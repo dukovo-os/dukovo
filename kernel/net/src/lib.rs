@@ -29,6 +29,13 @@
 //! advertise; smoltcp answers neighbour solicitations for them, and
 //! sends what they carry.
 //!
+//! The kernel may have an interface's frames pass through [`Hooks`] of
+//! its own: the VLANs and bridges above it take their frames from those
+//! it receives and give it theirs to send ([`layer2`], ADR 0333), and the
+//! firewall decides about the packets from other machines that start
+//! something ([`filter`], ADR 0334), each answer to a UDP datagram the
+//! interface sent being let in without asking it.
+//!
 //! [`Pinger`] sends ICMP echo requests and matches their replies, for
 //! the kernel's own checks of a link (`selftest=net`). The stack itself
 //! answers echo requests to its addresses.
@@ -46,7 +53,9 @@
 #![forbid(unsafe_code)]
 
 mod across;
+pub mod filter;
 pub mod ipv6;
+pub mod layer2;
 mod loopback;
 #[cfg(kani)]
 mod proofs;
@@ -57,6 +66,7 @@ mod tests;
 mod tests6;
 
 pub use across::{Across, OtherEnd};
+pub use layer2::TAGGED_FRAME;
 pub use loopback::Loopback;
 pub use smoltcp;
 pub use smoltcp::wire::{
@@ -64,7 +74,7 @@ pub use smoltcp::wire::{
 };
 pub use sockets::{ConnectError, Shown, TcpMemory, UdpMemory};
 
-use core::cell::Cell;
+use core::cell::{Cell, RefCell};
 
 use managed::ManagedSlice;
 use smoltcp::iface::{Config, Interface, PollResult, SocketHandle, SocketSet, SocketStorage};
@@ -75,7 +85,8 @@ use smoltcp::wire::{HardwareAddress, Icmpv4Packet, Icmpv4Repr, IpCidr};
 
 /// The bytes of the longest Ethernet frame the stack sends or takes:
 /// its header and an IP packet of 1500 bytes, without the frame check
-/// sequence, which the card adds and removes.
+/// sequence, which the card adds and removes. A card's buffers hold
+/// [`TAGGED_FRAME`]s, one with a VLAN tag, for the VLANs above it.
 pub const FRAME: usize = 1514;
 
 /// The bytes of an Ethernet frame's header.
@@ -129,13 +140,32 @@ pub trait Link {
     }
 }
 
+/// What the kernel has an interface's frames pass through besides its
+/// stack (ADRs 0333 and 0334). Each is told the interface's number.
+#[derive(Clone, Copy)]
+pub struct Hooks {
+    /// The interface's number.
+    pub number: usize,
+    /// Takes `frame`, which the link received, if it is for an interface
+    /// above it, a VLAN or a bridge: true if it did.
+    pub sift: fn(number: usize, frame: &[u8]) -> bool,
+    /// Copies the next frame an interface above it has for the link to
+    /// send into `frame`: its length, or `None` when none waits.
+    pub next: fn(number: usize, frame: &mut [u8]) -> Option<usize>,
+    /// Whether to let `packet` in at `now_ns`: one from another machine
+    /// that answers no datagram the interface sent.
+    pub admit: fn(number: usize, packet: &filter::Inbound, now_ns: u64) -> bool,
+}
+
 /// The memory a stack works in, lent to it for as long as it lives.
 pub struct Memory {
-    /// A frame received, while the stack reads it: [`FRAME`] bytes, as
-    /// longer frames are cut to it; on an IP link, the longest packet.
+    /// A frame received, while the stack reads it: [`TAGGED_FRAME`]
+    /// bytes, as longer frames are cut to it; on an IP link, the longest
+    /// packet.
     pub receive: &'static mut [u8],
-    /// A frame to send, while the stack writes it: [`FRAME`] bytes, or
-    /// fewer for a smaller MTU; on an IP link, its MTU.
+    /// A frame to send, while the stack writes it, or one of a VLAN's to
+    /// send: [`TAGGED_FRAME`] bytes, or fewer for a smaller MTU; on an IP
+    /// link, its MTU.
     pub transmit: &'static mut [u8],
     /// A slot for each socket the stack can have.
     pub sockets: &'static mut [SocketStorage<'static>],
@@ -155,6 +185,9 @@ pub struct Stack<L: Link> {
     /// Whether its addresses changed since [`Stack::take_moved`].
     moved: bool,
     counted: Counted,
+    /// What its frames pass through, and the datagrams it sent lately.
+    hooks: Option<Hooks>,
+    flows: RefCell<filter::Flows>,
 }
 
 /// What an interface has sent and received since it started, as Linux
@@ -229,6 +262,10 @@ struct Phy<'a, L: Link> {
     /// and the claims on its addresses that come, at `now`.
     ipv6: Option<&'a mut ipv6::Ipv6>,
     now: u64,
+    /// What its frames pass through, and the datagrams it sent lately,
+    /// whose answers it lets in.
+    hooks: Option<Hooks>,
+    flows: Option<&'a RefCell<filter::Flows>>,
 }
 
 impl<'a, L: Link> Phy<'a, L> {
@@ -239,7 +276,17 @@ impl<'a, L: Link> Phy<'a, L> {
         counted: &'a Counted,
     ) -> Phy<'a, L> {
         let in_place = link.loopback().is_some();
-        Phy { link, in_place, receive, transmit, counted, ipv6: None, now: 0 }
+        Phy {
+            link,
+            in_place,
+            receive,
+            transmit,
+            counted,
+            ipv6: None,
+            now: 0,
+            hooks: None,
+            flows: None,
+        }
     }
 }
 
@@ -255,9 +302,23 @@ enum Received<'a> {
 /// packet received. `spare` takes a loopback packet with no room, which
 /// is lost. Each is counted as it goes.
 enum Sending<'a, L: Link> {
-    Copied { link: &'a mut L, buffer: &'a mut [u8], counted: &'a Counted },
-    InPlace { link: &'a mut Loopback, spare: &'a mut [u8], counted: &'a Counted },
-    Answer { answer: loopback::Answer<'a>, spare: &'a mut [u8], counted: &'a Counted },
+    Copied {
+        link: &'a mut L,
+        buffer: &'a mut [u8],
+        counted: &'a Counted,
+        /// The datagrams sent lately, which this one joins, at `now`.
+        flows: Option<(&'a RefCell<filter::Flows>, u64)>,
+    },
+    InPlace {
+        link: &'a mut Loopback,
+        spare: &'a mut [u8],
+        counted: &'a Counted,
+    },
+    Answer {
+        answer: loopback::Answer<'a>,
+        spare: &'a mut [u8],
+        counted: &'a Counted,
+    },
 }
 
 impl phy::RxToken for Received<'_> {
@@ -294,7 +355,7 @@ fn counted_write<R>(
 impl<L: Link> phy::TxToken for Sending<'_, L> {
     fn consume<R, F: FnOnce(&mut [u8]) -> R>(self, len: usize, f: F) -> R {
         match self {
-            Sending::Copied { link, buffer, counted } => {
+            Sending::Copied { link, buffer, counted, flows } => {
                 // smoltcp asks for no more than the capabilities' largest
                 // frame, which is no longer than the buffer. Were it to ask
                 // for more, a frame cut short would be wrong: it is
@@ -305,6 +366,9 @@ impl<L: Link> phy::TxToken for Sending<'_, L> {
                 let result = f(frame);
                 if fits && link.send(frame) {
                     counted.sent(len);
+                    if let Some((flows, now)) = flows {
+                        flows.borrow_mut().sent(frame, now);
+                    }
                 } else {
                     counted.dropped();
                 }
@@ -339,16 +403,31 @@ impl<L: Link> phy::Device for Phy<'_, L> {
             let answer = Sending::Answer { answer, spare: self.transmit, counted };
             return Some((Received::InPlace(packet, counted), answer));
         }
-        let len = self.link.receive(self.receive)?;
-        let len = len.min(self.receive.len());
-        counted.received(len);
+        let len = loop {
+            let len = self.link.receive(self.receive)?;
+            let len = len.min(self.receive.len());
+            counted.received(len);
+            let frame = &self.receive[..len];
+            let Some(hooks) = self.hooks else { break len };
+            // A VLAN's or a bridge's, or one the firewall keeps out, goes
+            // no further.
+            if (hooks.sift)(hooks.number, frame) {
+                continue;
+            }
+            let Some(packet) = filter::inbound(frame) else { break len };
+            let answer = self.flows.is_some_and(|flows| flows.borrow().answers(&packet, self.now));
+            if answer || (hooks.admit)(hooks.number, &packet, self.now) {
+                break len;
+            }
+        };
         if let Some(ipv6) = self.ipv6.as_deref_mut()
             && ipv6.enabled()
             && let Some(heard) = ipv6::hear(&self.receive[..len])
         {
             ipv6.heard(heard, self.now);
         }
-        let sending = Sending::Copied { link: self.link, buffer: self.transmit, counted };
+        let flows = self.flows.map(|flows| (flows, self.now));
+        let sending = Sending::Copied { link: self.link, buffer: self.transmit, counted, flows };
         Some((Received::Copied(&self.receive[..len]), sending))
     }
 
@@ -363,7 +442,8 @@ impl<L: Link> phy::Device for Phy<'_, L> {
             });
         }
         if self.link.can_send() {
-            Some(Sending::Copied { link: self.link, buffer: self.transmit, counted })
+            let flows = self.flows.map(|flows| (flows, self.now));
+            Some(Sending::Copied { link: self.link, buffer: self.transmit, counted, flows })
         } else {
             None
         }
@@ -441,7 +521,15 @@ impl<L: Link> Stack<L> {
             ipv6,
             moved: false,
             counted,
+            hooks: None,
+            flows: RefCell::default(),
         }
+    }
+
+    /// Has the interface's frames pass through `hooks` from now on, or
+    /// through none.
+    pub fn set_hooks(&mut self, hooks: Option<Hooks>) {
+        self.hooks = hooks;
     }
 
     /// Gives the interface `address` (with its prefix) as its only IPv4
@@ -685,12 +773,15 @@ impl<L: Link> Stack<L> {
     /// answer go through in one call.
     pub fn poll(&mut self, now_ns: u64) -> bool {
         let mut changed = false;
+        self.send_above();
         for _ in 0..POLL_ROUNDS {
             let mut phy =
                 Phy::new(&mut self.link, &mut *self.receive, &mut *self.transmit, &self.counted);
             if phy.link.medium() == Medium::Ethernet {
                 phy.ipv6 = Some(&mut self.ipv6);
                 phy.now = now_ns;
+                phy.hooks = self.hooks;
+                phy.flows = self.hooks.is_some().then_some(&self.flows);
             }
             let result = self.iface.poll(instant(now_ns), &mut phy, &mut self.sockets);
             self.link.flush();
@@ -714,6 +805,26 @@ impl<L: Link> Stack<L> {
         }
         // New addresses may let sockets send what waited for one.
         changed | self.sync_ipv6()
+    }
+
+    /// Sends what the interfaces above it have for its link, while the
+    /// link takes it.
+    fn send_above(&mut self) {
+        let Some(hooks) = self.hooks else { return };
+        let mut sent = false;
+        while self.link.can_send() {
+            let Some(len) = (hooks.next)(hooks.number, self.transmit) else { break };
+            let frame = &self.transmit[..len.min(self.transmit.len())];
+            if self.link.send(frame) {
+                self.counted.sent(frame.len());
+            } else {
+                self.counted.dropped();
+            }
+            sent = true;
+        }
+        if sent {
+            self.link.flush();
+        }
     }
 
     /// How long until [`Stack::poll`] has something to do even if no

@@ -20,6 +20,15 @@
 //! those it was given (`configure_ipv6`, given_only): how it makes the
 //! others is netd(8)'s.
 //!
+//! Bridges and VLANs (ADR 0333): `ip link add` makes them (`ip link add
+//! br0 type bridge`, `ip link add link net0 name net0.7 type vlan id 7`),
+//! `ip link set net1 master br0` and `nomaster` join an interface to a
+//! bridge and take it out, and `ip link del` takes one away, through
+//! radix-network(2)'s `add_link`, `set_master` and `remove_link`, with
+//! the control right too. `ip link` shows each port's bridge (`master
+//! br0`) and each VLAN's parent (`net0.7@net0`), and `-d` what each is,
+//! from its `link` file; `ip link show master br0` the bridge's ports.
+//!
 //! Errors are iproute2's: a mistake in the command line ends with status
 //! 1, and what the kernel refuses with 2, said as `RTNETLINK answers:`
 //! and the C library's text, which scripts look for.
@@ -31,7 +40,9 @@ use std::path::Path;
 
 use radix_abi::Status;
 use radix_abi::errors::{File as FileError, Kernel};
-use radix_abi::network::{self, InterfaceAddress, InterfaceAddressIpv6, Ipv6Flags, Ipv6Settings};
+use radix_abi::network::{
+    self, InterfaceAddress, InterfaceAddressIpv6, Ipv6Flags, Ipv6Settings, LinkKind,
+};
 use radix_abi::startup::{NETWORK_SLOTS, SLOT_NETWORK};
 
 use crate::args::Args;
@@ -235,6 +246,50 @@ pub fn link_local(ip: Ipv6Addr) -> bool {
     ip.segments()[0] & 0xffc0 == 0xfe80
 }
 
+/// What an interface is, as its `link` file says.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum Kind {
+    #[default]
+    Card,
+    Loopback,
+    /// A bridge, and its ports.
+    Bridge {
+        ports: Vec<String>,
+    },
+    /// A VLAN, its number, on the interface named `parent`.
+    Vlan {
+        id: u16,
+        parent: String,
+    },
+}
+
+/// What an interface's `link` file says: what it is, and its bridge if
+/// it is a port of one.
+pub fn parse_link(text: &str) -> (Kind, Option<String>) {
+    let mut kind = Kind::Card;
+    let mut master = None;
+    for line in text.lines() {
+        let words: Vec<&str> = line.split_whitespace().collect();
+        match words[..] {
+            ["loopback"] => kind = Kind::Loopback,
+            ["bridge"] => kind = Kind::Bridge { ports: Vec::new() },
+            ["vlan", id, "on", parent] => {
+                if let Ok(id) = id.parse() {
+                    kind = Kind::Vlan { id, parent: parent.to_string() };
+                }
+            }
+            ["port", port] => {
+                if let Kind::Bridge { ports } = &mut kind {
+                    ports.push(port.to_string());
+                }
+            }
+            ["master", bridge] => master = Some(bridge.to_string()),
+            _ => {}
+        }
+    }
+    (kind, master)
+}
+
 /// An interface, as `/kernel/class/net` shows it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Interface {
@@ -250,6 +305,10 @@ pub struct Interface {
     pub addresses: Vec<Cidr>,
     pub router: Option<Ipv4Addr>,
     pub ipv6: Ipv6,
+    /// What it is: a card, a bridge or a VLAN.
+    pub kind: Kind,
+    /// The bridge it is a port of.
+    pub master: Option<String>,
     /// Bytes, packets, errors and dropped, received then sent.
     pub received: [u64; 4],
     pub sent: [u64; 4],
@@ -298,11 +357,17 @@ pub fn read_interfaces(dir: &Path, routes: &Path) -> io::Result<Vec<Interface>> 
         let Some(index) = read_number(&path, "ifindex") else { continue };
         let statistic =
             |file: &str| -> u64 { read_number(&path.join("statistics"), file).unwrap_or(0) };
+        let loopback = read_number::<u16>(&path, "type") == Some(772);
+        let (kind, master) = match read(&path, "link") {
+            Some(text) => parse_link(&text),
+            None if loopback => (Kind::Loopback, None),
+            None => (Kind::Card, None),
+        };
         interfaces.push(Interface {
             index,
             mtu: read_number(&path, "mtu").unwrap_or(0),
             mac: read(&path, "address").unwrap_or_default(),
-            loopback: read_number::<u16>(&path, "type") == Some(772),
+            loopback,
             carrier: read_number::<u8>(&path, "carrier") == Some(1),
             operstate: read(&path, "operstate").unwrap_or_default(),
             addresses: read(&path, "ipv4")
@@ -312,6 +377,8 @@ pub fn read_interfaces(dir: &Path, routes: &Path) -> io::Result<Vec<Interface>> 
                 .collect(),
             router: routers.iter().find(|(card, _)| *card == name).map(|(_, router)| *router),
             ipv6: Ipv6::parse(&read(&path, "ipv6").unwrap_or_default()),
+            kind,
+            master,
             received: ["rx_bytes", "rx_packets", "rx_errors", "rx_dropped"].map(statistic),
             sent: ["tx_bytes", "tx_packets", "tx_errors", "tx_dropped"].map(statistic),
             name,
@@ -343,15 +410,25 @@ pub trait Network {
         addresses: &[Cidr6],
         router: Option<Ipv6Addr>,
     ) -> Result<(), Status>;
+
+    /// Makes a bridge, or a VLAN numbered `vlan` on interface `parent`,
+    /// named `name`: its number.
+    fn add_link(&self, kind: LinkKind, parent: u32, vlan: u16, name: &str) -> Result<u32, Status>;
+
+    /// Makes interface `index` a port of bridge `bridge`, or of none.
+    fn set_master(&self, index: u32, bridge: Option<u32>) -> Result<(), Status>;
+
+    /// Takes bridge or VLAN `index` away.
+    fn remove_link(&self, index: u32) -> Result<(), Status>;
 }
 
 /// Calls `call` with each network capability's slot in turn until one
 /// allows it.
-fn through_slots(mut call: impl FnMut(u32) -> Result<(), Status>) -> Result<(), Status> {
+fn through_slots<T>(mut call: impl FnMut(u32) -> Result<T, Status>) -> Result<T, Status> {
     let mut refusal = Kernel::EmptySlot.status(0);
     for slot in SLOT_NETWORK..SLOT_NETWORK + NETWORK_SLOTS {
         match call(slot) {
-            Ok(()) => return Ok(()),
+            Ok(done) => return Ok(done),
             Err(status) => match Kernel::from_status(status) {
                 Some(Kernel::MissingRights) => refusal = status,
                 Some(Kernel::NoSuchSlot | Kernel::EmptySlot | Kernel::WrongKind) => {}
@@ -407,6 +484,20 @@ impl Network for Slots {
         let router: &[u8] = router.as_ref().map_or(&[], |router| router);
         through_slots(|slot| network::configure_ipv6(&SYS, slot, index, &settings, &bytes, router))
     }
+
+    fn add_link(&self, kind: LinkKind, parent: u32, vlan: u16, name: &str) -> Result<u32, Status> {
+        let vlan = u32::from(vlan);
+        through_slots(|slot| network::add_link(&SYS, slot, kind, parent, vlan, name.as_bytes()))
+            .map(|made| made.interface)
+    }
+
+    fn set_master(&self, index: u32, bridge: Option<u32>) -> Result<(), Status> {
+        through_slots(|slot| network::set_master(&SYS, slot, index, bridge.unwrap_or(0)))
+    }
+
+    fn remove_link(&self, index: u32) -> Result<(), Status> {
+        through_slots(|slot| network::remove_link(&SYS, slot, index))
+    }
 }
 
 /// A failure the kernel's way, as iproute2 says one: exit status 2.
@@ -428,6 +519,9 @@ fn refused(status: Status) -> Fail {
         }
         Some(Kernel::NotSupported) => "Operation not supported",
         Some(Kernel::InvalidArgument) => "Invalid argument",
+        Some(Kernel::Occupied) => "File exists",
+        Some(Kernel::NoRoom) => "No space left on device",
+        Some(Kernel::NoMemory) => "Cannot allocate memory",
         _ if FileError::from_status(status) == Some(FileError::NoDevice) => "No such device",
         _ => return answers(&crate::sys::status_name(status.0)),
     };
@@ -447,6 +541,8 @@ struct Command {
     family: Option<Family>,
     brief: bool,
     statistics: bool,
+    /// What each interface is, with `-d`.
+    details: bool,
     /// The colours, with `-color` (ADR 0260).
     colors: Option<Colors>,
     words: Vec<String>,
@@ -521,9 +617,13 @@ fn matches(word: &str, full: &str, least: usize) -> bool {
 
 const HELP: &str = "Usage: ip [ OPTIONS ] OBJECT { COMMAND | help }
 where  OBJECT := { link | address | route }
-       OPTIONS := { -4 | -6 | -s[tatistics] | -br[ief] | -c[olor][={always|auto|never}] }
-       ip link [ show [ [ dev ] NAME ] ]
-       ip link set [ dev ] NAME up
+       OPTIONS := { -4 | -6 | -s[tatistics] | -d[etails] | -br[ief] |
+                    -c[olor][={always|auto|never}] }
+       ip link [ show [ [ dev ] NAME | master BRIDGE ] ]
+       ip link add [ name ] NAME type bridge
+       ip link add link DEVICE [ name ] NAME type vlan id ID
+       ip link set [ dev ] NAME { up | master BRIDGE | nomaster }
+       ip link del [ dev ] NAME
        ip address [ show [ [ dev ] NAME ] ]
        ip address { add | del } IFADDR dev NAME
        ip address flush dev NAME
@@ -534,8 +634,14 @@ where  OBJECT := { link | address | route }
 ";
 
 pub fn main(args: &mut Args) -> Result<i32, Fail> {
-    let mut command =
-        Command { family: None, brief: false, statistics: false, colors: None, words: Vec::new() };
+    let mut command = Command {
+        family: None,
+        brief: false,
+        statistics: false,
+        details: false,
+        colors: None,
+        words: Vec::new(),
+    };
     let mut options = true;
     for word in args.rest() {
         let word = word.into_string().map_err(|_| usage("an argument is not UTF-8".into()))?;
@@ -548,6 +654,7 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
                     return Ok(0);
                 }
                 _ if matches(option, "brief", 2) => command.brief = true,
+                _ if matches(option, "details", 1) => command.details = true,
                 // As iproute2: -c, -color, -color=always|auto|never; auto
                 // only on a terminal, and never with NO_COLOR set.
                 _ if matches(option.split('=').next().unwrap_or(""), "color", 1) => {
@@ -613,7 +720,13 @@ fn run(
             return link(command, &shown, out).map(|()| 0);
         }
         if matches(verb, "set", 1) {
-            return set_link(interfaces, rest);
+            return set_link(interfaces, rest, network);
+        }
+        if matches(verb, "add", 1) {
+            return add_link(interfaces, rest, network);
+        }
+        if matches(verb, "delete", 1) {
+            return remove_link(interfaces, rest, network);
         }
     } else if matches(object, "address", 1) || object == "addr" {
         if show {
@@ -652,6 +765,10 @@ fn named<'a>(interfaces: &'a [Interface], name: &str) -> Result<&'a Interface, F
 fn selected<'a>(interfaces: &'a [Interface], words: &[&str]) -> Result<Vec<&'a Interface>, Fail> {
     match words {
         [] => Ok(interfaces.iter().collect()),
+        ["master", bridge] => {
+            named(interfaces, bridge)?;
+            Ok(interfaces.iter().filter(|i| i.master.as_deref() == Some(*bridge)).collect())
+        }
         ["dev", name] | [name] => Ok(vec![named(interfaces, name)?]),
         [other, ..] => {
             Err(usage(format!("Error: either \"dev\" is duplicate, or \"{other}\" is a garbage.")))
@@ -685,11 +802,18 @@ fn heading(
     mode: bool,
     out: &mut dyn Write,
 ) -> io::Result<()> {
+    // A VLAN is shown with its parent, `net0.7@net0`, as on Linux.
+    let name = match &interface.kind {
+        Kind::Vlan { parent, .. } => format!("{}@{parent}", interface.name),
+        _ => interface.name.clone(),
+    };
+    let master =
+        interface.master.as_ref().map_or(String::new(), |bridge| format!(" master {bridge}"));
     writeln!(
         out,
-        "{}: {}: {} mtu {} qdisc noqueue state {}{} group default",
+        "{}: {}: {} mtu {} qdisc noqueue{master} state {}{} group default",
         interface.index,
-        paint(command, |c| &c.name, &interface.name),
+        paint(command, |c| &c.name, &name),
         flags(interface),
         interface.mtu,
         painted_state(command, interface),
@@ -701,7 +825,18 @@ fn heading(
         ("ether", "ff:ff:ff:ff:ff:ff")
     };
     let mac = paint(command, |c| &c.mac, &interface.mac);
-    writeln!(out, "    link/{kind} {mac} brd {broadcast}")
+    writeln!(out, "    link/{kind} {mac} brd {broadcast}")?;
+    if command.details {
+        match &interface.kind {
+            Kind::Bridge { .. } => writeln!(out, "    bridge ")?,
+            Kind::Vlan { id, .. } => writeln!(out, "    vlan protocol 802.1Q id {id} ")?,
+            Kind::Card | Kind::Loopback => {}
+        }
+        if interface.master.is_some() {
+            writeln!(out, "    bridge_slave ")?;
+        }
+    }
+    Ok(())
 }
 
 /// `ip link`.
@@ -957,17 +1092,111 @@ fn route6(interfaces: &[&Interface], out: &mut dyn Write) -> Result<(), Fail> {
 
 /// `ip link set [dev] NAME up`: the interfaces are always up, and taking
 /// one down is not there yet.
-fn set_link(interfaces: &[Interface], words: &[&str]) -> Result<i32, Fail> {
+fn set_link(interfaces: &[Interface], words: &[&str], network: &dyn Network) -> Result<i32, Fail> {
     let (name, rest) = match words {
         ["dev", name, rest @ ..] | [name, rest @ ..] => (*name, rest),
         [] => return Err(usage("Not enough information: \"dev\" argument is required.".into())),
     };
-    named(interfaces, name)?;
+    let interface = named(interfaces, name)?;
     match rest {
         ["up"] => Ok(0),
         ["down"] => Err(answers("Operation not supported (interfaces are always up)")),
-        _ => Err(usage("ip link set takes only \"up\" here; see ip(8).".into())),
+        ["master", bridge] | ["up", "master", bridge] | ["master", bridge, "up"] => {
+            let bridge = named(interfaces, bridge)?;
+            network.set_master(interface.index, Some(bridge.index)).map_err(refused)?;
+            Ok(0)
+        }
+        ["nomaster"] => {
+            network.set_master(interface.index, None).map_err(refused)?;
+            Ok(0)
+        }
+        _ => Err(usage(
+            "ip link set takes \"up\", \"master BRIDGE\" or \"nomaster\" here; see ip(8).".into(),
+        )),
     }
+}
+
+/// `ip link add`: a bridge, or a VLAN on an interface.
+fn add_link(interfaces: &[Interface], words: &[&str], network: &dyn Network) -> Result<i32, Fail> {
+    let mut parent = None;
+    let mut name = None;
+    let mut kind = None;
+    let mut id = None;
+    let mut at = 0;
+    while at < words.len() {
+        let value = || {
+            words
+                .get(at + 1)
+                .copied()
+                .ok_or_else(|| usage("Command line is not complete. Try option \"help\"".into()))
+        };
+        match words[at] {
+            "link" => parent = Some(value()?),
+            "name" | "dev" => name = Some(value()?),
+            "type" => kind = Some(value()?),
+            "id" if kind == Some("vlan") => id = Some(value()?),
+            word if name.is_none() && kind.is_none() => {
+                name = Some(word);
+                at += 1;
+                continue;
+            }
+            word => {
+                return Err(usage(format!("Error: either \"{word}\" is duplicate, or a garbage.")));
+            }
+        }
+        at += 2;
+    }
+    let name =
+        name.ok_or_else(|| usage("Not enough information: \"dev\" argument is required.".into()))?;
+    if interfaces.iter().any(|interface| interface.name == name) {
+        return Err(answers("File exists"));
+    }
+    match kind {
+        Some("bridge") => {
+            if parent.is_some() {
+                return Err(usage("Error: a bridge is on no link.".into()));
+            }
+            network.add_link(LinkKind::Bridge, 0, 0, name).map_err(refused)?;
+        }
+        Some("vlan") => {
+            let parent =
+                parent.ok_or_else(|| usage("Error: VLAN needs \"link\" (its parent).".into()))?;
+            let parent = named(interfaces, parent)?;
+            let id = id.ok_or_else(|| usage("Error: VLAN needs \"id\".".into()))?;
+            let id: u16 =
+                id.parse().ok().filter(|id| (1..=4094).contains(id)).ok_or_else(|| {
+                    usage(format!("Error: \"{id}\" is not a VLAN id, 1 to 4094."))
+                })?;
+            network.add_link(LinkKind::Vlan, parent.index, id, name).map_err(refused)?;
+        }
+        Some(other) => {
+            return Err(usage(format!(
+                "Error: Unknown device type \"{other}\": bridge and vlan are."
+            )));
+        }
+        None => return Err(usage("Not enough information: \"type\" argument is required.".into())),
+    }
+    Ok(0)
+}
+
+/// `ip link del`: a bridge or VLAN.
+fn remove_link(
+    interfaces: &[Interface],
+    words: &[&str],
+    network: &dyn Network,
+) -> Result<i32, Fail> {
+    let name = match words {
+        ["dev", name] | [name] => *name,
+        [] => return Err(usage("Not enough information: \"dev\" argument is required.".into())),
+        [_, other, ..] => {
+            return Err(usage(format!(
+                "Error: either \"dev\" is duplicate, or \"{other}\" is a garbage."
+            )));
+        }
+    };
+    let interface = named(interfaces, name)?;
+    network.remove_link(interface.index).map_err(refused)?;
+    Ok(0)
 }
 
 /// The value after each of `keys` in `words`, which are key-value pairs,
@@ -1376,7 +1605,7 @@ mod tests {
 
     /// What ip(8) asks the kernel, kept instead.
     #[derive(Default)]
-    struct Kept(RefCell<Vec<Asked>>, RefCell<Vec<Asked6>>);
+    struct Kept(RefCell<Vec<Asked>>, RefCell<Vec<Asked6>>, RefCell<Vec<String>>);
 
     impl Network for Kept {
         fn configure(
@@ -1400,6 +1629,27 @@ mod tests {
             self.1.borrow_mut().push((index, addresses.to_vec(), router));
             Ok(())
         }
+
+        fn add_link(
+            &self,
+            kind: LinkKind,
+            parent: u32,
+            vlan: u16,
+            name: &str,
+        ) -> Result<u32, Status> {
+            self.2.borrow_mut().push(format!("add {kind:?} {parent} {vlan} {name}"));
+            Ok(9)
+        }
+
+        fn set_master(&self, index: u32, bridge: Option<u32>) -> Result<(), Status> {
+            self.2.borrow_mut().push(format!("master {index} {bridge:?}"));
+            Ok(())
+        }
+
+        fn remove_link(&self, index: u32) -> Result<(), Status> {
+            self.2.borrow_mut().push(format!("remove {index}"));
+            Ok(())
+        }
     }
 
     fn command(words: &str) -> Command {
@@ -1412,7 +1662,11 @@ mod tests {
         if family.is_some() {
             words.remove(0);
         }
-        Command { family, brief: false, statistics: false, colors: None, words }
+        let details = words.first().is_some_and(|word| word == "-d");
+        if details {
+            words.remove(0);
+        }
+        Command { family, brief: false, statistics: false, details, colors: None, words }
     }
 
     /// What `ip <words>` prints, or how it fails, and what it asked.
@@ -1436,6 +1690,84 @@ mod tests {
 
     fn cidr(text: &str) -> Cidr {
         Cidr::parse(text).unwrap()
+    }
+
+    /// What `ip <words>` asked of bridges and VLANs.
+    fn ip_links(words: &str) -> (Result<String, Fail>, Vec<String>) {
+        let kept = Kept::default();
+        let mut out = Vec::new();
+        let result = run(&command(words), &interfaces(), &kept, &mut out)
+            .map(|_| String::from_utf8(out).unwrap());
+        (result, kept.2.into_inner())
+    }
+
+    #[test]
+    fn bridges_and_vlans_are_made_joined_and_taken_away() {
+        let (result, asked) = ip_links("link add br0 type bridge");
+        assert!(result.is_ok());
+        assert_eq!(asked, ["add Bridge 0 0 br0"]);
+        let (result, asked) = ip_links("link add link net0 name net0.7 type vlan id 7");
+        assert!(result.is_ok());
+        assert_eq!(asked, ["add Vlan 2 7 net0.7"]);
+        let (result, asked) = ip_links("link set dev net0 master net0");
+        assert!(result.is_ok());
+        assert_eq!(asked, ["master 2 Some(2)"]);
+        let (result, asked) = ip_links("link set net0 nomaster");
+        assert!(result.is_ok());
+        assert_eq!(asked, ["master 2 None"]);
+        let (result, asked) = ip_links("link del dev net0");
+        assert!(result.is_ok());
+        assert_eq!(asked, ["remove 2"]);
+        // Mistakes are the command line's, and ask nothing.
+        for words in [
+            "link add net0 type bridge",
+            "link add link net0 name v type vlan id 4095",
+            "link add link net9 name v type vlan id 7",
+            "link add name v type vlan id 7",
+            "link add v type macvlan",
+            "link set net0 master br9",
+        ] {
+            let (result, asked) = ip_links(words);
+            assert!(result.is_err(), "{words}");
+            assert!(asked.is_empty(), "{words}");
+        }
+    }
+
+    #[test]
+    fn the_link_file_says_what_an_interface_is() {
+        assert_eq!(parse_link("card\nmaster br0\n"), (Kind::Card, Some("br0".into())));
+        assert_eq!(
+            parse_link("bridge\nport net0\nport net1\nheard 52:54:00:12:34:56 on net1 3\n"),
+            (Kind::Bridge { ports: vec!["net0".into(), "net1".into()] }, None)
+        );
+        assert_eq!(
+            parse_link("vlan 7 on net0\nlost 2\n"),
+            (Kind::Vlan { id: 7, parent: "net0".into() }, None)
+        );
+        assert_eq!(parse_link("loopback\n"), (Kind::Loopback, None));
+    }
+
+    #[test]
+    fn a_vlan_and_a_port_are_shown_as_linux_shows_them() {
+        let mut interfaces = interfaces();
+        let mut vlan = interfaces[1].clone();
+        vlan.name = "net0.7".into();
+        vlan.index = 3;
+        vlan.kind = Kind::Vlan { id: 7, parent: "net0".into() };
+        interfaces[1].master = Some("br0".into());
+        let mut out = Vec::new();
+        let shown: Vec<&Interface> = interfaces.iter().skip(1).chain([&vlan]).collect();
+        link(&command("-d link"), &shown, &mut out).unwrap();
+        let out = String::from_utf8(out).unwrap();
+        assert!(
+            out.contains(
+                "2: net0: <BROADCAST,UP,LOWER_UP> mtu 1500 qdisc noqueue master br0 state UP"
+            ),
+            "{out}"
+        );
+        assert!(out.contains("    bridge_slave "), "{out}");
+        assert!(out.contains("3: net0.7@net0: "), "{out}");
+        assert!(out.contains("    vlan protocol 802.1Q id 7 "), "{out}");
     }
 
     #[test]

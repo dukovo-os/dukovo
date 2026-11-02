@@ -30,6 +30,10 @@
 //! is [`crate::dhcp6`], ADR 0335), on a socket of its own on port 546,
 //! and gives the card the address it gets as ip(8) would. The DNS servers
 //! DHCPv6 gives and routers advertise go into resolv.conf after DHCP's.
+//!
+//! Bridges and VLANs that ip(8) makes (ADR 0333) are set up as cards are,
+//! by their names; a bridge's port is not, while it is one: its bridge
+//! has the addresses.
 
 use std::collections::HashMap;
 use std::fs;
@@ -646,14 +650,18 @@ impl Netd {
         };
         let known = self.cards.len();
         self.cards.retain(|card| {
-            let here = interfaces.iter().any(|i| i.index == card.index && i.name == card.name);
-            if !here {
-                eprintln!("netd: {} went", card.name);
+            let found = interfaces.iter().find(|i| i.index == card.index && i.name == card.name);
+            match found.map(|interface| &interface.master) {
+                None => eprintln!("netd: {} went", card.name),
+                // A bridge's port has no addresses: the bridge has them.
+                Some(Some(bridge)) => eprintln!("netd: {} is a port of {bridge} now", card.name),
+                Some(None) => return true,
             }
-            here
+            false
         });
         let mut changed = self.cards.len() != known;
-        for interface in interfaces.iter().filter(|interface| !interface.loopback) {
+        let set_up = |interface: &&Interface| !interface.loopback && interface.master.is_none();
+        for interface in interfaces.iter().filter(set_up) {
             if let Some(card) = self.cards.iter_mut().find(|card| card.index == interface.index) {
                 // The DNS servers its routers advertise now.
                 let advertised: Vec<Ipv6Addr> =

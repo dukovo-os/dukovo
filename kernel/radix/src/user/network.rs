@@ -12,9 +12,9 @@
 
 use radix_abi::errors::{File, Kernel};
 use radix_abi::network::{
-    self as abi, AddressFamily, ConfigureArgs, ConfigureIpv6Args, InterfaceAddress,
-    InterfaceAddressIpv6, Ipv6Flags, Ipv6Settings, PortsArgs, PortsResults, RestrictArgs,
-    SocketArgs, SocketType,
+    self as abi, AddLinkArgs, AddLinkResults, AddressFamily, ConfigureArgs, ConfigureIpv6Args,
+    InterfaceAddress, InterfaceAddressIpv6, Ipv6Flags, Ipv6Settings, LinkKind, PortsArgs,
+    PortsResults, RemoveLinkArgs, RestrictArgs, SetMasterArgs, SocketArgs, SocketType,
 };
 use radix_cap::{Capability, Derivation, ObjectKind, Rights, SlotRef};
 use radix_hal::UserMode;
@@ -26,6 +26,7 @@ use super::{Result, UserRef, cap_error, error};
 use crate::Arch;
 use crate::caps;
 use crate::fs::inet;
+use crate::net::links::{self, LinkError, Role};
 use crate::net::{self, ConfigureError};
 
 /// Calls the method `label` on `cap`, a network capability in `user`'s
@@ -94,7 +95,62 @@ pub fn method(
                 .map_err(configure_error)?;
             answer(label, 0, [0; 8])
         }
+        abi::ADD_LINK => {
+            let a = AddLinkArgs::decode(args)?;
+            cap.check(ObjectKind::Network, Rights::CONTROL).map_err(cap_error)?;
+            let mut name = [0u8; 16];
+            let len = usize::try_from(a.name.len).ok().filter(|&len| len < name.len());
+            let len = len.ok_or(error(Kernel::InvalidArgument))?;
+            copy_in(&mut name[..len], a.name.address, a.name.len)?;
+            let role = match a.kind {
+                LinkKind::Bridge => Role::Bridge,
+                LinkKind::Vlan => {
+                    let parent = number_of(a.parent)?;
+                    let id = u16::try_from(a.vlan).map_err(|_| error(Kernel::InvalidArgument))?;
+                    Role::Vlan { parent, id }
+                }
+            };
+            let number = links::add(role, &name[..len]).map_err(link_error)?;
+            // At most MAX_INTERFACES.
+            let results = AddLinkResults { interface: number as u32 + 1 };
+            answer(label, AddLinkResults::WORDS, results.encode())
+        }
+        abi::SET_MASTER => {
+            let a = SetMasterArgs::decode(args)?;
+            cap.check(ObjectKind::Network, Rights::CONTROL).map_err(cap_error)?;
+            let port = number_of(a.interface)?;
+            let bridge = match a.bridge {
+                0 => None,
+                bridge => Some(number_of(bridge)?),
+            };
+            links::set_master(port, bridge).map_err(link_error)?;
+            answer(label, 0, [0; 8])
+        }
+        abi::REMOVE_LINK => {
+            let a = RemoveLinkArgs::decode(args)?;
+            cap.check(ObjectKind::Network, Rights::CONTROL).map_err(cap_error)?;
+            links::remove(number_of(a.interface)?).map_err(link_error)?;
+            answer(label, 0, [0; 8])
+        }
         _ => Err(error(Kernel::NoSuchMethod)),
+    }
+}
+
+/// The kernel's number for the interface Linux numbers `index`
+/// (`ifindex`), if there is one.
+fn number_of(index: u32) -> Result<usize> {
+    net::by_index(index).map(|interface| interface.number).ok_or(File::NoDevice.status(0))
+}
+
+/// What `add_link`, `set_master` and `remove_link` fail with.
+fn link_error(err: LinkError) -> radix_abi::Status {
+    match err {
+        LinkError::Name | LinkError::Vlan => error(Kernel::InvalidArgument),
+        LinkError::Taken => error(Kernel::Occupied),
+        LinkError::NoDevice => File::NoDevice.status(0),
+        LinkError::NotSupported => error(Kernel::NotSupported),
+        LinkError::NoRoom => error(Kernel::NoRoom),
+        LinkError::NoMemory => error(Kernel::NoMemory),
     }
 }
 

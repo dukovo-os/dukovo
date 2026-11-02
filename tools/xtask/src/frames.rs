@@ -43,6 +43,11 @@ const ALLOWED: &[(&str, &str)] = &[
          (radix::usb::XHCI_STACK_PAGES)",
     ),
     (
+        "radix::net::add_virtual",
+        "builds a bridge's or VLAN's stack on the thread radix::net::links makes it on, whose \
+         stack is 64 KiB (radix::net::links::MAKER_STACK_PAGES)",
+    ),
+    (
         "radix::net::program::attach_usb",
         "gives a USB Ethernet adapter its interface on its xHCI controller's thread, whose stack \
          is 48 KiB (radix::usb::XHCI_STACK_PAGES)",

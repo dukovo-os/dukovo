@@ -31,6 +31,11 @@
 //! the pollers of every network socket: they look again
 //! ([`generation`], [`changed`]).
 //!
+//! Bridges and VLANs are interfaces too, made by programs, whose frames go
+//! through other interfaces' links ([`links`], ADR 0333); each
+//! interface's frames pass through them, and through the firewall
+//! ([`firewall`], ADR 0334), on their way to its stack.
+//!
 //! `selftest=net` pings the router from the first card (QEMU's user
 //! network answers at 10.0.2.2, which is what it uses without flags).
 //!
@@ -40,6 +45,8 @@
 //! connection has ended is an [`Orphan`] of its interface, which the
 //! thread takes apart once the connection has gone.
 
+pub mod firewall;
+pub mod links;
 pub mod memory;
 pub mod ports;
 pub mod proc;
@@ -61,8 +68,8 @@ use radix_net::ipv6::{self, Event, Kind};
 use radix_net::smoltcp::iface::{SocketHandle, SocketStorage};
 use radix_net::smoltcp::socket::{AnySocket, icmp, tcp};
 use radix_net::{
-    FRAME, IpAddress, Ipv4Address, Ipv4Cidr, Ipv6Address, Ipv6Cidr, Link, Loopback, Medium, Memory,
-    PingMemory, Pinger, Stack,
+    IpAddress, Ipv4Address, Ipv4Cidr, Ipv6Address, Ipv6Cidr, Link, Loopback, Medium, Memory,
+    PingMemory, Pinger, Stack, TAGGED_FRAME,
 };
 use radix_nic::Nic;
 use radix_sync::{Mutex, Once};
@@ -74,9 +81,11 @@ use crate::sched::{self, Options, Policy, ThreadRef, wait};
 use crate::user::network::Ipv6Change;
 use crate::user::posix::poll::Polled;
 
-/// The most network cards.
-const MAX_CARDS: usize = 8;
-/// The most interfaces: the loopback one, and the cards.
+/// The most network interfaces besides the loopback one: cards, bridges
+/// and VLANs.
+const MAX_CARDS: usize = 16;
+/// The most interfaces: the loopback one, and the cards, bridges and
+/// VLANs.
 pub const MAX_INTERFACES: usize = MAX_CARDS + 1;
 /// The sockets an interface has slots for at first. When every slot is
 /// taken it makes twice as many, up to [`MAX_SOCKETS`] (ADR 0188).
@@ -114,12 +123,14 @@ pub const ORPHAN_NS: u64 = 60_000_000_000;
 
 /// What an interface's stack sends and receives through: a virtio network
 /// card, a card of one of the drivers that share `radix-nic` (ADR 0197),
-/// a card a program drives (ADR 0198), or the loopback link.
+/// a card a program drives (ADR 0198), a bridge's or VLAN's link through
+/// other interfaces (ADR 0333), or the loopback link.
 #[expect(clippy::large_enum_variant, reason = "each is made once, in its interface's place")]
 pub enum Card {
     Virtio { net: Net, vector: Option<u32> },
     Nic { nic: Box<dyn Nic, Kmalloc>, vector: Option<u32> },
     Program(program::Program),
+    Virtual(links::Virtual),
     Loopback(Loopback),
 }
 
@@ -130,7 +141,7 @@ impl Card {
         match self {
             Card::Virtio { net, .. } => net.failed(),
             Card::Nic { nic, .. } => nic.failed(),
-            Card::Program(_) | Card::Loopback(_) => false,
+            Card::Program(_) | Card::Virtual(_) | Card::Loopback(_) => false,
         }
     }
 
@@ -149,7 +160,7 @@ impl Card {
     fn interrupts(&self) -> bool {
         match self {
             Card::Virtio { vector, .. } | Card::Nic { vector, .. } => vector.is_some(),
-            Card::Program(_) => true,
+            Card::Program(_) | Card::Virtual(_) => true,
             Card::Loopback(_) => false,
         }
     }
@@ -158,14 +169,16 @@ impl Card {
 impl Link for Card {
     fn medium(&self) -> Medium {
         match self {
-            Card::Virtio { .. } | Card::Nic { .. } | Card::Program(_) => Medium::Ethernet,
+            Card::Virtio { .. } | Card::Nic { .. } | Card::Program(_) | Card::Virtual(_) => {
+                Medium::Ethernet
+            }
             Card::Loopback(link) => link.medium(),
         }
     }
 
     fn pending(&self) -> bool {
         match self {
-            Card::Virtio { .. } | Card::Nic { .. } | Card::Program(_) => false,
+            Card::Virtio { .. } | Card::Nic { .. } | Card::Program(_) | Card::Virtual(_) => false,
             Card::Loopback(link) => link.pending(),
         }
     }
@@ -175,6 +188,7 @@ impl Link for Card {
             Card::Virtio { net, .. } => net.info().mac,
             Card::Nic { nic, .. } => nic.info().mac,
             Card::Program(card) => card.mac(),
+            Card::Virtual(link) => link.mac,
             Card::Loopback(link) => link.mac(),
         }
     }
@@ -184,6 +198,7 @@ impl Link for Card {
             Card::Virtio { net, .. } => net.receive(frame),
             Card::Nic { nic, .. } => nic.receive(frame),
             Card::Program(card) => card.receive(frame),
+            Card::Virtual(link) => link.receive(frame),
             Card::Loopback(link) => link.receive(frame),
         }
     }
@@ -193,6 +208,7 @@ impl Link for Card {
             Card::Virtio { net, .. } => net.can_send(),
             Card::Nic { nic, .. } => nic.can_send(),
             Card::Program(card) => card.can_send(),
+            Card::Virtual(_) => true,
             Card::Loopback(link) => link.can_send(),
         }
     }
@@ -202,6 +218,7 @@ impl Link for Card {
             Card::Virtio { net, .. } => frame.len() <= MAX_FRAME && net.send(frame).is_ok(),
             Card::Nic { nic, .. } => nic.send(frame),
             Card::Program(card) => card.send(frame),
+            Card::Virtual(link) => link.send(frame),
             Card::Loopback(link) => link.send(frame),
         }
     }
@@ -211,6 +228,8 @@ impl Link for Card {
             Card::Virtio { net, .. } => net.notify(),
             Card::Nic { nic, .. } => nic.flush(),
             Card::Program(card) => card.flush(),
+            // Those it gave frames to are woken after the poll.
+            Card::Virtual(_) => {}
             Card::Loopback(link) => link.flush(),
         }
     }
@@ -218,14 +237,14 @@ impl Link for Card {
     fn needs_checksums(&self) -> bool {
         match self {
             // No card's checksum offloads are used.
-            Card::Virtio { .. } | Card::Nic { .. } | Card::Program(_) => true,
+            Card::Virtio { .. } | Card::Nic { .. } | Card::Program(_) | Card::Virtual(_) => true,
             Card::Loopback(link) => link.needs_checksums(),
         }
     }
 
     fn loopback(&mut self) -> Option<&mut Loopback> {
         match self {
-            Card::Virtio { .. } | Card::Nic { .. } | Card::Program(_) => None,
+            Card::Virtio { .. } | Card::Nic { .. } | Card::Program(_) | Card::Virtual(_) => None,
             Card::Loopback(link) => link.loopback(),
         }
     }
@@ -245,7 +264,7 @@ impl Drop for Card {
                 *vector
             }
             // Its driver's device capability stops the card.
-            Card::Program(_) | Card::Loopback(_) => None,
+            Card::Program(_) | Card::Virtual(_) | Card::Loopback(_) => None,
         };
         if let Some(vector) = vector {
             <Arch as Devices>::free_interrupt(vector);
@@ -270,8 +289,9 @@ pub struct Orphan {
 
 /// One interface: its stack and the thread that runs it.
 pub struct Interface {
-    /// `lo`, `net0`, `net1` and on.
-    pub name: TextBuf<8>,
+    /// `lo`, `net0`, `net1` and on, or the name a program gave a bridge
+    /// or VLAN: at most 15 bytes, as Linux's IFNAMSIZ allows.
+    pub name: TextBuf<16>,
     /// Its place among the interfaces: 0 for `lo`, then the cards in the
     /// order they were found.
     pub number: usize,
@@ -288,6 +308,9 @@ pub struct Interface {
     /// lock held: the loopback interface's poller wakes it sooner when a
     /// timer is due before then.
     wake_at: AtomicU64,
+    /// Set once a bridge or VLAN was taken away: it is in no listing, and
+    /// its thread ends.
+    gone: AtomicBool,
 }
 
 impl Interface {
@@ -300,6 +323,17 @@ impl Interface {
         } else {
             self.wake();
         }
+    }
+
+    /// Whether it was taken away, a bridge or VLAN.
+    pub fn gone(&self) -> bool {
+        self.gone.load(Ordering::Acquire)
+    }
+
+    /// Takes it away, and has its thread end.
+    fn go(&self) {
+        self.gone.store(true, Ordering::Release);
+        self.wake();
     }
 
     /// Wakes the interface's thread, to poll its stack.
@@ -322,6 +356,7 @@ impl Interface {
             let due = [delay, orphans].into_iter().flatten().min();
             (changed, due, self.wake_at.load(Ordering::Relaxed))
         };
+        links::wake_given();
         if changed {
             self::changed();
         }
@@ -505,15 +540,23 @@ static LO: Once<Interface> = Once::new();
 static INTERFACES: [Once<Interface>; MAX_CARDS] = [const { Once::new() }; MAX_CARDS];
 static COUNT: AtomicUsize = AtomicUsize::new(0);
 
-/// Every interface: `lo` first, then the cards.
+/// Every interface: `lo` first, then the cards, bridges and VLANs, but
+/// those taken away.
 pub fn interfaces() -> impl Iterator<Item = &'static Interface> {
     let cards = COUNT.load(Ordering::Acquire).min(MAX_CARDS);
-    LO.get().into_iter().chain(INTERFACES[..cards].iter().filter_map(Once::get))
+    LO.get()
+        .into_iter()
+        .chain(INTERFACES[..cards].iter().filter_map(Once::get))
+        .filter(|interface| !interface.gone())
 }
 
-/// The interface numbered `index`, as Linux numbers them (`ifindex`).
+/// The interface numbered `index`, as Linux numbers them (`ifindex`),
+/// unless it was taken away.
 pub fn by_index(index: u32) -> Option<&'static Interface> {
-    index.checked_sub(1).and_then(|number| numbered(number as usize))
+    index
+        .checked_sub(1)
+        .and_then(|number| numbered(number as usize))
+        .filter(|interface| !interface.gone())
 }
 
 /// Why [`configure`] failed.
@@ -720,7 +763,7 @@ fn start_loopback() -> Result<(), &'static str> {
     let mut stack = Stack::new(card, memory, radix_random::u64(), sched::now_ns());
     stack.set_ipv4_addresses(&LOOPBACK_OWN);
     stack.set_ipv6_addresses(&[Ipv6Cidr::new(LOOPBACK_IPV6, 128)]);
-    let mut name = TextBuf::<8>::new();
+    let mut name = TextBuf::<16>::new();
     let _ = name.write_str("lo");
     let interface = interface(name, 0, stack, slots).ok_or("out of memory")?;
     if LO.set(interface).is_err() {
@@ -736,7 +779,7 @@ fn start_loopback() -> Result<(), &'static str> {
 /// An interface named `name`, numbered `number`, of `stack`, whose socket
 /// slots `slots` lent.
 fn interface(
-    name: TextBuf<8>,
+    name: TextBuf<16>,
     number: usize,
     stack: Stack<Card>,
     slots: Lease<SocketStorage<'static>, Kmalloc>,
@@ -751,6 +794,7 @@ fn interface(
         slots: Mutex::new(slots),
         thread: Once::new(),
         wake_at: AtomicU64::new(u64::MAX),
+        gone: AtomicBool::new(false),
     })
 }
 
@@ -1405,28 +1449,59 @@ fn attach(function: &Function, index: usize, card: Card, about: &About) -> Resul
 /// Gives the card `card`, numbered `index`, its interface, `netN`, with
 /// the first card's address from the flags.
 fn add_interface(index: usize, card: Card) -> Result<&'static Interface, Failure> {
-    let (slots, sockets) = slots(SOCKETS).ok_or("out of memory")?;
-    let memory = Memory {
-        receive: forever(FRAME).ok_or("out of memory")?,
-        transmit: forever(FRAME).ok_or("out of memory")?,
-        sockets,
-    };
-    let mut stack = Stack::new(card, memory, radix_random::u64(), sched::now_ns());
-    let flags = FLAGS.get().copied().unwrap_or((None, None));
-    if index == 0
-        && let (Some(address), gateway) = flags
-    {
-        stack.set_ipv4(address, gateway);
-    }
-    let mut name = TextBuf::<8>::new();
+    let mut name = TextBuf::<16>::new();
     let _ = write!(name, "net{index}");
-    let interface =
-        interface(name, index + 1, stack, slots).ok_or(Failure::Other("out of memory"))?;
+    let flags = FLAGS.get().copied().unwrap_or((None, None));
+    let first = if index == 0 { flags } else { (None, None) };
+    let interface = build(name, index, card, first)?;
     if INTERFACES[index].set(interface).is_err() {
         return Err(Failure::Other("its slot is taken"));
     }
-    COUNT.store(index + 1, Ordering::Release);
+    COUNT.fetch_max(index + 1, Ordering::AcqRel);
     INTERFACES[index].get().ok_or(Failure::Other("its slot is empty"))
+}
+
+/// An interface named `name` in place `index` among the cards, of `card`,
+/// with `address` and `gateway` if given, and the hooks its frames pass
+/// through.
+#[inline(always)]
+fn build(
+    name: TextBuf<16>,
+    index: usize,
+    card: Card,
+    (address, gateway): (Option<Ipv4Cidr>, Option<Ipv4Address>),
+) -> Result<Interface, Failure> {
+    let (slots, sockets) = slots(SOCKETS).ok_or("out of memory")?;
+    let memory = Memory {
+        receive: forever(TAGGED_FRAME).ok_or("out of memory")?,
+        transmit: forever(TAGGED_FRAME).ok_or("out of memory")?,
+        sockets,
+    };
+    let mut stack = Stack::new(card, memory, radix_random::u64(), sched::now_ns());
+    if let Some(address) = address {
+        stack.set_ipv4(address, gateway);
+    }
+    stack.set_hooks(Some(links::hooks(index + 1)));
+    interface(name, index + 1, stack, slots).ok_or(Failure::Other("out of memory"))
+}
+
+/// Gives a bridge or VLAN named `name`, with the MAC address `mac`, its
+/// interface, in the first free place among the cards (ADR 0333).
+#[inline(never)]
+fn add_virtual(name: &TextBuf<16>, mac: [u8; 6]) -> Result<&'static Interface, Failure> {
+    let first = COUNT.load(Ordering::Acquire);
+    for (index, slot) in INTERFACES.iter().enumerate().skip(first) {
+        if slot.get().is_some() {
+            continue;
+        }
+        let card = Card::Virtual(links::Virtual { number: index + 1, mac });
+        let interface = build(name.clone(), index, card, (None, None))?;
+        if slot.set(interface).is_ok() {
+            COUNT.fetch_max(index + 1, Ordering::AcqRel);
+            return slot.get().ok_or(Failure::Other("its slot is empty"));
+        }
+    }
+    Err(Failure::Other("no room for another interface"))
 }
 
 /// The interface numbered `number`: `lo`, or a card's.
@@ -1441,6 +1516,9 @@ fn numbered(number: usize) -> Option<&'static Interface> {
 /// and tells socket calls when that may have changed what they can do.
 fn run(number: usize) {
     let Some(interface) = numbered(number) else { return };
+    if interface.gone() {
+        return;
+    }
     // A card is looked at this often even when nothing is due, in case
     // it has no interrupt; the loopback interface is polled by whoever
     // sends on it, and its thread only wakes for its timers.
@@ -1481,6 +1559,10 @@ fn run(number: usize) {
             }
             (wake_at, changed, stack.take_moved())
         };
+        links::wake_given();
+        if interface.gone() {
+            return;
+        }
         // The addresses it made for itself are `lo`'s too, taken without
         // its stack's lock.
         if moved {
