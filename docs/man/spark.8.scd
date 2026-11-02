@@ -9,7 +9,7 @@ spark - the first program, which starts every other
 
 # SYNOPSIS
 
-Kernel command line: [*init=*_path_] [_flags_ ...] [*--* [*--no-volumes*] [*--compress* _disk_ ...] [*--watchdog* _seconds_] [*--test-hang*] [*--services* | *--service-dir* _directory_] [*--posix*] [*--network*] [*--names*] [_program_ [_argument_ ...]]]
+Kernel command line: [*init=*_path_] [_flags_ ...] [*--* [*--no-volumes*] [*--compress* _disk_ ...] [*--watchdog* _seconds_] [*--test-hang*] [*--services* | *--service-dir* _directory_] [*--posix*] [*--network*] [*--firewall*] [*--names*] [_program_ [_argument_ ...]]]
 
 # DESCRIPTION
 
@@ -79,6 +79,8 @@ Spark gets what every program gets (see *radix-startup*(2)) and more:
   real-time clock (*radix-clock*(2), ADR 0194);
 - the root device capability in slot 15, which opens the cards the
   kernel left for driver programs (below);
+- the firewall capability in slot 16, which gives the packet filter its
+  rules (*radix-firewall*(2), ADR 0334);
 - an image placed at a random address, as every position-independent
   program is (see *radix-processes*(7)).
 
@@ -430,8 +432,10 @@ test (*ob*(1)) boots with *-- --network /system/tests/sockets virtio*.
 
 A service gets only what its file asks for, derived from that
 capability: with *network.outbound*, one with the send right for every
-port, for each range of *network.listen*, one with the receive right
-for those ports, and with *admin.network* one with only the control
+port, for each range of *network.listen*, one with the receive and
+inbound rights for those ports, so that other machines reach the
+service there through the firewall (*firewall*(8), ADR 0334), and with
+*admin.network* one with only the control
 right, which sets the interfaces' addresses and routers, in the slots
 from _SLOT_NETWORK_, in that order. Each keeps the copy and transfer
 rights, so the service's children get them through *fork* and *exec*.
@@ -439,6 +443,15 @@ A service that asks for none cannot use the network at all; the C
 library's calls fail with EACCES (*radix-posix*(7)). *consoled*(8)'s
 file asks for all three, so that root's shells may connect, listen and
 run *ip*(8), as root may on Linux.
+
+The kernel gives Spark the firewall capability too, with the read and
+control rights (*radix-firewall*(2)). A service whose file says
+*admin.firewall = true* gets a copy in _SLOT_FIREWALL_, with the copy
+and transfer rights: the *firewall* service's does, to load the rules
+at boot, and *authd*(8)'s, to hand it to an administrator's command
+inside *elevate*(8). With *--firewall* before a POSIX program, Spark
+gives the program it starts a copy, as the *network-pair* boot test
+needs to run *firewall*(8).
 
 # THE PLATFORM
 

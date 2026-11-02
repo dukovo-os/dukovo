@@ -68,6 +68,8 @@ enum ObjectKind: u8 {
     /// A PCI card the kernel left for a driver program, or the root of
     /// all of them (radix-device(2)).
     device = 22;
+    /// The firewall's rules (radix-firewall(2)).
+    firewall = 23;
 }
 
 /// What a capability lets its holder do.
@@ -101,6 +103,10 @@ flags Rights: u64 {
     /// do (radix-directory(2)). The security design calls it override,
     /// which Rust and C++ keep as a word.
     bypass = 12;
+    /// Be reached from other machines: a network capability's sockets
+    /// that listen on its ports take what other machines start
+    /// (radix-firewall(2)).
+    inbound = 13;
 }
 
 /// The flags of a slot, which stay with the slot rather than the

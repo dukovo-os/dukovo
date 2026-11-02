@@ -25,7 +25,10 @@
 //! 0190). `admin.hardware = true` gives it the platform capability, which
 //! sets the fans, the LEDs and the ARGB header (ADR 0208), and
 //! `admin.time = true` the clock capability, which sets the time of day
-//! and the real-time clock (ADR 0194). A driver program's
+//! and the real-time clock (ADR 0194), and `admin.firewall = true` the
+//! firewall capability, which gives the packet filter its rules (ADR
+//! 0334). The ports a service listens on take what other machines start:
+//! they are open while it runs (ADR 0334). A driver program's
 //! `devices.pci` names the cards it drives, and Spark gives it each card
 //! the kernel left for a program that one matches (ADR 0198). It reaches
 //! the tree only through the view Spark builds of what its file declares
@@ -78,6 +81,8 @@ pub struct Spec {
     pub hardware: bool,
     /// Whether it gets the clock capability: admin.time.
     pub time: bool,
+    /// Whether it gets the firewall capability: admin.firewall.
+    pub firewall: bool,
     /// The places its view holds beyond what every service's does.
     pub places: Vec<Place>,
     /// The places it mounts filesystems beneath, which it gets as
@@ -132,6 +137,7 @@ pub fn parse(name: &str, text: &str) -> Result<Spec, String> {
         configure: file.permissions.admin.network,
         hardware: file.permissions.admin.hardware,
         time: file.permissions.admin.time,
+        firewall: file.permissions.admin.firewall,
         places: file.permissions.places(),
         mounts: file.permissions.files.mount.clone(),
         whole_tree: file.permissions.runs_with_your_access,

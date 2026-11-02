@@ -115,7 +115,9 @@ wrong in plain words:
 		The ports it may bind to and listen on, as numbers and ranges,
 		such as *[22, "8000-8009"]*; none unless set. Ranges may not
 		overlap, and with *network.outbound* and *admin.network* there
-		are at most eight.
+		are at most eight. Other machines reach the service there while
+		it runs, through the firewall (*firewall*(8), ADR 0334): its
+		capabilities for these ports have the inbound right.
 
 	*files.read* = [_"path"_, ...]
 		Places of the tree it may read, directories or files, each at
@@ -158,6 +160,13 @@ wrong in plain words:
 		and routers, as *ip*(8) does, with a network capability of only
 		the control right (*radix-network*(2), ADR 0190); *false* unless
 		set. *consoled*(8)'s file sets it, so that root's shells may.
+
+	*admin.firewall* = *true* | *false*
+		Whether it holds the firewall capability, which gives the packet
+		filter its rules (*radix-firewall*(2), ADR 0334); *false* unless
+		set. The *firewall* service's file sets it, to load the rules at
+		boot, and *authd*(8)'s, so that an administrator's *firewall*(8)
+		inside *elevate*(8) may change them.
 
 	*admin.hardware* = *true* | *false*
 		Whether it may set the machine's fans, their curves, its LEDs

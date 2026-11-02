@@ -5,8 +5,8 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 # Networking
 
-This chapter describes networking in Dukovo as of Phase 12a.5 of the
-roadmap, with the Intel cards of 12b. Phase 12 builds it up in steps:
+This chapter describes networking in Dukovo as of Phase 12c of the
+roadmap: the cards of 12b, and IPv6, bridges, VLANs and the firewall. Phase 12 builds it up in steps:
 sockets for programs, TCP that matches Linux, `netd` with DHCP, DNS and
 `curl`, the time service, the Realtek, Intel and USB Ethernet cards,
 IPv6, the firewall and WireGuard. This page grows with each.
@@ -174,6 +174,29 @@ IPv6, the firewall and WireGuard. This page grows with each.
 - **`netlog` sends the log to another computer** over UDP as it is
   written, to debug a machine whose screen shows nothing
   ([ADR 0196](https://github.com/openlinuxsystems/orthros/blob/main/docs/adr/0196-netlog-sends-the-kernel-log-over-udp.md)).
+- **IPv6, with nothing to set**: each card makes its link-local address
+  and, from what its routers advertise, a stable address that is the
+  same on the same network at every boot but tells no network its MAC
+  address (RFC 7217), and temporary ones it sends from (RFC 8981), each
+  tested before it is used; it takes the routers, DNS servers and MTU
+  the adverts carry
+  ([ADR 0331](https://github.com/openlinuxsystems/orthros/blob/main/docs/adr/0331-the-kernel-makes-each-cards-ipv6-addresses-by-slaac.md)).
+  netd asks DHCPv6 for addresses or settings when the routers say to
+  ([ADR 0335](https://github.com/openlinuxsystems/orthros/blob/main/docs/adr/0335-netd-asks-dhcpv6-when-routers-say-to.md)).
+- **IPv6 sockets** that take IPv4 too unless `IPV6_V6ONLY`, as on
+  Linux, and lookups that ask for A and AAAA records and order them as
+  RFC 6724 does, so curl, ssh and git reach names with only AAAA records
+  ([ADR 0332](https://github.com/openlinuxsystems/orthros/blob/main/docs/adr/0332-ipv6-sockets-take-ipv4-too-and-lookups-ask-for-both.md)).
+- **Bridges and VLANs**, made with iproute2's commands: `ip link add br0
+  type bridge`, `ip link set net0 master br0`, `ip link add link net0
+  name net0.7 type vlan id 7`; netd sets them up as cards
+  ([ADR 0333](https://github.com/openlinuxsystems/orthros/blob/main/docs/adr/0333-bridges-and-vlans-are-kernel-links-joined-through-each-stacks-hooks.md)).
+- **A firewall that keeps what is open in step with what runs**: other
+  machines reach what a service listens on while it runs, and what the
+  rules allow; nothing else they start gets in, and what is dropped is
+  logged. What you run yourself listens for your machine alone until
+  `firewall allow program PATH` lets others reach it
+  ([ADR 0334](https://github.com/openlinuxsystems/orthros/blob/main/docs/adr/0334-the-firewall-denies-inbound-unless-a-service-listens-or-a-rule-allows.md)).
 
 Native programs use the sockets through radix-network(2) and
 radix-file(2).
@@ -195,7 +218,61 @@ network.listen = [80, 443]
 Spark derives one capability for each range from its own and puts them
 in the service's network slots. The service can bind to and listen on
 ports 80 and 443, and nothing more: binding another port, connecting
-out or sending a datagram anywhere fails with `EACCES`.
+out or sending a datagram anywhere fails with `EACCES`. Its
+capabilities for 80 and 443 have the inbound right too, so other
+machines reach it there through the firewall while it runs, and not
+once it stops.
+
+## The firewall
+
+With no rules, a fresh machine answers pings and lets other machines
+reach only what its services listen on. `firewall status` lists every
+socket that listens and who reaches it:
+
+```
+$ firewall status
+Firewall: 0 rules; 3 packets dropped since the machine started
+Other machines reach what services listen on, and what the rules allow; pings are answered.
+
+Listening      Process  Program                          Reached from
+tcp 443             41  /system/commands/httpd           other machines (its service)
+tcp 8000           212  /users/alice/bin/devserver       this machine only
+                        To allow it from other machines: firewall allow program /users/alice/bin/devserver
+```
+
+`firewall allow program PATH`, `firewall allow tcp 8080 from
+192.168.1.0/24` and `firewall deny udp 5353 on net1` add rules,
+`firewall list` numbers them and `firewall remove N` takes one away;
+they are kept in `/system/settings/firewall`, and the first that
+matches decides. Changing them needs an administrator, through
+`elevate`. The kernel logs what it drops, five a second at most:
+
+```
+Firewall: dropped a TCP connection from 192.168.1.7:51514 to port 8000 on net0: process 212 listens for this machine alone
+```
+
+## Bridges and VLANs
+
+A bridge joins cards into one network, as a switch does, for virtual
+machines or a second machine on another port; a VLAN reaches a tagged
+network on a switch's trunk port:
+
+```
+# ip link add br0 type bridge
+# ip link set net0 master br0
+# ip link set net1 master br0
+# ip link add link br0 name br0.7 type vlan id 7
+# cat >> /system/settings/network
+[br0.7]
+dhcp = no
+address = 192.168.7.1/24
+address = fd07::1/64
+# service netd reload
+```
+
+netd asks DHCP for `br0`'s address as it would for a card's, and the
+ports have none of their own while they are ports. `ip -d link` shows
+what each interface is.
 
 ## Setting the cards up
 
@@ -413,6 +490,18 @@ system's root certificates:
 
 ```
 ./ob test --case tls
+```
+
+## Trying two machines
+
+The `network-pair` boot test boots two machines on a cable: the first
+bridges its network and the cable, with VLAN 7 on the bridge, and the
+second gets its addresses by DHCP, SLAAC and DHCPv6 through the bridge,
+fetches the first's page with curl by IPv6 and IPv4, and probes its
+firewall:
+
+```
+./ob test --case network-pair
 ```
 
 ## Trying the sockets
