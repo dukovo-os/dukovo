@@ -47,10 +47,16 @@ use crate::{APPEND, Error, In, Out, Result, mem};
 
 const PAGE: u64 = PAGE_SIZE as u64;
 
-/// The most pages [`FileCache::sync`] hands its backing in one write:
-/// 256 KiB, two of the extents Btrfs compresses, which it compresses at
-/// once on two CPUs (ADR 0134).
+/// The most pages [`FileCache::sync`] hands its backing in one write,
+/// unless it asks for more ([`Backing::write_run_pages`]): 256 KiB, two of
+/// the extents Btrfs compresses, which it compresses at once on two CPUs
+/// (ADR 0134).
 pub const WRITE_RUN: usize = 64;
+
+/// The most pages [`FileCache::sync`] hands a backing that asks for more
+/// than [`WRITE_RUN`]: 1 MiB, eight of Btrfs's compressed extents, which it
+/// compresses two by two while the two before are written (ADR 0291).
+pub const WRITE_RUN_MAX: usize = 256;
 
 /// The fewest pages a read that misses asks its backing for beyond those
 /// it copies, when it goes on from where the cached pages end or starts
@@ -120,6 +126,13 @@ pub trait Backing {
     /// reads more.
     fn run_pages(&self) -> usize {
         1
+    }
+
+    /// The most pages [`FileCache::sync`] hands [`Backing::write_pages`] at
+    /// once: [`WRITE_RUN`], unless it does better with more, up to
+    /// [`WRITE_RUN_MAX`].
+    fn write_run_pages(&self) -> usize {
+        WRITE_RUN
     }
 
     /// Writes the first `len` bytes of page `index` to the disk.
@@ -532,12 +545,14 @@ impl FileCache {
     }
 
     /// Writes every dirty page back, in runs of up to [`WRITE_RUN`] pages
-    /// next to each other in the file. Pages whose write failed stay
-    /// dirty.
+    /// next to each other in the file, or as many as the backing asks for
+    /// ([`Backing::write_run_pages`]) when there is memory to list them.
+    /// Pages whose write failed stay dirty.
     pub fn sync(&self, backing: &dyn Backing) -> Result<()> {
         if !backing.persistent() {
             return Ok(());
         }
+        let most = backing.write_run_pages().clamp(1, WRITE_RUN_MAX);
         let mut state = self.state.lock();
         let State { pages, size, dirty, .. } = &mut *state;
         let mut failed = None;
@@ -549,18 +564,40 @@ impl FileCache {
                 index = found + 1;
                 continue;
             }
-            let mut run = [&*first.page; WRITE_RUN];
             let mut n = 1;
-            while n < WRITE_RUN
-                && let Some(slot) = pages.get(found + n as u64)
-                && slot.dirty
-            {
-                run[n] = &*slot.page;
+            while n < most && pages.get(found + n as u64).is_some_and(|slot| slot.dirty) {
                 n += 1;
+            }
+            // A run longer than the stack holds is listed on the heap, or
+            // cut to what the stack holds.
+            let mut long = None;
+            if n > WRITE_RUN {
+                long = mem::vec_with_capacity(n).ok();
+                if long.is_none() {
+                    n = WRITE_RUN;
+                }
             }
             let last = found + n as u64 - 1;
             index = last + 1;
-            match backing.write_pages(found, &run[..n], page_len(last, *size)) {
+            let page = |at: u64| pages.get(at).map_or(&*first.page, |slot| &*slot.page);
+            let len = page_len(last, *size);
+            let written = match &mut long {
+                Some(run) => {
+                    for at in found..=last {
+                        mem::push(run, page(at))?;
+                    }
+                    backing.write_pages(found, run, len)
+                }
+                None => {
+                    let mut run = [&*first.page; WRITE_RUN];
+                    for (slot, at) in run.iter_mut().zip(found..=last) {
+                        *slot = page(at);
+                    }
+                    backing.write_pages(found, &run[..n], len)
+                }
+            };
+            drop(long);
+            match written {
                 Ok(()) => {
                     for at in found..=last {
                         if let Some(slot) = pages.get_mut(at) {

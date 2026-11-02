@@ -179,8 +179,10 @@ dirty.
   space (`Backing::truncate`).
 - `sync` writes the dirty pages back through the backing, each run of up
   to `WRITE_RUN` (64) contiguous ones in one call (`Backing::write_pages`,
-  which writes them one at a time unless the filesystem does better); a
-  page whose write fails stays dirty.
+  which writes them one at a time unless the filesystem does better), or
+  up to `WRITE_RUN_MAX` (256) for a backing that asks for them
+  (`Backing::write_run_pages`: Btrfs, for the files it compresses, ADR
+  0291); a page whose write fails stays dirty.
 - `shrink` drops clean pages.
 
 One mutex guards a file's pages and size, and is held while the disk

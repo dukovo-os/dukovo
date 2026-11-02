@@ -25,7 +25,7 @@ use radix_block::{PAGE_SIZE, Page, SegmentMut};
 use radix_sync::{Mutex, Once};
 use radix_vfs::acl::{self, Acl, AclCell};
 use radix_vfs::cache::{Backing, FileCache, page_len};
-use radix_vfs::mem::{self, Alloc, KArc, KVec};
+use radix_vfs::mem::{self, Alloc, KArc, KBox, KVec};
 use radix_vfs::path::check_name;
 use radix_vfs::{
     Access, AccessChange, Error, In, Kind, ListFn, Node, NodeRef, Out, Result, Setting,
@@ -38,7 +38,7 @@ use crate::files::{Files, Packed, Put, at, compression, file_type, put_time, put
 use crate::format::{Key, item, name_hash, tree, u32_at};
 use crate::fs::{Inner, Txn};
 use crate::inode::{self, Inode};
-use crate::pack::{CHUNK, Packer};
+use crate::pack::{CHUNK, PACKERS, Packer};
 use crate::tree::{Cursor, Root};
 use crate::unpack::{self, Workspace};
 use crate::xattr;
@@ -804,22 +804,26 @@ impl BtrfsNode {
         files.write_data(self.ino, 0, &[&*page], sums, 0)
     }
 
+    /// Whether the file's data is written compressed: never without
+    /// checksums, never when the file says not to, and always when it says
+    /// to, as on Linux; otherwise as the mount has it.
+    fn compresses(&self) -> bool {
+        let inode = self.inode();
+        let flags = inode.flags;
+        inode.has_sums()
+            && flags & inode::flags::NOCOMPRESS == 0
+            && (self.fs.compress() || flags & inode::flags::COMPRESS != 0)
+    }
+
     /// Writes `pages`, the file's pages from `index` on (`len` bytes of
     /// the last one in the file), to new extents.
     fn write_run(&self, index: u64, pages: &[&Page], len: usize) -> Result<()> {
         let pos = index * PAGE;
         let end = pos + (pages.len() as u64 - 1) * PAGE + len as u64;
-        let inode = self.inode();
-        let sums = inode.has_sums();
-        // As on Linux: never without checksums, never when the file says
-        // not to, and always when it says to.
-        let flags = inode.flags;
-        if sums
-            && flags & inode::flags::NOCOMPRESS == 0
-            && (self.fs.compress() || flags & inode::flags::COMPRESS != 0)
-        {
+        if self.compresses() {
             return self.write_packed(index, pages, end);
         }
+        let sums = self.inode().has_sums();
         self.fs.change(|txn| {
             let mut files = txn.files(&self.fs.volume, self.subvol);
             if pos != 0 {
@@ -834,41 +838,66 @@ impl BtrfsNode {
     /// 128 KiB to an extent (ADR 0134): two chunks at a time, the second on
     /// another CPU when one is free, compressed before the transaction is
     /// taken. A chunk that would not save a sector is written as it is.
-    /// The file ends at `end`.
+    /// With [`PACKERS`] packers, the next two chunks are compressed while
+    /// two are written, on the CPUs the write leaves waiting for the disk
+    /// (ADR 0291). The file ends at `end`.
     fn write_packed(&self, index: u64, pages: &[&Page], end: u64) -> Result<()> {
         // The bytes of the chunk of `n` pages from page `at` that are the
         // file's.
-        let bytes = |at: u64, n: usize| {
+        let bytes = move |at: u64, n: usize| {
             usize::try_from(end.saturating_sub(at * PAGE))
                 .map_or(n * PAGE_SIZE, |b| b.min(n * PAGE_SIZE))
         };
-        let mut done = 0;
-        while done < pages.len() {
-            let rest = &pages[done..];
-            let at = index + done as u64;
-            done += self.fs.with_packers(rest.len() > CHUNK, |own, other| {
-                let (first, rest) = rest.split_at(rest.len().min(CHUNK));
-                let second = &rest[..rest.len().min(CHUNK)];
-                let (mut a, mut b) = (None, None);
-                match other {
-                    Some(other) if !second.is_empty() => {
-                        let next = at + CHUNK as u64;
-                        radix_vfs::join(
-                            || a = own.pack(first, bytes(at, first.len())),
-                            || b = other.pack(second, bytes(next, second.len())),
-                        );
-                        self.write_chunks(at, [(first, a, &*own), (second, b, &*other)], end)?;
-                        Ok(first.len() + second.len())
-                    }
-                    _ => {
-                        a = own.pack(first, bytes(at, first.len()));
-                        self.write_chunks(at, [(first, a, &*own), (&[], None, &*own)], end)?;
-                        Ok(first.len())
-                    }
+        let want = match pages.len().div_ceil(CHUNK) {
+            0 | 1 => 1,
+            2 => 2,
+            _ => PACKERS,
+        };
+        self.fs.with_packers(want, |packers| {
+            // A step is a chunk for each packer of a side, two at most.
+            let per = packers.len().min(2);
+            let (mut front, mut back) = packers.split_at_mut(per);
+            let ahead = per == 2 && back.len() >= 2;
+            let mut steps = pages.chunks(per * CHUNK);
+            let Some(mut step) = steps.next() else { return Ok(()) };
+            let mut at = index;
+            let mut made = pack_step(front, step, at, &bytes);
+            for next in steps {
+                let next_at = at + step.len() as u64;
+                if ahead {
+                    let (mut written, mut next_made) = (Ok(()), [None; 2]);
+                    let side = &mut *back;
+                    radix_vfs::join(
+                        || written = self.write_step(front, step, at, made, end),
+                        || next_made = pack_step(side, next, next_at, &bytes),
+                    );
+                    written?;
+                    core::mem::swap(&mut front, &mut back);
+                    made = next_made;
+                } else {
+                    self.write_step(front, step, at, made, end)?;
+                    made = pack_step(front, next, next_at, &bytes);
                 }
-            })?;
-        }
-        Ok(())
+                (step, at) = (next, next_at);
+            }
+            self.write_step(front, step, at, made, end)
+        })
+    }
+
+    /// Writes `step`, the file's pages from `index` on, compressed by the
+    /// packers of `side` into the frames `made` gives the lengths of.
+    fn write_step(
+        &self,
+        side: &[KBox<Packer>],
+        step: &[&Page],
+        index: u64,
+        made: [Option<usize>; 2],
+        end: u64,
+    ) -> Result<()> {
+        let (first, second) = step.split_at(step.len().min(CHUNK));
+        let own = side.first().ok_or(Error::Corrupt)?;
+        let other = side.get(1).unwrap_or(own);
+        self.write_chunks(index, [(first, made[0], own), (second, made[1], other)], end)
     }
 
     /// Writes `chunks`, the file's pages from `index` on, each compressed
@@ -1154,6 +1183,33 @@ fn put_frames(
     Ok(Some((files.put_data(&disk[..n], true)?, e)))
 }
 
+/// Compresses `step`, the file's pages from `index` on, with the packers
+/// of `side`: its first chunk with the first, and its second, if it has
+/// one, with the second on another CPU. `bytes` gives how many bytes of a
+/// chunk are the file's. Returns the frames' lengths, of the chunks that
+/// shrank.
+fn pack_step(
+    side: &mut [KBox<Packer>],
+    step: &[&Page],
+    index: u64,
+    bytes: &(impl Fn(u64, usize) -> usize + Sync),
+) -> [Option<usize>; 2] {
+    let (first, second) = step.split_at(step.len().min(CHUNK));
+    match side {
+        [own, other, ..] if !second.is_empty() => {
+            let (mut a, mut b) = (None, None);
+            let next = index + CHUNK as u64;
+            radix_vfs::join(
+                || a = own.pack(first, bytes(index, first.len())),
+                || b = other.pack(second, bytes(next, second.len())),
+            );
+            [a, b]
+        }
+        [own, ..] => [own.pack(first, bytes(index, first.len())), None],
+        [] => [None, None],
+    }
+}
+
 /// Writes `pages` with [`Files::write_data`], in halves when there is no
 /// one free range that holds them all.
 fn write_split(
@@ -1209,6 +1265,16 @@ impl Backing for FileBacking<'_> {
 
     fn run_pages(&self) -> usize {
         radix_vfs::cache::READ_RUN
+    }
+
+    /// A compressed file's whole runs, so that the next extents are
+    /// compressed while the first are written (ADR 0291).
+    fn write_run_pages(&self) -> usize {
+        if self.0.compresses() {
+            radix_vfs::cache::WRITE_RUN_MAX
+        } else {
+            radix_vfs::cache::WRITE_RUN
+        }
     }
 
     fn write_page(&self, index: u64, page: &Page, len: usize) -> Result<()> {

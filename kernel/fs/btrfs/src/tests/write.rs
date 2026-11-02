@@ -51,8 +51,11 @@ pub(super) fn mkfs_sized(size: u64, args: &[&str]) -> Vec<u8> {
     image
 }
 
-/// A disk that can be written, holding `image`.
+/// A disk that can be written, holding `image`. Its filesystem's joins
+/// run on two threads, so that compressed writes compress ahead of the
+/// disk as on two CPUs (ADR 0291).
 pub(super) fn writable(image: &[u8]) -> KArc<RamDisk> {
+    radix_vfs::set_join(super::join_on_threads);
     let disk = mem::arc(RamDisk::with_blocks(image.len() as u64 / 512, false, 512)).unwrap();
     disk.load(0, image).unwrap();
     disk

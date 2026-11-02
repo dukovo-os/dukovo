@@ -10,10 +10,13 @@
 //! Linux; so is a file without checksums, which Linux never compresses.
 //! The checksums of a compressed extent are of its sectors as written.
 //!
-//! A filesystem has two [`Packer`]s, made at its first compressed write
-//! and dropped when memory runs short: writes compress two extents at a
-//! time, the second on another CPU when one is free (`radix_vfs::join`),
-//! before they take the transaction, so that reads go on meanwhile.
+//! A filesystem has up to [`PACKERS`] [`Packer`]s, made at its first
+//! compressed write and dropped when memory runs short: writes compress
+//! two extents at a time, the second on another CPU when one is free
+//! (`radix_vfs::join`), before they take the transaction, so that reads go
+//! on meanwhile. A longer write compresses its next two extents into the
+//! other two packers while the first two are written, so that the disk
+//! and the CPUs work at once, as Linux's writeback has them (ADR 0291).
 
 use radix_block::mem::CachePage;
 use radix_block::{PAGE_SIZE, Page};
@@ -25,6 +28,10 @@ use crate::zstd::encode::Encoder;
 
 /// The most pages an extent compressed holds.
 pub(crate) const CHUNK: usize = MAX_UNCOMPRESSED / PAGE_SIZE;
+
+/// The most packers a filesystem has: two extents written while the next
+/// two are compressed.
+pub(crate) const PACKERS: usize = 4;
 
 /// An encoder and the pages a frame is written from.
 pub(crate) struct Packer {
