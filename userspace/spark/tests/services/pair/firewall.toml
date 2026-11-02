@@ -1,0 +1,20 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+#
+# A service of the network-pair boot test: firewall(8) as the system's
+# own file has it, which gives the firewall the rules of
+# /system/settings/firewall at boot, none on a test machine.
+
+service_version = 1
+description = "Firewall rules"
+program = "/system/commands/firewall"
+arguments = ["load"]
+order = 6
+restart = "never"
+
+[limits]
+memory = "8M"
+
+[permissions]
+admin.firewall = true
+runs-with-your-access = true

@@ -355,9 +355,11 @@ _/kernel/class/hwmon/hwmon_*n*_/temp_*k*_crit_, _temp_*k*_max_, _temp_*k*_crit_a
 
 _/kernel/class/net/_*name*_/ifindex_, _iflink_
 	The network interfaces, *lo* and the cards (*net0*, *net1*...),
-	each a directory of its name, with its number as Linux numbers
-	interfaces: *lo* is 1 and the cards follow from 2, in the order the
-	kernel found them (ADR 0190). The C library's *if_nametoindex* and
+	then the bridges and VLANs *ip*(8) made, each a directory of its
+	name, with its number as Linux numbers interfaces: *lo* is 1 and the
+	cards follow from 2, in the order the kernel found them (ADR 0190).
+	_iflink_ is the same, but for a VLAN, whose _iflink_ is its
+	parent's number, as on Linux. The C library's *if_nametoindex* and
 	*if_nameindex* read these, and *ip*(8) the rest.
 
 _/kernel/class/net/_*name*_/address_, _broadcast_, _addr_len_
@@ -379,6 +381,28 @@ _/kernel/class/net/_*name*_/ipv4_
 	as _10.0.2.15/24_, the first the one it sends from; nothing for a
 	card not set up. *lo* shows 127.0.0.1/8, though it answers each
 	card's addresses too. Linux gives these only over netlink.
+
+_/kernel/class/net/_*name*_/ipv6_
+	Radix's own: what its IPv6 has (ADR 0331), a line each: each
+	address with its prefix, what it is (*link-local*, *stable*,
+	*temporary* or *given*) and how many seconds it is preferred and
+	valid for, *tentative* at the end while it is tested
+	(_address 2001:db8::5/64 temporary preferred 86000 valid 172000_);
+	the routers that advertised themselves (_router fe80::1 lifetime
+	1800_) and the one it was given (_router fe80::1 given_); the DNS
+	servers they advertised (_dns 2001:db8::53 lifetime 600_); the MTU
+	(_mtu 1500_); and whether DHCPv6 is to give addresses (_dhcp
+	managed_) or other settings (_dhcp other_). *ip*(8) and *netd*(8)
+	read it.
+
+_/kernel/class/net/_*name*_/link_
+	Radix's own: what the interface is (ADR 0333), on its first line:
+	*card*, *loopback*, *bridge* or *vlan 7 on net0*. For a bridge, a
+	line for each port (_port net0_) and one for each machine it heard
+	in the last five minutes, the port and how many seconds ago
+	(_heard 52:54:00:12:34:56 on net0 12_); for a bridge's port, its
+	bridge (_master br0_); and how many frames were lost to its full
+	queues, if any (_lost 3_).
 
 _/kernel/class/net/_*name*_/statistics/rx_bytes_, _rx_packets_, _tx_bytes_, _tx_packets_, _tx_dropped_
 	What it received and sent since boot, and what it could not send

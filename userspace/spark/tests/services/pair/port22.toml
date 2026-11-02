@@ -1,0 +1,21 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+#
+# A service of the network-pair boot test, in place of sshd until Phase
+# 13 brings it: it listens on port 22, as sshd's file will ask, and is
+# off until the test starts it, as sshd is until it is enabled. While it
+# runs, other machines reach port 22, and only that port; once it stops,
+# none reach it (ADR 0334).
+
+service_version = 1
+description = "Listens on port 22, as sshd will"
+program = "/system/tests/posix/pairtest"
+arguments = ["serve", "22"]
+enabled = false
+restart = "never"
+
+[limits]
+memory = "8M"
+
+[permissions]
+network.listen = [22]

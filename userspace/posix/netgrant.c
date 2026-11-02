@@ -4,10 +4,12 @@
 // What the spark-network boot test runs as its services (ADR 0184): it
 // checks that Spark gave it the network its service file asks for, and
 // nothing more. With `granted` that is a capability to connect out, then
-// one to listen on ports 8000 to 8009 and one on port 9000, and the C
-// library's sockets go through them: it listens on ports 8005 and 9000
-// and connects to the first, but cannot bind port 8010. With `none` it
-// holds no network capability, and cannot make a socket.
+// one to listen on ports 8000 to 8009 and one on port 9000, both with
+// the inbound right, which lets other machines reach them through the
+// firewall (ADR 0334), and the C library's sockets go through them: it
+// listens on ports 8005 and 9000 and connects to the first, but cannot
+// bind port 8010. With `none` it holds no network capability, and cannot
+// make a socket.
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
@@ -79,8 +81,8 @@ static void granted(void) {
 	uint64_t kept = RADIX_RIGHTS_COPY | RADIX_RIGHTS_TRANSFER;
 	const struct wanted wanted[] = {
 			{RADIX_RIGHTS_SEND | kept, 0, 65536},
-			{RADIX_RIGHTS_RECEIVE | kept, 8000, 10},
-			{RADIX_RIGHTS_RECEIVE | kept, 9000, 1},
+			{RADIX_RIGHTS_RECEIVE | RADIX_RIGHTS_INBOUND | kept, 8000, 10},
+			{RADIX_RIGHTS_RECEIVE | RADIX_RIGHTS_INBOUND | kept, 9000, 1},
 	};
 	holds(wanted, sizeof(wanted) / sizeof(wanted[0]));
 	// It listens on its ports, through the second capability and the

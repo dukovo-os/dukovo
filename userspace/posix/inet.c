@@ -11,7 +11,10 @@
 // descriptor.
 // UDP: sendto and recvfrom, datagrams kept whole, sendmsg and recvmsg
 // over several buffers, connect, and MSG_DONTWAIT. The errors of
-// addresses in use or not on the machine and of families not there. And
+// addresses in use or not on the machine and of families not there.
+// AF_INET6 over ::1 (ADR 0332): a connection, its addresses and its
+// data, IPV6_V6ONLY, and an IPv4 client reaching a socket bound to ::
+// as ::ffff:127.0.0.1. And
 // the interfaces' names and numbers (if_nametoindex, if_indextoname,
 // if_nameindex) and SO_BINDTODEVICE, of lo, the only interface this boot
 // has; the interfaces boot test binds to a card. And
@@ -435,7 +438,7 @@ static void errors(void) {
 	CHECK_ERROR(connect(b, (struct sockaddr *)&other, sizeof(other)), EAFNOSUPPORT);
 	close(a);
 	close(b);
-	CHECK_ERROR(socket(AF_INET6, SOCK_STREAM, 0), EAFNOSUPPORT);
+	CHECK_ERROR(socket(AF_PACKET, SOCK_RAW, 0), EAFNOSUPPORT);
 	CHECK_ERROR(socket(AF_INET, SOCK_STREAM, IPPROTO_UDP), EPROTONOSUPPORT);
 	CHECK_ERROR(socket(AF_INET, SOCK_RAW, IPPROTO_ICMP), EPERM);
 	// A datagram goes somewhere.
@@ -446,6 +449,58 @@ static void errors(void) {
 
 // lo's name and number, as /kernel/class/net gives them, and a socket
 // bound to it with SO_BINDTODEVICE, which still reaches 127.0.0.1.
+// AF_INET6 over ::1 (ADR 0332).
+static void ipv6(void) {
+	int server = socket(AF_INET6, SOCK_STREAM, 0);
+	CHECK(server >= 0);
+	struct sockaddr_in6 at;
+	memset(&at, 0, sizeof(at));
+	at.sin6_family = AF_INET6;
+	at.sin6_addr = in6addr_loopback;
+	CHECK(bind(server, (struct sockaddr *)&at, sizeof(at)) == 0);
+	CHECK(listen(server, 1) == 0);
+	socklen_t len = sizeof(at);
+	CHECK(getsockname(server, (struct sockaddr *)&at, &len) == 0);
+	CHECK(at.sin6_family == AF_INET6 && at.sin6_port != 0);
+	int client = socket(AF_INET6, SOCK_STREAM, 0);
+	CHECK(client >= 0);
+	CHECK(connect(client, (struct sockaddr *)&at, sizeof(at)) == 0);
+	struct sockaddr_in6 peer;
+	len = sizeof(peer);
+	int accepted = accept(server, (struct sockaddr *)&peer, &len);
+	CHECK(accepted >= 0);
+	CHECK(peer.sin6_family == AF_INET6 && IN6_IS_ADDR_LOOPBACK(&peer.sin6_addr));
+	CHECK(write(client, "six", 3) == 3);
+	char buffer[8];
+	CHECK(read(accepted, buffer, sizeof(buffer)) == 3 && !memcmp(buffer, "six", 3));
+	close(accepted);
+	close(client);
+	close(server);
+	// A socket bound to :: takes IPv4 too, unless IPV6_V6ONLY.
+	int any = socket(AF_INET6, SOCK_STREAM, 0);
+	CHECK(any >= 0);
+	int only = 1;
+	len = sizeof(only);
+	CHECK(getsockopt(any, IPPROTO_IPV6, IPV6_V6ONLY, &only, &len) == 0 && only == 0);
+	memset(&at, 0, sizeof(at));
+	at.sin6_family = AF_INET6;
+	at.sin6_addr = in6addr_any;
+	CHECK(bind(any, (struct sockaddr *)&at, sizeof(at)) == 0);
+	CHECK(listen(any, 1) == 0);
+	len = sizeof(at);
+	CHECK(getsockname(any, (struct sockaddr *)&at, &len) == 0);
+	int four = socket(AF_INET, SOCK_STREAM, 0);
+	struct sockaddr_in to = loopback(ntohs(at.sin6_port));
+	CHECK(connect(four, (struct sockaddr *)&to, sizeof(to)) == 0);
+	len = sizeof(peer);
+	accepted = accept(any, (struct sockaddr *)&peer, &len);
+	CHECK(accepted >= 0);
+	CHECK(peer.sin6_family == AF_INET6 && IN6_IS_ADDR_V4MAPPED(&peer.sin6_addr));
+	close(accepted);
+	close(four);
+	close(any);
+}
+
 static void interfaces(void) {
 	CHECK(if_nametoindex("lo") == 1);
 	CHECK(if_nametoindex("net0") == 0 && errno == ENODEV);
@@ -601,6 +656,7 @@ int main(void) {
 	RUN(shared);
 	RUN(udp);
 	RUN(errors);
+	RUN(ipv6);
 	RUN(interfaces);
 	RUN(capabilities);
 	return check_end();

@@ -252,6 +252,25 @@ _/processes/net/tcp_, _/processes/net/udp_
 	listed once. The user is root's, and the timers, inode and other
 	fields are 0.
 
+_/processes/net/tcp6_, _/processes/net/udp6_
+	The IPv6 sockets, likewise, as Linux's _tcp6_ and _udp6_ list them
+	(ADR 0332): an address is four such numbers, each four of its bytes
+	read as a little-endian number (::1 is
+	*00000000000000000000000001000000*).
+
+_/processes/net/if_inet6_
+	Each interface's IPv6 addresses, as Linux's _/proc/net/if_inet6_
+	lists them: the address's 16 bytes in hexadecimal, in order, then
+	the interface's number, the prefix length, the scope and the flags
+	(*80* for a permanent one, *01* for a temporary one, *20* for one no
+	longer preferred, *40* while it is tested) in hexadecimal, and its
+	name.
+
+_/processes/net/ipv6_route_
+	The IPv6 routes, as Linux's _/proc/net/ipv6_route_ lists them: each
+	interface's networks and default routes, with the router, the
+	metric and the interface's name.
+
 _/processes/acpi/button/lid/_*name*_/state_
 	For each lid of the firmware's (_PNP0C0D_, through uACPI), by its
 	name in the ACPI namespace, as *LID0*, Linux's line: *state:* and six
