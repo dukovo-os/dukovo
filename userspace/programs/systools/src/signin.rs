@@ -367,13 +367,24 @@ pub fn start(
 /// and elevated commands listen (ADR 0257).
 pub const FIRST_OPEN_PORT: u32 = 1024;
 
+/// Every right but inbound: a program a person runs, even as root,
+/// listens for this machine alone until the firewall allows it from
+/// others (ADR 0334).
+const ALL_BUT_INBOUND: Rights =
+    match Rights::from_bits(Rights::ALL.bits() & !Rights::INBOUND.bits()) {
+        Some(rights) => rights,
+        None => Rights::ALL,
+    };
+
 /// Gives `child` the network, from authd's network capabilities in the
 /// NETWORK_SLOTS slots from SLOT_NETWORK into its own from SLOT_NETWORK
 /// (ADR 0257). With `everything`, for root's session and elevated
 /// commands, each goes as authd holds it, setting up the interfaces
 /// included. Otherwise the child connects out, and listens on the ports
 /// from [`FIRST_OPEN_PORT`], but sets up nothing, as anyone may on Linux.
-/// `scratch` is an empty slot to restrict through.
+/// Neither has the inbound right, which authd's has: what the child
+/// listens on, other machines reach only as the firewall's rules allow
+/// (ADR 0334). `scratch` is an empty slot to restrict through.
 pub fn give_network(child: u32, scratch: u32, everything: bool) -> Result<(), Status> {
     // Kept through fork and exec, as Spark gives them (ADR 0184).
     let kept = Rights::COPY.union(Rights::TRANSFER);
@@ -385,7 +396,7 @@ pub fn give_network(child: u32, scratch: u32, everything: bool) -> Result<(), St
             continue;
         }
         if everything {
-            process::share(&SYS, child, from, to, Rights::ALL, 0)?;
+            process::share(&SYS, child, from, to, ALL_BUT_INBOUND, 0)?;
             to += 1;
             continue;
         }

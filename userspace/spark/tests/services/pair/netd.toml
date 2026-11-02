@@ -1,0 +1,20 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+#
+# A service of the network-pair boot test: netd(8) as the system's own
+# file has it, which sets each machine's interfaces up, its bridge and
+# VLAN too, by QEMU's DHCP server and router.
+
+service_version = 1
+description = "Network setup"
+program = "/system/commands/netd"
+restart = "always"
+
+[limits]
+memory = "16M"
+
+[permissions]
+network.outbound = true
+network.listen = [68, 546]
+admin.network = true
+files.read-write = ["/system/state/netd", "/system/live/netd"]

@@ -89,6 +89,8 @@ error that starts with the tool's name.
 :  run a command as an administrator
 |  *findmnt*(8)
 :  the mounts, as a tree, or the one sought
+|  *firewall*(8)
+:  the firewall's rules, and what listens
 |  *fstrim*(8)
 :  discard what a mounted filesystem does not use
 |  *free*(1)

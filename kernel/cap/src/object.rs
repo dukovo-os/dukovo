@@ -80,10 +80,12 @@ pub enum ObjectKind {
     /// A PCI card the kernel left for a driver program, or the root of
     /// all of them (ADR 0198).
     Device = 22,
+    /// The firewall's rules (ADR 0334).
+    Firewall = 23,
 }
 
 /// How many kinds there are.
-pub const KINDS: usize = 23;
+pub const KINDS: usize = 24;
 
 impl ObjectKind {
     /// Every kind, in the order of their numbers.
@@ -111,6 +113,7 @@ impl ObjectKind {
         ObjectKind::Names,
         ObjectKind::Clock,
         ObjectKind::Device,
+        ObjectKind::Firewall,
     ];
 
     /// The kind numbered `n`.
@@ -157,7 +160,11 @@ impl ObjectKind {
             // Sending is connecting out, to any port; receiving is taking
             // what comes to the ports in the range; control sets the
             // interfaces up.
-            ObjectKind::Network => Rights::SEND.union(Rights::RECEIVE).union(Rights::CONTROL),
+            // Inbound lets what other machines start reach the sockets
+            // that listen on them (ADR 0334).
+            ObjectKind::Network => {
+                Rights::SEND.union(Rights::RECEIVE).union(Rights::CONTROL).union(Rights::INBOUND)
+            }
             // Reading asks what the controls are set to; control changes
             // them.
             ObjectKind::Platform => Rights::READ.union(Rights::CONTROL),
@@ -167,6 +174,9 @@ impl ObjectKind {
             // Reading asks what the cards are; control opens one, maps its
             // registers and memory and attaches it.
             ObjectKind::Device => Rights::READ.union(Rights::CONTROL),
+            // Reading asks what the rules are and what listens; control
+            // gives the rules.
+            ObjectKind::Firewall => Rights::READ.union(Rights::CONTROL),
         };
         own.union(Rights::COPY).union(Rights::TRANSFER)
     }
@@ -230,6 +240,7 @@ impl ObjectKind {
             ObjectKind::Names => "names",
             ObjectKind::Clock => "clock",
             ObjectKind::Device => "device",
+            ObjectKind::Firewall => "firewall",
         }
     }
 }

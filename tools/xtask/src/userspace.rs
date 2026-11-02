@@ -127,6 +127,7 @@ pub const STD_LINKS: &[(&str, &str)] = &[
     ("system/commands/eject", "systools"),
     ("system/commands/elevate", "systools"),
     ("system/commands/findmnt", "systools"),
+    ("system/commands/firewall", "systools"),
     ("system/commands/fsck-btrfs", "systools"),
     ("system/commands/fsck-fat", "systools"),
     ("system/commands/fsck.fat", "systools"),

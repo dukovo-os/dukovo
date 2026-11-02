@@ -85,6 +85,8 @@ pub enum Object {
     Devices,
     /// A card a driver program drives.
     Device(DeviceRef),
+    /// The firewall's rules (radix-firewall(2)).
+    Firewall,
 }
 
 impl Object {
@@ -107,6 +109,7 @@ impl Object {
             Object::Names => ObjectKind::Names,
             Object::Clock => ObjectKind::Clock,
             Object::Devices | Object::Device(_) => ObjectKind::Device,
+            Object::Firewall => ObjectKind::Firewall,
         }
     }
 }
@@ -283,6 +286,7 @@ enum Kept {
     Clock,
     Devices,
     Device(Weak<DeviceObject, Kmalloc>),
+    Firewall,
 }
 
 impl Kept {
@@ -305,6 +309,7 @@ impl Kept {
             Object::Clock => Kept::Clock,
             Object::Devices => Kept::Devices,
             Object::Device(device) => Kept::Device(Arc::downgrade(device)),
+            Object::Firewall => Kept::Firewall,
         }
     }
 
@@ -328,6 +333,7 @@ impl Kept {
             Kept::Clock => Object::Clock,
             Kept::Devices => Object::Devices,
             Kept::Device(device) => Object::Device(device.upgrade()?),
+            Kept::Firewall => Object::Firewall,
         })
     }
 }
@@ -630,7 +636,8 @@ pub fn released(registry: &mut Registry, released: &Released) {
         | Object::Platform
         | Object::Names
         | Object::Clock
-        | Object::Devices => {}
+        | Object::Devices
+        | Object::Firewall => {}
     }
     // What it was charged is given back once it has closed.
     drop(charge);

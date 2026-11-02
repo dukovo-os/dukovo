@@ -327,7 +327,9 @@ pub fn exec(
     let cwd = extra.next();
     let execfn = extra.next();
 
-    // The program, or a script and its interpreter.
+    // The program, or a script and its interpreter. The firewall knows
+    // it by the file run, the script's for a script (ADR 0334).
+    let ran = crate::net::firewall::Program { mount: file.at.mount.id, id: file.at.node.stat().id };
     let mut program_file = File::open(&file.at)?;
     drop(file);
     let mut script = None;
@@ -394,6 +396,7 @@ pub fn exec(
         .unwrap_or("program");
     let name = Name::new(name);
     keep_args(target, &block, script.as_ref(), execfn);
+    target.posix.lock().program = ran;
     if let Some(cwd) = cwd {
         super::set_directory(target, cwd);
     }

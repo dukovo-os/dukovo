@@ -64,8 +64,8 @@ use libradix::abi::process::{
 };
 use libradix::abi::resource_domain::{self, NO_LIMIT};
 use libradix::abi::startup::{
-    DEVICE_SLOTS, SLOT_CLOCK, SLOT_DEVICE, SLOT_FD_BASE, SLOT_FIRST_EXTRA, SLOT_LOG, SLOT_NETWORK,
-    SLOT_PLATFORM, SLOT_PROCESS, SLOT_RANDOM, SLOT_ROOT,
+    DEVICE_SLOTS, SLOT_CLOCK, SLOT_DEVICE, SLOT_FD_BASE, SLOT_FIREWALL, SLOT_FIRST_EXTRA, SLOT_LOG,
+    SLOT_NETWORK, SLOT_PLATFORM, SLOT_PROCESS, SLOT_RANDOM, SLOT_ROOT,
 };
 use libradix::abi::{network, power, signal, syscalls};
 use radix_rt::fs::{Dir, File};
@@ -176,10 +176,11 @@ fn non_blocking(slot: u32) {
 
 /// Gives `child` the network capabilities `spec` asks for, derived from
 /// Spark's `network`, in the slots from SLOT_NETWORK: one to connect out,
-/// one to listen on each range of ports, and for admin.network one with
-/// only the control right, which sets the interfaces up (ADR 0190). They
-/// have the copy and transfer rights, so that they last through `fork`
-/// (ADR 0183).
+/// one to listen on each range of ports, with the inbound right, so that
+/// other machines reach the service there through the firewall (ADR
+/// 0334), and for admin.network one with only the control right, which
+/// sets the interfaces up (ADR 0190). They have the copy and transfer
+/// rights, so that they last through `fork` (ADR 0183).
 fn grant_network(network: Option<u32>, spec: &Spec, child: u32) -> Result<(), String> {
     if spec.network_grants() == 0 {
         return Ok(());
@@ -187,8 +188,10 @@ fn grant_network(network: Option<u32>, spec: &Spec, child: u32) -> Result<(), St
     let network = network.ok_or("Spark has no network capability to give")?;
     let kept = Rights::COPY.union(Rights::TRANSFER);
     let outbound = spec.outbound.then_some((0, 1 << 16, Rights::SEND.union(kept)));
-    let listen =
-        spec.listen.iter().map(|&(first, count)| (first, count, Rights::RECEIVE.union(kept)));
+    let listen = spec
+        .listen
+        .iter()
+        .map(|&(first, count)| (first, count, Rights::RECEIVE.union(Rights::INBOUND).union(kept)));
     let configure = spec.configure.then_some((0, 1 << 16, Rights::CONTROL.union(kept)));
     let grants = outbound.into_iter().chain(listen).chain(configure);
     for (to, (first, count, rights)) in (SLOT_NETWORK..).zip(grants) {
@@ -226,6 +229,19 @@ fn grant_clock(clock: Option<u32>, spec: &Spec, child: u32) -> Result<(), String
     let rights = Rights::READ.union(Rights::CONTROL).union(Rights::COPY).union(Rights::TRANSFER);
     process::share(&SYS, child, clock, SLOT_CLOCK, rights, 0)
         .map_err(|status| format!("giving it the clock failed: {:#x}", status.0))
+}
+
+/// Gives `child` the firewall capability in SLOT_FIREWALL if `spec` asks
+/// for admin.firewall, with the read and control rights, and the copy and
+/// transfer rights so that it lasts through `fork` (ADR 0334).
+fn grant_firewall(firewall: Option<u32>, spec: &Spec, child: u32) -> Result<(), String> {
+    if !spec.firewall {
+        return Ok(());
+    }
+    let firewall = firewall.ok_or("Spark has no firewall capability to give")?;
+    let rights = Rights::READ.union(Rights::CONTROL).union(Rights::COPY).union(Rights::TRANSFER);
+    process::share(&SYS, child, firewall, SLOT_FIREWALL, rights, 0)
+        .map_err(|status| format!("giving it the firewall failed: {:#x}", status.0))
 }
 
 /// A card the kernel left for a driver program: its PCI address, vendor
@@ -461,6 +477,8 @@ pub struct Supervisor {
     clock: Option<u32>,
     /// The root device capability (ADR 0198), from the kernel.
     devices: Option<u32>,
+    /// The firewall capability (ADR 0334), from the kernel.
+    firewall: Option<u32>,
     /// The notification the kernel signals when a child changes.
     children: Option<u32>,
     /// The notification the kernel signals when the power button is
@@ -495,6 +513,7 @@ impl Supervisor {
         let names = SLOT_FIRST_EXTRA + 5;
         let clock = SLOT_FIRST_EXTRA + 6;
         let devices = SLOT_FIRST_EXTRA + 7;
+        let firewall = SLOT_FIRST_EXTRA + 8;
         let children = slots::take().filter(|&slot| {
             process::create(&SYS, SLOT_PROCESS, ObjectKind::Notification, 0, slot).is_ok()
                 && process::notify_children(&SYS, SLOT_PROCESS, slot).is_ok()
@@ -520,6 +539,7 @@ impl Supervisor {
             names: holds(names, ObjectKind::Names).then_some(names),
             clock: holds(clock, ObjectKind::Clock).then_some(clock),
             devices: holds(devices, ObjectKind::Device).then_some(devices),
+            firewall: holds(firewall, ObjectKind::Firewall).then_some(firewall),
             children,
             button,
             listener: None,
@@ -887,6 +907,7 @@ impl Supervisor {
             .and_then(|()| grant_network(self.network, spec, child))
             .and_then(|()| grant_platform(self.platform, spec, child))
             .and_then(|()| grant_clock(self.clock, spec, child))
+            .and_then(|()| grant_firewall(self.firewall, spec, child))
             .and_then(|()| grant_devices(self.devices, spec, child))
             .and_then(|()| {
                 let block = exec_block(&spec.program, &args, &environment);

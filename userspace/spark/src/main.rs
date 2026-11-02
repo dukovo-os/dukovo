@@ -43,7 +43,9 @@
 //!    its child, with a pseudo-terminal as its standard input, output and
 //!    error, and copies what it writes there to the kernel log. With
 //!    `--network` before those, the program gets Spark's network
-//!    capability too, in `SLOT_NETWORK`, and with `--names`, a POSIX one
+//!    capability too, in `SLOT_NETWORK`; with `--firewall`, a POSIX one
+//!    gets the firewall capability in `SLOT_FIREWALL`, for firewall(8), as
+//!    the `network-pair` boot test needs; and with `--names`, a POSIX one
 //!    gets the names capability as its descriptor 3, as the `principals`
 //!    boot test needs.
 //!
@@ -71,8 +73,8 @@ use libradix::abi::errors::File as FileError;
 use libradix::abi::errors::Kernel as KernelError;
 use libradix::abi::notification::WaitFlags;
 use libradix::abi::startup::{
-    SLOT_FD_BASE, SLOT_FIRST_EXTRA, SLOT_LOG, SLOT_NETWORK, SLOT_PROCESS, SLOT_RANDOM, SLOT_ROOT,
-    Startup,
+    SLOT_FD_BASE, SLOT_FIREWALL, SLOT_FIRST_EXTRA, SLOT_LOG, SLOT_NETWORK, SLOT_PROCESS,
+    SLOT_RANDOM, SLOT_ROOT, Startup,
 };
 use libradix::abi::{file, memory, process, syscalls, terminal};
 use radix_rt::bootfs::BootFs;
@@ -96,6 +98,10 @@ const NETWORK: u32 = SLOT_FIRST_EXTRA + 3;
 /// Where the kernel gave Spark the names capability, after the network
 /// and the platform capability.
 const NAMES: u32 = SLOT_FIRST_EXTRA + 5;
+
+/// Where the kernel gave Spark the firewall capability (ADR 0334), after
+/// the names, the clock and the root device capability.
+const FIREWALL: u32 = SLOT_FIRST_EXTRA + 8;
 
 /// The directories of the root, every one a mount point or a place for
 /// one (the plan's spec 7.1), named so that they need no explaining
@@ -257,12 +263,14 @@ fn run() -> Option<Supervisor> {
             break;
         }
     }
-    let (mut posix, mut network, mut names) = (false, None, None);
+    let (mut posix, mut network, mut names, mut firewall) = (false, None, None, None);
     loop {
         if words.next_if_eq(&"--posix").is_some() {
             posix = true;
         } else if words.next_if_eq(&"--network").is_some() {
             network = Some(NETWORK);
+        } else if words.next_if_eq(&"--firewall").is_some() {
+            firewall = Some(FIREWALL);
         } else if words.next_if_eq(&"--names").is_some() {
             names = Some(NAMES);
         } else {
@@ -281,7 +289,7 @@ fn run() -> Option<Supervisor> {
         count += 1;
     }
     if posix {
-        match run_posix(&root, path, &rest[..count], network, names) {
+        match run_posix(&root, path, &rest[..count], Given { network, names, firewall }) {
             Ok(program) => supervisor.watch_program(program),
             Err(what) => println!("spark: could not start {path}: {what}"),
         }
@@ -351,17 +359,23 @@ fn run_native(root: &Dir, path: &str, args: &[&str], network: Option<u32>) {
     }
 }
 
+/// The capabilities of Spark's that a POSIX program it runs gets, by
+/// their slots in Spark.
+#[derive(Clone, Copy)]
+struct Given {
+    /// The network capability, for SLOT_NETWORK.
+    network: Option<u32>,
+    /// The names capability, for descriptor 3.
+    names: Option<u32>,
+    /// The firewall capability, for SLOT_FIREWALL.
+    firewall: Option<u32>,
+}
+
 /// Starts the POSIX program at `path` with `args` (radix-posix(7)) as
 /// Spark's child, on a new pseudo-terminal whose output goes to the
-/// kernel log, with the network capability in `network` if there is one,
-/// and the names capability in `names` as its descriptor 3.
-fn run_posix(
-    root: &Dir,
-    path: &str,
-    args: &[&str],
-    network: Option<u32>,
-    names: Option<u32>,
-) -> Result<Program, String> {
+/// kernel log, with the capabilities `given` names.
+fn run_posix(root: &Dir, path: &str, args: &[&str], given: Given) -> Result<Program, String> {
+    let Given { network, names, firewall } = given;
     let (master, terminal) =
         open_pty(root).map_err(|what| format!("cannot make a pseudo-terminal: {what}"))?;
     let program = root
@@ -380,6 +394,7 @@ fn run_posix(
         .into_iter()
         .zip([SLOT_ROOT, SLOT_RANDOM, SLOT_LOG])
         .chain(network.map(|slot| (slot, SLOT_NETWORK)))
+        .chain(firewall.map(|slot| (slot, SLOT_FIREWALL)))
         .chain((0..3).map(|fd| (terminal.slot(), SLOT_FD_BASE + fd)))
         .chain(names.map(|slot| (slot, SLOT_FD_BASE + 3)));
     let shared = shares.try_for_each(|(from, to)| {

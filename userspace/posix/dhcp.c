@@ -91,8 +91,9 @@ static int connection;
 
 static void leased(void) {
 	CHECK(wait_file(NET0 "ipv4", OFFERED "/24", 60));
-	OUTPUT("", "net0             UP             " OFFERED "/24 \n", "/bin/ip", "-br", "address",
-	       "show", "net0");
+	// -4: its IPv6 addresses, made from the machine's secret, differ.
+	OUTPUT("", "net0             UP             " OFFERED "/24 \n", "/bin/ip", "-4", "-br",
+	       "address", "show", "net0");
 	CONTAINS("default via " ROUTER " dev net0 \n", "/bin/ip", "route");
 	CHECK(wait_file(RESOLV, "nameserver " DNS "\n", 10));
 	CONTAINS("# Written by netd(8)", "/bin/head", "-n", "1", RESOLV);
