@@ -167,8 +167,8 @@ static void sharing(void) {
 			PUBLIC);
 	SAYS(1, "", "", "10.0.2.0/33 is not an address", SHARE, "add", "--nfs", "10.0.2.0/33", "Bad", PUBLIC);
 	SAYS(1, "", "", "nowhere is not an address", SHARE, "add", "--nfs", "nowhere", "Bad", PUBLIC);
-	SAYS(0, "", "NFS: 10.0.2.2", "", SHARE, "list");
-	SAYS(0, "", "NFS is off", "", SHARE, "list");
+	CONTAINS("NFS: 10.0.2.2", SHARE, "list");
+	CONTAINS("NFS is off", SHARE, "list");
 	CHECK(strstr(contents("/system/settings/shares.toml"), "nfs = [\"10.0.2.0/24\"]") != NULL);
 }
 
@@ -177,7 +177,7 @@ static void on(void) {
 	CHECK(!listening());
 	SAYS(0, "", "NFS is on", "", SHARE, "nfs", "on");
 	CHECK(port_becomes(1, 30));
-	SAYS(0, "", "NFS is on", "", SHARE, "list");
+	CONTAINS("NFS is on", SHARE, "list");
 	CHECK(strstr(contents(SERVICE_FILE), "\nenabled = true\n") != NULL);
 }
 
@@ -214,7 +214,7 @@ static void off(void) {
 	SAYS(0, "", "Stopped sharing Readonly", "", SHARE, "remove", "readonly");
 	SAYS(0, "", "Stopped sharing Public", "", SHARE, "remove", "Public");
 	SAYS(0, "", "Stopped sharing Private", "", SHARE, "remove", "Private");
-	SAYS(0, "", "No folder is shared", "", SHARE, "list");
+	CONTAINS("No folder is shared", SHARE, "list");
 }
 
 int main(int argc, char **argv) {
