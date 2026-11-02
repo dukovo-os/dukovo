@@ -419,9 +419,9 @@ pub fn nobody() -> User {
 /// Starts an NFS worker as `user`, acting for them and the groups
 /// `groups`, with the descriptors nfsd sent: the read end of nfsd's pipe
 /// of requests as its 3, the write end of the pipe of its answers as its
-/// 4, and nfsd's standard error as its 1 and 2. Its view
-/// holds the shares' `folders` alone, each at `/.nfs-` and its key in
-/// hexadecimal, opened past the folders above them as Linux's server
+/// 4, and nfsd's standard error as its 1 and 2; its 0 is /dev/null. Its
+/// view holds the shares' `folders` alone, each at `/.nfs-` and its key
+/// in hexadecimal, opened past the folders above them as Linux's server
 /// does: below each, the owners and modes of the files decide. It gets no
 /// network. Returns the number of its process, a child of authd's.
 pub fn start_nfs(
@@ -431,12 +431,17 @@ pub fn start_nfs(
     [requests, answers, log]: [&OwnedFd; 3],
     folders: &[(u64, String)],
 ) -> Result<u64, String> {
+    // Rust's runtime opens /dev/null for a standard descriptor that is
+    // closed, and aborts if it cannot, as it cannot in the worker's view.
+    let null = File::open("/dev/null")
+        .map_err(|err| format!("cannot start the NFS worker: /dev/null: {err}"))?;
     let program = Program {
         what: "the NFS worker",
         path: NFS_PROGRAM,
         args: &[b"nfsd", b"--worker"],
         env: vec![format!("USER={}", user.name), "HOME=/".into(), "LANG=C.UTF-8".into()],
         descriptors: &[
+            (null.as_raw_fd(), 0),
             (log.as_raw_fd(), 1),
             (log.as_raw_fd(), 2),
             (requests.as_raw_fd(), 3),

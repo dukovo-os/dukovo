@@ -32,8 +32,10 @@
 #define SHARE "/system/commands/share"
 #define SERVICE_FILE "/system/settings/spark/services/nfsd.toml"
 #define ALICE 1000
-// The folder shared, and the files the host writes there.
-#define PUBLIC "/users/alice/Public"
+// The folder shared, alice's, and the files the host writes there. It is
+// in /tmp, as the test's /users is in the root, which holds at most a
+// megabyte, and the host copies in a larger file.
+#define PUBLIC "/tmp/Public"
 #define FROM_HOST PUBLIC "/from-host.txt"
 #define RENAMED PUBLIC "/renamed.txt"
 #define MADE_BY_HOST PUBLIC "/made-by-host"
@@ -153,8 +155,8 @@ static int alice(void) {
 	return check_end();
 }
 
-// The folder of alice's home that the shares are, and share(1) adding
-// and listing them, and refusing a network that is not one.
+// alice's folder that the shares are, and share(1) adding and listing
+// them, and refusing a network that is not one.
 static void sharing(void) {
 	CHECK(mkdir(PUBLIC, 0755) == 0 && chown(PUBLIC, ALICE, ALICE) == 0);
 	write_text(PUBLIC "/from-dukovo.txt", "written on Dukovo\n");
@@ -163,7 +165,7 @@ static void sharing(void) {
 	SAYS(0, "", "NFS is off; `share nfs on` turns it on.", "", SHARE, "add", "--read-only",
 			"--nfs", "10.0.2.2", "Readonly", PUBLIC);
 	// Shared to Windows PCs alone: no NFS client sees it.
-	SAYS(0, "", "Shared /users/alice/Public as Private, read-write.", "", SHARE, "add", "Private",
+	SAYS(0, "", "Shared /tmp/Public as Private, read-write.", "", SHARE, "add", "Private",
 			PUBLIC);
 	SAYS(1, "", "", "10.0.2.0/33 is not an address", SHARE, "add", "--nfs", "10.0.2.0/33", "Bad", PUBLIC);
 	SAYS(1, "", "", "nowhere is not an address", SHARE, "add", "--nfs", "nowhere", "Bad", PUBLIC);
