@@ -84,6 +84,37 @@ pub struct Setup {
     /// Its IPv6 addresses and router of its own, besides those it makes.
     pub addresses6: Vec<Cidr6>,
     pub router6: Option<Ipv6Addr>,
+    /// When it asks DHCPv6: as its routers say, unless this says.
+    pub dhcpv6: Option<Dhcpv6>,
+}
+
+/// When a card asks DHCPv6, the `dhcpv6` setting.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Dhcpv6 {
+    /// As its routers say: for an address and the settings when they say
+    /// it gives addresses (M), for the settings when they say it gives
+    /// those (O).
+    #[default]
+    Auto,
+    /// Always, for the settings only.
+    Settings,
+    /// Always, for an address and the settings.
+    Address,
+    /// Never.
+    No,
+}
+
+impl Dhcpv6 {
+    /// Whether the card asks, and whether for an address, when its routers
+    /// say `managed` and `other`.
+    pub fn asks(self, managed: bool, other: bool) -> Option<bool> {
+        match self {
+            Dhcpv6::Auto => (managed || other).then_some(managed),
+            Dhcpv6::Settings => Some(false),
+            Dhcpv6::Address => Some(true),
+            Dhcpv6::No => None,
+        }
+    }
 }
 
 impl Setup {
@@ -108,6 +139,7 @@ impl Setup {
             temporary: self.temporary != Some(false),
             addresses: self.addresses6.clone(),
             router: self.router6,
+            dhcpv6: self.dhcpv6.unwrap_or_default(),
         }
     }
 }
@@ -119,6 +151,7 @@ struct Ipv6Setup {
     temporary: bool,
     addresses: Vec<Cidr6>,
     router: Option<Ipv6Addr>,
+    dhcpv6: Dhcpv6,
 }
 
 /// Whether `ip` is an IPv6 address a host may have: not unspecified,
@@ -174,6 +207,22 @@ pub fn parse_settings(text: &str) -> (Vec<(String, Setup)>, Vec<String>) {
             "dhcp" => yes_no(&mut setup.dhcp),
             "ipv6" => yes_no(&mut setup.ipv6),
             "temporary-addresses" => yes_no(&mut setup.temporary),
+            "dhcpv6" => {
+                let mode = match value {
+                    "auto" => Some(Dhcpv6::Auto),
+                    "settings" => Some(Dhcpv6::Settings),
+                    "address" => Some(Dhcpv6::Address),
+                    "no" => Some(Dhcpv6::No),
+                    _ => None,
+                };
+                match mode {
+                    Some(mode) if setup.dhcpv6.is_none() => {
+                        setup.dhcpv6 = Some(mode);
+                        true
+                    }
+                    _ => false,
+                }
+            }
             "address" if v6 => match Cidr6::parse(value) {
                 Some(cidr)
                     if unicast6(cidr.ip)
@@ -818,21 +867,22 @@ impl Netd {
         }
     }
 
-    /// Starts or stops `card`'s DHCPv6 client as its routers say, its
-    /// IPv6 being on: one that asks for an address and the settings when
-    /// they say DHCPv6 gives addresses (M), or one that asks for the
-    /// settings when it gives only those (O). True if what goes into
-    /// resolv.conf changed.
+    /// Starts or stops `card`'s DHCPv6 client as its routers and its
+    /// `dhcpv6` setting say, its IPv6 being on: one that asks for an
+    /// address and the settings, or one that asks for the settings. True
+    /// if what goes into resolv.conf changed.
     fn follow_dhcp6(
         network: &dyn Network,
         card: &mut Card,
         interface: &Interface,
         now: Instant,
     ) -> bool {
-        let on = card.ipv6.as_ref().is_some_and(|ipv6| ipv6.on);
-        let (managed, other) = (interface.ipv6.managed, interface.ipv6.other);
-        let wanted = on && (managed || other);
-        if card.dhcp6.as_ref().is_some_and(|dhcp6| wanted && dhcp6.client.managed() == managed) {
+        let asks = card
+            .ipv6
+            .as_ref()
+            .filter(|ipv6| ipv6.on)
+            .and_then(|ipv6| ipv6.dhcpv6.asks(interface.ipv6.managed, interface.ipv6.other));
+        if card.dhcp6.as_ref().is_some_and(|dhcp6| asks == Some(dhcp6.client.managed())) {
             return false;
         }
         let mut changed = false;
@@ -842,9 +892,7 @@ impl Netd {
             }
             changed = !(old.dns.is_empty() && old.domains.is_empty());
         }
-        if !wanted {
-            return changed;
-        }
+        let Some(managed) = asks else { return changed };
         match client_socket6(&card.name) {
             Ok(socket) => {
                 let what = if managed { "an address and its settings" } else { "its settings" };
@@ -1391,6 +1439,27 @@ mod tests {
         // Without DHCP, IPv6 alone is not being left alone.
         assert!(!cards[2].1.dhcp() && !cards[2].1.alone());
         assert!(Setup::default().ipv6().on && Setup::default().ipv6().temporary);
+    }
+
+    #[test]
+    fn dhcpv6_is_asked_as_routers_and_the_settings_say() {
+        let (cards, wrong) = parse_settings(
+            "[net0]\ndhcpv6 = settings\n[net1]\ndhcpv6 = address\n[net2]\ndhcpv6 = no\n\
+             [net3]\ndhcpv6 = sometimes\n",
+        );
+        assert_eq!(wrong, [format!("{SETTINGS}:8: 'sometimes' is not a dhcpv6 here")]);
+        let mode = |at: usize| cards[at].1.ipv6().dhcpv6;
+        assert_eq!(
+            [mode(0), mode(1), mode(2), mode(3)],
+            [Dhcpv6::Settings, Dhcpv6::Address, Dhcpv6::No, Dhcpv6::Auto]
+        );
+        // As routers say: M asks for an address, O for the settings.
+        assert_eq!(Dhcpv6::Auto.asks(false, false), None);
+        assert_eq!(Dhcpv6::Auto.asks(false, true), Some(false));
+        assert_eq!(Dhcpv6::Auto.asks(true, true), Some(true));
+        assert_eq!(Dhcpv6::Settings.asks(true, false), Some(false));
+        assert_eq!(Dhcpv6::Address.asks(false, false), Some(true));
+        assert_eq!(Dhcpv6::No.asks(true, true), None);
     }
 
     #[test]

@@ -530,7 +530,12 @@ impl Client {
                 _ => {}
             }
         }
-        if client? != self.duid.as_slice() || answer.server.is_empty() {
+        // A server names itself (RFC 8415, 16.10), but QEMU's, which
+        // only answers INFORMATION-REQUEST, does not: there, where no
+        // later message goes to the server, an answer that does not is
+        // taken.
+        let nameless = answer.server.is_empty() && self.phase != Phase::Informing;
+        if client? != self.duid.as_slice() || nameless {
             return None;
         }
         Some((kind, answer))
@@ -811,6 +816,32 @@ mod tests {
         put_option(&mut refused, IA_NA, &ia);
         let actions = client.receive(&refused, now + secs(301));
         assert_eq!(actions[0], Action::Unbind);
+        assert_eq!(client.phase(), Phase::Soliciting);
+    }
+
+    /// QEMU's answer to `to`: its client's ID and a DNS server, and no
+    /// server ID.
+    fn qemus(kind: u8, to: &[u8]) -> Vec<u8> {
+        let mut out = vec![kind, to[1], to[2], to[3]];
+        put_option(&mut out, CLIENT_ID, &option(to, CLIENT_ID).unwrap());
+        put_option(&mut out, DNS_SERVERS, &"fec0::3".parse::<Ipv6Addr>().unwrap().octets());
+        out
+    }
+
+    #[test]
+    fn an_answer_with_no_server_id_is_taken_for_the_settings_only() {
+        let start = Instant::now();
+        let mut client = Client::new(MAC, false, 9, start);
+        let request = sent(&client.tick(client.next()));
+        let actions = client.receive(&qemus(REPLY, &request), start);
+        assert_eq!(
+            actions,
+            [Action::Settings { dns: vec!["fec0::3".parse().unwrap()], domains: Vec::new() }]
+        );
+        let mut client = Client::new(MAC, true, 9, start);
+        let solicit = sent(&client.tick(client.next()));
+        assert_eq!(client.receive(&qemus(ADVERTISE, &solicit), start), []);
+        assert_eq!(client.receive(&qemus(REPLY, &solicit), start), []);
         assert_eq!(client.phase(), Phase::Soliciting);
     }
 
