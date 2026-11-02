@@ -291,6 +291,33 @@ pub fn std_cargo(ctx: &Ctx, subcommand: &str, toolchain: &ports::Toolchain) -> C
     cmd
 }
 
+/// Forgets what `target/programs` built for Radix against an older build
+/// of the rust-std port, before Cargo builds there. Cargo does not see
+/// Rust's standard library change under it, so it would keep crates
+/// built against the old one, which rustc cannot load (E0463, E0460): a
+/// change to the C library builds the port again, and CI restores a
+/// target directory main built against main's.
+///
+/// # Errors
+///
+/// If the old builds cannot be taken away, or the port's stamp kept.
+pub fn forget_stale_std(ctx: &Ctx) -> Result<()> {
+    let stamp = std::fs::read_to_string(ctx.out.join("ports").join("rust-std.stamp"))
+        .context(|| "reading the rust-std port's stamp".to_string())?;
+    let dir = ctx.target.join("programs");
+    let seen = dir.join("rust-std.stamp");
+    if std::fs::read_to_string(&seen).ok().as_deref() == Some(stamp.as_str()) {
+        return Ok(());
+    }
+    let built = dir.join(STD_TARGET_NAME);
+    if built.exists() {
+        step("Rust's standard library was built again: building its programs afresh");
+        std::fs::remove_dir_all(&built).context(|| format!("removing {}", built.display()))?;
+    }
+    process::create_dir(&dir)?;
+    ports::write_file(&seen, &stamp)
+}
+
 /// The workspace of programs on Rust's standard library.
 pub const STD_MANIFEST: &str = "userspace/programs/Cargo.toml";
 
@@ -497,6 +524,7 @@ fn build_std(
     profile: Profile,
     toolchain: &ports::Toolchain,
 ) -> Result<Vec<(String, PathBuf)>> {
+    forget_stale_std(ctx)?;
     step(&format!("Building the programs on Rust's standard library ({profile})"));
     let mut cmd = std_cargo(ctx, "build", toolchain);
     for (_, package) in STD_ARCHIVE {
