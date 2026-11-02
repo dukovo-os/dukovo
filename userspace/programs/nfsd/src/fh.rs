@@ -9,6 +9,7 @@
 //! its share.
 
 use std::collections::HashMap;
+use std::time::{Duration, Instant};
 
 /// The version of the handles' layout, their first byte.
 const VERSION: u8 = 1;
@@ -73,15 +74,25 @@ struct Seen {
 
 /// The most files remembered: past it, nfsd forgets them all, and looks
 /// for those it is asked for again.
-const SEEN_MAX: usize = 1 << 20;
+const SEEN_MAX: usize = 1 << 18;
 
 /// The most folders a file's path goes through.
 const DEPTH_MAX: usize = 2048;
+
+/// How long a handle that a search of its share as a person did not find
+/// is taken as gone for them without searching again: a handle a client
+/// makes up costs one search, not one for each call.
+const MISSING_TIME: Duration = Duration::from_mins(5);
+/// The most such handles kept.
+const MISSING_MAX: usize = 4096;
 
 /// Where nfsd saw each file, by its share, device and inode number.
 #[derive(Default)]
 pub struct Places {
     seen: HashMap<(u64, u64, u64), Seen>,
+    /// Handles a search as a person did not find, and when: by the
+    /// share's key, the device and inode number, and the person's number.
+    missing: HashMap<(u64, u64, u64, u32), Instant>,
 }
 
 impl Places {
@@ -122,6 +133,31 @@ impl Places {
     pub fn forget(&mut self, key: u64, dev: u64, ino: u64) {
         self.seen.remove(&(key, dev, ino));
     }
+
+    /// Notes that a search of share `key` as the person numbered `uid` did
+    /// not find the file `dev`, `ino` at `now`.
+    pub fn not_found(&mut self, key: u64, dev: u64, ino: u64, uid: u32, now: Instant) {
+        if self.missing.len() >= MISSING_MAX {
+            self.missing.retain(|_, at| now.saturating_duration_since(*at) < MISSING_TIME);
+            if self.missing.len() >= MISSING_MAX {
+                self.missing.clear();
+            }
+        }
+        self.missing.insert((key, dev, ino, uid), now);
+    }
+
+    /// Whether a search for the file as the person numbered `uid` did not
+    /// find it lately.
+    pub fn missing(&self, key: u64, dev: u64, ino: u64, uid: u32, now: Instant) -> bool {
+        self.missing
+            .get(&(key, dev, ino, uid))
+            .is_some_and(|at| now.saturating_duration_since(*at) < MISSING_TIME)
+    }
+
+    /// Forgets the handles searches did not find, as the shares changed.
+    pub fn forget_missing(&mut self) {
+        self.missing.clear();
+    }
 }
 
 #[cfg(test)]
@@ -157,5 +193,24 @@ mod tests {
         places.learn(1, Some((9, 21)), b"x", 9, 20);
         places.learn(1, Some((9, 20)), b"y", 9, 21);
         assert_eq!(places.path(1, 9, 20), None);
+    }
+
+    #[test]
+    fn handles_not_found_are_not_looked_for_again_for_a_while() {
+        let mut places = Places::default();
+        let now = Instant::now();
+        assert!(!places.missing(1, 2, 3, 1000, now));
+        places.not_found(1, 2, 3, 1000, now);
+        assert!(places.missing(1, 2, 3, 1000, now + Duration::from_mins(4)));
+        assert!(!places.missing(1, 2, 4, 1000, now));
+        // Another may reach what they cannot.
+        assert!(!places.missing(1, 2, 3, 1001, now));
+        assert!(!places.missing(1, 2, 3, 1000, now + MISSING_TIME));
+        for ino in 0..=(MISSING_MAX as u64) {
+            places.not_found(2, 0, ino, 1000, now);
+        }
+        assert!(places.missing.len() <= MISSING_MAX);
+        places.forget_missing();
+        assert!(!places.missing(2, 0, 0, 1000, now));
     }
 }

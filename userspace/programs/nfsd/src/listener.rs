@@ -26,8 +26,10 @@ use crate::xdr::Reader;
 
 /// NFS's port.
 pub const PORT: u16 = 2049;
-/// The most connections at once.
-const CONNECTIONS_MAX: usize = 256;
+/// The most connections at once: Linux's client makes one to a server,
+/// or up to 16 with `nconnect`, and each may hold a record of up to a
+/// megabyte while it waits its turn.
+const CONNECTIONS_MAX: usize = 64;
 /// How long a connection may say nothing: Linux's client closes one it
 /// left idle for five minutes, and calls at least once a lease.
 const IDLE: Duration = Duration::from_mins(15);
@@ -188,7 +190,7 @@ fn serve<B: Backend>(
     let _ = stream.set_nodelay(true);
     sys::keep_alive(stream);
     stream.set_read_timeout(Some(IDLE))?;
-    let mut input = BufReader::with_capacity(256 * 1024, stream);
+    let mut input = BufReader::with_capacity(64 * 1024, stream);
     loop {
         if !server.lock().unwrap_or_else(PoisonError::into_inner).reaches(peer) {
             return Err(io::Error::new(

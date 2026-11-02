@@ -5,6 +5,8 @@
 //! each on the COMPOUND's current file, done by the worker of the person
 //! who calls, so the kernel decides what they may do.
 
+use std::time::Instant;
+
 use crate::attr::{self, Facts, Settings};
 use crate::fh::Fh;
 use crate::ipc::{Changes, Create, FsStat, Make, Reply, Request, Stat};
@@ -409,7 +411,12 @@ impl<B: Backend> Server<B> {
                 _ => self.places.forget(key, dev, ino),
             }
         }
-        // Not seen since nfsd started, or moved by someone else.
+        // Not seen since nfsd started, or moved by someone else; looked
+        // for once in a while.
+        let now = Instant::now();
+        if self.places.missing(key, dev, ino, cur.uid, now) {
+            return Err(err::STALE.into());
+        }
         match self.ask(cur.uid, Request::Find(root.clone(), dev, ino, FIND_MAX))? {
             Reply::Found(Some(rel)) => {
                 let path = join(&root, &rel);
@@ -420,7 +427,10 @@ impl<B: Backend> Server<B> {
                 self.places.learn(key, None, &rel, dev, ino);
                 Ok(Here::File { share, path, fh, stat: Some(stat) })
             }
-            _ => Err(err::STALE.into()),
+            _ => {
+                self.places.not_found(key, dev, ino, cur.uid, now);
+                Err(err::STALE.into())
+            }
         }
     }
 

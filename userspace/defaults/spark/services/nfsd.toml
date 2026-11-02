@@ -1,0 +1,39 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+#
+# NFS file sharing: nfsd(8) serves the folders shares.toml(5) lists, to
+# the networks each names under `nfs`, to Linux and other Unix machines
+# over NFS 4.2 (ADR 0341). It trusts the numbers a client says its
+# people have, as every NFS server without Kerberos does, so a share
+# names only networks whose machines you trust; root on them is served
+# as no one. authd starts a worker for each person, which sees only the
+# shared folders, so the files' owners and modes decide what each may
+# do.
+#
+# It is off until `share nfs on` turns it on, which sets `enabled =
+# true` below and starts it; `share nfs off` stops it and turns it off
+# again (share(1)). Port 2049 is open only while it runs.
+#
+# service.toml(5) explains each setting. `service check nfsd` checks
+# this file, and `service edit nfsd` checks it as you save.
+
+service_version = 1
+description = "NFS file sharing"
+program = "/system/commands/nfsd"
+# `share nfs on` and `share nfs off` set this.
+enabled = false
+# After the network and authd, with the services people add.
+order = 40
+# Started again whenever it ends: always, on-failure or never.
+restart = "always"
+
+[limits]
+# The clients' sessions and what nfsd remembers of their files: each
+# person's worker runs in authd's domain, as them.
+memory = "256M"
+
+# What it holds beyond what every service reads (service.toml(5)): port
+# 2049, and authd's socket, through which it has workers started.
+[permissions]
+network.listen = [2049]
+files.read = ["/system/live/authd"]

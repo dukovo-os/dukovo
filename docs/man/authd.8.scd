@@ -210,6 +210,18 @@ closes the connection, but for a session (below):
 	Ends every share session, as *share off* does: *ok* and how many.
 	Only root may.
 
+*nfs-worker* _number_
+	Starts *nfsd --worker* as the person numbered _number_, with their
+	groups, if it is a person's account and not disabled, or as no one
+	(65534) for any other number: the worker that
+	serves an NFS client's calls as them (*nfsd*(8), ADR 0341). The
+	request comes with two descriptors: the worker's end of a socket,
+	and nfsd's log. The worker sees the folders of the shares that
+	name networks in _/system/settings/shares.toml_, each at
+	_/.nfs-_*key*, and nothing else of the system. authd answers *ok*
+	and the name it serves as, and notes the start in the audit log.
+	Only root may, as nfsd runs.
+
 authd knows who asks by the connection: the kernel gives it the process
 at the other end, and the user and group it acted for when it connected
 (*SO_PEERCRED*, *radix-posix*(7)). An administrator is root inside

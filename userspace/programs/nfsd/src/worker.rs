@@ -142,8 +142,10 @@ impl Worker {
     }
 
     /// The path the listener named, if it is in a share: absolute, with
-    /// no `.` or `..`, and its folder, followed through any links, in a
-    /// share's folder. Its last part is not followed.
+    /// no `.` or `..`, and its folder, followed through any links, in the
+    /// folder of the share it names, so that no link leads from one share
+    /// into another, which may be read-only or kept from the client's
+    /// network. Its last part is not followed.
     fn place(&self, bytes: &[u8]) -> io::Result<PathBuf> {
         let refused = || io::Error::from_raw_os_error(libc::EACCES);
         let path = path_of(bytes);
@@ -161,7 +163,8 @@ impl Worker {
             (Some(parent), Some(name)) => fs::canonicalize(parent)?.join(name),
             _ => return Err(refused()),
         };
-        let inside = |(_, r): &(PathBuf, PathBuf)| real.starts_with(r);
+        let inside =
+            |(named, r): &(PathBuf, PathBuf)| path.starts_with(named) && real.starts_with(r);
         if self.roots.iter().any(inside) { Ok(real) } else { Err(refused()) }
     }
 
@@ -564,6 +567,31 @@ pub mod tests {
         assert_eq!(w.serve(Request::Stat(b"share/sub".to_vec())), Err(libc::EACCES));
         let dotdot = [bytes(&share), b"/sub/../../secret".to_vec()].concat();
         assert_eq!(w.serve(Request::Stat(dotdot)), Err(libc::EACCES));
+    }
+
+    #[test]
+    fn links_lead_from_no_share_into_another() {
+        let dir = tempdir("between");
+        let (open, kept) = (dir.join("open"), dir.join("kept"));
+        fs::create_dir_all(&open).unwrap();
+        fs::create_dir_all(kept.join("in")).unwrap();
+        fs::write(kept.join("in/file"), b"kept").unwrap();
+        std::os::unix::fs::symlink(&kept, open.join("to-kept")).unwrap();
+        let mut w = Worker::new(&[open.clone(), kept.clone()]);
+        // Each share reaches its own, and not the other's through a link.
+        assert!(w.serve(Request::Stat(bytes(&kept.join("in/file")))).is_ok());
+        assert!(w.serve(Request::Stat(bytes(&open.join("to-kept")))).is_ok());
+        let through = bytes(&open.join("to-kept/in/file"));
+        assert_eq!(w.serve(Request::Stat(through.clone())), Err(libc::EACCES));
+        let write = Request::Write {
+            handle: None,
+            path: through,
+            offset: 0,
+            sync: false,
+            data: b"x".to_vec(),
+        };
+        assert_eq!(w.serve(write), Err(libc::EACCES));
+        assert_eq!(fs::read(kept.join("in/file")).unwrap(), b"kept");
     }
 
     #[test]

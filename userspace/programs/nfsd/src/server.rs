@@ -40,8 +40,16 @@ pub struct Context {
 const OPS_MAX: u32 = 128;
 /// The most slots of a session.
 const SLOTS_MAX: u32 = 64;
-/// The largest answer kept for a replay.
-const CACHED_MAX: u32 = 64 * 1024;
+/// The largest answer kept for a replay: what a client asks to be kept
+/// is small (an OPEN's, a CREATE's), and the slots of every session hold
+/// at most [`SESSIONS_MAX`] times [`SLOTS_MAX`] of them.
+const CACHED_MAX: u32 = 8 * 1024;
+/// The most sessions, of all clients.
+const SESSIONS_MAX: usize = 128;
+/// The most sessions of one client.
+const CLIENT_SESSIONS_MAX: usize = 8;
+/// The most client records.
+const CLIENTS_MAX: usize = 512;
 /// The longest tag a COMPOUND carries.
 const TAG_MAX: usize = 1024;
 
@@ -189,6 +197,7 @@ impl<B: Backend> Server<B> {
                     self.shares = shares;
                     self.backend.restart();
                     self.state.forget_handles();
+                    self.places.forget_missing();
                 }
             }
         }
@@ -250,7 +259,11 @@ impl<B: Backend> Server<B> {
         let mut done = 0;
         let mut status = err::OK;
         let mut slot = None;
+        // An answer to keep for a replay may be no larger than a slot
+        // holds.
+        let mut room = usize::MAX;
         for i in 0..count {
+            let before = results.bytes.len();
             let Ok(code) = r.u32() else {
                 results.u32(op::ILLEGAL).u32(err::BADXDR);
                 done += 1;
@@ -263,6 +276,9 @@ impl<B: Backend> Server<B> {
                         Ok(Sequenced::Replay(answer)) => return Some(answer),
                         Ok(Sequenced::New { body, session, slot: at, keep }) => {
                             slot = Some((session, at, keep));
+                            if keep {
+                                room = CACHED_MAX as usize - (12 + tag.len());
+                            }
                             Ok(body)
                         }
                         Err(fail) => Err(fail),
@@ -293,6 +309,12 @@ impl<B: Backend> Server<B> {
                     results.bytes.extend_from_slice(&body.bytes);
                     status = s;
                 }
+            }
+            if results.bytes.len() > room {
+                results.bytes.truncate(before);
+                results.u32(if known(code) { code } else { op::ILLEGAL });
+                results.u32(err::REP_TOO_BIG_TO_CACHE);
+                status = err::REP_TOO_BIG_TO_CACHE;
             }
             if status != err::OK {
                 break;
@@ -438,6 +460,10 @@ impl<B: Backend> Server<B> {
                         self.state.clients.remove(&old);
                     }
                 }
+                if self.state.clients.len() >= CLIENTS_MAX {
+                    // Records whose leases end go each second.
+                    return Err(err::DELAY.into());
+                }
                 let id = self.state.new_client_id();
                 let client = Client {
                     owner,
@@ -485,6 +511,10 @@ impl<B: Backend> Server<B> {
         }
         if fore.max_request < 1024 || fore.max_response < 1024 {
             return Err(err::TOOSMALL.into());
+        }
+        let theirs = self.state.sessions.values().filter(|s| s.client == id).count();
+        if theirs >= CLIENT_SESSIONS_MAX || self.state.sessions.len() >= SESSIONS_MAX {
+            return Err(err::NOSPC.into());
         }
         // The record this one replaces, of the same client before it
         // started again, goes now.

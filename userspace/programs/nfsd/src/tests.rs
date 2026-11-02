@@ -105,6 +105,12 @@ struct Session {
 impl Session {
     /// EXCHANGE_ID and CREATE_SESSION, as `owner`.
     fn new(server: &mut Server<Local>, owner: &[u8]) -> Session {
+        Session::try_new(server, owner).unwrap()
+    }
+
+    /// EXCHANGE_ID and CREATE_SESSION, as `owner`: the session, or
+    /// CREATE_SESSION's status.
+    fn try_new(server: &mut Server<Local>, owner: &[u8]) -> Result<Session, u32> {
         let exchange = op(op::EXCHANGE_ID, |w| {
             w.fixed(&[9; 8]).opaque(owner).u32(0).u32(0).u32(0);
         });
@@ -122,10 +128,12 @@ impl Session {
         });
         let answer = compound(server, &cx(0), &[create]);
         let (status, mut r) = results(&answer);
-        assert_eq!(status, err::OK);
+        if status != err::OK {
+            return Err(status);
+        }
         next(&mut r);
         let id = r.array().unwrap();
-        Session { id, sequence: 0, client }
+        Ok(Session { id, sequence: 0, client })
     }
 
     /// SEQUENCE, the next request in slot 0.
@@ -266,6 +274,45 @@ fn sessions_order_their_requests() {
     // The same client again, unchanged: the same record.
     let again = Session::new(&mut server, b"linux client");
     assert_eq!(again.client, s.client);
+}
+
+#[test]
+fn kept_answers_and_sessions_are_bounded() {
+    let (music, docs) = dirs("bounded");
+    fs::write(music.join("big.bin"), vec![7; 32 * 1024]).unwrap();
+    let mut server = server(&music, &docs);
+    let mut s = Session::new(&mut server, b"bounded");
+    let share = share_fh(&mut server, &mut s, "Music");
+    // A READ too large to keep: refused, as asked to be kept, and read as
+    // not.
+    let read = op(op::READ, |w| {
+        stateid(w, (0, [0; 12]));
+        w.u64(0).u32(16 * 1024);
+    });
+    let ops = [putfh(&share), lookup("big.bin"), read];
+    let kept = s.sequence(true);
+    let mut all = vec![kept.clone()];
+    all.extend_from_slice(&ops);
+    let answer = compound(&mut server, &cx(1000), &all);
+    let (status, mut r) = after_sequence(&answer);
+    assert_eq!(status, err::REP_TOO_BIG_TO_CACHE);
+    next(&mut r);
+    next(&mut r);
+    assert_eq!(next(&mut r), (op::READ, err::REP_TOO_BIG_TO_CACHE));
+    assert_eq!(compound(&mut server, &cx(1000), &all), answer);
+    let answer = s.call(&mut server, 1000, &ops);
+    let (status, mut r) = after_sequence(&answer);
+    assert_eq!(status, err::OK);
+    next(&mut r);
+    next(&mut r);
+    assert_eq!(next(&mut r), (op::READ, err::OK));
+    assert_eq!((r.bool(), r.opaque(1 << 20).map(<[u8]>::len)), (Ok(false), Ok(16 * 1024)));
+    // A client has eight sessions at most.
+    for _ in 1..8 {
+        Session::new(&mut server, b"bounded");
+    }
+    assert_eq!(Session::try_new(&mut server, b"bounded").err(), Some(err::NOSPC));
+    assert!(Session::try_new(&mut server, b"another").is_ok());
 }
 
 #[test]
