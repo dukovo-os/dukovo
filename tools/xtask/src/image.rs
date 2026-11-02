@@ -1,14 +1,15 @@
 // SPDX-FileCopyrightText: 2026 The Dukovo contributors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! Building the hybrid boot image with grub-mkrescue.
+//! Building the boot images, with the GRUB `ob` builds (ADR 0306).
 //!
-//! The image carries GRUB for both legacy BIOS (El Torito plus an MBR boot
-//! record) and UEFI (an EFI system partition), so the same file boots from
-//! a USB stick, a hard disk or optical media. An image for a disk has a
-//! Dukovo root partition after grub-mkrescue's, with the system on Btrfs
-//! (ADR 0137). Phase 14 replaces it with the GPT disk image assembled by
-//! Dukovo's own rdisk and mkfs tools.
+//! A disk image, for a USB stick or a hard disk, is a GPT that the disk
+//! engine makes, as rdisk and mkfs-fat do: GRUB for a BIOS in a BIOS boot
+//! partition and the disk's first sector, as rgrub-setup puts it, an EFI
+//! system partition the kernel's FAT crate fills, with UEFI's GRUB, and
+//! the Dukovo root, with the system on Btrfs (ADR 0137). An ISO, for
+//! optical media, is what xorriso makes of the same files, with El
+//! Torito's boot images for both firmwares.
 
 use std::fmt::Write;
 use std::io::{Read, Seek, SeekFrom, Write as _};
@@ -18,6 +19,9 @@ use std::process::Command;
 use crate::account::{self, Account};
 use crate::config::{self, Profile};
 use crate::process::{self, step};
+use disk::blockfile::BlockFile;
+
+use crate::grub::{self, Grub};
 use crate::{Context, Ctx, Error, Result, VERSION, kernel, licenses, rootfs, userspace};
 
 /// What goes into an image and where it is written.
@@ -43,6 +47,8 @@ pub struct ImageSpec<'a> {
     pub staging: PathBuf,
     /// Output file.
     pub output: PathBuf,
+    /// Whether it is an ISO for optical media, not a disk image.
+    pub iso: bool,
 }
 
 /// File name of a release image.
@@ -103,6 +109,7 @@ pub fn build_release(
             root: (!iso).then_some(root.as_path()),
             staging: ctx.out.join("image-root"),
             output: ctx.out.join(file_name(iso)),
+            iso,
         },
     );
     let _ = std::fs::remove_file(&root);
@@ -280,31 +287,28 @@ fn find_placeholder(text: &str) -> Option<&str> {
     None
 }
 
-/// Builds an image from `spec`.
+/// Builds an image from `spec`: a disk image (a USB stick's), or an ISO
+/// for optical media when [`ImageSpec::iso`] says so, each booting with
+/// the GRUB `./ob` builds ([`grub::build`]) under a PC's BIOS and UEFI.
 pub fn build(ctx: &Ctx, spec: &ImageSpec<'_>) -> Result<()> {
-    let mkrescue = process::find_any(&["grub-mkrescue", "grub2-mkrescue"]).ok_or_else(|| {
-        Error::new("grub-mkrescue is not installed")
-            .hint("run `./ob doctor` to see what is missing")
-    })?;
-    for (tool, purpose) in [("xorriso", "write the image"), ("mformat", "build the EFI partition")]
-    {
-        if process::find_program(tool).is_none() {
-            return Err(Error::new(format!("{tool} is needed to {purpose} but is not installed"))
-                .hint("run `./ob doctor` to see what is missing"));
-        }
+    if spec.iso && process::find_program("xorriso").is_none() {
+        return Err(Error::new("xorriso is needed to write the ISO but is not installed")
+            .hint("run `./ob doctor` to see what is missing"));
     }
+    let grub = grub::build(ctx)?;
 
     step(&format!("Assembling the boot image {}", ctx.display(&spec.output)));
-    if spec.staging.exists() {
-        std::fs::remove_dir_all(&spec.staging)
-            .context(|| format!("removing {}", spec.staging.display()))?;
+    for dir in [&spec.staging, &grub_work(spec)] {
+        if dir.exists() {
+            std::fs::remove_dir_all(dir).context(|| format!("removing {}", dir.display()))?;
+        }
     }
     kernel::copy_for_image(ctx, spec.kernel, &spec.staging.join("boot/radix"))?;
     let manifest = licenses::install(
         ctx,
         &spec.staging,
         &licenses::Extras {
-            mkrescue: &mkrescue,
+            grub: &grub,
             microcode: spec.microcode.is_some(),
             programs: spec.programs.map(|programs| &programs.ports),
         },
@@ -342,22 +346,14 @@ pub fn build(ctx: &Ctx, spec: &ImageSpec<'_>) -> Result<()> {
         process::create_dir(parent)?;
     }
 
-    let mut cmd = Command::new(&mkrescue);
-    // The menu uses GRUB's text terminals, so no font, translation or theme
-    // is needed; leaving them out keeps the image's GRUB files to GRUB's own
-    // code, which the license manifest lists.
-    cmd.args(["--fonts=", "--locales=", "--themes="]);
-    cmd.arg("-o").arg(&spec.output).arg(&spec.staging);
-    // Arguments after `--` go to xorriso. The volume label lets installers
-    // and udev rules recognise the medium.
-    cmd.args(["--", "-volid", &volume_id()]);
-    if let Some(epoch) = source_date_epoch(ctx) {
-        cmd.env("SOURCE_DATE_EPOCH", epoch);
+    let time = image_time(ctx);
+    process::create_dir(&grub_work(spec))?;
+    if spec.iso {
+        make_iso(ctx, spec, &grub, time)?;
+    } else {
+        make_stick(ctx, spec, &grub, time)?;
     }
-    let output = process::output(ctx, &mut cmd)?;
-    if ctx.verbose {
-        eprint!("{}", String::from_utf8_lossy(&output.stderr));
-    }
+    let _ = std::fs::remove_dir_all(grub_work(spec));
     if let Some(root) = spec.root {
         step("Adding the Dukovo root partition");
         append_root(&spec.output, root)?;
@@ -366,6 +362,211 @@ pub fn build(ctx: &Ctx, spec: &ImageSpec<'_>) -> Result<()> {
     let sidecar = spec.output.with_extension("spdx");
     std::fs::write(&sidecar, manifest).context(|| format!("writing {}", sidecar.display()))?;
     Ok(())
+}
+
+/// Where the GRUB images an image is made with are made: beside its
+/// staging directory.
+fn grub_work(spec: &ImageSpec<'_>) -> PathBuf {
+    spec.staging.with_extension("grub")
+}
+
+/// When an image is made, in seconds since 1970: [`source_date_epoch`],
+/// or now.
+pub fn image_time(ctx: &Ctx) -> u64 {
+    source_date_epoch(ctx).and_then(|epoch| epoch.parse().ok()).unwrap_or_else(|| {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs())
+    })
+}
+
+/// The size of a disk image's BIOS boot partition, which GRUB's
+/// `core.img` is in for a PC's BIOS, in sectors: a MiB.
+const BIOS_BOOT_SECTORS: u64 = 2048;
+
+/// The label of an image's EFI system partition.
+const ESP_LABEL: &str = "DUKOVO";
+
+/// Makes the disk image `spec.output` from the staging directory (ADR
+/// 0306): a GPT with GRUB's `core.img` in its first partition, a BIOS
+/// boot partition, and an EFI system partition second, FAT32, holding
+/// the staging tree and UEFI's GRUB as `EFI/BOOT/BOOTX64.EFI`, with
+/// GRUB's `boot.img` in the disk's first sector for a PC's BIOS, which
+/// rgrub-setup(8) puts there on Dukovo. A protective MBR covers the
+/// disk, as the UEFI specification asks, so the image boots from a USB
+/// stick or a disk under either firmware.
+fn make_stick(ctx: &Ctx, spec: &ImageSpec<'_>, grub: &Grub, time: u64) -> Result<()> {
+    let images = grub.disk_images(ctx, &grub_work(spec))?;
+    process::copy(&images.efi, &spec.staging.join("EFI/BOOT/BOOTX64.EFI"))?;
+    let read = |path: &Path| std::fs::read(path).context(|| format!("reading {}", path.display()));
+    let (boot, core) = (read(&images.boot)?, read(&images.core)?);
+
+    // Room for what the staging tree holds, a little more, and a
+    // filesystem of at least 64 MiB, which FAT32's clusters need.
+    let content = tree_bytes(&spec.staging)?;
+    let esp_bytes = (content + content / 8 + (16 << 20)).max(64 << 20).next_multiple_of(1 << 20);
+    let esp_sectors = esp_bytes / SECTOR as u64;
+    // The table and a MiB's gap before the partitions, and a MiB after
+    // them, which the backup table is at the end of.
+    let sectors = 2048 + BIOS_BOOT_SECTORS + esp_sectors + 2048;
+    let shown = spec.output.display().to_string();
+    let disk = new_disk(&spec.output, sectors)?;
+    let mut rng = disk::Rng::system();
+    let failed = |err: disk::table::Error| Error::new(format!("{shown}: {}", err.0));
+    let mut table =
+        disk::Table::new(disk::Scheme::Gpt, SECTOR as u32, sectors, &mut rng).map_err(failed)?;
+    let kind = |name| disk::types::parse(name, disk::Scheme::Gpt).expect("a known type");
+    for (name, kind, end) in [
+        ("BIOS boot", kind("bios-boot"), disk::End::Sectors(BIOS_BOOT_SECTORS)),
+        ("EFI system", kind("efi"), disk::End::Sectors(esp_sectors)),
+    ] {
+        let new = disk::New { name: name.into(), ..disk::New::of(kind, end) };
+        table.add(new, &mut rng).map_err(failed)?;
+    }
+    let writes = disk::plan(&disk, &table).context(|| format!("partitioning {shown}"))?;
+    disk::apply(&disk, &writes).context(|| format!("partitioning {shown}"))?;
+    let part = table.get(2).expect("the EFI system partition was added");
+    let esp = disk.part(part.first, part.sectors()).context(|| format!("opening {shown}"))?;
+    let options = disk::fat::Options {
+        bits: Some(32),
+        label: Some(ESP_LABEL.into()),
+        hidden: Some(part.first),
+        now: Some(time),
+        ..disk::fat::Options::default()
+    };
+    disk::fat::format(&esp, &options, &mut rng)
+        .map_err(|why| Error::new(format!("{shown}: making its EFI system partition: {why}")))?;
+    fill_fat(esp, &spec.staging, time, &shown)?;
+    disk::grub::setup_bios(&disk, &boot, &core)
+        .map_err(|why| Error::new(format!("{shown}: putting GRUB on it for a BIOS: {why}")))?;
+    Ok(())
+}
+
+/// A new file of `sectors` at `path`, as a disk.
+fn new_disk(path: &Path, sectors: u64) -> Result<disk::Device> {
+    let _ = std::fs::remove_file(path);
+    let bytes = sectors * SECTOR as u64;
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .and_then(|file| file.set_len(bytes).map(|()| file))
+        .context(|| format!("making {}", path.display()))?;
+    Ok(disk::Device::whole(file, bytes, SECTOR as u32))
+}
+
+/// Writes the tree `from` into the FAT on `device` with the kernel's FAT
+/// crate, as Radix writes one.
+fn fill_fat(device: disk::Device, from: &Path, time: u64, shown: &str) -> Result<()> {
+    rootfs::host_clock(time);
+    let fs = radix_fat::FatFs::mount(BlockFile::new(device, false).into_ref(), false)
+        .map_err(|err| rootfs::failed(shown, err))?;
+    let root = radix_vfs::FileSystem::root(&*fs);
+    rootfs::copy(from, &root)?;
+    radix_vfs::FileSystem::sync(&*fs).map_err(|err| rootfs::failed(shown, err))
+}
+
+/// The bytes the files under `dir` take, in 4 KiB blocks, and a block
+/// for each directory.
+fn tree_bytes(dir: &Path) -> Result<u64> {
+    let mut total = 4096;
+    for entry in std::fs::read_dir(dir).context(|| format!("reading {}", dir.display()))? {
+        let entry = entry.context(|| format!("reading {}", dir.display()))?;
+        let meta = entry.metadata().context(|| format!("reading {}", entry.path().display()))?;
+        total += if meta.is_dir() {
+            tree_bytes(&entry.path())?
+        } else {
+            meta.len().next_multiple_of(4096)
+        };
+    }
+    Ok(total)
+}
+
+/// Makes the ISO `spec.output` of the staging directory with xorriso
+/// (ADR 0306), for optical media, which El Torito boots: GRUB's
+/// `cdboot.img` and a `core.img` for a CD under a PC's BIOS, and under
+/// UEFI a FAT image holding UEFI's GRUB, which finds the disc by the
+/// UUID GRUB reads from its time of making.
+fn make_iso(ctx: &Ctx, spec: &ImageSpec<'_>, grub: &Grub, time: u64) -> Result<()> {
+    let work = grub_work(spec);
+    let (date, uuid) = iso_date(time);
+    // grub-mkimage puts `cdboot.img` before `core.img` for a CD.
+    let eltorito = spec.staging.join(ELTORITO);
+    process::create_dir(eltorito.parent().expect("the El Torito image has a parent"))?;
+    grub.mkimage(ctx, "i386-pc-eltorito", "/boot/grub", None, &eltorito)?;
+
+    let early = work.join("early.cfg");
+    let config =
+        format!("search --no-floppy --fs-uuid --set=root {uuid}\nset prefix=($root)/boot/grub\n");
+    std::fs::write(&early, config).context(|| format!("writing {}", early.display()))?;
+    let tree = work.join("efi");
+    let app = tree.join("EFI/BOOT/BOOTX64.EFI");
+    process::create_dir(app.parent().expect("BOOTX64.EFI has a parent"))?;
+    grub.mkimage(ctx, "x86_64-efi", "/boot/grub", Some(&early), &app)?;
+    let size = std::fs::metadata(&app).context(|| format!("reading {}", app.display()))?.len();
+    let efi_img = spec.staging.join(EFI_IMAGE);
+    let sectors = (size + (1 << 20)).next_multiple_of(1 << 20) / SECTOR as u64;
+    let device = new_disk(&efi_img, sectors)?;
+    let shown = efi_img.display().to_string();
+    let options = disk::fat::Options {
+        label: Some(ESP_LABEL.into()),
+        now: Some(time),
+        ..disk::fat::Options::default()
+    };
+    disk::fat::format(&device, &options, &mut disk::Rng::system())
+        .map_err(|why| Error::new(format!("{shown}: {why}")))?;
+    fill_fat(device, &tree, time, &shown)?;
+
+    let mut cmd = Command::new("xorriso");
+    cmd.args(["-as", "mkisofs", "-quiet", "-R", "-V", &volume_id()])
+        .arg(format!("--modification-date={date}"))
+        .args(["-b", ELTORITO, "-no-emul-boot", "-boot-load-size", "4", "-boot-info-table"])
+        .args(["-eltorito-alt-boot", "-e", EFI_IMAGE, "-no-emul-boot"])
+        .arg("-o")
+        .arg(&spec.output)
+        .arg(&spec.staging)
+        .env("SOURCE_DATE_EPOCH", time.to_string());
+    let output = process::output(ctx, &mut cmd)?;
+    if ctx.verbose {
+        eprint!("{}", String::from_utf8_lossy(&output.stderr));
+    }
+    Ok(())
+}
+
+/// Where an ISO's El Torito image for a PC's BIOS is.
+const ELTORITO: &str = "boot/grub/i386-pc/eltorito.img";
+
+/// Where an ISO's El Torito image for UEFI is, a FAT holding GRUB.
+const EFI_IMAGE: &str = "boot/grub/efi.img";
+
+/// The ISO's time of making for xorriso's `--modification-date`
+/// (`YYYYMMDDhhmmss00`), and the UUID GRUB reads from it
+/// (`YYYY-MM-DD-hh-mm-ss-00`), for `time` seconds since 1970 (UTC).
+fn iso_date(time: u64) -> (String, String) {
+    let days = time / 86_400;
+    let secs = time % 86_400;
+    let (year, month, day) = civil(days);
+    let (h, m, s) = (secs / 3600, secs / 60 % 60, secs % 60);
+    (
+        format!("{year:04}{month:02}{day:02}{h:02}{m:02}{s:02}00"),
+        format!("{year:04}-{month:02}-{day:02}-{h:02}-{m:02}-{s:02}-00"),
+    )
+}
+
+/// The year, month and day of `days` since 1970-01-01, by Howard
+/// Hinnant's `civil_from_days`.
+fn civil(days: u64) -> (u64, u64, u64) {
+    let z = days + 719_468;
+    let era = z / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + u64::from(month <= 2);
+    (year, month, day)
 }
 
 /// The size of the Dukovo root partition of an image (ADR 0137).
@@ -457,11 +658,7 @@ pub fn make_root(
         let subvolume = |name: &str| staging.join(name);
         account::add(&system, &subvolume(SUBVOLUMES[1]), &subvolume(SUBVOLUMES[2]), account)?;
     }
-    let time = source_date_epoch(ctx).and_then(|epoch| epoch.parse().ok()).unwrap_or_else(|| {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.as_secs())
-    });
+    let time = image_time(ctx);
     let made = rootfs::make(staging, output, ROOT_BYTES, ROOT_LABEL, &SUBVOLUMES, time);
     let _ = std::fs::remove_dir_all(staging);
     made
@@ -615,7 +812,7 @@ pub fn crc32(bytes: &[u8]) -> u32 {
     !crc
 }
 
-/// The size of a sector, which the GPT of grub-mkrescue's image counts in.
+/// The size of a sector, which an image's GPT counts in.
 const SECTOR: usize = 512;
 
 /// ISO 9660 volume label, such as `DUKOVO_0_0_1`.
@@ -623,9 +820,10 @@ pub fn volume_id() -> String {
     format!("DUKOVO_{}", VERSION.replace(['.', '-'], "_")).to_ascii_uppercase()
 }
 
-/// Commit time of HEAD, which xorriso uses for the ISO timestamps instead of
-/// the clock. An existing `SOURCE_DATE_EPOCH` wins. Images are not yet
-/// bit-for-bit reproducible: grub-mkrescue adds random UUIDs.
+/// Commit time of HEAD, which an image's files and filesystems have
+/// instead of the clock. An existing `SOURCE_DATE_EPOCH` wins. Images
+/// are not yet bit-for-bit reproducible: their GPT and filesystems have
+/// random UUIDs.
 pub fn source_date_epoch(ctx: &Ctx) -> Option<String> {
     if let Ok(epoch) = std::env::var("SOURCE_DATE_EPOCH") {
         return Some(epoch);

@@ -164,8 +164,8 @@ impl Package {
 
 /// What besides the kernel's crates goes into an image.
 pub struct Extras<'a> {
-    /// The grub-mkrescue that assembles the image.
-    pub mkrescue: &'a Path,
+    /// The GRUB the image boots with, built from its pinned source.
+    pub grub: &'a crate::grub::Grub,
     /// Whether the image carries Intel microcode.
     pub microcode: bool,
     /// The ports, when the image carries the user programs: the test
@@ -205,7 +205,7 @@ pub fn install(ctx: &Ctx, staging: &Path, extras: &Extras<'_>) -> Result<String>
             }
         }
     }
-    packages.push(grub(ctx, extras.mkrescue)?);
+    packages.push(grub(extras.grub));
     if extras.microcode {
         packages.push(microcode());
     }
@@ -907,31 +907,27 @@ fn c_packages(ctx: &Ctx, ports: &Ports) -> Result<Vec<Package>> {
     Ok(packages)
 }
 
-/// GRUB, which grub-mkrescue copies from the build host into every image.
-fn grub(ctx: &Ctx, mkrescue: &Path) -> Result<Package> {
-    let output = process::output(ctx, Command::new(mkrescue).arg("--version"))?;
-    let text = String::from_utf8_lossy(&output.stdout);
-    let version = grub_version(&text).unwrap_or("NOASSERTION").to_string();
-    Ok(Package {
+/// GRUB, which `./ob` builds from the GNU project's pinned tarball for
+/// every image (ADR 0306).
+fn grub(grub: &crate::grub::Grub) -> Package {
+    let version = crate::grub::VERSION;
+    Package {
         name: "grub".into(),
-        version: version.clone(),
+        version: version.into(),
         license: "GPL-3.0-or-later".into(),
         area: Area::Bootloader,
-        download: "NOASSERTION".into(),
-        sha256: None,
-        notices: Vec::new(),
+        download: crate::grub::URL.into(),
+        sha256: Some(crate::grub::SHA256.into()),
+        notices: vec![grub.copying.clone()],
         comment: format!(
-            "The GRUB {version} boot loader and its modules, copied from the build \
-             host by grub-mkrescue. GRUB is a separate program that loads the kernel. \
-             Its corresponding source is the build host distribution's source package \
-             for this version; see https://www.gnu.org/software/grub/."
+            "The GRUB {version} boot loader and the modules of it the image's GRUB \
+             holds, built by Dukovo's `./ob` from the GNU project's tarball of the \
+             download location and SHA-256 given, unchanged but for the file \
+             grub-core/extra_deps.lst the release leaves out, as tools/xtask/src/grub.rs \
+             in Dukovo's source says (its corresponding source). GRUB is a separate \
+             program that loads the kernel; see https://www.gnu.org/software/grub/."
         ),
-    })
-}
-
-/// The version in `grub-mkrescue (GRUB) 2.12-1ubuntu7.3`.
-fn grub_version(text: &str) -> Option<&str> {
-    text.lines().next()?.split_whitespace().last()
+    }
 }
 
 fn microcode() -> Package {
@@ -1422,11 +1418,5 @@ mod tests {
             text.contains("Notices: /system/resources/licenses/notices/compiler_builtins-0.1.160.")
         );
         assert!(text.contains("Created: 1970-01-01T00:00:00Z\n"));
-    }
-
-    #[test]
-    fn grub_versions() {
-        assert_eq!(grub_version("grub-mkrescue (GRUB) 2.12-1ubuntu7.3\n"), Some("2.12-1ubuntu7.3"));
-        assert_eq!(grub_version(""), None);
     }
 }

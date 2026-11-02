@@ -24,14 +24,19 @@ panic report, the crash log, the kernel debugger and trace points.
 
 ## Boot image
 
-*ob image* builds a hybrid image with *grub-mkrescue*(1). It holds GRUB for
-legacy BIOS (an El Torito boot record and an MBR boot record) and for UEFI
-(an EFI system partition with _EFI/BOOT/BOOTX64.EFI_), so the same file
-boots from a USB stick, a hard disk or optical media, on UEFI and BIOS
-machines. After those partitions an image for a disk has a fifth, the
-Dukovo root (GPT type 90C9A303-3954-4174-8F8B-EE75A92A9EB0), whose
-Btrfs holds the system and what changes (*spark*(8)). The files GRUB
-reads are:
+*ob image* builds a disk image, for a USB stick or a hard disk, that
+boots on UEFI and BIOS machines with GRUB 2.12, which *ob* builds from
+its source with only the modules the image needs. It is a GPT of three
+partitions, with a protective MBR whose boot code is GRUB's _boot.img_:
+a BIOS boot partition holding GRUB's _core.img_, which a BIOS's GRUB
+starts from and which finds GRUB's files at _(,gpt2)/boot/grub_; the EFI
+system partition, FAT32, holding UEFI's GRUB as _EFI/BOOT/BOOTX64.EFI_
+and the files below; and the Dukovo root (GPT type
+90C9A303-3954-4174-8F8B-EE75A92A9EB0), whose Btrfs holds the system and
+what changes (*spark*(8)). *rgrub-setup*(8) puts the same GRUB on other
+disks. *ob image --iso* builds an ISO for optical media instead, which
+El Torito boots under either firmware, holding the same files and no
+root. The files GRUB reads are:
 
 _/boot/radix_
 	The kernel, an ELF executable, without its debug information: GRUB
@@ -1130,7 +1135,7 @@ the steps of a smoke test and its results.
 
 # SEE ALSO
 
-*spark*(8), *radix-processes*(7), *radix-debug*(7), *radix-capabilities*(7), *radix-scheduling*(7), *ob*(1), *dukovo.toml*(5), *grub-mkrescue*(1)
+*spark*(8), *radix-processes*(7), *radix-debug*(7), *radix-capabilities*(7), *radix-scheduling*(7), *ob*(1), *dukovo.toml*(5), *rgrub-setup*(8)
 
 The Multiboot2 specification:
 https://www.gnu.org/software/grub/manual/multiboot2/

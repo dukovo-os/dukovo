@@ -540,6 +540,7 @@ version = "0.11.0"
 dependencies = [
  "radix-block",
  "radix-btrfs",
+ "radix-fat",
  "radix-vfs",
  "serde",
  "serde_json",
@@ -1148,6 +1149,16 @@ version = "0.11.0"
 
 [[package]]
 name = "radix-btrfs"
+version = "0.11.0"
+dependencies = [
+ "radix-block",
+ "radix-hw",
+ "radix-sync",
+ "radix-vfs",
+]
+
+[[package]]
+name = "radix-fat"
 version = "0.11.0"
 dependencies = [
  "radix-block",
