@@ -4,7 +4,8 @@
 //! The methods of the network capability (Phase 12, radix-network(2),
 //! ADR 0183): making network sockets, deriving a capability for fewer
 //! ports or rights, as Spark does for each service, and with the control
-//! right setting the interfaces up (ADR 0190).
+//! right setting the interfaces up (ADR 0190), and opening tunnels for
+//! the programs that carry their packets (ADR 0339).
 //!
 //! What a network capability allows is checked again where it is used:
 //! by the socket methods that take its slot (`files`), not by the socket
@@ -13,8 +14,8 @@
 use radix_abi::errors::{File, Kernel};
 use radix_abi::network::{
     self as abi, AddLinkArgs, AddLinkResults, AddressFamily, ConfigureArgs, ConfigureIpv6Args,
-    InterfaceAddress, InterfaceAddressIpv6, Ipv6Flags, Ipv6Settings, LinkKind, PortsArgs,
-    PortsResults, RemoveLinkArgs, RestrictArgs, SetMasterArgs, SocketArgs, SocketType,
+    InterfaceAddress, InterfaceAddressIpv6, Ipv6Flags, Ipv6Settings, LinkKind, OpenTunnelArgs,
+    PortsArgs, PortsResults, RemoveLinkArgs, RestrictArgs, SetMasterArgs, SocketArgs, SocketType,
 };
 use radix_cap::{Capability, Derivation, ObjectKind, Rights, SlotRef};
 use radix_hal::UserMode;
@@ -25,7 +26,7 @@ use super::methods::{Answer, answer};
 use super::{Result, UserRef, cap_error, error};
 use crate::Arch;
 use crate::caps;
-use crate::fs::inet;
+use crate::fs::{inet, tunnel};
 use crate::net::links::{self, LinkError, Role};
 use crate::net::{self, ConfigureError};
 
@@ -108,6 +109,7 @@ pub fn method(
             copy_in(&mut name[..len], a.name.address, a.name.len)?;
             let role = match a.kind {
                 LinkKind::Bridge => Role::Bridge,
+                LinkKind::Tunnel => Role::Tunnel,
                 LinkKind::Vlan => {
                     let parent = number_of(a.parent)?;
                     let id = u16::try_from(a.vlan).map_err(|_| error(Kernel::InvalidArgument))?;
@@ -134,6 +136,12 @@ pub fn method(
             let a = RemoveLinkArgs::decode(args)?;
             cap.check(ObjectKind::Network, Rights::CONTROL).map_err(cap_error)?;
             links::remove(number_of(a.interface)?).map_err(link_error)?;
+            answer(label, 0, [0; 8])
+        }
+        abi::OPEN_TUNNEL => {
+            let a = OpenTunnelArgs::decode(args)?;
+            cap.check(ObjectKind::Network, Rights::CONTROL).map_err(cap_error)?;
+            tunnel::open(user, number_of(a.interface)?, a.to, a.flags)?;
             answer(label, 0, [0; 8])
         }
         _ => Err(error(Kernel::NoSuchMethod)),

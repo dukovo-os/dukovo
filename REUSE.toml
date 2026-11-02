@@ -55,6 +55,13 @@ path = "userspace/programs/keymap/keymaps/COPYING-xkeyboard-config"
 SPDX-FileCopyrightText = "1996-2025 The xkeyboard-config contributors"
 SPDX-License-Identifier = "MIT"
 
+# boringtun 0.7.1's LICENSE.md, https://github.com/cloudflare/boringtun,
+# verbatim: its notice, which its crates.io package leaves out (ADR 0340).
+[[annotations]]
+path = "userspace/programs/systools/notices/LICENSE-boringtun.md"
+SPDX-FileCopyrightText = "2019 Cloudflare, Inc."
+SPDX-License-Identifier = "BSD-3-Clause"
+
 # What the shell's test scripts must write: bash's and dash's output,
 # compared byte for byte, which a header would change.
 [[annotations]]

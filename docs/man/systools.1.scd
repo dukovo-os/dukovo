@@ -225,6 +225,10 @@ error that starts with the tool's name.
 :  run a command again and again
 |  *watchdog*(8)
 :  the hardware watchdog Spark pets
+|  *wg*(8)
+:  WireGuard's keys, and what its interfaces have
+|  *wgd*(8)
+:  the WireGuard tunnels
 |  *which*(1)
 :  where a command is
 |  *xxd*(1)

@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 //! What the firewall looks at in the frames an interface receives from
-//! other machines (ADR 0334).
+//! other machines (ADR 0334), and in the packets a tunnel receives
+//! (ADR 0339).
 //!
 //! The firewall decides about the packets that start something: a TCP
 //! segment that opens a connection (SYN without ACK), a UDP datagram that
@@ -22,6 +23,8 @@
 //! port it went to.
 
 use smoltcp::wire::{IpAddress, Ipv4Address, Ipv6Address};
+
+use crate::Medium;
 
 /// What a packet the firewall decides about is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -55,6 +58,7 @@ struct Ip {
     from: IpAddress,
     to: IpAddress,
     carries: u8,
+    /// Where what it carries starts, in what the link carries.
     at: usize,
 }
 
@@ -83,12 +87,24 @@ const ECHO_REQUEST_V6: u8 = 128;
 const SYN: u8 = 0x02;
 const ACK: u8 = 0x10;
 
-/// The IP packet in an Ethernet frame, if it carries one that is whole
-/// and is not a fragment past the first.
-fn ip(frame: &[u8]) -> Option<Ip> {
-    let packet = frame.get(ETHERNET..)?;
-    match frame.get(12..14)? {
-        t if t == IPV4 => {
+/// The IP packet in what a link of `medium` carries, if it is one that
+/// is whole and is not a fragment past the first: in an Ethernet frame,
+/// after its header, of the version its type says; on an IP link, a
+/// tunnel's, the packet alone, of the version its first byte says.
+fn ip(frame: &[u8], medium: Medium) -> Option<Ip> {
+    let (packet, version, start) = match medium {
+        Medium::Ethernet => {
+            let version = match frame.get(12..14)? {
+                t if t == IPV4 => 4,
+                t if t == IPV6 => 6,
+                _ => return None,
+            };
+            (frame.get(ETHERNET..)?, version, ETHERNET)
+        }
+        Medium::Ip => (frame, frame.first()? >> 4, 0),
+    };
+    match version {
+        4 => {
             let header = usize::from(packet.first()? & 0x0f) * 4;
             if packet.first()? >> 4 != 4 || header < 20 || packet.len() < header {
                 return None;
@@ -102,9 +118,10 @@ fn ip(frame: &[u8]) -> Option<Ip> {
                 let octets: [u8; 4] = packet.get(at..at + 4)?.try_into().ok()?;
                 Some(IpAddress::Ipv4(Ipv4Address::from(octets)))
             };
-            Some(Ip { from: address(12)?, to: address(16)?, carries: packet[9], at: header })
+            let (from, to) = (address(12)?, address(16)?);
+            Some(Ip { from, to, carries: packet[9], at: start + header })
         }
-        t if t == IPV6 => {
+        6 => {
             if packet.first()? >> 4 != 6 || packet.len() < 40 {
                 return None;
             }
@@ -135,16 +152,17 @@ fn ip(frame: &[u8]) -> Option<Ip> {
                     _ => break,
                 }
             }
-            Some(Ip { from, to, carries, at })
+            Some(Ip { from, to, carries, at: start + at })
         }
         _ => None,
     }
 }
 
-/// The packet in `frame` that the firewall decides about, if it is one.
-pub fn inbound(frame: &[u8]) -> Option<Inbound> {
-    let ip = ip(frame)?;
-    let body = frame.get(ETHERNET + ip.at..)?;
+/// The packet in `frame`, which a link of `medium` received, that the
+/// firewall decides about, if it is one.
+pub fn inbound(frame: &[u8], medium: Medium) -> Option<Inbound> {
+    let ip = ip(frame, medium)?;
+    let body = frame.get(ip.at..)?;
     let ports = || -> Option<(u16, u16)> {
         Some((
             u16::from_be_bytes([*body.first()?, *body.get(1)?]),
@@ -208,13 +226,13 @@ impl Default for Flows {
 
 impl Flows {
     /// Notes the datagram in `frame`, which the interface sends at
-    /// `now_ns`, if it is one.
-    pub fn sent(&mut self, frame: &[u8], now_ns: u64) {
-        let Some(ip) = ip(frame) else { return };
+    /// `now_ns` on a link of `medium`, if it is one.
+    pub fn sent(&mut self, frame: &[u8], medium: Medium, now_ns: u64) {
+        let Some(ip) = ip(frame, medium) else { return };
         if ip.carries != UDP {
             return;
         }
-        let Some(body) = frame.get(ETHERNET + ip.at..ETHERNET + ip.at + 4) else { return };
+        let Some(body) = frame.get(ip.at..ip.at + 4) else { return };
         let port = u16::from_be_bytes([body[0], body[1]]);
         let to_port = u16::from_be_bytes([body[2], body[3]]);
         let to = (!is_group(ip.to)).then_some(ip.to);
@@ -254,6 +272,11 @@ mod tests {
     use std::vec::Vec;
 
     use super::*;
+
+    /// The packet in an Ethernet frame that the firewall decides about.
+    fn inbound(frame: &[u8]) -> Option<Inbound> {
+        super::inbound(frame, Medium::Ethernet)
+    }
 
     /// An Ethernet frame of IPv4 from `from` to `to` carrying `carries`,
     /// whose body is `body`.
@@ -337,8 +360,8 @@ mod tests {
     fn answers_to_datagrams_sent_are_let_in_for_a_while() {
         let mut flows = Flows::default();
         // A DNS query, and a DHCP discovery to every machine.
-        flows.sent(&v4([10, 0, 2, 15], [10, 0, 2, 3], UDP, &udp(50000, 53)), 0);
-        flows.sent(&v4([0, 0, 0, 0], [255, 255, 255, 255], UDP, &udp(68, 67)), 0);
+        flows.sent(&v4([10, 0, 2, 15], [10, 0, 2, 3], UDP, &udp(50000, 53)), Medium::Ethernet, 0);
+        flows.sent(&v4([0, 0, 0, 0], [255, 255, 255, 255], UDP, &udp(68, 67)), Medium::Ethernet, 0);
         let answer = |from: [u8; 4], from_port: u16, port: u16| {
             inbound(&v4(from, [10, 0, 2, 15], UDP, &udp(from_port, port))).unwrap()
         };
@@ -352,13 +375,37 @@ mod tests {
         let syn = inbound(&v4([10, 0, 2, 3], [10, 0, 2, 15], TCP, &tcp(53, 50000, SYN))).unwrap();
         assert!(!flows.answers(&syn, 1));
         // DHCPv6's question goes to a group; its answer comes from a server.
-        flows.sent(&v6("fe80::5", "ff02::1:2", UDP, &[], &udp(546, 547)), 0);
+        flows.sent(&v6("fe80::5", "ff02::1:2", UDP, &[], &udp(546, 547)), Medium::Ethernet, 0);
         let reply = inbound(&v6("fec0::2", "fe80::5", UDP, &[], &udp(547, 546))).unwrap();
         assert!(flows.answers(&reply, 1));
         // More than it holds: the one ending first goes.
         for n in 0..FLOWS as u16 {
-            flows.sent(&v4([10, 0, 2, 15], [10, 0, 2, 9], UDP, &udp(1000 + n, 7)), 5);
+            flows.sent(
+                &v4([10, 0, 2, 15], [10, 0, 2, 9], UDP, &udp(1000 + n, 7)),
+                Medium::Ethernet,
+                5,
+            );
         }
         assert!(!flows.answers(&answer([10, 0, 2, 3], 53, 50000), 1));
+    }
+
+    #[test]
+    fn a_tunnels_packets_are_read_without_an_ethernet_header() {
+        // The same packets, as a tunnel's IP link carries them.
+        let bare = |frame: Vec<u8>| frame[ETHERNET..].to_vec();
+        let syn = bare(v4([10, 9, 0, 2], [10, 9, 0, 1], TCP, &tcp(41000, 8080, SYN)));
+        let found = super::inbound(&syn, Medium::Ip).unwrap();
+        assert_eq!((found.protocol, found.port), (Protocol::Tcp, 8080));
+        assert_eq!(found.from, IpAddress::Ipv4(Ipv4Address::new(10, 9, 0, 2)));
+        let syn6 = bare(v6("fd09::2", "fd09::1", TCP, &[], &tcp(41000, 8080, SYN)));
+        assert_eq!(super::inbound(&syn6, Medium::Ip).unwrap().port, 8080);
+        // Nor is an Ethernet frame one, nor a packet of no version.
+        assert_eq!(super::inbound(&syn, Medium::Ethernet), None);
+        assert_eq!(super::inbound(&[0x50; 40], Medium::Ip), None);
+        // A datagram's answer comes back through the tunnel.
+        let mut flows = Flows::default();
+        flows.sent(&bare(v4([10, 9, 0, 1], [10, 9, 0, 2], UDP, &udp(50000, 53))), Medium::Ip, 0);
+        let reply = bare(v4([10, 9, 0, 2], [10, 9, 0, 1], UDP, &udp(53, 50000)));
+        assert!(flows.answers(&super::inbound(&reply, Medium::Ip).unwrap(), 1));
     }
 }

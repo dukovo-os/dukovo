@@ -66,6 +66,8 @@ mod tests;
 mod tests6;
 #[cfg(test)]
 mod tests_multicast;
+#[cfg(test)]
+mod tests_tunnel;
 
 pub use across::{Across, OtherEnd};
 pub use layer2::TAGGED_FRAME;
@@ -99,7 +101,8 @@ const ETHERNET_HEADER: usize = 14;
 pub enum Medium {
     /// Ethernet frames, with their MAC addresses: a network card's.
     Ethernet,
-    /// IP packets alone: the loopback interface's.
+    /// IP packets alone: the loopback interface's, and a tunnel's (ADR
+    /// 0339).
     Ip,
 }
 
@@ -385,7 +388,7 @@ impl<L: Link> phy::TxToken for Sending<'_, L> {
                 if fits && link.send(frame) {
                     counted.sent(len);
                     if let Some((flows, now)) = flows {
-                        flows.borrow_mut().sent(frame, now);
+                        flows.borrow_mut().sent(frame, link.medium(), now);
                     }
                 } else {
                     counted.dropped();
@@ -428,11 +431,12 @@ impl<L: Link> phy::Device for Phy<'_, L> {
             let frame = &self.receive[..len];
             let Some(hooks) = self.hooks else { break len };
             // A VLAN's or a bridge's, or one the firewall keeps out, goes
-            // no further.
-            if (hooks.sift)(hooks.number, frame) {
+            // no further. A tunnel's packets are for its stack alone.
+            let medium = self.link.medium();
+            if medium == Medium::Ethernet && (hooks.sift)(hooks.number, frame) {
                 continue;
             }
-            let Some(packet) = filter::inbound(frame) else { break len };
+            let Some(packet) = filter::inbound(frame, medium) else { break len };
             let answer = self.flows.is_some_and(|flows| flows.borrow().answers(&packet, self.now));
             if answer || (hooks.admit)(hooks.number, &packet, self.now) {
                 break len;
@@ -528,7 +532,10 @@ impl<L: Link> Stack<L> {
         let mut phy = Phy::new(&mut link, &mut *receive, &mut *transmit, &counted);
         let iface = Interface::new(config, &mut phy, instant(now_ns));
         let sockets = SocketSet::new(sockets);
-        let ipv6 = ipv6::Ipv6::new(link.mac(), seed.rotate_left(17) ^ 0x9e37_79b9_7f4a_7c15);
+        let mut ipv6 = ipv6::Ipv6::new(link.mac(), seed.rotate_left(17) ^ 0x9e37_79b9_7f4a_7c15);
+        if link.medium() == Medium::Ip {
+            ipv6.set_no_neighbours();
+        }
         Stack {
             link,
             iface,
@@ -844,11 +851,13 @@ impl<L: Link> Stack<L> {
         for _ in 0..POLL_ROUNDS {
             let mut phy =
                 Phy::new(&mut self.link, &mut *self.receive, &mut *self.transmit, &self.counted);
+            // A card's frames, and a tunnel's packets, pass through the
+            // hooks, the firewall's among them; `lo`'s have none.
+            phy.now = now_ns;
+            phy.hooks = self.hooks;
+            phy.flows = self.hooks.is_some().then_some(&self.flows);
             if phy.link.medium() == Medium::Ethernet {
                 phy.ipv6 = Some(&mut self.ipv6);
-                phy.now = now_ns;
-                phy.hooks = self.hooks;
-                phy.flows = self.hooks.is_some().then_some(&self.flows);
             }
             let result = self.iface.poll(instant(now_ns), &mut phy, &mut self.sockets);
             self.link.flush();

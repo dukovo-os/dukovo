@@ -132,7 +132,10 @@ mod util;
 mod volumed;
 mod watch;
 mod watchdog;
+mod wg;
+mod wgd;
 mod which;
+mod wireguard;
 mod xxd;
 
 use std::ffi::OsString;
@@ -261,6 +264,8 @@ const TOOLS: &[(&str, Tool)] = &[
     ("w", sessions::w),
     ("watch", watch::main),
     ("watchdog", watchdog::main),
+    ("wg", wg::main),
+    ("wgd", wgd::main),
     ("which", which::main),
     ("who", sessions::who),
     ("xxd", xxd::main),

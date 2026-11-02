@@ -207,6 +207,13 @@ IPv6, the firewall and WireGuard. This page grows with each.
   ping(8) is anyone's, through a ping socket, and multicast works as on
   Linux
   ([ADR 0336](https://github.com/openlinuxsystems/orthros/blob/main/docs/adr/0336-multicast-groups-packet-info-and-ping-sockets-on-smoltcp.md)).
+- **WireGuard**, with wg-quick's files and wireguard-tools' `wg`:
+  wgd(8) brings up an interface for each file in
+  `/system/state/wireguard` and carries it to its peers, Linux's
+  WireGuard among them, on Cloudflare's boringtun
+  ([ADR 0340](https://github.com/openlinuxsystems/orthros/blob/main/docs/adr/0340-wgd-runs-wireguard-on-boringtun.md)),
+  through the kernel's tunnels
+  ([ADR 0339](https://github.com/openlinuxsystems/orthros/blob/main/docs/adr/0339-tunnels-are-ip-links-whose-packets-a-program-carries.md)).
 - **An app reaches the local network only if you let it**: a bundle's
   network.local permission, asked for when it first runs, is a right of
   its own, apart from reaching the internet
@@ -287,6 +294,42 @@ address = fd07::1/64
 netd asks DHCP for `br0`'s address as it would for a card's, and the
 ports have none of their own while they are ports. `ip -d link` shows
 what each interface is.
+
+## WireGuard
+
+A file for each interface, in wg-quick's format (wireguard.conf(5)),
+and wgd brings it up. Make the keys first, kept from others, and give
+the peer the public one:
+
+```
+# umask 077
+# wg genkey > /system/state/wireguard/wg0.key
+# wg pubkey < /system/state/wireguard/wg0.key
+9wjCu3Ap0zMQ2K+E+hjKuatuKFDsu29PFtTDfAyPzmQ=
+# cat > /system/state/wireguard/wg0.conf
+[Interface]
+PrivateKey = <what wg0.key holds>
+Address = 10.9.0.2/24, fd09::2/64
+
+[Peer]
+PublicKey = <the peer's public key>
+AllowedIPs = 10.9.0.0/24, fd09::/64
+Endpoint = vpn.example.org:51820
+PersistentKeepalive = 25
+# service wgd reload
+# wg show wg0
+```
+
+A file from a Linux machine, a router or a VPN provider works as it is;
+what wg-quick alone does (DNS, Table and the Up and Down scripts) is
+warned of and passed over. `wg set`, `wg syncconf` and the rest change
+an interface until wgd reads its file again, and `service wgd reload`
+does that without ending the sessions of the peers that did not
+change. The interface listens on the file's ListenPort; a port other
+than 51820 needs a line in wgd's service too
+(`service edit wgd`). Until the routing table comes, AllowedIPs of
+`0.0.0.0/0`, which would send everything through the tunnel, do not:
+the kernel routes by each interface's subnet.
 
 ## Setting the cards up
 
@@ -560,6 +603,17 @@ and not the send right alone:
 
 ```
 ./ob test --case network-discovery
+```
+
+The `network-wireguard` boot test boots two machines on a cable, each
+with wgd, and checks that b fetches a's page through their tunnel by
+IPv4 and IPv6, that they ping each other through it, that the cable
+carries only WireGuard's sealed datagrams, that a reload of wgd keeps
+the session, and that a refuses b's packets from an address b's
+AllowedIPs leave out:
+
+```
+./ob test --case network-wireguard
 ```
 
 ## Trying the sockets

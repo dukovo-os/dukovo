@@ -1,0 +1,36 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+#
+# WireGuard: wgd(8) brings up an interface for each file NAME.conf in
+# /system/state/wireguard (wireguard.conf(5), wg-quick's format) and
+# carries its packets to its peers, on boringtun (ADR 0340). With no
+# files it waits, holding no port. `service wgd reload` reads the files
+# again, keeping the sessions of the peers that did not change; wg(8)
+# shows and changes the interfaces until then.
+#
+# service.toml(5) explains each setting. `service check wgd` checks
+# this file, and `service edit wgd` checks it as you save.
+
+service_version = 1
+description = "WireGuard tunnels"
+program = "/system/commands/wgd"
+# After netd, which gives the cards their addresses, and resolved,
+# which finds the peers' names, before the services that use the
+# tunnels.
+order = 26
+# Started again whenever it ends: always, on-failure or never.
+restart = "always"
+
+[limits]
+memory = "32M"
+
+# What it holds beyond what every service reads (service.toml(5)): the
+# networks its peers are on, and WireGuard's port, 51820, which a file's
+# ListenPort may change (add it here too then); making, opening and
+# setting up the tunnel interfaces; its files, which hold private keys,
+# and the folder of wg's sockets.
+[permissions]
+network.outbound = true
+network.listen = [51820]
+admin.network = true
+files.read-write = ["/system/state/wireguard", "/system/live/wireguard"]

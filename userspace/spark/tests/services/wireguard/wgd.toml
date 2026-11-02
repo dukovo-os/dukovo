@@ -1,0 +1,21 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+#
+# A service of the network-wireguard boot test: wgd(8) as the system's
+# own file has it. It starts with no file, and brings up wg0 once the
+# test's wgtest writes wg0.conf and reloads it.
+
+service_version = 1
+description = "WireGuard tunnels"
+program = "/system/commands/wgd"
+order = 26
+restart = "always"
+
+[limits]
+memory = "32M"
+
+[permissions]
+network.outbound = true
+network.listen = [51820]
+admin.network = true
+files.read-write = ["/system/state/wireguard", "/system/live/wireguard"]

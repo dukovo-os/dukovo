@@ -262,6 +262,9 @@ pub enum Kind {
         id: u16,
         parent: String,
     },
+    /// A tunnel, whose packets a program carries, as wgd(8) carries
+    /// WireGuard's (ADR 0339).
+    Tunnel,
 }
 
 /// What an interface's `link` file says: what it is, and its bridge if
@@ -274,6 +277,7 @@ pub fn parse_link(text: &str) -> (Kind, Option<String>) {
         match words[..] {
             ["loopback"] => kind = Kind::Loopback,
             ["bridge"] => kind = Kind::Bridge { ports: Vec::new() },
+            ["tunnel"] => kind = Kind::Tunnel,
             ["vlan", id, "on", parent] => {
                 if let Ok(id) = id.parse() {
                     kind = Kind::Vlan { id, parent: parent.to_string() };
@@ -425,7 +429,9 @@ pub trait Network {
 
 /// Calls `call` with each network capability's slot in turn until one
 /// allows it.
-fn through_slots<T>(mut call: impl FnMut(u32) -> Result<T, Status>) -> Result<T, Status> {
+pub(crate) fn through_slots<T>(
+    mut call: impl FnMut(u32) -> Result<T, Status>,
+) -> Result<T, Status> {
     let mut refusal = Kernel::EmptySlot.status(0);
     for slot in SLOT_NETWORK..SLOT_NETWORK + NETWORK_SLOTS {
         match call(slot) {
@@ -777,13 +783,18 @@ fn selected<'a>(interfaces: &'a [Interface], words: &[&str]) -> Result<Vec<&'a I
     }
 }
 
-/// An interface's flags, as ip(8) shows them: `<BROADCAST,UP,LOWER_UP>`.
+/// An interface's flags, as ip(8) shows them: `<BROADCAST,UP,LOWER_UP>`,
+/// and a tunnel's, as Linux shows a WireGuard interface's,
+/// `<POINTOPOINT,NOARP,UP,LOWER_UP>`.
 fn flags(interface: &Interface) -> String {
     let mut flags = Vec::new();
     if !interface.carrier {
         flags.push("NO-CARRIER");
     }
-    flags.push(if interface.loopback { "LOOPBACK" } else { "BROADCAST" });
+    match interface.kind {
+        Kind::Tunnel => flags.extend(["POINTOPOINT", "NOARP"]),
+        _ => flags.push(if interface.loopback { "LOOPBACK" } else { "BROADCAST" }),
+    }
     flags.push("UP");
     if interface.carrier {
         flags.push("LOWER_UP");
@@ -826,12 +837,17 @@ fn heading(
         ("ether", "ff:ff:ff:ff:ff:ff")
     };
     let mac = paint(command, |c| &c.mac, &interface.mac);
-    writeln!(out, "    link/{kind} {mac} brd {broadcast}")?;
+    // A tunnel has no MAC address, as Linux shows it.
+    if interface.kind == Kind::Tunnel {
+        writeln!(out, "    link/none ")?;
+    } else {
+        writeln!(out, "    link/{kind} {mac} brd {broadcast}")?;
+    }
     if command.details {
         match &interface.kind {
             Kind::Bridge { .. } => writeln!(out, "    bridge ")?,
             Kind::Vlan { id, .. } => writeln!(out, "    vlan protocol 802.1Q id {id} ")?,
-            Kind::Card | Kind::Loopback => {}
+            Kind::Card | Kind::Loopback | Kind::Tunnel => {}
         }
         if interface.master.is_some() {
             writeln!(out, "    bridge_slave ")?;
@@ -1170,6 +1186,14 @@ fn add_link(interfaces: &[Interface], words: &[&str], network: &dyn Network) -> 
                 })?;
             network.add_link(LinkKind::Vlan, parent.index, id, name).map_err(refused)?;
         }
+        // wgd makes them, from their files (ADR 0340).
+        Some("wireguard") => {
+            return Err(usage(format!(
+                "Error: wgd(8) makes WireGuard interfaces: put {name}'s settings in \
+                 /system/state/wireguard/{name}.conf and start wgd, or run \
+                 `service wgd reload` if it runs."
+            )));
+        }
         Some(other) => {
             return Err(usage(format!(
                 "Error: Unknown device type \"{other}\": bridge and vlan are."
@@ -1180,7 +1204,7 @@ fn add_link(interfaces: &[Interface], words: &[&str], network: &dyn Network) -> 
     Ok(0)
 }
 
-/// `ip link del`: a bridge or VLAN.
+/// `ip link del`: a bridge, VLAN or tunnel.
 fn remove_link(
     interfaces: &[Interface],
     words: &[&str],

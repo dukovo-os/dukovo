@@ -52,6 +52,7 @@ pub mod socket;
 pub mod sysfs;
 pub mod trace;
 pub mod tty;
+pub mod tunnel;
 pub mod writeback;
 
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -127,6 +128,8 @@ enum Special {
     Framebuffer,
     /// A connection of `/devices/fuse`.
     Fuse,
+    /// The program's end of a tunnel (ADR 0339).
+    Tunnel,
 }
 
 /// The most bytes of a path an [`Opened`] keeps.
@@ -311,6 +314,7 @@ impl FileObject {
             Kind::CharDevice if mouse::is_mouse(&at.node) => Special::Mouse,
             Kind::CharDevice if framebuffer::is_framebuffer(&at.node) => Special::Framebuffer,
             Kind::CharDevice if fuse::channel_of(&at.node).is_some() => Special::Fuse,
+            Kind::CharDevice if tunnel::end_of(&at.node).is_some() => Special::Tunnel,
             _ => Special::No,
         };
         // The devices are the last kinds: one comparison for the others.
@@ -408,6 +412,11 @@ impl FileObject {
     /// The connection of `/devices/fuse` it is of, if it is of one.
     pub fn fuse_channel(&self) -> Option<&fuse::Channel> {
         if self.special == Special::Fuse { fuse::channel_of(&self.at.node) } else { None }
+    }
+
+    /// Whether it is the program's end of a tunnel.
+    pub fn is_tunnel(&self) -> bool {
+        self.special == Special::Tunnel
     }
 
     /// Whether its reads and writes are a pipe's, a socket's, a terminal's
