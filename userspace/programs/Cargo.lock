@@ -533,6 +533,9 @@ dependencies = [
 name = "disk"
 version = "0.11.0"
 dependencies = [
+ "radix-block",
+ "radix-btrfs",
+ "radix-vfs",
  "serde",
  "serde_json",
 ]
@@ -1112,6 +1115,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "radix-block"
+version = "0.11.0"
+dependencies = [
+ "radix-hw",
+ "radix-mm",
+ "radix-sync",
+]
+
+[[package]]
+name = "radix-bootfs"
+version = "0.11.0"
+
+[[package]]
+name = "radix-btrfs"
+version = "0.11.0"
+dependencies = [
+ "radix-block",
+ "radix-hw",
+ "radix-sync",
+ "radix-vfs",
+]
+
+[[package]]
 name = "radix-fbcon"
 version = "0.11.0"
 dependencies = [
@@ -1148,6 +1174,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "radix-mm"
+version = "0.11.0"
+dependencies = [
+ "radix-sync",
+]
+
+[[package]]
 name = "radix-nic"
 version = "0.11.0"
 dependencies = [
@@ -1176,6 +1209,16 @@ version = "0.11.0"
 [[package]]
 name = "radix-sync"
 version = "0.11.0"
+
+[[package]]
+name = "radix-vfs"
+version = "0.11.0"
+dependencies = [
+ "radix-block",
+ "radix-bootfs",
+ "radix-hw",
+ "radix-sync",
+]
 
 [[package]]
 name = "rand_core"

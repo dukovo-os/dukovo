@@ -3,14 +3,22 @@
 
 [package]
 name = "disk"
-description = "Dukovo's disk tools' engine (ADR 0300): GPT and MBR partition tables, layout files, and the FAT and exFAT formats, for rdisk(8), mkfs-fat(8), fsck-fat(8) and mkfs-exfat(8) on Dukovo and for ./ob image on Linux"
+description = "Dukovo's disk tools' engine (ADR 0300): GPT and MBR partition tables, layout files, and the FAT and exFAT formats, for rdisk(8), mkfs-fat(8), fsck-fat(8), mkfs-exfat(8), mkfs-btrfs(8) and fsck-btrfs(8) on Dukovo and for ./ob image on Linux"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 publish.workspace = true
 
+[features]
+# Btrfs, made and checked by the kernel's own crate (ADRs 0304 and 0305),
+# for mkfs-btrfs, fsck-btrfs and ./ob image.
+btrfs = ["dep:radix-block", "dep:radix-btrfs", "dep:radix-vfs"]
+
 [dependencies]
+radix-block = { path = "../../../kernel/fs/block", features = ["host"], optional = true }
+radix-btrfs = { path = "../../../kernel/fs/btrfs", features = ["make", "check"], optional = true }
+radix-vfs = { path = "../../../kernel/fs/vfs", features = ["host"], optional = true }
 # Layout files (rdisk-layout(5)) are JSON (both MIT OR Apache-2.0).
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.140"

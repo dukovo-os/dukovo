@@ -469,6 +469,13 @@ impl<'v> Cursor<'v> {
         Ok(cursor)
     }
 
+    /// The address of the leaf it is in, and its slot there, for tests
+    /// that spoil an item on purpose.
+    #[cfg(test)]
+    pub(crate) fn leaf(&self) -> Option<(u64, usize)> {
+        self.path[0].as_ref().map(|(block, slot)| (block.bytenr(), *slot))
+    }
+
     /// A cursor at the last item of the tree `root` whose key is `key` or
     /// before it; `None` if there is none.
     pub fn seek_last(volume: &'v Volume, root: &Root, key: &Key) -> Result<Option<Cursor<'v>>> {

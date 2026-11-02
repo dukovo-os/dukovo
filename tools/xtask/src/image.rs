@@ -18,7 +18,7 @@ use std::process::Command;
 use crate::account::{self, Account};
 use crate::config::{self, Profile};
 use crate::process::{self, step};
-use crate::{Context, Ctx, Error, Result, VERSION, btrfs, kernel, licenses, userspace};
+use crate::{Context, Ctx, Error, Result, VERSION, kernel, licenses, rootfs, userspace};
 
 /// What goes into an image and where it is written.
 pub struct ImageSpec<'a> {
@@ -389,10 +389,11 @@ const SUBVOLUMES: [&str; 7] =
     ["@system.a", "@settings", "@state", "@applications", "@users", "@shared", "@snapshots"];
 
 /// Makes the Dukovo root's Btrfs in the file `output`, of [`ROOT_BYTES`],
-/// with the pinned `mkfs.btrfs` ([`btrfs::mkfs`]): `@system.a` holds what
-/// the boot archive at `bootfs` has in its `system` directory, unpacked
-/// into `staging` first, and the other [`SUBVOLUMES`] are empty but for
-/// the files of `account`, if there is one. Data is compressed with zstd.
+/// with the kernel's own Btrfs crate ([`rootfs::make`], ADR 0304):
+/// `@system.a` holds what the boot archive at `bootfs` has in its
+/// `system` directory, unpacked into `staging` first, and the other
+/// [`SUBVOLUMES`] are empty but for the files of `account`, if there is
+/// one. Data is compressed with zstd, and every file is root's.
 pub fn make_root(
     ctx: &Ctx,
     bootfs: &Path,
@@ -456,22 +457,14 @@ pub fn make_root(
         let subvolume = |name: &str| staging.join(name);
         account::add(&system, &subvolume(SUBVOLUMES[1]), &subvolume(SUBVOLUMES[2]), account)?;
     }
-    let _ = std::fs::remove_file(output);
-    std::fs::File::create(output)
-        .and_then(|file| file.set_len(ROOT_BYTES))
-        .context(|| format!("making {}", output.display()))?;
-    let mut cmd = Command::new(btrfs::mkfs(ctx)?);
-    cmd.args(["-q", "-f", "-L", ROOT_LABEL, "--compress", "zstd", "--rootdir"]).arg(staging);
-    cmd.args(["--subvol", &format!("ro:{}", SUBVOLUMES[0])]);
-    for name in &SUBVOLUMES[1..] {
-        cmd.args(["--subvol", &format!("rw:{name}")]);
-    }
-    let made = process::run(ctx, cmd.arg(output).stdin(std::process::Stdio::null()));
+    let time = source_date_epoch(ctx).and_then(|epoch| epoch.parse().ok()).unwrap_or_else(|| {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs())
+    });
+    let made = rootfs::make(staging, output, ROOT_BYTES, ROOT_LABEL, &SUBVOLUMES, time);
     let _ = std::fs::remove_dir_all(staging);
-    made?;
-    // mkfs.btrfs gave each file the owner of its staging copy, whoever
-    // runs ob; a system's files are root's (ADR 0213).
-    btrfs::give_to_root(output).map(drop)
+    made
 }
 
 /// Puts the Dukovo root partition, holding the filesystem in the file

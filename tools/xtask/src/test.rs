@@ -301,6 +301,11 @@ const NTFS_EMPTY: u8 = 14;
 /// `bitlocker` test makes it (ADR 0240).
 const BITLOCKER: u8 = 15;
 
+/// [`Disk::fat`] for a disk of [`raw_bytes`] that Dukovo's mkfs-btrfs
+/// makes a Btrfs on, which the host then checks with `btrfs check`
+/// ([`btrfs_checked`], ADR 0304).
+const BTRFS_BLANK: u8 = 17;
+
 /// The partition table of a test disk with a filesystem.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Table {
@@ -3102,10 +3107,15 @@ fn make_disks(
             std::fs::write(&at, rules(i))
                 .map_err(|err| format!("writing {}: {err}", at.display()))?;
         }
-        if disk.fat == 0 {
+        if disk.fat == 0 || disk.fat == BTRFS_BLANK {
             std::fs::write(&image.path, raw_bytes(image.bytes))
                 .map_err(|err| format!("writing {}: {err}", image.path.display()))?;
-            made.push(image);
+            let tool = if disk.fat == BTRFS_BLANK {
+                Some(btrfs::tool(ctx).map_err(|err| err.to_string())?)
+            } else {
+                None
+            };
+            made.push(DiskImage { btrfs: tool, ..image });
             continue;
         }
         if disk.fat == SWAP {

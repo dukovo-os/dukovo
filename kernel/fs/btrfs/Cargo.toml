@@ -16,6 +16,10 @@ bench = false
 [features]
 # Host memory instead of the kernel's, for tests on the host.
 host = ["radix-vfs/host", "radix-block/host"]
+# Making new filesystems, for mkfs-btrfs and ./ob image (ADR 0304).
+make = ["host"]
+# Checking filesystems without changing them, for fsck-btrfs (ADR 0305).
+check = ["host"]
 
 [dependencies]
 radix-block = { path = "../block" }

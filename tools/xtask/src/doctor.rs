@@ -333,9 +333,10 @@ fn requirements() -> Vec<Requirement> {
         },
         Requirement {
             name: "btrfs-progs",
-            purpose: "makes the image's Dukovo root and the Btrfs filesystems of the Btrfs tests",
-            // In /usr/sbin too; `ob test` and `ob image` fetch a newer
-            // copy when this one is too old (`btrfs.rs`).
+            purpose: "makes and checks the Btrfs filesystems of the Btrfs tests, as Linux would",
+            // In /usr/sbin too; `ob test` fetches a newer copy when this
+            // one is too old (`btrfs.rs`). The image's Dukovo root is made
+            // with the kernel's own Btrfs crate (ADR 0304).
             found: |_| btrfs::system_mkfs().map(|path| path.display().to_string()),
             packages: all("btrfs-progs"),
             fallback: None,

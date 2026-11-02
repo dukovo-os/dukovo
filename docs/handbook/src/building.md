@@ -85,7 +85,9 @@ btrfs-progs makes the filesystems Radix's Btrfs tests read. Ubuntu 24.04
 and Linux Mint 22 have version 6.6, which lacks options the tests use, so
 `./ob test` fetches Ubuntu 26.04's package (6.17.1), checks its SHA-256 and
 unpacks it into `.cache/btrfs-progs/` without installing it. Fedora and
-Arch Linux have a recent enough version.
+Arch Linux have a recent enough version. `./ob image` does not use it: it
+makes the image's Dukovo root with the kernel's own Btrfs crate, as
+Dukovo's mkfs-btrfs does (ADR 0304).
 
 udftools, UDFclient and genisoimage make and fill the UDF volumes Radix's
 UDF tests read. Fedora and Arch Linux have no UDFclient package: build it

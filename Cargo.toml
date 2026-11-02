@@ -79,3 +79,8 @@ opt-level = 3
 
 [profile.dev.package.blake2]
 opt-level = 3
+
+# `ob image` compresses and checksums the Dukovo root as it writes it with
+# the kernel's Btrfs crate (ADR 0304): minutes in a debug build.
+[profile.dev.package.radix-btrfs]
+opt-level = 3

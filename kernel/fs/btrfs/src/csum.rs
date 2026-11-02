@@ -44,6 +44,16 @@ impl CsumType {
         }
     }
 
+    /// Its number on the disk.
+    pub fn to_disk(self) -> u16 {
+        match self {
+            CsumType::Crc32c => 0,
+            CsumType::Xxhash64 => 1,
+            CsumType::Sha256 => 2,
+            CsumType::Blake2b => 3,
+        }
+    }
+
     /// How many bytes of a checksum's room it fills.
     pub fn size(self) -> usize {
         match self {

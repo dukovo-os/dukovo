@@ -60,7 +60,7 @@ fn control(device: &File, request: u32, value: &mut [u8]) -> Result<(), Status> 
 }
 
 /// A UUID as it is written: 8-4-4-4-12 hexadecimal digits.
-fn uuid_text(bytes: &[u8]) -> String {
+pub(crate) fn uuid_text(bytes: &[u8]) -> String {
     let mut text = String::new();
     for (at, byte) in bytes.iter().enumerate() {
         if matches!(at, 4 | 6 | 8 | 10) {
@@ -72,7 +72,7 @@ fn uuid_text(bytes: &[u8]) -> String {
 }
 
 /// The UUID written `text`, as 16 bytes.
-fn parse_uuid(text: &str) -> Option<[u8; 16]> {
+pub(crate) fn parse_uuid(text: &str) -> Option<[u8; 16]> {
     let digits: Vec<u8> = text.bytes().filter(|&b| b != b'-').collect();
     let dashes: Vec<usize> = text.match_indices('-').map(|(at, _)| at).collect();
     if digits.len() != 32 || (dashes != [8, 13, 18, 23]) {
