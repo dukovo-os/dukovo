@@ -261,6 +261,19 @@ fn requests_go_and_come_back() {
         Request::Set { name: "bob".into(), full_name: Some("Bob Smith".into()), admin: None },
         Request::Set { name: "bob".into(), full_name: Some(String::new()), admin: Some(true) },
         Request::Set { name: "bob".into(), full_name: None, admin: Some(false) },
+        Request::SharePassword {
+            name: "alice".into(),
+            current: b"s3cret".to_vec(),
+            new: Some(b"for windows".to_vec()),
+        },
+        Request::SharePassword { name: "alice".into(), current: Vec::new(), new: None },
+        Request::ShareSignIn {
+            from: "192.0.2.7".into(),
+            negotiate: b"NTLMSSP\0\x01".to_vec(),
+            challenge: Vec::new(),
+            authenticate: vec![0, 0xff, 0x80],
+        },
+        Request::EndShares,
     ];
     for request in requests {
         assert_eq!(Request::decode(&request.encode()), Ok(request));
@@ -311,6 +324,20 @@ fn requests_go_and_come_back() {
         text: "Give Notes".into(),
     };
     assert_eq!(choose.encode(), b"choose\0pts/2\0bob\0grant\0Give Notes\0");
+    assert_eq!(
+        Request::ShareSignIn {
+            from: "::1".into(),
+            negotiate: vec![0x4e, 0],
+            challenge: vec![0xab],
+            authenticate: Vec::new(),
+        }
+        .encode(),
+        b"share-signin\0::1\x004e00\0ab\0\0"
+    );
+    assert_eq!(
+        Request::SharePassword { name: "bob".into(), current: b"pw".to_vec(), new: None }.encode(),
+        b"share-password\0bob\0pw\0clear\0\0"
+    );
     // A question with a line break, an empty field or a kind authd does
     // not know is no request.
     for bad in [
@@ -320,6 +347,11 @@ fn requests_go_and_come_back() {
         b"choose\0pts/2\0bob\0maybe\0x\0",
         b"prompted\x003\0sometimes\0\0",
         b"prompted\x003\0always\0x\0",
+        b"share-password\0bob\0pw\0clear\0x\0",
+        b"share-password\0bob\0pw\0keep\0x\0",
+        b"share-signin\0x\0abc\0\0\0",
+        b"share-signin\0x\0zz\0\0\0",
+        b"end-shares\0x\0",
     ] {
         assert!(Request::decode(bad).is_err(), "{bad:?}");
     }

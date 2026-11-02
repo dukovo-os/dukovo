@@ -84,3 +84,8 @@ opt-level = 3
 # the kernel's Btrfs crate (ADR 0304): minutes in a debug build.
 [profile.dev.package.radix-btrfs]
 opt-level = 3
+
+# And it writes an image's EFI system partition, some 200 MiB, with the
+# kernel's FAT crate (ADR 0306).
+[profile.dev.package.radix-fat]
+opt-level = 3

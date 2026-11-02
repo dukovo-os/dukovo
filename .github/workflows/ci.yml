@@ -48,10 +48,18 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            qemu-system-x86 ovmf grub-common grub-pc-bin grub-efi-amd64-bin \
-            xorriso mtools dosfstools exfatprogs gdisk fdisk sleuthkit btrfs-progs e2fsprogs ntfs-3g dislocker libbde-utils openssh-server samba scdoc mandoc \
+            qemu-system-x86 ovmf gcc flex gawk \
+            xorriso mtools dosfstools exfatprogs gdisk fdisk sleuthkit btrfs-progs e2fsprogs ntfs-3g dislocker libbde-utils openssh-server samba smbclient scdoc mandoc \
             udftools udfclient genisoimage qemu-system-misc \
             clang-20 lld-20 llvm-20 libclang-rt-20-dev meson ninja-build cmake bison pkgconf autoconf
+
+      # GRUB, which ./ob builds from its pinned source for the images
+      # (ADR 0306): built once for each change to its recipe.
+      - name: Cache GRUB
+        uses: actions/cache@v4
+        with:
+          path: .cache/grub
+          key: grub-${{ hashFiles('tools/xtask/src/grub.rs') }}
 
       - name: Install mdBook
         run: |
@@ -151,10 +159,18 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            qemu-system-x86 ovmf grub-common grub-pc-bin grub-efi-amd64-bin \
-            xorriso mtools dosfstools exfatprogs gdisk fdisk sleuthkit btrfs-progs e2fsprogs ntfs-3g dislocker libbde-utils openssh-server samba scdoc mandoc \
+            qemu-system-x86 ovmf gcc flex gawk \
+            xorriso mtools dosfstools exfatprogs gdisk fdisk sleuthkit btrfs-progs e2fsprogs ntfs-3g dislocker libbde-utils openssh-server samba smbclient scdoc mandoc \
             udftools udfclient genisoimage \
             clang-20 lld-20 llvm-20 libclang-rt-20-dev meson ninja-build cmake bison pkgconf autoconf
+
+      # GRUB, which ./ob builds from its pinned source for the images
+      # (ADR 0306): built once for each change to its recipe.
+      - name: Cache GRUB
+        uses: actions/cache@v4
+        with:
+          path: .cache/grub
+          key: grub-${{ hashFiles('tools/xtask/src/grub.rs') }}
 
       # ./ob setup runs ./ob doctor, which asks for mdBook too.
       - name: Install mdBook
@@ -246,10 +262,18 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            qemu-system-x86 ovmf grub-common grub-pc-bin grub-efi-amd64-bin \
-            xorriso mtools dosfstools exfatprogs gdisk fdisk sleuthkit btrfs-progs e2fsprogs ntfs-3g dislocker libbde-utils openssh-server samba scdoc mandoc \
+            qemu-system-x86 ovmf gcc flex gawk \
+            xorriso mtools dosfstools exfatprogs gdisk fdisk sleuthkit btrfs-progs e2fsprogs ntfs-3g dislocker libbde-utils openssh-server samba smbclient scdoc mandoc \
             udftools udfclient genisoimage \
             clang-20 lld-20 llvm-20 libclang-rt-20-dev meson ninja-build cmake bison pkgconf autoconf
+
+      # GRUB, which ./ob builds from its pinned source for the images
+      # (ADR 0306): built once for each change to its recipe.
+      - name: Cache GRUB
+        uses: actions/cache@v4
+        with:
+          path: .cache/grub
+          key: grub-${{ hashFiles('tools/xtask/src/grub.rs') }}
 
       # ./ob setup runs ./ob doctor, which asks for mdBook too.
       - name: Install mdBook
@@ -318,10 +342,18 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            qemu-system-x86 ovmf grub-common grub-pc-bin grub-efi-amd64-bin \
-            xorriso mtools dosfstools exfatprogs gdisk fdisk sleuthkit btrfs-progs e2fsprogs ntfs-3g dislocker libbde-utils openssh-server samba scdoc mandoc \
+            qemu-system-x86 ovmf gcc flex gawk \
+            xorriso mtools dosfstools exfatprogs gdisk fdisk sleuthkit btrfs-progs e2fsprogs ntfs-3g dislocker libbde-utils openssh-server samba smbclient scdoc mandoc \
             udftools udfclient genisoimage \
             clang-20 lld-20 llvm-20 libclang-rt-20-dev meson ninja-build cmake bison pkgconf autoconf
+
+      # GRUB, which ./ob builds from its pinned source for the images
+      # (ADR 0306): built once for each change to its recipe.
+      - name: Cache GRUB
+        uses: actions/cache@v4
+        with:
+          path: .cache/grub
+          key: grub-${{ hashFiles('tools/xtask/src/grub.rs') }}
 
       - name: Install the pinned Rust toolchain
         run: rustup toolchain install

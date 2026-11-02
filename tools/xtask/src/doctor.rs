@@ -3,7 +3,7 @@
 
 //! `ob setup` and `ob doctor`: preparing and checking the build host.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Command;
 
 use crate::process::{self, step};
@@ -171,14 +171,6 @@ fn aarch64_target(ctx: &Ctx) -> Option<String> {
     dir.is_dir().then(|| kernel::AARCH64_TARGET.to_string())
 }
 
-fn grub_platform(dir: &'static str) -> Option<String> {
-    ["/usr/lib/grub", "/usr/share/grub", "/usr/lib64/grub"]
-        .iter()
-        .map(|base| Path::new(base).join(dir))
-        .find(|path| path.join("modinfo.sh").is_file() || path.join("kernel.img").is_file())
-        .map(|path| path.display().to_string())
-}
-
 fn requirements() -> Vec<Requirement> {
     vec![
         Requirement {
@@ -228,44 +220,29 @@ fn requirements() -> Vec<Requirement> {
             fallback: None,
         },
         Requirement {
-            name: "grub-mkrescue",
-            purpose: "builds the hybrid boot image",
-            found: |_| {
-                program_version("grub-mkrescue", "--version")
-                    .or_else(|| program_version("grub2-mkrescue", "--version"))
-            },
-            packages: Packages {
-                apt: Some("grub-common"),
-                dnf: Some("grub2-tools-extra"),
-                pacman: Some("grub"),
-            },
+            name: "GCC",
+            purpose: "builds GRUB from its pinned source, for the images' boot loader",
+            found: |_| program_version("gcc", "--version"),
+            packages: Packages { apt: Some("gcc"), dnf: Some("gcc"), pacman: Some("gcc") },
             fallback: None,
         },
         Requirement {
-            name: "GRUB for BIOS",
-            purpose: "the i386-pc boot code in the image",
-            found: |_| grub_platform("i386-pc"),
-            packages: Packages {
-                apt: Some("grub-pc-bin"),
-                dnf: Some("grub2-pc-modules"),
-                pacman: Some("grub"),
-            },
+            name: "flex",
+            purpose: "builds GRUB's lexer",
+            found: |_| program_version("flex", "--version"),
+            packages: all("flex"),
             fallback: None,
         },
         Requirement {
-            name: "GRUB for UEFI",
-            purpose: "the x86_64-efi boot code in the image",
-            found: |_| grub_platform("x86_64-efi"),
-            packages: Packages {
-                apt: Some("grub-efi-amd64-bin"),
-                dnf: Some("grub2-efi-x64-modules"),
-                pacman: Some("grub"),
-            },
+            name: "gawk",
+            purpose: "lists GRUB's modules as GRUB builds them",
+            found: |_| program_version("gawk", "--version"),
+            packages: all("gawk"),
             fallback: None,
         },
         Requirement {
             name: "xorriso",
-            purpose: "writes the ISO 9660 part of the image, and the discs the ISO 9660 tests read",
+            purpose: "writes the ISO image, and the discs the ISO 9660 tests read",
             found: |_| program_version("xorriso", "-version"),
             packages: Packages {
                 apt: Some("xorriso"),
@@ -276,7 +253,7 @@ fn requirements() -> Vec<Requirement> {
         },
         Requirement {
             name: "mtools",
-            purpose: "builds the EFI system partition",
+            purpose: "reads and writes the FAT test disks",
             found: |_| program_version("mformat", "--version"),
             packages: all("mtools"),
             fallback: None,
@@ -454,6 +431,17 @@ fn requirements() -> Vec<Requirement> {
             fallback: None,
         },
         Requirement {
+            name: "Samba's client",
+            purpose: "smbclient, the smbd test's PC: it lists Dukovo's shares and copies files to and from them over SMB 3, through QEMU's network",
+            found: |_| program_version("smbclient", "--version"),
+            packages: Packages {
+                apt: Some("smbclient"),
+                dnf: Some("samba-client"),
+                pacman: Some("smbclient"),
+            },
+            fallback: None,
+        },
+        Requirement {
             name: "libbde",
             purpose: "bdeinfo, which unlocks the BitLocker volumes of radix-bitlocker's tests as Windows' are unlocked",
             found: |_| program_version("bdeinfo", "-V"),
@@ -596,14 +584,14 @@ fn requirements() -> Vec<Requirement> {
         },
         Requirement {
             name: "make",
-            purpose: "runs the ports' makefiles",
+            purpose: "runs the ports' and GRUB's makefiles",
             found: |_| program_version("make", "--version"),
             packages: all("make"),
             fallback: None,
         },
         Requirement {
             name: "Bison",
-            purpose: "compiles the grammar of the One True Awk's port",
+            purpose: "compiles the grammars of the One True Awk's port and of GRUB",
             found: |_| program_version("bison", "--version"),
             packages: all("bison"),
             fallback: None,

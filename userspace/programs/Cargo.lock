@@ -8,6 +8,9 @@ version = "0.11.0"
 dependencies = [
  "argon2",
  "base64ct",
+ "hmac",
+ "md-5",
+ "md4",
 ]
 
 [[package]]
@@ -535,6 +538,7 @@ version = "0.11.0"
 dependencies = [
  "radix-block",
  "radix-btrfs",
+ "radix-fat",
  "radix-vfs",
  "serde",
  "serde_json",
@@ -1176,6 +1180,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "radix-fat"
+version = "0.11.0"
+dependencies = [
+ "radix-block",
+ "radix-hw",
+ "radix-sync",
+ "radix-vfs",
+]
+
+[[package]]
 name = "radix-fbcon"
 version = "0.11.0"
 dependencies = [
@@ -1610,6 +1624,21 @@ dependencies = [
  "sha1",
  "sha2 0.11.1",
  "thiserror",
+ "tokio",
+]
+
+[[package]]
+name = "smbd"
+version = "0.11.0"
+dependencies = [
+ "accounts",
+ "aes 0.9.3",
+ "aes-gcm",
+ "cmac 0.8.0",
+ "libc",
+ "manifest",
+ "sha2 0.11.1",
+ "smb2",
  "tokio",
 ]
 

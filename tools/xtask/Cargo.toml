@@ -31,6 +31,9 @@ radix-bitlocker = { path = "../../kernel/fs/bitlocker", features = ["make"] }
 disk = { path = "../../userspace/programs/disk", features = ["btrfs"] }
 radix-btrfs = { path = "../../kernel/fs/btrfs", features = ["make"] }
 radix-vfs = { path = "../../kernel/fs/vfs", features = ["host"] }
+# An image's EFI system partition, written by the kernel's FAT crate as
+# Radix writes one (ADR 0306).
+radix-fat = { path = "../../kernel/fs/fat", features = ["host"] }
 # The account files and Argon2id hashes, for `ob image --user` (ADR 0218).
 accounts = { path = "../../userspace/programs/accounts", features = ["hash"] }
 # The settings of service files and the fields and permissions of

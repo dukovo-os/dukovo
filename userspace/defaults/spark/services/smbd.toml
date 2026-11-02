@@ -1,0 +1,36 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+#
+# Windows file sharing: smbd(8) serves the folders shares.toml(5) lists
+# to Windows PCs, Macs and Linux machines over SMB 3, always signed and
+# encrypted (ADR 0228). It signs each PC in through authd(8), with the
+# person's sharing password, and authd starts a share session as them,
+# so the files' owners and modes decide what each may do.
+#
+# It is off until `share on` turns it on, which sets `enabled = true`
+# below and starts it; `share off` stops it and turns it off again
+# (share(1)). Port 445 is open only while it runs.
+#
+# service.toml(5) explains each setting. `service check smbd` checks
+# this file, and `service edit smbd` checks it as you save.
+
+service_version = 1
+description = "Windows file sharing"
+program = "/system/commands/smbd"
+# `share on` and `share off` set this.
+enabled = false
+# After the network and authd, with the services people add.
+order = 40
+# Started again whenever it ends: always, on-failure or never.
+restart = "always"
+
+[limits]
+# Only sign-ins run here: each PC's share session runs in authd's
+# domain, as the person it signed in.
+memory = "64M"
+
+# What it holds beyond what every service reads (service.toml(5)): port
+# 445, and authd's socket, through which it signs PCs in.
+[permissions]
+network.listen = [445]
+files.read = ["/system/live/authd"]

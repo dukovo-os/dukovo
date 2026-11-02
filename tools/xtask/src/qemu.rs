@@ -279,7 +279,8 @@ pub fn run_command(ctx: &Ctx, args: &mut Args) -> Result<()> {
     overrides.account = account.account(ctx)?;
 
     require_qemu()?;
-    let image_path = image::build_release(ctx, profile, false, &overrides)?;
+    // A CD-ROM holds the ISO; a USB stick or a disk the disk image.
+    let image_path = image::build_release(ctx, profile, media == Media::Cdrom, &overrides)?;
     let machine = Machine {
         firmware,
         media,

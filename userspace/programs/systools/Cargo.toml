@@ -13,11 +13,12 @@ publish.workspace = true
 [dependencies]
 # authd(8)'s account files and Argon2id hashes, and what it is asked
 # (ADR 0218).
-accounts = { path = "../accounts", features = ["hash"] }
+accounts = { path = "../accounts", features = ["hash", "ntlm"] }
 # rdisk(8)'s tables, the mkfs tools' FAT and exFAT (ADR 0300), and
 # mkfs-btrfs(8) and fsck-btrfs(8) on the kernel's Btrfs crate (ADRs 0304
-# and 0305).
-disk = { path = "../disk", features = ["btrfs"] }
+# and 0305), and rgrub-setup(8)'s GRUB on disks and EFI system partitions
+# on its FAT crate (ADR 0306).
+disk = { path = "../disk", features = ["btrfs", "fat"] }
 # keymap(1)'s layouts and their setting (ADR 0149).
 keymap = { path = "../keymap" }
 libc = "0.2.191"

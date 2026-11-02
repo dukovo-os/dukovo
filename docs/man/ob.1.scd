@@ -32,8 +32,8 @@ _target/userspace/_).
 # GLOBAL OPTIONS
 
 *-v*, *--verbose*
-	Print every external command (cargo, grub-mkrescue, qemu-system-x86_64)
-	before running it.
+	Print every external command (cargo, grub-mkimage, xorriso,
+	qemu-system-x86_64) before running it.
 
 *--container*
 	Run the command inside the pinned build container rather than on the
@@ -63,8 +63,8 @@ _target/userspace/_).
 
 *doctor*
 	Check every host tool the build needs: rustup, the pinned toolchain
-	with its sources and AArch64 target, QEMU, OVMF, GRUB for BIOS and
-	UEFI, xorriso, mtools, dosfstools, exfatprogs, gdisk, fdisk, The
+	with its sources and AArch64 target, QEMU, OVMF, the tools that build
+	GRUB (GCC, flex and gawk), xorriso, mtools, dosfstools, exfatprogs, gdisk, fdisk, The
 	Sleuth Kit, btrfs-progs, e2fsprogs, the tools that build
 	the ports (Clang 20 or later with compiler-rt's builtins, LLD, LLVM's
 	tools, Meson 1.3 or later, Ninja, *localedef*, git, curl and patch,
@@ -136,18 +136,24 @@ _target/userspace/_).
 
 *image* [*--iso*] [*--cmdline* _flags_] [*--microcode* _path_] [*--disk-check* _serial_] [*--debug* | *--release*]
 	Build the kernel, then the boot image
-	_out/dukovo-VERSION-x86_64.img_. The image is a hybrid: it starts
-	under UEFI and under legacy BIOS, from a USB stick, a hard disk or
-	optical media. Write it to a USB stick as shown in *EXAMPLES*.
-	*dukovo-boot*(7) lists what the image contains.
+	_out/dukovo-VERSION-x86_64.img_, a disk image for a USB stick or a
+	hard disk, which starts under UEFI and under legacy BIOS. Write it to
+	a USB stick as shown in *EXAMPLES*. With *--iso*, the image is
+	_out/dukovo-VERSION-x86_64.iso_ instead, for optical media, which
+	El Torito starts under either firmware. *dukovo-boot*(7) lists what
+	the image contains.
 
-	After grub-mkrescue's partitions the image has a Dukovo root
-	partition, the fifth, of 512 MiB: Btrfs made by *mkfs.btrfs* (the
-	pinned btrfs-progs of the Btrfs tests when the system's is older
-	than 6.17), with the system in the read-only subvolume _@system.a_
-	and empty subvolumes for settings, state, applications, users and
-	shared files. Booted from a disk Radix sees, Spark mounts them
-	(*spark*(8)).
+	Both boot with GRUB 2.12, which *ob* builds from the GNU project's
+	tarball the first time, checked against its pinned SHA-256, into
+	_.cache/grub_, with GCC, flex, gawk and Bison (some two minutes).
+	The disk image is a GPT that Dukovo's own code makes: a BIOS boot
+	partition holding GRUB's _core.img_, the EFI system partition,
+	FAT32, which the kernel's FAT crate fills, and a Dukovo root
+	partition, the third, of 512 MiB: Btrfs made and filled by the
+	kernel's Btrfs crate, as *mkfs-btrfs*(8) makes one, with the system
+	in the read-only subvolume _@system.a_ and empty subvolumes for
+	settings, state, applications, users and shared files. Booted from a
+	disk Radix sees, Spark mounts them (*spark*(8)).
 
 	Every image carries a license manifest. *ob* lists each component
 	that goes into it: the crates linked into the kernel (from *cargo
@@ -162,9 +168,9 @@ _target/userspace/_).
 	of the document next to the image.
 
 	*--iso*
-		Name the output _out/dukovo-VERSION-x86_64.iso_ instead, for
-		virtual machines and optical media. It has no Dukovo root
-		partition, as optical media are read-only.
+		Make an ISO, _out/dukovo-VERSION-x86_64.iso_, instead, for
+		virtual machines and optical media, with *xorriso*(1). It has no
+		Dukovo root partition, as optical media are read-only.
 
 	*--cmdline* _flags_
 		Kernel command-line flags instead of *boot.cmdline*, such as
@@ -212,7 +218,8 @@ _target/userspace/_).
 
 	*--media* _kind_
 		Attach the image as *usb* (a USB stick on an xHCI controller, the
-		default), *cdrom* (a SATA CD-ROM) or *disk* (a SATA hard disk).
+		default), *cdrom* (a SATA CD-ROM, which holds the ISO that
+		*image --iso* makes) or *disk* (a SATA hard disk).
 
 	*--headless*
 		Do not open a QEMU window. This is automatic when neither
@@ -1217,7 +1224,7 @@ _target/userspace/_).
 	*root*
 		Boot 2 CPUs under UEFI from the test image as a USB stick, with
 		a copy of it and its Dukovo root partition, as *image* makes
-		one, as a virtio disk. Spark must find Dukovo's root on _vda5_,
+		one, as a virtio disk. Spark must find Dukovo's root on _vda3_,
 		mount it again to compress, mount its subvolumes and copy the
 		default settings in. _/system/tests/storage root_ checks in
 		_/processes/mounts_ that _/system_ is _@system.a_, read-only,
@@ -1858,7 +1865,7 @@ Build on a host without the tools installed, using Podman or Docker:
 # SEE ALSO
 
 *dukovo.toml*(5), *dukovo-boot*(7), *radix-debug*(7), *radix-ipc*(7),
-*radix-posix*(7), *spark*(8), *qemu-system-x86_64*(1), *grub-mkrescue*(1), *rustup*(1), *gdb*(1), *dd*(1)
+*radix-posix*(7), *spark*(8), *qemu-system-x86_64*(1), *grub-mkimage*(1), *xorriso*(1), *rustup*(1), *gdb*(1), *dd*(1)
 
 The Dukovo handbook, chapter "Building Dukovo with ob", in
 _docs/handbook/_ or _out/docs/handbook/index.html_ after *ob docs*.
