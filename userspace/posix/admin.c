@@ -686,7 +686,7 @@ static void hardware(void) {
 // ip and ss (ADR 0190), of lo, the only interface this boot has, and of
 // sockets this test opens on it; the interfaces boot test sets a card up.
 static void network(void) {
-	OUTPUT("", "lo               UNKNOWN        127.0.0.1/8 \n", "/bin/ip", "-br", "address");
+	OUTPUT("", "lo               UNKNOWN        127.0.0.1/8 ::1/128 \n", "/bin/ip", "-br", "address");
 	CONTAINS("1: lo: <LOOPBACK,UP,LOWER_UP> mtu ", "/bin/ip", "link");
 	CONTAINS("\n    link/loopback 00:00:00:00:00:00 brd 00:00:00:00:00:00\n", "/bin/ip", "l", "show",
 	         "lo");
@@ -695,7 +695,7 @@ static void network(void) {
 	OUTPUT("", "", "/bin/ip", "route");
 	STATUS(0, "/bin/ip", "link", "set", "lo", "up");
 	STATUS(1, "/bin/ip", "link", "show", "nosuch");
-	STATUS(1, "/bin/ip", "-6", "address");
+	CONTAINS("\n    inet6 ::1/128 scope host ", "/bin/ip", "-6", "address");
 	STATUS(1, "/bin/ip", "neigh");
 	STATUS(2, "/bin/ip", "address", "add", "127.0.0.2/8", "dev", "lo");
 	STATUS(2, "/bin/ip", "link", "set", "lo", "down");
@@ -717,7 +717,7 @@ static void network(void) {
 	CONTAINS("Netid State ", "/bin/ss", "-a");
 	close(server);
 	close(datagrams);
-	STATUS(1, "/bin/ss", "-6");
+	CONTAINS("Netid State ", "/bin/ss", "-6", "-a");
 	STATUS(1, "/bin/ss", "-x");
 }
 
