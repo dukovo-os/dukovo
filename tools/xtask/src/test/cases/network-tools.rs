@@ -93,11 +93,19 @@ fn network_tools(vm: &mut Vm, case: &Case) -> Result<(), String> {
 }
 
 /// Checks that the nettooltest of machine `who` passed, by its log and
-/// its exit code.
+/// its exit code. What failed comes with what nettooltest said about it,
+/// such as how a command ended, as the log's tail may not hold it.
 fn passed(vm: &Vm, who: &str, code: &str) -> Result<(), String> {
     let log = vm.log();
-    let failed: Vec<&str> =
-        log.lines().filter(|line| line.contains("nettooltest: FAILED")).map(str::trim).collect();
+    let failed: Vec<&str> = log
+        .lines()
+        .filter(|line| {
+            line.contains("nettooltest: FAILED")
+                || (line.contains("nettooltest: `")
+                    && (line.contains("did not say") || line.contains("never said")))
+        })
+        .map(str::trim)
+        .collect();
     if !failed.is_empty() || !log.contains("nettooltest: every check passed") || code != "0x0" {
         return Err(format!("nettooltest {who} failed ({code}): {}", failed.join("; ")));
     }

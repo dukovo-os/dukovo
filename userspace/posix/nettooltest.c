@@ -559,15 +559,20 @@ static void nc(void) {
 }
 
 // Whether iperf3 `command` succeeds and what it writes holds `needle`:
-// again, a second later, while b's server says it is busy, as an iperf3
-// server does for a while after a test, until it has put the last one
-// away (iperf3's own "try again later").
+// again, a second later, while b's server is between two tests, as the
+// last client may leave before it is: it says it is busy until it has
+// put the last test away (iperf3's own "try again later"), and then
+// refuses connections until it listens again, as an iperf3 server closes
+// its listening socket after each test and opens another for the next.
 static int iperf3_says(const char *command, const char *needle) {
 	static char buffer[16384];
+	int got = -1;
 	for(int tries = 0; tries < 10; tries++) {
-		int got = output(command, buffer, sizeof(buffer));
+		got = output(command, buffer, sizeof(buffer));
 		printf("nettooltest: $ %s\n%s", command, buffer);
-		if(strstr(buffer, "the server is busy")) {
+		if(strstr(buffer, "the server is busy")
+				|| (strstr(buffer, "unable to connect to server")
+						&& strstr(buffer, "Connection refused"))) {
 			check_sleep_ms(1000);
 			continue;
 		}
@@ -575,7 +580,13 @@ static int iperf3_says(const char *command, const char *needle) {
 			return 1;
 		break;
 	}
-	printf("nettooltest: `%s` did not say \"%s\"\n", command, needle);
+	// iperf3's last line, which holds its error, for the test's summary.
+	const char *last = buffer;
+	for(const char *at = buffer; *at; at++)
+		if(at[0] == '\n' && at[1])
+			last = at + 1;
+	printf("nettooltest: `%s` (exit %d) did not say \"%s\"; it ended: %s%s", command, got,
+			needle, last, *last && last[strlen(last) - 1] == '\n' ? "" : "\n");
 	return 0;
 }
 
