@@ -646,6 +646,7 @@ impl Authd {
                     let messages = [negotiate.as_slice(), challenge, authenticate];
                     self.share_sign_in(i, &files, from, messages, peer, now)
                 }
+                Request::NfsWorker { uid } => self.nfs_worker(i, &files, *uid, peer, now),
                 Request::EndShares => {
                     if peer.is_root() {
                         let ended = self.end_shares(None);
@@ -1485,6 +1486,66 @@ impl Authd {
         }
     }
 
+    /// Starts an NFS worker for nfsd (ADR 0343): as the person numbered
+    /// `uid`, or as no one for root, for a number with no person's
+    /// account and for a disabled one, in a view of the folders of the
+    /// shares NFS serves. NFS's AUTH_SYS takes a client at its word for
+    /// who calls: the shares name the networks it may call from.
+    fn nfs_worker(
+        &mut self,
+        i: usize,
+        files: &Files,
+        uid: u32,
+        peer: Peer,
+        now: Instant,
+    ) -> (Answer, Instant) {
+        let refused = |why: &str| (Answer::Refused(why.into()), now);
+        let descriptors = std::mem::take(&mut self.clients[i].descriptors);
+        if !peer.is_root() {
+            return refused("only nfsd, which runs as root, starts NFS workers");
+        }
+        let Ok([requests, answers, log]) = <[OwnedFd; 3]>::try_from(descriptors) else {
+            return refused(
+                "an NFS worker comes with three descriptors: its pipe from nfsd, its pipe to \
+                 nfsd and the log",
+            );
+        };
+        let Some(names) = self.names else {
+            return refused(
+                "authd holds no names capability to start NFS workers with: its service file \
+                 needs `names = true`",
+            );
+        };
+        let person = files
+            .users
+            .entries()
+            .find(|u| u.uid == uid && u.is_person() && !files.disabled(&u.name))
+            .cloned();
+        let (user, groups) = match person {
+            Some(user) => {
+                let groups = accounts::other_groups(
+                    &user,
+                    &files.groups,
+                    radix_abi::names::GROUPS_MAX as usize,
+                );
+                (user, groups)
+            }
+            None => (signin::nobody(), Vec::new()),
+        };
+        let folders = nfs_folders();
+        match signin::start_nfs(names, &user, &groups, [&requests, &answers, &log], &folders) {
+            Ok(process) => {
+                audit!(
+                    "started an NFS worker as {} for number {uid}, with {} shares: process {process}",
+                    user.name,
+                    folders.len()
+                );
+                (Answer::Done(user.name), now)
+            }
+            Err(why) => (Answer::Refused(why), now),
+        }
+    }
+
     /// Ends the share sessions, or those of the account numbered `only`:
     /// how many were asked to end.
     fn end_shares(&mut self, only: Option<u32>) -> u32 {
@@ -1868,6 +1929,18 @@ impl Authd {
         );
         Answer::Done(changed)
     }
+}
+
+/// The shares NFS serves, those of shares.toml(5) that name networks:
+/// each one's key and folder.
+fn nfs_folders() -> Vec<(u64, String)> {
+    let Ok(text) = fs::read_to_string(manifest::shares::PATH) else { return Vec::new() };
+    let Ok(all) = manifest::shares::from_toml(&text) else { return Vec::new() };
+    all.shares
+        .into_iter()
+        .filter(|share| !share.nfs.is_empty())
+        .map(|share| (manifest::shares::nfs_key(&share.name), share.folder))
+        .collect()
 }
 
 /// The terminal a share session's records name (ADR 0228), as Samba's

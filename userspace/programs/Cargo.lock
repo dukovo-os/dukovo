@@ -1100,6 +1100,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "nfsd"
+version = "0.11.0"
+dependencies = [
+ "accounts",
+ "libc",
+ "manifest",
+]
+
+[[package]]
 name = "nix"
 version = "0.30.1"
 dependencies = [
