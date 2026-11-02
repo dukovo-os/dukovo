@@ -417,8 +417,9 @@ pub fn nobody() -> User {
 }
 
 /// Starts an NFS worker as `user`, acting for them and the groups
-/// `groups`, with the descriptors nfsd sent: `socket`, its own to nfsd,
-/// as its 3, and `log`, nfsd's standard error, as its 1 and 2. Its view
+/// `groups`, with the descriptors nfsd sent: the read end of nfsd's pipe
+/// of requests as its 3, the write end of the pipe of its answers as its
+/// 4, and nfsd's standard error as its 1 and 2. Its view
 /// holds the shares' `folders` alone, each at `/.nfs-` and its key in
 /// hexadecimal, opened past the folders above them as Linux's server
 /// does: below each, the owners and modes of the files decide. It gets no
@@ -427,8 +428,7 @@ pub fn start_nfs(
     names: u32,
     user: &User,
     groups: &[u32],
-    socket: &OwnedFd,
-    log: &OwnedFd,
+    [requests, answers, log]: [&OwnedFd; 3],
     folders: &[(u64, String)],
 ) -> Result<u64, String> {
     let program = Program {
@@ -436,7 +436,12 @@ pub fn start_nfs(
         path: NFS_PROGRAM,
         args: &[b"nfsd", b"--worker"],
         env: vec![format!("USER={}", user.name), "HOME=/".into(), "LANG=C.UTF-8".into()],
-        descriptors: &[(log.as_raw_fd(), 1), (log.as_raw_fd(), 2), (socket.as_raw_fd(), 3)],
+        descriptors: &[
+            (log.as_raw_fd(), 1),
+            (log.as_raw_fd(), 2),
+            (requests.as_raw_fd(), 3),
+            (answers.as_raw_fd(), 4),
+        ],
         network: false,
         shares: Some(folders),
     };

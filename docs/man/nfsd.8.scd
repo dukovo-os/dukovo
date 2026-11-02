@@ -103,7 +103,7 @@ _/system/settings/spark/services/nfsd.toml_
 
 nfsd runs until Spark stops it, which ends every worker too; 1 if it
 cannot listen on port 2049. *nfsd --worker* ends when nfsd closes its
-socket.
+pipe to it.
 
 # SEE ALSO
 

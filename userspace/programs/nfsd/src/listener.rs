@@ -6,6 +6,7 @@
 //! person calls come as.
 
 use std::collections::HashMap;
+use std::fs::File;
 use std::io::{self, BufReader, Read, Write};
 use std::net::{IpAddr, Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::os::fd::AsRawFd;
@@ -45,12 +46,22 @@ const AUTHD_TIME: Duration = Duration::from_secs(10);
 /// called.
 #[derive(Default)]
 pub struct Pool {
-    workers: HashMap<u32, (UnixStream, Instant)>,
+    workers: HashMap<u32, (Link, Instant)>,
+}
+
+/// The two pipes to a worker and back. Not a socket pair: Radix sends no
+/// socket with another's bytes, so that none keeps itself open (ADR
+/// 0091), and authd is sent the worker's ends.
+struct Link {
+    /// Where requests go.
+    to: File,
+    /// Where answers come from.
+    from: File,
 }
 
 impl Pool {
     /// The worker of the person numbered `uid`, started if there is none.
-    fn worker(&mut self, uid: u32) -> io::Result<&mut UnixStream> {
+    fn worker(&mut self, uid: u32) -> io::Result<&mut Link> {
         if !self.workers.contains_key(&uid) {
             if self.workers.len() >= WORKERS_MAX {
                 let oldest =
@@ -62,10 +73,9 @@ impl Pool {
             let stream = start_worker(uid)?;
             self.workers.insert(uid, (stream, Instant::now()));
         }
-        let (stream, at) =
-            self.workers.get_mut(&uid).ok_or_else(|| io::Error::other("no worker"))?;
+        let (link, at) = self.workers.get_mut(&uid).ok_or_else(|| io::Error::other("no worker"))?;
         *at = Instant::now();
-        Ok(stream)
+        Ok(link)
     }
 }
 
@@ -99,36 +109,39 @@ impl Backend for Pool {
 
 /// Sends a worker `message` and reads its answer, which it has
 /// [`WORKER_TIME`] to give.
-fn exchange(stream: &mut UnixStream, message: &[u8]) -> io::Result<Answer> {
-    ipc::send(stream, message)?;
-    if !sys::readable(stream, WORKER_TIME)? {
+fn exchange(link: &mut Link, message: &[u8]) -> io::Result<Answer> {
+    ipc::send(&mut link.to, message)?;
+    if !sys::readable(&link.from, WORKER_TIME)? {
         return Err(io::Error::new(io::ErrorKind::TimedOut, "no answer in time"));
     }
-    let answer = ipc::receive(stream)?.ok_or(io::ErrorKind::UnexpectedEof)?;
+    let answer = ipc::receive(&mut link.from)?.ok_or(io::ErrorKind::UnexpectedEof)?;
     ipc::decode_answer(&answer)
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "a broken answer"))
 }
 
-/// Has authd start a worker as the person numbered `uid`: nfsd's end of
-/// its socket.
-fn start_worker(uid: u32) -> io::Result<UnixStream> {
-    let (ours, theirs) = UnixStream::pair()?;
+/// Has authd start a worker as the person numbered `uid`: nfsd's ends of
+/// the pipes to it and back.
+fn start_worker(uid: u32) -> io::Result<Link> {
+    let (requests, to) = sys::pipe()?;
+    let (from, answers) = sys::pipe()?;
     let stream = UnixStream::connect(accounts::SOCKET)?;
     let request = AuthdRequest::NfsWorker { uid };
     sys::send_with_fds(
         &stream,
         &request.encode(),
-        &[theirs.as_raw_fd(), io::stderr().as_raw_fd()],
+        &[requests.as_raw_fd(), answers.as_raw_fd(), io::stderr().as_raw_fd()],
     )?;
     stream.shutdown(Shutdown::Write)?;
-    drop(theirs);
+    // The worker holds them now; nfsd's copies would keep each pipe open
+    // after the worker ended.
+    drop((requests, answers));
     if !sys::readable(&stream, AUTHD_TIME)? {
         return Err(io::Error::new(io::ErrorKind::TimedOut, "authd did not answer in time"));
     }
     let mut line = String::new();
     (&stream).take(4096).read_to_string(&mut line)?;
     match AuthdAnswer::decode(&line) {
-        AuthdAnswer::Done(_) => Ok(ours),
+        AuthdAnswer::Done(_) => Ok(Link { to: File::from(to), from: File::from(from) }),
         AuthdAnswer::Refused(why) => Err(io::Error::other(why)),
     }
 }

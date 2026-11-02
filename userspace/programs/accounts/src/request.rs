@@ -286,9 +286,10 @@ pub enum Request {
     /// Start an NFS worker (ADR 0341): nfsd(8)'s, which runs as root, to
     /// ask. authd starts `nfsd --worker` as the person numbered `uid`,
     /// or as no one for root and a number with no person's account, in
-    /// a view of the folders of the shares NFS serves alone, with the two
-    /// descriptors sent with the request: its socket to nfsd, and where
-    /// it logs. The answer is `ok` and the name it runs as.
+    /// a view of the folders of the shares NFS serves alone, with the
+    /// three descriptors sent with the request: the read end of nfsd's
+    /// pipe to it, the write end of its pipe back, and where it logs. The
+    /// answer is `ok` and the name it runs as.
     NfsWorker {
         /// The number of the person an NFS call names.
         uid: u32,

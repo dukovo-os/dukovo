@@ -1504,8 +1504,11 @@ impl Authd {
         if !peer.is_root() {
             return refused("only nfsd, which runs as root, starts NFS workers");
         }
-        let Ok([socket, log]) = <[OwnedFd; 2]>::try_from(descriptors) else {
-            return refused("an NFS worker comes with two descriptors: its socket and the log");
+        let Ok([requests, answers, log]) = <[OwnedFd; 3]>::try_from(descriptors) else {
+            return refused(
+                "an NFS worker comes with three descriptors: its pipe from nfsd, its pipe to \
+                 nfsd and the log",
+            );
         };
         let Some(names) = self.names else {
             return refused(
@@ -1530,7 +1533,7 @@ impl Authd {
             None => (signin::nobody(), Vec::new()),
         };
         let folders = nfs_folders();
-        match signin::start_nfs(names, &user, &groups, &socket, &log, &folders) {
+        match signin::start_nfs(names, &user, &groups, [&requests, &answers, &log], &folders) {
             Ok(process) => {
                 audit!(
                     "started an NFS worker as {} for number {uid}, with {} shares: process {process}",

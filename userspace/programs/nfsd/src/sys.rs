@@ -2,10 +2,11 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 //! What nfsd asks of the system beyond Rust's standard library: the
-//! machine's name, random bytes, descriptors sent to authd, and waits.
+//! machine's name, random bytes, pipes, descriptors sent to authd, and
+//! waits.
 
 use std::io::{self, Write};
-use std::os::fd::{AsRawFd, RawFd};
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::net::UnixStream;
 use std::time::Duration;
 
@@ -41,6 +42,17 @@ pub fn random<const N: usize>() -> io::Result<[u8; N]> {
         got += n as usize;
     }
     Ok(out)
+}
+
+/// A pipe, both ends closed on exec: its read end, then its write end.
+pub fn pipe() -> io::Result<(OwnedFd, OwnedFd)> {
+    let mut fds = [0; 2];
+    // SAFETY: `fds` has room for the two descriptors pipe2 writes.
+    if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: pipe2 made both, and nothing else owns them.
+    Ok(unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) })
 }
 
 /// Sends `bytes` on `stream` with the descriptors `fds` (SCM_RIGHTS) in

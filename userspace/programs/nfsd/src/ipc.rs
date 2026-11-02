@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 //! What the listener asks a worker, and its answers, in XDR on the
-//! socket between them: each a record of a u32 length and its bytes.
+//! pipes between them: each a record of a u32 length and its bytes.
 //!
 //! A worker acts on paths the listener names, as the person it runs as;
 //! the kernel decides what each may do. The listener keeps NFS's state;
@@ -545,7 +545,7 @@ pub fn decode_answer(bytes: &[u8]) -> xdr::Result<Answer> {
 ///
 /// # Errors
 ///
-/// The socket's.
+/// The pipe's.
 pub fn send(output: &mut impl Write, bytes: &[u8]) -> io::Result<()> {
     let mut framed = Vec::with_capacity(bytes.len() + 4);
     framed.extend_from_slice(&(bytes.len() as u32).to_be_bytes());
@@ -557,7 +557,7 @@ pub fn send(output: &mut impl Write, bytes: &[u8]) -> io::Result<()> {
 ///
 /// # Errors
 ///
-/// The socket's, and `InvalidData` for one past [`MESSAGE_MAX`].
+/// The pipe's, and `InvalidData` for one past [`MESSAGE_MAX`].
 pub fn receive(input: &mut impl Read) -> io::Result<Option<Vec<u8>>> {
     let mut length = [0u8; 4];
     match input.read_exact(&mut length) {

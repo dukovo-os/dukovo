@@ -54,10 +54,11 @@ client is not root here.
   keeps the clients' state: their records, sessions and slots, with a
   replay cache, opens and their share reservations, POSIX byte-range
   locks, and stateids. It touches no file: for each lookup, read,
-  write, create, rename or remove it asks a *worker*, over a socket
-  pair, with a small request and answer of its own (ipc.rs).
+  write, create, rename or remove it asks a *worker*, over two pipes,
+  with a small request and answer of its own (ipc.rs). Not a socket
+  pair: Radix sends no socket with a socket's bytes (ADR 0091).
 - **Each call as the person.** authd starts `nfsd --worker` at the
-  listener's `nfs-worker` request, with the worker's end of the socket
+  listener's `nfs-worker` request, with the worker's ends of the pipes
   and the log, *as the person the call's number is*, with their groups,
   if it is a person's account and not disabled; any other number, a
   service's included, as no one (65534). The listener serves root (0)

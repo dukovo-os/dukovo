@@ -4,8 +4,8 @@
 //! `nfsd --worker`: the files of the shares NFS reaches, as one person.
 //!
 //! authd starts a worker as the person an NFS call names (or as no one,
-//! for root and for numbers with no account), with its socket to the
-//! listener as descriptor 3, in a view that holds only the folders of the
+//! for root and for numbers with no account), with the listener's pipes
+//! as descriptors 3 and 4, in a view that holds only the folders of the
 //! shares NFS serves, each at `/.nfs-` and its share's key. It does what
 //! the listener asks, on paths in them and nowhere else, and the kernel
 //! decides what each may do as that person: as Linux's server, the
@@ -18,7 +18,6 @@ use std::io;
 use std::os::fd::FromRawFd;
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::unix::fs::{DirBuilderExt, FileExt, FileTypeExt, MetadataExt, OpenOptionsExt};
-use std::os::unix::net::UnixStream;
 use std::path::{Component, Path, PathBuf};
 use std::process::ExitCode;
 
@@ -511,23 +510,25 @@ fn attached() -> Vec<PathBuf> {
         .collect()
 }
 
-/// Runs as `nfsd --worker`: serves the listener on descriptor 3 until it
-/// closes.
+/// Runs as `nfsd --worker`: serves the listener's requests, read from
+/// descriptor 3, with answers written to descriptor 4, until it closes
+/// its pipe.
 pub fn run() -> ExitCode {
     // The modes NFS asks for are what files get: the client applied its
     // own mask already.
     // SAFETY: umask only sets the mask.
     unsafe { libc::umask(0) };
-    // SAFETY: authd gives the worker the listener's socket as descriptor
-    // 3, and nothing else owns it.
-    let mut socket = unsafe { UnixStream::from_raw_fd(3) };
+    // SAFETY: authd gives the worker the read end of the listener's pipe
+    // to it as descriptor 3, and the write end of the pipe back as 4, and
+    // nothing else owns them.
+    let (mut requests, mut answers) = unsafe { (File::from_raw_fd(3), File::from_raw_fd(4)) };
     let mut worker = Worker::new(&attached());
     loop {
-        let message = match ipc::receive(&mut socket) {
+        let message = match ipc::receive(&mut requests) {
             Ok(Some(message)) => message,
             Ok(None) => return ExitCode::SUCCESS,
             Err(err) => {
-                eprintln!("nfsd worker: the listener's socket: {err}");
+                eprintln!("nfsd worker: the listener's pipe: {err}");
                 return ExitCode::FAILURE;
             }
         };
@@ -535,8 +536,8 @@ pub fn run() -> ExitCode {
             Ok(request) => worker.serve(request),
             Err(_) => Err(libc::EINVAL),
         };
-        if let Err(err) = ipc::send(&mut socket, &ipc::encode_answer(&answer)) {
-            eprintln!("nfsd worker: the listener's socket: {err}");
+        if let Err(err) = ipc::send(&mut answers, &ipc::encode_answer(&answer)) {
+            eprintln!("nfsd worker: the listener's pipe: {err}");
             return ExitCode::FAILURE;
         }
     }
