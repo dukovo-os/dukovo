@@ -3,7 +3,7 @@
 
 //! The network services as the system runs them (ADRs 0193 to 0196),
 //! against servers on lo that netservices-test runs
-//! (userspace/programs/netservices-test): DNS on port 5353 over UDP and
+//! (userspace/programs/netservices-test): DNS on port 8053 over UDP and
 //! TCP, DNS over TLS, DNS over HTTPS and a web page with a test
 //! authority's certificate, Network Time Security five seconds ahead of
 //! the machine's clock, and a log sink. Spark starts every service, and

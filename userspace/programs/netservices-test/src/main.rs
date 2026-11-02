@@ -7,7 +7,7 @@
 //! this program runs on lo with the certificates of testdata/, which
 //! OpenSSL made (testdata/make.sh):
 //!
-//! - DNS on port 5353, over UDP and TCP, for the names `*.test`;
+//! - DNS on port 8053, over UDP and TCP, for the names `*.test`;
 //! - DNS over TLS on port 853 and over HTTPS on port 443, with the same
 //!   answers, and a page for curl at `https://www.test/hello`;
 //! - Network Time Security's key establishment on port 4460 and its NTP
@@ -53,8 +53,9 @@ const TIMED_STATUS: &str = "/system/live/timed/status";
 const NETLOG: &str = "/system/settings/netlog";
 
 /// The ports the servers listen on, on 127.0.0.1: plain DNS's is not 53,
-/// which resolved holds on 127.0.0.53.
-const DNS_PORT: u16 = 5353;
+/// which resolved holds on 127.0.0.53, nor mDNS's 5353, which discoverd
+/// holds from its start (ADR 0338).
+const DNS_PORT: u16 = 8053;
 const DOT_PORT: u16 = 853;
 const HTTPS_PORT: u16 = 443;
 const LOG_PORT: u16 = 6666;
