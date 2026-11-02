@@ -2123,6 +2123,8 @@ enum Target<'a> {
     Framebuffer,
     /// A connection of `/devices/fuse`.
     Fuse,
+    /// The program's end of a tunnel.
+    Tunnel,
     /// A file of the tree, through its node.
     Node,
 }
@@ -2146,6 +2148,8 @@ fn target(file: &FileObject) -> Target<'_> {
         Target::Framebuffer
     } else if file.fuse_channel().is_some() {
         Target::Fuse
+    } else if file.is_tunnel() {
+        Target::Tunnel
     } else {
         Target::Node
     }
@@ -2205,6 +2209,7 @@ fn read_special(
         Target::Keyboard => fs::keyboard::read(file, out, non_blocking).map(|n| n as u64),
         Target::Mouse => fs::mouse::read(file, out, non_blocking).map(|n| n as u64),
         Target::Fuse => fs::fuse::read(file, out, non_blocking).map(|n| n as u64),
+        Target::Tunnel => fs::tunnel::read(file, out, non_blocking).map(|n| n as u64),
         Target::Framebuffer | Target::Node => Ok(0),
     }
 }
@@ -2266,6 +2271,7 @@ fn write_special(
         Target::Tty(handle) => handle.write(user, data, non_blocking).map(|n| n as u64),
         Target::Kmsg => fs::kmsg::write(data).map(|n| n as u64),
         Target::Fuse => fs::fuse::write(file, data).map(|n| n as u64),
+        Target::Tunnel => fs::tunnel::write(file, data).map(|n| n as u64),
         Target::Framebuffer if offset == file::CURRENT => {
             let mut at = file.offset.lock();
             let written = fs::framebuffer::write(file, *at, data)? as u64;

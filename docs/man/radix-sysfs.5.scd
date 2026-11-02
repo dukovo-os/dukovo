@@ -355,7 +355,8 @@ _/kernel/class/hwmon/hwmon_*n*_/temp_*k*_crit_, _temp_*k*_max_, _temp_*k*_crit_a
 
 _/kernel/class/net/_*name*_/ifindex_, _iflink_
 	The network interfaces, *lo* and the cards (*net0*, *net1*...),
-	then the bridges and VLANs *ip*(8) made, each a directory of its
+	then the bridges and VLANs *ip*(8) made and the tunnels *wgd*(8)
+	made, each a directory of its
 	name, with its number as Linux numbers interfaces: *lo* is 1 and the
 	cards follow from 2, in the order the kernel found them (ADR 0190).
 	_iflink_ is the same, but for a VLAN, whose _iflink_ is its
@@ -365,17 +366,20 @@ _/kernel/class/net/_*name*_/ifindex_, _iflink_
 _/kernel/class/net/_*name*_/address_, _broadcast_, _addr_len_
 	Its MAC address, as _52:54:00:12:34:56_, and the one that reaches
 	every card on its network, all zeros for *lo*; and 6, their length.
+	A tunnel has none: both are empty, and _addr_len_ 0.
 
 _/kernel/class/net/_*name*_/mtu_, _type_, _flags_
-	The longest packet it sends; *1* (ARPHRD_ETHER) for a card or *772*
-	(ARPHRD_LOOPBACK) for *lo*; and Linux's flags, in hexadecimal:
-	IFF_UP, with IFF_BROADCAST and IFF_MULTICAST for a card or
-	IFF_LOOPBACK for *lo*.
+	The longest packet it sends; *1* (ARPHRD_ETHER) for a card, *772*
+	(ARPHRD_LOOPBACK) for *lo* or *65534* (ARPHRD_NONE) for a tunnel, as
+	Linux numbers a tun; and Linux's flags, in hexadecimal: IFF_UP, with
+	IFF_BROADCAST and IFF_MULTICAST for a card, IFF_LOOPBACK for *lo*, or
+	IFF_POINTOPOINT and IFF_NOARP for a tunnel (ADR 0339).
 
 _/kernel/class/net/_*name*_/operstate_, _carrier_
-	*up*, *down* for a card the kernel stopped after an error, or
-	*unknown* for *lo*, which has no link; and *1* while it is not
-	down, else *0*.
+	*up*, *down* for a card the kernel stopped after an error or a
+	tunnel no program has open, or *unknown* for *lo* and an open
+	tunnel, which have no link; and *1* while it is not down, else
+	*0*.
 
 _/kernel/class/net/_*name*_/ipv4_
 	Radix's own: its IPv4 addresses with their prefixes, a line each,
@@ -398,7 +402,8 @@ _/kernel/class/net/_*name*_/ipv6_
 
 _/kernel/class/net/_*name*_/link_
 	Radix's own: what the interface is (ADR 0333), on its first line:
-	*card*, *loopback*, *bridge* or *vlan 7 on net0*. For a bridge, a
+	*card*, *loopback*, *bridge*, *vlan 7 on net0* or *tunnel*. For a
+	bridge, a
 	line for each port (_port net0_) and one for each machine it heard
 	in the last five minutes, the port and how many seconds ago
 	(_heard 52:54:00:12:34:56 on net0 12_); for a bridge's port, its

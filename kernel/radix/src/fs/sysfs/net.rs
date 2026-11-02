@@ -8,11 +8,16 @@
 //! Each interface (`lo`, `net0`...) has Linux's files: `ifindex` and
 //! `iflink`, its number (radix-network(2)); `address` and `broadcast`,
 //! its MAC address and the one that reaches every card (all zeros for
-//! `lo`), and `addr_len`; `mtu`; `type`, ARPHRD_ETHER (1) or
-//! ARPHRD_LOOPBACK (772); `flags`, IFF_UP with IFF_BROADCAST for a card
-//! or IFF_LOOPBACK for `lo`, in hexadecimal; `operstate` (`up`, `down`
-//! for a card that stopped with an error, `unknown` for `lo`) and
-//! `carrier`; and in `statistics`, what it sent and received. And one of
+//! `lo`), and `addr_len`; `mtu`; `type`, ARPHRD_ETHER (1),
+//! ARPHRD_LOOPBACK (772) or for a tunnel ARPHRD_NONE (65534), as Linux's
+//! WireGuard interfaces are; `flags`, IFF_UP with IFF_BROADCAST for a
+//! card, IFF_LOOPBACK for `lo`, or IFF_POINTOPOINT and IFF_NOARP for a
+//! tunnel, in hexadecimal; `operstate` (`up`, `down` for a card that
+//! stopped with an error or a tunnel no program has open, `unknown` for
+//! `lo` and for a tunnel a program has, as Linux says of WireGuard's) and
+//! `carrier`; and in `statistics`, what it sent and received. A tunnel
+//! has no MAC address: its `address` and `broadcast` are empty, and its
+//! `addr_len` 0. And one of
 //! Radix's own, `ipv4`, its IPv4 addresses with their prefixes, a line
 //! each, the first the one it sends from, which Linux gives only through
 //! netlink; and `ipv6`, what its IPv6 has (ADR 0331), a line each: its
@@ -25,7 +30,8 @@
 //! lifetime 600`), the MTU (`mtu 1500`) and whether DHCPv6 is to give
 //! addresses (`dhcp managed`) or other settings (`dhcp other`), which
 //! netd(8) reads. And `link`, what the interface is (ADR 0333): `card`,
-//! `loopback`, `bridge` or `vlan 7 on net0` on its first line; for a
+//! `loopback`, `bridge`, `tunnel` or `vlan 7 on net0` on its first line;
+//! for a
 //! bridge, a line for each port (`port net0`) and for each machine it
 //! heard in the last five minutes, where and how many seconds ago
 //! (`heard 52:54:00:12:34:56 on net0 12`); and for a bridge's port, the
@@ -73,15 +79,31 @@ impl Listing for Interfaces {
 /// What one of an interface's files says.
 type Field = fn(&'static Interface, &mut Text) -> fmt::Result;
 
-/// Linux's ARPHRD_ETHER and ARPHRD_LOOPBACK, an interface's `type`.
+/// Linux's ARPHRD_ETHER, ARPHRD_LOOPBACK and ARPHRD_NONE, an interface's
+/// `type`.
 const ETHER: u16 = 1;
 const LOOPBACK: u16 = 772;
+const NONE: u16 = 65534;
 
-/// Linux's IFF_UP, IFF_BROADCAST, IFF_LOOPBACK and IFF_MULTICAST.
+/// Linux's IFF_UP, IFF_BROADCAST, IFF_LOOPBACK, IFF_POINTOPOINT,
+/// IFF_NOARP and IFF_MULTICAST.
 const UP: u32 = 0x1;
 const BROADCAST: u32 = 0x2;
 const IS_LOOPBACK: u32 = 0x8;
+const POINTOPOINT: u32 = 0x10;
+const NOARP: u32 = 0x80;
 const MULTICAST: u32 = 0x1000;
+
+/// Whether `interface` is a tunnel, which has no MAC address.
+fn is_tunnel(interface: &Interface) -> bool {
+    links::role(interface.number) == Some(Role::Tunnel)
+}
+
+/// Writes `interface`'s MAC address, or `mac` for `lo`, or nothing for a
+/// tunnel, which has none.
+fn write_address(interface: &Interface, text: &mut Text, mac: [u8; 6]) -> fmt::Result {
+    if is_tunnel(interface) { writeln!(text) } else { write_mac(text, mac) }
+}
 
 /// An interface's files, as Linux's.
 const FILES: [(&str, Field); 13] = [
@@ -90,15 +112,30 @@ const FILES: [(&str, Field); 13] = [
         Some(Role::Vlan { parent, .. }) => writeln!(t, "{}", parent + 1),
         _ => writeln!(t, "{}", i.index()),
     }),
-    ("address", |i, t| write_mac(t, i.stack.lock().mac().map_or([0; 6], |mac| mac.0))),
-    ("broadcast", |i, t| write_mac(t, if i.is_loopback() { [0; 6] } else { [0xff; 6] })),
-    ("addr_len", |_, t| writeln!(t, "6")),
+    ("address", |i, t| write_address(i, t, i.stack.lock().mac().map_or([0; 6], |mac| mac.0))),
+    ("broadcast", |i, t| write_address(i, t, if i.is_loopback() { [0; 6] } else { [0xff; 6] })),
+    ("addr_len", |i, t| writeln!(t, "{}", if is_tunnel(i) { 0 } else { 6 })),
     ("mtu", |i, t| writeln!(t, "{}", i.stack.lock().mtu())),
-    ("type", |i, t| writeln!(t, "{}", if i.is_loopback() { LOOPBACK } else { ETHER })),
+    ("type", |i, t| {
+        let kind = if i.is_loopback() {
+            LOOPBACK
+        } else if is_tunnel(i) {
+            NONE
+        } else {
+            ETHER
+        };
+        writeln!(t, "{kind}")
+    }),
     ("flags", |i, t| {
-        // A card joins multicast groups (ADR 0336); `lo` does not, as on
-        // Linux.
-        let kind = if i.is_loopback() { IS_LOOPBACK } else { BROADCAST | MULTICAST };
+        // A card joins multicast groups (ADR 0336); `lo` and a tunnel do
+        // not, as on Linux.
+        let kind = if i.is_loopback() {
+            IS_LOOPBACK
+        } else if is_tunnel(i) {
+            POINTOPOINT | NOARP
+        } else {
+            BROADCAST | MULTICAST
+        };
         writeln!(t, "{:#x}", UP | kind)
     }),
     ("operstate", |i, t| writeln!(t, "{}", operstate(i))),
@@ -144,12 +181,13 @@ fn write_link(interface: &'static Interface, text: &mut Text) -> fmt::Result {
             })?;
         }
         Some(Role::Vlan { parent, id }) => writeln!(text, "vlan {id} on {}", name_of(parent))?,
+        Some(Role::Tunnel) => writeln!(text, "tunnel")?,
         None => writeln!(text, "card")?,
     }
     if let Some(bridge) = links::master(number) {
         writeln!(text, "master {}", name_of(bridge))?;
     }
-    match links::lost(number) {
+    match links::lost(number) + crate::net::tunnel::lost(number) {
         0 => Ok(()),
         lost => writeln!(text, "lost {lost}"),
     }
@@ -229,12 +267,16 @@ const STATISTICS: [(&str, Statistic); 8] = [
 
 /// `operstate`: `lo` has no link to be up or down, as on Linux; a card's
 /// is down once it stopped with an error, and one a program drives while
-/// no driver has attached it or its driver says so (ADR 0198).
+/// no driver has attached it or its driver says so (ADR 0198); a tunnel's
+/// while no program has it open, and unknown while one has, as Linux says
+/// of a WireGuard interface's (ADR 0339).
 fn operstate(interface: &Interface) -> &'static str {
     if interface.is_loopback() {
         "unknown"
     } else if interface.stack.lock().link().down() {
         "down"
+    } else if is_tunnel(interface) {
+        "unknown"
     } else {
         "up"
     }

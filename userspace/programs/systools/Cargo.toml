@@ -66,6 +66,11 @@ mdns-sd = { version = "0.21.7", default-features = false, features = ["logging"]
 # ping(8)'s ping sockets (ADR 0336); ob patches it in from the
 # rust-crates port.
 socket2 = "0.6.5"
+# wgd(8)'s WireGuard (ADR 0340): Cloudflare's boringtun, its noise
+# protocol and sessions alone, without its device and its threads; wg(8)
+# writes keys in base64, as wireguard-tools does.
+base64 = "0.22.1"
+boringtun = { version = "0.7.1", default-features = false }
 # logd(8)'s records and requests, as lines of JSON (ADR 0210).
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.140"

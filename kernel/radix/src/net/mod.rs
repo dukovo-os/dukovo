@@ -51,6 +51,7 @@ pub mod memory;
 pub mod ports;
 pub mod proc;
 pub mod program;
+pub mod tunnel;
 
 use alloc::boxed::Box;
 use alloc::vec::Vec;
@@ -124,13 +125,15 @@ pub const ORPHAN_NS: u64 = 60_000_000_000;
 /// What an interface's stack sends and receives through: a virtio network
 /// card, a card of one of the drivers that share `radix-nic` (ADR 0197),
 /// a card a program drives (ADR 0198), a bridge's or VLAN's link through
-/// other interfaces (ADR 0333), or the loopback link.
+/// other interfaces (ADR 0333), a tunnel's through its program (ADR
+/// 0339), or the loopback link.
 #[expect(clippy::large_enum_variant, reason = "each is made once, in its interface's place")]
 pub enum Card {
     Virtio { net: Net, vector: Option<u32> },
     Nic { nic: Box<dyn Nic, Kmalloc>, vector: Option<u32> },
     Program(program::Program),
     Virtual(links::Virtual),
+    Tunnel(tunnel::Tunnel),
     Loopback(Loopback),
 }
 
@@ -141,15 +144,17 @@ impl Card {
         match self {
             Card::Virtio { net, .. } => net.failed(),
             Card::Nic { nic, .. } => nic.failed(),
-            Card::Program(_) | Card::Virtual(_) | Card::Loopback(_) => false,
+            Card::Program(_) | Card::Virtual(_) | Card::Tunnel(_) | Card::Loopback(_) => false,
         }
     }
 
     /// Whether the card's link is down: it stopped with an error, or no
-    /// driver drives it, or its driver says its link is down.
+    /// driver drives it, or its driver says its link is down; a tunnel's,
+    /// while no program has it open.
     pub fn down(&self) -> bool {
         match self {
             Card::Program(card) => !card.up(),
+            Card::Tunnel(link) => !link.open(),
             card => card.failed(),
         }
     }
@@ -160,7 +165,7 @@ impl Card {
     fn interrupts(&self) -> bool {
         match self {
             Card::Virtio { vector, .. } | Card::Nic { vector, .. } => vector.is_some(),
-            Card::Program(_) | Card::Virtual(_) => true,
+            Card::Program(_) | Card::Virtual(_) | Card::Tunnel(_) => true,
             Card::Loopback(_) => false,
         }
     }
@@ -172,13 +177,18 @@ impl Link for Card {
             Card::Virtio { .. } | Card::Nic { .. } | Card::Program(_) | Card::Virtual(_) => {
                 Medium::Ethernet
             }
+            Card::Tunnel(_) => Medium::Ip,
             Card::Loopback(link) => link.medium(),
         }
     }
 
     fn pending(&self) -> bool {
         match self {
-            Card::Virtio { .. } | Card::Nic { .. } | Card::Program(_) | Card::Virtual(_) => false,
+            Card::Virtio { .. }
+            | Card::Nic { .. }
+            | Card::Program(_)
+            | Card::Virtual(_)
+            | Card::Tunnel(_) => false,
             Card::Loopback(link) => link.pending(),
         }
     }
@@ -189,6 +199,7 @@ impl Link for Card {
             Card::Nic { nic, .. } => nic.info().mac,
             Card::Program(card) => card.mac(),
             Card::Virtual(link) => link.mac,
+            Card::Tunnel(_) => [0; 6],
             Card::Loopback(link) => link.mac(),
         }
     }
@@ -199,6 +210,7 @@ impl Link for Card {
             Card::Nic { nic, .. } => nic.receive(frame),
             Card::Program(card) => card.receive(frame),
             Card::Virtual(link) => link.receive(frame),
+            Card::Tunnel(link) => link.receive(frame),
             Card::Loopback(link) => link.receive(frame),
         }
     }
@@ -208,7 +220,7 @@ impl Link for Card {
             Card::Virtio { net, .. } => net.can_send(),
             Card::Nic { nic, .. } => nic.can_send(),
             Card::Program(card) => card.can_send(),
-            Card::Virtual(_) => true,
+            Card::Virtual(_) | Card::Tunnel(_) => true,
             Card::Loopback(link) => link.can_send(),
         }
     }
@@ -219,6 +231,7 @@ impl Link for Card {
             Card::Nic { nic, .. } => nic.send(frame),
             Card::Program(card) => card.send(frame),
             Card::Virtual(link) => link.send(frame),
+            Card::Tunnel(link) => link.send(frame),
             Card::Loopback(link) => link.send(frame),
         }
     }
@@ -229,22 +242,31 @@ impl Link for Card {
             Card::Nic { nic, .. } => nic.flush(),
             Card::Program(card) => card.flush(),
             // Those it gave frames to are woken after the poll.
-            Card::Virtual(_) => {}
+            Card::Virtual(_) | Card::Tunnel(_) => {}
             Card::Loopback(link) => link.flush(),
         }
     }
 
     fn needs_checksums(&self) -> bool {
         match self {
-            // No card's checksum offloads are used.
-            Card::Virtio { .. } | Card::Nic { .. } | Card::Program(_) | Card::Virtual(_) => true,
+            // No card's checksum offloads are used. A tunnel's packets
+            // reach other machines, whose systems check them.
+            Card::Virtio { .. }
+            | Card::Nic { .. }
+            | Card::Program(_)
+            | Card::Virtual(_)
+            | Card::Tunnel(_) => true,
             Card::Loopback(link) => link.needs_checksums(),
         }
     }
 
     fn loopback(&mut self) -> Option<&mut Loopback> {
         match self {
-            Card::Virtio { .. } | Card::Nic { .. } | Card::Program(_) | Card::Virtual(_) => None,
+            Card::Virtio { .. }
+            | Card::Nic { .. }
+            | Card::Program(_)
+            | Card::Virtual(_)
+            | Card::Tunnel(_) => None,
             Card::Loopback(link) => link.loopback(),
         }
     }
@@ -264,7 +286,7 @@ impl Drop for Card {
                 *vector
             }
             // Its driver's device capability stops the card.
-            Card::Program(_) | Card::Virtual(_) | Card::Loopback(_) => None,
+            Card::Program(_) | Card::Virtual(_) | Card::Tunnel(_) | Card::Loopback(_) => None,
         };
         if let Some(vector) = vector {
             <Arch as Devices>::free_interrupt(vector);
@@ -1520,7 +1542,7 @@ fn add_interface(index: usize, card: Card) -> Result<&'static Interface, Failure
     let _ = write!(name, "net{index}");
     let flags = FLAGS.get().copied().unwrap_or((None, None));
     let first = if index == 0 { flags } else { (None, None) };
-    let interface = build(name, index, card, first)?;
+    let interface = build(name, index, card, first, TAGGED_FRAME)?;
     if INTERFACES[index].set(interface).is_err() {
         return Err(Failure::Other("its slot is taken"));
     }
@@ -1530,18 +1552,19 @@ fn add_interface(index: usize, card: Card) -> Result<&'static Interface, Failure
 
 /// An interface named `name` in place `index` among the cards, of `card`,
 /// with `address` and `gateway` if given, and the hooks its frames pass
-/// through.
+/// through, sending frames of at most `transmit` bytes.
 #[inline(always)]
 fn build(
     name: TextBuf<16>,
     index: usize,
     card: Card,
     (address, gateway): (Option<Ipv4Cidr>, Option<Ipv4Address>),
+    transmit: usize,
 ) -> Result<Interface, Failure> {
     let (slots, sockets) = slots(SOCKETS).ok_or("out of memory")?;
     let memory = Memory {
         receive: forever(TAGGED_FRAME).ok_or("out of memory")?,
-        transmit: forever(TAGGED_FRAME).ok_or("out of memory")?,
+        transmit: forever(transmit).ok_or("out of memory")?,
         sockets,
     };
     let mut stack = new_stack(card, memory).ok_or("out of memory")?;
@@ -1554,17 +1577,42 @@ fn build(
 
 /// Gives a bridge or VLAN named `name`, with the MAC address `mac`, its
 /// interface, in the first free place among the cards (ADR 0333).
-#[inline(never)]
 fn add_virtual(name: &TextBuf<16>, mac: [u8; 6]) -> Result<&'static Interface, Failure> {
+    add_link(name, Made::Virtual(mac))
+}
+
+/// Gives a tunnel named `name` its interface, in the first free place
+/// among the cards, sending packets of at most its MTU (ADR 0339).
+fn add_tunnel(name: &TextBuf<16>) -> Result<&'static Interface, Failure> {
+    add_link(name, Made::Tunnel)
+}
+
+/// What [`add_link`] makes.
+#[derive(Clone, Copy)]
+enum Made {
+    /// A bridge or VLAN, with this MAC address.
+    Virtual([u8; 6]),
+    Tunnel,
+}
+
+/// Gives the link `made` an interface named `name`, in the first free
+/// place among the cards. One function for each kind, not inlined, so
+/// that the interface it builds is in one frame (ADR 0058).
+#[inline(never)]
+fn add_link(name: &TextBuf<16>, made: Made) -> Result<&'static Interface, Failure> {
     let first = COUNT.load(Ordering::Acquire);
     for (index, slot) in INTERFACES.iter().enumerate().skip(first) {
         if slot.get().is_some() {
             continue;
         }
-        let card = Card::Virtual(links::Virtual { number: index + 1, mac });
-        let interface = build(name.clone(), index, card, (None, None))?;
+        let number = index + 1;
+        let (card, transmit) = match made {
+            Made::Virtual(mac) => (Card::Virtual(links::Virtual { number, mac }), TAGGED_FRAME),
+            Made::Tunnel => (Card::Tunnel(tunnel::Tunnel { number }), tunnel::MTU),
+        };
+        let interface = build(name.clone(), index, card, (None, None), transmit)?;
         if slot.set(interface).is_ok() {
-            COUNT.fetch_max(index + 1, Ordering::AcqRel);
+            COUNT.fetch_max(number, Ordering::AcqRel);
             return slot.get().ok_or(Failure::Other("its slot is empty"));
         }
     }
@@ -1627,6 +1675,7 @@ fn run(number: usize) {
             (wake_at, changed, stack.take_moved())
         };
         links::wake_given();
+        tunnel::wake_given();
         firewall::log_dropped();
         if interface.gone() {
             return;

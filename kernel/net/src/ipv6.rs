@@ -462,6 +462,11 @@ pub struct Ipv6 {
     last: u64,
     /// What happened, oldest first, until taken.
     events: [Option<Event>; EVENTS],
+    /// Whether its link has neighbours to ask, as a card's has: on an IP
+    /// link, a tunnel's (ADR 0339), the addresses it is given are its own
+    /// at once, untested, and it makes none, not even a link-local one,
+    /// as Linux makes none for a WireGuard interface.
+    neighbours: bool,
 }
 
 impl Ipv6 {
@@ -489,7 +494,20 @@ impl Ipv6 {
             changed: false,
             last: 0,
             events: [None; EVENTS],
+            neighbours: true,
         }
+    }
+
+    /// Has an interface on a link without neighbours, an IP link, take
+    /// its addresses untested and make none.
+    pub fn set_no_neighbours(&mut self) {
+        self.neighbours = false;
+    }
+
+    /// How an address it is given is tested: not at all on a link
+    /// without neighbours.
+    fn given_test(&self) -> Test {
+        if self.neighbours { Test::Due } else { Test::Passed }
     }
 
     /// Sets how the interface makes its addresses, or turns its IPv6 off
@@ -506,16 +524,21 @@ impl Ipv6 {
         let seed = self.random.next();
         let last = self.last;
         let events = self.events;
+        let neighbours = self.neighbours;
         *self = Ipv6::new(mac, seed);
         self.last = last;
         self.events = events;
+        self.neighbours = neighbours;
         self.settings = settings;
         self.changed = true;
         let Some(settings) = settings else { return };
         self.enabled = true;
         self.given_router = router;
-        let link = Ipv6Cidr::new(Ipv6Address::new(0xfe80, 0, 0, 0, 0, 0, 0, 0), 64);
-        self.add_stable(&link, Kind::LinkLocal, 0, &settings.secret, None, None);
+        if neighbours {
+            let link = Ipv6Cidr::new(Ipv6Address::new(0xfe80, 0, 0, 0, 0, 0, 0, 0), 64);
+            self.add_stable(&link, Kind::LinkLocal, 0, &settings.secret, None, None);
+        }
+        let test = self.given_test();
         for &cidr in addresses {
             self.add(Address {
                 cidr,
@@ -523,7 +546,7 @@ impl Ipv6 {
                 preferred_until: None,
                 valid_until: None,
                 tries: 0,
-                test: Test::Due,
+                test,
             });
         }
     }
@@ -542,6 +565,7 @@ impl Ipv6 {
                 *slot = None;
             }
         }
+        let test = self.given_test();
         for &cidr in addresses {
             self.add(Address {
                 cidr,
@@ -549,7 +573,7 @@ impl Ipv6 {
                 preferred_until: None,
                 valid_until: None,
                 tries: 0,
-                test: Test::Due,
+                test,
             });
         }
         self.changed = true;

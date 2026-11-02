@@ -45,7 +45,7 @@ first letters, as iproute2 takes them: *ip a* is *ip address show*, and
 
 The interfaces are *lo*, numbered 1, and the network cards, *net0*,
 *net1*... from 2, in the order the kernel found them, then the bridges
-and VLANs made with *link add*. ip reads them from
+and VLANs made with *link add* and the tunnels *wgd*(8) made. ip reads them from
 _/kernel/class/net_ (*radix-sysfs*(5)) and the routes from
 _/processes/net/route_ (*radix-proc*(5)), which anyone may.
 
@@ -61,11 +61,13 @@ by its service (*spark*(8)) may; root's shells at the console are
 
 *link* [*show* [[*dev*] _name_]]
 	Each interface, or the one named: its number, name, flags, MTU and
-	state, then its MAC address and the broadcast one. The flags are
-	Linux's: *LOOPBACK* for *lo*, else *BROADCAST*; *UP*, as every
-	interface always is; and *LOWER\_UP* while its link is, else
-	*NO-CARRIER*. The state is *UP*, *DOWN* for a card the kernel
-	stopped after an error, or *UNKNOWN* for *lo*.
+	state, then its MAC address and the broadcast one, or *link/none*
+	for a tunnel, which has none. The flags are Linux's: *LOOPBACK* for
+	*lo*, *POINTOPOINT* and *NOARP* for a tunnel, else *BROADCAST*;
+	*UP*, as every interface always is; and *LOWER\_UP* while its link
+	is, else *NO-CARRIER*. The state is *UP*, *DOWN* for a card the
+	kernel stopped after an error or a tunnel no program has open, or
+	*UNKNOWN* for *lo* and an open tunnel.
 
 ```
 2: net0: <BROADCAST,UP,LOWER_UP> mtu 1500 qdisc noqueue state UP mode DEFAULT group default
@@ -94,9 +96,13 @@ by its service (*spark*(8)) may; root's shells at the console are
 	on it. *nomaster* takes it out again. *ip link show master* _bridge_
 	shows the bridge's ports.
 
+*link add* _name_ *type wireguard*
+	Says to write _name_'s file for *wgd*(8) instead, which makes
+	WireGuard's interfaces from their files (*wireguard.conf*(5)).
+
 *link del* [*dev*] _name_
-	Takes the bridge or VLAN _name_ away; a bridge's ports become cards
-	of their own again. A card cannot be taken away.
+	Takes the bridge, VLAN or tunnel _name_ away; a bridge's ports
+	become cards of their own again. A card cannot be taken away.
 
 *address* [*show* [[*dev*] _name_]]
 	As *link*, with each IPv4 address, its network's broadcast address
@@ -214,5 +220,5 @@ net0             UP             192.168.1.20/24 fe80::4c1e:9a2:d07:113b/64
 
 # SEE ALSO
 
-*ss*(8), *colors.toml*(5), *radix-network*(2), *radix-proc*(5),
+*ss*(8), *wgd*(8), *colors.toml*(5), *radix-network*(2), *radix-proc*(5),
 *radix-sysfs*(5), *spark*(8), *systools*(1)

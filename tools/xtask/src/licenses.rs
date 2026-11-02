@@ -96,6 +96,13 @@ const PORT_EXTRA_ALLOW: &[&str] = &[
 /// `expr` matches regular expressions with.
 const BUNDLED_C: &[(&str, &str, &[&str])] = &[("onig_sys", "BSD-2-Clause", &["oniguruma/COPYING"])];
 
+/// Crates whose packages on crates.io carry no license file: the one their
+/// repository has at that version, which Dukovo's keeps (REUSE.toml says
+/// whose it is), as their licenses ask a binary's documentation to hold
+/// their notices.
+const KEPT_NOTICES: &[(&str, &str, &str)] =
+    &[("boringtun", "0.7.1", "userspace/programs/systools/notices/LICENSE-boringtun.md")];
+
 /// Names of the files in a source tree that hold license terms or notices.
 const NOTICE_PREFIXES: &[&str] = &["LICENSE", "LICENCE", "COPYING", "COPYRIGHT", "NOTICE"];
 
@@ -420,6 +427,12 @@ fn listed_packages(
                 let dir = registry_dir(&package.name, &package.version);
                 if let Some(dir) = &dir {
                     package.notices = notice_files(dir);
+                }
+                if let Some((.., kept)) = KEPT_NOTICES
+                    .iter()
+                    .find(|(name, version, _)| *name == package.name && *version == package.version)
+                {
+                    package.notices.push(ctx.root.join(kept));
                 }
                 if let Some((_, license, files)) =
                     BUNDLED_C.iter().find(|(name, ..)| *name == package.name)
@@ -1279,6 +1292,15 @@ mod tests {
 
     fn allow(list: &[&str]) -> Vec<String> {
         list.iter().map(ToString::to_string).collect()
+    }
+
+    #[test]
+    fn each_kept_notice_is_there() {
+        for (name, version, path) in KEPT_NOTICES {
+            let text = std::fs::read_to_string(root().join(path))
+                .unwrap_or_else(|err| panic!("{name} {version}'s notice {path}: {err}"));
+            assert!(text.contains("Copyright"), "{path} holds no copyright notice");
+        }
     }
 
     #[test]

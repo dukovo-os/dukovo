@@ -30,6 +30,10 @@
 //! one on. One taken away (`remove_link`) is gone from every listing and
 //! takes no more frames; its place among the interfaces is not used
 //! again until the machine restarts.
+//!
+//! A tunnel (ADR 0339) is made and taken away the same way, its stack on
+//! a thread of its own; its packets go through its program
+//! ([`super::tunnel`]), not through other interfaces.
 
 use alloc::vec::Vec;
 use core::fmt::Write;
@@ -48,7 +52,7 @@ use crate::sched::{self, Options, Policy, wait};
 /// Linux's default transmit queue holds a thousand.
 const QUEUE_FRAMES: usize = 64;
 
-/// What a bridge or VLAN interface is.
+/// What a bridge, VLAN or tunnel interface is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Role {
     /// A bridge, which its ports join.
@@ -56,6 +60,8 @@ pub enum Role {
     /// A VLAN on the interface numbered `parent`, with the VLAN number
     /// `id`.
     Vlan { parent: usize, id: u16 },
+    /// A tunnel, whose packets a program carries (ADR 0339).
+    Tunnel,
 }
 
 /// The link of a bridge or VLAN interface: frames from its queue, and to
@@ -84,13 +90,13 @@ impl Virtual {
                 state.give_out(parent, |out| layer2::tag(frame, id, out))
             }
             Some(Role::Bridge) => state.bridge_out(self.number, frame, None, now),
-            None => false,
+            Some(Role::Tunnel) | None => false,
         }
     }
 }
 
 /// A ring of frames, each up to [`TAGGED_FRAME`] bytes.
-struct Queue {
+pub(super) struct Queue {
     bytes: Vec<u8, Kmalloc>,
     lens: [u16; QUEUE_FRAMES],
     first: usize,
@@ -98,7 +104,7 @@ struct Queue {
 }
 
 impl Queue {
-    fn new() -> Option<Queue> {
+    pub(super) fn new() -> Option<Queue> {
         let bytes = radix_mm::bytes::zeroed(QUEUE_FRAMES * TAGGED_FRAME, kmalloc()).ok()?;
         Some(Queue { bytes, lens: [0; QUEUE_FRAMES], first: 0, count: 0 })
     }
@@ -106,7 +112,7 @@ impl Queue {
     /// Puts the frame `write` writes into the next free slot, given the
     /// slot and returning the frame's length: false if there is no free
     /// slot, or `write` wrote nothing.
-    fn push(&mut self, write: impl FnOnce(&mut [u8]) -> Option<usize>) -> bool {
+    pub(super) fn push(&mut self, write: impl FnOnce(&mut [u8]) -> Option<usize>) -> bool {
         if self.count == QUEUE_FRAMES {
             return false;
         }
@@ -121,16 +127,39 @@ impl Queue {
 
     /// Copies the oldest frame into `out`, cut to its length, and lets it
     /// go: its length.
-    fn pop(&mut self, out: &mut [u8]) -> Option<usize> {
+    pub(super) fn pop(&mut self, out: &mut [u8]) -> Option<usize> {
+        let len = self.oldest()?.len().min(out.len());
+        let slot = self.first;
+        out[..len].copy_from_slice(&self.bytes[slot * TAGGED_FRAME..slot * TAGGED_FRAME + len]);
+        self.drop_oldest();
+        Some(len)
+    }
+
+    /// The oldest frame, if one waits.
+    pub(super) fn oldest(&self) -> Option<&[u8]> {
         if self.count == 0 {
             return None;
         }
-        let slot = self.first;
-        let len = usize::from(self.lens[slot]).min(out.len());
-        out[..len].copy_from_slice(&self.bytes[slot * TAGGED_FRAME..slot * TAGGED_FRAME + len]);
-        self.first = (self.first + 1) % QUEUE_FRAMES;
-        self.count -= 1;
-        Some(len)
+        let at = self.first * TAGGED_FRAME;
+        Some(&self.bytes[at..at + usize::from(self.lens[self.first])])
+    }
+
+    /// Lets the oldest frame go.
+    pub(super) fn drop_oldest(&mut self) {
+        if self.count > 0 {
+            self.first = (self.first + 1) % QUEUE_FRAMES;
+            self.count -= 1;
+        }
+    }
+
+    /// Whether it has no room for another frame.
+    pub(super) fn is_full(&self) -> bool {
+        self.count == QUEUE_FRAMES
+    }
+
+    /// Lets every frame go.
+    pub(super) fn clear(&mut self) {
+        self.count = 0;
     }
 }
 
@@ -408,7 +437,8 @@ fn free(role: Role, name: &str) -> Result<(), LinkError> {
     if let Role::Vlan { parent, id } = role {
         let found =
             numbered(parent).filter(|interface| !interface.gone()).ok_or(LinkError::NoDevice)?;
-        if found.is_loopback() {
+        // A tunnel has no Ethernet frames to tag.
+        if found.is_loopback() || self::role(parent) == Some(Role::Tunnel) {
             return Err(LinkError::NotSupported);
         }
         if !(layer2::VLAN_FIRST..=layer2::VLAN_LAST).contains(&id) {
@@ -458,8 +488,9 @@ fn make(_: usize) {
 
 /// Makes the interface `asked` asks for, with its queue and its thread.
 fn make_link(asked: &Asked) -> Result<usize, LinkError> {
-    let up = Queue::new().ok_or(LinkError::NoMemory)?;
     let (mac, parent_out) = match asked.role {
+        // A tunnel has neither a MAC address nor frames.
+        Role::Tunnel => return make_tunnel(&asked.name),
         Role::Bridge => (super::fallback_mac(), None),
         Role::Vlan { parent, .. } => {
             let parent_mac = numbered(parent)
@@ -473,6 +504,7 @@ fn make_link(asked: &Asked) -> Result<usize, LinkError> {
             (parent_mac.0, out)
         }
     };
+    let up = Queue::new().ok_or(LinkError::NoMemory)?;
     let fdb = match asked.role {
         Role::Bridge => {
             let mut entries = Vec::new_in(kmalloc());
@@ -480,7 +512,7 @@ fn make_link(asked: &Asked) -> Result<usize, LinkError> {
             while entries.len() < FDB_ENTRIES && entries.push_within_capacity(None).is_ok() {}
             Some(Fdb::new(entries))
         }
-        Role::Vlan { .. } => None,
+        Role::Vlan { .. } | Role::Tunnel => None,
     };
     let interface = super::add_virtual(&asked.name, mac).map_err(|_| LinkError::NoRoom)?;
     let number = interface.number;
@@ -504,7 +536,21 @@ fn make_link(asked: &Asked) -> Result<usize, LinkError> {
             interface.name,
             numbered(parent).map_or("?", |parent| parent.name.as_str())
         ),
+        // Made by make_tunnel.
+        Role::Tunnel => {}
     }
+    super::run_thread(interface).map_err(|_| LinkError::NoMemory)?;
+    Ok(number)
+}
+
+/// Makes a tunnel named `name`, with its pipe and its thread.
+fn make_tunnel(name: &TextBuf<16>) -> Result<usize, LinkError> {
+    let pipe = super::tunnel::Pipe::new().ok_or(LinkError::NoMemory)?;
+    let interface = super::add_tunnel(name).map_err(|_| LinkError::NoRoom)?;
+    let number = interface.number;
+    STATE.lock().roles[number] = Some(Role::Tunnel);
+    super::tunnel::install(number, pipe);
+    info!("Net: {} is a tunnel", interface.name);
     super::run_thread(interface).map_err(|_| LinkError::NoMemory)?;
     Ok(number)
 }
@@ -518,7 +564,8 @@ fn make_link(asked: &Asked) -> Result<usize, LinkError> {
 pub fn set_master(port: usize, bridge: Option<usize>) -> Result<(), LinkError> {
     let interface =
         numbered(port).filter(|interface| !interface.gone()).ok_or(LinkError::NoDevice)?;
-    if interface.is_loopback() || role(port) == Some(Role::Bridge) {
+    // A tunnel has no Ethernet frames for a bridge.
+    if interface.is_loopback() || matches!(role(port), Some(Role::Bridge | Role::Tunnel)) {
         return Err(LinkError::NotSupported);
     }
     let queue = match bridge {
@@ -584,8 +631,9 @@ pub fn set_master(port: usize, bridge: Option<usize>) -> Result<(), LinkError> {
     Ok(())
 }
 
-/// Takes the bridge or VLAN numbered `number` away: its ports leave it,
-/// and so do the VLANs on it.
+/// Takes the bridge, VLAN or tunnel numbered `number` away: its ports
+/// leave it, and so do the VLANs on it; a tunnel's program reads and
+/// writes no more packets.
 ///
 /// # Errors
 ///
@@ -612,6 +660,9 @@ pub fn remove(number: usize) -> Result<(), LinkError> {
     };
     for vlan in vlans {
         remove(vlan)?;
+    }
+    if role(number) == Some(Role::Tunnel) {
+        super::tunnel::remove(number);
     }
     {
         let mut state = STATE.lock();

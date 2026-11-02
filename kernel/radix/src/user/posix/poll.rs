@@ -127,6 +127,8 @@ fn polled_by(object: &Object, each: &mut dyn FnMut(&Polled)) {
                 each(&crate::fs::mouse::POLLED);
             } else if file.fuse_channel().is_some() {
                 each(&crate::fs::fuse::POLLED);
+            } else if file.is_tunnel() {
+                each(&crate::fs::tunnel::POLLED);
             }
         }
         Object::Notification(notification) => each(notification.polled()),
@@ -213,6 +215,8 @@ fn events_of(object: &Object) -> u16 {
                 crate::fs::mouse::events(file)
             } else if file.fuse_channel().is_some() {
                 crate::fs::fuse::events(file)
+            } else if file.is_tunnel() {
+                crate::fs::tunnel::events(file)
             } else {
                 READABLE | WRITABLE
             }

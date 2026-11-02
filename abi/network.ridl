@@ -40,6 +40,10 @@
 //! away (`remove_link`), as ip(8)'s `link` commands do (ADR 0333). They
 //! are numbered after the cards, in the first place free; a place one
 //! was taken away from is not used again until the machine restarts.
+//!
+//! It makes tunnels too, interfaces whose IP packets a program carries,
+//! as wgd(8) carries WireGuard's (`add_link`), and opens them for that
+//! program (`open_tunnel`, ADR 0339).
 
 module network;
 
@@ -164,11 +168,16 @@ enum LinkKind: u32 {
     /// of that interface tagged with its VLAN number, and the frames that
     /// interface receives tagged with it come to it.
     vlan = 2;
+    /// A tunnel: IP packets alone, with no Ethernet header, MAC address
+    /// or neighbours, at most 1420 bytes each, which go to and come from
+    /// the program that opens it (`open_tunnel`). Its link is down while
+    /// no program has it open. (Since version 6, ADR 0339.)
+    tunnel = 3;
 }
 
 /// A range of the network's ports, and the rights to connect out, to
 /// listen on them, and to set the interfaces up.
-interface network = 0x000f version 5 {
+interface network = 0x000f version 6 {
     kind = network;
     /// Makes a socket of `family` and `kind` in slot `to`, with `flags`:
     /// one that is neither bound nor connected (POSIX's `socket`). Needs
@@ -215,14 +224,15 @@ interface network = 0x000f version 5 {
         raises [no_such_slot, empty_slot, wrong_kind, missing_rights, invalid_argument,
                 bad_address, no_device, not_supported];
     /// Makes an interface of `kind` named `name`, 1 to 15 letters,
-    /// digits, `.`, `-` and `_`: a bridge, or a VLAN numbered `vlan`, 1 to
-    /// 4094, on the interface numbered `parent`; both are ignored for a
-    /// bridge. Its number. Fails with occupied if an interface has the
-    /// name or the parent has a VLAN with that number, invalid_argument
-    /// for a name or number not allowed, no_device for a parent that is
-    /// not there, not_supported for `lo`, and no_room once there are
-    /// sixteen interfaces besides `lo`. Needs the control right. (Since
-    /// version 4.)
+    /// digits, `.`, `-` and `_`: a bridge, a tunnel, or a VLAN numbered
+    /// `vlan`, 1 to 4094, on the interface numbered `parent`; both are
+    /// ignored for a bridge or a tunnel. Its number. Fails with occupied
+    /// if an interface has the name or the parent has a VLAN with that
+    /// number, invalid_argument for a name or number not allowed,
+    /// no_device for a parent that is not there, not_supported for `lo`
+    /// or a tunnel as a parent, and no_room once there are sixteen
+    /// interfaces besides `lo`. Needs the control right. (Since version
+    /// 4.)
     method add_link = 6 (kind: LinkKind, parent: u32, vlan: u32, name: in bytes)
                         -> (interface: u32)
         raises [no_such_slot, empty_slot, wrong_kind, missing_rights, invalid_argument,
@@ -231,17 +241,34 @@ interface network = 0x000f version 5 {
     /// numbered `bridge`, or of no bridge for 0. A port's addresses are
     /// taken away, and its frames go through the bridge; a bridge has its
     /// first port's MAC address. Fails with no_device for an interface or
-    /// bridge that is not there, and not_supported for `lo` or a bridge
-    /// as a port. Needs the control right. (Since version 4.)
+    /// bridge that is not there, and not_supported for `lo`, a bridge or
+    /// a tunnel as a port. Needs the control right. (Since version 4.)
     method set_master = 7 (interface: u32, bridge: u32) -> ()
         raises [no_such_slot, empty_slot, wrong_kind, missing_rights, no_device,
                 not_supported, no_memory];
-    /// Takes the bridge or VLAN numbered `interface` away, and the VLANs
-    /// on it; a bridge's ports are left as interfaces of their own,
-    /// without addresses. Fails with no_device for one that is not there,
-    /// and not_supported for `lo` or a card. Needs the control right.
-    /// (Since version 4.)
+    /// Takes the bridge, VLAN or tunnel numbered `interface` away, and
+    /// the VLANs on it; a bridge's ports are left as interfaces of their
+    /// own, without addresses, and a tunnel's file fails as no_device from
+    /// then on. Fails with no_device for one that is not there, and
+    /// not_supported for `lo` or a card. Needs the control right. (Since
+    /// version 4.)
     method remove_link = 8 (interface: u32) -> ()
         raises [no_such_slot, empty_slot, wrong_kind, missing_rights, no_device,
                 not_supported, no_memory];
+    /// Puts in slot `to`, with `flags`, the file of the tunnel numbered
+    /// `interface`, the other end of its link: a read takes the next IP
+    /// packet its stack sent, waiting for one unless the file is
+    /// non-blocking, cut to the buffer if it is longer; a write gives its
+    /// stack one packet, IPv4 or IPv6 by its first byte's version, of 1 to
+    /// 1518 bytes, else fails with invalid_argument, and never waits: one
+    /// that finds the stack's queue full is lost. A poll finds the file
+    /// readable while a packet waits. While the file is open, the
+    /// tunnel's link is up; when its last description goes, the link is
+    /// down, and what its stack sends is lost until it is opened again.
+    /// Fails with no_device for an interface that is not a tunnel, busy
+    /// while another file has it open, and occupied if the slot is not
+    /// empty. Needs the control right. (Since version 6, ADR 0339.)
+    method open_tunnel = 9 (to: slot, interface: u32, flags: PipeFlags) -> ()
+        raises [no_such_slot, empty_slot, wrong_kind, missing_rights, no_device, busy,
+                occupied, no_memory];
 }

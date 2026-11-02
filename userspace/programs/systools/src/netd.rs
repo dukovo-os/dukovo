@@ -663,7 +663,11 @@ impl Netd {
             false
         });
         let mut changed = self.cards.len() != known;
-        let set_up = |interface: &&Interface| !interface.loopback && interface.master.is_none();
+        // A tunnel's addresses are its program's to give, as wgd(8) gives
+        // a WireGuard interface's (ADR 0340).
+        let set_up = |interface: &&Interface| {
+            !interface.loopback && interface.master.is_none() && interface.kind != ip::Kind::Tunnel
+        };
         for interface in interfaces.iter().filter(set_up) {
             if let Some(card) = self.cards.iter_mut().find(|card| card.index == interface.index) {
                 // The DNS servers its routers advertise now.
