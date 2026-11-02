@@ -25,13 +25,16 @@
 //! the kernel makes its addresses from the prefixes routers advertise,
 //! stable ones from the machine's secret, which netd makes once and
 //! keeps in `/system/state/netd/ipv6-secret`, and temporary ones to send
-//! from unless the settings say no. The DNS servers routers advertise go
-//! into resolv.conf after DHCP's.
+//! from unless the settings say no. When its routers say that DHCPv6
+//! gives addresses or other settings, netd asks for them too (the client
+//! is [`crate::dhcp6`], ADR 0335), on a socket of its own on port 546,
+//! and gives the card the address it gets as ip(8) would. The DNS servers
+//! DHCPv6 gives and routers advertise go into resolv.conf after DHCP's.
 
 use std::collections::HashMap;
 use std::fs;
 use std::io::{self, Write};
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddrV4, UdpSocket};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddrV4, SocketAddrV6, UdpSocket};
 use std::os::fd::{AsRawFd, FromRawFd};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
@@ -42,6 +45,7 @@ use radix_abi::network::{Ipv6Flags, Ipv6Settings};
 
 use crate::args::Args;
 use crate::dhcp::{self, Action, Client, Lease};
+use crate::dhcp6;
 use crate::ip::{self, Cidr, Cidr6, Interface, Network};
 use crate::util::{self, Fail};
 
@@ -357,8 +361,21 @@ struct Card {
     /// advertise.
     ipv6: Option<Ipv6Setup>,
     dns6: Vec<Ipv6Addr>,
+    /// Its DHCPv6 client, while its routers say to ask.
+    dhcp6: Option<Dhcp6>,
     /// The last failure to send, so that each is said once.
     failure: Option<String>,
+}
+
+/// A card's DHCPv6 client, on its socket, and what it got.
+#[derive(Debug)]
+struct Dhcp6 {
+    socket: UdpSocket,
+    client: Box<dhcp6::Client>,
+    /// The address netd gave the card from it, a /128.
+    given: Option<Cidr6>,
+    dns: Vec<Ipv6Addr>,
+    domains: Vec<String>,
 }
 
 /// Set by SIGTERM: netd ends. Set by SIGHUP: it reads the settings
@@ -488,6 +505,51 @@ fn client_socket(name: &str) -> io::Result<UdpSocket> {
     Ok(socket)
 }
 
+/// A UDP socket on IPv6 port 546 of the card named `name`, for DHCPv6,
+/// which does not block.
+fn client_socket6(name: &str) -> io::Result<UdpSocket> {
+    let check = |result: libc::c_int| {
+        if result < 0 { Err(io::Error::last_os_error()) } else { Ok(result) }
+    };
+    // SAFETY: socket takes numbers; the descriptor is owned below.
+    let fd =
+        check(unsafe { libc::socket(libc::AF_INET6, libc::SOCK_DGRAM | libc::SOCK_CLOEXEC, 0) })?;
+    // SAFETY: fd is a socket of netd's own, which the UdpSocket closes.
+    let socket = unsafe { UdpSocket::from_raw_fd(fd) };
+    let on: libc::c_int = 1;
+    // SAFETY: the option's values are valid for the lengths given.
+    unsafe {
+        check(libc::setsockopt(
+            fd,
+            libc::SOL_SOCKET,
+            libc::SO_BINDTODEVICE,
+            name.as_ptr().cast(),
+            name.len() as libc::socklen_t,
+        ))?;
+        check(libc::setsockopt(
+            fd,
+            libc::IPPROTO_IPV6,
+            libc::IPV6_V6ONLY,
+            (&raw const on).cast(),
+            size_of::<libc::c_int>() as libc::socklen_t,
+        ))?;
+    }
+    // SAFETY: all zeros is a valid sockaddr_in6: ::, port 0.
+    let mut address: libc::sockaddr_in6 = unsafe { util::zeroed() };
+    address.sin6_family = libc::AF_INET6 as libc::sa_family_t;
+    address.sin6_port = dhcp6::CLIENT_PORT.to_be();
+    // SAFETY: the address is valid for its length.
+    check(unsafe {
+        libc::bind(
+            fd,
+            (&raw const address).cast(),
+            size_of::<libc::sockaddr_in6>() as libc::socklen_t,
+        )
+    })?;
+    socket.set_nonblocking(true)?;
+    Ok(socket)
+}
+
 /// netd's state.
 struct Netd {
     cards: Vec<Card>,
@@ -498,8 +560,10 @@ struct Netd {
     /// The machine's IPv6 secret.
     secret: [u8; 16],
     /// How the cards' IPv6 was set before the settings were read again,
-    /// by their numbers, so that what did not change stays as it is.
+    /// and their DHCPv6 clients, by their numbers, so that what did not
+    /// change stays as it is.
     ipv6_before: Vec<(u32, Ipv6Setup)>,
+    dhcp6_before: Vec<(u32, Dhcp6)>,
 }
 
 impl Netd {
@@ -549,18 +613,23 @@ impl Netd {
                     card.dns6 = advertised;
                     changed = true;
                 }
+                changed |= Netd::follow_dhcp6(self.network, card, interface, now);
                 let back = interface.carrier && !card.carrier;
                 card.carrier = interface.carrier;
                 if back && let How::Dhcp { client, .. } = &mut card.how {
                     eprintln!("netd: {}'s link is up again; asking for its address", card.name);
                     client.link_up(now);
                 }
+                if back && let Some(dhcp6) = &mut card.dhcp6 {
+                    dhcp6.client.link_up(now);
+                }
                 if matches!(card.how, How::Waiting) {
                     Netd::ask(card, interface, now, false);
                 }
                 continue;
             }
-            if let Some(card) = self.card(interface, now, first) {
+            if let Some(mut card) = self.card(interface, now, first) {
+                self.keep_dhcp6(&mut card);
                 self.cards.push(card);
                 changed = true;
             }
@@ -587,6 +656,7 @@ impl Netd {
             domain: None,
             ipv6: None,
             dns6: Vec::new(),
+            dhcp6: None,
             failure: None,
         };
         if setup.alone() {
@@ -731,6 +801,142 @@ impl Netd {
         }
     }
 
+    /// Gives a card that came back after the settings were read again the
+    /// DHCPv6 client it had, if its IPv6 stayed as it was: the address
+    /// it gave stays.
+    fn keep_dhcp6(&mut self, card: &mut Card) {
+        let Some(at) = self.dhcp6_before.iter().position(|(index, _)| *index == card.index) else {
+            return;
+        };
+        let (_, dhcp6) = self.dhcp6_before.swap_remove(at);
+        let same = self
+            .ipv6_before
+            .iter()
+            .any(|(index, before)| *index == card.index && card.ipv6.as_ref() == Some(before));
+        if same {
+            card.dhcp6 = Some(dhcp6);
+        }
+    }
+
+    /// Starts or stops `card`'s DHCPv6 client as its routers say, its
+    /// IPv6 being on: one that asks for an address and the settings when
+    /// they say DHCPv6 gives addresses (M), or one that asks for the
+    /// settings when it gives only those (O). True if what goes into
+    /// resolv.conf changed.
+    fn follow_dhcp6(
+        network: &dyn Network,
+        card: &mut Card,
+        interface: &Interface,
+        now: Instant,
+    ) -> bool {
+        let on = card.ipv6.as_ref().is_some_and(|ipv6| ipv6.on);
+        let (managed, other) = (interface.ipv6.managed, interface.ipv6.other);
+        let wanted = on && (managed || other);
+        if card.dhcp6.as_ref().is_some_and(|dhcp6| wanted && dhcp6.client.managed() == managed) {
+            return false;
+        }
+        let mut changed = false;
+        if let Some(old) = card.dhcp6.take() {
+            if old.given.is_some() {
+                give6(network, &card.name, card.index, interface, old.given, None);
+            }
+            changed = !(old.dns.is_empty() && old.domains.is_empty());
+        }
+        if !wanted {
+            return changed;
+        }
+        match client_socket6(&card.name) {
+            Ok(socket) => {
+                let what = if managed { "an address and its settings" } else { "its settings" };
+                eprintln!("netd: {}: asking DHCPv6 for {what}", card.name);
+                card.dhcp6 = Some(Dhcp6 {
+                    socket,
+                    client: Box::new(dhcp6::Client::new(card.mac, managed, seed(), now)),
+                    given: None,
+                    dns: Vec::new(),
+                    domains: Vec::new(),
+                });
+            }
+            Err(err) => eprintln!(
+                "netd: {}: no socket on port {}: {}",
+                card.name,
+                dhcp6::CLIENT_PORT,
+                util::strip_os_error(&err)
+            ),
+        }
+        changed
+    }
+
+    /// Does what card `at`'s DHCPv6 client asks.
+    fn act6(&mut self, at: usize, actions: Vec<dhcp6::Action>) {
+        for action in actions {
+            let card = &mut self.cards[at];
+            let Some(dhcp6) = &mut card.dhcp6 else { return };
+            match action {
+                dhcp6::Action::Send(message) => {
+                    let to = SocketAddrV6::new(dhcp6::SERVERS, dhcp6::SERVER_PORT, 0, card.index);
+                    let failure = dhcp6
+                        .socket
+                        .send_to(&message, to)
+                        .err()
+                        .map(|err| util::strip_os_error(&err));
+                    if failure.is_some() && failure != card.failure {
+                        eprintln!(
+                            "netd: {}: cannot send to {}: {}",
+                            card.name,
+                            dhcp6::SERVERS,
+                            failure.as_deref().unwrap_or("")
+                        );
+                    }
+                    card.failure = failure;
+                }
+                dhcp6::Action::Bind(lease) => {
+                    let ours = Cidr6 { ip: lease.address.ip, prefix: 128 };
+                    let Some(interface) = Netd::interface(card.index) else { continue };
+                    let had = interface.ipv6.given().contains(&ours);
+                    if !(had && dhcp6.given == Some(ours))
+                        && give6(
+                            self.network,
+                            &card.name,
+                            card.index,
+                            &interface,
+                            dhcp6.given,
+                            Some(ours),
+                        )
+                    {
+                        let verb = if dhcp6.given == Some(ours) { "keeps" } else { "has" };
+                        dhcp6.given = Some(ours);
+                        eprintln!(
+                            "netd: {} {verb} {} by DHCPv6 for {}",
+                            card.name,
+                            ours.ip,
+                            lasting(lease.address.valid)
+                        );
+                    }
+                }
+                dhcp6::Action::Unbind => {
+                    let Some(lost) = dhcp6.given.take() else { continue };
+                    if let Some(interface) = Netd::interface(card.index) {
+                        give6(self.network, &card.name, card.index, &interface, Some(lost), None);
+                    }
+                    eprintln!("netd: {} gave up {}; asking for another", card.name, lost.ip);
+                }
+                dhcp6::Action::Settings { dns, domains } => {
+                    if dhcp6.dns == dns && dhcp6.domains == domains {
+                        continue;
+                    }
+                    let servers: Vec<String> = dns.iter().map(Ipv6Addr::to_string).collect();
+                    let servers =
+                        if servers.is_empty() { "none".to_owned() } else { servers.join(" ") };
+                    eprintln!("netd: {} has DNS {servers} by DHCPv6", card.name);
+                    dhcp6.dns = dns;
+                    dhcp6.domains = domains;
+                    self.write_resolv();
+                }
+            }
+        }
+    }
+
     /// The card numbered `index`'s interface now.
     fn interface(index: u32) -> Option<Interface> {
         let interfaces =
@@ -824,19 +1030,23 @@ impl Netd {
     fn write_resolv(&self) {
         let mut servers: Vec<IpAddr> = Vec::new();
         let mut search: Vec<String> = Vec::new();
-        // The settings' and DHCP's first, then those routers advertise.
-        let advertised =
-            self.cards.iter().flat_map(|card| card.dns6.iter().map(|&dns| IpAddr::V6(dns)));
+        // The settings' and DHCP's first, then DHCPv6's and those routers
+        // advertise.
+        let advertised = self.cards.iter().flat_map(|card| {
+            let dhcp6 = card.dhcp6.iter().flat_map(|dhcp6| &dhcp6.dns);
+            dhcp6.chain(&card.dns6).map(|&dns| IpAddr::V6(dns))
+        });
         for dns in self.cards.iter().flat_map(|card| card.dns.iter().copied()).chain(advertised) {
             if !servers.contains(&dns) {
                 servers.push(dns);
             }
         }
         for card in &self.cards {
-            if let Some(domain) = &card.domain
-                && !search.contains(domain)
-            {
-                search.push(domain.clone());
+            let dhcp6 = card.dhcp6.iter().flat_map(|dhcp6| &dhcp6.domains);
+            for domain in card.domain.iter().chain(dhcp6) {
+                if !search.contains(domain) {
+                    search.push(domain.clone());
+                }
             }
         }
         if servers.is_empty() && search.is_empty() {
@@ -871,6 +1081,10 @@ impl Netd {
                 self.scan(now);
             }
             for at in 0..self.cards.len() {
+                if let Some(dhcp6) = &mut self.cards[at].dhcp6 {
+                    let actions = dhcp6.client.tick(now);
+                    self.act6(at, actions);
+                }
                 let actions = match &mut self.cards[at].how {
                     How::Dhcp { client, .. } => client.tick(now),
                     _ => continue,
@@ -887,6 +1101,14 @@ impl Netd {
                         revents: 0,
                     });
                     deadline = deadline.min(client.next());
+                }
+                if let Some(dhcp6) = &card.dhcp6 {
+                    fds.push(libc::pollfd {
+                        fd: dhcp6.socket.as_raw_fd(),
+                        events: libc::POLLIN,
+                        revents: 0,
+                    });
+                    deadline = deadline.min(dhcp6.client.next());
                 }
             }
             let timeout = deadline.saturating_duration_since(now).as_millis().min(60_000);
@@ -912,6 +1134,16 @@ impl Netd {
                     }
                     let actions = client.receive(&buffer[..len], now);
                     self.act(at, actions);
+                }
+                let mut buffer = [0u8; dhcp6::MESSAGE_MAX];
+                while let Some(dhcp6) = &mut self.cards[at].dhcp6
+                    && let Ok((len, from)) = dhcp6.socket.recv_from(&mut buffer)
+                {
+                    if from.port() != dhcp6::SERVER_PORT {
+                        continue;
+                    }
+                    let actions = dhcp6.client.receive(&buffer[..len], now);
+                    self.act6(at, actions);
                 }
             }
         }
@@ -945,11 +1177,17 @@ impl Netd {
                     self.give(&mut card, &interface, &keep, router);
                 }
             }
+            if let Some(dhcp6) = card.dhcp6.take() {
+                self.dhcp6_before.push((card.index, dhcp6));
+            }
             drop(card);
         }
         self.scan(now);
-        // A card the settings now leave alone keeps its IPv6 as it was.
+        // A card the settings now leave alone keeps its IPv6 as it was,
+        // and the address DHCPv6 gave it; one whose IPv6 was set afresh
+        // lost that.
         self.ipv6_before.clear();
+        self.dhcp6_before.clear();
         self.write_resolv();
     }
 }
@@ -968,7 +1206,35 @@ fn placeholder() -> Card {
         domain: None,
         ipv6: None,
         dns6: Vec::new(),
+        dhcp6: None,
         failure: None,
+    }
+}
+
+/// Gives the card named `name`, numbered `index`, the IPv6 address `new`
+/// (or none) in place of `old`, the one DHCPv6 gave it before, keeping
+/// the others it was given and its router. False if the kernel refused.
+fn give6(
+    network: &dyn Network,
+    name: &str,
+    index: u32,
+    interface: &Interface,
+    old: Option<Cidr6>,
+    new: Option<Cidr6>,
+) -> bool {
+    let mut given: Vec<Cidr6> = interface.ipv6.given();
+    given.retain(|cidr| Some(*cidr) != old && Some(*cidr) != new);
+    given.truncate(ip::ADDRESSES_IPV6_MAX - usize::from(new.is_some()));
+    given.extend(new);
+    match network.configure_ipv6(index, None, &given, interface.ipv6.given_router) {
+        Ok(()) => true,
+        Err(status) => {
+            eprintln!(
+                "netd: {name}: the kernel refused its DHCPv6 address: {}",
+                crate::sys::status_name(status.0)
+            );
+            false
+        }
     }
 }
 
@@ -1033,6 +1299,7 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
         network: &ip::Slots,
         secret: load_secret(),
         ipv6_before: Vec::new(),
+        dhcp6_before: Vec::new(),
     };
     netd.read_settings();
     netd.run().map_err(|e| util::failed(&"netd", e))?;

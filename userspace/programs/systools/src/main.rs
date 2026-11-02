@@ -42,6 +42,7 @@ mod column;
 mod device;
 mod df;
 mod dhcp;
+mod dhcp6;
 mod diskhealth;
 mod dmesg;
 mod e1000d;

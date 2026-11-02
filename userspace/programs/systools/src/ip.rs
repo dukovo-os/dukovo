@@ -45,7 +45,7 @@ pub const ROUTES: &str = "/processes/net/route";
 /// The most addresses an interface takes (radix-network(2)).
 const ADDRESSES_MAX: usize = network::ADDRESSES_MAX as usize;
 /// The most IPv6 addresses it is given besides those it makes.
-const ADDRESSES_IPV6_MAX: usize = network::ADDRESSES_IPV6_MAX as usize;
+pub const ADDRESSES_IPV6_MAX: usize = network::ADDRESSES_IPV6_MAX as usize;
 
 /// An IPv4 address and the length of its network's prefix.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
