@@ -67,6 +67,10 @@ static const char *const ELSEWHERE[][2] = {
 		{"fsck-fat", "the rdisk boot test's: it checks the FAT filesystem mkfs-fat made"},
 		{"fsck.fat", "the rdisk boot test's: it runs fsck-fat by dosfstools' name"},
 		{"fsck.vfat", "the rdisk boot test's: it runs fsck-fat by dosfstools' other name"},
+		{"mkfs-btrfs", "the btrfs-tools boot test's: it makes a Btrfs on a blank disk"},
+		{"mkfs.btrfs", "the btrfs-tools boot test's: it runs mkfs-btrfs by btrfs-progs' name"},
+		{"fsck-btrfs", "the btrfs-tools boot test's: it checks the Btrfs mkfs-btrfs made"},
+		{"btrfsck", "the btrfs-tools boot test's: it runs fsck-btrfs by btrfs-progs' old name"},
 };
 
 enum { ELSEWHERE_COUNT = sizeof(ELSEWHERE) / sizeof(ELSEWHERE[0]) };

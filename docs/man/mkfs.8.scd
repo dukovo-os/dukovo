@@ -18,6 +18,8 @@ operands after the kind, as util-linux's *mkfs* does:
 
 [[ *Kind*
 :[ *Tool*
+|  btrfs
+:  *mkfs-btrfs*(8)
 |  fat, vfat, msdos
 :  *mkfs-fat*(8)
 |  exfat
@@ -47,4 +49,4 @@ The tool's.
 
 # SEE ALSO
 
-*mkfs-fat*(8), *mkfs-exfat*(8), *mkswap*(8), *fsck-fat*(8), *rdisk*(8)
+*mkfs-btrfs*(8), *mkfs-fat*(8), *mkfs-exfat*(8), *mkswap*(8), *fsck-btrfs*(8), *fsck-fat*(8), *rdisk*(8)

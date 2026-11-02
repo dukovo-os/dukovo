@@ -28,6 +28,10 @@
 //! - [`cow::Writer`]: changing the trees by copying on write, in
 //!   transactions that [`space`] gives room and `commit` makes durable
 //!   (ADR 0129).
+//! - `make`: a new, empty filesystem, as `mkfs.btrfs` makes one (feature
+//!   `make`, ADR 0304), and `check`: a filesystem checked without a
+//!   change, as `btrfs check --readonly` checks it (feature `check`, ADR
+//!   0305).
 //!
 //! The crate is a compartment: it has no `unsafe` code, and builds for the
 //! host (feature `host`).
@@ -41,6 +45,8 @@ extern crate alloc;
 
 mod balance;
 mod blake2b;
+#[cfg(any(test, feature = "check"))]
+pub mod check;
 pub mod chunk;
 mod commit;
 pub mod cow;
@@ -56,6 +62,8 @@ pub mod inflate;
 pub mod inode;
 mod log;
 pub mod lzo;
+#[cfg(any(test, feature = "make"))]
+pub mod make;
 pub mod node;
 mod pack;
 mod quota;

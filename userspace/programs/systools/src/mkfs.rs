@@ -5,7 +5,7 @@
 //! and exFAT filesystems made and checked by the disk engine, with the
 //! options of dosfstools' mkfs.fat and fsck.fat and of exfatprogs'
 //! mkfs.exfat, by whose names they run too. mkfs runs the tool of the
-//! kind `-t` names.
+//! kind `-t` names, mkfs-btrfs(8) among them.
 
 use std::ffi::OsString;
 use std::io::{self, Write};
@@ -16,16 +16,18 @@ use disk::{Rng, exfat, fat, fatck};
 use crate::args::{Arg, Args};
 use crate::blockdev::{self, Opened};
 use crate::util::{self, Fail};
-use crate::{links, probe, swap};
+use crate::{btrfs, links, probe, swap};
 
-/// fsck(8)'s exit statuses, which fsck-fat gives as e2fsck does.
+/// fsck(8)'s exit statuses, which fsck-fat and fsck-btrfs give as
+/// e2fsck does.
 const FIXED: i32 = 1;
-const LEFT: i32 = 4;
-const OPERATIONAL: i32 = 8;
-const USAGE: i32 = 16;
+pub(crate) const LEFT: i32 = 4;
+pub(crate) const OPERATIONAL: i32 = 8;
+pub(crate) const USAGE: i32 = 16;
 
 /// The kinds mkfs makes itself, and the tool that makes each.
-const KINDS: [(&str, &str); 5] = [
+const KINDS: [(&str, &str); 6] = [
+    ("btrfs", "mkfs-btrfs"),
     ("fat", "mkfs-fat"),
     ("vfat", "mkfs-fat"),
     ("msdos", "mkfs-fat"),
@@ -50,14 +52,14 @@ pub fn mkfs(args: &mut Args) -> Result<i32, Fail> {
         } else if text == "-V" || text == "--verbose" {
             verbose = true;
         } else if text == "-h" || text == "--help" {
-            println!("usage: mkfs -t fat|exfat|swap [OPTION...] DEVICE [SIZE]");
+            println!("usage: mkfs -t btrfs|fat|exfat|swap [OPTION...] DEVICE [SIZE]");
             return Ok(0);
         } else {
             rest.push(item);
         }
     }
     let Some(kind) = kind else {
-        return Err(util::usage("say which filesystem with -t: fat, exfat or swap".into()));
+        return Err(util::usage("say which filesystem with -t: btrfs, fat, exfat or swap".into()));
     };
     let kind = kind.to_string_lossy().into_owned();
     if let Some((_, tool)) = KINDS.iter().find(|(k, _)| *k == kind) {
@@ -68,6 +70,7 @@ pub fn mkfs(args: &mut Args) -> Result<i32, Fail> {
         let run = match *tool {
             "mkfs-fat" => mkfs_fat,
             "mkfs-exfat" => mkfs_exfat,
+            "mkfs-btrfs" => btrfs::mkfs_btrfs,
             _ => swap::mkswap,
         };
         return run(&mut args).map_err(|fail| {
@@ -91,12 +94,12 @@ pub fn mkfs(args: &mut Args) -> Result<i32, Fail> {
 
 /// Opens the device or file `operand` that a filesystem is made on: to
 /// write, and not while something uses it. A whole disk with partitions
-/// is refused, unless `whole`, as mkfs.fat's -I has it: the filesystem
-/// would take the place of its table.
-fn target(
+/// is refused, unless `whole`, as mkfs.fat's -I (`flag`) has it: the
+/// filesystem would take the place of its table.
+pub(crate) fn target(
     operand: &OsString,
     sector: Option<u32>,
-    whole: bool,
+    (whole, flag): (bool, &str),
     doing: &str,
 ) -> Result<Opened, Fail> {
     let opened = blockdev::open(operand, true, sector)?;
@@ -121,7 +124,7 @@ fn target(
     if partitioned {
         return Err(util::fail(format!(
             "{} has partitions; a filesystem on the whole of it would take the table's place \
-             (-I makes it anyway)",
+             ({flag} makes it anyway)",
             opened.shown
         )));
     }
@@ -137,7 +140,7 @@ fn hidden_of(opened: &Opened) -> Option<u64> {
 }
 
 /// The time a reproducible build asks for, SOURCE_DATE_EPOCH, if any.
-fn source_date() -> Option<u64> {
+pub(crate) fn source_date() -> Option<u64> {
     std::env::var("SOURCE_DATE_EPOCH").ok()?.trim().parse().ok()
 }
 
@@ -208,7 +211,7 @@ pub fn mkfs_fat(args: &mut Args) -> Result<i32, Fail> {
         let file = std::fs::OpenOptions::new().write(true).create_new(true).open(path);
         file.and_then(|f| f.set_len(kib * 1024)).map_err(|e| util::failed(&path.display(), e))?;
     }
-    let opened = target(path, sector, whole, "a new filesystem on")?;
+    let opened = target(path, sector, (whole, "-I"), "a new filesystem on")?;
     if options.hidden.is_none() {
         options.hidden = hidden_of(&opened);
     }
@@ -291,7 +294,7 @@ pub fn mkfs_exfat(args: &mut Args) -> Result<i32, Fail> {
     let [path] = operands.as_slice() else {
         return Err(util::usage("say the one device or file to make the filesystem on".into()));
     };
-    let opened = target(path, None, whole, "a new filesystem on")?;
+    let opened = target(path, None, (whole, "-I"), "a new filesystem on")?;
     options.hidden = hidden_of(&opened);
     let device = opened.device().map_err(|e| util::failed(&opened.shown, e))?;
     let made = exfat::format(&device, &options, &mut Rng::system()).map_err(util::fail)?;
