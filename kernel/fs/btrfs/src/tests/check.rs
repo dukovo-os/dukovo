@@ -31,7 +31,8 @@ const MIB: u64 = 1 << 20;
 fn report(image: &[u8], data: bool) -> Report {
     let volume = open(image).unwrap();
     let mut phases = Vec::new();
-    let report = check::check(&volume, data, &mut |n, name| phases.push((n, name.to_owned()))).unwrap();
+    let report =
+        check::check(&volume, data, &mut |n, name| phases.push((n, name.to_owned()))).unwrap();
     let names: Vec<_> = PHASES.iter().enumerate().map(|(i, p)| (i + 1, (*p).to_owned())).collect();
     assert_eq!(phases, names);
     report
@@ -61,7 +62,8 @@ fn written() -> Vec<u8> {
     let dir = home.create("docs", Kind::Directory, DIR).unwrap();
     for (n, len) in [0usize, 10, 3000, 5000, 70_000, 1 << 20].into_iter().enumerate() {
         let file = dir.create(&format!("f{n}"), Kind::File, FILE).unwrap();
-        let data = if n % 2 == 0 { noise(n as u64, len) } else { "text ".repeat(len / 5).into_bytes() };
+        let data =
+            if n % 2 == 0 { noise(n as u64, len) } else { "text ".repeat(len / 5).into_bytes() };
         assert_eq!(file.write(0, &Slice(&data)).unwrap(), data.len());
     }
     let f1 = dir.lookup("f1").unwrap();
@@ -126,7 +128,8 @@ fn spoil(image: &mut [u8], id: u64, key: Key, f: impl Fn(&mut [u8])) {
     for at in sites {
         let block = &mut image[at as usize..at as usize + nodesize];
         let header = 101 + slot * 25;
-        let (offset, size) = (u32_at(block, header + 17) as usize, u32_at(block, header + 21) as usize);
+        let (offset, size) =
+            (u32_at(block, header + 17) as usize, u32_at(block, header + 21) as usize);
         f(&mut block[101 + offset..101 + offset + size]);
         let sum = csum.sum(&block[32..]);
         block[..32].copy_from_slice(&sum);
@@ -137,7 +140,8 @@ fn spoil(image: &mut [u8], id: u64, key: Key, f: impl Fn(&mut [u8])) {
 /// `pick` takes.
 fn first(image: &[u8], id: u64, kind: u8, pick: impl Fn(&[u8]) -> bool) -> Key {
     let volume = open(image).unwrap();
-    let root = if id == tree::CHUNK { volume.chunk_root() } else { volume.tree(id).unwrap().unwrap() };
+    let root =
+        if id == tree::CHUNK { volume.chunk_root() } else { volume.tree(id).unwrap().unwrap() };
     let mut cursor = Cursor::seek(&volume, &root, &Key::new(0, 0, 0)).unwrap();
     while let Some((key, data)) = cursor.get() {
         if key.kind == kind && pick(data) {
@@ -205,6 +209,9 @@ fn what_is_spoiled_is_found_as_btrfs_check_finds_it() {
     drop(volume);
     image[second + 200] ^= 0x55;
     let found = report(&image, false).problems;
-    assert!(found.len() == 1 && found[0].contains("copy 2") && found[0].contains("checksum"), "{found:#?}");
+    assert!(
+        found.len() == 1 && found[0].contains("copy 2") && found[0].contains("checksum"),
+        "{found:#?}"
+    );
     let _: String = found.concat();
 }

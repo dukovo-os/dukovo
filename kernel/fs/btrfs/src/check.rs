@@ -209,6 +209,10 @@ pub fn check(volume: &Volume, data: bool, phase: &mut dyn FnMut(usize, &str)) ->
     Ok(c.report)
 }
 
+/// A chunk as the check reads it: its start, length, kind, bytes a
+/// stripe holds, and its stripes' devices and offsets.
+type ChunkRow = (u64, u64, u64, u64, Vec<(u64, u64)>);
+
 impl Check<'_> {
     /// The superblock's copies on each disk: each that the disk reaches is
     /// a Btrfs superblock of this filesystem with its checksum.
@@ -263,13 +267,17 @@ impl Check<'_> {
                         let extent =
                             ExtentItem { refs, flags, length, tree_block, level, backrefs: map };
                         if tree_block == (flags & EXTENT_DATA != 0) && !skinny {
-                            self.problem(format!("extent {}: its flags are {flags:#x}", key.objectid));
+                            self.problem(format!(
+                                "extent {}: its flags are {flags:#x}",
+                                key.objectid
+                            ));
                         }
                         if self.extents.insert(key.objectid, extent).is_some() {
                             self.problem(format!("extent {}: it has two items", key.objectid));
                         }
                     }
-                    Err(e) => self.problem(format!("extent {}: its item cannot be read: {e}", key.objectid)),
+                    Err(e) => self
+                        .problem(format!("extent {}: its item cannot be read: {e}", key.objectid)),
                 }
             }
             cursor.advance()?;
@@ -292,21 +300,26 @@ impl Check<'_> {
             if key.kind == item::ROOT_ITEM {
                 match RootItem::read(data) {
                     Some(r) if r.generation <= sb.generation => {
-                        let root = Root { bytenr: r.bytenr, level: r.level, generation: r.generation };
+                        let root =
+                            Root { bytenr: r.bytenr, level: r.level, generation: r.generation };
                         trees.push((key.objectid, root, r.refs));
                     }
                     Some(r) => self.problem(format!(
                         "tree {}: its root item says transaction {}, past the last ({})",
                         key.objectid as i64, r.generation, sb.generation
                     )),
-                    None => self.problem(format!("tree {}: its root item is too short", key.objectid as i64)),
+                    None => self.problem(format!(
+                        "tree {}: its root item is too short",
+                        key.objectid as i64
+                    )),
                 }
             }
             cursor.advance()?;
         }
         for (id, root, refs) in trees {
             self.walk(id, root);
-            let files = id == tree::FS || id == DATA_RELOC || (tree::FIRST_FREE..LAST_FREE).contains(&id);
+            let files =
+                id == tree::FS || id == DATA_RELOC || (tree::FIRST_FREE..LAST_FREE).contains(&id);
             if files && refs > 0 {
                 self.subvolumes.push((id, root));
             }
@@ -338,7 +351,8 @@ impl Check<'_> {
             self.other_copies(&want);
             let mut refs = BTreeMap::new();
             refs.insert(by, 1);
-            self.blocks.insert(want.bytenr, Reached { level: block.level(), owner: block.owner(), refs });
+            self.blocks
+                .insert(want.bytenr, Reached { level: block.level(), owner: block.owner(), refs });
             // Who the block refers to: by its tree, or by its address once
             // it is marked so.
             let full = self.extents.get(&want.bytenr).is_some_and(|e| e.flags & FULL_BACKREF != 0);
@@ -364,7 +378,11 @@ impl Check<'_> {
                 let by = if full {
                     Ref::SharedData(want.bytenr)
                 } else {
-                    Ref::Data { root: block.owner(), ino: key.objectid, offset: key.offset.wrapping_sub(offset) }
+                    Ref::Data {
+                        root: block.owner(),
+                        ino: key.objectid,
+                        offset: key.offset.wrapping_sub(offset),
+                    }
                 };
                 let extent = self.data.entry(disk_bytenr).or_default();
                 if extent.length != 0 && extent.length != disk_len {
@@ -505,7 +523,7 @@ impl Check<'_> {
     fn chunks(&mut self) -> Result<()> {
         let volume = self.volume;
         let groups = self.groups()?;
-        let chunks: Vec<(u64, u64, u64, u64, Vec<(u64, u64)>)> = volume.with_chunks(|map| {
+        let chunks: Vec<ChunkRow> = volume.with_chunks(|map| {
             map.chunks()
                 .iter()
                 .map(|c| {
@@ -580,7 +598,8 @@ impl Check<'_> {
             }
             let end = last_end.entry(devid).or_insert(0);
             if offset < *end {
-                problems.push(format!("device {devid}: its extents at {offset} and before overlap"));
+                problems
+                    .push(format!("device {devid}: its extents at {offset} and before overlap"));
             }
             *end = (*end).max(offset + len);
             *used.entry(devid).or_insert(0) += len;
@@ -617,7 +636,9 @@ impl Check<'_> {
             return Ok(());
         }
         let Some(fst) = volume.tree(tree::FREE_SPACE)? else {
-            self.problem(String::from("the superblock says there is a free-space tree, but there is none"));
+            self.problem(String::from(
+                "the superblock says there is a free-space tree, but there is none",
+            ));
             return Ok(());
         };
         let mut problems = Vec::new();
@@ -626,7 +647,8 @@ impl Check<'_> {
             let free = match crate::space::read_free(volume, &fst, start, length) {
                 Ok((free, _)) => free,
                 Err(e) => {
-                    problems.push(format!("block group {start}: its free space cannot be read: {e}"));
+                    problems
+                        .push(format!("block group {start}: its free space cannot be read: {e}"));
                     continue;
                 }
             };
@@ -637,9 +659,10 @@ impl Check<'_> {
                 self.extents.range(start..end).map(|(&at, e)| (at, at + e.length)).collect();
             taken.extend(mirrors.iter().copied());
             taken.sort_unstable();
-            for &(lo, hi) in free.iter() {
+            for &(lo, hi) in &free {
                 if lo < start || hi > end {
-                    problems.push(format!("block group {start}: free space {lo}..{hi} is outside it"));
+                    problems
+                        .push(format!("block group {start}: free space {lo}..{hi} is outside it"));
                 }
                 for &(a, b) in taken.iter().filter(|r| r.0 < hi && lo < r.1) {
                     if !mirrors.contains(&(a, b)) {
@@ -654,14 +677,14 @@ impl Check<'_> {
             covered.sort_unstable();
             for (lo, hi) in covered {
                 if lo > at {
-                    problems.push(format!(
-                        "block group {start}: {at}..{lo} is neither free nor taken"
-                    ));
+                    problems
+                        .push(format!("block group {start}: {at}..{lo} is neither free nor taken"));
                 }
                 at = at.max(hi);
             }
             if at < end {
-                problems.push(format!("block group {start}: {at}..{end} is neither free nor taken"));
+                problems
+                    .push(format!("block group {start}: {at}..{end} is neither free nor taken"));
             }
         }
         self.report.problems.extend(problems);
@@ -794,7 +817,11 @@ impl Check<'_> {
                         Some((len, counted)) => {
                             inodes.entry(ino).or_default().extents.push((key.offset, len, counted));
                         }
-                        None => problems.push(format!("{}: a file extent at {} is bad", what(ino), key.offset)),
+                        None => problems.push(format!(
+                            "{}: a file extent at {} is bad",
+                            what(ino),
+                            key.offset
+                        )),
                     }
                 }
                 ORPHAN_ITEM if ino == ORPHAN => inodes.entry(key.offset).or_default().orphan = true,
@@ -802,7 +829,8 @@ impl Check<'_> {
             }
             cursor.advance()?;
         }
-        let top = if id == DATA_RELOC || id == tree::FS || id >= tree::FIRST_FREE { 256 } else { 0 };
+        let top =
+            if id == DATA_RELOC || id == tree::FS || id >= tree::FIRST_FREE { 256 } else { 0 };
         for (&ino, items) in &inodes {
             if ino == ORPHAN {
                 continue;
@@ -822,7 +850,9 @@ impl Check<'_> {
                 if *parent == ino && ino == top {
                     continue;
                 }
-                let names_it = |e: &(Vec<u8>, Key, u8)| e.0 == *name && e.1.objectid == ino && e.1.kind == item::INODE_ITEM;
+                let names_it = |e: &(Vec<u8>, Key, u8)| {
+                    e.0 == *name && e.1.objectid == ino && e.1.kind == item::INODE_ITEM
+                };
                 let Some(p) = inodes.get(parent) else {
                     problems.push(format!("{}: its directory {parent} is missing", what(ino)));
                     continue;
@@ -838,7 +868,11 @@ impl Check<'_> {
             let links = items.names.iter().filter(|n| !(n.0 == ino && ino == top)).count() as u32;
             let want = if dir { 1 } else { links };
             if inode.nlink != want && !(items.orphan && inode.nlink == 0) {
-                problems.push(format!("{}: it has {} links, and {links} names", what(ino), inode.nlink));
+                problems.push(format!(
+                    "{}: it has {} links, and {links} names",
+                    what(ino),
+                    inode.nlink
+                ));
             }
             if dir {
                 let names: u64 = items.index.values().map(|e| e.0.len() as u64).sum();
@@ -871,8 +905,11 @@ impl Check<'_> {
                         continue;
                     }
                     let target = inodes.get(&location.objectid);
-                    let back = target.is_some_and(|t| t.names.iter().any(|n| n.0 == ino && n.1 == *index && n.2 == *name));
-                    let typed = target.and_then(|t| t.inode).is_some_and(|i| type_of(i.mode) == *kind);
+                    let back = target.is_some_and(|t| {
+                        t.names.iter().any(|n| n.0 == ino && n.1 == *index && n.2 == *name)
+                    });
+                    let typed =
+                        target.and_then(|t| t.inode).is_some_and(|i| type_of(i.mode) == *kind);
                     if !back || !typed {
                         problems.push(format!(
                             "{}: entry {} names inode {}, which does not name it back as such",
@@ -888,7 +925,8 @@ impl Check<'_> {
             let mut counted = 0;
             for &(offset, len, count) in &items.extents {
                 if offset < end {
-                    problems.push(format!("{}: its extents at {offset} and before overlap", what(ino)));
+                    problems
+                        .push(format!("{}: its extents at {offset} and before overlap", what(ino)));
                 }
                 end = end.max(offset + len);
                 counted += count;
@@ -921,7 +959,10 @@ impl Check<'_> {
         while let Some((key, data)) = cursor.get() {
             let regular = key.kind == item::EXTENT_DATA && data.len() == 53 && data[20] == 1;
             if regular && u64_at(data, 21) != 0 {
-                let sums = inodes.get(&key.objectid).and_then(|i| i.inode).is_some_and(|i| i.flags & flags::NODATASUM == 0);
+                let sums = inodes
+                    .get(&key.objectid)
+                    .and_then(|i| i.inode)
+                    .is_some_and(|i| i.flags & flags::NODATASUM == 0);
                 if sums {
                     out.push(u64_at(data, 21));
                 }
@@ -943,7 +984,8 @@ impl Check<'_> {
         };
         // The ranges the checksum tree covers.
         let mut covered: Vec<(u64, u64)> = Vec::new();
-        let mut cursor = Cursor::seek(volume, &csums, &Key::first(tree::EXTENT_CSUM, item::EXTENT_CSUM))?;
+        let mut cursor =
+            Cursor::seek(volume, &csums, &Key::first(tree::EXTENT_CSUM, item::EXTENT_CSUM))?;
         while let Some((key, sums)) = cursor.get() {
             if !key.is(tree::EXTENT_CSUM, item::EXTENT_CSUM) {
                 break;
@@ -968,7 +1010,8 @@ impl Check<'_> {
                 .map(|(s, d)| (s + d.length).min(hi) - (*s).max(lo))
                 .sum();
             if held != hi - lo {
-                problems.push(format!("checksums for {lo}..{hi}, where only {held} bytes are data"));
+                problems
+                    .push(format!("checksums for {lo}..{hi}, where only {held} bytes are data"));
             }
         }
         for (&start, d) in &self.data {
@@ -996,7 +1039,13 @@ impl Check<'_> {
 
     /// Reads every copy of the data extent at `start`, `length` bytes,
     /// and checks each sector against the checksum tree `csums`.
-    fn verify(&self, csums: &Root, start: u64, length: u64, problems: &mut Vec<String>) -> Result<()> {
+    fn verify(
+        &self,
+        csums: &Root,
+        start: u64,
+        length: u64,
+        problems: &mut Vec<String>,
+    ) -> Result<()> {
         let volume = self.volume;
         let sb = volume.superblock();
         let sector = u64::from(sb.sectorsize);
@@ -1006,7 +1055,9 @@ impl Check<'_> {
             let len = place.len.min(start + length - at).min(1 << 20);
             let count = (len / sector) as usize;
             let mut sums = Vec::with_capacity(count);
-            crate::extent::each_sum(volume, csums, at, count, &mut |_, sum| sums.push(sum.map(<[u8]>::to_vec)))?;
+            crate::extent::each_sum(volume, csums, at, count, &mut |_, sum| {
+                sums.push(sum.map(<[u8]>::to_vec));
+            })?;
             for (n, site) in place.copies().iter().enumerate() {
                 let mut bytes = std::vec![0; len as usize];
                 if let Err(e) = volume.read_site(*site, &mut bytes) {
@@ -1014,7 +1065,10 @@ impl Check<'_> {
                     continue;
                 }
                 for (i, piece) in bytes.chunks(sector as usize).enumerate() {
-                    let good = sums.get(i).and_then(Option::as_ref).is_some_and(|s| sb.csum_type.matches(piece, s));
+                    let good = sums
+                        .get(i)
+                        .and_then(Option::as_ref)
+                        .is_some_and(|s| sb.csum_type.matches(piece, s));
                     if !good {
                         problems.push(format!(
                             "data at {}: copy {} has a bad checksum",
@@ -1040,7 +1094,11 @@ impl Check<'_> {
         while let Some((key, data)) = cursor.get() {
             if matches!(key.kind, item::ROOT_REF | item::ROOT_BACKREF) && data.len() >= 18 {
                 let len = usize::from(u16_at(data, 16));
-                let value = (u64_at(data, 0), u64_at(data, 8), data.get(18..18 + len).unwrap_or_default().to_vec());
+                let value = (
+                    u64_at(data, 0),
+                    u64_at(data, 8),
+                    data.get(18..18 + len).unwrap_or_default().to_vec(),
+                );
                 if key.kind == item::ROOT_REF {
                     refs.insert((key.objectid, key.offset), value);
                 } else {
@@ -1065,9 +1123,13 @@ impl Check<'_> {
             // The parent's directory has the entry.
             let Some(&(_, tree_root)) = subvolumes.iter().find(|s| s.0 == parent) else { continue };
             let key = Key::new(*dirid, item::DIR_INDEX, *index);
-            let named = crate::tree::find(volume, &tree_root, &key)?.and_then(|d| dir_entries(&d)).is_some_and(|e| {
-                e.iter().any(|(location, _, n)| n == name && location.objectid == child && location.kind == item::ROOT_ITEM)
-            });
+            let named = crate::tree::find(volume, &tree_root, &key)?
+                .and_then(|d| dir_entries(&d))
+                .is_some_and(|e| {
+                    e.iter().any(|(location, _, n)| {
+                        n == name && location.objectid == child && location.kind == item::ROOT_ITEM
+                    })
+                });
             if !named {
                 problems.push(format!(
                     "subvolume {child}: directory {dirid} of {parent} has no entry {} at {index}",

@@ -3,13 +3,14 @@
 
 //! Two blank virtio disks, one of 512-byte sectors and one of 4 KiB
 //! sectors, are given a Btrfs at the console with Dukovo's own tools.
-//! *mkfs-btrfs* makes one on the first; *mkfs.btrfs* must then refuse to
+//! The first is made by *mkfs-btrfs*; *mkfs.btrfs* must then refuse to
 //! make another over it without *-f*, and *mkfs -t btrfs -f* makes it
-//! again, labelled, which */devices/disk/by-label* must lead to.
-//! *mkfs.btrfs -f* makes one of 4 KiB nodes, one copy of metadata and
-//! xxHash checksums on the second. *fsck-btrfs* and *btrfsck
-//! --check-data-csum* must find both whole, and refuse *--repair*. On the
-//! host, Linux's *btrfs check* must find both whole (ADRs 0304 and 0305).
+//! again, labelled, which */devices/disk/by-label* must lead to. The
+//! second is made by *mkfs.btrfs -f*, with 4 KiB nodes, one copy of
+//! metadata and xxHash checksums. Both must be found whole by
+//! *fsck-btrfs* and by *btrfsck* with its *--check-data-csum*, which
+//! must refuse *--repair*. On the host, Linux's *btrfs check* must find
+//! both whole (ADRs 0304 and 0305).
 
 use super::super::*;
 

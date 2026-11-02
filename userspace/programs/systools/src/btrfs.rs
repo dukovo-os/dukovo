@@ -77,9 +77,7 @@ fn csum_named(text: &str) -> Result<CsumType, Fail> {
         "xxhash" | "xxhash64" => Ok(CsumType::Xxhash64),
         "sha256" => Ok(CsumType::Sha256),
         "blake2" | "blake2b" => Ok(CsumType::Blake2b),
-        _ => Err(util::usage(format!(
-            "'{text}' is no checksum: crc32c, xxhash, sha256 or blake2"
-        ))),
+        _ => Err(util::usage(format!("'{text}' is no checksum: crc32c, xxhash, sha256 or blake2"))),
     }
 }
 
@@ -113,7 +111,9 @@ fn summary(shown: &str, options: &Options<'_>, layout: &Layout) {
     println!("Sector size:        {}", btrfs::SECTORSIZE);
     println!("Filesystem size:    {}", pretty(layout.total_bytes));
     println!("Block group profiles:");
-    for (name, flag) in [("Data", kind::DATA), ("Metadata", kind::METADATA), ("System", kind::SYSTEM)] {
+    for (name, flag) in
+        [("Data", kind::DATA), ("Metadata", kind::METADATA), ("System", kind::SYSTEM)]
+    {
         for group in layout.groups.iter().filter(|g| g.flags & flag != 0) {
             let profile = if group.flags & kind::DUP != 0 { "DUP" } else { "single" };
             println!("  {:<18}{profile:<8}{:>12}", format!("{name}:"), pretty(group.length));
@@ -301,7 +301,11 @@ pub fn fsck_btrfs(args: &mut Args) -> Result<i32, Fail> {
         }
     }
     let [path] = operands.as_slice() else {
-        return Err(Fail { code: USAGE, message: "say the one device or file to check".into(), usage: true });
+        return Err(Fail {
+            code: USAGE,
+            message: "say the one device or file to check".into(),
+            usage: true,
+        });
     };
     let opened = blockdev::open(path, false, None).map_err(|f| Fail { code: OPERATIONAL, ..f })?;
     if opened.uses() != 0 && !force {

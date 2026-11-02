@@ -134,15 +134,21 @@ fn copy(from: &Path, to: &NodeRef) -> Result<()> {
             let link = Access::default_for(Kind::Symlink);
             to.make_link(name, target, link).map_err(|err| failed(&shown, err))?;
         } else if kind.is_dir() {
-            let dir = to.create(name, Kind::Directory, access_of(&meta)).map_err(|err| failed(&shown, err))?;
+            let dir = to
+                .create(name, Kind::Directory, access_of(&meta))
+                .map_err(|err| failed(&shown, err))?;
             copy(&path, &dir)?;
             dir.set_times(None, Some(modified(&meta))).map_err(|err| failed(&shown, err))?;
         } else if kind.is_file() {
             let data = std::fs::read(&path).context(|| format!("reading {shown}"))?;
-            let file = to.create(name, Kind::File, access_of(&meta)).map_err(|err| failed(&shown, err))?;
+            let file =
+                to.create(name, Kind::File, access_of(&meta)).map_err(|err| failed(&shown, err))?;
             let written = file.write(0, &Slice(&data)).map_err(|err| failed(&shown, err))?;
             if written != data.len() {
-                return Err(Error::new(format!("{shown}: {written} of {} bytes written", data.len())));
+                return Err(Error::new(format!(
+                    "{shown}: {written} of {} bytes written",
+                    data.len()
+                )));
             }
             let when = modified(&meta);
             file.set_times(Some(when), Some(when)).map_err(|err| failed(&shown, err))?;
@@ -165,8 +171,12 @@ mod tests {
     /// The `btrfs` of btrfs-progs that `ob test` points `RADIX_BTRFS_PROGS`
     /// at, or the system's, if there is one.
     fn btrfs_tool() -> Option<PathBuf> {
-        let pinned = std::env::var_os("RADIX_BTRFS_PROGS").map(|sbin| PathBuf::from(sbin).join("../bin/btrfs"));
-        pinned.into_iter().chain(["/usr/bin/btrfs", "/bin/btrfs", "/usr/sbin/btrfs"].map(PathBuf::from)).find(|p| p.exists())
+        let pinned = std::env::var_os("RADIX_BTRFS_PROGS")
+            .map(|sbin| PathBuf::from(sbin).join("../bin/btrfs"));
+        pinned
+            .into_iter()
+            .chain(["/usr/bin/btrfs", "/bin/btrfs", "/usr/sbin/btrfs"].map(PathBuf::from))
+            .find(|p| p.exists())
     }
 
     fn read_all(node: &NodeRef) -> Vec<u8> {

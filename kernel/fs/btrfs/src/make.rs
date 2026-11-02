@@ -218,9 +218,11 @@ impl Group {
         let mut out = mem::vec();
         for mirror in MIRRORS {
             for &stripe in &self.stripes[..self.copies] {
-                let (lo, hi) = (mirror.max(stripe), (mirror + MIRROR_GUARD).min(stripe + self.length));
+                let (lo, hi) =
+                    (mirror.max(stripe), (mirror + MIRROR_GUARD).min(stripe + self.length));
                 if lo < hi {
-                    let _ = mem::push(&mut out, (self.start + lo - stripe, self.start + hi - stripe));
+                    let _ =
+                        mem::push(&mut out, (self.start + lo - stripe, self.start + hi - stripe));
                 }
             }
         }
@@ -273,8 +275,13 @@ pub fn layout(bytes: u64, dup: bool) -> Result<Layout> {
         copies,
     };
     let at = at + length * copies as u64;
-    let data =
-        Group { flags: kind::DATA, start: metadata.end(), length: 8 * MIB, stripes: [at, 0], copies: 1 };
+    let data = Group {
+        flags: kind::DATA,
+        start: metadata.end(),
+        length: 8 * MIB,
+        stripes: [at, 0],
+        copies: 1,
+    };
     if at + data.length > total {
         return Err(Error::NoSpace);
     }
@@ -442,7 +449,8 @@ pub fn make(device: &DeviceRef, o: &Options<'_>) -> Result<Layout> {
         let mut out = mem::vec_with_capacity(count)?;
         let mut at = group.start;
         while out.len() < count {
-            if let Some(&(_, hi)) = mirrors.iter().find(|&&(lo, hi)| at < hi && lo < at + nodesize) {
+            if let Some(&(_, hi)) = mirrors.iter().find(|&&(lo, hi)| at < hi && lo < at + nodesize)
+            {
                 at = hi.div_ceil(nodesize) * nodesize;
                 continue;
             }
@@ -522,11 +530,19 @@ pub fn make(device: &DeviceRef, o: &Options<'_>) -> Result<Layout> {
         leaf.add(Key::new(id, item::ROOT_ITEM, 0), ROOT_ITEM_SIZE, |d| root.fill(d, o.nodesize))?;
     }
     const DEFAULT: &[u8] = b"default";
-    leaf.add(Key::new(tree::FS, item::INODE_REF, tree::ROOT_TREE_DIR), 10 + DEFAULT.len(), inode_ref(DEFAULT))?;
+    leaf.add(
+        Key::new(tree::FS, item::INODE_REF, tree::ROOT_TREE_DIR),
+        10 + DEFAULT.len(),
+        inode_ref(DEFAULT),
+    )?;
     leaf.add(Key::new(tree::ROOT_TREE_DIR, item::INODE_ITEM, 0), INODE_ITEM_SIZE, |d| {
         directory(d, o.nodesize, Some(o.time));
     })?;
-    leaf.add(Key::new(tree::ROOT_TREE_DIR, item::INODE_REF, tree::ROOT_TREE_DIR), 12, inode_ref(b".."))?;
+    leaf.add(
+        Key::new(tree::ROOT_TREE_DIR, item::INODE_REF, tree::ROOT_TREE_DIR),
+        12,
+        inode_ref(b".."),
+    )?;
     let entry = Key::new(tree::ROOT_TREE_DIR, item::DIR_ITEM, name_hash(DEFAULT));
     leaf.add(entry, 30 + DEFAULT.len(), |d| {
         put_key(d, 0, &Key::new(tree::FS, item::ROOT_ITEM, u64::MAX));
@@ -546,7 +562,8 @@ pub fn make(device: &DeviceRef, o: &Options<'_>) -> Result<Layout> {
             put_u64(d, 16, group.flags);
         })?;
     }
-    let owners = core::iter::once((chunk_root, tree::CHUNK)).chain(TREES.iter().map(|&id| (at(id), id)));
+    let owners =
+        core::iter::once((chunk_root, tree::CHUNK)).chain(TREES.iter().map(|&id| (at(id), id)));
     for (bytenr, owner) in owners {
         leaf.add(Key::new(bytenr, item::METADATA_ITEM, 0), 33, |d| {
             put_u64(d, 0, 1);
@@ -589,7 +606,8 @@ pub fn make(device: &DeviceRef, o: &Options<'_>) -> Result<Layout> {
     // subvolume.
     mem::push(&mut leaves, Leaf::new(tree::CSUM, at(tree::CSUM)))?;
     let mut leaf = Leaf::new(tree::UUID, at(tree::UUID));
-    let (high, low) = (crate::format::u64_at(&o.top_uuid, 0), crate::format::u64_at(&o.top_uuid, 8));
+    let (high, low) =
+        (crate::format::u64_at(&o.top_uuid, 0), crate::format::u64_at(&o.top_uuid, 8));
     leaf.add(Key::new(high, UUID_SUBVOL, low), 8, |d| put_u64(d, 0, tree::FS))?;
     mem::push(&mut leaves, leaf)?;
 
@@ -597,8 +615,9 @@ pub fn make(device: &DeviceRef, o: &Options<'_>) -> Result<Layout> {
     let mut leaf = Leaf::new(tree::FREE_SPACE, at(tree::FREE_SPACE));
     for group in [system, metadata, data] {
         let mut taken = group.mirrors();
-        let tree_blocks =
-            core::iter::once(chunk_root).chain(blocks.iter().copied()).filter(|&b| b >= group.start && b < group.end());
+        let tree_blocks = core::iter::once(chunk_root)
+            .chain(blocks.iter().copied())
+            .filter(|&b| b >= group.start && b < group.end());
         for bytenr in tree_blocks {
             mem::push(&mut taken, (bytenr, bytenr + nodesize))?;
         }
@@ -653,8 +672,10 @@ pub fn make(device: &DeviceRef, o: &Options<'_>) -> Result<Layout> {
     put_u32(&mut sb, at::STRIPESIZE, SECTORSIZE);
     put_u64(&mut sb, at::CHUNK_ROOT_GENERATION, GENERATION);
     put_u64(&mut sb, at::COMPAT_RO, compat_ro::FREE_SPACE_TREE | compat_ro::FREE_SPACE_TREE_VALID);
-    let mut features =
-        incompat::MIXED_BACKREF | incompat::EXTENDED_IREF | incompat::SKINNY_METADATA | incompat::NO_HOLES;
+    let mut features = incompat::MIXED_BACKREF
+        | incompat::EXTENDED_IREF
+        | incompat::SKINNY_METADATA
+        | incompat::NO_HOLES;
     if o.nodesize > SECTORSIZE {
         features |= incompat::BIG_METADATA;
     }

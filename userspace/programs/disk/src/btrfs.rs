@@ -14,8 +14,8 @@ use std::io;
 use radix_block::{BlockDevice, DeviceRef, Error as BlockError, Info, SECTOR, Segment, SegmentMut};
 
 pub use radix_btrfs::check::{PHASES, Report};
-pub use radix_btrfs::csum::CsumType;
 pub use radix_btrfs::chunk::kind;
+pub use radix_btrfs::csum::CsumType;
 pub use radix_btrfs::make::{Layout, MIN_BYTES, NODESIZE, Options, SECTORSIZE};
 
 use crate::device::Device;
@@ -56,7 +56,11 @@ impl BlockFile {
 impl BlockFile {
     /// Checks a request of `segments` from `sector`, as every block device
     /// does.
-    fn fits(&self, sector: u64, segments: impl Iterator<Item = (usize, usize)>) -> Result<(), BlockError> {
+    fn fits(
+        &self,
+        sector: u64,
+        segments: impl Iterator<Item = (usize, usize)>,
+    ) -> Result<(), BlockError> {
         let i = &self.info;
         radix_block::check(i.sectors, i.unit(), i.max_segments, sector, segments).map(drop)
     }
@@ -90,7 +94,9 @@ impl BlockDevice for BlockFile {
         self.fits(sector, segments.iter().map(|s| (s.offset, s.len)))?;
         let mut at = sector * SECTOR;
         for s in segments {
-            self.device.write_at(at, &s.page.bytes()[s.offset..s.offset + s.len]).map_err(io_error)?;
+            self.device
+                .write_at(at, &s.page.bytes()[s.offset..s.offset + s.len])
+                .map_err(io_error)?;
             at += s.len as u64;
         }
         Ok(())
@@ -104,10 +110,9 @@ impl BlockDevice for BlockFile {
 /// What a filesystem's errors say, in words.
 pub fn describe(err: radix_vfs::Error) -> String {
     match err {
-        radix_vfs::Error::NoSpace => format!(
-            "the device is too small: a Btrfs needs {} MiB at least",
-            MIN_BYTES >> 20
-        ),
+        radix_vfs::Error::NoSpace => {
+            format!("the device is too small: a Btrfs needs {} MiB at least", MIN_BYTES >> 20)
+        }
         radix_vfs::Error::Io => String::from("the device could not be read or written"),
         radix_vfs::Error::Corrupt => String::from("it is damaged"),
         radix_vfs::Error::UnknownFilesystem => String::from("it holds no Btrfs"),
@@ -150,7 +155,8 @@ impl Checking {
     /// Why it cannot be checked, in words: it is no Btrfs, or those trees
     /// cannot be read.
     pub fn open(device: &Device) -> Result<Checking, String> {
-        let file = BlockFile::new(device.part(0, device.sectors()).map_err(|e| e.to_string())?, true);
+        let file =
+            BlockFile::new(device.part(0, device.sectors()).map_err(|e| e.to_string())?, true);
         let volume = radix_btrfs::Volume::open(file.into_ref()).map_err(describe)?;
         Ok(Checking { volume })
     }

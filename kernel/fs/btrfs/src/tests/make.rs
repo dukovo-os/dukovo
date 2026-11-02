@@ -12,8 +12,8 @@ use std::string::{String, ToString};
 use std::vec;
 use std::vec::Vec;
 
-use radix_block::ram::RamDisk;
 use radix_block::DeviceRef;
+use radix_block::ram::RamDisk;
 use radix_vfs::mem::{self, KArc};
 use radix_vfs::{Error, FileSystem, Kind, Slice};
 
@@ -56,7 +56,11 @@ fn inspect(args: &[&str], path: &std::path::Path) -> String {
         .stdin(std::process::Stdio::null())
         .output()
         .unwrap();
-    assert!(out.status.success(), "btrfs inspect-internal: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "btrfs inspect-internal: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     String::from_utf8_lossy(&out.stdout).into_owned()
 }
 
@@ -67,7 +71,11 @@ fn shape(dump: &str) -> Vec<String> {
     let mut out = Vec::new();
     for line in dump.lines() {
         let line = line.trim();
-        if line.ends_with("tree key") || line.contains(" tree key (") || line.starts_with("chunk tree") || line.starts_with("root tree") {
+        if line.ends_with("tree key")
+            || line.contains(" tree key (")
+            || line.starts_with("chunk tree")
+            || line.starts_with("root tree")
+        {
             out.push(line.split(" key").next().unwrap_or(line).to_string());
         }
         let Some(key) = line.split("key (").nth(1).filter(|_| line.starts_with("item ")) else {
@@ -75,7 +83,8 @@ fn shape(dump: &str) -> Vec<String> {
         };
         let mut fields = key.split(' ');
         let (objectid, kind) = (fields.next().unwrap_or(""), fields.next().unwrap_or(""));
-        let objectid = if objectid.starts_with(|c: char| c.is_ascii_digit()) { "#" } else { objectid };
+        let objectid =
+            if objectid.starts_with(|c: char| c.is_ascii_digit()) { "#" } else { objectid };
         out.push(format!("  {objectid} {kind}"));
     }
     out
@@ -143,7 +152,9 @@ fn what_is_made_is_what_mkfs_btrfs_makes() {
     assert_eq!(trees(&a), trees(&b), "ours:\n{a}\n\nmkfs.btrfs's:\n{b}");
     let supers = |path| features(&inspect(&["dump-super", "-f"], path));
     assert_eq!(supers(&ours_at), supers(&theirs_at));
-    assert!(a.contains("label made") || inspect(&["dump-super"], &ours_at).contains("label\t\t\tmade"));
+    assert!(
+        a.contains("label made") || inspect(&["dump-super"], &ours_at).contains("label\t\t\tmade")
+    );
     let _ = std::fs::remove_file(&ours_at);
     let _ = std::fs::remove_file(&theirs_at);
 }
@@ -164,7 +175,10 @@ fn chunks_are_mkfs_btrfss_sizes() {
     assert_eq!(metadata(2 << 40), 1 << 30);
     let layout = make::layout(512 * MIB, true).unwrap();
     let [system, meta, data] = layout.groups;
-    assert_eq!((system.flags, system.length, system.copies), (kind::SYSTEM | kind::DUP, 8 * MIB, 2));
+    assert_eq!(
+        (system.flags, system.length, system.copies),
+        (kind::SYSTEM | kind::DUP, 8 * MIB, 2)
+    );
     assert_eq!((meta.flags, meta.copies), (kind::METADATA | kind::DUP, 2));
     assert_eq!((data.flags, data.length, data.copies), (kind::DATA, 8 * MIB, 1));
     assert_eq!(layout.allocated(), 88 * MIB);
@@ -247,7 +261,10 @@ fn what_is_made_is_written_and_read_back() {
     system.make_link("sh", "bin/text", LINK).unwrap();
     radix_vfs::downcast::<BtrfsNode>(&*system).unwrap().make_read_only().unwrap();
     // Not the top of a subvolume.
-    assert_eq!(radix_vfs::downcast::<BtrfsNode>(&*dir).unwrap().make_read_only(), Err(Error::InvalidArgument));
+    assert_eq!(
+        radix_vfs::downcast::<BtrfsNode>(&*dir).unwrap().make_read_only(),
+        Err(Error::InvalidArgument)
+    );
     fs.sync().unwrap();
     drop((dir, system, root, fs));
     checks(&disk, size, "written");
