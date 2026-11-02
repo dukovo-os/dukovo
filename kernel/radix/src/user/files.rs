@@ -115,6 +115,15 @@ impl Path {
         radix_vfs::path::parse(self.bytes()).map_err(fs::status)
     }
 
+    /// The bytes as a mount's source, which names it in the mounts list:
+    /// text, as `//server/share` or a device's name is, without NULs.
+    fn as_source(&self) -> Result<&str> {
+        match core::str::from_utf8(self.bytes()) {
+            Ok(text) if !text.contains('\0') => Ok(text),
+            _ => Err(fs::status(radix_vfs::Error::BadName)),
+        }
+    }
+
     /// The bytes as a symbolic link's target: UTF-8, which may start with
     /// `/` (the VFS checks the rest).
     fn as_target(&self) -> Result<&str> {
@@ -283,6 +292,7 @@ fn filesystem_kind(kind: FsKind) -> FilesystemKind {
         FsKind::Dev => FilesystemKind::Dev,
         FsKind::Boot => FilesystemKind::Bootfs,
         FsKind::Pipe => FilesystemKind::Pipe,
+        FsKind::Fuse => FilesystemKind::Fuse,
     }
 }
 
@@ -809,6 +819,7 @@ pub fn directory_method(
             answer(label, directory::RealPathResults::WORDS, results.encode())
         }
         directory::MOUNT => mount_method(user, found, label, args),
+        directory::MOUNT_FUSE => mount_fuse_method(user, found, label, args),
         directory::UNMOUNT => {
             let a = directory::UnmountArgs::decode(args)?;
             let dir = directory_of(found, Rights::CONTROL)?;
@@ -975,6 +986,34 @@ fn mount_method(user: &UserRef, found: &Found, label: u32, args: &[u64; 8]) -> R
     let made = fs::make(kind, source.as_ref().map(|s| &s.at.node), flags).map_err(fs::status)?;
     let mount = vfs()?
         .mount(&who, &dir.at, path.as_str()?, made.fs, made.source.as_str(), read_only)
+        .map_err(fs::status)?;
+    log_mount(mount, false);
+    answer(label, 0, [0; 8])
+}
+
+/// `mount_fuse` (ADR 0226): mounts the filesystem a program serves
+/// through a connection of `/devices/fuse`. Out of line, as `mount` is.
+#[inline(never)]
+fn mount_fuse_method(user: &UserRef, found: &Found, label: u32, args: &[u64; 8]) -> Result<Answer> {
+    let a = directory::MountFuseArgs::decode(args)?;
+    let dir = directory_of(found, Rights::CONTROL)?;
+    if dir.at.in_view() {
+        return Err(Kernel::NotSupported.status(0));
+    }
+    if a.flags.contains(MountFlags::COMPRESS) || a.flags.contains(MountFlags::DISCARD_HIBERNATION) {
+        return Err(Kernel::InvalidArgument.status(3));
+    }
+    let read_only = a.flags.contains(MountFlags::READ_ONLY);
+    let mut path = Path::Empty;
+    let path = path.copy(a.path)?;
+    let mut source = Path::Empty;
+    let source = source.copy(a.source)?;
+    let (_, file) = objects::file(user.cspace, a.connection, Rights::READ.union(Rights::WRITE))?;
+    let conn = fs::fuse::channel_of(&file.at.node).ok_or(error(Kernel::WrongKind))?.connection();
+    let who = who(found.cap.rights(), dir)?;
+    let made = radix_fuse::FuseFs::mount(conn, read_only).map_err(fs::status)?;
+    let mount = vfs()?
+        .mount(&who, &dir.at, path.as_str()?, made, source.as_source()?, read_only)
         .map_err(fs::status)?;
     log_mount(mount, false);
     answer(label, 0, [0; 8])
@@ -2023,6 +2062,8 @@ enum Target<'a> {
     Mouse,
     /// `/devices/fb0`.
     Framebuffer,
+    /// A connection of `/devices/fuse`.
+    Fuse,
     /// A file of the tree, through its node.
     Node,
 }
@@ -2044,6 +2085,8 @@ fn target(file: &FileObject) -> Target<'_> {
         Target::Mouse
     } else if file.is_framebuffer() {
         Target::Framebuffer
+    } else if file.fuse_channel().is_some() {
+        Target::Fuse
     } else {
         Target::Node
     }
@@ -2102,6 +2145,7 @@ fn read_special(
         Target::Kmsg => fs::kmsg::read(file, out, non_blocking).map(|n| n as u64),
         Target::Keyboard => fs::keyboard::read(file, out, non_blocking).map(|n| n as u64),
         Target::Mouse => fs::mouse::read(file, out, non_blocking).map(|n| n as u64),
+        Target::Fuse => fs::fuse::read(file, out, non_blocking).map(|n| n as u64),
         Target::Framebuffer | Target::Node => Ok(0),
     }
 }
@@ -2162,6 +2206,7 @@ fn write_special(
         Target::Inet(socket) => socket.send(data, None, non_blocking, true).map(|n| n as u64),
         Target::Tty(handle) => handle.write(user, data, non_blocking).map(|n| n as u64),
         Target::Kmsg => fs::kmsg::write(data).map(|n| n as u64),
+        Target::Fuse => fs::fuse::write(file, data).map(|n| n as u64),
         Target::Framebuffer if offset == file::CURRENT => {
             let mut at = file.offset.lock();
             let written = fs::framebuffer::write(file, *at, data)? as u64;
@@ -2211,6 +2256,12 @@ fn stands_for(at: &Location, rights: Rights, non_blocking: bool) -> Result<Optio
         return Ok(None);
     }
     let no_device = || radix_abi::errors::File::NoDevice.status(0);
+    // A filesystem a program serves is never a way to the kernel's
+    // devices: its device nodes are denied, as on a Linux mount with
+    // `nodev` (ADR 0226).
+    if at.mount.fs.kind() == FsKind::Fuse && matches!(kind, Kind::CharDevice | Kind::BlockDevice) {
+        return Err(radix_abi::errors::File::Denied.status(0));
+    }
     match kind {
         Kind::Pipe => {
             let (read, write) = (rights.contains(Rights::READ), rights.contains(Rights::WRITE));

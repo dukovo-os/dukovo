@@ -8,15 +8,16 @@
 //! never blocks once seeded at boot), a block device for each disk and
 //! partition `disk` finds, the terminals (Phase 8, `tty`): `ptmx`, `tty`
 //! and `pts/N`, since Phase 9 the kernel log (`kmsg`), the keyboards
-//! (`kbd`, from `keyboard`) and the screen (`fb0`, from `framebuffer`), and
-//! since Phase 11a the pointers (`mouse`, from `mouse`), and since Phase
-//! 14 `disk`, a link to `/system/live/disk`, where volumed(8) and the
-//! disk tools keep the links to disks by label and UUID (ADR 0303), as
-//! udev keeps Linux's in `/dev/disk`. Programs make and
-//! remove nothing in it; only the kernel adds devices, `pts/N` comes and
-//! goes with its pseudo-terminal, a USB disk and its partitions with
-//! the disk (Phase 11b), and a USB serial port's terminal, `ttyACM0` or
-//! `ttyUSB0` and on, with the port (Phase 11g).
+//! (`kbd`, from `keyboard`) and the screen (`fb0`, from `framebuffer`),
+//! since Phase 11a the pointers (`mouse`, from `mouse`), since Phase 13f
+//! the connections of filesystems that programs serve (`fuse`, from
+//! `fuse`), and since Phase 14 `disk`, a link to `/system/live/disk`,
+//! where volumed(8) and the disk tools keep the links to disks by label
+//! and UUID (ADR 0303), as udev keeps Linux's in `/dev/disk`. Programs
+//! make and remove nothing in it; only the kernel adds devices, `pts/N`
+//! comes and goes with its pseudo-terminal, a USB disk and its
+//! partitions with the disk (Phase 11b), and a USB serial port's
+//! terminal, `ttyACM0` or `ttyUSB0` and on, with the port (Phase 11g).
 
 use radix_block::DeviceRef;
 use radix_klog::{error, warn};
@@ -51,6 +52,8 @@ pub fn init() {
         root.add("mouse", mouse)?;
         let fb0: NodeRef = mem::arc(super::framebuffer::Framebuffer(next_id()))?;
         root.add("fb0", fb0)?;
+        let fuse: NodeRef = mem::arc(super::fuse::Fuse(next_id()))?;
+        root.add("fuse", fuse)?;
         root.add("disk", Link::make(next_id(), DISK_LINKS)?)?;
         super::tty::init(&root)?;
         Ok(root)
@@ -65,7 +68,7 @@ pub fn init() {
 
 /// The character devices of the tree that a device node made elsewhere
 /// opens, by Linux's numbers for them (ADR 0135).
-const NUMBERS: [((u32, u32), &str); 8] = [
+const NUMBERS: [((u32, u32), &str); 9] = [
     ((1, 3), "null"),
     ((1, 5), "zero"),
     ((1, 8), "random"),
@@ -73,6 +76,7 @@ const NUMBERS: [((u32, u32), &str); 8] = [
     ((1, 11), "kmsg"),
     ((5, 0), "tty"),
     ((5, 2), "ptmx"),
+    ((10, 229), "fuse"),
     ((29, 0), "fb0"),
 ];
 
