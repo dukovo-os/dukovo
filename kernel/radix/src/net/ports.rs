@@ -20,6 +20,12 @@
 //! one of AF_INET6 that takes both holds the port in both, as on Linux,
 //! so that a server may listen on port 22 over both through one socket
 //! or two.
+//!
+//! UDP sockets that set SO_REUSEADDR before they take a port share it
+//! with the others that did, and those that set SO_REUSEPORT with the
+//! others that set that, as on Linux (ADR 0336): two programs both hear
+//! mDNS on port 5353. A ping socket's echo identifier
+//! is held as a port is, of a protocol of its own.
 
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
@@ -31,6 +37,8 @@ use radix_sync::Mutex;
 pub enum Protocol {
     Tcp,
     Udp,
+    /// Ping sockets' echo identifiers.
+    Ping,
 }
 
 /// The versions of IP whose ports a socket holds: one, or both.
@@ -65,9 +73,9 @@ struct Table {
 /// Where the next search for a port of the kernel's own starts.
 struct Cursor(AtomicUsize);
 
-/// TCP's and UDP's tables, IPv4's then IPv6's.
-static TABLES: [Table; 4] = [const { Table { words: [const { AtomicU64::new(0) }; 1024] } }; 4];
-static CURSORS: [Cursor; 2] = [const { Cursor(AtomicUsize::new(0)) }; 2];
+/// TCP's, UDP's and ping's tables, IPv4's then IPv6's.
+static TABLES: [Table; 6] = [const { Table { words: [const { AtomicU64::new(0) }; 1024] } }; 6];
+static CURSORS: [Cursor; 3] = [const { Cursor(AtomicUsize::new(0)) }; 3];
 
 fn table(protocol: Protocol, v6: bool) -> &'static Table {
     &TABLES[protocol as usize * 2 + usize::from(v6)]
@@ -79,14 +87,52 @@ const EPHEMERAL: usize = 65_536 - EPHEMERAL_FIRST as usize;
 /// The most ports held by sockets bound to an interface at once.
 const SHARED_MAX: usize = 64;
 
-/// A port a socket bound to an interface holds, of one version of IP:
-/// its bit is set while any is here.
+/// How a datagram socket shares its port, as on Linux (ADR 0336): with
+/// SO_REUSEADDR, with the others that set it; with SO_REUSEPORT, with
+/// the others that set that.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Reuse {
+    /// SO_REUSEADDR.
+    pub address: bool,
+    /// SO_REUSEPORT.
+    pub port: bool,
+}
+
+impl Reuse {
+    /// Shared with none.
+    pub const NONE: Reuse = Reuse { address: false, port: false };
+
+    /// Whether it shares with any.
+    fn any(self) -> bool {
+        self.address || self.port
+    }
+
+    /// Whether a socket that reuses as this does may share a port with
+    /// one that reuses as `other` does: both set SO_REUSEADDR, or both
+    /// SO_REUSEPORT.
+    fn with(self, other: Reuse) -> bool {
+        (self.address && other.address) || (self.port && other.port)
+    }
+}
+
+/// A port a socket bound to an interface holds, or one that reuses
+/// ports, of one version of IP: its bit is set while any is here.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Shared {
     protocol: Protocol,
     v6: bool,
     port: u16,
     device: u32,
+    reuse: Reuse,
+}
+
+impl Shared {
+    /// Whether a socket on `device`, reusing ports as `reuse` says, may
+    /// hold the port beside this one: both reuse it alike, or they are
+    /// bound to two interfaces.
+    fn beside(&self, device: u32, reuse: Reuse) -> bool {
+        reuse.with(self.reuse) || (device != 0 && self.device != 0 && self.device != device)
+    }
 }
 
 /// The ports held by sockets bound to an interface. Nothing is locked
@@ -102,6 +148,8 @@ pub struct Held {
     /// The interface it is held on, which others may hold it on too; 0
     /// if the socket holds it alone.
     device: u32,
+    /// How others that reuse ports may hold it too.
+    reuse: Reuse,
 }
 
 impl Held {
@@ -119,22 +167,22 @@ impl Held {
 impl Drop for Held {
     fn drop(&mut self) {
         for v6 in self.versions.each() {
-            release(self.protocol, v6, self.port, self.device);
+            release(self.protocol, v6, self.port, self.device, self.reuse);
         }
     }
 }
 
-/// Lets go of `port` of `protocol` and one version of IP, held alone or
-/// on `device`.
-fn release(protocol: Protocol, v6: bool, port: u16, device: u32) {
+/// Lets go of `port` of `protocol` and one version of IP, held alone, on
+/// `device` or with others that `reuse` it.
+fn release(protocol: Protocol, v6: bool, port: u16, device: u32, reuse: Reuse) {
     let (word, bit) = place(port);
     let words = &table(protocol, v6).words;
-    if device == 0 {
+    if device == 0 && !reuse.any() {
         words[word].fetch_and(!bit, Ordering::Release);
         return;
     }
     let mut shared = SHARED.lock();
-    let ours = Some(Shared { protocol, v6, port, device });
+    let ours = Some(Shared { protocol, v6, port, device, reuse });
     if let Some(slot) = shared.iter_mut().find(|s| **s == ours) {
         *slot = None;
     }
@@ -151,35 +199,43 @@ fn place(port: u16) -> (usize, u64) {
 /// Takes `port` (1 to 65,535) of `protocol` and `versions`, unless a
 /// socket holds it in any of them.
 pub fn take(protocol: Protocol, versions: Versions, port: u16) -> Option<Held> {
-    take_on(protocol, versions, port, 0)
+    take_on(protocol, versions, port, 0, Reuse::NONE)
 }
 
 /// Takes `port` (1 to 65,535) of `protocol` and `versions` on the
 /// interface numbered `device`, for a socket bound to it, unless a
 /// socket bound to no interface or to that one holds it; on 0, alone.
-pub fn take_on(protocol: Protocol, versions: Versions, port: u16, device: u32) -> Option<Held> {
+/// With `reuse`, others that reuse it alike may hold it too, whatever
+/// their interfaces, and it is taken beside them.
+pub fn take_on(
+    protocol: Protocol,
+    versions: Versions,
+    port: u16,
+    device: u32,
+    reuse: Reuse,
+) -> Option<Held> {
     if port == 0 {
         return None;
     }
     let mut taken = [false; 2];
     for v6 in versions.each() {
-        if !take_one(protocol, v6, port, device) {
+        if !take_one(protocol, v6, port, device, reuse) {
             // Those taken go back.
             for (v6, _) in [false, true].into_iter().zip(taken).filter(|(_, t)| *t) {
-                release(protocol, v6, port, device);
+                release(protocol, v6, port, device, reuse);
             }
             return None;
         }
         taken[usize::from(v6)] = true;
     }
-    Some(Held { protocol, versions, port, device })
+    Some(Held { protocol, versions, port, device, reuse })
 }
 
 /// Takes `port` of `protocol` and one version of IP, as [`take_on`].
-fn take_one(protocol: Protocol, v6: bool, port: u16, device: u32) -> bool {
+fn take_one(protocol: Protocol, v6: bool, port: u16, device: u32, reuse: Reuse) -> bool {
     let (word, bit) = place(port);
     let words = &table(protocol, v6).words;
-    if device == 0 {
+    if device == 0 && !reuse.any() {
         // Another socket's, if set: no hold is made, as dropping one
         // frees the port.
         return words[word].fetch_or(bit, Ordering::AcqRel) & bit == 0;
@@ -188,11 +244,10 @@ fn take_one(protocol: Protocol, v6: bool, port: u16, device: u32) -> bool {
     let before = words[word].fetch_or(bit, Ordering::AcqRel);
     let mut holders =
         shared.iter().flatten().filter(|s| s.protocol == protocol && s.v6 == v6 && s.port == port);
-    let first = holders.next();
     if before & bit != 0 {
-        // Held: by sockets on other interfaces alone, or it is not ours.
-        let on = |s: &Shared| s.device == device;
-        if first.is_none_or(on) || holders.any(on) {
+        // Held by one socket alone, or by some this one may not be beside.
+        let first = holders.next();
+        if first.is_none() || !first.into_iter().chain(holders).all(|s| s.beside(device, reuse)) {
             return false;
         }
     }
@@ -202,7 +257,7 @@ fn take_one(protocol: Protocol, v6: bool, port: u16, device: u32) -> bool {
         }
         return false;
     };
-    *free = Some(Shared { protocol, v6, port, device });
+    *free = Some(Shared { protocol, v6, port, device, reuse });
     true
 }
 
@@ -214,10 +269,12 @@ fn take_one(protocol: Protocol, v6: bool, port: u16, device: u32) -> bool {
 /// free one from a place chosen at random each time (RFC 6056's first
 /// algorithm), as Linux picks them: a DNS answer is taken for a query's
 /// by its port and a 16-bit number, which together an attacker off the
-/// path must guess (ADR 0193).
-pub fn take_any(protocol: Protocol, versions: Versions) -> Option<Held> {
+/// path must guess (ADR 0193). A port is picked that none holds, and held
+/// as `reuse` says, so that others that reuse ports alike may take it
+/// beside it, as on Linux.
+pub fn take_any(protocol: Protocol, versions: Versions, reuse: Reuse) -> Option<Held> {
     let cursor = &CURSORS[protocol as usize].0;
-    if protocol == Protocol::Udp {
+    if protocol != Protocol::Tcp {
         cursor.store(radix_random::u64() as usize % EPHEMERAL, Ordering::Relaxed);
     } else if cursor.load(Ordering::Relaxed) == 0 {
         let start = (radix_random::u64() % EPHEMERAL as u64) as usize + 1;
@@ -226,7 +283,14 @@ pub fn take_any(protocol: Protocol, versions: Versions) -> Option<Held> {
     for _ in 0..EPHEMERAL {
         let next = cursor.fetch_add(1, Ordering::Relaxed);
         let port = EPHEMERAL_FIRST as usize + next % EPHEMERAL;
-        if let Some(held) = take(protocol, versions, port as u16) {
+        let Some(held) = take(protocol, versions, port as u16) else { continue };
+        if !reuse.any() {
+            return Some(held);
+        }
+        // Free: held anew to be shared. Another may take it between, and
+        // if it shares too, the two do.
+        drop(held);
+        if let Some(held) = take_on(protocol, versions, port as u16, 0, reuse) {
             return Some(held);
         }
     }

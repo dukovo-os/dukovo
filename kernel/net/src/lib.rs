@@ -64,6 +64,8 @@ mod sockets;
 mod tests;
 #[cfg(test)]
 mod tests6;
+#[cfg(test)]
+mod tests_multicast;
 
 pub use across::{Across, OtherEnd};
 pub use layer2::TAGGED_FRAME;
@@ -188,6 +190,22 @@ pub struct Stack<L: Link> {
     /// What its frames pass through, and the datagrams it sent lately.
     hooks: Option<Hooks>,
     flows: RefCell<filter::Flows>,
+    /// The multicast groups its sockets joined, each with how many did.
+    joined: [Option<(IpAddress, u32)>; GROUPS],
+}
+
+/// The most multicast groups an interface's sockets join between them:
+/// smoltcp's table has room for the solicited-node groups of its
+/// addresses besides.
+pub const GROUPS: usize = 48;
+
+/// Why [`Stack::join`] could not join a group.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum JoinError {
+    /// The address is not a multicast one.
+    NotMulticast,
+    /// The interface's sockets joined [`GROUPS`] groups already.
+    Full,
 }
 
 /// What an interface has sent and received since it started, as Linux
@@ -523,6 +541,7 @@ impl<L: Link> Stack<L> {
             counted,
             hooks: None,
             flows: RefCell::default(),
+            joined: [None; GROUPS],
         }
     }
 
@@ -752,6 +771,54 @@ impl<L: Link> Stack<L> {
             }
     }
 
+    /// Has the interface take the datagrams sent to the multicast group
+    /// `group`, for a socket that joins it, telling the routers (IGMP or
+    /// MLD) when it is the first: each join is undone by a [`Stack::leave`].
+    ///
+    /// # Errors
+    ///
+    /// Why it could not: see [`JoinError`].
+    pub fn join(&mut self, group: IpAddress) -> Result<(), JoinError> {
+        if !group.is_multicast() {
+            return Err(JoinError::NotMulticast);
+        }
+        if let Some((_, count)) = self.joined.iter_mut().flatten().find(|(g, _)| *g == group) {
+            *count += 1;
+            return Ok(());
+        }
+        let free = self.joined.iter_mut().find(|slot| slot.is_none()).ok_or(JoinError::Full)?;
+        self.iface.join_multicast_group(group).map_err(|err| match err {
+            smoltcp::iface::MulticastError::GroupTableFull => JoinError::Full,
+            smoltcp::iface::MulticastError::Unaddressable => JoinError::NotMulticast,
+        })?;
+        *free = Some((group, 1));
+        Ok(())
+    }
+
+    /// Undoes one [`Stack::join`] of `group`: once none is left, the
+    /// interface leaves the group, telling the routers. Nothing happens
+    /// for a group not joined.
+    pub fn leave(&mut self, group: IpAddress) {
+        let Some(slot) = self.joined.iter_mut().find(|slot| slot.is_some_and(|(g, _)| g == group))
+        else {
+            return;
+        };
+        match slot {
+            Some((_, count)) if *count > 1 => *count -= 1,
+            _ => {
+                *slot = None;
+                // A multicast address, joined above.
+                let _ = self.iface.leave_multicast_group(group);
+            }
+        }
+    }
+
+    /// The multicast groups the interface's sockets joined, each with how
+    /// many did, as `/proc/net/igmp` lists them.
+    pub fn groups(&self) -> impl Iterator<Item = (IpAddress, u32)> + '_ {
+        self.joined.iter().flatten().copied()
+    }
+
     /// The longest IP packet the interface sends, its MTU.
     pub fn mtu(&self) -> usize {
         match self.link.medium() {
@@ -916,8 +983,18 @@ pub struct PingMemory {
 }
 
 impl PingMemory {
+    /// An ICMP socket, not bound, made with this memory: a program's
+    /// ping socket's (ADR 0336), or a [`Pinger`]'s.
+    pub fn socket(self) -> icmp::Socket<'static> {
+        let PingMemory { receive_meta, receive, transmit_meta, transmit } = self;
+        icmp::Socket::new(
+            icmp::PacketBuffer::new(receive_meta, receive),
+            icmp::PacketBuffer::new(transmit_meta, transmit),
+        )
+    }
+
     /// The memory `socket` was made with, back.
-    fn of(socket: icmp::Socket<'static>) -> PingMemory {
+    pub fn of(socket: icmp::Socket<'static>) -> PingMemory {
         let (receive, transmit) = socket.into_buffers();
         let (receive_meta, receive) = receive.into_storage();
         let (transmit_meta, transmit) = transmit.into_storage();
@@ -964,11 +1041,7 @@ impl Pinger {
         memory: PingMemory,
         ident: u16,
     ) -> Result<Pinger, PingMemory> {
-        let PingMemory { receive_meta, receive, transmit_meta, transmit } = memory;
-        let mut socket = icmp::Socket::new(
-            icmp::PacketBuffer::new(receive_meta, receive),
-            icmp::PacketBuffer::new(transmit_meta, transmit),
-        );
+        let mut socket = memory.socket();
         // An unbound socket cannot be bound wrongly: the endpoint is set.
         if socket.bind(icmp::Endpoint::Ident(ident)).is_err() {
             return Err(PingMemory::of(socket));

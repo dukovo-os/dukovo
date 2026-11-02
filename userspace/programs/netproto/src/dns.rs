@@ -10,7 +10,7 @@
 //! the message's length: a message that runs out, or a name whose
 //! pointers loop, is not a message.
 
-use std::net::{Ipv4Addr, Ipv6Addr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 /// The header's length.
 pub const HEADER: usize = 12;
@@ -420,6 +420,55 @@ pub fn local_answer(query: &[u8], question: &Question) -> Option<Vec<u8>> {
     Some(out)
 }
 
+/// Whether `name` is `local` or below it: a name multicast DNS answers
+/// on the link (RFC 6762), never a DNS server.
+pub fn is_multicast_name(name: &str) -> bool {
+    let name = name.strip_suffix('.').unwrap_or(name);
+    // Not by slicing: a name's last bytes may be inside a character.
+    name.eq_ignore_ascii_case("local")
+        || name
+            .get(name.len().saturating_sub(6)..)
+            .is_some_and(|end| name.len() > 6 && end.eq_ignore_ascii_case(".local"))
+}
+
+/// The answer to `query`, asking `question`, from `addresses`, the
+/// question's name's: an A record for each IPv4 one and an AAAA record for
+/// each IPv6 one, as its type asks, each kept `ttl` seconds. NXDOMAIN if
+/// there are none, and none of the type asked for is no error with no
+/// records, as RFC 2308 has it.
+pub fn address_answer(
+    query: &[u8],
+    question: &Question,
+    addresses: &[IpAddr],
+    ttl: u32,
+) -> Vec<u8> {
+    let rcode = if addresses.is_empty() { NXDOMAIN } else { NOERROR };
+    let mut out = answer_start(query, question, rcode);
+    let any = question.qtype == ANY;
+    let mut count = 0u16;
+    if question.qclass == IN || question.qclass == ANY {
+        for address in addresses {
+            let (rtype, data) = match address {
+                IpAddr::V4(v4) => (A, v4.octets().to_vec()),
+                IpAddr::V6(v6) => (AAAA, v6.octets().to_vec()),
+            };
+            if (question.qtype != rtype && !any) || count == u16::MAX {
+                continue;
+            }
+            // A pointer to the question's name.
+            out.extend_from_slice(&[0xc0, HEADER as u8]);
+            out.extend_from_slice(&rtype.to_be_bytes());
+            out.extend_from_slice(&IN.to_be_bytes());
+            out.extend_from_slice(&ttl.to_be_bytes());
+            out.extend_from_slice(&(data.len() as u16).to_be_bytes());
+            out.extend_from_slice(&data);
+            count += 1;
+        }
+    }
+    out[6..8].copy_from_slice(&count.to_be_bytes());
+    out
+}
+
 /// A query for `name` of type `qtype`, numbered `id`, asking for
 /// recursion, with an OPT record offering `udp` bytes (RFC 6891).
 pub fn query(name: &str, qtype: u16, id: u16, udp: u16) -> Option<Vec<u8>> {
@@ -620,5 +669,26 @@ mod tests {
         assert_eq!(query(&"a".repeat(64), A, 1, 512), None);
         assert_eq!(type_by_name("aaaa"), Some(AAAA));
         assert_eq!(type_by_name("TYPE65"), Some(65));
+    }
+
+    #[test]
+    fn local_names_are_answered_with_the_addresses_mdns_found() {
+        assert!(is_multicast_name("printer.local") && is_multicast_name("B.LOCAL."));
+        assert!(is_multicast_name("local") && !is_multicast_name("notlocal"));
+        assert!(!is_multicast_name("local.example") && !is_multicast_name("xlocal"));
+        assert!(!is_multicast_name("a\u{e9}12345") && !is_multicast_name("\u{e9}local"));
+        let found: [IpAddr; 2] = [Ipv4Addr::new(10, 0, 0, 2).into(), Ipv6Addr::LOCALHOST.into()];
+        let q = query("b.local", A, 4, 512).unwrap();
+        let asked = question(&q).unwrap();
+        let a = address_answer(&q, &asked, &found, 120);
+        assert!(answers(&a, &asked));
+        let got = records(&a).unwrap();
+        assert_eq!(got.len(), 1);
+        assert_eq!((data_text(&a, &got[0]), got[0].ttl), ("10.0.0.2".into(), 120));
+        // Found, but with no address of the type: no records, no error.
+        let a = address_answer(&q, &asked, &found[1..], 120);
+        assert_eq!((header(&a).unwrap().rcode(), header(&a).unwrap().answers), (NOERROR, 0));
+        let a = address_answer(&q, &asked, &[], 120);
+        assert_eq!(header(&a).unwrap().rcode(), NXDOMAIN);
     }
 }

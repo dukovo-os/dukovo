@@ -133,7 +133,9 @@ flags SocketFlags: u32 {
 /// POSIX's `getsockopt` and `setsockopt` name them. A boolean is 0 or 1.
 enum SocketOption: u32 {
     /// SO_REUSEADDR, a boolean. A port is free once the socket bound to
-    /// it is closed, so it changes nothing, but it is kept.
+    /// it is closed, so for a stream socket it changes nothing, but it is
+    /// kept; a datagram socket that sets it before it is bound shares its
+    /// port as with reuse_port (since Phase 12c.3).
     reuse_address = 1;
     /// SO_KEEPALIVE, a boolean: a stream socket's connection is probed
     /// after two hours without traffic (keep_idle), and reset if the
@@ -190,6 +192,31 @@ enum SocketOption: u32 {
     /// SO_DOMAIN, read only: the socket's AddressFamily
     /// (radix-network(2)). (Since Phase 12c.)
     family = 17;
+    /// IP_MULTICAST_IF and IPV6_MULTICAST_IF: the interface, by its
+    /// number, that a datagram socket's datagrams to a multicast group go
+    /// out through, 0 for the one the socket is bound to or the routes
+    /// say. (Since Phase 12c.3, ADR 0336.)
+    multicast_interface = 18;
+    /// IP_MULTICAST_TTL and IPV6_MULTICAST_HOPS: how many routers a
+    /// datagram to a multicast group may pass, 0 to 255; 1 to begin
+    /// with, so that it stays on its network. (Since Phase 12c.3.)
+    multicast_hops = 19;
+    /// IP_MULTICAST_LOOP and IPV6_MULTICAST_LOOP, a boolean, true to
+    /// begin with: kept, though a datagram to a group goes to other
+    /// machines alone, and this machine's own sockets that joined it do
+    /// not get a copy. (Since Phase 12c.3.)
+    multicast_loop = 20;
+    /// SO_REUSEPORT, a boolean, of a datagram socket's, set before it is
+    /// bound: it shares its port with the others that set this or
+    /// reuse_address, as on Linux. A datagram to a group or a broadcast
+    /// address reaches each of them; one to an address of this
+    /// machine's, one of them. A stream socket's changes nothing. (Since
+    /// Phase 12c.3.)
+    reuse_port = 21;
+    /// IP_PKTINFO and IPV6_RECVPKTINFO, a boolean: whether
+    /// `receive_message` says that the program asked for where each
+    /// datagram went and the interface it came by. (Since Phase 12c.3.)
+    packet_info = 22;
 }
 
 /// The most files one `send_files` sends, as Linux's SCM_MAX_FD.
@@ -204,7 +231,7 @@ const BACKLOG_MAX: u64 = 4096;
 const SOCKET_NAME_MAX: u64 = 107;
 
 /// A file.
-interface file = 0x000c version 9 {
+interface file = 0x000c version 10 {
     kind = file;
     /// Reads from byte `offset` into `buffer`; returns how many bytes it
     /// read, fewer than asked at the end of the file. Needs the read right.
@@ -390,7 +417,9 @@ interface file = 0x000c version 9 {
                 bad_address, out_of_range, not_socket, not_supported, address_in_use,
                 address_not_available, busy];
     /// Connects a network socket to `address`, an Address, through the
-    /// network capability in slot `network`, which needs the send right.
+    /// network capability in slot `network`, which needs the send right,
+    /// or for an address on this machine's networks the local right
+    /// (radix-network(2)).
     /// A stream socket makes a connection over the interface with a route
     /// to it, waiting until it is made unless the description is
     /// non_blocking (in_progress; `poll` finds the socket writable once it
@@ -405,9 +434,10 @@ interface file = 0x000c version 9 {
                 no_memory, unreachable, refused, reset, timed_out, in_progress, already,
                 connected, interrupted, busy];
     /// Sends `data` as one datagram to `address`, an Address, from a
-    /// datagram socket, through the network capability in slot
-    /// `network`, which needs the send right; returns how many bytes
-    /// went. A socket that is not bound is bound first, as by
+    /// datagram or ping socket, through the network capability in slot
+    /// `network`, which needs the send right, or the local right for an
+    /// address on this machine's networks, a broadcast or a multicast one
+    /// (radix-network(2)); returns how many bytes went. A socket that is not bound is bound first, as by
     /// `connect_address`. A stream socket sends as `send` does, and
     /// takes neither the capability nor the address. Needs the write
     /// right.
@@ -467,4 +497,32 @@ interface file = 0x000c version 9 {
         raises [no_such_slot, empty_slot, missing_rights, invalid_argument, no_memory,
                 bad_address, denied, not_permitted, no_attribute, out_of_range, not_supported,
                 read_only, no_space, io, corrupt];
+    /// With `join`, has a datagram socket take the datagrams sent to the
+    /// multicast group `group`, an Address whose port is not looked at,
+    /// on the interface numbered `interface`: 0 for the one the routes
+    /// to the group go through. Joining needs the local right on the
+    /// network capability in slot `network` (radix-network(2)); a
+    /// socket joins 20 groups at most (no_buffers), each once
+    /// (address_in_use), and only a multicast address (invalid_argument)
+    /// on an interface that is there, or with 0 when a route goes to the
+    /// group (no_device, as on Linux). Without
+    /// `join`, leaves the group, which the socket must have joined there
+    /// (address_not_available), whatever `network` holds. A datagram to
+    /// a group comes only to the sockets on its port that joined it on
+    /// the interface it came by (ADR 0336). Closing the socket leaves
+    /// its groups. (Since version 10.)
+    method socket_group = 31 (network: slot, join: bool, group: in bytes, interface: u32) -> ()
+        raises [no_such_slot, empty_slot, wrong_kind, missing_rights, invalid_argument,
+                bad_address, not_socket, not_supported, address_in_use, address_not_available,
+                no_buffers, no_device];
+    /// Receives as `receive_from` does, and writes where the datagram
+    /// went into `destination`, an Address, if it has room for one: the
+    /// address of this machine's or the group it was sent to, and the
+    /// port. Returns how many bytes came, the number of the interface
+    /// it came by (0 for a stream socket's), and whether the socket's
+    /// packet_info option is set. (Since version 10.)
+    method receive_message = 32 (buffer: out bytes, address: out bytes, destination: out bytes, flags: SocketFlags)
+        -> (count: u64, interface: u32, info: bool)
+        raises [no_such_slot, empty_slot, missing_rights, bad_address, not_socket,
+                not_connected, would_block, interrupted, reset];
 }

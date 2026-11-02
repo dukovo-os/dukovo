@@ -10,7 +10,7 @@
 name = "rust-crates"
 version = "1"
 summary = "crates.io crates patched for Radix, for programs in Rust"
-license = "(MIT OR Apache-2.0) AND MIT AND (Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT) AND Apache-2.0 AND ISC"
+license = "(MIT OR Apache-2.0) AND MIT AND (MIT OR BSD-3-Clause) AND (Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT) AND Apache-2.0 AND ISC"
 homepage = "https://crates.io"
 depends = ["rust-std"]
 toolchain = true
@@ -50,6 +50,12 @@ name = "getrandom"
 version = "0.4.3"
 sha256 = "300e883d756b2e4ec94e02791f39b04b522276138852cfc41d9fb7e904106099"
 license = "MIT OR Apache-2.0"
+
+[[crate]]
+name = "if-addrs"
+version = "0.15.0"
+sha256 = "c0a05c691e1fae256cf7013d99dad472dc52d5543322761f83ec8d47eab40d2b"
+license = "MIT OR BSD-3-Clause"
 
 [[crate]]
 name = "mio"

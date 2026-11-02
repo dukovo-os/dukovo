@@ -81,6 +81,7 @@ pub fn lint(ctx: &Ctx) -> Result<()> {
     // port builds.
     userspace::install_headers(ctx)?;
     let ports = ports::build_all(ctx, &[])?;
+    userspace::forget_stale_std(ctx)?;
     step("Running Clippy on the programs on Rust's standard library");
     let mut cmd = userspace::std_cargo(ctx, "clippy", &ports.toolchain);
     cmd.arg("--workspace").args(["--", "-D", "warnings"]);

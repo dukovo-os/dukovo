@@ -6,10 +6,10 @@
 //! and the calls on a stack that need its interface, as connecting does.
 
 use smoltcp::iface::SocketHandle;
-use smoltcp::socket::{Socket, tcp, udp};
+use smoltcp::socket::{Socket, icmp, tcp, udp};
 use smoltcp::wire::{IpAddress, IpEndpoint, IpListenEndpoint, IpVersion};
 
-use crate::{Link, Stack, lent};
+use crate::{Link, PingMemory, Stack, lent};
 
 /// The buffers of a TCP socket, lent to it for as long as it lives.
 pub struct TcpMemory {
@@ -116,6 +116,17 @@ impl<L: Link> Stack<L> {
         match self.remove_socket(handle)? {
             Socket::Udp(socket) => Some(UdpMemory::of(socket)),
             // The slot held a UDP socket, looked at above.
+            _ => None,
+        }
+    }
+
+    /// Takes the ICMP socket `handle`, a ping socket's, out of the stack,
+    /// as [`Stack::remove_tcp`] does.
+    pub fn remove_icmp(&mut self, handle: SocketHandle) -> Option<PingMemory> {
+        self.socket_mut::<icmp::Socket<'static>>(handle)?;
+        match self.remove_socket(handle)? {
+            Socket::Icmp(socket) => Some(PingMemory::of(socket)),
+            // The slot held an ICMP socket, looked at above.
             _ => None,
         }
     }

@@ -256,10 +256,20 @@ real path:
   read;
 - *devices.serial*: the serial ports' terminals there are when it
   starts, _/devices/ttyACM_*N* and _/devices/ttyUSB_*N*, those you can
-  open.
+  open;
+- *network.local*: _/system/live/discoverd_, whose socket says what
+  *discoverd*(8) finds on your networks.
 
-*network.local* and *processes.debug* cannot be given yet, nor any
-permission an administrator gives: a program that requires one does not
+Its network is given as a capability (ADR 0337): *network.outbound*
+reaches machines beyond your networks, the internet, and this computer's
+own services; *network.local* the machines on your networks (their
+addresses, broadcasts and multicast groups, link-local addresses), and
+joining groups. A program with *network.outbound* alone cannot reach
+your printer, your router's page or a machine next to it; one with
+*network.local* alone reaches nothing beyond them.
+
+*processes.debug* cannot be given yet, nor any permission an
+administrator gives: a program that requires one does not
 run. A later version that asks for more than you allowed is asked again;
 one that asks for the same or less is not. What you said holds only for
 the publisher's key it was said of.

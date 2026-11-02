@@ -110,6 +110,36 @@ For IPv6 (ADR 0332):
   source, so that another machine took an address this one had; it is
   answered now, to all nodes, as RFC 4861 (7.2.4) says.
 
+For multicast (ADR 0336):
+
+- A UDP socket took every datagram to a multicast group the interface
+  had joined, whichever program's the group was. A socket now joins
+  groups of its own (`join_group`, `leave_group`, 20 at most, as Linux's
+  IP_MAX_MEMBERSHIPS), and a datagram to a group comes only to those
+  that joined it, as BSD's sockets have it and Linux's without
+  IP_MULTICAST_ALL.
+- A datagram to a group or a broadcast address went to the first socket
+  that took it alone: it goes to each now, as on Linux, so that two
+  programs on one port both hear mDNS. One to an address still goes to
+  the first.
+- `set_multicast_hop_limit` gives datagrams to groups a hop limit of
+  their own, as IP_MULTICAST_TTL and IPV6_MULTICAST_HOPS do.
+- The interface gathered tables the size of its groups' on the stack,
+  to leave solicited-node groups and to answer an MLD general query,
+  which a kernel's stack has no room for with 64 groups: it leaves them
+  one at a time, and answers in reports of 8 records each, and its
+  multicast egress is not inlined into each poll.
+- Every poll ran the multicast egress, which looks through the groups
+  for one joining and one leaving: a poll now skips it unless a group
+  is joining or leaving or a query is being answered.
+
+For ping sockets (ADR 0336):
+
+- An ICMP socket could only take its next message, not look at it: a
+  ping socket hands its program echo replies alone, and one that asks
+  how long the next is (MSG_PEEK, FIONREAD) must not lose it. `peek`
+  shows it and leaves it, as the UDP socket's does.
+
 To be offered upstream.
 
 --- a/src/iface/interface/tcp.rs
@@ -412,6 +442,22 @@ To be offered upstream.
      /// Register a waker for receive operations.
      ///
      /// The waker is woken on state changes that might affect the return value
+@@ -378,6 +384,15 @@
+         Ok(())
+     }
+ 
++    /// Return the next packet received, and the address it came from, without
++    /// dequeuing it, as [UDP's](crate::socket::udp::Socket::peek) does.
++    ///
++    /// This function returns `Err(Error::Exhausted)` if the receive buffer is empty.
++    pub fn peek(&mut self) -> Result<(&[u8], &IpAddress), RecvError> {
++        let (endpoint, packet_buf) = self.rx_buffer.peek().map_err(|_| RecvError::Exhausted)?;
++        Ok((packet_buf, endpoint))
++    }
++
+     /// Dequeue a packet received from a remote endpoint, and return the `IpAddress` as well
+     /// as a pointer to the payload.
+     ///
 --- a/src/socket/tcp.rs
 +++ b/src/socket/tcp.rs
 @@ -14,8 +14,8 @@
@@ -2462,7 +2508,42 @@ To be offered upstream.
  
  /// Metadata for a sent or received UDP packet.
  #[cfg_attr(feature = "defmt", derive(defmt::Format))]
-@@ -116,6 +118,9 @@
+@@ -52,6 +54,34 @@
+ /// A UDP packet ring buffer.
+ pub type PacketBuffer<'a> = crate::storage::PacketBuffer<'a, UdpMetadata>;
+ 
++/// The most multicast groups one socket joins, as Linux's
++/// IP_MAX_MEMBERSHIPS.
++pub const GROUPS_MAX: usize = 20;
++
++/// Error returned by [`Socket::join_group`].
++#[derive(Debug, PartialEq, Eq, Clone, Copy)]
++#[cfg_attr(feature = "defmt", derive(defmt::Format))]
++pub enum GroupError {
++    /// The address is not a multicast one.
++    NotMulticast,
++    /// The socket has joined the group already.
++    Joined,
++    /// The socket has joined [`GROUPS_MAX`] groups.
++    Full,
++}
++
++impl core::fmt::Display for GroupError {
++    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
++        match self {
++            GroupError::NotMulticast => write!(f, "not a multicast address"),
++            GroupError::Joined => write!(f, "joined already"),
++            GroupError::Full => write!(f, "too many groups"),
++        }
++    }
++}
++
++impl core::error::Error for GroupError {}
++
+ /// Error returned by [`Socket::bind`]
+ #[derive(Debug, PartialEq, Eq, Clone, Copy)]
+ #[cfg_attr(feature = "defmt", derive(defmt::Format))]
+@@ -116,10 +146,17 @@
  #[derive(Debug)]
  pub struct Socket<'a> {
      endpoint: IpListenEndpoint,
@@ -2472,7 +2553,15 @@ To be offered upstream.
      rx_buffer: PacketBuffer<'a>,
      tx_buffer: PacketBuffer<'a>,
      /// The time-to-live (IPv4) or hop limit (IPv6) value used in outgoing packets.
-@@ -131,6 +136,7 @@
+     hop_limit: Option<u8>,
++    /// The one used in packets to multicast groups: `hop_limit`'s if not set.
++    multicast_hop_limit: Option<u8>,
++    /// The multicast groups whose datagrams the socket takes.
++    groups: heapless::Vec<IpAddress, GROUPS_MAX>,
+     #[cfg(feature = "async")]
+     rx_waker: WakerRegistration,
+     #[cfg(feature = "async")]
+@@ -131,9 +168,12 @@
      pub fn new(rx_buffer: PacketBuffer<'a>, tx_buffer: PacketBuffer<'a>) -> Socket<'a> {
          Socket {
              endpoint: IpListenEndpoint::default(),
@@ -2480,7 +2569,12 @@ To be offered upstream.
              rx_buffer,
              tx_buffer,
              hop_limit: None,
-@@ -141,6 +147,12 @@
++            multicast_hop_limit: None,
++            groups: heapless::Vec::new(),
+             #[cfg(feature = "async")]
+             rx_waker: WakerRegistration::new(),
+             #[cfg(feature = "async")]
+@@ -141,6 +181,12 @@
          }
      }
  
@@ -2493,7 +2587,7 @@ To be offered upstream.
      /// Register a waker for receive operations.
      ///
      /// The waker is woken on state changes that might affect the return value
-@@ -182,6 +194,20 @@
+@@ -182,6 +228,20 @@
          self.endpoint
      }
  
@@ -2514,16 +2608,100 @@ To be offered upstream.
      /// Return the time-to-live (IPv4) or hop limit (IPv6) value used in outgoing packets.
      ///
      /// See also the [set_hop_limit](#method.set_hop_limit) method
-@@ -478,6 +504,9 @@
+@@ -209,6 +269,59 @@
+         self.hop_limit = hop_limit
+     }
+ 
++    /// Return the time-to-live (IPv4) or hop limit (IPv6) value used in outgoing packets to
++    /// multicast groups, if it is not [hop_limit](#method.hop_limit)'s.
++    pub fn multicast_hop_limit(&self) -> Option<u8> {
++        self.multicast_hop_limit
++    }
++
++    /// Set the time-to-live (IPv4) or hop limit (IPv6) value used in outgoing packets to
++    /// multicast groups, as IP_MULTICAST_TTL and IPV6_MULTICAST_HOPS do; `None` uses
++    /// [hop_limit](#method.hop_limit)'s.
++    ///
++    /// # Panics
++    ///
++    /// This function panics if a hop limit value of 0 is given, as
++    /// [set_hop_limit](#method.set_hop_limit) does.
++    pub fn set_multicast_hop_limit(&mut self, hop_limit: Option<u8>) {
++        if let Some(0) = hop_limit {
++            panic!("the time-to-live value of a packet must not be zero")
++        }
++
++        self.multicast_hop_limit = hop_limit
++    }
++
++    /// Have the socket take the datagrams sent to the multicast group `group`, to its port.
++    /// A datagram to a group comes only to the sockets that joined it, as with BSD's sockets
++    /// and Linux's without IP_MULTICAST_ALL; the interface joins the group itself
++    /// ([`Interface::join_multicast_group`](crate::iface::Interface::join_multicast_group)).
++    pub fn join_group(&mut self, group: IpAddress) -> Result<(), GroupError> {
++        if !group.is_multicast() {
++            return Err(GroupError::NotMulticast);
++        }
++        if self.groups.contains(&group) {
++            return Err(GroupError::Joined);
++        }
++        self.groups.push(group).map_err(|_| GroupError::Full)
++    }
++
++    /// Have the socket no longer take the datagrams sent to `group`: false if it had not
++    /// joined it.
++    pub fn leave_group(&mut self, group: IpAddress) -> bool {
++        match self.groups.iter().position(|joined| *joined == group) {
++            Some(at) => {
++                self.groups.swap_remove(at);
++                true
++            }
++            None => false,
++        }
++    }
++
++    /// The multicast groups the socket joined.
++    pub fn groups(&self) -> &[IpAddress] {
++        &self.groups
++    }
++
+     /// Bind the socket to the given endpoint.
+     ///
+     /// This function returns `Err(Error::Illegal)` if the socket was open
+@@ -478,6 +591,13 @@
          if self.endpoint.port != repr.dst_port {
              return false;
          }
 +        if self.version.is_some_and(|version| version != ip_repr.version()) {
 +            return false;
 +        }
++        // A datagram to a group is for the sockets that joined it alone.
++        if ip_repr.dst_addr().is_multicast() && !self.groups.contains(&ip_repr.dst_addr()) {
++            return false;
++        }
          if self.endpoint.addr.is_some()
              && self.endpoint.addr != Some(ip_repr.dst_addr())
              && !cx.is_broadcast(&ip_repr.dst_addr())
+@@ -538,6 +658,7 @@
+     {
+         let endpoint = self.endpoint;
+         let hop_limit = self.hop_limit.unwrap_or(64);
++        let multicast_hop_limit = self.multicast_hop_limit.unwrap_or(hop_limit);
+ 
+         let res = self.tx_buffer.dequeue_with(|packet_meta, payload_buf| {
+             let src_addr = if let Some(s) = packet_meta.local_address {
+@@ -570,6 +691,11 @@
+                 src_port: endpoint.port,
+                 dst_port: packet_meta.endpoint.port,
+             };
++            let hop_limit = if packet_meta.endpoint.addr.is_multicast() {
++                multicast_hop_limit
++            } else {
++                hop_limit
++            };
+             let ip_repr = IpRepr::new(
+                 src_addr,
+                 packet_meta.endpoint.addr,
 --- a/src/storage/packet_buffer.rs
 +++ b/src/storage/packet_buffer.rs
 @@ -253,6 +253,15 @@
@@ -2699,3 +2877,245 @@ To be offered upstream.
                          next_header: IpProtocol::Icmpv6,
                          hop_limit: 0xff,
                          payload_len: advert.buffer_len(),
+--- a/src/iface/interface/udp.rs
++++ b/src/iface/interface/udp.rs
+@@ -24,6 +24,12 @@
+             &self.caps.checksum
+         ));
+ 
++        // A datagram to a group or a broadcast address goes to every socket
++        // that takes it, as on Linux; one to an address, to the first.
++        #[cfg(feature = "socket-udp")]
++        let every = dst_addr.is_multicast() || self.is_broadcast(&dst_addr);
++        #[cfg(feature = "socket-udp")]
++        let mut taken = false;
+         #[cfg(feature = "socket-udp")]
+         for udp_socket in sockets
+             .items_mut()
+@@ -31,9 +37,16 @@
+         {
+             if udp_socket.accepts(self, &ip_repr, &udp_repr) {
+                 udp_socket.process(self, meta, &ip_repr, &udp_repr, udp_packet.payload());
+-                return None;
++                if !every {
++                    return None;
++                }
++                taken = true;
+             }
+         }
++        #[cfg(feature = "socket-udp")]
++        if taken {
++            return None;
++        }
+ 
+         #[cfg(feature = "socket-dns")]
+         for dns_socket in sockets
+--- a/src/iface/interface/multicast.rs
++++ b/src/iface/interface/multicast.rs
+@@ -1,6 +1,11 @@
+ use core::result::Result;
+ use heapless::{LinearMap, Vec};
+ 
++/// The most address records an MLDv2 report answering a general query
++/// carries: more go in further reports.
++#[cfg(feature = "proto-ipv6")]
++const MLD_RECORDS_PER_REPORT: usize = 8;
++
+ use super::{Interface, InterfaceInner};
+ #[cfg(any(feature = "proto-ipv4", feature = "proto-ipv6"))]
+ use super::{IpPayload, Packet, check};
+@@ -58,6 +63,8 @@
+ 
+ pub(crate) struct State {
+     groups: LinearMap<IpAddress, GroupState, IFACE_MAX_MULTICAST_GROUP_COUNT>,
++    /// Whether a group may be joining or leaving, its packet not yet sent.
++    pending: bool,
+     /// When to report for (all or) the next multicast group membership via IGMP
+     #[cfg(feature = "proto-ipv4")]
+     igmp_report_state: IgmpReportState,
+@@ -69,6 +76,7 @@
+     pub(crate) fn new() -> Self {
+         Self {
+             groups: LinearMap::new(),
++            pending: false,
+             #[cfg(feature = "proto-ipv4")]
+             igmp_report_state: IgmpReportState::Inactive,
+             #[cfg(feature = "proto-ipv6")]
+@@ -86,6 +94,25 @@
+             Some(GroupState::Leaving) => false,
+         }
+     }
++
++    /// Whether the multicast egress has anything to send: a group joining
++    /// or leaving, or a query to answer. Every poll asks, and most find
++    /// nothing, so they skip the egress and its look through the groups.
++    #[inline]
++    pub(crate) fn needs_egress(&self) -> bool {
++        if self.pending {
++            return true;
++        }
++        #[cfg(feature = "proto-ipv4")]
++        if !matches!(self.igmp_report_state, IgmpReportState::Inactive) {
++            return true;
++        }
++        #[cfg(feature = "proto-ipv6")]
++        if !matches!(self.mld_report_state, MldReportState::Inactive) {
++            return true;
++        }
++        false
++    }
+ }
+ 
+ impl core::fmt::Display for MulticastError {
+@@ -122,6 +149,7 @@
+                 .groups
+                 .insert(addr, GroupState::Joining)
+                 .map_err(|_| MulticastError::GroupTableFull)?;
++            self.inner.multicast.pending = true;
+         }
+         Ok(())
+     }
+@@ -145,6 +173,8 @@
+             };
+             if delete {
+                 self.inner.multicast.groups.remove(&addr);
++            } else {
++                self.inner.multicast.pending = true;
+             }
+         }
+         Ok(())
+@@ -157,17 +187,23 @@
+ 
+     #[cfg(feature = "proto-ipv6")]
+     pub(super) fn update_solicited_node_groups(&mut self) {
+-        // Remove old solicited-node multicast addresses
+-        let removals: Vec<_, IFACE_MAX_MULTICAST_GROUP_COUNT> = self
++        // Remove old solicited-node multicast addresses, one at a time
++        // rather than gathered on the stack first: a kernel's stack has
++        // little room for a table the size of the groups'. A group being
++        // left stays in the table until its leave is sent, so only those
++        // not yet leaving are looked for.
++        while let Some(removal) = self
+             .inner
+             .multicast
+             .groups
+-            .keys()
+-            .cloned()
+-            .filter(|a| matches!(a, IpAddress::Ipv6(a) if a.is_solicited_node_multicast() && !self.inner.has_solicited_node(*a)))
+-            .collect();
+-        for removal in removals {
+-            let _ = self.leave_multicast_group(removal);
++            .iter()
++            .filter(|&(_, &state)| state != GroupState::Leaving)
++            .map(|(a, _)| *a)
++            .find(|a| matches!(a, IpAddress::Ipv6(a) if a.is_solicited_node_multicast() && !self.inner.has_solicited_node(*a)))
++        {
++            if self.leave_multicast_group(removal).is_err() {
++                break;
++            }
+         }
+ 
+         let cidrs: Vec<IpCidr, IFACE_MAX_ADDR_COUNT> = Vec::from_slice(self.ip_addrs()).unwrap();
+@@ -183,6 +219,10 @@
+     /// - Send join/leave packets according to the multicast group state.
+     /// - Depending on `igmp_report_state` and the therein contained
+     ///   timeouts, send IGMP membership reports.
++    ///
++    /// Not inlined, so that what it needs of the stack is not added to
++    /// every poll's.
++    #[inline(never)]
+     pub(crate) fn multicast_egress(&mut self, device: &mut (impl Device + ?Sized)) {
+         // Process multicast joins.
+         while let Some((&addr, _)) = self
+@@ -275,6 +315,14 @@
+             self.inner.multicast.groups.remove(&addr);
+         }
+ 
++        // Still pending if a packet found no room in the device.
++        self.inner.multicast.pending = self
++            .inner
++            .multicast
++            .groups
++            .values()
++            .any(|&state| state != GroupState::Joined);
++
+         #[cfg(feature = "proto-ipv4")]
+         match self.inner.multicast.igmp_report_state {
+             IgmpReportState::ToSpecificQuery {
+@@ -347,27 +395,42 @@
+         #[cfg(feature = "proto-ipv6")]
+         match self.inner.multicast.mld_report_state {
+             MldReportState::ToGeneralQuery { timeout } if self.inner.now >= timeout => {
+-                let records = self
+-                    .inner
+-                    .multicast
+-                    .groups
+-                    .iter()
+-                    .filter_map(|(addr, _)| match addr {
+-                        IpAddress::Ipv6(addr) => Some(MldAddressRecordRepr::new(
+-                            MldRecordType::ModeIsExclude,
+-                            *addr,
+-                        )),
+-                        #[allow(unreachable_patterns)]
+-                        _ => None,
+-                    })
+-                    .collect::<heapless::Vec<_, IFACE_MAX_MULTICAST_GROUP_COUNT>>();
+-                if let Some(pkt) = self.inner.mldv2_report_packet(&records)
+-                    && let Some(tx_token) = device.transmit(self.inner.now)
+-                {
+-                    self.inner
+-                        .dispatch_ip(tx_token, PacketMeta::default(), pkt, &mut self.fragmenter)
+-                        .unwrap();
+-                };
++                // The records go MLD_RECORDS_PER_REPORT to a report, so
++                // that they need little of a kernel's stack.
++                let mut skip = 0;
++                loop {
++                    let records = self
++                        .inner
++                        .multicast
++                        .groups
++                        .iter()
++                        .filter_map(|(addr, _)| match addr {
++                            IpAddress::Ipv6(addr) => Some(MldAddressRecordRepr::new(
++                                MldRecordType::ModeIsExclude,
++                                *addr,
++                            )),
++                            #[allow(unreachable_patterns)]
++                            _ => None,
++                        })
++                        .skip(skip)
++                        .take(MLD_RECORDS_PER_REPORT)
++                        .collect::<heapless::Vec<_, MLD_RECORDS_PER_REPORT>>();
++                    if records.is_empty() && skip > 0 {
++                        break;
++                    }
++                    skip += records.len();
++                    let full = records.len() == MLD_RECORDS_PER_REPORT;
++                    if let Some(pkt) = self.inner.mldv2_report_packet(&records)
++                        && let Some(tx_token) = device.transmit(self.inner.now)
++                    {
++                        self.inner
++                            .dispatch_ip(tx_token, PacketMeta::default(), pkt, &mut self.fragmenter)
++                            .unwrap();
++                    };
++                    if !full {
++                        break;
++                    }
++                }
+                 self.inner.multicast.mld_report_state = MldReportState::Inactive;
+             }
+             MldReportState::ToSpecificQuery { group, timeout } if self.inner.now >= timeout => {
+--- a/src/iface/interface/mod.rs
++++ b/src/iface/interface/mod.rs
+@@ -542,7 +542,9 @@
+         }
+ 
+         #[cfg(feature = "multicast")]
+-        self.multicast_egress(device);
++        if self.inner.multicast.needs_egress() {
++            self.multicast_egress(device);
++        }
+ 
+         self.socket_egress(device, sockets)
+     }

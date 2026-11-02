@@ -1,0 +1,64 @@
+SPDX-FileCopyrightText: 2026 The Dukovo contributors
+SPDX-License-Identifier: Apache-2.0 OR MIT
+
+getifaddrs without the Linux option (ADR 0336): its sysdep tags and
+signatures leave the Linux option's block, so a system layer without
+that option can implement them, as patch 0050 did for the extended
+attribute calls. The Radix system layer builds the Linux option's
+getifaddrs and freeifaddrs (options/linux/generic/ifaddrs.cpp) and
+installs its <ifaddrs.h> (ports/mlibc/build.sh), which need nothing of
+Linux's: the BSDs and illumos have the same calls. mDNS (if-addrs, the
+Rust crate) and programs that list the machine's addresses call them.
+
+diff --git a/options/internal/include/mlibc/sysdep-tags.hpp b/options/internal/include/mlibc/sysdep-tags.hpp
+--- a/options/internal/include/mlibc/sysdep-tags.hpp
++++ b/options/internal/include/mlibc/sysdep-tags.hpp
+@@ -653,10 +653,6 @@
+ struct Fstatfs {};
+ // int sys_statx(int dirfd, const char *pathname, int flags, unsigned int mask, struct statx *statxbuf);
+ struct Statx {};
+-// int sys_getifaddrs(struct ifaddrs **);
+-struct Getifaddrs {};
+-// void sys_freeifaddrs(struct ifaddrs *ifa);
+-struct Freeifaddrs {};
+ // int sys_sendfile(int outfd, int infd, off_t *offset, size_t count, ssize_t *out);
+ struct Sendfile {};
+ // int sys_syncfs(int fd);
+@@ -691,6 +687,15 @@
+ struct Renameat2 {};
+ #endif // __MLIBC_LINUX_OPTION
+ 
++// getifaddrs, which the Radix system layer has without the Linux option;
++// its <ifaddrs.h> comes before the signatures, whose `struct ifaddrs`
++// would otherwise be a type of their own.
++#include <ifaddrs.h>
++// int sys_getifaddrs(struct ifaddrs **);
++struct Getifaddrs {};
++// void sys_freeifaddrs(struct ifaddrs *ifa);
++struct Freeifaddrs {};
++
+ // The extended attribute calls, which the Radix system layer has without
+ // the Linux option.
+ // int sys_setxattr(const char *path, const char *name, const void *val, size_t size, int flags);
+diff --git a/options/internal/include/mlibc/sysdep-signatures.hpp b/options/internal/include/mlibc/sysdep-signatures.hpp
+--- a/options/internal/include/mlibc/sysdep-signatures.hpp
++++ b/options/internal/include/mlibc/sysdep-signatures.hpp
+@@ -307,8 +307,6 @@
+ SYSDEP_FUNC(Statfs, const char *path, struct statfs *buf);
+ SYSDEP_FUNC(Fstatfs, int fd, struct statfs *buf);
+ SYSDEP_FUNC(Statx, int dirfd, const char *pathname, int flags, unsigned int mask, struct statx *statxbuf);
+-SYSDEP_FUNC(Getifaddrs, struct ifaddrs **);
+-SYSDEP_FUNC_RET(void, Freeifaddrs, struct ifaddrs *ifa);
+ SYSDEP_FUNC(Sendfile, int outfd, int infd, off_t *offset, size_t count, ssize_t *out);
+ SYSDEP_FUNC(Syncfs, int fd);
+ SYSDEP_FUNC(Unshare, int flags);
+@@ -327,6 +325,9 @@
+ SYSDEP_FUNC(Renameat2, int olddirfd, const char *old_path, int newdirfd, const char *new_path, unsigned int flags);
+ #endif // __MLIBC_LINUX_OPTION
+ 
++SYSDEP_FUNC(Getifaddrs, struct ifaddrs **);
++SYSDEP_FUNC_RET(void, Freeifaddrs, struct ifaddrs *ifa);
++
+ SYSDEP_FUNC(Setxattr, const char *path, const char *name, const void *val, size_t size, int flags);
+ SYSDEP_FUNC(Lsetxattr, const char *path, const char *name, const void *val, size_t size, int flags);
+ SYSDEP_FUNC(Fsetxattr, int fd, const char *name, const void *val, size_t size, int flags);

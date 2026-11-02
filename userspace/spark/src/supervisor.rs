@@ -176,18 +176,20 @@ fn non_blocking(slot: u32) {
 
 /// Gives `child` the network capabilities `spec` asks for, derived from
 /// Spark's `network`, in the slots from SLOT_NETWORK: one to connect out,
-/// one to listen on each range of ports, with the inbound right, so that
-/// other machines reach the service there through the firewall (ADR
-/// 0334), and for admin.network one with only the control right, which
-/// sets the interfaces up (ADR 0190). They have the copy and transfer
-/// rights, so that they last through `fork` (ADR 0183).
+/// to the machines on this one's networks too (the local right, ADR
+/// 0337), one to listen on each range of ports, with the inbound right,
+/// so that other machines reach the service there through the firewall
+/// (ADR 0334), and for admin.network one with only the control right,
+/// which sets the interfaces up (ADR 0190). They have the copy and
+/// transfer rights, so that they last through `fork` (ADR 0183).
 fn grant_network(network: Option<u32>, spec: &Spec, child: u32) -> Result<(), String> {
     if spec.network_grants() == 0 {
         return Ok(());
     }
     let network = network.ok_or("Spark has no network capability to give")?;
     let kept = Rights::COPY.union(Rights::TRANSFER);
-    let outbound = spec.outbound.then_some((0, 1 << 16, Rights::SEND.union(kept)));
+    let outbound =
+        spec.outbound.then_some((0, 1 << 16, Rights::SEND.union(Rights::LOCAL).union(kept)));
     let listen = spec
         .listen
         .iter()

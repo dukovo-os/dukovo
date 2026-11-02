@@ -7,7 +7,7 @@
 // disks, subvolumes, scrubs and replaced disks, swap areas, priorities, CPU affinity and I/O
 // classes, held files, traces, the kernel log, the dump and layout tools,
 // script, watch and pidstat, shutdown and service through Spark, the
-// hardware tools, ip and ss, and bundle. With them, what the kernel tells
+// hardware tools, ip, ss and ping, and bundle. With them, what the kernel tells
 // them: /processes (radix-proc(5)), /devices/kmsg, /kernel
 // (radix-sysfs(5)), getloadavg, and the priorities a child inherits.
 
@@ -719,6 +719,34 @@ static void network(void) {
 	close(datagrams);
 	CONTAINS("Netid State ", "/bin/ss", "-6", "-a");
 	STATUS(1, "/bin/ss", "-x");
+
+	// ping through a ping socket, which needs no privilege (ADR 0336), to
+	// this machine, whose lo answers; and to a network this boot does not
+	// reach, which nothing answers.
+	CONTAINS("PING 127.0.0.1 (127.0.0.1) 56(84) bytes of data.\n64 bytes from 127.0.0.1: icmp_seq=1 time=",
+	         "/bin/ping", "-c", "1", "127.0.0.1");
+	CONTAINS("\n--- 127.0.0.1 ping statistics ---\n2 packets transmitted, 2 received, 0% packet loss, time ",
+	         "/bin/ping", "-q", "-c", "2", "-i", "0.01", "127.0.0.1");
+	CONTAINS("rtt min/avg/max/mdev = ", "/bin/ping", "-q", "-c", "1", "127.0.0.1");
+	CONTAINS("64 bytes from ::1: icmp_seq=1 time=", "/bin/ping", "-c", "1", "::1");
+	CONTAINS("PING localhost (127.0.0.1) 56(84) bytes", "/bin/ping", "-4", "-c", "1", "localhost");
+	CONTAINS("\n108 bytes from 127.0.0.1: icmp_seq=1 ", "/bin/ping", "-c", "1", "-s", "100", "127.0.0.1");
+	STATUS(1, "/bin/ping", "-c", "1", "-W", "0.2", "192.0.2.1");
+	STATUS(2, "/bin/ping");
+	STATUS(2, "/bin/ping", "-c", "0", "127.0.0.1");
+	STATUS(2, "/bin/ping", "-6", "127.0.0.1");
+
+	// The machine's name, which /system/settings/hostname holds, as
+	// discoverd answers for it (ADR 0338): dukovo until it is given one.
+	unlink("/system/settings/hostname");
+	OUTPUT("", "dukovo\n", "/bin/hostname");
+	STATUS(0, "/bin/hostname", "posix-test");
+	OUTPUT("", "posix-test\n", "/bin/hostname");
+	OUTPUT("", "posix-test\n", "/bin/uname", "-n");
+	char named[64];
+	CHECK(!strcmp(read_file("/system/settings/hostname", named, sizeof(named)), "posix-test\n"));
+	CHECK(unlink("/system/settings/hostname") == 0);
+	OUTPUT("", "dukovo\n", "/bin/hostname");
 }
 
 // The storage tools on a disk and a mount that are not there, and on

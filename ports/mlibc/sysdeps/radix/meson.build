@@ -26,9 +26,10 @@ radix_sources = files(
 rtld_dso_sources += radix_sources
 
 libc_sources += radix_sources + files(
-	# The Linux option's getrandom (patch 0023), memalign (0035) and
-	# extended attribute calls (0050, ADR 0256), which need nothing of
-	# Linux's.
+	# The Linux option's getrandom (patch 0023), memalign (0035),
+	# extended attribute calls (0050, ADR 0256) and getifaddrs (0054, ADR
+	# 0336), which need nothing of Linux's.
+	'../../options/linux/generic/ifaddrs.cpp',
 	'../../options/linux/generic/malloc.cpp',
 	'../../options/linux/generic/sys-random.cpp',
 	'../../options/linux/generic/sys-xattr.cpp',
@@ -124,8 +125,9 @@ if not no_headers
 		follow_symlinks: true,
 	)
 	# And its malloc.h, of memalign and the glibc option's
-	# malloc_usable_size.
+	# malloc_usable_size, and ifaddrs.h, of getifaddrs.
 	install_headers(
+		'include/ifaddrs.h',
 		'include/malloc.h',
 		follow_symlinks: true,
 	)

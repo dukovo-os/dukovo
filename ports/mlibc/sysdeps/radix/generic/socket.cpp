@@ -352,13 +352,14 @@ void give_rights(struct msghdr *hdr, const Received &files) {
 }
 
 // Whether socket `slot` is a network socket, and its type in `type`
-// (SOCK_STREAM or SOCK_DGRAM) if it is: a Unix socket has no options.
+// (SOCK_STREAM, or SOCK_DGRAM for a datagram or a ping socket) if it is:
+// a Unix socket has no options.
 bool is_inet(uint32_t slot, int *type) {
 	struct radix_file_socket_option_results r;
 	if(radix_file_socket_option(slot, RADIX_SOCKET_OPTION_KIND, false, 0, &r))
 		return false;
 	if(type)
-		*type = r.value == RADIX_SOCKET_TYPE_DATAGRAM ? SOCK_DGRAM : SOCK_STREAM;
+		*type = r.value == RADIX_SOCKET_TYPE_STREAM ? SOCK_STREAM : SOCK_DGRAM;
 	return true;
 }
 
@@ -373,10 +374,12 @@ bool not_allowed(uint64_t status) {
 	case RADIX_KERNEL_NO_SUCH_SLOT:
 	case RADIX_KERNEL_WRONG_KIND:
 	case RADIX_KERNEL_OUT_OF_RANGE: return true;
-	// Without the send or receive right; a socket's own descriptor without
-	// the right a call needs (read or write) is EBADF, as for the others.
+	// Without the send, local or receive right (ADR 0337); a socket's own
+	// descriptor without the right a call needs (read or write) is EBADF,
+	// as for the others.
 	case RADIX_KERNEL_MISSING_RIGHTS:
-		return RADIX_STATUS_DETAIL(status) & (RADIX_RIGHTS_SEND | RADIX_RIGHTS_RECEIVE);
+		return RADIX_STATUS_DETAIL(status)
+				& (RADIX_RIGHTS_SEND | RADIX_RIGHTS_LOCAL | RADIX_RIGHTS_RECEIVE);
 	default: return false;
 	}
 }
@@ -518,11 +521,62 @@ uint32_t receive_flags(int flags) {
 	return flags & MSG_DONTWAIT ? RADIX_SOCKET_FLAGS_DONT_WAIT : 0;
 }
 
+// Gives `hdr`, in its control buffer, where a datagram came to: the
+// address `to` (the kernel's) on the interface numbered `index`, as
+// IP_PKTINFO's in_pktinfo for an IPv4 socket's or IPV6_PKTINFO's
+// in6_pktinfo for an IPv6 socket's. An in_pktinfo's ipi_spec_dst, the
+// address a reply goes from, is `to`, or for a datagram to a group or to
+// 255.255.255.255 the interface's own address, as on Linux (which gives
+// that for a network's broadcast address too). MSG_CTRUNC if there is no
+// room.
+void give_packet_info(struct msghdr *hdr, const struct radix_address &to, uint32_t index) {
+	union {
+		struct in_pktinfo in;
+		struct in6_pktinfo in6;
+	} info;
+	memset(&info, 0, sizeof(info));
+	int level, type;
+	size_t size;
+	if(to.family == RADIX_ADDRESS_FAMILY_IPV6) {
+		level = IPPROTO_IPV6;
+		type = IPV6_PKTINFO;
+		size = sizeof(info.in6);
+		memcpy(&info.in6.ipi6_addr, to.ip, sizeof(info.in6.ipi6_addr));
+		info.in6.ipi6_ifindex = index;
+	} else {
+		level = IPPROTO_IP;
+		type = IP_PKTINFO;
+		size = sizeof(info.in);
+		info.in.ipi_ifindex = static_cast<int>(index);
+		memcpy(&info.in.ipi_addr, to.ip, sizeof(info.in.ipi_addr));
+		// A group's address (224/4) or every machine's (255.255.255.255).
+		bool every = to.ip[0] >= 224;
+		info.in.ipi_spec_dst.s_addr = every ? radix::interface_address(index)
+				: info.in.ipi_addr.s_addr;
+	}
+	if(!hdr->msg_control || hdr->msg_controllen < CMSG_LEN(size)) {
+		hdr->msg_flags |= MSG_CTRUNC;
+		hdr->msg_controllen = 0;
+		return;
+	}
+	auto cmsg = static_cast<struct cmsghdr *>(hdr->msg_control);
+	cmsg->cmsg_level = level;
+	cmsg->cmsg_type = type;
+	cmsg->cmsg_len = CMSG_LEN(size);
+	memcpy(CMSG_DATA(cmsg), &info, size);
+	size_t used = CMSG_SPACE(size);
+	hdr->msg_controllen = used < hdr->msg_controllen ? used : hdr->msg_controllen;
+}
+
 // Receives one datagram on network socket `slot` into the buffers of
 // `iov`, as recvmsg(2) with `flags`, and who sent it into `from` (up to
 // `from_max` bytes, its length in `from_len`; nothing if `from` is null).
+// With `hdr`, whose control buffer it fills, where it came to too, if
+// the socket asked for that (IP_PKTINFO, IPV6_RECVPKTINFO); nothing else
+// comes there.
 int receive_datagram(uint32_t slot, const struct iovec *iov, int count, int flags,
-		struct sockaddr *from, socklen_t from_max, socklen_t *from_len, ssize_t *length) {
+		struct sockaddr *from, socklen_t from_max, socklen_t *from_len, ssize_t *length,
+		struct msghdr *hdr = nullptr) {
 	if(flags & ~(MSG_DONTWAIT | MSG_CMSG_CLOEXEC))
 		return EOPNOTSUPP;
 	size_t size;
@@ -536,11 +590,22 @@ int receive_datagram(uint32_t slot, const struct iovec *iov, int count, int flag
 		if(!buffer)
 			return ENOBUFS;
 	}
-	struct radix_address address;
+	struct radix_address address, to;
 	memset(&address, 0, sizeof(address));
-	struct radix_file_receive_from_results r;
-	uint64_t status = radix_file_receive_from_with(radix::cancellable, slot, buffer, size,
-			&address, sizeof(address), receive_flags(flags), &r);
+	memset(&to, 0, sizeof(to));
+	struct radix_file_receive_message_results r = {};
+	uint64_t status;
+	// Where it came to is asked for only with room for it, as it costs a
+	// call of its own.
+	if(hdr && hdr->msg_control && hdr->msg_controllen) {
+		status = radix_file_receive_message_with(radix::cancellable, slot, buffer, size,
+				&address, sizeof(address), &to, sizeof(to), receive_flags(flags), &r);
+	} else {
+		struct radix_file_receive_from_results from_r;
+		status = radix_file_receive_from_with(radix::cancellable, slot, buffer, size,
+				&address, sizeof(address), receive_flags(flags), &from_r);
+		r.count = from_r.count;
+	}
 	if(!status && count != 1) {
 		size_t at = 0;
 		for(int i = 0; i < count && at < r.count; i++) {
@@ -558,6 +623,13 @@ int receive_datagram(uint32_t slot, const struct iovec *iov, int count, int flag
 			give_inet(address, from, from_max, from_len);
 		else
 			*from_len = 0;
+	}
+	if(hdr) {
+		hdr->msg_flags = 0;
+		if(r.info)
+			give_packet_info(hdr, to, r.interface);
+		else
+			hdr->msg_controllen = 0;
 	}
 	*length = static_cast<ssize_t>(r.count);
 	return 0;
@@ -650,6 +722,7 @@ bool inet_option(int layer, int number, enum radix_socket_option *option, bool *
 	if(layer == SOL_SOCKET) {
 		switch(number) {
 		case SO_REUSEADDR: *option = RADIX_SOCKET_OPTION_REUSE_ADDRESS; return true;
+		case SO_REUSEPORT: *option = RADIX_SOCKET_OPTION_REUSE_PORT; return true;
 		case SO_KEEPALIVE: *option = RADIX_SOCKET_OPTION_KEEP_ALIVE; return true;
 		case SO_BROADCAST: *option = RADIX_SOCKET_OPTION_BROADCAST; return true;
 		case SO_RCVBUF: *option = RADIX_SOCKET_OPTION_RECEIVE_BUFFER; return true;
@@ -675,19 +748,124 @@ bool inet_option(int layer, int number, enum radix_socket_option *option, bool *
 		default: return false;
 		}
 	}
-	if(layer == IPPROTO_IP && number == IP_TTL) {
-		*option = RADIX_SOCKET_OPTION_TIME_TO_LIVE;
-		return true;
+	// A group's datagrams' hop limit, and whether they would loop back,
+	// are the socket's for both versions of IP (ADR 0336); IP_PKTINFO and
+	// IPV6_RECVPKTINFO ask where datagrams came to, as the socket's
+	// version's.
+	if(layer == IPPROTO_IP) {
+		switch(number) {
+		case IP_TTL: *option = RADIX_SOCKET_OPTION_TIME_TO_LIVE; return true;
+		case IP_MULTICAST_TTL: *option = RADIX_SOCKET_OPTION_MULTICAST_HOPS; return true;
+		case IP_MULTICAST_LOOP: *option = RADIX_SOCKET_OPTION_MULTICAST_LOOP; return true;
+		case IP_PKTINFO: *option = RADIX_SOCKET_OPTION_PACKET_INFO; return true;
+		default: return false;
+		}
 	}
 	if(layer == IPPROTO_IPV6) {
 		switch(number) {
 		case IPV6_V6ONLY: *option = RADIX_SOCKET_OPTION_V6_ONLY; return true;
 		// The hop limit is IPv6's time to live, the socket's one for both.
 		case IPV6_UNICAST_HOPS: *option = RADIX_SOCKET_OPTION_TIME_TO_LIVE; return true;
+		case IPV6_MULTICAST_IF: *option = RADIX_SOCKET_OPTION_MULTICAST_INTERFACE; return true;
+		case IPV6_MULTICAST_HOPS: *option = RADIX_SOCKET_OPTION_MULTICAST_HOPS; return true;
+		case IPV6_MULTICAST_LOOP: *option = RADIX_SOCKET_OPTION_MULTICAST_LOOP; return true;
+		case IPV6_RECVPKTINFO: *option = RADIX_SOCKET_OPTION_PACKET_INFO; return true;
 		default: return false;
 		}
 	}
 	return false;
+}
+
+// Whether `layer` and `number` are IP_MULTICAST_TTL or IP_MULTICAST_LOOP,
+// which Linux takes and gives as a byte as well as an int.
+bool byte_option(int layer, int number) {
+	return layer == IPPROTO_IP && (number == IP_MULTICAST_TTL || number == IP_MULTICAST_LOOP);
+}
+
+// The interface IP_MULTICAST_IF, IP_ADD_MEMBERSHIP and IP_DROP_MEMBERSHIP
+// name in `size` bytes of `buffer`, as Linux reads them: an ip_mreqn's
+// imr_ifindex, else its imr_address, an ip_mreq's imr_interface, or an
+// in_addr (for IP_MULTICAST_IF, `bare`), an address of the interface;
+// with the group, the ip_mreqn's or ip_mreq's first address, in `group`
+// if it is not null. 0 for INADDR_ANY, the interface the route to the
+// group goes through. EINVAL if it is too short, and EADDRNOTAVAIL (as
+// ENODEV for a membership) if no interface has the address.
+int interface_of(const void *buffer, socklen_t size, bool bare, struct in_addr *group,
+		unsigned int *index) {
+	struct ip_mreqn mreqn;
+	memset(&mreqn, 0, sizeof(mreqn));
+	if(size >= sizeof(struct ip_mreqn))
+		memcpy(&mreqn, buffer, sizeof(mreqn));
+	else if(size >= sizeof(struct ip_mreq))
+		memcpy(&mreqn, buffer, sizeof(struct ip_mreq));
+	else if(bare && size >= sizeof(struct in_addr))
+		memcpy(&mreqn.imr_address, buffer, sizeof(struct in_addr));
+	else
+		return EINVAL;
+	if(group)
+		*group = mreqn.imr_multiaddr;
+	if(mreqn.imr_ifindex) {
+		*index = static_cast<unsigned int>(mreqn.imr_ifindex);
+		return 0;
+	}
+	*index = 0;
+	if(mreqn.imr_address.s_addr == htonl(INADDR_ANY))
+		return 0;
+	*index = radix::interface_with(mreqn.imr_address.s_addr);
+	return *index ? 0 : (bare ? EADDRNOTAVAIL : ENODEV);
+}
+
+// Joins or leaves, as `join`, the group of `size` bytes of `buffer` on
+// network socket `slot`: an ip_mreqn or ip_mreq for IP_ADD_MEMBERSHIP and
+// IP_DROP_MEMBERSHIP (`v6` false), an ipv6_mreq for IPV6_ADD_MEMBERSHIP
+// and IPV6_DROP_MEMBERSHIP. Joining hears the machines on the networks
+// this one is on, which a network capability with the local right allows
+// (ADR 0337). An IPv6 socket takes an IPv4 group as an IPv4-mapped one.
+int socket_group(uint32_t slot, bool join, bool v6, const void *buffer, socklen_t size) {
+	struct radix_address group;
+	memset(&group, 0, sizeof(group));
+	unsigned int index;
+	if(v6) {
+		if(size < sizeof(struct ipv6_mreq))
+			return EINVAL;
+		struct ipv6_mreq mreq;
+		memcpy(&mreq, buffer, sizeof(mreq));
+		group.family = RADIX_ADDRESS_FAMILY_IPV6;
+		memcpy(group.ip, &mreq.ipv6mr_multiaddr, sizeof(mreq.ipv6mr_multiaddr));
+		index = mreq.ipv6mr_interface;
+	} else {
+		struct in_addr address;
+		if(int e = interface_of(buffer, size, false, &address, &index); e)
+			return e;
+		uint64_t family;
+		if(int e = get_option(slot, RADIX_SOCKET_OPTION_FAMILY, &family); e)
+			return e;
+		group.family = static_cast<uint32_t>(family);
+		if(family == RADIX_ADDRESS_FAMILY_IPV6) {
+			group.ip[10] = group.ip[11] = 0xff;
+			memcpy(group.ip + 12, &address, sizeof(address));
+		} else {
+			memcpy(group.ip, &address, sizeof(address));
+		}
+	}
+	for(uint32_t i = 0; i < RADIX_STARTUP_NETWORK_SLOTS; i++) {
+		uint64_t status = radix_file_socket_group(slot, RADIX_STARTUP_SLOT_NETWORK + i, join,
+				&group, sizeof(group), index);
+		if(!status)
+			return 0;
+		// A stream or ping socket has no groups: EPROTO, as Linux's
+		// stream sockets say.
+		if(is(status, RADIX_KERNEL_NOT_SUPPORTED))
+			return EPROTO;
+		// No such interface, or none the group's routes go through:
+		// ENODEV, as on Linux, where no_device is ENXIO elsewhere.
+		if(RADIX_STATUS_DOMAIN(status) == RADIX_FILE_ERROR_DOMAIN
+				&& RADIX_STATUS_CODE(status) == RADIX_FILE_NO_DEVICE)
+			return ENODEV;
+		if(!not_allowed(status))
+			return inet_errno(status);
+	}
+	return EACCES;
 }
 
 // getsockopt(2) on network socket `slot`, of type `type`.
@@ -698,6 +876,17 @@ int inet_getsockopt(uint32_t slot, int type, int layer, int number, void *buffer
 	bool time = false;
 	if(layer == SOL_SOCKET && number == SO_BINDTODEVICE)
 		return get_device(slot, buffer, size);
+	// The interface's address, as Linux gives the one it was set to.
+	if(layer == IPPROTO_IP && number == IP_MULTICAST_IF) {
+		if(int e = get_option(slot, RADIX_SOCKET_OPTION_MULTICAST_INTERFACE, &value); e)
+			return e;
+		struct in_addr address;
+		address.s_addr = radix::interface_address(static_cast<unsigned int>(value));
+		socklen_t len = *size < sizeof(address) ? *size : sizeof(address);
+		memcpy(buffer, &address, len);
+		*size = len;
+		return 0;
+	}
 	if(layer == SOL_SOCKET && (number == SO_TYPE || number == SO_DOMAIN
 			|| number == SO_PROTOCOL || number == SO_ACCEPTCONN)) {
 		struct radix_file_socket_state_results state;
@@ -710,7 +899,18 @@ int inet_getsockopt(uint32_t slot, int type, int layer, int number, void *buffer
 				return e;
 			value = value == RADIX_ADDRESS_FAMILY_IPV6 ? AF_INET6 : AF_INET;
 			break;
-		case SO_PROTOCOL: value = type == SOCK_DGRAM ? IPPROTO_UDP : IPPROTO_TCP; break;
+		case SO_PROTOCOL: {
+			uint64_t kind, family;
+			if(int e = get_option(slot, RADIX_SOCKET_OPTION_KIND, &kind); e)
+				return e;
+			if(int e = get_option(slot, RADIX_SOCKET_OPTION_FAMILY, &family); e)
+				return e;
+			if(kind == RADIX_SOCKET_TYPE_PING)
+				value = family == RADIX_ADDRESS_FAMILY_IPV6 ? IPPROTO_ICMPV6 : IPPROTO_ICMP;
+			else
+				value = type == SOCK_DGRAM ? IPPROTO_UDP : IPPROTO_TCP;
+			break;
+		}
 		default: value = state.listening; break;
 		}
 	} else if(inet_option(layer, number, &option, &time)) {
@@ -731,6 +931,13 @@ int inet_getsockopt(uint32_t slot, int type, int layer, int number, void *buffer
 		*size = len;
 		return 0;
 	}
+	// A byte for less room, as Linux gives it.
+	if(byte_option(layer, number) && *size > 0 && *size < sizeof(int)) {
+		unsigned char byte = static_cast<unsigned char>(value);
+		memcpy(buffer, &byte, 1);
+		*size = 1;
+		return 0;
+	}
 	if(*size < sizeof(int))
 		return EINVAL;
 	int as_int = static_cast<int>(value);
@@ -743,6 +950,17 @@ int inet_getsockopt(uint32_t slot, int type, int layer, int number, void *buffer
 int inet_setsockopt(uint32_t slot, int layer, int number, const void *buffer, socklen_t size) {
 	if(layer == SOL_SOCKET && number == SO_BINDTODEVICE)
 		return set_device(slot, buffer, size);
+	if(layer == IPPROTO_IP && number == IP_MULTICAST_IF) {
+		unsigned int index;
+		if(int e = interface_of(buffer, size, true, nullptr, &index); e)
+			return e;
+		return set_option(slot, RADIX_SOCKET_OPTION_MULTICAST_INTERFACE, index);
+	}
+	if(layer == IPPROTO_IP && (number == IP_ADD_MEMBERSHIP || number == IP_DROP_MEMBERSHIP))
+		return socket_group(slot, number == IP_ADD_MEMBERSHIP, false, buffer, size);
+	if(layer == IPPROTO_IPV6
+			&& (number == IPV6_ADD_MEMBERSHIP || number == IPV6_DROP_MEMBERSHIP))
+		return socket_group(slot, number == IPV6_ADD_MEMBERSHIP, true, buffer, size);
 	enum radix_socket_option option;
 	bool time;
 	if(!inet_option(layer, number, &option, &time))
@@ -759,9 +977,15 @@ int inet_setsockopt(uint32_t slot, int layer, int number, const void *buffer, so
 				+ static_cast<uint64_t>(tv.tv_usec) * 1000;
 	} else {
 		int as_int;
-		if(size < sizeof(int))
-			return EINVAL;
-		memcpy(&as_int, buffer, sizeof(int));
+		if(byte_option(layer, number) && size > 0 && size < sizeof(int)) {
+			unsigned char byte;
+			memcpy(&byte, buffer, 1);
+			as_int = byte;
+		} else {
+			if(size < sizeof(int))
+				return EINVAL;
+			memcpy(&as_int, buffer, sizeof(int));
+		}
 		switch(option) {
 		// A time to live or hop limit of -1 is the default, as on Linux.
 		case RADIX_SOCKET_OPTION_TIME_TO_LIVE:
@@ -770,6 +994,22 @@ int inet_setsockopt(uint32_t slot, int layer, int number, const void *buffer, so
 			if(as_int < 1 || as_int > 255)
 				return EINVAL;
 			break;
+		// A group's datagrams go no further than the network by default,
+		// and 0 keeps them on this machine (ADR 0336).
+		case RADIX_SOCKET_OPTION_MULTICAST_HOPS:
+			if(as_int == -1)
+				as_int = 1;
+			if(as_int < 0 || as_int > 255)
+				return EINVAL;
+			break;
+		// IPv6's takes 0 and 1 alone; IPv4's any number, as on Linux.
+		case RADIX_SOCKET_OPTION_MULTICAST_LOOP:
+			if(layer == IPPROTO_IPV6 && as_int != 0 && as_int != 1)
+				return EINVAL;
+			as_int = as_int != 0;
+			break;
+		case RADIX_SOCKET_OPTION_REUSE_PORT:
+		case RADIX_SOCKET_OPTION_PACKET_INFO: as_int = as_int != 0; break;
 		case RADIX_SOCKET_OPTION_ERROR: return ENOPROTOOPT;
 		default: break;
 		}
@@ -794,10 +1034,16 @@ int Sysdeps<Socket>::operator()(int family, int type_and_flags, int protocol, in
 			break;
 		case SOCK_DGRAM:
 			kind = RADIX_SOCKET_TYPE_DATAGRAM;
-			if(protocol != 0 && protocol != IPPROTO_UDP)
+			// Linux's ping sockets, which send ICMP echo requests and take
+			// their replies, of their version of IP (ADR 0336).
+			if((family == AF_INET && protocol == IPPROTO_ICMP)
+					|| (family == AF_INET6 && protocol == IPPROTO_ICMPV6))
+				kind = RADIX_SOCKET_TYPE_PING;
+			else if(protocol != 0 && protocol != IPPROTO_UDP)
 				return EPROTONOSUPPORT;
 			break;
-		// Raw sockets need a right of their own (ICMP, later).
+		// Raw sockets need a right of their own; ping(8) needs none, as it
+		// uses a ping socket.
 		case SOCK_RAW: return EPERM;
 		case SOCK_SEQPACKET: return ESOCKTNOSUPPORT;
 		default: return EINVAL;
@@ -1139,18 +1385,20 @@ int Sysdeps<MsgRecv>::operator()(int fd, struct msghdr *hdr, int flags, ssize_t 
 		int e;
 		if(type == SOCK_DGRAM) {
 			e = receive_datagram(slot, hdr->msg_iov, hdr->msg_iovlen, flags, from, from_len,
-					&from_len, length);
+					&from_len, length, hdr);
+			if(e)
+				return e;
 		} else {
 			e = receive_vector(fd, hdr->msg_iov, hdr->msg_iovlen,
 					flags & ~MSG_CMSG_CLOEXEC, nullptr, length);
+			if(e)
+				return e;
 			from_len = 0;
+			hdr->msg_flags = 0;
+			// Nothing comes with a stream's bytes.
+			hdr->msg_controllen = 0;
 		}
-		if(e)
-			return e;
-		hdr->msg_flags = 0;
 		hdr->msg_namelen = from ? from_len : 0;
-		// Nothing comes but bytes.
-		hdr->msg_controllen = 0;
 		return 0;
 	}
 	if(int e = radix::iov_total(hdr->msg_iov, hdr->msg_iovlen, &sum); e)

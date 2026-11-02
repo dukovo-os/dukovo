@@ -79,6 +79,11 @@ pub const ALWAYS: &[(&str, bool)] = &[
 #[cfg_attr(not(target_os = "radix"), allow(dead_code))]
 pub const NETWORK: &[&str] = &["/system/live/resolved", "/system/live/netd"];
 
+/// What a bundle that reaches the local network (`network.local`) also
+/// gets: discoverd's folder, whose socket says what is on it (ADR 0338).
+#[cfg_attr(not(target_os = "radix"), allow(dead_code))]
+pub const DISCOVERY: &str = crate::discoverd::FOLDER;
+
 /// Where drives you plug in appear: `files.volumes`.
 #[cfg_attr(not(target_os = "radix"), allow(dead_code))]
 pub const VOLUMES: &str = "/volumes";
@@ -264,8 +269,12 @@ pub fn choose(manifest: &Manifest, command: Option<&str>) -> Result<Chosen, Stri
 /// for.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Given {
-    /// `network.outbound`: to connect out, on every port.
+    /// `network.outbound`: to connect out, on every port, to machines
+    /// beyond this one's networks.
     pub outbound: bool,
+    /// `network.local`: to reach the machines on this one's networks, and
+    /// find them (ADR 0337).
+    pub local: bool,
     /// `network.listen`: the ports, each with whether it is required.
     pub listen: Vec<(Ports, bool)>,
     /// `files.folder`: your folders, by name, each with whether it may
@@ -313,6 +322,7 @@ pub fn give(given: &mut Given, name: &str, request: &Asked, words: &[String]) {
     };
     match name {
         "network.outbound" => given.outbound = true,
+        "network.local" => given.local = true,
         "network.listen" => given.listen.extend(request.ports.iter().map(|&p| (p, required))),
         "files.folder" => given.folders.extend(folders()),
         "files.shared" => given.shared.extend(folders()),
@@ -569,7 +579,7 @@ mod sandbox {
     use radix_abi::directory::{self, OpenFlags};
     use radix_abi::{Status, network, process, startup};
 
-    use super::{ALWAYS, NETWORK, Plan, SHARED, VOLUMES};
+    use super::{ALWAYS, DISCOVERY, NETWORK, Plan, SHARED, VOLUMES};
     use crate::bundled::APP_DATA;
     use crate::bundles::protocol::Answer;
     use crate::signin::{self, Spares};
@@ -756,10 +766,13 @@ mod sandbox {
                 attach(path, write)?;
             }
         }
-        for path in NETWORK.iter().filter(|_| plan.given.outbound) {
+        for path in NETWORK.iter().filter(|_| plan.given.outbound || plan.given.local) {
             if std::fs::symlink_metadata(path).is_ok() {
                 attach(path, false)?;
             }
+        }
+        if plan.given.local && std::fs::symlink_metadata(DISCOVERY).is_ok() {
+            attach(DISCOVERY, false)?;
         }
         // What the person gave it: all of their files, which hold its
         // data, or the folders given and its data; the drives, the
@@ -872,8 +885,10 @@ mod sandbox {
 
     /// Gives the program the network its manifest asks for, out of what
     /// the caller holds, in its slots from SLOT_NETWORK: to connect out,
-    /// then each range of ports to listen on, in order. A required range
-    /// the caller cannot listen on stops it; an optional one is left out.
+    /// beyond this machine's networks (the send right) and to them (the
+    /// local right, ADR 0337) as it asks, then each range of ports to
+    /// listen on, in order. A required range the caller cannot listen on
+    /// stops it; an optional one is left out.
     fn give_network(plan: &Plan<'_>, s: &Slots) -> Result<(), String> {
         let kept = Rights::COPY.union(Rights::TRANSFER);
         let held = held();
@@ -891,11 +906,12 @@ mod sandbox {
             to += 1;
             Ok(())
         };
-        if plan.given.outbound {
-            for &(slot, rights, first, past) in &held {
-                if rights.bits() & Rights::SEND.bits() != 0 && first < past {
-                    give(slot, first, past - first, Rights::SEND)?;
-                }
+        let reach = (if plan.given.outbound { Rights::SEND.bits() } else { 0 })
+            | (if plan.given.local { Rights::LOCAL.bits() } else { 0 });
+        for &(slot, rights, first, past) in &held {
+            let has = rights.bits() & reach;
+            if let Some(right) = Rights::from_bits(has).filter(|_| has != 0 && first < past) {
+                give(slot, first, past - first, right)?;
             }
         }
         for &(ports, required) in &plan.given.listen {

@@ -52,6 +52,7 @@ use super::objects::{self, Found, Object};
 use super::{Result, UserRef, UserThread, cap_error, error};
 use crate::fs::{self, Description, FileObject, FileRef, inet, locks, pipe, socket, tty};
 use crate::net::firewall::Owner;
+use crate::net::{self, Reach};
 use crate::{Arch, caps};
 
 /// The most bytes one read or write moves, as on Linux.
@@ -1562,7 +1563,7 @@ pub fn file_method(user: &UserRef, found: &Found, label: u32, args: &[u64; 8]) -
                 a.flags.contains(SocketFlags::DONT_WAIT) || file.description().non_blocking;
             let count = match socket {
                 AnySocket::Unix(socket) => socket.receive(&mut out, non_blocking)?,
-                AnySocket::Inet(socket) => socket.receive(&mut out, non_blocking)?.0,
+                AnySocket::Inet(socket) => socket.receive(&mut out, non_blocking)?.count,
             } as u64;
             user.process.note_read(count);
             answer(label, file::ReceiveResults::WORDS, file::ReceiveResults { count }.encode())
@@ -1652,6 +1653,7 @@ pub fn file_method(user: &UserRef, found: &Found, label: u32, args: &[u64; 8]) -
             let (_, socket) = inet_of(found, Rights::WRITE)?;
             let authority = network(user, a.network, Rights::NONE)?;
             if !authority.rights.contains(Rights::SEND)
+                && !authority.rights.contains(Rights::LOCAL)
                 && !authority.rights.contains(Rights::RECEIVE)
             {
                 return Err(Kernel::MissingRights.status(u32::from(Rights::SEND.bits())));
@@ -1666,8 +1668,8 @@ pub fn file_method(user: &UserRef, found: &Found, label: u32, args: &[u64; 8]) -
         file::CONNECT_ADDRESS => {
             let a = file::ConnectAddressArgs::decode(args)?;
             let (file, socket) = inet_of(found, Rights::WRITE)?;
-            network(user, a.network, Rights::SEND)?;
             let to = address_in(a.address)?;
+            network_to(user, a.network, &to)?;
             socket.connect(to, file.description().non_blocking)?;
             answer(label, 0, [0; 8])
         }
@@ -1677,9 +1679,10 @@ pub fn file_method(user: &UserRef, found: &Found, label: u32, args: &[u64; 8]) -
             // A stream socket sends to where it is connected, as on Linux.
             let to = match socket.kind() {
                 inet::Kind::Stream => None,
-                inet::Kind::Datagram => {
-                    network(user, a.network, Rights::SEND)?;
-                    Some(address_in(a.address)?)
+                inet::Kind::Datagram | inet::Kind::Ping => {
+                    let to = address_in(a.address)?;
+                    network_to(user, a.network, &to)?;
+                    Some(to)
                 }
             };
             let (address, len) = user_range(a.data)?;
@@ -1695,24 +1698,52 @@ pub fn file_method(user: &UserRef, found: &Found, label: u32, args: &[u64; 8]) -
             let a = file::ReceiveFromArgs::decode(args)?;
             let (file, socket) = inet_of(found, Rights::READ)?;
             let (address, len) = user_range(a.buffer)?;
-            let (from_address, from_len) = user_range(a.address)?;
+            user_range(a.address)?;
             let mut out = UserOut { address, len };
             let non_blocking =
                 a.flags.contains(SocketFlags::DONT_WAIT) || file.description().non_blocking;
-            let (count, from, scope) = socket.receive(&mut out, non_blocking)?;
-            let from = from.map_or((None, 0), |(ip, port)| (Some(ip), port));
-            let bytes = inet::address_of(from, socket.is_ipv6(), scope);
-            let fits = &bytes[..bytes.len().min(from_len)];
-            if !fits.is_empty() && !Arch::copy_to_user(from_address, fits) {
-                return Err(error(Kernel::BadAddress));
-            }
-            let count = count as u64;
+            let received = socket.receive(&mut out, non_blocking)?;
+            let from = received.from.map_or((None, 0), |(ip, port)| (Some(ip), port));
+            put_address(inet::address_of(from, socket.is_ipv6(), received.scope), a.address)?;
+            let count = received.count as u64;
             user.process.note_read(count);
             answer(
                 label,
                 file::ReceiveFromResults::WORDS,
                 file::ReceiveFromResults { count }.encode(),
             )
+        }
+        file::RECEIVE_MESSAGE => {
+            let a = file::ReceiveMessageArgs::decode(args)?;
+            let (file, socket) = inet_of(found, Rights::READ)?;
+            let (address, len) = user_range(a.buffer)?;
+            user_range(a.address)?;
+            user_range(a.destination)?;
+            let mut out = UserOut { address, len };
+            let non_blocking =
+                a.flags.contains(SocketFlags::DONT_WAIT) || file.description().non_blocking;
+            let received = socket.receive(&mut out, non_blocking)?;
+            let v6 = socket.is_ipv6();
+            let from = received.from.map_or((None, 0), |(ip, port)| (Some(ip), port));
+            put_address(inet::address_of(from, v6, received.scope), a.address)?;
+            let port = socket.local_port();
+            put_address(inet::address_of((received.to, port), v6, received.scope), a.destination)?;
+            let count = received.count as u64;
+            user.process.note_read(count);
+            let interface = if socket.kind() == inet::Kind::Stream { 0 } else { received.scope };
+            let results =
+                file::ReceiveMessageResults { count, interface, info: socket.packet_info() };
+            answer(label, file::ReceiveMessageResults::WORDS, results.encode())
+        }
+        file::SOCKET_GROUP => {
+            let a = file::SocketGroupArgs::decode(args)?;
+            let (_, socket) = inet_of(found, Rights::NONE)?;
+            // Joining hears the networks this machine is on (ADR 0337).
+            if a.join {
+                network(user, a.network, Rights::LOCAL)?;
+            }
+            socket.group(a.join, address_in(a.group)?, a.interface)?;
+            answer(label, 0, [0; 8])
         }
         file::SOCKET_OPTION => {
             let a = file::SocketOptionArgs::decode(args)?;
@@ -1810,6 +1841,37 @@ fn inet_of(found: &Found, needs: Rights) -> Result<(&FileRef, &inet::InetSocket)
         (file, AnySocket::Inet(socket)) => Ok((file, socket)),
         (_, AnySocket::Unix(_)) => Err(error(Kernel::NotSupported)),
     }
+}
+
+/// What the network capability in the caller's slot `slot` allows, if it
+/// reaches `to` (ADR 0337): the local right reaches the networks this
+/// machine is on, the send right those beyond them, and either the
+/// machine itself.
+fn network_to(user: &UserRef, slot: u32, to: &inet::Given) -> Result<inet::Authority> {
+    let authority = network(user, slot, Rights::NONE)?;
+    let rights = authority.rights;
+    let (reaches, needs) = match net::reach(to.ip()) {
+        Reach::Own => {
+            (rights.contains(Rights::SEND) || rights.contains(Rights::LOCAL), Rights::SEND)
+        }
+        Reach::Local => (rights.contains(Rights::LOCAL), Rights::LOCAL),
+        Reach::Beyond => (rights.contains(Rights::SEND), Rights::SEND),
+    };
+    if !reaches {
+        return Err(Kernel::MissingRights.status(u32::from(needs.bits())));
+    }
+    Ok(authority)
+}
+
+/// Copies `bytes`, an Address, into the caller's `buffer`, as much as it
+/// has room for.
+fn put_address(bytes: [u8; radix_abi::network::Address::SIZE], buffer: UserBuffer) -> Result<()> {
+    let (address, len) = user_range(buffer)?;
+    let fits = &bytes[..bytes.len().min(len)];
+    if !fits.is_empty() && !Arch::copy_to_user(address, fits) {
+        return Err(error(Kernel::BadAddress));
+    }
+    Ok(())
 }
 
 /// What the network capability in the caller's slot `slot` allows, if it
@@ -2137,7 +2199,7 @@ fn read_special(
     match target(file) {
         Target::Pipe(end) => end.pipe().read(out, non_blocking).map(|n| n as u64),
         Target::Socket(socket) => socket.receive(out, non_blocking).map(|n| n as u64),
-        Target::Inet(socket) => socket.receive(out, non_blocking).map(|(n, ..)| n as u64),
+        Target::Inet(socket) => socket.receive(out, non_blocking).map(|r| r.count as u64),
         Target::Tty(handle) => handle.read(user, out, non_blocking).map(|n| n as u64),
         Target::Kmsg => fs::kmsg::read(file, out, non_blocking).map(|n| n as u64),
         Target::Keyboard => fs::keyboard::read(file, out, non_blocking).map(|n| n as u64),

@@ -99,6 +99,7 @@ const HEADERS: &[&str] = &[
     "getopt.h",
     "glob.h",
     "grp.h",
+    "ifaddrs.h",
     "langinfo.h",
     "limits.h",
     "link.h",

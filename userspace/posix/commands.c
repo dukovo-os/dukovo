@@ -58,6 +58,8 @@ static const char *const ELSEWHERE[][2] = {
 		{"netlog", "the network-services boot test's service: it sends the log to that test's listener"},
 		{"curl", "the network-services boot test's: it fetches a page from that test's HTTPS server"},
 		{"e1000d", "the userspace-e1000 boot test's service: it drives the cards only e1000=program leaves it"},
+		{"discoverd", "the network-discovery boot test's service: it answers for the machine's name to the other machine on a cable"},
+		{"discover", "the network-discovery boot test's: it lists what the other machine on the cable offers"},
 		{"firewall", "the network-pair boot test's: it needs the firewall capability and another machine to reach this one"},
 		{"rdisk", "the rdisk boot test's: it partitions a blank disk, which no other test has"},
 		{"mkfs", "the rdisk boot test's: it makes filesystems on the partitions rdisk made"},

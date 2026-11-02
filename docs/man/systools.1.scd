@@ -77,6 +77,10 @@ error that starts with the tool's name.
 :  the space of each filesystem
 |  *device*(8)
 :  add disks to a Btrfs filesystem and remove them
+|  *discover*(1)
+:  what the local networks have: their services and devices
+|  *discoverd*(8)
+:  the machine's name on the local networks, and what they offer
 |  *diskhealth*(8)
 :  what each disk says of its health: SMART and the NVMe health log
 |  *dmesg*(1)
@@ -159,6 +163,8 @@ error that starts with the tool's name.
 :  find or signal processes by name
 |  *pidstat*(1)
 :  what each process uses
+|  *ping*(8)
+:  ask a machine whether it answers, and how soon
 |  *ps*(1)
 :  the processes
 |  *quota*(8)

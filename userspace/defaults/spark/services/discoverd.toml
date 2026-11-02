@@ -1,0 +1,33 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+#
+# What is on the local networks, and this machine's name on them:
+# discoverd(8) answers for NAME.local, the machine's name, by multicast
+# DNS, and offers it to the network's browsers; it finds .local names
+# for resolved(8), and the services and devices discover(1) lists, by
+# DNS-SD and WS-Discovery (ADR 0338). `service discoverd stop` takes the
+# machine off the local networks' lists until the next boot;
+# `enabled = false` after `program` keeps it off.
+#
+# service.toml(5) explains each setting. `service check discoverd`
+# checks this file, and `service edit discoverd` checks it as you save.
+
+service_version = 1
+description = "Local network discovery"
+program = "/system/commands/discoverd"
+# After netd, which gives the cards their addresses, and the services
+# that use the network.
+order = 24
+# Started again whenever it ends: always, on-failure or never.
+restart = "always"
+
+[limits]
+memory = "32M"
+
+# What it holds beyond what every service reads (service.toml(5)): the
+# local networks, whose mDNS group it joins on port 5353, which other
+# machines' questions come to, and its folder, where its socket is.
+[permissions]
+network.outbound = true
+network.listen = [5353]
+files.read-write = ["/system/live/discoverd"]

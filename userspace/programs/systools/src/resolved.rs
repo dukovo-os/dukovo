@@ -26,8 +26,10 @@
 //! day at most, and those that a name is not there as their SOA says
 //! (RFC 2308), an hour at most; an answer given out of the cache has its
 //! times to live counted down. `localhost` and the names below it are
-//! answered here, and `.local` and `invalid` names are not there (RFC
-//! 6761), so that they never leave the machine.
+//! answered here, and `invalid` names are not there (RFC 6761). `.local`
+//! names never go to a server: discoverd(8) finds them by multicast DNS
+//! on the networks this machine is on (RFC 6762, ADR 0338), and without
+//! it they are not there.
 //!
 //! The UDP queries come to the main thread, which answers those it can
 //! from the cache and passes the rest to WORKERS threads, each with its
@@ -505,6 +507,10 @@ impl Shared {
             out[4..12].fill(0);
             return Some(out);
         };
+        if dns::is_multicast_name(&question.name) {
+            self.local.fetch_add(1, Ordering::Relaxed);
+            return Some(multicast_answer(query, &question));
+        }
         if let Some(answer) = dns::local_answer(query, &question) {
             self.local.fetch_add(1, Ordering::Relaxed);
             return Some(answer);
@@ -995,11 +1001,16 @@ fn serve_udp(shared: &Shared, udp: &UdpSocket, queue: &SyncSender<(Vec<u8>, Sock
             continue;
         };
         let header = dns::header(query).map_or(0, |h| h.id);
-        let local = dns::local_answer(query, &question).inspect(|_| {
+        // A .local name waits for multicast DNS, on a worker.
+        let multicast = dns::is_multicast_name(&question.name);
+        let local = dns::local_answer(query, &question).filter(|_| !multicast).inspect(|_| {
             shared.queries.fetch_add(1, Ordering::Relaxed);
             shared.local.fetch_add(1, Ordering::Relaxed);
         });
         let quick = local.or_else(|| {
+            if multicast {
+                return None;
+            }
             let key = Key::of(query, &question);
             let answer = shared.cached(&key, header);
             if answer.is_some() {
@@ -1016,6 +1027,28 @@ fn serve_udp(shared: &Shared, udp: &UdpSocket, queue: &SyncSender<(Vec<u8>, Sock
             Err(TrySendError::Disconnected(_)) => return,
         }
     }
+}
+
+/// How long a `.local` record is kept by those who ask, as RFC 6762
+/// keeps a host's address records.
+const MULTICAST_TTL: u32 = 120;
+
+/// How long discoverd has to find a `.local` name's addresses: a little
+/// less than the two seconds a server has, so that a client's first try
+/// gets the answer.
+const MULTICAST_WAIT: Duration = Duration::from_millis(1500);
+
+/// The answer to `query`, for a `.local` name: the addresses discoverd(8)
+/// finds for it (A and AAAA, as asked), or that it is not there, if
+/// discoverd finds none or is not running. Records of other types (SRV,
+/// TXT, PTR) are discover(1)'s to find.
+fn multicast_answer(query: &[u8], question: &Question) -> Vec<u8> {
+    let addresses = if matches!(question.qtype, dns::A | dns::AAAA | dns::ANY) {
+        crate::discoverd::resolve(&question.name, MULTICAST_WAIT).unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    dns::address_answer(query, question, &addresses, MULTICAST_TTL)
 }
 
 /// A worker: answers the queries passed to it, over `reply`.

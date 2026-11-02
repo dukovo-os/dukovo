@@ -104,8 +104,13 @@ rights listed, plus *copy* and *transfer*, which every kind has.
 *network*
 	A range of the network's ports (at most 65,536), to connect out
 	through and to listen on, and the interfaces to set up (see
-	*radix-network*(2)). Rights: *send*, to connect out to any address
-	and send datagrams; *receive*, to bind to and listen on the ports in
+	*radix-network*(2)). Rights: *send*, to connect out to an address
+	beyond the networks the machine is on, through a router, and send
+	datagrams there; *local*, to reach the networks the machine is on:
+	an address on one of its interfaces' networks, a broadcast,
+	link-local or multicast one, and to join multicast groups (ADR
+	0337); either reaches the machine itself, its loopback and its own
+	addresses; *receive*, to bind to and listen on the ports in
 	the range; *inbound*, with *receive*, for other machines to reach
 	what listens on those ports through the firewall, which Spark gives
 	only with a service's *network.listen* (ADR 0334); *control*,
@@ -147,9 +152,9 @@ rights listed, plus *copy* and *transfer*, which every kind has.
 
 # RIGHTS
 
-The fourteen rights are *read*, *write*, *execute*, *send*, *receive*,
+The fifteen rights are *read*, *write*, *execute*, *send*, *receive*,
 *grant*, *signal*, *control*, *seal*, *unseal*, *copy*, *transfer*,
-*bypass* and *inbound*. What the first ten allow depends on the kind and is described
+*bypass*, *inbound* and *local*. What the first ten allow depends on the kind and is described
 with the operations that need them. *bypass*, on a directory or a file,
 passes the owners, groups and modes of the files reached through it, as
 Linux's CAP_DAC_OVERRIDE does but only beneath that directory, and is
@@ -288,7 +293,7 @@ Operations on capabilities fail with one of these, and change nothing:
 At boot the kernel reports its store:
 
 ```
-Capabilities: ready; 24 object kinds, 14 rights, spaces of up to 65536 slots, derivations up to 64 deep
+Capabilities: ready; 24 object kinds, 15 rights, spaces of up to 65536 slots, derivations up to 64 deep
 ```
 
 The *kdb* command *caps* counts the spaces, capabilities and objects by

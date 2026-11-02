@@ -694,6 +694,60 @@ pub fn route(to: impl Into<IpAddress>) -> Option<&'static Interface> {
     routed
 }
 
+/// The interface a datagram to the multicast group `group` goes out
+/// through when its socket names none: the card the routes say, else the
+/// first with an address of the group's version of IP, as a network with
+/// no router still has its groups (ADR 0336).
+pub fn route_group(group: IpAddress) -> Option<&'static Interface> {
+    route(group).filter(|interface| !interface.is_loopback()).or_else(|| {
+        interfaces().filter(|interface| !interface.is_loopback()).find(|interface| {
+            let stack = interface.stack.lock();
+            match group {
+                IpAddress::Ipv4(_) => stack.ipv4().is_some(),
+                IpAddress::Ipv6(_) => stack.ipv6_addresses().next().is_some(),
+            }
+        })
+    })
+}
+
+/// How far an address is from this machine, which decides the right a
+/// network capability needs to reach it (ADR 0337).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Reach {
+    /// This machine: a loopback address, or one of its own.
+    Own,
+    /// The networks it is on: an address on one of its cards' networks,
+    /// a link-local, broadcast or multicast one.
+    Local,
+    /// Beyond them, through a router.
+    Beyond,
+}
+
+/// How far `to` is.
+pub fn reach(to: IpAddress) -> Reach {
+    let local = match to {
+        IpAddress::Ipv4(ip) if ip.is_loopback() || ip.is_unspecified() => return Reach::Own,
+        IpAddress::Ipv6(ip) if ip.is_loopback() || ip.is_unspecified() => return Reach::Own,
+        IpAddress::Ipv4(ip) => ip.is_broadcast() || ip.is_link_local() || ip.is_multicast(),
+        IpAddress::Ipv6(ip) => ipv6::link_local(&ip) || ip.is_multicast(),
+    };
+    let mut reach = if local { Reach::Local } else { Reach::Beyond };
+    for interface in interfaces() {
+        let stack = interface.stack.lock();
+        if stack.has_address(to) {
+            return Reach::Own;
+        }
+        let on = match to {
+            IpAddress::Ipv4(ip) => stack.reaches(to) || stack.is_broadcast(ip),
+            IpAddress::Ipv6(_) => stack.reaches(to),
+        };
+        if on && !interface.is_loopback() {
+            reach = Reach::Local;
+        }
+    }
+    reach
+}
+
 /// What networking has done so far, counted: what socket calls wait on.
 static GENERATION: AtomicU64 = AtomicU64::new(0);
 /// The pollers of every network socket.

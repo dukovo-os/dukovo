@@ -44,12 +44,16 @@ pub fn method(
         abi::SOCKET => {
             let a = SocketArgs::decode(args)?;
             cap.check(ObjectKind::Network, Rights::NONE).map_err(cap_error)?;
-            if !cap.rights().contains(Rights::SEND) && !cap.rights().contains(Rights::RECEIVE) {
+            let rights = cap.rights();
+            let sends = rights.contains(Rights::SEND) || rights.contains(Rights::LOCAL);
+            // A ping socket only sends, and takes the replies to what it sent.
+            if !sends && (a.kind == SocketType::Ping || !rights.contains(Rights::RECEIVE)) {
                 return Err(Kernel::MissingRights.status(u32::from(Rights::SEND.bits())));
             }
             let kind = match a.kind {
                 SocketType::Stream => inet::Kind::Stream,
                 SocketType::Datagram => inet::Kind::Datagram,
+                SocketType::Ping => inet::Kind::Ping,
             };
             let v6 = a.family == AddressFamily::Ipv6;
             inet::make(user, a.to, kind, v6, a.flags)?;
