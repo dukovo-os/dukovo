@@ -189,6 +189,7 @@ pub const STD_LINKS: &[(&str, &str)] = &[
     ("system/commands/replace", "systools"),
     ("system/commands/resolvectl", "systools"),
     ("system/commands/resolved", "systools"),
+    ("system/commands/rgrub-setup", "systools"),
     ("system/commands/rtrace", "systools"),
     ("system/commands/script", "systools"),
     ("system/commands/scrub", "systools"),
@@ -444,6 +445,13 @@ pub fn build(ctx: &Ctx, profile: Profile) -> Result<Programs> {
         files.push((path.to_string(), built.join(package)));
     }
     crate::manuals::install(ctx, &mut files)?;
+    // GRUB's images, which rgrub-setup(8) puts on disks (ADR 0306).
+    let grub = crate::grub::build(ctx)?;
+    let images = grub.disk_images(ctx, &ctx.out.join("sysroot").join(crate::grub::SYSTEM_DIR))?;
+    for path in [images.boot, images.core, images.efi] {
+        let name = path.file_name().expect("an image has a name").to_string_lossy().into_owned();
+        files.push((format!("{}/{name}", crate::grub::SYSTEM_DIR), path));
+    }
     let archive = write_archive(&files, crate::image::source_date_epoch(ctx))?;
     std::fs::write(&bootfs, &archive).context(|| format!("writing {}", bootfs.display()))?;
     step(&format!(

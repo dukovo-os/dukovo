@@ -36,8 +36,17 @@ fn random(out: &mut [u8]) {
     }
 }
 
+/// Gives the kernel's filesystem crates on the host [`clock`] and
+/// [`random`], which read `time` (seconds since 1970), for the files they
+/// make: the first time given is kept.
+pub fn host_clock(time: u64) {
+    let _ = TIME.set(time);
+    radix_vfs::set_clock(clock);
+    radix_vfs::set_random(random);
+}
+
 /// What a filesystem error says, for `what`.
-fn failed(what: &str, err: radix_vfs::Error) -> Error {
+pub fn failed(what: &str, err: radix_vfs::Error) -> Error {
     Error::new(format!("{what}: {}", disk::btrfs::describe(err)))
 }
 
@@ -57,9 +66,7 @@ pub fn make(
     subvolumes: &[&str],
     time: u64,
 ) -> Result<()> {
-    let _ = TIME.set(time);
-    radix_vfs::set_clock(clock);
-    radix_vfs::set_random(random);
+    host_clock(time);
     let _ = std::fs::remove_file(output);
     let file = std::fs::OpenOptions::new()
         .read(true)
@@ -110,8 +117,9 @@ fn modified(meta: &std::fs::Metadata) -> u64 {
 }
 
 /// Writes what the directory `from` holds into `to`, in the order of its
-/// names, so the same tree is the same filesystem.
-fn copy(from: &Path, to: &NodeRef) -> Result<()> {
+/// names, so the same tree is the same filesystem: the Dukovo root's
+/// Btrfs, or an image's EFI system partition (FAT).
+pub fn copy(from: &Path, to: &NodeRef) -> Result<()> {
     let mut names: Vec<_> = std::fs::read_dir(from)
         .context(|| format!("reading {}", from.display()))?
         .map(|entry| entry.map(|e| e.file_name()))

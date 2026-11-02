@@ -69,7 +69,7 @@ without undoing your edits.
 ## Dukovo's root on a disk
 
 The image `./ob image` makes ends with a Dukovo root partition, the
-image's fifth, holding Btrfs with data compressed with zstd. Each part
+image's third, holding Btrfs with data compressed with zstd. Each part
 of the tree that changes is a subvolume of its own:
 
 | Subvolume | Mounted at |

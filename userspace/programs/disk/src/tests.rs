@@ -642,3 +642,120 @@ fn disks_for_windows() {
         keep_for_windows(name, &image);
     }
 }
+
+/// A disk with a GPT of a BIOS boot partition and an EFI system
+/// partition, as Dukovo's images have.
+fn bios_boot_disk(image: &Image) -> (Device, Table) {
+    let disk = image.device(512);
+    let mut rng = Rng::seeded(5);
+    let mut table = Table::new(Scheme::Gpt, 512, disk.sectors(), &mut rng).unwrap();
+    for (name, sectors) in [("bios-boot", 2048), ("efi", 8192)] {
+        table
+            .add(New::of(types::parse(name, Scheme::Gpt).unwrap(), End::Sectors(sectors)), &mut rng)
+            .unwrap();
+    }
+    write(&disk, &table);
+    (disk, table)
+}
+
+/// GRUB's images as `grub::setup_bios` takes them: a `boot.img` of one
+/// sector, and a `core.img` whose first sector ends with the segment it
+/// loads the rest at.
+fn grub_images(core_bytes: usize) -> (Vec<u8>, Vec<u8>) {
+    let mut boot = vec![0xccu8; 512];
+    boot[510..].copy_from_slice(&[0x55, 0xaa]);
+    let mut core: Vec<u8> = (0..core_bytes).map(|i| (i % 251) as u8).collect();
+    core[500..510].fill(0);
+    core[510..512].copy_from_slice(&0x0820u16.to_le_bytes());
+    (boot, core)
+}
+
+#[test]
+fn grub_for_a_bios_goes_where_grub_bios_setup_puts_it() {
+    let image = Image::new(16 << 20);
+    let (disk, _) = bios_boot_disk(&image);
+    let before = disk.read_sectors(0, 1).unwrap();
+    let (boot, core) = grub_images(3 * 512 + 100);
+    let setup = crate::grub::setup_bios(&disk, &boot, &core).unwrap();
+    assert_eq!(setup, crate::grub::Setup { core_sector: 2048, core_sectors: 4, partition: 1 });
+
+    let first = disk.read_sectors(0, 1).unwrap();
+    // boot.img's code, told where core.img is, with the drive check gone,
+    // and the disk's parameter block, signature and table kept.
+    assert_eq!(first[..3], boot[..3]);
+    assert_eq!(first[3..0x5a], before[3..0x5a]);
+    assert_eq!(first[0x5a..0x5c], boot[0x5a..0x5c]);
+    assert_eq!(first[0x5c..0x64], 2048u64.to_le_bytes());
+    assert_eq!(first[0x66..0x68], [0x90, 0x90]);
+    assert_eq!(first[0x1b8..], before[0x1b8..]);
+    // core.img's first sector tells where the rest of it is.
+    let placed = disk.read_sectors(2048, 4).unwrap();
+    assert_eq!(placed[500..508], 2049u64.to_le_bytes());
+    assert_eq!(placed[508..510], 3u16.to_le_bytes());
+    assert_eq!(placed[510..512], 0x0820u16.to_le_bytes());
+    assert_eq!(placed[512..core.len()], core[512..]);
+    assert!(placed[core.len()..].iter().all(|&b| b == 0));
+    // The table is as it was.
+    let (ok, text) = run("sgdisk", &["-v", image.path()]);
+    assert!(ok && text.contains("No problems found"), "{text}");
+}
+
+#[test]
+fn grub_for_a_bios_needs_a_gpt_with_room_in_a_bios_boot_partition() {
+    let image = Image::new(16 << 20);
+    let (disk, _) = bios_boot_disk(&image);
+    let (boot, core) = grub_images(2049 * 512);
+    let err = crate::grub::setup_bios(&disk, &boot, &core).unwrap_err();
+    assert!(
+        err.contains("core.img takes 2049 sectors, and the BIOS boot partition has 2048"),
+        "{err}"
+    );
+    let (boot, core) = grub_images(4096);
+    assert!(crate::grub::setup_bios(&disk, &boot[..400], &core).is_err());
+
+    let image = Image::new(16 << 20);
+    let disk = image.device(512);
+    let mut rng = Rng::seeded(6);
+    let mut table = Table::new(Scheme::Gpt, 512, disk.sectors(), &mut rng).unwrap();
+    table.add(New::of(kind("efi", Scheme::Gpt), End::Rest), &mut rng).unwrap();
+    write(&disk, &table);
+    let err = crate::grub::setup_bios(&disk, &boot, &core).unwrap_err();
+    assert!(err.contains("no BIOS boot partition"), "{err}");
+
+    let mut table = Table::new(Scheme::Mbr, 512, disk.sectors(), &mut rng).unwrap();
+    table.add(New::of(kind("efi", Scheme::Mbr), End::Rest), &mut rng).unwrap();
+    write(&disk, &table);
+    let err = crate::grub::setup_bios(&disk, &boot, &core).unwrap_err();
+    assert!(err.contains("MBR"), "{err}");
+}
+
+#[cfg(feature = "fat")]
+#[test]
+fn files_go_in_an_efi_system_partitions_fat() {
+    for bits in [16u8, 32] {
+        let image = Image::new(48 << 20);
+        let options =
+            fat::Options { bits: Some(bits), label: Some("ESP".into()), ..fat::Options::default() };
+        fat::format(&image.device(512), &options, &mut Rng::seeded(3)).unwrap();
+        let big: Vec<u8> = (0..300_000u32).map(|i| (i % 253) as u8).collect();
+        crate::esp::put_file(image.device(512), "EFI/BOOT/BOOTX64.EFI", &big).unwrap();
+        let (ok, text) = run("fsck.fat", &["-n", image.path()]);
+        assert!(ok, "{text}");
+        let copy = PathBuf::from(format!("{}.efi", image.path()));
+        let (ok, text) = run(
+            "mcopy",
+            &["-n", "-i", image.path(), "::/EFI/BOOT/BOOTX64.EFI", copy.to_str().unwrap()],
+        );
+        assert!(ok, "{text}");
+        assert_eq!(std::fs::read(&copy).unwrap(), big);
+        let _ = std::fs::remove_file(&copy);
+        // Put again, it takes the old one's place.
+        crate::esp::put_file(image.device(512), "/efi/boot/bootx64.efi", b"smaller").unwrap();
+        let (ok, text) = run("fsck.fat", &["-n", image.path()]);
+        assert!(ok, "{text}");
+        let (ok, text) = run("mtype", &["-i", image.path(), "::/EFI/BOOT/BOOTX64.EFI"]);
+        assert!(ok && text == "smaller", "{text}");
+        let (ok, text) = run("mdir", &["-i", image.path(), "-b", "::/EFI/BOOT"]);
+        assert!(ok && text.lines().count() == 1, "{text}");
+    }
+}

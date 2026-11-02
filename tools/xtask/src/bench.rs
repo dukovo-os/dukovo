@@ -485,7 +485,7 @@ pub fn command(ctx: &Ctx, args: &mut Args) -> Result<()> {
         Built { kernel: kernel::build(ctx, profile)?, programs: userspace::build(ctx, profile)? };
     let dir = ctx.out.join("bench");
     process::create_dir(&dir)?;
-    let image = test::build_test_image(ctx, &built, &dir, TestImage::Plain)?;
+    let image = test::build_test_image(ctx, &built, &dir, TestImage::Plain, false)?;
     let btrfs = btrfs_disk(ctx, &dir)?;
     if instructions {
         return count_instructions(ctx, &dir, &image, &btrfs, gate, summary.as_deref());
