@@ -102,15 +102,21 @@ network sends before it knows who sent it, so it is also fuzzed.
   a Windows Server 2025 runner, without KVM, and Windows' own client
   maps its shares through a port QEMU forwards (`net use /TCPPORT`,
   since Windows' own server holds 445 there), copies files both ways,
-  shows a file's list with `icacls`, adds root to it, and is refused a
-  denying entry, a write to the read-only share and a wrong password;
-  smbdtest then checks what Windows did, as for Samba's client.
+  shows a file's list with `icacls`, adds root to it through
+  SetNamedSecurityInfo, and is refused a denying entry, a write to the
+  read-only share and a wrong password; smbdtest then checks what
+  Windows did, as for Samba's client.
 
 ## Consequences
 
 - The Security tab, `icacls` and `smbcacls` show and change a shared
-  file's POSIX access lists, with names, and what they are told was set
-  is what the file has.
+  file's POSIX access lists, and what they are told was set is what the
+  file has. The Security tab and `smbcacls` ask the server for names;
+  `icacls` looks SIDs up on its own machine, which knows no Unix users,
+  so it shows them as SIDs (S-1-22-1-1000) and cannot add one, even
+  given as `*S-1-22-1-0` ("No mapping between account names and
+  security IDs was done"). A program that gives the SID itself, through
+  SetNamedSecurityInfo or .NET's access rules, can.
 - Windows' sums and POSIX's classes differ: a person named in a list
   and also in its group gets the named entry alone on Dukovo, where a
   PC would add the two; and Everyone covers the others only, where a PC

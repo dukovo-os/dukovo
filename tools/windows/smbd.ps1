@@ -19,8 +19,8 @@
 # - is refused a wrong password, which authd logs;
 # - maps Public, reads the file Dukovo wrote, writes one and makes a
 #   folder, and lists them;
-# - shows a file's access list with icacls, adds root to it, and is
-#   refused a denying entry;
+# - shows a file's access list with icacls, adds root to it through
+#   Windows' SetNamedSecurityInfo, and is refused a denying entry;
 # - reads Readonly and is refused a write to it;
 # - writes done.txt, after which smbdtest checks what Windows did and
 #   its sign-ins, as the smbd boot test's host does with Samba's client.
@@ -137,6 +137,16 @@ function Invoke-Icacls([string[]] $Arguments) {
     return [pscustomobject]@{ Ok = ($LASTEXITCODE -eq 0); Text = $text }
 }
 
+# Adds an access rule for $Sid to the file at $Path's access list.
+function Add-Rule([string] $Path, [string] $Sid, [string] $Rights, [string] $Type) {
+    $file = [IO.FileInfo]::new($Path)
+    $security = [IO.FileSystemAclExtensions]::GetAccessControl($file,
+        [Security.AccessControl.AccessControlSections]::Access)
+    $security.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new(
+            [Security.Principal.SecurityIdentifier]::new($Sid), $Rights, $Type))
+    [IO.FileSystemAclExtensions]::SetAccessControl($file, $security)
+}
+
 function Assert-That([bool] $Condition, [string] $What) {
     if (-not $Condition) {
         throw "Windows' client did not $What"
@@ -201,18 +211,30 @@ try {
     $owner = (Get-Acl -LiteralPath 'P:\from-dukovo.txt').GetOwner(
         [Security.Principal.SecurityIdentifier]).Value
     Assert-That ($owner -eq 'S-1-22-1-1000') "show alice as the owner (got $owner)"
-    # root, S-1-22-1-0, may read it.
-    $granted = Invoke-Icacls @('P:\from-dukovo.txt', '/grant', '*S-1-22-1-0:(R)')
-    Write-Host $granted.Text
-    Assert-That $granted.Ok "add root to the file's access list"
+    # root, S-1-22-1-0, may read it. icacls looks each SID it is given up
+    # on this machine, which knows no Unix users ("No mapping between
+    # account names and security IDs"), so .NET's access rules, which
+    # take a SID as it is, change the list; Windows' SetNamedSecurityInfo
+    # sends the whole new list, as for Windows' own programs.
+    Add-Rule 'P:\from-dukovo.txt' 'S-1-22-1-0' 'Read' 'Allow'
+    Write-Host "  ok: add root to the file's access list"
     $shown = Invoke-Icacls @('P:\from-dukovo.txt')
     Write-Host $shown.Text
     Assert-That ($shown.Text -match '(Unix User\\root|S-1-22-1-0):\(R\)') `
         "show root in the file's access list"
     # A denying entry has no place in a POSIX list.
-    $denied = Invoke-Icacls @('P:\from-dukovo.txt', '/deny', '*S-1-22-1-0:(W)')
-    Write-Host $denied.Text
-    Assert-That (-not $denied.Ok) "be refused a denying entry"
+    $refused = $false
+    try {
+        Add-Rule 'P:\from-dukovo.txt' 'S-1-22-1-0' 'Write' 'Deny'
+    } catch {
+        Write-Host "  smbd refused the denying entry: $($_.Exception.Message)"
+        $refused = $true
+    }
+    Assert-That $refused "be refused a denying entry"
+    $shown = Invoke-Icacls @('P:\from-dukovo.txt')
+    Write-Host $shown.Text
+    Assert-That ($shown.Ok -and $shown.Text -notmatch '\(DENY\)') `
+        "keep the access list without the denying entry"
 
     # Read, but not written, in the read-only share.
     $mapped = Connect-Share 'R:' 'Readonly' $password

@@ -262,7 +262,7 @@ jobs:
   # Windows' own SMB client against smbd (ADRs 0228, 0229): QEMU boots
   # the smbd boot test's image, which the build job writes, without KVM,
   # and Windows maps its shares through a port QEMU forwards, copies
-  # files both ways and changes an access list with icacls.
+  # files both ways and changes an access list.
   smb-windows:
     name: Windows file sharing
     needs: build
