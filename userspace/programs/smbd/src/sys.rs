@@ -197,6 +197,79 @@ pub fn uid() -> u32 {
     unsafe { libc::geteuid() }
 }
 
+/// A user's or group's entry, looked up by number or by name with the
+/// reentrant calls: its name and number.
+fn lookup<T>(
+    call: impl FnOnce(*mut T, *mut libc::c_char, usize, *mut *mut T) -> libc::c_int,
+    read: impl FnOnce(&T) -> (*const libc::c_char, u32),
+) -> Option<(String, u32)> {
+    // SAFETY: all zeros is a valid passwd or group: numbers, and pointers
+    // that stay null until the call fills them.
+    let mut entry: T = unsafe { std::mem::zeroed() };
+    let mut buffer = vec![0u8; 16 * 1024];
+    let mut found: *mut T = std::ptr::null_mut();
+    if call(&raw mut entry, buffer.as_mut_ptr().cast(), buffer.len(), &raw mut found) != 0
+        || found.is_null()
+    {
+        return None;
+    }
+    let (name, id) = read(&entry);
+    if name.is_null() {
+        return None;
+    }
+    // SAFETY: the call set the name to a C string in the buffer, which
+    // lives until here.
+    let name = unsafe { std::ffi::CStr::from_ptr(name) }.to_str().ok()?.to_string();
+    Some((name, id))
+}
+
+/// User `uid`'s name, if it has one.
+pub fn user_name(uid: u32) -> Option<String> {
+    lookup(
+        // SAFETY: every pointer is valid for the call; the buffer for its
+        // length.
+        |pw, buffer, length, found| unsafe { libc::getpwuid_r(uid, pw, buffer, length, found) },
+        |pw: &libc::passwd| (pw.pw_name.cast_const(), pw.pw_uid),
+    )
+    .map(|(name, _)| name)
+}
+
+/// Group `gid`'s name, if it has one.
+pub fn group_name(gid: u32) -> Option<String> {
+    lookup(
+        // SAFETY: as for getpwuid_r.
+        |gr, buffer, length, found| unsafe { libc::getgrgid_r(gid, gr, buffer, length, found) },
+        |gr: &libc::group| (gr.gr_name.cast_const(), gr.gr_gid),
+    )
+    .map(|(name, _)| name)
+}
+
+/// The number of the user called `name`, if there is one.
+pub fn user_id(name: &str) -> Option<u32> {
+    let c = CString::new(name).ok()?;
+    lookup(
+        // SAFETY: as for getpwuid_r, and the name is a C string.
+        |pw, buffer, length, found| unsafe {
+            libc::getpwnam_r(c.as_ptr(), pw, buffer, length, found)
+        },
+        |pw: &libc::passwd| (pw.pw_name.cast_const(), pw.pw_uid),
+    )
+    .map(|(_, uid)| uid)
+}
+
+/// The number of the group called `name`, if there is one.
+pub fn group_id(name: &str) -> Option<u32> {
+    let c = CString::new(name).ok()?;
+    lookup(
+        // SAFETY: as for getpwnam_r.
+        |gr, buffer, length, found| unsafe {
+            libc::getgrnam_r(c.as_ptr(), gr, buffer, length, found)
+        },
+        |gr: &libc::group| (gr.gr_name.cast_const(), gr.gr_gid),
+    )
+    .map(|(_, gid)| gid)
+}
+
 /// Whether descriptor `fd` is open.
 pub fn is_open(fd: RawFd) -> bool {
     // SAFETY: F_GETFD only looks at the descriptor.

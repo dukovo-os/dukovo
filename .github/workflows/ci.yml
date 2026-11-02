@@ -164,6 +164,14 @@ jobs:
             udftools udfclient genisoimage \
             clang-20 lld-20 llvm-20 libclang-rt-20-dev meson ninja-build cmake bison pkgconf autoconf
 
+      # smbcacls has no -p: smbd's unit test and boot test listen on
+      # SMB's own port, 445, for it (ADR 0229). Installing samba started
+      # Samba's own server there, which the tests do not use.
+      - name: Let the tests listen on port 445
+        run: |
+          sudo systemctl stop smbd.service
+          sudo sysctl -w net.ipv4.ip_unprivileged_port_start=445
+
       # GRUB, which ./ob builds from its pinned source for the images
       # (ADR 0306): built once for each change to its recipe.
       - name: Cache GRUB
@@ -266,6 +274,14 @@ jobs:
             xorriso mtools dosfstools exfatprogs gdisk fdisk sleuthkit btrfs-progs e2fsprogs ntfs-3g dislocker libbde-utils openssh-server samba smbclient scdoc mandoc \
             udftools udfclient genisoimage \
             clang-20 lld-20 llvm-20 libclang-rt-20-dev meson ninja-build cmake bison pkgconf autoconf
+
+      # smbcacls has no -p: smbd's unit test and boot test listen on
+      # SMB's own port, 445, for it (ADR 0229). Installing samba started
+      # Samba's own server there, which the tests do not use.
+      - name: Let the tests listen on port 445
+        run: |
+          sudo systemctl stop smbd.service
+          sudo sysctl -w net.ipv4.ip_unprivileged_port_start=445
 
       # GRUB, which ./ob builds from its pinned source for the images
       # (ADR 0306): built once for each change to its recipe.

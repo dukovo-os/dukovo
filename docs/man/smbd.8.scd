@@ -70,7 +70,28 @@ expects; locks hold among the PC's own handles. A share marked
 *read-only* in *shares.toml*(5) changes nothing, whatever the modes.
 
 The PC asks the shares' names over IPC$, as *net view* and Windows'
-Explorer do; *IPC$* is not a name a share takes.
+Explorer do, and the names of users and groups; *IPC$* is not a name a
+share takes.
+
+# PERMISSIONS FROM A PC
+
+A file's owner, group and access lists (*setfacl*(1)) are what a PC's
+Security tab, *icacls* and Samba's *smbcacls* show as its security
+descriptor (ADR 0229). The owner and the group are the SIDs
+S-1-22-1-_uid_ and S-1-22-2-_gid_, which the PC names *Unix User\\*_name_
+and *Unix Group\\*_name_ by asking smbd; the others are *Everyone*. A
+folder's default list follows as entries its new files and folders
+inherit, its owner's and group's as *CREATOR OWNER* and *CREATOR GROUP*.
+Read, write and execute together are full control.
+
+A PC that changes them changes the lists. Each entry may do what its
+rights include of reading, writing and running; entries that inherit
+make a folder's default list, which takes the folder's own owner's and
+group's entries where the PC gave none; and the mask is what the named
+entries and the group have together. Denying entries, people and groups
+with no account here, and Windows' own groups are refused, as the lists
+cannot keep them. A new owner or group is set with *chown*(2), so only
+root gives a file away, and only a file's owner changes its lists.
 
 # FILES
 
@@ -95,4 +116,4 @@ connection.
 # SEE ALSO
 
 *share*(1), *shares.toml*(5), *authd*(8), *smb*(1), *service.toml*(5),
-*last*(1), *lastb*(1)
+*setfacl*(1), *getfacl*(1), *last*(1), *lastb*(1)

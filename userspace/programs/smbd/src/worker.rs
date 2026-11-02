@@ -139,7 +139,7 @@ impl Catalog {
             })
             .collect();
         listed.push(Listed { name: shares::IPC.into(), kind: rpc::IPC, comment: "IPC".into() });
-        Server { name: name.to_uppercase(), shares: listed }
+        Server { name: name.to_uppercase(), shares: listed, names: Box::new(crate::lsa::System) }
     }
 }
 

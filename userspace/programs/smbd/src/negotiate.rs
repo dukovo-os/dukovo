@@ -277,7 +277,7 @@ fn settle(
 }
 
 #[cfg(test)]
-mod tests {
+pub mod tests {
     use super::*;
 
     /// A NEGOTIATE request offering `dialects`, with 3.1.1's contexts

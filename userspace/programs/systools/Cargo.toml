@@ -11,6 +11,9 @@ repository.workspace = true
 publish.workspace = true
 
 [dependencies]
+# getfacl(1)'s and setfacl(1)'s access lists, in their attributes (ADR
+# 0256).
+acl = { path = "../acl" }
 # authd(8)'s account files and Argon2id hashes, and what it is asked
 # (ADR 0218).
 accounts = { path = "../accounts", features = ["hash", "ntlm"] }

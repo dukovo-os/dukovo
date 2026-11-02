@@ -313,85 +313,6 @@ pub fn volume(class: u8, volume: &Volume, label: &str) -> Result<Vec<u8>, Status
     Ok(out.0)
 }
 
-/// The parts of a security descriptor QUERY_INFO asks for.
-pub mod security {
-    pub const OWNER: u32 = 0x1;
-    pub const GROUP: u32 = 0x2;
-    pub const DACL: u32 = 0x4;
-}
-
-/// A SID's bytes: revision 1, `authority`, then `subs`.
-fn sid(authority: u8, subs: &[u32]) -> Vec<u8> {
-    let mut out = Out::new();
-    out.u8(1).u8(subs.len() as u8).bytes(&[0, 0, 0, 0, 0, authority]);
-    for &sub in subs {
-        out.u32(sub);
-    }
-    out.0
-}
-
-/// The rights of a mode's three bits, `rwx`, as an access mask.
-fn rights(bits: u32, owner: bool) -> u32 {
-    // READ_CONTROL and SYNCHRONIZE, and reading attributes, always.
-    let mut mask = 0x0012_0080;
-    if bits & 4 != 0 {
-        mask |= 0x0012_0089;
-    }
-    if bits & 2 != 0 {
-        mask |= 0x0012_0116 | 0x0001_0040;
-    }
-    if bits & 1 != 0 {
-        mask |= 0x0012_00a0;
-    }
-    if owner {
-        // The owner changes its modes, as WRITE_DAC and WRITE_ATTRIBUTES.
-        mask |= 0x0004_0100;
-    }
-    mask
-}
-
-/// A self-relative security descriptor of a file owned by `uid` and
-/// `gid` with `mode` (MS-DTYP 2.4.6): Samba's SIDs for Unix's users and
-/// groups (S-1-22-1-uid and S-1-22-2-gid), and a DACL of an allowing ACE
-/// for the owner, the group and Everyone, from the mode's three triples.
-/// `parts` says which of owner, group and DACL to give.
-pub fn descriptor(uid: u32, gid: u32, mode: u32, parts: u32) -> Vec<u8> {
-    let owner = sid(22, &[1, uid]);
-    let group = sid(22, &[2, gid]);
-    let everyone = sid(1, &[0]);
-    let mut dacl = Out::new();
-    let aces = [
-        (rights(mode >> 6, true), &owner),
-        (rights(mode >> 3, false), &group),
-        (rights(mode, false), &everyone),
-    ];
-    dacl.u8(2).u8(0).u16(0).u16(aces.len() as u16).u16(0);
-    for (mask, who) in aces {
-        dacl.u8(0).u8(0).u16((8 + who.len()) as u16).u32(mask).bytes(who);
-    }
-    let size = dacl.len() as u16;
-    dacl.set_u16(2, size);
-    let mut out = Out::new();
-    // SE_SELF_RELATIVE, with a DACL when one is asked for.
-    let control = 0x8000 | if parts & security::DACL != 0 { 0x0004 } else { 0 };
-    out.u8(1).u8(0).u16(control).u32(0).u32(0).u32(0).u32(0);
-    let put = |out: &mut Out, field: usize, bytes: &[u8]| {
-        let at = out.len() as u32;
-        out.set_u32(field, at);
-        out.bytes(bytes);
-    };
-    if parts & security::OWNER != 0 {
-        put(&mut out, 4, &owner);
-    }
-    if parts & security::GROUP != 0 {
-        put(&mut out, 8, &group);
-    }
-    if parts & security::DACL != 0 {
-        put(&mut out, 16, &dacl.0);
-    }
-    out.0
-}
-
 /// Whether `name` matches the pattern `pattern` of QUERY_DIRECTORY, in
 /// any case: `*` and `?`, and DOS's `<`, `>` and `"` (MS-FSA 2.1.4.4),
 /// read here as `*`, `?` and `.`.
@@ -497,17 +418,5 @@ mod tests {
         assert!(matches("<.txt", "x.txt"));
         assert!(matches("exact", "EXACT"));
         assert!(!matches("exact", "exactly"));
-    }
-
-    #[test]
-    fn a_descriptor_has_its_parts() {
-        let all = descriptor(1000, 1000, 0o640, security::OWNER | security::GROUP | security::DACL);
-        // Revision 1, self-relative with a DACL.
-        assert_eq!(&all[..4], &[1, 0, 0x04, 0x80]);
-        let owner = wire::u32_at(&all, 4).unwrap() as usize;
-        assert_eq!(&all[owner..owner + 8], &[1, 2, 0, 0, 0, 0, 0, 22]);
-        let only_owner = descriptor(1000, 1000, 0o640, security::OWNER);
-        assert_eq!(wire::u32_at(&only_owner, 16), Ok(0));
-        assert_eq!(rights(0, false), 0x0012_0080);
     }
 }

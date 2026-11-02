@@ -15,10 +15,14 @@ mod auth;
 mod commands;
 mod crypto;
 mod fs;
+#[cfg(test)]
+mod fuzz;
 mod info;
 mod listener;
+mod lsa;
 mod negotiate;
 mod rpc;
+mod sd;
 mod state;
 mod sys;
 #[cfg(test)]

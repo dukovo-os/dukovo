@@ -432,7 +432,7 @@ fn requirements() -> Vec<Requirement> {
         },
         Requirement {
             name: "Samba's client",
-            purpose: "smbclient, the smbd test's PC: it lists Dukovo's shares and copies files to and from them over SMB 3, through QEMU's network",
+            purpose: "smbclient and smbcacls, the smbd test's PC: they list Dukovo's shares, copy files to and from them and set their access lists over SMB 3, through QEMU's network",
             found: |_| program_version("smbclient", "--version"),
             packages: Packages {
                 apt: Some("smbclient"),

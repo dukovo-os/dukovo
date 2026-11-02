@@ -128,6 +128,7 @@ pub fn status_of(err: &io::Error) -> u32 {
         Some(libc::EXDEV) => status::NOT_SAME_DEVICE,
         Some(libc::EMFILE | libc::ENFILE) => status::TOO_MANY_OPENED_FILES,
         Some(libc::EINVAL) => status::INVALID_PARAMETER,
+        Some(libc::EOPNOTSUPP) => status::NOT_SUPPORTED,
         _ => match err.kind() {
             io::ErrorKind::NotFound => status::OBJECT_NAME_NOT_FOUND,
             io::ErrorKind::PermissionDenied => status::ACCESS_DENIED,

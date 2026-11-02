@@ -14,6 +14,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "acl"
+version = "0.11.0"
+dependencies = [
+ "libc",
+]
+
+[[package]]
 name = "adler2"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1614,6 +1621,7 @@ name = "smbd"
 version = "0.11.0"
 dependencies = [
  "accounts",
+ "acl",
  "aes 0.9.3",
  "aes-gcm",
  "cmac 0.8.0",
@@ -1724,6 +1732,7 @@ name = "systools"
 version = "0.11.0"
 dependencies = [
  "accounts",
+ "acl",
  "blake2",
  "disk",
  "ed25519-compact",

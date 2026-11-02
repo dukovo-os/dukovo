@@ -88,7 +88,11 @@ fn folder(name: &str) -> PathBuf {
 
 /// smbd on a port of the loopback, for `connections` connections.
 fn start(root: &Path, connections: usize) -> String {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    serve_on(TcpListener::bind("127.0.0.1:0").unwrap(), root, connections)
+}
+
+/// smbd on `listener`, for `connections` connections.
+fn serve_on(listener: TcpListener, root: &Path, connections: usize) -> String {
     let addr = listener.local_addr().unwrap().to_string();
     let root = root.to_path_buf();
     thread::spawn(move || {
@@ -217,4 +221,89 @@ fn sambas_smbclient_lists_and_copies() {
     assert!(root.join("sub").is_dir());
     fs::remove_dir_all(&root).unwrap();
     fs::remove_dir_all(&local).unwrap();
+}
+
+/// Runs Samba's smbcacls with `args` on `path` in the share at `host`:
+/// its output and whether it succeeded.
+fn smbcacls(host: &str, path: &str, args: &[&str]) -> (String, bool) {
+    let share = format!("//{host}/Docs");
+    let user = format!("alice%{PASSWORD}");
+    let common = ["-U", &user, "-m", "SMB3", "--client-protection=encrypt"];
+    let ran = std::process::Command::new("smbcacls")
+        .args([share.as_str(), path])
+        .args(common)
+        .args(args)
+        .output()
+        .unwrap();
+    let text =
+        format!("{}{}", String::from_utf8_lossy(&ran.stdout), String::from_utf8_lossy(&ran.stderr));
+    (text, ran.status.success())
+}
+
+#[test]
+fn sambas_smbcacls_reads_and_sets_access_lists() {
+    use acl::{NO_ID, Tag};
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+    if std::process::Command::new("smbcacls").arg("--version").output().is_err() {
+        eprintln!("no smbcacls here: the boot test runs it");
+        return;
+    }
+    let Some(nobody) = crate::sys::user_id("nobody") else {
+        eprintln!("no user nobody here to name in a list");
+        return;
+    };
+    let root = folder("smbcacls");
+    let file = root.join("file.txt");
+    fs::write(&file, b"listed\n").unwrap();
+    fs::set_permissions(&file, fs::Permissions::from_mode(0o640)).unwrap();
+    fs::create_dir(root.join("sub")).unwrap();
+    let meta = fs::metadata(&file).unwrap();
+    let me = crate::sys::user_name(meta.uid()).unwrap();
+    let my_group = crate::sys::group_name(meta.gid()).unwrap();
+    // smbcacls has no -p: it reaches port 445 alone, which CI lets the
+    // tests listen on (ci.yml).
+    let listener = match TcpListener::bind("127.0.0.1:445") {
+        Ok(listener) => listener,
+        Err(err) if std::env::var_os("GITHUB_ACTIONS").is_none() => {
+            eprintln!("smbcacls needs port 445, which this test may not have: {err}");
+            return;
+        }
+        Err(err) => panic!("port 445: {err}"),
+    };
+    let addr = serve_on(listener, &root, 6);
+    let (host, _) = addr.split_once(':').unwrap();
+
+    // The owner, the group and the mode's three ACEs, named over lsarpc.
+    let (text, ok) = smbcacls(host, "file.txt", &[]);
+    assert!(ok, "{text}");
+    assert!(text.contains(&format!("OWNER:Unix User\\{me}")), "{text}");
+    assert!(text.contains(&format!("GROUP:Unix Group\\{my_group}")), "{text}");
+    assert!(text.contains(&format!("ACL:Unix Group\\{my_group}:ALLOWED/0x0/R\n")), "{text}");
+    assert!(text.contains("ACL:Everyone:ALLOWED/0x0/"), "{text}");
+
+    // An ACE for nobody, by name: a named entry and a mask.
+    let (text, ok) = smbcacls(host, "file.txt", &["-a", "ACL:Unix User\\nobody:ALLOWED/0/R"]);
+    assert!(ok, "{text}");
+    let list = acl::access_list(&file, fs::metadata(&file).unwrap().mode(), false).unwrap();
+    assert_eq!(list.get(Tag::User, nobody).map(|e| e.perm), Some(4), "{list:?}");
+    assert_eq!(list.mask(), Some(4));
+    assert_eq!(list.get(Tag::UserObj, NO_ID).map(|e| e.perm), Some(6));
+    let (text, ok) = smbcacls(host, "file.txt", &[]);
+    assert!(ok && text.contains("ACL:Unix User\\nobody:ALLOWED/0x0/R\n"), "{text}");
+
+    // What a list cannot keep is refused, and nothing changes.
+    let (text, ok) = smbcacls(host, "file.txt", &["-a", "ACL:Everyone:DENIED/0/R"]);
+    assert!(!ok && text.contains("NT_STATUS_NOT_SUPPORTED"), "{text}");
+    let (text, ok) = smbcacls(host, "file.txt", &["-a", "ACL:S-1-5-32-544:ALLOWED/0/FULL"]);
+    assert!(!ok && text.contains("NT_STATUS_NONE_MAPPED"), "{text}");
+    assert_eq!(acl::access_list(&file, 0, false).unwrap(), list);
+
+    // An ACE that inherits gives a folder a default list.
+    let (text, ok) = smbcacls(host, "sub", &["-a", "ACL:Unix User\\nobody:ALLOWED/3/READ"]);
+    assert!(ok, "{text}");
+    let default = acl::default_list(&root.join("sub"), false).unwrap().unwrap();
+    assert_eq!(default.get(Tag::User, nobody).map(|e| e.perm), Some(5), "{default:?}");
+    assert_eq!(default.get(Tag::Other, NO_ID).map(|e| e.perm), Some(0));
+    fs::remove_dir_all(&root).unwrap();
 }
