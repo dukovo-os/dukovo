@@ -278,7 +278,7 @@ jobs:
           path: smbd-image
 
       - name: Install QEMU
-        run: choco install qemu --no-progress -y
+        run: choco install qemu --version=2026.8.11 --no-progress -y
 
       - name: Windows' client against smbd
         shell: pwsh

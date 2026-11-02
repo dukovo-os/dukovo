@@ -16,12 +16,12 @@
 # folder twice, to read and write and only to read, and says it is
 # ready. Then Windows' client, signed in as alice over SMB 3:
 #
+# - is refused a wrong password, which authd logs;
 # - maps Public, reads the file Dukovo wrote, writes one and makes a
 #   folder, and lists them;
 # - shows a file's access list with icacls, adds root to it, and is
 #   refused a denying entry;
 # - reads Readonly and is refused a write to it;
-# - is refused a wrong password;
 # - writes done.txt, after which smbdtest checks what Windows did and
 #   its sign-ins, as the smbd boot test's host does with Samba's client.
 
@@ -148,8 +148,23 @@ try {
     # TCG boots the image in minutes.
     Wait-Serial @('smbdtest: ready for the host') 1200
 
-    # Public, once netd has the guest's address: QEMU forwards to the
-    # address its DHCP server gives.
+    # A wrong password first, while Windows has no session open to the
+    # guest that it could use rather than sign in again. QEMU forwards
+    # to the address its DHCP server gives, so until netd has it the
+    # client reaches nothing; it tries until authd logs the refusal.
+    $deadline = (Get-Date).AddSeconds(120)
+    do {
+        $wrong = Connect-Share 'P:' 'Public' 'not her password'
+        Write-Host $wrong.Text
+        if ($wrong.Ok) {
+            throw "Windows' client was let in with a wrong password"
+        }
+        Start-Sleep -Seconds 3
+        $refused = (Read-Serial).Contains('authd: a wrong sharing password for alice')
+    } until ($refused -or (Get-Date) -gt $deadline)
+    Assert-That $refused "be refused a wrong password"
+
+    # Public, which authd may make wait a little after the wrong one.
     $deadline = (Get-Date).AddSeconds(120)
     do {
         $mapped = Connect-Share 'P:' 'Public' $password
@@ -159,11 +174,12 @@ try {
     } until ($mapped.Ok -or (Get-Date) -gt $deadline)
     Write-Host $mapped.Text
     Assert-That $mapped.Ok "map Public as alice"
-    Write-Host (Get-SmbConnection | Format-List ServerName, ShareName, UserName, Dialect,
+    $connections = @(Get-SmbConnection -ServerName 127.0.0.1)
+    Write-Host ($connections | Format-List ServerName, ShareName, UserName, Dialect,
             Encrypted, Signed | Out-String)
-    $connection = Get-SmbConnection -ServerName 127.0.0.1 -ShareName Public
-    Assert-That ($connection.Dialect -like '3.*' -and $connection.Encrypted) `
-        "sign in over SMB 3 with encryption"
+    $public = @($connections | Where-Object ShareName -eq 'Public')
+    Assert-That ($public.Count -eq 1 -and $public[0].Dialect -like '3.*' -and
+        $public[0].Encrypted) "sign in to Public over SMB 3 with encryption"
 
     # Both ways, and a folder.
     $got = [IO.File]::ReadAllText('P:\from-dukovo.txt')
@@ -213,17 +229,9 @@ try {
     }
     Assert-That $refused "be refused a write to Readonly"
 
-    # A wrong password, with no session open to the guest.
-    Invoke-Net @('use', 'P:', '/DELETE', '/Y') | Out-Null
-    Invoke-Net @('use', 'R:', '/DELETE', '/Y') | Out-Null
-    $wrong = Connect-Share 'P:' 'Public' 'not her password'
-    Write-Host $wrong.Text
-    Assert-That (-not $wrong.Ok) "be refused a wrong password"
-
     # The last file, which tells the guest Windows is done.
-    $mapped = Connect-Share 'P:' 'Public' $password
-    Assert-That $mapped.Ok "map Public again"
     [IO.File]::WriteAllText('P:\done.txt', "done`n")
+    Invoke-Net @('use', 'R:', '/DELETE', '/Y') | Out-Null
     Invoke-Net @('use', 'P:', '/DELETE', '/Y') | Out-Null
 
     Wait-Serial @('smbdtest: every check passed',
