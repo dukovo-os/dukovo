@@ -500,22 +500,29 @@ pub(crate) fn read_free(
 /// from use, on each of its disks.
 #[inline(never)]
 fn exclude_mirrors(volume: &Volume, group: &mut Group) -> Result<()> {
-    let (ranges, n) = mirror_ranges(volume, group.start)?;
+    let mut ranges = NO_MIRRORS;
+    let n = mirror_ranges(volume, group.start, &mut ranges)?;
     for &(lo, hi) in &ranges[..n] {
         remove(&mut group.free, lo, hi)?;
     }
     Ok(())
 }
 
+/// Room for the ranges [`mirror_ranges`] finds in a block group.
+pub(crate) type MirrorRanges = [(u64, u64); MIRRORS.len() * MAX_DISKS];
+
+/// [`MirrorRanges`] with none in it yet.
+pub(crate) const NO_MIRRORS: MirrorRanges = [(0, 0); MIRRORS.len() * MAX_DISKS];
+
 /// The logical ranges around the superblock's copies in the block group
-/// that starts at `start`, on each of its disks, and how many there are:
-/// what no block is put in.
+/// that starts at `start`, on each of its disks, put in `ranges`; returns
+/// how many there are: what no block is put in.
 pub(crate) fn mirror_ranges(
     volume: &Volume,
     start: u64,
-) -> Result<([(u64, u64); MIRRORS.len() * MAX_DISKS], usize)> {
+    ranges: &mut MirrorRanges,
+) -> Result<usize> {
     // Found under the chunk map's read lock, which allows no allocation.
-    let mut ranges = [(0, 0); MIRRORS.len() * MAX_DISKS];
     let mut n = 0;
     volume.with_chunks(|map| {
         let Some(chunk) = map.find(start) else { return Err(Error::Corrupt) };
@@ -542,5 +549,5 @@ pub(crate) fn mirror_ranges(
         }
         Ok(())
     })?;
-    Ok((ranges, n))
+    Ok(n)
 }

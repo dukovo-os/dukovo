@@ -652,7 +652,8 @@ impl Check<'_> {
                     continue;
                 }
             };
-            let (mirrors, n) = crate::space::mirror_ranges(volume, start)?;
+            let mut mirrors = crate::space::NO_MIRRORS;
+            let n = crate::space::mirror_ranges(volume, start, &mut mirrors)?;
             let mirrors = &mirrors[..n];
             // What is neither free nor taken: walk both in order.
             let mut taken: Vec<(u64, u64)> =
