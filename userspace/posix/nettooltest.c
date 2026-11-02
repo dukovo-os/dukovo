@@ -558,13 +558,34 @@ static void nc(void) {
 	printf("nettooltest: nc carried TCP and UDP both ways, by IPv4 and IPv6, and found b's open port\n");
 }
 
+// Whether iperf3 `command` succeeds and what it writes holds `needle`:
+// again, a second later, while b's server says it is busy, as an iperf3
+// server does for a while after a test, until it has put the last one
+// away (iperf3's own "try again later").
+static int iperf3_says(const char *command, const char *needle) {
+	static char buffer[16384];
+	for(int tries = 0; tries < 10; tries++) {
+		int got = output(command, buffer, sizeof(buffer));
+		printf("nettooltest: $ %s\n%s", command, buffer);
+		if(strstr(buffer, "the server is busy")) {
+			check_sleep_ms(1000);
+			continue;
+		}
+		if(got == 0 && strstr(buffer, needle))
+			return 1;
+		break;
+	}
+	printf("nettooltest: `%s` did not say \"%s\"\n", command, needle);
+	return 0;
+}
+
 // iperf3 against b's server: TCP, UDP, IPv6, b sending, and JSON.
 static void iperf3(void) {
 	CHECK(ask("start iperf3 -s -p 5201", "started"));
-	CHECK(says("iperf3 -c 192.168.50.2 -p 5201 -t 2", "receiver"));
-	CHECK(says("iperf3 -c 192.168.50.2 -p 5201 -t 1 -u -b 20M", "Jitter"));
-	CHECK(says("iperf3 -c fd50::2 -p 5201 -t 1 -R", "Reverse mode"));
-	CHECK(says("iperf3 -c 192.168.50.2 -p 5201 -t 1 -J", "\"sum_received\""));
+	CHECK(iperf3_says("iperf3 -c 192.168.50.2 -p 5201 -t 2", "receiver"));
+	CHECK(iperf3_says("iperf3 -c 192.168.50.2 -p 5201 -t 1 -u -b 20M", "Jitter"));
+	CHECK(iperf3_says("iperf3 -c fd50::2 -p 5201 -t 1 -R", "Reverse mode"));
+	CHECK(iperf3_says("iperf3 -c 192.168.50.2 -p 5201 -t 1 -J", "\"sum_received\""));
 	printf("nettooltest: iperf3 measured TCP and UDP to b, by IPv4 and IPv6, both ways\n");
 }
 

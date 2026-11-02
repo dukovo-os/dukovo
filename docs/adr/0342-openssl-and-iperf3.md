@@ -52,7 +52,10 @@ OpenSSL.
   certificate, checks digests and ciphers, and has one machine's
   s_client reach the other's s_server over TLS 1.3.
 - The image grows by the openssl command, about 7 MB, and iperf3,
-  about 600 KB.
+  about 600 KB. The kernel keeps the boot loader's copy of the boot
+  archive beside Spark's (ADR 0287), so the three boot tests that ran
+  in 384 MiB (`spark-oom`, `spark-stop` and `swap`) no longer had room
+  to start Spark; they run in 512 MiB, and `swap` fills 768 MiB.
 - OpenSSL's security releases in the 3.5 series are taken as they come,
   as every port's are.
 - iperf3 measures TCP and UDP between machines, by IPv4 and IPv6 and
