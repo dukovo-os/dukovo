@@ -50,7 +50,7 @@ use crate::dir::Entries;
 use crate::files::Files;
 use crate::format::{Key, item, name_hash, tree};
 use crate::node::BtrfsNode;
-use crate::pack::Packer;
+use crate::pack::{PACKERS, Packer};
 use crate::superblock::incompat;
 use crate::tree::{Cursor, Root};
 use crate::unpack::Workspace;
@@ -122,8 +122,10 @@ pub(crate) struct Inner {
     /// `compress=zstd:1` mount option has it (ADR 0134).
     compress: AtomicBool,
     /// What compressing extents uses, once one is written: a packer for
-    /// the writer, and one for the extent another CPU compresses.
-    packers: Mutex<[Option<KBox<Packer>>; 2]>,
+    /// the writer, one for the extent another CPU compresses, and two more
+    /// for the next two extents of a long write, compressed while the
+    /// first two are written ([`PACKERS`] in all, ADR 0291).
+    packers: Mutex<KVec<KBox<Packer>>>,
     /// The running transaction, on a writable mount.
     tx: Option<Mutex<Txn>>,
     /// The nodes whose data or inode waits for the next sync.
@@ -368,7 +370,7 @@ impl Inner {
             nodes: Mutex::new(mem::vec()),
             workspaces: Mutex::new([None, None]),
             compress: AtomicBool::new(false),
-            packers: Mutex::new([None, None]),
+            packers: Mutex::new(mem::vec()),
             tx,
             dirty: Mutex::new(mem::vec()),
             reap: Mutex::new(mem::vec()),
@@ -700,33 +702,40 @@ impl Inner {
         self.compress.load(Ordering::Relaxed)
     }
 
-    /// Runs `f` with the packer of compressed writes, made if need be,
-    /// and, when `two` and `radix_vfs::join` may use another CPU, the
-    /// second, for the extent that CPU compresses: made if there is
-    /// memory for it, or else `None`.
+    /// Runs `f` with up to `want` of the packers of compressed writes,
+    /// made if need be: the first always, the others when
+    /// `radix_vfs::join` may use another CPU and there is memory for them.
+    /// It gets one, two, or [`PACKERS`].
     pub(crate) fn with_packers<R>(
         &self,
-        two: bool,
-        f: impl FnOnce(&mut Packer, Option<&mut Packer>) -> Result<R>,
+        want: usize,
+        f: impl FnOnce(&mut [KBox<Packer>]) -> Result<R>,
     ) -> Result<R> {
-        let mut slots = self.packers.lock();
-        let [first, second] = &mut *slots;
-        let first = match first {
-            Some(packer) => packer,
-            empty => empty.insert(Packer::boxed()?),
-        };
-        let two = two && radix_vfs::joins();
-        if two && second.is_none() {
-            *second = Packer::boxed().ok();
+        let mut packers = self.packers.lock();
+        let want = if radix_vfs::joins() { want.clamp(1, PACKERS) } else { 1 };
+        while packers.len() < want {
+            let made = Packer::boxed().and_then(|packer| Ok(mem::push(&mut packers, packer)?));
+            match made {
+                Ok(()) => {}
+                Err(err) if packers.is_empty() => return Err(err),
+                Err(_) => break,
+            }
         }
-        f(first, if two { second.as_deref_mut() } else { None })
+        // Two to a side: three are used as two.
+        let got = match packers.len().min(want) {
+            3 => 2,
+            n => n,
+        };
+        f(&mut packers[..got])
     }
 
     /// Drops the packers of compressed writes, unless a write is under
     /// way; returns the pages they held.
     fn drop_packers(&self) -> usize {
-        let Some(mut slots) = self.packers.try_lock() else { return 0 };
-        slots.iter_mut().filter_map(Option::take).map(|packer| packer.held()).sum()
+        let Some(mut packers) = self.packers.try_lock() else { return 0 };
+        let held = packers.iter().map(|packer| packer.held()).sum();
+        packers.clear();
+        held
     }
 
     /// Drops the workspaces of compressed reads, unless a read is under
