@@ -5601,28 +5601,21 @@ fn page_fault(vm: &mut Vm, _case: &Case) -> Result<(), String> {
 }
 
 fn crash_reboot(vm: &mut Vm, case: &Case) -> Result<(), String> {
-    // The log goes at the first 2 MiB boundary clear of what the kernel
-    // reserved before it, from 4 GiB when there is RAM there, otherwise
-    // from 64 MiB. Under BIOS, GRUB loads the boot archive below 64 MiB,
-    // and the archive reaches past it.
     let floor: u64 = if case.memory == "1G" { 64 << 20 } else { 1 << 32 };
-    let first = reservations(vm)?;
-    let (place, before) = first.split_last().ok_or("the kernel reserved no crash log")?;
-    let mut start = floor;
-    while let Some(&(_, end)) = before.iter().find(|&&(s, e)| s < start + (1 << 20) && start <= e) {
-        start = (end + 1).next_multiple_of(2 << 20);
-    }
-    if *place != (start, start + 0xf_ffff) {
-        return Err(format!("the crash log is at {:#x}, not at {start:#x}", place.0));
-    }
+    let first = crash_log_place(&reservations(vm)?, floor)?;
     vm.expect("Crash log: boot 1;")?;
     vm.expect("selftest crash-reboot: panicking now")?;
     vm.expect("Radix panic on CPU 0")?;
     vm.expect("selftest crash-reboot: deliberate panic")?;
     // The machine restarts and boots again, and finds the log where it
-    // left it.
-    if reservations(vm)? != first {
-        return Err("the second boot reserved other memory, so its crash log moved".into());
+    // left it. The boot information may differ by a few bytes, as the
+    // firmware's memory map can, but not the reservations it is placed by.
+    let second = crash_log_place(&reservations(vm)?, floor)?;
+    if second != first {
+        return Err(format!(
+            "the second boot reserved other memory, so its crash log moved from {:#x} to {:#x}",
+            first.0, second.0
+        ));
     }
     vm.expect("Crash log: boot 2; the previous boot (1) ended with a kernel panic")?;
     vm.expect("| [")?;
@@ -5630,6 +5623,23 @@ fn crash_reboot(vm: &mut Vm, case: &Case) -> Result<(), String> {
     vm.expect("selftest crash-reboot: passed")?;
     vm.expect("Boot complete.")?;
     vm.expect_exit(QEMU_EXIT_SUCCESS)
+}
+
+/// Where the crash log is, given the kernel's `reserved` ranges, after
+/// checking that it is where it should go: at the first 2 MiB boundary
+/// from `floor` clear of what the kernel reserved before it. The floor is
+/// 4 GiB when there is RAM there, otherwise 64 MiB: under BIOS, GRUB loads
+/// the boot archive below 64 MiB, and the archive reaches past it.
+fn crash_log_place(reserved: &[(u64, u64)], floor: u64) -> Result<(u64, u64), String> {
+    let (place, before) = reserved.split_last().ok_or("the kernel reserved no crash log")?;
+    let mut start = floor;
+    while let Some(&(_, end)) = before.iter().find(|&&(s, e)| s < start + (1 << 20) && start <= e) {
+        start = (end + 1).next_multiple_of(2 << 20);
+    }
+    if *place != (start, start + 0xf_ffff) {
+        return Err(format!("the crash log is at {:#x}, not at {start:#x}", place.0));
+    }
+    Ok(*place)
 }
 
 /// The kernel's list of the memory it reserved at boot, up to the crash
