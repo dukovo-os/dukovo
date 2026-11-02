@@ -115,6 +115,15 @@ impl Path {
         radix_vfs::path::parse(self.bytes()).map_err(fs::status)
     }
 
+    /// The bytes as a mount's source, which names it in the mounts list:
+    /// text, as `//server/share` or a device's name is, without NULs.
+    fn as_source(&self) -> Result<&str> {
+        match core::str::from_utf8(self.bytes()) {
+            Ok(text) if !text.contains('\0') => Ok(text),
+            _ => Err(fs::status(radix_vfs::Error::BadName)),
+        }
+    }
+
     /// The bytes as a symbolic link's target: UTF-8, which may start with
     /// `/` (the VFS checks the rest).
     fn as_target(&self) -> Result<&str> {
@@ -1004,7 +1013,7 @@ fn mount_fuse_method(user: &UserRef, found: &Found, label: u32, args: &[u64; 8])
     let who = who(found.cap.rights(), dir)?;
     let made = radix_fuse::FuseFs::mount(conn, read_only).map_err(fs::status)?;
     let mount = vfs()?
-        .mount(&who, &dir.at, path.as_str()?, made, source.as_str()?, read_only)
+        .mount(&who, &dir.at, path.as_str()?, made, source.as_source()?, read_only)
         .map_err(fs::status)?;
     log_mount(mount, false);
     answer(label, 0, [0; 8])

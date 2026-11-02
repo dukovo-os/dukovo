@@ -61,7 +61,7 @@ fn fuse(vm: &mut Vm, case: &Case) -> Result<(), String> {
         return Err(format!("the fuse test failed ({code}): {}", failed.join("; ")));
     }
     // The kernel's line for the mount, in its log.
-    if !log.contains("Files: mounted fuse from fuse-test on /tmp/fuse-test") {
+    if !log.contains("Files: mounted fuse from //fuse-test/memory on /tmp/fuse-test") {
         return Err("the kernel did not log the mount".to_string());
     }
     Ok(())

@@ -7,7 +7,8 @@
 //! it mounts at /tmp/fuse-test with radix-directory(2)'s `mount_fuse`,
 //! and uses it as any program uses files:
 //!
-//! - the mount is listed, as a `fuse` filesystem from `fuse-test`;
+//! - the mount is listed, as a `fuse` filesystem from `//fuse-test/memory`,
+//!   a source named as a share's is;
 //! - files are made, written, read, appended to, cut short, renamed and
 //!   removed, and a large one goes over in the pieces INIT allows;
 //! - directories are made, listed, moved and removed, a full one is not
@@ -51,8 +52,9 @@ const NAME: &str = "fuse-test";
 /// Where the filesystem is mounted.
 const DIR: &str = "/tmp/fuse-test";
 
-/// The mount's source, as the mounts list names it.
-const SOURCE: &str = "fuse-test";
+/// The mount's source, as the mounts list names it: named as a share's
+/// is, `//server/share`, which is text and not a path.
+const SOURCE: &str = "//fuse-test/memory";
 
 /// A user other than root, for the permission checks.
 const OTHER: u32 = 1000;
@@ -205,7 +207,7 @@ fn main() {
         println!("{NAME}: the filesystem was not mounted");
         std::process::exit(1);
     };
-    part("mount: listed as a fuse filesystem from fuse-test", listed);
+    part("mount: listed as a fuse filesystem from //fuse-test/memory", listed);
     part("files: made, written, read, appended to, cut short, renamed and removed", files);
     part("large: a 3 MiB file written and read back in the pieces INIT allows", large);
     part("directories: made, listed, moved and removed; a full one stays", directories);

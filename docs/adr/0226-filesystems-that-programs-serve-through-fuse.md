@@ -41,7 +41,8 @@ programs and unmounts is one that a decade of programs already expect.
   `MAX_PAGES` and says more, within 4 KiB and 1 MiB.
 - **Mounting.** radix-directory(2) gains `mount_fuse` (method 40): a
   path, the connection's slot, which must be open for reading and
-  writing, a source named in the mounts list, and the mount flags but
+  writing, a source that names it in the mounts list, text such as
+  `//server/share` rather than a path, and the mount flags but
   compression. It needs the directory's control right, which
   administrators' sessions hold, as mounting needs elsewhere. The
   filesystem kind is `fuse` (13). `INIT` is queued at the mount, and
