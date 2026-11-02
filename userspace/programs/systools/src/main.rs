@@ -76,6 +76,7 @@ mod lsusb;
 mod memory;
 mod mkfs;
 mod modes;
+mod mount;
 mod netd;
 mod netlog;
 mod notifyd;
@@ -186,6 +187,7 @@ const TOOLS: &[(&str, Tool)] = &[
     ("mkfs.fat", mkfs::mkfs_fat),
     ("mkfs.vfat", mkfs::mkfs_fat),
     ("mkswap", swap::mkswap),
+    ("mount", mount::mount),
     ("netd", netd::main),
     ("netlog", netlog::main),
     ("notifications", notifyd::notifications),
@@ -223,6 +225,7 @@ const TOOLS: &[(&str, Tool)] = &[
     ("timedatectl", timedatectl::main),
     ("top", top::main),
     ("tree", tree::main),
+    ("umount", mount::umount),
     ("unlock", unlock::main),
     ("uptime", sessions::uptime),
     ("user", account::user),

@@ -722,7 +722,8 @@ static void network(void) {
 }
 
 // The storage tools on a disk and a mount that are not there, and on
-// tmpfs; the disk-health and storage-tools boot tests run them on disks.
+// tmpfs; the disk-health, storage-tools and smb boot tests run them on
+// disks.
 static void storage(void) {
 	STATUS(2, "/bin/diskhealth", "nosuch");
 	STATUS(2, "/bin/diskhealth", "/devices/nosuch");
@@ -739,6 +740,18 @@ static void storage(void) {
 	CONTAINS("TARGET", "/bin/findmnt");
 	STATUS(1, "/bin/findmnt", "-t", "xfs");
 	CONTAINS("/tmp ", "/bin/findmnt", "-l", "-t", "nobtrfs");
+	// mount(8) lists the mounts as Linux's does, of a kind with -t; a
+	// disk that is not there is not mounted, nor one of no kind Dukovo
+	// has; umount needs a mount. The smb boot test mounts a disk and
+	// shares with them.
+	CONTAINS(" on /tmp type tmpfs (rw)\n", "/bin/mount");
+	CONTAINS(" on /tmp type tmpfs (rw)\n", "/bin/mount", "-t", "fat,tmpfs");
+	OUTPUT("", "", "/bin/mount", "-t", "xfs");
+	STATUS(1, "/bin/mount", "/devices/nosuch", "/tmp");
+	STATUS(1, "/bin/mount", "-t", "xfs", "/devices/null", "/tmp");
+	STATUS(1, "/bin/mount", "/tmp");
+	STATUS(1, "/bin/umount", "/tmp/nosuch");
+	STATUS(1, "/bin/umount");
 	STATUS(1, "/bin/fstrim", "/tmp");
 	STATUS(1, "/bin/fstrim");
 	CONTAINS("avg-cpu:  %user   %nice %system %iowait  %steal   %idle\n", "/bin/iostat", "-c");

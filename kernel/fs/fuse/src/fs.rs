@@ -15,10 +15,11 @@
 //!
 //! Reads and writes go to the program, a request of at most
 //! [`Connection::max_data`] bytes at a time, through a file the node
-//! opens the first time it reads, and one it opens the first time it
-//! writes (`OPEN`), which stay open while the node lives and are closed
-//! (`RELEASE`) when it goes: the kernel's descriptions of files are not
-//! the program's. A file made with `CREATE` is open to write already.
+//! opens to read and one it opens to write (`OPEN`), when open(2) first
+//! asks for each, so that the program's refusal fails the open as on
+//! Linux; they stay open while the node lives and are closed (`RELEASE`)
+//! when it goes: the kernel's descriptions of files are not the
+//! program's. A file made with `CREATE` is open to write already.
 //! Nothing is cached: each read asks, as Linux's `direct_io` does.
 
 use alloc::sync::Weak;
@@ -29,7 +30,7 @@ use radix_sync::Mutex;
 use radix_vfs::mem::{self, Alloc, KArc, KVec};
 use radix_vfs::{
     APPEND, Access, AccessChange, Error, FileSystem, FsInfo, FsKind, In, Kind, ListFn, Node,
-    NodeRef, Out, Result, Setting, Stat, acl,
+    NodeRef, Out, Result, Setting, Stat, acl, want,
 };
 
 use crate::abi::{self, Attr, Entry, Reader, StatFs, op};
@@ -509,6 +510,20 @@ impl Drop for FuseNode {
 }
 
 impl Node for FuseNode {
+    /// Opens the program's file to read or to write as the open asks, if
+    /// the node has none open so yet: the program refuses it now, as
+    /// Linux's FUSE sends `OPEN` with open(2), not at the first read or
+    /// write.
+    fn opening(&self, asked: u16) -> Result<()> {
+        if asked & want::READ != 0 {
+            self.file(false)?;
+        }
+        if asked & want::WRITE != 0 {
+            self.file(true)?;
+        }
+        Ok(())
+    }
+
     fn stat(&self) -> Stat {
         let a = self.attr();
         Stat {

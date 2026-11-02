@@ -686,6 +686,15 @@ pub trait Node: Send + Sync + Any {
         Ok(None)
     }
 
+    /// Told that a file is being opened to do what `want` says, as
+    /// [`want`]'s read and write bits, before a handle to it is made: a
+    /// filesystem that a program serves opens its own file now, so that
+    /// the program's refusal fails the open, as on Linux, rather than the
+    /// first read or write. Nothing, by default.
+    fn opening(&self, _want: u16) -> Result<()> {
+        Ok(())
+    }
+
     /// The entry `name` of a directory.
     fn lookup(&self, _name: &str) -> Result<NodeRef> {
         Err(Error::NotDirectory)

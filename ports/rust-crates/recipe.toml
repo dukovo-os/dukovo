@@ -88,6 +88,18 @@ sha256 = "891efababe418670775f199f0d233d84843c227a0949a883ce15b37c78d6629d"
 license = "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT"
 
 [[crate]]
+name = "socket2"
+version = "0.6.5"
+sha256 = "c3d1e2c7f27f8d4cb10542a02c49005dbd6e93095799d6f3be745fae9f8fedd4"
+license = "MIT OR Apache-2.0"
+
+[[crate]]
+name = "tokio"
+version = "1.54.1"
+sha256 = "b52fd3255258d26fac7264ab5a76b53c13367136dc011d3d6ad4f8ed070396a3"
+license = "MIT"
+
+[[crate]]
 name = "uucore"
 version = "0.9.0"
 sha256 = "069b34217c27f611e1589f540f58118dbf226a9e407d38ab472052ff075a1dc2"

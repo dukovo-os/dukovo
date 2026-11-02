@@ -1,0 +1,41 @@
+SPDX-FileCopyrightText: Tokio Contributors
+SPDX-FileCopyrightText: 2026 The Dukovo contributors
+SPDX-License-Identifier: MIT
+
+tokio asks a Unix socket's peer for its credentials with SO_PEERCRED and
+Linux's struct ucred on Radix, as on Linux (radix-posix(7)).
+
+diff --git a/tokio-1.54.1/src/net/unix/ucred.rs b/tokio-1.54.1/src/net/unix/ucred.rs
+index 8e2f28f..d17f1b4 100644
+--- a/tokio-1.54.1/src/net/unix/ucred.rs
++++ b/tokio-1.54.1/src/net/unix/ucred.rs
+@@ -39,7 +39,8 @@ impl UCred {
+     target_os = "android",
+     target_os = "openbsd",
+     target_os = "haiku",
+-    target_os = "cygwin"
++    target_os = "cygwin",
++    target_os = "radix"
+ ))]
+ pub(crate) use self::impl_linux::get_peer_cred;
+ 
+@@ -85,7 +86,8 @@ pub(crate) use self::impl_nto::get_peer_cred;
+     target_os = "android",
+     target_os = "openbsd",
+     target_os = "haiku",
+-    target_os = "cygwin"
++    target_os = "cygwin",
++    target_os = "radix"
+ ))]
+ pub(crate) mod impl_linux {
+     use crate::net::unix::{self, UnixStream};
+@@ -100,7 +102,8 @@ pub(crate) mod impl_linux {
+         target_os = "redox",
+         target_os = "android",
+         target_os = "haiku",
+-        target_os = "cygwin"
++        target_os = "cygwin",
++        target_os = "radix"
+     ))]
+     use libc::ucred;
+ 

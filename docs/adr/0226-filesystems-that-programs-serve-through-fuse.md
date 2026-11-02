@@ -51,8 +51,10 @@ programs and unmounts is one that a decade of programs already expect.
 - **Nodes.** The kernel keeps one node for each node number the program
   names, and sends `FORGET` with the count of its names when the kernel
   lets go of it. A node's attributes are kept for as long as the answer
-  that gave them allows. Files are opened for reading and for writing as
-  needed, and released when the node goes; `CREATE` makes a file and its
+  that gave them allows. A node opens the program's file for reading,
+  and one for writing, when open(2) first asks for each, so that the
+  program's refusal fails the open as Linux's `OPEN` does; they are
+  released when the node goes; `CREATE` makes a file and its
   handle at once, and a program that answers it with ENOSYS gets
   `MKNOD` and `OPEN` after. A name made, removed or moved has its
   directories' attributes asked for again, their links and times having

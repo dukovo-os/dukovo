@@ -656,14 +656,19 @@ impl Vfs {
             return Err(Error::NotDirectory);
         }
         // A directory is listed and changed through, each checked then.
-        if !made && kind != Kind::Directory {
-            let asked = flags.want | if flags.truncate { want::WRITE } else { 0 };
-            if asked != 0 {
-                who.check(&*at.node, asked)?;
-            }
+        let asked = flags.want | if flags.truncate { want::WRITE } else { 0 };
+        if !made && kind != Kind::Directory && asked != 0 {
+            who.check(&*at.node, asked)?;
         }
         if flags.truncate && kind == Kind::File {
             at.writable()?;
+        }
+        // Its filesystem's say before it is cut, which a refusal leaves
+        // as it was.
+        if kind == Kind::File {
+            at.node.opening(asked)?;
+        }
+        if flags.truncate && kind == Kind::File {
             at.node.set_size(0)?;
         }
         let node = at.node.open()?.unwrap_or(at.node);

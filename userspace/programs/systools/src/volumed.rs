@@ -42,7 +42,7 @@ const EFI_SYSTEM: [&str; 2] = ["c12a7328-f81f-11d2-ba4b-00a0c93ec93b", "0xef"];
 /// The filesystems tried, in Spark's order: FAT, exFAT and NTFS before
 /// the others, whose superblocks their `mkfs` can leave behind, and discs
 /// last, UDF before the ISO 9660 a DVD has as a bridge to it.
-const KINDS: [(&[u8], &str); 7] = [
+pub const KINDS: [(&[u8], &str); 7] = [
     (b"fat", "FAT"),
     (b"exfat", "exFAT"),
     (b"ntfs", "NTFS"),
