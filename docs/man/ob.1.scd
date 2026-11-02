@@ -240,7 +240,7 @@ _target/userspace/_).
 		Pass everything after *--* to *qemu-system-x86_64*(1) unchanged,
 		for example *-- -d int* to log interrupts.
 
-*test* [*unit* | *boot* | *kani* | *tla* | *corpus* | *riscv*] [*--case* _name_]... [*--shard* _part_/_parts_] [*--timeout* _seconds_] [*--debug* | *--release*] | *--list*
+*test* [*unit* | *boot* | *kani* | *tla* | *corpus* | *riscv*] [*--case* _name_]... [*--shard* _part_/_parts_] [*--timeout* _seconds_] [*--image-only*] [*--debug* | *--release*] | *--list*
 	Run the unit tests of the build tool and the kernel libraries on this
 	machine, then the boot tests: build a test image and boot it in QEMU
 	once per case below. Each case follows the serial console, types
@@ -250,7 +250,10 @@ _target/userspace/_).
 	expected, usually through the *qemu-exit* flag (see
 	*dukovo-boot*(7)). Serial logs and screenshots go to _out/test/_.
 	Give *unit* or *boot* to run only that part. Without KVM the boot
-	tests take a few minutes.
+	tests take a few minutes. *boot --case* _name_ *--image-only* boots
+	nothing: it writes each case's image, its command line in place, to
+	_out/test/name.img_, for a machine to boot by itself, as CI's
+	Windows job boots *smbd*'s.
 
 	The Btrfs tests make their filesystems with *mkfs.btrfs*. When the
 	system's lacks *--subvol*, *--compress* or *--inode-flags*, as Ubuntu

@@ -202,6 +202,7 @@ press Ctrl-A then X to quit QEMU. KVM is used when /dev/kvm is accessible.
         "test" => {
             "Usage: ./ob test [unit | boot | kani | tla | corpus | riscv] [--case <name>]...
                  [--shard <part>/<parts>] [--timeout <seconds>] [--debug | --release]
+       ./ob test boot --case <name>... --image-only
        ./ob test --list
 
 Runs host unit tests, then the boot tests: QEMU boots a test image under
@@ -216,7 +217,9 @@ tools into .cache/tla). With `corpus`, --case names a source in
 userspace/programs/nukesh/tests/corpus.toml. `riscv` builds the RISC-V smoke
 boot and boots it on QEMU's virt machine under OpenSBI (seconds; it needs
 qemu-system-riscv64). `boot --shard 2/3` runs every
-third boot test from the second, as CI's parallel jobs do. --list names every
+third boot test from the second, as CI's parallel jobs do. `boot --case smbd
+--image-only` boots nothing: it writes the case's image, its command line in
+place, to out/test/smbd.img, for CI's Windows job to boot. --list names every
 boot test; those that Phases 11 to 13 add from now on are listed only there
 (ob(1) has them all). The boot tests are:
   uefi-usb, bios-usb, uefi-cdrom, bios-cdrom   normal boots (bios-usb with the

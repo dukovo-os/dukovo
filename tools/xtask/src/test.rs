@@ -2588,9 +2588,15 @@ pub fn command(ctx: &Ctx, args: &mut Args) -> Result<()> {
         Some(value) => Some(parse_shard(&value)?),
         None => None,
     };
+    let image_only = args.flag("--image-only");
     let profile = args.profile(&ctx.config)?;
     let which = args.positional();
     args.finish()?;
+    if image_only && (which.as_deref() != Some("boot") || selected.is_empty()) {
+        crate::bail!(
+            "--image-only writes the images of boot tests; give `boot` and --case with it"
+        );
+    }
     let (unit, boot) = match which.as_deref() {
         None if selected.is_empty() => (true, true),
         None | Some("boot") => (false, true),
@@ -2636,6 +2642,9 @@ pub fn command(ctx: &Ctx, args: &mut Args) -> Result<()> {
             kernel: kernel::build(ctx, profile)?,
             programs: userspace::build(ctx, profile)?,
         };
+        if image_only {
+            return case_images(ctx, &built, &cases);
+        }
         boot_tests(ctx, &built, &cases, Duration::from_secs(timeout))?;
     }
     Ok(())
@@ -2802,18 +2811,45 @@ pub fn with_cmdline(image: &[u8], cmdline: &str) -> Result<Vec<u8>, String> {
     Ok(copy)
 }
 
+/// Each test image `cases` boot, of the kind and for the media they ask,
+/// built in `dir`: whether it is an ISO, and its bytes.
+type TestImages = Vec<((TestImage, bool), Vec<u8>)>;
+
+fn test_images(ctx: &Ctx, built: &Built, dir: &Path, cases: &[&Case]) -> Result<TestImages> {
+    let mut images: TestImages = Vec::new();
+    for case in cases {
+        let key = (case.image, case.media == Media::Cdrom);
+        if !images.iter().any(|(made, _)| *made == key) {
+            images.push((key, build_test_image(ctx, built, dir, key.0, key.1)?));
+        }
+    }
+    Ok(images)
+}
+
+/// `ob test boot --case <name> --image-only`: each case's boot image, its
+/// command line in place, as `out/test/<name>.img` (or `.iso`), for a
+/// machine to boot by itself, as CI's Windows job boots `smbd`'s.
+fn case_images(ctx: &Ctx, built: &Built, cases: &[&Case]) -> Result<()> {
+    let dir = ctx.out.join("test");
+    process::create_dir(&dir)?;
+    let images = test_images(ctx, built, &dir, cases)?;
+    for case in cases {
+        let iso = case.media == Media::Cdrom;
+        let base = &images.iter().find(|(made, _)| *made == (case.image, iso)).expect("built").1;
+        let path = dir.join(format!("{}.{}", case.name, if iso { "iso" } else { "img" }));
+        let image = with_cmdline(base, case.cmdline).map_err(Error::new)?;
+        std::fs::write(&path, image)
+            .map_err(|err| Error::new(format!("writing {}: {err}", path.display())))?;
+        step(&format!("Wrote {}, which boots `{}`", ctx.display(&path), case.cmdline));
+    }
+    Ok(())
+}
+
 fn boot_tests(ctx: &Ctx, built: &Built, cases: &[&Case], timeout: Duration) -> Result<()> {
     qemu::require_qemu()?;
     let dir = ctx.out.join("test");
     process::create_dir(&dir)?;
-    // Each image the cases boot, of the kind and for the media they ask.
-    let mut images: Vec<((TestImage, bool), Vec<u8>)> = Vec::new();
-    for case in cases {
-        let key = (case.image, case.media == Media::Cdrom);
-        if !images.iter().any(|(made, _)| *made == key) {
-            images.push((key, build_test_image(ctx, built, &dir, key.0, key.1)?));
-        }
-    }
+    let images = test_images(ctx, built, &dir, cases)?;
 
     let root = if cases.iter().any(|case| case.disks.iter().any(|disk| disk.fat == ROOT)) {
         let path = dir.join("root.btrfs");
