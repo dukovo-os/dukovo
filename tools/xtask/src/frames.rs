@@ -57,6 +57,12 @@ const ALLOWED: &[(&str, &str)] = &[
         "sets up the loopback interface and its stack at boot, on the boot CPU's 64 KiB stack",
     ),
     (
+        "radix::net::new_stack",
+        "builds an interface's stack onto the heap for radix::net::start_loopback, \
+         radix::net::add_interface and radix::net::add_virtual, on the 48 KiB or 64 KiB stacks \
+         they run on",
+    ),
+    (
         "radix::fs::disk::nvme::bind",
         "sets up a controller and its disks at boot, on the boot CPU's 64 KiB stack",
     ),

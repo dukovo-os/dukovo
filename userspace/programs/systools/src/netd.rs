@@ -1196,11 +1196,12 @@ impl Netd {
                 }
                 let mut buffer = [0u8; dhcp6::MESSAGE_MAX];
                 while let Some(dhcp6) = &mut self.cards[at].dhcp6
-                    && let Ok((len, from)) = dhcp6.socket.recv_from(&mut buffer)
+                    && let Ok(len) = dhcp6.socket.recv(&mut buffer)
                 {
-                    if from.port() != dhcp6::SERVER_PORT {
-                        continue;
-                    }
+                    // From any port, as other clients take them: QEMU's
+                    // server answers from 8962, 547 with its bytes swapped.
+                    // The transaction and the client's DUID say whose an
+                    // answer is (RFC 8415, 16).
                     let actions = dhcp6.client.receive(&buffer[..len], now);
                     self.act6(at, actions);
                 }

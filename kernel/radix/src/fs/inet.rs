@@ -1705,6 +1705,20 @@ pub fn file(
         .ok_or(status(Kernel::NoMemory))
 }
 
+/// A new network socket of `kind`, IPv6's if `v6`, as a description for
+/// `user`'s process: in a frame of its own, as the socket is built on the
+/// stack before it goes to the heap, which accept's frame then need not
+/// hold (ADR 0058).
+#[inline(never)]
+fn new_file(
+    user: &crate::user::UserRef,
+    kind: Kind,
+    v6: bool,
+    flags: PipeFlags,
+) -> Result<FileRef, Status> {
+    InetSocket::new(kind, v6).and_then(|socket| file(user, socket, flags))
+}
+
 /// Makes a network socket of `kind`, IPv6's if `v6`, for `user`'s
 /// process, in slot `to`, with `flags` (radix-network(2)'s `socket`).
 pub fn make(
@@ -1714,7 +1728,7 @@ pub fn make(
     v6: bool,
     flags: PipeFlags,
 ) -> Result<(), Status> {
-    install(user, to, file(user, InetSocket::new(kind, v6)?, flags)?, flags)
+    install(user, to, new_file(user, kind, v6, flags)?, flags)
 }
 
 /// Takes a connection made to `listener`, waiting for one unless
@@ -1732,8 +1746,7 @@ pub fn accept(
 ) -> Result<(), Status> {
     let taken = listener.take(non_blocking)?;
     let v6 = listener.is_ipv6();
-    let made = match InetSocket::new(Kind::Stream, v6).and_then(|socket| file(user, socket, flags))
-    {
+    let made = match new_file(user, Kind::Stream, v6, flags) {
         Ok(made) => made,
         Err(err) => {
             listener.give_back(taken.part);

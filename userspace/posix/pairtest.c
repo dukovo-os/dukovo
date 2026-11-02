@@ -475,7 +475,10 @@ static void follow(FILE *from, FILE *to) {
 }
 
 static int b(void) {
+	// QEMU's router sets neither M nor O in its adverts, but answers
+	// DHCPv6 for the settings.
 	write_file("/system/settings/network",
+			"[net0]\ndhcpv6 = settings\n"
 			"[net0.7]\ndhcp = no\naddress = 192.168.7.2/24\naddress = fd07::2/64\n");
 	CHECK(run("service netd reload") == 0);
 	CHECK(run("ip link add link net0 name net0.7 type vlan id 7") == 0);

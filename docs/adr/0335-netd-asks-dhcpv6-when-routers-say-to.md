@@ -14,8 +14,9 @@ The plan's netd is a "DHCPv4/v6 client". A router advertisement's M
 flag says addresses come from DHCPv6, and its O flag that other
 settings do, the DNS servers and the domains to search; some networks
 give DNS servers only that way, and managed ones give addresses only
-that way. QEMU's user network sets O and answers INFORMATION-REQUEST,
-without naming itself.
+that way. QEMU's user network sets neither flag, but answers
+INFORMATION-REQUEST, without naming itself, and from port 8962: 547 with
+its bytes swapped.
 
 ## Decision
 
@@ -36,8 +37,9 @@ without naming itself.
   and domains into resolv.conf after DHCP's.
 - **What a server says is checked first**: an answer must match the
   transaction and name the client and a server, except that an answer
-  to INFORMATION-REQUEST that names no server is taken, as QEMU's is;
-  addresses must be ones a host may have, and domains only names.
+  to INFORMATION-REQUEST that names no server is taken, as QEMU's is,
+  from whatever port it comes, as other clients take it; addresses must
+  be ones a host may have, and domains only names.
 - **network(5)'s `dhcpv6`** says when a card asks: `auto` (as its
   routers say), `settings`, `address` or `no`.
 
@@ -46,6 +48,6 @@ without naming itself.
 - A machine gets its DNS servers on IPv6-only networks that give them by
   DHCPv6, and its address on managed ones.
 - The `network-pair` boot test checks the settings from QEMU's network
-  through a bridge.
+  through a bridge, with `dhcpv6 = settings`.
 - Prefix delegation (IA_PD), for a machine that routes for others, is
   left for when Dukovo routes.

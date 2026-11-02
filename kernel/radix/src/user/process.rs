@@ -167,7 +167,8 @@ pub struct ProcessObject {
     /// class in bits 8 to 15, the level in bits 0 to 7.
     io_priority: AtomicU32,
     /// The arguments its program started with, each ending with a NUL, up
-    /// to ARGS_KEPT bytes (`/processes/<n>/cmdline`); none before `exec`.
+    /// to ARGS_KEPT bytes (`/processes/<n>/cmdline`): a forked child's are
+    /// its parent's, as on Linux; none before `exec` otherwise.
     args: SpinLock<Option<Vec<u8, Kmalloc>>>,
     /// Its POSIX side (Phase 8).
     pub posix: SpinLock<PosixState>,
@@ -588,6 +589,28 @@ impl ProcessObject {
             copy
         });
         let old = core::mem::replace(&mut *self.args.lock(), copy);
+        drop(old);
+    }
+
+    /// Keeps the arguments `parent`'s program started with, as a forked
+    /// child's (`fork`), so that `/processes/<n>/cmdline` shows the same
+    /// for both, as Linux's does. Without memory for them it keeps none.
+    pub fn inherit_args(&self, parent: &ProcessObject) {
+        let len = parent.args.lock().as_ref().map_or(0, Vec::len);
+        if len == 0 {
+            return;
+        }
+        let mut copy = Vec::new_in(kmalloc());
+        if copy.try_reserve_exact(len).is_err() {
+            return;
+        }
+        if let Some(args) = parent.args.lock().as_ref() {
+            // Room was reserved above for as many as it had then.
+            for &byte in args.iter().take(len) {
+                let _ = copy.push_within_capacity(byte);
+            }
+        }
+        let old = self.args.lock().replace(copy);
         drop(old);
     }
 

@@ -8,9 +8,10 @@
 //! and VLAN 7 on the bridge at 192.168.7.1 and fd07::1, through ip(8) and
 //! network(5); the kernel must say so. Machine b boots once a's bridge is
 //! up, and must get its IPv4 address by DHCP, its IPv6 router and stable
-//! and temporary addresses by SLAAC and its DNS server by DHCPv6, all
-//! from QEMU's network through a's bridge, and VLAN 7 at 192.168.7.2 and
-//! fd07::2. b's curl must fetch a's page over VLAN 7 by IPv6 and IPv4,
+//! and temporary addresses by SLAAC and its DNS server by DHCPv6 (its
+//! network(5) asks for the settings, as QEMU's router sets neither M nor
+//! O), all from QEMU's network through a's bridge, and VLAN 7 at
+//! 192.168.7.2 and fd07::2. b's curl must fetch a's page over VLAN 7 by IPv6 and IPv4,
 //! and over the bridge at a's DHCP and SLAAC addresses. Then the
 //! firewall, probed from b: a program a runs as a person would, without
 //! the inbound right, must be reachable from a alone, which firewall
@@ -106,11 +107,14 @@ fn network_pair(vm: &mut Vm, case: &Case) -> Result<(), String> {
         }
         b.expect_anywhere("pairtest: connected to a")?;
     }
-    for part in PARTS {
-        vm.expect_ahead(part)?;
-    }
+    // Read once a's pairtest ends, so that a check that fails ends the
+    // test then, not at the timeout.
     let code = program_line(vm, "(/system/tests/posix/pairtest) exited with code ")?;
     passed(vm, "a", &code)?;
+    let log = vm.log();
+    if let Some(part) = PARTS.iter().find(|part| !log.contains(*part)) {
+        return Err(format!("pairtest a never said \"{part}\""));
+    }
     let b = vm.peer()?;
     let code = program_line(b, "(/system/tests/posix/pairtest) exited with code ")?;
     passed(b, "b", &code)?;

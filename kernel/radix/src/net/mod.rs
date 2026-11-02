@@ -295,7 +295,10 @@ pub struct Interface {
     /// Its place among the interfaces: 0 for `lo`, then the cards in the
     /// order they were found.
     pub number: usize,
-    pub stack: Mutex<Stack<Card>>,
+    /// Its stack, on the heap: the stack is several KiB, which every move
+    /// of the interface would otherwise copy through the frames that make
+    /// it, on the boot CPU's stack (ADR 0058).
+    pub stack: Mutex<Box<Stack<Card>, Kmalloc>>,
     /// Its orphans, with room for as many as it has socket slots. Taken
     /// with the stack's lock held.
     orphans: Mutex<Vec<Orphan, Kmalloc>>,
@@ -761,7 +764,7 @@ fn start_loopback() -> Result<(), &'static str> {
         transmit: forever(LOOPBACK_MTU).ok_or("out of memory")?,
         sockets,
     };
-    let mut stack = Stack::new(card, memory, radix_random::u64(), sched::now_ns());
+    let mut stack = new_stack(card, memory).ok_or("out of memory")?;
     stack.set_ipv4_addresses(&LOOPBACK_OWN);
     stack.set_ipv6_addresses(&[Ipv6Cidr::new(LOOPBACK_IPV6, 128)]);
     let mut name = TextBuf::<16>::new();
@@ -782,7 +785,7 @@ fn start_loopback() -> Result<(), &'static str> {
 fn interface(
     name: TextBuf<16>,
     number: usize,
-    stack: Stack<Card>,
+    stack: Box<Stack<Card>, Kmalloc>,
     slots: Lease<SocketStorage<'static>, Kmalloc>,
 ) -> Option<Interface> {
     let mut orphans = Vec::new_in(kmalloc());
@@ -861,6 +864,15 @@ fn addresses_changed_ipv4() {
 
 fn kmalloc() -> Kmalloc {
     HEAP.with(Flags::MAY_SLEEP)
+}
+
+/// A stack on `card` with `memory`, on the heap, made in a frame of its
+/// own so that the frames of those who make interfaces hold only a
+/// pointer to it.
+#[inline(never)]
+fn new_stack(card: Card, memory: Memory) -> Option<Box<Stack<Card>, Kmalloc>> {
+    let stack = Stack::new(card, memory, radix_random::u64(), sched::now_ns());
+    Box::try_new_in(stack, kmalloc()).ok()
 }
 
 /// `len` zero bytes from the heap, for as long as the kernel runs.
@@ -1478,7 +1490,7 @@ fn build(
         transmit: forever(TAGGED_FRAME).ok_or("out of memory")?,
         sockets,
     };
-    let mut stack = Stack::new(card, memory, radix_random::u64(), sched::now_ns());
+    let mut stack = new_stack(card, memory).ok_or("out of memory")?;
     if let Some(address) = address {
         stack.set_ipv4(address, gateway);
     }
