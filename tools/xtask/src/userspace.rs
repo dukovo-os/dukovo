@@ -90,7 +90,6 @@ pub const ARCHIVE_HIDDEN: (&str, &str) = ("system/.hidden", "bin\nlib\nshare\n")
 pub const STD_ARCHIVE: &[(&str, &str)] = &[
     ("system/commands/consoled", "consoled"),
     ("system/commands/nukesh", "nukesh"),
-    ("system/commands/firewall", "systools"),
     ("system/commands/smb", "smb"),
     ("system/commands/systools", "systools"),
     ("system/tests/posix/fuse-test", "fuse-test"),
@@ -127,6 +126,7 @@ pub const STD_LINKS: &[(&str, &str)] = &[
     ("system/commands/eject", "systools"),
     ("system/commands/elevate", "systools"),
     ("system/commands/findmnt", "systools"),
+    ("system/commands/firewall", "systools"),
     ("system/commands/fsck-fat", "systools"),
     ("system/commands/fsck.fat", "systools"),
     ("system/commands/fsck.vfat", "systools"),

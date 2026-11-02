@@ -8,8 +8,10 @@
 // the inbound right, which lets other machines reach them through the
 // firewall (ADR 0334), and the C library's sockets go through them: it
 // listens on ports 8005 and 9000 and connects to the first, but cannot
-// bind port 8010. With `none` it holds no network capability, and cannot
-// make a socket.
+// bind port 8010. With `bundle`, what the bundle-run boot test's second
+// bundle runs, it is the same but for the inbound right, which bundles
+// never get: what a person runs listens for this machine alone. With
+// `none` it holds no network capability, and cannot make a socket.
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
@@ -77,12 +79,14 @@ static int listening(unsigned short port) {
 	return fd;
 }
 
-static void granted(void) {
+// Checks the capabilities of `granted` or `bundle`, the listening ones
+// with `inbound` among their rights, and that they work.
+static void listens(uint64_t inbound) {
 	uint64_t kept = RADIX_RIGHTS_COPY | RADIX_RIGHTS_TRANSFER;
 	const struct wanted wanted[] = {
 			{RADIX_RIGHTS_SEND | kept, 0, 65536},
-			{RADIX_RIGHTS_RECEIVE | RADIX_RIGHTS_INBOUND | kept, 8000, 10},
-			{RADIX_RIGHTS_RECEIVE | RADIX_RIGHTS_INBOUND | kept, 9000, 1},
+			{RADIX_RIGHTS_RECEIVE | inbound | kept, 8000, 10},
+			{RADIX_RIGHTS_RECEIVE | inbound | kept, 9000, 1},
 	};
 	holds(wanted, sizeof(wanted) / sizeof(wanted[0]));
 	// It listens on its ports, through the second capability and the
@@ -111,6 +115,14 @@ static void granted(void) {
 		   "8000-8009 and 9000\n");
 }
 
+static void granted(void) {
+	listens(RADIX_RIGHTS_INBOUND);
+}
+
+static void bundle(void) {
+	listens(0);
+}
+
 static void none(void) {
 	holds(NULL, 0);
 	CHECK_ERROR(socket(AF_INET, SOCK_STREAM, 0), EACCES);
@@ -122,10 +134,12 @@ int main(int argc, char **argv) {
 	check_start("netgrant");
 	if(argc == 2 && strcmp(argv[1], "granted") == 0)
 		RUN(granted);
+	else if(argc == 2 && strcmp(argv[1], "bundle") == 0)
+		RUN(bundle);
 	else if(argc == 2 && strcmp(argv[1], "none") == 0)
 		RUN(none);
 	else
-		check_failed(__FILE__, __LINE__, "its argument is granted or none", EINVAL);
+		check_failed(__FILE__, __LINE__, "its argument is granted, bundle or none", EINVAL);
 	int code = check_end();
 	// The last line, which the boot test waits for, either way.
 	printf("netgrant: done\n");
