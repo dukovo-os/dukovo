@@ -1,0 +1,32 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+#
+# Gives the firewall the rules of /system/settings/firewall at boot
+# (firewall(8), ADR 0334), and ends. Without rules, what each service
+# listens on is open while it runs, and what a program a person runs
+# listens on is for this machine alone. `service firewall start` loads
+# the rules again, as `firewall load` does.
+#
+# service.toml(5) explains each setting. `service check firewall` checks
+# this file, and `service edit firewall` checks it as you save.
+
+service_version = 1
+description = "Firewall rules"
+program = "/system/commands/firewall"
+arguments = ["load"]
+# After logd, which keeps what it says, and before the services that
+# listen.
+order = 6
+# It gives the rules and ends.
+restart = "never"
+
+[limits]
+memory = "8M"
+
+# What it holds beyond what every service reads (service.toml(5)): the
+# firewall, and the whole tree, past the owners and modes of files, to
+# find the file of each program a rule names wherever it is, in a
+# person's home too. It reads and changes nothing else.
+[permissions]
+admin.firewall = true
+runs-with-your-access = true

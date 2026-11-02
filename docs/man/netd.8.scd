@@ -39,8 +39,30 @@ for what passes netd's checks: a unicast address, a router on its
 network, unicast DNS servers, a domain name of letters, digits, *-* and
 *\_*, and a lease of at least a minute.
 
-The kernel lets each card's socket hold port 68 beside the others', as
-each is bound to its own card (*radix-posix*(7)). While another socket
+Each card's IPv6 is on unless its settings say no (ADR 0331): the
+kernel makes its link-local address and, from the prefixes its routers
+advertise, a stable address (RFC 7217), made from a secret of the
+machine's that netd makes once and keeps in
+_/system/state/netd/ipv6-secret_, and temporary ones (RFC 8981), which
+it sends from, unless the settings say *temporary-addresses = no*. The
+kernel takes the routers, DNS servers (RFC 8106) and MTU the adverts
+carry; netd gives it the settings' static IPv6 addresses and router.
+
+When a card's routers say that addresses (their adverts' M flag) or
+other settings (O) come from DHCPv6, netd asks for them too, as the
+settings' *dhcpv6* allows (ADR 0335): its client (RFC 8415) asks for
+the DNS servers and domains with INFORMATION-REQUEST, or SOLICITs an
+address in an IA_NA and keeps it with RENEW and REBIND. It is known by
+its DUID-LL, made from the card's MAC address, and sends from port 546
+of the card. The address it gets is given to the card as *ip*(8) gives
+one; its DNS servers and domains go after DHCP's.
+
+Bridges and VLANs that *ip*(8) makes (ADR 0333) are set up as cards
+are, by their names; a bridge's port is not, while it is one, as its
+bridge has the addresses.
+
+The kernel lets each card's socket hold ports 68 and 546 beside the
+others', as each is bound to its own card (*radix-posix*(7)). While another socket
 holds the port on a card, the card waits for it, and netd tries again
 each time it looks at the cards.
 
@@ -49,8 +71,9 @@ named by its MAC address. netd started again goes on with the lease the
 card has, and its connections go on; after a reboot the card asks for
 the address it had, and for any if no server answers.
 
-netd writes the DNS servers, three at most, the settings' first, and
-the leases' domain names as *search*, into
+netd writes the DNS servers, three at most, the settings' first, then
+DHCP's, DHCPv6's and those routers advertise, and the leases' domain
+names as *search*, into
 _/system/live/netd/resolv.conf_, for *resolved*(8), which every program
 asks, to forward queries to unless its own settings name servers.
 
@@ -67,6 +90,8 @@ system's log after *netd:*:
 ```
 netd: net0: asking for an address by DHCP
 netd: net0 has 10.0.2.15/24 from 10.0.2.2 for 1 day, router 10.0.2.2, DNS 10.0.2.3
+netd: net0: asking DHCPv6 for its settings
+netd: net0 has DNS fec0::3 by DHCPv6
 ```
 
 # SIGNALS
@@ -88,6 +113,10 @@ _/system/state/netd/_*52-54-00-12-34-56.lease*
 	when it was given (seconds since 1970) and for how long, and when
 	to renew and rebind it, a *key = value* a line.
 
+_/system/state/netd/ipv6-secret_
+	The machine's IPv6 secret, which its stable addresses are made from:
+	a new one gives it new addresses. Only netd reads it.
+
 _/system/live/netd/resolv.conf_
 	The DNS servers, which *resolved*(8) asks.
 
@@ -98,8 +127,8 @@ _/system/settings/spark/services/netd.toml_
 
 0 when it was ended; 1 for an argument, as it takes none.
 
-Not yet: DHCPv6 and a DHCP server (12c of the roadmap), an ARP probe
-of the address offered, DHCPDECLINE and DHCPRELEASE.
+Not yet: a DHCP server, DHCPv6 prefix delegation, an ARP probe of the
+address offered, DHCPDECLINE and DHCPRELEASE.
 
 # SEE ALSO
 

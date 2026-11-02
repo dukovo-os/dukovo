@@ -78,7 +78,7 @@ static void names(void) {
 
 // Before it is set up, the card has no address and no route.
 static void bare(void) {
-	OUTPUT("", "lo               UNKNOWN        127.0.0.1/8 \n"
+	OUTPUT("", "lo               UNKNOWN        127.0.0.1/8 ::1/128 \n"
 	           "net0             UP             \n",
 	       "/bin/ip", "-br", "address");
 	OUTPUT("", "", "/bin/ip", "route");

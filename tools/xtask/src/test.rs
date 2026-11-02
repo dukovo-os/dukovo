@@ -63,6 +63,19 @@ const UCSI_TABLE: &str = "file=ucsi.aml";
 /// `usb-serial` case). QEMU plugs a USB serial port in only once its
 /// character device is connected, which a UDP one never is.
 const SERIAL_LINE: [&str; 2] = ["<serial line 0>", "<serial line 1>"];
+/// In a case's `qemu`, what comes after this boots a second machine, the
+/// peer, from the same image beside the first once QEMU has started it:
+/// the peer's command line, then its own arguments. The script reaches
+/// it through [`Vm::peer`] (the `network-pair` case).
+const PEER: &str = "<peer>";
+/// The two ends of a network cable between the machines, as `-netdev`'s
+/// argument: a stream netdev `cable` on a Unix socket in the test's
+/// directory, which the first machine listens on and the peer connects
+/// to.
+const CABLE: [&str; 2] = ["<cable server>", "<cable client>"];
+/// A `-object` argument that dumps what goes over the first machine's
+/// end of the cable to `<case>.pcap` in the test's directory.
+const CABLE_DUMP: &str = "<cable dump>";
 /// The SMBIOS memory device of the `smbus` case, which QEMU gives in place
 /// of its own ([`ddr4_device`]).
 const DDR4_DEVICE: &str = "file=ddr4.smbios";
@@ -2858,13 +2871,23 @@ fn run_case(
     let disks = make_disks(ctx, dir, case, base, root)?;
     let mut extra: Vec<String> = case.qemu.iter().map(ToString::to_string).collect();
     let socket = qemu::option_value(&dir.join(format!("{}.line", case.name)));
+    let cable_path = dir.join(format!("{}.cable", case.name));
+    let cable = qemu::option_value(&cable_path);
+    let dump = qemu::option_value(&dir.join(format!("{}.pcap", case.name)));
     for arg in &mut extra {
         if *arg == SERIAL_LINE[0] {
             *arg = format!("socket,id=line0,path={socket},server=on,wait=off");
         } else if *arg == SERIAL_LINE[1] {
             *arg = format!("socket,id=line1,path={socket},reconnect=1");
+        } else if *arg == CABLE[0] {
+            *arg = format!("stream,id=cable,server=on,addr.type=unix,addr.path={cable}");
+        } else if *arg == CABLE[1] {
+            *arg = format!("stream,id=cable,server=off,addr.type=unix,addr.path={cable}");
+        } else if *arg == CABLE_DUMP {
+            *arg = format!("filter-dump,id=dump,netdev=cable,file={dump}");
         }
     }
+    let mut peer = extra.iter().position(|arg| arg == PEER).map(|at| extra.split_off(at));
     for arg in &mut extra {
         let (name, bytes) = match arg.as_str() {
             POWER_TABLE => ("power.aml", POWER_AML.to_vec()),
@@ -2972,12 +2995,59 @@ fn run_case(
         extra,
         direct: None,
     };
+    // The peer: a machine of its own, on its own copy of the image.
+    let peer_image = dir.join(format!("{}-peer.img", case.name));
+    if let Some(args) = peer.as_mut() {
+        if args.len() < 2 {
+            return Err(format!("{PEER} needs the peer's command line after it"));
+        }
+        let cmdline = args.remove(1);
+        args.remove(0);
+        std::fs::write(&peer_image, with_cmdline(base, &cmdline)?)
+            .map_err(|err| format!("writing {}: {err}", peer_image.display()))?;
+    }
+    let peer_machine = |extra: &[String]| -> Result<Machine, String> {
+        Ok(Machine {
+            firmware: case.firmware,
+            media: case.media,
+            ovmf: match case.firmware {
+                Firmware::Uefi => Some(
+                    qemu::prepare_ovmf(ctx, &format!("test-{}-peer", case.name))
+                        .map_err(|e| e.to_string())?,
+                ),
+                Firmware::Bios => None,
+            },
+            image: peer_image.clone(),
+            memory: case.memory.into(),
+            cpus: case.cpus,
+            kvm: machine.kvm,
+            cpu_model: machine.cpu_model.clone(),
+            serial: Serial::Pipe,
+            display: false,
+            reboot: case.reboot,
+            gdb: false,
+            qmp: Some(dir.join(format!("{}-peer.qmp", case.name))),
+            extra: extra.to_vec(),
+            direct: None,
+        })
+    };
     let boot = |name: &str, cmdline: &str, script: Script| -> Result<(), String> {
         std::fs::write(&image, with_cmdline(base, cmdline)?)
             .map_err(|err| format!("writing {}: {err}", image.display()))?;
         let _ = std::fs::remove_file(&qmp);
+        let _ = std::fs::remove_file(&cable_path);
         let mut vm = Vm::start(ctx, &machine, dir, name, timeout)?;
-        let result = script(&mut vm, case).and_then(|()| kernel_complaints(&vm, case));
+        if let Some(extra) = &peer {
+            vm.pending = Some(Box::new(Pending {
+                machine: peer_machine(extra)?,
+                name: format!("{name}-peer"),
+                cable: cable_path.clone(),
+                verbose: ctx.verbose,
+            }));
+        }
+        let result = script(&mut vm, case)
+            .and_then(|()| kernel_complaints(&vm, case))
+            .and_then(|()| vm.peer.as_deref().map_or(Ok(()), |peer| kernel_complaints(peer, case)));
         vm.stop();
         result?;
         let log = vm.log();
@@ -2994,6 +3064,8 @@ fn run_case(
             });
     }
     let _ = std::fs::remove_file(&image);
+    let _ = std::fs::remove_file(&peer_image);
+    let _ = std::fs::remove_file(&cable_path);
     if result.is_ok() {
         for disk in &disks {
             let _ = std::fs::remove_file(&disk.path);
@@ -3726,11 +3798,35 @@ pub struct Vm {
     screenshot: PathBuf,
     /// Whether QEMU runs the guest with KVM.
     kvm: bool,
+    /// The machine beside it, which a case's [`PEER`] boots.
+    peer: Option<Box<Vm>>,
+    /// That machine, until [`Vm::boot_peer`] boots it.
+    pending: Option<Box<Pending>>,
+}
+
+/// A peer machine (a case's [`PEER`]) not yet booted.
+struct Pending {
+    machine: Machine,
+    /// Its name, for its logs.
+    name: String,
+    /// The cable's socket, which the first machine's QEMU makes.
+    cable: PathBuf,
+    verbose: bool,
 }
 
 impl Vm {
     pub fn start(
         ctx: &Ctx,
+        machine: &Machine,
+        dir: &Path,
+        name: &str,
+        timeout: Duration,
+    ) -> Result<Vm, String> {
+        Vm::spawn(ctx.verbose, machine, dir, name, timeout)
+    }
+
+    fn spawn(
+        verbose: bool,
         machine: &Machine,
         dir: &Path,
         name: &str,
@@ -3744,7 +3840,7 @@ impl Vm {
             .map_err(|err| format!("creating {}: {err}", log_path.display()))?;
         let mut cmd = machine.command();
         cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(stderr);
-        if ctx.verbose {
+        if verbose {
             eprintln!("+ {}", process::render(&cmd));
         }
         let mut child = cmd.spawn().map_err(|err| format!("cannot start QEMU: {err}"))?;
@@ -3770,7 +3866,28 @@ impl Vm {
             stderr_log,
             screenshot: dir.join(format!("{name}.ppm")),
             kvm: machine.kvm,
+            peer: None,
+            pending: None,
         })
+    }
+
+    /// Boots the machine beside this one, the case's [`PEER`], on the
+    /// cable this one's QEMU listens on.
+    pub fn boot_peer(&mut self) -> Result<(), String> {
+        let pending = self.pending.take().ok_or("the case has no peer to boot")?;
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while !pending.cable.exists() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        let peer =
+            Vm::spawn(pending.verbose, &pending.machine, self.dir(), &pending.name, self.timeout)?;
+        self.peer = Some(Box::new(peer));
+        Ok(())
+    }
+
+    /// The machine beside this one, once [`Vm::boot_peer`] has booted it.
+    pub fn peer(&mut self) -> Result<&mut Vm, String> {
+        self.peer.as_deref_mut().ok_or_else(|| "the peer has not booted".into())
     }
 
     /// The serial output so far, cleaned of escape sequences.
@@ -4051,6 +4168,9 @@ impl Vm {
     }
 
     fn stop(&mut self) {
+        if let Some(peer) = self.peer.as_deref_mut() {
+            peer.stop();
+        }
         if self.exited().is_none() {
             let _ = self.child.kill();
             let _ = self.child.wait();
@@ -4336,7 +4456,7 @@ fn boot_report(vm: &mut Vm, case: &Case) -> Result<(), String> {
     } else {
         vm.expect("Lock checker: ")?;
     }
-    vm.expect("Capabilities: ready; 23 object kinds, 13 rights")?;
+    vm.expect("Capabilities: ready; 24 object kinds, 14 rights")?;
     vm.expect("User mode: SYSCALL/SYSRET entry, user half ")?;
     vm.expect("Files: the root is a tmpfs; Spark mounts the rest")?;
     // Every test image carries the user test programs.
@@ -4434,7 +4554,7 @@ fn consoles(vm: &mut Vm, case: &Case) -> Result<(), String> {
     vm.expect("Boot complete.")?;
     vm.expect("spark: Spark v2 is process ")?;
     vm.expect("spark: listening at /system/live/spark/control")?;
-    vm.expect("spark: 12 services in /system/settings/spark/services, 12 enabled")?;
+    vm.expect("spark: 13 services in /system/settings/spark/services, 13 enabled")?;
     vm.expect("spark: started consoled (/system/commands/consoled) as process ")?;
     vm.expect("consoled: console of ")?;
     vm.expect("consoled: started /system/commands/nukesh on tty1 as process ")?;
@@ -5442,7 +5562,7 @@ fn sockets(vm: &mut Vm, case: &Case) -> Result<(), String> {
     // Both come during the PCI scan, among lines boot_report reads past.
     let log = vm.log();
     for needle in [
-        "Net: lo is the loopback interface, at 127.0.0.1/8, 127.0.0.53 and every card's address",
+        "Net: lo is the loopback interface, at 127.0.0.1/8, 127.0.0.53, ::1 and every card's address",
         "Net: net0 has the address 10.0.2.15/24, through the router 10.0.2.2",
     ] {
         if !log.contains(needle) {
@@ -5460,6 +5580,9 @@ fn sockets(vm: &mut Vm, case: &Case) -> Result<(), String> {
     vm.expect("sockets: tcp: a socket that does not wait connected, and said when it had")?;
     vm.expect("sockets: udp: datagrams went each way over lo, kept their bounds, and said where they came from")?;
     vm.expect("sockets: rights: each method refused what its capability does not allow")?;
+    vm.expect("sockets: ipv6: a socket on [::] took connections from ::1 and from 127.0.0.1")?;
+    vm.expect("sockets: ipv6: a datagram went between ports of ::1")?;
+    vm.expect("sockets: ipv6: a v6-only socket shared its port with an IPv4 one")?;
     vm.expect(
         "sockets: virtio: a connection to 10.0.2.100 port 7 echoed what went through the card",
     )?;
@@ -7907,7 +8030,7 @@ fn principals(vm: &mut Vm, case: &Case) -> Result<(), String> {
 fn services(vm: &mut Vm, case: &Case) -> Result<(), String> {
     boot_report(vm, case)?;
     vm.expect("Boot complete.")?;
-    vm.expect_anywhere("spark: 12 services in /system/settings/spark/services, 12 enabled")?;
+    vm.expect_anywhere("spark: 13 services in /system/settings/spark/services, 13 enabled")?;
     vm.expect_ahead("spark: started /system/tests/posix/servicetest as process ")?;
     let code = program_line(vm, "(/system/tests/posix/servicetest) exited with code ")?;
     let log = vm.log();

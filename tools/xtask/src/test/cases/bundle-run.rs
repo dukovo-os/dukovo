@@ -8,8 +8,9 @@
 //! only its own folders of alice's home, not her files; it cannot change
 //! the system's settings; and it holds no network capability, so it
 //! cannot make a socket (netgrant none). The second asks to connect out
-//! and to listen on ports 8000 to 8009 and 9000, and gets exactly that
-//! (netgrant granted). Each command is on her PATH, a link to bundle(1)
+//! and to listen on ports 8000 to 8009 and 9000, and gets exactly that,
+//! without the inbound right that would let other machines reach its
+//! ports through the firewall (netgrant bundle, ADR 0334). Each command is on her PATH, a link to bundle(1)
 //! in her applications/commands, run by its name or by bundle run.
 //! Unsealed by an administrator, a bundle no longer runs; removing one
 //! removes its command. The power button ends it.
@@ -118,7 +119,7 @@ fn bundle_run(vm: &mut Vm, case: &Case) -> Result<(), String> {
         "Accept connections on these ports: 8000-8009, 9000 (at install)",
         "installed org.example.online 0.1.0, for you",
     ])?;
-    answer_prompt(vm, "$", "clear; online granted; echo \"status $?\"")?;
+    answer_prompt(vm, "$", "clear; online bundle; echo \"status $?\"")?;
     vm.expect_screen(&[
         "netgrant: Spark gave it the network to connect out and to listen on ports",
         "netgrant: every check passed",

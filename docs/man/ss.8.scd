@@ -9,15 +9,17 @@ ss - list the TCP and UDP sockets
 
 # SYNOPSIS
 
-*ss* [*-t*] [*-u*] [*-l* | *-a*] [*-n*] [*-H*]
+*ss* [*-t*] [*-u*] [*-4*] [*-6*] [*-l* | *-a*] [*-n*] [*-H*]
 
 # DESCRIPTION
 
 ss lists the TCP and UDP sockets, from _/processes/net/tcp_ and
-_/processes/net/udp_ (*radix-proc*(5)), with the columns of iproute2's
-ss on Linux (ADR 0190): each socket's state, its queues, and its two
-ends. A socket listening on all of an interface's addresses shows
-*0.0.0.0*, and an end not connected, *\**.
+_/processes/net/udp_, and _tcp6_ and _udp6_ for IPv6 ones
+(*radix-proc*(5), ADR 0332), with the columns of iproute2's ss on Linux
+(ADR 0190): each socket's state, its queues, and its two ends. A socket
+listening on all of an interface's addresses shows *0.0.0.0*, or *[::]*
+for IPv6, whose addresses are in brackets, and an end not connected,
+*\**.
 
 By default ss lists the connections: the TCP sockets neither listening
 nor ending in *TIME-WAIT*, nor half open in *SYN-RECV*, and the UDP
@@ -28,6 +30,7 @@ names each socket's protocol.
 $ ss -tl
 State  Recv-Q Send-Q Local Address:Port Peer Address:Port
 LISTEN 0      0            0.0.0.0:22        0.0.0.0:*
+LISTEN 0      0               [::]:8080         [::]:*
 ```
 
 Recv-Q and Send-Q are the bytes received and not yet read, and those
@@ -51,10 +54,14 @@ written and not yet acknowledged.
 *-H*, *--no-header*
 	No header line.
 
-*-n*, *--numeric*, *-4*, *--ipv4*
-	Change nothing: ss gives addresses and ports as numbers, as there
-	is no name service to ask yet (Phase 12a.5 of the roadmap), and
-	IPv4 is all there is until Phase 12c; *-6* fails.
+*-4*, *--ipv4*
+	The IPv4 sockets.
+
+*-6*, *--ipv6*
+	The IPv6 sockets. Without *-4* or *-6*, both.
+
+*-n*, *--numeric*
+	Changes nothing: ss gives addresses and ports as numbers.
 
 Not yet: *-p*, the process that holds each socket, which the kernel's
 lists do not name; *-x*, the Unix sockets; *-s*; *-e*; *-i*; and the

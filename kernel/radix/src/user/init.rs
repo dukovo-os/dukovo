@@ -14,8 +14,9 @@
 //! power capability (Phase 9), a network capability for all of the
 //! network's ports (Phase 12, ADR 0183), the platform capability
 //! (Phase 11, ADR 0208), the names capability (Phase 13, ADR 0214), the
-//! clock capability (Phase 12, ADR 0194) and the root device capability
-//! (Phase 12, ADR 0198), and the words after a lone `--` on the command
+//! clock capability (Phase 12, ADR 0194), the root device capability
+//! (Phase 12, ADR 0198) and the firewall capability (Phase 12, ADR
+//! 0334), and the words after a lone `--` on the command
 //! line as its arguments. From then on Spark
 //! starts every other program. The kernel keeps Spark's process
 //! capability, and Spark is the one program that must not end: if it
@@ -136,15 +137,15 @@ fn start_spark(
     // capability, the memory for the programs it starts, the domain its
     // services' domains go below, the machine's power, the network, its
     // platform controls, the names (ADR 0214), the clock (ADR 0194), the
-    // cards left for programs (ADR 0198), and the boot archive's memory
-    // and frames. It is never destroyed.
-    let slots = loader::archive_slots(archive.len()).saturating_add(9);
+    // cards left for programs (ADR 0198), the firewall (ADR 0334), and the
+    // boot archive's memory and frames. It is never destroyed.
+    let slots = loader::archive_slots(archive.len()).saturating_add(10);
     let kept =
         caps::with(|store| store.create_space(slots)).and_then(|made| made).map_err(cap_error)?;
     let slot = |n| SlotRef::new(kept, n);
     let (at, pool, services, power, network, platform) =
         (slot(0), slot(1), slot(2), slot(3), slot(4), slot(5));
-    let (names, clock, devices) = (slot(6), slot(7), slot(8));
+    let (names, clock, devices, firewall) = (slot(6), slot(7), slot(8), slot(9));
     caps::create_memory(pool, MEMORY_ORDER).map_err(cap_error)?;
     let settings = Settings::new(OomClass::Service);
     caps::create_domain(services, &domains::root(), SERVICES, settings).map_err(cap_error)?;
@@ -153,6 +154,7 @@ fn start_spark(
     process::install(names, ObjectKind::Names, Object::Names)?;
     process::install(clock, ObjectKind::Clock, Object::Clock)?;
     process::install(devices, ObjectKind::Device, Object::Devices)?;
+    process::install(firewall, ObjectKind::Firewall, Object::Firewall)?;
     caps::with(|store| store.grant_range(network, ObjectKind::Network, 0, 1 << 16))
         .and_then(|done| done)
         .map_err(cap_error)?;
@@ -173,8 +175,9 @@ fn start_spark(
             (names, ObjectKind::Names.rights(), 0),
             (clock, ObjectKind::Clock.rights(), 0),
             (devices, ObjectKind::Device.rights(), 0),
+            (firewall, ObjectKind::Firewall.rights(), 0),
         ],
-        archive: Some((archive, slot(9))),
+        archive: Some((archive, slot(10))),
         root: true,
         domain: domains::root(),
         on_exit: Some(spark_exited),

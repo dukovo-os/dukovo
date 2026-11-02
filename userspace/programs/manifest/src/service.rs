@@ -68,6 +68,7 @@ pub const KEYS: &[&str] = &[
     "admin.network",
     "admin.hardware",
     "admin.time",
+    "admin.firewall",
     "names",
     "devices.pci",
 ];
@@ -205,8 +206,8 @@ impl Permissions {
     }
 }
 
-/// The administration group: `admin.network`, `admin.hardware` and
-/// `admin.time`.
+/// The administration group: `admin.network`, `admin.hardware`,
+/// `admin.time` and `admin.firewall`.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Admin {
@@ -223,6 +224,10 @@ pub struct Admin {
     /// time of day and writes the real-time clock (ADR 0194).
     #[serde(default)]
     pub time: bool,
+    /// Whether it gets the firewall capability, which gives the packet
+    /// filter its rules (ADR 0334).
+    #[serde(default)]
+    pub firewall: bool,
 }
 
 /// The devices group: `devices.pci`, the cards the kernel left for a
@@ -553,6 +558,8 @@ admin.hardware = false
 # Whether it may set the time of day and the real-time clock, as timed(8)
 # does.
 admin.time = false
+# Whether it may give the firewall its rules, as firewall(8) does.
+admin.firewall = false
 # Giving processes and files another user's name: only for authd, which
 # signs people in.
 names = false

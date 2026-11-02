@@ -21,7 +21,9 @@
 //! every program's DNS queries, which `resolvectl` shows (ADR 0193);
 //! `timed` keeps the clock right from the network over NTS, and
 //! `timedatectl` shows it and sets the time zone (ADR 0194); `netlog`
-//! sends the log to another computer as it is written (ADR 0196).
+//! sends the log to another computer as it is written (ADR 0196);
+//! `firewall` gives the packet filter its rules and says what listens
+//! (ADR 0334).
 //! `authd` keeps the accounts, which `user` and `passwd` change, `login`
 //! signs people in through it, and `elevate`, and `sudo` in front of it,
 //! run a command as an administrator (ADRs 0218, 0250 and 0219); `last`,
@@ -49,6 +51,7 @@ mod column;
 mod device;
 mod df;
 mod dhcp;
+mod dhcp6;
 mod diskhealth;
 mod dmesg;
 mod e1000d;
@@ -57,6 +60,7 @@ mod eject;
 mod elevate;
 mod facl;
 mod findmnt;
+mod firewall;
 mod fstrim;
 mod hexdump;
 mod hwinfo;
@@ -154,6 +158,7 @@ const TOOLS: &[(&str, Tool)] = &[
     ("eject", eject::main),
     ("elevate", elevate::main),
     ("findmnt", findmnt::main),
+    ("firewall", firewall::main),
     ("fsck-btrfs", btrfs::fsck_btrfs),
     ("fsck-fat", mkfs::fsck_fat),
     ("fsck.fat", mkfs::fsck_fat),

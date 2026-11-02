@@ -144,6 +144,10 @@ pub struct PosixState {
     /// `set_directory`): an absolute path, for `/processes`. Shared, so that
     /// `fork` copies it under the lock without taking memory.
     pub directory: Option<Directory>,
+    /// The program it last ran, as the file `exec` ran (a script, not its
+    /// interpreter): what the firewall's rules for programs name (ADR
+    /// 0334). A child has its parent's until it runs its own.
+    pub program: crate::net::firewall::Program,
 }
 
 /// Whether two processes act for the same user, which `kill` asks of
@@ -187,15 +191,19 @@ impl PosixState {
             limits: Box::try_new_in(limits::Limits::DEFAULT, kmalloc()).ok()?,
             file_mask: 0o022,
             directory: None,
+            program: crate::net::firewall::Program::NONE,
         })
     }
 
     /// Takes what a child has of its parent's `parent` (`fork`, or `exec`
     /// on a created process): its resource limits, file mode mask and,
-    /// unless `exec` noted its own, working directory.
+    /// unless `exec` noted its own, working directory and program.
     pub fn inherit(&mut self, parent: &PosixState) {
         *self.limits = *parent.limits;
         self.file_mask = parent.file_mask;
+        if self.program == crate::net::firewall::Program::NONE {
+            self.program = parent.program;
+        }
         if self.directory.is_none() {
             self.directory.clone_from(&parent.directory);
         }

@@ -106,8 +106,11 @@ rights listed, plus *copy* and *transfer*, which every kind has.
 	through and to listen on, and the interfaces to set up (see
 	*radix-network*(2)). Rights: *send*, to connect out to any address
 	and send datagrams; *receive*, to bind to and listen on the ports in
-	the range; *control*, whatever the range, to set the interfaces'
-	addresses and routers (ADR 0190).
+	the range; *inbound*, with *receive*, for other machines to reach
+	what listens on those ports through the firewall, which Spark gives
+	only with a service's *network.listen* (ADR 0334); *control*,
+	whatever the range, to set the interfaces' addresses and routers,
+	and make bridges and VLANs (ADRs 0190 and 0333).
 
 *platform*
 	The machine's platform controls, which its embedded controller
@@ -136,11 +139,17 @@ rights listed, plus *copy* and *transfer*, which every kind has.
 	map its registers and the memory it reaches, take its interrupt and
 	attach it to the network.
 
+*firewall*
+	The firewall's rules, which only Spark holds from the kernel and
+	gives the services with *admin.firewall* (see *radix-firewall*(2),
+	ADR 0334). Rights: *read*, to ask its rules, its counts and what
+	listens; *control*, to give it new rules.
+
 # RIGHTS
 
-The thirteen rights are *read*, *write*, *execute*, *send*, *receive*,
-*grant*, *signal*, *control*, *seal*, *unseal*, *copy*, *transfer* and
-*bypass*. What the first ten allow depends on the kind and is described
+The fourteen rights are *read*, *write*, *execute*, *send*, *receive*,
+*grant*, *signal*, *control*, *seal*, *unseal*, *copy*, *transfer*,
+*bypass* and *inbound*. What the first ten allow depends on the kind and is described
 with the operations that need them. *bypass*, on a directory or a file,
 passes the owners, groups and modes of the files reached through it, as
 Linux's CAP_DAC_OVERRIDE does but only beneath that directory, and is
@@ -279,7 +288,7 @@ Operations on capabilities fail with one of these, and change nothing:
 At boot the kernel reports its store:
 
 ```
-Capabilities: ready; 23 object kinds, 13 rights, spaces of up to 65536 slots, derivations up to 64 deep
+Capabilities: ready; 24 object kinds, 14 rights, spaces of up to 65536 slots, derivations up to 64 deep
 ```
 
 The *kdb* command *caps* counts the spaces, capabilities and objects by
