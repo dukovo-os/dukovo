@@ -20,25 +20,37 @@
 //! otherwise sleeps until a client has something to send. SIGHUP reads
 //! the settings again; SIGTERM ends netd and leaves the cards as they
 //! are, so that connections go on.
+//!
+//! It turns each card's IPv6 on (ADR 0331) unless the settings say no:
+//! the kernel makes its addresses from the prefixes routers advertise,
+//! stable ones from the machine's secret, which netd makes once and
+//! keeps in `/system/state/netd/ipv6-secret`, and temporary ones to send
+//! from unless the settings say no. The DNS servers routers advertise go
+//! into resolv.conf after DHCP's.
 
 use std::collections::HashMap;
 use std::fs;
 use std::io::{self, Write};
-use std::net::{Ipv4Addr, SocketAddrV4, UdpSocket};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddrV4, UdpSocket};
 use std::os::fd::{AsRawFd, FromRawFd};
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use radix_abi::network::{Ipv6Flags, Ipv6Settings};
+
 use crate::args::Args;
 use crate::dhcp::{self, Action, Client, Lease};
-use crate::ip::{self, Cidr, Interface, Network};
+use crate::ip::{self, Cidr, Cidr6, Interface, Network};
 use crate::util::{self, Fail};
 
 /// The settings file, the leases' directory and the resolver's file.
 pub const SETTINGS: &str = "/system/settings/network";
 const LEASES: &str = "/system/state/netd";
 const RESOLV: &str = "/system/live/netd/resolv.conf";
+/// The machine's IPv6 secret, which only netd reads.
+const SECRET: &str = "/system/state/netd/ipv6-secret";
 
 /// How often netd looks at the cards.
 const SCAN: Duration = Duration::from_secs(5);
@@ -60,7 +72,14 @@ pub struct Setup {
     pub dhcp: Option<bool>,
     pub addresses: Vec<Cidr>,
     pub router: Option<Ipv4Addr>,
-    pub dns: Vec<Ipv4Addr>,
+    pub dns: Vec<IpAddr>,
+    /// Whether it has IPv6, and makes temporary addresses: unless they
+    /// say no.
+    pub ipv6: Option<bool>,
+    pub temporary: Option<bool>,
+    /// Its IPv6 addresses and router of its own, besides those it makes.
+    pub addresses6: Vec<Cidr6>,
+    pub router6: Option<Ipv6Addr>,
 }
 
 impl Setup {
@@ -68,10 +87,40 @@ impl Setup {
         self.dhcp.unwrap_or(self.addresses.is_empty())
     }
 
-    /// Whether netd leaves the card alone.
+    /// Whether netd leaves the card alone: no DHCP, and nothing of its
+    /// own, of either version.
     fn alone(&self) -> bool {
-        !self.dhcp() && self.addresses.is_empty()
+        !self.dhcp()
+            && self.addresses.is_empty()
+            && self.addresses6.is_empty()
+            && self.ipv6 != Some(true)
     }
+
+    /// How its IPv6 is set: on, with temporary addresses, its own
+    /// addresses and router.
+    fn ipv6(&self) -> Ipv6Setup {
+        Ipv6Setup {
+            on: self.ipv6 != Some(false),
+            temporary: self.temporary != Some(false),
+            addresses: self.addresses6.clone(),
+            router: self.router6,
+        }
+    }
+}
+
+/// How netd set a card's IPv6.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Ipv6Setup {
+    on: bool,
+    temporary: bool,
+    addresses: Vec<Cidr6>,
+    router: Option<Ipv6Addr>,
+}
+
+/// Whether `ip` is an IPv6 address a host may have: not unspecified,
+/// loopback, multicast or IPv4-mapped.
+pub fn unicast6(ip: Ipv6Addr) -> bool {
+    !ip.is_unspecified() && !ip.is_loopback() && !ip.is_multicast() && ip.to_ipv4_mapped().is_none()
 }
 
 /// The settings file: how each card it names is set up, by its name or
@@ -108,10 +157,27 @@ pub fn parse_settings(text: &str) -> (Vec<(String, Setup)>, Vec<String>) {
             continue;
         };
         let address = || value.parse::<Ipv4Addr>().ok().filter(|&ip| dhcp::unicast(ip));
+        let address6 = || value.parse::<Ipv6Addr>().ok().filter(|&ip| unicast6(ip));
+        let v6 = value.contains(':');
+        let yes_no = |flag: &mut Option<bool>| match value {
+            "yes" | "no" if flag.is_none() => {
+                *flag = Some(value == "yes");
+                true
+            }
+            _ => false,
+        };
         let ok = match key {
-            "dhcp" => match value {
-                "yes" | "no" if setup.dhcp.is_none() => {
-                    setup.dhcp = Some(value == "yes");
+            "dhcp" => yes_no(&mut setup.dhcp),
+            "ipv6" => yes_no(&mut setup.ipv6),
+            "temporary-addresses" => yes_no(&mut setup.temporary),
+            "address" if v6 => match Cidr6::parse(value) {
+                Some(cidr)
+                    if unicast6(cidr.ip)
+                        && !ip::link_local(cidr.ip)
+                        && cidr.prefix > 0
+                        && setup.addresses6.len() < ADDRESSES_MAX =>
+                {
+                    setup.addresses6.push(cidr);
                     true
                 }
                 _ => false,
@@ -123,6 +189,13 @@ pub fn parse_settings(text: &str) -> (Vec<(String, Setup)>, Vec<String>) {
                 }
                 _ => false,
             },
+            "router" if v6 => match address6() {
+                Some(router) if setup.router6.is_none() => {
+                    setup.router6 = Some(router);
+                    true
+                }
+                _ => false,
+            },
             "router" => match address() {
                 Some(router) if setup.router.is_none() => {
                     setup.router = Some(router);
@@ -130,13 +203,15 @@ pub fn parse_settings(text: &str) -> (Vec<(String, Setup)>, Vec<String>) {
                 }
                 _ => false,
             },
-            "dns" => match address() {
-                Some(dns) if setup.dns.len() < DNS_MAX => {
-                    setup.dns.push(dns);
-                    true
+            "dns" => {
+                match if v6 { address6().map(IpAddr::V6) } else { address().map(IpAddr::V4) } {
+                    Some(dns) if setup.dns.len() < DNS_MAX => {
+                        setup.dns.push(dns);
+                        true
+                    }
+                    _ => false,
                 }
-                _ => false,
-            },
+            }
             _ => {
                 wrong.push(format!("{SETTINGS}:{at}: no setting is called {key}"));
                 continue;
@@ -150,6 +225,16 @@ pub fn parse_settings(text: &str) -> (Vec<(String, Setup)>, Vec<String>) {
         if let Some(router) = setup.router
             && !setup.addresses.is_empty()
             && !setup.addresses.iter().any(|cidr| cidr.contains(router))
+        {
+            wrong
+                .push(format!("{SETTINGS}: [{name}]'s router {router} is on none of its networks"));
+        }
+        // A link-local router is on every link; another must be on one of
+        // the card's networks, if it names any.
+        if let Some(router) = setup.router6
+            && !ip::link_local(router)
+            && !setup.addresses6.is_empty()
+            && !setup.addresses6.iter().any(|cidr| cidr.contains(router))
         {
             wrong
                 .push(format!("{SETTINGS}: [{name}]'s router {router} is on none of its networks"));
@@ -214,7 +299,7 @@ pub fn parse_lease(text: &str) -> Option<(Lease, u64)> {
 
 /// The resolv.conf of `servers` and the domains `search`, at most
 /// [`DNS_MAX`] servers.
-pub fn resolv_text(servers: &[Ipv4Addr], search: &[String]) -> String {
+pub fn resolv_text(servers: &[IpAddr], search: &[String]) -> String {
     let mut text = format!(
         "# Written by netd(8) from what DHCP and {SETTINGS} give.\n\
          # /etc/resolv.conf leads here; make it a file of your own for other servers.\n"
@@ -266,8 +351,12 @@ struct Card {
     /// What netd gave it: addresses, router, DNS servers and domain.
     given: Vec<Cidr>,
     router: Option<Ipv4Addr>,
-    dns: Vec<Ipv4Addr>,
+    dns: Vec<IpAddr>,
     domain: Option<String>,
+    /// How netd set its IPv6, if it did, and the DNS servers its routers
+    /// advertise.
+    ipv6: Option<Ipv6Setup>,
+    dns6: Vec<Ipv6Addr>,
     /// The last failure to send, so that each is said once.
     failure: Option<String>,
 }
@@ -288,6 +377,62 @@ extern "C" fn on_hangup(_: libc::c_int) {
 /// The seconds since 1970.
 fn wall() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |since| since.as_secs())
+}
+
+/// The secret a secret file holds: 32 hexadecimal digits, on a line
+/// after the comments.
+pub fn parse_secret(text: &str) -> Option<[u8; 16]> {
+    let line =
+        text.lines().map(str::trim).find(|line| !line.is_empty() && !line.starts_with('#'))?;
+    if line.len() != 32 {
+        return None;
+    }
+    let mut secret = [0u8; 16];
+    for (at, byte) in secret.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(line.get(at * 2..at * 2 + 2)?, 16).ok()?;
+    }
+    Some(secret)
+}
+
+/// A secret file's text.
+pub fn secret_text(secret: &[u8; 16]) -> String {
+    let hex: String = secret.iter().map(|byte| format!("{byte:02x}")).collect();
+    format!(
+        "# netd(8)'s IPv6 secret (RFC 7217): the stable addresses are made from it.\n\
+         # Keep it private; a new one gives the machine new addresses.\n{hex}\n"
+    )
+}
+
+/// The machine's IPv6 secret: the one netd keeps, or a new one, made at
+/// random and kept, readable by netd alone.
+fn load_secret() -> [u8; 16] {
+    if let Some(secret) = fs::read_to_string(SECRET).ok().as_deref().and_then(parse_secret) {
+        return secret;
+    }
+    let mut secret = [0u8; 16];
+    // SAFETY: the buffer is valid for its length.
+    let got = unsafe { libc::getrandom(secret.as_mut_ptr().cast(), secret.len(), 0) };
+    if got != 16 {
+        secret[..8].copy_from_slice(&seed().to_le_bytes());
+        secret[8..].copy_from_slice(&seed().rotate_left(17).to_le_bytes());
+    }
+    let new = format!("{SECRET}.new");
+    let written = fs::create_dir_all(LEASES)
+        .and_then(|()| {
+            let mut file = fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .mode(0o600)
+                .open(&new)?;
+            file.write_all(secret_text(&secret).as_bytes())?;
+            file.sync_all()
+        })
+        .and_then(|()| fs::rename(&new, SECRET));
+    if let Err(err) = written {
+        eprintln!("netd: cannot keep the IPv6 secret in {SECRET}: {}", util::strip_os_error(&err));
+    }
+    secret
 }
 
 /// A number from the kernel's random source, else from the clock.
@@ -350,6 +495,11 @@ struct Netd {
     /// When it last looked at the cards.
     scanned: Option<Instant>,
     network: &'static dyn Network,
+    /// The machine's IPv6 secret.
+    secret: [u8; 16],
+    /// How the cards' IPv6 was set before the settings were read again,
+    /// by their numbers, so that what did not change stays as it is.
+    ipv6_before: Vec<(u32, Ipv6Setup)>,
 }
 
 impl Netd {
@@ -392,6 +542,13 @@ impl Netd {
         let mut changed = self.cards.len() != known;
         for interface in interfaces.iter().filter(|interface| !interface.loopback) {
             if let Some(card) = self.cards.iter_mut().find(|card| card.index == interface.index) {
+                // The DNS servers its routers advertise now.
+                let advertised: Vec<Ipv6Addr> =
+                    interface.ipv6.dns.iter().map(|(dns, _)| *dns).collect();
+                if card.ipv6.as_ref().is_some_and(|ipv6| ipv6.on) && card.dns6 != advertised {
+                    card.dns6 = advertised;
+                    changed = true;
+                }
                 let back = interface.carrier && !card.carrier;
                 card.carrier = interface.carrier;
                 if back && let How::Dhcp { client, .. } = &mut card.how {
@@ -428,12 +585,15 @@ impl Netd {
             router: None,
             dns: setup.dns.clone(),
             domain: None,
+            ipv6: None,
+            dns6: Vec::new(),
             failure: None,
         };
         if setup.alone() {
             eprintln!("netd: {} is left as it is, as {SETTINGS} says", card.name);
             return Some(card);
         }
+        self.set_ipv6(&mut card, &setup);
         if !setup.addresses.is_empty() {
             self.give(&mut card, interface, &setup.addresses, setup.router);
             card.how = How::Fixed;
@@ -484,7 +644,7 @@ impl Netd {
                 if applied {
                     card.given = vec![lease.address];
                     card.router = lease.router;
-                    card.dns.extend(&lease.dns);
+                    card.dns.extend(lease.dns.iter().map(|&dns| IpAddr::V4(dns)));
                     card.domain.clone_from(&lease.domain);
                 }
                 let client = Client::with_lease(card.mac, seed(), now, lease, given, applied);
@@ -540,6 +700,37 @@ impl Netd {
         }
     }
 
+    /// Sets `card`'s IPv6 as `setup` says, with the machine's secret,
+    /// unless it was set so before the settings were read again: the
+    /// kernel makes its addresses afresh.
+    fn set_ipv6(&self, card: &mut Card, setup: &Setup) {
+        let want = setup.ipv6();
+        if let Some((_, before)) = self.ipv6_before.iter().find(|(index, _)| *index == card.index)
+            && *before == want
+        {
+            card.ipv6 = Some(want);
+            return;
+        }
+        let mut flags = Ipv6Flags::NONE.bits();
+        if want.on {
+            flags |= Ipv6Flags::ENABLED.bits() | Ipv6Flags::AUTOCONF.bits();
+            if want.temporary {
+                flags |= Ipv6Flags::TEMPORARY.bits();
+            }
+        }
+        let settings = Ipv6Settings { flags, reserved: 0, secret: self.secret };
+        let (addresses, router) =
+            if want.on { (&want.addresses[..], want.router) } else { (&[][..], None) };
+        match self.network.configure_ipv6(card.index, Some(&settings), addresses, router) {
+            Ok(()) => card.ipv6 = Some(want),
+            Err(status) => eprintln!(
+                "netd: {}: the kernel refused its IPv6 settings: {}",
+                card.name,
+                crate::sys::status_name(status.0)
+            ),
+        }
+    }
+
     /// The card numbered `index`'s interface now.
     fn interface(index: u32) -> Option<Interface> {
         let interfaces =
@@ -590,7 +781,9 @@ impl Netd {
         }
         if !changed || self.give(&mut card, &interface, &ours, lease.router) {
             let mut dns = setup.dns.clone();
-            dns.extend(lease.dns.iter().filter(|dns| !setup.dns.contains(dns)));
+            dns.extend(
+                lease.dns.iter().map(|&dns| IpAddr::V4(dns)).filter(|dns| !setup.dns.contains(dns)),
+            );
             card.dns = dns;
             card.domain.clone_from(&lease.domain);
             let router = lease.router.map_or(String::new(), |router| format!(", router {router}"));
@@ -629,14 +822,17 @@ impl Netd {
     /// Writes the cards' DNS servers into resolv.conf, or takes it away
     /// when there are none.
     fn write_resolv(&self) {
-        let mut servers: Vec<Ipv4Addr> = Vec::new();
+        let mut servers: Vec<IpAddr> = Vec::new();
         let mut search: Vec<String> = Vec::new();
-        for card in &self.cards {
-            for dns in &card.dns {
-                if !servers.contains(dns) {
-                    servers.push(*dns);
-                }
+        // The settings' and DHCP's first, then those routers advertise.
+        let advertised =
+            self.cards.iter().flat_map(|card| card.dns6.iter().map(|&dns| IpAddr::V6(dns)));
+        for dns in self.cards.iter().flat_map(|card| card.dns.iter().copied()).chain(advertised) {
+            if !servers.contains(&dns) {
+                servers.push(dns);
             }
+        }
+        for card in &self.cards {
             if let Some(domain) = &card.domain
                 && !search.contains(domain)
             {
@@ -727,6 +923,8 @@ impl Netd {
         self.read_settings();
         let now = Instant::now();
         let cards = std::mem::take(&mut self.cards);
+        self.ipv6_before =
+            cards.iter().filter_map(|card| Some((card.index, card.ipv6.clone()?))).collect();
         for mut card in cards {
             // Its addresses from the old settings go; a lease's stay with
             // the lease, which the new client goes on with.
@@ -750,6 +948,8 @@ impl Netd {
             drop(card);
         }
         self.scan(now);
+        // A card the settings now leave alone keeps its IPv6 as it was.
+        self.ipv6_before.clear();
         self.write_resolv();
     }
 }
@@ -766,6 +966,8 @@ fn placeholder() -> Card {
         router: None,
         dns: Vec::new(),
         domain: None,
+        ipv6: None,
+        dns6: Vec::new(),
         failure: None,
     }
 }
@@ -824,8 +1026,14 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
         // SAFETY: the handlers only store to an atomic.
         unsafe { libc::sigaction(signal, &raw const action, std::ptr::null_mut()) };
     }
-    let mut netd =
-        Netd { cards: Vec::new(), settings: Vec::new(), scanned: None, network: &ip::Slots };
+    let mut netd = Netd {
+        cards: Vec::new(),
+        settings: Vec::new(),
+        scanned: None,
+        network: &ip::Slots,
+        secret: load_secret(),
+        ipv6_before: Vec::new(),
+    };
     netd.read_settings();
     netd.run().map_err(|e| util::failed(&"netd", e))?;
     Ok(0)
@@ -861,7 +1069,11 @@ mod tests {
             dhcp: None,
             addresses: vec![cidr("192.168.1.10/24"), cidr("192.168.1.11/24")],
             router: Some(Ipv4Addr::new(192, 168, 1, 1)),
-            dns: vec![Ipv4Addr::new(192, 168, 1, 1), Ipv4Addr::new(9, 9, 9, 9)],
+            dns: vec![
+                IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)),
+                IpAddr::V4(Ipv4Addr::new(9, 9, 9, 9)),
+            ],
+            ..Setup::default()
         };
         assert_eq!(cards[0], ("net0".to_string(), net0.clone()));
         assert!(!net0.dhcp() && !net0.alone());
@@ -869,6 +1081,60 @@ mod tests {
         assert!(cards[1].1.alone());
         assert!(cards[2].1.dhcp() && !cards[2].1.alone());
         assert!(Setup::default().dhcp());
+    }
+
+    #[test]
+    fn the_settings_set_ipv6_up() {
+        let (cards, wrong) = parse_settings(
+            "[net0]\n\
+             address = 2001:db8::10/64\n\
+             router = fe80::1\n\
+             dns = 2001:db8::53\n\
+             temporary-addresses = no\n\
+             [net1]\n\
+             ipv6 = no\n\
+             [net2]\n\
+             dhcp = no\n\
+             ipv6 = yes\n\
+             [net3]\n\
+             address = fe80::5/64\n\
+             address = ff02::1/64\n\
+             router = 2001:db9::1\n\
+             address = 2001:db8::11/64\n\
+             ipv6 = maybe\n",
+        );
+        assert_eq!(
+            wrong,
+            [
+                "/system/settings/network:12: 'fe80::5/64' is not a address here",
+                "/system/settings/network:13: 'ff02::1/64' is not a address here",
+                "/system/settings/network:16: 'maybe' is not a ipv6 here",
+                "/system/settings/network: [net3]'s router 2001:db9::1 is on none of its networks",
+            ]
+        );
+        let net0 = &cards[0].1;
+        assert_eq!(net0.addresses6, [Cidr6::parse("2001:db8::10/64").unwrap()]);
+        assert_eq!(net0.router6, Some("fe80::1".parse().unwrap()));
+        assert_eq!(net0.dns, [IpAddr::V6("2001:db8::53".parse().unwrap())]);
+        let ipv6 = net0.ipv6();
+        assert!(ipv6.on && !ipv6.temporary);
+        // IPv4 by DHCP still, with addresses of IPv6 alone.
+        assert!(net0.dhcp() && !net0.alone());
+        assert!(!cards[1].1.ipv6().on);
+        // Without DHCP, IPv6 alone is not being left alone.
+        assert!(!cards[2].1.dhcp() && !cards[2].1.alone());
+        assert!(Setup::default().ipv6().on && Setup::default().ipv6().temporary);
+    }
+
+    #[test]
+    fn the_secret_reads_back_as_it_was_written() {
+        let secret = *b"0123456789abcdef";
+        let text = secret_text(&secret);
+        assert!(text.ends_with("\n30313233343536373839616263646566\n"));
+        assert_eq!(parse_secret(&text), Some(secret));
+        assert_eq!(parse_secret("# nothing\n"), None);
+        assert_eq!(parse_secret("0123\n"), None);
+        assert_eq!(parse_secret(&"zz".repeat(16)), None);
     }
 
     #[test]
@@ -905,7 +1171,7 @@ mod tests {
         );
         // The second [net0]'s lines went nowhere.
         assert_eq!(cards.len(), 1);
-        assert_eq!(cards[0].1.dns, Vec::<Ipv4Addr>::new());
+        assert_eq!(cards[0].1.dns, Vec::<IpAddr>::new());
         assert_eq!(cards[0].1.addresses, [cidr("192.168.1.10/24")]);
     }
 
@@ -946,7 +1212,8 @@ mod tests {
 
     #[test]
     fn resolv_conf_has_three_servers_and_the_domains() {
-        let servers = [[10, 0, 2, 3], [1, 1, 1, 1], [9, 9, 9, 9], [8, 8, 8, 8]].map(Ipv4Addr::from);
+        let servers = [[10, 0, 2, 3], [1, 1, 1, 1], [9, 9, 9, 9], [8, 8, 8, 8]]
+            .map(|ip| IpAddr::V4(Ipv4Addr::from(ip)));
         assert_eq!(
             resolv_text(&servers, &["example.org".into(), "lan".into()]),
             "# Written by netd(8) from what DHCP and /system/settings/network give.\n\
@@ -958,6 +1225,8 @@ mod tests {
         );
         assert!(resolv_text(&servers[..1], &[]).ends_with("\nnameserver 10.0.2.3\n"));
         assert!(!resolv_text(&servers[..1], &[]).contains("search"));
+        let six = [IpAddr::V6("fec0::3".parse().unwrap())];
+        assert!(resolv_text(&six, &[]).ends_with("\nnameserver fec0::3\n"));
     }
 
     #[test]

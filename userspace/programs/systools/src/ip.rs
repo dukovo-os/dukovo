@@ -405,9 +405,7 @@ impl Network for Slots {
         }
         let router = router.map(|router| router.octets());
         let router: &[u8] = router.as_ref().map_or(&[], |router| router);
-        through_slots(|slot| {
-            network::configure_ipv6(&SYS, slot, index, &settings, &bytes, router)
-        })
+        through_slots(|slot| network::configure_ipv6(&SYS, slot, index, &settings, &bytes, router))
     }
 }
 
@@ -910,7 +908,11 @@ fn route6(interfaces: &[&Interface], out: &mut dyn Write) -> Result<(), Fail> {
         let name = &interface.name;
         if interface.loopback {
             for address in &interface.ipv6.addresses {
-                writeln!(out, "{} dev {name} proto kernel metric 256 pref medium", address.cidr.ip)?;
+                writeln!(
+                    out,
+                    "{} dev {name} proto kernel metric 256 pref medium",
+                    address.cidr.ip
+                )?;
             }
             continue;
         }
@@ -934,7 +936,8 @@ fn route6(interfaces: &[&Interface], out: &mut dyn Write) -> Result<(), Fail> {
             }
         }
         for (network, expires) in networks {
-            let expires = expires.map(|seconds| format!(" expires {seconds}sec")).unwrap_or_default();
+            let expires =
+                expires.map(|seconds| format!(" expires {seconds}sec")).unwrap_or_default();
             writeln!(out, "{network} dev {name} proto kernel metric 256{expires} pref medium")?;
         }
         if link {
@@ -1096,7 +1099,9 @@ fn change_address6(
     let cidr = Cidr6::parse(text)
         .ok_or_else(|| usage(format!("Error: inet6 prefix is expected rather than \"{text}\".")))?;
     if link_local(cidr.ip) {
-        return Err(answers("Operation not supported (the link-local address is the interface's own)"));
+        return Err(answers(
+            "Operation not supported (the link-local address is the interface's own)",
+        ));
     }
     let mut given = interface.ipv6.given();
     if matches(verb, "add", 1) {
@@ -1124,9 +1129,10 @@ fn change_address6(
     }
     // A router the addresses left no longer reach goes with them, unless
     // it is link-local, which every interface with IPv6 reaches.
-    let router = interface.ipv6.given_router.filter(|router| {
-        link_local(*router) || given.iter().any(|cidr| cidr.contains(*router))
-    });
+    let router = interface
+        .ipv6
+        .given_router
+        .filter(|router| link_local(*router) || given.iter().any(|cidr| cidr.contains(*router)));
     network.configure_ipv6(interface.index, None, &given, router).map_err(refused)?;
     Ok(0)
 }
@@ -1142,7 +1148,9 @@ fn change_route(
 ) -> Result<i32, Fail> {
     let (values, plain) = pairs(words, &["via", "dev"])?;
     let [via, dev] = values[..] else { unreachable!() };
-    if family == Some(Family::V6) || via.is_some_and(|via| via.contains(':')) || plain == Some("::/0")
+    if family == Some(Family::V6)
+        || via.is_some_and(|via| via.contains(':'))
+        || plain == Some("::/0")
     {
         return change_route6(verb, interfaces, plain, via, dev, network);
     }
@@ -1241,8 +1249,7 @@ fn change_route6(
         Some(name) => named(interfaces, name)?,
         None if matches(verb, "delete", 1) => cards()
             .find(|card| {
-                card.ipv6.given_router.is_some()
-                    && (via.is_none() || card.ipv6.given_router == via)
+                card.ipv6.given_router.is_some() && (via.is_none() || card.ipv6.given_router == via)
             })
             .ok_or_else(|| answers("No such process"))?,
         None => {
@@ -1405,13 +1412,7 @@ mod tests {
         if family.is_some() {
             words.remove(0);
         }
-        Command {
-            family,
-            brief: false,
-            statistics: false,
-            colors: None,
-            words,
-        }
+        Command { family, brief: false, statistics: false, colors: None, words }
     }
 
     /// What `ip <words>` prints, or how it fails, and what it asked.
@@ -1550,10 +1551,7 @@ mod tests {
         assert_eq!((asked.len(), asked6), (0, vec![(2, Vec::new(), None)]));
         // The default route.
         let (_, _, asked6) = ip6("-6 route add default via fe80::1 dev net0");
-        assert_eq!(
-            asked6,
-            [(2, vec![cidr6("2001:db8::5/64")], Some("fe80::1".parse().unwrap()))]
-        );
+        assert_eq!(asked6, [(2, vec![cidr6("2001:db8::5/64")], Some("fe80::1".parse().unwrap()))]);
         let (out, ..) = ip6("-6 route add default via fe80::1");
         assert_eq!(out.unwrap_err().code, 1);
         let (_, _, asked6) = ip6("route replace default via 2001:db8::1");
