@@ -1,19 +1,26 @@
 // SPDX-FileCopyrightText: 2026 The Dukovo contributors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! The srvsvc pipe of IPC$: DCE/RPC (C706, MS-RPCE) over SMB, enough of
-//! the Server Service (MS-SRVS) for a PC to list the shares, as
-//! `smbclient -L` and Windows' Explorer do: NetrShareEnum,
-//! NetrShareGetInfo and NetrServerGetInfo, in NDR.
+//! The pipes of IPC$: DCE/RPC (C706, MS-RPCE) over SMB. The srvsvc pipe
+//! has enough of the Server Service (MS-SRVS) for a PC to list the
+//! shares, as `smbclient -L` and Windows' Explorer do: NetrShareEnum,
+//! NetrShareGetInfo and NetrServerGetInfo, in NDR. The lsarpc pipe names
+//! SIDs ([`crate::lsa`]).
 //!
 //! A pipe takes whole PDUs written to it and gives back its answers, a
 //! PDU at a time, cut to the size the client binds with.
 
+use crate::lsa::{self, Names, Policies};
+use crate::sd::Sid;
 use crate::wire::{self, Out};
 
 /// srvsvc's interface: 4b324fc8-1670-01d3-1278-5a47bf6ee188, version 3.0.
 const SRVSVC: [u8; 16] = [
     0xc8, 0x4f, 0x32, 0x4b, 0x70, 0x16, 0xd3, 0x01, 0x12, 0x78, 0x5a, 0x47, 0xbf, 0x6e, 0xe1, 0x88,
+];
+/// lsarpc's interface: 12345778-1234-abcd-ef00-0123456789ab, version 0.0.
+const LSARPC: [u8; 16] = [
+    0x78, 0x57, 0x34, 0x12, 0x34, 0x12, 0xcd, 0xab, 0xef, 0x00, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab,
 ];
 /// NDR's transfer syntax: 8a885d04-1ceb-11c9-9fe8-08002b104860, version 2.
 const NDR: [u8; 16] = [
@@ -39,7 +46,58 @@ const WERR_OK: u32 = 0;
 const WERR_UNKNOWN_LEVEL: u32 = 0x7c;
 const WERR_NET_NAME_NOT_FOUND: u32 = 0x906;
 /// The fault of an operation the server does not have.
-const NCA_OP_RNG_ERROR: u32 = 0x1c01_0002;
+pub const NCA_OP_RNG_ERROR: u32 = 0x1c01_0002;
+/// The fault of a request whose stub does not read.
+pub const BAD_STUB_DATA: u32 = 0x0000_06f7;
+/// The longest stub a request may have in all its fragments.
+const STUB_MAX: usize = 1 << 20;
+
+/// The interfaces of the pipes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Interface {
+    /// The Server Service's: the shares.
+    #[default]
+    Srvsvc,
+    /// The Local Security Authority's: names and SIDs.
+    Lsarpc,
+}
+
+impl Interface {
+    /// The interface of the pipe called `name`, if smbd has it.
+    pub fn of_pipe(name: &str) -> Option<Interface> {
+        let name = name.trim_start_matches('\\');
+        if name.eq_ignore_ascii_case("srvsvc") {
+            Some(Interface::Srvsvc)
+        } else if name.eq_ignore_ascii_case("lsarpc") || name.eq_ignore_ascii_case("lsass") {
+            Some(Interface::Lsarpc)
+        } else {
+            None
+        }
+    }
+
+    /// Its pipe's name, as an open of it is called.
+    pub fn name(self) -> &'static str {
+        match self {
+            Interface::Srvsvc => "\\srvsvc",
+            Interface::Lsarpc => "\\lsarpc",
+        }
+    }
+
+    fn uuid(self) -> [u8; 16] {
+        match self {
+            Interface::Srvsvc => SRVSVC,
+            Interface::Lsarpc => LSARPC,
+        }
+    }
+
+    /// The address a BIND_ACK gives.
+    fn address(self) -> &'static [u8] {
+        match self {
+            Interface::Srvsvc => b"\\PIPE\\srvsvc\0",
+            Interface::Lsarpc => b"\\PIPE\\lsass\0",
+        }
+    }
+}
 
 /// A share, as the pipe lists it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -57,17 +115,23 @@ pub const DISK: u32 = 0;
 /// IPC$'s.
 pub const IPC: u32 = 0x8000_0003;
 
-/// What the pipe answers about.
+/// What the pipes answer about.
 pub struct Server {
     /// The server's name.
     pub name: String,
     /// Its shares, IPC$ among them.
     pub shares: Vec<Listed>,
+    /// The names of its users and groups.
+    pub names: Box<dyn Names>,
 }
 
-/// One end of the srvsvc pipe.
+/// One end of a pipe.
 #[derive(Debug, Default)]
 pub struct Pipe {
+    /// Its interface.
+    interface: Interface,
+    /// lsarpc's open policy handles.
+    policies: Policies,
     /// What was written and not yet a whole PDU.
     input: Vec<u8>,
     /// The answers waiting to be read, a PDU each.
@@ -81,6 +145,11 @@ pub struct Pipe {
 }
 
 impl Pipe {
+    /// A pipe of `interface`.
+    pub fn new(interface: Interface) -> Pipe {
+        Pipe { interface, ..Pipe::default() }
+    }
+
     /// Takes what a client wrote, and answers each whole PDU in it.
     pub fn write(&mut self, bytes: &[u8], server: &Server) {
         self.input.extend_from_slice(bytes);
@@ -130,7 +199,12 @@ impl Pipe {
                 if flags & FIRST != 0 {
                     self.stub.clear();
                 }
-                self.stub.extend_from_slice(pdu.get(24..).unwrap_or_default());
+                let part = pdu.get(24..).unwrap_or_default();
+                if self.stub.len() + part.len() > STUB_MAX {
+                    self.stub = Vec::new();
+                    return self.fault(call, context, BAD_STUB_DATA);
+                }
+                self.stub.extend_from_slice(part);
                 if flags & LAST == 0 {
                     return;
                 }
@@ -138,16 +212,21 @@ impl Pipe {
                 if self.context != Some(context) {
                     return self.fault(call, context, NCA_OP_RNG_ERROR);
                 }
-                match operate(operation, &stub, server) {
-                    Some(answer) => self.respond(call, context, &answer),
-                    None => self.fault(call, context, NCA_OP_RNG_ERROR),
+                let answer = match self.interface {
+                    Interface::Srvsvc => operate(operation, &stub, server).ok_or(NCA_OP_RNG_ERROR),
+                    Interface::Lsarpc => lsa::operate(operation, &stub, server, &mut self.policies),
+                };
+                match answer {
+                    Ok(answer) => self.respond(call, context, &answer),
+                    Err(fault) => self.fault(call, context, fault),
                 }
             }
             _ => {}
         }
     }
 
-    /// Answers a BIND: srvsvc in NDR is accepted, and nothing else.
+    /// Answers a BIND: the pipe's interface in NDR is accepted, and
+    /// nothing else.
     fn bind(&mut self, pdu: &[u8], call: u32) {
         let max_receive = wire::u16_at(pdu, 18).unwrap_or(4280) as usize;
         self.max_fragment = max_receive.clamp(1024, 65_535);
@@ -162,7 +241,7 @@ impl Pipe {
             let mut accepted = false;
             for k in 0..syntaxes as usize {
                 let syntax = pdu.get(at + 24 + 20 * k..at + 44 + 20 * k).unwrap_or_default();
-                if abstract_syntax.get(..16) == Some(&SRVSVC)
+                if abstract_syntax.get(..16) == Some(&self.interface.uuid())
                     && syntax.get(..16) == Some(&NDR)
                     && syntax.get(16..20) == Some(&[2, 0, 0, 0])
                 {
@@ -178,7 +257,7 @@ impl Pipe {
             }
             at += 24 + 20 * syntaxes as usize;
         }
-        let address = b"\\PIPE\\srvsvc\0";
+        let address = self.interface.address();
         let mut body = Out::new();
         body.u16(self.max_fragment as u16)
             .u16(self.max_fragment as u16)
@@ -230,17 +309,52 @@ fn pdu_of(kind: u8, flags: u8, call: u32, body: &[u8]) -> Vec<u8> {
 }
 
 /// NDR's reading of a request's stub.
-struct Ndr<'a> {
+pub struct Ndr<'a> {
     bytes: &'a [u8],
     at: usize,
 }
 
-impl Ndr<'_> {
-    fn u32(&mut self) -> Option<u32> {
+impl<'a> Ndr<'a> {
+    /// A reader of `bytes`, from their start.
+    pub fn new(bytes: &'a [u8]) -> Ndr<'a> {
+        Ndr { bytes, at: 0 }
+    }
+
+    pub fn u32(&mut self) -> Option<u32> {
         self.at = self.at.next_multiple_of(4);
         let value = wire::u32_at(self.bytes, self.at).ok()?;
         self.at += 4;
         Some(value)
+    }
+
+    /// `n` bytes, as they are.
+    pub fn bytes(&mut self, n: usize) -> Option<&'a [u8]> {
+        let bytes = wire::slice_at(self.bytes, self.at, n).ok()?;
+        self.at += n;
+        Some(bytes)
+    }
+
+    /// A context handle: 20 bytes.
+    pub fn handle(&mut self) -> Option<[u8; 20]> {
+        self.at = self.at.next_multiple_of(4);
+        self.bytes(20)?.try_into().ok()
+    }
+
+    /// An RPC_SID, a conformant structure: its count, then the SID.
+    pub fn sid(&mut self) -> Option<Sid> {
+        let count = self.u32()? as usize;
+        let bytes = self.bytes(8 + 4 * count.min(16))?;
+        let (sid, _) = Sid::parse(bytes)?;
+        (sid.subs.len() == count).then_some(sid)
+    }
+
+    /// A conformant varying array of UTF-16, as text.
+    pub fn units(&mut self) -> Option<String> {
+        let _max = self.u32()?;
+        let _offset = self.u32()?;
+        let actual = self.u32()? as usize;
+        let bytes = self.bytes(actual.checked_mul(2)?)?;
+        wire::utf16(bytes).ok()
     }
 
     /// A conformant varying string of UTF-16, after its pointer if it is
@@ -249,12 +363,7 @@ impl Ndr<'_> {
         if unique && self.u32()? == 0 {
             return Some(None);
         }
-        let _max = self.u32()?;
-        let _offset = self.u32()?;
-        let actual = self.u32()? as usize;
-        let bytes = wire::slice_at(self.bytes, self.at, actual.checked_mul(2)?).ok()?;
-        self.at += bytes.len();
-        let text = wire::utf16(bytes).ok()?;
+        let text = self.units()?;
         Some(Some(text.trim_end_matches('\0').to_string()))
     }
 }
@@ -262,21 +371,63 @@ impl Ndr<'_> {
 /// NDR's writing of a response's stub, with the deferred strings of
 /// pointers written after what holds them.
 #[derive(Default)]
-struct Writer {
-    out: Out,
+pub struct Writer {
+    pub out: Out,
     next_referent: u32,
 }
 
 impl Writer {
-    fn u32(&mut self, value: u32) {
+    pub fn u16(&mut self, value: u16) {
+        self.out.align(2);
+        self.out.u16(value);
+    }
+
+    pub fn u32(&mut self, value: u32) {
         self.out.align(4);
         self.out.u32(value);
     }
 
-    fn pointer(&mut self) {
+    /// A pointer's referent, not null.
+    pub fn pointer(&mut self) {
         self.next_referent += 4;
         let referent = 0x0002_0000 + self.next_referent;
         self.u32(referent);
+    }
+
+    /// An RPC_UNICODE_STRING's own part: its lengths in bytes and its
+    /// buffer's pointer, null for an empty one. [`Writer::units`] writes
+    /// the buffer, where the pointer's referent goes.
+    pub fn unicode(&mut self, text: &str) {
+        let bytes = (text.encode_utf16().count() * 2) as u16;
+        self.out.align(4);
+        self.u16(bytes);
+        self.u16(bytes);
+        if text.is_empty() {
+            self.u32(0);
+        } else {
+            self.pointer();
+        }
+    }
+
+    /// The buffer of an RPC_UNICODE_STRING that is not empty: a
+    /// conformant varying array of UTF-16 without a NUL.
+    pub fn units(&mut self, text: &str) {
+        if text.is_empty() {
+            return;
+        }
+        let units: Vec<u16> = text.encode_utf16().collect();
+        self.u32(units.len() as u32);
+        self.u32(0);
+        self.u32(units.len() as u32);
+        for unit in units {
+            self.out.u16(unit);
+        }
+    }
+
+    /// An RPC_SID: its count, then the SID.
+    pub fn sid(&mut self, sid: &Sid) {
+        self.u32(sid.subs.len() as u32);
+        self.out.bytes(&sid.bytes());
     }
 
     /// A conformant varying string, with its NUL.
@@ -295,7 +446,7 @@ impl Writer {
 /// The answer to operation `operation` with `stub`, or none for an
 /// operation the pipe does not have.
 fn operate(operation: u16, stub: &[u8], server: &Server) -> Option<Vec<u8>> {
-    let mut ndr = Ndr { bytes: stub, at: 0 };
+    let mut ndr = Ndr::new(stub);
     let mut w = Writer::default();
     match operation {
         NETR_SHARE_ENUM => {
@@ -421,6 +572,7 @@ mod tests {
                 Listed { name: "Music".into(), kind: DISK, comment: "tunes".into() },
                 Listed { name: "IPC$".into(), kind: IPC, comment: "Remote procedure calls".into() },
             ],
+            names: Box::new(lsa::tests::Fake),
         }
     }
 

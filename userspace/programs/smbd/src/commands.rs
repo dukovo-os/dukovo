@@ -21,9 +21,10 @@ use crate::crypto::dialect;
 use crate::fs::{self as share, Kind, Listing, Lock, Open, Tree, access};
 use crate::info::{self, Opened, Stat, attribute, class, fs_class};
 use crate::negotiate::SECURITY_MODE;
-use crate::sys;
+use crate::rpc::{Interface, Pipe};
 use crate::wire::{self, HEADER, Out, Status, status, status_of};
 use crate::worker::{Chain, OPENS_MAX, Reply, Worker, maximal_access};
+use crate::{sd, sys};
 
 /// CREATE's dispositions (MS-SMB2 2.2.13).
 mod disposition {
@@ -307,16 +308,14 @@ impl Worker {
         Ok((id, made, meta, maximal))
     }
 
-    /// Opens the srvsvc pipe, the one IPC$ has.
+    /// Opens a pipe of IPC$: srvsvc or lsarpc.
     fn open_pipe(&mut self, name: &str, desired: u32, chain: &mut Chain) -> Result<Reply, Status> {
-        if !name.trim_start_matches('\\').eq_ignore_ascii_case("srvsvc") {
-            return Err(status::OBJECT_NAME_NOT_FOUND);
-        }
+        let interface = Interface::of_pipe(name).ok_or(status::OBJECT_NAME_NOT_FOUND)?;
         let open = Open {
             tree: chain.tree,
             path: PathBuf::new(),
-            name: "\\srvsvc".into(),
-            kind: Kind::Pipe(Box::default()),
+            name: interface.name().into(),
+            kind: Kind::Pipe(Box::new(Pipe::new(interface))),
             file: None,
             access: access::specific(desired) & !access::MAXIMUM_ALLOWED,
             delete_on_close: false,
@@ -755,8 +754,8 @@ impl Worker {
                 if open.access & access::READ_CONTROL == 0 {
                     return Err(status::ACCESS_DENIED);
                 }
-                let meta = meta()?;
-                let descriptor = info::descriptor(meta.uid(), meta.gid(), meta.mode(), additional);
+                let security = sd::Security::of(&open.path, &meta()?)?;
+                let descriptor = sd::descriptor(&security, additional);
                 if descriptor.len() > room {
                     // What it takes, for the PC to ask again.
                     let needed = (descriptor.len() as u32).to_le_bytes();
@@ -773,24 +772,54 @@ impl Worker {
     }
 
     /// SET_INFO (MS-SMB2 3.3.5.21): changes a file's times, attributes,
-    /// size, name or deletion. Security descriptors are set with the
-    /// Security tab's ACLs, which smbd does not yet take.
+    /// size, name or deletion, or its owner, group and access lists from
+    /// a security descriptor (ADR 0229).
     pub(crate) fn set_info(&mut self, message: &[u8], chain: &mut Chain) -> Result<Reply, Status> {
         let kind = wire::u8_at(message, HEADER + 2)?;
         let class = wire::u8_at(message, HEADER + 3)?;
         let length = wire::u32_at(message, HEADER + 4)? as usize;
         let offset = usize::from(wire::u16_at(message, HEADER + 8)?);
+        let additional = wire::u32_at(message, HEADER + 12)?;
         let id = self.file_id(message, HEADER + 16, chain)?;
         let buffer = wire::slice_at(message, offset, length)?;
         let tree = self.tree(chain)?.clone();
         match kind {
             kind::FILE => self.set_file(id, class, buffer, &tree)?,
-            kind::SECURITY => return Err(status::ACCESS_DENIED),
+            kind::SECURITY => self.set_security(id, additional, buffer, &tree)?,
             _ => return Err(status::NOT_SUPPORTED),
         }
         let mut out = Out::new();
         out.u16(2);
         Ok(Reply::ok(out.0))
+    }
+
+    /// Sets the `parts` of the security descriptor in `buffer` on open
+    /// `id`: its DACL given WRITE_DAC, its owner and group given
+    /// WRITE_OWNER. A SACL, and the parts no file here has, are left as
+    /// they are.
+    fn set_security(
+        &mut self,
+        id: u64,
+        parts: u32,
+        buffer: &[u8],
+        tree: &Tree,
+    ) -> Result<(), Status> {
+        let open = self.opens.all.get(&id).ok_or(status::FILE_CLOSED)?;
+        if matches!(open.kind, Kind::Pipe(_)) {
+            return Err(status::INVALID_PARAMETER);
+        }
+        let parts = parts & (sd::part::OWNER | sd::part::GROUP | sd::part::DACL);
+        let mut needed = 0;
+        if parts & sd::part::DACL != 0 {
+            needed |= access::WRITE_DAC;
+        }
+        if parts & (sd::part::OWNER | sd::part::GROUP) != 0 {
+            needed |= access::WRITE_OWNER;
+        }
+        if tree.read_only || open.access & needed != needed {
+            return Err(status::ACCESS_DENIED);
+        }
+        sd::set(&open.path, &sd::parse(buffer)?, parts)
     }
 
     /// Sets file information class `class` of open `id` from `buffer`.

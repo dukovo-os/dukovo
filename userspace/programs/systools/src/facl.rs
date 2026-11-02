@@ -13,217 +13,22 @@
 //! others'. setfacl works out the whole new list, as libacl does, and
 //! sets it at once.
 
-use std::ffi::{CString, OsString, c_char, c_int, c_void};
+use std::ffi::OsString;
 use std::fmt::Write as _;
 use std::io::{self, BufRead, Write};
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::Path;
 
+use acl::{Acl, Entry, NO_ID, Tag, access_list, default_list, write_access, write_default};
+
 use crate::args::{Arg, Args};
 use crate::util::{self, Fail, fail, usage};
 
-/// The attribute of the list that decides.
-const ACCESS: &str = "system.posix_acl_access";
-/// The attribute of a directory's list for what is made in it.
-const DEFAULT: &str = "system.posix_acl_default";
-
-// The C library's extended attribute calls (sys/xattr.h), which the
-// libc crate does not declare for Radix.
-unsafe extern "C" {
-    fn getxattr(path: *const c_char, name: *const c_char, value: *mut c_void, size: usize)
-    -> isize;
-    fn lgetxattr(
-        path: *const c_char,
-        name: *const c_char,
-        value: *mut c_void,
-        size: usize,
-    ) -> isize;
-    fn setxattr(
-        path: *const c_char,
-        name: *const c_char,
-        value: *const c_void,
-        size: usize,
-        flags: c_int,
-    ) -> c_int;
-    fn removexattr(path: *const c_char, name: *const c_char) -> c_int;
-}
-
-/// What an entry names, in the order of a list: Linux's tags.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-enum Tag {
-    UserObj = 0x01,
-    User = 0x02,
-    GroupObj = 0x04,
-    Group = 0x08,
-    Mask = 0x10,
-    Other = 0x20,
-}
-
-impl Tag {
-    fn from_bits(bits: u16) -> Option<Tag> {
-        Some(match bits {
-            0x01 => Tag::UserObj,
-            0x02 => Tag::User,
-            0x04 => Tag::GroupObj,
-            0x08 => Tag::Group,
-            0x10 => Tag::Mask,
-            0x20 => Tag::Other,
-            _ => return None,
-        })
-    }
-
-    /// Whether it has a number: a named user's or group's.
-    fn named(self) -> bool {
-        matches!(self, Tag::User | Tag::Group)
-    }
-
-    /// Whether the mask limits it: the group class.
-    fn masked(self) -> bool {
-        matches!(self, Tag::User | Tag::GroupObj | Tag::Group)
-    }
-
-    fn word(self) -> &'static str {
-        match self {
-            Tag::UserObj | Tag::User => "user",
-            Tag::GroupObj | Tag::Group => "group",
-            Tag::Mask => "mask",
-            Tag::Other => "other",
-        }
-    }
-}
-
-/// An entry: what it names (with its number if named) and its read (4),
-/// write (2) and execute (1) permissions.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct Entry {
-    tag: Tag,
-    id: u32,
-    perm: u8,
-}
-
-/// Linux's number for an entry that names no one.
-const NO_ID: u32 = u32::MAX;
-
-/// An access list, its entries in order.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-struct Acl {
-    entries: Vec<Entry>,
-}
-
-impl Acl {
-    /// The list a mode's permission bits say.
-    fn from_mode(mode: u32) -> Acl {
-        let perm = |shift: u32| ((mode >> shift) & 7) as u8;
-        Acl {
-            entries: vec![
-                Entry { tag: Tag::UserObj, id: NO_ID, perm: perm(6) },
-                Entry { tag: Tag::GroupObj, id: NO_ID, perm: perm(3) },
-                Entry { tag: Tag::Other, id: NO_ID, perm: perm(0) },
-            ],
-        }
-    }
-
-    /// The list in an attribute's value; none for one with no entries or
-    /// one that does not read.
-    fn from_value(value: &[u8]) -> Option<Acl> {
-        if value.len() < 4
-            || !(value.len() - 4).is_multiple_of(8)
-            || value[..4] != 2u32.to_le_bytes()
-        {
-            return None;
-        }
-        let mut acl = Acl::default();
-        for raw in value[4..].as_chunks::<8>().0 {
-            let tag = Tag::from_bits(u16::from_le_bytes([raw[0], raw[1]]))?;
-            let perm = u16::from_le_bytes([raw[2], raw[3]]);
-            let id = u32::from_le_bytes([raw[4], raw[5], raw[6], raw[7]]);
-            let id = if tag.named() { id } else { NO_ID };
-            acl.set(Entry { tag, id, perm: (perm & 7) as u8 });
-        }
-        (!acl.entries.is_empty()).then_some(acl)
-    }
-
-    /// Its attribute value.
-    fn to_value(&self) -> Vec<u8> {
-        let mut value = 2u32.to_le_bytes().to_vec();
-        for e in &self.entries {
-            value.extend_from_slice(&(e.tag as u16).to_le_bytes());
-            value.extend_from_slice(&u16::from(e.perm).to_le_bytes());
-            value.extend_from_slice(&e.id.to_le_bytes());
-        }
-        value
-    }
-
-    fn get(&self, tag: Tag, id: u32) -> Option<&Entry> {
-        self.entries.iter().find(|e| e.tag == tag && e.id == id)
-    }
-
-    /// Sets an entry, in its place.
-    fn set(&mut self, entry: Entry) {
-        match self.entries.binary_search_by_key(&(entry.tag, entry.id), |e| (e.tag, e.id)) {
-            Ok(i) => self.entries[i] = entry,
-            Err(i) => self.entries.insert(i, entry),
-        }
-    }
-
-    fn remove(&mut self, tag: Tag, id: u32) {
-        self.entries.retain(|e| !(e.tag == tag && e.id == id));
-    }
-
-    fn mask(&self) -> Option<u8> {
-        self.get(Tag::Mask, NO_ID).map(|e| e.perm)
-    }
-
-    /// Whether it names a user or group, and so needs a mask.
-    fn has_named(&self) -> bool {
-        self.entries.iter().any(|e| e.tag.named())
-    }
-
-    /// Whether it says no more than a mode does.
-    fn is_base(&self) -> bool {
-        self.entries.iter().all(|e| matches!(e.tag, Tag::UserObj | Tag::GroupObj | Tag::Other))
-    }
-
-    /// Its owner's, group's and others' entries alone, as `setfacl -b`
-    /// leaves them.
-    fn base(&self) -> Acl {
-        Acl {
-            entries: self
-                .entries
-                .iter()
-                .filter(|e| matches!(e.tag, Tag::UserObj | Tag::GroupObj | Tag::Other))
-                .copied()
-                .collect(),
-        }
-    }
-
-    /// The mask that lets every entry it limits have what it names: all
-    /// their permissions together (libacl's `acl_calc_mask`).
-    fn calc_mask(&self) -> u8 {
-        self.entries.iter().filter(|e| e.tag.masked()).fold(0, |m, e| m | e.perm)
-    }
-
-    /// The first entry missing for a whole list, counted from 1 as
-    /// setfacl counts them; none if it is whole.
-    fn missing(&self) -> Option<usize> {
-        let has = |tag| self.entries.iter().any(|e| e.tag == tag);
-        if !has(Tag::UserObj) {
-            return Some(1);
-        }
-        if !has(Tag::GroupObj) {
-            return Some(2);
-        }
-        if !has(Tag::Other) {
-            return Some(3);
-        }
-        None
-    }
-
-    /// The short text `setfacl --test` shows, each entry with `prefix`.
-    fn short_text(&self, prefix: &str) -> Vec<String> {
-        self.entries.iter().map(|&e| format!("{prefix}{}", entry_text(e, true, true))).collect()
-    }
+/// The short text `setfacl --test` shows of `acl`, each entry with
+/// `prefix`.
+fn short_text(acl: &Acl, prefix: &str) -> Vec<String> {
+    acl.entries.iter().map(|&e| format!("{prefix}{}", entry_text(e, true, true))).collect()
 }
 
 /// `rwx` with `-` for each permission it has not.
@@ -387,96 +192,6 @@ fn parse_perm(text: &str) -> Option<Perm> {
         }
     }
     Some(perm)
-}
-
-/// A file's attribute `name` read, following a symbolic link unless
-/// `physical`: none if it has none, or its filesystem keeps none.
-fn read_attribute(path: &Path, name: &str, physical: bool) -> io::Result<Option<Vec<u8>>> {
-    let c_path = c_string(path.as_os_str().as_bytes())?;
-    let c_name = c_string(name.as_bytes())?;
-    let mut buffer = vec![0u8; 256];
-    loop {
-        // SAFETY: the path and name are C strings, and the buffer is as
-        // long as the size given.
-        let n = unsafe {
-            let get = if physical { lgetxattr } else { getxattr };
-            get(c_path.as_ptr(), c_name.as_ptr(), buffer.as_mut_ptr().cast(), buffer.len())
-        };
-        if n >= 0 {
-            buffer.truncate(n as usize);
-            return Ok(Some(buffer));
-        }
-        let error = io::Error::last_os_error();
-        match error.raw_os_error() {
-            Some(libc::ENODATA | libc::EOPNOTSUPP) => return Ok(None),
-            Some(libc::ERANGE) if buffer.len() < 65536 => buffer.resize(buffer.len() * 4, 0),
-            _ => return Err(error),
-        }
-    }
-}
-
-fn c_string(bytes: &[u8]) -> io::Result<CString> {
-    CString::new(bytes).map_err(|_| io::Error::from_raw_os_error(libc::EINVAL))
-}
-
-/// A file's access list, from its attribute or its mode.
-fn access_list(path: &Path, mode: u32, physical: bool) -> io::Result<Acl> {
-    Ok(read_attribute(path, ACCESS, physical)?
-        .and_then(|v| Acl::from_value(&v))
-        .unwrap_or_else(|| Acl::from_mode(mode)))
-}
-
-/// A directory's default list, if it has one.
-fn default_list(path: &Path, physical: bool) -> io::Result<Option<Acl>> {
-    Ok(read_attribute(path, DEFAULT, physical)?.and_then(|v| Acl::from_value(&v)))
-}
-
-/// Sets a file's access list. One the mode says all of is set as a mode
-/// where the filesystem keeps no lists, as libacl does.
-fn write_access(path: &Path, acl: &Acl, mode: u32) -> io::Result<()> {
-    let c_path = c_string(path.as_os_str().as_bytes())?;
-    let c_name = c_string(ACCESS.as_bytes())?;
-    let value = acl.to_value();
-    // SAFETY: C strings, and the value's bytes with their length.
-    let r = unsafe {
-        setxattr(c_path.as_ptr(), c_name.as_ptr(), value.as_ptr().cast(), value.len(), 0)
-    };
-    if r == 0 {
-        return Ok(());
-    }
-    let error = io::Error::last_os_error();
-    if error.raw_os_error() == Some(libc::EOPNOTSUPP) && acl.is_base() {
-        let perm = |tag| u32::from(acl.get(tag, NO_ID).map_or(0, |e| e.perm));
-        let bits = (mode & 0o7000)
-            | (perm(Tag::UserObj) << 6)
-            | (perm(Tag::GroupObj) << 3)
-            | perm(Tag::Other);
-        return std::fs::set_permissions(path, std::fs::Permissions::from_mode(bits));
-    }
-    Err(error)
-}
-
-/// Sets a directory's default list, or takes it away given none.
-fn write_default(path: &Path, acl: Option<&Acl>) -> io::Result<()> {
-    let c_path = c_string(path.as_os_str().as_bytes())?;
-    let c_name = c_string(DEFAULT.as_bytes())?;
-    // SAFETY: C strings, and the value's bytes with their length.
-    let r = unsafe {
-        match acl {
-            Some(acl) => {
-                let value = acl.to_value();
-                setxattr(c_path.as_ptr(), c_name.as_ptr(), value.as_ptr().cast(), value.len(), 0)
-            }
-            None => removexattr(c_path.as_ptr(), c_name.as_ptr()),
-        }
-    };
-    let error = io::Error::last_os_error();
-    if r == 0
-        || (acl.is_none() && matches!(error.raw_os_error(), Some(libc::ENODATA | libc::EOPNOTSUPP)))
-    {
-        return Ok(());
-    }
-    Err(error)
 }
 
 /// Which symbolic links a walk follows.
@@ -957,10 +672,10 @@ fn apply(plan: &Plan, path: &Path, named: bool, owner: Option<(u32, u32)>) -> bo
             Err(why) => return complain(&why),
         };
     if plan.test {
-        let mut parts = access.short_text("");
+        let mut parts = short_text(&access, "");
         parts.push("*".into());
         if let Some(default) = &default {
-            parts.extend(default.short_text("d:"));
+            parts.extend(short_text(default, "d:"));
         }
         println!("{}: {}", path.display(), parts.join(","));
         return true;

@@ -14,6 +14,9 @@ publish.workspace = true
 # What authd(8) is asked (ADR 0218), and NTLM's helpers: HMAC-MD5, MD5
 # and RC4, which SPNEGO's mechListMIC is made with.
 accounts = { path = "../accounts", features = ["ntlm"] }
+# POSIX access lists, which a PC sees and sets as security descriptors
+# (ADR 0229).
+acl = { path = "../acl" }
 # RustCrypto's AES, AES-CMAC and AES-GCM (MIT OR Apache-2.0), the
 # versions smb2 uses: SMB 3's signatures are AES-CMAC or AES-GMAC.
 aes = "0.9.1"

@@ -155,6 +155,11 @@ jobs:
             sudo udevadm trigger --name-match=kvm
           fi
 
+      # smbcacls has no -p: smbd's unit test and boot test listen on
+      # SMB's own port, 445, for it (ADR 0229).
+      - name: Let the tests listen on port 445
+        run: sudo sysctl -w net.ipv4.ip_unprivileged_port_start=445
+
       - name: Install host packages
         run: |
           sudo apt-get update
@@ -257,6 +262,11 @@ jobs:
             sudo udevadm control --reload-rules
             sudo udevadm trigger --name-match=kvm
           fi
+
+      # smbcacls has no -p: smbd's unit test and boot test listen on
+      # SMB's own port, 445, for it (ADR 0229).
+      - name: Let the tests listen on port 445
+        run: sudo sysctl -w net.ipv4.ip_unprivileged_port_start=445
 
       - name: Install host packages
         run: |
