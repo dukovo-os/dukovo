@@ -1486,7 +1486,7 @@ impl Authd {
         }
     }
 
-    /// Starts an NFS worker for nfsd (ADR 0341): as the person numbered
+    /// Starts an NFS worker for nfsd (ADR 0343): as the person numbered
     /// `uid`, or as no one for root, for a number with no person's
     /// account and for a disabled one, in a view of the folders of the
     /// shares NFS serves. NFS's AUTH_SYS takes a client at its word for

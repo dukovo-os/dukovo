@@ -15,7 +15,7 @@ _/system/settings/shares.toml_
 
 shares.toml lists the folders *smbd*(8) shares with Windows PCs, Macs
 and Linux machines on the network (ADR 0228), and *nfsd*(8) with the
-networks each names over NFS (ADR 0341). *share*(1) writes it:
+networks each names over NFS (ADR 0343). *share*(1) writes it:
 *share add*, *share remove* and *share list*. It is root's to change and
 everyone's to read. smbd and nfsd read it again within a second of a
 change.

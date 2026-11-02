@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 //! nfsd(8): shares folders with Linux and other Unix machines over NFS
-//! 4.2 (ADR 0341).
+//! 4.2 (ADR 0343).
 //!
 //! - `nfsd`, as Spark runs it when NFS is on (`share nfs on`), listens on
 //!   port 2049 and serves the shares of shares.toml(5) that name the

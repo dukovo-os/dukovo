@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 //! The shares NFS serves: those of shares.toml(5) that name networks
-//! (ADR 0341), read again whenever the file changes.
+//! (ADR 0343), read again whenever the file changes.
 
 use std::fs;
 use std::net::IpAddr;

@@ -3,7 +3,7 @@
 #
 # NFS file sharing: nfsd(8) serves the folders shares.toml(5) lists, to
 # the networks each names under `nfs`, to Linux and other Unix machines
-# over NFS 4.2 (ADR 0341). It trusts the numbers a client says its
+# over NFS 4.2 (ADR 0343). It trusts the numbers a client says its
 # people have, as every NFS server without Kerberos does, so a share
 # names only networks whose machines you trust; root on them is served
 # as no one. authd starts a worker for each person, which sees only the

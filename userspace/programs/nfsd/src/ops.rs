@@ -156,7 +156,7 @@ fn cinfo(w: &mut Writer, before: u64, after: u64) {
     w.bool(false).u64(before).u64(after);
 }
 
-/// SECINFO's answer: AUTH_SYS alone, until Kerberos (ADR 0341).
+/// SECINFO's answer: AUTH_SYS alone, until Kerberos (ADR 0343).
 fn secinfo() -> Writer {
     let mut w = Writer::new();
     w.u32(1).u32(AUTH_SYS);

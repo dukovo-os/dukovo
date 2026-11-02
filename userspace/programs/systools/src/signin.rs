@@ -395,7 +395,7 @@ pub fn start_share(
     launch(names, user, groups, &program)
 }
 
-/// nfsd(8)'s worker, which serves NFS's calls as a person (ADR 0341).
+/// nfsd(8)'s worker, which serves NFS's calls as a person (ADR 0343).
 pub const NFS_PROGRAM: &str = "/system/commands/nfsd";
 
 /// The number of the user no one is, whom NFS serves root as, and a

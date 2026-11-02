@@ -3,7 +3,7 @@
 
 [package]
 name = "nfsd"
-description = "nfsd(8): shares folders with Linux and other Unix machines over NFS 4.2, each person's calls served as them (ADR 0341)"
+description = "nfsd(8): shares folders with Linux and other Unix machines over NFS 4.2, each person's calls served as them (ADR 0343)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

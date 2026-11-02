@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 The Dukovo contributors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! nfsd(8) and share(1) against Linux's own NFS client (ADR 0341):
+//! nfsd(8) and share(1) against Linux's own NFS client (ADR 0343):
 //! _/system/tests/posix/nfsdtest_ makes alice's account and shares a
 //! folder of her home to QEMU's network, to read and write, and to the
 //! host's address alone, only to read, and once more to no network;
@@ -40,7 +40,7 @@ const BIG_SIZE: usize = 4 * 1024 * 1024;
 
 pub const CASE: Case = Case {
     name: "nfsd",
-    about: "nfsd and share against the host's Linux NFS client through a port QEMU forwards: folders shared to a network and to one address, read-write and read-only; the shares the host may reach listed at the root; root served as no one and refused a write; as alice's number, files read, written, renamed, linked, locked and copied back after a new mount over NFS 4.2; a write to the read-only share refused; share nfs off closing the port (ADR 0341)",
+    about: "nfsd and share against the host's Linux NFS client through a port QEMU forwards: folders shared to a network and to one address, read-write and read-only; the shares the host may reach listed at the root; root served as no one and refused a write; as alice's number, files read, written, renamed, linked, locked and copied back after a new mount over NFS 4.2; a write to the read-only share refused; share nfs off closing the port (ADR 0343)",
     firmware: Firmware::Uefi,
     media: Media::Usb,
     // Every service, as on a machine, netd setting the card up by DHCP.

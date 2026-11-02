@@ -22,7 +22,7 @@
 //! everyone from changing anything there, whatever the files allow.
 //!
 //! `nfs` lists the networks whose machines may mount it over NFS, as
-//! `computer:/name`, from nfsd(8) (ADR 0341): addresses, or networks as
+//! `computer:/name`, from nfsd(8) (ADR 0343): addresses, or networks as
 //! an address and the length of its prefix. NFS's machines say who calls
 //! and are taken at their word, so a share has none unless it is given
 //! them.
@@ -68,14 +68,14 @@ pub struct Share {
     #[serde(default, rename = "read-only")]
     pub read_only: bool,
     /// The networks NFS's clients may mount it from: none keeps it from
-    /// NFS (ADR 0341).
+    /// NFS (ADR 0343).
     #[serde(default)]
     pub nfs: Vec<String>,
 }
 
 /// The number NFS's filehandles carry for the share named `name`, and
 /// the name its folder has in an NFS worker's view, `.nfs-` and it in
-/// hexadecimal (ADR 0341): FNV-1a of the name in lower case, so it is the
+/// hexadecimal (ADR 0343): FNV-1a of the name in lower case, so it is the
 /// same after a restart.
 pub fn nfs_key(name: &str) -> u64 {
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;

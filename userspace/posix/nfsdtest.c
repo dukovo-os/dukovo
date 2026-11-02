@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 The Dukovo contributors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-// What the nfsd boot test runs (ADR 0341): Spark starts it as root with
+// What the nfsd boot test runs (ADR 0343): Spark starts it as root with
 // the services, authd(8) among them, the names capability and the
 // network. It makes alice's account with user(8) and shares a folder of
 // her home with share(1) to QEMU's network, to read and write and again

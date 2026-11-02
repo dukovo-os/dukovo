@@ -3,7 +3,7 @@
 
 //! share(1): folders shared with Windows PCs, Macs and Linux machines,
 //! which smbd(8) serves over SMB 3, signed and encrypted (ADR 0228), and
-//! nfsd(8) over NFS 4.2 to the networks a share names (ADR 0341).
+//! nfsd(8) over NFS 4.2 to the networks a share names (ADR 0343).
 //!
 //! - `share` and `share list` list the shares, and say whether sharing
 //!   is on.

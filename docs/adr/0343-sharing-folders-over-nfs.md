@@ -3,7 +3,7 @@ SPDX-FileCopyrightText: 2026 The Dukovo contributors
 SPDX-License-Identifier: Apache-2.0 OR MIT
 -->
 
-# 0341. Sharing folders over NFS 4.2: nfsd, served as each person, to the networks a share names
+# 0343. Sharing folders over NFS 4.2: nfsd, served as each person, to the networks a share names
 
 - Status: Accepted
 - Date: 2026-11-02

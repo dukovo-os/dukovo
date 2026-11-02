@@ -283,7 +283,7 @@ pub enum Request {
     /// End every share session, as `share off` does: root's to ask. The
     /// answer is `ok` and how many ended.
     EndShares,
-    /// Start an NFS worker (ADR 0341): nfsd(8)'s, which runs as root, to
+    /// Start an NFS worker (ADR 0343): nfsd(8)'s, which runs as root, to
     /// ask. authd starts `nfsd --worker` as the person numbered `uid`,
     /// or as no one for root and a number with no person's account, in
     /// a view of the folders of the shares NFS serves alone, with the

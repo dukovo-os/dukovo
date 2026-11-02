@@ -16,7 +16,7 @@ nfsd - share folders with Linux and other Unix machines over NFS 4.2
 # DESCRIPTION
 
 nfsd serves the folders *shares.toml*(5) lists to Linux, BSD and other
-Unix machines over NFS 4.1 and 4.2 (ADR 0341), to the networks each
+Unix machines over NFS 4.1 and 4.2 (ADR 0343), to the networks each
 share names under *nfs*. Spark runs it as the *nfsd* service while NFS
 is on: *share nfs on* turns it on, and *share nfs off* off
 (*share*(1)). It is off until then, and port 2049 with it. A share that
