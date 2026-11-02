@@ -357,6 +357,7 @@ impl Interface {
             (changed, due, self.wake_at.load(Ordering::Relaxed))
         };
         links::wake_given();
+        firewall::log_dropped();
         if changed {
             self::changed();
         }
@@ -1560,6 +1561,7 @@ fn run(number: usize) {
             (wake_at, changed, stack.take_moved())
         };
         links::wake_given();
+        firewall::log_dropped();
         if interface.gone() {
             return;
         }

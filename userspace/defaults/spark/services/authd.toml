@@ -43,6 +43,8 @@ admin.hardware = true
 # The clock capability, which it hands to an administrator's command
 # inside elevate too, so that date(1)'s --set works there (ADR 0194).
 admin.time = true
+# The firewall capability, likewise, for firewall(8) (ADR 0334).
+admin.firewall = true
 # The network, which it hands on (ADR 0257): each session connects out
 # and listens on the ports from 1024, as anyone may on Linux; root's
 # session and an administrator's command inside elevate also listen

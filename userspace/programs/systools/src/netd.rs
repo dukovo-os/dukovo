@@ -466,7 +466,10 @@ pub fn parse_secret(text: &str) -> Option<[u8; 16]> {
 
 /// A secret file's text.
 pub fn secret_text(secret: &[u8; 16]) -> String {
-    let hex: String = secret.iter().map(|byte| format!("{byte:02x}")).collect();
+    let hex = secret.iter().fold(String::new(), |mut hex, byte| {
+        let _ = std::fmt::Write::write_fmt(&mut hex, format_args!("{byte:02x}"));
+        hex
+    });
     format!(
         "# netd(8)'s IPv6 secret (RFC 7217): the stable addresses are made from it.\n\
          # Keep it private; a new one gives the machine new addresses.\n{hex}\n"

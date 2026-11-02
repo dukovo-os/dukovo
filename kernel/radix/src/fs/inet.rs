@@ -62,6 +62,7 @@ use radix_vfs::mount::Location;
 use radix_vfs::{In, Kind as NodeKind, Node, NodeRef, Out, Stat, mem, next_id};
 
 use super::{Description, FileObject, FileRef, pipe};
+use crate::net::firewall::{self, Listener, Listening, Owner};
 use crate::net::memory::{self, TcpLeases, UdpLeases};
 use crate::net::ports::{self, Held, Protocol, Versions};
 use crate::net::{self, Interface, Orphan};
@@ -312,6 +313,14 @@ struct State {
     /// Whether it was bound through a capability with the receive right
     /// for its port, as listening needs.
     may_listen: bool,
+    /// Whether that capability has the inbound right for its port too,
+    /// so that what other machines start reaches it (ADR 0334).
+    inbound: bool,
+    /// Who bound it, for the firewall's rules for programs.
+    owner: Owner,
+    /// Its place among the firewall's listeners, while it listens or is
+    /// a datagram socket bound to a port of its own.
+    listening: Option<Listening>,
     /// Where it is connected, or for a datagram socket where its
     /// datagrams go.
     peer: Option<Peer>,
@@ -599,6 +608,9 @@ impl InetSocket {
                 held: None,
                 picked: false,
                 may_listen: false,
+                inbound: false,
+                owner: Owner::default(),
+                listening: None,
                 peer: None,
                 scope: 0,
                 v6,
@@ -661,13 +673,14 @@ impl InetSocket {
     }
 
     /// Binds it to `given` through `authority` (radix-file(2)'s
-    /// `bind_address`).
-    pub fn bind(&self, given: Given, authority: Authority) -> Result<(), Status> {
+    /// `bind_address`), for `owner`.
+    pub fn bind(&self, given: Given, authority: Authority, owner: Owner) -> Result<(), Status> {
         let mut state = self.state.lock();
         if state.local.is_some() || state.phase != Phase::Fresh {
             return Err(status(Kernel::InvalidArgument));
         }
         let (endpoint, _) = state.endpoint(given)?;
+        state.owner = owner;
         self.bind_locked(&mut state, endpoint, Some(authority))
     }
 
@@ -712,8 +725,13 @@ impl InetSocket {
             state.datagram_parts(address, port)?;
         }
         state.may_listen = authority.is_some_and(|authority| authority.receives_on(port));
+        state.inbound = state.may_listen
+            && authority.is_some_and(|authority| authority.rights.contains(Rights::INBOUND));
         state.local = Some((address, port));
         state.held = Some(held);
+        if self.kind == Kind::Datagram && state.may_listen {
+            state.listening = firewall::listen(listener(state, Protocol::Udp, versions, port));
+        }
         Ok(())
     }
 
@@ -763,6 +781,12 @@ impl InetSocket {
         // The pool is the parts from here; a bound socket had none.
         state.parts = pool;
         state.phase = Phase::Listening;
+        let versions = match address {
+            None => state.versions(),
+            Some(IpAddress::Ipv4(_)) => Versions::Ipv4,
+            Some(IpAddress::Ipv6(_)) => Versions::Ipv6,
+        };
+        state.listening = firewall::listen(listener(&state, Protocol::Tcp, versions, port));
         Ok(())
     }
 
@@ -1602,6 +1626,19 @@ fn receive_datagram(state: &mut State, out: &mut dyn Out) -> Result<Option<Recei
         }
     }
     Ok(None)
+}
+
+/// What the firewall knows of `state`'s socket, listening for
+/// `protocol` on `port` of `versions`.
+fn listener(state: &State, protocol: Protocol, versions: Versions, port: u16) -> Listener {
+    Listener {
+        protocol,
+        port,
+        versions,
+        device: state.options.device,
+        owner: state.owner,
+        inbound: state.inbound,
+    }
 }
 
 impl Drop for InetSocket {

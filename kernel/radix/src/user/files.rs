@@ -51,6 +51,7 @@ use super::names::Identity;
 use super::objects::{self, Found, Object};
 use super::{Result, UserRef, UserThread, cap_error, error};
 use crate::fs::{self, Description, FileObject, FileRef, inet, locks, pipe, socket, tty};
+use crate::net::firewall::Owner;
 use crate::{Arch, caps};
 
 /// The most bytes one read or write moves, as on Linux.
@@ -1616,7 +1617,11 @@ pub fn file_method(user: &UserRef, found: &Found, label: u32, args: &[u64; 8]) -
             {
                 return Err(Kernel::MissingRights.status(u32::from(Rights::SEND.bits())));
             }
-            socket.bind(address_in(a.address)?, authority)?;
+            let owner = Owner {
+                program: user.process.posix.lock().program,
+                process: user.process.number(),
+            };
+            socket.bind(address_in(a.address)?, authority, owner)?;
             answer(label, 0, [0; 8])
         }
         file::CONNECT_ADDRESS => {

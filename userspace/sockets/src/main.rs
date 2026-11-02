@@ -147,10 +147,14 @@ fn address6(ip: [u8; 16], port: u16) -> [u8; Address::SIZE] {
     bytes
 }
 
+/// An IPv6 socket's end: its family, address and port.
+type Peer6 = (u32, [u8; 16], u16);
+
 /// The family, IPv6 address and port `bytes`, an Address, hold.
-fn parse6(bytes: &[u8; Address::SIZE]) -> (u32, [u8; 16], u16) {
+fn parse6(bytes: &[u8; Address::SIZE]) -> Peer6 {
     let at = Address::OFFSET_IP;
-    let word = |at: usize| u32::from_le_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]]);
+    let word =
+        |at: usize| u32::from_le_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]]);
     let port = u16::from_le_bytes([bytes[Address::OFFSET_PORT], bytes[Address::OFFSET_PORT + 1]]);
     let mut ip = [0; 16];
     ip.copy_from_slice(&bytes[at..at + 16]);
@@ -287,12 +291,18 @@ impl Socket {
         file::connect_address(&SYS, self.0, network, &address6(ip, port))
     }
 
-    fn send_to6(&self, network: u32, ip: [u8; 16], port: u16, data: &[u8]) -> Result<usize, Status> {
+    fn send_to6(
+        &self,
+        network: u32,
+        ip: [u8; 16],
+        port: u16,
+        data: &[u8],
+    ) -> Result<usize, Status> {
         file::send_to(&SYS, self.0, network, &address6(ip, port), data, SocketFlags::NONE)
             .map(|sent| sent.count as usize)
     }
 
-    fn receive_from6(&self, buffer: &mut [u8]) -> Result<(usize, (u32, [u8; 16], u16)), Status> {
+    fn receive_from6(&self, buffer: &mut [u8]) -> Result<(usize, Peer6), Status> {
         let mut from = [0; Address::SIZE];
         let got = file::receive_from(&SYS, self.0, buffer, &mut from, SocketFlags::NONE)?;
         Ok((got.count as usize, parse6(&from)))
@@ -690,10 +700,9 @@ fn ipv6(checks: &mut Checks, out: u32) {
     println!("sockets: ipv6: a socket on [::] took connections from ::1 and from 127.0.0.1");
 
     // Datagrams between ::1's ports.
-    let (Ok(bound), Ok(sender)) = (
-        Socket::new6(SLOT_NETWORK, SocketType::Datagram),
-        Socket::new6(out, SocketType::Datagram),
-    ) else {
+    let (Ok(bound), Ok(sender)) =
+        (Socket::new6(SLOT_NETWORK, SocketType::Datagram), Socket::new6(out, SocketType::Datagram))
+    else {
         checks.check(false, "making IPv6 datagram sockets");
         return;
     };
@@ -702,7 +711,7 @@ fn ipv6(checks: &mut Checks, out: u32) {
     checks.check(sent == Ok(12), "sending a datagram to [::1]:7101");
     let mut buffer = [0u8; 64];
     let got = bound.receive_from6(&mut buffer);
-    let port = sender.name6(false).map(|(.., port)| port).unwrap_or(0);
+    let port = sender.name6(false).map_or(0, |(.., port)| port);
     checks.check(
         got == Ok((12, (v6 as u32, LOOPBACK6, port))) && &buffer[..12] == b"datagram six",
         &format!("the IPv6 datagram came as {got:?}"),

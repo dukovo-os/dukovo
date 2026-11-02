@@ -212,6 +212,7 @@ impl Client {
         client
     }
 
+    #[cfg(test)]
     pub fn phase(&self) -> Phase {
         self.phase
     }
@@ -227,6 +228,7 @@ impl Client {
     }
 
     /// The lease, if the card has one.
+    #[cfg(test)]
     pub fn lease(&self) -> Option<&Lease> {
         self.lease.as_ref().map(|(lease, _)| lease)
     }
@@ -479,7 +481,7 @@ impl Client {
                 SERVER_ID if !data.is_empty() && data.len() <= 130 => answer.server = data.to_vec(),
                 PREFERENCE if data.len() == 1 => answer.preference = data[0],
                 STATUS_CODE if data.len() >= 2 => {
-                    answer.status = u16::from_be_bytes([data[0], data[1]])
+                    answer.status = u16::from_be_bytes([data[0], data[1]]);
                 }
                 IA_NA if data.len() >= 12 && data[..4] == self.iaid => {
                     answer.t1 = u32::from_be_bytes([data[4], data[5], data[6], data[7]]);
@@ -515,9 +517,8 @@ impl Client {
                     }
                 }
                 DNS_SERVERS => {
-                    for chunk in data.chunks_exact(16).take(3) {
-                        let octets: [u8; 16] = chunk.try_into().ok()?;
-                        let server = Ipv6Addr::from(octets);
+                    for octets in data.as_chunks::<16>().0.iter().take(3) {
+                        let server = Ipv6Addr::from(*octets);
                         if unicast(server) || is_link_local(server) {
                             answer.dns.push(server);
                         }

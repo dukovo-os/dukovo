@@ -90,6 +90,7 @@ pub const ARCHIVE_HIDDEN: (&str, &str) = ("system/.hidden", "bin\nlib\nshare\n")
 pub const STD_ARCHIVE: &[(&str, &str)] = &[
     ("system/commands/consoled", "consoled"),
     ("system/commands/nukesh", "nukesh"),
+    ("system/commands/firewall", "systools"),
     ("system/commands/systools", "systools"),
     ("system/tests/posix/git-https-test", "git-https-test"),
     ("system/tests/posix/netservices-test", "netservices-test"),

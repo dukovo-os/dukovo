@@ -49,6 +49,7 @@ mod clock;
 pub mod device;
 mod domain;
 pub(crate) mod files;
+mod firewall;
 pub mod init;
 mod ipc;
 pub mod launch;

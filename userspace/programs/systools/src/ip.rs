@@ -236,6 +236,7 @@ impl Ipv6 {
 
     /// Its default route: the first router that advertised itself, else
     /// the one it was given.
+    #[cfg(test)]
     pub fn router(&self) -> Option<Ipv6Addr> {
         self.routers.first().map(|(router, _)| *router).or(self.given_router)
     }
@@ -1072,7 +1073,7 @@ fn route6(interfaces: &[&Interface], out: &mut dyn Write) -> Result<(), Fail> {
         }
         for (network, expires) in networks {
             let expires =
-                expires.map(|seconds| format!(" expires {seconds}sec")).unwrap_or_default();
+                expires.map_or_else(String::new, |seconds| format!(" expires {seconds}sec"));
             writeln!(out, "{network} dev {name} proto kernel metric 256{expires} pref medium")?;
         }
         if link {

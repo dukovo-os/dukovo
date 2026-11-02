@@ -1,0 +1,17 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+#
+# The firewall's rules (firewall(8), ADR 0334), a rule a line, in order:
+# the first that matches what another machine starts decides. With none,
+# what the services listen on is open while they run (their files'
+# network.listen), pings are answered, and what a program you run
+# listens on is for this machine alone. `firewall allow ...` adds a rule
+# here, and `firewall load` reads this file again.
+#
+# A web server for everyone, a port for the office network alone, a
+# program of your own from anywhere, and no pings on one card:
+#
+#   allow tcp 80
+#   allow tcp 8000-8100 from 192.168.1.0/24
+#   allow program /users/alice/bin/server
+#   deny ping on net1

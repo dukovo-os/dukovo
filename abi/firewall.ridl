@@ -1,0 +1,142 @@
+// SPDX-FileCopyrightText: 2026 The Dukovo contributors
+// SPDX-License-Identifier: Apache-2.0 OR MIT
+
+//! The firewall capability (Phase 12, ADR 0334): the rules of the packet
+//! filter every card, bridge and VLAN passes what it receives through.
+//!
+//! The filter decides about what other machines start: a TCP connection,
+//! a UDP datagram that answers nothing this machine sent, and a ping. The
+//! segments of connections, answers, and what `lo` carries pass. The
+//! first rule that matches a packet decides; when none does, a ping is
+//! let in, and a connection or datagram only if a socket listens for it
+//! that was bound through a network capability with the inbound right
+//! for its port (radix-network(2)): what Spark gives the services whose
+//! files ask to listen, so that a service's ports are open while it runs.
+//! A program a user runs listens for this machine alone, until a rule
+//! allows it from other machines. What is not let in is dropped without
+//! an answer, counted, and logged.
+//!
+//! A rule may name a program by the file it runs from, its mount and file
+//! numbers as stat(2)'s st_dev and st_ino give them: it matches what
+//! comes to a port that program's socket listens on, which the kernel
+//! knows from the file each process last ran with radix-process(2)'s
+//! `exec`.
+//!
+//! The kernel gives Spark the one capability to the firewall when it
+//! starts, with the read and control rights. Spark gives a service a copy
+//! in SLOT_FIREWALL when its file asks for admin.firewall
+//! (service.toml(5)), and elevate(8) passes the one it holds to the
+//! command it runs, for firewall(8). Asking needs the read right, and
+//! changing the rules the control right.
+
+module firewall;
+
+/// The most rules the firewall holds.
+const RULES_MAX: u64 = 128;
+
+/// What a rule does with what it matches.
+enum Action: u32 {
+    /// Lets it in.
+    allow = 1;
+    /// Drops it.
+    deny = 2;
+}
+
+/// What a rule matches.
+enum Match: u32 {
+    /// Connections, datagrams and pings.
+    any = 0;
+    /// TCP connections.
+    tcp = 1;
+    /// UDP datagrams.
+    udp = 2;
+    /// Pings: ICMP and ICMPv6 echo requests.
+    ping = 3;
+}
+
+/// One rule, as `set_rules` takes it and `rules` gives it.
+struct Rule {
+    /// An Action.
+    action: u32;
+    /// A Match.
+    protocol: u32;
+    /// The first of the ports it is for: 0 with `last_port` 65535 for
+    /// every one. A ping has none, and matches only a rule for every port.
+    first_port: u16;
+    /// The last of them.
+    last_port: u16;
+    /// The version of IP of `from`, 4 or 6, or 0 for from anywhere.
+    family: u32;
+    /// The network it is from, in network byte order: an IPv4 address in
+    /// the first 4 bytes, the rest zero.
+    from: [u8; 16];
+    /// The length of that network's prefix.
+    prefix: u8;
+    /// Zero.
+    reserved: [u8; 3];
+    /// The interface it comes by, by its number: 0 for any.
+    interface: u32;
+    /// The program that listens for it: its mount's number, st_dev, with
+    /// `file` zero too for any.
+    mount: u64;
+    /// Its file's number, st_ino.
+    file: u64;
+}
+
+/// What a Listener is bound for.
+flags ListenerFlags: u32 {
+    /// IPv4.
+    ipv4 = 0;
+    /// IPv6.
+    ipv6 = 1;
+    /// Its network capability has the inbound right for its port.
+    inbound = 2;
+}
+
+/// A socket that may take what other machines start, as `listeners`
+/// gives it: one listening for TCP connections, or a UDP socket bound to
+/// a port of its own.
+struct Listener {
+    /// A Match: tcp or udp.
+    protocol: u32;
+    /// The port.
+    port: u16;
+    /// Zero.
+    reserved: u16;
+    /// ListenerFlags.
+    flags: u32;
+    /// The interface it is bound to, by its number: 0 for any.
+    interface: u32;
+    /// The process that bound it, by its number.
+    process: u64;
+    /// The program it ran then: its mount's number, with `file` zero too
+    /// if the kernel knows none.
+    mount: u64;
+    /// Its file's number.
+    file: u64;
+}
+
+/// The firewall's rules, and what they let in.
+interface firewall = 0x0032 version 1 {
+    kind = firewall;
+    /// Gives the firewall the rules in `rules`, Rule structures, at most
+    /// RULES_MAX, in place of those it had; none leaves the listeners
+    /// alone to decide. Fails with invalid_argument for a rule that is
+    /// not one, and out_of_range for more than RULES_MAX. Needs the
+    /// control right.
+    method set_rules = 1 (rules: in bytes) -> ()
+        raises [no_such_slot, empty_slot, wrong_kind, missing_rights, invalid_argument,
+                bad_address, out_of_range, no_memory];
+    /// How many rules there are, and how many packets were dropped since
+    /// the machine started. Needs the read right.
+    method state = 2 () -> (rules: u32, dropped: u64)
+        raises [no_such_slot, empty_slot, wrong_kind, missing_rights];
+    /// Copies the rules, Rule structures in order, into `buffer`, as many
+    /// as fit: how many there are. Needs the read right.
+    method rules = 3 (buffer: out bytes) -> (count: u32)
+        raises [no_such_slot, empty_slot, wrong_kind, missing_rights, bad_address];
+    /// Copies the listeners, Listener structures, into `buffer`, as many
+    /// as fit: how many there are. Needs the read right.
+    method listeners = 4 (buffer: out bytes) -> (count: u32)
+        raises [no_such_slot, empty_slot, wrong_kind, missing_rights, bad_address];
+}

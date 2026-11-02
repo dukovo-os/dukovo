@@ -51,11 +51,14 @@ impl Rights {
     /// Pass the second gate: the owners and modes of the files beneath a
     /// directory (ADR 0214's override).
     pub const BYPASS: Rights = Rights(1 << 12);
+    /// Be reached from other machines: a network capability's sockets
+    /// listening on its ports take what they start (ADR 0334).
+    pub const INBOUND: Rights = Rights(1 << 13);
     /// Every right.
-    pub const ALL: Rights = Rights((1 << 13) - 1);
+    pub const ALL: Rights = Rights((1 << 14) - 1);
 
     /// Every right with its name, in bit order.
-    pub const NAMES: [(Rights, &'static str); 13] = [
+    pub const NAMES: [(Rights, &'static str); 14] = [
         (Rights::READ, "read"),
         (Rights::WRITE, "write"),
         (Rights::EXECUTE, "execute"),
@@ -69,6 +72,7 @@ impl Rights {
         (Rights::COPY, "copy"),
         (Rights::TRANSFER, "transfer"),
         (Rights::BYPASS, "bypass"),
+        (Rights::INBOUND, "inbound"),
     ];
 
     /// The set's bits.
@@ -191,7 +195,7 @@ mod tests {
         assert_eq!(rw & Rights::WRITE, Rights::WRITE);
         assert_eq!(rw - Rights::WRITE, Rights::READ);
         assert_eq!(rw.len(), 2);
-        assert_eq!(Rights::from_bits(1 << 13), None);
+        assert_eq!(Rights::from_bits(1 << 14), None);
         assert_eq!(Rights::from_bits_truncate(0xffff), Rights::ALL);
     }
 

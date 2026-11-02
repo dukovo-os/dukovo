@@ -79,6 +79,8 @@ Spark gets what every program gets (see *radix-startup*(2)) and more:
   real-time clock (*radix-clock*(2), ADR 0194);
 - the root device capability in slot 15, which opens the cards the
   kernel left for driver programs (below);
+- the firewall capability in slot 16, which gives the packet filter its
+  rules (*radix-firewall*(2), ADR 0334);
 - an image placed at a random address, as every position-independent
   program is (see *radix-processes*(7)).
 
