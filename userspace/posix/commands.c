@@ -80,6 +80,13 @@ static const char *const ELSEWHERE[][2] = {
 		{"smbd", "the smbd boot test's service: the host's smbclient reaches it only through QEMU's network"},
 		{"share", "the smbd boot test's: it shares folders, sets sharing passwords and turns smbd on and off"},
 		{"rgrub-setup", "the rgrub-setup boot test's: it puts GRUB on a blank disk, which then boots"},
+		{"nc", "the network-tools boot test's: it connects to and listens for the other machine on a cable"},
+		{"iperf3", "the network-tools boot test's: it measures the cable to the other machine, which runs iperf3 -s"},
+		{"dig", "the network-tools boot test's: it asks that test's name server, on the other machine"},
+		{"host", "the network-tools boot test's: it looks names up on that test's name server"},
+		{"whois", "the network-tools boot test's: it asks that test's WHOIS servers, on the other machine"},
+		{"openssl", "the network-tools boot test's: it makes keys and a certificate, and its s_client reaches s_server across the cable"},
+		{"nic", "the network-tools boot test's: it shows an e1000e card's negotiated link and a virtio card's"},
 };
 
 enum { ELSEWHERE_COUNT = sizeof(ELSEWHERE) / sizeof(ELSEWHERE[0]) };

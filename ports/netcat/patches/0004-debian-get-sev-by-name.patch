@@ -1,0 +1,35 @@
+SPDX-FileCopyrightText: 2008-2022 The Debian maintainers of netcat-openbsd (Decklin Foster, Soren Hansen, Aron Xu, Guilhem Moulin)
+SPDX-License-Identifier: BSD-3-Clause
+
+Debian's netcat-openbsd 1.238-1 patch get-sev-by-name.patch, as Debian ships it.
+
+From: Aron Xu <aron@debian.org>
+Date: Mon, 13 Feb 2012 14:45:08 +0800
+Subject: Add ability to specify destination ports by name
+
+---
+ netcat.c | 7 ++++++-
+ 1 file changed, 6 insertions(+), 1 deletion(-)
+
+diff --git a/netcat.c b/netcat.c
+index 7062cae..bf08acf 100644
+--- a/netcat.c
++++ b/netcat.c
+@@ -1707,11 +1707,16 @@ strtoport(char *portstr, int udp)
+ void
+ build_ports(char *p)
+ {
++	struct servent *sv;
+ 	char *n;
+ 	int hi, lo, cp;
+ 	int x = 0;
+ 
+-	if (isdigit((unsigned char)*p) && (n = strchr(p, '-')) != NULL) {
++	sv = getservbyname(p, uflag ? "udp" : "tcp");
++	if (sv) {
++		if (asprintf(&portlist[0], "%d", ntohs(sv->s_port)) < 0)
++			err(1, "asprintf");
++	} else if (isdigit((unsigned char)*p) && (n = strchr(p, '-')) != NULL) {
+ 		*n = '\0';
+ 		n++;
+ 

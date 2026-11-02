@@ -135,14 +135,19 @@ impl End {
     /// Receives up to `out.len()` bytes into `out`, waiting for some
     /// unless `non_blocking`, with the files that came with them; returns
     /// 0 once the other end has stopped writing and all it wrote has been
-    /// read.
+    /// read. With `peek`, the bytes and files stay for the next receive,
+    /// and copies of the files come (MSG_PEEK, ADR 0341).
     pub fn receive(
         &self,
         out: &mut dyn Out,
         non_blocking: bool,
+        peek: bool,
     ) -> Result<(usize, Option<Files>), Status> {
         if self.shut_read.load(Ordering::Acquire) {
             return Ok((0, None));
+        }
+        if peek {
+            return self.rx.peek_files(out, non_blocking);
         }
         self.rx.read_files(out, non_blocking)
     }
@@ -398,8 +403,13 @@ impl Socket {
     }
 
     /// Receives as [`End::receive`] does, closing the files that came.
-    pub fn receive(&self, out: &mut dyn Out, non_blocking: bool) -> Result<usize, Status> {
-        self.connected()?.receive(out, non_blocking).map(|(read, _)| read)
+    pub fn receive(
+        &self,
+        out: &mut dyn Out,
+        non_blocking: bool,
+        peek: bool,
+    ) -> Result<usize, Status> {
+        self.connected()?.receive(out, non_blocking, peek).map(|(read, _)| read)
     }
 
     /// Sends as [`End::send`] does, without files.
@@ -488,7 +498,7 @@ impl Node for Socket {
     // Reads and writes through the node itself (the kernel's own) never
     // wait.
     fn read(&self, _offset: u64, out: &mut dyn Out) -> radix_vfs::Result<usize> {
-        self.receive(out, true).map_err(|_| radix_vfs::Error::NotSupported)
+        self.receive(out, true, false).map_err(|_| radix_vfs::Error::NotSupported)
     }
 
     fn write(&self, _offset: u64, data: &dyn In) -> radix_vfs::Result<usize> {

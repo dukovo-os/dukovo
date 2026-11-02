@@ -1,0 +1,23 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# nc, OpenBSD's netcat (ADR 0341): reads and writes TCP and UDP
+# connections and Unix sockets, listens, and scans ports, with Debian's
+# patches, which give it the options and behaviour of Linux's nc
+# (netcat-openbsd), and a few functions libbsd gives it there. Eric
+# Jackson's netcat.c and David Sacerdote's manual page are BSD-3-Clause,
+# atomicio.c and socks.c BSD-2-Clause, and Debian's patches BSD-3-Clause.
+# The release archive is OpenBSD's tree as Debian takes it, from Ubuntu's
+# pool, which keeps it unchanged.
+name = "netcat"
+version = "1.238"
+summary = "nc, OpenBSD's netcat, as Linux has it"
+license = "BSD-3-Clause AND BSD-2-Clause"
+homepage = "https://cvsweb.openbsd.org/src/usr.bin/nc/"
+depends = ["mlibc"]
+notices = ["netcat.c", "atomicio.c", "socks.c"]
+image = ["system/commands/nc", "system/resources/man/man1/nc.1"]
+
+[source]
+url = "https://archive.ubuntu.com/ubuntu/pool/main/n/netcat-openbsd/netcat-openbsd_1.238.orig.tar.gz"
+sha256 = "9f72a37d85dec1366309fdb0172be4e67e09ec26e89f13156315149e17c02479"

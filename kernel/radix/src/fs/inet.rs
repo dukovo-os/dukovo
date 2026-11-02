@@ -1290,18 +1290,25 @@ impl InetSocket {
 
     /// Receives into `out`, waiting unless `non_blocking`: a stream
     /// socket's bytes, 0 at the end; a datagram socket's next datagram,
-    /// of which what `out` has no room for is lost. Returns how many bytes
-    /// came, and from where.
-    pub fn receive(&self, out: &mut dyn Out, non_blocking: bool) -> Result<Received, Status> {
+    /// of which what `out` has no room for is lost. With `peek`, what
+    /// came stays, for the next receive to take again (MSG_PEEK, ADR
+    /// 0341). Returns how many bytes came, and from where.
+    pub fn receive(
+        &self,
+        out: &mut dyn Out,
+        non_blocking: bool,
+        peek: bool,
+    ) -> Result<Received, Status> {
         let timeout = self.state.lock().options.receive_timeout_ns;
         self.wait(non_blocking, timeout, Kernel::WouldBlock, "receive", |state| {
             if state.shut_read {
                 return Ok(Some(Received::of(0, state.peer, state.scope)));
             }
             match self.kind {
+                Kind::Stream if peek => peek_stream(state, out),
                 Kind::Stream => receive_stream(state, out),
-                Kind::Datagram => receive_datagram(state, out),
-                Kind::Ping => receive_ping(state, out),
+                Kind::Datagram => receive_datagram(state, out, peek),
+                Kind::Ping => receive_ping(state, out, peek),
             }
         })
     }
@@ -1980,10 +1987,69 @@ fn receive_stream(state: &mut State, out: &mut dyn Out) -> Result<Option<Receive
     }
 }
 
+/// One try at peeking at a stream socket's bytes into `out`, as
+/// [`receive_stream`] receives them but leaving them in its buffer, so
+/// that no window opens. They may lie in two pieces of the buffer's
+/// storage, which are copied in turn.
+fn peek_stream(state: &mut State, out: &mut dyn Out) -> Result<Option<Received>, Status> {
+    loop {
+        let Some(index) = state.connection()? else { return Ok(None) };
+        let (peer, scope) = (state.peer, state.scope);
+        let part = &state.parts[index];
+        let mut stack = part.interface.stack.lock();
+        let Some(connection) = stack.socket_mut::<tcp::Socket<'static>>(part.handle) else {
+            return Err(status(Kernel::Reset));
+        };
+        if out.is_empty() {
+            return Ok(Some(Received::of(0, peer, scope)));
+        }
+        let (mut at, mut copied, mut tried, mut finished) = (0, Ok(true), 0, false);
+        while at < out.len() {
+            let bytes = match connection.peek_at(at, out.len() - at) {
+                Ok(bytes) => bytes,
+                // The other end sent its FIN, and all it sent has been read.
+                Err(tcp::RecvError::Finished) => {
+                    finished = true;
+                    break;
+                }
+                Err(tcp::RecvError::InvalidState) => return Err(status(Kernel::Reset)),
+            };
+            if bytes.is_empty() {
+                break;
+            }
+            tried = bytes.len();
+            copied = out.put_now(at, bytes);
+            if !matches!(copied, Ok(true)) {
+                break;
+            }
+            at += tried;
+        }
+        drop(stack);
+        return match copied {
+            // What one piece copied is the answer, as a short receive is
+            // one, and a page for the first is made without the stack's
+            // lock, as in `receive_stream`.
+            _ if at > 0 => Ok(Some(Received::of(at, peer, scope))),
+            Ok(true) if finished => Ok(Some(Received::of(0, peer, scope))),
+            Ok(true) => Ok(None),
+            Ok(false) => {
+                out.fault_in(0, tried).map_err(super::status)?;
+                continue;
+            }
+            Err(err) => Err(super::status(err)),
+        };
+    }
+}
+
 /// One try at receiving a datagram from any of a datagram socket's parts
 /// into `out`: datagrams from elsewhere than where a connected one is
-/// connected are dropped. A datagram is taken only once it is copied.
-fn receive_datagram(state: &mut State, out: &mut dyn Out) -> Result<Option<Received>, Status> {
+/// connected are dropped. A datagram is taken only once it is copied,
+/// and with `peek` not even then.
+fn receive_datagram(
+    state: &mut State,
+    out: &mut dyn Out,
+    peek: bool,
+) -> Result<Option<Received>, Status> {
     let peer = (state.phase == Phase::Connected).then_some(state.peer).flatten();
     let mut index = 0;
     while let Some(part) = state.parts.get(index) {
@@ -2006,7 +2072,9 @@ fn receive_datagram(state: &mut State, out: &mut dyn Out) -> Result<Option<Recei
         let to = meta.local_address;
         match out.put_now(0, &data[..n]) {
             Ok(true) => {
-                let _ = socket.recv();
+                if !peek {
+                    let _ = socket.recv();
+                }
                 return Ok(Some(Received { count: n, from: Some(from), scope, to }));
             }
             // As in `receive_stream`, and this part is looked at again.
@@ -2025,7 +2093,11 @@ fn receive_datagram(state: &mut State, out: &mut dyn Out) -> Result<Option<Recei
 /// requests its parts take too, with its identifier, as when it pings
 /// its own machine, are dropped, and so are replies from elsewhere than
 /// where a connected one is connected.
-fn receive_ping(state: &mut State, out: &mut dyn Out) -> Result<Option<Received>, Status> {
+fn receive_ping(
+    state: &mut State,
+    out: &mut dyn Out,
+    peek: bool,
+) -> Result<Option<Received>, Status> {
     let peer = (state.phase == Phase::Connected).then_some(state.peer).flatten();
     let reply = if state.v6 { ECHO_REPLY_V6 } else { ECHO_REPLY };
     let mut index = 0;
@@ -2047,7 +2119,9 @@ fn receive_ping(state: &mut State, out: &mut dyn Out) -> Result<Option<Received>
         let n = data.len().min(out.len());
         match out.put_now(0, &data[..n]) {
             Ok(true) => {
-                let _ = socket.recv();
+                if !peek {
+                    let _ = socket.recv();
+                }
                 return Ok(Some(Received::of(n, Some((from, 0)), scope)));
             }
             Ok(false) => {
@@ -2110,7 +2184,7 @@ impl Node for InetSocket {
     // Reads and writes through the node itself (the kernel's own) never
     // wait.
     fn read(&self, _offset: u64, out: &mut dyn Out) -> radix_vfs::Result<usize> {
-        self.receive(out, true).map(|r| r.count).map_err(|_| radix_vfs::Error::NotSupported)
+        self.receive(out, true, false).map(|r| r.count).map_err(|_| radix_vfs::Error::NotSupported)
     }
 
     fn write(&self, _offset: u64, data: &dyn In) -> radix_vfs::Result<usize> {

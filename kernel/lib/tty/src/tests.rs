@@ -63,6 +63,45 @@ fn rings_wrap_and_keep_order() {
 }
 
 #[test]
+fn a_peek_shows_both_pieces_and_takes_nothing() {
+    let mut ring = Ring::new([0u8; 8]);
+    ring.push(b"abcdef");
+    let mut out = [0u8; 5];
+    assert_eq!(ring.pop(&mut out), 5);
+    // "fghij" lies in two pieces: "fgh" at the end, "ij" at the start.
+    assert_eq!(ring.push(b"ghij"), 4);
+    let mut seen = Vec::new();
+    let mut runs = 0;
+    let peeked = ring.peek_with::<()>(16, &mut |run| {
+        seen.extend_from_slice(run);
+        runs += 1;
+        Ok(())
+    });
+    assert_eq!((peeked, runs), (Ok(5), 2));
+    assert_eq!(seen, b"fghij");
+    assert_eq!(ring.len(), 5, "nothing taken");
+    seen.clear();
+    let peeked = ring.peek_with::<()>(4, &mut |run| {
+        seen.extend_from_slice(run);
+        Ok(())
+    });
+    assert_eq!(peeked, Ok(4));
+    assert_eq!(seen, b"fghi");
+    // A sink that fails on the second piece gets the first counted.
+    let mut calls = 0;
+    let failing = ring.peek_with(16, &mut |_| {
+        calls += 1;
+        if calls == 2 { Err(1) } else { Ok(()) }
+    });
+    assert_eq!(failing, Ok(3));
+    assert_eq!(ring.peek_with(16, &mut |_| Err::<(), _>(2)), Err(2));
+    let mut rest = [0u8; 8];
+    assert_eq!(ring.pop(&mut rest), 5);
+    assert_eq!(&rest[..5], b"fghij");
+    assert_eq!(Ring::new([0u8; 0]).peek_with::<()>(4, &mut |_| Ok(())), Ok(0));
+}
+
+#[test]
 fn canonical_input_is_edited_a_line_at_a_time() {
     let mut ldisc = Ldisc::new([0u8; 64]);
     let (echo, _) = typed(&mut ldisc, b"helo\x7flo wrold\x17world\r");

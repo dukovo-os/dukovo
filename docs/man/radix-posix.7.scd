@@ -291,13 +291,14 @@ those its control buffer has no room for and says so with
 *MSG_CTRUNC*; *read* and *recv* close them all. At most 1,024
 descriptors are on their way each way at once (ETOOMANYREFS). Sockets
 of the *AF_UNIX* family are not passed (EOPNOTSUPP), so none can keep
-itself open (ADR 0091); network sockets are.
+itself open (ADR 0091); network sockets are. *MSG_PEEK* leaves the
+bytes it gets for the next receive, and the descriptors riding on them
+come to it as copies, as on Linux (ADR 0341).
 
 *AF_UNIX* datagram and sequenced-packet sockets fail with
-ESOCKTNOSUPPORT, Linux's abstract names and *MSG_PEEK* and *MSG_OOB*
-with EOPNOTSUPP, and control messages other than *SCM_RIGHTS* with
-EINVAL. *AF_INET6* fails with EAFNOSUPPORT until IPv6 (Phase 12c), and
-other families with EAFNOSUPPORT.
+ESOCKTNOSUPPORT, Linux's abstract names and *MSG_OOB* with EOPNOTSUPP,
+and control messages other than *SCM_RIGHTS* with EINVAL. Families
+other than *AF_UNIX*, *AF_INET* and *AF_INET6* fail with EAFNOSUPPORT.
 
 ## NETWORK SOCKETS
 
@@ -330,7 +331,9 @@ holds 64 KiB each way, the receiver's, and a writer waits for the
 reader once that is full. A datagram is sent and received whole: *sendmsg*
 gathers its buffers into one, *recvmsg* spreads one over its buffers,
 and what has no room is lost. *recvfrom* and *recvmsg* give a datagram's
-sender, and no address for a stream.
+sender, and no address for a stream. *MSG_PEEK* leaves a stream's bytes
+or a datagram where they were, for the next receive (ADR 0341); with
+*MSG_WAITALL* it waits for some bytes, not for all.
 
 *getsockopt* and *setsockopt* take *SO_REUSEADDR* (kept, changing
 nothing), *SO_KEEPALIVE*, *SO_BROADCAST*, *SO_BINDTODEVICE*, *SO_RCVBUF*
@@ -689,8 +692,8 @@ passed*; the boot test fails on any failure.
 # LIMITS
 
 - *AF_UNIX* sockets are streams only, and are not passed over each
-  other; *AF_INET* sockets are TCP and UDP over IPv4 only, without
-  *MSG_PEEK* or *MSG_OOB*. Hard links, named pipes (*mkfifo*), device
+  other; network sockets are TCP, UDP and ping sockets, without
+  *MSG_OOB*. Hard links, named pipes (*mkfifo*), device
   nodes (*mknod*) and socket names work on tmpfs and Btrfs, not on FAT
   or exFAT (EPERM); a device node opens only the devices with fixed
   Linux numbers (*radix-files*(7)). Symbolic links work on tmpfs, Btrfs

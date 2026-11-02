@@ -1561,9 +1561,10 @@ pub fn file_method(user: &UserRef, found: &Found, label: u32, args: &[u64; 8]) -
             let mut out = UserOut { address, len };
             let non_blocking =
                 a.flags.contains(SocketFlags::DONT_WAIT) || file.description().non_blocking;
+            let peek = a.flags.contains(SocketFlags::PEEK);
             let count = match socket {
-                AnySocket::Unix(socket) => socket.receive(&mut out, non_blocking)?,
-                AnySocket::Inet(socket) => socket.receive(&mut out, non_blocking)?.count,
+                AnySocket::Unix(socket) => socket.receive(&mut out, non_blocking, peek)?,
+                AnySocket::Inet(socket) => socket.receive(&mut out, non_blocking, peek)?.count,
             } as u64;
             user.process.note_read(count);
             answer(label, file::ReceiveResults::WORDS, file::ReceiveResults { count }.encode())
@@ -1702,7 +1703,8 @@ pub fn file_method(user: &UserRef, found: &Found, label: u32, args: &[u64; 8]) -
             let mut out = UserOut { address, len };
             let non_blocking =
                 a.flags.contains(SocketFlags::DONT_WAIT) || file.description().non_blocking;
-            let received = socket.receive(&mut out, non_blocking)?;
+            let peek = a.flags.contains(SocketFlags::PEEK);
+            let received = socket.receive(&mut out, non_blocking, peek)?;
             let from = received.from.map_or((None, 0), |(ip, port)| (Some(ip), port));
             put_address(inet::address_of(from, socket.is_ipv6(), received.scope), a.address)?;
             let count = received.count as u64;
@@ -1722,7 +1724,8 @@ pub fn file_method(user: &UserRef, found: &Found, label: u32, args: &[u64; 8]) -
             let mut out = UserOut { address, len };
             let non_blocking =
                 a.flags.contains(SocketFlags::DONT_WAIT) || file.description().non_blocking;
-            let received = socket.receive(&mut out, non_blocking)?;
+            let peek = a.flags.contains(SocketFlags::PEEK);
+            let received = socket.receive(&mut out, non_blocking, peek)?;
             let v6 = socket.is_ipv6();
             let from = received.from.map_or((None, 0), |(ip, port)| (Some(ip), port));
             put_address(inet::address_of(from, v6, received.scope), a.address)?;
@@ -1783,7 +1786,8 @@ pub fn file_method(user: &UserRef, found: &Found, label: u32, args: &[u64; 8]) -
             let mut out = UserOut { address, len };
             let non_blocking =
                 a.flags.contains(SocketFlags::DONT_WAIT) || file.description().non_blocking;
-            let (count, files) = end.receive(&mut out, non_blocking)?;
+            let peek = a.flags.contains(SocketFlags::PEEK);
+            let (count, files) = end.receive(&mut out, non_blocking, peek)?;
             let close_on_exec = a.flags.contains(SocketFlags::CLOSE_ON_EXEC);
             let (files, lost) = match files {
                 Some(files) => install_received(user, files, a.slots, close_on_exec)?,
@@ -2202,8 +2206,8 @@ fn read_special(
     let non_blocking = never_wait || file.description().non_blocking;
     match target(file) {
         Target::Pipe(end) => end.pipe().read(out, non_blocking).map(|n| n as u64),
-        Target::Socket(socket) => socket.receive(out, non_blocking).map(|n| n as u64),
-        Target::Inet(socket) => socket.receive(out, non_blocking).map(|r| r.count as u64),
+        Target::Socket(socket) => socket.receive(out, non_blocking, false).map(|n| n as u64),
+        Target::Inet(socket) => socket.receive(out, non_blocking, false).map(|r| r.count as u64),
         Target::Tty(handle) => handle.read(user, out, non_blocking).map(|n| n as u64),
         Target::Kmsg => fs::kmsg::read(file, out, non_blocking).map(|n| n as u64),
         Target::Keyboard => fs::keyboard::read(file, out, non_blocking).map(|n| n as u64),

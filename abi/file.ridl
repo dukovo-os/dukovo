@@ -127,6 +127,12 @@ flags SocketFlags: u32 {
     /// The slots `receive_files` puts files in are closed by exec:
     /// POSIX's MSG_CMSG_CLOEXEC.
     close_on_exec = 2;
+    /// What a receive gets stays, for the next receive to get again:
+    /// POSIX's MSG_PEEK. A stream socket's bytes may be fewer than wait;
+    /// a datagram socket's datagram stays whole. Files riding on the
+    /// bytes (`receive_files`) come as copies, and stay too, as on Linux.
+    /// (Since Phase 12, ADR 0341.)
+    peek = 3;
 }
 
 /// A network socket's option, which `socket_option` reads and sets, as

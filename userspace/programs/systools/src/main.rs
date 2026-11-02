@@ -22,6 +22,9 @@
 //! `discoverd` finds `.local` names and what the local networks offer,
 //! which `discover` lists, and `ping` asks a machine whether it is there
 //! (ADRs 0336 to 0338);
+//! `dig` and `host` ask name servers, and `whois` the registries, what
+//! they hold, and `nic` shows what a network card says of itself, as
+//! ethtool does (ADR 0341);
 //! `timed` keeps the clock right from the network over NTS, and
 //! `timedatectl` shows it and sets the time zone (ADR 0194); `netlog`
 //! sends the log to another computer as it is written (ADR 0196);
@@ -56,6 +59,7 @@ mod device;
 mod df;
 mod dhcp;
 mod dhcp6;
+mod dig;
 mod discover;
 mod discoverd;
 mod diskhealth;
@@ -92,6 +96,7 @@ mod modes;
 mod mount;
 mod netd;
 mod netlog;
+mod nic;
 mod notifyd;
 mod nvme;
 mod pidstat;
@@ -135,6 +140,7 @@ mod watchdog;
 mod wg;
 mod wgd;
 mod which;
+mod whois;
 mod wireguard;
 mod xxd;
 
@@ -163,6 +169,7 @@ const TOOLS: &[(&str, Tool)] = &[
     ("column", column::main),
     ("df", df::main),
     ("device", device::main),
+    ("dig", dig::dig),
     ("discover", discover::main),
     ("discoverd", discoverd::main),
     ("diskhealth", diskhealth::main),
@@ -183,6 +190,7 @@ const TOOLS: &[(&str, Tool)] = &[
     ("halt", power::halt),
     ("hd", hexdump::hd),
     ("hexdump", hexdump::main),
+    ("host", dig::host),
     ("hwinfo", hwinfo::main),
     ("ionice", priority::ionice),
     ("iostat", iostat::main),
@@ -216,6 +224,7 @@ const TOOLS: &[(&str, Tool)] = &[
     ("mount", mount::mount),
     ("netd", netd::main),
     ("netlog", netlog::main),
+    ("nic", nic::main),
     ("notifications", notifyd::notifications),
     ("notify-send", notifyd::notify_send),
     ("notifyd", notifyd::main),
@@ -268,6 +277,7 @@ const TOOLS: &[(&str, Tool)] = &[
     ("wgd", wgd::main),
     ("which", which::main),
     ("who", sessions::who),
+    ("whois", whois::main),
     ("xxd", xxd::main),
 ];
 

@@ -159,6 +159,32 @@ impl Card {
         }
     }
 
+    /// The card's wire, as its driver says now (ADR 0341): whether its
+    /// link is up, and how fast and in which duplex if the card says.
+    /// `None` for a link with no wire, a bridge's, a VLAN's, a tunnel's
+    /// or the loopback link's; a virtio card says only whether its link
+    /// is up.
+    pub fn wire(&self) -> Option<radix_nic::Link> {
+        match self {
+            Card::Virtio { net, .. } => {
+                Some(radix_nic::Link { up: !net.failed() && net.link_up(), ..Default::default() })
+            }
+            Card::Nic { nic, .. } if nic.failed() => Some(radix_nic::Link::default()),
+            Card::Nic { nic, .. } => Some(nic.link()),
+            Card::Program(card) => Some(card.link()),
+            Card::Virtual(_) | Card::Tunnel(_) | Card::Loopback(_) => None,
+        }
+    }
+
+    /// How many received frames the card dropped, damaged, too short or
+    /// with no slot to give back, if its driver counts them.
+    pub fn dropped(&self) -> Option<u64> {
+        match self {
+            Card::Nic { nic, .. } => Some(nic.dropped()),
+            _ => None,
+        }
+    }
+
     /// Whether the card raises an interrupt when it has something for the
     /// stack; one that does not is polled. A program's driver wakes the
     /// stack itself.
@@ -336,6 +362,26 @@ pub struct Interface {
     /// Set once a bridge or VLAN was taken away: it is in no listing, and
     /// its thread ends.
     gone: AtomicBool,
+    /// What its card is, set as the card is attached, for a card the
+    /// kernel drives.
+    pub hardware: Once<Hardware>,
+}
+
+/// What the kernel knows of a card it drives, which `/kernel/class/net`'s
+/// `card` file shows (ADR 0341), as `ethtool -i` and `-g` show Linux's.
+pub struct Hardware {
+    /// Its driver: `radix-virtio`, `radix-intel-net`.
+    pub driver: &'static str,
+    /// Its maker and model: `virtio`, `Intel 82574L`.
+    pub model: TextBuf<40>,
+    /// Its PCI address: `0000:00:03.0`.
+    pub bus: TextBuf<16>,
+    /// How many frames the card holds for the driver at once.
+    pub receive_slots: u16,
+    /// How many frames the driver can have waiting to be sent.
+    pub transmit_slots: u16,
+    /// How it interrupts: `MSI-X vector 0x31`, `polled`.
+    pub interrupt: TextBuf<24>,
 }
 
 impl Interface {
@@ -875,6 +921,7 @@ fn interface(
         thread: Once::new(),
         wake_at: AtomicU64::new(u64::MAX),
         gone: AtomicBool::new(false),
+        hardware: Once::new(),
     })
 }
 
@@ -1099,6 +1146,20 @@ impl Known {
         matches!(self, Known::Ena | Known::Gve)
     }
 
+    /// Its driver's name, the crate's.
+    fn driver(self) -> &'static str {
+        match self {
+            Known::Intel(_) => "radix-intel-net",
+            Known::Vmxnet3 => "radix-vmxnet3",
+            Known::Ena => "radix-ena",
+            Known::Gve => "radix-gve",
+            Known::Realtek(_) => "radix-realtek-net",
+            Known::Atheros(_) => "radix-atheros-net",
+            Known::Broadcom(_) => "radix-broadcom-net",
+            Known::Rge(_) => "radix-rge-net",
+        }
+    }
+
     /// The article its name takes.
     fn article(self) -> &'static str {
         match self {
@@ -1290,8 +1351,9 @@ fn start(function: &Function, index: usize) -> Result<(), Failure> {
     })?;
     // From here a failure drops the card, which stops it.
     let info = net.info();
-    let mut about = About::new(info.mac, info.receive_slots, info.transmit_slots);
+    let mut about = About::new("radix-virtio", info.mac, info.receive_slots, info.transmit_slots);
     let _ = about.what.write_str("a virtio network card");
+    let _ = about.model.write_str("virtio");
     let _ = match interrupt {
         Some(vector) => write!(about.how, "MSI-X vector {vector:#x}"),
         None => about.how.write_str("polled"),
@@ -1444,13 +1506,18 @@ fn start_card(function: &Function, card: Known, index: usize) -> Result<(), Fail
     })?;
     // From here a failure drops the card, which stops it.
     let info = nic.info();
-    let mut about = About::new(info.mac, info.receive_slots, info.transmit_slots);
+    let mut about = About::new(card.driver(), info.mac, info.receive_slots, info.transmit_slots);
     // A Realtek card is named by its chip, which only its registers say.
     let _ = match card {
-        Known::Realtek(_) => write!(about.what, "a Realtek {} network card", info.model),
-        Known::Rge(_) => write!(about.what, "a {} network card", info.model),
-        _ => write!(about.what, "{} {card} network card", card.article()),
+        Known::Realtek(_) => write!(about.model, "Realtek {}", info.model),
+        Known::Rge(_) => about.model.write_str(info.model),
+        _ => write!(about.model, "{card}"),
     };
+    let article = match card {
+        Known::Realtek(_) | Known::Rge(_) => "a",
+        _ => card.article(),
+    };
+    let _ = write!(about.what, "{article} {} network card", about.model);
     let kind = if card.msix() { "MSI-X" } else { "MSI" };
     let _ = match interrupt {
         Some(vector) => write!(about.how, "{kind} vector {vector:#x}"),
@@ -1483,8 +1550,13 @@ fn boxed(nic: impl Nic + 'static) -> Option<Box<dyn Nic, Kmalloc>> {
     Box::try_new_in(nic, kmalloc()).ok().map(|nic| nic as Box<dyn Nic, Kmalloc>)
 }
 
-/// What the log says of a card once it is set up.
+/// What the log says of a card once it is set up, and its interface's
+/// [`Hardware`] keeps.
 struct About {
+    /// Its driver's name.
+    driver: &'static str,
+    /// Its maker and model: "virtio", "Intel 82574L".
+    model: TextBuf<40>,
     /// What it is: "a virtio network card", "an Intel 82574L network
     /// card".
     what: TextBuf<48>,
@@ -1496,14 +1568,25 @@ struct About {
 }
 
 impl About {
-    fn new(mac: [u8; 6], receive_slots: u16, transmit_slots: u16) -> About {
-        About { what: TextBuf::new(), mac, receive_slots, transmit_slots, how: TextBuf::new() }
+    fn new(driver: &'static str, mac: [u8; 6], receive_slots: u16, transmit_slots: u16) -> About {
+        let (model, what, how) = (TextBuf::new(), TextBuf::new(), TextBuf::new());
+        About { driver, model, what, mac, receive_slots, transmit_slots, how }
     }
 }
 
 /// Gives the card `card`, numbered `index`, an interface and its thread.
 fn attach(function: &Function, index: usize, card: Card, about: &About) -> Result<(), Failure> {
     let interface = add_interface(index, card)?;
+    let mut bus = TextBuf::new();
+    let _ = write!(bus, "{}", function.address());
+    let _ = interface.hardware.set(Hardware {
+        driver: about.driver,
+        model: about.model.clone(),
+        bus,
+        receive_slots: about.receive_slots,
+        transmit_slots: about.transmit_slots,
+        interrupt: about.how.clone(),
+    });
     let name = &interface.name;
     let flags = FLAGS.get().copied().unwrap_or((None, None));
     let mac = about.mac;

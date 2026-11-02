@@ -214,6 +214,11 @@ IPv6, the firewall and WireGuard. This page grows with each.
   ([ADR 0340](https://github.com/openlinuxsystems/orthros/blob/main/docs/adr/0340-wgd-runs-wireguard-on-boringtun.md)),
   through the kernel's tunnels
   ([ADR 0339](https://github.com/openlinuxsystems/orthros/blob/main/docs/adr/0339-tunnels-are-ip-links-whose-packets-a-program-carries.md)).
+- **The administrator's tools**: dig and host, whois, OpenBSD's nc,
+  nic for what each card says of its link, as ethtool, openssl and
+  iperf3
+  ([ADR 0341](https://github.com/openlinuxsystems/orthros/blob/main/docs/adr/0341-dig-host-whois-nc-and-nic.md),
+  [ADR 0342](https://github.com/openlinuxsystems/orthros/blob/main/docs/adr/0342-openssl-and-iperf3.md)).
 - **An app reaches the local network only if you let it**: a bundle's
   network.local permission, asked for when it first runs, is a right of
   its own, apart from reaching the internet
@@ -330,6 +335,34 @@ than 51820 needs a line in wgd's service too
 (`service edit wgd`). Until the routing table comes, AllowedIPs of
 `0.0.0.0/0`, which would send everything through the tunnel, do not:
 the kernel routes by each interface's subnet.
+
+## The administrator's tools
+
+The tools take Linux's options and print Linux's words, so what you
+type and what your scripts read stay the same:
+
+```
+$ nic net0
+Settings for net0:
+	Speed: 1000Mb/s
+	Duplex: Full
+	Link detected: yes
+$ dig example.org MX +short
+$ host -t TXT example.org
+$ whois example.org
+$ nc -zv 192.168.1.10 22
+$ iperf3 -c 192.168.1.10
+$ openssl s_client -connect example.org:443 < /dev/null
+```
+
+`nic` alone lists each interface's link, speed and driver, `nic -i`
+shows a card's driver, model and PCI address, `-g` its rings, `-k` its
+offloads and `-S` its counts (nic(8)). dig and host ask the servers in
+`/etc/resolv.conf`, the local resolver unless you name one
+with `@server` (dig(1), host(1)); whois starts at IANA's server and
+follows the registries' referrals (whois(1)). nc is OpenBSD's netcat as
+Debian ships it, iperf3 ESnet's, and openssl OpenSSL's command, whose
+settings are in `/system/settings/ssl` with the root certificates.
 
 ## Setting the cards up
 
@@ -614,6 +647,17 @@ AllowedIPs leave out:
 
 ```
 ./ob test --case network-wireguard
+```
+
+The `network-tools` boot test boots two machines on a cable, the first
+with an e1000e and the second with a virtio card, and checks nic on
+both, nc both ways over TCP and UDP, iperf3 against the second's
+server, dig and host against its name server and through resolved,
+whois through its referrals, and openssl's keys and certificates, with
+the second's s_client reaching the first's s_server over TLS 1.3:
+
+```
+./ob test --case network-tools
 ```
 
 ## Trying the sockets

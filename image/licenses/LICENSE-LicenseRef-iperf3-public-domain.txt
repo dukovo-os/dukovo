@@ -1,0 +1,5 @@
+iperf3's src/portable_endian.h is in the public domain, which its
+LICENSE gives with the following notice:
+
+// "License": Public Domain
+// I, Mathias Panzenböck, place this file hereby into the public domain. Use it at your own risk for whatever you like.

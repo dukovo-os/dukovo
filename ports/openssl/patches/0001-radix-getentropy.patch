@@ -1,0 +1,21 @@
+SPDX-FileCopyrightText: 2026 The Dukovo contributors
+SPDX-License-Identifier: Apache-2.0
+
+Seeds OpenSSL's random numbers on Radix with getentropy(), as on WASI:
+the C library has it, and the kernel's random numbers behind it. The
+weak reference OpenSSL tries first finds nothing in a static program
+that nothing else links getentropy into, and the devices it would read
+next are a fallback. The change is under OpenSSL's Apache-2.0 license,
+so that it can go upstream as it is.
+
+--- a/providers/implementations/rands/seeding/rand_unix.c
++++ b/providers/implementations/rands/seeding/rand_unix.c
+@@ -395,7 +395,7 @@
+     return getrandom(buf, buflen, 0);
+ #  elif (defined(__FreeBSD__) || defined(__NetBSD__)) && defined(KERN_ARND)
+     return sysctl_random(buf, buflen);
+-#  elif defined(__wasi__)
++#  elif defined(__wasi__) || defined(__radix__)
+     if (getentropy(buf, buflen) == 0)
+       return (ssize_t)buflen;
+     return -1;

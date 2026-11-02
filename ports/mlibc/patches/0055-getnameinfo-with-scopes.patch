@@ -1,0 +1,70 @@
+SPDX-FileCopyrightText: 2026 The Dukovo contributors
+SPDX-License-Identifier: Apache-2.0 OR MIT
+
+getnameinfo printed "ipv6 is not fully supported in this function" to
+standard error for every IPv6 address, so nc and ssh said it on each
+IPv6 connection, and it dropped a link-local address's scope, so
+fe80::1 came back without the link it is on. It now says nothing, and
+names a scoped address's scope after a %, as glibc does: a link-local
+or link-local multicast address's interface by name (fe80::1%net0), or
+by number with NI_NUMERICSCOPE, when the interface is gone, or for
+another scope (ADR 0341).
+Meant for upstream.
+
+--- a/options/posix/generic/netdb.cpp
++++ b/options/posix/generic/netdb.cpp
+@@ -11,6 +11,8 @@
+ #include <frg/span.hpp>
+ #include <sys/socket.h>
+ #include <arpa/inet.h>
++#include <net/if.h>
++#include <netinet/in.h>
+ #include <stdlib.h>
+ #include <stdio.h>
+ #include <stddef.h>
+@@ -379,6 +381,9 @@
+ 	frg::array<uint8_t, 16> addr_array;
+ 	int family = addr->sa_family;
+ 	in_port_t port;
++	// An IPv6 address's scope, and whether it is a link's.
++	uint32_t scope = 0;
++	bool link_local = false;
+ 
+ 	switch(family) {
+ 		case AF_INET: {
+@@ -390,12 +395,14 @@
+ 			break;
+ 		}
+ 		case AF_INET6: {
+-			mlibc::infoLogger() << "getnameinfo(): ipv6 is not fully supported in this function" << frg::endlog;
+ 			if (addr_len < sizeof(struct sockaddr_in6))
+ 				return EAI_FAMILY;
+ 			auto sockaddr = reinterpret_cast<const struct sockaddr_in6*>(addr);
+ 			memcpy(addr_array.data(), reinterpret_cast<const char*>(&sockaddr->sin6_addr), 16);
+ 			port = sockaddr->sin6_port;
++			scope = sockaddr->sin6_scope_id;
++			link_local = IN6_IS_ADDR_LINKLOCAL(&sockaddr->sin6_addr)
++					|| IN6_IS_ADDR_MC_LINKLOCAL(&sockaddr->sin6_addr);
+ 			break;
+ 		}
+ 		default:
+@@ -423,6 +430,19 @@
+ 						return EAI_FAIL;
+ 				}
+ 			}
++			// A scoped address names its scope after a %, as glibc
++			// gives it: a link's interface by name (fe80::1%net0), or
++			// by number with NI_NUMERICSCOPE, for an interface that is
++			// gone, or for another scope.
++			if (scope) {
++				char zone[IF_NAMESIZE + 2] = "%";
++				if ((flags & NI_NUMERICSCOPE) || !link_local || !if_indextoname(scope, zone + 1))
++					snprintf(zone + 1, sizeof(zone) - 1, "%u", static_cast<unsigned int>(scope));
++				size_t used = strlen(host);
++				if (used + strlen(zone) + 1 > host_len)
++					return EAI_OVERFLOW;
++				memcpy(host + used, zone, strlen(zone) + 1);
++			}
+ 		}
+ 
+ 		if (res < 0)

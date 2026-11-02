@@ -104,6 +104,19 @@ impl Buffer {
     }
 }
 
+/// Copies of `files`, which a peek gives while they stay riding on their
+/// byte.
+fn copies(files: &Files) -> Result<Files, Status> {
+    let mut copies = alloc::vec::Vec::new_in(heap());
+    copies.try_reserve_exact(files.len()).map_err(|_| Kernel::NoMemory.status(0))?;
+    for passed in files {
+        let (kind, rights, file) = (passed.kind, passed.rights, passed.file.clone());
+        // Room was reserved above.
+        let _ = copies.push_within_capacity(Passed { kind, rights, file });
+    }
+    Ok(copies)
+}
+
 /// The heap a pipe's memory comes from.
 fn heap() -> Kmalloc {
     radix_mm::HEAP.with(radix_mm::Flags::MAY_SLEEP)
@@ -262,6 +275,29 @@ impl Pipe {
         out: &mut dyn Out,
         non_blocking: bool,
     ) -> Result<(usize, Option<Files>), Status> {
+        self.take(out, non_blocking, false)
+    }
+
+    /// Reads as [`Pipe::read_files`] does, but leaves what it read for the
+    /// next read: a socket's MSG_PEEK (ADR 0341). Files that ride on the
+    /// first byte come all the same, as copies, as on Linux, and stay
+    /// riding on it.
+    pub fn peek_files(
+        &self,
+        out: &mut dyn Out,
+        non_blocking: bool,
+    ) -> Result<(usize, Option<Files>), Status> {
+        self.take(out, non_blocking, true)
+    }
+
+    /// [`Pipe::read_files`], or with `peek` [`Pipe::peek_files`].
+    #[inline(always)]
+    fn take(
+        &self,
+        out: &mut dyn Out,
+        non_blocking: bool,
+        peek: bool,
+    ) -> Result<(usize, Option<Files>), Status> {
         let want = out.len();
         if want == 0 {
             return Ok((0, None));
@@ -272,11 +308,22 @@ impl Pipe {
                 if !buffer.ring.is_empty() {
                     let (most, with_files) = buffer.boundary();
                     let mut at = 0;
-                    let read = buffer.ring.read_with(want.min(most), &mut |run| {
+                    let mut sink = |run: &[u8]| {
                         out.put(at, run)?;
                         at += run.len();
                         Ok::<(), radix_vfs::Error>(())
-                    });
+                    };
+                    if peek {
+                        let read = buffer.ring.peek_with(want.min(most), &mut sink);
+                        let files = match buffer.attachments.iter().next() {
+                            Some(attachment) if with_files && matches!(read, Ok(1..)) => {
+                                Some(copies(&attachment.files)?)
+                            }
+                            _ => None,
+                        };
+                        return read.map(|read| (read, files)).map_err(super::status);
+                    }
+                    let read = buffer.ring.read_with(want.min(most), &mut sink);
                     let taken = *read.as_ref().unwrap_or(&0);
                     buffer.taken += taken as u64;
                     let files = if with_files && taken > 0 {

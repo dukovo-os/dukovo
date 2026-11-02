@@ -10,6 +10,7 @@
 // backlog, and connections from another process. And descriptors passed
 // with SCM_RIGHTS: pipes, files and directories, between processes too,
 // MSG_CTRUNC, MSG_CMSG_CLOEXEC, the bytes they ride on, and the limits.
+// And MSG_PEEK, of bytes and of descriptors (ADR 0341).
 
 #include <fcntl.h>
 #include <limits.h>
@@ -691,6 +692,50 @@ static void passing(void) {
 
 // A child opens a file and sends it to its parent, which reads it after
 // the child has gone; and the parent sends the child a pipe to answer on.
+// MSG_PEEK (ADR 0341): what a peek gets stays for the next receive, and
+// descriptors riding on it come as copies, as on Linux, to each peek and
+// to the receive that takes their byte.
+static void peeking(void) {
+	int fds[2];
+	CHECK(socketpair(AF_UNIX, SOCK_STREAM, 0, fds) == 0);
+	char buffer[16];
+	CHECK_ERROR(recv(fds[1], buffer, sizeof(buffer), MSG_PEEK | MSG_DONTWAIT), EAGAIN);
+	CHECK(send(fds[0], "peekaboo", 8, 0) == 8);
+	CHECK(recv(fds[1], buffer, 4, MSG_PEEK) == 4 && !memcmp(buffer, "peek", 4));
+	CHECK(recv(fds[1], buffer, sizeof(buffer), MSG_PEEK) == 8 && !memcmp(buffer, "peekaboo", 8));
+	int waiting = -1;
+	CHECK(ioctl(fds[1], FIONREAD, &waiting) == 0 && waiting == 8);
+	char first[3], second[8];
+	struct iovec iov[2] = {{first, sizeof(first)}, {second, sizeof(second)}};
+	struct msghdr message = {.msg_iov = iov, .msg_iovlen = 2};
+	CHECK(recvmsg(fds[1], &message, MSG_PEEK) == 8);
+	CHECK(!memcmp(first, "pee", 3) && !memcmp(second, "kaboo", 5));
+	CHECK(read(fds[1], buffer, sizeof(buffer)) == 8 && !memcmp(buffer, "peekaboo", 8));
+	int pipe_fds[2];
+	CHECK(pipe(pipe_fds) == 0);
+	CHECK(send_fds(fds[0], 'x', &pipe_fds[1], 1) == 1);
+	CHECK(close(pipe_fds[1]) == 0);
+	int got[8];
+	int count;
+	int flags;
+	CHECK(receive_fds(fds[1], buffer, sizeof(buffer), got, 1, &count, MSG_PEEK, &flags) == 1);
+	CHECK(buffer[0] == 'x' && count == 1);
+	int peeked = got[0];
+	CHECK(receive_fds(fds[1], buffer, sizeof(buffer), got, 1, &count, 0, &flags) == 1);
+	CHECK(buffer[0] == 'x' && count == 1 && got[0] != peeked);
+	CHECK(write(peeked, "1", 1) == 1 && write(got[0], "2", 1) == 1);
+	CHECK(read(pipe_fds[0], buffer, sizeof(buffer)) == 2 && !memcmp(buffer, "12", 2));
+	close(peeked);
+	close(got[0]);
+	CHECK(read(pipe_fds[0], buffer, sizeof(buffer)) == 0);
+	close(pipe_fds[0]);
+	// At the end of the stream a peek gets 0, as a read does.
+	CHECK(shutdown(fds[0], SHUT_WR) == 0);
+	CHECK(recv(fds[1], buffer, sizeof(buffer), MSG_PEEK) == 0);
+	close(fds[0]);
+	close(fds[1]);
+}
+
 static void between(void) {
 	int fds[2];
 	CHECK(socketpair(AF_UNIX, SOCK_STREAM, 0, fds) == 0);
@@ -742,6 +787,7 @@ int main(void) {
 	RUN(named);
 	RUN(backlog);
 	RUN(passing);
+	RUN(peeking);
 	RUN(between);
 	return check_end();
 }

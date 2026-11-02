@@ -122,6 +122,26 @@ impl<B: AsRef<[u8]> + AsMut<[u8]>> Ring<B> {
         Ok(done)
     }
 
+    /// Shows up to `max` bytes from the front to `sink`, a run that lies
+    /// in one piece at a time, as [`Ring::read_with`] does, but leaves
+    /// them in the ring: a socket's MSG_PEEK.
+    pub fn peek_with<E>(
+        &self,
+        max: usize,
+        sink: &mut dyn FnMut(&[u8]) -> Result<(), E>,
+    ) -> Result<usize, E> {
+        let (cap, mut done) = (self.capacity(), 0);
+        while done < max.min(self.len) {
+            let head = (self.head + done) % cap;
+            let run = (max.min(self.len) - done).min(cap - head);
+            if let Err(err) = sink(&self.buf.as_ref()[head..head + run]) {
+                return if done == 0 { Err(err) } else { Ok(done) };
+            }
+            done += run;
+        }
+        Ok(done)
+    }
+
     /// Adds up to `max` bytes at the back, having `source` fill each run
     /// of free room that lies in one piece. As with [`Ring::read_with`], a
     /// run `source` fails on is not added, and ends the write.

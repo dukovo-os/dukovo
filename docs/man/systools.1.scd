@@ -81,6 +81,8 @@ error that starts with the tool's name.
 :  what the local networks have: their services and devices
 |  *discoverd*(8)
 :  the machine's name on the local networks, and what they offer
+|  *dig*(1)
+:  ask a name server about a name, and show its whole answer
 |  *diskhealth*(8)
 :  what each disk says of its health: SMART and the NVMe health log
 |  *dmesg*(1)
@@ -105,6 +107,8 @@ error that starts with the tool's name.
 :  halt, power off or restart the machine
 |  *hexdump*(1), *hd*(1)
 :  a file's bytes, in hexadecimal or other formats
+|  *host*(1)
+:  look a name or an address up in the DNS
 |  *hwinfo*(8)
 :  what the machine is, as its firmware's SMBIOS tables say
 |  *ionice*(1)
@@ -149,6 +153,8 @@ error that starts with the tool's name.
 :  set the network cards up, by DHCP or as their settings say
 |  *netlog*(8)
 :  send the log to another computer as it is written
+|  *nic*(8)
+:  a network card's link, driver, rings, offloads and counts, as ethtool
 |  *notifications*(1)
 :  the notifications notifyd keeps
 |  *notify-send*(1)
@@ -231,6 +237,8 @@ error that starts with the tool's name.
 :  the WireGuard tunnels
 |  *which*(1)
 :  where a command is
+|  *whois*(1)
+:  who holds a domain, an address or an AS number
 |  *xxd*(1)
 :  a hex dump, and back
 
