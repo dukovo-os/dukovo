@@ -3,7 +3,7 @@
 
 [package]
 name = "manifest"
-description = "Dukovo's files that describe programs: service files (service.toml(5)) and bundle manifests (manifest.json(5))"
+description = "Dukovo's files that describe programs: service files (service.toml(5)), bundle manifests (manifest.json(5)) and the shares file (shares.toml(5))"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

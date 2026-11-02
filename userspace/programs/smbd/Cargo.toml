@@ -1,0 +1,42 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+[package]
+name = "smbd"
+description = "smbd(8): shares folders with Windows PCs and other computers over SMB 3, signed and encrypted, each person's session served as them (ADR 0228)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+# What authd(8) is asked (ADR 0218), and NTLM's helpers: HMAC-MD5, MD5
+# and RC4, which SPNEGO's mechListMIC is made with.
+accounts = { path = "../accounts", features = ["ntlm"] }
+# RustCrypto's AES, AES-CMAC and AES-GCM (MIT OR Apache-2.0), the
+# versions smb2 uses: SMB 3's signatures are AES-CMAC or AES-GMAC.
+aes = "0.9.1"
+aes-gcm = "0.11.0"
+cmac = "0.8.0"
+# The libc crate with its Radix module, which ob patches in from the
+# rust-std port (ADR 0070).
+libc = "0.2.191"
+# The shares file, shares.toml(5).
+manifest = { path = "../manifest" }
+# RustCrypto's SHA-512 (MIT OR Apache-2.0), the version smb2 uses: SMB
+# 3.1.1's preauthentication hash, which a session's sign-in carries on
+# from NEGOTIATE's.
+sha2 = "0.11.1"
+# SMB 3's key derivation (SP800-108) and its encryption (AES-CCM and
+# AES-GCM), from the client smb(1) uses (ADR 0227); its client signs in
+# to smbd in the unit tests.
+smb2 = { version = "0.39.0", default-features = false, features = ["tokio"] }
+
+[dev-dependencies]
+# The runtime smb2's client runs on, in the unit test where it signs in
+# to smbd and uses a share.
+tokio = { version = "1.54.1", features = ["rt", "net", "time"] }
+
+[lints]
+workspace = true

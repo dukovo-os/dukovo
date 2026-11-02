@@ -91,6 +91,7 @@ pub const STD_ARCHIVE: &[(&str, &str)] = &[
     ("system/commands/consoled", "consoled"),
     ("system/commands/nukesh", "nukesh"),
     ("system/commands/smb", "smb"),
+    ("system/commands/smbd", "smbd"),
     ("system/commands/systools", "systools"),
     ("system/tests/posix/fuse-test", "fuse-test"),
     ("system/tests/posix/git-https-test", "git-https-test"),
@@ -196,6 +197,7 @@ pub const STD_LINKS: &[(&str, &str)] = &[
     ("system/commands/sensors", "systools"),
     ("system/commands/service", "systools"),
     ("system/commands/setfacl", "systools"),
+    ("system/commands/share", "systools"),
     ("system/commands/shutdown", "systools"),
     ("system/commands/ss", "systools"),
     ("system/commands/subvolume", "systools"),
@@ -304,6 +306,7 @@ pub const HOST_TESTED: &[&str] = &[
     "netproto",
     "nukesh",
     "smb",
+    "smbd",
     "systools",
 ];
 

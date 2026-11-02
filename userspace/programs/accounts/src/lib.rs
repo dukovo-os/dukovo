@@ -24,6 +24,8 @@
 
 #[cfg(feature = "hash")]
 pub mod hash;
+#[cfg(feature = "ntlm")]
+pub mod ntlm;
 pub mod request;
 pub mod signins;
 #[cfg(test)]
@@ -41,6 +43,11 @@ pub const STATE: &str = "/system/state/authd";
 /// `/etc/shadow` begins, where an empty hash is an empty password and
 /// [`DISABLED`] in front marks a disabled account.
 pub const PASSWORDS: &str = "/system/state/authd/passwords";
+/// The sharing passwords (ADR 0228): a line `name:hash:` each, read as
+/// [`PASSWORDS`]'s are, where the hash is the hexadecimal NT hash of the
+/// password Windows PCs sign in to shares with. It is worth the password
+/// to anyone who reads it, so it is root's alone, mode 0600.
+pub const SHARING: &str = "/system/state/authd/sharing";
 /// The numbers of removed accounts, which no account gets again (ADR
 /// 0220): a line `number:name:removed`, the day of the removal, each.
 pub const RETIRED: &str = "/system/state/authd/retired";

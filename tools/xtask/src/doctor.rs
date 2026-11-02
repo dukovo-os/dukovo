@@ -431,6 +431,17 @@ fn requirements() -> Vec<Requirement> {
             fallback: None,
         },
         Requirement {
+            name: "Samba's client",
+            purpose: "smbclient, the smbd test's PC: it lists Dukovo's shares and copies files to and from them over SMB 3, through QEMU's network",
+            found: |_| program_version("smbclient", "--version"),
+            packages: Packages {
+                apt: Some("smbclient"),
+                dnf: Some("samba-client"),
+                pacman: Some("smbclient"),
+            },
+            fallback: None,
+        },
+        Requirement {
             name: "libbde",
             purpose: "bdeinfo, which unlocks the BitLocker volumes of radix-bitlocker's tests as Windows' are unlocked",
             found: |_| program_version("bdeinfo", "-V"),

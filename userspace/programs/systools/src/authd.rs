@@ -36,6 +36,14 @@
 //! authd writes it an `ask` line for each password it wants, and holds
 //! the elevate request, with its descriptors, until consoled's
 //! `prompted` answer, or for at most [`PROMPT_TIME`].
+//!
+//! It keeps the sharing passwords too (ADR 0228): the NT hash of each,
+//! in `/system/state/authd/sharing`, which only root reads. smbd(8)
+//! asks it to check a Windows PC's NTLMv2 sign-in to the shares
+//! (`accounts::ntlm`), and on a right one authd starts smbd's worker as
+//! that person, with the PC's connection, as it starts a session; a
+//! wrong one waits as a wrong password at a console does, counted for
+//! the PC's address.
 
 use std::collections::HashMap;
 use std::fmt::Write as _;
@@ -49,6 +57,7 @@ use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::time::{Duration, Instant};
 
 use accounts::hash::{self, Cost};
+use accounts::ntlm::{self, Refusal};
 use accounts::request::{
     self, Answer, Mode, Prompt, Prompted, Question, REQUEST_MAX, Relay, Request,
 };
@@ -242,6 +251,8 @@ extern "C" fn on_child(_: libc::c_int) {
 struct Session {
     name: String,
     terminal: String,
+    /// Where it signed in from: a PC's address for a share session.
+    from: String,
     /// The account's number and its own group, whose sign-in records
     /// the session's go in.
     number: u32,
@@ -284,6 +295,9 @@ struct Files {
     users: Table<User>,
     groups: Table<Group>,
     passwords: Table<Password>,
+    /// The sharing passwords' NT hashes (ADR 0228), read as the
+    /// passwords are.
+    sharing: Table<Password>,
 }
 
 impl Files {
@@ -293,7 +307,26 @@ impl Files {
             users: accounts::users(&read(accounts::PASSWD)?),
             groups: accounts::groups(&read(accounts::GROUP)?),
             passwords: accounts::passwords(&read(accounts::PASSWORDS)?),
+            sharing: accounts::passwords(&read(accounts::SHARING)?),
         })
+    }
+
+    /// The NT hash of `name`'s sharing password, if they set one.
+    fn sharing_hash(&self, name: &str) -> Option<[u8; ntlm::KEY]> {
+        let line = self.sharing.entries().find(|p| p.name == name)?;
+        ntlm::unhex(&line.hash)?.try_into().ok()
+    }
+
+    /// The account a Windows PC's sign-in names: `typed` as it is, or in
+    /// any case, as Windows takes names, when only one account is so
+    /// named.
+    fn share_account(&self, typed: &str) -> Option<&User> {
+        if let Some(user) = self.user(typed) {
+            return Some(user);
+        }
+        let mut alike = self.users.entries().filter(|u| u.name.eq_ignore_ascii_case(typed));
+        let user = alike.next()?;
+        alike.next().is_none().then_some(user)
     }
 
     fn user(&self, name: &str) -> Option<&User> {
@@ -503,19 +536,28 @@ impl Authd {
     /// before for the account it checks let it.
     fn take(&mut self, i: usize, request: Request, now: Instant) {
         let peer = self.clients[i].peer;
-        let own;
         let checks = match &request {
-            Request::Check { name, .. } | Request::Session { name, .. } => Some(name),
-            Request::Passwd { name, .. } if !peer.is_root() => Some(name),
+            Request::Check { name, .. } | Request::Session { name, .. } => {
+                Some((name.clone(), peer.source()))
+            }
+            Request::Passwd { name, .. } | Request::SharePassword { name, .. }
+                if !peer.is_root() =>
+            {
+                Some((name.clone(), peer.source()))
+            }
             Request::Elevate { password: Some(_), .. }
             | Request::Unlock { password: Some(_), .. } => {
-                own = util::user_name(peer.user);
-                Some(&own)
+                Some((util::user_name(peer.user), peer.source()))
+            }
+            // A PC's tries are counted for its address, whatever smbd's
+            // connection says.
+            Request::ShareSignIn { from, authenticate, .. } => {
+                ntlm::user_of(authenticate).map(|typed| (typed.to_lowercase(), share_source(from)))
             }
             _ => None,
         };
         let turn = checks
-            .and_then(|name| self.wrong.get(&(name.clone(), peer.source())))
+            .and_then(|key| self.wrong.get(&key))
             .map(|wrong| wrong.next)
             .filter(|&next| next > now);
         match turn {
@@ -596,6 +638,27 @@ impl Authd {
                 Request::Prompts => self.prompts(i, peer, now),
                 Request::Choose { terminal, name, question, text } => {
                     self.choose(peer, terminal, name, *question, text, now)
+                }
+                Request::SharePassword { name, current, new } => {
+                    self.share_password(&files, name, current, new.as_deref(), peer, now)
+                }
+                Request::ShareSignIn { from, negotiate, challenge, authenticate } => {
+                    let messages = [negotiate.as_slice(), challenge, authenticate];
+                    self.share_sign_in(i, &files, from, messages, peer, now)
+                }
+                Request::EndShares => {
+                    if peer.is_root() {
+                        let ended = self.end_shares(None);
+                        audit!(
+                            "ended the share sessions, {ended}, for process {} (user {})",
+                            peer.process,
+                            peer.user
+                        );
+                        (Answer::Done(ended.to_string()), now)
+                    } else {
+                        let why = "only an administrator, inside elevate, ends the share sessions";
+                        (Answer::Refused(why.into()), now)
+                    }
                 }
                 Request::Prompted { id, typed } => {
                     let from =
@@ -918,6 +981,7 @@ impl Authd {
                 let session = Session {
                     name: name.into(),
                     terminal: tty,
+                    from: String::new(),
                     number: user.uid,
                     group: user.gid,
                     elevated: false,
@@ -971,7 +1035,7 @@ impl Authd {
                     let seat = Seat {
                         name: session.name.clone(),
                         terminal: session.terminal.clone(),
-                        from: String::new(),
+                        from: session.from.clone(),
                         session: process as u32,
                     };
                     record(&signins::of(session.number), session.group, 0o640, Event::Out(seat));
@@ -1097,6 +1161,7 @@ impl Authd {
         let session = Session {
             name: user.name,
             terminal,
+            from: String::new(),
             number: user.uid,
             group: user.gid,
             elevated: true,
@@ -1221,6 +1286,216 @@ impl Authd {
             Ok(()) => (Answer::Done(String::new()), now),
             Err(refused) => refused,
         }
+    }
+
+    /// Sets `name`'s sharing password to `new`, or clears it (ADR 0228):
+    /// their own to change, after the password they sign in with, or
+    /// root's. Clearing it ends their share sessions.
+    #[allow(clippy::too_many_arguments)]
+    fn share_password(
+        &mut self,
+        files: &Files,
+        name: &str,
+        current: &[u8],
+        new: Option<&[u8]>,
+        peer: Peer,
+        now: Instant,
+    ) -> (Answer, Instant) {
+        let refused = |why: String| (Answer::Refused(why), now);
+        if !peer.is_root() {
+            if files.user(name).is_none_or(|u| u.uid != peer.user) {
+                return refused(
+                    "you change only your own sharing password: an administrator changes \
+                     another's inside elevate"
+                        .into(),
+                );
+            }
+            if let Err(refusal) = self.check_password(files, name, current, peer, now) {
+                return refusal;
+            }
+        }
+        let Some(user) = files.user(name) else {
+            return refused(format!("there is no account {}", shown(name)));
+        };
+        if !user.is_person() {
+            return refused(format!(
+                "{} is not a person's account: only people sign in to the shares",
+                shown(name)
+            ));
+        }
+        let mut sharing = files.sharing.clone();
+        let had = sharing.entries().any(|p| p.name == name);
+        match new {
+            Some([]) => {
+                return refused(format!(
+                    "a sharing password cannot be empty: with none, anyone on the network could \
+                     sign in as {name}. To stop sharing as {name}, clear it with share password \
+                     --clear"
+                ));
+            }
+            Some(password) => {
+                let Some(hash) = ntlm::nt_hash(password) else {
+                    return refused(
+                        "a sharing password is text, UTF-8, as Windows sends it".into(),
+                    );
+                };
+                let hash = ntlm::hex(&hash);
+                if had {
+                    for line in sharing.entries_mut().filter(|p| p.name == name) {
+                        line.hash.clone_from(&hash);
+                    }
+                } else {
+                    sharing.push(Password { name: name.into(), hash });
+                }
+            }
+            None if !had => return (Answer::Done(format!("{name} had no sharing password")), now),
+            None => sharing.retain_entries(|p| p.name != name),
+        }
+        if let Err(why) = replace(accounts::SHARING, &sharing.text(), 0o600) {
+            return refused(why);
+        }
+        let ended = if new.is_none() { self.end_shares(Some(user.uid)) } else { 0 };
+        audit!(
+            "{} {name}'s sharing password, for process {} (user {}){}",
+            if new.is_some() { "set" } else { "cleared" },
+            peer.process,
+            peer.user,
+            if ended > 0 { format!("; {ended} share sessions ended") } else { String::new() }
+        );
+        (Answer::Done(String::new()), now)
+    }
+
+    /// Checks a Windows PC's sign-in to the shares, `messages`, NTLM's
+    /// NEGOTIATE, CHALLENGE and AUTHENTICATE, from `from` (ADR 0228):
+    /// smbd's to ask, which runs as root. On a right sharing password,
+    /// starts smbd's worker as the person, with the descriptors client
+    /// `i` sent, and answers with their name and the session key.
+    fn share_sign_in(
+        &mut self,
+        i: usize,
+        files: &Files,
+        from: &str,
+        messages: [&[u8]; 3],
+        peer: Peer,
+        now: Instant,
+    ) -> (Answer, Instant) {
+        let refused = |why: &str| (Answer::Refused(why.into()), now);
+        let descriptors = std::mem::take(&mut self.clients[i].descriptors);
+        if !peer.is_root() {
+            return refused("only smbd, which runs as root, signs PCs in to the shares");
+        }
+        let Ok([session, connection, log]) = <[OwnedFd; 3]>::try_from(descriptors) else {
+            return refused(
+                "a share sign-in comes with three descriptors: the session's pipe, the \
+                 connection and the log",
+            );
+        };
+        let Some(names) = self.names else {
+            return refused(
+                "authd holds no names capability to start share sessions with: its service file \
+                 needs `names = true`",
+            );
+        };
+        let [negotiate, challenge, authenticate] = messages;
+        let typed = match ntlm::Authenticate::parse(authenticate) {
+            Ok(message) => message.user,
+            Err(why) => return refused(&why.to_string()),
+        };
+        let key = (typed.to_lowercase(), share_source(from));
+        let user = files.share_account(&typed).filter(|u| u.is_person()).cloned();
+        let hash = user.as_ref().and_then(|u| files.sharing_hash(&u.name));
+        let checked = match hash {
+            Some(hash) => ntlm::check(&hash, negotiate, challenge, authenticate),
+            // The same work, so that the time taken does not say whether
+            // the account is there, or has a sharing password.
+            None => {
+                let _ = ntlm::check(&[0; ntlm::KEY], negotiate, challenge, authenticate);
+                Err(Refusal::Wrong)
+            }
+        };
+        let session_key = match checked {
+            Ok(session_key) => session_key,
+            Err(Refusal::Wrong) => {
+                let wrong = self.wrong.entry(key).or_insert(Wrong { count: 0, next: now });
+                wrong.count += 1;
+                wrong.next = now + wait_after(wrong.count);
+                audit!(
+                    "a wrong sharing password for {}, from {}; {} in a row",
+                    shown(&typed),
+                    shown(from),
+                    wrong.count
+                );
+                let failed = Event::Failed {
+                    name: shown(&typed),
+                    terminal: SHARE_TERMINAL.into(),
+                    from: shown(from),
+                };
+                match &user {
+                    Some(user) => record(&signins::of(user.uid), user.gid, 0o640, failed),
+                    None => record(signins::UNKNOWN, 0, 0o600, failed),
+                }
+                return (Answer::Refused(request::WRONG_PASSWORD.into()), wrong.next);
+            }
+            Err(why) => {
+                audit!("refused a share sign-in as {} from {}: {why}", shown(&typed), shown(from));
+                return refused(&why.to_string());
+            }
+        };
+        self.wrong.remove(&key);
+        // A right password is an account's.
+        let Some(user) = user else {
+            return refused(request::WRONG_PASSWORD);
+        };
+        if files.disabled(&user.name) {
+            audit!(
+                "refused {} a share sign-in from {}: the account is disabled",
+                user.name,
+                shown(from)
+            );
+            return refused(&format!("the account {} is disabled", user.name));
+        }
+        let groups =
+            accounts::other_groups(&user, &files.groups, radix_abi::names::GROUPS_MAX as usize);
+        match signin::start_share(names, &user, &groups, &session, &connection, &log) {
+            Ok(process) => {
+                audit!(
+                    "{} signed in to the shares from {}: share session process {process}",
+                    user.name,
+                    shown(from)
+                );
+                let seat = Seat {
+                    name: user.name.clone(),
+                    terminal: SHARE_TERMINAL.into(),
+                    from: shown(from),
+                    session: process as u32,
+                };
+                record(&signins::of(user.uid), user.gid, 0o640, Event::In(seat));
+                let session = Session {
+                    name: user.name.clone(),
+                    terminal: SHARE_TERMINAL.into(),
+                    from: shown(from),
+                    number: user.uid,
+                    group: user.gid,
+                    elevated: false,
+                };
+                self.sessions.insert(process as i32, session);
+                (Answer::Done(format!("{} {}", user.name, ntlm::hex(&session_key))), now)
+            }
+            Err(why) => (Answer::Refused(why), now),
+        }
+    }
+
+    /// Ends the share sessions, or those of the account numbered `only`:
+    /// how many were asked to end.
+    fn end_shares(&mut self, only: Option<u32>) -> u32 {
+        let mut ended = 0;
+        for (&process, session) in &self.sessions {
+            if session.terminal == SHARE_TERMINAL && only.is_none_or(|n| n == session.number) {
+                signal_command(process, libc::SIGTERM);
+                ended += 1;
+            }
+        }
+        ended
     }
 
     /// Sets administrator `name`'s password to `password` from the
@@ -1405,18 +1680,23 @@ impl Authd {
                 return Answer::Refused(format!("{name} is disabled but not removed: {why}"));
             }
         };
-        let Files { mut users, mut groups, mut passwords } = files;
+        let Files { mut users, mut groups, mut passwords, mut sharing } = files;
         if let Err(why) = accounts::remove(&mut users, &mut groups, name) {
             return Answer::Refused(why);
         }
         passwords.retain_entries(|p| p.name != name);
+        let shared = sharing.entries().any(|p| p.name == name);
+        sharing.retain_entries(|p| p.name != name);
         // Its number first, so that it is never given again, then the
         // user, whose line going removes the account, and the rest.
         let day = util::local_time(util::now_ns() as i64 / 1_000_000_000, "%Y-%m-%d");
         let removed = retire(&user, &day)
             .and_then(|()| replace(accounts::PASSWD, &users.text(), 0o644))
             .and_then(|()| replace(accounts::GROUP, &groups.text(), 0o644))
-            .and_then(|()| replace(accounts::PASSWORDS, &passwords.text(), 0o600));
+            .and_then(|()| replace(accounts::PASSWORDS, &passwords.text(), 0o600))
+            .and_then(|()| {
+                if shared { replace(accounts::SHARING, &sharing.text(), 0o600) } else { Ok(()) }
+            });
         if let Err(why) = removed {
             return Answer::Refused(format!("{name} is disabled but not wholly removed: {why}"));
         }
@@ -1465,12 +1745,16 @@ impl Authd {
                  and what runs for them has ended"
             ));
         }
-        let Files { mut users, mut groups, mut passwords } = files;
+        let Files { mut users, mut groups, mut passwords, mut sharing } = files;
         let (before, after) = match accounts::rename(&mut users, &mut groups, name, new) {
             Ok(both) => both,
             Err(why) => return Answer::Refused(why),
         };
         for line in passwords.entries_mut().filter(|p| p.name == name) {
+            line.name = new.into();
+        }
+        let shared = sharing.entries().any(|p| p.name == name);
+        for line in sharing.entries_mut().filter(|p| p.name == name) {
             line.name = new.into();
         }
         // Its home moves first, then the files say where it is.
@@ -1488,6 +1772,9 @@ impl Authd {
             }
         }
         let written = replace(accounts::PASSWORDS, &passwords.text(), 0o600)
+            .and_then(|()| {
+                if shared { replace(accounts::SHARING, &sharing.text(), 0o600) } else { Ok(()) }
+            })
             .and_then(|()| replace(accounts::GROUP, &groups.text(), 0o644))
             .and_then(|()| replace(accounts::PASSWD, &users.text(), 0o644));
         if let Err(why) = written {
@@ -1581,6 +1868,16 @@ impl Authd {
         );
         Answer::Done(changed)
     }
+}
+
+/// The terminal a share session's records name (ADR 0228), as Samba's
+/// do: `last` shows a PC's sign-ins to the shares on it.
+const SHARE_TERMINAL: &str = "smb";
+
+/// Where a PC's tries at a sharing password come from, for slowing them
+/// down: its address.
+fn share_source(from: &str) -> String {
+    format!("smb {from}")
 }
 
 /// The account of a person `name`, for a request that changes it: root's
@@ -1854,7 +2151,7 @@ fn add(
     if !peer.is_root() {
         return Answer::Refused("only an administrator, inside elevate, makes accounts".into());
     }
-    let Files { mut users, mut groups, mut passwords } = files;
+    let Files { mut users, mut groups, mut passwords, .. } = files;
     let retired = match read_text(accounts::RETIRED) {
         Ok(text) => accounts::retired(&text),
         Err(err) => return Answer::Refused(format!("cannot read {}: {err}", accounts::RETIRED)),
