@@ -361,6 +361,7 @@ fn run_native(root: &Dir, path: &str, args: &[&str], network: Option<u32>) {
 
 /// The capabilities of Spark's that a POSIX program it runs gets, by
 /// their slots in Spark.
+#[derive(Clone, Copy)]
 struct Given {
     /// The network capability, for SLOT_NETWORK.
     network: Option<u32>,
