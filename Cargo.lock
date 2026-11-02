@@ -136,6 +136,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "disk"
+version = "0.11.0"
+dependencies = [
+ "radix-block",
+ "radix-btrfs",
+ "radix-vfs",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "dyn-clone"
 version = "1.0.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -265,8 +276,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "radix-block"
+version = "0.11.0"
+dependencies = [
+ "radix-hw",
+ "radix-mm",
+ "radix-sync",
+]
+
+[[package]]
 name = "radix-bootfs"
 version = "0.11.0"
+
+[[package]]
+name = "radix-btrfs"
+version = "0.11.0"
+dependencies = [
+ "radix-block",
+ "radix-hw",
+ "radix-sync",
+ "radix-vfs",
+]
 
 [[package]]
 name = "radix-fbcon"
@@ -309,6 +339,13 @@ name = "radix-microcode"
 version = "0.11.0"
 
 [[package]]
+name = "radix-mm"
+version = "0.11.0"
+dependencies = [
+ "radix-sync",
+]
+
+[[package]]
 name = "radix-pstate"
 version = "0.11.0"
 
@@ -326,6 +363,16 @@ dependencies = [
 [[package]]
 name = "radix-sync"
 version = "0.11.0"
+
+[[package]]
+name = "radix-vfs"
+version = "0.11.0"
+dependencies = [
+ "radix-block",
+ "radix-bootfs",
+ "radix-hw",
+ "radix-sync",
+]
 
 [[package]]
 name = "rand_core"
@@ -553,15 +600,18 @@ name = "xtask"
 version = "0.11.0"
 dependencies = [
  "accounts",
+ "disk",
  "manifest",
  "radix-bitlocker",
  "radix-bootfs",
+ "radix-btrfs",
  "radix-fbcon",
  "radix-hal",
  "radix-kdb",
  "radix-ksyms",
  "radix-microcode",
  "radix-relocs",
+ "radix-vfs",
  "ridlc",
  "rustc-demangle",
  "serde",

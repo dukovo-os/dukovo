@@ -15,6 +15,8 @@
 //! - [`fat`] makes FAT12, FAT16 and FAT32 filesystems, [`fatck`] checks
 //!   and mends them, and [`exfat`] makes exFAT ones, from Microsoft's
 //!   published specifications.
+//! - `btrfs` (feature `btrfs`) makes and checks Btrfs with the kernel's
+//!   own Btrfs crate (ADRs 0304 and 0305).
 //! - [`types`] names the partition types, [`size`] reads and prints
 //!   sizes, and [`guid`], [`crc32`] and [`rng`] are what GPT needs.
 //!
@@ -22,6 +24,8 @@
 //! read panics. Nothing is written until asked: [`plan`] says what a
 //! write puts where, and [`apply`] writes it.
 
+#[cfg(feature = "btrfs")]
+pub mod btrfs;
 pub mod crc32;
 pub mod device;
 pub mod exfat;

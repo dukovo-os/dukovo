@@ -28,7 +28,9 @@
 //! `lastb` and `lastlog` show the sign-ins it records (ADR 0254).
 //! `rdisk` partitions disks, `mkfs-fat` and `mkfs-exfat` make FAT and
 //! exFAT filesystems, and `fsck-fat` checks and mends FAT ones, with the
-//! disk engine (ADRs 0300 to 0302).
+//! disk engine (ADRs 0300 to 0302); `mkfs-btrfs` makes a Btrfs, and
+//! `fsck-btrfs` checks one, with the kernel's Btrfs crate (ADRs 0304 and
+//! 0305).
 //! `bundle` makes, signs, installs and runs bundles, which `bundled`
 //! installs, seals and removes (ADRs 0221 to 0223 and 0225); called by a
 //! name that is no tool's, through a link in a commands folder of
@@ -40,6 +42,7 @@ mod authd;
 mod balance;
 mod blkid;
 mod blockdev;
+mod btrfs;
 mod bundled;
 mod bundles;
 mod column;
@@ -135,6 +138,7 @@ const TOOLS: &[(&str, Tool)] = &[
     ("authd", authd::main),
     ("balance", balance::main),
     ("blkid", blkid::main),
+    ("btrfsck", btrfs::fsck_btrfs),
     ("bundle", bundles::main),
     ("bundled", bundled::main),
     ("chgrp", modes::chgrp),
@@ -150,6 +154,7 @@ const TOOLS: &[(&str, Tool)] = &[
     ("eject", eject::main),
     ("elevate", elevate::main),
     ("findmnt", findmnt::main),
+    ("fsck-btrfs", btrfs::fsck_btrfs),
     ("fsck-fat", mkfs::fsck_fat),
     ("fsck.fat", mkfs::fsck_fat),
     ("fsck.vfat", mkfs::fsck_fat),
@@ -181,8 +186,10 @@ const TOOLS: &[(&str, Tool)] = &[
     ("lspci", lspci::main),
     ("lsusb", lsusb::main),
     ("mkfs", mkfs::mkfs),
+    ("mkfs-btrfs", btrfs::mkfs_btrfs),
     ("mkfs-exfat", mkfs::mkfs_exfat),
     ("mkfs-fat", mkfs::mkfs_fat),
+    ("mkfs.btrfs", btrfs::mkfs_btrfs),
     ("mkfs.exfat", mkfs::mkfs_exfat),
     ("mkfs.fat", mkfs::mkfs_fat),
     ("mkfs.vfat", mkfs::mkfs_fat),

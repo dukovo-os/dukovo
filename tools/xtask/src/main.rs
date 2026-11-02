@@ -31,6 +31,7 @@ mod ports;
 mod process;
 mod qemu;
 mod riscv;
+mod rootfs;
 mod screen;
 mod shellbench;
 mod signoff;

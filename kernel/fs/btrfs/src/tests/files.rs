@@ -40,7 +40,7 @@ pub(super) fn noise(seed: u64, len: usize) -> Vec<u8> {
 /// around the inline and sector limits, a sparse file, links of both
 /// kinds, a FIFO, deep and wide directories, and names that are long,
 /// not ASCII, or not UTF-8.
-fn rich_tree() -> PathBuf {
+pub(super) fn rich_tree() -> PathBuf {
     let dir = scratch("rich");
     let write = |path: &str, bytes: &[u8]| {
         let path = dir.join(path);

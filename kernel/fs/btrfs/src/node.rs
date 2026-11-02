@@ -182,6 +182,32 @@ impl BtrfsNode {
         *self.inode.lock()
     }
 
+    /// Makes the subvolume this directory is the top of read-only, as
+    /// Linux's `btrfs property set ro true` does: its root item is marked
+    /// so, and from the next mount nothing in it may change. Its nodes
+    /// already loaded still may until then: this is for making a
+    /// filesystem, as `./ob image` makes `@system.a` (ADR 0304).
+    ///
+    /// Fails with [`Error::InvalidArgument`] if it is not the top
+    /// directory of a subvolume, and as a change does.
+    pub fn make_read_only(&self) -> Result<()> {
+        self.writes()?;
+        let volume = &self.fs.volume;
+        self.fs.change(|txn| {
+            let (_, top, _) = volume.subvolume(self.subvol)?.ok_or(Error::NotFound)?;
+            if self.ino != top {
+                return Err(Error::InvalidArgument);
+            }
+            let key = crate::cow::Writer::root_item_key(volume, self.subvol)?;
+            txn.writer.update(volume, tree::ROOT, &key, |d| {
+                // The root item's flags, after its inode item and seven
+                // other fields.
+                let flags = crate::format::u64_at(d, 208) | crate::format::RootItem::READ_ONLY;
+                put_u64(d, 208, flags);
+            })
+        })
+    }
+
     /// Its subvolume's tree, as the running transaction has it; the caller
     /// holds the transaction on a writable mount.
     fn tree(&self) -> Result<Root> {
