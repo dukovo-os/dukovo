@@ -40,6 +40,7 @@ pub mod devfs;
 pub mod disk;
 mod events;
 pub mod framebuffer;
+pub mod fuse;
 pub mod inet;
 pub mod keyboard;
 pub mod kmsg;
@@ -124,6 +125,8 @@ enum Special {
     Mouse,
     /// `/devices/fb0`.
     Framebuffer,
+    /// A connection of `/devices/fuse`.
+    Fuse,
 }
 
 /// The most bytes of a path an [`Opened`] keeps.
@@ -307,6 +310,7 @@ impl FileObject {
             Kind::CharDevice if keyboard::is_keyboard(&at.node) => Special::Keyboard,
             Kind::CharDevice if mouse::is_mouse(&at.node) => Special::Mouse,
             Kind::CharDevice if framebuffer::is_framebuffer(&at.node) => Special::Framebuffer,
+            Kind::CharDevice if fuse::channel_of(&at.node).is_some() => Special::Fuse,
             _ => Special::No,
         };
         // The devices are the last kinds: one comparison for the others.
@@ -399,6 +403,11 @@ impl FileObject {
     /// Whether it is of `/devices/fb0`.
     pub fn is_framebuffer(&self) -> bool {
         self.special == Special::Framebuffer
+    }
+
+    /// The connection of `/devices/fuse` it is of, if it is of one.
+    pub fn fuse_channel(&self) -> Option<&fuse::Channel> {
+        if self.special == Special::Fuse { fuse::channel_of(&self.at.node) } else { None }
     }
 
     /// Whether its reads and writes are a pipe's, a socket's, a terminal's
@@ -498,6 +507,7 @@ pub fn init() {
     radix_block::mem::set_page_source(<Arch as Devices>::alloc_cache_page);
     radix_vfs::set_clock(|| <Arch as Timer>::wall_clock_ns().unwrap_or(0));
     radix_vfs::set_random(radix_random::fill);
+    fuse::init();
     // The root's own mode is Linux's for its rootfs; Spark makes the
     // directories in it.
     let made = tmpfs(ROOT_MAX, 0o755).and_then(|root| Vfs::new(fs_ref(root)?, "tmpfs"));
@@ -798,6 +808,42 @@ fn free_disk(
     Ok(name)
 }
 
+/// What uses `device`, as radix-block(2)'s GET_IN_USE has it: the
+/// IN_USE flags of a mount from it, its swap area on, a Btrfs mounted
+/// from another of its disks, and a BitLocker volume of it unlocked; 0 if
+/// nothing does. For rdisk(8), and for re-reading a partition table
+/// (ADR 0301), which leaves alone what is in use.
+pub fn uses(device: &radix_block::DeviceRef) -> u32 {
+    use radix_abi::block as request;
+    let mut uses = 0;
+    let name = disk::name_of(device);
+    let mut mounted = false;
+    if let (Some(name), Some(vfs)) = (&name, vfs()) {
+        vfs.mounts(|mount| mounted |= mount.source() == name.as_str());
+    }
+    if mounted {
+        uses |= request::IN_USE_MOUNTED;
+    }
+    if radix_block::swap::is_on(&**device) {
+        uses |= request::IN_USE_SWAP;
+    }
+    // Dropped once the lock is let go: the last reference unmounts.
+    let mut held = mem::vec();
+    let mut btrfs = false;
+    for fs in BTRFS.lock().iter().flatten().filter_map(|m| m.fs.upgrade()) {
+        btrfs |= fs.has_disk(device);
+        let _ = mem::push(&mut held, fs);
+    }
+    drop(held);
+    if btrfs && !mounted {
+        uses |= request::IN_USE_BTRFS;
+    }
+    if name.as_ref().is_some_and(|name| disk::is_unlocked(name.as_str())) {
+        uses |= request::IN_USE_UNLOCKED;
+    }
+    uses
+}
+
 /// Warns when the Btrfs `fs`, mounted from `name`, mounted with disks
 /// missing, or with disks that missed changes: in a frame of its own, off
 /// the mount's deep reads.
@@ -961,6 +1007,15 @@ pub fn status(err: Error) -> Status {
         Error::Denied => FileError::Denied,
         Error::NoAttribute => FileError::NoAttribute,
         Error::OutOfRange => return Kernel::OutOfRange.status(0),
+        // The program that serves a filesystem answered a call EINTR, a
+        // signal having asked it to stop: the call fails, and does not
+        // run again, as on Linux (ADR 0226).
+        Error::Interrupted => {
+            return crate::user::posix::signal::interrupted(
+                crate::user::posix::signal::Restart::Never,
+            );
+        }
+        Error::NotConnected => return Kernel::NotConnected.status(0),
         Error::NotPermitted => return Kernel::NotPermitted.status(0),
         // What a node does not do is an argument it does not take.
         Error::NotSupported => return Kernel::InvalidArgument.status(0),
