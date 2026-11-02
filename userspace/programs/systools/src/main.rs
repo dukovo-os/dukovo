@@ -19,6 +19,9 @@
 //! `e1000d` drives Intel's e1000 and e1000e cards as a program (ADR
 //! 0198), `netd` sets the network cards up (ADR 0191), and `resolved` answers
 //! every program's DNS queries, which `resolvectl` shows (ADR 0193);
+//! `discoverd` finds `.local` names and what the local networks offer,
+//! which `discover` lists, and `ping` asks a machine whether it is there
+//! (ADRs 0336 to 0338);
 //! `timed` keeps the clock right from the network over NTS, and
 //! `timedatectl` shows it and sets the time zone (ADR 0194); `netlog`
 //! sends the log to another computer as it is written (ADR 0196);
@@ -52,6 +55,8 @@ mod device;
 mod df;
 mod dhcp;
 mod dhcp6;
+mod discover;
+mod discoverd;
 mod diskhealth;
 mod dmesg;
 mod e1000d;
@@ -89,6 +94,7 @@ mod netlog;
 mod notifyd;
 mod nvme;
 mod pidstat;
+mod ping;
 mod power;
 mod priority;
 mod probe;
@@ -151,6 +157,8 @@ const TOOLS: &[(&str, Tool)] = &[
     ("column", column::main),
     ("df", df::main),
     ("device", device::main),
+    ("discover", discover::main),
+    ("discoverd", discoverd::main),
     ("diskhealth", diskhealth::main),
     ("dmesg", dmesg::main),
     ("e1000d", e1000d::main),
@@ -209,6 +217,7 @@ const TOOLS: &[(&str, Tool)] = &[
     ("passwd", account::passwd),
     ("pgrep", signals::pgrep),
     ("pidstat", pidstat::main),
+    ("ping", ping::main),
     ("pkill", signals::pkill),
     ("poweroff", power::poweroff),
     ("ps", ps::main),
@@ -253,8 +262,9 @@ const TOOLS: &[(&str, Tool)] = &[
 ];
 
 /// The tools whose Linux versions exit with 2, not 1, for a mistake in
-/// the command line: procps-ng's pgrep and pkill, and which.
-const USAGE_TWO: &[&str] = &["getfacl", "pgrep", "pkill", "setfacl", "which"];
+/// the command line: procps-ng's pgrep and pkill, iputils' ping, and
+/// which.
+const USAGE_TWO: &[&str] = &["getfacl", "pgrep", "ping", "pkill", "setfacl", "which"];
 
 /// The tool named `name`.
 fn tool(name: &str) -> Option<Tool> {

@@ -69,9 +69,16 @@ empties the cache.
 
 _localhost_ and the names below it are answered here, as 127.0.0.1 and
 ::1, and so are those addresses' reverse names (RFC 6761). Names under
-_local_, which multicast DNS answers on the local network (RFC 6762),
-and under _invalid_ are answered as not there, so that they are never
-sent to a server.
+_invalid_ are answered as not there, so that they are never sent to a
+server.
+
+Names under _local_, which multicast DNS answers on the local networks
+(RFC 6762), never go to a server either: resolved asks *discoverd*(8)
+for their addresses, as nss-mdns has glibc ask Avahi, and answers A
+and AAAA questions with what it finds within a second and a half, each
+kept two minutes; a name it does not find, or every name while
+discoverd is not running, is not there. Their other records, as SRV
+and TXT, are *discover*(1)'s to find.
 
 ## What it shows
 
@@ -100,9 +107,9 @@ after ten seconds without a query. Another thread looks at the settings
 and netd's file every two seconds, and reads them again when they
 change.
 
-Its service holds port 53, netd's folder to read and its own to write,
-beyond what every service holds (*service.toml*(5)); it cannot write
-the settings.
+Its service holds port 53, netd's and discoverd's folders to read and
+its own to write, beyond what every service holds (*service.toml*(5));
+it cannot write the settings.
 
 # SIGNALS
 
@@ -143,11 +150,10 @@ _/system/settings/spark/services/resolved.toml_
 53 cannot be had.
 
 Not yet: DNSSEC validation, IPv6 servers (Phase 12d of the roadmap), a
-name for each network card's servers, LLMNR, and mDNS, which is to come
-with discovery (Phase 12e).
+name for each network card's servers, and LLMNR.
 
 # SEE ALSO
 
-*resolved*(5), *resolvectl*(1), *netd*(8), *network*(5),
+*resolved*(5), *resolvectl*(1), *discoverd*(8), *netd*(8), *network*(5),
 *dukovo-certificates*(7), *dukovo-privacy*(7), *service*(8),
 *spark*(8), *systools*(1)

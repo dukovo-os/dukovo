@@ -107,6 +107,12 @@ flags Rights: u64 {
     /// that listen on its ports take what other machines start
     /// (radix-firewall(2)).
     inbound = 13;
+    /// Reach the networks this machine is on: a network capability's
+    /// sockets send to the machines on its interfaces' networks, to
+    /// link-local, broadcast and multicast addresses, and join multicast
+    /// groups (radix-network(2), ADR 0337). The send right reaches the
+    /// rest; either reaches this machine's own addresses.
+    local = 14;
 }
 
 /// The flags of a slot, which stay with the slot rather than the

@@ -193,4 +193,13 @@ int iov_total(const struct iovec *iov, size_t count, size_t *sum);
 // Writes `len` bytes of `text` to the kernel log.
 void log(const char *text, size_t len);
 
+// The number of the interface that has the IPv4 address `address` (in
+// network byte order), as Linux's ip_dev_find: 0 if none has it
+// (interfaces.cpp).
+unsigned int interface_with(uint32_t address);
+
+// The first IPv4 address of the interface numbered `index`, the one it
+// sends from, in network byte order: 0 if it has none.
+uint32_t interface_address(unsigned int index);
+
 } // namespace radix

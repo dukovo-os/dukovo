@@ -10,8 +10,13 @@
 //! cannot make a socket (netgrant none). The second asks to connect out
 //! and to listen on ports 8000 to 8009 and 9000, and gets exactly that,
 //! without the inbound right that would let other machines reach its
-//! ports through the firewall (netgrant bundle, ADR 0334). Each command is on her PATH, a link to bundle(1)
-//! in her applications/commands, run by its name or by bundle run.
+//! ports through the firewall (netgrant bundle, ADR 0334), or the local
+//! right, so that it does not see discoverd's folder. The third asks for
+//! the local network alone, network.local, which she allows on its first
+//! run: it gets the local right and discoverd's folder, whose socket it
+//! asks (netgrant nearby, ADRs 0337 and 0338). Each command is on her
+//! PATH, a link to bundle(1) in her applications/commands, run by its
+//! name or by bundle run.
 //! Unsealed by an administrator, a bundle no longer runs; removing one
 //! removes its command. The power button ends it.
 
@@ -20,7 +25,7 @@ use super::super::*;
 /// The test.
 pub const CASE: Case = Case {
     name: "bundle-run",
-    about: "bundles run in a sandbox of their own (ADR 0225): one that asks for no permission cannot make a socket, sees only its own data of alice's home and cannot change the system's settings; one that asks to connect out and listen on ports gets exactly that; commands are on PATH as links to bundle(1); an unsealed bundle does not run",
+    about: "bundles run in a sandbox of their own (ADR 0225): one that asks for no permission cannot make a socket, sees only its own data of alice's home and cannot change the system's settings; one that asks to connect out and listen on ports gets exactly that; one that asks for the local network gets the local right and discoverd once allowed (ADRs 0337, 0338); commands are on PATH as links to bundle(1); an unsealed bundle does not run",
     firmware: Firmware::Uefi,
     media: Media::Usb,
     // As a normal boot: Spark starts the services, bundled among them.
@@ -45,6 +50,9 @@ const OFFLINE: &str = "#!/bin/sh\\necho home $HOME\\nls /users/alice\\ncat /user
 
 /// The second bundle's permissions, as its manifest writes them.
 const ONLINE: &str = r#"{"network.outbound": {"need": "required"}, "network.listen": {"need": "required", "ports": ["8000-8009", 9000]}}"#;
+
+/// The third's.
+const NEARBY: &str = r#"{"network.local": {"need": "required"}}"#;
 
 fn bundle_run(vm: &mut Vm, case: &Case) -> Result<(), String> {
     owner_signs_in(vm, case)?;
@@ -122,6 +130,33 @@ fn bundle_run(vm: &mut Vm, case: &Case) -> Result<(), String> {
     answer_prompt(vm, "$", "clear; online bundle; echo \"status $?\"")?;
     vm.expect_screen(&[
         "netgrant: Spark gave it the network to connect out and to listen on ports",
+        "netgrant: every check passed",
+        "status 0",
+    ])?;
+    // The third: the local network, asked about on its first run. The
+    // second goes first, as the homes have no room for both.
+    answer_prompt(
+        vm,
+        "$",
+        &format!(
+            "clear; bundle remove --purge org.example.online > /dev/null; bundle new \
+             org.example.nearby nearby > /dev/null; cp \
+             /system/tests/posix/netgrant nearby/bin/nearby; sed -i 's/\"permissions\": \
+             {{}}/\"permissions\": {NEARBY}/' nearby/manifest.json; bundle pack nearby -o \
+             nearby.dkv > /dev/null; bundle install --yes nearby.dkv | grep -e local -e \
+             installed; rm -r nearby nearby.dkv"
+        ),
+    )?;
+    vm.expect_screen(&[
+        "Reach devices on your local network and see what discovery finds (on first use)",
+        "installed org.example.nearby 0.1.0, for you",
+    ])?;
+    answer_prompt(vm, "$", "clear; nearby nearby; echo \"status $?\"")?;
+    vm.expect_screen(&["[permission] ", "A: always"])?;
+    vm.type_text("a")?;
+    vm.expect_anywhere("bundled: alice allowed org.example.nearby network.local")?;
+    vm.expect_screen(&[
+        "netgrant: Spark gave it the local network and discoverd",
         "netgrant: every check passed",
         "status 0",
     ])?;

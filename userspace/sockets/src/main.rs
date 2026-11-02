@@ -27,7 +27,9 @@
 //!   shares its port with an IPv4 one; and IPv4 addresses are refused.
 //! - With `virtio` as its argument, TCP through the virtio network card:
 //!   it connects to 10.0.2.100 port 7, where QEMU runs `cat`
-//!   (`guestfwd`), and what it sends comes back.
+//!   (`guestfwd`), and what it sends comes back. 10.0.2.100 is on the
+//!   card's network, which a capability reaches with the local right,
+//!   not with the send right alone (ADR 0337).
 //!
 //! It prints a line per step, `sockets: FAILED: ...` for each check that
 //! fails, and exits with 0 only if none did.
@@ -372,7 +374,9 @@ fn main(_start: &Startup) -> u64 {
     rights(&mut checks, out, listen);
     ipv6(&mut checks, out);
     if virtio {
-        through_virtio(&mut checks, out);
+        let near = restricted(&mut checks, 0, 65_536, Rights::LOCAL);
+        let Some(near) = near else { return 1 };
+        through_virtio(&mut checks, out, near);
     }
 
     for slot in [out, listen] {
@@ -747,12 +751,19 @@ fn ipv6(checks: &mut Checks, out: u32) {
     println!("sockets: ipv6: a v6-only socket shared its port with an IPv4 one");
 }
 
-/// TCP through the virtio card, to QEMU's `cat`.
-fn through_virtio(checks: &mut Checks, out: u32) {
-    let made = Socket::new(out, SocketType::Stream, PipeFlags::NONE);
+/// TCP through the virtio card, to QEMU's `cat`, on the card's network:
+/// with `near`, which has the local right, not `out`, which has only the
+/// send right.
+fn through_virtio(checks: &mut Checks, out: u32, near: u32) {
+    let made = Socket::new(near, SocketType::Stream, PipeFlags::NONE);
     let Some(socket) = checks.worked(made, "making a socket for the virtio card") else { return };
+    checks.refused(
+        socket.connect(out, ECHO.0, ECHO.1),
+        Kernel::MissingRights,
+        "connecting to the card's network with the send right alone",
+    );
     if checks
-        .worked(socket.connect(out, ECHO.0, ECHO.1), "connecting to 10.0.2.100 port 7")
+        .worked(socket.connect(near, ECHO.0, ECHO.1), "connecting to 10.0.2.100 port 7")
         .is_none()
     {
         return;

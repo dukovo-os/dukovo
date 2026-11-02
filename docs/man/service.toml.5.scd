@@ -109,7 +109,9 @@ wrong in plain words:
 
 	*network.outbound* = *true* | *false*
 		Whether it may connect out, to any address and port, and send
-		datagrams; *false* unless set.
+		datagrams, to the networks the machine is on and beyond them
+		(the network capability's *send* and *local* rights,
+		*radix-capabilities*(7)); *false* unless set.
 
 	*network.listen* = [_port_ | _"first-last"_, ...]
 		The ports it may bind to and listen on, as numbers and ranges,

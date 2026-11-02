@@ -380,8 +380,10 @@ const ALL_BUT_INBOUND: Rights =
 /// NETWORK_SLOTS slots from SLOT_NETWORK into its own from SLOT_NETWORK
 /// (ADR 0257). With `everything`, for root's session and elevated
 /// commands, each goes as authd holds it, setting up the interfaces
-/// included. Otherwise the child connects out, and listens on the ports
-/// from [`FIRST_OPEN_PORT`], but sets up nothing, as anyone may on Linux.
+/// included. Otherwise the child connects out, to the machines on this
+/// one's networks too (the local right, ADR 0337), and listens on the
+/// ports from [`FIRST_OPEN_PORT`], but sets up nothing, as anyone may on
+/// Linux.
 /// Neither has the inbound right, which authd's has: what the child
 /// listens on, other machines reach only as the firewall's rules allow
 /// (ADR 0334). `scratch` is an empty slot to restrict through.
@@ -407,6 +409,13 @@ pub fn give_network(child: u32, scratch: u32, everything: bool) -> Result<(), St
             if info.rights.bits() & right.bits() == 0 || first >= past || to >= end {
                 continue;
             }
+            // With the local right, if it is held, beside the send right.
+            let local = Rights::LOCAL.bits() & info.rights.bits();
+            let right = if right == Rights::SEND {
+                Rights::from_bits(right.bits() | local).unwrap_or(right)
+            } else {
+                right
+            };
             network::restrict(&SYS, from, scratch, first, past - first, right.union(kept))?;
             let shared = process::share(&SYS, child, scratch, to, Rights::ALL, 0);
             let _ = capability::delete(&SYS, scratch);

@@ -7,12 +7,16 @@
 //! A network capability designates a range of ports, the 65,536 of the
 //! whole network for the first, which the kernel gives Spark when it
 //! starts. Its send right lets its holder connect out, to any address and
-//! port, from a port the kernel picks: what the permission
-//! network.outbound grants. Its receive right lets its holder bind a
-//! socket to a port in its range, and listen there for the connections
-//! that come: network.listen, for those ports. `restrict` derives one
-//! for fewer ports, or fewer rights, which Spark gives each service as
-//! its manifest asks.
+//! port beyond the networks this machine is on, from a port the kernel
+//! picks: what the permission network.outbound grants. Its local right
+//! reaches the machines on those networks, and their broadcast and
+//! multicast groups, which a socket may join (ADR 0337): what
+//! network.local grants; a service's network.outbound grants both.
+//! Either reaches this machine's own addresses. Its receive right lets
+//! its holder bind a socket to a port in its range, and listen there for
+//! the connections that come: network.listen, for those ports.
+//! `restrict` derives one for fewer ports, or fewer rights, which Spark
+//! gives each service as its manifest asks.
 //!
 //! Sockets are made from a network capability (`socket`), and are files
 //! (radix-file(2)) with the socket methods: `bind_address`,
@@ -60,6 +64,14 @@ enum SocketType: u32 {
     /// Datagrams, each on its own, which may be lost: UDP, POSIX's
     /// SOCK_DGRAM.
     datagram = 2;
+    /// ICMP's or ICMPv6's echo requests, and the replies to them: POSIX's
+    /// SOCK_DGRAM with IPPROTO_ICMP or IPPROTO_ICMPV6, as Linux's ping
+    /// sockets (ADR 0336). A datagram sent is an echo request, its
+    /// header's identifier and checksum the kernel's; one received is a
+    /// reply to the socket's own, its header and all. Bound or not, it
+    /// has an identifier of its own, as a datagram socket has a port, and
+    /// the Address's port is it. (Since version 5, Phase 12c.3.)
+    ping = 3;
 }
 
 /// An address and port: where a socket is bound or connected, or where a
@@ -156,11 +168,12 @@ enum LinkKind: u32 {
 
 /// A range of the network's ports, and the rights to connect out, to
 /// listen on them, and to set the interfaces up.
-interface network = 0x000f version 4 {
+interface network = 0x000f version 5 {
     kind = network;
     /// Makes a socket of `family` and `kind` in slot `to`, with `flags`:
     /// one that is neither bound nor connected (POSIX's `socket`). Needs
-    /// the send or the receive right.
+    /// the send, the local or the receive right; a ping socket, the send
+    /// or the local right.
     method socket = 1 (to: slot, family: AddressFamily, kind: SocketType, flags: PipeFlags) -> ()
         raises [no_such_slot, empty_slot, wrong_kind, missing_rights, occupied, no_memory,
                 not_supported];

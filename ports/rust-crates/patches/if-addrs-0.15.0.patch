@@ -1,0 +1,66 @@
+SPDX-FileCopyrightText: MaidSafe.net limited, Messense Lv and the if-addrs contributors
+SPDX-FileCopyrightText: 2026 The Dukovo contributors
+SPDX-License-Identifier: MIT OR BSD-3-Clause
+
+if-addrs lists interfaces' addresses with getifaddrs on Radix as on the
+other POSIX systems (ADR 0336). Radix has no netlink, so the change
+notifier, which waits on a NETLINK_ROUTE socket, is left out as on the
+BSDs; and mlibc's struct ifaddrs has ifa_broadaddr and ifa_dstaddr
+apart, not in a union as glibc's, so a broadcast address is read from
+ifa_broadaddr.
+
+diff --git a/if-addrs-0.15.0/src/lib.rs b/if-addrs-0.15.0/src/lib.rs
+--- a/if-addrs-0.15.0/src/lib.rs
++++ b/if-addrs-0.15.0/src/lib.rs
+@@ -26,7 +26,8 @@
+     not(target_os = "freebsd"),
+     not(target_os = "netbsd"),
+     not(target_os = "openbsd"),
+-    not(target_os = "illumos")
++    not(target_os = "illumos"),
++    not(target_os = "radix")
+ ))]
+ mod posix_not_apple;
+ mod sockaddr;
+@@ -527,7 +528,8 @@
+     target_os = "freebsd",
+     target_os = "netbsd",
+     target_os = "openbsd",
+-    target_os = "illumos"
++    target_os = "illumos",
++    target_os = "radix"
+ )))]
+ #[cfg_attr(
+     docsrs,
+@@ -629,7 +631,8 @@
+     target_os = "freebsd",
+     target_os = "netbsd",
+     target_os = "openbsd",
+-    target_os = "illumos"
++    target_os = "illumos",
++    target_os = "radix"
+ )))]
+ #[cfg_attr(
+     docsrs,
+diff --git a/if-addrs-0.15.0/src/posix.rs b/if-addrs-0.15.0/src/posix.rs
+--- a/if-addrs-0.15.0/src/posix.rs
++++ b/if-addrs-0.15.0/src/posix.rs
+@@ -24,6 +24,10 @@
+     ))]
+     let sockaddr = ifaddr.ifa_ifu;
+ 
++    // On Radix, mlibc's `ifa_broadaddr` and `ifa_dstaddr` are apart.
++    #[cfg(target_os = "radix")]
++    let sockaddr = ifaddr.ifa_broadaddr;
++
+     // On BSD-like and embedded systems, only `ifa_dstaddr` is available.
+     #[cfg(not(any(
+         target_os = "linux",
+@@ -32,6 +36,7 @@
+         target_os = "emscripten",
+         target_os = "fuchsia",
+         target_os = "hurd",
++        target_os = "radix",
+     )))]
+     let sockaddr = ifaddr.ifa_dstaddr;
+ 

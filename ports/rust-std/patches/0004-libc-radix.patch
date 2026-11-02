@@ -89,7 +89,7 @@ new file mode 100644
 index 0000000..e740167
 --- /dev/null
 +++ b/vendor/libc-0.2.191/src/unix/radix/mod.rs
-@@ -0,0 +1,3068 @@
+@@ -0,0 +1,3082 @@
 +//! Radix: the kernel of Dukovo, with mlibc as its C library.
 +//!
 +//! * mlibc: <https://github.com/managarm/mlibc>, built with its Radix system
@@ -427,6 +427,18 @@ index 0000000..e740167
 +    pub struct if_nameindex {
 +        pub if_index: c_uint,
 +        pub if_name: *mut c_char,
++    }
++
++    // mlibc's, with ifa_broadaddr and ifa_dstaddr apart, not a union.
++    pub struct ifaddrs {
++        pub ifa_next: *mut crate::ifaddrs,
++        pub ifa_name: *mut c_char,
++        pub ifa_flags: c_uint,
++        pub ifa_addr: *mut crate::sockaddr,
++        pub ifa_netmask: *mut crate::sockaddr,
++        pub ifa_broadaddr: *mut crate::sockaddr,
++        pub ifa_dstaddr: *mut crate::sockaddr,
++        pub ifa_data: *mut c_void,
 +    }
 +
 +    pub struct Dl_info {
@@ -3136,6 +3148,8 @@ index 0000000..e740167
 +    ) -> *const c_char;
 +    pub fn if_nameindex() -> *mut crate::if_nameindex;
 +    pub fn if_freenameindex(ptr: *mut crate::if_nameindex);
++    pub fn getifaddrs(ifap: *mut *mut crate::ifaddrs) -> c_int;
++    pub fn freeifaddrs(ifa: *mut crate::ifaddrs);
 +
 +    // Locales
 +    pub fn newlocale(mask: c_int, locale: *const c_char, base: crate::locale_t)

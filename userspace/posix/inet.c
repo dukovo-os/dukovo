@@ -18,14 +18,19 @@
 // the interfaces' names and numbers (if_nametoindex, if_indextoname,
 // if_nameindex) and SO_BINDTODEVICE, of lo, the only interface this boot
 // has; the interfaces boot test binds to a card. And
+// ping sockets, IP_PKTINFO and IPV6_RECVPKTINFO, ports shared with
+// SO_REUSEPORT, multicast groups on lo, and getifaddrs (ADR 0336). And
 // the network capabilities: a child with none cannot make a socket
 // (EACCES), one that may only connect out cannot bind a port or listen,
-// and one that may only listen on ports 9000 to 9009 cannot connect out
-// or bind another port. The runner gets Spark's network capability, and
-// this test gets it through fork and exec.
+// or join or send to a group, one with the local right alone reaches
+// this machine and joins groups (ADR 0337), and one that may only listen
+// on ports 9000 to 9009 cannot connect out or bind another port. The
+// runner gets Spark's network capability, and this test gets it through
+// fork and exec.
 
 #include <arpa/inet.h>
 #include <fcntl.h>
+#include <ifaddrs.h>
 #include <net/if.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
@@ -557,6 +562,324 @@ static void interfaces(void) {
 	close(d);
 }
 
+// A ping socket (ADR 0336), which any program may make: an echo request
+// to 127.0.0.1 and one to ::1, whose identifier the kernel makes the
+// socket's, as its port; the replies, without their IP headers; a
+// connected one; and what a ping socket does not send.
+static void ping_sockets(void) {
+	int fd = socket(AF_INET, SOCK_DGRAM, IPPROTO_ICMP);
+	CHECK(fd >= 0);
+	int value = 0;
+	socklen_t size = sizeof(value);
+	CHECK(getsockopt(fd, SOL_SOCKET, SO_TYPE, &value, &size) == 0 && value == SOCK_DGRAM);
+	CHECK(getsockopt(fd, SOL_SOCKET, SO_PROTOCOL, &value, &size) == 0 && value == IPPROTO_ICMP);
+	struct timeval wait = {5, 0};
+	CHECK(setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &wait, sizeof(wait)) == 0);
+	unsigned char request[16] = {8, 0, 0, 0, 0x12, 0x34, 0, 7, 'e', 'c', 'h', 'o', ' ', 'm', 'e', '!'};
+	struct sockaddr_in to = loopback(0);
+	CHECK(sendto(fd, request, sizeof(request), 0, (struct sockaddr *)&to, sizeof(to))
+			== (ssize_t)sizeof(request));
+	unsigned short ident = port_of(fd);
+	CHECK(ident != 0);
+	unsigned char reply[64];
+	struct sockaddr_in from;
+	socklen_t from_len = sizeof(from);
+	CHECK(recvfrom(fd, reply, sizeof(reply), 0, (struct sockaddr *)&from, &from_len)
+			== (ssize_t)sizeof(request));
+	CHECK(reply[0] == 0 && reply[1] == 0 && ((reply[4] << 8) | reply[5]) == ident);
+	CHECK(reply[6] == 0 && reply[7] == 7 && !memcmp(reply + 8, request + 8, 8));
+	CHECK(from.sin_family == AF_INET && from.sin_addr.s_addr == htonl(INADDR_LOOPBACK));
+	// Only echo requests go, with their header whole.
+	unsigned char timestamp[20] = {13};
+	CHECK_ERROR(sendto(fd, timestamp, sizeof(timestamp), 0, (struct sockaddr *)&to, sizeof(to)),
+			EINVAL);
+	CHECK_ERROR(sendto(fd, request, 4, 0, (struct sockaddr *)&to, sizeof(to)), EINVAL);
+	// Connected, it takes replies from there alone.
+	CHECK(connect(fd, (struct sockaddr *)&to, sizeof(to)) == 0);
+	request[7] = 8;
+	CHECK(send(fd, request, sizeof(request), 0) == (ssize_t)sizeof(request));
+	CHECK(recv(fd, reply, sizeof(reply), 0) == (ssize_t)sizeof(request) && reply[7] == 8);
+	// A ping socket has no groups.
+	struct ip_mreqn group = {.imr_multiaddr.s_addr = inet_addr("239.1.2.3"), .imr_ifindex = 1};
+	CHECK_ERROR(setsockopt(fd, IPPROTO_IP, IP_ADD_MEMBERSHIP, &group, sizeof(group)), EPROTO);
+	close(fd);
+
+	int six = socket(AF_INET6, SOCK_DGRAM, IPPROTO_ICMPV6);
+	CHECK(six >= 0);
+	size = sizeof(value);
+	CHECK(getsockopt(six, SOL_SOCKET, SO_PROTOCOL, &value, &size) == 0 && value == IPPROTO_ICMPV6);
+	CHECK(setsockopt(six, SOL_SOCKET, SO_RCVTIMEO, &wait, sizeof(wait)) == 0);
+	request[0] = 128;
+	struct sockaddr_in6 to6;
+	memset(&to6, 0, sizeof(to6));
+	to6.sin6_family = AF_INET6;
+	to6.sin6_addr = in6addr_loopback;
+	CHECK(sendto(six, request, sizeof(request), 0, (struct sockaddr *)&to6, sizeof(to6))
+			== (ssize_t)sizeof(request));
+	struct sockaddr_in6 from6;
+	socklen_t from6_len = sizeof(from6);
+	CHECK(recvfrom(six, reply, sizeof(reply), 0, (struct sockaddr *)&from6, &from6_len)
+			== (ssize_t)sizeof(request));
+	CHECK(reply[0] == 129 && reply[7] == 8 && !memcmp(reply + 8, request + 8, 8));
+	CHECK(from6.sin6_family == AF_INET6 && IN6_IS_ADDR_LOOPBACK(&from6.sin6_addr));
+	close(six);
+	CHECK_ERROR(socket(AF_INET, SOCK_DGRAM, IPPROTO_ICMPV6), EPROTONOSUPPORT);
+	CHECK_ERROR(socket(AF_INET6, SOCK_DGRAM, IPPROTO_ICMP), EPROTONOSUPPORT);
+}
+
+// IP_PKTINFO and IPV6_RECVPKTINFO (ADR 0336): the interface each
+// datagram came by and the address it came to, as mDNS asks; MSG_CTRUNC
+// without room for them; and nothing when they are not asked for.
+static void packet_info(void) {
+	int fd = socket(AF_INET, SOCK_DGRAM, 0);
+	struct sockaddr_in at = loopback(0);
+	CHECK(bind(fd, (struct sockaddr *)&at, sizeof(at)) == 0);
+	int on = 1, value = 0;
+	socklen_t size = sizeof(value);
+	CHECK(setsockopt(fd, IPPROTO_IP, IP_PKTINFO, &on, sizeof(on)) == 0);
+	CHECK(getsockopt(fd, IPPROTO_IP, IP_PKTINFO, &value, &size) == 0 && value == 1);
+	struct sockaddr_in self = loopback(port_of(fd));
+	char data[8];
+	struct iovec iov = {data, sizeof(data)};
+	union {
+		struct cmsghdr align;
+		char buffer[CMSG_SPACE(sizeof(struct in6_pktinfo))];
+	} control;
+	struct msghdr hdr;
+	memset(&hdr, 0, sizeof(hdr));
+	hdr.msg_iov = &iov;
+	hdr.msg_iovlen = 1;
+	hdr.msg_control = control.buffer;
+	hdr.msg_controllen = sizeof(control.buffer);
+	CHECK(sendto(fd, "info", 4, 0, (struct sockaddr *)&self, sizeof(self)) == 4);
+	CHECK(recvmsg(fd, &hdr, 0) == 4 && hdr.msg_flags == 0);
+	struct cmsghdr *c = CMSG_FIRSTHDR(&hdr);
+	CHECK(c != NULL && c->cmsg_level == IPPROTO_IP && c->cmsg_type == IP_PKTINFO);
+	if(c) {
+		struct in_pktinfo info;
+		memcpy(&info, CMSG_DATA(c), sizeof(info));
+		CHECK(info.ipi_ifindex == 1);
+		CHECK(info.ipi_addr.s_addr == htonl(INADDR_LOOPBACK));
+		CHECK(info.ipi_spec_dst.s_addr == htonl(INADDR_LOOPBACK));
+		CHECK(CMSG_NXTHDR(&hdr, c) == NULL);
+	}
+	CHECK(sendto(fd, "info", 4, 0, (struct sockaddr *)&self, sizeof(self)) == 4);
+	hdr.msg_controllen = sizeof(struct cmsghdr) - 1;
+	CHECK(recvmsg(fd, &hdr, 0) == 4 && (hdr.msg_flags & MSG_CTRUNC) && hdr.msg_controllen == 0);
+	on = 0;
+	CHECK(setsockopt(fd, IPPROTO_IP, IP_PKTINFO, &on, sizeof(on)) == 0);
+	CHECK(sendto(fd, "info", 4, 0, (struct sockaddr *)&self, sizeof(self)) == 4);
+	hdr.msg_controllen = sizeof(control.buffer);
+	CHECK(recvmsg(fd, &hdr, 0) == 4 && hdr.msg_flags == 0 && hdr.msg_controllen == 0);
+	close(fd);
+
+	int six = socket(AF_INET6, SOCK_DGRAM, 0);
+	struct sockaddr_in6 at6;
+	memset(&at6, 0, sizeof(at6));
+	at6.sin6_family = AF_INET6;
+	at6.sin6_addr = in6addr_loopback;
+	CHECK(bind(six, (struct sockaddr *)&at6, sizeof(at6)) == 0);
+	on = 1;
+	CHECK(setsockopt(six, IPPROTO_IPV6, IPV6_RECVPKTINFO, &on, sizeof(on)) == 0);
+	socklen_t len = sizeof(at6);
+	CHECK(getsockname(six, (struct sockaddr *)&at6, &len) == 0);
+	CHECK(sendto(six, "six", 3, 0, (struct sockaddr *)&at6, sizeof(at6)) == 3);
+	hdr.msg_controllen = sizeof(control.buffer);
+	CHECK(recvmsg(six, &hdr, 0) == 3);
+	c = CMSG_FIRSTHDR(&hdr);
+	CHECK(c != NULL && c->cmsg_level == IPPROTO_IPV6 && c->cmsg_type == IPV6_PKTINFO);
+	if(c) {
+		struct in6_pktinfo info;
+		memcpy(&info, CMSG_DATA(c), sizeof(info));
+		CHECK(info.ipi6_ifindex == 1 && IN6_IS_ADDR_LOOPBACK(&info.ipi6_addr));
+	}
+	close(six);
+}
+
+// SO_REUSEPORT and SO_REUSEADDR (ADR 0336), as on Linux: datagram
+// sockets that set the same one share a port, an IPv6 one on :: with
+// IPv4 ones on 0.0.0.0 as mDNS's do, and a datagram to it reaches one of
+// them; a socket that sets only the other one is refused it.
+static void reuse_port(void) {
+	int a = socket(AF_INET, SOCK_DGRAM, 0);
+	int b = socket(AF_INET, SOCK_DGRAM, 0);
+	int c = socket(AF_INET, SOCK_DGRAM, 0);
+	int six = socket(AF_INET6, SOCK_DGRAM, 0);
+	int on = 1, value = 0;
+	socklen_t size = sizeof(value);
+	CHECK(getsockopt(a, SOL_SOCKET, SO_REUSEPORT, &value, &size) == 0 && value == 0);
+	CHECK(setsockopt(a, SOL_SOCKET, SO_REUSEPORT, &on, sizeof(on)) == 0);
+	CHECK(getsockopt(a, SOL_SOCKET, SO_REUSEPORT, &value, &size) == 0 && value == 1);
+	CHECK(setsockopt(b, SOL_SOCKET, SO_REUSEPORT, &on, sizeof(on)) == 0);
+	CHECK(setsockopt(c, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on)) == 0);
+	CHECK(setsockopt(six, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on)) == 0);
+	CHECK(setsockopt(six, SOL_SOCKET, SO_REUSEPORT, &on, sizeof(on)) == 0);
+	struct sockaddr_in any = loopback(0);
+	any.sin_addr.s_addr = htonl(INADDR_ANY);
+	CHECK(bind(a, (struct sockaddr *)&any, sizeof(any)) == 0);
+	unsigned short port = port_of(a);
+	any.sin_port = htons(port);
+	CHECK(bind(b, (struct sockaddr *)&any, sizeof(any)) == 0);
+	CHECK_ERROR(bind(c, (struct sockaddr *)&any, sizeof(any)), EADDRINUSE);
+	struct sockaddr_in6 any6;
+	memset(&any6, 0, sizeof(any6));
+	any6.sin6_family = AF_INET6;
+	any6.sin6_addr = in6addr_any;
+	any6.sin6_port = htons(port);
+	CHECK(bind(six, (struct sockaddr *)&any6, sizeof(any6)) == 0);
+	struct sockaddr_in to = loopback(port);
+	CHECK(sendto(c, "one", 3, 0, (struct sockaddr *)&to, sizeof(to)) == 3);
+	struct pollfd p[3] = {{a, POLLIN, 0}, {b, POLLIN, 0}, {six, POLLIN, 0}};
+	CHECK(poll(p, 3, 5000) >= 1);
+	close(a);
+	close(b);
+	close(c);
+	close(six);
+}
+
+// Multicast (ADR 0336), on lo, the only interface this boot has: the
+// options and their defaults, as ints and as bytes; groups joined and
+// left on an interface named by number or address; a datagram to a
+// group, which reaches the sockets on its port that joined it and no
+// other; and the errors.
+static void multicast(void) {
+	int fd = socket(AF_INET, SOCK_DGRAM, 0);
+	int value = -1;
+	socklen_t size = sizeof(value);
+	CHECK(getsockopt(fd, IPPROTO_IP, IP_MULTICAST_TTL, &value, &size) == 0 && value == 1);
+	size = sizeof(value);
+	CHECK(getsockopt(fd, IPPROTO_IP, IP_MULTICAST_LOOP, &value, &size) == 0 && value == 1);
+	int ttl = 255;
+	CHECK(setsockopt(fd, IPPROTO_IP, IP_MULTICAST_TTL, &ttl, sizeof(ttl)) == 0);
+	size = sizeof(value);
+	CHECK(getsockopt(fd, IPPROTO_IP, IP_MULTICAST_TTL, &value, &size) == 0 && value == 255);
+	unsigned char byte = 4;
+	CHECK(setsockopt(fd, IPPROTO_IP, IP_MULTICAST_TTL, &byte, 1) == 0);
+	byte = 0;
+	size = 1;
+	CHECK(getsockopt(fd, IPPROTO_IP, IP_MULTICAST_TTL, &byte, &size) == 0 && byte == 4 && size == 1);
+	ttl = 256;
+	CHECK_ERROR(setsockopt(fd, IPPROTO_IP, IP_MULTICAST_TTL, &ttl, sizeof(ttl)), EINVAL);
+	ttl = -1;
+	CHECK(setsockopt(fd, IPPROTO_IP, IP_MULTICAST_TTL, &ttl, sizeof(ttl)) == 0);
+	size = sizeof(value);
+	CHECK(getsockopt(fd, IPPROTO_IP, IP_MULTICAST_TTL, &value, &size) == 0 && value == 1);
+
+	// Joined on lo by its number, and by its address; each once.
+	struct ip_mreqn by_number = {.imr_multiaddr.s_addr = inet_addr("239.1.2.3"), .imr_ifindex = 1};
+	CHECK(setsockopt(fd, IPPROTO_IP, IP_ADD_MEMBERSHIP, &by_number, sizeof(by_number)) == 0);
+	CHECK_ERROR(setsockopt(fd, IPPROTO_IP, IP_ADD_MEMBERSHIP, &by_number, sizeof(by_number)),
+			EADDRINUSE);
+	struct ip_mreq by_address = {.imr_multiaddr.s_addr = inet_addr("239.1.2.4"),
+			.imr_interface.s_addr = htonl(INADDR_LOOPBACK)};
+	CHECK(setsockopt(fd, IPPROTO_IP, IP_ADD_MEMBERSHIP, &by_address, sizeof(by_address)) == 0);
+	CHECK(setsockopt(fd, IPPROTO_IP, IP_DROP_MEMBERSHIP, &by_address, sizeof(by_address)) == 0);
+	CHECK_ERROR(setsockopt(fd, IPPROTO_IP, IP_DROP_MEMBERSHIP, &by_address, sizeof(by_address)),
+			EADDRNOTAVAIL);
+	// Not a group; an interface not there; and with no card, no route to
+	// a group, so that the interface must be named.
+	struct ip_mreq wrong = {.imr_multiaddr.s_addr = htonl(INADDR_LOOPBACK),
+			.imr_interface.s_addr = htonl(INADDR_LOOPBACK)};
+	CHECK_ERROR(setsockopt(fd, IPPROTO_IP, IP_ADD_MEMBERSHIP, &wrong, sizeof(wrong)), EINVAL);
+	struct ip_mreqn nowhere = {.imr_multiaddr.s_addr = inet_addr("239.1.2.5"), .imr_ifindex = 9};
+	CHECK_ERROR(setsockopt(fd, IPPROTO_IP, IP_ADD_MEMBERSHIP, &nowhere, sizeof(nowhere)), ENODEV);
+	struct ip_mreq unnamed = {.imr_multiaddr.s_addr = inet_addr("239.1.2.5"),
+			.imr_interface.s_addr = htonl(INADDR_ANY)};
+	CHECK_ERROR(setsockopt(fd, IPPROTO_IP, IP_ADD_MEMBERSHIP, &unnamed, sizeof(unnamed)), ENODEV);
+	struct ip_mreq away = {.imr_multiaddr.s_addr = inet_addr("239.1.2.5"),
+			.imr_interface.s_addr = inet_addr("10.9.9.9")};
+	CHECK_ERROR(setsockopt(fd, IPPROTO_IP, IP_ADD_MEMBERSHIP, &away, sizeof(away)), ENODEV);
+	CHECK_ERROR(setsockopt(fd, IPPROTO_IP, IP_ADD_MEMBERSHIP, &by_number, 4), EINVAL);
+
+	// Bound to the group's port: the socket that joined takes what is sent
+	// to the group, and one that did not does not.
+	int other = socket(AF_INET, SOCK_DGRAM, 0);
+	int on = 1;
+	CHECK(setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on)) == 0);
+	CHECK(setsockopt(other, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on)) == 0);
+	struct sockaddr_in any = loopback(0);
+	any.sin_addr.s_addr = htonl(INADDR_ANY);
+	CHECK(bind(fd, (struct sockaddr *)&any, sizeof(any)) == 0);
+	any.sin_port = htons(port_of(fd));
+	CHECK(bind(other, (struct sockaddr *)&any, sizeof(any)) == 0);
+	int sender = socket(AF_INET, SOCK_DGRAM, 0);
+	struct in_addr lo = {htonl(INADDR_LOOPBACK)};
+	CHECK(setsockopt(sender, IPPROTO_IP, IP_MULTICAST_IF, &lo, sizeof(lo)) == 0);
+	struct in_addr chosen = {0};
+	size = sizeof(chosen);
+	CHECK(getsockopt(sender, IPPROTO_IP, IP_MULTICAST_IF, &chosen, &size) == 0);
+	CHECK(chosen.s_addr == htonl(INADDR_LOOPBACK));
+	struct sockaddr_in group = any;
+	group.sin_addr.s_addr = inet_addr("239.1.2.3");
+	CHECK(sendto(sender, "all", 3, 0, (struct sockaddr *)&group, sizeof(group)) == 3);
+	struct pollfd p = {fd, POLLIN, 0};
+	CHECK(poll(&p, 1, 5000) == 1);
+	char buffer[8];
+	CHECK(recv(fd, buffer, sizeof(buffer), MSG_DONTWAIT) == 3 && !memcmp(buffer, "all", 3));
+	CHECK_ERROR(recv(other, buffer, sizeof(buffer), MSG_DONTWAIT), EAGAIN);
+	// Left, it takes no more.
+	CHECK(setsockopt(fd, IPPROTO_IP, IP_DROP_MEMBERSHIP, &by_number, sizeof(by_number)) == 0);
+	CHECK(sendto(sender, "gone", 4, 0, (struct sockaddr *)&group, sizeof(group)) == 4);
+	CHECK(poll(&p, 1, 200) == 0);
+	close(sender);
+	close(other);
+	close(fd);
+
+	int six = socket(AF_INET6, SOCK_DGRAM, 0);
+	size = sizeof(value);
+	CHECK(getsockopt(six, IPPROTO_IPV6, IPV6_MULTICAST_HOPS, &value, &size) == 0 && value == 1);
+	int hops = -1;
+	CHECK(setsockopt(six, IPPROTO_IPV6, IPV6_MULTICAST_HOPS, &hops, sizeof(hops)) == 0);
+	int loop = 2;
+	CHECK_ERROR(setsockopt(six, IPPROTO_IPV6, IPV6_MULTICAST_LOOP, &loop, sizeof(loop)), EINVAL);
+	struct ipv6_mreq mdns6;
+	memset(&mdns6, 0, sizeof(mdns6));
+	inet_pton(AF_INET6, "ff02::fb", &mdns6.ipv6mr_multiaddr);
+	mdns6.ipv6mr_interface = 1;
+	CHECK(setsockopt(six, IPPROTO_IPV6, IPV6_ADD_MEMBERSHIP, &mdns6, sizeof(mdns6)) == 0);
+	CHECK(setsockopt(six, IPPROTO_IPV6, IPV6_DROP_MEMBERSHIP, &mdns6, sizeof(mdns6)) == 0);
+	unsigned int index = 1;
+	CHECK(setsockopt(six, IPPROTO_IPV6, IPV6_MULTICAST_IF, &index, sizeof(index)) == 0);
+	close(six);
+	// A stream socket has no groups, as on Linux.
+	int stream = socket(AF_INET, SOCK_STREAM, 0);
+	CHECK_ERROR(setsockopt(stream, IPPROTO_IP, IP_ADD_MEMBERSHIP, &by_number, sizeof(by_number)),
+			EPROTO);
+	close(stream);
+}
+
+// getifaddrs (ADR 0336): lo's IPv4 and IPv6 addresses, their masks and
+// flags, as /kernel/class/net gives them.
+static void addresses(void) {
+	struct ifaddrs *list = NULL;
+	CHECK(getifaddrs(&list) == 0 && list != NULL);
+	int four = 0, six = 0;
+	for(struct ifaddrs *i = list; i; i = i->ifa_next) {
+		CHECK(!strcmp(i->ifa_name, "lo"));
+		CHECK((i->ifa_flags & (IFF_UP | IFF_LOOPBACK | IFF_RUNNING)) == (IFF_UP | IFF_LOOPBACK | IFF_RUNNING));
+		CHECK(!(i->ifa_flags & IFF_BROADCAST) && i->ifa_broadaddr == NULL);
+		if(!i->ifa_addr)
+			continue;
+		if(i->ifa_addr->sa_family == AF_INET) {
+			four++;
+			struct sockaddr_in *in = (struct sockaddr_in *)i->ifa_addr;
+			struct sockaddr_in *mask = (struct sockaddr_in *)i->ifa_netmask;
+			CHECK(in->sin_addr.s_addr == htonl(INADDR_LOOPBACK));
+			CHECK(mask && mask->sin_addr.s_addr == htonl(0xff000000));
+		} else if(i->ifa_addr->sa_family == AF_INET6) {
+			six++;
+			struct sockaddr_in6 *in6 = (struct sockaddr_in6 *)i->ifa_addr;
+			struct sockaddr_in6 *mask = (struct sockaddr_in6 *)i->ifa_netmask;
+			CHECK(IN6_IS_ADDR_LOOPBACK(&in6->sin6_addr) && in6->sin6_scope_id == 0);
+			static const unsigned char all[16] = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+					0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
+			CHECK(mask && !memcmp(&mask->sin6_addr, all, 16));
+		}
+	}
+	CHECK(four == 1 && six == 1);
+	freeifaddrs(list);
+}
+
 // Deletes every network capability the process has, but the one in slot
 // `keep` (0 for none).
 static void drop_network(uint32_t keep) {
@@ -611,12 +934,40 @@ static void capabilities(void) {
 		CHECK_ERROR(bind(fd, (struct sockaddr *)&at, sizeof(at)), EACCES);
 		CHECK_ERROR(listen(fd, 1), EACCES);
 		close(fd);
+		// The send right reaches past the networks this machine is on,
+		// not them: no group to join or send to (ADR 0337).
+		int d = socket(AF_INET, SOCK_DGRAM, 0);
+		struct ip_mreqn group = {.imr_multiaddr.s_addr = inet_addr("239.1.2.3"), .imr_ifindex = 1};
+		CHECK_ERROR(setsockopt(d, IPPROTO_IP, IP_ADD_MEMBERSHIP, &group, sizeof(group)), EACCES);
+		struct sockaddr_in to_group = loopback(9);
+		to_group.sin_addr.s_addr = group.imr_multiaddr.s_addr;
+		CHECK_ERROR(sendto(d, "x", 1, 0, (struct sockaddr *)&to_group, sizeof(to_group)), EACCES);
+		close(d);
 		check_exit_child();
 	}
 	int accepted = accept(server, NULL, NULL);
 	CHECK(accepted >= 0);
 	char buffer[8];
 	CHECK(read(accepted, buffer, sizeof(buffer)) == 3);
+	close(accepted);
+	CHECK_CHILD(pid);
+	// The local right alone: this machine, and the groups of the networks
+	// it is on.
+	pid = check_fork();
+	if(pid == 0) {
+		only(0, 65536, RADIX_RIGHTS_LOCAL);
+		int client = connected(port);
+		CHECK(write(client, "near", 4) == 4);
+		close(client);
+		int d = socket(AF_INET, SOCK_DGRAM, 0);
+		struct ip_mreqn group = {.imr_multiaddr.s_addr = inet_addr("239.1.2.3"), .imr_ifindex = 1};
+		CHECK(setsockopt(d, IPPROTO_IP, IP_ADD_MEMBERSHIP, &group, sizeof(group)) == 0);
+		close(d);
+		check_exit_child();
+	}
+	accepted = accept(server, NULL, NULL);
+	CHECK(accepted >= 0);
+	CHECK(read(accepted, buffer, sizeof(buffer)) == 4);
 	close(accepted);
 	CHECK_CHILD(pid);
 	// Allowed only to listen on ports 9000 to 9009: it binds and listens
@@ -658,6 +1009,11 @@ int main(void) {
 	RUN(errors);
 	RUN(ipv6);
 	RUN(interfaces);
+	RUN(ping_sockets);
+	RUN(packet_info);
+	RUN(reuse_port);
+	RUN(multicast);
+	RUN(addresses);
 	RUN(capabilities);
 	return check_end();
 }

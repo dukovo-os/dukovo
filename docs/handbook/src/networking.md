@@ -197,6 +197,20 @@ IPv6, the firewall and WireGuard. This page grows with each.
   logged. What you run yourself listens for your machine alone until
   `firewall allow program PATH` lets others reach it
   ([ADR 0334](https://github.com/openlinuxsystems/orthros/blob/main/docs/adr/0334-the-firewall-denies-inbound-unless-a-service-listens-or-a-rule-allows.md)).
+- **Finding the machines beside it**: discoverd(8) answers for the
+  machine's `NAME.local` by multicast DNS, so `ping studio.local` works
+  from the machines that ask it, as macOS, Windows, Linux with Avahi
+  and other Dukovo machines do, and finds their
+  names, the services they offer by DNS-SD and the devices that answer
+  WS-Discovery, which discover(1) lists
+  ([ADR 0338](https://github.com/openlinuxsystems/orthros/blob/main/docs/adr/0338-discoverd-finds-what-the-local-networks-have-with-mdns-and-ws-discovery.md)).
+  ping(8) is anyone's, through a ping socket, and multicast works as on
+  Linux
+  ([ADR 0336](https://github.com/openlinuxsystems/orthros/blob/main/docs/adr/0336-multicast-groups-packet-info-and-ping-sockets-on-smoltcp.md)).
+- **An app reaches the local network only if you let it**: a bundle's
+  network.local permission, asked for when it first runs, is a right of
+  its own, apart from reaching the internet
+  ([ADR 0337](https://github.com/openlinuxsystems/orthros/blob/main/docs/adr/0337-the-local-right-reaches-the-networks-the-machine-is-on.md)).
 
 Native programs use the sockets through radix-network(2) and
 radix-file(2).
@@ -407,8 +421,42 @@ servers = 9.9.9.9#dns.quad9.net https://cloudflare-dns.com/dns-query#1.1.1.1
 # service resolved reload
 ```
 
-`localhost` is answered on the machine, and `.local` names never leave
-it. `resolvectl flush-caches` empties the cache.
+`localhost` is answered on the machine, and `.local` names never go
+to a server: resolved asks discoverd for them (below).
+`resolvectl flush-caches` empties the cache.
+
+## The machine's name and the local network
+
+The machine's name is the first line of `/system/settings/hostname`
+(hostname(5)), `dukovo` until you give it one. discoverd(8) answers for
+it on each network as `NAME.local`, and finds the other machines'
+`.local` names for every program's lookups:
+
+```
+# hostname studio
+# service discoverd restart
+$ ping -c 1 printer.local
+PING printer.local (192.168.1.7) 56(84) bytes of data.
+64 bytes from printer.local (192.168.1.7): icmp_seq=1 time=0.912 ms
+```
+
+`discover` lists what the networks offer, by DNS-SD, as printers,
+shared folders and other machines do, and what answers WS-Discovery,
+as Windows machines do:
+
+```
+$ discover
+SERVICE  TYPE               AT                 ADDRESSES
+laptop   _workstation._tcp  laptop.local:9     192.168.1.12
+printer  _ipp._tcp          printer.local:631  192.168.1.7
+
+DEVICE        TYPES                     ENDPOINT               DESCRIBED AT
+192.168.1.20  wsdp:Device pub:Computer  urn:uuid:5a1e33c0-...  http://192.168.1.20:5357/5a1e33c0-...
+```
+
+An app sees discoverd, and reaches the machines on your networks, only
+with network.local, which it asks you for when it first runs
+(bundle(1)).
 
 ## The time and the time zone
 
@@ -502,6 +550,16 @@ firewall:
 
 ```
 ./ob test --case network-pair
+```
+
+The `network-discovery` boot test boots two machines on a cable, names
+them `a` and `b`, and checks that each pings the other's `.local` name,
+by IPv4 and IPv6, that `discover` lists b's workstation and b as a
+WS-Discovery device, and that a ping reaches b with the local right
+and not the send right alone:
+
+```
+./ob test --case network-discovery
 ```
 
 ## Trying the sockets

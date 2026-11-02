@@ -462,19 +462,60 @@ int Sysdeps<Uname>::operator()(struct utsname *buf) {
 	return 0;
 }
 
+namespace {
+
+// The machine's name, which hostname(1) sets and discoverd(8) answers
+// for as NAME.local (ADR 0338): the first line of this file, as Linux's
+// /etc/hostname has it.
+constexpr const char *HOSTNAME_FILE = "/system/settings/hostname";
+
+// The name a machine has until it is given one.
+constexpr const char DEFAULT_HOSTNAME[] = "dukovo";
+
+// The longest name: what uname's nodename holds, 64 bytes, as Linux's
+// HOST_NAME_MAX is (mlibc's says 255).
+constexpr size_t HOSTNAME_MAX = sizeof(utsname::nodename) - 1;
+
+} // namespace
+
 int Sysdeps<GetHostname>::operator()(char *buffer, size_t bufsize) {
-	// Naming the machine comes with networking (Phase 12).
-	const char name[] = "dukovo";
-	if(bufsize < sizeof(name))
+	char name[HOSTNAME_MAX + 2];
+	size_t length = 0;
+	if(read_sys(HOSTNAME_FILE, name, sizeof(name))) {
+		length = strlen(name);
+		while(length && (name[length - 1] == ' ' || name[length - 1] == '\t'
+				|| name[length - 1] == '\r'))
+			length--;
+	}
+	// None, or one too long to be a name: the default's.
+	if(!length || length > HOSTNAME_MAX) {
+		length = sizeof(DEFAULT_HOSTNAME) - 1;
+		memcpy(name, DEFAULT_HOSTNAME, length);
+	}
+	if(bufsize <= length)
 		return ENAMETOOLONG;
-	memcpy(buffer, name, sizeof(name));
+	memcpy(buffer, name, length);
+	buffer[length] = 0;
 	return 0;
 }
 
+// Names the machine: writes its settings' file, which an administrator
+// may; EPERM for anyone else, as on Linux.
 int Sysdeps<SetHostname>::operator()(const char *buffer, size_t bufsize) {
-	(void)buffer;
-	(void)bufsize;
-	return EPERM;
+	if(bufsize > HOSTNAME_MAX || memchr(buffer, '\n', bufsize) || memchr(buffer, 0, bufsize))
+		return EINVAL;
+	int fd;
+	if(int e = sysdep<Open>(HOSTNAME_FILE, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644, &fd); e)
+		return e == EACCES || e == EROFS ? EPERM : e;
+	char line[HOSTNAME_MAX + 1];
+	memcpy(line, buffer, bufsize);
+	line[bufsize] = '\n';
+	ssize_t wrote = 0;
+	int e = sysdep<Write>(fd, line, bufsize + 1, &wrote);
+	sysdep<Close>(fd);
+	if(e)
+		return e;
+	return wrote == static_cast<ssize_t>(bufsize + 1) ? 0 : EIO;
 }
 
 int Sysdeps<Sysconf>::operator()(int num, long *ret) {

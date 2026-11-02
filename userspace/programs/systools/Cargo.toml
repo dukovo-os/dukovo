@@ -54,6 +54,14 @@ radix-spd = { path = "../../../kernel/lib/spd" }
 # timed's NTS key establishment; ring's random numbers for both.
 ring = "0.17.14"
 rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
+# discoverd(8)'s multicast DNS and DNS-SD (ADR 0338), without the async
+# half of its channels, and the machine's addresses for its own name;
+# ob patches if-addrs in from the rust-crates port.
+if-addrs = "0.15.0"
+mdns-sd = { version = "0.21.7", default-features = false, features = ["logging"] }
+# ping(8)'s ping sockets (ADR 0336); ob patches it in from the
+# rust-crates port.
+socket2 = "0.6.5"
 # logd(8)'s records and requests, as lines of JSON (ADR 0210).
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.140"

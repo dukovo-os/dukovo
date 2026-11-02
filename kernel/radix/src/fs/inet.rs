@@ -41,6 +41,20 @@
 //! a stream socket's connection that has not ended: that one is closed,
 //! its FIN sent, and left to its interface as an orphan (`net::Orphan`),
 //! which goes once the connection has, or is reset after a minute.
+//!
+//! A datagram socket joins multicast groups on one interface each
+//! (`socket_group`, ADR 0336): its part there takes the group's
+//! datagrams, and the interface joins the group while any socket has. Its
+//! datagrams to a group go out through the interface IP_MULTICAST_IF
+//! names, or the one it is bound to, or the one the routes say. Datagram
+//! sockets that set SO_REUSEADDR or SO_REUSEPORT share their port, and a
+//! datagram to a group or a broadcast address reaches each of them.
+//!
+//! A ping socket (ADR 0336) sends ICMP or ICMPv6 echo requests and takes
+//! the replies, as Linux's do: its parts are smoltcp's ICMP sockets,
+//! bound to the echo identifier it holds as a datagram socket holds a
+//! port, each made on the interface its first request through it goes
+//! out of.
 
 use alloc::vec::Vec;
 use core::any::Any;
@@ -53,7 +67,7 @@ use radix_abi::process::PipeFlags;
 use radix_cap::{ObjectKind, Rights, SlotRef};
 use radix_mm::{Flags, HEAP, Kmalloc};
 use radix_net::smoltcp::iface::SocketHandle;
-use radix_net::smoltcp::socket::{tcp, udp};
+use radix_net::smoltcp::socket::{icmp, tcp, udp};
 use radix_net::smoltcp::time::Duration;
 use radix_net::smoltcp::wire::{IpAddress, IpEndpoint, IpListenEndpoint};
 use radix_net::{Across, ConnectError, IpVersion, Ipv4Address, Ipv6Address, OtherEnd, TcpMemory};
@@ -63,7 +77,7 @@ use radix_vfs::{In, Kind as NodeKind, Node, NodeRef, Out, Stat, mem, next_id};
 
 use super::{Description, FileObject, FileRef, pipe};
 use crate::net::firewall::{self, Listener, Listening, Owner};
-use crate::net::memory::{self, TcpLeases, UdpLeases};
+use crate::net::memory::{self, PingLeases, TcpLeases, UdpLeases};
 use crate::net::ports::{self, Held, Protocol, Versions};
 use crate::net::{self, Interface, Orphan};
 use crate::sched::{self, wait};
@@ -96,6 +110,20 @@ const UDP_HEADERS_IPV6: usize = 48;
 /// The bytes a datagram socket's first copy of a datagram has room for, at
 /// least: a DNS query's, say.
 const BOUNCE_FIRST: usize = 512;
+/// The most multicast groups a datagram socket joins, as Linux's
+/// IP_MAX_MEMBERSHIPS.
+const MEMBERSHIPS_MAX: usize = udp::GROUPS_MAX;
+/// The bytes of an IPv4 header and an IPv6 header, which a ping's
+/// interface's MTU holds with it.
+const IPV4_HEADER: usize = 20;
+const IPV6_HEADER: usize = 40;
+/// The first bytes of ICMP's and ICMPv6's echo requests and replies:
+/// their types, and the bytes of their headers.
+const ECHO_REQUEST: u8 = 8;
+const ECHO_REPLY: u8 = 0;
+const ECHO_REQUEST_V6: u8 = 128;
+const ECHO_REPLY_V6: u8 = 129;
+const ECHO_HEADER: usize = 8;
 
 /// What a network socket carries.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -104,6 +132,8 @@ pub enum Kind {
     Stream,
     /// UDP's datagrams.
     Datagram,
+    /// ICMP's or ICMPv6's echo requests and replies (ADR 0336).
+    Ping,
 }
 
 impl Kind {
@@ -111,6 +141,7 @@ impl Kind {
         match self {
             Kind::Stream => Protocol::Tcp,
             Kind::Datagram => Protocol::Udp,
+            Kind::Ping => Protocol::Ping,
         }
     }
 }
@@ -139,9 +170,26 @@ pub type Endpoint = (Option<IpAddress>, u16);
 /// An address and a port to connect or send to, or that sent.
 pub type Peer = (IpAddress, u16);
 
-/// How many bytes a receive took, from where, and the interface it came
-/// by, by its number.
-type Received = (usize, Option<Peer>, u32);
+/// What a receive took.
+#[derive(Clone, Copy, Debug)]
+pub struct Received {
+    /// How many bytes.
+    pub count: usize,
+    /// Where they came from.
+    pub from: Option<Peer>,
+    /// The interface they came by, by its number; a stream socket's
+    /// peer's, for a link-local one.
+    pub scope: u32,
+    /// Where a datagram went: the address of this machine's, or the
+    /// group, it was sent to.
+    pub to: Option<IpAddress>,
+}
+
+impl Received {
+    fn of(count: usize, from: Option<Peer>, scope: u32) -> Received {
+        Received { count, from, scope, to: None }
+    }
+}
 
 /// An address and port as a program gave it, radix-network(2)'s Address:
 /// of its family, an IPv4-mapped one as it is.
@@ -151,6 +199,16 @@ pub struct Given {
     ip: IpAddress,
     port: u16,
     scope: u32,
+}
+
+impl Given {
+    /// Its address, an IPv4-mapped one as the IPv4 address it maps.
+    pub fn ip(&self) -> IpAddress {
+        match self.ip {
+            IpAddress::Ipv6(ip) => ip.to_ipv4_mapped().map_or(self.ip, IpAddress::Ipv4),
+            v4 => v4,
+        }
+    }
 }
 
 /// What `bytes`, an Address, says.
@@ -205,6 +263,7 @@ pub fn address_of(endpoint: Endpoint, v6: bool, scope: u32) -> [u8; Address::SIZ
 enum Leases {
     Tcp(TcpLeases),
     Udp(UdpLeases),
+    Ping(PingLeases),
 }
 
 /// One of smoltcp's sockets, of a network socket's, on one interface.
@@ -259,6 +318,16 @@ struct Options {
     device: u32,
     /// An IPv6 socket's IPV6_V6ONLY.
     v6_only: bool,
+    /// The interface its datagrams to groups go out through, by its
+    /// number: 0 for the one it is bound to, or the routes'.
+    multicast_interface: u32,
+    /// Their hop limit: 0 keeps them on this machine, which sends none.
+    multicast_hops: u8,
+    multicast_loop: bool,
+    /// SO_REUSEPORT: a datagram socket shares its port.
+    reuse_port: bool,
+    /// IP_PKTINFO and IPV6_RECVPKTINFO.
+    packet_info: bool,
 }
 
 impl Options {
@@ -275,7 +344,24 @@ impl Options {
         send_timeout_ns: 0,
         device: 0,
         v6_only: false,
+        multicast_interface: 0,
+        multicast_hops: 1,
+        multicast_loop: true,
+        reuse_port: false,
+        packet_info: false,
     };
+
+    /// Whether a datagram socket shares its port (ADR 0336).
+    fn reuses(&self) -> ports::Reuse {
+        ports::Reuse { address: self.reuse_address, port: self.reuse_port }
+    }
+
+    /// Sets what they say on `socket`, a datagram socket's part.
+    fn apply_udp(&self, socket: &mut udp::Socket<'static>) {
+        socket.set_hop_limit(Some(self.time_to_live));
+        // None go when it is 0: see `send_datagram`.
+        socket.set_multicast_hop_limit(Some(self.multicast_hops.max(1)));
+    }
 
     /// Sets what they say on `socket`, a stream socket's connection.
     fn apply(&self, socket: &mut tcp::Socket<'static>, connected: bool) {
@@ -297,6 +383,13 @@ impl Options {
         };
         socket.set_timeout(Some(answer));
     }
+}
+
+/// A multicast group a datagram socket joined, on one interface.
+#[derive(Clone, Copy)]
+struct Membership {
+    group: IpAddress,
+    interface: &'static Interface,
 }
 
 /// What a socket keeps under its lock.
@@ -339,6 +432,8 @@ struct State {
     /// Where a datagram socket's datagram is copied from the program before
     /// it goes, made when it first sends one.
     bounce: Option<Vec<u8, Kmalloc>>,
+    /// The multicast groups a datagram socket joined.
+    memberships: Vec<Membership, Kmalloc>,
 }
 
 impl State {
@@ -386,7 +481,8 @@ impl State {
         self.parts.try_reserve_exact(net::MAX_INTERFACES).map_err(|_| status(Kernel::NoMemory))?;
         let version = self.version();
         for interface in interfaces_for(address, self.options.device) {
-            match udp_part(interface, address, port, version) {
+            let groups = self.memberships.iter().filter(|m| core::ptr::eq(m.interface, interface));
+            match udp_part(interface, address, port, version, &self.options, groups) {
                 // Room was reserved for every interface.
                 Ok(part) => {
                     let _ = self.parts.push_within_capacity(part);
@@ -405,6 +501,9 @@ impl State {
     /// broadcast address), else the way the routes go, through the
     /// interface numbered `scope` for a link-local address.
     fn route(&self, to: IpAddress, scope: u32) -> Result<&'static Interface, Status> {
+        if to.is_multicast() {
+            return self.route_group(to, scope);
+        }
         let interface = match self.options.device {
             0 => net::route_scoped(to, scope),
             device => net::by_index(device)
@@ -413,8 +512,63 @@ impl State {
         interface.ok_or(status(Kernel::Unreachable))
     }
 
+    /// The interface a datagram to the multicast group `group` goes out
+    /// through, or a socket joins it on (ADR 0336): the one numbered
+    /// `index`, else IP_MULTICAST_IF's, else the one the socket is bound
+    /// to, else the one `scope` numbers, else the routes'.
+    fn route_group(&self, group: IpAddress, scope: u32) -> Result<&'static Interface, Status> {
+        let named = [self.options.multicast_interface, self.options.device, scope]
+            .into_iter()
+            .find(|&index| index != 0);
+        let interface = match named {
+            Some(index) => net::by_index(index),
+            None => net::route_group(group),
+        };
+        interface.ok_or(status(Kernel::Unreachable))
+    }
+
+    /// The ping socket's part on `interface`, made if it has none, with
+    /// its echo identifier `ident` (ADR 0336). Not inlined, as
+    /// [`udp_part`] is not.
+    #[inline(never)]
+    fn ping_part(&mut self, interface: &'static Interface, ident: u16) -> Result<usize, Status> {
+        if let Some(at) =
+            self.parts.iter().position(|part| core::ptr::eq(part.interface, interface))
+        {
+            return Ok(at);
+        }
+        self.parts.try_reserve(1).map_err(|_| status(Kernel::NoMemory))?;
+        let (leases, ping_memory) = memory::lend_ping().ok_or(status(Kernel::NoMemory))?;
+        let mut socket = ping_memory.socket();
+        socket.set_hop_limit(Some(self.options.time_to_live));
+        if socket.bind(icmp::Endpoint::Ident(ident)).is_err() {
+            memory::give_back_ping(leases, socket);
+            return Err(status(Kernel::InvalidArgument));
+        }
+        let mut stack = interface.stack.lock();
+        let handle = match interface.add_socket(&mut stack, socket) {
+            Ok(handle) => handle,
+            Err(socket) => {
+                drop(stack);
+                memory::give_back_ping(leases, socket);
+                return Err(status(Kernel::NoBuffers));
+            }
+        };
+        drop(stack);
+        // Room was reserved above.
+        let _ = self.parts.push_within_capacity(Part {
+            interface,
+            handle,
+            leases: Leases::Ping(leases),
+            other: OtherEnd::default(),
+        });
+        Ok(self.parts.len() - 1)
+    }
+
     /// Starts its connection to `to`, through the interface numbered
-    /// `scope` if it is link-local, under its lock.
+    /// `scope` if it is link-local, under its lock. Not inlined: the TCP
+    /// socket it makes is large for connect's stack (ADR 0058).
+    #[inline(never)]
     fn start_connection(&mut self, to: Peer, scope: u32) -> Result<(), Status> {
         let interface = self.route(to.0, scope)?;
         let bound = self.local;
@@ -428,8 +582,8 @@ impl State {
             Some((_, port)) => (None, port),
             None => {
                 let versions = self.versions();
-                let held =
-                    ports::take_any(Protocol::Tcp, versions).ok_or(status(Kernel::AddressInUse))?;
+                let held = ports::take_any(Protocol::Tcp, versions, ports::Reuse::NONE)
+                    .ok_or(status(Kernel::AddressInUse))?;
                 let port = held.port();
                 (Some(held), port)
             }
@@ -621,6 +775,7 @@ impl InetSocket {
                 shut_write: false,
                 options: Options::DEFAULT,
                 bounce: None,
+                memberships: Vec::new_in(kmalloc()),
             }),
         })
     }
@@ -699,14 +854,24 @@ impl InetSocket {
         {
             return Err(status(Kernel::AddressNotAvailable));
         }
-        // One bound to an address takes its version's alone.
-        let versions = match address {
-            None => state.versions(),
-            Some(IpAddress::Ipv4(_)) => Versions::Ipv4,
-            Some(IpAddress::Ipv6(_)) => Versions::Ipv6,
+        // One bound to an address takes its version's alone, and a ping
+        // socket its family's.
+        let versions = match (address, self.kind) {
+            (_, Kind::Ping) if state.v6 => Versions::Ipv6,
+            (_, Kind::Ping) => Versions::Ipv4,
+            (None, _) => state.versions(),
+            (Some(IpAddress::Ipv4(_)), _) => Versions::Ipv4,
+            (Some(IpAddress::Ipv6(_)), _) => Versions::Ipv6,
         };
+        // Datagram sockets that reuse a port share it (ADR 0336).
+        let reuse =
+            if self.kind == Kind::Datagram { state.options.reuses() } else { ports::Reuse::NONE };
         let held = if port == 0 {
-            ports::take_any(self.kind.protocol(), versions).ok_or(status(Kernel::AddressInUse))?
+            ports::take_any(self.kind.protocol(), versions, reuse)
+                .ok_or(status(Kernel::AddressInUse))?
+        } else if self.kind == Kind::Ping {
+            // An echo identifier is no port: any free one is the socket's.
+            ports::take(Protocol::Ping, versions, port).ok_or(status(Kernel::AddressInUse))?
         } else {
             let authority = authority.ok_or(status(Kernel::InvalidArgument))?;
             if !authority.rights.contains(Rights::RECEIVE) {
@@ -716,7 +881,7 @@ impl InetSocket {
                 return Err(status(Kernel::OutOfRange));
             }
             // Sockets on other interfaces may hold it too (ADR 0191).
-            ports::take_on(self.kind.protocol(), versions, port, state.options.device)
+            ports::take_on(self.kind.protocol(), versions, port, state.options.device, reuse)
                 .ok_or(status(Kernel::AddressInUse))?
         };
         let port = held.port();
@@ -724,7 +889,8 @@ impl InetSocket {
             // It receives from now on.
             state.datagram_parts(address, port)?;
         }
-        state.may_listen = authority.is_some_and(|authority| authority.receives_on(port));
+        state.may_listen = self.kind != Kind::Ping
+            && authority.is_some_and(|authority| authority.receives_on(port));
         state.inbound = state.may_listen
             && authority.is_some_and(|authority| authority.rights.contains(Rights::INBOUND));
         state.local = Some((address, port));
@@ -883,12 +1049,15 @@ impl InetSocket {
     pub fn connect(&self, given: Given, non_blocking: bool) -> Result<(), Status> {
         let (to, scope) = {
             let state = self.state.lock();
+            // A ping socket's address has no port, as on Linux.
             match state.endpoint(given)? {
-                ((Some(ip), port), scope) if port != 0 => ((ip, port), scope),
+                ((Some(ip), port), scope) if port != 0 || self.kind == Kind::Ping => {
+                    ((ip, port), scope)
+                }
                 _ => return Err(status(Kernel::InvalidArgument)),
             }
         };
-        if self.kind == Kind::Datagram {
+        if self.kind != Kind::Stream {
             let mut state = self.state.lock();
             self.bind_if_not(&mut state)?;
             state.peer = Some(to);
@@ -941,7 +1110,7 @@ impl InetSocket {
         non_blocking: bool,
         signal: bool,
     ) -> Result<usize, Status> {
-        if self.kind == Kind::Datagram {
+        if self.kind != Kind::Stream {
             let to = match to {
                 Some(given) => match self.state.lock().endpoint(given)? {
                     ((Some(ip), port), scope) => Some(((ip, port), scope)),
@@ -949,6 +1118,9 @@ impl InetSocket {
                 },
                 None => None,
             };
+            if self.kind == Kind::Ping {
+                return self.send_ping(data, to.map(|((ip, _), scope)| (ip, scope)), non_blocking);
+            }
             return self.send_datagram(data, to, non_blocking);
         }
         let timeout = self.state.lock().options.send_timeout_ns;
@@ -1060,6 +1232,11 @@ impl InetSocket {
             if data.len() > room.min(memory::UDP_BUFFER) {
                 return Err(status(Kernel::MessageTooLong));
             }
+            // A hop limit of 0 keeps a group's datagrams on this machine,
+            // whose own sockets do not get them: none goes (ADR 0336).
+            if to.0.is_multicast() && state.options.multicast_hops == 0 {
+                return Ok(data.len());
+            }
             (to, interface, state.options.send_timeout_ns)
         };
         let endpoint = IpEndpoint::new(to.0, to.1);
@@ -1119,11 +1296,101 @@ impl InetSocket {
         let timeout = self.state.lock().options.receive_timeout_ns;
         self.wait(non_blocking, timeout, Kernel::WouldBlock, "receive", |state| {
             if state.shut_read {
-                return Ok(Some((0, state.peer, state.scope)));
+                return Ok(Some(Received::of(0, state.peer, state.scope)));
             }
             match self.kind {
                 Kind::Stream => receive_stream(state, out),
                 Kind::Datagram => receive_datagram(state, out),
+                Kind::Ping => receive_ping(state, out),
+            }
+        })
+    }
+
+    /// Whether its packet_info option is set (`receive_message`).
+    pub fn packet_info(&self) -> bool {
+        self.state.lock().options.packet_info
+    }
+
+    /// Sends `data`, an echo request, waiting for room unless
+    /// `non_blocking`, to `to` (through the interface its scope numbers,
+    /// for a link-local address) or where it is connected: a ping
+    /// socket's (ADR 0336). Its identifier is made the socket's, and its
+    /// checksum is made as it goes.
+    fn send_ping(
+        &self,
+        data: &dyn In,
+        to: Option<(IpAddress, u32)>,
+        non_blocking: bool,
+    ) -> Result<usize, Status> {
+        let (to, interface, ident, timeout) = {
+            let mut state = self.state.lock();
+            if state.shut_write {
+                return pipe::broken(0, false);
+            }
+            let connected = state.peer.map(|(ip, _)| (ip, state.scope));
+            let (to, scope) = to.or(connected).ok_or(status(Kernel::NotConnected))?;
+            // ICMPv6 reaches no IPv4 machine.
+            if state.v6 != matches!(to, IpAddress::Ipv6(_)) {
+                return Err(status(Kernel::InvalidArgument));
+            }
+            self.bind_if_not(&mut state)?;
+            let ident = state.local.map_or(0, |(_, ident)| ident);
+            let interface = state.route(to, scope)?;
+            let (room, broadcast) = {
+                let stack = interface.stack.lock();
+                let (header, broadcast) = match to {
+                    IpAddress::Ipv4(ip) => {
+                        (IPV4_HEADER, ip.is_broadcast() || stack.is_broadcast(ip))
+                    }
+                    IpAddress::Ipv6(_) => (IPV6_HEADER, false),
+                };
+                (stack.mtu().saturating_sub(header), broadcast)
+            };
+            if broadcast && !state.options.broadcast {
+                return Err(status(Kernel::Broadcast));
+            }
+            if data.len() < ECHO_HEADER {
+                return Err(status(Kernel::InvalidArgument));
+            }
+            if data.len() > room.min(memory::PING_MAX) {
+                return Err(status(Kernel::MessageTooLong));
+            }
+            state.ping_part(interface, ident)?;
+            (to, interface, ident, state.options.send_timeout_ns)
+        };
+        let len = data.len();
+        self.wait(non_blocking, timeout, Kernel::WouldBlock, "send", |state| {
+            if state.bounce.as_ref().is_none_or(|bounce| bounce.len() < len) {
+                let size = len.next_power_of_two().clamp(BOUNCE_FIRST, memory::PING_MAX);
+                let bounce = radix_mm::bytes::zeroed(size, kmalloc());
+                state.bounce = Some(bounce.map_err(|_| status(Kernel::NoMemory))?);
+            }
+            let request = if state.v6 { ECHO_REQUEST_V6 } else { ECHO_REQUEST };
+            let bounce = state.bounce.as_mut().map_or(&mut [][..], |bounce| &mut bounce[..len]);
+            data.get(0, bounce).map_err(super::status)?;
+            // An echo request, as Linux's ping sockets take alone.
+            if bounce[0] != request || bounce[1] != 0 {
+                return Err(status(Kernel::InvalidArgument));
+            }
+            bounce[4..6].copy_from_slice(&ident.to_be_bytes());
+            let part = state
+                .parts
+                .iter()
+                .find(|part| core::ptr::eq(part.interface, interface))
+                .ok_or(status(Kernel::Unreachable))?;
+            let bounce = state.bounce.as_ref().map_or(&[][..], |bounce| &bounce[..len]);
+            let mut stack = interface.stack.lock();
+            let socket = stack
+                .socket_mut::<icmp::Socket<'static>>(part.handle)
+                .ok_or(status(Kernel::Unreachable))?;
+            match socket.send_slice(bounce, to) {
+                Ok(()) => {
+                    drop(stack);
+                    interface.kick();
+                    Ok(Some(len))
+                }
+                Err(icmp::SendError::BufferFull) => Ok(None),
+                Err(icmp::SendError::Unaddressable) => Err(status(Kernel::Unreachable)),
             }
         })
     }
@@ -1167,6 +1434,12 @@ impl InetSocket {
         Ok(address_of(endpoint, state.v6, state.scope))
     }
 
+    /// The port it is bound to, or a ping socket's identifier: 0 if it is
+    /// not bound.
+    pub fn local_port(&self) -> u16 {
+        self.state.lock().local.map_or(0, |(_, port)| port)
+    }
+
     /// Whether it listens, and whether it is connected.
     pub fn listens_and_connected(&self) -> (bool, bool) {
         let phase = self.state.lock().phase;
@@ -1190,6 +1463,11 @@ impl InetSocket {
             SocketOption::TimeToLive => u64::from(options.time_to_live),
             SocketOption::ReceiveTimeout => options.receive_timeout_ns,
             SocketOption::SendTimeout => options.send_timeout_ns,
+            SocketOption::MulticastInterface => u64::from(options.multicast_interface),
+            SocketOption::MulticastHops => u64::from(options.multicast_hops),
+            SocketOption::MulticastLoop => flag(options.multicast_loop),
+            SocketOption::ReusePort => flag(options.reuse_port),
+            SocketOption::PacketInfo => flag(options.packet_info),
             SocketOption::V6Only => {
                 if !state.v6 {
                     return Err(status(Kernel::NotSupported));
@@ -1219,6 +1497,7 @@ impl InetSocket {
             SocketOption::ReceiveBuffer | SocketOption::SendBuffer => match self.kind {
                 Kind::Stream => memory::TCP_BUFFER as u64,
                 Kind::Datagram => memory::UDP_BUFFER as u64,
+                Kind::Ping => memory::PING_BUFFER as u64,
             },
             SocketOption::Error => {
                 if set.is_some() {
@@ -1233,6 +1512,7 @@ impl InetSocket {
                 return Ok(match self.kind {
                     Kind::Stream => u64::from(SocketType::Stream.raw()),
                     Kind::Datagram => u64::from(SocketType::Datagram.raw()),
+                    Kind::Ping => u64::from(SocketType::Ping.raw()),
                 });
             }
         };
@@ -1255,6 +1535,20 @@ impl InetSocket {
             }
             SocketOption::ReceiveTimeout => options.receive_timeout_ns = value,
             SocketOption::SendTimeout => options.send_timeout_ns = value,
+            SocketOption::MulticastInterface => {
+                let index = u32::try_from(value).map_err(|_| File::NoDevice.status(0))?;
+                if index != 0 && net::by_index(index).is_none() {
+                    return Err(File::NoDevice.status(0));
+                }
+                options.multicast_interface = index;
+            }
+            SocketOption::MulticastHops => {
+                options.multicast_hops =
+                    u8::try_from(value).map_err(|_| status(Kernel::InvalidArgument))?;
+            }
+            SocketOption::MulticastLoop => options.multicast_loop = value != 0,
+            SocketOption::ReusePort => options.reuse_port = value != 0,
+            SocketOption::PacketInfo => options.packet_info = value != 0,
             // Taken, and changing nothing.
             _ => {}
         }
@@ -1271,16 +1565,87 @@ impl InetSocket {
                 part.interface.kick();
             }
         }
-        if self.kind == Kind::Datagram {
-            for part in &state.parts {
-                if let Some(socket) =
-                    part.interface.stack.lock().socket_mut::<udp::Socket<'static>>(part.handle)
-                {
-                    socket.set_hop_limit(Some(options.time_to_live));
+        for part in &state.parts {
+            let mut stack = part.interface.stack.lock();
+            match self.kind {
+                Kind::Datagram => {
+                    if let Some(socket) = stack.socket_mut::<udp::Socket<'static>>(part.handle) {
+                        options.apply_udp(socket);
+                    }
                 }
+                Kind::Ping => {
+                    if let Some(socket) = stack.socket_mut::<icmp::Socket<'static>>(part.handle) {
+                        socket.set_hop_limit(Some(options.time_to_live));
+                    }
+                }
+                Kind::Stream => {}
             }
         }
         Ok(old)
+    }
+
+    /// Joins the multicast group `given`, or with `join` false leaves it,
+    /// on the interface numbered `index`, or for 0 the one the routes to
+    /// the group go through (radix-file(2)'s `socket_group`, ADR 0336).
+    pub fn group(&self, join: bool, given: Given, index: u32) -> Result<(), Status> {
+        if self.kind != Kind::Datagram {
+            return Err(status(Kernel::NotSupported));
+        }
+        let mut state = self.state.lock();
+        let group = match state.endpoint(given)? {
+            ((Some(group), _), _) if group.is_multicast() => group,
+            _ => return Err(status(Kernel::InvalidArgument)),
+        };
+        // No such interface, or for 0 none the group's routes go through:
+        // ENODEV, as on Linux.
+        let no_device = File::NoDevice.status(0);
+        let interface = match index {
+            0 => state.route_group(group, 0).map_err(|_| no_device)?,
+            index => net::by_index(index).ok_or(no_device)?,
+        };
+        let at = state
+            .memberships
+            .iter()
+            .position(|m| m.group == group && core::ptr::eq(m.interface, interface));
+        let joining = |stack: &mut radix_net::Stack<net::Card>, handle| {
+            stack.socket_mut::<udp::Socket<'static>>(handle).map(|socket| {
+                if join {
+                    let _ = socket.join_group(group);
+                } else {
+                    socket.leave_group(group);
+                }
+            })
+        };
+        if !join {
+            let Some(at) = at else { return Err(status(Kernel::AddressNotAvailable)) };
+            state.memberships.swap_remove(at);
+            let mut stack = interface.stack.lock();
+            for part in state.parts.iter().filter(|part| core::ptr::eq(part.interface, interface)) {
+                joining(&mut stack, part.handle);
+            }
+            stack.leave(group);
+            drop(stack);
+            interface.kick();
+            return Ok(());
+        }
+        if at.is_some() {
+            return Err(status(Kernel::AddressInUse));
+        }
+        if state.memberships.len() >= MEMBERSHIPS_MAX {
+            return Err(status(Kernel::NoBuffers));
+        }
+        state.memberships.try_reserve(1).map_err(|_| status(Kernel::NoMemory))?;
+        let mut stack = interface.stack.lock();
+        stack.join(group).map_err(|_| status(Kernel::NoBuffers))?;
+        for part in state.parts.iter().filter(|part| core::ptr::eq(part.interface, interface)) {
+            joining(&mut stack, part.handle);
+        }
+        drop(stack);
+        // Room was reserved above.
+        let _ = state.memberships.push_within_capacity(Membership { group, interface });
+        // The routers hear of it as the interface next polls.
+        interface.kick();
+        Ok(())
     }
 
     /// Binds it, under its lock, to the interface numbered `device`, or
@@ -1305,6 +1670,10 @@ impl InetSocket {
             return Err(status(Kernel::InvalidArgument));
         }
         let was = core::mem::replace(&mut state.options.device, device);
+        // A ping socket's parts are made again as its requests go.
+        if self.kind == Kind::Ping {
+            release_parts(&mut state.parts, false, None);
+        }
         if let (Kind::Datagram, Some((address, port))) = (self.kind, state.local) {
             let mut old = core::mem::replace(&mut state.parts, Vec::new_in(kmalloc()));
             if let Err(err) = state.datagram_parts(address, port) {
@@ -1333,8 +1702,12 @@ impl InetSocket {
                     .socket_mut::<udp::Socket<'static>>(part.handle)
                     .and_then(|socket| socket.peek().ok().map(|(data, _)| data.len()))
                     .unwrap_or(0),
+                Kind::Ping => stack
+                    .socket_mut::<icmp::Socket<'static>>(part.handle)
+                    .and_then(|socket| socket.peek().ok().map(|(data, _)| data.len()))
+                    .unwrap_or(0),
             };
-            if pending > 0 && self.kind == Kind::Datagram {
+            if pending > 0 && self.kind != Kind::Stream {
                 break;
             }
         }
@@ -1344,14 +1717,19 @@ impl InetSocket {
     /// The events `poll` finds on it, as Linux's.
     pub fn events(&self) -> u16 {
         let mut state = self.state.lock();
-        if self.kind == Kind::Datagram {
+        if self.kind != Kind::Stream {
             let mut events = poll::WRITABLE;
             for part in &state.parts {
                 let mut stack = part.interface.stack.lock();
-                if stack
-                    .socket_mut::<udp::Socket<'static>>(part.handle)
-                    .is_some_and(|s| s.can_recv())
-                {
+                let can_receive = match self.kind {
+                    Kind::Datagram => stack
+                        .socket_mut::<udp::Socket<'static>>(part.handle)
+                        .is_some_and(|s| s.can_recv()),
+                    _ => stack
+                        .socket_mut::<icmp::Socket<'static>>(part.handle)
+                        .is_some_and(|s| s.can_recv()),
+                };
+                if can_receive {
                     events |= poll::READABLE;
                 }
             }
@@ -1402,6 +1780,9 @@ fn release_part(part: Part, connected: bool, port: &mut Option<Held>) {
         Leases::Udp(leases) => {
             memory::end_udp(&mut stack, handle, leases, interface.name.as_str());
         }
+        Leases::Ping(leases) => {
+            memory::end_ping(&mut stack, handle, leases, interface.name.as_str());
+        }
         Leases::Tcp(leases) => {
             let open = stack.socket_mut::<tcp::Socket<'static>>(handle).is_some_and(|socket| {
                 match socket.state() {
@@ -1436,16 +1817,26 @@ fn release_part(part: Part, connected: bool, port: &mut Option<Held>) {
 }
 
 /// A UDP socket on `interface`, bound to `address` and `port`, kept to
-/// `version` of IP when it is any address.
-fn udp_part(
+/// `version` of IP when it is any address, with `options`, in the
+/// multicast `groups` the socket joined there. Not inlined: the socket
+/// it makes, with its groups, is large for its callers' stacks (ADR 0058).
+#[inline(never)]
+fn udp_part<'a>(
     interface: &'static Interface,
     address: Option<IpAddress>,
     port: u16,
     version: Option<IpVersion>,
+    options: &Options,
+    groups: impl Iterator<Item = &'a Membership>,
 ) -> Result<Part, Status> {
     let (leases, udp_memory) = memory::lend_udp().ok_or(status(Kernel::NoMemory))?;
     let mut socket = udp_memory.socket();
     socket.set_version(version);
+    options.apply_udp(&mut socket);
+    for membership in groups {
+        // At most MEMBERSHIPS_MAX, each once.
+        let _ = socket.join_group(membership.group);
+    }
     let endpoint = IpListenEndpoint { addr: address, port };
     if socket.bind(endpoint).is_err() {
         memory::give_back_udp(leases, socket);
@@ -1531,7 +1922,7 @@ fn receive_stream(state: &mut State, out: &mut dyn Out) -> Result<Option<Receive
             return Err(status(Kernel::Reset));
         };
         if out.is_empty() {
-            return Ok(Some((0, peer, scope)));
+            return Ok(Some(Received::of(0, peer, scope)));
         }
         // Whether the window it offers had shut to half its buffer or less.
         let narrow = connection.recv_queue() * 2 >= connection.recv_capacity();
@@ -1580,10 +1971,10 @@ fn receive_stream(state: &mut State, out: &mut dyn Out) -> Result<Option<Receive
                     None if narrow => interface.kick(),
                     None => {}
                 }
-                Ok(Some((n, peer, scope)))
+                Ok(Some(Received::of(n, peer, scope)))
             }
             // The other end sent its FIN, and all it sent has been read.
-            Err(tcp::RecvError::Finished) => Ok(Some((0, peer, scope))),
+            Err(tcp::RecvError::Finished) => Ok(Some(Received::of(0, peer, scope))),
             Err(tcp::RecvError::InvalidState) => Err(status(Kernel::Reset)),
         };
     }
@@ -1612,12 +2003,53 @@ fn receive_datagram(state: &mut State, out: &mut dyn Out) -> Result<Option<Recei
             continue;
         }
         let n = data.len().min(out.len());
+        let to = meta.local_address;
         match out.put_now(0, &data[..n]) {
             Ok(true) => {
                 let _ = socket.recv();
-                return Ok(Some((n, Some(from), scope)));
+                return Ok(Some(Received { count: n, from: Some(from), scope, to }));
             }
             // As in `receive_stream`, and this part is looked at again.
+            Ok(false) => {
+                drop(stack);
+                out.fault_in(0, n).map_err(super::status)?;
+            }
+            Err(err) => return Err(super::status(err)),
+        }
+    }
+    Ok(None)
+}
+
+/// One try at receiving an echo reply from any of a ping socket's parts
+/// into `out`, its header and all, as [`receive_datagram`] does: the echo
+/// requests its parts take too, with its identifier, as when it pings
+/// its own machine, are dropped, and so are replies from elsewhere than
+/// where a connected one is connected.
+fn receive_ping(state: &mut State, out: &mut dyn Out) -> Result<Option<Received>, Status> {
+    let peer = (state.phase == Phase::Connected).then_some(state.peer).flatten();
+    let reply = if state.v6 { ECHO_REPLY_V6 } else { ECHO_REPLY };
+    let mut index = 0;
+    while let Some(part) = state.parts.get(index) {
+        let mut stack = part.interface.stack.lock();
+        let Some(socket) = stack.socket_mut::<icmp::Socket<'static>>(part.handle) else {
+            index += 1;
+            continue;
+        };
+        let Ok((data, &from)) = socket.peek() else {
+            index += 1;
+            continue;
+        };
+        let scope = part.interface.index();
+        if data.first() != Some(&reply) || peer.is_some_and(|(ip, _)| ip != from) {
+            let _ = socket.recv();
+            continue;
+        }
+        let n = data.len().min(out.len());
+        match out.put_now(0, &data[..n]) {
+            Ok(true) => {
+                let _ = socket.recv();
+                return Ok(Some(Received::of(n, Some((from, 0)), scope)));
+            }
             Ok(false) => {
                 drop(stack);
                 out.fault_in(0, n).map_err(super::status)?;
@@ -1648,6 +2080,10 @@ impl Drop for InetSocket {
         let connected = matches!(state.phase, Phase::Connecting | Phase::Connected);
         let port = state.held.take_if(|_| connected && self.kind == Kind::Stream);
         release_parts(&mut state.parts, connected, port);
+        while let Some(membership) = state.memberships.pop() {
+            membership.interface.stack.lock().leave(membership.group);
+            membership.interface.kick();
+        }
     }
 }
 
@@ -1674,7 +2110,7 @@ impl Node for InetSocket {
     // Reads and writes through the node itself (the kernel's own) never
     // wait.
     fn read(&self, _offset: u64, out: &mut dyn Out) -> radix_vfs::Result<usize> {
-        self.receive(out, true).map(|(n, ..)| n).map_err(|_| radix_vfs::Error::NotSupported)
+        self.receive(out, true).map(|r| r.count).map_err(|_| radix_vfs::Error::NotSupported)
     }
 
     fn write(&self, _offset: u64, data: &dyn In) -> radix_vfs::Result<usize> {

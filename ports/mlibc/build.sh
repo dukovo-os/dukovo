@@ -30,8 +30,10 @@ mkdir -p "$PORT_SRC/sysdeps/radix/include/sys"
 for header in random.h sysmacros.h xattr.h; do
 	ln -s "../../../../options/linux/include/sys/$header" "$PORT_SRC/sysdeps/radix/include/sys/$header"
 done
-# And malloc.h, of memalign (0035).
+# And malloc.h, of memalign (0035), and ifaddrs.h, of getifaddrs (0054,
+# ADR 0336).
 ln -s ../../../options/linux/include/malloc.h "$PORT_SRC/sysdeps/radix/include/malloc.h"
+ln -s ../../../options/linux/include/ifaddrs.h "$PORT_SRC/sysdeps/radix/include/ifaddrs.h"
 
 # Code from musl 1.2.5 that the patches use: exact floating-point
 # conversions (0004), strftime (0006), the calendar arithmetic (0007),

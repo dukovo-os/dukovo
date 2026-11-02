@@ -54,11 +54,15 @@ impl Rights {
     /// Be reached from other machines: a network capability's sockets
     /// listening on its ports take what they start (ADR 0334).
     pub const INBOUND: Rights = Rights(1 << 13);
+    /// Reach the networks the machine is on: a network capability's
+    /// sockets send to their machines, groups and broadcast addresses
+    /// (ADR 0337).
+    pub const LOCAL: Rights = Rights(1 << 14);
     /// Every right.
-    pub const ALL: Rights = Rights((1 << 14) - 1);
+    pub const ALL: Rights = Rights((1 << 15) - 1);
 
     /// Every right with its name, in bit order.
-    pub const NAMES: [(Rights, &'static str); 14] = [
+    pub const NAMES: [(Rights, &'static str); 15] = [
         (Rights::READ, "read"),
         (Rights::WRITE, "write"),
         (Rights::EXECUTE, "execute"),
@@ -73,6 +77,7 @@ impl Rights {
         (Rights::TRANSFER, "transfer"),
         (Rights::BYPASS, "bypass"),
         (Rights::INBOUND, "inbound"),
+        (Rights::LOCAL, "local"),
     ];
 
     /// The set's bits.
@@ -195,7 +200,7 @@ mod tests {
         assert_eq!(rw & Rights::WRITE, Rights::WRITE);
         assert_eq!(rw - Rights::WRITE, Rights::READ);
         assert_eq!(rw.len(), 2);
-        assert_eq!(Rights::from_bits(1 << 14), None);
+        assert_eq!(Rights::from_bits(1 << 15), None);
         assert_eq!(Rights::from_bits_truncate(0xffff), Rights::ALL);
     }
 

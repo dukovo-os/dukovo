@@ -234,6 +234,8 @@ fn encode_listener(listener: &firewall::Listener) -> [u8; AbiListener::SIZE] {
     let protocol = match listener.protocol {
         Protocol::Tcp => AbiMatch::Tcp,
         Protocol::Udp => AbiMatch::Udp,
+        // Ping sockets take only replies, and listen for nothing.
+        Protocol::Ping => AbiMatch::Ping,
     };
     let mut flags = match listener.versions {
         Versions::Ipv4 => ListenerFlags::IPV4,

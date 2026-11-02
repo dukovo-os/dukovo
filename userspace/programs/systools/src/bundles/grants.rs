@@ -36,9 +36,8 @@ pub const FOLDER: &str = "/system/state/grants";
 pub const YOUR_ACCESS: &str = "runs-with-your-access";
 
 /// Permissions manifest version 1 defines that this Dukovo cannot give
-/// yet: reaching only the local network waits for discovery (12c), and
-/// debugging other programs for a debugger's capability.
-pub const NOT_YET: &[&str] = &["network.local", "processes.debug"];
+/// yet: debugging other programs waits for a debugger's capability.
+pub const NOT_YET: &[&str] = &["processes.debug"];
 
 /// The most grants bundled keeps for one person.
 pub const GRANTS_MAX: usize = 4096;

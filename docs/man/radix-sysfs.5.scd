@@ -369,7 +369,8 @@ _/kernel/class/net/_*name*_/address_, _broadcast_, _addr_len_
 _/kernel/class/net/_*name*_/mtu_, _type_, _flags_
 	The longest packet it sends; *1* (ARPHRD_ETHER) for a card or *772*
 	(ARPHRD_LOOPBACK) for *lo*; and Linux's flags, in hexadecimal:
-	IFF_UP, with IFF_BROADCAST for a card or IFF_LOOPBACK for *lo*.
+	IFF_UP, with IFF_BROADCAST and IFF_MULTICAST for a card or
+	IFF_LOOPBACK for *lo*.
 
 _/kernel/class/net/_*name*_/operstate_, _carrier_
 	*up*, *down* for a card the kernel stopped after an error, or

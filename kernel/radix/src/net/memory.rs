@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 The Dukovo contributors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! The memory of programs' TCP and UDP sockets (ADR 0183), lent to
+//! The memory of programs' TCP, UDP and ping sockets (ADR 0183), lent to
 //! smoltcp from the heap through leases, and taken back when the socket
 //! comes out of its stack (ADR 0182).
 //!
@@ -23,8 +23,8 @@ use radix_klog::warn;
 use radix_mm::Kmalloc;
 use radix_mm::lease::{self, Lease};
 use radix_net::smoltcp::iface::SocketHandle;
-use radix_net::smoltcp::socket::udp;
-use radix_net::{Stack, TcpMemory, UdpMemory};
+use radix_net::smoltcp::socket::{icmp, udp};
+use radix_net::{PingMemory, Stack, TcpMemory, UdpMemory};
 use radix_sync::Mutex;
 
 use super::{Card, kmalloc, values};
@@ -37,6 +37,13 @@ pub const TCP_BUFFER: usize = 65_536;
 /// bytes, as on Linux.
 pub const UDP_BUFFER: usize = TCP_BUFFER;
 pub const UDP_DATAGRAMS: usize = 16;
+
+/// The bytes of messages a ping socket holds each way on an interface,
+/// and how many: the longest it sends is a quarter of them, an echo
+/// request of 4,096 bytes with its header (ADR 0336).
+pub const PING_BUFFER: usize = 16_384;
+pub const PING_MESSAGES: usize = 16;
+pub const PING_MAX: usize = PING_BUFFER / 4;
 
 /// How many buffers of [`TCP_BUFFER`] bytes are kept once their sockets
 /// closed: four sockets' worth, 512 KiB.
@@ -81,6 +88,35 @@ pub struct UdpLeases {
     receive: Lease<u8, Kmalloc>,
     transmit_meta: Lease<udp::PacketMetadata, Kmalloc>,
     transmit: Lease<u8, Kmalloc>,
+}
+
+/// The leases of a ping socket's memory on one interface.
+pub struct PingLeases {
+    receive_meta: Lease<icmp::PacketMetadata, Kmalloc>,
+    receive: Lease<u8, Kmalloc>,
+    transmit_meta: Lease<icmp::PacketMetadata, Kmalloc>,
+    transmit: Lease<u8, Kmalloc>,
+}
+
+/// Memory for a ping socket on one interface, lent from the heap.
+pub fn lend_ping() -> Option<(PingLeases, PingMemory)> {
+    let receive_meta = values(|| icmp::PacketMetadata::EMPTY, PING_MESSAGES)?;
+    let transmit_meta = values(|| icmp::PacketMetadata::EMPTY, PING_MESSAGES)?;
+    let receive = radix_mm::bytes::zeroed(PING_BUFFER, kmalloc()).ok()?;
+    let transmit = radix_mm::bytes::zeroed(PING_BUFFER, kmalloc()).ok()?;
+    let (receive_meta_lease, receive_meta) = lease::lend(receive_meta);
+    let (receive_lease, receive) = lease::lend(receive);
+    let (transmit_meta_lease, transmit_meta) = lease::lend(transmit_meta);
+    let (transmit_lease, transmit) = lease::lend(transmit);
+    Some((
+        PingLeases {
+            receive_meta: receive_meta_lease,
+            receive: receive_lease,
+            transmit_meta: transmit_meta_lease,
+            transmit: transmit_lease,
+        },
+        PingMemory { receive_meta, receive, transmit_meta, transmit },
+    ))
 }
 
 /// Memory for a TCP socket, lent from the heap.
@@ -158,6 +194,27 @@ impl UdpPlaces {
     }
 }
 
+/// Where a ping socket's memory is once it came back, as [`TcpPlaces`].
+pub struct PingPlaces {
+    receive_meta: *mut [icmp::PacketMetadata],
+    receive: *mut [u8],
+    transmit_meta: *mut [icmp::PacketMetadata],
+    transmit: *mut [u8],
+}
+
+impl PingPlaces {
+    /// Where `memory` is: its slices end here.
+    pub fn of(memory: PingMemory) -> PingPlaces {
+        let PingMemory { receive_meta, receive, transmit_meta, transmit } = memory;
+        PingPlaces {
+            receive_meta: ptr::from_mut(receive_meta),
+            receive: ptr::from_mut(receive),
+            transmit_meta: ptr::from_mut(transmit_meta),
+            transmit: ptr::from_mut(transmit),
+        }
+    }
+}
+
 /// Takes the bytes `lease` lent back from `place`, where they came back to,
 /// and keeps them for another socket: false if they were not where they
 /// were lent, and stay lent.
@@ -213,6 +270,24 @@ impl UdpLeases {
     }
 }
 
+impl PingLeases {
+    /// Takes the memory back from where it came back to, as
+    /// [`TcpLeases::end`] does; its buffers go back to the heap.
+    #[allow(unsafe_code)]
+    pub fn end(self, places: &PingPlaces) -> bool {
+        // SAFETY: as in `TcpLeases::end`, from `PingPlaces::of`.
+        let ended = unsafe {
+            [
+                self.receive_meta.end(places.receive_meta).is_ok(),
+                self.receive.end(places.receive).is_ok(),
+                self.transmit_meta.end(places.transmit_meta).is_ok(),
+                self.transmit.end(places.transmit).is_ok(),
+            ]
+        };
+        ended.into_iter().all(|ended| ended)
+    }
+}
+
 /// Takes the TCP socket `handle` out of `stack`, the interface `name`'s,
 /// and its memory back through `leases`. Memory that does not come back
 /// stays lent, which leaks it, and is said.
@@ -248,6 +323,24 @@ pub fn end_udp(stack: &mut Stack<Card>, handle: SocketHandle, leases: UdpLeases,
     };
     if !ended {
         warn!("Net: {name}: a UDP socket's memory did not come back");
+    }
+}
+
+/// Takes the ping socket `handle` out of `stack`, as [`end_tcp`] does.
+pub fn end_ping(stack: &mut Stack<Card>, handle: SocketHandle, leases: PingLeases, name: &str) {
+    let ended = match stack.remove_icmp(handle) {
+        Some(memory) => leases.end(&PingPlaces::of(memory)),
+        None => false,
+    };
+    if !ended {
+        warn!("Net: {name}: a ping socket's memory did not come back");
+    }
+}
+
+/// Takes back the memory of `socket`, a ping socket no stack took.
+pub fn give_back_ping(leases: PingLeases, socket: icmp::Socket<'static>) {
+    if !leases.end(&PingPlaces::of(PingMemory::of(socket))) {
+        warn!("Net: a ping socket's memory did not come back");
     }
 }
 

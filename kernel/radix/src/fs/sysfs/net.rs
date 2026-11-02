@@ -77,10 +77,11 @@ type Field = fn(&'static Interface, &mut Text) -> fmt::Result;
 const ETHER: u16 = 1;
 const LOOPBACK: u16 = 772;
 
-/// Linux's IFF_UP, IFF_BROADCAST and IFF_LOOPBACK.
+/// Linux's IFF_UP, IFF_BROADCAST, IFF_LOOPBACK and IFF_MULTICAST.
 const UP: u32 = 0x1;
 const BROADCAST: u32 = 0x2;
 const IS_LOOPBACK: u32 = 0x8;
+const MULTICAST: u32 = 0x1000;
 
 /// An interface's files, as Linux's.
 const FILES: [(&str, Field); 13] = [
@@ -95,7 +96,10 @@ const FILES: [(&str, Field); 13] = [
     ("mtu", |i, t| writeln!(t, "{}", i.stack.lock().mtu())),
     ("type", |i, t| writeln!(t, "{}", if i.is_loopback() { LOOPBACK } else { ETHER })),
     ("flags", |i, t| {
-        writeln!(t, "{:#x}", UP | if i.is_loopback() { IS_LOOPBACK } else { BROADCAST })
+        // A card joins multicast groups (ADR 0336); `lo` does not, as on
+        // Linux.
+        let kind = if i.is_loopback() { IS_LOOPBACK } else { BROADCAST | MULTICAST };
+        writeln!(t, "{:#x}", UP | kind)
     }),
     ("operstate", |i, t| writeln!(t, "{}", operstate(i))),
     ("carrier", |i, t| writeln!(t, "{}", u8::from(operstate(i) != "down"))),

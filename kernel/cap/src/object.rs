@@ -161,10 +161,13 @@ impl ObjectKind {
             // what comes to the ports in the range; control sets the
             // interfaces up.
             // Inbound lets what other machines start reach the sockets
-            // that listen on them (ADR 0334).
-            ObjectKind::Network => {
-                Rights::SEND.union(Rights::RECEIVE).union(Rights::CONTROL).union(Rights::INBOUND)
-            }
+            // that listen on them (ADR 0334); local reaches the networks
+            // the machine is on, which sending alone does not (ADR 0337).
+            ObjectKind::Network => Rights::SEND
+                .union(Rights::RECEIVE)
+                .union(Rights::CONTROL)
+                .union(Rights::INBOUND)
+                .union(Rights::LOCAL),
             // Reading asks what the controls are set to; control changes
             // them.
             ObjectKind::Platform => Rights::READ.union(Rights::CONTROL),
