@@ -137,6 +137,18 @@ jobs:
             out/dukovo-*-x86_64.spdx
           retention-days: 14
 
+      # The smbd boot test's image, its command line in place, which the
+      # Windows file sharing job boots.
+      - name: ./ob test boot --case smbd --image-only
+        run: ./ob test boot --case smbd --image-only
+
+      - name: Upload the smbd test image
+        uses: actions/upload-artifact@v4
+        with:
+          name: smbd-image
+          path: out/test/smbd.img
+          retention-days: 3
+
   # The host unit tests and the boot tests run beside the lint job, the
   # boot tests split between three machines, so that a pull request's CI
   # takes the time of its slowest job rather than of all of them in turn.
@@ -246,6 +258,39 @@ jobs:
       - name: chkdsk each volume, and read its files back
         shell: pwsh
         run: ./tools/windows/chkdsk.ps1 ntfs-volumes
+
+  # Windows' own SMB client against smbd (ADRs 0228, 0229): QEMU boots
+  # the smbd boot test's image, which the build job writes, without KVM,
+  # and Windows maps its shares through a port QEMU forwards, copies
+  # files both ways and changes an access list with icacls.
+  smb-windows:
+    name: Windows file sharing
+    needs: build
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: tools/windows
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: smbd-image
+          path: smbd-image
+
+      - name: Install QEMU
+        run: choco install qemu --no-progress -y
+
+      - name: Windows' client against smbd
+        shell: pwsh
+        run: ./tools/windows/smbd.ps1 smbd-image/smbd.img
+
+      - name: Keep the guest's serial log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smbd-windows-log
+          path: ${{ runner.temp }}/smbd/serial.log
+          retention-days: 14
 
   boot:
     name: Boot tests (${{ matrix.shard }}/3)

@@ -97,6 +97,14 @@ network sends before it knows who sent it, so it is also fuzzed.
   reaches only port 445, so both listen there: CI lets its tests bind
   it, and on a machine that does not the boot test leaves smbcacls out
   and says so.
+- **Tested by Windows too**, in CI's Windows file sharing job
+  (tools/windows/smbd.ps1): QEMU boots the `smbd` boot test's image on
+  a Windows Server 2025 runner, without KVM, and Windows' own client
+  maps its shares through a port QEMU forwards (`net use /TCPPORT`,
+  since Windows' own server holds 445 there), copies files both ways,
+  shows a file's list with `icacls`, adds root to it, and is refused a
+  denying entry, a write to the read-only share and a wrong password;
+  smbdtest then checks what Windows did, as for Samba's client.
 
 ## Consequences
 
@@ -111,8 +119,7 @@ network sends before it knows who sent it, so it is also fuzzed.
   set from a PC; ADR 0256's lists have no place for them.
 - A PC that finds a SID with no name (an account since removed) shows
   the SID, as it does for its own.
-- **Not yet:** a Windows client in CI against smbd (13f.3, next);
-  LsarQueryInformationPolicy and the domain's own SID, which the
+- **Not yet:** LsarQueryInformationPolicy and the domain's own SID, which the
   object picker of a domain-joined PC asks for; SACLs and auditing;
   SMB 3.1.1's POSIX extensions, which carry modes and owners without
   SIDs.
