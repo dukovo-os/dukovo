@@ -550,6 +550,7 @@ fn worker(root: &std::path::Path) -> (Worker, Keys) {
             folder: root.to_string_lossy().into_owned(),
             comment: String::new(),
             read_only: true,
+            nfs: Vec::new(),
         }],
     };
     (worker, keys())

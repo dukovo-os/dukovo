@@ -29,6 +29,7 @@
 //! share-password\0alice\0secret\0set\0for windows\0
 //! share-signin\0192.0.2.7\04e544c4d...\04e544c4d...\04e544c4d...\0
 //! end-shares\0
+//! nfs-worker\01000\0
 //! ```
 //!
 //! An answer is `ok`, maybe with words after it, or `no` and why, then a
@@ -282,6 +283,16 @@ pub enum Request {
     /// End every share session, as `share off` does: root's to ask. The
     /// answer is `ok` and how many ended.
     EndShares,
+    /// Start an NFS worker (ADR 0341): nfsd(8)'s, which runs as root, to
+    /// ask. authd starts `nfsd --worker` as the person numbered `uid`,
+    /// or as no one for root and a number with no person's account, in
+    /// a view of the folders of the shares NFS serves alone, with the two
+    /// descriptors sent with the request: its socket to nfsd, and where
+    /// it logs. The answer is `ok` and the name it runs as.
+    NfsWorker {
+        /// The number of the person an NFS call names.
+        uid: u32,
+    },
 }
 
 /// What came of a prompt on a console.
@@ -424,6 +435,7 @@ impl Request {
     pub fn encode(&self) -> Vec<u8> {
         let id_text;
         let hexed;
+        let number;
         let fields: Vec<&[u8]> = match self {
             Request::Check { name, password } => vec![b"check", name.as_bytes(), password],
             Request::Passwd { name, current, new } => {
@@ -509,6 +521,10 @@ impl Request {
                 ]
             }
             Request::EndShares => vec![b"end-shares"],
+            Request::NfsWorker { uid } => {
+                number = uid.to_string();
+                vec![b"nfs-worker", number.as_bytes()]
+            }
         };
         let mut bytes = Vec::new();
         for field in fields {
@@ -652,6 +668,10 @@ impl Request {
                 })
             }
             [b"end-shares"] => Ok(Request::EndShares),
+            [b"nfs-worker", uid] => {
+                let uid = std::str::from_utf8(uid).ok().and_then(|u| u.parse().ok());
+                Ok(Request::NfsWorker { uid: uid.ok_or_else(malformed)? })
+            }
             _ => Err(malformed()),
         }
     }
@@ -691,7 +711,8 @@ impl Request {
             | Request::Rename { .. }
             | Request::Set { .. }
             | Request::ShareSignIn { .. }
-            | Request::EndShares => {}
+            | Request::EndShares
+            | Request::NfsWorker { .. } => {}
         }
     }
 }
@@ -760,6 +781,7 @@ impl std::fmt::Debug for Request {
             }
             Request::ShareSignIn { from, .. } => write!(f, "ShareSignIn {{ from: {from:?} }}"),
             Request::EndShares => write!(f, "EndShares"),
+            Request::NfsWorker { uid } => write!(f, "NfsWorker {{ uid: {uid} }}"),
         }
     }
 }

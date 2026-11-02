@@ -2,14 +2,16 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 //! share(1): folders shared with Windows PCs, Macs and Linux machines,
-//! which smbd(8) serves over SMB 3, signed and encrypted (ADR 0228).
+//! which smbd(8) serves over SMB 3, signed and encrypted (ADR 0228), and
+//! nfsd(8) over NFS 4.2 to the networks a share names (ADR 0341).
 //!
 //! - `share` and `share list` list the shares, and say whether sharing
 //!   is on.
-//! - `share add NAME FOLDER [--read-only] [--comment TEXT]` and `share
-//!   remove NAME` change shares.toml(5), as root.
+//! - `share add NAME FOLDER [--read-only] [--comment TEXT] [--nfs
+//!   NETWORK]...` and `share remove NAME` change shares.toml(5), as root.
 //! - `share on` and `share off`, as root, start smbd and have it start
 //!   at each boot, or stop it, which ends every share session.
+//! - `share nfs on` and `share nfs off` do the same for nfsd.
 //! - `share password [--clear] [NAME]` sets your sharing password, the
 //!   one a PC signs in with, after your login password; root sets
 //!   anyone's. Only its NT hash is kept, by authd, apart from the login
@@ -35,13 +37,16 @@ use crate::util::{self, Fail, fail, usage};
 
 /// smbd's service file.
 const SERVICE: &str = "smbd";
+/// nfsd's.
+const NFS_SERVICE: &str = "nfsd";
 /// Where the system's own service files are kept, as Spark copies them.
 const DEFAULTS: &str = "/system/resources/default-settings/spark/services";
 
 const HELP: &str = "Usage: share [list]
-       share add [--read-only] [--comment TEXT] NAME FOLDER
+       share add [--read-only] [--comment TEXT] [--nfs NETWORK]... NAME FOLDER
        share remove NAME
        share on | off
+       share nfs on | off
        share password [--clear] [NAME]
 
 Shares folders with Windows PCs and other computers over SMB 3, signed
@@ -49,10 +54,14 @@ and encrypted, by smbd(8). A PC signs in with a person's name and their
 sharing password, and sees in each share what that person may see.
 
   list      the shares, and whether sharing is on
-  add       shares FOLDER as NAME; --read-only lets no one change it
+  add       shares FOLDER as NAME; --read-only lets no one change it;
+            --nfs lets machines on NETWORK (192.168.1.0/24, or one
+            address) mount it over NFS, which takes them at their word
+            for who they are
   remove    stops sharing NAME
   on, off   starts smbd, now and at each boot, or stops it and ends
             every session
+  nfs       the same for nfsd(8), NFS 4.2's server, off at first
   password  sets your sharing password, asked after your login password;
             --clear removes it. Root sets anyone's.";
 
@@ -72,8 +81,9 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
         Some("list") => list(args),
         Some("add") => add(args),
         Some("remove") => remove(args),
-        Some("on") => turn(args, true),
-        Some("off") => turn(args, false),
+        Some("on") => turn(args, SERVICE, true),
+        Some("off") => turn(args, SERVICE, false),
+        Some("nfs") => nfs(args),
         Some("password") => password(args),
         _ => Err(usage(format!("no such command: {}\n{HELP}", subcommand.to_string_lossy()))),
     }
@@ -126,27 +136,30 @@ fn write(path: &str, text: &str, mode: u32) -> Result<(), Fail> {
     Ok(())
 }
 
-/// The path of smbd's service file.
-fn service_path() -> String {
-    format!("{}/{SERVICE}.toml", servicefiles::DIR)
+/// The path of `service`'s service file.
+fn service_path(service: &str) -> String {
+    format!("{}/{service}.toml", servicefiles::DIR)
 }
 
-/// smbd's service file, from the system's own if it is not there.
-fn service_text() -> Result<String, Fail> {
-    let path = service_path();
+/// `service`'s service file, from the system's own if it is not there.
+fn service_text(service: &str) -> Result<String, Fail> {
+    let path = service_path(service);
     match fs::read_to_string(&path) {
         Ok(text) => Ok(text),
         Err(e) if e.kind() == io::ErrorKind::NotFound => {
-            let default = format!("{DEFAULTS}/{SERVICE}.toml");
+            let default = format!("{DEFAULTS}/{service}.toml");
             fs::read_to_string(&default).map_err(|e| util::failed(&default, e))
         }
         Err(e) => Err(util::failed(&path, e)),
     }
 }
 
-/// Whether sharing is on: smbd starts at boot.
-fn is_on() -> bool {
-    service_text().ok().and_then(|text| service::from_toml(&text).ok()).is_some_and(|s| s.enabled)
+/// Whether `service` starts at boot: smbd for sharing, nfsd for NFS.
+fn is_on(service: &str) -> bool {
+    service_text(service)
+        .ok()
+        .and_then(|text| service::from_toml(&text).ok())
+        .is_some_and(|s| s.enabled)
 }
 
 /// `text`, a service file, with its `enabled` line saying `on`, or one
@@ -175,10 +188,16 @@ fn with_enabled(text: &str, on: bool) -> String {
 fn list(args: &mut Args) -> Result<i32, Fail> {
     nothing_more(args)?;
     let shares = read()?;
-    if is_on() {
+    if is_on(SERVICE) {
         println!("Sharing is on: smbd(8) serves these shares on port 445.");
     } else {
         println!("Sharing is off; `share on` turns it on.");
+    }
+    let nfs = shares.shares.iter().any(|s| !s.nfs.is_empty());
+    if is_on(NFS_SERVICE) {
+        println!("NFS is on: nfsd(8) serves the shares that name networks on port 2049.");
+    } else if nfs {
+        println!("NFS is off; `share nfs on` turns it on.");
     }
     if shares.shares.is_empty() {
         println!("No folder is shared; `share add NAME FOLDER` shares one.");
@@ -193,6 +212,9 @@ fn list(args: &mut Args) -> Result<i32, Fail> {
             "{:width$}  {:folders$}  {access:10}  {}",
             share.name, share.folder, share.comment
         );
+        if !share.nfs.is_empty() {
+            println!("{:width$}  NFS: {}", "", share.nfs.join(", "));
+        }
     }
     Ok(0)
 }
@@ -200,11 +222,17 @@ fn list(args: &mut Args) -> Result<i32, Fail> {
 /// `share add`.
 fn add(args: &mut Args) -> Result<i32, Fail> {
     let (mut read_only, mut comment, mut operands) = (false, String::new(), Vec::new());
+    let mut nfs = Vec::new();
     while let Some(arg) = args.next()? {
         match arg {
             Arg::Long(l) if l == "read-only" => read_only = true,
             Arg::Long(l) if l == "comment" => {
                 comment = args.value()?.to_string_lossy().into_owned();
+            }
+            Arg::Long(l) if l == "nfs" => {
+                let network = args.value()?.to_string_lossy().into_owned();
+                shares::Network::parse(&network).map_err(usage)?;
+                nfs.push(network);
             }
             Arg::Operand(operand) => operands.push(operand.to_string_lossy().into_owned()),
             other => return Err(args.unknown(&other)),
@@ -217,14 +245,21 @@ fn add(args: &mut Args) -> Result<i32, Fail> {
     if !folder.is_dir() {
         return Err(fail(format!("{} is not a folder", folder.display())));
     }
-    let share = Share { name, folder: folder.to_string_lossy().into_owned(), comment, read_only };
+    let folder = folder.to_string_lossy().into_owned();
+    let share = Share { name, folder, comment, read_only, nfs };
     let mut all = read()?;
     all.add(share.clone()).map_err(fail)?;
     write(shares::PATH, &all.to_toml(), 0o644)?;
     let how = if share.read_only { "read-only" } else { "read-write" };
     println!("Shared {} as {}, {how}.", share.folder, share.name);
-    if !is_on() {
+    if !is_on(SERVICE) {
         println!("Sharing is off; `share on` turns it on.");
+    }
+    if !share.nfs.is_empty() {
+        println!("NFS clients on {} mount it as :/{}.", share.nfs.join(", "), share.name);
+        if !is_on(NFS_SERVICE) {
+            println!("NFS is off; `share nfs on` turns it on.");
+        }
     }
     Ok(0)
 }
@@ -252,17 +287,44 @@ fn remove(args: &mut Args) -> Result<i32, Fail> {
     Ok(0)
 }
 
-/// `share on` and `share off`.
-fn turn(args: &mut Args, on: bool) -> Result<i32, Fail> {
+/// `share nfs on` and `share nfs off`.
+fn nfs(args: &mut Args) -> Result<i32, Fail> {
+    let Some(Arg::Operand(which)) = args.next()? else {
+        return Err(usage("share nfs takes on or off: share nfs on".into()));
+    };
+    match which.to_str() {
+        Some("on") => turn(args, NFS_SERVICE, true),
+        Some("off") => turn(args, NFS_SERVICE, false),
+        _ => Err(usage("share nfs takes on or off: share nfs on".into())),
+    }
+}
+
+/// `share on` and `share off`, and `share nfs on` and `off`: `service`
+/// starts or stops, now and at each boot.
+fn turn(args: &mut Args, service: &str, on: bool) -> Result<i32, Fail> {
     nothing_more(args)?;
-    root_only(if on { "turns sharing on" } else { "turns sharing off" })?;
-    let text = with_enabled(&service_text()?, on);
-    service::from_toml(&text).map_err(|e| fail(format!("{}: {e}", service_path())))?;
-    write(&service_path(), &text, 0o644)?;
+    let what = if service == NFS_SERVICE { "NFS" } else { "sharing" };
+    root_only(&format!("turns {what} {}", if on { "on" } else { "off" }))?;
+    let text = with_enabled(&service_text(service)?, on);
+    service::from_toml(&text).map_err(|e| fail(format!("{}: {e}", service_path(service))))?;
+    write(&service_path(service), &text, 0o644)?;
     let verb = if on { "start" } else { "stop" };
-    let answer = power::request(&format!("{verb} {SERVICE}"))?;
+    let answer = power::request(&format!("{verb} {service}"))?;
     if let Some(why) = answer.strip_prefix("error: ") {
-        return Err(fail(format!("cannot {verb} smbd: {}", why.trim_end())));
+        return Err(fail(format!("cannot {verb} {service}: {}", why.trim_end())));
+    }
+    if service == NFS_SERVICE {
+        if !on {
+            println!("NFS is off; its clients' mounts stop answering.");
+            return Ok(0);
+        }
+        println!("NFS is on: nfsd(8) serves on port 2049, and starts at each boot.");
+        if !read()?.shares.iter().any(|s| !s.nfs.is_empty()) {
+            println!(
+                "No share names a network yet; `share add --nfs NETWORK NAME FOLDER` adds one."
+            );
+        }
+        return Ok(0);
     }
     if on {
         println!("Sharing is on: smbd(8) serves the shares on port 445, and starts at each boot.");

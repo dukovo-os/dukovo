@@ -1116,6 +1116,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "nfsd"
+version = "0.11.0"
+dependencies = [
+ "accounts",
+ "libc",
+ "manifest",
+]
+
+[[package]]
 name = "nix"
 version = "0.29.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

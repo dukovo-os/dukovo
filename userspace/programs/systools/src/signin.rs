@@ -109,6 +109,44 @@ fn build_view(root: u32, stamped: u32, view: u32, scratch: u32, tmp: &str) -> Re
     attach(tmp.trim_start_matches('/'), "tmp", OpenFlags::DIRECTORY)
 }
 
+/// Builds an NFS worker's view in `view`, acting for `root`'s name
+/// without the bypass right: each of the shares' `folders` at `.nfs-`
+/// and its key, opened through `stamped`, with the bypass right, into
+/// `scratch`, and given without it. A folder that cannot be opened is
+/// left out, and said so.
+fn build_share_view(
+    root: u32,
+    stamped: u32,
+    view: u32,
+    scratch: u32,
+    folders: &[(u64, String)],
+) -> Result<(), String> {
+    let failed =
+        |what: String| move |status: Status| format!("{what}: {}", sys::status_name(status.0));
+    directory::make_view(&SYS, root, view).map_err(failed("making its view".into()))?;
+    for (key, folder) in folders {
+        let path = folder.trim_start_matches('/');
+        let opened = directory::open(
+            &SYS,
+            stamped,
+            path.as_bytes(),
+            OpenFlags::DIRECTORY,
+            GIVEN,
+            scratch,
+            0,
+        );
+        if let Err(status) = opened {
+            eprintln!("authd: an NFS worker goes without {folder}: {}", sys::status_name(status.0));
+            continue;
+        }
+        let at = format!(".nfs-{key:016x}");
+        let attached = directory::attach(&SYS, view, at.as_bytes(), scratch);
+        let _ = capability::delete(&SYS, scratch);
+        attached.map_err(failed(format!("attaching {folder}")))?;
+    }
+    Ok(())
+}
+
 /// The environment variable that says which descriptor holds the names
 /// capability Spark gave authd (service.toml(5), `names`).
 pub const NAMES_DESCRIPTOR: &str = "NAMES_DESCRIPTOR";
@@ -310,6 +348,7 @@ pub fn start(
         env: environment(user, term),
         descriptors: &[(tty, 0), (tty, 1), (tty, 2)],
         network: true,
+        shares: None,
     };
     launch(names, user, groups, &program)
 }
@@ -351,6 +390,55 @@ pub fn start_share(
             (connection.as_raw_fd(), 3),
         ],
         network: false,
+        shares: None,
+    };
+    launch(names, user, groups, &program)
+}
+
+/// nfsd(8)'s worker, which serves NFS's calls as a person (ADR 0341).
+pub const NFS_PROGRAM: &str = "/system/commands/nfsd";
+
+/// The number of the user no one is, whom NFS serves root as, and a
+/// number with no person's account: as Linux's `nobody`, it owns nothing
+/// and no account has it.
+pub const NOBODY: u32 = 65_534;
+
+/// Who an NFS worker for root, or for a number with no person's
+/// account, runs as.
+pub fn nobody() -> User {
+    User {
+        name: "nobody".into(),
+        uid: NOBODY,
+        gid: NOBODY,
+        full_name: String::new(),
+        home: "/".into(),
+        shell: String::new(),
+    }
+}
+
+/// Starts an NFS worker as `user`, acting for them and the groups
+/// `groups`, with the descriptors nfsd sent: `socket`, its own to nfsd,
+/// as its 3, and `log`, nfsd's standard error, as its 1 and 2. Its view
+/// holds the shares' `folders` alone, each at `/.nfs-` and its key in
+/// hexadecimal, opened past the folders above them as Linux's server
+/// does: below each, the owners and modes of the files decide. It gets no
+/// network. Returns the number of its process, a child of authd's.
+pub fn start_nfs(
+    names: u32,
+    user: &User,
+    groups: &[u32],
+    socket: &OwnedFd,
+    log: &OwnedFd,
+    folders: &[(u64, String)],
+) -> Result<u64, String> {
+    let program = Program {
+        what: "the NFS worker",
+        path: NFS_PROGRAM,
+        args: &[b"nfsd", b"--worker"],
+        env: vec![format!("USER={}", user.name), "HOME=/".into(), "LANG=C.UTF-8".into()],
+        descriptors: &[(log.as_raw_fd(), 1), (log.as_raw_fd(), 2), (socket.as_raw_fd(), 3)],
+        network: false,
+        shares: Some(folders),
     };
     launch(names, user, groups, &program)
 }
@@ -370,6 +458,9 @@ struct Program<'a> {
     descriptors: &'a [(RawFd, u32)],
     /// Whether it gets the network, as a session does (ADR 0257).
     network: bool,
+    /// For an NFS worker, the shares' folders, by their keys, which its
+    /// view holds alone.
+    shares: Option<&'a [(u64, String)]>,
 }
 
 /// Starts `program` as `user`, acting for them and the groups `groups`,
@@ -401,8 +492,14 @@ fn launch(names: u32, user: &User, groups: &[u32], program: &Program) -> Result<
         .map_err(failed("making its process"))?;
     names::name_process(&SYS, names, child, user.uid, user.gid, &others)
         .map_err(failed("naming its process"))?;
-    // A person's root is a view with their own /tmp; root's, the tree.
-    let own_root = if user.uid == 0 {
+    // A person's root is a view with their own /tmp; root's, the tree;
+    // an NFS worker's, the shares.
+    let own_root = if let Some(folders) = program.shares {
+        build_share_view(root, stamped, view, scratch, folders)
+            .map_err(|why| format!("cannot start {what}: {why}"))?;
+        capability::derive(&SYS, view, given, GIVEN, 0).map_err(failed("its view"))?;
+        given
+    } else if user.uid == 0 {
         root
     } else {
         let tmp = own_tmp(user).map_err(|err| format!("cannot start {what}: its /tmp: {err}"))?;

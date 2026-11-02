@@ -68,6 +68,7 @@ fn serve_one(listener: &TcpListener, root: &Path) {
                         folder: root.to_string_lossy().into_owned(),
                         comment: "documents".into(),
                         read_only: false,
+                        nfs: Vec::new(),
                     }],
                 };
                 wire::write_frame(&mut &stream, &response).unwrap();
