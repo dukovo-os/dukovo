@@ -103,6 +103,7 @@ mod scrub;
 mod sensors;
 mod servicefiles;
 mod sessions;
+mod share;
 mod signals;
 mod signin;
 mod ss;
@@ -221,6 +222,7 @@ const TOOLS: &[(&str, Tool)] = &[
     ("sensors", sensors::main),
     ("service", power::service),
     ("setfacl", facl::setfacl),
+    ("share", share::main),
     ("shutdown", power::shutdown),
     ("ss", ss::main),
     ("subvolume", subvolume::main),

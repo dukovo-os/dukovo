@@ -44,6 +44,16 @@ A hash says its cost, so one moved from Linux, or made at another cost,
 is checked all the same, up to 1 GiB, 16 passes and 16 lanes. An empty
 hash is an empty password; an account with no line, or a line authd
 cannot read, is locked: no password opens it.
+
+A person may also have a sharing password, which Windows PCs sign in to
+the folders *smbd*(8) shares with (ADR 0228), set with *share
+password* (*share*(1)). NTLMv2, which the PCs sign in with, needs the
+password's NT hash, the MD4 of its UTF-16, which is as good as the
+password to anyone who reads it; so it is never the login password's,
+and is kept apart, in _/system/state/authd/sharing_, a line
+_name_*:*_hash_*:* each, the hash in hexadecimal, root's and of mode
+0600 beside the passwords. An account without a line signs in to no
+share.
 authd writes each file anew beside the old one, syncs it and renames it
 over the old one, the hashes first and the passwd file last, so that an
 account is there once its user is. Lines it does not read, an
@@ -178,6 +188,28 @@ closes the connection, but for a session (below):
 	*ok elsewhere* when the terminal is not a console's or nothing asks
 	on the consoles. Only root may, as bundled runs.
 
+*share-password* _name_ _current_ *set*|*clear* _new_
+	Sets _name_'s sharing password to _new_, or clears it, which ends
+	their share sessions (ADR 0228). Root sets anyone's, with an empty
+	_current_; a person sets only their own, given their login
+	password, which a wrong one waits for as *check*'s does. An empty
+	_new_ is refused, and so is an account that is not a person's.
+
+*share-signin* _from_ _negotiate_ _challenge_ _authenticate_
+	A PC signs in to the shares from the address _from_: the three
+	NTLM messages, in hexadecimal, as the PC sent them and *smbd*(8)
+	answered. The request comes with three descriptors: the read end of
+	a pipe, the PC's connection, and smbd's log. authd checks NTLMv2
+	against the sharing password of the account the PC names, in any
+	case, and starts that person's share session (SESSIONS), then
+	answers *ok* _name_ _key_, the session key in hexadecimal. A wrong
+	password, or a name with no sharing password, waits and is answered
+	as *check*'s, by name and address. Only root may, as smbd runs.
+
+*end-shares*
+	Ends every share session, as *share off* does: *ok* and how many.
+	Only root may.
+
 authd knows who asks by the connection: the kernel gives it the process
 at the other end, and the user and group it acted for when it connected
 (*SO_PEERCRED*, *radix-posix*(7)). An administrator is root inside
@@ -265,6 +297,14 @@ of authd ends the sessions it started.
 Without the names capability authd logs *no names capability: sign-in
 cannot start sessions* when it starts, and refuses *session*.
 
+A share session is a Windows PC's, signed in through *smbd*(8) (ADR
+0228): authd starts *smbd --worker* as the person, as it starts a
+session's first process, in a view of theirs, with the pipe smbd sent
+as its descriptor 0, smbd's log as 1 and 2 and the PC's connection as
+3, and no network of its own. It is on the terminal *smb*, from the
+PC's address, and ends with the connection, when the person's sharing
+password is cleared, or at *end-shares*.
+
 Before a session's programs start, authd writes on its terminal when
 the person last signed in, and the wrong passwords typed for them since
 (see SIGN-IN RECORDS), as Linux's pam_lastlog does:
@@ -312,6 +352,9 @@ none:
   and that process, which pairs them.
 - *failed*: a wrong password was typed at a sign-in, with the name
   typed.
+
+A share session (SESSIONS) is recorded on the terminal *smb*, from the
+PC's address, and a wrong sharing password as *failed* there.
 
 The starts and stops are in _system_, which everyone reads. Each
 account's sign-ins, sign-outs and wrong passwords are in a file named

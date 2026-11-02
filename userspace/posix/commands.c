@@ -72,6 +72,8 @@ static const char *const ELSEWHERE[][2] = {
 		{"mkfs.btrfs", "the btrfs-tools boot test's: it runs mkfs-btrfs by btrfs-progs' name"},
 		{"fsck-btrfs", "the btrfs-tools boot test's: it checks the Btrfs mkfs-btrfs made"},
 		{"btrfsck", "the btrfs-tools boot test's: it runs fsck-btrfs by btrfs-progs' old name"},
+		{"smbd", "the smbd boot test's service: the host's smbclient reaches it only through QEMU's network"},
+		{"share", "the smbd boot test's: it shares folders, sets sharing passwords and turns smbd on and off"},
 };
 
 enum { ELSEWHERE_COUNT = sizeof(ELSEWHERE) / sizeof(ELSEWHERE[0]) };

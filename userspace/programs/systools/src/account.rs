@@ -52,7 +52,7 @@ fn account(name: &str) -> Result<User, Fail> {
 }
 
 /// The name of the account the program runs for.
-fn own_name() -> Result<String, Fail> {
+pub(crate) fn own_name() -> Result<String, Fail> {
     let uid = util::own_user();
     let text = std::fs::read_to_string(accounts::PASSWD)
         .map_err(|e| util::failed(&accounts::PASSWD, e))?;

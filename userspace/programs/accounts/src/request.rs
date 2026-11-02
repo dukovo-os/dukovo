@@ -26,6 +26,9 @@
 //! forget\0
 //! prompts\0
 //! prompted\07\0password\0secret\0
+//! share-password\0alice\0secret\0set\0for windows\0
+//! share-signin\0192.0.2.7\04e544c4d...\04e544c4d...\04e544c4d...\0
+//! end-shares\0
 //! ```
 //!
 //! An answer is `ok`, maybe with words after it, or `no` and why, then a
@@ -57,8 +60,28 @@
 
 use crate::wipe;
 
-/// The longest request authd reads, in bytes.
-pub const REQUEST_MAX: usize = 4096;
+/// The hexadecimal of `bytes`.
+pub fn hex(bytes: &[u8]) -> String {
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    let mut text = String::with_capacity(bytes.len() * 2);
+    for &byte in bytes {
+        text.push(char::from(DIGITS[usize::from(byte >> 4)]));
+        text.push(char::from(DIGITS[usize::from(byte & 0xf)]));
+    }
+    text
+}
+
+/// The bytes of `text`, hexadecimal.
+pub fn unhex(text: &str) -> Option<Vec<u8>> {
+    if !text.len().is_multiple_of(2) {
+        return None;
+    }
+    (0..text.len()).step_by(2).map(|i| u8::from_str_radix(text.get(i..i + 2)?, 16).ok()).collect()
+}
+
+/// The longest request authd reads, in bytes: room for a share sign-in's
+/// three NTLM messages, in hexadecimal.
+pub const REQUEST_MAX: usize = 8192;
 
 /// A request. Its `Debug` leaves out the passwords.
 #[derive(PartialEq, Eq)]
@@ -228,6 +251,37 @@ pub enum Request {
         /// characters, in the system's own words.
         text: String,
     },
+    /// Set or clear `name`'s sharing password, which Windows PCs sign in
+    /// to shares with (ADR 0228): their own to ask, with the password
+    /// they sign in to Dukovo with, or root's, with none.
+    SharePassword {
+        /// The person.
+        name: String,
+        /// Their sign-in password; empty from root.
+        current: Vec<u8>,
+        /// The new sharing password, or none to clear it.
+        new: Option<Vec<u8>>,
+    },
+    /// A Windows PC signs in to the shares (ADR 0228): smbd(8)'s, which
+    /// runs as root, to ask. authd checks the NTLMv2 AUTHENTICATE message
+    /// against the sharing password of the account it names, then starts
+    /// smbd's worker as that person, with the three descriptors sent with
+    /// the request: the pipe the worker reads its session from, the
+    /// connection, and where it logs. The answer is `ok`, the account's
+    /// name and the session key in hexadecimal.
+    ShareSignIn {
+        /// The PC's address, for the records of sign-ins.
+        from: String,
+        /// The NEGOTIATE message, as the PC sent it.
+        negotiate: Vec<u8>,
+        /// The CHALLENGE message smbd answered with.
+        challenge: Vec<u8>,
+        /// The AUTHENTICATE message.
+        authenticate: Vec<u8>,
+    },
+    /// End every share session, as `share off` does: root's to ask. The
+    /// answer is `ok` and how many ended.
+    EndShares,
 }
 
 /// What came of a prompt on a console.
@@ -369,6 +423,7 @@ impl Request {
     /// What is sent.
     pub fn encode(&self) -> Vec<u8> {
         let id_text;
+        let hexed;
         let fields: Vec<&[u8]> = match self {
             Request::Check { name, password } => vec![b"check", name.as_bytes(), password],
             Request::Passwd { name, current, new } => {
@@ -435,6 +490,25 @@ impl Request {
                 question.word().as_bytes(),
                 text.as_bytes(),
             ],
+            Request::SharePassword { name, current, new } => {
+                let (kind, new): (&[u8], &[u8]) = match new {
+                    Some(new) => (b"set", new),
+                    None => (b"clear", b""),
+                };
+                vec![b"share-password", name.as_bytes(), current, kind, new]
+            }
+            Request::ShareSignIn { from, negotiate, challenge, authenticate } => {
+                hexed = [hex(negotiate), hex(challenge), hex(authenticate)];
+                let [negotiate, challenge, authenticate] = &hexed;
+                vec![
+                    b"share-signin",
+                    from.as_bytes(),
+                    negotiate.as_bytes(),
+                    challenge.as_bytes(),
+                    authenticate.as_bytes(),
+                ]
+            }
+            Request::EndShares => vec![b"end-shares"],
         };
         let mut bytes = Vec::new();
         for field in fields {
@@ -558,6 +632,26 @@ impl Request {
                 }
                 Ok(Request::Choose { terminal, name, question, text: words })
             }
+            [b"share-password", name, current, kind, new] => {
+                let new = match (kind, new) {
+                    (b"set", new) => Some(new.to_vec()),
+                    (b"clear", b"") => None,
+                    _ => return Err(malformed()),
+                };
+                Ok(Request::SharePassword { name: text(name)?, current: current.to_vec(), new })
+            }
+            [b"share-signin", from, negotiate, challenge, authenticate] => {
+                let bytes = |field: &[u8]| {
+                    std::str::from_utf8(field).ok().and_then(unhex).ok_or_else(malformed)
+                };
+                Ok(Request::ShareSignIn {
+                    from: text(from)?,
+                    negotiate: bytes(negotiate)?,
+                    challenge: bytes(challenge)?,
+                    authenticate: bytes(authenticate)?,
+                })
+            }
+            [b"end-shares"] => Ok(Request::EndShares),
             _ => Err(malformed()),
         }
     }
@@ -580,6 +674,12 @@ impl Request {
                 }
             }
             Request::Prompted { typed: Prompted::Password(password), .. } => wipe(password),
+            Request::SharePassword { current, new, .. } => {
+                wipe(current);
+                if let Some(new) = new {
+                    wipe(new);
+                }
+            }
             Request::NeedsOwner
             | Request::Forget
             | Request::Prompts
@@ -589,7 +689,9 @@ impl Request {
             | Request::Enable { .. }
             | Request::Remove { .. }
             | Request::Rename { .. }
-            | Request::Set { .. } => {}
+            | Request::Set { .. }
+            | Request::ShareSignIn { .. }
+            | Request::EndShares => {}
         }
     }
 }
@@ -653,6 +755,11 @@ impl std::fmt::Debug for Request {
                 "Choose {{ terminal: {terminal:?}, name: {name:?}, question: {question:?}, text: \
                  {text:?} }}"
             ),
+            Request::SharePassword { name, new, .. } => {
+                write!(f, "SharePassword {{ name: {name:?}, clear: {} }}", new.is_none())
+            }
+            Request::ShareSignIn { from, .. } => write!(f, "ShareSignIn {{ from: {from:?} }}"),
+            Request::EndShares => write!(f, "EndShares"),
         }
     }
 }

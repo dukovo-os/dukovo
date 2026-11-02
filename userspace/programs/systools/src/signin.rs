@@ -302,14 +302,86 @@ pub fn start(
     terminal: &OwnedFd,
     term: &str,
 ) -> Result<u64, String> {
-    let failed = |what: &'static str| {
-        move |status: Status| {
-            format!("cannot start the session: {what}: {}", sys::status_name(status.0))
-        }
+    let tty = terminal.as_raw_fd();
+    let program = Program {
+        what: "the session",
+        path: FIRST_PROGRAM,
+        args: &[b"login", b"--session"],
+        env: environment(user, term),
+        descriptors: &[(tty, 0), (tty, 1), (tty, 2)],
+        network: true,
     };
-    let spares =
-        Spares::new(8).map_err(|err| format!("cannot start the session: no slots: {err}"))?;
-    let [stamped, root, program, child, view, given, scratch, network] =
+    launch(names, user, groups, &program)
+}
+
+/// smbd(8)'s worker, which serves a Windows PC's share session as the
+/// person who signed in (ADR 0228).
+pub const SHARE_PROGRAM: &str = "/system/commands/smbd";
+
+/// Starts the worker of a share session of `user`'s, acting for them and
+/// the groups `groups`, with the descriptors smbd sent: `session`, the
+/// pipe it reads the session from, as its 0; `connection`, the PC's, as
+/// its 3; and `log`, smbd's standard error, as its 1 and 2. It gets no
+/// network of its own: only the connection it serves. Returns the number
+/// of its process, a child of authd's.
+pub fn start_share(
+    names: u32,
+    user: &User,
+    groups: &[u32],
+    session: &OwnedFd,
+    connection: &OwnedFd,
+    log: &OwnedFd,
+) -> Result<u64, String> {
+    let home = user.home.trim_end_matches('/');
+    let program = Program {
+        what: "the share session",
+        path: SHARE_PROGRAM,
+        args: &[b"smbd", b"--worker"],
+        env: vec![
+            format!("HOME={}", user.home),
+            format!("USER={}", user.name),
+            format!("LOGNAME={}", user.name),
+            format!("PATH=/system/commands:/applications/commands:{home}/applications/commands"),
+            "LANG=C.UTF-8".into(),
+        ],
+        descriptors: &[
+            (session.as_raw_fd(), 0),
+            (log.as_raw_fd(), 1),
+            (log.as_raw_fd(), 2),
+            (connection.as_raw_fd(), 3),
+        ],
+        network: false,
+    };
+    launch(names, user, groups, &program)
+}
+
+/// A program to start as a person.
+struct Program<'a> {
+    /// What it is, for errors: "the session".
+    what: &'static str,
+    /// Its path, which is opened through the person's root.
+    path: &'a str,
+    /// Its arguments, its name first.
+    args: &'a [&'a [u8]],
+    /// Its environment.
+    env: Vec<String>,
+    /// Descriptors of authd's, each with the number it has in the
+    /// program.
+    descriptors: &'a [(RawFd, u32)],
+    /// Whether it gets the network, as a session does (ADR 0257).
+    network: bool,
+}
+
+/// Starts `program` as `user`, acting for them and the groups `groups`,
+/// with the names capability in `names`, in a view of its own unless it
+/// is root's. Returns the number of its process, a child of authd's.
+fn launch(names: u32, user: &User, groups: &[u32], program: &Program) -> Result<u64, String> {
+    let what = program.what;
+    let failed = |step: &'static str| {
+        move |status: Status| format!("cannot start {what}: {step}: {}", sys::status_name(status.0))
+    };
+    let spares = Spares::new(8).map_err(|err| format!("cannot start {what}: no slots: {err}"))?;
+    let [stamped, root, opened, child, view, given, scratch, network] =
         [0, 1, 2, 3, 4, 5, 6, 7].map(|i| spares.slot(i));
     let others: Vec<u8> = groups.iter().flat_map(|g| g.to_le_bytes()).collect();
     names::stamp(&SYS, names, startup::SLOT_ROOT, stamped, user.uid, user.gid, &others)
@@ -322,41 +394,41 @@ pub fn start(
     capability::derive(&SYS, stamped, root, without, 0).map_err(failed("its root"))?;
     // The program is opened through the user's root, so that it is one
     // they may run.
-    let path = FIRST_PROGRAM.trim_start_matches('/');
-    directory::open(&SYS, root, path.as_bytes(), OpenFlags::NONE, Rights::READ, program, 0)
-        .map_err(failed("opening login"))?;
+    let path = program.path.trim_start_matches('/');
+    directory::open(&SYS, root, path.as_bytes(), OpenFlags::NONE, Rights::READ, opened, 0)
+        .map_err(failed("opening its program"))?;
     process::create(&SYS, startup::SLOT_PROCESS, ObjectKind::Process, SLOTS, child)
         .map_err(failed("making its process"))?;
     names::name_process(&SYS, names, child, user.uid, user.gid, &others)
         .map_err(failed("naming its process"))?;
     // A person's root is a view with their own /tmp; root's, the tree.
-    let session_root = if user.uid == 0 {
+    let own_root = if user.uid == 0 {
         root
     } else {
-        let tmp =
-            own_tmp(user).map_err(|err| format!("cannot start the session: its /tmp: {err}"))?;
+        let tmp = own_tmp(user).map_err(|err| format!("cannot start {what}: its /tmp: {err}"))?;
         build_view(root, stamped, view, scratch, &tmp)
-            .map_err(|why| format!("cannot start the session: {why}"))?;
+            .map_err(|why| format!("cannot start {what}: {why}"))?;
         capability::derive(&SYS, view, given, GIVEN, 0).map_err(failed("its view"))?;
         given
     };
-    let tty = sys::slot_of(terminal.as_raw_fd());
-    let shares = [
-        (session_root, startup::SLOT_ROOT),
+    let base = [
+        (own_root, startup::SLOT_ROOT),
         (startup::SLOT_RANDOM, startup::SLOT_RANDOM),
         (startup::SLOT_LOG, startup::SLOT_LOG),
-        (tty, startup::SLOT_FD_BASE),
-        (tty, startup::SLOT_FD_BASE + 1),
-        (tty, startup::SLOT_FD_BASE + 2),
     ];
-    for (from, to) in shares {
+    let descriptors = program
+        .descriptors
+        .iter()
+        .map(|&(fd, number)| (sys::slot_of(fd), startup::SLOT_FD_BASE + number));
+    for (from, to) in base.into_iter().chain(descriptors) {
         process::share(&SYS, child, from, to, Rights::ALL, 0)
             .map_err(failed("giving it its capabilities"))?;
     }
-    give_network(child, network, user.uid == 0).map_err(failed("giving it the network"))?;
-    let block =
-        exec_block(FIRST_PROGRAM.as_bytes(), &[b"login", b"--session"], &environment(user, term));
-    process::exec(&SYS, child, program, &block).map_err(failed("starting login"))?;
+    if program.network {
+        give_network(child, network, user.uid == 0).map_err(failed("giving it the network"))?;
+    }
+    let block = exec_block(program.path.as_bytes(), program.args, &program.env);
+    process::exec(&SYS, child, opened, &block).map_err(failed("starting its program"))?;
     // The child stays in the tree after its capability goes, for wait.
     let number = process::info(&SYS, child).map_err(failed("its number"))?.number;
     Ok(number)
