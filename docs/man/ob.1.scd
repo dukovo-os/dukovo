@@ -464,7 +464,7 @@ _target/userspace/_).
 		Boot 2 CPUs with 512 MiB and a 1 GiB virtio disk the host's
 		*mkswap* made a swap area of. _/system/tests/posix/swaptest_
 		must turn it on with *swapon*(8), find that it cannot be turned
-		on twice and that the disk refuses writes, fill 768 MiB with a
+		on twice and that the disk refuses writes, fill 640 MiB with a
 		pattern and read it all back, fork a child that checks half of
 		it and changes a quarter while the parent's stays, and turn the
 		area off with *swapoff*(8) while some of what it keeps is still

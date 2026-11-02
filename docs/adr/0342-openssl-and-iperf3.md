@@ -55,7 +55,7 @@ OpenSSL.
   about 600 KB. The kernel keeps the boot loader's copy of the boot
   archive beside Spark's (ADR 0287), so the three boot tests that ran
   in 384 MiB (`spark-oom`, `spark-stop` and `swap`) no longer had room
-  to start Spark; they run in 512 MiB, and `swap` fills 768 MiB.
+  to start Spark; they run in 512 MiB, and `swap` fills 640 MiB.
 - OpenSSL's security releases in the 3.5 series are taken as they come,
   as every port's are.
 - iperf3 measures TCP and UDP between machines, by IPv4 and IPv6 and

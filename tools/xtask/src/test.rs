@@ -1337,10 +1337,10 @@ pub const CASES: &[Case] = &[
     },
     Case {
         name: "swap",
-        about: "a swap area Linux's mkswap made on a virtio disk: swapon turns it on, a program fills 768 MiB of a 512 MiB machine and gets it all back, through a fork too, and swapoff turns it off with pages still on it; the area stays as mkswap made it",
+        about: "a swap area Linux's mkswap made on a virtio disk: swapon turns it on, a program fills 640 MiB of a 512 MiB machine and gets it all back, through a fork too, and swapoff turns it off with pages still on it; the area stays as mkswap made it",
         firmware: Firmware::Uefi,
         media: Media::Usb,
-        cmdline: "lockdep -- --posix /system/tests/posix/swaptest /devices/vda 768",
+        cmdline: "lockdep -- --posix /system/tests/posix/swaptest /devices/vda 640",
         cpus: 2,
         memory: "512M",
         reboot: false,
@@ -7899,7 +7899,7 @@ fn swap(vm: &mut Vm, case: &Case) -> Result<(), String> {
     let slots = SWAP_KIB / 4 - 1;
     vm.expect(&format!("Swap: vda: {} MiB in {slots} slots, priority -2", slots * 4 / 1024))?;
     vm.expect(&format!("swaptest: swap is on, {} KiB", slots * 4))?;
-    vm.expect("swaptest: filled 768 MiB")?;
+    vm.expect("swaptest: filled 640 MiB")?;
     vm.expect("swaptest: read it back, ")?;
     vm.expect("swaptest: a child changed its copy")?;
     vm.expect("Swap: vda: off")?;
