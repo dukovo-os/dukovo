@@ -90,6 +90,7 @@ pub const ARCHIVE_HIDDEN: (&str, &str) = ("system/.hidden", "bin\nlib\nshare\n")
 pub const STD_ARCHIVE: &[(&str, &str)] = &[
     ("system/commands/consoled", "consoled"),
     ("system/commands/nukesh", "nukesh"),
+    ("system/commands/smb", "smb"),
     ("system/commands/systools", "systools"),
     ("system/tests/posix/fuse-test", "fuse-test"),
     ("system/tests/posix/git-https-test", "git-https-test"),
@@ -162,6 +163,7 @@ pub const STD_LINKS: &[(&str, &str)] = &[
     ("system/commands/mkfs.fat", "systools"),
     ("system/commands/mkfs.vfat", "systools"),
     ("system/commands/mkswap", "systools"),
+    ("system/commands/mount", "systools"),
     ("system/commands/netd", "systools"),
     ("system/commands/netlog", "systools"),
     ("system/commands/notifications", "systools"),
@@ -199,6 +201,7 @@ pub const STD_LINKS: &[(&str, &str)] = &[
     ("system/commands/timedatectl", "systools"),
     ("system/commands/top", "systools"),
     ("system/commands/tree", "systools"),
+    ("system/commands/umount", "systools"),
     ("system/commands/unlock", "systools"),
     ("system/commands/uptime", "systools"),
     ("system/commands/user", "systools"),
@@ -294,6 +297,7 @@ pub const HOST_TESTED: &[&str] = &[
     "manifest",
     "netproto",
     "nukesh",
+    "smb",
     "systools",
 ];
 

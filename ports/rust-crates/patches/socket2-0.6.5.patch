@@ -1,0 +1,82 @@
+SPDX-FileCopyrightText: Alex Crichton, Thomas de Zeeuw and the socket2 contributors
+SPDX-FileCopyrightText: 2026 The Dukovo contributors
+SPDX-License-Identifier: MIT OR Apache-2.0
+
+socket2 builds for Radix as for Linux, but for what Radix's sockets do
+not have, which it leaves out as for other systems without them:
+source-specific multicast (IP_ADD_SOURCE_MEMBERSHIP), IP_RECVTOS, and
+TCP keepalive's interval and count. A msghdr's msg_iovlen is an int, as
+mlibc has it and Linux's musl does.
+
+diff --git a/socket2-0.6.5/src/socket.rs b/socket2-0.6.5/src/socket.rs
+index da01a77..3a50006 100644
+--- a/socket2-0.6.5/src/socket.rs
++++ b/socket2-0.6.5/src/socket.rs
+@@ -1418,6 +1418,7 @@ impl Socket {
+     /// multicast group. If it's [`Ipv4Addr::UNSPECIFIED`] (`INADDR_ANY`) then
+     /// an appropriate interface is chosen by the system.
+     #[cfg(not(any(
++        target_os = "radix",
+         target_os = "dragonfly",
+         target_os = "haiku",
+         target_os = "hurd",
+@@ -1458,6 +1459,7 @@ impl Socket {
+     ///
+     /// [`join_ssm_v4`]: Socket::join_ssm_v4
+     #[cfg(not(any(
++        target_os = "radix",
+         target_os = "dragonfly",
+         target_os = "haiku",
+         target_os = "hurd",
+@@ -1676,6 +1678,7 @@ impl Socket {
+     /// incoming packets. It contains a byte which specifies the
+     /// Type of Service/Precedence field of the packet header.
+     #[cfg(not(any(
++        target_os = "radix",
+         target_os = "aix",
+         target_os = "dragonfly",
+         target_os = "fuchsia",
+@@ -1711,6 +1714,7 @@ impl Socket {
+     ///
+     /// [`set_recv_tos_v4`]: Socket::set_recv_tos_v4
+     #[cfg(not(any(
++        target_os = "radix",
+         target_os = "aix",
+         target_os = "dragonfly",
+         target_os = "fuchsia",
+diff --git a/socket2-0.6.5/src/sys/unix.rs b/socket2-0.6.5/src/sys/unix.rs
+index a226fe1..128fdcc 100644
+--- a/socket2-0.6.5/src/sys/unix.rs
++++ b/socket2-0.6.5/src/sys/unix.rs
+@@ -188,6 +188,7 @@ pub(crate) use libc::IPV6_RECVTCLASS;
+ ))]
+ pub(crate) use libc::IP_HDRINCL;
+ #[cfg(not(any(
++    target_os = "radix",
+     target_os = "aix",
+     target_os = "dragonfly",
+     target_os = "fuchsia",
+@@ -245,6 +246,7 @@ pub(crate) use libc::{
+     SO_REUSEADDR, SO_SNDBUF, SO_SNDTIMEO, SO_TYPE, TCP_NODELAY,
+ };
+ #[cfg(not(any(
++    target_os = "radix",
+     target_os = "dragonfly",
+     target_os = "haiku",
+     target_os = "hurd",
+@@ -415,6 +417,7 @@ type IovLen = usize;
+         )
+     ),
+     target_os = "aix",
++    target_os = "radix",
+     target_os = "dragonfly",
+     target_os = "emscripten",
+     target_os = "freebsd",
+@@ -1293,6 +1296,7 @@ pub(crate) fn set_tcp_keepalive(fd: RawSocket, keepalive: &TcpKeepalive) -> io::
+         target_os = "freebsd",
+         target_os = "fuchsia",
+         target_os = "hurd",
++        target_os = "radix",
+         target_os = "illumos",
+         target_os = "ios",
+         target_os = "visionos",

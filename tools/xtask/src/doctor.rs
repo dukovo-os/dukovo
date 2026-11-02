@@ -446,6 +446,13 @@ fn requirements() -> Vec<Requirement> {
             fallback: None,
         },
         Requirement {
+            name: "Samba",
+            purpose: "serves the smb test's share, through QEMU's network, as a Windows network's server",
+            found: |_| program_version("/usr/sbin/smbd", "-V"),
+            packages: all("samba"),
+            fallback: None,
+        },
+        Requirement {
             name: "libbde",
             purpose: "bdeinfo, which unlocks the BitLocker volumes of radix-bitlocker's tests as Windows' are unlocked",
             found: |_| program_version("bdeinfo", "-V"),
