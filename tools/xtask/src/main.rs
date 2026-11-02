@@ -18,6 +18,7 @@ mod doctor;
 mod elf;
 mod fixture;
 mod frames;
+mod grub;
 mod image;
 mod kernel;
 mod krelocs;

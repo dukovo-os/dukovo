@@ -16,7 +16,12 @@
 //!   and mends them, and [`exfat`] makes exFAT ones, from Microsoft's
 //!   published specifications.
 //! - `btrfs` (feature `btrfs`) makes and checks Btrfs with the kernel's
-//!   own Btrfs crate (ADRs 0304 and 0305).
+//!   own Btrfs crate (ADRs 0304 and 0305), on a `blockfile::BlockFile`
+//!   (feature `kernel`), as which the kernel's filesystems see a device.
+//! - [`grub`] puts GRUB on a disk for a PC's BIOS, as grub-bios-setup
+//!   does, for rgrub-setup(8) and `./ob image` (ADR 0306), and `esp`
+//!   (feature `fat`) puts files in an EFI system partition's FAT with
+//!   the kernel's own FAT crate, for rgrub-setup's UEFI GRUB.
 //! - [`types`] names the partition types, [`size`] reads and prints
 //!   sizes, and [`guid`], [`crc32`] and [`rng`] are what GPT needs.
 //!
@@ -24,14 +29,19 @@
 //! read panics. Nothing is written until asked: [`plan`] says what a
 //! write puts where, and [`apply`] writes it.
 
+#[cfg(feature = "kernel")]
+pub mod blockfile;
 #[cfg(feature = "btrfs")]
 pub mod btrfs;
 pub mod crc32;
 pub mod device;
+#[cfg(feature = "fat")]
+pub mod esp;
 pub mod exfat;
 pub mod fat;
 pub mod fatck;
 pub mod gpt;
+pub mod grub;
 pub mod guid;
 pub mod layout;
 pub mod mbr;

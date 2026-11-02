@@ -293,6 +293,12 @@ const BITLOCKER: u8 = 15;
 /// ([`btrfs_checked`], ADR 0304).
 const BTRFS_BLANK: u8 = 17;
 
+/// [`Disk::fat`] for a copy of the test image without its GRUB, for a
+/// BIOS or for UEFI, which rgrub-setup(8) puts back: the case's second
+/// boot boots from it, under the case's firmware, without the test image
+/// ([`cases::rgrub_setup`], ADR 0306). It is the case's first disk.
+const GRUBLESS: u8 = 18;
+
 /// The partition table of a test disk with a filesystem.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Table {
@@ -840,7 +846,7 @@ const SWAP_KIB: u64 = 1 << 20;
 const SWAP_UUID: &str = "6c6f9a34-1b7e-4f0e-9a51-0d2f3c5b8e17";
 
 /// The `root` test's disk: a copy of the test image with a Dukovo root
-/// partition, its fifth, as a virtio disk: `vda5`.
+/// partition, its third, as a virtio disk: `vda3`.
 const ROOT_DISKS: &[Disk] =
     &[Disk { label: image::ROOT_LABEL, ..btrfs_disk(Bus::Virtio, 512, ROOT, root_checked) }];
 
@@ -2713,13 +2719,20 @@ pub struct Built {
     pub programs: userspace::Programs,
 }
 
-/// Builds a test image whose kernel command line is a placeholder slot.
-pub fn build_test_image(ctx: &Ctx, built: &Built, dir: &Path, kind: TestImage) -> Result<Vec<u8>> {
+/// Builds a test image whose kernel command line is a placeholder slot:
+/// a disk image, or an ISO for the cases that boot from a CD (`iso`).
+pub fn build_test_image(
+    ctx: &Ctx,
+    built: &Built,
+    dir: &Path,
+    kind: TestImage,
+    iso: bool,
+) -> Result<Vec<u8>> {
     let name = match kind {
         TestImage::Plain => "dukovo-test",
         TestImage::Microcode => "dukovo-test-microcode",
     };
-    let output = dir.join(format!("{name}.img"));
+    let output = dir.join(format!("{name}.{}", if iso { "iso" } else { "img" }));
     image::build(
         ctx,
         &ImageSpec {
@@ -2732,6 +2745,7 @@ pub fn build_test_image(ctx: &Ctx, built: &Built, dir: &Path, kind: TestImage) -
             root: None,
             staging: dir.join(format!("{name}-root")),
             output: output.clone(),
+            iso,
         },
     )?;
     std::fs::read(&output).map_err(|err| Error::new(format!("reading {}: {err}", output.display())))
@@ -2779,12 +2793,14 @@ fn boot_tests(ctx: &Ctx, built: &Built, cases: &[&Case], timeout: Duration) -> R
     qemu::require_qemu()?;
     let dir = ctx.out.join("test");
     process::create_dir(&dir)?;
-    let plain = build_test_image(ctx, built, &dir, TestImage::Plain)?;
-    let microcode = if cases.iter().any(|case| case.image == TestImage::Microcode) {
-        Some(build_test_image(ctx, built, &dir, TestImage::Microcode)?)
-    } else {
-        None
-    };
+    // Each image the cases boot, of the kind and for the media they ask.
+    let mut images: Vec<((TestImage, bool), Vec<u8>)> = Vec::new();
+    for case in cases {
+        let key = (case.image, case.media == Media::Cdrom);
+        if !images.iter().any(|(made, _)| *made == key) {
+            images.push((key, build_test_image(ctx, built, &dir, key.0, key.1)?));
+        }
+    }
 
     let root = if cases.iter().any(|case| case.disks.iter().any(|disk| disk.fat == ROOT)) {
         let path = dir.join("root.btrfs");
@@ -2802,10 +2818,8 @@ fn boot_tests(ctx: &Ctx, built: &Built, cases: &[&Case], timeout: Duration) -> R
     ));
     let mut failures = 0;
     for case in cases {
-        let base = match case.image {
-            TestImage::Plain => &plain,
-            TestImage::Microcode => microcode.as_ref().expect("built when a case needs it"),
-        };
+        let key = (case.image, case.media == Media::Cdrom);
+        let base = &images.iter().find(|(made, _)| *made == key).expect("built above").1;
         let started = Instant::now();
         let outcome = run_case(ctx, case, base, root.as_deref(), &dir, kvm, timeout);
         let secs = started.elapsed().as_secs_f32();
@@ -2955,6 +2969,25 @@ fn run_case(
         ),
         Firmware::Bios => None,
     };
+    // A second boot from a copy of the test image boots it alone.
+    let from_disk = case.disks.first().is_some_and(|disk| disk.fat == GRUBLESS);
+    let disk_machine = from_disk.then(|| Machine {
+        firmware: case.firmware,
+        media: Media::Disk,
+        ovmf: ovmf.clone(),
+        image: disks[0].path.clone(),
+        memory: case.memory.into(),
+        cpus: case.cpus,
+        kvm: kvm && case.cpu_model.is_none(),
+        cpu_model: case.cpu_model.map(str::to_string),
+        serial: Serial::Pipe,
+        display: false,
+        reboot: case.reboot,
+        gdb: false,
+        qmp: Some(qmp.clone()),
+        extra: without_disk(&extra, 0),
+        direct: None,
+    });
     let machine = Machine {
         firmware: case.firmware,
         media: case.media,
@@ -2972,22 +3005,28 @@ fn run_case(
         extra,
         direct: None,
     };
-    let boot = |name: &str, cmdline: &str, script: Script| -> Result<(), String> {
-        std::fs::write(&image, with_cmdline(base, cmdline)?)
-            .map_err(|err| format!("writing {}: {err}", image.display()))?;
+    let run = |machine: &Machine, name: &str, script: Script| -> Result<(), String> {
         let _ = std::fs::remove_file(&qmp);
-        let mut vm = Vm::start(ctx, &machine, dir, name, timeout)?;
+        let mut vm = Vm::start(ctx, machine, dir, name, timeout)?;
         let result = script(&mut vm, case).and_then(|()| kernel_complaints(&vm, case));
         vm.stop();
         result?;
         let log = vm.log();
         disks.iter().try_for_each(|disk| (disk.check)(disk, &log))
     };
+    let boot = |name: &str, cmdline: &str, script: Script| -> Result<(), String> {
+        std::fs::write(&image, with_cmdline(base, cmdline)?)
+            .map_err(|err| format!("writing {}: {err}", image.display()))?;
+        run(&machine, name, script)
+    };
     let mut result = boot(case.name, case.cmdline, case.script);
     if let (Ok(()), Some(second)) = (&result, &case.second) {
         let name = format!("{}-reboot", case.name);
         result = (second.before)(case, &disks)
-            .and_then(|()| boot(&name, second.cmdline, second.script))
+            .and_then(|()| match &disk_machine {
+                Some(machine) => run(machine, &name, second.script),
+                None => boot(&name, second.cmdline, second.script),
+            })
             .map_err(|err| {
                 let log = dir.join(format!("boot-{name}.log"));
                 format!("{AFTER_THE_REBOOT}: {err} (serial log: {})", ctx.display(&log))
@@ -3010,6 +3049,24 @@ const PARTITION_START: u64 = 2048;
 /// `mkfs.btrfs`, filled with [`storage_big_byte`]'s bytes, or as the
 /// test image `base` with the Dukovo root's filesystem in the file `root`
 /// after its partitions; and the configuration files of their errors.
+/// QEMU's `extra` arguments without those of the case's disk `n`: its
+/// `-drive` and its `-device`.
+fn without_disk(extra: &[String], n: usize) -> Vec<String> {
+    let id = format!("id=disk{n},");
+    let drive = format!("drive=disk{n}");
+    let named = |arg: &String| arg.contains(&id) || arg.split(',').any(|part| part == drive);
+    let mut kept = Vec::new();
+    let mut args = extra.iter().peekable();
+    while let Some(arg) = args.next() {
+        if (arg == "-drive" || arg == "-device") && args.peek().is_some_and(|next| named(next)) {
+            args.next();
+            continue;
+        }
+        kept.push(arg.clone());
+    }
+    kept
+}
+
 fn make_disks(
     ctx: &Ctx,
     dir: &Path,
@@ -3104,6 +3161,11 @@ fn make_disks(
         if disk.ntfs() {
             make_ntfs(ctx, disk, &image.path)?;
             made.push(image);
+            continue;
+        }
+        if disk.fat == GRUBLESS {
+            let cmdline = case.second.as_ref().map_or(case.cmdline, |second| second.cmdline);
+            made.push(cases::rgrub_setup::make(base, cmdline, image)?);
             continue;
         }
         if disk.fat == BITLOCKER {
@@ -7045,7 +7107,7 @@ fn root_boot(vm: &mut Vm, first: bool) -> Result<(), String> {
     // The image's EFI system partition is no volume.
     let efi = partition_name(name, 2);
     vm.expect(&format!("spark: {efi} is an EFI system partition; left alone"))?;
-    let disk = partition_name(name, 5);
+    let disk = partition_name(name, 3);
     let mounted = format!("spark: mounted the Btrfs filesystem of {disk} at /volumes/{disk}");
     vm.expect(&mounted)?;
     vm.expect(&format!("{mounted}, compressed (zstd)"))?;

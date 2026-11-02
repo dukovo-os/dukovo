@@ -30,7 +30,8 @@
 //! exFAT filesystems, and `fsck-fat` checks and mends FAT ones, with the
 //! disk engine (ADRs 0300 to 0302); `mkfs-btrfs` makes a Btrfs, and
 //! `fsck-btrfs` checks one, with the kernel's Btrfs crate (ADRs 0304 and
-//! 0305).
+//! 0305); `rgrub-setup` puts GRUB on a disk or an EFI system partition
+//! (ADR 0306).
 //! `bundle` makes, signs, installs and runs bundles, which `bundled`
 //! installs, seals and removes (ADRs 0221 to 0223 and 0225); called by a
 //! name that is no tool's, through a link in a commands folder of
@@ -97,6 +98,7 @@ mod remount;
 mod replace;
 mod resolvectl;
 mod resolved;
+mod rgrub;
 mod rtrace;
 mod script;
 mod scrub;
@@ -215,6 +217,7 @@ const TOOLS: &[(&str, Tool)] = &[
     ("replace", replace::main),
     ("resolvectl", resolvectl::main),
     ("resolved", resolved::main),
+    ("rgrub-setup", rgrub::main),
     ("rtrace", rtrace::main),
     ("script", script::main),
     ("scrub", scrub::main),

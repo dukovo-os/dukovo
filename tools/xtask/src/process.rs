@@ -90,11 +90,6 @@ pub fn find_program(name: impl AsRef<OsStr>) -> Option<PathBuf> {
         .find(|candidate| is_executable(candidate))
 }
 
-/// Returns the first of `names` found on `PATH`.
-pub fn find_any(names: &[&str]) -> Option<PathBuf> {
-    names.iter().find_map(find_program)
-}
-
 fn is_executable(path: &Path) -> bool {
     use std::os::unix::fs::PermissionsExt;
     path.metadata().is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
