@@ -84,8 +84,8 @@ fn names_display_controllers_as_neofetch_does() {
     assert_eq!(amd, "AMD Radeon RX 6600/6600 XT/6600M");
     let nvidia = gpu_name(Some("NVIDIA Corporation"), Some("GA106 [GeForce RTX 3060]"), (0, 0));
     assert_eq!(nvidia, "NVIDIA GeForce RTX 3060");
-    assert_eq!(gpu_name(Some("Red Hat, Inc."), None, (0x1af4, 0x1050)), "Red Hat 1050");
-    assert_eq!(gpu_name(None, None, (0x1234, 0x1111)), "1234 1111");
+    assert_eq!(gpu_name(Some("Red Hat, Inc."), None, (0x1af4, 0x1050)), "Red Hat Device 1050");
+    assert_eq!(gpu_name(None, None, (0x1234, 0x1111)), "Device 1234:1111");
 }
 
 #[test]

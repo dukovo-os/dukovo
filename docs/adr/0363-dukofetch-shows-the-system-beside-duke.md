@@ -33,7 +33,9 @@ a mock of the output first, as every change to what people see is.
   controller, the memory in use, the root filesystem's room and type,
   and each interface's IPv4 addresses. A line whose source is missing
   is left out rather than shown blank or guessed: there is no line yet
-  for the features installed or for updates, whose sources do not exist.
+  for the features installed or for updates, whose sources do not exist,
+  and no disk line when the root filesystem is kept in memory, as when
+  the system runs from its boot archive.
 - **The lines say things as neofetch says them**, so that they read as
   people expect: the processor's name without `(R)`, `(TM)`, `CPU` and
   its clock, with the CPU count and the highest clock CPUID leaf 0x16

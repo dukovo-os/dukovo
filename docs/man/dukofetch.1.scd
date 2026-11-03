@@ -44,8 +44,11 @@ processor from CPUID and _/kernel/cpus_, the display controllers from
 the PCI functions named by the PCI ID database, as *lspci*(8) names
 them, the disk from *statvfs*(3) and the mounts, and the addresses as
 *ip*(8) shows them. A line whose source is missing is left out: there is
-no *Apps* line when bundled cannot be asked, and no *GPU* line on a
-machine without a display controller.
+no *Apps* line when bundled cannot be asked, no *GPU* line on a machine
+without a display controller, and no *Disk* line when the root
+filesystem is kept in memory, as when the system runs from its boot
+archive. A display controller the PCI ID database does not name is shown
+by its IDs, as *lspci*(8) shows it: *Device 1234:1111*.
 
 The memory in use leaves out the page cache, as *free*(1)'s *used*
 does. The disk's percentage is the share in use of what a person can

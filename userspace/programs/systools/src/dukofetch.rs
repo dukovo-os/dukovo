@@ -307,11 +307,14 @@ fn gpus() -> Vec<String> {
 /// A display controller's name: its vendor's short name, then its
 /// model, the part of the database's name in brackets where it has one
 /// (`NVIDIA GeForce RTX 3060` for `NVIDIA Corporation` and `GA106
-/// [GeForce RTX 3060]`); the IDs for what the database lacks.
+/// [GeForce RTX 3060]`); what the database lacks as lspci(8) shows it,
+/// `Device 1234:1111` for QEMU's display.
 fn gpu_name(vendor: Option<&str>, device: Option<&str>, (v, d): (u16, u16)) -> String {
-    let vendor = vendor.map_or_else(|| format!("{v:04x}"), short_vendor);
-    let device = device.map_or_else(|| format!("{d:04x}"), |name| bracketed(name).to_string());
-    format!("{vendor} {device}")
+    match (vendor, device) {
+        (Some(vendor), Some(device)) => format!("{} {}", short_vendor(vendor), bracketed(device)),
+        (Some(vendor), None) => format!("{} Device {d:04x}", short_vendor(vendor)),
+        (None, _) => format!("Device {v:04x}:{d:04x}"),
+    }
 }
 
 /// What is in the last brackets of `name`, or all of it.
@@ -331,15 +334,23 @@ fn short_vendor(name: &str) -> String {
     short.to_string()
 }
 
+/// The root filesystem, unless it is in memory, as when the system runs
+/// from its boot archive: its room is then the memory line's.
 fn disk() -> Option<Disk> {
+    let mounts = proc::mounts().unwrap_or_default();
+    let kind = mounts.iter().rev().find(|m| m.path == "/").map(|m| m.kind.clone());
+    if kind.as_deref().is_some_and(|kind| IN_MEMORY.contains(&kind)) {
+        return None;
+    }
     let space = df::statvfs(OsStr::new("/")).ok().filter(|s| s.size > 0)?;
     let used = space.size.saturating_sub(space.free);
     let usable = used + space.available;
     let percent = if usable == 0 { 0 } else { (used * 100).div_ceil(usable) };
-    let mounts = proc::mounts().unwrap_or_default();
-    let root = mounts.iter().rev().find(|m| m.path == "/");
-    Some(Disk { used, total: space.size, percent, kind: root.map(|m| m.kind.clone()) })
+    Some(Disk { used, total: space.size, percent, kind })
 }
+
+/// The filesystems kept in memory.
+const IN_MEMORY: &[&str] = &["tmpfs", "ramfs", "rootfs"];
 
 fn addresses() -> Vec<(String, Cidr)> {
     let interfaces =
