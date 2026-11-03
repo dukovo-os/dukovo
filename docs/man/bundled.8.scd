@@ -14,7 +14,8 @@ bundled - install, seal and remove bundles, and keep what they may do
 # DESCRIPTION
 
 bundled installs bundles, seals them so that nothing changes them, and
-removes them, for whoever asks with *bundle*(1) (ADR 0223). It links the
+removes them, for whoever asks with *bundle*(1) (ADR 0223), from files
+or from the catalogs this computer trusts (ADR 0383). It links the
 commands of the bundles it installed where the shell finds them, and
 tells *bundle run* which bundle to run and what it recorded of it (ADR
 0225). It keeps what each person said of each bundle's permissions, and
@@ -48,11 +49,14 @@ folder, and unpacks the archive into it with the confined unpacker of
 the folder again itself: the signature, the list, every file's SHA-256,
 and that it holds only folders and regular files.
 
-It decides whether to trust the key. A key the ID is bound to is
-trusted, and any other key for that ID is refused; the asker's developer
-key is trusted for their own installs; any other key installs only
-after a warning that this computer does not know it, and from then on
-the ID is bound to it. A command named as one of _/system/commands_, or
+It decides whether to trust the bundle (ADR 0383). An ID bound to a
+catalog installs only from a file that catalog lists, whatever key
+signed it. Otherwise an ID bound to a key installs only as that key
+signs, and any other key for that ID is refused. A file a catalog lists
+is trusted as that catalog's (CATALOGS); the asker's developer key is
+trusted for their own installs; any other key installs only after a
+warning that this computer does not know it and that no catalog it
+trusts lists the file, and from then on the ID is bound to it. A command named as one of _/system/commands_, or
 as one another bundle in reach adds, is refused.
 
 It answers with the install sheet: the name, ID, version and publisher,
@@ -62,8 +66,8 @@ saying plainly which run with your access, outside the sandbox. bundle
 asks, unless *--yes* answered. Then bundled seals the folder (each file
 root's, mode 0444, or 0555 for a program; each folder root's, 0555),
 renames it to its ID in place of the same ID from the same key, records
-it, binds the ID to its key at its first install there, links its
-commands, and writes a security event to the audit log. Anything that
+it, binds the ID to its key, and to its catalog if it came from one, at
+its first install there, links its commands, and writes a security event to the audit log. Anything that
 fails removes the folder it made, and nothing is recorded.
 
 # COMMANDS
@@ -107,6 +111,36 @@ the audit log. A terminal that is not a console's is answered
 question: bundled records it, and tells each run of the bundle that
 watches, on the *watch* connection its runner keeps, at once.
 
+# CATALOGS
+
+bundled reads the catalogs set in _/system/settings/catalogs_ with
+Dukovo's TUF client (ADR 0380), as root; no other program does. Each is
+a folder by its name, which holds _url_, where its repository is, and
+_root.json_, the root to start from; a file _off_ there turns it off.
+Spark copies the catalogs the system comes with into it from
+_/system/resources/default-settings/catalogs_, so bundled turns one of
+those off rather than removing it.
+
+For each catalog, bundled keeps the metadata it trusts, the root it
+started from, and an index of the bundles the catalog's targets list:
+each one's path, SHA-256, length, ID, version and name, with when it was
+read and when the soonest of the metadata it came from expires. It reads
+a catalog anew, from what it trusts, for *bundle search* and for *bundle
+install* by ID, and writes the index only once every check has passed.
+It starts again from _root.json_ when that file changes.
+
+Asked to install an ID, it reads the catalogs in order, those the system
+comes with first, and fetches the newest version from the first that
+lists it, or from the one asked for, through the client, which checks
+its length and SHA-256 as it comes. The file is its own until the
+install ends, and then removed. Asked to install a file, it sums the
+archive and looks it up in each index that has not expired: a catalog
+lists it if it has that ID with that SHA-256 and length.
+
+Adding and removing a catalog are root's, and each is a security event
+of the audit log. A catalog is kept only once bundled has read it from
+the root it came with.
+
 # REMOVING
 
 bundled removes the sealed folder and the record, and with *--purge* the
@@ -126,6 +160,18 @@ _/system/state/bundled/installed_
 _/system/state/bundled/bound_
 	Each ID's key, for everyone and for each person, since its first
 	install there.
+
+_/system/state/bundled/catalog-bound_
+	Each ID installed from a catalog, and which, for everyone and for
+	each person, since its first install from it.
+
+_/system/state/bundled/catalogs/NAME_
+	Each catalog's client: _tuf_, the metadata it trusts,
+	_first-root.json_, the root it started from, _index_, and
+	_downloads_, the files being installed.
+
+_/system/settings/catalogs/NAME_
+	Each catalog: _url_, _root.json_ and _off_.
 
 _/system/state/bundled/developer-keys_
 	Each person's developer key, which *bundle new* and *bundle key*

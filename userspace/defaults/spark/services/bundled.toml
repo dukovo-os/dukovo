@@ -25,6 +25,8 @@ memory = "256M"
 # What it holds: the whole tree, as Spark does, past the owners and modes
 # of files: it seals each bundle as root's, in /applications and in each
 # person's home, and keeps its records in /system/state/bundled, which
-# no other program's view holds.
+# no other program's view holds; and the network, to read the catalogs
+# in /system/settings/catalogs and fetch from them (ADR 0383).
 [permissions]
 runs-with-your-access = true
+network.outbound = true

@@ -52,6 +52,20 @@ pub enum Request {
     /// Keeps the connection, to say each permission the person takes
     /// away from app `id` while it runs.
     Watch { id: String },
+    /// Installs the newest version of `id` a catalog lists, from
+    /// `catalog` or the first that lists it (ADR 0383), as `Install`.
+    Get { id: String, catalog: Option<String>, everyone: bool, yes: bool },
+    /// Lists the bundles the catalogs list whose ID or name holds every
+    /// one of `words`.
+    Search { words: Vec<String> },
+    /// Lists the catalogs.
+    Catalogs,
+    /// Adds catalog `name` at `url`, with the root sent with the request:
+    /// an administrator's.
+    CatalogAdd { name: String, url: String },
+    /// Removes catalog `name`, or turns off one the system comes with:
+    /// an administrator's.
+    CatalogRemove { name: String },
 }
 
 /// Which bundle `run` asks for.
@@ -70,6 +84,19 @@ fn whose(everyone: bool) -> &'static str {
 fn checked_id(id: &str) -> Result<String, String> {
     manifest::bundle::check_id(id).map_err(|why| format!("{id:?}: {why}"))?;
     Ok(id.into())
+}
+
+fn checked_catalog(name: &str) -> Result<String, String> {
+    super::catalogs::check_name(name)?;
+    Ok(name.into())
+}
+
+/// A word to search for: printable, without tabs.
+fn checked_word(word: &str) -> Result<String, String> {
+    if word.is_empty() || word.chars().any(char::is_control) {
+        return Err(format!("{word:?} is no word to search for"));
+    }
+    Ok(word.into())
 }
 
 fn checked_permission(name: &str) -> Result<String, String> {
@@ -126,6 +153,16 @@ impl Request {
             }
             Request::Revoke { id, permission } => format!("revoke\t{id}\t{permission}\n"),
             Request::Watch { id } => format!("watch\t{id}\n"),
+            Request::Get { id, catalog, everyone, yes } => format!(
+                "get\t{id}\t{}\t{}\t{}\n",
+                catalog.as_deref().unwrap_or("-"),
+                whose(*everyone),
+                if *yes { "yes" } else { "ask" }
+            ),
+            Request::Search { words } => format!("search\t{}\n", words.join("\t")),
+            Request::Catalogs => "catalogs\n".into(),
+            Request::CatalogAdd { name, url } => format!("catalog-add\t{name}\t{url}\n"),
+            Request::CatalogRemove { name } => format!("catalog-remove\t{name}\n"),
         }
     }
 
@@ -137,15 +174,30 @@ impl Request {
             "me" => Ok(false),
             _ => Err(format!("{word:?} is neither everyone nor me")),
         };
+        let yes = |word: &str| match word {
+            "yes" => Ok(true),
+            "ask" => Ok(false),
+            _ => Err(format!("{word:?} is neither yes nor ask")),
+        };
         match words.as_slice() {
             ["install", place, answer] => {
-                let yes = match *answer {
-                    "yes" => true,
-                    "ask" => false,
-                    _ => return Err(format!("{answer:?} is neither yes nor ask")),
-                };
-                Ok(Request::Install { everyone: everyone(place)?, yes })
+                Ok(Request::Install { everyone: everyone(place)?, yes: yes(answer)? })
             }
+            ["get", id, catalog, place, answer] => Ok(Request::Get {
+                id: checked_id(id)?,
+                catalog: if *catalog == "-" { None } else { Some(checked_catalog(catalog)?) },
+                everyone: everyone(place)?,
+                yes: yes(answer)?,
+            }),
+            ["search", words @ ..] if !words.is_empty() => Ok(Request::Search {
+                words: words.iter().map(|w| checked_word(w)).collect::<Result<_, _>>()?,
+            }),
+            ["catalogs"] => Ok(Request::Catalogs),
+            ["catalog-add", name, url] => Ok(Request::CatalogAdd {
+                name: checked_catalog(name)?,
+                url: super::catalogs::check_url(url)?,
+            }),
+            ["catalog-remove", name] => Ok(Request::CatalogRemove { name: checked_catalog(name)? }),
             ["list"] => Ok(Request::List),
             ["info", id] => Ok(Request::Info { id: checked_id(id)? }),
             ["remove", id, place, data] => {
@@ -206,6 +258,31 @@ pub struct Found {
     pub list: String,
 }
 
+/// A bundle a catalog lists, as `search` gives it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Hit {
+    pub catalog: String,
+    pub id: String,
+    pub version: String,
+    /// Its name, as the catalog gives it, shown.
+    pub name: String,
+}
+
+/// A catalog, as `catalogs` gives it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Shown {
+    pub name: String,
+    pub url: String,
+    /// Whether it is off, or the system's own.
+    pub off: bool,
+    pub default: bool,
+    /// How many bundles it lists, and when bundled last read it and what
+    /// it read expires, in seconds since 1970; none if never.
+    pub bundles: usize,
+    pub read: Option<i64>,
+    pub expires: Option<i64>,
+}
+
 /// What bundled answers.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Answer {
@@ -221,6 +298,10 @@ pub enum Answer {
     Granted(Grant),
     /// A permission the person took away, on a `watch` connection.
     Revoked(String),
+    /// A bundle a catalog lists.
+    Hit(Hit),
+    /// A catalog.
+    Catalog(Shown),
     /// Done, and what was done.
     Ok(String),
     /// Not done, and why.
@@ -265,6 +346,28 @@ impl Answer {
             )
             .into_bytes(),
             Answer::Revoked(permission) => format!("revoked\t{permission}\n").into_bytes(),
+            Answer::Hit(h) => format!(
+                "hit\t{}\t{}\t{}\t{}\n",
+                h.catalog,
+                h.id,
+                one_line(&h.version),
+                one_line(&h.name)
+            )
+            .into_bytes(),
+            Answer::Catalog(c) => {
+                let time = |t: Option<i64>| t.map_or_else(|| "-".into(), |t| t.to_string());
+                format!(
+                    "catalog\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
+                    c.name,
+                    one_line(&c.url),
+                    if c.off { "off" } else { "on" },
+                    if c.default { "default" } else { "added" },
+                    c.bundles,
+                    time(c.read),
+                    time(c.expires)
+                )
+                .into_bytes()
+            }
             Answer::Ok(what) => format!("ok {}\n", one_line(what)).into_bytes(),
             Answer::Error(why) => format!("error {}\n", one_line(why)).into_bytes(),
         }
@@ -324,6 +427,39 @@ impl Answer {
                 given: read_words(&permission, given).map_err(|why| bad(&why))?,
                 asked: read_words(&permission, asked).map_err(|why| bad(&why))?,
                 permission,
+            })));
+        }
+        if let ["hit", catalog, id, version, name] = words.as_slice() {
+            return Ok(Some(Answer::Hit(Hit {
+                catalog: checked_catalog(catalog).map_err(|why| bad(&why))?,
+                id: checked_id(id).map_err(|why| bad(&why))?,
+                version: one_line(version),
+                name: one_line(name),
+            })));
+        }
+        if let ["catalog", name, url, off, default, bundles, read, expires] = words.as_slice() {
+            let time = |t: &str| -> io::Result<Option<i64>> {
+                if t == "-" {
+                    return Ok(None);
+                }
+                t.parse().map(Some).map_err(|_| bad("a catalog's time"))
+            };
+            return Ok(Some(Answer::Catalog(Shown {
+                name: checked_catalog(name).map_err(|why| bad(&why))?,
+                url: one_line(url),
+                off: match *off {
+                    "off" => true,
+                    "on" => false,
+                    _ => return Err(bad("neither on nor off")),
+                },
+                default: match *default {
+                    "default" => true,
+                    "added" => false,
+                    _ => return Err(bad("neither default nor added")),
+                },
+                bundles: bundles.parse().map_err(|_| bad("a catalog's bundles"))?,
+                read: time(read)?,
+                expires: time(expires)?,
             })));
         }
         if let ["revoked", permission] = words.as_slice() {
@@ -388,6 +524,22 @@ mod tests {
                 permission: "network.outbound".into(),
             },
             Request::Watch { id: "org.example.notes".into() },
+            Request::Get {
+                id: "io.github.burntsushi.ripgrep".into(),
+                catalog: None,
+                everyone: false,
+                yes: false,
+            },
+            Request::Get {
+                id: "io.github.burntsushi.ripgrep".into(),
+                catalog: Some("dukovo".into()),
+                everyone: true,
+                yes: true,
+            },
+            Request::Search { words: vec!["rip".into(), "grep tool".into()] },
+            Request::Catalogs,
+            Request::CatalogAdd { name: "feed".into(), url: "https://example.org/catalog/".into() },
+            Request::CatalogRemove { name: "dukovo".into() },
         ] {
             let line = request.line();
             assert!(line.ends_with('\n') && line.matches('\n').count() == 1);
@@ -414,6 +566,12 @@ mod tests {
             "grant\torg.example.notes\tfiles.folder",
             "revoke\torg.example.notes",
             "watch\tNotes",
+            "get\tRipgrep\t-\tme\task",
+            "get\tio.github.burntsushi.ripgrep\tDukovo\tme\task",
+            "search",
+            "search\t",
+            "catalog-add\tfeed\tftp://example.org/",
+            "catalog-remove\t../x",
         ] {
             assert!(Request::read(bad).is_err(), "{bad:?}");
         }
@@ -454,6 +612,30 @@ mod tests {
                 asked: Vec::new(),
             }),
             Answer::Revoked("files.folder".into()),
+            Answer::Hit(Hit {
+                catalog: "dukovo".into(),
+                id: "io.github.sharkdp.bat".into(),
+                version: "0.26.1".into(),
+                name: "bat".into(),
+            }),
+            Answer::Catalog(Shown {
+                name: "dukovo".into(),
+                url: "https://updates.dukovo.org/catalog/".into(),
+                off: false,
+                default: true,
+                bundles: 2,
+                read: Some(1_793_000_000),
+                expires: Some(1_793_086_400),
+            }),
+            Answer::Catalog(Shown {
+                name: "feed".into(),
+                url: "file:///volumes/vdb/catalog/".into(),
+                off: true,
+                default: false,
+                bundles: 0,
+                read: None,
+                expires: None,
+            }),
             Answer::Ok("installed org.example.notes 0.1.0".into()),
             Answer::Error("it is not signed".into()),
         ];

@@ -2850,6 +2850,7 @@ dependencies = [
  "serde_json",
  "smoltcp",
  "socket2",
+ "tuf",
 ]
 
 [[package]]

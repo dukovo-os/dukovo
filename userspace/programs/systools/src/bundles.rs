@@ -21,6 +21,8 @@
 //! - `bundle install FILE.dkv`, `bundle list`, `bundle info ID` and
 //!   `bundle remove ID` ask bundled(8), which installs, seals and removes
 //!   bundles (ADR 0223).
+//! - `bundle search WORD...`, `bundle install ID` and `bundle catalog`
+//!   find, fetch and set the catalogs bundled installs from (ADR 0383).
 //! - `bundle grant ID PERMISSION [WORD...]` and `bundle revoke ID
 //!   PERMISSION` change what an app may do (ADR 0224): bundled gives a
 //!   permission only after the trusted prompt's yes.
@@ -29,6 +31,7 @@
 // the dkv crate's, which ob packs the catalog's bundles with too.
 #[allow(unused_imports)]
 pub(crate) use dkv::{base64, minisign, sbom, signed, sums, zip};
+pub(crate) mod catalogs;
 pub(crate) mod confine;
 pub(crate) mod folder;
 pub(crate) mod grants;
@@ -47,7 +50,7 @@ use std::path::{Path, PathBuf};
 use manifest::bundle::{self, Manifest};
 
 use self::minisign::{PublicKey, SecretKey};
-use self::protocol::{Answer, Request};
+use self::protocol::{Answer, Request, Shown};
 use self::registry::Place;
 use crate::args::{Arg, Args};
 use crate::signin;
@@ -64,6 +67,11 @@ const USAGE: &str =
        bundle verify [FOLDER | FILE.dkv] [--key PUBLIC-KEY]
        bundle unpack FILE.dkv FOLDER
        bundle install FILE.dkv [--for-everyone] [--yes]
+       bundle install ID [--from CATALOG] [--for-everyone] [--yes]
+       bundle search WORD...
+       bundle catalog
+       bundle catalog add NAME URL ROOT-FILE
+       bundle catalog remove NAME
        bundle list
        bundle info ID
        bundle remove ID [--for-everyone] [--keep-data | --purge]
@@ -106,6 +114,7 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
     let mut everyone = false;
     let mut yes = false;
     let mut data = None;
+    let mut from = None;
     while let Some(arg) = args.next()? {
         match arg {
             Arg::Long(l) if l == "for-everyone" => everyone = true,
@@ -117,6 +126,7 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
             Arg::Long(l) if l == "publisher" => publisher = Some(args.text()?),
             Arg::Long(l) if l == "license" => license = Some(args.text()?),
             Arg::Long(l) if l == "key" => key = Some(args.text()?),
+            Arg::Long(l) if l == "from" => from = Some(args.text()?),
             Arg::Long(l) if l == "output" => output = Some(args.text()?),
             Arg::Short('o') => output = Some(args.text()?),
             Arg::Long(l) if l == "confined" => confined = true,
@@ -138,7 +148,8 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
     let everyone_ok = matches!(sub, Some("install" | "remove")) || !everyone;
     let yes_ok = sub == Some("install") || !yes;
     let data_ok = sub == Some("remove") || data.is_none();
-    if !everyone_ok || !yes_ok || !data_ok {
+    let from_ok = sub == Some("install") || from.is_none();
+    if !everyone_ok || !yes_ok || !data_ok || !from_ok {
         return Err(usage(USAGE.into()));
     }
     let folder = || operands.first().map_or(".", String::as_str);
@@ -159,7 +170,14 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
         (Some("verify"), [] | [_]) => verify(folder(), key.as_deref()),
         (Some("unpack"), []) if confined => Ok(confine::confined()),
         (Some("unpack"), [archive, folder]) => unpack(archive, folder),
-        (Some("install"), [archive]) => install(archive, everyone, yes),
+        (Some("install"), [what]) if from.is_none() && is_file(what) => {
+            install(what, everyone, yes)
+        }
+        (Some("install"), [id]) => get(id, from, everyone, yes),
+        (Some("search"), words) if !words.is_empty() => search(words),
+        (Some("catalog"), []) => list_catalogs(),
+        (Some("catalog"), [add, name, url, root]) if add == "add" => add_catalog(name, url, root),
+        (Some("catalog"), [remove, name]) if remove == "remove" => remove_catalog(name),
         (Some("list"), []) => list(),
         (Some("info"), [id]) => info(id),
         (Some("remove"), [id]) => remove(id, everyone, data),
@@ -529,6 +547,13 @@ fn agree(question: &str, yes: &[char]) -> Result<bool, Fail> {
     Ok(line.trim_start().chars().next().is_some_and(|c| yes.contains(&c.to_ascii_lowercase())))
 }
 
+/// Whether `install`'s operand names a file, rather than a bundle's ID
+/// for a catalog: a path, or a name with the packed extension, or what
+/// is there.
+fn is_file(what: &str) -> bool {
+    what.contains('/') || what.ends_with(&format!(".{EXTENSION}")) || Path::new(what).exists()
+}
+
 /// `bundle install FILE.dkv`: bundled shows the install sheet, asks, and
 /// installs it sealed, for this person or for everyone.
 fn install(archive: &str, everyone: bool, yes: bool) -> Result<i32, Fail> {
@@ -540,22 +565,47 @@ fn install(archive: &str, everyone: bool, yes: bool) -> Result<i32, Fail> {
         )));
     }
     let file = File::open(path).map_err(|e| util::failed(&archive, e))?;
-    let (stream, mut input) =
-        ask(&Request::Install { everyone, yes }, Some(&file)).map_err(fail)?;
+    let (stream, input) = ask(&Request::Install { everyone, yes }, Some(&file)).map_err(fail)?;
+    installing(archive, &stream, input)
+}
+
+/// `bundle install ID`: bundled fetches the newest version a catalog
+/// lists, then shows its sheet and asks, as for a file.
+fn get(id: &str, from: Option<String>, everyone: bool, yes: bool) -> Result<i32, Fail> {
+    bundle::check_id(id).map_err(|why| {
+        usage(format!(
+            "{id}: neither a file nor a bundle's ID ({why}); `bundle search` finds a bundle's ID"
+        ))
+    })?;
+    if let Some(name) = &from {
+        catalogs::check_name(name).map_err(usage)?;
+    }
+    let request = Request::Get { id: id.into(), catalog: from, everyone, yes };
+    let (stream, input) = ask(&request, None).map_err(fail)?;
+    installing(id, &stream, input)
+}
+
+/// Shows an install's sheet, asks, and says what bundled did.
+fn installing(
+    what: &str,
+    stream: &UnixStream,
+    mut input: BufReader<UnixStream>,
+) -> Result<i32, Fail> {
     loop {
         match answer(&mut input)? {
             Answer::Sheet(text) => print!("{text}"),
             Answer::Question => {
                 let agreed = agree("Install it? [y/N] ", &['y'])?;
                 let reply: &[u8] = if agreed { b"yes\n" } else { b"no\n" };
-                (&stream).write_all(reply).map_err(|e| fail(format!("bundled: {e}")))?;
+                let mut stream = stream;
+                stream.write_all(reply).map_err(|e| fail(format!("bundled: {e}")))?;
             }
-            Answer::Ok(what) => {
-                println!("{what}");
+            Answer::Ok(done) => {
+                println!("{done}");
                 return Ok(0);
             }
             Answer::Error(why) => {
-                eprintln!("bundle: {archive}: {why}");
+                eprintln!("bundle: {what}: {why}");
                 return Ok(1);
             }
             _ => return Err(fail("bundled answered out of turn".into())),
@@ -613,6 +663,115 @@ fn list() -> Result<i32, Fail> {
         println!("{:width$}  {:version_width$}  {whose:9}  {}", row.id, row.version, row.name);
     }
     Ok(0)
+}
+
+/// `bundle search WORD...`: the newest version of each bundle the
+/// catalogs list whose ID or name holds every word.
+fn search(words: &[String]) -> Result<i32, Fail> {
+    let (_stream, mut input) =
+        ask(&Request::Search { words: words.to_vec() }, None).map_err(fail)?;
+    let mut hits = Vec::new();
+    let said = loop {
+        match answer(&mut input)? {
+            Answer::Hit(hit) => hits.push(hit),
+            Answer::Ok(said) => break said,
+            Answer::Error(why) => {
+                eprintln!("bundle: {why}");
+                return Ok(1);
+            }
+            _ => return Err(fail("bundled answered out of turn".into())),
+        }
+    };
+    // What came after the count: catalogs that could not be read.
+    for note in said.split("; ").skip(1) {
+        eprintln!("bundle: {note}");
+    }
+    if hits.is_empty() {
+        println!("no bundle found");
+        return Ok(1);
+    }
+    let width = hits.iter().map(|h| h.id.len()).max().unwrap_or(2).max(2);
+    let version_width = hits.iter().map(|h| h.version.len()).max().unwrap_or(7).max(7);
+    let catalog_width = hits.iter().map(|h| h.catalog.len()).max().unwrap_or(7).max(7);
+    println!("{:width$}  {:version_width$}  {:catalog_width$}  NAME", "ID", "VERSION", "CATALOG");
+    for hit in hits {
+        println!(
+            "{:width$}  {:version_width$}  {:catalog_width$}  {}",
+            hit.id, hit.version, hit.catalog, hit.name
+        );
+    }
+    Ok(0)
+}
+
+/// `bundle catalog`: each catalog, whether it is on, how many bundles it
+/// listed when bundled last read it, and until when that holds.
+fn list_catalogs() -> Result<i32, Fail> {
+    let (_stream, mut input) = ask(&Request::Catalogs, None).map_err(fail)?;
+    let mut rows: Vec<Shown> = Vec::new();
+    let said = loop {
+        match answer(&mut input)? {
+            Answer::Catalog(shown) => rows.push(shown),
+            Answer::Ok(said) => break said,
+            Answer::Error(why) => {
+                eprintln!("bundle: {why}");
+                return Ok(1);
+            }
+            _ => return Err(fail("bundled answered out of turn".into())),
+        }
+    };
+    for note in said.split("; ").skip(1) {
+        eprintln!("bundle: {note}");
+    }
+    if rows.is_empty() {
+        println!("no catalog is set: `elevate bundle catalog add NAME URL ROOT-FILE` adds one");
+        return Ok(0);
+    }
+    let width = rows.iter().map(|r| r.name.len()).max().unwrap_or(4).max(4);
+    println!("{:width$}  {:3}  {:7}  {:13}  URL", "NAME", "", "BUNDLES", "READ");
+    for row in rows {
+        let state = if row.off { "off" } else { "on" };
+        let read = row
+            .read
+            .map_or_else(|| "never".to_string(), |t| util::time_text(t, "%Y-%m-%d %H:%M", true));
+        let stale = row.expires.is_some_and(|e| e <= util::now_ns() as i64 / 1_000_000_000);
+        let read = if stale { format!("{read}!") } else { read };
+        println!("{:width$}  {state:3}  {:<7}  {read:13}  {}", row.name, row.bundles, row.url);
+    }
+    Ok(0)
+}
+
+/// `bundle catalog add NAME URL ROOT-FILE`: bundled reads the catalog
+/// with that root before it keeps it.
+fn add_catalog(name: &str, url: &str, root: &str) -> Result<i32, Fail> {
+    catalogs::check_name(name).map_err(usage)?;
+    let url = catalogs::check_url(url).map_err(usage)?;
+    let file = File::open(root).map_err(|e| util::failed(&root, e))?;
+    let request = Request::CatalogAdd { name: name.into(), url };
+    let (_stream, mut input) = ask(&request, Some(&file)).map_err(fail)?;
+    done(&mut input, name)
+}
+
+/// `bundle catalog remove NAME`.
+fn remove_catalog(name: &str) -> Result<i32, Fail> {
+    catalogs::check_name(name).map_err(usage)?;
+    let (_stream, mut input) =
+        ask(&Request::CatalogRemove { name: name.into() }, None).map_err(fail)?;
+    done(&mut input, name)
+}
+
+/// Says bundled's last answer: what it did, or why not.
+fn done(input: &mut BufReader<UnixStream>, what: &str) -> Result<i32, Fail> {
+    match answer(input)? {
+        Answer::Ok(said) => {
+            println!("{said}");
+            Ok(0)
+        }
+        Answer::Error(why) => {
+            eprintln!("bundle: {what}: {why}");
+            Ok(1)
+        }
+        _ => Err(fail("bundled answered out of turn".into())),
+    }
 }
 
 /// A line of `bundle info` for what the person said of a permission.

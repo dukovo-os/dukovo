@@ -36,6 +36,9 @@ manifest = { path = "../manifest", features = ["schema"] }
 # the SHA-256 of each file, and the zip a .dkv file is, in the dkv crate
 # that ob shares (ADR 0370).
 dkv = { path = "../dkv" }
+# bundled(8) reads the catalogs with Dukovo's TUF client (ADRs 0380 and
+# 0383).
+tuf = { path = "../tuf" }
 # The system call interface, generated from abi/*.ridl, for what the C
 # library does not wrap: affinity, I/O priority, tracing.
 radix-abi = { path = "../../../kernel/abi" }
