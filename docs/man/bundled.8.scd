@@ -90,6 +90,15 @@ answers with the asker's own bundle before everyone's: its place, ID and
 key, and the SHA-256 of the signed list it recorded at install. *bundle
 run* checks the folder against them before it runs anything.
 
+A bundle with a line is kept by its full ID, _ID@LINE_ (ADR 0387), and
+the key and catalog its ID is bound to bind all its lines. Lines of one
+ID may add the same commands, which no other two bundles may; each
+line's commands are linked a second time as _NAME-LINE_. When the ID or
+command asked for is several lines', bundled answers with the lines, the
+files a project chooses them with, and the asker's default line and
+everyone's, and *bundle*(1) chooses the line in the asker's working
+folder, which bundled cannot read, and asks again for it.
+
 # GRANTS
 
 bundled keeps what each person said of each bundle's permissions, the
@@ -265,6 +274,10 @@ _/system/state/bundled/held_
 
 _/system/state/bundled/automatic_
 	Each place whose bundles update by themselves, and since when.
+
+_/system/state/bundled/defaults_
+	The default line of each ID with lines, for everyone and for each
+	person (*bundle default*).
 
 _/system/state/bundled/history_
 	What bundled did to bundles, a line of tab-separated fields each,

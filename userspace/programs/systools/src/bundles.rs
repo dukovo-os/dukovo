@@ -85,6 +85,7 @@ const USAGE: &str =
        bundle hold ID [--for-everyone]
        bundle unhold ID [--for-everyone]
        bundle history [ID]
+       bundle default NAME [LINE | --clear] [--for-everyone]
        bundle list
        bundle info ID
        bundle remove ID [--for-everyone] [--keep-data | --purge]
@@ -130,9 +131,11 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
     let mut from = None;
     let mut check_only = false;
     let mut automatic = None;
+    let mut clear = false;
     while let Some(arg) = args.next()? {
         match arg {
             Arg::Long(l) if l == "check" => check_only = true,
+            Arg::Long(l) if l == "clear" => clear = true,
             Arg::Long(l) if l == "automatic" && automatic.is_none() => {
                 automatic = Some(match args.text()?.as_str() {
                     "on" => true,
@@ -168,15 +171,17 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
     if !key_ok || !output_ok || (confined && (sub != Some("unpack") || !operands.is_empty())) {
         return Err(usage(USAGE.into()));
     }
-    let everyone_ok =
-        matches!(sub, Some("install" | "remove" | "update" | "rollback" | "hold" | "unhold"))
-            || !everyone;
+    let everyone_ok = matches!(
+        sub,
+        Some("install" | "remove" | "update" | "rollback" | "hold" | "unhold" | "default")
+    ) || !everyone;
     let yes_ok = matches!(sub, Some("install" | "update")) || !yes;
     let data_ok = sub == Some("remove") || data.is_none();
     let from_ok = sub == Some("install") || from.is_none();
     let update_ok = sub == Some("update") || (!check_only && automatic.is_none());
     let automatic_ok = automatic.is_none() || (!check_only && !yes && operands.is_empty());
-    if !everyone_ok || !yes_ok || !data_ok || !from_ok || !update_ok || !automatic_ok {
+    let clear_ok = (sub == Some("default") && operands.len() == 1) || !clear;
+    if !everyone_ok || !yes_ok || !data_ok || !from_ok || !update_ok || !automatic_ok || !clear_ok {
         return Err(usage(USAGE.into()));
     }
     let folder = || operands.first().map_or(".", String::as_str);
@@ -216,6 +221,16 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
         (Some("hold"), [id]) => simple(&Request::Hold { id: checked(id)?, everyone, on: true }, id),
         (Some("unhold"), [id]) => {
             simple(&Request::Hold { id: checked(id)?, everyone, on: false }, id)
+        }
+        (Some("default"), [name]) if !clear && !everyone => show_default(name),
+        (Some("default"), [name]) if clear => {
+            simple(&Request::Default { name: line_name(name)?, line: None, everyone }, name)
+        }
+        (Some("default"), [name, line]) => {
+            bundle::check_version_line(line).map_err(|why| usage(format!("{line}: {why}")))?;
+            let request =
+                Request::Default { name: line_name(name)?, line: Some(line.clone()), everyone };
+            simple(&request, name)
         }
         (Some("history"), []) => history(None),
         (Some("history"), [id]) => history(Some(checked(id)?)),
@@ -610,7 +625,7 @@ fn install(archive: &str, everyone: bool, yes: bool) -> Result<i32, Fail> {
 /// `bundle install ID`: bundled fetches the newest version a catalog
 /// lists, then shows its sheet and asks, as for a file.
 fn get(id: &str, from: Option<String>, everyone: bool, yes: bool) -> Result<i32, Fail> {
-    bundle::check_id(id).map_err(|why| {
+    bundle::check_full_id(id).map_err(|why| {
         usage(format!(
             "{id}: neither a file nor a bundle's ID ({why}); `bundle search` finds a bundle's ID"
         ))
@@ -653,8 +668,60 @@ fn installing(
 
 /// `id`, checked as a bundle's ID.
 fn checked(id: &str) -> Result<String, Fail> {
-    bundle::check_id(id).map_err(|why| usage(format!("{id}: {why}")))?;
+    bundle::check_full_id(id).map_err(|why| usage(format!("{id}: {why}")))?;
     Ok(id.into())
+}
+
+/// An ID, or one of the commands of its lines, as `bundle default` takes
+/// them.
+fn line_name(name: &str) -> Result<String, Fail> {
+    if bundle::check_id(name).is_ok() {
+        return Ok(name.into());
+    }
+    bundle::check_command_name(name).map_err(|why| usage(format!("{name}: {why}")))?;
+    Ok(name.into())
+}
+
+/// `bundle default NAME`: which line of the ID NAME names runs in the
+/// working folder, and why; the lines installed, and the defaults (ADR
+/// 0387).
+fn show_default(name: &str) -> Result<i32, Fail> {
+    let request = Request::Lines { name: line_name(name)? };
+    let (_stream, mut input) = ask(&request, None).map_err(fail)?;
+    let mut lines = None;
+    loop {
+        match answer(&mut input)? {
+            Answer::Lines(l) if lines.is_none() => lines = Some(l),
+            Answer::Ok(_) => break,
+            Answer::Error(why) => {
+                eprintln!("bundle: {name}: {why}");
+                return Ok(1);
+            }
+            _ => return Err(fail("bundled answered out of turn".into())),
+        }
+    }
+    let lines = lines.ok_or_else(|| fail("bundled found no lines".into()))?;
+    let here = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
+    let none = || "none".to_string();
+    match run::pick(&lines, &here) {
+        Ok((line, why)) => {
+            let why = match why {
+                run::Why::Project(path) => format!("as {} asks", path.display()),
+                run::Why::Mine => "your default".into(),
+                run::Why::Everyone => "everyone's default".into(),
+                run::Why::Newest => "the newest installed".into(),
+            };
+            println!("{}: {line} runs here, {why}", lines.id);
+        }
+        Err(why) => println!("{}: none runs here: {why}", lines.id),
+    }
+    println!("lines installed: {}", lines.lines.join(", "));
+    println!("your default: {}", lines.mine.clone().unwrap_or_else(none));
+    println!("everyone's default: {}", lines.everyone.clone().unwrap_or_else(none));
+    if !lines.files.is_empty() {
+        println!("a project chooses with: {}", lines.files.join(", "));
+    }
+    Ok(0)
 }
 
 /// Asks bundled `request`, and says what it did, or why not.
@@ -961,7 +1028,7 @@ fn said_line(grant: &grants::Grant) -> String {
 /// `bundle info ID`: an installed bundle's sheet, what you said of its
 /// permissions, where it is and when it was installed.
 fn info(id: &str) -> Result<i32, Fail> {
-    bundle::check_id(id).map_err(usage)?;
+    bundle::check_full_id(id).map_err(usage)?;
     let (_stream, mut input) = ask(&Request::Info { id: id.into() }, None).map_err(fail)?;
     let mut said = Vec::new();
     loop {
@@ -995,7 +1062,7 @@ fn info(id: &str) -> Result<i32, Fail> {
 /// `bundle remove ID`: removes it, after asking whether to delete its
 /// settings and data unless `--keep-data` or `--purge` answers.
 fn remove(id: &str, everyone: bool, data: Option<bool>) -> Result<i32, Fail> {
-    bundle::check_id(id).map_err(usage)?;
+    bundle::check_full_id(id).map_err(usage)?;
     let purge = match data {
         Some(purge) => purge,
         // Removing for everyone leaves each person's data.
@@ -1032,7 +1099,7 @@ fn remove(id: &str, everyone: bool, data: Option<bool>) -> Result<i32, Fail> {
 /// `documents=read-write`), after the trusted prompt's yes on this
 /// console (ADR 0224).
 fn grant(id: &str, permission: &str, words: &[String]) -> Result<i32, Fail> {
-    bundle::check_id(id).map_err(usage)?;
+    bundle::check_full_id(id).map_err(usage)?;
     let found = bundle::permissions::find(permission).ok_or_else(|| {
         usage(format!("{permission} is no permission of manifest.json(5)'s list"))
     })?;
@@ -1047,7 +1114,7 @@ fn grant(id: &str, permission: &str, words: &[String]) -> Result<i32, Fail> {
 /// `bundle revoke ID PERMISSION`: takes a permission away from an app,
 /// now and from now on; a run of it that holds it stops.
 fn revoke(id: &str, permission: &str) -> Result<i32, Fail> {
-    bundle::check_id(id).map_err(usage)?;
+    bundle::check_full_id(id).map_err(usage)?;
     if bundle::permissions::find(permission).is_none() {
         return Err(usage(format!("{permission} is no permission of manifest.json(5)'s list")));
     }

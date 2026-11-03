@@ -6,8 +6,13 @@
 //! person's developer key, the catalog each ID installed from one is
 //! bound to (ADR 0383), and the version each new one replaced, the IDs
 //! held at their version, and the places that update by themselves (ADR
-//! 0384). Each is a file of lines, tab-separated, read strictly: a line
-//! that does not read is an error, never skipped.
+//! 0384), and the line of each ID that runs unless a project asks for
+//! another (ADR 0387). Each is a file of lines, tab-separated, read
+//! strictly: a line that does not read is an error, never skipped.
+//!
+//! A bundle with a line is kept by its full ID, `ID@LINE`; the key and
+//! catalog an ID is bound to bind all its lines, so bindings are kept by
+//! the ID alone.
 
 use std::fmt;
 
@@ -29,9 +34,17 @@ pub const PREVIOUS: &str = "previous";
 pub const HELD: &str = "held";
 /// The places whose bundles update by themselves.
 pub const AUTOMATIC: &str = "automatic";
+/// The default line of each ID with lines, in each place.
+pub const DEFAULTS: &str = "defaults";
 /// The files, in the order [`Registry::read`] takes them.
-pub const FILES: [&str; 7] =
-    [INSTALLED, BOUND, DEVELOPER_KEYS, CATALOG_BOUND, PREVIOUS, HELD, AUTOMATIC];
+pub const FILES: [&str; 8] =
+    [INSTALLED, BOUND, DEVELOPER_KEYS, CATALOG_BOUND, PREVIOUS, HELD, AUTOMATIC, DEFAULTS];
+
+/// The ID of the full ID `id`: what is before its `@`, if it has a line.
+#[must_use]
+pub fn base_id(id: &str) -> &str {
+    id.split_once('@').map_or(id, |(base, _)| base)
+}
 
 /// Where a bundle is installed: for everyone, or for one person.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -120,6 +133,15 @@ pub struct Held {
     pub since: u64,
 }
 
+/// The line of an ID that runs in a place unless a project asks for
+/// another.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LineDefault {
+    pub place: Place,
+    pub id: String,
+    pub line: String,
+}
+
 /// What bundled keeps.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Registry {
@@ -133,6 +155,7 @@ pub struct Registry {
     pub held: Vec<Held>,
     /// The places that update by themselves, and since when.
     pub automatic: Vec<(Place, u64)>,
+    pub defaults: Vec<LineDefault>,
 }
 
 /// Splits `line` into exactly `N` tab-separated fields.
@@ -168,6 +191,11 @@ fn checked_id(id: &str) -> Result<String, String> {
     Ok(id.into())
 }
 
+fn checked_full_id(id: &str) -> Result<String, String> {
+    manifest::bundle::check_full_id(id)?;
+    Ok(id.into())
+}
+
 fn checked_hex(text: &str) -> Result<String, String> {
     let hex = text.len() == 64 && text.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'));
     hex.then(|| text.into()).ok_or_else(|| format!("{text:?} is not a SHA-256"))
@@ -178,7 +206,7 @@ fn read_installed(line: &str) -> Result<Installed, String> {
     let [place, id, version, key, list, when] = fields(line)?;
     Ok(Installed {
         place: Place::parse(place)?,
-        id: checked_id(id)?,
+        id: checked_full_id(id)?,
         version: version.into(),
         key: PublicKey::decode(key)?,
         list: checked_hex(list)?,
@@ -201,8 +229,9 @@ fn installed_text(all: &[Installed]) -> String {
 
 impl Registry {
     /// Reads the files' texts, in the order of [`FILES`].
-    pub fn read(texts: &[String; 7]) -> Result<Registry, String> {
-        let [installed, bound, developer_keys, catalog_bound, previous, held, automatic] = texts;
+    pub fn read(texts: &[String; 8]) -> Result<Registry, String> {
+        let [installed, bound, developer_keys, catalog_bound, previous, held, automatic, defaults] =
+            texts;
         let installed = lines(INSTALLED, installed, read_installed)?;
         let previous = lines(PREVIOUS, previous, read_installed)?;
         let bound = lines(BOUND, bound, |line| {
@@ -230,14 +259,31 @@ impl Registry {
         })?;
         let held = lines(HELD, held, |line| {
             let [place, id, since] = fields(line)?;
-            Ok(Held { place: Place::parse(place)?, id: checked_id(id)?, since: number(since)? })
+            Ok(Held {
+                place: Place::parse(place)?,
+                id: checked_full_id(id)?,
+                since: number(since)?,
+            })
         })?;
         let automatic = lines(AUTOMATIC, automatic, |line| {
             let [place, since] = fields(line)?;
             Ok((Place::parse(place)?, number(since)?))
         })?;
-        let registry =
-            Registry { installed, bound, developer_keys, catalog_bound, previous, held, automatic };
+        let defaults = lines(DEFAULTS, defaults, |line| {
+            let [place, id, line] = fields(line)?;
+            manifest::bundle::check_version_line(line)?;
+            Ok(LineDefault { place: Place::parse(place)?, id: checked_id(id)?, line: line.into() })
+        })?;
+        let registry = Registry {
+            installed,
+            bound,
+            developer_keys,
+            catalog_bound,
+            previous,
+            held,
+            automatic,
+            defaults,
+        };
         registry.check()?;
         Ok(registry)
     }
@@ -281,11 +327,16 @@ impl Registry {
                 return Err(format!("{AUTOMATIC}: {place} is there twice"));
             }
         }
+        for d in &self.defaults {
+            if !seen.insert((7, d.place, d.id.as_str())) {
+                return Err(format!("{DEFAULTS}: {} is there twice for {}", d.id, d.place));
+            }
+        }
         Ok(())
     }
 
     /// The files' texts, in the order of [`FILES`], sorted.
-    pub fn texts(&self) -> [String; 7] {
+    pub fn texts(&self) -> [String; 8] {
         let mut bound: Vec<String> = self
             .bound
             .iter()
@@ -310,6 +361,9 @@ impl Registry {
         let mut automatic: Vec<String> =
             self.automatic.iter().map(|(place, since)| format!("{place}\t{since}\n")).collect();
         automatic.sort();
+        let mut defaults: Vec<String> =
+            self.defaults.iter().map(|d| format!("{}\t{}\t{}\n", d.place, d.id, d.line)).collect();
+        defaults.sort();
         [
             installed_text(&self.installed),
             bound.concat(),
@@ -318,6 +372,7 @@ impl Registry {
             installed_text(&self.previous),
             held.concat(),
             automatic.concat(),
+            defaults.concat(),
         ]
     }
 
@@ -326,14 +381,27 @@ impl Registry {
         self.installed.iter().find(|i| i.place == place && i.id == id)
     }
 
-    /// The key `id` is bound to in `place`.
+    /// The key `id`, or the ID of its line, is bound to in `place`.
     pub fn bound(&self, place: Place, id: &str) -> Option<&Bound> {
-        self.bound.iter().find(|b| b.place == place && b.id == id)
+        self.bound.iter().find(|b| b.place == place && b.id == base_id(id))
     }
 
-    /// The catalog `id` is bound to in `place`.
+    /// The catalog `id`, or the ID of its line, is bound to in `place`.
     pub fn catalog_bound(&self, place: Place, id: &str) -> Option<&CatalogBound> {
-        self.catalog_bound.iter().find(|b| b.place == place && b.id == id)
+        self.catalog_bound.iter().find(|b| b.place == place && b.id == base_id(id))
+    }
+
+    /// The default line of the ID `id` in `place`, if one is set.
+    pub fn default_line(&self, place: Place, id: &str) -> Option<&str> {
+        self.defaults.iter().find(|d| d.place == place && d.id == id).map(|d| d.line.as_str())
+    }
+
+    /// Sets the default line of the ID `id` in `place`, or forgets it.
+    pub fn set_default_line(&mut self, place: Place, id: &str, line: Option<&str>) {
+        self.defaults.retain(|d| d.place != place || d.id != id);
+        if let Some(line) = line {
+            self.defaults.push(LineDefault { place, id: id.into(), line: line.into() });
+        }
     }
 
     /// The developer key of the user `user`.
@@ -407,7 +475,7 @@ impl Registry {
         {
             self.catalog_bound.push(CatalogBound {
                 place: installed.place,
-                id: installed.id.clone(),
+                id: base_id(&installed.id).into(),
                 catalog: catalog.into(),
                 since: installed.when,
             });
@@ -415,7 +483,7 @@ impl Registry {
         if self.bound(installed.place, &installed.id).is_none() {
             self.bound.push(Bound {
                 place: installed.place,
-                id: installed.id.clone(),
+                id: base_id(&installed.id).into(),
                 key: installed.key,
                 since: installed.when,
             });
@@ -561,6 +629,38 @@ mod tests {
         assert!(b.contains("everyone\torg.example.tea\tRW"));
         assert_eq!(again.developer_key(1000), Some(key(1)));
         assert_eq!(Registry::read(&Default::default()).unwrap(), Registry::default());
+    }
+
+    #[test]
+    fn lines_are_kept_by_full_id_and_bound_by_id() {
+        let mut registry = Registry::default();
+        registry.record(installed(Place::Everyone, "org.nodejs.node@20", 1), Some("dukovo"));
+        registry.record(installed(Place::Everyone, "org.nodejs.node@22", 1), Some("dukovo"));
+        assert_eq!(registry.installed.len(), 2);
+        assert!(registry.previous.is_empty());
+        // One binding for the ID, which binds every line.
+        assert_eq!(registry.bound.len(), 1);
+        assert_eq!(registry.bound[0].id, "org.nodejs.node");
+        assert!(registry.bound(Place::Everyone, "org.nodejs.node@24").is_some());
+        assert!(registry.catalog_bound(Place::Everyone, "org.nodejs.node@24").is_some());
+        registry.set_default_line(Place::User(1000), "org.nodejs.node", Some("20"));
+        registry.set_default_line(Place::Everyone, "org.nodejs.node", Some("22"));
+        registry.set_held(Place::Everyone, "org.nodejs.node@22", true, 5);
+        let again = Registry::read(&registry.texts()).unwrap();
+        assert_eq!(again, registry);
+        assert_eq!(again.default_line(Place::User(1000), "org.nodejs.node"), Some("20"));
+        assert_eq!(again.default_line(Place::Everyone, "org.nodejs.node"), Some("22"));
+        assert_eq!(again.texts()[7], "1000\torg.nodejs.node\t20\neveryone\torg.nodejs.node\t22\n");
+        registry.set_default_line(Place::User(1000), "org.nodejs.node", None);
+        assert_eq!(registry.default_line(Place::User(1000), "org.nodejs.node"), None);
+        assert_eq!(base_id("org.nodejs.node@22"), "org.nodejs.node");
+        assert_eq!(base_id("org.nodejs.node"), "org.nodejs.node");
+        // A default names an ID and a line; a binding, the ID alone.
+        let mut texts = Registry::default().texts();
+        texts[7] = "everyone\torg.nodejs.node@22\t22\n".into();
+        assert!(Registry::read(&texts).is_err());
+        texts[7] = "everyone\torg.nodejs.node\tv22\n".into();
+        assert!(Registry::read(&texts).is_err());
     }
 
     #[test]

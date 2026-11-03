@@ -62,6 +62,8 @@ pub const KEYS: &[&str] = &[
     "summary",
     "description",
     "version",
+    "line",
+    "line_files",
     "publisher",
     "license",
     "source",
@@ -121,6 +123,13 @@ pub struct Manifest {
     pub description: Option<Text>,
     /// Its version.
     pub version: Version,
+    /// The major version line its version belongs to, which keeps it
+    /// beside the bundle's other lines as a bundle of its own, `ID@LINE`
+    /// (ADR 0387).
+    pub line: Option<VersionLine>,
+    /// The files a project keeps that say which line it wants, such as
+    /// `.nvmrc`.
+    pub line_files: Vec<FileName>,
     /// Who publishes it; the key comes from its signature.
     pub publisher: Publisher,
     /// Its license, as an SPDX expression.
@@ -249,6 +258,12 @@ fn at(text: &str, path: &[Step<'_>]) -> usize {
 }
 
 impl Manifest {
+    /// Its full ID: `ID@LINE` when it has a line, else its ID (ADR 0387).
+    #[must_use]
+    pub fn full_id(&self) -> String {
+        full_id(&self.id.0, self.line.as_ref().map(|l| l.0.as_str()))
+    }
+
     /// The checks that need more than one field: each problem, with the
     /// line of the field it is about. The permissions named in `failed`
     /// were asked for, but wrongly, which is said already.
@@ -259,6 +274,38 @@ impl Manifest {
             errors.push(Error::at(at(text, path), message));
         };
         use Step::{Index, Key};
+
+        // A line, which its version is of, and the files that choose it.
+        if let Some(line) = &self.line {
+            if !in_line(&self.version.0, &line.0) {
+                fail(
+                    &[Key("line")],
+                    format!(
+                        "version {} is not of line {line}: a line's versions start with it, as \
+                         {line}.1 does",
+                        self.version
+                    ),
+                );
+            }
+            if !self.services.is_empty() {
+                fail(
+                    &[Key("line")],
+                    "a bundle with a line runs no services yet: its lines would run services \
+                     of the same names"
+                        .into(),
+                );
+            }
+        } else if !self.line_files.is_empty() {
+            fail(&[Key("line_files")], "line_files chooses a line, so it needs a line".into());
+        }
+        if self.line_files.len() > 8 {
+            fail(&[Key("line_files")], "line_files names at most 8 files".into());
+        }
+        for (i, file) in self.line_files.iter().enumerate() {
+            if self.line_files[..i].contains(file) {
+                fail(&[Key("line_files"), Index(i)], format!("line_files names {file} twice"));
+            }
+        }
 
         // The architectures, and a program for each.
         if self.architectures.is_empty() {
@@ -479,6 +526,8 @@ impl<'de> Deserialize<'de> for Top {
                 let mut summary = None;
                 let mut description = None;
                 let mut version = None;
+                let mut line = None;
+                let mut line_files = None;
                 let mut publisher = None;
                 let mut license = None;
                 let mut source = None;
@@ -514,6 +563,8 @@ impl<'de> Deserialize<'de> for Top {
                         "summary" => summary = Some(map.next_value()?),
                         "description" => description = Some(map.next_value()?),
                         "version" => version = Some(map.next_value()?),
+                        "line" => line = Some(map.next_value()?),
+                        "line_files" => line_files = Some(map.next_value()?),
                         "publisher" => publisher = Some(map.next_value()?),
                         "license" => license = Some(map.next_value()?),
                         "source" => source = Some(map.next_value()?),
@@ -573,6 +624,8 @@ impl<'de> Deserialize<'de> for Top {
                         summary,
                         description,
                         version,
+                        line,
+                        line_files: line_files.unwrap_or_default(),
                         publisher,
                         license,
                         source,
@@ -777,6 +830,24 @@ text!(
 );
 
 text!(
+    /// A major version line: numbers between dots, such as `22` or
+    /// `3.13`, which the versions of the line start with.
+    VersionLine,
+    "A major version line: numbers between dots, such as 22 or 3.13",
+    @pattern "^(0|[1-9][0-9]*)(\\.(0|[1-9][0-9]*)){0,2}$",
+    check_version_line
+);
+
+text!(
+    /// The name of a file, such as `.nvmrc`: no folder, at most 64
+    /// characters.
+    FileName,
+    "A file's name, such as .nvmrc, without a /",
+    @pattern "^[^/]{1,64}$",
+    check_file_name
+);
+
+text!(
     /// A web address, `https://`.
     Url,
     "A web address, starting https://",
@@ -925,6 +996,112 @@ fn check_version(version: &str) -> Result<(), String> {
              and a +build as semantic versioning has them; not `{}`",
             version.escape_debug()
         ))
+    }
+}
+
+/// The numbers of `text`, numbers between dots without a leading zero,
+/// or `None`.
+fn numbers(text: &str) -> Option<Vec<u64>> {
+    let number_ok = |n: &str| {
+        !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()) && (n == "0" || !n.starts_with('0'))
+    };
+    text.split('.').map(|n| if number_ok(n) { n.parse().ok() } else { None }).collect()
+}
+
+/// Checks a version line: one to three numbers between dots.
+pub fn check_version_line(line: &str) -> Result<(), String> {
+    match numbers(line) {
+        Some(n) if (1..=3).contains(&n.len()) => Ok(()),
+        _ => Err(format!(
+            "line is a major version line, one to three numbers between dots such as 22 or \
+             3.13; not `{}`",
+            line.escape_debug()
+        )),
+    }
+}
+
+/// Whether `version` is of `line`: its numbers start with the line's.
+#[must_use]
+pub fn in_line(version: &str, line: &str) -> bool {
+    let core = version.split(['-', '+']).next().unwrap_or_default();
+    match (numbers(core), numbers(line)) {
+        (Some(v), Some(l)) => v.starts_with(&l),
+        _ => false,
+    }
+}
+
+fn check_file_name(name: &str) -> Result<(), String> {
+    let fits = (1..=64).contains(&name.chars().count())
+        && name != "."
+        && name != ".."
+        && !name.contains('/')
+        && !name.chars().any(char::is_control);
+    if fits {
+        Ok(())
+    } else {
+        Err(format!(
+            "`{}` is not a file's name: 1 to 64 characters, without a / or control characters",
+            name.escape_debug()
+        ))
+    }
+}
+
+/// The full ID of a bundle of ID `id` and line `line`: `ID@LINE`, or the
+/// ID when it has no line (ADR 0387).
+#[must_use]
+pub fn full_id(id: &str, line: Option<&str>) -> String {
+    match line {
+        Some(line) => format!("{id}@{line}"),
+        None => id.into(),
+    }
+}
+
+/// A full ID's ID and line, each checked.
+pub fn split_full_id(full: &str) -> Result<(&str, Option<&str>), String> {
+    match full.split_once('@') {
+        Some((id, line)) => {
+            check_id(id)?;
+            check_version_line(line)?;
+            Ok((id, Some(line)))
+        }
+        None => check_id(full).map(|()| (full, None)),
+    }
+}
+
+/// Checks a full ID: an ID, perhaps with `@` and a line.
+pub fn check_full_id(full: &str) -> Result<(), String> {
+    split_full_id(full).map(|_| ())
+}
+
+/// What a project's file asks for of the lines `lines`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Wish {
+    /// This one of them.
+    Line(String),
+    /// A version none of them is or holds.
+    Missing(String),
+    /// Nothing a line answers, such as `lts/iron` or `system`.
+    Nothing,
+}
+
+/// What `text`, a project's `.nvmrc` or the like, asks for of the lines
+/// `lines`: its first word, a `v` before it dropped, is a version or a
+/// line. A line it is of, or one of it, answers: of several, the newest,
+/// so that `3` takes 3.13 before 3.12.
+#[must_use]
+pub fn wished_line(text: &str, lines: &[&str]) -> Wish {
+    let Some(word) = text.split_whitespace().next() else { return Wish::Nothing };
+    let word = word.strip_prefix(['v', 'V']).unwrap_or(word);
+    let core = word.split(['-', '+']).next().unwrap_or_default();
+    let Some(wanted) = numbers(core) else { return Wish::Nothing };
+    let best = lines
+        .iter()
+        .filter_map(|line| numbers(line).map(|n| (*line, n)))
+        .filter(|(_, n)| wanted.starts_with(n) || n.starts_with(&wanted))
+        .max_by(|a, b| a.1.cmp(&b.1));
+    match best {
+        Some((line, _)) => Wish::Line(line.into()),
+        None => Wish::Missing(core.into()),
     }
 }
 
@@ -1738,6 +1915,8 @@ struct Shape {
     summary: Line,
     description: Option<Text>,
     version: Version,
+    line: Option<VersionLine>,
+    line_files: Option<Vec<FileName>>,
     publisher: Publisher,
     license: License,
     source: Option<Url>,

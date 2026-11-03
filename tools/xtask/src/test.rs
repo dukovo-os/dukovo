@@ -335,6 +335,13 @@ const UPDATE_SITE: u8 = 21;
 /// files of [`SERVICE_BUNDLES`] ([`service_files_disk`], ADR 0385).
 const SERVICE_FILES: u8 = 22;
 
+/// [`Disk::fat`] for a FAT32 disk on the whole disk holding a catalog
+/// that `ob` signs with throwaway keys ([`lines_site_disk`], ADR 0387):
+/// `catalog/`, listing two lines of a test bundle ([`LINE_BUNDLES`]);
+/// `root.json`, its first root; and the first version of each line, as
+/// `.dkv` files.
+const LINES_SITE: u8 = 23;
+
 /// The program of a version of lighthouse that answers its health check,
 /// with `nc` listening on its socket.
 macro_rules! lighthouse_answers {
@@ -375,6 +382,7 @@ exec sleep 100000
         services: "{\"name\": \"beacon\", \"program\": \"beacon\", \"start\": \"at-boot\", \
                \"restart\": \"on-failure\"}",
         provides: "",
+        line: "",
     },
     lighthouse("1.0.0", lighthouse_answers!("1.0.0")),
     lighthouse("1.1.0", lighthouse_answers!("1.1.0")),
@@ -400,6 +408,7 @@ const fn lighthouse(version: &'static str, script: &'static str) -> crate::bundl
         services: "{\"name\": \"lighthouse\", \"program\": \"lighthouse\", \"start\": \"at-boot\", \
                    \"restart\": \"on-failure\", \"health\": {\"socket\": \"ready\"}}",
         provides: "{\"socket\": \"ready\", \"to\": \"system\"}",
+        line: "",
     }
 }
 
@@ -414,6 +423,7 @@ const UPDATE_BUNDLES: [crate::bundles::TestBundle; 4] = [
         permissions: "{}",
         services: "",
         provides: "",
+        line: "",
     },
     crate::bundles::TestBundle {
         id: "org.example.diary",
@@ -422,6 +432,7 @@ const UPDATE_BUNDLES: [crate::bundles::TestBundle; 4] = [
         permissions: "{}",
         services: "",
         provides: "",
+        line: "",
     },
     crate::bundles::TestBundle {
         id: "org.example.fetcher",
@@ -430,6 +441,7 @@ const UPDATE_BUNDLES: [crate::bundles::TestBundle; 4] = [
         permissions: "{}",
         services: "",
         provides: "",
+        line: "",
     },
     crate::bundles::TestBundle {
         id: "org.example.fetcher",
@@ -438,7 +450,33 @@ const UPDATE_BUNDLES: [crate::bundles::TestBundle; 4] = [
         permissions: "{\"network.outbound\": {\"need\": \"required\", \"why\": \"To fetch.\"}}",
         services: "",
         provides: "",
+        line: "",
     },
+];
+
+/// tide `version`, of line `line`, which says its version.
+const fn tide(
+    version: &'static str,
+    line: &'static str,
+    script: &'static str,
+) -> crate::bundles::TestBundle {
+    crate::bundles::TestBundle {
+        id: "org.example.tide",
+        version,
+        script,
+        permissions: "{}",
+        services: "",
+        provides: "",
+        line,
+    }
+}
+
+/// The bundles of a [`LINES_SITE`] disk: tide's lines 1, in 1.0.0 and
+/// 1.1.0, and 2, in 2.0.0, each of which says its version.
+const LINE_BUNDLES: [crate::bundles::TestBundle; 3] = [
+    tide("1.0.0", "1", "#!/bin/sh\necho \"tide 1.0.0\"\n"),
+    tide("1.1.0", "1", "#!/bin/sh\necho \"tide 1.1.0\"\n"),
+    tide("2.0.0", "2", "#!/bin/sh\necho \"tide 2.0.0\"\n"),
 ];
 
 /// The partition table of a test disk with a filesystem.
@@ -723,6 +761,13 @@ const fn service_files_disk(kib: u64, label: &'static str) -> Disk {
 /// at `/volumes/<disk>`.
 const fn update_site_disk(kib: u64, label: &'static str) -> Disk {
     Disk { fat: UPDATE_SITE, ..fat_disk(kib, 32, label, Table::None, Bus::Virtio) }
+}
+
+/// A virtio disk of `kib` KiB, labelled `label`, holding a test catalog of
+/// two lines of a test bundle ([`LINES_SITE`]), which Spark mounts at
+/// `/volumes/<disk>`.
+const fn lines_site_disk(kib: u64, label: &'static str) -> Disk {
+    Disk { fat: LINES_SITE, ..fat_disk(kib, 32, label, Table::None, Bus::Virtio) }
 }
 
 /// The storage test's disks: FAT12, FAT16 and FAT32 on whole disks, and
@@ -3464,7 +3509,12 @@ fn make_disks(
             continue;
         }
         if disk.fat == UPDATE_SITE {
-            make_update_site(ctx, disk, &image.path)?;
+            make_site(ctx, disk, &image.path, &UPDATE_BUNDLES, &["1.0.0"])?;
+            made.push(image);
+            continue;
+        }
+        if disk.fat == LINES_SITE {
+            make_site(ctx, disk, &image.path, &LINE_BUNDLES, &["1.0.0", "2.0.0"])?;
             made.push(image);
             continue;
         }
@@ -4116,10 +4166,16 @@ fn make_catalog_site(ctx: &Ctx, disk: &Disk, path: &Path) -> Result<(), String> 
     .map(drop)
 }
 
-/// Makes an [`UPDATE_SITE`] disk: a test catalog of [`UPDATE_BUNDLES`],
-/// its root, and the first version of each bundle as a file.
-fn make_update_site(ctx: &Ctx, disk: &Disk, path: &Path) -> Result<(), String> {
-    let files = UPDATE_BUNDLES
+/// Makes an [`UPDATE_SITE`] or [`LINES_SITE`] disk: a test catalog of
+/// `bundles`, its root, and the versions `copied` as files.
+fn make_site(
+    ctx: &Ctx,
+    disk: &Disk,
+    path: &Path,
+    bundles: &[crate::bundles::TestBundle],
+    copied: &[&str],
+) -> Result<(), String> {
+    let files = bundles
         .iter()
         .map(|bundle| crate::bundles::pack_test(ctx, bundle))
         .collect::<Result<Vec<PathBuf>>>()
@@ -4136,8 +4192,8 @@ fn make_update_site(ctx: &Ctx, disk: &Disk, path: &Path) -> Result<(), String> {
     };
     mcopy(&["-s", "-i", &image], &dir.join("site"), "::/catalog")?;
     mcopy(&["-i", &image], &dir.join("root.json"), "::/")?;
-    for (bundle, file) in UPDATE_BUNDLES.iter().zip(&files) {
-        if bundle.version == "1.0.0" {
+    for (bundle, file) in bundles.iter().zip(&files) {
+        if copied.contains(&bundle.version) {
             mcopy(&["-i", &image], file, "::/")?;
         }
     }

@@ -132,6 +132,9 @@ pub struct TestBundle {
     pub services: &'static str,
     /// Its manifest's `provides`, a JSON array's insides; empty for none.
     pub provides: &'static str,
+    /// Its manifest's `line`, with `.NAME-version` as the file a project
+    /// chooses it with (ADR 0387); empty for none.
+    pub line: &'static str,
 }
 
 /// Packs `bundle` into out/test/bundles, signed by the build key, and
@@ -146,6 +149,17 @@ pub fn pack_test(ctx: &Ctx, bundle: &TestBundle) -> Result<PathBuf> {
     let manifest = manifest::bundle::template(bundle.id, name, "Dukovo tests", "MIT")
         .replace("\"version\": \"0.1.0\"", &format!("\"version\": \"{}\"", bundle.version))
         .replace("\"permissions\": {}", &format!("\"permissions\": {}", bundle.permissions));
+    let manifest = if bundle.line.is_empty() {
+        manifest
+    } else {
+        manifest.replace(
+            "  \"permissions\":",
+            &format!(
+                "  \"line\": \"{}\",\n  \"line_files\": [\".{name}-version\"],\n  \"permissions\":",
+                bundle.line
+            ),
+        )
+    };
     let manifest = if bundle.services.is_empty() {
         manifest
     } else {
