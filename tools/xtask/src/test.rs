@@ -335,13 +335,31 @@ const UPDATE_SITE: u8 = 21;
 /// files of [`SERVICE_BUNDLES`] ([`service_files_disk`], ADR 0385).
 const SERVICE_FILES: u8 = 22;
 
-/// The bundles of a [`SERVICE_FILES`] disk: beacon runs a service, which
+/// The program of a version of lighthouse that answers its health check,
+/// with `nc` listening on its socket.
+macro_rules! lighthouse_answers {
+    ($version:literal) => {
+        concat!(
+            "#!/bin/sh\necho ",
+            $version,
+            " >> \"$HOME/notes\"\nn=$(wc -l < \"$HOME/notes\" | tr -d ' ')\necho \"lighthouse ",
+            $version,
+            " runs, greeting ${GREETING:-none}, start $n\"\nrm -f \"$RUNTIME_DIRECTORY/ready\"\nexec \
+             nc -lkU \"$RUNTIME_DIRECTORY/ready\"\n"
+        )
+    };
+}
+
+/// The bundles of a [`SERVICE_FILES`] disk. beacon runs a service, which
 /// counts its starts in its data folder, says as whom it runs, and
-/// crashes on its first start.
-const SERVICE_BUNDLES: [crate::bundles::TestBundle; 1] = [crate::bundles::TestBundle {
-    id: "org.example.beacon",
-    version: "1.0.0",
-    script: "#!/bin/sh
+/// crashes on its first start. lighthouse's service keeps a line for each
+/// start in its data, says its greeting, and answers its health check
+/// through `nc`, except in 2.0.0, which never answers (ADR 0386).
+const SERVICE_BUNDLES: [crate::bundles::TestBundle; 4] = [
+    crate::bundles::TestBundle {
+        id: "org.example.beacon",
+        version: "1.0.0",
+        script: "#!/bin/sh
 echo started >> \"$HOME/starts\"
 n=$(wc -l < \"$HOME/starts\" | tr -d ' ')
 \
@@ -353,10 +371,37 @@ if [ \"$n\" = 1 ]; then
 fi
 exec sleep 100000
 ",
-    permissions: "{}",
-    services: "{\"name\": \"beacon\", \"program\": \"beacon\", \"start\": \"at-boot\", \
+        permissions: "{}",
+        services: "{\"name\": \"beacon\", \"program\": \"beacon\", \"start\": \"at-boot\", \
                \"restart\": \"on-failure\"}",
-}];
+        provides: "",
+    },
+    lighthouse("1.0.0", lighthouse_answers!("1.0.0")),
+    lighthouse("1.1.0", lighthouse_answers!("1.1.0")),
+    lighthouse(
+        "2.0.0",
+        "#!/bin/sh
+echo 2.0.0 >> \"$HOME/notes\"
+n=$(wc -l < \"$HOME/notes\" | tr -d ' ')
+echo \"lighthouse 2.0.0 runs, start $n, and never answers\"
+exec sleep 100000
+",
+    ),
+];
+
+/// lighthouse `version`, whose service runs `script` and is checked
+/// through its socket `ready`.
+const fn lighthouse(version: &'static str, script: &'static str) -> crate::bundles::TestBundle {
+    crate::bundles::TestBundle {
+        id: "org.example.lighthouse",
+        version,
+        script,
+        permissions: "{}",
+        services: "{\"name\": \"lighthouse\", \"program\": \"lighthouse\", \"start\": \"at-boot\", \
+                   \"restart\": \"on-failure\", \"health\": {\"socket\": \"ready\"}}",
+        provides: "{\"socket\": \"ready\", \"to\": \"system\"}",
+    }
+}
 
 /// The bundles of an [`UPDATE_SITE`] disk. diary keeps a line for each
 /// run in its data, and shows them; 1.1.0 asks for nothing more. fetcher
@@ -368,6 +413,7 @@ const UPDATE_BUNDLES: [crate::bundles::TestBundle; 4] = [
         script: "#!/bin/sh\necho \"diary 1.0.0 ran\" >> \"$HOME/days\"\ncat \"$HOME/days\"\n",
         permissions: "{}",
         services: "",
+        provides: "",
     },
     crate::bundles::TestBundle {
         id: "org.example.diary",
@@ -375,6 +421,7 @@ const UPDATE_BUNDLES: [crate::bundles::TestBundle; 4] = [
         script: "#!/bin/sh\necho \"diary 1.1.0 ran\" >> \"$HOME/days\"\ncat \"$HOME/days\"\n",
         permissions: "{}",
         services: "",
+        provides: "",
     },
     crate::bundles::TestBundle {
         id: "org.example.fetcher",
@@ -382,6 +429,7 @@ const UPDATE_BUNDLES: [crate::bundles::TestBundle; 4] = [
         script: "#!/bin/sh\necho \"fetcher 1.0.0\"\n",
         permissions: "{}",
         services: "",
+        provides: "",
     },
     crate::bundles::TestBundle {
         id: "org.example.fetcher",
@@ -389,6 +437,7 @@ const UPDATE_BUNDLES: [crate::bundles::TestBundle; 4] = [
         script: "#!/bin/sh\necho \"fetcher 1.1.0\"\n",
         permissions: "{\"network.outbound\": {\"need\": \"required\", \"why\": \"To fetch.\"}}",
         services: "",
+        provides: "",
     },
 ];
 

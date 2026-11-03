@@ -51,7 +51,7 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use accounts::request::{Choice, Question};
 use manifest::bundle::permissions::{self, Tier};
@@ -69,7 +69,7 @@ use crate::bundles::protocol::{
 use crate::bundles::registry::{self, Installed, Place, Registry, Trust};
 use crate::bundles::services::{self, Record};
 use crate::bundles::sheet::{self, Facts};
-use crate::bundles::{MANIFEST, confine, signed, sums};
+use crate::bundles::{MANIFEST, confine, signed, snapshots, sums};
 use crate::util::{self, Fail};
 use crate::{proc, signin, sys};
 
@@ -664,7 +664,20 @@ fn install_in(
         .err()
         .map_or_default(|why| format!("; its commands are not linked: {why}"));
     let ran = run_services(&checked.manifest, old.as_ref());
-    Ok(format!("installed {id} {version}{over}, for {whose}{linked}{ran}"))
+    let installed = format!("installed {id} {version}{over}, for {whose}{linked}{}", ran.said);
+    // A new version of a service bundle proves itself, or the version it
+    // replaced comes back, with its data (ADR 0386).
+    if let (Some(from), Place::Everyone) = (&previous, place)
+        && let Err(why) = health(&checked.manifest, &ran.started)
+    {
+        audit!("{id} {version} failed its health check: {why}; going back to {from}");
+        let note = format!("{version} failed its health check: {why}");
+        return Err(match go_back(shared, place, &id, None, note) {
+            Ok(back) => format!("{installed}; but {why}, so bundled {back}"),
+            Err(e) => format!("{installed}; but {why}, and it could not go back: {e}"),
+        });
+    }
+    Ok(installed)
 }
 
 /// Checks that `manifest`'s services may be installed in `place` (ADR
@@ -771,14 +784,76 @@ fn tell_spark(verb: &str, name: &str) -> Option<String> {
     }
 }
 
+/// What [`run_services`] did: what to say after the install's message,
+/// and the services it started.
+struct Ran {
+    said: String,
+    started: Vec<String>,
+}
+
+/// How long a service has to stop when bundled stops it, before it
+/// carries on: Spark's own wait, and some.
+const STOP_TIME: Duration = Duration::from_secs(15);
+
+/// How long the services of a new version have to answer their health
+/// checks (ADR 0386).
+const HEALTH_TIME: Duration = Duration::from_secs(60);
+
+/// What Spark says each of `names` is doing: running, waiting, stopping,
+/// stopped or disabled; nothing for one it does not know.
+fn service_states(names: &[String]) -> Vec<(String, String)> {
+    let Ok(answer) = crate::power::request("status") else { return Vec::new() };
+    answer
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split('\t');
+            let (name, state) = (fields.next()?, fields.next()?);
+            names.iter().any(|n| n == name).then(|| (name.to_string(), state.to_string()))
+        })
+        .collect()
+}
+
+/// Stops each of `names` and waits, up to [`STOP_TIME`], until none
+/// runs: what went wrong, if anything.
+fn stop_services(names: &[String]) -> Option<String> {
+    for name in names {
+        if let Some(why) = tell_spark("stop", name)
+            && !why.starts_with("no service is called")
+        {
+            return Some(format!("its service {name} did not stop: {why}"));
+        }
+    }
+    let deadline = Instant::now() + STOP_TIME;
+    loop {
+        let states = service_states(names);
+        let running: Vec<&str> = states
+            .iter()
+            .filter(|(_, state)| !matches!(state.as_str(), "stopped" | "disabled"))
+            .map(|(name, _)| name.as_str())
+            .collect();
+        if running.is_empty() {
+            return None;
+        }
+        if Instant::now() >= deadline {
+            return Some(format!("{} did not stop in time", running.join(", ")));
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+}
+
 /// Writes the files of `manifest`'s services, installed for everyone, in
-/// place of those of `old`, the version it replaced, if any; takes away
-/// the services `old` ran that it does not; and starts each that starts
-/// at boot, or starts again each that ran. What went wrong, said after
-/// the install's message: the bundle is installed whatever it is.
-fn run_services(manifest: &Manifest, old: Option<&Manifest>) -> String {
+/// place of those of `old`, the version it replaced, if any (ADR 0385,
+/// 0386): takes away the services `old` ran that it does not; stops the
+/// others `old` ran, so that the copy of their data is whole; keeps a
+/// copy of each account's data as `old` left it, or, going back to a
+/// version whose copy is kept, brings that back; writes each file, but
+/// beside one an administrator changed, as `NAME.toml.default`; and
+/// starts each that is enabled. What went wrong is said after the
+/// install's message: the bundle is installed whatever it is.
+fn run_services(manifest: &Manifest, old: Option<&Manifest>) -> Ran {
     let id = &manifest.id.0;
     let mut said = String::new();
+    let mut started = Vec::new();
     for (name, record) in records() {
         if record.id == *id
             && !manifest.services.iter().any(|s| s.name.0 == name)
@@ -787,28 +862,69 @@ fn run_services(manifest: &Manifest, old: Option<&Manifest>) -> String {
             let _ = write!(said, "; its old service {name} is not wholly removed: {why}");
         }
     }
+    if let Some(old) = old {
+        let ran: Vec<String> = old
+            .services
+            .iter()
+            .map(|s| s.name.0.clone())
+            .filter(|name| read_record(name).is_some_and(|r| r.id == *id))
+            .collect();
+        if let Some(why) = stop_services(&ran) {
+            let _ = write!(said, "; {why}");
+        }
+    }
+    let data = Path::new(services::DATA).join(id);
+    for account in services::accounts(manifest) {
+        match snapshots::carry_owned(&data, &account, &manifest.version.0, SystemTime::now()) {
+            Ok(None) => {}
+            Ok(Some(done)) => {
+                let _ = write!(said, "; the data of its account {done}");
+            }
+            Err(why) => {
+                let _ = write!(said, "; the data of its account {account} is as it was: {why}");
+            }
+        }
+    }
     let folder = format!("{EVERYONE}/{id}");
     for service in &manifest.services {
         let name = &service.name.0;
         let path = services::file_path(name);
+        let record = read_record(name);
+        let current = record.as_ref().and_then(|_| fs::read_to_string(&path).ok());
         // An administrator's enable or disable stays.
-        let enabled = read_record(name)
-            .and_then(|_| fs::read_to_string(&path).ok())
-            .and_then(|text| services::enabled(&text));
-        let record = Record { id: id.clone(), account: services::account(service) };
+        let enabled = current.as_deref().and_then(services::enabled);
+        // As does a file an administrator changed: the new one goes
+        // beside it, and service check says what differs.
+        let changed = matches!((&record, &current), (Some(r), Some(t)) if r.changed(t));
+        let default = format!("{path}.default");
         let written = services::file(manifest, service, &folder, enabled).and_then(|text| {
+            let record = Record {
+                id: id.clone(),
+                account: services::account(service),
+                written: services::fingerprint(&text),
+            };
             make_folder(Path::new(&state(services::RECORDS)), 0o700)?;
-            write_whole(&state(&format!("{}/{name}", services::RECORDS)), &record.text(), 0o600)?;
-            write_whole(&path, &text, 0o644)?;
-            Ok(text)
-        });
-        let text = match written {
-            Ok(text) => text,
-            Err(why) => {
-                let _ = write!(said, "; its service {name} cannot run: {why}");
-                continue;
+            if changed {
+                write_whole(&default, &text, 0o644)?;
+            } else {
+                write_whole(&path, &text, 0o644)?;
+                let _ = fs::remove_file(&default);
             }
-        };
+            write_whole(&state(&format!("{}/{name}", services::RECORDS)), &record.text(), 0o600)?;
+            Ok(())
+        });
+        if let Err(why) = written {
+            let _ = write!(said, "; its service {name} cannot run: {why}");
+            continue;
+        }
+        if changed {
+            let _ = write!(
+                said,
+                "; its service {name} keeps the file an administrator changed, and the new one \
+                 is {default}: service check {name} says what differs"
+            );
+        }
+        let text = fs::read_to_string(&path).unwrap_or_default();
         if services::enabled(&text) != Some(true) {
             let _ = write!(
                 said,
@@ -817,18 +933,46 @@ fn run_services(manifest: &Manifest, old: Option<&Manifest>) -> String {
             );
             continue;
         }
-        let ran = old.is_some_and(|old| old.services.iter().any(|s| s.name.0 == *name));
-        let verb = if ran { "restart" } else { "start" };
-        match tell_spark(verb, name) {
+        match tell_spark("start", name) {
             None => {
                 let _ = write!(said, "; its service {name} runs");
+                started.push(name.clone());
             }
             Some(why) => {
                 let _ = write!(said, "; its service {name} did not start: {why}");
             }
         }
     }
-    said
+    Ran { said, started }
+}
+
+/// Whether the services of `manifest` that were `started` work: each
+/// whose manifest names a health check answers on its socket, in its
+/// account's live folder, within [`HEALTH_TIME`] (ADR 0386). Why not, if
+/// one does not.
+fn health(manifest: &Manifest, started: &[String]) -> Result<(), String> {
+    let deadline = Instant::now() + HEALTH_TIME;
+    for service in &manifest.services {
+        let (Some(check), true) = (&service.health, started.contains(&service.name.0)) else {
+            continue;
+        };
+        let socket =
+            format!("{}/{}", services::live_folder(&services::account(service)), check.socket);
+        loop {
+            if UnixStream::connect(&socket).is_ok() {
+                break;
+            }
+            if Instant::now() >= deadline {
+                return Err(format!(
+                    "its service {} did not answer at {socket} within {} seconds",
+                    service.name,
+                    HEALTH_TIME.as_secs()
+                ));
+            }
+            std::thread::sleep(Duration::from_millis(250));
+        }
+    }
+    Ok(())
 }
 
 /// Stops service `name` and takes its file and record away: what went
@@ -1986,6 +2130,20 @@ fn rollback(shared: &Shared, asker: u32, id: &str, everyone: bool) -> Result<Str
         ));
     }
     let place = if everyone { Place::Everyone } else { Place::User(asker) };
+    go_back(shared, place, id, Some(asker), String::new())
+}
+
+/// Goes back to the version of bundle `id` in `place` that the one there
+/// replaced, and holds it there: for `by`, who asked, or by bundled
+/// itself when a new version failed its health check, which `note`
+/// says, in the history.
+fn go_back(
+    shared: &Shared,
+    place: Place,
+    id: &str,
+    by: Option<u32>,
+    note: String,
+) -> Result<String, String> {
     let mut registry = shared.lock();
     let Some(current) = registry.installed(place, id).cloned() else {
         return Err(format!("{id} is not installed for {}", whose_word(place)));
@@ -2034,9 +2192,9 @@ fn rollback(shared: &Shared, asker: u32, id: &str, everyone: bool) -> Result<Str
         .err()
         .map_or_default(|why| format!("; its commands are not linked: {why}"));
     drop(registry);
+    let who = by.map_or_else(|| "bundled".into(), |asker| whom(Place::User(asker)));
     audit!(
-        "{} went back to {id} {} for {}, from {}",
-        whom(Place::User(asker)),
+        "{who} went back to {id} {} for {}, from {}",
         then.version,
         whom(place),
         current.version
@@ -2048,19 +2206,19 @@ fn rollback(shared: &Shared, asker: u32, id: &str, everyone: bool) -> Result<Str
         what: What::RolledBack,
         from: Some(current.version.clone()),
         to: Some(then.version.clone()),
-        by: Some(asker),
-        note: String::new(),
+        by,
+        note,
     });
     let held =
         if held { format!("; it is held there until `bundle unhold {id}`") } else { String::new() };
-    let ran = if place == Place::Everyone {
-        run_services(&checked.manifest, from.as_ref())
+    let (data, ran) = if place == Place::Everyone && !checked.manifest.services.is_empty() {
+        ("", run_services(&checked.manifest, from.as_ref()).said)
     } else {
-        String::new()
+        ("; its data comes back at its next run", String::new())
     };
     Ok(format!(
-        "went back to {id} {}, from {}; its data comes back at its next run{held}; `bundle \
-         rollback {id}` goes forward again{linked}{ran}",
+        "went back to {id} {}, from {}{data}{held}; `bundle rollback {id}` goes forward \
+         again{linked}{ran}",
         then.version, current.version
     ))
 }

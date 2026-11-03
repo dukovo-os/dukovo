@@ -78,7 +78,7 @@ fn line_of(text: &str, at: usize) -> usize {
 
 /// `message` from serde or toml, in plain words: on one line, with Rust's
 /// names of types as service.toml(5) says them.
-fn plain(message: &str) -> String {
+pub(crate) fn plain(message: &str) -> String {
     if let Some(rest) = message.strip_prefix("unknown field `")
         && let Some((name, _)) = rest.split_once('`')
     {

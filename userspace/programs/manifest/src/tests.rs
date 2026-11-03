@@ -196,6 +196,39 @@ fn a_service_may_run_as_an_account() {
 }
 
 #[test]
+fn an_override_sets_keys_over_the_file() {
+    let base = file(
+        "enabled = true\n[environment]\nMODE = \"slow\"\nKEEP = \"1\"\n[permissions]\n\
+         network.listen = [80]\nfiles.read = [\"/a\"]\n",
+    );
+    let over = service::Override::from_toml(
+        "restart = \"never\"\n[environment]\nMODE = \"fast\"\n[limits]\nmemory = \"64M\"\n\
+         [permissions]\nfiles.read = [\"/b\"]\n",
+    )
+    .unwrap();
+    let service = service::from_toml_over(&base, Some(&over)).unwrap();
+    assert_eq!(service.restart, service::Restart::Never);
+    // A table's keys one by one; any other value in place of the file's.
+    assert!(service.environment.iter().any(|(k, v)| k == "MODE" && v == "fast"));
+    assert!(service.environment.iter().any(|(k, v)| k == "KEEP" && v == "1"));
+    assert_eq!(service.limits.memory, Some(64 << 20));
+    assert_eq!(service.permissions.network.listen.len(), 1);
+    assert_eq!(service.permissions.files.read, ["/b"]);
+    assert!(service.enabled);
+    // Without one, the file as it is; with one that breaks it, why.
+    assert_eq!(service::from_toml_over(&base, None), service::from_toml(&base));
+    let bad = service::Override::from_toml("restart = \"sometimes\"\n").unwrap();
+    assert!(service::from_toml_over(&base, Some(&bad)).is_err());
+    assert!(service::Override::from_toml("restart = \n").is_err());
+    let newer = base.replace("[\"/a\"]", "[\"/a\", \"/c\"]").replace("\"slow\"", "\"fast\"");
+    assert_eq!(
+        service::changed_keys(&base, &newer).unwrap(),
+        ["environment.MODE", "permissions.files.read"]
+    );
+    assert!(service::changed_keys(&base, &base).unwrap().is_empty());
+}
+
+#[test]
 fn what_a_view_holds_and_the_secrets() {
     let text = file(
         "secrets = [\"api-token\", \"db_password\"]\n\

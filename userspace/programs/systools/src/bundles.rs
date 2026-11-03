@@ -763,7 +763,7 @@ fn history_line(e: &Event, me: u32) -> String {
     let what = match e.what {
         What::Installed => format!("installed {to}{note}"),
         What::Updated => format!("updated {from} to {to}{note}"),
-        What::RolledBack => format!("went back to {to}, from {from}"),
+        What::RolledBack => format!("went back to {to}, from {from}{note}"),
         What::Removed => format!("removed {from}{note}"),
         What::Held => format!("held at {from}"),
         What::Released => format!("let go at {from}, to update again"),

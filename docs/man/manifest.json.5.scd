@@ -171,7 +171,10 @@ windows (1.1), *runtime*, the Linux layer (1.3), and *plugins* (1.10).
 
 	*health* = { *socket* = _"name"_ }
 		How to tell it works: a socket it provides, which answers once
-		it does.
+		it does. The service makes it in *RUNTIME_DIRECTORY*; after an
+		update, a new version that does not answer on it within 60
+		seconds goes back to the version before, with its data
+		(*bundled*(8), ADR 0386).
 
 *permissions* = { _"name"_: { *need*, *why*, ... } }
 	The permissions it asks for, by the names of the list below, each

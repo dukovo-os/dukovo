@@ -208,7 +208,9 @@ folder and as a _.dkv_ file, which is a zip of the folder.
 	catalog it came from lists; see UPDATES. One that asks for no more
 	than the version it replaces updates without a question; one that
 	asks for more shows its sheet and asks, which *--yes* answers. A held
-	one is left as it is, and bundle says so. With *--check*, it lists
+	one is left as it is, and bundle says so. A service bundle's new
+	version that fails its health check goes back by itself, with its
+	data, and is held (*bundled*(8)). With *--check*, it lists
 	what would update, with the version installed, the newest and the
 	catalog, and changes nothing.
 
@@ -221,7 +223,8 @@ folder and as a _.dkv_ file, which is a zip of the folder.
 *rollback* _id_ [*--for-everyone*]
 	Goes back to the version the last update replaced, and holds the
 	bundle there. Its data, as that version left it, comes back at its
-	next run. Running it again goes forward again.
+	next run, and its services' data at once. Running it again goes
+	forward again.
 
 *hold* _id_ [*--for-everyone*], *unhold* _id_ [*--for-everyone*]
 	Holds a bundle at its version, so that no update changes it, or
@@ -231,7 +234,8 @@ folder and as a _.dkv_ file, which is a zip of the folder.
 	Shows what was done to your bundles and everyone's, or to _id_, the
 	newest last: each install, update, going back, removal, hold and
 	release, update that waits for you and update that failed, with
-	when, and who asked or that it updated by itself.
+	when, who asked or that it did so by itself, and, for a version
+	that failed its health check, why bundled went back.
 
 *list*
 	Lists the bundles you can run, yours and everyone's: ID, version,

@@ -296,6 +296,27 @@ spark: /system/settings/spark/services/web.toml: line 6: restart must be always,
 
 A service whose file never read is not started.
 
+# OVERRIDE FILES
+
+_/system/settings/spark/services/settings.d/name.toml_ changes a
+service without touching its file, which the system or *bundled*(8)
+wrote and an update may write again (ADR 0386). Its keys take the place
+of the file's: a table's key by key, any other value whole, a list too.
+Spark and *service check* read it over the file each time they read the
+file, and an error names both. A greeting for a bundle's service and
+more memory:
+
+```
+[environment]
+GREETING = "hello"
+
+[limits]
+memory = "512M"
+```
+
+Spark keeps a good copy of it beside the file's, and a file and override
+that do not read together run the last good copy of both.
+
 # FILES OF BEFORE PHASE 13
 
 Until Phase 13, a service file was _name_*.service*, lines of
@@ -346,8 +367,12 @@ _/system/settings/spark/services/name.toml_
 _/system/resources/default-settings/spark/services_
 	The system's own, copied in when missing.
 
+_/system/settings/spark/services/settings.d/name.toml_
+	A service's override file.
+
 _/system/state/spark/good/name.toml_
-	The last copy of each that read.
+	The last copy of each that read, with its override in
+	_settings.d_ beside it.
 
 _/system/state/spark/secrets/name_
 	A service's secrets.

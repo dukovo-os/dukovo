@@ -11,9 +11,14 @@
 //! the account's alone. bundled writes the service's file,
 //! `/system/settings/spark/services/NAME.toml`, as a service file of the
 //! system's is written (service.toml(5)), and keeps a record of it in
-//! `/system/state/bundled/services/NAME`: the bundle's ID and the account.
-//! A file there that no record names is not bundled's, and no bundle's
-//! service takes its name.
+//! `/system/state/bundled/services/NAME`: the bundle's ID, the account,
+//! and a sum of the file it wrote last, which tells an administrator's
+//! changes apart (ADR 0386). A file there that no record names is not
+//! bundled's, and no bundle's service takes its name.
+//!
+//! A service makes its sockets in `/system/live/services/ACCOUNT`, which
+//! `RUNTIME_DIRECTORY` names, as systemd's does: the health check of an
+//! update connects to the one its manifest names (ADR 0386).
 //!
 //! The file holds what the service may do, from what the bundle asks for
 //! and its program keeps, as far as a service may hold it: the network,
@@ -66,32 +71,55 @@ pub fn data_folder(id: &str, account: &str) -> String {
     format!("{DATA}/{id}/{account}")
 }
 
+/// The folder of the sockets the services of account `account` make,
+/// which Spark makes as one starts, the account's (ADR 0386).
+pub fn live_folder(account: &str) -> String {
+    format!("/system/live/services/{account}")
+}
+
+/// What tells the service file `text` from another: a sum of it with its
+/// `enabled` line set one way, as `service enable` changes only that.
+pub fn fingerprint(text: &str) -> String {
+    let text = crate::servicefiles::with_enabled(text, false);
+    super::sums::hex(&super::sums::sha256(text.as_bytes()))
+}
+
 /// The path of service `name`'s file.
 pub fn file_path(name: &str) -> String {
     format!("{SPARK}/{name}.toml")
 }
 
-/// A record of a service file bundled wrote: whose service it is, and
-/// the account it runs as.
+/// A record of a service file bundled wrote: whose service it is, the
+/// account it runs as, and the [`fingerprint`] of the file bundled wrote
+/// last.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Record {
     pub id: String,
     pub account: String,
+    pub written: String,
 }
 
 impl Record {
-    /// The record as its file holds it: the ID and the account on a line.
+    /// The record as its file holds it: its fields on a line, with tabs
+    /// between them.
     pub fn text(&self) -> String {
-        format!("{}\t{}\n", self.id, self.account)
+        format!("{}\t{}\t{}\n", self.id, self.account, self.written)
     }
 
     /// The record its file's `text` holds, if it reads.
     pub fn parse(text: &str) -> Option<Record> {
-        let (id, account) = text.trim_end_matches('\n').split_once('\t')?;
-        if id.is_empty() || account.is_empty() || account.contains(['\t', '\n']) {
+        let mut fields = text.trim_end_matches('\n').split('\t');
+        let (id, account, written) = (fields.next()?, fields.next()?, fields.next()?);
+        if id.is_empty() || account.is_empty() || fields.next().is_some() || text.contains('\r') {
             return None;
         }
-        Some(Record { id: id.into(), account: account.into() })
+        Some(Record { id: id.into(), account: account.into(), written: written.into() })
+    }
+
+    /// Whether `text`, the service's file as it is, is not the one
+    /// bundled wrote last: an administrator changed it.
+    pub fn changed(&self, text: &str) -> bool {
+        fingerprint(text) != self.written
     }
 }
 
@@ -178,6 +206,7 @@ pub fn file(
         })?;
     let account = account(service);
     let data = data_folder(id, &account);
+    let live = live_folder(&account);
     let holds = holds(manifest, service);
     let enabled = enabled.unwrap_or(service.start != Start::WhenEnabled);
     let mut o = String::new();
@@ -205,8 +234,9 @@ pub fn file(
     let _ = writeln!(o, "HOME = {}", quoted(&data));
     let _ = writeln!(o, "USER = {}", quoted(&account));
     let _ = writeln!(o, "LOGNAME = {}", quoted(&account));
+    let _ = writeln!(o, "RUNTIME_DIRECTORY = {}", quoted(&live));
     for (key, value) in &service.environment.0 {
-        if !["HOME", "USER", "LOGNAME"].contains(&key.as_str()) {
+        if !["HOME", "USER", "LOGNAME", "RUNTIME_DIRECTORY"].contains(&key.as_str()) {
             let _ = writeln!(o, "{} = {}", quoted(key), quoted(value));
         }
     }
@@ -230,7 +260,7 @@ pub fn file(
         holds.shared.iter().filter(move |(_, w)| *w == write).map(|(f, _)| format!("/shared/{f}"))
     };
     let read: Vec<String> = std::iter::once(folder.to_string()).chain(shared(false)).collect();
-    let read_write: Vec<String> = std::iter::once(data).chain(shared(true)).collect();
+    let read_write: Vec<String> = [data, live].into_iter().chain(shared(true)).collect();
     let _ = writeln!(o, "files.read = {}", list(read.iter().map(String::as_str)));
     let _ = writeln!(o, "files.read-write = {}", list(read_write.iter().map(String::as_str)));
     service_file::from_toml(&o)
@@ -302,6 +332,7 @@ mod tests {
                 ("/applications/org.example.web".to_string(), false),
                 ("/shared/photos".into(), false),
                 ("/shared/services/org.example.web/web".into(), true),
+                ("/system/live/services/web".into(), true),
                 ("/shared/music".into(), true),
             ]
         );
@@ -314,6 +345,11 @@ mod tests {
         for key in ["USER", "LOGNAME"] {
             assert!(read.environment.iter().any(|(k, v)| k == key && v == "web"), "{key}");
         }
+        assert!(
+            read.environment
+                .iter()
+                .any(|(k, v)| k == "RUNTIME_DIRECTORY" && v == "/system/live/services/web")
+        );
         assert!(text.starts_with("# The service web of the bundle org.example.web 0.1.0"));
         assert_eq!(enabled(&text), Some(true));
     }
@@ -337,11 +373,24 @@ mod tests {
     }
 
     #[test]
-    fn records_read_back() {
-        let record = Record { id: "org.example.web".into(), account: "web".into() };
-        assert_eq!(Record::parse(&record.text()), Some(record));
-        assert_eq!(Record::parse("org.example.web\n"), None);
-        assert_eq!(Record::parse("\tweb\n"), None);
+    fn records_read_back_and_tell_changes_apart() {
+        let m = manifest(r#"{"name": "web", "program": "web"}"#, "");
+        let text = file(&m, &m.services[0], "/applications/org.example.web", None).unwrap();
+        let record = Record {
+            id: "org.example.web".into(),
+            account: "web".into(),
+            written: fingerprint(&text),
+        };
+        assert_eq!(Record::parse(&record.text()), Some(record.clone()));
+        assert_eq!(Record::parse("org.example.web\tweb\n"), None);
+        assert_eq!(Record::parse("\tweb\tsum\n"), None);
+        assert_eq!(Record::parse("a\tweb\tsum\tmore\n"), None);
+        // Enabled or not, it is the file bundled wrote; another change is
+        // an administrator's.
+        assert!(!record.changed(&text));
+        let on = file(&m, &m.services[0], "/applications/org.example.web", Some(true)).unwrap();
+        assert!(!record.changed(&on));
+        assert!(record.changed(&text.replace("cpu_weight = 100", "cpu_weight = 50")));
     }
 
     #[test]

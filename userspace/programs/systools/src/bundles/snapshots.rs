@@ -18,7 +18,7 @@
 use std::cmp::Ordering;
 use std::fs;
 use std::io;
-use std::os::unix::fs::DirBuilderExt;
+use std::os::unix::fs::{DirBuilderExt, MetadataExt};
 use std::path::Path;
 use std::time::{Duration, SystemTime};
 
@@ -37,22 +37,34 @@ fn usable(version: &str) -> bool {
 }
 
 /// Copies the folder `from` to `to`, which must not be there: folders,
-/// files and links, each as it is; anything else is left out.
-fn copy_tree(from: &Path, to: &Path) -> io::Result<()> {
+/// files and links, each as it is; anything else is left out. With
+/// `owners`, as root copies a service's data, each keeps its owner too.
+fn copy_tree(from: &Path, to: &Path, owners: bool) -> io::Result<()> {
     fs::create_dir(to)?;
     for entry in fs::read_dir(from)? {
         let entry = entry?;
         let (source, target) = (entry.path(), to.join(entry.file_name()));
         let kind = entry.file_type()?;
         if kind.is_dir() {
-            copy_tree(&source, &target)?;
+            copy_tree(&source, &target, owners)?;
+            continue;
         } else if kind.is_file() {
             fs::copy(&source, &target)?;
         } else if kind.is_symlink() {
             std::os::unix::fs::symlink(fs::read_link(&source)?, &target)?;
+        } else {
+            continue;
+        }
+        if owners {
+            let st = fs::symlink_metadata(&source)?;
+            std::os::unix::fs::lchown(&target, Some(st.uid()), Some(st.gid()))?;
         }
     }
-    fs::set_permissions(to, fs::metadata(from)?.permissions())
+    let st = fs::metadata(from)?;
+    if owners {
+        std::os::unix::fs::chown(to, Some(st.uid()), Some(st.gid()))?;
+    }
+    fs::set_permissions(to, st.permissions())
 }
 
 /// Marks `folder` as made `now`, which [`prune`] counts from.
@@ -93,6 +105,32 @@ pub fn carry(
     id: &str,
     version: &str,
     now: SystemTime,
+) -> Result<Option<String>, String> {
+    carry_with(app_data, id, version, now, false)
+}
+
+/// As [`carry`], for the data folder `id` in `/shared/services/ID` of a
+/// service's account (ADR 0386): bundled, as root, copies it, and each
+/// copy keeps the owners of what it copies.
+///
+/// # Errors
+///
+/// As [`carry`].
+pub fn carry_owned(
+    folder: &Path,
+    account: &str,
+    version: &str,
+    now: SystemTime,
+) -> Result<Option<String>, String> {
+    carry_with(folder, account, version, now, true)
+}
+
+fn carry_with(
+    app_data: &Path,
+    id: &str,
+    version: &str,
+    now: SystemTime,
+    owners: bool,
 ) -> Result<Option<String>, String> {
     let copies = app_data.join(SNAPSHOTS).join(id);
     let failed = |what: &Path, e: io::Error| format!("{}: {e}", what.display());
@@ -138,7 +176,7 @@ pub fn carry(
             KEPT_FOR.as_secs() / 86_400
         )
     } else {
-        if let Err(e) = copy_tree(&data, &kept) {
+        if let Err(e) = copy_tree(&data, &kept, owners) {
             let _ = fs::remove_dir_all(&kept);
             return Err(failed(&kept, e));
         }
@@ -198,5 +236,31 @@ mod tests {
         assert_eq!(carry(&app_data, id, "0.9.0", later), Ok(None));
         assert!(!newer.exists() && !copy.exists());
         fs::remove_dir_all(&app_data).unwrap();
+    }
+
+    #[test]
+    fn a_services_copies_keep_their_owners() {
+        let folder = std::env::temp_dir().join(format!("service-snapshots-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&folder);
+        let data = folder.join("beacon");
+        fs::create_dir_all(&data).unwrap();
+        fs::write(data.join("notes"), "1.0.0\n").unwrap();
+        // As root, the host tests can give it to another; as anyone else,
+        // the copy of their own is all there is to see.
+        // SAFETY: geteuid only reads the process's user.
+        let root = unsafe { libc::geteuid() } == 0;
+        let (uid, gid) = if root { (100, 100) } else { (fs::metadata(&data).unwrap().uid(), 0) };
+        if root {
+            std::os::unix::fs::chown(&data, Some(uid), Some(gid)).unwrap();
+            std::os::unix::fs::chown(data.join("notes"), Some(uid), Some(gid)).unwrap();
+        }
+        let now = SystemTime::now();
+        assert_eq!(carry_owned(&folder, "beacon", "1.0.0", now), Ok(None));
+        let said = carry_owned(&folder, "beacon", "1.1.0", now).unwrap().unwrap();
+        assert!(said.contains("kept a copy of the data 1.0.0 left"), "{said}");
+        let copy = folder.join(SNAPSHOTS).join("beacon").join("1.0.0");
+        assert_eq!(fs::metadata(&copy).unwrap().uid(), uid);
+        assert_eq!(fs::metadata(copy.join("notes")).unwrap().uid(), uid);
+        fs::remove_dir_all(&folder).unwrap();
     }
 }
