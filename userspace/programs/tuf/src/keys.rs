@@ -8,10 +8,10 @@
 
 use base64::Engine;
 use ring::signature::{self, UnparsedPublicKey, VerificationAlgorithm};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 /// A public key, as a role's metadata lists it.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct Key {
     /// `ed25519`, `ecdsa` (or its older name, `ecdsa-sha2-nistp256`) or
     /// `rsa`.
@@ -24,7 +24,7 @@ pub struct Key {
 }
 
 /// A key's public half.
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
 pub struct KeyVal {
     /// Hex for Ed25519; PEM, a SubjectPublicKeyInfo, for the others.
     #[serde(default)]
@@ -80,6 +80,32 @@ impl Key {
             }
             _ => return None,
         })
+    }
+
+    /// Its ID, as securesystemslib makes it: the SHA-256, in hex, of
+    /// the key in canonical JSON.
+    #[must_use]
+    pub fn id(&self) -> String {
+        let value = serde_json::to_value(self).unwrap_or_default();
+        let bytes = crate::json::canonical(&value).unwrap_or_default();
+        ring::digest::digest(&ring::digest::SHA256, &bytes).as_ref().iter().fold(
+            String::new(),
+            |mut text, b| {
+                use std::fmt::Write as _;
+                let _ = write!(text, "{b:02x}");
+                text
+            },
+        )
+    }
+
+    /// Whether it is an ECDSA P-256 key whose public half is a P-256
+    /// SubjectPublicKeyInfo.
+    #[must_use]
+    pub fn is_p256(&self) -> bool {
+        self.keytype == "ecdsa"
+            && self.scheme == "ecdsa-sha2-nistp256"
+            && pem(&self.keyval.public)
+                .is_some_and(|der| spki(&der, EC_PUBLIC_KEY, Some(P256)).is_some())
     }
 
     /// Whether `sig`, a signature in hex, is this key's over `message`.

@@ -1514,6 +1514,37 @@ _target/userspace/_).
 	*--debug*, *--release*
 		As for *build*.
 
+*catalog* *key* *yubikey* [*--serial* _n_] | *key* *new* _file_ _name_ [_role_]... | *root* [*--days* _n_] | *sign* [*--days* _n_] [*--remove* _path_]... [*--yes*] [_bundle_]... | *publish* | *status*
+	Make and sign the catalog's TUF repository in _catalog/_ (ADR 0381),
+	with catalog-repo, which ob builds for this machine. Every command
+	takes *--key* _file_, an Ed25519 secret key that signs in place of a
+	YubiKey: the update server's online key, or a test's.
+
+	*key yubikey* adds to _catalog/keys/_ the ECDSA P-256 key in slot 9c
+	(Digital Signature) of a YubiKey, the only one plugged in or the one
+	*--serial* names, to sign for root and targets. The key is made on
+	the YubiKey with *ykman*, as _catalog/README.md_ says, and its secret
+	half never leaves it. *key new* makes an Ed25519 key, its secret half
+	in _file_, readable by its owner alone, to sign for the roles named,
+	snapshot and timestamp by default.
+
+	*root* signs the next root from the keys in _catalog/keys/_, each
+	role signed for by any one of its keys, with every YubiKey plugged in
+	that holds a root key of the old root or the new one; it is good for
+	a year. *sign* packs the bundles as *ob ports* does, then lists what
+	changes in targets, the bundles in _out/bundles/_, or those named,
+	and the paths
+	*--remove* takes out, asks, and signs the next targets with one touch
+	of a YubiKey, good for half a year; a bundle's ID and version, once
+	signed, are never signed again as other bytes. The new bundles wait
+	in _out/catalog/store/_. *publish* signs a snapshot and timestamp
+	with the online key and lays out what the update server serves in
+	_out/catalog/site/_, every file by its version or SHA-256, then reads
+	it all back as a new computer would. *status* says each role's
+	version and expiry, and warns a month before. The YubiKeys need
+	yubikey-manager (the *yubikey-manager* package on Debian, Ubuntu and
+	Linux Mint) and the system's Python.
+
 *fixture* *btrfs-log*|*btrfs-radix-log*|*ntfs-3g* [*--linux-kernel* _file_]
 	Make test data that only Linux makes, for the host tests of Radix's
 	filesystems. *btrfs-log* makes a 128 MiB Btrfs disk with

@@ -340,6 +340,7 @@ pub const STD_MANIFEST: &str = "userspace/programs/Cargo.toml";
 /// host: what they test does not need Radix.
 pub const HOST_TESTED: &[&str] = &[
     "accounts",
+    "catalog-repo",
     "consoled",
     "disk",
     "dkv",

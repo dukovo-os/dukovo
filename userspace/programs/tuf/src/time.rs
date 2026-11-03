@@ -53,6 +53,34 @@ pub fn parse(text: &str) -> Option<i64> {
     Some(days_from_civil(year, month, day) * 86_400 + hour * 3600 + minute * 60 + second)
 }
 
+/// `secs`, seconds since 1970, as TUF writes a time.
+#[must_use]
+pub fn format(secs: i64) -> String {
+    let (days, rest) = (secs.div_euclid(86_400), secs.rem_euclid(86_400));
+    let (year, month, day) = civil_from_days(days);
+    format!(
+        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}Z",
+        rest / 3600,
+        rest / 60 % 60,
+        rest % 60
+    )
+}
+
+/// The date `days` after 1970-01-01, the inverse of [`days_from_civil`].
+fn civil_from_days(days: i64) -> (i64, i64, i64) {
+    let days = days + 719_468;
+    let era = days.div_euclid(146_097);
+    let day_of_era = days - era * 146_097;
+    let year_of_era =
+        (day_of_era - day_of_era / 1460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let month_from_march = (5 * day_of_year + 2) / 153;
+    let day = day_of_year - (153 * month_from_march + 2) / 5 + 1;
+    let month = if month_from_march < 10 { month_from_march + 3 } else { month_from_march - 9 };
+    let year = year_of_era + era * 400 + i64::from(month <= 2);
+    (year, month, day)
+}
+
 /// Days since 1970-01-01 of a date in the proleptic Gregorian calendar
 /// (Howard Hinnant's algorithm).
 fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
@@ -76,6 +104,22 @@ mod tests {
         assert_eq!(parse("2024-02-29T23:59:59Z"), Some(1_709_251_199));
         assert_eq!(parse("2038-01-19T03:14:08Z"), Some(1 << 31));
         assert_eq!(parse("1969-12-31T23:59:59Z"), Some(-1));
+    }
+
+    #[test]
+    fn times_format_as_they_parse() {
+        for text in [
+            "1970-01-01T00:00:00Z",
+            "1969-12-31T23:59:59Z",
+            "2000-02-29T12:34:56Z",
+            "2026-11-03T14:30:00Z",
+            "2100-03-01T00:00:00Z",
+        ] {
+            assert_eq!(format(parse(text).unwrap()), text);
+        }
+        for secs in (-86_400 * 800..86_400 * 40_000).step_by(86_399 * 7) {
+            assert_eq!(parse(&format(secs)), Some(secs));
+        }
     }
 
     #[test]

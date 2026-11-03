@@ -378,10 +378,11 @@ impl Capacity {
         matches!(self.block_length, 512 | 1024 | 2048 | 4096) && self.blocks > 0
     }
 
-    /// A physical block's length, in bytes, at most 64 KiB.
+    /// A physical block's length, in bytes, at most 64 KiB, or the block
+    /// length when that is more (or 0).
     pub fn physical_block(&self) -> u32 {
-        self.block_length
-            << self.physical_exponent.min(16 - self.block_length.trailing_zeros() as u8)
+        let room = 16u8.saturating_sub(self.block_length.trailing_zeros() as u8);
+        self.block_length << self.physical_exponent.min(room)
     }
 
     /// Its size in bytes.

@@ -392,6 +392,11 @@ fn short_and_strange_answers_are_read_safely() {
     // A physical block past 64 KiB is held to it.
     let huge = Capacity { blocks: 1, block_length: 4096, physical_exponent: 15 };
     assert_eq!(huge.physical_block(), 65536);
+    // A device's block length of 0, or of more than 64 KiB, is no shift
+    // past the 16 bits (proptest found 0, from twelve zero bytes).
+    assert_eq!(Capacity::parse_16(&[0; 12]).unwrap().physical_block(), 0);
+    let wide = Capacity { blocks: 1, block_length: 1 << 17, physical_exponent: 3 };
+    assert_eq!(wide.physical_block(), 1 << 17);
     assert_eq!(write_protected(&[3, 0]), None);
     assert_eq!(format!("{}", Absent::Failed("INQUIRY", None)), "it failed INQUIRY");
 }
