@@ -3,7 +3,7 @@
 
 use super::request::{
     Answer, CONTINUE, Choice, Mode, PROMPT_SHOWN_MAX, Prompt, Prompted, Question, REQUEST_MAX,
-    Relay, Request, ended, ended_status, signal, stopped, stopped_signal,
+    Relay, Request, SSH_COMMAND_MAX, ended, ended_status, signal, stopped, stopped_signal,
 };
 use super::*;
 
@@ -274,6 +274,34 @@ fn requests_go_and_come_back() {
             authenticate: vec![0, 0xff, 0x80],
         },
         Request::EndShares,
+        Request::SshKey { name: "alice".into(), key: b"\0\0\0\x0bssh-ed25519".to_vec() },
+        Request::SshSession {
+            connection: "192.0.2.7 51234 192.0.2.1 22".into(),
+            name: "alice".into(),
+            signed: vec![0, 0, 0, 32, 0xff],
+            signature: vec![1, 2],
+            term: "xterm-256color".into(),
+            command: None,
+            language: vec!["LANG=C.UTF-8".into(), "LC_TIME=en_GB.UTF-8".into()],
+        },
+        Request::SshSession {
+            connection: "::1 40000 ::1 22".into(),
+            name: "alice".into(),
+            signed: Vec::new(),
+            signature: Vec::new(),
+            term: String::new(),
+            command: Some(b"ls -l 'my files'".to_vec()),
+            language: Vec::new(),
+        },
+        Request::SshSession {
+            connection: String::new(),
+            name: "alice".into(),
+            signed: Vec::new(),
+            signature: Vec::new(),
+            term: String::new(),
+            command: Some(Vec::new()),
+            language: Vec::new(),
+        },
     ];
     for request in requests {
         assert_eq!(Request::decode(&request.encode()), Ok(request));
@@ -338,6 +366,23 @@ fn requests_go_and_come_back() {
         Request::SharePassword { name: "bob".into(), current: b"pw".to_vec(), new: None }.encode(),
         b"share-password\0bob\0pw\0clear\0\0"
     );
+    assert_eq!(
+        Request::SshKey { name: "bob".into(), key: vec![0, 0xab] }.encode(),
+        b"ssh-key\0bob\x0000ab\0"
+    );
+    let ssh = Request::SshSession {
+        connection: "a 1 b 22".into(),
+        name: "bob".into(),
+        signed: vec![1],
+        signature: vec![2],
+        term: "linux".into(),
+        command: Some(b"id".to_vec()),
+        language: vec!["LANG=C".into()],
+    };
+    assert_eq!(
+        ssh.encode(),
+        b"ssh-session\0a 1 b 22\0bob\x0001\x0002\0linux\0command\0id\0LANG=C\0"
+    );
     // A question with a line break, an empty field or a kind authd does
     // not know is no request.
     for bad in [
@@ -352,6 +397,16 @@ fn requests_go_and_come_back() {
         b"share-signin\0x\0abc\0\0\0",
         b"share-signin\0x\0zz\0\0\0",
         b"end-shares\0x\0",
+        // A key or signature that is not hexadecimal; a shell with a
+        // command, or a kind of session there is not; a language setting
+        // that is not one; a command too long.
+        b"ssh-key\0bob\0zz\0",
+        b"ssh-key\0bob\0",
+        b"ssh-session\0a\0bob\0zz\0\0linux\0shell\0\0",
+        b"ssh-session\0a\0bob\0\0\0linux\0shell\0id\0",
+        b"ssh-session\0a\0bob\0\0\0linux\0exec\0id\0",
+        b"ssh-session\0a\0bob\0\0\0linux\0shell\0\0LANG\0",
+        b"ssh-session\0a\0bob\0\0\0linux\0",
     ] {
         assert!(Request::decode(bad).is_err(), "{bad:?}");
     }
@@ -398,6 +453,32 @@ fn requests_go_and_come_back() {
         assert!(Request::decode(bad).is_err(), "{bad:?}");
     }
     assert!(Request::decode(&vec![b'a'; REQUEST_MAX + 1]).is_err());
+    let mut long = b"ssh-session\0a\0bob\0\0\0\0command\0".to_vec();
+    long.extend(vec![b'x'; SSH_COMMAND_MAX + 1]);
+    long.push(0);
+    assert!(Request::decode(&long).is_err());
+}
+
+#[test]
+fn an_ssh_session_takes_language_settings_and_nothing_else() {
+    for taken in ["LANG=de_DE.UTF-8", "LANGUAGE=de:en", "LC_ALL=C", "LC_TIME=en_DK.UTF-8", "LANG="]
+    {
+        assert!(request::ssh_language(taken), "{taken}");
+    }
+    let long = format!("LANG={}", "x".repeat(request::SSH_SETTING_MAX + 1));
+    for passed_over in [
+        "LANG",
+        "LC_=C",
+        "LC_all=C",
+        "LD_PRELOAD=/tmp/x.so",
+        "PATH=/tmp",
+        "TERM=xterm",
+        "LANG=a b",
+        "LANG=a\nb",
+        long.as_str(),
+    ] {
+        assert!(!request::ssh_language(passed_over), "{passed_over}");
+    }
 }
 
 #[test]

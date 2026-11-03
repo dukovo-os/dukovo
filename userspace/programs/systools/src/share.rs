@@ -31,7 +31,6 @@ use manifest::shares::{self, Share, Shares};
 
 use crate::account::{self, Input};
 use crate::args::{Arg, Args};
-use crate::power;
 use crate::servicefiles;
 use crate::util::{self, Fail, fail, usage};
 
@@ -39,8 +38,6 @@ use crate::util::{self, Fail, fail, usage};
 const SERVICE: &str = "smbd";
 /// nfsd's.
 const NFS_SERVICE: &str = "nfsd";
-/// Where the system's own service files are kept, as Spark copies them.
-const DEFAULTS: &str = "/system/resources/default-settings/spark/services";
 
 const HELP: &str = "Usage: share [list]
        share add [--read-only] [--comment TEXT] [--nfs NETWORK]... NAME FOLDER
@@ -136,52 +133,12 @@ fn write(path: &str, text: &str, mode: u32) -> Result<(), Fail> {
     Ok(())
 }
 
-/// The path of `service`'s service file.
-fn service_path(service: &str) -> String {
-    format!("{}/{service}.toml", servicefiles::DIR)
-}
-
-/// `service`'s service file, from the system's own if it is not there.
-fn service_text(service: &str) -> Result<String, Fail> {
-    let path = service_path(service);
-    match fs::read_to_string(&path) {
-        Ok(text) => Ok(text),
-        Err(e) if e.kind() == io::ErrorKind::NotFound => {
-            let default = format!("{DEFAULTS}/{service}.toml");
-            fs::read_to_string(&default).map_err(|e| util::failed(&default, e))
-        }
-        Err(e) => Err(util::failed(&path, e)),
-    }
-}
-
 /// Whether `service` starts at boot: smbd for sharing, nfsd for NFS.
 fn is_on(service: &str) -> bool {
-    service_text(service)
+    servicefiles::text(service)
         .ok()
         .and_then(|text| service::from_toml(&text).ok())
         .is_some_and(|s| s.enabled)
-}
-
-/// `text`, a service file, with its `enabled` line saying `on`, or one
-/// added after its `program` line.
-fn with_enabled(text: &str, on: bool) -> String {
-    let line = format!("enabled = {on}");
-    let mut lines: Vec<String> = text.lines().map(String::from).collect();
-    // The top-level keys: those before the first table.
-    let top = lines.iter().position(|l| l.trim_start().starts_with('[')).unwrap_or(lines.len());
-    let key_of = |l: &str| l.split_once('=').map(|(key, _)| key.trim().to_string());
-    if let Some(at) = lines[..top].iter().position(|l| key_of(l).as_deref() == Some("enabled")) {
-        lines[at] = line;
-    } else {
-        let at = lines[..top]
-            .iter()
-            .position(|l| key_of(l).as_deref() == Some("program"))
-            .map_or(0, |at| at + 1);
-        lines.insert(at, line);
-    }
-    let mut text = lines.join("\n");
-    text.push('\n');
-    text
 }
 
 /// `share` and `share list`.
@@ -305,14 +262,7 @@ fn turn(args: &mut Args, service: &str, on: bool) -> Result<i32, Fail> {
     nothing_more(args)?;
     let what = if service == NFS_SERVICE { "NFS" } else { "sharing" };
     root_only(&format!("turns {what} {}", if on { "on" } else { "off" }))?;
-    let text = with_enabled(&service_text(service)?, on);
-    service::from_toml(&text).map_err(|e| fail(format!("{}: {e}", service_path(service))))?;
-    write(&service_path(service), &text, 0o644)?;
-    let verb = if on { "start" } else { "stop" };
-    let answer = power::request(&format!("{verb} {service}"))?;
-    if let Some(why) = answer.strip_prefix("error: ") {
-        return Err(fail(format!("cannot {verb} {service}: {}", why.trim_end())));
-    }
+    servicefiles::turn(service, on)?;
     if service == NFS_SERVICE {
         if !on {
             println!("NFS is off; its clients' mounts stop answering.");
@@ -384,22 +334,4 @@ fn password(args: &mut Args) -> Result<i32, Fail> {
         Answer::Refused(why) => return Err(fail(why)),
     }
     Ok(0)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn enabled_is_set_in_place_or_after_program() {
-        let file = "# smbd\nservice_version = 1\nprogram = \"/system/commands/smbd\"\nenabled = false\n\n[permissions]\nenabled = 1\n";
-        let on = with_enabled(file, true);
-        assert!(on.contains("\nenabled = true\n\n[permissions]\nenabled = 1\n"), "{on}");
-        assert_eq!(with_enabled(&on, false), file);
-        let without = "service_version = 1\nprogram = \"/x\"\norder = 40\n";
-        assert_eq!(
-            with_enabled(without, true),
-            "service_version = 1\nprogram = \"/x\"\nenabled = true\norder = 40\n"
-        );
-    }
 }

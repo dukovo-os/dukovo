@@ -30,6 +30,8 @@
 //! share-signin\0192.0.2.7\04e544c4d...\04e544c4d...\04e544c4d...\0
 //! end-shares\0
 //! nfs-worker\01000\0
+//! ssh-key\0alice\0000000b7373682d6564...\0
+//! ssh-session\0192.0.2.7 51234 192.0.2.1 22\0alice\000000020...\0000000b...\0xterm\0shell\0\0LANG=C.UTF-8\0
 //! ```
 //!
 //! An answer is `ok`, maybe with words after it, or `no` and why, then a
@@ -40,6 +42,11 @@
 //! (SCM_RIGHTS), and its answer is `ok` and the number of the session's
 //! first process; the connection then stays open until that process
 //! ends, when authd writes [`ended`]'s line and closes it (ADR 0250).
+//!
+//! An `ssh-session` request (ADR 0347) comes with a terminal, or with
+//! the three descriptors the session is to have as its 0, 1 and 2, and
+//! is answered as a `session` request is, its connection then waiting
+//! for the session's end.
 //!
 //! An `elevate` request (ADR 0219) comes with the three descriptors the
 //! command is to have as its 0, 1 and 2, and a pipe's read end, sent
@@ -81,8 +88,35 @@ pub fn unhex(text: &str) -> Option<Vec<u8>> {
 }
 
 /// The longest request authd reads, in bytes: room for a share sign-in's
-/// three NTLM messages, in hexadecimal.
-pub const REQUEST_MAX: usize = 8192;
+/// three NTLM messages, in hexadecimal, and for the command an SSH
+/// client asks to run ([`SSH_COMMAND_MAX`]).
+pub const REQUEST_MAX: usize = 64 * 1024;
+
+/// The longest command an SSH client may ask to run, in bytes: what
+/// [`REQUEST_MAX`] leaves room for, with the rest of the request.
+pub const SSH_COMMAND_MAX: usize = 32 * 1024;
+
+/// The kinds of key whose signatures authd checks for an SSH sign-in
+/// (ADR 0347).
+pub const SSH_KEY_ALGORITHMS: &[&str] =
+    &["ssh-ed25519", "ecdsa-sha2-nistp256", "ecdsa-sha2-nistp384"];
+
+/// The longest value of a language setting an SSH session takes.
+pub const SSH_SETTING_MAX: usize = 256;
+
+/// Whether `setting`, `NAME=value`, is one of an SSH client's language
+/// settings a session takes, as Debian's sshd takes LANG and LC_*
+/// (AcceptEnv): `LANG`, `LANGUAGE` or an `LC_` name, with a value of
+/// printable characters.
+pub fn ssh_language(setting: &str) -> bool {
+    let Some((name, value)) = setting.split_once('=') else { return false };
+    let named = name == "LANG"
+        || name == "LANGUAGE"
+        || name.strip_prefix("LC_").is_some_and(|rest| {
+            !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_uppercase() || b == b'_')
+        });
+    named && value.len() <= SSH_SETTING_MAX && value.bytes().all(|b| b.is_ascii_graphic())
+}
 
 /// A request. Its `Debug` leaves out the passwords.
 #[derive(PartialEq, Eq)]
@@ -293,6 +327,43 @@ pub enum Request {
     NfsWorker {
         /// The number of the person an NFS call names.
         uid: u32,
+    },
+    /// Whether the public key `key` may sign `name` in over SSH (ADR
+    /// 0347), which sshd(8) asks before a client signs with it: sshd's,
+    /// which runs as root, to ask. The answer is `ok` for a key in the
+    /// person's `~/.ssh/authorized_keys`, and `no` for any other key,
+    /// name or account, alike.
+    SshKey {
+        /// The account.
+        name: String,
+        /// The key, as SSH carries it (RFC 4253 6.6): its algorithm's
+        /// name, then its numbers.
+        key: Vec<u8>,
+    },
+    /// Sign `name` in over SSH and start their session (ADR 0347):
+    /// sshd(8)'s, which runs as root, to ask. authd checks the
+    /// `signature` over `signed` itself, with the key `signed` names, and
+    /// that the key is in the person's `~/.ssh/authorized_keys`; then it
+    /// starts the session, as a `session` request's, with the descriptors
+    /// sent: a terminal, or three for its 0, 1 and 2.
+    SshSession {
+        /// The client's address and port, then this machine's, as
+        /// `SSH_CONNECTION` says them: `192.0.2.7 51234 192.0.2.1 22`.
+        connection: String,
+        /// The account.
+        name: String,
+        /// What the client signed (RFC 4252 7): the session's
+        /// identifier, then its sign-in request up to the signature.
+        signed: Vec<u8>,
+        /// The signature: its algorithm's name, then its bytes.
+        signature: Vec<u8>,
+        /// The terminal's type, for `TERM`, on a terminal.
+        term: String,
+        /// The command the client asked to run, if not the shell.
+        command: Option<Vec<u8>>,
+        /// The client's language settings, `LANG`, `LANGUAGE` and
+        /// `LC_*`, as `NAME=value`.
+        language: Vec<String>,
     },
 }
 
@@ -526,6 +597,37 @@ impl Request {
                 number = uid.to_string();
                 vec![b"nfs-worker", number.as_bytes()]
             }
+            Request::SshKey { name, key } => {
+                hexed = [hex(key), String::new(), String::new()];
+                vec![b"ssh-key", name.as_bytes(), hexed[0].as_bytes()]
+            }
+            Request::SshSession {
+                connection,
+                name,
+                signed,
+                signature,
+                term,
+                command,
+                language,
+            } => {
+                hexed = [hex(signed), hex(signature), String::new()];
+                let (kind, command): (&[u8], &[u8]) = match command {
+                    Some(command) => (b"command", command),
+                    None => (b"shell", b""),
+                };
+                let mut fields: Vec<&[u8]> = vec![
+                    b"ssh-session",
+                    connection.as_bytes(),
+                    name.as_bytes(),
+                    hexed[0].as_bytes(),
+                    hexed[1].as_bytes(),
+                    term.as_bytes(),
+                    kind,
+                    command,
+                ];
+                fields.extend(language.iter().map(String::as_bytes));
+                fields
+            }
         };
         let mut bytes = Vec::new();
         for field in fields {
@@ -673,6 +775,45 @@ impl Request {
                 let uid = std::str::from_utf8(uid).ok().and_then(|u| u.parse().ok());
                 Ok(Request::NfsWorker { uid: uid.ok_or_else(malformed)? })
             }
+            [b"ssh-key", name, key] => {
+                let key = std::str::from_utf8(key).ok().and_then(unhex).ok_or_else(malformed)?;
+                Ok(Request::SshKey { name: text(name)?, key })
+            }
+            [
+                b"ssh-session",
+                connection,
+                name,
+                signed,
+                signature,
+                term,
+                kind,
+                command,
+                ref rest @ ..,
+            ] => {
+                let bytes = |field: &[u8]| {
+                    std::str::from_utf8(field).ok().and_then(unhex).ok_or_else(malformed)
+                };
+                let command = match (kind, command) {
+                    (b"shell", b"") => None,
+                    (b"command", command) if command.len() <= SSH_COMMAND_MAX => {
+                        Some(command.to_vec())
+                    }
+                    _ => return Err(malformed()),
+                };
+                let language = rest
+                    .iter()
+                    .map(|f| text(f).ok().filter(|t| t.contains('=')).ok_or_else(malformed))
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(Request::SshSession {
+                    connection: text(connection)?,
+                    name: text(name)?,
+                    signed: bytes(signed)?,
+                    signature: bytes(signature)?,
+                    term: text(term)?,
+                    command,
+                    language,
+                })
+            }
             _ => Err(malformed()),
         }
     }
@@ -713,7 +854,9 @@ impl Request {
             | Request::Set { .. }
             | Request::ShareSignIn { .. }
             | Request::EndShares
-            | Request::NfsWorker { .. } => {}
+            | Request::NfsWorker { .. }
+            | Request::SshKey { .. }
+            | Request::SshSession { .. } => {}
         }
     }
 }
@@ -783,6 +926,13 @@ impl std::fmt::Debug for Request {
             Request::ShareSignIn { from, .. } => write!(f, "ShareSignIn {{ from: {from:?} }}"),
             Request::EndShares => write!(f, "EndShares"),
             Request::NfsWorker { uid } => write!(f, "NfsWorker {{ uid: {uid} }}"),
+            Request::SshKey { name, .. } => write!(f, "SshKey {{ name: {name:?} }}"),
+            Request::SshSession { connection, name, term, command, .. } => write!(
+                f,
+                "SshSession {{ connection: {connection:?}, name: {name:?}, term: {term:?}, \
+                 command: {} }}",
+                command.is_some()
+            ),
         }
     }
 }

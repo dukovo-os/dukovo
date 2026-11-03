@@ -267,6 +267,7 @@ pub fn service(args: &mut Args) -> Result<i32, Fail> {
                 println!(
                     "Usage: service < option > | --status-all | [ service_name [ command | --full-restart ] ]"
                 );
+                println!("       service service_name enable | disable");
                 println!(
                     "       service check [ service_name | file ]... | new service_name | edit service_name"
                 );
@@ -295,6 +296,8 @@ pub fn service(args: &mut Args) -> Result<i32, Fail> {
         ));
     };
     match command.as_str() {
+        "enable" => servicefiles::enable(name, true),
+        "disable" => servicefiles::enable(name, false),
         "start" | "stop" | "restart" | "reload" => {
             ask(&format!("{command} {name}"))?;
             Ok(0)
