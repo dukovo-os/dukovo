@@ -1,0 +1,30 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# tcpdump (ADR 0346): prints the packets an interface sends and takes, or
+# those a capture file holds, through libpcap, and writes them to such
+# files. Its code is under the Lawrence Berkeley Laboratory's and the
+# University of California's BSD licenses, some with the clause on
+# advertising, and others' BSD-style ones; LicenseRef-tcpdump-notices
+# keeps the notice of every file the build compiles, as the files have
+# it, with those that are not on the SPDX License List (Juniper's and
+# others' shorter ones, Sun's for RPC, Carnegie Mellon's, the Tampere
+# University of Technology's, Compaq's) and tcpdump's LICENSE, the
+# license of the files without one. Files it offers under that license
+# or the GPL it is taken under the former. The release archive is
+# tcpdump's, from Ubuntu's pool, which keeps it unchanged.
+name = "tcpdump"
+version = "4.99.6"
+summary = "tcpdump, which prints and saves the packets of a network"
+license = "BSD-4-Clause-Shortened AND BSD-4-Clause-UC AND BSD-4-Clause AND BSD-3-Clause AND BSD-2-Clause AND ISC AND BSD-4.3RENO AND BSD-4.3TAHOE AND LicenseRef-tcpdump-notices"
+homepage = "https://www.tcpdump.org/"
+depends = ["mlibc", "libpcap"]
+notices = ["LICENSE"]
+image = [
+    "system/commands/tcpdump",
+    "system/resources/man/man1/tcpdump.1",
+]
+
+[source]
+url = "https://archive.ubuntu.com/ubuntu/pool/main/t/tcpdump/tcpdump_4.99.6.orig.tar.xz"
+sha256 = "40a8cefd45f0d2a06827e6658efb830d484868c449ad80f7efb33516af44f3da"

@@ -1,0 +1,30 @@
+SPDX-FileCopyrightText: 2026 The Dukovo contributors
+SPDX-License-Identifier: Apache-2.0 OR MIT
+
+Takes mlibc's timeradd and timersub on Radix: mlibc declares them as
+functions in <sys/time.h>, where glibc and the BSDs define macros, so
+the macros portability.h defines where none are would rewrite mlibc's
+declarations in the files that include <sys/time.h> after it.
+
+--- a/portability.h
++++ b/portability.h
+@@ -113,8 +113,8 @@
+     PCAP_PRINTFLIKE(2, 0);
+ #endif
+ 
+-/* For Solaris before 11. */
+-#ifndef timeradd
++/* For Solaris before 11; mlibc's are functions. */
++#if !defined(timeradd) && !defined(__radix__)
+ #define timeradd(a, b, result)                       \
+   do {                                               \
+     (result)->tv_sec = (a)->tv_sec + (b)->tv_sec;    \
+@@ -125,7 +125,7 @@
+     }                                                \
+   } while (0)
+ #endif /* timeradd */
+-#ifndef timersub
++#if !defined(timersub) && !defined(__radix__)
+ #define timersub(a, b, result)                       \
+   do {                                               \
+     (result)->tv_sec = (a)->tv_sec - (b)->tv_sec;    \

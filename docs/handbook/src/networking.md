@@ -216,11 +216,13 @@ IPv6, the firewall and WireGuard. This page grows with each.
   ([ADR 0339](https://github.com/openlinuxsystems/orthros/blob/main/docs/adr/0339-tunnels-are-ip-links-whose-packets-a-program-carries.md)).
 - **The administrator's tools**: dig and host, whois, OpenBSD's nc,
   nic for what each card says of its link, as ethtool, openssl and
-  iperf3, and traceroute and mtr, which run without privilege as on
-  Linux, from the ICMP errors the kernel gives sockets
+  iperf3, traceroute and mtr, which run without privilege as on
+  Linux, from the ICMP errors the kernel gives sockets, and tcpdump, on
+  the kernel's packet captures and their filters
   ([ADR 0341](https://github.com/openlinuxsystems/orthros/blob/main/docs/adr/0341-dig-host-whois-nc-and-nic.md),
   [ADR 0342](https://github.com/openlinuxsystems/orthros/blob/main/docs/adr/0342-openssl-and-iperf3.md),
-  [ADR 0345](https://github.com/openlinuxsystems/orthros/blob/main/docs/adr/0345-traceroute-mtr-and-icmp-errors-for-sockets.md)).
+  [ADR 0345](https://github.com/openlinuxsystems/orthros/blob/main/docs/adr/0345-traceroute-mtr-and-icmp-errors-for-sockets.md),
+  [ADR 0346](https://github.com/openlinuxsystems/orthros/blob/main/docs/adr/0346-packet-capture-libpcap-and-tcpdump.md)).
 - **An app reaches the local network only if you let it**: a bundle's
   network.local permission, asked for when it first runs, is a right of
   its own, apart from reaching the internet
@@ -357,6 +359,8 @@ $ iperf3 -c 192.168.1.10
 $ openssl s_client -connect example.org:443 < /dev/null
 $ traceroute example.org
 $ mtr --report example.org
+$ elevate tcpdump -i net0 -n port 53
+$ elevate tcpdump -i any -w capture.pcap
 ```
 
 `nic` alone lists each interface's link, speed and driver, `nic -i`
@@ -374,6 +378,18 @@ shows how many answers come back and how soon, on the terminal or with
 `--report` once, `-z` with each network's AS number (mtr(8)). Neither
 needs privilege: the routers' "time exceeded" errors come back to the
 sockets their probes went from.
+
+tcpdump is the Tcpdump Group's, on their libpcap (tcpdump(1)). It prints
+what an interface receives and sends, or with `-i any` what every
+interface does, each packet's interface and direction before it as on
+Linux, picked by a filter such as `port 53` or `icmp6`
+(pcap-filter(7)), which the kernel runs itself for one interface; `-w`
+writes what it captures to a file that Wireshark and tcpdump `-r` read,
+and `-Q in` or `-Q out` keeps one direction. Capturing needs the
+network's control right, so run it with elevate(8), as Linux asks for
+root. A card is not yet put in promiscuous mode, so tcpdump sees what
+its driver lets in, the machine's own frames, broadcasts and the
+multicast groups it joined, and says so; `-p` asks for no more.
 
 ## Setting the cards up
 

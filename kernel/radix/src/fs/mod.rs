@@ -36,6 +36,7 @@
 //! ([`defer_drop`]) and dropped once the lock has gone ([`drop_deferred`],
 //! from `caps::with`): no disk is ever waited for with the store locked.
 
+pub mod capture;
 pub mod devfs;
 pub mod disk;
 mod events;
@@ -130,6 +131,8 @@ enum Special {
     Fuse,
     /// The program's end of a tunnel (ADR 0339).
     Tunnel,
+    /// A packet capture's file (ADR 0346).
+    Capture,
 }
 
 /// The most bytes of a path an [`Opened`] keeps.
@@ -315,6 +318,7 @@ impl FileObject {
             Kind::CharDevice if framebuffer::is_framebuffer(&at.node) => Special::Framebuffer,
             Kind::CharDevice if fuse::channel_of(&at.node).is_some() => Special::Fuse,
             Kind::CharDevice if tunnel::end_of(&at.node).is_some() => Special::Tunnel,
+            Kind::CharDevice if capture::end_of(&at.node).is_some() => Special::Capture,
             _ => Special::No,
         };
         // The devices are the last kinds: one comparison for the others.
@@ -417,6 +421,11 @@ impl FileObject {
     /// Whether it is the program's end of a tunnel.
     pub fn is_tunnel(&self) -> bool {
         self.special == Special::Tunnel
+    }
+
+    /// Whether it is a packet capture's file.
+    pub fn is_capture(&self) -> bool {
+        self.special == Special::Capture
     }
 
     /// Whether its reads and writes are a pipe's, a socket's, a terminal's

@@ -291,8 +291,9 @@ interface file = 0x000c version 11 {
     /// Terminals take the termios, window size, process group and
     /// controlling terminal requests radix-terminal(2) lists, block
     /// devices the size, sector and discard requests radix-block(2) lists,
-    /// and files `CLONE` and `CLONE_RANGE`; other files fail with
-    /// not_terminal.
+    /// packet captures CAPTURE_FILTER and CAPTURE_COUNTS (radix-network(2),
+    /// ADR 0346), and files `CLONE` and `CLONE_RANGE`; other files fail
+    /// with not_terminal.
     method control = 8 (request: u32, argument: u64, buffer: addr, size: u64) -> (result: u64)
         raises [no_such_slot, empty_slot, missing_rights, invalid_argument, bad_address,
                 not_terminal, not_permitted, interrupted, io, read_only, not_supported, no_memory,
