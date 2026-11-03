@@ -39,6 +39,7 @@ mod shellbench;
 mod signoff;
 mod test;
 mod tla;
+mod tuf;
 mod upstream;
 mod userspace;
 
@@ -213,7 +214,7 @@ press Ctrl-A then X to quit QEMU. KVM is used when /dev/kvm is accessible.
                        takes them"
         }
         "test" => {
-            "Usage: ./ob test [unit | boot | kani | tla | corpus | riscv] [--case <name>]...
+            "Usage: ./ob test [unit | boot | kani | tla | tuf | corpus | riscv] [--case <name>]...
                  [--shard <part>/<parts>] [--timeout <seconds>] [--debug | --release]
        ./ob test boot --case <name>... --image-only
        ./ob test --list
@@ -223,8 +224,10 @@ UEFI and BIOS, from USB and CD-ROM, with 4 CPUs, and each test follows the
 serial console, types kdb commands and reads the framebuffer from
 screenshots. Logs go to out/test/. Give `unit` or `boot` to run only that
 part; `kani` checks the Kani proof harnesses instead, `tla` the TLA+
-models with TLC, and `corpus` compares Nukesh with dash and bash on POSIX's
-shell tests and real projects' scripts, in a sandbox (minutes each, so plain
+models with TLC, `tuf` the TUF conformance suite against the TUF client
+(it needs Python with venv, and faketime; ob fetches the pinned suite into
+.cache/tuf-conformance), and `corpus` compares Nukesh with dash and bash on
+POSIX's shell tests and real projects' scripts, in a sandbox (minutes each, so plain
 `ob test` leaves them out; TLC needs Java, and ob downloads the pinned TLA+
 tools into .cache/tla). With `corpus`, --case names a source in
 userspace/programs/nukesh/tests/corpus.toml. `riscv` builds the RISC-V smoke
@@ -760,7 +763,7 @@ fn dispatch(argv: Vec<String>) -> Result<()> {
             }
             args.finish()?;
             userspace::install_headers(&ctx)?;
-            ports::build_all(&ctx, &rebuild).map(|_| ())
+            ports::build_and_pack(&ctx, &rebuild).map(|_| ())
         }
         "image" => {
             let iso = args.flag("--iso");

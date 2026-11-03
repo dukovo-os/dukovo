@@ -799,6 +799,19 @@ fn is_notice(path: &Path) -> bool {
     NOTICE_PREFIXES.iter().any(|prefix| upper.starts_with(prefix))
 }
 
+/// Whether every crates.io crate the port `name` linked, as its
+/// `crates.txt` lists them, has its sources in Cargo's registry, where its
+/// notices are read from; true for a port that lists none. Building the
+/// port again fetches them.
+pub fn crates_fetched(ctx: &Ctx, name: &str) -> bool {
+    let list = crate::ports::info_dir(ctx, name).join("crates.txt");
+    let Ok(text) = std::fs::read_to_string(&list) else { return true };
+    text.lines().filter_map(parse_tree_line).all(|entry| {
+        !matches!(entry.source, Source::Registry)
+            || registry_dir(&entry.name, &entry.version).is_some()
+    })
+}
+
 /// The unpacked source of a crates.io crate in Cargo's cache.
 fn registry_dir(name: &str, version: &str) -> Option<PathBuf> {
     let home = std::env::var_os("CARGO_HOME")

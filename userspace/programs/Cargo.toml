@@ -10,7 +10,7 @@
 
 [workspace]
 resolver = "3"
-members = ["accounts", "acl", "consoled", "disk", "dkv", "fuse-test", "git-https-test", "keymap", "manifest", "netproto", "netservices-test", "nfs", "nfsd", "nukesh", "smb", "smbd", "sshd", "std-test", "systools", "tls-test"]
+members = ["accounts", "acl", "consoled", "disk", "dkv", "fuse-test", "git-https-test", "keymap", "manifest", "netproto", "netservices-test", "nfs", "nfsd", "nukesh", "smb", "smbd", "sshd", "std-test", "systools", "tls-test", "tuf"]
 
 [workspace.package]
 # Keep in step with the root Cargo.toml (a unit test of ob checks it).
@@ -79,3 +79,4 @@ used_underscore_binding = "warn"
 [profile.release]
 # Symbols stay, so that backtraces name functions; debug info goes.
 strip = "debuginfo"
+
