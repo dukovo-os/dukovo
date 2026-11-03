@@ -9,7 +9,9 @@
 //! request's descriptor chain is matched to its slot by the chain's head,
 //! which may be reused as soon as the chain is handed back, so under the
 //! queue's lock at that moment. Requests of one transfer ring the
-//! doorbell once, after the last of them, so that QEMU merges them.
+//! doorbell once, after the last of them, so that QEMU merges them. A
+//! thread polling for its request turns the queue's interrupt off
+//! meanwhile (`Controller::poll`, ADR 0365).
 
 use alloc::sync::Arc;
 use core::fmt::Write;
@@ -77,6 +79,15 @@ impl Controller for Virtio {
             self.held = false;
             self.blk.notify();
         }
+    }
+
+    fn poll(&mut self, polled: bool) -> bool {
+        // A device without an interrupt is polled anyway.
+        if self.vector.is_none() {
+            return false;
+        }
+        self.blk.set_quiet(polled);
+        true
     }
 
     fn complete(&mut self) -> Option<(u8, Outcome)> {

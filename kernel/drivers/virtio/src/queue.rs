@@ -39,6 +39,14 @@
 //! The device's many completions of one batch then raise one interrupt,
 //! not one each. Without them, the driver leaves the doorbell alone while
 //! the device says it needs none (`VIRTQ_USED_F_NO_NOTIFY`).
+//!
+//! A queue a thread polls is *quiet* ([`Queue::set_quiet`]): the device
+//! raises no interrupt for what it uses meanwhile (2.7.7.1), as Linux's
+//! `virtqueue_disable_cb` asks. With event indexes the driver asks about
+//! an index the device has already passed, so that the device interrupts
+//! only 2^16 completions on; without them it sets
+//! `VIRTQ_AVAIL_F_NO_INTERRUPT`. Once loud again, the next look that finds
+//! nothing used asks for an interrupt and looks again.
 
 use radix_hw::{Dma, Mmio, device_barrier};
 
@@ -56,6 +64,8 @@ const FLAG_WRITE: u16 = 2;
 const FLAG_INDIRECT: u16 = 4;
 /// In the used ring's flags: the device needs no doorbell.
 const USED_NO_NOTIFY: u16 = 1;
+/// In the available ring's flags: the driver wants no interrupt.
+const AVAIL_NO_INTERRUPT: u16 = 1;
 /// No table, in `table_of`.
 const NO_TABLE: u8 = u8::MAX;
 
@@ -107,6 +117,8 @@ pub struct Queue {
     /// The used index after which the driver last asked for an
     /// interrupt, with event indexes.
     asked: u16,
+    /// Whether the device is to raise no interrupt: a thread polls.
+    quiet: bool,
 }
 
 /// Where the available and used rings start, and the bytes all three
@@ -190,6 +202,7 @@ impl Queue {
             event_idx: features & feature::EVENT_IDX != 0,
             kicked: 0,
             asked: 0,
+            quiet: false,
         };
         config.write16(common::QUEUE_ENABLE, 1);
         Ok(queue)
@@ -353,7 +366,7 @@ impl Queue {
         for _ in 0..self.size {
             let mut device_idx = self.memory.read16(self.used + 2);
             if device_idx == self.last_used {
-                if !self.event_idx || self.asked == self.last_used {
+                if !self.event_idx || self.quiet || self.asked == self.last_used {
                     return None;
                 }
                 // Every used buffer is read: ask for an interrupt at the
@@ -382,11 +395,36 @@ impl Queue {
         }
         // A queue's worth skipped: the next used buffer, of whatever it
         // gives next, interrupts again.
-        if self.event_idx {
+        if self.event_idx && !self.quiet {
             self.asked = self.last_used;
             self.memory.write16(self.avail + 4 + 2 * usize::from(self.size), self.asked);
         }
         None
+    }
+
+    /// Stops the device's interrupts for what it uses, while `quiet`,
+    /// for a thread that polls [`Queue::used`] instead; starts them again
+    /// when not. Once they are on again, the next call of [`Queue::used`]
+    /// that finds nothing asks for one and looks again, so that nothing
+    /// used meanwhile goes unseen.
+    pub fn set_quiet(&mut self, quiet: bool) {
+        if quiet == self.quiet {
+            return;
+        }
+        self.quiet = quiet;
+        if self.event_idx {
+            // Asked about an index the device has passed: it interrupts
+            // again only when its index comes round to it, 2^16 entries on.
+            // Loud again, the ask differs from what was read, so the next
+            // look that finds nothing asks anew.
+            self.asked = self.last_used.wrapping_sub(1);
+            if quiet {
+                self.memory.write16(self.avail + 4 + 2 * usize::from(self.size), self.asked);
+            }
+        } else {
+            self.memory.write16(self.avail, if quiet { AVAIL_NO_INTERRUPT } else { 0 });
+        }
+        device_barrier();
     }
 
     /// Puts the chain from `head`, in flight, and its table back.

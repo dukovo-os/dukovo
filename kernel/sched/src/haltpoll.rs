@@ -50,6 +50,12 @@ impl HaltPoll {
         HaltPoll { limit_ns: 0 }
     }
 
+    /// A limit learnt before, kept elsewhere: a disk's lane keeps its own
+    /// in an atomic, as its waits on any CPU teach it.
+    pub const fn with_limit(limit_ns: u64) -> HaltPoll {
+        HaltPoll { limit_ns: if limit_ns > MAX_POLL_NS { MAX_POLL_NS } else { limit_ns } }
+    }
+
     /// How long to poll before halting.
     pub const fn limit_ns(&self) -> u64 {
         self.limit_ns
@@ -69,6 +75,14 @@ impl HaltPoll {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_limit_kept_elsewhere_goes_on_learning() {
+        assert_eq!(HaltPoll::with_limit(u64::MAX).limit_ns(), MAX_POLL_NS);
+        let mut poll = HaltPoll::with_limit(GROW_START_NS);
+        poll.record(GROW_START_NS + 1, true);
+        assert_eq!(poll.limit_ns(), 2 * GROW_START_NS);
+    }
 
     #[test]
     fn short_waits_grow_the_limit_and_long_ones_shrink_it() {

@@ -44,6 +44,14 @@
 //! Its thread waits for the last request first: requests tend to end in
 //! order, so the earlier ones' completions wake no one.
 //!
+//! In a virtual machine, a thread that has its CPU to itself polls for
+//! its request before it sleeps, with the device's interrupt off, for as
+//! long as the lane's recent waits suggest ([`radix_sched::HaltPoll`]'s
+//! rule, learnt from every wait for a request): the sleep and the
+//! interrupt that ends it are each an exit to the hypervisor, which cost
+//! more there than the device's own time for a small transfer
+//! ([`Controller::poll`]; virtio disks).
+//!
 //! A request the device fails ends in an I/O error, which the log tells
 //! of, with what the controller said of it, for at most
 //! [`FAILURES_LOGGED`] requests of a disk in each 5 s. One it hands back to
@@ -65,9 +73,10 @@ use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering};
 
 use radix_abi::process::{IO_LEVELS, IoClass};
 use radix_block::{BlockDevice, Error, Health, Info, Page, Segment, SegmentMut, Stats, Write};
-use radix_hal::{CpuLocal, Devices, PciAddress, Timer};
+use radix_hal::{Cpu, CpuLocal, Devices, PciAddress, Timer};
 use radix_klog::{TextBuf, warn};
 use radix_mm::{Flags, HEAP, Kmalloc};
+use radix_sched::HaltPoll;
 use radix_sync::SpinLock;
 
 use super::{Name, READ_SECTORS, READS, WRITES, WRITTEN_SECTORS};
@@ -180,6 +189,16 @@ pub trait Controller: Send + Sized {
     /// Tells the device of the requests [`Controller::submit`] held back.
     fn kick(&mut self) {}
 
+    /// Turns the device's interrupt off while `polled`, for threads that
+    /// poll [`Controller::complete`] instead, and on again when not; once
+    /// on, the next [`Controller::complete`] that finds nothing makes
+    /// sure the device interrupts for what it finishes after. Returns
+    /// whether the controller can be polled so; one that cannot (the
+    /// default) leaves its interrupt as it was.
+    fn poll(&mut self, _polled: bool) -> bool {
+        false
+    }
+
     /// The next finished request: its slot and how it ended.
     fn complete(&mut self) -> Option<(u8, Outcome)>;
 
@@ -283,6 +302,12 @@ struct Lane<C> {
     /// How many threads wait for room: with none, a completion or a slot
     /// freed wakes no one.
     room_waiters: AtomicU32,
+    /// How many threads poll for their requests: while any do, the
+    /// device's interrupt is off ([`Controller::poll`]).
+    pollers: AtomicU32,
+    /// How long a thread polls before it sleeps, learnt from the lane's
+    /// waits ([`HaltPoll`]); 0 until a wait shows polling would pay.
+    poll_ns: AtomicU64,
 }
 
 /// A disk: the device's driver, in one lane or one for each CPU, and the
@@ -348,6 +373,8 @@ impl<C: Controller> Disk<C> {
                 requests: [const { AtomicU8::new(FREE) }; SLOTS],
                 events: AtomicU64::new(0),
                 room_waiters: AtomicU32::new(0),
+                pollers: AtomicU32::new(0),
+                poll_ns: AtomicU64::new(0),
             };
             built.push_within_capacity(lane).ok()?;
         }
@@ -501,6 +528,9 @@ impl<C: Controller> Disk<C> {
         *self.spare.lock_irq() = taken;
         self.recovering.store(false, Ordering::Release);
         for lane in 0..self.lanes.len() {
+            // A thread that stopped polling while the part was out could
+            // not turn the interrupt back on.
+            self.set_polled(lane);
             self.collect(lane);
         }
         // Those waiting for room find it again, whatever was collected.
@@ -535,10 +565,67 @@ impl<C: Controller> Disk<C> {
         condition()
     }
 
+    /// Turns `lane`'s interrupt off while threads poll it, on when none
+    /// do, as its count of pollers says under the lane's lock: whichever
+    /// of two threads changing the count takes the lock last sets what the
+    /// count is then. Returns whether the controller can be polled; with
+    /// its part out for recovery, it is set when put back.
+    fn set_polled(&self, lane: usize) -> bool {
+        let this = &self.lanes[lane];
+        let mut queue = this.queue.lock_irq();
+        let Some(controller) = queue.as_mut() else { return false };
+        controller.poll(this.pollers.load(Ordering::Acquire) > 0)
+    }
+
+    /// Polls `lane` until `ended` holds, with the device's interrupt off,
+    /// for at most the lane's learnt time, and only in a virtual machine
+    /// and while no other thread wants this CPU (`sched::cpu_to_itself`).
+    /// Turns the interrupt back on before it returns, and collects what
+    /// finished meanwhile. Returns whether `ended` holds.
+    fn poll_for(&self, lane: usize, ended: &impl Fn() -> bool) -> bool {
+        let this = &self.lanes[lane];
+        let limit = this.poll_ns.load(Ordering::Relaxed);
+        if limit == 0 || !sched::cpu_to_itself() {
+            return false;
+        }
+        let until = sched::now_ns().saturating_add(limit);
+        this.pollers.fetch_add(1, Ordering::AcqRel);
+        if self.set_polled(lane) {
+            loop {
+                self.collect(lane);
+                if ended()
+                    || self.attention.load(Ordering::Acquire)
+                    || sched::now_ns() >= until
+                    || !sched::cpu_to_itself()
+                {
+                    break;
+                }
+                core::hint::spin_loop();
+            }
+        }
+        this.pollers.fetch_sub(1, Ordering::AcqRel);
+        self.set_polled(lane);
+        // What finished as the interrupt came back on.
+        self.collect(lane);
+        ended()
+    }
+
+    /// Learns from a wait for a request in `lane` that lasted `waited_ns`
+    /// how long the next should poll ([`HaltPoll::record`]: a wait within
+    /// the limit keeps it, one past it doubles it, one too long for
+    /// polling to pay halves it).
+    fn learn(&self, lane: usize, waited_ns: u64) {
+        let limit = &self.lanes[lane].poll_ns;
+        let mut poll = HaltPoll::with_limit(limit.load(Ordering::Relaxed));
+        poll.record(waited_ns, true);
+        limit.store(poll.limit_ns(), Ordering::Relaxed);
+    }
+
     /// Waits until the request in `slot` of `lane` is handed back, as
     /// [`Disk::wait`] does: asleep, named in the slot for the completion
-    /// to wake, when the device raises an interrupt. Returns whether it
-    /// was handed back.
+    /// to wake, when the device raises an interrupt, after polling for it
+    /// a while in a virtual machine ([`Disk::poll_for`]). Returns whether
+    /// it was handed back.
     fn wait_for(&self, lane: usize, slot: usize, deadline_ns: u64) -> bool {
         let this = &self.lanes[lane];
         let request = &this.requests[slot];
@@ -549,6 +636,12 @@ impl<C: Controller> Disk<C> {
         };
         sched::DISK_WAITERS.fetch_add(1, Ordering::Relaxed);
         let _counted = Counted;
+        let virtualized = Arch::virtualized();
+        let started = if virtualized { sched::now_ns() } else { 0 };
+        if virtualized && !ended() && self.poll_for(lane, &ended) {
+            self.learn(lane, sched::now_ns().saturating_sub(started));
+            return true;
+        }
         // Named under the lock that the completion takes once it has set
         // the slot, and the slot looked at after: either the completion
         // finds this thread named, or this finds the slot set.
@@ -558,6 +651,9 @@ impl<C: Controller> Disk<C> {
             sched::block_until(deadline_ns, "disk");
         }
         *sleeper.lock_irq() = None;
+        if virtualized && ended() {
+            self.learn(lane, sched::now_ns().saturating_sub(started));
+        }
         ended()
     }
 

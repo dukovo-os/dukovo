@@ -837,3 +837,31 @@ fn dropping_the_driver_resets_the_device() {
     assert_eq!(s.status, 0);
     assert!(!s.enabled);
 }
+
+#[test]
+fn a_quiet_queue_raises_no_interrupt_until_loud_again() {
+    let buffer = Dma::fake(4096);
+    for features in [FEATURES, FEATURES & !common_feature::EVENT_IDX] {
+        let (device, mut blk) = setup(features);
+        let interrupts = || device.state.lock().unwrap().interrupts;
+        let token = blk.submit(Op::Read, 0, &[(buffer.phys(), 512)]).unwrap();
+        assert_eq!(wait(&mut blk, token), Outcome::Done);
+        assert_eq!(blk.complete(), None);
+        assert_eq!(interrupts(), 1);
+        // Polled: the device uses buffers without a word.
+        blk.set_quiet(true);
+        for sector in 0..3 {
+            let token = blk.submit(Op::Read, sector, &[(buffer.phys(), 512)]).unwrap();
+            assert_eq!(wait(&mut blk, token), Outcome::Done);
+            assert_eq!(blk.complete(), None);
+        }
+        assert_eq!(interrupts(), 1, "none while quiet ({features:#x})");
+        // Loud again: the look that finds nothing asks, and the next
+        // completion interrupts.
+        blk.set_quiet(false);
+        assert_eq!(blk.complete(), None);
+        let token = blk.submit(Op::Read, 3, &[(buffer.phys(), 512)]).unwrap();
+        assert_eq!(interrupts(), 2, "one again once loud ({features:#x})");
+        assert_eq!(wait(&mut blk, token), Outcome::Done);
+    }
+}
