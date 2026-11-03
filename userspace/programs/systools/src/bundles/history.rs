@@ -117,7 +117,7 @@ impl Event {
         let [when, place, id, what, from, to, by, note] = words.as_slice() else {
             return Err(format!("{} fields where 8 belong", words.len()));
         };
-        manifest::bundle::check_id(id)?;
+        manifest::bundle::check_full_id(id)?;
         Ok(Event {
             when: when.parse().map_err(|_| format!("{when:?} is not a time"))?,
             place: Place::parse(place)?,

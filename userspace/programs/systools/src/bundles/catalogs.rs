@@ -187,7 +187,7 @@ impl Index {
                 let custom = target.custom.as_ref()?;
                 let text = |key: &str| custom.get(key)?.as_str().map(String::from);
                 let id = text("id")?;
-                manifest::bundle::check_id(&id).ok()?;
+                manifest::bundle::check_full_id(&id).ok()?;
                 let version = text("version")?;
                 let sha256 = target.hashes.0.iter().find(|(alg, _)| alg == "sha256")?.1.clone();
                 let hex = sha256.len() == 64 && sha256.bytes().all(|b| b.is_ascii_hexdigit());
@@ -255,13 +255,18 @@ impl Index {
         now < self.expires
     }
 
-    /// The newest version it lists of `id`.
+    /// The newest version it lists of `id`; of an ID it lists only with
+    /// lines, the newest of its newest line (ADR 0387).
     #[must_use]
     pub fn newest(&self, id: &str) -> Option<&Entry> {
-        self.entries
-            .iter()
-            .filter(|e| e.id == id)
-            .max_by(|a, b| compare_versions(&a.version, &b.version))
+        let newest = |of: &dyn Fn(&Entry) -> bool| {
+            self.entries
+                .iter()
+                .filter(|e| of(e))
+                .max_by(|a, b| compare_versions(&a.version, &b.version))
+        };
+        newest(&|e| e.id == id)
+            .or_else(|| newest(&|e| e.id.split_once('@').is_some_and(|(base, _)| base == id)))
     }
 
     /// Whether it lists a file of `id` with this SHA-256 and length.
@@ -528,6 +533,29 @@ mod tests {
         assert_eq!(read.search(&["github".into()]).len(), 2);
         assert!(read.search(&["github".into(), "zzz".into()]).is_empty());
         assert!(Index::read("read\t1\n").is_err());
+    }
+
+    #[test]
+    fn an_ids_lines_are_bundles_of_their_own() {
+        let index = Index {
+            read: 1,
+            expires: 2,
+            version: 1,
+            entries: vec![
+                entry("org.nodejs.node@20", "20.18.0", 'a'),
+                entry("org.nodejs.node@22", "22.11.0", 'b'),
+                entry("org.nodejs.node@22", "22.12.0", 'c'),
+            ],
+        };
+        // An update stays in its line; an install by the ID takes the
+        // newest line.
+        assert_eq!(index.newest("org.nodejs.node@20").unwrap().version, "20.18.0");
+        assert_eq!(index.newest("org.nodejs.node@22").unwrap().version, "22.12.0");
+        assert_eq!(index.newest("org.nodejs.node").unwrap().id, "org.nodejs.node@22");
+        assert!(index.newest("org.nodejs.node@24").is_none());
+        assert!(index.newest("org.nodejs").is_none());
+        assert_eq!(index.search(&["node".into()]).len(), 2);
+        assert_eq!(Index::read(&index.text()).unwrap(), index);
     }
 
     #[test]

@@ -6,8 +6,8 @@
 //! `install` request comes with the archive's descriptor (SCM_RIGHTS).
 //! bundled answers with lines too: the install sheet (`sheet N` and N bytes
 //! of text), a question for a yes or a no, a listed bundle, the bundle to
-//! run, what the asker said of its permissions, and last `ok` or `error`
-//! with why. A `watch` connection then stays open, for the permissions
+//! run, or the lines of an ID to choose it from (ADR 0387), what the
+//! asker said of its permissions, and last `ok` or `error` with why. A `watch` connection then stays open, for the permissions
 //! the person takes away while the app runs.
 
 use std::io::{self, BufRead, Read};
@@ -80,6 +80,12 @@ pub enum Request {
     Automatic { everyone: bool, on: bool },
     /// What bundled did to the asker's bundles and everyone's, or to `id`.
     History { id: Option<String> },
+    /// The lines of `name`, an ID or a command one of its lines adds,
+    /// installed for the asker or for everyone (ADR 0387).
+    Lines { name: String },
+    /// Makes `line` the default line of `name`'s ID, the asker's or
+    /// everyone's, or forgets it with none.
+    Default { name: String, line: Option<String>, everyone: bool },
 }
 
 /// Which bundle `run` asks for.
@@ -95,9 +101,24 @@ fn whose(everyone: bool) -> &'static str {
     if everyone { "everyone" } else { "me" }
 }
 
+/// An ID, or a full ID with its line (ADR 0387).
 fn checked_id(id: &str) -> Result<String, String> {
-    manifest::bundle::check_id(id).map_err(|why| format!("{id:?}: {why}"))?;
+    manifest::bundle::check_full_id(id).map_err(|why| format!("{id:?}: {why}"))?;
     Ok(id.into())
+}
+
+/// An ID or a command's name, as `bundle default` takes them.
+fn checked_name(name: &str) -> Result<String, String> {
+    if manifest::bundle::check_id(name).is_ok() {
+        return Ok(name.into());
+    }
+    manifest::bundle::check_command_name(name).map_err(|why| format!("{name:?}: {why}"))?;
+    Ok(name.into())
+}
+
+fn checked_line(line: &str) -> Result<String, String> {
+    manifest::bundle::check_version_line(line).map_err(|why| format!("{line:?}: {why}"))?;
+    Ok(line.into())
 }
 
 fn checked_catalog(name: &str) -> Result<String, String> {
@@ -197,6 +218,12 @@ impl Request {
                 format!("automatic\t{}\t{}\n", whose(*everyone), if *on { "on" } else { "off" })
             }
             Request::History { id } => format!("history\t{}\n", id.as_deref().unwrap_or("-")),
+            Request::Lines { name } => format!("lines\t{name}\n"),
+            Request::Default { name, line, everyone } => format!(
+                "default\t{name}\t{}\t{}\n",
+                line.as_deref().unwrap_or("-"),
+                whose(*everyone)
+            ),
         }
     }
 
@@ -232,6 +259,12 @@ impl Request {
                 words: words.iter().map(|w| checked_word(w)).collect::<Result<_, _>>()?,
             }),
             ["catalogs"] => Ok(Request::Catalogs),
+            ["lines", name] => Ok(Request::Lines { name: checked_name(name)? }),
+            ["default", name, line, place] => Ok(Request::Default {
+                name: checked_name(name)?,
+                line: if *line == "-" { None } else { Some(checked_line(line)?) },
+                everyone: everyone(place)?,
+            }),
             ["catalog-add", name, url] => Ok(Request::CatalogAdd {
                 name: checked_catalog(name)?,
                 url: super::catalogs::check_url(url)?,
@@ -321,6 +354,21 @@ pub struct Found {
     pub list: String,
 }
 
+/// The lines of an ID installed for the asker or for everyone, to choose
+/// the one to run from (ADR 0387).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Lines {
+    /// The ID.
+    pub id: String,
+    /// Its lines, oldest first.
+    pub lines: Vec<String>,
+    /// The files a project keeps that say which it wants, of every line.
+    pub files: Vec<String>,
+    /// The asker's default line, and everyone's.
+    pub mine: Option<String>,
+    pub everyone: Option<String>,
+}
+
 /// A bundle a catalog lists, as `search` gives it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Hit {
@@ -370,6 +418,8 @@ pub enum Answer {
     Listed(Listed),
     /// The bundle to run.
     Found(Found),
+    /// The lines to choose the bundle to run from.
+    Lines(Lines),
     /// What the asker said of one of its permissions.
     Granted(Grant),
     /// A permission the person took away, on a `watch` connection.
@@ -419,6 +469,15 @@ impl Answer {
                 format!("found\t{}\t{}\t{}\t{}\n", f.place, f.id, f.key.encoded(), f.list)
                     .into_bytes()
             }
+            Answer::Lines(l) => format!(
+                "lines\t{}\t{}\t{}\t{}\t{}\n",
+                l.id,
+                word_list(&l.lines),
+                if l.files.is_empty() { "-".into() } else { l.files.join("/") },
+                l.mine.as_deref().unwrap_or("-"),
+                l.everyone.as_deref().unwrap_or("-")
+            )
+            .into_bytes(),
             Answer::Granted(g) => format!(
                 "granted\t{}\t{}\t{}\t{}\t{}\n",
                 g.permission,
@@ -512,6 +571,36 @@ impl Answer {
             "everyone" => Ok(Place::Everyone),
             uid => uid.parse().map(Place::User).map_err(|_| bad("a bundle's place")),
         };
+        if let ["lines", id, lines, files, mine, everyone] = words.as_slice() {
+            let line = |word: &str| -> Result<Option<String>, io::Error> {
+                if word == "-" {
+                    Ok(None)
+                } else {
+                    checked_line(word).map(Some).map_err(|w| bad(&w))
+                }
+            };
+            let lines = if *lines == "-" {
+                Vec::new()
+            } else {
+                lines.split(',').map(checked_line).collect::<Result<_, _>>().map_err(|w| bad(&w))?
+            };
+            let files: Vec<String> = if *files == "-" {
+                Vec::new()
+            } else {
+                files.split('/').map(String::from).collect()
+            };
+            if files.iter().any(|f| f.is_empty() || f == "." || f == ".." || f.len() > 64) {
+                return Err(bad("a line's file"));
+            }
+            manifest::bundle::check_id(id).map_err(|why| bad(&why))?;
+            return Ok(Some(Answer::Lines(Lines {
+                id: (*id).into(),
+                lines,
+                files,
+                mine: line(mine)?,
+                everyone: line(everyone)?,
+            })));
+        }
         if let ["found", at, id, key, list] = words.as_slice() {
             return Ok(Some(Answer::Found(Found {
                 place: place(at)?,
@@ -668,6 +757,12 @@ mod tests {
             Request::Automatic { everyone: false, on: true },
             Request::History { id: None },
             Request::History { id: Some("org.example.notes".into()) },
+            Request::Run { find: Find::Id("org.nodejs.node@22".into()) },
+            Request::Rollback { id: "org.python.python@3.13".into(), everyone: true },
+            Request::Lines { name: "node".into() },
+            Request::Lines { name: "org.nodejs.node".into() },
+            Request::Default { name: "node".into(), line: Some("22".into()), everyone: false },
+            Request::Default { name: "org.nodejs.node".into(), line: None, everyone: true },
         ] {
             let line = request.line();
             assert!(line.ends_with('\n') && line.matches('\n').count() == 1);
@@ -726,6 +821,26 @@ mod tests {
             Answer::Sheet("Notes 0.1.0, for yourself\n  Signed by key RW...\n".into()),
             Answer::Question,
             Answer::Listed(listed),
+            Answer::Lines(Lines {
+                id: "org.nodejs.node".into(),
+                lines: vec!["20".into(), "22".into()],
+                files: vec![".nvmrc".into(), ".node-version".into()],
+                mine: Some("20".into()),
+                everyone: None,
+            }),
+            Answer::Lines(Lines {
+                id: "org.example.tide".into(),
+                lines: vec!["1".into()],
+                files: Vec::new(),
+                mine: None,
+                everyone: Some("1".into()),
+            }),
+            Answer::Found(Found {
+                place: Place::Everyone,
+                id: "org.example.notes@2".into(),
+                key: key(),
+                list: "cd".repeat(32),
+            }),
             Answer::Found(Found {
                 place: Place::Everyone,
                 id: "org.example.notes".into(),

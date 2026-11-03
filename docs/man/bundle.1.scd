@@ -51,6 +51,8 @@ bundle - make, check, sign, pack, install, update and run bundles, and say what 
 
 *bundle history* [_id_]
 
+*bundle default* _name_ [_line_ | *--clear*] [*--for-everyone*]
+
 *bundle list*
 
 *bundle info* _id_
@@ -237,6 +239,15 @@ folder and as a _.dkv_ file, which is a zip of the folder.
 	when, who asked or that it did so by itself, and, for a version
 	that failed its health check, why bundled went back.
 
+*default* _name_ [_line_ | *--clear*] [*--for-everyone*]
+	With _line_, makes it your default line of the ID _name_ names, its
+	ID or one of its commands: the line that runs unless a project asks
+	for another (LINES); with *--for-everyone*, everyone's, which an
+	administrator sets through *elevate*(8), and which your own comes
+	before. *--clear* forgets it. With neither, says which line runs in
+	the working folder and why, the lines installed, the defaults, and
+	the files a project chooses with.
+
 *list*
 	Lists the bundles you can run, yours and everyone's: ID, version,
 	whose, and name.
@@ -315,6 +326,30 @@ network at all, so it cannot make a socket. Its environment is clean:
 *HOME*, *USER*, *LOGNAME*, *PATH*=_/system/commands_, *TERM*, and your
 *LANG*, *LC\_\** and *TZ*. Its descriptors 0 to 2 are yours; bundle
 waits for it and exits with its status.
+
+# LINES
+
+A bundle whose manifest has a *line*, such as Node.js 22, is a bundle of
+its own, _id_*@*_line_ (ADR 0387): *org.nodejs.node@22* installs beside
+*org.nodejs.node@20*, updates within line 22, and never replaces it. Each
+command, *bundle*, *info*, *update*, *rollback*, *hold* and *remove*,
+takes the full ID; *bundle install* _id_ from a catalog takes its newest
+line, and _id_*@*_line_ that line.
+
+Lines of one ID may add the same commands, and each line's commands are
+linked a second time as _name_*-*_line_: *node-22* always runs line 22.
+When several lines installed for you or for everyone add the command
+you run, the one that runs is:
+
+. the line a project asks for: from the working folder up to _/_, the
+  nearest folder holding one of the files the manifest's *line_files*
+  names, such as _.nvmrc_; its first word, a *v* before it dropped, is
+  a version or a line, and the line it is of, or the newest of it,
+  runs. A version no installed line is or holds stops the command,
+  which says so and which file asks for it; a word that is no version,
+  such as *lts/iron*, is passed over;
+. your default (*bundle default*), then everyone's;
+. the newest line installed.
 
 # PERMISSIONS
 
@@ -445,6 +480,10 @@ _~/app-data/.snapshots/id_
 
 _/applications/.previous-id_, _~/applications/.previous-id_
 	The version of a bundle that its last update replaced, sealed.
+
+_.nvmrc_, _.node-version_, ...
+	A project's file that says which line runs a command, as a bundle's
+	*line_files* name them (LINES).
 
 _/system/state/grants/uid_
 	What each person said of each bundle's permissions, which only

@@ -114,7 +114,9 @@ impl Changes {
 }
 
 /// A bundle's target: its path, `bundles/ID-VERSION.dkv`, and what
-/// targets lists for it: length, SHA-256, and its ID and version.
+/// targets lists for it: length, SHA-256, and its ID and version. A
+/// bundle with a line is listed by its full ID, `ID@LINE`, so that its
+/// updates stay in its line (ADR 0387).
 ///
 /// # Errors
 ///
@@ -137,7 +139,12 @@ pub fn bundle_target(data: &[u8]) -> Result<(String, Value), String> {
         return Err(format!("{id} {version} cannot name a file"));
     }
     let mut info = repo::file_info(data);
-    let mut custom = json!({ "id": id, "version": version });
+    let full = match manifest["line"].as_str() {
+        Some(line) if safe(line) => format!("{id}@{line}"),
+        Some(line) => return Err(format!("{id} {version}: line {line} cannot name a bundle")),
+        None => id.clone(),
+    };
+    let mut custom = json!({ "id": full, "version": version });
     if let Ok(name) = field("name") {
         custom["name"] = name.into();
     }

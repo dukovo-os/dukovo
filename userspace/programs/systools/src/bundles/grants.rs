@@ -299,7 +299,7 @@ impl Grants {
             let [id, key, permission, said, since, given, asked] = fields.as_slice() else {
                 return Err(bad("not seven fields"));
             };
-            manifest::bundle::check_id(id).map_err(|why| bad(&why))?;
+            manifest::bundle::check_full_id(id).map_err(|why| bad(&why))?;
             let key = PublicKey::decode(key).map_err(|why| bad(&why))?;
             let found = permissions::find(permission).ok_or_else(|| bad("no such permission"))?;
             let said = Said::from_word(said).ok_or_else(|| bad("neither allow nor never"))?;

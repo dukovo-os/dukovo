@@ -34,19 +34,20 @@
 //! SIGKILL, and its next run goes without.
 
 use std::ffi::OsString;
-use std::io::{self, BufReader};
+use std::fs::File;
+use std::io::{self, BufReader, Read};
 use std::os::fd::OwnedFd;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::net::UnixStream;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-use manifest::bundle::{Arch, Manifest, Need, Request as Asked, RunsWith};
+use manifest::bundle::{Arch, Manifest, Need, Request as Asked, RunsWith, Wish};
 use manifest::service::Ports;
 
 use super::folder::{Dir, fd_stat};
 use super::grants::{self, Grant, Step, YOUR_ACCESS};
-use super::protocol::{Answer, Find, Found, Request};
+use super::protocol::{Answer, Find, Found, Lines, Request};
 use super::signed::{self, LIST_MAX, MANIFEST_MAX, SIGNATURE_MAX};
 use super::sums::{self, Entry, LIST, SIGNATURE};
 use super::{MANIFEST, answer, ask};
@@ -100,7 +101,7 @@ const SERIAL: &[&str] = &["ttyACM", "ttyUSB"];
 
 /// `bundle run [--command NAME] ID [ARGUMENT...]`.
 pub fn run(id: &str, command: Option<&str>, args: Vec<OsString>) -> Result<i32, Fail> {
-    manifest::bundle::check_id(id).map_err(util::usage)?;
+    manifest::bundle::check_full_id(id).map_err(util::usage)?;
     let (found, said) = locate(&Find::Id(id.into()))?;
     start(&found, &said, command, args)
 }
@@ -121,24 +122,100 @@ pub fn command(name: &str, args: Vec<OsString>) -> i32 {
     }
 }
 
+/// Why a line runs (ADR 0387).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Why {
+    /// A project's file asks for it.
+    Project(PathBuf),
+    /// It is the person's default, or everyone's.
+    Mine,
+    Everyone,
+    /// It is the newest installed.
+    Newest,
+}
+
+/// The line of `lines` to run in the folder `here`, and why (ADR 0387):
+/// the one the nearest project file asks for, then the person's default,
+/// everyone's, and the newest. A project file that asks for a version no
+/// line installed is or holds stops it.
+pub fn pick(lines: &Lines, here: &Path) -> Result<(String, Why), String> {
+    if let Some((path, text)) = project_file(&lines.files, here) {
+        let all: Vec<&str> = lines.lines.iter().map(String::as_str).collect();
+        match manifest::bundle::wished_line(&text, &all) {
+            Wish::Line(line) => return Ok((line, Why::Project(path))),
+            Wish::Missing(version) => {
+                return Err(format!(
+                    "this project uses {} {version}, as {} says, which is not installed: bundle \
+                     search {} lists the lines the catalogs have",
+                    lines.id,
+                    path.display(),
+                    lines.id
+                ));
+            }
+            Wish::Nothing => {}
+        }
+    }
+    for (default, why) in [(&lines.mine, Why::Mine), (&lines.everyone, Why::Everyone)] {
+        if let Some(line) = default
+            && lines.lines.contains(line)
+        {
+            return Ok((line.clone(), why));
+        }
+    }
+    let newest = lines.lines.last().cloned();
+    newest
+        .map(|line| (line, Why::Newest))
+        .ok_or_else(|| format!("no line of {} is installed", lines.id))
+}
+
+/// The nearest of `files` from the folder `here` up to `/`: its path and
+/// what it starts with.
+fn project_file(files: &[String], here: &Path) -> Option<(PathBuf, String)> {
+    for folder in here.ancestors() {
+        for name in files {
+            let path = folder.join(name);
+            let Ok(file) = File::open(&path) else { continue };
+            if !file.metadata().is_ok_and(|m| m.is_file()) {
+                continue;
+            }
+            let mut bytes = Vec::new();
+            let _ = file.take(256).read_to_end(&mut bytes);
+            return Some((path, String::from_utf8_lossy(&bytes).into_owned()));
+        }
+    }
+    None
+}
+
 /// Asks bundled which bundle `find` names: it, and what the person
-/// said of its permissions.
+/// said of its permissions. When it names several lines of an ID, the
+/// one [`pick`] picks in the working folder (ADR 0387).
 fn locate(find: &Find) -> Result<(Found, Vec<Grant>), Fail> {
     let (_stream, mut input) = ask(&Request::Run { find: find.clone() }, None).map_err(fail)?;
     let mut found = None;
+    let mut lines = None;
     let mut said = Vec::new();
     loop {
         match answer(&mut input)? {
-            Answer::Found(f) if found.is_none() => found = Some(f),
+            Answer::Found(f) if found.is_none() && lines.is_none() => found = Some(f),
+            Answer::Lines(l) if found.is_none() && lines.is_none() => lines = Some(l),
             Answer::Granted(g) if found.is_some() => said.push(g),
             Answer::Ok(_) => break,
             Answer::Error(why) => return Err(fail(why)),
             _ => return Err(fail("bundled answered out of turn".into())),
         }
     }
+    if let Some(lines) = lines {
+        let here = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
+        let (line, _) = pick(&lines, &here).map_err(fail)?;
+        let full = format!("{}@{line}", lines.id);
+        if find == &Find::Id(full.clone()) {
+            return Err(fail("bundled answered out of turn".into()));
+        }
+        return locate(&Find::Id(full));
+    }
     let found = found.ok_or_else(|| fail("bundled found nothing".into()))?;
     let asked = match find {
-        Find::Id(id) => found.id == *id,
+        Find::Id(id) => found.id == *id || super::registry::base_id(&found.id) == id,
         Find::Command(_) => true,
     };
     if !asked {
@@ -221,8 +298,8 @@ pub fn open_sealed(found: &Found) -> Result<Sealed, String> {
     }
     let bytes = sealed_file(&folder, &path, MANIFEST, MANIFEST_MAX)?;
     let manifest = signed::manifest_of(&bytes, &listed)?;
-    if manifest.id != found.id {
-        return Err(format!("{path}: its manifest is {}'s", manifest.id));
+    if manifest.full_id() != found.id {
+        return Err(format!("{path}: its manifest is {}'s", manifest.full_id()));
     }
     Ok(Sealed { folder, path, manifest, listed })
 }
@@ -245,7 +322,13 @@ pub fn choose(manifest: &Manifest, command: Option<&str>) -> Result<Chosen, Stri
     let id = &manifest.id;
     let (arg0, program, runs_with) = match command {
         Some(name) => {
-            let found = manifest.commands.iter().find(|c| c.name == *name);
+            // A line's command runs as NAME-LINE too (ADR 0387).
+            let lined = || {
+                let line = manifest.line.as_ref()?;
+                let base = name.strip_suffix(line.0.as_str())?.strip_suffix('-')?;
+                manifest.commands.iter().find(|c| c.name == *base)
+            };
+            let found = manifest.commands.iter().find(|c| c.name == *name).or_else(lined);
             let c = found.ok_or_else(|| format!("{id} adds no command {name}"))?;
             (c.name.to_string(), c.program.to_string(), c.runs_with)
         }
@@ -349,7 +432,7 @@ pub fn given(
     said: &[Grant],
     mut person: impl FnMut(&str) -> Result<String, String>,
 ) -> Result<Given, String> {
-    let id = manifest.id.0.as_str();
+    let id = &manifest.full_id();
     let mut given = Given::default();
     for (name, request) in kept(manifest, program) {
         let grant = said.iter().find(|g| g.permission == name);
@@ -639,7 +722,7 @@ mod sandbox {
         let ended = Arc::new(Mutex::new(false));
         let stopping = Arc::new(AtomicBool::new(false));
         let following = watching.and_then(|input| {
-            let id = plan.sealed.manifest.id.0.clone();
+            let id = plan.sealed.manifest.full_id();
             let flags = (Arc::clone(&ended), Arc::clone(&stopping));
             follow(input, number, plan.given.names.clone(), id, flags)
         });
@@ -795,7 +878,7 @@ mod sandbox {
                 attach(&format!("{}/{folder}", plan.home), *write)?;
             }
             // Its own is its data folder, attached as it may change it.
-            let own = &plan.sealed.manifest.id.0;
+            let own = &plan.sealed.manifest.full_id();
             for app in plan.given.app_data.iter().filter(|app| *app != own) {
                 let path = format!("{}/{APP_DATA}/{app}", plan.home);
                 if std::fs::symlink_metadata(&path).is_ok() {
@@ -980,6 +1063,49 @@ mod sandbox {
 mod tests {
     use super::*;
     use crate::bundles::grants::Said;
+
+    #[test]
+    fn a_project_chooses_its_line_then_the_defaults_then_the_newest() {
+        let root = std::env::temp_dir().join(format!("lines-{}", std::process::id()));
+        let deep = root.join("project/src/parts");
+        std::fs::create_dir_all(&deep).unwrap();
+        let mut lines = Lines {
+            id: "org.nodejs.node".into(),
+            lines: vec!["20".into(), "22".into()],
+            files: vec![".nvmrc".into(), ".node-version".into()],
+            mine: None,
+            everyone: None,
+        };
+        let picked = |lines: &Lines| pick(lines, &deep);
+        // No file anywhere up: the newest, then everyone's default, then
+        // the person's own.
+        assert_eq!(picked(&lines), Ok(("22".into(), Why::Newest)));
+        lines.everyone = Some("20".into());
+        assert_eq!(picked(&lines), Ok(("20".into(), Why::Everyone)));
+        lines.mine = Some("22".into());
+        assert_eq!(picked(&lines), Ok(("22".into(), Why::Mine)));
+        // A default whose line is not installed is passed over.
+        lines.mine = Some("18".into());
+        assert_eq!(picked(&lines), Ok(("20".into(), Why::Everyone)));
+        // The nearest file, of the first name in a folder, chooses.
+        let project = root.join("project");
+        std::fs::write(project.join(".node-version"), "22.11.0\n").unwrap();
+        let file = project.join(".node-version");
+        assert_eq!(picked(&lines), Ok(("22".into(), Why::Project(file))));
+        std::fs::write(project.join(".nvmrc"), "v20\n").unwrap();
+        let file = project.join(".nvmrc");
+        assert_eq!(picked(&lines), Ok(("20".into(), Why::Project(file))));
+        std::fs::write(deep.join(".nvmrc"), "lts/iron\n").unwrap();
+        assert_eq!(picked(&lines), Ok(("20".into(), Why::Everyone)));
+        std::fs::write(deep.join(".nvmrc"), "18\n").unwrap();
+        let why = picked(&lines).unwrap_err();
+        assert!(why.starts_with("this project uses org.nodejs.node 18, as "), "{why}");
+        assert!(why.contains("parts/.nvmrc says, which is not installed"), "{why}");
+        // A bundle whose lines name no files reads none.
+        lines.files.clear();
+        assert_eq!(picked(&lines), Ok(("20".into(), Why::Everyone)));
+        std::fs::remove_dir_all(&root).unwrap();
+    }
 
     fn manifest(extra: &str, permissions: &str) -> Manifest {
         let text = manifest::bundle::template("org.example.notes", "Notes", "Example", "MIT")

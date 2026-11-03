@@ -64,9 +64,9 @@ use crate::bundles::grants::{self, Grant, Grants, Said};
 use crate::bundles::history::{self, Event, What};
 use crate::bundles::minisign::PublicKey;
 use crate::bundles::protocol::{
-    self, Answer, Available, Find, Found, Hit, LINE_MAX, Listed, Request, Shown,
+    self, Answer, Available, Find, Found, Hit, LINE_MAX, Lines, Listed, Request, Shown,
 };
-use crate::bundles::registry::{self, Installed, Place, Registry, Trust};
+use crate::bundles::registry::{self, Installed, Place, Registry, Trust, base_id};
 use crate::bundles::services::{self, Record};
 use crate::bundles::sheet::{self, Facts};
 use crate::bundles::{MANIFEST, confine, signed, snapshots, sums};
@@ -532,8 +532,11 @@ fn install_in(
     still("as it was unpacked")?;
     let checked = signed::check_folder(Path::new(&unpacked))?;
     still("as it was checked")?;
-    let id = checked.manifest.id.0.clone();
-    if checked.key != report.key || id != report.id || checked.manifest.version.0 != report.version
+    // A bundle with a line is a bundle of its own, ID@LINE (ADR 0387).
+    let id = checked.manifest.full_id();
+    if checked.key != report.key
+        || checked.manifest.id.0 != report.id
+        || checked.manifest.version.0 != report.version
     {
         return Err("the unpacker's report is not what it unpacked".into());
     }
@@ -1116,7 +1119,10 @@ fn commands_in_reach(registry: &Registry, place: Place, id: &str) -> Vec<(String
     let mut commands = Vec::new();
     for installed in &registry.installed {
         let reach = installed.place == place || installed.place == Place::Everyone;
-        if !reach || installed.id == id {
+        // The lines of an ID may add the same commands (ADR 0387).
+        let line_of_it =
+            id.contains('@') && installed.id.contains('@') && base_id(&installed.id) == base_id(id);
+        if !reach || installed.id == id || line_of_it {
             continue;
         }
         if let Ok(manifest) = installed_manifest(installed.place, &installed.id) {
@@ -1128,14 +1134,23 @@ fn commands_in_reach(registry: &Registry, place: Place, id: &str) -> Vec<(String
     commands
 }
 
-/// The commands of the bundles installed in `place`.
+/// The commands of the bundles installed in `place`, and each command
+/// of a line a second time as `NAME-LINE`, which runs that line (ADR
+/// 0387).
 fn commands_of(registry: &Registry, place: Place) -> Vec<String> {
     let mut commands: Vec<String> = registry
         .installed
         .iter()
         .filter(|i| i.place == place)
         .filter_map(|i| installed_manifest(i.place, &i.id).ok())
-        .flat_map(|m| m.commands.into_iter().map(|c| c.name.to_string()))
+        .flat_map(|m| {
+            let line = m.line.map(|l| l.0);
+            m.commands.into_iter().flat_map(move |c| {
+                let name = c.name.to_string();
+                let lined = line.as_ref().map(|line| format!("{name}-{line}"));
+                std::iter::once(name).chain(lined)
+            })
+        })
         .collect();
     commands.sort();
     commands.dedup();
@@ -1179,8 +1194,93 @@ fn link_commands(registry: &Registry, place: Place) -> Result<(), String> {
     Ok(())
 }
 
+/// The lines of the ID that `name` names, installed for `asker` or for
+/// everyone: `name` is the ID, or a command one of its lines adds, the
+/// asker's own before everyone's (ADR 0387). `None` when no line is.
+fn lines_of(registry: &Registry, asker: u32, name: &str) -> Option<Lines> {
+    let places = [Place::User(asker), Place::Everyone];
+    let in_reach =
+        || registry.installed.iter().filter(|i| places.contains(&i.place) && i.id.contains('@'));
+    let named = |i: &Installed| {
+        base_id(&i.id) == name
+            || installed_manifest(i.place, &i.id)
+                .is_ok_and(|m| m.commands.iter().any(|c| c.name == *name))
+    };
+    let first = places
+        .iter()
+        .find_map(|place| in_reach().filter(|i| i.place == *place).find(|i| named(i)))?;
+    let id = base_id(&first.id).to_string();
+    let mut lines: Vec<String> = Vec::new();
+    let mut files: Vec<String> = Vec::new();
+    for installed in in_reach().filter(|i| base_id(&i.id) == id) {
+        let Ok(manifest) = installed_manifest(installed.place, &installed.id) else { continue };
+        let Some(line) = manifest.line.map(|l| l.0) else { continue };
+        if !lines.contains(&line) {
+            lines.push(line);
+        }
+        for file in manifest.line_files {
+            if !files.contains(&file.0) {
+                files.push(file.0);
+            }
+        }
+    }
+    lines.sort_by(|a, b| catalogs::compare_versions(a, b));
+    let default = |place| registry.default_line(place, &id).map(String::from);
+    let mine = if asker == 0 { None } else { default(Place::User(asker)) };
+    let everyone = default(Place::Everyone);
+    Some(Lines { id, lines, files, mine, everyone })
+}
+
+/// `bundle default NAME [LINE]`: makes `line` the line of the ID `name`
+/// names that runs unless a project asks for another, the asker's or
+/// everyone's, or forgets it (ADR 0387).
+fn set_default(
+    shared: &Shared,
+    asker: u32,
+    name: &str,
+    line: Option<&str>,
+    everyone: bool,
+) -> Result<String, String> {
+    if everyone && asker != 0 {
+        return Err("everyone's default line is an administrator's to set: run elevate bundle \
+                    default --for-everyone"
+            .into());
+    }
+    let place = if everyone { Place::Everyone } else { Place::User(asker) };
+    let mut registry = shared.lock();
+    let lines = lines_of(&registry, asker, name)
+        .ok_or_else(|| format!("no line of {name} is installed"))?;
+    let id = lines.id;
+    if let Some(line) = line {
+        let full = format!("{id}@{line}");
+        let there = if everyone {
+            registry.installed(Place::Everyone, &full).is_some()
+        } else {
+            lines.lines.iter().any(|l| l == line)
+        };
+        if !there {
+            let whom = if everyone { " for everyone" } else { "" };
+            return Err(format!("{full} is not installed{whom}"));
+        }
+    }
+    registry.set_default_line(place, &id, line);
+    save(&registry)?;
+    drop(registry);
+    let whose = if everyone { "everyone's" } else { "your" };
+    if everyone {
+        audit!("root made {} everyone's default line of {id}", line.unwrap_or("none"));
+    }
+    Ok(match line {
+        Some(line) => format!("{line} is {whose} default line of {id}"),
+        None if everyone => format!("{id} has no default line for everyone now"),
+        None => format!("{id} has no default line for you now"),
+    })
+}
+
 /// The bundle to run that `find` names, the asker's own before
-/// everyone's, and what bundled recorded of it.
+/// everyone's, and what bundled recorded of it; or, when it names an ID
+/// or a command that several lines of an ID have, those lines, for the
+/// asker to choose from (ADR 0387).
 fn find(
     shared: &Shared,
     connection: &mut Connection,
@@ -1190,18 +1290,44 @@ fn find(
     let found = {
         let registry = shared.lock();
         let places = [Place::User(asker), Place::Everyone];
-        let mut found = None;
-        for place in places {
-            found = registry.installed.iter().filter(|i| i.place == place).find(|i| match find {
-                Find::Id(id) => i.id == *id,
-                Find::Command(name) => installed_manifest(i.place, &i.id)
-                    .is_ok_and(|m| m.commands.iter().any(|c| c.name == *name)),
-            });
-            if found.is_some() {
-                break;
-            }
+        let first = |matches: &dyn Fn(&Installed) -> bool| {
+            places.iter().find_map(|place| {
+                registry.installed.iter().filter(|i| i.place == *place).find(|i| matches(i))
+            })
+        };
+        let adds = |i: &Installed, name: &str| {
+            installed_manifest(i.place, &i.id)
+                .is_ok_and(|m| m.commands.iter().any(|c| c.name == *name))
+        };
+        let exact = match find {
+            Find::Id(id) => first(&|i| i.id == *id),
+            Find::Command(name) => first(&|i| adds(i, name)),
+        };
+        let name = match find {
+            Find::Id(id) => id,
+            Find::Command(name) => name,
+        };
+        let lines = match find {
+            Find::Id(id) if exact.is_some() || id.contains('@') => None,
+            Find::Command(_) if exact.is_some_and(|i| !i.id.contains('@')) => None,
+            _ => lines_of(&registry, asker, name).filter(|l| l.lines.len() > 1),
+        };
+        if let Some(lines) = lines {
+            connection.send(&Answer::Lines(lines)).map_err(|e| format!("{e}"))?;
+            return Ok("choose a line".into());
         }
-        found.cloned()
+        // An ID with one line installed, or NAME-LINE, a command of a line.
+        let one = || match find {
+            Find::Id(id) => first(&|i| base_id(&i.id) == id && i.id.contains('@')),
+            Find::Command(name) => first(&|i| {
+                i.id.split_once('@').is_some_and(|(_, line)| {
+                    name.strip_suffix(line)
+                        .and_then(|rest| rest.strip_suffix('-'))
+                        .is_some_and(|command| adds(i, command))
+                })
+            }),
+        };
+        exact.or_else(one).cloned()
     };
     let Some(installed) = found else {
         return Err(match find {
@@ -2447,6 +2573,16 @@ fn serve(shared: &Shared, stream: UnixStream) {
         Ok(Request::Hold { id, everyone, on }) => hold(shared, asker, &id, everyone, on),
         Ok(Request::Automatic { everyone, on }) => automatic(shared, asker, everyone, on),
         Ok(Request::History { id }) => history_of(&mut connection, asker, id.as_deref()),
+        Ok(Request::Lines { name }) => match lines_of(&shared.lock(), asker, &name) {
+            Some(lines) => connection
+                .send(&Answer::Lines(lines))
+                .map_err(|e| format!("{e}"))
+                .map(|()| format!("the lines of {name}")),
+            None => Err(format!("no line of {name} is installed")),
+        },
+        Ok(Request::Default { name, line, everyone }) => {
+            set_default(shared, asker, &name, line.as_deref(), everyone)
+        }
         Ok(Request::List) => list(shared, &mut connection, asker),
         Ok(Request::Info { id }) => info(shared, &mut connection, asker, &id),
         Ok(Request::Remove { id, everyone, purge }) => remove(shared, asker, &id, everyone, purge),
@@ -2528,7 +2664,7 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
         .mode(0o700)
         .create(registry::STATE)
         .map_err(|e| util::failed(&registry::STATE, e))?;
-    let mut texts: [String; 7] = Default::default();
+    let mut texts: [String; 8] = Default::default();
     for (text, name) in texts.iter_mut().zip(registry::FILES) {
         *text = read_state(name).map_err(|e| util::failed(&state(name), e))?;
     }

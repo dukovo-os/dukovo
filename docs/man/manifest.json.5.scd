@@ -77,6 +77,21 @@ windows (1.1), *runtime*, the Linux layer (1.3), and *plugins* (1.10).
 	with a pre-release after *-* (*"2.0.0-beta.1"*) and a build after
 	*+*. Required.
 
+*line* = _"line"_
+	The major version line its version is of, such as *"22"* or
+	*"3.13"*: one to three numbers between dots, which its version
+	starts with. A bundle with a line is a bundle of its own,
+	_id_*@*_line_, beside the ID's other lines: it updates within its
+	line, and a newer line never replaces it (ADR 0387). Not with
+	*services*, for now.
+
+*line_files* = [ _"file"_, ... ]
+	The files a project keeps that say which line it wants, such as
+	*[".nvmrc", ".node-version"]*: at most 8 names, without a */*. When
+	several lines of the ID add a command, the nearest of these from the
+	working folder up chooses the line that runs it (*bundle*(1), LINES).
+	Needs *line*.
+
 *publisher* = { *name* = _"text"_, *url* = _"https://..."_ }
 	Who publishes it, and their web site. The key comes from the
 	signature, never from the manifest. *name* is required.

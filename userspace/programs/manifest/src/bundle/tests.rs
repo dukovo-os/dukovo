@@ -542,6 +542,66 @@ fn an_update_feed_and_its_key() {
 }
 
 #[test]
+fn a_line_and_the_files_that_choose_it() {
+    let text = with(",\n  \"line\": \"1\",\n  \"line_files\": [\".app-version\", \".apprc\"]");
+    let manifest = from_json(&text).unwrap();
+    assert_eq!(manifest.line.as_ref().map(|l| l.0.as_str()), Some("1"));
+    assert_eq!(manifest.full_id(), "org.example.app@1");
+    let files: Vec<&str> = manifest.line_files.iter().map(|f| f.0.as_str()).collect();
+    assert_eq!(files, [".app-version", ".apprc"]);
+    assert_eq!(from_json(&with("")).unwrap().full_id(), "org.example.app");
+    // Its version is of its line, and its files choose a line.
+    assert_eq!(
+        error(&with(",\n  \"line\": \"2\"")),
+        "line 12: version 1.0 is not of line 2: a line's versions start with it, as 2.1 does"
+    );
+    for bad in ["01", "1.0.0.0", "v1", "", "1."] {
+        let text = with(&format!(",\n  \"line\": \"{bad}\""));
+        assert!(error(&text).contains("is a major version line"), "{bad}");
+    }
+    assert_eq!(
+        error(&with(",\n  \"line_files\": [\".apprc\"]")),
+        "line 12: line_files chooses a line, so it needs a line"
+    );
+    for bad in ["a/b", "..", ""] {
+        let text = with(&format!(",\n  \"line\": \"1\",\n  \"line_files\": [\"{bad}\"]"));
+        assert!(error(&text).contains("is not a file's name"), "{bad}");
+    }
+    let twice = with(",\n  \"line\": \"1\",\n  \"line_files\": [\".apprc\", \".apprc\"]");
+    assert!(error(&twice).contains("line_files names .apprc twice"));
+}
+
+#[test]
+fn versions_lines_and_full_ids() {
+    assert!(in_line("22.11.0", "22"));
+    assert!(in_line("22", "22"));
+    assert!(in_line("22.0.0-rc.1", "22"));
+    assert!(in_line("3.13.1", "3.13"));
+    assert!(!in_line("3.12.1", "3.13"));
+    assert!(!in_line("220.1.0", "22"));
+    assert!(!in_line("3", "3.13"));
+    assert_eq!(split_full_id("org.nodejs.node@22"), Ok(("org.nodejs.node", Some("22"))));
+    assert_eq!(split_full_id("org.nodejs.node"), Ok(("org.nodejs.node", None)));
+    assert_eq!(full_id("org.nodejs.node", Some("22")), "org.nodejs.node@22");
+    for bad in ["org.nodejs.node@", "@22", "org.nodejs.node@v22", "org.nodejs.node@22@1", "node@22"]
+    {
+        assert!(check_full_id(bad).is_err(), "{bad}");
+    }
+    // What a project's file asks for.
+    let node = ["20", "22"];
+    assert_eq!(wished_line("v22.11.0\n", &node), Wish::Line("22".into()));
+    assert_eq!(wished_line("20 # the LTS", &node), Wish::Line("20".into()));
+    assert_eq!(wished_line("18.20.4", &node), Wish::Missing("18.20.4".into()));
+    assert_eq!(wished_line("lts/iron", &node), Wish::Nothing);
+    assert_eq!(wished_line("node", &node), Wish::Nothing);
+    assert_eq!(wished_line("", &node), Wish::Nothing);
+    let python = ["3.12", "3.13"];
+    assert_eq!(wished_line("3.12.4", &python), Wish::Line("3.12".into()));
+    assert_eq!(wished_line("3", &python), Wish::Line("3.13".into()));
+    assert_eq!(wished_line("3.11", &python), Wish::Missing("3.11".into()));
+}
+
+#[test]
 fn spdx_expressions() {
     for (text, ids) in [
         ("MIT", &["MIT"][..]),
