@@ -20,5 +20,9 @@ libc = "0.2.191"
 # share from.
 manifest = { path = "../manifest" }
 
+[features]
+# nfsd for nfs(1)'s tests: a server in their process (src/testing.rs).
+testing = []
+
 [lints]
 workspace = true

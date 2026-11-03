@@ -185,6 +185,11 @@ impl Writer {
     pub fn len(&self) -> usize {
         self.bytes.len()
     }
+
+    /// Whether it wrote nothing.
+    pub fn is_empty(&self) -> bool {
+        self.bytes.is_empty()
+    }
 }
 
 #[cfg(test)]

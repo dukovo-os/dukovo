@@ -3,9 +3,11 @@
 
 //! mount(8) and umount(8), as Linux's, for the filesystems Dukovo has: a
 //! disk's (FAT, exFAT, NTFS, Btrfs, ext4, UDF and ISO 9660, whichever it
-//! holds when `-t` names none), and a share of a Windows network, which
+//! holds when `-t` names none), a share of a Windows network, which
 //! smb(1) mounts and serves (`-t smb` or `-t cifs`, or a source that
-//! starts with `//`; ADR 0227). Without a source and a folder, mount lists
+//! starts with `//`; ADR 0227), and a folder a Unix machine shares over
+//! NFS, which nfs(1) mounts and serves (`-t nfs` or `-t nfs4`, or a
+//! source `server:/path`; ADR 0344). Without a source and a folder, mount lists
 //! the mounts as Linux's does. umount unmounts the filesystem at a folder,
 //! or the one a source is mounted from. Volumes that come and go are
 //! volumed(8)'s, at /volumes; these are for the rest.
@@ -36,10 +38,28 @@ const SMB: &str = "/system/commands/smb";
 /// The kinds that name a share, which smb(1) mounts.
 const SHARES: &[&str] = &["smb", "smb3", "cifs"];
 
+/// The program that mounts and serves folders shared over NFS.
+const NFS: &str = "/system/commands/nfs";
+
+/// The kinds that name a folder shared over NFS, which nfs(1) mounts.
+const EXPORTS: &[&str] = &["nfs", "nfs4"];
+
 /// Whether `source` names a share: `//server/share`, `\\server\share`
 /// or `smb://server/share`.
 fn is_share(source: &[u8]) -> bool {
     source.starts_with(b"//") || source.starts_with(b"\\\\") || source.starts_with(b"smb://")
+}
+
+/// Whether `source` names a folder shared over NFS: `server:/path`,
+/// `[v6]:/path` or `nfs://server/path`.
+fn is_export(source: &[u8]) -> bool {
+    if source.starts_with(b"nfs://") {
+        return true;
+    }
+    match source.windows(2).position(|pair| pair == b":/") {
+        Some(at) => at > 0 && !source[..at].contains(&b'/'),
+        None => false,
+    }
 }
 
 pub fn mount(args: &mut Args) -> Result<i32, Fail> {
@@ -65,7 +85,11 @@ pub fn mount(args: &mut Args) -> Result<i32, Fail> {
         [source, dir] => {
             let share = kinds.as_deref().is_some_and(|kind| SHARES.contains(&kind));
             if share || (kinds.is_none() && is_share(source.as_bytes())) {
-                return Err(serve_share(source, dir, &options, access));
+                return Err(serve(SMB, source, dir, &options, access));
+            }
+            let export = kinds.as_deref().is_some_and(|kind| EXPORTS.contains(&kind));
+            if export || (kinds.is_none() && is_export(source.as_bytes())) {
+                return Err(serve(NFS, source, dir, &options, access));
             }
             mount_disk(source, dir, kinds.as_deref(), &options, access)
         }
@@ -75,7 +99,8 @@ pub fn mount(args: &mut Args) -> Result<i32, Fail> {
 }
 
 /// Lists the mounts, of the kinds `kinds` names if it names some: a
-/// share's as `smb`'s, `cifs`'s or `fuse`'s.
+/// share's as `smb`'s, `cifs`'s or `fuse`'s, and an NFS folder's as
+/// `nfs`'s, `nfs4`'s or `fuse`'s.
 fn list(kinds: Option<&str>, labels: bool) -> Result<i32, Fail> {
     let mounts = proc::mounts().map_err(|e| util::failed(&"/processes/mounts", e))?;
     let wanted: Option<Vec<&str>> = kinds.map(|kinds| kinds.split(',').collect());
@@ -99,28 +124,33 @@ fn list(kinds: Option<&str>, labels: bool) -> Result<i32, Fail> {
 
 /// Whether mount `m` is of the kind `kind` names.
 fn is_kind(m: &Mount, kind: &str) -> bool {
-    m.kind == kind || (SHARES.contains(&kind) && m.kind == "fuse" && is_share(m.source.as_bytes()))
+    let fuse = m.kind == "fuse";
+    m.kind == kind
+        || (SHARES.contains(&kind) && fuse && is_share(m.source.as_bytes()))
+        || (EXPORTS.contains(&kind) && fuse && is_export(m.source.as_bytes()))
 }
 
-/// Mounts a share: smb(1) does, with these options, in this process's
-/// place. Returns only if it cannot be run.
-fn serve_share(
+/// Mounts a share or an NFS folder: `program`, smb(1) or nfs(1), does,
+/// with these options, in this process's place. Returns only if it
+/// cannot be run.
+fn serve(
+    program: &str,
     source: &OsString,
     dir: &OsString,
     options: &[String],
     access: Option<&str>,
 ) -> Fail {
-    let mut smb = Command::new(SMB);
-    smb.arg("mount");
+    let mut command = Command::new(program);
+    command.arg("mount");
     for options in options {
-        smb.args(["-o", options]);
+        command.args(["-o", options]);
     }
     if let Some(access) = access {
-        smb.args(["-o", access]);
+        command.args(["-o", access]);
     }
-    smb.arg(source).arg(dir);
-    let err = smb.exec();
-    util::failed(&SMB, err)
+    command.arg(source).arg(dir);
+    let err = command.exec();
+    util::failed(&program, err)
 }
 
 /// Mounts the disk `source`, a device or its name under /devices, at
@@ -280,6 +310,7 @@ pub fn umount(args: &mut Args) -> Result<i32, Fail> {
 fn is_from(m: &Mount, what: &OsString) -> bool {
     m.source.as_bytes() == what.as_bytes()
         || (!is_share(what.as_bytes())
+            && !is_export(what.as_bytes())
             && device_path(&m.source.clone().into()) == device_path(what))
 }
 
@@ -338,6 +369,20 @@ mod tests {
         let disk = mount("vdb1", "volumes/data", "btrfs");
         assert!(is_kind(&disk, "btrfs") && !is_kind(&disk, "cifs"));
         assert!(!is_kind(&mount("fuse-test", "tmp/fuse-test", "fuse"), "smb"));
+    }
+
+    #[test]
+    fn nfs_folders_are_named_by_their_source_or_kind() {
+        for source in ["nas:/srv/music", "10.0.2.2:/", "[fe80::1]:/x", "nfs://nas/srv"] {
+            assert!(is_export(source.as_bytes()), "{source}");
+        }
+        for source in ["/devices/vdb1", "vdb1", ":/x", "a/b:/c", "//nas/media", "nas:x"] {
+            assert!(!is_export(source.as_bytes()), "{source}");
+        }
+        let folder = mount("nas:/srv/music", "home/ann/music", "fuse");
+        assert!(is_kind(&folder, "nfs") && is_kind(&folder, "nfs4") && is_kind(&folder, "fuse"));
+        assert!(!is_kind(&folder, "smb"));
+        assert!(!is_kind(&mount("//nas/media", "m", "fuse"), "nfs"));
     }
 
     #[test]

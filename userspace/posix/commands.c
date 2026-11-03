@@ -51,6 +51,7 @@ static const char *const ELSEWHERE[][2] = {
 		{"ssh-agent", "the ssh boot test's: it keeps that key"},
 		{"ssh-add", "the ssh boot test's: it gives ssh-agent that key"},
 		{"smb", "the smb boot test's: it mounts and lists shares of the host's smbd, which only QEMU's network reaches"},
+		{"nfs", "the nfs boot test's: it mounts and lists folders the host's Linux NFS server exports, which only QEMU's network reaches"},
 		{"resolved", "the network-services boot test's service: it asks that test's DNS servers on lo"},
 		{"resolvectl", "the network-services boot test's: it shows resolved's servers and looks names up through it"},
 		{"timed", "the network-services boot test's service: it sets the clock from that test's NTS server"},
