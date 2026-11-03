@@ -12,22 +12,6 @@
 //!   shared folders alone: authd starts one for each person calls come
 //!   as, and one as no one for root's.
 
-mod attr;
-mod fh;
-mod ipc;
-mod listener;
-mod nfs;
-mod ops;
-mod rpc;
-mod server;
-mod shares;
-mod state;
-mod sys;
-#[cfg(test)]
-mod tests;
-mod worker;
-mod xdr;
-
 use std::process::ExitCode;
 
 const USAGE: &str = "usage: nfsd [--worker]";
@@ -41,8 +25,8 @@ it while NFS is on: see share(1).
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
-        [] => listener::run(),
-        ["--worker"] => worker::run(),
+        [] => nfsd::listen(),
+        ["--worker"] => nfsd::work(),
         ["--help" | "-h"] => {
             println!("{USAGE}\n\n{HELP}");
             ExitCode::SUCCESS

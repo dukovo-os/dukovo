@@ -89,6 +89,7 @@ pub const ARCHIVE_HIDDEN: (&str, &str) = ("system/.hidden", "bin\nlib\nshare\n")
 /// each one's path in it, and its package in userspace/programs.
 pub const STD_ARCHIVE: &[(&str, &str)] = &[
     ("system/commands/consoled", "consoled"),
+    ("system/commands/nfs", "nfs"),
     ("system/commands/nfsd", "nfsd"),
     ("system/commands/nukesh", "nukesh"),
     ("system/commands/smb", "smb"),
@@ -337,6 +338,7 @@ pub const HOST_TESTED: &[&str] = &[
     "keymap",
     "manifest",
     "netproto",
+    "nfs",
     "nfsd",
     "nukesh",
     "smb",

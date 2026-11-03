@@ -1,0 +1,35 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+[package]
+name = "nfs"
+description = "nfs(1): mounts a folder a Linux or other Unix machine shares over NFS 4.1 or 4.2 as a filesystem it serves through /devices/fuse, and lists folders (ADR 0344)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+# The users and groups (ADR 0218): the groups AUTH_SYS names a caller's,
+# and the numbers of owners a server gives by name.
+accounts = { path = "../accounts" }
+# The filesystem's side of Linux's FUSE protocol, which ob patches in
+# from the rust-crates port (ADR 0226), at the protocol's version 7.31.
+fuser = { version = "0.16.0", default-features = false, features = ["abi-7-31"] }
+# The libc crate with its Radix module, which ob patches in from the
+# rust-std port (ADR 0070).
+libc = "0.2.191"
+# NFS's protocol, as nfsd(8) speaks it: XDR, NFS version 4's numbers
+# and RPC's records (ADR 0343).
+nfsd = { path = "../nfsd" }
+# The system call interface, generated from abi/*.ridl: radix-directory(2)'s
+# mount_fuse, which the C library does not wrap.
+radix-abi = { path = "../../../kernel/abi" }
+
+[dev-dependencies]
+# nfsd in the tests' process, which the client's tests mount.
+nfsd = { path = "../nfsd", features = ["testing"] }
+
+[lints]
+workspace = true

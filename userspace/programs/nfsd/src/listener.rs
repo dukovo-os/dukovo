@@ -194,7 +194,7 @@ pub fn answer<B: Backend>(
 
 /// Serves one connection until it ends, or its client's address may
 /// reach no share.
-fn serve<B: Backend>(
+pub(crate) fn serve<B: Backend>(
     stream: &TcpStream,
     from: SocketAddr,
     server: &Mutex<Server<B>>,

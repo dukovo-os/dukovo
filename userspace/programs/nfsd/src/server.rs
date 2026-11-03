@@ -176,7 +176,7 @@ impl<B: Backend> Server<B> {
     }
 
     /// Serves `shares` alone, at their folders, as the tests do.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "testing"))]
     pub fn with_shares(mut self, shares: Vec<NfsShare>) -> Server<B> {
         self.shares = shares;
         self.shares_seen = None;
