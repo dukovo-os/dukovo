@@ -17,12 +17,18 @@
 //! repeated. Sequences use the codes the format predefines, which need no
 //! description. A frame larger than the caller's limit is not made: the
 //! extent is written uncompressed.
+//!
+//! Each sequence is kept as the block writes it: its three codes are
+//! worked out, and counted, as the match is found, and its extra bits
+//! joined into one value, so writing the sequences is three codes and one
+//! value each. A run's literals are copied a word at a time, as most are a
+//! few bytes. The streams of bits shift with BMI2's instructions where
+//! the processor has them, as the decoder does.
 
+use radix_hw::bmi2::Bmi2;
 use radix_vfs::mem::{self, KVec, NoMemory};
 
-use super::{
-    HUFFMAN_MAX_BITS, Kind, LL_BASE, LL_BITS, MAGIC, MAX_BLOCK, ML_BASE, ML_BITS, copy_short,
-};
+use super::{HUFFMAN_MAX_BITS, Kind, LL_BASE, LL_BITS, MAGIC, MAX_BLOCK, ML_BASE, ML_BITS};
 
 /// The bits of a hash of six bytes, which index the table of matches.
 const HASH_LOG: u32 = 14;
@@ -47,14 +53,15 @@ const FRAME_HEADER: usize = 9;
 /// A block's header.
 const BLOCK_HEADER: usize = 3;
 
-/// A run of literals and the match after it.
+/// A run of literals and the match after it, as the block writes them:
+/// the codes of the literals' length, the match's length and the offset,
+/// and the extra bits after the codes' bases of all three, in that order
+/// from the low bit.
 #[derive(Clone, Copy, Default)]
 struct Sequence {
-    literals: u32,
-    /// The offset as the format codes it: 1 for the last repeated, or
-    /// the offset plus 3.
-    offset: u32,
-    len: u32,
+    extra: u64,
+    /// The three codes, then how many extra bits there are.
+    codes: [u8; 4],
 }
 
 /// The code of each literal length below 64, from [`LL_BASE`].
@@ -103,6 +110,64 @@ const fn padded<const N: usize>(bits: &[u8; N]) -> [u8; 64] {
         i += 1;
     }
     out
+}
+
+/// `bases`, with zeros after them to 64.
+const fn padded_bases<const N: usize>(bases: &[u32; N]) -> [u32; 64] {
+    let mut out = [0; 64];
+    let mut i = 0;
+    while i < N {
+        out[i] = bases[i];
+        i += 1;
+    }
+    out
+}
+
+/// The bases and extra bits of the codes of lengths, indexed without
+/// checks.
+const LL_BASES: [u32; 64] = padded_bases(&LL_BASE);
+const LL_EXTRA: [u8; 64] = padded(&LL_BITS);
+const ML_BASES: [u32; 64] = padded_bases(&ML_BASE);
+const ML_EXTRA: [u8; 64] = padded(&ML_BITS);
+
+/// The shifts the encoder's streams of bits make by counts that vary:
+/// [`Plain`]'s, or BMI2's, which take their count from any register in
+/// one operation where the others take it from `cl` (two or three
+/// operations on Intel's processors), as Linux's zstd uses them where the
+/// processor has BMI2.
+trait Shifts: Copy {
+    /// `value << count`, `count` below 64.
+    fn shl(self, value: u64, count: u32) -> u64;
+    /// `value >> count`, `count` below 64.
+    fn shr(self, value: u64, count: u32) -> u64;
+}
+
+/// The shifts every x86-64 processor has.
+#[derive(Clone, Copy)]
+struct Plain;
+
+impl Shifts for Plain {
+    #[inline(always)]
+    fn shl(self, value: u64, count: u32) -> u64 {
+        value << (count & 63)
+    }
+
+    #[inline(always)]
+    fn shr(self, value: u64, count: u32) -> u64 {
+        value >> (count & 63)
+    }
+}
+
+impl Shifts for Bmi2 {
+    #[inline(always)]
+    fn shl(self, value: u64, count: u32) -> u64 {
+        Bmi2::shl(self, value, count)
+    }
+
+    #[inline(always)]
+    fn shr(self, value: u64, count: u32) -> u64 {
+        Bmi2::shr(self, value, count)
+    }
 }
 
 /// The data compressed, with room after the most there is for a word
@@ -168,34 +233,41 @@ const MASKS: [u64; 64] = {
 
 /// Bits written from the low end of each byte up, as the decoder reads
 /// them from the last byte down.
-struct Bits<'o> {
+struct Bits<'o, S> {
     out: &'o mut [u8],
     at: usize,
     acc: u64,
     n: u32,
+    shifts: S,
 }
 
-impl<'o> Bits<'o> {
-    fn new(out: &'o mut [u8]) -> Bits<'o> {
-        Bits { out, at: 0, acc: 0, n: 0 }
+impl<'o, S: Shifts> Bits<'o, S> {
+    fn new(out: &'o mut [u8], shifts: S) -> Bits<'o, S> {
+        Bits { out, at: 0, acc: 0, n: 0, shifts }
     }
 
     /// Adds the low `bits` of `value`; the bits held stay below 64.
     #[inline(always)]
     fn add(&mut self, value: u64, bits: u32) {
-        self.acc |= (value & MASKS[bits as usize & 63]) << self.n;
+        self.add_exact(value & MASKS[bits as usize & 63], bits);
+    }
+
+    /// Adds `value`, which is below `2^bits`; the bits held stay below
+    /// 64.
+    #[inline(always)]
+    fn add_exact(&mut self, value: u64, bits: u32) {
+        self.acc |= self.shifts.shl(value, self.n);
         self.n += bits;
     }
 
     /// Writes the whole bytes held, or fails at the end of the room.
     #[inline(always)]
     fn flush(&mut self) -> Option<()> {
-        let bytes = self.n / 8;
         let to = self.out.get_mut(self.at..)?.first_chunk_mut::<8>()?;
         *to = self.acc.to_le_bytes();
-        self.at += bytes as usize;
+        self.at += (self.n / 8) as usize;
         // At most 7 bytes: fewer than 64 bits are held.
-        self.acc >>= bytes * 8;
+        self.acc = self.shifts.shr(self.acc, self.n & !7);
         self.n %= 8;
         Some(())
     }
@@ -332,11 +404,12 @@ impl<'t> Coder<'t> {
 
     /// Codes `sym` from `state`.
     #[inline(always)]
-    fn put(&self, out: &mut Bits<'_>, state: &mut u32, sym: usize) {
+    fn put<S: Shifts>(&self, out: &mut Bits<'_, S>, state: &mut u32, sym: usize) {
         let (bits, find) = self.symbols[sym & 63];
         let n = (*state + bits) >> 16;
         out.add(u64::from(*state), n);
-        *state = u32::from(self.states[((*state >> n) as i32 + find) as usize & (MAX_STATES - 1)]);
+        let next = out.shifts.shr(u64::from(*state), n) as i32 + find;
+        *state = u32::from(self.states[next as usize & (MAX_STATES - 1)]);
     }
 }
 
@@ -582,11 +655,14 @@ impl Huffman {
     }
 
     /// Codes `lits` into one stream, the last first; returns its length.
-    fn stream(&self, lits: &[u8], out: &mut [u8]) -> Option<usize> {
-        let mut bits = Bits::new(out);
+    fn stream<S: Shifts>(&self, lits: &[u8], out: &mut [u8], shifts: S) -> Option<usize> {
+        let mut bits = Bits::new(out, shifts);
+        let codes: &[u16; 256] = self.codes.as_slice().try_into().ok()?;
+        let lens: &[u8; 256] = self.lens.as_slice().try_into().ok()?;
         for (i, &sym) in lits.iter().rev().enumerate() {
             let sym = usize::from(sym);
-            bits.add(u64::from(self.codes[sym]), u32::from(self.lens[sym]));
+            // A code is below 2^its length.
+            bits.add_exact(u64::from(codes[sym]), u32::from(lens[sym]));
             if i % 4 == 3 {
                 bits.flush()?;
             }
@@ -611,22 +687,48 @@ fn plain_header(kind: u32, n: usize, out: &mut [u8]) -> Option<usize> {
 /// What [`Encoder::find`] has found so far: the block's literals and
 /// sequences.
 struct Found<'e> {
-    literals: &'e mut [u8],
-    sequences: &'e mut [Sequence],
+    literals: &'e mut [u8; MAX_BLOCK + 8],
+    sequences: &'e mut [Sequence; MAX_SEQUENCES],
     count: usize,
     lits: usize,
+    /// How often the sequences use each symbol of the three codes: of
+    /// literals' lengths, offsets and matches' lengths, 64 apart.
+    tally: &'e mut [u32; 3 * 64],
 }
 
 impl Found<'_> {
-    /// Adds the sequence of `literals` and a match of `len` bytes at
-    /// offset value `offset`; with no room, the block is cut short there.
+    /// Adds the sequence of the literals of `src` from `from` to `to` and
+    /// a match of `len` bytes at offset value `offset`; with no room, the
+    /// block is cut short there.
     #[inline(always)]
-    fn emit(&mut self, literals: &[u8], offset: usize, len: usize) {
-        let n = literals.len();
-        let Some(to) = self.literals.get_mut(self.lits..self.lits + n) else { return };
+    fn emit(&mut self, src: &Window, from: usize, to: usize, offset: usize, len: usize) {
+        let n = to - from;
+        // Whole words, as most runs are a few bytes: the literals have
+        // room for a word past the most there are.
+        let words = n.div_ceil(8);
+        let Some(out) = self.literals.get_mut(self.lits..self.lits + 8 * words) else { return };
         let Some(seq) = self.sequences.get_mut(self.count) else { return };
-        copy_short(to, literals);
-        *seq = Sequence { literals: n as u32, offset: offset as u32, len: len as u32 };
+        for (k, word_out) in out.as_chunks_mut::<8>().0.iter_mut().enumerate() {
+            *word_out = word(src, from + 8 * k).to_le_bytes();
+        }
+        let (lits, offset, len) = (n as u32, offset as u32, len as u32);
+        let of = offset.ilog2();
+        let offset_extra = u64::from(offset ^ 1 << of);
+        // Short lengths are their own codes, with no extra bits.
+        let (ll, ml, extra, bits) = if lits < 16 && len < 35 {
+            (lits as usize, (len - 3) as usize, offset_extra, of)
+        } else {
+            let (ll, ml) = (ll_code(lits), ml_code(len));
+            let (ll_bits, ml_bits) = (u32::from(LL_EXTRA[ll & 63]), u32::from(ML_EXTRA[ml & 63]));
+            let extra = u64::from(lits - LL_BASES[ll & 63])
+                | u64::from(len - ML_BASES[ml & 63]) << ll_bits
+                | offset_extra << (ll_bits + ml_bits);
+            (ll, ml, extra, ll_bits + ml_bits + of)
+        };
+        *seq = Sequence { extra, codes: [ll as u8, ml as u8, of as u8, bits as u8] };
+        self.tally[ll & 63] += 1;
+        self.tally[64 + (of as usize & 63)] += 1;
+        self.tally[128 + (ml & 63)] += 1;
         self.count += 1;
         self.lits += n;
     }
@@ -638,12 +740,9 @@ pub struct Encoder {
     input: KVec<u8>,
     /// The last place each hash was seen.
     table: KVec<u32>,
-    /// The block's literals, in order.
+    /// The block's literals, in order, and room for a word after them.
     literals: KVec<u8>,
     sequences: KVec<Sequence>,
-    /// Each sequence's codes: of its literals' length, its match's length
-    /// and its offset.
-    codes: KVec<[u8; 3]>,
     huffman: Huffman,
     /// The predefined codes of literals' lengths, offsets and matches'
     /// lengths, then the block's own: on the heap, which keeps an encoder
@@ -653,6 +752,8 @@ pub struct Encoder {
     /// 64 apart.
     counts: KVec<u32>,
     shares: KVec<i16>,
+    /// BMI2's shifts, where the processor has them.
+    bmi2: Option<Bmi2>,
 }
 
 impl Encoder {
@@ -662,9 +763,8 @@ impl Encoder {
         Ok(Encoder {
             input: crate::zeroed(WINDOW)?,
             table: crate::filled(1 << HASH_LOG, 0)?,
-            literals: crate::zeroed(MAX_BLOCK)?,
+            literals: crate::zeroed(MAX_BLOCK + 8)?,
             sequences: crate::filled(MAX_SEQUENCES, Sequence::default())?,
-            codes: crate::filled(MAX_SEQUENCES, [0; 3])?,
             huffman: Huffman::new()?,
             tables: {
                 let mut tables = mem::vec_with_capacity(6)?;
@@ -678,7 +778,15 @@ impl Encoder {
             },
             counts: crate::filled(3 * 64, 0)?,
             shares: crate::filled(64, 0)?,
+            bmi2: Bmi2::get(),
         })
+    }
+
+    /// The encoder without BMI2's shifts, as on a processor without them.
+    #[cfg(test)]
+    fn without_bmi2(mut self) -> Encoder {
+        self.bmi2 = None;
+        self
     }
 
     /// The bytes of memory it holds, about.
@@ -687,7 +795,6 @@ impl Encoder {
             + self.table.capacity() * 4
             + self.literals.capacity()
             + self.sequences.capacity() * size_of::<Sequence>()
-            + self.codes.capacity() * 3
             + 20 * 1024
     }
 
@@ -707,8 +814,15 @@ impl Encoder {
         let head = FRAME_HEADER + BLOCK_HEADER;
         let (sequences, literals) = self.find(n);
         let body = out.get_mut(head..)?;
-        let mut size = self.literals_section(literals, body)?;
-        size += self.sequences_section(sequences, body.get_mut(size..)?)?;
+        let mut size = match self.bmi2 {
+            Some(bmi2) => self.literals_section(literals, body, bmi2)?,
+            None => self.literals_section(literals, body, Plain)?,
+        };
+        let rest = body.get_mut(size..)?;
+        size += match self.bmi2 {
+            Some(bmi2) => self.sequences_section(sequences, rest, bmi2)?,
+            None => self.sequences_section(sequences, rest, Plain)?,
+        };
         let total = head + size;
         if total > limit {
             return None;
@@ -723,20 +837,28 @@ impl Encoder {
 
     /// Finds the sequences and literals of the first `n` bytes of the
     /// input; returns how many of each.
+    #[inline(never)]
     fn find(&mut self, n: usize) -> (usize, usize) {
-        let Encoder { input, table, literals, sequences, .. } = self;
+        let Encoder { input, table, literals, sequences, counts, .. } = self;
         let Ok(src) = <&Window>::try_from(&input[..]) else { return (0, 0) };
         let table: &mut [u32; 1 << HASH_LOG] = match table.as_mut_slice().try_into() {
             Ok(table) => table,
             Err(_) => return (0, 0),
         };
-        table.fill(0);
-        let mut found = Found {
-            literals: literals.as_mut_slice(),
-            sequences: sequences.as_mut_slice(),
-            count: 0,
-            lits: 0,
+        let Ok(tally) = <&mut [u32; 3 * 64]>::try_from(counts.as_mut_slice()) else {
+            return (0, 0);
         };
+        // Of sizes known here, which keeps their lengths out of registers.
+        let Ok(literals) = <&mut [u8; MAX_BLOCK + 8]>::try_from(literals.as_mut_slice()) else {
+            return (0, 0);
+        };
+        let Ok(sequences) = <&mut [Sequence; MAX_SEQUENCES]>::try_from(sequences.as_mut_slice())
+        else {
+            return (0, 0);
+        };
+        table.fill(0);
+        tally.fill(0);
+        let mut found = Found { literals, sequences, count: 0, lits: 0, tally };
         let (mut rep, mut before) = (1, 4);
         let end = n.saturating_sub(TAIL);
         let (mut anchor, mut ip) = (0, 1);
@@ -748,7 +870,7 @@ impl Encoder {
             let next = ip + 1;
             if rep <= next && word4(src, next - rep) == word4(src, next) {
                 let len = MIN_MATCH + alike(src, n, next + 4, next + 4 - rep);
-                found.emit(&src[anchor..next], 1, len);
+                found.emit(src, anchor, next, 1, len);
                 ip = next + len;
             } else if seen < ip && word4(src, seen) == word4(src, ip) {
                 let (mut at, mut from) = (ip, seen);
@@ -757,7 +879,7 @@ impl Encoder {
                     (at, from, len) = (at - 1, from - 1, len + 1);
                 }
                 let offset = at - from;
-                found.emit(&src[anchor..at], offset + 3, len);
+                found.emit(src, anchor, at, offset + 3, len);
                 (before, rep) = (rep, offset);
                 ip = at + len;
             } else {
@@ -775,7 +897,7 @@ impl Encoder {
                 let len = MIN_MATCH + alike(src, n, ip + 4, ip + 4 - before);
                 (rep, before) = (before, rep);
                 table[hash(word(src, ip))] = ip as u32;
-                found.emit(&src[anchor..ip], 1, len);
+                found.emit(src, anchor, ip, 1, len);
                 ip += len;
                 anchor = ip;
             }
@@ -789,7 +911,12 @@ impl Encoder {
     }
 
     /// Writes the block's `n` literals; returns their section's length.
-    fn literals_section(&mut self, n: usize, out: &mut [u8]) -> Option<usize> {
+    fn literals_section<S: Shifts>(
+        &mut self,
+        n: usize,
+        out: &mut [u8],
+        shifts: S,
+    ) -> Option<usize> {
         let lits = self.literals.get(..n)?;
         let raw = |out: &mut [u8]| {
             let at = plain_header(0, n, out)?;
@@ -842,13 +969,13 @@ impl Encoder {
         }
         let mut at = header + tree;
         if streams == 1 {
-            at += h.stream(lits, out.get_mut(at..)?)?;
+            at += h.stream(lits, out.get_mut(at..)?, shifts)?;
         } else {
             let part = n.div_ceil(4);
             let table = at;
             at += jump;
             for (i, chunk) in lits.chunks(part).enumerate() {
-                let len = h.stream(chunk, out.get_mut(at..)?)?;
+                let len = h.stream(chunk, out.get_mut(at..)?, shifts)?;
                 if i < 3 {
                     let to = out.get_mut(table + 2 * i..table + 2 * i + 2)?;
                     to.copy_from_slice(&u16::try_from(len).ok()?.to_le_bytes());
@@ -872,7 +999,12 @@ impl Encoder {
 
     /// Writes the block's first `count` sequences; returns their
     /// section's length.
-    fn sequences_section(&mut self, count: usize, out: &mut [u8]) -> Option<usize> {
+    fn sequences_section<S: Shifts>(
+        &mut self,
+        count: usize,
+        out: &mut [u8],
+        shifts: S,
+    ) -> Option<usize> {
         let mut at = match count {
             0 => {
                 *out.first_mut()? = 0;
@@ -892,19 +1024,10 @@ impl Encoder {
                 3
             }
         };
-        let Encoder { sequences, codes, tables, counts, shares, .. } = self;
+        // `find` counted the codes' symbols.
+        let Encoder { sequences, tables, counts, shares, .. } = self;
         let (predefined, fitted) = tables.split_at_mut(3);
         let seqs = sequences.get(..count)?;
-        let codes = codes.get_mut(..count)?;
-        let tally: &mut [u32; 3 * 64] = counts.as_mut_slice().try_into().ok()?;
-        tally.fill(0);
-        for (s, code) in seqs.iter().zip(codes.iter_mut()) {
-            let (ll, ml, of) = (ll_code(s.literals), ml_code(s.len), s.offset.ilog2() as usize);
-            tally[ll & 63] += 1;
-            tally[64 + (of & 63)] += 1;
-            tally[128 + (ml & 63)] += 1;
-            *code = [ll as u8, ml as u8, of as u8];
-        }
         // Each code: one symbol, the block's own, or the predefined one
         // for a few sequences or counts that do not fit.
         let modes = at;
@@ -944,32 +1067,24 @@ impl Encoder {
         let [ll_table, of_table, ml_table] =
             core::array::from_fn(|k| Coder::of(if own[k] { &fitted[k] } else { &predefined[k] }));
         let (ll_table, of_table, ml_table) = (ll_table?, of_table?, ml_table?);
-        let mut bits = Bits::new(out.get_mut(at..)?);
-        // The bases are multiples of their codes' ranges: the extra bits
-        // are the low bits of the lengths (less 3, for matches).
-        let (ll_bits, ml_bits) = (padded(&LL_BITS), padded(&ML_BITS));
+        let mut bits = Bits::new(out.get_mut(at..)?, shifts);
         let last = &seqs[count - 1];
-        let [ll, ml, of] = codes[count - 1].map(usize::from);
+        let [ll, ml, of, _] = last.codes.map(usize::from);
         let mut ml_state = ml_table.first(ml);
         let mut of_state = of_table.first(of);
         let mut ll_state = ll_table.first(ll);
-        bits.add(u64::from(last.literals), u32::from(ll_bits[ll & 63]));
-        bits.add(u64::from(last.len - 3), u32::from(ml_bits[ml & 63]));
-        bits.add(u64::from(last.offset), of as u32);
+        bits.add_exact(last.extra, u32::from(last.codes[3]));
         bits.flush()?;
-        for (s, code) in seqs[..count - 1].iter().zip(&codes[..count - 1]).rev() {
-            let [ll, ml, of] = code.map(usize::from);
+        for s in seqs[..count - 1].iter().rev() {
+            let [ll, ml, of, extra] = s.codes.map(usize::from);
             of_table.put(&mut bits, &mut of_state, of);
             ml_table.put(&mut bits, &mut ml_state, ml);
             ll_table.put(&mut bits, &mut ll_state, ll);
-            let (ll_extra, ml_extra) = (u32::from(ll_bits[ll & 63]), u32::from(ml_bits[ml & 63]));
             // The states take at most 26 bits, the extra bits 49.
-            if ll_extra + ml_extra + of as u32 >= 31 {
+            if extra >= 31 {
                 bits.flush()?;
             }
-            bits.add(u64::from(s.literals), ll_extra);
-            bits.add(u64::from(s.len - 3), ml_extra);
-            bits.add(u64::from(s.offset), of as u32);
+            bits.add_exact(s.extra, extra as u32);
             bits.flush()?;
         }
         bits.add(u64::from(ml_state), ml_table.log);
@@ -987,17 +1102,23 @@ mod tests {
     /// Compresses `data` and has the decoder give it back, with BMI2's
     /// shifts where the host has them and without.
     fn round_trip(data: &[u8]) -> Option<usize> {
-        let mut encoder = Encoder::new().unwrap();
-        let mut frame = vec![0; MAX_BLOCK + 64];
-        encoder.input()[..data.len()].copy_from_slice(data);
-        let made = encoder.compress(data.len(), &mut frame, MAX_BLOCK + 32)?;
-        for mut zstd in [Zstd::new().unwrap(), Zstd::new().unwrap().without_bmi2()] {
-            let mut out = vec![0; data.len()];
-            let got = zstd.decompress(&frame[..made], &mut out).unwrap();
-            assert_eq!(got, data.len());
-            assert!(out == data, "the frame of {} bytes gives other bytes", data.len());
+        let mut made = None;
+        for mut encoder in [Encoder::new().unwrap(), Encoder::new().unwrap().without_bmi2()] {
+            let mut frame = vec![0; MAX_BLOCK + 64];
+            encoder.input()[..data.len()].copy_from_slice(data);
+            let len = encoder.compress(data.len(), &mut frame, MAX_BLOCK + 32);
+            // Both shifts make the same frame.
+            assert!(made.is_none() || made == Some(len), "BMI2 makes another frame");
+            made = Some(len);
+            let len = len?;
+            for mut zstd in [Zstd::new().unwrap(), Zstd::new().unwrap().without_bmi2()] {
+                let mut out = vec![0; data.len()];
+                let got = zstd.decompress(&frame[..len], &mut out).unwrap();
+                assert_eq!(got, data.len());
+                assert!(out == data, "the frame of {} bytes gives other bytes", data.len());
+            }
         }
-        Some(made)
+        made.flatten()
     }
 
     fn text(seed: u64, len: usize) -> Vec<u8> {
