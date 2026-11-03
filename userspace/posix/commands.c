@@ -81,6 +81,7 @@ static const char *const ELSEWHERE[][2] = {
 		{"smbd", "the smbd boot test's service: the host's smbclient reaches it only through QEMU's network"},
 		{"share", "the smbd and nfsd boot tests': they share folders, set sharing passwords and turn smbd and nfsd on and off"},
 		{"nfsd", "the nfsd boot test's service: the host's NFS client reaches it only through QEMU's network"},
+		{"sshd", "the sshd boot test's service: the host's OpenSSH client reaches it only through QEMU's network"},
 		{"rgrub-setup", "the rgrub-setup boot test's: it puts GRUB on a blank disk, which then boots"},
 		{"nc", "the network-tools boot test's: it connects to and listens for the other machine on a cable"},
 		{"iperf3", "the network-tools boot test's: it measures the cable to the other machine, which runs iperf3 -s"},
