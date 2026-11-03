@@ -487,6 +487,9 @@ Formats every Rust source file in the repository with rustfmt."
                          [<bundle>]...
        ./ob catalog publish --key <file>
        ./ob catalog status
+       ./ob catalog server setup
+       ./ob catalog deploy
+       ./ob catalog check [<url>]
 
 Makes and signs the catalog's TUF repository in catalog/ (ADR 0381), with
 catalog-repo, which it builds for this machine. Root and targets are signed
@@ -499,7 +502,15 @@ and timestamp with the online key and lays out what the server serves in
 out/catalog/site/, then reads it back as a client. --key names an Ed25519
 secret key file that signs in place of a YubiKey: the online key, or a
 test's. The YubiKeys need yubikey-manager (`sudo apt install
-yubikey-manager`)."
+yubikey-manager`).
+
+The update server (ADR 0382) is reached over SSH as `$OB_UPDATE_SSH`, by
+default updates.dukovo.org. `server setup` copies tools/update-server/ and
+catalog-repo there and runs its setup through sudo, then writes the
+server's online key to catalog/keys/online.json. `deploy` copies the
+catalog and the signed bundles there for the server to publish, then
+checks what it serves. `check` reads a served catalog, by default
+https://updates.dukovo.org/catalog/, as a client would."
         }
         "signoff" => {
             "Usage: ./ob signoff [<base>]

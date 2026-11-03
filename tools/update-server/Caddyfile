@@ -1,0 +1,20 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+#
+# Dukovo's update server (ADR 0382). setup.sh writes the host's name as
+# the site's address; Caddy gets its certificate from Let's Encrypt.
+
+@HOST@ {
+	root * /srv/dukovo
+	file_server
+
+	# What a client asks for first, which changes: never kept stale.
+	@current path /catalog/metadata/timestamp.json /catalog/metadata/root.json
+	header @current Cache-Control "no-cache"
+	# Everything else is named by its version or hash, so never changes.
+	@named path /catalog/metadata/*.*.json /catalog/targets/*
+	header @named Cache-Control "public, max-age=31536000, immutable"
+
+	header Strict-Transport-Security "max-age=31536000"
+	header X-Content-Type-Options "nosniff"
+}

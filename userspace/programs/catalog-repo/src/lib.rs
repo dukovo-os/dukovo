@@ -353,15 +353,10 @@ impl Repo {
         let root = self.root()?.ok_or("there is no root yet")?;
         let targets = self.targets()?.ok_or("no targets have been signed yet")?;
         let keys = keys::read_all(&self.keys_dir())?;
-        let signer_for = |role: &str| {
-            let ids = &root.signed.signed.roles[role].keyids;
-            keys.iter()
-                .filter(|k| ids.contains(&k.key.id()))
-                .find_map(|k| signers.for_key(k))
-                .ok_or(format!("nothing here can sign for {role}: give the online key's file"))
-        };
-        let (snapshot_signer, timestamp_signer) =
-            (signer_for("snapshot")?, signer_for("timestamp")?);
+        let (snapshot_signer, timestamp_signer) = (
+            online_signer(&root, &keys, signers, "snapshot")?,
+            online_signer(&root, &keys, signers, "timestamp")?,
+        );
         for version in 1..=root.signed.version {
             let name = format!("{version}.root.json");
             let bytes = std::fs::read(self.metadata(&name)).map_err(|e| format!("{name}: {e}"))?;
@@ -420,24 +415,154 @@ impl Repo {
         check_served(out, &targets.signed.signed)?;
         Ok((snapshot_version, timestamp_version))
     }
+
+    /// Keeps what `out` serves current, as the update server does every
+    /// six hours: a new timestamp alone while `out` serves this root and
+    /// a snapshot of these targets good for more than [`RENEW_DAYS`], and
+    /// everything again, as [`Repo::publish`], otherwise.
+    ///
+    /// # Errors
+    ///
+    /// As [`Repo::publish`].
+    pub fn refresh(
+        &self,
+        store: &Path,
+        out: &Path,
+        signers: &Signers,
+        days: (i64, i64),
+    ) -> Result<Refreshed, String> {
+        let root = self.root()?.ok_or("there is no root yet")?;
+        let targets = self.targets()?.ok_or("no targets have been signed yet")?;
+        if let Some(served) = Served::read(out)
+            && served.root == root.bytes
+            && served.targets_version == Some(targets.signed.version)
+            && served.snapshot_expires.is_some_and(|t| t - tuf::time::now() > RENEW_DAYS * 86_400)
+        {
+            let keys = keys::read_all(&self.keys_dir())?;
+            let signer = online_signer(&root, &keys, signers, "timestamp")?;
+            let version = served.timestamp_version + 1;
+            let timestamp = repo::sign(
+                &repo::timestamp(
+                    version,
+                    &repo::expires_in(days.1),
+                    served.snapshot_version,
+                    &served.snapshot,
+                ),
+                &[signer.as_ref()],
+            )?;
+            write(&out.join("metadata/timestamp.json"), &timestamp)?;
+            check_served(out, &targets.signed.signed)?;
+            return Ok(Refreshed::Timestamp(version));
+        }
+        let (snapshot, timestamp) = self.publish(store, out, signers, days)?;
+        Ok(Refreshed::All { snapshot, timestamp })
+    }
+
+    /// Reads the catalog served at `url` with the client, from this
+    /// repository's first root, as a new computer would, and fetches
+    /// every target these targets list. Returns how many there are.
+    ///
+    /// # Errors
+    ///
+    /// If the client refuses what is served or cannot fetch a target.
+    pub fn check_url(&self, url: &str) -> Result<usize, String> {
+        let first =
+            std::fs::read(self.metadata("1.root.json")).map_err(|e| format!("1.root.json: {e}"))?;
+        let targets = self.targets()?.ok_or("no targets have been signed yet")?;
+        let url = if url.ends_with('/') { url.to_string() } else { format!("{url}/") };
+        let base = tuf::Url::parse(&url).map_err(|e| format!("{url}: {e}"))?;
+        check_at(&base, &first, &targets.signed.signed)?;
+        Ok(targets.signed.signed.targets.len())
+    }
+}
+
+/// How many days before the served snapshot expires `refresh` signs a new
+/// one, though targets have not changed.
+pub const RENEW_DAYS: i64 = 2;
+
+/// What [`Repo::refresh`] signed.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Refreshed {
+    /// A timestamp alone, of this version.
+    Timestamp(u64),
+    /// Everything again, as `publish`: these versions of snapshot and
+    /// timestamp.
+    All {
+        /// The snapshot's version.
+        snapshot: u64,
+        /// The timestamp's version.
+        timestamp: u64,
+    },
+}
+
+/// What a published repository serves now, as `refresh` reads it.
+struct Served {
+    root: Vec<u8>,
+    timestamp_version: u64,
+    snapshot_version: u64,
+    snapshot: Vec<u8>,
+    targets_version: Option<u64>,
+    snapshot_expires: Option<i64>,
+}
+
+impl Served {
+    fn read(out: &Path) -> Option<Served> {
+        let metadata = out.join("metadata");
+        let timestamp: Value =
+            serde_json::from_slice(&std::fs::read(metadata.join("timestamp.json")).ok()?).ok()?;
+        let snapshot_version = timestamp["signed"]["meta"]["snapshot.json"]["version"].as_u64()?;
+        let snapshot =
+            std::fs::read(metadata.join(format!("{snapshot_version}.snapshot.json"))).ok()?;
+        let parsed: Value = serde_json::from_slice(&snapshot).ok()?;
+        Some(Served {
+            root: std::fs::read(metadata.join("root.json")).ok()?,
+            timestamp_version: timestamp["signed"]["version"].as_u64()?,
+            snapshot_version,
+            targets_version: parsed["signed"]["meta"]["targets.json"]["version"].as_u64(),
+            snapshot_expires: parsed["signed"]["expires"].as_str().and_then(tuf::time::parse),
+            snapshot,
+        })
+    }
+}
+
+/// What signs for `role`, one of the online roles: a key of `root`'s for
+/// it that `signers` holds.
+fn online_signer<'a>(
+    root: &Loaded<Root>,
+    keys: &'a [KeyFile],
+    signers: &'a Signers,
+    role: &str,
+) -> Result<Box<dyn Signer + 'a>, String> {
+    let ids = &root.signed.signed.roles[role].keyids;
+    keys.iter()
+        .filter(|k| ids.contains(&k.key.id()))
+        .find_map(|k| signers.for_key(k))
+        .ok_or(format!("nothing here can sign for {role}: give the online key's file"))
 }
 
 /// Reads `out` with the client, from its first root, as a new computer
 /// would, and finds every target there.
 fn check_served(out: &Path, targets: &Targets) -> Result<(), String> {
-    let client = out.with_extension("check");
-    let _ = std::fs::remove_dir_all(&client);
     let first = std::fs::read(out.join("metadata/1.root.json")).map_err(|e| e.to_string())?;
-    tuf::init(&client, &first).map_err(|e| e.to_string())?;
     let absolute = std::fs::canonicalize(out).map_err(|e| format!("{}: {e}", out.display()))?;
     let base =
         tuf::Url::parse(&format!("file://{}/", absolute.display())).map_err(|e| e.to_string())?;
+    check_at(&base, &first, targets)
+}
+
+/// Reads the repository at `base` with the client, from the root `first`,
+/// in a folder of its own, and fetches every target `targets` lists.
+fn check_at(base: &tuf::Url, first: &[u8], targets: &Targets) -> Result<(), String> {
+    let client = std::env::temp_dir().join(format!("catalog-repo-check-{}", std::process::id()));
+    let client = client.as_path();
+    let _ = std::fs::remove_dir_all(client);
+    tuf::init(client, first).map_err(|e| e.to_string())?;
     let metadata = base.resolve("metadata/").map_err(|e| e.to_string())?;
     let served = base.resolve("targets/").map_err(|e| e.to_string())?;
     let result = (|| {
         let mut updater =
-            tuf::Updater::new(&client, &metadata, Some(&served)).map_err(|e| e.to_string())?;
-        updater.refresh().map_err(|e| format!("the client refuses what was published: {e}"))?;
+            tuf::Updater::new(client, &metadata, Some(&served)).map_err(|e| e.to_string())?;
+        updater.refresh().map_err(|e| format!("the client refuses {base}: {e}"))?;
         for path in targets.targets.keys() {
             let target = updater
                 .target(path)
@@ -448,7 +573,7 @@ fn check_served(out: &Path, targets: &Targets) -> Result<(), String> {
         }
         Ok(())
     })();
-    let _ = std::fs::remove_dir_all(&client);
+    let _ = std::fs::remove_dir_all(client);
     result
 }
 
@@ -560,6 +685,15 @@ mod tests {
         assert!(out.join("metadata/1.targets.json").is_file());
         assert!(out.join("metadata/2.snapshot.json").is_file());
 
+        // The server's refresh: a timestamp alone while the snapshot is
+        // good for long enough, and everything again once it is not.
+        assert_eq!(repo.refresh(&store, &out, &online_only, (7, 1)), Ok(Refreshed::Timestamp(3)));
+        assert_eq!(repo.publish(&store, &out, &online_only, (1, 1)), Ok((3, 4)));
+        assert_eq!(
+            repo.refresh(&store, &out, &online_only, (7, 1)),
+            Ok(Refreshed::All { snapshot: 4, timestamp: 5 })
+        );
+
         // A second root, signed by the same YubiKey, and a batch that
         // takes a bundle out, still read back from the first root.
         assert_eq!(repo.sign_root(&both, 365), Ok(2));
@@ -567,10 +701,16 @@ mod tests {
         let changes = repo.changes(&[], &gone).unwrap();
         assert_eq!(changes.lines(), vec!["- bundles/org.dukovo.bat-0.25.0.dkv"]);
         assert_eq!(repo.sign_targets(&changes, &[], &store, &both, 182), Ok(2));
-        assert_eq!(repo.publish(&store, &out, &online_only, (7, 1)), Ok((3, 3)));
+        // A new root or targets: refresh signs everything again.
+        assert_eq!(
+            repo.refresh(&store, &out, &online_only, (7, 1)),
+            Ok(Refreshed::All { snapshot: 5, timestamp: 6 })
+        );
         assert!(out.join("metadata/2.root.json").is_file());
         let targets = repo.targets().unwrap().unwrap();
         assert_eq!(targets.signed.signed.targets.len(), 1);
+        let served = std::fs::canonicalize(&out).unwrap();
+        assert_eq!(repo.check_url(&format!("file://{}", served.display())), Ok(1));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }
