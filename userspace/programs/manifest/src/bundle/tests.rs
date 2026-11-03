@@ -572,6 +572,42 @@ fn a_line_and_the_files_that_choose_it() {
 }
 
 #[test]
+fn add_ons_for_each_person_of_a_line() {
+    let commands = ",\n  \"commands\": [{ \"name\": \"app\", \"program\": \"app\", \"runs_with\": \"your-access\" }]";
+    let add_ons =
+        ",\n  \"add_ons\": { \"variables\": [\"NPM_CONFIG_PREFIX\"], \"commands\": \"bin\" }";
+    let text = with(&format!(",\n  \"line\": \"1\"{add_ons}{commands}"));
+    let manifest = from_json(&text).unwrap();
+    let got = manifest.add_ons.unwrap();
+    assert_eq!(got.variables, [VariableName("NPM_CONFIG_PREFIX".into())]);
+    assert_eq!(got.commands.0, "bin");
+    // Kept for each line, and installed by a command with your access.
+    assert_eq!(
+        error(&with(&format!("{add_ons}{commands}"))),
+        "line 12: add_ons are kept for each line, so they need a line"
+    );
+    assert_eq!(
+        error(&with(&format!(",\n  \"line\": \"1\"{add_ons}"))),
+        "line 13: add_ons are installed by a command that runs with your access, and none does"
+    );
+    // Variables the system sets are not a bundle's to name.
+    for bad in ["PATH", "LD_PRELOAD", "LC_ALL", "BUNDLE_LINES", "npm_prefix", "1A", ""] {
+        let text = with(&format!(
+            ",\n  \"line\": \"1\",\n  \"add_ons\": {{ \"variables\": [\"{bad}\"], \"commands\": \"bin\" }}{commands}"
+        ));
+        assert!(!errors(&text).is_empty(), "{bad}");
+    }
+    let none = ",\n  \"line\": \"1\",\n  \"add_ons\": { \"variables\": [], \"commands\": \"bin\" }";
+    assert!(error(&with(&format!("{none}{commands}"))).contains("add_ons names 1 to 4 variables"));
+    for bad in ["../bin", "/bin", "a/b/c/d", "bin/", "."] {
+        let text = with(&format!(
+            ",\n  \"line\": \"1\",\n  \"add_ons\": {{ \"variables\": [\"A\"], \"commands\": \"{bad}\" }}{commands}"
+        ));
+        assert!(error(&text).contains("is not a folder in another"), "{bad}");
+    }
+}
+
+#[test]
 fn versions_lines_and_full_ids() {
     assert!(in_line("22.11.0", "22"));
     assert!(in_line("22", "22"));

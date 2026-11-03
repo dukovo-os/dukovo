@@ -383,6 +383,7 @@ exec sleep 100000
                \"restart\": \"on-failure\"}",
         provides: "",
         line: "",
+        add_ons: "",
     },
     lighthouse("1.0.0", lighthouse_answers!("1.0.0")),
     lighthouse("1.1.0", lighthouse_answers!("1.1.0")),
@@ -409,6 +410,7 @@ const fn lighthouse(version: &'static str, script: &'static str) -> crate::bundl
                    \"restart\": \"on-failure\", \"health\": {\"socket\": \"ready\"}}",
         provides: "{\"socket\": \"ready\", \"to\": \"system\"}",
         line: "",
+        add_ons: "",
     }
 }
 
@@ -424,6 +426,7 @@ const UPDATE_BUNDLES: [crate::bundles::TestBundle; 4] = [
         services: "",
         provides: "",
         line: "",
+        add_ons: "",
     },
     crate::bundles::TestBundle {
         id: "org.example.diary",
@@ -433,6 +436,7 @@ const UPDATE_BUNDLES: [crate::bundles::TestBundle; 4] = [
         services: "",
         provides: "",
         line: "",
+        add_ons: "",
     },
     crate::bundles::TestBundle {
         id: "org.example.fetcher",
@@ -442,6 +446,7 @@ const UPDATE_BUNDLES: [crate::bundles::TestBundle; 4] = [
         services: "",
         provides: "",
         line: "",
+        add_ons: "",
     },
     crate::bundles::TestBundle {
         id: "org.example.fetcher",
@@ -451,6 +456,7 @@ const UPDATE_BUNDLES: [crate::bundles::TestBundle; 4] = [
         services: "",
         provides: "",
         line: "",
+        add_ons: "",
     },
 ];
 
@@ -468,8 +474,16 @@ const fn tide(
         services: "",
         provides: "",
         line,
+        add_ons: TIDEPM,
     }
 }
+
+/// tidepm, tide's command that runs with your access: `tidepm add NAME`
+/// adds the command NAME to its line's add-ons, which says the tide it
+/// runs on (ADR 0388).
+const TIDEPM: &str = "#!/bin/sh\nmkdir -p \"$TIDE_HOME/bin\" || exit 1\nprintf '#!/bin/sh\\necho \
+                      \"%s, on $(tide)\"\\n' \"$2\" > \"$TIDE_HOME/bin/$2\"\nchmod 755 \
+                      \"$TIDE_HOME/bin/$2\"\necho \"added $2 to $TIDE_HOME\"\n";
 
 /// The bundles of a [`LINES_SITE`] disk: tide's lines 1, in 1.0.0 and
 /// 1.1.0, and 2, in 2.0.0, each of which says its version.

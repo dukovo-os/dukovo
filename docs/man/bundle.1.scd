@@ -351,6 +351,32 @@ you run, the one that runs is:
 . your default (*bundle default*), then everyone's;
 . the newest line installed.
 
+The line an add-on was added with comes before all of these, while the
+add-on runs (ADD-ONS).
+
+# ADD-ONS
+
+A line whose manifest has *add_ons*, such as Node.js 22, keeps what its
+package manager installs for each person in a folder of theirs,
+_~/applications/add-ons/id@line_ (ADR 0388): its commands that run with
+your access find the folder in the variables the manifest names, such as
+*NPM_CONFIG_PREFIX*, so *npm install -g* installs there with no
+*elevate*. When the folder of the add-ons' commands changed, as a run
+of such a command ends, *bundled*(8) links each of them beside your
+commands, where they are on your *PATH* until they go. Through
+*elevate*, an administrator's add-ons are everyone's, in
+_/applications/add-ons/id@line_.
+
+An add-on's command runs with your access, as a program of yours, on
+the line it was added with: what it runs of the line's commands is of
+that line, whichever runs elsewhere, as *BUNDLE_LINES* says. A command
+the system has, or a bundle adds, comes before an add-on's of the same
+name, and none named as a system command is linked.
+
+The add-ons are the line's data: *bundle remove* takes their commands
+away, and with *--purge* the folder too; with *--keep-data* they stay,
+and come back when the line is installed again.
+
 # PERMISSIONS
 
 What else a program gets is what you allow (ADR 0224), of the
@@ -484,6 +510,10 @@ _/applications/.previous-id_, _~/applications/.previous-id_
 _.nvmrc_, _.node-version_, ...
 	A project's file that says which line runs a command, as a bundle's
 	*line_files* name them (LINES).
+
+_~/applications/add-ons/id@line_, _/applications/add-ons/id@line_
+	What a line's package manager installed for you, or for everyone
+	(ADD-ONS).
 
 _/system/state/grants/uid_
 	What each person said of each bundle's permissions, which only

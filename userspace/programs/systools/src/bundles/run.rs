@@ -42,12 +42,14 @@ use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-use manifest::bundle::{Arch, Manifest, Need, Request as Asked, RunsWith, Wish};
+use manifest::bundle::{
+    AddOns, Arch, BUNDLE_LINES, Manifest, Need, Request as Asked, RunsWith, Wish,
+};
 use manifest::service::Ports;
 
 use super::folder::{Dir, fd_stat};
 use super::grants::{self, Grant, Step, YOUR_ACCESS};
-use super::protocol::{Answer, Find, Found, Lines, Request};
+use super::protocol::{AddOn, Answer, Find, Found, Lines, Request};
 use super::signed::{self, LIST_MAX, MANIFEST_MAX, SIGNATURE_MAX};
 use super::sums::{self, Entry, LIST, SIGNATURE};
 use super::{MANIFEST, answer, ask};
@@ -102,8 +104,10 @@ const SERIAL: &[&str] = &["ttyACM", "ttyUSB"];
 /// `bundle run [--command NAME] ID [ARGUMENT...]`.
 pub fn run(id: &str, command: Option<&str>, args: Vec<OsString>) -> Result<i32, Fail> {
     manifest::bundle::check_full_id(id).map_err(util::usage)?;
-    let (found, said) = locate(&Find::Id(id.into()))?;
-    start(&found, &said, command, args)
+    match locate(&Find::Id(id.into()))? {
+        Target::Bundle(found, said) => start(&found, &said, command, args),
+        Target::AddOn(_) => Err(fail("bundled answered out of turn".into())),
+    }
 }
 
 /// A bundle's command, run as `name` through its link (`notes` for
@@ -112,7 +116,10 @@ pub fn command(name: &str, args: Vec<OsString>) -> i32 {
     let result = manifest::bundle::check_command_name(name)
         .map_err(fail)
         .and_then(|()| locate(&Find::Command(name.into())))
-        .and_then(|(found, said)| start(&found, &said, Some(name), args));
+        .and_then(|target| match target {
+            Target::Bundle(found, said) => start(&found, &said, Some(name), args),
+            Target::AddOn(add_on) => run_add_on(&add_on, name, args),
+        });
     match result {
         Ok(code) => code,
         Err(failure) => {
@@ -132,13 +139,31 @@ pub enum Why {
     Everyone,
     /// It is the newest installed.
     Newest,
+    /// The add-on that runs it was added with it (ADR 0388).
+    AddOn,
+}
+
+/// The lines the add-on commands running now were added with, as
+/// [`BUNDLE_LINES`] names them, between spaces.
+#[must_use]
+pub fn pins() -> String {
+    std::env::var(BUNDLE_LINES).unwrap_or_default()
 }
 
 /// The line of `lines` to run in the folder `here`, and why (ADR 0387):
-/// the one the nearest project file asks for, then the person's default,
-/// everyone's, and the newest. A project file that asks for a version no
-/// line installed is or holds stops it.
-pub fn pick(lines: &Lines, here: &Path) -> Result<(String, Why), String> {
+/// the one an add-on that runs it was added with, as `pins` names it
+/// (ADR 0388), then the one the nearest project file asks for, then the
+/// person's default, everyone's, and the newest. A project file that asks
+/// for a version no line installed is or holds stops it.
+pub fn pick(lines: &Lines, here: &Path, pins: &str) -> Result<(String, Why), String> {
+    for pin in pins.split_whitespace() {
+        if let Ok((id, Some(line))) = manifest::bundle::split_full_id(pin)
+            && id == lines.id
+            && lines.lines.iter().any(|l| l == line)
+        {
+            return Ok((line.into(), Why::AddOn));
+        }
+    }
     if let Some((path, text)) = project_file(&lines.files, here) {
         let all: Vec<&str> = lines.lines.iter().map(String::as_str).collect();
         match manifest::bundle::wished_line(&text, &all) {
@@ -186,27 +211,43 @@ fn project_file(files: &[String], here: &Path) -> Option<(PathBuf, String)> {
     None
 }
 
+/// What `run` runs.
+enum Target {
+    /// A bundle's program, and what the person said of its permissions.
+    Bundle(Found, Vec<Grant>),
+    /// A command of a line's add-ons (ADR 0388).
+    AddOn(AddOn),
+}
+
 /// Asks bundled which bundle `find` names: it, and what the person
 /// said of its permissions. When it names several lines of an ID, the
-/// one [`pick`] picks in the working folder (ADR 0387).
-fn locate(find: &Find) -> Result<(Found, Vec<Grant>), Fail> {
+/// one [`pick`] picks in the working folder (ADR 0387); a command no
+/// bundle adds may be an add-on's (ADR 0388).
+fn locate(find: &Find) -> Result<Target, Fail> {
     let (_stream, mut input) = ask(&Request::Run { find: find.clone() }, None).map_err(fail)?;
     let mut found = None;
     let mut lines = None;
+    let mut add_on = None;
     let mut said = Vec::new();
+    let command = matches!(find, Find::Command(_));
     loop {
+        let first = found.is_none() && lines.is_none() && add_on.is_none();
         match answer(&mut input)? {
-            Answer::Found(f) if found.is_none() && lines.is_none() => found = Some(f),
-            Answer::Lines(l) if found.is_none() && lines.is_none() => lines = Some(l),
+            Answer::Found(f) if first => found = Some(f),
+            Answer::Lines(l) if first => lines = Some(l),
+            Answer::AddOn(a) if first && command => add_on = Some(a),
             Answer::Granted(g) if found.is_some() => said.push(g),
             Answer::Ok(_) => break,
             Answer::Error(why) => return Err(fail(why)),
             _ => return Err(fail("bundled answered out of turn".into())),
         }
     }
+    if let Some(add_on) = add_on {
+        return Ok(Target::AddOn(add_on));
+    }
     if let Some(lines) = lines {
         let here = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
-        let (line, _) = pick(&lines, &here).map_err(fail)?;
+        let (line, _) = pick(&lines, &here, &pins()).map_err(fail)?;
         let full = format!("{}@{line}", lines.id);
         if find == &Find::Id(full.clone()) {
             return Err(fail("bundled answered out of turn".into()));
@@ -221,7 +262,105 @@ fn locate(find: &Find) -> Result<(Found, Vec<Grant>), Fail> {
     if !asked {
         return Err(fail("bundled found another bundle than the one asked for".into()));
     }
-    Ok((found, said))
+    Ok(Target::Bundle(found, said))
+}
+
+/// The most lines [`BUNDLE_LINES`] names.
+const PINS_MAX: usize = 16;
+
+/// Runs `add_on`, a command of a line's add-ons, as `name` with `args`
+/// (ADR 0388): with the person's access, as a program of theirs, with its
+/// line first in [`BUNDLE_LINES`], so that the line's commands it runs
+/// are of the line it was added with.
+fn run_add_on(add_on: &AddOn, name: &str, args: Vec<OsString>) -> Result<i32, Fail> {
+    use std::os::unix::process::CommandExt;
+    let base = super::registry::base_id(&add_on.id);
+    let now = pins();
+    let others = now.split_whitespace().filter(|pin| super::registry::base_id(pin) != base);
+    let pins: Vec<&str> =
+        std::iter::once(add_on.id.as_str()).chain(others).take(PINS_MAX).collect();
+    let error = std::process::Command::new(&add_on.path)
+        .arg0(name)
+        .args(args)
+        .env(BUNDLE_LINES, pins.join(" "))
+        .exec();
+    Err(util::failed(&add_on.path, error))
+}
+
+/// Runs `command`, a command of `found`'s line that runs with your
+/// access, with the line's add-ons folder in the variables `add_ons`
+/// names, made if it is not there (ADR 0388). When the folder of their
+/// commands changed, bundled links them beside the person's commands.
+/// Its exit status, as a shell gives it.
+fn with_add_ons(
+    found: &Found,
+    add_ons: &AddOns,
+    mut command: std::process::Command,
+) -> Result<i32, Fail> {
+    use std::os::unix::process::ExitStatusExt;
+    // SAFETY: getuid has no failure and touches no memory.
+    let uid = unsafe { libc::getuid() };
+    let folder = add_ons_folder(&found.id, uid).map_err(fail)?;
+    for variable in &add_ons.variables {
+        command.env(&variable.0, &folder);
+    }
+    let commands = format!("{folder}/{}", add_ons.commands);
+    let before = stamp(&commands);
+    let program = command.get_program().to_string_lossy().into_owned();
+    let mut child = command.spawn().map_err(|e| util::failed(&program, e))?;
+    // As system(3): the terminal's Ctrl+C is the program's to take.
+    // SAFETY: setting dispositions touches no memory.
+    let old = unsafe {
+        (libc::signal(libc::SIGINT, libc::SIG_IGN), libc::signal(libc::SIGQUIT, libc::SIG_IGN))
+    };
+    let status = child.wait();
+    // SAFETY: as above.
+    unsafe {
+        libc::signal(libc::SIGINT, old.0);
+        libc::signal(libc::SIGQUIT, old.1);
+    }
+    let status = status.map_err(|e| util::failed(&program, e))?;
+    if stamp(&commands) != before
+        && let Err(why) = link_add_ons()
+    {
+        eprintln!("bundle: {}: the commands of its add-ons are not linked: {why}", found.id);
+    }
+    Ok(status.code().or_else(|| status.signal().map(|s| 128 + s)).unwrap_or(1))
+}
+
+/// The add-ons folder of line `id` for `uid`, made theirs if it is not
+/// there: `~/applications/add-ons/ID`, or for an administrator,
+/// everyone's in `/applications` (ADR 0388).
+fn add_ons_folder(id: &str, uid: u32) -> Result<String, String> {
+    let applications = if uid == 0 {
+        bundled::EVERYONE.to_string()
+    } else {
+        let user = bundled::account(uid)?;
+        format!("{}/{}", user.home.trim_end_matches('/'), bundled::APPLICATIONS)
+    };
+    let add_ons = format!("{applications}/{}", bundled::ADD_ONS);
+    let folder = format!("{add_ons}/{id}");
+    for path in [&applications, &add_ons, &folder] {
+        folder_of(path, uid, 0o755)?;
+    }
+    Ok(folder)
+}
+
+/// When the folder at `path` last changed, and which it is; none if
+/// there is none.
+fn stamp(path: &str) -> Option<(i64, i64, u64)> {
+    use std::os::unix::fs::MetadataExt;
+    std::fs::symlink_metadata(path).ok().map(|m| (m.mtime(), m.mtime_nsec(), m.ino()))
+}
+
+/// Has bundled link the commands of the person's add-ons anew.
+fn link_add_ons() -> Result<(), String> {
+    let (_stream, mut input) = ask(&Request::AddOns, None)?;
+    match answer(&mut input).map_err(|f| f.message)? {
+        Answer::Ok(_) => Ok(()),
+        Answer::Error(why) => Err(why),
+        _ => Err("bundled answered out of turn".into()),
+    }
 }
 
 /// Asks bundled to ask the person whether the bundle `found` names may
@@ -531,8 +670,14 @@ fn caller_environment() -> Vec<(String, String)> {
 /// Makes the folder `path` if it is not there, mode 0700, and checks that
 /// it is a folder of `uid`'s, not a link.
 fn own_folder(path: &str, uid: u32) -> Result<(), String> {
+    folder_of(path, uid, 0o700)
+}
+
+/// Makes the folder at `path` with `mode` if it is not there, and checks
+/// that it is a folder of `uid`'s.
+fn folder_of(path: &str, uid: u32, mode: u32) -> Result<(), String> {
     use std::os::unix::fs::{DirBuilderExt, MetadataExt};
-    match std::fs::DirBuilder::new().mode(0o700).create(path) {
+    match std::fs::DirBuilder::new().mode(mode).create(path) {
         Err(e) if e.kind() != io::ErrorKind::AlreadyExists => {
             return Err(format!("{path}: {}", util::strip_os_error(&e)));
         }
@@ -575,7 +720,12 @@ fn start(
         // As a program of the system's: with all the caller holds.
         use std::os::unix::process::CommandExt;
         drop(program);
-        let error = std::process::Command::new(&path).arg0(&chosen.arg0).args(args).exec();
+        let mut command = std::process::Command::new(&path);
+        command.arg0(&chosen.arg0).args(args);
+        if let Some(add_ons) = &sealed.manifest.add_ons {
+            return with_add_ons(found, add_ons, command);
+        }
+        let error = command.exec();
         return Err(util::failed(&path, error));
     }
     let given = given(&sealed.manifest, &chosen.program, said, |name| ask_person(found, name))
@@ -1076,7 +1226,7 @@ mod tests {
             mine: None,
             everyone: None,
         };
-        let picked = |lines: &Lines| pick(lines, &deep);
+        let picked = |lines: &Lines| pick(lines, &deep, "");
         // No file anywhere up: the newest, then everyone's default, then
         // the person's own.
         assert_eq!(picked(&lines), Ok(("22".into(), Why::Newest)));
@@ -1101,6 +1251,12 @@ mod tests {
         let why = picked(&lines).unwrap_err();
         assert!(why.starts_with("this project uses org.nodejs.node 18, as "), "{why}");
         assert!(why.contains("parts/.nvmrc says, which is not installed"), "{why}");
+        // The line an add-on was added with comes first, even there.
+        let pinned = |pins: &str| pick(&lines, &deep, pins);
+        assert_eq!(pinned("org.example.app@1 org.nodejs.node@22"), Ok(("22".into(), Why::AddOn)));
+        // One not installed, or of another ID, is passed over.
+        assert!(pinned("org.nodejs.node@24").is_err());
+        assert!(pinned("org.nodejs.nodejs@22 node@22").is_err());
         // A bundle whose lines name no files reads none.
         lines.files.clear();
         assert_eq!(picked(&lines), Ok(("20".into(), Why::Everyone)));

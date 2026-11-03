@@ -92,6 +92,19 @@ windows (1.1), *runtime*, the Linux layer (1.3), and *plugins* (1.10).
 	working folder up chooses the line that runs it (*bundle*(1), LINES).
 	Needs *line*.
 
+*add_ons* = { *variables* = [ _"NAME"_, ... ], *commands* = _"folder"_ }
+	Where the line's package manager installs what each person adds,
+	as *npm install -g* does (*bundle*(1), ADD-ONS): a folder of
+	theirs for the line, _~/applications/add-ons/id@line_, which each
+	command of the line that runs with your access finds in the
+	environment variables *variables* names, such as
+	*["NPM_CONFIG_PREFIX"]*: 1 to 4 names of capitals, digits and
+	underscores, none the system sets, such as *PATH*, *HOME* and those
+	that start with *LD_* or *LC_*.
+	*commands* is the folder in it where the package manager puts
+	commands, such as *"bin"*: one to three names between */*. Needs
+	*line*, and a command that runs with your access.
+
 *publisher* = { *name* = _"text"_, *url* = _"https://..."_ }
 	Who publishes it, and their web site. The key comes from the
 	signature, never from the manifest. *name* is required.

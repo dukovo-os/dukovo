@@ -86,6 +86,9 @@ pub enum Request {
     /// Makes `line` the default line of `name`'s ID, the asker's or
     /// everyone's, or forgets it with none.
     Default { name: String, line: Option<String>, everyone: bool },
+    /// Links the commands of the asker's add-ons anew: their own, or
+    /// everyone's for an administrator (ADR 0388).
+    AddOns,
 }
 
 /// Which bundle `run` asks for.
@@ -224,6 +227,7 @@ impl Request {
                 line.as_deref().unwrap_or("-"),
                 whose(*everyone)
             ),
+            Request::AddOns => "add-ons\n".into(),
         }
     }
 
@@ -259,6 +263,7 @@ impl Request {
                 words: words.iter().map(|w| checked_word(w)).collect::<Result<_, _>>()?,
             }),
             ["catalogs"] => Ok(Request::Catalogs),
+            ["add-ons"] => Ok(Request::AddOns),
             ["lines", name] => Ok(Request::Lines { name: checked_name(name)? }),
             ["default", name, line, place] => Ok(Request::Default {
                 name: checked_name(name)?,
@@ -354,6 +359,15 @@ pub struct Found {
     pub list: String,
 }
 
+/// A command of a line's add-ons, as `run` finds it (ADR 0388): the
+/// add-ons' place, the line, and the command's path.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AddOn {
+    pub place: Place,
+    pub id: String,
+    pub path: String,
+}
+
 /// The lines of an ID installed for the asker or for everyone, to choose
 /// the one to run from (ADR 0387).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -420,6 +434,8 @@ pub enum Answer {
     Found(Found),
     /// The lines to choose the bundle to run from.
     Lines(Lines),
+    /// The add-on command to run.
+    AddOn(AddOn),
     /// What the asker said of one of its permissions.
     Granted(Grant),
     /// A permission the person took away, on a `watch` connection.
@@ -478,6 +494,7 @@ impl Answer {
                 l.everyone.as_deref().unwrap_or("-")
             )
             .into_bytes(),
+            Answer::AddOn(a) => format!("add-on\t{}\t{}\t{}\n", a.place, a.id, a.path).into_bytes(),
             Answer::Granted(g) => format!(
                 "granted\t{}\t{}\t{}\t{}\t{}\n",
                 g.permission,
@@ -599,6 +616,20 @@ impl Answer {
                 files,
                 mine: line(mine)?,
                 everyone: line(everyone)?,
+            })));
+        }
+        if let ["add-on", at, id, path] = words.as_slice() {
+            let path_ok = path.starts_with('/')
+                && path.len() <= 4096
+                && path.split('/').skip(1).all(|p| !p.is_empty() && p != "." && p != "..")
+                && !path.chars().any(char::is_control);
+            if !path_ok {
+                return Err(bad("an add-on's path"));
+            }
+            return Ok(Some(Answer::AddOn(AddOn {
+                place: place(at)?,
+                id: checked_id(id).map_err(|why| bad(&why))?,
+                path: (*path).into(),
             })));
         }
         if let ["found", at, id, key, list] = words.as_slice() {
@@ -763,6 +794,7 @@ mod tests {
             Request::Lines { name: "org.nodejs.node".into() },
             Request::Default { name: "node".into(), line: Some("22".into()), everyone: false },
             Request::Default { name: "org.nodejs.node".into(), line: None, everyone: true },
+            Request::AddOns,
         ] {
             let line = request.line();
             assert!(line.ends_with('\n') && line.matches('\n').count() == 1);
@@ -834,6 +866,11 @@ mod tests {
                 files: Vec::new(),
                 mine: None,
                 everyone: Some("1".into()),
+            }),
+            Answer::AddOn(AddOn {
+                place: Place::User(1000),
+                id: "org.nodejs.node@22".into(),
+                path: "/users/alice/applications/add-ons/org.nodejs.node@22/bin/tsc".into(),
             }),
             Answer::Found(Found {
                 place: Place::Everyone,
@@ -932,6 +969,9 @@ mod tests {
             b"revoked\tfiles.everything\n",
             b"available\t1000\torg.example.notes\t1\t2\tdukovo\tmaybe\n",
             b"event\t1\t1000\tNotes\tupdated\t-\t-\t1\t-\n",
+            b"add-on\t1000\torg.nodejs.node@22\tbin/tsc\n",
+            b"add-on\t1000\torg.nodejs.node@22\t/users/alice/../bob/tsc\n",
+            b"add-on\t1000\tnode@22\t/users/alice/tsc\n",
         ] {
             assert!(Answer::read(&mut io::Cursor::new(bad.to_vec())).is_err(), "{bad:?}");
         }

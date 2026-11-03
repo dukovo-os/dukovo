@@ -135,6 +135,10 @@ pub struct TestBundle {
     /// Its manifest's `line`, with `.NAME-version` as the file a project
     /// chooses it with (ADR 0387); empty for none.
     pub line: &'static str,
+    /// The script of `NAMEpm`, a second command, which runs with your
+    /// access and adds add-ons to the folder `NAME_HOME` names (ADR
+    /// 0388); empty for none.
+    pub add_ons: &'static str,
 }
 
 /// Packs `bundle` into out/test/bundles, signed by the build key, and
@@ -160,6 +164,40 @@ pub fn pack_test(ctx: &Ctx, bundle: &TestBundle) -> Result<PathBuf> {
             ),
         )
     };
+    let manifest = if bundle.add_ons.is_empty() {
+        manifest
+    } else {
+        let quote = |text: &str| format!("\"{text}\"");
+        let path = |program: &str| format!("{{ \"path\": {{ \"x86_64\": \"bin/{program}\" }} }}");
+        let pm = format!("{name}pm");
+        manifest
+            .replace(
+                &format!("    {}: {}\n  }},", quote(name), path(name)),
+                &format!(
+                    "    {}: {},\n    {}: {}\n  }},",
+                    quote(name),
+                    path(name),
+                    quote(&pm),
+                    path(&pm)
+                ),
+            )
+            .replace(
+                "\"runs_with\": \"sandbox\" }\n  ],",
+                &format!(
+                    "\"runs_with\": \"sandbox\" }},\n    {{ \"name\": {pm}, \"program\": {pm}, \
+                     \"runs_with\": \"your-access\" }}\n  ],",
+                    pm = quote(&pm)
+                ),
+            )
+            .replace(
+                "  \"permissions\":",
+                &format!(
+                    "  \"add_ons\": {{ \"variables\": [\"{}_HOME\"], \"commands\": \"bin\" }},\n  \
+                     \"permissions\":",
+                    name.to_uppercase()
+                ),
+            )
+    };
     let manifest = if bundle.services.is_empty() {
         manifest
     } else {
@@ -180,10 +218,14 @@ pub fn pack_test(ctx: &Ctx, bundle: &TestBundle) -> Result<PathBuf> {
         .map_err(|why| Error::new(format!("test bundle {}: {why}", bundle.id)))?;
     std::fs::write(folder.join(dkv::MANIFEST), &manifest)
         .context(|| format!("writing {}", folder.join(dkv::MANIFEST).display()))?;
-    let program = folder.join("bin").join(name);
-    std::fs::write(&program, bundle.script).context(|| format!("writing {}", program.display()))?;
-    std::fs::set_permissions(&program, std::os::unix::fs::PermissionsExt::from_mode(0o755))
-        .context(|| format!("writing {}", program.display()))?;
+    let pm = format!("{name}pm");
+    let programs = [(name, bundle.script), (pm.as_str(), bundle.add_ons)];
+    for (program, script) in programs.into_iter().filter(|(_, script)| !script.is_empty()) {
+        let program = folder.join("bin").join(program);
+        std::fs::write(&program, script).context(|| format!("writing {}", program.display()))?;
+        std::fs::set_permissions(&program, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+            .context(|| format!("writing {}", program.display()))?;
+    }
     let key = signing_key(ctx)?;
     dkv::signed::sign_folder(&folder, &key, 0, &crate::licenses::rfc3339(0))
         .map_err(|why| Error::new(format!("signing test bundle {}: {why}", bundle.id)))?;
