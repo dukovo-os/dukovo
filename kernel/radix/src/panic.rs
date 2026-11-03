@@ -272,6 +272,7 @@ fn panic(info: &PanicInfo<'_>) -> ! {
     }
     crashlog::set_ending(Ending::Panicked);
     usb::dbc::flush();
+    crate::uart::flush();
 
     let settings = settings();
     let planned_crash = settings.selftest == Some("crash-reboot");

@@ -149,6 +149,7 @@ pub const KERNEL_LIBRARIES: &[&str] = &[
     "radix-sync",
     "radix-tty",
     "radix-uacpi",
+    "radix-uart",
     "radix-ucsi",
     "radix-udf",
     "radix-usb",
