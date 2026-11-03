@@ -28,6 +28,7 @@ pub mod hash;
 pub mod ntlm;
 pub mod request;
 pub mod signins;
+pub mod sshd_config;
 #[cfg(test)]
 mod tests;
 

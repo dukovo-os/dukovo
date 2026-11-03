@@ -31,7 +31,10 @@
 //! end-shares\0
 //! nfs-worker\01000\0
 //! ssh-key\0alice\0000000b7373682d6564...\0
-//! ssh-session\0192.0.2.7 51234 192.0.2.1 22\0alice\000000020...\0000000b...\0xterm\0shell\0\0LANG=C.UTF-8\0
+//! ssh-password\0192.0.2.7 51234 192.0.2.1 22\0alice\0secret\0
+//! ssh-session\0192.0.2.7 51234 192.0.2.1 22\0alice\0key\000000020...\0000000b...\0xterm\0shell\0\0LANG=C.UTF-8\0
+//! ssh-session\0192.0.2.7 51234 192.0.2.1 22\0alice\0ticket\09f86d081...\0\0\0subsystem\0sftp\0
+//! ssh-ended\09f86d081...\0
 //! ```
 //!
 //! An answer is `ok`, maybe with words after it, or `no` and why, then a
@@ -46,7 +49,10 @@
 //! An `ssh-session` request (ADR 0347) comes with a terminal, or with
 //! the three descriptors the session is to have as its 0, 1 and 2, and
 //! is answered as a `session` request is, its connection then waiting
-//! for the session's end.
+//! for the session's end. It shows that the person signed in with what
+//! the client signed with their key, or with the ticket authd answered
+//! an `ssh-password` request with (ADR 0348), which holds for the
+//! connection that asked until it sends `ssh-ended`.
 //!
 //! An `elevate` request (ADR 0219) comes with the three descriptors the
 //! command is to have as its 0, 1 and 2, and a pipe's read end, sent
@@ -340,32 +346,84 @@ pub enum Request {
         /// name, then its numbers.
         key: Vec<u8>,
     },
+    /// Whether `password` is `name`'s, for an SSH client at `connection`
+    /// (ADR 0348): sshd(8)'s, which runs as root, to ask, once
+    /// sshd_config(5) lets passwords sign in. The answer to a right one is
+    /// `ok` and a ticket, in hexadecimal, which starts the person's
+    /// sessions on that connection ([`SshProof::Ticket`]) until sshd says
+    /// [`Request::SshEnded`]; a wrong one is answered as `check`'s is,
+    /// once the next try may be made, counted for the client's address.
+    SshPassword {
+        /// The client's address and port, then this machine's, as
+        /// `SSH_CONNECTION` says them: `192.0.2.7 51234 192.0.2.1 22`.
+        connection: String,
+        /// The account.
+        name: String,
+        /// The password the client sent.
+        password: Vec<u8>,
+    },
     /// Sign `name` in over SSH and start their session (ADR 0347):
-    /// sshd(8)'s, which runs as root, to ask. authd checks the
-    /// `signature` over `signed` itself, with the key `signed` names, and
-    /// that the key is in the person's `~/.ssh/authorized_keys`; then it
-    /// starts the session, as a `session` request's, with the descriptors
-    /// sent: a terminal, or three for its 0, 1 and 2.
+    /// sshd(8)'s, which runs as root, to ask. authd checks `proof`
+    /// itself: the signature with the key the signed request names, and
+    /// that the key is in the person's `~/.ssh/authorized_keys`; or that
+    /// it gave the ticket to this connection for `name`. Then it starts
+    /// the session, as a `session` request's, with the descriptors sent:
+    /// a terminal, or three for its 0, 1 and 2.
     SshSession {
         /// The client's address and port, then this machine's, as
         /// `SSH_CONNECTION` says them: `192.0.2.7 51234 192.0.2.1 22`.
         connection: String,
         /// The account.
         name: String,
+        /// How the person signed in.
+        proof: SshProof,
+        /// The terminal's type, for `TERM`, on a terminal.
+        term: String,
+        /// What the client asked to run.
+        run: SshRun,
+        /// The client's language settings, `LANG`, `LANGUAGE` and
+        /// `LC_*`, as `NAME=value`.
+        language: Vec<String>,
+    },
+    /// The connection that an [`SshProof::Ticket`] was given to ended:
+    /// sshd(8)'s to say, from the process that asked for it.
+    SshEnded {
+        /// The ticket.
+        ticket: Vec<u8>,
+    },
+}
+
+/// How a person signed in over SSH, which authd checks again for each
+/// session (ADRs 0347 and 0348).
+#[derive(Clone, PartialEq, Eq)]
+pub enum SshProof {
+    /// With a key: what the client signed and its signature.
+    Key {
         /// What the client signed (RFC 4252 7): the session's
         /// identifier, then its sign-in request up to the signature.
         signed: Vec<u8>,
         /// The signature: its algorithm's name, then its bytes.
         signature: Vec<u8>,
-        /// The terminal's type, for `TERM`, on a terminal.
-        term: String,
-        /// The command the client asked to run, if not the shell.
-        command: Option<Vec<u8>>,
-        /// The client's language settings, `LANG`, `LANGUAGE` and
-        /// `LC_*`, as `NAME=value`.
-        language: Vec<String>,
     },
+    /// With a password: the ticket authd answered it with
+    /// ([`Request::SshPassword`]).
+    Ticket(Vec<u8>),
 }
+
+/// What an SSH client asked a session to run (RFC 4254 6.5).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SshRun {
+    /// The person's shell.
+    Shell,
+    /// A command, which their shell runs.
+    Command(Vec<u8>),
+    /// The SFTP subsystem, which scp uses too: OpenSSH's sftp-server
+    /// (ADR 0348).
+    Sftp,
+}
+
+/// The length of a ticket authd gives for a password over SSH, in bytes.
+pub const SSH_TICKET_LENGTH: usize = 32;
 
 /// What came of a prompt on a console.
 #[derive(PartialEq, Eq)]
@@ -601,32 +659,42 @@ impl Request {
                 hexed = [hex(key), String::new(), String::new()];
                 vec![b"ssh-key", name.as_bytes(), hexed[0].as_bytes()]
             }
-            Request::SshSession {
-                connection,
-                name,
-                signed,
-                signature,
-                term,
-                command,
-                language,
-            } => {
-                hexed = [hex(signed), hex(signature), String::new()];
-                let (kind, command): (&[u8], &[u8]) = match command {
-                    Some(command) => (b"command", command),
-                    None => (b"shell", b""),
+            Request::SshPassword { connection, name, password } => {
+                vec![b"ssh-password", connection.as_bytes(), name.as_bytes(), password]
+            }
+            Request::SshSession { connection, name, proof, term, run, language } => {
+                let proven: &[u8] = match proof {
+                    SshProof::Key { signed, signature } => {
+                        hexed = [hex(signed), hex(signature), String::new()];
+                        b"key"
+                    }
+                    SshProof::Ticket(ticket) => {
+                        hexed = [hex(ticket), String::new(), String::new()];
+                        b"ticket"
+                    }
+                };
+                let (kind, what): (&[u8], &[u8]) = match run {
+                    SshRun::Shell => (b"shell", b""),
+                    SshRun::Command(command) => (b"command", command),
+                    SshRun::Sftp => (b"subsystem", b"sftp"),
                 };
                 let mut fields: Vec<&[u8]> = vec![
                     b"ssh-session",
                     connection.as_bytes(),
                     name.as_bytes(),
+                    proven,
                     hexed[0].as_bytes(),
                     hexed[1].as_bytes(),
                     term.as_bytes(),
                     kind,
-                    command,
+                    what,
                 ];
                 fields.extend(language.iter().map(String::as_bytes));
                 fields
+            }
+            Request::SshEnded { ticket } => {
+                hexed = [hex(ticket), String::new(), String::new()];
+                vec![b"ssh-ended", hexed[0].as_bytes()]
             }
         };
         let mut bytes = Vec::new();
@@ -779,25 +847,43 @@ impl Request {
                 let key = std::str::from_utf8(key).ok().and_then(unhex).ok_or_else(malformed)?;
                 Ok(Request::SshKey { name: text(name)?, key })
             }
+            [b"ssh-password", connection, name, password] => Ok(Request::SshPassword {
+                connection: text(connection)?,
+                name: text(name)?,
+                password: password.to_vec(),
+            }),
             [
                 b"ssh-session",
                 connection,
                 name,
-                signed,
-                signature,
+                proven,
+                first,
+                second,
                 term,
                 kind,
-                command,
+                what,
                 ref rest @ ..,
             ] => {
                 let bytes = |field: &[u8]| {
                     std::str::from_utf8(field).ok().and_then(unhex).ok_or_else(malformed)
                 };
-                let command = match (kind, command) {
-                    (b"shell", b"") => None,
-                    (b"command", command) if command.len() <= SSH_COMMAND_MAX => {
-                        Some(command.to_vec())
+                let proof = match proven {
+                    b"key" => SshProof::Key { signed: bytes(first)?, signature: bytes(second)? },
+                    b"ticket" if second.is_empty() => {
+                        let ticket = bytes(first)?;
+                        if ticket.len() != SSH_TICKET_LENGTH {
+                            return Err(malformed());
+                        }
+                        SshProof::Ticket(ticket)
                     }
+                    _ => return Err(malformed()),
+                };
+                let run = match (kind, what) {
+                    (b"shell", b"") => SshRun::Shell,
+                    (b"command", command) if command.len() <= SSH_COMMAND_MAX => {
+                        SshRun::Command(command.to_vec())
+                    }
+                    (b"subsystem", b"sftp") => SshRun::Sftp,
                     _ => return Err(malformed()),
                 };
                 let language = rest
@@ -807,12 +893,18 @@ impl Request {
                 Ok(Request::SshSession {
                     connection: text(connection)?,
                     name: text(name)?,
-                    signed: bytes(signed)?,
-                    signature: bytes(signature)?,
+                    proof,
                     term: text(term)?,
-                    command,
+                    run,
                     language,
                 })
+            }
+            [b"ssh-ended", ticket] => {
+                let ticket = std::str::from_utf8(ticket).ok().and_then(unhex);
+                match ticket.filter(|t| t.len() == SSH_TICKET_LENGTH) {
+                    Some(ticket) => Ok(Request::SshEnded { ticket }),
+                    None => Err(malformed()),
+                }
             }
             _ => Err(malformed()),
         }
@@ -842,6 +934,9 @@ impl Request {
                     wipe(new);
                 }
             }
+            Request::SshPassword { password, .. } => wipe(password),
+            Request::SshSession { proof: SshProof::Ticket(ticket), .. }
+            | Request::SshEnded { ticket } => wipe(ticket),
             Request::NeedsOwner
             | Request::Forget
             | Request::Prompts
@@ -856,7 +951,7 @@ impl Request {
             | Request::EndShares
             | Request::NfsWorker { .. }
             | Request::SshKey { .. }
-            | Request::SshSession { .. } => {}
+            | Request::SshSession { proof: SshProof::Key { .. }, .. } => {}
         }
     }
 }
@@ -927,12 +1022,26 @@ impl std::fmt::Debug for Request {
             Request::EndShares => write!(f, "EndShares"),
             Request::NfsWorker { uid } => write!(f, "NfsWorker {{ uid: {uid} }}"),
             Request::SshKey { name, .. } => write!(f, "SshKey {{ name: {name:?} }}"),
-            Request::SshSession { connection, name, term, command, .. } => write!(
-                f,
-                "SshSession {{ connection: {connection:?}, name: {name:?}, term: {term:?}, \
-                 command: {} }}",
-                command.is_some()
-            ),
+            Request::SshPassword { connection, name, .. } => {
+                write!(f, "SshPassword {{ connection: {connection:?}, name: {name:?} }}")
+            }
+            Request::SshSession { connection, name, proof, term, run, .. } => {
+                let proof = match proof {
+                    SshProof::Key { .. } => "Key",
+                    SshProof::Ticket(_) => "Ticket",
+                };
+                let run = match run {
+                    SshRun::Shell => "Shell",
+                    SshRun::Command(_) => "Command",
+                    SshRun::Sftp => "Sftp",
+                };
+                write!(
+                    f,
+                    "SshSession {{ connection: {connection:?}, name: {name:?}, proof: {proof}, \
+                     term: {term:?}, run: {run} }}"
+                )
+            }
+            Request::SshEnded { .. } => write!(f, "SshEnded"),
         }
     }
 }

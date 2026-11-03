@@ -10,8 +10,13 @@
 //! in with a key their `~/.ssh/authorized_keys` lists: sshd asks authd(8)
 //! whether a key may sign them in before the client signs with it, and
 //! hands authd what the client signed, and the signature, to start each
-//! session, which authd checks again itself (ADR 0347). A connection has
-//! two minutes to sign in, six tries, and four sessions at most.
+//! session, which authd checks again itself (ADR 0347). Once
+//! sshd_config(5) lets passwords sign in, authd checks one and answers
+//! with a ticket for this connection, which starts the sessions in its
+//! stead, and which goes when the connection ends (ADR 0348). The
+//! settings say who may sign in at all. A connection has two minutes to
+//! sign in, six tries, and four sessions at most, each a shell, a
+//! command or SFTP.
 
 use std::collections::HashMap;
 use std::fs::File;
@@ -25,7 +30,10 @@ use std::time::Duration;
 use tokio::sync::oneshot;
 use tokio::time::Instant;
 
-use accounts::request::{self, Answer, Request, SSH_COMMAND_MAX, SSH_KEY_ALGORITHMS};
+use accounts::request::{
+    self, Answer, Request, SSH_COMMAND_MAX, SSH_KEY_ALGORITHMS, SshProof, SshRun,
+};
+use accounts::sshd_config::{self, Settings};
 use russh::keys::ssh_key::HashAlg;
 use russh::keys::{Algorithm, PrivateKey};
 use russh::server::{
@@ -93,6 +101,8 @@ impl std::fmt::Display for Error {
 
 /// A connection's state.
 struct Connection {
+    /// What sshd_config(5) said as the listener started it.
+    settings: Settings,
     /// Where the client is, for the log.
     from: String,
     /// The connection as SSH_CONNECTION says it.
@@ -109,8 +119,9 @@ struct Connection {
     channels: HashMap<ChannelId, session::Channel>,
 }
 
-/// `sshd --connection`: serves the connection on standard input.
-pub fn run() -> ExitCode {
+/// `sshd --connection`: serves the connection on standard input, with
+/// the `settings` the listener read.
+pub fn run(settings: Settings) -> ExitCode {
     // SAFETY: the listener gave this process the connection as standard
     // input, and the pipe as standard output, which nothing else uses.
     let (socket, notify) = unsafe { (TcpStream::from_raw_fd(0), File::from_raw_fd(1)) };
@@ -138,6 +149,7 @@ pub fn run() -> ExitCode {
     };
     let (guard, signed_in) = oneshot::channel();
     let connection = Connection {
+        settings,
         connection: format!("{} {} {} {}", peer.ip(), peer.port(), local.ip(), local.port()),
         from: from.clone(),
         notify: Some(notify),
@@ -173,9 +185,16 @@ async fn serve(
     let deadline = Instant::now() + SIGN_IN_TIME;
     socket.set_nonblocking(true).map_err(|err| err.to_string())?;
     let socket = tokio::net::TcpStream::from_std(socket).map_err(|err| err.to_string())?;
+    let mut methods = Vec::new();
+    if connection.settings.keys {
+        methods.push(MethodKind::PublicKey);
+    }
+    if connection.settings.passwords {
+        methods.push(MethodKind::Password);
+    }
     let config = Arc::new(server::Config {
         server_id: SshId::Standard("SSH-2.0-Dukovo".into()),
-        methods: MethodSet::from(&[MethodKind::PublicKey][..]),
+        methods: MethodSet::from(methods.as_slice()),
         auth_rejection_time: Duration::from_secs(1),
         auth_rejection_time_initial: Some(Duration::ZERO),
         keys: vec![key],
@@ -225,26 +244,64 @@ fn account_name(name: &str) -> bool {
     !name.is_empty() && name.len() <= NAME_MAX && !name.contains(['\0', '\n'])
 }
 
+/// Whether the settings let `name` sign in: AllowUsers and the others.
+fn admitted(settings: &Settings, name: &str) -> Result<(), String> {
+    let groups = if settings.checks_groups() { groups_of(name)? } else { Vec::new() };
+    settings.admits(name, &groups)
+}
+
+/// The names of the groups of `name`'s account, none for a name no
+/// account has.
+fn groups_of(name: &str) -> Result<Vec<String>, String> {
+    let read = |path: &str| {
+        std::fs::read_to_string(path).map_err(|err| format!("cannot read {path}: {err}"))
+    };
+    let users = accounts::users(&read(accounts::PASSWD)?);
+    let groups = accounts::groups(&read(accounts::GROUP)?);
+    Ok(users
+        .entries()
+        .find(|user| user.name == name)
+        .map_or_default(|user| sshd_config::group_names(user, &groups)))
+}
+
 impl Connection {
+    /// Someone signed in as `name`, as `proof` shows: the listener counts
+    /// the connection as signed in, and its sign-in guard stands down.
+    fn sign_in(&mut self, name: &str, proof: SshProof, how: &str) {
+        eprintln!("sshd: {name} signed in from {} with {how}", self.from);
+        self.signed_in = Some(SignedIn { name: name.into(), proof });
+        self.refused = None;
+        if let Some(mut notify) = self.notify.take() {
+            let _ = notify.write_all(b"in\n");
+        }
+        if let Some(guard) = self.guard.take() {
+            let _ = guard.send(());
+        }
+    }
+
     /// The channel `id`, if it is one of ours and its session has not
     /// started.
     fn unstarted(&mut self, id: ChannelId) -> Option<&mut session::Channel> {
         self.channels.get_mut(&id).filter(|channel| channel.running.is_none())
     }
 
-    /// Starts the session of channel `id`, with `command` if the client
-    /// asked for one.
+    /// Starts the session of channel `id`, running what the client asked,
+    /// `run`.
     async fn start(
         &mut self,
         id: ChannelId,
-        command: Option<Vec<u8>>,
+        run: SshRun,
         session: &mut Session,
     ) -> Result<(), Error> {
         let handle = session.handle();
         let started = match (&self.signed_in, self.channels.get_mut(&id)) {
             (Some(who), Some(channel)) if channel.running.is_none() => {
-                let what = if command.is_some() { "a command" } else { "a shell" };
-                session::start(channel, id, handle, who, &self.connection, command)
+                let what = match run {
+                    SshRun::Shell => "a shell",
+                    SshRun::Command(_) => "a command",
+                    SshRun::Sftp => "SFTP",
+                };
+                session::start(channel, id, handle, who, &self.connection, run)
                     .await
                     .map(|process| (who.name.clone(), what, process))
             }
@@ -282,8 +339,15 @@ impl server::Handler for Connection {
         user: &str,
         offer: PublicKeyOffer<'_>,
     ) -> Result<Auth, Error> {
+        if !self.settings.keys {
+            return Ok(Auth::reject());
+        }
         if !account_name(user) {
             self.refused = Some("a name no account has".into());
+            return Ok(Auth::reject());
+        }
+        if let Err(why) = admitted(&self.settings, user) {
+            self.refused = Some(format!("{user}: {why}"));
             return Ok(Auth::reject());
         }
         // The algorithm the client signs with must be the key's own:
@@ -317,25 +381,58 @@ impl server::Handler for Connection {
         user: &str,
         key: VerifiedPublicKey<'_>,
     ) -> Result<Auth, Error> {
-        if !account_name(user) {
+        // Checked again, as a client may sign without asking first.
+        if !self.settings.keys
+            || !account_name(user)
+            || self.signed_in.is_some()
+            || admitted(&self.settings, user).is_err()
+        {
             return Ok(Auth::reject());
         }
         let fingerprint = key.public_key.fingerprint(HashAlg::Sha256).to_string();
-        eprintln!("sshd: {user} signed in from {} with key {fingerprint}", self.from);
-        self.signed_in = Some(SignedIn {
-            name: user.into(),
-            signed: key.signed.to_vec(),
-            signature: key.signature.to_vec(),
-        });
-        self.refused = None;
-        // The listener counts this connection as signed in now.
-        if let Some(mut notify) = self.notify.take() {
-            let _ = notify.write_all(b"in\n");
-        }
-        if let Some(guard) = self.guard.take() {
-            let _ = guard.send(());
-        }
+        let proof =
+            SshProof::Key { signed: key.signed.to_vec(), signature: key.signature.to_vec() };
+        self.sign_in(user, proof, &format!("key {fingerprint}"));
         Ok(Auth::Accept)
+    }
+
+    async fn auth_password(&mut self, user: &str, password: &str) -> Result<Auth, Error> {
+        if !self.settings.passwords || !account_name(user) || self.signed_in.is_some() {
+            return Ok(Auth::reject());
+        }
+        if let Err(why) = admitted(&self.settings, user) {
+            self.refused = Some(format!("{user}: {why}"));
+            return Ok(Auth::reject());
+        }
+        let request = Request::SshPassword {
+            connection: self.connection.clone(),
+            name: user.into(),
+            password: password.as_bytes().to_vec(),
+        };
+        let answer = authd::ask(&request, &[]).await;
+        // The request's password is wiped as it goes.
+        drop(request);
+        match answer {
+            Ok((Answer::Done(ticket), _)) => match request::unhex(&ticket) {
+                Some(ticket) if ticket.len() == request::SSH_TICKET_LENGTH => {
+                    self.sign_in(user, SshProof::Ticket(ticket), "a password");
+                    Ok(Auth::Accept)
+                }
+                _ => {
+                    eprintln!("sshd: authd answered a password with no ticket");
+                    Ok(Auth::reject())
+                }
+            },
+            Ok((Answer::Refused(why), _)) => {
+                self.refused = Some(format!("a password for {user}: {why}"));
+                Ok(Auth::reject())
+            }
+            Err(why) => {
+                eprintln!("sshd: {why}");
+                self.refused = Some(why);
+                Ok(Auth::reject())
+            }
+        }
     }
 
     fn adjusts_window(&self) -> bool {
@@ -413,7 +510,7 @@ impl server::Handler for Connection {
     }
 
     async fn shell_request(&mut self, id: ChannelId, session: &mut Session) -> Result<(), Error> {
-        self.start(id, None, session).await
+        self.start(id, SshRun::Shell, session).await
     }
 
     async fn exec_request(
@@ -427,15 +524,20 @@ impl server::Handler for Connection {
             session.channel_failure(id)?;
             return Ok(());
         }
-        self.start(id, Some(command.to_vec()), session).await
+        self.start(id, SshRun::Command(command.to_vec()), session).await
     }
 
     async fn subsystem_request(
         &mut self,
         id: ChannelId,
-        _name: &str,
+        name: &str,
         session: &mut Session,
     ) -> Result<(), Error> {
+        // SFTP, which scp uses too: OpenSSH's sftp-server, as the person.
+        if name == "sftp" {
+            return self.start(id, SshRun::Sftp, session).await;
+        }
+        eprintln!("sshd: refused the subsystem {name:?} for {}: SFTP is the only one", self.from);
         session.channel_failure(id)?;
         Ok(())
     }
@@ -522,6 +624,10 @@ impl Drop for Connection {
             && let Some(why) = &self.refused
         {
             eprintln!("sshd: no one signed in from {}: {why}", self.from);
+        }
+        // A password's ticket holds no longer than its connection.
+        if let Some(SignedIn { proof: SshProof::Ticket(ticket), .. }) = self.signed_in.take() {
+            authd::tell(&Request::SshEnded { ticket });
         }
     }
 }

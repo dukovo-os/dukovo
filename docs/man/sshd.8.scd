@@ -11,14 +11,17 @@ sshd - let people sign in to this computer over SSH
 
 *sshd*
 
-*sshd --connection*
+*sshd* *-t* | *-T*
+
+*sshd --connection --settings* _settings_
 
 # DESCRIPTION
 
 sshd lets people sign in to this computer from another over SSH, with
-a key their _~/.ssh/authorized_keys_ lists, and run a shell or a
-command there as themselves (ADR 0347). Spark runs it as the *sshd*
-service once it is turned on:
+a key their _~/.ssh/authorized_keys_ lists, or with their password once
+*sshd_config*(5) lets them, and run a shell or a command there as
+themselves, or copy files with *sftp* and *scp* (ADRs 0347 and 0348).
+Spark runs it as the *sshd* service once it is turned on:
 
 ```
 $ sudo service sshd enable
@@ -61,7 +64,26 @@ neither their group nor others may write them, as OpenSSH's sshd checks
 with StrictModes; otherwise no key in the file signs anyone in. Links
 are not followed, and the file is read up to 1 MiB.
 
-Passwords are refused: only a key signs anyone in.
+# PASSWORDS
+
+A password signs a person in only once *sshd_config*(5) says
+*PasswordAuthentication yes*, as an administrator chooses:
+
+```
+$ sudo nano /system/settings/ssh/sshd_config
+$ sshd -t && sudo service sshd reload
+```
+
+*authd*(8) checks it, as at the console. A wrong one is answered only
+after a wait, which grows with each wrong one from that address, up to
+a minute; *lastb*(1) shows it, and the person is told of it at their
+next sign-in. An empty password never signs anyone in over SSH. sshd
+keeps no password: authd answers a right one with a ticket for that
+connection alone, which starts the person's sessions on it and goes
+when it ends.
+
+*AllowUsers*, *AllowGroups*, *DenyUsers* and *DenyGroups* in
+sshd_config say who may sign in at all, with a key or a password.
 
 # SESSIONS
 
@@ -83,15 +105,21 @@ terminal's type. The client's *LANG*, *LANGUAGE* and *LC_\** settings
 are taken, as Debian's sshd takes them (*SendEnv* in *ssh_config*(5));
 other variables a client sends are refused.
 
-SFTP and *scp*, port forwarding, X11 forwarding and agent forwarding
-are refused.
+*sftp*(1) and *scp*(1) copy files as the person: the SFTP subsystem
+runs OpenSSH's *sftp-server*(8) as a command of the session, which scp
+uses too, and *scp -O*, OpenSSH's old protocol, runs *scp* itself as a
+command. Other subsystems, port forwarding, X11 forwarding and agent
+forwarding are refused.
 
 # HOW IT WORKS
 
-*sshd*, as Spark runs it, as root, makes the host key if there is none,
-listens on port 22 of every address, IPv4 and IPv6, and starts
-*sshd --connection* for each client, with the connection as its
-standard input.
+*sshd*, as Spark runs it, as root, reads *sshd_config*(5), makes the
+host key if there is none, listens on port 22 of every address, IPv4
+and IPv6, and starts *sshd --connection* for each client, with the
+connection as its standard input and the settings it read. SIGHUP,
+which *service sshd reload* sends, has it read sshd_config again for
+the connections that come after; the ones open go on as they were, and
+a file with a mistake leaves the settings as they were.
 
 *sshd --connection* speaks SSH 2 with russh: the key exchange is
 mlkem768x25519-sha256 or curve25519-sha256, the ciphers
@@ -99,8 +127,9 @@ chacha20-poly1305, AES-GCM and AES-CTR, the MACs SHA-2's. Before a
 client signs with a key, sshd asks *authd*(8) whether the key may sign
 the person in. To start each session, it hands authd what the client
 signed and the signature, and authd checks them itself against the
-key, and the key against _~/.ssh/authorized_keys_, before it starts
-the session as the person, on the terminal sshd made or on three pipes.
+key, and the key against _~/.ssh/authorized_keys_, or the ticket it
+gave for the person's password, before it starts the session as the
+person, on the terminal sshd made or on three pipes.
 sshd then passes the bytes between the client and the session, and lets
 the client send only as much as the session has taken.
 
@@ -110,10 +139,26 @@ are open. A connection holds four sessions at most, and the computer
 32 SSH sessions. A client that sends nothing for a minute is asked
 whether it is there; one that does not answer three times is let go.
 
+# OPTIONS
+
+*-t*
+	Check _/system/settings/ssh/sshd_config_: say each mistake, a line
+	each, and end with 1 if there is any, as OpenSSH's *sshd -t* does.
+
+*-T*
+	Show the settings sshd_config makes, each keyword once, with the
+	defaults of those it does not give.
+
 # FILES
 
 _~/.ssh/authorized_keys_
 	The keys that sign the person in.
+
+_/system/settings/ssh/sshd_config_
+	The settings (*sshd_config*(5)).
+
+_/system/libraries/ssh/sftp-server_
+	OpenSSH's SFTP server, which an SFTP session runs.
 
 _/system/state/sshd/ssh_host_ed25519_key_
 	The computer's own key, Ed25519, made the first time sshd starts,
@@ -132,10 +177,13 @@ _/system/settings/spark/services/sshd.toml_
 # EXIT STATUS
 
 sshd runs until Spark stops it, which ends the connections it serves
-and their sessions; 1 if it cannot make or read the host key, or
-listen on port 22. *sshd --connection* ends with its connection.
+and their sessions; 1 if sshd_config has a mistake, or it cannot make
+or read the host key, or listen on port 22. *sshd --connection* ends
+with its connection. *sshd -t* and *sshd -T* end with 0, or with 1 for
+a mistake.
 
 # SEE ALSO
 
-*ssh*(1), *ssh-keygen*(1), *authd*(8), *login*(1), *service*(8),
+*ssh*(1), *sftp*(1), *scp*(1), *ssh-keygen*(1), *sshd_config*(5),
+*sftp-server*(8), *authd*(8), *login*(1), *service*(8),
 *service.toml*(5), *last*(1)

@@ -17,8 +17,15 @@
 //! pseudo-terminal of the client's type, a shell on it runs what is
 //! typed and ends with its status, LANG is passed on and other
 //! variables are not; root, bob, the key behind an option and a key not
-//! listed are refused. last(1) shows alice's sessions from the host, and
-//! *service sshd disable* stops sshd and closes the port.
+//! listed are refused, and so is alice's password. *sftp* puts a file,
+//! renames it, gets it back whole, and makes and removes a folder; *scp*
+//! and *scp -O* copy one there and back. last(1) shows alice's sessions
+//! from the host, and the files copied are hers. A sshd_config with a
+//! mistake is refused by *sshd -t*, and a reload keeps what sshd had;
+//! one that turns passwords on but keeps bob out is read on a reload:
+//! alice's password signs her in, a wrong one and bob's are refused,
+//! and lastb(1) shows the wrong one (ADR 0348). *service sshd disable*
+//! stops sshd and closes the port.
 
 use std::io::Write;
 use std::path::Path;
@@ -36,7 +43,7 @@ const NETDEV: &str = "user,id=n0,guestfwd=tcp:10.0.2.100:80-cmd:out/test/sshd/ke
 
 pub const CASE: Case = Case {
     name: "sshd",
-    about: "sshd and service enable against the host's OpenSSH client through a port QEMU forwards: keys from authorized_keys, one behind an option passed over; the host key made and checked; commands with their output, error and exit status, 4 MiB through cat, a terminal and a shell on it, LANG passed on; root, another person, an unsafe file and a key not listed refused; the guest's own client signing in; last(1); service disable closing the port (ADR 0347)",
+    about: "sshd and service enable against the host's OpenSSH client through a port QEMU forwards: keys from authorized_keys, one behind an option passed over; the host key made and checked; commands with their output, error and exit status, 4 MiB through cat, a terminal and a shell on it, LANG passed on; root, another person, an unsafe file and a key not listed refused; the guest's own client signing in; last(1); sftp, scp and scp -O copying files there and back; sshd_config with a mistake refused and kept out of a reload; passwords turned on by a reload, a wrong one and a denied user refused, lastb(1); service disable closing the port (ADRs 0347 and 0348)",
     firmware: Firmware::Uefi,
     media: Media::Usb,
     // Every service, as on a machine, netd setting the card up by DHCP.
@@ -53,13 +60,21 @@ pub const CASE: Case = Case {
 };
 
 /// The parts sshdtest prints before it shows the host key, then before
-/// the host's turn, and after it.
+/// the host's turn, then before its turn with passwords, and after it.
 const BEFORE: &[&str] = &["accounts", "keys", "on"];
 const THEN: &[&str] = &["guest", "host"];
+const PASSWORDS: &[&str] = &["passwords"];
 const AFTER: &[&str] = &["off"];
 
 /// The size of what goes through `cat` and back.
 const BIG_SIZE: usize = 4 * 1024 * 1024;
+
+/// The size of each file sftp and scp copy: sshdtest checks it.
+const COPIED_SIZE: usize = 256 * 1024;
+
+/// alice's password and bob's, as sshdtest makes their accounts.
+const ALICE_PASSWORD: &str = "wonderland";
+const BOB_PASSWORD: &str = "looking-glass";
 
 fn write(path: &Path, text: &str, executable: bool) -> Result<(), String> {
     std::fs::write(path, text).map_err(|err| format!("writing {}: {err}", path.display()))?;
@@ -95,7 +110,9 @@ fn keys(dir: &Path) -> Result<(), String> {
         &dir.join("keys"),
         &format!("#!/bin/sh\nexec cat {at}/alice.pub {at}/optioned.pub\n"),
         true,
-    )
+    )?;
+    // What ssh asks for a password: the one the test gives it.
+    write(&dir.join("askpass"), "#!/bin/sh\nprintf '%s\\n' \"$SSHD_TEST_PASSWORD\"\n", true)
 }
 
 /// What the host's ssh did: its exit status, output and error.
@@ -117,7 +134,45 @@ struct Client<'a> {
     port: u16,
 }
 
+/// How a client signs in.
+#[derive(Clone, Copy)]
+enum Auth<'a> {
+    /// With this key of the test's.
+    Key(&'a str),
+    /// With this password, which ssh asks the test's askpass for.
+    Password(&'a str),
+}
+
 impl Client<'_> {
+    /// `program`, one of OpenSSH's clients, to the guest: with the port
+    /// flag `port`, the host key the guest showed, and `auth`.
+    fn client(&self, program: &str, port: &str, auth: Auth) -> Command {
+        let known = self.dir.join("known_hosts");
+        let mut command = Command::new(program);
+        command
+            .args(["-F", "/dev/null", port, &self.port.to_string()])
+            .args(["-o", "StrictHostKeyChecking=yes", "-o"])
+            .arg(format!("UserKnownHostsFile={}", known.display()))
+            .args(["-o", "LogLevel=ERROR", "-o", "ConnectTimeout=30"]);
+        match auth {
+            Auth::Key(key) => {
+                command
+                    .arg("-i")
+                    .arg(self.dir.join(key))
+                    .args(["-o", "IdentitiesOnly=yes", "-o", "BatchMode=yes"]);
+            }
+            Auth::Password(password) => {
+                command
+                    .args(["-o", "PubkeyAuthentication=no", "-o"])
+                    .args(["PreferredAuthentications=password", "-o", "NumberOfPasswordPrompts=1"])
+                    .env("SSH_ASKPASS", self.dir.join("askpass"))
+                    .env("SSH_ASKPASS_REQUIRE", "force")
+                    .env("SSHD_TEST_PASSWORD", password);
+            }
+        }
+        command
+    }
+
     /// `ssh` as `user` with the key `key`, with `options` and `args`
     /// after them, given `input`, for two minutes at most.
     fn ssh(
@@ -129,62 +184,39 @@ impl Client<'_> {
         input: &[u8],
         env: &[(&str, &str)],
     ) -> Result<Ran, String> {
-        let port = self.port.to_string();
-        let key = self.dir.join(key);
-        let known = self.dir.join("known_hosts");
-        let mut command = Command::new("ssh");
-        command
-            .args(["-F", "/dev/null", "-p", &port, "-i"])
-            .arg(&key)
-            .args(["-o", "IdentitiesOnly=yes", "-o", "BatchMode=yes"])
-            .args(["-o", "StrictHostKeyChecking=yes", "-o"])
-            .arg(format!("UserKnownHostsFile={}", known.display()))
-            .args(["-o", "LogLevel=ERROR", "-o", "ConnectTimeout=30"])
-            .args(options)
-            .arg(format!("{user}@127.0.0.1"))
-            .args(args)
-            .envs(env.iter().copied())
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        let mut child =
-            command.spawn().map_err(|err| format!("the sshd test needs the host's ssh: {err}"))?;
-        let mut stdin = child.stdin.take();
-        let input = input.to_vec();
-        // The input goes in while the output comes out.
-        let feeder = std::thread::spawn(move || {
-            if let Some(stdin) = &mut stdin {
-                let _ = stdin.write_all(&input);
-            }
-        });
-        let id = child.id();
-        let (send, receive) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            let _ = send.send(child.wait_with_output());
-        });
-        let output = match receive.recv_timeout(Duration::from_secs(120)) {
-            Ok(Ok(output)) => output,
-            Ok(Err(err)) => return Err(format!("running ssh: {err}")),
-            Err(_) => {
-                let _ = Command::new("kill").args(["-KILL", &id.to_string()]).status();
-                // What came before, to tell where it stopped.
-                let came = match receive.recv_timeout(Duration::from_secs(5)) {
-                    Ok(Ok(output)) => format!(
-                        "{:?} {:?}",
-                        String::from_utf8_lossy(&output.stdout),
-                        String::from_utf8_lossy(&output.stderr)
-                    ),
-                    _ => "nothing".into(),
-                };
-                return Err(format!("ssh {user}@ {args:?} took more than two minutes: {came}"));
-            }
-        };
-        let _ = feeder.join();
-        Ok(Ran {
-            status: output.status.code(),
-            out: output.stdout,
-            err: String::from_utf8_lossy(&output.stderr).into_owned(),
-        })
+        let mut command = self.client("ssh", "-p", Auth::Key(key));
+        command.args(options).arg(format!("{user}@127.0.0.1")).args(args).envs(env.iter().copied());
+        let what = format!("ssh {user}@ {args:?}");
+        run(command, input, &what)
+    }
+
+    /// `ssh` as `user` with `password`, running `command`.
+    fn ssh_password(&self, password: &str, user: &str, command: &str) -> Result<Ran, String> {
+        let mut ssh = self.client("ssh", "-p", Auth::Password(password));
+        ssh.arg(format!("{user}@127.0.0.1")).arg(command);
+        run(ssh, b"", &format!("ssh {user}@ with a password, {command:?}"))
+    }
+
+    /// `sftp` as alice with her key, running the commands in `batch`.
+    fn sftp(&self, batch: &Path) -> Result<Ran, String> {
+        let mut sftp = self.client("sftp", "-P", Auth::Key("alice"));
+        sftp.arg("-b").arg(batch).arg("alice@127.0.0.1");
+        run(sftp, b"", "sftp")
+    }
+
+    /// `scp` with `options`, as alice with her key, from `from` to `to`.
+    fn scp(&self, options: &[&str], from: &str, to: &str) -> Result<(), String> {
+        let mut scp = self.client("scp", "-P", Auth::Key("alice"));
+        scp.args(options).args([from, to]);
+        let ran = run(scp, b"", &format!("scp {options:?} {from} {to}"))?;
+        if ran.status != Some(0) {
+            return Err(format!(
+                "scp {options:?} {from} {to} ended with {:?}: {}",
+                ran.status,
+                ran.err.trim()
+            ));
+        }
+        Ok(())
     }
 
     /// alice's `command`, which must exit with `status` and write `out`.
@@ -213,6 +245,50 @@ impl Client<'_> {
         }
         Ok(())
     }
+}
+
+/// Runs `command` given `input`, for two minutes at most.
+fn run(mut command: Command, input: &[u8], what: &str) -> Result<Ran, String> {
+    command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = command.spawn().map_err(|err| {
+        format!("the sshd test needs the host's OpenSSH client (openssh-client): {what}: {err}")
+    })?;
+    let mut stdin = child.stdin.take();
+    let input = input.to_vec();
+    // The input goes in while the output comes out.
+    let feeder = std::thread::spawn(move || {
+        if let Some(stdin) = &mut stdin {
+            let _ = stdin.write_all(&input);
+        }
+    });
+    let id = child.id();
+    let (send, receive) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = send.send(child.wait_with_output());
+    });
+    let output = match receive.recv_timeout(Duration::from_secs(120)) {
+        Ok(Ok(output)) => output,
+        Ok(Err(err)) => return Err(format!("running {what}: {err}")),
+        Err(_) => {
+            let _ = Command::new("kill").args(["-KILL", &id.to_string()]).status();
+            // What came before, to tell where it stopped.
+            let came = match receive.recv_timeout(Duration::from_secs(5)) {
+                Ok(Ok(output)) => format!(
+                    "{:?} {:?}",
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr)
+                ),
+                _ => "nothing".into(),
+            };
+            return Err(format!("{what} took more than two minutes: {came}"));
+        }
+    };
+    let _ = feeder.join();
+    Ok(Ran {
+        status: output.status.code(),
+        out: output.stdout,
+        err: String::from_utf8_lossy(&output.stderr).into_owned(),
+    })
 }
 
 /// The host's turn: its client against the guest's sshd.
@@ -286,8 +362,90 @@ fn host(client: &Client) -> Result<(), String> {
     client.refused("alice", "bob", "as others may write bob's authorized_keys")?;
     client.refused("optioned", "alice", "as its line has an option")?;
     client.refused("stranger", "alice", "as it is not listed")?;
+    // A password is not asked for: sshd_config does not turn them on.
+    let ran = client.ssh_password(ALICE_PASSWORD, "alice", "true")?;
+    if ran.status != Some(255) || !ran.err.contains("Permission denied (publickey)") {
+        return Err(format!("alice's password was not refused: {:?}, {}", ran.status, ran.err));
+    }
+    copies(client)?;
     // The last: the guest goes on.
     client.alice("echo done > ~/host-done", 0, "")?;
+    Ok(())
+}
+
+/// The bytes of `path`.
+fn read(path: &Path) -> Result<Vec<u8>, String> {
+    std::fs::read(path).map_err(|err| format!("reading {}: {err}", path.display()))
+}
+
+/// sftp and scp, which runs sftp too, and scp -O, which runs scp on the
+/// guest: each copies a file there and back whole, as alice's.
+fn copies(client: &Client) -> Result<(), String> {
+    let dir = client.dir;
+    let data: Vec<u8> = (0..COPIED_SIZE).map(|i| (i * 7 % 253) as u8).collect();
+    let up = dir.join("up.bin");
+    std::fs::write(&up, &data).map_err(|err| format!("writing {}: {err}", up.display()))?;
+    let down = dir.join("sftp-back.bin");
+    let batch = dir.join("batch");
+    write(
+        &batch,
+        &format!(
+            "put {} up.bin\nrename up.bin sftp.bin\nget sftp.bin {}\nmkdir folder\nrmdir \
+             folder\nls\n",
+            up.display(),
+            down.display()
+        ),
+        false,
+    )?;
+    let ran = client.sftp(&batch)?;
+    if ran.status != Some(0) || !ran.out().contains("sftp.bin") || read(&down)? != data {
+        return Err(format!(
+            "sftp ended with {:?} and wrote {:?}, {}",
+            ran.status,
+            ran.out(),
+            ran.err.trim()
+        ));
+    }
+    let up_text = up.display().to_string();
+    for (options, name) in [(&[][..], "scp"), (&["-O"][..], "scp-o")] {
+        let back = dir.join(format!("{name}-back.bin"));
+        client.scp(options, &up_text, &format!("alice@127.0.0.1:{name}.bin"))?;
+        client.scp(options, &format!("alice@127.0.0.1:{name}.bin"), &back.display().to_string())?;
+        if read(&back)? != data {
+            return Err(format!("scp {options:?} did not bring the file back whole"));
+        }
+    }
+    Ok(())
+}
+
+/// The host's turn with passwords, once sshd_config turns them on but
+/// keeps bob out.
+fn passwords(client: &Client) -> Result<(), String> {
+    let ran = client.ssh_password(ALICE_PASSWORD, "alice", "id -un")?;
+    if ran.status != Some(0) || ran.out() != "alice\n" {
+        return Err(format!(
+            "alice's password did not sign her in: {:?}, {:?}, {}",
+            ran.status,
+            ran.out(),
+            ran.err.trim()
+        ));
+    }
+    for (password, user, why) in [
+        ("not-wonderland", "alice", "a wrong password"),
+        (BOB_PASSWORD, "bob", "bob's, as DenyUsers names him"),
+    ] {
+        let ran = client.ssh_password(password, user, "true")?;
+        if ran.status != Some(255) || !ran.err.contains("Permission denied") {
+            return Err(format!("{why} was not refused: {:?}, {}", ran.status, ran.err.trim()));
+        }
+    }
+    // Her key signs her in still.
+    client.alice("echo key", 0, "key\n")?;
+    // The last, with her password: the guest goes on.
+    let ran = client.ssh_password(ALICE_PASSWORD, "alice", "echo done > ~/passwords-done")?;
+    if ran.status != Some(0) {
+        return Err(format!("alice's last command ended with {:?}: {}", ran.status, ran.err));
+    }
     Ok(())
 }
 
@@ -314,7 +472,13 @@ fn sshd(vm: &mut Vm, case: &Case) -> Result<(), String> {
         .port();
     write(&dir.join("known_hosts"), &format!("[127.0.0.1]:{port} {key}\n"), false)?;
     vm.monitor(&format!("hostfwd_add n0 tcp:127.0.0.1:{port}-:22"))?;
-    host(&Client { dir: &dir, port })?;
+    let client = Client { dir: &dir, port };
+    host(&client)?;
+    for part in PASSWORDS {
+        vm.expect_ahead(&format!("sshdtest: {part}"))?;
+    }
+    vm.expect("sshdtest: passwords on")?;
+    passwords(&client)?;
     for part in AFTER {
         vm.expect_ahead(&format!("sshdtest: {part}"))?;
     }

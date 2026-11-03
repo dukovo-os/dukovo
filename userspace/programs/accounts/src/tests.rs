@@ -3,7 +3,8 @@
 
 use super::request::{
     Answer, CONTINUE, Choice, Mode, PROMPT_SHOWN_MAX, Prompt, Prompted, Question, REQUEST_MAX,
-    Relay, Request, SSH_COMMAND_MAX, ended, ended_status, signal, stopped, stopped_signal,
+    Relay, Request, SSH_COMMAND_MAX, SshProof, SshRun, ended, ended_status, signal, stopped,
+    stopped_signal,
 };
 use super::*;
 
@@ -275,33 +276,44 @@ fn requests_go_and_come_back() {
         },
         Request::EndShares,
         Request::SshKey { name: "alice".into(), key: b"\0\0\0\x0bssh-ed25519".to_vec() },
+        Request::SshPassword {
+            connection: "192.0.2.7 51234 192.0.2.1 22".into(),
+            name: "alice".into(),
+            password: b"s3cret with spaces".to_vec(),
+        },
         Request::SshSession {
             connection: "192.0.2.7 51234 192.0.2.1 22".into(),
             name: "alice".into(),
-            signed: vec![0, 0, 0, 32, 0xff],
-            signature: vec![1, 2],
+            proof: SshProof::Key { signed: vec![0, 0, 0, 32, 0xff], signature: vec![1, 2] },
             term: "xterm-256color".into(),
-            command: None,
+            run: SshRun::Shell,
             language: vec!["LANG=C.UTF-8".into(), "LC_TIME=en_GB.UTF-8".into()],
         },
         Request::SshSession {
             connection: "::1 40000 ::1 22".into(),
             name: "alice".into(),
-            signed: Vec::new(),
-            signature: Vec::new(),
+            proof: SshProof::Key { signed: Vec::new(), signature: Vec::new() },
             term: String::new(),
-            command: Some(b"ls -l 'my files'".to_vec()),
+            run: SshRun::Command(b"ls -l 'my files'".to_vec()),
             language: Vec::new(),
         },
         Request::SshSession {
             connection: String::new(),
             name: "alice".into(),
-            signed: Vec::new(),
-            signature: Vec::new(),
+            proof: SshProof::Ticket(vec![7; request::SSH_TICKET_LENGTH]),
             term: String::new(),
-            command: Some(Vec::new()),
+            run: SshRun::Command(Vec::new()),
             language: Vec::new(),
         },
+        Request::SshSession {
+            connection: "a 1 b 22".into(),
+            name: "alice".into(),
+            proof: SshProof::Ticket(vec![0xab; request::SSH_TICKET_LENGTH]),
+            term: String::new(),
+            run: SshRun::Sftp,
+            language: Vec::new(),
+        },
+        Request::SshEnded { ticket: vec![0xcd; request::SSH_TICKET_LENGTH] },
     ];
     for request in requests {
         assert_eq!(Request::decode(&request.encode()), Ok(request));
@@ -373,16 +385,60 @@ fn requests_go_and_come_back() {
     let ssh = Request::SshSession {
         connection: "a 1 b 22".into(),
         name: "bob".into(),
-        signed: vec![1],
-        signature: vec![2],
+        proof: SshProof::Key { signed: vec![1], signature: vec![2] },
         term: "linux".into(),
-        command: Some(b"id".to_vec()),
+        run: SshRun::Command(b"id".to_vec()),
         language: vec!["LANG=C".into()],
     };
     assert_eq!(
         ssh.encode(),
-        b"ssh-session\0a 1 b 22\0bob\x0001\x0002\0linux\0command\0id\0LANG=C\0"
+        b"ssh-session\0a 1 b 22\0bob\0key\x0001\x0002\0linux\0command\0id\0LANG=C\0"
     );
+    let ticket = "ab".repeat(request::SSH_TICKET_LENGTH);
+    let sftp = Request::SshSession {
+        connection: "a 1 b 22".into(),
+        name: "bob".into(),
+        proof: SshProof::Ticket(vec![0xab; request::SSH_TICKET_LENGTH]),
+        term: String::new(),
+        run: SshRun::Sftp,
+        language: Vec::new(),
+    };
+    assert_eq!(
+        sftp.encode(),
+        format!("ssh-session\0a 1 b 22\0bob\0ticket\0{ticket}\0\0\0subsystem\0sftp\0").as_bytes()
+    );
+    assert_eq!(
+        Request::SshPassword {
+            connection: "a 1 b 22".into(),
+            name: "bob".into(),
+            password: b"pw".to_vec()
+        }
+        .encode(),
+        b"ssh-password\0a 1 b 22\0bob\0pw\0"
+    );
+    // A password over SSH is not shown, nor a ticket.
+    let password = Request::SshPassword {
+        connection: "a 1 b 22".into(),
+        name: "bob".into(),
+        password: b"hunter2".to_vec(),
+    };
+    assert!(!format!("{password:?}").contains("hunter2"));
+    assert!(!format!("{sftp:?}").contains("abab"));
+    // A ticket of another length, a ticket with a second field, or a
+    // subsystem other than SFTP is no request.
+    let short = "ab".repeat(request::SSH_TICKET_LENGTH - 1);
+    for bad in [
+        format!("ssh-session\0a\0bob\0ticket\0{short}\0\0\0shell\0\0"),
+        format!("ssh-session\0a\0bob\0ticket\0{ticket}\0ab\0\0shell\0\0"),
+        format!("ssh-session\0a\0bob\0password\0{ticket}\0\0\0shell\0\0"),
+        format!("ssh-session\0a\0bob\0ticket\0{ticket}\0\0\0subsystem\0netconf\0"),
+        format!("ssh-session\0a\0bob\0ticket\0{ticket}\0\0\0subsystem\0\0"),
+        format!("ssh-ended\0{short}\0"),
+        format!("ssh-ended\0{ticket}\0x\0"),
+        "ssh-password\0a\0bob\0".to_string(),
+    ] {
+        assert!(Request::decode(bad.as_bytes()).is_err(), "{bad:?}");
+    }
     // A question with a line break, an empty field or a kind authd does
     // not know is no request.
     for bad in [
@@ -402,11 +458,12 @@ fn requests_go_and_come_back() {
         // that is not one; a command too long.
         b"ssh-key\0bob\0zz\0",
         b"ssh-key\0bob\0",
-        b"ssh-session\0a\0bob\0zz\0\0linux\0shell\0\0",
-        b"ssh-session\0a\0bob\0\0\0linux\0shell\0id\0",
-        b"ssh-session\0a\0bob\0\0\0linux\0exec\0id\0",
-        b"ssh-session\0a\0bob\0\0\0linux\0shell\0\0LANG\0",
-        b"ssh-session\0a\0bob\0\0\0linux\0",
+        b"ssh-session\0a\0bob\0key\0zz\0\0linux\0shell\0\0",
+        b"ssh-session\0a\0bob\0key\0\0\0linux\0shell\0id\0",
+        b"ssh-session\0a\0bob\0key\0\0\0linux\0exec\0id\0",
+        b"ssh-session\0a\0bob\0key\0\0\0linux\0shell\0\0LANG\0",
+        b"ssh-session\0a\0bob\0key\0\0\0linux\0",
+        b"ssh-session\0a\0bob\0\0\0linux\0shell\0\0",
     ] {
         assert!(Request::decode(bad).is_err(), "{bad:?}");
     }
@@ -453,7 +510,7 @@ fn requests_go_and_come_back() {
         assert!(Request::decode(bad).is_err(), "{bad:?}");
     }
     assert!(Request::decode(&vec![b'a'; REQUEST_MAX + 1]).is_err());
-    let mut long = b"ssh-session\0a\0bob\0\0\0\0command\0".to_vec();
+    let mut long = b"ssh-session\0a\0bob\0key\0\0\0\0command\0".to_vec();
     long.extend(vec![b'x'; SSH_COMMAND_MAX + 1]);
     long.push(0);
     assert!(Request::decode(&long).is_err());

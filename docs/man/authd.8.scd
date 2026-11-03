@@ -231,14 +231,33 @@ closes the connection, but for a session (below):
 	*ok* if it may. sshd asks before a client signs with the key; only
 	root may.
 
-*ssh-session* _connection_ _name_ _signed_ _signature_ _term_ *shell*|*command* _command_ [_language_...]
-	Starts the session of someone who signed in over SSH. _signed_ is
-	what their client signed and _signature_ its signature, in
-	hexadecimal (RFC 4252 section 7): authd checks the signature
-	against the key the signed request names, that the request names
-	_name_, and that the key may sign them in, as for *ssh-key*. Then
-	it starts _name_'s session (SESSIONS): their shell, or with
-	*command*, *login --session --command* _command_ (*login*(1)). The
+*ssh-password* _connection_ _name_ _password_
+	Whether _password_ is _name_'s, for an SSH client at _connection_,
+	once *sshd_config*(5) lets passwords sign in (ADR 0348). A wrong one
+	is answered as for *check*, but counted for the client's address
+	(WRONG PASSWORDS) and recorded as *failed* on the terminal *ssh*,
+	from it (SIGN-IN RECORDS). An empty password is refused. A right one, of
+	a person's account that is not disabled, is answered *ok* and a
+	ticket: 32 random bytes, in hexadecimal, that start _name_'s
+	sessions on that connection, asked by the process that asked for
+	it alone, until it says *ssh-ended*; sshd keeps no password. authd
+	keeps 128 tickets at most, and lets the oldest go first. Only root
+	may, as sshd runs.
+
+*ssh-session* _connection_ _name_ *key*|*ticket* _proof_ _signature_ _term_ _kind_ _what_ [_language_...]
+	Starts the session of someone who signed in over SSH. With *key*,
+	_proof_ is what their client signed and _signature_ its
+	signature, in hexadecimal (RFC 4252 section 7): authd checks the
+	signature against the key the signed request names, that the
+	request names _name_, and that the key may sign them in, as for
+	*ssh-key*. With *ticket*, _proof_ is a ticket and _signature_ is
+	empty: authd checks that it gave the ticket for _name_'s password
+	to this connection and this process, and that
+	the account is still a person's and not disabled. Then it starts
+	_name_'s session (SESSIONS): with the _kind_ *shell* and no _what_,
+	their shell; with *command*, *login --session --command* _what_
+	(*login*(1)); with *subsystem* and *sftp*, the same with OpenSSH's
+	_/system/libraries/ssh/sftp-server_, for SFTP and *scp*. The
 	request comes with the session's terminal, of the type _term_, or
 	with three descriptors, the session's standard input, output and
 	error. _connection_ is the four words of *SSH_CONNECTION*: the
@@ -247,10 +266,14 @@ closes the connection, but for a session (below):
 	and each _language_ that is a *LANG*, *LANGUAGE* or *LC_\** setting.
 	authd answers *ok* and the session's first process, and later
 	*ended* _status_ on the same connection when that process ends, as
-	for *session*. A refusal of a signature or a key is noted in the
-	audit log, and so is each session started, with the key's
-	fingerprint. Only root may, as sshd runs; at most 32 SSH sessions
-	run at once.
+	for *session*. A refusal of a signature, a key or a ticket is noted
+	in the audit log, and so is each session started, with the key's
+	fingerprint or *a password*. Only root may, as sshd runs; at most
+	32 SSH sessions run at once.
+
+*ssh-ended* _ticket_
+	The connection given _ticket_ ended: the ticket goes. Only the
+	process it was given to may say so.
 
 authd knows who asks by the connection: the kernel gives it the process
 at the other end, and the user and group it acted for when it connected
@@ -261,7 +284,8 @@ at the other end, and the user and group it acted for when it connected
 
 A wrong password is answered only after a wait: 2 seconds for each of
 the first three in a row, then twice as long each time, up to a minute,
-for that account asked by that user. A try made while one waits waits
+for that account asked by that user, or, for a Windows PC's sign-in to
+the shares and an SSH client's password, from that address. A try made while one waits waits
 its turn, so tries at once do not go faster. A right password ends the
 run; one forgotten after 15 minutes with no try ends it too. A name
 there is not is checked against a hash all the same, and answered the
@@ -398,7 +422,10 @@ none:
 A share session (SESSIONS) is recorded on the terminal *smb*, from the
 PC's address, and a wrong sharing password as *failed* there. An SSH
 session on a terminal is recorded on it, from the client's address; one
-without a terminal is not, as on Linux.
+without a terminal is not, as on Linux. A wrong password over SSH is
+recorded as *failed* on the terminal *ssh*, from the client's address;
+a key that does not sign in is not, as Linux's sshd records only
+passwords.
 
 The starts and stops are in _system_, which everyone reads. Each
 account's sign-ins, sign-outs and wrong passwords are in a file named

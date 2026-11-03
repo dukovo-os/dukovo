@@ -18,7 +18,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
-use accounts::request::{self, Answer, Request};
+use accounts::request::{self, Answer, Request, SshProof, SshRun};
 use russh::server::Handle;
 use russh::{ChannelId, Sig};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -38,14 +38,13 @@ pub const WINDOW: u32 = 2 * 1024 * 1024;
 /// first process has ended, while programs it left behind may hold it.
 const DRAIN_TIME: Duration = Duration::from_secs(1);
 
-/// Who signed in, and what they signed: authd checks it again for each
-/// session.
+/// Who signed in, and how: authd checks it again for each session.
 pub struct SignedIn {
     /// The account.
     pub name: String,
-    /// What the client signed, and its signature.
-    pub signed: Vec<u8>,
-    pub signature: Vec<u8>,
+    /// What the client signed with their key, and its signature; or the
+    /// ticket authd gave for their password.
+    pub proof: SshProof,
 }
 
 /// A session channel.
@@ -134,16 +133,16 @@ enum Ends {
     Pipes { input: OwnedFd, output: OwnedFd, error: OwnedFd },
 }
 
-/// Starts `channel`'s session for `who`, with `command` if the client
-/// asked for one, through authd: once it runs, its bytes pass between
-/// the channel `id` and it, and the client hears how it ended.
+/// Starts `channel`'s session for `who`, running what the client asked,
+/// `run`, through authd: once it runs, its bytes pass between the channel
+/// `id` and it, and the client hears how it ended.
 pub async fn start(
     channel: &mut Channel,
     id: ChannelId,
     handle: Handle,
     who: &SignedIn,
     connection: &str,
-    command: Option<Vec<u8>>,
+    run: SshRun,
 ) -> Result<u32, String> {
     let failed = |err: io::Error| format!("cannot make the session's terminal or pipes: {err}");
     let (ends, given): (Ends, Vec<OwnedFd>) = match &channel.pty {
@@ -164,10 +163,9 @@ pub async fn start(
     let request = Request::SshSession {
         connection: connection.into(),
         name: who.name.clone(),
-        signed: who.signed.clone(),
-        signature: who.signature.clone(),
+        proof: who.proof.clone(),
         term: channel.pty.as_ref().map_or_default(|p| p.term.clone()),
-        command,
+        run,
         language: channel.language.clone(),
     };
     let fds: Vec<RawFd> = given.iter().map(AsRawFd::as_raw_fd).collect();
