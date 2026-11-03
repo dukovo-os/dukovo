@@ -1,0 +1,25 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+[package]
+name = "tuf"
+description = "The Update Framework's client, for catalogs, updates and bundle feeds (ADR 0380)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+# Signatures and hashes, ring's, which ob patches in from the
+# rust-crates port (ADR 0192); keys in PEM.
+base64 = "0.22.1"
+ring = "0.17.14"
+# https for fetches, rustls on ring (ADR 0192).
+rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
+# Metadata, in JSON.
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.140"
+
+[lints]
+workspace = true

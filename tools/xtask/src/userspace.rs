@@ -353,6 +353,7 @@ pub const HOST_TESTED: &[&str] = &[
     "smb",
     "smbd",
     "systools",
+    "tuf",
 ];
 
 /// The Cargo.lock of the host builds of the programs on Rust's standard
@@ -365,13 +366,18 @@ pub const HOST_LOCK: &str = "userspace/programs/host/Cargo.lock";
 /// library, building for the host, writing to `target/programs-host`:
 /// for their unit tests.
 pub fn host_cargo(ctx: &Ctx, subcommand: &str) -> Command {
+    host_cargo_of(ctx, subcommand, HOST_TESTED)
+}
+
+/// [`host_cargo`] for `packages` alone.
+pub fn host_cargo_of(ctx: &Ctx, subcommand: &str, packages: &[&str]) -> Command {
     let mut cmd = process::cargo(ctx);
     cmd.args([subcommand, "--manifest-path", STD_MANIFEST])
         .arg("--config")
         .arg(format!(r#"resolver.lockfile-path="{}""#, ctx.root.join(HOST_LOCK).display()))
         .arg("--target-dir")
         .arg(ctx.target.join("programs-host"));
-    for package in HOST_TESTED {
+    for package in packages {
         cmd.args(["-p", package]);
     }
     cmd

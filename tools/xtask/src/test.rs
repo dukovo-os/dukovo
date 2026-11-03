@@ -2616,13 +2616,15 @@ pub fn command(ctx: &Ctx, args: &mut Args) -> Result<()> {
         Some("unit") if selected.is_empty() && shard.is_none() => (true, false),
         Some("kani") if selected.is_empty() => return kani(ctx),
         Some("tla") if selected.is_empty() => return tla::check(ctx),
+        Some("tuf") if selected.is_empty() => return crate::tuf::check(ctx),
         Some("corpus") => return corpus::test(ctx, &selected),
         Some("riscv") if selected.is_empty() => return crate::riscv::test(ctx),
-        Some(suite @ ("unit" | "kani" | "tla" | "riscv")) => {
+        Some(suite @ ("unit" | "kani" | "tla" | "tuf" | "riscv")) => {
             crate::bail!("--case and --shard select boot tests; they cannot be used with `{suite}`")
         }
         Some(other) => crate::bail!(
-            "unknown test suite `{other}`; use `unit`, `boot`, `kani`, `tla`, `corpus` or `riscv`"
+            "unknown test suite `{other}`; use `unit`, `boot`, `kani`, `tla`, `tuf`, `corpus` or \
+             `riscv`"
         ),
     };
     if shard.is_some() && which.as_deref() != Some("boot") {

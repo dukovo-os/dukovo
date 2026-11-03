@@ -258,7 +258,7 @@ _target/userspace/_).
 		Pass everything after *--* to *qemu-system-x86_64*(1) unchanged,
 		for example *-- -d int* to log interrupts.
 
-*test* [*unit* | *boot* | *kani* | *tla* | *corpus* | *riscv*] [*--case* _name_]... [*--shard* _part_/_parts_] [*--timeout* _seconds_] [*--image-only*] [*--debug* | *--release*] | *--list*
+*test* [*unit* | *boot* | *kani* | *tla* | *tuf* | *corpus* | *riscv*] [*--case* _name_]... [*--shard* _part_/_parts_] [*--timeout* _seconds_] [*--image-only*] [*--debug* | *--release*] | *--list*
 	Run the unit tests of the build tool and the kernel libraries on this
 	machine, then the boot tests: build a test image and boot it in QEMU
 	once per case below. Each case follows the serial console, types
@@ -311,6 +311,18 @@ _target/userspace/_).
 	Debian, Ubuntu and Linux Mint). The first run downloads the pinned
 	release of the TLA+ tools from GitHub into _.cache/tla/_ and checks
 	its SHA-256; TLC's working files go to _out/tla/_.
+
+	*tuf* runs the TUF conformance suite instead (ADR 0380): it builds
+	the TUF client's conformance CLI, *tuf-conformance*, for the host and
+	runs tuf-conformance's tests against it, which serve repositories
+	over HTTP and check what the client trusts, fetches and refuses. The
+	tests the client is expected to fail, with why, are in
+	_userspace/programs/tuf/tuf-conformance.xfails_. The first run
+	fetches the suite at its pinned commit into _.cache/tuf-conformance/_
+	and installs the Python packages it pins in a virtual environment
+	there. It needs Python 3.10 or later with venv, git and faketime (the
+	*python3-venv* and *faketime* packages on Debian, Ubuntu and Linux
+	Mint). It takes seconds; CI runs it in a job of its own.
 
 	*corpus* runs the shell corpus instead (ADR 0103): the sources that
 	_userspace/programs/nukesh/tests/corpus.toml_ lists, each a git

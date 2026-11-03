@@ -543,6 +543,36 @@ jobs:
       - name: ./ob test tla
         run: ./ob test tla
 
+  tuf:
+    name: TUF conformance
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the pinned Rust toolchain
+        run: rustup toolchain install
+
+      # Some of the suite's tests run the client under faketime; Python
+      # and its venv module come with the runner.
+      - name: Install faketime
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends faketime
+
+      - name: Cache the conformance suite
+        uses: actions/cache@v4
+        with:
+          path: .cache/tuf-conformance
+          key: tuf-conformance-${{ hashFiles('tools/xtask/src/tuf.rs') }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+
+      # The TUF client against tuf-conformance (ADR 0380).
+      - name: ./ob test tuf
+        run: ./ob test tuf
+
   corpus:
     name: Shell corpus
     runs-on: ubuntu-24.04

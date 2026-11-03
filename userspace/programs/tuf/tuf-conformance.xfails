@@ -1,0 +1,11 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# The TUF conformance tests the client is expected to fail (ADR 0380).
+# `ob test tuf` puts this file beside the client, where the suite reads
+# it; a test listed here that passes fails the run. Each has a comment
+# above it that says why.
+
+# ML-DSA keys: ring, which checks the client's signatures, has no ML-DSA
+# (FIPS 204). Dukovo's repositories sign with Ed25519 and P-256.
+test_mldsa_keytype_and_scheme
