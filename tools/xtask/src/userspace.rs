@@ -94,6 +94,7 @@ pub const STD_ARCHIVE: &[(&str, &str)] = &[
     ("system/commands/nukesh", "nukesh"),
     ("system/commands/smb", "smb"),
     ("system/commands/smbd", "smbd"),
+    ("system/commands/sshd", "sshd"),
     ("system/commands/systools", "systools"),
     ("system/tests/posix/fuse-test", "fuse-test"),
     ("system/tests/posix/git-https-test", "git-https-test"),

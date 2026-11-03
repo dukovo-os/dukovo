@@ -11,6 +11,8 @@ service - start, stop and look at the services, and check their files
 
 *service* _name_ *start* | *stop* | *restart* | *--full-restart* | *reload* | *status*
 
+*service* _name_ *enable* | *disable*
+
 *service --status-all*
 
 *service check* [_name_ | _file_]...
@@ -49,6 +51,20 @@ after it ended:
 ```
 
 The command line is Debian's.
+
+*enable* turns a service on: it sets *enabled = true* in its file, so
+that it starts at each boot, and starts it now, as
+*systemctl enable --now* does; *disable* stops it and sets
+*enabled = false*, so that it no longer starts at boot. Only root may.
+A service whose file is not in _/system/settings/spark/services_ yet
+gets a copy of the system's own there first, and the change is written
+only if Spark still reads the file after it. This is how *sshd*(8) is
+turned on:
+
+```
+$ sudo service sshd enable
+sshd is running, and starts at each boot.
+```
 
 *check*, *new* and *edit* work on the services' files
 (*service.toml*(5)), with the same reader Spark uses:
@@ -115,4 +131,4 @@ _/system/state/spark/secrets/_*name*
 
 # SEE ALSO
 
-*spark*(8), *service.toml*(5), *shutdown*(8), *systools*(1)
+*spark*(8), *service.toml*(5), *shutdown*(8), *sshd*(8), *systools*(1)

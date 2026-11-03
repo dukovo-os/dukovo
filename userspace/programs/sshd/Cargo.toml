@@ -1,0 +1,28 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+[package]
+name = "sshd"
+description = "sshd(8): lets people sign in to this computer over SSH with a key, each session served as them (ADR 0347)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+# What authd(8) is asked (ADR 0218): whether a key may sign someone in,
+# and to start their session.
+accounts = { path = "../accounts" }
+# The libc crate with its Radix module, which ob patches in from the
+# rust-std port (ADR 0070).
+libc = "0.2.191"
+# SSH itself (Apache-2.0), with ring's cryptography: ob patches it so
+# that a handler sees what a client signed, for authd to check again,
+# and gives a client room to send as a session reads (ADR 0347).
+russh = { version = "0.65.0", default-features = false, features = ["ring"] }
+# The runtime russh runs on (MIT), one thread per connection.
+tokio = { version = "1.54.1", features = ["rt", "net", "time", "io-util", "sync"] }
+
+[lints]
+workspace = true

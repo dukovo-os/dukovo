@@ -7,7 +7,9 @@ nix on Radix, which has Linux's system interface through mlibc: the
 Linux's C library has: errno's names and descriptions, signals, termios
 with Linux's speeds and flags, the passwd fields, directory entries'
 inode numbers, ioctl's Linux encoding, pipe2 and the other unistd calls,
-and CLOCK_BOOTTIME, which boringtun's timers read.
+and CLOCK_BOOTTIME, which boringtun's timers read. Its memory calls
+leave out MAP_NORESERVE and shm_unlink, which Radix's libc crate does
+not name, so that russh's buffers can lock their pages (mlock).
 
 diff --git a/nix-0.31.3/build.rs b/nix-0.31.3/build.rs
 index eb27943..c348db0 100644
@@ -589,6 +591,27 @@ index f8bf616..79d8e10 100644
      target_os = "cygwin"
  ))]
  pub use self::linux::*;
+diff --git a/nix-0.31.3/src/sys/mman.rs b/nix-0.31.3/src/sys/mman.rs
+--- a/nix-0.31.3/src/sys/mman.rs
++++ b/nix-0.31.3/src/sys/mman.rs
+@@ -82,7 +82,7 @@
+         /// Do not reserve swap space for this mapping.
+         ///
+         /// This was removed in FreeBSD 11 and is unused in DragonFlyBSD.
+-        #[cfg(not(any(freebsdlike, target_os = "aix", target_os = "hurd", target_os = "redox")))]
++        #[cfg(not(any(freebsdlike, target_os = "aix", target_os = "hurd", target_os = "redox", radix)))]
+         MAP_NORESERVE;
+         /// Populate page tables for a mapping.
+         #[cfg(linux_android)]
+@@ -671,7 +671,7 @@
+ /// For more information, see [`shm_unlink(3)`].
+ ///
+ /// [`shm_unlink(3)`]: https://man7.org/linux/man-pages/man3/shm_unlink.3.html
+-#[cfg(not(target_os = "android"))]
++#[cfg(not(any(target_os = "android", radix)))]
+ pub fn shm_unlink<P: ?Sized + NixPath>(name: &P) -> Result<()> {
+     let ret =
+         name.with_nix_path(|cstr| unsafe { libc::shm_unlink(cstr.as_ptr()) })?;
 diff --git a/nix-0.31.3/src/sys/mod.rs b/nix-0.31.3/src/sys/mod.rs
 index bfdf4d0..48cc678 100644
 --- a/nix-0.31.3/src/sys/mod.rs
