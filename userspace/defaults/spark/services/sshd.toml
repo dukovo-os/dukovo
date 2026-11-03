@@ -4,11 +4,13 @@
 # Signing in over SSH: sshd(8) lets people sign in to this computer from
 # another with a key their ~/.ssh/authorized_keys lists (ADR 0347), or
 # with a password once /system/settings/ssh/sshd_config turns passwords
-# on (sshd_config(5), ADR 0348), and copy files with sftp and scp. It
-# makes the computer's own key, which clients remember it by, the first
-# time it starts. authd(8) checks each key's signature and password,
-# and starts the person's session as them; sshd itself only passes the
-# bytes. `service sshd reload` has it read sshd_config again.
+# on (sshd_config(5), ADR 0348), copy files with sftp and scp, and
+# forward ports (ADR 0349). It makes the computer's own key, which
+# clients remember it by, the first time it starts. authd(8) checks
+# each key's signature and password, and starts the person's session
+# as them, and the forwarder that makes their forwarded connections;
+# sshd itself only passes the bytes, and holds no network but port 22.
+# `service sshd reload` has it read sshd_config again.
 #
 # It is off until `service sshd enable` turns it on, which sets
 # `enabled = true` below and starts it; `service sshd disable` stops it

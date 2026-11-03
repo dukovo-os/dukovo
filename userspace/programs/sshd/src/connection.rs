@@ -17,6 +17,11 @@
 //! settings say who may sign in at all. A connection has two minutes to
 //! sign in, six tries, and four sessions at most, each a shell, a
 //! command or SFTP.
+//!
+//! Once someone signed in, their client may forward ports, as the
+//! settings let it (ADR 0349): sshd has the connection's forwarder, which
+//! authd starts as them, make the connections and listen on the ports
+//! ([`forward`]).
 
 use std::collections::HashMap;
 use std::fs::File;
@@ -30,6 +35,7 @@ use std::time::Duration;
 use tokio::sync::oneshot;
 use tokio::time::Instant;
 
+use accounts::forwarding::HOST_MAX;
 use accounts::request::{
     self, Answer, Request, SSH_COMMAND_MAX, SSH_KEY_ALGORITHMS, SshProof, SshRun,
 };
@@ -37,10 +43,14 @@ use accounts::sshd_config::{self, Settings};
 use russh::keys::ssh_key::HashAlg;
 use russh::keys::{Algorithm, PrivateKey};
 use russh::server::{
-    self, Auth, ChannelOpenHandle, Msg, PublicKeyOffer, Session, VerifiedPublicKey,
+    self, Auth, ChannelOpenHandle, Handle, Msg, PublicKeyOffer, Session, VerifiedPublicKey,
 };
-use russh::{Channel, ChannelId, Disconnect, MethodKind, MethodSet, Preferred, SshId, kex};
+use russh::{
+    Channel, ChannelId, ChannelOpenFailure, Disconnect, MethodKind, MethodSet, Preferred, SshId,
+    kex,
+};
 
+use crate::forward::Forwarding;
 use crate::session::{self, SignedIn, WINDOW};
 use crate::{authd, hostkey, pty};
 
@@ -63,6 +73,10 @@ const NAME_MAX: usize = 256;
 const TERM_MAX: usize = 64;
 /// The most language settings one session takes.
 const SETTINGS_MAX: usize = 16;
+/// How long the forwarder may take to listen on a port.
+const LISTEN_TIME: Duration = Duration::from_secs(10);
+/// The ports below this are root's to listen on, as on Linux.
+const PORTS_FROM: u16 = 1024;
 
 /// The key exchanges sshd offers: post-quantum hybrid first, then
 /// Curve25519, which every OpenSSH since 6.5 speaks. The finite-field
@@ -117,6 +131,8 @@ struct Connection {
     refused: Option<String>,
     /// The session channels.
     channels: HashMap<ChannelId, session::Channel>,
+    /// The forwarding, once the client forwarded a port.
+    forwarding: Option<Forwarding>,
 }
 
 /// `sshd --connection`: serves the connection on standard input, with
@@ -157,6 +173,7 @@ pub fn run(settings: Settings) -> ExitCode {
         signed_in: None,
         refused: None,
         channels: HashMap::new(),
+        forwarding: None,
     };
     match runtime.block_on(serve(socket, key, connection, signed_in)) {
         Ok(()) => ExitCode::SUCCESS,
@@ -279,6 +296,45 @@ impl Connection {
         }
     }
 
+    /// The connection's forwarding, its forwarder started through authd
+    /// the first time; `None`, and why in the log, if it cannot be.
+    async fn forwarding(&mut self, handle: Handle) -> Option<&Forwarding> {
+        let who = self.signed_in.as_ref()?;
+        match &self.forwarding {
+            Some(forwarding) if forwarding.alive() => {}
+            // It ended, and said why: the connection forwards no more.
+            Some(_) => return None,
+            None => match Forwarding::start(handle, who, &self.connection, &self.from).await {
+                Ok(forwarding) => {
+                    eprintln!(
+                        "sshd: started forwarding for {} from {}, process {}",
+                        who.name, self.from, forwarding.process
+                    );
+                    self.forwarding = Some(forwarding);
+                }
+                Err(why) => {
+                    eprintln!("sshd: cannot forward for {} from {}: {why}", who.name, self.from);
+                    return None;
+                }
+            },
+        }
+        self.forwarding.as_ref()
+    }
+
+    /// Who signed in, if anyone, and the settings let them forward
+    /// `which` way: if not, why is logged.
+    fn may_forward(&self, which: &str, allowed: bool) -> Option<String> {
+        let who = self.signed_in.as_ref()?;
+        if !allowed {
+            eprintln!(
+                "sshd: refused to forward {which} for {} from {}: AllowTcpForwarding",
+                who.name, self.from
+            );
+            return None;
+        }
+        Some(who.name.clone())
+    }
+
     /// The channel `id`, if it is one of ours and its session has not
     /// started.
     fn unstarted(&mut self, id: ChannelId) -> Option<&mut session::Channel> {
@@ -300,6 +356,7 @@ impl Connection {
                     SshRun::Shell => "a shell",
                     SshRun::Command(_) => "a command",
                     SshRun::Sftp => "SFTP",
+                    SshRun::Forward => "forwarding",
                 };
                 session::start(channel, id, handle, who, &self.connection, run)
                     .await
@@ -437,6 +494,95 @@ impl server::Handler for Connection {
 
     fn adjusts_window(&self) -> bool {
         true
+    }
+
+    async fn channel_open_direct_tcpip(
+        &mut self,
+        channel: Channel<Msg>,
+        host: &str,
+        port: u32,
+        _originator_address: &str,
+        _originator_port: u32,
+        reply: ChannelOpenHandle,
+        session: &mut Session,
+    ) -> Result<(), Error> {
+        // Dropping the reply refuses the channel.
+        if self.may_forward("a connection", self.settings.forwards_local()).is_none() {
+            return Ok(());
+        }
+        let Ok(port) = u16::try_from(port) else { return Ok(()) };
+        if !printable(host, HOST_MAX) {
+            return Ok(());
+        }
+        match self.forwarding(session.handle()).await {
+            Some(forwarding) => forwarding.connect(channel, reply, host.into(), port),
+            None => reply.reject(ChannelOpenFailure::ConnectFailed).await,
+        }
+        Ok(())
+    }
+
+    async fn tcpip_forward(
+        &mut self,
+        address: &str,
+        port: &mut u32,
+        session: &mut Session,
+    ) -> Result<bool, Error> {
+        let Some(name) = self.may_forward("a port", self.settings.forwards_remote()) else {
+            return Ok(false);
+        };
+        let Ok(asked) = u16::try_from(*port) else { return Ok(false) };
+        if address.len() > HOST_MAX || address.chars().any(char::is_control) {
+            return Ok(false);
+        }
+        // As OpenSSH's sshd, for anyone but root, whom it does not sign in.
+        if asked != 0 && asked < PORTS_FROM {
+            eprintln!(
+                "sshd: refused to forward port {asked} for {name} from {}: the ports below \
+                 {PORTS_FROM} are root's",
+                self.from
+            );
+            return Ok(false);
+        }
+        let listening_at = self.settings.listen_address(address);
+        let from = self.from.clone();
+        let Some(forwarding) = self.forwarding(session.handle()).await else { return Ok(false) };
+        let listened = forwarding.listen(address.into(), listening_at.clone(), asked);
+        match tokio::time::timeout(LISTEN_TIME, listened).await {
+            Ok(Ok(listening)) => {
+                let at = if listening_at.is_empty() { "every address" } else { &listening_at };
+                eprintln!("sshd: forwarding port {listening} at {at} for {name} from {from}");
+                if asked == 0 {
+                    *port = u32::from(listening);
+                }
+                Ok(true)
+            }
+            Ok(Err(why)) => {
+                eprintln!("sshd: cannot forward port {asked} for {name} from {from}: {why}");
+                Ok(false)
+            }
+            Err(_) => {
+                eprintln!(
+                    "sshd: cannot forward port {asked} for {name} from {from}: the forwarder did \
+                     not listen in {} seconds",
+                    LISTEN_TIME.as_secs()
+                );
+                Ok(false)
+            }
+        }
+    }
+
+    async fn cancel_tcpip_forward(
+        &mut self,
+        address: &str,
+        port: u32,
+        _session: &mut Session,
+    ) -> Result<bool, Error> {
+        match &self.forwarding {
+            Some(forwarding) if forwarding.alive() => {
+                Ok(forwarding.unlisten(address.into(), port).await)
+            }
+            _ => Ok(false),
+        }
     }
 
     async fn channel_open_session(
@@ -581,13 +727,16 @@ impl server::Handler for Connection {
         data: &[u8],
         session: &mut Session,
     ) -> Result<(), Error> {
-        match self.channels.get_mut(&id).and_then(|channel| channel.running.as_mut()) {
-            Some(running) => running.input(data).map_err(|_| Error::Overrun),
+        match self.channels.get_mut(&id).map(|channel| channel.running.as_mut()) {
+            Some(Some(running)) => running.input(data).map_err(|_| Error::Overrun),
             // Before the session starts, input is passed over.
-            None => {
+            Some(None) => {
                 session::give_room(&session.handle(), id, data.len());
                 Ok(())
             }
+            // A forwarded connection's channel, whose bytes its own task
+            // passes on (forward.rs).
+            None => Ok(()),
         }
     }
 

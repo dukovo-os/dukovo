@@ -51,7 +51,9 @@
 //! sshd asks it to check one, counted for the client's address as a PC's
 //! are, and a right one is answered with a ticket that starts that
 //! person's sessions for that connection's process alone, so that sshd
-//! keeps no password.
+//! keeps no password. A connection's forwarding is the person's too: the
+//! forwarder that makes its connections, `sshd --forward`, starts as an
+//! SSH session does, with the network a session has (ADR 0349).
 
 use std::collections::HashMap;
 use std::fmt::Write as _;
@@ -1649,8 +1651,16 @@ impl Authd {
             SshRun::Shell => (None, "a shell"),
             SshRun::Command(command) => (Some(command), "a command"),
             SshRun::Sftp => (Some(SFTP_SERVER.as_bytes()), "SFTP"),
+            SshRun::Forward => (None, "forwarding"),
         };
-        let shell = command.is_none();
+        let forwarder = match (asked.run, &io) {
+            (SshRun::Forward, signin::SshIo::Pipes(pipes)) => Some(*pipes),
+            (SshRun::Forward, signin::SshIo::Terminal(_)) => {
+                return refused("a connection's forwarder runs on pipes, not a terminal".into());
+            }
+            _ => None,
+        };
+        let shell = command.is_none() && forwarder.is_none();
         let groups =
             accounts::other_groups(user, &files.groups, radix_abi::names::GROUPS_MAX as usize);
         let language: Vec<String> =
@@ -1681,7 +1691,11 @@ impl Authd {
                 let _ = File::from(copy).write_all(text.as_bytes());
             }
         }
-        let process = match signin::start_ssh(names, user, &groups, &io, env, command) {
+        let started = match forwarder {
+            Some(pipes) => signin::start_forwarder(names, user, &groups, pipes, env),
+            None => signin::start_ssh(names, user, &groups, &io, env, command),
+        };
+        let process = match started {
             Ok(process) => process as i32,
             Err(why) => return refused(why),
         };

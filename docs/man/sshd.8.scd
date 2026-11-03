@@ -15,13 +15,16 @@ sshd - let people sign in to this computer over SSH
 
 *sshd --connection --settings* _settings_
 
+*sshd --forward*
+
 # DESCRIPTION
 
 sshd lets people sign in to this computer from another over SSH, with
 a key their _~/.ssh/authorized_keys_ lists, or with their password once
 *sshd_config*(5) lets them, and run a shell or a command there as
-themselves, or copy files with *sftp* and *scp* (ADRs 0347 and 0348).
-Spark runs it as the *sshd* service once it is turned on:
+themselves, copy files with *sftp* and *scp*, and forward ports (ADRs
+0347 to 0349). Spark runs it as the *sshd* service once it is turned
+on:
 
 ```
 $ sudo service sshd enable
@@ -108,8 +111,38 @@ other variables a client sends are refused.
 *sftp*(1) and *scp*(1) copy files as the person: the SFTP subsystem
 runs OpenSSH's *sftp-server*(8) as a command of the session, which scp
 uses too, and *scp -O*, OpenSSH's old protocol, runs *scp* itself as a
-command. Other subsystems, port forwarding, X11 forwarding and agent
-forwarding are refused.
+command. Other subsystems, X11 forwarding and agent forwarding are
+refused.
+
+# FORWARDING
+
+A client may forward ports both ways, as OpenSSH's sshd lets it unless
+*AllowTcpForwarding* in *sshd_config*(5) says otherwise (ADR 0349):
+
+```
+$ ssh -L 8080:localhost:80 alice@dukovo
+$ ssh -D 1080 alice@dukovo
+$ ssh -R 9000:localhost:3000 alice@dukovo
+```
+
+With *-L*, *-D* and *-W*, each connection the client forwards is made
+from this computer, to where the client names. With *-R*, a port here
+listens, and each connection to it goes to the client, which makes
+the rest of the way. Either way the connections are the person's: the
+connection's forwarder, *sshd --forward*, which *authd*(8) starts as
+them the first time their client forwards anything, makes them and
+listens, with the network a session of theirs has (ADR 0257). So, as
+for anyone but root on Linux, a port below 1024 is refused, and names
+are looked up as the person's own programs look them up.
+
+A port forwarded from here listens on the loopback addresses,
+127.0.0.1 and ::1, for this computer's programs alone, unless
+*GatewayPorts* says otherwise. Even then, other machines reach it only
+once the firewall lets them, as for anything a person runs:
+*firewall allow program /system/commands/sshd* (*firewall*(8)). A
+client that asks for port 0 is told the port chosen. A connection
+forwards 128 connections at once, and 16 ports; forwarding Unix
+sockets is refused.
 
 # HOW IT WORKS
 
@@ -132,6 +165,15 @@ gave for the person's password, before it starts the session as the
 person, on the terminal sshd made or on three pipes.
 sshd then passes the bytes between the client and the session, and lets
 the client send only as much as the session has taken.
+
+The first time a client forwards a port, sshd asks authd for the
+connection's forwarder too, with the same proof, and authd starts
+*sshd --forward* as the person, on three pipes, outside any shell. sshd
+passes it frames: the connections to make and the ports to listen on,
+and the bytes of each, which go only as fast as the other side takes
+them, a stream at a time. The forwarder ends with the connection, and
+its connections and ports with it; should it end before, the
+connection's forwarded channels close, and the log says why.
 
 A connection has two minutes to sign in and six keys to try; at most
 30 connections sign in at once, 10 of them from one address, and 100
@@ -179,11 +221,11 @@ _/system/settings/spark/services/sshd.toml_
 sshd runs until Spark stops it, which ends the connections it serves
 and their sessions; 1 if sshd_config has a mistake, or it cannot make
 or read the host key, or listen on port 22. *sshd --connection* ends
-with its connection. *sshd -t* and *sshd -T* end with 0, or with 1 for
-a mistake.
+with its connection, and *sshd --forward* as sshd closes its input.
+*sshd -t* and *sshd -T* end with 0, or with 1 for a mistake.
 
 # SEE ALSO
 
 *ssh*(1), *sftp*(1), *scp*(1), *ssh-keygen*(1), *sshd_config*(5),
 *sftp-server*(8), *authd*(8), *login*(1), *service*(8),
-*service.toml*(5), *last*(1)
+*service.toml*(5), *last*(1), *firewall*(8)

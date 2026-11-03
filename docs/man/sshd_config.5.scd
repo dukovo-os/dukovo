@@ -14,7 +14,8 @@ _/system/settings/ssh/sshd_config_
 # DESCRIPTION
 
 *sshd*(8) reads this file as it starts, and again when *service sshd
-reload* asks it to, for the connections that come after (ADR 0348).
+reload* asks it to, for the connections that come after (ADRs 0348
+and 0349).
 The file is OpenSSH's, with the keywords below; the default one says
 nothing but comments, so keys alone sign in, and everyone with a
 person's account may:
@@ -23,6 +24,8 @@ person's account may:
 # Passwords sign in too, but only alice's and bob's.
 PasswordAuthentication yes
 AllowUsers alice bob
+# Clients forward ports here to them, not the other way.
+AllowTcpForwarding remote
 ```
 
 Each line is a keyword, in any case, and its values, after spaces or
@@ -40,6 +43,24 @@ a line meant to keep people out never does nothing. *sshd -t* checks
 the file before a reload, and *sshd -T* shows what it says.
 
 # KEYWORDS
+
+*AllowTcpForwarding* *yes*|*all*|*local*|*remote*|*no*
+	Which ports a client may forward (ADR 0349, *sshd*(8)): *local*
+	the connections it has made from here, as *ssh -L*, *-D* and *-W*
+	ask; *remote* the ports here it has listen for it, as *ssh -R*
+	asks; *yes* or *all* both, the default, as OpenSSH's; *no* neither.
+	The connections are the person's, made with the network a session
+	of theirs has: turning forwarding off keeps nothing from someone
+	who can run their own programs here.
+
+*GatewayPorts* *no*|*yes*|*clientspecified*
+	Where a port a client forwards from here listens. The default:
+	*no*, on the loopback addresses alone, for this computer's
+	programs; a client may name 127.0.0.1 or ::1 to have one of the
+	two. *yes*: on every address. *clientspecified*: where the client
+	asks: an empty address or *\** is every address, *localhost* the
+	loopback ones. Other machines reach a port only once the firewall
+	lets them too (*firewall*(8)).
 
 *PasswordAuthentication* *yes*|*no*
 	Whether a person's password signs them in. The default: *no*,
@@ -88,4 +109,4 @@ _/system/resources/default-settings/ssh/sshd_config_
 
 # SEE ALSO
 
-*sshd*(8), *authd*(8), *service*(8), *ssh_config*(5)
+*sshd*(8), *authd*(8), *service*(8), *ssh_config*(5), *firewall*(8)

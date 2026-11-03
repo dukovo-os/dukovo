@@ -284,7 +284,7 @@ async fn write_in(mut to: pipe::Sender, mut input: mpsc::UnboundedReceiver<Vec<u
 }
 
 /// Writes all of `bytes` to `to`.
-async fn write_all(to: &mut pipe::Sender, bytes: &[u8]) -> io::Result<()> {
+pub async fn write_all(to: &mut pipe::Sender, bytes: &[u8]) -> io::Result<()> {
     let mut at = 0;
     while at < bytes.len() {
         match to.write(&bytes[at..]).await {

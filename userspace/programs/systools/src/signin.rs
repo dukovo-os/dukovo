@@ -429,6 +429,35 @@ pub fn start_ssh(
     launch(names, user, groups, &program)
 }
 
+/// sshd(8), whose `--forward` makes an SSH connection's forwarded
+/// connections, and listens on the ports its client forwards (ADR 0349).
+pub const FORWARDER: &str = "/system/commands/sshd";
+
+/// Starts the forwarder of `user`'s SSH connection, `sshd --forward`,
+/// acting for them and the groups `groups`, with the network a session
+/// gets (ADR 0257) and nothing else of a session's: no shell runs it, as
+/// what a shell's startup writes would break its frames. Its 0, 1 and 2
+/// are `pipes`, and its environment `env`. Returns the number of its
+/// process, a child of authd's.
+pub fn start_forwarder(
+    names: u32,
+    user: &User,
+    groups: &[u32],
+    [input, output, error]: [&OwnedFd; 3],
+    env: Vec<String>,
+) -> Result<u64, String> {
+    let program = Program {
+        what: "the SSH connection's forwarder",
+        path: FORWARDER,
+        args: &[b"sshd", b"--forward"],
+        env,
+        descriptors: &[(input.as_raw_fd(), 0), (output.as_raw_fd(), 1), (error.as_raw_fd(), 2)],
+        network: true,
+        shares: None,
+    };
+    launch(names, user, groups, &program)
+}
+
 /// smbd(8)'s worker, which serves a Windows PC's share session as the
 /// person who signed in (ADR 0228).
 pub const SHARE_PROGRAM: &str = "/system/commands/smbd";

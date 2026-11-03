@@ -22,6 +22,7 @@
 //! are kept as they are when a file is written again, so that an edit by
 //! hand is never lost.
 
+pub mod forwarding;
 #[cfg(feature = "hash")]
 pub mod hash;
 #[cfg(feature = "ntlm")]
