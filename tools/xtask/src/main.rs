@@ -11,6 +11,7 @@ mod account;
 mod baseline;
 mod bench;
 mod btrfs;
+mod bundles;
 mod config;
 mod corpus;
 mod docs;
@@ -38,6 +39,7 @@ mod shellbench;
 mod signoff;
 mod test;
 mod tla;
+mod upstream;
 mod userspace;
 
 use std::fmt;
@@ -137,6 +139,8 @@ out/sysroot/boot/usertests, and writes the boot archive.
         }
         "ports" => {
             "Usage: ./ob ports [--rebuild <name>]...
+       ./ob ports outdated [--tsv]
+       ./ob ports audit
 
 Builds the ports in ports/, each after those it needs: the C library
 (mlibc), the C++ headers it is built with, and programs from elsewhere.
@@ -146,6 +150,15 @@ when its directory, the toolchain or a port it needs changed. The
 toolchain is the host's Clang (20 or later) and LLD, wrapped by
 out/toolchain/bin/x86_64-radix-cc and the Meson cross files in
 out/toolchain/meson. `./ob build` runs this first.
+
+A port whose recipe has a [bundle] table is the catalog's, not the
+image's: its build.sh installs into $PORT_BUNDLE, and ob packs that into a
+signed out/bundles/<id>-<version>.dkv with its manifest, SBOM and licenses
+(ADR 0370).
+
+`outdated` lists the ports pinned to a git tag whose upstream has released
+a newer version (--tsv: name, pin and newer release, for CI). `audit` checks
+the Cargo.lock of each bundle's port in Rust with cargo-audit.
 
   --rebuild <name>   Build this port even if nothing changed; repeat for more"
         }
@@ -728,6 +741,19 @@ fn dispatch(argv: Vec<String>) -> Result<()> {
             userspace::build(&ctx, profile).map(|_| ())
         }
         "ports" => {
+            match args.positional().as_deref() {
+                Some("outdated") => {
+                    let tsv = args.flag("--tsv");
+                    args.finish()?;
+                    return upstream::outdated(&ctx, tsv);
+                }
+                Some("audit") => {
+                    args.finish()?;
+                    return upstream::audit(&ctx);
+                }
+                Some(other) => bail!("`./ob ports` has no `{other}`; see `./ob help ports`"),
+                None => {}
+            }
             let mut rebuild = Vec::new();
             while let Some(name) = args.value("--rebuild")? {
                 rebuild.push(name);

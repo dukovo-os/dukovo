@@ -1,0 +1,19 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# Dukovo's own crate in the place of crates.io's ansi_colours, which is
+# under the LGPL (ADR 0370): the same function bat calls, written from
+# xterm's 256-colour palette alone. ports/bat's build gives it to bat
+# with Cargo's [patch], so the bundle links no LGPL code.
+[package]
+name = "ansi_colours"
+version = "1.2.3"
+edition = "2021"
+license = "Apache-2.0 OR MIT"
+description = "The nearest colour of xterm's 256-colour palette to a 24-bit colour"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[workspace]

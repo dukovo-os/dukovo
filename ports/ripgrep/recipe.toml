@@ -1,0 +1,23 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# ripgrep, rg, which searches files for lines that match a regular
+# expression, skipping what .gitignore leaves out: a bundle of the Dukovo
+# catalog, not of the image (ADR 0370). Its command runs with the access
+# of whoever runs it, as command-line tools do.
+name = "ripgrep"
+version = "15.2.0"
+summary = "searches files and folders for lines that match a pattern"
+license = "Unlicense OR MIT"
+homepage = "https://github.com/BurntSushi/ripgrep"
+depends = ["rust-crates"]
+
+[source]
+git = "https://github.com/BurntSushi/ripgrep.git"
+commit = "e89fff89ac9af12e8d4ce9d5fd07beb408ca730f"
+tag = "15.2.0"
+
+[bundle]
+id = "io.github.burntsushi.ripgrep"
+name = "ripgrep"
+commands = ["rg"]

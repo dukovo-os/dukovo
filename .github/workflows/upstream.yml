@@ -1,0 +1,89 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# Keeps the ports up with their upstreams (ADR 0370). Each Monday,
+# `./ob ports outdated` asks each port's repository for its releases, and
+# an issue is opened, or brought up to date, for each port whose upstream
+# has a newer one; a person moves the pin, and signs the commit off, in a
+# pull request that CI tests as any other. Each day, `./ob ports audit`
+# checks the crates of the catalog's bundles in Rust against the RustSec
+# advisory database, and an advisory fails the run.
+name: Upstream releases and advisories
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 6 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: upstream
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  outdated:
+    name: ./ob ports outdated
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+
+      - name: Find newer releases
+        id: find
+        run: |
+          if [ "${{ github.event_name }}" = schedule ] && [ "$(date -u +%u)" != 1 ]; then
+            echo "Not Monday: only the audit runs today."
+            exit 0
+          fi
+          ./ob ports outdated --tsv > outdated.tsv
+          cat outdated.tsv
+
+      - name: Open or update an issue for each
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          [ -s outdated.tsv ] || exit 0
+          while IFS="$(printf '\t')" read -r name pinned newer; do
+            title="Port $name: $newer is out (pinned to $pinned)"
+            body="Upstream of ports/$name has released $newer; the recipe pins $pinned.
+
+          Move the pin in ports/$name/recipe.toml (commit and tag), check that the
+          patches still apply and that \`./ob ports --rebuild $name\` builds, and open
+          a pull request; CI tests it as any other. Found by \`./ob ports outdated\`
+          (ADR 0370)."
+            open=$(gh issue list --state open --search "\"Port $name:\" in:title" \
+              --json number,title --jq ".[] | select(.title | startswith(\"Port $name:\")) | .number" | head -n 1)
+            if [ -n "$open" ]; then
+              gh issue edit "$open" --title "$title" --body "$body"
+            else
+              gh issue create --title "$title" --body "$body"
+            fi
+          done < outdated.tsv
+
+  audit:
+    name: ./ob ports audit
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+
+      - name: Install cargo-audit
+        # Keep in step with ADR 0370.
+        run: cargo install cargo-audit --version 0.22.1 --locked
+
+      - name: Check the bundles' crates against RustSec
+        run: ./ob ports audit

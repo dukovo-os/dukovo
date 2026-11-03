@@ -19,10 +19,10 @@ use std::path::Path;
 
 use manifest::bundle::{self, Manifest};
 
-use super::minisign::{PublicKey, SecretKey, Signature};
-use super::sums::{self, Entry, Hasher, LIST, SIGNATURE};
-use super::zip::{self, Archive, Source};
-use super::{MANIFEST, sbom};
+use crate::minisign::{PublicKey, SecretKey, Signature};
+use crate::sums::{self, Entry, Hasher, LIST, SIGNATURE};
+use crate::zip::{self, Archive, Source};
+use crate::{MANIFEST, sbom};
 
 /// The prefix of the signature's first line, before the key that made it.
 pub const SIGNED_BY: &str = "signed by key ";
@@ -36,9 +36,11 @@ pub const SIGNATURE_MAX: u64 = 16 << 10;
 /// What checking a bundle found: it is signed by `key`, and is `manifest`'s.
 #[derive(Debug)]
 pub struct Checked {
+    /// The key the signature proves made it.
     pub key: PublicKey,
     /// The signature's trusted comment.
     pub trusted: String,
+    /// Its manifest, read and checked.
     pub manifest: Manifest,
     /// How many files its list holds: all but the list and the signature.
     pub files: usize,

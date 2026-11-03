@@ -1,0 +1,20 @@
+SPDX-FileCopyrightText: bat-developers
+SPDX-FileCopyrightText: 2026 The Dukovo contributors
+SPDX-License-Identifier: MIT OR Apache-2.0
+
+bat the application without its --diagnostic report, whose bugreport
+crate reads what the system is from Linux's /proc through sysinfo,
+which knows nothing of Radix: the rest of the application, its manual
+page and its completions, stays.
+
+diff --git a/Cargo.toml b/Cargo.toml
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -18,7 +18,6 @@
+ # Feature required for bat the application. Should be disabled when depending on
+ # bat as a library.
+ application = [
+-    "bugreport",
+     "build-assets",
+     "minimal-application",
+ ]

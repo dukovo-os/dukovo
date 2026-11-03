@@ -14,7 +14,7 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::ports::Ports;
+use crate::ports::{Port, Ports};
 use crate::process::{self, step};
 use crate::{Context, Ctx, Error, Result, VERSION, kernel, patched, userspace};
 
@@ -248,11 +248,8 @@ pub fn install(ctx: &Ctx, staging: &Path, extras: &Extras<'_>) -> Result<String>
             process::copy(notice, &dir.join(package.notice_dir()).join(name))?;
         }
     }
-    let document = Document {
-        name: format!("dukovo-{VERSION}-x86_64"),
-        commit: git_commit(ctx),
-        created: crate::image::source_date_epoch(ctx).and_then(|e| e.parse().ok()).unwrap_or(0),
-    };
+    let created = crate::image::source_date_epoch(ctx).and_then(|e| e.parse().ok()).unwrap_or(0);
+    let document = Document::image(&git_commit(ctx), created);
     let manifest = document.render(&packages, &ids, &ctx.root)?;
     write(&dir.join(MANIFEST), &manifest)?;
     write(&dir.join("README"), &readme(&packages))?;
@@ -261,6 +258,113 @@ pub fn install(ctx: &Ctx, staging: &Path, extras: &Extras<'_>) -> Result<String>
         packages.len()
     ));
     Ok(manifest)
+}
+
+/// Licenses a catalog bundle's port, and what is built into it, may use
+/// beyond a port's (ADR 0370). The Mozilla Public License 2.0 is copyleft
+/// file by file: each such file's source is the crate on crates.io that
+/// the bundle's SBOM names, with its SHA-256, which is the "reasonable
+/// means" of obtaining it that it asks for.
+const BUNDLE_EXTRA_ALLOW: &[&str] = &["MPL-2.0"];
+
+/// What a bundle says of its licenses (ADR 0370): every component of the
+/// port the bundle is built from, checked against the port allow-list
+/// and [`BUNDLE_EXTRA_ALLOW`], written into the bundle's `folder` as
+/// `sbom.spdx`, which lists each, and `licenses/`, with the texts of
+/// every license named and each component's notices. `created` is the
+/// document's time, in seconds since 1970.
+pub fn bundle(ctx: &Ctx, ports: &Ports, port: &Port, folder: &Path, created: i64) -> Result<()> {
+    let recipe = &port.recipe;
+    let spec = recipe.bundle.as_ref().expect("a bundle's port");
+    let mut packages = Vec::new();
+    port_packages(ctx, ports, port, &mut packages)?;
+    let mut problems = Vec::new();
+    let allowed: Vec<String> = kernel_allow_list(ctx)?
+        .into_iter()
+        .chain(PORT_EXTRA_ALLOW.iter().chain(BUNDLE_EXTRA_ALLOW).map(ToString::to_string))
+        .collect();
+    for package in &packages {
+        let what = format!("{} {}", package.name, package.version);
+        match Expr::parse(&package.license) {
+            _ if package.license.is_empty() => {
+                problems.push(format!("{what} declares no SPDX license"));
+            }
+            Err(err) => problems.push(format!("{what}: license `{}`: {err}", package.license)),
+            Ok(expr) if !expr.satisfied_by(&allowed) => problems.push(format!(
+                "{what}: license `{}` is outside the bundle allow-list (the port's and \
+                 BUNDLE_EXTRA_ALLOW in tools/xtask/src/licenses.rs)",
+                package.license
+            )),
+            Ok(_) => {}
+        }
+    }
+    if !problems.is_empty() {
+        return Err(Error::new(format!(
+            "bundle {}: license check failed:\n  {}",
+            spec.id,
+            problems.join("\n  ")
+        ))
+        .hint("see docs/adr/0370-ports-the-catalog-carries-are-packed-as-bundles.md"));
+    }
+    let ids = license_ids(&packages)?;
+    let dir = folder.join("licenses");
+    process::create_dir(&dir.join("texts"))?;
+    for id in &ids {
+        process::copy(&text_source(&ctx.root, id), &dir.join(format!("texts/{id}.txt")))?;
+    }
+    for package in &packages {
+        for notice in &package.notices {
+            let name = notice.file_name().expect("a notice is a file");
+            process::copy(notice, &dir.join(package.notice_dir()).join(name))?;
+        }
+    }
+    let commit = git_commit(ctx);
+    let name = format!("{}-{}", spec.id, recipe.version);
+    let document = Document {
+        namespace: format!(
+            "https://dukovo.org/spdx/bundles/{name}-{}",
+            &commit[..commit.len().min(12)]
+        ),
+        name,
+        created,
+        top: Top {
+            id: "bundle".into(),
+            name: spec.id.clone(),
+            version: recipe.version.clone(),
+            download: format!(
+                "git+https://github.com/openlinuxsystems/orthros@{commit}#ports/{}",
+                recipe.name
+            ),
+            license: recipe.license.clone(),
+            comment: format!(
+                "The Dukovo catalog's bundle of {} {}, built by ports/{} of Dukovo. Each \
+                 component below keeps its own license; the texts are in licenses/texts and \
+                 the notices in licenses/notices.",
+                spec.name, recipe.version, recipe.name
+            ),
+        },
+        notices: "licenses".into(),
+    };
+    write(&folder.join("sbom.spdx"), &document.render(&packages, &ids, &ctx.root)?)?;
+    write(&dir.join("README"), &bundle_readme(&spec.name, &recipe.version, &packages))?;
+    Ok(())
+}
+
+/// A one-line-per-component summary of a bundle's licenses.
+fn bundle_readme(name: &str, version: &str, packages: &[Package]) -> String {
+    let mut out = format!(
+        "{name} {version}: its components and their licenses\n\n\
+         ../sbom.spdx lists every component of this bundle in the SPDX 2.3\n\
+         tag-value format. texts/ holds the full text of every license named\n\
+         there, and notices/ the copyright and license files that came with\n\
+         each component's source.\n\n"
+    );
+    let width = packages.iter().map(|p| p.name.len() + p.version.len() + 1).max().unwrap_or(0);
+    for package in packages {
+        let what = format!("{} {}", package.name, package.version);
+        let _ = writeln!(out, "{what:width$}  {}", package.license);
+    }
+    out
 }
 
 fn write(path: &Path, text: &str) -> Result<()> {
@@ -828,97 +932,9 @@ fn c_packages(ctx: &Ctx, ports: &Ports) -> Result<Vec<Package>> {
         notices: Vec::new(),
         comment: format!("Part of Dukovo: the C test programs of {}.", userspace::POSIX_SOURCES),
     }];
-    for port in ports.ports.iter().filter(|port| !port.recipe.toolchain) {
-        let recipe = &port.recipe;
-        if let Some(source) = &port.source {
-            packages.push(Package {
-                name: recipe.name.clone(),
-                version: recipe.version.clone(),
-                license: recipe.license.clone(),
-                area: Area::Port,
-                download: recipe.source.download(),
-                sha256: (!recipe.source.sha256.is_empty()).then(|| recipe.source.sha256.clone()),
-                notices: if recipe.notices.is_empty() {
-                    notice_files(source)
-                } else {
-                    recipe.notices.iter().map(|file| source.join(file)).collect()
-                },
-                comment: format!(
-                    "{}, from {} ({}); built by ports/{} of Dukovo.",
-                    recipe.summary,
-                    recipe.homepage,
-                    recipe.source.release(),
-                    recipe.name
-                ),
-            });
-        }
-        for (extra, source) in recipe.extra.iter().zip(&port.extras) {
-            let name = extra.path.rsplit('/').next().unwrap_or(&extra.path);
-            packages.push(Package {
-                name: name.to_string(),
-                version: extra.commit[..12].to_string(),
-                license: extra.license.clone(),
-                area: Area::Port,
-                download: format!("git+{}@{}", extra.git, extra.commit),
-                sha256: None,
-                notices: notice_files(source),
-                comment: format!(
-                    "Built into {} {} from its {}.",
-                    recipe.name, recipe.version, extra.path
-                ),
-            });
-        }
-        for (krate, source) in recipe.crates.iter().zip(&port.crates) {
-            packages.push(Package {
-                name: krate.name.clone(),
-                version: krate.version.clone(),
-                license: krate.license.clone(),
-                area: Area::Port,
-                download: crate_download(&krate.name, &krate.version),
-                sha256: Some(krate.sha256.clone()),
-                notices: notice_files(source),
-                comment: format!(
-                    "A crate from crates.io, built into {} {} by ports/{} of Dukovo.",
-                    recipe.name, recipe.version, recipe.name
-                ),
-            });
-        }
-        for bundled in &recipe.bundled {
-            packages.push(Package {
-                name: bundled.name.clone(),
-                version: bundled.version.clone(),
-                license: bundled.license.clone(),
-                area: Area::Port,
-                download: bundled.homepage.clone(),
-                sha256: None,
-                notices: bundled.notices.iter().map(|file| port.dir.join(file)).collect(),
-                comment: format!(
-                    "Built into {} {} from ports/{} of Dukovo, which keeps its code.",
-                    recipe.name, recipe.version, recipe.name
-                ),
-            });
-        }
-        // A port in Rust: the crates its build linked.
-        let info = crate::ports::info_dir(ctx, &recipe.name);
-        let list = info.join("crates.txt");
-        if list.is_file() {
-            let text =
-                std::fs::read_to_string(&list).context(|| format!("reading {}", list.display()))?;
-            let lock = read_lock(&info.join("Cargo.lock"))?;
-            let what = format!("port {}", recipe.name);
-            let own = ctx.target.join("ports/work").join(&recipe.name);
-            for mut package in listed_packages(ctx, &what, &text, &lock, Some(ports), Some(&own))? {
-                if packages.iter().any(|p| p.name == package.name && p.version == package.version) {
-                    continue;
-                }
-                package.area = Area::Port;
-                package.comment = format!(
-                    "{} Built into {} {} by ports/{} of Dukovo.",
-                    package.comment, recipe.name, recipe.version, recipe.name
-                );
-                packages.push(package);
-            }
-        }
+    // A bundle's port is the catalog's, and not in the image (ADR 0370).
+    for port in ports.ports.iter().filter(|p| !p.recipe.toolchain && p.recipe.bundle.is_none()) {
+        port_packages(ctx, ports, port, &mut packages)?;
     }
     let llvm = ports.toolchain.llvm_version();
     packages.push(Package {
@@ -935,6 +951,103 @@ fn c_packages(ctx: &Ctx, ports: &Ports) -> Result<Vec<Package>> {
         ),
     });
     Ok(packages)
+}
+
+/// What `port` builds into what it installs: its source, extra sources,
+/// crates and bundled code, and for a port in Rust the crates its build
+/// linked; each added to `packages` unless it is there already.
+fn port_packages(ctx: &Ctx, ports: &Ports, port: &Port, packages: &mut Vec<Package>) -> Result<()> {
+    let recipe = &port.recipe;
+    if let Some(source) = &port.source {
+        packages.push(Package {
+            name: recipe.name.clone(),
+            version: recipe.version.clone(),
+            license: recipe.license.clone(),
+            area: Area::Port,
+            download: recipe.source.download(),
+            sha256: (!recipe.source.sha256.is_empty()).then(|| recipe.source.sha256.clone()),
+            notices: if recipe.notices.is_empty() {
+                notice_files(source)
+            } else {
+                recipe.notices.iter().map(|file| source.join(file)).collect()
+            },
+            comment: format!(
+                "{}, from {} ({}); built by ports/{} of Dukovo.",
+                recipe.summary,
+                recipe.homepage,
+                recipe.source.release(),
+                recipe.name
+            ),
+        });
+    }
+    for (extra, source) in recipe.extra.iter().zip(&port.extras) {
+        let name = extra.path.rsplit('/').next().unwrap_or(&extra.path);
+        packages.push(Package {
+            name: name.to_string(),
+            version: extra.commit[..12].to_string(),
+            license: extra.license.clone(),
+            area: Area::Port,
+            download: format!("git+{}@{}", extra.git, extra.commit),
+            sha256: None,
+            notices: notice_files(source),
+            comment: format!(
+                "Built into {} {} from its {}.",
+                recipe.name, recipe.version, extra.path
+            ),
+        });
+    }
+    for (krate, source) in recipe.crates.iter().zip(&port.crates) {
+        packages.push(Package {
+            name: krate.name.clone(),
+            version: krate.version.clone(),
+            license: krate.license.clone(),
+            area: Area::Port,
+            download: crate_download(&krate.name, &krate.version),
+            sha256: Some(krate.sha256.clone()),
+            notices: notice_files(source),
+            comment: format!(
+                "A crate from crates.io, built into {} {} by ports/{} of Dukovo.",
+                recipe.name, recipe.version, recipe.name
+            ),
+        });
+    }
+    for bundled in &recipe.bundled {
+        packages.push(Package {
+            name: bundled.name.clone(),
+            version: bundled.version.clone(),
+            license: bundled.license.clone(),
+            area: Area::Port,
+            download: bundled.homepage.clone(),
+            sha256: None,
+            notices: bundled.notices.iter().map(|file| port.dir.join(file)).collect(),
+            comment: format!(
+                "Built into {} {} from ports/{} of Dukovo, which keeps its code.",
+                recipe.name, recipe.version, recipe.name
+            ),
+        });
+    }
+    // A port in Rust: the crates its build linked.
+    let info = crate::ports::info_dir(ctx, &recipe.name);
+    let list = info.join("crates.txt");
+    if list.is_file() {
+        let text =
+            std::fs::read_to_string(&list).context(|| format!("reading {}", list.display()))?;
+        let lock = read_lock(&info.join("Cargo.lock"))?;
+        let what = format!("port {}", recipe.name);
+        let own = ctx.target.join("ports/work").join(&recipe.name);
+        for mut package in listed_packages(ctx, &what, &text, &lock, Some(ports), Some(&own))? {
+            if packages.iter().any(|p| p.name == package.name && p.version == package.version) {
+                continue;
+            }
+            package.area = Area::Port;
+            package.comment = format!(
+                "{} Built into {} {} by ports/{} of Dukovo.",
+                package.comment, recipe.name, recipe.version, recipe.name
+            );
+            packages.push(package);
+        }
+    }
+    Ok(())
 }
 
 /// GRUB, which `./ob` builds from the GNU project's pinned tarball for
@@ -1182,47 +1295,75 @@ fn git_commit(ctx: &Ctx) -> String {
 /// The SPDX document's own fields.
 struct Document {
     name: String,
-    commit: String,
+    namespace: String,
     /// Seconds since 1970, from `SOURCE_DATE_EPOCH` or the commit time.
     created: i64,
+    /// What it describes, which contains every package.
+    top: Top,
+    /// Where the notices are, for the packages' comments: `/` and the
+    /// image's [`DIR`], or a bundle's `licenses`.
+    notices: String,
+}
+
+/// What an SPDX document describes: the image, or a bundle.
+struct Top {
+    /// Its SPDX ID's last part: `SPDXRef-Package-<id>`.
+    id: String,
+    name: String,
+    version: String,
+    download: String,
+    license: String,
+    comment: String,
 }
 
 impl Document {
+    /// The document of the image of Dukovo at `commit`.
+    fn image(commit: &str, created: i64) -> Document {
+        let name = format!("dukovo-{VERSION}-x86_64");
+        Document {
+            namespace: format!("https://github.com/openlinuxsystems/orthros/spdx/{name}-{commit}"),
+            name,
+            created,
+            top: Top {
+                id: "dukovo".into(),
+                name: "dukovo".into(),
+                version: VERSION.into(),
+                download: format!("git+https://github.com/openlinuxsystems/orthros@{commit}"),
+                license: "NOASSERTION".into(),
+                comment: format!(
+                    "The Dukovo {VERSION} x86-64 boot image. Each component below keeps its \
+                     own license; the texts are in /{DIR}/texts and the notices in \
+                     /{DIR}/notices."
+                ),
+            },
+            notices: format!("/{DIR}"),
+        }
+    }
+
     /// Renders the document in the SPDX 2.3 tag-value format.
     fn render(&self, packages: &[Package], ids: &BTreeSet<String>, root: &Path) -> Result<String> {
+        let top = &self.top;
+        let top_id = format!("SPDXRef-Package-{}", top.id);
         let mut out = String::new();
         let o = &mut out;
         let _ = writeln!(o, "SPDXVersion: SPDX-2.3");
         let _ = writeln!(o, "DataLicense: CC0-1.0");
         let _ = writeln!(o, "SPDXID: SPDXRef-DOCUMENT");
         let _ = writeln!(o, "DocumentName: {}", self.name);
-        let _ = writeln!(
-            o,
-            "DocumentNamespace: https://github.com/openlinuxsystems/orthros/spdx/{}-{}",
-            self.name, self.commit
-        );
+        let _ = writeln!(o, "DocumentNamespace: {}", self.namespace);
         let _ = writeln!(o, "Creator: Tool: ob-{VERSION}");
         let _ = writeln!(o, "Created: {}", rfc3339(self.created));
         let _ = writeln!(o);
-        let _ = writeln!(o, "PackageName: dukovo");
-        let _ = writeln!(o, "SPDXID: SPDXRef-Package-dukovo");
-        let _ = writeln!(o, "PackageVersion: {VERSION}");
-        let _ = writeln!(
-            o,
-            "PackageDownloadLocation: git+https://github.com/openlinuxsystems/orthros@{}",
-            self.commit
-        );
+        let _ = writeln!(o, "PackageName: {}", top.name);
+        let _ = writeln!(o, "SPDXID: {top_id}");
+        let _ = writeln!(o, "PackageVersion: {}", top.version);
+        let _ = writeln!(o, "PackageDownloadLocation: {}", top.download);
         let _ = writeln!(o, "FilesAnalyzed: false");
         let _ = writeln!(o, "PackageLicenseConcluded: NOASSERTION");
-        let _ = writeln!(o, "PackageLicenseDeclared: NOASSERTION");
+        let _ = writeln!(o, "PackageLicenseDeclared: {}", top.license);
         let _ = writeln!(o, "PackageCopyrightText: NOASSERTION");
-        let _ = writeln!(
-            o,
-            "PackageComment: <text>The Dukovo {VERSION} x86-64 boot image. Each \
-             component below keeps its own license; the texts are in \
-             /{DIR}/texts and the notices in /{DIR}/notices.</text>"
-        );
-        let _ = writeln!(o, "Relationship: SPDXRef-DOCUMENT DESCRIBES SPDXRef-Package-dukovo");
+        let _ = writeln!(o, "PackageComment: <text>{}</text>", top.comment);
+        let _ = writeln!(o, "Relationship: SPDXRef-DOCUMENT DESCRIBES {top_id}");
         for package in packages {
             let _ = writeln!(o);
             let _ = writeln!(o, "PackageName: {}", package.name);
@@ -1241,11 +1382,10 @@ impl Document {
             let _ = writeln!(o, "PackageCopyrightText: NOASSERTION");
             let mut comment = package.comment.clone();
             if !package.notices.is_empty() {
-                let _ = write!(comment, " Notices: /{DIR}/{}.", package.notice_dir());
+                let _ = write!(comment, " Notices: {}/{}.", self.notices, package.notice_dir());
             }
             let _ = writeln!(o, "PackageComment: <text>{comment}</text>");
-            let _ =
-                writeln!(o, "Relationship: SPDXRef-Package-dukovo CONTAINS {}", package.spdx_id());
+            let _ = writeln!(o, "Relationship: {top_id} CONTAINS {}", package.spdx_id());
         }
         for id in ids.iter().filter(|id| id.starts_with("LicenseRef-")) {
             let path = text_source(root, id);
@@ -1278,7 +1418,7 @@ fn readme(packages: &[Package]) -> String {
 }
 
 /// Formats seconds since 1970 as `YYYY-MM-DDThh:mm:ssZ`.
-fn rfc3339(seconds: i64) -> String {
+pub fn rfc3339(seconds: i64) -> String {
     let days = seconds.div_euclid(86_400);
     let secs = seconds.rem_euclid(86_400);
     // Howard Hinnant's days-to-civil algorithm.
@@ -1443,7 +1583,7 @@ mod tests {
             notices: vec!["LICENSE.txt".into()],
             comment: "C.".into(),
         }];
-        let document = Document { name: "dukovo-test".into(), commit: "c0ffee".into(), created: 0 };
+        let document = Document::image("c0ffee", 0);
         let ids = BTreeSet::from(["MIT".to_string()]);
         let text = document.render(&packages, &ids, &root()).unwrap();
         assert!(text.starts_with("SPDXVersion: SPDX-2.3\n"));

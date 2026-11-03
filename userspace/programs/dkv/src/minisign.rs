@@ -20,7 +20,7 @@ use blake2::digest::consts::U32;
 use blake2::{Blake2b, Blake2b512, Digest};
 use ed25519_compact::{KeyPair, Seed};
 
-use super::base64;
+use crate::base64;
 
 /// The prefix of the untrusted first line of each file.
 const UNTRUSTED: &str = "untrusted comment: ";
@@ -48,7 +48,9 @@ impl std::fmt::Display for KeyId {
 /// A public key.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PublicKey {
+    /// The key's ID, which its signatures name.
     pub id: KeyId,
+    /// The Ed25519 public key.
     pub key: [u8; 32],
 }
 
@@ -119,6 +121,7 @@ impl PublicKey {
 /// A secret key, with its public half.
 #[derive(Clone)]
 pub struct SecretKey {
+    /// The key's ID, which its signatures name.
     pub id: KeyId,
     pair: KeyPair,
 }
@@ -149,6 +152,7 @@ impl SecretKey {
         Ok(SecretKey { id, pair })
     }
 
+    /// Its public half.
     pub fn public(&self) -> PublicKey {
         PublicKey { id: self.id, key: *self.pair.pk }
     }
@@ -246,9 +250,11 @@ pub struct Signature {
     pub hashed: bool,
     /// The ID of the key that made it.
     pub key: KeyId,
+    /// The Ed25519 signature of the file's BLAKE2b-512 hash.
     pub signature: [u8; 64],
     /// The trusted comment, which the second signature covers.
     pub trusted: String,
+    /// The signature over the first and the trusted comment.
     pub global: [u8; 64],
 }
 

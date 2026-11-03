@@ -342,6 +342,7 @@ pub const HOST_TESTED: &[&str] = &[
     "accounts",
     "consoled",
     "disk",
+    "dkv",
     "git-https-test",
     "keymap",
     "manifest",

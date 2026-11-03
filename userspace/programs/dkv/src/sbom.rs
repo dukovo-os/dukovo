@@ -11,7 +11,7 @@ use std::fmt::Write as _;
 
 use manifest::bundle::Manifest;
 
-use super::sums;
+use crate::sums;
 
 /// The SBOM's name in a bundle.
 pub const SBOM: &str = "sbom.spdx";

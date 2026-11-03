@@ -33,11 +33,9 @@ netproto = { path = "../netproto" }
 # (ADR 0221).
 manifest = { path = "../manifest", features = ["schema"] }
 # bundle(1)'s signatures (ADR 0222): minisign's Ed25519 over BLAKE2b-512,
-# the SHA-256 of each file, and the zip a .dkv file is.
-blake2 = { version = "0.10.6", default-features = false }
-ed25519-compact = { version = "2.6.0", default-features = false }
-miniz_oxide = { version = "0.9.1", default-features = false, features = ["with-alloc"] }
-sha2 = { version = "0.10.9", default-features = false }
+# the SHA-256 of each file, and the zip a .dkv file is, in the dkv crate
+# that ob shares (ADR 0370).
+dkv = { path = "../dkv" }
 # The system call interface, generated from abi/*.ridl, for what the C
 # library does not wrap: affinity, I/O priority, tracing.
 radix-abi = { path = "../../../kernel/abi" }

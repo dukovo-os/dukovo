@@ -83,6 +83,16 @@ requests built at once do not add rows at the same place.
 | [schemars](https://github.com/GREsau/schemars) 1.2.3 and schemars_derive by Graham Esau, with [dyn-clone](https://github.com/dtolnay/dyn-clone) 1.0.20 and [ref-cast](https://github.com/dtolnay/ref-cast) 1.0.27 by David Tolnay, and serde_derive_internals 0.30.0 by Erick Tryzelaar and David Tolnay, from crates.io | The JSON Schema of bundle manifests, which bundle(1) prints, made from the types that read them ([ADR 0221](docs/adr/0221-bundle-manifests-version-1.md)) | MIT (dyn-clone, ref-cast and serde_derive_internals: MIT OR Apache-2.0) |
 | [ed25519-compact](https://github.com/jedisct1/rust-ed25519-compact) 2.6.0 by Frank Denis, [sha2](https://github.com/RustCrypto/hashes) 0.10.9 by the RustCrypto developers, and [miniz_oxide](https://github.com/Frommi/miniz_oxide) 0.9.1 by Frommi and oyvindln, from Rich Geldreich's miniz, with [adler2](https://github.com/oyvindln/adler2) 2.0.1 by Jonas Schievink and oyvindln, from crates.io | bundle(1)'s minisign signatures, the SHA-256 of each file a bundle signs, and the deflate of `.dkv` files ([ADR 0222](docs/adr/0222-bundles-are-signed-with-minisign-and-packed-as-dkv-files.md)) | MIT (sha2: MIT OR Apache-2.0; miniz_oxide: MIT OR Zlib OR Apache-2.0; adler2: 0BSD OR MIT OR Apache-2.0) |
 
+## In the catalog's bundles
+
+Programs the Dukovo catalog carries as bundles, built from ports and
+packed by `ob ports` ([ADR 0370](docs/adr/0370-ports-the-catalog-carries-are-packed-as-bundles.md)):
+none is in the image. Each bundle's `sbom.spdx` and `licenses/` list
+every crate and library it holds.
+
+| Project | What we use it for | License |
+|---|---|---|
+
 ## Rust crates
 
 The build tool (`tools/xtask`), the Linux benchmark (`tools/linux-bench`)

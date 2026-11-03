@@ -313,6 +313,11 @@ const BTRFS_BLANK: u8 = 17;
 /// ([`cases::rgrub_setup`], ADR 0306). It is the case's first disk.
 const GRUBLESS: u8 = 18;
 
+/// [`Disk::fat`] for a FAT32 disk on the whole disk holding the `.dkv`
+/// files of the catalog's bundles of ports that `ob` packed into
+/// out/bundles ([`bundle_files_disk`], ADR 0370).
+const BUNDLE_FILES: u8 = 19;
+
 /// The partition table of a test disk with a filesystem.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Table {
@@ -568,6 +573,13 @@ const fn fat_disk(kib: u64, fat: u8, label: &'static str, table: Table, bus: Bus
         read_only: false,
         check,
     }
+}
+
+/// A FAT32 virtio disk of `kib` KiB, labelled `label`, holding the
+/// catalog's bundles of ports (ADR 0370), which Spark mounts at
+/// `/volumes/<disk>`.
+const fn bundle_files_disk(kib: u64, label: &'static str) -> Disk {
+    Disk { fat: BUNDLE_FILES, ..fat_disk(kib, 32, label, Table::None, Bus::Virtio) }
 }
 
 /// The storage test's disks: FAT12, FAT16 and FAT32 on whole disks, and
@@ -3287,6 +3299,11 @@ fn make_disks(
             made.push(image);
             continue;
         }
+        if disk.fat == BUNDLE_FILES {
+            make_bundle_files(ctx, disk, &image.path)?;
+            made.push(image);
+            continue;
+        }
         let path = &image.path;
         let mut mkfs = std::process::Command::new(fat_tool("mkfs.fat"));
         // A fixed volume ID, so that runs match.
@@ -3871,6 +3888,31 @@ fn fsck(disk: &DiskImage, _log: &str) -> Result<(), String> {
         let _ = std::fs::remove_file(&checked);
     }
     result.map(drop).map_err(|err| format!("{} is damaged: {err}", disk.path.display()))
+}
+
+/// Makes a [`BUNDLE_FILES`] disk: FAT32 holding every `.dkv` file of
+/// out/bundles, copied in with mtools.
+fn make_bundle_files(ctx: &Ctx, disk: &Disk, path: &Path) -> Result<(), String> {
+    let dir = crate::bundles::dir(ctx);
+    let mut files: Vec<PathBuf> = std::fs::read_dir(&dir)
+        .map_err(|err| format!("reading {}: {err} (run `./ob ports`)", dir.display()))?
+        .filter_map(|entry| entry.ok().map(|e| e.path()))
+        .filter(|path| path.extension().is_some_and(|e| e == dkv::EXTENSION))
+        .collect();
+    files.sort();
+    if files.is_empty() {
+        return Err(format!("{} holds no bundles (run `./ob ports`)", dir.display()));
+    }
+    let mut mkfs = std::process::Command::new(fat_tool("mkfs.fat"));
+    mkfs.args(["-F", "32", "-n", disk.label, "-i", "4f525448", "-C"])
+        .arg(path)
+        .arg(disk.kib.to_string());
+    host_tool(&mut mkfs)?;
+    let image = path.display().to_string();
+    for file in &files {
+        host_tool(std::process::Command::new("mcopy").args(["-i", &image]).arg(file).arg("::/"))?;
+    }
+    Ok(())
 }
 
 /// The mtools name of a test disk's filesystem.

@@ -1,0 +1,24 @@
+SPDX-FileCopyrightText: Andrew Gallant and ripgrep contributors
+SPDX-FileCopyrightText: 2026 The Dukovo contributors
+SPDX-License-Identifier: Unlicense OR MIT
+
+ripgrep's libc crate moved to 0.2.191, the release the rust-std port
+builds Radix's standard library with and gives programs (ADR 0370), as
+`cargo update -p libc --precise 0.2.191` locks it.
+
+diff --git a/Cargo.lock b/Cargo.lock
+index 5589334..ab14fd4 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -279,9 +279,9 @@ checksum = "803ec87c9cfb29b9d2633f20cba1f488db3fd53f2158b1024cbefb47ba05d413"
+ 
+ [[package]]
+ name = "libc"
+-version = "0.2.186"
++version = "0.2.191"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "68ab91017fe16c622486840e4c83c9a37afeff978bd239b5293d61ece587de66"
++checksum = "65cd87c9a6d60536580b316ad985726104730a5151c99845f2490428ef91240a"
+ 
+ [[package]]
+ name = "log"
