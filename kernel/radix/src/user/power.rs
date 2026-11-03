@@ -178,6 +178,8 @@ fn wind_down() {
     // The screen is the log's again, whatever program held it, so the last
     // lines show.
     console::give_back();
+    // As do the PCI serial ports, which a thread sends to.
+    crate::uart::flush();
 }
 
 /// What a method does to the machine.

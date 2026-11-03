@@ -102,6 +102,13 @@ and the memory manager's state (`mem`, `heap`), the capability store
 registers, memory dumps and symbol lookups.
 `kdb` also stops at breakpoints and after a panic. `continue` leaves it.
 
+On a machine without a serial port on its board, a PCI Express serial
+card gives it one: the kernel finds 16550-compatible ports on the PCI
+bus, such as those of cards built on the ASIX AX99100, and sends them
+the kernel log, from the start of boot, and `kdb`, as it does COM1. On a
+vPro machine, Intel AMT's Serial-over-LAN port works the same way, over
+the network to a management console. `uart(4)` describes both.
+
 ## The lock checker
 
 Boot with `lockdep` to have the kernel check every lock it takes (debug
