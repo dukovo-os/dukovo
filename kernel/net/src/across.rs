@@ -55,7 +55,8 @@ impl<L: Link> Stack<L> {
     /// the loopback link, and no packet waits in its ring. `other` is where
     /// it was last found.
     fn other_end(&mut self, handle: SocketHandle, other: &mut OtherEnd) -> Option<SocketHandle> {
-        if self.link.pending() || self.link.loopback().is_none() {
+        // A capture of the loopback interface sees its packets (ADR 0346).
+        if self.link.pending() || self.link.loopback().is_none() || self.watched() {
             return None;
         }
         let socket = self.sockets.try_get::<tcp::Socket<'static>>(handle)?;

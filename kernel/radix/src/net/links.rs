@@ -686,6 +686,7 @@ pub fn remove(number: usize) -> Result<(), LinkError> {
         stack.configure_ipv6(None, &[], None);
     }
     interface.go();
+    super::capture::gone(number);
     info!("Net: {} was taken away", interface.name);
     super::changed();
     Ok(())

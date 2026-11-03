@@ -94,6 +94,7 @@ static const char *const ELSEWHERE[][2] = {
 		{"traceroute6", "the network-trace boot test's: it finds those routers by IPv6"},
 		{"mtr", "the network-trace boot test's: it measures each of those routers, with mtr-packet"},
 		{"mtr-packet", "the network-trace boot test's: mtr runs it to send its probes"},
+		{"tcpdump", "the network-capture boot test's: it captures lo, a tunnel, a card and every interface"},
 };
 
 enum { ELSEWHERE_COUNT = sizeof(ELSEWHERE) / sizeof(ELSEWHERE[0]) };
