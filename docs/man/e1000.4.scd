@@ -5,7 +5,8 @@ e1000(4) "Dukovo" "Dukovo Manual"
 
 # NAME
 
-e1000, e1000e - Intel's 8254x and 8257x gigabit Ethernet cards
+e1000, e1000e - Intel's 8254x and 8257x gigabit Ethernet cards, and the
+Ethernet in Intel's chipsets
 
 # DESCRIPTION
 
@@ -32,6 +33,23 @@ Net: net0 is an Intel 82574L network card at 0000:00:03.0, MAC 52:54:00:12:34:57
 A card the kernel cannot give an interrupt is polled: every millisecond
 while frames move, every 10 ms when quiet. A card that stops with an
 error is left stopped, and the log says so.
+
+# THE ETHERNET IN INTEL'S CHIPSETS
+
+The 82579LM and 82579V, with Intel's 6 and 7 series chipsets (from
+2011), and the I219-LM and I219-V with the 100 and 200 series, Lewisburg
+and Comet Lake H (from 2015), as on many Dell OptiPlex, Precision and
+Latitude machines: a MAC in the chipset with a PHY chip beside it, with
+the same legacy descriptors, and an MSI (ADR 0361). Their PHY is shared
+with Intel's management engine, which runs AMT on vPro machines: while
+an AMT Serial-over-LAN or IDE-R session blocks PHY resets, the driver
+resets the MAC alone and leaves the link as AMT set it up. On the 82579
+with the management engine running, a ring tail that the engine made
+the chip lose stops the card, and the log says so.
+
+The I217 and I218, the I219s of Cannon Lake and later chipsets, and the
+82577 and 82578 are not driven yet. None of these chips can be a driver
+program (*e1000=program*).
 
 # AS A PROGRAM
 

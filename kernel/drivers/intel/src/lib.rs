@@ -16,6 +16,9 @@
 //!   the few registers that moved.
 //! - [`ixgbe`]: the 10 gigabit 82599, X540 and X550, with registers of
 //!   their own and igb's advanced descriptors.
+//! - [`pch`]: the Ethernet in Intel's chipsets, the 82579 and the I219,
+//!   a MAC in the chipset with a PHY of its own beside it, which Intel's
+//!   management engine may share; e1000's legacy descriptors.
 //!
 //! Each driver is written from Intel's datasheets, with FreeBSD's drivers
 //! (BSD-3-Clause, Intel's shared code) as the reference for the sequences
@@ -26,7 +29,8 @@
 //! or none, polled, when the kernel has none for it.
 //!
 //! [`identify`] says whether a PCI function is one of them, and [`start`]
-//! resets it and sets it running.
+//! resets it and sets it running; [`pch::start`] the chips in the
+//! chipset, which need more of the machine.
 
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
@@ -35,6 +39,7 @@ pub mod em;
 pub mod igb;
 pub mod igc;
 pub mod ixgbe;
+pub mod pch;
 mod rings;
 mod shared;
 
@@ -63,7 +68,7 @@ impl Model {
     pub fn msi(&self) -> bool {
         match self.kind {
             Kind::Em(mac) => mac.pcie(),
-            Kind::Igb(_) | Kind::Igc(_) | Kind::Ixgbe(_) => true,
+            Kind::Igb(_) | Kind::Igc(_) | Kind::Ixgbe(_) | Kind::Pch(_) => true,
         }
     }
 }
@@ -79,6 +84,8 @@ pub enum Kind {
     Igc(igc::Mac),
     /// The ixgbe family ([`ixgbe`]).
     Ixgbe(ixgbe::Mac),
+    /// The Ethernet in the chipset ([`pch`]).
+    Pch(pch::Mac),
 }
 
 /// The card with Intel's device ID `device`, if a driver here knows it.
@@ -97,13 +104,15 @@ pub fn identify(vendor: u16, device: u16) -> Option<Model> {
         .or_else(|| {
             ixgbe::identify(device).map(|(name, mac)| Model { name, kind: Kind::Ixgbe(mac) })
         })
+        .or_else(|| pch::identify(device).map(|(name, mac)| Model { name, kind: Kind::Pch(mac) }))
 }
 
 /// Resets the card `model`, whose registers are `regs` (its first BAR),
 /// and sets it running, with interrupts as `interrupt` says. `fallback_mac`
 /// is its address if it has none that can be read; `alloc` gives zeroed
 /// DMA memory in pages, and `delay` waits the given number of
-/// microseconds.
+/// microseconds. The chips in the chipset are started by [`pch::start`]
+/// instead.
 pub fn start(
     model: Model,
     regs: Mmio,
@@ -119,6 +128,7 @@ pub fn start(
         Kind::Ixgbe(mac) => {
             ixgbe::start(model.name, mac, regs, interrupt, fallback_mac, alloc, delay)
         }
+        Kind::Pch(_) => Err(Error::Unsupported("the chipset's Ethernet without its platform")),
     }
 }
 
@@ -140,6 +150,9 @@ pub struct Card {
     info: Info,
     interrupt: Interrupt,
     ops: &'static Ops,
+    /// What the chips in the chipset keep, which they stop through and
+    /// watch their link with.
+    pch: Option<pch::Pch>,
     /// Whether it was stopped.
     stopped: bool,
 }
@@ -162,7 +175,7 @@ impl Card {
             receive_slots: (receive - 1) as u16,
             transmit_slots: (transmit - 1) as u16,
         };
-        Card { regs, rings, info, interrupt, ops, stopped: false }
+        Card { regs, rings, info, interrupt, ops, pch: None, stopped: false }
     }
 }
 
@@ -176,8 +189,9 @@ impl Nic for Card {
     }
 
     fn failed(&self) -> bool {
-        // A card that is gone reads as all ones.
-        self.regs.read32(shared::reg::STATUS) == u32::MAX
+        // A card that is gone reads as all ones; an 82579's rings stop
+        // when its management engine lost a tail.
+        self.regs.read32(shared::reg::STATUS) == u32::MAX || self.rings.broken()
     }
 
     fn receive(&mut self, frame: &mut [u8]) -> Option<usize> {
@@ -194,6 +208,11 @@ impl Nic for Card {
             if self.rings.received() {
                 return self.rings.receive(frame);
             }
+        }
+        // With nothing more to take, a chip in the chipset sees to its
+        // link.
+        if let Some(pch) = &mut self.pch {
+            pch.look();
         }
         None
     }
@@ -219,7 +238,10 @@ impl Nic for Card {
     fn stop(&mut self) {
         if !self.stopped {
             self.stopped = true;
-            (self.ops.halt)(&self.regs);
+            match &self.pch {
+                Some(pch) => pch.halt(),
+                None => (self.ops.halt)(&self.regs),
+            }
         }
     }
 }
