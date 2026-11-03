@@ -646,7 +646,7 @@ static void power(void) {
 // sensors (ADR 0230), of the boot stick, and of chips not there: the
 // usb-devices and acpi-thermal boot tests run them on more; and hwinfo
 // (ADR 0231), from /kernel/class/dmi/id without the platform capability,
-// which the smbios boot test gives it.
+// which the smbios boot test gives it; and dukofetch (ADR 0363).
 static void hardware(void) {
 	CONTAINS("00:00.0 Host bridge: Intel Corporation 82G33/G31/P35/P31 Express DRAM Controller\n",
 	         "/bin/lspci");
@@ -681,6 +681,24 @@ static void hardware(void) {
 	STATUS(1, "/bin/hwinfo", "memory");
 	STATUS(1, "/bin/hwinfo", "-s");
 	STATUS(1, "/bin/hwinfo", "nosuch");
+
+	// dukofetch (ADR 0363): its lines in plain text into a pipe, and as
+	// JSON; on script's terminal, Duke in half blocks beside them, in
+	// xterm's 256 colours unless COLORTERM says true colour, and plain
+	// with NO_COLOR.
+	CONTAINS("\nOS: Dukovo Server ", "/bin/dukofetch");
+	CONTAINS("\nKernel: Radix ", "/bin/dukofetch", "--no-logo");
+	CONTAINS("\n  \"kernel\": {\"name\": \"Radix\", \"version\": \"", "/bin/dukofetch",
+	         "--json");
+	STATUS(1, "/bin/dukofetch", "--logo");
+	CONTAINS("\x1b[1;38;5;173mOS\x1b[0m\x1b[38;5;240m:\x1b[0m Dukovo Server ", "/bin/script", "-q",
+	         "-c", "TERM=xterm NO_COLOR= COLORTERM= dukofetch", DIR "/typescript");
+	CONTAINS("\u2588", "/bin/script", "-q", "-c", "TERM=xterm NO_COLOR= dukofetch",
+	         DIR "/typescript");
+	CONTAINS("\x1b[1;38;2;200;135;58mOS\x1b[0m", "/bin/script", "-q", "-c",
+	         "TERM=xterm NO_COLOR= COLORTERM=truecolor dukofetch", DIR "/typescript");
+	CONTAINS("\nOS: Dukovo Server ", "/bin/script", "-q", "-c", "NO_COLOR=1 dukofetch",
+	         DIR "/typescript");
 }
 
 // ip and ss (ADR 0190), of lo, the only interface this boot has, and of

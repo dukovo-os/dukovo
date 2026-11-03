@@ -65,6 +65,7 @@ mod discover;
 mod discoverd;
 mod diskhealth;
 mod dmesg;
+mod dukofetch;
 mod e1000d;
 mod ectool;
 mod eject;
@@ -177,6 +178,7 @@ const TOOLS: &[(&str, Tool)] = &[
     ("discoverd", discoverd::main),
     ("diskhealth", diskhealth::main),
     ("dmesg", dmesg::main),
+    ("dukofetch", dukofetch::main),
     ("e1000d", e1000d::main),
     ("ectool", ectool::main),
     ("eject", eject::main),

@@ -429,6 +429,36 @@ mod tests {
     }
 
     #[test]
+    fn every_font_draws_half_blocks_and_lines() {
+        for (name, _) in FONTS {
+            let font = builtin_font(name).unwrap();
+            let full = u32::MAX >> (32 - font.width);
+            let (top, bottom) = (0, font.height - 1);
+            let upper = font.glyph('\u{2580}');
+            assert_eq!(
+                (upper.row_bits(top), upper.row_bits(bottom)),
+                (full, 0),
+                "{name}: \u{2580}"
+            );
+            let lower = font.glyph('\u{2584}');
+            assert_eq!(
+                (lower.row_bits(top), lower.row_bits(bottom)),
+                (0, full),
+                "{name}: \u{2584}"
+            );
+            let block = font.glyph('\u{2588}');
+            assert_eq!(
+                (block.row_bits(top), block.row_bits(bottom)),
+                (full, full),
+                "{name}: \u{2588}"
+            );
+            let line = font.glyph('\u{2500}');
+            let lit = (0..font.height).filter(|&y| line.row_bits(y) != 0).count();
+            assert!(lit > 0 && lit <= font.height / 8, "{name}: \u{2500} is {lit} rows thick");
+        }
+    }
+
+    #[test]
     fn clears_and_centres_the_grid() {
         let console = console(804, 600);
         assert_eq!((console.cols(), console.rows()), (100, 37));

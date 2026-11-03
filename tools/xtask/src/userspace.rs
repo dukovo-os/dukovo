@@ -129,6 +129,7 @@ pub const STD_LINKS: &[(&str, &str)] = &[
     ("system/commands/discoverd", "systools"),
     ("system/commands/diskhealth", "systools"),
     ("system/commands/dmesg", "systools"),
+    ("system/commands/dukofetch", "systools"),
     ("system/commands/e1000d", "systools"),
     ("system/commands/ectool", "systools"),
     ("system/commands/eject", "systools"),

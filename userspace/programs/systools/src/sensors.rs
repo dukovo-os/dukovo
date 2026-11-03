@@ -337,7 +337,7 @@ fn print_json(chips: &[Chip], out: &mut dyn Write) -> io::Result<()> {
 }
 
 /// `text`, with what JSON escapes escaped.
-fn json_text(text: &str) -> String {
+pub(crate) fn json_text(text: &str) -> String {
     let mut escaped = String::new();
     for c in text.chars() {
         match c {

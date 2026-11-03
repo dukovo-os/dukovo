@@ -15,7 +15,7 @@ use crate::args::{Arg, Args};
 use crate::util::{Fail, fail, usage};
 
 /// Where the kernel lists the functions.
-const DEVICES: &str = "/kernel/bus/pci/devices";
+pub(crate) const DEVICES: &str = "/kernel/bus/pci/devices";
 
 /// The PCI ID database, where hwdata puts it on Linux, under Dukovo's
 /// name for /usr/share.
@@ -23,13 +23,13 @@ pub const IDS: &str = "/system/resources/hwdata/pci.ids";
 
 /// A PCI function, as the kernel shows it.
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct Function {
+pub(crate) struct Function {
     domain: u16,
     bus: u8,
     slot: u8,
     func: u8,
-    vendor: u16,
-    device: u16,
+    pub(crate) vendor: u16,
+    pub(crate) device: u16,
     /// Class, subclass and programming interface.
     class: u32,
     revision: u8,
@@ -37,7 +37,7 @@ struct Function {
 }
 
 impl Function {
-    fn base_class(&self) -> u8 {
+    pub(crate) fn base_class(&self) -> u8 {
         (self.class >> 16) as u8
     }
 
@@ -68,7 +68,7 @@ fn parse_address(name: &str) -> Option<(u16, u8, u8, u8)> {
 }
 
 /// The functions under `dir`, in the order of their addresses.
-fn functions(dir: &Path) -> io::Result<Vec<Function>> {
+pub(crate) fn functions(dir: &Path) -> io::Result<Vec<Function>> {
     let mut found = Vec::new();
     for entry in fs::read_dir(dir)? {
         let entry = entry?;
@@ -107,9 +107,9 @@ fn functions(dir: &Path) -> io::Result<Vec<Function>> {
 
 /// The names the database gives the functions asked about.
 #[derive(Default)]
-struct Names {
-    vendors: HashMap<u16, String>,
-    devices: HashMap<(u16, u16), String>,
+pub(crate) struct Names {
+    pub(crate) vendors: HashMap<u16, String>,
+    pub(crate) devices: HashMap<(u16, u16), String>,
     subsystems: HashMap<(u16, u16, u16, u16), String>,
     classes: HashMap<u8, String>,
     subclasses: HashMap<(u8, u8), String>,
@@ -133,7 +133,7 @@ fn class_id(text: &str) -> Option<(u8, &str)> {
 impl Names {
     /// The names in database `text` of what `functions` are. Only those
     /// are kept: the database names some 40,000 devices.
-    fn read(text: &str, functions: &[Function]) -> Names {
+    pub(crate) fn read(text: &str, functions: &[Function]) -> Names {
         let mut vendors = HashSet::new();
         for f in functions {
             vendors.insert(f.vendor);

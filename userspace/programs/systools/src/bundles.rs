@@ -565,6 +565,25 @@ fn install(archive: &str, everyone: bool, yes: bool) -> Result<i32, Fail> {
     }
 }
 
+/// How many bundles this person can run, theirs and everyone's, a
+/// bundle installed for both counted once, as bundled(8) lists them for
+/// dukofetch(1); `None` when bundled cannot be asked or does not answer
+/// within two seconds.
+pub fn count() -> Option<usize> {
+    let (stream, mut input) = ask(&Request::List, None).ok()?;
+    // The answers are read through a clone, which shares the socket and
+    // so its timeout.
+    let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(2)));
+    let mut ids = std::collections::HashSet::new();
+    loop {
+        match Answer::read(&mut input).ok()?? {
+            Answer::Listed(listed) => ids.insert(listed.id),
+            Answer::Ok(_) => return Some(ids.len()),
+            _ => return None,
+        };
+    }
+}
+
 /// `bundle list`: the bundles this person can run, theirs and everyone's.
 fn list() -> Result<i32, Fail> {
     let (_stream, mut input) = ask(&Request::List, None).map_err(fail)?;
