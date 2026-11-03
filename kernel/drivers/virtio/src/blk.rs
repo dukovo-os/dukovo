@@ -379,6 +379,14 @@ impl Blk {
         self.queue.next_free()
     }
 
+    /// Stops the device's interrupts while `quiet`, for a thread that
+    /// polls [`Blk::complete`]; starts them again when not, and then the
+    /// next call of [`Blk::complete`] that finds nothing asks for one
+    /// ([`Queue::set_quiet`]).
+    pub fn set_quiet(&mut self, quiet: bool) {
+        self.queue.set_quiet(quiet);
+    }
+
     /// The next finished request: its token and how it ended.
     pub fn complete(&mut self) -> Option<(u16, Outcome)> {
         let (head, _) = self.queue.used()?;

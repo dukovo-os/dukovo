@@ -1623,6 +1623,15 @@ fn idle_loop(cpu: usize) -> ! {
     }
 }
 
+/// Whether the running thread has its CPU to itself: no other thread is
+/// ready there and no switch is pending. A thread about to wait a moment
+/// may then poll for what it waits for, taking time from no one (the
+/// disks' queue does, in a virtual machine).
+pub fn cpu_to_itself() -> bool {
+    let slot = CPUS.this();
+    slot.running.load(Ordering::Relaxed) <= 1 && !slot.need_resched.load(Ordering::Relaxed)
+}
+
 /// Polls `need_resched` until `until`, and returns whether it was set.
 /// Wakers see `polling` and skip the interrupt. Interrupts are on while it
 /// polls, so timers and devices are served, but preemption is off: the

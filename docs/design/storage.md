@@ -374,6 +374,13 @@ read or write of its file. The thread waits for the last request first,
 so the earlier ones' completions, which usually come before it, wake no
 one (ADR 0116).
 
+In a virtual machine, a thread that has its CPU to itself polls a
+virtio disk for its request before it sleeps, with the queue's interrupt
+off, for as long as the lane's recent waits suggest (Linux's haltpoll
+rule, at most 200 µs): the sleep and the interrupt that would end it are
+each an exit to the hypervisor. It stops as soon as another thread wants
+the CPU, and the interrupt comes back on before it sleeps (ADR 0365).
+
 `ioctl` on a block device takes Linux's requests (radix-block(2)): the
 size in bytes and in sectors, the logical and physical sector sizes, the
 minimum and optimal I/O sizes, the alignment offset, whether it is
