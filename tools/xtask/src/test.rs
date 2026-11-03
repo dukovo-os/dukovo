@@ -324,6 +324,43 @@ const BUNDLE_FILES: u8 = 19;
 /// `root.json`, its first root; and every `.dkv` file in out/bundles.
 const CATALOG_SITE: u8 = 20;
 
+/// [`Disk::fat`] for a FAT32 disk on the whole disk holding a catalog
+/// that `ob` signs with throwaway keys ([`update_site_disk`], ADR 0384):
+/// `catalog/`, listing two versions each of two small test bundles
+/// ([`UPDATE_BUNDLES`]); `root.json`, its first root; and the first
+/// version of each, as `.dkv` files.
+const UPDATE_SITE: u8 = 21;
+
+/// The bundles of an [`UPDATE_SITE`] disk. diary keeps a line for each
+/// run in its data, and shows them; 1.1.0 asks for nothing more. fetcher
+/// 1.1.0 asks to connect out, which 1.0.0 did not.
+const UPDATE_BUNDLES: [crate::bundles::TestBundle; 4] = [
+    crate::bundles::TestBundle {
+        id: "org.example.diary",
+        version: "1.0.0",
+        script: "#!/bin/sh\necho \"diary 1.0.0 ran\" >> \"$HOME/days\"\ncat \"$HOME/days\"\n",
+        permissions: "{}",
+    },
+    crate::bundles::TestBundle {
+        id: "org.example.diary",
+        version: "1.1.0",
+        script: "#!/bin/sh\necho \"diary 1.1.0 ran\" >> \"$HOME/days\"\ncat \"$HOME/days\"\n",
+        permissions: "{}",
+    },
+    crate::bundles::TestBundle {
+        id: "org.example.fetcher",
+        version: "1.0.0",
+        script: "#!/bin/sh\necho \"fetcher 1.0.0\"\n",
+        permissions: "{}",
+    },
+    crate::bundles::TestBundle {
+        id: "org.example.fetcher",
+        version: "1.1.0",
+        script: "#!/bin/sh\necho \"fetcher 1.1.0\"\n",
+        permissions: "{\"network.outbound\": {\"need\": \"required\", \"why\": \"To fetch.\"}}",
+    },
+];
+
 /// The partition table of a test disk with a filesystem.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Table {
@@ -592,6 +629,13 @@ const fn bundle_files_disk(kib: u64, label: &'static str) -> Disk {
 /// ([`CATALOG_SITE`]), which Spark mounts at `/volumes/<disk>`.
 const fn catalog_site_disk(kib: u64, label: &'static str) -> Disk {
     Disk { fat: CATALOG_SITE, ..fat_disk(kib, 32, label, Table::None, Bus::Virtio) }
+}
+
+/// A virtio disk of `kib` KiB, labelled `label`, holding a test catalog of
+/// two versions of each test bundle ([`UPDATE_SITE`]), which Spark mounts
+/// at `/volumes/<disk>`.
+const fn update_site_disk(kib: u64, label: &'static str) -> Disk {
+    Disk { fat: UPDATE_SITE, ..fat_disk(kib, 32, label, Table::None, Bus::Virtio) }
 }
 
 /// The storage test's disks: FAT12, FAT16 and FAT32 on whole disks, and
@@ -3332,6 +3376,11 @@ fn make_disks(
             made.push(image);
             continue;
         }
+        if disk.fat == UPDATE_SITE {
+            make_update_site(ctx, disk, &image.path)?;
+            made.push(image);
+            continue;
+        }
         let path = &image.path;
         let mut mkfs = std::process::Command::new(fat_tool("mkfs.fat"));
         // A fixed volume ID, so that runs match.
@@ -3973,6 +4022,34 @@ fn make_catalog_site(ctx: &Ctx, disk: &Disk, path: &Path) -> Result<(), String> 
             .arg("::/"),
     )
     .map(drop)
+}
+
+/// Makes an [`UPDATE_SITE`] disk: a test catalog of [`UPDATE_BUNDLES`],
+/// its root, and the first version of each bundle as a file.
+fn make_update_site(ctx: &Ctx, disk: &Disk, path: &Path) -> Result<(), String> {
+    let files = UPDATE_BUNDLES
+        .iter()
+        .map(|bundle| crate::bundles::pack_test(ctx, bundle))
+        .collect::<Result<Vec<PathBuf>>>()
+        .map_err(|e| e.to_string())?;
+    let dir = crate::catalog::test_site(ctx, &files).map_err(|e| e.to_string())?;
+    let mut mkfs = std::process::Command::new(fat_tool("mkfs.fat"));
+    mkfs.args(["-F", "32", "-n", disk.label, "-i", "4f525448", "-C"])
+        .arg(path)
+        .arg(disk.kib.to_string());
+    host_tool(&mut mkfs)?;
+    let image = path.display().to_string();
+    let mcopy = |args: &[&str], from: &Path, to: &str| {
+        host_tool(std::process::Command::new("mcopy").args(args).arg(from).arg(to)).map(drop)
+    };
+    mcopy(&["-s", "-i", &image], &dir.join("site"), "::/catalog")?;
+    mcopy(&["-i", &image], &dir.join("root.json"), "::/")?;
+    for (bundle, file) in UPDATE_BUNDLES.iter().zip(&files) {
+        if bundle.version == "1.0.0" {
+            mcopy(&["-i", &image], file, "::/")?;
+        }
+    }
+    Ok(())
 }
 
 /// The mtools name of a test disk's filesystem.

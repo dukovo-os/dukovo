@@ -38,6 +38,8 @@ use std::io::{self, BufReader};
 use std::os::fd::OwnedFd;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::net::UnixStream;
+use std::path::Path;
+use std::time::SystemTime;
 
 use manifest::bundle::{Arch, Manifest, Need, Request as Asked, RunsWith};
 use manifest::service::Ports;
@@ -510,6 +512,15 @@ fn start(
     own_folder(&app_data, uid).map_err(fail)?;
     let data = format!("{app_data}/{}", found.id);
     own_folder(&data, uid).map_err(fail)?;
+    // Another version than last ran: its data as that one left it is
+    // kept first, or brought back (ADR 0384). As the person, so only what
+    // they may read is copied.
+    let version = &sealed.manifest.version.0;
+    match super::snapshots::carry(Path::new(&app_data), &found.id, version, SystemTime::now()) {
+        Ok(Some(said)) => eprintln!("bundle: {said}"),
+        Ok(None) => {}
+        Err(why) => eprintln!("bundle: {}: its data as it was is not kept: {why}", found.id),
+    }
     let tmp = format!("/tmp/.app-{}", found.id);
     own_folder(&tmp, uid).map_err(fail)?;
     let env = environment(&user, &data, &caller_environment());
