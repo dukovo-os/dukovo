@@ -67,7 +67,7 @@ use libradix::abi::startup::{
     DEVICE_SLOTS, SLOT_CLOCK, SLOT_DEVICE, SLOT_FD_BASE, SLOT_FIREWALL, SLOT_FIRST_EXTRA, SLOT_LOG,
     SLOT_NETWORK, SLOT_PLATFORM, SLOT_PROCESS, SLOT_RANDOM, SLOT_ROOT,
 };
-use libradix::abi::{network, power, signal, syscalls};
+use libradix::abi::{names as names_abi, network, power, signal, syscalls};
 use radix_rt::fs::{Dir, File};
 use radix_rt::{SYS, println, slots};
 
@@ -172,6 +172,34 @@ pub fn exec_block(path: &str, args: &[&str], env: &[String]) -> Vec<u8> {
 /// Makes the description in `slot` not wait.
 fn non_blocking(slot: u32) {
     let _ = file_abi::status_flags(&SYS, slot, true, DescriptionFlags::NON_BLOCKING);
+}
+
+/// Account `name`, which a service's file names (ADR 0385): its numbers,
+/// from the accounts file, and Spark's `root` acting for it, stamped with
+/// the `names` capability. Root's number is refused: a service that acts
+/// for root names no account.
+fn account(root: &Dir, names: Option<u32>, name: &str) -> Result<views::Account, String> {
+    let names =
+        names.ok_or("the kernel gave Spark no names capability, which runs it as its account")?;
+    let passwd = root
+        .read_file(&manifest::service::PASSWD[1..])
+        .map_err(|err| format!("{}: {err}", manifest::service::PASSWD))?;
+    let (user, group) = core::str::from_utf8(&passwd)
+        .ok()
+        .and_then(|text| manifest::service::account_numbers(text, name))
+        .ok_or_else(|| format!("there is no account {name}"))?;
+    if user == 0 {
+        return Err(format!(
+            "{name} has root's number: a service that acts for root names no account"
+        ));
+    }
+    let slot = slots::take().ok_or("no free slot")?;
+    if let Err(status) = names_abi::stamp(&SYS, names, root.slot(), slot, user, group, &[]) {
+        slots::give_back(slot);
+        return Err(format!("cannot act for {name}: {:#x}", status.0));
+    }
+    let root = Dir::own(slot).map_err(|err| format!("cannot act for {name}: {err}"))?;
+    Ok(views::Account { root, user, group })
 }
 
 /// Gives `child` the network capabilities `spec` asks for, derived from
@@ -821,12 +849,19 @@ impl Supervisor {
             let _ = resource_domain::set_weight(&SYS, domain, spec.weight);
             let _ = resource_domain::set_limit(&SYS, domain, spec.memory_pages.unwrap_or(NO_LIMIT));
         }
-        let program = self
-            .root
+        // Its account, if not root's (ADR 0385): Spark's root acting for
+        // it, through which its program and its view are opened.
+        let account = match &spec.account {
+            Some(name) => Some(account(&self.root, self.names, name)?),
+            None => None,
+        };
+        let program = account
+            .as_ref()
+            .map_or(&self.root, |account| &account.root)
             .open(spec.program.trim_start_matches('/'), OpenFlags::NONE, Rights::READ)
             .map_err(|err| format!("{}: {err}", spec.program))?;
         // Its root: a view of what its file declares (ADR 0217).
-        let view = views::build(&self.root, spec)?;
+        let view = views::build(&self.root, account.as_ref(), spec)?;
         let root = match &view.root {
             views::Root::View(dir) => dir.slot(),
             views::Root::Spark => root,
@@ -897,14 +932,19 @@ impl Supervisor {
         if !spec.mounts.is_empty() {
             environment.push(format!("MOUNT_PLACES={}", spec.mounts.join(":")));
         }
-        let started = shares
-            .iter()
-            .copied()
-            .chain(mounts)
-            .chain(names)
-            .try_for_each(|(from, to)| {
-                process::share(&SYS, child, from, to, Rights::ALL, 0)
-                    .map_err(|status| format!("sharing slot {to} failed: {:#x}", status.0))
+        let named = match (&account, self.names) {
+            (Some(account), Some(slot)) => {
+                names_abi::name_process(&SYS, slot, child, account.user, account.group, &[])
+                    .map_err(|status| format!("cannot name its process: {:#x}", status.0))
+            }
+            _ => Ok(()),
+        };
+        let started = named
+            .and_then(|()| {
+                shares.iter().copied().chain(mounts).chain(names).try_for_each(|(from, to)| {
+                    process::share(&SYS, child, from, to, Rights::ALL, 0)
+                        .map_err(|status| format!("sharing slot {to} failed: {:#x}", status.0))
+                })
             })
             .and_then(|()| grant_network(self.network, spec, child))
             .and_then(|()| grant_platform(self.platform, spec, child))

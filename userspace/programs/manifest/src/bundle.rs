@@ -40,7 +40,7 @@ use serde::de::{self, DeserializeOwned, Deserializer, IgnoredAny, MapAccess, Vis
 
 use self::locate::{Step, locate};
 use self::permissions::{PERSONAL_FOLDERS, Takes};
-use crate::service::{self, Oom, Ports, Restart};
+use crate::service::{self, Oom, Ports, Restart, check_account};
 use crate::{Error, line_of};
 
 #[cfg(feature = "schema")]
@@ -991,23 +991,6 @@ fn account_like(name: &str) -> String {
     match lower.chars().next() {
         Some(c) if c.is_ascii_lowercase() || c == '_' => lower,
         _ => format!("_{}", &lower[..lower.len().min(31)]),
-    }
-}
-
-fn check_account(name: &str) -> Result<(), String> {
-    let fits = (1..=32).contains(&name.len())
-        && name
-            .bytes()
-            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b"_-.".contains(&b))
-        && (name.as_bytes()[0].is_ascii_lowercase() || name.starts_with('_'));
-    if fits {
-        Ok(())
-    } else {
-        Err(format!(
-            "`{}` is not an account's name: it has 1 to 32 lowercase letters, digits, `_`, `-` \
-             and `.`, and starts with a letter or `_`",
-            name.escape_debug()
-        ))
     }
 }
 

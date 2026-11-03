@@ -169,7 +169,9 @@ folder and as a _.dkv_ file, which is a zip of the folder.
 	no warning (CATALOGS). A bundle signed by your developer key installs
 	with no warning for you; any other key this computer does not know
 	installs after a warning, and from then on only that key may install
-	that ID.
+	that ID. A bundle that runs services installs only for everyone:
+	its services run as accounts of their own, which the sheet names
+	(*bundled*(8), ADR 0385).
 
 *install* _id_ [*--from* _catalog_] [*--for-everyone*] [*--yes*]
 	Fetches the newest version of _id_ from the first catalog that lists
@@ -245,7 +247,9 @@ folder and as a _.dkv_ file, which is a zip of the folder.
 	everyone, through *elevate*(8). It asks whether to delete its
 	settings and data, _~/app-data/id_, and the copies of it kept for
 	going back, too; *--keep-data* and *--purge* answer for scripts. The
-	version kept to go back to goes with it. Kept data is picked up by a later version from
+	version kept to go back to goes with it. Its services stop and go;
+	their accounts and data, in _/shared/services/id_, stay unless
+	*--purge*. Kept data is picked up by a later version from
 	the same publisher; what you said of its permissions goes with its
 	data and stays with kept data.
 

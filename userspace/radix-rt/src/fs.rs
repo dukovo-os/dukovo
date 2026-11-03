@@ -266,6 +266,18 @@ impl Dir {
         Ok(Dir { held: Held { slot, owned: false } })
     }
 
+    /// The directory whose capability a call put in `slot`, a slot from
+    /// [`slots::take`] that the [`Dir`] takes over: dropping it deletes the
+    /// capability and gives the slot back. A slot of another kind is given
+    /// back empty.
+    pub fn own(slot: u32) -> Result<Dir> {
+        let held = Held { slot, owned: true };
+        if !holds(slot, ObjectKind::Directory) {
+            return Err(Error::WrongKind);
+        }
+        Ok(Dir { held })
+    }
+
     /// The slot of its capability, to share it with a program.
     pub fn slot(&self) -> u32 {
         self.held.slot

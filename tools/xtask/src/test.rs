@@ -331,6 +331,33 @@ const CATALOG_SITE: u8 = 20;
 /// version of each, as `.dkv` files.
 const UPDATE_SITE: u8 = 21;
 
+/// [`Disk::fat`] for a FAT32 disk on the whole disk holding the `.dkv`
+/// files of [`SERVICE_BUNDLES`] ([`service_files_disk`], ADR 0385).
+const SERVICE_FILES: u8 = 22;
+
+/// The bundles of a [`SERVICE_FILES`] disk: beacon runs a service, which
+/// counts its starts in its data folder, says as whom it runs, and
+/// crashes on its first start.
+const SERVICE_BUNDLES: [crate::bundles::TestBundle; 1] = [crate::bundles::TestBundle {
+    id: "org.example.beacon",
+    version: "1.0.0",
+    script: "#!/bin/sh
+echo started >> \"$HOME/starts\"
+n=$(wc -l < \"$HOME/starts\" | tr -d ' ')
+\
+             echo \"beacon 1.0.0 runs as $(id -un), start $n\"
+if [ \"$n\" = 1 ]; then
+  \
+             echo \"beacon crashes\"
+  kill -SEGV $$
+fi
+exec sleep 100000
+",
+    permissions: "{}",
+    services: "{\"name\": \"beacon\", \"program\": \"beacon\", \"start\": \"at-boot\", \
+               \"restart\": \"on-failure\"}",
+}];
+
 /// The bundles of an [`UPDATE_SITE`] disk. diary keeps a line for each
 /// run in its data, and shows them; 1.1.0 asks for nothing more. fetcher
 /// 1.1.0 asks to connect out, which 1.0.0 did not.
@@ -340,24 +367,28 @@ const UPDATE_BUNDLES: [crate::bundles::TestBundle; 4] = [
         version: "1.0.0",
         script: "#!/bin/sh\necho \"diary 1.0.0 ran\" >> \"$HOME/days\"\ncat \"$HOME/days\"\n",
         permissions: "{}",
+        services: "",
     },
     crate::bundles::TestBundle {
         id: "org.example.diary",
         version: "1.1.0",
         script: "#!/bin/sh\necho \"diary 1.1.0 ran\" >> \"$HOME/days\"\ncat \"$HOME/days\"\n",
         permissions: "{}",
+        services: "",
     },
     crate::bundles::TestBundle {
         id: "org.example.fetcher",
         version: "1.0.0",
         script: "#!/bin/sh\necho \"fetcher 1.0.0\"\n",
         permissions: "{}",
+        services: "",
     },
     crate::bundles::TestBundle {
         id: "org.example.fetcher",
         version: "1.1.0",
         script: "#!/bin/sh\necho \"fetcher 1.1.0\"\n",
         permissions: "{\"network.outbound\": {\"need\": \"required\", \"why\": \"To fetch.\"}}",
+        services: "",
     },
 ];
 
@@ -629,6 +660,13 @@ const fn bundle_files_disk(kib: u64, label: &'static str) -> Disk {
 /// ([`CATALOG_SITE`]), which Spark mounts at `/volumes/<disk>`.
 const fn catalog_site_disk(kib: u64, label: &'static str) -> Disk {
     Disk { fat: CATALOG_SITE, ..fat_disk(kib, 32, label, Table::None, Bus::Virtio) }
+}
+
+/// A FAT32 virtio disk of `kib` KiB, labelled `label`, holding the files
+/// of [`SERVICE_BUNDLES`] ([`SERVICE_FILES`]), which Spark mounts at
+/// `/volumes/<disk>`.
+const fn service_files_disk(kib: u64, label: &'static str) -> Disk {
+    Disk { fat: SERVICE_FILES, ..fat_disk(kib, 32, label, Table::None, Bus::Virtio) }
 }
 
 /// A virtio disk of `kib` KiB, labelled `label`, holding a test catalog of
@@ -3381,6 +3419,11 @@ fn make_disks(
             made.push(image);
             continue;
         }
+        if disk.fat == SERVICE_FILES {
+            make_service_files(ctx, disk, &image.path)?;
+            made.push(image);
+            continue;
+        }
         let path = &image.path;
         let mut mkfs = std::process::Command::new(fat_tool("mkfs.fat"));
         // A fixed volume ID, so that runs match.
@@ -4048,6 +4091,21 @@ fn make_update_site(ctx: &Ctx, disk: &Disk, path: &Path) -> Result<(), String> {
         if bundle.version == "1.0.0" {
             mcopy(&["-i", &image], file, "::/")?;
         }
+    }
+    Ok(())
+}
+
+/// Makes a [`SERVICE_FILES`] disk: the files of [`SERVICE_BUNDLES`].
+fn make_service_files(ctx: &Ctx, disk: &Disk, path: &Path) -> Result<(), String> {
+    let mut mkfs = std::process::Command::new(fat_tool("mkfs.fat"));
+    mkfs.args(["-F", "32", "-n", disk.label, "-i", "4f525448", "-C"])
+        .arg(path)
+        .arg(disk.kib.to_string());
+    host_tool(&mut mkfs)?;
+    let image = path.display().to_string();
+    for bundle in &SERVICE_BUNDLES {
+        let file = crate::bundles::pack_test(ctx, bundle).map_err(|e| e.to_string())?;
+        host_tool(std::process::Command::new("mcopy").args(["-i", &image]).arg(&file).arg("::/"))?;
     }
     Ok(())
 }

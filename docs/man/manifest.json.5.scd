@@ -144,6 +144,8 @@ windows (1.1), *runtime*, the Linux layer (1.3), and *plugins* (1.10).
 		The account it runs as, its own, made when it is installed;
 		the service's name unless given, which must then be one an
 		account may have: lowercase letters, digits, *\_*, *-* and *.*.
+		Its data folder and home is _/shared/services/ID/name_
+		(*bundled*(8)).
 
 	*restart* = *"always"* | *"on-failure"* | *"never"*
 		When it is started again after it ends; *"always"* unless
@@ -161,7 +163,8 @@ windows (1.1), *runtime*, the Linux layer (1.3), and *plugins* (1.10).
 	*start* = *"when-enabled"* | *"at-boot"* | *"on-connection"*
 		When it starts: once an administrator enables it (the
 		default), at boot once it is installed, or at the first
-		connection to a socket it provides, which *provides* names.
+		connection to a socket it provides, which *provides* names;
+		for now such a one starts at boot.
 
 	*needs* = [_"interface/1"_, ...]
 		The interfaces that must be up before it starts.

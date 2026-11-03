@@ -97,6 +97,9 @@ pub struct Spec {
     pub secrets: Vec<String>,
     /// The PCI cards it drives: devices.pci.
     pub devices: Vec<PciId>,
+    /// The account it runs as, a bundle's service's own (ADR 0385); when
+    /// none, it acts for root.
+    pub account: Option<String>,
 }
 
 impl Spec {
@@ -144,6 +147,7 @@ pub fn parse(name: &str, text: &str) -> Result<Spec, String> {
         names: file.permissions.names,
         secrets: file.secrets,
         devices: file.permissions.devices.pci,
+        account: file.account,
     })
 }
 

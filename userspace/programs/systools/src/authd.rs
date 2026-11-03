@@ -644,6 +644,9 @@ impl Authd {
                 Request::Disable { name } => (self.disable(&files, name, peer), now),
                 Request::Enable { name } => (enable(&files, name, peer), now),
                 Request::Remove { name } => (self.remove(files, name, peer), now),
+                Request::Service { name, whose, home } => {
+                    (add_service(files, name, whose, home, peer), now)
+                }
                 Request::Rename { name, new } => (self.rename(files, name, new, peer), now),
                 Request::Set { name, full_name, admin } => {
                     (self.set(files, name, full_name.as_deref(), *admin, peer), now)
@@ -2068,7 +2071,12 @@ impl Authd {
     /// retires its number and takes its lines out of the account files.
     /// Its home is left to the asker.
     fn remove(&mut self, files: Files, name: &str, peer: Peer) -> Answer {
-        let user = match person(&files, name, peer, "removes accounts") {
+        // A service's account goes as a person's does (ADR 0385).
+        let found = match files.user(name) {
+            Some(user) if user.is_service() && peer.is_root() => Ok(user),
+            _ => person(&files, name, peer, "removes accounts"),
+        };
+        let user = match found {
             Ok(user) => user.clone(),
             Err(why) => return Answer::Refused(why),
         };
@@ -2688,6 +2696,54 @@ fn add(
                 peer.user
             );
             Answer::Done(format!("made {name}, number {number}, home {}{home_note}", user.home))
+        }
+        Err(why) => Answer::Refused(why),
+    }
+}
+
+/// Makes the account of a bundle's service (ADR 0385), as bundled(8)
+/// asks as it installs the bundle: no password signs in to it, and its
+/// home is the service's data folder, which bundled makes.
+fn add_service(files: Files, name: &str, whose: &str, home: &str, peer: Peer) -> Answer {
+    if !peer.is_root() {
+        return Answer::Refused("only bundled, as root, makes a service's account".into());
+    }
+    if !home.starts_with("/shared/services/") || home.contains("/../") || home.ends_with("/..") {
+        return Answer::Refused(format!("{} is not a service's data folder", shown(home)));
+    }
+    let Files { mut users, mut groups, mut passwords, .. } = files;
+    let retired = match read_text(accounts::RETIRED) {
+        Ok(text) => accounts::retired(&text),
+        Err(err) => return Answer::Refused(format!("cannot read {}: {err}", accounts::RETIRED)),
+    };
+    let had = users.entries().any(|u| u.name == name);
+    let full_name = format!("A service of {whose}");
+    let user =
+        match accounts::add_service(&mut users, &mut groups, name, &full_name, home, &retired) {
+            Ok(user) => user,
+            Err(why) => return Answer::Refused(why),
+        };
+    let number = user.uid;
+    if had {
+        return Answer::Done(number.to_string());
+    }
+    // Disabled: no password opens it, ever.
+    passwords.retain_entries(|p| p.name != name);
+    let mut password = Password { name: name.into(), hash: String::new() };
+    password.set_disabled(true);
+    passwords.push(password);
+    let made = replace(accounts::PASSWORDS, &passwords.text(), 0o600)
+        .and_then(|()| replace(accounts::GROUP, &groups.text(), 0o644))
+        .and_then(|()| replace(accounts::PASSWD, &users.text(), 0o644));
+    match made {
+        Ok(()) => {
+            audit!(
+                "made the account {name} ({number}) of a service of {whose}, for process {} \
+                 (user {})",
+                peer.process,
+                peer.user
+            );
+            Answer::Done(number.to_string())
         }
         Err(why) => Answer::Refused(why),
     }
