@@ -107,8 +107,9 @@ fn bundles(vm: &mut Vm, case: &Case) -> Result<(), String> {
     answer_prompt(vm, "$", "clear; cd; bundle install notes.dkv; echo \"status $?\"")?;
     vm.expect_screen(&[
         "notes 0.1.0, for yourself",
-        "  Warning: this computer does not know this key. That the bundle comes",
-        "  from alice is its own word, which nothing has checked:",
+        "  Warning: this computer does not know this key.",
+        "  No catalog it trusts lists this file. That the bundle comes from",
+        "  alice is its own word, which nothing has checked: install it",
     ])?;
     answer_prompt(vm, "Install it? [y/N]", "n")?;
     vm.expect_screen(&["bundle: notes.dkv: not installed, as you said", "status 1"])?;

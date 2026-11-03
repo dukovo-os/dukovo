@@ -2,9 +2,10 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 //! What bundled(8) keeps in `/system/state/bundled` (ADR 0223), which only
-//! it writes: the bundles it installed, the key each ID is bound to, and
-//! each person's developer key. Each is a file of lines, tab-separated,
-//! read strictly: a line that does not read is an error, never skipped.
+//! it writes: the bundles it installed, the key each ID is bound to, each
+//! person's developer key, and the catalog each ID installed from one is
+//! bound to (ADR 0383). Each is a file of lines, tab-separated, read
+//! strictly: a line that does not read is an error, never skipped.
 
 use std::fmt;
 
@@ -18,6 +19,10 @@ pub const INSTALLED: &str = "installed";
 pub const BOUND: &str = "bound";
 /// Each person's developer key.
 pub const DEVELOPER_KEYS: &str = "developer-keys";
+/// The catalog each ID is bound to, in each place.
+pub const CATALOG_BOUND: &str = "catalog-bound";
+/// The files, in the order [`Registry::read`] takes them.
+pub const FILES: [&str; 4] = [INSTALLED, BOUND, DEVELOPER_KEYS, CATALOG_BOUND];
 
 /// Where a bundle is installed: for everyone, or for one person.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -85,6 +90,18 @@ pub struct Bound {
     pub since: u64,
 }
 
+/// An ID bound to a catalog in a place, from its first install from it
+/// there: from then on, only a file that catalog lists installs it, as
+/// whatever key signed it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CatalogBound {
+    pub place: Place,
+    pub id: String,
+    pub catalog: String,
+    /// Since when, in seconds since 1970.
+    pub since: u64,
+}
+
 /// What bundled keeps.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Registry {
@@ -92,6 +109,7 @@ pub struct Registry {
     pub bound: Vec<Bound>,
     /// Each person's developer key, by user number.
     pub developer_keys: Vec<(u32, PublicKey)>,
+    pub catalog_bound: Vec<CatalogBound>,
 }
 
 /// Splits `line` into exactly `N` tab-separated fields.
@@ -133,8 +151,9 @@ fn checked_hex(text: &str) -> Result<String, String> {
 }
 
 impl Registry {
-    /// Reads the three files' texts.
-    pub fn read(installed: &str, bound: &str, developer_keys: &str) -> Result<Registry, String> {
+    /// Reads the files' texts, in the order of [`FILES`].
+    pub fn read(texts: &[String; 4]) -> Result<Registry, String> {
+        let [installed, bound, developer_keys, catalog_bound] = texts;
         let installed = lines(INSTALLED, installed, |line| {
             let [place, id, version, key, list, when] = fields(line)?;
             Ok(Installed {
@@ -159,7 +178,17 @@ impl Registry {
             let [user, key] = fields(line)?;
             Ok((number(user)?, PublicKey::decode(key)?))
         })?;
-        let registry = Registry { installed, bound, developer_keys };
+        let catalog_bound = lines(CATALOG_BOUND, catalog_bound, |line| {
+            let [place, id, catalog, since] = fields(line)?;
+            super::catalogs::check_name(catalog)?;
+            Ok(CatalogBound {
+                place: Place::parse(place)?,
+                id: checked_id(id)?,
+                catalog: catalog.into(),
+                since: number(since)?,
+            })
+        })?;
+        let registry = Registry { installed, bound, developer_keys, catalog_bound };
         registry.check()?;
         Ok(registry)
     }
@@ -183,11 +212,16 @@ impl Registry {
                 return Err(format!("{DEVELOPER_KEYS}: user {user} is there twice"));
             }
         }
+        for b in &self.catalog_bound {
+            if !seen.insert((3, b.place, b.id.as_str())) {
+                return Err(format!("{CATALOG_BOUND}: {} is there twice for {}", b.id, b.place));
+            }
+        }
         Ok(())
     }
 
-    /// The three files' texts, in [`Registry::read`]'s order, sorted.
-    pub fn texts(&self) -> [String; 3] {
+    /// The files' texts, in the order of [`FILES`], sorted.
+    pub fn texts(&self) -> [String; 4] {
         let mut installed: Vec<String> = self
             .installed
             .iter()
@@ -209,7 +243,13 @@ impl Registry {
             .map(|(user, key)| format!("{user}\t{}\n", key.encoded()))
             .collect();
         keys.sort();
-        [installed.concat(), bound.concat(), keys.concat()]
+        let mut catalogs: Vec<String> = self
+            .catalog_bound
+            .iter()
+            .map(|b| format!("{}\t{}\t{}\t{}\n", b.place, b.id, b.catalog, b.since))
+            .collect();
+        catalogs.sort();
+        [installed.concat(), bound.concat(), keys.concat(), catalogs.concat()]
     }
 
     /// The bundle `id` installed in `place`.
@@ -222,14 +262,30 @@ impl Registry {
         self.bound.iter().find(|b| b.place == place && b.id == id)
     }
 
+    /// The catalog `id` is bound to in `place`.
+    pub fn catalog_bound(&self, place: Place, id: &str) -> Option<&CatalogBound> {
+        self.catalog_bound.iter().find(|b| b.place == place && b.id == id)
+    }
+
     /// The developer key of the user `user`.
     pub fn developer_key(&self, user: u32) -> Option<PublicKey> {
         self.developer_keys.iter().find(|(u, _)| *u == user).map(|(_, key)| *key)
     }
 
     /// Records `installed`, in place of what was there for its place and
-    /// ID, and binds its ID to its key there if it is not bound yet.
-    pub fn record(&mut self, installed: Installed) {
+    /// ID, and binds its ID to its key there if it is not bound yet, and
+    /// to `catalog`, the one that listed it, if it is not bound to one.
+    pub fn record(&mut self, installed: Installed, catalog: Option<&str>) {
+        if let Some(catalog) = catalog
+            && self.catalog_bound(installed.place, &installed.id).is_none()
+        {
+            self.catalog_bound.push(CatalogBound {
+                place: installed.place,
+                id: installed.id.clone(),
+                catalog: catalog.into(),
+                since: installed.when,
+            });
+        }
         if self.bound(installed.place, &installed.id).is_none() {
             self.bound.push(Bound {
                 place: installed.place,
@@ -258,6 +314,9 @@ impl Registry {
 /// Why a bundle's key is trusted, or that it is not known.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Trust {
+    /// A catalog this computer trusts lists this very file, and its ID
+    /// is bound to that catalog in the place since then, or will be.
+    Catalog { name: String, since: Option<u64> },
     /// Its ID is bound to this key in the place, since then.
     Bound { since: u64 },
     /// Its ID is bound to this key for everyone, since then.
@@ -270,15 +329,36 @@ pub enum Trust {
 }
 
 impl Registry {
-    /// Whether `key` may sign `id` in `place` for user `asker`: its trust,
-    /// or why not, when the ID is bound to another key.
+    /// Whether a file of `id` signed by `key`, which the catalogs
+    /// `listed` list, may install in `place` for user `asker`: its trust,
+    /// or why not.
+    ///
+    /// - An ID bound to a catalog, for everyone or in the place, installs
+    ///   only from a file that catalog lists, whatever key signed it.
+    /// - Otherwise an ID bound to a key installs only as that key signs.
+    /// - A file a catalog lists is trusted as that catalog's, the first of
+    ///   `listed`; then the asker's developer key; then nothing.
     pub fn trust(
         &self,
         place: Place,
         asker: u32,
         id: &str,
         key: &PublicKey,
+        listed: &[String],
     ) -> Result<Trust, String> {
+        let everyone = self.catalog_bound(Place::Everyone, id);
+        let own = if place == Place::Everyone { None } else { self.catalog_bound(place, id) };
+        if let Some(b) = own.or(everyone) {
+            if !listed.contains(&b.catalog) {
+                return Err(format!(
+                    "{id} comes from catalog {}, since its first install from it, and that \
+                     catalog does not list this file: only a file it lists may install it",
+                    b.catalog
+                ));
+            }
+            let since = own.map_or(b.since, |own| own.since);
+            return Ok(Trust::Catalog { name: b.catalog.clone(), since: Some(since) });
+        }
         let everyone = self.bound(Place::Everyone, id);
         let own = if place == Place::Everyone { None } else { self.bound(place, id) };
         for (binding, whose) in [(everyone, "for everyone"), (own, "here")] {
@@ -292,6 +372,9 @@ impl Registry {
                     b.key.encoded()
                 ));
             }
+        }
+        if let Some(name) = listed.first() {
+            return Ok(Trust::Catalog { name: name.clone(), since: None });
         }
         if let Some(b) = own {
             return Ok(Trust::Bound { since: b.since });
@@ -335,18 +418,19 @@ mod tests {
     #[test]
     fn the_files_read_back() {
         let mut registry = Registry::default();
-        registry.record(installed(Place::User(1000), "org.example.notes", 1));
-        registry.record(installed(Place::Everyone, "org.example.tea", 2));
+        registry.record(installed(Place::User(1000), "org.example.notes", 1), None);
+        registry.record(installed(Place::Everyone, "org.example.tea", 2), None);
         registry.set_developer_key(1000, key(1));
-        let [a, b, c] = registry.texts();
-        let again = Registry::read(&a, &b, &c).unwrap();
+        let texts = registry.texts();
+        let again = Registry::read(&texts).unwrap();
+        let [a, b, ..] = texts;
         assert_eq!(again.texts(), registry.texts());
         assert_eq!(again.installed.len(), 2);
         assert_eq!(again.bound.len(), 2);
         assert!(a.starts_with("1000\torg.example.notes\t1.0.0\tRW"));
         assert!(b.contains("everyone\torg.example.tea\tRW"));
         assert_eq!(again.developer_key(1000), Some(key(1)));
-        assert_eq!(Registry::read("", "", "").unwrap(), Registry::default());
+        assert_eq!(Registry::read(&Default::default()).unwrap(), Registry::default());
     }
 
     #[test]
@@ -365,10 +449,12 @@ mod tests {
             format!("{}\t{list}\t17\n", line.replace("1.0.0", "1.0.0\u{1b}")),
             format!("all{}\t{list}\t17\n", &line[4..]),
         ] {
-            assert!(Registry::read(&bad, &good[1], &good[2]).is_err(), "{bad:?}");
+            let texts = [bad.clone(), good[1].clone(), good[2].clone(), good[3].clone()];
+            assert!(Registry::read(&texts).is_err(), "{bad:?}");
         }
         let two = format!("5\t{}\n5\t{}\n", key(1).encoded(), key(2).encoded());
-        assert!(Registry::read("", "", &two).unwrap_err().contains("twice"));
+        let texts = [String::new(), String::new(), two, String::new()];
+        assert!(Registry::read(&texts).unwrap_err().contains("twice"));
     }
 
     #[test]
@@ -379,32 +465,72 @@ mod tests {
         let id = "org.example.notes";
         // Nothing bound: her developer key is hers alone to trust.
         registry.set_developer_key(1000, key(1));
-        assert_eq!(registry.trust(alice, 1000, id, &key(1)), Ok(Trust::Developer));
-        assert_eq!(registry.trust(bob, 1001, id, &key(1)), Ok(Trust::Unknown));
-        assert_eq!(registry.trust(alice, 1000, id, &key(2)), Ok(Trust::Unknown));
+        assert_eq!(registry.trust(alice, 1000, id, &key(1), &[]), Ok(Trust::Developer));
+        assert_eq!(registry.trust(bob, 1001, id, &key(1), &[]), Ok(Trust::Unknown));
+        assert_eq!(registry.trust(alice, 1000, id, &key(2), &[]), Ok(Trust::Unknown));
         // Bound for her: only that key, for her; bob is free.
-        registry.record(installed(alice, id, 1));
+        registry.record(installed(alice, id, 1), None);
         assert_eq!(
-            registry.trust(alice, 1000, id, &key(1)),
+            registry.trust(alice, 1000, id, &key(1), &[]),
             Ok(Trust::Bound { since: 1_793_000_000 })
         );
-        assert!(registry.trust(alice, 1000, id, &key(2)).unwrap_err().contains("bound to key"));
-        assert_eq!(registry.trust(bob, 1001, id, &key(2)), Ok(Trust::Unknown));
+        assert!(
+            registry.trust(alice, 1000, id, &key(2), &[]).unwrap_err().contains("bound to key")
+        );
+        assert_eq!(registry.trust(bob, 1001, id, &key(2), &[]), Ok(Trust::Unknown));
         // Bound for everyone: that key, for everyone and each person.
-        registry.record(installed(Place::Everyone, "org.example.tea", 3));
+        registry.record(installed(Place::Everyone, "org.example.tea", 3), None);
         let tea = "org.example.tea";
-        assert!(registry.trust(bob, 1001, tea, &key(2)).is_err());
+        assert!(registry.trust(bob, 1001, tea, &key(2), &[]).is_err());
         assert_eq!(
-            registry.trust(bob, 1001, tea, &key(3)),
+            registry.trust(bob, 1001, tea, &key(3), &[]),
             Ok(Trust::BoundForEveryone { since: 1_793_000_000 })
         );
         assert_eq!(
-            registry.trust(Place::Everyone, 0, tea, &key(3)),
+            registry.trust(Place::Everyone, 0, tea, &key(3), &[]),
             Ok(Trust::Bound { since: 1_793_000_000 })
         );
         // Forgetting keeps the binding.
         assert!(registry.forget(alice, id).is_some());
         assert!(registry.installed(alice, id).is_none());
-        assert!(registry.trust(alice, 1000, id, &key(2)).is_err());
+        assert!(registry.trust(alice, 1000, id, &key(2), &[]).is_err());
+    }
+
+    #[test]
+    fn an_id_from_a_catalog_installs_only_from_it() {
+        let mut registry = Registry::default();
+        let alice = Place::User(1000);
+        let id = "io.github.burntsushi.ripgrep";
+        let dukovo = vec!["dukovo".to_string()];
+        // Listed: the catalog's, whatever key signed it.
+        assert_eq!(
+            registry.trust(alice, 1000, id, &key(1), &dukovo),
+            Ok(Trust::Catalog { name: "dukovo".into(), since: None })
+        );
+        registry.record(installed(alice, id, 1), Some("dukovo"));
+        assert_eq!(registry.catalog_bound(alice, id).unwrap().catalog, "dukovo");
+        // From then on, a file it lists, signed by any key; nothing else,
+        // not even one signed by the same key.
+        assert_eq!(
+            registry.trust(alice, 1000, id, &key(2), &dukovo),
+            Ok(Trust::Catalog { name: "dukovo".into(), since: Some(1_793_000_000) })
+        );
+        let other = vec!["feed".to_string()];
+        assert!(
+            registry.trust(alice, 1000, id, &key(1), &[]).unwrap_err().contains("catalog dukovo")
+        );
+        assert!(registry.trust(alice, 1000, id, &key(1), &other).is_err());
+        // An ID bound to a key stays that key's, though a catalog lists it.
+        let notes = "org.example.notes";
+        registry.record(installed(alice, notes, 3), None);
+        assert!(registry.trust(alice, 1000, notes, &key(4), &dukovo).is_err());
+        assert_eq!(
+            registry.trust(alice, 1000, notes, &key(3), &dukovo),
+            Ok(Trust::Catalog { name: "dukovo".into(), since: None })
+        );
+        // The bindings read back.
+        let again = Registry::read(&registry.texts()).unwrap();
+        assert_eq!(again, registry);
+        assert!(registry.texts()[3].starts_with("1000\tio.github.burntsushi.ripgrep\tdukovo\t"));
     }
 }

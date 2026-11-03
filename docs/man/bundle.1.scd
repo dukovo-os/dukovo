@@ -29,6 +29,16 @@ bundle - make, check, sign, pack, install and run bundles, and say what they may
 
 *bundle install* _file_*.dkv* [*--for-everyone*] [*--yes*]
 
+*bundle install* _id_ [*--from* _catalog_] [*--for-everyone*] [*--yes*]
+
+*bundle search* _word_...
+
+*bundle catalog*
+
+*bundle catalog add* _name_ _url_ _root-file_
+
+*bundle catalog remove* _name_
+
 *bundle list*
 
 *bundle info* _id_
@@ -50,7 +60,8 @@ and checks manifests with the same reader that installs bundles, so what
 packs it into one _.dkv_ file to share, and checks and unpacks one. It
 installs, lists and removes bundles through *bundled*(8), as apt and
 dpkg do packages, runs them, each in a sandbox of its own, and gives
-them the permissions you allow.
+them the permissions you allow. It finds bundles in the catalogs this
+computer trusts and installs them from there (CATALOGS).
 
 A signed bundle has _files.sha256_, the SHA-256 of each of its other
 files as *sha256sum*(1) writes them, and _signature_, minisign's Ed25519
@@ -139,10 +150,41 @@ folder and as a _.dkv_ file, which is a zip of the folder.
 	whether this computer knows the key, its size, the permissions it
 	asks for in the system's own words, and its commands. bundle asks
 	*Install it?*; *--yes* answers for scripts. Installed, the bundle is
-	sealed: root's and read-only, so nothing changes it. A bundle signed
-	by your developer key installs with no warning for you; any other key
-	this computer does not know installs after a warning, and from then
-	on only that key may install that ID.
+	sealed: root's and read-only, so nothing changes it. A file that a
+	catalog this computer trusts lists installs as that catalog's, with
+	no warning (CATALOGS). A bundle signed by your developer key installs
+	with no warning for you; any other key this computer does not know
+	installs after a warning, and from then on only that key may install
+	that ID.
+
+*install* _id_ [*--from* _catalog_] [*--for-everyone*] [*--yes*]
+	Fetches the newest version of _id_ from the first catalog that lists
+	it, or from _catalog_, and installs it as a file, with the catalog's
+	name on its sheet. bundle takes what it is given for a file when it
+	has a _/_, ends in _.dkv_ or names a file that is there.
+
+*search* _word_...
+	Reads the catalogs anew and lists the newest version of each bundle
+	whose ID or name holds every _word_, in any case: ID, version,
+	catalog and name. It exits with 1 when none does. A catalog that
+	cannot be read is left out, and bundle says why.
+
+*catalog*
+	Lists the catalogs: name, on or off, how many bundles each listed
+	when bundled last read it, when that was, followed by *!* once what
+	it read has expired, and where it is.
+
+*catalog add* _name_ _url_ _root-file_
+	Adds a catalog, which only an administrator may, through
+	*elevate*(8). _name_ is a lowercase letter, then up to 31 lowercase
+	letters, digits and *-*; _url_ is where its repository is, by
+	*https*, *http* or *file*; and _root-file_ is the root it starts
+	from, which its publisher gives. bundled reads the catalog from that
+	root before it keeps anything.
+
+*catalog remove* _name_
+	Removes a catalog, through *elevate*(8). One the system comes with
+	is turned off instead, so that it stays off.
 
 *list*
 	Lists the bundles you can run, yours and everyone's: ID, version,
@@ -280,6 +322,27 @@ socket outlives the capability it was made with, so the program and
 what it started are stopped, *SIGTERM* and two seconds later *SIGKILL*,
 and bundle exits with 143; its next run goes without.
 
+# CATALOGS
+
+A catalog is a repository of bundles, signed as The Update Framework
+says (ADR 0380), that *bundled*(8) reads and installs from (ADR 0383).
+Dukovo comes with its own, *dukovo*; an administrator may add others.
+bundled reads each one from the root it was set with, and checks every
+file it fetches, metadata and bundles, against the keys that root and
+those after it name.
+
+A catalog lists each bundle's _.dkv_ file by its SHA-256 and length, so
+it vouches for that very file, wherever it came from: one *bundle
+install* fetched, or one copied from a disk. Such a file installs with
+no warning, and its sheet names the catalog. From then on its ID
+installs, for you or for everyone, only from a file that same catalog
+lists, whatever key signed it. A catalog whose metadata expired vouches
+for nothing until it is read again.
+
+A file no catalog lists installs as before: signed by your developer key
+with no warning, or by any other key after one, which also says that no
+catalog this computer trusts lists it.
+
 # FILES
 
 _$XDG_DATA_HOME/bundle/developer.key_, _developer.pub_
@@ -297,6 +360,10 @@ _~/app-data/id_
 _/system/state/grants/uid_
 	What each person said of each bundle's permissions, which only
 	*bundled*(8) writes.
+
+_/system/settings/catalogs/name_
+	A catalog: _url_, _root.json_, and _off_ when it is turned off
+	(*bundled*(8)).
 
 # EXIT STATUS
 
@@ -345,6 +412,21 @@ The same checks with other tools, on any system:
 $ cd notes && minisign -Vm files.sha256 -x signature -P RWS...
 $ sha256sum -c files.sha256
 $ unzip -t org.example.notes-0.1.0.dkv
+```
+
+From a catalog:
+
+```
+$ bundle search ripgrep
+ID                            VERSION  CATALOG  NAME
+io.github.burntsushi.ripgrep  15.2.0   dukovo   ripgrep
+$ bundle install io.github.burntsushi.ripgrep
+ripgrep 15.2.0, for yourself
+  io.github.burntsushi.ripgrep, by Dukovo catalog
+  From catalog dukovo, which this computer trusts: it lists this very file.
+  ...
+Install it? [y/N] y
+installed io.github.burntsushi.ripgrep 15.2.0, for you
 ```
 
 # SEE ALSO

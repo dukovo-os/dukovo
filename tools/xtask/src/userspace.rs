@@ -12,6 +12,8 @@
 //! files the ports put there (ADR 0069) and the programs on Rust's
 //! standard library of userspace/programs (ADR 0070).
 
+use std::fs::Permissions;
+use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -457,6 +459,29 @@ pub fn install_headers(ctx: &Ctx) -> Result<PathBuf> {
     Ok(include)
 }
 
+/// Dukovo's own catalog among the default settings, which bundled(8)
+/// installs from (ADR 0383): its address, and the first root signed in
+/// `catalog/`. None until that root is signed.
+fn dukovo_catalog(ctx: &Ctx) -> Result<Vec<(String, PathBuf)>> {
+    let first = ctx.root.join(crate::catalog::REPO).join("metadata/1.root.json");
+    if !first.is_file() {
+        return Ok(Vec::new());
+    }
+    let dir = ctx.out.join("catalog/default-settings");
+    std::fs::create_dir_all(&dir).context(|| format!("making {}", dir.display()))?;
+    let url = dir.join("url");
+    std::fs::write(&url, format!("{}\n", crate::catalog::URL))
+        .context(|| format!("writing {}", url.display()))?;
+    std::fs::set_permissions(&url, Permissions::from_mode(0o644))
+        .context(|| format!("writing {}", url.display()))?;
+    let root = dir.join("root.json");
+    std::fs::copy(&first, &root).context(|| format!("copying {}", first.display()))?;
+    std::fs::set_permissions(&root, Permissions::from_mode(0o644))
+        .context(|| format!("writing {}", root.display()))?;
+    let at = format!("{DEFAULTS_DIR}/catalogs/dukovo");
+    Ok(vec![(format!("{at}/url"), url), (format!("{at}/root.json"), root)])
+}
+
 /// Builds the ports, the C test programs and the user programs, installs
 /// the test image as `out/sysroot/boot/usertests`, and writes the boot
 /// archive to `out/sysroot/boot/bootfs`.
@@ -465,6 +490,7 @@ pub fn build(ctx: &Ctx, profile: Profile) -> Result<Programs> {
     let ports = ports::build_all(ctx, &[])?;
     let mut files = build_posix(ctx, &ports.toolchain)?;
     install_tree(ctx, DEFAULTS, DEFAULTS_DIR, &mut files)?;
+    files.extend(dukovo_catalog(ctx)?);
     install_tree(ctx, TEST_SERVICES, TEST_SERVICES_DIR, &mut files)?;
     for port in &ports.ports {
         files.extend(ports::image_files(ctx, &port.recipe, &ctx.out.join("sysroot"))?);

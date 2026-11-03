@@ -318,6 +318,12 @@ const GRUBLESS: u8 = 18;
 /// out/bundles ([`bundle_files_disk`], ADR 0370).
 const BUNDLE_FILES: u8 = 19;
 
+/// [`Disk::fat`] for a FAT32 disk on the whole disk holding a catalog
+/// that `ob` signs with throwaway keys ([`catalog_site_disk`], ADR 0383):
+/// `catalog/`, as a server serves it, listing ripgrep's bundle alone;
+/// `root.json`, its first root; and every `.dkv` file in out/bundles.
+const CATALOG_SITE: u8 = 20;
+
 /// The partition table of a test disk with a filesystem.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Table {
@@ -580,6 +586,12 @@ const fn fat_disk(kib: u64, fat: u8, label: &'static str, table: Table, bus: Bus
 /// `/volumes/<disk>`.
 const fn bundle_files_disk(kib: u64, label: &'static str) -> Disk {
     Disk { fat: BUNDLE_FILES, ..fat_disk(kib, 32, label, Table::None, Bus::Virtio) }
+}
+
+/// A FAT32 disk on the whole disk holding a test catalog
+/// ([`CATALOG_SITE`]), which Spark mounts at `/volumes/<disk>`.
+const fn catalog_site_disk(kib: u64, label: &'static str) -> Disk {
+    Disk { fat: CATALOG_SITE, ..fat_disk(kib, 32, label, Table::None, Bus::Virtio) }
 }
 
 /// The storage test's disks: FAT12, FAT16 and FAT32 on whole disks, and
@@ -1451,7 +1463,9 @@ pub const CASES: &[Case] = &[
         media: Media::Usb,
         cmdline: "lockdep -- --services --posix --names /system/tests/posix/accounttest",
         cpus: 2,
-        memory: "512M",
+        // A password's hash takes 64 MiB, beside two copies of the boot
+        // archive, which grew past what 512 MiB leaves for it.
+        memory: "1G",
         reboot: false,
         image: TestImage::Plain,
         cpu_model: None,
@@ -2660,7 +2674,8 @@ pub fn command(ctx: &Ctx, args: &mut Args) -> Result<()> {
         // The catalog's bundles are packed only for a case that installs
         // them: packing builds a bundle's port again when what it packs
         // from is gone, as it is after a restored cache.
-        if cases.iter().any(|case| case.disks.iter().any(|disk| disk.fat == BUNDLE_FILES)) {
+        let packs = |disk: &Disk| matches!(disk.fat, BUNDLE_FILES | CATALOG_SITE);
+        if cases.iter().any(|case| case.disks.iter().any(packs)) {
             crate::ports::build_and_pack(ctx, &[])?;
         }
         if image_only {
@@ -3312,6 +3327,11 @@ fn make_disks(
             made.push(image);
             continue;
         }
+        if disk.fat == CATALOG_SITE {
+            make_catalog_site(ctx, disk, &image.path)?;
+            made.push(image);
+            continue;
+        }
         let path = &image.path;
         let mut mkfs = std::process::Command::new(fat_tool("mkfs.fat"));
         // A fixed volume ID, so that runs match.
@@ -3921,6 +3941,38 @@ fn make_bundle_files(ctx: &Ctx, disk: &Disk, path: &Path) -> Result<(), String> 
         host_tool(std::process::Command::new("mcopy").args(["-i", &image]).arg(file).arg("::/"))?;
     }
     Ok(())
+}
+
+/// Makes a [`CATALOG_SITE`] disk: the bundle files, then a test catalog
+/// that lists ripgrep's alone, so that bat's is a file from no catalog.
+fn make_catalog_site(ctx: &Ctx, disk: &Disk, path: &Path) -> Result<(), String> {
+    make_bundle_files(ctx, disk, path)?;
+    let bundles = crate::bundles::dir(ctx);
+    let ripgrep = std::fs::read_dir(&bundles)
+        .map_err(|err| format!("reading {}: {err}", bundles.display()))?
+        .filter_map(|entry| entry.ok().map(|e| e.path()))
+        .find(|path| {
+            path.file_name()
+                .is_some_and(|n| n.to_string_lossy().starts_with("io.github.burntsushi.ripgrep-"))
+        })
+        .ok_or_else(|| {
+            format!("{} holds no ripgrep bundle (run `./ob ports`)", bundles.display())
+        })?;
+    let dir = crate::catalog::test_site(ctx, &[ripgrep]).map_err(|e| e.to_string())?;
+    let image = path.display().to_string();
+    host_tool(
+        std::process::Command::new("mcopy")
+            .args(["-s", "-i", &image])
+            .arg(dir.join("site"))
+            .arg("::/catalog"),
+    )?;
+    host_tool(
+        std::process::Command::new("mcopy")
+            .args(["-i", &image])
+            .arg(dir.join("root.json"))
+            .arg("::/"),
+    )
+    .map(drop)
 }
 
 /// The mtools name of a test disk's filesystem.

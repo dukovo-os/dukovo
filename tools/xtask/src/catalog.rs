@@ -240,6 +240,47 @@ fn deploy(ctx: &Ctx) -> Result<()> {
     check(ctx, URL)
 }
 
+/// Makes a catalog signed with throwaway keys, for a boot test, in
+/// `out/test/catalog`: `site/`, laid out as the update server serves it,
+/// listing `bundles`, and `root.json`, its first root (ADR 0383).
+pub fn test_site(ctx: &Ctx, bundles: &[PathBuf]) -> Result<PathBuf> {
+    let dir = ctx.out.join("test/catalog");
+    if dir.exists() {
+        std::fs::remove_dir_all(&dir).context(|| format!("removing {}", dir.display()))?;
+    }
+    std::fs::create_dir_all(&dir).context(|| format!("making {}", dir.display()))?;
+    let program = build(ctx, false)?;
+    step("Signing a test catalog with throwaway keys");
+    let (repo, store, site) = (dir.join("repo"), dir.join("store"), dir.join("site"));
+    let (test_key, online_key) = (dir.join("test.key"), dir.join("online.key"));
+    let run = |args: &[&std::ffi::OsStr]| {
+        let mut cmd = Command::new(&program);
+        cmd.arg("--repo").arg(&repo).args(args);
+        process::output(ctx, &mut cmd).map(drop)
+    };
+    let os = |text: &'static str| std::ffi::OsStr::new(text);
+    run(&[os("key"), os("new"), test_key.as_os_str(), os("test"), os("root"), os("targets")])?;
+    run(&[os("key"), os("new"), online_key.as_os_str(), os("online")])?;
+    run(&[os("root"), os("--key"), test_key.as_os_str()])?;
+    let mut sign = vec![os("sign"), os("--yes"), os("--key"), test_key.as_os_str()];
+    sign.extend([os("--store"), store.as_os_str()]);
+    sign.extend(bundles.iter().map(|b| b.as_os_str()));
+    run(&sign)?;
+    run(&[
+        os("publish"),
+        os("--key"),
+        online_key.as_os_str(),
+        os("--store"),
+        store.as_os_str(),
+        os("--out"),
+        site.as_os_str(),
+    ])?;
+    let root = dir.join("root.json");
+    std::fs::copy(repo.join("metadata/1.root.json"), &root)
+        .context(|| format!("writing {}", root.display()))?;
+    Ok(dir)
+}
+
 /// `ob catalog check`: reads the catalog `url` serves as a client would,
 /// from catalog/'s first root, and fetches every bundle.
 fn check(ctx: &Ctx, url: &str) -> Result<()> {

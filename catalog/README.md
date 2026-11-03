@@ -71,6 +71,10 @@ With both YubiKeys plugged in and `keys/online.json` in place,
 each. Commit `keys/` and `metadata/`. The second YubiKey then goes to its
 safe place; either one alone signs from then on.
 
+Every image built after that carries `metadata/1.root.json` as the root
+of the `dukovo` catalog, among its default settings, so `bundle search`
+and `bundle install` read the catalog from it (ADR 0383).
+
 ## Signing a batch
 
 `./ob catalog sign` packs the catalog's bundles into `out/bundles/`, as

@@ -75,6 +75,20 @@ pub fn write(facts: &Facts<'_>) -> String {
     let _ = writeln!(o, "  {}", shown(&m.summary.0, 100));
     let _ = writeln!(o, "  Signed by key {}", facts.key.encoded());
     match facts.trust {
+        Trust::Catalog { name, since: None } => {
+            let _ = writeln!(
+                o,
+                "  From catalog {name}, which this computer trusts: it lists this very file."
+            );
+        }
+        Trust::Catalog { name, since: Some(since) } => {
+            let _ = writeln!(
+                o,
+                "  From catalog {name}, which this computer trusts: it lists this very file.\n  \
+                 The bundle has come from there since {}.",
+                day(*since)
+            );
+        }
         Trust::Developer => {
             let _ = writeln!(o, "  Your developer key, which this computer trusts for you alone.");
         }
@@ -87,9 +101,10 @@ pub fn write(facts: &Facts<'_>) -> String {
         Trust::Unknown => {
             let _ = writeln!(
                 o,
-                "  Warning: this computer does not know this key. That the bundle comes\n  \
-                 from {} is its own word, which nothing has checked:\n  install it only if \
-                 you trust where you got it. From now on only this\n  key may install {}.",
+                "  Warning: this computer does not know this key.\n  No catalog it trusts lists \
+                 this file. That the bundle comes from\n  {} is its own word, which nothing has \
+                 checked: install it\n  only if you trust where you got it. From now on only \
+                 this key\n  may install {}.",
                 shown(&m.publisher.name.0, 40),
                 m.id
             );
@@ -188,6 +203,15 @@ mod tests {
         assert!(sheet(Trust::Developer).contains("Your developer key"));
         assert!(!sheet(Trust::Developer).contains("Warning"));
         assert!(sheet(Trust::Bound { since: 1_793_000_000 }).contains("here, on 2026-10-26."));
+        assert!(unknown.contains("  No catalog it trusts lists this file."), "{unknown}");
+        let listed = sheet(Trust::Catalog { name: "dukovo".into(), since: None });
+        assert!(listed.contains("  From catalog dukovo, which this computer trusts: it lists"));
+        assert!(!listed.contains("Warning"));
+        let bound = sheet(Trust::Catalog { name: "dukovo".into(), since: Some(1_793_000_000) });
+        assert!(
+            bound.contains("this very file.\n  The bundle has come from there since 2026-10-26.\n"),
+            "{bound}"
+        );
     }
 
     #[test]

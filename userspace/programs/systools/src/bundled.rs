@@ -33,6 +33,13 @@
 //! grant` goes through the same prompt; taking a permission away needs
 //! none, and reaches each run of the app at once, through the `watch`
 //! connection its runner keeps.
+//!
+//! It reads the catalogs (ADR 0383, `bundles::catalogs`) with the TUF
+//! client, as root, so that what a catalog vouches for is never a
+//! person's word: `bundle search` searches what they list, `bundle
+//! install ID` fetches the newest version from them, and a file installed
+//! from anywhere else is trusted as a catalog's when a catalog lists its
+//! very bytes.
 
 use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader, Read, Write};
@@ -50,11 +57,12 @@ use manifest::bundle::permissions::{self, Tier};
 use manifest::bundle::{Manifest, Need, Request as Asked, RunsWith};
 
 use crate::args::Args;
+use crate::bundles::catalogs::{self, Catalog};
 use crate::bundles::folder::{DEPTH_MAX, Dir, check, fd_stat, same};
 use crate::bundles::grants::{self, Grant, Grants, Said};
 use crate::bundles::minisign::PublicKey;
-use crate::bundles::protocol::{self, Answer, Find, Found, LINE_MAX, Listed, Request};
-use crate::bundles::registry::{self, Installed, Place, Registry};
+use crate::bundles::protocol::{self, Answer, Find, Found, Hit, LINE_MAX, Listed, Request, Shown};
+use crate::bundles::registry::{self, Installed, Place, Registry, Trust};
 use crate::bundles::sheet::{self, Facts};
 use crate::bundles::{MANIFEST, confine, signed, sums};
 use crate::util::{self, Fail};
@@ -138,6 +146,8 @@ struct Shared {
     /// The runs of apps that follow what is taken away from them.
     watchers: Mutex<Vec<Watcher>>,
     connections: AtomicUsize,
+    /// Held while a catalog's client reads or fetches, one at a time.
+    catalogs: Mutex<()>,
 }
 
 /// A run of an app, by its runner's `watch` connection.
@@ -158,6 +168,10 @@ impl Shared {
 
     fn watchers(&self) -> MutexGuard<'_, Vec<Watcher>> {
         self.watchers.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn catalogs(&self) -> MutexGuard<'_, ()> {
+        self.catalogs.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 }
 
@@ -188,8 +202,7 @@ fn write_whole(path: &str, text: &str, mode: u32) -> Result<(), String> {
 
 /// Writes the registry's files, each whole or not at all.
 fn save(registry: &Registry) -> Result<(), String> {
-    let names = [registry::INSTALLED, registry::BOUND, registry::DEVELOPER_KEYS];
-    for (name, text) in names.iter().zip(registry.texts()) {
+    for (name, text) in registry::FILES.iter().zip(registry.texts()) {
         write_whole(&state(name), &text, 0o644)?;
     }
     Ok(())
@@ -380,6 +393,7 @@ fn tidy(dir: &Dir) {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn install(
     shared: &Shared,
     connection: &mut Connection,
@@ -387,6 +401,7 @@ fn install(
     archive: &File,
     everyone: bool,
     yes: bool,
+    from: Option<&str>,
 ) -> Result<String, String> {
     if everyone && asker != 0 {
         return Err("installing for everyone is an administrator's: run elevate bundle install \
@@ -398,26 +413,76 @@ fn install(
     tidy(&places);
     let working = working_name("installing")?;
     places.make(&working, 0o700).map_err(|e| format!("{path}/{working}: {e}"))?;
-    let result =
-        install_in(shared, connection, asker, archive, place, &places, &path, &working, yes);
+    let to = Unpacking { place, places: &places, path: &path, working: &working };
+    let result = install_in(shared, connection, asker, archive, &to, yes, from);
     if result.is_err() {
         let _ = places.remove_tree(&working, 0);
     }
     result
 }
 
-#[allow(clippy::too_many_arguments)]
+/// Where an install unpacks: the place, its folder, the folder's path, and
+/// the working folder's name in it.
+struct Unpacking<'a> {
+    place: Place,
+    places: &'a Dir,
+    path: &'a str,
+    working: &'a str,
+}
+
+/// The SHA-256, in hex, and length of `archive`, read from its start.
+fn archive_hash(archive: &File) -> Result<(String, u64), String> {
+    let mut file = archive.try_clone().map_err(|e| format!("{e}"))?;
+    io::Seek::seek(&mut file, io::SeekFrom::Start(0)).map_err(|e| format!("{e}"))?;
+    let mut hasher = sums::Hasher::default();
+    let mut buffer = vec![0u8; 64 * 1024];
+    let mut length = 0u64;
+    loop {
+        let n = file.read(&mut buffer).map_err(|e| format!("{e}"))?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buffer[..n]);
+        length += n as u64;
+    }
+    Ok((sums::hex(&hasher.finish()), length))
+}
+
+/// The catalogs that list a file of `id` with this SHA-256 and length,
+/// from the indexes they last gave, while those still vouch for it:
+/// `from` first, when it is one.
+fn listing(id: &str, sha256: &str, length: u64, from: Option<&str>) -> Vec<String> {
+    let (catalogs, _) = read_catalogs();
+    let now = tuf::time::now();
+    let state = Path::new(catalogs::STATE);
+    let mut listed: Vec<String> = catalogs
+        .iter()
+        .filter(|c| !c.off)
+        .filter(|c| {
+            catalogs::read_index(state, &c.name)
+                .is_some_and(|index| index.current(now) && index.lists(id, sha256, length))
+        })
+        .map(|c| c.name.clone())
+        .collect();
+    if let Some(from) = from
+        && let Some(at) = listed.iter().position(|name| name == from)
+    {
+        let name = listed.remove(at);
+        listed.insert(0, name);
+    }
+    listed
+}
+
 fn install_in(
     shared: &Shared,
     connection: &mut Connection,
     asker: u32,
     archive: &File,
-    place: Place,
-    places: &Dir,
-    path: &str,
-    working: &str,
+    to: &Unpacking<'_>,
     yes: bool,
+    from: Option<&str>,
 ) -> Result<String, String> {
+    let Unpacking { place, places, path, working } = *to;
     let folder = places.dir_at(working).map_err(|e| format!("{path}/{working}: {e}"))?;
     let made = folder.stat().map_err(|e| format!("{path}/{working}: {e}"))?;
     if made.st_uid != 0 || made.st_mode & 0o7777 != 0o700 {
@@ -443,9 +508,18 @@ fn install_in(
     }
     let list = fs::read(Path::new(&unpacked).join(sums::LIST)).map_err(|e| format!("{e}"))?;
     let list = sums::hex(&sums::sha256(&list));
+    // The bytes a catalog may vouch for: those of the archive, which
+    // the unpacked folder came from and has been checked against.
+    let (sha256, length) = archive_hash(archive)?;
+    let listed = listing(&id, &sha256, length, from);
+    if let Some(from) = from
+        && listed.first().map(String::as_str) != Some(from)
+    {
+        return Err(format!("catalog {from} does not list what was fetched from it"));
+    }
     let (trust, others) = {
         let registry = shared.lock();
-        let trust = registry.trust(place, asker, &id, &checked.key)?;
+        let trust = registry.trust(place, asker, &id, &checked.key, &listed)?;
         (trust, commands_in_reach(&registry, place, &id))
     };
     for command in &checked.manifest.commands {
@@ -480,7 +554,7 @@ fn install_in(
     let version = checked.manifest.version.0.clone();
     let mut registry = shared.lock();
     // Bound since? Another install may have come in between.
-    let trust = registry.trust(place, asker, &id, &checked.key)?;
+    let trust = registry.trust(place, asker, &id, &checked.key, &listed)?;
     let replaced = match places.stat_at(&id).map_err(|e| format!("{path}/{id}: {e}"))? {
         Some(_) => {
             let old = working_name("removing")?;
@@ -499,20 +573,21 @@ fn install_in(
     }
     let when = util::now_ns() / 1_000_000_000;
     let previous = registry.installed(place, &id).map(|i| i.version.clone());
-    registry.record(Installed {
-        place,
-        id: id.clone(),
-        version: version.clone(),
-        key: checked.key,
-        list,
-        when,
-    });
+    let catalog = match &trust {
+        Trust::Catalog { name, .. } => Some(name.as_str()),
+        _ => None,
+    };
+    registry.record(
+        Installed { place, id: id.clone(), version: version.clone(), key: checked.key, list, when },
+        catalog,
+    );
     save(&registry)?;
     drop(registry);
-    let why = match trust {
-        registry::Trust::Developer => "their developer key",
-        registry::Trust::Bound { .. } | registry::Trust::BoundForEveryone { .. } => "its key",
-        registry::Trust::Unknown => "a key this computer did not know",
+    let why = match &trust {
+        Trust::Catalog { name, .. } => format!("from catalog {name}"),
+        Trust::Developer => "their developer key".into(),
+        Trust::Bound { .. } | Trust::BoundForEveryone { .. } => "its key".into(),
+        Trust::Unknown => "a key this computer did not know".into(),
     };
     let asked_by = whom(Place::User(asker));
     let over = previous.map_or_default(|v| format!(" in place of {v}"));
@@ -689,13 +764,18 @@ fn info(
     asker: u32,
     id: &str,
 ) -> Result<String, String> {
-    let (installed, bound) = {
+    let (installed, trust) = {
         let registry = shared.lock();
         let own = registry.installed(Place::User(asker), id);
         let found = own.or_else(|| registry.installed(Place::Everyone, id)).cloned();
         let found = found.ok_or_else(|| format!("{id} is not installed"))?;
-        let bound = registry.bound(found.place, id).map_or(found.when, |b| b.since);
-        (found, bound)
+        let trust = match registry.catalog_bound(found.place, id) {
+            Some(b) => Trust::Catalog { name: b.catalog.clone(), since: Some(b.since) },
+            None => Trust::Bound {
+                since: registry.bound(found.place, id).map_or(found.when, |b| b.since),
+            },
+        };
+        (found, trust)
     };
     let (path, _) = place_folder(installed.place)?;
     let folder = format!("{path}/{id}");
@@ -708,7 +788,6 @@ fn info(
         .filter_map(|e| fs::metadata(format!("{folder}/{}", e.path)).ok())
         .map(|m| m.len())
         .sum();
-    let trust = registry::Trust::Bound { since: bound };
     let facts = Facts {
         manifest: &manifest,
         key: &installed.key,
@@ -1048,6 +1127,254 @@ fn watch(shared: &Shared, uid: u32, id: String, stream: UnixStream) {
 }
 
 /// Answers one connection.
+/// The catalogs set, and why each that is left out is.
+fn read_catalogs() -> (Vec<Catalog>, Vec<String>) {
+    catalogs::read_all(Path::new(catalogs::SETTINGS), Path::new(catalogs::DEFAULTS))
+}
+
+/// The catalogs read anew, and why each other could not be.
+type Opened = (Vec<(Catalog, catalogs::Open)>, Vec<String>);
+
+/// Reads every catalog that is on anew, or `only`: each one read, and why
+/// each other could not be.
+fn open_catalogs(only: Option<&str>) -> Result<Opened, String> {
+    let (all, _) = read_catalogs();
+    let chosen: Vec<Catalog> = match only {
+        Some(name) => {
+            let catalog = all.into_iter().find(|c| c.name == name).ok_or_else(|| {
+                format!("there is no catalog {name}: `bundle catalog` lists them")
+            })?;
+            if catalog.off {
+                return Err(format!("catalog {name} is off"));
+            }
+            vec![catalog]
+        }
+        None => all.into_iter().filter(|c| !c.off).collect(),
+    };
+    if chosen.is_empty() {
+        return Err("no catalog is set: `bundle catalog add` adds one".into());
+    }
+    let state = Path::new(catalogs::STATE);
+    let mut open = Vec::new();
+    let mut failed = Vec::new();
+    for catalog in chosen {
+        match catalogs::open(&catalog, state) {
+            Ok(read) => open.push((catalog, read)),
+            Err(why) => failed.push(format!("catalog {} could not be read: {why}", catalog.name)),
+        }
+    }
+    Ok((open, failed))
+}
+
+/// `bundle search WORD...`: what the catalogs list, read anew; a catalog
+/// that cannot be read is searched as it last was, and said.
+fn search(
+    shared: &Shared,
+    connection: &mut Connection,
+    words: &[String],
+) -> Result<String, String> {
+    let _reading = shared.catalogs();
+    let (open, failed) = open_catalogs(None)?;
+    let state = Path::new(catalogs::STATE);
+    let (all, _) = read_catalogs();
+    let mut notes = failed;
+    let mut found = 0;
+    for catalog in all.iter().filter(|c| !c.off) {
+        let index = match open.iter().find(|(c, _)| c.name == catalog.name) {
+            Some((_, read)) => Some(read.index.clone()),
+            None => catalogs::read_index(state, &catalog.name).inspect(|index| {
+                let day = util::time_text(index.read, "%Y-%m-%d", true);
+                notes.push(format!("catalog {} as it was on {day}", catalog.name));
+            }),
+        };
+        for entry in index.iter().flat_map(|index| index.search(words)) {
+            let hit = Hit {
+                catalog: catalog.name.clone(),
+                id: entry.id.clone(),
+                version: entry.version.clone(),
+                name: entry.name.clone(),
+            };
+            connection.send(&Answer::Hit(hit)).map_err(|e| format!("{e}"))?;
+            found += 1;
+        }
+    }
+    let mut said = format!("{found} found");
+    for note in notes {
+        said += &format!("; {note}");
+    }
+    Ok(said)
+}
+
+/// `bundle install ID`: the newest version of `id` that `catalog`, or the
+/// first catalog that lists it, lists; or, when `id` came from a catalog
+/// already here, that catalog's. Fetched by the client, checked against
+/// its targets, then installed as a file is.
+#[allow(clippy::too_many_arguments)]
+fn get(
+    shared: &Shared,
+    connection: &mut Connection,
+    asker: u32,
+    id: &str,
+    catalog: Option<&str>,
+    everyone: bool,
+    yes: bool,
+) -> Result<String, String> {
+    let place = if everyone { Place::Everyone } else { Place::User(asker) };
+    let bound = {
+        let registry = shared.lock();
+        let own = if everyone { None } else { registry.catalog_bound(place, id) };
+        own.or_else(|| registry.catalog_bound(Place::Everyone, id)).map(|b| b.catalog.clone())
+    };
+    if let (Some(bound), Some(asked)) = (&bound, catalog)
+        && bound != asked
+    {
+        return Err(format!("{id} comes from catalog {bound}, since its first install from it"));
+    }
+    let only = catalog.or(bound.as_deref());
+    let (name, file) = {
+        let _reading = shared.catalogs();
+        let (mut open, failed) = open_catalogs(only)?;
+        let mut chosen = None;
+        for (catalog, read) in &mut open {
+            if let Some(entry) = read.index.newest(id).cloned() {
+                chosen = Some((catalog.name.clone(), read, entry));
+                break;
+            }
+        }
+        let Some((name, read, entry)) = chosen else {
+            let mut why = match only {
+                Some(only) => format!("catalog {only} does not list {id}"),
+                None => format!("no catalog lists {id}"),
+            };
+            for note in failed {
+                why += &format!("; {note}");
+            }
+            return Err(why);
+        };
+        (name, read.fetch(&entry)?)
+    };
+    let archive = File::open(&file).map_err(|e| format!("{}: {e}", file.display()));
+    let result = archive.and_then(|archive| {
+        install(shared, connection, asker, &archive, everyone, yes, Some(&name))
+    });
+    let _ = fs::remove_file(&file);
+    result
+}
+
+/// `bundle catalog`: each catalog, and what bundled last read of it.
+fn list_catalogs(connection: &mut Connection) -> Result<String, String> {
+    let (all, errors) = read_catalogs();
+    let state = Path::new(catalogs::STATE);
+    for catalog in &all {
+        let index = catalogs::read_index(state, &catalog.name);
+        let shown = Shown {
+            name: catalog.name.clone(),
+            url: catalog.url.clone(),
+            off: catalog.off,
+            default: catalog.default,
+            bundles: index.as_ref().map_or(0, |i| i.entries.len()),
+            read: index.as_ref().map(|i| i.read),
+            expires: index.as_ref().map(|i| i.expires),
+        };
+        connection.send(&Answer::Catalog(shown)).map_err(|e| format!("{e}"))?;
+    }
+    let mut said = format!("{} catalogs", all.len());
+    for why in errors {
+        said += &format!("; left out: {why}");
+    }
+    Ok(said)
+}
+
+/// Makes `path`, a folder, root's with `mode`.
+fn make_folder(path: &Path, mode: u32) -> Result<(), String> {
+    fs::DirBuilder::new()
+        .recursive(true)
+        .mode(mode)
+        .create(path)
+        .and_then(|()| fs::set_permissions(path, fs::Permissions::from_mode(mode)))
+        .map_err(|e| format!("{}: {e}", path.display()))
+}
+
+/// `bundle catalog add NAME URL ROOT`: an administrator's. The root must
+/// be a root signed by its own keys, and the catalog must read with it
+/// before it is kept.
+fn catalog_add(
+    shared: &Shared,
+    asker: u32,
+    name: &str,
+    url: &str,
+    root: &File,
+) -> Result<String, String> {
+    if asker != 0 {
+        return Err("adding a catalog is an administrator's: run elevate bundle catalog add".into());
+    }
+    let mut bytes = Vec::new();
+    root.take(512 * 1024 + 1).read_to_end(&mut bytes).map_err(|e| format!("its root: {e}"))?;
+    if bytes.len() > 512 * 1024 {
+        return Err("its root is larger than a root may be".into());
+    }
+    catalogs::check_root(&bytes).map_err(|why| format!("its root: {why}"))?;
+    let dir = Path::new(catalogs::SETTINGS).join(name);
+    let (all, _) = read_catalogs();
+    if let Some(there) = all.iter().find(|c| c.name == name)
+        && !there.off
+    {
+        return Err(format!("there is a catalog {name} already"));
+    }
+    let catalog = Catalog {
+        name: name.into(),
+        url: url.into(),
+        root: bytes.clone(),
+        off: false,
+        default: false,
+    };
+    let _reading = shared.catalogs();
+    let state = Path::new(catalogs::STATE);
+    let read = catalogs::open(&catalog, state).map_err(|why| {
+        catalogs::forget(state, name);
+        format!("{url} does not read as a catalog with that root: {why}")
+    })?;
+    make_folder(Path::new(catalogs::SETTINGS), 0o755)?;
+    make_folder(&dir, 0o755)?;
+    write_whole(&dir.join(catalogs::URL_FILE).display().to_string(), &format!("{url}\n"), 0o644)?;
+    let root_path = dir.join(catalogs::ROOT_FILE);
+    let written = String::from_utf8(bytes).map_err(|_| "its root is not text".to_string())?;
+    write_whole(&root_path.display().to_string(), &written, 0o644)?;
+    let _ = fs::remove_file(dir.join(catalogs::OFF_FILE));
+    let count = read.index.entries.len();
+    let lists = format!("{count} bundle{}", if count == 1 { "" } else { "s" });
+    audit!("root added catalog {name}, at {url}, which lists {lists}");
+    Ok(format!("added catalog {name}, which lists {lists}"))
+}
+
+/// `bundle catalog remove NAME`: an administrator's. One the system comes
+/// with is turned off, so that Spark does not bring it back; any other
+/// is removed. Bundles installed from it stay, bound to it.
+fn catalog_remove(shared: &Shared, asker: u32, name: &str) -> Result<String, String> {
+    if asker != 0 {
+        return Err(
+            "removing a catalog is an administrator's: run elevate bundle catalog remove".into()
+        );
+    }
+    let (all, _) = read_catalogs();
+    let catalog =
+        all.iter().find(|c| c.name == name).ok_or_else(|| format!("there is no catalog {name}"))?;
+    let dir = Path::new(catalogs::SETTINGS).join(name);
+    let _reading = shared.catalogs();
+    if catalog.default {
+        write_whole(&dir.join(catalogs::OFF_FILE).display().to_string(), "", 0o644)?;
+    } else {
+        fs::remove_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    }
+    catalogs::forget(Path::new(catalogs::STATE), name);
+    audit!("root removed catalog {name}");
+    Ok(if catalog.default {
+        format!("turned catalog {name} off; `bundle catalog add` with its root turns it on again")
+    } else {
+        format!("removed catalog {name}")
+    })
+}
+
 fn serve(shared: &Shared, stream: UnixStream) {
     let Some(asker) = asker(&stream) else { return };
     let deadline = Instant::now() + REQUEST_TIME;
@@ -1080,11 +1407,23 @@ fn serve(shared: &Shared, stream: UnixStream) {
         Err(why) => Err(why),
         Ok(Request::Install { everyone, yes }) => match fds.pop() {
             Some(fd) if fds.is_empty() => {
-                install(shared, &mut connection, asker, &File::from(fd), everyone, yes)
+                install(shared, &mut connection, asker, &File::from(fd), everyone, yes, None)
             }
             _ => Err("an install request comes with its archive, and nothing else".into()),
         },
-        Ok(_) if !fds.is_empty() => Err("only an install request comes with a file".into()),
+        Ok(Request::CatalogAdd { name, url }) => match fds.pop() {
+            Some(fd) if fds.is_empty() => catalog_add(shared, asker, &name, &url, &File::from(fd)),
+            _ => Err("adding a catalog comes with its root, and nothing else".into()),
+        },
+        Ok(_) if !fds.is_empty() => {
+            Err("only an install request, or adding a catalog, comes with a file".into())
+        }
+        Ok(Request::Get { id, catalog, everyone, yes }) => {
+            get(shared, &mut connection, asker, &id, catalog.as_deref(), everyone, yes)
+        }
+        Ok(Request::Search { words }) => search(shared, &mut connection, &words),
+        Ok(Request::Catalogs) => list_catalogs(&mut connection),
+        Ok(Request::CatalogRemove { name }) => catalog_remove(shared, asker, &name),
         Ok(Request::List) => list(shared, &mut connection, asker),
         Ok(Request::Info { id }) => info(shared, &mut connection, asker, &id),
         Ok(Request::Remove { id, everyone, purge }) => remove(shared, asker, &id, everyone, purge),
@@ -1150,16 +1489,22 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
         .mode(0o700)
         .create(registry::STATE)
         .map_err(|e| util::failed(&registry::STATE, e))?;
-    let texts = [registry::INSTALLED, registry::BOUND, registry::DEVELOPER_KEYS]
-        .map(|name| read_state(name).map_err(|e| util::failed(&state(name), e)));
-    let [installed, bound, keys] = texts;
-    let mut registry = Registry::read(&installed?, &bound?, &keys?).map_err(util::fail)?;
+    let mut texts: [String; 4] = Default::default();
+    for (text, name) in texts.iter_mut().zip(registry::FILES) {
+        *text = read_state(name).map_err(|e| util::failed(&state(name), e))?;
+    }
+    let mut registry = Registry::read(&texts).map_err(util::fail)?;
     if notice(&mut registry) {
         save(&registry).map_err(util::fail)?;
     }
     let grants = read_grants()?;
     if let Ok(dir) = Dir::open(EVERYONE) {
         tidy(&dir);
+    }
+    catalogs::tidy(Path::new(catalogs::STATE));
+    let (known, errors) = read_catalogs();
+    for why in errors {
+        eprintln!("bundled: a catalog is left out: {why}");
     }
     // The links, from what it recorded: for everyone, and for each person
     // with a bundle.
@@ -1184,12 +1529,17 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
     // Anyone may ask: it tells who asks by the connection.
     fs::set_permissions(socket, fs::Permissions::from_mode(0o666))
         .map_err(|e| util::failed(&socket, e))?;
+    let on: Vec<&str> = known.iter().filter(|c| !c.off).map(|c| c.name.as_str()).collect();
+    if !on.is_empty() {
+        eprintln!("bundled: installs from the catalogs {}", on.join(", "));
+    }
     eprintln!("bundled: {} bundles installed; answering at {socket}", registry.installed.len());
     let shared = Arc::new(Shared {
         registry: Mutex::new(registry),
         grants: Mutex::new(grants),
         watchers: Mutex::new(Vec::new()),
         connections: AtomicUsize::new(0),
+        catalogs: Mutex::new(()),
     });
     for stream in listener.incoming() {
         let Ok(stream) = stream else { continue };
