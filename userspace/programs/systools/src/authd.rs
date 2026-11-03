@@ -44,6 +44,14 @@
 //! that person, with the PC's connection, as it starts a session; a
 //! wrong one waits as a wrong password at a console does, counted for
 //! the PC's address.
+//!
+//! sshd(8) asks it whether a key may sign someone in over SSH, and to
+//! start each SSH session, whose key's signature authd checks itself
+//! (ADR 0347). Once sshd_config(5) lets passwords sign in (ADR 0348),
+//! sshd asks it to check one, counted for the client's address as a PC's
+//! are, and a right one is answered with a ticket that starts that
+//! person's sessions for that connection's process alone, so that sshd
+//! keeps no password.
 
 use std::collections::HashMap;
 use std::fmt::Write as _;
@@ -59,7 +67,8 @@ use std::time::{Duration, Instant};
 use accounts::hash::{self, Cost};
 use accounts::ntlm::{self, Refusal};
 use accounts::request::{
-    self, Answer, Mode, Prompt, Prompted, Question, REQUEST_MAX, Relay, Request,
+    self, Answer, Mode, Prompt, Prompted, Question, REQUEST_MAX, Relay, Request, SSH_TICKET_LENGTH,
+    SshProof, SshRun,
 };
 use accounts::signins::{self, Event, Latest, Place, Record, Seat};
 use accounts::{DISABLED, Group, Password, Table, User};
@@ -228,7 +237,25 @@ struct Authd {
     prompting: Option<Prompting>,
     /// The pipe's read end that SIGCHLD wakes it with.
     children: File,
+    /// The tickets given for passwords over SSH, by their bytes.
+    tickets: HashMap<Vec<u8>, Ticket>,
 }
+
+/// What a ticket for a password over SSH holds (ADR 0348).
+struct Ticket {
+    /// Whose password it was.
+    name: String,
+    /// The connection, as SSH_CONNECTION says it, and sshd's process
+    /// serving it, which alone may use the ticket.
+    connection: String,
+    process: u64,
+    /// When it was given.
+    given: Instant,
+}
+
+/// The most tickets kept: one for each connection sshd keeps open, and
+/// room for those whose end sshd could not say. The oldest goes first.
+const TICKETS_MAX: usize = 128;
 
 /// Set by SIGTERM: authd ends.
 static STOP: AtomicBool = AtomicBool::new(false);
@@ -555,9 +582,12 @@ impl Authd {
                 Some((util::user_name(peer.user), peer.source()))
             }
             // A PC's tries are counted for its address, whatever smbd's
-            // connection says.
+            // connection says, and an SSH client's for its own.
             Request::ShareSignIn { from, authenticate, .. } => {
                 ntlm::user_of(authenticate).map(|typed| (typed.to_lowercase(), share_source(from)))
+            }
+            Request::SshPassword { connection, name, .. } => {
+                ssh_from(connection).map(|from| (name.clone(), ssh_source(from)))
             }
             _ => None,
         };
@@ -653,26 +683,14 @@ impl Authd {
                 }
                 Request::NfsWorker { uid } => self.nfs_worker(i, &files, *uid, peer, now),
                 Request::SshKey { name, key } => (ssh_key(&files, name, key, peer), now),
-                Request::SshSession {
-                    connection,
-                    name,
-                    signed,
-                    signature,
-                    term,
-                    command,
-                    language,
-                } => {
-                    let asked = SshAsked {
-                        connection,
-                        name,
-                        signed,
-                        signature,
-                        term,
-                        command: command.as_deref(),
-                        language,
-                    };
+                Request::SshPassword { connection, name, password } => {
+                    self.ssh_password(&files, connection, name, password, peer, now)
+                }
+                Request::SshSession { connection, name, proof, term, run, language } => {
+                    let asked = SshAsked { connection, name, proof, term, run, language };
                     (self.ssh_session(i, &files, &asked, peer), now)
                 }
+                Request::SshEnded { ticket } => (self.ssh_ended(ticket, peer), now),
                 Request::EndShares => {
                     if peer.is_root() {
                         let ended = self.end_shares(None);
@@ -870,6 +888,20 @@ impl Authd {
         peer: Peer,
         now: Instant,
     ) -> Result<(), (Answer, Instant)> {
+        self.check_password_from(files, name, password, peer.source(), peer, now)
+    }
+
+    /// Checks `password` as [`Authd::check_password`] does, with the
+    /// wrong ones counted for `source`.
+    fn check_password_from(
+        &mut self,
+        files: &Files,
+        name: &str,
+        password: &[u8],
+        source: String,
+        peer: Peer,
+        now: Instant,
+    ) -> Result<(), (Answer, Instant)> {
         let right = match files.user(name) {
             // The hash is made all the same, so that the time taken does
             // not say whether the account is there.
@@ -879,7 +911,7 @@ impl Authd {
             }
             Some(_) => password_is(files, name, password),
         };
-        let key = (name.to_string(), peer.source());
+        let key = (name.to_string(), source);
         match right {
             // Said only to someone who knows the password, as Linux's
             // login tells of an expired account.
@@ -1557,27 +1589,68 @@ impl Authd {
                 );
             }
         };
-        // The signature first: sshd's word that the client signed is not
-        // taken (ADR 0347).
-        let request = match sshkeys::verify(asked.signed, asked.signature) {
-            Ok(request) if request.user == asked.name => request,
-            Ok(_) => return refused("the signed sign-in request names another account".into()),
-            Err(why) => {
-                audit!("refused an SSH sign-in as {} from {from}: {why}", shown(asked.name));
-                return refused(why.into());
+        // How they signed in first: sshd's word is not taken (ADRs 0347
+        // and 0348).
+        let (user, with) = match asked.proof {
+            SshProof::Key { signed, signature } => {
+                let request = match sshkeys::verify(signed, signature) {
+                    Ok(request) if request.user == asked.name => request,
+                    Ok(_) => {
+                        return refused("the signed sign-in request names another account".into());
+                    }
+                    Err(why) => {
+                        audit!(
+                            "refused an SSH sign-in as {} from {from}: {why}",
+                            shown(asked.name)
+                        );
+                        return refused(why.into());
+                    }
+                };
+                let with = format!("key {}", sshkeys::fingerprint(request.key));
+                match ssh_person(files, asked.name, request.key) {
+                    Ok(user) => (user, with),
+                    Err(why) => {
+                        audit!(
+                            "refused an SSH sign-in as {} from {from} with {with}: {why}",
+                            shown(asked.name)
+                        );
+                        return refused(why);
+                    }
+                }
+            }
+            SshProof::Ticket(ticket) => {
+                let given = self.tickets.get(ticket.as_slice()).is_some_and(|given| {
+                    given.process == peer.process
+                        && given.name == asked.name
+                        && given.connection == asked.connection
+                });
+                if !given {
+                    audit!(
+                        "refused an SSH session as {} from {from}: a password's ticket authd did \
+                         not give that connection, for process {}",
+                        shown(asked.name),
+                        peer.process
+                    );
+                    return refused("authd gave this connection no such ticket".into());
+                }
+                match ssh_password_person(files, asked.name) {
+                    Ok(user) => (user, "a password".to_string()),
+                    Err(why) => {
+                        audit!(
+                            "refused an SSH session as {} from {from} with a password: {why}",
+                            shown(asked.name)
+                        );
+                        return refused(why);
+                    }
+                }
             }
         };
-        let fingerprint = sshkeys::fingerprint(request.key);
-        let user = match ssh_person(files, asked.name, request.key) {
-            Ok(user) => user,
-            Err(why) => {
-                audit!(
-                    "refused an SSH sign-in as {} from {from} with key {fingerprint}: {why}",
-                    shown(asked.name)
-                );
-                return refused(why);
-            }
+        let (command, what): (Option<&[u8]>, &str) = match asked.run {
+            SshRun::Shell => (None, "a shell"),
+            SshRun::Command(command) => (Some(command), "a command"),
+            SshRun::Sftp => (Some(SFTP_SERVER.as_bytes()), "SFTP"),
         };
+        let shell = command.is_none();
         let groups =
             accounts::other_groups(user, &files.groups, radix_abi::names::GROUPS_MAX as usize);
         let language: Vec<String> =
@@ -1593,8 +1666,8 @@ impl Authd {
         // the wrong passwords since, and what happened while they were
         // away, as a console's does.
         let notices = Notices::read();
-        let theirs = if asked.command.is_none() { notices.of(&user.name) } else { Vec::new() };
-        if let Some(tty) = terminal.as_ref().filter(|_| asked.command.is_none()) {
+        let theirs = if shell { notices.of(&user.name) } else { Vec::new() };
+        if let Some(tty) = terminal.as_ref().filter(|_| shell) {
             let records = read_text(&signins::of(user.uid)).unwrap_or_default();
             let mut lines =
                 latest_lines(&signins::latest(&signins::parse(&records)), &user.name, |time| {
@@ -1608,14 +1681,13 @@ impl Authd {
                 let _ = File::from(copy).write_all(text.as_bytes());
             }
         }
-        let process = match signin::start_ssh(names, user, &groups, &io, env, asked.command) {
+        let process = match signin::start_ssh(names, user, &groups, &io, env, command) {
             Ok(process) => process as i32,
             Err(why) => return refused(why),
         };
-        let what = if asked.command.is_some() { "a command" } else { "a shell" };
         audit!(
-            "{} signed in over SSH from {from} with key {fingerprint}: {what} on {tty}, session \
-             process {process}",
+            "{} signed in over SSH from {from} with {with}: {what} on {tty}, session process \
+             {process}",
             user.name
         );
         if !theirs.is_empty()
@@ -1646,6 +1718,100 @@ impl Authd {
         self.sessions.insert(process, session);
         self.clients[i].session = Some(process);
         Answer::Done(process.to_string())
+    }
+
+    /// Checks `name`'s `password` for an SSH client at `connection`, for
+    /// sshd (ADR 0348), as a console's: a wrong one is answered when the
+    /// next try may be made, counted for the client's address, and
+    /// recorded for lastb(1). A right one, of a person's account that is
+    /// not disabled, is answered with a ticket that starts their sessions
+    /// for this connection's process alone, until it says the connection
+    /// ended.
+    fn ssh_password(
+        &mut self,
+        files: &Files,
+        connection: &str,
+        name: &str,
+        password: &[u8],
+        peer: Peer,
+        now: Instant,
+    ) -> (Answer, Instant) {
+        let refused = |why: String| (Answer::Refused(why), now);
+        if !peer.is_root() {
+            return refused("only sshd, which runs as root, checks passwords over SSH".into());
+        }
+        let Some(from) = ssh_from(connection) else {
+            return refused("an SSH sign-in names its connection as SSH_CONNECTION does".into());
+        };
+        // As OpenSSH's PermitEmptyPasswords no: an account whose password
+        // is empty signs in at the console alone.
+        if password.is_empty() {
+            return refused("an empty password signs no one in over SSH".into());
+        }
+        if let Err((answer, at)) =
+            self.check_password_from(files, name, password, ssh_source(from), peer, now)
+        {
+            if matches!(&answer, Answer::Refused(why) if why == request::WRONG_PASSWORD) {
+                let failed = Event::Failed {
+                    name: shown(name),
+                    terminal: SSH_TERMINAL.into(),
+                    from: shown(from),
+                };
+                match files.user(name) {
+                    Some(user) => record(&signins::of(user.uid), user.gid, 0o640, failed),
+                    None => record(signins::UNKNOWN, 0, 0o600, failed),
+                }
+            }
+            return (answer, at);
+        }
+        let user = match ssh_password_person(files, name) {
+            Ok(user) => user,
+            Err(why) => {
+                audit!(
+                    "refused an SSH sign-in as {} from {from} with a password: {why}",
+                    shown(name)
+                );
+                return refused(why);
+            }
+        };
+        let mut ticket = vec![0; SSH_TICKET_LENGTH];
+        if let Err(err) =
+            File::open("/devices/urandom").and_then(|mut random| random.read_exact(&mut ticket))
+        {
+            return refused(format!("cannot read /devices/urandom: {err}"));
+        }
+        let oldest = (self.tickets.len() >= TICKETS_MAX)
+            .then(|| self.tickets.iter().min_by_key(|(_, given)| given.given))
+            .flatten()
+            .map(|(oldest, _)| oldest.clone());
+        if let Some(gone) = oldest.and_then(|oldest| self.tickets.remove(&oldest)) {
+            eprintln!(
+                "authd: {TICKETS_MAX} tickets for SSH passwords are kept: {}'s, from {}, the \
+                 oldest, goes",
+                gone.name, gone.connection
+            );
+        }
+        let answer = request::hex(&ticket);
+        let given = Ticket {
+            name: user.name.clone(),
+            connection: connection.into(),
+            process: peer.process,
+            given: now,
+        };
+        self.tickets.insert(ticket, given);
+        (Answer::Done(answer), now)
+    }
+
+    /// sshd's connection whose process was given `ticket` ended: the
+    /// ticket goes.
+    fn ssh_ended(&mut self, ticket: &[u8], peer: Peer) -> Answer {
+        match self.tickets.get(ticket) {
+            Some(given) if peer.is_root() && given.process == peer.process => {
+                self.tickets.remove(ticket);
+                Answer::Done(String::new())
+            }
+            _ => Answer::Refused("authd gave this process no such ticket".into()),
+        }
     }
 
     /// Starts an NFS worker for nfsd (ADR 0343): as the person numbered
@@ -2133,11 +2299,32 @@ fn person<'a>(files: &'a Files, name: &str, peer: Peer, what: &str) -> Result<&'
 struct SshAsked<'a> {
     connection: &'a str,
     name: &'a str,
-    signed: &'a [u8],
-    signature: &'a [u8],
+    proof: &'a SshProof,
     term: &'a str,
-    command: Option<&'a [u8]>,
+    run: &'a SshRun,
     language: &'a [String],
+}
+
+/// OpenSSH's sftp-server, which an SFTP session runs (ADR 0348): scp
+/// uses it too.
+const SFTP_SERVER: &str = "/system/libraries/ssh/sftp-server";
+
+/// Where an SSH client's tries at a password come from, for slowing them
+/// down: its address, `from`.
+fn ssh_source(from: &str) -> String {
+    format!("ssh {from}")
+}
+
+/// The person `name`, if their password may sign them in over SSH once it
+/// is right (ADR 0348): theirs is a person's account, and not disabled.
+fn ssh_password_person<'a>(files: &'a Files, name: &str) -> Result<&'a User, String> {
+    let Some(user) = files.user(name).filter(|u| u.is_person()) else {
+        return Err(format!("there is no person's account {}", shown(name)));
+    };
+    if files.disabled(name) {
+        return Err(format!("the account {name} is disabled"));
+    }
+    Ok(user)
 }
 
 /// The most SSH sessions at once, so that they leave authd room for the
@@ -2757,6 +2944,7 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
         next_prompt: 1,
         prompting: None,
         children,
+        tickets: HashMap::new(),
     };
     authd.run_loop().map_err(|e| util::failed(&"authd", e))?;
     let _ = fs::remove_file(accounts::SOCKET);

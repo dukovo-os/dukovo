@@ -17,7 +17,7 @@
 # from a host the build machine may not reach.
 name = "openssh"
 version = "10.6p1"
-summary = "OpenSSH's client: ssh, scp, sftp, ssh-agent and ssh-keygen"
+summary = "OpenSSH's client: ssh, scp, sftp, ssh-agent and ssh-keygen; and sftp-server, for sshd(8)"
 license = "SSH-OpenSSH AND SSH-short AND BSD-2-Clause AND BSD-3-Clause AND ISC AND ssh-keyscan AND snprintf AND X11-distribute-modifications-variant AND LicenseRef-IBM-base64 AND LicenseRef-OpenSSH-public-domain AND (MIT OR Apache-2.0)"
 homepage = "https://www.openssh.com/portable.html"
 depends = ["mlibc", "zlib"]

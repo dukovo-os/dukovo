@@ -6,7 +6,9 @@
 # the folders Dukovo names (radix-files(7)): ssh, scp, sftp, ssh-add,
 # ssh-agent, ssh-keygen and ssh-keyscan in /system/commands, their
 # manual pages, and OpenSSH's ssh_config among the default settings
-# Spark puts in /system/settings.
+# Spark puts in /system/settings. sftp-server, which Dukovo's own
+# sshd(8) runs for SFTP and scp (ADR 0348), goes in
+# /system/libraries/ssh, where OpenSSH's libexec programs go.
 #
 # It is the client only (ADR 0289): no sshd. It is built without OpenSSL,
 # so it has OpenSSH's own cryptography alone (Ed25519, ChaCha20-Poly1305,
@@ -45,20 +47,25 @@ x86_64-radix-configure . --without-openssl --with-zlib --without-pam \
 }
 programs="ssh scp sftp ssh-add ssh-agent ssh-keygen ssh-keyscan"
 # shellcheck disable=SC2086 # one word per program
-make -j"$JOBS" $programs >"$PORT_BUILD/make.log" 2>&1 || {
+make -j"$JOBS" $programs sftp-server >"$PORT_BUILD/make.log" 2>&1 || {
 	tail -n 60 "$PORT_BUILD/make.log" >&2
 	exit 1
 }
 
 stage="$PORT_BUILD/stage"
 rm -rf "$stage"
-mkdir -p "$stage/system/commands" "$stage/system/resources/man/man1" "$stage/system/resources/man/man5"
+mkdir -p "$stage/system/commands" "$stage/system/libraries/ssh" \
+	"$stage/system/resources/man/man1" "$stage/system/resources/man/man5" \
+	"$stage/system/resources/man/man8"
 for program in $programs; do
 	cp "$program" "$stage/system/commands/$program"
 	$STRIP "$stage/system/commands/$program"
 	cp "$program.1" "$stage/system/resources/man/man1/$program.1"
 done
 cp ssh_config.5 "$stage/system/resources/man/man5/ssh_config.5"
+cp sftp-server "$stage/system/libraries/ssh/sftp-server"
+$STRIP "$stage/system/libraries/ssh/sftp-server"
+cp sftp-server.8 "$stage/system/resources/man/man8/sftp-server.8"
 
 defaults="$stage/system/resources/default-settings/ssh"
 mkdir -p "$defaults"

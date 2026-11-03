@@ -10,15 +10,24 @@
 //! as OpenSSH's MaxStartups and PerSourceMaxStartups keep them, and 100
 //! connections are open at most. A connection says on a pipe once
 //! someone signed in, and counts as signing in until then.
+//!
+//! It reads sshd_config(5) as it starts, and does not start if the file
+//! has a mistake; SIGHUP (`service sshd reload`) has it read the file
+//! again for the connections that come after, as OpenSSH's sshd does,
+//! and keep what it had if the file has a mistake now. The connections
+//! open go on as they were.
 
 use std::collections::HashMap;
 use std::io::Read;
 use std::net::{IpAddr, TcpListener, TcpStream};
 use std::os::fd::OwnedFd;
 use std::process::{Child, Command, ExitCode, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread;
 use std::time::Duration;
+
+use accounts::sshd_config::{self, Settings};
 
 use crate::hostkey;
 
@@ -83,11 +92,62 @@ fn counts(shared: &Shared) -> std::sync::MutexGuard<'_, Counts> {
     shared.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// Starts `sshd --connection` for `stream`, from `address`, and a thread
-/// that hears when someone signed in on it and when it ends.
-fn start(stream: TcpStream, address: IpAddr, shared: &Shared) -> Result<(), String> {
+/// The settings each new connection gets, as sshd_config(5) says them.
+type Current = Arc<Mutex<String>>;
+
+fn current(settings: &Current) -> String {
+    settings.lock().unwrap_or_else(PoisonError::into_inner).clone()
+}
+
+/// Set by SIGHUP: the settings are to be read again.
+static RELOAD: AtomicBool = AtomicBool::new(false);
+
+extern "C" fn on_hangup(_: libc::c_int) {
+    RELOAD.store(true, Ordering::Relaxed);
+}
+
+/// Reads the settings again each time SIGHUP asks, for the connections
+/// that come after; a file with a mistake leaves them as they were.
+fn reload(settings: &Current) {
+    loop {
+        thread::sleep(Duration::from_secs(1));
+        if !RELOAD.swap(false, Ordering::Relaxed) {
+            continue;
+        }
+        match sshd_config::read() {
+            Ok(read) => {
+                *settings.lock().unwrap_or_else(PoisonError::into_inner) = read.text();
+                eprintln!("sshd: read {} again: {}", sshd_config::PATH, summary(&read));
+            }
+            Err(why) => {
+                eprintln!("sshd: {why}");
+                eprintln!("sshd: kept the settings it had, as {} has a mistake", sshd_config::PATH);
+            }
+        }
+    }
+}
+
+/// How people may sign in, for the log.
+fn summary(settings: &Settings) -> &'static str {
+    match (settings.keys, settings.passwords) {
+        (true, false) => "keys sign in",
+        (true, true) => "keys and passwords sign in",
+        (false, true) => "passwords sign in",
+        (false, false) => "no one signs in: PubkeyAuthentication and PasswordAuthentication are no",
+    }
+}
+
+/// Starts `sshd --connection` for `stream`, from `address`, with the
+/// `settings`, and a thread that hears when someone signed in on it and
+/// when it ends.
+fn start(
+    stream: TcpStream,
+    address: IpAddr,
+    settings: &str,
+    shared: &Shared,
+) -> Result<(), String> {
     let mut child = Command::new(PROGRAM)
-        .arg("--connection")
+        .args(["--connection", "--settings", settings])
         .stdin(Stdio::from(OwnedFd::from(stream)))
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
@@ -122,7 +182,7 @@ fn watch(
 }
 
 /// Takes connections from `listener` while the limits let them in.
-fn accept(listener: &TcpListener, shared: &Shared) {
+fn accept(listener: &TcpListener, settings: &Current, shared: &Shared) {
     loop {
         let (stream, from) = match listener.accept() {
             Ok(accepted) => accepted,
@@ -137,7 +197,7 @@ fn accept(listener: &TcpListener, shared: &Shared) {
             eprintln!("sshd: refused a connection from {address}: {why}");
             continue;
         }
-        if let Err(why) = start(stream, address, shared) {
+        if let Err(why) = start(stream, address, &current(settings), shared) {
             eprintln!("sshd: {why}");
             let mut counts = counts(shared);
             counts.signed_in(address);
@@ -146,9 +206,32 @@ fn accept(listener: &TcpListener, shared: &Shared) {
     }
 }
 
-/// sshd: makes the host key if there is none, listens on port 22, and
-/// serves each connection in a process of its own.
+/// sshd: reads its settings, makes the host key if there is none, listens
+/// on port 22, and serves each connection in a process of its own.
 pub fn run() -> ExitCode {
+    let settings = match sshd_config::read() {
+        Ok(settings) => settings,
+        Err(why) => {
+            eprintln!("sshd: {why}");
+            eprintln!(
+                "sshd: does not start until {} is right: see sshd_config(5)",
+                sshd_config::PATH
+            );
+            return ExitCode::FAILURE;
+        }
+    };
+    eprintln!("sshd: {}", summary(&settings));
+    let settings: Current = Arc::new(Mutex::new(settings.text()));
+    // SAFETY: all zeros is a valid sigaction: numbers, a signal set and a
+    // function address.
+    let mut action: libc::sigaction = unsafe { std::mem::zeroed() };
+    action.sa_sigaction = on_hangup as *const () as usize;
+    // SAFETY: the handler only stores to an atomic.
+    unsafe { libc::sigaction(libc::SIGHUP, &raw const action, std::ptr::null_mut()) };
+    {
+        let settings = Arc::clone(&settings);
+        let _ = thread::Builder::new().name("reload".into()).spawn(move || reload(&settings));
+    }
     match hostkey::load_or_make() {
         Ok((key, made)) => {
             let fingerprint = hostkey::fingerprint(&key);
@@ -169,11 +252,12 @@ pub fn run() -> ExitCode {
     };
     let shared = Shared::default();
     if let Ok(ipv6) = TcpListener::bind(("::", PORT)) {
-        let shared = Arc::clone(&shared);
-        let _ =
-            thread::Builder::new().name("listen-ipv6".into()).spawn(move || accept(&ipv6, &shared));
+        let (settings, shared) = (Arc::clone(&settings), Arc::clone(&shared));
+        let _ = thread::Builder::new()
+            .name("listen-ipv6".into())
+            .spawn(move || accept(&ipv6, &settings, &shared));
     }
     eprintln!("sshd: listening on port {PORT}");
-    accept(&ipv4, &shared);
+    accept(&ipv4, &settings, &shared);
     ExitCode::SUCCESS
 }

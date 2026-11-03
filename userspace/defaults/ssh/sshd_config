@@ -1,0 +1,28 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+#
+# How people may sign in to this computer over SSH, and who
+# (sshd_config(5), ADR 0348). sshd reads this file as it starts and when
+# `service sshd reload` asks it to; `sshd -t` checks it first. A keyword
+# sshd does not carry out is a mistake that keeps it from starting.
+#
+# With nothing said, a key in a person's ~/.ssh/authorized_keys signs
+# them in, and nothing else does.
+#
+# Passwords too, checked by authd as at the console:
+#
+#   PasswordAuthentication yes
+#
+# Keys, which are the default:
+#
+#   PubkeyAuthentication yes
+#
+# Only some people, by their names or their groups, with * and ?:
+#
+#   AllowUsers alice bob
+#   AllowGroups admins
+#
+# Everyone but some:
+#
+#   DenyUsers guest
+#   DenyGroups visitors

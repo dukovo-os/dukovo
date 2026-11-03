@@ -1,8 +1,9 @@
 // SPDX-FileCopyrightText: 2026 The Dukovo contributors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! What sshd asks authd(8) (ADR 0347): whether a key may sign someone
-//! in, and to start their session, which it then waits on for its end.
+//! What sshd asks authd(8) (ADRs 0347 and 0348): whether a key may sign
+//! someone in, whether a password is right, and to start their session,
+//! which it then waits on for its end.
 //! authd may be busy with another's password for a second or two, so the
 //! connection waits for its answer without holding the others up.
 
@@ -39,6 +40,39 @@ impl Asked {
         Ok(Some(line.trim_end_matches('\n').to_string()))
     }
 }
+
+/// Tells authd `request`, waiting a moment for its answer, which is not
+/// looked at: for what a connection says as it ends, outside its
+/// runtime.
+pub fn tell(request: &Request) {
+    let told = std::os::unix::net::UnixStream::connect(accounts::SOCKET).and_then(|stream| {
+        sys::send_with_fds(&stream, &request.encode(), &[])?;
+        stream.shutdown(Shutdown::Write)?;
+        // Radix's sockets take no SO_RCVTIMEO: the answer is waited for
+        // without blocking.
+        stream.set_nonblocking(true)?;
+        let until = std::time::Instant::now() + TELL_TIME;
+        let mut answer = [0u8; 64];
+        loop {
+            match io::Read::read(&mut &stream, &mut answer) {
+                Err(err) if err.kind() == io::ErrorKind::WouldBlock => {
+                    if std::time::Instant::now() >= until {
+                        return Err(io::Error::new(io::ErrorKind::TimedOut, "no answer"));
+                    }
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(err) if err.kind() == io::ErrorKind::Interrupted => {}
+                read => return read.map(drop),
+            }
+        }
+    });
+    if let Err(err) = told {
+        eprintln!("sshd: cannot tell authd at {}: {err}", accounts::SOCKET);
+    }
+}
+
+/// How long [`tell`] waits for authd.
+const TELL_TIME: Duration = Duration::from_secs(5);
 
 /// Sends authd `request`, with the descriptors `fds`: its answer, and
 /// the connection, on which a session's end comes later.

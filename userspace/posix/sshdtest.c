@@ -11,9 +11,14 @@
 // signs no one in. As alice, she cannot turn sshd on, nor ask authd about
 // keys. `service sshd enable` starts sshd(8), which makes its host key;
 // the guest's own OpenSSH client signs in as alice, and root is refused.
-// Then the host's client signs in through a port QEMU forwards, and when
-// the host's last file is in alice's home, the test finds her session in
-// last(1), and `service sshd disable` stops sshd and closes the port.
+// Then the host's client signs in through a port QEMU forwards, and
+// copies files with sftp and scp; when the host's last file is in
+// alice's home, the test finds her session in last(1) and the files the
+// host copied, hers. A sshd_config with a mistake is refused by sshd -t
+// and a reload keeps what sshd had; then one that turns passwords on
+// but keeps bob out, and the host signs in with alice's password; lastb
+// shows the wrong one it tried (ADR 0348). `service sshd disable` stops
+// sshd and closes the port.
 
 #include <arpa/inet.h>
 #include <fcntl.h>
@@ -31,6 +36,9 @@
 #define USER "/system/commands/user"
 #define SERVICE "/system/commands/service"
 #define SERVICE_FILE "/system/settings/spark/services/sshd.toml"
+#define SSHD "/system/commands/sshd"
+#define SSHD_CONFIG "/system/settings/ssh/sshd_config"
+#define LOG "/system/commands/log"
 #define HOST_KEY "/system/state/sshd/ssh_host_ed25519_key"
 #define ALICE 1000
 #define BOB 1001
@@ -44,8 +52,12 @@
 #define SSH \
 	"ssh -i " GUEST_KEY " -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes " \
 	"-o UserKnownHostsFile=" KNOWN_HOSTS " -o LogLevel=ERROR "
-// The host's last file, written as alice when it has checked the rest.
+// The host's last files, written as alice when it has checked the rest,
+// with keys, then with passwords.
 #define DONE "/users/alice/host-done"
+#define PASSWORDS_DONE "/users/alice/passwords-done"
+// The size of each file the host copies.
+#define COPIED_SIZE 262144
 // How long the host may take, in seconds.
 #define HOST_SECONDS 300
 
@@ -222,10 +234,35 @@ static void keys(void) {
 	write_text("/users/bob/.ssh/authorized_keys", text, BOB, 0666);
 }
 
+// Waits up to `seconds` for sshd's log to say `text`; whether it did.
+static int log_says(const char *text, int seconds) {
+	long long deadline = check_now_ns() + seconds * 1000000000LL;
+	for(;;) {
+		run_both((const char *const[]){LOG, "-s", "sshd", NULL}, "");
+		if(strstr(output, text))
+			return 1;
+		if(check_now_ns() > deadline)
+			return 0;
+		check_sleep_ms(500);
+	}
+}
+
+// Waits up to `seconds` for alice's file `path`; whether it came, hers.
+static int comes(const char *path, int seconds) {
+	struct stat st;
+	long long deadline = check_now_ns() + seconds * 1000000000LL;
+	while(stat(path, &st) != 0 && check_now_ns() < deadline)
+		check_sleep_ms(500);
+	return stat(path, &st) == 0 && st.st_uid == ALICE && st.st_gid == ALICE;
+}
+
 // `service sshd enable` starts sshd, which makes its key and listens on
-// port 22; the test shows the key, which the host's client checks.
+// port 22; the test shows the key, which the host's client checks. The
+// default sshd_config says nothing: keys sign in, passwords do not.
 static void on(void) {
 	CHECK(!listening());
+	SAYS(0, "", "", "", SSHD, "-t");
+	SAYS(0, "", "PasswordAuthentication no\nPubkeyAuthentication yes\n", "", SSHD, "-T");
 	SAYS(0, "", "sshd is running, and starts at each boot.", "", SERVICE, "sshd", "enable");
 	CHECK(port_becomes(1, 60));
 	CHECK(strstr(contents(SERVICE_FILE), "\nenabled = true\n") != NULL);
@@ -256,18 +293,50 @@ static void guest(void) {
 }
 
 // What the host's client did, which it ends by writing host-done as
-// alice; last(1) shows her sessions on terminals, from the host.
+// alice; last(1) shows her sessions on terminals, from the host, and the
+// files it copied with sftp, scp and scp -O are hers.
 static void host(void) {
 	printf("sshdtest: ready for the host\n");
 	fflush(stdout);
-	struct stat st;
-	long long deadline = check_now_ns() + HOST_SECONDS * 1000000000LL;
-	while(stat(DONE, &st) != 0 && check_now_ns() < deadline)
-		check_sleep_ms(500);
-	CHECK(stat(DONE, &st) == 0 && st.st_uid == ALICE && st.st_gid == ALICE);
+	CHECK(comes(DONE, HOST_SECONDS));
 	CHECK(!strcmp(contents(DONE), "done\n"));
 	CONTAINS("10.0.2.2", "/system/commands/last", "alice");
 	CONTAINS("pts/", "/system/commands/last", "alice");
+	const char *copied[] = {"/users/alice/sftp.bin", "/users/alice/scp.bin",
+			"/users/alice/scp-o.bin"};
+	for(size_t i = 0; i < sizeof(copied) / sizeof(copied[0]); i++) {
+		struct stat st;
+		CHECK(stat(copied[i], &st) == 0 && st.st_uid == ALICE && st.st_size == COPIED_SIZE);
+	}
+	// The folder sftp made, and removed.
+	struct stat st;
+	CHECK(stat("/users/alice/folder", &st) != 0);
+}
+
+// sshd_config: a mistake keeps sshd as it was; then passwords sign in,
+// but not bob's, and the host signs in with alice's.
+static void passwords(void) {
+	write_text(SSHD_CONFIG, "PasswordAuthentication yes\nPort 2222\n", 0, 0644);
+	SAYS(1, "", "", "sshd_config line 2: sshd does not take Port", SSHD, "-t");
+	SAYS(0, "", "", "", SERVICE, "sshd", "reload");
+	CHECK(log_says("kept the settings it had", 30));
+	CHECK(listening());
+	write_text(SSHD_CONFIG, "# The sshd test's.\nPasswordAuthentication yes\nDenyUsers bob\n", 0,
+			0644);
+	SAYS(0, "", "", "", SSHD, "-t");
+	SAYS(0, "", "PasswordAuthentication yes\n", "", SSHD, "-T");
+	SAYS(0, "", "", "", SERVICE, "sshd", "reload");
+	CHECK(log_says("keys and passwords sign in", 30));
+	printf("sshdtest: passwords on\n");
+	fflush(stdout);
+	CHECK(comes(PASSWORDS_DONE, HOST_SECONDS));
+	CHECK(!strcmp(contents(PASSWORDS_DONE), "done\n"));
+	// The wrong password the host tried, from its address.
+	CONTAINS("10.0.2.2", "/system/commands/lastb", "alice");
+	CONTAINS("ssh", "/system/commands/lastb", "alice");
+	CHECK(unlink(SSHD_CONFIG) == 0);
+	// sshd told authd each password's connection ended.
+	CHECK(!log_says("cannot tell authd", 0));
 }
 
 // `service sshd disable` stops sshd, which closes the port.
@@ -295,6 +364,7 @@ int main(int argc, char **argv) {
 	RUN(on);
 	RUN(guest);
 	RUN(host);
+	RUN(passwords);
 	RUN(off);
 	return check_end();
 }
