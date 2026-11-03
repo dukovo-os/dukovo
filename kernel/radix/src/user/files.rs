@@ -1738,6 +1738,26 @@ pub fn file_method(user: &UserRef, found: &Found, label: u32, args: &[u64; 8]) -
                 file::ReceiveMessageResults { count, interface, info: socket.packet_info() };
             answer(label, file::ReceiveMessageResults::WORDS, results.encode())
         }
+        file::RECEIVE_ERROR => {
+            let a = file::ReceiveErrorArgs::decode(args)?;
+            let (_, socket) = inet_of(found, Rights::READ)?;
+            let (address, len) = user_range(a.buffer)?;
+            let (report, report_len) = user_range(a.report)?;
+            let (heard, v6) = socket.receive_error()?;
+            let data = heard.report.data();
+            let fits = &data[..data.len().min(len)];
+            if !fits.is_empty() && !Arch::copy_to_user(address, fits) {
+                return Err(error(Kernel::BadAddress));
+            }
+            let bytes = inet::error_report(&heard, v6);
+            let room = &bytes[..bytes.len().min(report_len)];
+            if !room.is_empty() && !Arch::copy_to_user(report, room) {
+                return Err(error(Kernel::BadAddress));
+            }
+            let results =
+                file::ReceiveErrorResults { count: fits.len() as u64, kept: data.len() as u64 };
+            answer(label, file::ReceiveErrorResults::WORDS, results.encode())
+        }
         file::SOCKET_GROUP => {
             let a = file::SocketGroupArgs::decode(args)?;
             let (_, socket) = inet_of(found, Rights::NONE)?;

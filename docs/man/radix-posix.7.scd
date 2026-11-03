@@ -361,6 +361,25 @@ timestamps. *getsockopt* also answers *SO_TYPE*, *SO_DOMAIN*, *SO_PROTOCOL*,
 *SO_ERROR* and *SO_ACCEPTCONN*. *SOCK_RAW* fails with EPERM, and control
 messages with EOPNOTSUPP.
 
+The ICMP and ICMPv6 errors that come back about what a UDP or ping
+socket sent reach it as on Linux (ADR 0345): a router's "time exceeded"
+(EHOSTUNREACH), a machine's "port unreachable" (ECONNREFUSED), and the
+other "destination unreachable", "packet too big" and "parameter
+problem" errors, each to the socket whose port, address, interface and
+peer match it best. A connected socket without *IP_RECVERR* learns of
+the hard ones, as "port unreachable": its next *recv* or *send* fails
+with that error, once, *poll* says *POLLERR* until then, and
+*SO_ERROR* takes it too. With *IP_RECVERR*, or *IPV6_RECVERR* for an
+IPv6 socket, every error is kept too, up to 32, for *recvmsg* with
+*MSG_ERRQUEUE*: it gives what the error quotes of the datagram past its
+UDP header, or of the echo request from its ICMP header, where it was
+sent as the address, *MSG_ERRQUEUE* in *msg_flags*, and a control
+message *IP_RECVERR* (*IPV6_RECVERR*) holding a *struct
+sock_extended_err* of _<linux/errqueue.h>_ and the address of the
+router or machine that said it (*SO_EE_OFFENDER*). Turning the option
+off throws away the errors kept. *IP_TOS* and *IPV6_TCLASS* take only
+0, the type of service every packet has.
+
 # TERMINALS
 
 Opening _/devices/ptmx_ makes a pseudo-terminal and gives the opener its
@@ -701,6 +720,9 @@ passed*; the boot test fails on any failure.
 - A directory descriptor from before exec has no path: *..* above it
   fails with EXDEV, and *fchdir* to it with ENOSYS. One whose directory
   was moved while it was open still goes by the old path for both.
+- An ICMP error keeps at most 128 bytes of what it quotes. TCP sockets
+  do not hear ICMP errors yet, and redirects and source quenches are
+  the stack's, never a socket's.
 - A shared writable mapping of a file fails with ENODEV.
 - *clock_gettime* is a system call; there is no vDSO.
 - A *poll* waits for a change anywhere, so many pollers on a busy system

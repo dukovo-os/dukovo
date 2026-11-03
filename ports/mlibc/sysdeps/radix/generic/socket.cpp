@@ -36,6 +36,7 @@
 #include <sys/un.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
+#include <linux/errqueue.h>
 #include <sys/time.h>
 #include <stdlib.h>
 
@@ -679,6 +680,85 @@ int receive_datagram(uint32_t slot, const struct iovec *iov, int count, int flag
 	return 0;
 }
 
+// Takes the oldest ICMP error that waits for datagram or ping socket
+// `slot`, as recvmsg(2) with MSG_ERRQUEUE does on Linux (ADR 0345): what
+// it quotes of the packet into the buffers of `iov` (past a datagram's
+// UDP header, or from an echo request's ICMP header on), where the
+// packet went into `from` (up to `from_max` bytes, its length in
+// `from_len`; nothing if `from` is null), and with `hdr`, in its control
+// buffer, IP_RECVERR's struct sock_extended_err and the address of the
+// machine that sent the error; IPV6_RECVERR's of level SOL_IPV6 for an
+// IPv6 socket, as Linux gives an IPv4 error there too. The other flags
+// change nothing, as on Linux. EAGAIN when none waits, and for a stream
+// socket, which hears none.
+int receive_error(uint32_t slot, const struct iovec *iov, int count, struct sockaddr *from,
+		socklen_t from_max, socklen_t *from_len, ssize_t *length, struct msghdr *hdr) {
+	size_t size;
+	if(int e = radix::iov_total(iov, count, &size); e)
+		return e;
+	// The kernel quotes this much at most.
+	char quoted[128];
+	struct radix_socket_error report;
+	memset(&report, 0, sizeof(report));
+	struct radix_file_receive_error_results r = {};
+	uint64_t status = radix_file_receive_error(slot, quoted, sizeof(quoted), &report,
+			sizeof(report), &r);
+	if(status) {
+		int e = inet_errno(status);
+		return e == EOPNOTSUPP ? EAGAIN : e;
+	}
+	size_t copied = r.count < size ? r.count : size;
+	size_t at = 0;
+	for(int i = 0; i < count && at < copied; i++) {
+		size_t n = copied - at < iov[i].iov_len ? copied - at : iov[i].iov_len;
+		memcpy(iov[i].iov_base, quoted + at, n);
+		at += n;
+	}
+	if(from_len) {
+		if(from)
+			give_inet(report.destination, from, from_max, from_len);
+		else
+			*from_len = 0;
+	}
+	if(hdr) {
+		hdr->msg_flags = MSG_ERRQUEUE;
+		if(r.kept > size)
+			hdr->msg_flags |= MSG_TRUNC;
+		struct {
+			struct sock_extended_err ee;
+			union {
+				struct sockaddr_in in;
+				struct sockaddr_in6 in6;
+			} offender;
+		} errhdr;
+		memset(&errhdr, 0, sizeof(errhdr));
+		errhdr.ee.ee_errno = static_cast<uint32_t>(radix::to_errno(report.error));
+		errhdr.ee.ee_origin = report.origin;
+		errhdr.ee.ee_type = report.kind;
+		errhdr.ee.ee_code = report.code;
+		errhdr.ee.ee_info = report.info;
+		socklen_t offender_size;
+		give_inet(report.offender, reinterpret_cast<struct sockaddr *>(&errhdr.offender),
+				sizeof(errhdr.offender), &offender_size);
+		bool v6 = report.destination.family == RADIX_ADDRESS_FAMILY_IPV6;
+		size_t data = sizeof(errhdr.ee) + offender_size;
+		if(!hdr->msg_control || hdr->msg_controllen < CMSG_LEN(data)) {
+			hdr->msg_flags |= MSG_CTRUNC;
+			hdr->msg_controllen = 0;
+		} else {
+			auto cmsg = static_cast<struct cmsghdr *>(hdr->msg_control);
+			cmsg->cmsg_level = v6 ? SOL_IPV6 : SOL_IP;
+			cmsg->cmsg_type = v6 ? IPV6_RECVERR : IP_RECVERR;
+			cmsg->cmsg_len = CMSG_LEN(data);
+			memcpy(CMSG_DATA(cmsg), &errhdr, data);
+			size_t used = CMSG_SPACE(data);
+			hdr->msg_controllen = used < hdr->msg_controllen ? used : hdr->msg_controllen;
+		}
+	}
+	*length = static_cast<ssize_t>(copied);
+	return 0;
+}
+
 // Sends `size` bytes from `data` on network socket `slot` as send(2) with
 // `flags`, to `to` (an AF_INET address of `length` bytes) if it is not
 // null, through a network capability that allows it.
@@ -795,13 +875,15 @@ bool inet_option(int layer, int number, enum radix_socket_option *option, bool *
 	// A group's datagrams' hop limit, and whether they would loop back,
 	// are the socket's for both versions of IP (ADR 0336); IP_PKTINFO and
 	// IPV6_RECVPKTINFO ask where datagrams came to, as the socket's
-	// version's.
+	// version's; IP_RECVERR and IPV6_RECVERR ask for the ICMP errors
+	// about what it sends, both versions' (ADR 0345).
 	if(layer == IPPROTO_IP) {
 		switch(number) {
 		case IP_TTL: *option = RADIX_SOCKET_OPTION_TIME_TO_LIVE; return true;
 		case IP_MULTICAST_TTL: *option = RADIX_SOCKET_OPTION_MULTICAST_HOPS; return true;
 		case IP_MULTICAST_LOOP: *option = RADIX_SOCKET_OPTION_MULTICAST_LOOP; return true;
 		case IP_PKTINFO: *option = RADIX_SOCKET_OPTION_PACKET_INFO; return true;
+		case IP_RECVERR: *option = RADIX_SOCKET_OPTION_RECEIVE_ERRORS; return true;
 		default: return false;
 		}
 	}
@@ -814,10 +896,17 @@ bool inet_option(int layer, int number, enum radix_socket_option *option, bool *
 		case IPV6_MULTICAST_HOPS: *option = RADIX_SOCKET_OPTION_MULTICAST_HOPS; return true;
 		case IPV6_MULTICAST_LOOP: *option = RADIX_SOCKET_OPTION_MULTICAST_LOOP; return true;
 		case IPV6_RECVPKTINFO: *option = RADIX_SOCKET_OPTION_PACKET_INFO; return true;
+		case IPV6_RECVERR: *option = RADIX_SOCKET_OPTION_RECEIVE_ERRORS; return true;
 		default: return false;
 		}
 	}
 	return false;
+}
+
+// Whether `layer` and `number` are IP_TOS or IPV6_TCLASS.
+bool type_of_service(int layer, int number) {
+	return (layer == IPPROTO_IP && number == IP_TOS)
+			|| (layer == IPPROTO_IPV6 && number == IPV6_TCLASS);
 }
 
 // Whether `layer` and `number` are IP_MULTICAST_TTL or IP_MULTICAST_LOOP,
@@ -957,6 +1046,8 @@ int inet_getsockopt(uint32_t slot, int type, int layer, int number, void *buffer
 		}
 		default: value = state.listening; break;
 		}
+	} else if(type_of_service(layer, number)) {
+		value = 0;
 	} else if(inet_option(layer, number, &option, &time)) {
 		if(int e = get_option(slot, option, &value); e)
 			return e;
@@ -1005,6 +1096,16 @@ int inet_setsockopt(uint32_t slot, int layer, int number, const void *buffer, so
 	if(layer == IPPROTO_IPV6
 			&& (number == IPV6_ADD_MEMBERSHIP || number == IPV6_DROP_MEMBERSHIP))
 		return socket_group(slot, number == IPV6_ADD_MEMBERSHIP, true, buffer, size);
+	// The type of service and traffic class are 0, the default, alone:
+	// the kernel sends every packet with 0 (ADR 0345), as mtr(8) asks
+	// for unless told otherwise.
+	if(type_of_service(layer, number)) {
+		int as_int;
+		if(size < sizeof(int))
+			return EINVAL;
+		memcpy(&as_int, buffer, sizeof(int));
+		return as_int == 0 || (layer == IPPROTO_IPV6 && as_int == -1) ? 0 : ENOPROTOOPT;
+	}
 	enum radix_socket_option option;
 	bool time;
 	if(!inet_option(layer, number, &option, &time))
@@ -1053,7 +1154,8 @@ int inet_setsockopt(uint32_t slot, int layer, int number, const void *buffer, so
 			as_int = as_int != 0;
 			break;
 		case RADIX_SOCKET_OPTION_REUSE_PORT:
-		case RADIX_SOCKET_OPTION_PACKET_INFO: as_int = as_int != 0; break;
+		case RADIX_SOCKET_OPTION_PACKET_INFO:
+		case RADIX_SOCKET_OPTION_RECEIVE_ERRORS: as_int = as_int != 0; break;
 		case RADIX_SOCKET_OPTION_ERROR: return ENOPROTOOPT;
 		default: break;
 		}
@@ -1385,6 +1487,10 @@ int Sysdeps<Recvfrom>::operator()(int fd, void *buffer, size_t size, int flags,
 	// receive takes one datagram, so the family is asked for only when the
 	// sender is, as in sendto.
 	int type;
+	// The ICMP errors about what a network socket sent (ADR 0345).
+	if((flags & MSG_ERRQUEUE) && is_inet(slot, &type))
+		return receive_error(slot, &iov, 1, sock_addr, addr_length ? *addr_length : 0,
+				addr_length, length, nullptr);
 	if(addr_length && is_inet(slot, &type)) {
 		if(type == SOCK_DGRAM)
 			return receive_datagram(slot, &iov, 1, flags, sock_addr,
@@ -1423,6 +1529,16 @@ int Sysdeps<MsgRecv>::operator()(int fd, struct msghdr *hdr, int flags, ssize_t 
 	bool asks = (hdr->msg_name && hdr->msg_namelen) || hdr->msg_iovlen > 1
 			|| (hdr->msg_control && hdr->msg_controllen);
 	int type;
+	// The ICMP errors about what a network socket sent (ADR 0345).
+	if((flags & MSG_ERRQUEUE) && is_inet(slot, &type)) {
+		auto from = static_cast<struct sockaddr *>(hdr->msg_name);
+		socklen_t from_len = hdr->msg_namelen;
+		if(int e = receive_error(slot, hdr->msg_iov, hdr->msg_iovlen, from, from_len,
+				&from_len, length, hdr); e)
+			return e;
+		hdr->msg_namelen = from ? from_len : 0;
+		return 0;
+	}
 	if(asks && is_inet(slot, &type)) {
 		auto from = static_cast<struct sockaddr *>(hdr->msg_name);
 		socklen_t from_len = hdr->msg_namelen;

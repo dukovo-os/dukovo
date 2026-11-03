@@ -141,6 +141,25 @@ errors kernel = 1 {
     /// not say it sends to every host (radix-file(2)'s broadcast option,
     /// SO_BROADCAST).
     broadcast = 50 => EACCES;
+    /// The machine cannot be reached: a router on the way said so, or
+    /// that the packet's hop limit ran out before it got there (an ICMP
+    /// or ICMPv6 error a datagram or ping socket heard, ADR 0345).
+    host_unreachable = 51 => EHOSTUNREACH;
+    /// A router or the machine found something wrong in a packet's
+    /// header (ICMP's "parameter problem").
+    protocol_error = 52 => EPROTO;
+    /// A router does not know the machine (ICMP's "destination host
+    /// unknown").
+    host_down = 53 => EHOSTDOWN;
+    /// The machine is cut off from the network (ICMP's "source host
+    /// isolated").
+    no_network = 54 => ENONET;
+    /// The machine does not take the packet's protocol (ICMP's
+    /// "protocol unreachable").
+    protocol_unreachable = 55 => ENOPROTOOPT;
+    /// A router or the machine says that what was sent is prohibited
+    /// there (ICMPv6's "administratively prohibited").
+    prohibited = 56 => EACCES;
 }
 
 /// Errors of files and directories (radix-directory(2), radix-file(2)).

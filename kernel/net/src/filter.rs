@@ -130,32 +130,38 @@ fn ip(frame: &[u8], medium: Medium) -> Option<Ip> {
                 Some(IpAddress::Ipv6(Ipv6Address::from(octets)))
             };
             let (from, to) = (address(8)?, address(24)?);
-            let (mut carries, mut at) = (packet[6], 40);
-            // Past a few extension headers to what it carries.
-            for _ in 0..4 {
-                match carries {
-                    HOP_BY_HOP | ROUTING | DESTINATION => {
-                        let next = *packet.get(at)?;
-                        at += (usize::from(*packet.get(at + 1)?) + 1) * 8;
-                        carries = next;
-                    }
-                    FRAGMENT => {
-                        let next = *packet.get(at)?;
-                        let offset =
-                            u16::from_be_bytes([*packet.get(at + 2)?, *packet.get(at + 3)?]) >> 3;
-                        if offset != 0 {
-                            return None;
-                        }
-                        at += 8;
-                        carries = next;
-                    }
-                    _ => break,
-                }
-            }
+            let (carries, at) = carried_v6(packet)?;
             Some(Ip { from, to, carries, at: start + at })
         }
         _ => None,
     }
+}
+
+/// What `packet`, an IPv6 packet whose fixed header is whole, carries,
+/// and where that starts: past a few extension headers. `None` for a
+/// fragment past the first, which has no ports to read.
+pub(crate) fn carried_v6(packet: &[u8]) -> Option<(u8, usize)> {
+    let (mut carries, mut at) = (*packet.get(6)?, 40);
+    for _ in 0..4 {
+        match carries {
+            HOP_BY_HOP | ROUTING | DESTINATION => {
+                let next = *packet.get(at)?;
+                at += (usize::from(*packet.get(at + 1)?) + 1) * 8;
+                carries = next;
+            }
+            FRAGMENT => {
+                let next = *packet.get(at)?;
+                let offset = u16::from_be_bytes([*packet.get(at + 2)?, *packet.get(at + 3)?]) >> 3;
+                if offset != 0 {
+                    return None;
+                }
+                at += 8;
+                carries = next;
+            }
+            _ => break,
+        }
+    }
+    Some((carries, at))
 }
 
 /// The packet in `frame`, which a link of `medium` received, that the

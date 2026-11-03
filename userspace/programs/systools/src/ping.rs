@@ -11,18 +11,23 @@
 //! `-b` (a broadcast address may be pinged), `-q` and `-n`; it prints what
 //! iputils prints, its statistics at the end, or when it is interrupted,
 //! and exits as iputils does: 0 if a reply came (with `-w` and `-c`, as
-//! many as were sent), 1 if not, 2 for another failure.
+//! many as were sent), 1 if not, 2 for another failure. As iputils' does,
+//! it asks for the ICMP errors about its requests (IP_RECVERR, ADR 0345),
+//! and says which router or machine sent one: "From 10.0.0.1 icmp_seq=3
+//! Time to live exceeded".
 
 use std::fmt::Write as _;
 use std::io::{self, Write};
 use std::mem::MaybeUninit;
 use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
+use std::os::fd::AsRawFd;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use socket2::{Domain, Protocol, SockAddr, Socket, Type};
 
 use crate::args::{Arg, Args};
+use crate::traceroute::{self, Heard, ORIGIN_ICMP6};
 use crate::util::{self, Fail, fail_with, usage};
 
 /// The bytes of data each request carries, unless `-s` says.
@@ -265,6 +270,99 @@ fn reply(v6: bool, message: &[u8]) -> Option<(u16, Option<Duration>)> {
     Some((seq, sent))
 }
 
+/// What an ICMP error about a request says, as iputils' ping prints it.
+fn error_text(heard: &Heard) -> String {
+    let (kind, code, info) = (heard.kind, heard.code, heard.info);
+    if heard.origin == ORIGIN_ICMP6 {
+        return match kind {
+            1 => {
+                let why = match code {
+                    0 => "No route".to_string(),
+                    1 => "Administratively prohibited".into(),
+                    2 => "Beyond scope of source address".into(),
+                    3 => "Address unreachable".into(),
+                    4 => "Port unreachable".into(),
+                    code => format!("Unknown code {code}"),
+                };
+                format!("Destination unreachable: {why}")
+            }
+            2 if code != 0 => format!("Packet too big: mtu={info}, code={code}"),
+            2 => format!("Packet too big: mtu={info}"),
+            3 => match code {
+                0 => "Time exceeded: Hop limit".into(),
+                1 => "Time exceeded: Defragmentation failure".into(),
+                code => format!("Time exceeded: code {code}"),
+            },
+            4 => {
+                let what = match code {
+                    0 => "Wrong header field ".to_string(),
+                    1 => "Unknown header ".into(),
+                    2 => "Unknown option ".into(),
+                    code => format!("code {code} "),
+                };
+                format!("Parameter problem: {what}at {info}")
+            }
+            kind => format!("Unknown icmp type: {kind}"),
+        };
+    }
+    match (kind, code) {
+        (3, _) => match code {
+            0 => "Destination Net Unreachable".into(),
+            1 => "Destination Host Unreachable".into(),
+            2 => "Destination Protocol Unreachable".into(),
+            3 => "Destination Port Unreachable".into(),
+            4 => format!("Frag needed and DF set (mtu = {info})"),
+            5 => "Source Route Failed".into(),
+            6 => "Destination Net Unknown".into(),
+            7 => "Destination Host Unknown".into(),
+            8 => "Source Host Isolated".into(),
+            9 => "Destination Net Prohibited".into(),
+            10 => "Destination Host Prohibited".into(),
+            11 => "Destination Net Unreachable for Type of Service".into(),
+            12 => "Destination Host Unreachable for Type of Service".into(),
+            13 => "Packet filtered".into(),
+            14 => "Precedence Violation".into(),
+            15 => "Precedence Cutoff".into(),
+            code => format!("Dest Unreachable, Bad Code: {code}"),
+        },
+        (11, 0) => "Time to live exceeded".into(),
+        (11, 1) => "Frag reassembly time exceeded".into(),
+        (11, code) => format!("Time exceeded, Bad Code: {code}"),
+        (12, _) => format!("Parameter problem: pointer = {info}"),
+        (kind, _) => format!("Bad ICMP type: {kind}"),
+    }
+}
+
+/// Takes the ICMP errors that wait for `socket` (MSG_ERRQUEUE) about its
+/// requests to `address`, and prints each, as iputils' ping does, unless
+/// `quiet`: how many there were.
+fn take_errors(
+    socket: &Socket,
+    v6: bool,
+    address: IpAddr,
+    quiet: bool,
+    out: &mut impl Write,
+) -> io::Result<u64> {
+    let request = if v6 { REQUEST_V6 } else { REQUEST };
+    let mut taken = 0;
+    while let Ok(received) = traceroute::receive(socket.as_raw_fd(), true) {
+        let Some(heard) = received.heard else { continue };
+        let message = &received.data;
+        // Another program's, or no error about a request.
+        if message.len() < HEADER || message[0] != request || received.name != Some(address) {
+            continue;
+        }
+        taken += 1;
+        if !quiet {
+            let seq = u16::from_be_bytes([message[6], message[7]]);
+            let from = heard.offender.map_or_else(|| "?".to_string(), |from| from.to_string());
+            writeln!(out, "From {from} icmp_seq={seq} {}", error_text(&heard))?;
+            out.flush()?;
+        }
+    }
+    Ok(taken)
+}
+
 /// ping(8).
 pub fn main(args: &mut Args) -> Result<i32, Fail> {
     let options = options(args)?;
@@ -281,6 +379,12 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
     if options.broadcast && !v6 {
         socket.set_broadcast(true).map_err(|e| fail_with(2, format!("broadcast: {e}")))?;
     }
+    // The routers' and the machine's errors about the requests, as
+    // iputils asks for them.
+    let (level, option) =
+        if v6 { (libc::SOL_IPV6, libc::IPV6_RECVERR) } else { (libc::SOL_IP, libc::IP_RECVERR) };
+    traceroute::set_int(&socket, level, option, 1)
+        .map_err(|e| fail_with(2, format!("setsockopt: {}", util::strip_os_error(&e))))?;
     // SAFETY: all zeros is a valid sigaction: numbers, a signal set and a
     // function address.
     let mut action: libc::sigaction = unsafe { util::zeroed() };
@@ -313,6 +417,14 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
         if INTERRUPTED.load(Ordering::Relaxed) {
             break;
         }
+        // As iputils' ends: once each request of the count was answered
+        // or an error came about it, and with a deadline at the first
+        // error.
+        if options.count.is_some_and(|c| tally.received + tally.errors >= c)
+            || (options.deadline.is_some() && tally.errors > 0)
+        {
+            break;
+        }
         let now = Instant::now();
         if options.deadline.is_some_and(|d| now >= start + d) {
             break;
@@ -331,7 +443,16 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
             tally.sent += 1;
             last_sent = Some(now);
             next = now + options.interval;
-            if let Err(e) = socket.send_to(&message, &to) {
+            // An error about an earlier request fails the next send once,
+            // as on Linux: its own, which goes again.
+            let sent = match socket.send_to(&message, &to) {
+                Err(e) if traceroute::left_by_icmp(&e) => {
+                    tally.errors += take_errors(&socket, v6, address, options.quiet, &mut out)?;
+                    socket.send_to(&message, &to)
+                }
+                sent => sent,
+            };
+            if let Err(e) = sent {
                 tally.errors += 1;
                 writeln!(out, "ping: sendmsg: {}", util::strip_os_error(&e))?;
             }
@@ -355,9 +476,14 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
             {
                 continue;
             }
+            // An ICMP error came: it waits in the error queue.
             Err(e) => {
-                tally.errors += 1;
-                writeln!(out, "ping: recvmsg: {}", util::strip_os_error(&e))?;
+                let taken = take_errors(&socket, v6, address, options.quiet, &mut out)?;
+                tally.errors += taken;
+                if taken == 0 && !traceroute::left_by_icmp(&e) {
+                    tally.errors += 1;
+                    writeln!(out, "ping: recvmsg: {}", util::strip_os_error(&e))?;
+                }
                 continue;
             }
         };
@@ -409,6 +535,7 @@ fn round_trip(ms: f64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::traceroute::ORIGIN_ICMP;
 
     #[test]
     fn a_request_carries_its_number_and_time() {
@@ -439,6 +566,21 @@ mod tests {
         let none = Tally { sent: 1, ..Tally::default() }.summary("x", Duration::ZERO);
         assert!(none.contains("1 packets transmitted, 0 received, 100% packet loss"), "{none}");
         assert!(!none.contains("rtt"), "{none}");
+    }
+
+    #[test]
+    fn errors_read_as_iputils_prints_them() {
+        let of = |origin, kind, code, info| {
+            error_text(&Heard { errno: 0, origin, kind, code, info, offender: None })
+        };
+        assert_eq!(of(ORIGIN_ICMP, 11, 0, 0), "Time to live exceeded");
+        assert_eq!(of(ORIGIN_ICMP, 3, 1, 0), "Destination Host Unreachable");
+        assert_eq!(of(ORIGIN_ICMP, 3, 4, 1400), "Frag needed and DF set (mtu = 1400)");
+        assert_eq!(of(ORIGIN_ICMP, 12, 0, 20), "Parameter problem: pointer = 20");
+        assert_eq!(of(ORIGIN_ICMP6, 3, 0, 0), "Time exceeded: Hop limit");
+        assert_eq!(of(ORIGIN_ICMP6, 1, 3, 0), "Destination unreachable: Address unreachable");
+        assert_eq!(of(ORIGIN_ICMP6, 2, 0, 1280), "Packet too big: mtu=1280");
+        assert_eq!(of(ORIGIN_ICMP6, 4, 1, 6), "Parameter problem: Unknown header at 6");
     }
 
     #[test]

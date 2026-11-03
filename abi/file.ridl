@@ -158,7 +158,9 @@ enum SocketOption: u32 {
     /// changes nothing.
     send_buffer = 5;
     /// SO_ERROR, read only: why the last connection the socket tried
-    /// failed, as a status word (0 for none), which reading clears.
+    /// failed, as a status word (0 for none), which reading clears; for
+    /// a datagram or ping socket, the error an ICMP or ICMPv6 error
+    /// reported last (receive_errors; since Phase 12, ADR 0345).
     error = 6;
     /// IP_TTL: how many routers its packets may pass, 1 to 255.
     time_to_live = 7;
@@ -223,6 +225,16 @@ enum SocketOption: u32 {
     /// `receive_message` says that the program asked for where each
     /// datagram went and the interface it came by. (Since Phase 12c.3.)
     packet_info = 22;
+    /// IP_RECVERR and IPV6_RECVERR, a boolean, of a datagram or ping
+    /// socket's: the ICMP and ICMPv6 errors it hears about what it sent,
+    /// a router's "time exceeded" and a machine's "port unreachable"
+    /// among them, wait for `receive_error`, as on Linux, and each makes
+    /// the next send or receive fail with its error, once. Without it,
+    /// only a connected socket hears one, and only of the errors that
+    /// say the other end cannot be reached at all (refused,
+    /// protocol_unreachable, prohibited and the like). Turning it off
+    /// throws away those that wait. (Since Phase 12, ADR 0345.)
+    receive_errors = 23;
 }
 
 /// The most files one `send_files` sends, as Linux's SCM_MAX_FD.
@@ -237,7 +249,7 @@ const BACKLOG_MAX: u64 = 4096;
 const SOCKET_NAME_MAX: u64 = 107;
 
 /// A file.
-interface file = 0x000c version 10 {
+interface file = 0x000c version 11 {
     kind = file;
     /// Reads from byte `offset` into `buffer`; returns how many bytes it
     /// read, fewer than asked at the end of the file. Needs the read right.
@@ -322,8 +334,9 @@ interface file = 0x000c version 10 {
     /// the address it is connected to. Needs the write right.
     method send = 12 (data: in bytes, flags: SocketFlags) -> (count: u64)
         raises [no_such_slot, empty_slot, missing_rights, bad_address, not_socket, would_block,
-                gone, interrupted, not_connected, reset, message_too_long, unreachable,
-                broadcast];
+                gone, interrupted, not_connected, reset, message_too_long, unreachable, broadcast,
+                refused, host_unreachable, protocol_error, host_down, no_network,
+                protocol_unreachable, prohibited, not_supported];
     /// Receives what a socket's other end sent into `buffer`, as `read`
     /// does but with `flags`; returns how many bytes came, 0 once the
     /// other end is gone or shut for writing and all it sent has been
@@ -331,7 +344,9 @@ interface file = 0x000c version 10 {
     /// `buffer` has no room for is lost. Needs the read right.
     method receive = 13 (buffer: out bytes, flags: SocketFlags) -> (count: u64)
         raises [no_such_slot, empty_slot, missing_rights, bad_address, not_socket, would_block,
-                interrupted, not_connected, reset];
+                interrupted, not_connected, reset, refused, unreachable, host_unreachable,
+                protocol_error, host_down, no_network, protocol_unreachable, prohibited,
+                message_too_long, not_supported];
     /// Shuts a socket's end for reading (what the other end sends then
     /// fails with gone), for writing (the other end then receives the
     /// end), or both, for every description of the end: POSIX's
@@ -449,17 +464,20 @@ interface file = 0x000c version 10 {
     /// right.
     method send_to = 23 (network: slot, address: in bytes, data: in bytes, flags: SocketFlags)
         -> (count: u64)
-        raises [no_such_slot, empty_slot, wrong_kind, missing_rights, invalid_argument,
-                bad_address, not_socket, not_supported, address_in_use, no_buffers, no_memory,
-                unreachable, would_block, interrupted, message_too_long, not_connected, gone,
-                reset, broadcast];
+        raises [no_such_slot, empty_slot, wrong_kind, missing_rights, invalid_argument, bad_address,
+                not_socket, not_supported, address_in_use, no_buffers, no_memory, unreachable,
+                would_block, interrupted, message_too_long, not_connected, gone, reset, broadcast,
+                refused, host_unreachable, protocol_error, host_down, no_network,
+                protocol_unreachable, prohibited];
     /// Receives as `receive` does, and writes where what came is from
     /// into `address`, as an Address, if it has room for one; returns how
     /// many bytes came. Needs the read right.
     method receive_from = 24 (buffer: out bytes, address: out bytes, flags: SocketFlags)
         -> (count: u64)
-        raises [no_such_slot, empty_slot, missing_rights, bad_address, not_socket,
-                not_connected, would_block, interrupted, reset];
+        raises [no_such_slot, empty_slot, missing_rights, bad_address, not_socket, not_connected,
+                would_block, interrupted, reset, refused, unreachable, host_unreachable,
+                protocol_error, host_down, no_network, protocol_unreachable, prohibited,
+                message_too_long, not_supported];
     /// Reads, and with `set` changes to `value`, one of a network
     /// socket's options, and returns it as it was. A read-only option
     /// fails with invalid_argument when set, and a socket that is not a
@@ -529,6 +547,24 @@ interface file = 0x000c version 10 {
     /// packet_info option is set. (Since version 10.)
     method receive_message = 32 (buffer: out bytes, address: out bytes, destination: out bytes, flags: SocketFlags)
         -> (count: u64, interface: u32, info: bool)
+        raises [no_such_slot, empty_slot, missing_rights, bad_address, not_socket, not_connected,
+                would_block, interrupted, reset, refused, unreachable, host_unreachable,
+                protocol_error, host_down, no_network, protocol_unreachable, prohibited,
+                message_too_long, not_supported];
+    /// Takes the oldest of the ICMP and ICMPv6 errors a datagram or ping
+    /// socket heard about what it sent, which wait while its
+    /// receive_errors option is set: POSIX's MSG_ERRQUEUE, as on Linux
+    /// (ADR 0345). Writes what the error quotes of the packet into
+    /// `buffer`, past a datagram's UDP header or from an echo request's
+    /// own header on, the first 128 bytes at most, what `buffer` has no
+    /// room for lost; and what it says into `report`, a SocketError
+    /// (radix-network(2)), if it has room for one. Returns how many bytes
+    /// it wrote, and how many it kept. Fails with would_block, waiting
+    /// for none, when none waits, and with not_supported for a socket of
+    /// another kind. The send or receive after it fails with the next
+    /// error's, if another waits. Needs the read right. (Since version
+    /// 11.)
+    method receive_error = 33 (buffer: out bytes, report: out bytes) -> (count: u64, kept: u64)
         raises [no_such_slot, empty_slot, missing_rights, bad_address, not_socket,
-                not_connected, would_block, interrupted, reset];
+                not_supported, would_block];
 }

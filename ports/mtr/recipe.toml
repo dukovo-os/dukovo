@@ -1,0 +1,30 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# mtr (ADR 0345): traceroute and ping in one, which asks each router on
+# the way to a machine again and again and shows how many of its answers
+# come back and how long they take, on the terminal with ncurses or as a
+# report. Its probes go from mtr-packet, a program of their own, which
+# mtr runs; without raw sockets it sends them over ICMP datagram sockets
+# and reads the routers' answers from their queue of errors (IP_RECVERR),
+# as it does on Linux. Matt Kimball's and its other authors' code is
+# under version 2 of the GPL only; queue.h is the University of
+# California's (BSD-3-Clause), in BSDCOPYING. The release archive is the
+# v0.95 tag's, from Ubuntu's pool, which keeps it unchanged.
+name = "mtr"
+version = "0.95"
+summary = "mtr, which traces the way to a machine and measures each hop"
+license = "GPL-2.0-only AND BSD-3-Clause"
+homepage = "https://www.bitwizard.nl/mtr/"
+depends = ["mlibc", "ncurses"]
+notices = ["COPYING", "BSDCOPYING"]
+image = [
+    "system/commands/mtr",
+    "system/commands/mtr-packet",
+    "system/resources/man/man8/mtr.8",
+    "system/resources/man/man8/mtr-packet.8",
+]
+
+[source]
+url = "https://archive.ubuntu.com/ubuntu/pool/main/m/mtr/mtr_0.95.orig.tar.gz"
+sha256 = "12490fb660ba5fb34df8c06a0f62b4f9cbd11a584fc3f6eceda0a99124e8596f"

@@ -1,0 +1,178 @@
+SPDX-FileCopyrightText: 2026 The Dukovo contributors
+SPDX-License-Identifier: Apache-2.0 OR MIT
+
+res_query failed every query with NO_RECOVERY, so that mtr found no
+network's AS number (its -z and -y ask origin.asn.cymru.com's TXT
+records), and res_init and its kin said they were stubs on standard
+error, in the middle of mtr's screen. res_query now asks the
+nameservers of /etc/resolv.conf with the lookups' own queries, for any
+type and class, without the search list, as glibc does: it gives the
+answer, cut to the buffer with TC set when it does not fit, or -1 with
+h_errno HOST_NOT_FOUND, NO_DATA, TRY_AGAIN or NO_RECOVERY as glibc's
+would. res_init, res_ninit and res_nclose say nothing, as each query
+reads /etc/resolv.conf (ADR 0345).
+Meant for upstream.
+
+--- a/options/posix/generic/lookup.cpp
++++ b/options/posix/generic/lookup.cpp
+@@ -176,10 +176,12 @@
+ 		}
+ 	}
+ 
+-	// A query for name's records of type, with a random identifier, asking
+-	// for recursion, and EDNS(0)'s OPT record offering UDP_SIZE bytes:
+-	// false if DNS cannot carry the name.
+-	bool make_query(bytes &out, const char *name, size_t length, uint16_t type) {
++	// A query for name's records of type, of class IN unless another is
++	// asked, with a random identifier, asking for recursion, and EDNS(0)'s
++	// OPT record offering UDP_SIZE bytes: false if DNS cannot carry the
++	// name.
++	bool make_query(bytes &out, const char *name, size_t length, uint16_t type,
++			uint16_t klass = CLASS_IN) {
+ 		uint16_t id;
+ 		if (mlibc::sysdep_or_enosys<GetEntropy>(&id, sizeof(id)))
+ 			id = static_cast<uint16_t>((now_ms() * 2654435761u) >> 16);
+@@ -192,7 +194,7 @@
+ 		if (!put_name(out, name, length))
+ 			return false;
+ 		put16(out, type);
+-		put16(out, CLASS_IN);
++		put16(out, klass);
+ 		out.push(0); // the root's name
+ 		put16(out, RECORD_OPT);
+ 		put16(out, UDP_SIZE);
+@@ -389,12 +391,14 @@
+ 	}
+ 
+ 	// Asks the nameservers of /etc/resolv.conf in turn for name's records
+-	// of type, until one answers or says the name is not there: 0 with the
+-	// answer in out, or -EAI_NONAME for a name DNS cannot carry, or
+-	// -EAI_AGAIN or -EAI_FAIL from the last server asked.
+-	int query(const resolv_conf &conf, const char *name, size_t length, uint16_t type, bytes &out) {
++	// of type, of class IN unless another is asked, until one answers or
++	// says the name is not there: 0 with the answer in out, or -EAI_NONAME
++	// for a name DNS cannot carry, or -EAI_AGAIN or -EAI_FAIL from the last
++	// server asked.
++	int query(const resolv_conf &conf, const char *name, size_t length, uint16_t type, bytes &out,
++			uint16_t klass = CLASS_IN) {
+ 		bytes question{getAllocator()};
+-		if (!make_query(question, name, length, type))
++		if (!make_query(question, name, length, type, klass))
+ 			return -EAI_NONAME;
+ 		int result = -EAI_AGAIN;
+ 		for (auto &nameserver : conf.nameservers) {
+@@ -705,6 +709,17 @@
+ 	buf.buf = std::move(sorted);
+ }
+ 
++// Asks for name's records of type and class as it is, without the search
++// list, for res_query(3): 0 with the answer in out, whose RCODE is
++// NOERROR or NXDOMAIN, or -EAI_NONAME for a name DNS cannot carry, or
++// -EAI_AGAIN when no server answered or one failed, or -EAI_FAIL when they
++// would not answer.
++int lookup_raw_dns(const char *name, uint16_t klass, uint16_t type,
++		frg::vector<uint8_t, MemoryAllocator> &out) {
++	auto conf = read_resolv_conf();
++	return query(conf, name, strlen(name), type, out, klass);
++}
++
+ // Looks name up with the search list, as glibc does: a name with fewer
+ // dots than ndots (1) is tried under each search domain first and then as
+ // it is, a name with more as it is first. Only addresses of the family
+--- a/options/posix/include/mlibc/lookup.hpp
++++ b/options/posix/include/mlibc/lookup.hpp
+@@ -47,6 +47,8 @@
+ int lookup_name_dns(struct lookup_result &buf, const char *name,
+ 		frg::string<MemoryAllocator> &canon_name, int family);
+ int lookup_addr_dns(frg::span<char> name, frg::array<uint8_t, 16> &addr, int family);
++int lookup_raw_dns(const char *name, uint16_t klass, uint16_t type,
++		frg::vector<uint8_t, MemoryAllocator> &out);
+ int lookup_name_hosts(struct lookup_result &buf, const char *name,
+ 		frg::string<MemoryAllocator> &canon_name, int family);
+ int lookup_addr_hosts(frg::span<char> name, frg::array<uint8_t, 16> &addr, int family);
+--- a/options/glibc/generic/resolv.cpp
++++ b/options/glibc/generic/resolv.cpp
+@@ -3,7 +3,10 @@
+ #include <resolv.h>
+ #include <arpa/nameser.h>
+ #include <bits/ensure.h>
++#include <mlibc/allocator.hpp>
+ #include <mlibc/debug.hpp>
++#include <mlibc/lookup.hpp>
++#include <string.h>
+ 
+ int dn_expand(const unsigned char *msg, const unsigned char *eom,
+ 		const unsigned char *src, char *dst, int size) {
+@@ -14,27 +17,62 @@
+ 	return ns_name_uncompress(msg, eom, src, dst, size);
+ }
+ 
+-// No name server is there to ask: the query fails as a lookup does that
+-// cannot be done.
+-int res_query(const char *, int, int, unsigned char *, int) {
+-	h_errno = NO_RECOVERY;
+-	errno = ECONNREFUSED;
+-	return -1;
++// Asks the nameservers of /etc/resolv.conf in turn for dname's records of
++// type and class, without the search list, as glibc does, with the lookups'
++// own queries: the answer's length, and as much of it as anslen bytes hold
++// in answer, with TC set when it is cut short there, or -1 with h_errno
++// saying why: HOST_NOT_FOUND when the name is not there, NO_DATA when it
++// has no such records, TRY_AGAIN when no server answered or one failed,
++// and NO_RECOVERY when they would not answer or DNS cannot carry the name.
++int res_query(const char *dname, int klass, int type, unsigned char *answer, int anslen) {
++	if(!dname || klass < 0 || klass > 0xFFFF || type < 0 || type > 0xFFFF
++			|| !answer || anslen < NS_HFIXEDSZ) {
++		h_errno = NO_RECOVERY;
++		errno = EINVAL;
++		return -1;
++	}
++	frg::vector<uint8_t, MemoryAllocator> msg{getAllocator()};
++	switch(mlibc::lookup_raw_dns(dname, klass, type, msg)) {
++	case 0:
++		break;
++	case -EAI_AGAIN:
++		h_errno = TRY_AGAIN;
++		return -1;
++	case -EAI_NONAME:
++		h_errno = NO_RECOVERY;
++		errno = EMSGSIZE;
++		return -1;
++	default:
++		h_errno = NO_RECOVERY;
++		return -1;
++	}
++	// The header's RCODE, answer count and TC bit, by its bytes.
++	if((msg[3] & 0xF) == ns_r_nxdomain) {
++		h_errno = HOST_NOT_FOUND;
++		return -1;
++	}
++	if(!msg[6] && !msg[7]) {
++		h_errno = NO_DATA;
++		return -1;
++	}
++	size_t length = msg.size() < static_cast<size_t>(anslen) ? msg.size() : anslen;
++	memcpy(answer, msg.data(), length);
++	if(length < msg.size())
++		answer[2] |= 0x02;
++	return length;
+ }
+ 
++// Each query reads /etc/resolv.conf, so that there is nothing to read
++// ahead or to let go of.
+ int res_init() {
+-	mlibc::infoLogger() << "mlibc: res_init is a stub!" << frg::endlog;
+ 	return 0;
+ }
+ 
+ int res_ninit(res_state) {
+-	mlibc::infoLogger() << "mlibc: res_ninit is a stub!" << frg::endlog;
+ 	return 0;
+ }
+ 
+ void res_nclose(res_state) {
+-	mlibc::infoLogger() << "mlibc: res_nclose is a stub!" << frg::endlog;
+-	return;
+ }
+ 
+ // Writes the dotted name `name` as a DNS name at `out`, in at most

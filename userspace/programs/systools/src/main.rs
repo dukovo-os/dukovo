@@ -24,7 +24,8 @@
 //! (ADRs 0336 to 0338);
 //! `dig` and `host` ask name servers, and `whois` the registries, what
 //! they hold, and `nic` shows what a network card says of itself, as
-//! ethtool does (ADR 0341);
+//! ethtool does (ADR 0341); `traceroute` finds the way to a machine, a
+//! router at a time (ADR 0345);
 //! `timed` keeps the clock right from the network over NTS, and
 //! `timedatectl` shows it and sets the time zone (ADR 0194); `netlog`
 //! sends the log to another computer as it is written (ADR 0196);
@@ -131,6 +132,7 @@ mod timed;
 mod timedatectl;
 mod tls;
 mod top;
+mod traceroute;
 mod tree;
 mod unlock;
 mod util;
@@ -262,6 +264,8 @@ const TOOLS: &[(&str, Tool)] = &[
     ("timed", timed::main),
     ("timedatectl", timedatectl::main),
     ("top", top::main),
+    ("traceroute", traceroute::main),
+    ("traceroute6", traceroute::main6),
     ("tree", tree::main),
     ("umount", mount::umount),
     ("unlock", unlock::main),

@@ -99,6 +99,35 @@ struct Address {
     scope: u32;
 }
 
+/// An ICMP or ICMPv6 error a datagram or ping socket heard about what it
+/// sent, as radix-file(2)'s `receive_error` gives it: what Linux's
+/// sock_extended_err and its offender say, and where the packet went
+/// (ADR 0345). (Since Phase 12.)
+struct SocketError {
+    /// What it came as, Linux's ee_origin: 2 for ICMP, 3 for ICMPv6.
+    origin: u8;
+    /// The ICMP or ICMPv6 message's type.
+    kind: u8;
+    /// Its code.
+    code: u8;
+    /// Zero.
+    reserved: u8;
+    /// What it says besides, Linux's ee_info: the next hop's MTU of a
+    /// "fragmentation needed" or "packet too big", the pointer of a
+    /// "parameter problem"; 0 otherwise.
+    info: u32;
+    /// The error the socket's next send or receive fails with for it, as
+    /// a status word: host_unreachable for a router's "time exceeded",
+    /// refused for a machine's "port unreachable", and so on.
+    error: u64;
+    /// Who sent it: a router on the packet's way, or the machine it went
+    /// to; an Address of the socket's family, its port 0.
+    offender: Address;
+    /// Where the packet went: the address and port it was sent to, a
+    /// ping socket's port its echo identifier's 0.
+    destination: Address;
+}
+
 /// The most IPv4 addresses `configure` gives an interface.
 const ADDRESSES_MAX: u64 = 4;
 
