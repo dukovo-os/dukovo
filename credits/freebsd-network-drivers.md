@@ -23,6 +23,18 @@ Section: Specifications and papers
   admin queue by address on revision 1
   ([ADR 0197](docs/adr/0197-network-cards-share-one-driver-interface-and-copy-frames-through-slots.md)).
   No code is taken from any of them.
+- FreeBSD's `em(4)` code for the Ethernet in Intel's chipsets:
+  `e1000_ich8lan.c`, `e1000_phy.c`, `e1000_api.c` and `e1000_osdep.c`
+  (BSD-3-Clause, Copyright Intel Corporation) and `if_em.c`
+  (BSD-2-Clause, Copyright Intel Corporation and Nicole Graziano), the
+  reference for the PHY's pages and
+  software flag, leaving ultra low power mode, LANPHYPC, the reset and
+  post-reset sequences, the NVM's extended configuration and flash
+  cycles, the link workarounds, latency tolerance and the 82579's write
+  interlock with its management engine, from which `radix-intel-net`'s
+  `pch` drives the 82579 and the I219
+  ([ADR 0361](docs/adr/0361-intels-chipset-ethernet-the-82579-and-i219.md)).
+  No code is taken from them.
 - FreeBSD's `re(4)` and its `if_rlreg.h` (BSD-4-Clause, Copyright Bill
   Paul), the reference for the registers, descriptors, chip revisions
   and their quirks, and the start and stop sequences from which

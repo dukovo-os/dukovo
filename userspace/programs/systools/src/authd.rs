@@ -68,7 +68,7 @@ use radix_abi::names;
 use crate::args::Args;
 use crate::elevate::{self, Plan};
 use crate::util::{self, Fail};
-use crate::{proc, sessions, signin, sys};
+use crate::{proc, sessions, signin, sshkeys, sys};
 
 /// How long a connection has to send its request.
 const REQUEST_TIME: Duration = Duration::from_secs(10);
@@ -259,6 +259,11 @@ struct Session {
     group: u32,
     /// Whether it is an elevated command.
     elevated: bool,
+    /// Whether it signed in over SSH (ADR 0347).
+    remote: bool,
+    /// Whether its sign-in is in the records, for last(1): all but an
+    /// SSH command's without a terminal, as on Linux.
+    recorded: bool,
 }
 
 /// How long a connection whose session runs may wait: as long as it
@@ -647,6 +652,27 @@ impl Authd {
                     self.share_sign_in(i, &files, from, messages, peer, now)
                 }
                 Request::NfsWorker { uid } => self.nfs_worker(i, &files, *uid, peer, now),
+                Request::SshKey { name, key } => (ssh_key(&files, name, key, peer), now),
+                Request::SshSession {
+                    connection,
+                    name,
+                    signed,
+                    signature,
+                    term,
+                    command,
+                    language,
+                } => {
+                    let asked = SshAsked {
+                        connection,
+                        name,
+                        signed,
+                        signature,
+                        term,
+                        command: command.as_deref(),
+                        language,
+                    };
+                    (self.ssh_session(i, &files, &asked, peer), now)
+                }
                 Request::EndShares => {
                     if peer.is_root() {
                         let ended = self.end_shares(None);
@@ -986,6 +1012,8 @@ impl Authd {
                     number: user.uid,
                     group: user.gid,
                     elevated: false,
+                    remote: false,
+                    recorded: true,
                 };
                 self.sessions.insert(process, session);
                 self.clients[i].session = Some(process);
@@ -1033,13 +1061,16 @@ impl Authd {
                         session.name,
                         session.terminal
                     );
-                    let seat = Seat {
-                        name: session.name.clone(),
-                        terminal: session.terminal.clone(),
-                        from: session.from.clone(),
-                        session: process as u32,
-                    };
-                    record(&signins::of(session.number), session.group, 0o640, Event::Out(seat));
+                    if session.recorded {
+                        let seat = Seat {
+                            name: session.name.clone(),
+                            terminal: session.terminal.clone(),
+                            from: session.from.clone(),
+                            session: process as u32,
+                        };
+                        let out = Event::Out(seat);
+                        record(&signins::of(session.number), session.group, 0o640, out);
+                    }
                 }
             }
             for client in &mut self.clients {
@@ -1166,6 +1197,8 @@ impl Authd {
             number: user.uid,
             group: user.gid,
             elevated: true,
+            remote: false,
+            recorded: false,
         };
         self.sessions.insert(process, session);
         let client = &mut self.clients[i];
@@ -1478,12 +1511,141 @@ impl Authd {
                     number: user.uid,
                     group: user.gid,
                     elevated: false,
+                    remote: false,
+                    recorded: true,
                 };
                 self.sessions.insert(process as i32, session);
                 (Answer::Done(format!("{} {}", user.name, ntlm::hex(&session_key))), now)
             }
             Err(why) => (Answer::Refused(why), now),
         }
+    }
+
+    /// Signs a person in over SSH and starts their session (ADR 0347),
+    /// for sshd: once the signature of what the client signed is the
+    /// key's, and the person's authorized keys name the key. Client `i`
+    /// then waits for the session's end, as a console's sign-in does.
+    fn ssh_session(&mut self, i: usize, files: &Files, asked: &SshAsked, peer: Peer) -> Answer {
+        let refused = |why: String| Answer::Refused(why);
+        let mut descriptors = std::mem::take(&mut self.clients[i].descriptors);
+        if !peer.is_root() {
+            return refused("only sshd, which runs as root, signs people in over SSH".into());
+        }
+        let Some(names) = self.names else {
+            return refused(
+                "authd holds no names capability to start sessions with: its service file needs \
+                 `names = true`"
+                    .into(),
+            );
+        };
+        let Some(from) = ssh_from(asked.connection) else {
+            return refused("an SSH sign-in names its connection as SSH_CONNECTION does".into());
+        };
+        let running = self.sessions.values().filter(|s| s.remote).count();
+        if running >= SSH_SESSIONS_MAX {
+            return refused(format!("there are {SSH_SESSIONS_MAX} SSH sessions at once already"));
+        }
+        let terminal = (descriptors.len() == 1).then(|| descriptors.remove(0));
+        let terminal = terminal.filter(signin::is_terminal);
+        let pipes = <[OwnedFd; 3]>::try_from(descriptors).ok();
+        let io = match (&terminal, &pipes) {
+            (Some(tty), _) => signin::SshIo::Terminal(tty),
+            (None, Some([input, output, error])) => signin::SshIo::Pipes([input, output, error]),
+            (None, None) => {
+                return refused(
+                    "an SSH session comes with its terminal, or with three descriptors".into(),
+                );
+            }
+        };
+        // The signature first: sshd's word that the client signed is not
+        // taken (ADR 0347).
+        let request = match sshkeys::verify(asked.signed, asked.signature) {
+            Ok(request) if request.user == asked.name => request,
+            Ok(_) => return refused("the signed sign-in request names another account".into()),
+            Err(why) => {
+                audit!("refused an SSH sign-in as {} from {from}: {why}", shown(asked.name));
+                return refused(why.into());
+            }
+        };
+        let fingerprint = sshkeys::fingerprint(request.key);
+        let user = match ssh_person(files, asked.name, request.key) {
+            Ok(user) => user,
+            Err(why) => {
+                audit!(
+                    "refused an SSH sign-in as {} from {from} with key {fingerprint}: {why}",
+                    shown(asked.name)
+                );
+                return refused(why);
+            }
+        };
+        let groups =
+            accounts::other_groups(user, &files.groups, radix_abi::names::GROUPS_MAX as usize);
+        let language: Vec<String> =
+            asked.language.iter().filter(|l| request::ssh_language(l)).cloned().collect();
+        let (tty, term) = match &terminal {
+            Some(tty) => (signin::terminal_name(tty), Some(signin::terminal_type(asked.term))),
+            None => (SSH_TERMINAL.to_string(), None),
+        };
+        let tty_path = terminal.is_some().then(|| format!("/dev/{tty}"));
+        let env =
+            signin::ssh_environment(user, term, tty_path.as_deref(), asked.connection, &language);
+        // On a terminal, a shell's session first shows the last sign-in,
+        // the wrong passwords since, and what happened while they were
+        // away, as a console's does.
+        let notices = Notices::read();
+        let theirs = if asked.command.is_none() { notices.of(&user.name) } else { Vec::new() };
+        if let Some(tty) = terminal.as_ref().filter(|_| asked.command.is_none()) {
+            let records = read_text(&signins::of(user.uid)).unwrap_or_default();
+            let mut lines =
+                latest_lines(&signins::latest(&signins::parse(&records)), &user.name, |time| {
+                    util::local_time(time, WHEN)
+                });
+            lines.extend(theirs.iter().cloned());
+            if !lines.is_empty()
+                && let Ok(copy) = tty.try_clone()
+            {
+                let text = format!("\n{}\n\n", lines.join("\n"));
+                let _ = File::from(copy).write_all(text.as_bytes());
+            }
+        }
+        let process = match signin::start_ssh(names, user, &groups, &io, env, asked.command) {
+            Ok(process) => process as i32,
+            Err(why) => return refused(why),
+        };
+        let what = if asked.command.is_some() { "a command" } else { "a shell" };
+        audit!(
+            "{} signed in over SSH from {from} with key {fingerprint}: {what} on {tty}, session \
+             process {process}",
+            user.name
+        );
+        if !theirs.is_empty()
+            && let Err(why) = notices.without(&user.name).write()
+        {
+            eprintln!("authd: {why}");
+        }
+        let recorded = terminal.is_some();
+        if recorded {
+            let seat = Seat {
+                name: user.name.clone(),
+                terminal: tty.clone(),
+                from: shown(from),
+                session: process as u32,
+            };
+            record(&signins::of(user.uid), user.gid, 0o640, Event::In(seat));
+        }
+        let session = Session {
+            name: user.name.clone(),
+            terminal: tty,
+            from: shown(from),
+            number: user.uid,
+            group: user.gid,
+            elevated: false,
+            remote: true,
+            recorded,
+        };
+        self.sessions.insert(process, session);
+        self.clients[i].session = Some(process);
+        Answer::Done(process.to_string())
     }
 
     /// Starts an NFS worker for nfsd (ADR 0343): as the person numbered
@@ -1967,6 +2129,76 @@ fn person<'a>(files: &'a Files, name: &str, peer: Peer, what: &str) -> Result<&'
 }
 
 /// Enables `name`'s account again, with the password it had.
+/// An SSH session's request, as sshd sent it (ADR 0347).
+struct SshAsked<'a> {
+    connection: &'a str,
+    name: &'a str,
+    signed: &'a [u8],
+    signature: &'a [u8],
+    term: &'a str,
+    command: Option<&'a [u8]>,
+    language: &'a [String],
+}
+
+/// The most SSH sessions at once, so that they leave authd room for the
+/// consoles' sign-ins and elevate.
+const SSH_SESSIONS_MAX: usize = CLIENTS_MAX / 2;
+
+/// The terminal an SSH session without one is recorded on.
+const SSH_TERMINAL: &str = "ssh";
+
+/// The client's address in `connection`, SSH_CONNECTION's four words:
+/// its address and port, then this machine's.
+fn ssh_from(connection: &str) -> Option<&str> {
+    let words: Vec<&str> = connection.split(' ').collect();
+    let fine = |word: &&str| {
+        !word.is_empty() && word.len() <= 64 && word.bytes().all(|b| b.is_ascii_graphic())
+    };
+    (words.len() == 4 && words.iter().all(fine)).then_some(words[0])
+}
+
+/// The person `name`, if `key` may sign them in over SSH (ADR 0347):
+/// theirs is a person's account, not disabled, the key is of a kind
+/// authd checks, and their `~/.ssh/authorized_keys` names it.
+fn ssh_person<'a>(files: &'a Files, name: &str, key: &[u8]) -> Result<&'a User, String> {
+    let Some(user) = files.user(name).filter(|u| u.is_person()) else {
+        return Err(format!("there is no person's account {}", shown(name)));
+    };
+    if files.disabled(name) {
+        return Err(format!("the account {name} is disabled"));
+    }
+    let kind = sshkeys::algorithm_of(key).unwrap_or_default();
+    if !sshkeys::ALGORITHMS.contains(&kind) {
+        return Err(format!("authd does not check {} keys", shown(kind)));
+    }
+    let Some(text) = sshkeys::read_authorized(user)? else {
+        return Err(format!("{name} has no ~/.ssh/authorized_keys"));
+    };
+    let skipped = |line: usize| {
+        eprintln!(
+            "authd: line {line} of {name}'s ~/.ssh/authorized_keys has options, which authd does \
+             not carry out yet: its key does not sign in"
+        );
+    };
+    if !sshkeys::names(&text, key, skipped) {
+        return Err(format!("{name}'s authorized keys do not name it"));
+    }
+    Ok(user)
+}
+
+/// Whether `key` may sign `name` in over SSH, for sshd, before the client
+/// signs with it: sshd's, which runs as root, to ask.
+fn ssh_key(files: &Files, name: &str, key: &[u8], peer: Peer) -> Answer {
+    if !peer.is_root() {
+        let why = "only sshd, which runs as root, asks which keys sign in over SSH";
+        return Answer::Refused(why.into());
+    }
+    match ssh_person(files, name, key) {
+        Ok(_) => Answer::Done(String::new()),
+        Err(why) => Answer::Refused(why),
+    }
+}
+
 fn enable(files: &Files, name: &str, peer: Peer) -> Answer {
     if let Err(why) = person(files, name, peer, "enables accounts") {
         return Answer::Refused(why);

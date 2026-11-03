@@ -11,7 +11,7 @@ login - sign in at a console
 
 *login*
 
-*login --session*
+*login --session* [*--command* _command_]
 
 # DESCRIPTION
 
@@ -128,10 +128,21 @@ environment authd gives it is *HOME*, *SHELL*, *USER* and *LOGNAME* from
 the account, *PATH=/system/commands*, *TERM* from the console,
 *LANG=C.UTF-8* and *EDITOR=nano*.
 
+A session that signed in over SSH (*sshd*(8), ADR 0347) runs the same
+way, on the terminal sshd made for it, or on three pipes when the client
+asked for none; then there is no controlling terminal to take. With
+*--command*, it runs the command the client asked for with the shell's
+*-c*, the shell named without the *-*, so that it reads no login files,
+as Linux's sshd runs one.
+
 # OPTIONS
 
 *--session*
 	Run as a session's first process, as above. authd passes it.
+
+*--command* _command_
+	In a session, run _command_ with *SHELL -c* instead of a login
+	shell. authd passes it for an SSH client's command.
 
 # EXIT STATUS
 
@@ -140,5 +151,5 @@ authd could not be reached in 30 seconds, saying so.
 
 # SEE ALSO
 
-*authd*(8), *consoled*(8), *user*(8), *passwd*(1), *who*(1), *last*(1),
+*authd*(8), *consoled*(8), *sshd*(8), *user*(8), *passwd*(1), *who*(1), *last*(1),
 *lastlog*(8), *nukesh*(1), *dukovo-boot*(7), *systools*(1)

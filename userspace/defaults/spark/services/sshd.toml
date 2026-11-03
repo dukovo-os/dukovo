@@ -1,0 +1,39 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+#
+# Signing in over SSH: sshd(8) lets people sign in to this computer from
+# another with a key their ~/.ssh/authorized_keys lists (ADR 0347). It
+# makes the computer's own key, which clients remember it by, the first
+# time it starts. authd(8) checks each key's signature and starts the
+# person's session as them; sshd itself only passes the bytes.
+#
+# It is off until `service sshd enable` turns it on, which sets
+# `enabled = true` below and starts it; `service sshd disable` stops it
+# and turns it off again (service(8)). Port 22 is open only while it
+# runs. Stopping it ends the connections it serves.
+#
+# service.toml(5) explains each setting. `service check sshd` checks
+# this file, and `service edit sshd` checks it as you save.
+
+service_version = 1
+description = "Sign-in over SSH"
+program = "/system/commands/sshd"
+# `service sshd enable` and `service sshd disable` set this.
+enabled = false
+# After the network and authd, with the services people add.
+order = 40
+# Started again whenever it ends: always, on-failure or never.
+restart = "always"
+
+[limits]
+# A process for each connection, 100 at most; each person's session
+# runs in authd's domain, as them.
+memory = "256M"
+
+# What it holds beyond what every service reads (service.toml(5)): port
+# 22, authd's socket, through which it signs people in, the folder that
+# keeps the computer's key, and the terminals it makes for sessions.
+[permissions]
+network.listen = [22]
+files.read = ["/system/live/authd"]
+files.read-write = ["/system/state/sshd", "/devices/ptmx", "/devices/pts"]

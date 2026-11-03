@@ -1,0 +1,7 @@
+<!--
+SPDX-FileCopyrightText: 2026 The Dukovo contributors
+SPDX-License-Identifier: Apache-2.0 OR MIT
+-->
+
+Section: In every image
+| [russh](https://github.com/warp-tech/russh) 0.65.0 by Pierre-Étienne Meunier and the russh contributors, patched for Radix, with its russh-cryptovec, also patched, and russh-util, on [ring](https://github.com/briansmith/ring) and tokio as the rows above name them, with the [RustCrypto](https://github.com/RustCrypto) project's ssh-key, ssh-encoding, ssh-cipher, ml-kem, p256, p384, ecdsa, chacha20, poly1305, sha3 and the crates they use, [curve25519-dalek and ed25519-dalek](https://github.com/dalek-cryptography/curve25519-dalek) by the dalek-cryptography contributors, [fiat-crypto](https://github.com/mit-plv/fiat-crypto) by its authors, [data-encoding](https://github.com/ia0/data-encoding), [num-bigint](https://github.com/rust-num/num-bigint) and [futures](https://github.com/rust-lang/futures-rs), from crates.io | sshd(8)'s SSH 2: the key exchange, ciphers and the host's Ed25519 key, with signing in by key checked again by authd(8) ([ADR 0347](docs/adr/0347-signing-in-over-ssh-with-keys.md)); every one, with its version and license, is in the image's license manifest | Apache-2.0 (russh, russh-cryptovec, russh-util); MIT OR Apache-2.0 (the RustCrypto crates, num-bigint, futures); BSD-3-Clause (curve25519-dalek, ed25519-dalek); MIT OR Apache-2.0 OR BSD-1-Clause (fiat-crypto); MIT (data-encoding) |

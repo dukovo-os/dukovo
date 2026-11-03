@@ -1,0 +1,146 @@
+SPDX-FileCopyrightText: Pierre-Étienne Meunier and the russh contributors
+SPDX-FileCopyrightText: 2026 The Dukovo contributors
+SPDX-License-Identifier: Apache-2.0
+
+Two changes for Dukovo's sshd(8) (ADR 0347).
+
+russh hands a server's handler what a client signed to sign in with a
+public key (RFC 4252 section 7), and the signature, beside the key it
+verified: sshd passes both to authd(8), which checks the signature
+again itself before it starts a session as the person, so that sshd's
+word alone never makes anyone a person. The fields are new, and
+VerifiedPublicKey is non-exhaustive.
+
+A handler may also give a client room to send on a channel itself, as
+it consumes what came (RFC 4254 section 5.2), as OpenSSH's sshd does,
+rather than russh as the data comes: otherwise a client can send
+faster than a session reads, and the connection must hold all of it or
+stop, and stopping holds up the session's output too. Handlers that do
+not ask for it (adjusts_window) see no change.
+
+diff --git a/russh-0.65.0/src/server/encrypted.rs b/russh-0.65.0/src/server/encrypted.rs
+--- a/russh-0.65.0/src/server/encrypted.rs
++++ b/russh-0.65.0/src/server/encrypted.rs
+@@ -1216,11 +1216,18 @@
+                             Ok(Verifier::verify(&pubkey, &buf, &sig).is_ok())
+                         })? {
+                             debug!("signature verified");
++                            // What was signed, which the handler may
++                            // check again (Dukovo).
++                            let mut signed = Vec::new();
++                            map_err!(session_id.encode(&mut signed))?;
++                            signed.extend_from_slice(sig_init_buffer);
+                             let auth = match pk_or_cert {
+                                 PublicKeyOrCertificate::PublicKey { ref key, .. } => {
+                                     let key = VerifiedPublicKey {
+                                         public_key: key,
+                                         algorithm: &algorithm,
++                                        signed: &signed,
++                                        signature: &encoded_signature,
+                                     };
+                                     handler.auth_publickey(user, key).await?
+                                 }
+@@ -1487,7 +1494,13 @@
+                 trace!("handler.data {ext:?} {channel_num:?}");
+                 let data = map_err!(Bytes::decode(r))?;
+                 map_err!(ensure_end(r))?;
+-                let target = self.target_window_size;
++                // A handler that gives room back itself (Dukovo): the
++                // window only shrinks here.
++                let target = if handler.adjusts_window() {
++                    0
++                } else {
++                    self.target_window_size
++                };
+ 
+                 #[allow(clippy::collapsible_if)]
+                 if let Some(ref mut enc) = self.common.encrypted {
+diff --git a/russh-0.65.0/src/server/mod.rs b/russh-0.65.0/src/server/mod.rs
+--- a/russh-0.65.0/src/server/mod.rs
++++ b/russh-0.65.0/src/server/mod.rs
+@@ -239,6 +239,13 @@
+     /// algorithm named in the request (`ssh-rsa`, `rsa-sha2-256`,
+     /// `ssh-ed25519`, ...).
+     pub algorithm: &'a ssh_key::Algorithm,
++    /// What the client signed (RFC 4252 §7): the session identifier, as
++    /// a string, then the request up to its signature, as it came. For
++    /// Dukovo, whose authd(8) checks the signature again itself.
++    pub signed: &'a [u8],
++    /// The signature, as the request carried it: a string of its
++    /// algorithm's name and a string of its bytes. For Dukovo too.
++    pub signature: &'a [u8],
+ }
+ 
+ /// Server handler. Each client will have their own handler.
+@@ -543,6 +550,16 @@
+         current
+     }
+ 
++    /// Whether the handler gives the client more room to send on its
++    /// channels itself, with [`Handle::window_adjust`], as it consumes
++    /// what came, rather than russh as the data comes (RFC 4254 5.2).
++    /// For Dukovo, whose sshd(8) lets a client send only what a session
++    /// has room for, as OpenSSH's does, so that a session slow to read
++    /// never holds the connection up.
++    fn adjusts_window(&self) -> bool {
++        false
++    }
++
+     /// The client requests a pseudo-terminal with the given
+     /// specifications.
+     ///
+diff --git a/russh-0.65.0/src/server/session.rs b/russh-0.65.0/src/server/session.rs
+--- a/russh-0.65.0/src/server/session.rs
++++ b/russh-0.65.0/src/server/session.rs
+@@ -84,6 +84,11 @@
+         language_tag: String,
+     },
+     Channel(ChannelId, ChannelMsg),
++    /// More room for the client to send on a channel (Dukovo).
++    WindowAdjust {
++        id: ChannelId,
++        bytes: u32,
++    },
+     ChannelOpenReply {
+         pending: PendingChannelOpen,
+         result: Result<(), ChannelOpenFailure>,
+@@ -149,6 +154,16 @@
+             })
+     }
+ 
++    /// Gives the client `bytes` more room to send on channel `id`, for a
++    /// handler that [adjusts the window](super::Handler::adjusts_window)
++    /// itself, once it has consumed them. For Dukovo.
++    pub async fn window_adjust(&self, id: ChannelId, bytes: u32) -> Result<(), ()> {
++        self.sender
++            .send(Msg::WindowAdjust { id, bytes })
++            .await
++            .map_err(|_| ())
++    }
++
+     /// Send EOF to the session referenced by this handler.
+     pub async fn eof(&self, id: ChannelId) -> Result<(), ()> {
+         self.sender
+@@ -617,6 +632,22 @@
+                 self.common
+                     .disconnect(reason, &description, &language_tag)?;
+             }
++            Msg::WindowAdjust { id, bytes } => {
++                if let Some(ref mut enc) = self.common.encrypted
++                    && let Some(channel) = enc.channels.get_mut(&id)
++                {
++                    // A window is at most 2^32 - 1 bytes (RFC 4254 5.2).
++                    let bytes = bytes.min(u32::MAX - channel.sender_window_size);
++                    if bytes > 0 {
++                        channel.sender_window_size += bytes;
++                        push_packet!(enc.write, {
++                            enc.write.push(msg::CHANNEL_WINDOW_ADJUST);
++                            channel.recipient_channel.encode(&mut enc.write)?;
++                            bytes.encode(&mut enc.write)?;
++                        });
++                    }
++                }
++            }
+             Msg::ChannelOpenReply { pending, result } => {
+                 self.finalize_channel_open_reply(pending, result)?;
+             }

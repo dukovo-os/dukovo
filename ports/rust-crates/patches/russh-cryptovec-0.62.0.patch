@@ -1,0 +1,37 @@
+SPDX-FileCopyrightText: Pierre-Étienne Meunier and the russh contributors
+SPDX-FileCopyrightText: 2026 The Dukovo contributors
+SPDX-License-Identifier: Apache-2.0
+
+CryptoVec locks no memory on Radix, as on wasm: Radix has no mlock(2)
+yet, and mlibc logs each call of a system call it lacks, which CryptoVec
+makes for each buffer it grows, about a hundred lines for each SSH
+connection sshd(8) serves. What CryptoVec holds may then be swapped out,
+as OpenSSH's sshd, which locks nothing, leaves its keys. Drop this once
+Radix locks memory.
+
+diff --git a/russh-cryptovec-0.62.0/src/platform/mod.rs b/russh-cryptovec-0.62.0/src/platform/mod.rs
+--- a/russh-cryptovec-0.62.0/src/platform/mod.rs
++++ b/russh-cryptovec-0.62.0/src/platform/mod.rs
+@@ -2,17 +2,18 @@
+ mod windows;
+ 
+ #[cfg(not(windows))]
+-#[cfg(not(target_arch = "wasm32"))]
++#[cfg(not(any(target_arch = "wasm32", target_os = "radix")))]
+ mod unix;
+ 
+-#[cfg(target_arch = "wasm32")]
++// Radix has no mlock(2) yet (Dukovo).
++#[cfg(any(target_arch = "wasm32", target_os = "radix"))]
+ mod wasm;
+ 
+ // Re-export functions based on the platform
+ #[cfg(not(windows))]
+-#[cfg(not(target_arch = "wasm32"))]
++#[cfg(not(any(target_arch = "wasm32", target_os = "radix")))]
+ pub use unix::{mlock, munlock};
+-#[cfg(target_arch = "wasm32")]
++#[cfg(any(target_arch = "wasm32", target_os = "radix"))]
+ pub use wasm::{mlock, munlock};
+ #[cfg(windows)]
+ pub use windows::{mlock, munlock};

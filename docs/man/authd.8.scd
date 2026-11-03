@@ -222,6 +222,36 @@ closes the connection, but for a session (below):
 	answers *ok* and the name it serves as, and notes the start in the
 	audit log. Only root may, as nfsd runs.
 
+*ssh-key* _name_ _key_
+	Whether the key _key_, in hexadecimal as SSH sends a public key,
+	may sign _name_ in over SSH (*sshd*(8), ADR 0347): their account is
+	a person's and not disabled, the key is of a kind authd checks
+	(*ssh-ed25519*, *ecdsa-sha2-nistp256* or *ecdsa-sha2-nistp384*),
+	and their _~/.ssh/authorized_keys_ names it, read as sshd(8) says.
+	*ok* if it may. sshd asks before a client signs with the key; only
+	root may.
+
+*ssh-session* _connection_ _name_ _signed_ _signature_ _term_ *shell*|*command* _command_ [_language_...]
+	Starts the session of someone who signed in over SSH. _signed_ is
+	what their client signed and _signature_ its signature, in
+	hexadecimal (RFC 4252 section 7): authd checks the signature
+	against the key the signed request names, that the request names
+	_name_, and that the key may sign them in, as for *ssh-key*. Then
+	it starts _name_'s session (SESSIONS): their shell, or with
+	*command*, *login --session --command* _command_ (*login*(1)). The
+	request comes with the session's terminal, of the type _term_, or
+	with three descriptors, the session's standard input, output and
+	error. _connection_ is the four words of *SSH_CONNECTION*: the
+	client's address and port, then this computer's. The session gets
+	*SSH_CLIENT*, *SSH_CONNECTION*, on a terminal *SSH_TTY* and *TERM*,
+	and each _language_ that is a *LANG*, *LANGUAGE* or *LC_\** setting.
+	authd answers *ok* and the session's first process, and later
+	*ended* _status_ on the same connection when that process ends, as
+	for *session*. A refusal of a signature or a key is noted in the
+	audit log, and so is each session started, with the key's
+	fingerprint. Only root may, as sshd runs; at most 32 SSH sessions
+	run at once.
+
 authd knows who asks by the connection: the kernel gives it the process
 at the other end, and the user and group it acted for when it connected
 (*SO_PEERCRED*, *radix-posix*(7)). An administrator is root inside
@@ -366,7 +396,9 @@ none:
   typed.
 
 A share session (SESSIONS) is recorded on the terminal *smb*, from the
-PC's address, and a wrong sharing password as *failed* there.
+PC's address, and a wrong sharing password as *failed* there. An SSH
+session on a terminal is recorded on it, from the client's address; one
+without a terminal is not, as on Linux.
 
 The starts and stops are in _system_, which everyone reads. Each
 account's sign-ins, sign-outs and wrong passwords are in a file named
@@ -533,7 +565,7 @@ exits with 1 if it cannot start.
 
 # SEE ALSO
 
-*login*(1), *elevate*(8), *sudo*(8), *user*(8), *passwd*(1), *id*(1), *last*(1),
+*login*(1), *sshd*(8), *elevate*(8), *sudo*(8), *user*(8), *passwd*(1), *id*(1), *last*(1),
 *lastlog*(8), *consoled*(8), *service*(8),
 *service.toml*(5), *spark*(8), *logd*(8), *radix-names*(2), *radix-posix*(7),
 *systools*(1)

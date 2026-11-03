@@ -125,6 +125,7 @@ mod share;
 mod signals;
 mod signin;
 mod ss;
+mod sshkeys;
 mod subvolume;
 mod swap;
 mod sys;

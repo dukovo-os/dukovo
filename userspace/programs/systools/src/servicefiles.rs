@@ -1,9 +1,9 @@
 // SPDX-FileCopyrightText: 2026 The Dukovo contributors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! `service check`, `service new` and `service edit` (service(8)): the
-//! service files Spark reads (service.toml(5), ADR 0216), checked with the
-//! same reader Spark uses.
+//! `service check`, `service new`, `service edit`, and `service NAME
+//! enable` and `disable` (service(8)): the service files Spark reads
+//! (service.toml(5), ADR 0216), checked with the same reader Spark uses.
 //!
 //! `service edit` works as visudo(8) does: it copies the file, opens the
 //! copy in the editor, checks it, and puts it in place only if it reads;
@@ -17,11 +17,14 @@ use std::process::Command;
 
 use manifest::service;
 
-use crate::prompt;
 use crate::util::{self, Fail, fail, usage};
+use crate::{power, prompt};
 
 /// Where Spark reads the service files.
 pub const DIR: &str = "/system/settings/spark/services";
+
+/// Where the system's own service files are kept, as Spark copies them.
+const DEFAULTS: &str = "/system/resources/default-settings/spark/services";
 
 /// The editor `service edit` runs when neither VISUAL nor EDITOR names
 /// one.
@@ -306,4 +309,131 @@ fn read_secret(name: &str, secret: &str) -> Result<Vec<u8>, Fail> {
         return Err(fail(format!("{name}'s secret {secret} cannot be empty")));
     }
     Ok(value)
+}
+
+/// The path of service `name`'s file.
+fn path(name: &str) -> String {
+    format!("{DIR}/{name}.toml")
+}
+
+/// Service `name`'s file, from the system's own if it is not there.
+pub fn text(name: &str) -> Result<String, Fail> {
+    let path = path(name);
+    match fs::read_to_string(&path) {
+        Ok(text) => Ok(text),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {
+            let default = format!("{DEFAULTS}/{name}.toml");
+            fs::read_to_string(&default).map_err(|e| match e.kind() {
+                io::ErrorKind::NotFound => fail(format!("{name}: unrecognized service")),
+                _ => util::failed(&default, e),
+            })
+        }
+        Err(e) => Err(util::failed(&path, e)),
+    }
+}
+
+/// `text`, a service file, with its `enabled` line saying `on`, or one
+/// added after its `program` line.
+fn with_enabled(text: &str, on: bool) -> String {
+    let line = format!("enabled = {on}");
+    let mut lines: Vec<String> = text.lines().map(String::from).collect();
+    // The top-level keys: those before the first table.
+    let top = lines.iter().position(|l| l.trim_start().starts_with('[')).unwrap_or(lines.len());
+    let key_of = |l: &str| l.split_once('=').map(|(key, _)| key.trim().to_string());
+    if let Some(at) = lines[..top].iter().position(|l| key_of(l).as_deref() == Some("enabled")) {
+        lines[at] = line;
+    } else {
+        let at = lines[..top]
+            .iter()
+            .position(|l| key_of(l).as_deref() == Some("program"))
+            .map_or(0, |at| at + 1);
+        lines.insert(at, line);
+    }
+    let mut text = lines.join("\n");
+    text.push('\n');
+    text
+}
+
+/// Turns service `name` on or off: its file says whether it starts at
+/// boot, and Spark starts or stops it now. The file changes only if it
+/// still reads.
+pub fn turn(name: &str, on: bool) -> Result<(), Fail> {
+    let path = path(name);
+    let text = with_enabled(&text(name)?, on);
+    service::from_toml(&text).map_err(|e| fail(format!("{path}: {e}")))?;
+    let new = format!("{DIR}/.{name}.toml.new");
+    let _ = fs::remove_file(&new);
+    let written = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o644)
+        .open(&new)
+        .and_then(|mut file| file.write_all(text.as_bytes()).and_then(|()| file.sync_all()))
+        .and_then(|()| fs::rename(&new, &path));
+    if let Err(e) = written {
+        let _ = fs::remove_file(&new);
+        return Err(util::failed(&path, e));
+    }
+    let verb = if on { "start" } else { "stop" };
+    let answer = power::request(&format!("{verb} {name}"))?;
+    if let Some(why) = answer.strip_prefix("error: ") {
+        return Err(fail(format!("cannot {verb} {name}: {}", why.trim_end())));
+    }
+    Ok(())
+}
+
+/// `service NAME enable` and `service NAME disable`: the service starts
+/// now and at each boot, or stops now and no longer starts at boot, as
+/// `systemctl enable --now` and `disable --now` do.
+pub fn enable(name: &str, on: bool) -> Result<i32, Fail> {
+    let verb = if on { "enable" } else { "disable" };
+    if !name_ok(name) {
+        return Err(usage(format!("service {verb} takes a service's name, not {name}")));
+    }
+    if util::own_user() != 0 {
+        return Err(fail(format!(
+            "only root may {verb} a service: elevate first, as `sudo service {name} {verb}`"
+        )));
+    }
+    turn(name, on)?;
+    if on {
+        println!("{name} is running, and starts at each boot.");
+    } else {
+        println!("{name} is stopped, and no longer starts at boot.");
+    }
+    Ok(0)
+}
+
+/// Whether `name` names a service file in [`DIR`], not a path.
+fn name_ok(name: &str) -> bool {
+    !name.is_empty()
+        && !name.starts_with('.')
+        && name.bytes().all(|b| b.is_ascii_alphanumeric() || b"-_.@".contains(&b))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn enabled_is_set_in_place_or_after_program() {
+        let file = "# smbd\nservice_version = 1\nprogram = \"/system/commands/smbd\"\nenabled = false\n\n[permissions]\nenabled = 1\n";
+        let on = with_enabled(file, true);
+        assert!(on.contains("\nenabled = true\n\n[permissions]\nenabled = 1\n"), "{on}");
+        assert_eq!(with_enabled(&on, false), file);
+        let without = "service_version = 1\nprogram = \"/x\"\norder = 40\n";
+        assert_eq!(
+            with_enabled(without, true),
+            "service_version = 1\nprogram = \"/x\"\nenabled = true\norder = 40\n"
+        );
+    }
+
+    #[test]
+    fn only_a_services_name_is_enabled() {
+        assert!(name_ok("sshd"));
+        assert!(name_ok("my-app_2"));
+        for bad in ["", "../etc/passwd", "a/b", ".hidden", "a b"] {
+            assert!(!name_ok(bad), "{bad}");
+        }
+    }
 }

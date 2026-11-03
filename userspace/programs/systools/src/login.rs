@@ -13,7 +13,9 @@
 //! In a session, authd runs `login --session` first, as the person: it
 //! makes the terminal the session's controlling terminal, goes to their
 //! home and runs their shell as a login shell, as login(1) does on Linux
-//! after its checks.
+//! after its checks. An SSH session (ADR 0347) may run on pipes rather
+//! than a terminal, and with `--command` runs that command with the
+//! shell's `-c`, as Linux's sshd runs one, instead of a login shell.
 //!
 //! A computer started from its boot menu's startup-trouble entry, with
 //! the kernel flag `startup-trouble`, shows the startup-trouble menu
@@ -21,9 +23,10 @@
 //! through authd, which tells every administrator at their next sign-in,
 //! or restarts or powers off the computer.
 
-use std::ffi::CString;
+use std::ffi::{CString, OsString};
 use std::io::{self, BufRead, BufReader, Write};
 use std::net::Shutdown;
+use std::os::unix::ffi::OsStringExt;
 use std::os::unix::net::UnixStream;
 use std::time::{Duration, Instant};
 
@@ -317,16 +320,17 @@ fn console() -> Result<i32, Fail> {
     }
 }
 
-/// The first program of a session, as its user: the terminal becomes the
-/// session's, then the shell runs as a login shell in the home.
-fn session() -> Result<i32, Fail> {
+/// The first program of a session, as its user: the terminal, if it
+/// has one, becomes the session's, then the shell runs as a login shell
+/// in the home, or runs `command` if there is one.
+fn session(command: Option<OsString>) -> Result<i32, Fail> {
     // SAFETY: setsid and the terminal request change only this process's
     // session; authd made it in its own process group, so setsid works.
     unsafe {
         if libc::setsid() < 0 {
             return Err(util::failed(&"setsid", io::Error::last_os_error()));
         }
-        if libc::ioctl(0, libc::TIOCSCTTY, 0) < 0 {
+        if libc::isatty(0) == 1 && libc::ioctl(0, libc::TIOCSCTTY, 0) < 0 {
             return Err(util::failed(&"the terminal", io::Error::last_os_error()));
         }
     }
@@ -339,11 +343,23 @@ fn session() -> Result<i32, Fail> {
     }
     let shell = std::env::var("SHELL").ok().filter(|s| !s.is_empty());
     let shell = shell.unwrap_or_else(|| accounts::SHELL.into());
-    // A login shell's name starts with a dash (sh(1)).
-    let name = format!("-{}", shell.rsplit('/').next().unwrap_or("sh"));
-    let path = CString::new(shell.clone()).map_err(|_| fail("a shell path with a NUL".into()))?;
-    let arg = CString::new(name).map_err(|_| fail("a shell path with a NUL".into()))?;
-    let argv = [arg.as_ptr(), std::ptr::null()];
+    let base = shell.rsplit('/').next().unwrap_or("sh");
+    let nul = || fail("a shell path or command with a NUL".into());
+    let path = CString::new(shell.clone()).map_err(|_| nul())?;
+    let mut args = Vec::new();
+    match command {
+        // A command runs with the shell's -c, the shell named as it is,
+        // so that it reads no login files, as with Linux's sshd.
+        Some(command) => {
+            args.push(CString::new(base).map_err(|_| nul())?);
+            args.push(c"-c".to_owned());
+            args.push(CString::new(command.into_vec()).map_err(|_| nul())?);
+        }
+        // A login shell's name starts with a dash (sh(1)).
+        None => args.push(CString::new(format!("-{base}")).map_err(|_| nul())?),
+    }
+    let mut argv: Vec<*const libc::c_char> = args.iter().map(|a| a.as_ptr()).collect();
+    argv.push(std::ptr::null());
     // SAFETY: execv takes NUL-terminated strings and a null-ended list,
     // which live until it returns, if it does.
     unsafe { libc::execv(path.as_ptr(), argv.as_ptr()) };
@@ -353,12 +369,17 @@ fn session() -> Result<i32, Fail> {
 /// login(1).
 pub fn main(args: &mut Args) -> Result<i32, Fail> {
     let mut in_session = false;
+    let mut command = None;
     while let Some(arg) = args.next()? {
         match arg {
             Arg::Long(name) if name == "session" => in_session = true,
+            Arg::Long(name) if name == "command" => command = Some(args.value()?),
             other => return Err(args.unknown(&other)),
         }
     }
+    if command.is_some() && !in_session {
+        return Err(fail("--command runs only in a session (--session)".into()));
+    }
     let _ = io::stdout().flush();
-    if in_session { session() } else { console() }
+    if in_session { session(command) } else { console() }
 }

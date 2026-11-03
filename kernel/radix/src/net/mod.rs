@@ -1402,11 +1402,17 @@ fn start_card(function: &Function, card: Known, index: usize) -> Result<(), Fail
     };
     let regs = map_registers(function, first)?;
     // VMXNET3's commands are in a second BAR, gVNIC's doorbells in its
-    // third, and the APE of Broadcom's chips that have one too.
+    // third, and the APE of Broadcom's chips that have one too; the
+    // 82579's flash registers in its second.
     let more = match card {
         Known::Vmxnet3 => Some(map_registers(function, 1)?),
         Known::Gve => Some(map_registers(function, 2)?),
         Known::Broadcom(model) if model.ape() => Some(map_registers(function, 2)?),
+        Known::Intel(radix_intel_net::Model { kind: radix_intel_net::Kind::Pch(mac), .. })
+            if mac.flash_bar() =>
+        {
+            Some(map_registers(function, 1)?)
+        }
         Known::Broadcom(_) => None,
         Known::Intel(_) | Known::Ena | Known::Realtek(_) | Known::Atheros(_) | Known::Rge(_) => {
             None
@@ -1436,6 +1442,22 @@ fn start_card(function: &Function, card: Known, index: usize) -> Result<(), Fail
         None => radix_nic::Interrupt::Polled,
     };
     let started = match card {
+        // The Ethernet in Intel's chipsets reads its configuration space
+        // and keeps time while it runs.
+        Known::Intel(model) if matches!(model.kind, radix_intel_net::Kind::Pch(_)) => {
+            let platform =
+                radix_intel_net::pch::Platform { function, flash: more, clock: sched::now_ns };
+            radix_intel_net::pch::start(
+                model,
+                regs,
+                platform,
+                how,
+                fallback_mac(),
+                &mut alloc,
+                &mut delay,
+            )
+            .and_then(|nic| boxed(nic).ok_or(radix_nic::Error::NoMemory))
+        }
         Known::Intel(model) => {
             radix_intel_net::start(model, regs, how, fallback_mac(), &mut alloc, &mut delay)
                 .and_then(|nic| boxed(nic).ok_or(radix_nic::Error::NoMemory))

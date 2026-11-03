@@ -353,6 +353,82 @@ pub fn start(
     launch(names, user, groups, &program)
 }
 
+/// What an SSH session runs on: the terminal sshd made for it, or three
+/// pipes for its standard input, output and error.
+pub enum SshIo<'a> {
+    /// A terminal, as the session's 0, 1 and 2.
+    Terminal(&'a OwnedFd),
+    /// The session's 0, 1 and 2.
+    Pipes([&'a OwnedFd; 3]),
+}
+
+/// The environment an SSH session starts with (ADR 0347): a console
+/// session's, but with `TERM` only on a terminal, the client's
+/// `language` settings over `LANG`, and what Linux's sshd adds:
+/// `SSH_CLIENT`, `SSH_CONNECTION`, and `SSH_TTY` on a terminal.
+/// `connection` is the client's address and port, then this machine's.
+pub fn ssh_environment(
+    user: &User,
+    term: Option<&str>,
+    tty: Option<&str>,
+    connection: &str,
+    language: &[String],
+) -> Vec<String> {
+    let mut env: Vec<String> = environment(user, term.unwrap_or(""))
+        .into_iter()
+        .filter(|v| term.is_some() || !v.starts_with("TERM="))
+        .filter(|v| !(v.starts_with("LANG=") && language.iter().any(|l| l.starts_with("LANG="))))
+        .collect();
+    env.extend(language.iter().cloned());
+    let words: Vec<&str> = connection.split(' ').collect();
+    if let [address, port, _, local_port] = words[..] {
+        env.push(format!("SSH_CLIENT={address} {port} {local_port}"));
+    }
+    env.push(format!("SSH_CONNECTION={connection}"));
+    if let Some(tty) = tty {
+        env.push(format!("SSH_TTY={tty}"));
+    }
+    env
+}
+
+/// Starts `user`'s session over SSH (ADR 0347), acting for them and the
+/// groups `groups`, with the names capability in `names`: `login
+/// --session`, with `command` if the client asked for one, on `io`, in
+/// the environment `env`. Returns the number of its first process, a
+/// child of authd's.
+pub fn start_ssh(
+    names: u32,
+    user: &User,
+    groups: &[u32],
+    io: &SshIo,
+    env: Vec<String>,
+    command: Option<&[u8]>,
+) -> Result<u64, String> {
+    let descriptors = match io {
+        SshIo::Terminal(tty) => {
+            let tty = tty.as_raw_fd();
+            [(tty, 0), (tty, 1), (tty, 2)]
+        }
+        SshIo::Pipes([input, output, error]) => {
+            [(input.as_raw_fd(), 0), (output.as_raw_fd(), 1), (error.as_raw_fd(), 2)]
+        }
+    };
+    let mut args: Vec<&[u8]> = vec![b"login", b"--session"];
+    if let Some(command) = command {
+        args.extend([b"--command".as_slice(), command]);
+    }
+    let program = Program {
+        what: "the SSH session",
+        path: FIRST_PROGRAM,
+        args: &args,
+        env,
+        descriptors: &descriptors,
+        network: true,
+        shares: None,
+    };
+    launch(names, user, groups, &program)
+}
+
 /// smbd(8)'s worker, which serves a Windows PC's share session as the
 /// person who signed in (ADR 0228).
 pub const SHARE_PROGRAM: &str = "/system/commands/smbd";
@@ -627,6 +703,30 @@ mod tests {
         }
         assert!(environment(&alice(), "x\ny").iter().any(|e| e == "TERM=dumb"));
         assert!(environment(&alice(), "").iter().any(|e| e == "TERM=dumb"));
+    }
+
+    #[test]
+    fn an_ssh_session_says_where_it_came_from() {
+        let connection = "192.0.2.7 51234 192.0.2.1 22";
+        let language = ["LANG=de_DE.UTF-8".to_string(), "LC_TIME=en_GB.UTF-8".to_string()];
+        let env =
+            ssh_environment(&alice(), Some("xterm"), Some("/devices/pts/3"), connection, &language);
+        for set in [
+            "TERM=xterm",
+            "LANG=de_DE.UTF-8",
+            "LC_TIME=en_GB.UTF-8",
+            "SSH_CLIENT=192.0.2.7 51234 22",
+            "SSH_CONNECTION=192.0.2.7 51234 192.0.2.1 22",
+            "SSH_TTY=/devices/pts/3",
+            "HOME=/users/alice",
+        ] {
+            assert!(env.iter().any(|e| e == set), "{set}: {env:?}");
+        }
+        assert_eq!(env.iter().filter(|e| e.starts_with("LANG=")).count(), 1);
+        // Without a terminal: no TERM or SSH_TTY, and the system's LANG.
+        let env = ssh_environment(&alice(), None, None, connection, &[]);
+        assert!(!env.iter().any(|e| e.starts_with("TERM=") || e.starts_with("SSH_TTY=")));
+        assert!(env.iter().any(|e| e == "LANG=C.UTF-8"));
     }
 
     #[test]
