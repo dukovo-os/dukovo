@@ -257,10 +257,13 @@ closes the connection, but for a session (below):
 	_name_'s session (SESSIONS): with the _kind_ *shell* and no _what_,
 	their shell; with *command*, *login --session --command* _what_
 	(*login*(1)); with *subsystem* and *sftp*, the same with OpenSSH's
-	_/system/libraries/ssh/sftp-server_, for SFTP and *scp*. The
-	request comes with the session's terminal, of the type _term_, or
-	with three descriptors, the session's standard input, output and
-	error. _connection_ is the four words of *SSH_CONNECTION*: the
+	_/system/libraries/ssh/sftp-server_, for SFTP and *scp*; with
+	*forward* and no _what_, the connection's forwarder,
+	*sshd --forward*, with no shell, and the network of a session but
+	nothing else of one's (*sshd*(8), ADR 0349). The request comes
+	with the session's terminal, of the type _term_, or with three
+	descriptors, the session's standard input, output and error, which
+	a forwarder needs. _connection_ is the four words of *SSH_CONNECTION*: the
 	client's address and port, then this computer's. The session gets
 	*SSH_CLIENT*, *SSH_CONNECTION*, on a terminal *SSH_TTY* and *TERM*,
 	and each _language_ that is a *LANG*, *LANGUAGE* or *LC_\** setting.

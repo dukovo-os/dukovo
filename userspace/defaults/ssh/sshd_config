@@ -1,10 +1,11 @@
 # SPDX-FileCopyrightText: 2026 The Dukovo contributors
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 #
-# How people may sign in to this computer over SSH, and who
-# (sshd_config(5), ADR 0348). sshd reads this file as it starts and when
-# `service sshd reload` asks it to; `sshd -t` checks it first. A keyword
-# sshd does not carry out is a mistake that keeps it from starting.
+# How people may sign in to this computer over SSH, and who, and what
+# their clients may forward (sshd_config(5), ADRs 0348 and 0349). sshd
+# reads this file as it starts and when `service sshd reload` asks it
+# to; `sshd -t` checks it first. A keyword sshd does not carry out is a
+# mistake that keeps it from starting.
 #
 # With nothing said, a key in a person's ~/.ssh/authorized_keys signs
 # them in, and nothing else does.
@@ -26,3 +27,18 @@
 #
 #   DenyUsers guest
 #   DenyGroups visitors
+#
+# Clients forward ports both ways with nothing said (ADR 0349); the
+# connections are the person's, made with their session's network. Only
+# from the client to where it names (ssh -L, -D, -W), only from a port
+# here to the client (ssh -R), or neither:
+#
+#   AllowTcpForwarding local
+#   AllowTcpForwarding remote
+#   AllowTcpForwarding no
+#
+# A port forwarded from here listens for this computer's programs alone;
+# on every address, or where the client asks:
+#
+#   GatewayPorts yes
+#   GatewayPorts clientspecified

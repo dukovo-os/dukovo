@@ -34,6 +34,7 @@
 //! ssh-password\0192.0.2.7 51234 192.0.2.1 22\0alice\0secret\0
 //! ssh-session\0192.0.2.7 51234 192.0.2.1 22\0alice\0key\000000020...\0000000b...\0xterm\0shell\0\0LANG=C.UTF-8\0
 //! ssh-session\0192.0.2.7 51234 192.0.2.1 22\0alice\0ticket\09f86d081...\0\0\0subsystem\0sftp\0
+//! ssh-session\0192.0.2.7 51234 192.0.2.1 22\0alice\0key\000000020...\0000000b...\0\0forward\0\0
 //! ssh-ended\09f86d081...\0
 //! ```
 //!
@@ -420,6 +421,10 @@ pub enum SshRun {
     /// The SFTP subsystem, which scp uses too: OpenSSH's sftp-server
     /// (ADR 0348).
     Sftp,
+    /// The connection's forwarder, `sshd --forward`, which makes the
+    /// connections the client forwards and listens on the ports it asks
+    /// for, with the network of the person's session (ADR 0349).
+    Forward,
 }
 
 /// The length of a ticket authd gives for a password over SSH, in bytes.
@@ -677,6 +682,7 @@ impl Request {
                     SshRun::Shell => (b"shell", b""),
                     SshRun::Command(command) => (b"command", command),
                     SshRun::Sftp => (b"subsystem", b"sftp"),
+                    SshRun::Forward => (b"forward", b""),
                 };
                 let mut fields: Vec<&[u8]> = vec![
                     b"ssh-session",
@@ -884,6 +890,7 @@ impl Request {
                         SshRun::Command(command.to_vec())
                     }
                     (b"subsystem", b"sftp") => SshRun::Sftp,
+                    (b"forward", b"") => SshRun::Forward,
                     _ => return Err(malformed()),
                 };
                 let language = rest
@@ -1034,6 +1041,7 @@ impl std::fmt::Debug for Request {
                     SshRun::Shell => "Shell",
                     SshRun::Command(_) => "Command",
                     SshRun::Sftp => "Sftp",
+                    SshRun::Forward => "Forward",
                 };
                 write!(
                     f,

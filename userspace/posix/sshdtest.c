@@ -14,11 +14,14 @@
 // Then the host's client signs in through a port QEMU forwards, and
 // copies files with sftp and scp; when the host's last file is in
 // alice's home, the test finds her session in last(1) and the files the
-// host copied, hers. A sshd_config with a mistake is refused by sshd -t
-// and a reload keeps what sshd had; then one that turns passwords on
-// but keeps bob out, and the host signs in with alice's password; lastb
-// shows the wrong one it tried (ADR 0348). `service sshd disable` stops
-// sshd and closes the port.
+// host copied, hers. The host forwards port 7000 here to a server of its
+// own with ssh -R: it listens on the loopback alone, a MiB goes each way
+// through it, and it closes with the host's client (ADR 0349). A
+// sshd_config with a mistake is refused by sshd -t and a reload keeps
+// what sshd had; then one that turns passwords on but keeps bob out,
+// and forwarding to the host alone, and the host signs in with alice's
+// password; lastb shows the wrong one it tried (ADR 0348). `service sshd
+// disable` stops sshd and closes the port.
 
 #include <arpa/inet.h>
 #include <fcntl.h>
@@ -60,6 +63,12 @@
 #define COPIED_SIZE 262144
 // How long the host may take, in seconds.
 #define HOST_SECONDS 300
+// The port the host forwards here to its server, and how much goes each
+// way through it.
+#define FORWARDED_PORT 7000
+#define FORWARDED_SIZE (1024 * 1024)
+// This computer's address on QEMU's network, from its DHCP server.
+#define GUEST "10.0.2.15"
 
 // What a program wrote to its standard error.
 static char errors[4096];
@@ -124,15 +133,25 @@ static void write_text(const char *path, const char *text, uint32_t user, mode_t
 	CHECK(close(fd) == 0);
 }
 
-// Whether something listens on port 22 of the loopback.
-static int listening(void) {
+// A connection to `address` port `port`, or -1.
+static int connect_to(const char *address, int port) {
 	int fd = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
 	CHECK(fd >= 0);
-	struct sockaddr_in at = {.sin_family = AF_INET, .sin_port = htons(22)};
-	at.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-	int connected = connect(fd, (struct sockaddr *)&at, sizeof(at)) == 0;
-	close(fd);
-	return connected;
+	struct sockaddr_in at = {.sin_family = AF_INET, .sin_port = htons(port)};
+	CHECK(inet_pton(AF_INET, address, &at.sin_addr) == 1);
+	if(connect(fd, (struct sockaddr *)&at, sizeof(at)) != 0) {
+		close(fd);
+		return -1;
+	}
+	return fd;
+}
+
+// Whether something listens on port 22 of the loopback.
+static int listening(void) {
+	int fd = connect_to("127.0.0.1", 22);
+	if(fd >= 0)
+		close(fd);
+	return fd >= 0;
 }
 
 // Waits up to `seconds` for port 22 to be `open` or not; whether it is.
@@ -262,7 +281,10 @@ static int comes(const char *path, int seconds) {
 static void on(void) {
 	CHECK(!listening());
 	SAYS(0, "", "", "", SSHD, "-t");
-	SAYS(0, "", "PasswordAuthentication no\nPubkeyAuthentication yes\n", "", SSHD, "-T");
+	SAYS(0, "",
+			"PasswordAuthentication no\nPubkeyAuthentication yes\nAllowTcpForwarding yes\n"
+			"GatewayPorts no\n",
+			"", SSHD, "-T");
 	SAYS(0, "", "sshd is running, and starts at each boot.", "", SERVICE, "sshd", "enable");
 	CHECK(port_becomes(1, 60));
 	CHECK(strstr(contents(SERVICE_FILE), "\nenabled = true\n") != NULL);
@@ -313,24 +335,87 @@ static void host(void) {
 	CHECK(stat("/users/alice/folder", &st) != 0);
 }
 
+// A byte of what goes through the forwarded port: to the host, or `back`.
+static unsigned char pattern(size_t i, int back) {
+	return back ? (unsigned char)((i * 13 + 5) % 251) : (unsigned char)(i * 7 % 253);
+}
+
+// The host forwards port 7000 here to a server of its own, with ssh -R
+// (ADR 0349): alice's forwarder listens on the loopback alone, as
+// GatewayPorts says by default, and a MiB goes each way, the server
+// sending its own once all of this one came. The port closes as the
+// host's client goes.
+static void forwarding(void) {
+	static unsigned char data[FORWARDED_SIZE];
+	long long deadline = check_now_ns() + HOST_SECONDS * 1000000000LL;
+	int fd;
+	while((fd = connect_to("127.0.0.1", FORWARDED_PORT)) < 0) {
+		CHECK(check_now_ns() < deadline);
+		if(check_now_ns() >= deadline)
+			return;
+		check_sleep_ms(500);
+	}
+	CHECK(log_says("forwarding port 7000 at localhost for alice from 10.0.2.2", 10));
+	CHECK(log_says("started forwarding for alice from 10.0.2.2", 0));
+	int outside = connect_to(GUEST, FORWARDED_PORT);
+	CHECK(outside < 0);
+	if(outside >= 0)
+		close(outside);
+	for(size_t i = 0; i < FORWARDED_SIZE; i++)
+		data[i] = pattern(i, 0);
+	size_t done = 0;
+	ssize_t n;
+	while(done < FORWARDED_SIZE && (n = write(fd, data + done, FORWARDED_SIZE - done)) > 0)
+		done += n;
+	CHECK(done == FORWARDED_SIZE);
+	CHECK(shutdown(fd, SHUT_WR) == 0);
+	size_t same = 0;
+	done = 0;
+	while((n = read(fd, data, sizeof(data))) > 0) {
+		for(ssize_t i = 0; i < n; i++)
+			same += data[i] == pattern(done + i, 1);
+		done += n;
+	}
+	close(fd);
+	CHECK(done == FORWARDED_SIZE && same == FORWARDED_SIZE);
+	printf("sshdtest: forwarded\n");
+	fflush(stdout);
+	deadline = check_now_ns() + 30 * 1000000000LL;
+	while((fd = connect_to("127.0.0.1", FORWARDED_PORT)) >= 0) {
+		close(fd);
+		if(check_now_ns() > deadline)
+			break;
+		check_sleep_ms(500);
+	}
+	CHECK(fd < 0);
+	// Nothing the forwarder sent broke its frames, and it said nothing.
+	CHECK(!log_says("sshd: forwarding for ", 0));
+}
+
 // sshd_config: a mistake keeps sshd as it was; then passwords sign in,
-// but not bob's, and the host signs in with alice's.
+// but not bob's, and the host signs in with alice's; forwarding goes to
+// the host alone.
 static void passwords(void) {
 	write_text(SSHD_CONFIG, "PasswordAuthentication yes\nPort 2222\n", 0, 0644);
 	SAYS(1, "", "", "sshd_config line 2: sshd does not take Port", SSHD, "-t");
 	SAYS(0, "", "", "", SERVICE, "sshd", "reload");
 	CHECK(log_says("kept the settings it had", 30));
 	CHECK(listening());
-	write_text(SSHD_CONFIG, "# The sshd test's.\nPasswordAuthentication yes\nDenyUsers bob\n", 0,
-			0644);
+	write_text(SSHD_CONFIG,
+			"# The sshd test's.\nPasswordAuthentication yes\nDenyUsers bob\n"
+			"AllowTcpForwarding remote\n",
+			0, 0644);
 	SAYS(0, "", "", "", SSHD, "-t");
 	SAYS(0, "", "PasswordAuthentication yes\n", "", SSHD, "-T");
+	SAYS(0, "", "AllowTcpForwarding remote\n", "", SSHD, "-T");
 	SAYS(0, "", "", "", SERVICE, "sshd", "reload");
 	CHECK(log_says("keys and passwords sign in", 30));
 	printf("sshdtest: passwords on\n");
 	fflush(stdout);
 	CHECK(comes(PASSWORDS_DONE, HOST_SECONDS));
 	CHECK(!strcmp(contents(PASSWORDS_DONE), "done\n"));
+	// The host's ssh -W before it, refused by AllowTcpForwarding remote.
+	CHECK(log_says("refused to forward a connection for alice from 10.0.2.2", 0));
 	// The wrong password the host tried, from its address.
 	CONTAINS("10.0.2.2", "/system/commands/lastb", "alice");
 	CONTAINS("ssh", "/system/commands/lastb", "alice");
@@ -364,6 +449,7 @@ int main(int argc, char **argv) {
 	RUN(on);
 	RUN(guest);
 	RUN(host);
+	RUN(forwarding);
 	RUN(passwords);
 	RUN(off);
 	return check_end();

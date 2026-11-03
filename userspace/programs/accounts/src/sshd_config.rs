@@ -9,6 +9,8 @@
 //! # Passwords sign in too, but only alice's and bob's.
 //! PasswordAuthentication yes
 //! AllowUsers alice bob
+//! # Clients forward ports from here to them, not the other way.
+//! AllowTcpForwarding remote
 //! ```
 //!
 //! A line is a keyword, in any case, then its values, after spaces or one
@@ -49,6 +51,37 @@ pub struct Settings {
     /// When there are any, the only groups whose people may
     /// (AllowGroups).
     pub allow_groups: Vec<String>,
+    /// Which ports a client may forward (AllowTcpForwarding, ADR 0349).
+    pub forwarding: Forwarding,
+    /// Where a port forwarded from here to the client listens
+    /// (GatewayPorts).
+    pub gateway_ports: GatewayPorts,
+}
+
+/// Which ports a client may forward (AllowTcpForwarding).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Forwarding {
+    /// Both ways, as OpenSSH's sshd lets by default: `yes`, or `all`.
+    Yes,
+    /// From the client to where it names from here alone, as `ssh -L`,
+    /// `-D` and `-W` ask: `local`.
+    Local,
+    /// From a port here to the client alone, as `ssh -R` asks: `remote`.
+    Remote,
+    /// Neither: `no`.
+    No,
+}
+
+/// Where a port forwarded from here to the client listens (GatewayPorts).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GatewayPorts {
+    /// On the loopback addresses, for this computer's programs alone,
+    /// as OpenSSH's sshd has it by default: `no`.
+    No,
+    /// On every address, for anyone who can reach this computer: `yes`.
+    Yes,
+    /// Where the client asks: `clientspecified`.
+    ClientSpecified,
 }
 
 impl Default for Settings {
@@ -60,6 +93,8 @@ impl Default for Settings {
             allow_users: Vec::new(),
             deny_groups: Vec::new(),
             allow_groups: Vec::new(),
+            forwarding: Forwarding::Yes,
+            gateway_ports: GatewayPorts::No,
         }
     }
 }
@@ -123,6 +158,17 @@ fn flag(keyword: &str, values: &[String]) -> Result<bool, String> {
     }
 }
 
+/// One of `choices`, in any case, and what it stands for.
+fn choice<T: Copy>(keyword: &str, values: &[String], choices: &[(&str, T)]) -> Result<T, String> {
+    if let [value] = values
+        && let Some((_, chosen)) = choices.iter().find(|(name, _)| value.eq_ignore_ascii_case(name))
+    {
+        return Ok(*chosen);
+    }
+    let names: Vec<&str> = choices.iter().map(|(name, _)| *name).collect();
+    Err(format!("{keyword} takes one of {}", names.join(", ")))
+}
+
 /// The patterns of a list: names with `*` and `?`, which match any
 /// characters and any one.
 fn patterns(keyword: &str, values: &[String]) -> Result<Vec<String>, String> {
@@ -150,6 +196,7 @@ fn patterns(keyword: &str, values: &[String]) -> Result<Vec<String>, String> {
 pub fn parse(text: &str) -> Result<Settings, Vec<Mistake>> {
     let mut settings = Settings::default();
     let (mut passwords, mut keys) = (None, None);
+    let (mut forwarding, mut gateway_ports) = (None, None);
     let mut mistakes = Vec::new();
     for (number, line) in text.lines().enumerate() {
         let line_number = number + 1;
@@ -172,6 +219,32 @@ pub fn parse(text: &str) -> Result<Settings, Vec<Mistake>> {
             "allowusers" => patterns(&keyword, &values).map(|p| settings.allow_users.extend(p)),
             "denygroups" => patterns(&keyword, &values).map(|p| settings.deny_groups.extend(p)),
             "allowgroups" => patterns(&keyword, &values).map(|p| settings.allow_groups.extend(p)),
+            "allowtcpforwarding" => choice(
+                &keyword,
+                &values,
+                &[
+                    ("yes", Forwarding::Yes),
+                    ("all", Forwarding::Yes),
+                    ("local", Forwarding::Local),
+                    ("remote", Forwarding::Remote),
+                    ("no", Forwarding::No),
+                ],
+            )
+            .map(|value| {
+                forwarding.get_or_insert(value);
+            }),
+            "gatewayports" => choice(
+                &keyword,
+                &values,
+                &[
+                    ("no", GatewayPorts::No),
+                    ("yes", GatewayPorts::Yes),
+                    ("clientspecified", GatewayPorts::ClientSpecified),
+                ],
+            )
+            .map(|value| {
+                gateway_ports.get_or_insert(value);
+            }),
             _ => Err(format!(
                 "sshd does not take {keyword}: sshd_config(5) lists the keywords it takes"
             )),
@@ -197,6 +270,8 @@ pub fn parse(text: &str) -> Result<Settings, Vec<Mistake>> {
     }
     settings.passwords = passwords.unwrap_or(settings.passwords);
     settings.keys = keys.unwrap_or(settings.keys);
+    settings.forwarding = forwarding.unwrap_or(settings.forwarding);
+    settings.gateway_ports = gateway_ports.unwrap_or(settings.gateway_ports);
     Ok(settings)
 }
 
@@ -304,12 +379,52 @@ impl Settings {
         !self.deny_groups.is_empty() || !self.allow_groups.is_empty()
     }
 
+    /// Whether a client may have a connection made from here to where it
+    /// names (`direct-tcpip`, RFC 4254 7.2).
+    pub fn forwards_local(&self) -> bool {
+        matches!(self.forwarding, Forwarding::Yes | Forwarding::Local)
+    }
+
+    /// Whether a client may have a port here listen for it
+    /// (`tcpip-forward`, RFC 4254 7.1).
+    pub fn forwards_remote(&self) -> bool {
+        matches!(self.forwarding, Forwarding::Yes | Forwarding::Remote)
+    }
+
+    /// Where a port that a client asked to listen at `address` listens,
+    /// as OpenSSH's sshd decides it: `localhost` for the loopback
+    /// addresses, empty for every address, or an address. Unless
+    /// GatewayPorts says otherwise, only this computer's programs reach
+    /// it, though a client may name 127.0.0.1 or ::1 to have one of the
+    /// two.
+    pub fn listen_address(&self, address: &str) -> String {
+        match self.gateway_ports {
+            GatewayPorts::No if address == "127.0.0.1" || address == "::1" => address.into(),
+            GatewayPorts::No => "localhost".into(),
+            GatewayPorts::Yes => String::new(),
+            GatewayPorts::ClientSpecified if address.is_empty() || address == "*" => String::new(),
+            GatewayPorts::ClientSpecified => address.into(),
+        }
+    }
+
     /// The settings as a file says them, each keyword once: what
     /// `sshd -T` shows, and what [`parse`] reads back the same.
     pub fn text(&self) -> String {
         let yes = |value: bool| if value { "yes" } else { "no" };
+        let forwarding = match self.forwarding {
+            Forwarding::Yes => "yes",
+            Forwarding::Local => "local",
+            Forwarding::Remote => "remote",
+            Forwarding::No => "no",
+        };
+        let gateway_ports = match self.gateway_ports {
+            GatewayPorts::No => "no",
+            GatewayPorts::Yes => "yes",
+            GatewayPorts::ClientSpecified => "clientspecified",
+        };
         let mut text = format!(
-            "PasswordAuthentication {}\nPubkeyAuthentication {}\n",
+            "PasswordAuthentication {}\nPubkeyAuthentication {}\nAllowTcpForwarding \
+             {forwarding}\nGatewayPorts {gateway_ports}\n",
             yes(self.passwords),
             yes(self.keys)
         );
@@ -425,14 +540,61 @@ mod tests {
             "",
             "PasswordAuthentication yes\nPubkeyAuthentication no\n",
             "AllowUsers alice \"two words\"\nDenyUsers x\nAllowGroups staff\nDenyGroups g?\n",
+            "AllowTcpForwarding local\nGatewayPorts clientspecified\n",
+            "AllowTcpForwarding remote\nGatewayPorts yes\n",
+            "AllowTcpForwarding no\n",
         ] {
             let settings = parse(text).unwrap();
             assert_eq!(parse(&settings.text()).unwrap(), settings, "{text}");
         }
         assert_eq!(
             Settings::default().text(),
-            "PasswordAuthentication no\nPubkeyAuthentication yes\n"
+            "PasswordAuthentication no\nPubkeyAuthentication yes\nAllowTcpForwarding yes\n\
+             GatewayPorts no\n"
         );
+    }
+
+    #[test]
+    fn forwarding_is_both_ways_unless_the_file_says_otherwise() {
+        let both = Settings::default();
+        assert!(both.forwards_local() && both.forwards_remote());
+        for (value, local, remote) in [
+            ("yes", true, true),
+            ("ALL", true, true),
+            ("local", true, false),
+            ("Remote", false, true),
+            ("no", false, false),
+        ] {
+            let settings = parse(&format!("AllowTcpForwarding {value}\n")).unwrap();
+            assert_eq!((settings.forwards_local(), settings.forwards_remote()), (local, remote));
+        }
+        let first = parse("AllowTcpForwarding no\nAllowTcpForwarding yes\n").unwrap();
+        assert_eq!(first.forwarding, Forwarding::No);
+        for text in ["AllowTcpForwarding maybe\n", "AllowTcpForwarding\n", "GatewayPorts all\n"] {
+            let why = &parse(text).unwrap_err()[0].why;
+            assert!(why.contains("takes one of"), "{why}");
+        }
+    }
+
+    #[test]
+    fn forwarded_ports_listen_where_openssh_has_them() {
+        let no = Settings::default();
+        let yes = parse("GatewayPorts yes\n").unwrap();
+        let client = parse("GatewayPorts clientspecified\n").unwrap();
+        // What ssh -R sends: localhost when no address is given, empty or
+        // * for every address, or one.
+        for (asked, by_no, by_yes, by_client) in [
+            ("localhost", "localhost", "", "localhost"),
+            ("", "localhost", "", ""),
+            ("*", "localhost", "", ""),
+            ("192.0.2.1", "localhost", "", "192.0.2.1"),
+            ("127.0.0.1", "127.0.0.1", "", "127.0.0.1"),
+            ("::1", "::1", "", "::1"),
+        ] {
+            assert_eq!(no.listen_address(asked), by_no, "{asked}");
+            assert_eq!(yes.listen_address(asked), by_yes, "{asked}");
+            assert_eq!(client.listen_address(asked), by_client, "{asked}");
+        }
     }
 
     #[test]

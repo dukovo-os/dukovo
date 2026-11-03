@@ -313,6 +313,14 @@ fn requests_go_and_come_back() {
             run: SshRun::Sftp,
             language: Vec::new(),
         },
+        Request::SshSession {
+            connection: "a 1 b 22".into(),
+            name: "alice".into(),
+            proof: SshProof::Key { signed: vec![1], signature: vec![2] },
+            term: String::new(),
+            run: SshRun::Forward,
+            language: Vec::new(),
+        },
         Request::SshEnded { ticket: vec![0xcd; request::SSH_TICKET_LENGTH] },
     ];
     for request in requests {
@@ -407,6 +415,18 @@ fn requests_go_and_come_back() {
         sftp.encode(),
         format!("ssh-session\0a 1 b 22\0bob\0ticket\0{ticket}\0\0\0subsystem\0sftp\0").as_bytes()
     );
+    let forward = Request::SshSession {
+        connection: "a 1 b 22".into(),
+        name: "bob".into(),
+        proof: SshProof::Ticket(vec![0xab; request::SSH_TICKET_LENGTH]),
+        term: String::new(),
+        run: SshRun::Forward,
+        language: Vec::new(),
+    };
+    assert_eq!(
+        forward.encode(),
+        format!("ssh-session\0a 1 b 22\0bob\0ticket\0{ticket}\0\0\0forward\0\0").as_bytes()
+    );
     assert_eq!(
         Request::SshPassword {
             connection: "a 1 b 22".into(),
@@ -433,6 +453,7 @@ fn requests_go_and_come_back() {
         format!("ssh-session\0a\0bob\0password\0{ticket}\0\0\0shell\0\0"),
         format!("ssh-session\0a\0bob\0ticket\0{ticket}\0\0\0subsystem\0netconf\0"),
         format!("ssh-session\0a\0bob\0ticket\0{ticket}\0\0\0subsystem\0\0"),
+        format!("ssh-session\0a\0bob\0ticket\0{ticket}\0\0\0forward\0x\0"),
         format!("ssh-ended\0{short}\0"),
         format!("ssh-ended\0{ticket}\0x\0"),
         "ssh-password\0a\0bob\0".to_string(),

@@ -4,17 +4,23 @@
 //! sshd(8): lets people sign in to this computer over SSH, with a key
 //! their `~/.ssh/authorized_keys` lists, or a password once
 //! sshd_config(5) lets them, each session served as them by authd(8)
-//! (ADRs 0347 and 0348): a shell, a command or SFTP.
+//! (ADRs 0347 and 0348): a shell, a command or SFTP. Their clients may
+//! forward ports, through a forwarder that runs as them (ADR 0349).
 //!
 //! - `sshd`, as Spark runs it once `service enable sshd` turns it on,
 //!   reads sshd_config, makes the host's key the first time, listens on
 //!   port 22, and starts a process for each connection.
 //! - `sshd --connection --settings TEXT` serves one connection, its
 //!   standard input, with the settings the listener read.
+//! - `sshd --forward`, which authd(8) starts as the person, forwards a
+//!   connection's ports, passing frames with it on its standard input
+//!   and output.
 //! - `sshd -t` checks sshd_config, and `sshd -T` shows what it says.
 
 mod authd;
 mod connection;
+mod forward;
+mod forwarder;
 mod hostkey;
 mod listener;
 mod pty;
@@ -47,6 +53,7 @@ fn main() -> ExitCode {
                 ExitCode::FAILURE
             }
         },
+        ["--forward"] => forwarder::run(),
         ["-t"] => match sshd_config::read() {
             Ok(_) => ExitCode::SUCCESS,
             Err(why) => {

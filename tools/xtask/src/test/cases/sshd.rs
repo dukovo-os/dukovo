@@ -19,15 +19,22 @@
 //! variables are not; root, bob, the key behind an option and a key not
 //! listed are refused, and so is alice's password. *sftp* puts a file,
 //! renames it, gets it back whole, and makes and removes a folder; *scp*
-//! and *scp -O* copy one there and back. last(1) shows alice's sessions
-//! from the host, and the files copied are hers. A sshd_config with a
-//! mistake is refused by *sshd -t*, and a reload keeps what sshd had;
-//! one that turns passwords on but keeps bob out is read on a reload:
-//! alice's password signs her in, a wrong one and bob's are refused,
-//! and lastb(1) shows the wrong one (ADR 0348). *service sshd disable*
-//! stops sshd and closes the port.
+//! and *scp -O* copy one there and back. *ssh -W* has alice's forwarder
+//! connect to the host's port 80, whose keys come back, and by name to
+//! the guest's own sshd. last(1) shows alice's sessions from the host,
+//! and the files copied are hers. *ssh -R* forwards port 7000 of the
+//! guest to a server of the host's: a port below 1024 is refused, the
+//! port listens on the loopback alone, a MiB goes each way, and it
+//! closes with the client (ADR 0349). A sshd_config with a mistake is
+//! refused by *sshd -t*, and a reload keeps what sshd had; one that
+//! turns passwords on but keeps bob out, and forwarding to the client
+//! alone, is read on a reload: alice's password signs her in, a wrong
+//! one and bob's are refused, lastb(1) shows the wrong one (ADR 0348),
+//! and *ssh -W* is refused. *service sshd disable* stops sshd and closes
+//! the port.
 
-use std::io::Write;
+use std::io::{Read, Write};
+use std::net::TcpListener;
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::Duration;
@@ -43,7 +50,7 @@ const NETDEV: &str = "user,id=n0,guestfwd=tcp:10.0.2.100:80-cmd:out/test/sshd/ke
 
 pub const CASE: Case = Case {
     name: "sshd",
-    about: "sshd and service enable against the host's OpenSSH client through a port QEMU forwards: keys from authorized_keys, one behind an option passed over; the host key made and checked; commands with their output, error and exit status, 4 MiB through cat, a terminal and a shell on it, LANG passed on; root, another person, an unsafe file and a key not listed refused; the guest's own client signing in; last(1); sftp, scp and scp -O copying files there and back; sshd_config with a mistake refused and kept out of a reload; passwords turned on by a reload, a wrong one and a denied user refused, lastb(1); service disable closing the port (ADRs 0347 and 0348)",
+    about: "sshd and service enable against the host's OpenSSH client through a port QEMU forwards: keys from authorized_keys, one behind an option passed over; the host key made and checked; commands with their output, error and exit status, 4 MiB through cat, a terminal and a shell on it, LANG passed on; root, another person, an unsafe file and a key not listed refused; the guest's own client signing in; last(1); sftp, scp and scp -O copying files there and back; ssh -W to an address and a name; ssh -R with a MiB each way, on the loopback alone, a low port refused; sshd_config with a mistake refused and kept out of a reload; passwords turned on by a reload, a wrong one and a denied user refused, lastb(1), forwarding cut to one way; service disable closing the port (ADRs 0347 to 0349)",
     firmware: Firmware::Uefi,
     media: Media::Usb,
     // Every service, as on a machine, netd setting the card up by DHCP.
@@ -63,6 +70,7 @@ pub const CASE: Case = Case {
 /// the host's turn, then before its turn with passwords, and after it.
 const BEFORE: &[&str] = &["accounts", "keys", "on"];
 const THEN: &[&str] = &["guest", "host"];
+const FORWARDING: &[&str] = &["forwarding"];
 const PASSWORDS: &[&str] = &["passwords"];
 const AFTER: &[&str] = &["off"];
 
@@ -71,6 +79,11 @@ const BIG_SIZE: usize = 4 * 1024 * 1024;
 
 /// The size of each file sftp and scp copy: sshdtest checks it.
 const COPIED_SIZE: usize = 256 * 1024;
+
+/// The guest's port the host forwards to its server, and how much goes
+/// each way through it: sshdtest uses both.
+const FORWARDED_PORT: u16 = 7000;
+const FORWARDED_SIZE: usize = 1024 * 1024;
 
 /// alice's password and bob's, as sshdtest makes their accounts.
 const ALICE_PASSWORD: &str = "wonderland";
@@ -368,6 +381,25 @@ fn host(client: &Client) -> Result<(), String> {
         return Err(format!("alice's password was not refused: {:?}, {}", ran.status, ran.err));
     }
     copies(client)?;
+    // Forwarding: alice's forwarder connects to the host's port 80, whose
+    // keys come back, and to the guest's own sshd by name.
+    let ran = client.ssh("alice", "alice", &["-W", "10.0.2.100:80"], &[], b"", &[])?;
+    if ran.status != Some(0) || !ran.out().contains(" host-alice\n") {
+        return Err(format!(
+            "ssh -W to the host's port 80 ended with {:?} and wrote {:?}, {}",
+            ran.status,
+            ran.out(),
+            ran.err.trim()
+        ));
+    }
+    let ran = client.ssh("alice", "alice", &["-W", "localhost:22"], &[], b"", &[])?;
+    if !ran.out().starts_with("SSH-2.0-Dukovo") {
+        return Err(format!(
+            "ssh -W to the guest's localhost port 22 wrote {:?}, {}",
+            ran.out(),
+            ran.err.trim()
+        ));
+    }
     // The last: the guest goes on.
     client.alice("echo done > ~/host-done", 0, "")?;
     Ok(())
@@ -418,8 +450,61 @@ fn copies(client: &Client) -> Result<(), String> {
     Ok(())
 }
 
+/// A byte of what goes through the forwarded port: from the guest, or
+/// `back` to it, as sshdtest's.
+fn pattern(i: usize, back: bool) -> u8 {
+    if back { ((i * 13 + 5) % 251) as u8 } else { (i * 7 % 253) as u8 }
+}
+
+/// The host's server for the forwarded port: it takes one connection,
+/// reads to its end, and sends a MiB back once a MiB came right.
+fn serve(listener: &TcpListener) -> Result<(), String> {
+    let (mut socket, _) = listener.accept().map_err(|err| format!("accepting: {err}"))?;
+    let failed = |err: std::io::Error| format!("the forwarded connection: {err}");
+    socket.set_read_timeout(Some(Duration::from_secs(120))).map_err(failed)?;
+    let mut came = Vec::new();
+    socket.read_to_end(&mut came).map_err(failed)?;
+    let right = came.iter().enumerate().all(|(i, &byte)| byte == pattern(i, false));
+    if came.len() != FORWARDED_SIZE || !right {
+        return Err(format!("{} bytes came through the forwarded port, not the MiB sent", came.len()));
+    }
+    let back: Vec<u8> = (0..FORWARDED_SIZE).map(|i| pattern(i, true)).collect();
+    socket.write_all(&back).map_err(failed)
+}
+
+/// The host forwards the guest's port 7000 to a server of its own, with
+/// ssh -R, once a port below 1024 is refused; sshdtest sends a MiB
+/// through it and gets one back, then says so, and the client goes.
+fn remote(client: &Client, vm: &mut Vm) -> Result<(), String> {
+    let refused = ["-N", "-o", "ExitOnForwardFailure=yes", "-R", "80:127.0.0.1:1"];
+    let ran = client.ssh("alice", "alice", &refused, &[], b"", &[])?;
+    if ran.status != Some(255) || !ran.err.contains("forwarding failed for listen port 80") {
+        return Err(format!("port 80 was not refused: {:?}, {}", ran.status, ran.err.trim()));
+    }
+    let listener =
+        TcpListener::bind("127.0.0.1:0").map_err(|err| format!("no port for the server: {err}"))?;
+    let port = listener.local_addr().map_err(|err| err.to_string())?.port();
+    let server = std::thread::spawn(move || serve(&listener));
+    let mut ssh = client.client("ssh", "-p", Auth::Key("alice"));
+    ssh.args(["-N", "-o", "ExitOnForwardFailure=yes", "-R"])
+        .arg(format!("{FORWARDED_PORT}:127.0.0.1:{port}"))
+        .arg("alice@127.0.0.1")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped());
+    let mut child = ssh.spawn().map_err(|err| format!("running ssh -R: {err}"))?;
+    let forwarded = vm.expect("sshdtest: forwarded");
+    let _ = child.kill();
+    let said = child
+        .wait_with_output()
+        .map_or_default(|output| String::from_utf8_lossy(&output.stderr).into_owned());
+    forwarded.map_err(|err| format!("{err}; ssh -R said {:?}", said.trim()))?;
+    // The guest had its MiB back: the server is done.
+    server.join().map_err(|_| "the forwarded port's server failed".to_string())?
+}
+
 /// The host's turn with passwords, once sshd_config turns them on but
-/// keeps bob out.
+/// keeps bob out, and forwards to the client alone.
 fn passwords(client: &Client) -> Result<(), String> {
     let ran = client.ssh_password(ALICE_PASSWORD, "alice", "id -un")?;
     if ran.status != Some(0) || ran.out() != "alice\n" {
@@ -439,8 +524,14 @@ fn passwords(client: &Client) -> Result<(), String> {
             return Err(format!("{why} was not refused: {:?}, {}", ran.status, ran.err.trim()));
         }
     }
-    // Her key signs her in still.
+    // Her key signs her in still; forwarding from the client is refused.
     client.alice("echo key", 0, "key\n")?;
+    let ran = client.ssh("alice", "alice", &["-W", "10.0.2.100:80"], &[], b"", &[])?;
+    // The client says no more with LogLevel ERROR; the guest checks sshd's
+    // log for why.
+    if ran.status != Some(255) || !ran.err.contains("stdio forwarding failed") {
+        return Err(format!("ssh -W was not refused: {:?}, {}", ran.status, ran.err.trim()));
+    }
     // The last, with her password: the guest goes on.
     let ran = client.ssh_password(ALICE_PASSWORD, "alice", "echo done > ~/passwords-done")?;
     if ran.status != Some(0) {
@@ -474,6 +565,10 @@ fn sshd(vm: &mut Vm, case: &Case) -> Result<(), String> {
     vm.monitor(&format!("hostfwd_add n0 tcp:127.0.0.1:{port}-:22"))?;
     let client = Client { dir: &dir, port };
     host(&client)?;
+    for part in FORWARDING {
+        vm.expect_ahead(&format!("sshdtest: {part}"))?;
+    }
+    remote(&client, vm)?;
     for part in PASSWORDS {
         vm.expect_ahead(&format!("sshdtest: {part}"))?;
     }
