@@ -10,9 +10,9 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 ## Context
 
-Phase 13f.4b, the second of three NFS steps: nfsd(8) shares Dukovo's
-folders (ADR 0343), this mounts the folders a Linux server, a NAS or
-another Unix machine shares, and 13f.4c adds Kerberos to both. Linux
+Phase 13f.4b, the second NFS step: nfsd(8) shares Dukovo's folders (ADR
+0343), and this mounts the folders a Linux server, a NAS or another Unix
+machine shares; Kerberos comes to both after the keyring (13h). Linux
 mounts them with its kernel's client and `mount -t nfs`, whose options
 fill people's guides and mount tables. Dukovo's kernel keeps protocols
 out: a program serves the folder through `/devices/fuse` (ADR 0226), as
@@ -60,7 +60,7 @@ XDR, the protocol's numbers and RPC's records.
   those numbers; `name@domain` is this machine's account of that name,
   or no one (65534). Owners and modes are the server's, which the kernel
   checks (ADR 0226) and the server checks again. `sec=krb5*` is refused
-  until 13f.4c; so is a server that asks for it.
+  until 13h; so is a server that asks for it.
 - **The files:** a node stands for a filehandle, which renames leave
   alone, and its number is the server's file number, as Linux's client
   shows it, unless another node has it (another of the server's
@@ -108,7 +108,7 @@ XDR, the protocol's numbers and RPC's records.
   the server trusts that a call is from the user it names. nfs sends the
   number the kernel gives for the caller, so a person reaches what that
   number may on the server; root is the server's to squash.
-- **Not yet:** Kerberos (13f.4c); locks the server and other clients see
+- **Not yet:** Kerberos (13h); locks the server and other clients see
   (a lock is this machine's alone, as Linux's `local_lock=all`);
   delegations and a page cache, and more than one call at a time, so a
   large file moves slower than with Linux's client on a fast network;
