@@ -12,6 +12,7 @@ mod baseline;
 mod bench;
 mod btrfs;
 mod bundles;
+mod catalog;
 mod config;
 mod corpus;
 mod docs;
@@ -64,6 +65,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("image", "Build the bootable USB image (or an ISO with --iso)"),
     ("run", "Boot the image in QEMU with the serial console on this terminal"),
     ("test", "Run unit tests, then boot the image in QEMU under UEFI and BIOS"),
+    ("catalog", "Make and sign the catalog's TUF repository, with YubiKeys"),
     ("bench", "Measure system calls and IPC round trips on Radix and on this machine's Linux"),
     ("fixture", "Make test data that only Linux makes, such as a Btrfs log of fsyncs"),
     ("docs", "Build the man pages and the handbook into out/docs"),
@@ -477,6 +479,28 @@ and the user programs, treating every warning as an error."
 
 Formats every Rust source file in the repository with rustfmt."
         }
+        "catalog" => {
+            "Usage: ./ob catalog key yubikey [--serial <number>]
+       ./ob catalog key new <file> <name> [<role>]...
+       ./ob catalog root [--days <n>] [--key <file>]...
+       ./ob catalog sign [--days <n>] [--remove <path>]... [--yes] [--key <file>]...
+                         [<bundle>]...
+       ./ob catalog publish --key <file>
+       ./ob catalog status
+
+Makes and signs the catalog's TUF repository in catalog/ (ADR 0381), with
+catalog-repo, which it builds for this machine. Root and targets are signed
+by a YubiKey, either of the catalog's two alone; `key yubikey` adds the
+P-256 key in a YubiKey's slot 9c, made with ykman as catalog/README.md says.
+`root` signs the next root from the keys in catalog/keys/. `sign` lists
+what changes, the bundles in out/bundles/ by default, and signs them into
+the next targets with one touch of a YubiKey. `publish` signs a snapshot
+and timestamp with the online key and lays out what the server serves in
+out/catalog/site/, then reads it back as a client. --key names an Ed25519
+secret key file that signs in place of a YubiKey: the online key, or a
+test's. The YubiKeys need yubikey-manager (`sudo apt install
+yubikey-manager`)."
+        }
         "signoff" => {
             "Usage: ./ob signoff [<base>]
 
@@ -656,6 +680,11 @@ impl Args {
         }
     }
 
+    /// Every argument not yet taken, for commands that pass them on.
+    pub fn rest(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.args)
+    }
+
     /// Arguments after `--`, for commands that pass them on.
     pub fn take_passthrough(&mut self) -> Vec<String> {
         std::mem::take(&mut self.passthrough)
@@ -804,6 +833,7 @@ fn dispatch(argv: Vec<String>) -> Result<()> {
             args.finish()?;
             lint::fmt(&ctx)
         }
+        "catalog" => catalog::command(&ctx, args.rest()),
         "signoff" => {
             let base = args.positional();
             args.finish()?;

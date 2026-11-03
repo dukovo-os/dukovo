@@ -9,13 +9,15 @@
 //! as the reference client, python-tuf's `ngclient`, runs it, and the
 //! TUF conformance suite checks it against both (`ob test tuf`). It
 //! reads metadata in canonical JSON, checks signatures with ring, and
-//! fetches over http, https or file URLs.
+//! fetches over http, https or file URLs. Its `repo` module makes and
+//! signs a repository's metadata, for the catalog's tools (ADR 0381).
 
 pub mod fetch;
 pub mod http;
 pub mod json;
 pub mod keys;
 pub mod metadata;
+pub mod repo;
 pub mod time;
 pub mod trusted;
 pub mod updater;
