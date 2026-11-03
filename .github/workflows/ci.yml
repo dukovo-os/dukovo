@@ -316,7 +316,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             qemu-system-x86 ovmf gcc flex gawk \
-            xorriso mtools dosfstools exfatprogs gdisk fdisk sleuthkit btrfs-progs e2fsprogs ntfs-3g dislocker libbde-utils openssh-server samba smbclient scdoc mandoc \
+            xorriso mtools dosfstools exfatprogs gdisk fdisk sleuthkit btrfs-progs e2fsprogs ntfs-3g dislocker libbde-utils openssh-server samba smbclient nfs-kernel-server scdoc mandoc \
             udftools udfclient genisoimage \
             clang-20 lld-20 llvm-20 libclang-rt-20-dev meson ninja-build cmake bison pkgconf autoconf
 
@@ -327,6 +327,11 @@ jobs:
         run: |
           sudo systemctl stop smbd.service
           sudo sysctl -w net.ipv4.ip_unprivileged_port_start=445
+
+      # The nfs boot test's server (ADR 0344): Linux's own, which the
+      # test exports its folders from, as root, to QEMU's network.
+      - name: Start Linux's NFS server
+        run: sudo systemctl start nfs-server.service
 
       # GRUB, which ./ob builds from its pinned source for the images
       # (ADR 0306): built once for each change to its recipe.

@@ -128,7 +128,8 @@ impl Nodes {
     fn forget(&mut self, ino: u64, count: u64) {
         let Some(node) = self.nodes.get_mut(&ino) else { return };
         node.lookups = node.lookups.saturating_sub(count);
-        if node.lookups == 0 && ino != ROOT
+        if node.lookups == 0
+            && ino != ROOT
             && let Some(node) = self.nodes.remove(&ino)
         {
             self.by_fh.remove(&node.fh);
@@ -657,7 +658,14 @@ impl NfsFs {
         let client_id = self.client().client_id();
         let mut ops = Ops::kept();
         ops.putfh(&dir);
-        open_args(ops.op(op::OPEN), access, client_id, &owner, Some((how, &set)), Some(name.as_bytes()));
+        open_args(
+            ops.op(op::OPEN),
+            access,
+            client_id,
+            &owner,
+            Some((how, &set)),
+            Some(name.as_bytes()),
+        );
         ops.op(op::GETFH);
         getattr(&mut ops, attrs::FILE);
         let results = self.run(cred, &ops)?;
@@ -928,19 +936,34 @@ impl NfsFs {
         Ok(listing.iter().map(|listed| (listed.name.clone(), listed.kind)).collect())
     }
 
-    /// The names of listing `handle` of folder `ino`, with their kinds
-    /// and numbers: `.` and `..` first.
-    fn listed(&self, ino: u64, handle: u64) -> Result<Vec<(u64, FileType, &OsStr)>, c_int> {
+    /// The names of listing `handle` of folder `ino` from the `from`th
+    /// on, `.` and `..` first, each with its place, number and kind: a
+    /// page of a large folder starts where the last ended, without
+    /// going through those before it.
+    pub(crate) fn listed(
+        &self,
+        ino: u64,
+        handle: u64,
+        from: usize,
+    ) -> Result<impl Iterator<Item = (usize, u64, FileType, &OsStr)> + '_, c_int> {
         let listing = self.listings.get(&handle).ok_or(libc::EBADF)?;
-        let mut all = vec![
+        let dots = [
             (ino, FileType::Directory, OsStr::new(".")),
             (ROOT, FileType::Directory, OsStr::new("..")),
         ];
-        for (i, listed) in listing.iter().enumerate() {
-            let number = if listed.fileid > ROOT { listed.fileid } else { u64::MAX - i as u64 };
-            all.push((number, listed.kind, listed.name.as_os_str()));
-        }
-        Ok(all)
+        let start = from.saturating_sub(dots.len());
+        let names =
+            listing.get(start..).unwrap_or_default().iter().enumerate().map(move |(j, listed)| {
+                let i = start + j;
+                let number = if listed.fileid > ROOT { listed.fileid } else { u64::MAX - i as u64 };
+                (dots.len() + i, number, listed.kind, listed.name.as_os_str())
+            });
+        let dots = dots
+            .into_iter()
+            .enumerate()
+            .skip(from)
+            .map(|(i, (number, kind, name))| (i, number, kind, name));
+        Ok(dots.chain(names))
     }
 
     /// The room and names left on the server's filesystem.
@@ -1276,12 +1299,12 @@ impl Filesystem for NfsFs {
         offset: i64,
         mut reply: ReplyDirectory,
     ) {
-        let all = match self.listed(ino, fh) {
-            Ok(all) => all,
+        let from = usize::try_from(offset).unwrap_or(0);
+        let entries = match self.listed(ino, fh, from) {
+            Ok(entries) => entries,
             Err(err) => return reply.error(err),
         };
-        let skip = usize::try_from(offset).unwrap_or(0);
-        for (i, (number, kind, name)) in all.into_iter().enumerate().skip(skip) {
+        for (i, number, kind, name) in entries {
             if reply.add(number, i as i64 + 1, kind, name) {
                 break;
             }
@@ -1306,7 +1329,16 @@ impl Filesystem for NfsFs {
         match self.space(&cred) {
             Ok(s) => {
                 let block = BLOCK as u32;
-                reply.statfs(s.blocks, s.free, s.avail, s.files, s.files_free, block, s.max_name, block);
+                reply.statfs(
+                    s.blocks,
+                    s.free,
+                    s.avail,
+                    s.files,
+                    s.files_free,
+                    block,
+                    s.max_name,
+                    block,
+                );
             }
             Err(err) => reply.error(err),
         }

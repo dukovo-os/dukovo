@@ -200,7 +200,8 @@ impl Set {
             bits.add(attr::OWNER_GROUP);
             v.opaque(gid.to_string().as_bytes());
         }
-        for (bit, when) in [(attr::TIME_ACCESS_SET, self.atime), (attr::TIME_MODIFY_SET, self.mtime)]
+        for (bit, when) in
+            [(attr::TIME_ACCESS_SET, self.atime), (attr::TIME_MODIFY_SET, self.mtime)]
         {
             let Some(when) = when else { continue };
             bits.add(bit);

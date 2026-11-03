@@ -148,7 +148,22 @@ fn folders_names_and_links() {
             .unwrap();
     }
     let listing = fs.list(&cred, ROOT).unwrap();
-    assert_eq!(fs.names(listing).unwrap().len(), 302);
+    let names = fs.names(listing).unwrap();
+    assert_eq!(names.len(), 302);
+    // The kernel's pages of it, each from where the last ended.
+    let all: Vec<_> = fs.listed(ROOT, listing, 0).unwrap().collect();
+    assert_eq!(all.len(), 304);
+    assert_eq!((all[0].0, all[0].1, all[0].3), (0, ROOT, OsStr::new(".")));
+    assert_eq!(all[1].3, OsStr::new(".."));
+    let page: Vec<_> = fs.listed(ROOT, listing, 200).unwrap().collect();
+    assert_eq!(page.len(), 104);
+    assert_eq!(page[0].0, 200);
+    assert_eq!(page[0].3, names[198].0.as_os_str());
+    assert_eq!(
+        fs.listed(ROOT, listing, 1).unwrap().next().map(|entry| entry.3),
+        Some(OsStr::new(".."))
+    );
+    assert_eq!(fs.listed(ROOT, listing, 304).unwrap().count(), 0);
 }
 
 #[test]

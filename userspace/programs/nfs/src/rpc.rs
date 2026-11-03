@@ -82,7 +82,8 @@ impl Conn {
         // The record mark, in the four bytes left for it: one fragment.
         let mark = 0x8000_0000 | (w.bytes.len() - 4) as u32;
         w.bytes[..4].copy_from_slice(&mark.to_be_bytes());
-        (&*self.input.get_ref()).write_all(&w.bytes)?;
+        let mut stream: &TcpStream = self.input.get_ref();
+        stream.write_all(&w.bytes)?;
         loop {
             let Some(record) = wire::read_record(&mut self.input)? else {
                 return Err(io::ErrorKind::UnexpectedEof.into());

@@ -107,13 +107,61 @@ impl Default for Options {
 /// flags, and those of NFS versions, transports and helpers this has
 /// not.
 const LEFT_ALONE: &[&str] = &[
-    "ac", "acdirmax", "acdirmin", "acregmax", "acregmin", "actimeo", "async", "atime", "auto",
-    "bg", "clientaddr", "cto", "defaults", "dev", "diratime", "exec", "fg", "fsc", "intr",
-    "local_lock", "lock", "lookupcache", "max_connect", "mountaddr", "mounthost", "mountport",
-    "mountproto", "mountvers", "namlen", "nconnect", "noac", "noatime", "noauto", "nocto",
-    "nodev", "nodiratime", "noexec", "nofail", "nofsc", "nointr", "nolock", "norelatime",
-    "noresvport", "nosharecache", "nosuid", "relatime", "resvport", "retry", "sharecache",
-    "strictatime", "suid", "sync", "user", "users", "_netdev",
+    "ac",
+    "acdirmax",
+    "acdirmin",
+    "acregmax",
+    "acregmin",
+    "actimeo",
+    "async",
+    "atime",
+    "auto",
+    "bg",
+    "clientaddr",
+    "cto",
+    "defaults",
+    "dev",
+    "diratime",
+    "exec",
+    "fg",
+    "fsc",
+    "intr",
+    "local_lock",
+    "lock",
+    "lookupcache",
+    "max_connect",
+    "mountaddr",
+    "mounthost",
+    "mountport",
+    "mountproto",
+    "mountvers",
+    "namlen",
+    "nconnect",
+    "noac",
+    "noatime",
+    "noauto",
+    "nocto",
+    "nodev",
+    "nodiratime",
+    "noexec",
+    "nofail",
+    "nofsc",
+    "nointr",
+    "nolock",
+    "norelatime",
+    "noresvport",
+    "nosharecache",
+    "nosuid",
+    "relatime",
+    "resvport",
+    "retry",
+    "sharecache",
+    "strictatime",
+    "suid",
+    "sync",
+    "user",
+    "users",
+    "_netdev",
 ];
 
 impl Options {
@@ -133,9 +181,15 @@ impl Options {
                         Some("4.1") => Some(1),
                         Some("4.2") => Some(2),
                         Some("4.0") => {
-                            return Err(format!("{option}: NFS 4.0 is not spoken, 4.1 and 4.2 are"));
+                            return Err(format!(
+                                "{option}: NFS 4.0 is not spoken, 4.1 and 4.2 are"
+                            ));
                         }
-                        _ => return Err(format!("{option}: NFS 4.1 and 4.2 are spoken, not 2 or 3")),
+                        _ => {
+                            return Err(format!(
+                                "{option}: NFS 4.1 and 4.2 are spoken, not 2 or 3"
+                            ));
+                        }
                     };
                 }
                 "minorversion" => {
@@ -147,8 +201,9 @@ impl Options {
                 }
                 "port" => {
                     let port = number()?;
-                    self.port = Some(u16::try_from(port).map_err(|_| format!("{option}: no such port"))?)
-                        .filter(|&p| p != 0);
+                    self.port =
+                        Some(u16::try_from(port).map_err(|_| format!("{option}: no such port"))?)
+                            .filter(|&p| p != 0);
                 }
                 "addr" => {
                     let addr = value.unwrap_or("").trim_start_matches('[').trim_end_matches(']');
