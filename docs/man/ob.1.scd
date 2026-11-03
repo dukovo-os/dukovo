@@ -117,10 +117,28 @@ _target/userspace/_).
 	Rust toolchain, for Rust's standard library) or a port it needs.
 	After Rust's standard library is built, its *libc* crate is checked
 	against the C library (see *PORTS*). *build* runs this first.
+	The ports of the catalog's bundles, ripgrep and bat, go into no
+	image: each is packed into a signed _out/bundles/ID-VERSION.dkv_
+	(see *PORTS*, ADR 0370).
 
 	*--rebuild* _name_
 		Build this port even if nothing changed; repeat the option for
 		more.
+
+*ports outdated* [*--tsv*]
+	Ask each port's git repository for its tags and list, for each port
+	pinned to a tag, whether its upstream has released a newer version
+	of the same series; release archives and snapshots are not checked.
+	With *--tsv*, only the ports with a newer release, one line each:
+	name, pinned tag and newer tag, separated by tabs. CI runs it each
+	Monday and opens an issue for each (ADR 0370).
+
+*ports audit*
+	Check the _Cargo.lock_ of each bundle's port in Rust, at its pinned
+	commit with its patches, against the RustSec advisory database with
+	*cargo-audit*, which must be installed (with *cargo install
+	cargo-audit --locked*). A vulnerability fails it; crates that are only
+	unmaintained or unsound are shown. CI runs it each day.
 
 *crates*
 	Fetch each crate from crates.io that _kernel/patches/crates.toml_
@@ -1596,7 +1614,9 @@ _recipe.toml_
 	for a source without a LICENSE or COPYING file, the files that hold
 	its *notices*; and code from other projects the port keeps in its
 	own directory (*bundled*: name, version, license, home page and
-	notice files), each a package of its own in the license manifest.
+	notice files), each a package of its own in the license manifest;
+	and for a port the catalog carries rather than the image, its
+	*[bundle]*: the bundle's *id*, *name* and *commands* (ADR 0370).
 
 _patches/\*.patch_
 	Changes to the source, applied in name order with *patch -p1*. Each
@@ -1614,7 +1634,8 @@ _build.sh_
 	line, such as links and manual pages; and for a program in Rust,
 	_crates.txt_, the crates it links as *cargo tree -e
 	normal,no-proc-macro --prefix none --format '{p}|{l}'* lists them,
-	and its _Cargo.lock_), *SYSROOT*, *TOOLCHAIN*, Cargo for Radix
+	and its _Cargo.lock_), for a bundle's port an empty folder for the
+	bundle (*PORT_BUNDLE*), *SYSROOT*, *TOOLCHAIN*, Cargo for Radix
 	(*CARGO_RADIX*), *PREFIX* (_/system_), *JOBS*, *HOST*
 	(*x86_64-radix*), the toolchain's programs as *CC*, *CXX*, *AR*,
 	*RANLIB*, *NM*, *STRIP* and *OBJCOPY*, *CFLAGS* and *CXXFLAGS*, the
@@ -1635,6 +1656,22 @@ is fetched again. A build uses nothing the recipe does not name. A
 source is copied into the build with its files' times, so make never
 remakes a release's generated files. Every port's license and notices go into the image's license
 manifest.
+
+A bundle's port installs into *PORT_BUNDLE* instead of the sysroot: a
+program _bin/COMMAND_ for each of its *commands*, and anything else the
+bundle holds, such as _man/man1/_. Nothing of it reaches an image. *ob*
+gives the folder a _manifest.json_ (*manifest.json*(5)): the recipe's
+version, summary, license and home page, its git repository as the
+source, the publisher "Dukovo catalog", and each command running with
+the access of whoever runs it, as command-line tools do, which the
+install sheet says. It writes _sbom.spdx_, listing every component the
+port builds in as the image's manifest does, and _licenses/_ with their
+texts and notices, after checking them against the ports' allow-list
+and MPL-2.0. It then signs the folder and packs it into
+_out/bundles/ID-VERSION.dkv_ with the code *bundle*(1) packs with. The
+key is the file *OB_BUNDLE_KEY* names, or the build's own,
+_out/bundles/build.key_, made the first time; Dukovo trusts neither, and
+the catalog signs what it publishes with its own keys (ADR 0370).
 
 The toolchain is the host's Clang, LLD and LLVM tools, made to target
 Radix by the scripts and Meson cross files *ob* writes into
@@ -1692,6 +1729,10 @@ kind and size as the crate's, and the same result. Any difference
 fails the build.
 
 # ENVIRONMENT
+
+*OB_BUNDLE_KEY*
+	A minisign secret key file, unencrypted, that signs the catalog's
+	bundles of ports instead of the build's own key (see *PORTS*).
 
 *OB_CONTAINER_ENGINE*
 	Program to use for *--container*, such as *podman* or *docker*.

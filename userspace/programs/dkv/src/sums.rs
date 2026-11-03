@@ -18,6 +18,7 @@ pub const SIGNATURE: &str = "signature";
 /// The longest path of a file in a bundle, and of each of its parts, as
 /// Linux's PATH_MAX and NAME_MAX.
 pub const PATH_MAX: usize = 4095;
+/// The longest name of a file or folder a bundle may hold, in bytes.
 pub const NAME_MAX: usize = 255;
 /// The most files a bundle holds.
 pub const FILES_MAX: usize = 1 << 20;
@@ -25,7 +26,9 @@ pub const FILES_MAX: usize = 1 << 20;
 /// What the list says about one file.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Entry {
+    /// The file's path in the bundle.
     pub path: String,
+    /// The SHA-256 of its bytes.
     pub sha256: [u8; 32],
 }
 
@@ -34,10 +37,12 @@ pub struct Entry {
 pub struct Hasher(Sha256);
 
 impl Hasher {
+    /// Hashes `bytes` too.
     pub fn update(&mut self, bytes: &[u8]) {
         self.0.update(bytes);
     }
 
+    /// The hash of everything given.
     pub fn finish(self) -> [u8; 32] {
         self.0.finalize().into()
     }

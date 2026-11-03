@@ -93,6 +93,26 @@ pub struct Recipe {
     /// directory, each a package of its own in the license manifest.
     #[serde(default)]
     pub bundled: Vec<Bundled>,
+    /// For a port the catalog carries and the image does not: the bundle
+    /// ob packs from what its build.sh installs into `$PORT_BUNDLE`
+    /// (ADR 0370).
+    #[serde(default)]
+    pub bundle: Option<BundleRecipe>,
+}
+
+/// What a port that is a catalog bundle says of its bundle; the rest of
+/// its manifest comes from the recipe (ADR 0370).
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BundleRecipe {
+    /// The bundle's ID, reverse DNS of its upstream's home.
+    pub id: String,
+    /// Its name as people see it.
+    pub name: String,
+    /// The commands it gives, each a program `bin/<command>` that runs
+    /// with the access of whoever runs it, as command-line tools do
+    /// (manifest.json(5)); the install sheet says so.
+    pub commands: Vec<String>,
 }
 
 /// Where a source comes from: a git repository and a commit in it, a
@@ -346,6 +366,25 @@ fn check(ctx: &Ctx, recipe: &Recipe, dir: &Path) -> Result<()> {
     }
     if recipe.toolchain && !recipe.image.is_empty() {
         return Err(Error::new(format!("{what}: a toolchain port puts nothing in the image")));
+    }
+    if let Some(bundle) = &recipe.bundle {
+        if recipe.toolchain || !recipe.image.is_empty() {
+            return Err(Error::new(format!(
+                "{what}: a bundle is the catalog's: it is no toolchain port and puts nothing in \
+                 the image"
+            )));
+        }
+        let plain = |s: &str| {
+            !s.is_empty()
+                && s.bytes().all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b))
+                && !s.starts_with(['.', '-'])
+        };
+        if bundle.commands.is_empty() || !bundle.commands.iter().all(|c| plain(c)) {
+            return Err(Error::new(format!(
+                "{what}: a bundle gives commands, each a name of letters, digits, `-`, `_` \
+                 and `.`"
+            )));
+        }
     }
     Ok(())
 }
@@ -950,7 +989,9 @@ pub fn build_all(ctx: &Ctx, rebuild: &[String]) -> Result<Ports> {
                 .hint("the ports are the directories of ports/"));
         }
     }
-    Ok(Ports { toolchain, ports })
+    let ports = Ports { toolchain, ports };
+    crate::bundles::pack_all(ctx, &ports)?;
+    Ok(ports)
 }
 
 /// What went into a port's build: its directory's files, the toolchain
@@ -1298,29 +1339,20 @@ fn build(ctx: &Ctx, toolchain: &Toolchain, port: &Port) -> Result<()> {
     for (krate, source) in recipe.crates.iter().zip(&port.crates) {
         copy_tree(ctx, source, &src.join(krate.path()))?;
     }
-    let patches = dir.join("patches");
-    if patches.is_dir() {
-        let mut list: Vec<PathBuf> = std::fs::read_dir(&patches)
-            .context(|| format!("reading {}", patches.display()))?
-            .filter_map(|entry| entry.ok().map(|e| e.path()))
-            .filter(|path| path.extension().is_some_and(|e| e == "patch"))
-            .collect();
-        list.sort();
-        for patch in list {
-            let mut cmd = Command::new("patch");
-            cmd.args(["-p1", "--batch", "--forward", "--quiet", "-d"])
-                .arg(&src)
-                .arg("-i")
-                .arg(&patch);
-            process::run(ctx, &mut cmd)?;
-        }
-    }
+    apply_patches(ctx, dir, &src)?;
     process::create_dir(&build_dir)?;
     let info = info_dir(ctx, &recipe.name);
     if info.exists() {
         std::fs::remove_dir_all(&info).context(|| format!("removing {}", info.display()))?;
     }
     process::create_dir(&info)?;
+    let bundle = crate::bundles::staging(ctx, &recipe.name);
+    if bundle.exists() {
+        std::fs::remove_dir_all(&bundle).context(|| format!("removing {}", bundle.display()))?;
+    }
+    if recipe.bundle.is_some() {
+        process::create_dir(&bundle)?;
+    }
     let sysroot = ctx.out.join("sysroot");
     process::create_dir(&sysroot)?;
     let jobs = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
@@ -1340,6 +1372,7 @@ fn build(ctx: &Ctx, toolchain: &Toolchain, port: &Port) -> Result<()> {
         .env("PORT_SRC", &src)
         .env("PORT_BUILD", &build_dir)
         .env("PORT_INFO", &info)
+        .env("PORT_BUNDLE", &bundle)
         .env("SYSROOT", &sysroot)
         .env("TOOLCHAIN", &toolchain.dir)
         .env("CARGO_RADIX", toolchain.cargo())
@@ -1368,6 +1401,16 @@ fn build(ctx: &Ctx, toolchain: &Toolchain, port: &Port) -> Result<()> {
         .env("SOURCE_DATE_EPOCH", crate::image::source_date_epoch(ctx).unwrap_or("0".into()));
     process::run(ctx, &mut cmd)
         .map_err(|err| Error::new(format!("port {}: {err}", recipe.name)))?;
+    if let Some(spec) = &recipe.bundle {
+        for command in &spec.commands {
+            if !bundle.join("bin").join(command).is_file() {
+                return Err(Error::new(format!(
+                    "port {}: build.sh installed no bin/{command} in $PORT_BUNDLE",
+                    recipe.name
+                )));
+            }
+        }
+    }
     // Nothing a recipe or build.sh says goes in the image may be missing.
     for file in &image_list(ctx, recipe)? {
         let path = sysroot.join(file);
@@ -1377,6 +1420,29 @@ fn build(ctx: &Ctx, toolchain: &Toolchain, port: &Port) -> Result<()> {
                 "port {}: build.sh installed no {file} in the sysroot",
                 recipe.name
             )));
+        }
+    }
+    Ok(())
+}
+
+/// Applies the patches of the port in `dir` to its source `src`, in name
+/// order.
+pub fn apply_patches(ctx: &Ctx, dir: &Path, src: &Path) -> Result<()> {
+    let patches = dir.join("patches");
+    if patches.is_dir() {
+        let mut list: Vec<PathBuf> = std::fs::read_dir(&patches)
+            .context(|| format!("reading {}", patches.display()))?
+            .filter_map(|entry| entry.ok().map(|e| e.path()))
+            .filter(|path| path.extension().is_some_and(|e| e == "patch"))
+            .collect();
+        list.sort();
+        for patch in list {
+            let mut cmd = Command::new("patch");
+            cmd.args(["-p1", "--batch", "--forward", "--quiet", "-d"])
+                .arg(src)
+                .arg("-i")
+                .arg(&patch);
+            process::run(ctx, &mut cmd)?;
         }
     }
     Ok(())

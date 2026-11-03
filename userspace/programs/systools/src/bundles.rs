@@ -25,19 +25,17 @@
 //!   PERMISSION` change what an app may do (ADR 0224): bundled gives a
 //!   permission only after the trusted prompt's yes.
 
-mod base64;
+// The signed list, minisign, the SBOM and the zip of a .dkv file are
+// the dkv crate's, which ob packs the catalog's bundles with too.
+#[allow(unused_imports)]
+pub(crate) use dkv::{base64, minisign, sbom, signed, sums, zip};
 pub(crate) mod confine;
 pub(crate) mod folder;
 pub(crate) mod grants;
-pub(crate) mod minisign;
 pub(crate) mod protocol;
 pub(crate) mod registry;
 pub(crate) mod run;
-mod sbom;
 pub(crate) mod sheet;
-pub(crate) mod signed;
-pub(crate) mod sums;
-mod zip;
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufReader, IsTerminal, Read, Write};
@@ -74,10 +72,10 @@ const USAGE: &str =
        bundle revoke ID PERMISSION";
 
 /// The manifest's name in a bundle's folder.
-pub(crate) const MANIFEST: &str = "manifest.json";
+pub(crate) use dkv::MANIFEST;
 
 /// A packed bundle's extension.
-const EXTENSION: &str = "dkv";
+use dkv::EXTENSION;
 
 /// The developer key's files, in `$XDG_DATA_HOME/bundle`.
 const DEVELOPER_KEY: &str = "developer.key";

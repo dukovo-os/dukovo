@@ -40,6 +40,9 @@ accounts = { path = "../../userspace/programs/accounts", features = ["hash"] }
 # bundle manifests, which `ob docs --check` compares with service.toml(5)
 # and manifest.json(5).
 manifest = { path = "../../userspace/programs/manifest", features = ["bundle"] }
+# The catalog's bundles of ports, signed and packed as bundle(1) packs them
+# (ADR 0370).
+dkv = { path = "../../userspace/programs/dkv" }
 # The interface compiler, for the man(2) pages and C headers of abi/*.ridl.
 ridlc = { path = "../ridlc" }
 rustc-demangle = "0.1"

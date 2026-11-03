@@ -24,7 +24,7 @@ use std::os::unix::fs::FileExt;
 use miniz_oxide::inflate::stream::{InflateState, inflate};
 use miniz_oxide::{DataFormat, MZError, MZFlush, MZStatus};
 
-use super::sums;
+use crate::sums;
 
 const LOCAL: u32 = 0x0403_4b50;
 const CENTRAL: u32 = 0x0201_4b50;
@@ -74,17 +74,26 @@ const fn crc_table() -> [u32; 256] {
 
 static CRC_TABLE: [u32; 256] = crc_table();
 
+impl Default for Crc {
+    fn default() -> Crc {
+        Crc::new()
+    }
+}
+
 impl Crc {
+    /// A CRC-32 of no bytes yet.
     pub fn new() -> Crc {
         Crc(!0)
     }
 
+    /// Adds `bytes`.
     pub fn update(&mut self, bytes: &[u8]) {
         for &b in bytes {
             self.0 = CRC_TABLE[((self.0 ^ u32::from(b)) & 0xff) as usize] ^ (self.0 >> 8);
         }
     }
 
+    /// The CRC-32 of everything added.
     pub fn value(self) -> u32 {
         !self.0
     }
@@ -92,8 +101,11 @@ impl Crc {
 
 /// A file to write into an archive.
 pub struct Input<'a> {
+    /// Its path in the archive.
     pub path: &'a str,
+    /// Whether it may be run.
     pub executable: bool,
+    /// Its bytes.
     pub data: &'a [u8],
 }
 
@@ -114,6 +126,7 @@ fn u32_of(value: u64) -> io::Result<u32> {
 }
 
 impl<W: Write> Writer<W> {
+    /// A writer of an archive to `out`.
     pub fn new(out: W) -> Writer<W> {
         Writer { out, offset: 0, central: Vec::new(), entries: 0 }
     }
@@ -210,11 +223,17 @@ impl<W: Write> Writer<W> {
 pub struct Entry {
     /// Its path, without the `/` a folder's ends in.
     pub path: String,
+    /// Whether it is a folder.
     pub folder: bool,
+    /// Whether it may be run.
     pub executable: bool,
+    /// How it is stored: 0, as it is, or 8, deflated.
     pub method: u16,
+    /// The CRC-32 of its bytes.
     pub crc: u32,
+    /// How many bytes it takes in the archive.
     pub packed: u64,
+    /// How many bytes it is.
     pub size: u64,
     /// Where its local header starts, and where its bytes do.
     header: u64,
@@ -223,7 +242,15 @@ pub struct Entry {
 
 /// Where an archive's bytes come from: a file, or bytes in memory.
 pub trait Source {
+    /// How many bytes it holds.
     fn len(&self) -> io::Result<u64>;
+
+    /// Whether it holds no bytes.
+    fn is_empty(&self) -> io::Result<bool> {
+        self.len().map(|len| len == 0)
+    }
+
+    /// Reads into `buf` from `offset`, as many bytes as are there.
     fn read_at(&self, buf: &mut [u8], offset: u64) -> io::Result<usize>;
 
     /// Fills `buf` from `offset`, or fails.
@@ -276,6 +303,7 @@ fn u32_at(bytes: &[u8], at: usize) -> u32 {
 /// An archive's directory, read and checked.
 pub struct Archive<'a, S: Source + ?Sized> {
     source: &'a S,
+    /// Its entries, in the central directory's order.
     pub entries: Vec<Entry>,
 }
 
@@ -457,8 +485,12 @@ impl<'a, S: Source + ?Sized> Archive<'a, S> {
                     offset += have as u64;
                     start = 0;
                 }
-                let flush = if offset == entry.packed { MZFlush::Finish } else { MZFlush::None };
-                let result = inflate(&mut state, &input[start..have], &mut output, flush);
+                // Never MZFlush::Finish: miniz_oxide takes a first call with
+                // Finish to mean that the output buffer holds it all, and
+                // fails a file whose deflated bytes fit in the input buffer
+                // but whose own do not fit in the output's. StreamEnd ends
+                // the stream all the same.
+                let result = inflate(&mut state, &input[start..have], &mut output, MZFlush::None);
                 start += result.bytes_consumed;
                 sink(&output[..result.bytes_written])?;
                 match result.status {
@@ -657,6 +689,19 @@ mod tests {
             ("empty", false, b""),
         ]);
         assert_eq!(again, bytes);
+    }
+
+    /// A file whose deflated bytes fit in one read of the input but which
+    /// inflates to more than one buffer of output, as a manual page does.
+    #[test]
+    fn small_deflated_files_inflate_to_more_than_a_buffer() {
+        let text: Vec<u8> =
+            (0..6000).flat_map(|i| format!("line {i} of a manual page\n").into_bytes()).collect();
+        assert!(text.len() > 64 << 10);
+        let bytes = pack(&[("man/man1/x.1", false, &text)]);
+        assert!(bytes.len() < 64 << 10);
+        let archive = Archive::read(&bytes[..]).unwrap();
+        assert_eq!(unpacked(&archive, "man/man1/x.1"), text);
     }
 
     /// An archive Info-ZIP's zip 3.0 made of a folder (`zip -r -X`), with a

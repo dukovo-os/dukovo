@@ -1,0 +1,26 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# bat, a cat that shows files with syntax highlighting, line numbers and
+# a pager: a bundle of the Dukovo catalog, not of the image (ADR 0370).
+# Built without its Git markers, whose libgit2 carries LGPL code, and
+# without --diagnostic, whose report reads Linux's /proc; and with
+# Dukovo's own ansi_colours (ansi_colours/, Apache-2.0 OR MIT) in the
+# place of crates.io's, which is under the LGPL. Its command runs with
+# the access of whoever runs it, as command-line tools do.
+name = "bat"
+version = "0.26.1"
+summary = "shows files with syntax highlighting, line numbers and paging"
+license = "MIT OR Apache-2.0"
+homepage = "https://github.com/sharkdp/bat"
+depends = ["rust-crates"]
+
+[source]
+git = "https://github.com/sharkdp/bat.git"
+commit = "979ba22628bc9d8171f2cffca2bd5c90c9fc0a9e"
+tag = "v0.26.1"
+
+[bundle]
+id = "io.github.sharkdp.bat"
+name = "bat"
+commands = ["bat"]

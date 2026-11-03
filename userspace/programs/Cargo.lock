@@ -791,6 +791,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "dkv"
+version = "0.12.0"
+dependencies = [
+ "blake2 0.10.6",
+ "ed25519-compact",
+ "libc",
+ "manifest",
+ "miniz_oxide",
+ "sha2 0.10.9",
+]
+
+[[package]]
 name = "document-features"
 version = "0.2.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2807,16 +2819,14 @@ dependencies = [
  "accounts",
  "acl",
  "base64",
- "blake2 0.10.6",
  "boringtun",
  "disk",
- "ed25519-compact",
+ "dkv",
  "if-addrs",
  "keymap",
  "libc",
  "manifest",
  "mdns-sd",
- "miniz_oxide",
  "netproto",
  "radix-abi",
  "radix-bitlocker",
@@ -2829,7 +2839,6 @@ dependencies = [
  "rustls",
  "serde",
  "serde_json",
- "sha2 0.10.9",
  "smoltcp",
  "socket2",
 ]
