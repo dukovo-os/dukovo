@@ -507,9 +507,10 @@ yubikey-manager`).
 The update server (ADR 0382) is reached over SSH as `$OB_UPDATE_SSH`, by
 default updates.dukovo.org. `server setup` copies tools/update-server/ and
 catalog-repo there and runs its setup through sudo, then writes the
-server's online key to catalog/keys/online.json. `deploy` copies the
-catalog and the signed bundles there for the server to publish, then
-checks what it serves. `check` reads a served catalog, by default
+server's online key to catalog/keys/online.json, which `sign` needs: the
+targets delegate the daily list of the bundles' known flaws to it (ADR
+0389). `deploy` copies the catalog and the signed bundles there for the
+server to publish, then checks what it serves. `check` reads a served catalog, by default
 https://updates.dukovo.org/catalog/, as a client would."
         }
         "signoff" => {

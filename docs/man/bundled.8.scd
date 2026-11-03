@@ -159,6 +159,12 @@ install ends, and then removed. Asked to install a file, it sums the
 archive and looks it up in each index that has not expired: a catalog
 lists it if it has that ID with that SHA-256 and length.
 
+Each time it reads a catalog, bundled also fetches the catalog's list
+of known flaws (ADR 0389), which its targets delegate to the role
+*flaws*, and keeps it beside the index while it was made less than
+eight days ago; one it cannot fetch is not kept. *bundle search*,
+*bundle list*, *bundle info* and the sheet read it.
+
 Adding and removing a catalog are root's, and each is a security event
 of the audit log. A catalog is kept only once bundled has read it from
 the root it came with.
@@ -187,6 +193,12 @@ minutes after it starts, then daily, and at once when it is turned on.
 An update by itself that asks for more than the version it replaces is
 not installed; it waits for a person, and bundled writes so once for
 that version in the history and each time in its log.
+
+The daily check runs with the updater, whether or not any place
+updates by itself: it reads anew each catalog that installed bundles
+are bound to, and writes the known flaws of each installed version to
+its log and, once for each change, to _history_ as *flawed*. It changes
+no bundle.
 
 bundled writes each install, update, going back, removal, hold and
 release, waiting update and failed one to _history_. A person is shown
@@ -297,8 +309,9 @@ _/system/state/bundled/history_
 
 _/system/state/bundled/catalogs/NAME_
 	Each catalog's client: _tuf_, the metadata it trusts,
-	_first-root.json_, the root it started from, _index_, and
-	_downloads_, the files being installed.
+	_first-root.json_, the root it started from, _index_, _flaws.json_,
+	its list of known flaws, and _downloads_, the files being
+	installed.
 
 _/system/settings/catalogs/NAME_
 	Each catalog: _url_, _root.json_ and _off_.

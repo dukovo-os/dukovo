@@ -184,7 +184,19 @@ impl Package {
     fn notice_dir(&self) -> String {
         format!("notices/{}-{}", self.name, self.version)
     }
+
+    /// Its package URL, by which advisories name it (ADR 0389): a crate's
+    /// from crates.io, and none for other components.
+    fn purl(&self) -> Option<String> {
+        self.download
+            .starts_with(CRATES_DOWNLOAD)
+            .then(|| format!("pkg:cargo/{}@{}", self.name, self.version.replace('+', "%2B")))
+    }
 }
+
+/// Where a crate from crates.io downloads from, the start of its
+/// [`Package::download`].
+const CRATES_DOWNLOAD: &str = "https://crates.io/api/v1/crates/";
 
 /// What besides the kernel's crates goes into an image.
 pub struct Extras<'a> {
@@ -588,7 +600,7 @@ fn listed_packages(
 
 /// Where crates.io serves a crate.
 fn crate_download(name: &str, version: &str) -> String {
-    format!("https://crates.io/api/v1/crates/{name}/{version}/download")
+    format!("{CRATES_DOWNLOAD}{name}/{version}/download")
 }
 
 /// A crate from crates.io that a port's recipe lists, and so patches.
@@ -1393,6 +1405,9 @@ impl Document {
             let _ = writeln!(o, "PackageLicenseConcluded: {}", package.license);
             let _ = writeln!(o, "PackageLicenseDeclared: {}", package.license);
             let _ = writeln!(o, "PackageCopyrightText: NOASSERTION");
+            if let Some(purl) = package.purl() {
+                let _ = writeln!(o, "ExternalRef: PACKAGE-MANAGER purl {purl}");
+            }
             let mut comment = package.comment.clone();
             if !package.notices.is_empty() {
                 let _ = write!(comment, " Notices: {}/{}.", self.notices, package.notice_dir());
@@ -1586,16 +1601,20 @@ mod tests {
 
     #[test]
     fn renders_spdx() {
-        let packages = vec![Package {
-            name: "compiler_builtins".into(),
+        let crate_named = |name: &str, download: String| Package {
+            name: name.into(),
             version: "0.1.160".into(),
             license: "MIT".into(),
             area: Area::Kernel,
-            download: "NOASSERTION".into(),
+            download,
             sha256: Some("ab".into()),
             notices: vec!["LICENSE.txt".into()],
             comment: "C.".into(),
-        }];
+        };
+        let packages = vec![
+            crate_named("compiler_builtins", "NOASSERTION".into()),
+            crate_named("regex", format!("{CRATES_DOWNLOAD}regex/0.1.160/download")),
+        ];
         let document = Document::image("c0ffee", 0);
         let ids = BTreeSet::from(["MIT".to_string()]);
         let text = document.render(&packages, &ids, &root()).unwrap();
@@ -1610,5 +1629,8 @@ mod tests {
             text.contains("Notices: /system/resources/licenses/notices/compiler_builtins-0.1.160.")
         );
         assert!(text.contains("Created: 1970-01-01T00:00:00Z\n"));
+        // A crate from crates.io, by its package URL, for advisories.
+        assert!(text.contains("ExternalRef: PACKAGE-MANAGER purl pkg:cargo/regex@0.1.160\n"));
+        assert_eq!(text.matches("ExternalRef:").count(), 1);
     }
 }

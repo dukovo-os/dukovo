@@ -837,6 +837,7 @@ fn history_line(e: &Event, me: u32) -> String {
         What::Released => format!("let go at {from}, to update again"),
         What::Waiting => format!("{to} {}", e.note),
         What::Failed => format!("{to} did not update: {}", e.note),
+        What::Flawed => format!("{from} has known flaws: {}", e.note),
     };
     let whose = if e.place == Place::Everyone { ", for everyone" } else { "" };
     let by = match e.by {
@@ -895,13 +896,23 @@ fn list() -> Result<i32, Fail> {
     rows.sort_by(|a, b| a.id.cmp(&b.id).then(a.place.cmp(&b.place)));
     let width = rows.iter().map(|r| r.id.len()).max().unwrap_or(2).max(2);
     let version_width = rows.iter().map(|r| r.version.len()).max().unwrap_or(7).max(7);
-    println!("{:width$}  {:version_width$}  {:9}  NAME", "ID", "VERSION", "FOR");
+    let flaws_width = rows.iter().map(|r| r.flags.shown().len()).max().unwrap_or(5).max(5);
+    println!(
+        "{:width$}  {:version_width$}  {:9}  {:flaws_width$}  NAME",
+        "ID", "VERSION", "FOR", "FLAWS"
+    );
     for row in rows {
         let whose = match row.place {
             Place::Everyone => "everyone",
             Place::User(_) => "you",
         };
-        println!("{:width$}  {:version_width$}  {whose:9}  {}", row.id, row.version, row.name);
+        println!(
+            "{:width$}  {:version_width$}  {whose:9}  {:flaws_width$}  {}",
+            row.id,
+            row.version,
+            row.flags.shown(),
+            row.name
+        );
     }
     Ok(0)
 }
@@ -934,11 +945,19 @@ fn search(words: &[String]) -> Result<i32, Fail> {
     let width = hits.iter().map(|h| h.id.len()).max().unwrap_or(2).max(2);
     let version_width = hits.iter().map(|h| h.version.len()).max().unwrap_or(7).max(7);
     let catalog_width = hits.iter().map(|h| h.catalog.len()).max().unwrap_or(7).max(7);
-    println!("{:width$}  {:version_width$}  {:catalog_width$}  NAME", "ID", "VERSION", "CATALOG");
+    let flaws_width = hits.iter().map(|h| h.flags.shown().len()).max().unwrap_or(5).max(5);
+    println!(
+        "{:width$}  {:version_width$}  {:catalog_width$}  {:flaws_width$}  NAME",
+        "ID", "VERSION", "CATALOG", "FLAWS"
+    );
     for hit in hits {
         println!(
-            "{:width$}  {:version_width$}  {:catalog_width$}  {}",
-            hit.id, hit.version, hit.catalog, hit.name
+            "{:width$}  {:version_width$}  {:catalog_width$}  {:flaws_width$}  {}",
+            hit.id,
+            hit.version,
+            hit.catalog,
+            hit.flags.shown(),
+            hit.name
         );
     }
     Ok(0)

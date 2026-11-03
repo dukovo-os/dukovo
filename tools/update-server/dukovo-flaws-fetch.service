@@ -1,0 +1,33 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+[Unit]
+Description=Fetch OSV's advisories for the Dukovo catalog's known flaws (ADR 0389)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=dukovo-flaws
+Group=dukovo-flaws
+UMask=0022
+# The ecosystems whose advisories are fetched, as OSV names them: those
+# the bundles' SBOMs name components of. A drop-in may name others.
+Environment=ECOSYSTEMS=crates.io
+ExecStart=/usr/local/lib/dukovo-catalog/flaws-fetch.sh
+# It writes its own folder and nothing else.
+ProtectSystem=strict
+ReadWritePaths=/var/lib/dukovo-flaws
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native

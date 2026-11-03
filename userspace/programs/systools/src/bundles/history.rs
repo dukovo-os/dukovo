@@ -35,6 +35,9 @@ pub enum What {
     Waiting,
     /// An update that failed.
     Failed,
+    /// The daily check found that its catalog knows of flaws in the
+    /// installed version (ADR 0389).
+    Flawed,
 }
 
 impl What {
@@ -48,6 +51,7 @@ impl What {
             What::Released => "released",
             What::Waiting => "waiting",
             What::Failed => "failed",
+            What::Flawed => "flawed",
         }
     }
 
@@ -61,6 +65,7 @@ impl What {
             "released" => What::Released,
             "waiting" => What::Waiting,
             "failed" => What::Failed,
+            "flawed" => What::Flawed,
             _ => return Err(format!("{word:?} is not something bundled does")),
         })
     }

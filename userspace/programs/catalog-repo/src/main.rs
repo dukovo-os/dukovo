@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use catalog_repo::keys::{self, Signers};
-use catalog_repo::{Refreshed, Repo, WARN_DAYS, expires_days};
+use catalog_repo::{FLAWS_DAYS, Refreshed, Repo, WARN_DAYS, expires_days};
 
 const USAGE: &str = "\
 usage: catalog-repo --repo DIR [--yubikey-helper PROGRAM] [--key FILE]... COMMAND
@@ -22,6 +22,9 @@ usage: catalog-repo --repo DIR [--yubikey-helper PROGRAM] [--key FILE]... COMMAN
                                          the bundles in --bundles DIR by default
        publish --store DIR --out DIR     snapshot, timestamp and the files to serve
        refresh --store DIR --out DIR     a new timestamp, or all again when needed
+       flaws --store DIR --out DIR OSV...
+                                         sign the list of the bundles' known flaws
+                                         from advisories in the OSV format, and publish
        check URL                         read what URL serves from the first root
        status                            the roles' versions, expiry and keys";
 
@@ -175,6 +178,32 @@ fn run(options: &Options) -> Result<(), String> {
                     out.display()
                 ),
             }
+        }
+        ["flaws", sources @ ..] => {
+            let store = options.store.as_ref().ok_or("--store is needed")?;
+            let out = options.out.as_ref().ok_or("--out is needed")?;
+            if sources.is_empty() {
+                return Err("name the advisories: OSV's export of an ecosystem, all.zip".into());
+            }
+            let mut advisories = Vec::new();
+            for source in sources {
+                let data = std::fs::read(source).map_err(|e| format!("{source}: {e}"))?;
+                advisories
+                    .extend(dkv::flaws::read_osv(&data).map_err(|e| format!("{source}: {e}"))?);
+            }
+            let signers = signers()?;
+            let days = options.days.unwrap_or(FLAWS_DAYS);
+            let (version, count) = repo.sign_flaws(store, &signers, &advisories, days)?;
+            println!(
+                "Signed flaws version {version}: {count} known flaws, from {} advisories.",
+                advisories.len()
+            );
+            let days = (expires_days("snapshot"), expires_days("timestamp"));
+            let (snapshot, timestamp) = repo.publish(store, out, &signers, days)?;
+            println!(
+                "Published snapshot {snapshot} and timestamp {timestamp} in {}.",
+                out.display()
+            );
         }
         ["check", url] => {
             let count = repo.check_url(url)?;

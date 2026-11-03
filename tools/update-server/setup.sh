@@ -13,6 +13,8 @@
 # - The person running it, through sudo, may deploy: what they copy into
 #   /var/lib/dukovo-catalog-incoming is published when `ready` appears.
 # - Every six hours the timestamp is signed again.
+# - Each day the user dukovo-flaws fetches OSV's advisories, and the list
+#   of the bundles' known flaws is signed from them (ADR 0389).
 #
 # It can run again, to update the program or these files.
 set -eu
@@ -38,9 +40,9 @@ if ! command -v caddy >/dev/null 2>&1 &&
 	exit 1
 fi
 
-echo "==> Installing Caddy and rsync"
+echo "==> Installing Caddy, rsync and curl"
 apt-get update -qq
-DEBIAN_FRONTEND=noninteractive apt-get install -y -qq caddy rsync >/dev/null
+DEBIAN_FRONTEND=noninteractive apt-get install -y -qq caddy rsync curl >/dev/null
 
 echo "==> The catalog's user, and who may deploy"
 getent group dukovo-deploy >/dev/null || groupadd --system dukovo-deploy
@@ -50,18 +52,25 @@ if ! id dukovo-catalog >/dev/null 2>&1; then
 fi
 usermod -a -G dukovo-deploy dukovo-catalog
 usermod -a -G dukovo-deploy "$deployer"
+# Who fetches the advisories, the one job that reaches the web.
+if ! id dukovo-flaws >/dev/null 2>&1; then
+	useradd --system --home-dir /var/lib/dukovo-flaws --no-create-home \
+		--shell /usr/sbin/nologin dukovo-flaws
+fi
 
 install -d -o dukovo-catalog -g dukovo-catalog -m 0700 /var/lib/dukovo-catalog
 install -d -o dukovo-catalog -g dukovo-catalog -m 0700 \
 	/var/lib/dukovo-catalog/repo /var/lib/dukovo-catalog/store
 install -d -o root -g dukovo-deploy -m 2770 /var/lib/dukovo-catalog-incoming
+install -d -o dukovo-flaws -g dukovo-flaws -m 0755 /var/lib/dukovo-flaws
 # /srv/dukovo/catalog is a link the first deploy makes (site.sh).
 install -d -o dukovo-catalog -g dukovo-catalog -m 0755 /srv/dukovo
 install -d -o root -g root -m 0755 /usr/local/lib/dukovo-catalog /usr/local/share/dukovo-catalog
 
 echo "==> The program and the scripts"
 install -o root -g root -m 0755 "$here/catalog-repo" /usr/local/lib/dukovo-catalog/catalog-repo
-install -o root -g root -m 0755 "$here/publish.sh" "$here/refresh.sh" /usr/local/lib/dukovo-catalog/
+install -o root -g root -m 0755 "$here/publish.sh" "$here/refresh.sh" \
+	"$here/flaws-fetch.sh" "$here/flaws.sh" /usr/local/lib/dukovo-catalog/
 install -o root -g root -m 0644 "$here/site.sh" /usr/local/lib/dukovo-catalog/
 
 # The online key: its secret half never leaves this folder, and its public
@@ -83,13 +92,16 @@ caddy validate --adapter caddyfile --config /etc/caddy/Caddyfile.new >/dev/null
 mv /etc/caddy/Caddyfile.new /etc/caddy/Caddyfile
 systemctl reload-or-restart caddy
 
-echo "==> The units that publish and refresh"
+echo "==> The units that publish, refresh and list the known flaws"
 for unit in dukovo-catalog-publish.service dukovo-catalog-publish.path \
-	dukovo-catalog-refresh.service dukovo-catalog-refresh.timer; do
+	dukovo-catalog-refresh.service dukovo-catalog-refresh.timer \
+	dukovo-flaws-fetch.service dukovo-catalog-flaws.service \
+	dukovo-catalog-flaws.timer; do
 	install -o root -g root -m 0644 "$here/$unit" /etc/systemd/system/
 done
 systemctl daemon-reload
-systemctl enable --now dukovo-catalog-publish.path dukovo-catalog-refresh.timer
+systemctl enable --now dukovo-catalog-publish.path dukovo-catalog-refresh.timer \
+	dukovo-catalog-flaws.timer
 
 if command -v ufw >/dev/null 2>&1 && ufw status | grep -q '^Status: active'; then
 	ufw allow 80/tcp >/dev/null

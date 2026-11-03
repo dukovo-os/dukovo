@@ -1559,7 +1559,10 @@ _target/userspace/_).
 	bundles in _out/catalog/store/_ to the server, which publishes them
 	with its online key, or keeps what it served and says why; then it
 	checks what the server serves. The server signs the timestamp again
-	every six hours, and the snapshot when it has two days left. *check*
+	every six hours, and the snapshot when it has two days left. Each day
+	it also fetches OSV's advisories and signs the list of the bundles'
+	known flaws with the online key, which the targets delegate that list
+	to (ADR 0389); so *sign* needs _catalog/keys/online.json_. *check*
 	reads a catalog served at _url_, by default
 	_https://updates.dukovo.org/catalog/_, as a new computer would, from
 	the first root in _catalog/metadata/_, and fetches every bundle.

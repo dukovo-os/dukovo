@@ -15,12 +15,19 @@
 //! - A catalog vouches for a bundle by the SHA-256 and length of its
 //!   `.dkv` file, which the client checks when it fetches it, and which
 //!   bundled checks a file from anywhere else against.
+//! - Its list of known flaws (ADR 0389), which its update server signs
+//!   each day, is fetched each time it is read, and kept beside the index
+//!   while it is good: of a bundle it does not list, a catalog tells
+//!   nothing.
 
 use std::cmp::Ordering;
 use std::path::{Path, PathBuf};
 
+use dkv::flaws::{List, Severity};
 use tuf::metadata::Targets;
 use tuf::{Updater, Url};
+
+use super::protocol::Flags;
 
 /// Where the catalogs are set.
 pub const SETTINGS: &str = "/system/settings/catalogs";
@@ -40,6 +47,7 @@ pub const OFF_FILE: &str = "off";
 const TUF_DIR: &str = "tuf";
 const FIRST_ROOT: &str = "first-root.json";
 const INDEX: &str = "index";
+const FLAWS: &str = "flaws.json";
 const DOWNLOADS: &str = "downloads";
 
 /// The targets a catalog's bundles are, by path.
@@ -367,6 +375,36 @@ pub fn read_index(state: &Path, name: &str) -> Option<Index> {
     Index::read(&text).ok()
 }
 
+/// The list of flaws bundled last fetched from catalog `name`, if it
+/// was good then, can be read, and was made less than
+/// [`FLAWS_GOOD_DAYS`] ago (ADR 0389).
+#[must_use]
+pub fn read_flaws(state: &Path, name: &str) -> Option<List> {
+    let data = std::fs::read(state_dir(state, name).join(FLAWS)).ok()?;
+    let list = List::read(&data).ok()?;
+    let made = tuf::time::parse(&list.made)?;
+    (tuf::time::now() - made < FLAWS_GOOD_DAYS * 86_400).then_some(list)
+}
+
+/// How long a catalog's list of flaws tells of them, in days: the week
+/// its update server signs it for, and a day more for clocks.
+const FLAWS_GOOD_DAYS: i64 = 8;
+
+/// What `list` says of version `version` of bundle `id`, in short.
+#[must_use]
+pub fn flags(list: Option<&List>, id: &str, version: &str) -> Flags {
+    let Some(list) = list.filter(|l| l.checked(id, version)) else {
+        return Flags::Unknown;
+    };
+    let mut count = 0;
+    let mut worst = Severity::Unknown;
+    for flaw in list.of(id, version) {
+        count += 1;
+        worst = worst.max(flaw.severity);
+    }
+    if count == 0 { Flags::None } else { Flags::Known { count, worst } }
+}
+
 /// A catalog's client, brought up to date.
 pub struct Open {
     updater: Updater,
@@ -415,7 +453,33 @@ pub fn open(catalog: &Catalog, state: &Path) -> Result<Open, String> {
     .unwrap_or_default();
     let index = Index::of(&top.signed, top.version, tuf::time::now(), expires);
     write_whole(&dir.join(INDEX), index.text().as_bytes())?;
+    // The list of flaws, while it is good; one that cannot be had is not
+    // kept, so that nothing tells of flaws from an old one.
+    let flaws = dir.join(FLAWS);
+    if fetch_flaws(&mut updater, &flaws).is_err() {
+        let _ = std::fs::remove_file(&flaws);
+    }
     Ok(Open { updater, dir, index })
+}
+
+/// Fetches a catalog's list of flaws into `file`, if its snapshot lists
+/// the role that signs it.
+fn fetch_flaws(updater: &mut Updater, file: &Path) -> Result<(), String> {
+    let listed = updater
+        .trusted()
+        .snapshot()
+        .is_some_and(|s| s.signed.meta.contains_key(&format!("{}.json", dkv::flaws::ROLE)));
+    if !listed {
+        return Err("the catalog signs no list of flaws".into());
+    }
+    let target = updater
+        .target(dkv::flaws::TARGET)
+        .map_err(|e| e.to_string())?
+        .ok_or("the catalog's flaws role lists no list")?;
+    if !Updater::cached(file, &target) {
+        updater.download_target(dkv::flaws::TARGET, &target, file).map_err(|e| e.to_string())?;
+    }
+    List::read(&std::fs::read(file).map_err(|e| e.to_string())?).map(drop)
 }
 
 impl Open {

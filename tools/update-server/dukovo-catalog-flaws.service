@@ -1,0 +1,33 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+[Unit]
+Description=Sign the Dukovo catalog's list of known flaws (ADR 0389)
+# The advisories are fetched first; if that fails, those of the day
+# before are used, while they are less than two days old.
+Wants=dukovo-flaws-fetch.service
+After=dukovo-flaws-fetch.service
+
+[Service]
+Type=oneshot
+User=dukovo-catalog
+Group=dukovo-catalog
+UMask=0022
+ExecStart=/usr/local/lib/dukovo-catalog/flaws.sh
+# It reads and writes its own folders and nothing else, and has no use
+# for the network: the advisories are on the disk.
+ProtectSystem=strict
+ReadWritePaths=/var/lib/dukovo-catalog /srv/dukovo
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+PrivateNetwork=yes
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native

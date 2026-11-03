@@ -64,7 +64,8 @@ use crate::bundles::grants::{self, Grant, Grants, Said};
 use crate::bundles::history::{self, Event, What};
 use crate::bundles::minisign::PublicKey;
 use crate::bundles::protocol::{
-    self, AddOn, Answer, Available, Find, Found, Hit, LINE_MAX, Lines, Listed, Request, Shown,
+    self, AddOn, Answer, Available, Find, Flags, Found, Hit, LINE_MAX, Lines, Listed, Request,
+    Shown,
 };
 use crate::bundles::registry::{self, Installed, Place, Registry, Trust, base_id};
 use crate::bundles::services::{self, Record};
@@ -590,6 +591,7 @@ fn install_in(
             more.join(", ")
         ));
     }
+    let flaws = kept_flaws(&trust);
     let facts = Facts {
         manifest: &checked.manifest,
         key: &checked.key,
@@ -598,6 +600,8 @@ fn install_in(
         files: checked.files,
         bytes: checked.bytes,
         replaces: before.as_deref().map(|v| (v, more.as_slice())),
+        flaws: flaws.as_ref(),
+        all_flaws: false,
     };
     if !how.update || !more.is_empty() {
         if let Some(talk) = talk.as_deref_mut() {
@@ -1499,8 +1503,17 @@ fn list(shared: &Shared, connection: &mut Connection, asker: u32) -> Result<Stri
         .filter(|i| i.place == Place::Everyone || i.place == Place::User(asker))
         .cloned()
         .collect();
+    let state = Path::new(catalogs::STATE);
+    let mut lists = std::collections::HashMap::new();
     for i in &installed {
         let name = installed_manifest(i.place, &i.id).map_or_else(|_| "?".into(), |m| m.name.0);
+        let bound = shared.lock().catalog_bound(i.place, &i.id).map(|b| b.catalog.clone());
+        let flags = bound.map_or(Flags::Unknown, |catalog| {
+            let list = lists
+                .entry(catalog)
+                .or_insert_with_key(|catalog| catalogs::read_flaws(state, catalog));
+            catalogs::flags(list.as_ref(), &i.id, &i.version)
+        });
         let listed = Listed {
             place: i.place,
             id: i.id.clone(),
@@ -1508,6 +1521,7 @@ fn list(shared: &Shared, connection: &mut Connection, asker: u32) -> Result<Stri
             key: i.key,
             when: i.when,
             name: sheet::shown(&name, 60),
+            flags,
         };
         connection.send(&Answer::Listed(listed)).map_err(|e| format!("{e}"))?;
     }
@@ -1544,6 +1558,7 @@ fn info(
         .filter_map(|e| fs::metadata(format!("{folder}/{}", e.path)).ok())
         .map(|m| m.len())
         .sum();
+    let flaws = kept_flaws(&trust);
     let facts = Facts {
         manifest: &manifest,
         key: &installed.key,
@@ -1552,6 +1567,8 @@ fn info(
         files: listed.len(),
         bytes,
         replaces: None,
+        flaws: flaws.as_ref(),
+        all_flaws: true,
     };
     connection.send(&Answer::Sheet(sheet::write(&facts))).map_err(|e| format!("{e}"))?;
     send_grants(shared, connection, asker, id, &installed.key)?;
@@ -1990,12 +2007,14 @@ fn search(
                 notes.push(format!("catalog {} as it was on {day}", catalog.name));
             }),
         };
+        let flaws = catalogs::read_flaws(state, &catalog.name);
         for entry in index.iter().flat_map(|index| index.search(words)) {
             let hit = Hit {
                 catalog: catalog.name.clone(),
                 id: entry.id.clone(),
                 version: entry.version.clone(),
                 name: entry.name.clone(),
+                flags: catalogs::flags(flaws.as_ref(), &entry.id, &entry.version),
             };
             connection.send(&Answer::Hit(hit)).map_err(|e| format!("{e}"))?;
             found += 1;
@@ -2073,6 +2092,98 @@ struct Pending {
     held: bool,
     /// The newer version, fetched and checked by the client.
     file: Option<std::path::PathBuf>,
+}
+
+/// The list of known flaws kept of the catalog a bundle is trusted as
+/// coming from, if it is one's (ADR 0389).
+fn kept_flaws(trust: &Trust) -> Option<dkv::flaws::List> {
+    match trust {
+        Trust::Catalog { name, .. } => catalogs::read_flaws(Path::new(catalogs::STATE), name),
+        _ => None,
+    }
+}
+
+/// The most flaws a history event names.
+const FLAWS_NAMED: usize = 5;
+
+/// The daily check of installed bundles (ADR 0389): reads anew each
+/// catalog that installed bundles come from, which fetches its list of
+/// known flaws, then tells the history and the log of each installed
+/// version that list knows flaws of, once for each change.
+fn check_flaws(shared: &Shared) {
+    let installed: Vec<(Installed, String)> = {
+        let registry = shared.lock();
+        registry
+            .installed
+            .iter()
+            .filter_map(|i| {
+                let bound = registry.catalog_bound(i.place, &i.id)?;
+                Some((i.clone(), bound.catalog.clone()))
+            })
+            .collect()
+    };
+    let mut names: Vec<&str> = installed.iter().map(|(_, c)| c.as_str()).collect();
+    names.sort_unstable();
+    names.dedup();
+    let (all, _) = read_catalogs();
+    let kept = Path::new(catalogs::STATE);
+    let history = history::read(&state(history::HISTORY));
+    for name in names {
+        let Some(catalog) = all.iter().find(|c| c.name == name && !c.off) else { continue };
+        let read = {
+            let _reading = shared.catalogs();
+            catalogs::open(catalog, kept)
+        };
+        if let Err(why) = read {
+            eprintln!("bundled: the daily check could not read catalog {name}: {why}");
+            continue;
+        }
+        let Some(list) = catalogs::read_flaws(kept, name) else { continue };
+        for (i, _) in installed.iter().filter(|(_, c)| c == name) {
+            let found: Vec<_> = list.of(&i.id, &i.version).collect();
+            if found.is_empty() {
+                continue;
+            }
+            let mut note: Vec<String> = found
+                .iter()
+                .take(FLAWS_NAMED)
+                .map(|f| format!("{} ({}) in {}", f.id, f.severity.word(), f.component))
+                .collect();
+            if found.len() > FLAWS_NAMED {
+                note.push(format!("and {} more", found.len() - FLAWS_NAMED));
+            }
+            let note = note.join(", ");
+            let said = history
+                .iter()
+                .rev()
+                .find(|e| {
+                    e.what == What::Flawed
+                        && e.place == i.place
+                        && e.id == i.id
+                        && e.from.as_deref() == Some(i.version.as_str())
+                })
+                .is_some_and(|e| e.note == note);
+            if said {
+                continue;
+            }
+            eprintln!(
+                "bundled: {} {} for {} has known flaws: {note}",
+                i.id,
+                i.version,
+                whom(i.place)
+            );
+            add_history(&Event {
+                when: now(),
+                place: i.place,
+                id: i.id.clone(),
+                what: What::Flawed,
+                from: Some(i.version.clone()),
+                to: None,
+                by: None,
+                note,
+            });
+        }
+    }
 }
 
 /// The bundles of `place`, or those of `ids`, whose catalogs list a newer
@@ -2313,8 +2424,9 @@ fn update_by_themselves(shared: &Shared) {
     }
 }
 
-/// Runs [`update_by_themselves`] some minutes after bundled starts, then
-/// daily, and at once when a place turns it on.
+/// Runs [`check_flaws`], and [`update_by_themselves`] where a place
+/// turned it on, some minutes after bundled starts, then daily, and at
+/// once when a place turns updating by themselves on.
 fn updater(shared: &Shared) {
     let mut next = Instant::now() + AUTOMATIC_FIRST;
     loop {
@@ -2334,6 +2446,7 @@ fn updater(shared: &Shared) {
             *asked = false;
         }
         next = Instant::now() + AUTOMATIC_EVERY;
+        check_flaws(shared);
         if !shared.lock().automatic.is_empty() {
             update_by_themselves(shared);
         }

@@ -184,8 +184,9 @@ folder and as a _.dkv_ file, which is a zip of the folder.
 *search* _word_...
 	Reads the catalogs anew and lists the newest version of each bundle
 	whose ID or name holds every _word_, in any case: ID, version,
-	catalog and name. It exits with 1 when none does. A catalog that
-	cannot be read is left out, and bundle says why.
+	catalog, its known flaws (FLAWS) and name. It exits with 1 when none
+	does. A catalog that cannot be read is left out, and bundle says
+	why.
 
 *catalog*
 	Lists the catalogs: name, on or off, how many bundles each listed
@@ -237,7 +238,9 @@ folder and as a _.dkv_ file, which is a zip of the folder.
 	newest last: each install, update, going back, removal, hold and
 	release, update that waits for you and update that failed, with
 	when, who asked or that it did so by itself, and, for a version
-	that failed its health check, why bundled went back.
+	that failed its health check, why bundled went back. It also shows
+	the known flaws the daily check found in an installed version
+	(FLAWS).
 
 *default* _name_ [_line_ | *--clear*] [*--for-everyone*]
 	With _line_, makes it your default line of the ID _name_ names, its
@@ -250,10 +253,11 @@ folder and as a _.dkv_ file, which is a zip of the folder.
 
 *list*
 	Lists the bundles you can run, yours and everyone's: ID, version,
-	whose, and name.
+	whose, its known flaws (FLAWS), and name.
 
 *info* _id_
-	Shows an installed bundle's sheet, what you said of its permissions
+	Shows an installed bundle's sheet, with every known flaw of its
+	version, what you said of its permissions
 	and since when, when it was installed, where, and where its data is,
 	which version it can go back to, and whether it is held.
 
@@ -459,6 +463,29 @@ A file no catalog lists installs as before: signed by your developer key
 with no warning, or by any other key after one, which also says that no
 catalog this computer trusts lists it.
 
+# FLAWS
+
+A catalog lists the known flaws of its bundles (ADR 0389): its update
+server matches the components each bundle's SBOM, _sbom.spdx_, lists
+with the advisories OSV gathers, and signs the list each day. Each time
+bundled reads the catalog, it keeps the list, while the list is less
+than a week old.
+
+*bundle search* and *bundle list* show what it says in the FLAWS column:
+*none*; how many and the worst, *low*, *medium*, *high*, *critical* or
+*unknown*, such as *2, high*; or *-* when nothing tells, for a bundle
+from no catalog, one its catalog's list did not look at, or one whose
+catalog has no list that is good. The sheet of a bundle from a catalog
+says so too, and names the five worst, each with its advisory, the
+component it is in, and the version of that component that fixes it;
+*bundle info* names them all.
+
+Some minutes after *bundled*(8) starts, then daily, it reads anew each
+catalog your bundles come from, and writes the flaws of each installed
+version in the history once for each change. Nothing is removed or
+blocked: whether to update, go back or remove a flawed bundle is
+yours.
+
 # UPDATES
 
 A bundle updates from the catalog it is bound to (ADR 0384): one
@@ -576,12 +603,14 @@ From a catalog:
 
 ```
 $ bundle search ripgrep
-ID                            VERSION  CATALOG  NAME
-io.github.burntsushi.ripgrep  15.2.0   dukovo   ripgrep
+ID                            VERSION  CATALOG  FLAWS  NAME
+io.github.burntsushi.ripgrep  15.2.0   dukovo   none   ripgrep
 $ bundle install io.github.burntsushi.ripgrep
 ripgrep 15.2.0, for yourself
   io.github.burntsushi.ripgrep, by Dukovo catalog
   From catalog dukovo, which this computer trusts: it lists this very file.
+  31 files, 1.8 MB
+  Known flaws: none, by catalog dukovo's list of 2026-11-03.
   ...
 Install it? [y/N] y
 installed io.github.burntsushi.ripgrep 15.2.0, for you

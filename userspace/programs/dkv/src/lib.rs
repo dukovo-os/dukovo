@@ -8,6 +8,7 @@
 //! (ADR 0370), so that both make the same files.
 
 pub mod base64;
+pub mod flaws;
 pub mod minisign;
 pub mod sbom;
 pub mod signed;
