@@ -78,8 +78,8 @@ int slot_of(int fd, uint32_t *slot) {
 // (MSG_OOB, MSG_EOR) are for what these sockets do not have.
 constexpr int SEND_FLAGS = MSG_DONTWAIT | MSG_NOSIGNAL | MSG_MORE;
 
-// The flags receive takes. MSG_PEEK is not taken yet.
-constexpr int RECEIVE_FLAGS = MSG_DONTWAIT | MSG_WAITALL | MSG_CMSG_CLOEXEC;
+// The flags receive takes.
+constexpr int RECEIVE_FLAGS = MSG_DONTWAIT | MSG_WAITALL | MSG_CMSG_CLOEXEC | MSG_PEEK;
 
 // The kernel's SocketFlags for send's `flags`.
 uint32_t send_flags(int flags) {
@@ -128,14 +128,17 @@ struct Received {
 
 // Receives up to `size` bytes on `fd` into `buffer`, waiting for some
 // unless `dont_wait`: 0 bytes once the other end has stopped sending.
-// With `files`, the descriptors that came with the bytes go there, closed
-// by exec if `close_on_exec`. Made with `syscall`.
+// With `peek`, they stay for the next receive (MSG_PEEK). With `files`,
+// the descriptors that came with the bytes go there, closed by exec if
+// `close_on_exec`. Made with `syscall`.
 int receive_bytes(radix_syscall_fn *syscall, int fd, void *buffer, size_t size, bool dont_wait,
-		Received *files, bool close_on_exec, size_t *got) {
+		bool peek, Received *files, bool close_on_exec, size_t *got) {
 	uint32_t slot;
 	if(int e = slot_of(fd, &slot); e)
 		return e;
 	uint32_t flags = dont_wait ? RADIX_SOCKET_FLAGS_DONT_WAIT : 0;
+	if(peek)
+		flags |= RADIX_SOCKET_FLAGS_PEEK;
 	uint64_t status;
 	if(files) {
 		if(close_on_exec)
@@ -159,17 +162,55 @@ int receive_bytes(radix_syscall_fn *syscall, int fd, void *buffer, size_t size, 
 	return 0;
 }
 
+// Peeks into the buffers of `iov`, as recvmsg(2) with MSG_PEEK and
+// `flags`: one receive, through a buffer of their sum's size if there are
+// more than one, as a second would see the same bytes again. MSG_WAITALL
+// waits for no more than some bytes. As receive_vector otherwise.
+int peek_vector(int fd, const struct iovec *iov, size_t count, int flags, Received *files,
+		ssize_t *length) {
+	size_t size;
+	if(int e = radix::iov_total(iov, count, &size); e)
+		return e;
+	char *buffer = count == 1 ? static_cast<char *>(iov[0].iov_base) : nullptr;
+	if(count != 1) {
+		buffer = static_cast<char *>(malloc(size ? size : 1));
+		if(!buffer)
+			return ENOBUFS;
+	}
+	size_t got = 0;
+	bool dont_wait = flags & MSG_DONTWAIT;
+	bool close_on_exec = flags & MSG_CMSG_CLOEXEC;
+	int e = receive_bytes(radix::cancellable, fd, buffer, size, dont_wait, true, files,
+			close_on_exec, &got);
+	if(!e && count != 1) {
+		size_t at = 0;
+		for(size_t i = 0; i < count && at < got; i++) {
+			size_t n = got - at < iov[i].iov_len ? got - at : iov[i].iov_len;
+			memcpy(iov[i].iov_base, buffer + at, n);
+			at += n;
+		}
+	}
+	if(count != 1)
+		free(buffer);
+	if(e)
+		return e;
+	*length = static_cast<ssize_t>(got);
+	return 0;
+}
+
 // Receives into the buffers of `iov`, as recvmsg(2) with `flags`: what
 // waits now, after waiting for some unless MSG_DONTWAIT; with MSG_WAITALL,
 // until the buffers are full, the other end stops sending, or an error
 // comes after some bytes (which are then what it returns). With `files`,
 // the descriptors that come with the bytes go there, and the receive ends
-// with the bytes they came with, as on Linux. A cancellation point until
-// bytes come.
+// with the bytes they came with, as on Linux. With MSG_PEEK, what comes
+// stays (peek_vector). A cancellation point until bytes come.
 int receive_vector(int fd, const struct iovec *iov, size_t count, int flags, Received *files,
 		ssize_t *length) {
 	if(flags & ~RECEIVE_FLAGS)
 		return EOPNOTSUPP;
+	if(flags & MSG_PEEK)
+		return peek_vector(fd, iov, count, flags, files, length);
 	bool dont_wait = flags & MSG_DONTWAIT;
 	bool wait_all = (flags & MSG_WAITALL) && !dont_wait;
 	bool close_on_exec = flags & MSG_CMSG_CLOEXEC;
@@ -182,7 +223,7 @@ int receive_vector(int fd, const struct iovec *iov, size_t count, int flags, Rec
 			size_t got = 0;
 			bool now = dont_wait || (total && !wait_all);
 			int e = receive_bytes(total ? radix_syscall : radix::cancellable, fd, base + at,
-					iov[i].iov_len - at, now, files, close_on_exec, &got);
+					iov[i].iov_len - at, now, false, files, close_on_exec, &got);
 			if(e && !total)
 				return e;
 			at += got;
@@ -516,9 +557,12 @@ int gather(const struct iovec *iov, int count, size_t size, char **out) {
 }
 
 // The kernel's SocketFlags for a network socket's receive `flags`: only
-// MSG_DONTWAIT means anything to a datagram's receive.
+// MSG_DONTWAIT and MSG_PEEK mean anything to a datagram's receive.
 uint32_t receive_flags(int flags) {
-	return flags & MSG_DONTWAIT ? RADIX_SOCKET_FLAGS_DONT_WAIT : 0;
+	uint32_t kernel = flags & MSG_DONTWAIT ? RADIX_SOCKET_FLAGS_DONT_WAIT : 0;
+	if(flags & MSG_PEEK)
+		kernel |= RADIX_SOCKET_FLAGS_PEEK;
+	return kernel;
 }
 
 // Gives `hdr`, in its control buffer, where a datagram came to: the
@@ -577,7 +621,7 @@ void give_packet_info(struct msghdr *hdr, const struct radix_address &to, uint32
 int receive_datagram(uint32_t slot, const struct iovec *iov, int count, int flags,
 		struct sockaddr *from, socklen_t from_max, socklen_t *from_len, ssize_t *length,
 		struct msghdr *hdr = nullptr) {
-	if(flags & ~(MSG_DONTWAIT | MSG_CMSG_CLOEXEC))
+	if(flags & ~(MSG_DONTWAIT | MSG_CMSG_CLOEXEC | MSG_PEEK))
 		return EOPNOTSUPP;
 	size_t size;
 	if(int e = radix::iov_total(iov, count, &size); e)

@@ -415,6 +415,25 @@ _/kernel/class/net/_*name*_/statistics/rx_bytes_, _rx_packets_, _tx_bytes_, _tx_
 	for want of room; _rx_errors_, _rx_dropped_ and _tx_errors_ are 0,
 	as the stack counts none.
 
+_/kernel/class/net/_*name*_/speed_, _duplex_
+	What the card negotiated, as Linux's: its speed in megabits a
+	second, or *-1* while its link is down or the card does not say, as
+	a virtio card does not, and *full*, *half* or *unknown*; *-1* and
+	*unknown* for a bridge, a VLAN, a tunnel and *lo*, which have no wire
+	(ADR 0341). *nic*(8) reads them.
+
+_/kernel/class/net/_*name*_/card_
+	Radix's own: what the kernel knows of a card it drives, a line each,
+	as ethtool's _-i_ and _-g_ show Linux's (ADR 0341): its driver
+	(_driver radix-intel-net_), its model (_model Intel 82574L_), its PCI
+	address (_bus 0000:00:03.0_), how many frames it holds each way
+	(_receive_slots 256_, _transmit_slots 256_), how it interrupts
+	(_interrupt MSI vector 0x31_), and how many received frames its
+	driver dropped, damaged, too short or with no slot for them
+	(_dropped 0_), when the driver counts them. For a card a program
+	drives, only _driver program_, and for a USB adapter _driver
+	radix-usb_; nothing for the others.
+
 _/kernel/devices/system/cpu/possible_, _present_, _online_
 	The CPUs the machine has, and those that run threads, as Linux's
 	lists: *0-7*, which util-linux's lscpu reads.

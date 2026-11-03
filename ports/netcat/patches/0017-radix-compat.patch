@@ -1,0 +1,226 @@
+SPDX-FileCopyrightText: 2026 The Dukovo contributors
+SPDX-License-Identifier: Apache-2.0 OR MIT
+
+Builds netcat for Radix without libbsd, which Debian's patches take it
+from: compat.c gives OpenBSD's strtonum, readpassphrase and
+arc4random_uniform, and the resolver library's b64_ntop, which the C
+library does not have, and the DSCP value the C library's
+<netinet/ip.h> lacks. The new files are under netcat's BSD-3-Clause
+license, so that they can go with it as they are.
+
+--- a/compat.c
++++ b/compat.c
+@@ -0,0 +1,149 @@
++/*
++ * SPDX-FileCopyrightText: 2026 The Dukovo contributors
++ * SPDX-License-Identifier: BSD-3-Clause
++ *
++ * What netcat takes from libbsd on Linux, written for Radix: see
++ * compat.h.
++ */
++#include <errno.h>
++#include <fcntl.h>
++#include <limits.h>
++#include <stdlib.h>
++#include <string.h>
++#include <sys/random.h>
++#include <termios.h>
++#include <unistd.h>
++
++#include "compat.h"
++
++long long
++strtonum(const char *text, long long min, long long max, const char **errstr)
++{
++	char *end;
++	long long value;
++
++	if (min > max) {
++		errno = EINVAL;
++		*errstr = "invalid";
++		return 0;
++	}
++	errno = 0;
++	value = strtoll(text, &end, 10);
++	if (end == text || *end != '\0') {
++		errno = EINVAL;
++		*errstr = "invalid";
++		return 0;
++	}
++	if ((value == LLONG_MIN && errno == ERANGE) || value < min) {
++		errno = ERANGE;
++		*errstr = "too small";
++		return 0;
++	}
++	if ((value == LLONG_MAX && errno == ERANGE) || value > max) {
++		errno = ERANGE;
++		*errstr = "too large";
++		return 0;
++	}
++	*errstr = NULL;
++	return value;
++}
++
++/*
++ * Reads a line from the terminal, or from standard input when there is
++ * none and RPP_REQUIRE_TTY is not set, with its echo off unless
++ * RPP_ECHO_ON says otherwise. The newline is not kept.
++ */
++char *
++readpassphrase(const char *prompt, char *buf, size_t size, int flags)
++{
++	struct termios old, quiet;
++	int input, output, restore = 0, saved;
++	size_t length = 0;
++	char c;
++	ssize_t got;
++
++	if (size == 0) {
++		errno = EINVAL;
++		return NULL;
++	}
++	input = output = open("/dev/tty", O_RDWR | O_CLOEXEC);
++	if (input == -1) {
++		if (flags & RPP_REQUIRE_TTY) {
++			errno = ENOTTY;
++			return NULL;
++		}
++		input = STDIN_FILENO;
++		output = STDERR_FILENO;
++	}
++	if (!(flags & RPP_ECHO_ON) && tcgetattr(input, &old) == 0) {
++		quiet = old;
++		quiet.c_lflag &= ~(ECHO | ECHONL);
++		if (tcsetattr(input, TCSAFLUSH, &quiet) == 0)
++			restore = 1;
++	}
++	if (prompt != NULL)
++		(void)write(output, prompt, strlen(prompt));
++	while ((got = read(input, &c, 1)) == 1 && c != '\n' && c != '\r') {
++		if (length + 1 < size)
++			buf[length++] = c;
++	}
++	saved = errno;
++	buf[length] = '\0';
++	if (restore) {
++		(void)tcsetattr(input, TCSAFLUSH, &old);
++		(void)write(output, "\n", 1);
++	}
++	if (input != STDIN_FILENO)
++		(void)close(input);
++	if (got == -1) {
++		errno = saved;
++		return NULL;
++	}
++	return buf;
++}
++
++uint32_t
++arc4random_uniform(uint32_t bound)
++{
++	uint32_t value, least;
++
++	if (bound < 2)
++		return 0;
++	/* What a 32-bit value takes modulo bound without favouring any. */
++	least = -bound % bound;
++	for (;;) {
++		if (getrandom(&value, sizeof(value), 0) != sizeof(value))
++			abort();
++		if (value >= least)
++			return value % bound;
++	}
++}
++
++/* Base64, as RFC 4648 gives it, with its padding and a final NUL. */
++int
++b64_ntop(const unsigned char *src, size_t length, char *out, size_t size)
++{
++	static const char digits[] =
++	    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
++	size_t at = 0, i;
++
++	for (i = 0; i < length; i += 3) {
++		uint32_t group = (uint32_t)src[i] << 16;
++		size_t left = length - i;
++
++		if (left > 1)
++			group |= (uint32_t)src[i + 1] << 8;
++		if (left > 2)
++			group |= src[i + 2];
++		if (at + 4 >= size)
++			return -1;
++		out[at++] = digits[(group >> 18) & 63];
++		out[at++] = digits[(group >> 12) & 63];
++		out[at++] = left > 1 ? digits[(group >> 6) & 63] : '=';
++		out[at++] = left > 2 ? digits[group & 63] : '=';
++	}
++	if (at >= size)
++		return -1;
++	out[at] = '\0';
++	return (int)at;
++}
+--- a/compat.h
++++ b/compat.h
+@@ -0,0 +1,28 @@
++/*
++ * SPDX-FileCopyrightText: 2026 The Dukovo contributors
++ * SPDX-License-Identifier: BSD-3-Clause
++ *
++ * What netcat takes from libbsd on Linux, which Radix's C library does
++ * not have: OpenBSD's strtonum, readpassphrase and arc4random_uniform,
++ * and the resolver library's b64_ntop.
++ */
++#ifndef NC_COMPAT_H
++#define NC_COMPAT_H
++
++#include <stddef.h>
++#include <stdint.h>
++
++#ifndef IPTOS_DSCP_VA
++#define IPTOS_DSCP_VA	0xb0
++#endif
++
++#define RPP_ECHO_OFF	0x00
++#define RPP_ECHO_ON	0x01
++#define RPP_REQUIRE_TTY	0x02
++
++long long strtonum(const char *, long long, long long, const char **);
++char *readpassphrase(const char *, char *, size_t, int);
++uint32_t arc4random_uniform(uint32_t);
++int b64_ntop(const unsigned char *, size_t, char *, size_t);
++
++#endif
+--- a/netcat.c
++++ b/netcat.c
+@@ -47,7 +47,7 @@
+ # include <linux/in6.h>
+ #endif
+ #if defined(TCP_MD5SIG_EXT) && defined(TCP_MD5SIG_MAXKEYLEN)
+-# include <bsd/readpassphrase.h>
++# include "compat.h"
+ #endif
+ 
+ #ifndef IPTOS_LOWDELAY
+@@ -108,8 +108,8 @@
+ # include <tls.h>
+ #endif
+ #include <unistd.h>
+-#include <bsd/stdlib.h>
+-#include <bsd/string.h>
++#include "compat.h"
++
+ 
+ #include "atomicio.h"
+ 
+--- a/socks.c
++++ b/socks.c
+@@ -38,7 +38,7 @@
+ #include <string.h>
+ #include <unistd.h>
+ #include <resolv.h>
+-#include <bsd/readpassphrase.h>
++#include "compat.h"
+ #include "atomicio.h"
+ 
+ #define SOCKS_PORT	"1080"

@@ -132,6 +132,21 @@ impl Program {
         self.attached.as_ref().is_some_and(|at| !at.side.broken() && at.side.link(&*at.pages).up)
     }
 
+    /// Its link, as its driver last said: down until one attaches it, or
+    /// once it broke the rules.
+    pub fn link(&self) -> radix_nic::Link {
+        self.attached.as_ref().map_or(radix_nic::Link::default(), |at| at.side.link(&*at.pages))
+    }
+
+    /// Who drives it, as `/kernel/class/net`'s `card` file says (ADR
+    /// 0341): a program, or a USB controller's thread.
+    pub fn driver(&self) -> &'static str {
+        match self.driver {
+            Driver::Program(_) => "program",
+            Driver::Usb(_) => "radix-usb",
+        }
+    }
+
     /// Copies the next frame the driver received into `frame`; wakes a
     /// USB controller's thread that waits for the room.
     pub fn receive(&mut self, frame: &mut [u8]) -> Option<usize> {

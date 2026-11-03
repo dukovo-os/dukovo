@@ -472,10 +472,37 @@ pub fn address_answer(
 /// A query for `name` of type `qtype`, numbered `id`, asking for
 /// recursion, with an OPT record offering `udp` bytes (RFC 6891).
 pub fn query(name: &str, qtype: u16, id: u16, udp: u16) -> Option<Vec<u8>> {
+    query_with(name, qtype, IN, id, RD, Some(Edns { udp, dnssec: false }))
+}
+
+/// What a query's OPT record says (RFC 6891): the UDP size it offers,
+/// and whether it wants DNSSEC's records (the DO bit, RFC 3225).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Edns {
+    /// The bytes of the largest answer over UDP it takes.
+    pub udp: u16,
+    /// Whether it asks for signatures with the records.
+    pub dnssec: bool,
+}
+
+/// The DO bit of an OPT record's extended flags.
+pub const DO: u16 = 1 << 15;
+
+/// A query for `name` of type `qtype` in class `qclass`, numbered `id`,
+/// with the header's `flags` (RD, AD and CD among them), and an OPT
+/// record if `edns` is given; `None` for a name that is not one.
+pub fn query_with(
+    name: &str,
+    qtype: u16,
+    qclass: u16,
+    id: u16,
+    flags: u16,
+    edns: Option<Edns>,
+) -> Option<Vec<u8>> {
     let mut out = Vec::with_capacity(name.len() + 32);
     out.extend_from_slice(&id.to_be_bytes());
-    out.extend_from_slice(&RD.to_be_bytes());
-    out.extend_from_slice(&[0, 1, 0, 0, 0, 0, 0, 1]);
+    out.extend_from_slice(&flags.to_be_bytes());
+    out.extend_from_slice(&[0, 1, 0, 0, 0, 0, 0, u8::from(edns.is_some())]);
     let trimmed = name.strip_suffix('.').unwrap_or(name);
     if !trimmed.is_empty() {
         for label in trimmed.split('.') {
@@ -489,13 +516,17 @@ pub fn query(name: &str, qtype: u16, id: u16, udp: u16) -> Option<Vec<u8>> {
         return None;
     }
     out.extend_from_slice(&qtype.to_be_bytes());
-    out.extend_from_slice(&IN.to_be_bytes());
-    // The OPT record: the root's name, its type, the size, no extended
-    // flags, no options.
-    out.push(0);
-    out.extend_from_slice(&OPT.to_be_bytes());
-    out.extend_from_slice(&udp.to_be_bytes());
-    out.extend_from_slice(&[0, 0, 0, 0, 0, 0]);
+    out.extend_from_slice(&qclass.to_be_bytes());
+    if let Some(edns) = edns {
+        // The OPT record: the root's name, its type, the size, the
+        // extended response code and version 0, the flags, no options.
+        out.push(0);
+        out.extend_from_slice(&OPT.to_be_bytes());
+        out.extend_from_slice(&edns.udp.to_be_bytes());
+        out.extend_from_slice(&[0, 0]);
+        out.extend_from_slice(&(if edns.dnssec { DO } else { 0 }).to_be_bytes());
+        out.extend_from_slice(&[0, 0]);
+    }
     Some(out)
 }
 

@@ -38,6 +38,18 @@
 //! bridge (`master br0`), which Linux shows as a `master` link; and how
 //! many frames were lost to its full queues, if any (`lost 3`). A VLAN's
 //! `iflink` is its parent's number, as on Linux.
+//!
+//! And what its card says of its wire, which nic(8) shows (ADR 0341):
+//! Linux's `speed`, in megabits a second, -1 while the link is down or
+//! the card does not say, and `duplex`, `full`, `half` or `unknown`; and
+//! Radix's `card`, for a card the kernel drives, a line for each of what
+//! `ethtool -i` and `-g` show of Linux's: its driver (`driver
+//! radix-intel-net`), its model (`model Intel 82574L`), its PCI address
+//! (`bus 0000:00:03.0`), how many frames it holds each way
+//! (`receive_slots 256`, `transmit_slots 256`), how it interrupts
+//! (`interrupt MSI vector 0x31`) and how many received frames it dropped
+//! (`dropped 0`); for one a program or a USB controller's thread drives,
+//! only `driver program` or `driver radix-usb`; for the others, nothing.
 
 use core::fmt::{self, Write};
 
@@ -106,7 +118,7 @@ fn write_address(interface: &Interface, text: &mut Text, mac: [u8; 6]) -> fmt::R
 }
 
 /// An interface's files, as Linux's.
-const FILES: [(&str, Field); 13] = [
+const FILES: [(&str, Field); 16] = [
     ("ifindex", |i, t| writeln!(t, "{}", i.index())),
     ("iflink", |i, t| match links::role(i.number) {
         Some(Role::Vlan { parent, .. }) => writeln!(t, "{}", parent + 1),
@@ -151,7 +163,43 @@ const FILES: [(&str, Field); 13] = [
     }),
     ("ipv6", write_ipv6),
     ("link", write_link),
+    ("speed", |i, t| {
+        let wire = i.stack.lock().link().wire().unwrap_or_default();
+        if wire.up && wire.mbps != 0 { writeln!(t, "{}", wire.mbps) } else { writeln!(t, "-1") }
+    }),
+    ("duplex", |i, t| {
+        let wire = i.stack.lock().link().wire().unwrap_or_default();
+        let duplex = match wire {
+            _ if !wire.up || wire.mbps == 0 => "unknown",
+            radix_nic::Link { full_duplex: true, .. } => "full",
+            _ => "half",
+        };
+        writeln!(t, "{duplex}")
+    }),
+    ("card", write_card),
 ];
+
+/// `card`: what the kernel knows of the interface's card.
+fn write_card(interface: &'static Interface, text: &mut Text) -> fmt::Result {
+    if let Some(card) = interface.hardware.get() {
+        writeln!(text, "driver {}", card.driver)?;
+        writeln!(text, "model {}", card.model)?;
+        writeln!(text, "bus {}", card.bus)?;
+        writeln!(text, "receive_slots {}", card.receive_slots)?;
+        writeln!(text, "transmit_slots {}", card.transmit_slots)?;
+        writeln!(text, "interrupt {}", card.interrupt)?;
+    }
+    let mut stack = interface.stack.lock();
+    match stack.link() {
+        net::Card::Program(card) => writeln!(text, "driver {}", card.driver()),
+        card => match card.dropped() {
+            Some(dropped) if interface.hardware.get().is_some() => {
+                writeln!(text, "dropped {dropped}")
+            }
+            _ => Ok(()),
+        },
+    }
+}
 
 /// The name of the interface numbered `number`, or `?` if it is gone.
 fn name_of(number: usize) -> &'static str {

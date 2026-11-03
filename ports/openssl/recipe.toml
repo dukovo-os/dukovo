@@ -1,0 +1,20 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# openssl, OpenSSL's command (ADR 0342): keys, certificates and their
+# requests, digests and ciphers, and s_client and s_server, which test
+# TLS servers and clients. OpenSSL 3.5 is a long-term release, under the
+# Apache License 2.0. Only the command goes in the image, with its
+# manual pages and openssl.cnf among the default settings: its
+# libraries stay out of the sysroot, so that no other port builds on
+# them, as Dukovo's TLS is rustls's (ADR 0192).
+name = "openssl"
+version = "3.5.4"
+summary = "openssl, OpenSSL's command for keys, certificates and TLS"
+license = "Apache-2.0"
+homepage = "https://openssl-library.org"
+depends = ["mlibc"]
+
+[source]
+url = "https://github.com/openssl/openssl/releases/download/openssl-3.5.4/openssl-3.5.4.tar.gz"
+sha256 = "967311f84955316969bdb1d8d4b983718ef42338639c621ec4c34fddef355e99"

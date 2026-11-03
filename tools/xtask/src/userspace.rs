@@ -122,6 +122,7 @@ pub const STD_LINKS: &[(&str, &str)] = &[
     ("system/commands/column", "systools"),
     ("system/commands/df", "systools"),
     ("system/commands/device", "systools"),
+    ("system/commands/dig", "systools"),
     ("system/commands/discover", "systools"),
     ("system/commands/discoverd", "systools"),
     ("system/commands/diskhealth", "systools"),
@@ -142,6 +143,7 @@ pub const STD_LINKS: &[(&str, &str)] = &[
     ("system/commands/hd", "systools"),
     ("system/commands/halt", "systools"),
     ("system/commands/hexdump", "systools"),
+    ("system/commands/host", "systools"),
     ("system/commands/hwinfo", "systools"),
     ("system/commands/ionice", "systools"),
     ("system/commands/iostat", "systools"),
@@ -175,6 +177,7 @@ pub const STD_LINKS: &[(&str, &str)] = &[
     ("system/commands/mount", "systools"),
     ("system/commands/netd", "systools"),
     ("system/commands/netlog", "systools"),
+    ("system/commands/nic", "systools"),
     ("system/commands/notifications", "systools"),
     ("system/commands/notify-send", "systools"),
     ("system/commands/notifyd", "systools"),
@@ -227,6 +230,7 @@ pub const STD_LINKS: &[(&str, &str)] = &[
     ("system/commands/wgd", "systools"),
     ("system/commands/which", "systools"),
     ("system/commands/who", "systools"),
+    ("system/commands/whois", "systools"),
     ("system/commands/xxd", "systools"),
 ];
 

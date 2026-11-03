@@ -1,0 +1,21 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+#
+# A service of the network-tools boot test: resolved(8) as the system's
+# own file has it, which machine a's nettooltest points at b's name
+# server, for host(1), dig(1) and whois(1) to look names up through.
+
+service_version = 1
+description = "DNS resolver"
+program = "/system/commands/resolved"
+order = 21
+restart = "always"
+
+[limits]
+memory = "32M"
+
+[permissions]
+network.outbound = true
+network.listen = [53]
+files.read = ["/system/live/netd", "/system/live/discoverd"]
+files.read-write = ["/system/live/resolved"]

@@ -19,7 +19,9 @@
 // if_nameindex) and SO_BINDTODEVICE, of lo, the only interface this boot
 // has; the interfaces boot test binds to a card. And
 // ping sockets, IP_PKTINFO and IPV6_RECVPKTINFO, ports shared with
-// SO_REUSEPORT, multicast groups on lo, and getifaddrs (ADR 0336). And
+// SO_REUSEPORT, multicast groups on lo, and getifaddrs (ADR 0336).
+// MSG_PEEK on streams, datagrams and ping sockets, and getnameinfo's
+// numeric names with their scopes (ADR 0341). And
 // the network capabilities: a child with none cannot make a socket
 // (EACCES), one that may only connect out cannot bind a port or listen,
 // or join or send to a group, one with the local right alone reaches
@@ -32,6 +34,7 @@
 #include <fcntl.h>
 #include <ifaddrs.h>
 #include <net/if.h>
+#include <netdb.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <poll.h>
@@ -420,6 +423,151 @@ static void udp(void) {
 	CHECK(recv(b, buffer, sizeof(buffer), 0) == 1);
 	close(a);
 	close(b);
+}
+
+// Waits up to 5 s for `fd` to have `count` bytes or more to read.
+static void waiting_for(int fd, int count) {
+	int waiting = 0;
+	for(int i = 0; i < 5000; i++) {
+		CHECK(ioctl(fd, FIONREAD, &waiting) == 0);
+		if(waiting >= count)
+			return;
+		check_sleep_ms(1);
+	}
+	CHECK(waiting >= count);
+}
+
+// MSG_PEEK (ADR 0341): what a peek gets stays for the next receive.
+static void peeking(void) {
+	int server = listener();
+	int client = connected(port_of(server));
+	int accepted = accept(server, NULL, NULL);
+	CHECK(accepted >= 0);
+	static char buffer[4096], want[4096];
+	CHECK_ERROR(recv(client, buffer, sizeof(buffer), MSG_PEEK | MSG_DONTWAIT), EAGAIN);
+	CHECK(send(accepted, "peekaboo", 8, 0) == 8);
+	waiting_for(client, 8);
+	CHECK(recv(client, buffer, 4, MSG_PEEK) == 4 && !memcmp(buffer, "peek", 4));
+	CHECK(recv(client, buffer, sizeof(buffer), MSG_PEEK) == 8 && !memcmp(buffer, "peekaboo", 8));
+	char first[3], second[8];
+	struct iovec spread[2] = {{first, sizeof(first)}, {second, sizeof(second)}};
+	struct msghdr hdr = {.msg_iov = spread, .msg_iovlen = 2};
+	CHECK(recvmsg(client, &hdr, MSG_PEEK) == 8);
+	CHECK(!memcmp(first, "pee", 3) && !memcmp(second, "kaboo", 5));
+	CHECK(recv(client, buffer, sizeof(buffer), 0) == 8 && !memcmp(buffer, "peekaboo", 8));
+	// 3,000 bytes at a time, each peeked whole before it is read, until
+	// twice round the receive buffer: some lie in two pieces of it.
+	int size = 0;
+	socklen_t len = sizeof(size);
+	CHECK(getsockopt(client, SOL_SOCKET, SO_RCVBUF, &size, &len) == 0 && size > 0);
+	size_t at = 0;
+	while(at < 2 * (size_t)size + 3000) {
+		for(size_t i = 0; i < 3000; i++)
+			want[i] = (char)((at + i) * 7 + (at + i) / 251);
+		CHECK(send(accepted, want, 3000, 0) == 3000);
+		waiting_for(client, 3000);
+		memset(buffer, 0, sizeof(buffer));
+		if(recv(client, buffer, sizeof(buffer), MSG_PEEK) != 3000 || memcmp(buffer, want, 3000)) {
+			CHECK(!"a peek saw the 3,000 bytes whole");
+			break;
+		}
+		CHECK(recv(client, buffer, 3000, MSG_WAITALL) == 3000 && !memcmp(buffer, want, 3000));
+		at += 3000;
+	}
+	// At the end of the stream a peek gets 0, as a read does.
+	CHECK(shutdown(accepted, SHUT_WR) == 0);
+	struct pollfd p = {client, POLLIN, 0};
+	CHECK(poll(&p, 1, 5000) == 1);
+	CHECK(recv(client, buffer, sizeof(buffer), MSG_PEEK) == 0);
+	CHECK(recv(client, buffer, sizeof(buffer), 0) == 0);
+	close(accepted);
+	close(client);
+	close(server);
+
+	// A datagram stays whole, and says who sent it each time, as nc's
+	// UDP listener asks before it connects.
+	int a = socket(AF_INET, SOCK_DGRAM, 0);
+	int b = socket(AF_INET, SOCK_DGRAM, 0);
+	struct sockaddr_in any = loopback(0);
+	CHECK(bind(a, (struct sockaddr *)&any, sizeof(any)) == 0);
+	CHECK(bind(b, (struct sockaddr *)&any, sizeof(any)) == 0);
+	struct sockaddr_in to_b = loopback(port_of(b));
+	CHECK(sendto(a, "one", 3, 0, (struct sockaddr *)&to_b, sizeof(to_b)) == 3);
+	CHECK(sendto(a, "two!", 4, 0, (struct sockaddr *)&to_b, sizeof(to_b)) == 4);
+	p.fd = b;
+	CHECK(poll(&p, 1, 5000) == 1);
+	struct sockaddr_in from;
+	for(int i = 0; i < 2; i++) {
+		socklen_t from_len = sizeof(from);
+		memset(&from, 0, sizeof(from));
+		CHECK(recvfrom(b, buffer, sizeof(buffer), MSG_PEEK, (struct sockaddr *)&from, &from_len)
+				== 3);
+		CHECK(!memcmp(buffer, "one", 3) && ntohs(from.sin_port) == port_of(a));
+	}
+	CHECK(recv(b, buffer, 2, MSG_PEEK) == 2 && !memcmp(buffer, "on", 2));
+	hdr.msg_name = &from;
+	hdr.msg_namelen = sizeof(from);
+	CHECK(recvmsg(b, &hdr, MSG_PEEK) == 3 && !memcmp(first, "one", 3));
+	CHECK(hdr.msg_namelen == sizeof(from) && ntohs(from.sin_port) == port_of(a));
+	CHECK(recv(b, buffer, sizeof(buffer), 0) == 3 && !memcmp(buffer, "one", 3));
+	CHECK(recv(b, buffer, sizeof(buffer), MSG_PEEK | MSG_DONTWAIT) == 4);
+	CHECK(recv(b, buffer, sizeof(buffer), MSG_DONTWAIT) == 4 && !memcmp(buffer, "two!", 4));
+	CHECK_ERROR(recv(b, buffer, sizeof(buffer), MSG_PEEK | MSG_DONTWAIT), EAGAIN);
+	close(a);
+	close(b);
+
+	// A ping socket's reply stays too.
+	int ping = socket(AF_INET, SOCK_DGRAM, IPPROTO_ICMP);
+	CHECK(ping >= 0);
+	unsigned char request[12] = {8, 0, 0, 0, 0, 0, 0, 1, 'p', 'e', 'e', 'k'};
+	CHECK(sendto(ping, request, sizeof(request), 0, (struct sockaddr *)&any, sizeof(any)) == 12);
+	p.fd = ping;
+	CHECK(poll(&p, 1, 5000) == 1);
+	unsigned char reply[64];
+	CHECK(recv(ping, reply, sizeof(reply), MSG_PEEK) == 12 && reply[0] == 0);
+	CHECK(recv(ping, reply, sizeof(reply), 0) == 12 && !memcmp(reply + 8, "peek", 4));
+	CHECK_ERROR(recv(ping, reply, sizeof(reply), MSG_DONTWAIT), EAGAIN);
+	close(ping);
+}
+
+// getnameinfo's numeric names (ADR 0341): a scoped IPv6 address has
+// its scope after a %, as glibc gives it, a link's interface by name.
+static void numeric_names(void) {
+	struct sockaddr_in four = loopback(80);
+	char host[64], serv[16], want[64];
+	int numeric = NI_NUMERICHOST | NI_NUMERICSERV;
+	CHECK(getnameinfo((struct sockaddr *)&four, sizeof(four), host, sizeof(host), serv,
+			sizeof(serv), numeric) == 0);
+	CHECK(!strcmp(host, "127.0.0.1") && !strcmp(serv, "80"));
+	struct sockaddr_in6 six;
+	memset(&six, 0, sizeof(six));
+	six.sin6_family = AF_INET6;
+	six.sin6_port = htons(7000);
+	CHECK(inet_pton(AF_INET6, "fe80::1", &six.sin6_addr) == 1);
+	unsigned int lo = if_nametoindex("lo");
+	CHECK(lo != 0);
+	six.sin6_scope_id = lo;
+	CHECK(getnameinfo((struct sockaddr *)&six, sizeof(six), host, sizeof(host), serv,
+			sizeof(serv), numeric) == 0);
+	CHECK(!strcmp(host, "fe80::1%lo") && !strcmp(serv, "7000"));
+	CHECK(getnameinfo((struct sockaddr *)&six, sizeof(six), host, sizeof(host), NULL, 0,
+			numeric | NI_NUMERICSCOPE) == 0);
+	snprintf(want, sizeof(want), "fe80::1%%%u", lo);
+	CHECK(!strcmp(host, want));
+	// No room for the scope.
+	CHECK(getnameinfo((struct sockaddr *)&six, sizeof(six), host, 9, NULL, 0, numeric)
+			== EAI_OVERFLOW);
+	// An interface that is gone, and another scope, are numbers.
+	six.sin6_scope_id = 99;
+	CHECK(getnameinfo((struct sockaddr *)&six, sizeof(six), host, sizeof(host), NULL, 0,
+			numeric) == 0 && !strcmp(host, "fe80::1%99"));
+	CHECK(inet_pton(AF_INET6, "2001:db8::1", &six.sin6_addr) == 1);
+	six.sin6_scope_id = 5;
+	CHECK(getnameinfo((struct sockaddr *)&six, sizeof(six), host, sizeof(host), NULL, 0,
+			numeric) == 0 && !strcmp(host, "2001:db8::1%5"));
+	six.sin6_scope_id = 0;
+	CHECK(getnameinfo((struct sockaddr *)&six, sizeof(six), host, sizeof(host), NULL, 0,
+			numeric) == 0 && !strcmp(host, "2001:db8::1"));
 }
 
 static void errors(void) {
@@ -1006,6 +1154,8 @@ int main(void) {
 	RUN(unbound);
 	RUN(shared);
 	RUN(udp);
+	RUN(peeking);
+	RUN(numeric_names);
 	RUN(errors);
 	RUN(ipv6);
 	RUN(interfaces);
