@@ -212,6 +212,19 @@ pub enum Request {
         /// The account.
         name: String,
     },
+    /// Make the account `name` of a bundle's service (ADR 0385), whose
+    /// home is `home`, its data folder, and whose full name `whose` says
+    /// whose service it is; one made already with that home is kept. Root's
+    /// to ask; the answer is `ok` and its number. It is removed as any
+    /// account is.
+    Service {
+        /// The account.
+        name: String,
+        /// The bundle whose service it is.
+        whose: String,
+        /// Its home.
+        home: String,
+    },
     /// Rename account `name` to `new`, with its own group and its home in
     /// `/users`, while nothing acts for it. Root's to ask.
     Rename {
@@ -594,6 +607,9 @@ impl Request {
             Request::Disable { name } => vec![b"disable", name.as_bytes()],
             Request::Enable { name } => vec![b"enable", name.as_bytes()],
             Request::Remove { name } => vec![b"remove", name.as_bytes()],
+            Request::Service { name, whose, home } => {
+                vec![b"service", name.as_bytes(), whose.as_bytes(), home.as_bytes()]
+            }
             Request::Rename { name, new } => vec![b"rename", name.as_bytes(), new.as_bytes()],
             Request::Set { name, full_name, admin } => {
                 let mut fields: Vec<&[u8]> = vec![b"set", name.as_bytes()];
@@ -742,6 +758,9 @@ impl Request {
             [b"disable", name] => Ok(Request::Disable { name: text(name)? }),
             [b"enable", name] => Ok(Request::Enable { name: text(name)? }),
             [b"remove", name] => Ok(Request::Remove { name: text(name)? }),
+            [b"service", name, whose, home] => {
+                Ok(Request::Service { name: text(name)?, whose: text(whose)?, home: text(home)? })
+            }
             [b"rename", name, new] => Ok(Request::Rename { name: text(name)?, new: text(new)? }),
             [b"set", name, ref settings @ ..] => {
                 let (mut full_name, mut admin) = (None, None);
@@ -952,6 +971,7 @@ impl Request {
             | Request::Disable { .. }
             | Request::Enable { .. }
             | Request::Remove { .. }
+            | Request::Service { .. }
             | Request::Rename { .. }
             | Request::Set { .. }
             | Request::ShareSignIn { .. }
@@ -982,6 +1002,9 @@ impl std::fmt::Debug for Request {
             Request::Disable { name } => write!(f, "Disable {{ name: {name:?} }}"),
             Request::Enable { name } => write!(f, "Enable {{ name: {name:?} }}"),
             Request::Remove { name } => write!(f, "Remove {{ name: {name:?} }}"),
+            Request::Service { name, whose, home } => {
+                write!(f, "Service {{ name: {name:?}, whose: {whose:?}, home: {home:?} }}")
+            }
             Request::Rename { name, new } => {
                 write!(f, "Rename {{ name: {name:?}, new: {new:?} }}")
             }

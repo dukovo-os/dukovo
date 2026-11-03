@@ -140,6 +140,9 @@ pub struct Service {
     pub secrets: Vec<String>,
     /// What it may do beyond running.
     pub permissions: Permissions,
+    /// The account it runs as, a bundle's service's own (ADR 0385); when
+    /// none, it acts for root, without root's bypass.
+    pub account: Option<String>,
 }
 
 impl Service {
@@ -369,6 +372,25 @@ pub fn secrets_dir(name: &str) -> String {
     format!("{SPARK_STATE}/secrets/{name}")
 }
 
+/// The file of the accounts, whose lines are
+/// `name:x:user:group:full name:home:shell`.
+pub const PASSWD: &str = "/system/settings/passwd";
+
+/// The user and group numbers of account `name` in `passwd`, the text of
+/// [`PASSWD`], which Spark runs a service with an `account` as (ADR
+/// 0385).
+pub fn account_numbers(passwd: &str, name: &str) -> Option<(u32, u32)> {
+    passwd.lines().find_map(|line| {
+        let mut fields = line.split(':');
+        if fields.next()? != name {
+            return None;
+        }
+        let user = fields.nth(1)?.parse().ok()?;
+        let group = fields.next()?.parse().ok()?;
+        Some((user, group))
+    })
+}
+
 /// The most places `files.mount` names: they are descriptors 3 and on.
 pub const MOUNT_MAX: usize = 4;
 
@@ -514,6 +536,9 @@ arguments = []
 order = 60
 # Whether Spark starts it at boot: true once it is ready.
 enabled = false
+# The account it runs as, for a bundle's service, which bundled makes;
+# left out, it acts for root, without root's bypass.
+# account = "NAME"
 # When it is started again after it ends: always, on-failure or never.
 restart = "on-failure"
 # The secrets Spark hands it as read-only files, in the folder
@@ -578,6 +603,25 @@ pub fn from_toml(text: &str) -> Result<Service, Error> {
     toml::from_str(text).map_err(|err| Error::from_toml(text, &err))
 }
 
+/// Checks an account's name, as Debian's: 1 to 32 lowercase letters,
+/// digits, `_`, `-` and `.`, starting with a letter or `_`.
+pub fn check_account(name: &str) -> Result<(), String> {
+    let fits = (1..=32).contains(&name.len())
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b"_-.".contains(&b))
+        && (name.as_bytes()[0].is_ascii_lowercase() || name.starts_with('_'));
+    if fits {
+        Ok(())
+    } else {
+        Err(format!(
+            "`{}` is not an account's name: it has 1 to 32 lowercase letters, digits, `_`, `-` \
+             and `.`, and starts with a letter or `_`",
+            name.escape_debug()
+        ))
+    }
+}
+
 /// Checks a service's name, the name of its file without `.toml`: it
 /// names its resource domain and its log lines too.
 pub fn check_name(name: &str) -> Result<(), String> {
@@ -619,6 +663,7 @@ struct File {
     secrets: Vec<String>,
     #[serde(default)]
     permissions: Permissions,
+    account: Option<String>,
 }
 
 impl TryFrom<File> for Service {
@@ -636,6 +681,17 @@ impl TryFrom<File> for Service {
         if let Some(bad) = file.arguments.iter().find(|a| a.contains('\0')) {
             return Err(format!("the argument `{}` holds a NUL", bad.escape_debug()));
         }
+        if let Some(account) = &file.account {
+            check_account(account).map_err(|why| format!("account: {why}"))?;
+            if account == "root" {
+                return Err("account is root's: leave it out to act for root".into());
+            }
+            if file.permissions.runs_with_your_access {
+                return Err(format!(
+                    "it runs as {account}, so it cannot run with your access, which is root's"
+                ));
+            }
+        }
         Ok(Service {
             description: file.description,
             program,
@@ -647,6 +703,7 @@ impl TryFrom<File> for Service {
             limits: file.limits,
             secrets: file.secrets,
             permissions: file.permissions,
+            account: file.account,
         })
     }
 }

@@ -171,6 +171,34 @@ bundled writes each install, update, going back, removal, hold and
 release, waiting update and failed one to _history_. A person is shown
 their own bundles' events and everyone's; root is shown all.
 
+# SERVICES
+
+A bundle whose manifest declares services installs only for everyone
+(ADR 0385), as they run for no one. For each account its services name,
+or each service's name, bundled asks *authd*(8) for an account of its
+own: a number from 100, a group of its own, no password and no shell,
+whose home is its data folder, _/shared/services/ID/ACCOUNT_, which
+bundled makes, the account's alone. An account of that name with that
+home is taken up again; another of that name stops the install.
+
+Once the bundle is in place, bundled writes each service's file,
+_/system/settings/spark/services/NAME.toml_ (*service.toml*(5)), checked
+as Spark reads it: the program in the bundle's folder, run as its
+account, its arguments, environment, restart, limits and secrets, order
+70, and what it may do: read the bundle's folder, change its data
+folder, and of what the bundle asks for and the program keeps, connect
+out, listen on its ports and reach the folders of _/shared_ it names. A
+person's permissions never reach a service. It tells *spark*(8) to
+start each service that starts at boot; one that starts when enabled
+waits for *service* _NAME_ *enable*. A service name that a file bundled
+did not write has already, the system's or an administrator's, stops
+the install.
+
+An update or going back writes the files again, keeping what an
+administrator enabled or disabled, starts each enabled service again,
+and takes away the services the version before ran that this one does
+not; a new service counts as asking for more.
+
 # REMOVING
 
 bundled removes the sealed folder, the version kept to go back to, and
@@ -181,6 +209,11 @@ to its key, so a later version from the same publisher picks kept data
 up and one from anyone else is refused. At its start it forgets a
 recorded bundle whose folder is gone, and removes the working folders
 it left behind.
+
+Removing a bundle installed for everyone stops its services and removes
+their files. Their accounts and data folders stay, for a later install
+to take up; with *--purge*, authd removes the accounts, whose numbers
+are retired, and bundled removes _/shared/services/ID_.
 
 # FILES
 
@@ -226,6 +259,15 @@ _/system/state/grants/UID_
 	Each person's grants, by their user number, mode 0600. One bundled
 	cannot read is set aside as _UID.bad_, and its person is asked
 	again.
+
+_/system/state/bundled/services/NAME_
+	Each service file bundled wrote: the bundle's ID and the account.
+
+_/system/settings/spark/services/NAME.toml_
+	The service files it writes for bundles' services.
+
+_/shared/services/ID/ACCOUNT_
+	The data folder of each account of a bundle's services, its home.
 
 _/system/live/bundled/socket_
 	Where it answers.

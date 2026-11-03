@@ -41,11 +41,12 @@
 //! from anywhere else is trusted as a catalog's when a catalog lists its
 //! very bytes.
 
+use std::fmt::Write as _;
 use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::Shutdown;
 use std::os::fd::{AsRawFd, OwnedFd};
-use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -66,6 +67,7 @@ use crate::bundles::protocol::{
     self, Answer, Available, Find, Found, Hit, LINE_MAX, Listed, Request, Shown,
 };
 use crate::bundles::registry::{self, Installed, Place, Registry, Trust};
+use crate::bundles::services::{self, Record};
 use crate::bundles::sheet::{self, Facts};
 use crate::bundles::{MANIFEST, confine, signed, sums};
 use crate::util::{self, Fail};
@@ -561,11 +563,14 @@ fn install_in(
             return Err(format!("its command {name} is one {} already adds", other.1));
         }
     }
+    // Services run for everyone, each by a name of its own (ADR 0385).
+    check_services(&checked.manifest, place)?;
     // What it asks for that the version it replaces did not (ADR 0384).
     // One whose manifest cannot be read is taken to have asked for
     // nothing, so that the sheet is shown.
+    let old = before.as_ref().and_then(|_| installed_manifest(place, &id).ok());
     let more = match &before {
-        Some(_) => asks_more(installed_manifest(place, &id).ok().as_ref(), &checked.manifest),
+        Some(_) => asks_more(old.as_ref(), &checked.manifest),
         None => Vec::new(),
     };
     if how.automatic && !more.is_empty() {
@@ -600,6 +605,8 @@ fn install_in(
             }
         }
     }
+    // Its services' accounts and data folders, before it is in place.
+    make_accounts(&checked.manifest)?;
     seal(&folder, 0)?;
     set_root(&folder.0, 0o555).map_err(|e| format!("{unpacked}: {e}"))?;
     still("as it was sealed")?;
@@ -656,7 +663,228 @@ fn install_in(
     let linked = link_commands(&shared.lock(), place)
         .err()
         .map_or_default(|why| format!("; its commands are not linked: {why}"));
-    Ok(format!("installed {id} {version}{over}, for {whose}{linked}"))
+    let ran = run_services(&checked.manifest, old.as_ref());
+    Ok(format!("installed {id} {version}{over}, for {whose}{linked}{ran}"))
+}
+
+/// Checks that `manifest`'s services may be installed in `place` (ADR
+/// 0385): for everyone only, as they run for no one, and each by a name
+/// no service of the system's or of another bundle has.
+fn check_services(manifest: &Manifest, place: Place) -> Result<(), String> {
+    let id = &manifest.id.0;
+    if manifest.services.is_empty() {
+        return Ok(());
+    }
+    if place != Place::Everyone {
+        return Err(format!(
+            "{id} runs services, which run for everyone: an administrator installs it with \
+             elevate bundle install --for-everyone"
+        ));
+    }
+    for service in &manifest.services {
+        let name = &service.name.0;
+        match read_record(name) {
+            Some(record) if record.id == *id => {}
+            Some(record) => return Err(format!("its service {name} is {}'s", record.id)),
+            None if Path::new(&services::file_path(name)).exists() => {
+                return Err(format!("its service {name} is one of the system's"));
+            }
+            None => {}
+        }
+    }
+    Ok(())
+}
+
+/// The record of service `name`'s file, if bundled wrote it.
+fn read_record(name: &str) -> Option<Record> {
+    let path = state(&format!("{}/{name}", services::RECORDS));
+    Record::parse(&fs::read_to_string(path).ok()?)
+}
+
+/// The services bundled wrote files for, by name, with their records.
+fn records() -> Vec<(String, Record)> {
+    let Ok(entries) = fs::read_dir(state(services::RECORDS)) else { return Vec::new() };
+    let mut all: Vec<(String, Record)> = entries
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let name = entry.file_name().into_string().ok()?;
+            let record = read_record(&name)?;
+            Some((name, record))
+        })
+        .collect();
+    all.sort_by(|a, b| a.0.cmp(&b.0));
+    all
+}
+
+/// Makes the accounts of `manifest`'s services through authd(8), and
+/// their data folders, each its account's alone (ADR 0385). An account
+/// and a folder kept from an earlier install are taken up again.
+fn make_accounts(manifest: &Manifest) -> Result<(), String> {
+    if manifest.services.is_empty() {
+        return Ok(());
+    }
+    let id = &manifest.id.0;
+    make_folder(Path::new(services::DATA), 0o755)?;
+    let bundle = format!("{}/{id}", services::DATA);
+    match fs::symlink_metadata(&bundle) {
+        Ok(st) if st.is_dir() && st.uid() == 0 => {}
+        Ok(_) => return Err(format!("{bundle} is in the way: it is not bundled's")),
+        Err(_) => make_folder(Path::new(&bundle), 0o755)?,
+    }
+    for name in services::accounts(manifest) {
+        let home = services::data_folder(id, &name);
+        let request = accounts::request::Request::Service {
+            name: name.clone(),
+            whose: id.clone(),
+            home: home.clone(),
+        };
+        let answer = crate::account::ask(&request).map_err(|fail| fail.message)?;
+        let number = match answer {
+            accounts::request::Answer::Done(word) => word.parse::<u32>().ok(),
+            accounts::request::Answer::Refused(why) => {
+                return Err(format!("cannot make the account {name}: {why}"));
+            }
+        };
+        let user = number
+            .and_then(|uid| account(uid).ok())
+            .ok_or_else(|| format!("authd made the account {name}, but it is not there"))?;
+        match fs::symlink_metadata(&home) {
+            Ok(st) if st.is_dir() && st.uid() == user.uid => continue,
+            Ok(_) => return Err(format!("{home} is in the way: it is not {name}'s")),
+            Err(_) => {}
+        }
+        fs::DirBuilder::new()
+            .mode(0o700)
+            .create(&home)
+            .and_then(|()| std::os::unix::fs::chown(&home, Some(user.uid), Some(user.gid)))
+            .and_then(|()| fs::set_permissions(&home, fs::Permissions::from_mode(0o700)))
+            .map_err(|e| format!("{home}: {e}"))?;
+    }
+    Ok(())
+}
+
+/// Asks Spark to `verb` service `name`: what went wrong, if anything.
+fn tell_spark(verb: &str, name: &str) -> Option<String> {
+    match crate::power::request(&format!("{verb} {name}")) {
+        Ok(answer) => answer.strip_prefix("error: ").map(|why| why.trim_end().to_string()),
+        Err(fail) => Some(fail.message),
+    }
+}
+
+/// Writes the files of `manifest`'s services, installed for everyone, in
+/// place of those of `old`, the version it replaced, if any; takes away
+/// the services `old` ran that it does not; and starts each that starts
+/// at boot, or starts again each that ran. What went wrong, said after
+/// the install's message: the bundle is installed whatever it is.
+fn run_services(manifest: &Manifest, old: Option<&Manifest>) -> String {
+    let id = &manifest.id.0;
+    let mut said = String::new();
+    for (name, record) in records() {
+        if record.id == *id
+            && !manifest.services.iter().any(|s| s.name.0 == name)
+            && let Some(why) = drop_service(&name)
+        {
+            let _ = write!(said, "; its old service {name} is not wholly removed: {why}");
+        }
+    }
+    let folder = format!("{EVERYONE}/{id}");
+    for service in &manifest.services {
+        let name = &service.name.0;
+        let path = services::file_path(name);
+        // An administrator's enable or disable stays.
+        let enabled = read_record(name)
+            .and_then(|_| fs::read_to_string(&path).ok())
+            .and_then(|text| services::enabled(&text));
+        let record = Record { id: id.clone(), account: services::account(service) };
+        let written = services::file(manifest, service, &folder, enabled).and_then(|text| {
+            make_folder(Path::new(&state(services::RECORDS)), 0o700)?;
+            write_whole(&state(&format!("{}/{name}", services::RECORDS)), &record.text(), 0o600)?;
+            write_whole(&path, &text, 0o644)?;
+            Ok(text)
+        });
+        let text = match written {
+            Ok(text) => text,
+            Err(why) => {
+                let _ = write!(said, "; its service {name} cannot run: {why}");
+                continue;
+            }
+        };
+        if services::enabled(&text) != Some(true) {
+            let _ = write!(
+                said,
+                "; its service {name} starts once an administrator enables it: elevate \
+                 service {name} enable"
+            );
+            continue;
+        }
+        let ran = old.is_some_and(|old| old.services.iter().any(|s| s.name.0 == *name));
+        let verb = if ran { "restart" } else { "start" };
+        match tell_spark(verb, name) {
+            None => {
+                let _ = write!(said, "; its service {name} runs");
+            }
+            Some(why) => {
+                let _ = write!(said, "; its service {name} did not start: {why}");
+            }
+        }
+    }
+    said
+}
+
+/// Stops service `name` and takes its file and record away: what went
+/// wrong, if anything.
+fn drop_service(name: &str) -> Option<String> {
+    let stopped = tell_spark("stop", name);
+    let path = services::file_path(name);
+    if let Err(e) = fs::remove_file(&path)
+        && e.kind() != io::ErrorKind::NotFound
+    {
+        return Some(format!("{path}: {e}"));
+    }
+    let _ = fs::remove_file(state(&format!("{}/{name}", services::RECORDS)));
+    stopped.filter(|why| !why.starts_with("no service is called"))
+}
+
+/// Stops and takes away the services of bundle `id`, installed for
+/// everyone; with `purge`, their accounts and data folders too, which are
+/// kept otherwise, for a later install to take up. What it did, for the
+/// removal's message.
+fn remove_services(id: &str, purge: bool) -> Result<String, String> {
+    let mut accounts: Vec<String> = Vec::new();
+    let mut said = String::new();
+    for (name, record) in records() {
+        if record.id != id {
+            continue;
+        }
+        if let Some(why) = drop_service(&name) {
+            let _ = write!(said, "; its service {name} is not wholly removed: {why}");
+        }
+        if !accounts.contains(&record.account) {
+            accounts.push(record.account);
+        }
+    }
+    let data = format!("{}/{id}", services::DATA);
+    let kept = fs::symlink_metadata(&data).is_ok_and(|st| st.is_dir() && st.uid() == 0);
+    if !purge {
+        if kept {
+            let _ = write!(said, "; its services' data stays in {data}, for --purge to remove");
+        }
+        return Ok(said);
+    }
+    for name in &accounts {
+        let request = accounts::request::Request::Remove { name: name.clone() };
+        match crate::account::ask(&request).map_err(|fail| fail.message)? {
+            accounts::request::Answer::Done(_) => {}
+            accounts::request::Answer::Refused(why) => {
+                let _ = write!(said, "; its account {name} is not removed: {why}");
+            }
+        }
+    }
+    if kept {
+        fs::remove_dir_all(&data).map_err(|e| format!("{data}: {e}"))?;
+        let _ = write!(said, ", with its services' accounts and data");
+    }
+    Ok(said)
 }
 
 /// The name the version a bundle replaced is kept by, beside it.
@@ -723,6 +951,11 @@ fn asks_more(old: Option<&Manifest>, new: &Manifest) -> Vec<String> {
     let was = old.map_or_default(yours);
     if yours(new).iter().any(|c| !was.contains(c)) {
         more.push(grants::YOUR_ACCESS.into());
+    }
+    // A service runs for no one, from boot: one more is more.
+    let ran = |name: &str| old.is_some_and(|old| old.services.iter().any(|s| s.name.0 == name));
+    if new.services.iter().any(|s| !ran(&s.name.0)) {
+        more.push(sheet::SERVICES.into());
     }
     more
 }
@@ -971,6 +1204,9 @@ fn remove(
         return Err(format!("{id} is not installed"));
     };
     let (places, path) = open_place(place)?;
+    // Its services stop before their program goes (ADR 0385).
+    let services =
+        if place == Place::Everyone { remove_services(id, purge)? } else { String::new() };
     if places.stat_at(id).map_err(|e| format!("{path}/{id}: {e}"))?.is_some() {
         let old = working_name("removing")?;
         places.rename(id, &old).map_err(|e| format!("{path}/{id}: {e}"))?;
@@ -1030,7 +1266,7 @@ fn remove(
         note: if purged { "with its data".into() } else { String::new() },
     });
     let and = if purged { ", and its data" } else { "" };
-    Ok(format!("removed {id} {}{and}", installed.version))
+    Ok(format!("removed {id} {}{and}{services}", installed.version))
 }
 
 /// The bundle `id` that `asker` runs: their own before everyone's.
@@ -1781,6 +2017,8 @@ fn rollback(shared: &Shared, asker: u32, id: &str, everyone: bool) -> Result<Str
             return Err(format!("its command {name} is one {} adds now", other.1));
         }
     }
+    // The version it goes back from, whose services it replaces.
+    let from = installed_manifest(place, id).ok();
     let swapping = working_name("swapping")?;
     places.rename(id, &swapping).map_err(|e| format!("{path}/{id}: {e}"))?;
     if let Err(e) = places.rename(&kept, id) {
@@ -1815,9 +2053,14 @@ fn rollback(shared: &Shared, asker: u32, id: &str, everyone: bool) -> Result<Str
     });
     let held =
         if held { format!("; it is held there until `bundle unhold {id}`") } else { String::new() };
+    let ran = if place == Place::Everyone {
+        run_services(&checked.manifest, from.as_ref())
+    } else {
+        String::new()
+    };
     Ok(format!(
         "went back to {id} {}, from {}; its data comes back at its next run{held}; `bundle \
-         rollback {id}` goes forward again{linked}",
+         rollback {id}` goes forward again{linked}{ran}",
         then.version, current.version
     ))
 }

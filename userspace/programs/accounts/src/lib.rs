@@ -67,6 +67,14 @@ pub const SHELL: &str = "/system/commands/nukesh";
 pub const FIRST_USER: u32 = 1000;
 /// The last of them.
 pub const LAST_USER: u32 = 59999;
+/// The numbers of the accounts that services of bundles run as (ADR
+/// 0385), below people's: authd makes one as bundled(8) installs such a
+/// service, and none signs in.
+pub const FIRST_SERVICE: u32 = 100;
+/// The last of them.
+pub const LAST_SERVICE: u32 = 999;
+/// The shell of an account no one signs in to.
+pub const NO_SHELL: &str = "/system/commands/false";
 /// The group of the administrators, who may elevate (13b.6).
 pub const ADMINS: &str = "admins";
 /// Its number, as Linux's `wheel` has.
@@ -131,6 +139,11 @@ impl User {
     /// Whether it is a person's account, not the system's.
     pub fn is_person(&self) -> bool {
         (FIRST_USER..=LAST_USER).contains(&self.uid)
+    }
+
+    /// Whether it is the account of a bundle's service (ADR 0385).
+    pub fn is_service(&self) -> bool {
+        (FIRST_SERVICE..=LAST_SERVICE).contains(&self.uid)
     }
 }
 
@@ -371,7 +384,18 @@ pub fn retired_line(user: &User, day: &str) -> String {
 /// user and no group has, and that no removed account had (`retired`), so
 /// that the files a removed account left are never another's.
 pub fn free_number(users: &Table<User>, groups: &Table<Group>, retired: &[u32]) -> Option<u32> {
-    (FIRST_USER..=LAST_USER).find(|&n| {
+    free_in(FIRST_USER..=LAST_USER, users, groups, retired)
+}
+
+/// The lowest number of `range` that no user and no group has and no
+/// removed account had.
+fn free_in(
+    range: std::ops::RangeInclusive<u32>,
+    users: &Table<User>,
+    groups: &Table<Group>,
+    retired: &[u32],
+) -> Option<u32> {
+    range.into_iter().find(|&n| {
         !users.entries().any(|u| u.uid == n)
             && !groups.entries().any(|g| g.gid == n)
             && !retired.contains(&n)
@@ -411,6 +435,46 @@ pub fn add(
         full_name: full_name.into(),
         home: format!("{USERS}/{name}"),
         shell: SHELL.into(),
+    };
+    users.push(user.clone());
+    Ok(user)
+}
+
+/// Adds the account of a bundle's service, `name`, to `users` and
+/// `groups` (ADR 0385): with the lowest free number from
+/// [`FIRST_SERVICE`] not `retired`, a group of its own, `home`, which is
+/// the service's data folder, and [`NO_SHELL`]. `full_name` says whose
+/// service it is. An account of that name that is a service's already,
+/// with that home, is kept as it is. Its user, or why it cannot be made.
+pub fn add_service(
+    users: &mut Table<User>,
+    groups: &mut Table<Group>,
+    name: &str,
+    full_name: &str,
+    home: &str,
+    retired: &[u32],
+) -> Result<User, String> {
+    check_name(name)?;
+    check_full_name(full_name)?;
+    if let Some(user) = users.entries().find(|u| u.name == name) {
+        if user.is_service() && user.home == home {
+            return Ok(user.clone());
+        }
+        return Err(format!("there is an account {name} already"));
+    }
+    if groups.entries().any(|g| g.name == name) {
+        return Err(format!("there is a group {name} already"));
+    }
+    let number = free_in(FIRST_SERVICE..=LAST_SERVICE, users, groups, retired)
+        .ok_or("every number of a service's account is taken")?;
+    groups.push(Group { name: name.into(), gid: number, members: Vec::new() });
+    let user = User {
+        name: name.into(),
+        uid: number,
+        gid: number,
+        full_name: full_name.into(),
+        home: home.into(),
+        shell: NO_SHELL.into(),
     };
     users.push(user.clone());
     Ok(user)

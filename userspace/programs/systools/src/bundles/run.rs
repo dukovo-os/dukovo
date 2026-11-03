@@ -54,7 +54,7 @@ use crate::bundled;
 use crate::util::{self, Fail, fail};
 
 /// The architecture this system runs.
-const ARCH: Arch = Arch::X86_64;
+pub const ARCH: Arch = Arch::X86_64;
 
 /// What a sandboxed program's view holds besides its bundle, its data
 /// and its `/tmp`, each at its path, and whether it may change it: the

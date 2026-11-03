@@ -126,7 +126,19 @@ closes the connection, but for a session (below):
 	the retired ones, which no account gets again, and takes its user,
 	its own group and its name in other groups out of the account files.
 	Answers *ok* and its home, which authd leaves as it is: *user*(8)
-	keeps, archives or deletes it. Only root may.
+	keeps, archives or deletes it. Only root may. A service's account
+	(*service*, below) is removed the same way.
+
+*service* _name_ _bundle_ _home_
+	Makes the account of a bundle's service (ADR 0385), as *bundled*(8)
+	asks while it installs the bundle: the lowest number from 100 to 999
+	that no user or group has and no removed account had, a group of
+	its own, a password entry that is disabled, so nothing signs in to
+	it, the shell _/system/commands/false_, the full name *A service of*
+	_bundle_, and _home_, its data folder, which must be in
+	_/shared/services_ and which bundled makes. An account of that name
+	with that home is taken up again. Answers *ok* and its number. Only
+	root may.
 
 *rename* _name_ _new_
 	Renames the account, its own group, its name in other groups, its

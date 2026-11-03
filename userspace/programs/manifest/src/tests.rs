@@ -177,6 +177,25 @@ network.listen = [80, "443", "8000-8009"]
 }
 
 #[test]
+fn a_service_may_run_as_an_account() {
+    assert_eq!(service::from_toml(&file("")).unwrap().account, None);
+    let service = service::from_toml(&file("account = \"web-cache\"\n")).unwrap();
+    assert_eq!(service.account.as_deref(), Some("web-cache"));
+    assert!(error(&file("account = \"root\"\n")).contains("leave it out"));
+    assert!(error(&file("account = \"Web\"\n")).contains("is not an account's name"));
+    let whole = file("account = \"web\"\n[permissions]\nruns-with-your-access = true\n");
+    assert!(error(&whole).contains("cannot run with your access"));
+
+    let passwd = "root:x:0:0:root:/system/state/root:/system/commands/nukesh\n\
+                  web:x:100:100:A service of org.example.web:/shared/services/org.example.web:\
+                  /system/commands/false\nbroken:x:1x:2\n";
+    assert_eq!(service::account_numbers(passwd, "web"), Some((100, 100)));
+    assert_eq!(service::account_numbers(passwd, "root"), Some((0, 0)));
+    assert_eq!(service::account_numbers(passwd, "we"), None);
+    assert_eq!(service::account_numbers(passwd, "broken"), None);
+}
+
+#[test]
 fn what_a_view_holds_and_the_secrets() {
     let text = file(
         "secrets = [\"api-token\", \"db_password\"]\n\

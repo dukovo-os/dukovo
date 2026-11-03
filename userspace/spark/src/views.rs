@@ -21,6 +21,12 @@
 //! A file with `runs-with-your-access` gets Spark's own root instead, the
 //! whole tree with the bypass right, as consoled needs to start root's
 //! shells until sign-in (13b.5).
+//!
+//! A file with an `account`, a bundle's service's (ADR 0385), gets a view
+//! that acts for that account: the places in it are opened as the account,
+//! so that the owners and modes of their files narrow it as they would a
+//! person, and what it makes is the account's. Its `/tmp`, the places it
+//! may change that Spark makes, and its secrets are the account's.
 
 use alloc::format;
 use alloc::string::String;
@@ -55,6 +61,16 @@ pub struct View {
     pub mounts: Vec<Dir>,
 }
 
+/// The account a service runs as, other than root's.
+pub struct Account {
+    /// Spark's root, acting for the account.
+    pub root: Dir,
+    /// Its user number.
+    pub user: u32,
+    /// Its group's number.
+    pub group: u32,
+}
+
 /// A service's root.
 pub enum Root {
     /// A view of its own.
@@ -63,14 +79,17 @@ pub enum Root {
     Spark,
 }
 
-/// Builds service `spec`'s view beneath Spark's `root`, or says why not.
-pub fn build(root: &Dir, spec: &Spec) -> Result<View, String> {
+/// Builds service `spec`'s view beneath Spark's `root`, acting for its
+/// `account` if it has one, or says why not.
+pub fn build(root: &Dir, account: Option<&Account>, spec: &Spec) -> Result<View, String> {
     if spec.whole_tree {
         return Ok(View { root: Root::Spark, mounts: Vec::new() });
     }
     // Without the bypass right: the view, and each place attached to it,
-    // acts for root as the owners and modes of its files let it.
-    let base = root
+    // acts for root, or for the account, as the owners and modes of its
+    // files let it.
+    let base = account
+        .map_or(root, |account| &account.root)
         .derive(GIVEN.union(Rights::CONTROL))
         .map_err(|err| format!("cannot narrow the root: {err}"))?;
     let view = base.make_view().map_err(|err| format!("cannot make its view: {err}"))?;
@@ -88,7 +107,11 @@ pub fn build(root: &Dir, spec: &Spec) -> Result<View, String> {
         // folder for what goes at shutdown, as notifyd's is for those that
         // start before notifyd.
         if (place.write && !optional) || within(path, "system/live") {
+            let new = root.stat(path).is_err();
             services::make_dirs(root, path)?;
+            if new && place.write {
+                own(root, account, path)?;
+            }
         }
         match root.stat(path) {
             Ok(_) => {}
@@ -116,11 +139,25 @@ pub fn build(root: &Dir, spec: &Spec) -> Result<View, String> {
                 ));
             }
         }
+        // A view holds only what acts for its name: the secrets are the
+        // account's, then, as systemd hands a service's credentials to its
+        // user, read-only.
+        if let Some(account) = account {
+            let give = |path: &str, mode| {
+                root.set_access(path, Some(account.user), Some(account.group), Some(mode))
+                    .map_err(|err| format!("cannot give /{path} to its account: {err}"))
+            };
+            give(&dir[1..], 0o500)?;
+            for secret in &spec.secrets {
+                give(&format!("{}/{secret}", &dir[1..]), 0o400)?;
+            }
+        }
         attach(&base, &view, &dir[1..], false)?;
     }
 
     let tmp = format!("{TMP}/{}", spec.name);
     services::make_dirs(root, &tmp)?;
+    own(root, account, &tmp)?;
     let opened = base.open_dir(&tmp, GIVEN).map_err(|err| format!("/{tmp}: {err}"))?;
     view.attach("tmp", opened.slot()).map_err(|err| format!("cannot attach /tmp: {err}"))?;
 
@@ -139,6 +176,14 @@ pub fn build(root: &Dir, spec: &Spec) -> Result<View, String> {
     // Without the control right: nothing more can be attached to it.
     let given = view.derive(GIVEN).map_err(|err| format!("cannot narrow its view: {err}"))?;
     Ok(View { root: Root::View(given), mounts })
+}
+
+/// Gives the folder at `path` beneath `root` to `account`, if the service
+/// has one, for it alone.
+fn own(root: &Dir, account: Option<&Account>, path: &str) -> Result<(), String> {
+    let Some(account) = account else { return Ok(()) };
+    root.set_access(path, Some(account.user), Some(account.group), Some(0o700))
+        .map_err(|err| format!("cannot give /{path} to its account: {err}"))
 }
 
 /// Whether `inner` is `outer` or beneath it.

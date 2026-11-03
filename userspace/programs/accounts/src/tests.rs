@@ -147,6 +147,27 @@ fn adding_accounts() {
 }
 
 #[test]
+fn services_get_accounts_of_their_own() {
+    let mut users = users("root:x:0:0:root:/:/system/commands/nukesh\n");
+    let mut groups = groups("root:x:0:\nstaff:x:100:\n");
+    let home = "/shared/services/org.example.web";
+    // The lowest free number from 100, past a group's and a retired one.
+    let web = add_service(&mut users, &mut groups, "web", "org.example.web", home, &[101]).unwrap();
+    assert_eq!((web.uid, web.gid, web.shell.as_str()), (102, 102, NO_SHELL));
+    assert!(web.is_service() && !web.is_person());
+    assert!(users.text().ends_with(
+        "web:x:102:102:org.example.web:/shared/services/org.example.web:/system/commands/false\n"
+    ));
+    // Again, the same: kept; another home, or a person's name: refused.
+    let again = add_service(&mut users, &mut groups, "web", "org.example.web", home, &[]).unwrap();
+    assert_eq!(again, web);
+    assert!(add_service(&mut users, &mut groups, "web", "x", "/shared/services/x", &[]).is_err());
+    add(&mut users, &mut groups, "alice", "", false, &[]).unwrap();
+    assert!(add_service(&mut users, &mut groups, "alice", "x", home, &[]).is_err());
+    assert_eq!(add(&mut users, &mut groups, "bob", "", false, &[]).unwrap().uid, 1001);
+}
+
+#[test]
 fn password_lines() {
     let table = passwords("alice:$argon2id$v=19$x:\nbob::\ncarol:!:19000:0:99999:7:::\n");
     let hashes: Vec<(&str, &str)> =
@@ -258,6 +279,11 @@ fn requests_go_and_come_back() {
         Request::Disable { name: "bob".into() },
         Request::Enable { name: "bob".into() },
         Request::Remove { name: "bob".into() },
+        Request::Service {
+            name: "web".into(),
+            whose: "org.example.web".into(),
+            home: "/shared/services/org.example.web".into(),
+        },
         Request::Rename { name: "bob".into(), new: "robert".into() },
         Request::Set { name: "bob".into(), full_name: Some("Bob Smith".into()), admin: None },
         Request::Set { name: "bob".into(), full_name: Some(String::new()), admin: Some(true) },

@@ -42,6 +42,7 @@ pub(crate) mod history;
 pub(crate) mod protocol;
 pub(crate) mod registry;
 pub(crate) mod run;
+pub(crate) mod services;
 pub(crate) mod sheet;
 pub(crate) mod snapshots;
 

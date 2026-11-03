@@ -77,6 +77,18 @@ wrong in plain words:
 	default), only after an exit code other than 0 or a signal, or not
 	at all.
 
+*account* = _"name"_
+	The account it runs as, from _/system/settings/passwd_; root's
+	unless set, without root's right to pass the owners and modes of
+	files. A bundle's service has an account of its own, which
+	*bundled*(8) makes as it installs the bundle and names here (ADR
+	0385). Spark starts the program as the account and builds its view
+	as it: each place in the view is opened as the account, so the
+	owners and modes of the files narrow what it reaches as they would a
+	person's, and what it makes is the account's. Its _/tmp_, the places
+	it may change that Spark makes, and its secrets are given to the
+	account. Not *"root"*, and not with *runs-with-your-access*.
+
 *secrets* = [_"name"_, ...]
 	The names of its secrets, such as a database's password or an API
 	token, each written as a service's name is; none unless set. Set
@@ -231,9 +243,9 @@ at its own path, and what every service has without asking:
   _/usr/bin/env_ work.
 
 Nothing else of the tree is there: not the homes, not _/shared_, not
-another service's files, not Spark's. It acts for root, but without the
-right to pass the owners and modes of files, so a file whose mode closes
-it to root is closed to it too. A place its file names that is one of
+another service's files, not Spark's. It acts for root, or for its
+*account*, but without the right to pass the owners and modes of files,
+so a file whose mode closes it to root is closed to it too. A place its file names that is one of
 the list takes that one's place, so notifyd's
 *files.read-write = ["/system/live/notify"]* lets it change its folder.
 
@@ -254,7 +266,8 @@ printf '%s' "$TOKEN" | service secret set web api-token
 ```
 
 Spark attaches the service's folder of secrets read-only at that same
-path in its view, and names it in *SECRETS_DIRECTORY*, so the service
+path in its view, given to its *account* if it has one (mode 0500, and
+0400 for each secret), and names it in *SECRETS_DIRECTORY*, so the service
 reads _$SECRETS_DIRECTORY/db-password_. A value is never put in a
 variable, which _/processes_, crash reports and logs could show. A
 service whose secret is not set is not started:

@@ -17,6 +17,10 @@ use super::minisign::PublicKey;
 use super::registry::{Place, Trust};
 use crate::util;
 
+/// What [`Facts::replaces`] names when a version runs a service the one
+/// it replaces did not.
+pub const SERVICES: &str = "services";
+
 /// What the sheet tells of a bundle besides its manifest.
 pub struct Facts<'a> {
     pub manifest: &'a Manifest,
@@ -160,9 +164,16 @@ pub fn write(facts: &Facts<'_>) -> String {
             let _ = writeln!(o, "  New in this version: a command that runs with your access.");
         }
     }
-    let services: Vec<String> = m.services.iter().map(|s| s.name.to_string()).collect();
+    // Each runs for no one, as an account of its own (ADR 0385).
+    let services = super::services::sheet_lines(m);
     if !services.is_empty() {
-        let _ = writeln!(o, "  Services: {}", services.join(", "));
+        let _ = writeln!(o, "  Services, which Spark runs, each as an account of its own:");
+        for line in services {
+            let _ = writeln!(o, "    {line}");
+        }
+        if new.iter().any(|n| n == SERVICES) {
+            let _ = writeln!(o, "  New in this version: a service.");
+        }
     }
     o
 }
