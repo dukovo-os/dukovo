@@ -636,7 +636,14 @@ impl Inner {
             self.commit_locked(&mut txn)?;
         }
         match failed {
-            Some(err) => Err(err),
+            Some(err) => {
+                // What failed is tried again a commit's time from now, not
+                // at each look of the writeback thread.
+                if self.since.load(Ordering::Acquire) != 0 {
+                    self.since.store(radix_vfs::now().max(1), Ordering::Release);
+                }
+                Err(err)
+            }
             None => Ok(()),
         }
     }
@@ -661,9 +668,17 @@ impl Inner {
 
     pub(crate) fn commit_locked(&self, txn: &mut Txn) -> Result<()> {
         txn.writer.commit(&self.volume)?;
-        // What waits for the next sync keeps the commit due.
+        // What waits for the next sync keeps the commit due, from the time
+        // of the oldest change: a commit of an fsync or a snapshot does not
+        // write the pages that wait, so taking the time anew at each would
+        // keep them from the disk as long as such commits came within
+        // [`COMMIT_NS`] of each other.
         let waiting = !self.dirty.lock().is_empty() || !self.reap.lock().is_empty();
-        self.since.store(if waiting { radix_vfs::now().max(1) } else { 0 }, Ordering::Release);
+        if waiting {
+            self.touch();
+        } else {
+            self.since.store(0, Ordering::Release);
+        }
         Ok(())
     }
 
@@ -893,9 +908,19 @@ impl FileSystem for BtrfsFs {
         self.inner.change(|txn| txn.writer.limit_qgroup(volume, id, max_referenced, max_exclusive))
     }
 
+    /// Whether the disk lacks a change: a change since the last commit, a
+    /// page or node waiting for the next sync, or a file to free.
+    /// Powering off syncs it then, however new the change.
+    fn is_dirty(&self) -> bool {
+        self.inner.since.load(Ordering::Acquire) != 0
+            || self.inner.data_reserved.load(Ordering::Acquire) != 0
+            || !self.inner.dirty.lock().is_empty()
+            || !self.inner.reap.lock().is_empty()
+    }
+
     /// Whether a commit is due: the oldest change the disk lacks is
     /// [`COMMIT_NS`] old, or more than [`DIRTY_PAGES_MAX`] pages wait.
-    fn is_dirty(&self) -> bool {
+    fn is_due(&self) -> bool {
         let since = self.inner.since.load(Ordering::Acquire);
         if since == 0 {
             return false;

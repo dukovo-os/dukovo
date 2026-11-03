@@ -1167,6 +1167,12 @@ pub trait FileSystem: Send + Sync {
     fn is_dirty(&self) -> bool {
         false
     }
+    /// Whether the writeback thread should write its changes now: any it
+    /// holds, unless it keeps them for a while to write them together,
+    /// as Btrfs keeps a transaction for up to 30 s, as Linux's does.
+    fn is_due(&self) -> bool {
+        self.is_dirty()
+    }
     /// Reads every block it holds, every copy, and checks each against
     /// its checksum, as Linux's `btrfs scrub` does; writes a good copy
     /// over a bad one if `repair`. A filesystem that keeps no checksums

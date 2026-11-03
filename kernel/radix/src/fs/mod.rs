@@ -988,6 +988,10 @@ impl FileSystem for Subtree {
         self.inner.is_dirty()
     }
 
+    fn is_due(&self) -> bool {
+        self.inner.is_due()
+    }
+
     fn shrink(&self, max: usize) -> usize {
         self.inner.shrink(max)
     }

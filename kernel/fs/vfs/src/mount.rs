@@ -1219,11 +1219,23 @@ impl Vfs {
         }
     }
 
-    /// Syncs every filesystem with changes; returns the first error.
+    /// Syncs every filesystem with changes, as the machine powers off;
+    /// returns the first error.
     pub fn sync_all(&self) -> Result<()> {
+        self.sync_where(|fs| fs.is_dirty())
+    }
+
+    /// Syncs every filesystem whose changes are due
+    /// ([`crate::FileSystem::is_due`]), as the writeback thread does every few
+    /// seconds; returns the first error.
+    pub fn sync_due(&self) -> Result<()> {
+        self.sync_where(|fs| fs.is_due())
+    }
+
+    fn sync_where(&self, wanted: impl Fn(&FsRef) -> bool) -> Result<()> {
         let mut first = Ok(());
         for fs in &self.filesystems()? {
-            if fs.is_dirty()
+            if wanted(fs)
                 && let Err(err) = fs.sync()
                 && first.is_ok()
             {

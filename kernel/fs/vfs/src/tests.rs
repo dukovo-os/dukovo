@@ -643,6 +643,57 @@ fn a_mount_whose_disk_is_gone_unmounts_though_its_sync_fails() {
     vfs.remove(&K, &root, "stick").unwrap();
 }
 
+/// A filesystem holding changes it keeps a while before it writes them,
+/// as Btrfs keeps a transaction: its syncs counted.
+struct Waiting {
+    inner: FsRef,
+    syncs: AtomicUsize,
+}
+
+impl FileSystem for Waiting {
+    fn kind(&self) -> FsKind {
+        self.inner.kind()
+    }
+
+    fn root(&self) -> NodeRef {
+        self.inner.root()
+    }
+
+    fn info(&self) -> crate::FsInfo {
+        self.inner.info()
+    }
+
+    fn sync(&self) -> Result<()> {
+        self.syncs.fetch_add(1, Ordering::Relaxed);
+        Ok(())
+    }
+
+    fn is_dirty(&self) -> bool {
+        true
+    }
+
+    fn is_due(&self) -> bool {
+        false
+    }
+}
+
+#[test]
+fn powering_off_syncs_changes_the_writeback_thread_leaves_for_later() {
+    let vfs = vfs();
+    let root = vfs.root();
+    vfs.make_directory(&K, &root, "data", DIR).unwrap();
+    let waiting = mem::arc(Waiting { inner: tmpfs(1 << 20), syncs: AtomicUsize::new(0) }).unwrap();
+    let fs: FsRef = waiting.clone();
+    vfs.mount(&K, &root, "data", fs, "vdb", false).unwrap();
+    // The writeback thread leaves what is not due yet.
+    vfs.sync_due().unwrap();
+    assert_eq!(waiting.syncs.load(Ordering::Relaxed), 0);
+    // Powering off writes every change, however new.
+    vfs.sync_all().unwrap();
+    assert_eq!(waiting.syncs.load(Ordering::Relaxed), 1);
+    vfs.unmount(&K, &root, "data").unwrap();
+}
+
 #[test]
 fn mounts_join_filesystems() {
     let vfs = vfs();
