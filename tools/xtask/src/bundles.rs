@@ -33,9 +33,12 @@ pub const KEY_VARIABLE: &str = "OB_BUNDLE_KEY";
 /// for.
 const REQUIRES_OS: &str = "0.12";
 
-/// The folder a bundle's port installs into, `$PORT_BUNDLE`.
+/// The folder a bundle's port installs into, `$PORT_BUNDLE`: beside the
+/// port's stamp, in `out/ports/<name>/bundle`, so that a cache keeps or
+/// loses both together. Under target/, CI's Cargo cache brought back
+/// part of it, and a bundle was packed without its program.
 pub fn staging(ctx: &Ctx, name: &str) -> PathBuf {
-    ctx.target.join("ports/bundles").join(name)
+    crate::ports::info_dir(ctx, name).join("bundle")
 }
 
 /// Where the `.dkv` files are.
@@ -69,6 +72,16 @@ fn pack(ctx: &Ctx, ports: &Ports, port: &Port, key: &SecretKey) -> Result<PathBu
     let recipe = &port.recipe;
     let spec = recipe.bundle.as_ref().expect("a bundle's port");
     let built = staging(ctx, &recipe.name);
+    for command in &spec.commands {
+        if !built.join("bin").join(command).is_file() {
+            return Err(Error::new(format!(
+                "port {}: {} has no bin/{command} to pack",
+                recipe.name,
+                ctx.display(&built)
+            ))
+            .hint(format!("build it again with `./ob ports --rebuild {}`", recipe.name)));
+        }
+    }
     let folder = ctx.target.join("ports/packing").join(&recipe.name);
     if folder.exists() {
         std::fs::remove_dir_all(&folder).context(|| format!("removing {}", folder.display()))?;

@@ -939,6 +939,16 @@ pub struct Ports {
 
 /// Builds every port that changed, in order, and returns them all.
 pub fn build_all(ctx: &Ctx, rebuild: &[String]) -> Result<Ports> {
+    build_ports(ctx, rebuild, false)
+}
+
+/// Builds every port that changed, as [`build_all`] does, and packs the
+/// bundles of the ports the catalog carries into out/bundles (ADR 0370).
+pub fn build_and_pack(ctx: &Ctx, rebuild: &[String]) -> Result<Ports> {
+    build_ports(ctx, rebuild, true)
+}
+
+fn build_ports(ctx: &Ctx, rebuild: &[String], pack: bool) -> Result<Ports> {
     let toolchain = find_toolchain(ctx)?;
     toolchain.write(ctx)?;
     let mut stamps: BTreeMap<String, u64> = BTreeMap::new();
@@ -968,9 +978,14 @@ pub fn build_all(ctx: &Ctx, rebuild: &[String]) -> Result<Ports> {
         let stamp = inputs_hash(ctx, &port.dir, &toolchain, recipe, &stamps)?;
         let stamp_file = ctx.out.join("ports").join(format!("{}.stamp", recipe.name));
         let built = std::fs::read_to_string(&stamp_file).ok() == Some(format!("{stamp:016x}\n"));
-        // A bundle's port is packed from the folder it installed into,
-        // which a restored cache of out/ does not bring back.
-        let staged = recipe.bundle.is_none() || crate::bundles::staging(ctx, &recipe.name).is_dir();
+        // A bundle's port is packed from the folder it installed into, and
+        // its licenses from the sources of the crates it linked, in
+        // Cargo's registry. A cache can bring the stamp back without
+        // either: CI's prunes the registry to the workspace's crates.
+        let staged = !pack
+            || recipe.bundle.is_none()
+            || (crate::bundles::staging(ctx, &recipe.name).is_dir()
+                && crate::licenses::crates_fetched(ctx, &recipe.name));
         if built && staged && !rebuild.contains(&recipe.name) {
             step(&format!("Port {} {} is up to date", recipe.name, recipe.version));
         } else {
@@ -993,7 +1008,9 @@ pub fn build_all(ctx: &Ctx, rebuild: &[String]) -> Result<Ports> {
         }
     }
     let ports = Ports { toolchain, ports };
-    crate::bundles::pack_all(ctx, &ports)?;
+    if pack {
+        crate::bundles::pack_all(ctx, &ports)?;
+    }
     Ok(ports)
 }
 

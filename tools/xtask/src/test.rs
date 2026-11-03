@@ -2657,6 +2657,12 @@ pub fn command(ctx: &Ctx, args: &mut Args) -> Result<()> {
             kernel: kernel::build(ctx, profile)?,
             programs: userspace::build(ctx, profile)?,
         };
+        // The catalog's bundles are packed only for a case that installs
+        // them: packing builds a bundle's port again when what it packs
+        // from is gone, as it is after a restored cache.
+        if cases.iter().any(|case| case.disks.iter().any(|disk| disk.fat == BUNDLE_FILES)) {
+            crate::ports::build_and_pack(ctx, &[])?;
+        }
         if image_only {
             return case_images(ctx, &built, &cases);
         }

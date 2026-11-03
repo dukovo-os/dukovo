@@ -763,7 +763,7 @@ fn dispatch(argv: Vec<String>) -> Result<()> {
             }
             args.finish()?;
             userspace::install_headers(&ctx)?;
-            ports::build_all(&ctx, &rebuild).map(|_| ())
+            ports::build_and_pack(&ctx, &rebuild).map(|_| ())
         }
         "image" => {
             let iso = args.flag("--iso");

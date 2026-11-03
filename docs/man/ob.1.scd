@@ -1684,6 +1684,11 @@ _out/bundles/ID-VERSION.dkv_ with the code *bundle*(1) packs with. The
 key is the file *OB_BUNDLE_KEY* names, or the build's own,
 _out/bundles/build.key_, made the first time; Dukovo trusts neither, and
 the catalog signs what it publishes with its own keys (ADR 0370).
+*ports* packs the bundles, as does a boot test that installs them; *build*
+and *image* do not. The folder a bundle's port installs into is
+_out/ports/NAME/bundle/_, beside its stamp. When it is gone, or Cargo's
+registry lacks a crate the port links, whose notices the bundle carries,
+as after a restored cache, packing builds the port again first.
 
 The toolchain is the host's Clang, LLD and LLVM tools, made to target
 Radix by the scripts and Meson cross files *ob* writes into
