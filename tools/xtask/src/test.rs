@@ -1463,7 +1463,9 @@ pub const CASES: &[Case] = &[
         media: Media::Usb,
         cmdline: "lockdep -- --services --posix --names /system/tests/posix/accounttest",
         cpus: 2,
-        memory: "512M",
+        // A password's hash takes 64 MiB, beside two copies of the boot
+        // archive, which grew past what 512 MiB leaves for it.
+        memory: "1G",
         reboot: false,
         image: TestImage::Plain,
         cpu_model: None,
