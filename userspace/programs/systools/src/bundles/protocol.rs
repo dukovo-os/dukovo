@@ -13,6 +13,7 @@
 use std::io::{self, BufRead, Read};
 
 use super::grants::{self, Grant, Said};
+use super::history::Event;
 use super::minisign::PublicKey;
 use super::registry::Place;
 
@@ -66,6 +67,19 @@ pub enum Request {
     /// Removes catalog `name`, or turns off one the system comes with:
     /// an administrator's.
     CatalogRemove { name: String },
+    /// Updates the bundles `ids`, or every one, of the asker's or
+    /// everyone's (ADR 0384); with `check`, only says which would update;
+    /// with `yes`, without asking about one that asks for more.
+    Update { ids: Vec<String>, everyone: bool, check: bool, yes: bool },
+    /// Goes back to the version bundle `id` replaced.
+    Rollback { id: String, everyone: bool },
+    /// Holds bundle `id` at its version, or lets it go.
+    Hold { id: String, everyone: bool, on: bool },
+    /// Turns updating by themselves on or off, for the asker's bundles or
+    /// everyone's.
+    Automatic { everyone: bool, on: bool },
+    /// What bundled did to the asker's bundles and everyone's, or to `id`.
+    History { id: Option<String> },
 }
 
 /// Which bundle `run` asks for.
@@ -163,6 +177,26 @@ impl Request {
             Request::Catalogs => "catalogs\n".into(),
             Request::CatalogAdd { name, url } => format!("catalog-add\t{name}\t{url}\n"),
             Request::CatalogRemove { name } => format!("catalog-remove\t{name}\n"),
+            Request::Update { ids, everyone, check, yes } => {
+                let mut line = format!(
+                    "update\t{}\t{}\t{}",
+                    whose(*everyone),
+                    if *check { "check" } else { "apply" },
+                    if *yes { "yes" } else { "ask" }
+                );
+                for id in ids {
+                    line += &format!("\t{id}");
+                }
+                line + "\n"
+            }
+            Request::Rollback { id, everyone } => format!("rollback\t{id}\t{}\n", whose(*everyone)),
+            Request::Hold { id, everyone, on } => {
+                format!("hold\t{id}\t{}\t{}\n", whose(*everyone), if *on { "on" } else { "off" })
+            }
+            Request::Automatic { everyone, on } => {
+                format!("automatic\t{}\t{}\n", whose(*everyone), if *on { "on" } else { "off" })
+            }
+            Request::History { id } => format!("history\t{}\n", id.as_deref().unwrap_or("-")),
         }
     }
 
@@ -178,6 +212,11 @@ impl Request {
             "yes" => Ok(true),
             "ask" => Ok(false),
             _ => Err(format!("{word:?} is neither yes nor ask")),
+        };
+        let on = |word: &str| match word {
+            "on" => Ok(true),
+            "off" => Ok(false),
+            _ => Err(format!("{word:?} is neither on nor off")),
         };
         match words.as_slice() {
             ["install", place, answer] => {
@@ -198,6 +237,30 @@ impl Request {
                 url: super::catalogs::check_url(url)?,
             }),
             ["catalog-remove", name] => Ok(Request::CatalogRemove { name: checked_catalog(name)? }),
+            ["update", place, mode, answer, ids @ ..] => Ok(Request::Update {
+                ids: ids.iter().map(|id| checked_id(id)).collect::<Result<_, _>>()?,
+                everyone: everyone(place)?,
+                check: match *mode {
+                    "check" => true,
+                    "apply" => false,
+                    _ => return Err(format!("{mode:?} is neither check nor apply")),
+                },
+                yes: yes(answer)?,
+            }),
+            ["rollback", id, place] => {
+                Ok(Request::Rollback { id: checked_id(id)?, everyone: everyone(place)? })
+            }
+            ["hold", id, place, state] => Ok(Request::Hold {
+                id: checked_id(id)?,
+                everyone: everyone(place)?,
+                on: on(state)?,
+            }),
+            ["automatic", place, state] => {
+                Ok(Request::Automatic { everyone: everyone(place)?, on: on(state)? })
+            }
+            ["history", id] => {
+                Ok(Request::History { id: if *id == "-" { None } else { Some(checked_id(id)?) } })
+            }
             ["list"] => Ok(Request::List),
             ["info", id] => Ok(Request::Info { id: checked_id(id)? }),
             ["remove", id, place, data] => {
@@ -283,6 +346,19 @@ pub struct Shown {
     pub expires: Option<i64>,
 }
 
+/// A bundle that would update, as `update --check` gives it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Available {
+    pub place: Place,
+    pub id: String,
+    /// The version installed, and the newest its catalog lists.
+    pub from: String,
+    pub to: String,
+    pub catalog: String,
+    /// Whether it is held at its version.
+    pub held: bool,
+}
+
 /// What bundled answers.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Answer {
@@ -302,6 +378,13 @@ pub enum Answer {
     Hit(Hit),
     /// A catalog.
     Catalog(Shown),
+    /// A bundle that would update.
+    Available(Available),
+    /// Something bundled did, of the history.
+    Event(Event),
+    /// What became of one of several things asked, such as one bundle of
+    /// an update.
+    Note(String),
     /// Done, and what was done.
     Ok(String),
     /// Not done, and why.
@@ -368,6 +451,18 @@ impl Answer {
                 )
                 .into_bytes()
             }
+            Answer::Available(a) => format!(
+                "available\t{}\t{}\t{}\t{}\t{}\t{}\n",
+                a.place,
+                a.id,
+                one_line(&a.from),
+                one_line(&a.to),
+                a.catalog,
+                if a.held { "held" } else { "free" }
+            )
+            .into_bytes(),
+            Answer::Event(e) => format!("event\t{}", e.line()).into_bytes(),
+            Answer::Note(what) => format!("note {}\n", one_line(what)).into_bytes(),
             Answer::Ok(what) => format!("ok {}\n", one_line(what)).into_bytes(),
             Answer::Error(why) => format!("error {}\n", one_line(why)).into_bytes(),
         }
@@ -405,6 +500,12 @@ impl Answer {
         }
         if let Some(why) = line.strip_prefix("error ") {
             return Ok(Some(Answer::Error(one_line(why))));
+        }
+        if let Some(what) = line.strip_prefix("note ") {
+            return Ok(Some(Answer::Note(one_line(what))));
+        }
+        if let Some(event) = line.strip_prefix("event\t") {
+            return Ok(Some(Answer::Event(Event::read(event).map_err(|why| bad(&why))?)));
         }
         let words: Vec<&str> = line.split('\t').collect();
         let place = |word: &str| match word {
@@ -460,6 +561,20 @@ impl Answer {
                 bundles: bundles.parse().map_err(|_| bad("a catalog's bundles"))?,
                 read: time(read)?,
                 expires: time(expires)?,
+            })));
+        }
+        if let ["available", at, id, from, to, catalog, held] = words.as_slice() {
+            return Ok(Some(Answer::Available(Available {
+                place: place(at)?,
+                id: checked_id(id).map_err(|why| bad(&why))?,
+                from: one_line(from),
+                to: one_line(to),
+                catalog: checked_catalog(catalog).map_err(|why| bad(&why))?,
+                held: match *held {
+                    "held" => true,
+                    "free" => false,
+                    _ => return Err(bad("neither held nor free")),
+                },
             })));
         }
         if let ["revoked", permission] = words.as_slice() {
@@ -540,6 +655,19 @@ mod tests {
             Request::Catalogs,
             Request::CatalogAdd { name: "feed".into(), url: "https://example.org/catalog/".into() },
             Request::CatalogRemove { name: "dukovo".into() },
+            Request::Update { ids: Vec::new(), everyone: false, check: true, yes: false },
+            Request::Update {
+                ids: vec!["org.example.notes".into(), "org.example.tea".into()],
+                everyone: true,
+                check: false,
+                yes: true,
+            },
+            Request::Rollback { id: "org.example.notes".into(), everyone: false },
+            Request::Hold { id: "org.example.notes".into(), everyone: true, on: true },
+            Request::Hold { id: "org.example.notes".into(), everyone: false, on: false },
+            Request::Automatic { everyone: false, on: true },
+            Request::History { id: None },
+            Request::History { id: Some("org.example.notes".into()) },
         ] {
             let line = request.line();
             assert!(line.ends_with('\n') && line.matches('\n').count() == 1);
@@ -572,6 +700,13 @@ mod tests {
             "search\t",
             "catalog-add\tfeed\tftp://example.org/",
             "catalog-remove\t../x",
+            "update\tme\tcheck",
+            "update\tme\tmaybe\task",
+            "update\tme\tapply\task\tNotes",
+            "rollback\torg.example.notes",
+            "hold\torg.example.notes\tme\tsometimes",
+            "automatic\tall\ton",
+            "history",
         ] {
             assert!(Request::read(bad).is_err(), "{bad:?}");
         }
@@ -636,6 +771,25 @@ mod tests {
                 read: None,
                 expires: None,
             }),
+            Answer::Available(Available {
+                place: Place::User(1000),
+                id: "org.example.notes".into(),
+                from: "1.0.0".into(),
+                to: "1.1.0".into(),
+                catalog: "dukovo".into(),
+                held: true,
+            }),
+            Answer::Event(crate::bundles::history::Event {
+                when: 1_793_000_000,
+                place: Place::Everyone,
+                id: "org.example.notes".into(),
+                what: crate::bundles::history::What::RolledBack,
+                from: Some("1.1.0".into()),
+                to: Some("1.0.0".into()),
+                by: Some(0),
+                note: String::new(),
+            }),
+            Answer::Note("updated org.example.notes 1.0.0 to 1.1.0".into()),
             Answer::Ok("installed org.example.notes 0.1.0".into()),
             Answer::Error("it is not signed".into()),
         ];
@@ -661,6 +815,8 @@ mod tests {
             b"granted\tfiles.folder\tmaybe\t1\t-\t-\n",
             b"granted\tfiles.folder\tallow\t1\tsecrets=read\t-\n",
             b"revoked\tfiles.everything\n",
+            b"available\t1000\torg.example.notes\t1\t2\tdukovo\tmaybe\n",
+            b"event\t1\t1000\tNotes\tupdated\t-\t-\t1\t-\n",
         ] {
             assert!(Answer::read(&mut io::Cursor::new(bad.to_vec())).is_err(), "{bad:?}");
         }

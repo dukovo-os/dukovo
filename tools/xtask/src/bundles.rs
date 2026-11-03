@@ -121,6 +121,50 @@ fn pack(ctx: &Ctx, ports: &Ports, port: &Port, key: &SecretKey) -> Result<PathBu
     Ok(out)
 }
 
+/// A small bundle the boot tests make (ADR 0384): one program, a shell
+/// script, and the permissions its manifest asks for, as JSON.
+pub struct TestBundle {
+    pub id: &'static str,
+    pub version: &'static str,
+    pub script: &'static str,
+    pub permissions: &'static str,
+}
+
+/// Packs `bundle` into out/test/bundles, signed by the build key, and
+/// gives its file.
+pub fn pack_test(ctx: &Ctx, bundle: &TestBundle) -> Result<PathBuf> {
+    let name = bundle.id.rsplit('.').next().unwrap_or(bundle.id);
+    let folder = ctx.target.join("test-bundles").join(format!("{}-{}", bundle.id, bundle.version));
+    if folder.exists() {
+        std::fs::remove_dir_all(&folder).context(|| format!("removing {}", folder.display()))?;
+    }
+    process::create_dir(&folder.join("bin"))?;
+    let manifest = manifest::bundle::template(bundle.id, name, "Dukovo tests", "MIT")
+        .replace("\"version\": \"0.1.0\"", &format!("\"version\": \"{}\"", bundle.version))
+        .replace("\"permissions\": {}", &format!("\"permissions\": {}", bundle.permissions));
+    dkv::signed::parse_manifest(manifest.as_bytes())
+        .map_err(|why| Error::new(format!("test bundle {}: {why}", bundle.id)))?;
+    std::fs::write(folder.join(dkv::MANIFEST), &manifest)
+        .context(|| format!("writing {}", folder.join(dkv::MANIFEST).display()))?;
+    let program = folder.join("bin").join(name);
+    std::fs::write(&program, bundle.script).context(|| format!("writing {}", program.display()))?;
+    std::fs::set_permissions(&program, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+        .context(|| format!("writing {}", program.display()))?;
+    let key = signing_key(ctx)?;
+    dkv::signed::sign_folder(&folder, &key, 0, &crate::licenses::rfc3339(0))
+        .map_err(|why| Error::new(format!("signing test bundle {}: {why}", bundle.id)))?;
+    let dir = ctx.out.join("test/bundles");
+    process::create_dir(&dir)?;
+    let out = dir.join(format!("{}-{}.{}", bundle.id, bundle.version, dkv::EXTENSION));
+    let mut writer = std::io::BufWriter::new(
+        std::fs::File::create(&out).context(|| format!("writing {}", out.display()))?,
+    );
+    dkv::signed::pack(&folder, &mut writer)
+        .map_err(|why| Error::new(format!("packing test bundle {}: {why}", bundle.id)))?;
+    std::io::Write::flush(&mut writer).context(|| format!("writing {}", out.display()))?;
+    Ok(out)
+}
+
 /// The manifest of `port`'s bundle (manifest.json(5)): its identity from
 /// the recipe, a program for each command, run with the access of
 /// whoever runs it, as command-line tools are.

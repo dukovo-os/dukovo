@@ -26,6 +26,9 @@ pub struct Facts<'a> {
     /// Its files, and the bytes they take.
     pub files: usize,
     pub bytes: u64,
+    /// The version it would replace, and the permissions it asks for
+    /// that that version did not (ADR 0384).
+    pub replaces: Option<(&'a str, &'a [String])>,
 }
 
 /// `text` as the bundle wrote it, on one line, without control
@@ -70,7 +73,9 @@ fn for_whom(place: Place) -> &'static str {
 pub fn write(facts: &Facts<'_>) -> String {
     let m = facts.manifest;
     let mut o = String::new();
-    let _ = writeln!(o, "{} {}, {}", shown(&m.name.0, 60), m.version, for_whom(facts.place));
+    let over = facts.replaces.map_or_default(|(version, _)| format!(", in place of {version}"));
+    let new: &[String] = facts.replaces.map_or(&[], |(_, new)| new);
+    let _ = writeln!(o, "{} {}, {}{over}", shown(&m.name.0, 60), m.version, for_whom(facts.place));
     let _ = writeln!(o, "  {}, by {}", m.id, shown(&m.publisher.name.0, 60));
     let _ = writeln!(o, "  {}", shown(&m.summary.0, 100));
     let _ = writeln!(o, "  Signed by key {}", facts.key.encoded());
@@ -129,7 +134,8 @@ pub fn write(facts: &Facts<'_>) -> String {
                 let _ = write!(what, ": {}", objects.join(", "));
             }
             let need = if request.need.word() == "optional" { ", optional" } else { "" };
-            let _ = writeln!(o, "    {what} ({}{need})", permission.tier.words());
+            let fresh = if new.iter().any(|n| n == name) { ", new in this version" } else { "" };
+            let _ = writeln!(o, "    {what} ({}{need}){fresh}", permission.tier.words());
             if let Some(why) = &request.why {
                 let _ = writeln!(o, "      In its words: \"{}\"", shown(&why.0, 100));
             }
@@ -150,6 +156,9 @@ pub fn write(facts: &Facts<'_>) -> String {
             "  Commands that run with your access, outside its sandbox: {}",
             yours.join(", ")
         );
+        if new.iter().any(|n| n == super::grants::YOUR_ACCESS) {
+            let _ = writeln!(o, "  New in this version: a command that runs with your access.");
+        }
     }
     let services: Vec<String> = m.services.iter().map(|s| s.name.to_string()).collect();
     if !services.is_empty() {
@@ -183,6 +192,7 @@ mod tests {
                 place: Place::User(1000),
                 files: 3,
                 bytes: 12_345,
+                replaces: None,
             })
         };
         let unknown = sheet(Trust::Unknown);
@@ -212,6 +222,20 @@ mod tests {
             bound.contains("this very file.\n  The bundle has come from there since 2026-10-26.\n"),
             "{bound}"
         );
+        // An update: what it replaces, and what it asks for anew.
+        let new = ["network.listen".to_string()];
+        let update = write(&Facts {
+            manifest: &manifest,
+            key: &key,
+            trust: &Trust::Developer,
+            place: Place::Everyone,
+            files: 3,
+            bytes: 12_345,
+            replaces: Some(("0.0.9", &new)),
+        });
+        assert!(update.starts_with("Notes 0.1.0, for everyone, in place of 0.0.9\n"), "{update}");
+        assert!(update.contains("(at install, optional), new in this version\n"), "{update}");
+        assert!(update.contains("this computer (at install)\n"), "{update}");
     }
 
     #[test]

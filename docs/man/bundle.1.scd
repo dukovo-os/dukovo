@@ -5,7 +5,7 @@ bundle(1) "Dukovo" "Dukovo Manual"
 
 # NAME
 
-bundle - make, check, sign, pack, install and run bundles, and say what they may do
+bundle - make, check, sign, pack, install, update and run bundles, and say what they may do
 
 # SYNOPSIS
 
@@ -39,6 +39,18 @@ bundle - make, check, sign, pack, install and run bundles, and say what they may
 
 *bundle catalog remove* _name_
 
+*bundle update* [_id_...] [*--check*] [*--for-everyone*] [*--yes*]
+
+*bundle update --automatic* *on*|*off* [*--for-everyone*]
+
+*bundle rollback* _id_ [*--for-everyone*]
+
+*bundle hold* _id_ [*--for-everyone*]
+
+*bundle unhold* _id_ [*--for-everyone*]
+
+*bundle history* [_id_]
+
 *bundle list*
 
 *bundle info* _id_
@@ -61,7 +73,9 @@ packs it into one _.dkv_ file to share, and checks and unpacks one. It
 installs, lists and removes bundles through *bundled*(8), as apt and
 dpkg do packages, runs them, each in a sandbox of its own, and gives
 them the permissions you allow. It finds bundles in the catalogs this
-computer trusts and installs them from there (CATALOGS).
+computer trusts and installs them from there (CATALOGS), and updates
+them from there, keeping the version each update replaced to go back to
+(UPDATES).
 
 A signed bundle has _files.sha256_, the SHA-256 of each of its other
 files as *sha256sum*(1) writes them, and _signature_, minisign's Ed25519
@@ -186,19 +200,52 @@ folder and as a _.dkv_ file, which is a zip of the folder.
 	Removes a catalog, through *elevate*(8). One the system comes with
 	is turned off instead, so that it stays off.
 
+*update* [_id_...] [*--check*] [*--for-everyone*] [*--yes*]
+	Updates your bundles, or each _id_ given, or with *--for-everyone*
+	everyone's, through *elevate*(8), each to the newest version the
+	catalog it came from lists; see UPDATES. One that asks for no more
+	than the version it replaces updates without a question; one that
+	asks for more shows its sheet and asks, which *--yes* answers. A held
+	one is left as it is, and bundle says so. With *--check*, it lists
+	what would update, with the version installed, the newest and the
+	catalog, and changes nothing.
+
+*update --automatic* *on*|*off* [*--for-everyone*]
+	Says whether your bundles, or everyone's, through *elevate*(8),
+	update by themselves, daily; it is off unless you turn it on. Turned
+	on, they update at once. One whose new version asks for more waits
+	for you to run *bundle update*, and *bundle history* says so.
+
+*rollback* _id_ [*--for-everyone*]
+	Goes back to the version the last update replaced, and holds the
+	bundle there. Its data, as that version left it, comes back at its
+	next run. Running it again goes forward again.
+
+*hold* _id_ [*--for-everyone*], *unhold* _id_ [*--for-everyone*]
+	Holds a bundle at its version, so that no update changes it, or
+	lets it update again.
+
+*history* [_id_]
+	Shows what was done to your bundles and everyone's, or to _id_, the
+	newest last: each install, update, going back, removal, hold and
+	release, update that waits for you and update that failed, with
+	when, and who asked or that it updated by itself.
+
 *list*
 	Lists the bundles you can run, yours and everyone's: ID, version,
 	whose, and name.
 
 *info* _id_
 	Shows an installed bundle's sheet, what you said of its permissions
-	and since when, when it was installed, where, and where its data is.
+	and since when, when it was installed, where, and where its data is,
+	which version it can go back to, and whether it is held.
 
 *remove* _id_ [*--for-everyone*] [*--keep-data* | *--purge*]
 	Removes your bundle, or with *--for-everyone* one installed for
 	everyone, through *elevate*(8). It asks whether to delete its
-	settings and data, _~/app-data/id_, too; *--keep-data* and *--purge*
-	answer for scripts. Kept data is picked up by a later version from
+	settings and data, _~/app-data/id_, and the copies of it kept for
+	going back, too; *--keep-data* and *--purge* answer for scripts. The
+	version kept to go back to goes with it. Kept data is picked up by a later version from
 	the same publisher; what you said of its permissions goes with its
 	data and stays with kept data.
 
@@ -343,6 +390,33 @@ A file no catalog lists installs as before: signed by your developer key
 with no warning, or by any other key after one, which also says that no
 catalog this computer trusts lists it.
 
+# UPDATES
+
+A bundle updates from the catalog it is bound to (ADR 0384): one
+installed from a file no catalog listed updates only from a newer file.
+An update is an install, with every check an install has. Its sheet is
+shown, and you are asked, only when the new version asks for more than
+the one it replaces: a permission the old one did not ask for, more of
+one, or a command that runs with your access. The sheet says which
+version it replaces and marks what is new in this version.
+
+The version an update replaces is kept beside the new one, sealed as
+it was, to go back to with *bundle rollback*; only the last is kept.
+Going back holds the bundle, so that no update undoes it; *bundle
+unhold* lets it update again.
+
+The first time another version of an app runs for you, bundle keeps a
+copy of the app's data as the version that ran before left it, in
+_~/app-data/.snapshots/id/version_, and says so; the new version goes on
+with the data. When you go back to that version, its copy comes back in
+place of the data, and what the newer version left is kept in turn. A
+copy is kept for 30 days.
+
+Updating by themselves, once turned on, runs some minutes after
+*bundled*(8) starts and then daily. An update that asks for more than
+the version it replaces never installs by itself: it waits for *bundle
+update*.
+
 # FILES
 
 _$XDG_DATA_HOME/bundle/developer.key_, _developer.pub_
@@ -356,6 +430,13 @@ _/applications_, _~/applications_
 
 _~/app-data/id_
 	A bundle's settings and data, its home when it runs.
+
+_~/app-data/.snapshots/id_
+	The copies of a bundle's data that each version left, for 30 days,
+	and _.ran_, the version that last ran.
+
+_/applications/.previous-id_, _~/applications/.previous-id_
+	The version of a bundle that its last update replaced, sealed.
 
 _/system/state/grants/uid_
 	What each person said of each bundle's permissions, which only
@@ -427,6 +508,22 @@ ripgrep 15.2.0, for yourself
   ...
 Install it? [y/N] y
 installed io.github.burntsushi.ripgrep 15.2.0, for you
+```
+
+Updating, going back, and holding there:
+
+```
+$ bundle update --check
+ID                            INSTALLED  NEWEST  CATALOG
+io.github.burntsushi.ripgrep  15.2.0     15.3.0  dukovo
+1 to update, 0 up to date
+$ bundle update
+installed io.github.burntsushi.ripgrep 15.3.0 in place of 15.2.0, for you
+1 updated, 0 not, 0 up to date
+$ bundle rollback io.github.burntsushi.ripgrep
+went back to io.github.burntsushi.ripgrep 15.2.0, from 15.3.0; ...
+$ bundle update --automatic on
+Your bundles update by themselves from now on, daily, from their catalogs; ...
 ```
 
 # SEE ALSO

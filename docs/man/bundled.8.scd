@@ -5,7 +5,7 @@ bundled(8) "Dukovo" "Dukovo Manual"
 
 # NAME
 
-bundled - install, seal and remove bundles, and keep what they may do
+bundled - install, seal, update and remove bundles, and keep what they may do
 
 # SYNOPSIS
 
@@ -15,7 +15,8 @@ bundled - install, seal and remove bundles, and keep what they may do
 
 bundled installs bundles, seals them so that nothing changes them, and
 removes them, for whoever asks with *bundle*(1) (ADR 0223), from files
-or from the catalogs this computer trusts (ADR 0383). It links the
+or from the catalogs this computer trusts (ADR 0383), and updates them
+from there, by themselves for those who turn that on (ADR 0384). It links the
 commands of the bundles it installed where the shell finds them, and
 tells *bundle run* which bundle to run and what it recorded of it (ADR
 0225). It keeps what each person said of each bundle's permissions, and
@@ -141,10 +142,40 @@ Adding and removing a catalog are root's, and each is a security event
 of the audit log. A catalog is kept only once bundled has read it from
 the root it came with.
 
+# UPDATES
+
+Asked to update, bundled reads anew the catalogs the place's bundles are
+bound to and, for each bundle a catalog lists a newer version of, and
+that is not held, fetches the newest and installs it as above, with one
+difference: it shows the sheet and asks only when the new version asks
+for more than the one it replaces, a permission or more of one, or a
+command that runs with the person's access. Updating everyone's bundles
+is an administrator's.
+
+An update keeps the version it replaces as _.previous-ID_ beside it,
+sealed, in place of the one kept before, and moves its record to
+_previous_. The switch is renames in the place's folder, made while
+bundled holds the registry's lock. Asked to go back, bundled checks
+that _.previous-ID_ is its own, sealed, and the very version recorded,
+by its key, list and version, then makes the two change places and
+holds the bundle there.
+
+A held bundle, in _held_, is left as it is by every update. Each place
+may update by itself (_automatic_): bundled's updater does so ten
+minutes after it starts, then daily, and at once when it is turned on.
+An update by itself that asks for more than the version it replaces is
+not installed; it waits for a person, and bundled writes so once for
+that version in the history and each time in its log.
+
+bundled writes each install, update, going back, removal, hold and
+release, waiting update and failed one to _history_. A person is shown
+their own bundles' events and everyone's; root is shown all.
+
 # REMOVING
 
-bundled removes the sealed folder and the record, and with *--purge* the
-asker's _app-data/ID_ and what they said of its permissions too, and
+bundled removes the sealed folder, the version kept to go back to, and
+the record, and with *--purge* the asker's _app-data/ID_, its copies in
+_app-data/.snapshots/ID_ and what they said of its permissions too, and
 unlinks its commands. The ID stays bound
 to its key, so a later version from the same publisher picks kept data
 up and one from anyone else is refused. At its start it forgets a
@@ -164,6 +195,20 @@ _/system/state/bundled/bound_
 _/system/state/bundled/catalog-bound_
 	Each ID installed from a catalog, and which, for everyone and for
 	each person, since its first install from it.
+
+_/system/state/bundled/previous_
+	Each version an update replaced and kept to go back to, recorded as
+	in _installed_.
+
+_/system/state/bundled/held_
+	Each bundle held at its version, and since when.
+
+_/system/state/bundled/automatic_
+	Each place whose bundles update by themselves, and since when.
+
+_/system/state/bundled/history_
+	What bundled did to bundles, a line of tab-separated fields each,
+	mode 0600; it keeps about the newest thousand.
 
 _/system/state/bundled/catalogs/NAME_
 	Each catalog's client: _tuf_, the metadata it trusts,
@@ -186,8 +231,8 @@ _/system/live/bundled/socket_
 	Where it answers.
 
 _/applications_, _~/applications_
-	The bundles for everyone and each person's own, and their
-	_commands_ folders.
+	The bundles for everyone and each person's own, the versions kept
+	to go back to, _.previous-ID_, and their _commands_ folders.
 
 # SEE ALSO
 

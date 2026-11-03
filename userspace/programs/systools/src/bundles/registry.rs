@@ -3,9 +3,11 @@
 
 //! What bundled(8) keeps in `/system/state/bundled` (ADR 0223), which only
 //! it writes: the bundles it installed, the key each ID is bound to, each
-//! person's developer key, and the catalog each ID installed from one is
-//! bound to (ADR 0383). Each is a file of lines, tab-separated, read
-//! strictly: a line that does not read is an error, never skipped.
+//! person's developer key, the catalog each ID installed from one is
+//! bound to (ADR 0383), and the version each new one replaced, the IDs
+//! held at their version, and the places that update by themselves (ADR
+//! 0384). Each is a file of lines, tab-separated, read strictly: a line
+//! that does not read is an error, never skipped.
 
 use std::fmt;
 
@@ -21,8 +23,15 @@ pub const BOUND: &str = "bound";
 pub const DEVELOPER_KEYS: &str = "developer-keys";
 /// The catalog each ID is bound to, in each place.
 pub const CATALOG_BOUND: &str = "catalog-bound";
+/// The version each bundle replaced, kept to go back to.
+pub const PREVIOUS: &str = "previous";
+/// The IDs held at their version, in each place.
+pub const HELD: &str = "held";
+/// The places whose bundles update by themselves.
+pub const AUTOMATIC: &str = "automatic";
 /// The files, in the order [`Registry::read`] takes them.
-pub const FILES: [&str; 4] = [INSTALLED, BOUND, DEVELOPER_KEYS, CATALOG_BOUND];
+pub const FILES: [&str; 7] =
+    [INSTALLED, BOUND, DEVELOPER_KEYS, CATALOG_BOUND, PREVIOUS, HELD, AUTOMATIC];
 
 /// Where a bundle is installed: for everyone, or for one person.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -43,7 +52,7 @@ impl fmt::Display for Place {
 }
 
 impl Place {
-    fn parse(text: &str) -> Result<Place, String> {
+    pub fn parse(text: &str) -> Result<Place, String> {
         if text == "everyone" {
             return Ok(Place::Everyone);
         }
@@ -102,6 +111,15 @@ pub struct CatalogBound {
     pub since: u64,
 }
 
+/// An ID held at its version in a place: updates leave it as it is.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Held {
+    pub place: Place,
+    pub id: String,
+    /// Since when, in seconds since 1970.
+    pub since: u64,
+}
+
 /// What bundled keeps.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Registry {
@@ -110,6 +128,11 @@ pub struct Registry {
     /// Each person's developer key, by user number.
     pub developer_keys: Vec<(u32, PublicKey)>,
     pub catalog_bound: Vec<CatalogBound>,
+    /// The version each installed bundle replaced, if it is kept.
+    pub previous: Vec<Installed>,
+    pub held: Vec<Held>,
+    /// The places that update by themselves, and since when.
+    pub automatic: Vec<(Place, u64)>,
 }
 
 /// Splits `line` into exactly `N` tab-separated fields.
@@ -150,21 +173,38 @@ fn checked_hex(text: &str) -> Result<String, String> {
     hex.then(|| text.into()).ok_or_else(|| format!("{text:?} is not a SHA-256"))
 }
 
+/// A line of [`INSTALLED`] or [`PREVIOUS`].
+fn read_installed(line: &str) -> Result<Installed, String> {
+    let [place, id, version, key, list, when] = fields(line)?;
+    Ok(Installed {
+        place: Place::parse(place)?,
+        id: checked_id(id)?,
+        version: version.into(),
+        key: PublicKey::decode(key)?,
+        list: checked_hex(list)?,
+        when: number(when)?,
+    })
+}
+
+/// The lines of [`INSTALLED`] or [`PREVIOUS`], sorted.
+fn installed_text(all: &[Installed]) -> String {
+    let mut lines: Vec<String> = all
+        .iter()
+        .map(|i| {
+            let key = i.key.encoded();
+            format!("{}\t{}\t{}\t{key}\t{}\t{}\n", i.place, i.id, i.version, i.list, i.when)
+        })
+        .collect();
+    lines.sort();
+    lines.concat()
+}
+
 impl Registry {
     /// Reads the files' texts, in the order of [`FILES`].
-    pub fn read(texts: &[String; 4]) -> Result<Registry, String> {
-        let [installed, bound, developer_keys, catalog_bound] = texts;
-        let installed = lines(INSTALLED, installed, |line| {
-            let [place, id, version, key, list, when] = fields(line)?;
-            Ok(Installed {
-                place: Place::parse(place)?,
-                id: checked_id(id)?,
-                version: version.into(),
-                key: PublicKey::decode(key)?,
-                list: checked_hex(list)?,
-                when: number(when)?,
-            })
-        })?;
+    pub fn read(texts: &[String; 7]) -> Result<Registry, String> {
+        let [installed, bound, developer_keys, catalog_bound, previous, held, automatic] = texts;
+        let installed = lines(INSTALLED, installed, read_installed)?;
+        let previous = lines(PREVIOUS, previous, read_installed)?;
         let bound = lines(BOUND, bound, |line| {
             let [place, id, key, since] = fields(line)?;
             Ok(Bound {
@@ -188,7 +228,16 @@ impl Registry {
                 since: number(since)?,
             })
         })?;
-        let registry = Registry { installed, bound, developer_keys, catalog_bound };
+        let held = lines(HELD, held, |line| {
+            let [place, id, since] = fields(line)?;
+            Ok(Held { place: Place::parse(place)?, id: checked_id(id)?, since: number(since)? })
+        })?;
+        let automatic = lines(AUTOMATIC, automatic, |line| {
+            let [place, since] = fields(line)?;
+            Ok((Place::parse(place)?, number(since)?))
+        })?;
+        let registry =
+            Registry { installed, bound, developer_keys, catalog_bound, previous, held, automatic };
         registry.check()?;
         Ok(registry)
     }
@@ -217,20 +266,26 @@ impl Registry {
                 return Err(format!("{CATALOG_BOUND}: {} is there twice for {}", b.id, b.place));
             }
         }
+        for p in &self.previous {
+            if !seen.insert((4, p.place, p.id.as_str())) {
+                return Err(format!("{PREVIOUS}: {} is there twice for {}", p.id, p.place));
+            }
+        }
+        for h in &self.held {
+            if !seen.insert((5, h.place, h.id.as_str())) {
+                return Err(format!("{HELD}: {} is there twice for {}", h.id, h.place));
+            }
+        }
+        for (place, _) in &self.automatic {
+            if !seen.insert((6, *place, "")) {
+                return Err(format!("{AUTOMATIC}: {place} is there twice"));
+            }
+        }
         Ok(())
     }
 
     /// The files' texts, in the order of [`FILES`], sorted.
-    pub fn texts(&self) -> [String; 4] {
-        let mut installed: Vec<String> = self
-            .installed
-            .iter()
-            .map(|i| {
-                let key = i.key.encoded();
-                format!("{}\t{}\t{}\t{key}\t{}\t{}\n", i.place, i.id, i.version, i.list, i.when)
-            })
-            .collect();
-        installed.sort();
+    pub fn texts(&self) -> [String; 7] {
         let mut bound: Vec<String> = self
             .bound
             .iter()
@@ -249,7 +304,21 @@ impl Registry {
             .map(|b| format!("{}\t{}\t{}\t{}\n", b.place, b.id, b.catalog, b.since))
             .collect();
         catalogs.sort();
-        [installed.concat(), bound.concat(), keys.concat(), catalogs.concat()]
+        let mut held: Vec<String> =
+            self.held.iter().map(|h| format!("{}\t{}\t{}\n", h.place, h.id, h.since)).collect();
+        held.sort();
+        let mut automatic: Vec<String> =
+            self.automatic.iter().map(|(place, since)| format!("{place}\t{since}\n")).collect();
+        automatic.sort();
+        [
+            installed_text(&self.installed),
+            bound.concat(),
+            keys.concat(),
+            catalogs.concat(),
+            installed_text(&self.previous),
+            held.concat(),
+            automatic.concat(),
+        ]
     }
 
     /// The bundle `id` installed in `place`.
@@ -272,9 +341,66 @@ impl Registry {
         self.developer_keys.iter().find(|(u, _)| *u == user).map(|(_, key)| *key)
     }
 
+    /// The version the bundle `id` in `place` replaced, if it is kept.
+    pub fn previous(&self, place: Place, id: &str) -> Option<&Installed> {
+        self.previous.iter().find(|i| i.place == place && i.id == id)
+    }
+
+    /// Whether `id` is held in `place`, and since when.
+    pub fn held(&self, place: Place, id: &str) -> Option<&Held> {
+        self.held.iter().find(|h| h.place == place && h.id == id)
+    }
+
+    /// Holds `id` in `place` from `since`, or lets it go; whether that
+    /// changed anything.
+    pub fn set_held(&mut self, place: Place, id: &str, on: bool, since: u64) -> bool {
+        let was = self.held(place, id).is_some();
+        if was != on {
+            self.held.retain(|h| h.place != place || h.id != id);
+            if on {
+                self.held.push(Held { place, id: id.into(), since });
+            }
+        }
+        was != on
+    }
+
+    /// Since when the bundles of `place` update by themselves, if they do.
+    pub fn automatic(&self, place: Place) -> Option<u64> {
+        self.automatic.iter().find(|(p, _)| *p == place).map(|(_, since)| *since)
+    }
+
+    /// Turns updating by themselves on or off for `place`; whether that
+    /// changed anything.
+    pub fn set_automatic(&mut self, place: Place, on: bool, since: u64) -> bool {
+        let was = self.automatic(place).is_some();
+        if was != on {
+            self.automatic.retain(|(p, _)| *p != place);
+            if on {
+                self.automatic.push((place, since));
+            }
+        }
+        was != on
+    }
+
+    /// Goes back to the version `id` replaced in `place`, which then is the
+    /// one kept: the version now installed, and the one it replaced.
+    pub fn roll_back(&mut self, place: Place, id: &str) -> Option<(Installed, Installed)> {
+        let at = self.previous.iter().position(|i| i.place == place && i.id == id)?;
+        let now = self.installed.iter().position(|i| i.place == place && i.id == id)?;
+        std::mem::swap(&mut self.previous[at], &mut self.installed[now]);
+        Some((self.installed[now].clone(), self.previous[at].clone()))
+    }
+
+    /// Forgets the version kept of `id` in `place`.
+    pub fn forget_previous(&mut self, place: Place, id: &str) -> Option<Installed> {
+        let at = self.previous.iter().position(|i| i.place == place && i.id == id)?;
+        Some(self.previous.remove(at))
+    }
+
     /// Records `installed`, in place of what was there for its place and
-    /// ID, and binds its ID to its key there if it is not bound yet, and
-    /// to `catalog`, the one that listed it, if it is not bound to one.
+    /// ID, which is kept as the version it replaced, and binds its ID to
+    /// its key there if it is not bound yet, and to `catalog`, the one that
+    /// listed it, if it is not bound to one.
     pub fn record(&mut self, installed: Installed, catalog: Option<&str>) {
         if let Some(catalog) = catalog
             && self.catalog_bound(installed.place, &installed.id).is_none()
@@ -294,12 +420,16 @@ impl Registry {
                 since: installed.when,
             });
         }
-        self.installed.retain(|i| i.place != installed.place || i.id != installed.id);
+        if let Some(old) = self.forget(installed.place, &installed.id) {
+            self.previous.push(old);
+        }
         self.installed.push(installed);
     }
 
-    /// Forgets the bundle `id` installed in `place`; its binding stays.
+    /// Forgets the bundle `id` installed in `place`, and the version it
+    /// replaced; its binding stays.
     pub fn forget(&mut self, place: Place, id: &str) -> Option<Installed> {
+        self.forget_previous(place, id);
         let at = self.installed.iter().position(|i| i.place == place && i.id == id)?;
         Some(self.installed.remove(at))
     }
@@ -449,11 +579,16 @@ mod tests {
             format!("{}\t{list}\t17\n", line.replace("1.0.0", "1.0.0\u{1b}")),
             format!("all{}\t{list}\t17\n", &line[4..]),
         ] {
-            let texts = [bad.clone(), good[1].clone(), good[2].clone(), good[3].clone()];
+            let mut texts = good.clone();
+            texts[0] = bad.clone();
             assert!(Registry::read(&texts).is_err(), "{bad:?}");
         }
         let two = format!("5\t{}\n5\t{}\n", key(1).encoded(), key(2).encoded());
-        let texts = [String::new(), String::new(), two, String::new()];
+        let mut texts = good.clone();
+        texts[2] = two;
+        assert!(Registry::read(&texts).unwrap_err().contains("twice"));
+        let mut texts = good;
+        texts[6] = "1000\t5\n1000\t6\n".into();
         assert!(Registry::read(&texts).unwrap_err().contains("twice"));
     }
 
@@ -532,5 +667,44 @@ mod tests {
         let again = Registry::read(&registry.texts()).unwrap();
         assert_eq!(again, registry);
         assert!(registry.texts()[3].starts_with("1000\tio.github.burntsushi.ripgrep\tdukovo\t"));
+    }
+
+    #[test]
+    fn a_replaced_version_is_kept_to_go_back_to() {
+        let mut registry = Registry::default();
+        let alice = Place::User(1000);
+        let id = "org.example.notes";
+        registry.record(installed(alice, id, 1), None);
+        assert_eq!(registry.previous(alice, id), None);
+        let mut newer = installed(alice, id, 1);
+        newer.version = "1.1.0".into();
+        newer.list = "cd".repeat(32);
+        registry.record(newer.clone(), None);
+        assert_eq!(registry.installed(alice, id), Some(&newer));
+        assert_eq!(registry.previous(alice, id).map(|p| p.version.as_str()), Some("1.0.0"));
+        // Back, and forward again: each time the other is kept.
+        let (now, kept) = registry.roll_back(alice, id).unwrap();
+        assert_eq!((now.version.as_str(), kept.version.as_str()), ("1.0.0", "1.1.0"));
+        let (now, kept) = registry.roll_back(alice, id).unwrap();
+        assert_eq!((now.version.as_str(), kept.version.as_str()), ("1.1.0", "1.0.0"));
+        assert_eq!(registry.roll_back(Place::Everyone, id), None);
+        // Held, automatic, and all of it read back.
+        assert!(registry.set_held(alice, id, true, 5));
+        assert!(!registry.set_held(alice, id, true, 6));
+        assert_eq!(registry.held(alice, id).map(|h| h.since), Some(5));
+        assert!(registry.set_automatic(Place::Everyone, true, 7));
+        assert!(!registry.set_automatic(Place::Everyone, true, 8));
+        assert_eq!(registry.automatic(Place::Everyone), Some(7));
+        assert_eq!(registry.automatic(alice), None);
+        let again = Registry::read(&registry.texts()).unwrap();
+        assert_eq!(again, registry);
+        assert!(registry.texts()[4].starts_with("1000\torg.example.notes\t1.0.0\tRW"));
+        assert_eq!(registry.texts()[5], "1000\torg.example.notes\t5\n");
+        assert_eq!(registry.texts()[6], "everyone\t7\n");
+        assert!(registry.set_held(alice, id, false, 9));
+        assert!(registry.set_automatic(Place::Everyone, false, 9));
+        // Removing forgets the kept version too.
+        registry.forget(alice, id);
+        assert_eq!(registry.previous(alice, id), None);
     }
 }

@@ -23,6 +23,9 @@
 //!   bundles (ADR 0223).
 //! - `bundle search WORD...`, `bundle install ID` and `bundle catalog`
 //!   find, fetch and set the catalogs bundled installs from (ADR 0383).
+//! - `bundle update`, `bundle rollback ID`, `bundle hold ID`, `bundle
+//!   unhold ID` and `bundle history` update bundles from their catalogs,
+//!   go back, hold one at its version and say what was done (ADR 0384).
 //! - `bundle grant ID PERMISSION [WORD...]` and `bundle revoke ID
 //!   PERMISSION` change what an app may do (ADR 0224): bundled gives a
 //!   permission only after the trusted prompt's yes.
@@ -35,10 +38,12 @@ pub(crate) mod catalogs;
 pub(crate) mod confine;
 pub(crate) mod folder;
 pub(crate) mod grants;
+pub(crate) mod history;
 pub(crate) mod protocol;
 pub(crate) mod registry;
 pub(crate) mod run;
 pub(crate) mod sheet;
+pub(crate) mod snapshots;
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufReader, IsTerminal, Read, Write};
@@ -49,8 +54,9 @@ use std::path::{Path, PathBuf};
 
 use manifest::bundle::{self, Manifest};
 
+use self::history::{Event, What};
 use self::minisign::{PublicKey, SecretKey};
-use self::protocol::{Answer, Request, Shown};
+use self::protocol::{Answer, Available, Request, Shown};
 use self::registry::Place;
 use crate::args::{Arg, Args};
 use crate::signin;
@@ -72,6 +78,12 @@ const USAGE: &str =
        bundle catalog
        bundle catalog add NAME URL ROOT-FILE
        bundle catalog remove NAME
+       bundle update [ID...] [--check] [--for-everyone] [--yes]
+       bundle update --automatic on|off [--for-everyone]
+       bundle rollback ID [--for-everyone]
+       bundle hold ID [--for-everyone]
+       bundle unhold ID [--for-everyone]
+       bundle history [ID]
        bundle list
        bundle info ID
        bundle remove ID [--for-everyone] [--keep-data | --purge]
@@ -115,8 +127,18 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
     let mut yes = false;
     let mut data = None;
     let mut from = None;
+    let mut check_only = false;
+    let mut automatic = None;
     while let Some(arg) = args.next()? {
         match arg {
+            Arg::Long(l) if l == "check" => check_only = true,
+            Arg::Long(l) if l == "automatic" && automatic.is_none() => {
+                automatic = Some(match args.text()?.as_str() {
+                    "on" => true,
+                    "off" => false,
+                    _ => return Err(usage(USAGE.into())),
+                });
+            }
             Arg::Long(l) if l == "for-everyone" => everyone = true,
             Arg::Long(l) if l == "yes" => yes = true,
             Arg::Short('y') => yes = true,
@@ -145,11 +167,15 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
     if !key_ok || !output_ok || (confined && (sub != Some("unpack") || !operands.is_empty())) {
         return Err(usage(USAGE.into()));
     }
-    let everyone_ok = matches!(sub, Some("install" | "remove")) || !everyone;
-    let yes_ok = sub == Some("install") || !yes;
+    let everyone_ok =
+        matches!(sub, Some("install" | "remove" | "update" | "rollback" | "hold" | "unhold"))
+            || !everyone;
+    let yes_ok = matches!(sub, Some("install" | "update")) || !yes;
     let data_ok = sub == Some("remove") || data.is_none();
     let from_ok = sub == Some("install") || from.is_none();
-    if !everyone_ok || !yes_ok || !data_ok || !from_ok {
+    let update_ok = sub == Some("update") || (!check_only && automatic.is_none());
+    let automatic_ok = automatic.is_none() || (!check_only && !yes && operands.is_empty());
+    if !everyone_ok || !yes_ok || !data_ok || !from_ok || !update_ok || !automatic_ok {
         return Err(usage(USAGE.into()));
     }
     let folder = || operands.first().map_or(".", String::as_str);
@@ -181,6 +207,17 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
         (Some("list"), []) => list(),
         (Some("info"), [id]) => info(id),
         (Some("remove"), [id]) => remove(id, everyone, data),
+        (Some("update"), []) if let Some(on) = automatic => {
+            simple(&Request::Automatic { everyone, on }, "bundle")
+        }
+        (Some("update"), ids) => update(ids, everyone, check_only, yes),
+        (Some("rollback"), [id]) => simple(&Request::Rollback { id: checked(id)?, everyone }, id),
+        (Some("hold"), [id]) => simple(&Request::Hold { id: checked(id)?, everyone, on: true }, id),
+        (Some("unhold"), [id]) => {
+            simple(&Request::Hold { id: checked(id)?, everyone, on: false }, id)
+        }
+        (Some("history"), []) => history(None),
+        (Some("history"), [id]) => history(Some(checked(id)?)),
         (Some("grant"), [id, permission, words @ ..]) => grant(id, permission, words),
         (Some("revoke"), [id, permission]) => revoke(id, permission),
         _ => Err(usage(USAGE.into())),
@@ -611,6 +648,141 @@ fn installing(
             _ => return Err(fail("bundled answered out of turn".into())),
         }
     }
+}
+
+/// `id`, checked as a bundle's ID.
+fn checked(id: &str) -> Result<String, Fail> {
+    bundle::check_id(id).map_err(|why| usage(format!("{id}: {why}")))?;
+    Ok(id.into())
+}
+
+/// Asks bundled `request`, and says what it did, or why not.
+fn simple(request: &Request, what: &str) -> Result<i32, Fail> {
+    let (_stream, mut input) = ask(request, None).map_err(fail)?;
+    match answer(&mut input)? {
+        Answer::Ok(done) => {
+            println!("{done}");
+            Ok(0)
+        }
+        Answer::Error(why) => {
+            eprintln!("bundle: {what}: {why}");
+            Ok(1)
+        }
+        _ => Err(fail("bundled answered out of turn".into())),
+    }
+}
+
+/// `bundle update`: with `--check`, the bundles whose catalogs list a
+/// newer version; otherwise each updated, shown and asked about only
+/// when it asks for more than the version it replaces.
+fn update(ids: &[String], everyone: bool, check: bool, yes: bool) -> Result<i32, Fail> {
+    let ids = ids.iter().map(|id| checked(id)).collect::<Result<Vec<_>, _>>()?;
+    let request = Request::Update { ids, everyone, check, yes };
+    let (stream, mut input) = ask(&request, None).map_err(fail)?;
+    let mut rows: Vec<Available> = Vec::new();
+    let mut notes = Vec::new();
+    let said = loop {
+        match answer(&mut input)? {
+            Answer::Available(row) => rows.push(row),
+            Answer::Note(note) if check => notes.push(note),
+            Answer::Note(note) => println!("{note}"),
+            Answer::Sheet(text) => print!("{text}"),
+            Answer::Question => {
+                let agreed = agree("Install it? [y/N] ", &['y'])?;
+                let reply: &[u8] = if agreed { b"yes\n" } else { b"no\n" };
+                let mut stream = &stream;
+                stream.write_all(reply).map_err(|e| fail(format!("bundled: {e}")))?;
+            }
+            Answer::Ok(said) => break said,
+            Answer::Error(why) => {
+                eprintln!("bundle: {why}");
+                return Ok(1);
+            }
+            _ => return Err(fail("bundled answered out of turn".into())),
+        }
+    };
+    let mut parts = said.split("; ");
+    let summary = parts.next().unwrap_or_default();
+    for note in parts {
+        eprintln!("bundle: {note}");
+    }
+    if check && !rows.is_empty() {
+        let width = rows.iter().map(|r| r.id.len()).max().unwrap_or(2).max(2);
+        let from_width = rows.iter().map(|r| r.from.len()).max().unwrap_or(9).max(9);
+        let to_width = rows.iter().map(|r| r.to.len()).max().unwrap_or(6).max(6);
+        println!("{:width$}  {:from_width$}  {:to_width$}  CATALOG", "ID", "INSTALLED", "NEWEST");
+        for row in &rows {
+            let held = if row.held { "  (held)" } else { "" };
+            println!(
+                "{:width$}  {:from_width$}  {:to_width$}  {}{held}",
+                row.id, row.from, row.to, row.catalog
+            );
+        }
+    }
+    for note in notes {
+        println!("{note}");
+    }
+    println!("{summary}");
+    Ok(0)
+}
+
+/// `bundle history`: what bundled did to this person's bundles and
+/// everyone's, or to one, the newest last.
+fn history(id: Option<String>) -> Result<i32, Fail> {
+    let (_stream, mut input) = ask(&Request::History { id }, None).map_err(fail)?;
+    // SAFETY: getuid has no failure and touches no memory.
+    let me = unsafe { libc::getuid() };
+    let mut shown = 0;
+    loop {
+        match answer(&mut input)? {
+            Answer::Event(event) => {
+                println!("{}", history_line(&event, me));
+                shown += 1;
+            }
+            Answer::Ok(_) => break,
+            Answer::Error(why) => {
+                eprintln!("bundle: {why}");
+                return Ok(1);
+            }
+            _ => return Err(fail("bundled answered out of turn".into())),
+        }
+    }
+    if shown == 0 {
+        println!("bundled has done nothing to your bundles yet");
+    }
+    Ok(0)
+}
+
+/// An event of the history, as a line: when, the ID, and what was done.
+fn history_line(e: &Event, me: u32) -> String {
+    let when = util::time_text(i64::try_from(e.when).unwrap_or(0), "%Y-%m-%d %H:%M", true);
+    let from = e.from.as_deref().unwrap_or("?");
+    let to = e.to.as_deref().unwrap_or("?");
+    let note = if e.note.is_empty() { String::new() } else { format!(", {}", e.note) };
+    let what = match e.what {
+        What::Installed => format!("installed {to}{note}"),
+        What::Updated => format!("updated {from} to {to}{note}"),
+        What::RolledBack => format!("went back to {to}, from {from}"),
+        What::Removed => format!("removed {from}{note}"),
+        What::Held => format!("held at {from}"),
+        What::Released => format!("let go at {from}, to update again"),
+        What::Waiting => format!("{to} {}", e.note),
+        What::Failed => format!("{to} did not update: {}", e.note),
+    };
+    let whose = if e.place == Place::Everyone { ", for everyone" } else { "" };
+    let by = match e.by {
+        None => ", by itself".to_string(),
+        Some(uid) if uid == me => String::new(),
+        Some(uid) => {
+            bundled_name(uid).map_or_else(|| format!(", by user {uid}"), |n| format!(", by {n}"))
+        }
+    };
+    format!("{when}  {}  {what}{whose}{by}", e.id)
+}
+
+/// The name of user `uid`, if it has an account.
+fn bundled_name(uid: u32) -> Option<String> {
+    crate::bundled::account(uid).ok().map(|u| u.name)
 }
 
 /// How many bundles this person can run, theirs and everyone's, a
