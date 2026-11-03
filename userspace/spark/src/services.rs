@@ -41,7 +41,7 @@ use alloc::vec::Vec;
 use libradix::abi::capability::Rights;
 use libradix::abi::errors::File as FileError;
 use libradix::abi::resource_domain::OomClass;
-use manifest::service::{self, Oom, PciId, Place};
+use manifest::service::{self, OVERRIDES, Oom, Override, PciId, Place};
 use radix_rt::fs::Dir;
 use radix_rt::println;
 
@@ -112,9 +112,9 @@ impl Spec {
 }
 
 /// Reads the service file `name`.toml with `text`.
-pub fn parse(name: &str, text: &str) -> Result<Spec, String> {
+pub fn parse(name: &str, text: &str, over: Option<&Override>) -> Result<Spec, String> {
     check_name(name)?;
-    let file = service::from_toml(text).map_err(|err| err.to_string())?;
+    let file = service::from_toml_over(text, over).map_err(|err| err.to_string())?;
     let network = &file.permissions.network;
     Ok(Spec {
         name: name.to_string(),
@@ -201,27 +201,72 @@ fn write_new(dir: &Dir, path: &str, text: &str) -> Result<(), String> {
     )
 }
 
-/// Reads service `name`'s file in `dir`: what it says and its text.
-pub fn read(root: &Dir, dir: &str, name: &str) -> Result<(Spec, String), String> {
+/// The texts a service is read from: its file, and the file in
+/// [`OVERRIDES`] that sets keys over it, if there is one (ADR 0386).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Texts {
+    pub file: String,
+    pub over: Option<String>,
+}
+
+/// Reads the text at `path` beneath `root`; None if nothing is there.
+fn read_text(root: &Dir, path: &str) -> Result<Option<String>, String> {
+    match root.read_file(path) {
+        Ok(bytes) => {
+            String::from_utf8(bytes).map(Some).map_err(|_| format!("/{path}: it is not UTF-8 text"))
+        }
+        Err(err) if err.is(FileError::NotFound) => Ok(None),
+        Err(err) => Err(format!("/{path}: {err}")),
+    }
+}
+
+/// Reads service `name`'s file in `dir`, with its override in
+/// `dir/settings.d` set over it: what they say and their texts.
+pub fn read(root: &Dir, dir: &str, name: &str) -> Result<(Spec, Texts), String> {
     // A name is never a path.
     check_name(name)?;
     let path = format!("{dir}/{name}.toml");
-    let text = root.read_file(&path).map_err(|err| format!("/{path}: {err}"))?;
-    let text = String::from_utf8(text).map_err(|_| format!("/{path}: it is not UTF-8 text"))?;
-    let spec = parse(name, &text).map_err(|err| format!("/{path}: {err}"))?;
-    Ok((spec, text))
+    let file = read_text(root, &path)?.ok_or_else(|| format!("/{path}: no such file"))?;
+    let over_path = format!("{dir}/{OVERRIDES}/{name}.toml");
+    let over = read_text(root, &over_path)?;
+    let read = match &over {
+        Some(text) => {
+            Some(Override::from_toml(text).map_err(|err| format!("/{over_path}: {err}"))?)
+        }
+        None => None,
+    };
+    let spec = parse(name, &file, read.as_ref()).map_err(|err| match &over {
+        Some(_) => format!("/{path}, with /{over_path} over it: {err}"),
+        None => format!("/{path}: {err}"),
+    })?;
+    Ok((spec, Texts { file, over }))
 }
 
-/// The last copy of service `name`'s file that read, if Spark kept one.
-pub fn good(root: &Dir, name: &str) -> Option<(Spec, String)> {
+/// The last copy of service `name`'s file and override that read, if
+/// Spark kept one.
+pub fn good(root: &Dir, name: &str) -> Option<(Spec, Texts)> {
     read(root, GOOD, name).ok()
 }
 
-/// Keeps `text` as the last good copy of service `name`'s file.
-pub fn keep_good(root: &Dir, name: &str, text: &str) {
+/// Keeps `texts` as the last good copy of service `name`'s file and its
+/// override.
+pub fn keep_good(root: &Dir, name: &str, texts: &Texts) {
+    let file = format!("{name}.toml");
+    let overrides = format!("{GOOD}/{OVERRIDES}");
     let kept = make_dirs(root, GOOD)
         .and_then(|()| root.open_dir(GOOD, READ_WRITE).map_err(|err| format!("{err}")))
-        .and_then(|dir| write_new(&dir, &format!("{name}.toml"), text));
+        .and_then(|dir| write_new(&dir, &file, &texts.file))
+        .and_then(|()| match &texts.over {
+            Some(text) => make_dirs(root, &overrides)
+                .and_then(|()| {
+                    root.open_dir(&overrides, READ_WRITE).map_err(|err| format!("{err}"))
+                })
+                .and_then(|dir| write_new(&dir, &file, text)),
+            None => match root.remove(&format!("{overrides}/{file}")) {
+                Err(err) if !err.is(FileError::NotFound) => Err(format!("{err}")),
+                _ => Ok(()),
+            },
+        });
     if let Err(err) = kept {
         println!("spark: cannot keep a good copy of {name}'s file in /{GOOD}: {err}");
     }

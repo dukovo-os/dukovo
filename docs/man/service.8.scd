@@ -75,7 +75,11 @@ sshd is running, and starts at each boot.
 	_/system/settings/spark/services_. Prints _file_*: ok* for each that
 	reads, and for each that does not, which line is wrong and why on
 	the standard error; says which files are of before Phase 13 and
-	not converted yet.
+	not converted yet. A file is read with its override file in
+	_settings.d_ over it, which *ok* names (*service.toml*(5)). When an
+	update of a bundle kept a file an administrator changed and put the
+	new one beside it as _name.toml.default_ (*bundled*(8)), it says so
+	and which settings differ between the two.
 
 *new* _name_
 	Write a new file for the service _name_ with every setting

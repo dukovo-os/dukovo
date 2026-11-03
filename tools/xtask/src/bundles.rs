@@ -130,6 +130,8 @@ pub struct TestBundle {
     pub permissions: &'static str,
     /// Its manifest's `services`, a JSON array's insides; empty for none.
     pub services: &'static str,
+    /// Its manifest's `provides`, a JSON array's insides; empty for none.
+    pub provides: &'static str,
 }
 
 /// Packs `bundle` into out/test/bundles, signed by the build key, and
@@ -150,6 +152,14 @@ pub fn pack_test(ctx: &Ctx, bundle: &TestBundle) -> Result<PathBuf> {
         manifest.replace(
             "  \"permissions\":",
             &format!("  \"services\": [{}],\n  \"permissions\":", bundle.services),
+        )
+    };
+    let manifest = if bundle.provides.is_empty() {
+        manifest
+    } else {
+        manifest.replace(
+            "  \"permissions\":",
+            &format!("  \"provides\": [{}],\n  \"permissions\":", bundle.provides),
         )
     };
     dkv::signed::parse_manifest(manifest.as_bytes())

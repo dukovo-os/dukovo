@@ -194,10 +194,37 @@ waits for *service* _NAME_ *enable*. A service name that a file bundled
 did not write has already, the system's or an administrator's, stops
 the install.
 
-An update or going back writes the files again, keeping what an
-administrator enabled or disabled, starts each enabled service again,
-and takes away the services the version before ran that this one does
-not; a new service counts as asking for more.
+Each service's environment holds *HOME*, *USER* and *LOGNAME*, its
+account's, and *RUNTIME_DIRECTORY*, _/system/live/services/ACCOUNT_,
+which Spark makes as it starts, the account's: the sockets it provides
+go there.
+
+# UPDATING SERVICES
+
+An update or going back stops the services the version before ran and
+waits until Spark says they have stopped (ADR 0386). It copies each
+account's data folder to _/shared/services/ID/.snapshots/ACCOUNT/VERSION_
+for the version that ran, keeping each file's owner, as *bundle run*
+does for an app's data; going back to a version whose copy is there,
+the two change places, so that what the newer one left is kept in turn,
+and the data comes back at once. A copy goes once it is 30 days old, at
+the next update.
+
+It writes the service files again, keeping what an administrator
+enabled or disabled; one an administrator changed in any other way
+stays as it is, and the new one goes beside it as _NAME.toml.default_,
+which *service check* compares with it. An administrator's changes
+belong in an override file, _settings.d/NAME.toml_, which updates never
+touch (*service.toml*(5)). It takes away the services the version
+before ran that this one does not, and starts each enabled one; a new
+service counts as asking for more.
+
+After an update, each started service whose manifest names a *health*
+socket must answer on it, in its _RUNTIME_DIRECTORY_, within 60 seconds.
+If one does not, bundled goes back by itself, as *bundle rollback*
+does: the version before, its services' data as that version left it,
+and a hold, so that no update tries the failed version again unasked.
+The update fails with why, and the history keeps it.
 
 # REMOVING
 
@@ -268,6 +295,12 @@ _/system/settings/spark/services/NAME.toml_
 
 _/shared/services/ID/ACCOUNT_
 	The data folder of each account of a bundle's services, its home.
+
+_/shared/services/ID/.snapshots/ACCOUNT/VERSION_
+	The data of an account as each version left it.
+
+_/system/live/services/ACCOUNT_
+	The sockets of an account's services.
 
 _/system/live/bundled/socket_
 	Where it answers.

@@ -40,8 +40,15 @@ fn path_of(what: &str) -> Result<PathBuf, Fail> {
     Ok(Path::new(DIR).join(format!("{what}.toml")))
 }
 
-/// What is wrong with the service file at `path`, or None if it reads.
-/// Its name must be a service's name too.
+/// The override file of the service file at `path` (ADR 0386):
+/// `settings.d/NAME.toml` beside it.
+fn override_path(path: &Path) -> PathBuf {
+    let name = path.file_name().unwrap_or_default();
+    path.with_file_name(service::OVERRIDES).join(name)
+}
+
+/// What is wrong with the service file at `path`, with its override set
+/// over it, or None if they read. Its name must be a service's name too.
 fn check_file(path: &Path) -> Result<Option<String>, Fail> {
     let text = fs::read(path).map_err(|e| util::failed(&path.display(), e))?;
     let Ok(text) = String::from_utf8(text) else {
@@ -51,7 +58,51 @@ fn check_file(path: &Path) -> Result<Option<String>, Fail> {
     if let Err(err) = service::check_name(name) {
         return Ok(Some(format!("its name: {err}")));
     }
-    Ok(service::from_toml(&text).err().map(|err| err.to_string()))
+    let over_path = override_path(path);
+    let over = match fs::read(&over_path) {
+        Ok(bytes) => {
+            let Ok(over) = String::from_utf8(bytes) else {
+                return Ok(Some(format!("{}: it is not UTF-8 text", over_path.display())));
+            };
+            match service::Override::from_toml(&over) {
+                Ok(over) => Some(over),
+                Err(err) => return Ok(Some(format!("{}: {err}", over_path.display()))),
+            }
+        }
+        Err(e) if e.kind() == io::ErrorKind::NotFound => None,
+        Err(e) => return Err(util::failed(&over_path.display(), e)),
+    };
+    Ok(service::from_toml_over(&text, over.as_ref()).err().map(|err| match over {
+        Some(_) => format!("with {} over it: {err}", over_path.display()),
+        None => err.to_string(),
+    }))
+}
+
+/// What `service check` says of a file that reads: its override, and a
+/// newer default an update put beside it, with the keys that differ
+/// (ADR 0386).
+fn notes(path: &Path) -> String {
+    let mut said = String::new();
+    let over = override_path(path);
+    if over.exists() {
+        said.push_str(&format!(", with {} over it", over.display()));
+    }
+    let mut default = path.as_os_str().to_owned();
+    default.push(".default");
+    let default = PathBuf::from(default);
+    if let (Ok(file), Ok(newer)) = (fs::read_to_string(path), fs::read_to_string(&default)) {
+        let differ = match service::changed_keys(&file, &newer) {
+            Ok(keys) if keys.is_empty() => "the same settings".into(),
+            Ok(keys) => format!("these settings differ: {}", keys.join(", ")),
+            Err(err) => format!("it does not read: {err}"),
+        };
+        said.push_str(&format!(
+            "; an update left a newer default beside it, {}, and kept this one, which an \
+             administrator changed; {differ}",
+            default.display()
+        ));
+    }
+    said
 }
 
 /// `service check [NAME | FILE]...`: checks each file, or every one in
@@ -81,7 +132,7 @@ pub fn check(operands: &[String]) -> Result<i32, Fail> {
     let mut bad = 0;
     for path in &paths {
         match check_file(path) {
-            Ok(None) => println!("{}: ok", path.display()),
+            Ok(None) => println!("{}: ok{}", path.display(), notes(path)),
             Ok(Some(why)) => {
                 eprintln!("{}: {why}", path.display());
                 bad += 1;
@@ -334,7 +385,7 @@ pub fn text(name: &str) -> Result<String, Fail> {
 
 /// `text`, a service file, with its `enabled` line saying `on`, or one
 /// added after its `program` line.
-fn with_enabled(text: &str, on: bool) -> String {
+pub(crate) fn with_enabled(text: &str, on: bool) -> String {
     let line = format!("enabled = {on}");
     let mut lines: Vec<String> = text.lines().map(String::from).collect();
     // The top-level keys: those before the first table.

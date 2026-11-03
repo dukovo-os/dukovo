@@ -603,6 +603,72 @@ pub fn from_toml(text: &str) -> Result<Service, Error> {
     toml::from_str(text).map_err(|err| Error::from_toml(text, &err))
 }
 
+/// The folder, beside the service files, of the files that change them
+/// (ADR 0386): `settings.d/NAME.toml` sets keys of `NAME.toml`, so that
+/// an administrator's changes never touch the file the system or a
+/// bundle wrote, which an update may write again.
+pub const OVERRIDES: &str = "settings.d";
+
+/// An override file, read: the keys it sets.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Override(toml::Table);
+
+impl Override {
+    /// Reads an override file: any keys and tables, checked only once
+    /// they are set over a service file.
+    pub fn from_toml(text: &str) -> Result<Override, Error> {
+        toml::from_str(text).map(Override).map_err(|err| Error::from_toml(text, &err))
+    }
+}
+
+/// Sets each key of `over` in `table`: a table's keys one by one, any
+/// other value in place of the one there.
+fn set_over(table: &mut toml::Table, over: toml::Table) {
+    for (key, value) in over {
+        match (table.get_mut(&key), value) {
+            (Some(toml::Value::Table(inner)), toml::Value::Table(more)) => set_over(inner, more),
+            (_, value) => {
+                table.insert(key, value);
+            }
+        }
+    }
+}
+
+/// The keys whose values differ between the service files `a` and `b`,
+/// as dotted paths, such as `limits.memory`, in order: what an update's
+/// new default beside an administrator's file changes (ADR 0386).
+pub fn changed_keys(a: &str, b: &str) -> Result<Vec<String>, Error> {
+    fn walk(prefix: &str, a: &toml::Table, b: &toml::Table, out: &mut Vec<String>) {
+        let mut keys: Vec<&String> = a.keys().chain(b.keys()).collect();
+        keys.sort();
+        keys.dedup();
+        for key in keys {
+            let path = if prefix.is_empty() { key.clone() } else { format!("{prefix}.{key}") };
+            match (a.get(key), b.get(key)) {
+                (Some(toml::Value::Table(x)), Some(toml::Value::Table(y))) => {
+                    walk(&path, x, y, out);
+                }
+                (x, y) if x != y => out.push(path),
+                _ => {}
+            }
+        }
+    }
+    let a: toml::Table = toml::from_str(a).map_err(|err| Error::from_toml(a, &err))?;
+    let b: toml::Table = toml::from_str(b).map_err(|err| Error::from_toml(b, &err))?;
+    let mut out = Vec::new();
+    walk("", &a, &b, &mut out);
+    Ok(out)
+}
+
+/// Reads a service file with its override, if it has one, set over it.
+pub fn from_toml_over(text: &str, over: Option<&Override>) -> Result<Service, Error> {
+    let Some(Override(over)) = over else { return from_toml(text) };
+    let mut table: toml::Table =
+        toml::from_str(text).map_err(|err| Error::from_toml(text, &err))?;
+    set_over(&mut table, over.clone());
+    table.try_into().map_err(|err: toml::de::Error| Error::new(crate::plain(err.message())))
+}
+
 /// Checks an account's name, as Debian's: 1 to 32 lowercase letters,
 /// digits, `_`, `-` and `.`, starting with a letter or `_`.
 pub fn check_account(name: &str) -> Result<(), String> {

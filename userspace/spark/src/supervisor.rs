@@ -404,7 +404,7 @@ struct Service {
     oom_stops: u32,
     /// The text of its file that `spec` was read from, kept as the last
     /// good copy.
-    good: String,
+    good: services::Texts,
     /// What was wrong with its file when last read, said once.
     complaint: Option<String>,
     /// Why it could not start, when it last could not, for the request
@@ -414,7 +414,7 @@ struct Service {
 
 impl Service {
     /// A stopped service that runs `spec`, read from `good`.
-    fn new(spec: Spec, good: String) -> Service {
+    fn new(spec: Spec, good: services::Texts) -> Service {
         Service {
             spec,
             state: State::Stopped,
