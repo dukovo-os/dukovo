@@ -14,6 +14,7 @@ use std::sync::{Arc, Mutex};
 use fuser::FileType;
 
 use crate::attrs::{Set, When};
+use crate::client::Ops;
 use crate::fs::{Made, NfsFs, ROOT};
 use crate::options::{Options, Target};
 use crate::rpc::Cred;
@@ -198,6 +199,32 @@ fn opens_are_made_again_after_the_server_lost_the_client() {
     assert_eq!(fs.read(handle, 0, 64).unwrap(), b"before and after");
     fs.release(handle).unwrap();
     assert_eq!(fs::read(dir.join("f")).unwrap(), b"before and after");
+}
+
+#[test]
+fn calls_whose_reply_was_lost_are_sent_again() {
+    let dir = tempdir("again");
+    let addr = nfsd::testing::serve(&[("Music", dir.clone())]).unwrap();
+    let mut options = Options::default();
+    options.add(&format!("soft,timeo=50,port={}", addr.port())).unwrap();
+    let target = Target::parse("127.0.0.1:/Music").unwrap();
+    // SAFETY: getuid and getgid only read the process's IDs.
+    let (uid, gid) = unsafe { (libc::getuid(), libc::getgid()) };
+    let cred = Cred { uid, gid, gids: Vec::new() };
+    let (mut client, root) = crate::connect(&target, &options, &cred).unwrap();
+    // One whose reply the server kept, which it gives again.
+    let mut kept = Ops::kept();
+    kept.putfh(&root);
+    client.run(&cred, &kept).unwrap();
+    client.lose_reply();
+    client.run(&cred, &kept).unwrap();
+    // One whose reply it did not keep: sent again as a new call.
+    let mut read = Ops::new();
+    read.putfh(&root);
+    client.run(&cred, &read).unwrap();
+    client.lose_reply();
+    client.run(&cred, &read).unwrap();
+    client.run(&cred, &read).unwrap();
 }
 
 #[test]

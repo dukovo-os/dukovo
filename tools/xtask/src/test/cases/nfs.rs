@@ -42,7 +42,7 @@ pub const CASE: Case = Case {
     about: "nfs, mount and umount against the host's Linux NFS server through QEMU's network: command lines refused, a folder listed and mounted with mount -t nfs, root served as no one and refused a write, files written, renamed, linked and copied as number 1000, modes changed, a read-only folder mounted without -t and refusing writes, both unmounted (ADR 0344)",
     firmware: Firmware::Uefi,
     media: Media::Usb,
-    cmdline: "lockdep ip=10.0.2.15/24 gateway=10.0.2.2 -- --posix --network /system/tests/posix/nfstest",
+    cmdline: "lockdep ip=10.0.2.15/24 gateway=10.0.2.2 -- --posix --names --network /system/tests/posix/nfstest",
     cpus: 2,
     memory: "1G",
     reboot: false,

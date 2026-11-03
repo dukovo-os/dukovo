@@ -288,9 +288,14 @@ fn connect(target: &Target, options: &Options, cred: &Cred) -> Result<(Client, V
     if a.lease != 0 {
         client.lease = Duration::from_secs(u64::from(a.lease));
     }
-    let read = options.rsize.map_or(a.max_read, |most| u64::from(most).min(a.max_read.max(1)));
-    let write = options.wsize.map_or(a.max_write, |most| u64::from(most).min(a.max_write.max(1)));
-    client.limit_io(read, write);
+    // The least of what was asked and what the server takes, if it says
+    // (0 where it does not, or nothing was asked).
+    let least = |asked: Option<u32>, server: u64| match asked.map(u64::from) {
+        Some(asked) if server != 0 => asked.min(server),
+        Some(asked) => asked,
+        None => server,
+    };
+    client.limit_io(least(options.rsize, a.max_read), least(options.wsize, a.max_write));
     client.timing.hard = options.hard;
     Ok((client, root))
 }

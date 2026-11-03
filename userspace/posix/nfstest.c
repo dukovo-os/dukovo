@@ -16,12 +16,12 @@
 // only the command lines are checked.
 
 #include <arpa/inet.h>
-#include <grp.h>
 #include <netinet/in.h>
 #include <stdarg.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 
+#include "names.h"
 #include "programs.h"
 
 // Where the host names the folders.
@@ -33,6 +33,9 @@
 
 // The number the host's files are owned by, which writes as itself.
 #define ALICE 1000
+
+// This program, which runs again as number 1000.
+#define PROGRAM "system/tests/posix/nfstest"
 
 // The large file's size, which the host checks too.
 #define BIG (4 * 1024 * 1024)
@@ -206,21 +209,15 @@ static void links_and_modes(void) {
 	STATUS(0, "/bin/sh", "-c", "df " MOUNTED " >/dev/null");
 }
 
-// As number 1000, in a child of its own: the files, folders, links and
-// modes.
-static void as_alice(void) {
-	pid_t pid = check_fork();
-	if(pid == 0) {
-		gid_t groups[1] = {ALICE};
-		CHECK(setgroups(1, groups) == 0);
-		CHECK(setgid(ALICE) == 0);
-		CHECK(setuid(ALICE) == 0);
-		RUN(files);
-		RUN(folders);
-		RUN(links_and_modes);
-		check_exit_child();
-	}
-	CHECK_CHILD(pid);
+// As number 1000, started again as authd starts a person's programs
+// (`--names`): the files, folders, links and modes.
+static int alice(void) {
+	check_start("nfstest");
+	CHECK(getuid() == ALICE && getgid() == ALICE);
+	RUN(files);
+	RUN(folders);
+	RUN(links_and_modes);
+	return check_end();
 }
 
 // Unmounted by its folder; the read-only folder mounted without -t,
@@ -240,7 +237,9 @@ static void unmounting(void) {
 	STATUS(1, "/bin/sh", "-c", "umount " MOUNTED " 2>/dev/null");
 }
 
-int main(void) {
+int main(int argc, char **argv) {
+	if(argc == 2 && !strcmp(argv[1], "alice"))
+		return alice();
 	check_start("nfstest");
 	int server = about_host();
 	RUN(command_lines);
@@ -250,7 +249,15 @@ int main(void) {
 	}
 	RUN(listing);
 	RUN(mounted);
-	as_alice();
+	// Number 1000 notes the commands it runs, for the `commands` test,
+	// too.
+	int notes = open(COMMANDS_RUN, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0644);
+	CHECK(notes >= 0 && fchmod(notes, 0666) == 0);
+	close(notes);
+	char *const alice_args[] = {"nfstest", "alice", NULL};
+	const uint32_t groups[] = {ALICE};
+	pid_t pid = start_as(PROGRAM, ALICE, ALICE, groups, 1, alice_args);
+	CHECK_CHILD(pid);
 	RUN(unmounting);
 	return check_end();
 }

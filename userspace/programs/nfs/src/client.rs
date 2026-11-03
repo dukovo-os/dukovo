@@ -236,6 +236,9 @@ pub struct Client {
     pub max_write: u32,
     /// When the server last answered.
     pub last: Instant,
+    /// Whether the mount ended, and the client with it: the lease is not
+    /// renewed, which would make a client ID again.
+    ended: bool,
 }
 
 /// The credential of the machine itself, for the calls that are no
@@ -274,6 +277,7 @@ impl Client {
             max_read: 1 << 20,
             max_write: 1 << 20,
             last: Instant::now(),
+            ended: false,
         }
     }
 
@@ -383,6 +387,17 @@ impl Client {
             }
             // The slot is busy with the same call: it is sent again.
             err::DELAY => Ok(Err(Duration::from_millis(500))),
+            // A call sent again after its connection was lost, which the
+            // server carried out without keeping its reply (one that asked
+            // for none: a read), or (SEQ_FALSE_RETRY) took for another: it
+            // goes again as a new call, in the slot's next number, as
+            // Linux's client sends it.
+            err::RETRY_UNCACHED_REP | 10_076 => {
+                if let Some(session) = &mut self.session {
+                    session.sequence = session.sequence.wrapping_add(1);
+                }
+                Ok(Err(Duration::ZERO))
+            }
             err::BADSESSION
             | err::DEADSESSION
             | err::CONN_NOT_BOUND_TO_SESSION
@@ -532,12 +547,16 @@ impl Client {
 
     /// A SEQUENCE alone, which renews the lease.
     pub fn renew(&mut self) -> Result<(), Fail> {
+        if self.ended {
+            return Ok(());
+        }
         self.run(&machine(), &Ops::new()).map(drop)
     }
 
     /// Ends the session and client ID, for the server to free what it
     /// kept of them; a failure is not this mount's to report.
     pub fn goodbye(&mut self) {
+        self.ended = true;
         if let Some(session) = self.session.take() {
             let _ = self.bare(op::DESTROY_SESSION, &session.id);
         }
@@ -545,6 +564,16 @@ impl Client {
             let mut args = Writer::new();
             args.u64(client.id);
             let _ = self.bare(op::DESTROY_CLIENTID, &args.bytes);
+        }
+        self.conn = None;
+    }
+
+    /// Takes back the slot's last sequence number and the connection, as
+    /// when a reply was lost on the way: for the tests.
+    #[cfg(test)]
+    pub fn lose_reply(&mut self) {
+        if let Some(session) = &mut self.session {
+            session.sequence = session.sequence.wrapping_sub(1);
         }
         self.conn = None;
     }
