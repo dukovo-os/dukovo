@@ -36,6 +36,11 @@
 //! something ([`filter`], ADR 0334), each answer to a UDP datagram the
 //! interface sent being let in without asking it.
 //!
+//! The ICMP and ICMPv6 errors an interface receives about what its
+//! sockets sent, a router's "time exceeded" and a machine's "port
+//! unreachable" among them, go to the kernel's [`Reporter`] as
+//! [`reports`] reads them (ADR 0345), for it to give the sockets.
+//!
 //! [`Pinger`] sends ICMP echo requests and matches their replies, for
 //! the kernel's own checks of a link (`selftest=net`). The stack itself
 //! answers echo requests to its addresses.
@@ -59,6 +64,7 @@ pub mod layer2;
 mod loopback;
 #[cfg(kani)]
 mod proofs;
+pub mod reports;
 mod sockets;
 #[cfg(test)]
 mod tests;
@@ -67,11 +73,14 @@ mod tests6;
 #[cfg(test)]
 mod tests_multicast;
 #[cfg(test)]
+mod tests_reports;
+#[cfg(test)]
 mod tests_tunnel;
 
 pub use across::{Across, OtherEnd};
 pub use layer2::TAGGED_FRAME;
 pub use loopback::Loopback;
+pub use reports::{About, Reason, Report};
 pub use smoltcp;
 pub use smoltcp::wire::{
     EthernetAddress, IpAddress, IpVersion, Ipv4Address, Ipv4Cidr, Ipv6Address, Ipv6Cidr,
@@ -162,6 +171,51 @@ pub struct Hooks {
     pub admit: fn(number: usize, packet: &filter::Inbound, now_ns: u64) -> bool,
 }
 
+/// Who hears the ICMP and ICMPv6 errors an interface receives about
+/// what its sockets sent (ADR 0345): the kernel, which gives them to the
+/// sockets. It is told the interface's number, and called with the
+/// stack's lock held, as the stack polls.
+#[derive(Clone, Copy)]
+pub struct Reporter {
+    /// The interface's number.
+    pub number: usize,
+    /// Takes `report`, an error that came to one of the interface's
+    /// addresses.
+    pub hear: fn(number: usize, report: &Report),
+}
+
+/// The most addresses an interface has, as smoltcp keeps them.
+const ADDRESSES: usize = 16;
+
+/// What a poll needs to hear errors: who hears them, the addresses they
+/// must come to, and whether their checksums are checked.
+#[derive(Clone, Copy)]
+struct Hearing<'a> {
+    reporter: Reporter,
+    own: &'a [IpAddress],
+    verify: bool,
+}
+
+impl Hearing<'_> {
+    /// Hands the error `frame` holds, if it holds one to an address of
+    /// the interface's, to the reporter.
+    #[inline]
+    fn hear(&self, frame: &[u8], medium: Medium, counted: &Counted) {
+        if reports::may_be(frame, medium) {
+            self.hear_error(frame, medium, counted);
+        }
+    }
+
+    #[inline(never)]
+    fn hear_error(&self, frame: &[u8], medium: Medium, counted: &Counted) {
+        let Some(report) = reports::heard(frame, medium, self.verify) else { return };
+        if self.own.contains(&report.to) {
+            (self.reporter.hear)(self.reporter.number, &report);
+            counted.reported.set(true);
+        }
+    }
+}
+
 /// The memory a stack works in, lent to it for as long as it lives.
 pub struct Memory {
     /// A frame received, while the stack reads it: [`TAGGED_FRAME`]
@@ -195,6 +249,12 @@ pub struct Stack<L: Link> {
     flows: RefCell<filter::Flows>,
     /// The multicast groups its sockets joined, each with how many did.
     joined: [Option<(IpAddress, u32)>; GROUPS],
+    /// Who hears the errors it receives.
+    reporter: Option<Reporter>,
+    /// Its addresses, the first `owned`, which errors must come to: a
+    /// copy of smoltcp's, which a poll has lent to it.
+    own: [IpAddress; ADDRESSES],
+    owned: usize,
 }
 
 /// The most multicast groups an interface's sockets join between them:
@@ -237,6 +297,8 @@ struct Counted {
     sent_packets: Cell<u64>,
     sent_bytes: Cell<u64>,
     send_dropped: Cell<u64>,
+    /// Whether an error went to the reporter.
+    reported: Cell<bool>,
 }
 
 /// Adds `by` to `count`.
@@ -287,6 +349,8 @@ struct Phy<'a, L: Link> {
     /// whose answers it lets in.
     hooks: Option<Hooks>,
     flows: Option<&'a RefCell<filter::Flows>>,
+    /// Who hears the errors it receives.
+    hearing: Option<Hearing<'a>>,
 }
 
 impl<'a, L: Link> Phy<'a, L> {
@@ -307,6 +371,7 @@ impl<'a, L: Link> Phy<'a, L> {
             now: 0,
             hooks: None,
             flows: None,
+            hearing: None,
         }
     }
 }
@@ -315,7 +380,7 @@ impl<'a, L: Link> Phy<'a, L> {
 /// (counted as it is read).
 enum Received<'a> {
     Copied(&'a [u8]),
-    InPlace(loopback::Oldest<'a>, &'a Counted),
+    InPlace(loopback::Oldest<'a>, &'a Counted, Option<Hearing<'a>>),
 }
 
 /// A frame to send: written to the stack's buffer for the card to copy, or
@@ -346,8 +411,11 @@ impl phy::RxToken for Received<'_> {
     fn consume<R, F: FnOnce(&[u8]) -> R>(self, f: F) -> R {
         match self {
             Received::Copied(frame) => f(frame),
-            Received::InPlace(packet, counted) => packet.read(|packet| {
+            Received::InPlace(packet, counted, hearing) => packet.read(|packet| {
                 counted.received(packet.len());
+                if let Some(hearing) = hearing {
+                    hearing.hear(packet, Medium::Ip, counted);
+                }
                 f(packet)
             }),
         }
@@ -422,7 +490,7 @@ impl<L: Link> phy::Device for Phy<'_, L> {
         if self.in_place {
             let (packet, answer) = self.link.loopback()?.oldest()?;
             let answer = Sending::Answer { answer, spare: self.transmit, counted };
-            return Some((Received::InPlace(packet, counted), answer));
+            return Some((Received::InPlace(packet, counted, self.hearing), answer));
         }
         let len = loop {
             let len = self.link.receive(self.receive)?;
@@ -447,6 +515,9 @@ impl<L: Link> phy::Device for Phy<'_, L> {
             && let Some(heard) = ipv6::hear(&self.receive[..len])
         {
             ipv6.heard(heard, self.now);
+        }
+        if let Some(hearing) = self.hearing {
+            hearing.hear(&self.receive[..len], self.link.medium(), counted);
         }
         let flows = self.flows.map(|flows| (flows, self.now));
         let sending = Sending::Copied { link: self.link, buffer: self.transmit, counted, flows };
@@ -549,7 +620,16 @@ impl<L: Link> Stack<L> {
             hooks: None,
             flows: RefCell::default(),
             joined: [None; GROUPS],
+            reporter: None,
+            own: [IpAddress::Ipv4(Ipv4Address::UNSPECIFIED); ADDRESSES],
+            owned: 0,
         }
+    }
+
+    /// Has `reporter` hear the errors the interface receives about what
+    /// its sockets sent from now on, or none.
+    pub fn set_reporter(&mut self, reporter: Option<Reporter>) {
+        self.reporter = reporter;
     }
 
     /// Has the interface's frames pass through `hooks` from now on, or
@@ -610,6 +690,11 @@ impl<L: Link> Stack<L> {
                 }
             }
         });
+        self.owned = 0;
+        for (slot, cidr) in self.own.iter_mut().zip(self.iface.ip_addrs()) {
+            *slot = cidr.address();
+            self.owned += 1;
+        }
     }
 
     /// Gives smoltcp the IPv6 addresses and default route the interface
@@ -848,6 +933,7 @@ impl<L: Link> Stack<L> {
     pub fn poll(&mut self, now_ns: u64) -> bool {
         let mut changed = false;
         self.send_above();
+        let verify = self.link.needs_checksums();
         for _ in 0..POLL_ROUNDS {
             let mut phy =
                 Phy::new(&mut self.link, &mut *self.receive, &mut *self.transmit, &self.counted);
@@ -856,12 +942,17 @@ impl<L: Link> Stack<L> {
             phy.now = now_ns;
             phy.hooks = self.hooks;
             phy.flows = self.hooks.is_some().then_some(&self.flows);
+            phy.hearing = self.reporter.map(|reporter| Hearing {
+                reporter,
+                own: &self.own[..self.owned],
+                verify,
+            });
             if phy.link.medium() == Medium::Ethernet {
                 phy.ipv6 = Some(&mut self.ipv6);
             }
             let result = self.iface.poll(instant(now_ns), &mut phy, &mut self.sockets);
             self.link.flush();
-            changed |= result == PollResult::SocketStateChanged;
+            changed |= result == PollResult::SocketStateChanged || self.counted.reported.take();
             if !self.link.pending() {
                 break;
             }

@@ -213,6 +213,8 @@ error that starts with the tool's name.
 :  the clock, the time zone, and how timed keeps the time
 |  *top*(1)
 :  the processes, refreshed
+|  *traceroute*(8), *traceroute6*(8)
+:  the routers on the way to a machine, one hop at a time
 |  *tree*(1)
 :  directories as a tree
 |  *unlock*(8)

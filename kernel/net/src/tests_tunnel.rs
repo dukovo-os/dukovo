@@ -22,7 +22,7 @@ type Queue = Rc<RefCell<VecDeque<Vec<u8>>>>;
 
 /// One end of a tunnel: packets sent go into `out`, packets received
 /// come from `inbox`.
-struct Tun {
+pub(crate) struct Tun {
     inbox: Queue,
     out: Queue,
 }
@@ -74,7 +74,7 @@ fn memory() -> Memory {
 
 /// The two ends of a tunnel, at 10.9.0.1 and 10.9.0.2 and fd09::1 and
 /// fd09::2.
-fn tunnel() -> (Stack<Tun>, Stack<Tun>) {
+pub(crate) fn tunnel() -> (Stack<Tun>, Stack<Tun>) {
     let (a_to_b, b_to_a): (Queue, Queue) = Default::default();
     let mut a = Stack::new(Tun { inbox: b_to_a.clone(), out: a_to_b.clone() }, memory(), 1, 0);
     let mut b = Stack::new(Tun { inbox: a_to_b, out: b_to_a }, memory(), 2, 0);

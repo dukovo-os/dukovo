@@ -136,6 +136,11 @@ if not no_headers
 		'include/asm/ioctls.h',
 		subdir: 'asm',
 	)
+	# Linux's linux/errqueue.h, of IP_RECVERR's errors (ADR 0345).
+	install_headers(
+		'include/linux/errqueue.h',
+		subdir: 'linux',
+	)
 endif
 
 if not headers_only

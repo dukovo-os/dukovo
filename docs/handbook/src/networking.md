@@ -216,9 +216,11 @@ IPv6, the firewall and WireGuard. This page grows with each.
   ([ADR 0339](https://github.com/openlinuxsystems/orthros/blob/main/docs/adr/0339-tunnels-are-ip-links-whose-packets-a-program-carries.md)).
 - **The administrator's tools**: dig and host, whois, OpenBSD's nc,
   nic for what each card says of its link, as ethtool, openssl and
-  iperf3
+  iperf3, and traceroute and mtr, which run without privilege as on
+  Linux, from the ICMP errors the kernel gives sockets
   ([ADR 0341](https://github.com/openlinuxsystems/orthros/blob/main/docs/adr/0341-dig-host-whois-nc-and-nic.md),
-  [ADR 0342](https://github.com/openlinuxsystems/orthros/blob/main/docs/adr/0342-openssl-and-iperf3.md)).
+  [ADR 0342](https://github.com/openlinuxsystems/orthros/blob/main/docs/adr/0342-openssl-and-iperf3.md),
+  [ADR 0345](https://github.com/openlinuxsystems/orthros/blob/main/docs/adr/0345-traceroute-mtr-and-icmp-errors-for-sockets.md)).
 - **An app reaches the local network only if you let it**: a bundle's
   network.local permission, asked for when it first runs, is a right of
   its own, apart from reaching the internet
@@ -353,6 +355,8 @@ $ whois example.org
 $ nc -zv 192.168.1.10 22
 $ iperf3 -c 192.168.1.10
 $ openssl s_client -connect example.org:443 < /dev/null
+$ traceroute example.org
+$ mtr --report example.org
 ```
 
 `nic` alone lists each interface's link, speed and driver, `nic -i`
@@ -363,6 +367,13 @@ with `@server` (dig(1), host(1)); whois starts at IANA's server and
 follows the registries' referrals (whois(1)). nc is OpenBSD's netcat as
 Debian ships it, iperf3 ESnet's, and openssl OpenSSL's command, whose
 settings are in `/system/settings/ssl` with the root certificates.
+traceroute is Dmitry Butskoy's as Linux distributions have it, by UDP or
+with `-I` by ICMP, and `traceroute6` or `-6` traces over IPv6
+(traceroute(8)); mtr asks each router on the way again and again and
+shows how many answers come back and how soon, on the terminal or with
+`--report` once, `-z` with each network's AS number (mtr(8)). Neither
+needs privilege: the routers' "time exceeded" errors come back to the
+sockets their probes went from.
 
 ## Setting the cards up
 

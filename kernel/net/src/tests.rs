@@ -427,7 +427,7 @@ fn knows_its_addresses_and_routes() {
 }
 
 /// A stack on a loopback link, at 127.0.0.1/8.
-fn loopback() -> Stack<Loopback> {
+pub(crate) fn loopback() -> Stack<Loopback> {
     let memory = Memory {
         receive: leak(0u8, 4096),
         transmit: leak(0u8, 4096),

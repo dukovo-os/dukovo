@@ -1,0 +1,63 @@
+SPDX-FileCopyrightText: 2026 The Dukovo contributors
+SPDX-License-Identifier: Apache-2.0 OR MIT
+
+gethostbyaddr found no name for any address, so that mtr --report gave
+every router's address where Linux's gives its name. It now looks the
+address up in /etc/hosts and then in DNS, as getnameinfo does and as
+glibc's gethostbyaddr does, and gives a hostent of its own with the
+name and the address, or HOST_NOT_FOUND (ADR 0345).
+Meant for upstream.
+
+--- a/options/posix/generic/netdb.cpp
++++ b/options/posix/generic/netdb.cpp
+@@ -560,8 +560,48 @@
+ 	return nullptr;
+ }
+ 
+-struct hostent *gethostbyaddr(const void *, socklen_t, int) {
+-	return nullptr;
++// Looks the address's name up in /etc/hosts and then in DNS, as
++// getnameinfo does, and as glibc's gethostbyaddr does: a hostent of its
++// own, which the next call takes back, with the name, no aliases and the
++// address, or nullptr with h_errno HOST_NOT_FOUND when it has no name, or
++// NO_RECOVERY for an address that is not of `type` or a lookup that
++// failed.
++struct hostent *gethostbyaddr(const void *addr, socklen_t len, int type) {
++	if(type != AF_INET && type != AF_INET6) {
++		errno = EAFNOSUPPORT;
++		h_errno = NO_RECOVERY;
++		return nullptr;
++	}
++	if(!addr || len != (type == AF_INET ? 4 : 16)) {
++		errno = EINVAL;
++		h_errno = NO_RECOVERY;
++		return nullptr;
++	}
++	static char name[NI_MAXHOST];
++	static char address[16];
++	static char *addresses[2];
++	static char *aliases[1];
++	static struct hostent h;
++	frg::array<uint8_t, 16> bytes{};
++	memcpy(bytes.data(), addr, len);
++	frg::span<char> span{name, sizeof(name)};
++	int found = mlibc::lookup_addr_hosts(span, bytes, type);
++	if(!found)
++		found = mlibc::lookup_addr_dns(span, bytes, type);
++	if(found <= 0) {
++		h_errno = found ? NO_RECOVERY : HOST_NOT_FOUND;
++		return nullptr;
++	}
++	memcpy(address, addr, len);
++	addresses[0] = address;
++	addresses[1] = nullptr;
++	aliases[0] = nullptr;
++	h.h_name = name;
++	h.h_aliases = aliases;
++	h.h_addrtype = type;
++	h.h_length = len;
++	h.h_addr_list = addresses;
++	return &h;
+ }
+ 
+ int gethostbyaddr_r(const void *__restrict, socklen_t, int, struct hostent *__restrict,

@@ -148,6 +148,16 @@ For MSG_PEEK on stream sockets (ADR 0341):
   it reads. `peek_at` shows the octets from an offset on, as the
   buffer's `get_allocated` does, which reaches the piece past the end.
 
+For traceroute and mtr (ADR 0345):
+
+- A UDP or ICMP socket gave a datagram its hop limit when it went, not
+  when it was sent: one sent with a hop limit of 1 and then another
+  with 2 both went with 2 when they waited together, so that mtr's
+  probes, a hop limit each, all went as far. A UDP socket's
+  `UdpMetadata` carries a datagram's own hop limit, and an ICMP
+  socket's metadata does too, with `send_slice_with_hop_limit`; the
+  socket's is for those without.
+
 To be offered upstream.
 
 --- a/src/iface/interface/tcp.rs
@@ -437,7 +447,41 @@ To be offered upstream.
  }
 --- a/src/socket/icmp.rs
 +++ b/src/socket/icmp.rs
-@@ -143,6 +143,12 @@
+@@ -99,11 +99,31 @@
+     }
+ }
+ 
++/// Where an ICMP packet came from or goes, and for one to send, the hop
++/// limit it goes with if not the socket's: so that a hop limit set
++/// between two sends is the second's alone, as it is when the first went
++/// at once.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++#[cfg_attr(feature = "defmt", derive(defmt::Format))]
++pub struct Meta {
++    pub addr: IpAddress,
++    pub hop_limit: Option<u8>,
++}
++
++impl From<IpAddress> for Meta {
++    fn from(addr: IpAddress) -> Meta {
++        Meta {
++            addr,
++            hop_limit: None,
++        }
++    }
++}
++
+ /// An ICMP packet metadata.
+-pub type PacketMetadata = crate::storage::PacketMetadata<IpAddress>;
++pub type PacketMetadata = crate::storage::PacketMetadata<Meta>;
+ 
+ /// An ICMP packet ring buffer.
+-pub type PacketBuffer<'a> = crate::storage::PacketBuffer<'a, IpAddress>;
++pub type PacketBuffer<'a> = crate::storage::PacketBuffer<'a, Meta>;
+ 
+ /// A ICMP socket
+ ///
+@@ -143,6 +163,12 @@
          }
      }
  
@@ -450,22 +494,103 @@ To be offered upstream.
      /// Register a waker for receive operations.
      ///
      /// The waker is woken on state changes that might affect the return value
-@@ -378,6 +384,15 @@
+@@ -335,7 +361,7 @@
+ 
+         let packet_buf = self
+             .tx_buffer
+-            .enqueue(size, endpoint)
++            .enqueue(size, endpoint.into())
+             .map_err(|_| SendError::BufferFull)?;
+ 
+         net_trace!("icmp:{}: buffer to send {} octets", endpoint, size);
+@@ -362,7 +388,7 @@
+ 
+         let size = self
+             .tx_buffer
+-            .enqueue_with_infallible(max_size, endpoint, f)
++            .enqueue_with_infallible(max_size, endpoint.into(), f)
+             .map_err(|_| SendError::BufferFull)?;
+ 
+         net_trace!("icmp:{}: buffer to send {} octets", endpoint, size);
+@@ -378,12 +404,48 @@
          Ok(())
      }
  
++    /// Enqueue a packet to be sent to a given remote address with the hop
++    /// limit `hop_limit`, whatever the socket's is when it goes, and fill
++    /// it from a slice.
++    ///
++    /// See also [send](#method.send).
++    pub fn send_slice_with_hop_limit(
++        &mut self,
++        data: &[u8],
++        endpoint: IpAddress,
++        hop_limit: u8,
++    ) -> Result<(), SendError> {
++        if endpoint.is_unspecified() {
++            return Err(SendError::Unaddressable);
++        }
++        let meta = Meta {
++            addr: endpoint,
++            hop_limit: Some(hop_limit),
++        };
++        let packet_buf = self
++            .tx_buffer
++            .enqueue(data.len(), meta)
++            .map_err(|_| SendError::BufferFull)?;
++        packet_buf.copy_from_slice(data);
++        Ok(())
++    }
++
 +    /// Return the next packet received, and the address it came from, without
 +    /// dequeuing it, as [UDP's](crate::socket::udp::Socket::peek) does.
 +    ///
 +    /// This function returns `Err(Error::Exhausted)` if the receive buffer is empty.
 +    pub fn peek(&mut self) -> Result<(&[u8], &IpAddress), RecvError> {
-+        let (endpoint, packet_buf) = self.rx_buffer.peek().map_err(|_| RecvError::Exhausted)?;
-+        Ok((packet_buf, endpoint))
++        let (meta, packet_buf) = self.rx_buffer.peek().map_err(|_| RecvError::Exhausted)?;
++        Ok((packet_buf, &meta.addr))
 +    }
 +
      /// Dequeue a packet received from a remote endpoint, and return the `IpAddress` as well
      /// as a pointer to the payload.
      ///
+     /// This function returns `Err(Error::Exhausted)` if the receive buffer is empty.
+     pub fn recv(&mut self) -> Result<(&[u8], IpAddress), RecvError> {
+-        let (endpoint, packet_buf) = self.rx_buffer.dequeue().map_err(|_| RecvError::Exhausted)?;
++        let (meta, packet_buf) = self.rx_buffer.dequeue().map_err(|_| RecvError::Exhausted)?;
++        let endpoint = meta.addr;
+ 
+         net_trace!(
+             "icmp:{}: receive {} buffered octets",
+@@ -557,7 +619,7 @@
+ 
+         match self
+             .rx_buffer
+-            .enqueue(icmp_repr.buffer_len(), ip_repr.src_addr.into())
++            .enqueue(icmp_repr.buffer_len(), IpAddress::from(ip_repr.src_addr).into())
+         {
+             Ok(packet_buf) => {
+                 icmp_repr.emit(
+@@ -583,7 +645,7 @@
+ 
+         match self
+             .rx_buffer
+-            .enqueue(icmp_repr.buffer_len(), ip_repr.src_addr.into())
++            .enqueue(icmp_repr.buffer_len(), IpAddress::from(ip_repr.src_addr).into())
+         {
+             Ok(packet_buf) => icmp_repr.emit(
+                 &ip_repr.src_addr,
+@@ -603,7 +665,9 @@
+         F: FnOnce(&mut Context, (IpRepr, IcmpRepr)) -> Result<(), E>,
+     {
+         let hop_limit = self.hop_limit.unwrap_or(64);
+-        let res = self.tx_buffer.dequeue_with(|remote_endpoint, packet_buf| {
++        let res = self.tx_buffer.dequeue_with(|meta, packet_buf| {
++            let remote_endpoint = &meta.addr;
++            let hop_limit = meta.hop_limit.unwrap_or(hop_limit);
+             net_trace!(
+                 "icmp:{}: sending {} octets",
+                 remote_endpoint,
 --- a/src/socket/tcp.rs
 +++ b/src/socket/tcp.rs
 @@ -14,8 +14,8 @@
@@ -2531,7 +2656,26 @@ To be offered upstream.
  
  /// Metadata for a sent or received UDP packet.
  #[cfg_attr(feature = "defmt", derive(defmt::Format))]
-@@ -52,6 +54,34 @@
+@@ -24,6 +26,10 @@
+     /// heuristic (for IPv4).
+     pub local_address: Option<IpAddress>,
+     pub meta: PacketMeta,
++    /// The hop limit an outgoing datagram goes with, if not the socket's:
++    /// so that a hop limit set between two sends is the second's alone,
++    /// as it is when the first went at once. Incoming datagrams have none.
++    pub hop_limit: Option<u8>,
+ }
+ 
+ impl<T: Into<IpEndpoint>> From<T> for UdpMetadata {
+@@ -32,6 +38,7 @@
+             endpoint: value.into(),
+             local_address: None,
+             meta: PacketMeta::default(),
++            hop_limit: None,
+         }
+     }
+ }
+@@ -52,6 +59,34 @@
  /// A UDP packet ring buffer.
  pub type PacketBuffer<'a> = crate::storage::PacketBuffer<'a, UdpMetadata>;
  
@@ -2566,7 +2710,7 @@ To be offered upstream.
  /// Error returned by [`Socket::bind`]
  #[derive(Debug, PartialEq, Eq, Clone, Copy)]
  #[cfg_attr(feature = "defmt", derive(defmt::Format))]
-@@ -116,10 +146,17 @@
+@@ -116,10 +151,17 @@
  #[derive(Debug)]
  pub struct Socket<'a> {
      endpoint: IpListenEndpoint,
@@ -2584,7 +2728,7 @@ To be offered upstream.
      #[cfg(feature = "async")]
      rx_waker: WakerRegistration,
      #[cfg(feature = "async")]
-@@ -131,9 +168,12 @@
+@@ -131,9 +173,12 @@
      pub fn new(rx_buffer: PacketBuffer<'a>, tx_buffer: PacketBuffer<'a>) -> Socket<'a> {
          Socket {
              endpoint: IpListenEndpoint::default(),
@@ -2597,7 +2741,7 @@ To be offered upstream.
              #[cfg(feature = "async")]
              rx_waker: WakerRegistration::new(),
              #[cfg(feature = "async")]
-@@ -141,6 +181,12 @@
+@@ -141,6 +186,12 @@
          }
      }
  
@@ -2610,7 +2754,7 @@ To be offered upstream.
      /// Register a waker for receive operations.
      ///
      /// The waker is woken on state changes that might affect the return value
-@@ -182,6 +228,20 @@
+@@ -182,6 +233,20 @@
          self.endpoint
      }
  
@@ -2631,7 +2775,7 @@ To be offered upstream.
      /// Return the time-to-live (IPv4) or hop limit (IPv6) value used in outgoing packets.
      ///
      /// See also the [set_hop_limit](#method.set_hop_limit) method
-@@ -209,6 +269,59 @@
+@@ -209,6 +274,59 @@
          self.hop_limit = hop_limit
      }
  
@@ -2691,7 +2835,7 @@ To be offered upstream.
      /// Bind the socket to the given endpoint.
      ///
      /// This function returns `Err(Error::Illegal)` if the socket was open
-@@ -478,6 +591,13 @@
+@@ -478,6 +596,13 @@
          if self.endpoint.port != repr.dst_port {
              return false;
          }
@@ -2705,7 +2849,15 @@ To be offered upstream.
          if self.endpoint.addr.is_some()
              && self.endpoint.addr != Some(ip_repr.dst_addr())
              && !cx.is_broadcast(&ip_repr.dst_addr())
-@@ -538,6 +658,7 @@
+@@ -517,6 +642,7 @@
+             endpoint: remote_endpoint,
+             local_address: Some(ip_repr.dst_addr()),
+             meta,
++            hop_limit: None,
+         };
+ 
+         match self.rx_buffer.enqueue(size, metadata) {
+@@ -538,6 +664,7 @@
      {
          let endpoint = self.endpoint;
          let hop_limit = self.hop_limit.unwrap_or(64);
@@ -2713,14 +2865,14 @@ To be offered upstream.
  
          let res = self.tx_buffer.dequeue_with(|packet_meta, payload_buf| {
              let src_addr = if let Some(s) = packet_meta.local_address {
-@@ -570,6 +691,11 @@
+@@ -570,6 +697,11 @@
                  src_port: endpoint.port,
                  dst_port: packet_meta.endpoint.port,
              };
-+            let hop_limit = if packet_meta.endpoint.addr.is_multicast() {
-+                multicast_hop_limit
-+            } else {
-+                hop_limit
++            let hop_limit = match packet_meta.hop_limit {
++                Some(hop_limit) => hop_limit,
++                None if packet_meta.endpoint.addr.is_multicast() => multicast_hop_limit,
++                None => hop_limit,
 +            };
              let ip_repr = IpRepr::new(
                  src_addr,

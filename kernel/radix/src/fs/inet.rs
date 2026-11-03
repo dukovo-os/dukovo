@@ -55,14 +55,23 @@
 //! bound to the echo identifier it holds as a datagram socket holds a
 //! port, each made on the interface its first request through it goes
 //! out of.
+//!
+//! A datagram or ping socket that asked for errors (IP_RECVERR), or is
+//! connected, hears the ICMP and ICMPv6 errors about what it sent (ADR
+//! 0345, `net::errors`): one that asked keeps them for `receive_error`,
+//! and its next send or receive fails with each, once; one that did not
+//! hears only those that say its other end cannot be reached at all. Each
+//! datagram and echo request goes with the hop limit the socket had when
+//! it was sent, for traceroute(8) and mtr(8).
 
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::any::Any;
 
 use radix_abi::Status;
 use radix_abi::errors::{File, Kernel};
 use radix_abi::file::SocketOption;
-use radix_abi::network::{Address, AddressFamily, SocketType};
+use radix_abi::network::{Address, AddressFamily, SocketError, SocketType};
 use radix_abi::process::PipeFlags;
 use radix_cap::{ObjectKind, Rights, SlotRef};
 use radix_mm::{Flags, HEAP, Kmalloc};
@@ -76,6 +85,7 @@ use radix_vfs::mount::Location;
 use radix_vfs::{In, Kind as NodeKind, Node, NodeRef, Out, Stat, mem, next_id};
 
 use super::{Description, FileObject, FileRef, pipe};
+use crate::net::errors::{self, Heard, Sink, Watch};
 use crate::net::firewall::{self, Listener, Listening, Owner};
 use crate::net::memory::{self, PingLeases, TcpLeases, UdpLeases};
 use crate::net::ports::{self, Held, Protocol, Versions};
@@ -259,6 +269,29 @@ pub fn address_of(endpoint: Endpoint, v6: bool, scope: u32) -> [u8; Address::SIZ
     bytes
 }
 
+/// What `heard` says, as radix-network(2)'s SocketError, for a socket of
+/// IPv6 if `v6`: its addresses IPv4-mapped for an IPv4 error, as on
+/// Linux.
+pub fn error_report(heard: &Heard, v6: bool) -> [u8; SocketError::SIZE] {
+    let report = &heard.report;
+    let mut bytes = [0; SocketError::SIZE];
+    // Linux's SO_EE_ORIGIN_ICMP and SO_EE_ORIGIN_ICMP6.
+    bytes[SocketError::OFFSET_ORIGIN] = if report.is_v6() { 3 } else { 2 };
+    bytes[SocketError::OFFSET_KIND] = report.kind;
+    bytes[SocketError::OFFSET_CODE] = report.code;
+    bytes[SocketError::OFFSET_INFO..SocketError::OFFSET_INFO + 4]
+        .copy_from_slice(&report.info.to_le_bytes());
+    bytes[SocketError::OFFSET_ERROR..SocketError::OFFSET_ERROR + 8]
+        .copy_from_slice(&heard.error.0.to_le_bytes());
+    let offender = address_of((Some(report.offender), 0), v6, heard.interface);
+    let at = SocketError::OFFSET_OFFENDER;
+    bytes[at..at + Address::SIZE].copy_from_slice(&offender);
+    let destination = address_of((Some(report.remote), report.remote_port), v6, heard.interface);
+    let at = SocketError::OFFSET_DESTINATION;
+    bytes[at..at + Address::SIZE].copy_from_slice(&destination);
+    bytes
+}
+
 /// The memory of a part, lent.
 enum Leases {
     Tcp(TcpLeases),
@@ -328,6 +361,8 @@ struct Options {
     reuse_port: bool,
     /// IP_PKTINFO and IPV6_RECVPKTINFO.
     packet_info: bool,
+    /// IP_RECVERR and IPV6_RECVERR (ADR 0345).
+    receive_errors: bool,
 }
 
 impl Options {
@@ -349,6 +384,7 @@ impl Options {
         multicast_loop: true,
         reuse_port: false,
         packet_info: false,
+        receive_errors: false,
     };
 
     /// Whether a datagram socket shares its port (ADR 0336).
@@ -434,9 +470,19 @@ struct State {
     bounce: Option<Vec<u8, Kmalloc>>,
     /// The multicast groups a datagram socket joined.
     memberships: Vec<Membership, Kmalloc>,
+    /// The ICMP errors a datagram or ping socket heard (ADR 0345), once
+    /// it has been watched.
+    errors: Option<Arc<Sink, Kmalloc>>,
+    /// Whether it is watched for them now.
+    watched: bool,
 }
 
 impl State {
+    /// Takes the error an ICMP error left for its next call, if one.
+    fn take_error(&self) -> Option<Status> {
+        self.errors.as_ref()?.take_error()
+    }
+
     /// The versions of IP it takes: an IPv4 socket's, or an IPv6 one's
     /// that is v6-only, one alone; else both.
     fn versions(&self) -> Versions {
@@ -776,6 +822,8 @@ impl InetSocket {
                 options: Options::DEFAULT,
                 bounce: None,
                 memberships: Vec::new_in(kmalloc()),
+                errors: None,
+                watched: false,
             }),
         })
     }
@@ -898,7 +946,60 @@ impl InetSocket {
         if self.kind == Kind::Datagram && state.may_listen {
             state.listening = firewall::listen(listener(state, Protocol::Udp, versions, port));
         }
+        if self.kind != Kind::Stream && state.options.receive_errors {
+            self.watch(state)?;
+        }
         Ok(())
+    }
+
+    /// Watches it for the ICMP errors about what it sends, as it is now
+    /// (ADR 0345): a datagram or ping socket with a port or identifier
+    /// that asked for errors or is connected; or no longer.
+    fn watch(&self, state: &mut State) -> Result<(), Status> {
+        let wanted =
+            self.kind != Kind::Stream && (state.options.receive_errors || state.peer.is_some());
+        let Some((address, port)) = state.local.filter(|_| wanted) else {
+            if state.watched {
+                errors::unwatch(self.id);
+                state.watched = false;
+            }
+            return Ok(());
+        };
+        let sink = match &state.errors {
+            Some(sink) => sink.clone(),
+            None => state.errors.insert(Sink::new()?).clone(),
+        };
+        let (protocol, versions) = match (self.kind, address) {
+            (Kind::Ping, _) if state.v6 => (Protocol::Ping, Versions::Ipv6),
+            (Kind::Ping, _) => (Protocol::Ping, Versions::Ipv4),
+            (_, None) => (Protocol::Udp, state.versions()),
+            (_, Some(IpAddress::Ipv4(_))) => (Protocol::Udp, Versions::Ipv4),
+            (_, Some(IpAddress::Ipv6(_))) => (Protocol::Udp, Versions::Ipv6),
+        };
+        errors::watch(Watch {
+            socket: self.id,
+            protocol,
+            port,
+            versions,
+            local: address,
+            device: state.options.device,
+            peer: state.peer,
+            queue: state.options.receive_errors,
+            sink,
+        })?;
+        state.watched = true;
+        Ok(())
+    }
+
+    /// Takes the oldest ICMP error it heard that waits (radix-file(2)'s
+    /// `receive_error`, ADR 0345), and says whether it is an IPv6 socket.
+    pub fn receive_error(&self) -> Result<(Heard, bool), Status> {
+        if self.kind == Kind::Stream {
+            return Err(status(Kernel::NotSupported));
+        }
+        let state = self.state.lock();
+        let heard = state.errors.as_ref().and_then(|sink| sink.take());
+        heard.map(|heard| (heard, state.v6)).ok_or(status(Kernel::WouldBlock))
     }
 
     /// Binds it, if it is not, to any address and a port the kernel picks:
@@ -1063,7 +1164,8 @@ impl InetSocket {
             state.peer = Some(to);
             state.scope = scope;
             state.phase = Phase::Connected;
-            return Ok(());
+            // It hears errors about what it sends there from now on.
+            return self.watch(&mut state);
         }
         let timeout = {
             let mut state = self.state.lock();
@@ -1207,6 +1309,9 @@ impl InetSocket {
             if state.shut_write {
                 return pipe::broken(0, false);
             }
+            if let Some(error) = state.take_error() {
+                return Err(error);
+            }
             let connected = state.peer.map(|peer| (peer, state.scope));
             let (to, scope) = to.or(connected).ok_or(status(Kernel::NotConnected))?;
             if to.1 == 0 {
@@ -1272,7 +1377,14 @@ impl InetSocket {
                 IpAddress::Ipv6(_) if bound_to_any => stack.source_for(endpoint.addr),
                 _ => None,
             };
-            let meta = udp::UdpMetadata { local_address: from, ..endpoint.into() };
+            let mut meta = udp::UdpMetadata { local_address: from, ..endpoint.into() };
+            // The hop limit it is sent with now, whatever the socket's is
+            // when it goes.
+            meta.hop_limit = Some(if endpoint.addr.is_multicast() {
+                state.options.multicast_hops.max(1)
+            } else {
+                state.options.time_to_live
+            });
             let socket = stack
                 .socket_mut::<udp::Socket<'static>>(part.handle)
                 .ok_or(status(Kernel::Unreachable))?;
@@ -1304,6 +1416,10 @@ impl InetSocket {
             if state.shut_read {
                 return Ok(Some(Received::of(0, state.peer, state.scope)));
             }
+            // An ICMP error comes before what waits, as on Linux.
+            if let Some(error) = state.take_error() {
+                return Err(error);
+            }
             match self.kind {
                 Kind::Stream if peek => peek_stream(state, out),
                 Kind::Stream => receive_stream(state, out),
@@ -1333,6 +1449,9 @@ impl InetSocket {
             let mut state = self.state.lock();
             if state.shut_write {
                 return pipe::broken(0, false);
+            }
+            if let Some(error) = state.take_error() {
+                return Err(error);
             }
             let connected = state.peer.map(|(ip, _)| (ip, state.scope));
             let (to, scope) = to.or(connected).ok_or(status(Kernel::NotConnected))?;
@@ -1390,7 +1509,8 @@ impl InetSocket {
             let socket = stack
                 .socket_mut::<icmp::Socket<'static>>(part.handle)
                 .ok_or(status(Kernel::Unreachable))?;
-            match socket.send_slice(bounce, to) {
+            // With the hop limit it has now, as a datagram goes.
+            match socket.send_slice_with_hop_limit(bounce, to, state.options.time_to_live) {
                 Ok(()) => {
                     drop(stack);
                     interface.kick();
@@ -1510,7 +1630,31 @@ impl InetSocket {
                 if set.is_some() {
                     return Err(status(Kernel::InvalidArgument));
                 }
-                return Ok(core::mem::replace(&mut state.error, 0));
+                let error = core::mem::replace(&mut state.error, 0);
+                return Ok(if error == 0 {
+                    state.take_error().map_or(0, |error| error.0)
+                } else {
+                    error
+                });
+            }
+            SocketOption::ReceiveErrors => {
+                let old = flag(options.receive_errors);
+                let Some(value) = set else { return Ok(old) };
+                if self.kind == Kind::Stream {
+                    // Taken, and changing nothing: a stream socket hears
+                    // no ICMP errors yet.
+                    options.receive_errors = value != 0;
+                    return Ok(old);
+                }
+                options.receive_errors = value != 0;
+                // As on Linux, those that wait go when it is turned off.
+                if value == 0
+                    && let Some(sink) = &state.errors
+                {
+                    sink.clear();
+                }
+                self.watch(&mut state)?;
+                return Ok(old);
             }
             SocketOption::Kind => {
                 if set.is_some() {
@@ -1691,6 +1835,10 @@ impl InetSocket {
             }
             release_parts(&mut old, false, None);
         }
+        // Its errors are those that come by that interface now.
+        if state.watched {
+            self.watch(state)?;
+        }
         Ok(())
     }
 
@@ -1742,6 +1890,9 @@ impl InetSocket {
             }
             if state.shut_read {
                 events |= poll::READABLE;
+            }
+            if state.errors.as_ref().is_some_and(|sink| sink.has_error()) {
+                events |= poll::ERROR;
             }
             return events;
         }
@@ -2154,6 +2305,9 @@ impl Drop for InetSocket {
         let connected = matches!(state.phase, Phase::Connecting | Phase::Connected);
         let port = state.held.take_if(|_| connected && self.kind == Kind::Stream);
         release_parts(&mut state.parts, connected, port);
+        if state.watched {
+            errors::unwatch(self.id);
+        }
         while let Some(membership) = state.memberships.pop() {
             membership.interface.stack.lock().leave(membership.group);
             membership.interface.kick();

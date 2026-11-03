@@ -32,6 +32,20 @@ PING b.local (192.168.50.2) 56(84) bytes of data.
 rtt min/avg/max/mdev = 0.388/0.400/0.412/0.012 ms
 ```
 
+When a router on the way says a request's time to live ran out, or
+that _destination_ cannot be reached, ping says which router and what,
+as iputils' does, from the ICMP errors the kernel gives its socket
+(IP_RECVERR, ADR 0345):
+
+```
+$ ping -c 1 -t 1 10.77.9.9
+PING 10.77.9.9 (10.77.9.9) 56(84) bytes of data.
+From 10.77.1.1 icmp_seq=1 Time to live exceeded
+```
+
+An error counts as an answer for *-c*: ping stops once each request has
+had a reply or an error, and with *-w* at the first error.
+
 It sends a request each second until it is interrupted, by *Ctrl-C*,
 or until _count_ have gone, and then prints how many were answered, and
 the least, the average and the most time a reply took, and how far they
@@ -97,5 +111,5 @@ failure.
 
 # SEE ALSO
 
-*discover*(1), *discoverd*(8), *ip*(8), *resolved*(8), *ss*(8),
-*systools*(1)
+*discover*(1), *discoverd*(8), *ip*(8), *mtr*(8), *resolved*(8), *ss*(8),
+*systools*(1), *traceroute*(8)

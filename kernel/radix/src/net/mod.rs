@@ -31,6 +31,9 @@
 //! the pollers of every network socket: they look again
 //! ([`generation`], [`changed`]).
 //!
+//! The ICMP and ICMPv6 errors each interface hears about what datagram
+//! and ping sockets sent go to the sockets ([`errors`], ADR 0345).
+//!
 //! Bridges and VLANs are interfaces too, made by programs, whose frames go
 //! through other interfaces' links ([`links`], ADR 0333); each
 //! interface's frames pass through them, and through the firewall
@@ -45,6 +48,7 @@
 //! connection has ended is an [`Orphan`] of its interface, which the
 //! thread takes apart once the connection has gone.
 
+pub mod errors;
 pub mod firewall;
 pub mod links;
 pub mod memory;
@@ -70,7 +74,7 @@ use radix_net::smoltcp::iface::{SocketHandle, SocketStorage};
 use radix_net::smoltcp::socket::{AnySocket, icmp, tcp};
 use radix_net::{
     IpAddress, Ipv4Address, Ipv4Cidr, Ipv6Address, Ipv6Cidr, Link, Loopback, Medium, Memory,
-    PingMemory, Pinger, Stack, TAGGED_FRAME,
+    PingMemory, Pinger, Reporter, Stack, TAGGED_FRAME,
 };
 use radix_nic::Nic;
 use radix_sync::{Mutex, Once};
@@ -887,6 +891,7 @@ fn start_loopback() -> Result<(), &'static str> {
         sockets,
     };
     let mut stack = new_stack(card, memory).ok_or("out of memory")?;
+    stack.set_reporter(Some(Reporter { number: 0, hear: errors::hear }));
     stack.set_ipv4_addresses(&LOOPBACK_OWN);
     stack.set_ipv6_addresses(&[Ipv6Cidr::new(LOOPBACK_IPV6, 128)]);
     let mut name = TextBuf::<16>::new();
@@ -1655,6 +1660,7 @@ fn build(
         stack.set_ipv4(address, gateway);
     }
     stack.set_hooks(Some(links::hooks(index + 1)));
+    stack.set_reporter(Some(Reporter { number: index + 1, hear: errors::hear }));
     interface(name, index + 1, stack, slots).ok_or(Failure::Other("out of memory"))
 }
 

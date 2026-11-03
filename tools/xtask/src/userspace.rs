@@ -215,6 +215,8 @@ pub const STD_LINKS: &[(&str, &str)] = &[
     ("system/commands/timed", "systools"),
     ("system/commands/timedatectl", "systools"),
     ("system/commands/top", "systools"),
+    ("system/commands/traceroute", "systools"),
+    ("system/commands/traceroute6", "systools"),
     ("system/commands/tree", "systools"),
     ("system/commands/umount", "systools"),
     ("system/commands/unlock", "systools"),

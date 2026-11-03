@@ -21,7 +21,10 @@
 // ping sockets, IP_PKTINFO and IPV6_RECVPKTINFO, ports shared with
 // SO_REUSEPORT, multicast groups on lo, and getifaddrs (ADR 0336).
 // MSG_PEEK on streams, datagrams and ping sockets, and getnameinfo's
-// numeric names with their scopes (ADR 0341). And
+// numeric names with their scopes (ADR 0341). ICMP errors (ADR 0345):
+// a connected UDP socket's ECONNREFUSED, by recv, send, poll's POLLERR
+// and SO_ERROR, an unconnected one hearing nothing, and IP_RECVERR's and
+// IPV6_RECVERR's queue of errors, read with MSG_ERRQUEUE, and IP_TOS. And
 // the network capabilities: a child with none cannot make a socket
 // (EACCES), one that may only connect out cannot bind a port or listen,
 // or join or send to a group, one with the local right alone reaches
@@ -33,6 +36,7 @@
 #include <arpa/inet.h>
 #include <fcntl.h>
 #include <ifaddrs.h>
+#include <linux/errqueue.h>
 #include <net/if.h>
 #include <netdb.h>
 #include <netinet/in.h>
@@ -600,6 +604,178 @@ static void errors(void) {
 	close(d);
 }
 
+// A port of 127.0.0.1's that no socket has.
+static unsigned short closed_port(void) {
+	int fd = socket(AF_INET, SOCK_DGRAM, 0);
+	struct sockaddr_in at = loopback(0);
+	CHECK(fd >= 0 && bind(fd, (struct sockaddr *)&at, sizeof(at)) == 0);
+	unsigned short port = port_of(fd);
+	close(fd);
+	return port;
+}
+
+// Waits up to 5 s for an error on `fd`.
+static void waiting_for_error(int fd) {
+	struct pollfd p = {fd, POLLIN, 0};
+	CHECK(poll(&p, 1, 5000) == 1 && (p.revents & POLLERR));
+}
+
+// The error IP_RECVERR or IPV6_RECVERR queued on `fd`, with what it
+// quotes in `data` (its length the result) and where it was about in
+// `to`.
+struct queued {
+	struct sock_extended_err ee;
+	union {
+		struct sockaddr_in in;
+		struct sockaddr_in6 in6;
+	} offender;
+};
+
+static ssize_t queued_error(int fd, char *data, size_t size, void *to, socklen_t *to_len,
+		int level, int type, struct queued *error, int *flags) {
+	struct iovec iov = {data, size};
+	union {
+		struct cmsghdr align;
+		char space[CMSG_SPACE(sizeof(struct queued))];
+	} control;
+	struct msghdr hdr;
+	memset(&hdr, 0, sizeof(hdr));
+	hdr.msg_name = to;
+	hdr.msg_namelen = *to_len;
+	hdr.msg_iov = &iov;
+	hdr.msg_iovlen = 1;
+	hdr.msg_control = control.space;
+	hdr.msg_controllen = sizeof(control.space);
+	ssize_t got = recvmsg(fd, &hdr, MSG_ERRQUEUE);
+	if(got < 0)
+		return got;
+	*to_len = hdr.msg_namelen;
+	*flags = hdr.msg_flags;
+	struct cmsghdr *c = CMSG_FIRSTHDR(&hdr);
+	CHECK(c && c->cmsg_level == level && c->cmsg_type == type);
+	CHECK(c->cmsg_len >= CMSG_LEN(sizeof(struct sock_extended_err)));
+	memset(error, 0, sizeof(*error));
+	memcpy(error, CMSG_DATA(c), c->cmsg_len - CMSG_LEN(0));
+	CHECK(!CMSG_NXTHDR(&hdr, c));
+	return got;
+}
+
+// ICMP errors (ADR 0345). A connected UDP socket learns that nothing
+// listens where it sends, as on Linux: its next recv or send fails with
+// ECONNREFUSED, once, and poll says POLLERR until then, or SO_ERROR
+// takes it. An unconnected socket hears of it only with IP_RECVERR,
+// which queues each error with what it was about, for MSG_ERRQUEUE.
+static void icmp_errors(void) {
+	char buffer[64];
+	unsigned short closed = closed_port();
+	struct sockaddr_in there = loopback(closed);
+	int fd = socket(AF_INET, SOCK_DGRAM, 0);
+	CHECK(fd >= 0);
+	CHECK(connect(fd, (struct sockaddr *)&there, sizeof(there)) == 0);
+	CHECK(send(fd, "probe", 5, 0) == 5);
+	waiting_for_error(fd);
+	CHECK_ERROR(recv(fd, buffer, sizeof(buffer), 0), ECONNREFUSED);
+	CHECK_ERROR(recv(fd, buffer, sizeof(buffer), MSG_DONTWAIT), EAGAIN);
+	// The error fails a send too, and SO_ERROR takes it as well.
+	CHECK(send(fd, "probe", 5, 0) == 5);
+	waiting_for_error(fd);
+	CHECK_ERROR(send(fd, "again", 5, 0), ECONNREFUSED);
+	CHECK(send(fd, "probe", 5, 0) == 5);
+	waiting_for_error(fd);
+	int value = -1;
+	socklen_t size = sizeof(value);
+	CHECK(getsockopt(fd, SOL_SOCKET, SO_ERROR, &value, &size) == 0 && value == ECONNREFUSED);
+	CHECK(getsockopt(fd, SOL_SOCKET, SO_ERROR, &value, &size) == 0 && value == 0);
+	// Without IP_RECVERR, nothing waits on the queue.
+	CHECK_ERROR(recv(fd, buffer, sizeof(buffer), MSG_ERRQUEUE), EAGAIN);
+	close(fd);
+
+	// Unconnected, it hears nothing without IP_RECVERR.
+	fd = socket(AF_INET, SOCK_DGRAM, 0);
+	CHECK(fd >= 0);
+	CHECK(sendto(fd, "probe", 5, 0, (struct sockaddr *)&there, sizeof(there)) == 5);
+	struct pollfd p = {fd, POLLIN, 0};
+	CHECK(poll(&p, 1, 300) == 0);
+	CHECK_ERROR(recv(fd, buffer, sizeof(buffer), MSG_DONTWAIT), EAGAIN);
+	// With it, each error waits with the datagram's data, where it went,
+	// and who said so.
+	value = 1;
+	CHECK(setsockopt(fd, SOL_IP, IP_RECVERR, &value, sizeof(value)) == 0);
+	value = -1;
+	size = sizeof(value);
+	CHECK(getsockopt(fd, SOL_IP, IP_RECVERR, &value, &size) == 0 && value == 1);
+	CHECK(sendto(fd, "probe", 5, 0, (struct sockaddr *)&there, sizeof(there)) == 5);
+	waiting_for_error(fd);
+	struct queued error;
+	struct sockaddr_in to;
+	socklen_t to_len = sizeof(to);
+	int flags = 0;
+	CHECK(queued_error(fd, buffer, sizeof(buffer), &to, &to_len, SOL_IP, IP_RECVERR, &error, &flags)
+			== 5);
+	CHECK(!memcmp(buffer, "probe", 5) && (flags & MSG_ERRQUEUE) && !(flags & MSG_TRUNC));
+	CHECK(to_len == sizeof(to) && to.sin_family == AF_INET && ntohs(to.sin_port) == closed);
+	CHECK(to.sin_addr.s_addr == htonl(INADDR_LOOPBACK));
+	CHECK(error.ee.ee_errno == ECONNREFUSED && error.ee.ee_origin == SO_EE_ORIGIN_ICMP);
+	CHECK(error.ee.ee_type == 3 && error.ee.ee_code == 3 && error.ee.ee_info == 0);
+	struct sockaddr_in *offender = (struct sockaddr_in *)SO_EE_OFFENDER(&error.ee);
+	CHECK(offender->sin_family == AF_INET && offender->sin_addr.s_addr == htonl(INADDR_LOOPBACK));
+	// Taking it from the queue takes the error a call would fail with.
+	CHECK_ERROR(recv(fd, buffer, sizeof(buffer), MSG_DONTWAIT), EAGAIN);
+	CHECK_ERROR(recv(fd, buffer, sizeof(buffer), MSG_ERRQUEUE), EAGAIN);
+	// What does not fit is cut short.
+	CHECK(sendto(fd, "probe", 5, 0, (struct sockaddr *)&there, sizeof(there)) == 5);
+	waiting_for_error(fd);
+	to_len = sizeof(to);
+	CHECK(queued_error(fd, buffer, 2, &to, &to_len, SOL_IP, IP_RECVERR, &error, &flags) == 2);
+	CHECK(!memcmp(buffer, "pr", 2) && (flags & MSG_TRUNC));
+	// Turning IP_RECVERR off throws away what waits, but not the error
+	// the next call fails with, as on Linux.
+	CHECK(sendto(fd, "probe", 5, 0, (struct sockaddr *)&there, sizeof(there)) == 5);
+	waiting_for_error(fd);
+	value = 0;
+	CHECK(setsockopt(fd, SOL_IP, IP_RECVERR, &value, sizeof(value)) == 0);
+	CHECK_ERROR(recv(fd, buffer, sizeof(buffer), MSG_ERRQUEUE), EAGAIN);
+	CHECK_ERROR(recv(fd, buffer, sizeof(buffer), MSG_DONTWAIT), ECONNREFUSED);
+	CHECK_ERROR(recv(fd, buffer, sizeof(buffer), MSG_DONTWAIT), EAGAIN);
+	// Packets go with no type of service but the default.
+	value = -1;
+	size = sizeof(value);
+	CHECK(getsockopt(fd, SOL_IP, IP_TOS, &value, &size) == 0 && value == 0);
+	value = 0;
+	CHECK(setsockopt(fd, SOL_IP, IP_TOS, &value, sizeof(value)) == 0);
+	value = 0x10;
+	CHECK_ERROR(setsockopt(fd, SOL_IP, IP_TOS, &value, sizeof(value)), ENOPROTOOPT);
+	close(fd);
+
+	// IPv6, to a port of ::1's that no socket has.
+	int six = socket(AF_INET6, SOCK_DGRAM, 0);
+	CHECK(six >= 0);
+	value = 1;
+	CHECK(setsockopt(six, SOL_IPV6, IPV6_RECVERR, &value, sizeof(value)) == 0);
+	struct sockaddr_in6 there6;
+	memset(&there6, 0, sizeof(there6));
+	there6.sin6_family = AF_INET6;
+	there6.sin6_addr = in6addr_loopback;
+	there6.sin6_port = htons(closed);
+	CHECK(sendto(six, "probe6", 6, 0, (struct sockaddr *)&there6, sizeof(there6)) == 6);
+	waiting_for_error(six);
+	struct sockaddr_in6 to6;
+	socklen_t to6_len = sizeof(to6);
+	CHECK(queued_error(six, buffer, sizeof(buffer), &to6, &to6_len, SOL_IPV6, IPV6_RECVERR, &error,
+			&flags) == 6);
+	CHECK(!memcmp(buffer, "probe6", 6) && to6_len == sizeof(to6));
+	CHECK(to6.sin6_family == AF_INET6 && IN6_IS_ADDR_LOOPBACK(&to6.sin6_addr));
+	CHECK(ntohs(to6.sin6_port) == closed);
+	CHECK(error.ee.ee_errno == ECONNREFUSED && error.ee.ee_origin == SO_EE_ORIGIN_ICMP6);
+	CHECK(error.ee.ee_type == 1 && error.ee.ee_code == 4);
+	struct sockaddr_in6 *offender6 = (struct sockaddr_in6 *)SO_EE_OFFENDER(&error.ee);
+	CHECK(offender6->sin6_family == AF_INET6 && IN6_IS_ADDR_LOOPBACK(&offender6->sin6_addr));
+	value = -1;
+	size = sizeof(value);
+	CHECK(getsockopt(six, SOL_IPV6, IPV6_TCLASS, &value, &size) == 0 && value == 0);
+	close(six);
+}
+
 // lo's name and number, as /kernel/class/net gives them, and a socket
 // bound to it with SO_BINDTODEVICE, which still reaches 127.0.0.1.
 // AF_INET6 over ::1 (ADR 0332).
@@ -1157,6 +1333,7 @@ int main(void) {
 	RUN(peeking);
 	RUN(numeric_names);
 	RUN(errors);
+	RUN(icmp_errors);
 	RUN(ipv6);
 	RUN(interfaces);
 	RUN(ping_sockets);
