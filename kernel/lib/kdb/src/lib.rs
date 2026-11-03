@@ -451,6 +451,68 @@ impl<const N: usize> LineEditor<N> {
     }
 }
 
+/// Gathers what is written into lines of up to `N` bytes and hands each
+/// to `out` whole, so that what else writes to the same console, such as
+/// the kernel log from another CPU while `kdb` waits at the end of boot,
+/// lands between `kdb`'s lines and never inside one. A piece that does not
+/// fit after what waits goes out after it; one longer than `N` goes out
+/// alone. What waits goes out when the writer is dropped.
+pub struct Lines<F: FnMut(&str), const N: usize> {
+    bytes: [u8; N],
+    len: usize,
+    out: F,
+}
+
+impl<F: FnMut(&str), const N: usize> Lines<F, N> {
+    /// A writer that hands its lines to `out`.
+    pub fn new(out: F) -> Self {
+        Lines { bytes: [0; N], len: 0, out }
+    }
+
+    /// Hands on what waits.
+    pub fn flush(&mut self) {
+        if self.len == 0 {
+            return;
+        }
+        // Only whole `&str`s are copied in, so the bytes are UTF-8.
+        if let Ok(text) = core::str::from_utf8(&self.bytes[..self.len]) {
+            (self.out)(text);
+        }
+        self.len = 0;
+    }
+
+    fn push(&mut self, piece: &str) {
+        if self.len + piece.len() > N {
+            self.flush();
+        }
+        if piece.len() > N {
+            (self.out)(piece);
+            return;
+        }
+        self.bytes[self.len..self.len + piece.len()].copy_from_slice(piece.as_bytes());
+        self.len += piece.len();
+    }
+}
+
+impl<F: FnMut(&str), const N: usize> fmt::Write for Lines<F, N> {
+    fn write_str(&mut self, mut text: &str) -> fmt::Result {
+        while let Some(end) = text.find('\n') {
+            let (line, rest) = text.split_at(end + 1);
+            self.push(line);
+            self.flush();
+            text = rest;
+        }
+        self.push(text);
+        Ok(())
+    }
+}
+
+impl<F: FnMut(&str), const N: usize> Drop for Lines<F, N> {
+    fn drop(&mut self) {
+        self.flush();
+    }
+}
+
 /// Writes a hex dump of `bytes`, which start at `address`: 16 bytes per
 /// line with their printable ASCII.
 pub fn write_hex_dump(out: &mut dyn fmt::Write, address: u64, bytes: &[u8]) -> fmt::Result {
@@ -590,5 +652,57 @@ mod tests {
         assert_eq!(parse_number("0x1_0"), Some(16));
         assert_eq!(parse_address("dead_beef"), Some(0xdead_beef));
         assert_eq!(parse_address("ffffffffffffffffff"), None);
+    }
+
+    /// What a [`Lines`] of `N` bytes hands on for `write`, write by write.
+    fn gathered<const N: usize>(write: impl FnOnce(&mut dyn fmt::Write)) -> Vec<String> {
+        let mut writes = Vec::new();
+        {
+            let mut lines = Lines::<_, N>::new(|text: &str| writes.push(text.to_owned()));
+            write(&mut lines);
+        }
+        writes
+    }
+
+    #[test]
+    fn lines_go_out_whole() {
+        // `format_args!` writes "2", " CPUs, timer at ", "100" and " Hz";
+        // they go out as one line, which nothing can land inside.
+        let writes = gathered::<64>(|out| {
+            writeln!(out, "{} CPUs, timer at {} Hz", 2, 100).unwrap();
+            write!(out, "  cpu{}: online", 0).unwrap();
+            writeln!(out).unwrap();
+        });
+        assert_eq!(writes, ["2 CPUs, timer at 100 Hz\n", "  cpu0: online\n"]);
+        // Two lines in one piece go out one at a time; the end of an
+        // unfinished line goes out when the writer is dropped.
+        let writes = gathered::<64>(|out| out.write_str("one\ntwo\nthree").unwrap());
+        assert_eq!(writes, ["one\n", "two\n", "three"]);
+    }
+
+    #[test]
+    fn long_lines_go_out_in_order() {
+        // A piece that does not fit goes after what waits, and one longer
+        // than the buffer alone; nothing is lost or reordered, and no
+        // character is split.
+        let writes = gathered::<8>(|out| {
+            out.write_str("abc").unwrap();
+            out.write_str("défgh").unwrap();
+            out.write_str("0123456789").unwrap();
+            out.write_str("z\n").unwrap();
+        });
+        assert_eq!(writes, ["abc", "défgh", "0123456789", "z\n"]);
+        // A hex dump's line, written in many pieces, goes out whole.
+        let mut whole = String::new();
+        write_hex_dump(&mut whole, 0x1000, b"Radix kernel\x00\x01\x02\x03AB").unwrap();
+        let dump = gathered::<128>(|out| {
+            write_hex_dump(out, 0x1000, b"Radix kernel\x00\x01\x02\x03AB").unwrap();
+        });
+        assert_eq!(dump, whole.split_inclusive('\n').collect::<Vec<_>>());
+        // With less room than a line, it still all goes out, in order.
+        let mut short = String::new();
+        write_hex_dump(&mut short, 0x1000, b"Radix").unwrap();
+        let small = gathered::<16>(|out| write_hex_dump(out, 0x1000, b"Radix").unwrap());
+        assert_eq!(small.concat(), short);
     }
 }
