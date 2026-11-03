@@ -48,6 +48,7 @@
 //! connection has ended is an [`Orphan`] of its interface, which the
 //! thread takes apart once the connection has gone.
 
+pub mod capture;
 pub mod errors;
 pub mod firewall;
 pub mod links;
@@ -400,6 +401,15 @@ impl Interface {
         }
     }
 
+    /// Polls its stack now, in the calling thread, as the loopback
+    /// interface's work is done: for what a socket about to close has
+    /// waiting, which its thread would find gone. Called without its
+    /// stack's lock.
+    pub fn send_now(&self) {
+        self.poll_here();
+        tunnel::wake_given();
+    }
+
     /// Whether it was taken away, a bridge or VLAN.
     pub fn gone(&self) -> bool {
         self.gone.load(Ordering::Acquire)
@@ -432,6 +442,7 @@ impl Interface {
             (changed, due, self.wake_at.load(Ordering::Relaxed))
         };
         links::wake_given();
+        capture::wake_seen();
         firewall::log_dropped();
         if changed {
             self::changed();
@@ -892,6 +903,7 @@ fn start_loopback() -> Result<(), &'static str> {
     };
     let mut stack = new_stack(card, memory).ok_or("out of memory")?;
     stack.set_reporter(Some(Reporter { number: 0, hear: errors::hear }));
+    stack.set_tap(Some(capture::tap(0)));
     stack.set_ipv4_addresses(&LOOPBACK_OWN);
     stack.set_ipv6_addresses(&[Ipv6Cidr::new(LOOPBACK_IPV6, 128)]);
     let mut name = TextBuf::<16>::new();
@@ -1683,6 +1695,7 @@ fn build(
     }
     stack.set_hooks(Some(links::hooks(index + 1)));
     stack.set_reporter(Some(Reporter { number: index + 1, hear: errors::hear }));
+    stack.set_tap(Some(capture::tap(index + 1)));
     interface(name, index + 1, stack, slots).ok_or(Failure::Other("out of memory"))
 }
 
@@ -1787,6 +1800,7 @@ fn run(number: usize) {
         };
         links::wake_given();
         tunnel::wake_given();
+        capture::wake_seen();
         firewall::log_dropped();
         if interface.gone() {
             return;

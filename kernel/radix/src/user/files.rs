@@ -1522,6 +1522,23 @@ pub fn file_method(user: &UserRef, found: &Found, label: u32, args: &[u64; 8]) -
                     fs::framebuffer::control(file, a.request, may_write)?;
                     0
                 }
+                Target::Capture => {
+                    let size = a.size;
+                    let copy_in = |bytes: &mut [u8]| {
+                        if size < bytes.len() as u64 || !Arch::copy_from_user(bytes, a.buffer) {
+                            return Err(error(Kernel::BadAddress));
+                        }
+                        Ok(())
+                    };
+                    let copy_out = |bytes: &[u8]| {
+                        if size < bytes.len() as u64 || !Arch::copy_to_user(a.buffer, bytes) {
+                            return Err(error(Kernel::BadAddress));
+                        }
+                        Ok(())
+                    };
+                    fs::capture::control(file, a.request, a.size, copy_in, copy_out)?;
+                    0
+                }
                 Target::Node if matches!(a.request, file::CLONE | file::CLONE_RANGE) => {
                     clone_file(user, found, file, &a)?;
                     0
@@ -2149,6 +2166,8 @@ enum Target<'a> {
     Fuse,
     /// The program's end of a tunnel.
     Tunnel,
+    /// A packet capture's file.
+    Capture,
     /// A file of the tree, through its node.
     Node,
 }
@@ -2174,6 +2193,8 @@ fn target(file: &FileObject) -> Target<'_> {
         Target::Fuse
     } else if file.is_tunnel() {
         Target::Tunnel
+    } else if file.is_capture() {
+        Target::Capture
     } else {
         Target::Node
     }
@@ -2234,6 +2255,7 @@ fn read_special(
         Target::Mouse => fs::mouse::read(file, out, non_blocking).map(|n| n as u64),
         Target::Fuse => fs::fuse::read(file, out, non_blocking).map(|n| n as u64),
         Target::Tunnel => fs::tunnel::read(file, out, non_blocking).map(|n| n as u64),
+        Target::Capture => fs::capture::read(file, out, non_blocking).map(|n| n as u64),
         Target::Framebuffer | Target::Node => Ok(0),
     }
 }
@@ -2296,6 +2318,7 @@ fn write_special(
         Target::Kmsg => fs::kmsg::write(data).map(|n| n as u64),
         Target::Fuse => fs::fuse::write(file, data).map(|n| n as u64),
         Target::Tunnel => fs::tunnel::write(file, data).map(|n| n as u64),
+        Target::Capture => Err(error(Kernel::NotSupported)),
         Target::Framebuffer if offset == file::CURRENT => {
             let mut at = file.offset.lock();
             let written = fs::framebuffer::write(file, *at, data)? as u64;

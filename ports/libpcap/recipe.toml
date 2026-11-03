@@ -1,0 +1,28 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# libpcap (ADR 0346): the packet capture library tcpdump is built on, as a
+# static library, its headers and its pcap-config in the sysroot, with
+# pcap-radix.c, this port's, as its capture on Radix, and the manual
+# pages of its filters, link types, timestamps and capture files in the
+# image. The Lawrence Berkeley Laboratory's and the University of
+# California's code is under their BSD licenses, some with the clause on
+# advertising (the University rescinded its own in 1999); others' files
+# are BSD-3-Clause, BSD-2-Clause and BSD-4-Clause, and ieee80211.h is
+# BSD-3-Clause or GPL-2.0-only. LicenseRef-libpcap-notices keeps the
+# notice of every file the build compiles, as the files have it: some
+# are not on the SPDX License List (the Computer Systems Engineering
+# Group's, Juniper's, Carnegie Mellon's). pcap-radix.c and the patches
+# are Dukovo's. The release archive is libpcap's, from Ubuntu's pool,
+# which keeps it unchanged.
+name = "libpcap"
+version = "1.10.7"
+summary = "libpcap, the packet capture library"
+license = "BSD-4-Clause-Shortened AND BSD-4-Clause-UC AND BSD-4-Clause AND BSD-3-Clause AND BSD-2-Clause AND (BSD-3-Clause OR GPL-2.0-only) AND LicenseRef-libpcap-notices AND (Apache-2.0 OR MIT)"
+homepage = "https://www.tcpdump.org/"
+depends = ["mlibc"]
+notices = ["LICENSE"]
+
+[source]
+url = "https://archive.ubuntu.com/ubuntu/pool/main/libp/libpcap/libpcap_1.10.7.orig.tar.xz"
+sha256 = "68fa62cffb974f4275641ce14c2e2d75739251f30e00e6a0900903b247d76a03"

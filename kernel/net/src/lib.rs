@@ -41,6 +41,14 @@
 //! unreachable" among them, go to the kernel's [`Reporter`] as
 //! [`reports`] reads them (ADR 0345), for it to give the sockets.
 //!
+//! While a packet capture looks at an interface, tcpdump(8)'s, its
+//! [`Tap`] sees each frame it receives, before anything above it takes
+//! it, and each it sends, as Linux's packet sockets do (ADR 0346); the
+//! capture's [`bpf`] filter picks those it keeps. A loopback packet is
+//! seen once, as it is received. A TCP connection on the loopback link
+//! sends its bytes in packets while the loopback interface is looked at,
+//! for them to be seen.
+//!
 //! [`Pinger`] sends ICMP echo requests and matches their replies, for
 //! the kernel's own checks of a link (`selftest=net`). The stack itself
 //! answers echo requests to its addresses.
@@ -58,6 +66,7 @@
 #![forbid(unsafe_code)]
 
 mod across;
+pub mod bpf;
 pub mod filter;
 pub mod ipv6;
 pub mod layer2;
@@ -75,6 +84,8 @@ mod tests_multicast;
 #[cfg(test)]
 mod tests_reports;
 #[cfg(test)]
+mod tests_tap;
+#[cfg(test)]
 mod tests_tunnel;
 
 pub use across::{Across, OtherEnd};
@@ -88,6 +99,7 @@ pub use smoltcp::wire::{
 pub use sockets::{ConnectError, Shown, TcpMemory, UdpMemory};
 
 use core::cell::{Cell, RefCell};
+use core::sync::atomic::{AtomicBool, Ordering};
 
 use managed::ManagedSlice;
 use smoltcp::iface::{Config, Interface, PollResult, SocketHandle, SocketSet, SocketStorage};
@@ -184,6 +196,39 @@ pub struct Reporter {
     pub hear: fn(number: usize, report: &Report),
 }
 
+/// Who sees an interface's frames as they come and go (ADR 0346): the
+/// kernel's packet captures. It is told the interface's number, and
+/// called with the stack's lock held, as the stack polls, while
+/// `watched` says a capture looks at the interface.
+#[derive(Clone, Copy)]
+pub struct Tap {
+    /// The interface's number.
+    pub number: usize,
+    /// Whether a capture looks at the interface: looked at for each
+    /// frame, so that one no capture looks at costs a load.
+    pub watched: &'static AtomicBool,
+    /// Sees `frame`, of the link's `medium`, which the interface sent if
+    /// `outgoing` and received otherwise.
+    pub see: fn(number: usize, frame: &[u8], medium: Medium, outgoing: bool),
+}
+
+impl Tap {
+    /// Has the tap see `frame`, if a capture looks at its interface.
+    #[inline]
+    fn saw(tap: Option<&Tap>, frame: &[u8], medium: Medium, outgoing: bool) {
+        if let Some(tap) = tap
+            && tap.watched.load(Ordering::Relaxed)
+        {
+            (tap.see)(tap.number, frame, medium, outgoing);
+        }
+    }
+
+    /// Whether a capture looks at the interface of `tap`.
+    fn watching(tap: Option<&Tap>) -> bool {
+        tap.is_some_and(|tap| tap.watched.load(Ordering::Relaxed))
+    }
+}
+
 /// The most addresses an interface has, as smoltcp keeps them.
 const ADDRESSES: usize = 16;
 
@@ -251,6 +296,8 @@ pub struct Stack<L: Link> {
     joined: [Option<(IpAddress, u32)>; GROUPS],
     /// Who hears the errors it receives.
     reporter: Option<Reporter>,
+    /// Who sees its frames.
+    tap: Option<Tap>,
     /// Its addresses, the first `owned`, which errors must come to: a
     /// copy of smoltcp's, which a poll has lent to it.
     own: [IpAddress; ADDRESSES],
@@ -351,6 +398,9 @@ struct Phy<'a, L: Link> {
     flows: Option<&'a RefCell<filter::Flows>>,
     /// Who hears the errors it receives.
     hearing: Option<Hearing<'a>>,
+    /// Who sees its frames: the stack's, lent, which keeps the tokens
+    /// small.
+    tap: Option<&'a Tap>,
 }
 
 impl<'a, L: Link> Phy<'a, L> {
@@ -372,6 +422,7 @@ impl<'a, L: Link> Phy<'a, L> {
             hooks: None,
             flows: None,
             hearing: None,
+            tap: None,
         }
     }
 }
@@ -380,7 +431,7 @@ impl<'a, L: Link> Phy<'a, L> {
 /// (counted as it is read).
 enum Received<'a> {
     Copied(&'a [u8]),
-    InPlace(loopback::Oldest<'a>, &'a Counted, Option<Hearing<'a>>),
+    InPlace(loopback::Oldest<'a>, &'a Counted, Option<Hearing<'a>>, Option<&'a Tap>),
 }
 
 /// A frame to send: written to the stack's buffer for the card to copy, or
@@ -394,6 +445,7 @@ enum Sending<'a, L: Link> {
         counted: &'a Counted,
         /// The datagrams sent lately, which this one joins, at `now`.
         flows: Option<(&'a RefCell<filter::Flows>, u64)>,
+        tap: Option<&'a Tap>,
     },
     InPlace {
         link: &'a mut Loopback,
@@ -411,8 +463,9 @@ impl phy::RxToken for Received<'_> {
     fn consume<R, F: FnOnce(&[u8]) -> R>(self, f: F) -> R {
         match self {
             Received::Copied(frame) => f(frame),
-            Received::InPlace(packet, counted, hearing) => packet.read(|packet| {
+            Received::InPlace(packet, counted, hearing, tap) => packet.read(|packet| {
                 counted.received(packet.len());
+                Tap::saw(tap, packet, Medium::Ip, false);
                 if let Some(hearing) = hearing {
                     hearing.hear(packet, Medium::Ip, counted);
                 }
@@ -444,7 +497,7 @@ fn counted_write<R>(
 impl<L: Link> phy::TxToken for Sending<'_, L> {
     fn consume<R, F: FnOnce(&mut [u8]) -> R>(self, len: usize, f: F) -> R {
         match self {
-            Sending::Copied { link, buffer, counted, flows } => {
+            Sending::Copied { link, buffer, counted, flows, tap } => {
                 // smoltcp asks for no more than the capabilities' largest
                 // frame, which is no longer than the buffer. Were it to ask
                 // for more, a frame cut short would be wrong: it is
@@ -455,6 +508,7 @@ impl<L: Link> phy::TxToken for Sending<'_, L> {
                 let result = f(frame);
                 if fits && link.send(frame) {
                     counted.sent(len);
+                    Tap::saw(tap, frame, link.medium(), true);
                     if let Some((flows, now)) = flows {
                         flows.borrow_mut().sent(frame, link.medium(), now);
                     }
@@ -490,17 +544,20 @@ impl<L: Link> phy::Device for Phy<'_, L> {
         if self.in_place {
             let (packet, answer) = self.link.loopback()?.oldest()?;
             let answer = Sending::Answer { answer, spare: self.transmit, counted };
-            return Some((Received::InPlace(packet, counted, self.hearing), answer));
+            return Some((Received::InPlace(packet, counted, self.hearing, self.tap), answer));
         }
         let len = loop {
             let len = self.link.receive(self.receive)?;
             let len = len.min(self.receive.len());
             counted.received(len);
             let frame = &self.receive[..len];
+            // Seen before anything takes it, as Linux's captures see a
+            // frame its firewall drops.
+            let medium = self.link.medium();
+            Tap::saw(self.tap, frame, medium, false);
             let Some(hooks) = self.hooks else { break len };
             // A VLAN's or a bridge's, or one the firewall keeps out, goes
             // no further. A tunnel's packets are for its stack alone.
-            let medium = self.link.medium();
             if medium == Medium::Ethernet && (hooks.sift)(hooks.number, frame) {
                 continue;
             }
@@ -520,7 +577,9 @@ impl<L: Link> phy::Device for Phy<'_, L> {
             hearing.hear(&self.receive[..len], self.link.medium(), counted);
         }
         let flows = self.flows.map(|flows| (flows, self.now));
-        let sending = Sending::Copied { link: self.link, buffer: self.transmit, counted, flows };
+        let tap = self.tap;
+        let sending =
+            Sending::Copied { link: self.link, buffer: self.transmit, counted, flows, tap };
         Some((Received::Copied(&self.receive[..len]), sending))
     }
 
@@ -536,7 +595,8 @@ impl<L: Link> phy::Device for Phy<'_, L> {
         }
         if self.link.can_send() {
             let flows = self.flows.map(|flows| (flows, self.now));
-            Some(Sending::Copied { link: self.link, buffer: self.transmit, counted, flows })
+            let tap = self.tap;
+            Some(Sending::Copied { link: self.link, buffer: self.transmit, counted, flows, tap })
         } else {
             None
         }
@@ -621,6 +681,7 @@ impl<L: Link> Stack<L> {
             flows: RefCell::default(),
             joined: [None; GROUPS],
             reporter: None,
+            tap: None,
             own: [IpAddress::Ipv4(Ipv4Address::UNSPECIFIED); ADDRESSES],
             owned: 0,
         }
@@ -636,6 +697,17 @@ impl<L: Link> Stack<L> {
     /// through none.
     pub fn set_hooks(&mut self, hooks: Option<Hooks>) {
         self.hooks = hooks;
+    }
+
+    /// Has `tap` see the interface's frames from now on, while a capture
+    /// looks at it, or none.
+    pub fn set_tap(&mut self, tap: Option<Tap>) {
+        self.tap = tap;
+    }
+
+    /// Whether a capture looks at the interface now.
+    pub fn watched(&self) -> bool {
+        Tap::watching(self.tap.as_ref())
     }
 
     /// Gives the interface `address` (with its prefix) as its only IPv4
@@ -947,6 +1019,7 @@ impl<L: Link> Stack<L> {
                 own: &self.own[..self.owned],
                 verify,
             });
+            phy.tap = self.tap.as_ref();
             if phy.link.medium() == Medium::Ethernet {
                 phy.ipv6 = Some(&mut self.ipv6);
             }
@@ -958,11 +1031,12 @@ impl<L: Link> Stack<L> {
             }
         }
         if self.ipv6.enabled() && self.link.medium() == Medium::Ethernet {
-            let (link, counted) = (&mut self.link, &self.counted);
+            let (link, counted, tap) = (&mut self.link, &self.counted, self.tap.as_ref());
             self.ipv6.poll(now_ns, &mut |frame| {
                 let sent = link.can_send() && link.send(frame);
                 if sent {
                     counted.sent(frame.len());
+                    Tap::saw(tap, frame, Medium::Ethernet, true);
                 } else {
                     counted.dropped();
                 }
@@ -984,6 +1058,7 @@ impl<L: Link> Stack<L> {
             let frame = &self.transmit[..len.min(self.transmit.len())];
             if self.link.send(frame) {
                 self.counted.sent(frame.len());
+                Tap::saw(self.tap.as_ref(), frame, self.link.medium(), true);
             } else {
                 self.counted.dropped();
             }

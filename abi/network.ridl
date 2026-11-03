@@ -44,6 +44,12 @@
 //! It makes tunnels too, interfaces whose IP packets a program carries,
 //! as wgd(8) carries WireGuard's (`add_link`), and opens them for that
 //! program (`open_tunnel`, ADR 0339).
+//!
+//! And it opens packet captures (`open_capture`, ADR 0346): files whose
+//! reads take the frames an interface receives and sends, those a
+//! classic BPF filter picks, for tcpdump(8) and the rest of libpcap's
+//! programs, as Linux's packet sockets and the BSDs' BPF devices give
+//! them.
 
 module network;
 
@@ -204,9 +210,78 @@ enum LinkKind: u32 {
     tunnel = 3;
 }
 
+/// The most bytes of each frame a packet capture keeps: libpcap's
+/// MAXIMUM_SNAPLEN, tcpdump(8)'s default snap length.
+const CAPTURE_SNAP_MAX: u64 = 262144;
+/// The fewest bytes of frames not yet read a packet capture keeps.
+const CAPTURE_BUFFER_MIN: u64 = 65536;
+/// The most.
+const CAPTURE_BUFFER_MAX: u64 = 67108864;
+/// What it keeps when `open_capture` is given 0: libpcap's default on
+/// Linux, 2 MiB.
+const CAPTURE_BUFFER_DEFAULT: u64 = 2097152;
+/// The most packet captures open at once, between all programs.
+const CAPTURES_MAX: u64 = 16;
+
+/// radix-file(2)'s `control` request that gives a packet capture's file
+/// a filter: `buffer` holds `size` / 8 classic BPF instructions, 1 to
+/// 4096 of them, laid out as Linux's struct sock_filter and libpcap's
+/// struct bpf_insn, which the kernel runs on each frame from then on,
+/// keeping only those it returns more than 0 for, cut to that many bytes
+/// (ADR 0346); with `size` 0 it takes the filter away, and every frame is
+/// kept. Fails with invalid_argument for a program the kernel does not
+/// run: an instruction not classic BPF's, a jump past the end, a memory
+/// word past the sixteen, a division by a constant 0, or a last
+/// instruction that does not return. The frames waiting are thrown away,
+/// as they were not filtered, and the counts start again, as the BSDs'
+/// BIOCSETF does. `argument` is not used.
+const CAPTURE_FILTER: u32 = 0x52430001;
+/// radix-file(2)'s `control` request that writes a packet capture's
+/// CaptureCounts into `buffer`, whose `size` is 16. `argument` is not
+/// used.
+const CAPTURE_COUNTS: u32 = 0x52430002;
+
+/// A frame's link-layer, as pcap's link types number them: an Ethernet
+/// frame, header and all (LINKTYPE_ETHERNET).
+const CAPTURE_LINK_ETHERNET: u64 = 1;
+/// A frame that is an IP packet alone, IPv4 or IPv6 by its first byte's
+/// version: a tunnel's (LINKTYPE_RAW).
+const CAPTURE_LINK_RAW: u64 = 101;
+
+/// A frame a packet capture saw, as a read of its file gives it: this,
+/// then `captured` bytes of the frame, then zeros to a multiple of 8
+/// bytes, where the next one starts.
+struct CaptureHeader {
+    /// When it was seen: nanoseconds since 1970, by the time of day, or
+    /// since the machine started while that is not known.
+    time: u64;
+    /// The frame's length.
+    length: u32;
+    /// The bytes of it that follow: as many as the snap length and the
+    /// filter keep, at most `length`.
+    captured: u32;
+    /// The interface it was seen on, by its number.
+    interface: u32;
+    /// Its link-layer: CAPTURE_LINK_ETHERNET or CAPTURE_LINK_RAW.
+    link: u16;
+    /// 0 when the interface received it, 1 when it sent it.
+    outgoing: u8;
+    /// Zero.
+    reserved: u8;
+}
+
+/// What a packet capture counted since it opened, or since its filter
+/// was last set: what `control`'s CAPTURE_COUNTS writes.
+struct CaptureCounts {
+    /// The frames it kept: those its filter took, or all without one.
+    received: u64;
+    /// Of those, the frames lost as its file was full.
+    dropped: u64;
+}
+
 /// A range of the network's ports, and the rights to connect out, to
 /// listen on them, and to set the interfaces up.
-interface network = 0x000f version 6 {
+interface network = 0x000f version 7 {
     kind = network;
     /// Makes a socket of `family` and `kind` in slot `to`, with `flags`:
     /// one that is neither bound nor connected (POSIX's `socket`). Needs
@@ -300,4 +375,32 @@ interface network = 0x000f version 6 {
     method open_tunnel = 9 (to: slot, interface: u32, flags: PipeFlags) -> ()
         raises [no_such_slot, empty_slot, wrong_kind, missing_rights, no_device, busy,
                 occupied, no_memory];
+    /// Puts in slot `to`, with `flags`, a packet capture of the interface
+    /// numbered `interface`, or of every interface for 0, those added
+    /// later among them (ADR 0346): a file whose reads take the frames
+    /// the interface receives and sends from then on, each a
+    /// CaptureHeader and its first `snap` bytes, 1 to CAPTURE_SNAP_MAX,
+    /// at most. A frame received is seen before anything takes it, the
+    /// firewall and the VLANs above the interface among them; a loopback
+    /// packet once, as it is received, with an Ethernet header of zero
+    /// addresses before it, as Linux's `lo` gives it, and a tunnel's as
+    /// the IP packet it is. A read takes as many whole frames as fit in
+    /// its buffer, waiting for one unless the file is non-blocking, and
+    /// cuts the first to the buffer if it alone does not fit. The file
+    /// keeps `buffer` bytes of frames not yet read, CAPTURE_BUFFER_MIN to
+    /// CAPTURE_BUFFER_MAX, or CAPTURE_BUFFER_DEFAULT for 0; a frame that
+    /// finds no room is lost, and counted. A poll finds the file readable
+    /// while a frame waits. Its `control` takes CAPTURE_FILTER and
+    /// CAPTURE_COUNTS; a write fails with not_supported. Once the
+    /// interface is taken away, a read finds the frames that wait, then
+    /// fails with no_device, and a poll finds the file in error. Fails
+    /// with no_device for an interface that is not there,
+    /// invalid_argument for a snap length or buffer out of range, busy
+    /// while CAPTURES_MAX are open, as the BSDs' BPF devices once were,
+    /// and occupied if the slot is not empty. Needs the control right.
+    /// (Since version 7, ADR 0346.)
+    method open_capture = 10 (to: slot, interface: u32, snap: u32, buffer: u32, flags: PipeFlags)
+                             -> ()
+        raises [no_such_slot, empty_slot, wrong_kind, missing_rights, invalid_argument,
+                no_device, busy, occupied, no_memory];
 }

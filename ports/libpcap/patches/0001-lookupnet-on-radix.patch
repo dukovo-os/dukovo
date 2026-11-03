@@ -1,0 +1,29 @@
+SPDX-FileCopyrightText: 2026 The Dukovo contributors
+SPDX-License-Identifier: Apache-2.0 OR MIT
+
+Leaves pcap_lookupnet to the capture module on Radix: pcap.c's asks for
+an interface's IPv4 address and netmask with Linux's and the BSDs'
+SIOCGIFADDR and SIOCGIFNETMASK, which Radix has no ioctl for, and
+pcap-radix.c (ports/libpcap) finds them through getifaddrs, as mlibc
+gives them from /kernel/class/net (ADR 0346).
+
+--- a/pcap.c
++++ b/pcap.c
+@@ -1587,7 +1587,7 @@
+ }
+ #endif /* !defined(HAVE_PACKET32) && !defined(MSDOS) */
+ 
+-#if !defined(_WIN32) && !defined(MSDOS)
++#if !defined(_WIN32) && !defined(MSDOS) && !defined(__radix__)
+ /*
+  * We don't just fetch the entire list of devices, search for the
+  * particular device, and use its first IPv4 address, as that's too
+@@ -1709,7 +1709,7 @@
+ 	*netp &= *maskp;
+ 	return (0);
+ }
+-#endif /* !defined(_WIN32) && !defined(MSDOS) */
++#endif /* !defined(_WIN32) && !defined(MSDOS) && !defined(__radix__) */
+ 
+ #ifdef ENABLE_REMOTE
+ #include "pcap-rpcap.h"

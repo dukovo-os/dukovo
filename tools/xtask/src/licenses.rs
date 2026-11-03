@@ -67,6 +67,12 @@ const FIRMWARE_ALLOW: &[&str] = &["LicenseRef-Intel-Microcode"];
 /// iperf's units.c under the University of Illinois/NCSA license, parts
 /// of Lucent's libtask under the notice SPDX names dtoa, and Mathias
 /// Panzenböck's portable_endian.h in the public domain (ADR 0342).
+/// libpcap and tcpdump are under the Lawrence Berkeley Laboratory's and
+/// the University of California's BSD licenses, some with the clause on
+/// advertising (BSD-4-Clause-Shortened, BSD-4.3RENO, BSD-4.3TAHOE and the
+/// 4-clause ones), and others' BSD-style notices, each of which their
+/// LicenseRef-libpcap-notices and LicenseRef-tcpdump-notices keep as the
+/// files have it (ADR 0346).
 const PORT_EXTRA_ALLOW: &[&str] = &[
     "CC0-1.0",
     "GPL-2.0-only",
@@ -92,6 +98,12 @@ const PORT_EXTRA_ALLOW: &[&str] = &[
     "LicenseRef-OpenSSH-public-domain",
     "NCSA",
     "LicenseRef-iperf3-public-domain",
+    "BSD-4-Clause",
+    "BSD-4-Clause-Shortened",
+    "BSD-4.3RENO",
+    "BSD-4.3TAHOE",
+    "LicenseRef-libpcap-notices",
+    "LicenseRef-tcpdump-notices",
 ];
 
 /// Crates from crates.io that compile another project's C code into what

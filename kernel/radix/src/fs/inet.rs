@@ -1936,6 +1936,18 @@ fn release_part(part: Part, connected: bool, port: &mut Option<Held>) {
     let mut stack = interface.stack.lock();
     match leases {
         Leases::Udp(leases) => {
+            // Datagrams it sent that its interface's thread has not sent
+            // yet go now, as Linux sends them in sendto: a program that
+            // sends one and closes the socket at once must not lose it.
+            // One that waits for its neighbour's address is still lost.
+            if stack
+                .socket_mut::<udp::Socket<'static>>(handle)
+                .is_some_and(|socket| socket.send_queue() > 0)
+            {
+                drop(stack);
+                interface.send_now();
+                stack = interface.stack.lock();
+            }
             memory::end_udp(&mut stack, handle, leases, interface.name.as_str());
         }
         Leases::Ping(leases) => {
