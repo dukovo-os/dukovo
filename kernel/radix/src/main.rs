@@ -79,6 +79,7 @@ mod schedtest;
 mod selftest;
 mod swap;
 mod symbols;
+mod uart;
 mod usb;
 mod user;
 mod usertest;

@@ -37,6 +37,7 @@ members = [
     "drivers/scsi",
     "drivers/sdhci",
     "drivers/smbus",
+    "drivers/uart",
     "drivers/ucsi",
     "drivers/usb",
     "drivers/usbhc",

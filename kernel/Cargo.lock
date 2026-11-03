@@ -302,6 +302,7 @@ dependencies = [
  "radix-sync",
  "radix-tty",
  "radix-uacpi",
+ "radix-uart",
  "radix-ucsi",
  "radix-udf",
  "radix-usb",
@@ -786,6 +787,13 @@ name = "radix-uacpi"
 version = "0.12.0"
 dependencies = [
  "radix-sync",
+]
+
+[[package]]
+name = "radix-uart"
+version = "0.12.0"
+dependencies = [
+ "radix-hw",
 ]
 
 [[package]]

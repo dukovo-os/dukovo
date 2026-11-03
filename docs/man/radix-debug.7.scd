@@ -33,9 +33,10 @@ finds one of its objects damaged (see *HEAP CORRUPTION*). The panicking
 CPU then:
 
 . stops the other CPUs with a non-maskable interrupt;
-. writes the report to the serial port, the VGA text screen if in use, the
-  Debug Capability console with the *dbc* flag (giving it up to 2 s to go
-  out), and the crash log;
+. writes the report to the serial port, the serial ports of PCI cards and
+  AMT's (*uart*(4)), the VGA text screen if in use, the Debug Capability
+  console with the *dbc* flag (giving each up to 2 s to go out), and the
+  crash log;
 . fills the framebuffer with the report under a red *RADIX KERNEL PANIC*
   banner, followed by as many recent log messages as fit;
 . records in the crash log that this boot ended with a panic;
@@ -179,8 +180,10 @@ A slot whose magic, version, ring size or hash does not match is ignored.
 
 *kdb* is a command line on the debug console: the serial port, for use
 under QEMU (where *ob run* connects the serial port to the terminal) or
-on machines with one, and with the *dbc* flag the Debug Capability
-console too (see *DEBUG CAPABILITY CONSOLE*). Boot with the *kdb* flag,
+on machines with one; the serial ports of PCI cards and Intel AMT's
+Serial-over-LAN port, on machines without one (*uart*(4), ADR 0360);
+and with the *dbc* flag the Debug Capability console too (see *DEBUG
+CAPABILITY CONSOLE*). Boot with the *kdb* flag,
 for example *./ob run --cmdline kdb*. The kernel then enters *kdb*:
 
 - at the end of boot, after *Boot complete.*;
@@ -767,5 +770,5 @@ _out/test/_
 
 # SEE ALSO
 
-*dukovo-boot*(7), *radix-capabilities*(7), *radix-scheduling*(7), *radix-ipc*(7),
+*dukovo-boot*(7), *uart*(4), *radix-capabilities*(7), *radix-scheduling*(7), *radix-ipc*(7),
 *watchdog*(8), *ob*(1), *gdb*(1), *qemu-system-x86_64*(1)
