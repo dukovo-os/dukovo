@@ -24,7 +24,8 @@ with sessions, which make a request sent twice safe, and locks and
 opens in the protocol itself. Every client that matters speaks 4.1 or
 4.2: Linux's since 2.6.32, the BSDs', macOS's. Its usual security,
 AUTH_SYS, is a user and group number the client states and the server
-believes; Kerberos (RPCSEC_GSS) proves them, and comes after (13f.4c).
+believes; Kerberos (RPCSEC_GSS) proves them, and comes after the
+keyring (13h).
 
 As for smbd, two things must hold: each call does what that person may
 do and no more, as at their own shell, which a server running as root
@@ -120,11 +121,11 @@ client is not root here.
   names may say any person's number and act as them in the shares
   (not as root, nor as a service). share(1), shares.toml(5) and
   nfsd(8) say so, and a share names no network until asked;
-  Kerberos (13f.4c) is the cure.
+  Kerberos (13h) is the cure.
 - A bug in a worker acts only as the person, in the view of the shares;
   the listener, root's, parses RPC and XDR in bounded records but opens
   no file.
-- **Not yet:** Dukovo as an NFS client (13f.4b); Kerberos (13f.4c);
-  delegations, a grace period and state kept through restarts; COPY and
-  CLONE on the server; and COMPOUNDs answered in parallel, which the
-  benchmarks will ask for.
+- **Not yet:** Kerberos (13h, after the keyring; Dukovo's client came
+  in ADR 0344); delegations, a grace period and state kept through
+  restarts; COPY and CLONE on the server; and COMPOUNDs answered in
+  parallel, which the benchmarks will ask for.
