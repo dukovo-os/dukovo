@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use catalog_repo::keys::{self, Signers};
-use catalog_repo::{Repo, WARN_DAYS, expires_days};
+use catalog_repo::{Refreshed, Repo, WARN_DAYS, expires_days};
 
 const USAGE: &str = "\
 usage: catalog-repo --repo DIR [--yubikey-helper PROGRAM] [--key FILE]... COMMAND
@@ -21,6 +21,8 @@ usage: catalog-repo --repo DIR [--yubikey-helper PROGRAM] [--key FILE]... COMMAN
                                          sign the next targets: one touch a batch,
                                          the bundles in --bundles DIR by default
        publish --store DIR --out DIR     snapshot, timestamp and the files to serve
+       refresh --store DIR --out DIR     a new timestamp, or all again when needed
+       check URL                         read what URL serves from the first root
        status                            the roles' versions, expiry and keys";
 
 struct Options {
@@ -88,7 +90,12 @@ fn confirm(question: &str) -> Result<bool, String> {
 
 fn run(options: &Options) -> Result<(), String> {
     let repo = Repo::new(options.repo.as_ref().ok_or(format!("--repo is needed\n{USAGE}"))?);
-    let signers = || Signers::new(options.helper.as_deref(), &options.keys);
+    // The YubiKeys are looked for only when a key here is a YubiKey's, so
+    // that key files alone, as the update server's, need no yubikey-manager.
+    let signers = || {
+        let yubikeys = keys::read_all(&repo.keys_dir())?.iter().any(|key| key.yubikey.is_some());
+        Signers::new(options.helper.as_deref().filter(|_| yubikeys), &options.keys)
+    };
     let words: Vec<&str> = options.rest.iter().map(String::as_str).collect();
     match words.as_slice() {
         ["key", "yubikey"] => {
@@ -155,6 +162,24 @@ fn run(options: &Options) -> Result<(), String> {
             println!(
                 "Published snapshot {snapshot} and timestamp {timestamp} in {}.",
                 out.display()
+            );
+        }
+        ["refresh"] => {
+            let store = options.store.as_ref().ok_or("--store is needed")?;
+            let out = options.out.as_ref().ok_or("--out is needed")?;
+            let days = (expires_days("snapshot"), expires_days("timestamp"));
+            match repo.refresh(store, out, &signers()?, days)? {
+                Refreshed::Timestamp(version) => println!("Signed timestamp {version}."),
+                Refreshed::All { snapshot, timestamp } => println!(
+                    "Published snapshot {snapshot} and timestamp {timestamp} in {}.",
+                    out.display()
+                ),
+            }
+        }
+        ["check", url] => {
+            let count = repo.check_url(url)?;
+            println!(
+                "{url}: the client reads it from the first root and fetches all {count} bundles."
             );
         }
         ["status"] => status(&repo)?,

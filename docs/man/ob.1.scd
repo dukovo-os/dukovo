@@ -1514,7 +1514,7 @@ _target/userspace/_).
 	*--debug*, *--release*
 		As for *build*.
 
-*catalog* *key* *yubikey* [*--serial* _n_] | *key* *new* _file_ _name_ [_role_]... | *root* [*--days* _n_] | *sign* [*--days* _n_] [*--remove* _path_]... [*--yes*] [_bundle_]... | *publish* | *status*
+*catalog* *key* *yubikey* [*--serial* _n_] | *key* *new* _file_ _name_ [_role_]... | *root* [*--days* _n_] | *sign* [*--days* _n_] [*--remove* _path_]... [*--yes*] [_bundle_]... | *publish* | *status* | *server* *setup* | *deploy* | *check* [_url_]
 	Make and sign the catalog's TUF repository in _catalog/_ (ADR 0381),
 	with catalog-repo, which ob builds for this machine. Every command
 	takes *--key* _file_, an Ed25519 secret key that signs in place of a
@@ -1544,6 +1544,25 @@ _target/userspace/_).
 	version and expiry, and warns a month before. The YubiKeys need
 	yubikey-manager (the *yubikey-manager* package on Debian, Ubuntu and
 	Linux Mint) and the system's Python.
+
+	The update server (ADR 0382) is reached with *ssh*(1) and *rsync*(1)
+	as *$OB_UPDATE_SSH*, by default _updates.dukovo.org_, with the login
+	of whoever signs: the signed bundles exist only on that computer.
+	*server setup* copies _tools/update-server/_ and catalog-repo, built
+	for release, to _~/dukovo-update-server/_ there and runs its
+	_setup.sh_ through *sudo*(8), which installs Caddy to serve the
+	catalog over https, makes the server's online key the first time, and
+	lets that login deploy; then it writes the online key's public half
+	to _catalog/keys/online.json_, for the next root to list, and fails
+	if a different one is there. It can run again, to update the server.
+	*deploy* copies _catalog/keys/_, _catalog/metadata/_ and the signed
+	bundles in _out/catalog/store/_ to the server, which publishes them
+	with its online key, or keeps what it served and says why; then it
+	checks what the server serves. The server signs the timestamp again
+	every six hours, and the snapshot when it has two days left. *check*
+	reads a catalog served at _url_, by default
+	_https://updates.dukovo.org/catalog/_, as a new computer would, from
+	the first root in _catalog/metadata/_, and fetches every bundle.
 
 *fixture* *btrfs-log*|*btrfs-radix-log*|*ntfs-3g* [*--linux-kernel* _file_]
 	Make test data that only Linux makes, for the host tests of Radix's
@@ -1800,6 +1819,11 @@ fails the build.
 
 *OB_TARGET_DIR*
 	Directory for Cargo output instead of _target/_.
+
+*OB_UPDATE_SSH*
+	The update server as *ssh*(1) names it, such as
+	_user@updates.dukovo.org_ or a host in _~/.ssh/config_, for *catalog
+	server setup* and *catalog deploy*; _updates.dukovo.org_ by default.
 
 *SOURCE_DATE_EPOCH*
 	Timestamp for files in the image. By default *ob* uses the time of the
