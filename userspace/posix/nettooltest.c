@@ -558,12 +558,25 @@ static void nc(void) {
 	printf("nettooltest: nc carried TCP and UDP both ways, by IPv4 and IPv6, and found b's open port\n");
 }
 
+// Whether iperf3's `output` says its connection to the server was reset
+// before a test began: before it says where it is connected
+// ("Connecting to host", or "connecting_to" in JSON), which it says once
+// the server has sent it the test's parameters. A reset after that is
+// the test failing.
+static int reset_before_test(const char *output) {
+	return !strstr(output, "Connecting to host") && !strstr(output, "connecting_to")
+			&& (strstr(output, "Connection reset by peer") || strstr(output, "Broken pipe"));
+}
+
 // Whether iperf3 `command` succeeds and what it writes holds `needle`:
 // again, a second later, while b's server is between two tests, as the
 // last client may leave before it is: it says it is busy until it has
 // put the last test away (iperf3's own "try again later"), and then
 // refuses connections until it listens again, as an iperf3 server closes
 // its listening socket after each test and opens another for the next.
+// A connection that reaches the old socket as it closes, still waiting
+// to be accepted, is reset, as Linux resets one: iperf3 says it could
+// not send its cookie or receive a control message.
 static int iperf3_says(const char *command, const char *needle) {
 	static char buffer[16384];
 	int got = -1;
@@ -572,7 +585,8 @@ static int iperf3_says(const char *command, const char *needle) {
 		printf("nettooltest: $ %s\n%s", command, buffer);
 		if(strstr(buffer, "the server is busy")
 				|| (strstr(buffer, "unable to connect to server")
-						&& strstr(buffer, "Connection refused"))) {
+						&& strstr(buffer, "Connection refused"))
+				|| reset_before_test(buffer)) {
 			check_sleep_ms(1000);
 			continue;
 		}
