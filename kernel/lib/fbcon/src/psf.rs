@@ -241,15 +241,58 @@ impl<'a> Font<'a> {
         found.filter(|&glyph| glyph < self.count)
     }
 
-    /// The bitmap of the glyph for `c`, or of `?` when the font lacks it.
+    /// The bitmap of the glyph for `c`; when the font lacks it, a band
+    /// [`band`] draws, or `?`.
     pub fn glyph(&self, c: char) -> Glyph<'a> {
-        let index = self.lookup(c).unwrap_or(self.fallback);
+        let index = match self.lookup(c) {
+            Some(index) => index,
+            None => match band(c, self.height) {
+                Some(rows) => {
+                    return Glyph {
+                        bytes: &[],
+                        bytes_per_row: self.bytes_per_row,
+                        width: self.width,
+                        band: Some(rows),
+                    };
+                }
+                None => self.fallback,
+            },
+        };
         let start = index * self.glyph_size;
         Glyph {
             bytes: &self.glyphs[start..start + self.glyph_size],
             bytes_per_row: self.bytes_per_row,
             width: self.width,
+            band: None,
         }
+    }
+}
+
+/// The rows, from `top` to before `bottom`, lit across the whole cell
+/// for the block elements and lines that are one such band, in a cell
+/// `height` pixels high: the half and eighth blocks and the full block,
+/// which programs draw pictures with in two pixels a cell, and the
+/// light and heavy horizontal lines, as thick as Spleen's strokes. The
+/// console draws them when its font lacks them, as Spleen's 8x16 does,
+/// as terminals such as foot and kitty draw them themselves.
+fn band(c: char, height: usize) -> Option<(usize, usize)> {
+    let eighths = |top: usize, bottom: usize| Some((top * height / 8, bottom * height / 8));
+    let line = |thickness: usize| {
+        let top = (height - thickness) / 2;
+        Some((top, top + thickness))
+    };
+    let stroke = (height / 16).max(1);
+    match c {
+        // ─ and ━.
+        '\u{2500}' => line(stroke),
+        '\u{2501}' => line(2 * stroke),
+        // ▀.
+        '\u{2580}' => eighths(0, 4),
+        // ▁ to ▇, then █: the lower one to eight eighths.
+        '\u{2581}'..='\u{2588}' => eighths(8 - (c as usize - 0x2580), 8),
+        // ▔.
+        '\u{2594}' => eighths(0, 1),
+        _ => None,
     }
 }
 
@@ -259,17 +302,26 @@ pub struct Glyph<'a> {
     bytes: &'a [u8],
     bytes_per_row: usize,
     width: usize,
+    /// The rows lit across the whole cell, for a glyph drawn as a band.
+    band: Option<(usize, usize)>,
 }
 
 impl Glyph<'_> {
     /// Whether the pixel at (`x`, `y`) is set.
     pub fn pixel(&self, x: usize, y: usize) -> bool {
+        if let Some((top, bottom)) = self.band {
+            return (top..bottom).contains(&y);
+        }
         let byte = self.bytes[y * self.bytes_per_row + x / 8];
         byte & (0x80 >> (x % 8)) != 0
     }
 
     /// The bits of row `y`, leftmost pixel in bit `width - 1`.
     pub fn row_bits(&self, y: usize) -> u32 {
+        if let Some((top, bottom)) = self.band {
+            let lit = (top..bottom).contains(&y);
+            return if lit { u32::MAX >> (32 - self.width) } else { 0 };
+        }
         let row = &self.bytes[y * self.bytes_per_row..(y + 1) * self.bytes_per_row];
         let packed = row.iter().fold(0u64, |acc, &b| (acc << 8) | u64::from(b));
         (packed >> (self.bytes_per_row * 8 - self.width)) as u32
@@ -316,6 +368,35 @@ mod tests {
         let glyph = font.glyph('Z');
         assert!(glyph.pixel(7, 0) && glyph.pixel(6, 1) && !glyph.pixel(0, 0));
         assert_eq!(font.glyph('A').row_bits(0), 0x80);
+    }
+
+    #[test]
+    fn draws_the_bands_a_font_lacks() {
+        let own = [0xff; 16];
+        let bytes = psf2(8, 16, &[&[0; 16], &own], Some(&["?", "\u{2588}"]));
+        let font = Font::parse(&bytes).unwrap();
+        // Its own full block is kept.
+        assert_eq!(font.lookup('\u{2588}'), Some(1));
+        assert_eq!(font.glyph('\u{2588}').row_bits(15), 0xff);
+        let rows = |c: char| -> [u32; 16] { core::array::from_fn(|y| font.glyph(c).row_bits(y)) };
+        let lit = |top: usize, bottom: usize| -> [u32; 16] {
+            core::array::from_fn(|y| if (top..bottom).contains(&y) { 0xff } else { 0 })
+        };
+        assert_eq!(rows('\u{2580}'), lit(0, 8), "upper half");
+        assert_eq!(rows('\u{2584}'), lit(8, 16), "lower half");
+        assert_eq!(rows('\u{2581}'), lit(14, 16), "lower eighth");
+        assert_eq!(rows('\u{2594}'), lit(0, 2), "upper eighth");
+        assert_eq!(rows('\u{2500}'), lit(7, 8), "light line");
+        assert_eq!(rows('\u{2501}'), lit(7, 9), "heavy line");
+        assert!(font.glyph('\u{2580}').pixel(7, 0) && !font.glyph('\u{2580}').pixel(0, 8));
+        // Anything else it lacks is `?`.
+        assert_eq!(rows('\u{2591}'), [0; 16]);
+        // Glyphs 32 pixels wide fill their rows.
+        let wide = psf2(32, 32, &[&[0; 128]], None);
+        let font = Font::parse(&wide).unwrap();
+        assert_eq!(font.glyph('\u{2580}').row_bits(15), u32::MAX);
+        assert_eq!(font.glyph('\u{2500}').row_bits(15), u32::MAX);
+        assert_eq!(font.glyph('\u{2500}').row_bits(17), 0, "two pixels thick at 32");
     }
 
     #[test]

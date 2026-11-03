@@ -87,6 +87,8 @@ error that starts with the tool's name.
 :  what each disk says of its health: SMART and the NVMe health log
 |  *dmesg*(1)
 :  the kernel's log
+|  *dukofetch*(1)
+:  the system at a glance, beside Duke
 |  *ectool*(8)
 :  set the embedded controller's fans, fan curves, LEDs and ARGB header
 |  *eject*(1)

@@ -14,11 +14,11 @@ use crate::util::{Fail, fail};
 
 /// The registers CPUID leaf `leaf`, subleaf `sub` gives: EAX, EBX, ECX,
 /// EDX.
-type Cpuid<'a> = &'a dyn Fn(u32, u32) -> [u32; 4];
+pub(crate) type Cpuid<'a> = &'a dyn Fn(u32, u32) -> [u32; 4];
 
 /// This processor's CPUID.
 #[cfg(target_arch = "x86_64")]
-fn cpuid(leaf: u32, sub: u32) -> [u32; 4] {
+pub(crate) fn cpuid(leaf: u32, sub: u32) -> [u32; 4] {
     // SAFETY: every x86-64 processor has CPUID, which only reads.
     #[allow(unused_unsafe)]
     let r = unsafe { core::arch::x86_64::__cpuid_count(leaf, sub) };
@@ -345,15 +345,7 @@ impl Processor {
         if base_family == 6 || base_family == 0xf {
             model |= ((signature >> 16) & 0xf) << 4;
         }
-        let model_name = (max_ext >= 0x8000_0004).then(|| {
-            let mut bytes = Vec::new();
-            for l in 0x8000_0002..=0x8000_0004 {
-                bytes.extend(cpuid(l, 0).iter().flat_map(|r| r.to_le_bytes()));
-            }
-            let text = String::from_utf8_lossy(&bytes).trim_end_matches('\0').to_string();
-            text.split_whitespace().collect::<Vec<_>>().join(" ")
-        });
-        let model_name = model_name.filter(|name| !name.is_empty());
+        let model_name = model_name(cpuid);
         let mut flags = Vec::new();
         for &(l, sub, register, names) in FLAGS {
             let value = leaf(l, sub)[register];
@@ -533,8 +525,23 @@ fn report(p: &Processor, cpus: u32) -> Vec<(usize, &'static str, String)> {
     rows
 }
 
+/// The processor's brand string, from CPUID leaves 0x80000002 to
+/// 0x80000004, with its runs of spaces made one, if it has one.
+pub(crate) fn model_name(cpuid: Cpuid<'_>) -> Option<String> {
+    let [max_ext, ..] = cpuid(0x8000_0000, 0);
+    if max_ext < 0x8000_0004 {
+        return None;
+    }
+    let mut bytes = Vec::new();
+    for l in 0x8000_0002..=0x8000_0004 {
+        bytes.extend(cpuid(l, 0).iter().flat_map(|r| r.to_le_bytes()));
+    }
+    let text = String::from_utf8_lossy(&bytes).trim_end_matches('\0').to_string();
+    Some(text.split_whitespace().collect::<Vec<_>>().join(" ")).filter(|name| !name.is_empty())
+}
+
 /// The CPUs the kernel runs.
-fn cpus() -> Result<u32, Fail> {
+pub(crate) fn cpus() -> Result<u32, Fail> {
     let text = std::fs::read_to_string("/kernel/cpus")
         .map_err(|error| fail(format!("/kernel/cpus: {}", crate::util::strip_os_error(&error))))?;
     text.trim().parse().map_err(|_| fail(format!("/kernel/cpus: not a number: {}", text.trim())))
