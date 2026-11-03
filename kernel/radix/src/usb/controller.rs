@@ -883,7 +883,10 @@ pub(super) fn read_device(
             bulk_out: EndpointDescriptor::default(),
         }; MAX_SERIALS],
         serial_count: 0,
-        net: radix_usb::net::port(&config),
+        net: radix_usb::net::port(&config).or_else(|| {
+            let model = radix_usb::net::asix::identify(found.vendor, found.product, found.release)?;
+            radix_usb::net::asix::port(&config, model)
+        }),
     };
     let mut named: [&str; 4] = [""; 4];
     let mut count = 0;

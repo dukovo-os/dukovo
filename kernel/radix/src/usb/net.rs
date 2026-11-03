@@ -4,7 +4,9 @@
 //! Ethernet adapters on USB (Phase 12, ADR 0199): CDC-ECM and CDC-NCM
 //! (`radix_usb::net`), Realtek's RTL8153 and QEMU's `usb-net` among them,
 //! in the configuration that has the adapter when the first is their
-//! maker's own or RNDIS (`controller::choose_configuration`).
+//! maker's own or RNDIS (`controller::choose_configuration`); and ASIX's
+//! AX88179 and its kin in their own protocol (ADR 0362,
+//! `radix_usb::net::asix`).
 //!
 //! Once a device is configured, [`Controller::start_net`] reads its MAC
 //! address, asks an NCM adapter for the rules of its transfer blocks and
@@ -28,22 +30,31 @@
 //!   speed. An adapter is taken to have its link up, at 100 Mb/s, until
 //!   it says otherwise: QEMU's says nothing.
 //!
+//! An ASIX adapter is brought up with its vendor's requests and polled
+//! for its PHY's link each second, as FreeBSD's axge(4) does; it sends
+//! its frames in bursts that may be longer than a transfer here, which
+//! are joined until a transfer comes short, and takes each frame sent
+//! after a header of its own.
+//!
 //! An adapter unplugged takes its link away: its interface goes down,
 //! keeping its addresses, and is its own again when it comes back. Only
 //! xHCI controllers carry the bulk transfers an adapter needs.
 
 use alloc::sync::Arc;
+use alloc::vec::Vec;
 
 use radix_klog::{info, warn};
-use radix_mm::Kmalloc;
+use radix_mm::{Flags, HEAP, Kmalloc};
 use radix_nic::link::{self, Driver};
 use radix_nic::{Link, MAX_FRAME, MIN_FRAME};
+use radix_usb::net::asix::{self, mii, register};
 use radix_usb::net::{self as usbnet, Notification, Port, Protocol, filter, ncm};
 use radix_usb::{Setup, descriptor};
-use radix_xhci::{code, endpoint_index};
+use radix_xhci::{Device, Host, Xhci, code, endpoint_index};
 
 use super::controller::{Controller, Name, Why, alloc};
 use crate::net::program::{self, Pages};
+use crate::sched;
 
 /// Errors in a row on an endpoint before the adapter is given up.
 const PIPE_ERRORS: u8 = 3;
@@ -53,10 +64,20 @@ const ECM_READ: usize = 2048;
 /// The longest block an NCM adapter is asked to send: a page, the most a
 /// transfer here carries.
 const NCM_READ: usize = 4096;
+/// The bytes each read of an ASIX adapter asks for: a page, the most a
+/// transfer here carries; its bursts are joined from them.
+const ASIX_READ: usize = 4096;
 /// The bytes a notification has at most that are read: a speed change's.
 const NOTIFICATION: usize = 16;
 /// The link an adapter is taken to have until it says.
 const ASSUMED: Link = Link { up: true, mbps: 100, full_duplex: true };
+/// The longest burst of an ASIX adapter that is kept, as FreeBSD's
+/// axge(4) reads them: longer ones are dropped.
+const ASIX_BURST: usize = 65536;
+/// How often an ASIX adapter's PHY is asked for its link.
+const ASIX_POLL_NS: u64 = 1_000_000_000;
+/// How long an ASIX adapter's PHY has to come out of its reset.
+const ASIX_PHY_RESET_TRIES: u32 = 50;
 
 /// What the thread keeps of an adapter it carries.
 pub(super) struct Ethernet {
@@ -84,6 +105,109 @@ pub(super) struct Ethernet {
     link: Link,
     /// Errors in a row on its endpoints.
     errors: u8,
+    /// An ASIX adapter's own state.
+    asix: Option<Asix>,
+}
+
+/// What the thread keeps of an ASIX adapter.
+struct Asix {
+    /// The burst it is sending, joined from transfers: its first `len`
+    /// bytes, and whether it outgrew [`ASIX_BURST`] and is dropped.
+    burst: Vec<u8, Kmalloc>,
+    len: usize,
+    overflowed: bool,
+    /// Its USB speed, as its PLSR register says.
+    plsr: u8,
+    /// When its PHY was last asked for its link.
+    polled_at: u64,
+}
+
+/// Runs `step` of an ASIX adapter's bring-up on `device`, and waits as it
+/// asks.
+fn asix_step(
+    device: &mut Device,
+    xhci: &mut Xhci,
+    host: &mut dyn Host,
+    step: asix::Step,
+) -> Result<(), Why> {
+    device.control_out(xhci, host, step.setup, &step.data)?;
+    if step.then_ms > 0 {
+        sched::sleep_ns(u64::from(step.then_ms) * 1_000_000);
+    }
+    Ok(())
+}
+
+/// Reads the PHY's register `register` of the ASIX adapter `device`.
+fn asix_phy(
+    device: &mut Device,
+    xhci: &mut Xhci,
+    host: &mut dyn Host,
+    buffer: &mut [u8],
+    register: u8,
+) -> Option<u16> {
+    let came = device.control_in(xhci, host, asix::phy_read(register), &mut buffer[..2]).ok()?;
+    (came == 2).then(|| u16::from_le_bytes([buffer[0], buffer[1]]))
+}
+
+/// Writes `value` to the PHY's register `register` of the ASIX adapter
+/// `device`.
+fn asix_phy_write(
+    device: &mut Device,
+    xhci: &mut Xhci,
+    host: &mut dyn Host,
+    register: u8,
+    value: u16,
+) -> Result<(), Why> {
+    device.control_out(xhci, host, asix::phy_write(register), &value.to_le_bytes())?;
+    Ok(())
+}
+
+/// Brings up the ASIX adapter `model` on `device`, as FreeBSD's axge(4)
+/// starts one: its PHY powered and its clocks on, its MAC address read
+/// (or a random one given it), its filter and medium set, and its PHY
+/// reset and negotiating. Says its MAC address and its USB speed.
+#[inline(never)]
+fn asix_start(
+    device: &mut Device,
+    xhci: &mut Xhci,
+    host: &mut dyn Host,
+    buffer: &mut [u8],
+    model: asix::Model,
+) -> Result<([u8; 6], u8), Why> {
+    for step in asix::power_up(model) {
+        asix_step(device, xhci, host, step)?;
+    }
+    let came = device.control_in(xhci, host, asix::read(register::NIDR, 6), &mut buffer[..6])?;
+    let mut mac = [0u8; 6];
+    mac.copy_from_slice(&buffer[..6]);
+    if came != 6 || !asix::usable(&mac) {
+        mac = random_mac();
+        device.control_out(xhci, host, asix::write(register::NIDR, 6), &mac)?;
+    }
+    for step in asix::configure() {
+        asix_step(device, xhci, host, step)?;
+    }
+    let came = device.control_in(xhci, host, asix::read(register::PLSR, 1), &mut buffer[..1])?;
+    let plsr = if came == 1 { buffer[0] } else { 0 };
+    device.control_out(
+        xhci,
+        host,
+        asix::write(register::BULK_IN, 5),
+        &asix::bulk_in(1000, plsr),
+    )?;
+    // The PHY: reset, then every speed advertised and negotiation begun.
+    asix_phy_write(device, xhci, host, mii::BMCR, mii::BMCR_RESET)?;
+    for _ in 0..ASIX_PHY_RESET_TRIES {
+        sched::sleep_ns(10_000_000);
+        let bmcr = asix_phy(device, xhci, host, buffer, mii::BMCR);
+        if bmcr.is_some_and(|bmcr| bmcr & mii::BMCR_RESET == 0) {
+            break;
+        }
+    }
+    asix_phy_write(device, xhci, host, mii::ANAR, mii::ANAR_ALL)?;
+    asix_phy_write(device, xhci, host, mii::GTCR, mii::GTCR_ALL)?;
+    asix_phy_write(device, xhci, host, mii::BMCR, mii::BMCR_AUTONEGOTIATE)?;
+    Ok((mac, plsr))
 }
 
 /// The adapter `ethernet`, whose device is gone or stopped: its
@@ -127,9 +251,18 @@ impl Controller {
         let attached = &mut devices[at];
         let path = attached.path;
         let device = &mut attached.device;
-        let mac = match port.mac_string {
-            0 => None,
-            index => {
+        let mut asix = None;
+        let mac = match (port.protocol, port.mac_string) {
+            (Protocol::Asix(model), _) => {
+                let (mac, plsr) = asix_start(device, xhci, host, buffer, model)?;
+                let mut burst = Vec::new_in(HEAP.with(Flags::MAY_SLEEP));
+                burst.try_reserve_exact(ASIX_BURST).map_err(|_| Why::Device("out of memory"))?;
+                while burst.push_within_capacity(0).is_ok() {}
+                asix = Some(Asix { burst, len: 0, overflowed: false, plsr, polled_at: 0 });
+                Some(mac)
+            }
+            (_, 0) => None,
+            (_, index) => {
                 let setup = Setup::get_descriptor(descriptor::STRING, index, 0x0409, 64);
                 device
                     .control_in(xhci, host, setup, &mut buffer[..64])
@@ -140,6 +273,7 @@ impl Controller {
         let mac = mac.unwrap_or_else(random_mac);
         let (read_length, blocks) = match port.protocol {
             Protocol::Ecm => (ECM_READ, None),
+            Protocol::Asix(_) => (ASIX_READ, None),
             Protocol::Ncm => {
                 let setup = usbnet::get_ntb_parameters(port.control);
                 let came = device.control_in(xhci, host, setup, &mut buffer[..ncm::PARAMETERS])?;
@@ -162,15 +296,20 @@ impl Controller {
             device.set_interface(xhci, host, &mut alloc, setting, &[], &pair)?;
         }
         // An adapter that passes every frame may refuse the request, as
-        // QEMU's does; Linux goes on too.
-        let passed = filter::DIRECTED | filter::BROADCAST | filter::ALL_MULTICAST;
-        let _ =
-            device.control_out(xhci, host, usbnet::set_packet_filter(port.control, passed), &[]);
+        // QEMU's does; Linux goes on too. An ASIX adapter's filter is its
+        // own register, set as it was brought up.
+        if asix.is_none() {
+            let passed = filter::DIRECTED | filter::BROADCAST | filter::ALL_MULTICAST;
+            let setup = usbnet::set_packet_filter(port.control, passed);
+            let _ = device.control_out(xhci, host, setup, &[]);
+        }
         let place = Name(*bus, path);
         let (number, pages) = program::attach_usb(*bus - 1, mac, port.protocol.name(), &place)
             .ok_or(Why::Device("it could not be given an interface"))?;
         let side = Driver::new();
-        side.set_link(&*pages, ASSUMED);
+        // An ASIX adapter's link is down until its PHY says otherwise.
+        let link = if asix.is_some() { Link::default() } else { ASSUMED };
+        side.set_link(&*pages, link);
         program::wake(number);
         attached.ethernet = Some(Ethernet {
             port,
@@ -186,8 +325,9 @@ impl Controller {
             read_length,
             blocks,
             sequence: 0,
-            link: ASSUMED,
+            link,
             errors: 0,
+            asix,
         });
         self.net_listen(at);
         Ok(())
@@ -233,13 +373,62 @@ impl Controller {
     /// it again once its link has room. Says whether anything moved.
     pub(super) fn net(&mut self) -> bool {
         let mut any = false;
+        let now = sched::now_ns();
         for at in 0..self.devices.len() {
             if self.devices[at].ethernet.is_some() {
                 any |= self.net_send(at);
+                self.net_poll(at, now);
                 self.net_listen(at);
             }
         }
         any
+    }
+
+    /// Asks the PHY of the ASIX adapter of the device at `at` for its link,
+    /// if it was last asked a second or more before `now`, and sets the
+    /// adapter's medium and bursts to the link it has.
+    #[inline(never)]
+    fn net_poll(&mut self, at: usize, now: u64) {
+        let Controller { devices, buffer, xhci, host, bus, .. } = self;
+        let attached = &mut devices[at];
+        let Some(ethernet) = attached.ethernet.as_mut() else { return };
+        let Some(asix) = ethernet.asix.as_mut() else { return };
+        if asix.polled_at != 0 && now.saturating_sub(asix.polled_at) < ASIX_POLL_NS {
+            return;
+        }
+        asix.polled_at = now.max(1);
+        let device = &mut attached.device;
+        let mut phy = |register| asix_phy(device, xhci, host, buffer, register);
+        // BMSR keeps a loss of link until it is read: the second read says
+        // how it is now.
+        let _ = phy(mii::BMSR);
+        let (Some(bmsr), Some(anar), Some(anlpar), Some(gtcr), Some(gtsr)) =
+            (phy(mii::BMSR), phy(mii::ANAR), phy(mii::ANLPAR), phy(mii::GTCR), phy(mii::GTSR))
+        else {
+            return;
+        };
+        let found = asix::resolve(bmsr, anar, anlpar, gtcr, gtsr);
+        let link = found.map_or(Link::default(), |medium| Link {
+            up: true,
+            mbps: medium.mbps,
+            full_duplex: medium.full_duplex,
+        });
+        if link == ethernet.link {
+            return;
+        }
+        if let Some(medium) = found {
+            let bursts = asix::bulk_in(medium.mbps, asix.plsr);
+            let _ = device.control_out(xhci, host, asix::write(register::BULK_IN, 5), &bursts);
+            let value = asix::medium(medium).to_le_bytes();
+            let _ = device.control_out(xhci, host, asix::write(register::MSR, 2), &value);
+        }
+        if link.up != ethernet.link.up {
+            let state = if link.up { "up" } else { "down" };
+            info!("USB: {}: its network adapter's link is {state}", Name(*bus, attached.path));
+        }
+        ethernet.link = link;
+        ethernet.side.set_link(&*ethernet.pages, link);
+        program::wake(ethernet.number);
     }
 
     /// Sends the next frame the stack has for the adapter of the device
@@ -258,6 +447,12 @@ impl Controller {
         }
         let packet = ethernet.port.bulk_out.max_packet();
         let out: &[u8] = match ethernet.blocks {
+            // After a header, and a second one if the transfer would end
+            // on a packet's boundary.
+            None if ethernet.asix.is_some() => {
+                let Some(built) = asix::build(&frame[..len], packet, block) else { return true };
+                &block[..built]
+            }
             None => {
                 let len = padded(frame, len, packet);
                 &frame[..len]
@@ -332,9 +527,30 @@ impl Controller {
                         side.received(memory, frame);
                     }
                 };
-                match ethernet.blocks {
-                    None => give(&buffer[..came]),
-                    Some(_) => {
+                match (ethernet.blocks, ethernet.asix.as_mut()) {
+                    (_, Some(asix)) => {
+                        // A burst goes on until a transfer comes short.
+                        let room = asix.burst.len() - asix.len;
+                        if asix.overflowed || came > room {
+                            asix.overflowed = true;
+                        } else {
+                            asix.burst[asix.len..asix.len + came].copy_from_slice(&buffer[..came]);
+                            asix.len += came;
+                        }
+                        if came == ethernet.read_length {
+                            return;
+                        }
+                        if !asix.overflowed {
+                            let burst = &asix.burst[..asix.len];
+                            for (offset, len) in asix::frames(burst) {
+                                give(&burst[offset..offset + len]);
+                            }
+                        }
+                        asix.len = 0;
+                        asix.overflowed = false;
+                    }
+                    (None, None) => give(&buffer[..came]),
+                    (Some(_), None) => {
                         for (offset, len) in ncm::frames(&buffer[..came]) {
                             give(&buffer[offset..offset + len]);
                         }

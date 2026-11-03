@@ -21,11 +21,15 @@
 //!
 //! Realtek's RTL8153 and the other adapters whose first configuration is
 //! their maker's own have another that is ECM's or NCM's, which
-//! [`port`] finds as well: the kernel puts them in that one.
+//! [`port`] finds as well: the kernel puts them in that one. ASIX's
+//! AX88179 and its kin have only their maker's protocol, which [`asix`]
+//! speaks ([`Protocol::Asix`]).
 
 use crate::TO_INTERFACE;
 use crate::{CLASS, Configuration, DEVICE_TO_HOST, EndpointDescriptor, InterfaceDescriptor, Setup};
 use crate::{TransferType, class};
+
+pub mod asix;
 
 /// The communications interface's subclasses (CDC 1.2, table 4).
 pub mod subclass {
@@ -50,6 +54,8 @@ pub enum Protocol {
     Ecm,
     /// NCM: transfer blocks of frames.
     Ncm,
+    /// ASIX's own: bursts of frames with headers of the chip's ([`asix`]).
+    Asix(asix::Model),
 }
 
 impl Protocol {
@@ -58,6 +64,7 @@ impl Protocol {
         match self {
             Protocol::Ecm => "CDC-ECM",
             Protocol::Ncm => "CDC-NCM",
+            Protocol::Asix(model) => model.name(),
         }
     }
 
@@ -67,6 +74,7 @@ impl Protocol {
         match self {
             Protocol::Ecm => "cdc_ether",
             Protocol::Ncm => "cdc_ncm",
+            Protocol::Asix(_) => "ax88179_178a",
         }
     }
 }
