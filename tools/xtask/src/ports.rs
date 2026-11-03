@@ -968,7 +968,10 @@ pub fn build_all(ctx: &Ctx, rebuild: &[String]) -> Result<Ports> {
         let stamp = inputs_hash(ctx, &port.dir, &toolchain, recipe, &stamps)?;
         let stamp_file = ctx.out.join("ports").join(format!("{}.stamp", recipe.name));
         let built = std::fs::read_to_string(&stamp_file).ok() == Some(format!("{stamp:016x}\n"));
-        if built && !rebuild.contains(&recipe.name) {
+        // A bundle's port is packed from the folder it installed into,
+        // which a restored cache of out/ does not bring back.
+        let staged = recipe.bundle.is_none() || crate::bundles::staging(ctx, &recipe.name).is_dir();
+        if built && staged && !rebuild.contains(&recipe.name) {
             step(&format!("Port {} {} is up to date", recipe.name, recipe.version));
         } else {
             build(ctx, &toolchain, &port)?;
