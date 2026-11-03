@@ -31,20 +31,23 @@ static ACTIVE: AtomicBool = AtomicBool::new(false);
 /// Longest command line.
 const LINE: usize = 120;
 
-/// Writes to the debug console.
-struct Console;
+/// Longest line `kdb` gathers before writing it.
+const LINE_BYTES: usize = 256;
 
-impl Write for Console {
-    fn write_str(&mut self, s: &str) -> fmt::Result {
-        debug_console::write(s);
-        Ok(())
-    }
+/// Writes to the debug console a line at a time, so that the log, which
+/// the other CPUs keep writing while `kdb` waits, cannot land inside a
+/// line of its answer.
+fn console() -> radix_kdb::Lines<fn(&str), LINE_BYTES> {
+    radix_kdb::Lines::new(debug_console::write)
 }
 
-/// Writes one line to the debug console.
+/// Writes one line to the debug console. Kept out of its callers' frames,
+/// with its line.
+#[inline(never)]
 fn say(args: fmt::Arguments<'_>) {
-    let _ = Console.write_fmt(args);
-    debug_console::write("\n");
+    let mut out = console();
+    let _ = out.write_fmt(args);
+    let _ = out.write_str("\n");
 }
 
 /// Why `kdb` was entered, and what it can show about that.
@@ -151,7 +154,7 @@ fn run(session: &Session<'_>, command: Command<'_>) {
     match command {
         Command::Nothing | Command::Continue => {}
         Command::Help => {
-            let _ = radix_kdb::write_help(&mut Console);
+            let _ = radix_kdb::write_help(&mut console());
         }
         Command::Log { count } => show_log(count),
         Command::Trace(action) => show_trace(action),
@@ -182,10 +185,11 @@ fn run(session: &Session<'_>, command: Command<'_>) {
         Command::Registers => match session.fault {
             Some(fault) => {
                 for row in fault.registers().chunks(4) {
+                    let mut out = console();
                     for (name, value) in row {
-                        let _ = write!(Console, "  {name:>6} {value:016x}");
+                        let _ = write!(out, "  {name:>6} {value:016x}");
                     }
-                    say(format_args!(""));
+                    let _ = out.write_str("\n");
                 }
             }
             None => say(format_args!(
@@ -302,7 +306,7 @@ fn examine(address: u64, len: usize) {
             say(format_args!("{at:#x}: not mapped, or not RAM (kdb reads only RAM)"));
             return;
         }
-        let _ = radix_kdb::write_hex_dump(&mut Console, at, &buf[..n]);
+        let _ = radix_kdb::write_hex_dump(&mut console(), at, &buf[..n]);
         done += n;
     }
 }
