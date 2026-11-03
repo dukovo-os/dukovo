@@ -9,6 +9,7 @@ mod em;
 mod igb;
 mod igc;
 mod ixgbe;
+mod pch;
 
 use radix_hw::{Dma, fake_memory, fake_memory_write};
 use radix_nic::PAGE;

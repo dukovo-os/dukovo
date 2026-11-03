@@ -145,6 +145,49 @@ impl Ring {
     }
 }
 
+/// The 82579's write interlock with its management engine ([`pch`]): a
+/// register and the bit in it that says the engine holds the bus they
+/// share, when a write could be lost; the time; and the registers whose
+/// bits turn the receiver and transmitter on, which a tail that did not
+/// take turns off.
+///
+/// [`pch`]: crate::pch
+#[derive(Clone, Copy)]
+pub struct Interlock {
+    pub busy_at: usize,
+    pub busy: u32,
+    pub clock: fn() -> u64,
+    pub receive_enable: (usize, u32),
+    pub transmit_enable: (usize, u32),
+}
+
+/// How long a write waits for the bus: FreeBSD's 2000 polls of 50 µs.
+const INTERLOCK_NS: u64 = 100_000_000;
+
+impl Interlock {
+    /// Waits for the bus, then writes.
+    pub fn write(&self, regs: &Mmio, at: usize, value: u32) {
+        let until = (self.clock)().saturating_add(INTERLOCK_NS);
+        while regs.read32(self.busy_at) & self.busy != 0 && (self.clock)() < until {
+            core::hint::spin_loop();
+        }
+        regs.write32(at, value);
+    }
+
+    /// Writes a tail and reads it back: whether it took. One that did not
+    /// turns its unit off, as the card may have taken a wrong one.
+    fn write_tail(&self, regs: &Mmio, at: usize, value: u32, enable: (usize, u32)) -> bool {
+        self.write(regs, at, value);
+        if regs.read32(at) == value {
+            return true;
+        }
+        let (control, bit) = enable;
+        let on = regs.read32(control);
+        self.write(regs, control, on & !bit);
+        false
+    }
+}
+
 /// The two rings, as the card and the driver share them.
 pub struct Rings {
     regs: Mmio,
@@ -166,6 +209,9 @@ pub struct Rings {
     /// The oldest transmit descriptor the card may still be sending.
     unsent: usize,
     dropped: u64,
+    interlock: Option<Interlock>,
+    /// Whether a tail did not take, and the rings stopped.
+    broken: bool,
 }
 
 impl Rings {
@@ -182,6 +228,19 @@ impl Rings {
         transmit: usize,
         alloc: &mut dyn FnMut(usize) -> Option<Dma>,
     ) -> Result<Rings, Error> {
+        Rings::interlocked(regs, offsets, format, (receive, transmit), None, alloc)
+    }
+
+    /// As [`Rings::new`], with every register written through
+    /// `interlock`, if there is one, from the first.
+    pub fn interlocked(
+        regs: Mmio,
+        offsets: Offsets,
+        format: Format,
+        (receive, transmit): (usize, usize),
+        interlock: Option<Interlock>,
+        alloc: &mut dyn FnMut(usize) -> Option<Dma>,
+    ) -> Result<Rings, Error> {
         debug_assert!(
             receive.is_multiple_of(8)
                 && transmit.is_multiple_of(8)
@@ -193,20 +252,24 @@ impl Rings {
         for index in 0..receive.count {
             receive.descriptors.write64(Ring::at(index), receive.slots.phys(index));
         }
+        let write = |at: usize, value: u32| match &interlock {
+            Some(interlock) => interlock.write(&regs, at, value),
+            None => regs.write32(at, value),
+        };
         let o = offsets;
         let phys = receive.descriptors.phys();
-        regs.write32(o.rdbal, phys as u32);
-        regs.write32(o.rdbah, (phys >> 32) as u32);
-        regs.write32(o.rdlen, (receive.count * DESCRIPTOR) as u32);
-        regs.write32(o.rdh, 0);
-        regs.write32(o.rdt, 0);
+        write(o.rdbal, phys as u32);
+        write(o.rdbah, (phys >> 32) as u32);
+        write(o.rdlen, (receive.count * DESCRIPTOR) as u32);
+        write(o.rdh, 0);
+        write(o.rdt, 0);
         let tail = receive.count - 1;
         let phys = transmit.descriptors.phys();
-        regs.write32(o.tdbal, phys as u32);
-        regs.write32(o.tdbah, (phys >> 32) as u32);
-        regs.write32(o.tdlen, (transmit.count * DESCRIPTOR) as u32);
-        regs.write32(o.tdh, 0);
-        regs.write32(o.tdt, 0);
+        write(o.tdbal, phys as u32);
+        write(o.tdbah, (phys >> 32) as u32);
+        write(o.tdlen, (transmit.count * DESCRIPTOR) as u32);
+        write(o.tdh, 0);
+        write(o.tdt, 0);
         Ok(Rings {
             regs,
             offsets,
@@ -220,7 +283,14 @@ impl Rings {
             transmit_told: 0,
             unsent: 0,
             dropped: 0,
+            interlock,
+            broken: false,
         })
+    }
+
+    /// Whether a tail write was lost, so that the card stopped.
+    pub fn broken(&self) -> bool {
+        self.broken
     }
 
     /// Hands the card every receive descriptor but one, by its tail.
@@ -322,12 +392,26 @@ impl Rings {
             device_barrier();
         }
         if changed.0 {
-            self.regs.write32(self.offsets.rdt, tail as u32);
+            self.write_tail(self.offsets.rdt, tail as u32, true);
             self.receive_tail.0 = tail;
         }
         if changed.1 {
-            self.regs.write32(self.offsets.tdt, self.transmit_tail as u32);
+            self.write_tail(self.offsets.tdt, self.transmit_tail as u32, false);
             self.transmit_told = self.transmit_tail;
+        }
+    }
+
+    /// Writes a tail, through the interlock if there is one.
+    fn write_tail(&mut self, at: usize, value: u32, receive: bool) {
+        match self.interlock {
+            None => self.regs.write32(at, value),
+            Some(interlock) => {
+                let enable =
+                    if receive { interlock.receive_enable } else { interlock.transmit_enable };
+                if !interlock.write_tail(&self.regs, at, value, enable) {
+                    self.broken = true;
+                }
+            }
         }
     }
 
