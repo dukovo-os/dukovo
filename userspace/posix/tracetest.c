@@ -499,10 +499,19 @@ static void sockets(void) {
 	CHECK(sendto(fd, "probe three", 11, 0, (struct sockaddr *)&to, sizeof(to)) == 11);
 	CHECK(queued_error(fd, data, sizeof(data), SOL_IP, IP_RECVERR, &error) == 0);
 	CHECK(error.ee.ee_type == 11 && offender_is(&error, "10.77.3.1"));
-	// Datagrams sent together keep their own hop limits.
+	// Datagrams sent together keep their own hop limits. A router's
+	// answer to one may come before the next is sent: with IP_RECVERR,
+	// as on Linux, that send fails with the error, which stays queued,
+	// and the datagram is sent again.
 	for(ttl = 1; ttl <= 4; ttl++) {
 		CHECK(setsockopt(fd, IPPROTO_IP, IP_TTL, &ttl, sizeof(ttl)) == 0);
-		CHECK(sendto(fd, "hop", 3, 0, (struct sockaddr *)&to, sizeof(to)) == 3);
+		ssize_t sent = -1;
+		for(int tries = 0; tries < 4 && sent < 0; tries++) {
+			sent = sendto(fd, "hop", 3, 0, (struct sockaddr *)&to, sizeof(to));
+			if(sent < 0 && errno != EHOSTUNREACH)
+				break;
+		}
+		CHECK(sent == 3);
 	}
 	CHECK(queued_error(fd, data, sizeof(data), SOL_IP, IP_RECVERR, &error) == 3);
 	CHECK(error.ee.ee_type == 11 && offender_is(&error, "10.77.1.1"));
