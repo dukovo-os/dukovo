@@ -472,7 +472,7 @@ fn the_writeback_thread_commits_early_once_more_pages_wait_than_the_limit() {
     let disk = writable(&mkfs_sized(256 << 20, &[]));
     let fs = mount_rw(&disk);
     let root = fs.root();
-    assert!(!fs.is_dirty());
+    assert!(!fs.is_due());
     let file = root.create("big", Kind::File, FILE).unwrap();
     let data = noise(43, 1 << 20);
     let limit = (crate::fs::DIRTY_PAGES_MAX * radix_block::PAGE_SIZE) as u64;
@@ -481,23 +481,25 @@ fn the_writeback_thread_commits_early_once_more_pages_wait_than_the_limit() {
     }
     // Rewriting dirty pages counts nothing more.
     put(&file, 0, &data);
-    assert!(!fs.is_dirty(), "at the limit");
+    assert!(!fs.is_due(), "at the limit");
     put(&file, limit, &data[..1]);
-    assert!(fs.is_dirty(), "a page past it");
+    assert!(fs.is_due(), "a page past it");
     drop(file);
     root.remove("big").unwrap();
-    assert!(!fs.is_dirty(), "a removed file's pages are never written");
+    assert!(!fs.is_due(), "a removed file's pages are never written");
     let file = root.create("again", Kind::File, FILE).unwrap();
     for at in (0..=limit).step_by(data.len()) {
         put(&file, at, &data);
     }
-    assert!(fs.is_dirty());
+    assert!(fs.is_due());
     fs.sync().unwrap();
-    assert!(!fs.is_dirty(), "synced");
+    assert!(!fs.is_due(), "synced");
     put(&file, 0, &data);
-    assert!(!fs.is_dirty(), "one MiB waits");
+    assert!(!fs.is_due(), "one MiB waits");
+    assert!(fs.is_dirty(), "and powering off writes it");
     drop(file);
     fs.sync().unwrap();
+    assert!(!fs.is_dirty(), "written");
     assert_checks(&image_of(&disk, 256 << 20));
 }
 

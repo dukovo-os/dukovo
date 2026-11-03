@@ -3,9 +3,11 @@
 
 //! The writeback thread.
 //!
-//! Every [`INTERVAL_NS`] it writes each filesystem with changes in memory
-//! to its disk (`Vfs::sync_all`), so at most that much work is lost when
-//! the power goes, as with Linux's flusher threads. It also drops clean
+//! Every [`INTERVAL_NS`] it writes each filesystem whose changes in memory
+//! are due to its disk (`Vfs::sync_due`): every change for most, those 30 s
+//! old for Btrfs, so at most that much work is lost when the power goes,
+//! as with Linux's flusher threads. Powering off writes every change
+//! (`Vfs::sync_all`). It also drops clean
 //! cached pages, which the disk has, when memory runs short: when the
 //! frame allocator's free pages fall below 1/64 of memory at a wake-up,
 //! and whenever the out-of-memory policy asks ([`reclaim`]) before it
@@ -80,7 +82,7 @@ fn run(_: usize) {
             wait::wake_all(done_key());
         }
         if sched::now_ns() >= next_sync {
-            if let Err(err) = vfs.sync_all() {
+            if let Err(err) = vfs.sync_due() {
                 // Said once, then counted: a failing disk would fill the
                 // log every five seconds.
                 if FAILED.fetch_add(1, Ordering::Relaxed) == 0 {

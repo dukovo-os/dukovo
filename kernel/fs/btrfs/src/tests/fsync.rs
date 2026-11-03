@@ -319,3 +319,28 @@ fn linux_replays_radixs_log_as_radix_does() {
     let (whole, text) = btrfs_check(&image_of(&disk, image.len()));
     assert!(whole, "btrfs check failed after the replay:\n{text}");
 }
+
+#[test]
+fn every_change_counts_for_powering_off_however_new() {
+    let image = mkfs_empty(&[]);
+    let disk = mem::arc(CrashDisk::new(&image)).unwrap();
+    let fs = mount_crash(&disk);
+    let root = fs.root();
+    assert!(!fs.is_dirty(), "a mount changes nothing");
+    let a = root.create("a", Kind::File, FILE).unwrap();
+    put(&a, 0, &noise(1, 10_000));
+    // New, so not due for the writeback thread; but the disk lacks it,
+    // and powering off writes it.
+    assert!(fs.is_dirty());
+    assert!(!fs.is_due());
+    // A new file's fsync commits, without the pages of another file:
+    // those still wait.
+    let n = root.create("n", Kind::File, FILE).unwrap();
+    put(&n, 0, &noise(2, 100));
+    n.sync().unwrap();
+    assert_eq!(log_root(&disk), 0, "a new file commits");
+    assert!(fs.is_dirty(), "a's pages wait");
+    fs.sync().unwrap();
+    assert!(!fs.is_dirty());
+    assert!(!fs.is_due());
+}
