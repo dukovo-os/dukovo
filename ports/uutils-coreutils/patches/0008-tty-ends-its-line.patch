@@ -1,0 +1,18 @@
+SPDX-FileCopyrightText: The uutils developers
+SPDX-FileCopyrightText: 2026 The Dukovo contributors
+SPDX-License-Identifier: MIT
+
+`tty` ends the name of the terminal with a newline, as GNU's does: it
+wrote the name alone, so `tty; echo x` printed `/devices/pts/2x`.
+
+--- a/src/uu/tty/src/tty.rs
++++ b/src/uu/tty/src/tty.rs
+@@ -44,7 +44,7 @@
+         use std::os::unix::ffi::OsStrExt;
+         use uucore::display::OsWrite;
+         let os_name = std::ffi::OsStr::from_bytes(name.as_bytes());
+-        stdout.write_all_os(os_name)
++        stdout.write_all_os(os_name).and_then(|()| writeln!(stdout))
+     } else {
+         set_exit_code(1);
+         writeln!(stdout, "{}", translate!("tty-not-a-tty"))

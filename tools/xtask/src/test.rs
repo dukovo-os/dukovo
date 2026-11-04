@@ -8741,11 +8741,17 @@ fn accounts(vm: &mut Vm, case: &Case) -> Result<(), String> {
 /// 0257). The power button ends it.
 fn signin(vm: &mut Vm, case: &Case) -> Result<(), String> {
     owner_signs_in(vm, case)?;
-    answer_prompt(vm, "$", "clear; id; pwd; echo \"$USER $HOME $SHELL\"; tty")?;
+    // tty ends its line, as GNU's does.
+    answer_prompt(
+        vm,
+        "$",
+        "clear; id; pwd; echo \"$USER $HOME $SHELL\"; tty; echo \"tty $(tty | wc -l) line\"",
+    )?;
     vm.expect_screen(&[
         "uid=1000(alice) gid=1000(alice) groups=1000(alice),10(admins)",
         "alice /users/alice /system/commands/nukesh",
         "/devices/pts/",
+        "tty 1 line",
     ])?;
     bob_signs_in(vm)?;
     // Which pseudo-terminals the consoles got depends on what opened one

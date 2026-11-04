@@ -75,7 +75,7 @@ const USAGE: &str =
        bundle verify [FOLDER | FILE.dkv] [--key PUBLIC-KEY]
        bundle feed FOLDER [FILE.dkv...] [--key SECRET-KEY-FILE] [--days N]
        bundle unpack FILE.dkv FOLDER
-       bundle install FILE.dkv [--for-everyone] [--yes]
+       bundle install FILE.dkv [--unsigned] [--for-everyone] [--yes]
        bundle install ID [--from CATALOG] [--for-everyone] [--yes]
        bundle search WORD...
        bundle catalog
@@ -141,6 +141,7 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
     let mut automatic = None;
     let mut clear = false;
     let mut days = None;
+    let mut unsigned = false;
     while let Some(arg) = args.next()? {
         match arg {
             Arg::Long(l) if l == "check" => check_only = true,
@@ -153,6 +154,7 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
                 });
             }
             Arg::Long(l) if l == "for-everyone" => everyone = true,
+            Arg::Long(l) if l == "unsigned" => unsigned = true,
             Arg::Long(l) if l == "yes" => yes = true,
             Arg::Short('y') => yes = true,
             Arg::Long(l) if l == "keep-data" && data.is_none() => data = Some(false),
@@ -188,9 +190,11 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
     let key_ok = matches!(sub, Some("sign" | "pack" | "verify" | "feed")) || key.is_none();
     let output_ok = sub == Some("pack") || output.is_none();
     let days_ok = sub == Some("feed") || days.is_none();
+    let unsigned_ok = sub == Some("install") || !unsigned;
     if !key_ok
         || !output_ok
         || !days_ok
+        || !unsigned_ok
         || (confined && (sub != Some("unpack") || !operands.is_empty()))
     {
         return Err(usage(USAGE.into()));
@@ -230,9 +234,9 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
         (Some("unpack"), []) if confined => Ok(confine::confined()),
         (Some("unpack"), [archive, folder]) => unpack(archive, folder),
         (Some("install"), [what]) if from.is_none() && is_file(what) => {
-            install(what, everyone, yes)
+            install(what, everyone, yes, unsigned)
         }
-        (Some("install"), [id]) => get(id, from, everyone, yes),
+        (Some("install"), [id]) if !unsigned => get(id, from, everyone, yes),
         (Some("search"), words) if !words.is_empty() => search(words),
         (Some("catalog"), []) => list_catalogs(),
         (Some("catalog"), [add, name, url, root]) if add == "add" => add_catalog(name, url, root),
@@ -635,8 +639,10 @@ fn is_file(what: &str) -> bool {
 }
 
 /// `bundle install FILE.dkv`: bundled shows the install sheet, asks, and
-/// installs it sealed, for this person or for everyone.
-fn install(archive: &str, everyone: bool, yes: bool) -> Result<i32, Fail> {
+/// installs it sealed, for this person or for everyone. With `--unsigned`,
+/// a file with no signature at all is signed with the developer key first,
+/// after a warning (ADR 0391).
+fn install(archive: &str, everyone: bool, yes: bool, unsigned: bool) -> Result<i32, Fail> {
     let path = Path::new(archive);
     if path.is_dir() {
         return Err(fail(format!(
@@ -645,8 +651,71 @@ fn install(archive: &str, everyone: bool, yes: bool) -> Result<i32, Fail> {
         )));
     }
     let file = File::open(path).map_err(|e| util::failed(&archive, e))?;
-    let (stream, input) = ask(&Request::Install { everyone, yes }, Some(&file)).map_err(fail)?;
-    installing(archive, &stream, input)
+    let signed_here = if unsigned { sign_unsigned(archive, &file)? } else { None };
+    let sent = signed_here.as_ref().map_or(&file, |(file, _)| file);
+    let asked = ask(&Request::Install { everyone, yes }, Some(sent)).map_err(fail);
+    let done = asked.and_then(|(stream, input)| installing(archive, &stream, input));
+    if let Some((_, path)) = &signed_here {
+        let _ = fs::remove_file(path);
+    }
+    done
+}
+
+/// For `bundle install --unsigned`: `file`, which has no signature, signed
+/// with the developer key in a file of its own in the temporary folder,
+/// which only this person sees, and that file's path; or nothing, if it is
+/// signed already. One whose signature fails is refused: someone changed it
+/// after it was signed.
+fn sign_unsigned(archive: &str, file: &File) -> Result<Option<(File, PathBuf)>, Fail> {
+    match signed::check_archive(file) {
+        Ok(_) => return Ok(None),
+        Err(why) if why == signed::NO_SIGNATURE => {}
+        Err(why) => {
+            return Err(fail(format!(
+                "{archive}: {why}; --unsigned installs only a bundle with no signature at all"
+            )));
+        }
+    }
+    let key = signing_key(None)?;
+    // As bundle new does: so that bundled knows the key, made now or not.
+    let _ = tell_bundled(&key.public());
+    let path = std::env::temp_dir().join(format!(
+        "bundle-unsigned-{}-{}.{EXTENSION}",
+        std::process::id(),
+        util::now_ns()
+    ));
+    let time = build_time();
+    let created = util::time_text(time, "%Y-%m-%dT%H:%M:%SZ", true);
+    let made = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&path)
+        .map_err(|e| util::failed(&path.display(), e))
+        .and_then(|out| {
+            let mut out = io::BufWriter::new(out);
+            signed::sign_archive(file, &key, time, &created, &mut out)
+                .map_err(|why| fail(format!("{archive}: {why}")))?;
+            out.flush().map_err(|e| util::failed(&path.display(), e))?;
+            File::open(&path).map_err(|e| util::failed(&path.display(), e))
+        });
+    let signed = match made {
+        Ok(signed) => signed,
+        Err(why) => {
+            let _ = fs::remove_file(&path);
+            return Err(why);
+        }
+    };
+    println!(
+        "{archive} is not signed: no publisher vouches for it, so nothing says who made it, or \
+         that it is as they made it."
+    );
+    println!(
+        "signed here by {}, which only this computer trusts, to install it; a later version of \
+         it needs --unsigned too",
+        key_words(&key.public())
+    );
+    Ok(Some((signed, path)))
 }
 
 /// `bundle install ID`: bundled fetches the newest version a catalog
@@ -686,6 +755,12 @@ fn installing(
             }
             Answer::Error(why) => {
                 eprintln!("bundle: {what}: {why}");
+                if why.ends_with(signed::NO_SIGNATURE) && is_file(what) {
+                    eprintln!(
+                        "bundle: if you trust where it came from, `bundle install --unsigned \
+                         {what}` signs it with your developer key and installs it"
+                    );
+                }
                 return Ok(1);
             }
             _ => return Err(fail("bundled answered out of turn".into())),

@@ -18,7 +18,7 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 - [Nukesh guide and scripting](nukesh.md)
 - [Files, the directory hierarchy and /volumes](files.md)
-- [Bundles and permissions]()
+- [Bundles and permissions](bundles.md)
 - [Users and administration](users.md)
 - [Networking](networking.md)
 - [Updates, snapshots, backups and recovery]()
