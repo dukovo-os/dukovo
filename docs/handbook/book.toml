@@ -12,5 +12,5 @@ src = "src"
 create-missing = false
 
 [output.html]
-git-repository-url = "https://github.com/openlinuxsystems/orthros"
-edit-url-template = "https://github.com/openlinuxsystems/orthros/edit/main/docs/handbook/{path}"
+git-repository-url = "https://github.com/dukovo-os/dukovo"
+edit-url-template = "https://github.com/dukovo-os/dukovo/edit/main/docs/handbook/{path}"

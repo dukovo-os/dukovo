@@ -23,7 +23,7 @@ IPv6, the firewall and WireGuard. This page grows with each.
   (e1000(4), igb(4), igc(4), ixgbe(4), vmxnet3(4), ena(4), gve(4)).
   Every card is driven behind the IOMMU, through the same interface,
   and set up as a virtio card is
-  ([ADR 0197](https://github.com/openlinuxsystems/orthros/blob/main/docs/adr/0197-network-cards-share-one-driver-interface-and-copy-frames-through-slots.md)).
+  ([ADR 0197](https://github.com/dukovo-os/dukovo/blob/main/docs/adr/0197-network-cards-share-one-driver-interface-and-copy-frames-through-slots.md)).
   QEMU emulates the e1000, e1000e, igb and VMXNET3, which the
   `network-cards` boot test runs; the others are checked against
   models of the cards, and the first boot on each kind of machine is
@@ -56,7 +56,7 @@ IPv6, the firewall and WireGuard. This page grows with each.
   e1000e cards an IOMMU confines to e1000d(8), which drives them with
   the same driver in a process of its own; when it ends, the kernel
   stops the card and Spark starts it again
-  ([ADR 0198](https://github.com/openlinuxsystems/orthros/blob/main/docs/adr/0198-a-card-s-driver-can-run-as-a-program-on-a-device-capability.md)).
+  ([ADR 0198](https://github.com/dukovo-os/dukovo/blob/main/docs/adr/0198-a-card-s-driver-can-run-as-a-program-on-a-device-capability.md)).
   The `userspace-e1000` boot test kills it halfway through 2 MiB of
   traffic, which comes back whole.
 - **USB Ethernet adapters**: CDC-ECM and CDC-NCM on an xHCI
@@ -64,12 +64,12 @@ IPv6, the firewall and WireGuard. This page grows with each.
   in its class configuration (cdc_ether(4)). An adapter gets its
   interface when it is plugged in, after the PCI cards', and the same
   one back when it is plugged in again
-  ([ADR 0199](https://github.com/openlinuxsystems/orthros/blob/main/docs/adr/0199-usb-ethernet-adapters-share-the-driver-program-link.md)).
+  ([ADR 0199](https://github.com/dukovo-os/dukovo/blob/main/docs/adr/0199-usb-ethernet-adapters-share-the-driver-program-link.md)).
   The `usb-ethernet` boot test runs QEMU's `usb-net` through DHCP, 2 MiB
   of traffic, and an unplug.
 - **The TCP/IP stack runs in the kernel**, built on
   [smoltcp](https://github.com/smoltcp-rs/smoltcp) in safe Rust
-  ([ADR 0180](https://github.com/openlinuxsystems/orthros/blob/main/docs/adr/0180-the-tcp-ip-stack-runs-in-the-kernel-on-smoltcp.md)).
+  ([ADR 0180](https://github.com/dukovo-os/dukovo/blob/main/docs/adr/0180-the-tcp-ip-stack-runs-in-the-kernel-on-smoltcp.md)).
   It speaks Ethernet, ARP, IPv4, ICMP, TCP and UDP: it answers pings,
   the kernel's self-test pings with it, and programs connect, listen
   and send datagrams through it.
@@ -79,14 +79,14 @@ IPv6, the firewall and WireGuard. This page grows with each.
   over it delivers it too, before its call returns, with no switch to
   another thread, and a program may connect to itself as often as it
   likes
-  ([ADR 0185](https://github.com/openlinuxsystems/orthros/blob/main/docs/adr/0185-loopback-runs-in-the-senders-thread-and-the-network-joins-the-gate.md)).
+  ([ADR 0185](https://github.com/dukovo-os/dukovo/blob/main/docs/adr/0185-loopback-runs-in-the-senders-thread-and-the-network-joins-the-gate.md)).
   A TCP connection over `lo` passes its bytes straight from the sender
   into the receiver's buffer, in no packet, as Solaris's TCP fusion
   does, so a byte is copied twice, as on Linux
-  ([ADR 0186](https://github.com/openlinuxsystems/orthros/blob/main/docs/adr/0186-a-loopback-connection-passes-its-bytes-straight-across.md)).
+  ([ADR 0186](https://github.com/dukovo-os/dukovo/blob/main/docs/adr/0186-a-loopback-connection-passes-its-bytes-straight-across.md)).
   `ob bench` holds TCP and UDP over `lo` to Linux's speed.
 - **TCP behaves as Linux's** where a program or the other end can tell
-  ([ADR 0187](https://github.com/openlinuxsystems/orthros/blob/main/docs/adr/0187-tcp-keeps-quiet-connections-and-controls-congestion-as-linux-does.md)):
+  ([ADR 0187](https://github.com/dukovo-os/dukovo/blob/main/docs/adr/0187-tcp-keeps-quiet-connections-and-controls-congestion-as-linux-does.md)):
   CUBIC congestion control from a window of ten segments, a 200 ms
   floor on the retransmission timeout, timestamps from a random start
   for each connection, and keep-alive probes after two hours of quiet,
@@ -97,13 +97,13 @@ IPv6, the firewall and WireGuard. This page grows with each.
   A window that loses several segments resends each of them in about
   one round trip, from the SACK blocks the other end sends, and old
   duplicates are dropped by their timestamps (PAWS)
-  ([ADR 0188](https://github.com/openlinuxsystems/orthros/blob/main/docs/adr/0188-tcp-recovers-from-losses-with-sack-and-an-interface-holds-thousands-of-sockets.md)).
+  ([ADR 0188](https://github.com/dukovo-os/dukovo/blob/main/docs/adr/0188-tcp-recovers-from-losses-with-sack-and-an-interface-holds-thousands-of-sockets.md)).
 - **Thousands of sockets on each interface**: up to 16,384, in slots the
   interface adds as they fill. A connection in TIME-WAIT that its
   program closed keeps none of its buffers, and a client may connect
   again from the same port at once, as on Linux (ADR 0188).
 - **Sockets for programs, through network capabilities**
-  ([ADR 0183](https://github.com/openlinuxsystems/orthros/blob/main/docs/adr/0183-programs-reach-the-network-through-capabilities-of-its-ports.md)).
+  ([ADR 0183](https://github.com/dukovo-os/dukovo/blob/main/docs/adr/0183-programs-reach-the-network-through-capabilities-of-its-ports.md)).
   A program uses the network only if it was given a network
   capability, a range of ports with two rights: *send*, to connect out
   and send datagrams anywhere, and *receive*, to bind to and listen on
@@ -113,11 +113,11 @@ IPv6, the firewall and WireGuard. This page grows with each.
 - **Each card reaches only its own memory** behind the IOMMU: the
   driver copies frames through slots of DMA memory that belong to the
   card
-  ([ADR 0181](https://github.com/openlinuxsystems/orthros/blob/main/docs/adr/0181-virtio-net-copies-frames-through-slots-of-its-own.md)).
+  ([ADR 0181](https://github.com/dukovo-os/dukovo/blob/main/docs/adr/0181-virtio-net-copies-frames-through-slots-of-its-own.md)).
 - **smoltcp is patched** so that a socket's memory goes back to the
   kernel when the socket closes, and so that a full socket table or a
   stale socket never panics the kernel
-  ([ADR 0182](https://github.com/openlinuxsystems/orthros/blob/main/docs/adr/0182-the-kernel-patches-smoltcp-so-socket-memory-comes-back.md)).
+  ([ADR 0182](https://github.com/dukovo-os/dukovo/blob/main/docs/adr/0182-the-kernel-patches-smoltcp-so-socket-memory-comes-back.md)).
   `./ob crates` fetches it from crates.io and applies the patch, and
   every build does that first.
 - **Tested against broken and hostile networks**: `ob test` gives two
@@ -126,7 +126,7 @@ IPv6, the firewall and WireGuard. This page grows with each.
   connection between them must work afterwards. Kani proves that the
   stack reads any Ethernet, ARP, IPv4, ICMP and UDP header, and any TCP
   option, without a panic and writes it back the same
-  ([ADR 0189](https://github.com/openlinuxsystems/orthros/blob/main/docs/adr/0189-frames-changed-at-random-break-neither-stack-and-kani-proves-the-headers.md)).
+  ([ADR 0189](https://github.com/dukovo-os/dukovo/blob/main/docs/adr/0189-frames-changed-at-random-break-neither-stack-and-kani-proves-the-headers.md)).
 
 - **The C library's BSD sockets**: `socket`, `bind`, `listen`,
   `connect`, `accept`, `send`, `recv`, `sendto`, `recvfrom`, `sendmsg`,
@@ -134,7 +134,7 @@ IPv6, the firewall and WireGuard. This page grows with each.
   and `shutdown` work on `AF_INET` TCP and UDP sockets, as radix-posix(7)
   describes. A call the program's capabilities do not allow fails with
   `EACCES`
-  ([ADR 0184](https://github.com/openlinuxsystems/orthros/blob/main/docs/adr/0184-services-and-the-c-library-use-the-network-capabilities-they-were-given.md)).
+  ([ADR 0184](https://github.com/dukovo-os/dukovo/blob/main/docs/adr/0184-services-and-the-c-library-use-the-network-capabilities-they-were-given.md)).
 - **Services get the network their files ask for**: under
   `[permissions]`, a service file's `network.outbound = true` lets it
   connect out, and `network.listen` names the ports it may listen on
@@ -145,88 +145,88 @@ IPv6, the firewall and WireGuard. This page grows with each.
   `ip link` and `ip route` show the interfaces, their addresses and
   routes, `ip address add` and `ip route add default via` set a card
   up, and `ss` lists the TCP and UDP sockets
-  ([ADR 0190](https://github.com/openlinuxsystems/orthros/blob/main/docs/adr/0190-interfaces-are-shown-as-linux-shows-them-and-set-up-through-the-network-capability.md)).
+  ([ADR 0190](https://github.com/dukovo-os/dukovo/blob/main/docs/adr/0190-interfaces-are-shown-as-linux-shows-them-and-set-up-through-the-network-capability.md)).
   The interfaces are in `/kernel/class/net` and the counts, routes and
   sockets in `/processes/net`, in Linux's formats.
 - **`netd` sets every card up by DHCP** at boot, or as
   `/system/settings/network` says, keeps each lease across restarts and
   reboots, and writes the DNS servers where `/etc/resolv.conf` leads
-  ([ADR 0191](https://github.com/openlinuxsystems/orthros/blob/main/docs/adr/0191-netd-sets-each-card-up-by-dhcp-or-as-its-settings-say.md)).
+  ([ADR 0191](https://github.com/dukovo-os/dukovo/blob/main/docs/adr/0191-netd-sets-each-card-up-by-dhcp-or-as-its-settings-say.md)).
   What a DHCP server says is checked before it reaches the routes or
   the resolver.
 - **TLS for programs in Rust**, rustls on ring, and the root
   certificates Mozilla trusts in
   `/system/resources/certificates/ca-certificates.crt`, which
   `/etc/ssl/certs/ca-certificates.crt` and `/etc/ssl/cert.pem` lead to
-  ([ADR 0192](https://github.com/openlinuxsystems/orthros/blob/main/docs/adr/0192-tls-is-rustls-on-ring-and-mozillas-roots-are-a-file-of-the-systems.md)).
+  ([ADR 0192](https://github.com/dukovo-os/dukovo/blob/main/docs/adr/0192-tls-is-rustls-on-ring-and-mozillas-roots-are-a-file-of-the-systems.md)).
   dukovo-certificates(7) says how to trust an authority of your own.
 - **`resolved` looks every name up**, at 127.0.0.53, which
   `/etc/resolv.conf` names: it keeps answers as long as they say, asks
   DHCP's servers or your own in turn, over DNS over TLS when they
   answer it, and over DNS over HTTPS when you name an `https://` URL
-  ([ADR 0193](https://github.com/openlinuxsystems/orthros/blob/main/docs/adr/0193-resolved-caches-every-programs-lookups-and-asks-over-tls-when-it-can.md)).
+  ([ADR 0193](https://github.com/dukovo-os/dukovo/blob/main/docs/adr/0193-resolved-caches-every-programs-lookups-and-asks-over-tls-when-it-can.md)).
 - **`timed` keeps the clock right** over Network Time Security, which
   authenticates every answer, and writes the real-time clock; the IANA
   time zone database and English's locales come with it
-  ([ADR 0194](https://github.com/openlinuxsystems/orthros/blob/main/docs/adr/0194-the-clock-is-a-capability-and-timed-sets-it-over-nts.md)).
+  ([ADR 0194](https://github.com/dukovo-os/dukovo/blob/main/docs/adr/0194-the-clock-is-a-capability-and-timed-sets-it-over-nts.md)).
 - **curl and libcurl**, 8.23, on rustls, with zlib and zstd
-  ([ADR 0195](https://github.com/openlinuxsystems/orthros/blob/main/docs/adr/0195-curl-and-libcurl-use-rustls-through-rustls-ffi.md)).
+  ([ADR 0195](https://github.com/dukovo-os/dukovo/blob/main/docs/adr/0195-curl-and-libcurl-use-rustls-through-rustls-ffi.md)).
 - **`netlog` sends the log to another computer** over UDP as it is
   written, to debug a machine whose screen shows nothing
-  ([ADR 0196](https://github.com/openlinuxsystems/orthros/blob/main/docs/adr/0196-netlog-sends-the-kernel-log-over-udp.md)).
+  ([ADR 0196](https://github.com/dukovo-os/dukovo/blob/main/docs/adr/0196-netlog-sends-the-kernel-log-over-udp.md)).
 - **IPv6, with nothing to set**: each card makes its link-local address
   and, from what its routers advertise, a stable address that is the
   same on the same network at every boot but tells no network its MAC
   address (RFC 7217), and temporary ones it sends from (RFC 8981), each
   tested before it is used; it takes the routers, DNS servers and MTU
   the adverts carry
-  ([ADR 0331](https://github.com/openlinuxsystems/orthros/blob/main/docs/adr/0331-the-kernel-makes-each-cards-ipv6-addresses-by-slaac.md)).
+  ([ADR 0331](https://github.com/dukovo-os/dukovo/blob/main/docs/adr/0331-the-kernel-makes-each-cards-ipv6-addresses-by-slaac.md)).
   netd asks DHCPv6 for addresses or settings when the routers say to
-  ([ADR 0335](https://github.com/openlinuxsystems/orthros/blob/main/docs/adr/0335-netd-asks-dhcpv6-when-routers-say-to.md)).
+  ([ADR 0335](https://github.com/dukovo-os/dukovo/blob/main/docs/adr/0335-netd-asks-dhcpv6-when-routers-say-to.md)).
 - **IPv6 sockets** that take IPv4 too unless `IPV6_V6ONLY`, as on
   Linux, and lookups that ask for A and AAAA records and order them as
   RFC 6724 does, so curl, ssh and git reach names with only AAAA records
-  ([ADR 0332](https://github.com/openlinuxsystems/orthros/blob/main/docs/adr/0332-ipv6-sockets-take-ipv4-too-and-lookups-ask-for-both.md)).
+  ([ADR 0332](https://github.com/dukovo-os/dukovo/blob/main/docs/adr/0332-ipv6-sockets-take-ipv4-too-and-lookups-ask-for-both.md)).
 - **Bridges and VLANs**, made with iproute2's commands: `ip link add br0
   type bridge`, `ip link set net0 master br0`, `ip link add link net0
   name net0.7 type vlan id 7`; netd sets them up as cards
-  ([ADR 0333](https://github.com/openlinuxsystems/orthros/blob/main/docs/adr/0333-bridges-and-vlans-are-kernel-links-joined-through-each-stacks-hooks.md)).
+  ([ADR 0333](https://github.com/dukovo-os/dukovo/blob/main/docs/adr/0333-bridges-and-vlans-are-kernel-links-joined-through-each-stacks-hooks.md)).
 - **A firewall that keeps what is open in step with what runs**: other
   machines reach what a service listens on while it runs, and what the
   rules allow; nothing else they start gets in, and what is dropped is
   logged. What you run yourself listens for your machine alone until
   `firewall allow program PATH` lets others reach it
-  ([ADR 0334](https://github.com/openlinuxsystems/orthros/blob/main/docs/adr/0334-the-firewall-denies-inbound-unless-a-service-listens-or-a-rule-allows.md)).
+  ([ADR 0334](https://github.com/dukovo-os/dukovo/blob/main/docs/adr/0334-the-firewall-denies-inbound-unless-a-service-listens-or-a-rule-allows.md)).
 - **Finding the machines beside it**: discoverd(8) answers for the
   machine's `NAME.local` by multicast DNS, so `ping studio.local` works
   from the machines that ask it, as macOS, Windows, Linux with Avahi
   and other Dukovo machines do, and finds their
   names, the services they offer by DNS-SD and the devices that answer
   WS-Discovery, which discover(1) lists
-  ([ADR 0338](https://github.com/openlinuxsystems/orthros/blob/main/docs/adr/0338-discoverd-finds-what-the-local-networks-have-with-mdns-and-ws-discovery.md)).
+  ([ADR 0338](https://github.com/dukovo-os/dukovo/blob/main/docs/adr/0338-discoverd-finds-what-the-local-networks-have-with-mdns-and-ws-discovery.md)).
   ping(8) is anyone's, through a ping socket, and multicast works as on
   Linux
-  ([ADR 0336](https://github.com/openlinuxsystems/orthros/blob/main/docs/adr/0336-multicast-groups-packet-info-and-ping-sockets-on-smoltcp.md)).
+  ([ADR 0336](https://github.com/dukovo-os/dukovo/blob/main/docs/adr/0336-multicast-groups-packet-info-and-ping-sockets-on-smoltcp.md)).
 - **WireGuard**, with wg-quick's files and wireguard-tools' `wg`:
   wgd(8) brings up an interface for each file in
   `/system/state/wireguard` and carries it to its peers, Linux's
   WireGuard among them, on Cloudflare's boringtun
-  ([ADR 0340](https://github.com/openlinuxsystems/orthros/blob/main/docs/adr/0340-wgd-runs-wireguard-on-boringtun.md)),
+  ([ADR 0340](https://github.com/dukovo-os/dukovo/blob/main/docs/adr/0340-wgd-runs-wireguard-on-boringtun.md)),
   through the kernel's tunnels
-  ([ADR 0339](https://github.com/openlinuxsystems/orthros/blob/main/docs/adr/0339-tunnels-are-ip-links-whose-packets-a-program-carries.md)).
+  ([ADR 0339](https://github.com/dukovo-os/dukovo/blob/main/docs/adr/0339-tunnels-are-ip-links-whose-packets-a-program-carries.md)).
 - **The administrator's tools**: dig and host, whois, OpenBSD's nc,
   nic for what each card says of its link, as ethtool, openssl and
   iperf3, traceroute and mtr, which run without privilege as on
   Linux, from the ICMP errors the kernel gives sockets, and tcpdump, on
   the kernel's packet captures and their filters
-  ([ADR 0341](https://github.com/openlinuxsystems/orthros/blob/main/docs/adr/0341-dig-host-whois-nc-and-nic.md),
-  [ADR 0342](https://github.com/openlinuxsystems/orthros/blob/main/docs/adr/0342-openssl-and-iperf3.md),
-  [ADR 0345](https://github.com/openlinuxsystems/orthros/blob/main/docs/adr/0345-traceroute-mtr-and-icmp-errors-for-sockets.md),
-  [ADR 0346](https://github.com/openlinuxsystems/orthros/blob/main/docs/adr/0346-packet-capture-libpcap-and-tcpdump.md)).
+  ([ADR 0341](https://github.com/dukovo-os/dukovo/blob/main/docs/adr/0341-dig-host-whois-nc-and-nic.md),
+  [ADR 0342](https://github.com/dukovo-os/dukovo/blob/main/docs/adr/0342-openssl-and-iperf3.md),
+  [ADR 0345](https://github.com/dukovo-os/dukovo/blob/main/docs/adr/0345-traceroute-mtr-and-icmp-errors-for-sockets.md),
+  [ADR 0346](https://github.com/dukovo-os/dukovo/blob/main/docs/adr/0346-packet-capture-libpcap-and-tcpdump.md)).
 - **An app reaches the local network only if you let it**: a bundle's
   network.local permission, asked for when it first runs, is a right of
   its own, apart from reaching the internet
-  ([ADR 0337](https://github.com/openlinuxsystems/orthros/blob/main/docs/adr/0337-the-local-right-reaches-the-networks-the-machine-is-on.md)).
+  ([ADR 0337](https://github.com/dukovo-os/dukovo/blob/main/docs/adr/0337-the-local-right-reaches-the-networks-the-machine-is-on.md)).
 
 Native programs use the sockets through radix-network(2) and
 radix-file(2).

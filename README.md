@@ -53,8 +53,8 @@ There is nothing to install yet.
 You need an x86-64 Linux machine. Everything else is checked for you.
 
 ```sh
-git clone https://github.com/openlinuxsystems/orthros
-cd orthros
+git clone https://github.com/dukovo-os/dukovo
+cd dukovo
 ./ob setup     # installs the pinned Rust toolchain, then lists any missing tools
 ./ob run       # builds the kernel and boot image, then boots it in QEMU
 ```

@@ -9,9 +9,9 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 Please report security problems privately through GitHub's private
 vulnerability reporting: open the repository's
-[Security tab](https://github.com/openlinuxsystems/orthros/security) and
+[Security tab](https://github.com/dukovo-os/dukovo/security) and
 choose **Report a vulnerability**, or go straight to
-<https://github.com/openlinuxsystems/orthros/security/advisories/new>.
+<https://github.com/dukovo-os/dukovo/security/advisories/new>.
 Only the maintainers ([GOVERNANCE.md](GOVERNANCE.md)) can see the report.
 
 Do not open a public issue, pull request or discussion about a

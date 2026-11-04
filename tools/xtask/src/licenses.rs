@@ -344,7 +344,7 @@ pub fn bundle(ctx: &Ctx, ports: &Ports, port: &Port, folder: &Path, created: i64
             name: spec.id.clone(),
             version: recipe.version.clone(),
             download: format!(
-                "git+https://github.com/openlinuxsystems/orthros@{commit}#ports/{}",
+                "git+https://github.com/dukovo-os/dukovo@{commit}#ports/{}",
                 recipe.name
             ),
             license: recipe.license.clone(),
@@ -546,8 +546,7 @@ fn listed_packages(
                 package.notices = notice_files(&path);
             }
             Source::Path(path) => {
-                package.download =
-                    format!("git+https://github.com/openlinuxsystems/orthros@{commit}");
+                package.download = format!("git+https://github.com/dukovo-os/dukovo@{commit}");
                 package.comment = "Part of Dukovo.".into();
                 package.notices = declared_notices(&path)?;
                 package.notices.extend(notice_files(&path));
@@ -952,7 +951,7 @@ fn c_packages(ctx: &Ctx, ports: &Ports) -> Result<Vec<Package>> {
         version: VERSION.into(),
         license: "Apache-2.0 OR MIT".into(),
         area: Area::Kernel,
-        download: format!("git+https://github.com/openlinuxsystems/orthros@{commit}"),
+        download: format!("git+https://github.com/dukovo-os/dukovo@{commit}"),
         sha256: None,
         notices: Vec::new(),
         comment: format!("Part of Dukovo: the C test programs of {}.", userspace::POSIX_SOURCES),
@@ -1346,14 +1345,14 @@ impl Document {
     fn image(commit: &str, created: i64) -> Document {
         let name = format!("dukovo-{VERSION}-x86_64");
         Document {
-            namespace: format!("https://github.com/openlinuxsystems/orthros/spdx/{name}-{commit}"),
+            namespace: format!("https://github.com/dukovo-os/dukovo/spdx/{name}-{commit}"),
             name,
             created,
             top: Top {
                 id: "dukovo".into(),
                 name: "dukovo".into(),
                 version: VERSION.into(),
-                download: format!("git+https://github.com/openlinuxsystems/orthros@{commit}"),
+                download: format!("git+https://github.com/dukovo-os/dukovo@{commit}"),
                 license: "NOASSERTION".into(),
                 comment: format!(
                     "The Dukovo {VERSION} x86-64 boot image. Each component below keeps its \
