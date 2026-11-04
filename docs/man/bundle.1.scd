@@ -29,7 +29,7 @@ bundle - make, check, sign, pack, install, update and run bundles, and say what 
 
 *bundle feed* _folder_ [_file_*.dkv*...] [*--key* _secret-key-file_] [*--days* _n_]
 
-*bundle install* _file_*.dkv* [*--for-everyone*] [*--yes*]
+*bundle install* _file_*.dkv* [*--unsigned*] [*--for-everyone*] [*--yes*]
 
 *bundle install* _id_ [*--from* _catalog_] [*--for-everyone*] [*--yes*]
 
@@ -171,7 +171,7 @@ folder and as a _.dkv_ file, which is a zip of the folder.
 	the address *update.feed* names; _folder_*/repository* holds what it
 	signed and _folder_*/store* the files, which are signed once each.
 
-*install* _file_*.dkv* [*--for-everyone*] [*--yes*]
+*install* _file_*.dkv* [*--unsigned*] [*--for-everyone*] [*--yes*]
 	Installs the bundle for you, in your _applications_ folder, or with
 	*--for-everyone*, which only an administrator may, through
 	*elevate*(8), in _/applications_. *bundled*(8) unpacks and checks it,
@@ -186,7 +186,8 @@ folder and as a _.dkv_ file, which is a zip of the folder.
 	installs after a warning, and from then on only that key may install
 	that ID. A bundle that runs services installs only for everyone:
 	its services run as accounts of their own, which the sheet names
-	(*bundled*(8), ADR 0385).
+	(*bundled*(8), ADR 0385). A file with no signature is refused, unless
+	*--unsigned* says to install it anyway (UNSIGNED BUNDLES).
 
 *install* _id_ [*--from* _catalog_] [*--for-everyone*] [*--yes*]
 	Fetches the newest version of _id_ from the first catalog that lists
@@ -543,6 +544,20 @@ feed lists of the bundle's ID and line, and installs it as any file is:
 signed by the key the bundle is bound to, with every check an install
 has. *bundle history* says *from its feed*. *bundle feed* makes and
 signs such a feed.
+
+# UNSIGNED BUNDLES
+
+A bundle with no signature at all, such as one zipped by hand, is
+refused: nothing says who made it, or that it is as they made it.
+*bundle install --unsigned* _file_*.dkv* is the override, given for
+each bundle (ADR 0391). It warns, then signs the file with your
+developer key, in a copy in your temporary folder, which only you see,
+and installs that copy, as your own build: the bundle's ID is bound to
+your developer key, so a later version of it needs *--unsigned* too,
+and the publisher's own signed version installs only once this one is
+removed. A file whose signature fails is never overridden: someone
+changed it after it was signed. A folder with no signature is signed by
+*bundle pack*, which makes its file.
 
 # FILES
 

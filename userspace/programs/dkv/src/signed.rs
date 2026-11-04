@@ -331,7 +331,7 @@ pub fn unpack<S: Source + ?Sized>(
         let entry = archive.file(name).ok_or_else(|| missing.to_string())?;
         archive.read_small(entry, max)
     };
-    let signature = small(SIGNATURE, SIGNATURE_MAX, "it is not signed: it has no signature")?;
+    let signature = small(SIGNATURE, SIGNATURE_MAX, NO_SIGNATURE)?;
     let list = small(LIST, LIST_MAX, &format!("it has no {LIST}, the list its signature signs"))?;
     let (key, trusted, listed) = check_list(&list, &signature)?;
     let manifest =
@@ -404,6 +404,109 @@ pub fn unpack<S: Source + ?Sized>(
         }
     }
     Ok(Checked { key, trusted, manifest, files, bytes })
+}
+
+/// Why a `.dkv` archive with no signature at all is refused: the one
+/// refusal `bundle install --unsigned` overrides (ADR 0391).
+pub const NO_SIGNATURE: &str = "it is not signed: it has no signature";
+
+/// Signs a `.dkv` archive that carries no signature and no list, as `bundle
+/// install --unsigned` does (ADR 0391): reads its manifest and every file,
+/// adds an SBOM if it has none (made at `created`), and writes to `out` the
+/// archive signed with `key`, laid out as [`pack`] lays one out, a file at
+/// a time. An archive that carries either is refused: what this signs must
+/// be what nobody signed, never what someone signed and another changed.
+pub fn sign_archive<S: Source + ?Sized>(
+    source: &S,
+    key: &SecretKey,
+    timestamp: i64,
+    created: &str,
+    out: impl Write,
+) -> Result<Checked, String> {
+    let archive = Archive::read(source)?;
+    if archive.file(SIGNATURE).is_some() || archive.file(LIST).is_some() {
+        return Err(format!(
+            "it carries a {SIGNATURE} or a {LIST}: only a bundle with neither is signed here"
+        ));
+    }
+    let manifest_entry = archive.file(MANIFEST).ok_or_else(|| format!("it has no {MANIFEST}"))?;
+    let manifest_bytes = archive.read_small(manifest_entry, MANIFEST_MAX)?;
+    let manifest = parse_manifest(&manifest_bytes)?;
+    let sbom_text = match archive.file(sbom::SBOM) {
+        Some(entry) => {
+            let bytes = archive.read_small(entry, sbom::SBOM_MAX)?;
+            let text =
+                std::str::from_utf8(&bytes).map_err(|_| format!("{}: not text", sbom::SBOM))?;
+            sbom::check(text)?;
+            None
+        }
+        None => Some(sbom::write(&manifest, created)),
+    };
+    let files: Vec<&zip::Entry> = archive.entries.iter().filter(|e| !e.folder).collect();
+    if files.len() + usize::from(sbom_text.is_some()) > zip::ENTRIES_MAX - 2 {
+        return Err(format!("more files than a bundle holds: {}", zip::ENTRIES_MAX - 2));
+    }
+    let read = |entry: &zip::Entry| -> Result<Vec<u8>, String> {
+        let mut bytes = Vec::new();
+        archive.unpack(entry, &mut |chunk| {
+            bytes.extend_from_slice(chunk);
+            Ok(())
+        })?;
+        Ok(bytes)
+    };
+    let mut listed = Vec::with_capacity(files.len() + 1);
+    let mut bytes = 0;
+    for entry in &files {
+        sums::check_path(&entry.path)?;
+        let mut hasher = Hasher::default();
+        archive.unpack(entry, &mut |chunk| {
+            hasher.update(chunk);
+            Ok(())
+        })?;
+        bytes += entry.size;
+        listed.push(Entry { path: entry.path.clone(), sha256: hasher.finish() });
+    }
+    if let Some(text) = &sbom_text {
+        bytes += text.len() as u64;
+        listed.push(Entry { path: sbom::SBOM.into(), sha256: sums::sha256(text.as_bytes()) });
+    }
+    let list = sums::write(&mut listed);
+    let trusted = trusted_comment(&manifest, timestamp);
+    let signature = key
+        .sign(list.as_bytes(), &format!("{SIGNED_BY}{}", key.public().encoded()), &trusted)
+        .file();
+    let programs: BTreeSet<&str> = manifest
+        .programs
+        .iter()
+        .flat_map(|(_, program)| program.path.iter().map(|(_, path)| path.0.as_str()))
+        .collect();
+    let mut writer = zip::Writer::new(out);
+    let first = [
+        (MANIFEST, &manifest_bytes[..]),
+        (SIGNATURE, signature.as_bytes()),
+        (LIST, list.as_bytes()),
+    ];
+    for (path, data) in first {
+        writer.add(&zip::Input { path, executable: false, data }).map_err(|e| e.to_string())?;
+    }
+    for listed in listed.iter().filter(|e| e.path != MANIFEST) {
+        let (data, executable) = match archive.file(&listed.path) {
+            Some(entry) => {
+                let data = read(entry)?;
+                // As it was hashed: the archive is read twice.
+                if sums::sha256(&data) != listed.sha256 {
+                    return Err(format!("{}: changed while it was signed", listed.path));
+                }
+                (data, entry.executable || programs.contains(listed.path.as_str()))
+            }
+            None => (sbom_text.as_deref().unwrap_or_default().as_bytes().to_vec(), false),
+        };
+        writer
+            .add(&zip::Input { path: &listed.path, executable, data: &data })
+            .map_err(|e| e.to_string())?;
+    }
+    writer.finish().map_err(|e| e.to_string())?;
+    Ok(Checked { key: key.public(), trusted, manifest, files: listed.len(), bytes })
 }
 
 /// Packs the signed bundle in `folder` into a `.dkv` archive written to
@@ -549,6 +652,45 @@ mod tests {
         writer.add(&zip::Input { path: "bin/extra", executable: true, data: b"x" }).unwrap();
         let added = writer.finish().unwrap();
         assert!(check_archive(&added[..]).unwrap_err().contains("added after signing"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// The `.dkv` archive of the files in `bundle`, as another zip tool
+    /// would make it, with neither list nor signature.
+    fn unsigned(bundle: &Path) -> Vec<u8> {
+        let mut writer = zip::Writer::new(Vec::new());
+        for (path, _, executable) in folder_files(bundle).unwrap() {
+            let data = fs::read(bundle.join(&path)).unwrap();
+            writer.add(&zip::Input { path: &path, executable, data: &data }).unwrap();
+        }
+        writer.finish().unwrap()
+    }
+
+    #[test]
+    fn an_archive_with_no_signature_is_signed_only_whole() {
+        let dir = folder("unsigned");
+        let bundle = dir.join("hello");
+        let bytes = unsigned(&bundle);
+        assert_eq!(check_archive(&bytes[..]).unwrap_err(), NO_SIGNATURE);
+        let mut signed = Vec::new();
+        let made =
+            sign_archive(&bytes[..], &key(5), 7, "2026-11-04T00:00:00Z", &mut signed).unwrap();
+        // Its three files and the SBOM it lacked.
+        assert_eq!(made.files, 4);
+        let checked = check_archive(&signed[..]).unwrap();
+        assert_eq!(checked.key, key(5).public());
+        assert_eq!(checked.signed_at(), Some(7));
+        assert_eq!(checked.manifest.id.0, "org.example.hello");
+        let archive = Archive::read(&signed[..]).unwrap();
+        assert!(archive.file("bin/hello").unwrap().executable);
+        assert!(archive.file(sbom::SBOM).is_some());
+        // One signed already, or with a list left in it, is not signed again.
+        let err = sign_archive(&signed[..], &key(5), 7, "x", Vec::new()).unwrap_err();
+        assert!(err.contains("only a bundle with neither"), "{err}");
+        // Nor one without a good manifest.
+        fs::write(bundle.join(MANIFEST), "{}").unwrap();
+        let err = sign_archive(&unsigned(&bundle)[..], &key(5), 7, "x", Vec::new()).unwrap_err();
+        assert!(err.starts_with(MANIFEST), "{err}");
         let _ = fs::remove_dir_all(&dir);
     }
 }

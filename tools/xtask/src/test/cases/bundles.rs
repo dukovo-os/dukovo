@@ -10,15 +10,17 @@
 //! know its key: no, then --yes. Through elevate alice installs it for
 //! everyone, which binds its ID to her key for everyone: bob's own bundle
 //! of that ID is refused. Removing asks about the data: alice's goes,
-//! bob keeps his, and the one for everyone goes through elevate. The
-//! power button ends it.
+//! bob keeps his, and the one for everyone goes through elevate. A
+//! bundle bob zips by hand, with no signature, is refused, and installs
+//! with --unsigned, after its warning, signed by his developer key (ADR
+//! 0391). The power button ends it.
 
 use super::super::*;
 
 /// The test.
 pub const CASE: Case = Case {
     name: "bundles",
-    about: "bundled installs, seals and removes bundles (ADR 0223): alice makes, packs and installs one signed by her developer key with no warning; it is root's and read-only, and bundle list and info show it; bob installs her file only after the warning that this computer does not know its key; an administrator installs it for everyone through elevate, after which bob's own bundle of the same ID is refused; removing asks about the data, and deletes it or keeps it",
+    about: "bundled installs, seals and removes bundles (ADR 0223): alice makes, packs and installs one signed by her developer key with no warning; it is root's and read-only, and bundle list and info show it; bob installs her file only after the warning that this computer does not know its key; an administrator installs it for everyone through elevate, after which bob's own bundle of the same ID is refused; removing asks about the data, and deletes it or keeps it; an unsigned bundle is refused, and installs only with --unsigned, after its warning (ADR 0391)",
     firmware: Firmware::Uefi,
     media: Media::Usb,
     // As signin: Spark starts the services, bundled among them, and
@@ -172,6 +174,28 @@ fn bundles(vm: &mut Vm, case: &Case) -> Result<(), String> {
     answer_prompt(vm, "$", "clear; elevate bundle remove --for-everyone org.example.notes; bundle list")?;
     vm.expect_screen(&["removed org.example.notes 0.1.0", "no bundles are installed"])?;
     vm.expect_anywhere("bundled: root removed org.example.notes 0.1.0 for everyone")?;
+    // A bundle zipped by hand, with no signature: refused, then installed
+    // with the override, signed by bob's developer key (ADR 0391).
+    vm.press(&["alt-f2"])?;
+    answer_prompt(
+        vm,
+        "$",
+        "clear; cd; bundle new org.example.loose loose > /dev/null; printf '#!/bin/sh\\necho \
+         loose ran\\n' > loose/bin/loose; chmod 755 loose/bin/loose; (cd loose && zip -qrX \
+         ../loose.dkv .); bundle install --yes loose.dkv; echo \"status $?\"",
+    )?;
+    vm.expect_screen(&[
+        "bundle: loose.dkv: it is not signed: it has no signature",
+        "bundle: if you trust where it came from",
+        "status 1",
+    ])?;
+    answer_prompt(vm, "$", "clear; bundle install --unsigned --yes loose.dkv; loose")?;
+    vm.expect_screen(&[
+        "loose.dkv is not signed: no publisher vouches for it",
+        "signed here by your developer key RW",
+        "installed org.example.loose 0.1.0, for you",
+        "loose ran",
+    ])?;
     vm.press_power_button()?;
     vm.expect("spark: every service has stopped")?;
     vm.expect("Power: `spark` asked to power off the machine; syncing the filesystems")?;
