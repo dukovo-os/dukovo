@@ -163,6 +163,43 @@ impl Opened {
     /// No path.
     pub const NONE: Opened = Opened { len: 0, state: Opened::UNKNOWN, bytes: [0; OPENED_MAX] };
 
+    /// Writes at `place`, which is not yet written, where an object for
+    /// `at` was opened ([`Opened::set`]): a path from a directory starts
+    /// as a copy of the directory's, put in place of the zeros it would
+    /// otherwise start as.
+    ///
+    /// # Safety
+    ///
+    /// `place` must be valid for writes and aligned, and nothing may read
+    /// it until this returns.
+    #[allow(unsafe_code)]
+    unsafe fn write_at(place: *mut Opened, at: &Location, from: Option<(&Opened, &[u8])>) {
+        match from {
+            Some((directory, path)) if at.mount_path().is_none() => {
+                // SAFETY: the caller's guarantee; the bytes are written
+                // whole before the reference to the whole is made.
+                unsafe {
+                    // Two copies of fixed lengths are plain moves, as in
+                    // `set`.
+                    let bytes = (&raw mut (*place).bytes).cast::<u8>();
+                    let from = directory.bytes.as_ptr();
+                    core::ptr::copy_nonoverlapping(from, bytes, 64);
+                    core::ptr::copy_nonoverlapping(from.add(64), bytes.add(64), OPENED_MAX - 64);
+                    (&raw mut (*place).len).write(directory.len);
+                    (&raw mut (*place).state).write(directory.state);
+                    (*place).join(path);
+                }
+            }
+            _ => {
+                // SAFETY: the caller's guarantee.
+                unsafe {
+                    place.write(Opened::NONE);
+                    (*place).set(at, from);
+                }
+            }
+        }
+    }
+
     /// Makes it where an object for `at` was opened by a path from a
     /// directory: `from` holds where the directory was opened and the
     /// path; it stays none if that is none. A mount's root has its own
@@ -298,16 +335,28 @@ impl FileObject {
     /// from a directory and acting for `name`: `from` holds where the
     /// directory was opened and the path. A mount's root has its own path,
     /// which the tree keeps.
-    #[allow(unsafe_code)]
     pub fn opened(
         at: Location,
         description: Description,
         from: Option<(&Opened, &[u8])>,
         name: Identity,
     ) -> Option<FileRef> {
+        FileObject::opened_as(at, None, description, from, name)
+    }
+
+    /// [`FileObject::opened`], with the node's kind when the caller has
+    /// asked it already: asking is a call through the node's filesystem.
+    #[allow(unsafe_code)]
+    pub fn opened_as(
+        at: Location,
+        kind: Option<Kind>,
+        description: Description,
+        from: Option<(&Opened, &[u8])>,
+        name: Identity,
+    ) -> Option<FileRef> {
         // Only a node of a pipe's, a socket's or a character device's kind
         // can be one.
-        let special = match at.node.kind() {
+        let special = match kind.unwrap_or_else(|| at.node.kind()) {
             Kind::Pipe if pipe::end_of(&at.node).is_some() => Special::Pipe,
             Kind::Socket if socket::socket_of(&at.node).is_some() => Special::Socket,
             Kind::Socket if inet::socket_of(&at.node).is_some() => Special::Inet,
@@ -337,18 +386,16 @@ impl FileObject {
         // in a `rep movsq` whose start costs more than the copy.
         // SAFETY: `place` is the new allocation's, which nothing else can
         // reach yet; each field is written once, before anything reads it.
-        let made = unsafe {
+        unsafe {
             (&raw mut (*place).at).write(at);
             (&raw mut (*place).offset).write(Mutex::new(offset));
             (&raw mut (*place).flags).write(AtomicU32::new(description.bits()));
             (&raw mut (*place).locked).write(AtomicBool::new(false));
             (&raw mut (*place).special).write(special);
             (&raw mut (*place).next).write(SpinLock::new(None));
-            (&raw mut (*place).opened).write(Opened::NONE);
             (&raw mut (*place).name).write(name);
-            &mut *place
-        };
-        made.opened.set(&made.at, from);
+            Opened::write_at(&raw mut (*place).opened, &(*place).at, from);
+        }
         // SAFETY: written just above.
         Some(unsafe { object.assume_init() })
     }

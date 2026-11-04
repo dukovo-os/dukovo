@@ -455,10 +455,13 @@ pub fn directory_method(
             if !missing.is_empty() {
                 return Err(cap_error(CapError::MissingRights(missing)));
             }
+            // The node's kind, unless it is replaced below.
+            let mut known = Some(kind);
             // A filesystem's named pipe, device node or socket's name opens
             // what it stands for, on a read-only mount too (ADR 0135).
-            if let Some(node) = stands_for(&at, wanted, description.non_blocking)? {
+            if let Some(node) = stands_for(&at, kind, wanted, description.non_blocking)? {
                 at.node = node;
+                known = None;
             } else if object_kind == ObjectKind::File && wanted.contains(Rights::WRITE) {
                 at.writable().map_err(fs::status)?;
             }
@@ -467,7 +470,7 @@ pub fn directory_method(
             let rights = wanted.union(Rights::COPY).union(Rights::TRANSFER).union(bypass);
             // The bytes the VFS took as a path above.
             let from = Some((&dir.opened, path.bytes()));
-            let object = FileObject::opened(at, description, from, dir.name.clone())
+            let object = FileObject::opened_as(at, known, description, from, dir.name.clone())
                 .ok_or(error(Kernel::NoMemory))?;
             let terminal = object.tty_handle().is_some().then(|| object.at.node.clone());
             install_file(user, to, object_kind, rights, object, close_on_exec)?;
@@ -2357,9 +2360,14 @@ fn seek(file: &FileObject, offset: i64, whence: Whence) -> Result<u64> {
 /// What the node `at` opened stands for, when it is a filesystem's named
 /// pipe (an end of its pipe, opened with `rights`), device node (the
 /// device, which the kernel must have) or socket's name (which no open
-/// takes: no_device, ENXIO); none for any other node.
-fn stands_for(at: &Location, rights: Rights, non_blocking: bool) -> Result<Option<NodeRef>> {
-    let kind = at.node.kind();
+/// takes: no_device, ENXIO); none for any other node. `kind` is the
+/// node's.
+fn stands_for(
+    at: &Location,
+    kind: Kind,
+    rights: Rights,
+    non_blocking: bool,
+) -> Result<Option<NodeRef>> {
     if !matches!(kind, Kind::Pipe | Kind::CharDevice | Kind::BlockDevice | Kind::Socket)
         || matches!(at.mount.fs.kind(), FsKind::Dev | FsKind::Pipe)
         || pipe::end_of(&at.node).is_some()

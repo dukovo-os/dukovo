@@ -62,12 +62,21 @@ fn start(state: &mut GracePeriods) {
 /// Waits until every RCU read section running when it was called has
 /// ended. Sleeps; call it where sleeping is allowed.
 pub fn synchronize() {
-    if !super::can_sleep() || super::online().len() <= 1 {
+    try_synchronize();
+}
+
+/// [`synchronize`], saying whether it could: false where sleeping is not
+/// allowed and other CPUs run, where it returns at once.
+pub fn try_synchronize() -> bool {
+    if super::online().len() <= 1 {
         // With one CPU, a thread that can call this is not in a read
-        // section, and no other CPU could be. Where sleeping is not
-        // allowed there is nothing safe to do but return; the lock
-        // checker reports such callers.
-        return;
+        // section, and no other CPU could be.
+        return true;
+    }
+    if !super::can_sleep() {
+        // Nothing safe to do but return; the lock checker reports such
+        // callers of `synchronize`.
+        return false;
     }
     let target = {
         let mut state = STATE.lock_irq();
@@ -79,6 +88,7 @@ pub fn synchronize() {
         target
     };
     wait::wait_until(key(), "rcu", || COMPLETED.load(Ordering::Acquire) >= target);
+    true
 }
 
 /// CPU `cpu` is in a quiescent state. With interrupts off, on that CPU.

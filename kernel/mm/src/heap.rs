@@ -19,7 +19,9 @@
 //!
 //! The heap takes its locks in one order: a CPU's cache, then a class's
 //! depot, then a class's slab cache, then a frame allocator zone, and holds
-//! them with interrupts disabled. It never calls the frame allocator's
+//! them with interrupts disabled. A CPU takes its own cache's lock only
+//! while another CPU is reaching into the cache ([`CpuCache`]). It never
+//! calls the frame allocator's
 //! reclaim hook while holding one: a new slab is allocated with no lock
 //! held, and the heap's own bookkeeping (magazines, per-CPU caches) is
 //! allocated without reclaim. So [`Heap::drain`], the reclaim hook, can
@@ -28,8 +30,9 @@
 #![allow(unsafe_code)]
 
 use core::alloc::{GlobalAlloc, Layout};
+use core::cell::UnsafeCell;
 use core::ptr::NonNull;
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use radix_sync::{Once, RawSpinLock, SpinLock};
 
@@ -57,12 +60,75 @@ const DEPOT_EMPTY: usize = 32;
 const BOOKKEEPING: Flags = Flags::MAY_SLEEP;
 
 /// One CPU's magazines, in a frame of its own on the CPU's node.
+///
+/// Its own CPU uses them with interrupts masked, where nothing can preempt
+/// it, and without a lock: a lock's locked instruction cost every
+/// allocation and free more than the rest of the magazine path. Another
+/// CPU reaches in only to drain the magazines or count them, rarely, and
+/// first *revokes* the cache: it counts itself in `revoked` and waits for
+/// an RCU grace period, after which no CPU is in a section that began
+/// without seeing the count (a CPU passes no quiescent state with
+/// interrupts masked). From then until it counts itself out, both sides
+/// take `lock`.
 struct CpuCache {
-    /// Taken only with interrupts masked (`NoInterrupts`), where nothing
-    /// can preempt its holder, and almost always by its own CPU: a raw
-    /// lock, without the preemption and lock checker hooks a `SpinLock`
-    /// calls, which cost every allocation and free more than the lock.
-    classes: RawSpinLock<[Loaded; CLASSES]>,
+    classes: UnsafeCell<[Loaded; CLASSES]>,
+    /// CPUs reaching in, or about to.
+    revoked: AtomicU32,
+    /// Held around each use of `classes` while `revoked` is not zero: a
+    /// raw lock, taken with interrupts masked.
+    lock: RawSpinLock<()>,
+}
+
+/// The CPU caches a [`Heap::revoke`] revoked, one bit for each.
+struct Revoked<'a> {
+    heap: &'a Heap,
+    cpus: [u64; MAX_CPUS / 64],
+}
+
+impl Revoked<'_> {
+    fn caches(&self) -> impl Iterator<Item = &'static CpuCache> + '_ {
+        let revoked = |cpu: usize| self.cpus[cpu / 64] & (1 << (cpu % 64)) != 0;
+        let cpus = self.heap.cpus.iter().enumerate();
+        cpus.filter(move |&(cpu, _)| revoked(cpu)).filter_map(|(_, cache)| cache.get().copied())
+    }
+
+    /// Ends what [`Heap::revoke`] began: the CPUs use their caches without
+    /// a lock again once nothing else revokes them.
+    fn restore(self) {
+        for cpu in self.caches() {
+            cpu.revoked.fetch_sub(1, Ordering::Release);
+        }
+    }
+}
+
+// SAFETY: `classes` is used only as `CpuCache` says: by its own CPU with
+// interrupts masked, or under `lock` while revoked.
+#[allow(unsafe_code)]
+unsafe impl Sync for CpuCache {}
+
+impl CpuCache {
+    /// Runs `f` on the magazines, from their own CPU with interrupts
+    /// masked.
+    #[inline(always)]
+    #[allow(unsafe_code)]
+    fn own<R>(&self, f: impl FnOnce(&mut [Loaded; CLASSES]) -> R) -> R {
+        let held = (self.revoked.load(Ordering::Acquire) != 0).then(|| self.lock.lock());
+        // SAFETY: the caller is the cache's CPU, with interrupts masked; no
+        // other CPU reaches in unless it is revoked, and then only under
+        // the lock, held here.
+        let result = f(unsafe { &mut *self.classes.get() });
+        drop(held);
+        result
+    }
+
+    /// Runs `f` on the magazines from any CPU, with interrupts masked,
+    /// between a [`Heap::revoke`] that waited and [`Revoked::restore`].
+    #[allow(unsafe_code)]
+    fn reached<R>(&self, f: impl FnOnce(&mut [Loaded; CLASSES]) -> R) -> R {
+        let _held = self.lock.lock();
+        // SAFETY: revoked, after a grace period: every user holds the lock.
+        f(unsafe { &mut *self.classes.get() })
+    }
 }
 
 const _: () = {
@@ -183,13 +249,16 @@ impl Heap {
     }
 
     fn alloc_inner(&self, layout: Layout, flags: Flags) -> Result<NonNull<u8>, AllocError> {
-        let (platform, env) = self.env().ok_or(AllocError)?;
+        // The direct map only off the magazines' path: asking for it is a
+        // call through the platform.
+        let platform = self.frames.platform().ok_or(AllocError)?;
+        let env = || Env { frames: self.frames, direct_map: platform.direct_map() };
         let Some(class) = Class::for_layout(layout.size(), layout.align()) else {
-            return self.alloc_large(env, layout, flags);
+            return self.alloc_large(env(), layout, flags);
         };
         let addr = match self.take_from_magazines(platform, class) {
             Some(addr) => addr,
-            None => self.take_from_slabs(env, class, flags, true)?,
+            None => self.take_from_slabs(env(), class, flags, true)?,
         };
         if flags.zero {
             // SAFETY: the object is ours: it was just taken from a free list
@@ -206,39 +275,40 @@ impl Heap {
 
     /// Takes an object from this CPU's magazines or the depot.
     fn take_from_magazines(&self, platform: &'static dyn Platform, class: Class) -> Option<usize> {
-        let irqs = NoInterrupts::new(Some(platform));
-        let cpu = self.cpu_cache(platform)?;
-        let mut classes = cpu.classes.lock();
-        let slot = &mut classes[class.index()];
-        let addr = match slot.pop() {
-            Some(addr) => addr,
-            None => {
-                let mut depot = self.depots[class.index()].lock();
-                let full = depot.full.pop()?;
-                // Both of the CPU's magazines are empty (or missing).
-                let empty = slot.previous.take();
-                slot.previous = slot.loaded.replace(full);
-                let surplus = match empty {
-                    Some(empty) if depot.empty.len() < DEPOT_EMPTY => {
-                        depot.empty.push(empty);
-                        None
+        let (irqs, here) = NoInterrupts::enter(platform);
+        let cpu = self.cpu_cache(platform, here)?;
+        let checked = cpu.own(|classes| {
+            let slot = &mut classes[class.index()];
+            let addr = match slot.pop() {
+                Some(addr) => addr,
+                None => {
+                    let mut depot = self.depots[class.index()].lock();
+                    let full = depot.full.pop()?;
+                    // Both of the CPU's magazines are empty (or missing).
+                    let empty = slot.previous.take();
+                    slot.previous = slot.loaded.replace(full);
+                    let surplus = match empty {
+                        Some(empty) if depot.empty.len() < DEPOT_EMPTY => {
+                            depot.empty.push(empty);
+                            None
+                        }
+                        other => other,
+                    };
+                    drop(depot);
+                    if let Some(magazine) = surplus {
+                        self.free_magazine(magazine);
                     }
-                    other => other,
-                };
-                drop(depot);
-                if let Some(magazine) = surplus {
-                    self.free_magazine(magazine);
+                    slot.pop()?
                 }
-                slot.pop()?
-            }
-        };
-        // SAFETY: objects in magazines are free objects of their class,
-        // owned by the magazine we just took this one from.
-        let checked = unsafe { slab::check_free(class, addr) };
-        drop(classes);
+            };
+            // SAFETY: objects in magazines are free objects of their
+            // class, owned by the magazine we just took this one from.
+            #[allow(unsafe_code)]
+            Some(unsafe { slab::check_free(class, addr) }.map(|_| addr))
+        })?;
         drop(irqs);
         match checked {
-            Ok(_) => Some(addr),
+            Ok(addr) => Some(addr),
             Err(corruption) => {
                 // Leave the object out of circulation.
                 self.report(corruption);
@@ -349,28 +419,29 @@ impl Heap {
         class: Class,
         addr: usize,
     ) -> bool {
-        let _irqs = NoInterrupts::new(Some(platform));
-        let Some(cpu) = self.cpu_cache(platform) else { return false };
-        let mut classes = cpu.classes.lock();
-        let slot = &mut classes[class.index()];
-        let capacity = class.magazine_rounds();
-        let Err(addr) = slot.push(addr, capacity) else { return true };
-        // Both magazines are full (or missing): swap in an empty one.
-        let empty = self.depots[class.index()].lock().empty.pop();
-        let Some(empty) = empty.or_else(|| self.new_magazine(env)) else { return false };
-        let full = slot.previous.take();
-        slot.previous = slot.loaded.replace(empty);
-        let pushed = slot.push(addr, capacity).is_ok();
-        if let Some(full) = full {
-            let mut depot = self.depots[class.index()].lock();
-            if depot.full.len() < DEPOT_FULL {
-                depot.full.push(full);
-            } else {
-                drop(depot);
-                self.flush(env, class, full);
+        let (_irqs, here) = NoInterrupts::enter(platform);
+        let Some(cpu) = self.cpu_cache(platform, here) else { return false };
+        cpu.own(|classes| {
+            let slot = &mut classes[class.index()];
+            let capacity = class.magazine_rounds();
+            let Err(addr) = slot.push(addr, capacity) else { return true };
+            // Both magazines are full (or missing): swap in an empty one.
+            let empty = self.depots[class.index()].lock().empty.pop();
+            let Some(empty) = empty.or_else(|| self.new_magazine(env)) else { return false };
+            let full = slot.previous.take();
+            slot.previous = slot.loaded.replace(empty);
+            let pushed = slot.push(addr, capacity).is_ok();
+            if let Some(full) = full {
+                let mut depot = self.depots[class.index()].lock();
+                if depot.full.len() < DEPOT_FULL {
+                    depot.full.push(full);
+                } else {
+                    drop(depot);
+                    self.flush(env, class, full);
+                }
             }
-        }
-        pushed
+            pushed
+        })
     }
 
     /// Returns an object to its slab.
@@ -468,10 +539,9 @@ impl Heap {
         }
     }
 
-    /// This CPU's cache, set up on first use. Call with interrupts
-    /// disabled.
-    fn cpu_cache(&self, platform: &'static dyn Platform) -> Option<&'static CpuCache> {
-        let cpu = platform.current_cpu();
+    /// The cache of `cpu`, this CPU, set up on first use. Call with
+    /// interrupts disabled.
+    fn cpu_cache(&self, platform: &'static dyn Platform, cpu: usize) -> Option<&'static CpuCache> {
         let slot = self.cpus.get(cpu)?;
         if let Some(cache) = slot.get() {
             return Some(cache);
@@ -480,7 +550,11 @@ impl Heap {
         let flags = BOOKKEEPING.prefer_node(node);
         let phys = self.frames.alloc_inner(0, flags, Owner::PerCpu, 0, false, false).ok()?;
         let addr = platform.direct_map() + phys as usize;
-        let empty = CpuCache { classes: RawSpinLock::new([const { Loaded::new() }; CLASSES]) };
+        let empty = CpuCache {
+            classes: UnsafeCell::new([const { Loaded::new() }; CLASSES]),
+            revoked: AtomicU32::new(0),
+            lock: RawSpinLock::new(()),
+        };
         // SAFETY: the frame was just allocated for this cache, is mapped by
         // the direct map and is never freed: a CPU's cache lives as long as
         // the kernel.
@@ -489,20 +563,61 @@ impl Heap {
         slot.set(cache).ok().copied()
     }
 
+    /// Revokes every CPU's cache there is ([`CpuCache`]), so that this CPU
+    /// may reach into them, and gives them; none, with nothing revoked,
+    /// where it may not wait for that. A cache set up meanwhile is not
+    /// among them. Each one given needs a [`Revoked::restore`].
+    fn revoke(&self) -> Option<Revoked<'_>> {
+        let mut revoked = Revoked { heap: self, cpus: [0; MAX_CPUS / 64] };
+        for (at, cpu) in self.cpus.iter().enumerate() {
+            if let Some(cpu) = cpu.get() {
+                cpu.revoked.fetch_add(1, Ordering::SeqCst);
+                revoked.cpus[at / 64] |= 1 << (at % 64);
+            }
+        }
+        if radix_sync::rcu::try_synchronize() {
+            return Some(revoked);
+        }
+        revoked.restore();
+        None
+    }
+
     /// Returns every cached object to its slab and every empty slab to the
     /// frame allocator. The frame allocator calls it before failing a
     /// `MaySleep` allocation; tests call it to check for leaks.
+    ///
+    /// Where it may not sleep, it cannot wait to reach into other CPUs'
+    /// caches ([`CpuCache`]), and drains this CPU's alone.
     pub fn drain(&self) {
         let Some((platform, env)) = self.env() else { return };
-        for slot in &self.cpus {
-            let Some(cpu) = slot.get() else { continue };
-            for class in Class::all() {
-                let _irqs = NoInterrupts::new(Some(platform));
-                let mut classes = cpu.classes.lock();
-                let slot = &mut classes[class.index()];
-                for magazine in [slot.loaded.take(), slot.previous.take()].into_iter().flatten() {
-                    self.flush(env, class, magazine);
+        let empty = |classes: &mut [Loaded; CLASSES], class: Class| {
+            let slot = &mut classes[class.index()];
+            [slot.loaded.take(), slot.previous.take()]
+        };
+        let flush = |magazines: [Option<&'static mut Magazine>; 2], class| {
+            for magazine in magazines.into_iter().flatten() {
+                self.flush(env, class, magazine);
+            }
+        };
+        if let Some(revoked) = self.revoke() {
+            for cpu in revoked.caches() {
+                for class in Class::all() {
+                    let magazines = {
+                        let _irqs = NoInterrupts::new(Some(platform));
+                        cpu.reached(|classes| empty(classes, class))
+                    };
+                    flush(magazines, class);
                 }
+            }
+            revoked.restore();
+        } else {
+            for class in Class::all() {
+                let magazines = {
+                    let (_irqs, here) = NoInterrupts::enter(platform);
+                    let Some(cpu) = self.cpus.get(here).and_then(Once::get) else { break };
+                    cpu.own(|classes| empty(classes, class))
+                };
+                flush(magazines, class);
             }
         }
         for class in Class::all() {
@@ -538,12 +653,18 @@ impl Heap {
     pub fn class_stats(&self, mut f: impl FnMut(&ClassStats)) {
         let platform = self.frames.platform();
         let mut cached = [0u64; CLASSES];
-        for cpu in self.cpus.iter().filter_map(Once::get) {
-            let _irqs = NoInterrupts::new(platform);
-            let classes = cpu.classes.lock();
-            for (count, slot) in cached.iter_mut().zip(classes.iter()) {
-                *count += slot.len() as u64;
+        // Where it cannot wait to reach into the CPUs' caches (in the
+        // debugger, say), their objects count as in use.
+        if let Some(revoked) = self.revoke() {
+            for cpu in revoked.caches() {
+                let _irqs = NoInterrupts::new(platform);
+                cpu.reached(|classes| {
+                    for (count, slot) in cached.iter_mut().zip(classes.iter()) {
+                        *count += slot.len() as u64;
+                    }
+                });
             }
+            revoked.restore();
         }
         for (count, depot) in cached.iter_mut().zip(&self.depots) {
             let _irqs = NoInterrupts::new(platform);

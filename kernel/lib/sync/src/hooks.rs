@@ -146,6 +146,13 @@ pub trait Hooks: Sync {
     /// Returns once every RCU read section that was running when it was
     /// called has ended.
     fn synchronize_rcu(&self) {}
+
+    /// As [`Hooks::synchronize_rcu`], but says whether every read section
+    /// that was running has ended: false where the caller may not sleep
+    /// and other CPUs run, so that it could not wait.
+    fn try_synchronize_rcu(&self) -> bool {
+        false
+    }
 }
 
 static HOOKS: Once<&'static dyn Hooks> = Once::new();

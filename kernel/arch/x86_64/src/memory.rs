@@ -444,6 +444,11 @@ unsafe impl radix_mm::Platform for MmPlatform {
         }
     }
 
+    fn enter(&self) -> (usize, bool) {
+        let were_enabled = cpu::disable_interrupts();
+        (percpu::current_index(), were_enabled)
+    }
+
     fn direct_map(&self) -> usize {
         direct_map() as usize
     }
