@@ -16,6 +16,7 @@ use super::grants::{self, Grant, Said};
 use super::history::Event;
 use super::minisign::PublicKey;
 use super::registry::Place;
+use dkv::flaws::Severity;
 
 /// Where bundled answers.
 pub const SOCKET: &str = "/system/live/bundled/socket";
@@ -346,6 +347,8 @@ pub struct Listed {
     pub when: u64,
     /// Its name, as it says it, shown.
     pub name: String,
+    /// What its catalog's list of flaws says of it.
+    pub flags: Flags,
 }
 
 /// The bundle to run, as `run` finds it: where, and what bundled
@@ -391,6 +394,59 @@ pub struct Hit {
     pub version: String,
     /// Its name, as the catalog gives it, shown.
     pub name: String,
+    /// What the catalog's list of flaws says of it.
+    pub flags: Flags,
+}
+
+/// What a catalog's list of known flaws says of a version of a bundle,
+/// in short (ADR 0389).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Flags {
+    /// Nothing: it is from no catalog, or its catalog's list does not
+    /// list it, or there is no list that is good.
+    #[default]
+    Unknown,
+    /// The list knows of no flaw in it.
+    None,
+    /// It knows of `count`, the worst of them this bad.
+    Known { count: u32, worst: Severity },
+}
+
+impl Flags {
+    /// As a word: `unknown`, `none`, or `COUNT-WORST`, such as `2-high`.
+    #[must_use]
+    pub fn word(self) -> String {
+        match self {
+            Flags::Unknown => "unknown".into(),
+            Flags::None => "none".into(),
+            Flags::Known { count, worst } => format!("{count}-{}", worst.word()),
+        }
+    }
+
+    /// Reads [`Flags::word`].
+    #[must_use]
+    pub fn from_word(word: &str) -> Option<Flags> {
+        match word {
+            "unknown" => Some(Flags::Unknown),
+            "none" => Some(Flags::None),
+            _ => {
+                let (count, worst) = word.split_once('-')?;
+                let count = count.parse().ok().filter(|&c| c > 0)?;
+                Some(Flags::Known { count, worst: Severity::from_word(worst)? })
+            }
+        }
+    }
+
+    /// As `bundle list` and `bundle search` show it: `-`, `none`, or
+    /// such as `2, high`.
+    #[must_use]
+    pub fn shown(self) -> String {
+        match self {
+            Flags::Unknown => "-".into(),
+            Flags::None => "none".into(),
+            Flags::Known { count, worst } => format!("{count}, {}", worst.word()),
+        }
+    }
 }
 
 /// A catalog, as `catalogs` gives it.
@@ -472,12 +528,13 @@ impl Answer {
             }
             Answer::Question => b"question\n".to_vec(),
             Answer::Listed(l) => format!(
-                "listed\t{}\t{}\t{}\t{}\t{}\t{}\n",
+                "listed\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
                 l.place,
                 l.id,
                 one_line(&l.version),
                 l.key.encoded(),
                 l.when,
+                l.flags.word(),
                 one_line(&l.name)
             )
             .into_bytes(),
@@ -506,10 +563,11 @@ impl Answer {
             .into_bytes(),
             Answer::Revoked(permission) => format!("revoked\t{permission}\n").into_bytes(),
             Answer::Hit(h) => format!(
-                "hit\t{}\t{}\t{}\t{}\n",
+                "hit\t{}\t{}\t{}\t{}\t{}\n",
                 h.catalog,
                 h.id,
                 one_line(&h.version),
+                h.flags.word(),
                 one_line(&h.name)
             )
             .into_bytes(),
@@ -650,12 +708,13 @@ impl Answer {
                 permission,
             })));
         }
-        if let ["hit", catalog, id, version, name] = words.as_slice() {
+        if let ["hit", catalog, id, version, flags, name] = words.as_slice() {
             return Ok(Some(Answer::Hit(Hit {
                 catalog: checked_catalog(catalog).map_err(|why| bad(&why))?,
                 id: checked_id(id).map_err(|why| bad(&why))?,
                 version: one_line(version),
                 name: one_line(name),
+                flags: Flags::from_word(flags).ok_or_else(|| bad("a hit's flaws"))?,
             })));
         }
         if let ["catalog", name, url, off, default, bundles, read, expires] = words.as_slice() {
@@ -701,7 +760,7 @@ impl Answer {
             let permission = checked_permission(permission).map_err(|why| bad(&why))?;
             return Ok(Some(Answer::Revoked(permission)));
         }
-        if let ["listed", place_word, id, version, key, when, name] = words.as_slice() {
+        if let ["listed", place_word, id, version, key, when, flags, name] = words.as_slice() {
             let place = place(place_word)?;
             return Ok(Some(Answer::Listed(Listed {
                 place,
@@ -710,6 +769,7 @@ impl Answer {
                 key: PublicKey::decode(key).map_err(|why| bad(&why))?,
                 when: when.parse().map_err(|_| bad("a listed bundle's time"))?,
                 name: one_line(name),
+                flags: Flags::from_word(flags).ok_or_else(|| bad("a listed bundle's flaws"))?,
             })));
         }
         Err(bad("not an answer bundle knows"))
@@ -848,6 +908,7 @@ mod tests {
             key: key(),
             when: 1_793_000_000,
             name: "Notes".into(),
+            flags: Flags::Known { count: 2, worst: Severity::High },
         };
         let answers = [
             Answer::Sheet("Notes 0.1.0, for yourself\n  Signed by key RW...\n".into()),
@@ -904,6 +965,14 @@ mod tests {
                 id: "io.github.sharkdp.bat".into(),
                 version: "0.26.1".into(),
                 name: "bat".into(),
+                flags: Flags::None,
+            }),
+            Answer::Hit(Hit {
+                catalog: "dukovo".into(),
+                id: "org.example.notes".into(),
+                version: "1.0.0".into(),
+                name: "Notes".into(),
+                flags: Flags::Unknown,
             }),
             Answer::Catalog(Shown {
                 name: "dukovo".into(),
@@ -972,6 +1041,9 @@ mod tests {
             b"add-on\t1000\torg.nodejs.node@22\tbin/tsc\n",
             b"add-on\t1000\torg.nodejs.node@22\t/users/alice/../bob/tsc\n",
             b"add-on\t1000\tnode@22\t/users/alice/tsc\n",
+            b"hit\tdukovo\torg.example.notes\t1\t0-high\tNotes\n",
+            b"hit\tdukovo\torg.example.notes\t1\t2-dire\tNotes\n",
+            b"hit\tdukovo\torg.example.notes\t1\tNotes\n",
         ] {
             assert!(Answer::read(&mut io::Cursor::new(bad.to_vec())).is_err(), "{bad:?}");
         }

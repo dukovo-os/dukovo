@@ -13,6 +13,8 @@ use std::fmt::Write as _;
 use manifest::bundle::permissions;
 use manifest::bundle::{Manifest, RunsWith};
 
+use dkv::flaws::List;
+
 use super::minisign::PublicKey;
 use super::registry::{Place, Trust};
 use crate::util;
@@ -33,7 +35,16 @@ pub struct Facts<'a> {
     /// The version it would replace, and the permissions it asks for
     /// that that version did not (ADR 0384).
     pub replaces: Option<(&'a str, &'a [String])>,
+    /// The list of known flaws of the catalog it is from, if one is kept
+    /// (ADR 0389).
+    pub flaws: Option<&'a List>,
+    /// Whether to name every flaw, as `bundle info` does, or the worst
+    /// few, as the install sheet does.
+    pub all_flaws: bool,
 }
+
+/// The most flaws the sheet names; `bundle info` names them all.
+const FLAWS_SHOWN: usize = 5;
 
 /// `text` as the bundle wrote it, on one line, without control
 /// characters, at most `max` characters.
@@ -70,6 +81,48 @@ fn for_whom(place: Place) -> &'static str {
     match place {
         Place::Everyone => "for everyone",
         Place::User(_) => "for yourself",
+    }
+}
+
+/// What catalog `catalog`'s list of flaws says of version `version` of
+/// bundle `id`: every flaw when `all`, else the worst few.
+fn flaws(o: &mut String, catalog: &str, list: Option<&List>, id: &str, version: &str, all: bool) {
+    let Some(list) = list.filter(|l| l.checked(id, version)) else {
+        let _ = writeln!(o, "  Known flaws: catalog {catalog} does not say.");
+        return;
+    };
+    let made = list.made.get(..10).unwrap_or(&list.made);
+    let found: Vec<_> = list.of(id, version).collect();
+    if found.is_empty() {
+        let _ = writeln!(o, "  Known flaws: none, by catalog {catalog}'s list of {made}.");
+        return;
+    }
+    let count = found.len();
+    let flaws = if count == 1 { "flaw" } else { "flaws" };
+    let _ = writeln!(
+        o,
+        "  Warning: catalog {catalog}'s list of {made} knows of {count} {flaws}\n  in the \
+         components it holds:"
+    );
+    let shown_count = if all { count } else { count.min(FLAWS_SHOWN) };
+    for flaw in &found[..shown_count] {
+        let fixed = flaw.fixed.as_ref().map_or_else(
+            || ", which no version fixes yet".to_string(),
+            |f| format!(", fixed in {}", shown(f, 20)),
+        );
+        let _ = writeln!(
+            o,
+            "    {} ({}) in {}{fixed}",
+            shown(&flaw.id, 30),
+            flaw.severity.word(),
+            shown(&flaw.component, 40)
+        );
+        if !flaw.summary.is_empty() {
+            let _ = writeln!(o, "      {}", shown(&flaw.summary, 70));
+        }
+    }
+    if shown_count < count {
+        let _ = writeln!(o, "    and {} more, which bundle info names", count - shown_count);
     }
 }
 
@@ -120,6 +173,12 @@ pub fn write(facts: &Facts<'_>) -> String {
         }
     }
     let _ = writeln!(o, "  {} files, {}", facts.files, size(facts.bytes));
+    if let Some(support) = &m.support {
+        let _ = writeln!(o, "  Its publisher takes problem reports at {}", shown(&support.0, 100));
+    }
+    if let Trust::Catalog { name, .. } = facts.trust {
+        flaws(&mut o, name, facts.flaws, &m.full_id(), &m.version.0, facts.all_flaws);
+    }
     if m.permissions.0.is_empty() {
         let _ = writeln!(o, "  It asks for no permission.");
     } else {
@@ -182,6 +241,7 @@ pub fn write(facts: &Facts<'_>) -> String {
 mod tests {
     use super::*;
     use crate::bundles::minisign::SecretKey;
+    use dkv::flaws::Severity;
 
     #[test]
     fn the_sheet_says_what_it_asks_for() {
@@ -204,6 +264,8 @@ mod tests {
                 files: 3,
                 bytes: 12_345,
                 replaces: None,
+                flaws: None,
+                all_flaws: false,
             })
         };
         let unknown = sheet(Trust::Unknown);
@@ -243,10 +305,95 @@ mod tests {
             files: 3,
             bytes: 12_345,
             replaces: Some(("0.0.9", &new)),
+            flaws: None,
+            all_flaws: false,
         });
         assert!(update.starts_with("Notes 0.1.0, for everyone, in place of 0.0.9\n"), "{update}");
         assert!(update.contains("(at install, optional), new in this version\n"), "{update}");
         assert!(update.contains("this computer (at install)\n"), "{update}");
+        assert!(!update.contains("Known flaws"), "{update}");
+        assert!(!update.contains("problem reports"), "{update}");
+    }
+
+    #[test]
+    fn the_sheet_tells_of_known_flaws() {
+        let text = manifest::bundle::template("org.example.notes", "Notes", "Example, Inc.", "MIT")
+            .replace(
+                "\"permissions\": {}",
+                "\"permissions\": {}, \"support\": \"bugs@example.org\"",
+            );
+        let manifest = manifest::bundle::from_json(&text).unwrap();
+        let key = SecretKey::generate(&[5u8; 40]).unwrap().public();
+        let trust = Trust::Catalog { name: "dukovo".into(), since: None };
+        let flaw = |id: &str, severity, fixed: Option<&str>| dkv::flaws::Flaw {
+            bundle: "org.example.notes".into(),
+            version: "0.1.0".into(),
+            id: id.into(),
+            aliases: Vec::new(),
+            component: "regex 1.10.2".into(),
+            severity,
+            summary: format!("{id}'s summary"),
+            fixed: fixed.map(String::from),
+        };
+        let checked = vec![("org.example.notes".to_string(), "0.1.0".to_string())];
+        let none = List { made: "2026-11-03T03:00:00Z".into(), checked, flaws: Vec::new() };
+        let mut some = none.clone();
+        some.flaws = (1..=7)
+            .map(|n| flaw(&format!("RUSTSEC-2026-000{n}"), Severity::High, Some("1.10.3")))
+            .collect();
+        some.flaws[0] = flaw("RUSTSEC-2026-0001", Severity::Critical, None);
+        let sheet = |flaws: Option<&List>, all_flaws| {
+            write(&Facts {
+                manifest: &manifest,
+                key: &key,
+                trust: &trust,
+                place: Place::User(1000),
+                files: 3,
+                bytes: 12_345,
+                replaces: None,
+                flaws,
+                all_flaws,
+            })
+        };
+        assert!(
+            sheet(None, false)
+                .contains("  Its publisher takes problem reports at bugs@example.org\n")
+        );
+        assert!(sheet(None, false).contains("  Known flaws: catalog dukovo does not say.\n"));
+        let mut other = none.clone();
+        other.checked[0].1 = "0.0.9".into();
+        assert!(sheet(Some(&other), false).contains("does not say"));
+        assert!(
+            sheet(Some(&none), false)
+                .contains("  Known flaws: none, by catalog dukovo's list of 2026-11-03.\n")
+        );
+        let few = sheet(Some(&some), false);
+        for line in [
+            "  Warning: catalog dukovo's list of 2026-11-03 knows of 7 flaws\n",
+            "    RUSTSEC-2026-0001 (critical) in regex 1.10.2, which no version fixes yet\n",
+            "      RUSTSEC-2026-0001's summary\n",
+            "    RUSTSEC-2026-0005 (high) in regex 1.10.2, fixed in 1.10.3\n",
+            "    and 2 more, which bundle info names\n",
+        ] {
+            assert!(few.contains(line), "{line}\n{few}");
+        }
+        assert!(!few.contains("RUSTSEC-2026-0006"), "{few}");
+        let all = sheet(Some(&some), true);
+        assert!(all.contains("RUSTSEC-2026-0007 (high)") && !all.contains("more"), "{all}");
+        assert!(few.lines().all(|l| l.chars().count() <= 80), "{few}");
+        // A bundle from no catalog: its flaws are not the sheet's to say.
+        let developer = write(&Facts {
+            manifest: &manifest,
+            key: &key,
+            trust: &Trust::Developer,
+            place: Place::User(1000),
+            files: 3,
+            bytes: 12_345,
+            replaces: None,
+            flaws: Some(&some),
+            all_flaws: true,
+        });
+        assert!(!developer.contains("flaws"), "{developer}");
     }
 
     #[test]

@@ -44,9 +44,10 @@ fn make_bundle(file: &str) -> String {
     )
 }
 
-/// A row of `bundle list`, as it lines the test's bundle up.
+/// A row of `bundle list`, as it lines the test's bundle up: from no
+/// catalog, so with no flaws to tell (ADR 0389).
 fn listed(version: &str, whose: &str, name: &str) -> String {
-    format!("{:17}  {:7}  {whose:9}  {name}", "org.example.notes", version)
+    format!("{:17}  {:7}  {whose:9}  {:5}  {name}", "org.example.notes", version, "-")
 }
 
 fn bundles(vm: &mut Vm, case: &Case) -> Result<(), String> {
@@ -88,7 +89,7 @@ fn bundles(vm: &mut Vm, case: &Case) -> Result<(), String> {
         "root 555",
         "Permission denied",
         "touch 1",
-        &format!("{:17}  {:7}  {:9}  NAME", "ID", "VERSION", "FOR"),
+        &format!("{:17}  {:7}  {:9}  {:5}  NAME", "ID", "VERSION", "FOR", "FLAWS"),
         &listed("0.1.0", "you", "notes"),
         "  Installed on ",
         "  In /users/alice/applications/org.example.notes",

@@ -7,11 +7,16 @@
 //! bat. Alice, the owner, adds the catalog through elevate, with its
 //! address on the disk and its root, and bundled reads it with the TUF
 //! client. bundle catalog lists it; bundle search finds ripgrep there and
-//! not bat. Installed by its ID, ripgrep's sheet says it comes from the
-//! catalog, with no warning, and rg runs. bat's file, which no catalog
-//! lists, shows the warning, and she says no. ripgrep's own file from the
-//! disk installs as the catalog's. Once the catalog is removed, nothing
-//! installs ripgrep, which is bound to it. The power button ends it.
+//! not bat. The catalog also lists the known flaws of two test
+//! advisories in crates ripgrep links (ADR 0389), which bundle search
+//! flags. Installed by its ID, ripgrep's sheet says it comes from the
+//! catalog, with no warning about its key, and names both flaws; rg runs,
+//! and bundle list flags it too. The daily check, which turning updates
+//! by themselves on starts at once, writes the flaws in the history. bat's
+//! file, which no catalog lists, shows the warning, and she says no.
+//! ripgrep's own file from the disk installs as the catalog's. Once the
+//! catalog is removed, nothing installs ripgrep, which is bound to it. The
+//! power button ends it.
 
 use super::super::*;
 
@@ -30,7 +35,7 @@ const DISKS: &[Disk] = &[
 /// The test.
 pub const CASE: Case = Case {
     name: "catalog-install",
-    about: "bundles install from a catalog (ADR 0383): an administrator adds a catalog signed with throwaway keys, from a disk; bundle search finds what it lists; ripgrep installs by its ID with no warning and runs; bat's file, which no catalog lists, shows the warning; ripgrep's own file installs as the catalog's; once the catalog is removed, nothing installs ripgrep",
+    about: "bundles install from a catalog (ADR 0383): an administrator adds a catalog signed with throwaway keys, from a disk; bundle search finds what it lists, flagged with its known flaws (ADR 0389); ripgrep installs by its ID with no warning about its key, its sheet names its flaws, and it runs; bundle list flags it, and the daily check writes its flaws in the history; bat's file, which no catalog lists, shows the warning; ripgrep's own file installs as the catalog's; once the catalog is removed, nothing installs ripgrep",
     firmware: Firmware::Uefi,
     media: Media::Usb,
     // As a normal boot: Spark starts the services, bundled among them.
@@ -70,8 +75,8 @@ fn catalog_install(vm: &mut Vm, case: &Case) -> Result<(), String> {
     // What it lists, and what it does not.
     answer_prompt(vm, "$", "clear; bundle search RIP; bundle search bat; echo \"bat $?\"")?;
     vm.expect_screen(&[
-        "VERSION  CATALOG  NAME",
-        "io.github.burntsushi.ripgrep  15.2.0   test     ripgrep",
+        "VERSION  CATALOG  FLAWS    NAME",
+        "io.github.burntsushi.ripgrep  15.2.0   test     2, high  ripgrep",
         "no bundle found",
         "bat 1",
     ])?;
@@ -81,8 +86,17 @@ fn catalog_install(vm: &mut Vm, case: &Case) -> Result<(), String> {
     vm.expect_screen(&[
         "ripgrep 15.2.0, for yourself",
         "  From catalog test, which this computer trusts: it lists this very file.",
+        // Its flaws, by the catalog's list: the worse first.
+        "  Warning: catalog test's list of ",
+        " knows of 2 flaws",
+        "  in the components it holds:",
+        "    TEST-0001 (high) in regex-automata ",
+        ", fixed in 999.0.0",
+        "      A test flaw in regex-automata",
+        "    TEST-0002 (low) in memchr ",
+        ", which no version fixes yet",
     ])?;
-    vm.expect_screen_without("Warning")?;
+    vm.expect_screen_without("does not know this key")?;
     answer_prompt(vm, "Install it? [y/N]", "y")?;
     vm.expect_screen(&["installed io.github.burntsushi.ripgrep 15.2.0, for you"])?;
     vm.expect_anywhere("(from catalog test)")?;
@@ -90,6 +104,30 @@ fn catalog_install(vm: &mut Vm, case: &Case) -> Result<(), String> {
     vm.expect_screen(&["[warning] ", "A: always"])?;
     vm.type_text("a")?;
     vm.expect_screen(&["ripgrep 15.2.0"])?;
+    // Flagged where it is listed.
+    answer_prompt(vm, "$", "clear; bundle list")?;
+    vm.expect_screen(&[
+        "FOR        FLAWS    NAME",
+        "io.github.burntsushi.ripgrep  15.2.0   you        2, high  ripgrep",
+    ])?;
+    // The daily check, which turning updates by themselves on starts at
+    // once, writes the flaws in the history, and the log.
+    answer_prompt(vm, "$", "clear; bundle update --automatic on")?;
+    vm.expect_anywhere(
+        "bundled: io.github.burntsushi.ripgrep 15.2.0 for alice has known flaws: TEST-0001 \
+         (high) in regex-automata ",
+    )?;
+    answer_prompt(
+        vm,
+        "$",
+        "clear; bundle update --automatic off; bundle history | tail -1 | sed 's/^.*ripgrep  //' \
+         | tr ',' '\\n'",
+    )?;
+    vm.expect_screen(&[
+        "15.2.0 has known flaws: TEST-0001 (high) in regex-automata ",
+        " TEST-0002 (low) in memchr ",
+        " by itself",
+    ])?;
     // bat's file: no catalog lists it.
     answer_prompt(
         vm,

@@ -608,6 +608,20 @@ fn add_ons_for_each_person_of_a_line() {
 }
 
 #[test]
+fn support_is_an_email_or_a_web_address() {
+    for good in ["bugs@example.org", "a.b+c@mail.example.co.uk", "https://example.org/issues"] {
+        let manifest = from_json(&with(&format!(",\n  \"support\": \"{good}\""))).unwrap();
+        assert_eq!(manifest.support.map(|s| s.0), Some(good.to_string()));
+    }
+    for bad in
+        ["bugs", "@example.org", "bugs@localhost", "http://example.org", "a b@c.d", "x@-a.org"]
+    {
+        let text = with(&format!(",\n  \"support\": \"{bad}\""));
+        assert!(error(&text).contains("is neither an email address"), "{bad}");
+    }
+}
+
+#[test]
 fn versions_lines_and_full_ids() {
     assert!(in_line("22.11.0", "22"));
     assert!(in_line("22", "22"));

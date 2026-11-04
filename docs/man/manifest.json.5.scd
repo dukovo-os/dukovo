@@ -123,6 +123,10 @@ windows (1.1), *runtime*, the Linux layer (1.3), and *plugins* (1.10).
 *homepage* = _"https://..."_
 	Its web site.
 
+*support* = _"bugs@example.org"_ | _"https://..."_
+	Where its publisher takes problem reports: an email address or a
+	web address. The sheet shows it.
+
 *icon* = _"path"_
 	Its icon: an SVG file in the bundle, such as
 	*"resources/app.svg"*.

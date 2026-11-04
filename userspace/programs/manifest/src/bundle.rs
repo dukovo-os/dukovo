@@ -69,6 +69,7 @@ pub const KEYS: &[&str] = &[
     "license",
     "source",
     "homepage",
+    "support",
     "icon",
     "requires_os",
     "architectures",
@@ -142,6 +143,10 @@ pub struct Manifest {
     pub source: Option<Url>,
     /// Its web site.
     pub homepage: Option<Url>,
+    /// Where problems with it are reported: an email address or a web
+    /// address, so that a report about a catalog's bundle reaches its
+    /// publisher (ADR 0389).
+    pub support: Option<Support>,
     /// Its icon: an SVG file in the bundle.
     pub icon: Option<BundlePath>,
     /// The first Dukovo release it runs on.
@@ -563,6 +568,7 @@ impl<'de> Deserialize<'de> for Top {
                 let mut license = None;
                 let mut source = None;
                 let mut homepage = None;
+                let mut support = None;
                 let mut icon = None;
                 let mut requires_os = None;
                 let mut architectures = None;
@@ -601,6 +607,7 @@ impl<'de> Deserialize<'de> for Top {
                         "license" => license = Some(map.next_value()?),
                         "source" => source = Some(map.next_value()?),
                         "homepage" => homepage = Some(map.next_value()?),
+                        "support" => support = Some(map.next_value()?),
                         "icon" => icon = Some(map.next_value()?),
                         "requires_os" => requires_os = Some(map.next_value()?),
                         "architectures" => architectures = Some(map.next_value()?),
@@ -663,6 +670,7 @@ impl<'de> Deserialize<'de> for Top {
                         license,
                         source,
                         homepage,
+                        support,
                         icon,
                         requires_os,
                         architectures,
@@ -896,6 +904,14 @@ text!(
     "A folder in another, such as bin: one to three names between /",
     @pattern "^[^/]{1,64}(/[^/]{1,64}){0,2}$",
     check_inner_path
+);
+
+text!(
+    /// Where problems are reported: an email address, such as
+    /// `bugs@example.org`, or a web address, `https://`.
+    Support,
+    "An email address, such as bugs@example.org, or a web address, https://",
+    check_support
 );
 
 text!(
@@ -1210,6 +1226,35 @@ pub fn wished_line(text: &str, lines: &[&str]) -> Wish {
     match best {
         Some((line, _)) => Wish::Line(line.into()),
         None => Wish::Missing(core.into()),
+    }
+}
+
+fn check_support(support: &str) -> Result<(), String> {
+    if support.starts_with("https://") {
+        return check_url(support);
+    }
+    let (local, domain) = support.split_once('@').unwrap_or_default();
+    let local_ok = (1..=64).contains(&local.len())
+        && local.bytes().all(|b| b.is_ascii_alphanumeric() || b"!#$%&'*+-/=?^_`{|}~.".contains(&b))
+        && !local.starts_with('.')
+        && !local.ends_with('.')
+        && !local.contains("..");
+    let domain_ok = (3..=253).contains(&domain.len())
+        && domain.contains('.')
+        && domain.split('.').all(|part| {
+            (1..=63).contains(&part.len())
+                && part.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+                && !part.starts_with('-')
+                && !part.ends_with('-')
+        });
+    if local_ok && domain_ok {
+        Ok(())
+    } else {
+        Err(format!(
+            "`{}` is neither an email address, such as bugs@example.org, nor a web address, \
+             https://",
+            support.escape_debug()
+        ))
     }
 }
 
@@ -2046,6 +2091,7 @@ struct Shape {
     license: License,
     source: Option<Url>,
     homepage: Option<Url>,
+    support: Option<Support>,
     icon: Option<BundlePath>,
     requires_os: OsVersion,
     architectures: Vec<Arch>,

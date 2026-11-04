@@ -40,6 +40,17 @@ pub const EXPIRES: [(&str, i64); 4] =
 /// How long before it expires `status` warns that a role needs signing.
 pub const WARN_DAYS: i64 = 30;
 
+/// The role the targets delegate the catalog's list of known flaws to
+/// (ADR 0389).
+pub const FLAWS_ROLE: &str = dkv::flaws::ROLE;
+/// The list's path among the targets.
+pub const FLAWS_TARGET: &str = dkv::flaws::TARGET;
+/// How long a list of flaws is good for, in days: a week, though the
+/// server signs one each day.
+pub const FLAWS_DAYS: i64 = 7;
+/// Where the store keeps the flaws role's metadata.
+const FLAWS_METADATA: &str = "flaws.role.json";
+
 /// The days `role`'s metadata is good for, by default.
 #[must_use]
 pub fn expires_days(role: &str) -> i64 {
@@ -331,12 +342,73 @@ impl Repo {
             }
         }
         listed.extend(changes.added.clone());
-        let signed = repo::targets(version, &repo::expires_in(days), &listed);
+        let mut signed = repo::targets(version, &repo::expires_in(days), &listed);
+        signed["delegations"] = flaws_delegation(&root.signed.signed, &keys)?;
         let bytes = repo::sign(&signed, &[signer.as_ref()])?;
         let new = Signed::<Targets>::parse(&bytes).map_err(|e| e.to_string())?;
         new.verified_by(&root.signed.signed, "targets").map_err(|e| e.to_string())?;
         write(&self.metadata("targets.json"), &bytes)?;
         Ok(version)
+    }
+
+    /// Signs the catalog's list of known flaws anew (ADR 0389): those that
+    /// `advisories` know of in the components each bundle's SBOM lists,
+    /// for every bundle the targets list, whose bytes are in `store`. The
+    /// flaws role, with the online key, lists the list; both go in
+    /// `store`, for [`Repo::publish`] to serve. Returns the role's version
+    /// and how many flaws it lists.
+    ///
+    /// # Errors
+    ///
+    /// If the targets do not delegate the flaws, a bundle or its SBOM
+    /// cannot be read, or nothing here signs for the online key.
+    pub fn sign_flaws(
+        &self,
+        store: &Path,
+        signers: &Signers,
+        advisories: &[dkv::flaws::Advisory],
+        days: i64,
+    ) -> Result<(u64, usize), String> {
+        let root = self.root()?.ok_or("there is no root yet")?;
+        let targets = self.targets()?.ok_or("no targets have been signed yet")?;
+        if targets.signed.signed.delegations.is_none() {
+            return Err("the targets delegate no flaws: sign the targets again".into());
+        }
+        let keys = keys::read_all(&self.keys_dir())?;
+        let signer = online_signer(&root, &keys, signers, "timestamp")?;
+        let mut list = dkv::flaws::List {
+            made: tuf::time::format(tuf::time::now()),
+            ..dkv::flaws::List::default()
+        };
+        for (path, target) in &targets.signed.signed.targets {
+            let custom = target.custom.as_ref();
+            let text = |key: &str| custom.and_then(|c| c.get(key)?.as_str().map(String::from));
+            let (Some(id), Some(version)) = (text("id"), text("version")) else { continue };
+            let data = std::fs::read(store.join(path)).map_err(|e| format!("{path}: {e}"))?;
+            let archive =
+                dkv::zip::Archive::read(data.as_slice()).map_err(|e| format!("{path}: {e}"))?;
+            let Some(entry) = archive.file(dkv::sbom::SBOM) else { continue };
+            let sbom = archive
+                .read_small(entry, dkv::sbom::SBOM_MAX)
+                .map_err(|e| format!("{path}: {}: {e}", dkv::sbom::SBOM))?;
+            let sbom = String::from_utf8_lossy(&sbom);
+            list.flaws.extend(dkv::flaws::find(&id, &version, &sbom, advisories));
+            list.checked.push((id, version));
+        }
+        let count = list.flaws.len();
+        let list = list.write();
+        write(&store.join(FLAWS_TARGET), &list)?;
+        let old = std::fs::read(store.join(FLAWS_METADATA)).ok();
+        let version = old
+            .and_then(|bytes| Signed::<Targets>::parse(&bytes).ok())
+            .map_or(1, |old| old.version + 1);
+        let listed = BTreeMap::from([(FLAWS_TARGET.to_string(), repo::file_info(&list))]);
+        let signed = repo::targets(version, &repo::expires_in(days), &listed);
+        let bytes = repo::sign(&signed, &[signer.as_ref()])?;
+        let new = Signed::<Targets>::parse(&bytes).map_err(|e| e.to_string())?;
+        new.verified_by(&targets.signed.signed, FLAWS_ROLE).map_err(|e| e.to_string())?;
+        write(&store.join(FLAWS_METADATA), &bytes)?;
+        Ok((version, count))
     }
 
     /// Lays out in `out` what a server serves, with consistent snapshots:
@@ -400,10 +472,30 @@ impl Repo {
             ),
             None => (1, 1),
         };
-        let meta = BTreeMap::from([(
+        let mut meta = BTreeMap::from([(
             "targets.json".to_string(),
             repo::meta(targets_version, &targets.bytes),
         )]);
+        // The list of flaws, once the server has signed one for these
+        // targets, while it is good (ADR 0389).
+        if let Some((parsed, bytes)) = &flaws_role(store, &targets.signed.signed) {
+            let list = std::fs::read(store.join(FLAWS_TARGET))
+                .map_err(|e| format!("{FLAWS_TARGET}: {e}"))?;
+            let target =
+                parsed.signed.targets.get(FLAWS_TARGET).ok_or("the flaws role lists no list")?;
+            tuf::metadata::check_file(&list, Some(target.length), Some(&target.hashes))
+                .map_err(|e| format!("{FLAWS_TARGET} in the store: {e}"))?;
+            let sha256 = &target
+                .hashes
+                .0
+                .iter()
+                .find(|(name, _)| name == "sha256")
+                .ok_or("the list of flaws has no SHA-256")?
+                .1;
+            write(&out.join(format!("targets/flaws/{sha256}.flaws.json")), &list)?;
+            write(&out.join(format!("metadata/{}.{FLAWS_ROLE}.json", parsed.version)), bytes)?;
+            meta.insert(format!("{FLAWS_ROLE}.json"), repo::meta(parsed.version, bytes));
+        }
         let snapshot = repo::sign(
             &repo::snapshot(snapshot_version, &repo::expires_in(days.0), &meta),
             &[snapshot_signer.as_ref()],
@@ -443,6 +535,8 @@ impl Repo {
         if let Some(served) = Served::read(out)
             && served.root == root.bytes
             && served.targets_version == Some(targets.signed.version)
+            && served.flaws_version
+                == flaws_role(store, &targets.signed.signed).map(|(flaws, _)| flaws.version)
             && served.snapshot_expires.is_some_and(|t| t - tuf::time::now() > RENEW_DAYS * 86_400)
         {
             let keys = keys::read_all(&self.keys_dir())?;
@@ -509,6 +603,7 @@ struct Served {
     snapshot_version: u64,
     snapshot: Vec<u8>,
     targets_version: Option<u64>,
+    flaws_version: Option<u64>,
     snapshot_expires: Option<i64>,
 }
 
@@ -526,10 +621,45 @@ impl Served {
             timestamp_version: timestamp["signed"]["version"].as_u64()?,
             snapshot_version,
             targets_version: parsed["signed"]["meta"]["targets.json"]["version"].as_u64(),
+            flaws_version: parsed["signed"]["meta"][format!("{FLAWS_ROLE}.json")]["version"]
+                .as_u64(),
             snapshot_expires: parsed["signed"]["expires"].as_str().and_then(tuf::time::parse),
             snapshot,
         })
     }
+}
+
+/// The flaws role in `store` that [`Repo::publish`] serves with
+/// `targets`, with its bytes: once the server has signed one, while it
+/// follows from these targets and has not expired. A list a week old is
+/// left out, not served: the catalog stays good, and clients say they
+/// cannot tell the flaws (ADR 0389).
+fn flaws_role(store: &Path, targets: &Targets) -> Option<(Signed<Targets>, Vec<u8>)> {
+    let bytes = std::fs::read(store.join(FLAWS_METADATA)).ok()?;
+    let parsed = Signed::<Targets>::parse(&bytes).ok()?;
+    parsed.verified_by(targets, FLAWS_ROLE).ok()?;
+    (!parsed.expired(tuf::time::now())).then_some((parsed, bytes))
+}
+
+/// The targets' delegation of the list of flaws to the online key, the
+/// key `root` gives timestamp (ADR 0389): `flaws/` alone, and no further.
+fn flaws_delegation(root: &Root, keys: &[KeyFile]) -> Result<Value, String> {
+    let ids = &root.roles["timestamp"].keyids;
+    let online = keys
+        .iter()
+        .find(|k| ids.contains(&k.key.id()))
+        .ok_or("keys/ has no file of the online key, which signs the list of flaws")?;
+    let id = online.key.id();
+    Ok(json!({
+        "keys": { id.clone(): online.key },
+        "roles": [{
+            "name": FLAWS_ROLE,
+            "keyids": [id],
+            "threshold": 1,
+            "paths": ["flaws/*"],
+            "terminating": true,
+        }],
+    }))
 }
 
 /// What signs for `role`, one of the online roles: a key of `root`'s for
@@ -570,7 +700,13 @@ fn check_at(base: &tuf::Url, first: &[u8], targets: &Targets) -> Result<(), Stri
         let mut updater =
             tuf::Updater::new(client, &metadata, Some(&served)).map_err(|e| e.to_string())?;
         updater.refresh().map_err(|e| format!("the client refuses {base}: {e}"))?;
-        for path in targets.targets.keys() {
+        // The list of flaws, once the server has signed one (ADR 0389).
+        let listed = updater
+            .trusted()
+            .snapshot()
+            .is_some_and(|s| s.signed.meta.contains_key(&format!("{FLAWS_ROLE}.json")));
+        let flaws = (targets.delegations.is_some() && listed).then_some(FLAWS_TARGET);
+        for path in targets.targets.keys().map(String::as_str).chain(flaws) {
             let target = updater
                 .target(path)
                 .map_err(|e| e.to_string())?
@@ -627,7 +763,15 @@ mod tests {
         let manifest = format!(r#"{{"id": "{id}", "version": "{version}", "name": "Test"}}"#);
         let path = dir.join(format!("{id}-{version}-{}.dkv", content.len()));
         let mut zip = dkv::zip::Writer::new(std::fs::File::create(&path).unwrap());
-        for (name, data) in [(dkv::MANIFEST, manifest.as_bytes()), ("bin/tool", content)] {
+        let sbom = format!(
+            "PackageName: {id}\nExternalRef: PACKAGE-MANAGER purl pkg:cargo/regex@1.10.2\n"
+        );
+        let files = [
+            (dkv::MANIFEST, manifest.as_bytes()),
+            ("bin/tool", content),
+            (dkv::sbom::SBOM, sbom.as_bytes()),
+        ];
+        for (name, data) in files {
             zip.add(&dkv::zip::Input { path: name, executable: false, data }).unwrap();
         }
         zip.finish().unwrap();
@@ -718,6 +862,40 @@ mod tests {
         assert_eq!(targets.signed.signed.targets.len(), 1);
         let served = std::fs::canonicalize(&out).unwrap();
         assert_eq!(repo.check_url(&format!("file://{}", served.display())), Ok(1));
+
+        // The server's list of flaws (ADR 0389), signed by the online key
+        // alone, which may list nothing but it.
+        let advisories = dkv::flaws::read_osv(
+            br#"{"id": "RUSTSEC-2026-0001", "summary": "A flaw", "affected": [{"package":
+                {"ecosystem": "crates.io", "name": "regex"}, "versions": ["1.10.2"]}]}"#,
+        )
+        .unwrap();
+        assert_eq!(repo.sign_flaws(&store, &online_only, &advisories, 7), Ok((1, 1)));
+        assert_eq!(
+            repo.refresh(&store, &out, &online_only, (7, 1)),
+            Ok(Refreshed::All { snapshot: 6, timestamp: 7 })
+        );
+        assert_eq!(repo.refresh(&store, &out, &online_only, (7, 1)), Ok(Refreshed::Timestamp(8)));
+        let list = std::fs::read(store.join(FLAWS_TARGET)).unwrap();
+        let list = dkv::flaws::List::read(&list).unwrap();
+        assert!(list.checked("org.dukovo.ripgrep", "14.1.1"));
+        let flaws = list.flaws;
+        assert_eq!(flaws.len(), 1);
+        assert_eq!(
+            (flaws[0].bundle.as_str(), flaws[0].id.as_str(), flaws[0].component.as_str()),
+            ("org.dukovo.ripgrep", "RUSTSEC-2026-0001", "regex 1.10.2")
+        );
+        assert!(out.join("metadata/1.flaws.json").is_file());
+        assert_eq!(repo.check_url(&format!("file://{}", served.display())), Ok(1));
+        assert_eq!(repo.sign_flaws(&store, &online_only, &[], 7), Ok((2, 0)));
+        // A list that has expired is left out, and the catalog stays good.
+        assert_eq!(repo.sign_flaws(&store, &online_only, &advisories, -1), Ok((3, 1)));
+        assert_eq!(
+            repo.refresh(&store, &out, &online_only, (7, 1)),
+            Ok(Refreshed::All { snapshot: 7, timestamp: 9 })
+        );
+        assert_eq!(repo.check_url(&format!("file://{}", served.display())), Ok(1));
+        assert_eq!(repo.refresh(&store, &out, &online_only, (7, 1)), Ok(Refreshed::Timestamp(10)));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

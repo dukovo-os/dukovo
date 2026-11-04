@@ -4148,8 +4148,24 @@ fn make_bundle_files(ctx: &Ctx, disk: &Disk, path: &Path) -> Result<(), String> 
     Ok(())
 }
 
+/// Two advisories in the OSV format that the [`CATALOG_SITE`] disk's
+/// catalog lists flaws from (ADR 0389): one in every version of a crate
+/// ripgrep links below 999.0.0, rated high by its CVSS vector, and one in
+/// another that no version fixes, rated low by its database.
+const TEST_ADVISORIES: &str = r#"[
+  {"id": "TEST-0001", "summary": "A test flaw in regex-automata",
+   "severity": [{"type": "CVSS_V3", "score": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H"}],
+   "affected": [{"package": {"ecosystem": "crates.io", "name": "regex-automata"},
+     "ranges": [{"type": "SEMVER", "events": [{"introduced": "0"}, {"fixed": "999.0.0"}]}]}]},
+  {"id": "TEST-0002", "summary": "A test flaw in memchr",
+   "database_specific": {"severity": "LOW"},
+   "affected": [{"package": {"ecosystem": "crates.io", "name": "memchr"},
+     "ranges": [{"type": "SEMVER", "events": [{"introduced": "0"}]}]}]}
+]"#;
+
 /// Makes a [`CATALOG_SITE`] disk: the bundle files, then a test catalog
-/// that lists ripgrep's alone, so that bat's is a file from no catalog.
+/// that lists ripgrep's alone, so that bat's is a file from no catalog,
+/// and the flaws of [`TEST_ADVISORIES`].
 fn make_catalog_site(ctx: &Ctx, disk: &Disk, path: &Path) -> Result<(), String> {
     make_bundle_files(ctx, disk, path)?;
     let bundles = crate::bundles::dir(ctx);
@@ -4163,7 +4179,8 @@ fn make_catalog_site(ctx: &Ctx, disk: &Disk, path: &Path) -> Result<(), String> 
         .ok_or_else(|| {
             format!("{} holds no ripgrep bundle (run `./ob ports`)", bundles.display())
         })?;
-    let dir = crate::catalog::test_site(ctx, &[ripgrep]).map_err(|e| e.to_string())?;
+    let dir = crate::catalog::test_site(ctx, &[ripgrep], Some(TEST_ADVISORIES))
+        .map_err(|e| e.to_string())?;
     let image = path.display().to_string();
     host_tool(
         std::process::Command::new("mcopy")
@@ -4194,7 +4211,7 @@ fn make_site(
         .map(|bundle| crate::bundles::pack_test(ctx, bundle))
         .collect::<Result<Vec<PathBuf>>>()
         .map_err(|e| e.to_string())?;
-    let dir = crate::catalog::test_site(ctx, &files).map_err(|e| e.to_string())?;
+    let dir = crate::catalog::test_site(ctx, &files, None).map_err(|e| e.to_string())?;
     let mut mkfs = std::process::Command::new(fat_tool("mkfs.fat"));
     mkfs.args(["-F", "32", "-n", disk.label, "-i", "4f525448", "-C"])
         .arg(path)

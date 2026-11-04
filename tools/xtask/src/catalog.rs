@@ -242,8 +242,10 @@ fn deploy(ctx: &Ctx) -> Result<()> {
 
 /// Makes a catalog signed with throwaway keys, for a boot test, in
 /// `out/test/catalog`: `site/`, laid out as the update server serves it,
-/// listing `bundles`, and `root.json`, its first root (ADR 0383).
-pub fn test_site(ctx: &Ctx, bundles: &[PathBuf]) -> Result<PathBuf> {
+/// listing `bundles`, and `root.json`, its first root (ADR 0383). With
+/// `advisories`, OSV advisories as JSON, it also lists the bundles' known
+/// flaws, as the update server does each day (ADR 0389).
+pub fn test_site(ctx: &Ctx, bundles: &[PathBuf], advisories: Option<&str>) -> Result<PathBuf> {
     let dir = ctx.out.join("test/catalog");
     if dir.exists() {
         std::fs::remove_dir_all(&dir).context(|| format!("removing {}", dir.display()))?;
@@ -275,6 +277,20 @@ pub fn test_site(ctx: &Ctx, bundles: &[PathBuf]) -> Result<PathBuf> {
         os("--out"),
         site.as_os_str(),
     ])?;
+    if let Some(advisories) = advisories {
+        let file = dir.join("advisories.json");
+        std::fs::write(&file, advisories).context(|| format!("writing {}", file.display()))?;
+        run(&[
+            os("flaws"),
+            os("--key"),
+            online_key.as_os_str(),
+            os("--store"),
+            store.as_os_str(),
+            os("--out"),
+            site.as_os_str(),
+            file.as_os_str(),
+        ])?;
+    }
     let root = dir.join("root.json");
     std::fs::copy(repo.join("metadata/1.root.json"), &root)
         .context(|| format!("writing {}", root.display()))?;
