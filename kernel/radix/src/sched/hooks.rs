@@ -148,6 +148,10 @@ impl Hooks for KernelHooks {
     fn synchronize_rcu(&self) {
         super::rcu::synchronize();
     }
+
+    fn try_synchronize_rcu(&self) -> bool {
+        super::rcu::try_synchronize()
+    }
 }
 
 /// Writes the checker's state, for `kdb`.

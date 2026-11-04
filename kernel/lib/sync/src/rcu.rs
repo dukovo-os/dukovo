@@ -59,6 +59,13 @@ pub fn synchronize() {
     }
 }
 
+/// As [`synchronize`], from a caller that may not be able to sleep: true
+/// once every read section that was running when it was called has ended,
+/// false if it could not wait for them.
+pub fn try_synchronize() -> bool {
+    hooks::active().is_none_or(Hooks::try_synchronize_rcu)
+}
+
 /// A heap-allocated value that readers reach without locks and writers
 /// replace whole. Every value it holds is in memory from its own
 /// allocator, which frees it.
