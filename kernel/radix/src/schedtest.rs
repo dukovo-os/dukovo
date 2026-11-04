@@ -907,6 +907,31 @@ static RCU_CURRENT: AtomicUsize = AtomicUsize::new(0);
 static RCU_ALIVE: [AtomicBool; 2] = [AtomicBool::new(true), AtomicBool::new(false)];
 static RCU_BAD: AtomicU64 = AtomicU64::new(0);
 static RCU_READS: AtomicU64 = AtomicU64::new(0);
+/// Objects retired by deferred calls, then the one readers reach now.
+const RCU_DEFERRED: u64 = 1000;
+static RCU_OBJECT: core::sync::atomic::AtomicPtr<Retired> =
+    core::sync::atomic::AtomicPtr::new(core::ptr::null_mut());
+static RCU_FREED: AtomicU64 = AtomicU64::new(0);
+
+/// An object readers reach through `RCU_OBJECT`, freed by a deferred call.
+struct Retired {
+    alive: AtomicBool,
+    deferred: radix_sync::rcu::Deferred,
+}
+
+/// The deferred call: marks the object dead, as readers check, and frees
+/// it.
+#[allow(unsafe_code)]
+unsafe fn retire(item: core::ptr::NonNull<radix_sync::rcu::Deferred>) {
+    let offset = core::mem::offset_of!(Retired, deferred);
+    let object = item.as_ptr().wrapping_byte_sub(offset).cast::<Retired>();
+    // SAFETY: `object` came from `Box::into_raw` (`rcu_defers`), and this
+    // call is its last use.
+    let object = unsafe { alloc::boxed::Box::from_raw_in(object, HEAP.with(Flags::MAY_SLEEP)) };
+    object.alive.store(false, Ordering::Release);
+    drop(object);
+    RCU_FREED.fetch_add(1, Ordering::Relaxed);
+}
 
 fn rcu_reader(_: usize) {
     let mut sections = 0u64;
@@ -914,8 +939,16 @@ fn rcu_reader(_: usize) {
         {
             let _reading = radix_sync::rcu::read_lock();
             let slot = RCU_CURRENT.load(Ordering::Acquire);
+            let object = RCU_OBJECT.load(Ordering::Acquire);
             for _ in 0..64 {
                 if !RCU_ALIVE[slot].load(Ordering::Acquire) {
+                    RCU_BAD.fetch_add(1, Ordering::Relaxed);
+                    break;
+                }
+                // SAFETY: a read section holds off the deferred call that
+                // frees it, which retires it first.
+                #[allow(unsafe_code)]
+                if !object.is_null() && !unsafe { &*object }.alive.load(Ordering::Acquire) {
                     RCU_BAD.fetch_add(1, Ordering::Relaxed);
                     break;
                 }
@@ -928,6 +961,45 @@ fn rcu_reader(_: usize) {
         }
     }
     RCU_READS.fetch_add(sections, Ordering::Relaxed);
+}
+
+/// Replaces the readers' object `RCU_DEFERRED` times, each old one freed
+/// by a deferred call, then waits (up to 10 s) for the calls; gives how
+/// many ran.
+#[allow(unsafe_code)]
+fn rcu_defers() -> u64 {
+    RCU_FREED.store(0, Ordering::Relaxed);
+    let heap = HEAP.with(Flags::MAY_SLEEP);
+    let mut made = 0;
+    for round in 0..=RCU_DEFERRED {
+        let next = if round < RCU_DEFERRED {
+            let object = Retired {
+                alive: AtomicBool::new(true),
+                deferred: radix_sync::rcu::Deferred::new(retire),
+            };
+            match alloc::boxed::Box::try_new_in(object, heap) {
+                Ok(object) => alloc::boxed::Box::into_raw_with_allocator(object).0,
+                Err(_) => break,
+            }
+        } else {
+            core::ptr::null_mut()
+        };
+        let old = RCU_OBJECT.swap(next, Ordering::AcqRel);
+        if let Some(old) = core::ptr::NonNull::new(old) {
+            // SAFETY: `old` is a live object no longer published, whose
+            // `Deferred` is in no queue; `retire` frees it.
+            unsafe { radix_sync::rcu::defer(core::ptr::NonNull::from(&(*old.as_ptr()).deferred)) };
+            made += 1;
+        }
+        if round % 64 == 0 {
+            sched::yield_now();
+        }
+    }
+    let deadline = sched::now_ns() + 10_000_000_000;
+    while RCU_FREED.load(Ordering::Relaxed) < made && sched::now_ns() < deadline {
+        sched::sleep_ns(1_000_000);
+    }
+    RCU_FREED.load(Ordering::Relaxed)
 }
 
 /// `selftest=rcu`.
@@ -956,6 +1028,7 @@ pub fn rcu() {
         // No reader can still be looking at the old one.
         RCU_ALIVE[old].store(false, Ordering::Release);
     }
+    let deferred = rcu_defers();
     let elapsed = sched::now_ns() - before.1;
     let readers = crew.threads().len();
     let failed = crew.failed;
@@ -966,13 +1039,17 @@ pub fn rcu() {
     outcome.check(bad == 0, format_args!("readers saw a retired object {bad} times"));
     outcome.check(reads > 0, format_args!("the readers read nothing"));
     outcome.check(
+        deferred == RCU_DEFERRED,
+        format_args!("only {deferred} of {RCU_DEFERRED} deferred calls ran"),
+    );
+    outcome.check(
         grace_periods >= RCU_ROUNDS,
         format_args!("{RCU_ROUNDS} synchronizations took only {grace_periods} grace periods"),
     );
     outcome.finish(format_args!(
         "{readers} readers on other CPUs made {reads} read sections while {RCU_ROUNDS} objects \
-         were retired, none too early; {grace_periods} grace periods in {} ms ({} us each on \
-         average)",
+         were retired, and {RCU_DEFERRED} freed by deferred calls, none too early; \
+         {grace_periods} grace periods in {} ms ({} us each on average)",
         elapsed / 1_000_000,
         sched::rcu::average_ns() / 1000
     ));

@@ -248,6 +248,7 @@ pub extern "Rust" fn radix_kernel_main(mut params: BootParams) -> ! {
     sched::start_threads();
     work::start();
     join::start();
+    sched::rcu::start_thread();
     oom::start();
     usb::init(flags.value("usb") == Some("off"));
     usb::dbc::init(flags.has("dbc"));

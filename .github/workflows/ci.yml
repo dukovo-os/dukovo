@@ -376,7 +376,16 @@ jobs:
         run: ./ob setup
 
       - name: ./ob test boot --shard ${{ matrix.shard }}/3
+        # A shard takes about 35 minutes; one that hangs fails here, with
+        # its logs, instead of running until the job's six hours.
+        timeout-minutes: 60
         run: ./ob test boot --shard ${{ matrix.shard }}/3
+
+      - name: Show the host's processes and kernel log
+        if: failure()
+        run: |
+          ps -eo pid,stat,etime,wchan:32,args | grep -v ' \[' || true
+          sudo dmesg | tail -n 60 || true
 
       - name: Upload boot test logs and screenshots
         if: failure()

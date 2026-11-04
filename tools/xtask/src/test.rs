@@ -2167,7 +2167,7 @@ pub const CASES: &[Case] = &[
     },
     Case {
         name: "rcu",
-        about: "RCU readers on 3 CPUs never see an object retired too early",
+        about: "RCU readers on 3 CPUs never see an object retired too early, by a grace period or by a deferred call",
         firmware: Firmware::Uefi,
         media: Media::Usb,
         cmdline: "qemu-exit lockdep selftest=rcu",
@@ -8554,7 +8554,7 @@ fn disk_errors(vm: &mut Vm, case: &Case) -> Result<(), String> {
 }
 
 fn rcu(vm: &mut Vm, case: &Case) -> Result<(), String> {
-    sched_case(vm, case, "rcu", "objects were retired, none too early")
+    sched_case(vm, case, "rcu", "freed by deferred calls, none too early")
 }
 
 fn oom(vm: &mut Vm, case: &Case) -> Result<(), String> {

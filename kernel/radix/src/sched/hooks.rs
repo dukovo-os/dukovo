@@ -152,6 +152,12 @@ impl Hooks for KernelHooks {
     fn try_synchronize_rcu(&self) -> bool {
         super::rcu::try_synchronize()
     }
+
+    #[allow(unsafe_code)]
+    unsafe fn defer_rcu(&self, item: core::ptr::NonNull<radix_sync::rcu::Deferred>) {
+        // SAFETY: the caller's guarantee.
+        unsafe { super::rcu::defer(item) }
+    }
 }
 
 /// Writes the checker's state, for `kdb`.

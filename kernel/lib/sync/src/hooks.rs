@@ -153,6 +153,20 @@ pub trait Hooks: Sync {
     fn try_synchronize_rcu(&self) -> bool {
         false
     }
+
+    /// Runs `item`'s call once every RCU read section running now has
+    /// ended ([`crate::rcu::defer`]). The kernel queues it; this default
+    /// waits and calls it.
+    ///
+    /// # Safety
+    ///
+    /// As [`crate::rcu::defer`].
+    #[allow(unsafe_code)]
+    unsafe fn defer_rcu(&self, item: core::ptr::NonNull<crate::rcu::Deferred>) {
+        self.synchronize_rcu();
+        // SAFETY: the caller's guarantee, and the grace period passed.
+        unsafe { crate::rcu::Deferred::call(item) }
+    }
 }
 
 static HOOKS: Once<&'static dyn Hooks> = Once::new();
