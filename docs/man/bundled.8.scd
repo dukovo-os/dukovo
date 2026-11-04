@@ -99,6 +99,18 @@ files a project chooses them with, and the asker's default line and
 everyone's, and *bundle*(1) chooses the line in the asker's working
 folder, which bundled cannot read, and asks again for it.
 
+A line's add-ons (ADR 0388) are in _~/applications/add-ons/ID@LINE_,
+each person's own, and an administrator's in
+_/applications/add-ons/ID@LINE_. Asked by *bundle*(1) after a run that
+changed them, and whenever it links a place's commands, bundled links
+each command in the folder the manifest's *add_ons* names beside the
+commands of the place, except one named as a system command, reading
+only names, through folders each the place owner's and never through a
+link. Asked for a command no bundle adds, it answers with the add-on of
+that name of the asker's lines, their own before everyone's, and the
+add-ons' path; a link to one that went goes then. Removing a line
+with *--purge* removes its add-ons with its data.
+
 # GRANTS
 
 bundled keeps what each person said of each bundle's permissions, the

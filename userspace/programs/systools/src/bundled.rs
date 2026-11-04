@@ -64,7 +64,7 @@ use crate::bundles::grants::{self, Grant, Grants, Said};
 use crate::bundles::history::{self, Event, What};
 use crate::bundles::minisign::PublicKey;
 use crate::bundles::protocol::{
-    self, Answer, Available, Find, Found, Hit, LINE_MAX, Lines, Listed, Request, Shown,
+    self, AddOn, Answer, Available, Find, Found, Hit, LINE_MAX, Lines, Listed, Request, Shown,
 };
 use crate::bundles::registry::{self, Installed, Place, Registry, Trust, base_id};
 use crate::bundles::services::{self, Record};
@@ -85,6 +85,13 @@ pub const COMMANDS: &str = "commands";
 /// Where each command's link leads: bundle(1), which runs the command of
 /// that name (ADR 0225).
 pub const LAUNCHER: &str = "/system/commands/bundle";
+
+/// The folder in a place's applications folder that holds the add-ons
+/// of each line, by its full ID (ADR 0388).
+pub const ADD_ONS: &str = "add-ons";
+
+/// The system's commands, which no add-on's is linked beside.
+const SYSTEM_COMMANDS: &str = "/system/commands";
 /// How long a request may take to come.
 const REQUEST_TIME: Duration = Duration::from_secs(10);
 /// How long the install sheet's question waits for its answer.
@@ -1178,7 +1185,16 @@ fn link_commands(registry: &Registry, place: Place) -> Result<(), String> {
     if st.st_uid != 0 {
         return Err(format!("{folder} changed as it was opened"));
     }
-    let wanted = commands_of(registry, place);
+    let mut wanted = commands_of(registry, place);
+    let system = Dir::open(SYSTEM_COMMANDS).and_then(|d| d.names()).unwrap_or_default();
+    wanted.extend(
+        add_on_commands(registry, place)
+            .into_iter()
+            .map(|a| a.0)
+            .filter(|name| !system.contains(name)),
+    );
+    wanted.sort();
+    wanted.dedup();
     for name in links.names().map_err(|e| format!("{folder}: {e}"))? {
         let target = links.read_link(&name).map_err(|e| format!("{folder}/{name}: {e}"))?;
         let keep = wanted.contains(&name) && target.as_deref() == Some(LAUNCHER);
@@ -1192,6 +1208,101 @@ fn link_commands(registry: &Registry, place: Place) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// Whose add-ons `asker`'s are: an administrator's are everyone's (ADR
+/// 0388).
+fn add_on_place(asker: u32) -> Place {
+    if asker == 0 { Place::Everyone } else { Place::User(asker) }
+}
+
+/// The lines with add-ons in reach of `place`, by full ID, and the
+/// folder in their add-ons that holds commands (ADR 0388).
+fn add_on_lines(registry: &Registry, place: Place) -> Vec<(String, String)> {
+    let mut lines: Vec<(String, String)> = Vec::new();
+    for at in [place, Place::Everyone] {
+        for installed in registry.installed.iter().filter(|i| i.place == at && i.id.contains('@')) {
+            if lines.iter().any(|(id, _)| *id == installed.id) {
+                continue;
+            }
+            if let Ok(manifest) = installed_manifest(installed.place, &installed.id)
+                && let Some(add_ons) = manifest.add_ons
+            {
+                lines.push((installed.id.clone(), add_ons.commands.0));
+            }
+        }
+    }
+    lines.sort();
+    lines
+}
+
+/// Opens the folder `inner` of the add-ons of line `id` in `place`, each
+/// part its owner's and not a link: it, and its path.
+fn add_ons_folder(place: Place, id: &str, inner: &str) -> Result<(Dir, String), String> {
+    let (places, path) = open_place(place)?;
+    let owner = place_folder(place)?.1;
+    let mut path = format!("{path}/{ADD_ONS}");
+    let mut dir = places.dir_at(ADD_ONS).map_err(|e| format!("{path}: {e}"))?;
+    for part in std::iter::once(id).chain(inner.split('/')) {
+        if dir.stat().map_err(|e| format!("{path}: {e}"))?.st_uid != owner {
+            return Err(format!("{path} is not its owner's"));
+        }
+        path = format!("{path}/{part}");
+        dir = dir.dir_at(part).map_err(|e| format!("{path}: {e}"))?;
+    }
+    if dir.stat().map_err(|e| format!("{path}: {e}"))?.st_uid != owner {
+        return Err(format!("{path} is not its owner's"));
+    }
+    Ok((dir, path))
+}
+
+/// The commands of the add-ons of `place` (ADR 0388): each one's name,
+/// line and path, by name; of two lines' commands of one name, the line
+/// first by full ID. Only names a command may have, and nothing of a
+/// folder that is not its owner's.
+fn add_on_commands(registry: &Registry, place: Place) -> Vec<(String, String, String)> {
+    let mut commands: Vec<(String, String, String)> = Vec::new();
+    for (id, inner) in add_on_lines(registry, place) {
+        let Ok((dir, path)) = add_ons_folder(place, &id, &inner) else { continue };
+        for name in dir.names().unwrap_or_default() {
+            let free = !commands.iter().any(|c| c.0 == name);
+            if free && manifest::bundle::check_command_name(&name).is_ok() {
+                commands.push((name.clone(), id.clone(), format!("{path}/{name}")));
+            }
+        }
+    }
+    commands.sort();
+    commands
+}
+
+/// The add-on command `name` that `asker` runs: their own before
+/// everyone's (ADR 0388).
+fn add_on(registry: &Registry, asker: u32, name: &str) -> Option<AddOn> {
+    let places =
+        if asker == 0 { vec![Place::Everyone] } else { vec![Place::User(asker), Place::Everyone] };
+    places.into_iter().find_map(|place| {
+        add_on_commands(registry, place)
+            .into_iter()
+            .find(|c| c.0 == name)
+            .map(|(_, id, path)| AddOn { place, id, path })
+    })
+}
+
+/// Removes the add-ons of line `id` in `place`: where they were, if they
+/// were.
+fn remove_add_ons(place: Place, id: &str) -> Result<Option<String>, String> {
+    let (places, path) = open_place(place)?;
+    let owner = place_folder(place)?.1;
+    let folder = format!("{path}/{ADD_ONS}");
+    let Ok(add_ons) = places.dir_at(ADD_ONS) else { return Ok(None) };
+    if add_ons.stat().map_err(|e| format!("{folder}: {e}"))?.st_uid != owner {
+        return Err(format!("{folder} is not its owner's"));
+    }
+    if add_ons.stat_at(id).map_err(|e| format!("{folder}/{id}: {e}"))?.is_none() {
+        return Ok(None);
+    }
+    add_ons.remove_tree(id, 0).map_err(|e| format!("{folder}/{id}: {e}"))?;
+    Ok(Some(format!("{folder}/{id}")))
 }
 
 /// The lines of the ID that `name` names, installed for `asker` or for
@@ -1332,7 +1443,18 @@ fn find(
     let Some(installed) = found else {
         return Err(match find {
             Find::Id(id) => format!("{id} is not installed"),
-            Find::Command(name) => format!("no bundle installed adds the command {name}"),
+            Find::Command(name) => {
+                // A command of a line's add-ons (ADR 0388); a link to one
+                // that went goes too.
+                let registry = shared.lock();
+                if let Some(add_on) = add_on(&registry, asker, name) {
+                    let id = add_on.id.clone();
+                    connection.send(&Answer::AddOn(add_on)).map_err(|e| format!("{e}"))?;
+                    return Ok(format!("{name}, an add-on of {id}"));
+                }
+                let _ = link_commands(&registry, add_on_place(asker));
+                format!("no bundle installed adds the command {name}")
+            }
         });
     };
     let answer = Answer::Found(Found {
@@ -1535,8 +1657,18 @@ fn remove(
         by: Some(asker),
         note: if purged { "with its data".into() } else { String::new() },
     });
+    // Its add-ons are its data: what each person added to the line (ADR
+    // 0388).
+    let mut add_ons = String::new();
+    if purge && id.contains('@') {
+        match remove_add_ons(place, id) {
+            Ok(Some(folder)) => add_ons = format!(", and its add-ons in {folder}"),
+            Ok(None) => {}
+            Err(why) => add_ons = format!("; its add-ons stay: {why}"),
+        }
+    }
     let and = if purged { ", and its data" } else { "" };
-    Ok(format!("removed {id} {}{and}{services}", installed.version))
+    Ok(format!("removed {id} {}{and}{add_ons}{services}", installed.version))
 }
 
 /// The bundle `id` that `asker` runs: their own before everyone's.
@@ -2587,6 +2719,8 @@ fn serve(shared: &Shared, stream: UnixStream) {
         Ok(Request::Info { id }) => info(shared, &mut connection, asker, &id),
         Ok(Request::Remove { id, everyone, purge }) => remove(shared, asker, &id, everyone, purge),
         Ok(Request::Run { find: what }) => find(shared, &mut connection, asker, &what),
+        Ok(Request::AddOns) => link_commands(&shared.lock(), add_on_place(asker))
+            .map(|()| format!("linked the commands of {}'s add-ons", whom(add_on_place(asker)))),
         Ok(Request::Ask { id, permission, list }) => {
             ask(shared, &connection, asker, &id, &permission, &list)
         }

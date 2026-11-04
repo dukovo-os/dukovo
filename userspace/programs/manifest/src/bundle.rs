@@ -64,6 +64,7 @@ pub const KEYS: &[&str] = &[
     "version",
     "line",
     "line_files",
+    "add_ons",
     "publisher",
     "license",
     "source",
@@ -130,6 +131,9 @@ pub struct Manifest {
     /// The files a project keeps that say which line it wants, such as
     /// `.nvmrc`.
     pub line_files: Vec<FileName>,
+    /// Where its package manager installs what each person adds, such as
+    /// `npm install -g` does (ADR 0388).
+    pub add_ons: Option<AddOns>,
     /// Who publishes it; the key comes from its signature.
     pub publisher: Publisher,
     /// Its license, as an SPDX expression.
@@ -297,6 +301,32 @@ impl Manifest {
             }
         } else if !self.line_files.is_empty() {
             fail(&[Key("line_files")], "line_files chooses a line, so it needs a line".into());
+        }
+        if let Some(add_ons) = &self.add_ons {
+            if self.line.is_none() {
+                fail(
+                    &[Key("add_ons")],
+                    "add_ons are kept for each line, so they need a line".into(),
+                );
+            }
+            if !self.commands.iter().any(|c| c.runs_with == RunsWith::YourAccess) {
+                fail(
+                    &[Key("add_ons")],
+                    "add_ons are installed by a command that runs with your access, and none does"
+                        .into(),
+                );
+            }
+            if !(1..=4).contains(&add_ons.variables.len()) {
+                fail(&[Key("add_ons"), Key("variables")], "add_ons names 1 to 4 variables".into());
+            }
+            for (i, name) in add_ons.variables.iter().enumerate() {
+                if add_ons.variables[..i].contains(name) {
+                    fail(
+                        &[Key("add_ons"), Key("variables"), Index(i)],
+                        format!("add_ons names {name} twice"),
+                    );
+                }
+            }
         }
         if self.line_files.len() > 8 {
             fail(&[Key("line_files")], "line_files names at most 8 files".into());
@@ -528,6 +558,7 @@ impl<'de> Deserialize<'de> for Top {
                 let mut version = None;
                 let mut line = None;
                 let mut line_files = None;
+                let mut add_ons = None;
                 let mut publisher = None;
                 let mut license = None;
                 let mut source = None;
@@ -565,6 +596,7 @@ impl<'de> Deserialize<'de> for Top {
                         "version" => version = Some(map.next_value()?),
                         "line" => line = Some(map.next_value()?),
                         "line_files" => line_files = Some(map.next_value()?),
+                        "add_ons" => add_ons = Some(map.next_value()?),
                         "publisher" => publisher = Some(map.next_value()?),
                         "license" => license = Some(map.next_value()?),
                         "source" => source = Some(map.next_value()?),
@@ -626,6 +658,7 @@ impl<'de> Deserialize<'de> for Top {
                         version,
                         line,
                         line_files: line_files.unwrap_or_default(),
+                        add_ons,
                         publisher,
                         license,
                         source,
@@ -848,6 +881,24 @@ text!(
 );
 
 text!(
+    /// An environment variable's name, such as `NPM_CONFIG_PREFIX`:
+    /// capitals, digits and `_`, and none the system sets.
+    VariableName,
+    "An environment variable's name, such as NPM_CONFIG_PREFIX",
+    @pattern "^[A-Z_][A-Z0-9_]{0,63}$",
+    check_variable_name
+);
+
+text!(
+    /// A folder in another, such as `bin`: one to three names between
+    /// `/`, none `.` or `..`.
+    InnerPath,
+    "A folder in another, such as bin: one to three names between /",
+    @pattern "^[^/]{1,64}(/[^/]{1,64}){0,2}$",
+    check_inner_path
+);
+
+text!(
     /// A web address, `https://`.
     Url,
     "A web address, starting https://",
@@ -1042,6 +1093,63 @@ fn check_file_name(name: &str) -> Result<(), String> {
         Err(format!(
             "`{}` is not a file's name: 1 to 64 characters, without a / or control characters",
             name.escape_debug()
+        ))
+    }
+}
+
+/// The variables the system sets or reads itself, which `add_ons` may
+/// not name.
+const SYSTEM_VARIABLES: &[&str] = &[
+    "PATH",
+    "HOME",
+    "USER",
+    "LOGNAME",
+    "SHELL",
+    "TERM",
+    "TZ",
+    "LANG",
+    "PWD",
+    "OLDPWD",
+    "IFS",
+    "ENV",
+    "BASH_ENV",
+    "TMPDIR",
+    "BUNDLE_LINES",
+];
+
+/// The variable that names the lines an add-on's command runs on
+/// (ADR 0388): full IDs between spaces.
+pub const BUNDLE_LINES: &str = "BUNDLE_LINES";
+
+fn check_variable_name(name: &str) -> Result<(), String> {
+    let shaped = (1..=64).contains(&name.len())
+        && name
+            .bytes()
+            .enumerate()
+            .all(|(i, b)| b.is_ascii_uppercase() || b == b'_' || (i > 0 && b.is_ascii_digit()));
+    if !shaped {
+        return Err(format!(
+            "`{}` is not a variable's name: capitals, digits and _, at most 64, not starting \
+             with a digit",
+            name.escape_debug()
+        ));
+    }
+    if SYSTEM_VARIABLES.contains(&name) || name.starts_with("LC_") || name.starts_with("LD_") {
+        return Err(format!("{name} is the system's to set"));
+    }
+    Ok(())
+}
+
+fn check_inner_path(path: &str) -> Result<(), String> {
+    let parts: Vec<&str> = path.split('/').collect();
+    let fits = (1..=3).contains(&parts.len())
+        && parts.iter().all(|p| check_file_name(p).is_ok() && *p != "." && *p != "..");
+    if fits {
+        Ok(())
+    } else {
+        Err(format!(
+            "`{}` is not a folder in another: one to three names between /, none . or ..",
+            path.escape_debug()
         ))
     }
 }
@@ -1882,6 +1990,22 @@ pub struct Update {
     pub key: PublicKey,
 }
 
+/// Where a line's package manager installs what each person adds, such
+/// as `npm install -g` does: a folder of their own for the line,
+/// `~/applications/add-ons/ID@LINE`, whose commands bundled links where
+/// theirs are (ADR 0388).
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct AddOns {
+    /// The environment variables that tell its commands the folder, such
+    /// as `NPM_CONFIG_PREFIX`.
+    pub variables: Vec<VariableName>,
+    /// The folder in it where the package manager puts commands, such as
+    /// `bin`.
+    pub commands: InnerPath,
+}
+
 /// A bundle's texts in another language.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
 #[cfg_attr(feature = "schema", derive(JsonSchema))]
@@ -1917,6 +2041,7 @@ struct Shape {
     version: Version,
     line: Option<VersionLine>,
     line_files: Option<Vec<FileName>>,
+    add_ons: Option<AddOns>,
     publisher: Publisher,
     license: License,
     source: Option<Url>,

@@ -703,13 +703,14 @@ fn show_default(name: &str) -> Result<i32, Fail> {
     let lines = lines.ok_or_else(|| fail("bundled found no lines".into()))?;
     let here = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
     let none = || "none".to_string();
-    match run::pick(&lines, &here) {
+    match run::pick(&lines, &here, &run::pins()) {
         Ok((line, why)) => {
             let why = match why {
                 run::Why::Project(path) => format!("as {} asks", path.display()),
                 run::Why::Mine => "your default".into(),
                 run::Why::Everyone => "everyone's default".into(),
                 run::Why::Newest => "the newest installed".into(),
+                run::Why::AddOn => "for the add-on that runs it".into(),
             };
             println!("{}: {line} runs here, {why}", lines.id);
         }
