@@ -59,6 +59,7 @@ use manifest::bundle::{Manifest, Need, Request as Asked, RunsWith};
 
 use crate::args::Args;
 use crate::bundles::catalogs::{self, Catalog};
+use crate::bundles::feeds;
 use crate::bundles::folder::{DEPTH_MAX, Dir, check, fd_stat, same};
 use crate::bundles::grants::{self, Grant, Grants, Said};
 use crate::bundles::history::{self, Event, What};
@@ -430,6 +431,8 @@ struct How<'a> {
     /// Asked by nobody, as updating by itself is: the sheet goes nowhere,
     /// and a version that asks for more waits.
     automatic: bool,
+    /// Fetched from the bundle's own feed (ADR 0390).
+    feed: bool,
 }
 
 /// What an update that asks for more says, when nobody is there to ask.
@@ -661,6 +664,7 @@ fn install_in(
     );
     let source = match &trust {
         Trust::Catalog { name, .. } => format!("from catalog {name}"),
+        _ if how.feed => "from its feed".into(),
         _ => "from a file".into(),
     };
     add_history(&Event {
@@ -2084,10 +2088,11 @@ fn get(
     result
 }
 
-/// A bundle whose catalog lists a newer version.
+/// A bundle whose catalog, or own feed, lists a newer version.
 struct Pending {
     installed: Installed,
-    catalog: String,
+    /// Its catalog, or none for its own feed (ADR 0390).
+    catalog: Option<String>,
     newest: String,
     held: bool,
     /// The newer version, fetched and checked by the client.
@@ -2231,8 +2236,11 @@ fn find_updates(
     let mut current = 0;
     for (installed, catalog, held) in candidates {
         let Some(catalog) = catalog else {
-            if ids.contains(&installed.id) {
-                notes.push(format!("{} came from a file, so no catalog updates it", installed.id));
+            match from_feed(place, &installed, held, fetch, ids.contains(&installed.id)) {
+                Ok(Feeding::Newer(p)) => pending.push(*p),
+                Ok(Feeding::Current) => current += 1,
+                Ok(Feeding::None) => {}
+                Err(why) => notes.push(why),
             }
             continue;
         };
@@ -2256,9 +2264,61 @@ fn find_updates(
         } else {
             None
         };
+        let catalog = Some(catalog);
         pending.push(Pending { installed, catalog, newest: entry.version, held, file });
     }
     Ok((pending, notes, current))
+}
+
+/// What a bundle from no catalog's own feed says.
+enum Feeding {
+    /// It names no feed.
+    None,
+    /// Its feed lists no newer version.
+    Current,
+    /// Its feed lists this one.
+    Newer(Box<Pending>),
+}
+
+/// What `installed`, from no catalog, has from its own feed (ADR 0390):
+/// a newer version, fetched when `fetch` and it is not held. That it
+/// names no feed is said only when it was `asked` for.
+fn from_feed(
+    place: Place,
+    installed: &Installed,
+    held: bool,
+    fetch: bool,
+    asked: bool,
+) -> Result<Feeding, String> {
+    let id = &installed.id;
+    let manifest = installed_manifest(place, id)?;
+    let Some(update) = &manifest.update else {
+        return if asked {
+            Err(format!("{id} came from a file and names no feed, so nothing updates it"))
+        } else {
+            Ok(Feeding::None)
+        };
+    };
+    let state = Path::new(feeds::STATE);
+    let mut open = feeds::open(state, place, id, &update.feed.0, &update.key.0)
+        .map_err(|why| format!("{id}: its feed: {why}"))?;
+    let Some(entry) = open.index.newest(id).cloned().filter(|e| {
+        catalogs::compare_versions(&e.version, &installed.version) == std::cmp::Ordering::Greater
+    }) else {
+        return Ok(Feeding::Current);
+    };
+    let file = if fetch && !held {
+        Some(open.fetch(&entry).map_err(|why| format!("{id} {}: {why}", entry.version))?)
+    } else {
+        None
+    };
+    Ok(Feeding::Newer(Box::new(Pending {
+        installed: installed.clone(),
+        catalog: None,
+        newest: entry.version,
+        held,
+        file,
+    })))
 }
 
 /// Whose bundles a place holds, as words.
@@ -2330,7 +2390,13 @@ fn update(
                 left += 1;
                 continue;
             };
-            let how = How { yes, from: Some(&p.catalog), update: true, automatic: false };
+            let how = How {
+                yes,
+                from: p.catalog.as_deref(),
+                update: true,
+                automatic: false,
+                feed: p.catalog.is_none(),
+            };
             let result = File::open(&file)
                 .map_err(|e| format!("{}: {e}", file.display()))
                 .and_then(|archive| {
@@ -2383,7 +2449,13 @@ fn update_by_themselves(shared: &Shared) {
                 Place::Everyone => (0, true),
                 Place::User(uid) => (uid, false),
             };
-            let how = How { yes: true, from: Some(&p.catalog), update: true, automatic: true };
+            let how = How {
+                yes: true,
+                from: p.catalog.as_deref(),
+                update: true,
+                automatic: true,
+                feed: p.catalog.is_none(),
+            };
             let result = File::open(&file)
                 .map_err(|e| format!("{}: {e}", file.display()))
                 .and_then(|archive| install(shared, None, asker, &archive, everyone, how));
@@ -2392,9 +2464,12 @@ fn update_by_themselves(shared: &Shared) {
             let (from, to) = (&p.installed.version, &p.newest);
             match result {
                 Ok(_) => eprintln!(
-                    "bundled: updated {id} {from} to {to} for {} by itself, from catalog {}",
+                    "bundled: updated {id} {from} to {to} for {} by itself, {}",
                     whom(place),
-                    p.catalog
+                    p.catalog.as_ref().map_or_else(
+                        || "from its feed".to_string(),
+                        |c| format!("from catalog {c}")
+                    )
                 ),
                 Err(why) => {
                     let waits = why.starts_with(WAITS);
@@ -2924,6 +2999,7 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
         tidy(&dir);
     }
     catalogs::tidy(Path::new(catalogs::STATE));
+    feeds::tidy(Path::new(feeds::STATE));
     let (known, errors) = read_catalogs();
     for why in errors {
         eprintln!("bundled: a catalog is left out: {why}");

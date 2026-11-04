@@ -2830,6 +2830,7 @@ dependencies = [
  "acl",
  "base64",
  "boringtun",
+ "catalog-repo",
  "disk",
  "dkv",
  "if-addrs",

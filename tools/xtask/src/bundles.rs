@@ -139,6 +139,9 @@ pub struct TestBundle {
     /// access and adds add-ons to the folder `NAME_HOME` names (ADR
     /// 0388); empty for none.
     pub add_ons: &'static str,
+    /// Its manifest's `update.feed`, the address of its own feed, which
+    /// the build key signs, `update.key` (ADR 0390); empty for none.
+    pub feed: &'static str,
 }
 
 /// Packs `bundle` into out/test/bundles, signed by the build key, and
@@ -214,6 +217,19 @@ pub fn pack_test(ctx: &Ctx, bundle: &TestBundle) -> Result<PathBuf> {
             &format!("  \"provides\": [{}],\n  \"permissions\":", bundle.provides),
         )
     };
+    let key = signing_key(ctx)?;
+    let manifest = if bundle.feed.is_empty() {
+        manifest
+    } else {
+        manifest.replace(
+            "  \"permissions\":",
+            &format!(
+                "  \"update\": {{ \"feed\": \"{}\", \"key\": \"{}\" }},\n  \"permissions\":",
+                bundle.feed,
+                key.public().encoded()
+            ),
+        )
+    };
     dkv::signed::parse_manifest(manifest.as_bytes())
         .map_err(|why| Error::new(format!("test bundle {}: {why}", bundle.id)))?;
     std::fs::write(folder.join(dkv::MANIFEST), &manifest)
@@ -226,7 +242,6 @@ pub fn pack_test(ctx: &Ctx, bundle: &TestBundle) -> Result<PathBuf> {
         std::fs::set_permissions(&program, std::os::unix::fs::PermissionsExt::from_mode(0o755))
             .context(|| format!("writing {}", program.display()))?;
     }
-    let key = signing_key(ctx)?;
     dkv::signed::sign_folder(&folder, &key, 0, &crate::licenses::rfc3339(0))
         .map_err(|why| Error::new(format!("signing test bundle {}: {why}", bundle.id)))?;
     let dir = ctx.out.join("test/bundles");
@@ -239,6 +254,21 @@ pub fn pack_test(ctx: &Ctx, bundle: &TestBundle) -> Result<PathBuf> {
         .map_err(|why| Error::new(format!("packing test bundle {}: {why}", bundle.id)))?;
     std::io::Write::flush(&mut writer).context(|| format!("writing {}", out.display()))?;
     Ok(out)
+}
+
+/// Signs the update feed in `folder` with the build key, adding `files`,
+/// with `bundle feed` of this machine's build of systools (ADR 0390).
+pub fn sign_test_feed(ctx: &Ctx, folder: &Path, files: &[PathBuf]) -> Result<()> {
+    signing_key(ctx)?;
+    let key =
+        std::env::var_os(KEY_VARIABLE).map_or_else(|| dir(ctx).join("build.key"), PathBuf::from);
+    let mut build = crate::userspace::host_cargo_of(ctx, "build", &["systools"]);
+    build.args(["--bin", "systools"]);
+    process::run(ctx, &mut build)?;
+    let program = ctx.target.join("programs-host/debug/systools");
+    let mut cmd = std::process::Command::new(program);
+    cmd.args(["bundle", "feed"]).arg(folder).args(files).arg("--key").arg(key);
+    process::output(ctx, &mut cmd).map(drop)
 }
 
 /// The manifest of `port`'s bundle (manifest.json(5)): its identity from

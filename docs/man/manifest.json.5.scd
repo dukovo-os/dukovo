@@ -244,8 +244,14 @@ windows (1.1), *runtime*, the Linux layer (1.3), and *plugins* (1.10).
 	as *"dukovo.certificates/1"*, each *"required"* or *"optional"*.
 
 *update* = { *feed* = _"https://..."_, *key* = _"minisign key"_ }
-	Its own update feed, for a bundle outside a catalog, and the
-	minisign public key that signs it, as *minisign -G* writes it.
+	Its own update feed, for a bundle outside a catalog (ADR 0390): the
+	address of a small TUF repository, with _metadata/_ and _targets/_
+	under it, by *https* or *http*, since all it serves is signed; and
+	the minisign public key it is rooted in, as *minisign -G* writes it,
+	which its first root, _metadata/1.root.json_, must name alone for
+	root. *bundled*(8) reads the feed that the installed version names;
+	*bundle feed* makes and signs one (*bundle*(1), OWN FEEDS). It lists
+	each bundle as a catalog does.
 
 *translations* = { _"language"_: { *name*, *summary*, *description*, *why* } }
 	Its texts in other languages, by BCP 47 tag such as *"de"* or

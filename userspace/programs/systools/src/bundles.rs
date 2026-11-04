@@ -36,6 +36,7 @@
 pub(crate) use dkv::{base64, minisign, sbom, signed, sums, zip};
 pub(crate) mod catalogs;
 pub(crate) mod confine;
+pub(crate) mod feeds;
 pub(crate) mod folder;
 pub(crate) mod grants;
 pub(crate) mod history;
@@ -72,6 +73,7 @@ const USAGE: &str =
        bundle sign [FOLDER] [--key SECRET-KEY-FILE]
        bundle pack [FOLDER] [--key SECRET-KEY-FILE] [--output FILE]
        bundle verify [FOLDER | FILE.dkv] [--key PUBLIC-KEY]
+       bundle feed FOLDER [FILE.dkv...] [--key SECRET-KEY-FILE] [--days N]
        bundle unpack FILE.dkv FOLDER
        bundle install FILE.dkv [--for-everyone] [--yes]
        bundle install ID [--from CATALOG] [--for-everyone] [--yes]
@@ -98,6 +100,12 @@ pub(crate) use dkv::MANIFEST;
 
 /// A packed bundle's extension.
 use dkv::EXTENSION;
+
+/// How many days a feed `bundle feed` signs is good for, unless `--days`
+/// says, and the most it may say; its root is good for a year.
+const FEED_DAYS: u32 = 30;
+const FEED_DAYS_MOST: u32 = 180;
+const FEED_ROOT_DAYS: i64 = 365;
 
 /// The developer key's files, in `$XDG_DATA_HOME/bundle`.
 const DEVELOPER_KEY: &str = "developer.key";
@@ -132,6 +140,7 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
     let mut check_only = false;
     let mut automatic = None;
     let mut clear = false;
+    let mut days = None;
     while let Some(arg) = args.next()? {
         match arg {
             Arg::Long(l) if l == "check" => check_only = true,
@@ -154,6 +163,16 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
             Arg::Long(l) if l == "key" => key = Some(args.text()?),
             Arg::Long(l) if l == "from" => from = Some(args.text()?),
             Arg::Long(l) if l == "output" => output = Some(args.text()?),
+            Arg::Long(l) if l == "days" && days.is_none() => {
+                days = Some(match args.text()?.parse::<u32>() {
+                    Ok(n @ 1..=FEED_DAYS_MOST) => n,
+                    _ => {
+                        return Err(usage(format!(
+                            "--days: a number of days from 1 to {FEED_DAYS_MOST}"
+                        )));
+                    }
+                });
+            }
             Arg::Short('o') => output = Some(args.text()?),
             Arg::Long(l) if l == "confined" => confined = true,
             Arg::Long(l) if l == "help" => {
@@ -166,9 +185,14 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
     }
     let sub = subcommand.as_deref();
     let new_only = name.is_some() || publisher.is_some() || license.is_some();
-    let key_ok = matches!(sub, Some("sign" | "pack" | "verify")) || key.is_none();
+    let key_ok = matches!(sub, Some("sign" | "pack" | "verify" | "feed")) || key.is_none();
     let output_ok = sub == Some("pack") || output.is_none();
-    if !key_ok || !output_ok || (confined && (sub != Some("unpack") || !operands.is_empty())) {
+    let days_ok = sub == Some("feed") || days.is_none();
+    if !key_ok
+        || !output_ok
+        || !days_ok
+        || (confined && (sub != Some("unpack") || !operands.is_empty()))
+    {
         return Err(usage(USAGE.into()));
     }
     let everyone_ok = matches!(
@@ -200,6 +224,9 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
         (Some("sign"), [] | [_]) => sign(Path::new(folder()), key.as_deref()).map(|_| 0),
         (Some("pack"), [] | [_]) => pack(Path::new(folder()), key.as_deref(), output.as_deref()),
         (Some("verify"), [] | [_]) => verify(folder(), key.as_deref()),
+        (Some("feed"), [folder, files @ ..]) => {
+            feed(folder, files, key.as_deref(), days.unwrap_or(FEED_DAYS))
+        }
         (Some("unpack"), []) if confined => Ok(confine::confined()),
         (Some("unpack"), [archive, folder]) => unpack(archive, folder),
         (Some("install"), [what]) if from.is_none() && is_file(what) => {
@@ -784,7 +811,10 @@ fn update(ids: &[String], everyone: bool, check: bool, yes: bool) -> Result<i32,
             let held = if row.held { "  (held)" } else { "" };
             println!(
                 "{:width$}  {:from_width$}  {:to_width$}  {}{held}",
-                row.id, row.from, row.to, row.catalog
+                row.id,
+                row.from,
+                row.to,
+                row.catalog.as_deref().unwrap_or("its own feed")
             );
         }
     }
@@ -1275,6 +1305,82 @@ fn verify(what: &str, key: Option<&str>) -> Result<i32, Fail> {
         checked.files,
         key_words(&checked.key)
     );
+    Ok(0)
+}
+
+/// `bundle feed FOLDER [FILE.dkv...]`: the update feed of bundles from no
+/// catalog (ADR 0390), a small TUF repository in FOLDER: `repository`,
+/// its signed metadata and key; `store`, the files it lists; and `site`,
+/// what is served at the address the bundles' manifests name. Each run
+/// adds the files given and signs every role anew with `--key`'s key or
+/// the developer key, which must be the key the files' manifests name,
+/// good for `days` days.
+fn feed(folder: &str, files: &[String], key: Option<&str>, days: u32) -> Result<i32, Fail> {
+    use catalog_repo::keys::{self as repo_keys, KeyFile, Signers};
+    let secret = signing_key(key)?;
+    let public = secret.public();
+    let encoded = public.encoded();
+    let mut named = false;
+    for path in files {
+        let file = File::open(path).map_err(|e| util::failed(path, e))?;
+        let checked = signed::check_archive(&file).map_err(|why| fail(format!("{path}: {why}")))?;
+        if let Some(update) = &checked.manifest.update {
+            if update.key.0 != encoded {
+                return Err(fail(format!(
+                    "{path}: its manifest names another key for its feed, {}, not {encoded}: \
+                     sign with that one, with --key",
+                    update.key
+                )));
+            }
+            named = true;
+        }
+    }
+    let folder = Path::new(folder);
+    let repo = catalog_repo::Repo::new(&folder.join("repository"));
+    let tuf_key = repo_keys::minisign_key(&public);
+    if repo.keys_dir().exists() {
+        let keys = repo_keys::read_all(&repo.keys_dir()).map_err(fail)?;
+        if !keys.iter().any(|k| k.key == tuf_key) {
+            return Err(fail(format!(
+                "{}: this feed is signed by another key: sign with that one, with --key",
+                folder.display()
+            )));
+        }
+    } else {
+        let roles = catalog_repo::ROLES.iter().map(|r| (*r).to_string()).collect();
+        let file = KeyFile { name: "publisher".into(), roles, yubikey: None, key: tuf_key };
+        file.write(&repo.keys_dir()).map_err(fail)?;
+    }
+    let mut signers = Signers::default();
+    signers.add(repo_keys::from_minisign(&secret).map_err(fail)?);
+    let now = tuf::time::now();
+    let days = i64::from(days);
+    // The root outlasts the rest by a month at least.
+    let root = repo.root().map_err(fail)?;
+    if root.is_none_or(|r| r.signed.expires - now < (days + 30) * 86_400) {
+        repo.sign_root(&signers, FEED_ROOT_DAYS).map_err(fail)?;
+    }
+    let paths: Vec<PathBuf> = files.iter().map(PathBuf::from).collect();
+    let changes = repo.changes(&paths, &[]).map_err(fail)?;
+    let (store, site) = (folder.join("store"), folder.join("site"));
+    repo.sign_targets(&changes, &paths, &store, &signers, days).map_err(fail)?;
+    repo.publish(&store, &site, &signers, (days, days)).map_err(fail)?;
+    let listed = repo.targets().map_err(fail)?.map_or(0, |t| t.signed.signed.targets.len());
+    println!(
+        "signed the feed in {}: {listed} file{}, {} new, good until {}; serve that folder at \
+         the address update.feed names, and run bundle feed {} again before then",
+        site.display(),
+        if listed == 1 { "" } else { "s" },
+        changes.added.len(),
+        tuf::time::format(now + days * 86_400),
+        folder.display()
+    );
+    if !named && !files.is_empty() {
+        println!(
+            "note: no file's manifest names this feed, in update.feed and update.key: bundled \
+             reads a feed only for a version installed that does"
+        );
+    }
     Ok(0)
 }
 
