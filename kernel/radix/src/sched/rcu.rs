@@ -15,11 +15,17 @@
 //! way (a reader that started after the running one began might still be
 //! inside). Grace periods run one at a time and are shared, so many
 //! callers waiting at once cost one grace period, not one each.
+//!
+//! [`defer`] queues a call for the end of the grace period `synchronize`
+//! would wait for, and returns; the `rcu` thread makes the calls whose
+//! grace period has completed, in the order they came.
 
+use core::ptr::NonNull;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use radix_sched::CpuSet;
 use radix_sync::SpinLock;
+use radix_sync::rcu::{Deferred, Queue};
 
 use super::wait;
 
@@ -33,6 +39,8 @@ struct GracePeriods {
     /// The highest grace period someone waits for.
     wanted: u64,
     started_ns: u64,
+    /// Deferred calls, for the `rcu` thread.
+    deferred: Queue,
 }
 
 static STATE: SpinLock<GracePeriods> = SpinLock::new(GracePeriods {
@@ -41,12 +49,18 @@ static STATE: SpinLock<GracePeriods> = SpinLock::new(GracePeriods {
     waiting: CpuSet::EMPTY,
     wanted: 0,
     started_ns: 0,
+    deferred: Queue::new(),
 });
 /// Mirrors of the state, read without the lock.
 static COMPLETED: AtomicU64 = AtomicU64::new(0);
 static RUNNING: AtomicBool = AtomicBool::new(false);
 /// Total time grace periods took, for the self-test's report.
 static TOTAL_NS: AtomicU64 = AtomicU64::new(0);
+/// The grace period the first deferred call waits for; `u64::MAX` with
+/// none. A mirror, for the `rcu` thread's wait.
+static FIRST_TARGET: AtomicU64 = AtomicU64::new(u64::MAX);
+/// Whether the `rcu` thread runs.
+static THREAD: AtomicBool = AtomicBool::new(false);
 
 fn key() -> usize {
     &raw const COMPLETED as usize
@@ -65,6 +79,78 @@ pub fn synchronize() {
     try_synchronize();
 }
 
+/// The grace period a caller that starts waiting now needs, which is
+/// asked for and started if none runs.
+fn request(state: &mut GracePeriods) -> u64 {
+    let target = state.completed + if state.running { 2 } else { 1 };
+    state.wanted = state.wanted.max(target);
+    if !state.running {
+        start(state);
+    }
+    target
+}
+
+/// Queues `item`'s call for the `rcu` thread, to run once every read
+/// section running now has ended. With one CPU there is no other read
+/// section: it runs now.
+///
+/// # Safety
+///
+/// As [`radix_sync::rcu::defer`].
+#[allow(unsafe_code)]
+pub unsafe fn defer(item: NonNull<Deferred>) {
+    if super::online().len() <= 1 {
+        // The caller is in no read section, and no other CPU runs.
+        // SAFETY: the caller's guarantee.
+        unsafe { Deferred::call(item) };
+        return;
+    }
+    let mut state = STATE.lock_irq();
+    let target = request(&mut state);
+    // SAFETY: the caller hands `item` over; targets only grow, as
+    // `completed` does.
+    unsafe { state.deferred.push(item, target) };
+    if let Some(first) = state.deferred.first_target() {
+        FIRST_TARGET.store(first, Ordering::Release);
+    }
+}
+
+/// Starts the `rcu` thread, which makes deferred calls.
+pub fn start_thread() {
+    let options = super::Options::new().policy(super::Policy::Fair { nice: -5 });
+    match super::spawn("rcu", run, 0, options) {
+        Ok(_) => THREAD.store(true, Ordering::Release),
+        Err(err) => radix_klog::error!("RCU: could not start the thread for deferred calls: {err}"),
+    }
+}
+
+/// The `rcu` thread: waits for the first deferred call's grace period,
+/// then makes every call whose grace period has completed.
+fn run(_: usize) {
+    loop {
+        wait::wait_until(key(), "rcu calls", || {
+            FIRST_TARGET.load(Ordering::Acquire) <= COMPLETED.load(Ordering::Acquire)
+        });
+        loop {
+            let ready = {
+                let mut state = STATE.lock_irq();
+                let completed = state.completed;
+                let ready = state.deferred.pop_ready(completed);
+                let first = state.deferred.first_target().unwrap_or(u64::MAX);
+                FIRST_TARGET.store(first, Ordering::Release);
+                ready
+            };
+            let Some(item) = ready else { break };
+            // SAFETY: queued by `defer`, whose caller made it safe to call
+            // once its grace period completed, as it now has.
+            #[allow(unsafe_code)]
+            unsafe {
+                Deferred::call(item);
+            }
+        }
+    }
+}
+
 /// [`synchronize`], saying whether it could: false where sleeping is not
 /// allowed and other CPUs run, where it returns at once.
 pub fn try_synchronize() -> bool {
@@ -78,15 +164,7 @@ pub fn try_synchronize() -> bool {
         // callers of `synchronize`.
         return false;
     }
-    let target = {
-        let mut state = STATE.lock_irq();
-        let target = state.completed + if state.running { 2 } else { 1 };
-        state.wanted = state.wanted.max(target);
-        if !state.running {
-            start(&mut state);
-        }
-        target
-    };
+    let target = request(&mut STATE.lock_irq());
     wait::wait_until(key(), "rcu", || COMPLETED.load(Ordering::Acquire) >= target);
     true
 }

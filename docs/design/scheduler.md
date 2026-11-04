@@ -357,6 +357,14 @@ thread that can call it is not in a read section, and no other CPU runs
 one. Where sleeping is not allowed it also returns at once, since there
 is nothing safe to do; such callers are bugs.
 
+A writer that cannot wait for a grace period, or should not (it lasts
+until every CPU has switched, up to a tick), *defers* the free instead
+(`radix_sync::rcu::defer`, ADR 0366): a `Deferred` inside what it retired
+goes on a queue with the grace period `synchronize` would wait for, and
+the `rcu` thread makes the calls whose grace period has completed, in the
+order they came. Deferring allocates nothing and returns at once; with
+one CPU the call is made at once.
+
 ## Per-CPU data
 
 `PerCpu<T>` (`percpu.rs`) holds one value per CPU, each on its own cache
@@ -585,8 +593,9 @@ ends, so its CPU cannot switch, idle, or count a tick as quiescent until
 then; `G` waits for that CPU, so `G` ends after the reader. `synchronize`
 waits for a grace period that starts after it was called, so every reader
 that could have seen the old pointer has finished before the writer
-frees it. *(The `rcu` self-test: readers on three CPUs never see an
-object freed too early over 100 replacements.)*
+frees it, and a deferred call waits for the same grace period. *(The
+`rcu` self-test: readers on three CPUs never see an object freed too
+early over 100 replacements, nor over 1,000 freed by deferred calls.)*
 
 **12. The lock checker finds every cycle it has seen.** The graph has an
 edge for every pair of classes taken nested in one context. A deadlock

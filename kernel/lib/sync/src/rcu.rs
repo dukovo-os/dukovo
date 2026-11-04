@@ -16,9 +16,15 @@
 //!
 //! Read sections must not sleep: they hold off preemption, and the
 //! scheduler reports a thread that sleeps inside one.
+//!
+//! A writer that cannot wait, or should not (a grace period lasts until
+//! every CPU has switched threads, up to a timer tick), hands what it
+//! retired to [`defer`] instead: a [`Deferred`] inside it runs once the
+//! grace period has passed, on the kernel's RCU thread.
 
 use alloc::boxed::Box;
 use core::alloc::Allocator;
+use core::cell::UnsafeCell;
 use core::marker::PhantomData;
 use core::ptr::NonNull;
 use core::sync::atomic::{AtomicPtr, Ordering};
@@ -64,6 +70,131 @@ pub fn synchronize() {
 /// false if it could not wait for them.
 pub fn try_synchronize() -> bool {
     hooks::active().is_none_or(Hooks::try_synchronize_rcu)
+}
+
+/// A call that [`defer`] puts off until no read section can still see what
+/// it frees: kept inside that, so that deferring needs no memory.
+pub struct Deferred {
+    /// The queue's: the next one, and the grace period it waits for.
+    next: UnsafeCell<Option<NonNull<Deferred>>>,
+    target: UnsafeCell<u64>,
+    run: unsafe fn(NonNull<Deferred>),
+}
+
+// SAFETY: the cells are the queue's, used only by whoever owns the queue
+// the call is in (`Queue`, behind the kernel's lock) or the deferring
+// caller before it hands the call over.
+#[allow(unsafe_code)]
+unsafe impl Sync for Deferred {}
+// SAFETY: as above.
+#[allow(unsafe_code)]
+unsafe impl Send for Deferred {}
+
+impl Deferred {
+    /// A call of `run`, given where the call is: `run` finds what holds it
+    /// from there (`container_of`).
+    pub const fn new(run: unsafe fn(NonNull<Deferred>)) -> Deferred {
+        Deferred { next: UnsafeCell::new(None), target: UnsafeCell::new(0), run }
+    }
+
+    /// Makes the call `item` holds.
+    ///
+    /// # Safety
+    ///
+    /// As its `run` requires: once, after the grace period [`defer`]
+    /// waited for.
+    #[allow(unsafe_code)]
+    pub unsafe fn call(item: NonNull<Deferred>) {
+        // SAFETY: the caller's guarantee; `item` is live until `run`.
+        unsafe { (item.as_ref().run)(item) }
+    }
+}
+
+/// Deferred calls in the order they were deferred, each with the grace
+/// period it waits for: the kernel keeps one, behind a lock.
+pub struct Queue {
+    head: Option<NonNull<Deferred>>,
+    tail: Option<NonNull<Deferred>>,
+}
+
+// SAFETY: it owns the calls it holds, which are `Send`.
+#[allow(unsafe_code)]
+unsafe impl Send for Queue {}
+
+impl Default for Queue {
+    fn default() -> Queue {
+        Queue::new()
+    }
+}
+
+impl Queue {
+    /// An empty queue.
+    pub const fn new() -> Queue {
+        Queue { head: None, tail: None }
+    }
+
+    /// Adds `item`, to run once grace period `target` has completed.
+    /// Targets must not go down from one push to the next.
+    ///
+    /// # Safety
+    ///
+    /// `item` must be live and in no queue until the queue gives it back.
+    #[allow(unsafe_code)]
+    pub unsafe fn push(&mut self, item: NonNull<Deferred>, target: u64) {
+        // SAFETY: the caller hands `item` over; a queued call's cells are
+        // the queue's.
+        unsafe {
+            *item.as_ref().next.get() = None;
+            *item.as_ref().target.get() = target;
+            match self.tail {
+                Some(tail) => *tail.as_ref().next.get() = Some(item),
+                None => self.head = Some(item),
+            }
+        }
+        self.tail = Some(item);
+    }
+
+    /// The grace period the first call waits for, if there is one.
+    #[allow(unsafe_code)]
+    pub fn first_target(&self) -> Option<u64> {
+        // SAFETY: a queued call is live and its cells are the queue's.
+        self.head.map(|head| unsafe { *head.as_ref().target.get() })
+    }
+
+    /// Takes out the first call, if the grace periods completed reach the
+    /// one it waits for: it may run.
+    #[allow(unsafe_code)]
+    pub fn pop_ready(&mut self, completed: u64) -> Option<NonNull<Deferred>> {
+        let head = self.head?;
+        if self.first_target()? > completed {
+            return None;
+        }
+        // SAFETY: as in `first_target`.
+        self.head = unsafe { *head.as_ref().next.get() };
+        if self.head.is_none() {
+            self.tail = None;
+        }
+        Some(head)
+    }
+}
+
+/// Runs the call in `item` once every read section running now has ended,
+/// or later. It returns at once. It must not be called inside a read
+/// section. Before the kernel registers its hooks only the boot CPU runs,
+/// and the call is made now.
+///
+/// # Safety
+///
+/// `item` must stay live, and in no other queue, until the call runs; the
+/// call must be safe to make then.
+#[allow(unsafe_code)]
+pub unsafe fn defer(item: NonNull<Deferred>) {
+    match hooks::active() {
+        // SAFETY: the caller's guarantee.
+        Some(hooks) => unsafe { hooks.defer_rcu(item) },
+        // SAFETY: as above; nothing else runs to read what it frees.
+        None => unsafe { Deferred::call(item) },
+    }
 }
 
 /// A heap-allocated value that readers reach without locks and writers
@@ -172,6 +303,51 @@ mod tests {
 
     fn pair(n: u64) -> Pair {
         Pair { a: AtomicU64::new(n), b: AtomicU64::new(n) }
+    }
+
+    #[allow(unsafe_code)]
+    unsafe fn nothing(_: NonNull<Deferred>) {}
+
+    #[test]
+    fn a_queue_gives_calls_back_in_order_once_their_grace_period_is_over() {
+        let calls: Vec<Deferred> = (0..3).map(|_| Deferred::new(nothing)).collect();
+        let mut queue = Queue::new();
+        assert_eq!(queue.first_target(), None);
+        for (call, target) in calls.iter().zip([1, 1, 2]) {
+            // SAFETY: each call is live, and in this queue alone.
+            #[allow(unsafe_code)]
+            unsafe {
+                queue.push(NonNull::from(call), target);
+            }
+        }
+        assert_eq!(queue.first_target(), Some(1));
+        assert!(queue.pop_ready(0).is_none());
+        assert_eq!(queue.pop_ready(1), Some(NonNull::from(&calls[0])));
+        assert_eq!(queue.pop_ready(1), Some(NonNull::from(&calls[1])));
+        assert!(queue.pop_ready(1).is_none());
+        assert_eq!(queue.pop_ready(5), Some(NonNull::from(&calls[2])));
+        assert_eq!(queue.first_target(), None);
+        assert!(queue.pop_ready(5).is_none());
+    }
+
+    static DEFERRED_RAN: AtomicU64 = AtomicU64::new(0);
+
+    #[allow(unsafe_code)]
+    unsafe fn count(_: NonNull<Deferred>) {
+        DEFERRED_RAN.fetch_add(1, Ordering::SeqCst);
+    }
+
+    #[test]
+    fn a_deferred_call_runs_after_the_readers() {
+        crate::testing::install();
+        let call = Box::new(Deferred::new(count));
+        // SAFETY: the call stays live until it runs, which the hooks'
+        // default does before returning.
+        #[allow(unsafe_code)]
+        unsafe {
+            defer(NonNull::from(&*call));
+        }
+        assert_eq!(DEFERRED_RAN.load(Ordering::SeqCst), 1);
     }
 
     #[test]
