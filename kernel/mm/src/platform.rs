@@ -32,6 +32,15 @@ pub unsafe trait Platform: Sync {
     /// Enables interrupts again if `were_enabled`.
     fn restore_interrupts(&self, were_enabled: bool);
 
+    /// Disables interrupts on this CPU and returns its index and whether
+    /// they were on: [`Platform::disable_interrupts`] and
+    /// [`Platform::current_cpu`] in one call, which the heap makes on
+    /// every allocation and free.
+    fn enter(&self) -> (usize, bool) {
+        let were_enabled = self.disable_interrupts();
+        (self.current_cpu(), were_enabled)
+    }
+
     /// Virtual address of physical address 0 in the direct map.
     fn direct_map(&self) -> usize;
 }
@@ -47,6 +56,12 @@ impl<'a> NoInterrupts<'a> {
     pub(crate) fn new(platform: Option<&'a dyn Platform>) -> NoInterrupts<'a> {
         let were_enabled = platform.is_some_and(Platform::disable_interrupts);
         NoInterrupts { platform, were_enabled }
+    }
+
+    /// Interrupts disabled on this CPU, and its index ([`Platform::enter`]).
+    pub(crate) fn enter(platform: &'a dyn Platform) -> (NoInterrupts<'a>, usize) {
+        let (cpu, were_enabled) = platform.enter();
+        (NoInterrupts { platform: Some(platform), were_enabled }, cpu)
     }
 }
 

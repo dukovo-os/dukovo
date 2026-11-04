@@ -317,7 +317,9 @@ pub fn released(device: &DeviceObject) {
 /// Stops the cards whose capabilities were released. Called with no
 /// lock held.
 pub fn close_deferred() {
-    if !CLOSING.swap(false, Ordering::AcqRel) {
+    // A load first: a swap is a locked instruction, and this runs after
+    // every change to the store, almost always with nothing to stop.
+    if !CLOSING.load(Ordering::Relaxed) || !CLOSING.swap(false, Ordering::AcqRel) {
         return;
     }
     for left in left() {

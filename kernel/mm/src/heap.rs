@@ -183,13 +183,16 @@ impl Heap {
     }
 
     fn alloc_inner(&self, layout: Layout, flags: Flags) -> Result<NonNull<u8>, AllocError> {
-        let (platform, env) = self.env().ok_or(AllocError)?;
+        // The direct map only off the magazines' path: asking for it is a
+        // call through the platform.
+        let platform = self.frames.platform().ok_or(AllocError)?;
+        let env = || Env { frames: self.frames, direct_map: platform.direct_map() };
         let Some(class) = Class::for_layout(layout.size(), layout.align()) else {
-            return self.alloc_large(env, layout, flags);
+            return self.alloc_large(env(), layout, flags);
         };
         let addr = match self.take_from_magazines(platform, class) {
             Some(addr) => addr,
-            None => self.take_from_slabs(env, class, flags, true)?,
+            None => self.take_from_slabs(env(), class, flags, true)?,
         };
         if flags.zero {
             // SAFETY: the object is ours: it was just taken from a free list
@@ -206,8 +209,8 @@ impl Heap {
 
     /// Takes an object from this CPU's magazines or the depot.
     fn take_from_magazines(&self, platform: &'static dyn Platform, class: Class) -> Option<usize> {
-        let irqs = NoInterrupts::new(Some(platform));
-        let cpu = self.cpu_cache(platform)?;
+        let (irqs, here) = NoInterrupts::enter(platform);
+        let cpu = self.cpu_cache(platform, here)?;
         let mut classes = cpu.classes.lock();
         let slot = &mut classes[class.index()];
         let addr = match slot.pop() {
@@ -349,8 +352,8 @@ impl Heap {
         class: Class,
         addr: usize,
     ) -> bool {
-        let _irqs = NoInterrupts::new(Some(platform));
-        let Some(cpu) = self.cpu_cache(platform) else { return false };
+        let (_irqs, here) = NoInterrupts::enter(platform);
+        let Some(cpu) = self.cpu_cache(platform, here) else { return false };
         let mut classes = cpu.classes.lock();
         let slot = &mut classes[class.index()];
         let capacity = class.magazine_rounds();
@@ -468,10 +471,9 @@ impl Heap {
         }
     }
 
-    /// This CPU's cache, set up on first use. Call with interrupts
-    /// disabled.
-    fn cpu_cache(&self, platform: &'static dyn Platform) -> Option<&'static CpuCache> {
-        let cpu = platform.current_cpu();
+    /// The cache of `cpu`, this CPU, set up on first use. Call with
+    /// interrupts disabled.
+    fn cpu_cache(&self, platform: &'static dyn Platform, cpu: usize) -> Option<&'static CpuCache> {
         let slot = self.cpus.get(cpu)?;
         if let Some(cache) = slot.get() {
             return Some(cache);
