@@ -1,0 +1,254 @@
+// SPDX-FileCopyrightText: 2026 The Dukovo contributors
+// SPDX-License-Identifier: Apache-2.0 OR MIT
+
+//! `ob bench --scaling`: how opening and closing files scales with the
+//! workers doing it at once, on Radix and on Linux in the same virtual
+//! machine, with [`CPUS`] CPUs.
+//!
+//! The POSIX benchmarks' C program (`userspace/posix/bench.c`) runs with
+//! `--scaling`: 1, 4 and 8 workers, threads of one process and then
+//! processes of their own, open and close a file each, in a directory
+//! each, on a tmpfs, all at once. Nothing a worker opens is another's,
+//! so what they share is the kernel's own state: on Radix the
+//! capability store, which one lock guards; on Linux the descriptor
+//! table, which threads share and processes do not. Each row is the
+//! slowest worker's time per open and close; a kernel that shares
+//! nothing keeps it at one worker's time up to [`CPUS`] workers, and at
+//! twice that with 8 (two workers a CPU).
+//!
+//! It is the measurement that decides whether the capability store's
+//! one lock is worth splitting. It reports, and gates nothing.
+
+use std::fmt::Write as _;
+use std::path::{Path, PathBuf};
+
+use crate::bench::{self, Measurement};
+use crate::config::{Firmware, Media, Profile};
+use crate::process::{self, step};
+use crate::qemu::{self, DirectBoot, Machine, Serial};
+use crate::test::{self, Built, TestImage, Vm};
+use crate::{Context, Ctx, Result, VERSION, baseline, kernel, userspace};
+
+/// The CPUs of both virtual machines: as many as a CI runner has.
+const CPUS: u32 = 4;
+
+/// The workers of each row, as the C program runs them.
+const WORKERS: [u32; 3] = [1, 4, 8];
+
+/// Spark's command line: the POSIX benchmarks with `--scaling` only.
+const RADIX_CMDLINE: &str = "-- --posix /system/tests/posix/bench --scaling";
+
+/// What linux-bench, as Linux's init, gets after `--` on its command
+/// line.
+const LINUX_ARGS: &str = "-- --only scaling";
+
+/// The C program's row name for `workers` threads or processes.
+fn name(threads: bool, workers: u32) -> String {
+    format!("posix_open_close_{}_{workers}", if threads { "threads" } else { "processes" })
+}
+
+/// `ob bench --scaling`.
+pub fn command(
+    ctx: &Ctx,
+    profile: Profile,
+    runs: u32,
+    linux: bool,
+    given_kernel: Option<String>,
+    summary: Option<&str>,
+) -> Result<()> {
+    qemu::require_qemu()?;
+    let built =
+        Built { kernel: kernel::build(ctx, profile)?, programs: userspace::build(ctx, profile)? };
+    let dir = ctx.out.join("bench-scaling");
+    process::create_dir(&dir)?;
+    let image = test::build_test_image(ctx, &built, &dir, TestImage::Plain, false)?;
+    let kvm = qemu::kvm_available();
+    let runs = if kvm { runs } else { 1 };
+    if !kvm {
+        eprintln!(
+            "    No KVM: QEMU emulates every instruction, so the numbers measure the emulator, \
+             and Linux's virtual machine does not run. One run only."
+        );
+    }
+    let vm_kernel = if linux && kvm {
+        let posix = bench::posix_for_linux(ctx, &dir)?;
+        let (kernel, modules) = match bench::linux_kernel(given_kernel)? {
+            Some(kernel) => (kernel, None),
+            None => {
+                let pinned = baseline::fetch(ctx)?;
+                (pinned.kernel, Some(pinned.modules))
+            }
+        };
+        let initrd = bench::linux_init(ctx, &dir, Some(&posix), None, &kernel, modules.as_deref())?;
+        Some((kernel, initrd))
+    } else {
+        None
+    };
+    let (mut radix, mut linux_vm) = (Vec::new(), Vec::new());
+    for run in 1..=runs {
+        let of = if runs > 1 { format!(", run {run} of {runs}") } else { String::new() };
+        step(&format!("Booting Radix with the open/close scaling benchmark on {CPUS} CPUs{of}"));
+        bench::keep_best(&mut radix, boot(ctx, &dir, Side::Radix(&image), kvm)?);
+        if let Some((kernel, initrd)) = &vm_kernel {
+            step(&format!("Measuring the same on Linux on {CPUS} CPUs{of}"));
+            bench::keep_best(&mut linux_vm, boot(ctx, &dir, Side::Linux(kernel, initrd), true)?);
+        }
+    }
+    let release = match &vm_kernel {
+        Some((kernel, _)) => Some(bench::release_of(kernel)?),
+        None => None,
+    };
+    let report = report(ctx, &radix, &linux_vm, release.as_deref(), runs, kvm);
+    let markdown = dir.join("report.md");
+    std::fs::write(&markdown, &report).context(|| format!("writing {}", markdown.display()))?;
+    if let Some(path) = summary {
+        bench::append(path, &report)?;
+    }
+    eprintln!("\n{report}");
+    step(&format!("Scaling report in {}", ctx.display(&markdown)));
+    Ok(())
+}
+
+/// The system a boot measures.
+#[derive(Clone, Copy)]
+enum Side<'a> {
+    /// Radix, from this test image.
+    Radix(&'a [u8]),
+    /// Linux: this kernel, with this initramfs (linux-bench and the C
+    /// program).
+    Linux(&'a Path, &'a Path),
+}
+
+/// Boots one side on [`CPUS`] CPUs and reads its `BENCH` lines.
+fn boot(ctx: &Ctx, dir: &Path, side: Side, kvm: bool) -> Result<Vec<Measurement>> {
+    let (image, direct, log, done) = match side {
+        Side::Radix(base) => {
+            let image = dir.join("scaling.img");
+            let bytes = test::with_cmdline(base, RADIX_CMDLINE).map_err(crate::Error::new)?;
+            std::fs::write(&image, bytes).context(|| format!("writing {}", image.display()))?;
+            (image, None, "scaling-radix", "posix-bench: done")
+        }
+        Side::Linux(kernel, initrd) => {
+            let direct = DirectBoot {
+                kernel: kernel.to_path_buf(),
+                initrd: initrd.to_path_buf(),
+                cmdline: format!("{} {LINUX_ARGS}", bench::LINUX_CMDLINE),
+            };
+            (PathBuf::new(), Some(direct), "scaling-linux", "linux-bench: done")
+        }
+    };
+    let machine = Machine {
+        firmware: Firmware::Bios,
+        media: Media::Usb,
+        ovmf: None,
+        image: image.clone(),
+        memory: bench::VM_MEMORY.into(),
+        cpus: CPUS,
+        kvm,
+        cpu_model: None,
+        serial: Serial::Pipe,
+        display: false,
+        reboot: false,
+        gdb: false,
+        qmp: None,
+        extra: Vec::new(),
+        direct,
+    };
+    let mut vm = Vm::start(ctx, &machine, dir, log, bench::TIMEOUT).map_err(crate::Error::new)?;
+    let outcome = vm.expect(done);
+    let text = vm.log();
+    drop(vm);
+    if !image.as_os_str().is_empty() {
+        let _ = std::fs::remove_file(&image);
+    }
+    if let Err(reason) = outcome {
+        bench::show_trouble(&text);
+        crate::bail!(
+            "the scaling boot failed: {reason}; serial log: {}",
+            ctx.display(&dir.join(format!("boot-{log}.log")))
+        );
+    }
+    let measured = bench::parse(&text);
+    if measured.iter().all(|m| !m.name.starts_with("posix_open_close_")) {
+        crate::bail!(
+            "the scaling boot printed no numbers; serial log: {}",
+            ctx.display(&dir.join(format!("boot-{log}.log")))
+        );
+    }
+    Ok(measured)
+}
+
+/// The report: each row's time on both sides, their ratio, and how many
+/// times one worker's time each side's is.
+fn report(
+    ctx: &Ctx,
+    radix: &[Measurement],
+    linux: &[Measurement],
+    release: Option<&str>,
+    runs: u32,
+    kvm: bool,
+) -> String {
+    let ns = |of: &[Measurement], name: &str| of.iter().find(|m| m.name == name).map(|m| m.ns);
+    let mut out = String::from("## Open and close, workers at once\n\n");
+    let _ = writeln!(
+        out,
+        "Radix {VERSION} at {}, in QEMU with {CPUS} CPUs{}, on {}; Linux {} in the same \
+         virtual machine. Each worker opens and closes its own file in its own tmpfs \
+         directory; a row is the slowest worker's time per open and close, fastest of {runs} \
+         run(s). \"Scaling\" is that time over one worker's: 1.00 up to {CPUS} workers, and \
+         2.00 with 8, if nothing is shared.\n",
+        bench::commit(ctx),
+        if kvm { ", KVM" } else { ", no KVM (emulated)" },
+        bench::host_cpu(),
+        release.unwrap_or("(not measured)"),
+    );
+    out.push_str(
+        "| Workers | Radix | Linux | Radix / Linux | Radix scaling | Linux scaling |\n\
+         |---|---:|---:|---:|---:|---:|\n",
+    );
+    for threads in [true, false] {
+        let one = (ns(radix, &name(threads, 1)), ns(linux, &name(threads, 1)));
+        for workers in WORKERS {
+            let row = name(threads, workers);
+            let (r, l) = (ns(radix, &row), ns(linux, &row));
+            let shown = |v: Option<f64>| v.map_or("–".into(), bench::show);
+            let ratio = |a: Option<f64>, b: Option<f64>| match (a, b) {
+                (Some(a), Some(b)) if b > 0.0 => format!("{:.2}", a / b),
+                _ => "–".into(),
+            };
+            let _ = writeln!(
+                out,
+                "| {workers} {} | {} | {} | {} | {} | {} |",
+                if threads { "threads" } else { "processes" },
+                shown(r),
+                shown(l),
+                ratio(r, l),
+                ratio(r, one.0),
+                ratio(l, one.1),
+            );
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rows_name_what_the_c_program_prints() {
+        let source = include_str!("../../../userspace/posix/bench.c");
+        assert!(source.contains("posix_open_close_%s_%d"));
+        assert!(source.contains("\"threads\" : \"processes\""));
+        assert!(source.contains("{1, 4, 8}"));
+        assert_eq!(name(true, 4), "posix_open_close_threads_4");
+        assert_eq!(name(false, 8), "posix_open_close_processes_8");
+    }
+
+    #[test]
+    fn linux_bench_takes_the_scaling_option() {
+        let source = include_str!("../../linux-bench/src/main.rs");
+        assert!(source.contains("\"--only\", Some(what)) if what == \"scaling\""));
+        assert!(LINUX_ARGS.ends_with("--only scaling"));
+    }
+}

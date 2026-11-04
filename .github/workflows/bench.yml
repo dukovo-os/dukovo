@@ -97,6 +97,14 @@ jobs:
       - name: ./ob bench
         run: ./ob bench --gate --summary "$GITHUB_STEP_SUMMARY"
 
+      # How open and close scale with 1, 4 and 8 workers at once on 4
+      # CPUs, next to Linux: the measurement behind splitting the
+      # capability store's lock. A report only, so it never fails the job.
+      - name: ./ob bench --scaling
+        if: always()
+        continue-on-error: true
+        run: ./ob bench --scaling --summary "$GITHUB_STEP_SUMMARY"
+
       - name: Upload the benchmark numbers
         if: always()
         uses: actions/upload-artifact@v4
@@ -108,5 +116,8 @@ jobs:
             out/bench/boot-bench.log
             out/bench/boot-posix-bench.log
             out/bench/boot-linux.log
+            out/bench-scaling/report.md
+            out/bench-scaling/boot-scaling-radix.log
+            out/bench-scaling/boot-scaling-linux.log
           if-no-files-found: ignore
           retention-days: 90
