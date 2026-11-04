@@ -176,6 +176,11 @@ pub fn write(facts: &Facts<'_>) -> String {
     if let Some(support) = &m.support {
         let _ = writeln!(o, "  Its publisher takes problem reports at {}", shown(&support.0, 100));
     }
+    if let Some(update) = &m.update
+        && !matches!(facts.trust, Trust::Catalog { .. })
+    {
+        let _ = writeln!(o, "  It updates from its own feed at {}", shown(&update.feed.0, 100));
+    }
     if let Trust::Catalog { name, .. } = facts.trust {
         flaws(&mut o, name, facts.flaws, &m.full_id(), &m.version.0, facts.all_flaws);
     }
@@ -251,10 +256,18 @@ mod tests {
                 "\"permissions\": {\"network.outbound\": {\"need\": \"required\", \"why\": \"To \
              sync.\"}, \"network.listen\": {\"need\": \"optional\", \"ports\": [8080]}}",
             );
-        let manifest = manifest::bundle::from_json(&text).unwrap();
         let mut random = [3u8; 40];
         random[0] = 4;
         let key = SecretKey::generate(&random).unwrap().public();
+        let text = text.replace(
+            "\"permissions\":",
+            &format!(
+                "\"update\": {{\"feed\": \"https://example.org/notes/feed.json\", \"key\": \"{}\"}}, \
+                 \"permissions\":",
+                key.encoded()
+            ),
+        );
+        let manifest = manifest::bundle::from_json(&text).unwrap();
         let sheet = |trust| {
             write(&Facts {
                 manifest: &manifest,
@@ -290,6 +303,10 @@ mod tests {
         let listed = sheet(Trust::Catalog { name: "dukovo".into(), since: None });
         assert!(listed.contains("  From catalog dukovo, which this computer trusts: it lists"));
         assert!(!listed.contains("Warning"));
+        // Its own feed, where no catalog lists it.
+        let feed = "  It updates from its own feed at https://example.org/notes/feed.json\n";
+        assert!(unknown.contains(feed), "{unknown}");
+        assert!(!listed.contains("its own feed"), "{listed}");
         let bound = sheet(Trust::Catalog { name: "dukovo".into(), since: Some(1_793_000_000) });
         assert!(
             bound.contains("this very file.\n  The bundle has come from there since 2026-10-26.\n"),

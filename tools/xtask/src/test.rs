@@ -342,6 +342,11 @@ const SERVICE_FILES: u8 = 22;
 /// `.dkv` files.
 const LINES_SITE: u8 = 23;
 
+/// [`Disk::fat`] for a FAT32 disk on the whole disk holding the first
+/// version of [`FEED_BUNDLES`], whose own feed the host serves
+/// ([`feed_files_disk`], ADR 0390).
+const FEED_FILES: u8 = 24;
+
 /// The program of a version of lighthouse that answers its health check,
 /// with `nc` listening on its socket.
 macro_rules! lighthouse_answers {
@@ -384,6 +389,7 @@ exec sleep 100000
         provides: "",
         line: "",
         add_ons: "",
+        feed: "",
     },
     lighthouse("1.0.0", lighthouse_answers!("1.0.0")),
     lighthouse("1.1.0", lighthouse_answers!("1.1.0")),
@@ -411,6 +417,7 @@ const fn lighthouse(version: &'static str, script: &'static str) -> crate::bundl
         provides: "{\"socket\": \"ready\", \"to\": \"system\"}",
         line: "",
         add_ons: "",
+        feed: "",
     }
 }
 
@@ -427,6 +434,7 @@ const UPDATE_BUNDLES: [crate::bundles::TestBundle; 4] = [
         provides: "",
         line: "",
         add_ons: "",
+        feed: "",
     },
     crate::bundles::TestBundle {
         id: "org.example.diary",
@@ -437,6 +445,7 @@ const UPDATE_BUNDLES: [crate::bundles::TestBundle; 4] = [
         provides: "",
         line: "",
         add_ons: "",
+        feed: "",
     },
     crate::bundles::TestBundle {
         id: "org.example.fetcher",
@@ -447,6 +456,7 @@ const UPDATE_BUNDLES: [crate::bundles::TestBundle; 4] = [
         provides: "",
         line: "",
         add_ons: "",
+        feed: "",
     },
     crate::bundles::TestBundle {
         id: "org.example.fetcher",
@@ -457,8 +467,37 @@ const UPDATE_BUNDLES: [crate::bundles::TestBundle; 4] = [
         provides: "",
         line: "",
         add_ons: "",
+        feed: "",
     },
 ];
+
+/// Where almanac's own feed is: QEMU's user network forwards 10.0.2.100
+/// port 80 to out/test/bundle-feed/serve, which serves the files of its
+/// `site` folder (ADR 0390).
+const FEED_ADDRESS: &str = "http://10.0.2.100/almanac";
+
+/// The bundles of a [`FEED_FILES`] disk: three versions of almanac, which
+/// says its version, from its own feed at [`FEED_ADDRESS`].
+const FEED_BUNDLES: [crate::bundles::TestBundle; 3] = [
+    almanac("1.0.0", "#!/bin/sh\necho \"almanac 1.0.0 ran\"\n"),
+    almanac("1.1.0", "#!/bin/sh\necho \"almanac 1.1.0 ran\"\n"),
+    almanac("1.2.0", "#!/bin/sh\necho \"almanac 1.2.0 ran\"\n"),
+];
+
+/// almanac `version`, which runs `script`.
+const fn almanac(version: &'static str, script: &'static str) -> crate::bundles::TestBundle {
+    crate::bundles::TestBundle {
+        id: "org.example.almanac",
+        version,
+        script,
+        permissions: "{}",
+        services: "",
+        provides: "",
+        line: "",
+        add_ons: "",
+        feed: FEED_ADDRESS,
+    }
+}
 
 /// tide `version`, of line `line`, which says its version.
 const fn tide(
@@ -475,6 +514,7 @@ const fn tide(
         provides: "",
         line,
         add_ons: TIDEPM,
+        feed: "",
     }
 }
 
@@ -782,6 +822,13 @@ const fn update_site_disk(kib: u64, label: &'static str) -> Disk {
 /// `/volumes/<disk>`.
 const fn lines_site_disk(kib: u64, label: &'static str) -> Disk {
     Disk { fat: LINES_SITE, ..fat_disk(kib, 32, label, Table::None, Bus::Virtio) }
+}
+
+/// A virtio disk of `kib` KiB, labelled `label`, holding almanac's first
+/// version, whose feed the host serves ([`FEED_FILES`]), which Spark
+/// mounts at `/volumes/<disk>`.
+const fn feed_files_disk(kib: u64, label: &'static str) -> Disk {
+    Disk { fat: FEED_FILES, ..fat_disk(kib, 32, label, Table::None, Bus::Virtio) }
 }
 
 /// The storage test's disks: FAT12, FAT16 and FAT32 on whole disks, and
@@ -3537,6 +3584,11 @@ fn make_disks(
             made.push(image);
             continue;
         }
+        if disk.fat == FEED_FILES {
+            make_feed_files(ctx, disk, &image.path)?;
+            made.push(image);
+            continue;
+        }
         let path = &image.path;
         let mut mkfs = std::process::Command::new(fat_tool("mkfs.fat"));
         // A fixed volume ID, so that runs match.
@@ -4243,6 +4295,88 @@ fn make_service_files(ctx: &Ctx, disk: &Disk, path: &Path) -> Result<(), String>
         let file = crate::bundles::pack_test(ctx, bundle).map_err(|e| e.to_string())?;
         host_tool(std::process::Command::new("mcopy").args(["-i", &image]).arg(&file).arg("::/"))?;
     }
+    Ok(())
+}
+
+/// The program QEMU runs for each connection to 10.0.2.100 port 80 in the
+/// bundle-feed test: one HTTP request, answered with the file of its
+/// `site` folder the path names.
+const FEED_SERVER: &str = "#!/bin/sh
+# One HTTP request a connection: the file of site/ that its path names.
+cd \"$(dirname \"$0\")/site\" || exit 1
+read -r method path rest
+cr=$(printf '\\r')
+while IFS= read -r line; do
+  case \"$line\" in \"\" | \"$cr\") break ;; esac
+done
+path=${path#/}
+case \"$path\" in *..* | \"\") path=missing ;; esac
+if [ \"$method\" = GET ] && [ -f \"$path\" ]; then
+  printf 'HTTP/1.1 200 OK\\r\\nContent-Length: %s\\r\\nConnection: close\\r\\n\\r\\n' \\
+    \"$(wc -c < \"$path\" | tr -d ' ')\"
+  cat \"$path\"
+else
+  printf 'HTTP/1.1 404 Not Found\\r\\nContent-Length: 0\\r\\nConnection: close\\r\\n\\r\\n'
+fi
+";
+
+/// Makes a [`FEED_FILES`] disk, almanac 1.0.0's file, and what the host
+/// serves of almanac's feed (ADR 0390), in out/test/bundle-feed: `serve`,
+/// which QEMU runs; `feed`, the feed's repository, which `bundle feed`
+/// signed with the build key twice, listing 1.0.0 and 1.1.0, and
+/// `site/almanac`, what it serves; and in `feeds`, what the test serves
+/// in its place: `old`, as the feed was signed the first time, and
+/// `changed`, signed a third time, adding 1.2.0, whose file served
+/// differs in a byte from the one it signs.
+fn make_feed_files(ctx: &Ctx, disk: &Disk, path: &Path) -> Result<(), String> {
+    let files = FEED_BUNDLES
+        .iter()
+        .map(|bundle| crate::bundles::pack_test(ctx, bundle))
+        .collect::<Result<Vec<PathBuf>>>()
+        .map_err(|e| e.to_string())?;
+    let mut mkfs = std::process::Command::new(fat_tool("mkfs.fat"));
+    mkfs.args(["-F", "32", "-n", disk.label, "-i", "4f525448", "-C"])
+        .arg(path)
+        .arg(disk.kib.to_string());
+    host_tool(&mut mkfs)?;
+    let image = path.display().to_string();
+    host_tool(std::process::Command::new("mcopy").args(["-i", &image]).arg(&files[0]).arg("::/"))?;
+    let dir = ctx.out.join("test/bundle-feed");
+    if dir.exists() {
+        std::fs::remove_dir_all(&dir).map_err(|e| format!("removing {}: {e}", dir.display()))?;
+    }
+    let failed = |what: &Path, e: std::io::Error| format!("writing {}: {e}", what.display());
+    std::fs::create_dir_all(dir.join("feeds")).map_err(|e| failed(&dir, e))?;
+    let serve = dir.join("serve");
+    std::fs::write(&serve, FEED_SERVER).map_err(|e| failed(&serve, e))?;
+    std::fs::set_permissions(&serve, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+        .map_err(|e| failed(&serve, e))?;
+    let sign = |folder: &Path, files: &[PathBuf]| {
+        crate::bundles::sign_test_feed(ctx, folder, files).map_err(|e| e.to_string())
+    };
+    let copy =
+        |from: &Path, to: &Path| crate::ports::copy_tree(ctx, from, to).map_err(|e| e.to_string());
+    let feed = dir.join("feed");
+    sign(&feed, &files[..2])?;
+    copy(&feed.join("site"), &dir.join("feeds/old"))?;
+    sign(&feed, &[])?;
+    copy(&feed.join("site"), &dir.join("site/almanac"))?;
+    let changed = dir.join("changed");
+    copy(&feed, &changed)?;
+    sign(&changed, &files[2..])?;
+    let name = files[2].file_name().map_or_default(|n| n.to_string_lossy().into_owned());
+    let served = changed.join("site/targets/bundles");
+    let file = std::fs::read_dir(&served)
+        .map_err(|e| format!("reading {}: {e}", served.display()))?
+        .filter_map(|entry| entry.ok().map(|e| e.path()))
+        .find(|p| p.file_name().is_some_and(|n| n.to_string_lossy().ends_with(&name)))
+        .ok_or(format!("{} serves no {name}", served.display()))?;
+    let mut bytes = std::fs::read(&file).map_err(|e| format!("reading {}: {e}", file.display()))?;
+    if let Some(last) = bytes.last_mut() {
+        *last ^= 1;
+    }
+    std::fs::write(&file, bytes).map_err(|e| failed(&file, e))?;
+    copy(&changed.join("site"), &dir.join("feeds/changed"))?;
     Ok(())
 }
 

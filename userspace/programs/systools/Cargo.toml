@@ -39,6 +39,9 @@ dkv = { path = "../dkv" }
 # bundled(8) reads the catalogs with Dukovo's TUF client (ADRs 0380 and
 # 0383).
 tuf = { path = "../tuf" }
+# bundle feed signs a bundle's own update feed, a small TUF repository, as
+# the catalog's is signed (ADRs 0381 and 0390).
+catalog-repo = { path = "../catalog-repo" }
 # The system call interface, generated from abi/*.ridl, for what the C
 # library does not wrap: affinity, I/O priority, tracing.
 radix-abi = { path = "../../../kernel/abi" }

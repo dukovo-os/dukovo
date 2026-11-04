@@ -157,6 +157,13 @@ impl SecretKey {
         PublicKey { id: self.id, key: *self.pair.pk }
     }
 
+    /// Its Ed25519 seed, the 32 bytes the key is made from, so that the
+    /// same key can sign as Ed25519 alone does: a bundle's own update feed,
+    /// a TUF repository, is signed so (ADR 0390).
+    pub fn ed25519_seed(&self) -> [u8; 32] {
+        *self.pair.sk.seed()
+    }
+
     /// The key in a minisign secret key file, if it has no password.
     pub fn read(text: &str) -> Result<SecretKey, String> {
         let mut lines = text.lines();

@@ -2,7 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 //! The catalog's keys: the public half of each in `keys/`, and what signs
-//! for it, a YubiKey through `tools/yubikey-piv.py` or a secret key file.
+//! for it, a YubiKey through `tools/yubikey-piv.py` or a secret key file;
+//! or, for a bundle's own update feed (ADR 0390), its publisher's minisign
+//! key, an Ed25519 key too.
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -193,6 +195,37 @@ impl Signers {
         let file = self.files.iter().find(|f| f.key() == &key.key)?;
         Some(Box::new(FileSigner(file)))
     }
+
+    /// Signs with `key` too.
+    pub fn add(&mut self, key: repo::Ed25519) {
+        self.files.push(key);
+    }
+}
+
+/// The TUF key of a minisign public key: the same Ed25519 key.
+#[must_use]
+pub fn minisign_key(public: &dkv::minisign::PublicKey) -> Key {
+    repo::ed25519_key(&public.key)
+}
+
+/// What signs as minisign secret key `secret` does, for TUF: Ed25519
+/// over the message itself.
+///
+/// # Errors
+///
+/// None in practice: the key is checked as it is made.
+pub fn from_minisign(secret: &dkv::minisign::SecretKey) -> Result<repo::Ed25519, String> {
+    // PKCS #8 version 1 of an Ed25519 key (RFC 8410): its seed alone.
+    let mut der = vec![
+        0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x04, 0x22, 0x04,
+        0x20,
+    ];
+    der.extend_from_slice(&secret.ed25519_seed());
+    let key = repo::Ed25519::from_pkcs8(&der)?;
+    if key.key() != &minisign_key(&secret.public()) {
+        return Err("the minisign key is not the Ed25519 key it should be".into());
+    }
+    Ok(key)
 }
 
 struct FileSigner<'a>(&'a repo::Ed25519);

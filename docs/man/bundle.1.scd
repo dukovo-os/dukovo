@@ -27,6 +27,8 @@ bundle - make, check, sign, pack, install, update and run bundles, and say what 
 
 *bundle unpack* _file_*.dkv* _folder_
 
+*bundle feed* _folder_ [_file_*.dkv*...] [*--key* _secret-key-file_] [*--days* _n_]
+
 *bundle install* _file_*.dkv* [*--for-everyone*] [*--yes*]
 
 *bundle install* _id_ [*--from* _catalog_] [*--for-everyone*] [*--yes*]
@@ -158,6 +160,17 @@ folder and as a _.dkv_ file, which is a zip of the folder.
 	A program the manifest names may be run once unpacked, as may a file
 	the archive marks so.
 
+*feed* _folder_ [_file_*.dkv*...] [*--key* _secret-key-file_] [*--days* _n_]
+	Signs the update feed of bundles that you publish yourself, from no
+	catalog (OWN FEEDS): a small TUF repository in _folder_, which it
+	makes the first time. It adds each file given, and signs every role
+	anew with the key the file *--key* names, or your developer key,
+	which must be the one the files' manifests name in *update.key*.
+	The feed is good for _n_ days, 30 unless given, at most 180: run
+	*bundle feed* _folder_ again before then. Serve _folder_*/site* at
+	the address *update.feed* names; _folder_*/repository* holds what it
+	signed and _folder_*/store* the files, which are signed once each.
+
 *install* _file_*.dkv* [*--for-everyone*] [*--yes*]
 	Installs the bundle for you, in your _applications_ folder, or with
 	*--for-everyone*, which only an administrator may, through
@@ -215,7 +228,7 @@ folder and as a _.dkv_ file, which is a zip of the folder.
 	version that fails its health check goes back by itself, with its
 	data, and is held (*bundled*(8)). With *--check*, it lists
 	what would update, with the version installed, the newest and the
-	catalog, and changes nothing.
+	catalog, or *its own feed*, and changes nothing.
 
 *update --automatic* *on*|*off* [*--for-everyone*]
 	Says whether your bundles, or everyone's, through *elevate*(8),
@@ -489,7 +502,8 @@ yours.
 # UPDATES
 
 A bundle updates from the catalog it is bound to (ADR 0384): one
-installed from a file no catalog listed updates only from a newer file.
+installed from a file no catalog listed updates from its own feed, when
+its manifest names one (OWN FEEDS), or else only from a newer file.
 An update is an install, with every check an install has. Its sheet is
 shown, and you are asked, only when the new version asks for more than
 the one it replaces: a permission the old one did not ask for, more of
@@ -512,6 +526,23 @@ Updating by themselves, once turned on, runs some minutes after
 *bundled*(8) starts and then daily. An update that asks for more than
 the version it replaces never installs by itself: it waits for *bundle
 update*.
+
+# OWN FEEDS
+
+A bundle that no catalog lists can still update, from a feed its
+publisher signs (ADR 0390). Its manifest's *update* names the feed, a
+small TUF repository served by *https* or *http*, and the minisign key
+it is rooted in (*manifest.json*(5)); the sheet says *It updates from
+its own feed at* that address. *bundled*(8) reads the feed that the
+installed version names with the client it reads catalogs with,
+starting from the feed's first root, which must name that key alone for
+root and be signed by it, so a feed cannot name a new key for itself.
+From there TUF refuses an old feed served again, one past its time, and
+files other than those it signs. bundled fetches the newest version the
+feed lists of the bundle's ID and line, and installs it as any file is:
+signed by the key the bundle is bound to, with every check an install
+has. *bundle history* says *from its feed*. *bundle feed* makes and
+signs such a feed.
 
 # FILES
 

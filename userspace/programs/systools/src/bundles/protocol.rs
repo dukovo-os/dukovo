@@ -469,10 +469,12 @@ pub struct Shown {
 pub struct Available {
     pub place: Place,
     pub id: String,
-    /// The version installed, and the newest its catalog lists.
+    /// The version installed, and the newest its catalog, or its own
+    /// feed, lists.
     pub from: String,
     pub to: String,
-    pub catalog: String,
+    /// Its catalog, or none for its own feed (ADR 0390).
+    pub catalog: Option<String>,
     /// Whether it is held at its version.
     pub held: bool,
 }
@@ -591,7 +593,7 @@ impl Answer {
                 a.id,
                 one_line(&a.from),
                 one_line(&a.to),
-                a.catalog,
+                a.catalog.as_deref().unwrap_or("-"),
                 if a.held { "held" } else { "free" }
             )
             .into_bytes(),
@@ -748,7 +750,10 @@ impl Answer {
                 id: checked_id(id).map_err(|why| bad(&why))?,
                 from: one_line(from),
                 to: one_line(to),
-                catalog: checked_catalog(catalog).map_err(|why| bad(&why))?,
+                catalog: match *catalog {
+                    "-" => None,
+                    name => Some(checked_catalog(name).map_err(|why| bad(&why))?),
+                },
                 held: match *held {
                     "held" => true,
                     "free" => false,
@@ -997,8 +1002,16 @@ mod tests {
                 id: "org.example.notes".into(),
                 from: "1.0.0".into(),
                 to: "1.1.0".into(),
-                catalog: "dukovo".into(),
+                catalog: Some("dukovo".into()),
                 held: true,
+            }),
+            Answer::Available(Available {
+                place: Place::Everyone,
+                id: "org.example.notes@2".into(),
+                from: "2.0.0".into(),
+                to: "2.1.0".into(),
+                catalog: None,
+                held: false,
             }),
             Answer::Event(crate::bundles::history::Event {
                 when: 1_793_000_000,

@@ -915,6 +915,15 @@ text!(
 );
 
 text!(
+    /// A feed's web address, `https://` or `http://`: what it serves is
+    /// signed, as a catalog's is (ADR 0390).
+    FeedUrl,
+    "A web address, starting https:// or http://",
+    @pattern "^https?://[^\\s]+$",
+    check_feed_url
+);
+
+text!(
     /// A web address, `https://`.
     Url,
     "A web address, starting https://",
@@ -1256,6 +1265,16 @@ fn check_support(support: &str) -> Result<(), String> {
             support.escape_debug()
         ))
     }
+}
+
+fn check_feed_url(url: &str) -> Result<(), String> {
+    match url.strip_prefix("http://") {
+        Some(rest) => check_url(&format!("https://{rest}")),
+        None => check_url(url),
+    }
+    .map_err(|_| {
+        format!("`{}` is not a web address starting https:// or http://", url.escape_debug())
+    })
 }
 
 fn check_url(url: &str) -> Result<(), String> {
@@ -2029,9 +2048,10 @@ pub struct Use {
 #[cfg_attr(feature = "schema", derive(JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct Update {
-    /// Where its signed update metadata is.
-    pub feed: Url,
-    /// The key that signs it.
+    /// Where its feed is, a TUF repository with `metadata/` and
+    /// `targets/` under it (ADR 0390).
+    pub feed: FeedUrl,
+    /// The key its first root names for root, a minisign key.
     pub key: PublicKey,
 }
 

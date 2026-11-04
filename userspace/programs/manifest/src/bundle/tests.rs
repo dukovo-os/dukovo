@@ -539,6 +539,20 @@ fn an_update_feed_and_its_key() {
     assert!(error(&feed(&key.replace("RW", "Rw"))).contains("is not a minisign public key"));
     let text = with(",\n  \"update\": { \"feed\": \"https://example.org/feed\" }");
     assert_eq!(error(&text), "line 12: missing field `key`");
+    // Its feed is signed, so plain http does too (ADR 0390).
+    let at = |feed: &str| {
+        with(&format!(",\n  \"update\": {{ \"feed\": \"{feed}\", \"key\": \"{key}\" }}"))
+    };
+    assert_eq!(
+        from_json(&at("http://10.0.2.100/feed.json")).unwrap().update.unwrap().feed.0,
+        "http://10.0.2.100/feed.json"
+    );
+    for bad in ["file:///feed.json", "ftp://example.org/feed", "http://", "https://a b"] {
+        assert!(
+            error(&at(bad)).contains("is not a web address starting https:// or http://"),
+            "{bad}"
+        );
+    }
 }
 
 #[test]

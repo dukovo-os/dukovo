@@ -179,6 +179,17 @@ for more than the one it replaces, a permission or more of one, or a
 command that runs with the person's access. Updating everyone's bundles
 is an administrator's.
 
+A bundle bound to no catalog updates from its own feed, when the
+manifest of its installed version names one in *update* (ADR 0390): a
+small TUF repository, which bundled reads with the client it reads the
+catalogs with, one for each place and bundle. The client starts from
+the feed's _metadata/1.root.json_, which must name *update.key* alone
+for root and be signed by it, and starts over when a manifest names
+another address, or a key the root it trusts does not name. bundled
+fetches the newest version the feed lists of the bundle's ID and line,
+by *https* or *http*, and installs it as any file is: its key must be
+the one its ID is bound to. Its history says *from its feed*.
+
 An update keeps the version it replaces as _.previous-ID_ beside it,
 sealed, in place of the one kept before, and moves its record to
 _previous_. The switch is renames in the place's folder, made while
@@ -315,6 +326,11 @@ _/system/state/bundled/catalogs/NAME_
 
 _/system/settings/catalogs/NAME_
 	Each catalog: _url_, _root.json_ and _off_.
+
+_/system/state/bundled/feeds/PLACE/ID_
+	The client of each bundle's own feed, for everyone or a user
+	number: _tuf_, the metadata it trusts, _key_ and _url_, what it
+	started from, _index_, and _downloads_, the files being installed.
 
 _/system/state/bundled/developer-keys_
 	Each person's developer key, which *bundle new* and *bundle key*

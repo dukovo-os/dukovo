@@ -422,18 +422,46 @@ pub struct Open {
 /// index stays as it was.
 pub fn open(catalog: &Catalog, state: &Path) -> Result<Open, String> {
     let dir = state_dir(state, &catalog.name);
-    let tuf_dir = dir.join(TUF_DIR);
-    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let first = dir.join(FIRST_ROOT);
-    if std::fs::read(&first).ok().as_deref() != Some(catalog.root.as_slice())
-        || !tuf_dir.join("root.json").exists()
-    {
-        let _ = std::fs::remove_dir_all(&tuf_dir);
-        let _ = std::fs::remove_file(dir.join(INDEX));
-        tuf::init(&tuf_dir, &catalog.root).map_err(|e| e.to_string())?;
+    let same = std::fs::read(&first).ok().as_deref() == Some(catalog.root.as_slice());
+    let root = (!same || !started(&dir)).then_some(catalog.root.as_slice());
+    let open = open_dir(&dir, &catalog.url, root)?;
+    if root.is_some() {
         write_whole(&first, &catalog.root)?;
     }
-    let base = Url::parse(&catalog.url).map_err(|e| format!("{}: {e}", catalog.url))?;
+    Ok(open)
+}
+
+/// Whether the client in `dir` has started: it trusts a root.
+#[must_use]
+pub fn started(dir: &Path) -> bool {
+    dir.join(TUF_DIR).join("root.json").exists()
+}
+
+/// The root the client in `dir` trusts now, if it has started.
+#[must_use]
+pub fn trusted_root(dir: &Path) -> Option<tuf::metadata::Root> {
+    let bytes = std::fs::read(dir.join(TUF_DIR).join("root.json")).ok()?;
+    tuf::metadata::Signed::<tuf::metadata::Root>::parse(&bytes).ok().map(|r| r.signed)
+}
+
+/// Reads the TUF repository at `url` anew with the client kept in `dir`:
+/// from `root` when it is given, which starts the client over, else from
+/// what it trusts. Writes its index (ADR 0383); a bundle's own feed is
+/// read so too (ADR 0390).
+///
+/// # Errors
+///
+/// As [`open`].
+pub fn open_dir(dir: &Path, url: &str, root: Option<&[u8]>) -> Result<Open, String> {
+    let tuf_dir = dir.join(TUF_DIR);
+    std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    if let Some(root) = root {
+        let _ = std::fs::remove_dir_all(&tuf_dir);
+        let _ = std::fs::remove_file(dir.join(INDEX));
+        tuf::init(&tuf_dir, root).map_err(|e| e.to_string())?;
+    }
+    let base = Url::parse(url).map_err(|e| format!("{url}: {e}"))?;
     let metadata = base.resolve("metadata/").map_err(|e| e.to_string())?;
     let targets = base.resolve("targets/").map_err(|e| e.to_string())?;
     let mut updater =
@@ -459,7 +487,7 @@ pub fn open(catalog: &Catalog, state: &Path) -> Result<Open, String> {
     if fetch_flaws(&mut updater, &flaws).is_err() {
         let _ = std::fs::remove_file(&flaws);
     }
-    Ok(Open { updater, dir, index })
+    Ok(Open { updater, dir: dir.to_path_buf(), index })
 }
 
 /// Fetches a catalog's list of flaws into `file`, if its snapshot lists
