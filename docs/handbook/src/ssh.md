@@ -17,13 +17,13 @@ sshd(8), sshd_config(5), authd(8), ssh(1), sftp(1) and scp(1).
   OpenSSH's on Linux, macOS and Windows, or any other. A shell, a
   command with its output, errors and exit status, or a terminal of the
   client's size, as on Linux
-  ([ADR 0347](https://github.com/openlinuxsystems/orthros/blob/main/docs/adr/0347-signing-in-over-ssh-with-keys.md)).
+  ([ADR 0347](https://github.com/dukovo-os/dukovo/blob/main/docs/adr/0347-signing-in-over-ssh-with-keys.md)).
 - **Passwords**, once an administrator turns them on; they are off
   until then, so keys alone sign in
-  ([ADR 0348](https://github.com/openlinuxsystems/orthros/blob/main/docs/adr/0348-passwords-and-sftp-over-ssh.md)).
+  ([ADR 0348](https://github.com/dukovo-os/dukovo/blob/main/docs/adr/0348-passwords-and-sftp-over-ssh.md)).
 - **Copying files** with `sftp`, `scp` and `scp -O`.
 - **Forwarding ports** both ways, with `ssh -L`, `-D`, `-W` and `-R`
-  ([ADR 0349](https://github.com/openlinuxsystems/orthros/blob/main/docs/adr/0349-port-forwarding-over-ssh-through-a-forwarder-run-as-the-person.md)).
+  ([ADR 0349](https://github.com/dukovo-os/dukovo/blob/main/docs/adr/0349-port-forwarding-over-ssh-through-a-forwarder-run-as-the-person.md)).
 - **Who may sign in**, and how, set in `/system/settings/ssh/sshd_config`
   in OpenSSH's own format.
 
@@ -186,7 +186,7 @@ want it anyway.
 The OpenSSH client in the image signs in to other computers as on
 Linux: `ssh`, `scp`, `sftp`, `ssh-keygen`, `ssh-agent` and the rest. It
 is built without OpenSSL, so its own keys are Ed25519 keys
-([ADR 0289](https://github.com/openlinuxsystems/orthros/blob/main/docs/adr/0289-the-openssh-client.md)).
+([ADR 0289](https://github.com/dukovo-os/dukovo/blob/main/docs/adr/0289-the-openssh-client.md)).
 
 ## When something goes wrong
 

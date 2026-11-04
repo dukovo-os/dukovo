@@ -16,7 +16,7 @@ Actions; both are free for open source projects.
 
 ## Decision
 
-The repository lives at https://github.com/openlinuxsystems/orthros and CI
+The repository lives at https://github.com/dukovo-os/dukovo and CI
 runs on GitHub Actions (`.github/workflows/ci.yml`). Every CI step is an
 `./ob` command, so the pipeline holds no logic that cannot run locally.
 

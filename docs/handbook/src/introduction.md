@@ -68,7 +68,7 @@ handbook describes **Phase 9**.
 Native storage, Btrfs on NVMe and SATA disks, arrives in Phase 10.
 Chapters for later phases are listed in the table of contents and are
 written as those phases land. The full plan is in
-[`docs/roadmap.md`](https://github.com/openlinuxsystems/orthros/blob/main/docs/roadmap.md).
+[`docs/roadmap.md`](https://github.com/dukovo-os/dukovo/blob/main/docs/roadmap.md).
 
 ## How this handbook is organised
 

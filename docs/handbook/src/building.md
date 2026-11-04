@@ -24,8 +24,8 @@ through a first build; `ob(1)` documents every option.
 Get the source and let `ob` set up the Rust toolchain:
 
 ```sh
-git clone https://github.com/openlinuxsystems/orthros
-cd orthros
+git clone https://github.com/dukovo-os/dukovo
+cd dukovo
 ./ob setup
 ```
 

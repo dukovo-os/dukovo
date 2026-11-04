@@ -18,35 +18,35 @@ service.toml(5).
 - **Installing from a catalog**, by the bundle's ID, with `bundle
   search` to find it; the catalog is a signed repository that vouches
   for each file it lists
-  ([ADR 0383](https://github.com/openlinuxsystems/orthros/blob/main/docs/adr/0383-bundled-installs-from-the-catalogs-an-administrator-trusts.md)).
+  ([ADR 0383](https://github.com/dukovo-os/dukovo/blob/main/docs/adr/0383-bundled-installs-from-the-catalogs-an-administrator-trusts.md)).
 - **Installing from a file**, signed by a key this computer may not
   know, after a warning
-  ([ADR 0223](https://github.com/openlinuxsystems/orthros/blob/main/docs/adr/0223-bundled-installs-seals-and-removes-bundles.md)),
+  ([ADR 0223](https://github.com/dukovo-os/dukovo/blob/main/docs/adr/0223-bundled-installs-seals-and-removes-bundles.md)),
   and a file with no signature only when you say so
-  ([ADR 0391](https://github.com/openlinuxsystems/orthros/blob/main/docs/adr/0391-an-unsigned-bundle-installs-only-with-an-override-that-signs-it-here.md)).
+  ([ADR 0391](https://github.com/dukovo-os/dukovo/blob/main/docs/adr/0391-an-unsigned-bundle-installs-only-with-an-override-that-signs-it-here.md)).
 - **Permissions you give**, asked on the console's bottom line, which
   no program can draw or answer, and taken back at any time
-  ([ADR 0224](https://github.com/openlinuxsystems/orthros/blob/main/docs/adr/0224-grants-and-the-trusted-permission-prompt.md)).
+  ([ADR 0224](https://github.com/dukovo-os/dukovo/blob/main/docs/adr/0224-grants-and-the-trusted-permission-prompt.md)).
 - **A sandbox for each app**, which sees its own folders and what you
   gave it, and nothing else
-  ([ADR 0225](https://github.com/openlinuxsystems/orthros/blob/main/docs/adr/0225-bundles-run-in-a-sandbox-of-their-own.md)).
+  ([ADR 0225](https://github.com/dukovo-os/dukovo/blob/main/docs/adr/0225-bundles-run-in-a-sandbox-of-their-own.md)).
 - **Updates, going back and holding**, with the app's data kept from
   before each update
-  ([ADR 0384](https://github.com/openlinuxsystems/orthros/blob/main/docs/adr/0384-bundles-update-from-their-catalog-go-back-and-hold.md)).
+  ([ADR 0384](https://github.com/dukovo-os/dukovo/blob/main/docs/adr/0384-bundles-update-from-their-catalog-go-back-and-hold.md)).
 - **Several major versions side by side**, such as Node.js 20 and 22,
   each with its own add-ons
-  ([ADR 0387](https://github.com/openlinuxsystems/orthros/blob/main/docs/adr/0387-a-bundles-line-keeps-its-major-versions-side-by-side.md),
-  [ADR 0388](https://github.com/openlinuxsystems/orthros/blob/main/docs/adr/0388-a-lines-add-ons-are-each-persons-and-run-on-it.md)).
+  ([ADR 0387](https://github.com/dukovo-os/dukovo/blob/main/docs/adr/0387-a-bundles-line-keeps-its-major-versions-side-by-side.md),
+  [ADR 0388](https://github.com/dukovo-os/dukovo/blob/main/docs/adr/0388-a-lines-add-ons-are-each-persons-and-run-on-it.md)).
 - **Known flaws**, which the catalog lists for each bundle and the
   daily check reads for what is installed
-  ([ADR 0389](https://github.com/openlinuxsystems/orthros/blob/main/docs/adr/0389-a-catalog-lists-its-bundles-known-flaws-which-the-daily-check-reads.md)).
+  ([ADR 0389](https://github.com/dukovo-os/dukovo/blob/main/docs/adr/0389-a-catalog-lists-its-bundles-known-flaws-which-the-daily-check-reads.md)).
 - **Services**, which a bundle may run for everyone, under accounts of
   their own, and whose updates prove themselves or go back
-  ([ADR 0385](https://github.com/openlinuxsystems/orthros/blob/main/docs/adr/0385-a-bundles-services-run-as-accounts-of-their-own.md),
-  [ADR 0386](https://github.com/openlinuxsystems/orthros/blob/main/docs/adr/0386-a-service-bundles-update-proves-itself-or-goes-back-with-its-data.md)).
+  ([ADR 0385](https://github.com/dukovo-os/dukovo/blob/main/docs/adr/0385-a-bundles-services-run-as-accounts-of-their-own.md),
+  [ADR 0386](https://github.com/dukovo-os/dukovo/blob/main/docs/adr/0386-a-service-bundles-update-proves-itself-or-goes-back-with-its-data.md)).
 - **A feed of its own** for a bundle no catalog lists, so that it
   updates too
-  ([ADR 0390](https://github.com/openlinuxsystems/orthros/blob/main/docs/adr/0390-a-bundle-from-no-catalog-updates-from-a-feed-its-publisher-signs.md)).
+  ([ADR 0390](https://github.com/dukovo-os/dukovo/blob/main/docs/adr/0390-a-bundle-from-no-catalog-updates-from-a-feed-its-publisher-signs.md)).
 
 Apps live outside `/system`: yours in `~/applications`, everyone's in
 `/applications`. Updating an app never touches the system, and updating

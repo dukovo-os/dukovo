@@ -7,19 +7,19 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 These documents live in the repository rather than in this handbook:
 
-- [`CONTRIBUTING.md`](https://github.com/openlinuxsystems/orthros/blob/main/CONTRIBUTING.md):
+- [`CONTRIBUTING.md`](https://github.com/dukovo-os/dukovo/blob/main/CONTRIBUTING.md):
   how to build and test, and what a change needs before it merges.
-- [`CODE_OF_CONDUCT.md`](https://github.com/openlinuxsystems/orthros/blob/main/CODE_OF_CONDUCT.md),
-  [`GOVERNANCE.md`](https://github.com/openlinuxsystems/orthros/blob/main/GOVERNANCE.md)
-  and [`SECURITY.md`](https://github.com/openlinuxsystems/orthros/blob/main/SECURITY.md):
+- [`CODE_OF_CONDUCT.md`](https://github.com/dukovo-os/dukovo/blob/main/CODE_OF_CONDUCT.md),
+  [`GOVERNANCE.md`](https://github.com/dukovo-os/dukovo/blob/main/GOVERNANCE.md)
+  and [`SECURITY.md`](https://github.com/dukovo-os/dukovo/blob/main/SECURITY.md):
   how people work together, who decides, and how to report a vulnerability.
-- [`docs/coding-standard.md`](https://github.com/openlinuxsystems/orthros/blob/main/docs/coding-standard.md):
+- [`docs/coding-standard.md`](https://github.com/dukovo-os/dukovo/blob/main/docs/coding-standard.md):
   rules for Rust code, including where `unsafe` is allowed.
-- [`docs/adr/`](https://github.com/openlinuxsystems/orthros/tree/main/docs/adr):
+- [`docs/adr/`](https://github.com/dukovo-os/dukovo/tree/main/docs/adr):
   architecture decision records.
-- [`docs/roadmap.md`](https://github.com/openlinuxsystems/orthros/blob/main/docs/roadmap.md):
+- [`docs/roadmap.md`](https://github.com/dukovo-os/dukovo/blob/main/docs/roadmap.md):
   the implementation plan, phase by phase.
-- [`docs/design/`](https://github.com/openlinuxsystems/orthros/tree/main/docs/design):
+- [`docs/design/`](https://github.com/dukovo-os/dukovo/tree/main/docs/design):
   how the kernel works: `boot.md`, `interrupts.md`, `memory.md`,
   `random.md`, `capabilities.md`, `scheduler.md`, `ipc.md`,
   `processes.md`, `storage.md` and `posix.md`.
