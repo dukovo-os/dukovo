@@ -44,6 +44,7 @@
 // pinned nightly has `Box::try_new_uninit_in` (for `RcuCell`) unstable.
 #![cfg_attr(kani, feature(allocator_api))]
 #![cfg_attr(not(kani), feature(allocator_ext))]
+#![feature(vec_push_within_capacity)]
 
 extern crate alloc;
 
@@ -51,6 +52,7 @@ mod hooks;
 mod mutex;
 mod once;
 pub mod rcu;
+pub mod rcu_map;
 mod spin;
 
 pub use hooks::{Acquire, Hooks, LockKind, LockSite, set_checking, set_hooks};

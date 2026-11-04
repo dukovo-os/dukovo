@@ -4,7 +4,8 @@
 //! tmpfs: a filesystem in memory.
 //!
 //! Directories list their entries in the order they were made, with an
-//! index sorted by name for lookups; files are page caches with no
+//! index sorted by name, and a map of names that lookups read without the
+//! directory's lock ([`RcuMap`], ADR 0367); files are page caches with no
 //! disk below ([`FileCache`] with a non-persistent backing), so a file's
 //! pages are its data and holes read as zeros. A filesystem has a size
 //! limit, charged by the bytes its files are long, and its files' memory
@@ -24,6 +25,7 @@ use core::any::Any;
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use radix_sync::Mutex;
+use radix_sync::rcu_map::RcuMap;
 
 use crate::acl::{self, Acl, AclCell};
 use crate::cache::{Backing, FileCache};
@@ -162,8 +164,12 @@ impl DirState {
     }
 }
 
+/// A directory's names for lookups, kept with its entries under its lock
+/// and read without it.
+type Names = RcuMap<KArc<TmpNode>, Alloc>;
+
 enum Body {
-    Dir(Mutex<DirState>),
+    Dir(Mutex<DirState>, Names),
     File {
         cache: FileCache,
         charged: AtomicU64,
@@ -267,7 +273,9 @@ impl TmpNode {
     fn new(id: u64, shared: KArc<Shared>, kind: Kind, access: Access) -> Result<KArc<TmpNode>> {
         let created = now();
         let body = match kind {
-            Kind::Directory => Body::Dir(Mutex::new(DirState::new(created))),
+            Kind::Directory => {
+                Body::Dir(Mutex::new(DirState::new(created)), RcuMap::new_in(mem::alloc()))
+            }
             Kind::File => {
                 Body::File { cache: FileCache::new(0, created), charged: AtomicU64::new(0) }
             }
@@ -349,7 +357,16 @@ impl TmpNode {
 
     fn dir(&self) -> Result<&Mutex<DirState>> {
         match &self.body {
-            Body::Dir(dir) => Ok(dir),
+            Body::Dir(dir, _) => Ok(dir),
+            _ => Err(Error::NotDirectory),
+        }
+    }
+
+    /// A directory's names for lookups ([`Names`]): changed with its
+    /// entries, under its lock.
+    fn names(&self) -> Result<&Names> {
+        match &self.body {
+            Body::Dir(_, names) => Ok(names),
             _ => Err(Error::NotDirectory),
         }
     }
@@ -357,7 +374,7 @@ impl TmpNode {
     fn file(&self) -> Result<(&FileCache, Charge<'_>)> {
         match &self.body {
             Body::File { cache, charged } => Ok((cache, Charge { shared: &self.shared, charged })),
-            Body::Dir(_) => Err(Error::IsDirectory),
+            Body::Dir(..) => Err(Error::IsDirectory),
             // Resolution follows links, so only a caller that asked not
             // to reaches one here; a socket's name cannot be opened, and
             // the kernel opens pipes and devices for their nodes.
@@ -384,7 +401,7 @@ impl TmpNode {
         let Err(at) = dir.find(name) else {
             return Err(Error::Exists);
         };
-        if matches!(node.body, Body::Dir(_)) {
+        if matches!(node.body, Body::Dir(..)) {
             *node.parent.lock() = self.weak();
         }
         if again {
@@ -395,7 +412,12 @@ impl TmpNode {
             }
             self.shared.count_file()?;
         }
-        if let Err(e) = dir.insert(at, name_bytes, node.clone()) {
+        let made = self.names()?.pending(name.as_bytes(), node.clone()).ok_or(Error::NoMemory);
+        if let Err(e) = made.and_then(|pending| {
+            dir.insert(at, name_bytes, node.clone())?;
+            self.names()?.insert(pending);
+            Ok(())
+        }) {
             if again {
                 self.shared.files.fetch_sub(1, Ordering::Relaxed);
             }
@@ -427,7 +449,7 @@ impl TmpNode {
     /// namespace lock, so only one thread ever takes two directory locks
     /// at once, the outer one first.
     fn is_empty_dir(&self) -> bool {
-        matches!(&self.body, Body::Dir(dir) if dir.lock_nested(1).entries.is_empty())
+        matches!(&self.body, Body::Dir(dir, _) if dir.lock_nested(1).entries.is_empty())
     }
 }
 
@@ -489,7 +511,7 @@ impl Drop for TmpNode {
         let charged = match &self.body {
             Body::File { charged, .. } => charged.load(Ordering::Relaxed),
             Body::Link { target, .. } => target.len() as u64,
-            Body::Dir(_) | Body::Socket { .. } | Body::Special { .. } => 0,
+            Body::Dir(..) | Body::Socket { .. } | Body::Special { .. } => 0,
         };
         let attributes = self.attributes.get_mut().bytes;
         self.shared.used.fetch_sub(charged + attributes, Ordering::Relaxed);
@@ -499,7 +521,7 @@ impl Drop for TmpNode {
 impl Node for TmpNode {
     fn stat(&self) -> Stat {
         let (size, modified, pages) = match &self.body {
-            Body::Dir(dir) => (0, dir.lock().modified, 0),
+            Body::Dir(dir, _) => (0, dir.lock().modified, 0),
             Body::File { cache, .. } => cache.status(),
             Body::Link { target, modified } => {
                 (target.len() as u64, modified.load(Ordering::Relaxed), 0)
@@ -525,7 +547,7 @@ impl Node for TmpNode {
             // A directory's count of its subdirectories is not kept: 1,
             // as Btrfs has it, says so to programs that look.
             links: match self.body {
-                Body::Dir(_) => 1,
+                Body::Dir(..) => 1,
                 _ => self.links.load(Ordering::Relaxed),
             },
             device,
@@ -534,7 +556,7 @@ impl Node for TmpNode {
 
     fn kind(&self) -> Kind {
         match self.body {
-            Body::Dir(_) => Kind::Directory,
+            Body::Dir(..) => Kind::Directory,
             Body::File { .. } => Kind::File,
             Body::Link { .. } => Kind::Symlink,
             Body::Socket { .. } => Kind::Socket,
@@ -551,8 +573,8 @@ impl Node for TmpNode {
     }
 
     fn lookup(&self, name: &str) -> Result<NodeRef> {
-        let dir = self.dir()?.lock();
-        Ok(dir.get(name)?.node.clone())
+        // Without the directory's lock: one lookup, in a read section.
+        Ok(self.names()?.get(name.as_bytes()).ok_or(Error::NotFound)?)
     }
 
     fn access(&self) -> Access {
@@ -597,7 +619,7 @@ impl Node for TmpNode {
         if !KArc::ptr_eq(&node.shared, &self.shared) {
             return Err(Error::CrossMount);
         }
-        if matches!(node.body, Body::Dir(_)) {
+        if matches!(node.body, Body::Dir(..)) {
             return Err(Error::IsDirectory);
         }
         let me = node.weak().and_then(|weak| weak.upgrade()).ok_or(Error::NotFound)?;
@@ -647,13 +669,14 @@ impl Node for TmpNode {
         let mut dir = self.dir()?.lock();
         let at = dir.find(name).map_err(|_| Error::NotFound)?;
         let node = &dir.at(at).node;
-        if matches!(node.body, Body::Dir(_)) && !node.is_empty_dir() {
+        if matches!(node.body, Body::Dir(..)) && !node.is_empty_dir() {
             return Err(Error::NotEmpty);
         }
         *node.parent.lock() = None;
         let time = now();
         node.unnamed(time);
         dir.remove(at);
+        self.names()?.remove(name.as_bytes());
         dir.modified = time;
         Ok(())
     }
@@ -668,7 +691,7 @@ impl Node for TmpNode {
         target.dir()?;
         let _namespace = self.shared.namespace.lock();
         if core::ptr::eq(self, target) {
-            return rename_within(&mut self.dir()?.lock(), from, to);
+            return rename_within(&mut self.dir()?.lock(), self.names()?, from, to);
         }
         // The entry to move, checked against what it would replace.
         let moving = {
@@ -677,10 +700,12 @@ impl Node for TmpNode {
         };
         // A directory cannot move under itself.
         let target_ref = target.weak().and_then(|weak| weak.upgrade()).ok_or(Error::NotFound)?;
-        if matches!(moving.body, Body::Dir(_)) && is_under(&target_ref, &moving) {
+        if matches!(moving.body, Body::Dir(..)) && is_under(&target_ref, &moving) {
             return Err(Error::BadName);
         }
         let name = mem::copy(to.as_bytes())?;
+        let names = target.names()?;
+        let pending = names.pending(to.as_bytes(), moving.clone()).ok_or(Error::NoMemory)?;
         {
             let mut dest = target.dir()?.lock();
             match dest.find(to) {
@@ -694,12 +719,14 @@ impl Node for TmpNode {
                     *entry.node.parent.lock() = None;
                     entry.node.unnamed(now());
                     entry.node = moving.clone();
+                    names.remove(to.as_bytes());
                 }
                 Err(at) => dest.insert(at, name, moving.clone())?,
             }
+            names.insert(pending);
             dest.modified = now();
         }
-        if matches!(moving.body, Body::Dir(_)) {
+        if matches!(moving.body, Body::Dir(..)) {
             *moving.parent.lock() = target.weak();
         }
         moving.changed.store(now(), Ordering::Relaxed);
@@ -707,6 +734,7 @@ impl Node for TmpNode {
         let mut source = self.dir()?.lock();
         if let Ok(at) = source.find(from) {
             source.remove(at);
+            self.names()?.remove(from.as_bytes());
         }
         source.modified = now();
         Ok(())
@@ -744,7 +772,7 @@ impl Node for TmpNode {
         }
         if let Some(modified) = modified {
             match &self.body {
-                Body::Dir(dir) => dir.lock().modified = modified,
+                Body::Dir(dir, _) => dir.lock().modified = modified,
                 Body::File { cache, .. } => cache.set_modified(modified),
                 Body::Link { modified: time, .. }
                 | Body::Socket { modified: time, .. }
@@ -862,25 +890,26 @@ fn is_under(node: &KArc<TmpNode>, dir: &KArc<TmpNode>) -> bool {
 /// name replaces any of them, a directory an empty directory.
 fn check_replace(moving: &TmpNode, old: &TmpNode) -> Result<()> {
     match (&moving.body, &old.body) {
-        (Body::Dir(_), Body::Dir(_)) if !old.is_empty_dir() => Err(Error::NotEmpty),
-        (Body::Dir(_), Body::Dir(_)) => Ok(()),
-        (Body::Dir(_), _) => Err(Error::NotDirectory),
-        (_, Body::Dir(_)) => Err(Error::IsDirectory),
+        (Body::Dir(..), Body::Dir(..)) if !old.is_empty_dir() => Err(Error::NotEmpty),
+        (Body::Dir(..), Body::Dir(..)) => Ok(()),
+        (Body::Dir(..), _) => Err(Error::NotDirectory),
+        (_, Body::Dir(..)) => Err(Error::IsDirectory),
         _ => Ok(()),
     }
 }
 
 /// A rename inside one directory. The entry keeps its place in listings
 /// unless it replaces another, whose place it takes.
-fn rename_within(dir: &mut DirState, from: &str, to: &str) -> Result<()> {
+fn rename_within(dir: &mut DirState, names: &Names, from: &str, to: &str) -> Result<()> {
     let at = dir.find(from).map_err(|_| Error::NotFound)?;
     if from == to {
         return Ok(());
     }
     let mut name = mem::copy(to.as_bytes())?;
+    let moving = dir.at_mut(at).node.clone();
+    let pending = names.pending(to.as_bytes(), moving.clone()).ok_or(Error::NoMemory)?;
     match dir.find(to) {
         Ok(old) => {
-            let moving = dir.at_mut(at).node.clone();
             let entry = dir.at_mut(old);
             // Two names of one file: nothing happens, as POSIX has it.
             if KArc::ptr_eq(&entry.node, &moving) {
@@ -892,6 +921,7 @@ fn rename_within(dir: &mut DirState, from: &str, to: &str) -> Result<()> {
             moving.changed.store(now(), Ordering::Relaxed);
             entry.node = moving;
             dir.remove(at);
+            names.remove(to.as_bytes());
         }
         Err(to_at) => {
             // The index changes, and the entry's name with it; the index
@@ -904,6 +934,9 @@ fn rename_within(dir: &mut DirState, from: &str, to: &str) -> Result<()> {
             entry.node.changed.store(now(), Ordering::Relaxed);
         }
     }
+    // The name now leads where `from` did, and `from` nowhere.
+    names.remove(from.as_bytes());
+    names.insert(pending);
     dir.modified = now();
     Ok(())
 }
