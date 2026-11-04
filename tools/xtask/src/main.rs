@@ -35,6 +35,7 @@ mod process;
 mod qemu;
 mod riscv;
 mod rootfs;
+mod scaling;
 mod screen;
 mod shellbench;
 mod signoff;
@@ -406,7 +407,7 @@ boot test; those that Phases 11 to 13 add from now on are listed only there
         }
         "bench" => {
             "Usage: ./ob bench [--no-linux] [--gate] [--linux-kernel <file>] [--runs <n>]
-                [--instructions] [--shell] [--from <file>] [--summary <file>]
+                [--instructions] [--shell] [--scaling] [--from <file>] [--summary <file>]
                 [--debug | --release]
 
 Boots Radix in QEMU on 2 CPUs with selftest=bench, where user programs time
@@ -421,6 +422,9 @@ and take minutes.
 
   --no-linux          Skip the Linux baseline
   --shell             Only time nukesh next to bash on this machine
+  --scaling           Only time open and close by 1, 4 and 8 threads and
+                      processes at once, on 4 CPUs, Radix next to Linux
+                      (out/bench-scaling/report.md); a report, no gate
   --gate              Fail if Radix takes longer than Linux in the same
                       virtual machine at any operation, measuring both
                       again (up to 6 more runs) while one is over

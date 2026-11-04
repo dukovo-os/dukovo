@@ -21,7 +21,8 @@
 // (127.0.0.1), which Radix's Spark lets it reach and linux-bench brings
 // up on Linux. With --git <program> it times `git status` in a
 // repository it makes in /tmp, with that git: the same release on both,
-// built for each (ADR 0294).
+// built for each (ADR 0294). With --scaling it runs nothing but the
+// open/close scaling benchmark (`scaling`), for `ob bench --scaling`.
 
 #include <arpa/inet.h>
 #include <dirent.h>
@@ -856,9 +857,142 @@ static void git_status(const char *git, uint64_t rounds) {
 	remove_tree(dir);
 }
 
+// The open/close scaling benchmark (`ob bench --scaling`): 1, 4 and 8
+// workers, threads of this process or processes of their own, open and
+// close a file at once, each its own file in its own directory, so that
+// no file or directory is shared and what they share is the kernel's:
+// on Radix the capability store, on Linux the descriptor table (threads
+// only). Each worker is pinned to a CPU in turn. A row's time is the
+// slowest worker's per open and close: what each one sees while the
+// others run, the same as one worker alone if nothing is shared.
+#define SCALING_MOST 8
+#define SCALING_ROUNDS 50000
+
+struct scaling {
+	int ready, go;
+	int workers, threads;
+	int cpus[SCALING_MOST], cpu_count;
+	int dirs[SCALING_MOST];
+	uint64_t elapsed[SCALING_MOST];
+};
+
+struct scaling_worker {
+	struct scaling *shared;
+	int index;
+};
+
+static void scaling_work(struct scaling *shared, int index) {
+	pin(shared->cpus[index % shared->cpu_count]);
+	int dir = shared->dirs[index];
+	__atomic_add_fetch(&shared->ready, 1, __ATOMIC_SEQ_CST);
+	while(!__atomic_load_n(&shared->go, __ATOMIC_ACQUIRE))
+		sched_yield();
+	uint64_t began = now_ns();
+	for(uint64_t i = 0; i < SCALING_ROUNDS; i++) {
+		int fd = openat(dir, "file", O_RDONLY | O_CLOEXEC);
+		if(fd < 0)
+			fail("openat");
+		close(fd);
+	}
+	shared->elapsed[index] = now_ns() - began;
+}
+
+static void *scaling_thread(void *argument) {
+	struct scaling_worker *worker = argument;
+	scaling_work(worker->shared, worker->index);
+	return NULL;
+}
+
+static void scaling_run(struct scaling *shared, int workers, int threads) {
+	shared->ready = 0;
+	shared->go = 0;
+	shared->workers = workers;
+	shared->threads = threads;
+	memset(shared->elapsed, 0, sizeof(shared->elapsed));
+	pthread_t thread[SCALING_MOST];
+	struct scaling_worker worker[SCALING_MOST];
+	pid_t child[SCALING_MOST];
+	settle();
+	for(int i = 0; i < workers; i++) {
+		if(threads) {
+			worker[i] = (struct scaling_worker){shared, i};
+			if(pthread_create(&thread[i], NULL, scaling_thread, &worker[i]) != 0)
+				fail("pthread_create");
+		} else {
+			child[i] = fork();
+			if(child[i] < 0)
+				fail("fork");
+			if(child[i] == 0) {
+				scaling_work(shared, i);
+				_exit(0);
+			}
+		}
+	}
+	while(__atomic_load_n(&shared->ready, __ATOMIC_ACQUIRE) < workers)
+		sched_yield();
+	__atomic_store_n(&shared->go, 1, __ATOMIC_RELEASE);
+	for(int i = 0; i < workers; i++) {
+		if(threads) {
+			pthread_join(thread[i], NULL);
+		} else {
+			int status;
+			if(waitpid(child[i], &status, 0) != child[i] || !WIFEXITED(status)
+			   || WEXITSTATUS(status))
+				fail("waitpid");
+		}
+	}
+	uint64_t slowest = 0;
+	for(int i = 0; i < workers; i++)
+		if(shared->elapsed[i] > slowest)
+			slowest = shared->elapsed[i];
+	printf("BENCH name=posix_open_close_%s_%d ns=%.2f iterations=%llu\n",
+	       threads ? "threads" : "processes", workers,
+	       (double)slowest / (double)SCALING_ROUNDS, (unsigned long long)SCALING_ROUNDS);
+	fflush(stdout);
+}
+
+static void scaling(void) {
+	struct scaling *shared = mmap(NULL, sizeof(*shared), PROT_READ | PROT_WRITE,
+	                              MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+	if(shared == MAP_FAILED)
+		fail("mmap");
+	memset(shared, 0, sizeof(*shared));
+	shared->cpu_count = allowed_cpus(shared->cpus, SCALING_MOST);
+	if(shared->cpu_count == 0)
+		fail("finding a CPU");
+	mkdir("/tmp", 01777);
+	char path[64];
+	for(int i = 0; i < SCALING_MOST; i++) {
+		snprintf(path, sizeof(path), "/tmp/posix-bench-scaling-%d", i);
+		if(mkdir(path, 0755) != 0 && errno != EEXIST)
+			fail(path);
+		shared->dirs[i] = open(path, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+		if(shared->dirs[i] < 0)
+			fail(path);
+		int fd = openat(shared->dirs[i], "file", O_WRONLY | O_CREAT | O_CLOEXEC, 0644);
+		if(fd < 0 || write(fd, "scaling\n", 8) != 8)
+			fail("making a file to open");
+		close(fd);
+	}
+	printf("posix-bench: open/close scaling on %d CPUs\n", shared->cpu_count);
+	static const int counts[] = {1, 4, 8};
+	for(int threads = 1; threads >= 0; threads--)
+		for(size_t c = 0; c < sizeof(counts) / sizeof(counts[0]); c++)
+			scaling_run(shared, counts[c], threads);
+	for(int i = 0; i < SCALING_MOST; i++)
+		close(shared->dirs[i]);
+	munmap(shared, sizeof(*shared));
+}
+
 int main(int argc, char **argv) {
 	if(argc > 1 && !strcmp(argv[1], "--exit"))
 		return 0;
+	if(argc > 1 && !strcmp(argv[1], "--scaling")) {
+		scaling();
+		printf("posix-bench: done\n");
+		fflush(stdout);
+		return 0;
+	}
 	const char *disk_path = NULL, *nvme_path = NULL, *btrfs_path = NULL, *git = NULL;
 	int networked = 0;
 	for(int i = 1; i < argc; i++) {

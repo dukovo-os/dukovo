@@ -1399,7 +1399,7 @@ _target/userspace/_).
 		Fail a boot test that has not finished after this long. The
 		default is 300.
 
-*bench* [*--gate*] [*--linux-kernel* _file_] [*--runs* _n_] [*--no-linux*] [*--instructions*] [*--shell*] [*--from* _file_] [*--summary* _file_] [*--debug* | *--release*]
+*bench* [*--gate*] [*--linux-kernel* _file_] [*--runs* _n_] [*--no-linux*] [*--instructions*] [*--shell*] [*--scaling*] [*--from* _file_] [*--summary* _file_] [*--debug* | *--release*]
 	Measure what system calls, IPC round trips, context switches, fresh
 	pages, TLB shootdowns, memory copies, files and POSIX calls cost on
 	Radix, next to Linux.
@@ -1496,6 +1496,17 @@ _target/userspace/_).
 		first prompt and of 100 round trips of *true* and Enter to the
 		next prompt, with their ratio, in _out/bench/shell.md_ and
 		*--summary*'s file. It is a report, not part of *--gate*.
+
+	*--scaling*
+		Time only how opening and closing files scales: boot Radix and
+		then Linux, in the same virtual machine, on 4 CPUs, where the
+		POSIX benchmarks run with *--scaling*: 1, 4 and 8 workers,
+		threads of one process and then processes of their own, open and
+		close a file each, in a tmpfs directory each, all at once. The
+		report, in _out/bench-scaling/report.md_ and *--summary*'s file,
+		gives the slowest worker's time per open and close on each side,
+		their ratio, and each side's time over one worker's. It is a
+		report, not part of *--gate*; CI runs it after the benchmarks.
 
 	*--from* _file_
 		Measure nothing, and report the numbers of a real machine

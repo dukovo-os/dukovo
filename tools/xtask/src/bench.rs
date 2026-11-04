@@ -85,7 +85,7 @@ const POSIX_SOURCE: &str = "userspace/posix/bench.c";
 pub(crate) const LINUX_CMDLINE: &str = "console=ttyS0 panic=-1 quiet mitigations=off";
 
 /// What both virtual machines get.
-const VM_MEMORY: &str = "1G";
+pub(crate) const VM_MEMORY: &str = "1G";
 const VM_CPUS: u32 = 2;
 
 /// The most time Radix may take for an operation, as a share of what
@@ -100,7 +100,7 @@ pub const GATE_RATIO: f64 = 1.00;
 /// virtual CPUs placed on one core, a virtual CPU waking up late) only
 /// ever makes a run slower, and rarely hits the same operation every
 /// time, while what the kernel costs is there in every run.
-const RUNS: u32 = 3;
+pub(crate) const RUNS: u32 = 3;
 
 /// How many more times, at most, `ob bench --gate` measures Radix and
 /// Linux in turn while an operation is over the gate after the first
@@ -111,7 +111,7 @@ pub const MORE_RUNS: u32 = 6;
 
 /// How long the benchmark boot may take: minutes under KVM, about three
 /// without it.
-const TIMEOUT: Duration = Duration::from_mins(15);
+pub(crate) const TIMEOUT: Duration = Duration::from_mins(15);
 
 /// QEMU's instruction counting: each instruction advances the guest's
 /// clock by 2^0 ns, and the clock does not run ahead to catch up with the
@@ -459,10 +459,27 @@ pub fn command(ctx: &Ctx, args: &mut Args) -> Result<()> {
     let given_kernel = args.value("--linux-kernel")?;
     let from = args.value("--from")?;
     let shell = args.flag("--shell");
+    let scaling = args.flag("--scaling");
     let profile = args.profile(&ctx.config)?;
     args.finish()?;
     if shell {
         return crate::shellbench::command(ctx, summary.as_deref());
+    }
+    if scaling {
+        if gate || instructions || from.is_some() {
+            crate::bail!(
+                "--scaling reports numbers, it is no gate, so it takes only --no-linux, \
+                          --runs, --linux-kernel and --summary"
+            );
+        }
+        return crate::scaling::command(
+            ctx,
+            profile,
+            runs,
+            linux,
+            given_kernel,
+            summary.as_deref(),
+        );
     }
     if let Some(path) = from {
         if gate || instructions || !linux || given_kernel.is_some() {
@@ -619,7 +636,7 @@ pub fn command(ctx: &Ctx, args: &mut Args) -> Result<()> {
 
 /// Adds the measurements of one run to `best`, keeping the fastest of
 /// each operation.
-fn keep_best(best: &mut Vec<Measurement>, run: Vec<Measurement>) {
+pub(crate) fn keep_best(best: &mut Vec<Measurement>, run: Vec<Measurement>) {
     for measured in run {
         match best.iter_mut().find(|kept| kept.name == measured.name) {
             Some(kept) if measured.ns < kept.ns => *kept = measured,
@@ -714,7 +731,7 @@ fn check_budgets(radix: &[Measurement]) -> Result<()> {
 }
 
 /// Appends `text` to the file at `path`.
-fn append(path: &str, text: &str) -> Result<()> {
+pub(crate) fn append(path: &str, text: &str) -> Result<()> {
     use std::io::Write as _;
     let mut file = std::fs::OpenOptions::new()
         .create(true)
@@ -1281,7 +1298,7 @@ fn newc_entry(out: &mut Vec<u8>, ino: u32, name: &str, mode: u32, rdev: (u32, u3
 /// Prints a failed boot's log, from the first sign of trouble or its last
 /// lines: CI keeps the log as an artifact, but the job's own output is
 /// where people look first.
-fn show_trouble(log: &str) {
+pub(crate) fn show_trouble(log: &str) {
     let text = test::clean_log(log);
     let lines: Vec<&str> = text.lines().collect();
     let trouble = lines.iter().position(|line| {
@@ -1586,12 +1603,12 @@ fn find<'a>(measurements: &'a [Measurement], name: &str) -> Option<&'a Measureme
 }
 
 /// A duration in nanoseconds, the way the report shows it.
-fn show(ns: f64) -> String {
+pub(crate) fn show(ns: f64) -> String {
     if ns >= 10_000.0 { format!("{:.1} µs", ns / 1000.0) } else { format!("{ns:.0} ns") }
 }
 
 /// The commit measured: CI's, else the checkout's.
-fn commit(ctx: &Ctx) -> String {
+pub(crate) fn commit(ctx: &Ctx) -> String {
     if let Ok(sha) = std::env::var("GITHUB_SHA") {
         return sha.chars().take(12).collect();
     }
@@ -1604,7 +1621,7 @@ fn commit(ctx: &Ctx) -> String {
 }
 
 /// The host CPU's name, from /proc/cpuinfo.
-fn host_cpu() -> String {
+pub(crate) fn host_cpu() -> String {
     std::fs::read_to_string("/proc/cpuinfo")
         .ok()
         .and_then(|info| {

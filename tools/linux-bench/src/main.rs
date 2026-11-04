@@ -6,7 +6,12 @@
 //!
 //! ```text
 //! linux-bench [--rounds <count>] [--posix-bench <program>] [--git <program>]
+//!             [--only scaling]
 //! ```
+//!
+//! With `--only scaling` it runs only the POSIX benchmarks' open/close
+//! scaling benchmark (`ob bench --scaling`); as process 1 it gets that
+//! from the kernel command line, after `--`.
 //!
 //! It prints one line per benchmark, in the format of the Radix benchmark
 //! programs:
@@ -96,6 +101,7 @@ fn main() {
     let mut posix = None;
     let mut btrfs_log = None;
     let mut git = None;
+    let mut scaling = false;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         let value = args.next();
@@ -105,13 +111,14 @@ fn main() {
             }
             ("--posix-bench", Some(program)) => posix = Some(PathBuf::from(program)),
             ("--git", Some(program)) => git = Some(PathBuf::from(program)),
+            ("--only", Some(what)) if what == "scaling" => scaling = true,
             ("--btrfs-log", Some(mode)) if mode == "make" || mode == "list" => {
                 btrfs_log = Some(mode);
             }
             _ => {
                 eprintln!(
                     "usage: linux-bench [--rounds <count>] [--posix-bench <program>] \
-                     [--git <program>] [--btrfs-log make|list]"
+                     [--git <program>] [--btrfs-log make|list] [--only scaling]"
                 );
                 std::process::exit(2);
             }
@@ -135,6 +142,22 @@ fn main() {
         eprintln!("linux-bench: this process may run on no CPU");
         std::process::exit(1);
     };
+    if scaling {
+        // `ob bench --scaling`: the POSIX benchmarks' open/close scaling
+        // benchmark, and nothing else.
+        let program = posix.unwrap_or_else(|| PathBuf::from(POSIX_BENCH));
+        std::io::stdout().flush().ok();
+        match std::process::Command::new(&program).arg("--scaling").status() {
+            Ok(status) if status.success() => {}
+            Ok(status) => eprintln!("linux-bench: {} failed: {status}", program.display()),
+            Err(err) => eprintln!("linux-bench: cannot run {}: {err}", program.display()),
+        }
+        if std::process::id() == 1 {
+            println!("linux-bench: done");
+            power_off();
+        }
+        return;
+    }
     pin(first);
 
     let calls = rounds * 2;
