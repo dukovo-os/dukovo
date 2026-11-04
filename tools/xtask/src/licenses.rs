@@ -546,8 +546,7 @@ fn listed_packages(
                 package.notices = notice_files(&path);
             }
             Source::Path(path) => {
-                package.download =
-                    format!("git+https://github.com/dukovo-os/dukovo@{commit}");
+                package.download = format!("git+https://github.com/dukovo-os/dukovo@{commit}");
                 package.comment = "Part of Dukovo.".into();
                 package.notices = declared_notices(&path)?;
                 package.notices.extend(notice_files(&path));
