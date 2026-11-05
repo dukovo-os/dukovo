@@ -7,20 +7,24 @@
 //! file (`radix-bootfs`) with the programs the system starts with. The
 //! kernel checks it whole, finds the first program in it (`init=PATH`,
 //! `/system/commands/spark` by default) and starts it in a process of its
-//! own (`loader`), with the archive mapped read-only for it, the root of the
-//! file tree in `SLOT_ROOT` (`crate::fs`), from `SLOT_FIRST_EXTRA` on a
-//! memory object for the programs it starts, a capability to `services`,
-//! the resource domain below the root that its services run in, the
-//! power capability (Phase 9), a network capability for all of the
-//! network's ports (Phase 12, ADR 0183), the platform capability
-//! (Phase 11, ADR 0208), the names capability (Phase 13, ADR 0214), the
-//! clock capability (Phase 12, ADR 0194), the root device capability
-//! (Phase 12, ADR 0198) and the firewall capability (Phase 12, ADR
-//! 0334), and the words after a lone `--` on the command
-//! line as its arguments. From then on Spark
+//! own (`loader`), with the root of the file tree in `SLOT_ROOT`
+//! (`crate::fs`), from `SLOT_FIRST_EXTRA` on a memory object for the
+//! programs it starts, a capability to `services`, the resource domain
+//! below the root that its services run in, the power capability
+//! (Phase 9), a network capability for all of the network's ports
+//! (Phase 12, ADR 0183), the platform capability (Phase 11, ADR 0208),
+//! the names capability (Phase 13, ADR 0214), the clock capability
+//! (Phase 12, ADR 0194), the root device capability (Phase 12, ADR 0198)
+//! and the firewall capability (Phase 12, ADR 0334), and the words after
+//! a lone `--` on the command line as its arguments. From then on Spark
 //! starts every other program. The kernel keeps Spark's process
 //! capability, and Spark is the one program that must not end: if it
 //! does, the kernel stops.
+//!
+//! The archive itself stays where the boot loader put it, and `/system`
+//! is served from it (`crate::fs`). Spark gets no copy of its own: one
+//! would cost as much memory as the archive and nothing reads it
+//! (ADR 0392).
 
 use alloc::vec::Vec;
 
@@ -108,7 +112,7 @@ pub fn start(path: &str, args: impl Iterator<Item = &'static str>) -> bool {
         bytes.len().div_ceil(1024),
         archive.len()
     );
-    match start_spark(path, image.data, bytes, args) {
+    match start_spark(path, image.data, args) {
         Ok(number) => {
             info!("Init: {path} is process {number}");
             true
@@ -120,12 +124,7 @@ pub fn start(path: &str, args: impl Iterator<Item = &'static str>) -> bool {
     }
 }
 
-fn start_spark(
-    path: &str,
-    image: &[u8],
-    archive: &[u8],
-    args: impl Iterator<Item = &'static str>,
-) -> Result<u64> {
+fn start_spark(path: &str, image: &[u8], args: impl Iterator<Item = &'static str>) -> Result<u64> {
     let mut words = Vec::new_in(HEAP.with(Flags::MAY_SLEEP));
     words.try_reserve(ARGS_MAX + 1).map_err(|_| status(Kernel::NoMemory))?;
     // Room was reserved above.
@@ -137,11 +136,10 @@ fn start_spark(
     // capability, the memory for the programs it starts, the domain its
     // services' domains go below, the machine's power, the network, its
     // platform controls, the names (ADR 0214), the clock (ADR 0194), the
-    // cards left for programs (ADR 0198), the firewall (ADR 0334), and the
-    // boot archive's memory and frames. It is never destroyed.
-    let slots = loader::archive_slots(archive.len()).saturating_add(10);
+    // cards left for programs (ADR 0198) and the firewall (ADR 0334). It
+    // is never destroyed.
     let kept =
-        caps::with(|store| store.create_space(slots)).and_then(|made| made).map_err(cap_error)?;
+        caps::with(|store| store.create_space(10)).and_then(|made| made).map_err(cap_error)?;
     let slot = |n| SlotRef::new(kept, n);
     let (at, pool, services, power, network, platform) =
         (slot(0), slot(1), slot(2), slot(3), slot(4), slot(5));
@@ -177,7 +175,6 @@ fn start_spark(
             (devices, ObjectKind::Device.rights(), 0),
             (firewall, ObjectKind::Firewall.rights(), 0),
         ],
-        archive: Some((archive, slot(10))),
         root: true,
         domain: domains::root(),
         on_exit: Some(spark_exited),

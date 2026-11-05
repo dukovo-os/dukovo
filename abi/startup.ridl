@@ -125,9 +125,9 @@ struct Startup {
     /// How many bytes the arguments take: each ends with a NUL, and the
     /// first is the program's path.
     args_size: u32;
-    /// Where the boot archive is mapped read-only, for Spark (0 for other
-    /// programs).
+    /// Always 0: Spark once had the boot archive mapped here, but no
+    /// program does now; its files are read through `/system` (ADR 0392).
     bootfs_address: u64;
-    /// The size of the boot archive, in bytes.
+    /// Always 0, as `bootfs_address` is.
     bootfs_size: u64;
 }

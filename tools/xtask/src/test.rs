@@ -6524,9 +6524,6 @@ fn spark(vm: &mut Vm, case: &Case) -> Result<(), String> {
     vm.expect("Init: /system/commands/spark is process ")?;
     let rest = program_line(vm, "spark: Spark v2 is process ")?;
     let spark = image_bias(&rest, "Spark")?;
-    vm.expect("spark: boot archive of ")?;
-    vm.expect(" KiB with ")?;
-    vm.expect(" files at 0x")?;
     vm.expect("spark: built the hierarchy of 9 directories and mounted 9 filesystems")?;
     // Spark's line and hello's first come in either order: hello may run
     // on another CPU before Spark logs that it started it.

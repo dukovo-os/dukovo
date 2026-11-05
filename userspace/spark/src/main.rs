@@ -3,10 +3,10 @@
 
 //! Spark, the first program (Phases 6, 7 and 9, spark(8)).
 //!
-//! The kernel starts Spark from the boot archive with the archive mapped
-//! read-only, the root of the system's tree in `SLOT_ROOT` (an empty
-//! tmpfs), and from `SLOT_FIRST_EXTRA` on a memory object for the programs
-//! it starts, a capability to the `services` resource domain, the power
+//! The kernel starts Spark from the boot archive with the root of the
+//! system's tree in `SLOT_ROOT` (an empty tmpfs), and from
+//! `SLOT_FIRST_EXTRA` on a memory object for the programs it starts, a
+//! capability to the `services` resource domain, the power
 //! capability, a network capability for all of the network's ports
 //! (radix-network(2)), the platform capability (radix-platform(2)) and
 //! the names capability (radix-names(2), ADR 0214).
@@ -77,7 +77,6 @@ use libradix::abi::startup::{
     SLOT_RANDOM, SLOT_ROOT, Startup,
 };
 use libradix::abi::{file, memory, process, syscalls, terminal};
-use radix_rt::bootfs::BootFs;
 use radix_rt::fs::{Dir, File};
 use radix_rt::spawn::{self, Spawn};
 use radix_rt::{SYS, args, entry, println, slots};
@@ -202,19 +201,6 @@ fn main(start: &Startup) -> u64 {
 /// Builds the hierarchy and mounts the disks, then starts the services or
 /// the program its arguments name; returns the supervision of them.
 fn run() -> Option<Supervisor> {
-    let archive = match BootFs::mount() {
-        Ok(archive) => archive,
-        Err(err) => {
-            println!("spark: {err}");
-            return None;
-        }
-    };
-    println!(
-        "spark: boot archive of {} KiB with {} files at {:#x}",
-        archive.size().div_ceil(1024),
-        archive.files(),
-        libradix::startup().bootfs_address
-    );
     let Some(root) = Dir::root() else {
         println!("spark: the kernel gave no root directory");
         return None;

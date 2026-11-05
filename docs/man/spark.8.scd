@@ -60,8 +60,6 @@ the kernel's own flags end at the *--*.
 
 Spark gets what every program gets (see *radix-startup*(2)) and more:
 
-- the boot archive, mapped read-only at a random address, whose place
-  and size the start-up page gives;
 - the root of the system's file tree, an empty tmpfs, as a directory
   capability with every right in *SLOT_ROOT* (7), the bypass right among
   them, acting for root (*radix-names*(2));
@@ -179,7 +177,6 @@ Its lines in the kernel log start with *spark:*, after the kernel's
 
 ```
 spark: Spark v2 is process 1, moved by 0x10ae4974a000
-spark: boot archive of 86929 KiB with 706 files at 0x20e61a756000
 spark: built the hierarchy of 9 directories and mounted 9 filesystems
 spark: added 6 default settings to /system/settings
 spark: listening at /system/live/spark/control

@@ -152,10 +152,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "radix-bootfs"
-version = "0.12.0"
-
-[[package]]
 name = "radix-elf"
 version = "0.12.0"
 
@@ -165,7 +161,6 @@ version = "0.12.0"
 dependencies = [
  "libradix",
  "radix-abi",
- "radix-bootfs",
  "radix-elf",
 ]
 
