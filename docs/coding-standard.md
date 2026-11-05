@@ -155,6 +155,29 @@ asking anyone.
   "Troubleshooting" section: the usual symptoms, what causes them and how
   to check.
 
+## Quality gates
+
+Dukovo aims to be best in class in how its code is written and tested, not
+only in what it does. These gates make that measurable. Each one is turned
+on in CI as the post-Phase-13 audit brings an area up to it; until then it
+reports without failing.
+
+- **Coverage.** Line coverage is measured on every pull request with
+  `cargo llvm-cov` and may not drop. Crates under `kernel/lib/` keep at
+  least 80%.
+- **Mutation testing.** `cargo mutants` runs nightly on the crates where a
+  missed bug costs most: capabilities, the memory manager, Btrfs and the
+  network parsers. A mutant that survives is either covered by a new test
+  or explained in the crate's notes.
+- **`unsafe` budget.** CI counts the `unsafe` blocks in each crate. A pull
+  request that adds one says why in its description, and the count may
+  only grow with that reason.
+- **Clippy pedantic.** `clippy::pedantic` is on in every crate. Each
+  allowed lint carries a comment saying why, where it is allowed.
+- **Documentation checks.** `./ob docs --check` fails when a module lacks
+  its `//!` comment or a subsystem's chapter lacks its Troubleshooting
+  section (see Readable code above).
+
 ## Testing
 
 - Code that can run on the host does: parsers, data structures, policy and
