@@ -457,6 +457,19 @@ Net: 10.0.2.2 answered ping 1 in 7.792 ms
 selftest net: passed; the router answered 4 pings, the fastest in 1.390 ms
 ```
 
+QEMU's user network answers pings to 10.0.2.2 by itself, but it sends
+a ping to any other machine through the host's unprivileged ping
+sockets. Hosts that turn those off, such as Linux Mint, whose
+`/proc/sys/net/ipv4/ping_group_range` reads `1 0`, drop every such
+ping: `ping 10.0.2.2` answers and `ping dukovo.org` does not, though
+DNS, TCP and UDP work. Allow the host's users to ping, then start QEMU
+again:
+
+```
+sudo sysctl -w net.ipv4.ping_group_range="0 2147483647"
+echo 'net.ipv4.ping_group_range = 0 2147483647' | sudo tee /etc/sysctl.d/60-ping.conf
+```
+
 `ob test --case net` runs the same test behind QEMU's IOMMU, as CI
 does. QEMU's `e1000`, `e1000e`, `igb` and `vmxnet3` cards work the same
 way in place of `virtio-net-pci`, and `ob test --case network-cards`
