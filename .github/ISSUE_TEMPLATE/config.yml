@@ -1,0 +1,7 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security issue privately
+    url: https://github.com/dukovo-os/dukovo/security/advisories/new
+    about: Please do not open a public issue for security problems.
