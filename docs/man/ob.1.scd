@@ -217,7 +217,7 @@ _target/userspace/_).
 		steps. The kernel command line may not have a *--* part, or a
 		*selftest* flag, with it.
 
-*run* [*--uefi* | *--bios*] [*--media* _kind_] [*--headless*] [*--gdb*] [*--cmdline* _flags_] [*--microcode* _path_] [*--debug* | *--release*] [*--* _qemu-args_...]
+*run* [*--uefi* | *--bios*] [*--media* _kind_] [*--headless*] [*--gdb*] [*--no-net*] [*--cmdline* _flags_] [*--microcode* _path_] [*--debug* | *--release*] [*--* _qemu-args_...]
 	Build the image and boot it in QEMU on a q35 machine with
 	*run.memory* of memory and *run.cpus* CPUs. The guest's serial port is
 	this terminal; press *Ctrl-A* then *X* to quit QEMU, or *Ctrl-A* then
@@ -250,6 +250,14 @@ _target/userspace/_).
 		function. Run *gdb -x out/qemu/radix.gdb* in another terminal.
 		The kernel is booted with *nokaslr* added to its flags, so it
 		runs at the addresses GDB's symbols name. See *radix-debug*(7).
+
+	*--no-net*
+		Give the guest no network card. By default it gets a virtio
+		network card on QEMU's user network, which hands out an address
+		by DHCP and reaches the outside through the host; the guest's SSH
+		port 22 is forwarded to localhost port 2222. Network arguments of
+		your own after *--* (*-nic*, *-netdev* or *-net*) replace that
+		card.
 
 	*--cmdline* _flags_, *--microcode* _path_
 		As for *image*.

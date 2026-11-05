@@ -246,6 +246,21 @@ fn with_flag(cmdline: &str, flag: &str) -> String {
     }
 }
 
+/// The host port `ob run` forwards to the guest's SSH port.
+const RUN_SSH_PORT: u16 = 2222;
+
+/// The network card `ob run` gives the guest unless told otherwise: a
+/// virtio card on QEMU's user network, which hands out an address by DHCP
+/// and reaches the outside through the host, with the guest's SSH port
+/// forwarded to localhost.
+const RUN_NIC: [&str; 4] =
+    ["-netdev", "user,id=n0,hostfwd=tcp:127.0.0.1:2222-:22", "-device", "virtio-net-pci,netdev=n0"];
+
+/// Whether extra QEMU arguments set up a network of their own.
+fn sets_network(extra: &[String]) -> bool {
+    extra.iter().any(|a| a == "-nic" || a == "-netdev" || a == "-net")
+}
+
 /// `ob run`.
 pub fn run_command(ctx: &Ctx, args: &mut Args) -> Result<()> {
     let firmware = match (args.flag("--bios"), args.flag("--uefi")) {
@@ -273,9 +288,16 @@ pub fn run_command(ctx: &Ctx, args: &mut Args) -> Result<()> {
         let cmdline = overrides.cmdline.as_deref().unwrap_or(&ctx.config.boot.cmdline);
         overrides.cmdline = Some(with_flag(cmdline, "nokaslr"));
     }
+    let no_net = args.flag("--no-net");
     let profile = args.profile(&ctx.config)?;
-    let extra = args.take_passthrough();
+    let mut extra = args.take_passthrough();
     args.finish()?;
+    let net = !no_net && !sets_network(&extra);
+    if net {
+        let mut nic: Vec<String> = RUN_NIC.iter().map(ToString::to_string).collect();
+        nic.append(&mut extra);
+        extra = nic;
+    }
     overrides.account = account.account(ctx)?;
 
     require_qemu()?;
@@ -322,6 +344,11 @@ pub fn run_command(ctx: &Ctx, args: &mut Args) -> Result<()> {
     if headless {
         eprintln!("    No QEMU window: no display found or --headless given.");
     }
+    if net {
+        eprintln!(
+            "    Network: a virtio card on QEMU's user network; ssh -p {RUN_SSH_PORT} <user>@localhost reaches the guest's port 22."
+        );
+    }
     eprintln!();
     let status = process::status(ctx, &mut machine.command())?;
     match status.code() {
@@ -334,6 +361,19 @@ pub fn run_command(ctx: &Ctx, args: &mut Args) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn run_nic_forwards_the_ssh_port() {
+        assert!(RUN_NIC[1].contains(&format!(":{RUN_SSH_PORT}-:22")));
+    }
+
+    #[test]
+    fn own_network_arguments_replace_the_run_nic() {
+        let own = |a: &[&str]| sets_network(&a.iter().map(ToString::to_string).collect::<Vec<_>>());
+        assert!(own(&["-nic", "user"]));
+        assert!(own(&["-netdev", "tap,id=t0"]));
+        assert!(!own(&["-d", "int"]));
+    }
+
     use super::*;
 
     fn machine(firmware: Firmware, media: Media) -> Machine {

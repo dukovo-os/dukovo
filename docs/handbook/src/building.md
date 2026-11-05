@@ -173,6 +173,7 @@ or type `poweroff` in the shell. Useful variations:
 | `./ob run --bios` | Boot as a legacy BIOS machine instead of UEFI |
 | `./ob run --media cdrom` | Attach the image as a CD-ROM instead of a USB stick (`disk` for a hard disk) |
 | `./ob run --headless` | No QEMU window, serial console only |
+| `./ob run --no-net` | No network card (by default the guest gets one on QEMU's user network, with SSH on localhost port 2222) |
 | `./ob run --debug` | Use an unoptimised kernel |
 | `./ob run --cmdline kdb` | Pass kernel flags, here to start the kernel debugger after boot |
 | `./ob run --gdb` | Wait for GDB; see [Debugging the kernel](debugging.md) |
