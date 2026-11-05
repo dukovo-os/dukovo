@@ -121,6 +121,40 @@ Wherever `unsafe` is used:
 - Every command, file format, kernel command-line flag and interface gets a
   man page; see [CONTRIBUTING.md](../CONTRIBUTING.md).
 
+## Readable code
+
+Code is written for the next person who has to debug it, often someone
+who has never seen it before and is in a hurry. They should be able to
+open a file, see what it does and find where things go wrong without
+asking anyone.
+
+- A module's `//!` comment says what it does, how it fits with its
+  neighbours, and where to start when it misbehaves: the log lines it
+  writes, the `kdb` commands that show its state, the boot test that
+  covers it.
+- Comments explain why: the reason for a choice, the hardware quirk or
+  specification section behind it, the bug a check prevents. They do not
+  repeat what the next line says, narrate the steps of a function, or
+  describe how the code came to be ("now we", "changed to", "new"). A
+  comment that would be wrong after a small change belongs in the commit
+  message instead.
+- Names say what a thing is in the words of its domain (`free_frames`,
+  `retry_after`), not in generic ones (`data`, `handler`, `manager`,
+  `helper`). Abbreviations are the ones the specification or Linux uses.
+- A function does one thing and fits on a screen. Deep nesting gives way
+  to early returns, and long `match` arms move into named functions.
+- Error messages and log lines say what failed, on which object, and what
+  the person can do about it, in plain words.
+- No dead code, commented-out code, leftover debugging output or
+  placeholder `TODO`s. A `TODO` names the follow-up issue or the phase that
+  will do it.
+- Code reads like the code around it. Match the file's existing style
+  instead of adding a new pattern, and prefer the plain, obvious way to
+  write something over a clever one.
+- Each subsystem's handbook chapter or design document has a
+  "Troubleshooting" section: the usual symptoms, what causes them and how
+  to check.
+
 ## Testing
 
 - Code that can run on the host does: parsers, data structures, policy and
