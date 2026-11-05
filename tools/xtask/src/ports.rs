@@ -1034,9 +1034,15 @@ fn inputs_hash(
         files.sort();
         for file in &files {
             file.strip_prefix(dir).unwrap_or(file).hash(&mut hasher);
-            std::fs::read(file)
-                .context(|| format!("reading {}", file.display()))?
-                .hash(&mut hasher);
+            let bytes = std::fs::read(file).context(|| format!("reading {}", file.display()))?;
+            // The system call headers carry the interface's documentation,
+            // which no port compiles: leaving it out means a change to a
+            // comment in abi/ does not rebuild every port.
+            if *dir == headers {
+                without_c_comments(&bytes).hash(&mut hasher);
+            } else {
+                bytes.hash(&mut hasher);
+            }
         }
     }
     toolchain.version.hash(&mut hasher);
@@ -1048,6 +1054,59 @@ fn inputs_hash(
         stamps.get(dep).hash(&mut hasher);
     }
     Ok(hasher.finish())
+}
+
+/// C source as the compiler sees it, for hashing: each comment and each run
+/// of spaces between tokens becomes one space, or one newline if it spans
+/// lines, so that adding or rewording a comment changes nothing. String
+/// and character literals are kept whole, so a `/*` inside one is not
+/// taken for a comment.
+fn without_c_comments(source: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(source.len());
+    let mut at = 0;
+    while at < source.len() {
+        let gap_start = at;
+        let mut newline = false;
+        // Skip a run of spaces and comments, noting whether it ends a line.
+        loop {
+            match (source.get(at), source.get(at + 1)) {
+                (Some(b'/'), Some(b'*')) => {
+                    let end = source[at + 2..].windows(2).position(|pair| pair == b"*/");
+                    let next = end.map_or(source.len(), |end| at + 2 + end + 2);
+                    newline |= source[at..next].contains(&b'\n');
+                    at = next;
+                }
+                (Some(b'/'), Some(b'/')) => {
+                    let end = source[at..].iter().position(|&byte| byte == b'\n');
+                    at = end.map_or(source.len(), |end| at + end);
+                }
+                (Some(&byte), _) if byte.is_ascii_whitespace() => {
+                    newline |= byte == b'\n';
+                    at += 1;
+                }
+                _ => break,
+            }
+        }
+        if at > gap_start {
+            out.push(if newline { b'\n' } else { b' ' });
+            continue;
+        }
+        let start = at;
+        if matches!(source[at], b'"' | b'\'') {
+            // The literal runs to the next quote of its kind that no
+            // backslash escapes.
+            let quote = source[at];
+            at += 1;
+            while at < source.len() && source[at] != quote {
+                at += if source[at] == b'\\' { 2 } else { 1 };
+            }
+            at = (at + 1).min(source.len());
+        } else {
+            at += 1;
+        }
+        out.extend_from_slice(&source[start..at]);
+    }
+    out
 }
 
 fn list_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
@@ -1524,6 +1583,20 @@ pub fn image_files(ctx: &Ctx, recipe: &Recipe, sysroot: &Path) -> Result<Vec<(St
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn header_hash_ignores_comments_but_not_code() {
+        let strip = |text: &str| without_c_comments(text.as_bytes());
+        let header = "struct s {\n    /*\n     * Old words.\n     */\n    int a; // why\n};\n";
+        let reworded = "struct s {\n    /* New words,\n       on two lines. */\n    int a;\n};\n";
+        let uncommented = "struct s {\n    int a;\n};\n";
+        assert_eq!(strip(header), strip(reworded));
+        assert_eq!(strip(header), strip(uncommented));
+        assert_ne!(strip(header), strip("struct s {\n    long a;\n};\n"));
+        // A comment marker inside a literal is part of the literal.
+        assert_ne!(strip("char *p = \"/* a */\";"), strip("char *p = \"/* b */\";"));
+        assert_eq!(strip("#define A 1 /* one */\n#define B 2"), strip("#define A 1\n#define B 2"));
+    }
 
     #[test]
     fn reads_clang_versions() {
