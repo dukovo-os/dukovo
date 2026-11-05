@@ -28,7 +28,7 @@ kernel/lib/bootfs       radix-bootfs: the checked ustar reader, and a writer
                         for ob (feature `write`)
 kernel/hal              cmdline.rs: `init=` and the words after `--`
 userspace/libradix      entry point, system calls, printing (ADR 0036)
-userspace/radix-rt      the runtime: heap, arguments, BootFs, spawn
+userspace/radix-rt      the runtime: heap, arguments, spawn
 userspace/spark         Spark (v0 in Phase 6; v1 in Phase 7, see storage.md)
 userspace/hello         the test program Spark starts
 tools/xtask             userspace.rs: builds the programs and writes the
@@ -181,17 +181,13 @@ way (ADR 0048).
    segments with their own access (read-only data after relocation,
    `PT_GNU_RELRO`, read-only from the start), the stack read-write and
    the start-up page read-only at `STARTUP_ADDRESS`.
-6. For Spark, it copies the boot archive into frames of its own (a
-   memory object and a frame per 4 MiB, kept in the kernel's capability
-   space for Spark, which has room for them however many there are) and
-   maps them read-only at a random page in the 1 TiB window from
-   `LOADER_BASE`.
-7. It writes the start-up page: its version, CPU, role and argument, the
+6. It writes the start-up page: its version, CPU, role and argument, the
    time-stamp counter's frequency, the kinds of the extra capabilities,
-   the free memory, the image's bias, the boot archive's place, and the
-   arguments, NUL-terminated, after the fields. The thread's number is
+   the free memory, the image's bias, and the arguments, NUL-terminated,
+   after the fields. The boot archive's address and size stay 0: no
+   program gets the archive mapped (ADR 0392). The thread's number is
    filled in once the thread exists but before it may run.
-8. It starts the thread at the entry point with the start-up page's
+7. It starts the thread at the entry point with the start-up page's
    address in its first argument register.
 
 If any step fails, the process made so far is ended, which frees
@@ -203,14 +199,14 @@ everything it was given.
 0x0000_0001_0000   start-up page (read-only)
 0x0000_0040_0000   a fixed program's image (usertests)
 0x1000_0000_0000   image window, 1 TiB: position-independent programs
-0x2000_0000_0000   loader window, 1 TiB: Spark's view of the boot archive
+0x2000_0000_0000   loader window, 1 TiB: unused since ADR 0392
 0x3000_0000_0000   PROGRAM_BASE: the program's own (radix-rt's heap)
 0x7fef_f000_0000   lowest top of the stack (STACK_TOP - STACK_WINDOW)
 0x7ff0_0000_0000   STACK_TOP, the highest top of the 256 KiB stack
 ```
 
-That gives 28 bits of entropy to the image and the archive, as Linux's
-default for `mmap` on x86-64, and 24 to the stack.
+That gives 28 bits of entropy to the image, as Linux's default for
+`mmap` on x86-64, and 24 to the stack.
 
 ## The boot archive
 
@@ -219,8 +215,7 @@ programs of `ARCHIVE` in `tools/xtask/src/userspace.rs` under their
 directories (`system/commands/spark`, `system/tests/hello`), owned by root,
 mode 0755 and dated from the commit. GRUB loads it as a module with the
 word `bootfs`. `radix_bootfs::open` checks it in one pass before anything
-uses it (ADR 0049), in the kernel before Spark starts and again in Spark
-when it mounts it. After that, finding a file or listing a directory
+uses it (ADR 0049), in the kernel before Spark starts. After that, finding a file or listing a directory
 cannot fail; both read the headers in turn.
 
 ## Starting Spark
@@ -232,20 +227,16 @@ loaded a `bootfs` module (`user/init.rs`):
    `/system/commands/spark` by default.
 2. It makes a kernel capability space, which is never destroyed:
    Spark's original process capability goes in slot 0, a 4 MiB memory
-   object in slot 1, and the boot archive's memory objects and frames,
-   two slots per 4 MiB of it, from slot 2 on. (Until Phase 9 they were
-   among Spark's 32 kept capabilities, which held an archive of at most
-   56 MiB.)
-3. It loads Spark with the archive, that memory object as its first extra
+   object in slot 1, and the capabilities Spark is given after it.
+3. It loads Spark with that memory object as its first extra
    capability (`SLOT_FIRST_EXTRA`, with the memory rights), its path and
    the words after a lone `--` on the command line as its arguments (at
    most 32), any CPU, the root domain, and `on_exit` set to a panic.
 
-Spark v0 (Phase 6) mounts the archive, reads the program its first
-argument names, spawns it with the rest of its arguments and 2 MiB of
-memory from the pool, waits for its exit notification, reaps it, checks
-that the pool has no page in use, and then waits for good on a
-notification nothing signals. Since Phase 7 the kernel also gives Spark
+Spark v0 (Phase 6) reads the program its first argument names, spawns
+it with the rest of its arguments and 2 MiB of memory from the pool,
+waits for its exit notification, reaps it, checks that the pool has no
+page in use, and then waits for good on a notification nothing signals. Since Phase 7 the kernel also gives Spark
 the root of the file tree, and Spark v1 builds the hierarchy on it first
 (docs/design/storage.md). Since Phase 9, Spark v2 supervises the
 system's services, each in a resource domain of its own made through the
@@ -256,7 +247,7 @@ the power capability (spark(8), ADRs 0098, 0099 and 0101).
 
 ```text
 args.rs    the arguments from the start-up page
-fs.rs      BootFs: the boot archive as a read-only file system
+fs.rs      files and directories, through the capabilities that reach them
 heap.rs    the global allocator
 lock.rs    a spin lock that yields while it waits
 slots.rs   free slots from 48 on, in an atomic bitmap
@@ -348,8 +339,9 @@ property tests that feed them garbage.
   reading files made programs free and make large buffers in turn).
   Programs on the Rust `std` port (Phase 8) use the C library's
   allocator instead; Spark and the other radix-rt programs keep it.
-- The kernel copies the boot archive into Spark's frames rather than
-  mapping the module's pages; finding a file reads the headers in turn.
+- The boot archive stays in the memory the boot loader put it in for as
+  long as the machine runs, since `/system` is served from it. Finding a
+  file reads the headers in turn.
 - A program that radix-rt's `spawn` or the kernel loads may not use
   shared libraries, an interpreter or thread-local storage; one that
   `exec` loads from a file may (docs/design/posix.md).

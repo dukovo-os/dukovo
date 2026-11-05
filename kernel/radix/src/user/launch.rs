@@ -148,7 +148,6 @@ impl Group {
             argument: spec.argument,
             args: &[spec.name],
             extra: &extra[..spec.extra.len()],
-            archive: None,
             root: false,
             domain: domains::root(),
             on_exit: None,

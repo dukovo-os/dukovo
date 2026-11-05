@@ -11,8 +11,7 @@
 //! - [`args`]: the program's arguments;
 //! - [`spawn`]: starting a program in a new process and reaping it;
 //! - [`fs`]: files and directories, through the capabilities that reach
-//!   them;
-//! - [`bootfs`]: the boot archive's files, read-only, for Spark.
+//!   them.
 //!
 //! A program built with it starts as every Radix program does
 //! (`libradix::entry!`), and links its allocator by using the crate.
@@ -23,7 +22,6 @@
 extern crate alloc;
 
 pub mod args;
-pub mod bootfs;
 pub mod fs;
 pub mod heap;
 mod lock;
