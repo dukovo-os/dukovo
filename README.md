@@ -148,7 +148,8 @@ Later phases add `libs/` and `tests/`, as described in the roadmap.
 
 ## Contributing
 
-Read [CONTRIBUTING.md](CONTRIBUTING.md) and the
+Start with [ARCHITECTURE.md](ARCHITECTURE.md), a map of the code, then read
+[CONTRIBUTING.md](CONTRIBUTING.md) and the
 [coding standard](docs/coding-standard.md). Every commit is signed off under
 the [Developer Certificate of Origin](CONTRIBUTING.md#developer-certificate-of-origin),
 and everyone taking part follows the [code of conduct](CODE_OF_CONDUCT.md).

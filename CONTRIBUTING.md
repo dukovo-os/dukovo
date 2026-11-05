@@ -8,6 +8,31 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 Thank you for helping. This guide covers how to build and test, what a
 change needs before it can merge, and where decisions are recorded.
 
+## Your first pull request
+
+1. Read [ARCHITECTURE.md](ARCHITECTURE.md) for a map of the code, and pick
+   an issue labelled `good first issue`, or one of your own. Say on the
+   issue that you are taking it.
+2. Run `./ob doctor` and install what it lists, then `./ob setup`.
+3. Run `./ob run` to boot Dukovo in QEMU and look around. `./ob test` runs
+   the tests; `./ob test boot --case <name>` runs one boot test.
+4. Make the change on a branch, with tests, following the
+   [coding standard](docs/coding-standard.md).
+5. Run `./ob lint`, `./ob test` and `./ob docs --check`, sign off each
+   commit (`git commit -s`), and open the pull request. The template asks
+   for what changed, why, and how you tested it.
+
+Questions are welcome on the issue or in the pull request.
+
+## Tools and responsibility
+
+Use whatever tools help you, editors, linters, generators or AI
+assistants. What matters is the result: when you sign off a commit, you
+are saying that you have read and understood every line of it, that you
+can explain and defend it in review, and that it meets the coding
+standard. Code nobody understands does not merge, however it was
+written.
+
 ## Build and test
 
 Everything goes through `./ob`, and CI runs exactly the same commands:

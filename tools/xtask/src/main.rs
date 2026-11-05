@@ -197,7 +197,7 @@ subvolumes for what changes, on Btrfs.
         }
         "run" => {
             "Usage: ./ob run [--bios | --uefi] [--media usb|cdrom|disk] [--headless] [--gdb]
-                [--cmdline <flags>] [--microcode <path>] [--user <name> ...]
+                [--no-net] [--cmdline <flags>] [--microcode <path>] [--user <name> ...]
                 [--debug | --release] [-- <extra QEMU arguments>]
 
 Builds the image and boots it in QEMU. The serial console is this terminal;
@@ -210,6 +210,9 @@ press Ctrl-A then X to quit QEMU. KVM is used when /dev/kvm is accessible.
   --gdb                Wait for GDB on localhost:1234; writes out/qemu/radix.gdb,
                        which stops at the kernel's first Rust function (adds
                        nokaslr, so the kernel runs where its symbols say)
+  --no-net             No network card; by default the guest gets a virtio card
+                       on QEMU's user network, with its SSH port on localhost:2222
+                       (extra QEMU network arguments after -- replace it too)
   --cmdline <flags>    Kernel flags instead of boot.cmdline, such as \"kdb\"
   --microcode <path>   Intel microcode file or directory instead of image.microcode
   --user <name>        Make an administrator's account in the image, with
