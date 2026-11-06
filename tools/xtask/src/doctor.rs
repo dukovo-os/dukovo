@@ -442,37 +442,6 @@ fn requirements() -> Vec<Requirement> {
             fallback: None,
         },
         Requirement {
-            name: "MIT Kerberos's KDC",
-            purpose: "krb5kdc, kdb5_util and kadmin.local: the kerberos test's realm, run as you on a port of its own, whose KDC kinit, klist and kvno reach through QEMU's network",
-            found: |_| {
-                let programs =
-                    ["/usr/sbin/krb5kdc", "/usr/sbin/kdb5_util", "/usr/sbin/kadmin.local"];
-                let found: Option<Vec<_>> = programs.iter().map(process::find_program).collect();
-                found.map(|found| found[0].display().to_string())
-            },
-            packages: Packages {
-                apt: Some("krb5-kdc krb5-admin-server"),
-                dnf: Some("krb5-server"),
-                pacman: Some("krb5"),
-            },
-            fallback: None,
-        },
-        Requirement {
-            name: "Kerberos for Linux's NFS",
-            purpose: "kinit, rpc.gssd and rpc.svcgssd: the nfs-kerberos test's host, whose kernel mounts the guest's share and serves its own with sec=krb5p",
-            found: |_| {
-                let programs = ["/usr/bin/kinit", "/usr/sbin/rpc.gssd", "/usr/sbin/rpc.svcgssd"];
-                let found: Option<Vec<_>> = programs.iter().map(process::find_program).collect();
-                found.map(|found| found[1].display().to_string())
-            },
-            packages: Packages {
-                apt: Some("krb5-user nfs-common"),
-                dnf: Some("krb5-workstation nfs-utils"),
-                pacman: Some("krb5 nfs-utils"),
-            },
-            fallback: None,
-        },
-        Requirement {
             name: "libbde",
             purpose: "bdeinfo, which unlocks the BitLocker volumes of radix-bitlocker's tests as Windows' are unlocked",
             found: |_| program_version("bdeinfo", "-V"),
@@ -719,6 +688,22 @@ pub fn doctor(ctx: &Ctx) -> Result<()> {
             "RISC-V QEMU"
         ),
     }
+    // Only two boot tests use Kerberos on the host, and CI's boot jobs
+    // install it, so a host without it still builds and tests the rest.
+    let kdc = ["/usr/sbin/krb5kdc", "/usr/sbin/kdb5_util", "/usr/sbin/kadmin.local"];
+    note_programs(
+        "MIT Kerberos",
+        &kdc,
+        "the kerberos and nfs-kerberos boot tests",
+        "krb5-kdc and krb5-admin-server",
+    );
+    let nfs = ["/usr/bin/kinit", "/usr/sbin/rpc.gssd", "/usr/sbin/rpc.svcgssd"];
+    note_programs(
+        "Kerberos NFS",
+        &nfs,
+        "the nfs-kerberos boot test, which checks only the guest's part without them",
+        "krb5-user and nfs-common",
+    );
     if qemu::kvm_available() {
         println!("  ok       {:<15} /dev/kvm is usable", "KVM");
     } else {
@@ -733,6 +718,24 @@ pub fn doctor(ctx: &Ctx) -> Result<()> {
     print_fixes(&missing, detect_distro());
     Err(Error::new(format!("{} requirement(s) missing", missing.len()))
         .hint("install them with the commands above, then run ./ob doctor again"))
+}
+
+/// Prints `programs` as found, or as a note naming the absent ones:
+/// only `needed_by` uses them, so a host may go without.
+fn note_programs(name: &str, programs: &[&str], needed_by: &str, packages: &str) {
+    let absent: Vec<&str> = programs
+        .iter()
+        .copied()
+        .filter(|program| process::find_program(program).is_none())
+        .collect();
+    if absent.is_empty() {
+        println!("  ok       {name:<15} {}", programs[0]);
+    } else {
+        println!(
+            "  note     {name:<15} {} not installed; only {needed_by} need them (packages {packages})",
+            absent.join(", ")
+        );
+    }
 }
 
 fn print_fixes(missing: &[Requirement], distro: Option<Distro>) {
