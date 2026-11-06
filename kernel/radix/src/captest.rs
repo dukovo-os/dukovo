@@ -1007,13 +1007,23 @@ fn stress_worker() {
                 at(space, random.below(u64::from(SHARED_SLOTS)) as u32)
             }
         };
-        let (_, _, result) = random_operation(&mut random, pick);
+        let (roll, made, result) = random_operation(&mut random, pick);
         done += 1;
+        // A retype of two into a space's last slot runs past its end.
+        let size = if made.space == own { STRESS_OWN_SLOTS } else { SHARED_SLOTS };
+        let past_the_end = (54..62).contains(&roll) && made.slot + 1 == size;
         match result {
             Ok(()) => {}
+            Err(CapError::NoSuchSlot) if past_the_end => refused += 1,
             // Every space it names is live and every slot inside it.
-            Err(CapError::NoSuchSpace | CapError::NoSuchSlot) => {
-                STRESS_COUNTS[2].fetch_add(1, Ordering::Relaxed);
+            Err(err @ (CapError::NoSuchSpace | CapError::NoSuchSlot)) => {
+                if STRESS_COUNTS[2].fetch_add(1, Ordering::Relaxed) == 0 {
+                    error!(
+                        "selftest caps: on cpu {me}, operation {roll} (made in slot {} of space \
+                         {}) said: {err}",
+                        made.slot, made.space.index
+                    );
+                }
             }
             Err(_) => refused += 1,
         }
