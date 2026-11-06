@@ -548,7 +548,9 @@ or copying a capability not held, every one of the 4,096 rights masks
 with every use the mask leaves out, badges, seals, ranges, retyping with
 the frame allocator's accounting, revocation across spaces and in steps,
 the depth limit, 100,000 random operations with the audit in between, and
-revocation racing derivations on all CPUs, and finally checks that nothing
+revocation racing derivations on all CPUs, every kind of operation on
+all CPUs at once in rounds with the audit between them (ADR 0369), with
+the lock-order checker on, and finally checks that nothing
 leaked from the store, the heap or the frame allocator. On QEMU without
 KVM it takes about a tenth of a second.
 
