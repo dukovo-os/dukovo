@@ -782,7 +782,7 @@ fn start(
         data: &data,
         tmp: &tmp,
         serial: &serial,
-        keyring: served.as_ref().map(super::keyring::Served::folder),
+        keyring: served.as_ref(),
     };
     // Opened before the sandbox takes its slots, as reading anything is.
     let watching = if given.names.is_empty() { None } else { watch(found) };
@@ -807,9 +807,9 @@ pub struct Plan<'a> {
     pub tmp: &'a str,
     /// The serial ports' terminals it is given.
     pub serial: &'a [String],
-    /// The folder of the keyring served for it, which its view holds at
-    /// authd's path.
-    pub keyring: Option<&'a str>,
+    /// The keyring served for it, whose folder its view holds at authd's
+    /// path; the sandbox opens it once it is built.
+    pub keyring: Option<&'a super::keyring::Served>,
 }
 
 #[cfg(not(target_os = "radix"))]
@@ -886,6 +886,11 @@ mod sandbox {
         let slots = Slots { base, view, given, scratch, child, network };
         let number = build_and_start(plan, &slots, &links)?;
         drop(spares);
+        // Only now: a connection taken while the spares were held could
+        // land in one of their slots, which dropping them empties.
+        if let Some(served) = plan.keyring {
+            served.open();
+        }
         let ended = Arc::new(Mutex::new(false));
         let stopping = Arc::new(AtomicBool::new(false));
         let following = watching.and_then(|input| {
@@ -1095,7 +1100,7 @@ mod sandbox {
         attached.map_err(failed("attaching /tmp".into()))?;
         // Its keyring, which the runner serves, where authd is: to reach,
         // not to change.
-        if let Some(folder) = plan.keyring {
+        if let Some(folder) = plan.keyring.map(keyring::Served::folder) {
             let from = folder.trim_start_matches('/');
             directory::open(&SYS, s.base, from.as_bytes(), flags, READ_ONLY, s.scratch, 0)
                 .map_err(failed(format!("opening {folder}")))?;

@@ -15,13 +15,24 @@
 //! the names pass as they are: the app reaches every entry, as your own
 //! programs do.
 //!
+//! The socket is made before the sandbox, whose view holds its folder,
+//! but nothing is taken from it until the runner says so with
+//! [`Served::open`], once the sandbox is built. While it is built, the
+//! runner keeps spare descriptor slots empty to put capabilities in, and
+//! an empty slot is a free descriptor to the C library: a connection
+//! taken then could land in one, and be deleted with the spares. The app
+//! may already be running by then; what it asks waits on the socket.
+//!
 //! Where to start when it misbehaves: `keyring list` outside the sandbox
 //! shows an app's entries as `app ID NAME`. When the runner cannot serve
 //! the keyring it says so on the standard error, and the app runs without
-//! it, finding authd unreachable.
+//! it, finding authd unreachable. When a request fails although authd
+//! did it (a secret kept, but `keyring set` saying it was not), suspect a
+//! descriptor of this thread's that another one closed.
 
 use std::io::{Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
+use std::sync::mpsc::{self, Sender};
 
 use accounts::request::{Answer, REQUEST_MAX, Request};
 use accounts::wipe;
@@ -41,15 +52,26 @@ const ONLY: &str = "an app in a sandbox reaches its keyring alone: it may set, g
                     remove entries, and your keyring is unlocked and locked outside it";
 
 /// The keyring served for one run: its folder and socket go when it is
-/// dropped. The thread serving it ends with the runner.
+/// dropped. The thread serving it ends with the runner, or with this if
+/// it was never opened.
 pub struct Served {
     folder: String,
+    /// Tells the thread to start taking connections.
+    open: Sender<()>,
 }
 
 impl Served {
     /// The folder the sandbox sees at authd's path.
+    #[cfg_attr(not(target_os = "radix"), allow(dead_code))]
     pub fn folder(&self) -> &str {
         &self.folder
+    }
+
+    /// Starts answering the app, once the runner opens nothing more of its
+    /// own while the app runs (see the module's notes).
+    #[cfg_attr(not(target_os = "radix"), allow(dead_code))]
+    pub fn open(&self) {
+        let _ = self.open.send(());
     }
 }
 
@@ -62,23 +84,28 @@ impl Drop for Served {
 
 /// Serves the keyring of the app `id` in `folder`, which the caller made
 /// as theirs alone, mode 0700, so that no one else reaches it; with
-/// `shared`, every entry.
+/// `shared`, every entry. The socket takes connections at once, but they
+/// are answered only after [`Served::open`].
 pub fn serve(folder: String, id: &str, shared: bool) -> Result<Served, String> {
     let path = format!("{folder}/{SOCKET}");
     // One left by a run that ended without removing it.
     let _ = std::fs::remove_file(&path);
     let listener = UnixListener::bind(&path).map_err(|err| format!("{path}: {err}"))?;
-    let served = Served { folder };
     let names = Names { prefix: format!("app {id} "), shared };
+    let (open, opened) = mpsc::channel();
     std::thread::Builder::new()
         .name("keyring".into())
         .spawn(move || {
+            // Dropped unopened: the program never started.
+            if opened.recv().is_err() {
+                return;
+            }
             for stream in listener.incoming().flatten() {
                 answer(stream, &names);
             }
         })
         .map_err(|err| format!("serving its keyring: {err}"))?;
-    Ok(served)
+    Ok(Served { folder, open })
 }
 
 /// How the app's names are the keyring's.
@@ -190,6 +217,31 @@ mod tests {
         assert_eq!(get, Some(Request::KeyringGet { name: "git https://x@y".into() }));
         let listed = Answer::Done("git https://x@y\tapp org.example.notes token".into());
         assert_eq!(shared.told(true, listed.clone()), listed);
+    }
+
+    /// Nothing is answered before the runner opens it, as the sandbox's
+    /// spare slots are held until then; what was asked waits, and is
+    /// answered after.
+    #[test]
+    fn answers_only_once_opened() {
+        use std::time::Duration;
+        let folder = std::env::temp_dir().join(format!("keyring-test-{}", std::process::id()));
+        std::fs::create_dir_all(&folder).unwrap();
+        let served = serve(folder.to_str().unwrap().into(), "org.example.notes", false).unwrap();
+        let mut stream = UnixStream::connect(folder.join(SOCKET)).unwrap();
+        // Not a request: refused without asking authd.
+        stream.write_all(b"not a request\n").unwrap();
+        stream.shutdown(std::net::Shutdown::Write).unwrap();
+        stream.set_read_timeout(Some(Duration::from_millis(300))).unwrap();
+        let mut told = Vec::new();
+        assert!(stream.read_to_end(&mut told).is_err(), "answered before it was opened");
+        served.open();
+        stream.set_read_timeout(None).unwrap();
+        stream.read_to_end(&mut told).unwrap();
+        let line = String::from_utf8(told).unwrap();
+        assert!(matches!(Answer::decode(&line), Answer::Refused(_)), "{line}");
+        drop(served);
+        assert!(!folder.exists(), "its folder outlived it");
     }
 
     #[test]
