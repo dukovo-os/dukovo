@@ -38,6 +38,23 @@ const CONNECTIONS_MAX: usize = 64;
 const IDLE: Duration = Duration::from_mins(15);
 /// The most workers kept: past it, the one called longest ago ends.
 const WORKERS_MAX: usize = 64;
+
+/// Writes `line` to the log, up to ten times a minute. Why a call under
+/// Kerberos was refused is where to start when a mount fails, but a
+/// client can send refused calls without end, and the log is shared.
+fn log_refusal(line: &str) {
+    static LOGGED: Mutex<(u64, u32)> = Mutex::new((0, 0));
+    let since = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH);
+    let minute = since.map_or(0, |since| since.as_secs() / 60);
+    let mut logged = LOGGED.lock().unwrap_or_else(PoisonError::into_inner);
+    if logged.0 != minute {
+        *logged = (minute, 0);
+    }
+    logged.1 += 1;
+    if logged.1 <= 10 {
+        eprintln!("{line}");
+    }
+}
 /// How long a worker may take to answer: a search for a handle through a
 /// large share is the longest.
 const WORKER_TIME: Duration = Duration::from_secs(120);
@@ -239,7 +256,15 @@ fn kerberos<B: Backend>(
                     .then(|| gss::unprotect(&held.context, cred.service, cred.seq, args));
                 (verifier, held.uid, body)
             }
-            Err(Refused::Credential) => return refuse(gss::CREDPROBLEM),
+            Err(Refused::Credential) => {
+                let why = if server.contexts.holds(&cred.handle) {
+                    "its verifier does not check"
+                } else {
+                    "no context has its handle, or its ticket ran out"
+                };
+                log_refusal(&format!("nfsd: Kerberos: refused a call from {peer}: {why}"));
+                return refuse(gss::CREDPROBLEM);
+            }
             Err(Refused::Context) => return refuse(gss::CTXPROBLEM),
             // A replay, or a call the client gave up on: no answer.
             Err(Refused::Dropped) => return None,
@@ -260,6 +285,11 @@ fn kerberos<B: Backend>(
         }
         // Arguments whose seal or signature does not check are garbage
         // too (RFC 2203 5.3.3.4.2).
+        (1, Some(Err(err))) => {
+            let service = cred.service.name();
+            log_refusal(&format!("nfsd: Kerberos: a call from {peer} under {service}: {err:?}"));
+            return Some(reply(rpc::GARBAGE_ARGS).bytes);
+        }
         (1, _) => return Some(reply(rpc::GARBAGE_ARGS).bytes),
         _ => return Some(reply(rpc::PROC_UNAVAIL).bytes),
     };

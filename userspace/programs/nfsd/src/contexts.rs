@@ -215,6 +215,11 @@ impl Contexts {
         self.held.get_mut(handle).map(|held| &mut held.context)
     }
 
+    /// Whether a context has the handle `handle`.
+    pub fn holds(&self, handle: &[u8]) -> bool {
+        self.held.contains_key(handle)
+    }
+
     /// Forgets the context `handle` names, at its client's DESTROY.
     pub fn destroy(&mut self, handle: &[u8]) {
         self.held.remove(handle);

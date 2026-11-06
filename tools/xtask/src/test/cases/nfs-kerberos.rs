@@ -360,10 +360,44 @@ fn alice_shares(vm: &mut Vm) -> Result<(), String> {
     wait_screen(vm, &["(SEC=KRB5P)"], 60)
 }
 
+/// The last `count` lines of `text`, each marked with `from`, for a
+/// failure's message: CI keeps the test's folder only in an artifact,
+/// which is slow to reach, so what the daemons said goes in the job's log.
+fn last_lines(from: &str, text: &str, count: usize) -> String {
+    let lines: Vec<&str> = text.lines().collect();
+    let mut out = String::new();
+    for line in &lines[lines.len().saturating_sub(count)..] {
+        out.push_str(&format!("\n          | {from}: {line}"));
+    }
+    out
+}
+
+/// What rpc.gssd, the KDC and the host's kernel said about the host's
+/// mount, for when it fails.
+fn host_mount_logs(dir: &Path) -> String {
+    let read = |name: &str| std::fs::read_to_string(dir.join(name)).unwrap_or_default();
+    let kernel = run(as_root(&["dmesg"]), "read the kernel's log").map(|(_, text)| text);
+    let rpc: Vec<&str> = match &kernel {
+        Ok(text) => {
+            text.lines().filter(|line| line.contains("RPC") || line.contains("gss")).collect()
+        }
+        Err(_) => Vec::new(),
+    };
+    format!(
+        "{}{}{}",
+        last_lines("gssd", &read("gssd.log"), 30),
+        last_lines("kdc", &read("kdc.log"), 8),
+        last_lines("kernel", &rpc.join("\n"), 30)
+    )
+}
+
 /// The share, which the host's kernel mounts with krb5p through
 /// `forwarded`, reads and writes to; the guest finds the file as alice's.
 fn linux_mounts_dukovo(vm: &mut Vm, host: &Path, forwarded: u16) -> Result<(), String> {
     vm.monitor(&format!("hostfwd_add n0 tcp:127.0.0.1:{forwarded}-:2049"))?;
+    // The kernel's RPC client says why a context or a call failed, in its
+    // log, while this is on (where its kernel has the debugging built in).
+    let _ = as_root(&["rpcdebug", "-m", "rpc", "-s", "auth"]).stdout(Stdio::null()).status();
     let at = host.join("mnt");
     let target = at.to_string_lossy().into_owned();
     // localhost names the guest's service, nfs/localhost, for rpc.gssd;
@@ -377,15 +411,20 @@ fn linux_mounts_dukovo(vm: &mut Vm, host: &Path, forwarded: u16) -> Result<(), S
         match run(as_root(&args), "mount the guest's share with krb5p")? {
             (true, _) => break Mount(target.clone()),
             (false, text) if started.elapsed() > Duration::from_secs(60) => {
+                let logs = host_mount_logs(Path::new(DIR));
+                let _ = as_root(&["rpcdebug", "-m", "rpc", "-c", "auth"])
+                    .stdout(Stdio::null())
+                    .status();
                 return Err(format!(
                     "the host's kernel did not mount the guest's share with krb5p: {}; see \
-                     {DIR}/gssd.log",
+                     {DIR}/gssd.log{logs}",
                     text.trim()
                 ));
             }
             (false, _) => std::thread::sleep(Duration::from_secs(2)),
         }
     };
+    let _ = as_root(&["rpcdebug", "-m", "rpc", "-c", "auth"]).stdout(Stdio::null()).status();
     let read = must(&["cat", &format!("{target}/from-dukovo.txt")], "read the guest's file")?;
     if read != "written on Dukovo\n" {
         return Err(format!("the host read {read:?} from the guest's share"));
