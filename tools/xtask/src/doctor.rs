@@ -458,6 +458,21 @@ fn requirements() -> Vec<Requirement> {
             fallback: None,
         },
         Requirement {
+            name: "Kerberos for Linux's NFS",
+            purpose: "kinit, rpc.gssd and rpc.svcgssd: the nfs-kerberos test's host, whose kernel mounts the guest's share and serves its own with sec=krb5p",
+            found: |_| {
+                let programs = ["/usr/bin/kinit", "/usr/sbin/rpc.gssd", "/usr/sbin/rpc.svcgssd"];
+                let found: Option<Vec<_>> = programs.iter().map(process::find_program).collect();
+                found.map(|found| found[1].display().to_string())
+            },
+            packages: Packages {
+                apt: Some("krb5-user nfs-common"),
+                dnf: Some("krb5-workstation nfs-utils"),
+                pacman: Some("krb5 nfs-utils"),
+            },
+            fallback: None,
+        },
+        Requirement {
             name: "libbde",
             purpose: "bdeinfo, which unlocks the BitLocker volumes of radix-bitlocker's tests as Windows' are unlocked",
             found: |_| program_version("bdeinfo", "-V"),

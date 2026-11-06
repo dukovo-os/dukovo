@@ -19,6 +19,8 @@ use crate::fs::{Made, NfsFs, ROOT};
 use crate::options::{Options, Target};
 use crate::rpc::Cred;
 
+mod kerberos;
+
 /// A fresh folder for a test.
 fn tempdir(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("nfs-test-{name}-{}", std::process::id()));

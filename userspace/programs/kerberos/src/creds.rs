@@ -273,7 +273,8 @@ pub fn destroy(keyring: &mut dyn Keyring) -> Result<usize> {
     Ok(names.len())
 }
 
-/// A keyring in memory, for tests here and in the crates that use this.
+/// A keyring in memory: for tests, and for nfs(1), which holds the
+/// tickets of whoever calls on a mount as authd gives them.
 #[derive(Default)]
 pub struct MemoryKeyring(pub std::collections::BTreeMap<String, Vec<u8>>);
 

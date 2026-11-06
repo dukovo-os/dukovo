@@ -569,19 +569,54 @@ fn random4() -> Result<[u8; 4]> {
     Ok([bytes[0], bytes[1], bytes[2], bytes[3]])
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::crypto::Enctype;
-    use crate::messages::encode_ticket;
+/// Contexts without a KDC, for the tests of what runs on GSS-API: this
+/// crate's, and nfs's and nfsd's, which turn on the `testing` feature.
+#[cfg(any(test, feature = "testing"))]
+pub mod testing {
+    use super::{Context, Initiator, accept};
+    use crate::creds::Credential;
+    use crate::crypto::{Enctype, Key};
+    use crate::keytab;
+    use crate::messages::{Principal, TicketPart, encode_ticket};
+    use crate::time;
 
-    /// A client's credential for `nfs/server@R`, and the keytab that
-    /// opens its ticket, as a KDC would make them.
-    fn setup(enctype: Enctype) -> (Credential, Vec<keytab::Entry>) {
-        let server = Principal::parse("nfs/server.example.org@EXAMPLE.ORG", None).unwrap();
-        let client = Principal::parse("alice@EXAMPLE.ORG", None).unwrap();
-        let service_key = Key::random(Enctype::Aes256Sha1).unwrap();
-        let session = Key::random(enctype).unwrap();
+    /// The service the tests' tickets are for.
+    pub const SERVICE: &str = "nfs/server.example.org@EXAMPLE.ORG";
+
+    /// The version of the service's key the tickets are under.
+    pub const KVNO: u32 = 3;
+
+    /// A ticket for `client` to `service`, with a session key of
+    /// `enctype`, as a KDC would issue it: the client's credential, and
+    /// the service's keytab, which also holds an older key.
+    ///
+    /// # Panics
+    ///
+    /// On a name that does not parse, or no random bytes.
+    pub fn issue(
+        client: &str,
+        service: &str,
+        enctype: Enctype,
+    ) -> (Credential, Vec<keytab::Entry>) {
+        let server = Principal::parse(service, None).expect("a service's name");
+        let service_key = Key::random(Enctype::Aes256Sha1).expect("random bytes");
+        let older = Key::random(Enctype::Aes256Sha1).expect("random bytes");
+        let entry =
+            |kvno, key| keytab::Entry { principal: server.clone(), timestamp: 0, kvno, key };
+        let keytab = vec![entry(KVNO - 1, older), entry(KVNO, service_key)];
+        (ticket(client, &keytab[1], enctype), keytab)
+    }
+
+    /// A ticket for `client` under the service's key `entry`, with a
+    /// session key of `enctype`: another client's, for a keytab that
+    /// [`issue`] made.
+    ///
+    /// # Panics
+    ///
+    /// On a name that does not parse, or no random bytes.
+    pub fn ticket(client: &str, entry: &keytab::Entry, enctype: Enctype) -> Credential {
+        let client = Principal::parse(client, None).expect("a client's name");
+        let session = Key::random(enctype).expect("random bytes");
         let (now, _) = time::now();
         let part = TicketPart {
             flags: 0,
@@ -591,37 +626,49 @@ mod tests {
             starttime: None,
             endtime: now + 3600,
         };
-        let credential = Credential {
+        Credential {
             client,
-            server: server.clone(),
+            server: entry.principal.clone(),
             key: session,
             authtime: now,
             starttime: now,
             endtime: now + 3600,
             renew_till: 0,
             flags: 0,
-            ticket: encode_ticket(&server, &service_key, 3, &part),
-        };
-        let keytab = vec![
-            keytab::Entry {
-                principal: server.clone(),
-                timestamp: 0,
-                kvno: 2,
-                key: Key::random(Enctype::Aes256Sha1).unwrap(),
-            },
-            keytab::Entry { principal: server, timestamp: 0, kvno: 3, key: service_key },
-        ];
-        (credential, keytab)
+            ticket: encode_ticket(&entry.principal, &entry.key, entry.kvno, &part),
+        }
     }
+
+    /// Both sides of a context for alice to [`SERVICE`], set up as
+    /// `wanted` asks: the client's, then the service's.
+    ///
+    /// # Panics
+    ///
+    /// When the context does not set up, which is a bug.
+    pub fn pair(wanted: u32) -> (Context, Context) {
+        let (credential, keytab) = issue("alice@EXAMPLE.ORG", SERVICE, Enctype::Aes256Sha1);
+        let (initiator, token) = Initiator::start(&credential, wanted).expect("a context starts");
+        let (service, answer) = accept(&keytab, &token).expect("the service accepts it");
+        let client = initiator.finish(answer.as_deref()).expect("the client takes the answer");
+        (client, service)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::crypto::Enctype;
+
+    use super::testing::{SERVICE, issue};
 
     /// Both sides' contexts, set up as `wanted` asks.
     fn contexts(enctype: Enctype, wanted: u32) -> (Context, Context) {
-        let (credential, keytab) = setup(enctype);
+        let (credential, keytab) = issue("alice@EXAMPLE.ORG", SERVICE, enctype);
         let (initiator, token) = Initiator::start(&credential, wanted).unwrap();
         let (acceptor, answer) = accept(&keytab, &token).unwrap();
         assert_eq!(acceptor.peer().to_string(), "alice@EXAMPLE.ORG");
         let client = initiator.finish(answer.as_deref()).unwrap();
-        assert_eq!(client.peer().to_string(), "nfs/server.example.org@EXAMPLE.ORG");
+        assert_eq!(client.peer().to_string(), SERVICE);
         (client, acceptor)
     }
 
@@ -680,9 +727,9 @@ mod tests {
 
     #[test]
     fn a_keytab_without_the_tickets_key_is_named() {
-        let (credential, mut keytab) = setup(Enctype::Aes256Sha1);
+        let (credential, mut keytab) = issue("alice@EXAMPLE.ORG", SERVICE, Enctype::Aes256Sha1);
         let (_, token) = Initiator::start(&credential, flags::MUTUAL).unwrap();
-        keytab.retain(|entry| entry.kvno != 3);
+        keytab.retain(|entry| entry.kvno != testing::KVNO);
         let err = accept(&keytab, &token).err().unwrap().to_string();
         assert!(err.contains("another version"), "{err}");
         keytab.clear();
@@ -692,7 +739,7 @@ mod tests {
 
     #[test]
     fn another_services_answer_is_refused() {
-        let (credential, _) = setup(Enctype::Aes256Sha1);
+        let (credential, _) = issue("alice@EXAMPLE.ORG", SERVICE, Enctype::Aes256Sha1);
         let (initiator, _) = Initiator::start(&credential, flags::MUTUAL).unwrap();
         // An answer from a service that never opened the ticket: it does
         // not know the session key.
@@ -710,7 +757,7 @@ mod tests {
 
     #[test]
     fn a_missing_answer_is_refused_when_one_was_asked_for() {
-        let (credential, _) = setup(Enctype::Aes256Sha1);
+        let (credential, _) = issue("alice@EXAMPLE.ORG", SERVICE, Enctype::Aes256Sha1);
         let (initiator, _) = Initiator::start(&credential, flags::MUTUAL).unwrap();
         assert!(initiator.finish(None).is_err());
     }

@@ -785,8 +785,8 @@ impl TicketPart {
 
     /// The EncTicketPart, as a KDC writes it: for tests, which play the
     /// KDC.
-    #[cfg(test)]
-    pub(crate) fn encode(&self) -> Vec<u8> {
+    #[cfg(any(test, feature = "testing"))]
+    pub fn encode(&self) -> Vec<u8> {
         let transited =
             der::sequence(&[der::field(0, &der::integer(1)), der::field(1, &der::octets(b""))]);
         let mut fields = vec![
@@ -807,15 +807,15 @@ impl TicketPart {
 
 /// A Ticket for `server`, its part sealed under `key`: for tests, which
 /// play the KDC.
-#[cfg(test)]
-pub(crate) fn encode_ticket(
-    server: &Principal,
-    key: &Key,
-    kvno: u32,
-    part: &TicketPart,
-) -> Vec<u8> {
+///
+/// # Panics
+///
+/// When no random bytes can be read for the seal.
+#[cfg(any(test, feature = "testing"))]
+pub fn encode_ticket(server: &Principal, key: &Key, kvno: u32, part: &TicketPart) -> Vec<u8> {
     const USAGE_TICKET: u32 = 2;
-    let sealed = Encrypted::seal(key, USAGE_TICKET, &part.encode(), Some(kvno)).unwrap();
+    let sealed =
+        Encrypted::seal(key, USAGE_TICKET, &part.encode(), Some(kvno)).expect("random bytes");
     der::application(
         1,
         &der::sequence(&[

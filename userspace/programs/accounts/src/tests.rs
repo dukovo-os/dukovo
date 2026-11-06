@@ -354,6 +354,7 @@ fn requests_go_and_come_back() {
         Request::KeyringRemove { name: "x".into() },
         Request::KeyringUnlock { password: b"pw".to_vec() },
         Request::KeyringLock,
+        Request::KerberosTickets { uid: 1000 },
     ];
     for request in requests {
         assert_eq!(Request::decode(&request.encode()), Ok(request));

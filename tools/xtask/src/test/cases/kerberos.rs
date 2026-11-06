@@ -7,7 +7,8 @@
 //! Its principals are alice, who must prove herself first
 //! (pre-authentication), bob, who has only an aes128-cts key, and the
 //! service nfs/server.dukovo.test, whose keytab the host serves at
-//! 10.0.2.100 port 80. Alice, signed in, writes krb5.conf through
+//! 10.0.2.100 port 80 (and nfs/localhost, which the nfs-kerberos test
+//! serves instead). Alice, signed in, writes krb5.conf through
 //! elevate; kinit asks for alice's password and keeps the ticket in her
 //! keyring, which klist and keyring list show; a wrong password is
 //! refused and the ticket stays; kvno takes the service's ticket and
@@ -23,8 +24,8 @@ use std::time::{Duration, Instant};
 
 use super::super::*;
 
-/// The test's realm.
-const REALM: &str = "DUKOVO.TEST";
+/// The test's realm, which the nfs-kerberos test also makes.
+pub(super) const REALM: &str = "DUKOVO.TEST";
 
 /// The service whose keytab the guest fetches.
 const SERVICE: &str = "nfs/server.dukovo.test";
@@ -62,7 +63,7 @@ pub const CASE: Case = Case {
 };
 
 /// The KDC, stopped when dropped, so that no test leaves one running.
-struct Kdc(Child);
+pub(super) struct Kdc(Child);
 
 impl Drop for Kdc {
     fn drop(&mut self) {
@@ -72,7 +73,7 @@ impl Drop for Kdc {
 }
 
 /// A port free for both TCP and UDP on the host's loopback.
-fn free_port() -> Result<u16, String> {
+pub(super) fn free_port() -> Result<u16, String> {
     for _ in 0..20 {
         let tcp = std::net::TcpListener::bind("127.0.0.1:0").map_err(|err| err.to_string())?;
         let port = tcp.local_addr().map_err(|err| err.to_string())?.port();
@@ -103,8 +104,10 @@ fn run(mut command: Command, what: &str) -> Result<(), String> {
 }
 
 /// The realm, made afresh in `dir` and served on `port`: its principals,
-/// the service's keytab, and the KDC running.
-fn realm(dir: &Path, port: u16) -> Result<Kdc, String> {
+/// the keytabs of nfs/server.dukovo.test (`nfs.keytab`) and of
+/// nfs/localhost (`localhost.keytab`), a program at `dir/keytab` that
+/// prints the one named `served`, and the KDC running.
+pub(super) fn realm(dir: &Path, port: u16, served: &str) -> Result<Kdc, String> {
     for program in [KRB5KDC, KDB5_UTIL, KADMIN_LOCAL] {
         if !Path::new(program).exists() {
             return Err(format!(
@@ -128,8 +131,12 @@ fn realm(dir: &Path, port: u16) -> Result<Kdc, String> {
         path("kadm5.acl"),
         path("kdc.log"),
     );
-    let krb5_conf =
-        format!("[libdefaults]\n    default_realm = {REALM}\n[realms]\n    {REALM} = {{\n        kdc = 127.0.0.1:{port}\n    }}\n");
+    // The host's programs name services as they are given, without DNS:
+    // server.dukovo.test is no name the host knows.
+    let krb5_conf = format!(
+        "[libdefaults]\n    default_realm = {REALM}\n    dns_canonicalize_hostname = false\n    \
+         rdns = false\n[realms]\n    {REALM} = {{\n        kdc = 127.0.0.1:{port}\n    }}\n"
+    );
     for (name, text) in [("kdc.conf", kdc_conf), ("krb5.conf", krb5_conf), ("kadm5.acl", String::new())] {
         std::fs::write(dir.join(name), text).map_err(|err| format!("writing {name}: {err}"))?;
     }
@@ -141,13 +148,15 @@ fn realm(dir: &Path, port: u16) -> Result<Kdc, String> {
         "addprinc -pw eat-me -e aes128-cts:normal bob".to_string(),
         format!("addprinc -randkey {SERVICE}"),
         format!("ktadd -k {} -e aes256-cts:normal {SERVICE}", path("nfs.keytab")),
+        "addprinc -randkey nfs/localhost".to_string(),
+        format!("ktadd -k {} -e aes256-cts:normal nfs/localhost", path("localhost.keytab")),
     ] {
         let mut kadmin = mit(KADMIN_LOCAL, dir);
         kadmin.args(["-r", REALM, "-q", &query]);
         run(kadmin, &format!("kadmin.local -q \"{query}\""))?;
     }
     let script = dir.join("keytab");
-    std::fs::write(&script, format!("#!/bin/sh\nexec cat {}\n", path("nfs.keytab")))
+    std::fs::write(&script, format!("#!/bin/sh\nexec cat {}\n", path(served)))
         .map_err(|err| format!("writing {}: {err}", script.display()))?;
     std::fs::set_permissions(&script, std::os::unix::fs::PermissionsExt::from_mode(0o755))
         .map_err(|err| format!("making {} a program: {err}", script.display()))?;
@@ -197,7 +206,7 @@ fn kerberos(vm: &mut Vm, case: &Case) -> Result<(), String> {
     let root: PathBuf = std::env::current_dir().map_err(|err| err.to_string())?;
     let dir = root.join(DIR);
     let port = free_port()?;
-    let kdc = realm(&dir, port)?;
+    let kdc = realm(&dir, port, "nfs.keytab")?;
 
     owner_signs_in(vm, case)?;
     vm.expect("authd: keyring of alice: open")?;

@@ -439,6 +439,17 @@ pub enum Request {
     /// Close the asker's keyring now, until they sign in with their
     /// password again or ask [`Request::KeyringUnlock`].
     KeyringLock,
+    /// The Kerberos tickets in the keyring of the person numbered `uid`
+    /// (ADR 0399): nfs(1)'s to ask, which runs as root and calls a server
+    /// with `sec=krb5` as whoever uses the mount, as Linux's rpc.gssd
+    /// reads each person's ticket cache. A person may ask for their own;
+    /// an app in a sandbox may not ask at all. The answer is `ok` and the
+    /// entries named `krb5 ...`, one to a line, each name and its secret
+    /// in hexadecimal with a tab between.
+    KerberosTickets {
+        /// The person's number.
+        uid: u32,
+    },
 }
 
 /// The longest name of an entry in a keyring, in bytes.
@@ -778,6 +789,10 @@ impl Request {
             Request::KeyringRemove { name } => vec![b"keyring-remove", name.as_bytes()],
             Request::KeyringUnlock { password } => vec![b"keyring-unlock", password],
             Request::KeyringLock => vec![b"keyring-lock"],
+            Request::KerberosTickets { uid } => {
+                number = uid.to_string();
+                vec![b"kerberos-tickets", number.as_bytes()]
+            }
         };
         let mut bytes = Vec::new();
         for field in fields {
@@ -1007,6 +1022,10 @@ impl Request {
                 Ok(Request::KeyringUnlock { password: password.to_vec() })
             }
             [b"keyring-lock"] => Ok(Request::KeyringLock),
+            [b"kerberos-tickets", uid] => {
+                let uid = std::str::from_utf8(uid).ok().and_then(|u| u.parse().ok());
+                Ok(Request::KerberosTickets { uid: uid.ok_or_else(malformed)? })
+            }
             _ => Err(malformed()),
         }
     }
@@ -1047,6 +1066,7 @@ impl Request {
             | Request::KeyringList
             | Request::KeyringRemove { .. }
             | Request::KeyringLock
+            | Request::KerberosTickets { .. }
             | Request::Prompts
             | Request::Prompted { .. }
             | Request::Choose { .. }
@@ -1161,6 +1181,7 @@ impl std::fmt::Debug for Request {
             Request::KeyringRemove { name } => write!(f, "KeyringRemove {{ name: {name:?} }}"),
             Request::KeyringUnlock { .. } => write!(f, "KeyringUnlock"),
             Request::KeyringLock => write!(f, "KeyringLock"),
+            Request::KerberosTickets { uid } => write!(f, "KerberosTickets {{ uid: {uid} }}"),
         }
     }
 }

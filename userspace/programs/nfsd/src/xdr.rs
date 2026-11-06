@@ -13,6 +13,7 @@ pub struct Bad;
 pub type Result<T> = core::result::Result<T, Bad>;
 
 /// Reads XDR from a buffer.
+#[derive(Clone)]
 pub struct Reader<'a> {
     bytes: &'a [u8],
     at: usize,

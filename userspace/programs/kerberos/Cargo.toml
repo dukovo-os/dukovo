@@ -23,5 +23,10 @@ sha2 = "0.11.1"
 # ob patches in for Radix (ADR 0192).
 ring = "0.17.14"
 
+[features]
+# gss::testing: contexts without a KDC, for the tests of nfs(1) and
+# nfsd(8), which run RPCSEC_GSS on them.
+testing = []
+
 [lints]
 workspace = true

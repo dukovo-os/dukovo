@@ -151,7 +151,8 @@ impl Config {
     }
 
     /// The realm `host` is in by `[domain_realm]`: its own name first,
-    /// then the nearest `.domain`.
+    /// then the nearest `.domain`, and else the default realm, as MIT's
+    /// library finds it without DNS.
     pub fn realm_of(&self, host: &str) -> Option<String> {
         let host = host.to_ascii_lowercase();
         if let Some((_, realm)) = self.domain_realm.iter().find(|(name, _)| *name == host) {
@@ -165,7 +166,7 @@ impl Config {
             }
             rest = &rest[dot + 1..];
         }
-        None
+        self.default_realm.clone()
     }
 }
 
@@ -320,7 +321,8 @@ includedir /etc/krb5.conf.d/
         assert_eq!(config.realm_of("a.b.Example.Org").as_deref(), Some("EXAMPLE.ORG"));
         assert_eq!(config.realm_of("example.org").as_deref(), Some("EXAMPLE.ORG"));
         assert_eq!(config.realm_of("lab.example.net").as_deref(), Some("LAB.EXAMPLE.NET"));
-        assert_eq!(config.realm_of("other.example.net"), None);
+        assert_eq!(config.realm_of("other.example.net").as_deref(), Some("EXAMPLE.ORG"));
+        assert_eq!(Config::parse("").unwrap().realm_of("nas"), None);
     }
 
     #[test]

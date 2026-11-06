@@ -73,6 +73,41 @@ $ elevate klist -k -e
 `kinit -k -t FILE PRINCIPAL` signs in with a keytab's key instead of a
 password, which shows that the keytab and the KDC agree.
 
+## NFS with Kerberos
+
+Kerberos is how NFS proves who calls, rather than taking the client's
+word: `sec=krb5` checks each person's ticket, `krb5i` also signs each
+call and reply, and `krb5p` also seals them, so the network sees
+nothing of the files. Use `krb5p` unless a server cannot.
+
+To mount a folder a server shares with Kerberos, take a ticket and
+mount by the server's name, which its service `nfs/NAME` is named by:
+
+```
+$ kinit
+$ mkdir ~/home
+$ elevate mount -t nfs -o sec=krb5p nas.example.org:/srv/home ~/home
+```
+
+Each person's calls go under their own ticket from then on: someone who
+has none, or whose ticket ran out, is refused until they `kinit`. If the
+name does not resolve, add `addr=` with the server's address; the name
+still names the service.
+
+To share a folder with Kerberos, the machine needs the keytab of its
+own `nfs/NAME` (above), where `NAME` is how clients name it. Then:
+
+```
+$ elevate share add --nfs 192.168.1.0/24 --nfs-sec krb5p Home /users/alice
+$ elevate share nfs on
+```
+
+A Linux client mounts it with `mount -t nfs4 -o sec=krb5p NAME:/Home
+/mnt`, with rpc.gssd running and a ticket of the person's. A principal
+of one part in the machine's realm, `alice@EXAMPLE.ORG`, is served as
+the account of that name; any other, the client machine's own among
+them, as no one. nfsd(8) and nfs(1) say more.
+
 ## Troubleshooting
 
 - **"no KDC answered"**: the error names each KDC and why. A refused
@@ -92,5 +127,19 @@ password, which shows that the keytab and the KDC agree.
   -randkey`.
 - **"your keyring is locked"**: kinit keeps the tickets in your keyring;
   `keyring unlock` opens it.
+- **An NFS mount says "Permission denied"**: the person has no ticket,
+  or it ran out: `klist` shows, `kinit` takes another. "the server
+  refused ...'s ticket" means the server has no key for the ticket's
+  version: its keytab is out of date (`klist -k` there, `kvno
+  nfs/NAME` here).
+- **"the server takes another security flavor for this folder"**: the
+  share takes Kerberos and the mount did not ask for it, or the other way
+  round: mount with the `sec=` the share lists (`share list` shows it on
+  Dukovo, `exportfs -v` on Linux).
+- **A Linux client's mount of a Dukovo share hangs or is refused**:
+  nfsd's log names each context it refused (`log nfsd`), most often a
+  keytab without the key for the name the client used; on the client,
+  rpc.gssd's log (`journalctl -u rpc-gssd`) says which ticket it looked
+  for.
 - **What the KDC saw**: its log records each request and why it refused
   one; MIT's is the file `[logging]` names in its kdc.conf.

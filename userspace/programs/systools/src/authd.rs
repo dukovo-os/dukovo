@@ -711,6 +711,9 @@ impl Authd {
                 | Request::KeyringRemove { .. }
                 | Request::KeyringUnlock { .. }
                 | Request::KeyringLock => self.keyring(&files, &request, peer, now),
+                Request::KerberosTickets { uid } => {
+                    (self.kerberos_tickets(&files, *uid, peer), now)
+                }
                 Request::EndShares => {
                     if peer.is_root() {
                         let ended = self.end_shares(None);
