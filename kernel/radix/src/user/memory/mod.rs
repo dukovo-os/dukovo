@@ -12,8 +12,8 @@
 //!
 //! A program never sees what a frame's memory held before: frames are
 //! zeroed before anything maps them. Retyping records new frames under the
-//! capability store's lock, and the thread that retyped them zeroes them
-//! after letting go of it, in steps of [`ZERO_STEP`] pages, before its
+//! capability store's locks, and the thread that retyped them zeroes them
+//! after letting go of them, in steps of [`ZERO_STEP`] pages, before its
 //! call returns; a thread that maps one sooner zeroes what is left itself
 //! ([`FrameObject::zero`]). Deleting a frame part-way waits for the step
 //! under way and stops the rest, before its memory can go back. So a large
@@ -53,7 +53,7 @@ use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use radix_abi::address_space::{ANONYMOUS_TOP, PAGE_SIZE};
 use radix_abi::capability::Rights as AbiRights;
 use radix_abi::errors::Kernel;
-use radix_cap::ObjectId;
+use radix_cap::{CapError, ObjectId};
 use radix_hal::{MapPageError, PageEdit, UserAccess, UserMode};
 use radix_ipc::range::user_pages;
 use radix_mm::{Flags, HEAP, Kmalloc};
@@ -65,7 +65,6 @@ use super::device::DevicePages;
 use super::ring::RingRef;
 use super::{Result, error};
 use crate::Arch;
-use crate::caps::Locked;
 use crate::domains::DomainRef;
 
 /// An address space, shared.
@@ -627,8 +626,8 @@ impl FrameObject {
 
     /// Zeroes the pages not zeroed yet, a step of [`ZERO_STEP`] pages at a
     /// time, unless the frame closes first. Returns whether every page is
-    /// zero. Never called with the capability store's lock held: closing
-    /// holds it and waits for the step under way.
+    /// zero. Never called with any of the capability store's locks held:
+    /// closing holds them and waits for the step under way.
     pub fn zero(&self) -> bool {
         loop {
             if self.zeroed.load(Ordering::Acquire) == self.pages {
@@ -697,7 +696,7 @@ impl FrameObject {
     }
 
     /// Its last capability is gone: stops zeroing it, then unmaps it from
-    /// every address space. Called with the capability store's lock held,
+    /// every address space. Called with the capability store's locks held,
     /// before its memory can go back to be retyped again.
     pub fn close(frame: &FrameRef) {
         // A step of zeroing under way ends first, and none starts after:
@@ -757,13 +756,13 @@ pub fn cap_rights(rights: AbiRights) -> radix_cap::Rights {
     radix_cap::Rights::from_bits_truncate(rights.bits() as u16)
 }
 
-/// Makes the frame object for a frame `store` just retyped: `id`, and
-/// its extent's first page frame and pages. Called with the store locked,
-/// so the object is recorded before any capability to it can be used; it
-/// is zeroed later ([`FrameObject::zero`]), and returned for that.
-pub fn frame_made(store: &mut Locked, id: ObjectId, base: u64, pages: u64) -> Result<FrameRef> {
-    let frame = FrameObject::new(base * PAGE_SIZE, pages).ok_or(error(Kernel::NoMemory))?;
-    super::objects::insert(store, id, super::objects::Object::Frame(frame.clone()))
-        .map_err(|_| error(Kernel::NoMemory))?;
+/// Makes and records the frame object for a frame the store is retyping:
+/// `id`, and its extent's first page frame and pages. Called before its
+/// capability is placed (`Tree::retype`'s `record`), so the object is
+/// recorded before any capability to it can be used; it is zeroed later
+/// ([`FrameObject::zero`]), and returned for that.
+pub fn frame_made(id: ObjectId, base: u64, pages: u64) -> core::result::Result<FrameRef, CapError> {
+    let frame = FrameObject::new(base * PAGE_SIZE, pages).ok_or(CapError::NoMemory)?;
+    super::objects::record(id, &mut Some(super::objects::Object::Frame(frame.clone())), None)?;
     Ok(frame)
 }

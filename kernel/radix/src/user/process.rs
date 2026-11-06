@@ -29,9 +29,9 @@
 //!
 //! Finishing needs the capability store, so a process that ends because
 //! the store released it (its last capability went, under the store's
-//! lock) is finished when the store's current change is done, before the
-//! lock goes ([`finish_pending`], from `caps::with`). Processes waiting to
-//! be finished are linked through themselves, so ending one never needs
+//! locks) is finished once the change is done and the locks have gone
+//! ([`finish_pending`], from `caps::finish`). Processes waiting to be
+//! finished are linked through themselves, so ending one never needs
 //! memory.
 //!
 //! Since Phase 8 a process also has a POSIX side (`posix`): its place in
@@ -39,12 +39,12 @@
 //! or one `exec` starts after `create`, does not end with its maker: its
 //! parent waits for it instead. Telling the parent that a process has
 //! finished may send signals, which may end more processes, so a process
-//! finished with the store locked tells it once the lock has gone
-//! ([`report_finished`]).
+//! [`finish_pending`] finished tells it after the rest of the store's
+//! change is finished ([`report_finished`]).
 //!
-//! Lock order: the capability store, then a process's POSIX state, then
-//! its state, then a thread's signals, then a thread's scheduler state
-//! (`sched::wake`).
+//! Lock order: the capability store's locks, then a process's POSIX
+//! state, then its state, then a thread's signals, then a thread's
+//! scheduler state (`sched::wake`).
 
 use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
@@ -79,7 +79,7 @@ use super::{
     Result, UserRef, UserThread, cap_error, default_window, error, set_ready, thread_main,
 };
 use crate::Arch;
-use crate::caps::{self, Locked};
+use crate::caps;
 use crate::domains::DomainRef;
 use crate::fs::trace::TraceRef;
 use crate::sched::{self, Name, Options, SpawnError, ThreadRef, wait};
@@ -263,50 +263,40 @@ pub fn create(
     let mut threads = Vec::new_in(HEAP.with(Flags::ATOMIC));
     threads.try_reserve(1).map_err(|_| error(Kernel::NoMemory))?;
     let posix = PosixState::new().ok_or(error(Kernel::NoMemory))?;
-    caps::with(|store| -> Result<ProcessRef> {
-        objects::reserve(store, 2).map_err(|_| error(Kernel::NoMemory))?;
-        let cspace = store.create_space(slots).map_err(cap_error)?;
-        let keep = match store.create_space(KEEP_SLOTS + 1) {
-            Ok(keep) => keep,
-            Err(err) => {
-                let _ = store.destroy_space(cspace);
-                return Err(cap_error(err));
-            }
-        };
-        let undo = |store: &mut Locked| {
-            let _ = store.destroy_space(cspace);
-            let _ = store.destroy_space(keep);
-        };
-        let made = (|| {
-            let id =
-                store.create(SlotRef::new(keep, 0), ObjectKind::AddressSpace).map_err(cap_error)?;
-            objects::insert(store, id, Object::Space(space.clone()))
-                .map_err(|_| error(Kernel::NoMemory))?;
-            let identity = maker.map_or(Identity::ROOT, ProcessObject::identity);
-            let process =
-                allocate(name, cspace, keep, space, account, threads, on_exit, posix, identity)?;
-            // Before its capability exists, so that a failure leaves
-            // nothing to undo but the spaces.
-            if let Some(maker) = maker {
-                maker.made_one(&process)?;
-            }
-            let at = at.unwrap_or(SlotRef::new(cspace, startup::SLOT_PROCESS));
-            let id = store.create(at, ObjectKind::Process).map_err(cap_error)?;
-            // Room was reserved above, so this cannot fail.
-            if objects::insert_charged(store, id, Object::Process(process.clone()), charge).is_err()
-            {
-                let _ = store.delete(at);
-                return Err(error(Kernel::NoMemory));
-            }
-            Ok(process)
-        })();
-        if made.is_err() {
-            undo(store);
+    // Nobody can name the new spaces until the process's capability is
+    // placed, last, so they are made one change after another.
+    let store = caps::store().map_err(cap_error)?;
+    let cspace = store.create_space(slots).map_err(cap_error)?;
+    let keep = match store.create_space(KEEP_SLOTS + 1) {
+        Ok(keep) => keep,
+        Err(err) => {
+            let _ = caps::destroy_space(cspace);
+            return Err(cap_error(err));
         }
-        made
-    })
-    .map_err(cap_error)
-    .and_then(|made| made)
+    };
+    let made = (|| {
+        let kind = ObjectKind::AddressSpace;
+        let mut object = Some(Object::Space(space.clone()));
+        objects::create(SlotRef::new(keep, 0), kind, kind.rights(), &mut object, None)?;
+        let identity = maker.map_or(Identity::ROOT, ProcessObject::identity);
+        let process =
+            allocate(name, cspace, keep, space, account, threads, on_exit, posix, identity)?;
+        // Before its capability exists, so that a failure leaves nothing
+        // to undo but the spaces.
+        if let Some(maker) = maker {
+            maker.made_one(&process)?;
+        }
+        let at = at.unwrap_or(SlotRef::new(cspace, startup::SLOT_PROCESS));
+        let kind = ObjectKind::Process;
+        let mut object = Some(Object::Process(process.clone()));
+        objects::create(at, kind, kind.rights(), &mut object, charge)?;
+        Ok(process)
+    })();
+    if made.is_err() {
+        let _ = caps::destroy_space(cspace);
+        let _ = caps::destroy_space(keep);
+    }
+    made
 }
 
 /// Makes the object of a process `create` is making, on the heap. Kept out
@@ -640,15 +630,13 @@ impl ProcessObject {
         }
         // Held throughout, so that two calls charge the slots once.
         let mut grown = self.grown.lock();
-        let now =
-            caps::with(|store| store.slots(self.cspace)).and_then(|n| n).map_err(cap_error)?;
+        let store = caps::store().map_err(cap_error)?;
+        let now = store.slots(self.cspace).map_err(cap_error)?;
         if slots <= now {
             return Ok(now);
         }
         let charge = Account::charge(&self.account, u64::from(slots - now) * SLOT_BYTES as u64)?;
-        let got = caps::with(|store| store.grow_space(self.cspace, slots))
-            .and_then(|n| n)
-            .map_err(cap_error)?;
+        let got = store.grow_space(self.cspace, slots).map_err(cap_error)?;
         match grown.as_mut() {
             Some(total) => total.absorb(charge),
             None => *grown = Some(charge),
@@ -832,7 +820,7 @@ impl ProcessObject {
     /// finished now if none is left to.
     pub fn exit(&self, code: u64) {
         if self.end(code) {
-            self.finish(None, None);
+            self.finish(false, None);
         }
     }
 
@@ -905,7 +893,7 @@ impl ProcessObject {
         drop(gone);
         wait::wake_all(self.threads_key());
         if finish {
-            self.finish(None, Some(me));
+            self.finish(false, Some(me));
         } else {
             sched::leave_domain(me);
         }
@@ -913,11 +901,11 @@ impl ProcessObject {
 
     /// Finishes ending it: ends the processes made for it, empties both
     /// its capability spaces, lets go of its address space, and tells
-    /// whoever asked. With `store`, the caller holds the store's lock
-    /// (`finish_pending`). `last` is its last thread, ending, if that is
-    /// the caller.
-    fn finish(&self, store: Option<&mut Locked>, last: Option<&ThreadRef>) {
-        let locked = store.is_some();
+    /// whoever asked. `pending` says [`finish_pending`] is the caller,
+    /// which finishes what this releases and has the parent told
+    /// afterwards. `last` is its last thread, ending, if that is the
+    /// caller.
+    fn finish(&self, pending: bool, last: Option<&ThreadRef>) {
         if self.has_record_locks() {
             crate::fs::locks::process_gone(self.number, None);
         }
@@ -926,7 +914,7 @@ impl ProcessObject {
         // a long line of processes made for each other is finished one
         // after another and never in a deepening recursion: the store's
         // next change finishes them (here `caps::destroy_space` below, or
-        // with the store's lock held, the rest of `finish_pending`).
+        // the rest of `finish_pending`'s loop).
         let made = self.made.lock().take();
         let made_here = made.iter().flatten().filter_map(Weak::upgrade);
         // A POSIX child is its parent's to wait for instead.
@@ -936,15 +924,17 @@ impl ProcessObject {
             }
         }
         drop(made);
-        match store {
-            Some(store) => {
-                let _ = store.destroy_space(self.cspace);
-                let _ = store.destroy_space(self.keep);
+        if pending {
+            // Without `caps::destroy_space`'s own finishing of what it
+            // releases, which would recurse: `finish_pending`'s loop
+            // finishes it.
+            if let Ok(store) = caps::store() {
+                let _ = store.destroy_space(self.cspace, &mut caps::release);
+                let _ = store.destroy_space(self.keep, &mut caps::release);
             }
-            None => {
-                let _ = caps::destroy_space(self.cspace);
-                let _ = caps::destroy_space(self.keep);
-            }
+        } else {
+            let _ = caps::destroy_space(self.cspace);
+            let _ = caps::destroy_space(self.keep);
         }
         // Its memory goes now, before its parent hears of the end. Its
         // threads' own references keep the empty space while they finish
@@ -978,9 +968,9 @@ impl ProcessObject {
         if let Some(on_exit) = self.on_exit {
             on_exit(self, code);
         }
-        // With the store locked, `finish_pending` has its parent told once
-        // the lock has gone.
-        if !locked {
+        // `finish_pending`'s caller has its parent told afterwards
+        // ([`report_finished`]).
+        if !pending {
             posix::exited(self);
         }
     }
@@ -988,8 +978,8 @@ impl ProcessObject {
 
 /// The store released a process: its last capability is gone, so it
 /// ends, with `EXIT_STOPPED` unless it was ending already. Called with
-/// the store locked: if it is to be finished now, [`finish_pending`]
-/// does that before the lock goes.
+/// the store's locks held: if it is to be finished now, [`finish_pending`]
+/// does that once they have gone.
 pub fn released(process: ProcessRef) {
     if process.end(EXIT_STOPPED) {
         push_pending(process);
@@ -1005,10 +995,10 @@ fn push_pending(process: ProcessRef) {
     ANY_PENDING.store(true, Ordering::Release);
 }
 
-/// Finishes the processes the store released, with the store locked:
-/// `caps::with` calls it after every change. Finishing one may release
-/// more, which are finished too.
-pub fn finish_pending(store: &mut Locked) {
+/// Finishes the processes the store released: `caps::finish` calls it
+/// after every change, once the store's locks have gone. Finishing one
+/// may release more, which are finished too, in this same loop.
+pub fn finish_pending() {
     if !ANY_PENDING.load(Ordering::Acquire) {
         return;
     }
@@ -1024,7 +1014,7 @@ pub fn finish_pending(store: &mut Locked) {
         };
         match next {
             Some(process) => {
-                process.finish(Some(store), None);
+                process.finish(true, None);
                 push_finished(process);
             }
             None => return,
@@ -1032,13 +1022,13 @@ pub fn finish_pending(store: &mut Locked) {
     }
 }
 
-/// The first of the processes finished with the store locked, whose
-/// parents are still to hear of it, linked through their `pending`.
+/// The first of the processes [`finish_pending`] finished, whose parents
+/// are still to hear of it, linked through their `pending`.
 static FINISHED: SpinLock<Option<ProcessRef>> = SpinLock::new(None);
 /// Whether any process waits in [`FINISHED`].
 static ANY_FINISHED: AtomicBool = AtomicBool::new(false);
 
-/// Puts `process`, finished with the store locked, on the list
+/// Puts `process`, which [`finish_pending`] finished, on the list
 /// [`report_finished`] reports.
 fn push_finished(process: ProcessRef) {
     let mut first = FINISHED.lock();
@@ -1047,8 +1037,8 @@ fn push_finished(process: ProcessRef) {
     ANY_FINISHED.store(true, Ordering::Release);
 }
 
-/// Tells the parents of the processes finished with the store locked
-/// (`posix::exited`). Called by `caps::with` once the lock has gone.
+/// Tells the parents of the processes [`finish_pending`] finished
+/// (`posix::exited`). Called by `caps::finish`, after the rest.
 pub fn report_finished() {
     if !ANY_FINISHED.load(Ordering::Acquire) {
         return;
@@ -1073,13 +1063,8 @@ pub fn install_charged(
     object: Object,
     charge: Option<Charge>,
 ) -> Result<()> {
-    caps::with(|store| -> Result<()> {
-        objects::reserve(store, 1).map_err(|_| error(Kernel::NoMemory))?;
-        let id = store.create(at, kind).map_err(cap_error)?;
-        objects::insert_charged(store, id, object, charge).map_err(|_| error(Kernel::NoMemory))
-    })
-    .map_err(cap_error)
-    .and_then(|made| made)
+    let mut object = Some(object);
+    objects::create(at, kind, kind.rights(), &mut object, charge).map(|_| ())
 }
 
 /// Makes an object of `kind` with its original capability in `at`.
@@ -1134,17 +1119,13 @@ pub fn method(
             let a = process::AddressSpaceArgs::decode(args)?;
             let how =
                 Derivation { rights: ObjectKind::AddressSpace.rights(), badge: None, range: None };
-            caps::with(|store| store.derive(SlotRef::new(target.keep, 0), at(a.to), how))
-                .and_then(|done| done)
-                .map_err(cap_error)?;
+            caps::derive(SlotRef::new(target.keep, 0), at(a.to), how).map_err(cap_error)?;
             answer(label, 0, [0; 8])
         }
         process::GIVE => {
             let a = process::GiveArgs::decode(args)?;
             let to = SlotRef::new(target.cspace, a.to);
-            caps::with(|store| store.move_cap(at(a.from), to))
-                .and_then(|done| done)
-                .map_err(cap_error)?;
+            caps::move_cap(at(a.from), to).map_err(cap_error)?;
             answer(label, 0, [0; 8])
         }
         process::SHARE => {
@@ -1155,9 +1136,7 @@ pub fn method(
                 range: None,
             };
             let to = SlotRef::new(target.cspace, a.to);
-            caps::with(|store| store.derive(at(a.from), to, how))
-                .and_then(|done| done)
-                .map_err(cap_error)?;
+            caps::derive(at(a.from), to, how).map_err(cap_error)?;
             answer(label, 0, [0; 8])
         }
         process::KEEP => {
@@ -1306,9 +1285,10 @@ pub fn create_in(maker: &ProcessRef, domain: DomainRef, slots: u32, to: SlotRef)
 }
 
 /// `process.keep`: moves the capability in `from` to the first free slot
-/// among `target`'s kept ones.
+/// among `target`'s kept ones, with both spaces locked, so that two keeps
+/// at once find different slots.
 pub fn keep(target: &ProcessObject, from: SlotRef) -> Result<()> {
-    caps::with(|store| -> Result<()> {
+    caps::with_tree(&[from.space, target.keep], |store| -> Result<()> {
         for slot in 1..=KEEP_SLOTS {
             let to = SlotRef::new(target.keep, slot);
             match store.get(to) {

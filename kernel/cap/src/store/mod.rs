@@ -224,7 +224,6 @@ impl fmt::Display for Inconsistency {
     }
 }
 
-
 /// Spaces in each block of the space table.
 const BLOCK: usize = 256;
 
@@ -263,18 +262,32 @@ fn bump(generation: u32) -> u32 {
     generation.wrapping_add(1).max(1)
 }
 
+/// Makes `vec` `len` long with values from `value`, in room reserved
+/// already: the kernel builds `alloc` without the infallible methods that
+/// would do this (ADR 0017).
+fn fill<T, A: Allocator>(vec: &mut Vec<T, A>, len: usize, mut value: impl FnMut() -> T) {
+    debug_assert!(vec.capacity() >= len, "room is reserved before a fill");
+    while vec.len() < len {
+        if vec.push_within_capacity(value()).is_err() {
+            break;
+        }
+    }
+}
+
 impl<A: Allocator + Clone> Capabilities<A> {
-    /// An empty store whose memory comes from `alloc`.
-    pub fn new(alloc: A) -> Self {
-        let mut blocks = Vec::with_capacity_in(BLOCKS, alloc.clone());
-        blocks.resize_with(BLOCKS, Once::new);
-        Capabilities {
+    /// An empty store whose memory comes from `alloc`. Fails if there is
+    /// no memory for its table of space blocks, a few tens of KiB.
+    pub fn new(alloc: A) -> Result<Self, CapError> {
+        let mut blocks = Vec::new_in(alloc.clone());
+        blocks.try_reserve_exact(BLOCKS).map_err(|_| CapError::NoMemory)?;
+        fill(&mut blocks, BLOCKS, Once::new);
+        Ok(Capabilities {
             tree: Mutex::new(Forest { spaces: Vec::new_in(alloc.clone()), free: None }),
             blocks,
             objects: Mutex::new(Objects::new(alloc.clone())),
             version: AtomicU64::new(0),
             alloc,
-        }
+        })
     }
 
     // ---- The locks ----
@@ -299,7 +312,8 @@ impl<A: Allocator + Clone> Capabilities<A> {
         for _ in 0..BLOCK {
             // Every space's lock is made on this line: one class for the
             // lock-order checker.
-            let state = SpaceState { generation: 1, live: false, slots: Vec::new_in(self.alloc.clone()) };
+            let state =
+                SpaceState { generation: 1, live: false, slots: Vec::new_in(self.alloc.clone()) };
             let _ = block.push_within_capacity(Space { state: Mutex::new(state) });
         }
         // Only the tree lock's holder makes blocks, so nobody else can

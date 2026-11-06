@@ -40,7 +40,7 @@ use radix_hal::{CpuLocal, MAX_CPUS, Smp, Timer};
 use radix_klog::{error, info};
 use radix_mm::{FRAMES, HEAP, Owner};
 
-use crate::caps::{self, Locked};
+use crate::caps::{self, Store};
 use crate::{Arch, work};
 
 /// What went wrong, and the error the store gave if that was the surprise.
@@ -74,9 +74,12 @@ fn ensure(condition: bool, what: &'static str) -> Check {
     if condition { Ok(()) } else { fail(what) }
 }
 
-/// Runs `f` on the store with its lock held.
-fn op<R>(f: impl FnOnce(&mut Locked) -> Result<R, CapError>) -> Result<R, CapError> {
-    caps::with(f).and_then(|result| result)
+/// Runs `f` on the store, whose methods take the locks they need, then
+/// finishes what it released.
+fn op<R>(f: impl FnOnce(&Store) -> Result<R, CapError>) -> Result<R, CapError> {
+    let result = caps::store().and_then(f);
+    caps::finish();
+    result
 }
 
 fn ok<T>(result: Result<T, CapError>, what: &'static str) -> Check<T> {
@@ -101,7 +104,7 @@ fn refused<T>(
 }
 
 fn audit() -> Check {
-    match caps::with(|store| store.audit()) {
+    match caps::store().map(Store::audit) {
         Ok(Ok(_)) => Ok(()),
         Ok(Err(inconsistency)) => {
             error!("selftest caps: the audit found: {inconsistency}");
@@ -148,10 +151,10 @@ pub fn run() {
     info!(
         "selftest caps: forging, widening, badges, sealing, ranges, memory, revocation, random and concurrent operations"
     );
-    let census = |store: &mut Locked| store.census();
+    let census = || caps::store().map(Store::census);
     let frames = || FRAMES.owner_pages(Owner::Memory);
     HEAP.drain();
-    let before = (caps::with(census).ok(), frames(), HEAP.stats());
+    let before = (census().ok(), frames(), HEAP.stats());
     let started = Arch::now_ns();
     let mut tally = Tally::default();
     let result = forging(&mut tally)
@@ -169,7 +172,7 @@ pub fn run() {
         return;
     }
     HEAP.drain();
-    let after = (caps::with(census).ok(), frames(), HEAP.stats());
+    let after = (census().ok(), frames(), HEAP.stats());
     let millis = (Arch::now_ns() - started) / 1_000_000;
     if after.0 != before.0 {
         error!("selftest caps: failed; capabilities or objects are left in the store");
@@ -459,7 +462,8 @@ fn memory(tally: &mut Tally) -> Check {
         "the memory object's pages are not accounted",
     )?;
     let extent = ok(
-        caps::with(|store| store.object(memory))
+        caps::store()
+            .map(|store| store.object(memory))
             .ok()
             .flatten()
             .and_then(|info| info.extent)
@@ -529,7 +533,7 @@ fn memory(tally: &mut Tally) -> Check {
         if let Ok(cap) = get(at(a, slot))
             && let Some(id) = cap.id()
         {
-            let info = caps::with(|store| store.object(id)).ok().flatten();
+            let info = caps::store().map(|store| store.object(id)).ok().flatten();
             let Some(own) = info.and_then(|info| info.extent) else {
                 return fail("a retyped object has no extent");
             };
@@ -560,7 +564,7 @@ fn memory(tally: &mut Tally) -> Check {
     // Revoking the memory takes everything made from it, and it can be
     // used again from the start.
     ok(caps::revoke(at(a, 0)), "a revoke was refused")?;
-    let info = caps::with(|store| store.object(memory)).ok().flatten();
+    let info = caps::store().map(|store| store.object(memory)).ok().flatten();
     ensure(
         info.is_some_and(|info| info.children == 0 && info.watermark == 0),
         "revoked memory is still in use",
@@ -576,7 +580,7 @@ fn memory(tally: &mut Tally) -> Check {
         "a memory object's pages were not given back",
     )?;
     ensure(
-        caps::with(|store| store.object(memory)).ok().flatten().is_none(),
+        caps::store().map(|store| store.object(memory)).ok().flatten().is_none(),
         "a memory object outlived its capabilities",
     )?;
     audit()
@@ -614,7 +618,7 @@ fn revocation(tally: &mut Tally) -> Check {
     // A revoke in steps: in between, nothing below the top can be used to
     // derive, and the top cannot move.
     let top = at(spaces[0], 0);
-    let step = ok(op(|store| store.revoke(top, 20)), "a revoke was refused")?;
+    let step = ok(op(|store| store.revoke(top, 20, &mut caps::release)), "a revoke was refused")?;
     ensure(step == Progress::More, "a revoke of 250 capabilities finished in one step of 20")?;
     let n = &mut tally.widenings;
     for &(space, slot) in &placed[1..] {
@@ -740,7 +744,7 @@ fn random(tally: &mut Tally) -> Check {
         // Whatever was made grants no more than what it was made from.
         if result.is_ok() && (10..62).contains(&roll) {
             let made = if (40..54).contains(&roll) { c } else { b };
-            let pair = caps::with(|store| {
+            let pair = caps::store().map(|store| {
                 let parent = store.parent(made).ok().flatten()?;
                 Some((store.get(made).ok()?, store.get(parent).ok()?))
             });

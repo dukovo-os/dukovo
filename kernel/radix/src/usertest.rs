@@ -155,8 +155,8 @@ struct Census {
 /// The census, once every group has gone: a space, capability or object a
 /// program's end missed shows up as a difference.
 fn census() -> Option<Census> {
-    let (store, registered) =
-        caps::with(|locked| (locked.census(), user::objects::census(&locked.registry))).ok()?;
+    let store = caps::store().ok()?.census();
+    let registered = user::objects::census();
     Some(Census { spaces: store.spaces, caps: store.caps, objects: store.objects, registered })
 }
 
@@ -377,7 +377,7 @@ pub fn fuzz() {
     if finished < fuzzers / 2 {
         outcome.fail(format_args!("only {finished} of {fuzzers} fuzzers got through their calls"));
     }
-    match caps::with(|store| store.audit().map(|_| ())) {
+    match caps::store().map(|store| store.audit().map(|_| ())) {
         Ok(Ok(())) => {}
         Ok(Err(problem)) => outcome.fail(format_args!("the capability store's audit: {problem}")),
         Err(err) => outcome.fail(format_args!("no capability store: {err}")),

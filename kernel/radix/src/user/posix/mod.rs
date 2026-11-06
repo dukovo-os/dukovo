@@ -630,11 +630,8 @@ pub fn method(
         process::SLOTS_USED => {
             let a = process::SlotsUsedArgs::decode(args)?;
             let cspace = me.cspace();
-            let (used, slots) =
-                caps::with(|store| -> core::result::Result<_, radix_cap::CapError> {
-                    Ok((store.used_slots(cspace, a.first)?, store.slots(cspace)?))
-                })
-                .and_then(|found| found)
+            let (used, slots) = caps::store()
+                .and_then(|store| Ok((store.used_slots(cspace, a.first)?, store.slots(cspace)?)))
                 .map_err(cap_error)?;
             let results = process::SlotsUsedResults { used, slots };
             answer(label, process::SlotsUsedResults::WORDS, results.encode())

@@ -56,9 +56,7 @@ pub fn fork(user: &UserRef, label: u32) -> Result<u64> {
     Arch::set_results(&mut regs, &SyscallRegs { number: 0, args: reply.encode() });
     let thread_pointer = Arch::thread_pointer(&regs);
 
-    let slots = caps::with(|store| store.slots(parent.cspace()))
-        .and_then(|slots| slots)
-        .map_err(cap_error)?;
+    let slots = caps::store().and_then(|store| store.slots(parent.cspace())).map_err(cap_error)?;
     let charge = Account::charge(parent.account(), process::bytes_of(slots))?;
     let account = Account::new(parent.account().domain().clone()).ok_or(error(Kernel::NoMemory))?;
     let name = parent.name();
@@ -141,10 +139,14 @@ fn abandon(child: &ProcessRef) {
     child.exit(EXIT_STOPPED);
 }
 
-/// Gives `child` copies of `parent`'s capabilities, as [`fork`] says.
+/// Gives `child` copies of `parent`'s capabilities, as [`fork`] says, as
+/// one change: the four spaces stay locked throughout, so the child gets
+/// the parent's capabilities as they were at one moment, as Linux copies
+/// a descriptor table under its lock.
 fn copy_capabilities(parent: &ProcessObject, child: &ProcessObject, slots: u32) -> Result<()> {
     let (from_space, to_space) = (parent.cspace(), child.cspace());
-    caps::with(|store| -> core::result::Result<(), CapError> {
+    let spaces = [from_space, to_space, parent.keep_space(), child.keep_space()];
+    caps::with_tree(&spaces, |store| -> core::result::Result<(), CapError> {
         let mut first = 0;
         while first < slots {
             let mut used = store.used_slots(from_space, first)?;

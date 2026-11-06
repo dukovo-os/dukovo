@@ -25,10 +25,24 @@ struct Copied<A: Allocator> {
 impl<A: Allocator + Clone> Capabilities<A> {
     /// Counts what the store holds.
     pub fn census(&self) -> Census {
-        let forest = self.tree.lock();
+        self.count(true).unwrap_or_default()
+    }
+
+    /// Counts what the store holds, as [`Capabilities::census`] does, but
+    /// gives up rather than wait for a lock: for a debugger, which may have
+    /// stopped the CPU that holds one.
+    pub fn try_census(&self) -> Option<Census> {
+        self.count(false)
+    }
+
+    /// The census, waiting for each lock if `wait`, or giving up (`None`)
+    /// at the first one held elsewhere.
+    fn count(&self, wait: bool) -> Option<Census> {
+        let forest = if wait { self.tree.lock() } else { self.tree.try_lock()? };
         let mut census = Census::default();
         for index in 0..forest.spaces.len() as u32 {
-            let Some(state) = self.lock_index(index, 0) else { continue };
+            let Some(space) = self.space(index) else { continue };
+            let state = if wait { space.state.lock() } else { space.state.try_lock()? };
             if !state.live {
                 continue;
             }
@@ -43,7 +57,7 @@ impl<A: Allocator + Clone> Capabilities<A> {
                 }
             }
         }
-        let objects = self.objects.lock();
+        let objects = if wait { self.objects.lock() } else { self.objects.try_lock()? };
         for entry in objects.records.iter().filter_map(|record| record.entry.as_ref()) {
             census.objects[entry.kind.index()] += 1;
             if entry.origin.is_none()
@@ -52,7 +66,7 @@ impl<A: Allocator + Clone> Capabilities<A> {
                 census.memory_pages += extent.pages;
             }
         }
-        census
+        Some(census)
     }
 
     /// Checks every invariant of the store: the tree's links agree with
@@ -82,7 +96,9 @@ impl<A: Allocator + Clone> Capabilities<A> {
                     }
                     let mut slots = Vec::new_in(self.alloc.clone());
                     slots.try_reserve_exact(state.slots.len()).map_err(|_| oom())?;
-                    slots.extend_from_slice(&state.slots);
+                    for &slot in &state.slots {
+                        let _ = slots.push_within_capacity(slot);
+                    }
                     Some(Copied { generation: state.generation, slots })
                 }
                 _ => {
@@ -100,7 +116,7 @@ impl<A: Allocator + Clone> Capabilities<A> {
         let mut non_roots = 0u64;
         let mut counts: Vec<(u32, u32), A> = Vec::new_in(self.alloc.clone());
         counts.try_reserve_exact(objects.records.len()).map_err(|_| oom())?;
-        counts.resize(objects.records.len(), (0, 0));
+        super::fill(&mut counts, objects.records.len(), || (0, 0));
         let slot_of = |link: Link| -> Option<&Slot> {
             copies.get(link.space as usize)?.as_ref()?.slots.get(link.slot as usize)
         };
@@ -261,4 +277,3 @@ fn check_objects<A: Allocator>(
     }
     Ok(())
 }
-

@@ -14,7 +14,7 @@
 //! is attached to its interface through a link (`net::program`).
 //!
 //! When the capability's last copy goes the registry marks it closed, under
-//! the store's lock, and the store's caller stops it once the lock has
+//! the store's locks, and the store's caller stops it once the locks have
 //! gone ([`close_deferred`]), in this order, so that the card reaches
 //! nothing it should not at any point: the link is taken from the
 //! interface, the card's bus mastering and MSI are turned off, its
@@ -307,8 +307,8 @@ impl DevicePages {
     }
 }
 
-/// The capability's last copy went: it is stopped once the store's lock
-/// has gone ([`close_deferred`]). Under the store's lock.
+/// The capability's last copy went: it is stopped once the store's locks
+/// have gone ([`close_deferred`]). Under the store's locks.
 pub fn released(device: &DeviceObject) {
     device.closed.store(true, Ordering::Release);
     CLOSING.store(true, Ordering::Release);

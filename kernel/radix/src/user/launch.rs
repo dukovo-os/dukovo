@@ -80,8 +80,8 @@ pub struct Group {
 impl Group {
     /// A new group, with nothing in it.
     pub fn new() -> Result<Group> {
-        let launcher = caps::with(|store| store.create_space(LAUNCHER_SLOTS))
-            .and_then(|made| made)
+        let launcher = caps::store()
+            .and_then(|store| store.create_space(LAUNCHER_SLOTS))
             .map_err(cap_error)?;
         let started = Vec::new_in(HEAP.with(Flags::MAY_SLEEP));
         Ok(Group { launcher, next: 0, started })

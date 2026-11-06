@@ -14,7 +14,7 @@ use crate::*;
 type Store = Capabilities<Global>;
 
 fn store() -> Store {
-    Capabilities::new(Global)
+    Capabilities::new(Global).expect("the host has memory for a store")
 }
 
 fn at(space: SpaceId, slot: u32) -> SlotRef {

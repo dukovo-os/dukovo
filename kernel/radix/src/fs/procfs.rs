@@ -456,10 +456,11 @@ fn threads(process: &ProcessRef, text: &mut Text) -> fmt::Result {
 fn held_caps(process: &ProcessRef) -> Vec<(u32, Capability), Kmalloc> {
     let mut caps = Vec::new_in(heap());
     let space = process.cspace();
-    let Ok(Ok(slots)) = crate::caps::with(|store| store.slots(space)) else { return caps };
+    let Ok(store) = crate::caps::store() else { return caps };
+    let Ok(slots) = store.slots(space) else { return caps };
     let mut first = 0;
     while first < slots {
-        let Ok(Ok(mut used)) = crate::caps::with(|store| store.used_slots(space, first)) else {
+        let Ok(mut used) = store.used_slots(space, first) else {
             break;
         };
         while used != 0 {
