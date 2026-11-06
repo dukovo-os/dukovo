@@ -63,7 +63,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("build", "Build the kernel, with its symbol table, and the user programs into out/sysroot"),
     ("ports", "Build the ports (the C library and programs from elsewhere) into out/sysroot"),
     ("crates", "Fetch the crates.io crates the kernel patches, and patch them into kernel/patched"),
-    ("image", "Build the bootable USB image (or an ISO with --iso)"),
+    ("image", "Build the bootable USB image, an ISO or an installed system's disk"),
     ("run", "Boot the image in QEMU with the serial console on this terminal"),
     ("test", "Run unit tests, then boot the image in QEMU under UEFI and BIOS"),
     ("catalog", "Make and sign the catalog's TUF repository, with YubiKeys"),
@@ -167,19 +167,23 @@ the Cargo.lock of each bundle's port in Rust with cargo-audit.
   --rebuild <name>   Build this port even if nothing changed; repeat for more"
         }
         "image" => {
-            "Usage: ./ob image [--iso] [--cmdline <flags>] [--microcode <path>]
+            "Usage: ./ob image [--iso | --installed] [--cmdline <flags>] [--microcode <path>]
                   [--disk-check <serial>] [--user <name> [--full-name <name>]
                   [--password-file <path>] [--test-cost]] [--debug | --release]
 
 Builds the kernel, then a hybrid boot image that starts under UEFI and
 legacy BIOS from a USB stick, a hard disk or optical media:
-  out/dukovo-<version>-x86_64.img   (default)
-  out/dukovo-<version>-x86_64.iso   (with --iso)
+  out/dukovo-<version>-x86_64.img             (default)
+  out/dukovo-<version>-x86_64.iso             (with --iso)
+  out/dukovo-<version>-x86_64-installed.img   (with --installed)
 The .img ends with a Dukovo root partition: the system and the
 subvolumes for what changes, on Btrfs.
 
   --iso                Name the output .iso for virtual machines and optical media,
                        without the Dukovo root partition
+  --installed          The disk of an installed system instead: GRUB starts the
+                       kernel and the startup archive from the root's system slot,
+                       and the system runs from the disk, not from memory (ADR 0307)
   --cmdline <flags>    Kernel flags instead of boot.cmdline (dukovo-boot(7))
   --microcode <path>   Intel microcode file or directory instead of image.microcode
   --disk-check <serial>
@@ -196,8 +200,8 @@ subvolumes for what changes, on Btrfs.
                        is quick to check under emulation, and to guess"
         }
         "run" => {
-            "Usage: ./ob run [--bios | --uefi] [--media usb|cdrom|disk] [--headless] [--gdb]
-                [--no-net] [--cmdline <flags>] [--microcode <path>] [--user <name> ...]
+            "Usage: ./ob run [--bios | --uefi] [--media usb|cdrom|disk] [--installed] [--headless]
+                [--gdb] [--no-net] [--cmdline <flags>] [--microcode <path>] [--user <name> ...]
                 [--debug | --release] [-- <extra QEMU arguments>]
 
 Builds the image and boots it in QEMU. The serial console is this terminal;
@@ -206,6 +210,8 @@ press Ctrl-A then X to quit QEMU. KVM is used when /dev/kvm is accessible.
   --bios               Boot through SeaBIOS (legacy BIOS)
   --uefi               Boot through OVMF (UEFI)
   --media <kind>       Attach the image as a USB stick, CD-ROM or SATA disk
+  --installed          Boot the disk of an installed system (./ob image --installed),
+                       as a SATA disk unless --media says otherwise
   --headless           Do not open a QEMU window (automatic without a display)
   --gdb                Wait for GDB on localhost:1234; writes out/qemu/radix.gdb,
                        which stops at the kernel's first Rust function (adds
@@ -814,9 +820,14 @@ fn dispatch(argv: Vec<String>) -> Result<()> {
             ports::build_and_pack(&ctx, &rebuild).map(|_| ())
         }
         "image" => {
-            let iso = args.flag("--iso");
+            let kind = match (args.flag("--iso"), args.flag("--installed")) {
+                (true, true) => bail!("--iso and --installed cannot be combined"),
+                (true, false) => image::Kind::Iso,
+                (false, true) => image::Kind::Installed,
+                (false, false) => image::Kind::Stick,
+            };
             let account = account::Options::from_args(&mut args)?;
-            if iso && account.any() {
+            if kind == image::Kind::Iso && account.any() {
                 bail!("--user makes an account in the root partition, which an .iso has none of");
             }
             let mut overrides = image::Overrides {
@@ -828,11 +839,15 @@ fn dispatch(argv: Vec<String>) -> Result<()> {
             let profile = args.profile(&ctx.config)?;
             args.finish()?;
             overrides.account = account.account(&ctx)?;
-            let path = image::build_release(&ctx, profile, iso, &overrides)?;
+            let path = image::build_release(&ctx, profile, kind, &overrides)?;
             println!("\nImage ready: {}", ctx.display(&path));
-            println!(
-                "Write it to a USB stick as shown in ob(1), EXAMPLES, or boot it with ./ob run."
-            );
+            if kind == image::Kind::Installed {
+                println!("Boot it with ./ob run --installed, or write it to a disk of its own.");
+            } else {
+                println!(
+                    "Write it to a USB stick as shown in ob(1), EXAMPLES, or boot it with ./ob run."
+                );
+            }
             Ok(())
         }
         "run" => qemu::run_command(&ctx, &mut args),

@@ -152,7 +152,7 @@ _target/userspace/_).
 	commands of your own on the kernel, such as cargo-deny's, which CI
 	runs after it.
 
-*image* [*--iso*] [*--cmdline* _flags_] [*--microcode* _path_] [*--disk-check* _serial_] [*--debug* | *--release*]
+*image* [*--iso* | *--installed*] [*--cmdline* _flags_] [*--microcode* _path_] [*--disk-check* _serial_] [*--debug* | *--release*]
 	Build the kernel, then the boot image
 	_out/dukovo-VERSION-x86_64.img_, a disk image for a USB stick or a
 	hard disk, which starts under UEFI and under legacy BIOS. Write it to
@@ -190,6 +190,16 @@ _target/userspace/_).
 		virtual machines and optical media, with *xorriso*(1). It has no
 		Dukovo root partition, as optical media are read-only.
 
+	*--installed*
+		Make the disk of an installed system,
+		_out/dukovo-VERSION-x86_64-installed.img_, instead: the same three
+		partitions, but GRUB finds the root by its Btrfs UUID and starts
+		the kernel and the startup archive, Spark alone, from its system
+		slot, _@system.a/startup_, and the system runs from the disk, not
+		from memory (ADR 0307). Its EFI system partition holds only GRUB,
+		its menu and the microcode, if any. See *Installed systems* in
+		*dukovo-boot*(7).
+
 	*--cmdline* _flags_
 		Kernel command-line flags instead of *boot.cmdline*, such as
 		*"kdb loglevel=debug"*. *dukovo-boot*(7) lists the flags.
@@ -217,7 +227,7 @@ _target/userspace/_).
 		steps. The kernel command line may not have a *--* part, or a
 		*selftest* flag, with it.
 
-*run* [*--uefi* | *--bios*] [*--media* _kind_] [*--headless*] [*--gdb*] [*--no-net*] [*--cmdline* _flags_] [*--microcode* _path_] [*--debug* | *--release*] [*--* _qemu-args_...]
+*run* [*--uefi* | *--bios*] [*--media* _kind_] [*--installed*] [*--headless*] [*--gdb*] [*--no-net*] [*--cmdline* _flags_] [*--microcode* _path_] [*--debug* | *--release*] [*--* _qemu-args_...]
 	Build the image and boot it in QEMU on a q35 machine with
 	*run.memory* of memory and *run.cpus* CPUs. The guest's serial port is
 	this terminal; press *Ctrl-A* then *X* to quit QEMU, or *Ctrl-A* then
@@ -238,6 +248,10 @@ _target/userspace/_).
 		Attach the image as *usb* (a USB stick on an xHCI controller, the
 		default), *cdrom* (a SATA CD-ROM, which holds the ISO that
 		*image --iso* makes) or *disk* (a SATA hard disk).
+
+	*--installed*
+		Boot the disk of an installed system that *image --installed*
+		makes, as a SATA hard disk unless *--media* says otherwise.
 
 	*--headless*
 		Do not open a QEMU window. This is automatic when neither

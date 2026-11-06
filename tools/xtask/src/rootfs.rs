@@ -53,7 +53,8 @@ pub fn failed(what: &str, err: radix_vfs::Error) -> Error {
 /// Makes a Btrfs labelled `label` in the file `output`, of `bytes`, at
 /// `time` (seconds since 1970): the subvolumes `subvolumes` in its top
 /// directory, each holding what the directory of its name in `staging`
-/// holds, and the first made read-only.
+/// holds, and the first made read-only. Returns its UUID, which the
+/// boot menu of an installed system finds it by (ADR 0307).
 ///
 /// # Errors
 ///
@@ -65,7 +66,7 @@ pub fn make(
     label: &str,
     subvolumes: &[&str],
     time: u64,
-) -> Result<()> {
+) -> Result<[u8; 16]> {
     host_clock(time);
     let _ = std::fs::remove_file(output);
     let file = std::fs::OpenOptions::new()
@@ -102,7 +103,8 @@ pub fn make(
             .ok_or_else(|| Error::new(format!("{first} is not a Btrfs directory")))?;
         btrfs.make_read_only().map_err(|err| failed(&format!("making {first} read-only"), err))?;
     }
-    radix_vfs::FileSystem::sync(&*fs).map_err(|err| failed(&format!("writing {shown}"), err))
+    radix_vfs::FileSystem::sync(&*fs).map_err(|err| failed(&format!("writing {shown}"), err))?;
+    Ok(options.fsid)
 }
 
 /// The access of `meta` for a file of root's.

@@ -62,6 +62,23 @@ _/system/resources/licenses/_
 	files that came with each component, such as the Spleen font
 	license. See *ob*(1).
 
+## Installed systems
+
+An installed system's disk, as *ob image --installed* builds it and the
+installer will leave it, has the same three partitions, but its EFI
+system partition holds only GRUB, the menu generated from
+_image/grub/installed.cfg.in_ and the microcode file, if any (ADR 0307).
+GRUB finds the Dukovo root by its Btrfs UUID and loads the kernel and the
+startup archive from the system's slot: _/@system.a/startup/radix_ and
+_/@system.a/startup/archive_, which the running system sees as
+_/system/startup_. The startup archive holds Spark alone. The kernel's
+command line carries *root=UUID=*_uuid_, for Spark, which mounts that
+root and runs everything else from it, and *panic=10*, so that a machine
+nobody is at restarts by itself. The boot loader keeps the startup
+archive in memory for the machine's whole life, as it does any archive,
+so an installed system keeps under a MiB where a USB stick keeps the
+whole system.
+
 ## Sequence
 
 . The firmware loads GRUB from the boot medium.
@@ -570,6 +587,15 @@ them to *init*, and the kernel does not read them.
 	Linux's *netconsole=* does, for one boot of a machine whose screen
 	shows nothing (ADR 0196). An IPv6 address goes in brackets when it
 	has a port. It names the target in place of *netlog*(5)'s.
+
+*root*=*UUID=*_uuid_
+	Read by *spark*(8), not the kernel: the Btrfs UUID of the Dukovo
+	root to run the system from, which an installed system's boot menu
+	gives (ADR 0307). Spark mounts that root and no other disk's, so
+	that a second disk with Dukovo on it, or an install stick, never
+	becomes the system GRUB did not start; when no disk holds it, Spark
+	says so and starts nothing. Without it, Spark takes the first disk
+	that holds a Dukovo root. The last one given counts.
 
 *startup-trouble*
 	Read by *login*(1) and *authd*(8), not the kernel: the sign-in at

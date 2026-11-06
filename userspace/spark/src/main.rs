@@ -27,7 +27,14 @@
 //!    into it;
 //! 2. mounts the FAT filesystem of each disk in `/devices` that holds one
 //!    (each partition, or the whole disk if it has none) at
-//!    `/volumes/<name>`;
+//!    `/volumes/<name>`, and puts Dukovo's root on a disk on `/system`
+//!    instead of the boot archive: the root whose Btrfs UUID the kernel's
+//!    command line names as `root=UUID=<uuid>`, as an installed system's
+//!    boot menu does (ADR 0307), or with none named the first disk that
+//!    holds one. An installed system starts from an archive of Spark
+//!    alone, so when the root it names cannot be found, Spark says so
+//!    and starts nothing; that is the first place to look when an
+//!    installed system stops after Spark;
 //! 3. listens for requests at `/system/live/spark/control` and, with no
 //!    arguments (a normal boot), starts the services the TOML files in
 //!    `/system/settings/spark/services` describe (`services`,
@@ -66,6 +73,7 @@ mod views;
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
+use core::fmt::Write as _;
 
 use libradix::abi::capability::{self, ObjectKind, Rights};
 use libradix::abi::directory::{FileKind, FilesystemKind, MountFlags, OpenFlags};
@@ -447,9 +455,10 @@ fn build(root: &Dir, volumes: bool, compress: &[&str]) -> bool {
             return false;
         }
     }
+    let named = named_root(root);
     let disk = if volumes {
         let btrfs = mount_disks(root, compress);
-        root_volume(root, &btrfs)
+        root_volume(root, &btrfs, named.as_deref())
     } else {
         println!("spark: leaving every disk's filesystems unmounted");
         None
@@ -460,6 +469,17 @@ fn build(root: &Dir, volumes: bool, compress: &[&str]) -> bool {
             ON_DISK.len() + 1
         }
         _ => {
+            // Two lines: a write to the log is cut at 256 bytes.
+            if let Some(uuid) = named.as_deref().filter(|_| volumes) {
+                println!(
+                    "spark: no disk holds the Dukovo root the boot menu names (root=UUID={uuid}), \
+                     so this installed system cannot start"
+                );
+                println!(
+                    "spark: /system is only the startup archive; check that the disk is \
+                     connected, or start Try Dukovo from an install stick to look at it"
+                );
+            }
             for (path, kind, flags) in IN_MEMORY {
                 let mounted = root.mount(path, kind, None, flags).and_then(|()| {
                     if kind == FilesystemKind::Tmpfs { narrow(root, path) } else { Ok(()) }
@@ -724,15 +744,23 @@ fn mount_disk(root: &Dir, name: &str, compress: bool) -> Option<MountFlags> {
 }
 
 /// Which Btrfs of `btrfs`, mounted at `/volumes/<name>`, is Dukovo's root:
-/// the first with the subvolumes [`ON_DISK`] mounts, as `./ob image` and
-/// the installer make it (ADR 0137). Like Fedora's, the root compresses
-/// what is written to it (ADR 0134): mounted without, it is mounted again.
-fn root_volume(root: &Dir, btrfs: &[(String, MountFlags)]) -> Option<String> {
-    let (name, flags) = btrfs.iter().find(|(name, _)| {
+/// one with the subvolumes [`ON_DISK`] mounts, as `./ob image` and the
+/// installer make it (ADR 0137). With a UUID `named` on the command line,
+/// as an installed system's boot menu gives, only the Btrfs with that UUID
+/// is (ADR 0307), so that a second disk with Dukovo on it, or an install
+/// stick, never becomes the system GRUB did not start; with none, the
+/// first is. Like Fedora's, the root compresses what is written to it
+/// (ADR 0134): mounted without, it is mounted again.
+fn root_volume(root: &Dir, btrfs: &[(String, MountFlags)], named: Option<&str>) -> Option<String> {
+    let holds_root = |name: &str| {
         ON_DISK.iter().all(|(subvolume, _, _)| {
             root.stat(&format!("volumes/{name}/{subvolume}"))
                 .is_ok_and(|stat| stat.kind == FileKind::Directory)
         })
+    };
+    let (name, flags) = btrfs.iter().find(|(name, _)| match named {
+        Some(uuid) => btrfs_uuid(root, name).as_deref() == Some(uuid) && holds_root(name),
+        None => holds_root(name),
     })?;
     if flags.contains(MountFlags::READ_ONLY) {
         println!("spark: {name} holds Dukovo's root but cannot be written; left alone");
@@ -747,6 +775,49 @@ fn root_volume(root: &Dir, btrfs: &[(String, MountFlags)]) -> Option<String> {
         mount_disk(root, name, true)?;
     }
     Some(name.clone())
+}
+
+/// The Dukovo root the kernel's command line names, `root=UUID=<uuid>`, in
+/// lowercase: the last one, as the kernel takes a flag's last value, from
+/// the words before a lone `--`, which are the kernel's (dukovo-boot(7)).
+fn named_root(root: &Dir) -> Option<String> {
+    let line = root.read_file("kernel/cmdline").ok()?;
+    let line = core::str::from_utf8(&line).ok()?;
+    line.split_ascii_whitespace()
+        .take_while(|&word| word != "--")
+        .filter_map(|word| word.strip_prefix("root=UUID="))
+        .last()
+        .map(str::to_ascii_lowercase)
+}
+
+/// Where a Btrfs keeps its first superblock, how much of it is read (4 KiB,
+/// whole sectors of any disk), and where in it are its UUID and its magic
+/// number (Btrfs's `btrfs_super_block`).
+const SUPERBLOCK: u64 = 0x1_0000;
+const SUPERBLOCK_READ: usize = 4096;
+const SUPERBLOCK_FSID: usize = 0x20;
+const SUPERBLOCK_MAGIC: usize = 0x40;
+const BTRFS_MAGIC: &[u8; 8] = b"_BHRfS_M";
+
+/// The UUID of the Btrfs on `/devices/<name>`, written as the command line
+/// writes it: lowercase, in groups of 8, 4, 4, 4 and 12 digits.
+fn btrfs_uuid(root: &Dir, name: &str) -> Option<String> {
+    let device = root.open(&format!("devices/{name}"), OpenFlags::NONE, Rights::READ).ok()?;
+    let mut head = alloc::vec![0u8; SUPERBLOCK_READ];
+    if device.read_at(SUPERBLOCK, &mut head).ok()? != head.len() {
+        return None;
+    }
+    if &head[SUPERBLOCK_MAGIC..SUPERBLOCK_MAGIC + 8] != BTRFS_MAGIC {
+        return None;
+    }
+    let mut text = String::with_capacity(36);
+    for (i, byte) in head[SUPERBLOCK_FSID..SUPERBLOCK_FSID + 16].iter().enumerate() {
+        if matches!(i, 4 | 6 | 8 | 10) {
+            text.push('-');
+        }
+        let _ = write!(text, "{byte:02x}");
+    }
+    Some(text)
 }
 
 /// Mounts the subvolumes of Dukovo's root on `/volumes/<disk>` where

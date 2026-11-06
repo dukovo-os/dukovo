@@ -166,6 +166,13 @@ pub const FLAGS: &[Flag] = &[
                   startup-trouble menu, which resets an administrator's password; the boot \
                   menu's startup-trouble entry sets it",
     },
+    Flag {
+        name: "root",
+        value: Some("UUID=uuid"),
+        summary: "for Spark, not the kernel: the Btrfs UUID of the Dukovo root to run the system \
+                  from, which an installed system's boot menu gives; Spark mounts no other \
+                  disk's root",
+    },
 ];
 
 /// The self-tests `selftest=name` runs; radix-debug(7) describes them.

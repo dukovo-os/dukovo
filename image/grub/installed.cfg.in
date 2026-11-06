@@ -1,0 +1,51 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# GRUB configuration of an installed Dukovo Server @VERSION@, on its EFI
+# system partition. `ob image --installed` generates boot/grub/grub.cfg
+# from image/grub/installed.cfg.in by filling in the VERSION, TIMEOUT,
+# CMDLINE, MODULES and ROOT_UUID placeholders. See dukovo-boot(7) and
+# ADR 0307.
+#
+# GRUB finds the Dukovo root by its Btrfs UUID and loads the kernel and
+# the startup archive from the system's slot, @system.a, so that they
+# change together with the system. The kernel command line names the same
+# root to Spark, which mounts it and runs everything else from it.
+
+set timeout=@TIMEOUT@
+set default=0
+
+# Mirror the menu on the first serial port, where Radix also writes.
+if serial --unit=0 --speed=115200; then
+    terminal_input --append serial
+    terminal_output --append serial
+fi
+
+# As on the USB stick: only the firmware's video drivers, GOP under UEFI
+# and VESA under BIOS, with the mode UEFI set kept for Radix's console.
+if [ "${grub_platform}" = "efi" ]; then
+    insmod efi_gop
+    insmod efi_uga
+    set gfxpayload=keep
+else
+    insmod vbe
+fi
+
+search --no-floppy --fs-uuid --set=system @ROOT_UUID@
+
+# An installed system restarts 10 seconds after a panic, so that a machine
+# nobody is at comes back by itself.
+menuentry "Dukovo Server @VERSION@ (Radix)" {
+    multiboot2 ($system)/@system.a/startup/radix root=UUID=@ROOT_UUID@ panic=10 @CMDLINE@
+    module2 ($system)/@system.a/startup/archive bootfs
+@MODULES@    boot
+}
+
+# For a lost administrator's password (ADR 0253). The flags come first,
+# so they are the kernel's whatever the command line holds after a lone
+# `--`.
+menuentry "Dukovo Server @VERSION@: startup trouble" {
+    multiboot2 ($system)/@system.a/startup/radix startup-trouble root=UUID=@ROOT_UUID@ panic=10 @CMDLINE@
+    module2 ($system)/@system.a/startup/archive bootfs
+@MODULES@    boot
+}
