@@ -13,7 +13,7 @@
 use core::alloc::Allocator;
 
 use super::objects::{Entry, Objects};
-use super::slots::{Slot, SpaceState};
+use super::slots::{Slot, SpaceState, two_slots};
 use super::{Capabilities, Extent, Released, SlotRef, SpaceId};
 use crate::cap::Capability;
 use crate::error::CapError;
@@ -256,10 +256,7 @@ impl<A: Allocator + Clone, K> SpaceView<'_, A, K> {
         if src == dst {
             return Err(CapError::Occupied);
         }
-        // Two slots of one array, borrowed apart.
-        let (low, high) = self.state.slots.split_at_mut(src.max(dst));
-        let (src, dst) =
-            if src < dst { (&mut low[src], &mut high[0]) } else { (&mut high[0], &mut low[dst]) };
+        let (src, dst) = two_slots(&mut self.state.slots, src, dst);
         Ok(move_unlinked(src, dst, &mut self.stale))
     }
 

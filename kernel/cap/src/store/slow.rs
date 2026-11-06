@@ -29,7 +29,7 @@ use radix_sync::MutexGuard;
 
 use super::fast::{make_recorded, move_unlinked};
 use super::objects::{Entry, Objects};
-use super::slots::{Forest, Link, Marks, Slot, SpaceState, Tree, Trees};
+use super::slots::{self, Forest, Link, Marks, Slot, SpaceState, Tree, Trees};
 use super::{
     Capabilities, Extent, MAX_DEPTH, MAX_RETYPE, MAX_SLOTS, Progress, Released, SlotRef, SpaceId,
     bump, fill,
@@ -435,9 +435,7 @@ impl<A: Allocator + Clone, K> TreeView<'_, A, K> {
             let Some(state) = self.state_mut(a.space) else {
                 panic!("a slot of a space the slow path does not hold");
             };
-            let (a, b) = (a.slot as usize, b.slot as usize);
-            let (low, high) = state.slots.split_at_mut(a.max(b));
-            return if a < b { (&mut low[a], &mut high[0]) } else { (&mut high[0], &mut low[b]) };
+            return slots::two_slots(&mut state.slots, a.slot as usize, b.slot as usize);
         }
         let mut first = None;
         let mut second = None;

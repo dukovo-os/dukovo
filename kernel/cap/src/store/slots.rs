@@ -108,6 +108,18 @@ impl Slot {
     }
 }
 
+/// Two different slots of one space, `slots[a]` and `slots[b]`, borrowed
+/// apart so both can be written.
+///
+/// # Panics
+///
+/// If `a` and `b` are the same slot, or either is out of range.
+pub(super) fn two_slots(slots: &mut [Slot], a: usize, b: usize) -> (&mut Slot, &mut Slot) {
+    assert_ne!(a, b, "one slot taken twice");
+    let (low, high) = slots.split_at_mut(a.max(b));
+    if a < b { (&mut low[a], &mut high[0]) } else { (&mut high[0], &mut low[b]) }
+}
+
 /// What [`Slot::take_unlinked`] took out of a slot.
 pub(super) struct Taken {
     pub(super) cap: Option<Capability>,

@@ -101,24 +101,25 @@ waiting on the process in the kernel, and calls `on_exit`. What is left
 is the number and the exit code. The registry entry, with the charge,
 goes when the last capability does: that **reaps** the process.
 
-### Ending under the store's lock
+### Ending under the store's locks
 
 A process also ends when the capability store releases it, because its
-last capability was deleted. That happens with the store's lock held, so
-finishing it, which changes the store, cannot happen there and then.
-`released` ends the process and, if it is to be finished, links it onto
-a pending list through its own `pending` field; `caps::with` calls
-`finish_pending` after every change, before the lock goes, which
-finishes each process on the list with the store passed in. Finishing
-one may release or end more, which join the list and are finished in the
-same loop, so a long chain of processes is finished iteratively, never
-by deepening recursion. Ending never allocates.
+last capability was deleted. That happens with the store's locks held
+(the object table's, ADR 0369), so finishing it, which changes the store,
+cannot happen there and then. `released` ends the process and, if it is
+to be finished, links it onto a pending list through its own `pending`
+field; `caps::finish` calls `finish_pending` after every change, once the
+locks have gone, which finishes each process on the list. Finishing one
+destroys its spaces, which may release or end more; they join the list
+and are finished in the same loop, so a long chain of processes is
+finished iteratively, never by deepening recursion. Ending never
+allocates.
 
 ### Processes made for a process
 
-`create` records each process it makes in the maker's list, under the
-store's lock and before the new capability exists, so a failure leaves
-nothing to undo but the new spaces. Once the maker has ended its list
+`create` records each process it makes in the maker's list before the
+new capability exists, so a failure leaves nothing to undo but the new
+spaces. Once the maker has ended its list
 is closed and `create` fails with `gone`. When the maker finishes, it
 ends each process still alive on the list (`EXIT_STOPPED`) and puts
 those with no thread left on the pending list. So a program cannot leave
@@ -130,9 +131,9 @@ lock.
 
 ### Lock order
 
-The capability store, then a process's list of made processes, then a
-process's state, then a thread's scheduler state (`sched::wake`). The
-list and the state are never held together.
+The capability store's locks, then a process's list of made processes,
+then a process's state, then a thread's scheduler state (`sched::wake`).
+The list and the state are never held together.
 
 ## Charges
 
@@ -306,10 +307,11 @@ The claims, and why they hold:
 5. **Ending never waits on memory or recursion.** `end` takes only the
    state lock and wakes threads; the pending list is linked through the
    processes themselves; the made list is taken whole.
-6. **The lock order holds** (see *Lock order*): `released` and
-   `finish_pending` run under the store's lock and take the others
-   inside it; `create` takes the made list under the store's lock; no
-   path takes the store's lock while holding a process's.
+6. **The lock order holds** (see *Lock order*): `released` runs under
+   the store's object table lock and takes a process's state inside it;
+   `finish_pending` and `create` run with no store lock held, and take
+   the store's locks only while holding no process lock; no path takes a
+   store lock while holding a process's.
 7. **Charges balance.** A charge is taken before an object exists and
    given back when its registry entry goes; a failed creation drops it.
 

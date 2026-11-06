@@ -54,6 +54,8 @@
 mod audit;
 mod fast;
 mod objects;
+#[cfg(kani)]
+mod proofs;
 mod slots;
 mod slow;
 

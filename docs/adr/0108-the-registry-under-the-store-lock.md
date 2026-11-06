@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 # 0108. The object registry is guarded by the capability store's lock
 
-- Status: Accepted
+- Status: Accepted; since [0369](0369-each-capability-space-has-its-own-lock-and-one-lock-guards-the-tree.md) the registry is kept beside the store's object table, under that table's lock
 - Date: 2026-10-25
 
 ## Context
