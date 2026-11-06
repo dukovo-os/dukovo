@@ -13,7 +13,9 @@
 //! - [`config`] reads krb5.conf and [`kdc`] reaches the KDCs it names;
 //! - [`client`] runs the AS and TGS exchanges, which make credentials;
 //! - [`creds`] keeps credentials in the person's keyring, and [`keytab`]
-//!   reads a service's keys.
+//!   reads a service's keys;
+//! - [`gss`] sets up GSS-API security contexts from a ticket and a
+//!   keytab, which RPCSEC_GSS runs on for NFS's `sec=krb5`.
 //!
 //! Debugging starts with the error, which says what the KDC refused or
 //! what did not read; then with the KDC's own log, which records each
@@ -24,6 +26,7 @@ pub mod config;
 pub mod creds;
 pub mod crypto;
 pub mod der;
+pub mod gss;
 pub mod kdc;
 pub mod keytab;
 pub mod messages;

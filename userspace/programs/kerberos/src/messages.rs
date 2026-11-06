@@ -464,6 +464,14 @@ const AS_REP: u8 = 11;
 const TGS_REP: u8 = 13;
 /// A KRB-ERROR's.
 const KRB_ERROR: u8 = 30;
+/// EncTicketPart's application tag.
+const ENC_TICKET_PART: u8 = 3;
+/// AP-REQ's application tag and message type.
+const AP_REQ: u8 = 14;
+/// AP-REP's.
+const AP_REP: u8 = 15;
+/// EncAPRepPart's application tag.
+const ENC_AP_REP_PART: u8 = 27;
 
 /// What a KDC answered: a reply, or an error.
 #[derive(Debug)]
@@ -695,15 +703,185 @@ fn decode_checksum(value: &[u8]) -> Result<(i32, Vec<u8>)> {
 /// under its session key. `options` are APOptions, as mutual-required.
 pub fn encode_ap_request(options: u32, ticket: &[u8], authenticator: &Encrypted) -> Vec<u8> {
     der::application(
-        14,
+        AP_REQ,
         &der::sequence(&[
             der::field(0, &der::integer(5)),
-            der::field(1, &der::integer(14)),
+            der::field(1, &der::integer(AP_REQ.into())),
             der::field(2, &der::bits(options)),
             der::field(3, ticket),
             der::field(4, &authenticator.encode()),
         ]),
     )
+}
+
+/// APOptions' mutual-required bit: the client asks the service to prove
+/// itself with an AP-REP.
+pub const AP_MUTUAL_REQUIRED: u32 = 1 << (31 - 2);
+
+/// An AP-REQ, read (RFC 4120 5.5.1): what a service gets from a client.
+#[derive(Clone, Debug)]
+pub struct ApRequest {
+    /// APOptions, as [`AP_MUTUAL_REQUIRED`].
+    pub options: u32,
+    /// The ticket, which the service opens with its own key.
+    pub ticket: Ticket,
+    /// The authenticator, under the ticket's session key.
+    pub authenticator: Encrypted,
+}
+
+impl ApRequest {
+    /// The AP-REQ `value`.
+    pub fn decode(value: &[u8]) -> Result<ApRequest> {
+        let inner = der::read_application(value, AP_REQ, "AP-REQ")?;
+        let mut seq = der::read_sequence(inner, "AP-REQ")?;
+        let _pvno = seq.field(0)?;
+        let kind = der::read_integer(seq.field(1)?, "msg-type")?;
+        if kind != i64::from(AP_REQ) {
+            return Err(Error::Malformed(format!("an AP-REQ of message type {kind}")));
+        }
+        let options = der::read_bits(seq.field(2)?, "ap-options")?;
+        let ticket = Ticket::decode(seq.field(3)?)?;
+        let authenticator = Encrypted::decode(seq.field(4)?)?;
+        Ok(ApRequest { options, ticket, authenticator })
+    }
+}
+
+/// The part of a ticket only its service opens (EncTicketPart, RFC 4120
+/// 5.3): who the client is, the session key, and when it is good.
+#[derive(Clone, Debug)]
+pub struct TicketPart {
+    /// TicketFlags.
+    pub flags: u32,
+    /// The session key the client was given with the ticket.
+    pub key: Key,
+    /// The client.
+    pub client: Principal,
+    /// When the client proved itself, in seconds since 1970.
+    pub authtime: i64,
+    /// When the ticket starts, if not at `authtime`.
+    pub starttime: Option<i64>,
+    /// When it ends.
+    pub endtime: i64,
+}
+
+impl TicketPart {
+    /// The EncTicketPart `plain`, opened from a ticket.
+    pub fn decode(plain: &[u8]) -> Result<TicketPart> {
+        let inner = der::read_application(plain, ENC_TICKET_PART, "EncTicketPart")?;
+        let mut seq = der::read_sequence(inner, "EncTicketPart")?;
+        let flags = der::read_bits(seq.field(0)?, "flags")?;
+        let key = decode_key(seq.field(1)?)?;
+        let realm = der::read_string(seq.field(2)?, "crealm")?;
+        let client = Principal::decode_name(seq.field(3)?, &realm)?;
+        let _transited = seq.field(4)?;
+        let authtime = der::read_time(seq.field(5)?, "authtime")?;
+        let starttime = seq.optional(6)?.map(|v| der::read_time(v, "starttime")).transpose()?;
+        let endtime = der::read_time(seq.field(7)?, "endtime")?;
+        // renew-till, the client's addresses and authorization data,
+        // which a service that maps principals to users does not need.
+        seq.skip_rest();
+        Ok(TicketPart { flags, key, client, authtime, starttime, endtime })
+    }
+
+    /// The EncTicketPart, as a KDC writes it: for tests, which play the
+    /// KDC.
+    #[cfg(test)]
+    pub(crate) fn encode(&self) -> Vec<u8> {
+        let transited =
+            der::sequence(&[der::field(0, &der::integer(1)), der::field(1, &der::octets(b""))]);
+        let mut fields = vec![
+            der::field(0, &der::bits(self.flags)),
+            der::field(1, &encode_key(&self.key)),
+            der::field(2, &der::string(&self.client.realm)),
+            der::field(3, &self.client.encode_name()),
+            der::field(4, &transited),
+            der::field(5, &der::kerberos_time(self.authtime)),
+        ];
+        if let Some(start) = self.starttime {
+            fields.push(der::field(6, &der::kerberos_time(start)));
+        }
+        fields.push(der::field(7, &der::kerberos_time(self.endtime)));
+        der::application(ENC_TICKET_PART, &der::sequence(&fields))
+    }
+}
+
+/// A Ticket for `server`, its part sealed under `key`: for tests, which
+/// play the KDC.
+#[cfg(test)]
+pub(crate) fn encode_ticket(
+    server: &Principal,
+    key: &Key,
+    kvno: u32,
+    part: &TicketPart,
+) -> Vec<u8> {
+    const USAGE_TICKET: u32 = 2;
+    let sealed = Encrypted::seal(key, USAGE_TICKET, &part.encode(), Some(kvno)).unwrap();
+    der::application(
+        1,
+        &der::sequence(&[
+            der::field(0, &der::integer(5)),
+            der::field(1, &der::string(&server.realm)),
+            der::field(2, &server.encode_name()),
+            der::field(3, &sealed.encode()),
+        ]),
+    )
+}
+
+/// The part of an AP-REP its client opens (EncAPRepPart, RFC 4120
+/// 5.5.2): the client's own time back, which proves the service opened
+/// the authenticator, and the service's choice of key and sequence.
+#[derive(Clone, Debug)]
+pub struct ApReplyPart {
+    /// The authenticator's time, in seconds since 1970.
+    pub ctime: i64,
+    /// Its microseconds.
+    pub cusec: u32,
+    /// The service's key for what follows, if it chose one.
+    pub subkey: Option<Key>,
+    /// The service's first sequence number, if any.
+    pub seq_number: Option<u32>,
+}
+
+impl ApReplyPart {
+    /// The whole AP-REP, with this part sealed under `key` for `usage`.
+    pub fn seal(&self, key: &Key, usage: u32) -> Result<Vec<u8>> {
+        let mut fields = vec![
+            der::field(0, &der::kerberos_time(self.ctime)),
+            der::field(1, &der::integer(self.cusec.into())),
+        ];
+        if let Some(subkey) = &self.subkey {
+            fields.push(der::field(2, &encode_key(subkey)));
+        }
+        if let Some(seq) = self.seq_number {
+            fields.push(der::field(3, &der::integer(seq.into())));
+        }
+        let part = der::application(ENC_AP_REP_PART, &der::sequence(&fields));
+        let sealed = Encrypted::seal(key, usage, &part, None)?;
+        Ok(der::application(
+            AP_REP,
+            &der::sequence(&[
+                der::field(0, &der::integer(5)),
+                der::field(1, &der::integer(AP_REP.into())),
+                der::field(2, &sealed.encode()),
+            ]),
+        ))
+    }
+
+    /// The part of the AP-REP `value`, opened with `key` for `usage`.
+    pub fn open(value: &[u8], key: &Key, usage: u32) -> Result<ApReplyPart> {
+        let inner = der::read_application(value, AP_REP, "AP-REP")?;
+        let mut seq = der::read_sequence(inner, "AP-REP")?;
+        let _pvno = seq.field(0)?;
+        let _msg_type = seq.field(1)?;
+        let plain = Encrypted::decode(seq.field(2)?)?.open(key, usage)?;
+        let inner = der::read_application(&plain, ENC_AP_REP_PART, "EncAPRepPart")?;
+        let mut seq = der::read_sequence(inner, "EncAPRepPart")?;
+        let ctime = der::read_time(seq.field(0)?, "ctime")?;
+        let cusec = der::read_uint32(seq.field(1)?, "cusec")?;
+        let subkey = seq.optional(2)?.map(decode_key).transpose()?;
+        let seq_number = seq.optional(3)?.map(|v| der::read_uint32(v, "seq-number")).transpose()?;
+        Ok(ApReplyPart { ctime, cusec, subkey, seq_number })
+    }
 }
 
 /// The PA-ENC-TS-ENC of `seconds` and `usec`, the time a client proves
