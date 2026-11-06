@@ -33,10 +33,10 @@
 [tag]
 	sort = version:refname
 [credential]
-	# A token or password typed for an https:// remote is kept in
-	# memory, by git credential-cache, for 8 hours, and never written
-	# to disk (ADR 0292). The keyring takes over in Phase 13g.
-	helper = cache --timeout=28800
+	# A token or password typed for an https:// remote is kept in the
+	# person's keyring, sealed under their password, so that it is asked
+	# for once, and again only if it stops working (ADR 0394).
+	helper = keyring
 [include]
 	# Diff, status and branch colours from Nukesh's colors.toml, and
 	# diffs shown with the words that changed marked, which each shell

@@ -12,15 +12,23 @@
 //! - without a token, git asks for one, and with no terminal to ask on,
 //!   fails, as does a wrong token;
 //! - with the token given once (`git credential approve`), git
-//!   credential-cache, the helper the system's gitconfig names, keeps it
-//!   in memory: git clones, commits and pushes without asking, and the
-//!   server's repository has the commit;
+//!   credential-cache keeps it in memory: git clones, commits and pushes
+//!   without asking, and the server's repository has the commit;
 //! - the token is in no file, and once the cache is told to exit, git
 //!   asks again.
+//!
+//! The system's gitconfig names the keyring's helper (ADR 0394), which
+//! needs a person's session; the test, which Spark runs, names the
+//! memory cache for its own git, as a person's `~/.gitconfig` may.
 //!
 //! Like the C tests, it prints "git-https-test: <part>" for each part
 //! that passed, a line for each check that fails, and "git-https-test:
 //! every check passed"; it exits with how many checks failed.
+//!
+//! `git-https-test --serve` runs the server alone, for the `git-keyring`
+//! boot test's person: it makes the repository and writes the authority
+//! in /tmp/git-https, says `git-https-test: serving` and the address once
+//! the server listens, and goes on serving after it returns.
 
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -53,6 +61,9 @@ const USER: &str = "test";
 const TOKEN: &str = "s3cret";
 /// `Basic` and base64 of "test:s3cret".
 const AUTHORIZATION: &str = "Basic dGVzdDpzM2NyZXQ=";
+
+/// Where the test is installed, which `--serve` starts again to serve.
+const PROGRAM: &str = "/system/tests/posix/git-https-test";
 
 /// git's HTTP backend, which the server runs for each request.
 const BACKEND: &str = "/system/libraries/git-core/git-http-backend";
@@ -133,11 +144,53 @@ fn seen() -> Vec<Seen> {
 }
 
 fn main() {
+    match std::env::args().nth(1).as_deref() {
+        Some("--serve") => serve_in_background(),
+        Some("--serving") => serving(),
+        _ => test(),
+    }
+}
+
+/// `--serve`: starts the server as a process of its own, says what it
+/// said once it listens, and returns, leaving it to serve.
+fn serve_in_background() {
+    let child = Command::new(PROGRAM)
+        .arg("--serving")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn();
+    let mut said = String::new();
+    if let Ok(mut child) = child
+        && let Some(out) = child.stdout.take()
+    {
+        let _ = BufReader::new(out).read_line(&mut said);
+    }
+    print!("{said}");
+    let serving = said.starts_with(&format!("{NAME}: serving"));
+    std::process::exit(if serving { 0 } else { 1 });
+}
+
+/// `--serving`: the server alone, until the process is ended.
+fn serving() {
+    if start().is_none() {
+        println!("{NAME}: the server did not start");
+        std::process::exit(1);
+    }
+    println!("{NAME}: serving {URL}");
+    let _ = std::io::stdout().flush();
+    loop {
+        thread::park();
+    }
+}
+
+/// The test itself.
+fn test() {
     let Some(()) = start() else {
         println!("{NAME}: the server did not start");
         std::process::exit(1);
     };
-    part("git: built with libcurl on rustls, credential-cache the system's helper", built);
+    part("git: built with libcurl on rustls, the keyring the system's helper", built);
     part("untrusted: a certificate from an unknown authority refused", untrusted);
     part("no token: git asks, and fails with no terminal; a wrong token refused", refused);
     let mut pushed = String::new();
@@ -389,6 +442,13 @@ fn git_command(dir: &str, args: &[&str]) -> Command {
         .env_remove("XDG_CACHE_HOME")
         .env("GIT_SSL_CAINFO", format!("{DIR}/ca.pem"))
         .env("GIT_TERMINAL_PROMPT", "0")
+        // The memory cache in place of the system's helper, the keyring,
+        // which needs a person's session: an empty helper clears the list.
+        .env("GIT_CONFIG_COUNT", "2")
+        .env("GIT_CONFIG_KEY_0", "credential.helper")
+        .env("GIT_CONFIG_VALUE_0", "")
+        .env("GIT_CONFIG_KEY_1", "credential.helper")
+        .env("GIT_CONFIG_VALUE_1", "cache --timeout=28800")
         .env("GIT_AUTHOR_NAME", "Test")
         .env("GIT_AUTHOR_EMAIL", "test@dukovo")
         .env("GIT_COMMITTER_NAME", "Test")
@@ -439,12 +499,14 @@ fn approve(token: &str) {
     }
 }
 
-/// git was built with https, and the system names the memory cache.
+/// git was built with https, and the system names the keyring's helper.
 fn built() {
     let version = git(DIR, &["version", "--build-options"]).unwrap_or_default();
     check!(version.contains("libcurl: 8.23.0"), "git version --build-options: {version}");
+    let system = git(DIR, &["config", "--system", "--get", "credential.helper"]);
+    check!(system.as_deref() == Some("keyring"), "the system's credential.helper is {system:?}");
     let helper = git(DIR, &["config", "--get", "credential.helper"]).unwrap_or_default();
-    check!(helper.starts_with("cache "), "credential.helper is {helper:?}");
+    check!(helper.starts_with("cache "), "the test's credential.helper is {helper:?}");
     check!(Path::new("/system/libraries/git-core/git-remote-https").exists());
 }
 

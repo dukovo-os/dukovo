@@ -92,6 +92,13 @@ pub const LIST: &[Permission] = &[
     defined("files.shared", "Use these folders of /shared", FirstUse, SharedFolders),
     defined("files.home", "Use all of your files", Warning, Nothing),
     defined("files.app-data", "Read these other apps' private data", Warning, Apps),
+    // An app reaches its own keyring entries with no permission (ADR 0396).
+    defined(
+        "keyring.shared",
+        "Use every secret in your keyring, other apps' too",
+        Warning,
+        Nothing,
+    ),
     defined(
         "network.outbound",
         "Connect to the internet and to services on this computer",
@@ -153,7 +160,6 @@ pub const LIST: &[Permission] = &[
     reserved("calendar", "Use your calendars", FirstUse, "1.5.6"),
     reserved("reminders", "Use your reminders", FirstUse, "1.5.6"),
     reserved("mail", "Use your mail", FirstUse, "1.5.6"),
-    reserved("keychain.shared", "Use keychain items another app saved", Warning, "1.4.1"),
     reserved("ai.ask", "Ask the local assistant", FirstUse, "1.10"),
     reserved(
         "memory.jit",

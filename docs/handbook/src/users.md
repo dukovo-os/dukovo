@@ -280,6 +280,10 @@ its `user.` attributes instead). See setfacl(1) and getfacl(1).
 wait of two seconds, and a longer one after each wrong one in a row, up
 to a minute, so a password cannot be guessed quickly.
 
+A new password seals your keyring under it; one an administrator sets
+without your old password empties the keyring unless it is open
+([Your keyring](keyring.md)).
+
 ## A lost administrator's password
 
 If you lose the password of the only administrator, choose **Dukovo

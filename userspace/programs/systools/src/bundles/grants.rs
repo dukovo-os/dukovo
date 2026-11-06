@@ -189,6 +189,9 @@ pub fn phrase(permission: &Permission, request: Option<&Asked>, words: &[String]
             format!("read the private data of {}", words.join(", "))
         }
         "files.home" => "use all of your files, which every other app keeps there too".into(),
+        "keyring.shared" => {
+            "use every secret in your keyring: your tokens and passphrases, and other apps'".into()
+        }
         YOUR_ACCESS => "run with everything you can reach, without a sandbox".into(),
         "network.listen" if request.is_some_and(|r| !r.ports.is_empty()) => {
             let ports: Vec<String> =

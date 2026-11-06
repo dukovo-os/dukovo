@@ -436,6 +436,15 @@ real path:
 - *network.local*: _/system/live/discoverd_, whose socket says what
   *discoverd*(8) finds on your networks.
 
+Each program also reaches its own entries of your keyring (ADR 0396):
+the runner serves them for as long as it runs, at authd's path,
+_/system/live/authd_, so *keyring*(1) works in the sandbox. The name
+_name_ an app gives is the entry *app* _ID name_ of your keyring, which
+*keyring list* shows outside it, and the app lists only its own. It
+may set, get, list and remove them, and nothing else of authd's. Given
+*keyring.shared*, asked with a warning, it reaches every entry by its
+own name, as your programs do.
+
 Its network is given as a capability (ADR 0337): *network.outbound*
 reaches machines beyond your networks, the internet, and this computer's
 own services; *network.local* the machines on your networks (their

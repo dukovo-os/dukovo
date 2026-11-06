@@ -74,6 +74,7 @@ mod facl;
 mod findmnt;
 mod firewall;
 mod fstrim;
+mod git_credential;
 mod hexdump;
 mod hwinfo;
 mod iostat;
@@ -128,6 +129,7 @@ mod share;
 mod signals;
 mod signin;
 mod ss;
+mod ssh_askpass;
 mod sshkeys;
 mod subvolume;
 mod swap;
@@ -194,6 +196,7 @@ const TOOLS: &[(&str, Tool)] = &[
     ("fstrim", fstrim::main),
     ("free", memory::free),
     ("getfacl", facl::getfacl),
+    ("git-credential-keyring", git_credential::main),
     ("halt", power::halt),
     ("hd", hexdump::hd),
     ("hexdump", hexdump::main),
@@ -262,6 +265,7 @@ const TOOLS: &[(&str, Tool)] = &[
     ("share", share::main),
     ("shutdown", power::shutdown),
     ("ss", ss::main),
+    ("ssh-askpass-keyring", ssh_askpass::main),
     ("subvolume", subvolume::main),
     ("sudo", elevate::main),
     ("swapoff", swap::swapoff),

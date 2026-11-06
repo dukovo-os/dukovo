@@ -273,7 +273,7 @@ pub fn terminal_type(term: &str) -> &str {
 /// over what Spark gives every POSIX program. `PATH` names the system's
 /// commands, then the folders where bundled(8) links the commands of the
 /// bundles for everyone and of the person's own (ADR 0225), so that
-/// installing never edits it.
+/// installing never edits it. OpenSSH's askpass is the keyring's.
 pub fn environment(user: &User, term: &str) -> Vec<String> {
     let home = user.home.trim_end_matches('/');
     vec![
@@ -285,6 +285,11 @@ pub fn environment(user: &User, term: &str) -> Vec<String> {
         format!("TERM={}", terminal_type(term)),
         "LANG=C.UTF-8".into(),
         "EDITOR=nano".into(),
+        // OpenSSH asks each question through ssh-askpass-keyring, which
+        // gives key passphrases from the keyring (ADR 0395); `force`, as
+        // OpenSSH otherwise uses an askpass only on a graphical display.
+        "SSH_ASKPASS=/system/commands/ssh-askpass-keyring".into(),
+        "SSH_ASKPASS_REQUIRE=force".into(),
     ]
 }
 
@@ -727,7 +732,16 @@ mod tests {
         let env = environment(&alice(), "linux");
         let path =
             "PATH=/system/commands:/applications/commands:/users/alice/applications/commands";
-        for set in ["HOME=/users/alice", "USER=alice", "LOGNAME=alice", "TERM=linux", path] {
+        let askpass = "SSH_ASKPASS=/system/commands/ssh-askpass-keyring";
+        for set in [
+            "HOME=/users/alice",
+            "USER=alice",
+            "LOGNAME=alice",
+            "TERM=linux",
+            path,
+            askpass,
+            "SSH_ASKPASS_REQUIRE=force",
+        ] {
             assert!(env.iter().any(|e| e == set), "{set}");
         }
         assert!(environment(&alice(), "x\ny").iter().any(|e| e == "TERM=dumb"));
