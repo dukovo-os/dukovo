@@ -475,27 +475,52 @@ jobs:
 
   # Only the commits a pull request adds: history already on main is left
   # as it is (ADR 0025).
-  signoff:
-    name: DCO sign-off
-    if: github.event_name == 'pull_request'
+  # Which of the slower checks below a pull request needs, from the files
+  # it changes. The account's runners are shared by every run, about 20
+  # jobs at once, so a check a pull request cannot affect leaves its
+  # runner to the runs waiting behind it. Main, and every other event,
+  # runs them all, so whatever a pull request skips is still checked when
+  # it merges.
+  scope:
+    name: Choose the checks
     runs-on: ubuntu-24.04
+    outputs:
+      kani: ${{ steps.scope.outputs.kani }}
+      tla: ${{ steps.scope.outputs.tla }}
+      container: ${{ steps.scope.outputs.container }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Install the pinned Rust toolchain
-        run: rustup toolchain install
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: ". -> target"
-
-      - name: ./ob signoff
-        run: ./ob signoff "${{ github.event.pull_request.base.sha }}"
+      - name: Decide from the changed files
+        id: scope
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          # `needs <pattern>` says true unless this is a pull request none
+          # of whose files match the pattern. Workflow changes run all.
+          needs() {
+            if [ "$GITHUB_EVENT_NAME" != pull_request ] \
+              || git diff --name-only "$BASE" HEAD | grep -qE "$1|^\.github/"; then
+              echo true
+            else
+              echo false
+            fi
+          }
+          {
+            # The Kani proofs are in the kernel's libraries, which build
+            # from kernel/ and tools/ridlc/ alone; doctor.rs pins Kani.
+            echo "kani=$(needs '^(kernel/|tools/ridlc/|tools/xtask/src/doctor\.rs|rust-toolchain\.toml)')"
+            # TLC checks the models in the tla/ folders, not the code.
+            echo "tla=$(needs '(^|/)tla/|^tools/xtask/src/tla\.rs')"
+            echo "container=$(needs '^(tools/container/|tools/xtask/src/(doctor|ports)\.rs|ports/|rust-toolchain\.toml)')"
+          } | tee -a "$GITHUB_OUTPUT"
 
   kani:
     name: Kani proofs
+    needs: scope
+    if: needs.scope.outputs.kani == 'true'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -532,6 +557,8 @@ jobs:
 
   tla:
     name: TLA+ models
+    needs: scope
+    if: needs.scope.outputs.tla == 'true'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -556,36 +583,6 @@ jobs:
 
       - name: ./ob test tla
         run: ./ob test tla
-
-  tuf:
-    name: TUF conformance
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install the pinned Rust toolchain
-        run: rustup toolchain install
-
-      # Some of the suite's tests run the client under faketime; Python
-      # and its venv module come with the runner.
-      - name: Install faketime
-        uses: ./.github/actions/apt-install
-        with:
-          packages: faketime
-
-      - name: Cache the conformance suite
-        uses: actions/cache@v4
-        with:
-          path: .cache/tuf-conformance
-          key: tuf-conformance-${{ hashFiles('tools/xtask/src/tuf.rs') }}
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: ". -> target"
-
-      # The TUF client against tuf-conformance (ADR 0380).
-      - name: ./ob test tuf
-        run: ./ob test tuf
 
   corpus:
     name: Shell corpus
@@ -613,37 +610,23 @@ jobs:
       - name: ./ob test corpus
         run: ./ob test corpus
 
+  # The container builds every port, the kernel, the programs and the
+  # image with its own toolchain, and boots a few of them (ADR 0330):
+  # what differs from the jobs above is the toolchain, not the code, and
+  # the ports are where it showed (OpenSSH needed Automake, #163). The
+  # whole of `ob --container test` runs every night instead
+  # (container.yml). A pull request runs this job only when it changes
+  # that toolchain or what builds with it (the scope job decides); main
+  # runs it on every merge.
   container:
     name: Build container
+    needs: scope
+    if: needs.scope.outputs.container == 'true'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      # The container builds every port, the kernel, the programs and the
-      # image with its own toolchain, and boots a few of them (ADR 0330):
-      # what differs from the jobs above is the toolchain, not the code,
-      # and the ports are where it showed (OpenSSH needed Automake, #163).
-      # The whole of `ob --container test` runs every night instead
-      # (container.yml). A pull request runs this job only when it changes
-      # that toolchain or what builds with it; main runs it on every merge.
-      - name: Decide whether the container needs testing
-        id: scope
-        env:
-          BASE: ${{ github.event.pull_request.base.sha }}
-        run: |
-          if [ "$GITHUB_EVENT_NAME" != pull_request ] \
-            || git diff --name-only "$BASE" HEAD \
-              | grep -qE '^(tools/container/|tools/xtask/src/(doctor|ports)\.rs|ports/|rust-toolchain\.toml|\.github/)'; then
-            echo run=true >> "$GITHUB_OUTPUT"
-          else
-            echo "No container files changed; main's run covers the container."
-            echo run=false >> "$GITHUB_OUTPUT"
-          fi
 
       - name: Allow QEMU to use KVM
-        if: steps.scope.outputs.run == 'true'
         run: |
           if [ -e /dev/kvm ]; then
             echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
@@ -655,12 +638,11 @@ jobs:
       # The ports main built last, as in the build job, keyed by the
       # container's definition, which holds its Clang.
       - name: Note the build container's version
-        if: steps.scope.outputs.run == 'true'
         id: ports-key
         run: echo "toolchain=$(sha256sum tools/container/Containerfile | cut -c1-12)" >> "$GITHUB_OUTPUT"
 
       - name: Restore the built ports
-        if: steps.scope.outputs.run == 'true' && github.event_name != 'push'
+        if: github.event_name != 'push'
         uses: actions/cache/restore@v4
         with:
           path: |
@@ -672,20 +654,17 @@ jobs:
           restore-keys: ports-container-${{ steps.ports-key.outputs.toolchain }}-
 
       - name: ./ob --container doctor
-        if: steps.scope.outputs.run == 'true'
         run: ./ob --container doctor
 
       # One case each for UEFI and BIOS, the C ports on mlibc, storage,
       # TLS on ring, and the git, curl and OpenSSH ports: about 3 minutes.
       - name: ./ob --container test boot (smoke cases)
-        if: steps.scope.outputs.run == 'true'
         run: >-
           ./ob --container test boot
           --case uefi-usb --case bios-cdrom --case posix --case storage
           --case tls --case git-https --case ssh
 
       - name: ./ob --container image
-        if: steps.scope.outputs.run == 'true'
         run: ./ob --container image
 
       - name: Save the built ports
@@ -699,36 +678,94 @@ jobs:
             target/container/ports/sources
           key: ports-container-${{ steps.ports-key.outputs.toolchain }}-${{ hashFiles('ports/**', 'abi/**', 'tools/**', 'rust-toolchain.toml') }}
 
-  deny:
-    name: Licenses and advisories
+  # The quick checks, in one job instead of one each, so that they hold
+  # one runner instead of four. Each runs even when one before it failed,
+  # so a failure here names every check that failed.
+  checks:
+    name: Licenses, sign-off and TUF
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install the pinned Rust toolchain
+        run: rustup toolchain install
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-deny
-      - name: cargo deny (build tool)
-        run: cargo deny --manifest-path Cargo.toml check
+
+      # Some of the TUF suite's tests run the client under faketime;
+      # Python and its venv module come with the runner.
+      - name: Install faketime
+        uses: ./.github/actions/apt-install
+        with:
+          packages: faketime
+
+      - name: Cache the conformance suite
+        uses: actions/cache@v4
+        with:
+          path: .cache/tuf-conformance
+          key: tuf-conformance-${{ hashFiles('tools/xtask/src/tuf.rs') }}
+
       # The kernel takes the crates it patches from kernel/patched (ADR 0182).
       - name: Patch the kernel's crates
         run: ./ob crates
+
+      - name: cargo deny (build tool)
+        if: ${{ !cancelled() }}
+        run: cargo deny --manifest-path Cargo.toml check
       # cargo-deny reads ./deny.toml unless told otherwise; the kernel has
       # its own, permissive-only policy.
       - name: cargo deny (kernel)
+        if: ${{ !cancelled() }}
         run: cargo deny --manifest-path kernel/Cargo.toml --config kernel/deny.toml check
       # The user programs go into /system, so they get the kernel's policy.
       - name: cargo deny (user programs)
+        if: ${{ !cancelled() }}
         run: cargo deny --manifest-path userspace/Cargo.toml --config kernel/deny.toml check
 
-  reuse:
-    name: REUSE compliance
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v4
       # Every file needs copyright and license information (ADR 0026). The
       # REUSE tool is GPL-3.0-or-later and only checks the repository.
       - name: reuse lint
+        if: ${{ !cancelled() }}
         run: |
           python3 -m venv "$RUNNER_TEMP/reuse"
           "$RUNNER_TEMP/reuse/bin/pip" install --quiet reuse==6.2.0
           "$RUNNER_TEMP/reuse/bin/reuse" lint
+
+      - name: ./ob signoff
+        if: ${{ !cancelled() && github.event_name == 'pull_request' }}
+        run: ./ob signoff "${{ github.event.pull_request.base.sha }}"
+
+      # The TUF client against tuf-conformance (ADR 0380).
+      - name: ./ob test tuf
+        if: ${{ !cancelled() }}
+        run: ./ob test tuf
+
+  # The one check main's ruleset requires: it passes when every job above
+  # passed, or was skipped on purpose, so that a job can be added, renamed
+  # or split without changing the ruleset. The benchmarks are left out, as
+  # they were from the required checks: their numbers move with the
+  # runner, and a red one is read by hand.
+  passed:
+    name: CI passed
+    if: always()
+    needs: [build, unit, chkdsk, smb-windows, boot, instructions, scope, kani, tla, corpus, container, checks]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check that every job passed or was skipped
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          echo "$RESULTS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
+          failed=$(echo "$RESULTS" | jq -r '[to_entries[] | select(.value.result != "success" and .value.result != "skipped") | .key] | join(", ")')
+          if [ -n "$failed" ]; then
+            echo "::error::These jobs did not pass: $failed"
+            exit 1
+          fi
