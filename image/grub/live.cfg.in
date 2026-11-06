@@ -3,18 +3,21 @@
 
 # GRUB configuration of the Dukovo Server @VERSION@ install stick and ISO.
 # `ob image` generates boot/grub/grub.cfg from image/grub/live.cfg.in by
-# filling in the VERSION, TIMEOUT, CMDLINE, MODULES and ENTRIES
+# filling in the VERSION, TIMEOUT, CMDLINE, MODULES, ENTRIES and DEFAULT
 # placeholders; ENTRIES holds the disk check's entry of
 # `ob image --disk-check`, or nothing. See dukovo-boot(7) and ADR 0308.
 #
 # Every entry that starts Dukovo starts the live system: the whole system
 # from the boot archive, in memory, with `live` on the command line, so
 # that Spark takes no disk's root and mounts no disk but the stick's own
-# DUKOVO_LIVE partition, read-only. The installer's entries come with the
-# installer.
+# DUKOVO_LIVE partition, read-only. With `install` too, consoled starts
+# the installer's screens on tty1 (ADR 0310). DEFAULT is the entry
+# started when nobody chooses one: `install` on a release's stick and
+# ISO, `try` in the boot tests' image, whose cases add `install` to
+# their own command line when they test the screens.
 
 set timeout=@TIMEOUT@
-set default=0
+set default=@DEFAULT@
 
 # Mirror the menu on the first serial port, where Radix also writes.
 if serial --unit=0 --speed=115200; then
@@ -33,9 +36,16 @@ else
     insmod vbe
 fi
 
+# The installer's screens on tty1, and a shell on the other consoles
+# with no sign-in: the live system has no accounts.
+menuentry "Install Dukovo @VERSION@" --id install {
+    multiboot2 /boot/radix live install console-sign-in=off @CMDLINE@
+@MODULES@    boot
+}
+
 # A shell on every console, with no sign-in: the live system has no
 # accounts, and nothing on it outlives the boot.
-menuentry "Try Dukovo @VERSION@ (live console)" {
+menuentry "Try Dukovo @VERSION@ (live console)" --id try {
     multiboot2 /boot/radix live console-sign-in=off @CMDLINE@
 @MODULES@    boot
 }
@@ -46,7 +56,7 @@ menuentry "Try Dukovo @VERSION@ (live console)" {
 # that disk's EFI system partition; under a BIOS, the disk's first sector,
 # with the disks' BIOS numbers swapped so that it finds itself first, as
 # it would with no stick.
-menuentry "Boot from first disk" {
+menuentry "Boot from first disk" --id first-disk {
     if [ "${grub_platform}" = "efi" ]; then
         for part in (hd1,gpt1) (hd1,gpt2) (hd1,gpt3) (hd1,gpt4); do
             if [ -f "${part}/EFI/BOOT/BOOTX64.EFI" ]; then

@@ -14,6 +14,15 @@ publish.workspace = true
 # The accounts' files, and checks of the password hashes an answers file
 # gives (ADR 0218).
 accounts = { path = "../accounts", features = ["hash"] }
+# Every message the installer shows, in Fluent files, one folder a
+# language (Apache-2.0 OR MIT).
+fluent-bundle = "0.16.0"
+unic-langid = "0.9.6"
+# The installer's screens, drawn on the console through crossterm, which
+# ob patches in from the rust-crates port (MIT).
+ratatui = { version = "0.30.2", default-features = false, features = ["crossterm"] }
+# The keyboard layouts the screens offer (keymap(1)).
+keymap = { path = "../keymap" }
 # The SHA-256 of each file as it is copied, ring's, which ob patches in
 # from the rust-crates port (ADR 0192).
 ring = "0.17.14"

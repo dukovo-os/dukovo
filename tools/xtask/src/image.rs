@@ -76,13 +76,36 @@ pub enum Menu {
     /// that holds a Dukovo root.
     Tests,
     /// The install stick's and the ISO's ([`LIVE_CFG`]): the live system,
-    /// from the boot archive, which takes no disk's root (ADR 0308).
-    Live,
+    /// from the boot archive, which takes no disk's root (ADR 0308), with
+    /// this entry started when nobody chooses one.
+    Live(LiveStart),
     /// An installed system's ([`INSTALLED_CFG`]): the kernel and the
     /// startup archive from the slot of the root with this Btrfs UUID
     /// (ADR 0307). Its EFI system partition holds GRUB and its menu, and
     /// the microcode, but no kernel or archive.
     Installed([u8; 16]),
+}
+
+/// Which of the live menu's entries starts when nobody chooses one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LiveStart {
+    /// *Install Dukovo*: the installer's screens on tty1, as a release's
+    /// stick and ISO start (ADR 0310).
+    Install,
+    /// *Try Dukovo*: a shell on every console, as the boot tests' live
+    /// image starts. A case that tests the screens adds `install` to its
+    /// own command line.
+    Try,
+}
+
+impl LiveStart {
+    /// The entry's `--id` in [`LIVE_CFG`].
+    fn id(self) -> &'static str {
+        match self {
+            Self::Install => "install",
+            Self::Try => "try",
+        }
+    }
 }
 
 /// Which image `ob image` makes.
@@ -155,9 +178,9 @@ pub fn build_release(
         }
         Kind::Stick => {
             make_live(ctx, &kernel, &programs, &ctx.out.join("live-staging"), &live)?;
-            Menu::Live
+            Menu::Live(LiveStart::Install)
         }
-        Kind::Iso => Menu::Live,
+        Kind::Iso => Menu::Live(LiveStart::Install),
     };
     // The features' flags go on whichever command line the image boots.
     let cmdline = overrides.cmdline.as_deref().unwrap_or(&ctx.config.boot.cmdline);
@@ -282,6 +305,11 @@ fn installed_template(ctx: &Ctx, uuid: [u8; 16]) -> Result<String> {
     let template =
         std::fs::read_to_string(&path).context(|| format!("reading {}", path.display()))?;
     Ok(template.replace("@ROOT_UUID@", &uuid_text(uuid)))
+}
+
+/// The live menu's template with the entry `start` as its default.
+fn live_template(template: &str, start: LiveStart) -> String {
+    template.replace("@DEFAULT@", start.id())
 }
 
 /// The installed system's menu in the system's GRUB folder, which
@@ -478,7 +506,7 @@ pub fn build(ctx: &Ctx, spec: &ImageSpec<'_>) -> Result<()> {
     };
     let template = match spec.menu {
         Menu::Installed(uuid) => installed_template(ctx, uuid)?,
-        Menu::Live => read(LIVE_CFG)?,
+        Menu::Live(start) => live_template(&read(LIVE_CFG)?, start),
         Menu::Tests => read(TESTS_CFG)?,
     };
     let entries = match spec.disk_check {
@@ -1196,8 +1224,20 @@ mod tests {
         let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../", "image/grub/live.cfg.in");
         let template = std::fs::read_to_string(path).unwrap();
         let modules = [("/boot/bootfs", userspace::BOOTFS_WORD)];
-        let cfg = render_grub_cfg(&template, 5, "quiet", &modules, "").unwrap();
-        assert!(cfg.contains(&format!("Try Dukovo {VERSION} (live console)")), "{cfg}");
+        let live = live_template(&template, LiveStart::Install);
+        let cfg = render_grub_cfg(&live, 5, "quiet", &modules, "").unwrap();
+        // A release starts the installer unless another entry is chosen.
+        assert!(cfg.contains("set default=install\n"), "{cfg}");
+        assert!(cfg.contains(&format!("menuentry \"Install Dukovo {VERSION}\" --id install {{")));
+        let install = format!(
+            "    multiboot2 /boot/radix live install console-sign-in=off quiet\n    module2 /boot/bootfs {}\n    boot\n",
+            userspace::BOOTFS_WORD
+        );
+        assert!(cfg.contains(&install), "{cfg}");
+        assert!(
+            cfg.contains(&format!("Try Dukovo {VERSION} (live console)\" --id try {{")),
+            "{cfg}"
+        );
         // Spark's flag comes first, so that a --cmdline of the user's
         // cannot push it past a `--`.
         let entry = format!(
@@ -1213,6 +1253,10 @@ mod tests {
         // The modules those need are built into GRUB.
         assert!(crate::grub::MODULES.contains(&"chain"));
         assert!(crate::grub::PC_MODULES.contains(&"drivemap"));
+        // The boot tests' live image tries the system instead.
+        let tests = live_template(&template, LiveStart::Try);
+        let cfg = render_grub_cfg(&tests, 0, "quiet", &modules, "").unwrap();
+        assert!(cfg.contains("set default=try\n"), "{cfg}");
     }
 
     #[test]

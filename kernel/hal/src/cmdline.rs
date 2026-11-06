@@ -180,6 +180,12 @@ pub const FLAGS: &[Flag] = &[
                   starts it: /system stays the boot archive, no disk is the root, and no disk is \
                   mounted but the stick's DUKOVO_LIVE, read-only",
     },
+    Flag {
+        name: "install",
+        value: None,
+        summary: "for consoled, not the kernel: tty1 runs the installer's screens, as the install \
+                  stick's Install Dukovo entry starts them, and root's shell once they end",
+    },
 ];
 
 /// The self-tests `selftest=name` runs; radix-debug(7) describes them.

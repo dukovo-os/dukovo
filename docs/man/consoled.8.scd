@@ -79,6 +79,14 @@ root's shell on each console, no sign-in*. Only someone who can already
 change the kernel's command line, at the boot menu or in the boot
 volume, can turn it off; the boot tests do, to type at root's shell.
 
+With *install* on the kernel's command line, as the install stick's
+*Install Dukovo* entry starts the live system, tty1's first session runs
+*dukovo-install*(8)'s screens as root in the shell's place, with no
+issue text, and consoled logs *install: the installer's screens on
+tty1*. When they end, by Live console on their first page or at the end
+of the install, tty1 clears and runs the shell as the other consoles do
+(ADR 0310).
+
 # NOTIFICATIONS
 
 consoled shows the notifications *notifyd*(8) passes on, such as

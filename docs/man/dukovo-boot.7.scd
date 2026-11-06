@@ -35,10 +35,13 @@ files below; and DUKOVO_LIVE (GPT type
 5894C662-AF90-4B47-BAAF-2E3396443B25, "Dukovo live"), a Btrfs whose
 read-only subvolume _release_ holds the signed release of the system
 that the installer installs (*system-release*(8), ADR 0308). The boot
-menu, from _image/grub/live.cfg.in_, starts the live system, *Try Dukovo
-(live console)*, with *live* on the command line, or offers *Boot from
-first disk*, which starts the machine's own system as if the stick were
-not there. *rgrub-setup*(8) puts the same GRUB on other disks.
+menu, from _image/grub/live.cfg.in_, starts the live system with *live*
+on the command line: *Install Dukovo*, the default, adds *install*, so
+that tty1 shows the installer's screens (*dukovo-install*(8), ADR 0310);
+*Try Dukovo (live console)* gives a shell on every console. *Boot from
+first disk* starts the machine's own system as if the stick were not
+there. The boot tests' live image starts *Try Dukovo* when nobody
+chooses, and the cases that test the installer add *install* themselves. *rgrub-setup*(8) puts the same GRUB on other disks.
 *ob image --iso* builds an ISO for optical media instead, which El Torito boots
 under either firmware, holding the same files and no release. The boot
 tests' images have the menu of _image/grub/grub.cfg.in_ instead, which
@@ -611,6 +614,15 @@ them to *init*, and the kernel does not read them.
 	archive, in memory, whatever disks hold a Dukovo root, and the only
 	disk Spark mounts is the stick's DUKOVO_LIVE, read-only: the
 	machine's disks are the owner's, for the installer or *mount*(8).
+
+*install*
+	Read by *consoled*(8), not the kernel: tty1 runs
+	*dukovo-install*(8)'s screens as root, with no sign-in, as the
+	install stick's *Install Dukovo* entry starts them, and root's shell
+	once they end, as Live console on their first page or the end of
+	the install leaves them. The install stick's entry gives
+	*console-sign-in=off* with it, so that the other consoles have
+	root's shell for a look around during the install.
 
 *startup-trouble*
 	Read by *login*(1) and *authd*(8), not the kernel: the sign-in at

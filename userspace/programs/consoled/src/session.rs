@@ -56,6 +56,12 @@ pub struct Console {
     pub retry_at: Option<Instant>,
     /// The terminal's name, as `pts/N`, while it has one.
     terminal: Option<String>,
+    /// A program run as root in the shell's place for the console's next
+    /// session only, as the installer's screens on tty1 under the kernel
+    /// flag `install` (dukovo-boot(7)). The shell follows when it ends.
+    pub once: Option<String>,
+    /// The program the session runs, or ran last.
+    program: String,
 }
 
 /// An argument or environment string as C wants it; one with a NUL in it
@@ -77,7 +83,14 @@ impl Console {
             quick_exits: 0,
             retry_at: None,
             terminal: None,
+            once: None,
+            program: String::new(),
         }
+    }
+
+    /// The program the session runs, or ran last.
+    pub fn program(&self) -> &str {
+        &self.program
     }
 
     /// The terminal's name, as /processes gives it: `pts/N`.
@@ -108,13 +121,21 @@ impl Console {
     }
 
     /// Starts a session: shows the issue text, then runs the shell on a
-    /// new pseudo-terminal as its controlling terminal.
+    /// new pseudo-terminal as its controlling terminal. The console's
+    /// [`once`](Console::once) program, if it has one, runs instead, as
+    /// root and with no issue text, since it draws the whole screen.
     pub fn start(&mut self, shell: &Shell) -> io::Result<()> {
         self.retry_at = None;
         self.term.reset();
+        let once = self.once.take();
+        self.program = once.clone().unwrap_or_else(|| shell.path.clone());
+        // login(1) signs people in; a program run once is root's, as the
+        // shell is with no sign-in.
+        let sign_in = shell.sign_in && once.is_none();
         let number = self.number;
         let issue = match &shell.welcome {
-            Some(welcome) if shell.sign_in => {
+            _ if once.is_some() => String::new(),
+            Some(welcome) if sign_in => {
                 welcome.render(self.term.cols(), self.term.rows(), &|text: &str| {
                     expand_issue(text, number)
                 })
@@ -148,12 +169,12 @@ impl Console {
         let (master, slave) =
             unsafe { (OwnedFd::from_raw_fd(master), OwnedFd::from_raw_fd(slave)) };
         set_flags(master.as_raw_fd());
-        // A login shell's name starts with a dash (sh(1)); login's does
-        // not.
-        let name = shell.path.rsplit('/').next().unwrap_or("sh");
-        let argv0 = if shell.sign_in { name.to_string() } else { format!("-{name}") };
-        let argv_strings = [c_string(&shell.path), c_string(&argv0)];
-        let sign_in = shell.sign_in;
+        // A login shell's name starts with a dash (sh(1)); login's and a
+        // program's run once do not.
+        let name = self.program.rsplit('/').next().unwrap_or("sh");
+        let login_shell = !sign_in && once.is_none();
+        let argv0 = if login_shell { format!("-{name}") } else { name.to_string() };
+        let argv_strings = [c_string(&self.program), c_string(&argv0)];
         let argv = [argv_strings[1].as_ptr(), std::ptr::null()];
         // XDG_VTNR names the console, as on Linux: nukesh's [folders]
         // resume keeps a place for each (ADR 0286).
@@ -268,7 +289,7 @@ impl Console {
             let message = format!(
                 "{} ended at once {QUICK_MAX} times on tty{} (last status {status:#x}); \
                  starting it again in {} seconds",
-                shell.path,
+                self.program,
                 self.number,
                 PAUSE.as_secs()
             );
@@ -279,7 +300,7 @@ impl Console {
             Ok(()) => None,
             Err(err) => {
                 self.retry_at = Some(Instant::now() + PAUSE);
-                Some(format!("cannot start {} on tty{}: {err}", shell.path, self.number))
+                Some(format!("cannot start {} on tty{}: {err}", self.program, self.number))
             }
         }
     }

@@ -27,12 +27,18 @@ pub struct Copied {
 /// Copies every directory, file and link of `release` from the store in
 /// the repository `repo` into `slot`, an empty directory. Directories get
 /// their modes last, so that one without write access is filled first.
+/// `progress` is given the bytes copied so far after each file.
 ///
 /// # Errors
 ///
 /// The first file that is missing or not what the list says, by its path
 /// in the release, or a write that failed.
-pub fn release(repo: &Path, release: &Release, slot: &Path) -> Result<Copied, String> {
+pub fn release(
+    repo: &Path,
+    release: &Release,
+    slot: &Path,
+    progress: &mut dyn FnMut(u64),
+) -> Result<Copied, String> {
     let store = Store::at(&repo.join("files"));
     let mut copied = Copied::default();
     let mut directories = Vec::new();
@@ -52,6 +58,7 @@ pub fn release(repo: &Path, release: &Release, slot: &Path) -> Result<Copied, St
                 set_mode(&to, entry.mode_bits()).map_err(|why| format!("{shown}: {why}"))?;
                 copied.files += 1;
                 copied.bytes += size;
+                progress(copied.bytes);
             }
             Kind::Link => {
                 let target = entry
@@ -143,7 +150,7 @@ mod tests {
         let dir = scratch("copy");
         let listed = repo(&dir.join("repo"), b"hello");
         fs::create_dir(dir.join("slot")).unwrap();
-        let copied = release(&dir.join("repo"), &listed, &dir.join("slot")).unwrap();
+        let copied = release(&dir.join("repo"), &listed, &dir.join("slot"), &mut |_| {}).unwrap();
         assert_eq!((copied.files, copied.bytes), (1, 5));
         assert_eq!(fs::read(dir.join("slot/tool")).unwrap(), b"hello");
         let mode = |p: &str| fs::metadata(dir.join(p)).unwrap().permissions().mode() & 0o7777;
@@ -159,12 +166,13 @@ mod tests {
         let (sha256, _) = listed.files[1].file().unwrap();
         fs::write(dir.join("repo/files").join(sha256), b"hellO").unwrap();
         fs::create_dir(dir.join("slot")).unwrap();
-        let why = release(&dir.join("repo"), &listed, &dir.join("slot")).unwrap_err();
+        let why = release(&dir.join("repo"), &listed, &dir.join("slot"), &mut |_| {}).unwrap_err();
         assert!(why.starts_with("bin/tool: the stick's copy is 5 bytes"), "{why}");
         assert!(!dir.join("slot/bin/tool").exists());
         fs::write(dir.join("repo/files").join(sha256), b"hello!").unwrap();
         fs::create_dir(dir.join("slot-2")).unwrap();
-        let why = release(&dir.join("repo"), &listed, &dir.join("slot-2")).unwrap_err();
+        let why =
+            release(&dir.join("repo"), &listed, &dir.join("slot-2"), &mut |_| {}).unwrap_err();
         assert!(why.contains("longer than"), "{why}");
         fs::remove_dir_all(&dir).unwrap();
     }

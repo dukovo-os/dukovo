@@ -8,7 +8,8 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 `./ob image` builds `out/dukovo-<version>-x86_64.img`. Written to a USB
 stick, it boots on UEFI and legacy BIOS computers. Its menu starts the
 live system, which runs from memory and leaves the machine's disks
-alone, or boots the machine's first disk. The stick also carries the
+alone, with the installer on the first console ([Installing](installing.md))
+or a shell on every console, or boots the machine's first disk. The stick also carries the
 signed release of the system that the installer installs; to check that
 a stick was written whole, run `system-release check` on its release
 from the live system:
@@ -63,12 +64,12 @@ These tools write the same image and check the target is removable:
 1. Plug the stick in and switch the computer on.
 2. Open the one-time boot menu (F12 on Dell computers) and choose the USB
    stick. It may be listed twice, once for UEFI and once for legacy boot.
-3. GRUB shows a menu with one entry, "Dukovo Server 0.12.0 (Radix)", and boots it
-   after three seconds.
+3. GRUB shows a menu: *Install Dukovo*, which it starts after a few
+   seconds, *Try Dukovo (live console)* and *Boot from first disk*.
 
-The screen then shows the kernel's log, under UEFI and legacy BIOS boot
-alike, ending with "Boot complete.". The computer then idles; switch it
-off with the power button. Where the kernel hears the button, the log
+The screen shows the kernel's log, under UEFI and legacy BIOS boot
+alike, then the installer, or a shell with *Try Dukovo*. Switch the
+computer off with the power button, or `poweroff` at a shell. Where the kernel hears the button, the log
 says "Power: the ACPI power button asks Spark to power the machine off",
 and a press stops the services and powers the machine off cleanly;
 elsewhere the firmware handles the button. If the kernel panics

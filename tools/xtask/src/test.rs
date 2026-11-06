@@ -20,7 +20,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use crate::config::{Firmware, Media};
-use crate::image::{self, ImageSpec, Menu, crc32};
+use crate::image::{self, ImageSpec, LiveStart, Menu, crc32};
 use crate::process::{self, step};
 use crate::qemu::{self, Machine, Serial};
 use crate::{
@@ -3057,7 +3057,7 @@ pub fn build_test_image(
             disk_check: None,
             root: None,
             live: None,
-            menu: if kind == TestImage::Live { Menu::Live } else { Menu::Tests },
+            menu: if kind == TestImage::Live { Menu::Live(LiveStart::Try) } else { Menu::Tests },
             staging: dir.join(format!("{name}-root")),
             output: output.clone(),
             iso,
