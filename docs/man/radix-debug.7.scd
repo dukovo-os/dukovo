@@ -577,7 +577,11 @@ boots.
 	runs 100,000 random operations with the store's full audit every
 	1,024; and has every other CPU derive from a tree of 4,096
 	capabilities while the boot CPU revokes it, after which nothing they
-	derived may be left. It finally checks that no capability, object,
+	derived may be left. Then, in 8 rounds with the audit after each,
+	every CPU makes random operations of every kind on six spaces they
+	share and a space of its own, which it destroys and makes again
+	every 500 operations, so that the store's per-space and tree locks
+	meet in every combination. It finally checks that no capability, object,
 	heap object or page of memory was leaked, and reports *selftest caps:
 	passed*.
 

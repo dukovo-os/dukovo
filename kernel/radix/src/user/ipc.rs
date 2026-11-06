@@ -21,15 +21,21 @@
 //! data words, if the sender's endpoint capability has the grant right.
 //! They are copied (or moved, with the move_caps flag) into the first
 //! empty slots of the receiver's receive window, and the receiver gets
-//! those slot numbers in place of the sender's. That happens under the
-//! capability store's lock, which register-only messages never take.
+//! those slot numbers in place of the sender's. That happens with the
+//! capability store's tree lock, both spaces' locks and its object
+//! table's held (`caps::with_all`), which register-only messages never
+//! take. The other side of the exchange is known only under the
+//! endpoint's lock, which comes after the store's: so the store's locks
+//! are taken for the space of whoever waits first at the time, and the
+//! exchange starts again if someone else waits first once the endpoint is
+//! locked.
 //!
 //! The fast path: a message to a waiting receiver, and every reply, wakes
 //! the other thread on this CPU (`sched::wake_sync`), where it runs as soon
 //! as this thread blocks, without an interrupt to another CPU.
 //!
-//! Lock order: the store, an endpoint, a thread's IPC state (never two of
-//! either at once).
+//! Lock order: the store's, an endpoint, a thread's IPC state (never two
+//! of either at once).
 
 use alloc::sync::Arc;
 use core::sync::atomic::{AtomicUsize, Ordering};
@@ -43,7 +49,7 @@ use radix_mm::{Flags, HEAP, Kmalloc};
 use radix_sync::SpinLock;
 
 use super::{Fifo, Result, UserRef, UserThread, cap_error, error};
-use crate::caps::{self, Locked};
+use crate::caps::{self, Tree};
 use crate::sched::{self, ThreadRef};
 
 /// An endpoint, shared.
@@ -53,7 +59,7 @@ pub type EndpointRef = Arc<Endpoint, Kmalloc>;
 pub struct Endpoint {
     queues: SpinLock<Queues>,
     /// Queued senders whose messages carry capabilities: a receiver that
-    /// sees any takes the store's lock first.
+    /// sees any takes the store's locks first.
     cap_senders: AtomicUsize,
 }
 
@@ -170,11 +176,25 @@ pub fn send(
     if message.info.caps > 0 && !message.grant {
         return Err(Kernel::MissingRights.status(u32::from(radix_cap::Rights::GRANT.bits())));
     }
-    let queued = if message.info.caps > 0 {
-        caps::with(|store| hand_over(Some(store), me, user, endpoint, message))
+    let queued = loop {
+        let handed = if message.info.caps > 0 {
+            // The store's locks for the sender's space and that of the
+            // receiver waiting first, if one does.
+            let receiver = endpoint.first_receiver();
+            let spaces = [message.cspace, receiver.unwrap_or(message.cspace)];
+            caps::with_all(&spaces, |store| {
+                hand_over(Some(Held { store, other: receiver }), me, user, endpoint, message)
+            })
             .map_err(cap_error)??
-    } else {
-        hand_over(None, me, user, endpoint, message)?
+        } else {
+            hand_over(None, me, user, endpoint, message)?
+        };
+        match handed {
+            Handed::Delivered => break false,
+            Handed::Queued => break true,
+            // Another receiver waits first now: again, with its space.
+            Handed::Again => {}
+        }
     };
     if queued {
         match wait(me, user, Some(endpoint), "send")? {
@@ -195,19 +215,60 @@ pub fn send(
     }
 }
 
-/// Hands `message` to a waiting receiver, or queues the sender. Returns
-/// whether it queued. With the store locked when the message carries
-/// capabilities.
+/// The store's locks, held for a message's capabilities, and the space of
+/// the thread on the other side they were taken for: the receiver that
+/// waited first, or the sender whose message was first, when they were
+/// taken (`None`: nobody, or a message without capabilities).
+struct Held<'a, 'v> {
+    store: &'a mut Tree<'v>,
+    other: Option<SpaceId>,
+}
+
+/// What [`hand_over`] did with a message.
+enum Handed {
+    /// A waiting receiver has it.
+    Delivered,
+    /// The sender waits in the endpoint's queue.
+    Queued,
+    /// The store's locks were taken for a receiver that no longer waits
+    /// first: again, with the space of the one that does.
+    Again,
+}
+
+impl Endpoint {
+    /// The capability space of the receiver waiting first, if one is.
+    fn first_receiver(&self) -> Option<SpaceId> {
+        let queues = self.queues.lock();
+        queues.receivers.iter().next().map(|receiver| user_of(receiver).cspace)
+    }
+
+    /// The capability space of the sender whose message is first, if one
+    /// is and it carries capabilities.
+    fn first_sender(&self) -> Option<SpaceId> {
+        let queues = self.queues.lock();
+        let first = queues.senders.iter().next()?;
+        (first.message.info.caps > 0).then_some(first.message.cspace)
+    }
+}
+
+/// Hands `message` to a waiting receiver, or queues the sender. With the
+/// store's locks held when the message carries capabilities.
 fn hand_over(
-    mut store: Option<&mut Locked>,
+    mut store: Option<Held<'_, '_>>,
     me: &ThreadRef,
     user: &UserRef,
     endpoint: &EndpointRef,
     message: Message,
-) -> Result<bool> {
+) -> Result<Handed> {
     let mut queues = endpoint.queues.lock();
     if queues.closed {
         return Err(error(Kernel::Gone));
+    }
+    if let Some(held) = &store {
+        let first = queues.receivers.iter().next().map(|receiver| user_of(receiver).cspace);
+        if first != held.other {
+            return Ok(Handed::Again);
+        }
     }
     let Some(receiver) = queues.receivers.pop_front() else {
         if message.info.no_block {
@@ -220,13 +281,13 @@ fn hand_over(
         if message.info.caps > 0 {
             endpoint.cap_senders.fetch_add(1, Ordering::Relaxed);
         }
-        return Ok(true);
+        return Ok(Handed::Queued);
     };
     let receiver_user = user_of(&receiver).clone();
     let mut words = message.words;
     if message.info.caps > 0 {
-        let store = store.as_mut().expect("the store is locked for capabilities");
-        match transfer(store, &message, &receiver_user) {
+        let held = store.as_mut().expect("the store is locked for capabilities");
+        match transfer(held.store, &message, &receiver_user) {
             Ok(slots) => words[..message.info.caps].copy_from_slice(&slots[..message.info.caps]),
             Err(err) => {
                 // The receiver waits on for another message; it was just
@@ -250,7 +311,7 @@ fn hand_over(
     });
     drop(queues);
     sched::wake_sync(&receiver);
-    Ok(false)
+    Ok(Handed::Delivered)
 }
 
 /// Receives a message on `endpoint` for the running thread, waiting for
@@ -264,8 +325,14 @@ pub fn recv(
     abandon_caller(user);
     let mut delivery = loop {
         let taken = if endpoint.cap_senders.load(Ordering::Relaxed) > 0 {
-            caps::with(|store| take(Some(store), me, user, endpoint, no_block))
-                .map_err(cap_error)??
+            // The store's locks for this thread's space and that of the
+            // sender whose message is first, if it carries capabilities.
+            let sender = endpoint.first_sender();
+            let spaces = [user.cspace, sender.unwrap_or(user.cspace)];
+            caps::with_all(&spaces, |store| {
+                take(Some(Held { store, other: sender }), me, user, endpoint, no_block)
+            })
+            .map_err(cap_error)??
         } else {
             take(None, me, user, endpoint, no_block)?
         };
@@ -275,7 +342,7 @@ pub fn recv(
                 IpcState::Delivered(delivery) => break delivery,
                 _ => unreachable!("a receiver's wait ends with a message or a failure"),
             },
-            // Again, with the store.
+            // Again, with the store's locks for the first sender's space.
             Taken::NeedStore => {}
         }
     };
@@ -288,13 +355,14 @@ pub fn recv(
 enum Taken {
     Message(Delivery),
     Queued,
-    /// The first sender carries capabilities: again, with the store.
+    /// The first sender carries capabilities, and the store's locks are
+    /// not held for its space: again, with them.
     NeedStore,
 }
 
 /// Takes the first sender's message, or queues the receiver.
 fn take(
-    mut store: Option<&mut Locked>,
+    mut store: Option<Held<'_, '_>>,
     me: &ThreadRef,
     user: &UserRef,
     endpoint: &EndpointRef,
@@ -308,7 +376,8 @@ fn take(
         let message = sender.message;
         let mut words = message.words;
         if message.info.caps > 0 {
-            let Some(store) = store.as_deref_mut() else {
+            let Some(held) = store.as_mut().filter(|held| held.other == Some(message.cspace))
+            else {
                 if let Err(sender) = queues.senders.push_front(sender) {
                     drop(queues);
                     fail(&sender.thread, error(Kernel::NoMemory));
@@ -316,7 +385,7 @@ fn take(
                 return Ok(Taken::NeedStore);
             };
             endpoint.cap_senders.fetch_sub(1, Ordering::Relaxed);
-            match transfer(store, &message, user) {
+            match transfer(held.store, &message, user) {
                 Ok(slots) => {
                     words[..message.info.caps].copy_from_slice(&slots[..message.info.caps]);
                 }
@@ -380,7 +449,9 @@ fn answer(
         }
         let message =
             Message { info, words, badge: 0, call: false, grant: true, cspace: user.cspace };
-        caps::with(|store| -> Result<()> {
+        // No spin lock is held while the store works, so its tree lock and
+        // the two spaces' locks are enough.
+        caps::with_tree(&[user.cspace, caller_user.cspace], |store| -> Result<()> {
             let slots = transfer(store, &message, &caller_user)?;
             if !deliver_reply(caller, &caller_user, info, {
                 words[..info.caps].copy_from_slice(&slots[..info.caps]);
@@ -516,7 +587,7 @@ fn cancel(me: &ThreadRef, user: &UserThread, endpoint: Option<&EndpointRef>) -> 
 /// Copies or moves a message's capabilities from the sender's space into
 /// the first empty slots of `to`'s receive window, and returns those
 /// slots. All or nothing.
-fn transfer(store: &mut Locked, message: &Message, to: &UserThread) -> Result<[u64; 4]> {
+fn transfer(store: &mut Tree<'_>, message: &Message, to: &UserThread) -> Result<[u64; 4]> {
     let count = message.info.caps;
     debug_assert!(count <= MESSAGE_CAPS as usize);
     let (first, window) = to.window();
@@ -560,16 +631,16 @@ fn transfer(store: &mut Locked, message: &Message, to: &UserThread) -> Result<[u
 
 /// Undoes a transfer of capabilities into `slots` of `to`'s space. A
 /// copy's deletion never releases its object, whose capability the sender
-/// still holds, so this never closes an object (it may run with an
-/// endpoint locked).
-fn undo(store: &mut Locked, message: &Message, to: &UserThread, slots: &[u64]) {
+/// still holds in a space whose lock is held, so this never closes an
+/// object (it may run with an endpoint locked).
+fn undo(store: &mut Tree<'_>, message: &Message, to: &UserThread, slots: &[u64]) {
     for (i, &slot) in slots.iter().enumerate() {
         let dest = SlotRef::new(to.cspace, slot as u32);
         if message.info.move_caps {
             let from = SlotRef::new(message.cspace, message.words[i] as u32);
             let _ = store.move_cap(dest, from);
         } else {
-            let _ = store.delete(dest);
+            let _ = store.delete(dest, &mut caps::release);
         }
     }
 }

@@ -1326,16 +1326,20 @@ pub fn install_file(
         ObjectKind::Directory => Object::Directory(object),
         _ => Object::File(object),
     });
-    let made = caps::with(|store| -> Result<()> {
-        objects::create_with_rights(store, to, kind, rights, &mut object, Some(charge))?;
+    // Made and flagged under one hold of the space's lock, so no exec
+    // finds the descriptor without its close_on_exec.
+    let made = caps::in_space(to.space, |space| {
+        let record =
+            |id, registry: &mut _| objects::record(registry, id, &mut object, Some(charge));
+        space.create_recorded(to, kind, rights, record)?;
         if close_on_exec {
-            store.set_slot_flags(to, SlotFlags::CLOSE_ON_EXEC.0 as u8).map_err(cap_error)?;
+            space.set_slot_flags(to, SlotFlags::CLOSE_ON_EXEC.0 as u8)?;
         }
         Ok(())
     })
-    .map_err(cap_error)
-    .and_then(|made| made);
-    // Not made: it goes now, with the store's lock gone.
+    .and_then(|made| made)
+    .map_err(cap_error);
+    // Not made: it goes now, with the store's locks gone.
     drop(object);
     made
 }
@@ -2037,11 +2041,9 @@ fn install_received(
 /// does for a new descriptor (radix-posix(7)).
 fn free_slot(user: &UserRef, mut from: u32, end: u32) -> Option<u32> {
     while from < end {
-        let (used, slots) = caps::with(|store| -> core::result::Result<_, CapError> {
-            Ok((store.used_slots(user.cspace, from)?, store.slots(user.cspace)?))
-        })
-        .and_then(|found| found)
-        .ok()?;
+        let (used, slots) = caps::store()
+            .and_then(|store| Ok((store.used_slots(user.cspace, from)?, store.slots(user.cspace)?)))
+            .ok()?;
         if from < slots {
             // Only the slots the space has count as free.
             let mut free = !used;

@@ -135,13 +135,13 @@ pub fn call(
         }
         (ObjectKind::Memory, memory::INFO) => {
             memory::InfoArgs::decode(&args)?;
-            let found = caps::with(|store| -> core::result::Result<_, CapError> {
+            let found = caps::store().and_then(|store| {
                 let cap = store.lookup(at, ObjectKind::Memory, Rights::READ)?;
                 let object = cap.id().and_then(|id| store.object(id)).ok_or(CapError::Empty)?;
                 let extent = object.extent.ok_or(CapError::Empty)?;
                 Ok((extent.pages, object.watermark))
             });
-            let (pages, used) = found.and_then(|found| found).map_err(cap_error)?;
+            let (pages, used) = found.map_err(cap_error)?;
             let results = memory::InfoResults { pages, used };
             answer(info.label, memory::InfoResults::WORDS, results.encode())
         }
@@ -222,16 +222,12 @@ fn capability(user: &UserRef, at: SlotRef, label: u32, args: &[u64; 8]) -> Resul
                 range: None,
             };
             let to = SlotRef::new(space, a.to);
-            caps::with(|store| store.derive(at, to, how))
-                .and_then(|done| done)
-                .map_err(cap_error)?;
+            caps::derive(at, to, how).map_err(cap_error)?;
             answer(label, 0, [0; 8])
         }
         abi_cap::MOVE_TO => {
             let a = abi_cap::MoveToArgs::decode(args)?;
-            caps::with(|store| store.move_cap(at, SlotRef::new(space, a.to)))
-                .and_then(|done| done)
-                .map_err(cap_error)?;
+            caps::move_cap(at, SlotRef::new(space, a.to)).map_err(cap_error)?;
             answer(label, 0, [0; 8])
         }
         abi_cap::DELETE => {
@@ -260,11 +256,12 @@ fn capability(user: &UserRef, at: SlotRef, label: u32, args: &[u64; 8]) -> Resul
         abi_cap::FLAGS => {
             let a = abi_cap::FlagsArgs::decode(args)?;
             let bits = u8::try_from(a.flags.0).map_err(|_| Kernel::InvalidArgument.status(1))?;
-            let old = caps::with(|store| {
-                if a.set { store.set_slot_flags(at, bits) } else { store.slot_flags(at) }
-            })
-            .and_then(|done| done)
-            .map_err(cap_error)?;
+            let old =
+                caps::store()
+                    .and_then(|store| {
+                        if a.set { store.set_slot_flags(at, bits) } else { store.slot_flags(at) }
+                    })
+                    .map_err(cap_error)?;
             let results = abi_cap::FlagsResults { flags: abi_cap::SlotFlags(u32::from(old)) };
             answer(label, abi_cap::FlagsResults::WORDS, results.encode())
         }
@@ -277,24 +274,25 @@ fn capability(user: &UserRef, at: SlotRef, label: u32, args: &[u64; 8]) -> Resul
                 (a.key, a.to)
             };
             let (key, to) = (SlotRef::new(space, key), SlotRef::new(space, to));
-            caps::with(|store| {
-                if label == abi_cap::SEAL {
-                    store.seal(at, key, to)
-                } else {
-                    store.unseal(at, key, to)
-                }
-            })
-            .and_then(|done| done)
-            .map_err(cap_error)?;
+            caps::store()
+                .and_then(|store| {
+                    if label == abi_cap::SEAL {
+                        store.seal(at, key, to)
+                    } else {
+                        store.unseal(at, key, to)
+                    }
+                })
+                .map_err(cap_error)?;
             answer(label, 0, [0; 8])
         }
         _ => Err(error(Kernel::NoSuchMethod)),
     }
 }
 
-/// `memory.retype`: makes memory or frame objects. Frames are zeroed and
-/// recorded before the store lets go, so no capability to one is used
-/// before its object exists.
+/// `memory.retype`: makes memory or frame objects. Each frame is recorded
+/// before its capability is placed, so no capability to one is used
+/// before its object exists; frames are zeroed once the store's locks
+/// have gone.
 pub fn retype(
     memory: SlotRef,
     kind: ObjectKind,
@@ -313,50 +311,37 @@ pub fn retype(
     if count == 0 || count > radix_cap::MAX_RETYPE {
         return Err(Kernel::InvalidArgument.status(3));
     }
-    // Room to remember the new frames, to zero them once the store's lock
-    // has gone.
+    // Room to remember the new frames, to zero them once the store's locks
+    // have gone.
     let mut frames = Vec::new_in(HEAP.with(Flags::MAY_SLEEP));
     if kind == ObjectKind::Frame {
         frames.try_reserve_exact(count as usize).map_err(|_| error(Kernel::NoMemory))?;
     }
-    caps::with(|store| -> Result<()> {
+    // The store hears of each new object before its capability is placed;
+    // a frame's is recorded then.
+    let mut record = |id, extent: radix_cap::Extent, registry: &mut objects::Registry| {
         if kind == ObjectKind::Frame {
-            objects::reserve(store, count as usize).map_err(|_| error(Kernel::NoMemory))?;
-        }
-        store.retype(memory, kind, order, to, count).map_err(cap_error)?;
-        if kind != ObjectKind::Frame {
-            return Ok(());
-        }
-        for i in 0..count {
-            let at = SlotRef::new(to.space, to.slot + i);
-            let found = store.get(at).ok().and_then(|cap| {
-                let id = cap.id()?;
-                let extent = store.object(id)?.extent?;
-                Some((id, extent.base, extent.pages))
-            });
-            let made = match found {
-                Some((id, base, pages)) => frame_made(store, id, base, pages),
-                None => Err(error(Kernel::NoMemory)),
-            };
-            match made {
-                // Room was reserved above.
-                Ok(frame) => drop(frames.push_within_capacity(frame)),
-                Err(err) => {
-                    // All or nothing: the frames made so far go again.
-                    for j in 0..count {
-                        let _ = store.delete(SlotRef::new(to.space, to.slot + j));
-                    }
-                    return Err(err);
-                }
-            }
+            let frame = frame_made(registry, id, extent.base, extent.pages)?;
+            // Room was reserved above.
+            let _ = frames.push_within_capacity((id, frame));
         }
         Ok(())
+    };
+    let retyped = caps::with_tree(&[memory.space, to.space], |tree| {
+        tree.retype(memory, kind, order, to, count, &mut record)
     })
-    .map_err(cap_error)
-    .and_then(|done| done)?;
-    // Zeroed outside the store's lock, before the call returns. A frame
+    .and_then(|retyped| retyped);
+    if let Err(err) = retyped {
+        // All or nothing: the store unmade every object, so the frames
+        // recorded before the failure leave the registry again.
+        for &(id, _) in &frames {
+            objects::unrecord(id);
+        }
+        return Err(cap_error(err));
+    }
+    // Zeroed outside the store's locks, before the call returns. A frame
     // deleted meanwhile stops being zeroed, and is not mapped any more.
-    for frame in &frames {
+    for (_, frame) in &frames {
         frame.zero();
     }
     Ok(())

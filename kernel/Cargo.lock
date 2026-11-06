@@ -450,6 +450,7 @@ name = "radix-cap"
 version = "0.12.0"
 dependencies = [
  "proptest",
+ "radix-sync",
 ]
 
 [[package]]

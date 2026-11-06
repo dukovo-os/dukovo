@@ -72,9 +72,7 @@ pub fn method(
                 range: Some((offset, u64::from(a.count))),
             };
             let (from, to) = (SlotRef::new(user.cspace, slot), SlotRef::new(user.cspace, a.to));
-            caps::with(|store| store.derive(from, to, how))
-                .and_then(|done| done)
-                .map_err(cap_error)?;
+            caps::derive(from, to, how).map_err(cap_error)?;
             answer(label, 0, [0; 8])
         }
         abi::PORTS => {

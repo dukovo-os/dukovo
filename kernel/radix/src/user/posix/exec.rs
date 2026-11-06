@@ -547,7 +547,8 @@ fn install_space(process: &ProcessRef, space: &SpaceRef, empty_thread: bool) -> 
         // Closing a descriptor of a file lets go of the process's record
         // locks on it, as `capability.delete` does.
         let mut from = 0;
-        while let Ok(Ok(Some(slot))) = caps::with(|store| store.find_flagged(cspace, mask, from)) {
+        let flagged = |from| caps::store().and_then(|store| store.find_flagged(cspace, mask, from));
+        while let Ok(Some(slot)) = flagged(from) {
             if let Ok(cap) = objects::capability(cspace, slot)
                 && let Ok(Object::File(file) | Object::Directory(file)) = objects::object_of(&cap)
             {
@@ -556,28 +557,31 @@ fn install_space(process: &ProcessRef, space: &SpaceRef, empty_thread: bool) -> 
             from = slot + 1;
         }
     }
-    caps::with(|store| -> Result<()> {
-        objects::reserve(store, 1).map_err(|_| error(Kernel::NoMemory))?;
-        store.delete(kept).map_err(cap_error)?;
-        let id = store.create(kept, ObjectKind::AddressSpace).map_err(cap_error)?;
-        objects::insert(store, id, Object::Space(space.clone()))
-            .map_err(|_| error(Kernel::NoMemory))?;
+    // One change after another: the process's other threads have stopped,
+    // and nobody else changes its spaces. What the deletes release is
+    // finished once, at the end.
+    let installed = (|| -> Result<()> {
+        let store = caps::store().map_err(cap_error)?;
+        store.delete(kept, &mut caps::release).map_err(cap_error)?;
+        let rights = ObjectKind::AddressSpace.rights();
+        let mut object = Some(Object::Space(space.clone()));
+        objects::create(kept, ObjectKind::AddressSpace, rights, &mut object, None)?;
         let at = SlotRef::new(cspace, startup::SLOT_SPACE);
-        let _ = store.delete(at);
-        let how = Derivation { rights: ObjectKind::AddressSpace.rights(), ..Derivation::COPY };
+        let _ = store.delete(at, &mut caps::release);
+        let how = Derivation { rights, ..Derivation::COPY };
         store.derive(kept, at, how).map_err(cap_error)?;
         let mut from = 0;
         while let Some(slot) = store.find_flagged(cspace, mask, from).map_err(cap_error)? {
-            let _ = store.delete(SlotRef::new(cspace, slot));
+            let _ = store.delete(SlotRef::new(cspace, slot), &mut caps::release);
             from = slot + 1;
         }
         if empty_thread {
-            let _ = store.delete(SlotRef::new(cspace, startup::SLOT_THREAD));
+            let _ = store.delete(SlotRef::new(cspace, startup::SLOT_THREAD), &mut caps::release);
         }
         Ok(())
-    })
-    .map_err(cap_error)
-    .and_then(|done| done)?;
+    })();
+    caps::finish();
+    installed?;
     process.set_space(space.clone());
     Ok(())
 }
@@ -686,9 +690,7 @@ fn start_created(
     let own = SlotRef::new(process.cspace(), startup::SLOT_PROCESS);
     if matches!(caps::get(own), Err(radix_cap::CapError::Empty)) {
         let how = Derivation { rights: Rights::READ.union(Rights::CONTROL), ..Derivation::COPY };
-        caps::with(|store| store.derive(SlotRef::new(me.cspace(), slot), own, how))
-            .and_then(|done| done)
-            .map_err(cap_error)?;
+        caps::derive(SlotRef::new(me.cspace(), slot), own, how).map_err(cap_error)?;
     }
     with_tree(|tree| -> Result<()> {
         super::join(tree, me)?;

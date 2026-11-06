@@ -158,6 +158,35 @@ deadlock checking on.
    on 4 CPUs with `audit()` between rounds; the benchmark run again; the
    design document updated; this ADR accepted.
 
+**How the split went in.**
+
+- Step 4 came before step 3: the split alone shows how much the object
+  table's lock still costs, and so how much step 3 has to win. Until
+  step 3, every open and close also takes O for a moment.
+- `caps::with` went in the same change as the split; no caller keeps
+  the one lock.
+- The registry lives beside the object table inside the store
+  (`Capabilities<A, K>`), under O. An object is recorded in the hold of
+  O that makes it (`create_recorded`) and leaves the registry in the
+  hold that releases it, since the `Released` callback is given the
+  registry. So an open takes its space's lock and O once each, not a
+  third lock for the registry.
+- IPC moves a message's capabilities with an endpoint's spin lock held,
+  and a mutex may not be waited for under a spin lock. `caps::with_all`
+  takes T, the named spaces and O before the endpoint's lock and holds
+  them throughout.
+- An operation may hold up to four spaces' locks (`fork` names the
+  parent's two spaces and the child's two). All are of one lockdep
+  class, made on one line, and the nth is taken with `lock_nested(n)`.
+- A slot whose bit is clear keeps an empty tree part: no links, depth 0
+  and no revoke mark. So the tree part lives in the forest under T
+  always, and the fast path never touches it. Only a linked slot takes
+  the revoke mark; a revoke of a capability with no relatives is done
+  at once, so the fast path needs to look at the bit alone.
+- What follows a release and must not run under the store's locks
+  (finishing a process, dropping a removed file, stopping a card,
+  telling a parent) runs in `caps::finish` once they have gone.
+
 ## Consequences
 
 - Opens and closes in different processes no longer take turns: each
@@ -173,5 +202,8 @@ deadlock checking on.
   once per operation on that slot.
 - The store's code gets harder: slots with fields under two locks need
   interior mutability, which Kani and the audit must cover (step 4).
+  In the end no interior mutability was needed: each slot's two parts
+  live in two structures, each under its own lock, and the Kani proofs
+  show the fast path's work on slots changes only the slots it names.
 - Lockdep checks the order at run time; the TLA+ model checks that the
   order and the fast path's check are enough for the tree to stay whole.

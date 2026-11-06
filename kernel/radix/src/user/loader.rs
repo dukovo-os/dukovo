@@ -146,7 +146,7 @@ fn build(at: SlotRef, process: &ProcessRef, program: &Program<'_>) -> Result<()>
     // The capabilities radix-startup(2) lists, but its thread.
     let derive = |from: SlotRef, to: SlotRef, rights: Rights, badge: u64| {
         let how = Derivation { rights, badge: (badge != 0).then_some(badge), range: None };
-        caps::with(|store| store.derive(from, to, how)).and_then(|done| done).map_err(cap_error)
+        caps::derive(from, to, how).map_err(cap_error)
     };
     let all = |kind: ObjectKind| kind.rights();
     derive(kept(0), mine(startup::SLOT_SPACE), all(ObjectKind::AddressSpace), 0)
@@ -195,13 +195,13 @@ fn build(at: SlotRef, process: &ProcessRef, program: &Program<'_>) -> Result<()>
     FrameObject::map_into(&page, &space, startup::STARTUP_ADDRESS, 0, 1, UserAccess::Read)
         .map_err(|err| failed(name, "mapping its start-up page", err))?;
 
-    let used = caps::with(|store| {
-        let cap = store.get(mine(startup::SLOT_MEMORY)).ok()?;
-        Some(store.object(cap.id()?)?.watermark)
-    })
-    .ok()
-    .flatten()
-    .unwrap_or(0);
+    let used = caps::store()
+        .ok()
+        .and_then(|store| {
+            let cap = store.get(mine(startup::SLOT_MEMORY)).ok()?;
+            Some(store.object(cap.id()?)?.watermark)
+        })
+        .unwrap_or(0);
     let mut bytes = [0u8; PAGE_SIZE as usize];
     let mut put = |offset: usize, value: &[u8]| {
         bytes[offset..offset + value.len()].copy_from_slice(value);

@@ -132,8 +132,8 @@ system call, and handed to the method, which checks its kind and rights
 before anything is looked up. An `open` that creates or cuts a file
 checks the destination slot is empty first, so that nothing changes for
 a call that fails; any other `open` finds an occupied slot when it puts
-the capability there, and the object it made goes once the store's lock
-has gone.
+the capability there, and the object it made goes once the store's locks
+have gone.
 
 `open` hands on at most the rights of the directory it opens through: a
 file gets read and write, a directory read, write and control, both copy
@@ -143,9 +143,10 @@ read-only Btrfs subvolume (a node whose `read_only` says so), fails with
 
 Releasing a file object can mean freeing a removed FAT file's clusters,
 which reads and writes the disk. The capability store releases objects
-with its lock held, so file objects are queued (`fs::defer_drop`, linked
+with its locks held, so file objects are queued (`fs::defer_drop`, linked
 through the objects themselves, so queueing needs no memory) and dropped
-once the store's lock has gone (`fs::drop_deferred`, from `caps::with`).
+once the store's locks have gone (`fs::drop_deferred`, from
+`caps::finish`).
 An object whose filesystem says that its nodes only free memory when they
 go (`FileSystem::light_drops`: tmpfs, the boot archive and the generated
 trees) is dropped at once instead (`fs::release`). Only its node can go
