@@ -375,6 +375,13 @@ jobs:
       - name: ./ob setup
         run: ./ob setup
 
+      # The ports, on their own: a change to one that every port builds
+      # on, such as the C library, builds them all again, which takes
+      # about 25 minutes and must not count against the shard's timeout.
+      - name: ./ob ports
+        timeout-minutes: 45
+        run: ./ob ports
+
       - name: ./ob test boot --shard ${{ matrix.shard }}/3
         # A shard takes about 35 minutes; one that hangs fails here, with
         # its logs, instead of running until the job's six hours.
