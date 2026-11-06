@@ -32,3 +32,11 @@ pub fn words() -> [u64; 8] {
 pub fn u64() -> u64 {
     LOCAL.with_own(Local::u64).unwrap_or_else(radix_random::u64)
 }
+
+/// A random number below `bound`, each equally likely, from where
+/// [`fill`] takes them: for the places a new address space puts things
+/// at random, which the kernel's generator would make a ChaCha block for,
+/// some 1,300 instructions of each fork and exec.
+pub fn below(bound: u64) -> u64 {
+    radix_random::below_from(bound, u64)
+}

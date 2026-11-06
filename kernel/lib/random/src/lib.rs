@@ -222,6 +222,14 @@ impl Default for Local {
 
 /// A random number below `bound`, each equally likely; 0 if `bound` is 0.
 pub fn below(bound: u64) -> u64 {
+    below_from(bound, u64)
+}
+
+/// A number below `bound` from the random 64-bit numbers `next` gives,
+/// each equally likely; 0 if `bound` is 0. For a caller with a generator
+/// of its own, such as a CPU's [`Local`], which makes its numbers a batch
+/// at a time where the kernel's generator makes a block for each.
+pub fn below_from(bound: u64, mut next: impl FnMut() -> u64) -> u64 {
     if bound == 0 {
         return 0;
     }
@@ -229,7 +237,7 @@ pub fn below(bound: u64) -> u64 {
     // what is left is a whole number of runs of `bound`.
     let threshold = bound.wrapping_neg() % bound;
     loop {
-        let x = u64();
+        let x = next();
         if x >= threshold {
             return x % bound;
         }
@@ -331,5 +339,21 @@ pub(crate) mod tests {
         assert!(seen.iter().all(|&s| s));
         assert!(below(u64::MAX) < u64::MAX);
         assert!(below(1 << 63) < 1 << 63);
+    }
+
+    #[test]
+    fn below_from_skips_numbers_that_would_favour_the_low_results() {
+        // Below 2^64 mod 3 = 1, the one number 0 would make 0 more likely.
+        let mut numbers = [0, 0, 5].into_iter();
+        assert_eq!(below_from(3, || numbers.next().unwrap()), 5 % 3);
+        let mut counter = 0u64;
+        for _ in 0..100 {
+            let x = below_from(1000, || {
+                counter = counter.wrapping_add(0x9e37_79b9_7f4a_7c15);
+                counter
+            });
+            assert!(x < 1000);
+        }
+        assert_eq!(below_from(0, || unreachable!("no number is needed")), 0);
     }
 }

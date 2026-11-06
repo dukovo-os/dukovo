@@ -188,7 +188,8 @@ fn map_program(
     window: core::ops::Range<u64>,
 ) -> Result<Mapped> {
     let image = &program.image;
-    let bias = image.random_bias(window.clone(), radix_random::u64()).map_err(not_executable)?;
+    let bias =
+        image.random_bias(window.clone(), crate::user::random::u64()).map_err(not_executable)?;
     let placed = image.place(bias, window).map_err(not_executable)?;
     for segment in image.segments() {
         let access = match segment.access {
@@ -522,7 +523,7 @@ fn build_stack(
         return Err(error(Kernel::ArgumentsTooLong));
     }
     let windows = startup::STACK_WINDOW / PAGE_SIZE - stack_bytes / PAGE_SIZE;
-    let top = startup::STACK_TOP - radix_random::below(windows) * PAGE_SIZE;
+    let top = startup::STACK_TOP - crate::user::random::below(windows) * PAGE_SIZE;
     let anon = Anon { access: Some(UserAccess::ReadWrite), shared: None, file: None };
     space
         .map_anonymous(stack_bytes / PAGE_SIZE, anon, Placement::FixedNoReplace(top - stack_bytes))
