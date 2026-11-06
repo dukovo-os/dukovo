@@ -8,9 +8,9 @@
 //! passphrase once, through ssh-askpass-keyring, which keeps it in her
 //! keyring once it opens the key. A second agent then takes the key with
 //! nothing asked, and ssh-keygen signs a file with it, as git signs a
-//! commit, with nothing asked either. The passphrase changed with
-//! `ssh-keygen -p`, the one kept no longer opens the key: ssh-add asks
-//! again, and the new one is kept in its place.
+//! commit, with nothing asked either. Once the passphrase is changed
+//! with `ssh-keygen -p`, the one kept no longer opens the key: ssh-add
+//! asks again, and the new one is kept in its place.
 //!
 //! What is asked is written on the terminal and read from it, whatever
 //! the commands' output: each command writes its output to a file, which
