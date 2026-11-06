@@ -118,9 +118,12 @@ impl<K> Record<K> {
         self.generation.store(bump(self.generation()), Ordering::Relaxed);
     }
 
-    /// Locks the record if it is of `generation`.
+    /// Locks the record if it is of `generation`. Always inlined: it is
+    /// on the path of every close, and as a call of its own it cost a
+    /// fifth again what the lock does (saving registers, and handing the
+    /// guard back through memory).
     #[track_caller]
-    #[inline]
+    #[inline(always)]
     fn lock_if(&self, generation: u32) -> Option<SpinLockGuard<'_, Inner<K>>> {
         let inner = self.inner.lock();
         (self.generation() == generation).then_some(inner)
@@ -404,7 +407,7 @@ impl<A: Allocator + Clone, K> Objects<A, K> {
         let mut capability = true;
         loop {
             let Some(record) = self.record(id.index) else { return };
-            let (entry, kept) = {
+            let (gone, kept) = {
                 let Some(mut inner) = record.lock_if(id.generation) else { return };
                 let Some(entry) = inner.entry.as_mut() else { return };
                 if capability {
@@ -418,15 +421,17 @@ impl<A: Allocator + Clone, K> Objects<A, K> {
                 if entry.caps > 0 || entry.children > 0 {
                     return;
                 }
-                let entry = *entry;
+                // Only these three are needed once it has gone.
+                let gone = (entry.kind, entry.extent, entry.origin);
                 inner.entry = None;
                 record.next_generation();
-                (entry, inner.kept.take())
+                (gone, inner.kept.take())
             };
-            let memory = if entry.origin.is_none() { entry.extent } else { None };
-            released(Released { kind: entry.kind, id, memory }, kept);
+            let (kind, extent, origin) = gone;
+            let memory = if origin.is_none() { extent } else { None };
+            released(Released { kind, id, memory }, kept);
             self.give(id.index, to);
-            let Some(origin) = entry.origin else { return };
+            let Some(origin) = origin else { return };
             id = origin;
             capability = false;
         }
