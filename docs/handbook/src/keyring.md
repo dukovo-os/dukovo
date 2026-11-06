@@ -6,7 +6,8 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 # Your keyring
 
 Each person has a keyring, which keeps their secrets: tokens for git and
-other services, the passphrases of their SSH keys, and Wi-Fi passwords.
+other services, the passphrases of their SSH keys, Kerberos tickets, and
+Wi-Fi passwords.
 authd keeps it in a file sealed under a key made from the person's
 password, so the file holds no secret, and no entry's name, in the
 clear. The full references are keyring(1), git-credential-keyring(1),
@@ -68,6 +69,12 @@ The next session's `ssh-add` asks nothing. A passphrase changed with
 kept in place of the old. Other questions, such as a server's password
 or whether to trust a host's key, are asked at the terminal as before,
 and are not kept.
+
+## Kerberos
+
+`kinit` keeps your Kerberos tickets in the keyring, each as the entry
+`krb5 CLIENT SERVER`, and `kdestroy` removes them. The chapter
+[Kerberos](kerberos.md) says more.
 
 ## Apps
 

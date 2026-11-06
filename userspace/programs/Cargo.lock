@@ -1588,6 +1588,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "kerberos"
+version = "0.12.0"
+dependencies = [
+ "aes 0.9.3",
+ "hmac 0.13.0",
+ "pbkdf2",
+ "ring",
+ "sha1",
+ "sha2 0.11.1",
+]
+
+[[package]]
 name = "keymap"
 version = "0.12.0"
 dependencies = [
@@ -3247,6 +3259,7 @@ dependencies = [
  "disk",
  "dkv",
  "if-addrs",
+ "kerberos",
  "keymap",
  "libc",
  "manifest",

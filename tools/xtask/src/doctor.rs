@@ -442,6 +442,22 @@ fn requirements() -> Vec<Requirement> {
             fallback: None,
         },
         Requirement {
+            name: "MIT Kerberos's KDC",
+            purpose: "krb5kdc, kdb5_util and kadmin.local: the kerberos test's realm, run as you on a port of its own, whose KDC kinit, klist and kvno reach through QEMU's network",
+            found: |_| {
+                let programs =
+                    ["/usr/sbin/krb5kdc", "/usr/sbin/kdb5_util", "/usr/sbin/kadmin.local"];
+                let found: Option<Vec<_>> = programs.iter().map(process::find_program).collect();
+                found.map(|found| found[0].display().to_string())
+            },
+            packages: Packages {
+                apt: Some("krb5-kdc krb5-admin-server"),
+                dnf: Some("krb5-server"),
+                pacman: Some("krb5"),
+            },
+            fallback: None,
+        },
+        Requirement {
             name: "libbde",
             purpose: "bdeinfo, which unlocks the BitLocker volumes of radix-bitlocker's tests as Windows' are unlocked",
             found: |_| program_version("bdeinfo", "-V"),
