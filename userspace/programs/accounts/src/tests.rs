@@ -348,6 +348,12 @@ fn requests_go_and_come_back() {
             language: Vec::new(),
         },
         Request::SshEnded { ticket: vec![0xcd; request::SSH_TICKET_LENGTH] },
+        Request::KeyringSet { name: "git https://example.org".into(), secret: vec![0, 1, 255] },
+        Request::KeyringGet { name: "x".into() },
+        Request::KeyringList,
+        Request::KeyringRemove { name: "x".into() },
+        Request::KeyringUnlock { password: b"pw".to_vec() },
+        Request::KeyringLock,
     ];
     for request in requests {
         assert_eq!(Request::decode(&request.encode()), Ok(request));
@@ -374,6 +380,11 @@ fn requests_go_and_come_back() {
     assert_eq!(elevate.encode(), b"elevate\0shell\0password\0pw\0linux\0/x\0LANG=C\0--\0id\0");
     assert_eq!(Request::Unlock { password: None, ask: true }.encode(), b"unlock\0ask\0\0");
     assert_eq!(Request::Disable { name: "bob".into() }.encode(), b"disable\0bob\0");
+    // A secret goes in hexadecimal, so that it may hold any byte.
+    assert_eq!(
+        Request::KeyringSet { name: "a b".into(), secret: b"\0z".to_vec() }.encode(),
+        b"keyring-set\0a b\x00007a\0"
+    );
     assert_eq!(
         Request::Rename { name: "bob".into(), new: "rob".into() }.encode(),
         b"rename\0bob\0rob\0"
@@ -736,7 +747,9 @@ fn wiping_leaves_nothing() {
 
 #[cfg(feature = "hash")]
 mod hashes {
-    use crate::hash::{Cost, hash, readable, verify};
+    use base64ct::{Base64Unpadded, Encoding};
+
+    use crate::hash::{Cost, cost_of, derive, hash, readable, verify};
 
     const SALT: [u8; 16] = *b"0123456789abcdef";
 
@@ -767,6 +780,20 @@ mod hashes {
             "$argon2id$v=19$m=8192,t=1,p=1$MDEyMzQ1Njc4OWFiY2RlZg$\
              64zw4y6hGNSGW1HTKDajc74EIkJpCJ+AUBXDspyrFEU"
         );
+    }
+
+    /// A key made from a password is the hash's bytes, made the same way,
+    /// at the cost the hash says.
+    #[test]
+    fn derives_a_key_as_it_hashes() {
+        let phc = hash(b"correct horse", &SALT, Cost::TEST).unwrap();
+        let cost = cost_of(&phc).unwrap();
+        assert_eq!(cost, Cost::TEST);
+        assert_eq!(Cost::from_text(&cost.text()), Some(cost));
+        assert_eq!(Cost::from_text("m=99999999,t=1,p=1"), None);
+        let mut key = [0u8; 32];
+        derive(b"correct horse", &SALT, cost, &mut key).unwrap();
+        assert!(phc.ends_with(&Base64Unpadded::encode_string(&key)));
     }
 
     #[test]

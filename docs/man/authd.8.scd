@@ -290,10 +290,49 @@ closes the connection, but for a session (below):
 	The connection given _ticket_ ended: the ticket goes. Only the
 	process it was given to may say so.
 
+*keyring-set* _name_ _secret_, *keyring-get* _name_, *keyring-list*, *keyring-remove* _name_
+	Keep _secret_, given in hexadecimal, as the entry _name_ of the
+	asker's own keyring, answer *ok* and an entry's secret in
+	hexadecimal, *ok* and the entries' names separated by tabs, or
+	remove one (see KEYRINGS). Anyone may, of their own keyring, while
+	it is open.
+
+*keyring-unlock* _password_, *keyring-lock*
+	Open the asker's keyring with their password, which waits after a
+	wrong one as a sign-in does, or close it now.
+
 authd knows who asks by the connection: the kernel gives it the process
 at the other end, and the user and group it acted for when it connected
 (*SO_PEERCRED*, *radix-posix*(7)). An administrator is root inside
 *elevate*(8): see ELEVATE.
+
+# KEYRINGS
+
+Each person has a keyring (ADR 0393, *keyring*(1)): secrets such as
+tokens and passphrases, kept in a file of authd's own, in which nothing
+is in the clear. Its entries are sealed with ChaCha20-Poly1305 under a
+random key of its own, and that key under one made from the person's
+password with Argon2id, with a salt of its own, at their password
+hash's cost.
+
+authd opens a keyring when its person signs in with their password, at
+a console or over SSH, or asks *keyring-unlock*, and makes it then if
+they have none; an account with no password has none. It holds it open
+in its own memory while one of their sessions runs, and closes it,
+wiping the key, when the last one ends.
+
+A change of password seals the keyring's key under the new one. When
+root sets a password without the old one, or the startup-trouble menu
+resets it, a keyring that is not open is emptied, since only the old
+password opened it, and the person is told; one whose new password is
+empty is emptied too. A removed account's keyring goes with it.
+
+authd says when a keyring opens and closes, and why one did not:
+
+```
+authd: keyring of alice: open
+authd: keyring of alice: closed
+```
 
 # WRONG PASSWORDS
 
@@ -588,6 +627,9 @@ _/system/state/authd/notices_
 	What each person is told at their next sign-in: a line
 	_name_<tab>_text_ each.
 
+_/system/state/authd/keyrings/_*number*
+	Each person's keyring, sealed (see KEYRINGS).
+
 _/system/state/sign-ins_
 	The sign-in records (see SIGN-IN RECORDS).
 
@@ -607,7 +649,7 @@ exits with 1 if it cannot start.
 
 # SEE ALSO
 
-*login*(1), *sshd*(8), *elevate*(8), *sudo*(8), *user*(8), *passwd*(1), *id*(1), *last*(1),
+*login*(1), *sshd*(8), *elevate*(8), *sudo*(8), *user*(8), *passwd*(1), *keyring*(1), *id*(1), *last*(1),
 *lastlog*(8), *consoled*(8), *service*(8),
 *service.toml*(5), *spark*(8), *logd*(8), *radix-names*(2), *radix-posix*(7),
 *systools*(1)

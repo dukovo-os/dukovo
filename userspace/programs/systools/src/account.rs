@@ -164,7 +164,14 @@ pub fn passwd(args: &mut Args) -> Result<i32, Fail> {
         if util::own_user() == 0 { Vec::new() } else { input.password("Current password: ")? };
     let new = input.new_password(&name)?;
     let answer = ask(&Request::Passwd { name: name.clone(), current, new })?;
-    done(answer, |_| eprintln!("The password of {name} is changed."))
+    done(answer, |said| {
+        eprintln!("The password of {name} is changed.");
+        // What became of their keyring, when it was not simply sealed
+        // under the new password (ADR 0393).
+        if !said.is_empty() {
+            eprintln!("{said}");
+        }
+    })
 }
 
 /// user(8): makes, lists, disables, enables, removes, renames and
