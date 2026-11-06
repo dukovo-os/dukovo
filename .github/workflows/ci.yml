@@ -45,12 +45,12 @@ jobs:
           fi
 
       - name: Install host packages
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            qemu-system-x86 ovmf gcc flex gawk \
-            xorriso mtools dosfstools exfatprogs gdisk fdisk sleuthkit btrfs-progs e2fsprogs ntfs-3g dislocker libbde-utils openssh-server samba smbclient scdoc mandoc \
-            udftools udfclient genisoimage qemu-system-misc \
+        uses: ./.github/actions/apt-install
+        with:
+          packages: >-
+            qemu-system-x86 ovmf gcc flex gawk
+            xorriso mtools dosfstools exfatprogs gdisk fdisk sleuthkit btrfs-progs e2fsprogs ntfs-3g dislocker libbde-utils openssh-server samba smbclient scdoc mandoc
+            udftools udfclient genisoimage qemu-system-misc
             clang-20 lld-20 llvm-20 libclang-rt-20-dev meson ninja-build cmake bison pkgconf autoconf
 
       # GRUB, which ./ob builds from its pinned source for the images
@@ -168,12 +168,12 @@ jobs:
           fi
 
       - name: Install host packages
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            qemu-system-x86 ovmf gcc flex gawk \
-            xorriso mtools dosfstools exfatprogs gdisk fdisk sleuthkit btrfs-progs e2fsprogs ntfs-3g dislocker libbde-utils openssh-server samba smbclient scdoc mandoc \
-            udftools udfclient genisoimage \
+        uses: ./.github/actions/apt-install
+        with:
+          packages: >-
+            qemu-system-x86 ovmf gcc flex gawk
+            xorriso mtools dosfstools exfatprogs gdisk fdisk sleuthkit btrfs-progs e2fsprogs ntfs-3g dislocker libbde-utils openssh-server samba smbclient scdoc mandoc
+            udftools udfclient genisoimage
             clang-20 lld-20 llvm-20 libclang-rt-20-dev meson ninja-build cmake bison pkgconf autoconf
 
       # smbcacls has no -p: smbd's unit test and boot test listen on
@@ -312,12 +312,12 @@ jobs:
           fi
 
       - name: Install host packages
-        run: |
-          sudo apt-get update
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-            qemu-system-x86 ovmf gcc flex gawk \
-            xorriso mtools dosfstools exfatprogs gdisk fdisk sleuthkit btrfs-progs e2fsprogs ntfs-3g dislocker libbde-utils openssh-server samba smbclient nfs-kernel-server krb5-kdc krb5-admin-server krb5-user scdoc mandoc \
-            udftools udfclient genisoimage \
+        uses: ./.github/actions/apt-install
+        with:
+          packages: >-
+            qemu-system-x86 ovmf gcc flex gawk
+            xorriso mtools dosfstools exfatprogs gdisk fdisk sleuthkit btrfs-progs e2fsprogs ntfs-3g dislocker libbde-utils openssh-server samba smbclient nfs-kernel-server krb5-kdc krb5-admin-server krb5-user scdoc mandoc
+            udftools udfclient genisoimage
             clang-20 lld-20 llvm-20 libclang-rt-20-dev meson ninja-build cmake bison pkgconf autoconf
 
       # smbcacls has no -p: smbd's unit test and boot test listen on
@@ -414,12 +414,12 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install host packages
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            qemu-system-x86 ovmf gcc flex gawk \
-            xorriso mtools dosfstools exfatprogs gdisk fdisk sleuthkit btrfs-progs e2fsprogs ntfs-3g dislocker libbde-utils openssh-server samba smbclient scdoc mandoc \
-            udftools udfclient genisoimage \
+        uses: ./.github/actions/apt-install
+        with:
+          packages: >-
+            qemu-system-x86 ovmf gcc flex gawk
+            xorriso mtools dosfstools exfatprogs gdisk fdisk sleuthkit btrfs-progs e2fsprogs ntfs-3g dislocker libbde-utils openssh-server samba smbclient scdoc mandoc
+            udftools udfclient genisoimage
             clang-20 lld-20 llvm-20 libclang-rt-20-dev meson ninja-build cmake bison pkgconf autoconf
 
       # GRUB, which ./ob builds from its pinned source for the images
@@ -564,9 +564,10 @@ jobs:
       # Some of the suite's tests run the client under faketime; Python
       # and its venv module come with the runner.
       - name: Install faketime
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends faketime
+        uses: ./.github/actions/apt-install
+        with:
+          packages: >-
+            faketime
 
       - name: Cache the conformance suite
         uses: actions/cache@v4
@@ -594,9 +595,10 @@ jobs:
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
 
       - name: Install host packages
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends dash bash util-linux
+        uses: ./.github/actions/apt-install
+        with:
+          packages: >-
+            dash bash util-linux
 
       - name: Install the pinned Rust toolchain
         run: rustup toolchain install

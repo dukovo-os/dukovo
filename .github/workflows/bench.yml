@@ -43,12 +43,12 @@ jobs:
           fi
 
       - name: Install host packages
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            qemu-system-x86 ovmf gcc flex gawk \
-            xorriso mtools dosfstools exfatprogs sleuthkit btrfs-progs e2fsprogs ntfs-3g dislocker libbde-utils scdoc mandoc \
-            udftools udfclient genisoimage \
+        uses: ./.github/actions/apt-install
+        with:
+          packages: >-
+            qemu-system-x86 ovmf gcc flex gawk
+            xorriso mtools dosfstools exfatprogs sleuthkit btrfs-progs e2fsprogs ntfs-3g dislocker libbde-utils scdoc mandoc
+            udftools udfclient genisoimage
             clang-20 lld-20 llvm-20 libclang-rt-20-dev meson ninja-build cmake bison pkgconf autoconf zlib1g-dev
 
       # GRUB, which ./ob builds from its pinned source for the images
