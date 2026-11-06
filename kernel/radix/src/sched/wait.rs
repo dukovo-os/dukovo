@@ -119,6 +119,8 @@ impl Table {
 static TABLE: SpinLock<Option<Table>> = SpinLock::new(None);
 static WAKEUPS: AtomicU64 = AtomicU64::new(0);
 static HANDOFFS: AtomicU64 = AtomicU64::new(0);
+static MUTEX_CONTENDED: AtomicU64 = AtomicU64::new(0);
+static MUTEX_WAITS: AtomicU64 = AtomicU64::new(0);
 static BOOSTS: AtomicU64 = AtomicU64::new(0);
 
 /// Sets the table up with room for `room` waiters.
@@ -232,6 +234,9 @@ pub fn wake_all(key: usize) {
 /// lends its priority along the chain of owners, and sleeps until the lock
 /// is handed to it.
 pub(super) fn mutex_wait(mutex: &RawMutex) {
+    // Counted here, off the fast path: taking a free mutex costs nothing
+    // more for it.
+    MUTEX_CONTENDED.fetch_add(1, Ordering::Relaxed);
     let Some(me) = current() else { return spin(mutex, super::NO_TOKEN) };
     let token = me.token();
     let key = mutex.key();
@@ -273,6 +278,7 @@ pub(super) fn mutex_wait(mutex: &RawMutex) {
         let seq = table.seq;
         table.push(Waiter { thread: me.clone(), key, prio, seq, owner });
         me.blocked_on.store(key, Ordering::Relaxed);
+        MUTEX_WAITS.fetch_add(1, Ordering::Relaxed);
         lend(table, owner, prio);
     }
     while mutex.owner() != token {
@@ -385,6 +391,28 @@ pub fn stats() -> (u64, u64, u64) {
         HANDOFFS.load(Ordering::Relaxed),
         BOOSTS.load(Ordering::Relaxed),
     )
+}
+
+/// How contended the kernel's mutexes have been since boot.
+/// `/processes/stat` gives these, so that a benchmark can see a lock its
+/// threads queue for.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct MutexCounts {
+    /// Times a thread found a mutex taken and went into [`mutex_wait`].
+    pub contended: u64,
+    /// Times a thread went to sleep waiting for a mutex.
+    pub waits: u64,
+    /// Times a mutex was handed to a sleeping waiter.
+    pub handoffs: u64,
+}
+
+/// The mutex counts now.
+pub fn mutex_counts() -> MutexCounts {
+    MutexCounts {
+        contended: MUTEX_CONTENDED.load(Ordering::Relaxed),
+        waits: MUTEX_WAITS.load(Ordering::Relaxed),
+        handoffs: HANDOFFS.load(Ordering::Relaxed),
+    }
 }
 
 /// How many threads wait in the table now, or `None` if it is locked.

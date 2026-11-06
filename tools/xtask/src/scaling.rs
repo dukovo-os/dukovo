@@ -22,7 +22,7 @@
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
-use crate::bench::{self, Measurement};
+use crate::bench::{self, Counts, Measurement};
 use crate::config::{Firmware, Media, Profile};
 use crate::process::{self, step};
 use crate::qemu::{self, DirectBoot, Machine, Serial};
@@ -84,21 +84,29 @@ pub fn command(
     } else {
         None
     };
-    let (mut radix, mut linux_vm) = (Vec::new(), Vec::new());
+    let (mut radix, mut linux_vm, mut counts) = (Vec::new(), Vec::new(), Vec::new());
     for run in 1..=runs {
         let of = if runs > 1 { format!(", run {run} of {runs}") } else { String::new() };
         step(&format!("Booting Radix with the open/close scaling benchmark on {CPUS} CPUs{of}"));
-        bench::keep_best(&mut radix, boot(ctx, &dir, Side::Radix(&image), kvm)?);
+        let (measured, counted) = boot(ctx, &dir, Side::Radix(&image), kvm)?;
+        bench::keep_best(&mut radix, measured);
+        // The kernel's counts of the first run: they count the same work
+        // every run, unlike the times.
+        if counts.is_empty() {
+            counts = counted;
+        }
         if let Some((kernel, initrd)) = &vm_kernel {
             step(&format!("Measuring the same on Linux on {CPUS} CPUs{of}"));
-            bench::keep_best(&mut linux_vm, boot(ctx, &dir, Side::Linux(kernel, initrd), true)?);
+            let (measured, _) = boot(ctx, &dir, Side::Linux(kernel, initrd), true)?;
+            bench::keep_best(&mut linux_vm, measured);
         }
     }
     let release = match &vm_kernel {
         Some((kernel, _)) => Some(bench::release_of(kernel)?),
         None => None,
     };
-    let report = report(ctx, &radix, &linux_vm, release.as_deref(), runs, kvm);
+    let mut report = report(ctx, &radix, &linux_vm, release.as_deref(), runs, kvm);
+    report.push_str(&counts_report(&counts));
     let markdown = dir.join("report.md");
     std::fs::write(&markdown, &report).context(|| format!("writing {}", markdown.display()))?;
     if let Some(path) = summary {
@@ -119,8 +127,9 @@ enum Side<'a> {
     Linux(&'a Path, &'a Path),
 }
 
-/// Boots one side on [`CPUS`] CPUs and reads its `BENCH` lines.
-fn boot(ctx: &Ctx, dir: &Path, side: Side, kvm: bool) -> Result<Vec<Measurement>> {
+/// Boots one side on [`CPUS`] CPUs and reads its `BENCH` and
+/// `BENCHCOUNT` lines.
+fn boot(ctx: &Ctx, dir: &Path, side: Side, kvm: bool) -> Result<(Vec<Measurement>, Vec<Counts>)> {
     let (image, direct, log, done) = match side {
         Side::Radix(base) => {
             let image = dir.join("scaling.img");
@@ -175,7 +184,7 @@ fn boot(ctx: &Ctx, dir: &Path, side: Side, kvm: bool) -> Result<Vec<Measurement>
             ctx.display(&dir.join(format!("boot-{log}.log")))
         );
     }
-    Ok(measured)
+    Ok((measured, bench::parse_counts(&text)))
 }
 
 /// The report: each row's time on both sides, their ratio, and how many
@@ -231,6 +240,53 @@ fn report(
     out
 }
 
+/// The events Radix's kernel counted, per open and close, in the order
+/// the C program prints them (`scaling_count_names`), with their headings.
+const EVENTS: [(&str, &str); 7] = [
+    ("switches", "Switches"),
+    ("ipis", "IPIs"),
+    ("halts", "Halts"),
+    ("mutex_contended", "Mutex found taken"),
+    ("mutex_waits", "Mutex sleeps"),
+    ("mutex_handoffs", "Mutex handoffs"),
+    ("cap_cache_flushes", "Capability cache flushes"),
+];
+
+/// A second table: what Radix's kernel did per open and close in each row,
+/// which shows whether workers queue for a lock and sleep while they wait.
+/// Empty when the boot printed no counts.
+fn counts_report(counts: &[Counts]) -> String {
+    if counts.is_empty() {
+        return String::new();
+    }
+    let mut out =
+        String::from("\nRadix's kernel events per open and close (first run):\n\n| Workers |");
+    for (_, heading) in EVENTS {
+        let _ = write!(out, " {heading} |");
+    }
+    out.push_str("\n|---|");
+    out.push_str(&"---:|".repeat(EVENTS.len()));
+    out.push('\n');
+    for threads in [true, false] {
+        for workers in WORKERS {
+            let Some(row) = counts.iter().find(|c| c.group == name(threads, workers)) else {
+                continue;
+            };
+            let _ = write!(out, "| {workers} {} |", if threads { "threads" } else { "processes" });
+            for (event, _) in EVENTS {
+                match row.events.iter().find(|(name, _)| name == event) {
+                    Some((_, count)) if row.rounds > 0 => {
+                        let _ = write!(out, " {:.3} |", *count as f64 / row.rounds as f64);
+                    }
+                    _ => out.push_str(" – |"),
+                }
+            }
+            out.push('\n');
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -243,6 +299,28 @@ mod tests {
         assert!(source.contains("{1, 4, 8}"));
         assert_eq!(name(true, 4), "posix_open_close_threads_4");
         assert_eq!(name(false, 8), "posix_open_close_processes_8");
+    }
+
+    #[test]
+    fn counts_name_what_the_c_program_counts() {
+        let source = include_str!("../../../userspace/posix/bench.c");
+        for (event, _) in EVENTS {
+            assert!(source.contains(&format!("\"{event}\"")), "bench.c does not count {event}");
+        }
+    }
+
+    #[test]
+    fn counts_show_per_open_and_close() {
+        let counts = bench::parse_counts(
+            "BENCHCOUNT group=posix_open_close_threads_4 rounds=200 switches=50 ipis=0 halts=0 \
+             mutex_contended=150 mutex_waits=100 mutex_handoffs=100 cap_cache_flushes=0",
+        );
+        let report = counts_report(&counts);
+        assert!(
+            report
+                .contains("| 4 threads | 0.250 | 0.000 | 0.000 | 0.750 | 0.500 | 0.500 | 0.000 |")
+        );
+        assert!(counts_report(&[]).is_empty());
     }
 
     #[test]

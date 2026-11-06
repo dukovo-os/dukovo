@@ -876,6 +876,35 @@ struct scaling {
 	uint64_t elapsed[SCALING_MOST];
 };
 
+// The kernel's counts that show where workers wait for each other, as
+// Radix's /processes/stat lists them: context switches, halts and
+// interprocessor interrupts, kernel mutexes found taken, sleeps for them
+// and handoffs of them, and stale capability caches. Linux has none of
+// them by these names, so it prints no counts.
+static const char *const scaling_count_names[] = {"switches", "ipis", "halts", "mutex_contended",
+		"mutex_waits", "mutex_handoffs", "cap_cache_flushes"};
+#define SCALING_COUNTS (sizeof(scaling_count_names) / sizeof(scaling_count_names[0]))
+
+// Reads the counts of `scaling_count_names`; false unless all are there.
+static int read_scaling_counts(uint64_t *counts) {
+	FILE *file = fopen(KERNEL_STAT, "r");
+	if(!file)
+		return 0;
+	char line[256];
+	unsigned found = 0;
+	while(fgets(line, sizeof(line), file)) {
+		for(size_t i = 0; i < SCALING_COUNTS; i++) {
+			size_t length = strlen(scaling_count_names[i]);
+			if(!strncmp(line, scaling_count_names[i], length) && line[length] == ':') {
+				counts[i] = strtoull(line + length + 1, NULL, 10);
+				found |= 1u << i;
+			}
+		}
+	}
+	fclose(file);
+	return found == (1u << SCALING_COUNTS) - 1;
+}
+
 struct scaling_worker {
 	struct scaling *shared;
 	int index;
@@ -913,6 +942,8 @@ static void scaling_run(struct scaling *shared, int workers, int threads) {
 	struct scaling_worker worker[SCALING_MOST];
 	pid_t child[SCALING_MOST];
 	settle();
+	uint64_t before[SCALING_COUNTS], after[SCALING_COUNTS];
+	int counted = read_scaling_counts(before);
 	for(int i = 0; i < workers; i++) {
 		if(threads) {
 			worker[i] = (struct scaling_worker){shared, i};
@@ -941,13 +972,24 @@ static void scaling_run(struct scaling *shared, int workers, int threads) {
 				fail("waitpid");
 		}
 	}
+	counted = counted && read_scaling_counts(after);
 	uint64_t slowest = 0;
 	for(int i = 0; i < workers; i++)
 		if(shared->elapsed[i] > slowest)
 			slowest = shared->elapsed[i];
-	printf("BENCH name=posix_open_close_%s_%d ns=%.2f iterations=%llu\n",
-	       threads ? "threads" : "processes", workers,
+	const char *kind = threads ? "threads" : "processes";
+	printf("BENCH name=posix_open_close_%s_%d ns=%.2f iterations=%llu\n", kind, workers,
 	       (double)slowest / (double)SCALING_ROUNDS, (unsigned long long)SCALING_ROUNDS);
+	// The counts cover every worker's opens and closes, and the starting
+	// and ending of the workers, which is small next to them.
+	if(counted) {
+		printf("BENCHCOUNT group=posix_open_close_%s_%d rounds=%llu", kind, workers,
+		       (unsigned long long)SCALING_ROUNDS * (unsigned long long)workers);
+		for(size_t i = 0; i < SCALING_COUNTS; i++)
+			printf(" %s=%llu", scaling_count_names[i],
+			       (unsigned long long)(after[i] - before[i]));
+		printf("\n");
+	}
 	fflush(stdout);
 }
 

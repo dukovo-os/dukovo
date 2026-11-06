@@ -1788,6 +1788,12 @@ impl Counters {
     }
 }
 
+/// How contended the kernel's mutexes have been since boot
+/// ([`wait::mutex_counts`]).
+pub fn mutex_counts() -> wait::MutexCounts {
+    wait::mutex_counts()
+}
+
 /// The counters now.
 pub fn counters() -> Counters {
     let mut total = Counters::default();
