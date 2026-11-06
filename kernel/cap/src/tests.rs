@@ -33,7 +33,7 @@ impl Bin {
 
 #[test]
 fn derived_capabilities_never_grant_more() {
-    let mut caps = store();
+    let caps = store();
     let a = caps.create_space(8).unwrap();
     let b = caps.create_space(8).unwrap();
     caps.create(at(a, 0), ObjectKind::Endpoint).unwrap();
@@ -56,7 +56,7 @@ fn derived_capabilities_never_grant_more() {
 
 #[test]
 fn objects_made_for_a_holder_get_only_the_rights_asked_for() {
-    let mut caps = store();
+    let caps = store();
     let a = caps.create_space(4).unwrap();
     let read = Rights::READ | Rights::COPY;
     // EXECUTE is not a file's right, so it is dropped.
@@ -83,7 +83,7 @@ fn objects_made_for_a_holder_get_only_the_rights_asked_for() {
 
 #[test]
 fn transfer_is_a_right_of_its_own() {
-    let mut caps = store();
+    let caps = store();
     let a = caps.create_space(4).unwrap();
     let b = caps.create_space(4).unwrap();
     caps.create(at(a, 0), ObjectKind::Notification).unwrap();
@@ -104,7 +104,7 @@ fn transfer_is_a_right_of_its_own() {
 
 #[test]
 fn revoke_reaches_every_space_and_survives_deletes() {
-    let mut caps = store();
+    let caps = store();
     let spaces: Vec<_> = (0..3).map(|_| caps.create_space(8).unwrap()).collect();
     let [a, b, c] = spaces[..] else { unreachable!() };
     caps.create(at(a, 0), ObjectKind::Endpoint).unwrap();
@@ -132,7 +132,7 @@ fn revoke_reaches_every_space_and_survives_deletes() {
 
 #[test]
 fn revoke_in_steps_blocks_new_derivations() {
-    let mut caps = store();
+    let caps = store();
     let a = caps.create_space(64).unwrap();
     caps.create(at(a, 0), ObjectKind::Endpoint).unwrap();
     for slot in 1..40 {
@@ -170,7 +170,7 @@ fn revoke_in_steps_blocks_new_derivations() {
 /// another put in its slot, stops: the newcomer keeps its descendants.
 #[test]
 fn a_revoke_ends_with_its_capability() {
-    let mut caps = store();
+    let caps = store();
     let a = caps.create_space(64).unwrap();
     caps.create(at(a, 0), ObjectKind::Endpoint).unwrap();
     for slot in 1..20 {
@@ -203,7 +203,7 @@ fn a_revoke_ends_with_its_capability() {
 
 #[test]
 fn derivation_depth_is_bounded() {
-    let mut caps = store();
+    let caps = store();
     let a = caps.create_space(MAX_DEPTH as u32 + 2).unwrap();
     caps.create(at(a, 0), ObjectKind::Thread).unwrap();
     for slot in 1..=MAX_DEPTH as u32 {
@@ -222,7 +222,7 @@ fn derivation_depth_is_bounded() {
 fn copying_and_deleting_in_turn_never_deepens() {
     // A shell saving a descriptor and putting it back: copy, delete the
     // first, copy back, delete the copy; far more rounds than MAX_DEPTH.
-    let mut caps = store();
+    let caps = store();
     let mut bin = Bin::default();
     let a = caps.create_space(3).unwrap();
     caps.create(at(a, 0), ObjectKind::Thread).unwrap();
@@ -242,7 +242,7 @@ fn copying_and_deleting_in_turn_never_deepens() {
 
 #[test]
 fn sealed_capabilities_round_trip_through_the_store() {
-    let mut caps = store();
+    let caps = store();
     let client = caps.create_space(4).unwrap();
     let service = caps.create_space(4).unwrap();
     caps.create(at(service, 0), ObjectKind::Endpoint).unwrap();
@@ -264,7 +264,7 @@ fn sealed_capabilities_round_trip_through_the_store() {
 
 #[test]
 fn retyped_memory_comes_back() {
-    let mut caps = store();
+    let caps = store();
     let a = caps.create_space(32).unwrap();
     let memory = caps.create_memory(at(a, 0), 0x400, 16).unwrap();
     caps.retype(at(a, 0), ObjectKind::Frame, 0, at(a, 1), 3).unwrap();
@@ -320,7 +320,7 @@ fn retyped_memory_comes_back() {
 /// still covers it (a regression the property test found).
 #[test]
 fn nested_memory_survives_deleting_the_middle() {
-    let mut caps = store();
+    let caps = store();
     let a = caps.create_space(8).unwrap();
     caps.create_memory(at(a, 0), 0x400, 4).unwrap();
     caps.retype(at(a, 0), ObjectKind::Memory, 1, at(a, 1), 1).unwrap();
@@ -344,7 +344,7 @@ fn nested_memory_survives_deleting_the_middle() {
 
 #[test]
 fn stale_names_are_refused() {
-    let mut caps = store();
+    let caps = store();
     let a = caps.create_space(2).unwrap();
     let endpoint = caps.create(at(a, 0), ObjectKind::Endpoint).unwrap();
     caps.destroy_space(a, &mut |_| {}).unwrap();
@@ -365,7 +365,7 @@ fn stale_names_are_refused() {
 
 #[test]
 fn slot_flags_stay_with_the_slot() {
-    let mut caps = store();
+    let caps = store();
     let a = caps.create_space(4).unwrap();
     caps.create(at(a, 0), ObjectKind::Endpoint).unwrap();
     assert_eq!(caps.slot_flags(at(a, 1)), Err(CapError::Empty));
@@ -391,7 +391,7 @@ fn slot_flags_stay_with_the_slot() {
 
 #[test]
 fn the_linked_bit_says_which_slots_have_relatives() {
-    let mut caps = store();
+    let caps = store();
     let a = caps.create_space(4).unwrap();
     let b = caps.create_space(2).unwrap();
     // A new object's capability has no relatives: deleting or moving it
@@ -428,44 +428,51 @@ fn the_linked_bit_says_which_slots_have_relatives() {
     caps.audit().unwrap();
 }
 
+/// Whether the store's version moved since `seen`, which then catches up.
+fn stale(caps: &Store, seen: &mut u64) -> bool {
+    let now = caps.version();
+    core::mem::replace(seen, now) != now
+}
+
 #[test]
 fn a_cached_capability_leaving_its_slot_makes_the_store_stale() {
-    let mut caps = store();
+    let caps = store();
+    let mut seen = caps.version();
     let a = caps.create_space(4).unwrap();
     caps.create(at(a, 0), ObjectKind::Endpoint).unwrap();
     caps.derive(at(a, 0), at(a, 1), Derivation::COPY).unwrap();
-    assert!(!caps.take_stale());
+    assert!(!stale(&caps, &mut seen));
     // Deleting or moving a capability nobody cached changes nothing cached.
     caps.move_cap(at(a, 1), at(a, 2)).unwrap();
     caps.delete(at(a, 2), &mut |_| {}).unwrap();
-    assert!(!caps.take_stale());
+    assert!(!stale(&caps, &mut seen));
     assert_eq!(caps.get_to_cache(at(a, 1)), Err(CapError::Empty));
     // Once cached, moving it out of its slot or deleting it does.
     let cap = caps.get_to_cache(at(a, 0)).unwrap();
     assert_eq!(caps.get(at(a, 0)), Ok(cap));
     caps.derive(at(a, 0), at(a, 1), Derivation::COPY).unwrap();
-    assert!(!caps.take_stale());
+    assert!(!stale(&caps, &mut seen));
     caps.move_cap(at(a, 0), at(a, 3)).unwrap();
-    assert!(caps.take_stale());
-    assert!(!caps.take_stale());
+    assert!(stale(&caps, &mut seen));
+    assert!(!stale(&caps, &mut seen));
     // Its new slot is not cached.
     caps.delete(at(a, 3), &mut |_| {}).unwrap();
-    assert!(!caps.take_stale());
+    assert!(!stale(&caps, &mut seen));
     // A revoke of its parent, and destroying its space, take it out too.
     caps.get_to_cache(at(a, 1)).unwrap();
     caps.create(at(a, 0), ObjectKind::Notification).unwrap();
     caps.derive(at(a, 0), at(a, 2), Derivation::COPY).unwrap();
     caps.get_to_cache(at(a, 2)).unwrap();
     assert_eq!(caps.revoke(at(a, 0), usize::MAX, &mut |_| {}), Ok(Progress::Done));
-    assert!(caps.take_stale());
+    assert!(stale(&caps, &mut seen));
     caps.destroy_space(a, &mut |_| {}).unwrap();
-    assert!(caps.take_stale());
+    assert!(stale(&caps, &mut seen));
     caps.audit().unwrap();
 }
 
 #[test]
 fn spaces_grow_and_keep_what_they_hold() {
-    let mut caps = store();
+    let caps = store();
     let a = caps.create_space(2).unwrap();
     let b = caps.create_space(2).unwrap();
     caps.create(at(a, 1), ObjectKind::Endpoint).unwrap();
@@ -485,7 +492,7 @@ fn spaces_grow_and_keep_what_they_hold() {
 
 #[test]
 fn device_ranges_narrow() {
-    let mut caps = store();
+    let caps = store();
     let a = caps.create_space(4).unwrap();
     caps.grant_range(at(a, 0), ObjectKind::IoPorts, 0, 1 << 16).unwrap();
     caps.derive(at(a, 0), at(a, 1), Derivation::with_range(0x60, 5)).unwrap();
@@ -501,6 +508,111 @@ fn device_ranges_narrow() {
     assert_eq!(caps.grant_range(at(a, 2), ObjectKind::Frame, 0, 1), Err(CapError::NotARange));
     assert_eq!(caps.create(at(a, 2), ObjectKind::Frame), Err(CapError::InvalidArgument));
     caps.audit().unwrap();
+}
+
+/// Threads at once, as on four CPUs: each opens and closes in its own
+/// space (the fast path), copies into its own slots and into the next
+/// thread's (the slow path, crossing spaces), moves, deletes what the
+/// thread before it copied in, revokes, and copies from a capability every
+/// thread shares. Whatever each operation answers, the store must stay
+/// whole, and every object made must be released once its capabilities
+/// are gone.
+#[test]
+fn threads_at_once_keep_the_store_whole() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Barrier};
+
+    const THREADS: usize = 4;
+    const ROUNDS: usize = 200_000;
+    /// Slots each thread fills itself; the rest of its space is its inbox.
+    const OWN: u32 = 8;
+    const SLOTS: u32 = 16;
+    let caps = Arc::new(store());
+    let spaces: Vec<SpaceId> = (0..THREADS).map(|_| caps.create_space(SLOTS).unwrap()).collect();
+    let shared = at(spaces[0], SLOTS - 1);
+    caps.create(shared, ObjectKind::Endpoint).unwrap();
+    let made = Arc::new(AtomicUsize::new(1));
+    let released = Arc::new(AtomicUsize::new(0));
+    let barrier = Arc::new(Barrier::new(THREADS));
+    let threads: Vec<_> = (0..THREADS)
+        .map(|t| {
+            let (caps, made, released, barrier) =
+                (caps.clone(), made.clone(), released.clone(), barrier.clone());
+            let (me, next) = (spaces[t], spaces[(t + 1) % THREADS]);
+            std::thread::spawn(move || {
+                let mut sink = |_: Released| {
+                    released.fetch_add(1, Ordering::Relaxed);
+                };
+                // xorshift64, seeded per thread.
+                let mut seed = 0x9e37_79b9_7f4a_7c15u64 ^ (t as u64 + 1);
+                let mut next_random = move || {
+                    seed ^= seed << 13;
+                    seed ^= seed >> 7;
+                    seed ^= seed << 17;
+                    seed
+                };
+                barrier.wait();
+                for _ in 0..ROUNDS {
+                    let r = next_random();
+                    let own = at(me, (r >> 8) as u32 % OWN);
+                    let other = at(me, (r >> 16) as u32 % OWN);
+                    let inbox = at(next, OWN + (r >> 24) as u32 % (SLOTS - OWN - 1));
+                    let mine = at(me, OWN + (r >> 32) as u32 % (SLOTS - OWN - 1));
+                    match r % 9 {
+                        0 | 1 => {
+                            if caps.create(own, ObjectKind::Endpoint).is_ok() {
+                                made.fetch_add(1, Ordering::Relaxed);
+                            }
+                        }
+                        2 => {
+                            let _ = caps.delete(own, &mut sink);
+                        }
+                        3 => {
+                            let _ = caps.derive(own, other, Derivation::COPY);
+                        }
+                        4 => {
+                            let _ = caps.derive(own, inbox, Derivation::COPY);
+                        }
+                        5 => {
+                            let _ = caps.delete(mine, &mut sink);
+                        }
+                        6 => {
+                            let _ = caps.move_cap(own, other);
+                        }
+                        7 => {
+                            let _ = caps.revoke(own, 4, &mut sink);
+                        }
+                        _ => {
+                            let _ = caps.derive(shared, own, Derivation::COPY);
+                            let _ = caps.get_to_cache(own);
+                        }
+                    }
+                }
+            })
+        })
+        .collect();
+    for thread in threads {
+        thread.join().unwrap();
+    }
+    caps.audit().unwrap();
+    // A revoke left half done keeps its mark; one more turn ends each.
+    for space in &spaces {
+        for slot in 0..SLOTS {
+            let _ = caps.continue_revoke(at(*space, slot), usize::MAX, &mut |_| {
+                released.fetch_add(1, Ordering::Relaxed);
+            });
+        }
+    }
+    caps.audit().unwrap();
+    for space in spaces {
+        caps.destroy_space(space, &mut |_| {
+            released.fetch_add(1, Ordering::Relaxed);
+        })
+        .unwrap();
+    }
+    let census = caps.audit().unwrap();
+    assert_eq!((census.total_caps(), census.total_objects()), (0, 0));
+    assert_eq!(made.load(Ordering::Relaxed), released.load(Ordering::Relaxed));
 }
 
 // ---- Random operation sequences against a model ----
@@ -727,9 +839,13 @@ impl Model {
         }
     }
 
+    /// A capability left with no relatives is unlinked, and a root again:
+    /// its depth is 0.
     fn unlink_if_alone(&mut self, at: (u32, u32)) {
         if self.nodes[&at].parent.is_none() && self.children(at).is_empty() {
-            self.nodes.get_mut(&at).unwrap().linked = false;
+            let node = self.nodes.get_mut(&at).unwrap();
+            node.linked = false;
+            node.depth = 0;
         }
     }
 
@@ -750,7 +866,7 @@ struct Run {
 
 impl Run {
     fn new() -> Run {
-        let mut caps = store();
+        let caps = store();
         let spaces = (0..SPACES).map(|_| caps.create_space(SLOTS).unwrap()).collect();
         Run { caps, spaces, model: Model::default() }
     }
@@ -1092,10 +1208,11 @@ proptest! {
         ops in proptest::collection::vec((op(), slot()), 1..60)
     ) {
         let mut run = Run::new();
+        let mut seen = run.caps.version();
         let mut cache = HashMap::new();
         for (op, look) in &ops {
             run.apply(op);
-            if run.caps.take_stale() {
+            if stale(&run.caps, &mut seen) {
                 cache.clear();
             }
             for (&at, cap) in &cache {
