@@ -44,7 +44,7 @@ Any USB stick works; writing the image **erases everything on it**.
 
    ```sh
    sudo umount /dev/sdX?* 2>/dev/null
-   sudo dd if=out/dukovo-0.12.0-x86_64.img of=/dev/sdX bs=4M conv=fsync status=progress
+   sudo dd if=out/dukovo-0.13.0-x86_64.img of=/dev/sdX bs=4M conv=fsync status=progress
    ```
 
 `conv=fsync` makes `dd` wait until the data is on the stick, so it is safe
