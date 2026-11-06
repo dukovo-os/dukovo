@@ -356,6 +356,11 @@ fn stale_names_are_refused() {
     assert_eq!(caps.get(at(b, 2)), Err(CapError::NoSuchSlot));
     assert_eq!(caps.get(at(b, 0)), Err(CapError::Empty));
     let again = caps.create(at(b, 0), ObjectKind::Endpoint).unwrap();
+    // A move between the live space and the stale name of its index is
+    // refused either way, without taking the one space's lock twice.
+    assert_eq!(caps.move_cap(at(b, 0), at(a, 1)), Err(CapError::NoSuchSpace));
+    assert_eq!(caps.move_cap(at(a, 0), at(b, 1)), Err(CapError::NoSuchSpace));
+    assert_eq!(caps.get(at(b, 0)).map(|cap| cap.id()), Ok(Some(again)));
     assert_eq!(again.index, endpoint.index);
     assert_ne!(again, endpoint);
     assert_eq!(caps.object(endpoint), None);

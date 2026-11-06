@@ -573,6 +573,11 @@ impl<A: Allocator + Clone, K> Capabilities<A, K> {
         if from.space == to.space {
             return self.in_space(from.space, |view| view.move_cap(from, to))?;
         }
+        if from.space.index == to.space.index {
+            // Two generations of one space: at most one is live, so the
+            // other name is stale. Locking both would take one lock twice.
+            return Err(CapError::NoSuchSpace);
+        }
         let low = from.space.index.min(to.space.index);
         let (first, second) = if from.space.index == low { (from, to) } else { (to, from) };
         let mut first_state = self.lock_space(first.space, 0)?;
