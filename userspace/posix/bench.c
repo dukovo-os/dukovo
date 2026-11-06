@@ -878,11 +878,11 @@ struct scaling {
 
 // The kernel's counts that show where workers wait for each other, as
 // Radix's /processes/stat lists them: context switches, halts and
-// interprocessor interrupts, kernel mutexes found taken, sleeps for them
-// and handoffs of them, and stale capability caches. Linux has none of
-// them by these names, so it prints no counts.
+// interprocessor interrupts, kernel mutexes found taken, sleeps for them,
+// handoffs of them and let-gos to their waiters, and stale capability
+// caches. Linux has none of them by these names, so it prints no counts.
 static const char *const scaling_count_names[] = {"switches", "ipis", "halts", "mutex_contended",
-		"mutex_waits", "mutex_handoffs", "cap_cache_flushes"};
+		"mutex_waits", "mutex_handoffs", "mutex_wakes", "cap_cache_flushes"};
 #define SCALING_COUNTS (sizeof(scaling_count_names) / sizeof(scaling_count_names[0]))
 
 // Reads the counts of `scaling_count_names`; false unless all are there.

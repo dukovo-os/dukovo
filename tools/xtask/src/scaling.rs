@@ -242,13 +242,14 @@ fn report(
 
 /// The events Radix's kernel counted, per open and close, in the order
 /// the C program prints them (`scaling_count_names`), with their headings.
-const EVENTS: [(&str, &str); 7] = [
+const EVENTS: [(&str, &str); 8] = [
     ("switches", "Switches"),
     ("ipis", "IPIs"),
     ("halts", "Halts"),
     ("mutex_contended", "Mutex found taken"),
     ("mutex_waits", "Mutex sleeps"),
     ("mutex_handoffs", "Mutex handoffs"),
+    ("mutex_wakes", "Mutex let-gos"),
     ("cap_cache_flushes", "Capability cache flushes"),
 ];
 
@@ -313,13 +314,13 @@ mod tests {
     fn counts_show_per_open_and_close() {
         let counts = bench::parse_counts(
             "BENCHCOUNT group=posix_open_close_threads_4 rounds=200 switches=50 ipis=0 halts=0 \
-             mutex_contended=150 mutex_waits=100 mutex_handoffs=100 cap_cache_flushes=0",
+             mutex_contended=150 mutex_waits=100 mutex_handoffs=40 mutex_wakes=60 \
+             cap_cache_flushes=0",
         );
         let report = counts_report(&counts);
-        assert!(
-            report
-                .contains("| 4 threads | 0.250 | 0.000 | 0.000 | 0.750 | 0.500 | 0.500 | 0.000 |")
-        );
+        assert!(report.contains(
+            "| 4 threads | 0.250 | 0.000 | 0.000 | 0.750 | 0.500 | 0.200 | 0.300 | 0.000 |"
+        ));
         assert!(counts_report(&[]).is_empty());
     }
 
