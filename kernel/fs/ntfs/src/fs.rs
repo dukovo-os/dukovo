@@ -320,16 +320,18 @@ fn take(loaded: &mut Loaded, attr: &Attr<'_>, clusters: u64) -> Result<()> {
     Ok(())
 }
 
-/// The master file table's clusters and how many records it has.
+/// The master file table's clusters and how many records it has, and
+/// `$MFTMirr`, on a volume mounted to write. A shrink moves both (ADR
+/// 0312), so both are under the one lock.
 struct Mft {
     runs: Runs,
     records: u64,
+    mirror: Option<Mirror>,
 }
 
-/// The copy of the first records, and how many it has. Its runs change
-/// only when a shrink moves it (ADR 0312).
+/// The copy of the first records, and how many it has.
 struct Mirror {
-    runs: Mutex<Runs>,
+    runs: Runs,
     records: u64,
 }
 
@@ -338,8 +340,6 @@ pub(crate) struct Volume {
     pub(crate) geo: Geometry,
     pub(crate) cache: BlockCache,
     mft: Mutex<Mft>,
-    /// `$MFTMirr`, on a volume mounted to write.
-    mirror: Option<Mirror>,
 }
 
 impl Volume {
@@ -365,8 +365,8 @@ impl Volume {
     /// Writes the copies of the first records to `runs` from now on: a
     /// shrink has copied `$MFTMirr`'s data there ([`crate::shrink`]).
     pub(crate) fn move_mirror(&self, runs: Runs) {
-        if let Some(mirror) = &self.mirror {
-            *mirror.runs.lock() = runs;
+        if let Some(mirror) = &mut self.mft.lock().mirror {
+            mirror.runs = runs;
         }
     }
 
@@ -403,21 +403,18 @@ impl Volume {
         let rs = u64::from(self.geo.record_size);
         let mut out = mem::copy(buf)?;
         fix_down(&mut out)?;
-        let records = self.mft.lock().records;
-        if number >= records {
+        let mft = self.mft.lock();
+        if number >= mft.records {
             return Err(Error::Corrupt);
         }
-        let mirrored = self.mirror.as_ref().filter(|mirror| number < mirror.records);
+        let mirrored = mft.mirror.as_ref().filter(|mirror| number < mirror.records);
         for mirror in [mirror_first, !mirror_first] {
-            if mirror {
-                if let Some(copy) = mirrored {
-                    let runs = copy.runs.lock();
-                    write_runs(&self.cache, &self.geo, &runs, number * rs, &out, through)?;
-                }
-            } else {
-                let mft = self.mft.lock();
-                write_runs(&self.cache, &self.geo, &mft.runs, number * rs, &out, through)?;
-            }
+            let runs = match (mirror, mirrored) {
+                (true, Some(copy)) => &copy.runs,
+                (true, None) => continue,
+                (false, _) => &mft.runs,
+            };
+            write_runs(&self.cache, &self.geo, runs, number * rs, &out, through)?;
         }
         Ok(())
     }
@@ -1290,7 +1287,7 @@ fn open(device: DeviceRef, read_only: bool, forced: bool) -> Result<Opened> {
         return Err(Error::NotSupported);
     }
     let (mft, records, growable) = load_mft(&cache, &geo)?;
-    let vol = Volume { geo, cache, mft: Mutex::new(Mft { runs: mft, records }), mirror: None };
+    let vol = Volume { geo, cache, mft: Mutex::new(Mft { runs: mft, records, mirror: None }) };
     let upcase = load_upcase(&vol)?;
     let about = about(&vol)?;
     let bitmap = load_bitmap(&vol)?;
@@ -1355,7 +1352,7 @@ fn assemble(
     let geo = vol.geo;
     let (log, records) = match writable {
         Some(Writable { mirror, log, records, .. }) => {
-            vol.mirror = Some(mirror);
+            vol.mft.get_mut().mirror = Some(mirror);
             (Some(log), Some(records))
         }
         None => (None, None),
@@ -1431,8 +1428,7 @@ fn writable(vol: &Volume, about: &About, growable: bool, forced: bool) -> Result
         return Err(Error::Corrupt);
     }
     let unclean = dirty || !clean;
-    let mirror = Mirror { runs: Mutex::new(mirror.runs), records: count };
-    Ok(Writable { mirror, log, records, unclean })
+    Ok(Writable { mirror: Mirror { runs: mirror.runs, records: count }, log, records, unclean })
 }
 
 /// Record `number`'s data, or its own `$BITMAP` if `bitmap`, if it is a
