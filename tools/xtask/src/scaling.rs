@@ -246,9 +246,9 @@ const EVENTS: [(&str, &str); 7] = [
     ("switches", "Switches"),
     ("ipis", "IPIs"),
     ("halts", "Halts"),
+    ("mutex_contended", "Mutex found taken"),
     ("mutex_waits", "Mutex sleeps"),
     ("mutex_handoffs", "Mutex handoffs"),
-    ("store_waits", "Store lock waits"),
     ("cap_cache_flushes", "Capability cache flushes"),
 ];
 
@@ -313,12 +313,12 @@ mod tests {
     fn counts_show_per_open_and_close() {
         let counts = bench::parse_counts(
             "BENCHCOUNT group=posix_open_close_threads_4 rounds=200 switches=50 ipis=0 halts=0 \
-             mutex_waits=100 mutex_handoffs=100 store_waits=150 cap_cache_flushes=0",
+             mutex_contended=150 mutex_waits=100 mutex_handoffs=100 cap_cache_flushes=0",
         );
         let report = counts_report(&counts);
         assert!(
             report
-                .contains("| 4 threads | 0.250 | 0.000 | 0.000 | 0.500 | 0.500 | 0.750 | 0.000 |")
+                .contains("| 4 threads | 0.250 | 0.000 | 0.000 | 0.750 | 0.500 | 0.500 | 0.000 |")
         );
         assert!(counts_report(&[]).is_empty());
     }

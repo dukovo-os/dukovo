@@ -40,7 +40,7 @@ use radix_cap::{
 };
 use radix_klog::{error, info};
 use radix_mm::{FRAMES, Flags, HEAP, Kmalloc, Owner, PAGE_SHIFT};
-use radix_sync::{Mutex, MutexGuard};
+use radix_sync::Mutex;
 
 use crate::domains::{self, DomainError, DomainRef, Settings};
 use crate::user::objects::{self, Registry};
@@ -100,27 +100,6 @@ impl Locked {
 /// The store, once [`init`] has run.
 static STORE: Mutex<Option<Locked>> = Mutex::new(None);
 
-/// Times a thread found the store's lock taken and had to wait for it.
-static WAITS: AtomicU64 = AtomicU64::new(0);
-
-/// Takes the store's lock, counting the times it was taken already
-/// ([`waits`]). The count is touched only on that slow path, so threads
-/// that do not contend share no counter.
-#[track_caller]
-fn lock() -> MutexGuard<'static, Option<Locked>> {
-    if let Some(store) = STORE.try_lock() {
-        return store;
-    }
-    WAITS.fetch_add(1, Ordering::Relaxed);
-    STORE.lock()
-}
-
-/// How many times a thread has had to wait for the store's lock since
-/// boot: what `/processes/stat` reports as `store_waits`.
-pub fn waits() -> u64 {
-    WAITS.load(Ordering::Relaxed)
-}
-
 /// Capabilities a revoke deletes before it lets go of the lock.
 pub const REVOKE_STEP: usize = 64;
 
@@ -142,7 +121,7 @@ pub fn init() {
 /// released are dropped after (`fs::drop_deferred`), and cards it released
 /// stopped (`user::device::close_deferred`).
 pub fn with<R>(f: impl FnOnce(&mut Locked) -> R) -> Result<R, CapError> {
-    let mut store = lock();
+    let mut store = STORE.lock();
     let result = match store.as_mut() {
         Some(store) => {
             let result = f(store);
@@ -204,7 +183,7 @@ pub fn mark_stale() {
 /// lock: for lookups too rare to be worth a place in a CPU's cache. The
 /// system calls' lookups go through `user::objects`, which keeps them.
 pub fn get(at: SlotRef) -> Result<Capability, CapError> {
-    lock().as_ref().ok_or(CapError::NoSuchSpace)?.get(at)
+    STORE.lock().as_ref().ok_or(CapError::NoSuchSpace)?.get(at)
 }
 
 /// The capability in `at`, for a CPU's cache to keep (`user::objects`):
@@ -216,7 +195,7 @@ pub fn get_to_cache<R>(
     at: SlotRef,
     also: impl FnOnce(&Capability, &mut Registry) -> R,
 ) -> Result<(Capability, R, u64), CapError> {
-    let mut store = lock();
+    let mut store = STORE.lock();
     let Locked { store, registry } = store.as_mut().ok_or(CapError::NoSuchSpace)?;
     let cap = store.get_to_cache(at)?;
     let found = also(&cap, registry);
@@ -234,7 +213,7 @@ pub fn try_with<R>(f: impl FnOnce(&Locked) -> R) -> Option<R> {
 /// store is set up: to read it, as the registry changes only through
 /// [`with`].
 pub fn with_registry<R>(f: impl FnOnce(&Registry) -> R) -> Option<R> {
-    let store = lock();
+    let store = STORE.lock();
     store.as_ref().map(|locked| f(&locked.registry))
 }
 
@@ -333,7 +312,7 @@ pub fn create_domain(
 
 /// The domain the capability in `at` names, if it has `needs` on it.
 pub fn domain_at(at: SlotRef, needs: Rights) -> Result<DomainRef, CapError> {
-    let cap = lock().as_ref().ok_or(CapError::NoSuchSpace)?.lookup(
+    let cap = STORE.lock().as_ref().ok_or(CapError::NoSuchSpace)?.lookup(
         at,
         ObjectKind::ResourceDomain,
         needs,

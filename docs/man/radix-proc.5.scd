@@ -209,11 +209,11 @@ _/processes/stat_
 	events that cost an exit to the host under a hypervisor (writes of
 	the timer hardware, interrupts sent to other CPUs, idle periods that
 	halted and idle periods a wake-up ended while the CPU polled);
-	*mutex_waits* and *mutex_handoffs*, the times a thread slept waiting
-	for a kernel mutex and the times a mutex was handed to a sleeping
-	waiter; *store_waits*, the times a thread found the capability
-	store's lock taken; *cap_cache_flushes*, how often the CPUs' caches
-	of capabilities went stale;
+	*mutex_contended*, *mutex_waits* and *mutex_handoffs*, the times a
+	thread found a kernel mutex taken, the times it slept waiting for
+	one and the times a mutex was handed to a sleeping waiter;
+	*cap_cache_flushes*, how often the CPUs' caches of capabilities went
+	stale;
 	*swap_ins* and *swap_outs*, the pages read back from swap and
 	written to it since boot; and *boot_time_ns*, when the kernel
 	started, in nanoseconds since 1970.

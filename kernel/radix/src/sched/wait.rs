@@ -119,6 +119,7 @@ impl Table {
 static TABLE: SpinLock<Option<Table>> = SpinLock::new(None);
 static WAKEUPS: AtomicU64 = AtomicU64::new(0);
 static HANDOFFS: AtomicU64 = AtomicU64::new(0);
+static MUTEX_CONTENDED: AtomicU64 = AtomicU64::new(0);
 static MUTEX_WAITS: AtomicU64 = AtomicU64::new(0);
 static BOOSTS: AtomicU64 = AtomicU64::new(0);
 
@@ -233,6 +234,9 @@ pub fn wake_all(key: usize) {
 /// lends its priority along the chain of owners, and sleeps until the lock
 /// is handed to it.
 pub(super) fn mutex_wait(mutex: &RawMutex) {
+    // Counted here, off the fast path: taking a free mutex costs nothing
+    // more for it.
+    MUTEX_CONTENDED.fetch_add(1, Ordering::Relaxed);
     let Some(me) = current() else { return spin(mutex, super::NO_TOKEN) };
     let token = me.token();
     let key = mutex.key();
@@ -389,11 +393,26 @@ pub fn stats() -> (u64, u64, u64) {
     )
 }
 
-/// How many times a thread went to sleep waiting for a mutex, and how
-/// many times a mutex was handed to a sleeping waiter: `/processes/stat`
-/// gives both, so that a benchmark can see a lock its threads queue for.
-pub fn mutex_counts() -> (u64, u64) {
-    (MUTEX_WAITS.load(Ordering::Relaxed), HANDOFFS.load(Ordering::Relaxed))
+/// How contended the kernel's mutexes have been since boot.
+/// `/processes/stat` gives these, so that a benchmark can see a lock its
+/// threads queue for.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct MutexCounts {
+    /// Times a thread found a mutex taken and went into [`mutex_wait`].
+    pub contended: u64,
+    /// Times a thread went to sleep waiting for a mutex.
+    pub waits: u64,
+    /// Times a mutex was handed to a sleeping waiter.
+    pub handoffs: u64,
+}
+
+/// The mutex counts now.
+pub fn mutex_counts() -> MutexCounts {
+    MutexCounts {
+        contended: MUTEX_CONTENDED.load(Ordering::Relaxed),
+        waits: MUTEX_WAITS.load(Ordering::Relaxed),
+        handoffs: HANDOFFS.load(Ordering::Relaxed),
+    }
 }
 
 /// How many threads wait in the table now, or `None` if it is locked.
