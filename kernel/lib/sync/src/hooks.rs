@@ -129,7 +129,10 @@ pub trait Hooks: Sync {
     /// Waits until the caller owns `mutex`, whose owner word is held by
     /// someone else. The word holds the owner's token, with
     /// [`RawMutex::WAITERS`] set while anyone waits; the implementation
-    /// sets it, sleeps, and returns once the lock is the caller's.
+    /// sets it, spins or sleeps, and returns once the lock is the
+    /// caller's. A word with no owner and the bit set is a free lock with
+    /// sleepers queued, which the implementation may take, keeping the
+    /// bit.
     fn mutex_wait(&self, mutex: &RawMutex) {
         let me = self.current_thread();
         while mutex.word().compare_exchange(0, me, Ordering::Acquire, Ordering::Relaxed).is_err() {
@@ -137,8 +140,8 @@ pub trait Hooks: Sync {
         }
     }
 
-    /// The owner lets go of `mutex`, which has waiters: hand it over (or
-    /// clear the word).
+    /// The owner lets go of `mutex`, which has waiters: hand it over, or
+    /// clear the owner and wake a waiter to try again.
     fn mutex_wake(&self, mutex: &RawMutex) {
         mutex.word().store(0, Ordering::Release);
     }

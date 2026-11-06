@@ -308,18 +308,32 @@ is preempted.
 
 `radix_sync::Mutex` is a word holding the owner's token (its thread
 pointer) and a *waiters* bit. Uncontended, taking and letting go are one
-compare-and-swap each. Contended, `mutex_wait` (`sched/wait.rs`) takes
-the wait table's lock, sets the waiters bit (taking the mutex instead if
-it was let go meanwhile), queues the thread with the priority it lends,
-and blocks until it is the owner. With the bit set the owner can let go
-only through `mutex_wake`, which needs the table, so the owner seen under
-the table's lock stays the owner while the waiter queues.
+compare-and-swap each. Contended, `mutex_wait` (`sched/wait.rs`) first
+spins while the owner is the running thread of some CPU
+(`sched::is_running`), taking the mutex if it finds no owner, for at
+most 4,096 pause instructions (some microseconds to a fifth of a
+millisecond, by CPU): a critical section is usually far shorter than a
+sleep and a wake-up. Once the owner does not run, or the
+spin ends, it takes the wait table's lock, sets the waiters bit (taking
+the mutex instead if it was let go meanwhile), queues the thread with
+the priority it lends, and blocks. With the bit set the owner can let
+go only through `mutex_wake`, which needs the table, so the owner seen
+under the table's lock stays the owner while the waiter queues.
 
-`mutex_wake` hands the mutex straight to the most urgent waiter (highest
-priority, then first come): it writes that waiter's token into the word,
-keeping the waiters bit if others remain, makes the new owner the owner
-of the remaining waiters, and wakes it. Nobody can take the mutex in
-between (no barging).
+`mutex_wake` picks the most urgent waiter (highest priority, then first
+come). If that waiter is real-time, or has lost the mutex 4 times
+already, it hands the mutex straight to it: it writes that waiter's
+token into the word, keeping the waiters bit if others remain, makes the
+new owner the owner of the remaining waiters, and wakes it, and nobody
+can take the mutex in between. Otherwise it lets the mutex go: it clears
+the owner, keeps the bit only if others remain, and wakes the waiter to
+try again. A spinning thread may take the mutex first; the waiter then
+counts a loss and queues again in the place it had. Without this, every
+critical section after two threads first met waited for a sleeper to
+wake, and the queue never drained (ADR 0368). `kernel/radix/tla/Mutex.tla`
+checks the protocol: mutual exclusion, no lost wake-up (the bit is set
+exactly while someone is queued), the handoff to real-time waiters, at
+most 4 losses, and every thread getting the mutex.
 
 **Priority inheritance.** A real-time waiter lends its effective
 priority to the owner (`lend`). The owner's loan (`boost`) is the
@@ -333,8 +347,8 @@ owner's loan from scratch. Fair waiters lend nothing: among fair threads
 EEVDF bounds every wait for the CPU already, and lending a nice level
 would have no clean meaning across domains.
 
-Because a handoff goes to the most urgent waiter, a real-time waiter
-always wins over a fair one. The `work/N` workers are therefore fair
+Because a real-time waiter that is the most urgent always gets a
+handoff, a real-time waiter always wins over a fair one. The `work/N` workers are therefore fair
 (nice −20), not real-time: a real-time worker taking a mutex in a loop
 would starve a fair thread waiting for the same mutex (ADR 0027).
 
@@ -558,13 +572,25 @@ lends its priority to `L` and to every owner along the chain `L` waits
 on (up to 16), so while `H` waits, `L` and each owner on the chain run at
 least at `H`'s priority, above `M`, and `M` cannot preempt them. When `L`
 lets go, the mutex goes straight to the most urgent waiter, `H` (or one
-more urgent), with no window for another thread to take it. `H`
-therefore waits only for the critical sections along the chain, as if
-`M` did not exist. Loans are recomputed from the waiters actually queued
+more urgent), with no window for another thread to take it: a waiter
+that is real-time always gets a handoff, never a let-go that a spinner
+could win. `H` therefore waits only for the critical sections along the
+chain, as if `M` did not exist. (While `H` spins before queuing it lends
+nothing, but it spins only while `L` runs; once `M` preempts `L`, `H`
+queues and lends.) Loans are recomputed from the waiters actually queued
 at each handoff and each priority change, so they never outlive their
 reason. *(The `sched-pi` self-test, with one mutex and with a chain of
 two; Kani `real_time_picks_the_most_urgent_first_comer` for the boosted
 pick; host test `boosting_moves_an_entry_up`.)*
+
+**8a. No fair mutex waiter starves.** A let-go wakes the oldest fair
+waiter, which keeps its place when it queues again; each time a running
+thread takes the mutex first, that waiter counts a loss, and after 4 it
+gets a handoff. So a fair waiter waits for the waiters ahead of it, for
+at most 4 critical sections of other threads each time it is woken, and
+for real-time waiters, which come first by design. *(TLA+
+`Mutex.tla`: `BoundedLosses`, `EveryRoundEnds`; the `sched-mutex`
+self-test.)*
 
 **9. Balancing settles.** A pull needs `(f − 1) · t_c ≥ (t + 1) · f_c`
 for source load `f` on `f_c` CPUs and destination load `t` on `t_c`. The
@@ -672,6 +698,26 @@ waker skip setting it, breaks `WakeOnTheWay`; letting a CPU take a
 context without waiting breaks `OneStackUser`; letting the balancer move
 a running thread breaks `QueuesConsistent`; and without fairness in
 picking, `AllFinish` fails.
+
+## Troubleshooting
+
+- **Work that takes one mutex in many threads runs far slower than in
+  one.** Read `/processes/stat` before and after: `mutex_contended`
+  counts the times a thread found a mutex taken, `mutex_waits` the
+  sleeps, and `mutex_handoffs` and `mutex_wakes` the two ways of letting
+  go. Contention with few sleeps means waiters spin and the lock is
+  merely busy; a sleep or more per operation means threads queue, and
+  every critical section may wait for a wake-up. `ob bench --scaling`
+  prints these per open and close.
+- **A real-time thread waits long for a mutex.** Its owner should run
+  with the waiter's priority: `kdb`'s scheduler report shows boosts and
+  handoffs. A chain longer than 16 owners lends no further. The
+  `sched-pi` boot test covers the lending, `sched-mutex` the handoffs.
+- **A thread sleeps for ever on a mutex nobody holds.** The waiters bit
+  was cleared with sleepers queued, or `blocked_on` was cleared before
+  the word was written: `Mutex.tla`'s `BitMeansWaiters` and
+  `SleepersAreQueued` say which, and `lockdep` on the command line
+  reports the lock's class and where it was taken.
 
 ## Limits
 

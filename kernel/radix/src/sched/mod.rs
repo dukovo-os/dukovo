@@ -1713,6 +1713,16 @@ fn reap(thread: ThreadRef) {
     drop(thread);
 }
 
+/// Whether the thread whose token is `token` is running on a CPU now: a
+/// mutex waiter spins only while the owner does (`wait::mutex_wait`). It
+/// reads each CPU's `current` word with no lock, so the answer may be out
+/// of date by the time it is used, which costs a waiter at most a spin
+/// too many or a sleep too soon.
+pub(super) fn is_running(token: usize) -> bool {
+    (0..Arch::cpu_count().min(MAX_CPUS))
+        .any(|cpu| CPUS.get(cpu).current.load(Ordering::Relaxed) == token)
+}
+
 /// The thread whose token is `token`.
 pub(super) fn registry_find(token: usize) -> Option<ThreadRef> {
     let registry = REGISTRY.lock_irq();

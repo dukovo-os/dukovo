@@ -13,8 +13,13 @@
 //!   the table locked, and the waker takes the lock after changing it, so
 //!   no wake-up is lost.
 //! - A contended [`radix_sync::Mutex`] queues its waiters here, most
-//!   urgent first, through the hooks ([`mutex_wait`], [`mutex_wake`]). The
-//!   owner lets go by handing the lock straight to the first waiter.
+//!   urgent first, through the hooks ([`mutex_wait`], [`mutex_wake`]).
+//!   A waiter first spins while the owner runs on a CPU, and queues only
+//!   when it does not, or after a bounded spin. The owner lets
+//!   go by handing the lock straight to a real-time waiter, or to one
+//!   that has lost it too often; otherwise it lets the lock go and wakes
+//!   the first waiter to try again, so that a running thread may take it
+//!   meanwhile (ADR 0368).
 //!
 //! A key may be both: an object whose first field is a mutex has that
 //! mutex's address, and objects wait on their own address. So the two
@@ -36,6 +41,13 @@
 //! priority inversion). Fair waiters lend nothing: among fair threads
 //! the fair class already bounds how long anyone waits for the CPU.
 //!
+//! When threads queue for a mutex far more than expected, `/processes/stat`
+//! shows it: `mutex_contended` counts the times a thread found one taken,
+//! `mutex_waits` the sleeps, `mutex_handoffs` and `mutex_wakes` the two
+//! ways of letting go; `kdb`'s scheduler report
+//! gives the handoffs, and the `sched-mutex` and `sched-pi` boot tests
+//! cover both ways.
+//!
 //! Lock order: this table's lock, then the registry's or a thread's, then a
 //! run queue's.
 
@@ -51,6 +63,27 @@ use super::{current, registry_find, set_boost};
 /// The longest chain of mutex owners a priority is lent along.
 const MAX_CHAIN: usize = 16;
 
+/// The owner queued mutex waiters record while their mutex has none: it
+/// was let go to them at large ([`mutex_wake`]), so there is nobody to
+/// lend to. Odd, so never a thread's token, and not 0, which marks a
+/// condition waiter.
+const NO_OWNER: usize = 1;
+
+/// How many times a fair waiter may wake to find its mutex taken by a
+/// thread that never slept before the mutex is handed to it outright.
+/// Each such loss is one critical section of another thread, so no
+/// waiter waits for ever.
+const LOSSES_BEFORE_HANDOFF: u8 = 4;
+
+/// While its owner runs, a mutex waiter spins instead of sleeping: it
+/// checks the owner this many times, with [`SPIN_PAUSES`] pause
+/// instructions between checks, before it queues anyway: 4,096 pauses,
+/// from some microseconds to a fifth of a millisecond as the CPU's
+/// `pause` is quick or slow. The kernel is preemptible outside spin
+/// locks, so a spinner still gives way to anything more urgent at a tick.
+const SPIN_CHECKS: u32 = 512;
+const SPIN_PAUSES: u32 = 8;
+
 /// A waiting thread.
 struct Waiter {
     thread: ThreadRef,
@@ -59,8 +92,12 @@ struct Waiter {
     prio: u8,
     /// Arrival order, for first come first served among equals.
     seq: u64,
-    /// The owner's token, for mutex waits; 0 otherwise.
+    /// The owner's token, for mutex waits ([`NO_OWNER`] while the mutex
+    /// is let go to its waiters at large); 0 otherwise.
     owner: usize,
+    /// A fair mutex waiter that has woken to find its mutex taken too
+    /// often: the mutex is handed to it outright next time.
+    starved: bool,
 }
 
 impl Waiter {
@@ -121,6 +158,7 @@ static WAKEUPS: AtomicU64 = AtomicU64::new(0);
 static HANDOFFS: AtomicU64 = AtomicU64::new(0);
 static MUTEX_CONTENDED: AtomicU64 = AtomicU64::new(0);
 static MUTEX_WAITS: AtomicU64 = AtomicU64::new(0);
+static MUTEX_WAKES: AtomicU64 = AtomicU64::new(0);
 static BOOSTS: AtomicU64 = AtomicU64::new(0);
 
 /// Sets the table up with room for `room` waiters.
@@ -174,7 +212,7 @@ pub fn wait_until(key: usize, reason: &'static str, condition: impl Fn() -> bool
             }
             table.seq += 1;
             let seq = table.seq;
-            table.push(Waiter { thread: me.clone(), key, prio: 0, seq, owner: 0 });
+            table.push(Waiter { thread: me.clone(), key, prio: 0, seq, owner: 0, starved: false });
         }
         super::block(reason);
         // Still queued after a spurious wake-up: leave, check, queue again.
@@ -205,7 +243,7 @@ pub fn wait_until_or_timeout(
             }
             table.seq += 1;
             let seq = table.seq;
-            table.push(Waiter { thread: me.clone(), key, prio: 0, seq, owner: 0 });
+            table.push(Waiter { thread: me.clone(), key, prio: 0, seq, owner: 0, starved: false });
         }
         super::sleep_until_inner(&me, deadline_ns, reason);
         if let Some(table) = TABLE.lock_irq().as_mut() {
@@ -230,60 +268,125 @@ pub fn wake_all(key: usize) {
     }
 }
 
-/// The hook behind a contended [`radix_sync::Mutex`]: queues the caller,
-/// lends its priority along the chain of owners, and sleeps until the lock
-/// is handed to it.
+/// The hook behind a contended [`radix_sync::Mutex`]: spins while the
+/// owner runs, since it will let go soon, then queues the caller, lends
+/// its priority along the chain of owners, and sleeps until the lock is
+/// handed to it, or let go to the waiters, when it tries again.
 pub(super) fn mutex_wait(mutex: &RawMutex) {
     // Counted here, off the fast path: taking a free mutex costs nothing
     // more for it.
     MUTEX_CONTENDED.fetch_add(1, Ordering::Relaxed);
     let Some(me) = current() else { return spin(mutex, super::NO_TOKEN) };
     let token = me.token();
+    // The waiter keeps its place in the queue each time it tries again.
+    let mut seq = None;
+    let mut losses: u8 = 0;
+    loop {
+        if spin_while_owner_runs(mutex, token) {
+            return;
+        }
+        match queue(mutex, &me, &mut seq, losses >= LOSSES_BEFORE_HANDOFF) {
+            Queued::Took => return,
+            Queued::NoTable => return spin(mutex, token),
+            Queued::Waiting => {}
+        }
+        // `mutex_wake` writes the word before it clears `blocked_on`, so
+        // a waiter that sees `blocked_on` clear sees whether the mutex is
+        // its own. Still set: the wake-up had no cause.
+        while me.blocked_on.load(Ordering::Acquire) != 0 {
+            super::block("mutex");
+        }
+        if mutex.owner() == token {
+            return;
+        }
+        losses = losses.saturating_add(1);
+    }
+}
+
+/// What [`queue`] did.
+enum Queued {
+    /// The mutex was let go meanwhile, and the caller took it.
+    Took,
+    /// The caller is queued.
+    Waiting,
+    /// The table is not set up: no threads sleep yet.
+    NoTable,
+}
+
+/// Queues `me` for `mutex` with the table locked, taking the mutex instead
+/// if it is free. `seq` is the caller's place in the queue, given the
+/// first time; `starved` asks for the mutex to be handed to it outright.
+fn queue(mutex: &RawMutex, me: &ThreadRef, seq: &mut Option<u64>, starved: bool) -> Queued {
+    let token = me.token();
     let key = mutex.key();
     let word = mutex.word();
-    {
-        let mut table = TABLE.lock_irq();
-        let Some(table) = table.as_mut() else {
-            drop(table);
-            return spin(mutex, token);
-        };
-        let mut seen = word.load(Ordering::Relaxed);
-        let owner = loop {
-            let owner = seen & !RawMutex::WAITERS;
-            if owner == 0 {
-                // Let go meanwhile: take it, keeping the waiters bit for
-                // whoever else is queued.
-                let bit = if table.has(key) { RawMutex::WAITERS } else { 0 };
-                match word.compare_exchange(seen, token | bit, Ordering::Acquire, Ordering::Relaxed)
-                {
-                    Ok(_) => return,
-                    Err(now) => seen = now,
-                }
-                continue;
-            }
-            match word.compare_exchange(
-                seen,
-                seen | RawMutex::WAITERS,
-                Ordering::Relaxed,
-                Ordering::Relaxed,
-            ) {
-                Ok(_) => break owner,
+    let mut table = TABLE.lock_irq();
+    let Some(table) = table.as_mut() else { return Queued::NoTable };
+    let mut seen = word.load(Ordering::Relaxed);
+    let owner = loop {
+        let owner = seen & !RawMutex::WAITERS;
+        if owner == 0 {
+            // Let go meanwhile: take it, keeping the waiters bit for
+            // whoever else is queued.
+            let bit = if table.has(key) { RawMutex::WAITERS } else { 0 };
+            match word.compare_exchange(seen, token | bit, Ordering::Acquire, Ordering::Relaxed) {
+                Ok(_) => return Queued::Took,
                 Err(now) => seen = now,
             }
-        };
-        // With the waiters bit set, the owner can only let go through
-        // `mutex_wake`, which needs the table: it is still the owner.
-        let prio = super::rt_prio_of(&me);
+            continue;
+        }
+        match word.compare_exchange(
+            seen,
+            seen | RawMutex::WAITERS,
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+        ) {
+            Ok(_) => break owner,
+            Err(now) => seen = now,
+        }
+    };
+    // With the waiters bit set, the owner can only let go through
+    // `mutex_wake`, which needs the table: it is still the owner.
+    let prio = super::rt_prio_of(me);
+    let seq = *seq.get_or_insert_with(|| {
         table.seq += 1;
-        let seq = table.seq;
-        table.push(Waiter { thread: me.clone(), key, prio, seq, owner });
-        me.blocked_on.store(key, Ordering::Relaxed);
-        MUTEX_WAITS.fetch_add(1, Ordering::Relaxed);
-        lend(table, owner, prio);
+        table.seq
+    });
+    table.push(Waiter { thread: me.clone(), key, prio, seq, owner, starved });
+    me.blocked_on.store(key, Ordering::Relaxed);
+    MUTEX_WAITS.fetch_add(1, Ordering::Relaxed);
+    lend(table, owner, prio);
+    Queued::Waiting
+}
+
+/// Spins while the owner of `mutex` runs on a CPU, taking the mutex if it
+/// is let go meanwhile. Returns whether the caller took it. A critical
+/// section is usually far shorter than putting a thread to sleep and
+/// waking it, which costs interrupts and, in a virtual machine, exits to
+/// the host; an owner that does not run (preempted, or asleep in its
+/// critical section) will not let go soon, so the caller stops and queues.
+fn spin_while_owner_runs(mutex: &RawMutex, token: usize) -> bool {
+    let word = mutex.word();
+    for _ in 0..SPIN_CHECKS {
+        let seen = word.load(Ordering::Relaxed);
+        let owner = seen & !RawMutex::WAITERS;
+        if owner == 0 {
+            // Free, though perhaps with sleepers queued: the bit stays for
+            // them, and this thread wakes the next one when it lets go.
+            let mine = token | (seen & RawMutex::WAITERS);
+            if word.compare_exchange(seen, mine, Ordering::Acquire, Ordering::Relaxed).is_ok() {
+                return true;
+            }
+            continue;
+        }
+        if !super::is_running(owner) {
+            return false;
+        }
+        for _ in 0..SPIN_PAUSES {
+            core::hint::spin_loop();
+        }
     }
-    while mutex.owner() != token {
-        super::block("mutex");
-    }
+    false
 }
 
 /// Lends `prio` to the thread owning `token` and along the chain of owners
@@ -318,9 +421,11 @@ fn lend(table: &mut Table, mut owner: usize, mut prio: u8) {
     }
 }
 
-/// The hook behind letting go of a contended mutex: hands it to the most
-/// urgent waiter, which inherits the remaining waiters, and drops what the
-/// old owner was lent through it.
+/// The hook behind letting go of a contended mutex. A real-time waiter,
+/// or one that has lost too often, gets the mutex handed straight to it
+/// ([`hand_over`]); otherwise the mutex is let go and the most urgent
+/// waiter woken to try again ([`let_go_to_waiters`]). Then the old owner
+/// drops what it was lent through the mutex.
 pub(super) fn mutex_wake(mutex: &RawMutex) {
     let me = current();
     let key = mutex.key();
@@ -331,25 +436,54 @@ pub(super) fn mutex_wake(mutex: &RawMutex) {
     };
     match table.best(key) {
         None => mutex.word().store(0, Ordering::Release),
-        Some(index) => {
-            let next = table.waiters.swap_remove(index);
-            let token = next.thread.token();
-            let more = table.has(key);
-            for waiter in table.waiters.iter_mut().filter(|w| w.for_mutex(key)) {
-                waiter.owner = token;
-            }
-            next.thread.blocked_on.store(0, Ordering::Relaxed);
-            mutex.word().store(token | if more { RawMutex::WAITERS } else { 0 }, Ordering::Release);
-            HANDOFFS.fetch_add(1, Ordering::Relaxed);
-            let inherited = table.lent_to(token);
-            set_boost(&next.thread, inherited);
-            super::wake(&next.thread);
+        Some(index) if table.waiters[index].prio > 0 || table.waiters[index].starved => {
+            hand_over(table, mutex, index);
         }
+        Some(index) => let_go_to_waiters(table, mutex, index),
     }
     if let Some(me) = me {
         let kept = table.lent_to(me.token());
         set_boost(&me, kept);
     }
+}
+
+/// Makes the waiter at `index` the owner of `mutex`, and of its remaining
+/// waiters, with the loans they make, and wakes it. Nobody can take the
+/// mutex in between, so a real-time waiter waits only for the critical
+/// sections ahead of it (`docs/design/scheduler.md`, property 8).
+fn hand_over(table: &mut Table, mutex: &RawMutex, index: usize) {
+    let key = mutex.key();
+    let next = table.waiters.swap_remove(index);
+    let token = next.thread.token();
+    let more = table.has(key);
+    for waiter in table.waiters.iter_mut().filter(|w| w.for_mutex(key)) {
+        waiter.owner = token;
+    }
+    mutex.word().store(token | if more { RawMutex::WAITERS } else { 0 }, Ordering::Release);
+    next.thread.blocked_on.store(0, Ordering::Release);
+    HANDOFFS.fetch_add(1, Ordering::Relaxed);
+    let inherited = table.lent_to(token);
+    set_boost(&next.thread, inherited);
+    super::wake(&next.thread);
+}
+
+/// Lets `mutex` go with fair waiters only queued, and wakes the one at
+/// `index` to try again: a thread already running, spinning for it, may
+/// take it first, so the lock does not wait for a sleeper to wake up
+/// (a convoy, where every critical section costs a wake-up). The waiter
+/// keeps its place, and after [`LOSSES_BEFORE_HANDOFF`] losses gets the
+/// mutex handed over. Fair waiters lend nothing, so no loan moves.
+fn let_go_to_waiters(table: &mut Table, mutex: &RawMutex, index: usize) {
+    let key = mutex.key();
+    let next = table.waiters.swap_remove(index);
+    let more = table.has(key);
+    for waiter in table.waiters.iter_mut().filter(|w| w.for_mutex(key)) {
+        waiter.owner = NO_OWNER;
+    }
+    mutex.word().store(if more { RawMutex::WAITERS } else { 0 }, Ordering::Release);
+    next.thread.blocked_on.store(0, Ordering::Release);
+    MUTEX_WAKES.fetch_add(1, Ordering::Relaxed);
+    super::wake(&next.thread);
 }
 
 /// A thread's own priority changed (`sched::set_policy`): what it lends
@@ -369,6 +503,25 @@ pub(super) fn priority_changed(thread: &ThreadRef) {
     };
     entry.prio = prio;
     let owner = entry.owner;
+    if owner == NO_OWNER {
+        // The mutex was let go to its waiters, so it has no owner on
+        // record to lend to. A waiter now real-time tries again, and
+        // queues behind whoever took it, lending to them. If it was the
+        // last one queued, the waiters bit stays set with nobody queued
+        // until the next owner lets go through `mutex_wake`, which finds
+        // nobody and clears it: one slow let-go, no lost wake-up.
+        if prio > 0
+            && let Some(index) = table
+                .waiters
+                .iter()
+                .position(|w| w.key == key && ThreadRef::ptr_eq(&w.thread, thread))
+        {
+            let waiter = table.waiters.swap_remove(index);
+            waiter.thread.blocked_on.store(0, Ordering::Release);
+            super::wake(&waiter.thread);
+        }
+        return;
+    }
     // Recompute the owner's loan from scratch: it may have gone down.
     if let Some(owner_thread) = registry_find(owner) {
         set_boost(&owner_thread, table.lent_to(owner));
@@ -404,6 +557,8 @@ pub struct MutexCounts {
     pub waits: u64,
     /// Times a mutex was handed to a sleeping waiter.
     pub handoffs: u64,
+    /// Times a mutex was let go with a sleeping waiter woken to try again.
+    pub wakes: u64,
 }
 
 /// The mutex counts now.
@@ -412,6 +567,7 @@ pub fn mutex_counts() -> MutexCounts {
         contended: MUTEX_CONTENDED.load(Ordering::Relaxed),
         waits: MUTEX_WAITS.load(Ordering::Relaxed),
         handoffs: HANDOFFS.load(Ordering::Relaxed),
+        wakes: MUTEX_WAKES.load(Ordering::Relaxed),
     }
 }
 

@@ -17,6 +17,11 @@
 //! - `sched-pi`: priority inversion, plain and through a chain of two
 //!   mutexes, ends as soon as the low-priority holder lets go, because the
 //!   holder inherits the waiter's priority.
+//! - `sched-mutex`: three fair threads per CPU and a FIFO one take one
+//!   mutex in turn, its holders now and then giving up the CPU: every
+//!   increment under it counts, every thread gets through, the mutex is
+//!   let go to its waiters and handed to the FIFO thread, and no thread
+//!   waits long for it.
 //! - `sched-balance`: threads started on one CPU spread over every CPU, on
 //!   both NUMA nodes.
 //! - `lockdep`: the lock checker reports a seeded AB-BA deadlock between
@@ -731,6 +736,105 @@ pub fn pi() {
          through a chain of two mutexes); the holder was lent priority 30",
         waits[0] / 1_000_000,
         waits[1] / 1_000_000
+    ));
+}
+
+// ---- sched-mutex ----
+
+/// The mutex the `sched-mutex` threads share, and the count they add to
+/// under it, read and written apart so that a second holder would lose
+/// increments.
+static MX: Mutex<()> = Mutex::new(());
+static MX_COUNT: AtomicU64 = AtomicU64::new(0);
+/// Threads that have done all their rounds.
+static MX_DONE: AtomicU32 = AtomicU32::new(0);
+/// The longest any thread waited for the mutex, in nanoseconds.
+static MX_LONGEST: AtomicU64 = AtomicU64::new(0);
+/// Rounds each fair thread does, and the FIFO thread.
+const MX_ROUNDS: u64 = 20_000;
+const MX_FIFO_ROUNDS: u64 = 2_000;
+/// A holder gives up the CPU once in this many rounds, so that waiters
+/// find the owner not running and sleep.
+const MX_YIELD_EVERY: u64 = 64;
+
+fn mx_worker(rounds: usize) {
+    for round in 0..rounds as u64 {
+        if STOP.load(Ordering::Relaxed) {
+            return;
+        }
+        let asked = sched::now_ns();
+        let guard = MX.lock();
+        MX_LONGEST.fetch_max(sched::now_ns() - asked, Ordering::Relaxed);
+        let count = MX_COUNT.load(Ordering::Relaxed);
+        for _ in 0..20 {
+            core::hint::spin_loop();
+        }
+        MX_COUNT.store(count + 1, Ordering::Relaxed);
+        if round % MX_YIELD_EVERY == 0 {
+            sched::yield_now();
+        }
+        drop(guard);
+    }
+    MX_DONE.fetch_add(1, Ordering::SeqCst);
+}
+
+/// `selftest=sched-mutex`.
+pub fn mutex() {
+    let mut outcome = Outcome::new("sched-mutex");
+    let cpus = sched::online().len();
+    if cpus < 2 {
+        warn!("selftest sched-mutex: skipped; it needs two CPUs");
+        return;
+    }
+    MX_COUNT.store(0, Ordering::SeqCst);
+    MX_DONE.store(0, Ordering::SeqCst);
+    MX_LONGEST.store(0, Ordering::SeqCst);
+    let before = sched::mutex_counts();
+    let fair = (3 * cpus).min(CREW_MAX - 1);
+    let mut crew = Crew::new();
+    for _ in 0..fair {
+        crew.spawn("mx-fair", mx_worker, MX_ROUNDS as usize, Options::new());
+    }
+    let fifo = Options::new().pinned(test_cpu()).policy(Policy::Fifo { prio: 10 });
+    crew.spawn("mx-fifo", mx_worker, MX_FIFO_ROUNDS as usize, fifo);
+    let threads = crew.threads().len() as u32;
+    let deadline = sched::now_ns() + 120_000_000_000;
+    while MX_DONE.load(Ordering::SeqCst) < threads && sched::now_ns() < deadline {
+        sched::sleep_ns(10_000_000);
+    }
+    let done = MX_DONE.load(Ordering::SeqCst);
+    crew.join();
+    let after = sched::mutex_counts();
+    let contended = after.contended - before.contended;
+    let sleeps = after.waits - before.waits;
+    let handoffs = after.handoffs - before.handoffs;
+    let wakes = after.wakes - before.wakes;
+    let want = fair as u64 * MX_ROUNDS + MX_FIFO_ROUNDS;
+    let count = MX_COUNT.load(Ordering::SeqCst);
+    let longest_ms = MX_LONGEST.load(Ordering::SeqCst) / 1_000_000;
+    outcome.check(
+        done == threads,
+        format_args!("{} of {threads} threads got through in two minutes", done),
+    );
+    outcome.check(
+        count == want,
+        format_args!("the count under the mutex is {count}, not {want}: two threads held it"),
+    );
+    outcome.check(
+        wakes > 0,
+        format_args!("the mutex was never let go to its waiters ({sleeps} sleeps)"),
+    );
+    outcome.check(
+        handoffs > 0,
+        format_args!("the mutex was never handed to a waiter, not even the FIFO thread"),
+    );
+    outcome
+        .check(longest_ms < 10_000, format_args!("a thread waited {longest_ms} ms for the mutex"));
+    outcome.check(!MX.is_locked(), format_args!("the mutex is still held after the test"));
+    outcome.finish(format_args!(
+        "{threads} threads took one mutex {want} times; {contended} found it taken, {sleeps} \
+         sleeps, {wakes} let-gos to the waiters, {handoffs} handoffs; the longest wait was \
+         {longest_ms} ms"
     ));
 }
 
