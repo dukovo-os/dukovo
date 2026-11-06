@@ -281,6 +281,20 @@ impl Answers {
     }
 }
 
+/// The Argon2id hash of `password` at `cost`, with a new random salt: a
+/// PHC string, as an answers file's `password_hash` and authd's password
+/// file hold them.
+///
+/// # Errors
+///
+/// If the system gives no random numbers, or Argon2 fails.
+pub fn hash_password(password: &[u8], cost: accounts::hash::Cost) -> Result<String, String> {
+    let mut salt = [0u8; accounts::hash::SALT];
+    ring::rand::SecureRandom::fill(&ring::rand::SystemRandom::new(), &mut salt)
+        .map_err(|_| "the system gave no random numbers for the salt".to_string())?;
+    accounts::hash::hash(password, &salt, cost)
+}
+
 /// Checks the accounts: their names, their full names and their
 /// passwords' hashes, and that no name is used twice.
 fn check_accounts(answers: &Answers, problem: &mut impl FnMut(&str, String)) {

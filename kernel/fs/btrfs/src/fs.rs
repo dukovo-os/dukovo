@@ -21,7 +21,11 @@
 //!
 //! # Locks
 //!
-//! A file's page cache is taken first, then, by a write that compresses,
+//! A sync holds the sync lock throughout, before any other: write-back's
+//! sync and one asked for, by a snapshot or sync(2), take turns, so that
+//! a sync returns only once every page dirtied before it began is on the
+//! disk, not while write-back is still writing pages it took first.
+//! Nothing else takes it. A file's page cache is taken first, then, by a write that compresses,
 //! the packers (ADR 0134). On a writable mount the transaction's lock
 //! comes next, held by every change and also by every
 //! read of the trees, since a change edits the transaction's blocks in
@@ -128,6 +132,9 @@ pub(crate) struct Inner {
     packers: Mutex<KVec<KBox<Packer>>>,
     /// The running transaction, on a writable mount.
     tx: Option<Mutex<Txn>>,
+    /// Held by each sync from start to end, so that syncs take turns
+    /// (see Locks above).
+    syncing: Mutex<()>,
     /// The nodes whose data or inode waits for the next sync.
     dirty: Mutex<KVec<KArc<BtrfsNode>>>,
     /// Inodes removed while open and since closed, by subvolume and
@@ -372,6 +379,7 @@ impl Inner {
             compress: AtomicBool::new(false),
             packers: Mutex::new(mem::vec()),
             tx,
+            syncing: Mutex::new(()),
             dirty: Mutex::new(mem::vec()),
             reap: Mutex::new(mem::vec()),
             sockets: Mutex::new(mem::vec()),
@@ -615,6 +623,10 @@ impl Inner {
     /// closed, and commits.
     pub(crate) fn sync(&self) -> Result<()> {
         let Some(tx) = &self.tx else { return Ok(()) };
+        // Another sync may have taken the nodes this one must wait for and
+        // be writing them still: a snapshot taken when this returned would
+        // then hold those files without their data.
+        let _syncing = self.syncing.lock();
         let pinned = core::mem::replace(&mut *self.dirty.lock(), mem::vec());
         let mut failed = None;
         for node in &pinned {

@@ -168,7 +168,7 @@ pub fn installed(vm: &mut Vm, _case: &Case) -> Result<(), String> {
 /// Waits until a line of the screen shows `needle`, for up to `seconds`:
 /// longer than [`Vm::expect_screen`] waits, for a command that takes a
 /// while.
-fn wait_for_screen(vm: &mut Vm, needle: &str, seconds: u64) -> Result<(), String> {
+pub fn wait_for_screen(vm: &mut Vm, needle: &str, seconds: u64) -> Result<(), String> {
     let deadline = Instant::now() + Duration::from_secs(seconds);
     loop {
         let screen = vm.screen()?;

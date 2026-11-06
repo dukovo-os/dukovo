@@ -6,14 +6,38 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 # Installing
 
 This chapter describes installing Dukovo onto a computer's disk from the
-install stick, as of Phase 14a of the roadmap: `dukovo-install`, which
-installs from an answers file, a JSON file that answers every question
-the installer would ask. The installer's screens, which ask those
-questions and write the same file, come next. The full references are
-dukovo-install(8) and install-answers(5)
-([ADR 0309](https://github.com/dukovo-os/dukovo/blob/main/docs/adr/0309-dukovo-install-installs-the-signed-release-as-an-answers-file-says.md)).
+install stick, as of Phase 14a of the roadmap: `dukovo-install`, whose
+screens ask a few questions and install, or which installs from an
+answers file, a JSON file that answers every question the screens ask.
+The full references are dukovo-install(8) and install-answers(5)
+([ADR 0309](https://github.com/dukovo-os/dukovo/blob/main/docs/adr/0309-dukovo-install-installs-the-signed-release-as-an-answers-file-says.md),
+[ADR 0310](https://github.com/dukovo-os/dukovo/blob/main/docs/adr/0310-the-installer-s-screens.md)).
 
 Installing **erases the disk it installs onto**.
+
+## Installing with the screens
+
+1. Start the computer from the install stick
+   ([Creating USB install media](usb-media.md)). Its first menu entry,
+   *Install Dukovo*, starts in a few seconds and shows the installer.
+2. Answer the five steps: the keyboard layout, the network and the
+   computer's name, the disk, your account, and the review. Tab moves,
+   Space chooses, Enter goes on, Esc goes back, and F1 explains the page.
+   On the time zone, type the start of its name, such as `america/den`.
+3. At the review, check what will be erased, type the disk's name in
+   the box, and choose Install.
+4. When the Done page shows, remove the stick and press Enter to
+   restart, then sign in with the account you made.
+
+Nothing is written to any disk before the review's Install. *Live
+console* on the first page leaves the installer for a shell, where
+`dukovo-install` starts it again, and the shell on Alt+F2 works
+throughout.
+
+The Done page can also save your answers on the stick as a setup file,
+`install.json`, without the passwords unless you asked to keep their
+hashes. On the next computer, choose *From a setup file* on the first
+page: the installer goes straight to the review.
 
 ## Writing the answers
 
@@ -48,7 +72,7 @@ the only one so far, gives the disk a BIOS boot partition, an EFI system
 partition, the swap asked for and the Dukovo root, and puts GRUB on it
 for both UEFI and legacy BIOS, so the disk starts either way.
 
-## Installing
+## Installing from an answers file
 
 1. Start the computer from the install stick
    ([Creating USB install media](usb-media.md)) and choose *Try Dukovo

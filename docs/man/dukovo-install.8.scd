@@ -9,6 +9,8 @@ dukovo-install - install Dukovo onto a disk from the install stick
 
 # SYNOPSIS
 
+*dukovo-install* [*--release* _dir_]
+
 *dukovo-install --answers* _file_ [*--release* _dir_]
 
 *dukovo-install --hash-password* [*--test-cost*] < _file_
@@ -16,14 +18,60 @@ dukovo-install - install Dukovo onto a disk from the install stick
 # DESCRIPTION
 
 dukovo-install installs Dukovo onto a disk from the signed release on
-the install stick, as an answers file says (*install-answers*(5)), with
-no questions asked: from the live system the stick starts, or from any
-Dukovo system that has the stick plugged in (ADR 0309). The same answers
-install the same system every time, which is how a fleet of servers is
-installed, and how the boot tests install one. The installer's screens,
-which ask the same questions, come next and write the same file.
+the install stick: from the live system the stick starts, or from any
+Dukovo system that has the stick plugged in. With no arguments it shows
+its screens, which ask what to install and where (ADR 0310); with
+*--answers*, it installs as an answers file says (*install-answers*(5)),
+with no questions asked (ADR 0309). The same answers install the same
+system every time, which is how a fleet of servers is installed, and
+how the boot tests install one.
 
-It checks the whole answers file before it touches a disk, and names
+# SCREENS
+
+The stick's boot menu starts the screens on tty1 with its first entry,
+*Install Dukovo*, and *Live console* on their first page leaves them
+for a shell, where *dukovo-install* starts them again. A bar at the top
+shows the five steps:
+
+. *Welcome*: the language, the keyboard layout, which the keys type in
+  at once, a box to try it, and whether to answer step by step or
+  install from a setup file.
+. *Network and name*: the network cards found, DHCP or a fixed address
+  for the card chosen, the computer's name and its time zone.
+. *Disk*: the disk to install on, which the install erases, and the
+  swap's size. The stick and a disk too small cannot be chosen, and a
+  disk that holds Windows says so in red.
+. *You*: the administrator, whose user name follows the name typed
+  until it is typed itself, a password typed twice, whether the saved
+  answers keep the passwords' hashes, and other people.
+. *Review*: everything the install will do. It is the only step that
+  changes the computer: Install asks for the disk's name, typed, first.
+
+Tab and Shift+Tab, or Up and Down, move between the fields and the
+buttons; Space chooses; Enter goes on; Esc goes back; F1 shows the
+page's help. Left and Right change a list, the time zone or the layout,
+and letters typed on it find the first name that starts with them,
+*america/den* for America/Denver. Each page's answers are checked as an
+answers file's are when Next leaves it, and what is wrong is shown above
+the buttons.
+
+The install then shows its steps, a bar of its progress and the log's
+last line; L shows the whole log, during the install and after, and the
+shell on Alt+F2 keeps working throughout. The Done page restarts the
+computer, or saves the answers as a setup file on the stick for the
+next computer, without the passwords' hashes unless they were kept.
+
+A setup file is an answers file called _install.json_ at the top of the
+stick's EFI system partition, which any computer can write. *From a
+setup file* on the first page shows the one the stick holds and what is
+wrong with it, if anything; Load goes to the review.
+
+Every message the screens show is in a Fluent file built into the
+program, one a language, so that a translation is a copy of one file.
+
+# ANSWERS FILES
+
+With *--answers*, it checks the whole answers file before it touches a disk, and names
 each problem by its key:
 
 ```
@@ -73,7 +121,7 @@ dukovo-install: Dukovo 0.14.0 is installed on vda. Remove the install stick, the
 # OPTIONS
 
 *--answers* _file_
-	Install as the answers file _file_ says.
+	Install as the answers file _file_ says, with no screens.
 
 *--release* _dir_
 	Install the release in _dir_, a release's repository as
@@ -111,6 +159,10 @@ _/system/settings/install/answers.json_
 	hashes unless the answers file keeps them, so that the install can
 	be repeated.
 
+_install.json_
+	A setup file, at the top of the install stick's EFI system
+	partition: the screens offer it, and their Done page writes it.
+
 # EXIT STATUS
 
 0 when the install finished, 1 when the answers file has problems or
@@ -119,4 +171,4 @@ the install failed, and 2 for a usage error.
 # SEE ALSO
 
 *install-answers*(5), *system-release*(8), *rdisk*(8), *rgrub-setup*(8),
-*spark*(8)
+*spark*(8), *consoled*(8), *dukovo-boot*(7), *keymap*(1)

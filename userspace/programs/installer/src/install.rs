@@ -19,7 +19,7 @@ use system_release::list::Release;
 use crate::answers::Answers;
 use crate::copy;
 use crate::disks;
-use crate::log::Log;
+use crate::log::{Log, Step};
 use crate::settings::{self, Target};
 
 /// The root a system trusts releases by (system-release(8)).
@@ -68,7 +68,7 @@ struct Parts {
 ///
 /// If there is no release, or it is not signed by the trusted root.
 pub fn find_release(release: Option<&Path>, log: &mut Log) -> Result<Source, String> {
-    log.step("Checking the signatures of the system release");
+    log.step(Step::Release);
     let (repo, stick) = match release {
         Some(dir) => {
             (dir.to_path_buf(), disks::live_partition().ok().map(|(name, _)| disks::disk_of(&name)))
@@ -102,7 +102,8 @@ pub fn find_release(release: Option<&Path>, log: &mut Log) -> Result<Source, Str
 /// the installer must run again.
 pub fn install(answers: &Answers, source: &Source, log: &mut Log) -> Result<(), String> {
     let disk = answers.target();
-    log.step(&format!("Checking {disk}"));
+    log.installing(disk, &source.release.version);
+    log.step(Step::Disk);
     check_target(disk, answers, source)?;
     fs::create_dir_all(WORK).map_err(|err| format!("making {WORK}: {err}"))?;
     let parts = partition(disk, answers, log)?;
@@ -143,7 +144,7 @@ fn check_target(disk: &str, answers: &Answers, source: &Source) -> Result<(), St
 /// Writes the guided layout's table on `disk` with rdisk(8), and waits
 /// for its partitions.
 fn partition(disk: &str, answers: &Answers, log: &mut Log) -> Result<Parts, String> {
-    log.step(&format!("Partitioning {disk}"));
+    log.step(Step::Partition);
     let layout = Path::new(WORK).join(format!("layout-{disk}.json"));
     let swap_gib = answers.disk.swap_gib;
     fs::write(&layout, guided_layout(swap_gib))
@@ -189,7 +190,7 @@ pub fn guided_layout(swap_gib: u32) -> String {
 /// Makes the filesystems: FAT32 on the EFI system partition, swap, and
 /// the root's Btrfs.
 fn format(parts: &Parts, log: &mut Log) -> Result<(), String> {
-    log.step("Making the filesystems");
+    log.step(Step::Format);
     log.run("mkfs-fat", &["-F", "32", "-n", "DUKOVO_EFI", &path(&disks::device(&parts.efi))])?;
     if let Some(swap) = &parts.swap {
         log.run("mkswap", &["-L", "swap", &path(&disks::device(swap))])?;
@@ -207,12 +208,12 @@ fn fill_root(
     root: &Path,
     log: &mut Log,
 ) -> Result<(), String> {
-    log.step("Making the subvolumes");
+    log.step(Step::Subvolumes);
     for name in SUBVOLUMES.iter().chain(&["@system.new"]) {
         log.run("subvolume", &["create", &path(&root.join(name))])?;
     }
     copy_system(source, root, log)?;
-    log.step("Writing the settings and accounts");
+    log.step(Step::Settings);
     let target = Target {
         slot: &root.join("@system.a"),
         settings: &root.join("@settings"),
@@ -226,12 +227,11 @@ fn fill_root(
 /// Copies the release into `@system.new`, checking every file, then
 /// keeps it as the read-only slot `@system.a`.
 fn copy_system(source: &Source, root: &Path, log: &mut Log) -> Result<(), String> {
-    log.step(&format!(
-        "Copying Dukovo {} into its slot, checking every file",
-        source.release.version
-    ));
+    log.step(Step::Copy);
     let new = root.join("@system.new");
-    let copied = copy::release(&source.repo, &source.release, &new)?;
+    let total = source.release.bytes();
+    let copied =
+        copy::release(&source.repo, &source.release, &new, &mut |done| log.copied(done, total))?;
     log.note(&format!(
         "copied {} files of {} MiB, each matching the signed list",
         copied.files,
@@ -245,7 +245,7 @@ fn copy_system(source: &Source, root: &Path, log: &mut Log) -> Result<(), String
 /// UEFI, from the new slot's own GRUB, and the menu that starts the slot,
 /// which names the root by its Btrfs UUID (ADR 0307).
 fn install_grub(parts: &Parts, slot: &Path, log: &mut Log) -> Result<(), String> {
-    log.step("Installing GRUB for UEFI and BIOS");
+    log.step(Step::Grub);
     let images = path(&slot.join("boot/grub"));
     log.run("rgrub-setup", &["-d", &images, &path(&disks::device(&parts.disk))])?;
     log.run("rgrub-setup", &["--efi", "-d", &images, &path(&disks::device(&parts.efi))])?;
@@ -286,7 +286,7 @@ fn btrfs_uuid(name: &str) -> Result<String, String> {
 /// Saves the answers, without passwords' hashes unless asked, and the
 /// log so far, in the new system.
 fn save(answers: &Answers, target: &Target, log: &mut Log) -> Result<(), String> {
-    log.step("Saving the answers and the install log");
+    log.step(Step::Save);
     let install = target.settings.join("install");
     settings::make_dir(&install, 0o755)?;
     let mode = if answers.keep_password_hashes { 0o600 } else { 0o644 };

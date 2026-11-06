@@ -1,9 +1,10 @@
 // SPDX-FileCopyrightText: 2026 The Dukovo contributors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! dukovo-install's command line (dukovo-install(8)): `--answers FILE`
-//! installs as the answers file says, and `--hash-password` makes the
-//! password hash an answers file gives.
+//! dukovo-install's command line (dukovo-install(8)): with no arguments
+//! it shows the installer's screens, `--answers FILE` installs as the
+//! answers file says, and `--hash-password` makes the password hash an
+//! answers file gives.
 
 use std::io::BufRead as _;
 use std::path::Path;
@@ -12,15 +13,20 @@ use std::process::ExitCode;
 use dukovo_install::answers::Answers;
 use dukovo_install::install;
 use dukovo_install::log::{self, Log};
+use dukovo_install::messages::{self, Arg};
+use dukovo_install::screens;
 
 const USAGE: &str = "\
-usage: dukovo-install --answers FILE [--release DIR]
+usage: dukovo-install [--release DIR]
+       dukovo-install --answers FILE [--release DIR]
        dukovo-install --hash-password [--test-cost] < FILE";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let words: Vec<&str> = args.iter().map(String::as_str).collect();
     let status = match words.as_slice() {
+        [] => screens::run(None),
+        ["--release", dir] => screens::run(Some(Path::new(dir))),
         ["--answers", file] => from_answers(Path::new(file), None),
         ["--answers", file, "--release", dir] => {
             from_answers(Path::new(file), Some(Path::new(dir)))
@@ -67,10 +73,12 @@ fn from_answers(file: &Path, release: Option<&Path>) -> u8 {
         .and_then(|source| install::install(&answers, &source, &mut log).map(|()| source));
     match done {
         Ok(source) => {
-            log.step(&format!(
-                "Dukovo {} is installed on {}. Remove the install stick, then restart.",
-                source.release.version,
-                answers.target()
+            log.finish(&messages::with(
+                "installed-line",
+                &[
+                    ("version", Arg::Text(&source.release.version)),
+                    ("disk", Arg::Text(answers.target())),
+                ],
             ));
             0
         }
@@ -100,12 +108,7 @@ fn hash_password(cost: accounts::hash::Cost) -> u8 {
     }
     let password = line.strip_suffix(b"\n").unwrap_or(&line);
     let password = password.strip_suffix(b"\r").unwrap_or(password);
-    let mut salt = [0u8; accounts::hash::SALT];
-    if ring::rand::SecureRandom::fill(&ring::rand::SystemRandom::new(), &mut salt).is_err() {
-        eprintln!("dukovo-install: the system gave no random numbers for the salt");
-        return 1;
-    }
-    let hashed = accounts::hash::hash(password, &salt, cost);
+    let hashed = dukovo_install::answers::hash_password(password, cost);
     // The password goes no further than this function.
     accounts::wipe(&mut line);
     match hashed {
