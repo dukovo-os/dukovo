@@ -126,8 +126,14 @@ Init: /system/commands/spark is process 1
 . The first Btrfs mounted read-write whose top holds the subvolumes
   _@system.a_, _@settings_, _@state_, _@applications_, _@users_ and
   _@shared_ is Dukovo's root, as *./ob image* makes it on its Dukovo root
-  partition. Spark mounts it again to compress if it was not, as the
-  root always does, then mounts _@system.a_ read-only on _/system_,
+  partition. When the kernel's command line names a root,
+  *root=UUID=*_uuid_, as an installed system's boot menu does, only the
+  Btrfs with that UUID is (ADR 0307): an installed system starts from an
+  archive of Spark alone, and the rest of the system is on that root. If
+  no disk holds it, Spark says so on the console and starts nothing; look
+  there first when an installed system stops after Spark. Spark mounts
+  the root again to compress if it was not, as the root always does,
+  then mounts _@system.a_ read-only on _/system_,
   _@settings_ on _/system/settings_, _@state_ on _/system/state_,
   _@applications_ on _/applications_, _@users_ on _/users_ and _@shared_
   on _/shared_, each as a directory of the mount at _/volumes/_*name*
@@ -560,6 +566,11 @@ _/boot/bootfs_
 
 _/system/commands/spark_
 	Spark, in the boot archive.
+
+_/system/startup/archive_
+	An installed system's startup archive, in its slot: Spark and the
+	directories it mounts on, which GRUB loads with the kernel,
+	_/system/startup/radix_ (ADR 0307).
 
 _/system/settings/spark/services/_*name*_.service_
 	The services (see *SERVICES*); the system's own come from

@@ -10,6 +10,14 @@
 //! the Dukovo root, with the system on Btrfs (ADR 0137). An ISO, for
 //! optical media, is what xorriso makes of the same files, with El
 //! Torito's boot images for both firmwares.
+//!
+//! The stick and the ISO boot the kernel and the whole boot archive from
+//! the EFI system partition. An installed system's disk (`ob image
+//! --installed`) boots from its root instead: GRUB finds the root by its
+//! Btrfs UUID and loads the kernel and the startup archive from the
+//! system's slot, `@system.a/startup` (ADR 0307). When an installed image
+//! will not start, look first at its grub.cfg ([`INSTALLED_CFG`]) and at
+//! what [`make_root`] put in `startup`.
 
 use std::fmt::Write;
 use std::io::{Read, Seek, SeekFrom, Write as _};
@@ -43,6 +51,11 @@ pub struct ImageSpec<'a> {
     /// A file holding the Dukovo root's filesystem ([`make_root`]), to put
     /// after the image's partitions ([`append_root`]).
     pub root: Option<&'a Path>,
+    /// For an installed system's disk: the UUID of the root whose slot
+    /// holds the kernel and the startup archive GRUB loads (ADR 0307).
+    /// Its EFI system partition then holds GRUB and its menu, and the
+    /// microcode, but no kernel or archive.
+    pub slot: Option<[u8; 16]>,
     /// Staging directory, recreated on every build.
     pub staging: PathBuf,
     /// Output file.
@@ -51,10 +64,26 @@ pub struct ImageSpec<'a> {
     pub iso: bool,
 }
 
+/// Which image `ob image` makes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Kind {
+    /// A disk image for a USB stick, which runs the system from the boot
+    /// archive or from the Dukovo root after its partitions.
+    Stick,
+    /// An ISO for optical media and virtual machines.
+    Iso,
+    /// The disk of an installed system: the layout dukovo-install leaves,
+    /// less the swap, starting from the root's slot (ADR 0307).
+    Installed,
+}
+
 /// File name of a release image.
-pub fn file_name(iso: bool) -> String {
-    let extension = if iso { "iso" } else { "img" };
-    format!("dukovo-{VERSION}-x86_64.{extension}")
+pub fn file_name(kind: Kind) -> String {
+    match kind {
+        Kind::Stick => format!("dukovo-{VERSION}-x86_64.img"),
+        Kind::Iso => format!("dukovo-{VERSION}-x86_64.iso"),
+        Kind::Installed => format!("dukovo-{VERSION}-x86_64-installed.img"),
+    }
 }
 
 /// Path of the microcode module inside the image.
@@ -77,7 +106,7 @@ pub struct Overrides {
 pub fn build_release(
     ctx: &Ctx,
     profile: Profile,
-    iso: bool,
+    kind: Kind,
     overrides: &Overrides,
 ) -> Result<PathBuf> {
     let microcode_source = overrides.microcode.as_deref().unwrap_or(&ctx.config.image.microcode);
@@ -89,10 +118,13 @@ pub fn build_release(
     let kernel = kernel::build(ctx, profile)?;
     let programs = userspace::build(ctx, profile)?;
     // Optical media are read-only, so an ISO has no root to write.
+    let iso = kind == Kind::Iso;
     let root = ctx.out.join("root.btrfs");
+    let mut uuid = None;
     if !iso {
         let staging = ctx.out.join("root-staging");
-        make_root(ctx, &programs.bootfs, &staging, &root, overrides.account.as_ref())?;
+        let account = overrides.account.as_ref();
+        uuid = Some(make_root(ctx, &kernel, &programs, &staging, &root, account)?);
     }
     // The features' flags go on whichever command line the image boots.
     let cmdline = overrides.cmdline.as_deref().unwrap_or(&ctx.config.boot.cmdline);
@@ -107,14 +139,15 @@ pub fn build_release(
             programs: Some(&programs),
             disk_check: overrides.disk_check.as_deref(),
             root: (!iso).then_some(root.as_path()),
+            slot: uuid.filter(|_| kind == Kind::Installed),
             staging: ctx.out.join("image-root"),
-            output: ctx.out.join(file_name(iso)),
+            output: ctx.out.join(file_name(kind)),
             iso,
         },
     );
     let _ = std::fs::remove_file(&root);
     built?;
-    Ok(ctx.out.join(file_name(iso)))
+    Ok(ctx.out.join(file_name(kind)))
 }
 
 /// Reads Intel microcode from a file of updates, or from every file in a
@@ -194,6 +227,33 @@ fn module_lines(modules: &[(&str, &str)]) -> String {
         let _ = writeln!(lines, "    module2 {path} {args}");
     }
     lines
+}
+
+/// The GRUB configuration of an installed system's EFI system partition,
+/// whose `@ROOT_UUID@` the installer fills too (ADR 0307).
+pub const INSTALLED_CFG: &str = "image/grub/installed.cfg.in";
+
+/// [`INSTALLED_CFG`] with the root's UUID in it, the other placeholders
+/// left for [`render_grub_cfg`].
+fn installed_template(ctx: &Ctx, uuid: [u8; 16]) -> Result<String> {
+    let path = ctx.root.join(INSTALLED_CFG);
+    let template =
+        std::fs::read_to_string(&path).context(|| format!("reading {}", path.display()))?;
+    Ok(template.replace("@ROOT_UUID@", &uuid_text(uuid)))
+}
+
+/// A UUID as GRUB's `search --fs-uuid`, Linux's `blkid` and the kernel's
+/// command line write it: lowercase, in groups of 8, 4, 4, 4 and 12
+/// digits.
+pub fn uuid_text(uuid: [u8; 16]) -> String {
+    let mut text = String::with_capacity(36);
+    for (i, byte) in uuid.iter().enumerate() {
+        if matches!(i, 4 | 6 | 8 | 10) {
+            text.push('-');
+        }
+        let _ = write!(text, "{byte:02x}");
+    }
+    text
 }
 
 /// Where the disk check's program is in the boot archive.
@@ -303,7 +363,16 @@ pub fn build(ctx: &Ctx, spec: &ImageSpec<'_>) -> Result<()> {
             std::fs::remove_dir_all(dir).context(|| format!("removing {}", dir.display()))?;
         }
     }
-    kernel::copy_for_image(ctx, spec.kernel, &spec.staging.join("boot/radix"))?;
+    if spec.slot.is_some() && (spec.iso || spec.disk_check.is_some()) {
+        crate::bail!(
+            "an installed system's disk is neither an ISO nor a disk check's image: those boot \
+             the system from memory"
+        );
+    }
+    // An installed system's kernel is in its slot, with its startup archive.
+    if spec.slot.is_none() {
+        kernel::copy_for_image(ctx, spec.kernel, &spec.staging.join("boot/radix"))?;
+    }
     let manifest = licenses::install(
         ctx,
         &spec.staging,
@@ -314,7 +383,7 @@ pub fn build(ctx: &Ctx, spec: &ImageSpec<'_>) -> Result<()> {
         },
     )?;
     let mut modules = Vec::new();
-    if let Some(programs) = spec.programs {
+    if let Some(programs) = spec.programs.filter(|_| spec.slot.is_none()) {
         // The kernel finds each module by the word on its command line.
         for (from, path, word) in [
             (&programs.usertests, userspace::USERTESTS_PATH, userspace::USERTESTS_WORD),
@@ -331,9 +400,13 @@ pub fn build(ctx: &Ctx, spec: &ImageSpec<'_>) -> Result<()> {
         // The kernel recognises the module by this word on its command line.
         modules.push((MICROCODE_PATH, "microcode"));
     }
-    let template_path = ctx.root.join("image/grub/grub.cfg.in");
-    let template = std::fs::read_to_string(&template_path)
-        .context(|| format!("reading {}", template_path.display()))?;
+    let template = match spec.slot {
+        Some(uuid) => installed_template(ctx, uuid)?,
+        None => {
+            let path = ctx.root.join("image/grub/grub.cfg.in");
+            std::fs::read_to_string(&path).context(|| format!("reading {}", path.display()))?
+        }
+    };
     let entries = match spec.disk_check {
         Some(serial) => disk_check(ctx, spec, serial, &modules)?,
         None => String::new(),
@@ -589,19 +662,35 @@ pub const ROOT_LABEL: &str = "dukovo-root";
 const SUBVOLUMES: [&str; 7] =
     ["@system.a", "@settings", "@state", "@applications", "@users", "@shared", "@snapshots"];
 
+/// The folder of the system, in its slot, that holds what GRUB starts an
+/// installed system with: the kernel, [`SLOT_KERNEL`], and the startup
+/// archive, [`SLOT_ARCHIVE`] (ADR 0307). It is not under `/system/boot`,
+/// where the EFI system partition is mounted.
+pub const SLOT_STARTUP: &str = "startup";
+
+/// The kernel's name in [`SLOT_STARTUP`].
+pub const SLOT_KERNEL: &str = "radix";
+
+/// The startup archive's name in [`SLOT_STARTUP`].
+pub const SLOT_ARCHIVE: &str = "archive";
+
 /// Makes the Dukovo root's Btrfs in the file `output`, of [`ROOT_BYTES`],
 /// with the kernel's own Btrfs crate ([`rootfs::make`], ADR 0304):
-/// `@system.a` holds what the boot archive at `bootfs` has in its
-/// `system` directory, unpacked into `staging` first, and the other
-/// [`SUBVOLUMES`] are empty but for the files of `account`, if there is
-/// one. Data is compressed with zstd, and every file is root's.
+/// `@system.a` holds what the boot archive of `programs` has in its
+/// `system` directory, unpacked into `staging` first, and in
+/// [`SLOT_STARTUP`] the kernel at `kernel` and the startup archive, which
+/// an installed system starts from; the other [`SUBVOLUMES`] are empty
+/// but for the files of `account`, if there is one. Data is compressed
+/// with zstd, and every file is root's. Returns the Btrfs's UUID.
 pub fn make_root(
     ctx: &Ctx,
-    bootfs: &Path,
+    kernel: &Path,
+    programs: &userspace::Programs,
     staging: &Path,
     output: &Path,
     account: Option<&Account>,
-) -> Result<()> {
+) -> Result<[u8; 16]> {
+    let bootfs = &programs.bootfs;
     step(&format!("Making the Dukovo root's Btrfs {}", ctx.display(output)));
     if staging.exists() {
         std::fs::remove_dir_all(staging).context(|| format!("removing {}", staging.display()))?;
@@ -654,14 +743,41 @@ pub fn make_root(
             })
             .context(|| format!("writing {}", path.display()))?;
     }
+    let time = image_time(ctx);
+    add_startup(ctx, kernel, &programs.startup, &system.join(SLOT_STARTUP), time)?;
     if let Some(account) = account {
         let subvolume = |name: &str| staging.join(name);
         account::add(&system, &subvolume(SUBVOLUMES[1]), &subvolume(SUBVOLUMES[2]), account)?;
     }
-    let time = image_time(ctx);
     let made = rootfs::make(staging, output, ROOT_BYTES, ROOT_LABEL, &SUBVOLUMES, time);
     let _ = std::fs::remove_dir_all(staging);
     made
+}
+
+/// Puts the kernel at `kernel`, without its debug information, and the
+/// startup archive at `archive` into the slot's folder `dir`, with mode
+/// 0644 and dated `time` (seconds since 1970), as the boot archive's files
+/// are, so the same build makes the same slot.
+fn add_startup(ctx: &Ctx, kernel: &Path, archive: &Path, dir: &Path, time: u64) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt as _;
+    process::create_dir(dir)?;
+    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o755))
+        .context(|| format!("setting the mode of {}", dir.display()))?;
+    let (to_kernel, to_archive) = (dir.join(SLOT_KERNEL), dir.join(SLOT_ARCHIVE));
+    kernel::copy_for_image(ctx, kernel, &to_kernel)?;
+    process::copy(archive, &to_archive)?;
+    let date = std::time::UNIX_EPOCH + std::time::Duration::from_secs(time);
+    for path in [&to_kernel, &to_archive] {
+        std::fs::File::options()
+            .write(true)
+            .open(path)
+            .and_then(|file| {
+                file.set_permissions(std::fs::Permissions::from_mode(0o644))?;
+                file.set_modified(date)
+            })
+            .context(|| format!("dating {}", path.display()))?;
+    }
+    Ok(())
 }
 
 /// Puts the Dukovo root partition, holding the filesystem in the file
@@ -869,9 +985,43 @@ mod tests {
     }
 
     #[test]
+    fn writes_uuids_as_grub_and_the_command_line_do() {
+        let uuid = [
+            0x90, 0xc9, 0xa3, 0x03, 0x39, 0x54, 0x41, 0x74, 0x8f, 0x8b, 0xee, 0x75, 0xa9, 0x2a,
+            0x9e, 0xb0,
+        ];
+        assert_eq!(uuid_text(uuid), "90c9a303-3954-4174-8f8b-ee75a92a9eb0");
+    }
+
+    #[test]
+    fn the_installed_menu_starts_the_slot_named_by_its_root() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../", "image/grub/installed.cfg.in");
+        let template = std::fs::read_to_string(path).unwrap();
+        let uuid = "90c9a303-3954-4174-8f8b-ee75a92a9eb0";
+        let filled = template.replace("@ROOT_UUID@", uuid);
+        let modules = [(MICROCODE_PATH, "microcode")];
+        let cfg = render_grub_cfg(&filled, 0, "quiet", &modules, "").unwrap();
+        assert!(cfg.contains(&format!("search --no-floppy --fs-uuid --set=system {uuid}\n")));
+        let kernel = format!(
+            "    multiboot2 ($system)/@system.a/{SLOT_STARTUP}/{SLOT_KERNEL} root=UUID={uuid} \
+             panic=10 quiet\n"
+        );
+        let archive = format!(
+            "    module2 ($system)/@system.a/{SLOT_STARTUP}/{SLOT_ARCHIVE} {}\n",
+            userspace::BOOTFS_WORD
+        );
+        let microcode = format!("    module2 {MICROCODE_PATH} microcode\n    boot\n");
+        assert!(cfg.contains(&format!("{kernel}{archive}{microcode}")), "{cfg}");
+        // The startup-trouble entry names the same root, with its flag first.
+        assert_eq!(cfg.matches(&format!("root=UUID={uuid} panic=10 quiet")).count(), 2);
+        assert!(cfg.contains("radix startup-trouble root=UUID="));
+    }
+
+    #[test]
     fn names_follow_the_version() {
-        assert_eq!(file_name(false), format!("dukovo-{VERSION}-x86_64.img"));
-        assert_eq!(file_name(true), format!("dukovo-{VERSION}-x86_64.iso"));
+        assert_eq!(file_name(Kind::Stick), format!("dukovo-{VERSION}-x86_64.img"));
+        assert_eq!(file_name(Kind::Iso), format!("dukovo-{VERSION}-x86_64.iso"));
+        assert_eq!(file_name(Kind::Installed), format!("dukovo-{VERSION}-x86_64-installed.img"));
         let label = volume_id();
         assert!(label.len() <= 32);
         assert!(label.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_'));
