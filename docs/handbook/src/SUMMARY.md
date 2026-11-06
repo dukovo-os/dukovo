@@ -20,6 +20,7 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 - [Files, the directory hierarchy and /volumes](files.md)
 - [Bundles and permissions](bundles.md)
 - [Users and administration](users.md)
+- [Your keyring](keyring.md)
 - [Networking](networking.md)
 - [Updates, snapshots, backups and recovery]()
 - [The Dukovo Admin web console]()

@@ -175,3 +175,30 @@ fn lock() -> Result<i32, Fail> {
     answered(ask(&Request::KeyringLock)?)?;
     Ok(0)
 }
+
+/// The secret of your entry `name`, for a helper that keeps its secrets
+/// in the keyring, as ssh-askpass-keyring does: `None` when there is no
+/// such entry, or authd's refusal, as when the keyring is locked.
+pub fn entry(name: &str) -> Result<Option<Vec<u8>>, String> {
+    let asked = |request: &Request| match ask(request).map_err(|fail| fail.message)? {
+        Answer::Done(text) => Ok(text),
+        Answer::Refused(why) => Err(why),
+    };
+    // Listed first, so that a missing entry is told from a refusal by
+    // what authd lists rather than by the words of its answer.
+    if !asked(&Request::KeyringList)?.split('\t').any(|listed| listed == name) {
+        return Ok(None);
+    }
+    let hexed = asked(&Request::KeyringGet { name: name.into() })?;
+    request::unhex(&hexed).map(Some).ok_or_else(|| format!("authd answered `{hexed}`"))
+}
+
+/// Keeps `secret` as your entry `name`, in place of what it held; or
+/// authd's refusal.
+pub fn keep(name: &str, secret: &[u8]) -> Result<(), String> {
+    let set = Request::KeyringSet { name: name.into(), secret: secret.to_vec() };
+    match ask(&set).map_err(|fail| fail.message)? {
+        Answer::Done(_) => Ok(()),
+        Answer::Refused(why) => Err(why),
+    }
+}

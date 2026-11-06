@@ -129,6 +129,7 @@ mod share;
 mod signals;
 mod signin;
 mod ss;
+mod ssh_askpass;
 mod sshkeys;
 mod subvolume;
 mod swap;
@@ -264,6 +265,7 @@ const TOOLS: &[(&str, Tool)] = &[
     ("share", share::main),
     ("shutdown", power::shutdown),
     ("ss", ss::main),
+    ("ssh-askpass-keyring", ssh_askpass::main),
     ("subvolume", subvolume::main),
     ("sudo", elevate::main),
     ("swapoff", swap::swapoff),
