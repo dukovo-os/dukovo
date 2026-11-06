@@ -79,6 +79,7 @@ mod hwinfo;
 mod iostat;
 mod ip;
 mod keymaps;
+mod keyring;
 mod last;
 mod links;
 mod log;
@@ -202,6 +203,7 @@ const TOOLS: &[(&str, Tool)] = &[
     ("ip", ip::main),
     ("journalctl", log::journalctl),
     ("keymap", keymaps::main),
+    ("keyring", keyring::main),
     ("kill", signals::kill),
     ("last", last::last),
     ("lastb", last::lastb),

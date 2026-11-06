@@ -405,6 +405,55 @@ pub enum Request {
         /// The ticket.
         ticket: Vec<u8>,
     },
+    /// Keep `secret` in the asker's keyring (ADR 0393) as the entry
+    /// `name`, in place of one of that name: anyone's to ask, in their own
+    /// keyring, while it is open.
+    KeyringSet {
+        /// The entry's name: at most [`KEYRING_NAME_MAX`] bytes of text,
+        /// with no control characters.
+        name: String,
+        /// Its secret: at most [`KEYRING_SECRET_MAX`] bytes, of any kind.
+        secret: Vec<u8>,
+    },
+    /// The secret of the entry `name` in the asker's keyring: the answer
+    /// is `ok` and the secret in hexadecimal.
+    KeyringGet {
+        /// The entry.
+        name: String,
+    },
+    /// The names of the entries in the asker's keyring: the answer is
+    /// `ok` and the names, separated by tabs.
+    KeyringList,
+    /// Remove the entry `name` from the asker's keyring.
+    KeyringRemove {
+        /// The entry.
+        name: String,
+    },
+    /// Open the asker's keyring with their password, as a sign-in with
+    /// one does: for a session that started without it, such as one
+    /// over SSH with a key. A wrong password waits as at a sign-in.
+    KeyringUnlock {
+        /// The asker's password.
+        password: Vec<u8>,
+    },
+    /// Close the asker's keyring now, until they sign in with their
+    /// password again or ask [`Request::KeyringUnlock`].
+    KeyringLock,
+}
+
+/// The longest name of an entry in a keyring, in bytes.
+pub const KEYRING_NAME_MAX: usize = 256;
+
+/// The longest secret a keyring keeps, in bytes: room for a token, a
+/// passphrase, or a few Kerberos tickets; in hexadecimal it fits in
+/// [`REQUEST_MAX`].
+pub const KEYRING_SECRET_MAX: usize = 16 * 1024;
+
+/// Whether `name` may name an entry in a keyring: text of at most
+/// [`KEYRING_NAME_MAX`] bytes, with no control characters, so that a list
+/// of names separated by tabs reads back.
+pub fn keyring_name(name: &str) -> bool {
+    !name.is_empty() && name.len() <= KEYRING_NAME_MAX && !name.chars().any(char::is_control)
 }
 
 /// How a person signed in over SSH, which authd checks again for each
@@ -584,6 +633,8 @@ impl Request {
         let id_text;
         let hexed;
         let number;
+        // A secret's hexadecimal, wiped once the request is made.
+        let mut secret_hex = Vec::new();
         let fields: Vec<&[u8]> = match self {
             Request::Check { name, password } => vec![b"check", name.as_bytes(), password],
             Request::Passwd { name, current, new } => {
@@ -718,12 +769,22 @@ impl Request {
                 hexed = [hex(ticket), String::new(), String::new()];
                 vec![b"ssh-ended", hexed[0].as_bytes()]
             }
+            Request::KeyringSet { name, secret } => {
+                secret_hex = hex(secret).into_bytes();
+                vec![b"keyring-set", name.as_bytes(), &secret_hex]
+            }
+            Request::KeyringGet { name } => vec![b"keyring-get", name.as_bytes()],
+            Request::KeyringList => vec![b"keyring-list"],
+            Request::KeyringRemove { name } => vec![b"keyring-remove", name.as_bytes()],
+            Request::KeyringUnlock { password } => vec![b"keyring-unlock", password],
+            Request::KeyringLock => vec![b"keyring-lock"],
         };
         let mut bytes = Vec::new();
         for field in fields {
             bytes.extend_from_slice(field);
             bytes.push(0);
         }
+        wipe(&mut secret_hex);
         bytes
     }
 
@@ -932,6 +993,20 @@ impl Request {
                     None => Err(malformed()),
                 }
             }
+            [b"keyring-set", name, secret] => {
+                let secret = std::str::from_utf8(secret).ok().and_then(unhex);
+                match secret.filter(|s| s.len() <= KEYRING_SECRET_MAX) {
+                    Some(secret) => Ok(Request::KeyringSet { name: text(name)?, secret }),
+                    None => Err(malformed()),
+                }
+            }
+            [b"keyring-get", name] => Ok(Request::KeyringGet { name: text(name)? }),
+            [b"keyring-list"] => Ok(Request::KeyringList),
+            [b"keyring-remove", name] => Ok(Request::KeyringRemove { name: text(name)? }),
+            [b"keyring-unlock", password] => {
+                Ok(Request::KeyringUnlock { password: password.to_vec() })
+            }
+            [b"keyring-lock"] => Ok(Request::KeyringLock),
             _ => Err(malformed()),
         }
     }
@@ -960,11 +1035,18 @@ impl Request {
                     wipe(new);
                 }
             }
-            Request::SshPassword { password, .. } => wipe(password),
+            Request::SshPassword { password, .. } | Request::KeyringUnlock { password } => {
+                wipe(password);
+            }
             Request::SshSession { proof: SshProof::Ticket(ticket), .. }
             | Request::SshEnded { ticket } => wipe(ticket),
+            Request::KeyringSet { secret, .. } => wipe(secret),
             Request::NeedsOwner
             | Request::Forget
+            | Request::KeyringGet { .. }
+            | Request::KeyringList
+            | Request::KeyringRemove { .. }
+            | Request::KeyringLock
             | Request::Prompts
             | Request::Prompted { .. }
             | Request::Choose { .. }
@@ -1073,6 +1155,12 @@ impl std::fmt::Debug for Request {
                 )
             }
             Request::SshEnded { .. } => write!(f, "SshEnded"),
+            Request::KeyringSet { name, .. } => write!(f, "KeyringSet {{ name: {name:?} }}"),
+            Request::KeyringGet { name } => write!(f, "KeyringGet {{ name: {name:?} }}"),
+            Request::KeyringList => write!(f, "KeyringList"),
+            Request::KeyringRemove { name } => write!(f, "KeyringRemove {{ name: {name:?} }}"),
+            Request::KeyringUnlock { .. } => write!(f, "KeyringUnlock"),
+            Request::KeyringLock => write!(f, "KeyringLock"),
         }
     }
 }

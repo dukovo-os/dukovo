@@ -163,6 +163,7 @@ pub const STD_LINKS: &[(&str, &str)] = &[
     ("system/commands/ip", "systools"),
     ("system/commands/journalctl", "systools"),
     ("system/commands/keymap", "systools"),
+    ("system/commands/keyring", "systools"),
     ("system/commands/kill", "systools"),
     ("system/commands/last", "systools"),
     ("system/commands/lastb", "systools"),

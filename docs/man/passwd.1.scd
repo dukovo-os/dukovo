@@ -27,6 +27,12 @@ A wrong current password is answered only after a wait, which grows
 with each wrong one in a row (*authd*(8)). Only you and root, which an
 administrator is inside *elevate*(8), change your password.
 
+Your keyring (*keyring*(1)) is sealed under the new password, and its
+entries stay. Root sets a password without the old one, so the keyring
+then opens only if it is open, as while its person is signed in;
+otherwise it is emptied, and *passwd* says so. An empty password
+empties it too: nothing could lock it.
+
 # EXAMPLES
 
 ```
@@ -44,4 +50,4 @@ The password of alice is changed.
 
 # SEE ALSO
 
-*user*(8), *authd*(8), *systools*(1)
+*user*(8), *keyring*(1), *authd*(8), *systools*(1)

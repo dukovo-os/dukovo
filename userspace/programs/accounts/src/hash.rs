@@ -29,6 +29,31 @@ impl Cost {
     /// 8 MiB and a pass, so that signing in under emulation stays quick.
     /// A hash says its cost, so authd checks either.
     pub const TEST: Cost = Cost { memory_kib: 8 * 1024, passes: 1, lanes: 1 };
+
+    /// Its parameters as a PHC string writes them: `m=65536,t=3,p=4`.
+    pub fn text(self) -> String {
+        format!("m={},t={},p={}", self.memory_kib, self.passes, self.lanes)
+    }
+
+    /// The cost in `text`, as [`Cost::text`] writes it, if it is at most
+    /// [`MOST`]'s.
+    pub fn from_text(text: &str) -> Option<Cost> {
+        let mut cost = Cost { memory_kib: 0, passes: 0, lanes: 0 };
+        for param in text.split(',') {
+            let (key, value) = param.split_once('=')?;
+            let value: u32 = value.parse().ok()?;
+            match key {
+                "m" => cost.memory_kib = value,
+                "t" => cost.passes = value,
+                "p" => cost.lanes = value,
+                _ => return None,
+            }
+        }
+        let within = cost.memory_kib <= MOST.memory_kib
+            && cost.passes <= MOST.passes
+            && cost.lanes <= MOST.lanes;
+        within.then_some(cost)
+    }
 }
 
 /// The most a hash read may cost: 1 GiB, 16 passes and 16 lanes, so that
@@ -76,20 +101,9 @@ fn parse(phc: &str) -> Result<Phc, String> {
     let bad = || "not an Argon2id hash".to_string();
     let fields: Vec<&str> = phc.split('$').collect();
     let ["", "argon2id", "v=19", params, salt, hash] = fields[..] else { return Err(bad()) };
-    let mut cost = Cost { memory_kib: 0, passes: 0, lanes: 0 };
-    for param in params.split(',') {
-        let (key, value) = param.split_once('=').ok_or_else(bad)?;
-        let value: u32 = value.parse().map_err(|_| bad())?;
-        match key {
-            "m" => cost.memory_kib = value,
-            "t" => cost.passes = value,
-            "p" => cost.lanes = value,
-            _ => return Err(bad()),
-        }
-    }
-    if cost.memory_kib > MOST.memory_kib || cost.passes > MOST.passes || cost.lanes > MOST.lanes {
-        return Err("an Argon2id hash that would cost more than authd spends".into());
-    }
+    let cost = Cost::from_text(params).ok_or_else(|| {
+        "not an Argon2id hash, or one that would cost more than authd spends".to_string()
+    })?;
     let salt = Base64Unpadded::decode_vec(salt).map_err(|_| bad())?;
     let hash = Base64Unpadded::decode_vec(hash).map_err(|_| bad())?;
     if !(8..=64).contains(&salt.len()) || !(16..=64).contains(&hash.len()) {
@@ -116,4 +130,18 @@ pub fn verify(password: &[u8], phc: &str) -> Result<bool, String> {
 /// Whether `phc` is a hash this reads.
 pub fn readable(phc: &str) -> bool {
     parse(phc).is_ok()
+}
+
+/// What the hash `phc` cost to make, which a key made from the same
+/// password costs too (the keyring's, ADR 0393).
+pub fn cost_of(phc: &str) -> Option<Cost> {
+    parse(phc).ok().map(|phc| phc.cost)
+}
+
+/// Fills `key` with Argon2id of `password` and `salt`, at `cost`: a key
+/// made from a password, as the keyring's key is sealed under (ADR 0393).
+pub fn derive(password: &[u8], salt: &[u8], cost: Cost, key: &mut [u8]) -> Result<(), String> {
+    argon2(cost, key.len())?
+        .hash_password_into(password, salt, key)
+        .map_err(|err| format!("Argon2: {err}"))
 }

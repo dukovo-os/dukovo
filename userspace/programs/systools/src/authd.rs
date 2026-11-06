@@ -54,6 +54,11 @@
 //! keeps no password. A connection's forwarding is the person's too: the
 //! forwarder that makes its connections, `sshd --forward`, starts as an
 //! SSH session does, with the network a session has (ADR 0349).
+//!
+//! It keeps each person's keyring (ADR 0393, [`keyring`]): their secrets,
+//! sealed in a file under a key made from their password, which it opens
+//! when they sign in with the password and holds open, in its memory
+//! alone, while one of their sessions runs.
 
 use std::collections::HashMap;
 use std::fmt::Write as _;
@@ -241,12 +246,15 @@ struct Authd {
     children: File,
     /// The tickets given for passwords over SSH, by their bytes.
     tickets: HashMap<Vec<u8>, Ticket>,
+    /// The keyrings open now, by their owners' numbers.
+    keyrings: HashMap<u32, keyring::Keyring>,
 }
 
 /// What a ticket for a password over SSH holds (ADR 0348).
 struct Ticket {
-    /// Whose password it was.
+    /// Whose password it was, and their number, whose keyring it opened.
     name: String,
+    number: u32,
     /// The connection, as SSH_CONNECTION says it, and sshd's process
     /// serving it, which alone may use the ticket.
     connection: String,
@@ -304,6 +312,8 @@ const SESSION_TIME: Duration = Duration::from_hours(100 * 365 * 24);
 macro_rules! audit {
     ($($arg:tt)*) => { println!("<86>authd: {}", format_args!($($arg)*)) };
 }
+
+mod keyring;
 
 /// The longest name a line of authd's shows.
 const SHOWN_MAX: usize = 64;
@@ -580,9 +590,8 @@ impl Authd {
                 Some((name.clone(), peer.source()))
             }
             Request::Elevate { password: Some(_), .. }
-            | Request::Unlock { password: Some(_), .. } => {
-                Some((util::user_name(peer.user), peer.source()))
-            }
+            | Request::Unlock { password: Some(_), .. }
+            | Request::KeyringUnlock { .. } => Some((util::user_name(peer.user), peer.source())),
             // A PC's tries are counted for its address, whatever smbd's
             // connection says, and an SSH client's for its own.
             Request::ShareSignIn { from, authenticate, .. } => {
@@ -696,6 +705,12 @@ impl Authd {
                     (self.ssh_session(i, &files, &asked, peer), now)
                 }
                 Request::SshEnded { ticket } => (self.ssh_ended(ticket, peer), now),
+                Request::KeyringSet { .. }
+                | Request::KeyringGet { .. }
+                | Request::KeyringList
+                | Request::KeyringRemove { .. }
+                | Request::KeyringUnlock { .. }
+                | Request::KeyringLock => self.keyring(&files, &request, peer, now),
                 Request::EndShares => {
                     if peer.is_root() {
                         let ended = self.end_shares(None);
@@ -1004,6 +1019,8 @@ impl Authd {
         let Some(user) = files.user(name) else {
             return (Answer::Refused(format!("there is no account {}", shown(name))), now);
         };
+        // Open before the session's first program runs, which may need it.
+        self.open_keyring_at_sign_in(files, user, password);
         let groups =
             accounts::other_groups(user, &files.groups, radix_abi::names::GROUPS_MAX as usize);
         // Their last sign-in and the wrong passwords typed for them
@@ -1118,6 +1135,7 @@ impl Authd {
                     client.deadline = now + REQUEST_TIME;
                 }
             }
+            self.close_idle_keyrings();
         }
     }
 
@@ -1809,8 +1827,10 @@ impl Authd {
             );
         }
         let answer = request::hex(&ticket);
+        self.open_keyring_at_sign_in(files, user, password);
         let given = Ticket {
             name: user.name.clone(),
+            number: user.uid,
             connection: connection.into(),
             process: peer.process,
             given: now,
@@ -1825,6 +1845,7 @@ impl Authd {
         match self.tickets.get(ticket) {
             Some(given) if peer.is_root() && given.process == peer.process => {
                 self.tickets.remove(ticket);
+                self.close_idle_keyrings();
                 Answer::Done(String::new())
             }
             _ => Answer::Refused("authd gave this process no such ticket".into()),
@@ -1937,6 +1958,7 @@ impl Authd {
         if let Err(why) = set_password(files, name, password, true) {
             return Answer::Refused(why);
         }
+        let emptied = self.reseal_keyring(user, None, password);
         // The new password opens the account at once.
         self.wrong.retain(|(account, _), _| account != name);
         let empty = if password.is_empty() { ", to an empty one" } else { "" };
@@ -1953,7 +1975,11 @@ impl Authd {
             files.users.entries().filter(|u| u.is_person() && accounts::is_admin(u, &files.groups));
         for admin in admins {
             let notice = if admin.name == name {
-                format!("Your password was reset from the startup-trouble menu on {when}.")
+                let keyring = match &emptied {
+                    Some(_) => " Your keyring was emptied, since only your old password opened it.",
+                    None => "",
+                };
+                format!("Your password was reset from the startup-trouble menu on {when}.{keyring}")
             } else {
                 format!("The password of {name} was reset from the startup-trouble menu on {when}.")
             };
@@ -1997,7 +2023,11 @@ impl Authd {
             peer.process,
             peer.user
         );
-        (Answer::Done(String::new()), now)
+        // Root gives no current password: the keyring opens only if it is
+        // open now.
+        let current = (!peer.is_root()).then_some(current);
+        let said = self.reseal_keyring(user, current, new).unwrap_or_default();
+        (Answer::Done(said), now)
     }
 }
 
@@ -2118,6 +2148,7 @@ impl Authd {
             eprintln!("authd: {why}");
         }
         self.wrong.retain(|(account, _), _| account != name);
+        self.remove_keyring(&user);
         // Its own /tmp goes with it (ADR 0255); its sign-in records stay,
         // root's to read.
         let tmp = format!("{}/{}", signin::TMP, user.uid);
@@ -2969,6 +3000,7 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
     own_dir(accounts::STATE, 0o700)?;
     // The sign-in records (ADR 0254), which no one but root lists.
     own_dir(signins::DIR, 0o711)?;
+    own_dir(keyring::FOLDER, 0o700)?;
     let boot = sessions::boot_seconds();
     let system = signins::parse(&read_text(signins::SYSTEM).unwrap_or_default());
     // Started again since the computer started, it records no start.
@@ -3015,6 +3047,7 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
         prompting: None,
         children,
         tickets: HashMap::new(),
+        keyrings: HashMap::new(),
     };
     authd.run_loop().map_err(|e| util::failed(&"authd", e))?;
     let _ = fs::remove_file(accounts::SOCKET);
