@@ -45,12 +45,12 @@ jobs:
           fi
 
       - name: Install host packages
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            qemu-system-x86 ovmf gcc flex gawk \
-            xorriso mtools dosfstools exfatprogs gdisk fdisk sleuthkit btrfs-progs e2fsprogs ntfs-3g dislocker libbde-utils openssh-server samba smbclient scdoc mandoc \
-            udftools udfclient genisoimage qemu-system-misc \
+        uses: ./.github/actions/apt-install
+        with:
+          packages: >-
+            qemu-system-x86 ovmf gcc flex gawk
+            xorriso mtools dosfstools exfatprogs gdisk fdisk sleuthkit btrfs-progs e2fsprogs ntfs-3g dislocker libbde-utils openssh-server samba smbclient scdoc mandoc
+            udftools udfclient genisoimage qemu-system-misc
             clang-20 lld-20 llvm-20 libclang-rt-20-dev meson ninja-build cmake bison pkgconf autoconf
 
       # GRUB, which ./ob builds from its pinned source for the images
@@ -168,12 +168,12 @@ jobs:
           fi
 
       - name: Install host packages
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            qemu-system-x86 ovmf gcc flex gawk \
-            xorriso mtools dosfstools exfatprogs gdisk fdisk sleuthkit btrfs-progs e2fsprogs ntfs-3g dislocker libbde-utils openssh-server samba smbclient scdoc mandoc \
-            udftools udfclient genisoimage \
+        uses: ./.github/actions/apt-install
+        with:
+          packages: >-
+            qemu-system-x86 ovmf gcc flex gawk
+            xorriso mtools dosfstools exfatprogs gdisk fdisk sleuthkit btrfs-progs e2fsprogs ntfs-3g dislocker libbde-utils openssh-server samba smbclient scdoc mandoc
+            udftools udfclient genisoimage
             clang-20 lld-20 llvm-20 libclang-rt-20-dev meson ninja-build cmake bison pkgconf autoconf
 
       # smbcacls has no -p: smbd's unit test and boot test listen on
@@ -293,12 +293,14 @@ jobs:
           retention-days: 14
 
   boot:
-    name: Boot tests (${{ matrix.shard }}/3)
+    name: Boot tests (${{ matrix.shard }}/5)
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
+      # Five jobs, which --shard gives the same amount of work by the
+      # times in tools/xtask/src/test/times.txt.
       matrix:
-        shard: [1, 2, 3]
+        shard: [1, 2, 3, 4, 5]
     steps:
       - uses: actions/checkout@v4
 
@@ -312,12 +314,12 @@ jobs:
           fi
 
       - name: Install host packages
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            qemu-system-x86 ovmf gcc flex gawk \
-            xorriso mtools dosfstools exfatprogs gdisk fdisk sleuthkit btrfs-progs e2fsprogs ntfs-3g dislocker libbde-utils openssh-server samba smbclient nfs-kernel-server scdoc mandoc \
-            udftools udfclient genisoimage \
+        uses: ./.github/actions/apt-install
+        with:
+          packages: >-
+            qemu-system-x86 ovmf gcc flex gawk
+            xorriso mtools dosfstools exfatprogs gdisk fdisk sleuthkit btrfs-progs e2fsprogs ntfs-3g dislocker libbde-utils openssh-server samba smbclient nfs-kernel-server scdoc mandoc
+            udftools udfclient genisoimage
             clang-20 lld-20 llvm-20 libclang-rt-20-dev meson ninja-build cmake bison pkgconf autoconf
 
       # smbcacls has no -p: smbd's unit test and boot test listen on
@@ -375,11 +377,12 @@ jobs:
       - name: ./ob setup
         run: ./ob setup
 
-      - name: ./ob test boot --shard ${{ matrix.shard }}/3
-        # A shard takes about 35 minutes; one that hangs fails here, with
-        # its logs, instead of running until the job's six hours.
-        timeout-minutes: 60
-        run: ./ob test boot --shard ${{ matrix.shard }}/3
+      - name: ./ob test boot --shard ${{ matrix.shard }}/5
+        # A shard takes about 27 minutes, 6 to 9 of them building; one
+        # that hangs fails here, with its logs, instead of running until
+        # the job's six hours.
+        timeout-minutes: 45
+        run: ./ob test boot --shard ${{ matrix.shard }}/5
 
       - name: Show the host's processes and kernel log
         if: failure()
@@ -414,12 +417,12 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install host packages
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            qemu-system-x86 ovmf gcc flex gawk \
-            xorriso mtools dosfstools exfatprogs gdisk fdisk sleuthkit btrfs-progs e2fsprogs ntfs-3g dislocker libbde-utils openssh-server samba smbclient scdoc mandoc \
-            udftools udfclient genisoimage \
+        uses: ./.github/actions/apt-install
+        with:
+          packages: >-
+            qemu-system-x86 ovmf gcc flex gawk
+            xorriso mtools dosfstools exfatprogs gdisk fdisk sleuthkit btrfs-progs e2fsprogs ntfs-3g dislocker libbde-utils openssh-server samba smbclient scdoc mandoc
+            udftools udfclient genisoimage
             clang-20 lld-20 llvm-20 libclang-rt-20-dev meson ninja-build cmake bison pkgconf autoconf
 
       # GRUB, which ./ob builds from its pinned source for the images
@@ -442,8 +445,10 @@ jobs:
         id: ports-key
         run: echo "clang=$(clang-20 --version | head -n1 | tr -c 'A-Za-z0-9.\n' -)" >> "$GITHUB_OUTPUT"
 
+      # On main too: this job saves nothing, so the build job's rule that
+      # main builds the ports from scratch does not need it to. Building
+      # them there made this job 38 minutes long, as it did the benchmarks.
       - name: Restore the built ports
-        if: github.event_name != 'push'
         uses: actions/cache/restore@v4
         with:
           path: |
@@ -564,9 +569,9 @@ jobs:
       # Some of the suite's tests run the client under faketime; Python
       # and its venv module come with the runner.
       - name: Install faketime
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends faketime
+        uses: ./.github/actions/apt-install
+        with:
+          packages: faketime
 
       - name: Cache the conformance suite
         uses: actions/cache@v4
@@ -594,9 +599,9 @@ jobs:
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
 
       - name: Install host packages
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends dash bash util-linux
+        uses: ./.github/actions/apt-install
+        with:
+          packages: dash bash util-linux
 
       - name: Install the pinned Rust toolchain
         run: rustup toolchain install

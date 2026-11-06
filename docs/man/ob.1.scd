@@ -1414,9 +1414,13 @@ _target/userspace/_).
 		Run only this boot test; repeat the option for more.
 
 	*--shard* _part_/_parts_
-		Run every _parts_th boot test, from the _part_th: *--shard 2/3*
-		runs the second, fifth, eighth and so on. CI runs the boot tests
-		in three jobs this way. It needs *boot*.
+		Split the boot tests into _parts_ shares that take about as long,
+		and run share _part_: *--shard 2/5* runs the second of five. The
+		times come from _tools/xtask/src/test/times.txt_, how long each
+		test takes on CI; a test it does not name counts as 40 seconds.
+		Tests that install the catalog's bundles tend to land together,
+		as the first of them in a run packs the bundles. CI runs the boot
+		tests in five jobs this way. It needs *boot*.
 
 	*--list*
 		Name every boot test and what it checks, and run none.

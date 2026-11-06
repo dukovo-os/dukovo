@@ -1,0 +1,54 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# Installs Ubuntu packages on a GitHub runner, for every CI job that needs
+# some.
+#
+# The runner's own mirror, azure.archive.ubuntu.com, is now and then so
+# slow that a download of under a minute takes an hour: on 2026-11-06 it
+# sent a boot job's 77 MB at 22 kB/s, for 59 minutes. apt only moves on
+# from a mirror that fails, not from one that is slow, so the download
+# gets four minutes there. Past that, it starts again from Ubuntu's own
+# archive.ubuntu.com, keeping the files it already has. Only then does
+# dpkg install them, so a download that is cut off never leaves a package
+# half installed.
+#
+# Troubleshooting: "The runner's Ubuntu mirror was slow" in a job's
+# warnings means the second download ran; a job that still fails here has
+# both mirrors failing, and a rerun is the fix.
+
+name: Install Ubuntu packages
+description: apt-get install, moving to archive.ubuntu.com when the runner's mirror is slow
+inputs:
+  packages:
+    description: The packages, separated by spaces or new lines
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: apt-get install
+      shell: bash
+      env:
+        PACKAGES: ${{ inputs.packages }}
+      run: |
+        set -euo pipefail
+        # A connection that sends nothing for 30 seconds is retried, three
+        # times, before apt calls the mirror failed.
+        apt=(sudo DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=3
+             -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30)
+        # Unquoted on purpose: one word per package.
+        # shellcheck disable=SC2086
+        download() {
+          timeout 120 "${apt[@]}" update &&
+            timeout "$1" "${apt[@]}" install -y --no-install-recommends --download-only $PACKAGES
+        }
+        if ! download 240; then
+          echo "::warning::The runner's Ubuntu mirror was slow; downloading from archive.ubuntu.com instead"
+          # The mirror list where the runner has one, and the sources.
+          sudo sed -i 's/azure\.archive\.ubuntu\.com/archive.ubuntu.com/g' \
+            /etc/apt/apt-mirrors.txt /etc/apt/sources.list.d/*.sources /etc/apt/sources.list \
+            2>/dev/null || true
+          download 1200
+        fi
+        # shellcheck disable=SC2086
+        "${apt[@]}" install -y --no-install-recommends $PACKAGES

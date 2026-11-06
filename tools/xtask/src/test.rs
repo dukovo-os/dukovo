@@ -1294,11 +1294,76 @@ fn parse_shard(value: &str) -> Result<(usize, usize)> {
     }
 }
 
-/// The cases of shard `part` of `parts`: every `parts`th, starting at the
-/// `part`th, so that each shard gets some of each kind and the slow ones
-/// (which sit together in CASES, such as the Btrfs tests) are spread out.
+/// How long each boot test takes on CI, from test/times.txt: `name seconds`
+/// lines, and `#` comments.
+const TIMES: &str = include_str!("test/times.txt");
+
+/// What test/times.txt counts a boot test it does not name as, in seconds:
+/// about the average, so that a new test needs no line there to be shared
+/// out fairly.
+const UNTIMED_SECONDS: u32 = 40;
+
+/// The lines of test/times.txt, as (name, seconds).
+fn timed_cases() -> impl Iterator<Item = (&'static str, Option<u32>)> {
+    TIMES.lines().filter(|line| !line.is_empty() && !line.starts_with('#')).map(|line| {
+        let (name, seconds) = line.split_once(' ').unwrap_or((line, ""));
+        (name, seconds.parse().ok())
+    })
+}
+
+/// How long `case` takes on CI by test/times.txt.
+fn case_seconds(case: &Case) -> u32 {
+    timed_cases()
+        .find(|&(name, _)| name == case.name)
+        .and_then(|(_, seconds)| seconds)
+        .unwrap_or(UNTIMED_SECONDS)
+}
+
+/// Whether `case` installs the catalog's bundles, which ob packs before
+/// the first such test of a run.
+fn needs_packing(case: &Case) -> bool {
+    case.disks.iter().any(|disk| matches!(disk.fat, BUNDLE_FILES | CATALOG_SITE))
+}
+
+/// About how long packing the catalog's bundles takes on CI, in seconds,
+/// once for a run that has a test needing them: it builds their ports
+/// again, as a restored cache lacks what they pack from.
+const PACKING_SECONDS: u32 = 180;
+
+/// How long `cases` take on CI by test/times.txt, packing included.
+fn cases_seconds(cases: &[&Case]) -> u32 {
+    let packing = cases.iter().any(|case| needs_packing(case));
+    cases.iter().map(|case| case_seconds(case)).sum::<u32>() + u32::from(packing) * PACKING_SECONDS
+}
+
+/// The cases of shard `part` of `parts`, chosen so that every shard takes
+/// about as long: the slowest test goes first, each to the shard it would
+/// end soonest in by test/times.txt ("longest first", which ends within one
+/// test of even). A shard pays for packing the bundles once, with its first
+/// test that needs them, so those tests tend to share a shard. Every
+/// shard's job works this out for itself, so it depends only on the cases
+/// and the times file; within a shard the cases keep their order in `cases`.
 fn in_shard(cases: Vec<&Case>, part: usize, parts: usize) -> Vec<&Case> {
-    cases.into_iter().enumerate().filter(|(i, _)| i % parts == part - 1).map(|(_, c)| c).collect()
+    let mut slowest_first: Vec<usize> = (0..cases.len()).collect();
+    // A stable sort: equal times stay in the cases' own order.
+    slowest_first.sort_by_key(|&i| std::cmp::Reverse(case_seconds(cases[i])));
+    let mut busy = vec![0u32; parts];
+    let mut packs = vec![false; parts];
+    let mut shard_of = vec![0usize; cases.len()];
+    for i in slowest_first {
+        let case = cases[i];
+        let cost = |shard: usize| {
+            let packing = needs_packing(case) && !packs[shard];
+            case_seconds(case) + u32::from(packing) * PACKING_SECONDS
+        };
+        // The shard that would end soonest; of equals, the first.
+        let shard = (0..parts).min_by_key(|&shard| (busy[shard] + cost(shard), shard)).unwrap_or(0);
+        busy[shard] += cost(shard);
+        packs[shard] |= needs_packing(case);
+        shard_of[i] = shard;
+    }
+    let mine = cases.into_iter().enumerate().filter(|&(i, _)| shard_of[i] == part - 1);
+    mine.map(|(_, case)| case).collect()
 }
 
 /// The boot tests, in the order they run. New ones of a phase built in
@@ -2912,6 +2977,11 @@ pub fn command(ctx: &Ctx, args: &mut Args) -> Result<()> {
     };
     if let Some((part, parts)) = shard {
         cases = in_shard(cases, part, parts);
+        eprintln!(
+            "Shard {part}/{parts}: {} boot tests, about {} minutes on CI by test/times.txt",
+            cases.len(),
+            cases_seconds(&cases).div_ceil(60)
+        );
     }
 
     if unit {
@@ -2925,8 +2995,7 @@ pub fn command(ctx: &Ctx, args: &mut Args) -> Result<()> {
         // The catalog's bundles are packed only for a case that installs
         // them: packing builds a bundle's port again when what it packs
         // from is gone, as it is after a restored cache.
-        let packs = |disk: &Disk| matches!(disk.fat, BUNDLE_FILES | CATALOG_SITE);
-        if cases.iter().any(|case| case.disks.iter().any(packs)) {
+        if cases.iter().any(|case| needs_packing(case)) {
             crate::ports::build_and_pack(ctx, &[])?;
         }
         if image_only {
@@ -9683,17 +9752,41 @@ mod tests {
     #[test]
     fn shards_split_the_cases_between_them() {
         let cases: Vec<&Case> = all_cases().collect();
-        let mut seen: Vec<&str> = Vec::new();
-        for part in 1..=3 {
-            seen.extend(in_shard(cases.clone(), part, 3).iter().map(|case| case.name));
+        let place = |case: &Case| cases.iter().position(|other| other.name == case.name).unwrap();
+        let slowest = cases.iter().map(|case| case_seconds(case)).max().unwrap();
+        for parts in [1, 3, 5] {
+            let mut seen: Vec<&str> = Vec::new();
+            let mut busy = Vec::new();
+            for part in 1..=parts {
+                let shard = in_shard(cases.clone(), part, parts);
+                let places: Vec<usize> = shard.iter().map(|case| place(case)).collect();
+                assert!(places.windows(2).all(|pair| pair[0] < pair[1]), "{part}/{parts} order");
+                busy.push(cases_seconds(&shard));
+                seen.extend(shard.iter().map(|case| case.name));
+            }
+            seen.sort_unstable();
+            let mut all: Vec<&str> = cases.iter().map(|case| case.name).collect();
+            all.sort_unstable();
+            assert_eq!(seen, all, "each case in exactly one of {parts} shards");
+            // Longest first ends with no shard more than one test, and its
+            // packing, behind.
+            let spread = busy.iter().max().unwrap() - busy.iter().min().unwrap();
+            assert!(spread <= slowest + PACKING_SECONDS, "{parts} shards take {busy:?} seconds");
         }
-        seen.sort_unstable();
-        let mut all: Vec<&str> = cases.iter().map(|case| case.name).collect();
-        all.sort_unstable();
-        assert_eq!(seen, all);
         assert_eq!(parse_shard("2/3").unwrap(), (2, 3));
         for bad in ["0/3", "4/3", "3", "a/b", "1/0"] {
             assert!(parse_shard(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn times_file_names_each_test_once_with_its_seconds() {
+        let mut named: Vec<&str> = Vec::new();
+        for (name, seconds) in timed_cases() {
+            assert!(seconds.is_some(), "test/times.txt: `{name}` needs `<name> <seconds>`");
+            assert!(all_cases().any(|case| case.name == name), "test/times.txt: no test `{name}`");
+            assert!(!named.contains(&name), "test/times.txt names `{name}` twice");
+            named.push(name);
         }
     }
 

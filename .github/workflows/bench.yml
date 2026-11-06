@@ -43,12 +43,12 @@ jobs:
           fi
 
       - name: Install host packages
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            qemu-system-x86 ovmf gcc flex gawk \
-            xorriso mtools dosfstools exfatprogs sleuthkit btrfs-progs e2fsprogs ntfs-3g dislocker libbde-utils scdoc mandoc \
-            udftools udfclient genisoimage \
+        uses: ./.github/actions/apt-install
+        with:
+          packages: >-
+            qemu-system-x86 ovmf gcc flex gawk
+            xorriso mtools dosfstools exfatprogs sleuthkit btrfs-progs e2fsprogs ntfs-3g dislocker libbde-utils scdoc mandoc
+            udftools udfclient genisoimage
             clang-20 lld-20 llvm-20 libclang-rt-20-dev meson ninja-build cmake bison pkgconf autoconf zlib1g-dev
 
       # GRUB, which ./ob builds from its pinned source for the images
@@ -71,8 +71,11 @@ jobs:
         id: ports-key
         run: echo "clang=$(clang-20 --version | head -n1 | tr -c 'A-Za-z0-9.\n' -)" >> "$GITHUB_OUTPUT"
 
+      # On main too: this job saves nothing, so the build job's rule that
+      # main builds the ports from scratch does not need it to. Building
+      # them there made ./ob bench take 38 minutes, against 11 on a pull
+      # request.
       - name: Restore the built ports
-        if: github.event_name != 'push'
         uses: actions/cache/restore@v4
         with:
           path: |

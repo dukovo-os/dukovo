@@ -246,8 +246,9 @@ POSIX's shell tests and real projects' scripts, in a sandbox (minutes each, so p
 tools into .cache/tla). With `corpus`, --case names a source in
 userspace/programs/nukesh/tests/corpus.toml. `riscv` builds the RISC-V smoke
 boot and boots it on QEMU's virt machine under OpenSBI (seconds; it needs
-qemu-system-riscv64). `boot --shard 2/3` runs every
-third boot test from the second, as CI's parallel jobs do. `boot --case smbd
+qemu-system-riscv64). `boot --shard 2/5` runs the second of five
+shares of the boot tests, as CI's parallel jobs do; the shares take about
+as long by the times in tools/xtask/src/test/times.txt. `boot --case smbd
 --image-only` boots nothing: it writes the case's image, its command line in
 place, to out/test/smbd.img, for CI's Windows job to boot. --list names every
 boot test; those that Phases 11 to 13 add from now on are listed only there
