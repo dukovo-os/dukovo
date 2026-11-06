@@ -132,10 +132,14 @@ pub(super) fn realm(dir: &Path, port: u16, served: &str) -> Result<Kdc, String> 
         path("kdc.log"),
     );
     // The host's programs name services as they are given, without DNS:
-    // server.dukovo.test is no name the host knows.
+    // server.dukovo.test is no name the host knows. qualify_shortname
+    // set empty keeps a name without a dot, localhost, as it is: MIT's
+    // library otherwise adds resolv.conf's first search domain, which a
+    // GitHub runner has, and asks for nfs/localhost.<that domain>.
     let krb5_conf = format!(
         "[libdefaults]\n    default_realm = {REALM}\n    dns_canonicalize_hostname = false\n    \
-         rdns = false\n[realms]\n    {REALM} = {{\n        kdc = 127.0.0.1:{port}\n    }}\n"
+         rdns = false\n    qualify_shortname = \"\"\n\
+         [realms]\n    {REALM} = {{\n        kdc = 127.0.0.1:{port}\n    }}\n"
     );
     for (name, text) in [("kdc.conf", kdc_conf), ("krb5.conf", krb5_conf), ("kadm5.acl", String::new())] {
         std::fs::write(dir.join(name), text).map_err(|err| format!("writing {name}: {err}"))?;

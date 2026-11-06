@@ -400,11 +400,13 @@ fn linux_mounts_dukovo(vm: &mut Vm, host: &Path, forwarded: u16) -> Result<(), S
     let _ = as_root(&["rpcdebug", "-m", "rpc", "-s", "auth"]).stdout(Stdio::null()).status();
     let at = host.join("mnt");
     let target = at.to_string_lossy().into_owned();
-    // localhost names the guest's service, nfs/localhost, for rpc.gssd;
-    // addr= keeps the kernel off ::1, which QEMU does not forward.
-    let options = format!(
-        "vers=4.2,proto=tcp,port={forwarded},addr=127.0.0.1,sec=krb5p,soft,timeo=100,retrans=3"
-    );
+    // rpc.gssd names the server by 127.0.0.1's name, as localhost has no
+    // dot: localhost in /etc/hosts, so the guest's service is
+    // nfs/localhost. proto=tcp keeps mount.nfs to IPv4's 127.0.0.1, as
+    // QEMU forwards no ::1; it looks the address up itself, whatever
+    // addr= says.
+    let options =
+        format!("vers=4.2,proto=tcp,port={forwarded},sec=krb5p,soft,timeo=100,retrans=3");
     let started = Instant::now();
     let mount = loop {
         let args = ["mount", "-t", "nfs4", "-o", &options, "localhost:/Secret", &target];
