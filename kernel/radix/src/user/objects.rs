@@ -1,38 +1,36 @@
 // SPDX-FileCopyrightText: 2026 The Dukovo contributors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! The registry of kernel objects: what each object name the capability
-//! store hands out stands for.
+//! The kernel objects: what each object name the capability store hands
+//! out stands for.
 //!
 //! The store keeps capabilities and the derivation tree, and knows each
-//! object only by its kind and an [`ObjectId`]; the objects themselves
-//! (an endpoint's queues, a frame's mappings) live here, in a table
-//! indexed like the store's object table and checked against its
-//! generation. An object enters the registry when the kernel makes it,
-//! right after the store gives it a name, and leaves when the store
-//! releases the name (its last capability is gone), which also closes
-//! it: an endpoint fails its waiting threads, a frame is unmapped from
-//! every address space. Holders of a reference (a thread blocked on an
-//! endpoint, a region of an address space) keep the memory alive until
-//! they let go.
+//! object by its kind and an [`ObjectId`]. The objects themselves (an
+//! endpoint's queues, a frame's mappings) are kept in the store's record
+//! of each object ([`Recorded`]), behind that record's own lock (ADR 0108,
+//! ADR 0369). An object is recorded when the kernel makes it, after the
+//! store gives it a name and before its capability is placed
+//! ([`create`]), so nobody finds the capability without it. It leaves
+//! when the store releases the name (its last capability is gone), which
+//! also closes it ([`released`]): an endpoint fails its waiting threads,
+//! a frame is unmapped from every address space. Holders of a reference
+//! (a thread blocked on an endpoint, a region of an address space) keep
+//! the memory alive until they let go.
 //!
-//! The registry lives beside the store's object table, under the table's
-//! lock (ADR 0108, ADR 0369): an object is recorded in the hold of that
-//! lock that names it, before its capability is placed ([`create`]), and
-//! leaves it in the hold that releases it ([`released`]), so making or
-//! releasing an object takes one lock beside its space's. A system call finds a capability and the object
-//! it designates with one look at its CPU's cache, which takes no lock
-//! when this CPU found that slot before at the version the store has now
-//! ([`find`]): system calls on different CPUs share no lock to reach
-//! their objects. A capability a CPU found leaving its slot, or an object
-//! leaving the registry, moves the version (`caps`); one nobody looked
-//! up, such as a file opened and closed again, does not.
+//! Making or releasing an object takes its space's lock and its record's,
+//! and no lock other objects share. A system call finds a capability and
+//! the object it designates with one look at its CPU's cache, which takes
+//! no lock when this CPU found that slot before at the version the store
+//! has now ([`find`]): system calls on different CPUs share no lock to
+//! reach their objects. A capability a CPU found leaving its slot, or an
+//! object a CPU found leaving the store, moves the version (`caps`); one
+//! nobody looked up, such as a file opened and closed again, does not.
 
 use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
 
 use radix_abi::errors::Kernel;
-use radix_cap::{CapError, Capability, ObjectId, ObjectKind, Released, Rights, SlotRef, SpaceId};
+use radix_cap::{CapError, Capability, ObjectId, ObjectKind, Rights, SlotRef, SpaceId};
 use radix_hal::MAX_CPUS;
 use radix_mm::{Flags, HEAP, Kmalloc};
 
@@ -115,95 +113,42 @@ impl Object {
     }
 }
 
-struct Entry {
-    generation: u32,
-    /// A CPU's cache may hold it ([`get_to_cache`]): taking it out moves
-    /// the store's version.
+/// What the store keeps of a kernel object, in the object's record
+/// (`radix_cap`'s `K`), which the store checks against the object's name
+/// and locks around each look.
+pub struct Recorded {
+    /// A CPU's cache may hold it ([`get_to_cache`]): its going moves the
+    /// store's version.
     cached: bool,
     object: Object,
     /// What the object costs, charged to the account of the process that
-    /// made it (`process.create`), and given back when it leaves.
+    /// made it (`process.create`), and given back when it goes.
     charge: Option<Charge>,
 }
 
-/// The registry: an entry for each object the store names, at the index of
-/// its name.
-pub struct Registry {
-    table: Vec<Option<Entry>, Kmalloc>,
-}
-
-impl Registry {
-    /// An empty registry, for the store to keep (`caps::init`).
-    pub fn new() -> Registry {
-        Registry { table: Vec::new_in(HEAP.with(Flags::MAY_SLEEP)) }
-    }
-}
-
-/// Records `object` under `id`, a name the store has just given, with what
-/// it was charged, which is given back when it leaves the registry: from
-/// the store's `record` callback, with the object table's lock held,
-/// before the object's capability is placed, so that nobody finds the
-/// capability without its object. `object` is taken only if it is
-/// recorded; on a failure it is left to the caller, to drop once the
-/// store's locks have gone, since it may hold the last reference to
-/// something whose drop takes locks (a removed file frees its space on
-/// the disk).
+/// Records `object` in `kept`, the store's place for it in the record of
+/// an object it has just named, with what it was charged, which is given
+/// back when the object goes: from the store's `record` callback, before
+/// the object's capability is placed, so that nobody finds the capability
+/// without its object. `object` is taken only if it is recorded; on a
+/// failure it is left to the caller, to drop once the store's locks have
+/// gone, since it may hold the last reference to something whose drop
+/// takes locks (a removed file frees its space on the disk).
 pub fn record(
-    registry: &mut Registry,
-    id: ObjectId,
+    kept: &mut Option<Recorded>,
     object: &mut Option<Object>,
     charge: Option<Charge>,
 ) -> core::result::Result<(), CapError> {
-    let table = &mut registry.table;
-    let index = id.index as usize;
-    if index >= table.len() {
-        table.try_reserve(index + 1 - table.len()).map_err(|_| CapError::NoMemory)?;
-        while table.len() <= index {
-            // Room was reserved above.
-            let _ = table.push_within_capacity(None);
-        }
-    }
     let Some(object) = object.take() else { return Err(CapError::Empty) };
-    replace(table, index, id.generation, object, charge);
+    *kept = Some(Recorded { cached: false, object, charge });
     Ok(())
 }
 
-/// Puts an entry of `generation` for `object` and its `charge` in the
-/// registry's slot `index`, which is normally empty; if a CPU may have
-/// cached what it held, the version moves. It takes the entry's fields,
-/// not an `Entry`, so that the entry is built in its slot: moving a whole
-/// one, 72 bytes, is a `rep movsq`, whose start alone costs an open more
-/// than writing the fields.
-#[inline(always)]
-fn replace(
-    table: &mut [Option<Entry>],
-    index: usize,
-    generation: u32,
-    object: Object,
-    charge: Option<Charge>,
-) {
-    let slot = &mut table[index];
-    if slot.as_ref().is_some_and(|old| old.cached) {
-        caps::mark_stale();
-    }
-    *slot = Some(Entry { generation, cached: false, object, charge });
-}
-
-/// Takes the object recorded under `id` out of the registry again, for an
-/// operation that recorded it and then failed, so that the store unmade
-/// the name ([`record`]'s undoing). The object is dropped, not closed:
-/// no capability to it was ever placed. An entry the name's index holds
-/// for a newer generation stays.
-pub fn unrecord(id: ObjectId) {
-    let entry = caps::store().ok().and_then(|store| store.with_registry(|r| remove(r, id)));
-    drop(entry);
-}
-
 /// Makes an object of `kind` in the store, with its original capability,
-/// holding only `rights`, in `at`, and records `object` under its name
-/// with what it was charged ([`record`]), with the lock of `at`'s space
-/// held throughout. `object` is taken only once nothing can fail; on a
-/// failure it is left to the caller, as [`record`] leaves it.
+/// holding only `rights`, in `at`, and records `object` with it with what
+/// it was charged ([`record`]), with the lock of `at`'s space held
+/// throughout. `object` is taken only once nothing can fail; on a failure
+/// it is left to the caller, as [`record`] leaves it.
 pub fn create(
     at: SlotRef,
     kind: ObjectKind,
@@ -212,37 +157,31 @@ pub fn create(
     charge: Option<Charge>,
 ) -> Result<ObjectId> {
     caps::in_space(at.space, |space| {
-        let record = |id, registry: &mut Registry| record(registry, id, object, charge);
+        let record = |_, kept: &mut Option<Recorded>| record(kept, object, charge);
         space.create_recorded(at, kind, rights, record).map(|(id, ())| id)
     })
     .and_then(|made| made)
     .map_err(cap_error)
 }
 
-/// The object named `id`, if it is in the registry, looked up under the
-/// object table's lock: for lookups too rare to be worth a place in a
+/// The object named `id`, if it lives and is a kernel object, looked up
+/// under its record's lock: for lookups too rare to be worth a place in a
 /// CPU's cache. The system calls' lookups go through [`find`].
 pub fn get(id: ObjectId) -> Option<Object> {
-    caps::store().ok()?.with_registry(|registry| {
-        let entry = registry.table.get(id.index as usize)?.as_ref()?;
-        (entry.generation == id.generation).then(|| entry.object.clone())
-    })
+    caps::store().ok()?.with_kept(id, |kept| kept.object.clone())
 }
 
-/// The object named `id`, for a CPU's cache to keep: from now on the
-/// version moves once it leaves the registry.
-fn get_to_cache(registry: &mut Registry, id: ObjectId) -> Option<Object> {
-    let entry = registry.table.get_mut(id.index as usize)?.as_mut()?;
-    if entry.generation != id.generation {
-        return None;
-    }
-    entry.cached = true;
-    Some(entry.object.clone())
+/// The object `kept` holds, for a CPU's cache to keep: from now on the
+/// version moves once it goes. Called under its record's lock, with the
+/// lock of the space whose slot named it held too (`caps::get_to_cache`).
+fn get_to_cache(kept: &mut Recorded) -> Object {
+    kept.cached = true;
+    kept.object.clone()
 }
 
 /// An object as a CPU's cache keeps it: a weak reference, which keeps its
 /// memory but not the object, so a cache never holds on to an object the
-/// registry has let go of. A hit takes a strong reference again, which
+/// store has let go of. A hit takes a strong reference again, which
 /// fails once the object is gone.
 enum Kept {
     Endpoint(Weak<Endpoint, Kmalloc>),
@@ -324,8 +263,8 @@ struct Cached {
     at: SlotRef,
     version: u64,
     cap: Capability,
-    /// `None` if the capability designates nothing in the registry, as a
-    /// memory capability does.
+    /// `None` if the capability designates no kernel object, as a memory
+    /// capability does.
     object: Option<Kept>,
 }
 
@@ -341,8 +280,8 @@ fn cache_index(at: SlotRef) -> usize {
 pub struct Found {
     /// The capability.
     pub cap: Capability,
-    /// The object it designates, if the caller wanted it and the registry
-    /// holds it, unless `held`.
+    /// The object it designates, if the caller wanted it and it is a
+    /// kernel object, unless `held`.
     pub object: Option<Object>,
     /// Whether the capability designates the process the caller said it
     /// holds ([`find_holding`]), which `object` then leaves out.
@@ -353,15 +292,15 @@ pub struct Found {
 /// designates if `wanted` says its kind's is needed, found in `place`.
 ///
 /// If this CPU found the capability at the version the store has now, it
-/// has not left the slot since, nor its object the registry, and nothing
+/// has not left the slot since, nor its object the store, and nothing
 /// else changes either: no lock, and nothing shared written but the
 /// object's reference count. A change under way that has not moved the
 /// version yet has not returned either, so a lookup that misses it
-/// happened before it. Otherwise the store and the registry are asked
-/// under their locks (`caps::get_to_cache`, [`get_to_cache`], so that the
-/// version moves once either goes), and the answer is kept with the
-/// version read before the store was asked: a change after the lookup
-/// moves the version past it.
+/// happened before it. Otherwise the store is asked under the space's
+/// lock and the object's record's (`caps::get_to_cache`,
+/// [`get_to_cache`], so that the version moves once either goes), and the
+/// answer is kept with the version read before the store was asked: a
+/// change after the lookup moves the version past it.
 ///
 /// What is found is written in the caller's `place`, not returned: a
 /// capability and an object are 88 bytes, which a move would copy with a
@@ -428,7 +367,7 @@ pub fn find_holding<'a>(
 }
 
 /// The object the capability in slot `slot` of `cspace` designates, if
-/// the registry holds one: [`find`] for a caller that wants only the
+/// it is a kernel object: [`find`] for a caller that wants only the
 /// object, which leaves the capability where it is rather than copy it.
 #[inline(always)]
 pub fn find_object(cspace: SpaceId, slot: u32) -> Option<Object> {
@@ -458,9 +397,7 @@ pub fn find_object(cspace: SpaceId, slot: u32) -> Option<Object> {
 #[cold]
 #[inline(never)]
 fn fill(at: SlotRef, index: usize) -> Result<Found> {
-    let (cap, object, version) =
-        caps::get_to_cache(at, |cap, registry| cap.id().and_then(|id| get_to_cache(registry, id)))
-            .map_err(cap_error)?;
+    let (cap, object, version) = caps::get_to_cache(at, get_to_cache).map_err(cap_error)?;
     let kept = Cached { at, version, cap, object: object.as_ref().map(Kept::of) };
     // What the entry held before goes once preemption is back on: it may
     // be the last reference to an object's memory.
@@ -566,24 +503,16 @@ typed_lookup!(
     FileRef
 );
 
-/// Takes the object named `id` out of the registry, with its charge.
-fn remove(registry: &mut Registry, id: ObjectId) -> Option<Entry> {
-    let slot = registry.table.get_mut(id.index as usize)?;
-    if slot.as_ref().is_some_and(|entry| entry.generation == id.generation) {
-        let entry = slot.take();
-        if entry.as_ref().is_some_and(|entry| entry.cached) {
-            caps::mark_stale();
-        }
-        entry
-    } else {
-        None
+/// The store released an object, and gave back what it kept of it: the
+/// object is closed, with the store's locks held but not its record's
+/// (`caps::release`). If a CPU's cache may hold it, the version moves
+/// first, before the operation that released it returns; its index is
+/// not handed out again until then either.
+pub fn released(kept: Option<Recorded>) {
+    let Some(Recorded { cached, object, charge }) = kept else { return };
+    if cached {
+        caps::mark_stale();
     }
-}
-
-/// The store released an object: it leaves the registry and is closed,
-/// with the store's locks held (`caps::release`).
-pub fn released(registry: &mut Registry, released: &Released) {
-    let Some(Entry { object, charge, .. }) = remove(registry, released.id) else { return };
     match object {
         Object::Endpoint(endpoint) => endpoint.close(),
         Object::Notification(notification) => notification.close(),
@@ -619,62 +548,74 @@ pub fn released(registry: &mut Registry, released: &Released) {
     drop(charge);
 }
 
-/// The numbers of the processes the registry holds, for `/processes`.
-pub fn process_numbers() -> Vec<u64, Kmalloc> {
-    let mut numbers = Vec::new_in(HEAP.with(Flags::MAY_SLEEP));
-    let Ok(store) = caps::store() else { return numbers };
-    store.with_registry(|registry| {
-        let table = &registry.table;
-        let count =
-            table.iter().flatten().filter(|e| matches!(e.object, Object::Process(_))).count();
-        if numbers.try_reserve_exact(count).is_err() {
-            return;
-        }
-        for entry in table.iter().flatten() {
-            if let Object::Process(process) = &entry.object {
-                let _ = numbers.push_within_capacity(process.number());
+/// Extra room [`gather`] reserves, for processes made while it counts.
+const ROOM: usize = 8;
+
+/// What `pick` takes from each process the store keeps, gathered one
+/// record's lock at a time: the processes are counted first, so the room
+/// is reserved with no lock held, and then gathered. If more were made in
+/// between than the extra room holds, it starts again, up to a few times,
+/// then gives what it has. `None` if there is no memory for them.
+fn gather<T>(pick: impl Fn(&ProcessRef) -> T) -> Option<Vec<T, Kmalloc>> {
+    let store = caps::store().ok()?;
+    let mut gathered = Vec::new_in(HEAP.with(Flags::MAY_SLEEP));
+    for _ in 0..4 {
+        let mut count = 0;
+        store.each_kept(|_, kept| count += usize::from(matches!(kept.object, Object::Process(_))));
+        gathered.clear();
+        gathered.try_reserve_exact(count + ROOM).ok()?;
+        let mut all = true;
+        store.each_kept(|_, kept| {
+            let Object::Process(process) = &kept.object else { return };
+            // Checked first, so nothing picked is dropped under the lock.
+            if gathered.len() < gathered.capacity() {
+                let _ = gathered.push_within_capacity(pick(process));
+            } else {
+                all = false;
             }
+        });
+        if all {
+            break;
         }
-    });
-    numbers
+    }
+    Some(gathered)
 }
 
-/// The processes the registry holds, taken out so that what is done
-/// with them takes no lock of theirs under the registry's (radix-names(2)'s
+/// The numbers of the processes the store keeps, for `/processes`.
+pub fn process_numbers() -> Vec<u64, Kmalloc> {
+    gather(|process| process.number()).unwrap_or_else(|| Vec::new_in(HEAP.with(Flags::MAY_SLEEP)))
+}
+
+/// The processes the store keeps, taken out so that what is done with
+/// them takes no lock of theirs under the store's (radix-names(2)'s
 /// `end`); none if there is no memory for them.
 pub fn processes() -> Option<Vec<ProcessRef, Kmalloc>> {
-    let mut processes = Vec::new_in(HEAP.with(Flags::MAY_SLEEP));
-    caps::store().ok()?.with_registry(|registry| {
-        let table = &registry.table;
-        let count =
-            table.iter().flatten().filter(|e| matches!(e.object, Object::Process(_))).count();
-        processes.try_reserve_exact(count).ok()?;
-        for entry in table.iter().flatten() {
-            if let Object::Process(process) = &entry.object {
-                let _ = processes.push_within_capacity(process.clone());
-            }
-        }
-        Some(())
-    })?;
-    Some(processes)
+    gather(ProcessRef::clone)
 }
 
-/// The process numbered `number`, if the registry holds it.
+/// The process numbered `number`, if the store keeps it.
 pub fn process_by_number(number: u64) -> Option<ProcessRef> {
-    caps::store().ok()?.with_registry(|registry| {
-        registry.table.iter().flatten().find_map(|entry| match &entry.object {
-            Object::Process(process) if process.number() == number => Some(process.clone()),
-            _ => None,
-        })
-    })
+    let mut found = None;
+    caps::store().ok()?.each_kept(|_, kept| match &kept.object {
+        Object::Process(process) if found.is_none() && process.number() == number => {
+            found = Some(process.clone());
+        }
+        _ => {}
+    });
+    found
 }
 
-/// How many objects of each kind `registry` holds, for `kdb` and the user
-/// tests (through `Store::with_registry`).
-pub fn census(registry: &mut Registry) -> [u32; radix_cap::KINDS] {
+/// How many kernel objects of each kind the store keeps, for `kdb` and
+/// the user tests. If not `wait`, it gives up (`None`) rather than wait
+/// for a lock: a debugger may have stopped the CPU that holds one.
+#[inline(never)]
+pub fn census(store: &caps::Store, wait: bool) -> Option<[u32; radix_cap::KINDS]> {
     let mut counts = [0; radix_cap::KINDS];
-    for entry in registry.table.iter().flatten() {
-        counts[entry.object.kind().index()] += 1;
+    let mut count = |_, kept: &mut Recorded| counts[kept.object.kind().index()] += 1;
+    if wait {
+        store.each_kept(&mut count);
+    } else {
+        store.try_each_kept(&mut count)?;
     }
-    counts
+    Some(counts)
 }

@@ -53,7 +53,7 @@ use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use radix_abi::address_space::{ANONYMOUS_TOP, PAGE_SIZE};
 use radix_abi::capability::Rights as AbiRights;
 use radix_abi::errors::Kernel;
-use radix_cap::{CapError, ObjectId};
+use radix_cap::CapError;
 use radix_hal::{MapPageError, PageEdit, UserAccess, UserMode};
 use radix_ipc::range::user_pages;
 use radix_mm::{Flags, HEAP, Kmalloc};
@@ -756,20 +756,20 @@ pub fn cap_rights(rights: AbiRights) -> radix_cap::Rights {
     radix_cap::Rights::from_bits_truncate(rights.bits() as u16)
 }
 
-/// Makes and records the frame object for a frame the store is retyping:
-/// `id`, and its extent's first page frame and pages. Called before its
-/// capability is placed (`Tree::retype`'s `record`, with the object
-/// table's lock held and `registry` beside it), so the object is recorded
-/// before any capability to it can be used; it is zeroed later
-/// ([`FrameObject::zero`]), and returned for that.
+/// Makes the frame object for a frame the store is retyping, from its
+/// extent's first page frame and pages, and records it in `kept`, the
+/// store's place for it. Called before its capability is placed
+/// (`Tree::retype`'s `record`, with the tree's and the spaces' locks
+/// held), so the object is recorded before any capability to it can be
+/// used; it is zeroed later ([`FrameObject::zero`]), and returned for
+/// that.
 pub fn frame_made(
-    registry: &mut super::objects::Registry,
-    id: ObjectId,
+    kept: &mut Option<super::objects::Recorded>,
     base: u64,
     pages: u64,
 ) -> core::result::Result<FrameRef, CapError> {
     let frame = FrameObject::new(base * PAGE_SIZE, pages).ok_or(CapError::NoMemory)?;
     let mut object = Some(super::objects::Object::Frame(frame.clone()));
-    super::objects::record(registry, id, &mut object, None)?;
+    super::objects::record(kept, &mut object, None)?;
     Ok(frame)
 }

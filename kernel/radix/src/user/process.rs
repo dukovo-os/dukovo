@@ -243,8 +243,8 @@ pub fn bytes_of(slots: u32) -> u64 {
 /// `name`, whose objects and threads are charged to `account`, and puts
 /// its original capability, with every right, in `at`, or with `None` in
 /// its own SLOT_PROCESS (a forked process, which holds itself). `charge`
-/// is what the process itself is charged to its maker; the registry keeps
-/// it until the process goes. A process made for `maker` ends when
+/// is what the process itself is charged to its maker; the store keeps
+/// it with the process until the process goes. A process made for `maker` ends when
 /// `maker` does, and acts for its name, or else for root; if `maker` has
 /// ended already, this fails with `gone`.
 pub fn create(
