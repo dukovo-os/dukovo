@@ -177,6 +177,9 @@ fn mount_disk(
         read_only = Some(access == "ro");
     }
     let kinds: Vec<&[u8]> = match kind {
+        // Only a Btrfs compresses, so only Btrfs is tried, as Linux's
+        // mount finds the filesystem first and gives it the option.
+        None if flags.contains(MountFlags::COMPRESS) => vec![b"btrfs".as_slice()],
         None => KINDS.iter().map(|(kind, _)| *kind).collect(),
         Some(kind) => match KINDS.iter().find(|(name, _)| name == &kind.as_bytes()) {
             Some((kind, _)) => vec![*kind],

@@ -55,7 +55,8 @@ bundle's, is refused.
 
 *-o* _options_, *--options* _options_
 	Comma-separated. For a disk: *ro*, *rw*, *defaults*, and *compress*
-	or *compress=zstd* for a Btrfs. For a share, those *smb*(1) takes;
+	or *compress=zstd* for a Btrfs, the only kind then tried without
+	*-t*. For a share, those *smb*(1) takes;
 	for an NFS folder, those *nfs*(1) takes.
 
 *-r*, *--read-only*

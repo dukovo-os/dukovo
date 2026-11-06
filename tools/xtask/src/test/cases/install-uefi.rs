@@ -1,0 +1,269 @@
+// SPDX-FileCopyrightText: 2026 The Dukovo contributors
+// SPDX-License-Identifier: Apache-2.0 OR MIT
+
+//! The install stick boots under UEFI into the live system, beside a
+//! blank virtio disk, and *dukovo-install --answers* installs Dukovo onto
+//! that disk as the test's answers file says (ADR 0309): the guided
+//! layout, the signed release copied and checked file by file into the
+//! slot *@system.a*, GRUB for both firmwares, the host name, time zone
+//! and keyboard, and the accounts of alice, the administrator, and bob.
+//! On the host, the disk must hold that layout, an EFI system partition
+//! that dosfstools' *fsck.fat* finds sound with UEFI's GRUB and a menu
+//! naming the root by its UUID, and a root Linux's *btrfs check* finds
+//! sound. The second boot is from that disk alone, without the stick:
+//! alice signs in on the console with her password, and finds the
+//! system, the settings and the saved answers the install left, without
+//! the password's hash.
+
+use std::process::Command;
+
+use disk::{Scheme, types};
+
+use super::super::*;
+
+pub const CASE: Case = Case {
+    name: "install-uefi",
+    about: "The live system installs Dukovo onto a blank disk under UEFI from an answers file: guided layout, signed release copied and checked, GRUB, settings and accounts; the host's fsck.fat and btrfs check find the disk sound, and it then boots alone, where alice signs in and finds the install's settings",
+    firmware: Firmware::Uefi,
+    media: Media::Usb,
+    // The live menu entry has its own flags, `live` and
+    // `console-sign-in=off`, before these.
+    cmdline: "",
+    cpus: 2,
+    memory: "1G",
+    reboot: false,
+    image: TestImage::Live,
+    cpu_model: None,
+    qemu: &[],
+    script: install,
+    disks: INSTALL_DISKS,
+    second: Some(SecondBoot { cmdline: "", before: nothing, script: installed }),
+};
+
+/// The blank disk Dukovo is installed onto, `vda`: 4 GiB, room for the
+/// answers file's 1 GiB of swap, the system and more.
+pub const INSTALL_DISKS: &[Disk] = &[Disk {
+    kib: 4 * 1024 * 1024,
+    fat: INSTALL_TARGET,
+    cluster: 0,
+    label: "",
+    table: Table::None,
+    bus: Bus::Virtio,
+    sector: 512,
+    device: "",
+    errors: None,
+    read_only: false,
+    check: installed_disk,
+}];
+
+/// The answers file the tests install by, from
+/// userspace/programs/installer/tests/install. Its administrator, alice,
+/// has the password [`PASSWORD`], hashed at the tests' low cost.
+const ANSWERS: &str = "/system/tests/install/answers.json";
+
+/// alice's password.
+const PASSWORD: &str = "queen of hearts";
+
+/// How long the install may take, in seconds: it copies the whole system.
+const INSTALL_SECONDS: u64 = 240;
+
+/// Nothing to do on the host between the boots: the disk check has run.
+pub fn nothing(_case: &Case, _disks: &[DiskImage]) -> Result<(), String> {
+    Ok(())
+}
+
+/// The first boot, from the stick: the live system installs Dukovo onto
+/// `vda` as the answers file says, then powers off. install-bios's first
+/// boot is the same.
+pub fn install(vm: &mut Vm, _case: &Case) -> Result<(), String> {
+    vm.expect("spark: the live system: /system is the boot archive, in memory, and no disk is the root")?;
+    vm.expect("spark: started consoled (/system/commands/consoled) as process ")?;
+    vm.expect_screen(&[&format!("{RELEASE} {VERSION} (tty1)"), "# "])?;
+
+    // The shell shows each command as it is typed, so the answer is a sum
+    // the command line does not hold.
+    vm.type_text(&format!(
+        "dukovo-install --answers {ANSWERS} > /tmp/out 2>&1; echo \"install: $((100 + $?))\"\n"
+    ))?;
+    wait_for_screen(vm, "install: 1", INSTALL_SECONDS)?;
+    if !vm.screen()?.iter().any(|line| line.trim() == "install: 100") {
+        vm.type_text("clear; tail -n 8 /tmp/install.log\n")?;
+        let _ = vm.expect_screen(&["problem: "]);
+        return Err(format!("dukovo-install failed: {}", vm.screen()?.join(" | ")));
+    }
+    vm.type_text("clear; cat /tmp/out\n")?;
+    vm.expect_screen(&[
+        "dukovo-install: Checking the signatures of the system release",
+        &format!("dukovo-install: Copying Dukovo {VERSION} into its slot, checking every file"),
+        "is installed on vda. Remove the install stick, then restart.",
+    ])?;
+
+    // The root holds the subvolumes, the slot among them and its copy
+    // gone. `mount -o compress` finds the Btrfs without `-t`, as Linux's.
+    vm.type_text(
+        "clear; mkdir /tmp/look && mount -o compress vda4 /tmp/look && ls /tmp/look && \
+         umount /tmp/look; echo \"looked: $((10 + $?))\"\n",
+    )?;
+    vm.expect_screen(&["@settings", "@state", "@system.a", "@users", "looked: 10"])?;
+    vm.expect_screen_without("@system.new")?;
+
+    vm.type_text("poweroff\n")?;
+    vm.expect("spark: asked to power off the machine")?;
+    vm.expect_exit(QEMU_EXIT_POWER_OFF)
+}
+
+/// The second boot, from the installed disk alone, now a SATA disk: GRUB
+/// finds the root by its UUID, alice signs in with her password, and the
+/// system, its settings and the saved answers are as the install left
+/// them. install-bios's second boot is the same.
+pub fn installed(vm: &mut Vm, _case: &Case) -> Result<(), String> {
+    vm.expect("spark: /system is Dukovo's root on ")?;
+    vm.expect_anywhere("consoled: started /system/commands/login on tty1 as process ")?;
+    vm.expect_screen(&[&format!("{RELEASE} {VERSION}")])?;
+    answer_prompt(vm, "Name:", "alice")?;
+    answer_prompt(vm, "Password:", PASSWORD)?;
+    vm.expect_anywhere("authd: alice signed in on pts/")?;
+
+    // Each answer has a label the command line does not hold whole.
+    answer_prompt(vm, "$", "echo \"host\"\": $(cat /system/settings/hostname)\"")?;
+    vm.expect_screen(&["host: installed"])?;
+    answer_prompt(vm, "$", "echo \"zone\"\": $(readlink /system/settings/localtime)\"")?;
+    vm.expect_screen(&["zone: /system/resources/zoneinfo/America/Denver"])?;
+    answer_prompt(vm, "$", "echo \"keys\"\": $(cat /system/settings/keyboard)\"")?;
+    vm.expect_screen(&["keys: layout = us"])?;
+    answer_prompt(
+        vm,
+        "$",
+        "echo \"people\"\": $(grep -c -e '^alice:x:1000:' -e '^bob:x:1001:' /system/settings/passwd)\"",
+    )?;
+    vm.expect_screen(&["people: 2"])?;
+    answer_prompt(vm, "$", "echo \"admins\"\": $(grep '^admins:' /system/settings/group)\"")?;
+    vm.expect_screen(&["admins: admins:x:10:alice"])?;
+
+    // The system is the release's, in the slot GRUB started.
+    answer_prompt(vm, "$", "ls /system/startup; echo \"slot\"\": $((40 + 2))\"")?;
+    vm.expect_screen(&["archive", "radix", "slot: 42"])?;
+
+    // The answers are kept, without the password's hash, and the log.
+    answer_prompt(
+        vm,
+        "$",
+        "grep -q '\"hostname\": \"installed\"' /system/settings/install/answers.json && \
+         ! grep -q argon2 /system/settings/install/answers.json; echo \"saved: $((10 + $?))\"",
+    )?;
+    vm.expect_screen(&["saved: 10"])?;
+    answer_prompt(
+        vm,
+        "$",
+        "grep -q 'installed: the log ends here' /system/state/log/install.log; \
+         echo \"log: $((10 + $?))\"",
+    )?;
+    vm.expect_screen(&["log: 10"])?;
+
+    vm.press_power_button()?;
+    vm.expect("spark: every service has stopped")?;
+    vm.expect_exit(QEMU_EXIT_POWER_OFF)
+}
+
+/// Waits until a line of the screen shows `needle`, for up to `seconds`:
+/// longer than [`Vm::expect_screen`] waits, for a command that takes a
+/// while.
+fn wait_for_screen(vm: &mut Vm, needle: &str, seconds: u64) -> Result<(), String> {
+    let deadline = Instant::now() + Duration::from_secs(seconds);
+    loop {
+        let screen = vm.screen()?;
+        if screen.iter().any(|line| line.contains(needle)) {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            return screen_shows(&screen, &[needle])
+                .map_err(|err| format!("after {seconds} s, {err}"));
+        }
+        std::thread::sleep(Duration::from_secs(1));
+    }
+}
+
+/// The partitions of the guided layout, in order, with 1 GiB of swap.
+const GUIDED: [&str; 4] = ["bios-boot", "efi", "swap", "dukovo-root"];
+
+/// Where UEFI's GRUB and its menu are on the EFI system partition.
+const EFI_GRUB: &str = "::/EFI/BOOT/BOOTX64.EFI";
+const EFI_MENU: &str = "::/boot/grub/grub.cfg";
+
+/// The host's side, after each boot: the disk holds the guided layout,
+/// GRUB's `boot.img` in its first sector, an EFI system partition that
+/// `fsck.fat` finds sound with UEFI's GRUB and a menu that names the root
+/// by its UUID, and a root Linux's `btrfs check` finds sound.
+pub fn installed_disk(disk: &DiskImage, log: &str) -> Result<(), String> {
+    let shown = disk.path.display().to_string();
+    let file = std::fs::File::open(&disk.path).map_err(|e| format!("opening {shown}: {e}"))?;
+    let device = disk::Device::whole(file, disk.bytes, 512);
+    let found = disk::read(&device).map_err(|e| format!("{shown}: {e}"))?;
+    let table = found.table.ok_or_else(|| format!("{shown} has no partition table"))?;
+    let kinds: Vec<_> = table.partitions.iter().map(|p| p.kind).collect();
+    let guided: Vec<_> =
+        GUIDED.iter().map(|name| types::parse(name, Scheme::Gpt).expect("a known type")).collect();
+    if kinds != guided {
+        let names: Vec<_> = kinds.iter().map(|kind| kind.name()).collect();
+        return Err(format!(
+            "{shown} holds partitions of {}, not the guided layout's {}",
+            names.join(", "),
+            GUIDED.join(", ")
+        ));
+    }
+    let part = |n: usize| {
+        let p = &table.partitions[n];
+        DiskImage {
+            path: disk.path.clone(),
+            offset: p.first * 512,
+            bytes: p.sectors() * 512,
+            sector: 512,
+            check: disk.check,
+            btrfs: disk.btrfs.clone(),
+        }
+    };
+
+    let first = device.read_sectors(0, 1).map_err(|e| format!("reading {shown}: {e}"))?;
+    // boot.img starts with its jump over the parameter block.
+    if first[..2] != [0xeb, 0x63] || first[510..512] != [0x55, 0xaa] {
+        return Err(format!("{shown}'s first sector holds no GRUB boot.img"));
+    }
+
+    let (esp, root) = (part(1), part(3));
+    let mut uuid = [0u8; 16];
+    // A Btrfs superblock is 64 KiB in, with its filesystem's UUID 32
+    // bytes into it.
+    device.read_at(root.offset + 0x10020, &mut uuid).map_err(|e| format!("reading {shown}: {e}"))?;
+    let uuid = image::uuid_text(uuid);
+    let menu = host_tool(Command::new("mtype").args(["-i", &mtools_image(&esp), EFI_MENU]))?;
+    let menu = String::from_utf8_lossy(&menu);
+    let wanted =
+        [format!("--set=system {uuid}\n"), format!("@system.a/startup/radix root=UUID={uuid} ")];
+    if menu.contains("@ROOT_UUID@") || !wanted.iter().all(|line| menu.contains(line.as_str())) {
+        return Err(format!("the EFI system partition's GRUB menu does not name the root {uuid}"));
+    }
+    host_tool(Command::new("mdir").args(["-i", &mtools_image(&esp), EFI_GRUB]))
+        .map_err(|err| format!("the EFI system partition holds no UEFI GRUB: {err}"))?;
+    fat_checked(&esp)?;
+    root_checked(&root, log)
+}
+
+/// Checks the FAT of the EFI system partition `esp` with dosfstools'
+/// `fsck.fat`, on a copy of it beside the disk.
+fn fat_checked(esp: &DiskImage) -> Result<(), String> {
+    let copy = esp.path.with_extension("esp");
+    let copied = (|| {
+        let mut from = std::fs::File::open(&esp.path)?;
+        let mut to = std::fs::File::create(&copy)?;
+        to.set_len(esp.bytes)?;
+        image::copy_sparse(&mut from, esp.offset, &mut to, 0, esp.bytes)
+    })()
+    .map_err(|err| format!("copying the EFI system partition to {}: {err}", copy.display()));
+    let checked = copied.and_then(|()| {
+        host_tool(Command::new(fat_tool("fsck.fat")).arg("-n").arg(&copy))
+            .map(drop)
+            .map_err(|err| format!("the EFI system partition fails fsck.fat: {err}"))
+    });
+    let _ = std::fs::remove_file(&copy);
+    checked
+}

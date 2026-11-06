@@ -99,6 +99,7 @@ pub const ARCHIVE_HIDDEN: (&str, &str) = ("system/.hidden", "bin\nlib\nshare\n")
 /// each one's path in it, and its package in userspace/programs.
 pub const STD_ARCHIVE: &[(&str, &str)] = &[
     ("system/commands/consoled", "consoled"),
+    ("system/commands/dukovo-install", "dukovo-install"),
     ("system/commands/nfs", "nfs"),
     ("system/commands/nfsd", "nfsd"),
     ("system/commands/nukesh", "nukesh"),
@@ -267,6 +268,11 @@ pub const DEFAULTS_DIR: &str = "system/resources/default-settings";
 pub const TEST_SERVICES: &str = "userspace/spark/tests/services";
 pub const TEST_SERVICES_DIR: &str = "system/tests/services";
 
+/// The answers files the install tests install by (ADR 0309), and where
+/// they are in the boot archive.
+pub const TEST_INSTALL: &str = "userspace/programs/installer/tests/install";
+pub const TEST_INSTALL_DIR: &str = "system/tests/install";
+
 /// The C and C++ test programs' sources, and where in the boot archive
 /// they go.
 pub const POSIX_SOURCES: &str = "userspace/posix";
@@ -361,6 +367,7 @@ pub const HOST_TESTED: &[&str] = &[
     "consoled",
     "disk",
     "dkv",
+    "dukovo-install",
     "git-https-test",
     "keymap",
     "manifest",
@@ -510,6 +517,7 @@ pub fn build(ctx: &Ctx, profile: Profile) -> Result<Programs> {
     // The root this system trusts its releases by (ADR 0308).
     files.push(crate::release::trusted_root(ctx)?);
     install_tree(ctx, TEST_SERVICES, TEST_SERVICES_DIR, &mut files)?;
+    install_tree(ctx, TEST_INSTALL, TEST_INSTALL_DIR, &mut files)?;
     for port in &ports.ports {
         files.extend(ports::image_files(ctx, &port.recipe, &ctx.out.join("sysroot"))?);
     }
@@ -551,6 +559,9 @@ pub fn build(ctx: &Ctx, profile: Profile) -> Result<Programs> {
         let name = path.file_name().expect("an image has a name").to_string_lossy().into_owned();
         files.push((format!("{}/{name}", crate::grub::SYSTEM_DIR), path));
     }
+    // The menu dukovo-install(8) puts on the disks it installs (ADR 0309).
+    let menu = crate::image::installer_menu(ctx, &ctx.out.join("release-menu"))?;
+    files.push((format!("{}/{}", crate::grub::SYSTEM_DIR, crate::image::INSTALLER_MENU), menu));
     let epoch = crate::image::source_date_epoch(ctx);
     let archive = write_archive(&files, epoch.clone())?;
     std::fs::write(&bootfs, &archive).context(|| format!("writing {}", bootfs.display()))?;

@@ -11,7 +11,7 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 - [Building Dukovo with ob](building.md)
 - [Creating USB install media](usb-media.md)
-- [Installing, including manual partitioning with rdisk]()
+- [Installing](installing.md)
 - [First boot and login]()
 
 # Using Dukovo

@@ -355,6 +355,12 @@ const LINES_SITE: u8 = 23;
 /// ([`feed_files_disk`], ADR 0390).
 const FEED_FILES: u8 = 24;
 
+/// [`Disk::fat`] for a blank disk, zeros only, that dukovo-install(8)
+/// installs Dukovo onto from the live system: the case's second boot
+/// boots from it alone, under the case's firmware, without the install
+/// stick ([`cases::install_uefi`], ADR 0309). It is the case's first disk.
+const INSTALL_TARGET: u8 = 25;
+
 /// The program of a version of lighthouse that answers its health check,
 /// with `nc` listening on its socket.
 macro_rules! lighthouse_answers {
@@ -3429,8 +3435,10 @@ fn run_case(
         ),
         Firmware::Bios => None,
     };
-    // A second boot from a copy of the test image boots it alone.
-    let from_disk = case.disks.first().is_some_and(|disk| disk.fat == GRUBLESS);
+    // A second boot from a copy of the test image, or from the disk
+    // Dukovo was installed on, boots that disk alone.
+    let from_disk =
+        case.disks.first().is_some_and(|disk| matches!(disk.fat, GRUBLESS | INSTALL_TARGET));
     let disk_machine = from_disk.then(|| Machine {
         firmware: case.firmware,
         media: Media::Disk,
@@ -3601,6 +3609,16 @@ fn make_disks(
             let at = image.path.with_extension("blkdebug");
             std::fs::write(&at, rules(i))
                 .map_err(|err| format!("writing {}: {err}", at.display()))?;
+        }
+        if disk.fat == INSTALL_TARGET {
+            // Sparse, so that a disk an install fits on costs the host
+            // only what the install writes.
+            std::fs::File::create(&image.path)
+                .and_then(|file| file.set_len(image.bytes))
+                .map_err(|err| format!("writing {}: {err}", image.path.display()))?;
+            let tool = btrfs::tool(ctx).map_err(|err| err.to_string())?;
+            made.push(DiskImage { btrfs: Some(tool), ..image });
+            continue;
         }
         if disk.fat == 0 || disk.fat == BTRFS_BLANK {
             std::fs::write(&image.path, raw_bytes(image.bytes))
