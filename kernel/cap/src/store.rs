@@ -192,19 +192,11 @@ struct Link {
     slot: u32,
 }
 
-/// A slot's place among its relatives in the derivation tree.
+/// A slot's place in the derivation tree. Once the store's lock is split
+/// (ADR 0369), the tree lock guards it, except in a slot that is not
+/// linked: no link leads there, so its space's lock does.
 #[derive(Clone, Copy, Debug)]
-struct Links {
-    parent: Option<Link>,
-    child: Option<Link>,
-    prev: Option<Link>,
-    next: Option<Link>,
-}
-
-/// One slot: a capability and its place in the derivation tree.
-#[derive(Clone, Copy, Debug)]
-struct Slot {
-    cap: Option<Capability>,
+struct Tree {
     parent: Option<Link>,
     child: Option<Link>,
     prev: Option<Link>,
@@ -213,8 +205,20 @@ struct Slot {
     /// capability gives its children a parent nearer the root, so this is
     /// an upper bound on the distance to a root.
     depth: u8,
-    /// A revoke of this capability is under way.
+    /// A revoke of this capability is under way. Deriving reads it on
+    /// every capability above the source, in any space.
     revoking: bool,
+}
+
+impl Tree {
+    const NONE: Tree =
+        Tree { parent: None, child: None, prev: None, next: None, depth: 0, revoking: false };
+}
+
+/// What a slot keeps beside its capability. Once the store's lock is
+/// split (ADR 0369), the slot's space's lock guards it.
+#[derive(Clone, Copy, Debug)]
+struct Marks {
     /// The slot's own flags (Phase 8), which stay with the slot rather
     /// than the capability: the kernel's close-on-exec. Clear in an empty
     /// slot, and in one a capability was just put in.
@@ -223,35 +227,76 @@ struct Slot {
     /// up with [`Capabilities::get_to_cache`]. Taking it out of the slot
     /// then makes the store stale ([`Capabilities::take_stale`]).
     cached: bool,
+    /// The slot may have a parent or children. Clear, it has neither (nor
+    /// siblings, which only children have), so its capability can be
+    /// deleted or moved without touching another slot: with only its
+    /// space's lock, once the store's lock is split. Set on both slots
+    /// when a capability is derived, carried by a move, and cleared when
+    /// the slot is emptied or a delete leaves it alone in the tree
+    /// ([`Capabilities::unlink_if_alone`]). It may stay set on a slot whose
+    /// last relative was in another space, which only costs the slow path.
+    linked: bool,
+}
+
+impl Marks {
+    const NONE: Marks = Marks { flags: 0, cached: false, linked: false };
+}
+
+/// One slot: a capability, its marks and its place in the derivation
+/// tree, each part under the lock that will guard it.
+#[derive(Clone, Copy, Debug)]
+struct Slot {
+    cap: Option<Capability>,
+    marks: Marks,
+    tree: Tree,
 }
 
 impl Slot {
-    const EMPTY: Slot = Slot {
-        cap: None,
-        parent: None,
-        child: None,
-        prev: None,
-        next: None,
-        depth: 0,
-        revoking: false,
-        flags: 0,
-        cached: false,
-    };
+    const EMPTY: Slot = Slot { cap: None, marks: Marks::NONE, tree: Tree::NONE };
 
-    /// Makes it [`Slot::EMPTY`] in place, a field at a time: storing a
+    /// Makes it [`Slot::EMPTY`] in place, a part at a time: storing a
     /// whole slot is a string move.
     fn clear(&mut self) {
-        let Slot { cap, parent, child, prev, next, depth, revoking, flags, cached } = self;
-        *cap = None;
-        *parent = None;
-        *child = None;
-        *prev = None;
-        *next = None;
-        *depth = 0;
-        *revoking = false;
-        *flags = 0;
-        *cached = false;
+        self.cap = None;
+        self.marks = Marks::NONE;
+        self.tree = Tree::NONE;
     }
+
+    // The fast path's two halves (ADR 0369). Both touch this slot alone,
+    // so once the store's lock is split they need only its space's lock.
+
+    /// Empties this slot, which is not linked, and returns what was in
+    /// it: the start of a delete or a move of a capability with no
+    /// relatives.
+    fn take_unlinked(&mut self) -> Taken {
+        debug_assert!(
+            !self.marks.linked && self.tree.parent.is_none() && self.tree.child.is_none(),
+            "taking a linked capability without the tree"
+        );
+        let taken =
+            Taken { cap: self.cap.take(), depth: self.tree.depth, cached: self.marks.cached };
+        self.clear();
+        taken
+    }
+
+    /// Puts `cap` in this empty slot, with no relatives: a new object's
+    /// original capability (at depth 0), or the end of a move (keeping
+    /// the depth it had, which is more than 0 if its parent was deleted).
+    fn put_unlinked(&mut self, cap: Capability, depth: u8) {
+        // Only an empty slot, which no cache can hold, takes a capability.
+        debug_assert!(self.cap.is_none(), "placing a capability in a full slot");
+        self.clear();
+        self.cap = Some(cap);
+        self.tree.depth = depth;
+    }
+}
+
+/// What [`Slot::take_unlinked`] took out of a slot.
+struct Taken {
+    cap: Option<Capability>,
+    depth: u8,
+    /// A cache outside the store may hold the capability.
+    cached: bool,
 }
 
 struct Space<A: Allocator> {
@@ -280,6 +325,16 @@ struct Record {
     next_free: Option<u32>,
 }
 
+/// The object table: an entry for each kernel object, with the counts
+/// that say when it goes. Every space shares it; it keeps a lock of its
+/// own once the store's lock is split (ADR 0369), so nothing here looks
+/// at a slot.
+struct Objects<A: Allocator> {
+    records: Vec<Record, A>,
+    /// The first free record.
+    free: Option<u32>,
+}
+
 /// Every capability space, the object table and the derivation tree.
 ///
 /// Every operation takes `&mut self`; the kernel keeps the store behind
@@ -290,8 +345,7 @@ pub struct Capabilities<A: Allocator + Clone> {
     alloc: A,
     spaces: Vec<Space<A>, A>,
     free_space: Option<u32>,
-    objects: Vec<Record, A>,
-    free_object: Option<u32>,
+    objects: Objects<A>,
     /// A capability looked up with [`Capabilities::get_to_cache`] has
     /// left its slot since [`Capabilities::take_stale`] last asked.
     stale: bool,
@@ -308,8 +362,7 @@ impl<A: Allocator + Clone> Capabilities<A> {
         Capabilities {
             spaces: Vec::new_in(alloc.clone()),
             free_space: None,
-            objects: Vec::new_in(alloc.clone()),
-            free_object: None,
+            objects: Objects { records: Vec::new_in(alloc.clone()), free: None },
             stale: false,
             alloc,
         }
@@ -399,14 +452,14 @@ impl<A: Allocator + Clone> Capabilities<A> {
     /// The flags of the slot `at`, which must hold a capability.
     pub fn slot_flags(&self, at: SlotRef) -> Result<u8, CapError> {
         let link = self.full(at)?;
-        Ok(self.slot(link).flags)
+        Ok(self.slot(link).marks.flags)
     }
 
     /// Sets the flags of the slot `at`, which must hold a capability, and
     /// returns them as they were.
     pub fn set_slot_flags(&mut self, at: SlotRef, flags: u8) -> Result<u8, CapError> {
         let link = self.full(at)?;
-        Ok(core::mem::replace(&mut self.slot_mut(link).flags, flags))
+        Ok(core::mem::replace(&mut self.slot_mut(link).marks.flags, flags))
     }
 
     /// The first slot of `space` from `from` on that holds a capability
@@ -422,7 +475,7 @@ impl<A: Allocator + Clone> Capabilities<A> {
             .iter()
             .enumerate()
             .skip(from as usize)
-            .find(|(_, slot)| slot.cap.is_some() && slot.flags & mask != 0);
+            .find(|(_, slot)| slot.cap.is_some() && slot.marks.flags & mask != 0);
         Ok(found.map(|(index, _)| index as u32))
     }
 
@@ -458,7 +511,7 @@ impl<A: Allocator + Clone> Capabilities<A> {
         let link = self.link(at)?;
         let slot = self.slot_mut(link);
         let cap = slot.cap.ok_or(CapError::Empty)?;
-        slot.cached = true;
+        slot.marks.cached = true;
         Ok(cap)
     }
 
@@ -486,24 +539,32 @@ impl<A: Allocator + Clone> Capabilities<A> {
     /// How many steps `at` is from a capability the kernel made, at most.
     pub fn depth(&self, at: SlotRef) -> Result<u8, CapError> {
         let link = self.full(at)?;
-        Ok(self.slot(link).depth)
+        Ok(self.slot(link).tree.depth)
     }
 
     /// The slot of the capability `at` was derived from, if it was.
     pub fn parent(&self, at: SlotRef) -> Result<Option<SlotRef>, CapError> {
         let link = self.full(at)?;
-        Ok(self.slot(link).parent.map(|parent| self.slot_ref(parent)))
+        Ok(self.slot(link).tree.parent.map(|parent| self.slot_ref(parent)))
+    }
+
+    /// Whether the slot `at` is marked as having relatives: it does if it
+    /// has a parent or children, and may if its last relative in another
+    /// space went (ADR 0369).
+    pub fn is_linked(&self, at: SlotRef) -> Result<bool, CapError> {
+        let link = self.full(at)?;
+        Ok(self.slot(link).marks.linked)
     }
 
     /// Whether a revoke of `at` is under way.
     pub fn is_revoking(&self, at: SlotRef) -> Result<bool, CapError> {
         let link = self.full(at)?;
-        Ok(self.slot(link).revoking)
+        Ok(self.slot(link).tree.revoking)
     }
 
     /// What the store knows about the kernel object `id`.
     pub fn object(&self, id: ObjectId) -> Option<ObjectInfo> {
-        let entry = self.entry(id)?;
+        let entry = self.objects.entry(id)?;
         Some(ObjectInfo {
             kind: entry.kind,
             caps: entry.caps,
@@ -519,7 +580,7 @@ impl<A: Allocator + Clone> Capabilities<A> {
     /// indexes below it plus `n`: a table kept beside this one, indexed the
     /// same way, needs no more room than that.
     pub fn object_records(&self) -> usize {
-        self.objects.len()
+        self.objects.records.len()
     }
 
     // ---- Making objects (the kernel only) ----
@@ -546,7 +607,7 @@ impl<A: Allocator + Clone> Capabilities<A> {
             return Err(CapError::InvalidArgument);
         }
         let link = self.empty(at)?;
-        let id = self.new_object(Entry {
+        let id = self.objects.insert(Entry {
             kind,
             caps: 1,
             children: 0,
@@ -573,7 +634,7 @@ impl<A: Allocator + Clone> Capabilities<A> {
             return Err(CapError::InvalidArgument);
         }
         let link = self.empty(at)?;
-        let id = self.new_object(Entry {
+        let id = self.objects.insert(Entry {
             kind: ObjectKind::Memory,
             caps: 1,
             children: 0,
@@ -618,7 +679,7 @@ impl<A: Allocator + Clone> Capabilities<A> {
         let derived = cap.derive(how)?;
         self.may_derive(src, &cap, from.space != to.space)?;
         self.place(dst, derived, Some(src));
-        self.retain(&derived);
+        self.objects.retain(&derived);
         Ok(())
     }
 
@@ -630,7 +691,7 @@ impl<A: Allocator + Clone> Capabilities<A> {
         let sealed = cap.seal_with(&key)?;
         self.may_derive(src, &cap, from.space != to.space)?;
         self.place(dst, sealed, Some(src));
-        self.retain(&sealed);
+        self.objects.retain(&sealed);
         Ok(())
     }
 
@@ -643,7 +704,7 @@ impl<A: Allocator + Clone> Capabilities<A> {
         let unsealed = cap.unseal_with(&key)?;
         self.may_derive(src, &cap, from.space != to.space)?;
         self.place(dst, unsealed, Some(src));
-        self.retain(&unsealed);
+        self.objects.retain(&unsealed);
         Ok(())
     }
 
@@ -681,19 +742,16 @@ impl<A: Allocator + Clone> Capabilities<A> {
         let Some(memory_id) = cap.id() else {
             return Err(CapError::InvalidArgument);
         };
-        let parent = self.entry(memory_id).ok_or(CapError::Empty)?;
+        let parent = self.objects.entry(memory_id).ok_or(CapError::Empty)?;
         let extent = parent.extent.ok_or(CapError::InvalidArgument)?;
         let (offset, watermark) =
             carve(extent.base, extent.pages, parent.watermark, order, u64::from(count))?;
         self.may_derive(src, &cap, memory.space != to.space)?;
         // Room for the records first, so nothing below can fail.
-        let free = self.free_records();
-        if free < count as usize {
-            self.objects.try_reserve(count as usize - free).map_err(|_| CapError::NoMemory)?;
-        }
+        self.objects.reserve(count as usize)?;
         for i in 0..count {
             let base = extent.base + offset + (u64::from(i) << order);
-            let id = self.new_object(Entry {
+            let id = self.objects.insert(Entry {
                 kind,
                 caps: 1,
                 children: 0,
@@ -704,7 +762,7 @@ impl<A: Allocator + Clone> Capabilities<A> {
             let child = cap.retyped(kind, id)?;
             self.place(Link { space: first.space, slot: to.slot + i }, child, Some(src));
         }
-        let parent = self.entry_mut(memory_id).ok_or(CapError::Empty)?;
+        let parent = self.objects.entry_mut(memory_id).ok_or(CapError::Empty)?;
         parent.children += count;
         parent.watermark = watermark;
         Ok(())
@@ -722,32 +780,57 @@ impl<A: Allocator + Clone> Capabilities<A> {
         if from.space != to.space && !cap.rights.contains(Rights::TRANSFER) {
             return Err(CapError::MissingRights(Rights::TRANSFER));
         }
-        if node.revoking {
+        if node.tree.revoking {
             return Err(CapError::Revoking);
         }
+        if node.marks.linked {
+            self.move_linked(src, dst);
+        } else {
+            self.move_unlinked(src, dst);
+        }
+        Ok(())
+    }
+
+    /// Moves a capability that may have relatives, from the full slot
+    /// `src` to the empty slot `dst`, and the links that lead to it.
+    fn move_linked(&mut self, src: Link, dst: Link) {
+        let node = *self.slot(src);
         // The flags stay behind: they belong to the slot. A cache may
-        // hold the capability under its old slot, not its new one.
-        *self.slot_mut(dst) = Slot { flags: 0, cached: false, ..node };
+        // hold the capability under its old slot, not its new one. The
+        // bit goes with the links.
+        *self.slot_mut(dst) =
+            Slot { marks: Marks { flags: 0, cached: false, ..node.marks }, ..node };
         *self.slot_mut(src) = Slot::EMPTY;
-        self.stale |= node.cached;
-        match node.prev {
-            Some(prev) => self.slot_mut(prev).next = Some(dst),
+        self.stale |= node.marks.cached;
+        match node.tree.prev {
+            Some(prev) => self.slot_mut(prev).tree.next = Some(dst),
             None => {
-                if let Some(parent) = node.parent {
-                    self.slot_mut(parent).child = Some(dst);
+                if let Some(parent) = node.tree.parent {
+                    self.slot_mut(parent).tree.child = Some(dst);
                 }
             }
         }
-        if let Some(next) = node.next {
-            self.slot_mut(next).prev = Some(dst);
+        if let Some(next) = node.tree.next {
+            self.slot_mut(next).tree.prev = Some(dst);
         }
-        let mut child = node.child;
+        let mut child = node.tree.child;
         while let Some(c) = child {
             let slot = self.slot_mut(c);
-            slot.parent = Some(dst);
-            child = slot.next;
+            slot.tree.parent = Some(dst);
+            child = slot.tree.next;
         }
-        Ok(())
+    }
+
+    /// Moves a capability whose slot is not linked, from the full slot
+    /// `src` to the empty slot `dst`: the fast path, which touches no
+    /// other slot (ADR 0369). Only the depth goes with it, as it may be
+    /// more than 0 in a capability whose parent was deleted.
+    fn move_unlinked(&mut self, src: Link, dst: Link) {
+        let taken = self.slot_mut(src).take_unlinked();
+        self.stale |= taken.cached;
+        if let Some(cap) = taken.cap {
+            self.slot_mut(dst).put_unlinked(cap, taken.depth);
+        }
     }
 
     /// Deletes the capability in `at`. Capabilities derived from it stay,
@@ -760,7 +843,11 @@ impl<A: Allocator + Clone> Capabilities<A> {
         released: &mut dyn FnMut(Released),
     ) -> Result<(), CapError> {
         let link = self.full(at)?;
-        self.remove(link, released);
+        if self.slot(link).marks.linked {
+            self.remove(link, released);
+        } else {
+            self.remove_unlinked(link, released);
+        }
         Ok(())
     }
 
@@ -776,11 +863,11 @@ impl<A: Allocator + Clone> Capabilities<A> {
         released: &mut dyn FnMut(Released),
     ) -> Result<Progress, CapError> {
         let top = self.full(at)?;
-        self.slot_mut(top).revoking = true;
+        self.slot_mut(top).tree.revoking = true;
         let mut deleted = 0;
         let mut at = top;
         loop {
-            if let Some(child) = self.slot(at).child {
+            if let Some(child) = self.slot(at).tree.child {
                 at = child;
                 continue;
             }
@@ -791,12 +878,14 @@ impl<A: Allocator + Clone> Capabilities<A> {
                 return Ok(Progress::More);
             }
             // Below `top`, so it has a parent.
-            let parent = self.slot(at).parent.unwrap_or(top);
+            let parent = self.slot(at).tree.parent.unwrap_or(top);
             self.remove(at, released);
             deleted += 1;
             at = parent;
         }
-        self.slot_mut(top).revoking = false;
+        // Nothing is left below it; with no parent either, it is alone.
+        self.unlink_if_alone(top);
+        self.slot_mut(top).tree.revoking = false;
         Ok(Progress::Done)
     }
 
@@ -814,7 +903,7 @@ impl<A: Allocator + Clone> Capabilities<A> {
         released: &mut dyn FnMut(Released),
     ) -> Result<Progress, CapError> {
         match self.link(at) {
-            Ok(link) if self.slot(link).revoking => self.revoke(at, budget, released),
+            Ok(link) if self.slot(link).tree.revoking => self.revoke(at, budget, released),
             _ => Ok(Progress::Done),
         }
     }
@@ -830,12 +919,12 @@ impl<A: Allocator + Clone> Capabilities<A> {
             for slot in &space.slots {
                 if let Some(cap) = slot.cap {
                     census.caps[cap.kind().index()] += 1;
-                    census.deepest = census.deepest.max(slot.depth);
-                    census.revoking += u32::from(slot.revoking);
+                    census.deepest = census.deepest.max(slot.tree.depth);
+                    census.revoking += u32::from(slot.tree.revoking);
                 }
             }
         }
-        for entry in self.objects.iter().filter_map(|record| record.entry.as_ref()) {
+        for entry in self.objects.records.iter().filter_map(|record| record.entry.as_ref()) {
             census.objects[entry.kind.index()] += 1;
             if entry.origin.is_none()
                 && let Some(extent) = entry.extent
@@ -847,7 +936,8 @@ impl<A: Allocator + Clone> Capabilities<A> {
     }
 
     /// Checks every invariant of the store: the tree's links agree with
-    /// each other, depths grow down the tree, every capability grants no
+    /// each other, every slot with relatives is marked linked, depths grow
+    /// down the tree, every capability grants no
     /// more than its parent, no capability holds a right its kind lacks or
     /// a badge its kind cannot carry, every capability names a live object
     /// of its kind, and every object's counts are right. Takes time in
@@ -860,9 +950,9 @@ impl<A: Allocator + Clone> Capabilities<A> {
         let mut non_roots = 0u64;
         let mut counts: Vec<(u32, u32), A> = Vec::new_in(self.alloc.clone());
         counts
-            .try_reserve_exact(self.objects.len())
+            .try_reserve_exact(self.objects.records.len())
             .map_err(|_| fail("out of memory for the audit", None))?;
-        for _ in 0..self.objects.len() {
+        for _ in 0..self.objects.records.len() {
             let _ = counts.push_within_capacity((0, 0));
         }
         for (index, space) in self.spaces.iter().enumerate() {
@@ -879,12 +969,13 @@ impl<A: Allocator + Clone> Capabilities<A> {
                 let here = Link { space: index as u32, slot: number as u32 };
                 let at = Some(SlotRef { space: id, slot: number as u32 });
                 let Some(cap) = slot.cap else {
-                    if slot.parent.is_some()
-                        || slot.child.is_some()
-                        || slot.prev.is_some()
-                        || slot.next.is_some()
-                        || slot.revoking
-                        || slot.depth != 0
+                    if slot.tree.parent.is_some()
+                        || slot.tree.child.is_some()
+                        || slot.tree.prev.is_some()
+                        || slot.tree.next.is_some()
+                        || slot.tree.revoking
+                        || slot.tree.depth != 0
+                        || slot.marks.linked
                     {
                         return Err(fail("an empty slot has links", at));
                     }
@@ -892,9 +983,9 @@ impl<A: Allocator + Clone> Capabilities<A> {
                 };
                 let kind = cap.kind();
                 census.caps[kind.index()] += 1;
-                census.deepest = census.deepest.max(slot.depth);
-                census.revoking += u32::from(slot.revoking);
-                if slot.depth > MAX_DEPTH {
+                census.deepest = census.deepest.max(slot.tree.depth);
+                census.revoking += u32::from(slot.tree.revoking);
+                if slot.tree.depth > MAX_DEPTH {
                     return Err(fail("a capability is deeper than MAX_DEPTH", at));
                 }
                 if !kind.rights().contains(cap.rights) {
@@ -905,7 +996,7 @@ impl<A: Allocator + Clone> Capabilities<A> {
                 }
                 match cap.object.target {
                     Target::Object(id) => {
-                        let Some(entry) = self.entry(id) else {
+                        let Some(entry) = self.objects.entry(id) else {
                             return Err(fail("a capability names an object that is gone", at));
                         };
                         if entry.kind != kind || kind.is_range() {
@@ -921,13 +1012,20 @@ impl<A: Allocator + Clone> Capabilities<A> {
                     }
                 }
                 if let Some(sealer) = cap.sealed_by
-                    && self.entry(sealer).is_some_and(|entry| entry.kind != ObjectKind::Endpoint)
+                    && self
+                        .objects
+                        .entry(sealer)
+                        .is_some_and(|entry| entry.kind != ObjectKind::Endpoint)
                 {
                     return Err(fail("a capability is sealed by something not an endpoint", at));
                 }
-                match slot.parent {
+                // A clear bit lets a delete or a move skip the tree.
+                if !slot.marks.linked && (slot.tree.parent.is_some() || slot.tree.child.is_some()) {
+                    return Err(fail("a capability with relatives is not marked linked", at));
+                }
+                match slot.tree.parent {
                     None => {
-                        if slot.prev.is_some() || slot.next.is_some() {
+                        if slot.tree.prev.is_some() || slot.tree.next.is_some() {
                             return Err(fail("a capability without a parent has siblings", at));
                         }
                     }
@@ -939,10 +1037,11 @@ impl<A: Allocator + Clone> Capabilities<A> {
                         let Some(parent_cap) = above.cap else {
                             return Err(fail("a capability's parent slot is empty", at));
                         };
-                        if above.depth >= slot.depth {
+                        if above.tree.depth >= slot.tree.depth {
                             return Err(fail("a capability is no deeper than its parent", at));
                         }
-                        if !cap.within(&parent_cap) && !self.retyped_from(&cap, &parent_cap) {
+                        if !cap.within(&parent_cap) && !self.objects.retyped_from(&cap, &parent_cap)
+                        {
                             return Err(fail("a capability grants more than its parent", at));
                         }
                     }
@@ -950,13 +1049,16 @@ impl<A: Allocator + Clone> Capabilities<A> {
                 // The children list: each child names this slot as its
                 // parent, and the list's links agree in both directions.
                 let mut prev = None;
-                let mut child = slot.child;
+                let mut child = slot.tree.child;
                 let mut steps = 0u64;
                 while let Some(c) = child {
                     let Some(below) = self.try_slot(c) else {
                         return Err(fail("a child link leads nowhere", at));
                     };
-                    if below.cap.is_none() || below.parent != Some(here) || below.prev != prev {
+                    if below.cap.is_none()
+                        || below.tree.parent != Some(here)
+                        || below.tree.prev != prev
+                    {
                         return Err(fail("a children list is inconsistent", at));
                     }
                     steps += 1;
@@ -964,7 +1066,7 @@ impl<A: Allocator + Clone> Capabilities<A> {
                         return Err(fail("a children list has a cycle", at));
                     }
                     prev = Some(c);
-                    child = below.next;
+                    child = below.tree.next;
                 }
                 children_listed += steps;
             }
@@ -972,11 +1074,11 @@ impl<A: Allocator + Clone> Capabilities<A> {
         if children_listed != non_roots {
             return Err(fail("a capability is missing from its parent's children", None));
         }
-        for record in &self.objects {
+        for record in &self.objects.records {
             if let Some(entry) = &record.entry
                 && let Some(origin) = entry.origin
             {
-                let Some(parent) = self.entry(origin) else {
+                let Some(parent) = self.objects.entry(origin) else {
                     return Err(fail("an object was retyped from memory that is gone", None));
                 };
                 let (Some(own), Some(from)) = (entry.extent, parent.extent) else {
@@ -988,7 +1090,7 @@ impl<A: Allocator + Clone> Capabilities<A> {
                 counts[origin.index as usize].1 += 1;
             }
         }
-        for (record, &(caps, children)) in self.objects.iter().zip(counts.iter()) {
+        for (record, &(caps, children)) in self.objects.records.iter().zip(counts.iter()) {
             let Some(entry) = &record.entry else { continue };
             census.objects[entry.kind.index()] += 1;
             if entry.origin.is_none()
@@ -1078,6 +1180,29 @@ impl<A: Allocator + Clone> Capabilities<A> {
         self.spaces.get(link.space as usize)?.slots.get(link.slot as usize)
     }
 
+    /// Takes the capability out of `link`, whose slot is not linked:
+    /// the fast path of [`Capabilities::remove`], which touches no other
+    /// slot (ADR 0369).
+    fn remove_unlinked(&mut self, link: Link, released: &mut dyn FnMut(Released)) {
+        let taken = self.slot_mut(link).take_unlinked();
+        self.stale |= taken.cached;
+        if let Some(id) = taken.cap.as_ref().and_then(Capability::id) {
+            self.objects.release(id, released);
+        }
+    }
+
+    /// Clears the `linked` bit of `link` if it has no parent and no
+    /// children left. A delete calls it on the deleted capability's
+    /// parent in the same space, whose lock it holds once the store's
+    /// lock is split (the common case of a copy made in a process and
+    /// deleted again), and a revoke on its capability when it ends.
+    fn unlink_if_alone(&mut self, link: Link) {
+        let slot = self.slot_mut(link);
+        if slot.tree.parent.is_none() && slot.tree.child.is_none() {
+            slot.marks.linked = false;
+        }
+    }
+
     /// Whether a capability made from `src` may be placed: not too deep,
     /// not below a revoke under way, and with `transfer` if it goes to
     /// another space.
@@ -1100,8 +1225,8 @@ impl<A: Allocator + Clone> Capabilities<A> {
         let mut at = Some(src);
         while let Some(link) = at {
             let slot = self.slot(link);
-            revoking |= slot.revoking;
-            at = slot.parent;
+            revoking |= slot.tree.revoking;
+            at = slot.tree.parent;
             distance += u8::from(at.is_some());
         }
         if distance >= MAX_DEPTH {
@@ -1116,35 +1241,38 @@ impl<A: Allocator + Clone> Capabilities<A> {
         let mut at = Some(src);
         while let Some(link) = at {
             let slot = self.slot_mut(link);
-            slot.depth = depth;
+            slot.tree.depth = depth;
             depth = depth.saturating_sub(1);
-            at = slot.parent;
+            at = slot.tree.parent;
         }
         Ok(())
     }
 
     /// Puts `cap` in the empty slot `link`, as the first child of
-    /// `parent`.
+    /// `parent` (and both slots are linked), or as a root.
     fn place(&mut self, link: Link, cap: Capability, parent: Option<Link>) {
+        let Some(parent) = parent else {
+            // A root: the fast path's create, which links nothing.
+            self.slot_mut(link).put_unlinked(cap, 0);
+            return;
+        };
         // Only an empty slot, which no cache can hold, takes a capability.
         debug_assert!(self.slot(link).cap.is_none(), "placing a capability in a full slot");
-        let (depth, next) = match parent {
-            Some(parent) => {
-                let above = self.slot_mut(parent);
-                (above.depth + 1, above.child.replace(link))
-            }
-            None => (0, None),
-        };
+        let above = self.slot_mut(parent);
+        above.marks.linked = true;
+        let depth = above.tree.depth + 1;
+        let next = above.tree.child.replace(link);
         if let Some(next) = next {
-            self.slot_mut(next).prev = Some(link);
+            self.slot_mut(next).tree.prev = Some(link);
         }
         // Written where it stays, not made aside and moved in.
         let slot = self.slot_mut(link);
         slot.clear();
         slot.cap = Some(cap);
-        slot.parent = parent;
-        slot.next = next;
-        slot.depth = depth;
+        slot.marks.linked = true;
+        slot.tree.parent = Some(parent);
+        slot.tree.next = next;
+        slot.tree.depth = depth;
     }
 
     /// Takes the capability out of `link`: its children move up to its
@@ -1154,9 +1282,8 @@ impl<A: Allocator + Clone> Capabilities<A> {
         // What the rest needs of the slot, without a copy of all of it.
         let slot = self.slot_mut(link);
         let held = slot.cap.as_ref().and_then(Capability::id);
-        let node =
-            Links { parent: slot.parent, child: slot.child, prev: slot.prev, next: slot.next };
-        let cached = slot.cached;
+        let node = slot.tree;
+        let cached = slot.marks.cached;
         slot.clear();
         self.stale |= cached;
         match (node.parent, node.child) {
@@ -1165,27 +1292,27 @@ impl<A: Allocator + Clone> Capabilities<A> {
                 let mut child = Some(first);
                 while let Some(c) = child {
                     let slot = self.slot_mut(c);
-                    slot.parent = Some(parent);
+                    slot.tree.parent = Some(parent);
                     last = c;
-                    child = slot.next;
+                    child = slot.tree.next;
                 }
-                self.slot_mut(first).prev = node.prev;
+                self.slot_mut(first).tree.prev = node.prev;
                 match node.prev {
-                    Some(prev) => self.slot_mut(prev).next = Some(first),
-                    None => self.slot_mut(parent).child = Some(first),
+                    Some(prev) => self.slot_mut(prev).tree.next = Some(first),
+                    None => self.slot_mut(parent).tree.child = Some(first),
                 }
-                self.slot_mut(last).next = node.next;
+                self.slot_mut(last).tree.next = node.next;
                 if let Some(next) = node.next {
-                    self.slot_mut(next).prev = Some(last);
+                    self.slot_mut(next).tree.prev = Some(last);
                 }
             }
             (Some(parent), None) => {
                 match node.prev {
-                    Some(prev) => self.slot_mut(prev).next = node.next,
-                    None => self.slot_mut(parent).child = node.next,
+                    Some(prev) => self.slot_mut(prev).tree.next = node.next,
+                    None => self.slot_mut(parent).tree.child = node.next,
                 }
                 if let Some(next) = node.next {
-                    self.slot_mut(next).prev = node.prev;
+                    self.slot_mut(next).tree.prev = node.prev;
                 }
             }
             (None, first) => {
@@ -1193,18 +1320,25 @@ impl<A: Allocator + Clone> Capabilities<A> {
                 let mut child = first;
                 while let Some(c) = child {
                     let slot = self.slot_mut(c);
-                    child = slot.next;
-                    slot.parent = None;
-                    slot.prev = None;
-                    slot.next = None;
+                    child = slot.tree.next;
+                    slot.tree.parent = None;
+                    slot.tree.prev = None;
+                    slot.tree.next = None;
                 }
             }
         }
+        if let Some(parent) = node.parent
+            && parent.space == link.space
+        {
+            self.unlink_if_alone(parent);
+        }
         if let Some(id) = held {
-            self.release(id, released);
+            self.objects.release(id, released);
         }
     }
+}
 
+impl<A: Allocator> Objects<A> {
     fn retain(&mut self, cap: &Capability) {
         if let Some(id) = cap.id()
             && let Some(entry) = self.entry_mut(id)
@@ -1223,11 +1357,11 @@ impl<A: Allocator + Clone> Capabilities<A> {
             if entry.caps > 0 || entry.children > 0 {
                 return;
             }
-            let record = &mut self.objects[id.index as usize];
+            let record = &mut self.records[id.index as usize];
             record.entry = None;
             record.generation = bump(record.generation);
-            record.next_free = self.free_object;
-            self.free_object = Some(id.index);
+            record.next_free = self.free;
+            self.free = Some(id.index);
             released(Released {
                 kind: entry.kind,
                 id,
@@ -1244,7 +1378,7 @@ impl<A: Allocator + Clone> Capabilities<A> {
     }
 
     fn entry(&self, id: ObjectId) -> Option<&Entry> {
-        let record = self.objects.get(id.index as usize)?;
+        let record = self.records.get(id.index as usize)?;
         if record.generation != id.generation {
             return None;
         }
@@ -1252,42 +1386,48 @@ impl<A: Allocator + Clone> Capabilities<A> {
     }
 
     fn entry_mut(&mut self, id: ObjectId) -> Option<&mut Entry> {
-        let record = self.objects.get_mut(id.index as usize)?;
+        let record = self.records.get_mut(id.index as usize)?;
         if record.generation != id.generation {
             return None;
         }
         record.entry.as_mut()
     }
 
-    /// Records on the free list and spare capacity.
-    fn free_records(&self) -> usize {
-        let mut free = self.objects.capacity() - self.objects.len();
-        let mut at = self.free_object;
+    /// Makes room for `count` more objects, counting the records on the
+    /// free list and the spare capacity, so that as many calls to
+    /// [`Objects::insert`] cannot fail.
+    fn reserve(&mut self, count: usize) -> Result<(), CapError> {
+        let mut free = self.records.capacity() - self.records.len();
+        let mut at = self.free;
         while let Some(index) = at {
             free += 1;
-            at = self.objects[index as usize].next_free;
+            at = self.records[index as usize].next_free;
         }
-        free
+        if free < count {
+            self.records.try_reserve(count - free).map_err(|_| CapError::NoMemory)?;
+        }
+        Ok(())
     }
 
-    fn new_object(&mut self, entry: Entry) -> Result<ObjectId, CapError> {
-        let index = match self.free_object {
+    /// A new object with `entry`, in a free record if there is one.
+    fn insert(&mut self, entry: Entry) -> Result<ObjectId, CapError> {
+        let index = match self.free {
             Some(index) => {
-                let record = &mut self.objects[index as usize];
-                self.free_object = record.next_free.take();
+                let record = &mut self.records[index as usize];
+                self.free = record.next_free.take();
                 record.entry = Some(entry);
                 index
             }
             None => {
-                let index = u32::try_from(self.objects.len()).map_err(|_| CapError::NoMemory)?;
-                self.objects.try_reserve(1).map_err(|_| CapError::NoMemory)?;
+                let index = u32::try_from(self.records.len()).map_err(|_| CapError::NoMemory)?;
+                self.records.try_reserve(1).map_err(|_| CapError::NoMemory)?;
                 let record = Record { generation: 1, entry: Some(entry), next_free: None };
                 // Cannot fail: the capacity was reserved.
-                let _ = self.objects.push_within_capacity(record);
+                let _ = self.records.push_within_capacity(record);
                 index
             }
         };
-        Ok(ObjectId { index, generation: self.objects[index as usize].generation })
+        Ok(ObjectId { index, generation: self.records[index as usize].generation })
     }
 
     /// Whether `cap` names an object retyped from the memory `parent`
@@ -1306,7 +1446,7 @@ impl<A: Allocator + Clone> Capabilities<A> {
         // Every object on the way stays while something retyped from it
         // does; the bound only guards a corrupt store against a cycle.
         let mut origin = self.entry(id).and_then(|entry| entry.origin);
-        for _ in 0..self.objects.len() {
+        for _ in 0..self.records.len() {
             match origin {
                 Some(above) if above == memory => return true,
                 Some(above) => origin = self.entry(above).and_then(|entry| entry.origin),

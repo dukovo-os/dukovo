@@ -390,6 +390,45 @@ fn slot_flags_stay_with_the_slot() {
 }
 
 #[test]
+fn the_linked_bit_says_which_slots_have_relatives() {
+    let mut caps = store();
+    let a = caps.create_space(4).unwrap();
+    let b = caps.create_space(2).unwrap();
+    // A new object's capability has no relatives: deleting or moving it
+    // touches no other slot.
+    caps.create(at(a, 0), ObjectKind::Endpoint).unwrap();
+    assert_eq!(caps.is_linked(at(a, 0)), Ok(false));
+    caps.move_cap(at(a, 0), at(a, 3)).unwrap();
+    assert_eq!(caps.is_linked(at(a, 3)), Ok(false));
+    caps.move_cap(at(a, 3), at(a, 0)).unwrap();
+    // A copy links both; deleting it in the same space unlinks the parent.
+    caps.derive(at(a, 0), at(a, 1), Derivation::COPY).unwrap();
+    assert_eq!(caps.is_linked(at(a, 0)), Ok(true));
+    assert_eq!(caps.is_linked(at(a, 1)), Ok(true));
+    // A move carries the bit, and the links.
+    caps.move_cap(at(a, 1), at(a, 2)).unwrap();
+    assert_eq!(caps.is_linked(at(a, 2)), Ok(true));
+    assert_eq!(caps.parent(at(a, 2)), Ok(Some(at(a, 0))));
+    caps.delete(at(a, 2), &mut |_| {}).unwrap();
+    assert_eq!(caps.is_linked(at(a, 0)), Ok(false));
+    // A copy in another space leaves the parent marked when it goes: its
+    // space's lock is not the one a delete there holds. That only sends
+    // the next delete or move of the parent the slow way.
+    caps.derive(at(a, 0), at(b, 0), Derivation::COPY).unwrap();
+    caps.delete(at(b, 0), &mut |_| {}).unwrap();
+    assert_eq!(caps.is_linked(at(a, 0)), Ok(true));
+    assert_eq!(caps.parent(at(a, 0)), Ok(None));
+    caps.audit().unwrap();
+    // A revoke that leaves the capability with no relatives unlinks it.
+    caps.derive(at(a, 0), at(b, 0), Derivation::COPY).unwrap();
+    caps.derive(at(b, 0), at(a, 1), Derivation::COPY).unwrap();
+    assert_eq!(caps.revoke(at(a, 0), usize::MAX, &mut |_| {}), Ok(Progress::Done));
+    assert_eq!(caps.is_linked(at(a, 0)), Ok(false));
+    assert_eq!(caps.is_linked(at(a, 1)), Err(CapError::Empty));
+    caps.audit().unwrap();
+}
+
+#[test]
 fn a_cached_capability_leaving_its_slot_makes_the_store_stale() {
     let mut caps = store();
     let a = caps.create_space(4).unwrap();
@@ -573,6 +612,8 @@ struct Node {
     cap: Capability,
     parent: Option<(u32, u32)>,
     depth: u8,
+    /// The store's `linked` bit, which the model keeps by the same rules.
+    linked: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -639,7 +680,10 @@ impl Model {
             }
         }
         let depth = parent.map_or(0, |p| self.nodes[&p].depth + 1);
-        self.nodes.insert(at, Node { cap, parent, depth });
+        if let Some(parent) = parent {
+            self.nodes.get_mut(&parent).unwrap().linked = true;
+        }
+        self.nodes.insert(at, Node { cap, parent, depth, linked: parent.is_some() });
         if let Some(id) = cap.id() {
             self.objects.entry(id).or_insert(Obj {
                 caps: 0,
@@ -657,6 +701,13 @@ impl Model {
         for child in self.children(at) {
             self.nodes.get_mut(&child).unwrap().parent = node.parent;
         }
+        // A parent in the same space left with no relatives is unlinked;
+        // one in another space keeps its bit.
+        if let Some(parent) = node.parent
+            && parent.0 == at.0
+        {
+            self.unlink_if_alone(parent);
+        }
         let Some(mut id) = node.cap.id() else { return };
         self.objects.get_mut(&id).unwrap().caps -= 1;
         loop {
@@ -673,6 +724,12 @@ impl Model {
                 parent.watermark = 0;
             }
             id = origin;
+        }
+    }
+
+    fn unlink_if_alone(&mut self, at: (u32, u32)) {
+        if self.nodes[&at].parent.is_none() && self.children(at).is_empty() {
+            self.nodes.get_mut(&at).unwrap().linked = false;
         }
     }
 
@@ -953,6 +1010,7 @@ impl Run {
                     for node in below {
                         model.remove(node);
                     }
+                    model.unlink_if_alone(at);
                 }
                 result.is_ok()
             }
@@ -984,6 +1042,7 @@ impl Run {
                         assert_eq!(self.caps.get(at), Ok(node.cap));
                         assert_eq!(self.caps.parent(at), Ok(node.parent.map(|p| self.at(p))));
                         assert_eq!(self.caps.depth(at), Ok(node.depth));
+                        assert_eq!(self.caps.is_linked(at), Ok(node.linked), "{at}");
                     }
                 }
             }
