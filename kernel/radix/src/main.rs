@@ -230,7 +230,7 @@ pub extern "Rust" fn radix_kernel_main(mut params: BootParams) -> ! {
         Arch::set_breakpoint_handler(kdb::on_breakpoint);
     }
     Arch::enable_interrupts();
-    // With interrupts on: the store's lock is a mutex.
+    // With interrupts on: the store's locks are mutexes.
     caps::init();
     user::init();
     fs::init();

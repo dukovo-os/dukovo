@@ -810,7 +810,8 @@ _target/userspace/_).
 		Boot 4 CPUs with *selftest=caps*, the capability store's test
 		suite: no capability can be forged or have its rights widened,
 		revokes reach everything derived even while 3 other CPUs keep
-		deriving, and nothing leaks.
+		deriving, every kind of operation on all 4 CPUs at once keeps the
+		store whole, and nothing leaks. The lock-order checker is on.
 
 	*fpu*
 		Boot 4 CPUs with *selftest=fpu*: three threads per CPU fill the

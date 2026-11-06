@@ -25,7 +25,12 @@
 //!    while it runs; derivation depth is bounded;
 //! 6. random operations, with the store's full audit in between;
 //! 7. all CPUs at once: the other CPUs keep deriving from a tree while
-//!    the boot CPU revokes it, and nothing they made survives.
+//!    the boot CPU revokes it, and nothing they made survives;
+//! 8. every operation on every CPU: in rounds, all CPUs make random
+//!    operations of every kind on spaces they share and spaces of their
+//!    own, which they destroy and make again, so that the store's fast
+//!    and slow paths meet in one space and across spaces (ADR 0369); the
+//!    store's audit runs between rounds.
 //!
 //! Then it checks that the store, the heap and the frame allocator are as
 //! they were. It reports `selftest caps: passed` with the counts.
@@ -40,7 +45,7 @@ use radix_hal::{CpuLocal, MAX_CPUS, Smp, Timer};
 use radix_klog::{error, info};
 use radix_mm::{FRAMES, HEAP, Owner};
 
-use crate::caps::{self, Locked};
+use crate::caps::{self, Store};
 use crate::{Arch, work};
 
 /// What went wrong, and the error the store gave if that was the surprise.
@@ -64,6 +69,10 @@ struct Tally {
     /// Derivations tried by other CPUs during the revoke, those refused
     /// as revoking, the CPUs, and the revoke's steps.
     concurrent: (u64, u64, usize, u64),
+    /// Operations all CPUs made in the stress rounds, and how many the
+    /// store refused.
+    stress: u64,
+    stress_refused: u64,
 }
 
 fn fail<T>(what: &'static str) -> Check<T> {
@@ -74,9 +83,12 @@ fn ensure(condition: bool, what: &'static str) -> Check {
     if condition { Ok(()) } else { fail(what) }
 }
 
-/// Runs `f` on the store with its lock held.
-fn op<R>(f: impl FnOnce(&mut Locked) -> Result<R, CapError>) -> Result<R, CapError> {
-    caps::with(f).and_then(|result| result)
+/// Runs `f` on the store, whose methods take the locks they need, then
+/// finishes what it released.
+fn op<R>(f: impl FnOnce(&Store) -> Result<R, CapError>) -> Result<R, CapError> {
+    let result = caps::store().and_then(f);
+    caps::finish();
+    result
 }
 
 fn ok<T>(result: Result<T, CapError>, what: &'static str) -> Check<T> {
@@ -101,7 +113,7 @@ fn refused<T>(
 }
 
 fn audit() -> Check {
-    match caps::with(|store| store.audit()) {
+    match caps::store().map(Store::audit) {
         Ok(Ok(_)) => Ok(()),
         Ok(Err(inconsistency)) => {
             error!("selftest caps: the audit found: {inconsistency}");
@@ -146,12 +158,14 @@ impl Random {
 /// Runs the self-test.
 pub fn run() {
     info!(
-        "selftest caps: forging, widening, badges, sealing, ranges, memory, revocation, random and concurrent operations"
+        "selftest caps: forging, widening, badges, sealing, ranges, memory, revocation, random, \
+         concurrent and stress operations"
     );
-    let census = |store: &mut Locked| store.census();
+    let census = || caps::store().map(Store::census);
+    let blocks = || caps::store().map_or(0, Store::space_blocks);
     let frames = || FRAMES.owner_pages(Owner::Memory);
     HEAP.drain();
-    let before = (caps::with(census).ok(), frames(), HEAP.stats());
+    let before = (census().ok(), frames(), HEAP.stats(), blocks());
     let started = Arch::now_ns();
     let mut tally = Tally::default();
     let result = forging(&mut tally)
@@ -160,7 +174,8 @@ pub fn run() {
         .and_then(|()| memory(&mut tally))
         .and_then(|()| revocation(&mut tally))
         .and_then(|()| random(&mut tally))
-        .and_then(|()| concurrent(&mut tally));
+        .and_then(|()| concurrent(&mut tally))
+        .and_then(|()| stress(&mut tally));
     if let Err(failure) = result {
         match failure.got {
             Some(err) => error!("selftest caps: failed; {} (the store said: {err})", failure.what),
@@ -169,7 +184,7 @@ pub fn run() {
         return;
     }
     HEAP.drain();
-    let after = (caps::with(census).ok(), frames(), HEAP.stats());
+    let after = (census().ok(), frames(), HEAP.stats(), blocks());
     let millis = (Arch::now_ns() - started) / 1_000_000;
     if after.0 != before.0 {
         error!("selftest caps: failed; capabilities or objects are left in the store");
@@ -182,9 +197,11 @@ pub fn run() {
         );
         return;
     }
-    // The store keeps its two tables, which may have grown.
+    // The store keeps its tables, which may have grown, and each block of
+    // its space table made for the spaces the test made at once.
     let held = |stats: &radix_mm::HeapStats| stats.objects + stats.large_blocks;
-    if held(&after.2) > held(&before.2) + 2 {
+    let new_blocks = (after.3 - before.3) as u64;
+    if held(&after.2) > held(&before.2) + 2 + new_blocks {
         error!(
             "selftest caps: failed; the heap holds {} more objects than before",
             held(&after.2) - held(&before.2)
@@ -195,8 +212,13 @@ pub fn run() {
     info!(
         "selftest caps: {} forgeries and {} widenings refused; {} random operations ({} refused); \
          {tried} derivations by {cpus} other CPUs during a {steps}-step revoke ({revoking} refused \
-         as revoking)",
-        tally.forgeries, tally.widenings, tally.random, tally.random_refused
+         as revoking); {} operations on all CPUs at once in {STRESS_ROUNDS} rounds ({} refused)",
+        tally.forgeries,
+        tally.widenings,
+        tally.random,
+        tally.random_refused,
+        tally.stress,
+        tally.stress_refused
     );
     info!(
         "selftest caps: passed in {}.{:03} s; no capability was forged or widened, and nothing \
@@ -459,7 +481,8 @@ fn memory(tally: &mut Tally) -> Check {
         "the memory object's pages are not accounted",
     )?;
     let extent = ok(
-        caps::with(|store| store.object(memory))
+        caps::store()
+            .map(|store| store.object(memory))
             .ok()
             .flatten()
             .and_then(|info| info.extent)
@@ -529,7 +552,7 @@ fn memory(tally: &mut Tally) -> Check {
         if let Ok(cap) = get(at(a, slot))
             && let Some(id) = cap.id()
         {
-            let info = caps::with(|store| store.object(id)).ok().flatten();
+            let info = caps::store().map(|store| store.object(id)).ok().flatten();
             let Some(own) = info.and_then(|info| info.extent) else {
                 return fail("a retyped object has no extent");
             };
@@ -560,7 +583,7 @@ fn memory(tally: &mut Tally) -> Check {
     // Revoking the memory takes everything made from it, and it can be
     // used again from the start.
     ok(caps::revoke(at(a, 0)), "a revoke was refused")?;
-    let info = caps::with(|store| store.object(memory)).ok().flatten();
+    let info = caps::store().map(|store| store.object(memory)).ok().flatten();
     ensure(
         info.is_some_and(|info| info.children == 0 && info.watermark == 0),
         "revoked memory is still in use",
@@ -576,7 +599,7 @@ fn memory(tally: &mut Tally) -> Check {
         "a memory object's pages were not given back",
     )?;
     ensure(
-        caps::with(|store| store.object(memory)).ok().flatten().is_none(),
+        caps::store().map(|store| store.object(memory)).ok().flatten().is_none(),
         "a memory object outlived its capabilities",
     )?;
     audit()
@@ -614,7 +637,7 @@ fn revocation(tally: &mut Tally) -> Check {
     // A revoke in steps: in between, nothing below the top can be used to
     // derive, and the top cannot move.
     let top = at(spaces[0], 0);
-    let step = ok(op(|store| store.revoke(top, 20)), "a revoke was refused")?;
+    let step = ok(op(|store| store.revoke(top, 20, &mut caps::release)), "a revoke was refused")?;
     ensure(step == Progress::More, "a revoke of 250 capabilities finished in one step of 20")?;
     let n = &mut tally.widenings;
     for &(space, slot) in &placed[1..] {
@@ -698,49 +721,14 @@ fn random(tally: &mut Tally) -> Check {
         )
     };
     for done in 0..RANDOM_OPERATIONS {
-        let (a, b, c) = (pick(&mut random), pick(&mut random), pick(&mut random));
-        let roll = random.below(100);
-        let result = match roll {
-            0..8 => {
-                let kind = [
-                    ObjectKind::Endpoint,
-                    ObjectKind::Notification,
-                    ObjectKind::Process,
-                    ObjectKind::Thread,
-                ][random.below(4) as usize];
-                op(|store| store.create(a, kind)).map(drop)
-            }
-            8..10 => caps::create_memory(a, random.below(3) as u32).map(drop),
-            10..40 => {
-                let mask = Rights::from_bits_truncate(random.next() as u16)
-                    | if random.below(4) > 0 {
-                        Rights::COPY | Rights::TRANSFER
-                    } else {
-                        Rights::NONE
-                    };
-                let badge = (random.below(5) == 0).then(|| random.below(3));
-                derive(a, b, Derivation { rights: mask, badge, range: None })
-            }
-            40..48 => op(|store| store.seal(a, b, c)),
-            48..54 => op(|store| store.unseal(a, b, c)),
-            54..62 => {
-                let kind = [ObjectKind::Frame, ObjectKind::Dma, ObjectKind::Memory]
-                    [random.below(3) as usize];
-                let (order, count) = (random.below(2) as u32, 1 + random.below(2) as u32);
-                op(|store| store.retype(a, kind, order, b, count))
-            }
-            62..76 => op(|store| store.move_cap(a, b)),
-            76..92 => caps::delete(a),
-            _ => caps::revoke(a).map(drop),
-        };
+        let (roll, made, result) = random_operation(&mut random, pick);
         tally.random += 1;
         if result.is_err() {
             tally.random_refused += 1;
         }
         // Whatever was made grants no more than what it was made from.
         if result.is_ok() && (10..62).contains(&roll) {
-            let made = if (40..54).contains(&roll) { c } else { b };
-            let pair = caps::with(|store| {
+            let pair = caps::store().map(|store| {
                 let parent = store.parent(made).ok().flatten()?;
                 Some((store.get(made).ok()?, store.get(parent).ok()?))
             });
@@ -762,6 +750,49 @@ fn random(tally: &mut Tally) -> Check {
         ok(caps::destroy_space(space), "a space could not be destroyed")?;
     }
     audit()
+}
+
+/// One random operation of any kind, on slots `pick` chooses: making an
+/// object or memory, deriving, sealing, unsealing, retyping, moving,
+/// deleting or revoking. Returns the roll that chose it, the slot it made
+/// a capability in (if it made one), and what the store said.
+fn random_operation(
+    random: &mut Random,
+    mut pick: impl FnMut(&mut Random) -> SlotRef,
+) -> (u64, SlotRef, Result<(), CapError>) {
+    let (a, b, c) = (pick(random), pick(random), pick(random));
+    let roll = random.below(100);
+    let result = match roll {
+        0..8 => {
+            let kind = [
+                ObjectKind::Endpoint,
+                ObjectKind::Notification,
+                ObjectKind::Process,
+                ObjectKind::Thread,
+            ][random.below(4) as usize];
+            op(|store| store.create(a, kind)).map(drop)
+        }
+        8..10 => caps::create_memory(a, random.below(3) as u32).map(drop),
+        10..40 => {
+            let mask = Rights::from_bits_truncate(random.next() as u16)
+                | if random.below(4) > 0 { Rights::COPY | Rights::TRANSFER } else { Rights::NONE };
+            let badge = (random.below(5) == 0).then(|| random.below(3));
+            derive(a, b, Derivation { rights: mask, badge, range: None })
+        }
+        40..48 => op(|store| store.seal(a, b, c)),
+        48..54 => op(|store| store.unseal(a, b, c)),
+        54..62 => {
+            let kind =
+                [ObjectKind::Frame, ObjectKind::Dma, ObjectKind::Memory][random.below(3) as usize];
+            let (order, count) = (random.below(2) as u32, 1 + random.below(2) as u32);
+            op(|store| store.retype(a, kind, order, b, count))
+        }
+        62..76 => op(|store| store.move_cap(a, b)),
+        76..92 => caps::delete(a),
+        _ => caps::revoke(a).map(drop),
+    };
+    let made = if (40..54).contains(&roll) { c } else { b };
+    (roll, made, result)
 }
 
 // ---- 7. All CPUs at once ----
@@ -891,4 +922,115 @@ fn concurrent_worker() {
         };
         OUTCOMES[outcome].fetch_add(1, Ordering::Relaxed);
     }
+}
+
+// ---- 8. Every operation on every CPU ----
+
+/// Rounds, with the audit after each.
+const STRESS_ROUNDS: u64 = 8;
+/// Operations each CPU makes in a round.
+const STRESS_OPERATIONS: u64 = 4_000;
+/// Spaces every CPU works in, and their size.
+const SHARED_SPACES: usize = 6;
+const SHARED_SLOTS: u32 = 48;
+/// The size of each CPU's own space, which it destroys and makes again
+/// every [`OWN_LIFE`] operations, with whatever links into it.
+const STRESS_OWN_SLOTS: u32 = 16;
+const OWN_LIFE: u64 = 500;
+
+/// The shared spaces, packed as in [`pack`].
+static SHARED: [AtomicU64; SHARED_SPACES] = [const { AtomicU64::new(0) }; SHARED_SPACES];
+/// The round under way, which seeds each CPU's operations.
+static ROUND: AtomicU64 = AtomicU64::new(0);
+/// Operations made, refused, and failed in a way they must not: naming a
+/// space or slot that should be there and was not, or a space that could
+/// not be made or destroyed.
+static STRESS_COUNTS: [AtomicU64; 3] = [const { AtomicU64::new(0) }; 3];
+
+fn stress(tally: &mut Tally) -> Check {
+    for shared in &SHARED {
+        shared.store(pack(space(SHARED_SLOTS)?), Ordering::Relaxed);
+    }
+    for count in &STRESS_COUNTS {
+        count.store(0, Ordering::Relaxed);
+    }
+    let me = Arch::current_cpu();
+    for round in 0..STRESS_ROUNDS {
+        ROUND.store(round, Ordering::Release);
+        work::on_all(me, stress_worker);
+        ensure(
+            STRESS_COUNTS[2].load(Ordering::Relaxed) == 0,
+            "an operation on all CPUs failed in a way it should not",
+        )?;
+        // Everyone has stopped: the store must be whole.
+        audit()?;
+    }
+    tally.stress = STRESS_COUNTS[0].load(Ordering::Relaxed);
+    tally.stress_refused = STRESS_COUNTS[1].load(Ordering::Relaxed);
+    for shared in &SHARED {
+        let space = unpack(shared.load(Ordering::Relaxed));
+        ok(caps::destroy_space(space), "a space could not be destroyed")?;
+    }
+    audit()
+}
+
+/// One CPU's round: random operations on the shared spaces and its own,
+/// three in four of them on a shared one, its own space destroyed and
+/// made again now and then.
+fn stress_worker() {
+    let me = Arch::current_cpu();
+    let shared = SHARED.each_ref().map(|packed| unpack(packed.load(Ordering::Relaxed)));
+    let round = ROUND.load(Ordering::Acquire);
+    let mut random = Random(0x5743_e55e ^ (round << 16) ^ me as u64);
+    let new_own = || caps::store().and_then(|store| store.create_space(STRESS_OWN_SLOTS));
+    let Ok(mut own) = new_own() else {
+        STRESS_COUNTS[2].fetch_add(1, Ordering::Relaxed);
+        return;
+    };
+    let (mut done, mut refused) = (0, 0);
+    for n in 0..STRESS_OPERATIONS {
+        if n % OWN_LIFE == OWN_LIFE - 1 {
+            let remade = caps::destroy_space(own).and_then(|()| new_own());
+            match remade {
+                Ok(space) => own = space,
+                Err(_) => {
+                    STRESS_COUNTS[2].fetch_add(1, Ordering::Relaxed);
+                    return;
+                }
+            }
+        }
+        let pick = |random: &mut Random| {
+            if random.below(4) == 0 {
+                at(own, random.below(u64::from(STRESS_OWN_SLOTS)) as u32)
+            } else {
+                let space = shared[random.below(SHARED_SPACES as u64) as usize];
+                at(space, random.below(u64::from(SHARED_SLOTS)) as u32)
+            }
+        };
+        let (roll, made, result) = random_operation(&mut random, pick);
+        done += 1;
+        // A retype of two into a space's last slot runs past its end.
+        let size = if made.space == own { STRESS_OWN_SLOTS } else { SHARED_SLOTS };
+        let past_the_end = (54..62).contains(&roll) && made.slot + 1 == size;
+        match result {
+            Ok(()) => {}
+            Err(CapError::NoSuchSlot) if past_the_end => refused += 1,
+            // Every space it names is live and every slot inside it.
+            Err(err @ (CapError::NoSuchSpace | CapError::NoSuchSlot)) => {
+                if STRESS_COUNTS[2].fetch_add(1, Ordering::Relaxed) == 0 {
+                    error!(
+                        "selftest caps: on cpu {me}, operation {roll} (made in slot {} of space \
+                         {}) said: {err}",
+                        made.slot, made.space.index
+                    );
+                }
+            }
+            Err(_) => refused += 1,
+        }
+    }
+    if caps::destroy_space(own).is_err() {
+        STRESS_COUNTS[2].fetch_add(1, Ordering::Relaxed);
+    }
+    STRESS_COUNTS[0].fetch_add(done, Ordering::Relaxed);
+    STRESS_COUNTS[1].fetch_add(refused, Ordering::Relaxed);
 }

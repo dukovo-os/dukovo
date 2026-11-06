@@ -2005,10 +2005,10 @@ pub const CASES: &[Case] = &[
     },
     Case {
         name: "caps",
-        about: "no capability can be forged or widened, and revokes win against 3 other CPUs",
+        about: "no capability can be forged or widened, revokes win against 3 other CPUs, and 4 CPUs at once keep the store whole",
         firmware: Firmware::Uefi,
         media: Media::Usb,
-        cmdline: "qemu-exit selftest=caps",
+        cmdline: "qemu-exit lockdep selftest=caps",
         cpus: 4,
         memory: "1G",
         reboot: false,
@@ -6207,6 +6207,7 @@ fn caps(vm: &mut Vm, case: &Case) -> Result<(), String> {
     vm.expect("selftest caps: ")?;
     vm.expect(" forgeries and ")?;
     vm.expect(" derivations by 3 other CPUs during a ")?;
+    vm.expect(" operations on all CPUs at once in 8 rounds (")?;
     selftest_passed(vm, "caps")?;
     vm.expect_exit(QEMU_EXIT_SUCCESS)
 }

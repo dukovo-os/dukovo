@@ -13,7 +13,7 @@ use crate::error::CapError;
 use crate::object::{KINDS, Object, ObjectId, ObjectKind, Target};
 use crate::rights::Rights;
 
-fn any_kind() -> ObjectKind {
+pub(crate) fn any_kind() -> ObjectKind {
     let index: usize = kani::any_where(|&n| n < KINDS);
     ObjectKind::ALL[index]
 }

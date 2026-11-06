@@ -1325,7 +1325,7 @@ pub fn oom() {
     );
     // The app's domain is made the way programs will get theirs: as a
     // kernel object behind a capability.
-    let Ok(space) = crate::caps::with(|store| store.create_space(4)).and_then(|made| made) else {
+    let Ok(space) = crate::caps::store().and_then(|store| store.create_space(4)) else {
         return outcome.fail(format_args!("could not make a capability space"));
     };
     let slot = SlotRef::new(space, 0);

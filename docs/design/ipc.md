@@ -199,7 +199,7 @@ message is an info word and up to eight data words:
 
 The kernel copies the words from the sender's saved registers straight
 into the receiver's: a register-only message never touches memory and
-never takes the capability store's lock. Whichever of sender and receiver
+never takes a lock of the capability store. Whichever of sender and receiver
 comes second hands the message over under the endpoint's lock and wakes
 the other; the first waits in the endpoint's queue of senders or
 receivers, first come first served. The receiver gets the sender's badge,
@@ -221,7 +221,8 @@ interrupt.
 
 **Capabilities in messages.** A message carries up to four capabilities,
 named by its first data words, when the sender's endpoint capability has
-the `grant` right. Under the store's lock they are copied (with the
+the `grant` right. Under the store's locks (`caps::with_all`: the tree
+lock, both spaces' and the object table's) they are copied (with the
 source's `copy` right) or moved into the first empty slots of the
 receiver's *receive window*, a range of slots each thread sets, and the
 receiver finds those slot numbers in place of the sender's. The transfer
@@ -229,9 +230,13 @@ is all or nothing. A copy across capability spaces needs the `transfer`
 right too (ADR 0023). A reply to a call may carry capabilities when the
 call came through a capability with `grant`.
 
-**Lock order.** The capability store, then an endpoint, then a thread's
-IPC state; never two of a kind. A receiver that sees a queued sender with
-capabilities retries with the store's lock taken first. No lock is held
+**Lock order.** The capability store's locks, then an endpoint, then a
+thread's IPC state; never two endpoints or two threads' states. The
+store's locks are mutexes, which may not be waited for under the
+endpoint's spin lock, so a transfer holds every store lock it needs,
+the object table's included, before it takes the endpoint's. A receiver
+that sees a queued sender with capabilities retries with the store's
+locks for both spaces taken first. No lock is held
 while a thread blocks.
 
 ## Notifications
@@ -544,11 +549,11 @@ whether to offer paravirtual EOI (ADR 0041).
 
 ## Known limits
 
-- Changes to the capability store all take its one lock, and taking
-  away a capability or object that some CPU found empties every CPU's
-  cache. Programs that change their capabilities all the time on many
-  CPUs at once would queue on the store's lock; a per-space store with
-  RCU over the slots is the fix if programs show it matters.
+- Each capability space has a lock of its own, and the derivation tree
+  and the object table one each (ADR 0369). Messages that carry
+  capabilities take the tree lock, so programs passing capabilities all
+  the time on many CPUs at once queue on it, and taking away a
+  capability or object that some CPU found empties every CPU's cache.
 - Rings charge their memory to a resource domain, and since Phase 6 so
   do the endpoints, notifications and processes a program makes with
   `process.create`. Queued messages, and the endpoints and notifications

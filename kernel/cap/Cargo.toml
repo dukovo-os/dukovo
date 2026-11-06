@@ -13,6 +13,11 @@ publish.workspace = true
 [lib]
 bench = false
 
+[dependencies]
+# The store's locks (ADR 0369): the kernel's own mutexes, which the
+# lock-order checker sees, and which spin on the host.
+radix-sync = { path = "../lib/sync" }
+
 [dev-dependencies]
 # Host-side property tests (ADR 0019). Without default features it needs
 # neither forking nor timeouts.

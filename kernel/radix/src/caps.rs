@@ -3,110 +3,90 @@
 
 //! The kernel's capability store.
 //!
-//! One [`Capabilities`] store (`radix-cap`) holds every capability space,
-//! behind one lock, which also guards the registry of the kernel objects
-//! the capabilities name (`user::objects`): the two change together
-//! ([`Locked`]). Its memory comes from the kernel heap. Memory objects
-//! take their pages from the frame allocator, owned by
-//! [`Owner::Memory`], and give them back when the store releases them.
+//! One [`Capabilities`] store (`radix-cap`) holds every capability space.
+//! Its memory comes from the kernel heap. Memory objects take their pages
+//! from the frame allocator, owned by [`Owner::Memory`], and give them
+//! back when the store releases them.
 //!
-//! The lock is a mutex, so a thread waiting for the store sleeps, and the
-//! store may allocate with `MaySleep` while holding it (the out-of-memory
-//! policy may then sleep too; it never needs the store). Revokes run in
-//! steps of [`REVOKE_STEP`] deletions and let go of the lock between
-//! steps, yielding the CPU, so other threads are not shut out for long.
+//! The store has its own locks (ADR 0369): one per capability space, a
+//! tree lock over the derivation tree's links and one over its object
+//! table. Work on one space's capabilities that follows no link of the
+//! tree (looking one up, making an object, deleting or moving a
+//! capability nothing was derived from) takes that space's lock alone
+//! ([`in_space`]), so programs in different spaces never wait for each
+//! other. Work that follows or changes a link (deriving, a delete or a
+//! move of a capability with relatives, a revoke) takes the tree lock and
+//! the spaces it names ([`with_tree`]). The locks are mutexes, so a
+//! thread waiting for one sleeps, and the store may allocate with
+//! `MaySleep` while holding them (the out-of-memory policy may then sleep
+//! too; it never needs the store). Revokes run in steps of
+//! [`REVOKE_STEP`] deletions and let go of the locks between steps,
+//! yielding the CPU, so other threads are not shut out for long.
+//!
+//! The registry of the kernel objects the capabilities name
+//! (`user::objects`) lives beside the store's object table, under the
+//! table's lock: an object is recorded in the hold that names it and
+//! leaves in the hold that releases it (ADR 0108). Lock order: the tree
+//! lock, the spaces' locks by increasing index, the object table's; then
+//! whatever an object takes when it closes ([`release`]).
 //!
 //! The store has a version number for the caches outside it: each CPU
 //! keeps the capabilities its system calls found, with the version the
-//! store had then (`user::objects`), and the version moves whenever a
-//! capability some CPU found leaves its slot (`Store::take_stale`), or an
-//! object some CPU found leaves the registry ([`mark_stale`]). Other
-//! changes, such as a capability put in an empty slot or one nobody
-//! looked up deleted, leave every cache as it is. So programs on
-//! different CPUs using their capabilities at once do not contend, and
-//! opening and closing files does not empty the caches.
+//! store had before the lookup (`user::objects`), and the version moves
+//! whenever a capability some CPU found leaves its slot, or an object
+//! some CPU found leaves the registry ([`mark_stale`]), before the lock
+//! that guarded it goes. Other changes, such as a capability put in an
+//! empty slot or one nobody looked up deleted, leave every cache as it
+//! is. So programs on different CPUs using their capabilities at once do
+//! not contend, and opening and closing files does not empty the caches.
+//!
+//! What the store releases is closed under its locks, but some of the
+//! work that follows waits until they have gone ([`finish`]): processes
+//! with no thread left are finished, removed files dropped, cards
+//! stopped and parents told.
 //!
 //! Resource domains (`domains`) are objects in the store too: a domain
 //! lives while a capability to it does, and goes when the last one is
 //! deleted or revoked.
 
 use core::fmt;
-use core::ops::{Deref, DerefMut};
-use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, Ordering};
 
 use radix_cap::{
-    CapError, Capabilities, Capability, MAX_DEPTH, MAX_SLOTS, ObjectId, ObjectKind, Progress,
-    Released, Rights, SlotRef, SpaceId,
+    CapError, Capabilities, Capability, Derivation, MAX_DEPTH, MAX_SLOTS, ObjectId, ObjectKind,
+    Progress, Released, Rights, SlotRef, SpaceId, SpaceView, TreeView,
 };
 use radix_klog::{error, info};
 use radix_mm::{FRAMES, Flags, HEAP, Kmalloc, Owner, PAGE_SHIFT};
-use radix_sync::Mutex;
+use radix_sync::Once;
 
 use crate::domains::{self, DomainError, DomainRef, Settings};
 use crate::user::objects::{self, Registry};
 
-/// The store's type in the kernel.
-pub type Store = Capabilities<Kmalloc>;
+/// The store's type in the kernel, with the registry beside its object
+/// table.
+pub type Store = Capabilities<Kmalloc, Registry>;
 
-/// What the store's lock guards: the store, and the registry of the
-/// objects it names, which changes only with it. It reads as the store;
-/// its own methods are the store's that may release objects, which then
-/// leave the registry ([`release`]).
-pub struct Locked {
-    pub store: Store,
-    pub registry: Registry,
-}
+/// One capability space, locked: the fast path's view ([`in_space`]).
+pub type Space<'v> = SpaceView<'v, Kmalloc, Registry>;
 
-impl Deref for Locked {
-    type Target = Store;
-
-    fn deref(&self) -> &Store {
-        &self.store
-    }
-}
-
-impl DerefMut for Locked {
-    fn deref_mut(&mut self) -> &mut Store {
-        &mut self.store
-    }
-}
-
-impl Locked {
-    /// [`Store::delete`].
-    pub fn delete(&mut self, at: SlotRef) -> Result<(), CapError> {
-        let Locked { store, registry } = self;
-        store.delete(at, &mut |released| release(registry, released))
-    }
-
-    /// [`Store::destroy_space`].
-    pub fn destroy_space(&mut self, space: SpaceId) -> Result<(), CapError> {
-        let Locked { store, registry } = self;
-        store.destroy_space(space, &mut |released| release(registry, released))
-    }
-
-    /// [`Store::revoke`].
-    pub fn revoke(&mut self, at: SlotRef, budget: usize) -> Result<Progress, CapError> {
-        let Locked { store, registry } = self;
-        store.revoke(at, budget, &mut |released| release(registry, released))
-    }
-
-    /// [`Store::continue_revoke`].
-    pub fn continue_revoke(&mut self, at: SlotRef, budget: usize) -> Result<Progress, CapError> {
-        let Locked { store, registry } = self;
-        store.continue_revoke(at, budget, &mut |released| release(registry, released))
-    }
-}
+/// The derivation tree and the spaces named, locked: the slow path's
+/// view ([`with_tree`]).
+pub type Tree<'v> = TreeView<'v, Kmalloc, Registry>;
 
 /// The store, once [`init`] has run.
-static STORE: Mutex<Option<Locked>> = Mutex::new(None);
+static STORE: Once<Store> = Once::new();
 
-/// Capabilities a revoke deletes before it lets go of the lock.
+/// Capabilities a revoke deletes before it lets go of the locks.
 pub const REVOKE_STEP: usize = 64;
 
 /// Sets up the store and reports it.
 pub fn init() {
-    let store = Capabilities::new(HEAP.with(Flags::MAY_SLEEP));
-    *STORE.lock() = Some(Locked { store, registry: Registry::new() });
+    let store = match Capabilities::new(HEAP.with(Flags::MAY_SLEEP), Registry::new()) {
+        Ok(store) => store,
+        Err(err) => panic!("no memory for the capability store at boot: {err}"),
+    };
+    let _ = STORE.set(store);
     info!(
         "Capabilities: ready; {} object kinds, {} rights, spaces of up to {MAX_SLOTS} slots, \
          derivations up to {MAX_DEPTH} deep",
@@ -115,115 +95,135 @@ pub fn init() {
     );
 }
 
-/// Runs `f` on the store with its lock held, if the store is set up.
-/// Processes that `f` released and that have no thread left to finish
-/// them are finished before the lock goes (`user::process`); files it
-/// released are dropped after (`fs::drop_deferred`), and cards it released
-/// stopped (`user::device::close_deferred`).
-pub fn with<R>(f: impl FnOnce(&mut Locked) -> R) -> Result<R, CapError> {
-    let mut store = STORE.lock();
-    let result = match store.as_mut() {
-        Some(store) => {
-            let result = f(store);
-            crate::user::process::finish_pending(store);
-            Ok(result)
-        }
-        None => Err(CapError::NoSuchSpace),
-    };
-    // If `f` took away something a CPU has cached, every cache is stale
-    // from now on: the version moves before the lock goes, so that whoever
-    // sees the change through the store sees the new version too.
-    let stale = store.as_mut().is_some_and(|locked| locked.store.take_stale());
-    // The mark is set and cleared only with the lock held, so a load and
-    // a store do (a swap would be a locked instruction on every change).
-    let marked = STALE.load(Ordering::Relaxed);
-    if marked {
-        STALE.store(false, Ordering::Relaxed);
-    }
-    if stale | marked {
-        VERSION.fetch_add(1, Ordering::Release);
-    }
-    drop(store);
-    // Files the change released go now, with the lock gone: the last of
-    // a removed file frees its space on the disk.
-    crate::fs::drop_deferred();
-    // Cards whose capabilities it released stop now: that takes the
-    // network stack's and address spaces' locks (`user::device`).
-    crate::user::device::close_deferred();
-    // Processes it finished tell their parents now: that may send
-    // signals, which may end more processes (Phase 8).
-    crate::user::process::report_finished();
+/// The store, if it is set up. Each of its methods takes the locks it
+/// needs and lets them go again; one that may release objects takes
+/// [`release`] to hear of them, and its caller then calls [`finish`].
+pub fn store() -> Result<&'static Store, CapError> {
+    STORE.get().ok_or(CapError::NoSuchSpace)
+}
+
+/// Runs `f` with the lock of `space` held, if the space exists: the fast
+/// path, for everything that follows no link of the derivation tree. What
+/// `f` releases ([`release`]) is finished once the lock has gone.
+pub fn in_space<R>(space: SpaceId, f: impl FnOnce(&mut Space<'_>) -> R) -> Result<R, CapError> {
+    let result = store()?.in_space(space, f);
+    finish();
     result
 }
 
-/// Moves, under the store's lock, on every change that takes away
-/// something a CPU's cache may hold.
-static VERSION: AtomicU64 = AtomicU64::new(0);
+/// Runs `f` with the tree lock and the locks of `spaces` held (at most
+/// four): the slow path, for everything that follows or changes a link.
+/// What `f` releases ([`release`]) is finished once the locks have gone.
+pub fn with_tree<R>(spaces: &[SpaceId], f: impl FnOnce(&mut Tree<'_>) -> R) -> Result<R, CapError> {
+    let result = store()?.with_tree(spaces, f);
+    finish();
+    Ok(result)
+}
 
-/// Something a cache outside the store may hold went in the change under
-/// way ([`mark_stale`]).
-static STALE: AtomicBool = AtomicBool::new(false);
+/// [`with_tree`], with the object table's lock held too: for a caller
+/// that takes a spin lock inside `f` and works on the store under it
+/// (`user::ipc`, which moves a message's capabilities with an endpoint
+/// locked). `f` must release nothing while it holds a spin lock.
+pub fn with_all<R>(spaces: &[SpaceId], f: impl FnOnce(&mut Tree<'_>) -> R) -> Result<R, CapError> {
+    let result = store()?.with_all(spaces, f);
+    finish();
+    Ok(result)
+}
+
+/// What follows a change of the store once its locks have gone.
+/// Processes it released that have no thread left to finish them are
+/// finished (`user::process`); files it released are dropped
+/// (`fs::drop_deferred`), the last of a removed file freeing its space on
+/// the disk; cards whose capabilities it released are stopped, which
+/// takes the network stack's and address spaces' locks
+/// (`user::device::close_deferred`); and the parents of the processes it
+/// finished are told, which may send signals that end more processes
+/// (Phase 8). Whatever queues such work says so with [`queued`], so a
+/// change that released nothing pays one load here.
+#[inline]
+pub fn finish() {
+    if QUEUED.load(Ordering::Relaxed) {
+        finish_queued();
+    }
+}
+
+/// Set when work waits for [`finish`]: a process to finish, a file to
+/// drop, a card to stop or a parent to tell.
+static QUEUED: AtomicBool = AtomicBool::new(false);
+
+/// Says that work waits for [`finish`]. Called after the work is queued,
+/// so that whoever sees this sees the work too.
+pub fn queued() {
+    QUEUED.store(true, Ordering::Release);
+}
+
+/// [`finish`]'s work, once [`queued`] said there is some. The flag is
+/// taken down first: work queued meanwhile puts it up again for the next
+/// call, so none is left behind. Each step looks at its own flag too.
+#[cold]
+#[inline(never)]
+fn finish_queued() {
+    if !QUEUED.swap(false, Ordering::AcqRel) {
+        return;
+    }
+    crate::user::process::finish_pending();
+    crate::fs::drop_deferred();
+    crate::user::device::close_deferred();
+    crate::user::process::report_finished();
+}
 
 /// The store's version: it moves when a capability a CPU found leaves its
 /// slot, and when an object a CPU found leaves the object registry
-/// (`user::objects`), which changes only under the store's lock. A version
-/// read with that lock held stays current until it goes.
+/// (`user::objects`), before the lock that guarded either goes. Read
+/// before a lookup, it says the lookup's answer still holds while it
+/// stays the same.
 pub fn version() -> u64 {
-    VERSION.load(Ordering::Acquire)
+    STORE.get().map_or(0, Store::version)
 }
 
-/// Says that the change under way, with the store's lock held, took away
-/// something a CPU may have cached outside the store (an object the
-/// registry handed out): the version moves before the lock goes.
+/// Says that a change took away something a CPU may have cached outside
+/// the store (an object the registry handed out): the version moves
+/// now, before the lock that guarded it goes.
 pub fn mark_stale() {
-    STALE.store(true, Ordering::Relaxed);
+    if let Some(store) = STORE.get() {
+        store.bump_version();
+    }
 }
 
-/// The capability in `at`, as [`Store::get`] gives it, under the store's
-/// lock: for lookups too rare to be worth a place in a CPU's cache. The
-/// system calls' lookups go through `user::objects`, which keeps them.
+/// The capability in `at`, as [`Store::get`] gives it: for lookups too
+/// rare to be worth a place in a CPU's cache. The system calls' lookups
+/// go through `user::objects`, which keeps them.
 pub fn get(at: SlotRef) -> Result<Capability, CapError> {
-    STORE.lock().as_ref().ok_or(CapError::NoSuchSpace)?.get(at)
+    store()?.get(at)
 }
 
 /// The capability in `at`, for a CPU's cache to keep (`user::objects`):
 /// from now on the version moves once it leaves its slot
-/// (`Store::get_to_cache`). With it come what `also` finds, with the
-/// store's lock still held, and the version then, which cannot move while
-/// the lock is held.
+/// ([`Space::get_to_cache`]). With it come what `also` finds in the
+/// registry, with the space's lock still held, and the version read
+/// before the lookup: any change to the slot after the lookup moves it
+/// past that.
 pub fn get_to_cache<R>(
     at: SlotRef,
     also: impl FnOnce(&Capability, &mut Registry) -> R,
 ) -> Result<(Capability, R, u64), CapError> {
-    let mut store = STORE.lock();
-    let Locked { store, registry } = store.as_mut().ok_or(CapError::NoSuchSpace)?;
-    let cap = store.get_to_cache(at)?;
-    let found = also(&cap, registry);
-    Ok((cap, found, VERSION.load(Ordering::Relaxed)))
-}
-
-/// Like [`with`], but gives up instead of waiting for the lock: for `kdb`,
-/// which may have stopped the CPU that holds it.
-pub fn try_with<R>(f: impl FnOnce(&Locked) -> R) -> Option<R> {
-    let store = STORE.try_lock()?;
-    store.as_ref().map(f)
-}
-
-/// Runs `f` on the object registry, with the store's lock held, if the
-/// store is set up: to read it, as the registry changes only through
-/// [`with`].
-pub fn with_registry<R>(f: impl FnOnce(&Registry) -> R) -> Option<R> {
-    let store = STORE.lock();
-    store.as_ref().map(|locked| f(&locked.registry))
+    let store = store()?;
+    let version = store.version();
+    store.in_space(at.space, |space| {
+        let cap = space.get_to_cache(at)?;
+        let found = space.with_registry(|registry| also(&cap, registry));
+        Ok((cap, found, version))
+    })?
 }
 
 /// Writes what the store holds, by kind, for `kdb`. Gives up if another
-/// CPU holds the store's lock.
+/// CPU holds one of the store's locks or the registry's.
 pub fn write_census(line: &mut dyn FnMut(fmt::Arguments<'_>)) {
-    let Some((census, registered)) =
-        try_with(|locked| (locked.census(), objects::census(&locked.registry)))
-    else {
-        line(format_args!("Capabilities: the store is not set up, or another CPU holds its lock"));
+    let counted = STORE
+        .get()
+        .and_then(|store| Some((store.try_census()?, store.try_with_registry(objects::census)?)));
+    let Some((census, registered)) = counted else {
+        line(format_args!("Capabilities: the store is not set up, or another CPU holds a lock"));
         return;
     };
     line(format_args!(
@@ -254,10 +254,12 @@ pub fn write_census(line: &mut dyn FnMut(fmt::Arguments<'_>)) {
     }
 }
 
-/// Gives back what the store released: kernel objects leave `registry`
-/// and close (`user::objects`), memory objects' pages return to the frame
-/// allocator, and domains leave the domain table.
-fn release(registry: &mut Registry, released: Released) {
+/// Gives back what the store released, with the store's locks held, the
+/// object table's among them: kernel objects leave `registry` and close
+/// (`user::objects`), memory objects' pages return to the frame
+/// allocator, and domains leave the domain table. Every operation that
+/// may release objects takes this.
+pub fn release(released: Released, registry: &mut Registry) {
     if released.kind == ObjectKind::ResourceDomain {
         domains::released(released.id);
     }
@@ -276,8 +278,7 @@ fn release(registry: &mut Registry, released: Released) {
 pub fn create_memory(at: SlotRef, order: u32) -> Result<ObjectId, CapError> {
     let phys =
         FRAMES.alloc(order, Flags::MAY_SLEEP, Owner::Memory).map_err(|_| CapError::NoMemory)?;
-    let made =
-        with(|store| store.create_memory(at, phys >> PAGE_SHIFT, 1 << order)).and_then(|r| r);
+    let made = store().and_then(|store| store.create_memory(at, phys >> PAGE_SHIFT, 1 << order));
     if made.is_err() {
         let _ = FRAMES.free(phys, order, Owner::Memory);
     }
@@ -285,63 +286,66 @@ pub fn create_memory(at: SlotRef, order: u32) -> Result<ObjectId, CapError> {
 }
 
 /// Makes a resource domain under `parent` and puts its original capability
-/// in `at`.
+/// in `at`. The domain is made before its capability is placed, so nobody
+/// finds the capability without it.
 pub fn create_domain(
     at: SlotRef,
     parent: &DomainRef,
     name: &str,
     settings: Settings,
 ) -> Result<DomainRef, CapError> {
-    with(|store| {
-        let id = store.create(at, ObjectKind::ResourceDomain)?;
-        match domains::create(name, parent, settings, Some(id)) {
-            Ok(domain) => Ok(domain),
-            Err(err) => {
-                // The capability goes again; nothing was made.
-                let _ = store.store.delete(at, &mut |_| {});
-                Err(match err {
-                    DomainError::NoMemory => CapError::NoMemory,
-                    DomainError::InvalidArgument | DomainError::OverLimit => {
-                        CapError::InvalidArgument
-                    }
-                })
-            }
-        }
-    })?
+    let kind = ObjectKind::ResourceDomain;
+    let record = |id, _: &mut Registry| {
+        domains::create(name, parent, settings, Some(id)).map_err(|err| match err {
+            DomainError::NoMemory => CapError::NoMemory,
+            DomainError::InvalidArgument | DomainError::OverLimit => CapError::InvalidArgument,
+        })
+    };
+    let made = in_space(at.space, |space| space.create_recorded(at, kind, kind.rights(), record))??;
+    Ok(made.1)
 }
 
 /// The domain the capability in `at` names, if it has `needs` on it.
 pub fn domain_at(at: SlotRef, needs: Rights) -> Result<DomainRef, CapError> {
-    let cap = STORE.lock().as_ref().ok_or(CapError::NoSuchSpace)?.lookup(
-        at,
-        ObjectKind::ResourceDomain,
-        needs,
-    )?;
+    let cap = store()?.lookup(at, ObjectKind::ResourceDomain, needs)?;
     cap.id().and_then(domains::by_object).ok_or(CapError::Empty)
+}
+
+/// Puts in `to` a capability derived from the one in `from`
+/// ([`Store::derive`]).
+pub fn derive(from: SlotRef, to: SlotRef, how: Derivation) -> Result<(), CapError> {
+    store()?.derive(from, to, how)
+}
+
+/// Moves the capability in `from` to `to` ([`Store::move_cap`]).
+pub fn move_cap(from: SlotRef, to: SlotRef) -> Result<(), CapError> {
+    store()?.move_cap(from, to)
 }
 
 /// Deletes the capability in `at`.
 pub fn delete(at: SlotRef) -> Result<(), CapError> {
-    with(|store| store.delete(at))?
+    let deleted = store()?.delete(at, &mut release);
+    finish();
+    deleted
 }
 
 /// Revokes everything derived from the capability in `at`, in steps of
-/// [`REVOKE_STEP`] with the lock let go in between. Returns how many
+/// [`REVOKE_STEP`] with the locks let go in between. Returns how many
 /// steps it took. A step after the first goes on only while the slot
 /// keeps its revoke mark, so a capability another thread puts in the
 /// slot meanwhile keeps its descendants.
 pub fn revoke(at: SlotRef) -> Result<u32, CapError> {
+    let store = store()?;
     let mut steps = 0;
     loop {
         steps += 1;
-        let step = |store: &mut Locked| {
-            if steps == 1 {
-                store.revoke(at, REVOKE_STEP)
-            } else {
-                store.continue_revoke(at, REVOKE_STEP)
-            }
+        let step = if steps == 1 {
+            store.revoke(at, REVOKE_STEP, &mut release)
+        } else {
+            store.continue_revoke(at, REVOKE_STEP, &mut release)
         };
-        match with(step)?? {
+        finish();
+        match step? {
             Progress::Done => return Ok(steps),
             Progress::More => crate::sched::yield_now(),
         }
@@ -350,5 +354,7 @@ pub fn revoke(at: SlotRef) -> Result<u32, CapError> {
 
 /// Destroys a capability space and everything in it.
 pub fn destroy_space(space: SpaceId) -> Result<(), CapError> {
-    with(|store| store.destroy_space(space))?
+    let destroyed = store()?.destroy_space(space, &mut release);
+    finish();
+    destroyed
 }

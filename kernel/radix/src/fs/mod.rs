@@ -32,9 +32,10 @@
 //! A file object's last reference can be the last one to a FAT file
 //! removed while open, whose clusters are freed when it goes, which
 //! reads and writes the disk. The capability store releases objects with
-//! its lock held, so released file objects are only queued there
-//! ([`defer_drop`]) and dropped once the lock has gone ([`drop_deferred`],
-//! from `caps::with`): no disk is ever waited for with the store locked.
+//! its locks held, so released file objects are only queued there
+//! ([`defer_drop`]) and dropped once the locks have gone
+//! ([`drop_deferred`], from `caps::finish`): no disk is ever waited for
+//! with any of the store's locks held.
 
 pub mod capture;
 pub mod devfs;
@@ -517,8 +518,8 @@ static DROPPED: SpinLock<Option<FileRef>> = SpinLock::new(None);
 /// need not take its lock to see that none does.
 static ANY_DROPPED: AtomicBool = AtomicBool::new(false);
 
-/// Lets go of a released object, with the store's lock held: at once if
-/// that can only free memory, or else queued until the lock has gone.
+/// Lets go of a released object, with the store's locks held: at once if
+/// that can only free memory, or else queued until the locks have gone.
 /// Only its node can be the last reference that goes: no mount is ever
 /// unmounted while a handle holds a place on it. A terminal's side, whose
 /// last description going may hang the terminal up and send signals, is
@@ -531,12 +532,14 @@ pub fn release(file: FileRef) {
     }
 }
 
-/// Queues a released object to be dropped once the store's lock has gone.
+/// Queues a released object to be dropped once the store's locks have
+/// gone.
 fn defer_drop(file: FileRef) {
     let mut head = DROPPED.lock();
     *file.next.lock() = head.take();
     *head = Some(file);
     ANY_DROPPED.store(true, Ordering::Release);
+    crate::caps::queued();
 }
 
 /// Drops the objects [`defer_drop`] queued. Called with no lock held.

@@ -55,6 +55,6 @@ pub use error::CapError;
 pub use object::{KINDS, Object, ObjectId, ObjectKind, Target};
 pub use rights::Rights;
 pub use store::{
-    Capabilities, Census, Extent, Inconsistency, MAX_DEPTH, MAX_RETYPE, MAX_SLOTS, ObjectInfo,
-    Progress, Released, SLOT_BYTES, SlotRef, SpaceId,
+    Capabilities, Census, Extent, Fast, Inconsistency, MAX_DEPTH, MAX_RETYPE, MAX_SLOTS,
+    ObjectInfo, Progress, Released, SLOT_BYTES, SlotRef, SpaceId, SpaceView, TreeView,
 };

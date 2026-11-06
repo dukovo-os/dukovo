@@ -36,9 +36,8 @@ use radix_sync::SpinLock;
 
 use super::memory::{Backing, SpaceObject, SpaceRef};
 use super::objects::{self, Object};
-use super::{Result, UserThread, cap_error, error};
+use super::{Result, UserThread, error};
 use crate::Arch;
-use crate::caps;
 use crate::domains::DomainRef;
 use crate::sched::{self, wait};
 
@@ -204,16 +203,11 @@ pub fn setup(user: &UserThread, space: u32, address: u64, entries: u32, to: u32)
     user_pages(address, pages).ok_or(Kernel::InvalidArgument.status(1))?;
     let ring = new(&space, layout)?;
     space.map(address, pages, &Backing::Ring(ring.clone()), 0, UserAccess::ReadWrite)?;
-    let made = caps::with(|store| -> Result<()> {
-        objects::reserve(store, 1).map_err(|_| error(Kernel::NoMemory))?;
-        let id =
-            store.create(SlotRef::new(user.cspace, to), ObjectKind::Ring).map_err(cap_error)?;
-        objects::insert(store, id, Object::Ring(ring.clone()))
-            .map_err(|_| error(Kernel::NoMemory))?;
-        Ok(())
-    })
-    .map_err(cap_error)
-    .and_then(|made| made);
+    let at = SlotRef::new(user.cspace, to);
+    let mut object = Some(Object::Ring(ring.clone()));
+    let made = objects::create(at, ObjectKind::Ring, ObjectKind::Ring.rights(), &mut object, None);
+    // What was not recorded goes now, with the store's locks gone.
+    drop(object);
     if let Err(err) = made {
         let _ = space.unmap(address, pages);
         return Err(err);
