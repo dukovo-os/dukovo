@@ -30,7 +30,8 @@ filesystem the
 disk or Radix cannot write (such as an NTFS that Windows hibernated
 with) is mounted read-only. A disk with partitions has each of them
 mounted, and an EFI system partition is left alone, as Windows, macOS
-and udisks leave it. A volume BitLocker locked is left for *unlock*(8),
+and udisks leave it. An install stick's DUKOVO_LIVE partition, with the
+signed release on it, is always mounted read-only (ADR 0308). A volume BitLocker locked is left for *unlock*(8),
 and the volume it unlocks, _/devices/_*name*-unlocked, is mounted as
 one plugged in (ADR 0240).
 

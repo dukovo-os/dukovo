@@ -130,6 +130,9 @@ disk.
 :  BIOS boot (EF02), GRUB's for a BIOS boot from a GPT
 |  dukovo-root
 :  Dukovo root (ADR 0137); on an MBR, Linux (0x83)
+|  dukovo-live
+:  Dukovo live (ADR 0308): an install stick's DUKOVO_LIVE, mounted
+   read-only; GPT only
 |  swap
 :  Linux swap (8200, 0x82)
 |  linux

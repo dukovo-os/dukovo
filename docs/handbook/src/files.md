@@ -68,8 +68,9 @@ without undoing your edits.
 
 ## Dukovo's root on a disk
 
-The image `./ob image` makes ends with a Dukovo root partition, the
-image's third, holding Btrfs with data compressed with zstd. Each part
+An installed system's disk, which the installer makes and
+`./ob image --installed` makes for a virtual machine, has a Dukovo root
+partition, its third, holding Btrfs with data compressed with zstd. Each part
 of the tree that changes is a subvolume of its own:
 
 | Subvolume | Mounted at |
@@ -82,9 +83,8 @@ of the tree that changes is a subvolume of its own:
 | `@shared` | `/shared` |
 | `@snapshots` | not mounted |
 
-When Dukovo boots from a disk it can see, a SATA, NVMe, virtio or USB
-disk (a USB stick the image was written to, since Phase 11b), Spark
-mounts these from it, and settings, files and everything else
+When Dukovo boots from a disk it can see that holds one, a SATA, NVMe,
+virtio or USB disk, Spark mounts these from it, and settings, files and everything else
 written there are kept from one boot to the next. `/processes/mounts`
 shows each with its disk:
 
@@ -93,11 +93,14 @@ sda5 /system btrfs ro label=dukovo-root
 sda5 /system/settings btrfs rw label=dukovo-root
 ```
 
-Booted from a CD, or from a disk with no Dukovo root partition,
-`/system` is the system the boot loader loaded and the rest is
-in memory: each boot starts afresh from the default settings, and
-`/applications`, `/users` and `/shared` start empty. An image for
-optical media (`./ob image --iso`) has no Dukovo root partition.
+Booted from the install stick (`./ob image`) or a CD
+(`./ob image --iso`), which run the live system, or from a disk with no
+Dukovo root partition, `/system` is the system the boot loader loaded
+and the rest is in memory: each boot starts afresh from the default
+settings, and `/applications`, `/users` and `/shared` start empty. The
+live system takes no disk's root and mounts none of the machine's
+disks; the stick's own DUKOVO_LIVE partition, with the signed release
+the installer installs, is mounted read-only.
 
 The partition's top, with every subvolume in it, is mounted in
 `/volumes` too, under the partition's name. `subvolume`(8) makes,

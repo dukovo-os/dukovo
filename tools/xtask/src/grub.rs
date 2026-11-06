@@ -87,10 +87,14 @@ pub const MODULES: &[&str] = &[
     "configfile",
     "video",
     "boot",
+    // The install stick's "Boot from first disk" (ADR 0308).
+    "chain",
 ];
 
-/// The modules a PC's BIOS needs more: its disks, and VESA's video.
-pub const PC_MODULES: &[&str] = &["biosdisk", "vbe"];
+/// The modules a PC's BIOS needs more: its disks, VESA's video, and the
+/// BIOS's disk numbers swapped, for the install stick's "Boot from first
+/// disk".
+pub const PC_MODULES: &[&str] = &["biosdisk", "vbe", "drivemap"];
 
 /// The modules UEFI needs more: the firmware's video.
 pub const EFI_MODULES: &[&str] = &["efi_gop", "efi_uga"];

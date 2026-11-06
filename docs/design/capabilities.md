@@ -341,6 +341,19 @@ The self-test's concurrent phase has every other CPU derive from random
 capabilities of a 4,096-capability tree while the boot CPU revokes it, and
 then checks that nothing they derived survived.
 
+**Finer locks (planned, ADR 0369).** The one lock is to be split: one
+lock per space for what its slots hold, and one tree lock for the links
+between slots, which cross spaces. A `linked` bit in each slot, set and
+cleared only with the slot's space locked, says the slot may have
+relatives. Creating a capability for a new object in an empty slot, and
+deleting or moving one whose bit is clear, take only the space's lock:
+they touch no link, and nobody can link the slot meanwhile, since that
+needs the same lock. Everything else takes the tree lock and then the
+locks of the spaces it changes, in increasing order; a revoke holds the
+tree lock through each turn and one space's lock at a time. Nobody waits
+for the tree lock holding a space's lock. `CapabilityLocks.tla` checks
+these rules (see *Verification*) before any kernel code changes.
+
 ## Verification
 
 **Unit tests** (`cargo test -p radix-cap`, run by `ob test unit`) cover
@@ -428,6 +441,28 @@ memory blocks themselves: those are checks on single capabilities, which
 the Kani proofs cover, and the property tests run them inside the store.
 It lets any object be retyped, a superset of what the store allows.
 
+**The model of the split locks** (`kernel/cap/tla/CapabilityLocks.tla`,
+ADR 0369) runs the operations above on threads that take the locks the
+split store will take: a fast path that changes only its own slots after
+checking the `linked` bit, a slow path that does each operation as one
+step under the tree lock and its spaces' locks, and revokes in turns.
+`CapabilityLocks.cfg` checks, with 2 threads, 3 slots in 2 spaces,
+2 objects and depth 2, that every invariant and step property of the
+table above still holds, and that a clear bit means no relatives
+(`LinkedIsSound`), a fast path acts only on an unlinked slot whose space
+it holds (`FastPathAlone`) and changes nothing outside its own slots
+(`FastPathTouchesOnlyItsSlots`), the leaf a revoke deletes is still a
+leaf (`LeafStays`), and the lock order holds (`LockOrder`), with deadlock
+checking on: about 5.2 million states, a minute on 4 CPUs. Each of these
+seeded bugs is caught: a derive that does not lock its source's space
+and a fast path that skips the bit (`FastPathAlone`, and
+`EmptySlotsAreBlank` without it), a delete that clears the bit of a
+parent with other children and a move that drops it (`LinkedIsSound`),
+and three ways of breaking the order, each of which deadlocks without
+`LockOrder`: a fast path that waits for the tree lock holding its space,
+a move that locks its source's space first, and a revoke that keeps the
+capability's space while it locks a leaf's.
+
 **The `caps` boot test** runs the `caps` self-test on 4 CPUs in QEMU
 (`kernel/radix/src/captest.rs`; `radix-debug(7)` lists its parts). It is
 the exit criterion's "in-kernel test suite": it tries every way of using
@@ -449,9 +484,10 @@ KVM it takes about a tenth of a second.
 - One store and one lock for the whole kernel. That is simple and
   obviously atomic. Lookups no longer take it when nothing has changed
   (see *In the kernel*), but every change serializes on it and empties
-  every CPU's cache. Finer locking (per space, with a tree lock for
-  derivation and revocation) can come when real workloads show the
-  need; the TLA+ model would have to grow with it.
+  every CPU's cache. With 4 or 8 workers opening and closing files
+  at once, that costs about 3 times Linux's time, threads or processes
+  alike (ADR 0369). Finer locking, per space with a tree lock for the
+  links, is designed and modelled (see *Concurrency*) and comes next.
 - The lock is a mutex (since Phase 4), and the store allocates under it
   with `MaySleep`. Retyping frames records them under the lock but zeroes
   them after it is let go (since Phase 6): the retyping thread zeroes

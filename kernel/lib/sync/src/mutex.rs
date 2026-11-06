@@ -7,9 +7,12 @@
 //! (from [`Hooks::current_thread`]) with bit 0 ([`RawMutex::WAITERS`]) set
 //! while threads wait. Taking a free lock and letting go of one nobody
 //! waits for are a single compare-and-swap each. The rest is the kernel's:
-//! [`Hooks::mutex_wait`] queues the caller by priority, lends its priority
-//! to the owner (priority inheritance) and sleeps until the lock is handed
-//! over; [`Hooks::mutex_wake`] hands it to the most urgent waiter.
+//! [`Hooks::mutex_wait`] spins while the owner runs, then queues the
+//! caller by priority, lends its priority to the owner (priority
+//! inheritance) and sleeps until the lock is handed over or let go to the
+//! waiters; [`Hooks::mutex_wake`] hands it to the most urgent waiter, or
+//! lets it go and wakes that waiter to try again. A free lock may still
+//! have [`RawMutex::WAITERS`] set: only the kernel's hooks take it then.
 //!
 //! Before the kernel registers its hooks there are no threads, and a
 //! contended mutex spins like a spin lock.
@@ -121,7 +124,9 @@ impl<T: ?Sized> Mutex<T> {
         self.guard(hooks, token)
     }
 
-    /// Takes the lock if it is free.
+    /// Takes the lock if it is free and nobody is queued for it. A lock
+    /// just let go to its queued waiters ([`RawMutex::WAITERS`] set, no
+    /// owner) is left to them and the threads spinning for it.
     #[track_caller]
     pub fn try_lock(&self) -> Option<MutexGuard<'_, T>> {
         let hooks = hooks::active();
@@ -232,7 +237,8 @@ impl<T: ?Sized> Drop for MutexGuard<'_, T> {
             raw.word.compare_exchange(self.token, 0, Ordering::Release, Ordering::Relaxed).is_ok();
         if !unlocked {
             match self.hooks {
-                // Waiters are queued: hand the lock to the first of them.
+                // Waiters are queued: the kernel hands the lock to one of
+                // them, or lets it go and wakes one to try again.
                 Some(hooks) if raw.word.load(Ordering::Relaxed) & RawMutex::WAITERS != 0 => {
                     hooks.mutex_wake(raw);
                 }

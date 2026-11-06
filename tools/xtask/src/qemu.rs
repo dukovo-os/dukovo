@@ -269,10 +269,16 @@ pub fn run_command(ctx: &Ctx, args: &mut Args) -> Result<()> {
         (false, true) => Firmware::Uefi,
         (false, false) => ctx.config.run.firmware,
     };
+    let installed = args.flag("--installed");
     let media = match args.value("--media")? {
         Some(value) => Media::parse(&value)?,
+        // An installed system is on a machine's own disk.
+        None if installed => Media::Disk,
         None => ctx.config.run.media,
     };
+    if installed && media == Media::Cdrom {
+        crate::bail!("an installed system's disk is not a CD-ROM; give --media usb or disk");
+    }
     let headless = args.flag("--headless") || !has_display();
     let gdb = args.flag("--gdb");
     let mut overrides = Overrides {
@@ -282,6 +288,12 @@ pub fn run_command(ctx: &Ctx, args: &mut Args) -> Result<()> {
         account: None,
     };
     let account = account::Options::from_args(args)?;
+    if !installed && account.any() {
+        crate::bail!(
+            "--user makes an account in an installed system's root, so it needs --installed: \
+             the stick runs the live system, which keeps no accounts"
+        );
+    }
     if gdb {
         // GDB's symbols are at the link address, so the kernel must stay
         // there.
@@ -302,7 +314,12 @@ pub fn run_command(ctx: &Ctx, args: &mut Args) -> Result<()> {
 
     require_qemu()?;
     // A CD-ROM holds the ISO; a USB stick or a disk the disk image.
-    let image_path = image::build_release(ctx, profile, media == Media::Cdrom, &overrides)?;
+    let kind = match media {
+        Media::Cdrom => image::Kind::Iso,
+        _ if installed => image::Kind::Installed,
+        _ => image::Kind::Stick,
+    };
+    let image_path = image::build_release(ctx, profile, kind, &overrides)?;
     let machine = Machine {
         firmware,
         media,

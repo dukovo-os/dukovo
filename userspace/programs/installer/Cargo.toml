@@ -1,0 +1,37 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+[package]
+name = "dukovo-install"
+description = "dukovo-install(8): Dukovo installed onto a disk from the install stick's signed release, as an answers file says"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+# The accounts' files, and checks of the password hashes an answers file
+# gives (ADR 0218).
+accounts = { path = "../accounts", features = ["hash"] }
+# Every message the installer shows, in Fluent files, one folder a
+# language (Apache-2.0 OR MIT).
+fluent-bundle = "0.16.0"
+unic-langid = "0.9.6"
+# The installer's screens, drawn on the console through crossterm, which
+# ob patches in from the rust-crates port (MIT).
+ratatui = { version = "0.30.2", default-features = false, features = ["crossterm"] }
+# The keyboard layouts the screens offer (keymap(1)).
+keymap = { path = "../keymap" }
+# The SHA-256 of each file as it is copied, ring's, which ob patches in
+# from the rust-crates port (ADR 0192).
+ring = "0.17.14"
+# The answers file, in JSON.
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.140"
+# The signed release on the install stick, read from the root the system
+# trusts (ADR 0308).
+system-release = { path = "../system-release" }
+
+[lints]
+workspace = true

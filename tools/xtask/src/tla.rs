@@ -25,6 +25,7 @@ pub const MODELS: &[(&str, &str)] = &[
     ("kernel/cap/tla/Capabilities.tla", "Capabilities.cfg"),
     ("kernel/cap/tla/Capabilities.tla", "CapabilitiesRetype.cfg"),
     ("kernel/cap/tla/Capabilities.tla", "CapabilitiesLiveness.cfg"),
+    ("kernel/cap/tla/CapabilityLocks.tla", "CapabilityLocks.cfg"),
     ("kernel/sched/tla/Scheduler.tla", "Scheduler.cfg"),
     ("kernel/sched/tla/Scheduler.tla", "SchedulerLiveness.cfg"),
     ("kernel/sched/tla/IdleWake.tla", "IdleWake.cfg"),
@@ -40,6 +41,7 @@ pub const MODELS: &[(&str, &str)] = &[
     ("kernel/radix/tla/Timers.tla", "Timers.cfg"),
     ("kernel/radix/tla/FileLocks.tla", "FileLocks.cfg"),
     ("kernel/radix/tla/Join.tla", "Join.cfg"),
+    ("kernel/radix/tla/Mutex.tla", "Mutex.cfg"),
 ];
 
 /// How to install Java.

@@ -122,17 +122,31 @@ Init: /system/commands/spark is process 1
   _/kernel/block/_*name*_/parttype_ is *0xef* in an MBR or
   *c12a7328-f81f-11d2-ba4b-00a0c93ec93b* in a GPT: what boots the
   machine is not one of the user's volumes, as on Windows and macOS and
-  with Linux's udisks (ADR 0161).
+  with Linux's udisks (ADR 0161). A Dukovo live partition, the install
+  stick's DUKOVO_LIVE, whose _parttype_ is
+  *5894c662-af90-4b47-baaf-2e3396443b25*, is always mounted read-only and
+  is never Dukovo's root, nor compressed (ADR 0308).
+. When the kernel's command line has the flag *live*, as the install
+  stick's boot menu gives it, Spark starts the live system: no disk is
+  Dukovo's root, and the only disk it mounts is the stick's DUKOVO_LIVE,
+  read-only. The machine's own disks stay unmounted, as an installer and
+  a rescue shell need them; *mount*(8) mounts one by hand.
 . The first Btrfs mounted read-write whose top holds the subvolumes
   _@system.a_, _@settings_, _@state_, _@applications_, _@users_ and
   _@shared_ is Dukovo's root, as *./ob image* makes it on its Dukovo root
-  partition. Spark mounts it again to compress if it was not, as the
-  root always does, then mounts _@system.a_ read-only on _/system_,
+  partition. When the kernel's command line names a root,
+  *root=UUID=*_uuid_, as an installed system's boot menu does, only the
+  Btrfs with that UUID is (ADR 0307): an installed system starts from an
+  archive of Spark alone, and the rest of the system is on that root. If
+  no disk holds it, Spark says so on the console and starts nothing; look
+  there first when an installed system stops after Spark. Spark mounts
+  the root again to compress if it was not, as the root always does,
+  then mounts _@system.a_ read-only on _/system_,
   _@settings_ on _/system/settings_, _@state_ on _/system/state_,
   _@applications_ on _/applications_, _@users_ on _/users_ and _@shared_
   on _/shared_, each as a directory of the mount at _/volumes/_*name*
   (the *bind* kind of *radix-files*(7)), and tmpfs on _/system/live_.
-  With no such disk, or with *--no-volumes*, it mounts the boot archive
+  With no such disk, with *--no-volumes* or with *live*, it mounts the boot archive
   read-only on _/system_ and tmpfs on _/system/settings_, _/system/state_
   and _/system/live_, which the next boot starts without. Then it makes
   _/system/state/tmp_, for temporary files that are to outlive a
@@ -561,6 +575,11 @@ _/boot/bootfs_
 _/system/commands/spark_
 	Spark, in the boot archive.
 
+_/system/startup/archive_
+	An installed system's startup archive, in its slot: Spark and the
+	directories it mounts on, which GRUB loads with the kernel,
+	_/system/startup/radix_ (ADR 0307).
+
 _/system/settings/spark/services/_*name*_.service_
 	The services (see *SERVICES*); the system's own come from
 	_/system/resources/default-settings/spark/services_.
@@ -670,4 +689,4 @@ _name_ *(process* _n_*) was ended by signal 9 (stopped by the out-of-memory poli
 *radix-sysfs*(5), *radix-directory*(2), *radix-process*(2),
 *radix-resource-domain*(2), *radix-power*(2), *radix-platform*(2),
 *radix-names*(2), *radix-device*(2), *radix-startup*(2), *ob*(1), *watchdog*(8),
-*ectool*(8), *e1000d*(8)
+*ectool*(8), *e1000d*(8), *system-release*(8)

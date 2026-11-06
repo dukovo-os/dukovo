@@ -166,6 +166,26 @@ pub const FLAGS: &[Flag] = &[
                   startup-trouble menu, which resets an administrator's password; the boot \
                   menu's startup-trouble entry sets it",
     },
+    Flag {
+        name: "root",
+        value: Some("UUID=uuid"),
+        summary: "for Spark, not the kernel: the Btrfs UUID of the Dukovo root to run the system \
+                  from, which an installed system's boot menu gives; Spark mounts no other \
+                  disk's root",
+    },
+    Flag {
+        name: "live",
+        value: None,
+        summary: "for Spark, not the kernel: the live system, as the install stick's boot menu \
+                  starts it: /system stays the boot archive, no disk is the root, and no disk is \
+                  mounted but the stick's DUKOVO_LIVE, read-only",
+    },
+    Flag {
+        name: "install",
+        value: None,
+        summary: "for consoled, not the kernel: tty1 runs the installer's screens, as the install \
+                  stick's Install Dukovo entry starts them, and root's shell once they end",
+    },
 ];
 
 /// The self-tests `selftest=name` runs; radix-debug(7) describes them.

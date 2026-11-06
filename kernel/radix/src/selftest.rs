@@ -26,9 +26,10 @@
 //! - `caps` runs the capability store's test suite (`captest`): no
 //!   capability can be forged or its rights widened, revocation reaches
 //!   everything derived, also while other CPUs derive, and nothing leaks.
-//! - `fpu`, `sched-fair`, `sched-rt`, `sched-pi`, `sched-balance`,
-//!   `lockdep`, `rcu` and `oom` test the scheduler, the lock checker, RCU
-//!   and the out-of-memory policy (`schedtest`).
+//! - `fpu`, `sched-fair`, `sched-rt`, `sched-pi`, `sched-mutex`,
+//!   `sched-balance`, `lockdep`, `rcu` and `oom` test the scheduler,
+//!   mutexes, the lock checker, RCU and the out-of-memory policy
+//!   (`schedtest`).
 //! - `user`, `ipc`, `fuzz` and `bench` start user-mode programs from the
 //!   `usertests` boot module: system calls and faults, IPC between
 //!   programs, random system calls, and the benchmarks (`usertest`).
@@ -68,6 +69,7 @@ pub fn run(name: &str) {
         "sched-fair" => schedtest::fair(),
         "sched-rt" => schedtest::rt(),
         "sched-pi" => schedtest::pi(),
+        "sched-mutex" => schedtest::mutex(),
         "sched-balance" => schedtest::balance(),
         "lockdep" => schedtest::lockdep(),
         "rcu" => schedtest::rcu(),

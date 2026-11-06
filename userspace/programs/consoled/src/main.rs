@@ -17,7 +17,9 @@
 //! prompt back cleared, or else consoled's own menu: sign in, on a console
 //! where nobody is, restart or power off. The keys type in the layout
 //! _/system/settings/keyboard_ names (keymap(1), ADR 0149), read again on
-//! SIGHUP, which `service consoled reload` sends. Notifications from
+//! SIGHUP, which `service consoled reload` sends. With the kernel flag
+//! `install`, tty1 runs the installer's screens before its shell
+//! (dukovo-install(8)). Notifications from
 //! notifyd(8) show on the bottom line (`notices`, ADR 0212). When
 //! consoled ends, the screen is the kernel log's again. Spark starts it as
 //! a service (spark(8)).
@@ -66,6 +68,9 @@ const POWEROFF: &str = "/system/commands/poweroff";
 
 /// What runs on each console: the sign-in.
 const LOGIN: &str = "/system/commands/login";
+
+/// What tty1 runs first under the kernel flag `install`.
+const INSTALLER: &str = "/system/commands/dukovo-install";
 
 /// welcome.toml(5), when the banner shows on this boot. A file that is not
 /// there is the defaults; its mistakes are logged, and leave their keys at
@@ -145,17 +150,18 @@ fn options() -> Result<Options, String> {
     Ok(options)
 }
 
-/// Whether the kernel's command line has `console-sign-in=off`
-/// (dukovo-boot(7)): root's shell on each console, with no sign-in.
-fn sign_in_off() -> bool {
+/// Whether the kernel's command line has the flag `flag`
+/// (dukovo-boot(7)), as `console-sign-in=off`, root's shell on each
+/// console with no sign-in, or `install`, the installer's screens on tty1.
+fn kernel_flag(flag: &str) -> bool {
     let line = std::fs::read_to_string("/kernel/cmdline").unwrap_or_default();
-    sign_in_off_in(&line)
+    has_flag(&line, flag)
 }
 
 /// Whether the kernel flags of command line `line`, those before a lone
-/// `--`, have `console-sign-in=off`.
-fn sign_in_off_in(line: &str) -> bool {
-    line.split_whitespace().take_while(|w| *w != "--").any(|w| w == "console-sign-in=off")
+/// `--`, have `flag`.
+fn has_flag(line: &str, flag: &str) -> bool {
+    line.split_whitespace().take_while(|w| *w != "--").any(|w| w == flag)
 }
 
 /// Root's shell and home from the user database, as login(1) reads them.
@@ -275,14 +281,15 @@ impl Consoled {
         match console.start(&self.shell) {
             Ok(()) => eprintln!(
                 "consoled: started {} on tty{} as process {}",
-                self.shell.path,
+                console.program(),
                 console.number,
                 console.child().unwrap_or(0)
             ),
             Err(err) => {
                 eprintln!(
                     "consoled: cannot start {} on tty{}: {err}",
-                    self.shell.path, console.number
+                    console.program(),
+                    console.number
                 );
                 console.retry_at = Some(Instant::now() + std::time::Duration::from_secs(10));
             }
@@ -546,7 +553,7 @@ fn main() -> ExitCode {
     // runs as root with no sign-in.
     let (sign_in, path, home) = match options.shell {
         Some(path) => (false, path, root_account().1),
-        None if sign_in_off() => {
+        None if kernel_flag("console-sign-in=off") => {
             eprintln!("consoled: console-sign-in=off: root's shell on each console, no sign-in");
             let (shell, home) = root_account();
             (false, shell, home)
@@ -564,7 +571,14 @@ fn main() -> ExitCode {
         }
     };
     let (cols, rows) = (screen.cols(), screen.rows());
-    let consoles = (1..=options.consoles).map(|n| Console::new(n, cols, rows)).collect();
+    let mut consoles: Vec<Console> =
+        (1..=options.consoles).map(|n| Console::new(n, cols, rows)).collect();
+    // The install stick's Install Dukovo entry: the installer's screens
+    // on tty1, then root's shell there (ADR 0310).
+    if kernel_flag("install") {
+        eprintln!("consoled: install: the installer's screens on tty1");
+        consoles[0].once = Some(INSTALLER.to_string());
+    }
     let keyboard = Keyboard::new(chosen_keymap());
     let notices = Notices::new(Instant::now());
     // Passwords are asked on the consoles only where people sign in;
@@ -586,14 +600,22 @@ fn main() -> ExitCode {
 
 #[cfg(test)]
 mod tests {
-    use super::sign_in_off_in;
+    use super::has_flag;
 
     #[test]
     fn sign_in_is_off_only_by_a_kernel_flag() {
-        assert!(sign_in_off_in("lockdep console-sign-in=off qemu-exit"));
-        assert!(!sign_in_off_in("lockdep qemu-exit"));
-        assert!(!sign_in_off_in("console-sign-in=on"));
+        let off = "console-sign-in=off";
+        assert!(has_flag("lockdep console-sign-in=off qemu-exit", off));
+        assert!(!has_flag("lockdep qemu-exit", off));
+        assert!(!has_flag("console-sign-in=on", off));
         // After `--` the words are Spark's.
-        assert!(!sign_in_off_in("qemu-exit -- console-sign-in=off"));
+        assert!(!has_flag("qemu-exit -- console-sign-in=off", off));
+    }
+
+    #[test]
+    fn the_installer_starts_only_by_its_own_word() {
+        assert!(has_flag("live install console-sign-in=off quiet", "install"));
+        assert!(!has_flag("live installer quiet", "install"));
+        assert!(!has_flag("live -- install", "install"));
     }
 }

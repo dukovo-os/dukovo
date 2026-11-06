@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "keyboard": "us",
+  "language": "en-US",
+  "disk": { "layout": "guided", "target": "/dev/vda", "swap_gib": 1 },
+  "hostname": "installed",
+  "time_zone": "America/Denver",
+  "admin": {
+    "name": "Alice Liddell",
+    "user": "alice",
+    "password_hash": "$argon2id$v=19$m=8192,t=1,p=1$ot2b17QE2qf2P8xYjOmtlw$EAvTvybT8iAOdGI5ke6mgjOV0GBmiYjwHMb16FfqT7g"
+  },
+  "users": [{ "name": "Bob", "user": "bob", "password_hash": "" }]
+}

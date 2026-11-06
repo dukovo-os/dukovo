@@ -310,3 +310,42 @@ fn random_snapshots_changes_and_removals_match_a_model() {
     synced(&fs, &disk, &model, "all removed");
     assert!(model.is_empty());
 }
+
+#[test]
+fn a_snapshot_holds_what_write_back_is_still_writing() {
+    // Write-back's sync takes a file's pages just after they are written
+    // and is still compressing them when a snapshot's own sync begins:
+    // that sync must wait for it, or the snapshot holds the file without
+    // its data, as the installer's slot once held an empty kernel.
+    let disk = writable(&mkfs_empty(&[]));
+    let fs = mount_rw(&disk);
+    fs.set_compress(true);
+    let root = fs.root();
+    let (go, went) = std::sync::mpsc::channel::<()>();
+    std::thread::scope(|scope| {
+        let fs = &fs;
+        scope.spawn(move || {
+            for () in went {
+                fs.sync().unwrap();
+            }
+        });
+        for round in 0..4u64 {
+            let source = format!("new{round}");
+            root.make_subvolume(&source).unwrap();
+            let new = root.lookup(&source).unwrap();
+            let data = noise(round, (2 << 20) + round as usize * 4096);
+            let file = new.create("kernel", Kind::File, FILE).unwrap();
+            put(&file, 0, &data);
+            drop(file);
+            // Write-back starts, and has taken the file by the snapshot.
+            go.send(()).unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            let slot = format!("slot{round}");
+            root.snapshot(&slot, &new, true).unwrap();
+            drop(new);
+            let kept = node(&root, &format!("/{slot}/kernel")).stat().size;
+            assert_eq!(kept, data.len() as u64, "round {round}: the snapshot's file");
+        }
+        drop(go);
+    });
+}

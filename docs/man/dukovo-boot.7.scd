@@ -24,19 +24,30 @@ panic report, the crash log, the kernel debugger and trace points.
 
 ## Boot image
 
-*ob image* builds a disk image, for a USB stick or a hard disk, that
-boots on UEFI and BIOS machines with GRUB 2.12, which *ob* builds from
-its source with only the modules the image needs. It is a GPT of three
-partitions, with a protective MBR whose boot code is GRUB's _boot.img_:
-a BIOS boot partition holding GRUB's _core.img_, which a BIOS's GRUB
-starts from and which finds GRUB's files at _(,gpt2)/boot/grub_; the EFI
-system partition, FAT32, holding UEFI's GRUB as _EFI/BOOT/BOOTX64.EFI_
-and the files below; and the Dukovo root (GPT type
-90C9A303-3954-4174-8F8B-EE75A92A9EB0), whose Btrfs holds the system and
-what changes (*spark*(8)). *rgrub-setup*(8) puts the same GRUB on other
-disks. *ob image --iso* builds an ISO for optical media instead, which
-El Torito boots under either firmware, holding the same files and no
-root. The files GRUB reads are:
+*ob image* builds the install stick's disk image, which boots on UEFI
+and BIOS machines with GRUB 2.12, which *ob* builds from its source with
+only the modules the image needs. It is a GPT of three partitions, with
+a protective MBR whose boot code is GRUB's _boot.img_: a BIOS boot
+partition holding GRUB's _core.img_, which a BIOS's GRUB starts from and
+which finds GRUB's files at _(,gpt2)/boot/grub_; the EFI system
+partition, FAT32, holding UEFI's GRUB as _EFI/BOOT/BOOTX64.EFI_ and the
+files below; and DUKOVO_LIVE (GPT type
+5894C662-AF90-4B47-BAAF-2E3396443B25, "Dukovo live"), a Btrfs whose
+read-only subvolume _release_ holds the signed release of the system
+that the installer installs (*system-release*(8), ADR 0308). The boot
+menu, from _image/grub/live.cfg.in_, starts the live system with *live*
+on the command line: *Install Dukovo*, the default, adds *install*, so
+that tty1 shows the installer's screens (*dukovo-install*(8), ADR 0310);
+*Try Dukovo (live console)* gives a shell on every console. *Boot from
+first disk* starts the machine's own system as if the stick were not
+there. The boot tests' live image starts *Try Dukovo* when nobody
+chooses, and the cases that test the installer add *install* themselves. *rgrub-setup*(8) puts the same GRUB on other disks.
+*ob image --iso* builds an ISO for optical media instead, which El Torito boots
+under either firmware, holding the same files and no release. The boot
+tests' images have the menu of _image/grub/grub.cfg.in_ instead, which
+takes a Dukovo root from a disk if one holds it, and some carry such a
+root (GPT type 90C9A303-3954-4174-8F8B-EE75A92A9EB0). The files GRUB
+reads are:
 
 _/boot/radix_
 	The kernel, an ELF executable, without its debug information: GRUB
@@ -46,7 +57,7 @@ _/boot/radix_
 	_out/sysroot/boot/radix_, for *gdb*(1).
 
 _/boot/grub/grub.cfg_
-	The menu, generated from _image/grub/grub.cfg.in_.
+	The menu, generated from _image/grub/live.cfg.in_.
 
 _/boot/firmware/intel-ucode.bin_
 	Intel microcode updates, only when the image was built with
@@ -61,6 +72,23 @@ _/system/resources/licenses/_
 	the text of each license, and _notices/_ the copyright and license
 	files that came with each component, such as the Spleen font
 	license. See *ob*(1).
+
+## Installed systems
+
+An installed system's disk, as *ob image --installed* builds it and the
+installer will leave it, has the same three partitions, but its EFI
+system partition holds only GRUB, the menu generated from
+_image/grub/installed.cfg.in_ and the microcode file, if any (ADR 0307).
+GRUB finds the Dukovo root by its Btrfs UUID and loads the kernel and the
+startup archive from the system's slot: _/@system.a/startup/radix_ and
+_/@system.a/startup/archive_, which the running system sees as
+_/system/startup_. The startup archive holds Spark alone. The kernel's
+command line carries *root=UUID=*_uuid_, for Spark, which mounts that
+root and runs everything else from it, and *panic=10*, so that a machine
+nobody is at restarts by itself. The boot loader keeps the startup
+archive in memory for the machine's whole life, as it does any archive,
+so an installed system keeps under a MiB where a USB stick keeps the
+whole system.
 
 ## Sequence
 
@@ -570,6 +598,31 @@ them to *init*, and the kernel does not read them.
 	Linux's *netconsole=* does, for one boot of a machine whose screen
 	shows nothing (ADR 0196). An IPv6 address goes in brackets when it
 	has a port. It names the target in place of *netlog*(5)'s.
+
+*root*=*UUID=*_uuid_
+	Read by *spark*(8), not the kernel: the Btrfs UUID of the Dukovo
+	root to run the system from, which an installed system's boot menu
+	gives (ADR 0307). Spark mounts that root and no other disk's, so
+	that a second disk with Dukovo on it, or an install stick, never
+	becomes the system GRUB did not start; when no disk holds it, Spark
+	says so and starts nothing. Without it, Spark takes the first disk
+	that holds a Dukovo root. The last one given counts.
+
+*live*
+	Read by *spark*(8), not the kernel: the live system, as the install
+	stick's boot menu starts it (ADR 0308). _/system_ stays the boot
+	archive, in memory, whatever disks hold a Dukovo root, and the only
+	disk Spark mounts is the stick's DUKOVO_LIVE, read-only: the
+	machine's disks are the owner's, for the installer or *mount*(8).
+
+*install*
+	Read by *consoled*(8), not the kernel: tty1 runs
+	*dukovo-install*(8)'s screens as root, with no sign-in, as the
+	install stick's *Install Dukovo* entry starts them, and root's shell
+	once they end, as Live console on their first page or the end of
+	the install leaves them. The install stick's entry gives
+	*console-sign-in=off* with it, so that the other consoles have
+	root's shell for a look around during the install.
 
 *startup-trouble*
 	Read by *login*(1) and *authd*(8), not the kernel: the sign-in at

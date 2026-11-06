@@ -44,6 +44,14 @@ pub const USERTESTS_WORD: &str = "usertests";
 pub const BOOTFS_PATH: &str = "/boot/bootfs";
 pub const BOOTFS_WORD: &str = "bootfs";
 
+/// Where `ob` writes the startup archive, which an installed system
+/// starts from instead of the boot archive (ADR 0307).
+pub const STARTUP_PATH: &str = "/boot/startup";
+
+/// The program the startup archive holds: Spark, which mounts the
+/// installed system's root and runs everything else from it.
+pub const STARTUP_PROGRAM: &str = "system/commands/spark";
+
 /// What the boot archive holds: each program's path in it, and its
 /// package.
 pub const ARCHIVE: &[(&str, &str)] = &[
@@ -91,6 +99,7 @@ pub const ARCHIVE_HIDDEN: (&str, &str) = ("system/.hidden", "bin\nlib\nshare\n")
 /// each one's path in it, and its package in userspace/programs.
 pub const STD_ARCHIVE: &[(&str, &str)] = &[
     ("system/commands/consoled", "consoled"),
+    ("system/commands/dukovo-install", "dukovo-install"),
     ("system/commands/nfs", "nfs"),
     ("system/commands/nfsd", "nfsd"),
     ("system/commands/nukesh", "nukesh"),
@@ -217,6 +226,7 @@ pub const STD_LINKS: &[(&str, &str)] = &[
     ("system/commands/sudo", "systools"),
     ("system/commands/swapoff", "systools"),
     ("system/commands/swapon", "systools"),
+    ("system/commands/system-release", "systools"),
     ("system/commands/taskset", "systools"),
     ("system/commands/timed", "systools"),
     ("system/commands/timedatectl", "systools"),
@@ -258,17 +268,27 @@ pub const DEFAULTS_DIR: &str = "system/resources/default-settings";
 pub const TEST_SERVICES: &str = "userspace/spark/tests/services";
 pub const TEST_SERVICES_DIR: &str = "system/tests/services";
 
+/// The answers files the install tests install by (ADR 0309), and where
+/// they are in the boot archive.
+pub const TEST_INSTALL: &str = "userspace/programs/installer/tests/install";
+pub const TEST_INSTALL_DIR: &str = "system/tests/install";
+
 /// The C and C++ test programs' sources, and where in the boot archive
 /// they go.
 pub const POSIX_SOURCES: &str = "userspace/posix";
 pub const POSIX_DIR: &str = "system/tests/posix";
 
-/// The user programs, built: the test image and the boot archive.
+/// The user programs, built: the test image, the boot archive and the
+/// startup archive.
 pub struct Programs {
     /// The test image.
     pub usertests: PathBuf,
-    /// The boot archive.
+    /// The boot archive: the whole system, which a USB stick or a disc
+    /// runs from memory.
     pub bootfs: PathBuf,
+    /// The startup archive: Spark alone, which an installed system starts
+    /// from (ADR 0307).
+    pub startup: PathBuf,
     /// The ports, and the toolchain they and the C programs were built
     /// with: what the license manifest lists.
     pub ports: Ports,
@@ -347,6 +367,7 @@ pub const HOST_TESTED: &[&str] = &[
     "consoled",
     "disk",
     "dkv",
+    "dukovo-install",
     "git-https-test",
     "keymap",
     "manifest",
@@ -356,6 +377,7 @@ pub const HOST_TESTED: &[&str] = &[
     "nukesh",
     "smb",
     "smbd",
+    "system-release",
     "systools",
     "tuf",
 ];
@@ -492,7 +514,10 @@ pub fn build(ctx: &Ctx, profile: Profile) -> Result<Programs> {
     let mut files = build_posix(ctx, &ports.toolchain)?;
     install_tree(ctx, DEFAULTS, DEFAULTS_DIR, &mut files)?;
     files.extend(dukovo_catalog(ctx)?);
+    // The root this system trusts its releases by (ADR 0308).
+    files.push(crate::release::trusted_root(ctx)?);
     install_tree(ctx, TEST_SERVICES, TEST_SERVICES_DIR, &mut files)?;
+    install_tree(ctx, TEST_INSTALL, TEST_INSTALL_DIR, &mut files)?;
     for port in &ports.ports {
         files.extend(ports::image_files(ctx, &port.recipe, &ctx.out.join("sysroot"))?);
     }
@@ -534,7 +559,11 @@ pub fn build(ctx: &Ctx, profile: Profile) -> Result<Programs> {
         let name = path.file_name().expect("an image has a name").to_string_lossy().into_owned();
         files.push((format!("{}/{name}", crate::grub::SYSTEM_DIR), path));
     }
-    let archive = write_archive(&files, crate::image::source_date_epoch(ctx))?;
+    // The menu dukovo-install(8) puts on the disks it installs (ADR 0309).
+    let menu = crate::image::installer_menu(ctx, &ctx.out.join("release-menu"))?;
+    files.push((format!("{}/{}", crate::grub::SYSTEM_DIR, crate::image::INSTALLER_MENU), menu));
+    let epoch = crate::image::source_date_epoch(ctx);
+    let archive = write_archive(&files, epoch.clone())?;
     std::fs::write(&bootfs, &archive).context(|| format!("writing {}", bootfs.display()))?;
     step(&format!(
         "Boot archive of {} programs written to {} ({} KiB)",
@@ -542,7 +571,15 @@ pub fn build(ctx: &Ctx, profile: Profile) -> Result<Programs> {
         ctx.display(&bootfs),
         archive.len() / 1024
     ));
-    Ok(Programs { usertests: installed, bootfs, ports })
+    let startup = ctx.out.join("sysroot").join(STARTUP_PATH.trim_start_matches('/'));
+    let archive = write_startup_archive(&built.join("spark"), epoch)?;
+    std::fs::write(&startup, &archive).context(|| format!("writing {}", startup.display()))?;
+    step(&format!(
+        "Startup archive written to {} ({} KiB)",
+        ctx.display(&startup),
+        archive.len() / 1024
+    ));
+    Ok(Programs { usertests: installed, bootfs, startup, ports })
 }
 
 /// Copies the files beneath `source`, a directory of the repository,
@@ -783,6 +820,34 @@ fn write_archive(files: &[(String, PathBuf)], epoch: Option<String>) -> Result<V
     Ok(writer.finish())
 }
 
+/// The startup archive (ADR 0307): Spark at [`STARTUP_PROGRAM`] and the
+/// directories of [`ARCHIVE_DIRS`], which Spark mounts memory on if no
+/// disk holds the root it is told to mount, dated `epoch` as the boot
+/// archive is. Everything else comes from the installed system's root, so
+/// the archive the boot loader keeps in memory for the machine's whole
+/// life is no bigger than Spark.
+fn write_startup_archive(spark: &Path, epoch: Option<String>) -> Result<Vec<u8>> {
+    let mtime = epoch.and_then(|epoch| epoch.parse().ok()).unwrap_or(0);
+    let program = std::fs::read(spark).context(|| format!("reading {}", spark.display()))?;
+    // Each path, and the program's bytes for the one file.
+    let mut entries: Vec<(&str, Option<&[u8]>)> =
+        ARCHIVE_DIRS.iter().map(|&dir| (dir, None)).collect();
+    entries.extend([("system", None), ("system/commands", None)]);
+    entries.push((STARTUP_PROGRAM, Some(&program)));
+    // In path order, a directory before what is in it, as the archive's
+    // reader wants.
+    entries.sort_by(|a, b| a.0.split('/').cmp(b.0.split('/')));
+    let mut writer = radix_bootfs::write::Writer::new();
+    for (path, data) in entries {
+        let written = match data {
+            Some(data) => writer.file(path, 0o755, mtime, data),
+            None => writer.directory(path, 0o755, mtime),
+        };
+        written.map_err(|err| crate::Error::new(format!("the startup archive: {path}: {err}")))?;
+    }
+    Ok(writer.finish())
+}
+
 /// Whether the file at `path` has an execute bit set.
 fn is_executable(path: &Path) -> Result<bool> {
     use std::os::unix::fs::PermissionsExt as _;
@@ -870,5 +935,33 @@ mod tests {
         assert_eq!(write_archive(&files, None).ok(), None, "the programs are gone");
         let under_a_link = [("system/bin/ls".to_string(), dir.join("ls"))];
         assert!(write_archive(&under_a_link, None).is_err(), "a file under /system/bin");
+    }
+
+    #[test]
+    fn the_startup_archive_holds_spark_and_the_mount_points_alone() {
+        let dir = std::env::temp_dir().join(format!("ob-startup-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let spark = dir.join("spark");
+        std::fs::write(&spark, "the spark program").unwrap();
+        let bytes = write_startup_archive(&spark, Some("1700000000".into())).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+        let archive = radix_bootfs::open(&bytes).unwrap();
+        let paths: Vec<String> = archive.entries().map(|e| e.path().to_string()).collect();
+        assert_eq!(
+            paths,
+            [
+                "system",
+                "system/boot",
+                "system/commands",
+                "system/commands/spark",
+                "system/live",
+                "system/settings",
+                "system/state"
+            ]
+        );
+        let program = archive.find("/system/commands/spark").unwrap();
+        assert_eq!(program.data, b"the spark program");
+        assert_eq!((program.mode, program.mtime), (0o755, 1_700_000_000));
+        assert!(write_startup_archive(&dir.join("gone"), None).is_err(), "no Spark to put in");
     }
 }
