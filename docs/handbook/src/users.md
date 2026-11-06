@@ -144,15 +144,17 @@ $ elevate user add bob
 rules are forced on it: an empty one, or one shorter than 8 characters,
 gets a warning and the question whether to keep it, and you decide.
 
-To have a machine start with an account, make it in the image:
+To have an installed system's disk start with an account, make it in
+the image:
 
 ```
-./ob image --user alice --full-name "Alice Liddell"
+./ob image --installed --user alice --full-name "Alice Liddell"
 ```
 
 `ob` asks for the password, and the image's root holds the account and
 the password's hash, never the password; the home is made at the first
-boot. `--password-file` takes the password from a file instead, for
+boot. The install stick runs the live system, which keeps no accounts,
+so `--user` needs `--installed`. `--password-file` takes the password from a file instead, for
 scripts.
 
 ## Disabling, removing and renaming accounts

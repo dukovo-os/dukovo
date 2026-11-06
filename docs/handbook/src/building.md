@@ -223,9 +223,11 @@ into the kernel's common code; CI runs that too.
 ./ob image
 ```
 
-The result is `out/dukovo-0.12.0-x86_64.img`, a hybrid image that boots on
-UEFI and BIOS machines from a USB stick, a hard disk or a CD.
-`./ob image --iso` writes the same image as an `.iso` for virtual machines.
+The result is `out/dukovo-0.12.0-x86_64.img`, the install stick, a hybrid
+image that boots on UEFI and BIOS machines into the live system and
+carries the signed release the installer installs. `./ob image --iso`
+writes the live system as an `.iso` for virtual machines, and
+`./ob image --installed` an installed system's disk.
 [Creating USB install media](usb-media.md) shows how to write it to a stick.
 
 ## Configuration

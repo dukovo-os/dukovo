@@ -20,7 +20,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use crate::config::{Firmware, Media};
-use crate::image::{self, ImageSpec, crc32};
+use crate::image::{self, ImageSpec, Menu, crc32};
 use crate::process::{self, step};
 use crate::qemu::{self, Machine, Serial};
 use crate::{
@@ -177,6 +177,10 @@ pub enum TestImage {
     /// system partition, and the Dukovo root after it, whose slot holds
     /// the kernel and the startup archive.
     Installed,
+    /// The install stick (ADR 0308): the live system's menu, and the
+    /// DUKOVO_LIVE partition after the image's own, holding the signed
+    /// release, unless the case boots it as a CD.
+    Live,
 }
 
 /// One boot test.
@@ -3030,6 +3034,7 @@ pub fn build_test_image(
     let name = match kind {
         TestImage::Plain => "dukovo-test",
         TestImage::Microcode => "dukovo-test-microcode",
+        TestImage::Live => "dukovo-test-live",
         TestImage::Installed => {
             return Err(Error::new("an installed system's test image needs its root's UUID"));
         }
@@ -3045,7 +3050,8 @@ pub fn build_test_image(
             programs: Some(&built.programs),
             disk_check: None,
             root: None,
-            slot: None,
+            live: None,
+            menu: if kind == TestImage::Live { Menu::Live } else { Menu::Tests },
             staging: dir.join(format!("{name}-root")),
             output: output.clone(),
             iso,
@@ -3076,7 +3082,8 @@ fn build_installed_test_image(
             programs: Some(&built.programs),
             disk_check: None,
             root: None,
-            slot: Some(uuid),
+            live: None,
+            menu: Menu::Installed(uuid),
             staging: dir.join("dukovo-test-installed-root"),
             output: output.clone(),
             iso: false,
@@ -3176,6 +3183,41 @@ fn test_root(ctx: &Ctx, built: &Built, dir: &Path, cases: &[&Case]) -> Result<Op
     Ok(Some(TestRoot { path, uuid }))
 }
 
+/// Makes the install stick's DUKOVO_LIVE filesystem in `dir`, holding the
+/// signed release of the test build, if a case of `cases` boots the stick
+/// from a disk.
+fn test_live(ctx: &Ctx, built: &Built, dir: &Path, cases: &[&Case]) -> Result<Option<PathBuf>> {
+    if !cases.iter().any(|case| case.image == TestImage::Live && case.media != Media::Cdrom) {
+        return Ok(None);
+    }
+    let path = dir.join("live.btrfs");
+    image::make_live(ctx, &built.kernel, &built.programs, &dir.join("live-staging"), &path)?;
+    Ok(Some(path))
+}
+
+/// Puts after the partitions of the case's boot image at `image` what its
+/// kind of image holds there: an installed system's Dukovo root, or the
+/// install stick's DUKOVO_LIVE.
+fn append_own(
+    case: &Case,
+    image: &Path,
+    root: Option<&Path>,
+    live: Option<&Path>,
+) -> Result<(), String> {
+    match case.image {
+        TestImage::Installed => {
+            let root = root.ok_or("the Dukovo root's filesystem was not made")?;
+            image::append_root(image, root).map_err(|err| err.to_string())?;
+        }
+        TestImage::Live if case.media != Media::Cdrom => {
+            let live = live.ok_or("the DUKOVO_LIVE filesystem was not made")?;
+            image::append_live(image, live).map_err(|err| err.to_string())?;
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
 /// `ob test boot --case <name> --image-only`: each case's boot image, its
 /// command line in place, as `out/test/<name>.img` (or `.iso`), for a
 /// machine to boot by itself, as CI's Windows job boots `smbd`'s.
@@ -3183,6 +3225,7 @@ fn case_images(ctx: &Ctx, built: &Built, cases: &[&Case]) -> Result<()> {
     let dir = ctx.out.join("test");
     process::create_dir(&dir)?;
     let root = test_root(ctx, built, &dir, cases)?;
+    let live = test_live(ctx, built, &dir, cases)?;
     let images = test_images(ctx, built, &dir, cases, root.as_ref())?;
     for case in cases {
         let iso = case.media == Media::Cdrom;
@@ -3191,13 +3234,15 @@ fn case_images(ctx: &Ctx, built: &Built, cases: &[&Case]) -> Result<()> {
         let image = with_cmdline(base, case.cmdline).map_err(Error::new)?;
         std::fs::write(&path, image)
             .map_err(|err| Error::new(format!("writing {}: {err}", path.display())))?;
-        if let (TestImage::Installed, Some(root)) = (case.image, &root) {
-            image::append_root(&path, &root.path)?;
-        }
+        let root = root.as_ref().map(|root| root.path.as_path());
+        append_own(case, &path, root, live.as_deref()).map_err(Error::new)?;
         step(&format!("Wrote {}, which boots `{}`", ctx.display(&path), case.cmdline));
     }
     if let Some(root) = &root {
         let _ = std::fs::remove_file(&root.path);
+    }
+    if let Some(live) = &live {
+        let _ = std::fs::remove_file(live);
     }
     Ok(())
 }
@@ -3208,6 +3253,7 @@ fn boot_tests(ctx: &Ctx, built: &Built, cases: &[&Case], timeout: Duration) -> R
     process::create_dir(&dir)?;
     // The root comes first: an installed system's menu names its UUID.
     let root = test_root(ctx, built, &dir, cases)?;
+    let live = test_live(ctx, built, &dir, cases)?;
     let images = test_images(ctx, built, &dir, cases, root.as_ref())?;
 
     let kvm = qemu::kvm_available();
@@ -3222,7 +3268,7 @@ fn boot_tests(ctx: &Ctx, built: &Built, cases: &[&Case], timeout: Duration) -> R
         let base = &images.iter().find(|(made, _)| *made == key).expect("built above").1;
         let started = Instant::now();
         let root = root.as_ref().map(|root| root.path.as_path());
-        let outcome = run_case(ctx, case, base, root, &dir, kvm, timeout);
+        let outcome = run_case(ctx, case, base, (root, live.as_deref()), &dir, kvm, timeout);
         let secs = started.elapsed().as_secs_f32();
         match outcome {
             Ok(()) => eprintln!("    PASS  {:<15} {} ({secs:.1} s)", case.name, case.about),
@@ -3249,6 +3295,9 @@ fn boot_tests(ctx: &Ctx, built: &Built, cases: &[&Case], timeout: Duration) -> R
     if let Some(root) = &root {
         let _ = std::fs::remove_file(&root.path);
     }
+    if let Some(live) = &live {
+        let _ = std::fs::remove_file(live);
+    }
     if failures > 0 {
         crate::bail!("{failures} of {} boot tests failed", cases.len());
     }
@@ -3263,7 +3312,7 @@ fn run_case(
     ctx: &Ctx,
     case: &Case,
     base: &[u8],
-    root: Option<&Path>,
+    (root, live): (Option<&Path>, Option<&Path>),
     dir: &Path,
     kvm: bool,
     timeout: Duration,
@@ -3475,11 +3524,7 @@ fn run_case(
     let boot = |name: &str, cmdline: &str, script: Script| -> Result<(), String> {
         std::fs::write(&image, with_cmdline(base, cmdline)?)
             .map_err(|err| format!("writing {}: {err}", image.display()))?;
-        // An installed system's disk holds its root, after its partitions.
-        if case.image == TestImage::Installed {
-            let root = root.ok_or("the Dukovo root's filesystem was not made")?;
-            image::append_root(&image, root).map_err(|err| err.to_string())?;
-        }
+        append_own(case, &image, root, live)?;
         run(&machine, name, script)
     };
     let mut result = boot(case.name, case.cmdline, case.script);

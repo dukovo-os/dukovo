@@ -6,11 +6,18 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 # Creating USB install media
 
 `./ob image` builds `out/dukovo-<version>-x86_64.img`. Written to a USB
-stick, it boots on UEFI and legacy BIOS computers. Until the installer the
-stick holds GRUB and the kernel, which reports the machine's memory,
-processors and firmware tables on the screen: useful for checking that a machine
-boots Dukovo and what the kernel finds there. The installer arrives in
-Phase 14.
+stick, it boots on UEFI and legacy BIOS computers. Its menu starts the
+live system, which runs from memory and leaves the machine's disks
+alone, or boots the machine's first disk. The stick also carries the
+signed release of the system that the installer installs; to check that
+a stick was written whole, run `system-release check` on its release
+from the live system:
+
+```sh
+system-release check /volumes/sda3/release
+```
+
+The installer arrives with the next part of Phase 14.
 
 ## Writing the image
 

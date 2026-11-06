@@ -225,6 +225,7 @@ pub const STD_LINKS: &[(&str, &str)] = &[
     ("system/commands/sudo", "systools"),
     ("system/commands/swapoff", "systools"),
     ("system/commands/swapon", "systools"),
+    ("system/commands/system-release", "systools"),
     ("system/commands/taskset", "systools"),
     ("system/commands/timed", "systools"),
     ("system/commands/timedatectl", "systools"),
@@ -369,6 +370,7 @@ pub const HOST_TESTED: &[&str] = &[
     "nukesh",
     "smb",
     "smbd",
+    "system-release",
     "systools",
     "tuf",
 ];
@@ -505,6 +507,8 @@ pub fn build(ctx: &Ctx, profile: Profile) -> Result<Programs> {
     let mut files = build_posix(ctx, &ports.toolchain)?;
     install_tree(ctx, DEFAULTS, DEFAULTS_DIR, &mut files)?;
     files.extend(dukovo_catalog(ctx)?);
+    // The root this system trusts its releases by (ADR 0308).
+    files.push(crate::release::trusted_root(ctx)?);
     install_tree(ctx, TEST_SERVICES, TEST_SERVICES_DIR, &mut files)?;
     for port in &ports.ports {
         files.extend(ports::image_files(ctx, &port.recipe, &ctx.out.join("sysroot"))?);

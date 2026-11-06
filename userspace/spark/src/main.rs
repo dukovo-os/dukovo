@@ -34,7 +34,12 @@
 //!    holds one. An installed system starts from an archive of Spark
 //!    alone, so when the root it names cannot be found, Spark says so
 //!    and starts nothing; that is the first place to look when an
-//!    installed system stops after Spark;
+//!    installed system stops after Spark. A partition of the type
+//!    "Dukovo live", an install stick's DUKOVO_LIVE, is mounted
+//!    read-only and is never the root. With `live` on the command line,
+//!    as the install stick's boot menu starts the live system (ADR 0308),
+//!    no disk is the root and none is mounted but such a partition: the
+//!    machine's disks are the owner's, for the installer or mount(8);
 //! 3. listens for requests at `/system/live/spark/control` and, with no
 //!    arguments (a normal boot), starts the services the TOML files in
 //!    `/system/settings/spark/services` describe (`services`,
@@ -456,12 +461,23 @@ fn build(root: &Dir, volumes: bool, compress: &[&str]) -> bool {
         }
     }
     let named = named_root(root);
-    let disk = if volumes {
-        let btrfs = mount_disks(root, compress);
-        root_volume(root, &btrfs, named.as_deref())
-    } else {
+    let live = live_boot(root);
+    let disk = if !volumes {
         println!("spark: leaving every disk's filesystems unmounted");
         None
+    } else if live {
+        // Two lines: a write to the log is cut at 256 bytes.
+        println!(
+            "spark: the live system: /system is the boot archive, in memory, and no disk is the root"
+        );
+        println!(
+            "spark: only the install medium is mounted; mount(8) mounts the machine's own disks"
+        );
+        mount_disks(root, compress, true);
+        None
+    } else {
+        let btrfs = mount_disks(root, compress, false);
+        root_volume(root, &btrfs, named.as_deref())
     };
     let mounted = match disk {
         Some(disk) if mount_root(root, &disk) => {
@@ -470,7 +486,7 @@ fn build(root: &Dir, volumes: bool, compress: &[&str]) -> bool {
         }
         _ => {
             // Two lines: a write to the log is cut at 256 bytes.
-            if let Some(uuid) = named.as_deref().filter(|_| volumes) {
+            if let Some(uuid) = named.as_deref().filter(|_| volumes && !live) {
                 println!(
                     "spark: no disk holds the Dukovo root the boot menu names (root=UUID={uuid}), \
                      so this installed system cannot start"
@@ -596,13 +612,21 @@ fn seed(from: &Dir, to: &Dir, depth: usize, added: &mut usize) {
 /// a GPT, and in an MBR.
 const EFI_SYSTEM: [&str; 2] = ["c12a7328-f81f-11d2-ba4b-00a0c93ec93b", "0xef"];
 
+/// The GPT type of an install stick's DUKOVO_LIVE partition, "Dukovo
+/// live" (ADR 0308), as `/kernel/block/<name>/parttype` gives it: the
+/// signed release the installer installs, which nothing may write.
+const DUKOVO_LIVE: &str = "5894c662-af90-4b47-baaf-2e3396443b25";
+
 /// Mounts the FAT, exFAT, NTFS, Btrfs or ext4 filesystem of each disk
 /// partition, or of each disk with no partitions, at `/volumes/<name>`:
 /// a Btrfs of several disks once, at the first of them. EFI system
 /// partitions are left alone: what boots the machine is no volume of the
-/// user's, as Windows, macOS and Linux's udisks have it. Returns the
-/// names of those it mounted Btrfs from, and how.
-fn mount_disks(root: &Dir, compress: &[&str]) -> Vec<(String, MountFlags)> {
+/// user's, as Windows, macOS and Linux's udisks have it. An install
+/// stick's DUKOVO_LIVE partition is mounted read-only, and with
+/// `live_only`, as the live system starts, it is the only one mounted.
+/// Returns the names of those it mounted Btrfs from that may hold
+/// Dukovo's root, and how.
+fn mount_disks(root: &Dir, compress: &[&str], live_only: bool) -> Vec<(String, MountFlags)> {
     let devices: Vec<String> =
         match root.open_dir("devices", Rights::READ).and_then(|dev| dev.entries()) {
             Ok(entries) => entries
@@ -625,21 +649,44 @@ fn mount_disks(root: &Dir, compress: &[&str]) -> Vec<(String, MountFlags)> {
                 .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
         })
     };
-    let efi_system = |name: &str| {
-        root.read_file(&format!("kernel/block/{name}/parttype"))
-            .is_ok_and(|kind| EFI_SYSTEM.contains(&String::from_utf8_lossy(&kind).trim_end()))
+    let part_type = |name: &str| {
+        root.read_file(&format!("kernel/block/{name}/parttype")).map_or_else(
+            |_| String::new(),
+            |kind| String::from_utf8_lossy(&kind).trim_end().to_ascii_lowercase(),
+        )
     };
     let mut btrfs = Vec::new();
     for name in devices.iter().filter(|name| !partitioned(name)) {
-        if efi_system(name) {
+        let kind = part_type(name);
+        if EFI_SYSTEM.contains(&kind.as_str()) {
             println!("spark: {name} is an EFI system partition; left alone");
             continue;
         }
-        if let Some(flags) = mount_disk(root, name, compress.contains(&name.as_str())) {
+        let medium = kind == DUKOVO_LIVE;
+        if live_only && !medium {
+            continue;
+        }
+        let compress = compress.contains(&name.as_str()) && !medium;
+        if let Some(flags) = mount_disk(root, name, compress, medium)
+            && !medium
+        {
             btrfs.push((name.clone(), flags));
         }
     }
     btrfs
+}
+
+/// Whether the kernel's command line has `live`, as the install stick's
+/// boot menu starts the live system with, among the words before a lone
+/// `--`, which are the kernel's (dukovo-boot(7)).
+fn live_boot(root: &Dir) -> bool {
+    root.read_file("kernel/cmdline").is_ok_and(|line| {
+        core::str::from_utf8(&line).is_ok_and(|line| {
+            line.split_ascii_whitespace()
+                .take_while(|&word| word != "--")
+                .any(|word| word == "live")
+        })
+    })
 }
 
 /// Mounts the filesystem on `/devices/<name>` at `/volumes/<name>`: FAT,
@@ -653,11 +700,14 @@ fn mount_disks(root: &Dir, compress: &[&str]) -> Vec<(String, MountFlags)> {
 /// is the newer. FAT, exFAT and NTFS each take the others' boot sectors
 /// for none of theirs, and `mkfs.btrfs` and `mkfs.ext4` each clear the
 /// other's superblock. A Btrfs mounted to
-/// write compresses its data if `compress`. Returns how it mounted a
-/// Btrfs.
-fn mount_disk(root: &Dir, name: &str, compress: bool) -> Option<MountFlags> {
-    let rw = Rights::READ.union(Rights::WRITE);
-    let (device, flags) = match root.open(&alloc::format!("devices/{name}"), OpenFlags::NONE, rw) {
+/// write compresses its data if `compress`. With `read_only`, as for an
+/// install stick's DUKOVO_LIVE, the disk is opened and mounted only to
+/// read. Returns how it mounted a Btrfs.
+fn mount_disk(root: &Dir, name: &str, compress: bool, read_only: bool) -> Option<MountFlags> {
+    let rights = if read_only { Rights::READ } else { Rights::READ.union(Rights::WRITE) };
+    let opened = root.open(&alloc::format!("devices/{name}"), OpenFlags::NONE, rights);
+    let (device, flags) = match opened {
+        Ok(device) if read_only => (device, MountFlags::READ_ONLY),
         Ok(device) => (device, MountFlags::NONE),
         Err(err) if err.is(FileError::ReadOnly) => {
             match root.open(&alloc::format!("devices/{name}"), OpenFlags::NONE, Rights::READ) {
@@ -772,7 +822,7 @@ fn root_volume(root: &Dir, btrfs: &[(String, MountFlags)], named: Option<&str>) 
             println!("spark: cannot mount {name} again to compress: {err}");
             return None;
         }
-        mount_disk(root, name, true)?;
+        mount_disk(root, name, true, false)?;
     }
     Some(name.clone())
 }

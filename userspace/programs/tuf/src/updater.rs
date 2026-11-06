@@ -145,15 +145,35 @@ impl Updater {
     /// If `dir`'s root cannot be read, or is not root metadata signed by
     /// its own keys.
     pub fn new(dir: &Path, metadata: &Url, targets: Option<&Url>) -> Result<Self, Error> {
+        let root = Updater::read_root(dir)?;
+        Ok(Updater::with(dir, metadata, targets, Trusted::new(&root, time::now())?))
+    }
+
+    /// As [`Updater::new`], for a repository the owner chose offline, on
+    /// an install stick or in an update file, whose metadata is checked
+    /// for everything but expiry ([`Trusted::offline`]).
+    ///
+    /// # Errors
+    ///
+    /// As [`Updater::new`].
+    pub fn offline(dir: &Path, metadata: &Url, targets: Option<&Url>) -> Result<Self, Error> {
+        let root = Updater::read_root(dir)?;
+        Ok(Updater::with(dir, metadata, targets, Trusted::offline(&root)?))
+    }
+
+    fn read_root(dir: &Path) -> Result<Vec<u8>, Error> {
         let path = dir.join("root.json");
-        let root = std::fs::read(&path).map_err(|err| Error::Io(path, err))?;
-        Ok(Updater {
+        std::fs::read(&path).map_err(|err| Error::Io(path, err))
+    }
+
+    fn with(dir: &Path, metadata: &Url, targets: Option<&Url>, trusted: Trusted) -> Self {
+        Updater {
             dir: dir.to_path_buf(),
             metadata: metadata.base(),
             targets: targets.map(Url::base),
             limits: Limits::default(),
-            trusted: Trusted::new(&root, time::now())?,
-        })
+            trusted,
+        }
     }
 
     /// The trusted metadata.

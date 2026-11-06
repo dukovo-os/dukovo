@@ -8,16 +8,26 @@
 //!
 //! An expired timestamp or snapshot still joins, so that it guards a
 //! newer one against rollback, but nothing after it is loaded.
+//!
+//! A repository the owner brought on a USB stick or in a file is checked
+//! [`Trusted::offline`]: every signature and version as online, but no
+//! expiry, which says that a server still vouches for the metadata and
+//! cannot be known offline (the updates design, section 8).
 
 use std::collections::{HashMap, HashSet};
 
-use crate::metadata::{Delegator, Error, Root, Signed, Snapshot, Targets, Timestamp, check_file};
+use crate::metadata::{
+    Delegator, Error, Kind, Root, Signed, Snapshot, Targets, Timestamp, check_file,
+};
 
 /// The trusted metadata of one update.
 #[derive(Debug)]
 pub struct Trusted {
     /// The time it is checked against, fixed when the update starts.
     now: i64,
+    /// Whether expiry is left unchecked, for a repository the owner chose
+    /// offline ([`Trusted::offline`]).
+    offline: bool,
     root: Signed<Root>,
     timestamp: Option<Signed<Timestamp>>,
     snapshot: Option<Signed<Snapshot>>,
@@ -44,12 +54,33 @@ impl Trusted {
         root.verified_by(&root.signed, "root")?;
         Ok(Trusted {
             now,
+            offline: false,
             root,
             timestamp: None,
             snapshot: None,
             targets: HashMap::new(),
             delegations: HashSet::new(),
         })
+    }
+
+    /// As [`Trusted::new`], for a repository the owner chose offline, on
+    /// an install stick or in an update file: every check is made but
+    /// expiry. Expiry stops a server, or someone between it and the
+    /// computer, from serving old metadata as current, which a file the
+    /// owner named cannot do; so an install stick a year old still
+    /// installs what it holds, signed as it was. Whether its version is
+    /// newer than the installed one is for the caller to check.
+    ///
+    /// # Errors
+    ///
+    /// As [`Trusted::new`].
+    pub fn offline(root: &[u8]) -> Result<Self, Error> {
+        Ok(Trusted { offline: true, ..Trusted::new(root, 0)? })
+    }
+
+    /// Whether `meta` has expired: never, offline.
+    fn expired<T: Kind>(&self, meta: &Signed<T>) -> bool {
+        !self.offline && meta.expired(self.now)
     }
 
     /// The trusted root.
@@ -119,7 +150,7 @@ impl Trusted {
         if self.snapshot.is_some() {
             return Err(order("timestamp after snapshot"));
         }
-        if self.root.expired(self.now) {
+        if self.expired(&self.root) {
             return Err(Error::Expired("the final root has expired".into()));
         }
         let new = Signed::<Timestamp>::parse(data)?;
@@ -147,7 +178,7 @@ impl Trusted {
 
     fn check_timestamp(&self) -> Result<(), Error> {
         match &self.timestamp {
-            Some(timestamp) if timestamp.expired(self.now) => {
+            Some(timestamp) if self.expired(timestamp) => {
                 Err(Error::Expired("timestamp.json has expired".into()))
             }
             Some(_) => Ok(()),
@@ -199,7 +230,7 @@ impl Trusted {
         let (Some(timestamp), Some(snapshot)) = (&self.timestamp, &self.snapshot) else {
             return Err(order("no snapshot"));
         };
-        if snapshot.expired(self.now) {
+        if self.expired(snapshot) {
             return Err(Error::Expired("snapshot.json has expired".into()));
         }
         let expected = timestamp.signed.snapshot().version;
@@ -251,7 +282,7 @@ impl Trusted {
                 meta.version, new.version
             )));
         }
-        if new.expired(self.now) {
+        if self.expired(&new) {
             return Err(Error::Expired(format!("{role} has expired")));
         }
         self.targets.insert(role.to_string(), new);

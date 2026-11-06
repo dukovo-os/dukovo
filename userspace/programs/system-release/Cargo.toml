@@ -1,0 +1,25 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+[package]
+name = "system-release"
+description = "Dukovo's signed system releases: the release list, its store of files and its TUF repository (ADR 0308)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+# The SHA-256 of every file, ring's, which ob patches in from the
+# rust-crates port (ADR 0192).
+ring = "0.17.14"
+# The release list, in JSON.
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.140"
+# The release list as a TUF target, signed and read back by Dukovo's own
+# TUF client (ADR 0380).
+tuf = { path = "../tuf" }
+
+[lints]
+workspace = true

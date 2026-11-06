@@ -24,19 +24,27 @@ panic report, the crash log, the kernel debugger and trace points.
 
 ## Boot image
 
-*ob image* builds a disk image, for a USB stick or a hard disk, that
-boots on UEFI and BIOS machines with GRUB 2.12, which *ob* builds from
-its source with only the modules the image needs. It is a GPT of three
-partitions, with a protective MBR whose boot code is GRUB's _boot.img_:
-a BIOS boot partition holding GRUB's _core.img_, which a BIOS's GRUB
-starts from and which finds GRUB's files at _(,gpt2)/boot/grub_; the EFI
-system partition, FAT32, holding UEFI's GRUB as _EFI/BOOT/BOOTX64.EFI_
-and the files below; and the Dukovo root (GPT type
-90C9A303-3954-4174-8F8B-EE75A92A9EB0), whose Btrfs holds the system and
-what changes (*spark*(8)). *rgrub-setup*(8) puts the same GRUB on other
-disks. *ob image --iso* builds an ISO for optical media instead, which
-El Torito boots under either firmware, holding the same files and no
-root. The files GRUB reads are:
+*ob image* builds the install stick's disk image, which boots on UEFI
+and BIOS machines with GRUB 2.12, which *ob* builds from its source with
+only the modules the image needs. It is a GPT of three partitions, with
+a protective MBR whose boot code is GRUB's _boot.img_: a BIOS boot
+partition holding GRUB's _core.img_, which a BIOS's GRUB starts from and
+which finds GRUB's files at _(,gpt2)/boot/grub_; the EFI system
+partition, FAT32, holding UEFI's GRUB as _EFI/BOOT/BOOTX64.EFI_ and the
+files below; and DUKOVO_LIVE (GPT type
+5894C662-AF90-4B47-BAAF-2E3396443B25, "Dukovo live"), a Btrfs whose
+read-only subvolume _release_ holds the signed release of the system
+that the installer installs (*system-release*(8), ADR 0308). The boot
+menu, from _image/grub/live.cfg.in_, starts the live system, *Try Dukovo
+(live console)*, with *live* on the command line, or offers *Boot from
+first disk*, which starts the machine's own system as if the stick were
+not there. *rgrub-setup*(8) puts the same GRUB on other disks.
+*ob image --iso* builds an ISO for optical media instead, which El Torito boots
+under either firmware, holding the same files and no release. The boot
+tests' images have the menu of _image/grub/grub.cfg.in_ instead, which
+takes a Dukovo root from a disk if one holds it, and some carry such a
+root (GPT type 90C9A303-3954-4174-8F8B-EE75A92A9EB0). The files GRUB
+reads are:
 
 _/boot/radix_
 	The kernel, an ELF executable, without its debug information: GRUB
@@ -46,7 +54,7 @@ _/boot/radix_
 	_out/sysroot/boot/radix_, for *gdb*(1).
 
 _/boot/grub/grub.cfg_
-	The menu, generated from _image/grub/grub.cfg.in_.
+	The menu, generated from _image/grub/live.cfg.in_.
 
 _/boot/firmware/intel-ucode.bin_
 	Intel microcode updates, only when the image was built with
@@ -596,6 +604,13 @@ them to *init*, and the kernel does not read them.
 	becomes the system GRUB did not start; when no disk holds it, Spark
 	says so and starts nothing. Without it, Spark takes the first disk
 	that holds a Dukovo root. The last one given counts.
+
+*live*
+	Read by *spark*(8), not the kernel: the live system, as the install
+	stick's boot menu starts it (ADR 0308). _/system_ stays the boot
+	archive, in memory, whatever disks hold a Dukovo root, and the only
+	disk Spark mounts is the stick's DUKOVO_LIVE, read-only: the
+	machine's disks are the owner's, for the installer or *mount*(8).
 
 *startup-trouble*
 	Read by *login*(1) and *authd*(8), not the kernel: the sign-in at

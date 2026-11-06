@@ -112,6 +112,7 @@ mod prompt;
 mod ps;
 mod quota;
 mod rdisk;
+mod releases;
 mod remount;
 mod replace;
 mod resolvectl;
@@ -265,6 +266,7 @@ const TOOLS: &[(&str, Tool)] = &[
     ("sudo", elevate::main),
     ("swapoff", swap::swapoff),
     ("swapon", swap::swapon),
+    ("system-release", releases::main),
     ("taskset", priority::taskset),
     ("timed", timed::main),
     ("timedatectl", timedatectl::main),

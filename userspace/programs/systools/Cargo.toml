@@ -39,6 +39,9 @@ dkv = { path = "../dkv" }
 # bundled(8) reads the catalogs with Dukovo's TUF client (ADRs 0380 and
 # 0383).
 tuf = { path = "../tuf" }
+# system-release(8) checks a signed system release, such as an install
+# stick's, with the crate ob signs releases with (ADR 0308).
+system-release = { path = "../system-release" }
 # bundle feed signs a bundle's own update feed, a small TUF repository, as
 # the catalog's is signed (ADRs 0381 and 0390).
 catalog-repo = { path = "../catalog-repo" }
