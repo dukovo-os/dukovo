@@ -54,9 +54,11 @@ operation takes only those it needs.
 **The locks.**
 
 - Each space's lock (S) guards what its slots hold: the capability, the
-  slot's flags, the cache mark, the revoke mark, and a new `linked` bit.
-- The tree lock (T) guards the links between slots (parent, first child,
-  siblings) and the stored depths of linked slots.
+  slot's flags, the cache mark, and a new `linked` bit.
+- The tree lock (T) guards each linked slot's place in the tree: its
+  links (parent, first child, siblings), its stored depth and its revoke
+  mark, which deriving reads on every capability above its source, in
+  any space.
 - The object table and the registry keep a lock of their own (O), taken
   last and only around a short step. Step 3 below replaces it with counts
   kept in each entry and free lists per CPU.
@@ -107,14 +109,16 @@ does) and to clear it; or a leaf's, to delete it. The walk down the tree
 follows links under T alone. Between turns it lets go of everything, as
 it lets go of the one lock today.
 
-**Which lock guards which field.** The capability, flags, marks and the
-`linked` bit are written with the slot's space locked. Links and the
-depth of a linked slot are written with T held. The slow path holds both
-for the slots it changes. A thread holding only T touches no slot whose
-bit is clear (no link leads to one), and a thread holding only a space's
-lock reads and writes no link. So each slot keeps its fields in two
-parts, one per lock, and the store gives out no `&mut` to a whole space
-or to the slots of more than one.
+**Which lock guards which field.** Each slot keeps its fields in two
+parts. The capability, flags, cache mark and `linked` bit are read and
+written with the slot's space locked. The tree part (links, depth,
+revoke mark) is read and written with T held while the slot is linked,
+and with the space locked while it is not: no link leads to an unlinked
+slot, so no thread holding only T reaches it, and the bit changes only
+with the space locked. A revoke holds both when it sets or clears its
+mark, and the slow path holds both for the slots it fills or empties.
+The store gives out no `&mut` to a whole space or to the slots of more
+than one.
 
 **The cache version.** The version the per-CPU capability caches check
 (ADR 0077) is already atomic. An operation that empties a cached slot
