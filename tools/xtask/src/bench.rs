@@ -1332,7 +1332,7 @@ impl Accel {
     /// adds `norandmaps`: with programs' memory in the same places every
     /// run, a fork builds the same page tables each time, where random
     /// places cross a table's boundary in some runs and not others and
-    /// moved the count some 2,600 instructions (dukovo-boot(7)).
+    /// moved the count some 2,600 instructions (ADR 0400).
     fn cmdline(self, cmdline: &str) -> String {
         match self {
             Accel::Count => format!("norandmaps {cmdline}"),
