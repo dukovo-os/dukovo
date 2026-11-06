@@ -514,6 +514,9 @@ pub struct Given {
     pub app_data: Vec<String>,
     /// `devices.serial`: the serial ports' terminals.
     pub serial: bool,
+    /// `keyring.shared`: every entry of your keyring, beside its own
+    /// (ADR 0396).
+    pub keyring_shared: bool,
     /// The permissions given, by name: taking one away stops the program.
     pub names: Vec<String>,
     /// The optional permissions it runs without, by name.
@@ -554,6 +557,7 @@ pub fn give(given: &mut Given, name: &str, request: &Asked, words: &[String]) {
         "files.volumes" => given.volumes = true,
         "files.app-data" => given.app_data.extend(words.iter().cloned()),
         "devices.serial" => given.serial = true,
+        "keyring.shared" => given.keyring_shared = true,
         // Notifications are always allowed; starting at sign-in is the
         // session's to do, not the program's.
         _ => {}
@@ -756,6 +760,14 @@ fn start(
     }
     let tmp = format!("/tmp/.app-{}", found.id);
     own_folder(&tmp, uid).map_err(fail)?;
+    // Its keyring, served for this run at authd's path in its view (ADR
+    // 0396), from a folder of the person's alone. Without it, the program
+    // runs and finds authd unreachable.
+    let keyring = format!("{tmp}.keyring-{}", std::process::id());
+    let served = own_folder(&keyring, uid)
+        .and_then(|()| super::keyring::serve(keyring, &found.id, given.keyring_shared))
+        .inspect_err(|why| eprintln!("bundle: {}: no keyring: {why}", found.id))
+        .ok();
     let env = environment(&user, &data, &caller_environment());
     let mut argv: Vec<Vec<u8>> = vec![chosen.arg0.clone().into_bytes()];
     argv.extend(args.iter().map(|a| a.as_bytes().to_vec()));
@@ -770,6 +782,7 @@ fn start(
         data: &data,
         tmp: &tmp,
         serial: &serial,
+        keyring: served.as_ref().map(super::keyring::Served::folder),
     };
     // Opened before the sandbox takes its slots, as reading anything is.
     let watching = if given.names.is_empty() { None } else { watch(found) };
@@ -794,6 +807,9 @@ pub struct Plan<'a> {
     pub tmp: &'a str,
     /// The serial ports' terminals it is given.
     pub serial: &'a [String],
+    /// The folder of the keyring served for it, which its view holds at
+    /// authd's path.
+    pub keyring: Option<&'a str>,
 }
 
 #[cfg(not(target_os = "radix"))]
@@ -825,6 +841,7 @@ mod sandbox {
 
     use super::{ALWAYS, DISCOVERY, NETWORK, Plan, SHARED, VOLUMES};
     use crate::bundled::APP_DATA;
+    use crate::bundles::keyring;
     use crate::bundles::protocol::Answer;
     use crate::signin::{self, Spares};
     use crate::sys::{self, SYS};
@@ -1076,6 +1093,17 @@ mod sandbox {
         let attached = directory::attach(&SYS, s.view, b"tmp", s.scratch);
         let _ = capability::delete(&SYS, s.scratch);
         attached.map_err(failed("attaching /tmp".into()))?;
+        // Its keyring, which the runner serves, where authd is: to reach,
+        // not to change.
+        if let Some(folder) = plan.keyring {
+            let from = folder.trim_start_matches('/');
+            directory::open(&SYS, s.base, from.as_bytes(), flags, READ_ONLY, s.scratch, 0)
+                .map_err(failed(format!("opening {folder}")))?;
+            let at = keyring::AT.as_bytes();
+            let attached = directory::attach(&SYS, s.view, at, s.scratch);
+            let _ = capability::delete(&SYS, s.scratch);
+            attached.map_err(failed(format!("attaching {folder}")))?;
+        }
         for (at, target) in links {
             // A name the view has already keeps what it has.
             let _ = directory::attach_link(&SYS, s.view, at.as_bytes(), target);
@@ -1387,9 +1415,10 @@ mod tests {
             "files.volumes": {"need": "required"},
             "files.shared": {"need": "required", "folders": {"team": "read"}},
             "files.app-data": {"need": "required", "apps": ["org.example.mail"]},
-            "devices.serial": {"need": "required"}}"#;
+            "devices.serial": {"need": "required"},
+            "keyring.shared": {"need": "required"}}"#;
         let g = given(&manifest("", all), "notes", &[], |_| Ok("always".into())).unwrap();
-        assert!(g.home && g.volumes && g.serial);
+        assert!(g.home && g.volumes && g.serial && g.keyring_shared);
         assert_eq!(g.shared, [("team".to_string(), false)]);
         assert_eq!(g.app_data, ["org.example.mail"]);
     }

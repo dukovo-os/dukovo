@@ -187,6 +187,9 @@ The OpenSSH client in the image signs in to other computers as on
 Linux: `ssh`, `scp`, `sftp`, `ssh-keygen`, `ssh-agent` and the rest. It
 is built without OpenSSL, so its own keys are Ed25519 keys
 ([ADR 0289](https://github.com/dukovo-os/dukovo/blob/main/docs/adr/0289-the-openssh-client.md)).
+A key's passphrase, asked for once, is kept in your keyring, and
+`ssh-add`, `ssh` and `ssh-keygen` take it from there
+([Your keyring](keyring.md)).
 
 ## When something goes wrong
 

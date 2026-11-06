@@ -3295,6 +3295,7 @@ dependencies = [
  "serde_json",
  "smoltcp",
  "socket2",
+ "ssh-key",
  "system-release",
  "tuf",
 ]

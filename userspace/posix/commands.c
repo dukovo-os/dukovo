@@ -98,6 +98,8 @@ static const char *const ELSEWHERE[][2] = {
 		{"mtr-packet", "the network-trace boot test's: mtr runs it to send its probes"},
 		{"tcpdump", "the network-capture boot test's: it captures lo, a tunnel, a card and every interface"},
 		{"keyring", "the keyring boot test's: it keeps secrets in the keyring authd opens at a sign-in with a password"},
+		{"git-credential-keyring", "the git-keyring boot test's: git runs it to keep its https tokens in the keyring"},
+		{"ssh-askpass-keyring", "the ssh-keyring boot test's: ssh-add runs it for a key's passphrase, which it keeps in the keyring"},
 };
 
 enum { ELSEWHERE_COUNT = sizeof(ELSEWHERE) / sizeof(ELSEWHERE[0]) };
