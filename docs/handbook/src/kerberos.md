@@ -135,7 +135,10 @@ them, as no one. nfsd(8) and nfs(1) say more.
 - **"the server takes another security flavor for this folder"**: the
   share takes Kerberos and the mount did not ask for it, or the other way
   round: mount with the `sec=` the share lists (`share list` shows it on
-  Dukovo, `exportfs -v` on Linux).
+  Dukovo, `exportfs -v` on Linux). A Linux server also needs its own
+  `/etc/krb5.keytab`, even when its NFS key is kept elsewhere: without
+  that file, its mountd offers only `sys` on the folders that lead to the
+  export, and refuses a `krb5p` mount there, Linux's own included.
 - **A Linux client's mount of a Dukovo share hangs or is refused**:
   nfsd's log names each context it refused (`log nfsd`), most often a
   keytab without the key for the name the client used; on the client,

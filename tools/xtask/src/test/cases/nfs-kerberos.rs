@@ -18,6 +18,11 @@
 //! test is not root, and Linux's NFS server and client (nfs-kernel-server,
 //! nfs-common); where they are missing, as in `ob --container`, only the
 //! guest's part is checked: its settings, alice's ticket and her share.
+//! Where the host has no /etc/krb5.keytab, the test puts an empty one
+//! there while it runs: mountd offers Kerberos on the folders on the way
+//! to an export, NFS 4's pseudo-root, only when that file exists, and
+//! without it the guest's mount, as Linux's own would, finds the root
+//! refusing krb5p.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -36,6 +41,13 @@ const NETDEV: &str = "user,id=n0,guestfwd=tcp:10.0.2.100:80-cmd:out/test/nfs-ker
 
 /// The host's NFS service, which rpc.svcgssd accepts tickets for.
 const HOST_SERVICE: &str = "nfs/server.dukovo.test@DUKOVO.TEST";
+
+/// The host's own keytab, whose being there makes mountd offer Kerberos
+/// on the pseudo-root (nfs-utils' v4root.c).
+const HOST_KEYTAB: &str = "/etc/krb5.keytab";
+
+/// A keytab with no keys: MIT's format version, 0x0502, alone.
+const EMPTY_KEYTAB: [u8; 2] = [0x05, 0x02];
 
 /// MIT's and Linux's programs the host runs, as Debian and Ubuntu
 /// install them.
@@ -171,6 +183,40 @@ impl Drop for Daemon {
         // Through sudo, which passes the signal on.
         let _ = as_root(&["kill", "-TERM", &self.0.id().to_string()]).status();
         let _ = self.0.wait();
+    }
+}
+
+/// An empty keytab at /etc/krb5.keytab where the host had none, taken
+/// away when dropped. Empty, so that rpc.gssd finds no machine key in it
+/// and nothing else on the host changes what it does.
+struct HostKeytab {
+    /// Whether the test put it there.
+    ours: bool,
+}
+
+impl HostKeytab {
+    /// Puts it in place, through a file in `dir`, unless the host has one.
+    fn put(dir: &Path) -> Result<HostKeytab, String> {
+        if Path::new(HOST_KEYTAB).exists() {
+            return Ok(HostKeytab { ours: false });
+        }
+        let empty = dir.join("empty.keytab");
+        std::fs::write(&empty, EMPTY_KEYTAB)
+            .map_err(|err| format!("writing {}: {err}", empty.display()))?;
+        let from = empty.to_string_lossy().into_owned();
+        must(
+            &["install", "-m", "600", &from, HOST_KEYTAB],
+            "put an empty keytab at /etc/krb5.keytab",
+        )?;
+        Ok(HostKeytab { ours: true })
+    }
+}
+
+impl Drop for HostKeytab {
+    fn drop(&mut self) {
+        if self.ours {
+            let _ = as_root(&["rm", "-f", HOST_KEYTAB]).status();
+        }
     }
 }
 
@@ -421,6 +467,9 @@ fn with_host(vm: &mut Vm, dir: &Path) -> Result<(), String> {
     // The kernel's Kerberos for RPC, where it is a module.
     let _ = as_root(&["modprobe", "rpcsec_gss_krb5"]).status();
 
+    // Before the export, as mountd looks for it as the export changes;
+    // taken away last, after the export.
+    let _keytab = HostKeytab::put(dir)?;
     let svcgssd = [SVCGSSD, "-f", "-v", "-p", HOST_SERVICE];
     let _svcgssd = Daemon::start(dir, "nfs.keytab", "svcgssd.log", &svcgssd)?;
     let _export = Export::new(&host.join("export"))?;
