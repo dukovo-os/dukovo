@@ -232,8 +232,8 @@ with *0x*. Both may contain *\_* separators, as in *ffffffff_80100000*.
 	Count the capability spaces and their slots, the capabilities and
 	the kernel objects, in all and by object kind, with the pages held by
 	memory objects, the deepest derivation and the revokes under way (see
-	*radix-capabilities*(7)). If another CPU holds the capability store's
-	lock, it says so instead of waiting.
+	*radix-capabilities*(7)). If another CPU holds one of the capability
+	store's locks, it says so instead of waiting.
 
 *threads*
 	List every thread: its number, name, CPU, state (and, when
@@ -468,8 +468,9 @@ boots.
 	kernel's half, an undefined instruction, a breakpoint, a division by
 	zero); each must be ended by the kernel, which logs *User: thread*
 	_id_ *(fault) ended:* and the fault, while the kernel and the other
-	programs carry on. Last, the capability store and the object
-	registry must hold what they held before the first program started.
+	programs carry on. Last, the capability store and the kernel
+	objects it keeps must be what they were before the first program
+	started.
 	Skipped with a warning when the boot loader loaded no *usertests*
 	module.
 
@@ -480,7 +481,7 @@ boots.
 	messages in shared memory, and messages posted to each other's ring.
 	Each pair ping-pongs a thousand times and checks every answer; each
 	program must exit with 0, and afterwards the capability store and
-	the object registry must hold what they held before. Reports
+	the kernel objects it keeps must be what they were before. Reports
 	*selftest ipc: passed*.
 
 *fuzz*
@@ -508,8 +509,8 @@ boots.
 	every result register. It logs each broken promise as *fuzz: broken promise* or
 	*fuzz: undocumented error*, and exits with their count. At least
 	half the fuzzers must finish, the capability store must pass its
-	audit, and the store and the object registry must hold what they
-	held before. The log names the seeds (*selftest fuzz: seeds* _a_
+	audit, and the store and the kernel objects it keeps must be what
+	they were before. The log names the seeds (*selftest fuzz: seeds* _a_
 	*to* _b_); the *fuzz-seed* flag (*dukovo-boot*(7)) repeats them.
 
 *bench*

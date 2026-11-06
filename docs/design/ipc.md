@@ -36,8 +36,8 @@ kernel/lib/elf          radix-elf: reads the program headers of a static ELF64
                         executable, refusing anything it cannot map safely
 kernel/arch/x86_64      user.rs: SYSCALL entry and SYSRET, entering user mode,
                         user faults, user copies with SMAP lifted, shared pages
-kernel/radix            user/: the system calls (syscall.rs), the object
-                        registry (objects.rs), address spaces and frames
+kernel/radix            user/: the system calls (syscall.rs), the kernel
+                        objects (objects.rs), address spaces and frames
                         (memory.rs), capability methods (methods.rs), endpoints
                         (ipc.rs), notifications (notify.rs), rings (ring.rs),
                         starting programs (launch.rs); usertest.rs: the
@@ -151,11 +151,10 @@ a thread's thread pointer and exit (`radix-thread(2)`), random bytes
 (`radix-random(2)`) and ring information (`radix-ring(2)`). A label that
 is no method of the object's interface fails with `no_such_method`.
 
-Every capability lookup goes through the capability store of Phase 3 and
-the object registry (`user/objects.rs`), which maps the store's object
-names to the kernel objects behind them, under the store's own lock
-(ADR 0108), and is told when the store releases a name, so the object
-closes when its last capability goes: an endpoint fails its waiters with
+Every capability lookup goes through the capability store of Phase 3,
+which keeps the kernel object behind each object name in its record of
+the object (`user/objects.rs`, ADR 0108), and gives it back when it
+releases the name, so the object closes when its last capability goes: an endpoint fails its waiters with
 `gone`, a frame is unmapped from every address space. Phase 5 adds three
 object kinds to the store's twelve: `random`, `ring` and `kernel_log`.
 
@@ -343,7 +342,8 @@ object, but their capabilities are kept with its process so a program
 cannot unmap its own code by deleting a capability. When the group ends,
 every process goes, and with it everything the programs had; the `user`,
 `ipc` and `fuzz` self-tests check that the capability store and the
-object registry hold what they held before the first program started.
+kernel objects it keeps are what they were before the first program
+started.
 
 The `usertests` programs (`userspace/usertests`) are:
 
@@ -549,8 +549,9 @@ whether to offer paravirtual EOI (ADR 0041).
 
 ## Known limits
 
-- Each capability space has a lock of its own, and the derivation tree
-  and the object table one each (ADR 0369). Messages that carry
+- Each capability space has a lock of its own, the derivation tree and
+  the object table's free records one each, and each object's record
+  one (ADR 0369). Messages that carry
   capabilities take the tree lock, so programs passing capabilities all
   the time on many CPUs at once queue on it, and taking away a
   capability or object that some CPU found empties every CPU's cache.

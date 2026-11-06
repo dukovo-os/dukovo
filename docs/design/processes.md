@@ -98,14 +98,14 @@ processes), lets go of the address space (its threads' own references
 keep it alive while they finish leaving it), sets **exited**, signals the
 `notify_exit` notification, logs a nonzero exit code, wakes anyone
 waiting on the process in the kernel, and calls `on_exit`. What is left
-is the number and the exit code. The registry entry, with the charge,
-goes when the last capability does: that **reaps** the process.
+is the number and the exit code. The store's record of it, with the
+charge, goes when the last capability does: that **reaps** the process.
 
 ### Ending under the store's locks
 
 A process also ends when the capability store releases it, because its
 last capability was deleted. That happens with the store's locks held
-(the object table's, ADR 0369), so finishing it, which changes the store,
+(its spaces', ADR 0369), so finishing it, which changes the store,
 cannot happen there and then. `released` ends the process and, if it is
 to be finished, links it onto a pending list through its own `pending`
 field; `caps::finish` calls `finish_pending` after every change, once the
@@ -148,9 +148,9 @@ account, by the bytes the kernel uses for it, before it is made:
 
 An account (`Account`) keeps a byte count and charges its domain whole
 pages as the count crosses page boundaries, so many small objects cost
-the domain what they really use. The `Charge` is kept in the object's
-registry entry and gives the bytes back when the entry goes, after the
-object has closed. A new process gets an account of its own in the
+the domain what they really use. The `Charge` is kept with the object
+in the store's record of it and gives the bytes back when the object
+goes, after it has closed. A new process gets an account of its own in the
 target's domain, for what it makes in turn.
 
 ## Loading a program
@@ -300,20 +300,20 @@ The claims, and why they hold:
 4. **Nothing is left behind.** Every process is reachable from its
    capabilities or from the process it was made for; when the last of
    those goes, it ends and is finished (claims 1 and 3), and when it is
-   reaped its registry entry and charge go. The `fuzz` boot test checks
-   this from the outside: the store's census and the registry hold the
-   same before and after programs that make processes and call every
+   reaped its record and charge go. The `fuzz` boot test checks this
+   from the outside: the store's census and its count of kernel objects
+   are the same before and after programs that make processes and call every
    process method at random.
 5. **Ending never waits on memory or recursion.** `end` takes only the
    state lock and wakes threads; the pending list is linked through the
    processes themselves; the made list is taken whole.
 6. **The lock order holds** (see *Lock order*): `released` runs under
-   the store's object table lock and takes a process's state inside it;
+   the store's space locks and takes a process's state inside them;
    `finish_pending` and `create` run with no store lock held, and take
    the store's locks only while holding no process lock; no path takes a
    store lock while holding a process's.
 7. **Charges balance.** A charge is taken before an object exists and
-   given back when its registry entry goes; a failed creation drops it.
+   given back when the object goes; a failed creation drops it.
 
 The `user` boot test's probe checks every process method's errors and
 success, including that a process made for a child that holds the only

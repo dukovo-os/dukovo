@@ -18,6 +18,7 @@
 use alloc::vec::Vec;
 use core::alloc::Allocator;
 
+use super::objects::Spare;
 use crate::cap::Capability;
 
 /// A slot of a space by index, inside the store.
@@ -133,6 +134,9 @@ pub(super) struct SpaceState<A: Allocator> {
     pub(super) generation: u32,
     pub(super) live: bool,
     pub(super) slots: Vec<Slot, A>,
+    /// Free object indexes the space keeps, so that making and releasing
+    /// objects with its lock held needs no other lock most of the time.
+    pub(super) spare: Spare,
 }
 
 /// The tree part of every slot, by space and slot, and the list of free

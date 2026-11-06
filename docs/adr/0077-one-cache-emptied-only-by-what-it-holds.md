@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 # 0077. One per-CPU cache finds a capability and its object, and empties only when something it holds goes
 
-- Status: Accepted; since [0369](0369-each-capability-space-has-its-own-lock-and-one-lock-guards-the-tree.md) the version lives in the store and moves before the lock of the slot that changed goes
+- Status: Accepted; since [0369](0369-each-capability-space-has-its-own-lock-and-one-lock-guards-the-tree.md) the version lives in the store and moves before the lock of the slot that changed goes, or, for an object, before the operation that released it returns
 - Date: 2026-10-22
 
 ## Context

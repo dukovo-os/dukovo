@@ -15,9 +15,9 @@
 //! (Phase 8), which ends the process unless a handler takes it; nothing a
 //! program does stops the kernel.
 //!
-//! Kernel objects live in [`objects`]'s registry, keyed by the name the
-//! capability store gives them, so a capability lookup leads to the object
-//! itself. The store decides what a program may do; the objects carry it
+//! Kernel objects are kept in the capability store, each in the record of
+//! the name the store gives it ([`objects`]), so a capability lookup leads
+//! to the object itself. The store decides what a program may do; the objects carry it
 //! out:
 //!
 //! - `ipc`: endpoints, synchronous messages of up to eight words and four
@@ -40,7 +40,7 @@
 //! `docs/design/ipc.md` and `docs/design/processes.md` describe the
 //! design.
 //!
-//! Lock order: the capability store, the object registry, a process's
+//! Lock order: the capability store (an object's record last), a process's
 //! state, a frame's state, an address space's regions; an endpoint, then
 //! a thread's IPC state; a ring's queues. None is held across a block.
 

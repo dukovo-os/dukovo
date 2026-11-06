@@ -28,8 +28,8 @@
 //!   how).
 //!
 //! Each test logs `selftest NAME: passed` or `failed` lines. `user`, `ipc`
-//! and `fuzz` also check that the capability store and the object registry
-//! hold what they held before, once every program has gone.
+//! and `fuzz` also check that the capability store and the kernel objects
+//! it keeps are what they were before, once every program has gone.
 
 use radix_cap::{KINDS, Rights};
 use radix_klog::{error, info, warn};
@@ -127,7 +127,7 @@ impl Outcome {
         }
     }
 
-    /// Fails unless the store and the registry hold what they held
+    /// Fails unless the store and its kernel objects are what they were
     /// `before` the test's programs started.
     fn nothing_left(&mut self, before: Option<&Census>) {
         let after = census();
@@ -143,7 +143,8 @@ impl Outcome {
     }
 }
 
-/// What the capability store and the user object registry hold, by kind.
+/// What the capability store and the kernel objects it keeps hold, by
+/// kind.
 #[derive(Debug, PartialEq, Eq)]
 struct Census {
     spaces: u32,
@@ -153,10 +154,12 @@ struct Census {
 }
 
 /// The census, once every group has gone: a space, capability or object a
-/// program's end missed shows up as a difference.
+/// program's end missed shows up as a difference. Not inlined: the
+/// tests that call it have large frames of their own.
+#[inline(never)]
 fn census() -> Option<Census> {
     let store = caps::store().ok()?;
-    let (store, registered) = (store.census(), store.with_registry(user::objects::census));
+    let (registered, store) = (user::objects::census(store, true)?, store.census());
     Some(Census { spaces: store.spaces, caps: store.caps, objects: store.objects, registered })
 }
 

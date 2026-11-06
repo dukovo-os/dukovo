@@ -187,11 +187,46 @@ deadlock checking on.
   (finishing a process, dropping a removed file, stopping a card,
   telling a parent) runs in `caps::finish` once they have gone.
 
+**How the object table went in (step 3).**
+
+- The counts in each entry are guarded by a spin lock in each record,
+  not kept as atomics: a release lowers a count, takes the kernel's
+  object out and moves the generation on, which must happen together.
+  The lock is held for a few loads and stores, and an operation holds
+  one record's at a time, taken after every other lock of the store.
+- The records live in blocks of 512, made when first needed and never
+  moved (2048 blocks at most, about a million objects), so finding a
+  record by its index takes no lock.
+- The free lists are kept per space, not per CPU: each space keeps up
+  to eight free records under its own lock, which an operation already
+  holds when it makes or releases an object there, and fills or empties
+  them four at a time from the table's free list. Lists per CPU would
+  need a lock of their own, or preemption off across the operation. O
+  now guards only the table's free list and the making of blocks, and a
+  destroyed space gives its spare records back there.
+- The generation of each record is an atomic beside its lock, changed
+  only under the lock: whoever takes a free record's index reads it
+  without the lock, so making an object takes the record's lock once.
+- The registry went into the records (the store's `K`; the kernel's
+  `user::objects::Recorded`): each kernel object is kept in its
+  object's record, beside its counts, and the kernel's registry table
+  is gone. What the kernel keeps of an object is filled in with no
+  record's lock held, so making it may allocate, and stored before the
+  object's first capability is placed. The `Released` callback is given
+  it once the record's lock has gone, so closing an object takes no
+  record lock.
+- A retype carves its pages and raises the memory object's count of
+  children in one hold of that object's record lock, since a fast-path
+  delete may release an object retyped from it meanwhile and lower the
+  count. Whatever refuses the retype after the carve takes it back, with
+  the objects already made, so a refused retype changes nothing.
+
 ## Consequences
 
 - Opens and closes in different processes no longer take turns: each
-  takes its own space's lock and, until step 3, the object table's
-  briefly. Threads of one process still take turns at their space's
+  takes its own space's lock and its own object's record's. Since step
+  3 they share only O, which a space takes once every few objects to
+  fill or empty its spare records. Threads of one process still take turns at their space's
   lock, as Linux's threads do at their file table's.
 - Deriving, revoking, and deleting or moving linked capabilities still
   take turns, at T, and take one or two locks more than now. They are
