@@ -125,6 +125,8 @@ error that starts with the tool's name.
 :  the keyboard layout the consoles type in
 |  *kill*(1)
 :  send a signal
+|  *kinit*(1), *klist*(1), *kvno*(1), *kdestroy*(1)
+:  get, list, take for services and throw away Kerberos tickets
 |  *last*(1), *lastb*(1)
 :  who signed in, when and for how long, and the wrong passwords
 |  *lastlog*(8)

@@ -13,12 +13,19 @@ publish.workspace = true
 [dependencies]
 # What authd(8) is asked (ADR 0218): to start each worker.
 accounts = { path = "../accounts" }
+# Kerberos (ADR 0397): GSS-API's contexts, which RPCSEC_GSS (sec=krb5,
+# krb5i and krb5p) runs on, and the keytab they are accepted with.
+kerberos = { path = "../kerberos" }
 # The libc crate with its Radix module, which ob patches in from the
 # rust-std port (ADR 0070).
 libc = "0.2.191"
 # The shares file, shares.toml(5), and the networks NFS may reach each
 # share from.
 manifest = { path = "../manifest" }
+
+[dev-dependencies]
+# Contexts without a KDC, for the tests of RPCSEC_GSS.
+kerberos = { path = "../kerberos", features = ["testing"] }
 
 [features]
 # nfsd for nfs(1)'s tests: a server in their process (src/testing.rs).

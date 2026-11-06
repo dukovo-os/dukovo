@@ -8,7 +8,8 @@
 //! - `share` and `share list` list the shares, and say whether sharing
 //!   is on.
 //! - `share add NAME FOLDER [--read-only] [--comment TEXT] [--nfs
-//!   NETWORK]...` and `share remove NAME` change shares.toml(5), as root.
+//!   NETWORK]... [--nfs-sec SEC[:SEC]...]` and `share remove NAME` change
+//!   shares.toml(5), as root.
 //! - `share on` and `share off`, as root, start smbd and have it start
 //!   at each boot, or stop it, which ends every share session.
 //! - `share nfs on` and `share nfs off` do the same for nfsd.
@@ -40,7 +41,8 @@ const SERVICE: &str = "smbd";
 const NFS_SERVICE: &str = "nfsd";
 
 const HELP: &str = "Usage: share [list]
-       share add [--read-only] [--comment TEXT] [--nfs NETWORK]... NAME FOLDER
+       share add [--read-only] [--comment TEXT] [--nfs NETWORK]...
+                 [--nfs-sec SEC[:SEC]...] NAME FOLDER
        share remove NAME
        share on | off
        share nfs on | off
@@ -54,7 +56,10 @@ sharing password, and sees in each share what that person may see.
   add       shares FOLDER as NAME; --read-only lets no one change it;
             --nfs lets machines on NETWORK (192.168.1.0/24, or one
             address) mount it over NFS, which takes them at their word
-            for who they are
+            for who they are; --nfs-sec krb5, krb5i or krb5p has each
+            caller prove it with a Kerberos ticket instead (sys, their
+            word, is the default), krb5i signing and krb5p sealing each
+            call too
   remove    stops sharing NAME
   on, off   starts smbd, now and at each boot, or stops it and ends
             every session
@@ -170,7 +175,8 @@ fn list(args: &mut Args) -> Result<i32, Fail> {
             share.name, share.folder, share.comment
         );
         if !share.nfs.is_empty() {
-            println!("{:width$}  NFS: {}", "", share.nfs.join(", "));
+            let sec = if share.nfs_sec.is_empty() { "sys".into() } else { share.nfs_sec.join(":") };
+            println!("{:width$}  NFS: {} (sec={sec})", "", share.nfs.join(", "));
         }
     }
     Ok(0)
@@ -179,7 +185,7 @@ fn list(args: &mut Args) -> Result<i32, Fail> {
 /// `share add`.
 fn add(args: &mut Args) -> Result<i32, Fail> {
     let (mut read_only, mut comment, mut operands) = (false, String::new(), Vec::new());
-    let mut nfs = Vec::new();
+    let (mut nfs, mut nfs_sec) = (Vec::new(), Vec::new());
     while let Some(arg) = args.next()? {
         match arg {
             Arg::Long(l) if l == "read-only" => read_only = true,
@@ -190,6 +196,17 @@ fn add(args: &mut Args) -> Result<i32, Fail> {
                 let network = args.value()?.to_string_lossy().into_owned();
                 shares::Network::parse(&network).map_err(usage)?;
                 nfs.push(network);
+            }
+            Arg::Long(l) if l == "nfs-sec" => {
+                for sec in args.value()?.to_string_lossy().split(':') {
+                    if !shares::NFS_SECURITY.contains(&sec) {
+                        return Err(usage(format!(
+                            "--nfs-sec takes sys, krb5, krb5i and krb5p, with colons between, \
+                             not {sec}"
+                        )));
+                    }
+                    nfs_sec.push(sec.to_string());
+                }
             }
             Arg::Operand(operand) => operands.push(operand.to_string_lossy().into_owned()),
             other => return Err(args.unknown(&other)),
@@ -203,7 +220,7 @@ fn add(args: &mut Args) -> Result<i32, Fail> {
         return Err(fail(format!("{} is not a folder", folder.display())));
     }
     let folder = folder.to_string_lossy().into_owned();
-    let share = Share { name, folder, comment, read_only, nfs };
+    let share = Share { name, folder, comment, read_only, nfs, nfs_sec };
     let mut all = read()?;
     all.add(share.clone()).map_err(fail)?;
     write(shares::PATH, &all.to_toml(), 0o644)?;
@@ -214,6 +231,13 @@ fn add(args: &mut Args) -> Result<i32, Fail> {
     }
     if !share.nfs.is_empty() {
         println!("NFS clients on {} mount it as :/{}.", share.nfs.join(", "), share.name);
+        let keytab = kerberos::keytab::PATH;
+        if share.nfs_sec.iter().any(|sec| sec.starts_with("krb5")) && !Path::new(keytab).exists() {
+            println!(
+                "Kerberos needs nfs/HOST's key in {keytab}: get it from the realm's \
+                 administrator (kadmin's ktadd)."
+            );
+        }
         if !is_on(NFS_SERVICE) {
             println!("NFS is off; `share nfs on` turns it on.");
         }

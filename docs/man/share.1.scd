@@ -11,7 +11,7 @@ share - share folders with Windows PCs and other computers
 
 *share* [*list*]
 
-*share add* [*--read-only*] [*--comment* _text_] [*--nfs* _network_]... _name_ _folder_
+*share add* [*--read-only*] [*--comment* _text_] [*--nfs* _network_]... [*--nfs-sec* _flavors_] _name_ _folder_
 
 *share remove* _name_
 
@@ -52,6 +52,14 @@ for each network. NFS with AUTH_SYS takes a machine at its word for who
 calls, so name only networks whose machines and their administrators
 you trust; root on them is served as no one (*nfsd*(8)). A share that
 names no network is not served over NFS.
+
+*--nfs-sec* names how NFS clients must say who calls, one or more of
+*sys*, *krb5*, *krb5i* and *krb5p* joined by *:*, the first preferred,
+as Linux's exports name them: *sys* takes the client's word, and the
+three Kerberos flavors take each person's ticket, signing and sealing
+the calls with *krb5i* and *krb5p* (*nfsd*(8)). *sys* unless given.
+Kerberos needs the machine's keytab, with the key of _nfs/name_; *add*
+says so when there is none.
 
 *remove* stops sharing _name_. A PC connected to it is told the share is
 gone at its next request.

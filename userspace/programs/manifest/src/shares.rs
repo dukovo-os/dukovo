@@ -25,7 +25,10 @@
 //! `computer:/name`, from nfsd(8) (ADR 0343): addresses, or networks as
 //! an address and the length of its prefix. NFS's machines say who calls
 //! and are taken at their word, so a share has none unless it is given
-//! them.
+//! them. `nfs-sec` lists how they may say it (ADR 0399): `sys`, their
+//! word, as when it is left out; or Kerberos, `krb5`, `krb5i` (each call
+//! signed) and `krb5p` (sealed too), where each caller proves who they
+//! are with a ticket.
 
 use alloc::format;
 use alloc::string::{String, ToString};
@@ -71,7 +74,14 @@ pub struct Share {
     /// NFS (ADR 0343).
     #[serde(default)]
     pub nfs: Vec<String>,
+    /// How NFS's calls may say who calls: [`NFS_SECURITY`]'s names,
+    /// `sys` alone when none are given (ADR 0399).
+    #[serde(default, rename = "nfs-sec")]
+    pub nfs_sec: Vec<String>,
 }
+
+/// The names `nfs-sec` takes, as Linux's exports(5) names them.
+pub const NFS_SECURITY: [&str; 4] = ["sys", "krb5", "krb5i", "krb5p"];
 
 /// The number NFS's filehandles carry for the share named `name`, and
 /// the name its folder has in an NFS worker's view, `.nfs-` and it in
@@ -207,6 +217,10 @@ impl Shares {
                 let networks: Vec<String> = share.nfs.iter().map(|n| quoted(n)).collect();
                 text.push_str(&format!("nfs = [{}]\n", networks.join(", ")));
             }
+            if !share.nfs_sec.is_empty() {
+                let flavors: Vec<String> = share.nfs_sec.iter().map(|n| quoted(n)).collect();
+                text.push_str(&format!("nfs-sec = [{}]\n", flavors.join(", ")));
+            }
         }
         text
     }
@@ -283,6 +297,11 @@ pub fn check(share: &Share) -> Result<(), String> {
     for network in &share.nfs {
         Network::parse(network)?;
     }
+    if let Some(odd) = share.nfs_sec.iter().find(|sec| !NFS_SECURITY.contains(&sec.as_str())) {
+        return Err(format!(
+            "its nfs-sec names {odd}, which is none of sys, krb5, krb5i and krb5p"
+        ));
+    }
     Ok(())
 }
 
@@ -313,6 +332,7 @@ mod tests {
             comment: "Chase's \"good\" music \\ all of it".into(),
             read_only: true,
             nfs: Vec::new(),
+            nfs_sec: Vec::new(),
         }
     }
 
@@ -326,12 +346,14 @@ mod tests {
             comment: String::new(),
             read_only: false,
             nfs: vec!["192.168.1.0/24".into(), "fd00::1".into()],
+            nfs_sec: vec!["krb5p".into(), "krb5i".into()],
         };
         shares.add(other).unwrap();
         let text = shares.to_toml();
         assert_eq!(from_toml(&text), Ok(shares.clone()));
         assert!(text.contains("read-only = true"));
         assert!(text.contains("nfs = [\"192.168.1.0/24\", \"fd00::1\"]"));
+        assert!(text.contains("nfs-sec = [\"krb5p\", \"krb5i\"]"));
         assert_eq!(from_toml(""), Ok(Shares::default()));
     }
 
@@ -367,6 +389,8 @@ mod tests {
         assert!(share.nfs_allows("10.0.2.15".parse().unwrap()));
         assert!(!music().nfs_allows("10.0.2.15".parse().unwrap()));
         assert!(check(&Share { nfs: vec!["nope".into()], ..music() }).is_err());
+        assert!(check(&Share { nfs_sec: vec!["krb5p".into()], ..music() }).is_ok());
+        assert!(check(&Share { nfs_sec: vec!["lkey".into()], ..music() }).is_err());
     }
 
     #[test]

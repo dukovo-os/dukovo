@@ -9,7 +9,9 @@
 use std::net::IpAddr;
 use std::time::{Instant, SystemTime};
 
+use crate::contexts::{Accounts, Contexts, Keys};
 use crate::fh::{Fh, Places};
+use crate::gss::Flavor;
 use crate::ipc::{Answer, Request, Stat, Time};
 use crate::nfs::{err, op};
 use crate::rpc::{AUTH_SYS, RECORD_MAX};
@@ -26,14 +28,17 @@ pub trait Backend {
     fn restart(&mut self);
 }
 
-/// Who calls, and from where.
+/// Who calls, from where, and how they said who they are.
 #[derive(Clone, Copy, Debug)]
 pub struct Context {
     /// The client's address.
     pub peer: IpAddr,
-    /// The person served: AUTH_SYS's user, or no one for root and for a
-    /// call with no credential.
+    /// The person served: AUTH_SYS's user, or the account a Kerberos
+    /// context's principal maps to; no one for root and for a call with
+    /// no credential.
     pub uid: u32,
+    /// The call's flavor, which each share takes or not.
+    pub flavor: Flavor,
 }
 
 /// The most operations in a COMPOUND, as CREATE_SESSION grants them.
@@ -83,6 +88,8 @@ pub struct Cur {
     pub uid: u32,
     /// The client's address.
     pub peer: IpAddr,
+    /// The call's flavor.
+    pub flavor: Flavor,
     /// The current filehandle's file.
     pub here: Option<Here>,
     /// The saved one's.
@@ -153,6 +160,8 @@ pub struct Server<B> {
     pub started: Time,
     /// When the leases were last looked at.
     swept: Instant,
+    /// The Kerberos contexts clients set up.
+    pub contexts: Contexts,
 }
 
 impl<B: Backend> Server<B> {
@@ -172,6 +181,7 @@ impl<B: Backend> Server<B> {
             attached: true,
             started: Time { seconds: now.as_secs().cast_signed(), nanos: now.subsec_nanos() },
             swept: Instant::now(),
+            contexts: Contexts::new(boot.to_be_bytes(), Keys::Keytab, Accounts::File),
         }
     }
 
@@ -249,6 +259,7 @@ impl<B: Backend> Server<B> {
         let mut cur = Cur {
             uid: cx.uid,
             peer: cx.peer,
+            flavor: cx.flavor,
             here: None,
             saved: None,
             stateid: None,
@@ -291,7 +302,9 @@ impl<B: Backend> Server<B> {
             } else if i == 0 && count > 1 {
                 Err(Fail::Status(err::NOT_ONLY_OP))
             } else {
-                self.operation(code, &mut cur, &mut r, now)
+                self.operation(code, &mut cur, &mut r, now).and_then(|body| {
+                    self.put_security(code, &cur, &r, i + 1 < count).map(|()| body)
+                })
             };
             results.u32(if known(code) { code } else { op::ILLEGAL });
             done += 1;
@@ -382,6 +395,35 @@ impl<B: Backend> Server<B> {
             }
             _ => self.file_operation(code, cur, r),
         }
+    }
+
+    /// After an operation that puts a file in place (PUTFH, RESTOREFH),
+    /// whether the call's flavor may use it (RFC 8881 2.6.3.1.1): not
+    /// checked when nothing follows, or what follows checks for itself
+    /// (a LOOKUP into it, a SECINFO, another PUTFH), so that a client
+    /// can find what a share takes.
+    fn put_security(&self, code: u32, cur: &Cur, r: &Reader, more: bool) -> Result<(), Fail> {
+        if !matches!(code, op::PUTFH | op::RESTOREFH) || !more {
+            return Ok(());
+        }
+        let checks_itself = match r.clone().u32() {
+            Ok(next) => matches!(
+                next,
+                op::PUTFH
+                    | op::PUTROOTFH
+                    | op::PUTPUBFH
+                    | op::RESTOREFH
+                    | op::SAVEFH
+                    | op::LOOKUP
+                    | op::LOOKUPP
+                    | op::OPEN
+                    | op::SECINFO
+                    | op::SECINFO_NO_NAME
+            ),
+            // The next operation's code does not read: it fails itself.
+            Err(_) => true,
+        };
+        if checks_itself { Ok(()) } else { self.secure(cur) }
     }
 
     /// SEQUENCE: the request's slot in its session, new or sent again.

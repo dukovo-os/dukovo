@@ -8,6 +8,8 @@
 use std::net::IpAddr;
 use std::time::Duration;
 
+use nfsd::gss::Service;
+
 /// NFS's port.
 pub const PORT: u16 = 2049;
 
@@ -85,6 +87,10 @@ pub struct Options {
     pub rsize: Option<u32>,
     pub wsize: Option<u32>,
     pub read_only: bool,
+    /// How calls say who calls: AUTH_SYS's numbers (`sec=sys`), or
+    /// Kerberos with one of RPCSEC_GSS's services (`sec=krb5`, `krb5i`,
+    /// `krb5p`).
+    pub sec: Option<Service>,
 }
 
 impl Default for Options {
@@ -99,6 +105,7 @@ impl Default for Options {
             rsize: None,
             wsize: None,
             read_only: false,
+            sec: None,
         }
     }
 }
@@ -215,11 +222,14 @@ impl Options {
                     _ => return Err(format!("{option}: NFS 4 goes over TCP alone here")),
                 },
                 "sec" => match value {
-                    Some("sys") => {}
-                    Some(v) if v.starts_with("krb5") => {
-                        return Err(format!("{option}: Kerberos is not spoken yet: sec=sys"));
+                    Some("sys") => self.sec = None,
+                    Some(name) => {
+                        let service = Service::from_name(name).ok_or_else(|| {
+                            format!("{option}: sec=sys, krb5, krb5i or krb5p, one of them")
+                        })?;
+                        self.sec = Some(service);
                     }
-                    _ => return Err(format!("{option}: sec=sys is spoken")),
+                    None => return Err(format!("{option}: sec=sys, krb5, krb5i or krb5p")),
                 },
                 "hard" => self.hard = true,
                 "soft" | "softerr" => self.hard = false,
@@ -278,7 +288,13 @@ mod tests {
         assert_eq!((o.timeout(), o.retrans, o.rsize), (Duration::from_secs(10), 3, Some(65536)));
         o.add("vers=4,hard,rw").unwrap();
         assert!(o.minor.is_none() && o.hard && !o.read_only);
-        for refused in ["vers=3", "vers=4.0", "proto=udp", "sec=krb5p", "port=x", "frobnicate"] {
+        o.add("sec=krb5p").unwrap();
+        assert_eq!(o.sec, Some(Service::Privacy));
+        o.add("sec=sys").unwrap();
+        assert_eq!(o.sec, None);
+        let refused =
+            ["vers=3", "vers=4.0", "proto=udp", "sec=lkey", "sec=krb5:sys", "port=x", "frobnicate"];
+        for refused in refused {
             assert!(Options::default().add(refused).is_err(), "{refused}");
         }
     }

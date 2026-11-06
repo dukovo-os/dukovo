@@ -49,6 +49,10 @@ use ring::rand::{SecureRandom, SystemRandom};
 use super::{Authd, Files, Peer, replace};
 use crate::util;
 
+/// The start of the names of Kerberos's entries, which kinit(1) keeps
+/// (ADR 0397).
+const KERBEROS_PREFIX: &str = "krb5 ";
+
 /// The folder of the keyrings' files, inside authd's own.
 pub const FOLDER: &str = "/system/state/authd/keyrings";
 
@@ -423,6 +427,42 @@ impl Authd {
             }
             _ => (self.keyring_entry(user, request), now),
         }
+    }
+
+    /// The Kerberos tickets in the keyring of the person numbered `uid`,
+    /// for `peer`: nfs(1), as root, or the person themselves. Only the
+    /// entries named `krb5 ...` are given, so that a mount's program
+    /// that calls as each person learns nothing else of theirs.
+    pub(super) fn kerberos_tickets(&self, files: &Files, uid: u32, peer: Peer) -> Answer {
+        if !peer.is_root() && peer.user != uid {
+            return Answer::Refused(
+                "only nfs, which runs as root, or the person themselves reads their Kerberos \
+                 tickets"
+                    .into(),
+            );
+        }
+        let name = files.users.entries().find(|u| u.uid == uid).map(|u| u.name.clone());
+        let Some(keyring) = self.keyrings.get(&uid) else {
+            return Answer::Refused(format!(
+                "the keyring of {} is closed, so their Kerberos tickets are out of reach: they \
+                 sign in with their password, or run keyring unlock",
+                name.unwrap_or_else(|| uid.to_string())
+            ));
+        };
+        let lines: Vec<String> = keyring
+            .names()
+            .filter(|entry| entry.starts_with(KERBEROS_PREFIX))
+            .filter_map(|entry| Some(format!("{entry}\t{}", request::hex(keyring.get(entry)?))))
+            .collect();
+        if peer.is_root() {
+            audit!(
+                "gave {} Kerberos tickets of {} to process {}",
+                lines.len(),
+                name.as_deref().unwrap_or("no one"),
+                peer.process
+            );
+        }
+        Answer::Done(lines.join("\n"))
     }
 
     /// Carries out a request about an entry of `user`'s keyring, which

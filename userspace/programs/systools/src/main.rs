@@ -79,6 +79,7 @@ mod hexdump;
 mod hwinfo;
 mod iostat;
 mod ip;
+mod kerberos;
 mod keymaps;
 mod keyring;
 mod last;
@@ -206,9 +207,13 @@ const TOOLS: &[(&str, Tool)] = &[
     ("iostat", iostat::main),
     ("ip", ip::main),
     ("journalctl", log::journalctl),
+    ("kdestroy", kerberos::kdestroy),
     ("keymap", keymaps::main),
     ("keyring", keyring::main),
     ("kill", signals::kill),
+    ("kinit", kerberos::kinit),
+    ("klist", kerberos::klist),
+    ("kvno", kerberos::kvno),
     ("last", last::last),
     ("lastb", last::lastb),
     ("lastlog", last::lastlog),

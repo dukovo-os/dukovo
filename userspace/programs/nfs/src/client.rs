@@ -22,7 +22,8 @@ use std::time::{Duration, Instant};
 use nfsd::nfs::{err, op};
 use nfsd::xdr::{self, Reader, Writer};
 
-use crate::rpc::{Conn, Cred};
+use crate::rpc::{self, Auth, Conn, Cred};
+use crate::security::Kerberos;
 
 /// COMPOUND, NFS version 4's one procedure but NULL.
 const COMPOUND: u32 = 1;
@@ -34,11 +35,14 @@ const WAIT_MAX: Duration = Duration::from_secs(180);
 /// The most a COMPOUND carries besides a READ's or WRITE's data.
 const OVERHEAD: u32 = 4096;
 
-/// What a call failed with: the server's status, or the connection's.
+/// What a call failed with: the server's status, the connection's, or
+/// Kerberos's refusal of the caller.
 #[derive(Debug)]
 pub enum Fail {
     Status(u32),
     Io(io::Error),
+    /// The caller has no ticket, or the server refused it: what to do.
+    Denied(String),
 }
 
 impl From<xdr::Bad> for Fail {
@@ -57,6 +61,7 @@ impl Fail {
                 io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock => libc::ETIMEDOUT,
                 _ => libc::EIO,
             },
+            Fail::Denied(_) => libc::EACCES,
         }
     }
 }
@@ -64,9 +69,10 @@ impl Fail {
 impl fmt::Display for Fail {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Fail::Status(err::WRONGSEC) => {
-                f.write_str("the server asks for Kerberos (sec=krb5), which nfs does not speak yet")
-            }
+            Fail::Status(err::WRONGSEC) => f.write_str(
+                "the server takes another security flavor for this folder: mount with the sec= \
+                 its export names (sys, krb5, krb5i or krb5p)",
+            ),
             Fail::Status(err::MINOR_VERS_MISMATCH) => {
                 f.write_str("the server speaks neither NFS 4.2 nor 4.1")
             }
@@ -76,6 +82,7 @@ impl fmt::Display for Fail {
                 write!(f, "{text} (NFS status {status})")
             }
             Fail::Io(e) => write!(f, "{e}"),
+            Fail::Denied(why) => f.write_str(why),
         }
     }
 }
@@ -195,6 +202,17 @@ impl<'a> Walk<'a> {
     }
 }
 
+/// Whose a call is.
+#[derive(Clone, Copy)]
+enum Who<'a> {
+    /// The machine's: the calls that keep the client ID, the session and
+    /// the lease, which are no one's and go with AUTH_SYS's numbers of
+    /// root, as RFC 8881's SP4_NONE lets them.
+    Machine,
+    /// A person's, as `cred` says.
+    Person(&'a Cred),
+}
+
 /// The client's state on the server.
 struct ClientId {
     id: u64,
@@ -239,12 +257,9 @@ pub struct Client {
     /// Whether the mount ended, and the client with it: the lease is not
     /// renewed, which would make a client ID again.
     ended: bool,
-}
-
-/// The credential of the machine itself, for the calls that are no
-/// one's: the client ID's and session's.
-pub fn machine() -> Cred {
-    Cred::default()
+    /// Each caller's Kerberos context, for `sec=krb5`, `krb5i` and
+    /// `krb5p`; none for `sec=sys`.
+    kerberos: Option<Kerberos>,
 }
 
 impl Client {
@@ -278,7 +293,13 @@ impl Client {
             max_write: 1 << 20,
             last: Instant::now(),
             ended: false,
+            kerberos: None,
         }
+    }
+
+    /// Calls go under each caller's Kerberos context from now on.
+    pub fn use_kerberos(&mut self, kerberos: Kerberos) {
+        self.kerberos = Some(kerberos);
     }
 
     /// The client ID, for open-owners.
@@ -295,10 +316,15 @@ impl Client {
     ///
     /// SEQUENCE's status, or the connection's once it is given up on.
     pub fn run(&mut self, cred: &Cred, ops: &Ops) -> Result<Results, Fail> {
+        self.run_as(Who::Person(cred), ops)
+    }
+
+    /// [`Client::run`], as `who`.
+    fn run_as(&mut self, who: Who<'_>, ops: &Ops) -> Result<Results, Fail> {
         let started = Instant::now();
         let mut lost = 0;
         loop {
-            match self.attempt(cred, ops) {
+            match self.attempt(who, ops) {
                 Ok(Ok(results)) => return Ok(results),
                 Ok(Err(wait)) => {
                     if started.elapsed() > WAIT_MAX {
@@ -324,13 +350,13 @@ impl Client {
 
     /// Sends `ops` once: their results, or how long to wait before they
     /// are sent again.
-    fn attempt(&mut self, cred: &Cred, ops: &Ops) -> Result<Result<Results, Duration>, Fail> {
+    fn attempt(&mut self, who: Who<'_>, ops: &Ops) -> Result<Result<Results, Duration>, Fail> {
         self.ready()?;
         if self.client.as_ref().is_some_and(|c| !c.reclaimed) {
             // Nothing to reclaim: opens may be made.
             let mut reclaim = Ops::kept();
             reclaim.op(op::RECLAIM_COMPLETE).bool(false);
-            match self.sequenced(&machine(), &reclaim)? {
+            match self.sequenced(Who::Machine, &reclaim)? {
                 Ok(results) => match results.walk().next(op::RECLAIM_COMPLETE) {
                     Ok(_) | Err(Fail::Status(err::COMPLETE_ALREADY)) => {
                         if let Some(client) = &mut self.client {
@@ -342,17 +368,17 @@ impl Client {
                 Err(wait) => return Ok(Err(wait)),
             }
         }
-        self.sequenced(cred, ops)
+        self.sequenced(who, ops)
     }
 
     /// Sends `ops` once after a SEQUENCE in the session's slot.
-    fn sequenced(&mut self, cred: &Cred, ops: &Ops) -> Result<Result<Results, Duration>, Fail> {
+    fn sequenced(&mut self, who: Who<'_>, ops: &Ops) -> Result<Result<Results, Duration>, Fail> {
         let session = self.session.as_ref().ok_or(Fail::Status(err::BADSESSION))?;
         let mut w = Writer::new();
         w.opaque(b"").u32(self.minor).u32(ops.n + 1);
         w.u32(op::SEQUENCE).fixed(&session.id).u32(session.sequence).u32(0).u32(0).bool(ops.keep);
         w.bytes.extend_from_slice(&ops.w.bytes);
-        let reply = self.call(cred, &w.bytes)?;
+        let reply = self.call(who, &w.bytes)?;
         let mut r = Reader::new(&reply);
         let status = r.u32()?;
         r.opaque(1024)?;
@@ -416,20 +442,54 @@ impl Client {
         }
     }
 
-    /// Sends a COMPOUND's arguments, `args`: its reply's results.
-    fn call(&mut self, cred: &Cred, args: &[u8]) -> Result<Vec<u8>, Fail> {
+    /// Sends a COMPOUND's arguments, `args`, as `who`: its reply's
+    /// results. A person's call on a Kerberos mount goes under their
+    /// context, set up again once if the server lost it.
+    fn call(&mut self, who: Who<'_>, args: &[u8]) -> Result<Vec<u8>, Fail> {
         if self.conn.is_none() {
             let conn = Conn::connect(self.addr, self.timing.timeout, self.xid).map_err(Fail::Io)?;
             self.conn = Some(conn);
         }
         let conn = self.conn.as_mut().ok_or(Fail::Status(err::IO))?;
-        let reply = conn.call(COMPOUND, cred, &self.machine, args);
+        let root = Cred::default();
+        let mut set_up_again = true;
+        let reply = loop {
+            let reply = match (&mut self.kerberos, who) {
+                (Some(kerberos), Who::Person(cred)) => {
+                    let session = kerberos.session(cred.uid, conn);
+                    let session = match session {
+                        Ok(session) => session,
+                        Err(fail) => {
+                            if matches!(fail, Fail::Io(_)) {
+                                self.conn = None;
+                            }
+                            return Err(fail);
+                        }
+                    };
+                    conn.call(COMPOUND, Auth::Gss(session), args)
+                }
+                (_, Who::Person(cred)) => conn.call(COMPOUND, Auth::Sys(cred, &self.machine), args),
+                (_, Who::Machine) => conn.call(COMPOUND, Auth::Sys(&root, &self.machine), args),
+            };
+            match (reply, &mut self.kerberos, who) {
+                (Err(e), Some(kerberos), Who::Person(cred))
+                    if rpc::context_lost(&e) && set_up_again =>
+                {
+                    kerberos.forget(cred.uid);
+                    set_up_again = false;
+                }
+                (reply, ..) => break reply,
+            }
+        };
         self.xid = self.xid.wrapping_add(1);
         match reply {
             Ok(reply) => Ok(reply),
             Err(e) => {
                 self.conn = None;
                 Err(match e.kind() {
+                    _ if rpc::context_lost(&e) => {
+                        Fail::Denied("the server keeps losing the Kerberos context".into())
+                    }
                     io::ErrorKind::PermissionDenied | io::ErrorKind::Unsupported => {
                         Fail::Status(io_status(&e))
                     }
@@ -464,7 +524,7 @@ impl Client {
         let mut w = Writer::new();
         w.opaque(b"").u32(self.minor).u32(1).u32(code);
         w.bytes.extend_from_slice(args);
-        let reply = self.call(&machine(), &w.bytes)?;
+        let reply = self.call(Who::Machine, &w.bytes)?;
         let mut r = Reader::new(&reply);
         let status = r.u32()?;
         r.opaque(1024)?;
@@ -550,7 +610,7 @@ impl Client {
         if self.ended {
             return Ok(());
         }
-        self.run(&machine(), &Ops::new()).map(drop)
+        self.run_as(Who::Machine, &Ops::new()).map(drop)
     }
 
     /// Ends the session and client ID, for the server to free what it
