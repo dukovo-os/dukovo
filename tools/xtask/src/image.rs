@@ -284,6 +284,35 @@ fn installed_template(ctx: &Ctx, uuid: [u8; 16]) -> Result<String> {
     Ok(template.replace("@ROOT_UUID@", &uuid_text(uuid)))
 }
 
+/// The installed system's menu in the system's GRUB folder, which
+/// dukovo-install(8) writes on the EFI system partition of the disk it
+/// installs, with the root's UUID in it (ADR 0309).
+pub const INSTALLER_MENU: &str = "installed.cfg";
+
+/// Writes [`INSTALLER_MENU`] into `dir`: [`INSTALLED_CFG`] with this
+/// build's timeout and command line, and `@ROOT_UUID@` left for the
+/// installer. Gives its path.
+pub fn installer_menu(ctx: &Ctx, dir: &Path) -> Result<PathBuf> {
+    let path = ctx.root.join(INSTALLED_CFG);
+    let template =
+        std::fs::read_to_string(&path).context(|| format!("reading {}", path.display()))?;
+    let boot = &ctx.config.boot;
+    let menu = installer_menu_text(&template, boot.timeout, &boot.cmdline)?;
+    process::create_dir(dir)?;
+    let out = dir.join(INSTALLER_MENU);
+    std::fs::write(&out, menu).context(|| format!("writing {}", out.display()))?;
+    Ok(out)
+}
+
+/// The text of [`INSTALLER_MENU`]: [`render_grub_cfg`] refuses a
+/// placeholder it does not fill, so the root's is held out of its sight
+/// and put back after.
+fn installer_menu_text(template: &str, timeout: u32, cmdline: &str) -> Result<String> {
+    const HELD: &str = "\u{1}ROOT_UUID\u{1}";
+    let held = template.replace("@ROOT_UUID@", HELD);
+    Ok(render_grub_cfg(&held, timeout, cmdline, &[], "")?.replace(HELD, "@ROOT_UUID@"))
+}
+
 /// A UUID as GRUB's `search --fs-uuid`, Linux's `blkid` and the kernel's
 /// command line write it: lowercase, in groups of 8, 4, 4, 4 and 12
 /// digits.
@@ -1149,6 +1178,17 @@ mod tests {
         // The startup-trouble entry names the same root, with its flag first.
         assert_eq!(cfg.matches(&format!("root=UUID={uuid} panic=10 quiet")).count(), 2);
         assert!(cfg.contains("radix startup-trouble root=UUID="));
+    }
+
+    #[test]
+    fn the_installers_menu_leaves_the_root_to_the_installer() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../", "image/grub/installed.cfg.in");
+        let template = std::fs::read_to_string(path).unwrap();
+        let menu = installer_menu_text(&template, 5, "quiet").unwrap();
+        assert!(menu.contains("search --no-floppy --fs-uuid --set=system @ROOT_UUID@\n"), "{menu}");
+        assert!(menu.contains("root=UUID=@ROOT_UUID@ panic=10 quiet\n"), "{menu}");
+        assert!(!menu.contains("@VERSION@") && !menu.contains("@CMDLINE@"));
+        assert!(!menu.contains('\u{1}'));
     }
 
     #[test]

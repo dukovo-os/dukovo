@@ -824,6 +824,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "dukovo-install"
+version = "0.12.0"
+dependencies = [
+ "accounts",
+ "ring",
+ "serde",
+ "serde_json",
+ "system-release",
+]
+
+[[package]]
 name = "dyn-clone"
 version = "1.0.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"

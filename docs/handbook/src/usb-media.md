@@ -17,7 +17,7 @@ from the live system:
 system-release check /volumes/sda3/release
 ```
 
-The installer arrives with the next part of Phase 14.
+[Installing](installing.md) installs it onto a disk.
 
 ## Writing the image
 

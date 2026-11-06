@@ -138,6 +138,13 @@ path = "userspace/programs/manifest/src/bundle/examples/*.json"
 SPDX-FileCopyrightText = "2026 The Dukovo contributors"
 SPDX-License-Identifier = "Apache-2.0 OR MIT"
 
+# The answers file the install tests install by (ADR 0309). JSON has no
+# comments.
+[[annotations]]
+path = "userspace/programs/installer/tests/install/*.json"
+SPDX-FileCopyrightText = "2026 The Dukovo contributors"
+SPDX-License-Identifier = "Apache-2.0 OR MIT"
+
 # The test certificates, keys and signatures OpenSSL made for tls-test
 # (testdata/make.sh), the message it signed, and the sealed messages'
 # hashes (testdata/aead.py), which tls-test reads (ADR 0192).
