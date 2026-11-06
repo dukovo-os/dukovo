@@ -72,10 +72,9 @@ use crate::user::{Result, error};
 const ANON_WINDOW: u64 = 1 << 40;
 
 /// Where a space's anonymous memory starts from: a random page boundary
-/// within [`ANON_WINDOW`] below ANONYMOUS_TOP, from this CPU's generator
-/// (`crate::user::random`), as programs' random bytes are.
+/// within [`ANON_WINDOW`] below ANONYMOUS_TOP (`crate::user::random::place`).
 pub(super) fn random_top() -> u64 {
-    ANONYMOUS_TOP - crate::user::random::below(ANON_WINDOW / PAGE_SIZE) * PAGE_SIZE
+    ANONYMOUS_TOP - crate::user::random::place(ANON_WINDOW / PAGE_SIZE) * PAGE_SIZE
 }
 
 /// An anonymous region's mapping.

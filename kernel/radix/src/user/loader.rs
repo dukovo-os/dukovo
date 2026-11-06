@@ -131,12 +131,12 @@ fn build(at: SlotRef, process: &ProcessRef, program: &Program<'_>) -> Result<()>
         }
         Kind::Relocatable => {
             let pages = startup::STACK_WINDOW / PAGE_SIZE;
-            let top = startup::STACK_TOP - radix_random::below(pages + 1) * PAGE_SIZE;
+            let top = startup::STACK_TOP - crate::user::random::place(pages + 1) * PAGE_SIZE;
             (startup::IMAGE_BASE..startup::IMAGE_BASE + startup::WINDOW, top)
         }
     };
     let placed = image
-        .random_bias(range.clone(), radix_random::u64())
+        .random_bias(range.clone(), crate::user::random::place_bits())
         .and_then(|bias| image.place(bias, range))
         .map_err(|err| {
             warn!("User: {name} does not fit: {err}");

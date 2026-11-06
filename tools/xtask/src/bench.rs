@@ -143,7 +143,7 @@ pub const BUDGETS: &[(&str, u64)] = &[
     ("notification_pingpong_same_cpu", 6_200), // 5,566
     ("channel_roundtrip_same_cpu", 5_100),     // 4,587
     ("ring_roundtrip_same_cpu", 9_400),        // 8,489
-    ("posix_fork_wait", 180_000),              // 162,149
+    ("posix_fork_wait", 170_000),              // 153,856, with norandmaps
     ("posix_fork_exec_wait", 590_000),         // 531,676
     ("posix_pipe_mib", 2_500_000),             // 2,188,725
     ("posix_signal", 5_900),                   // 5,300
@@ -684,7 +684,8 @@ fn budget_report(radix: &[Measurement]) -> String {
     let _ = writeln!(
         out,
         "Counted by QEMU (`-icount {ICOUNT}`): user and kernel instructions, the same on any \
-         machine. Operations on one CPU have a budget; `--gate` fails beyond it.\n"
+         machine, with programs' memory in the same places every run (`norandmaps`). \
+         Operations on one CPU have a budget; `--gate` fails beyond it.\n"
     );
     let _ = writeln!(out, "| Operation | Instructions | Budget | Of the budget |");
     let _ = writeln!(out, "| --- | ---: | ---: | ---: |");
@@ -1327,6 +1328,18 @@ impl Accel {
         if kvm { Accel::Kvm } else { Accel::Tcg }
     }
 
+    /// The kernel command line `cmdline` for it. Counting instructions
+    /// adds `norandmaps`: with programs' memory in the same places every
+    /// run, a fork builds the same page tables each time, where random
+    /// places cross a table's boundary in some runs and not others and
+    /// moved the count some 2,600 instructions (dukovo-boot(7)).
+    fn cmdline(self, cmdline: &str) -> String {
+        match self {
+            Accel::Count => format!("norandmaps {cmdline}"),
+            Accel::Kvm | Accel::Tcg => cmdline.into(),
+        }
+    }
+
     /// What QEMU is given for it, beyond the machine.
     fn extra(self) -> Vec<String> {
         match self {
@@ -1345,7 +1358,7 @@ fn radix_numbers(
     accel: Accel,
 ) -> Result<(Vec<Measurement>, Vec<Counts>)> {
     let image = dir.join("bench.img");
-    let bytes = test::with_cmdline(base, CMDLINE).map_err(crate::Error::new)?;
+    let bytes = test::with_cmdline(base, &accel.cmdline(CMDLINE)).map_err(crate::Error::new)?;
     std::fs::write(&image, bytes).context(|| format!("writing {}", image.display()))?;
     let machine = Machine {
         firmware: Firmware::Bios,
@@ -1396,7 +1409,8 @@ fn radix_posix_numbers(
     accel: Accel,
 ) -> Result<(Vec<Measurement>, Vec<Counts>)> {
     let image = dir.join("posix-bench.img");
-    let bytes = test::with_cmdline(base, POSIX_CMDLINE).map_err(crate::Error::new)?;
+    let bytes =
+        test::with_cmdline(base, &accel.cmdline(POSIX_CMDLINE)).map_err(crate::Error::new)?;
     std::fs::write(&image, bytes).context(|| format!("writing {}", image.display()))?;
     let mut extra = accel.extra();
     extra.extend(disk_args(dir, btrfs)?);

@@ -33,10 +33,21 @@ pub fn u64() -> u64 {
     LOCAL.with_own(Local::u64).unwrap_or_else(radix_random::u64)
 }
 
-/// A random number below `bound`, each equally likely, from where
-/// [`fill`] takes them: for the places a new address space puts things
-/// at random, which the kernel's generator would make a ChaCha block for,
-/// some 1,300 instructions of each fork and exec.
-pub fn below(bound: u64) -> u64 {
-    radix_random::below_from(bound, u64)
+/// Which of `places` a new address space puts something in (its
+/// anonymous memory, its stack): one at random, each equally likely, or
+/// the first, 0, with the `norandmaps` flag, which keeps programs'
+/// memory in the same places every boot so that the instruction gate
+/// counts the same page tables each time (dukovo-boot(7)). The numbers
+/// come from where [`fill`] takes them; the kernel's generator would make
+/// a ChaCha20 block for each, some 1,300 instructions of every fork and
+/// exec.
+pub fn place(places: u64) -> u64 {
+    if crate::settings().random_maps { radix_random::below_from(places, u64) } else { 0 }
+}
+
+/// 64 random bits for where a position-independent program goes in its
+/// window (`radix_elf::Image::random_bias`), or 0, the window's first
+/// place, with `norandmaps` ([`place`]).
+pub fn place_bits() -> u64 {
+    if crate::settings().random_maps { u64() } else { 0 }
 }

@@ -163,8 +163,9 @@ pub const KERNEL_LIBRARIES: &[&str] = &[
     "radix-xhci",
 ];
 
-/// Length of the command-line slot in the test image's grub.cfg.
-const CMDLINE_SLOT: usize = 160;
+/// Length of the command-line slot in the test image's grub.cfg: room
+/// for the POSIX benchmarks' command line with `norandmaps` in front.
+const CMDLINE_SLOT: usize = 192;
 
 /// Which test image a case boots.
 #[derive(Clone, Copy, PartialEq, Eq)]

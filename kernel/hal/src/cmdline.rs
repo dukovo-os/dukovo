@@ -48,6 +48,11 @@ pub const FLAGS: &[Flag] = &[
         summary: "keep the kernel, the direct map and the mapping window at fixed addresses",
     },
     Flag {
+        name: "norandmaps",
+        value: None,
+        summary: "put programs' stacks, images and anonymous memory in the same places every boot",
+    },
+    Flag {
         name: "nopcid",
         value: None,
         summary: "do not tag TLB entries with process-context identifiers (PCIDs)",
