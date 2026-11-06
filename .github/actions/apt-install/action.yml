@@ -8,7 +8,8 @@
 # slow that a download of under a minute takes an hour: on 2026-11-06 it
 # sent a boot job's 77 MB at 22 kB/s, for 59 minutes. apt only moves on
 # from a mirror that fails, not from one that is slow, so the download
-# gets four minutes there. Past that, it starts again from Ubuntu's own
+# gets 90 seconds there, against the 30 or less it takes from a mirror
+# that is well. Past that, it starts again from Ubuntu's own
 # archive.ubuntu.com, keeping the files it already has. Only then does
 # dpkg install them, so a download that is cut off never leaves a package
 # half installed.
@@ -42,7 +43,7 @@ runs:
           timeout 120 "${apt[@]}" update &&
             timeout "$1" "${apt[@]}" install -y --no-install-recommends --download-only $PACKAGES
         }
-        if ! download 240; then
+        if ! download 90; then
           echo "::warning::The runner's Ubuntu mirror was slow; downloading from archive.ubuntu.com instead"
           # The mirror list where the runner has one, and the sources.
           sudo sed -i 's/azure\.archive\.ubuntu\.com/archive.ubuntu.com/g' \
