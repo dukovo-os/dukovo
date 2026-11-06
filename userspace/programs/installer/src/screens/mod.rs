@@ -15,10 +15,13 @@
 //!
 //! - [`app`] keeps the answers and acts on each key.
 //! - [`draw`] draws them.
+//! - [`rdisk`] is the manual layout's screen, where each partition is
+//!   chosen (ADR 0311).
 //! - [`stick`] reads and saves setup files on the stick.
 
 pub mod app;
 pub mod draw;
+pub mod rdisk;
 pub mod stick;
 #[cfg(test)]
 mod tests;

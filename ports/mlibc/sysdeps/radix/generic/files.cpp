@@ -766,8 +766,8 @@ int Sysdeps<Dup2>::operator()(int fd, int flags, int newfd) {
 			continue;
 		if(is(status, RADIX_KERNEL_NO_SUCH_SLOT)) {
 			// Past the space's end: grow it, then try again.
-			uint32_t slot;
-			if(int e = radix::free_slot(newfd, &slot); e)
+			radix::SlotClaim grown;
+			if(int e = radix::free_slot(newfd, &grown); e)
 				return e;
 			continue;
 		}
@@ -1385,15 +1385,17 @@ int Sysdeps<Pipe>::operator()(int *fds, int flags) {
 	if(flags & ~(O_NONBLOCK | O_CLOEXEC | O_DIRECT))
 		return EINVAL;
 	for(;;) {
-		uint32_t read_slot;
-		uint32_t write_slot;
-		if(int e = radix::free_slot(0, &read_slot); e)
+		radix::SlotClaim read_end;
+		radix::SlotClaim write_end;
+		if(int e = radix::free_slot(0, &read_end); e)
 			return e;
+		uint32_t read_slot = read_end.slot();
 		int next = static_cast<int>(read_slot - radix::FD_BASE) + 1;
 		if(next >= radix::MAX_FDS)
 			return EMFILE;
-		if(int e = radix::free_slot(next, &write_slot); e)
+		if(int e = radix::free_slot(next, &write_end); e)
 			return e;
+		uint32_t write_slot = write_end.slot();
 		uint64_t status = radix_process_pipe(radix::SLOT_PROCESS, read_slot, write_slot,
 				pipe_flags);
 		if(is(status, RADIX_KERNEL_OCCUPIED))

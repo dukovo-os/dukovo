@@ -14,28 +14,44 @@ use crate::answers::{Answers, Layout, Network};
 use crate::log::{Event, Step};
 use crate::machine::{Card, DiskInfo, Machine};
 
-/// A computer with a Windows SSD, a blank disk, the install stick and a
-/// network card.
+/// A GPT on a disk of `gib` GiB, with a partition of each `(alias, MiB)`
+/// in turn.
+fn table(gib: u64, parts: &[(&str, u64)]) -> disk::Table {
+    let mut rng = disk::Rng::seeded(3);
+    let mut table = disk::Table::new(disk::Scheme::Gpt, 512, (gib << 30) / 512, &mut rng).unwrap();
+    for (alias, mib) in parts {
+        let kind = disk::types::parse(alias, disk::Scheme::Gpt).unwrap();
+        let end = disk::End::Sectors(mib << 11);
+        let new = disk::New { name: (*alias).to_string(), ..disk::New::of(kind, end) };
+        table.add(new, &mut rng).unwrap();
+    }
+    table
+}
+
+/// A computer with a Windows SSD, the install stick, a blank disk, a
+/// disk with a data partition and room beside it, and a network card.
 fn machine() -> Machine {
-    let disk = |name: &str, gib: u64, model: &str, partitions: &[&str], stick: bool| DiskInfo {
-        name: name.into(),
-        bytes: gib << 30,
-        model: model.into(),
-        rotational: Some(false),
-        partitions: partitions.iter().map(|p| (*p).to_string()).collect(),
-        stick,
+    let disk = |name: &str, gib: u64, model: &str, table: Option<disk::Table>, stick: bool| {
+        let partitions = table.iter().flat_map(|t| &t.partitions);
+        DiskInfo {
+            name: name.into(),
+            bytes: gib << 30,
+            model: model.into(),
+            rotational: Some(false),
+            partitions: partitions.map(|p| p.kind.to_string().to_lowercase()).collect(),
+            stick,
+            sector_size: 512,
+            table,
+        }
     };
+    let windows =
+        table(128, &[("efi", 100), ("windows-reserved", 16), ("windows-data", 100 << 10)]);
     Machine {
         disks: vec![
-            disk(
-                "sda",
-                128,
-                "SK hynix SC311",
-                &["c12a7328-f81f-11d2-ba4b-00a0c93ec93b", "e3c9e316-0b5c-4db8-817d-f92df00215ae"],
-                false,
-            ),
-            disk("sdb", 16, "SanDisk Ultra", &["5894c662-af90-4b47-baaf-2e3396443b25"], true),
-            disk("vda", 4, "", &[], false),
+            disk("sda", 128, "SK hynix SC311", Some(windows), false),
+            disk("sdb", 16, "SanDisk Ultra", Some(table(16, &[("dukovo-live", 2048)])), true),
+            disk("vda", 4, "", None, false),
+            disk("vdb", 16, "", Some(table(16, &[("linux", 4096)])), false),
         ],
         cards: vec![Card {
             name: "net0".into(),
@@ -286,14 +302,174 @@ fn the_disk_page_warns_before_windows_is_erased() {
     app.page = Page::Disk;
     app.focus = 0;
     let shown = screen(&app);
-    assert!(shown.contains("Windows, 2 partitions"), "{shown}");
+    assert!(shown.contains("Windows, 3 partitions"), "{shown}");
     assert!(shown.contains("Erasing sda deletes Windows and everything on it."), "{shown}");
-    assert!(shown.contains("vda stays untouched"), "{shown}");
+    assert!(shown.contains("vda, vdb stay untouched"), "{shown}");
     focus(&mut app, Id::Disk(2));
     press(&mut app, KeyCode::Char(' '));
     let shown = screen(&app);
     assert!(!shown.contains("Erasing"), "{shown}");
-    assert!(shown.contains("sda stays untouched"), "{shown}");
+    assert!(shown.contains("sda, vdb stay untouched"), "{shown}");
+}
+
+/// Goes on from the Disk page, with `disk` and the layout `layout`
+/// chosen.
+fn choose_layout(app: &mut App, disk: usize, layout: Id) {
+    app.page = Page::Disk;
+    focus(app, Id::Disk(disk));
+    press(app, KeyCode::Char(' '));
+    focus(app, layout);
+    press(app, KeyCode::Char(' '));
+    press(app, KeyCode::Enter);
+}
+
+/// Answers the You page, so that the review shows.
+fn answer_you(app: &mut App) {
+    assert_eq!(app.page, Page::You, "{:?}", app.problem);
+    type_text(app, "Alice Liddell");
+    press(app, KeyCode::Enter);
+    assert_eq!(app.page, Page::Review, "{:?}", app.problem);
+}
+
+#[test]
+fn the_free_space_layout_keeps_the_partitions_there() {
+    let mut app = app();
+    app.page = Page::Disk;
+    // A disk that starts Windows is not for it.
+    focus(&mut app, Id::Disk(0));
+    press(&mut app, KeyCode::Char(' '));
+    let shown = screen(&app);
+    assert!(shown.contains("sda starts a system already"), "{shown}");
+    assert!(!app.focusable().contains(&Id::Free), "it cannot be chosen");
+    choose_layout(&mut app, 3, Id::Free);
+    answer_you(&mut app);
+    let shown = screen(&app);
+    for needle in [
+        "Add to    vdb    (its partition is kept)",
+        "3  BIOS boot",
+        "2  EFI system        512 MiB   FAT32",
+        "5  Dukovo root",
+        "GRUB for UEFI and BIOS",
+        "Untouched sda",
+    ] {
+        assert!(shown.contains(needle), "{needle}:\n{shown}");
+    }
+    assert!(!shown.contains("Erase"), "{shown}");
+    let answers = app.answers().unwrap();
+    answers.check().unwrap();
+    assert_eq!((answers.disk.layout, answers.target()), (Layout::Free, "vdb"));
+    focus(&mut app, Id::Install);
+    press(&mut app, KeyCode::Enter);
+    assert!(app.problem.as_deref().is_some_and(|p| p.contains("confirm the changes")));
+}
+
+#[test]
+fn the_manual_layout_is_chosen_on_the_rdisk_screen() {
+    let mut app = app();
+    choose_layout(&mut app, 3, Id::Manual);
+    assert_eq!(app.page, Page::Rdisk, "{:?}", app.problem);
+    let shown = screen(&app);
+    for needle in [
+        "Step 3 of 5 · Partitions (rdisk)",
+        " vdb 16.0 GiB ",
+        "#  Name",
+        "1  linux                Linux filesystem",
+        "keep",
+        "Free space",
+        "Pending changes: 0",
+        "N new · D delete",
+    ] {
+        assert!(shown.contains(needle), "{needle}:\n{shown}");
+    }
+    assert!(!shown.contains(" sdb "), "the stick is not a tab:\n{shown}");
+    // Done with no root says what is missing.
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(app.page, Page::Rdisk);
+    assert!(app.problem.as_deref().is_some_and(|p| p.contains("Dukovo root")));
+    // D takes the partition out; D again keeps it; U undoes.
+    press(&mut app, KeyCode::Char('d'));
+    assert!(screen(&app).contains("DELETE"));
+    press(&mut app, KeyCode::Char('u'));
+    assert!(!screen(&app).contains("DELETE"));
+    // F formats it for data, Right choosing exFAT.
+    press(&mut app, KeyCode::Char('f'));
+    assert!(matches!(app.modal, Some(Modal::Partition(_))));
+    assert!(screen(&app).contains("‹ Data: Btrfs ›"));
+    press(&mut app, KeyCode::Right);
+    press(&mut app, KeyCode::Enter);
+    assert!(app.modal.is_none());
+    let shown = screen(&app);
+    assert!(shown.contains("exFAT") && shown.contains("/volumes/vdb1"), "{shown}");
+    // N offers the EFI system partition first, then the root in the rest.
+    press(&mut app, KeyCode::Char('n'));
+    let shown = screen(&app);
+    assert!(shown.contains("New partition") && shown.contains("‹ EFI system"), "{shown}");
+    press(&mut app, KeyCode::Enter);
+    press(&mut app, KeyCode::Char('n'));
+    assert!(screen(&app).contains("‹ Dukovo root"));
+    // Left and Right choose the use from the size's box too.
+    press(&mut app, KeyCode::Right);
+    assert!(screen(&app).contains("‹ EFI system"));
+    press(&mut app, KeyCode::Left);
+    // A size needs its unit.
+    for _ in 0..12 {
+        press(&mut app, KeyCode::Backspace);
+    }
+    type_text(&mut app, "4");
+    press(&mut app, KeyCode::Enter);
+    assert!(matches!(&app.modal, Some(Modal::Partition(form)) if form.problem.is_some()));
+    type_text(&mut app, " GiB");
+    press(&mut app, KeyCode::Enter);
+    assert!(app.modal.is_none(), "{:?}", app.modal);
+    let shown = screen(&app);
+    assert!(shown.contains("Pending changes: 3"), "{shown}");
+    assert!(shown.contains("make Dukovo root on vdb, 4.0 GiB"), "{shown}");
+    press(&mut app, KeyCode::Enter);
+    answer_you(&mut app);
+    let shown = screen(&app);
+    for needle in [
+        "Change    vdb",
+        "format  1  linux",
+        "make    2  EFI system",
+        "make    3  Dukovo root",
+        "GRUB for UEFI (the disk has no BIOS boot partition)",
+        "Type vdb to confirm",
+    ] {
+        assert!(shown.contains(needle), "{needle}:\n{shown}");
+    }
+    let answers = app.answers().unwrap();
+    answers.check().unwrap();
+    assert_eq!((answers.disk.layout, answers.target()), (Layout::Manual, "vdb"));
+    assert_eq!(answers.disk.changes.len(), 1);
+    assert_eq!(answers.disk.changes[0].partitions.len(), 3);
+    // Back from You is the rdisk screen, with its edits.
+    press(&mut app, KeyCode::Esc);
+    press(&mut app, KeyCode::Esc);
+    assert_eq!(app.page, Page::Rdisk);
+    assert!(screen(&app).contains("Pending changes: 3"));
+}
+
+#[test]
+fn g_lays_out_the_guided_partitions_on_a_blank_disk() {
+    let mut app = app();
+    choose_layout(&mut app, 2, Id::Manual);
+    assert_eq!(app.page, Page::Rdisk);
+    assert!(screen(&app).contains("no partition table yet"));
+    press(&mut app, KeyCode::F(1));
+    assert!(screen(&app).contains("The same disk engine as rdisk"));
+    press(&mut app, KeyCode::Esc);
+    assert!(app.modal.is_none());
+    press(&mut app, KeyCode::Char('g'));
+    let shown = screen(&app);
+    assert!(shown.contains("guided layout on vda"), "{shown}");
+    assert!(shown.contains("BIOS boot") && shown.contains("/system/boot"), "{shown}");
+    press(&mut app, KeyCode::Enter);
+    answer_you(&mut app);
+    let answers = app.answers().unwrap();
+    answers.check().unwrap();
+    assert_eq!(answers.target(), "vda");
+    assert!(answers.disk.changes[0].new_table);
+    assert!(screen(&app).contains("GRUB for UEFI and BIOS"));
 }
 
 #[test]

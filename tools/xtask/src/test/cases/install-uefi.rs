@@ -113,11 +113,20 @@ pub fn install(vm: &mut Vm, _case: &Case) -> Result<(), String> {
 }
 
 /// The second boot, from the installed disk alone, now a SATA disk: GRUB
-/// finds the root by its UUID, alice signs in with her password, and the
-/// system, its settings and the saved answers are as the install left
-/// them. install-bios's second boot is the same.
+/// finds the root by its UUID, Spark turns on its swap, alice signs in
+/// with her password, and the system, its settings and the saved answers
+/// are as the install left them. install-bios's second boot is the same.
 pub fn installed(vm: &mut Vm, _case: &Case) -> Result<(), String> {
+    signed_in(vm)?;
+    power_off(vm)
+}
+
+/// The installed system started: alice signs in with her password, and
+/// the system, its settings and the saved answers are as the answers
+/// file had them installed.
+pub fn signed_in(vm: &mut Vm) -> Result<(), String> {
     vm.expect("spark: /system is Dukovo's root on ")?;
+    vm.expect("spark: turned on swap on ")?;
     vm.expect_anywhere("consoled: started /system/commands/login on tty1 as process ")?;
     vm.expect_screen(&[&format!("{RELEASE} {VERSION}")])?;
     answer_prompt(vm, "Name:", "alice")?;
@@ -144,6 +153,11 @@ pub fn installed(vm: &mut Vm, _case: &Case) -> Result<(), String> {
     answer_prompt(vm, "$", "ls /system/startup; echo \"slot\"\": $((40 + 2))\"")?;
     vm.expect_screen(&["archive", "radix", "slot: 42"])?;
 
+    // Spark turned on the swap partition the answers asked for, the one
+    // on the root's disk (ADR 0311).
+    answer_prompt(vm, "$", "echo \"swap\"\": $(grep -c partition /processes/swaps)\"")?;
+    vm.expect_screen(&["swap: 1"])?;
+
     // The answers are kept, without the password's hash, and the log.
     answer_prompt(
         vm,
@@ -158,8 +172,11 @@ pub fn installed(vm: &mut Vm, _case: &Case) -> Result<(), String> {
         "grep -q 'installed: the log ends here' /system/state/log/install.log; \
          echo \"log: $((10 + $?))\"",
     )?;
-    vm.expect_screen(&["log: 10"])?;
+    vm.expect_screen(&["log: 10"])
+}
 
+/// The power button stops every service and powers off.
+pub fn power_off(vm: &mut Vm) -> Result<(), String> {
     vm.press_power_button()?;
     vm.expect("spark: every service has stopped")?;
     vm.expect_exit(QEMU_EXIT_POWER_OFF)
@@ -184,7 +201,7 @@ pub fn wait_for_screen(vm: &mut Vm, needle: &str, seconds: u64) -> Result<(), St
 }
 
 /// The partitions of the guided layout, in order, with 1 GiB of swap.
-const GUIDED: [&str; 4] = ["bios-boot", "efi", "swap", "dukovo-root"];
+const GUIDED: &[&str] = &["bios-boot", "efi", "swap", "dukovo-root"];
 
 /// Where UEFI's GRUB and its menu are on the EFI system partition.
 const EFI_GRUB: &str = "::/EFI/BOOT/BOOTX64.EFI";
@@ -195,20 +212,29 @@ const EFI_MENU: &str = "::/boot/grub/grub.cfg";
 /// `fsck.fat` finds sound with UEFI's GRUB and a menu that names the root
 /// by its UUID, and a root Linux's `btrfs check` finds sound.
 pub fn installed_disk(disk: &DiskImage, log: &str) -> Result<(), String> {
+    holds_install(disk, log, GUIDED)
+}
+
+/// The host's side of an install whose disk ends with the partitions of
+/// `layout`, in order, by their rdisk aliases: GRUB's `boot.img` in its
+/// first sector if it has a BIOS boot partition, its EFI system partition
+/// sound with UEFI's GRUB and a menu that names the root by its UUID,
+/// and the root sound.
+pub fn holds_install(disk: &DiskImage, log: &str, layout: &[&str]) -> Result<(), String> {
     let shown = disk.path.display().to_string();
     let file = std::fs::File::open(&disk.path).map_err(|e| format!("opening {shown}: {e}"))?;
     let device = disk::Device::whole(file, disk.bytes, 512);
     let found = disk::read(&device).map_err(|e| format!("{shown}: {e}"))?;
     let table = found.table.ok_or_else(|| format!("{shown} has no partition table"))?;
     let kinds: Vec<_> = table.partitions.iter().map(|p| p.kind).collect();
-    let guided: Vec<_> =
-        GUIDED.iter().map(|name| types::parse(name, Scheme::Gpt).expect("a known type")).collect();
-    if kinds != guided {
+    let wanted: Vec<_> =
+        layout.iter().map(|name| types::parse(name, Scheme::Gpt).expect("a known type")).collect();
+    if kinds != wanted {
         let names: Vec<_> = kinds.iter().map(|kind| kind.name()).collect();
         return Err(format!(
-            "{shown} holds partitions of {}, not the guided layout's {}",
+            "{shown} holds partitions of {}, not the layout's {}",
             names.join(", "),
-            GUIDED.join(", ")
+            layout.join(", ")
         ));
     }
     let part = |n: usize| {
@@ -223,13 +249,17 @@ pub fn installed_disk(disk: &DiskImage, log: &str) -> Result<(), String> {
         }
     };
 
-    let first = device.read_sectors(0, 1).map_err(|e| format!("reading {shown}: {e}"))?;
-    // boot.img starts with its jump over the parameter block.
-    if first[..2] != [0xeb, 0x63] || first[510..512] != [0x55, 0xaa] {
-        return Err(format!("{shown}'s first sector holds no GRUB boot.img"));
+    if layout.contains(&"bios-boot") {
+        let first = device.read_sectors(0, 1).map_err(|e| format!("reading {shown}: {e}"))?;
+        // boot.img starts with its jump over the parameter block.
+        if first[..2] != [0xeb, 0x63] || first[510..512] != [0x55, 0xaa] {
+            return Err(format!("{shown}'s first sector holds no GRUB boot.img"));
+        }
     }
 
-    let (esp, root) = (part(1), part(3));
+    let at = |alias: &str| layout.iter().position(|name| *name == alias).map(part);
+    let esp = at("efi").ok_or("the layout has no EFI system partition")?;
+    let root = at("dukovo-root").ok_or("the layout has no Dukovo root")?;
     let mut uuid = [0u8; 16];
     // A Btrfs superblock is 64 KiB in, with its filesystem's UUID 32
     // bytes into it.

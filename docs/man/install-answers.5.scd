@@ -55,18 +55,25 @@ it does not know is a problem, so that a mistyped one is not missed.
 
 	*layout*: *guided*, which erases the disk and gives it a BIOS
 	boot partition, an EFI system partition, swap and the Dukovo
-	root. The installer's screens add *free*, Dukovo in the disk's
-	free space, and *manual*, the partitions chosen on the rdisk
-	screen; *mirror*, two disks as one Btrfs RAID1, and *beside*,
-	Dukovo next to Windows, come later.
+	root; *free*, which keeps the disk's partitions and makes the
+	same four in its largest free space, on a GPT disk that does not
+	start a system already; or *manual*, the partitions *changes*
+	lists, as the installer's rdisk screen chooses them. *mirror*,
+	two disks as one Btrfs RAID1, and *beside*, Dukovo next to
+	Windows, come later.
 
 	*target*: the disk's name, as *lsblk*(8) lists it, with or
-	without _/dev/_ in front: *vda*, */dev/nvme0n1*.
+	without _/dev/_ in front: *vda*, */dev/nvme0n1*. For *manual*,
+	the disk that holds the root.
 
 	*mirror*: the second disk, for the mirror layout only.
 
 	*swap_gib*: the swap partition's size in GiB, up to 64; *0*, or
-	left out, for none.
+	left out, for none. Not for *manual*, whose swap partition, if
+	any, is in *changes*.
+
+	*changes*: for *manual* only, what becomes of each disk changed,
+	in a list (see *CHANGES* below).
 
 *hostname*
 	The machine's name (*hostname*(5)): letters, digits and *-*, not
@@ -99,6 +106,58 @@ it does not know is a problem, so that a mistyped one is not missed.
 	then readable by root alone, so that installing again sets the
 	same passwords; left out, the saved answers have none, and anyone
 	may read them.
+
+# CHANGES
+
+Each entry of *changes* changes one disk:
+
+```
+"changes": [{
+  "disk": "vda",
+  "delete": [2],
+  "partitions": [
+    { "number": 2, "first": 526336, "sectors": 1048576,
+      "name": "EFI system", "use": "efi" },
+    { "number": 3, "use": "data", "format": "exfat" },
+    { "number": 4, "first": 2099200, "sectors": 4194304, "use": "root" }
+  ]
+}]
+```
+
+*disk*
+	The disk's name, as *target* is written.
+
+*new_table*
+	*true* gives the disk a new, empty GPT first: every partition on
+	it is gone. Not with *delete*.
+
+*delete*
+	The partitions taken out, by number.
+
+*partitions*
+	The partitions made, and those formatted, each by its *number*.
+	A partition made has its *first* sector and its size in
+	*sectors*, both in the disk's own sectors, and a *name* in the
+	GPT if wanted; one formatted has neither, and is one the disk
+	has. Its *use* is what it holds:
+
+	*root*: the Dukovo root, Btrfs.++
+*efi*: the EFI system partition, FAT32.++
+*swap*: swap, which Spark turns on at every start (*spark*(8)).++
+*bios-boot*: GRUB for a BIOS, which then starts the disk too.++
+*data*: data, with *format* *btrfs*, *exfat* or *fat32*, or no
+*format* to leave a new one empty. Spark mounts it at
+_/volumes/<partition>_.
+
+	A partition of another use than *data* gets that use's type; a
+	data partition keeps the type it has.
+
+The changes must leave one root and one EFI system partition, on the
+same GPT disk, the target, which also holds the swap partition, if any.
+A target with a BIOS boot partition needs its EFI system partition
+numbered 2, where the BIOS's GRUB finds its files; without one, it
+starts by UEFI alone.
+Nothing is written to any disk before the whole file is checked.
 
 Server installs will add the keys *profile*, *features*, *web_console*,
 *ssh*, *updates* and *firmware*, which this installer does not take yet.

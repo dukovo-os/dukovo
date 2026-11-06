@@ -189,6 +189,12 @@ open file description, with its offset and status flags, so *dup*,
 grows as descriptors are opened, up to the soft *RLIMIT_NOFILE* (1,024 by
 default) and never past 4,032 descriptors.
 
+A new descriptor is the lowest free one, which the C library chooses and
+the kernel fills once the call has done its work: an *open* that makes a
+file makes it first. So that two threads opening at once never choose
+the same descriptor, the thread that chose one holds it until the kernel
+has filled it, and other threads choose the next.
+
 The C library keeps the working directory as a canonical string. It
 hands the kernel an absolute path, or a relative one joined to the
 working directory, as a path beneath the root directory, and the kernel

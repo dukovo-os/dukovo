@@ -4,7 +4,9 @@
 //! The disks, as the kernel lists them in `/kernel/block` (radix-sysfs(5)):
 //! the install stick's DUKOVO_LIVE partition, which holds the release, the
 //! disk it is on, which is never installed onto, and the names and sizes of
-//! disks and their partitions.
+//! disks and their partitions. A disk's partition table is read as rdisk(8)
+//! reads it, with the same engine, so that the layouts are worked out from
+//! what rdisk will find.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -72,6 +74,47 @@ pub fn disk_of(name: &str) -> String {
         Some(disk) if disk.ends_with(|c: char| c.is_ascii_digit()) => disk.to_string(),
         _ => digits.to_string(),
     }
+}
+
+/// The partition table of the disk `name`, of `bytes` in sectors of
+/// `sector_size` bytes, as rdisk(8) reads it: `None` if it has none.
+///
+/// # Errors
+///
+/// If the disk cannot be read, or its GPT is damaged in both copies.
+pub fn read_table(name: &str, bytes: u64, sector_size: u32) -> Result<Option<disk::Table>, String> {
+    let file = std::fs::File::open(device(name))
+        .map_err(|err| format!("{}: {err}", device(name).display()))?;
+    let found = disk::read(&disk::Device::whole(file, bytes, sector_size))
+        .map_err(|err| format!("{name}: {err}"))?;
+    Ok(found.table)
+}
+
+/// The first sector of the partition `name` on its disk, in 512-byte
+/// sectors, as the kernel has it now.
+fn start(name: &str) -> Option<u64> {
+    attribute(name, "start")?.parse().ok()
+}
+
+/// Waits until the partition `name` starts at `first`, in 512-byte
+/// sectors, as after a table that moved it was written: a partition
+/// taken out and made again under its number keeps its name.
+///
+/// # Errors
+///
+/// If it does not, after [`APPEAR`].
+pub fn wait_for_start(name: &str, first: u64) -> Result<(), String> {
+    let started = Instant::now();
+    while start(name) != Some(first) || !device(name).exists() {
+        if started.elapsed() > APPEAR {
+            return Err(format!(
+                "{} did not appear at sector {first} after its table was written",
+                device(name).display()
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    Ok(())
 }
 
 /// The device file of the disk or partition `name`.

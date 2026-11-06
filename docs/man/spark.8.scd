@@ -125,7 +125,9 @@ Init: /system/commands/spark is process 1
   with Linux's udisks (ADR 0161). A Dukovo live partition, the install
   stick's DUKOVO_LIVE, whose _parttype_ is
   *5894c662-af90-4b47-baaf-2e3396443b25*, is always mounted read-only and
-  is never Dukovo's root, nor compressed (ADR 0308).
+  is never Dukovo's root, nor compressed (ADR 0308). A swap partition,
+  of _parttype_ *0x82* or *0657fd6d-a4ab-43c4-84e5-0933c84b4f4f*, holds
+  no filesystem and is not mounted.
 . When the kernel's command line has the flag *live*, as the install
   stick's boot menu gives it, Spark starts the live system: no disk is
   Dukovo's root, and the only disk it mounts is the stick's DUKOVO_LIVE,
@@ -146,6 +148,11 @@ Init: /system/commands/spark is process 1
   _@applications_ on _/applications_, _@users_ on _/users_ and _@shared_
   on _/shared_, each as a directory of the mount at _/volumes/_*name*
   (the *bind* kind of *radix-files*(7)), and tmpfs on _/system/live_.
+  Then it turns on each swap partition of the disk that holds the root,
+  as the installer makes one, the way systemd's gpt-auto-generator
+  does; there is no fstab (ADR 0311). One whose first page does not end
+  in *SWAPSPACE2*, as when another system's Linux hibernated into it, is
+  left off, and Spark says why.
   With no such disk, with *--no-volumes* or with *live*, it mounts the boot archive
   read-only on _/system_ and tmpfs on _/system/settings_, _/system/state_
   and _/system/live_, which the next boot starts without. Then it makes
