@@ -82,9 +82,96 @@ pub struct Disk {
     /// The second disk, for the mirror layout.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mirror: Option<String>,
-    /// The swap partition's size in GiB, 0 for none.
+    /// The swap partition's size in GiB, 0 for none, in the guided and
+    /// free-space layouts; the manual layout lists its own.
     #[serde(default)]
     pub swap_gib: u32,
+    /// The manual layout's changes, a disk at a time, as the installer's
+    /// rdisk screen makes them: the target's, which holds the root and
+    /// the EFI system partition, and any other disk's.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub changes: Vec<Change>,
+}
+
+/// What the manual layout changes on one disk. Partitions it does not
+/// name are kept as they are.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Change {
+    /// The disk's name, as `target`'s.
+    pub disk: String,
+    /// Whether a new, empty GPT replaces the disk's table first, as for a
+    /// blank disk: every partition it had goes.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub new_table: bool,
+    /// The partitions taken out, by number.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub delete: Vec<u32>,
+    /// The partitions made, each with where it goes, and the partitions
+    /// kept but formatted, with neither.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub partitions: Vec<Part>,
+}
+
+/// A partition the manual layout makes or formats.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Part {
+    /// Its number in the disk's table.
+    pub number: u32,
+    /// A new partition's first sector, in the disk's logical sectors.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first: Option<u64>,
+    /// A new partition's size, in the disk's logical sectors.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sectors: Option<u64>,
+    /// A new partition's name in the GPT.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// What it is for.
+    #[serde(rename = "use")]
+    pub role: Role,
+    /// The filesystem a data partition gets; none leaves a new one empty.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub format: Option<Format>,
+}
+
+impl Part {
+    /// Whether the install makes it, rather than formatting one there is.
+    #[must_use]
+    pub fn is_new(&self) -> bool {
+        self.first.is_some()
+    }
+}
+
+/// What a partition is for, which says its type and its filesystem.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Role {
+    /// Dukovo's root: Btrfs, mounted at `/`.
+    Root,
+    /// The EFI system partition: FAT32, mounted at `/system/boot`, which
+    /// holds UEFI's GRUB and its menu.
+    Efi,
+    /// Swap, which Spark turns on when it is on the root's disk.
+    Swap,
+    /// The BIOS boot partition, which holds GRUB for a BIOS.
+    BiosBoot,
+    /// Someone's data, with the filesystem `format` names; Spark mounts
+    /// it at `/volumes/<name>`.
+    Data,
+}
+
+/// A data partition's filesystem.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Format {
+    /// FAT32, which every system reads.
+    Fat32,
+    /// exFAT, for large files that every system reads.
+    Exfat,
+    /// Btrfs.
+    Btrfs,
 }
 
 /// How the disk is laid out.
@@ -254,13 +341,11 @@ impl Answers {
         if problems.is_empty() { Ok(()) } else { Err(problems) }
     }
 
-    /// Checks the disk's answers.
+    /// Checks the disk's answers. What only the disks can tell, as
+    /// whether a partition fits, the install checks before it writes.
     fn check_disk(&self) -> Result<(), String> {
         match self.disk.layout {
-            Layout::Guided => {}
-            Layout::Free | Layout::Manual => {
-                return Err("this layout comes with the installer's screens; use \"guided\"".into());
-            }
+            Layout::Guided | Layout::Free | Layout::Manual => {}
             Layout::Mirror | Layout::Beside => {
                 return Err("this layout is not ready yet; use \"guided\"".into());
             }
@@ -277,7 +362,18 @@ impl Answers {
         if self.disk.swap_gib > SWAP_MAX_GIB {
             return Err(format!("swap_gib is at most {SWAP_MAX_GIB}"));
         }
-        Ok(())
+        if self.disk.layout != Layout::Manual {
+            if !self.disk.changes.is_empty() {
+                return Err("changes are the manual layout's only".into());
+            }
+            return Ok(());
+        }
+        if self.disk.swap_gib != 0 {
+            return Err("swap_gib is for the guided and free layouts; the manual layout lists \
+                        its swap partition in changes"
+                .into());
+        }
+        check_changes(self.target(), &self.disk.changes)
     }
 }
 
@@ -320,6 +416,98 @@ fn check_accounts(answers: &Answers, problem: &mut impl FnMut(&str, String)) {
             Some(hash) if accounts::hash::readable(hash) => {}
             Some(_) => problem(&format!("{key}.password_hash"), "not an Argon2id hash this system reads".into()),
         }
+    }
+}
+
+/// Checks the manual layout's changes: one root and one EFI system
+/// partition, both on the target, each partition either made (with where
+/// it goes) or formatted (with neither), and nothing named twice.
+fn check_changes(target: &str, changes: &[Change]) -> Result<(), String> {
+    if changes.is_empty() {
+        return Err("the manual layout lists its changes".into());
+    }
+    let mut disks = Vec::new();
+    for (i, change) in changes.iter().enumerate() {
+        let key = format!("changes[{i}]");
+        let disk = change.disk.as_str();
+        if !is_name(disk, 32) {
+            return Err(format!("{key}.disk {disk:?} is not a disk's name, such as vda"));
+        }
+        if disks.contains(&disk) {
+            return Err(format!("{key}.disk: {disk} is named twice"));
+        }
+        disks.push(disk);
+        if change.new_table && !change.delete.is_empty() {
+            return Err(format!("{key}: a new table leaves nothing to delete"));
+        }
+        let mut numbers = Vec::new();
+        for (j, part) in change.partitions.iter().enumerate() {
+            let key = format!("{key}.partitions[{j}]");
+            check_part(part, change, &key)?;
+            if numbers.contains(&part.number) {
+                return Err(format!("{key}: partition {} is named twice", part.number));
+            }
+            numbers.push(part.number);
+            let on_target = disk == target;
+            let only_on_target = match part.role {
+                Role::Root | Role::Efi => Some("Dukovo's root and its EFI system partition go"),
+                Role::Swap => Some("a swap partition goes, where Spark turns it on,"),
+                Role::BiosBoot | Role::Data => None,
+            };
+            if let Some(what) = only_on_target.filter(|_| !on_target) {
+                return Err(format!("{key}: {what} on the target, {target}"));
+            }
+        }
+    }
+    let count = |role: Role| {
+        changes.iter().flat_map(|change| &change.partitions).filter(|p| p.role == role).count()
+    };
+    if count(Role::Root) != 1 || count(Role::Efi) != 1 {
+        return Err(format!(
+            "the manual layout makes or formats one root and one EFI system partition, on {target}"
+        ));
+    }
+    if changes
+        .iter()
+        .any(|change| change.partitions.iter().filter(|p| p.role == Role::BiosBoot).count() > 1)
+    {
+        return Err("a disk has one BIOS boot partition at most".into());
+    }
+    Ok(())
+}
+
+/// Checks one partition of a manual change: a new one with its place, or
+/// one there is, formatted, which is not also deleted.
+fn check_part(part: &Part, change: &Change, key: &str) -> Result<(), String> {
+    if part.number == 0 || part.number > 128 {
+        return Err(format!("{key}.number is 1 to 128"));
+    }
+    match (part.first, part.sectors) {
+        (Some(_), Some(0)) => return Err(format!("{key}.sectors is more than 0")),
+        (Some(_), Some(_)) => {}
+        (None, None) => {
+            if change.new_table || change.delete.contains(&part.number) {
+                return Err(format!(
+                    "{key}: partition {} is gone before it can be formatted; give where a new \
+                     one goes (first and sectors)",
+                    part.number
+                ));
+            }
+            if part.name.is_some() {
+                return Err(format!("{key}.name is a new partition's only"));
+            }
+        }
+        _ => return Err(format!("{key}: a new partition has both first and sectors")),
+    }
+    if part.name.as_ref().is_some_and(|name| name.encode_utf16().count() > 36) {
+        return Err(format!("{key}.name is 36 characters at most"));
+    }
+    match (part.role, part.format) {
+        (Role::Data, None) if !part.is_new() => {
+            Err(format!("{key}: a data partition there is is named only to format it"))
+        }
+        (Role::Data, _) | (_, None) => Ok(()),
+        (_, Some(_)) => Err(format!("{key}.format is a data partition's only")),
     }
 }
 
@@ -469,6 +657,45 @@ pub(crate) mod tests {
         Answers::parse(saved.as_bytes()).unwrap();
         let kept = Answers { keep_password_hashes: true, ..answers };
         assert!(String::from_utf8(kept.to_saved()).unwrap().contains("$argon2id$x"));
+    }
+
+    /// A manual layout: a new GPT on vda with the root and its EFI
+    /// system partition, and vdb's third partition formatted as exFAT.
+    const MANUAL: &str = r#"{ "layout": "manual", "target": "vda", "changes": [
+        { "disk": "vda", "new_table": true, "partitions": [
+            { "number": 1, "first": 2048, "sectors": 1048576, "use": "efi" },
+            { "number": 2, "first": 1050624, "sectors": 8388608, "use": "root", "name": "Dukovo" } ] },
+        { "disk": "vdb", "partitions": [ { "number": 3, "use": "data", "format": "exfat" } ] } ] }"#;
+
+    fn with_disk(disk: &str) -> Result<(), Vec<String>> {
+        let text =
+            EXAMPLE.replace(r#"{ "layout": "guided", "target": "/dev/vda", "swap_gib": 1 }"#, disk);
+        Answers::parse(text.as_bytes()).unwrap().check()
+    }
+
+    #[test]
+    fn checks_the_manual_layouts_changes() {
+        with_disk(MANUAL).unwrap();
+        let problem = |disk: String| with_disk(&disk).unwrap_err().join("; ");
+        // The root goes on the target.
+        let moved = MANUAL.replace(r#""target": "vda""#, r#""target": "vdb""#);
+        assert!(problem(moved).contains("go on the target, vdb"));
+        // One root, and a data partition there is is named to format it.
+        let two = MANUAL.replace(r#""use": "efi""#, r#""use": "root""#);
+        assert!(problem(two).contains("one root and one EFI system partition"));
+        let unformatted = MANUAL.replace(r#", "format": "exfat""#, "");
+        assert!(problem(unformatted).contains("named only to format it"));
+        // A deleted partition cannot be formatted, nor a new one half placed.
+        let gone = MANUAL.replace(r#"{ "disk": "vdb", "#, r#"{ "disk": "vdb", "delete": [3], "#);
+        assert!(problem(gone).contains("is gone before it can be formatted"));
+        let half = MANUAL.replace(r#", "sectors": 1048576"#, "");
+        assert!(problem(half).contains("has both first and sectors"));
+        // swap_gib is the other layouts'; changes are the manual one's.
+        let swap = MANUAL.replace(r#""target": "vda","#, r#""target": "vda", "swap_gib": 2,"#);
+        assert!(problem(swap).contains("lists its swap partition"));
+        let guided = MANUAL.replace(r#""layout": "manual""#, r#""layout": "guided""#);
+        assert!(problem(guided).contains("changes are the manual layout's only"));
+        with_disk(r#"{ "layout": "free", "target": "vda", "swap_gib": 2 }"#).unwrap();
     }
 
     #[test]

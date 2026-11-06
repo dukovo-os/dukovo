@@ -14,6 +14,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Clear, Paragraph};
 
 use super::app::{App, Field, Id, Kind, Look, Modal, Page, Row};
+use super::rdisk::{self, FormField};
 use crate::log::{self, Step};
 use crate::messages::{self, Arg};
 
@@ -73,6 +74,11 @@ pub fn draw(frame: &mut Frame<'_>, app: &App) {
     };
     match app.page {
         Page::Installing | Page::Done | Page::Failed => draw_progress(frame, app, content),
+        Page::Rdisk => {
+            if let Some(shown) = &app.rdisk {
+                rdisk::draw(frame, shown, &app.machine, content);
+            }
+        }
         _ => draw_rows(frame, app, content),
     }
     let said = app
@@ -147,6 +153,7 @@ fn hints_text(app: &App) -> String {
         Page::Installing => "hints-installing",
         Page::Done => "hints-done",
         Page::Failed => "hints-failed",
+        Page::Rdisk => "hints-rdisk",
         _ => "hints",
     })
 }
@@ -376,14 +383,10 @@ fn draw_progress(frame: &mut Frame<'_>, app: &App, area: Rect) {
 
 /// Draws `modal` over the page.
 fn draw_modal(frame: &mut Frame<'_>, app: &App, modal: &Modal, area: Rect) {
-    let width = area.width.saturating_sub(4).min(90);
+    // The partition form is a small box over the list it changes.
+    let small = matches!(modal, Modal::Partition(_));
+    let width = area.width.saturating_sub(4).min(if small { 76 } else { 90 });
     let height = area.height.saturating_sub(4).min(26);
-    let rect = Rect {
-        x: area.x + (area.width - width) / 2,
-        y: area.y + (area.height - height) / 2,
-        width,
-        height,
-    };
     let (title, lines, hint) = match modal {
         Modal::Help(page) => {
             let id = format!("help-{}", page.name().trim_start_matches("page-"));
@@ -435,6 +438,41 @@ fn draw_modal(frame: &mut Frame<'_>, app: &App, modal: &Modal, area: Rect) {
             }
             (messages::text("person-title"), lines, messages::text("hint-person"))
         }
+        Modal::Partition(form) => {
+            let mut lines: Vec<Line<'static>> = vec![Line::raw("")];
+            for (i, which) in form.field_list().iter().enumerate() {
+                let (id, kind) = match which {
+                    FormField::Size => {
+                        ("rdisk-form-size", input_kind(&form.size, "rdisk-form-size-hint"))
+                    }
+                    FormField::Use => ("rdisk-form-use", Kind::Cycle(form.chosen().label())),
+                    FormField::Name => ("rdisk-form-name", input_kind(&form.name, "")),
+                };
+                let field = Field {
+                    id: Id::Name,
+                    kind,
+                    label: messages::text(id),
+                    note: String::new(),
+                    enabled: true,
+                };
+                lines.push(field_line(&field, form.focus == i, 0));
+            }
+            lines.push(Line::raw(""));
+            if let Some(problem) = &form.problem {
+                for part in wrap(&format!("! {problem}"), usize::from(width) - 4) {
+                    lines.push(Line::from(Span::styled(part, Style::new().fg(DANGER))));
+                }
+            }
+            let title = if form.row.is_some() { "rdisk-format-title" } else { "rdisk-new-title" };
+            (messages::text(title), lines, messages::text("hint-partition"))
+        }
+    };
+    let height = if small { height.min(lines.len() as u16 + 3) } else { height };
+    let rect = Rect {
+        x: area.x + (area.width - width) / 2,
+        y: area.y + (area.height - height) / 2,
+        width,
+        height,
     };
     let block = Block::bordered()
         .border_style(Style::new().fg(WARNING))
@@ -451,6 +489,13 @@ fn draw_modal(frame: &mut Frame<'_>, app: &App, modal: &Modal, area: Rect) {
         Rect { x: inner.x + 1, width: inner.width.saturating_sub(2), ..inner },
     );
     let _ = app;
+}
+
+/// A box to type in, holding `value`, with the hint of the message `hint`
+/// while it is empty.
+fn input_kind(value: &str, hint: &str) -> Kind {
+    let hint = if hint.is_empty() { String::new() } else { messages::text(hint) };
+    Kind::Input { value: value.to_string(), masked: false, hint }
 }
 
 /// The style of text that looks like `look`.

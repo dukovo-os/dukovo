@@ -248,15 +248,17 @@ int receive_vector(int fd, const struct iovec *iov, size_t count, int flags, Rec
 // The two ends of a pair in the lowest free descriptors.
 int make_pair(uint32_t flags, int *fds) {
 	for(;;) {
-		uint32_t first;
-		uint32_t second;
-		if(int e = radix::free_slot(0, &first); e)
+		radix::SlotClaim first_end;
+		radix::SlotClaim second_end;
+		if(int e = radix::free_slot(0, &first_end); e)
 			return e;
+		uint32_t first = first_end.slot();
 		int next = static_cast<int>(first - radix::FD_BASE) + 1;
 		if(next >= radix::MAX_FDS)
 			return EMFILE;
-		if(int e = radix::free_slot(next, &second); e)
+		if(int e = radix::free_slot(next, &second_end); e)
 			return e;
+		uint32_t second = second_end.slot();
 		uint64_t status = radix_process_socket_pair(radix::SLOT_PROCESS, first, second, flags);
 		// Another thread took a slot first.
 		if(is(status, RADIX_KERNEL_OCCUPIED))
@@ -1337,9 +1339,10 @@ int Sysdeps<Accept>::operator()(int fd, int *newfd, struct sockaddr *addr, sockl
 		return EINVAL;
 	uint32_t kernel = description_flags(flags);
 	for(;;) {
-		uint32_t to;
-		if(int e = radix::free_slot(0, &to); e)
+		radix::SlotClaim claim;
+		if(int e = radix::free_slot(0, &claim); e)
 			return e;
+		uint32_t to = claim.slot();
 		uint64_t status = radix_file_accept_with(radix::cancellable, slot, to, kernel);
 		// Another thread took the slot first.
 		if(is(status, RADIX_KERNEL_OCCUPIED))

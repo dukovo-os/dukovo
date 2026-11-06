@@ -40,8 +40,10 @@ on the command line: *Install Dukovo*, the default, adds *install*, so
 that tty1 shows the installer's screens (*dukovo-install*(8), ADR 0310);
 *Try Dukovo (live console)* gives a shell on every console. *Boot from
 first disk* starts the machine's own system as if the stick were not
-there. The boot tests' live image starts *Try Dukovo* when nobody
-chooses, and the cases that test the installer add *install* themselves. *rgrub-setup*(8) puts the same GRUB on other disks.
+there: under UEFI, the _EFI/BOOT/BOOTX64.EFI_ of the first EFI system
+partition, on any disk, that holds no _boot/radix_ as a Dukovo stick's
+does, and under a BIOS, the first sector of the disk after the stick.
+The boot tests' live image starts *Try Dukovo* when nobody chooses, and the cases that test the installer add *install* themselves. *rgrub-setup*(8) puts the same GRUB on other disks.
 *ob image --iso* builds an ISO for optical media instead, which El Torito boots
 under either firmware, holding the same files and no release. The boot
 tests' images have the menu of _image/grub/grub.cfg.in_ instead, which

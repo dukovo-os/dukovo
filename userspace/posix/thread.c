@@ -3,8 +3,9 @@
 
 // POSIX threads: creating and joining them, mutexes and condition
 // variables, thread-local storage, detached threads, signals to a
-// thread, and thread names.
+// thread, thread names, and descriptors two threads open at once.
 
+#include <fcntl.h>
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdint.h>
@@ -217,6 +218,52 @@ static void names(void) {
 	atomic_store(&stop, 0);
 }
 
+enum { FILES_MADE = 10000 };
+
+static atomic_int opening;
+
+// Opens a directory and closes it again until `opening` is 0, each time
+// in the lowest free descriptor, as the other thread's opens are too.
+// Returns how many times it did, or -1 if an open failed.
+static void *opens(void *argument) {
+	(void)argument;
+	intptr_t times = 0;
+	while(atomic_load(&opening)) {
+		int fd = open("/tmp", O_RDONLY | O_DIRECTORY);
+		if(fd < 0)
+			return (void *)-1;
+		close(fd);
+		times++;
+	}
+	return (void *)times;
+}
+
+// Two threads open files at once, each in the lowest free descriptor: a
+// file made with O_EXCL is made by one open, which succeeds. The C
+// library once let both threads choose the same descriptor, and the open
+// that lost it, its file already made, chose another and opened again,
+// to fail with EEXIST on its own file.
+static void descriptors(void) {
+	atomic_store(&opening, 1);
+	pthread_t thread;
+	CHECK(pthread_create(&thread, NULL, opens, NULL) == 0);
+	char path[64];
+	for(int i = 0; i < FILES_MADE; i++) {
+		snprintf(path, sizeof(path), "/tmp/thread-file-%d", i);
+		int fd = open(path, O_WRONLY | O_CREAT | O_EXCL, 0644);
+		CHECK(fd >= 0);
+		if(fd >= 0)
+			close(fd);
+		CHECK(unlink(path) == 0);
+		if(fd < 0)
+			break;
+	}
+	atomic_store(&opening, 0);
+	void *times = NULL;
+	CHECK(pthread_join(thread, &times) == 0);
+	CHECK((intptr_t)times > 0);
+}
+
 int main(void) {
 	check_start("thread");
 	RUN(counts);
@@ -225,5 +272,6 @@ int main(void) {
 	RUN(signals);
 	RUN(forking);
 	RUN(names);
+	RUN(descriptors);
 	return check_end();
 }

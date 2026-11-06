@@ -13,7 +13,10 @@
 //! - [`copy`] copies the release into the new slot, checking each file
 //!   against the signed list as it is written.
 //! - [`settings`] writes the new system's settings and accounts.
-//! - [`disks`] finds the stick and names disks and partitions.
+//! - [`plan`] works out what an install does to the disks, from the
+//!   layout the answers name, before anything is written.
+//! - [`disks`] finds the stick, names disks and partitions, and reads
+//!   their tables.
 //! - [`machine`] reads what the computer has, for the screens to offer.
 //! - [`messages`] holds every message the screens show, in Fluent.
 //! - [`log`] keeps the install log, `/tmp/install.log` while it runs and
@@ -27,5 +30,6 @@ pub mod install;
 pub mod log;
 pub mod machine;
 pub mod messages;
+pub mod plan;
 pub mod screens;
 pub mod settings;

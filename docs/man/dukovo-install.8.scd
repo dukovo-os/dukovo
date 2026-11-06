@@ -38,14 +38,28 @@ shows the five steps:
   install from a setup file.
 . *Network and name*: the network cards found, DHCP or a fixed address
   for the card chosen, the computer's name and its time zone.
-. *Disk*: the disk to install on, which the install erases, and the
-  swap's size. The stick and a disk too small cannot be chosen, and a
-  disk that holds Windows says so in red.
+. *Disk*: the disk to install on and how: the guided layout, which
+  erases it; its free space, which keeps its partitions; or Manual,
+  which opens the rdisk screen. The guided and free-space layouts take
+  the swap's size. The stick and a disk too small cannot be chosen, a
+  disk that holds Windows says so in red, and the free space says why
+  when it cannot be used.
 . *You*: the administrator, whose user name follows the name typed
   until it is typed itself, a password typed twice, whether the saved
   answers keep the passwords' hashes, and other people.
 . *Review*: everything the install will do. It is the only step that
   changes the computer: Install asks for the disk's name, typed, first.
+
+The rdisk screen lists each disk's partitions as they are and as they
+will be, by tabs, with a bar of the disk: N makes a partition in the
+free space, for a use (the Dukovo root, the EFI system partition, swap,
+BIOS boot, data on Btrfs, exFAT or FAT32, or empty), D takes one out or
+keeps it again, F formats one for a use, G lays out the guided
+partitions on the disk, U undoes the last change, and Tab shows the
+next disk. Each change is worked out as rdisk will write it, and
+nothing is written before the review's Install. Enter checks that the
+changes leave a Dukovo root and an EFI system partition on one GPT
+disk, which is the target.
 
 Tab and Shift+Tab, or Up and Down, move between the fields and the
 buttons; Space chooses; Enter goes on; Esc goes back; F1 shows the
@@ -87,14 +101,22 @@ An install then runs these steps, each printed as it starts:
   check* does (*system-release*(8)). A release that fails is not
   installed.
 . *Checking* the disk: it must be a whole disk, not the stick, and
-  big enough for the layout, the system and a GiB more.
-. *Partitioning* the disk: it is erased and gets the guided layout, as
-  *rdisk --script* applies it (*rdisk-layout*(5)): a 1 MiB BIOS boot
-  partition, a 512 MiB EFI system partition, the swap the answers ask
-  for, and the Dukovo root in the rest.
+  its layout must fit: the root big enough for the system and a GiB
+  more.
+. *Partitioning* the disk, and each other disk the manual layout
+  changes, as *rdisk --script* applies a layout file
+  (*rdisk-layout*(5)) the installer writes and logs. The guided layout
+  erases the disk and makes a 1 MiB BIOS boot partition, a 512 MiB EFI
+  system partition, the swap the answers ask for, and the Dukovo root
+  in the rest; the free-space layout makes the same four in the disk's
+  largest free space and keeps the rest, numbering the EFI system
+  partition 2, where the BIOS's GRUB finds its files, or leaving out the
+  BIOS boot partition if the disk has a partition 2; the manual layout makes the
+  answers' *changes*.
 . *Making the filesystems*: FAT32 on the EFI system partition, a swap
-  area, and the root's Btrfs, with *mkfs-fat*(8), *mkswap*(8) and
-  *mkfs-btrfs*(8).
+  area, the root's Btrfs, and the data partitions the manual layout
+  formats, with *mkfs-fat*(8), *mkswap*(8), *mkfs-btrfs*(8) and
+  *mkfs-exfat*(8).
 . *Making the subvolumes* of the root, as an installed system has them
   (*spark*(8)).
 . *Copying Dukovo* _version_ *into its slot, checking every file*:
@@ -110,6 +132,8 @@ An install then runs these steps, each printed as it starts:
   the BIOS boot partition, and for UEFI in the EFI system partition, with
   *rgrub-setup*(8), so that the disk starts under either firmware, and
   the menu that starts the slot, naming the root by its UUID (ADR 0307).
+  A disk the manual layout gives no BIOS boot partition gets GRUB for
+  UEFI alone.
 . *Saving the answers and the install log* in the new system.
 
 It ends with the line to act on:

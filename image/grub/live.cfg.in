@@ -50,21 +50,34 @@ menuentry "Try Dukovo @VERSION@ (live console)" --id try {
 @MODULES@    boot
 }
 
-# The machine's own system, as if the stick were not there. GRUB calls the
-# disk it started from hd0, so the machine's first disk is hd1. Under UEFI
+# The machine's own system, as if the stick were not there. Under UEFI
 # it starts the boot loader the firmware would, EFI/BOOT/BOOTX64.EFI on
-# that disk's EFI system partition; under a BIOS, the disk's first sector,
-# with the disks' BIOS numbers swapped so that it finds itself first, as
-# it would with no stick.
+# an EFI system partition, from the first disk that has one: UEFI's GRUB
+# numbers disks as the firmware lists them, which need not put the stick
+# first, so every disk is looked at, and a partition that holds the live
+# system's kernel, boot/radix, is passed over as this stick's own, or
+# another Dukovo stick's. The partition becomes GRUB's root first: the
+# chainloader tells the loader it starts that it was loaded from the
+# root, and a GRUB told the stick finds the stick's menu again, not its
+# own. Under a BIOS, GRUB calls the disk it started from hd0, so the
+# machine's first disk is hd1: it starts that disk's first sector, with
+# the disks' BIOS numbers swapped so that it finds itself first, as it
+# would with no stick.
 menuentry "Boot from first disk" --id first-disk {
     if [ "${grub_platform}" = "efi" ]; then
-        for part in (hd1,gpt1) (hd1,gpt2) (hd1,gpt3) (hd1,gpt4); do
-            if [ -f "${part}/EFI/BOOT/BOOTX64.EFI" ]; then
-                chainloader "${part}/EFI/BOOT/BOOTX64.EFI"
-                boot
-            fi
+        # Eight partitions each: the manual layout can put the EFI system
+        # partition after others.
+        for d in hd0 hd1 hd2 hd3 hd4 hd5 hd6 hd7; do
+            for n in 1 2 3 4 5 6 7 8; do
+                set part="(${d},gpt${n})"
+                if [ -f "${part}/EFI/BOOT/BOOTX64.EFI" -a ! -f "${part}/boot/radix" ]; then
+                    set root="${part}"
+                    chainloader /EFI/BOOT/BOOTX64.EFI
+                    boot
+                fi
+            done
         done
-        echo "The first disk has no EFI system partition with EFI/BOOT/BOOTX64.EFI."
+        echo "No disk but the stick has an EFI system partition with EFI/BOOT/BOOTX64.EFI."
     else
         set root=(hd1)
         drivemap -s (hd0) (hd1)

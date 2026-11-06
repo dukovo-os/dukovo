@@ -89,7 +89,35 @@ void set_files_limit(uint64_t limit) {
 	__atomic_store_n(&files_soft, fds, __ATOMIC_RELAXED);
 }
 
-int free_slot(int min_fd, uint32_t *slot) {
+namespace {
+
+// The file descriptors threads have claimed (SlotClaim), a bit each. They
+// are claimed and let go with atomic operations alone, as the notes of
+// directory paths below are taken: open and close are async-signal-safe.
+uint64_t claimed[(MAX_FDS + 63) / 64];
+
+// Claims descriptor `fd` for the running thread: false if another thread
+// holds it.
+bool claim_fd(int fd) {
+	uint64_t bit = UINT64_C(1) << (fd % 64);
+	return !(__atomic_fetch_or(&claimed[fd / 64], bit, __ATOMIC_ACQUIRE) & bit);
+}
+
+} // namespace
+
+SlotClaim::~SlotClaim() {
+	if(slot_ == NO_SLOT)
+		return;
+	int fd = static_cast<int>(slot_ - FD_BASE);
+	__atomic_fetch_and(&claimed[fd / 64], ~(UINT64_C(1) << (fd % 64)), __ATOMIC_RELEASE);
+}
+
+void forget_claims() {
+	for(uint64_t &word : claimed)
+		__atomic_store_n(&word, 0, __ATOMIC_RELAXED);
+}
+
+int free_slot(int min_fd, SlotClaim *claim) {
 	if(min_fd < 0 || min_fd >= MAX_FDS)
 		return EINVAL;
 	uint32_t first = FD_BASE + static_cast<uint32_t>(min_fd);
@@ -106,9 +134,15 @@ int free_slot(int min_fd, uint32_t *slot) {
 			uint64_t free = ~used.used;
 			if(room < 64)
 				free &= (UINT64_C(1) << room) - 1;
-			if(free) {
-				*slot = first + static_cast<uint32_t>(__builtin_ctzll(free));
-				return *slot < end ? 0 : EMFILE;
+			// The lowest of them that no other thread has claimed.
+			for(; free; free &= free - 1) {
+				uint32_t slot = first + static_cast<uint32_t>(__builtin_ctzll(free));
+				if(slot >= end)
+					return EMFILE;
+				if(claim_fd(static_cast<int>(slot - FD_BASE))) {
+					claim->slot_ = slot;
+					return 0;
+				}
 			}
 			first += 64;
 			if(first < used.slots)

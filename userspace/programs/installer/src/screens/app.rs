@@ -15,10 +15,12 @@ use std::time::{Duration, Instant};
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use crate::answers::{self, Account, Answers, Disk, Fixed, Layout, Network};
+use super::rdisk::{self, FormField, PartForm, Rdisk};
+use crate::answers::{self, Account, Answers, Disk, Fixed, Layout, Network, Role};
 use crate::log::{Event, Step};
 use crate::machine::{Holds, Machine};
 use crate::messages::{self, Arg};
+use crate::plan;
 
 /// A page of the installer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -31,6 +33,8 @@ pub enum Page {
     Network,
     /// The disk and its layout.
     Disk,
+    /// The manual layout's partitions, on the rdisk screen.
+    Rdisk,
     /// The administrator and the other accounts.
     You,
     /// Everything the install will do, and the disk's name typed to
@@ -57,6 +61,7 @@ impl Page {
             Page::SetupFile => "page-setup-file",
             Page::Network => "page-network",
             Page::Disk => "page-disk",
+            Page::Rdisk => "page-rdisk",
             Page::You => "page-you",
             Page::Review => "page-review",
             Page::Installing => "page-installing",
@@ -65,10 +70,12 @@ impl Page {
         }
     }
 
-    /// Its place among [`Page::STEPS`], if it is one.
+    /// Its place among [`Page::STEPS`], if it is one; the rdisk screen
+    /// is the Disk step's.
     #[must_use]
     pub fn step(self) -> Option<usize> {
-        Page::STEPS.iter().position(|page| *page == self)
+        let page = if self == Page::Rdisk { Page::Disk } else { self };
+        Page::STEPS.iter().position(|step| *step == page)
     }
 }
 
@@ -107,6 +114,10 @@ pub enum Id {
     Disk(usize),
     /// Disk: the guided layout.
     Guided,
+    /// Disk: the free-space layout.
+    Free,
+    /// Disk: the manual layout, on the rdisk screen.
+    Manual,
     /// Disk: the swap's size in GiB.
     Swap,
     /// You: the administrator's full name.
@@ -222,6 +233,8 @@ pub enum Modal {
     },
     /// Another person's account being added.
     Person(PersonForm),
+    /// A partition being made or formatted on the rdisk screen.
+    Partition(PartForm),
 }
 
 /// The form of another person's account.
@@ -356,6 +369,10 @@ pub struct App {
     pub disk: Option<usize>,
     /// The swap's size in GiB, as typed.
     pub swap: String,
+    /// How the disk is laid out: guided, free space or manual.
+    pub layout: Layout,
+    /// The rdisk screen, once the manual layout has shown it.
+    pub rdisk: Option<Rdisk>,
     /// The administrator's full name.
     pub name: String,
     /// The administrator's user name.
@@ -398,13 +415,6 @@ struct Seek {
 /// How long a pause starts the letters typed on a list field again.
 const SEEK_PAUSE: Duration = Duration::from_secs(1);
 
-/// The guided layout's partitions before the root, in bytes: the BIOS
-/// boot partition and the EFI system partition.
-const BEFORE_ROOT: u64 = (1 + 512) << 20;
-
-/// What the root needs beyond the release, as the engine counts it.
-const ROOM: u64 = 1 << 30;
-
 /// The swap the installer suggests at most, in GiB.
 const SWAP_SUGGESTED_MAX: u64 = 8;
 
@@ -442,6 +452,8 @@ impl App {
             zone,
             disk,
             swap: swap.to_string(),
+            layout: Layout::Guided,
+            rdisk: None,
             name: String::new(),
             user: String::new(),
             user_typed: false,
@@ -464,6 +476,7 @@ impl App {
             Page::SetupFile => self.setup_file_rows(),
             Page::Network => self.network_rows(),
             Page::Disk => self.disk_rows(),
+            Page::Rdisk => Vec::new(),
             Page::You => self.you_rows(),
             Page::Review => self.review_rows(),
             Page::Installing | Page::Done | Page::Failed => Vec::new(),
@@ -480,7 +493,7 @@ impl App {
             Page::Installing => &[],
             Page::Done => &[Id::Restart, Id::ShowLog, Id::SaveSetup],
             Page::Failed => &[Id::ShowLog, Id::Live],
-            Page::Network | Page::Disk | Page::You => &[Id::Back, Id::Next, Id::Help],
+            Page::Network | Page::Disk | Page::Rdisk | Page::You => &[Id::Back, Id::Next, Id::Help],
         };
         ids.iter().map(|id| (*id, messages::text(button_name(*id)))).collect()
     }
@@ -515,6 +528,10 @@ impl App {
         self.focus = 0;
         self.problem = None;
         self.said = None;
+        if page == Page::Rdisk {
+            // Its keys are its own; Next is the button Enter presses.
+            self.focus_on(Id::Next);
+        }
     }
 
     fn welcome_rows(&self) -> Vec<Row> {
@@ -640,9 +657,11 @@ impl App {
     fn disk_rows(&self) -> Vec<Row> {
         let mut rows = vec![Row::Text(messages::text("disk-which"), Look::Plain)];
         for (i, disk) in self.machine.disks.iter().enumerate() {
+            // The other layouts are checked against the room they find.
+            let small = self.layout == Layout::Guided && disk.bytes < self.needed();
             let note = if disk.stick {
                 messages::text("disk-stick")
-            } else if disk.bytes < self.needed() {
+            } else if small {
                 messages::with("disk-too-small", &[("size", Arg::Text(&size(self.needed())))])
             } else {
                 holds(disk.holds(), disk.partitions.len())
@@ -652,24 +671,47 @@ impl App {
                 kind: Kind::Choice(self.disk == Some(i)),
                 label: disk_label(disk),
                 note,
-                enabled: !disk.stick && disk.bytes >= self.needed(),
+                enabled: !disk.stick && !small,
             }));
         }
+        let free_note = match self.free_room() {
+            Ok(free) => messages::with("disk-free-note", &[("size", Arg::Text(&size(free)))]),
+            Err(why) => why,
+        };
         rows.extend([
             Row::Blank,
             Row::Text(messages::text("disk-how"), Look::Bold),
             field(
                 Id::Guided,
-                Kind::Choice(true),
+                Kind::Choice(self.layout == Layout::Guided),
                 "disk-guided",
                 &messages::text("disk-guided-note"),
             ),
-            input(Id::Swap, "disk-swap", &self.swap, false, "0"),
-            Row::Text(messages::text("disk-swap-note"), Look::Dim),
+            Row::Field(Field {
+                id: Id::Free,
+                kind: Kind::Choice(self.layout == Layout::Free),
+                label: messages::text("disk-free"),
+                note: free_note,
+                enabled: self.free_room().is_ok(),
+            }),
+            field(
+                Id::Manual,
+                Kind::Choice(self.layout == Layout::Manual),
+                "disk-manual",
+                &messages::text("disk-manual-note"),
+            ),
         ]);
+        // The manual layout makes its own swap partition, or none.
+        if self.layout != Layout::Manual {
+            rows.extend([
+                input(Id::Swap, "disk-swap", &self.swap, false, "0"),
+                Row::Text(messages::text("disk-swap-note"), Look::Dim),
+            ]);
+        }
         if let Some(disk) = self.disk.and_then(|i| self.machine.disks.get(i)) {
             let name = Arg::Text(&disk.name);
             let warning = match disk.holds() {
+                _ if self.layout != Layout::Guided => None,
                 Holds::Nothing => None,
                 Holds::Windows => Some(messages::with("disk-erase-windows", &[("disk", name)])),
                 Holds::Dukovo | Holds::Linux | Holds::Other => {
@@ -686,15 +728,40 @@ impl App {
                 .filter(|other| other.name != disk.name && !other.stick)
                 .map(|other| other.name.clone())
                 .collect();
-            if !others.is_empty() {
+            if !others.is_empty() && self.layout != Layout::Manual {
+                let count = Arg::Number(others.len() as u64);
                 let others = others.join(", ");
                 rows.push(Row::Text(
-                    messages::with("disk-untouched", &[("disks", Arg::Text(&others))]),
+                    messages::with(
+                        "disk-untouched",
+                        &[("disks", Arg::Text(&others)), ("count", count)],
+                    ),
                     Look::Dim,
                 ));
             }
         }
         rows
+    }
+
+    /// The free space the free-space layout would use on the disk
+    /// chosen, in bytes, or why it cannot be used.
+    fn free_room(&self) -> Result<u64, String> {
+        let disk = self
+            .disk
+            .and_then(|i| self.machine.disks.get(i))
+            .ok_or_else(|| messages::text("disk-none"))?;
+        let (_, sectors) = plan::free_room(disk, self.swap_gib(), self.root_bytes())?;
+        Ok(sectors * u64::from(disk.sector_size))
+    }
+
+    /// The swap asked for, in GiB, within what the installer makes.
+    fn swap_gib(&self) -> u32 {
+        self.swap.trim().parse::<u32>().unwrap_or(0).min(answers::SWAP_MAX_GIB)
+    }
+
+    /// What the root needs: the release and room to spare.
+    fn root_bytes(&self) -> u64 {
+        self.release_bytes + plan::ROOM
     }
 
     fn you_rows(&self) -> Vec<Row> {
@@ -753,45 +820,11 @@ impl App {
     /// What the install of `answers` will do, a row a line.
     fn review_lines(&self, answers: &Answers) -> Vec<Row> {
         let target = answers.target();
-        let disk = self.machine.disks.iter().find(|disk| disk.name == target);
-        let mut rows = Vec::new();
         let label = |id: &str, rest: String| format!("{:<10}{rest}", messages::text(id));
-        let erase = match disk.map(crate::machine::DiskInfo::holds) {
-            Some(Holds::Windows) => messages::text("review-erase-windows"),
-            Some(Holds::Nothing) | None => String::new(),
-            Some(_) => messages::text("review-erase-all"),
+        let (mut rows, bios_boot) = match answers.disk.layout {
+            Layout::Manual => self.review_changes(&answers.disk.changes, target),
+            layout => self.review_layout(layout, answers.disk.swap_gib, target),
         };
-        let model = disk.map_or("", |disk| disk.model.as_str());
-        rows.push(Row::Text(
-            label("review-erase", format!("{target}  {model}  {erase}")),
-            Look::Danger,
-        ));
-        rows.push(Row::Text(
-            label("review-create", messages::with("review-on", &[("disk", Arg::Text(target))])),
-            Look::Plain,
-        ));
-        let swap = u64::from(answers.disk.swap_gib) << 30;
-        let root = disk.map_or(0, |disk| disk.bytes.saturating_sub(BEFORE_ROOT + swap));
-        let mut parts = vec![
-            ("review-bios-boot", 1 << 20, "-".to_string()),
-            ("review-efi", 512 << 20, messages::text("review-efi-note")),
-        ];
-        if swap > 0 {
-            parts.push(("review-swap", swap, messages::text("review-swap-note")));
-        }
-        parts.push(("review-root", root, messages::text("review-root-note")));
-        for (i, (name, bytes, what)) in parts.into_iter().enumerate() {
-            rows.push(Row::Text(
-                format!(
-                    "{:12}{}  {:<16}{:>9}   {what}",
-                    "",
-                    i + 1,
-                    messages::text(name),
-                    size(bytes)
-                ),
-                Look::Plain,
-            ));
-        }
         rows.push(Row::Text(
             format!("{:12}{}", "", messages::text("review-subvolumes")),
             Look::Dim,
@@ -803,7 +836,8 @@ impl App {
             ),
             Look::Plain,
         ));
-        rows.push(Row::Text(format!("{:10}{}", "", messages::text("review-grub")), Look::Plain));
+        let grub = if bios_boot { "review-grub" } else { "review-grub-uefi" };
+        rows.push(Row::Text(format!("{:10}{}", "", messages::text(grub)), Look::Plain));
         let mut settings = vec![answers.hostname().to_string()];
         for (card, network) in &answers.network {
             settings.push(match network {
@@ -821,8 +855,11 @@ impl App {
         )];
         people.extend(answers.users.iter().map(|user| format!("{} ({})", user.user, user.name)));
         rows.push(Row::Text(label("review-accounts", people.join(", ")), Look::Plain));
-        for other in self.machine.disks.iter().filter(|other| other.name != target && !other.stick)
-        {
+        let changed: Vec<&str> =
+            answers.disk.changes.iter().map(|change| change.disk.as_str()).collect();
+        for other in self.machine.disks.iter().filter(|other| {
+            other.name != target && !other.stick && !changed.contains(&other.name.as_str())
+        }) {
             rows.push(Row::Text(
                 label("review-untouched", format!("{}  {}", other.name, other.model)),
                 Look::Good,
@@ -831,12 +868,139 @@ impl App {
         rows
     }
 
+    /// The review's lines of the guided or free-space layout on `target`
+    /// with swap of `swap_gib`: what is erased or kept, and each
+    /// partition made. With whether the disk gets a BIOS boot partition.
+    fn review_layout(&self, layout: Layout, swap_gib: u32, target: &str) -> (Vec<Row>, bool) {
+        let label = |id: &str, rest: String| format!("{:<10}{rest}", messages::text(id));
+        let Some(disk) = self.machine.disks.iter().find(|disk| disk.name == target) else {
+            return (Vec::new(), true);
+        };
+        let model = disk.model.as_str();
+        let (head, look, change) = if layout == Layout::Free {
+            let kept = Arg::Number(disk.partitions.len() as u64);
+            let head = format!(
+                "{target}  {model}  {}",
+                messages::with("review-keeps", &[("count", kept)])
+            );
+            (
+                label("review-add", head),
+                Look::Warning,
+                plan::free_space(disk, swap_gib, self.root_bytes()),
+            )
+        } else {
+            let erase = match disk.holds() {
+                Holds::Windows => messages::text("review-erase-windows"),
+                Holds::Nothing => String::new(),
+                _ => messages::text("review-erase-all"),
+            };
+            (
+                label("review-erase", format!("{target}  {model}  {erase}")),
+                Look::Danger,
+                plan::guided(disk, swap_gib),
+            )
+        };
+        let mut rows = vec![
+            Row::Text(head, look),
+            Row::Text(
+                label("review-create", messages::with("review-on", &[("disk", Arg::Text(target))])),
+                Look::Plain,
+            ),
+        ];
+        let sector = u64::from(disk.sector_size);
+        for part in change.map_or_else(|_| Vec::new(), |change| change.partitions) {
+            let bytes = part.sectors.unwrap_or_default() * sector;
+            rows.push(Row::Text(
+                format!(
+                    "{:12}{}  {:<16}{:>9}   {}",
+                    "",
+                    part.number,
+                    part.name.clone().unwrap_or_default(),
+                    size(bytes),
+                    holds_what(part.role, part.format)
+                ),
+                Look::Plain,
+            ));
+        }
+        (rows, true)
+    }
+
+    /// The review's lines of the manual layout's `changes`: each disk
+    /// changed, and each partition taken out, made or formatted. With
+    /// whether `target` has a BIOS boot partition after.
+    fn review_changes(&self, changes: &[answers::Change], target: &str) -> (Vec<Row>, bool) {
+        let mut rows = Vec::new();
+        let mut bios_boot = false;
+        for change in changes {
+            let Some(disk) = self.machine.disks.iter().find(|disk| disk.name == change.disk) else {
+                continue;
+            };
+            let what =
+                if change.new_table { messages::text("review-new-table") } else { String::new() };
+            rows.push(Row::Text(
+                format!(
+                    "{:<10}{}  {}  {what}",
+                    messages::text("review-change"),
+                    disk.name,
+                    disk.model
+                ),
+                Look::Danger,
+            ));
+            let sector = u64::from(disk.sector_size);
+            let was = |number: u32| disk.table.as_ref().and_then(|table| table.get(number));
+            let line = |verb: &str, number: u32, name: &str, bytes: u64, what: String| {
+                format!(
+                    "{:12}{:<8}{number:<3}{:<18}{:>9}   {what}",
+                    "",
+                    messages::text(verb),
+                    name,
+                    size(bytes)
+                )
+            };
+            let old_name = |number: u32| {
+                was(number).map_or(String::new(), |p| {
+                    if p.name.is_empty() { p.kind.name().to_string() } else { p.name.clone() }
+                })
+            };
+            if !change.new_table {
+                for &number in &change.delete {
+                    let bytes = was(number).map_or(0, |p| p.sectors() * sector);
+                    rows.push(Row::Text(
+                        line("review-delete", number, &old_name(number), bytes, String::new()),
+                        Look::Danger,
+                    ));
+                }
+            }
+            for part in &change.partitions {
+                let (verb, name, bytes) = match part.sectors {
+                    Some(sectors) => {
+                        ("review-new", part.name.clone().unwrap_or_default(), sectors * sector)
+                    }
+                    None => (
+                        "review-format",
+                        old_name(part.number),
+                        was(part.number).map_or(0, |p| p.sectors() * sector),
+                    ),
+                };
+                let look = if part.is_new() { Look::Plain } else { Look::Warning };
+                rows.push(Row::Text(
+                    line(verb, part.number, &name, bytes, holds_what(part.role, part.format)),
+                    look,
+                ));
+            }
+            if change.disk == target {
+                let kind = disk::types::parse("bios-boot", disk::Scheme::Gpt);
+                bios_boot = plan::after(disk, change)
+                    .is_ok_and(|table| table.partitions.iter().any(|p| Some(p.kind) == kind));
+            }
+        }
+        (rows, bios_boot)
+    }
+
     /// The size the guided layout needs: its first partitions, the swap
     /// asked for, the release and room to spare.
     fn needed(&self) -> u64 {
-        let swap =
-            self.swap.trim().parse::<u64>().unwrap_or(0).min(u64::from(answers::SWAP_MAX_GIB));
-        BEFORE_ROOT + (swap << 30) + self.release_bytes + ROOM
+        plan::needed(self.swap_gib(), self.root_bytes())
     }
 
     /// The answers: a setup file's, or those typed, with no passwords'
@@ -883,10 +1047,17 @@ impl App {
             keyboard: self.machine.layouts[self.keyboard].0.clone(),
             language: messages::LANGUAGE.to_string(),
             disk: Disk {
-                layout: Layout::Guided,
+                layout: self.layout,
                 target: disk.name.clone(),
                 mirror: None,
-                swap_gib: self.swap.trim().parse().unwrap_or(u32::MAX),
+                swap_gib: match self.layout {
+                    Layout::Manual => 0,
+                    _ => self.swap.trim().parse().unwrap_or(u32::MAX),
+                },
+                changes: match (&self.rdisk, self.layout) {
+                    (Some(rdisk), Layout::Manual) => rdisk.changes(&self.machine),
+                    _ => Vec::new(),
+                },
             },
             hostname: Some(self.hostname.trim().to_string()),
             time_zone: Some(self.machine.zones[self.zone].clone()),
@@ -923,7 +1094,15 @@ impl App {
     fn check_page(&self) -> Result<(), String> {
         let keys: &[&str] = match self.page {
             Page::Network => &["hostname", "time_zone", "network"],
-            Page::Disk => &["disk"],
+            Page::Disk => match self.layout {
+                // The rdisk screen checks the manual layout's edits.
+                Layout::Manual => return Ok(()),
+                Layout::Free => {
+                    self.free_room()?;
+                    &["disk"]
+                }
+                _ => &["disk"],
+            },
             Page::You => {
                 if self.password != self.repeat {
                     return Err(messages::text("you-mismatch"));
@@ -933,10 +1112,12 @@ impl App {
             Page::Review => {
                 let answers = self.answers()?;
                 if self.confirm.trim() != answers.target() {
-                    return Err(messages::with(
-                        "review-type",
-                        &[("disk", Arg::Text(answers.target()))],
-                    ));
+                    // Only the guided layout erases the whole disk.
+                    let id = match answers.disk.layout {
+                        Layout::Guided => "review-type",
+                        _ => "review-type-change",
+                    };
+                    return Err(messages::with(id, &[("disk", Arg::Text(answers.target()))]));
                 }
                 return Ok(());
             }
@@ -944,6 +1125,7 @@ impl App {
         };
         let answers = self.answers()?;
         if self.page == Page::Disk
+            && self.layout == Layout::Guided
             && self
                 .machine
                 .disks
@@ -970,6 +1152,9 @@ impl App {
     pub fn key(&mut self, key: KeyEvent) -> Outcome {
         if self.modal.is_some() {
             return self.modal_key(key);
+        }
+        if self.page == Page::Rdisk {
+            return self.rdisk_key(key);
         }
         // Any key but a letter ends the letters typed on a list field.
         if !matches!(key.code, KeyCode::Char(_)) {
@@ -1180,6 +1365,9 @@ impl App {
                 self.confirm.clear();
             }
             Id::KeepHashes => self.keep_hashes = !self.keep_hashes,
+            Id::Guided => self.layout = Layout::Guided,
+            Id::Free => self.layout = Layout::Free,
+            Id::Manual => self.layout = Layout::Manual,
             _ => {}
         }
         self.problem = None;
@@ -1245,7 +1433,30 @@ impl App {
             Page::Welcome if self.from_file => Page::SetupFile,
             Page::Welcome => Page::Network,
             Page::Network => Page::Disk,
+            Page::Disk if self.layout == Layout::Manual => {
+                if !self.open_rdisk() {
+                    self.problem = Some(messages::text("disk-none"));
+                    return Outcome::Stay;
+                }
+                Page::Rdisk
+            }
             Page::Disk => Page::You,
+            Page::Rdisk => {
+                let Some(rdisk) = &self.rdisk else { return Outcome::Stay };
+                match rdisk.done(&self.machine, self.root_bytes()) {
+                    Ok(target) => {
+                        // The disk that holds the root is the one the
+                        // review asks to have typed.
+                        self.disk = Some(target);
+                        self.confirm.clear();
+                        Page::You
+                    }
+                    Err(problem) => {
+                        self.problem = Some(problem);
+                        return Outcome::Stay;
+                    }
+                }
+            }
             Page::You => Page::Review,
             Page::Review => return self.press(Id::Install),
             Page::SetupFile => return self.press(Id::Load),
@@ -1260,6 +1471,8 @@ impl App {
         let before = match self.page {
             Page::SetupFile | Page::Network => Page::Welcome,
             Page::Disk => Page::Network,
+            Page::Rdisk => Page::Disk,
+            Page::You if self.layout == Layout::Manual => Page::Rdisk,
             Page::You => Page::Disk,
             Page::Review if self.loaded.take().is_some() => Page::SetupFile,
             Page::Review => Page::You,
@@ -1320,8 +1533,90 @@ impl App {
                 }
                 _ => {}
             },
+            Modal::Partition(form) => {
+                if key.code == KeyCode::Esc {
+                    self.modal = None;
+                } else if key.code == KeyCode::Enter {
+                    let form = form.clone();
+                    self.apply_partition(&form);
+                } else {
+                    partition_key(form, key);
+                }
+            }
         }
         Outcome::Stay
+    }
+
+    /// Readies the rdisk screen, on the disk chosen, or the first disk
+    /// that is not the install stick; it keeps its edits from before.
+    /// False if there is no disk to show.
+    fn open_rdisk(&mut self) -> bool {
+        let first = self.machine.disks.iter().position(|disk| !disk.stick);
+        let Some(at) = self.disk.or(first) else { return false };
+        match self.rdisk.as_mut() {
+            Some(rdisk) => {
+                rdisk.disk = at;
+                rdisk.move_row(0);
+            }
+            None => self.rdisk = Some(Rdisk::new(&self.machine, at)),
+        }
+        true
+    }
+
+    /// Acts on `key` on the rdisk screen.
+    fn rdisk_key(&mut self, key: KeyEvent) -> Outcome {
+        let Some(mut rdisk) = self.rdisk.take() else { return Outcome::Stay };
+        let disk = &self.machine.disks[rdisk.disk];
+        self.problem = None;
+        let mut done = Ok(());
+        match key.code {
+            KeyCode::Up => rdisk.move_row(-1),
+            KeyCode::Down => rdisk.move_row(1),
+            KeyCode::PageUp => rdisk.move_row(-10),
+            KeyCode::PageDown => rdisk.move_row(10),
+            KeyCode::Tab | KeyCode::BackTab => rdisk.next_disk(&self.machine),
+            KeyCode::Char('n' | 'N') => match rdisk.new_form(disk) {
+                Ok(form) => self.modal = Some(Modal::Partition(form)),
+                Err(why) => done = Err(why),
+            },
+            KeyCode::Char('f' | 'F') => {
+                if let Some(form) = rdisk.format_form() {
+                    self.modal = Some(Modal::Partition(form));
+                }
+            }
+            KeyCode::Char('d' | 'D') | KeyCode::Delete => done = rdisk.delete(),
+            KeyCode::Char('g' | 'G') => done = rdisk.guided(disk, self.swap_gib()),
+            KeyCode::Char('u' | 'U') => rdisk.undo(),
+            KeyCode::F(1) | KeyCode::Char('?') => self.modal = Some(Modal::Help(Page::Rdisk)),
+            KeyCode::Enter => {
+                self.rdisk = Some(rdisk);
+                return self.next();
+            }
+            KeyCode::Esc => {
+                self.rdisk = Some(rdisk);
+                self.back();
+                return Outcome::Stay;
+            }
+            _ => {}
+        }
+        self.problem = done.err();
+        self.rdisk = Some(rdisk);
+        Outcome::Stay
+    }
+
+    /// Makes or formats the partition of `form`, closing the form; what
+    /// stops it is shown in the form.
+    fn apply_partition(&mut self, form: &PartForm) {
+        let Some(rdisk) = self.rdisk.as_mut() else { return };
+        let disk = &self.machine.disks[rdisk.disk];
+        match rdisk.apply_form(disk, form) {
+            Ok(()) => self.modal = None,
+            Err(problem) => {
+                if let Some(Modal::Partition(shown)) = self.modal.as_mut() {
+                    shown.problem = Some(problem);
+                }
+            }
+        }
     }
 
     /// Adds the person of `form`, if the name and user name are good and
@@ -1367,6 +1662,32 @@ impl App {
         let page = if result.is_ok() { Page::Done } else { Page::Failed };
         self.progress.finished = Some(result);
         self.show(page);
+    }
+}
+
+/// Acts on `key` in the partition form: moving between its fields,
+/// choosing the use, and typing the size and name.
+fn partition_key(form: &mut PartForm, key: KeyEvent) {
+    let fields = form.fields();
+    let field = form.field();
+    form.problem = None;
+    match key.code {
+        KeyCode::Tab | KeyCode::Down => form.focus = (form.focus + 1) % fields,
+        KeyCode::BackTab | KeyCode::Up => form.focus = (form.focus + fields - 1) % fields,
+        // The boxes have no cursor to move, so Left and Right choose the
+        // use from any field, as the form's hint says.
+        KeyCode::Left => form.cycle(-1),
+        KeyCode::Right => form.cycle(1),
+        KeyCode::Char(' ') if field == FormField::Use => form.cycle(1),
+        KeyCode::Backspace => {
+            form.text_mut().map(String::pop);
+        }
+        KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+            if let Some(text) = form.text_mut() {
+                text.push(c);
+            }
+        }
+        _ => {}
     }
 }
 
@@ -1456,6 +1777,18 @@ fn holds(holds: Holds, partitions: usize) -> String {
         Holds::Dukovo => messages::with("disk-dukovo", &[("count", count)]),
         Holds::Linux => messages::with("disk-linux", &[("count", count)]),
         Holds::Other => messages::with("disk-partitions", &[("count", count)]),
+    }
+}
+
+/// What a partition for `role` holds, with `format` for data, as the
+/// review says it.
+fn holds_what(role: Role, format: Option<answers::Format>) -> String {
+    match role {
+        Role::BiosBoot => "-".to_string(),
+        Role::Efi => messages::text("review-efi-note"),
+        Role::Swap => messages::text("review-swap-note"),
+        Role::Root => messages::text("review-root-note"),
+        Role::Data => rdisk::Use { role, format }.label(),
     }
 }
 
