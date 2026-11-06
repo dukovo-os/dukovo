@@ -94,7 +94,7 @@ static void write_text(const char *path, const char *text) {
 static void command_lines(void) {
 	STATUS(2, "/bin/sh", "-c", "nfs 2>/dev/null");
 	STATUS(2, "/bin/sh", "-c", "nfs ls -o vers=3 10.0.2.2:/srv 2>/dev/null");
-	STATUS(2, "/bin/sh", "-c", "nfs ls -o sec=krb5 10.0.2.2:/srv 2>/dev/null");
+	STATUS(2, "/bin/sh", "-c", "nfs ls -o sec=lkey 10.0.2.2:/srv 2>/dev/null");
 	STATUS(2, "/bin/sh", "-c", "nfs ls nas 2>/dev/null");
 	STATUS(2, "/bin/sh", "-c", "nfs mount 10.0.2.2:/srv 2>/dev/null");
 	CONTAINS("usage: nfs mount", "/bin/sh", "-c", "nfs --help");

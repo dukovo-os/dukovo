@@ -9,9 +9,9 @@ use std::time::Instant;
 
 use crate::attr::{self, Facts, Settings};
 use crate::fh::Fh;
+use crate::gss::Flavor;
 use crate::ipc::{Changes, Create, FsStat, Make, Reply, Request, Stat};
 use crate::nfs::{self, Attrs, IO_MAX, err, kind, op};
-use crate::rpc::AUTH_SYS;
 use crate::server::{Backend, Cur, Done, Fail, Here, Server};
 use crate::state::{FileKey, Kind, Locker, Open, Stateid};
 use crate::worker::ATTACHED;
@@ -156,10 +156,13 @@ fn cinfo(w: &mut Writer, before: u64, after: u64) {
     w.bool(false).u64(before).u64(after);
 }
 
-/// SECINFO's answer: AUTH_SYS alone, until Kerberos (ADR 0343).
-fn secinfo() -> Writer {
+/// SECINFO's answer: `flavors`, the one to use first first.
+fn secinfo(flavors: &[Flavor]) -> Writer {
     let mut w = Writer::new();
-    w.u32(1).u32(AUTH_SYS);
+    w.u32(flavors.len() as u32);
+    for flavor in flavors {
+        flavor.write_secinfo(&mut w);
+    }
     w
 }
 
@@ -248,16 +251,28 @@ impl<B: Backend> Server<B> {
             op::SECINFO => {
                 let name = r.opaque(OWNER_MAX)?.to_vec();
                 check_name(&name)?;
-                here(cur)?;
+                let flavors = match here(cur)? {
+                    Here::Root => {
+                        let text = std::str::from_utf8(&name).map_err(|_| err::NOENT)?;
+                        let share = self.share_named(cur, text).ok_or(err::NOENT)?;
+                        self.shares[share].flavors.clone()
+                    }
+                    Here::File { share, .. } => self.shares[*share].flavors.clone(),
+                };
                 // SECINFO uses up the current filehandle.
                 cur.here = None;
-                Ok(secinfo())
+                Ok(secinfo(&flavors))
             }
             op::SECINFO_NO_NAME => {
-                let _style = r.u32()?;
-                here(cur)?;
+                // 0 for the current file's, 1 for its folder's.
+                let parent = r.u32()? == 1;
+                let flavors = match here(cur)? {
+                    Here::File { fh: Fh::Share(_), .. } if parent => self.root_flavors(cur),
+                    Here::Root => self.root_flavors(cur),
+                    Here::File { share, .. } => self.shares[*share].flavors.clone(),
+                };
                 cur.here = None;
-                Ok(secinfo())
+                Ok(secinfo(&flavors))
             }
             op::VERIFY => self.verify(cur, r, true),
             op::NVERIFY => self.verify(cur, r, false),
@@ -288,6 +303,43 @@ impl<B: Backend> Server<B> {
     fn share_of(&self, cur: &Cur, key: u64) -> Result<usize, Fail> {
         let at = self.shares.iter().position(|s| s.key == key).ok_or(err::STALE)?;
         if self.shares[at].allows(cur.peer) { Ok(at) } else { Err(err::ACCESS.into()) }
+    }
+
+    /// The share named `name` in the root, if the caller's address may
+    /// reach it.
+    fn share_named(&self, cur: &Cur, name: &str) -> Option<usize> {
+        self.shares
+            .iter()
+            .position(|s| manifest::shares::same_name(&s.name, name) && s.allows(cur.peer))
+    }
+
+    /// Fails with WRONGSEC if share `share` does not take the call's
+    /// flavor, so that the client asks SECINFO which it does.
+    fn takes(&self, share: usize, cur: &Cur) -> Result<(), Fail> {
+        if self.shares[share].takes(cur.flavor) { Ok(()) } else { Err(err::WRONGSEC.into()) }
+    }
+
+    /// [`Server::takes`] for the current file's share: the root takes
+    /// every flavor, since it only lists the shares.
+    pub fn secure(&self, cur: &Cur) -> Result<(), Fail> {
+        match &cur.here {
+            Some(Here::File { share, .. }) => self.takes(*share, cur),
+            _ => Ok(()),
+        }
+    }
+
+    /// The root's flavors: those of the shares the caller's address may
+    /// reach, each once, in the order the shares list them.
+    fn root_flavors(&self, cur: &Cur) -> Vec<Flavor> {
+        let mut flavors = Vec::new();
+        for share in self.shares.iter().filter(|share| share.allows(cur.peer)) {
+            for flavor in &share.flavors {
+                if !flavors.contains(flavor) {
+                    flavors.push(*flavor);
+                }
+            }
+        }
+        flavors
     }
 
     /// Fails if share `share` is read-only.
@@ -538,11 +590,8 @@ impl<B: Backend> Server<B> {
         check_name(&name)?;
         if let Here::Root = here(cur)? {
             let text = std::str::from_utf8(&name).map_err(|_| err::NOENT)?;
-            let share = self
-                .shares
-                .iter()
-                .position(|s| manifest::shares::same_name(&s.name, text) && s.allows(cur.peer))
-                .ok_or(err::NOENT)?;
+            let share = self.share_named(cur, text).ok_or(err::NOENT)?;
+            self.takes(share, cur)?;
             let path = self.root_path(share);
             let stat = self.stat_path(cur.uid, &path)?;
             let fh = Fh::Share(self.shares[share].key);
@@ -550,6 +599,7 @@ impl<B: Backend> Server<B> {
             cur.stateid = None;
             return Ok(Writer::new());
         }
+        self.secure(cur)?;
         let (share, folder, folder_fh) = self.folder_here(cur, err::NOENT)?;
         let path = join(&folder, &name);
         let stat = self.stat_path(cur.uid, &path)?;
@@ -570,6 +620,7 @@ impl<B: Backend> Server<B> {
             cur.stateid = None;
             return Ok(Writer::new());
         }
+        self.takes(share, cur)?;
         let root = self.root_path(share);
         let cut = path.iter().rposition(|&b| b == b'/').ok_or(err::SERVERFAULT)?;
         let parent = path[..cut].to_vec();
@@ -812,6 +863,8 @@ impl<B: Backend> Server<B> {
 
     /// OPEN: a file opened, perhaps made, by an open-owner.
     fn open(&mut self, cur: &mut Cur, r: &mut Reader) -> Done {
+        // A PUTFH before it left the check to it (RFC 8881 2.6.3.1.1.3).
+        self.secure(cur)?;
         let _seqid = r.u32()?;
         // The want flags above the access bits ask about delegations.
         let access = r.u32()? & 0xff;

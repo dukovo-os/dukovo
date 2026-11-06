@@ -3,10 +3,13 @@
 
 //! nfsd(8)'s parts (ADR 0343), and NFS's protocol, which nfs(1), the
 //! client, speaks with them (ADR 0344): XDR ([`xdr`]), NFS version 4's
-//! numbers ([`nfs`]) and RPC's records and calls ([`rpc`]).
+//! numbers ([`nfs`]), RPC's records and calls ([`rpc`]) and RPCSEC_GSS,
+//! Kerberos's credential ([`gss`], ADR 0399).
 
 mod attr;
+mod contexts;
 mod fh;
+pub mod gss;
 mod ipc;
 mod listener;
 pub mod nfs;

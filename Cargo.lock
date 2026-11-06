@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "accounts"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "argon2",
  "base64ct",
@@ -197,7 +197,7 @@ dependencies = [
 
 [[package]]
 name = "disk"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "radix-block",
  "radix-btrfs",
@@ -210,7 +210,7 @@ dependencies = [
 
 [[package]]
 name = "dkv"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "blake2",
  "ed25519-compact",
@@ -306,14 +306,14 @@ checksum = "65cd87c9a6d60536580b316ad985726104730a5151c99845f2490428ef91240a"
 
 [[package]]
 name = "linux-bench"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "libc",
 ]
 
 [[package]]
 name = "manifest"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "radix-abi",
  "schemars",
@@ -387,14 +387,14 @@ dependencies = [
 
 [[package]]
 name = "radix-abi"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "ridlc",
 ]
 
 [[package]]
 name = "radix-bitlocker"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "aes",
  "ccm",
@@ -404,7 +404,7 @@ dependencies = [
 
 [[package]]
 name = "radix-block"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "radix-hw",
  "radix-mm",
@@ -413,11 +413,11 @@ dependencies = [
 
 [[package]]
 name = "radix-bootfs"
-version = "0.12.0"
+version = "0.13.0"
 
 [[package]]
 name = "radix-btrfs"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "radix-block",
  "radix-hw",
@@ -427,7 +427,7 @@ dependencies = [
 
 [[package]]
 name = "radix-fat"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "radix-block",
  "radix-hw",
@@ -437,7 +437,7 @@ dependencies = [
 
 [[package]]
 name = "radix-fbcon"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "radix-hal",
  "radix-klog",
@@ -445,7 +445,7 @@ dependencies = [
 
 [[package]]
 name = "radix-hal"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "radix-hw",
  "radix-pstate",
@@ -454,37 +454,37 @@ dependencies = [
 
 [[package]]
 name = "radix-hw"
-version = "0.12.0"
+version = "0.13.0"
 
 [[package]]
 name = "radix-kdb"
-version = "0.12.0"
+version = "0.13.0"
 
 [[package]]
 name = "radix-klog"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "radix-sync",
 ]
 
 [[package]]
 name = "radix-ksyms"
-version = "0.12.0"
+version = "0.13.0"
 
 [[package]]
 name = "radix-microcode"
-version = "0.12.0"
+version = "0.13.0"
 
 [[package]]
 name = "radix-mm"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "radix-sync",
 ]
 
 [[package]]
 name = "radix-ntfs"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "radix-block",
  "radix-hw",
@@ -494,26 +494,26 @@ dependencies = [
 
 [[package]]
 name = "radix-pstate"
-version = "0.12.0"
+version = "0.13.0"
 
 [[package]]
 name = "radix-relocs"
-version = "0.12.0"
+version = "0.13.0"
 
 [[package]]
 name = "radix-sensors"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "radix-hw",
 ]
 
 [[package]]
 name = "radix-sync"
-version = "0.12.0"
+version = "0.13.0"
 
 [[package]]
 name = "radix-vfs"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "radix-block",
  "radix-bootfs",
@@ -549,7 +549,7 @@ dependencies = [
 
 [[package]]
 name = "ridlc"
-version = "0.12.0"
+version = "0.13.0"
 
 [[package]]
 name = "rustc-demangle"
@@ -744,7 +744,7 @@ checksum = "23b97319f7b8343df12cc98938e5c3eb436064524c8d2b4e30a1d3a36eecdf81"
 
 [[package]]
 name = "xtask"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "accounts",
  "disk",

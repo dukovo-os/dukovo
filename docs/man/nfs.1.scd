@@ -45,7 +45,25 @@ client sends them (AUTH_SYS): the server checks those numbers against
 its files' owners and modes. Use the same numbers for a person on both
 machines. The server takes them at its word, so share folders over NFS
 only to networks you trust; most servers serve root as no one (root
-squash). Kerberos (*sec=krb5*) is not spoken yet.
+squash).
+
+## Kerberos
+
+With *sec=krb5*, *krb5i* or *krb5p*, each person's calls go under their
+own Kerberos ticket instead (RPCSEC_GSS, ADR 0399), which the server
+checks: *krb5* proves who calls, *krb5i* signs each call and reply too,
+and *krb5p* also seals them, so that the network sees nothing of the
+files. A person gets their ticket with *kinit*(1), and nfs takes the
+server's ticket, for _nfs/server_, from their keyring as they first use
+the mount; someone without a ticket is refused (EACCES).
+
+Name the server as its Kerberos service is named, _nfs/server_ in the
+realm *krb5.conf*(5) gives it: by its name, not its address, with
+*addr=* if the name does not resolve. The mount's own walk to the folder
+goes under the machine's key for _host/name_ or _nfs/name_ in the keytab,
+as on Linux, or else under the ticket of whoever mounted through
+*elevate*(8). The calls that keep the mount's state with the server
+carry no person's files and go with AUTH_SYS's numbers.
 
 ## The files
 
@@ -104,7 +122,12 @@ machine's alone: other clients do not see them.
 	*ro*, *rw*
 		Mount only to read, or to write too (the default).
 
-	*proto=tcp*, *sec=sys*
+	*sec=*_flavor_
+		How calls say who makes them: *sys* (the default), or Kerberos's
+		*krb5*, *krb5i* or *krb5p* (see *Kerberos*). One flavor: a list is
+		refused.
+
+	*proto=tcp*
 		What nfs speaks; others are refused.
 
 # EXIT STATUS
@@ -124,6 +147,14 @@ $ ls ~/music
 $ elevate umount ~/music
 ```
 
+Mount a folder a server shares with Kerberos alone, after taking a
+ticket:
+
+```
+$ kinit
+$ elevate mount -t nfs -o sec=krb5p nas.example.org:/srv/home ~/home
+```
+
 List a folder, from a server on another port:
 
 ```
@@ -133,4 +164,4 @@ $ nfs ls nfs://nas.local:2050/srv/music
 # SEE ALSO
 
 *mount*(8), *umount*(8), *nfsd*(8), *share*(1), *elevate*(8),
-*smb*(1), *radix-files*(7)
+*kinit*(1), *krb5.conf*(5), *smb*(1), *radix-files*(7)

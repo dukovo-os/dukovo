@@ -11,8 +11,10 @@
 //! - `nfs ls [-o OPTIONS] SERVER:/PATH` lists a folder.
 //!
 //! Calls carry AUTH_SYS's credential: the caller's user and groups, by
-//! number, as Linux's client sends them (ADR 0344). The options are
-//! mount.nfs(8)'s (options.rs).
+//! number, as Linux's client sends them (ADR 0344); or, with `sec=krb5`,
+//! `krb5i` or `krb5p`, RPCSEC_GSS's, under a Kerberos context of each
+//! caller's own (security.rs, ADR 0399). The options are mount.nfs(8)'s
+//! (options.rs).
 
 mod attrs;
 mod client;
@@ -20,6 +22,7 @@ mod fs;
 mod ids;
 mod options;
 mod rpc;
+mod security;
 mod sys;
 #[cfg(test)]
 mod tests;
@@ -69,7 +72,11 @@ OPTIONS, comma-separated, as mount.nfs takes them:
                        and tries before a soft mount fails (2)
   rsize=N, wsize=N     the most bytes each read and write carries
   ro, rw               mounts to read only, or to write too (rw)
-  sec=sys              the caller's numbers (AUTH_SYS), the only one yet
+  sec=sys              the caller's numbers (AUTH_SYS)
+  sec=krb5, krb5i, krb5p
+                       each caller's Kerberos ticket, from their keyring
+                       after kinit; krb5i signs each call and reply,
+                       krb5p seals them too
 Other options of mount.nfs are taken and change nothing.
 
 See nfs(1).";
@@ -273,6 +280,25 @@ fn walk(client: &mut Client, cred: &Cred, names: &[String]) -> Result<(Vec<u8>, 
 /// folder's filehandle. The calls of a mount wait as `options` say once
 /// it is made; until then they fail after `retrans` tries.
 fn connect(target: &Target, options: &Options, cred: &Cred) -> Result<(Client, Vec<u8>), String> {
+    let kerberos = match options.sec {
+        Some(service) => {
+            let config = kerberos::config::Config::load().map_err(|err| err.to_string())?;
+            let server = security::server_principal(&target.host, &config)?;
+            let tickets = Box::new(security::AuthdTickets::new(config, &hostname()));
+            Some(security::Kerberos::new(service, server, tickets))
+        }
+        None => None,
+    };
+    connect_with(target, options, cred, kerberos)
+}
+
+/// [`connect`], with each caller's Kerberos contexts from `kerberos`.
+fn connect_with(
+    target: &Target,
+    options: &Options,
+    cred: &Cred,
+    kerberos: Option<security::Kerberos>,
+) -> Result<(Client, Vec<u8>), String> {
     let addr = address(target, options)?;
     let source = target.source();
     let timing = Timing { timeout: options.timeout(), retrans: options.retrans, hard: false };
@@ -281,6 +307,9 @@ fn connect(target: &Target, options: &Options, cred: &Cred) -> Result<(Client, V
     let mut owner = format!("dukovo-nfs {machine} ").into_bytes();
     owner.extend_from_slice(&verifier);
     let mut client = Client::new(addr, timing, options.minor, machine.as_bytes(), &owner, verifier);
+    if let Some(kerberos) = kerberos {
+        client.use_kerberos(kerberos);
+    }
     let (root, a) = walk(&mut client, cred, &target.names).map_err(|f| format!("{source}: {f}"))?;
     if a.kind != kind::DIR {
         return Err(format!("{source}: not a folder"));

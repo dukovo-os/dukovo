@@ -32,9 +32,10 @@ client, and those of the BSDs and macOS, speak 4.1 or 4.2.
 
 # WHO A CALL IS
 
-Each call says who makes it, AUTH_SYS's way: a user and group number,
-which nfsd takes at the client's word, as every NFS server does without
-Kerberos. So a share names only networks whose machines, and whose
+Each call says who makes it, AUTH_SYS's way unless the share takes
+Kerberos (see *KERBEROS*): a user and group number, which nfsd takes at
+the client's word, as every NFS server does without Kerberos. So a share
+names only networks whose machines, and whose
 administrators, you trust, as it trusts each to say truly who calls. A
 person's number on the client must be the same as on Dukovo, where the
 first person made is 1000. A call is served with the groups the person
@@ -45,7 +46,35 @@ what a file's modes let everyone do; so is a call that says no one, and
 one whose number is no person's here: a service's, a disabled
 account's, or one there is no account for.
 Owners and groups are numbers, as Linux's client sends them with
-AUTH_SYS; a name is refused. Kerberos (RPCSEC_GSS) is refused for now.
+AUTH_SYS; a name is refused.
+
+# KERBEROS
+
+A share whose *nfs-sec* lists *krb5*, *krb5i* or *krb5p*
+(*shares.toml*(5), *share add --nfs-sec*) takes calls under Kerberos
+(RPCSEC_GSS, ADR 0399): *krb5* proves who calls, *krb5i* signs each call
+and reply too, and *krb5p* also seals them. A share that lists only
+those refuses AUTH_SYS (NFS4ERR_WRONGSEC), and a client asks which it
+takes (SECINFO); the root takes every flavor.
+
+A client sets a context up with a ticket for _nfs/name_, which nfsd
+checks with that service's key in the keytab, _/system/settings/krb5.keytab_
+(or *KRB5_KTNAME*'s): put it there once, from the realm's
+administrator, with *nc* or a USB stick and *elevate*(8), and check it
+with *klist -k*. Only _nfs/_ keys open contexts; the keytab and the
+accounts are read again for each new context.
+
+Calls under a context are served as the account its principal names:
+_alice@REALM_, in the realm of nfsd's own key, is the account alice, if
+it is a person's; any other principal, a machine's _host/name_ among
+them, and root's, is served as no one. Linux's client goes under the
+machine's key for the mount's own walk and for root, and under each
+user's ticket for their calls, as Linux's rpc.gssd finds it.
+
+A context lasts as long as its ticket: then the client is told so and
+sets up another, as it does after nfsd restarts. Calls whose sequence
+numbers were seen already, or are more than 128 behind, are dropped
+unanswered, as replays.
 
 # HOW IT WORKS
 
@@ -94,6 +123,10 @@ _/system/settings/shares.toml_
 	The shares, and the networks each is served to over NFS
 	(*shares.toml*(5)).
 
+_/system/settings/krb5.keytab_
+	The keys of _nfs/name_ that Kerberos's clients' tickets are for
+	(*klist*(1) *-k* lists them).
+
 _/system/settings/spark/services/nfsd.toml_
 	nfsd's service file (*service.toml*(5)), whose *enabled* *share nfs
 	on* and *share nfs off* set; the system's own is
@@ -107,4 +140,5 @@ pipe to it.
 
 # SEE ALSO
 
-*share*(1), *shares.toml*(5), *authd*(8), *smbd*(8), *service.toml*(5)
+*share*(1), *shares.toml*(5), *authd*(8), *smbd*(8), *service.toml*(5),
+*kinit*(1), *krb5.conf*(5)

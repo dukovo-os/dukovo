@@ -61,10 +61,18 @@ nfs = ["192.168.1.0/24", "fd00::/64"]
 	then the share is not served over NFS. NFS with AUTH_SYS takes each
 	machine at its word for who calls.
 
+*nfs-sec* = [_"flavor"_, ...]
+	How NFS clients must say who calls, the one to use first first:
+	*"sys"*, AUTH_SYS's numbers, or Kerberos's *"krb5"*, *"krb5i"* and
+	*"krb5p"*, which check each person's ticket and sign, then seal,
+	what goes over the network (*nfsd*(8), ADR 0399). *["sys"]* unless
+	set.
+
 Whoever signs in reaches the folder as themselves: the owners, groups,
 modes and access lists of its files decide what they may read and
 change, as at their own shell (*smbd*(8)). Over NFS, a call is served as
-the number the client says, and root's as no one's (*nfsd*(8)).
+the number the client says, and root's as no one's, or with Kerberos as
+the account its principal names (*nfsd*(8)).
 
 smbd and nfsd say in the log when they cannot read the file, or a line
 of it is wrong, and then share no folder until it is mended; *share*(1)
