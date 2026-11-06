@@ -1788,6 +1788,12 @@ impl Counters {
     }
 }
 
+/// Threads that slept for a mutex, and mutexes handed to a sleeper, since
+/// boot ([`wait::mutex_counts`]).
+pub fn mutex_counts() -> (u64, u64) {
+    wait::mutex_counts()
+}
+
 /// The counters now.
 pub fn counters() -> Counters {
     let mut total = Counters::default();

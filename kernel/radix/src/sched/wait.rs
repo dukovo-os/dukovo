@@ -119,6 +119,7 @@ impl Table {
 static TABLE: SpinLock<Option<Table>> = SpinLock::new(None);
 static WAKEUPS: AtomicU64 = AtomicU64::new(0);
 static HANDOFFS: AtomicU64 = AtomicU64::new(0);
+static MUTEX_WAITS: AtomicU64 = AtomicU64::new(0);
 static BOOSTS: AtomicU64 = AtomicU64::new(0);
 
 /// Sets the table up with room for `room` waiters.
@@ -273,6 +274,7 @@ pub(super) fn mutex_wait(mutex: &RawMutex) {
         let seq = table.seq;
         table.push(Waiter { thread: me.clone(), key, prio, seq, owner });
         me.blocked_on.store(key, Ordering::Relaxed);
+        MUTEX_WAITS.fetch_add(1, Ordering::Relaxed);
         lend(table, owner, prio);
     }
     while mutex.owner() != token {
@@ -385,6 +387,13 @@ pub fn stats() -> (u64, u64, u64) {
         HANDOFFS.load(Ordering::Relaxed),
         BOOSTS.load(Ordering::Relaxed),
     )
+}
+
+/// How many times a thread went to sleep waiting for a mutex, and how
+/// many times a mutex was handed to a sleeping waiter: `/processes/stat`
+/// gives both, so that a benchmark can see a lock its threads queue for.
+pub fn mutex_counts() -> (u64, u64) {
+    (MUTEX_WAITS.load(Ordering::Relaxed), HANDOFFS.load(Ordering::Relaxed))
 }
 
 /// How many threads wait in the table now, or `None` if it is locked.
