@@ -69,6 +69,24 @@ kept in place of the old. Other questions, such as a server's password
 or whether to trust a host's key, are asked at the terminal as before,
 and are not kept.
 
+## Apps
+
+An app in its sandbox reaches its own entries alone. The name it gives,
+such as `token`, is the entry `app ID token` of your keyring, so
+`keyring list` shows an app's entries with its ID, and `keyring remove`
+forgets one. The app lists only its own, and cannot read what git, ssh
+or another app keeps. An app that needs more asks for `keyring.shared`,
+which the console's bottom line asks you about with a warning:
+
+```
+ [warning] Tokens (org.example.tokens) asks to: use every secret in your keyring: your tokens and passphrases, and other apps'      O: once    A: always    D: don't allow
+```
+
+Given, the app reaches every entry by its own name, as your own
+programs do; `bundle revoke ID keyring.shared` takes it back. Programs
+outside a sandbox, and an app's commands that run with your access,
+reach every entry, as on Linux.
+
 ## Your password
 
 `passwd` seals the keyring under your new password, and every entry
@@ -92,6 +110,10 @@ There is no way back in, by design.
   not an OpenSSH key has its passphrase asked for and not kept.
 - **To stop keeping a passphrase or token**: `keyring remove` with the
   entry's name, as `keyring list` shows it.
+- **An app does not find its secrets**: it reaches its keyring only
+  while `bundle` runs it; `keyring list` outside shows its entries as
+  `app ID NAME`. `bundle info ID` shows whether you gave it
+  `keyring.shared`.
 - **The keyring did not open at a sign-in**: authd's log says why.
   `elevate log -s authd` shows lines such as
   `authd: keyring of alice: open` and `authd: keyring of alice: closed`.

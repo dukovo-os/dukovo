@@ -42,6 +42,9 @@ https, as *git* _protocol_*://*_user_*@*_host_ entries
 (*git-credential-keyring*(1)), and the passphrases of your SSH keys, as
 *ssh* _path_ entries (*ssh-askpass-keyring*(1)).
 
+An app in a sandbox reaches its own entries alone, as *app* _ID name_
+entries, unless you give it *keyring.shared* (*bundle*(1)).
+
 # COMMANDS
 
 *set* _name_
@@ -97,4 +100,4 @@ is locked or has no such entry.
 # SEE ALSO
 
 *passwd*(1), *authd*(8), *git-credential-keyring*(1),
-*ssh-askpass-keyring*(1), *systools*(1)
+*ssh-askpass-keyring*(1), *bundle*(1), *systools*(1)

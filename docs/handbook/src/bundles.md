@@ -30,6 +30,10 @@ service.toml(5).
 - **A sandbox for each app**, which sees its own folders and what you
   gave it, and nothing else
   ([ADR 0225](https://github.com/dukovo-os/dukovo/blob/main/docs/adr/0225-bundles-run-in-a-sandbox-of-their-own.md)).
+- **Its own secrets**, in its part of your keyring, and all of your
+  keyring only when you give it `keyring.shared`
+  ([ADR 0396](https://github.com/dukovo-os/dukovo/blob/main/docs/adr/0396-an-app-in-a-sandbox-reaches-its-own-keyring-entries-alone.md),
+  [Your keyring](keyring.md)).
 - **Updates, going back and holding**, with the app's data kept from
   before each update
   ([ADR 0384](https://github.com/dukovo-os/dukovo/blob/main/docs/adr/0384-bundles-update-from-their-catalog-go-back-and-hold.md)).

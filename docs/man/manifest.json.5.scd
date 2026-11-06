@@ -285,6 +285,9 @@ defines these:
 |  *files.app-data*
 :  Read these other apps' private data (*apps*)
 :  with a warning
+|  *keyring.shared*
+:  Use every secret in your keyring, other apps' too
+:  with a warning
 |  *network.outbound*
 :  Connect to the internet and to services on this computer
 :  at install
@@ -329,8 +332,8 @@ that brings them: *devices.usb* (1.6), *devices.camera* (1.6.6),
 *devices.hardware* (1.8), *display* (1.1), *screen.capture* (1.5.2),
 *input.control* (1.5), *shortcuts.global* (1.5), *clipboard.read* (1.1),
 *background* (1.1), *location* (1.6), *contacts*, *calendar*,
-*reminders* and *mail* (1.5.6), *keychain.shared* (1.4.1), *ai.ask*
-(1.10) and *memory.jit* (1.2).
+*reminders* and *mail* (1.5.6), *ai.ask* (1.10) and *memory.jit*
+(1.2).
 
 Dukovo may later narrow what a permission gives, or ask again, when that
 protects people: a bundle keeps installing and running, perhaps with
