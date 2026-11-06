@@ -47,6 +47,15 @@ impl Runs {
         Runs { runs: mem::vec() }
     }
 
+    /// A copy of the runs.
+    pub fn copy(&self) -> Result<Runs> {
+        let mut runs = mem::vec_with_capacity(self.runs.len())?;
+        for &run in &self.runs {
+            let _ = runs.push_within_capacity(run);
+        }
+        Ok(Runs { runs })
+    }
+
     /// The clusters the runs cover.
     pub fn clusters(&self) -> u64 {
         self.runs.last().map_or(0, |run| run.vcn + run.len)

@@ -36,6 +36,9 @@
 //! - [`lznt1`] uncompresses and compresses compressed files.
 //! - [`reparse`] reads reparse points, links and junctions, and makes
 //!   links.
+//! - `check` (feature `shrink`) checks where a volume's clusters are, and
+//!   `shrink` shrinks a volume to make room beside Windows, for
+//!   resize-ntfs(8) and the installer (ADR 0312).
 //! - [`fs::NtfsFs`] is the filesystem; [`node::NtfsNode`] its files,
 //!   directories and links, whose alternate data streams are their
 //!   extended attributes. Metadata goes through a cache of the device's
@@ -55,6 +58,8 @@
 extern crate alloc;
 
 pub mod boot;
+#[cfg(any(test, feature = "shrink"))]
+pub mod check;
 pub mod edit;
 pub mod fs;
 pub mod index;
@@ -65,10 +70,14 @@ pub mod node;
 pub mod record;
 pub mod reparse;
 pub mod runs;
+#[cfg(any(test, feature = "shrink"))]
+pub mod shrink;
 pub mod space;
 pub mod tree;
 pub mod upcase;
 
+#[cfg(test)]
+mod shrink_tests;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]

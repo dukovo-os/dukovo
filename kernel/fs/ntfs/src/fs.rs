@@ -77,6 +77,10 @@ pub mod records {
     pub const ROOT: u64 = 5;
     /// Which clusters are in use.
     pub const BITMAP: u64 = 6;
+    /// The volume's first clusters: its boot sector and the code after.
+    pub const BOOT: u64 = 7;
+    /// The bad clusters, in its `$Bad` stream.
+    pub const BAD_CLUSTERS: u64 = 8;
     /// The up-case table.
     pub const UPCASE: u64 = 10;
     /// The first record of a file of the user's: those before are the
@@ -322,9 +326,10 @@ struct Mft {
     records: u64,
 }
 
-/// The copy of the first records, and how many it has.
+/// The copy of the first records, and how many it has. Its runs change
+/// only when a shrink moves it (ADR 0312).
 struct Mirror {
-    runs: Runs,
+    runs: Mutex<Runs>,
     records: u64,
 }
 
@@ -341,6 +346,28 @@ impl Volume {
     /// How many records the master file table has.
     pub(crate) fn records(&self) -> u64 {
         self.mft.lock().records
+    }
+
+    #[cfg(any(test, feature = "shrink"))]
+    /// A copy of the master file table's runs.
+    pub(crate) fn mft_runs(&self) -> Result<Runs> {
+        self.mft.lock().runs.copy()
+    }
+
+    #[cfg(any(test, feature = "shrink"))]
+    /// Reads and writes the master file table at `runs` from now on: a
+    /// shrink has copied it there ([`crate::shrink`]).
+    pub(crate) fn move_mft(&self, runs: Runs) {
+        self.mft.lock().runs = runs;
+    }
+
+    #[cfg(any(test, feature = "shrink"))]
+    /// Writes the copies of the first records to `runs` from now on: a
+    /// shrink has copied `$MFTMirr`'s data there ([`crate::shrink`]).
+    pub(crate) fn move_mirror(&self, runs: Runs) {
+        if let Some(mirror) = &self.mirror {
+            *mirror.runs.lock() = runs;
+        }
     }
 
     /// Reads record `number` into `buf`, its update sequence put back.
@@ -384,7 +411,8 @@ impl Volume {
         for mirror in [mirror_first, !mirror_first] {
             if mirror {
                 if let Some(copy) = mirrored {
-                    write_runs(&self.cache, &self.geo, &copy.runs, number * rs, &out, through)?;
+                    let runs = copy.runs.lock();
+                    write_runs(&self.cache, &self.geo, &runs, number * rs, &out, through)?;
                 }
             } else {
                 let mft = self.mft.lock();
@@ -671,7 +699,7 @@ pub(crate) struct Scratch {
 pub(crate) struct Space {
     pub(crate) clusters: Clusters,
     /// The master file table's `$BITMAP`, on a volume mounted to write.
-    records: Option<Stream>,
+    pub(crate) records: Option<Stream>,
     /// Where to look for a free record first.
     record_hint: u64,
     /// Whether `$Volume` on the disk says the volume is dirty.
@@ -698,8 +726,9 @@ pub(crate) struct Inner {
     /// The volume's flags as the mount found them.
     flags: u16,
     /// Whether the volume stays marked dirty, for Windows to check at
-    /// its next start: one written although Windows hibernated with it.
-    keep_dirty: AtomicBool,
+    /// its next start: one written although Windows hibernated with it,
+    /// or shrunk (ADR 0312).
+    pub(crate) keep_dirty: AtomicBool,
 }
 
 impl Inner {
@@ -1106,7 +1135,7 @@ pub(crate) fn replace_named(
 
 /// A mounted NTFS volume.
 pub struct NtfsFs {
-    inner: KArc<Inner>,
+    pub(crate) inner: KArc<Inner>,
     root: KArc<NtfsNode>,
     /// Its label, in UTF-16.
     label: KVec<u16>,
@@ -1402,7 +1431,8 @@ fn writable(vol: &Volume, about: &About, growable: bool, forced: bool) -> Result
         return Err(Error::Corrupt);
     }
     let unclean = dirty || !clean;
-    Ok(Writable { mirror: Mirror { runs: mirror.runs, records: count }, log, records, unclean })
+    let mirror = Mirror { runs: Mutex::new(mirror.runs), records: count };
+    Ok(Writable { mirror, log, records, unclean })
 }
 
 /// Record `number`'s data, or its own `$BITMAP` if `bitmap`, if it is a
