@@ -78,10 +78,24 @@ and the derivation tree.
 **Spaces** are vectors of slots, named by a `SpaceId` of an index and a
 generation; a destroyed space's index is reused with the next generation,
 so an old name stays wrong. A slot is named by a `SlotRef` (space and
-slot number). Each slot holds an optional capability and its place in the
+slot number). Each slot holds an optional capability, the slot's own
+marks (its flags, a cache mark and a `linked` bit), and its place in the
 derivation tree: parent, first child, previous and next sibling (as slot
 links, possibly in other spaces), a depth, and a revoke mark. The tree is
-intrusive, so deriving, deleting and moving never allocate.
+intrusive, so deriving, deleting and moving never allocate. The marks and
+the tree part are kept apart because each will have a lock of its own
+(ADR 0369).
+
+**The `linked` bit** says a slot may have relatives. Deriving sets it on
+both slots, a move carries it, and emptying a slot clears it. A delete
+clears it on the deleted capability's parent too, when that is in the
+same space and has no relatives left, and a revoke clears it on its
+capability when it ends with none. It may stay set on a slot whose last
+relative was in another space. A clear bit means no parent and no
+children, so `delete` and `move_cap` of such a capability take the fast
+path: they empty or fill that slot alone and follow no link
+(`Slot::take_unlinked`, `Slot::put_unlinked`), as they will with only
+the space's lock once the store's lock is split. `is_linked` reads it.
 
 **Objects** live in a table of records named by an `ObjectId` (index and
 generation, like spaces). Each record counts the capabilities that name
@@ -159,7 +173,8 @@ capability between steps and puts a new one in its slot, the revoke ends
 there and the newcomer keeps what was derived from it.
 
 **Audit.** `audit` checks every invariant of the store: the tree's links
-agree with each other and only join full slots, depths fall towards the
+agree with each other and only join full slots, every slot with relatives
+is marked linked and no empty slot is, depths fall towards the
 roots, every capability holds only rights of its kind and a badge only if
 its kind has them, every child is `within` its parent or retyped from the
 memory its parent names, every capability names a live object of its
@@ -453,9 +468,9 @@ table above still holds, and that a clear bit means no relatives
 it holds (`FastPathAlone`) and changes nothing outside its own slots
 (`FastPathTouchesOnlyItsSlots`), the leaf a revoke deletes is still a
 leaf (`LeafStays`), and the lock order holds (`LockOrder`), with deadlock
-checking on: about 5.2 million states, a minute on 4 CPUs. Each of these
-seeded bugs is caught: a derive that does not lock its source's space
-and a fast path that skips the bit (`FastPathAlone`, and
+checking on: about 7.9 million states, a minute and a half on 4 CPUs.
+Each of these seeded bugs is caught: a derive that does not lock its
+source's space and a fast path that skips the bit (`FastPathAlone`, and
 `EmptySlotsAreBlank` without it), a delete that clears the bit of a
 parent with other children and a move that drops it (`LinkedIsSound`),
 and three ways of breaking the order, each of which deadlocks without

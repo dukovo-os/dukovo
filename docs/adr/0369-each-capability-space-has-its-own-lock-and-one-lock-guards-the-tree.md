@@ -80,7 +80,9 @@ no siblings).
 - A move carries it to the new slot.
 - Emptying a slot clears it. A delete also clears it on the parent, when
   the parent is in the same space and is left with no relatives: the
-  common case of a copy made in one process and deleted again.
+  common case of a copy made in one process and deleted again. A revoke
+  that ends with its capability left with no relatives clears it there,
+  holding that space's lock to clear the mark.
 - It may stay set on a slot with no relatives, when the slot's last
   relative was in another space. That is safe: a set bit only sends an
   operation to the slow path, which may clear it there.

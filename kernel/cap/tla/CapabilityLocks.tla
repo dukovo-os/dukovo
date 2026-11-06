@@ -308,23 +308,26 @@ Mark(t) ==
 \* Without it (another revoke of the capability finished, or the
 \* capability was deleted, perhaps with another put in its slot), what
 \* was asked is done. With nothing left below the capability, the mark is
-\* cleared. Otherwise the turn lets go of the capability's space and goes
-\* down to a leaf.
+\* cleared, and so is the capability's flag if it has no parent either.
+\* Otherwise the turn lets go of the capability's space and goes down to
+\* a leaf.
 Again(t) ==
     /\ pc[t] = "again"
     /\ LET s == op[t].a
        IN  CASE ~revoking[s] ->
                     /\ pc' = [pc EXCEPT ![t] = "release"]
-                    /\ UNCHANGED <<store, held>>
+                    /\ UNCHANGED <<store, linked, held>>
              [] C!Descendants(s) = {} ->
                     /\ C!RevokeDone(s)
+                    /\ linked' = IF parent[s] = None
+                                 THEN [linked EXCEPT ![s] = FALSE] ELSE linked
                     /\ pc' = [pc EXCEPT ![t] = "release"]
                     /\ UNCHANGED held
              [] OTHER ->
                     /\ held' = [x \in Spaces |-> IF held[x] = t THEN None ELSE held[x]]
                     /\ pc' = [pc EXCEPT ![t] = "down"]
-                    /\ UNCHANGED store
-    /\ UNCHANGED <<linked, tree, op>>
+                    /\ UNCHANGED <<store, linked>>
+    /\ UNCHANGED <<tree, op>>
 
 \* The walk down the tree follows links, under the tree lock alone; the
 \* leaf it reaches is deleted with the leaf's space locked.
