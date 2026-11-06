@@ -69,6 +69,7 @@ fn serve_one(listener: &TcpListener, root: &Path) {
                         comment: "documents".into(),
                         read_only: false,
                         nfs: Vec::new(),
+                        nfs_sec: Vec::new(),
                     }],
                 };
                 wire::write_frame(&mut &stream, &response).unwrap();

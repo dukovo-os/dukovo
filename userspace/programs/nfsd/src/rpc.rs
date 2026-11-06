@@ -3,11 +3,14 @@
 
 //! ONC RPC version 2 (RFC 5531) over TCP: the record marking that frames
 //! each call, the call's header with its credential, and the replies.
-//! nfsd answers program 100003 (NFS), version 4, and only AUTH_SYS's
-//! and AUTH_NONE's credentials (RFC 5531's appendix A).
+//! nfsd answers program 100003 (NFS), version 4, with AUTH_SYS's and
+//! AUTH_NONE's credentials (RFC 5531's appendix A) and RPCSEC_GSS's
+//! (RFC 2203, [`crate::gss`]).
 
 use std::io::{self, Read};
+use std::ops::Range;
 
+use crate::gss::{self, RPCSEC_GSS};
 use crate::xdr::{self, Reader, Writer};
 
 /// NFS's program number.
@@ -25,10 +28,6 @@ const REPLY: u32 = 1;
 pub const AUTH_NONE: u32 = 0;
 /// The client's word for who calls (RFC 5531 appendix A).
 pub const AUTH_SYS: u32 = 1;
-/// RPCSEC_GSS (RFC 2203), Kerberos's, which nfsd does not speak yet: it
-/// is refused as too weak, as every flavor but these two is.
-#[cfg(test)]
-pub const RPCSEC_GSS: u32 = 6;
 
 /// The longest record read: a WRITE of 1 MiB and room for its COMPOUND.
 pub const RECORD_MAX: usize = (1 << 20) + 64 * 1024;
@@ -111,8 +110,24 @@ pub struct Call {
     pub procedure: u32,
     /// The credential's flavor.
     pub flavor: u32,
-    /// Who calls, for AUTH_SYS; no one for AUTH_NONE.
+    /// Who calls, for AUTH_SYS; no one for AUTH_NONE and RPCSEC_GSS,
+    /// whose context says who.
     pub caller: Caller,
+    /// RPCSEC_GSS's credential, and what its verifier signs.
+    pub gss: Option<GssCall>,
+}
+
+/// What an RPCSEC_GSS call carries besides its arguments.
+#[derive(Debug)]
+pub struct GssCall {
+    /// The credential.
+    pub cred: gss::Cred,
+    /// Where the header its verifier signs is in the record: from the xid
+    /// to the end of the credential.
+    pub header: Range<usize>,
+    /// The verifier's flavor and body: for a call under a context, a MIC
+    /// of the header.
+    pub verifier: (u32, Vec<u8>),
 }
 
 /// What is wrong with a call, as its reply says.
@@ -138,6 +153,7 @@ pub const AUTH_TOOWEAK: u32 = 5;
 ///
 /// What the reply is to say, and with no xid for what is no call.
 pub fn read_call(r: &mut Reader) -> Result<Call, (Option<u32>, Refusal)> {
+    let start = r.position();
     let xid = r.u32().map_err(|_| (None, Refusal::NotCall))?;
     let bad = |refusal| (Some(xid), refusal);
     if r.u32() != Ok(CALL) {
@@ -150,17 +166,20 @@ pub fn read_call(r: &mut Reader) -> Result<Call, (Option<u32>, Refusal)> {
     let (program, version, procedure) = header.map_err(|_| bad(Refusal::Auth(AUTH_BADCRED)))?;
     let flavor = r.u32().map_err(|_| bad(Refusal::Auth(AUTH_BADCRED)))?;
     let body = r.opaque(400).map_err(|_| bad(Refusal::Auth(AUTH_BADCRED)))?;
-    // The verifier: AUTH_NONE's, for both flavors taken.
-    let verifier = (|| -> xdr::Result<_> { Ok((r.u32()?, r.opaque(400)?.len())) })();
-    if verifier.is_err() {
-        return Err(bad(Refusal::Auth(AUTH_BADCRED)));
-    }
-    let caller = match flavor {
-        AUTH_NONE => Caller::none(),
-        AUTH_SYS => sys_caller(body).map_err(|_| bad(Refusal::Auth(AUTH_BADCRED)))?,
+    let header = start..r.position();
+    // The verifier: AUTH_NONE's, or RPCSEC_GSS's MIC of the header.
+    let verifier = (|| -> xdr::Result<_> { Ok((r.u32()?, r.opaque(400)?.to_vec())) })();
+    let verifier = verifier.map_err(|_| bad(Refusal::Auth(AUTH_BADCRED)))?;
+    let (caller, gss) = match flavor {
+        AUTH_NONE => (Caller::none(), None),
+        AUTH_SYS => (sys_caller(body).map_err(|_| bad(Refusal::Auth(AUTH_BADCRED)))?, None),
+        RPCSEC_GSS => {
+            let cred = gss::Cred::decode(body).map_err(|_| bad(Refusal::Auth(AUTH_BADCRED)))?;
+            (Caller::none(), Some(GssCall { cred, header, verifier }))
+        }
         _ => return Err(bad(Refusal::Auth(AUTH_TOOWEAK))),
     };
-    Ok(Call { xid, program, version, procedure, flavor, caller })
+    Ok(Call { xid, program, version, procedure, flavor, caller, gss })
 }
 
 /// AUTH_SYS's body: a stamp, the machine's name, the user, the group and
@@ -186,14 +205,21 @@ pub const PROG_MISMATCH: u32 = 2;
 pub const PROC_UNAVAIL: u32 = 3;
 /// The arguments could not be read.
 pub const GARBAGE_ARGS: u32 = 4;
+/// The server failed to carry the call out.
+pub const SYSTEM_ERR: u32 = 5;
 
 /// An accepted reply's header, with `stat`, for `xid`: what follows is
 /// the results.
 pub fn accepted(xid: u32, stat: u32) -> Writer {
+    accepted_with(xid, AUTH_NONE, &[], stat)
+}
+
+/// [`accepted`], with the verifier of `flavor` and `body`: RPCSEC_GSS's
+/// MIC of the call's sequence number, under a context.
+pub fn accepted_with(xid: u32, flavor: u32, body: &[u8], stat: u32) -> Writer {
     let mut w = Writer::new();
     w.u32(xid).u32(REPLY).u32(0);
-    // The verifier: AUTH_NONE.
-    w.u32(AUTH_NONE).u32(0);
+    w.u32(flavor).opaque(body);
     w.u32(stat);
     w
 }
@@ -239,14 +265,30 @@ mod tests {
     }
 
     #[test]
-    fn kerberos_is_refused_as_too_weak_for_now() {
+    fn an_rpcsec_gss_call_is_read_with_what_its_verifier_signs() {
+        let cred = gss::Cred {
+            proc: gss::proc::DATA,
+            seq: 5,
+            service: gss::Service::Privacy,
+            handle: vec![7; 8],
+        };
         let mut w = Writer::new();
-        w.u32(3).u32(CALL).u32(RPC_VERSION).u32(NFS_PROGRAM).u32(4).u32(0);
-        w.u32(RPCSEC_GSS).opaque(&[0; 8]).u32(AUTH_NONE).u32(0);
-        let err = read_call(&mut Reader::new(&w.bytes)).unwrap_err();
-        assert_eq!(err, (Some(3), Refusal::Auth(AUTH_TOOWEAK)));
-        let reply = refused(3, &err.1).unwrap();
-        assert_eq!(reply, [0, 0, 0, 3, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 5]);
+        w.u32(3).u32(CALL).u32(RPC_VERSION).u32(NFS_PROGRAM).u32(4).u32(1);
+        w.u32(RPCSEC_GSS).opaque(&cred.encode());
+        let signed = w.len();
+        w.u32(RPCSEC_GSS).opaque(b"mic!");
+        let call = read_call(&mut Reader::new(&w.bytes)).unwrap();
+        let gss = call.gss.unwrap();
+        assert_eq!((gss.cred, gss.header), (cred, 0..signed));
+        assert_eq!(gss.verifier, (RPCSEC_GSS, b"mic!".to_vec()));
+
+        let mut odd = Writer::new();
+        odd.u32(4).u32(CALL).u32(RPC_VERSION).u32(NFS_PROGRAM).u32(4).u32(0);
+        odd.u32(390_003).opaque(&[0; 8]).u32(AUTH_NONE).u32(0);
+        let err = read_call(&mut Reader::new(&odd.bytes)).unwrap_err();
+        assert_eq!(err, (Some(4), Refusal::Auth(AUTH_TOOWEAK)));
+        let reply = refused(4, &err.1).unwrap();
+        assert_eq!(reply, [0, 0, 0, 4, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 5]);
     }
 
     #[test]

@@ -42,7 +42,7 @@ When something is missing, `./ob doctor` prints the command that installs
 it for your distribution, for example on Ubuntu:
 
 ```text
-Checking the build host for Dukovo 0.12.0
+Checking the build host for Dukovo 0.13.0
 
   ok       rustup          rustup 1.28.2
   ok       Rust toolchain  nightly-2026-10-15
@@ -109,7 +109,7 @@ screen: you see GRUB's menu, then the kernel's log, which reports what it
 found and ends like this:
 
 ```text
-[    0.000000] Radix 0.12.0 (Dukovo Server 0.12.0)
+[    0.000000] Radix 0.13.0 (Dukovo Server 0.13.0)
 [    0.000000] Boot loader: GRUB 2.12
 [    0.000000] Firmware: UEFI
 [    0.000000] Command line:
@@ -223,7 +223,7 @@ into the kernel's common code; CI runs that too.
 ./ob image
 ```
 
-The result is `out/dukovo-0.12.0-x86_64.img`, the install stick, a hybrid
+The result is `out/dukovo-0.13.0-x86_64.img`, the install stick, a hybrid
 image that boots on UEFI and BIOS machines into the live system and
 carries the signed release the installer installs. `./ob image --iso`
 writes the live system as an `.iso` for virtual machines, and

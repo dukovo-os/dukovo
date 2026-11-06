@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use crate::fh::Fh;
+use crate::gss::Flavor;
 use crate::ipc::{Answer, Request};
 use crate::nfs::{Attrs, attr, err, kind, op};
 use crate::rpc;
@@ -19,6 +20,8 @@ use crate::shares;
 use crate::worker::Worker;
 use crate::worker::tests::tempdir;
 use crate::xdr::{Reader, Writer};
+
+mod kerberos;
 
 /// The worker, in the process, and the people it was asked to serve as.
 struct Local {
@@ -54,7 +57,7 @@ fn server(music: &Path, docs: &Path) -> Server<Local> {
 const CLIENT: &str = "10.0.2.15";
 
 fn cx(uid: u32) -> Context {
-    Context { peer: CLIENT.parse().unwrap(), uid }
+    Context { peer: CLIENT.parse().unwrap(), uid, flavor: Flavor::Sys }
 }
 
 /// An operation: its number, then what `args` writes.
@@ -147,9 +150,14 @@ impl Session {
 
     /// A COMPOUND of `ops` after SEQUENCE, as `uid`: its answer.
     fn call(&mut self, server: &mut Server<Local>, uid: u32, ops: &[Vec<u8>]) -> Vec<u8> {
+        self.call_as(server, &cx(uid), ops)
+    }
+
+    /// [`Session::call`], as `cx` says.
+    fn call_as(&mut self, server: &mut Server<Local>, cx: &Context, ops: &[Vec<u8>]) -> Vec<u8> {
         let mut all = vec![self.sequence(false)];
         all.extend_from_slice(ops);
-        compound(server, &cx(uid), &all)
+        compound(server, cx, &all)
     }
 }
 
@@ -587,8 +595,11 @@ fn read_only_shares_and_other_networks_are_kept_out() {
     assert!(server.reaches(CLIENT.parse().unwrap()));
     assert!(!server.reaches(away));
     let sequenced = s.sequence(false);
-    let answer =
-        compound(&mut server, &Context { peer: away, uid: 1000 }, &[sequenced, putfh(&docs_fh)]);
+    let answer = compound(
+        &mut server,
+        &Context { peer: away, uid: 1000, flavor: Flavor::Sys },
+        &[sequenced, putfh(&docs_fh)],
+    );
     assert_eq!(results(&answer).0, err::ACCESS);
 }
 

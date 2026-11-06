@@ -22,6 +22,9 @@ accounts = { path = "../accounts", features = ["hash", "ntlm"] }
 # and 0305), and rgrub-setup(8)'s GRUB on disks and EFI system partitions
 # on its FAT crate (ADR 0306).
 disk = { path = "../disk", features = ["btrfs", "fat"] }
+# kinit(1), klist(1) and kdestroy(1): Kerberos's exchanges, krb5.conf,
+# keytabs and tickets in the keyring (ADR 0397).
+kerberos = { path = "../kerberos" }
 # keymap(1)'s layouts and their setting (ADR 0149).
 keymap = { path = "../keymap" }
 libc = "0.2.191"
