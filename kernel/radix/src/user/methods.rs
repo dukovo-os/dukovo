@@ -319,9 +319,9 @@ pub fn retype(
     }
     // The store hears of each new object before its capability is placed;
     // a frame's is recorded then.
-    let mut record = |id, extent: radix_cap::Extent| {
+    let mut record = |id, extent: radix_cap::Extent, registry: &mut objects::Registry| {
         if kind == ObjectKind::Frame {
-            let frame = frame_made(id, extent.base, extent.pages)?;
+            let frame = frame_made(registry, id, extent.base, extent.pages)?;
             // Room was reserved above.
             let _ = frames.push_within_capacity((id, frame));
         }

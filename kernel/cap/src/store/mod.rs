@@ -242,7 +242,7 @@ struct Space<A: Allocator> {
 /// Operations that delete capabilities report the objects that went with
 /// them to a `released` callback, which runs with the object table's lock
 /// held and must not call back into the store.
-pub struct Capabilities<A: Allocator + Clone> {
+pub struct Capabilities<A: Allocator + Clone, K = ()> {
     alloc: A,
     /// The tree lock (T), over every slot's place in the tree and the
     /// list of free space indexes.
@@ -251,7 +251,7 @@ pub struct Capabilities<A: Allocator + Clone> {
     /// and never moved, so finding a space's lock takes no lock.
     blocks: Vec<Once<Vec<Space<A>, A>>, A>,
     /// The object table's lock (O).
-    objects: Mutex<Objects<A>>,
+    objects: Mutex<Objects<A, K>>,
     /// Moves on whenever a capability looked up to be cached leaves its
     /// slot, before the lock that guarded the slot goes.
     version: AtomicU64,
@@ -274,17 +274,20 @@ fn fill<T, A: Allocator>(vec: &mut Vec<T, A>, len: usize, mut value: impl FnMut(
     }
 }
 
-impl<A: Allocator + Clone> Capabilities<A> {
-    /// An empty store whose memory comes from `alloc`. Fails if there is
-    /// no memory for its table of space blocks, a few tens of KiB.
-    pub fn new(alloc: A) -> Result<Self, CapError> {
+impl<A: Allocator + Clone, K> Capabilities<A, K> {
+    /// An empty store whose memory comes from `alloc`, with `registry`
+    /// beside its object table, under the table's lock: what the kernel
+    /// keeps of each object, told of each object made and released. Fails
+    /// if there is no memory for the store's table of space blocks, a few
+    /// tens of KiB.
+    pub fn new(alloc: A, registry: K) -> Result<Self, CapError> {
         let mut blocks = Vec::new_in(alloc.clone());
         blocks.try_reserve_exact(BLOCKS).map_err(|_| CapError::NoMemory)?;
         fill(&mut blocks, BLOCKS, Once::new);
         Ok(Capabilities {
             tree: Mutex::new(Forest { spaces: Vec::new_in(alloc.clone()), free: None }),
             blocks,
-            objects: Mutex::new(Objects::new(alloc.clone())),
+            objects: Mutex::new(Objects::new(alloc.clone(), registry)),
             version: AtomicU64::new(0),
             alloc,
         })
@@ -322,6 +325,13 @@ impl<A: Allocator + Clone> Capabilities<A> {
         Ok(())
     }
 
+    /// How many blocks of the space table have been made: each holds
+    /// [`BLOCK`] spaces' locks and stays once made, for a test that counts
+    /// what the heap holds.
+    pub fn space_blocks(&self) -> usize {
+        self.blocks.iter().filter(|block| block.get().is_some()).count()
+    }
+
     /// Takes the lock of the space with index `index`, as the `nth` space
     /// lock of one operation (0 for the first).
     fn lock_index(&self, index: u32, nth: u8) -> Option<MutexGuard<'_, SpaceState<A>>> {
@@ -347,7 +357,7 @@ impl<A: Allocator + Clone> Capabilities<A> {
     pub fn in_space<R>(
         &self,
         space: SpaceId,
-        f: impl FnOnce(&mut SpaceView<'_, A>) -> R,
+        f: impl FnOnce(&mut SpaceView<'_, A, K>) -> R,
     ) -> Result<R, CapError> {
         let mut state = self.lock_space(space, 0)?;
         let mut view = SpaceView { store: self, id: space, state: &mut state, stale: false };
@@ -370,6 +380,22 @@ impl<A: Allocator + Clone> Capabilities<A> {
     /// store, when it changes.
     pub fn bump_version(&self) {
         self.version.fetch_add(1, Ordering::Release);
+    }
+
+    /// Runs `f` on what the kernel keeps beside the object table, with the
+    /// table's lock held: for the kernel's own lookups. Called with a
+    /// space's lock held too, it comes after it, as ADR 0369's order has
+    /// it; it must not be called from a view that holds the table already
+    /// ([`Capabilities::with_all`]), which has its own
+    /// ([`TreeView::with_registry`]).
+    pub fn with_registry<T>(&self, f: impl FnOnce(&mut K) -> T) -> T {
+        f(&mut self.objects.lock().registry)
+    }
+
+    /// [`Capabilities::with_registry`], giving up rather than wait for the
+    /// lock: for a debugger, which may have stopped the CPU that holds it.
+    pub fn try_with_registry<T>(&self, f: impl FnOnce(&mut K) -> T) -> Option<T> {
+        Some(f(&mut self.objects.try_lock()?.registry))
     }
 
     // ---- One operation at a time ----
@@ -525,7 +551,7 @@ impl<A: Allocator + Clone> Capabilities<A> {
         count: u32,
     ) -> Result<(), CapError> {
         self.with_tree(&[memory.space, to.space], |tree| {
-            tree.retype(memory, kind, order, to, count, &mut |_, _| Ok(()))
+            tree.retype(memory, kind, order, to, count, &mut |_, _, _| Ok(()))
         })
     }
 
@@ -579,7 +605,11 @@ impl<A: Allocator + Clone> Capabilities<A> {
     /// object, and nothing retyped from the object is left, the object
     /// goes too and `released` hears of it. One with no relatives goes
     /// with only its space's lock.
-    pub fn delete(&self, at: SlotRef, released: &mut dyn FnMut(Released)) -> Result<(), CapError> {
+    pub fn delete(
+        &self,
+        at: SlotRef,
+        released: &mut dyn FnMut(Released, &mut K),
+    ) -> Result<(), CapError> {
         if self.in_space(at.space, |view| view.delete(at, released))?? == Fast::Linked {
             self.with_tree(&[at.space], |tree| tree.delete(at, released))?;
         }

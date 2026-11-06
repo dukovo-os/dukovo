@@ -1329,7 +1329,8 @@ pub fn install_file(
     // Made and flagged under one hold of the space's lock, so no exec
     // finds the descriptor without its close_on_exec.
     let made = caps::in_space(to.space, |space| {
-        let record = |id| objects::record(id, &mut object, Some(charge));
+        let record =
+            |id, registry: &mut _| objects::record(registry, id, &mut object, Some(charge));
         space.create_recorded(to, kind, rights, record)?;
         if close_on_exec {
             space.set_slot_flags(to, SlotFlags::CLOSE_ON_EXEC.0 as u8)?;

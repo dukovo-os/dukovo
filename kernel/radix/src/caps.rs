@@ -24,10 +24,11 @@
 //! yielding the CPU, so other threads are not shut out for long.
 //!
 //! The registry of the kernel objects the capabilities name
-//! (`user::objects`) has a lock of its own, taken after the store's.
-//! Lock order: the tree lock, the spaces' locks by increasing index, the
-//! object table's, the registry's; then whatever an object takes when it
-//! closes ([`release`]).
+//! (`user::objects`) lives beside the store's object table, under the
+//! table's lock: an object is recorded in the hold that names it and
+//! leaves in the hold that releases it (ADR 0108). Lock order: the tree
+//! lock, the spaces' locks by increasing index, the object table's; then
+//! whatever an object takes when it closes ([`release`]).
 //!
 //! The store has a version number for the caches outside it: each CPU
 //! keeps the capabilities its system calls found, with the version the
@@ -59,17 +60,18 @@ use radix_mm::{FRAMES, Flags, HEAP, Kmalloc, Owner, PAGE_SHIFT};
 use radix_sync::Once;
 
 use crate::domains::{self, DomainError, DomainRef, Settings};
-use crate::user::objects;
+use crate::user::objects::{self, Registry};
 
-/// The store's type in the kernel.
-pub type Store = Capabilities<Kmalloc>;
+/// The store's type in the kernel, with the registry beside its object
+/// table.
+pub type Store = Capabilities<Kmalloc, Registry>;
 
 /// One capability space, locked: the fast path's view ([`in_space`]).
-pub type Space<'v> = SpaceView<'v, Kmalloc>;
+pub type Space<'v> = SpaceView<'v, Kmalloc, Registry>;
 
 /// The derivation tree and the spaces named, locked: the slow path's
 /// view ([`with_tree`]).
-pub type Tree<'v> = TreeView<'v, Kmalloc>;
+pub type Tree<'v> = TreeView<'v, Kmalloc, Registry>;
 
 /// The store, once [`init`] has run.
 static STORE: Once<Store> = Once::new();
@@ -79,7 +81,7 @@ pub const REVOKE_STEP: usize = 64;
 
 /// Sets up the store and reports it.
 pub fn init() {
-    let store = match Capabilities::new(HEAP.with(Flags::MAY_SLEEP)) {
+    let store = match Capabilities::new(HEAP.with(Flags::MAY_SLEEP), Registry::new()) {
         Ok(store) => store,
         Err(err) => panic!("no memory for the capability store at boot: {err}"),
     };
@@ -171,18 +173,19 @@ pub fn get(at: SlotRef) -> Result<Capability, CapError> {
 
 /// The capability in `at`, for a CPU's cache to keep (`user::objects`):
 /// from now on the version moves once it leaves its slot
-/// ([`Space::get_to_cache`]). With it come what `also` finds, with the
-/// space's lock still held, and the version read before the lookup: any
-/// change to the slot after the lookup moves it past that.
+/// ([`Space::get_to_cache`]). With it come what `also` finds in the
+/// registry, with the space's lock still held, and the version read
+/// before the lookup: any change to the slot after the lookup moves it
+/// past that.
 pub fn get_to_cache<R>(
     at: SlotRef,
-    also: impl FnOnce(&Capability) -> R,
+    also: impl FnOnce(&Capability, &mut Registry) -> R,
 ) -> Result<(Capability, R, u64), CapError> {
     let store = store()?;
     let version = store.version();
     store.in_space(at.space, |space| {
         let cap = space.get_to_cache(at)?;
-        let found = also(&cap);
+        let found = space.with_registry(|registry| also(&cap, registry));
         Ok((cap, found, version))
     })?
 }
@@ -190,7 +193,9 @@ pub fn get_to_cache<R>(
 /// Writes what the store holds, by kind, for `kdb`. Gives up if another
 /// CPU holds one of the store's locks or the registry's.
 pub fn write_census(line: &mut dyn FnMut(fmt::Arguments<'_>)) {
-    let counted = STORE.get().and_then(|store| Some((store.try_census()?, objects::try_census()?)));
+    let counted = STORE
+        .get()
+        .and_then(|store| Some((store.try_census()?, store.try_with_registry(objects::census)?)));
     let Some((census, registered)) = counted else {
         line(format_args!("Capabilities: the store is not set up, or another CPU holds a lock"));
         return;
@@ -223,17 +228,18 @@ pub fn write_census(line: &mut dyn FnMut(fmt::Arguments<'_>)) {
     }
 }
 
-/// Gives back what the store released, with the store's locks held:
-/// kernel objects leave the registry and close (`user::objects`), memory
-/// objects' pages return to the frame allocator, and domains leave the
-/// domain table. Every operation that may release objects takes this.
-pub fn release(released: Released) {
+/// Gives back what the store released, with the store's locks held, the
+/// object table's among them: kernel objects leave `registry` and close
+/// (`user::objects`), memory objects' pages return to the frame
+/// allocator, and domains leave the domain table. Every operation that
+/// may release objects takes this.
+pub fn release(released: Released, registry: &mut Registry) {
     if released.kind == ObjectKind::ResourceDomain {
         domains::released(released.id);
     }
     // Kernel objects close first: a frame is unmapped before its memory
     // can go back.
-    objects::released(&released);
+    objects::released(registry, &released);
     let Some(memory) = released.memory else { return };
     let order = memory.pages.trailing_zeros();
     if let Err(err) = FRAMES.free(memory.base << PAGE_SHIFT, order, Owner::Memory) {
@@ -262,21 +268,14 @@ pub fn create_domain(
     name: &str,
     settings: Settings,
 ) -> Result<DomainRef, CapError> {
-    let made = in_space(at.space, |space| {
-        space.create_recorded(
-            at,
-            ObjectKind::ResourceDomain,
-            ObjectKind::ResourceDomain.rights(),
-            |id| {
-                domains::create(name, parent, settings, Some(id)).map_err(|err| match err {
-                    DomainError::NoMemory => CapError::NoMemory,
-                    DomainError::InvalidArgument | DomainError::OverLimit => {
-                        CapError::InvalidArgument
-                    }
-                })
-            },
-        )
-    })??;
+    let kind = ObjectKind::ResourceDomain;
+    let record = |id, _: &mut Registry| {
+        domains::create(name, parent, settings, Some(id)).map_err(|err| match err {
+            DomainError::NoMemory => CapError::NoMemory,
+            DomainError::InvalidArgument | DomainError::OverLimit => CapError::InvalidArgument,
+        })
+    };
+    let made = in_space(at.space, |space| space.create_recorded(at, kind, kind.rights(), record))??;
     Ok(made.1)
 }
 

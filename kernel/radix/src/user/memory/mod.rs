@@ -758,11 +758,18 @@ pub fn cap_rights(rights: AbiRights) -> radix_cap::Rights {
 
 /// Makes and records the frame object for a frame the store is retyping:
 /// `id`, and its extent's first page frame and pages. Called before its
-/// capability is placed (`Tree::retype`'s `record`), so the object is
-/// recorded before any capability to it can be used; it is zeroed later
+/// capability is placed (`Tree::retype`'s `record`, with the object
+/// table's lock held and `registry` beside it), so the object is recorded
+/// before any capability to it can be used; it is zeroed later
 /// ([`FrameObject::zero`]), and returned for that.
-pub fn frame_made(id: ObjectId, base: u64, pages: u64) -> core::result::Result<FrameRef, CapError> {
+pub fn frame_made(
+    registry: &mut super::objects::Registry,
+    id: ObjectId,
+    base: u64,
+    pages: u64,
+) -> core::result::Result<FrameRef, CapError> {
     let frame = FrameObject::new(base * PAGE_SIZE, pages).ok_or(CapError::NoMemory)?;
-    super::objects::record(id, &mut Some(super::objects::Object::Frame(frame.clone())), None)?;
+    let mut object = Some(super::objects::Object::Frame(frame.clone()));
+    super::objects::record(registry, id, &mut object, None)?;
     Ok(frame)
 }

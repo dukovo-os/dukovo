@@ -155,8 +155,8 @@ struct Census {
 /// The census, once every group has gone: a space, capability or object a
 /// program's end missed shows up as a difference.
 fn census() -> Option<Census> {
-    let store = caps::store().ok()?.census();
-    let registered = user::objects::census();
+    let store = caps::store().ok()?;
+    let (store, registered) = (store.census(), store.with_registry(user::objects::census));
     Some(Census { spaces: store.spaces, caps: store.caps, objects: store.objects, registered })
 }
 

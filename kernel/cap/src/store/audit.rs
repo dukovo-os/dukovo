@@ -22,7 +22,7 @@ struct Copied<A: Allocator> {
     slots: Vec<Slot, A>,
 }
 
-impl<A: Allocator + Clone> Capabilities<A> {
+impl<A: Allocator + Clone, K> Capabilities<A, K> {
     /// Counts what the store holds.
     pub fn census(&self) -> Census {
         self.count(true).unwrap_or_default()
@@ -233,8 +233,8 @@ impl<A: Allocator + Clone> Capabilities<A> {
 
 /// The object table's part of the audit: every retyped object lies in its
 /// memory's used part, and every object's counts are those found.
-fn check_objects<A: Allocator>(
-    objects: &super::objects::Objects<A>,
+fn check_objects<A: Allocator, K>(
+    objects: &super::objects::Objects<A, K>,
     counts: &mut [(u32, u32)],
     census: &mut Census,
 ) -> Result<(), Inconsistency> {

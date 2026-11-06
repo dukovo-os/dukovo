@@ -7,6 +7,12 @@
 //! Every space shares the table, so it has a lock of its own (O in ADR
 //! 0369), taken after the tree's and the spaces' and only around a short
 //! step. Nothing here looks at a slot.
+//!
+//! The same lock guards what the kernel keeps beside the table (its
+//! registry of the objects themselves, `K`): an object is recorded there
+//! in the hold that names it, and leaves it in the hold that releases
+//! it, so making or releasing an object takes one lock beside its
+//! space's, not two (ADR 0108).
 
 use alloc::vec::Vec;
 use core::alloc::Allocator;
@@ -46,16 +52,21 @@ pub(super) struct Record {
     next_free: Option<u32>,
 }
 
-/// The table itself, which the store keeps behind its lock.
-pub(super) struct Objects<A: Allocator> {
+/// The table itself, which the store keeps behind its lock, with what the
+/// kernel keeps beside it.
+pub(super) struct Objects<A: Allocator, K> {
     pub(super) records: Vec<Record, A>,
     /// The first free record.
     free: Option<u32>,
+    /// What the kernel keeps beside the table, by the same names: told of
+    /// each object made ([`super::SpaceView::create_recorded`]) and each
+    /// released, under this same lock.
+    pub(super) registry: K,
 }
 
-impl<A: Allocator> Objects<A> {
-    pub(super) fn new(alloc: A) -> Self {
-        Objects { records: Vec::new_in(alloc), free: None }
+impl<A: Allocator, K> Objects<A, K> {
+    pub(super) fn new(alloc: A, registry: K) -> Self {
+        Objects { records: Vec::new_in(alloc), free: None, registry }
     }
 
     /// Counts one more capability to the object `cap` names, if any.
@@ -69,10 +80,10 @@ impl<A: Allocator> Objects<A> {
 
     /// Drops a capability's hold on the object `id`, and the object if
     /// that was the last hold, and so on up the memory it was retyped from.
-    /// `released` hears of each object that goes, before its record can be
-    /// used again: whatever the kernel keeps beside the table at the same
-    /// index is gone by then.
-    pub(super) fn release(&mut self, mut id: ObjectId, released: &mut dyn FnMut(Released)) {
+    /// `released` hears of each object that goes, with the registry, before
+    /// its record can be used again: whatever the kernel keeps beside the
+    /// table at the same index is gone by then.
+    pub(super) fn release(&mut self, mut id: ObjectId, released: &mut dyn FnMut(Released, &mut K)) {
         let Some(entry) = self.entry_mut(id) else { return };
         entry.caps -= 1;
         loop {
@@ -83,11 +94,8 @@ impl<A: Allocator> Objects<A> {
             let record = &mut self.records[id.index as usize];
             record.entry = None;
             record.generation = bump(record.generation);
-            released(Released {
-                kind: entry.kind,
-                id,
-                memory: if entry.origin.is_none() { entry.extent } else { None },
-            });
+            let memory = if entry.origin.is_none() { entry.extent } else { None };
+            released(Released { kind: entry.kind, id, memory }, &mut self.registry);
             let record = &mut self.records[id.index as usize];
             record.next_free = self.free;
             self.free = Some(id.index);

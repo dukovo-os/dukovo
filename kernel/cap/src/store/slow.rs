@@ -27,7 +27,7 @@ use alloc::vec::Vec;
 
 use radix_sync::MutexGuard;
 
-use super::fast::move_unlinked;
+use super::fast::{make_recorded, move_unlinked};
 use super::objects::{Entry, Objects};
 use super::slots::{Forest, Link, Marks, Slot, SpaceState, Tree, Trees};
 use super::{
@@ -48,20 +48,20 @@ pub const MAX_HELD: usize = 4;
 type Held<'v, A> = Option<(u32, Option<&'v mut SpaceState<A>>)>;
 
 /// The tree and some spaces, locked: the slow path's view of the store.
-pub struct TreeView<'v, A: Allocator + Clone> {
-    pub(super) store: &'v Capabilities<A>,
+pub struct TreeView<'v, A: Allocator + Clone, K = ()> {
+    pub(super) store: &'v Capabilities<A, K>,
     pub(super) forest: &'v mut Forest<A>,
     pub(super) held: [Held<'v, A>; MAX_HELD],
     /// The object table, when this view holds its lock throughout
     /// ([`Capabilities::with_all`]); otherwise each step takes the lock
     /// for the moment it needs it ([`TreeView::with_objects`]).
-    pub(super) objects: Option<&'v mut Objects<A>>,
+    pub(super) objects: Option<&'v mut Objects<A, K>>,
     /// A capability a cache may hold left its slot: the store's version
     /// moves before the locks go.
     pub(super) stale: bool,
 }
 
-impl<A: Allocator + Clone> TreeView<'_, A> {
+impl<A: Allocator + Clone, K> TreeView<'_, A, K> {
     // ---- Looking capabilities up ----
 
     /// The capability in `at`.
@@ -143,27 +143,21 @@ impl<A: Allocator + Clone> TreeView<'_, A> {
         at: SlotRef,
         kind: ObjectKind,
         rights: Rights,
-        record: impl FnOnce(ObjectId) -> Result<T, CapError>,
+        record: impl FnOnce(ObjectId, &mut K) -> Result<T, CapError>,
     ) -> Result<(ObjectId, T), CapError> {
         if kind.is_range() || kind.from_memory() {
             return Err(CapError::InvalidArgument);
         }
         let link = self.empty(at)?;
-        let id = self.with_objects(|_, objects| objects.insert(Entry::new(kind, None, None)))?;
-        let recorded = match record(id) {
-            Ok(recorded) => recorded,
-            Err(err) => {
-                self.with_objects(|_, objects| objects.unmake(id));
-                return Err(err);
-            }
-        };
+        let recorded = self.with_objects(|_, objects| make_recorded(objects, kind, record))?;
+        let id = recorded.0;
         let mut cap = Capability::original(crate::object::Object {
             kind,
             target: crate::object::Target::Object(id),
         });
         cap.rights = rights.intersection(kind.rights());
         self.slot_mut(link).put_unlinked(cap);
-        Ok((id, recorded))
+        Ok(recorded)
     }
 
     // ---- Deriving ----
@@ -220,7 +214,7 @@ impl<A: Allocator + Clone> TreeView<'_, A> {
         order: u32,
         to: SlotRef,
         count: u32,
-        record: &mut dyn FnMut(ObjectId, Extent) -> Result<(), CapError>,
+        record: &mut dyn FnMut(ObjectId, Extent, &mut K) -> Result<(), CapError>,
     ) -> Result<(), CapError> {
         let src = self.full(memory)?;
         let cap = self.slot(src).cap.ok_or(CapError::Empty)?;
@@ -260,7 +254,7 @@ impl<A: Allocator + Clone> TreeView<'_, A> {
                 let extent = Extent { base, pages: 1 << order };
                 let id = objects.insert(Entry::new(kind, Some(extent), Some(memory_id)))?;
                 let _ = made.push_within_capacity(id);
-                if let Err(err) = record(id, extent) {
+                if let Err(err) = record(id, extent, &mut objects.registry) {
                     for &id in &made {
                         objects.unmake(id);
                     }
@@ -311,11 +305,18 @@ impl<A: Allocator + Clone> TreeView<'_, A> {
     pub fn delete(
         &mut self,
         at: SlotRef,
-        released: &mut dyn FnMut(Released),
+        released: &mut dyn FnMut(Released, &mut K),
     ) -> Result<(), CapError> {
         let link = self.full(at)?;
         self.remove(link, released);
         Ok(())
+    }
+
+    /// Runs `f` on what the kernel keeps beside the object table: with the
+    /// table this view holds, or else with the table's lock, taken after
+    /// the locks this view holds.
+    pub fn with_registry<T>(&mut self, f: impl FnOnce(&mut K) -> T) -> T {
+        self.with_objects(|_, objects| f(&mut objects.registry))
     }
 
     // ---- Internals ----
@@ -323,7 +324,10 @@ impl<A: Allocator + Clone> TreeView<'_, A> {
     /// Runs `f` on this view and the object table: the table this view
     /// holds, or else the table's lock, taken for as long as `f` runs.
     /// The table is lent to `f` beside the view, so `f` may change both.
-    pub(super) fn with_objects<R>(&mut self, f: impl FnOnce(&mut Self, &mut Objects<A>) -> R) -> R {
+    pub(super) fn with_objects<R>(
+        &mut self,
+        f: impl FnOnce(&mut Self, &mut Objects<A, K>) -> R,
+    ) -> R {
         match self.objects.take() {
             Some(held) => {
                 let result = f(self, held);
@@ -332,7 +336,7 @@ impl<A: Allocator + Clone> TreeView<'_, A> {
             }
             None => {
                 let store = self.store;
-                let mut objects: MutexGuard<'_, Objects<A>> = store.objects.lock();
+                let mut objects: MutexGuard<'_, Objects<A, K>> = store.objects.lock();
                 f(self, &mut objects)
             }
         }
@@ -553,7 +557,7 @@ impl<A: Allocator + Clone> TreeView<'_, A> {
     /// parent, in its place among its siblings, and its object loses a
     /// capability. Only `link`'s own slot, and its parent's if that is in
     /// the same space, are touched beyond the tree.
-    pub(super) fn remove(&mut self, link: Link, released: &mut dyn FnMut(Released)) {
+    pub(super) fn remove(&mut self, link: Link, released: &mut dyn FnMut(Released, &mut K)) {
         let slot = core::mem::replace(self.slot_mut(link), Slot::EMPTY);
         let held = slot.cap.as_ref().and_then(Capability::id);
         self.stale |= slot.marks.cached;
@@ -624,7 +628,7 @@ impl<A: Allocator + Clone> TreeView<'_, A> {
     }
 }
 
-impl<A: Allocator + Clone> Capabilities<A> {
+impl<A: Allocator + Clone, K> Capabilities<A, K> {
     /// Runs `f` with the tree lock and the locks of `spaces` held: the
     /// slow path, for everything that follows or changes a link. A space
     /// named twice is locked once; one that does not exist is named and
@@ -633,7 +637,11 @@ impl<A: Allocator + Clone> Capabilities<A> {
     /// # Panics
     ///
     /// If `spaces` names more than [`MAX_HELD`] spaces.
-    pub fn with_tree<R>(&self, spaces: &[SpaceId], f: impl FnOnce(&mut TreeView<'_, A>) -> R) -> R {
+    pub fn with_tree<R>(
+        &self,
+        spaces: &[SpaceId],
+        f: impl FnOnce(&mut TreeView<'_, A, K>) -> R,
+    ) -> R {
         self.slow_path(spaces, false, f)
     }
 
@@ -647,7 +655,11 @@ impl<A: Allocator + Clone> Capabilities<A> {
     /// # Panics
     ///
     /// If `spaces` names more than [`MAX_HELD`] spaces.
-    pub fn with_all<R>(&self, spaces: &[SpaceId], f: impl FnOnce(&mut TreeView<'_, A>) -> R) -> R {
+    pub fn with_all<R>(
+        &self,
+        spaces: &[SpaceId],
+        f: impl FnOnce(&mut TreeView<'_, A, K>) -> R,
+    ) -> R {
         self.slow_path(spaces, true, f)
     }
 
@@ -655,7 +667,7 @@ impl<A: Allocator + Clone> Capabilities<A> {
         &self,
         spaces: &[SpaceId],
         hold_objects: bool,
-        f: impl FnOnce(&mut TreeView<'_, A>) -> R,
+        f: impl FnOnce(&mut TreeView<'_, A, K>) -> R,
     ) -> R {
         assert!(spaces.len() <= MAX_HELD, "the slow path names at most {MAX_HELD} spaces");
         let mut indexes = [u32::MAX; MAX_HELD];
@@ -708,7 +720,7 @@ impl<A: Allocator + Clone> Capabilities<A> {
         &self,
         at: SlotRef,
         budget: usize,
-        released: &mut dyn FnMut(Released),
+        released: &mut dyn FnMut(Released, &mut K),
     ) -> Result<Progress, CapError> {
         self.revoke_turn(at, budget, true, released)
     }
@@ -724,7 +736,7 @@ impl<A: Allocator + Clone> Capabilities<A> {
         &self,
         at: SlotRef,
         budget: usize,
-        released: &mut dyn FnMut(Released),
+        released: &mut dyn FnMut(Released, &mut K),
     ) -> Result<Progress, CapError> {
         self.revoke_turn(at, budget, false, released)
     }
@@ -734,7 +746,7 @@ impl<A: Allocator + Clone> Capabilities<A> {
         at: SlotRef,
         budget: usize,
         first: bool,
-        released: &mut dyn FnMut(Released),
+        released: &mut dyn FnMut(Released, &mut K),
     ) -> Result<Progress, CapError> {
         let mut forest = self.tree.lock();
         let top = {
@@ -852,7 +864,7 @@ impl<A: Allocator + Clone> Capabilities<A> {
     pub fn destroy_space(
         &self,
         space: SpaceId,
-        released: &mut dyn FnMut(Released),
+        released: &mut dyn FnMut(Released, &mut K),
     ) -> Result<(), CapError> {
         let mut forest = self.tree.lock();
         let mut state = self.lock_space(space, 0)?;
@@ -901,10 +913,10 @@ impl<A: Allocator + Clone> Capabilities<A> {
     }
 }
 
-impl<'v, A: Allocator + Clone> TreeView<'v, A> {
+impl<'v, A: Allocator + Clone, K> TreeView<'v, A, K> {
     /// A view of the tree and one space's state, for the store's own use.
     fn one(
-        store: &'v Capabilities<A>,
+        store: &'v Capabilities<A, K>,
         forest: &'v mut Forest<A>,
         index: u32,
         state: &'v mut SpaceState<A>,

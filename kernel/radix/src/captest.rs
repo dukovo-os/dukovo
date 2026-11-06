@@ -152,9 +152,10 @@ pub fn run() {
         "selftest caps: forging, widening, badges, sealing, ranges, memory, revocation, random and concurrent operations"
     );
     let census = || caps::store().map(Store::census);
+    let blocks = || caps::store().map_or(0, Store::space_blocks);
     let frames = || FRAMES.owner_pages(Owner::Memory);
     HEAP.drain();
-    let before = (census().ok(), frames(), HEAP.stats());
+    let before = (census().ok(), frames(), HEAP.stats(), blocks());
     let started = Arch::now_ns();
     let mut tally = Tally::default();
     let result = forging(&mut tally)
@@ -172,7 +173,7 @@ pub fn run() {
         return;
     }
     HEAP.drain();
-    let after = (census().ok(), frames(), HEAP.stats());
+    let after = (census().ok(), frames(), HEAP.stats(), blocks());
     let millis = (Arch::now_ns() - started) / 1_000_000;
     if after.0 != before.0 {
         error!("selftest caps: failed; capabilities or objects are left in the store");
@@ -185,9 +186,11 @@ pub fn run() {
         );
         return;
     }
-    // The store keeps its two tables, which may have grown.
+    // The store keeps its tables, which may have grown, and each block of
+    // its space table made for the spaces the test made at once.
     let held = |stats: &radix_mm::HeapStats| stats.objects + stats.large_blocks;
-    if held(&after.2) > held(&before.2) + 2 {
+    let new_blocks = (after.3 - before.3) as u64;
+    if held(&after.2) > held(&before.2) + 2 + new_blocks {
         error!(
             "selftest caps: failed; the heap holds {} more objects than before",
             held(&after.2) - held(&before.2)

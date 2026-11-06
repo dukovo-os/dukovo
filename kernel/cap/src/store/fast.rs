@@ -12,7 +12,7 @@
 
 use core::alloc::Allocator;
 
-use super::objects::Entry;
+use super::objects::{Entry, Objects};
 use super::slots::{Slot, SpaceState};
 use super::{Capabilities, Extent, Released, SlotRef, SpaceId};
 use crate::cap::Capability;
@@ -31,8 +31,8 @@ pub enum Fast<T> {
 }
 
 /// One space, locked: the fast path's view of the store.
-pub struct SpaceView<'v, A: Allocator + Clone> {
-    pub(super) store: &'v Capabilities<A>,
+pub struct SpaceView<'v, A: Allocator + Clone, K = ()> {
+    pub(super) store: &'v Capabilities<A, K>,
     pub(super) id: SpaceId,
     pub(super) state: &'v mut SpaceState<A>,
     /// A capability a cache may hold left its slot: the store's version
@@ -40,7 +40,7 @@ pub struct SpaceView<'v, A: Allocator + Clone> {
     pub(super) stale: bool,
 }
 
-impl<A: Allocator + Clone> SpaceView<'_, A> {
+impl<A: Allocator + Clone, K> SpaceView<'_, A, K> {
     /// The space.
     pub fn space(&self) -> SpaceId {
         self.id
@@ -149,38 +149,39 @@ impl<A: Allocator + Clone> SpaceView<'_, A> {
         kind: ObjectKind,
         rights: Rights,
     ) -> Result<ObjectId, CapError> {
-        self.create_recorded(at, kind, rights, |_| Ok(())).map(|(id, ())| id)
+        self.create_recorded(at, kind, rights, |_, _| Ok(())).map(|(id, ())| id)
     }
 
     /// Makes a new kernel object as [`SpaceView::create_with_rights`]
-    /// does, and runs `record` with its name before its capability is put
-    /// in `at`: for the kernel to record what the name stands for. If
-    /// `record` fails, the object is unmade and nothing is put in `at`.
+    /// does, and runs `record` with its name and the registry, in the same
+    /// hold of the object table's lock, before its capability is put in
+    /// `at`: for the kernel to record what the name stands for. If `record`
+    /// fails, the object is unmade and nothing is put in `at`.
     pub fn create_recorded<T>(
         &mut self,
         at: SlotRef,
         kind: ObjectKind,
         rights: Rights,
-        record: impl FnOnce(ObjectId) -> Result<T, CapError>,
+        record: impl FnOnce(ObjectId, &mut K) -> Result<T, CapError>,
     ) -> Result<(ObjectId, T), CapError> {
         if kind.is_range() || kind.from_memory() {
             return Err(CapError::InvalidArgument);
         }
         let index = self.empty(at)?;
-        let id = self.store.objects.lock().insert(Entry::new(kind, None, None))?;
         // Nobody can name the object before its capability is in the slot,
         // which this space's lock keeps from everyone else.
-        let recorded = match record(id) {
-            Ok(recorded) => recorded,
-            Err(err) => {
-                self.store.objects.lock().unmake(id);
-                return Err(err);
-            }
-        };
+        let recorded = make_recorded(&mut self.store.objects.lock(), kind, record)?;
+        let id = recorded.0;
         let mut cap = Capability::original(Object { kind, target: Target::Object(id) });
         cap.rights = rights.intersection(kind.rights());
         self.state.slots[index].put_unlinked(cap);
-        Ok((id, recorded))
+        Ok(recorded)
+    }
+
+    /// Runs `f` on what the kernel keeps beside the object table, with the
+    /// table's lock held after this space's ([`Capabilities::with_registry`]).
+    pub fn with_registry<T>(&self, f: impl FnOnce(&mut K) -> T) -> T {
+        self.store.with_registry(f)
     }
 
     /// Makes a memory object for `pages` pages from page frame `base`,
@@ -233,7 +234,7 @@ impl<A: Allocator + Clone> SpaceView<'_, A> {
     pub fn delete(
         &mut self,
         at: SlotRef,
-        released: &mut dyn FnMut(Released),
+        released: &mut dyn FnMut(Released, &mut K),
     ) -> Result<Fast<()>, CapError> {
         let index = self.full(at)?;
         if self.state.slots[index].marks.linked {
@@ -307,4 +308,22 @@ pub(super) fn move_unlinked(src: &mut Slot, dst: &mut Slot, stale: &mut bool) ->
         dst.put_unlinked(cap);
     }
     Fast::Done(())
+}
+
+/// Makes a new object of `kind` in `objects`, and has `record` record it
+/// in the registry in the same hold of the table's lock; unmakes it if
+/// `record` fails.
+pub(super) fn make_recorded<A: Allocator, K, T>(
+    objects: &mut Objects<A, K>,
+    kind: ObjectKind,
+    record: impl FnOnce(ObjectId, &mut K) -> Result<T, CapError>,
+) -> Result<(ObjectId, T), CapError> {
+    let id = objects.insert(Entry::new(kind, None, None))?;
+    match record(id, &mut objects.registry) {
+        Ok(recorded) => Ok((id, recorded)),
+        Err(err) => {
+            objects.unmake(id);
+            Err(err)
+        }
+    }
 }
