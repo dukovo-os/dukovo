@@ -25,6 +25,7 @@ pub const MODELS: &[(&str, &str)] = &[
     ("kernel/cap/tla/Capabilities.tla", "Capabilities.cfg"),
     ("kernel/cap/tla/Capabilities.tla", "CapabilitiesRetype.cfg"),
     ("kernel/cap/tla/Capabilities.tla", "CapabilitiesLiveness.cfg"),
+    ("kernel/cap/tla/CapabilityLocks.tla", "CapabilityLocks.cfg"),
     ("kernel/sched/tla/Scheduler.tla", "Scheduler.cfg"),
     ("kernel/sched/tla/Scheduler.tla", "SchedulerLiveness.cfg"),
     ("kernel/sched/tla/IdleWake.tla", "IdleWake.cfg"),
