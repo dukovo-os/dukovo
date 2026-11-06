@@ -7,9 +7,10 @@
 //! a token, and git-http-backend behind it. git must refuse a certificate
 //! it cannot trust; fail without a token, and with a wrong one; with the
 //! token given once, keep it in memory with credential-cache, the helper
-//! the system's gitconfig names, and clone, commit and push without
-//! asking, the push landing in the server's repository; and keep the
-//! token in no file, asking again once the cache exits.
+//! the test names for itself, as the system's, the keyring's (ADR 0394),
+//! needs a person's session; clone, commit and push without asking, the
+//! push landing in the server's repository; and keep the token in no
+//! file, asking again once the cache exits.
 
 use super::super::*;
 
