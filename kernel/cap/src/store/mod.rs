@@ -336,12 +336,14 @@ impl<A: Allocator + Clone, K> Capabilities<A, K> {
 
     /// Takes the lock of the space with index `index`, as the `nth` space
     /// lock of one operation (0 for the first).
+    #[inline]
     fn lock_index(&self, index: u32, nth: u8) -> Option<MutexGuard<'_, SpaceState<A>>> {
         let space = self.space(index)?;
         Some(if nth == 0 { space.state.lock() } else { space.state.lock_nested(nth) })
     }
 
     /// Takes the lock of `space`, which must be live.
+    #[inline]
     fn lock_space(
         &self,
         space: SpaceId,

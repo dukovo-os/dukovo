@@ -312,6 +312,7 @@ impl DevicePages {
 pub fn released(device: &DeviceObject) {
     device.closed.store(true, Ordering::Release);
     CLOSING.store(true, Ordering::Release);
+    crate::caps::queued();
 }
 
 /// Stops the cards whose capabilities were released. Called with no

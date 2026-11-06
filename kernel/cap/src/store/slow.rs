@@ -43,6 +43,9 @@ use crate::rights::Rights;
 /// capability, a key and fills a slot, each perhaps in a space of its own.
 pub const MAX_HELD: usize = 4;
 
+/// Objects a retype names on the stack; more go in a vector on the heap.
+const FEW: usize = 8;
+
 /// A space a [`TreeView`] names: its index, and its state if it has one
 /// (an index nothing was ever made at has none).
 type Held<'v, A> = Option<(u32, Option<&'v mut SpaceState<A>>)>;
@@ -247,15 +250,25 @@ impl<A: Allocator + Clone, K> TreeView<'_, A, K> {
             view.may_derive(src, &cap, memory.space != to.space)?;
             // Room for the records first, so nothing below can fail.
             objects.reserve(count as usize)?;
-            let mut made: Vec<ObjectId, A> = Vec::new_in(view.store.alloc.clone());
-            made.try_reserve_exact(count as usize).map_err(|_| CapError::NoMemory)?;
-            for i in 0..count {
-                let base = extent.base + offset + (u64::from(i) << order);
+            // The names made, to place or to unmake: on the stack for a
+            // few, as most retypes make (a page at a time), and on the
+            // heap for more.
+            let mut few = [ObjectId { index: 0, generation: 0 }; FEW];
+            let mut many: Vec<ObjectId, A> = Vec::new_in(view.store.alloc.clone());
+            let made: &mut [ObjectId] = if count as usize <= FEW {
+                &mut few[..count as usize]
+            } else {
+                many.try_reserve_exact(count as usize).map_err(|_| CapError::NoMemory)?;
+                super::fill(&mut many, count as usize, || ObjectId { index: 0, generation: 0 });
+                &mut many
+            };
+            for i in 0..count as usize {
+                let base = extent.base + offset + ((i as u64) << order);
                 let extent = Extent { base, pages: 1 << order };
                 let id = objects.insert(Entry::new(kind, Some(extent), Some(memory_id)))?;
-                let _ = made.push_within_capacity(id);
+                made[i] = id;
                 if let Err(err) = record(id, extent, &mut objects.registry) {
-                    for &id in &made {
+                    for &id in &made[..=i] {
                         objects.unmake(id);
                     }
                     return Err(err);

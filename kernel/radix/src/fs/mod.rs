@@ -539,6 +539,7 @@ fn defer_drop(file: FileRef) {
     *file.next.lock() = head.take();
     *head = Some(file);
     ANY_DROPPED.store(true, Ordering::Release);
+    crate::caps::queued();
 }
 
 /// Drops the objects [`defer_drop`] queued. Called with no lock held.

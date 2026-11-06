@@ -50,6 +50,7 @@
 //! deleted or revoked.
 
 use core::fmt;
+use core::sync::atomic::{AtomicBool, Ordering};
 
 use radix_cap::{
     CapError, Capabilities, Capability, Derivation, MAX_DEPTH, MAX_SLOTS, ObjectId, ObjectKind,
@@ -137,9 +138,34 @@ pub fn with_all<R>(spaces: &[SpaceId], f: impl FnOnce(&mut Tree<'_>) -> R) -> Re
 /// takes the network stack's and address spaces' locks
 /// (`user::device::close_deferred`); and the parents of the processes it
 /// finished are told, which may send signals that end more processes
-/// (Phase 8). Each step first looks at a flag, so a change that released
-/// nothing pays four loads.
+/// (Phase 8). Whatever queues such work says so with [`queued`], so a
+/// change that released nothing pays one load here.
+#[inline]
 pub fn finish() {
+    if QUEUED.load(Ordering::Relaxed) {
+        finish_queued();
+    }
+}
+
+/// Set when work waits for [`finish`]: a process to finish, a file to
+/// drop, a card to stop or a parent to tell.
+static QUEUED: AtomicBool = AtomicBool::new(false);
+
+/// Says that work waits for [`finish`]. Called after the work is queued,
+/// so that whoever sees this sees the work too.
+pub fn queued() {
+    QUEUED.store(true, Ordering::Release);
+}
+
+/// [`finish`]'s work, once [`queued`] said there is some. The flag is
+/// taken down first: work queued meanwhile puts it up again for the next
+/// call, so none is left behind. Each step looks at its own flag too.
+#[cold]
+#[inline(never)]
+fn finish_queued() {
+    if !QUEUED.swap(false, Ordering::AcqRel) {
+        return;
+    }
     crate::user::process::finish_pending();
     crate::fs::drop_deferred();
     crate::user::device::close_deferred();

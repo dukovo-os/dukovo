@@ -993,6 +993,7 @@ fn push_pending(process: ProcessRef) {
     *process.pending.lock() = first.take();
     *first = Some(process);
     ANY_PENDING.store(true, Ordering::Release);
+    caps::queued();
 }
 
 /// Finishes the processes the store released: `caps::finish` calls it
@@ -1035,6 +1036,7 @@ fn push_finished(process: ProcessRef) {
     *process.pending.lock() = first.take();
     *first = Some(process);
     ANY_FINISHED.store(true, Ordering::Release);
+    caps::queued();
 }
 
 /// Tells the parents of the processes [`finish_pending`] finished

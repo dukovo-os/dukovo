@@ -263,6 +263,47 @@ fn sealed_capabilities_round_trip_through_the_store() {
 }
 
 #[test]
+fn a_retype_that_fails_unmakes_what_it_made() {
+    let caps = Capabilities::<Global, usize>::new(Global, 0).unwrap();
+    let a = caps.create_space(32).unwrap();
+    let memory = caps.create_memory(at(a, 0), 0x400, 16).unwrap();
+    let frames = caps.census().objects[ObjectKind::Frame as usize];
+    // Records each object made, and fails at the `fail`th (from 0).
+    let retype = |count: u32, fail: usize| {
+        let mut seen = 0;
+        caps.with_tree(&[a], |tree| {
+            tree.retype(at(a, 0), ObjectKind::Frame, 0, at(a, 1), count, &mut |_, _, live| {
+                if seen == fail {
+                    return Err(CapError::NoMemory);
+                }
+                seen += 1;
+                *live += 1;
+                Ok(())
+            })
+        })
+    };
+    // A few (named on the stack) and many (on the heap), failing partway.
+    for (count, fail) in [(4, 2), (12, 9), (12, 0)] {
+        assert_eq!(retype(count, fail), Err(CapError::NoMemory));
+        assert_eq!(caps.object(memory).unwrap().children, 0);
+        assert_eq!(caps.census().objects[ObjectKind::Frame as usize], frames);
+        for slot in 1..=count {
+            assert_eq!(caps.get(at(a, slot)), Err(CapError::Empty));
+        }
+        caps.audit().unwrap();
+    }
+    // Many that all go in: each slot names a frame of its own.
+    retype(12, usize::MAX).unwrap();
+    let mut ids: Vec<ObjectId> =
+        (1..=12).map(|slot| caps.get(at(a, slot)).unwrap().id().unwrap()).collect();
+    ids.sort_by_key(|id| id.index);
+    ids.dedup();
+    assert_eq!(ids.len(), 12);
+    assert_eq!(caps.object(memory).unwrap().children, 12);
+    caps.audit().unwrap();
+}
+
+#[test]
 fn retyped_memory_comes_back() {
     let caps = store();
     let a = caps.create_space(32).unwrap();
