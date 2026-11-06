@@ -100,6 +100,10 @@ static const char *const ELSEWHERE[][2] = {
 		{"keyring", "the keyring boot test's: it keeps secrets in the keyring authd opens at a sign-in with a password"},
 		{"git-credential-keyring", "the git-keyring boot test's: git runs it to keep its https tokens in the keyring"},
 		{"ssh-askpass-keyring", "the ssh-keyring boot test's: ssh-add runs it for a key's passphrase, which it keeps in the keyring"},
+		{"kinit", "the kerberos boot test's: it reaches the host's KDC, which only QEMU's network reaches"},
+		{"klist", "the kerberos boot test's: it lists the tickets kinit keeps in the keyring"},
+		{"kvno", "the kerberos boot test's: it asks the host's KDC for a service ticket"},
+		{"kdestroy", "the kerberos boot test's: it removes the tickets kinit keeps in the keyring"},
 };
 
 enum { ELSEWHERE_COUNT = sizeof(ELSEWHERE) / sizeof(ELSEWHERE[0]) };

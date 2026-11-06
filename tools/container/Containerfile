@@ -22,7 +22,7 @@ RUN apt-get update \
         ca-certificates curl git build-essential \
         qemu-system-x86 ovmf \
         flex gawk xorriso mtools dosfstools exfatprogs gdisk fdisk sleuthkit \
-        btrfs-progs e2fsprogs ntfs-3g dislocker libbde-utils openssh-server samba smbclient scdoc mandoc gdb default-jre-headless \
+        btrfs-progs e2fsprogs ntfs-3g dislocker libbde-utils openssh-server samba smbclient krb5-kdc krb5-admin-server scdoc mandoc gdb default-jre-headless \
         udftools udfclient genisoimage \
         clang-20 lld-20 llvm-20 libclang-rt-20-dev meson ninja-build cmake bison pkgconf autoconf xz-utils \
     && rm -rf /var/lib/apt/lists/*

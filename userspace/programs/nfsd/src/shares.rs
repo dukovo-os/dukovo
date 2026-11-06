@@ -11,6 +11,8 @@ use std::time::SystemTime;
 
 use manifest::shares::{self, Share};
 
+use crate::gss::Flavor;
+
 /// A share NFS serves.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NfsShare {
@@ -20,6 +22,9 @@ pub struct NfsShare {
     pub folder: PathBuf,
     /// Whether nothing in it can be changed through it.
     pub read_only: bool,
+    /// How calls to it may say who calls, as SECINFO lists them: its
+    /// `nfs-sec`, or `sys` alone.
+    pub flavors: Vec<Flavor>,
     /// The networks it may be mounted from.
     share: Share,
     /// The number its filehandles carry: a hash of its name, in lower
@@ -31,6 +36,11 @@ impl NfsShare {
     /// Whether a client at `address` may reach it.
     pub fn allows(&self, address: IpAddr) -> bool {
         self.share.nfs_allows(address)
+    }
+
+    /// Whether a call that says who calls as `flavor` may reach it.
+    pub fn takes(&self, flavor: Flavor) -> bool {
+        self.flavors.contains(&flavor)
     }
 }
 
@@ -48,10 +58,18 @@ pub fn of_toml(text: &str) -> Result<Vec<NfsShare>, String> {
             name: share.name.clone(),
             folder: PathBuf::from(&share.folder),
             read_only: share.read_only,
+            flavors: flavors(&share.nfs_sec),
             key: key_of(&share.name),
             share,
         })
         .collect())
+}
+
+/// The flavors `nfs-sec` lists as `names`, which manifest checked:
+/// `sys` alone if it lists none.
+fn flavors(names: &[String]) -> Vec<Flavor> {
+    let listed: Vec<Flavor> = names.iter().filter_map(|name| Flavor::from_name(name)).collect();
+    if listed.is_empty() { vec![Flavor::Sys] } else { listed }
 }
 
 /// The shares NFS serves now: none if shares.toml is missing or broken,
@@ -89,5 +107,19 @@ mod tests {
         assert_eq!(served[0].key, key_of("MUSIC"));
         assert!(served[0].allows("10.0.2.2".parse().unwrap()));
         assert!(!served[0].allows("10.0.3.2".parse().unwrap()));
+        assert!(served[0].takes(Flavor::Sys));
+    }
+
+    #[test]
+    fn kerberos_shares_take_only_what_they_list() {
+        use crate::gss::Service;
+        let text = "[[share]]\nname = \"Docs\"\nfolder = \"/d\"\nnfs = [\"10.0.2.0/24\"]\n\
+                    nfs-sec = [\"krb5p\", \"krb5i\"]\n";
+        let docs = &of_toml(text).unwrap()[0];
+        assert_eq!(
+            docs.flavors,
+            [Flavor::Krb5(Service::Privacy), Flavor::Krb5(Service::Integrity)]
+        );
+        assert!(!docs.takes(Flavor::Sys) && !docs.takes(Flavor::Krb5(Service::None)));
     }
 }

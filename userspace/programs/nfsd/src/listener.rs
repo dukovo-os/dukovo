@@ -19,8 +19,10 @@ use std::time::{Duration, Instant};
 
 use accounts::request::{Answer as AuthdAnswer, Request as AuthdRequest};
 
+use crate::contexts::Refused;
+use crate::gss::{self, Flavor, RPCSEC_GSS};
 use crate::ipc::{self, Answer, Request};
-use crate::rpc::{self, NFS_PROGRAM, NFS_VERSION};
+use crate::rpc::{self, Call, GssCall, NFS_PROGRAM, NFS_VERSION, Refusal};
 use crate::server::{Backend, Context, Server};
 use crate::sys;
 use crate::xdr::Reader;
@@ -36,6 +38,23 @@ const CONNECTIONS_MAX: usize = 64;
 const IDLE: Duration = Duration::from_mins(15);
 /// The most workers kept: past it, the one called longest ago ends.
 const WORKERS_MAX: usize = 64;
+
+/// Writes `line` to the log, up to ten times a minute. Why a call under
+/// Kerberos was refused is where to start when a mount fails, but a
+/// client can send refused calls without end, and the log is shared.
+fn log_refusal(line: &str) {
+    static LOGGED: Mutex<(u64, u32)> = Mutex::new((0, 0));
+    let since = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH);
+    let minute = since.map_or(0, |since| since.as_secs() / 60);
+    let mut logged = LOGGED.lock().unwrap_or_else(PoisonError::into_inner);
+    if logged.0 != minute {
+        *logged = (minute, 0);
+    }
+    logged.1 += 1;
+    if logged.1 <= 10 {
+        eprintln!("{line}");
+    }
+}
 /// How long a worker may take to answer: a search for a handle through a
 /// large share is the longest.
 const WORKER_TIME: Duration = Duration::from_secs(120);
@@ -167,6 +186,10 @@ pub fn answer<B: Backend>(
         w.u32(NFS_VERSION).u32(NFS_VERSION);
         return Some(w.bytes);
     }
+    let args = &record[r.position()..];
+    if let Some(gss) = &call.gss {
+        return kerberos(server, peer, &call, gss, record, args);
+    }
     match call.procedure {
         0 => Some(rpc::accepted(call.xid, rpc::SUCCESS).bytes),
         1 => {
@@ -176,8 +199,7 @@ pub fn answer<B: Backend>(
             } else {
                 rpc::NOBODY
             };
-            let cx = Context { peer, uid };
-            let args = &record[r.position()..];
+            let cx = Context { peer, uid, flavor: Flavor::Sys };
             let mut server = server.lock().unwrap_or_else(PoisonError::into_inner);
             Some(match server.compound(&cx, args) {
                 Some(results) => {
@@ -189,6 +211,101 @@ pub fn answer<B: Backend>(
             })
         }
         _ => Some(rpc::accepted(call.xid, rpc::PROC_UNAVAIL).bytes),
+    }
+}
+
+/// The answer to an RPCSEC_GSS call (RFC 2203 5.3.3): a context set up
+/// (INIT), a call under one (DATA) or its end (DESTROY). `args` are the
+/// call's arguments in `record`, protected as its credential says.
+fn kerberos<B: Backend>(
+    server: &Mutex<Server<B>>,
+    peer: IpAddr,
+    call: &Call,
+    gss: &GssCall,
+    record: &[u8],
+    args: &[u8],
+) -> Option<Vec<u8>> {
+    let (xid, cred) = (call.xid, &gss.cred);
+    let refuse = |stat| rpc::refused(xid, &Refusal::Auth(stat));
+    let mut server = server.lock().unwrap_or_else(PoisonError::into_inner);
+    if cred.proc == gss::proc::INIT {
+        // A context is set up with NULL; Kerberos takes one round.
+        if call.procedure != 0 {
+            return refuse(rpc::AUTH_BADCRED);
+        }
+        let Ok(token) = Reader::new(args).opaque(64 * 1024) else {
+            return Some(rpc::accepted(xid, rpc::GARBAGE_ARGS).bytes);
+        };
+        let (result, verifier) = server.contexts.init(token, &peer.to_string());
+        let mut w = match verifier {
+            Some(mic) => rpc::accepted_with(xid, RPCSEC_GSS, &mic, rpc::SUCCESS),
+            None => rpc::accepted(xid, rpc::SUCCESS),
+        };
+        w.bytes.extend_from_slice(&result.encode());
+        return Some(w.bytes);
+    }
+    if !matches!(cred.proc, gss::proc::DATA | gss::proc::DESTROY) || gss.verifier.0 != RPCSEC_GSS {
+        return refuse(rpc::AUTH_BADCRED);
+    }
+    let header = &record[gss.header.clone()];
+    let (verifier, uid, body) =
+        match server.contexts.check(&cred.handle, cred.seq, header, &gss.verifier.1) {
+            Ok(held) => {
+                let verifier = gss::reply_verifier(&mut held.context, cred.seq);
+                let body = (call.procedure == 1)
+                    .then(|| gss::unprotect(&held.context, cred.service, cred.seq, args));
+                (verifier, held.uid, body)
+            }
+            Err(Refused::Credential) => {
+                let why = if server.contexts.holds(&cred.handle) {
+                    "its verifier does not check"
+                } else {
+                    "no context has its handle, or its ticket ran out"
+                };
+                log_refusal(&format!("nfsd: Kerberos: refused a call from {peer}: {why}"));
+                return refuse(gss::CREDPROBLEM);
+            }
+            Err(Refused::Context) => return refuse(gss::CTXPROBLEM),
+            // A replay, or a call the client gave up on: no answer.
+            Err(Refused::Dropped) => return None,
+        };
+    let reply = |stat| rpc::accepted_with(xid, RPCSEC_GSS, &verifier, stat);
+    if cred.proc == gss::proc::DESTROY {
+        server.contexts.destroy(&cred.handle);
+        return Some(reply(rpc::SUCCESS).bytes);
+    }
+    let results = match (call.procedure, body) {
+        (0, _) => Vec::new(),
+        (1, Some(Ok(body))) => {
+            let cx = Context { peer, uid, flavor: Flavor::Krb5(cred.service) };
+            match server.compound(&cx, &body) {
+                Some(results) => results,
+                None => return Some(reply(rpc::GARBAGE_ARGS).bytes),
+            }
+        }
+        // Arguments whose seal or signature does not check are garbage
+        // too (RFC 2203 5.3.3.4.2).
+        (1, Some(Err(err))) => {
+            let service = cred.service.name();
+            log_refusal(&format!("nfsd: Kerberos: a call from {peer} under {service}: {err:?}"));
+            return Some(reply(rpc::GARBAGE_ARGS).bytes);
+        }
+        (1, _) => return Some(reply(rpc::GARBAGE_ARGS).bytes),
+        _ => return Some(reply(rpc::PROC_UNAVAIL).bytes),
+    };
+    let Some(context) = server.contexts.context(&cred.handle) else {
+        return refuse(gss::CREDPROBLEM);
+    };
+    match gss::protect(context, cred.service, cred.seq, &results) {
+        Ok(protected) => {
+            let mut w = reply(rpc::SUCCESS);
+            w.bytes.extend_from_slice(&protected);
+            Some(w.bytes)
+        }
+        Err(err) => {
+            eprintln!("nfsd: Kerberos: cannot seal a reply to {peer}: {err}");
+            Some(reply(rpc::SYSTEM_ERR).bytes)
+        }
     }
 }
 

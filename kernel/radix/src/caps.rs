@@ -9,8 +9,9 @@
 //! back when the store releases them.
 //!
 //! The store has its own locks (ADR 0369): one per capability space, a
-//! tree lock over the derivation tree's links and one over its object
-//! table. Work on one space's capabilities that follows no link of the
+//! tree lock over the derivation tree's links, one over its object
+//! table's free records, and a spin lock in each object's record. Work on
+//! one space's capabilities that follows no link of the
 //! tree (looking one up, making an object, deleting or moving a
 //! capability nothing was derived from) takes that space's lock alone
 //! ([`in_space`]), so programs in different spaces never wait for each
@@ -23,19 +24,20 @@
 //! [`REVOKE_STEP`] deletions and let go of the locks between steps,
 //! yielding the CPU, so other threads are not shut out for long.
 //!
-//! The registry of the kernel objects the capabilities name
-//! (`user::objects`) lives beside the store's object table, under the
-//! table's lock: an object is recorded in the hold that names it and
-//! leaves in the hold that releases it (ADR 0108). Lock order: the tree
-//! lock, the spaces' locks by increasing index, the object table's; then
-//! whatever an object takes when it closes ([`release`]).
+//! The kernel objects the capabilities name (`user::objects`) are kept in
+//! the store's record of each object: an object is recorded when it is
+//! named, before its capability is placed, and given back when the store
+//! releases it (ADR 0108). Lock order: the tree lock, the spaces' locks by
+//! increasing index, the object table's, an object's record's; then
+//! whatever an object takes when it closes ([`release`]), which runs with
+//! no record's lock held.
 //!
 //! The store has a version number for the caches outside it: each CPU
 //! keeps the capabilities its system calls found, with the version the
 //! store had before the lookup (`user::objects`), and the version moves
 //! whenever a capability some CPU found leaves its slot, or an object
-//! some CPU found leaves the registry ([`mark_stale`]), before the lock
-//! that guarded it goes. Other changes, such as a capability put in an
+//! some CPU found leaves the store ([`mark_stale`]), before the operation
+//! that took it away returns. Other changes, such as a capability put in an
 //! empty slot or one nobody looked up deleted, leave every cache as it
 //! is. So programs on different CPUs using their capabilities at once do
 //! not contend, and opening and closing files does not empty the caches.
@@ -61,18 +63,18 @@ use radix_mm::{FRAMES, Flags, HEAP, Kmalloc, Owner, PAGE_SHIFT};
 use radix_sync::Once;
 
 use crate::domains::{self, DomainError, DomainRef, Settings};
-use crate::user::objects::{self, Registry};
+use crate::user::objects::{self, Recorded};
 
-/// The store's type in the kernel, with the registry beside its object
-/// table.
-pub type Store = Capabilities<Kmalloc, Registry>;
+/// The store's type in the kernel, which keeps each kernel object in its
+/// object's record.
+pub type Store = Capabilities<Kmalloc, Recorded>;
 
 /// One capability space, locked: the fast path's view ([`in_space`]).
-pub type Space<'v> = SpaceView<'v, Kmalloc, Registry>;
+pub type Space<'v> = SpaceView<'v, Kmalloc, Recorded>;
 
 /// The derivation tree and the spaces named, locked: the slow path's
 /// view ([`with_tree`]).
-pub type Tree<'v> = TreeView<'v, Kmalloc, Registry>;
+pub type Tree<'v> = TreeView<'v, Kmalloc, Recorded>;
 
 /// The store, once [`init`] has run.
 static STORE: Once<Store> = Once::new();
@@ -82,7 +84,7 @@ pub const REVOKE_STEP: usize = 64;
 
 /// Sets up the store and reports it.
 pub fn init() {
-    let store = match Capabilities::new(HEAP.with(Flags::MAY_SLEEP), Registry::new()) {
+    let store = match Capabilities::new(HEAP.with(Flags::MAY_SLEEP)) {
         Ok(store) => store,
         Err(err) => panic!("no memory for the capability store at boot: {err}"),
     };
@@ -120,7 +122,8 @@ pub fn with_tree<R>(spaces: &[SpaceId], f: impl FnOnce(&mut Tree<'_>) -> R) -> R
     Ok(result)
 }
 
-/// [`with_tree`], with the object table's lock held too: for a caller
+/// [`with_tree`], with the lock of the object table's free records held
+/// too: for a caller
 /// that takes a spin lock inside `f` and works on the store under it
 /// (`user::ipc`, which moves a message's capabilities with an endpoint
 /// locked). `f` must release nothing while it holds a spin lock.
@@ -173,8 +176,9 @@ fn finish_queued() {
 }
 
 /// The store's version: it moves when a capability a CPU found leaves its
-/// slot, and when an object a CPU found leaves the object registry
-/// (`user::objects`), before the lock that guarded either goes. Read
+/// slot, before the space's lock goes, and when an object a CPU found
+/// leaves the store (`user::objects`), before the operation that released
+/// it returns. Read
 /// before a lookup, it says the lookup's answer still holds while it
 /// stays the same.
 pub fn version() -> u64 {
@@ -182,8 +186,8 @@ pub fn version() -> u64 {
 }
 
 /// Says that a change took away something a CPU may have cached outside
-/// the store (an object the registry handed out): the version moves
-/// now, before the lock that guarded it goes.
+/// the store (a kernel object the store kept): the version moves now,
+/// before the operation that took it away returns.
 pub fn mark_stale() {
     if let Some(store) = STORE.get() {
         store.bump_version();
@@ -200,28 +204,29 @@ pub fn get(at: SlotRef) -> Result<Capability, CapError> {
 /// The capability in `at`, for a CPU's cache to keep (`user::objects`):
 /// from now on the version moves once it leaves its slot
 /// ([`Space::get_to_cache`]). With it come what `also` finds in the
-/// registry, with the space's lock still held, and the version read
-/// before the lookup: any change to the slot after the lookup moves it
-/// past that.
+/// record of the kernel object it names, if any, with the space's lock
+/// still held and the record's taken, and the version read before the
+/// lookup: any change to the slot after the lookup moves it past that.
 pub fn get_to_cache<R>(
     at: SlotRef,
-    also: impl FnOnce(&Capability, &mut Registry) -> R,
-) -> Result<(Capability, R, u64), CapError> {
+    also: impl FnOnce(&mut Recorded) -> R,
+) -> Result<(Capability, Option<R>, u64), CapError> {
     let store = store()?;
     let version = store.version();
     store.in_space(at.space, |space| {
         let cap = space.get_to_cache(at)?;
-        let found = space.with_registry(|registry| also(&cap, registry));
+        let found = cap.id().and_then(|id| space.with_kept(id, also));
         Ok((cap, found, version))
     })?
 }
 
 /// Writes what the store holds, by kind, for `kdb`. Gives up if another
-/// CPU holds one of the store's locks or the registry's.
+/// CPU holds one of the store's locks. Not inlined: its counts would
+/// widen the debugger's frame.
+#[inline(never)]
 pub fn write_census(line: &mut dyn FnMut(fmt::Arguments<'_>)) {
-    let counted = STORE
-        .get()
-        .and_then(|store| Some((store.try_census()?, store.try_with_registry(objects::census)?)));
+    let counted =
+        STORE.get().and_then(|store| Some((store.try_census()?, objects::census(store, false)?)));
     let Some((census, registered)) = counted else {
         line(format_args!("Capabilities: the store is not set up, or another CPU holds a lock"));
         return;
@@ -254,18 +259,18 @@ pub fn write_census(line: &mut dyn FnMut(fmt::Arguments<'_>)) {
     }
 }
 
-/// Gives back what the store released, with the store's locks held, the
-/// object table's among them: kernel objects leave `registry` and close
-/// (`user::objects`), memory objects' pages return to the frame
+/// Gives back what the store released, with the locks of the spaces it
+/// changed held but no object record's: kernel objects close, given back
+/// in `kept` (`user::objects`), memory objects' pages return to the frame
 /// allocator, and domains leave the domain table. Every operation that
 /// may release objects takes this.
-pub fn release(released: Released, registry: &mut Registry) {
+pub fn release(released: Released, kept: Option<Recorded>) {
     if released.kind == ObjectKind::ResourceDomain {
         domains::released(released.id);
     }
     // Kernel objects close first: a frame is unmapped before its memory
     // can go back.
-    objects::released(registry, &released);
+    objects::released(kept);
     let Some(memory) = released.memory else { return };
     let order = memory.pages.trailing_zeros();
     if let Err(err) = FRAMES.free(memory.base << PAGE_SHIFT, order, Owner::Memory) {
@@ -295,7 +300,7 @@ pub fn create_domain(
     settings: Settings,
 ) -> Result<DomainRef, CapError> {
     let kind = ObjectKind::ResourceDomain;
-    let record = |id, _: &mut Registry| {
+    let record = |id, _: &mut Option<Recorded>| {
         domains::create(name, parent, settings, Some(id)).map_err(|err| match err {
             DomainError::NoMemory => CapError::NoMemory,
             DomainError::InvalidArgument | DomainError::OverLimit => CapError::InvalidArgument,

@@ -551,6 +551,7 @@ fn worker(root: &std::path::Path) -> (Worker, Keys) {
             comment: String::new(),
             read_only: true,
             nfs: Vec::new(),
+            nfs_sec: Vec::new(),
         }],
     };
     (worker, keys())

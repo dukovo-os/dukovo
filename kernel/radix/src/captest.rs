@@ -162,7 +162,7 @@ pub fn run() {
          concurrent and stress operations"
     );
     let census = || caps::store().map(Store::census);
-    let blocks = || caps::store().map_or(0, Store::space_blocks);
+    let blocks = || caps::store().map_or(0, |store| store.space_blocks() + store.object_blocks());
     let frames = || FRAMES.owner_pages(Owner::Memory);
     HEAP.drain();
     let before = (census().ok(), frames(), HEAP.stats(), blocks());
@@ -198,7 +198,7 @@ pub fn run() {
         return;
     }
     // The store keeps its tables, which may have grown, and each block of
-    // its space table made for the spaces the test made at once.
+    // its space and object tables made for what the test made at once.
     let held = |stats: &radix_mm::HeapStats| stats.objects + stats.large_blocks;
     let new_blocks = (after.3 - before.3) as u64;
     if held(&after.2) > held(&before.2) + 2 + new_blocks {

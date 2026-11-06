@@ -23,7 +23,7 @@ kernel/cap/tla          Capabilities.tla: the TLA+ model of derivation,
                         retyping and revocation, with three TLC
                         configurations; CapabilityLocks.tla: the same
                         operations under the store's locks
-kernel/radix            caps.rs: the kernel's one store, the object registry
+kernel/radix            caps.rs: the kernel's one store, the kernel objects
                         beside it and the frame allocator behind memory
                         objects; captest.rs: the `caps` self-test
 tools/xtask             tla.rs: `ob test tla`
@@ -123,10 +123,10 @@ was retyped from, which may go in turn.
   source's child. Into another space they also need `transfer`.
 - `retype` carves `count` blocks of 2^`order` pages from a memory object
   (`carve`): from the object's watermark, aligned to their size in
-  physical memory, all inside the object. It reserves the table records
-  first, so it either makes them all or changes nothing. The watermark
-  only rises while anything retyped from the object lives, and returns to
-  0 when the last of them goes.
+  physical memory, all inside the object. If it cannot make them all,
+  it takes back those it made, and the carve, and changes nothing. The
+  watermark only rises while anything retyped from the object lives, and
+  returns to 0 when the last of them goes.
 - `move_cap` moves a capability to an empty slot, keeping its place in the
   tree; its parent and children are re-linked to the new slot. Into
   another space it needs `transfer`.
@@ -143,12 +143,14 @@ operation leaves the store as it was.
 **Locks** (ADR 0369). Each space has a lock of its own (S), over what
 its slots hold: the capabilities, their marks and the number of slots.
 One tree lock (T) guards every slot's place in the derivation tree,
-which crosses spaces, and the list of free space indexes. The object
-table has a lock of its own (O), and what the caller keeps of each
-object (its registry, the store's `K`; the kernel's is
-`user::objects::Registry`) lives beside the table under the same lock.
-They are taken in that order: T, then the spaces by increasing index,
-then O. A thread holding a space's lock never waits for the tree's.
+which crosses spaces, and the list of free space indexes. Each object's
+record in the object table has a spin lock of its own, over the
+object's counts and what the caller keeps of it (the store's `K`; the
+kernel's is `user::objects::Recorded`). The table has a lock too (O),
+over the free records no space keeps and the making of the table's
+blocks. They are taken in that order: T, then the spaces by increasing
+index, then O, then a record's. A thread holding a space's lock never
+waits for the tree's.
 
 - The **fast path** (`in_space`, a `SpaceView`) takes one space's lock:
   looking capabilities up, slot flags, making an object in an empty
@@ -160,21 +162,26 @@ then O. A thread holding a space's lock never waits for the tree's.
   the locks of up to four spaces it names (a fork names four: the
   parent's two and the child's two): deriving, sealing, retyping,
   deleting or moving a linked capability, and making or destroying a
-  space. `with_all` holds the object table's lock throughout as well,
-  for a caller that works on the store under a spin lock, which may not
-  wait for a mutex.
+  space. `with_all` holds O throughout as well, for a caller that works
+  on the store under a spin lock, which may not wait for a mutex.
 - A **revoke** holds the tree lock through each turn and one space's
   lock at a time.
 
-The object table's lock is held only while a count moves or a record
-changes. Making an object and recording it in the registry happen in
-one hold of it (`create_recorded`), and so do releasing an object and
-taking it out of the registry: the `Released` callback runs under it and
-is given the registry. Every space's lock is made on one line, so the
-kernel's lock-order checker sees one class, and the second, third and
-fourth an operation takes are taken nested (`lock_nested`). The spaces
-live in blocks of 256, made the first time one is needed and never
-moved, so finding a space's lock takes no lock.
+A record's lock is held only while a count moves or the record changes,
+a few loads and stores. The records live in blocks of 512, made the
+first time one is needed and never moved, so finding a record takes no
+lock. Each space keeps up to eight free records of its own, under its
+lock: both paths make and release objects with those, and take O only
+to fill or empty them, four at a time. Making an object fills in what the caller keeps of it
+(`create_recorded`) before its capability is placed, so nobody finds
+the capability without it. Releasing one takes that out of its record,
+and the `Released` callback is given it, with no record's lock held.
+Every space's lock is made on one line, so the kernel's lock-order
+checker sees one class, and the second, third and fourth an operation
+takes are taken nested (`lock_nested`); every record's lock is made on
+one line too, and an operation holds one at a time. The spaces live in
+blocks of 256, made the first time one is needed and never moved, so
+finding a space's lock takes no lock.
 
 **Depth.** Each capability stores a depth one more than its parent's at
 the time it was derived, at most `MAX_DEPTH` (64). A delete moves children
@@ -230,21 +237,22 @@ not run it on its own.
 ## In the kernel
 
 `kernel/radix/src/caps.rs` keeps one store for the whole kernel, set up
-right after the frame allocator, with the registry of kernel objects
-(`user::objects`) beside its object table. Memory objects get their
+right after the frame allocator. Each kernel object (`user::objects`)
+is kept in the store, in its object's record. Memory objects get their
 pages from the frame allocator, owned by `Owner::Memory`, and give them
 back from the `Released` callback. The store's locks are mutexes (since
 Phase 4), and it allocates with `MaySleep` under them.
 
 `caps::in_space` runs the fast path and `caps::with_tree` the slow one;
-`caps::with_all` is the slow path with the object table held too, for
+`caps::with_all` is the slow path with O held too, for
 IPC, which moves a message's capabilities with an endpoint's spin lock
 held. Each runs `caps::finish` once the locks have gone (see below).
 
-Lock order: the tree lock, the spaces' locks, the object table's (and
-with it the registry), then the heap's locks and the frame allocator's.
-The `Released` callback runs with the object table locked; it closes
-what it can there and leaves the rest for `caps::finish`.
+Lock order: the tree lock, the spaces' locks, the object table's, an
+object's record's, then the heap's locks and the frame allocator's.
+The `Released` callback runs with the spaces' locks held but no
+record's; it closes what it can there and leaves the rest for
+`caps::finish`.
 
 **After the locks.** Some of what follows a release cannot run under
 the store's locks, because it changes the store again or waits for a
@@ -264,13 +272,15 @@ number at the time (ADR 0077). A lookup that finds the slot in this
 CPU's cache at the current version returns it without taking any lock
 or writing anything another CPU reads.
 
-The version moves, before the lock that guarded the slot goes,
-whenever a capability some CPU found leaves its slot, or an object some
-CPU found leaves the registry. The version is read before the lookup.
-Finding a capability for a cache marks its slot
-(`SpaceView::get_to_cache`), and the store moves the version when a
-marked slot is emptied, moved from or destroyed; the registry does the
-same for its entries (`caps::mark_stale`). Other changes, such
+The version moves whenever a capability some CPU found leaves its
+slot, before the space's lock goes, and whenever an object some CPU
+found leaves the store, before the operation that released it returns.
+The version is read before the lookup. Finding a capability for a cache
+marks its slot (`SpaceView::get_to_cache`), and the store moves the
+version when a marked slot is emptied, moved from or destroyed; the
+kernel marks the objects it hands to a cache in the same hold of the
+space's lock, and moves the version when one of them goes
+(`caps::mark_stale`). Other changes, such
 as a capability put in an empty slot or one nobody looked up deleted,
 leave every cache as it is: nothing in a cache was taken away.
 
@@ -562,11 +572,11 @@ KVM it takes about a tenth of a second.
   (`docs/design/ipc.md`); since Phase 6 so do processes
   (`docs/design/processes.md`).
 - One store for the whole kernel, with a lock per space, one for the
-  tree and one for the object table (ADR 0369). Opens and closes in
-  different processes take their own space's lock and the object
-  table's for a moment; the object table's lock is the one they still
-  share, and per-entry counts and per-CPU free lists are to take it off
-  that path. Threads of one process take turns at their space's lock,
+  tree, one for the object table's free records and one in each
+  object's record (ADR 0369). Opens and closes in different processes
+  take their own space's lock and their own object's record's; the
+  table's lock is the only one they share, and a space takes it once
+  every few objects, to fill or empty its spare records. Threads of one process take turns at their space's lock,
   as Linux's threads do at their file table's. Deriving, revoking, and
   deleting or moving linked capabilities take turns at the tree lock.
 - The locks are mutexes (since Phase 4), and the store allocates under

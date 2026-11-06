@@ -1,0 +1,32 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+[package]
+name = "kerberos"
+description = "Kerberos 5 (ADR 0397): the encryption types of RFCs 3962 and 8009, the KDC exchanges of RFC 4120, krb5.conf, and credentials, for kinit(1), klist(1) and kdestroy(1) and the network file systems"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+# RustCrypto's AES, HMAC, SHA-1, SHA-2 and PBKDF2 (each Apache-2.0 OR
+# MIT), which the tree has already through ssh-key and others: Kerberos's
+# encryption types are built from them, not given whole by any of them.
+aes = "0.9.3"
+hmac = "0.13.0"
+pbkdf2 = "0.13.0"
+sha1 = "0.11.0"
+sha2 = "0.11.1"
+# Random confounders, keys and nonces, from ring's system random, which
+# ob patches in for Radix (ADR 0192).
+ring = "0.17.14"
+
+[features]
+# gss::testing: contexts without a KDC, for the tests of nfs(1) and
+# nfsd(8), which run RPCSEC_GSS on them.
+testing = []
+
+[lints]
+workspace = true

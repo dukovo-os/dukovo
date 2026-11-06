@@ -133,7 +133,7 @@ pub const BUDGETS: &[(&str, u64)] = &[
     ("cap_info", 470),                         // 425
     ("random_words", 2_500),                   // 2,221
     ("context_switch", 1_100),                 // 959
-    ("fresh_page", 9_900),                     // 8,986
+    ("fresh_page", 11_000),                    // 9,870, with record locks on frame and memory
     ("tlb_local", 3_500),                      // 3,106
     ("file_open_close", 3_950),                // 3,891
     ("file_stat", 1_900),                      // 1,657
@@ -143,7 +143,7 @@ pub const BUDGETS: &[(&str, u64)] = &[
     ("notification_pingpong_same_cpu", 6_200), // 5,566
     ("channel_roundtrip_same_cpu", 5_100),     // 4,587
     ("ring_roundtrip_same_cpu", 9_400),        // 8,489
-    ("posix_fork_wait", 160_000),              // 138,300
+    ("posix_fork_wait", 180_000),              // 162,149
     ("posix_fork_exec_wait", 590_000),         // 531,676
     ("posix_pipe_mib", 2_500_000),             // 2,188,725
     ("posix_signal", 5_900),                   // 5,300

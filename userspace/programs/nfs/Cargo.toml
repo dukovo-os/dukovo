@@ -17,6 +17,9 @@ accounts = { path = "../accounts" }
 # The filesystem's side of Linux's FUSE protocol, which ob patches in
 # from the rust-crates port (ADR 0226), at the protocol's version 7.31.
 fuser = { version = "0.16.0", default-features = false, features = ["abi-7-31"] }
+# Kerberos (ADR 0397): each caller's ticket for the server, and the
+# GSS-API contexts RPCSEC_GSS runs on (sec=krb5, krb5i and krb5p).
+kerberos = { path = "../kerberos" }
 # The libc crate with its Radix module, which ob patches in from the
 # rust-std port (ADR 0070).
 libc = "0.2.191"
@@ -28,6 +31,8 @@ nfsd = { path = "../nfsd" }
 radix-abi = { path = "../../../kernel/abi" }
 
 [dev-dependencies]
+# Contexts and tickets without a KDC, for the tests of sec=krb5.
+kerberos = { path = "../kerberos", features = ["testing"] }
 # nfsd in the tests' process, which the client's tests mount.
 nfsd = { path = "../nfsd", features = ["testing"] }
 

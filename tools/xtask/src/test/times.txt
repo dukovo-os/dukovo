@@ -59,6 +59,8 @@ git-keyring 127
 gpio 11
 i2c 22
 install-bios 99
+install-free 110
+install-manual 112
 install-screens 94
 install-uefi 99
 installed-bios 29
@@ -68,6 +70,7 @@ iommu 19
 iommu-amd 25
 ipc 12
 kdb 10
+kerberos 62
 keyring 71
 live-bios 41
 live-uefi 49
@@ -88,6 +91,7 @@ network-tools 82
 network-trace 41
 network-wireguard 44
 nfs 23
+nfs-kerberos 77
 nfsd 17
 ntfs 16
 ntfs-power-cut 36
