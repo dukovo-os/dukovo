@@ -378,4 +378,58 @@ mod tests {
         assert!(updater.target("bundles/bat.dkv").unwrap().is_none());
         std::fs::remove_dir_all(&dir).unwrap();
     }
+
+    /// Makes in `dir` a repository of one target, `system/1.0.json`, whose
+    /// metadata all expired yesterday, signed by one Ed25519 key; gives its
+    /// root.
+    fn expired_repository(dir: &Path) -> Vec<u8> {
+        let (key, _) = Ed25519::generate().unwrap();
+        let expires = expires_in(-1);
+        let roles =
+            ["root", "targets", "snapshot", "timestamp"].map(|role| (role, vec![key.key()], 1));
+        let root_file = sign(&root(1, &expires, &roles, true), &[&key]).unwrap();
+        put(&dir.join("metadata/1.root.json"), &root_file);
+        let list = b"a release list".as_slice();
+        let listed = BTreeMap::from([("system/1.0.json".to_string(), file_info(list))]);
+        let targets_file = sign(&targets(1, &expires, &listed), &[&key]).unwrap();
+        put(&dir.join("metadata/1.targets.json"), &targets_file);
+        let meta_files = BTreeMap::from([("targets.json".to_string(), meta(1, &targets_file))]);
+        let snapshot_file = sign(&snapshot(1, &expires, &meta_files), &[&key]).unwrap();
+        put(&dir.join("metadata/1.snapshot.json"), &snapshot_file);
+        let timestamp_file = sign(&timestamp(1, &expires, 1, &snapshot_file), &[&key]).unwrap();
+        put(&dir.join("metadata/timestamp.json"), &timestamp_file);
+        root_file
+    }
+
+    /// Expired metadata is refused online, and taken offline, as from an
+    /// install stick the owner chose; a signature that does not check is
+    /// refused either way.
+    #[test]
+    fn expiry_is_checked_online_but_not_offline() {
+        let dir = scratch("expired");
+        let root_file = expired_repository(&dir);
+        let base = Url::parse(&format!("file://{}/", dir.display())).unwrap();
+        let metadata = base.resolve("metadata/").unwrap();
+        let client = dir.join("online");
+        crate::init(&client, &root_file).unwrap();
+        let err = Updater::new(&client, &metadata, None).unwrap().refresh().unwrap_err();
+        assert!(err.to_string().contains("expired"), "{err}");
+
+        let client = dir.join("offline");
+        crate::init(&client, &root_file).unwrap();
+        let mut updater = Updater::offline(&client, &metadata, None).unwrap();
+        updater.refresh().unwrap();
+        assert!(updater.target("system/1.0.json").unwrap().is_some());
+
+        let path = dir.join("metadata/timestamp.json");
+        let forged = String::from_utf8(std::fs::read(&path).unwrap())
+            .unwrap()
+            .replace("\"version\": 1", "\"version\": 2");
+        std::fs::write(&path, forged).unwrap();
+        let client = dir.join("forged");
+        crate::init(&client, &root_file).unwrap();
+        let err = Updater::offline(&client, &metadata, None).unwrap().refresh().unwrap_err();
+        assert!(err.to_string().contains("sign"), "{err}");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }

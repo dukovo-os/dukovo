@@ -288,6 +288,12 @@ pub fn run_command(ctx: &Ctx, args: &mut Args) -> Result<()> {
         account: None,
     };
     let account = account::Options::from_args(args)?;
+    if !installed && account.any() {
+        crate::bail!(
+            "--user makes an account in an installed system's root, so it needs --installed: \
+             the stick runs the live system, which keeps no accounts"
+        );
+    }
     if gdb {
         // GDB's symbols are at the link address, so the kernel must stay
         // there.

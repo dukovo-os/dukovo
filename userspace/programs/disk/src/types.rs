@@ -4,7 +4,7 @@
 //! Partition types: what an entry says its partition holds, a GUID in a
 //! GPT and a byte in an MBR, and the short aliases rdisk(8) and layout
 //! files take for the ones Dukovo uses (`efi`, `bios-boot`, `swap`,
-//! `dukovo-root`, `linux`, `windows-data`).
+//! `dukovo-root`, `dukovo-live`, `linux`, `windows-data`).
 
 use std::fmt;
 
@@ -98,6 +98,15 @@ pub const TYPES: &[Type] = &[
         alias: "dukovo-root",
         name: "Dukovo root",
         gpt: Some(Guid::known("90C9A303-3954-4174-8F8B-EE75A92A9EB0")),
+        mbr: None,
+        code: None,
+    },
+    // Minted by ADR 0308: an install stick's DUKOVO_LIVE partition, which
+    // holds the signed release the installer installs.
+    Type {
+        alias: "dukovo-live",
+        name: "Dukovo live",
+        gpt: Some(Guid::known("5894C662-AF90-4B47-BAAF-2E3396443B25")),
         mbr: None,
         code: None,
     },

@@ -39,6 +39,11 @@ const PERIOD: Duration = Duration::from_secs(1);
 /// a GPT, and in an MBR. Spark leaves these alone, and so does volumed.
 const EFI_SYSTEM: [&str; 2] = ["c12a7328-f81f-11d2-ba4b-00a0c93ec93b", "0xef"];
 
+/// The type of an install stick's DUKOVO_LIVE partition, "Dukovo live"
+/// (ADR 0308): the signed release the installer installs, mounted
+/// read-only, by Spark and by volumed alike.
+const DUKOVO_LIVE: &str = "5894c662-af90-4b47-baaf-2e3396443b25";
+
 /// The filesystems tried, in Spark's order: FAT, exFAT and NTFS before
 /// the others, whose superblocks their `mkfs` can leave behind, and discs
 /// last, UDF before the ISO 9660 a DVD has as a bridge to it.
@@ -86,9 +91,15 @@ pub fn place_for(label: Option<&str>, name: &str, taken: impl Fn(&str) -> bool) 
     if taken(&label) { format!("{label}-{name}") } else { label }
 }
 
-/// Opens `/devices/<name>` to write, or to read when it refuses writes.
+/// Opens `/devices/<name>` to write, or to read when it refuses writes or
+/// is an install stick's DUKOVO_LIVE.
 fn open_device(name: &str) -> io::Result<(File, MountFlags)> {
     let path = format!("/devices/{name}");
+    if probe::block_text(name, "parttype")
+        .is_some_and(|kind| kind.eq_ignore_ascii_case(DUKOVO_LIVE))
+    {
+        return Ok((File::open(&path)?, MountFlags::READ_ONLY));
+    }
     match OpenOptions::new().read(true).write(true).open(&path) {
         Ok(file) => Ok((file, MountFlags::NONE)),
         Err(err) if err.raw_os_error() == Some(libc::EROFS) => {

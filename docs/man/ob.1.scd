@@ -153,10 +153,11 @@ _target/userspace/_).
 	runs after it.
 
 *image* [*--iso* | *--installed*] [*--cmdline* _flags_] [*--microcode* _path_] [*--disk-check* _serial_] [*--debug* | *--release*]
-	Build the kernel, then the boot image
-	_out/dukovo-VERSION-x86_64.img_, a disk image for a USB stick or a
-	hard disk, which starts under UEFI and under legacy BIOS. Write it to
-	a USB stick as shown in *EXAMPLES*. With *--iso*, the image is
+	Build the kernel, then the install stick's image
+	_out/dukovo-VERSION-x86_64.img_, which starts under UEFI and under
+	legacy BIOS into the live system, and carries the signed release of
+	the system that the installer installs (ADR 0308). Write it to a USB
+	stick as shown in *EXAMPLES*. With *--iso*, the image is
 	_out/dukovo-VERSION-x86_64.iso_ instead, for optical media, which
 	El Torito starts under either firmware. *dukovo-boot*(7) lists what
 	the image contains.
@@ -166,12 +167,14 @@ _target/userspace/_).
 	_.cache/grub_, with GCC, flex, gawk and Bison (some two minutes).
 	The disk image is a GPT that Dukovo's own code makes: a BIOS boot
 	partition holding GRUB's _core.img_, the EFI system partition,
-	FAT32, which the kernel's FAT crate fills, and a Dukovo root
-	partition, the third, of 512 MiB: Btrfs made and filled by the
-	kernel's Btrfs crate, as *mkfs-btrfs*(8) makes one, with the system
-	in the read-only subvolume _@system.a_ and empty subvolumes for
-	settings, state, applications, users and shared files. Booted from a
-	disk Radix sees, Spark mounts them (*spark*(8)).
+	FAT32, which the kernel's FAT crate fills, and DUKOVO_LIVE, the
+	third: Btrfs made and filled by the kernel's Btrfs crate, as
+	*mkfs-btrfs*(8) makes one, whose read-only subvolume _release_ holds
+	the release, signed with this machine's keys, which *ob* makes in
+	_.cache/release-keys_ the first time (*system-release*(8)). The boot
+	menu starts the live system, which Spark runs from memory without
+	taking any disk's root (*spark*(8)), or boots the machine's first
+	disk.
 
 	Every image carries a license manifest. *ob* lists each component
 	that goes into it: the crates linked into the kernel (from *cargo
@@ -187,8 +190,8 @@ _target/userspace/_).
 
 	*--iso*
 		Make an ISO, _out/dukovo-VERSION-x86_64.iso_, instead, for
-		virtual machines and optical media, with *xorriso*(1). It has no
-		Dukovo root partition, as optical media are read-only.
+		virtual machines and optical media, with *xorriso*(1). It runs
+		the same live system but carries no release.
 
 	*--installed*
 		Make the disk of an installed system,
@@ -1278,8 +1281,8 @@ _target/userspace/_).
 
 	*root*
 		Boot 2 CPUs under UEFI from the test image as a USB stick, with
-		a copy of it and its Dukovo root partition, as *image* makes
-		one, as a virtio disk. Spark must find Dukovo's root on _vda3_,
+		a copy of it and a Dukovo root partition, as
+		*image --installed* makes one, as a virtio disk. Spark must find Dukovo's root on _vda3_,
 		mount it again to compress, mount its subvolumes and copy the
 		default settings in. _/system/tests/storage root_ checks in
 		_/processes/mounts_ that _/system_ is _@system.a_, read-only,

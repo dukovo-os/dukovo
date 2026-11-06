@@ -33,6 +33,7 @@ mod patched;
 mod ports;
 mod process;
 mod qemu;
+mod release;
 mod riscv;
 mod rootfs;
 mod scaling;
@@ -176,11 +177,12 @@ legacy BIOS from a USB stick, a hard disk or optical media:
   out/dukovo-<version>-x86_64.img             (default)
   out/dukovo-<version>-x86_64.iso             (with --iso)
   out/dukovo-<version>-x86_64-installed.img   (with --installed)
-The .img ends with a Dukovo root partition: the system and the
-subvolumes for what changes, on Btrfs.
+The .img is the install stick: its menu starts the live system, and its
+DUKOVO_LIVE partition holds the signed release the installer installs
+(ADR 0308).
 
-  --iso                Name the output .iso for virtual machines and optical media,
-                       without the Dukovo root partition
+  --iso                Name the output .iso for virtual machines and optical media:
+                       the live system, without the release
   --installed          The disk of an installed system instead: GRUB starts the
                        kernel and the startup archive from the root's system slot,
                        and the system runs from the disk, not from memory (ADR 0307)
@@ -190,9 +192,9 @@ subvolumes for what changes, on Btrfs.
                        Add a boot entry that checks, and erases, the disk with
                        this serial number, and Linux's side of the check in
                        crosscheck/ (the handbook's Supported hardware chapter)
-  --user <name>        Make an administrator's account of this name in the root,
-                       asking for its password twice; authd makes its home at the
-                       first boot (ADR 0218)
+  --user <name>        With --installed, make an administrator's account of this
+                       name in the root, asking for its password twice; authd
+                       makes its home at the first boot (ADR 0218)
   --full-name <name>   The account's full name
   --password-file <path>
                        Take the password from the first line of this file
@@ -221,9 +223,9 @@ press Ctrl-A then X to quit QEMU. KVM is used when /dev/kvm is accessible.
                        (extra QEMU network arguments after -- replace it too)
   --cmdline <flags>    Kernel flags instead of boot.cmdline, such as \"kdb\"
   --microcode <path>   Intel microcode file or directory instead of image.microcode
-  --user <name>        Make an administrator's account in the image, with
-                       --full-name, --password-file and --test-cost as ./ob image
-                       takes them"
+  --user <name>        With --installed, make an administrator's account in the
+                       image, with --full-name, --password-file and --test-cost
+                       as ./ob image takes them"
         }
         "test" => {
             "Usage: ./ob test [unit | boot | kani | tla | tuf | corpus | riscv] [--case <name>]...
@@ -827,8 +829,11 @@ fn dispatch(argv: Vec<String>) -> Result<()> {
                 (false, false) => image::Kind::Stick,
             };
             let account = account::Options::from_args(&mut args)?;
-            if kind == image::Kind::Iso && account.any() {
-                bail!("--user makes an account in the root partition, which an .iso has none of");
+            if kind != image::Kind::Installed && account.any() {
+                bail!(
+                    "--user makes an account in an installed system's root, which only --installed \
+                     makes: the stick and the ISO run the live system, which keeps no accounts"
+                );
             }
             let mut overrides = image::Overrides {
                 cmdline: args.value("--cmdline")?,

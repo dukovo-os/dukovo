@@ -173,6 +173,13 @@ pub const FLAGS: &[Flag] = &[
                   from, which an installed system's boot menu gives; Spark mounts no other \
                   disk's root",
     },
+    Flag {
+        name: "live",
+        value: None,
+        summary: "for Spark, not the kernel: the live system, as the install stick's boot menu \
+                  starts it: /system stays the boot archive, no disk is the root, and no disk is \
+                  mounted but the stick's DUKOVO_LIVE, read-only",
+    },
 ];
 
 /// The self-tests `selftest=name` runs; radix-debug(7) describes them.
