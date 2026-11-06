@@ -16,10 +16,12 @@ use std::time::{Duration, Instant};
 
 use system_release::list::Release;
 
-use crate::answers::Answers;
+use crate::answers::{Answers, Change, Format, Layout, Role};
 use crate::copy;
 use crate::disks;
 use crate::log::{Log, Step};
+use crate::machine::{self, DiskInfo};
+use crate::plan;
 use crate::settings::{self, Target};
 
 /// The root a system trusts releases by (system-release(8)).
@@ -34,14 +36,6 @@ const WORK: &str = "/tmp/install";
 const SUBVOLUMES: [&str; 6] =
     ["@settings", "@state", "@applications", "@users", "@shared", "@snapshots"];
 
-/// What the root needs beyond the release itself: room for settings,
-/// state, users' files and the next update's slot.
-const ROOM: u64 = 1 << 30;
-
-/// The guided layout's partitions before the root, in MiB: the BIOS boot
-/// partition and the EFI system partition.
-const BEFORE_ROOT_MIB: u64 = 1 + 512;
-
 /// Where the release was found and what it is.
 pub struct Source {
     /// The repository: the stick's `release` folder.
@@ -52,12 +46,21 @@ pub struct Source {
     pub release: Release,
 }
 
-/// The install's partitions, by their names in `/devices`.
+/// A disk the install changes: what it is now, the change, and the
+/// table it has after.
+struct Planned {
+    disk: DiskInfo,
+    change: Change,
+    after: disk::Table,
+}
+
+/// The install's partitions on the target, by their names in `/devices`,
+/// and whether the target has a BIOS boot partition for GRUB.
 struct Parts {
     disk: String,
     efi: String,
-    swap: Option<String>,
     root: String,
+    bios_boot: bool,
 }
 
 /// Finds the release, in `release` or on the stick, and checks it
@@ -104,10 +107,10 @@ pub fn install(answers: &Answers, source: &Source, log: &mut Log) -> Result<(), 
     let disk = answers.target();
     log.installing(disk, &source.release.version);
     log.step(Step::Disk);
-    check_target(disk, answers, source)?;
+    let planned = plan_disks(answers, source)?;
     fs::create_dir_all(WORK).map_err(|err| format!("making {WORK}: {err}"))?;
-    let parts = partition(disk, answers, log)?;
-    format(&parts, log)?;
+    let parts = partition(&planned, disk, log)?;
+    format(&planned, log)?;
     let root = Path::new(WORK).join("root");
     mount(&parts.root, &root, &["-t", "btrfs", "-o", "compress"], log)?;
     let done = fill_root(answers, source, &parts, &root, log);
@@ -117,85 +120,117 @@ pub fn install(answers: &Answers, source: &Source, log: &mut Log) -> Result<(), 
     done.and(unmounted)
 }
 
-/// Checks that `disk` is a whole disk, not the stick, and large enough.
-fn check_target(disk: &str, answers: &Answers, source: &Source) -> Result<(), String> {
-    let bytes = disks::bytes(disk)?;
-    if disks::is_partition(disk) {
-        return Err(format!(
-            "disk.target: {disk} is a partition; name its disk, {}",
-            disks::disk_of(disk)
-        ));
-    }
-    if source.stick.as_deref() == Some(disk) {
-        return Err(format!("disk.target: {disk} is the install stick this system runs from"));
-    }
-    let swap = u64::from(answers.disk.swap_gib) << 30;
-    let needed = (BEFORE_ROOT_MIB << 20) + swap + source.release.bytes() + ROOM;
-    if bytes < needed {
-        return Err(format!(
-            "disk.target: {disk} holds {} MiB, and this install needs {} MiB",
-            bytes >> 20,
-            needed.div_ceil(1 << 20)
-        ));
-    }
-    Ok(())
-}
-
-/// Writes the guided layout's table on `disk` with rdisk(8), and waits
-/// for its partitions.
-fn partition(disk: &str, answers: &Answers, log: &mut Log) -> Result<Parts, String> {
-    log.step(Step::Partition);
-    let layout = Path::new(WORK).join(format!("layout-{disk}.json"));
+/// Works out the change of each disk the answers' layout touches (ADR
+/// 0311), and checks it against the disk as it is now: each a whole disk
+/// that is not the stick, each change fitting, the root on a GPT and big
+/// enough for the release and room to spare.
+fn plan_disks(answers: &Answers, source: &Source) -> Result<Vec<Planned>, String> {
+    let target =
+        machine::read_disk(answers.target()).map_err(|why| format!("disk.target: {why}"))?;
+    let root_bytes = source.release.bytes() + plan::ROOM;
     let swap_gib = answers.disk.swap_gib;
-    fs::write(&layout, guided_layout(swap_gib))
-        .map_err(|err| format!("writing {}: {err}", layout.display()))?;
-    log.run("rdisk", &["--script", &path(&layout), &path(&disks::device(disk))])?;
-    let root_number = if swap_gib > 0 { 4 } else { 3 };
-    let parts = Parts {
-        disk: disk.to_string(),
-        efi: disks::partition(disk, 2),
-        swap: (swap_gib > 0).then(|| disks::partition(disk, 3)),
-        root: disks::partition(disk, root_number),
+    let changes = match answers.disk.layout {
+        Layout::Guided => vec![plan::guided(&target, swap_gib)?],
+        Layout::Free => vec![plan::free_space(&target, swap_gib, root_bytes)?],
+        Layout::Manual => answers.disk.changes.clone(),
+        Layout::Mirror | Layout::Beside => return Err("disk.layout: not ready yet".into()),
     };
-    for name in [&parts.efi, &parts.root].into_iter().chain(&parts.swap) {
-        disks::wait_for(name)?;
+    let mut planned = Vec::new();
+    for change in changes {
+        let disk = if change.disk == target.name {
+            target.clone()
+        } else {
+            machine::read_disk(&change.disk).map_err(|why| format!("disk.changes: {why}"))?
+        };
+        if source.stick.as_deref() == Some(disk.name.as_str()) {
+            return Err(format!("disk: {} is the install stick this system runs from", disk.name));
+        }
+        let after = plan::after(&disk, &change).map_err(|why| format!("disk: {why}"))?;
+        planned.push(Planned { disk, change, after });
     }
-    Ok(parts)
-}
-
-/// The guided layout (rdisk-layout(5)): a BIOS boot partition, the EFI
-/// system partition second, where a BIOS's GRUB looks for its files
-/// (rgrub-setup(8)), swap if asked for, and the Dukovo root in the rest.
-#[must_use]
-pub fn guided_layout(swap_gib: u32) -> String {
-    let mut partitions = vec![
-        r#"{ "number": 1, "type": "bios-boot", "size": "1MiB", "name": "BIOS boot" }"#.to_string(),
-        r#"{ "number": 2, "type": "efi", "size": "512MiB", "name": "EFI system" }"#.to_string(),
-    ];
-    if swap_gib > 0 {
-        partitions.push(format!(
-            r#"{{ "number": 3, "type": "swap", "size": "{swap_gib}GiB", "name": "Swap" }}"#
+    let on_target = planned.iter().find(|p| p.disk.name == target.name);
+    let root = on_target.and_then(|p| {
+        let part = p.change.partitions.iter().find(|part| part.role == Role::Root)?;
+        p.after.get(part.number).map(|root| (p, root.sectors() * u64::from(p.after.sector_size)))
+    });
+    let Some((p, bytes)) = root else {
+        return Err(format!("disk: no root partition on the target, {}", target.name));
+    };
+    if p.after.scheme != disk::Scheme::Gpt {
+        return Err(format!(
+            "disk: {} has an MBR table, and Dukovo's disk needs a GPT",
+            target.name
         ));
     }
-    let root = if swap_gib > 0 { 4 } else { 3 };
-    partitions.push(format!(
-        r#"{{ "number": {root}, "type": "dukovo-root", "size": "rest", "name": "Dukovo root" }}"#
-    ));
-    format!(
-        "{{\n  \"table\": \"gpt\",\n  \"partitions\": [\n    {}\n  ]\n}}\n",
-        partitions.join(",\n    ")
-    )
+    plan::check_bios_boot(&target.name, &p.after).map_err(|why| format!("disk: {why}"))?;
+    if bytes < root_bytes {
+        return Err(format!(
+            "disk.target: the root on {} holds {} MiB, and this install needs {} MiB",
+            target.name,
+            bytes >> 20,
+            root_bytes.div_ceil(1 << 20)
+        ));
+    }
+    Ok(planned)
 }
 
-/// Makes the filesystems: FAT32 on the EFI system partition, swap, and
-/// the root's Btrfs.
-fn format(parts: &Parts, log: &mut Log) -> Result<(), String> {
-    log.step(Step::Format);
-    log.run("mkfs-fat", &["-F", "32", "-n", "DUKOVO_EFI", &path(&disks::device(&parts.efi))])?;
-    if let Some(swap) = &parts.swap {
-        log.run("mkswap", &["-L", "swap", &path(&disks::device(swap))])?;
+/// Writes each disk's new table with rdisk(8), from a layout file that
+/// gives every new partition's place, and waits for its partitions.
+fn partition(planned: &[Planned], target: &str, log: &mut Log) -> Result<Parts, String> {
+    log.step(Step::Partition);
+    for p in planned {
+        let name = &p.disk.name;
+        let layout = Path::new(WORK).join(format!("layout-{name}.json"));
+        let text = plan::layout_text(&p.disk, &p.change)?;
+        fs::write(&layout, &text).map_err(|err| format!("writing {}: {err}", layout.display()))?;
+        log.note(&format!("{}: {}", layout.display(), text.split_whitespace().collect::<String>()));
+        log.run("rdisk", &["--script", &path(&layout), &path(&disks::device(name))])?;
+        for part in &p.change.partitions {
+            let partition = disks::partition(name, part.number);
+            match p.after.get(part.number) {
+                // In 512-byte sectors, as the kernel counts.
+                Some(made) => {
+                    let first = made.first * u64::from(p.after.sector_size) / 512;
+                    disks::wait_for_start(&partition, first)?;
+                }
+                None => disks::wait_for(&partition)?,
+            }
+        }
     }
-    log.run("mkfs-btrfs", &["-f", "-L", "dukovo-root", &path(&disks::device(&parts.root))])?;
+    let p = planned.iter().find(|p| p.disk.name == target).ok_or("the target is not changed")?;
+    let numbered = |role: Role| {
+        p.change.partitions.iter().find(|part| part.role == role).map(|part| part.number)
+    };
+    let bios_boot = disk::types::parse("bios-boot", disk::Scheme::Gpt);
+    Ok(Parts {
+        disk: target.to_string(),
+        efi: disks::partition(target, numbered(Role::Efi).ok_or("no EFI system partition")?),
+        root: disks::partition(target, numbered(Role::Root).ok_or("no root partition")?),
+        bios_boot: p.after.partitions.iter().any(|part| Some(part.kind) == bios_boot),
+    })
+}
+
+/// Makes the filesystems each change asks for: FAT32 on the EFI system
+/// partition, swap, the root's Btrfs, and those of data partitions.
+fn format(planned: &[Planned], log: &mut Log) -> Result<(), String> {
+    log.step(Step::Format);
+    for p in planned {
+        for part in &p.change.partitions {
+            let device = path(&disks::device(&disks::partition(&p.disk.name, part.number)));
+            let (program, args): (&str, &[&str]) = match (part.role, part.format) {
+                (Role::Efi, _) => ("mkfs-fat", &["-F", "32", "-n", "DUKOVO_EFI"]),
+                (Role::Swap, _) => ("mkswap", &["-L", "swap"]),
+                (Role::Root, _) => ("mkfs-btrfs", &["-f", "-L", "dukovo-root"]),
+                (Role::Data, Some(Format::Fat32)) => ("mkfs-fat", &["-F", "32"]),
+                (Role::Data, Some(Format::Exfat)) => ("mkfs-exfat", &[]),
+                (Role::Data, Some(Format::Btrfs)) => ("mkfs-btrfs", &["-f"]),
+                (Role::BiosBoot, _) | (Role::Data, None) => continue,
+            };
+            let mut args = args.to_vec();
+            args.push(&device);
+            log.run(program, &args)?;
+        }
+    }
     Ok(())
 }
 
@@ -241,13 +276,21 @@ fn copy_system(source: &Source, root: &Path, log: &mut Log) -> Result<(), String
     run_when_free(log, "subvolume", &["delete", &path(&new)])
 }
 
-/// Puts GRUB on the disk for a BIOS and on its EFI system partition for
-/// UEFI, from the new slot's own GRUB, and the menu that starts the slot,
-/// which names the root by its Btrfs UUID (ADR 0307).
+/// Puts GRUB on the disk for a BIOS, if it has a BIOS boot partition,
+/// and on its EFI system partition for UEFI, from the new slot's own GRUB,
+/// and the menu that starts the slot, which names the root by its Btrfs
+/// UUID (ADR 0307).
 fn install_grub(parts: &Parts, slot: &Path, log: &mut Log) -> Result<(), String> {
     log.step(Step::Grub);
     let images = path(&slot.join("boot/grub"));
-    log.run("rgrub-setup", &["-d", &images, &path(&disks::device(&parts.disk))])?;
+    if parts.bios_boot {
+        log.run("rgrub-setup", &["-d", &images, &path(&disks::device(&parts.disk))])?;
+    } else {
+        log.note(&format!(
+            "{} has no BIOS boot partition: it starts by UEFI only, with no GRUB for a BIOS",
+            parts.disk
+        ));
+    }
     log.run("rgrub-setup", &["--efi", "-d", &images, &path(&disks::device(&parts.efi))])?;
     let uuid = btrfs_uuid(&parts.root)?;
     let template = slot.join("boot/grub/installed.cfg");
@@ -335,25 +378,4 @@ fn mount(name: &str, dir: &Path, options: &[&str], log: &mut Log) -> Result<(), 
 /// A path as a command's argument.
 fn path(path: &Path) -> String {
     path.display().to_string()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn the_guided_layout_is_a_layout_file() {
-        let with_swap = guided_layout(8);
-        assert!(
-            with_swap.contains(r#""number": 3, "type": "swap", "size": "8GiB""#),
-            "{with_swap}"
-        );
-        assert!(with_swap.contains(r#""number": 4, "type": "dukovo-root", "size": "rest""#));
-        let value: serde_json::Value = serde_json::from_str(&guided_layout(0)).unwrap();
-        let parts = value["partitions"].as_array().unwrap();
-        assert_eq!(parts.len(), 3);
-        assert_eq!(parts[2]["type"], "dukovo-root");
-        assert_eq!(parts[2]["number"], 3);
-        assert_eq!(parts[1]["number"], 2, "a BIOS's GRUB finds its files on the second partition");
-    }
 }

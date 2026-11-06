@@ -34,7 +34,9 @@
 //!    holds one. An installed system starts from an archive of Spark
 //!    alone, so when the root it names cannot be found, Spark says so
 //!    and starts nothing; that is the first place to look when an
-//!    installed system stops after Spark. A partition of the type
+//!    installed system stops after Spark. The swap partitions of the
+//!    disk that holds the root are turned on (`swap`, ADR 0311), and
+//!    left out of the filesystems mounted. A partition of the type
 //!    "Dukovo live", an install stick's DUKOVO_LIVE, is mounted
 //!    read-only and is never the root. With `live` on the command line,
 //!    as the install stick's boot menu starts the live system (ADR 0308),
@@ -73,6 +75,7 @@ extern crate alloc;
 
 mod services;
 mod supervisor;
+mod swap;
 mod views;
 
 use alloc::format;
@@ -482,6 +485,7 @@ fn build(root: &Dir, volumes: bool, compress: &[&str]) -> bool {
     let mounted = match disk {
         Some(disk) if mount_root(root, &disk) => {
             println!("spark: /system is Dukovo's root on {disk}, compressed (zstd)");
+            swap::turn_on(root, &disk);
             ON_DISK.len() + 1
         }
         _ => {
@@ -649,21 +653,20 @@ fn mount_disks(root: &Dir, compress: &[&str], live_only: bool) -> Vec<(String, M
                 .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
         })
     };
-    let part_type = |name: &str| {
-        root.read_file(&format!("kernel/block/{name}/parttype")).map_or_else(
-            |_| String::new(),
-            |kind| String::from_utf8_lossy(&kind).trim_end().to_ascii_lowercase(),
-        )
-    };
     let mut btrfs = Vec::new();
     for name in devices.iter().filter(|name| !partitioned(name)) {
-        let kind = part_type(name);
+        let kind = swap::part_type(root, name);
         if EFI_SYSTEM.contains(&kind.as_str()) {
             println!("spark: {name} is an EFI system partition; left alone");
             continue;
         }
         let medium = kind == DUKOVO_LIVE;
         if live_only && !medium {
+            continue;
+        }
+        // Turned on once the root is found, if it is on the root's disk.
+        if swap::SWAP.contains(&kind.as_str()) {
+            println!("spark: {name} is a swap partition; no filesystem to mount");
             continue;
         }
         let compress = compress.contains(&name.as_str()) && !medium;

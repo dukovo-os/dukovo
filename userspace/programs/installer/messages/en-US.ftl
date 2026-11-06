@@ -23,6 +23,7 @@ page-network = Network and name
 page-disk = Disk
 page-you = You
 page-review = Review
+page-rdisk = Partitions (rdisk)
 page-installing = Installing Dukovo
 page-done = Dukovo is installed
 page-failed = The install did not finish
@@ -108,11 +109,72 @@ disk-partitions = { $count ->
 disk-how = How should it be set up?
 disk-guided = Erase the disk and use the guided layout
 disk-guided-note = recommended
+disk-free = Use the free space and keep what is there
+disk-free-note = { $size } free in one piece
+disk-manual = Manual: choose the partitions yourself
+disk-manual-note = opens the rdisk screen
 disk-swap = Swap size (GiB)
 disk-swap-note = Swap the size of memory, at most 8 GiB, is suggested; 0 makes none.
 disk-erase-windows = Erasing { $disk } deletes Windows and everything on it.
 disk-erase = Erasing { $disk } deletes everything on it.
-disk-untouched = { $disks } stays untouched: format it later with rdisk and use it under /volumes.
+disk-untouched = { $count ->
+    [one] { $disks } stays untouched: format it later with rdisk and use it under /volumes.
+   *[other] { $disks } stay untouched: format them later with rdisk and use them under /volumes.
+}
+
+## The rdisk screen: the manual layout
+
+hints-rdisk = Up Down choose · N new · D delete · F format · G guided · U undo · Tab disk · Enter done · Esc back · F1 help
+rdisk-disks = Disks:
+rdisk-tab = (Tab switches disk)
+rdisk-new-gpt = no partition table yet: a new GPT is made
+rdisk-name = Name
+rdisk-filesystem = File system
+rdisk-size = Size
+rdisk-mount = Mount
+rdisk-change = Change
+rdisk-keep = keep
+rdisk-delete = DELETE
+rdisk-new = NEW
+rdisk-format = FORMAT
+rdisk-empty = (no partitions)
+rdisk-free = Free space
+rdisk-pending = Pending changes: { $count }
+rdisk-nothing-yet = Nothing is written until Install.
+rdisk-data = Data
+rdisk-use-root = Dukovo root: Btrfs at /
+rdisk-use-efi = EFI system: FAT32 at /system/boot
+rdisk-use-swap = Swap
+rdisk-use-bios-boot = BIOS boot, for GRUB on a BIOS
+rdisk-use-btrfs = Data: Btrfs
+rdisk-use-exfat = Data: exFAT
+rdisk-use-fat32 = Data: FAT32
+rdisk-use-empty = Empty, for later
+rdisk-new-title = New partition
+rdisk-format-title = Format a partition
+rdisk-form-size = Size
+rdisk-form-size-hint = 20 GiB, or 512 MiB
+rdisk-form-use = Use
+rdisk-form-name = Name
+hint-partition = Tab moves · Left and Right choose the use · Enter does it · Esc cancels
+rdisk-did-new = make { $name } on { $disk }, { $size }
+rdisk-did-format = format partition { $number } as { $use }
+rdisk-did-delete = delete partition { $number }, { $name }
+rdisk-did-keep = keep partition { $number }
+rdisk-did-drop = drop the new { $name }
+rdisk-did-guided = guided layout on { $disk }
+rdisk-no-room = No free space on { $disk }: D deletes a partition first.
+rdisk-size-unit = Give the size with its unit: 20 GiB, or 512 MiB.
+rdisk-not-on-mbr = An MBR table cannot hold that: Dukovo's disk needs a GPT, which G makes.
+rdisk-new-table = The disk gets a new table, so its old partitions cannot be kept: U undoes that.
+rdisk-space-used = A new partition uses its space: D drops that one first.
+rdisk-need-root = Make a Dukovo root partition first: N, or G for the guided layout.
+rdisk-one-root = Only one disk can hold the Dukovo root.
+rdisk-need-efi = { $disk } also needs an EFI system partition, beside the root.
+rdisk-need-gpt = { $disk } has an MBR table: Dukovo needs a GPT, which G makes.
+rdisk-root-small = The Dukovo root needs { $size } at least.
+rdisk-on-target = The EFI system and swap partitions go on { $disk }, with the root.
+rdisk-efi-second = A BIOS's GRUB looks on partition 2 of { $disk }: make the EFI system partition partition 2, or take out the BIOS boot partition.
 
 ## You
 
@@ -139,6 +201,16 @@ review-intro = This is the only step that changes this computer. Nothing has bee
 review-erase = Erase
 review-erase-windows = (Windows and all its files are deleted)
 review-erase-all = (everything on it is deleted)
+review-add = Add to
+review-keeps = { $count ->
+    [one] (its partition is kept)
+   *[other] (its { $count } partitions are kept)
+}
+review-change = Change
+review-new-table = (a new GPT replaces its table: everything on it is deleted)
+review-delete = delete
+review-new = make
+review-format = format
 review-create = Create
 review-on = on { $disk }:
 review-bios-boot = BIOS boot
@@ -152,6 +224,7 @@ review-subvolumes = Btrfs subvolumes: @system.a @settings @state @applications @
 review-install = Install
 review-release = Dukovo { $version }, the stick's signed system release
 review-grub = GRUB for UEFI and BIOS
+review-grub-uefi = GRUB for UEFI (the disk has no BIOS boot partition)
 review-settings = Settings
 review-dhcp = { $card } DHCP
 review-keyboard = keyboard { $layout }
@@ -160,6 +233,7 @@ review-admin = { $user } ({ $name }), administrator
 review-untouched = Untouched
 review-confirm = Type { $disk } to confirm
 review-type = Type { $disk } in the box to confirm that it is erased.
+review-type-change = Type { $disk } in the box to confirm the changes to it.
 
 ## The install's steps, as the screens list them and the console prints them
 
@@ -196,7 +270,14 @@ help-network =
     The time zone sets the clock the system shows; it keeps UTC inside.
 help-disk =
     The guided layout erases the disk and makes a BIOS boot partition, an EFI system partition, swap, and the Dukovo root on Btrfs, which starts under UEFI and a BIOS alike.
+    Use the free space keeps every partition on the disk and makes the same ones in its largest free space. It is for a disk of data: a disk that starts a system already needs Manual.
+    Manual opens the rdisk screen, where you choose every partition yourself.
     Other disks stay as they are. The install stick cannot be chosen.
+help-rdisk =
+    The same disk engine as rdisk on the command line. Every change goes into the pending list, and nothing is written until Install.
+    Up and Down choose a partition. N makes one in the free space. D marks one for deletion; D again keeps it. F formats one for a use. G lays out the guided partitions on this disk. U undoes the last change. Tab shows the next disk.
+    Dukovo needs a Dukovo root and an EFI system partition on the same GPT disk. Swap is optional, and a BIOS boot partition lets a BIOS start the disk. Data partitions are mounted at /volumes/<partition>.
+    Enter is done. Esc goes back to the Disk step and keeps the changes.
 help-you =
     The administrator signs in like anyone and elevates to change the system.
     The installed system keeps your answers without the passwords' hashes unless you ask it to keep them, for a repeat install.

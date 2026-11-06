@@ -80,12 +80,44 @@ int files_limit();
 // Notes that setrlimit made `limit` the soft RLIMIT_NOFILE.
 void set_files_limit(uint64_t limit);
 
-// Finds the lowest free file descriptor from `min_fd`, growing the
-// capability space when every slot is taken. Returns 0 and the slot, or
-// EMFILE if there is none below files_limit(). The slot may be taken by
-// another thread before it is used: callers that get `occupied` look
-// again (`place`).
-int free_slot(int min_fd, uint32_t *slot);
+// A file descriptor's slot that free_slot chose for the running thread:
+// no other thread's free_slot chooses it while the claim lasts, until it
+// goes out of scope once the thread has filled the slot or failed to.
+//
+// The kernel fills a slot only when the call that fills it has done its
+// work: an open looks that the slot is empty, makes the file, and then
+// puts it there. Two threads that chose the same lowest free descriptor
+// would race for it, and the one that lost would choose again with its
+// work done: an O_EXCL open would then fail with EEXIST on the file it
+// had made itself.
+class SlotClaim {
+public:
+	SlotClaim() = default;
+	SlotClaim(const SlotClaim &) = delete;
+	SlotClaim &operator=(const SlotClaim &) = delete;
+	~SlotClaim();
+
+	// The slot, or NO_SLOT until free_slot chose one.
+	uint32_t slot() const {
+		return slot_;
+	}
+
+private:
+	friend int free_slot(int min_fd, SlotClaim *claim);
+	uint32_t slot_ = NO_SLOT;
+};
+
+// Finds the lowest free file descriptor from `min_fd` that no other
+// thread has claimed, growing the capability space when every slot is
+// taken, and claims it for the running thread. Returns 0 with the slot in
+// `claim`, a new claim, or EMFILE if there is none below files_limit().
+// A capability may still reach the slot some other way first: callers
+// that get `occupied` look again (`place`).
+int free_slot(int min_fd, SlotClaim *claim);
+
+// Forgets every claim, in a child after fork: the threads that held them
+// are not in it.
+void forget_claims();
 
 // Forgets the path of directory descriptor `fd` (below).
 void forget_dir_path(int fd);
@@ -96,17 +128,17 @@ void forget_dir_path(int fd);
 template<typename F>
 int place(int min_fd, int *fd, F put) {
 	for(;;) {
-		uint32_t slot;
-		if(int e = free_slot(min_fd, &slot); e)
+		SlotClaim claim;
+		if(int e = free_slot(min_fd, &claim); e)
 			return e;
-		uint64_t status = put(slot);
+		uint64_t status = put(claim.slot());
 		if(!status) {
-			*fd = static_cast<int>(slot - FD_BASE);
+			*fd = static_cast<int>(claim.slot() - FD_BASE);
 			// A new descriptor has no directory path until it is given one.
 			forget_dir_path(*fd);
 			return 0;
 		}
-		// Another thread took it first.
+		// Something else filled it first.
 		if(RADIX_STATUS_DOMAIN(status) == RADIX_KERNEL_ERROR_DOMAIN
 				&& RADIX_STATUS_CODE(status) == RADIX_KERNEL_OCCUPIED)
 			continue;

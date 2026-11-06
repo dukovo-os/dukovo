@@ -1247,7 +1247,15 @@ mod tests {
         assert!(cfg.contains(&entry), "{cfg}");
         // Boot from first disk works under both firmwares.
         assert!(cfg.contains("Boot from first disk"));
-        assert!(cfg.contains("chainloader \"${part}/EFI/BOOT/BOOTX64.EFI\""));
+        // The partition is the root first, as the chainloader tells the
+        // loader it starts it was loaded from the root.
+        assert!(cfg.contains(
+            "set root=\"${part}\"\n                    chainloader /EFI/BOOT/BOOTX64.EFI"
+        ));
+        assert!(
+            cfg.contains("! -f \"${part}/boot/radix\""),
+            "the stick's own EFI system partition is passed over"
+        );
         assert!(cfg.contains("drivemap -s (hd0) (hd1)"));
         assert!(cfg.contains("chainloader +1"));
         // The modules those need are built into GRUB.

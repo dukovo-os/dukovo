@@ -40,6 +40,11 @@ pub struct DiskInfo {
     pub partitions: Vec<String>,
     /// Whether it is the install stick this system runs from.
     pub stick: bool,
+    /// The size of its logical sectors, in bytes: 512 or 4096.
+    pub sector_size: u32,
+    /// Its partition table, as rdisk(8) reads it, if it has one: what the
+    /// free-space layout and the rdisk screen work from.
+    pub table: Option<disk::Table>,
 }
 
 /// What a disk holds, as far as its partitions' kinds tell.
@@ -78,6 +83,12 @@ const LINUX_KINDS: [&str; 4] = [
 ];
 
 impl DiskInfo {
+    /// How many logical sectors it has.
+    #[must_use]
+    pub fn sectors(&self) -> u64 {
+        self.bytes / u64::from(self.sector_size.max(1))
+    }
+
     /// What it holds. Windows is named first: a disk with Windows and a
     /// Linux partition is still the disk Windows starts from.
     #[must_use]
@@ -134,8 +145,14 @@ impl Machine {
     #[must_use]
     pub fn probe() -> Machine {
         let stick = disks::live_partition().ok().map(|(name, _)| disks::disk_of(&name));
+        let mut disks = read_disks(Path::new(BLOCK), stick.as_deref());
+        for disk in &mut disks {
+            // A disk whose table cannot be read is offered as an empty one,
+            // which only the guided layout, erasing it, can use.
+            disk.table = disks::read_table(&disk.name, disk.bytes, disk.sector_size).ok().flatten();
+        }
         Machine {
-            disks: read_disks(Path::new(BLOCK), stick.as_deref()),
+            disks,
             cards: read_cards(Path::new(NET)),
             memory: read_memory(Path::new(MEMINFO)),
             layouts: layouts(),
@@ -151,8 +168,28 @@ fn attribute(block: &Path, name: &str, attribute: &str) -> Option<String> {
     Some(text.trim().to_string())
 }
 
+/// The whole disk `name` as the kernel lists it now, with its table: the
+/// disk an install changes, read again as it starts.
+///
+/// # Errors
+///
+/// If there is no such disk, it is a partition, or its table is damaged.
+pub fn read_disk(name: &str) -> Result<DiskInfo, String> {
+    if disks::is_partition(name) {
+        return Err(format!("{name} is a partition; name its disk, {}", disks::disk_of(name)));
+    }
+    let stick = disks::live_partition().ok().map(|(part, _)| disks::disk_of(&part));
+    let mut disk = read_disks(Path::new(BLOCK), stick.as_deref())
+        .into_iter()
+        .find(|disk| disk.name == name)
+        .ok_or_else(|| format!("there is no disk {name}: lsblk lists them"))?;
+    disk.table = disks::read_table(&disk.name, disk.bytes, disk.sector_size)?;
+    Ok(disk)
+}
+
 /// The whole disks in `block`, each with its partitions' kinds; the disk
-/// named `stick` is marked as the install stick.
+/// named `stick` is marked as the install stick. Their tables are read
+/// apart, from the disks themselves.
 fn read_disks(block: &Path, stick: Option<&str>) -> Vec<DiskInfo> {
     let mut names: Vec<String> = fs::read_dir(block)
         .into_iter()
@@ -178,6 +215,10 @@ fn read_disks(block: &Path, stick: Option<&str>) -> Vec<DiskInfo> {
                     .filter_map(|part| attribute(block, part, "parttype"))
                     .collect(),
                 stick: stick == Some(name.as_str()),
+                sector_size: attribute(block, name, "queue/logical_block_size")
+                    .and_then(|size| size.parse().ok())
+                    .unwrap_or(512),
+                table: None,
             }
         })
         // A disk of no size is a card reader with no card in it.
@@ -284,6 +325,7 @@ mod tests {
         write(&dir, "sda/size", "2097152\n");
         write(&dir, "sda/device/model", "SK hynix SC311\n");
         write(&dir, "sda/queue/rotational", "0\n");
+        write(&dir, "sda/queue/logical_block_size", "4096\n");
         write(&dir, "sda1/partition", "1\n");
         write(&dir, "sda1/parttype", "c12a7328-f81f-11d2-ba4b-00a0c93ec93b\n");
         write(&dir, "sda2/partition", "2\n");
@@ -299,6 +341,8 @@ mod tests {
         assert_eq!(disks[0].bytes, 1 << 30);
         assert_eq!(disks[0].model, "SK hynix SC311");
         assert_eq!(disks[0].rotational, Some(false));
+        assert_eq!((disks[0].sector_size, disks[0].sectors()), (4096, 1 << 18));
+        assert_eq!(disks[2].sector_size, 512);
         assert_eq!(disks[0].holds(), Holds::Windows);
         assert!(disks[1].stick && !disks[0].stick);
         assert_eq!(disks[1].holds(), Holds::Other);

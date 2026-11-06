@@ -21,6 +21,9 @@ unic-langid = "0.9.6"
 # The installer's screens, drawn on the console through crossterm, which
 # ob patches in from the rust-crates port (MIT).
 ratatui = { version = "0.30.2", default-features = false, features = ["crossterm"] }
+# Partition tables, read and planned with the engine rdisk(8) writes
+# them with (ADR 0300).
+disk = { path = "../disk" }
 # The keyboard layouts the screens offer (keymap(1)).
 keymap = { path = "../keymap" }
 # The SHA-256 of each file as it is copied, ring's, which ob patches in

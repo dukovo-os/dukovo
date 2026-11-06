@@ -361,6 +361,12 @@ const FEED_FILES: u8 = 24;
 /// stick ([`cases::install_uefi`], ADR 0309). It is the case's first disk.
 const INSTALL_TARGET: u8 = 25;
 
+/// [`Disk::fat`] for a blank disk, as [`INSTALL_TARGET`], whose second
+/// boot is from the install stick still there, by its menu's *Boot from
+/// first disk* ([`booting_first_disk`], ADR 0311), as a person who left
+/// the stick in would. It is the case's first disk.
+const INSTALL_FIRST_DISK: u8 = 26;
+
 /// The program of a version of lighthouse that answers its health check,
 /// with `nc` listening on its socket.
 macro_rules! lighthouse_answers {
@@ -3205,6 +3211,29 @@ pub fn with_cmdline(image: &[u8], cmdline: &str) -> Result<Vec<u8>, String> {
     Ok(copy)
 }
 
+/// A copy of a test image whose menu starts *Boot from first disk* when
+/// nobody chooses: its third entry, after *Install Dukovo* and *Try
+/// Dukovo* (dukovo-boot(7)). The menu's `set default=try` becomes
+/// `set default=2`, padded with spaces to its length, so that nothing
+/// else in the image moves.
+fn booting_first_disk(mut image: Vec<u8>) -> Result<Vec<u8>, String> {
+    const TRY: &[u8] = b"\nset default=try\n";
+    const FIRST_DISK: &[u8] = b"\nset default=2  \n";
+    let found: Vec<usize> = image
+        .windows(TRY.len())
+        .enumerate()
+        .filter(|(_, window)| *window == TRY)
+        .map(|(at, _)| at)
+        .collect();
+    if found.is_empty() {
+        return Err("the test image's menu has no `set default=try`".into());
+    }
+    for at in found {
+        image[at..at + TRY.len()].copy_from_slice(FIRST_DISK);
+    }
+    Ok(image)
+}
+
 /// Each test image `cases` boot, of the kind and for the media they ask,
 /// built in `dir`: whether it is an ISO, and its bytes.
 type TestImages = Vec<((TestImage, bool), Vec<u8>)>;
@@ -3598,19 +3627,25 @@ fn run_case(
         let log = vm.log();
         disks.iter().try_for_each(|disk| (disk.check)(disk, &log))
     };
-    let boot = |name: &str, cmdline: &str, script: Script| -> Result<(), String> {
-        std::fs::write(&image, with_cmdline(base, cmdline)?)
+    // A second boot by the stick's Boot from first disk.
+    let first_disk = case.disks.first().is_some_and(|disk| disk.fat == INSTALL_FIRST_DISK);
+    let boot = |name: &str, cmdline: &str, script: Script, again: bool| -> Result<(), String> {
+        let mut bytes = with_cmdline(base, cmdline)?;
+        if again && first_disk {
+            bytes = booting_first_disk(bytes)?;
+        }
+        std::fs::write(&image, bytes)
             .map_err(|err| format!("writing {}: {err}", image.display()))?;
         append_own(case, &image, root, live)?;
         run(&machine, name, script)
     };
-    let mut result = boot(case.name, case.cmdline, case.script);
+    let mut result = boot(case.name, case.cmdline, case.script, false);
     if let (Ok(()), Some(second)) = (&result, &case.second) {
         let name = format!("{}-reboot", case.name);
         result = (second.before)(case, &disks)
             .and_then(|()| match &disk_machine {
                 Some(machine) => run(machine, &name, second.script),
-                None => boot(&name, second.cmdline, second.script),
+                None => boot(&name, second.cmdline, second.script, true),
             })
             .map_err(|err| {
                 let log = dir.join(format!("boot-{name}.log"));
@@ -3679,7 +3714,7 @@ fn make_disks(
             std::fs::write(&at, rules(i))
                 .map_err(|err| format!("writing {}: {err}", at.display()))?;
         }
-        if disk.fat == INSTALL_TARGET {
+        if matches!(disk.fat, INSTALL_TARGET | INSTALL_FIRST_DISK) {
             // Sparse, so that a disk an install fits on costs the host
             // only what the install writes.
             std::fs::File::create(&image.path)
