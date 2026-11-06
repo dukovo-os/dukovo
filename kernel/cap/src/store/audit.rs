@@ -4,14 +4,15 @@
 //! Counting what the store holds, and checking every invariant of it.
 //!
 //! Both hold the tree lock throughout and take each space's lock in turn,
-//! then the object table's: the answer is exact for a store nobody else
-//! changes meanwhile, as in the tests, a debugger stop or a stress test
-//! between its rounds. Each space's slots are copied out under its lock,
-//! so a check that crosses spaces never holds two.
+//! then the object table's and each record's in turn: the answer is exact
+//! for a store nobody else changes meanwhile, as in the tests, a debugger
+//! stop or a stress test between its rounds. Each space's slots are copied
+//! out under its lock, so a check that crosses spaces never holds two.
 
 use alloc::vec::Vec;
 use core::alloc::Allocator;
 
+use super::objects::{Free, Spare};
 use super::slots::{Link, Slot, Tree};
 use super::{Capabilities, Census, Inconsistency, MAX_DEPTH, MAX_SLOTS, SlotRef, SpaceId};
 use crate::object::{ObjectKind, Target};
@@ -20,6 +21,7 @@ use crate::object::{ObjectKind, Target};
 struct Copied<A: Allocator> {
     generation: u32,
     slots: Vec<Slot, A>,
+    spare: Spare,
 }
 
 impl<A: Allocator + Clone, K> Capabilities<A, K> {
@@ -57,8 +59,11 @@ impl<A: Allocator + Clone, K> Capabilities<A, K> {
                 }
             }
         }
-        let objects = if wait { self.objects.lock() } else { self.objects.try_lock()? };
-        for entry in objects.records.iter().filter_map(|record| record.entry.as_ref()) {
+        let made = if wait { self.objects.lock() } else { self.objects.free.try_lock()? }.made;
+        for index in 0..made {
+            let Some(record) = self.objects.record(index) else { continue };
+            let record = if wait { record.lock() } else { record.try_lock()? };
+            let Some(entry) = record.entry else { continue };
             census.objects[entry.kind.index()] += 1;
             if entry.origin.is_none()
                 && let Some(extent) = entry.extent
@@ -99,7 +104,7 @@ impl<A: Allocator + Clone, K> Capabilities<A, K> {
                     for &slot in &state.slots {
                         let _ = slots.push_within_capacity(slot);
                     }
-                    Some(Copied { generation: state.generation, slots })
+                    Some(Copied { generation: state.generation, slots, spare: state.spare })
                 }
                 _ => {
                     if !trees.slots.is_empty() {
@@ -110,13 +115,14 @@ impl<A: Allocator + Clone, K> Capabilities<A, K> {
             };
             let _ = copies.push_within_capacity(copy);
         }
-        let objects = self.objects.lock();
+        let free = self.objects.lock();
+        let objects = &self.objects;
         let mut census = Census::default();
         let mut children_listed = 0u64;
         let mut non_roots = 0u64;
         let mut counts: Vec<(u32, u32), A> = Vec::new_in(self.alloc.clone());
-        counts.try_reserve_exact(objects.records.len()).map_err(|_| oom())?;
-        super::fill(&mut counts, objects.records.len(), || (0, 0));
+        counts.try_reserve_exact(free.made as usize).map_err(|_| oom())?;
+        super::fill(&mut counts, free.made as usize, || (0, 0));
         let slot_of = |link: Link| -> Option<&Slot> {
             copies.get(link.space as usize)?.as_ref()?.slots.get(link.slot as usize)
         };
@@ -226,21 +232,28 @@ impl<A: Allocator + Clone, K> Capabilities<A, K> {
         if children_listed != non_roots {
             return Err(fail("a capability is missing from its parent's children", None));
         }
-        check_objects(&objects, &mut counts, &mut census)?;
+        check_objects(objects, &free, &copies, &mut counts, &mut census)?;
         Ok(census)
     }
 }
 
 /// The object table's part of the audit: every retyped object lies in its
-/// memory's used part, and every object's counts are those found.
-fn check_objects<A: Allocator, K>(
+/// memory's used part, every object's counts are those found, and every
+/// record without an object is free once, on the table's list or among a
+/// space's spares.
+fn check_objects<A: Allocator + Clone, K>(
     objects: &super::objects::Objects<A, K>,
+    free: &Free<A>,
+    copies: &[Option<Copied<A>>],
     counts: &mut [(u32, u32)],
     census: &mut Census,
 ) -> Result<(), Inconsistency> {
     let fail = |what| Inconsistency { what, at: None };
-    for record in &objects.records {
-        if let Some(entry) = &record.entry
+    // Each record's entry, copied out under its lock, so no two records'
+    // locks are held at once.
+    let entry = |index: u32| objects.record(index).and_then(|record| record.lock().entry);
+    for index in 0..free.made {
+        if let Some(entry) = entry(index)
             && let Some(origin) = entry.origin
         {
             let Some(parent) = objects.entry(origin) else {
@@ -255,8 +268,29 @@ fn check_objects<A: Allocator, K>(
             counts[origin.index as usize].1 += 1;
         }
     }
-    for (record, &(caps, children)) in objects.records.iter().zip(counts.iter()) {
-        let Some(entry) = &record.entry else { continue };
+    // Free indexes: each listed once, on the table's list or a space's
+    // spares, and none of them holding an object. The second count of an
+    // index with no object is free to mark it listed.
+    let spares = copies.iter().flatten().flat_map(|copy| copy.spare.indexes());
+    for &index in free.indexes.iter().chain(spares) {
+        let Some(count) = counts.get_mut(index as usize) else {
+            return Err(fail("a free object index was never made"));
+        };
+        if entry(index).is_some() {
+            return Err(fail("a free object index holds an object"));
+        }
+        if count.1 == u32::MAX {
+            return Err(fail("a free object index is listed twice"));
+        }
+        count.1 = u32::MAX;
+    }
+    for (index, &(caps, children)) in counts.iter().enumerate() {
+        let Some(entry) = entry(index as u32) else {
+            if children != u32::MAX {
+                return Err(fail("an object index is neither used nor free"));
+            }
+            continue;
+        };
         census.objects[entry.kind.index()] += 1;
         if entry.origin.is_none()
             && let Some(extent) = entry.extent

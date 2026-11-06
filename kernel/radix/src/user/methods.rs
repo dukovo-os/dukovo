@@ -306,8 +306,8 @@ pub fn retype(
     if order > 20 {
         return Err(Kernel::InvalidArgument.status(1));
     }
-    // Checked before the registry makes room for `count` frames, which
-    // would otherwise ask the heap for room for any number a program wrote.
+    // Checked before room is made for `count` frames, which would
+    // otherwise ask the heap for room for any number a program wrote.
     if count == 0 || count > radix_cap::MAX_RETYPE {
         return Err(Kernel::InvalidArgument.status(3));
     }
@@ -319,11 +319,11 @@ pub fn retype(
     }
     // The store hears of each new object before its capability is placed;
     // a frame's is recorded then.
-    let mut record = |id, extent: radix_cap::Extent, registry: &mut objects::Registry| {
+    let mut record = |_, extent: radix_cap::Extent, kept: &mut Option<objects::Recorded>| {
         if kind == ObjectKind::Frame {
-            let frame = frame_made(registry, id, extent.base, extent.pages)?;
+            let frame = frame_made(kept, extent.base, extent.pages)?;
             // Room was reserved above.
-            let _ = frames.push_within_capacity((id, frame));
+            let _ = frames.push_within_capacity(frame);
         }
         Ok(())
     };
@@ -331,17 +331,13 @@ pub fn retype(
         tree.retype(memory, kind, order, to, count, &mut record)
     })
     .and_then(|retyped| retyped);
-    if let Err(err) = retyped {
-        // All or nothing: the store unmade every object, so the frames
-        // recorded before the failure leave the registry again.
-        for &(id, _) in &frames {
-            objects::unrecord(id);
-        }
-        return Err(cap_error(err));
-    }
+    // All or nothing: on a failure the store unmade every object, and
+    // dropped the frames recorded before it; the last references to them
+    // go here, once the store's locks have gone.
+    retyped.map_err(cap_error)?;
     // Zeroed outside the store's locks, before the call returns. A frame
     // deleted meanwhile stops being zeroed, and is not mapped any more.
-    for (_, frame) in &frames {
+    for frame in &frames {
         frame.zero();
     }
     Ok(())

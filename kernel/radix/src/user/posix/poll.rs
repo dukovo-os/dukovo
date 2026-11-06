@@ -190,8 +190,8 @@ fn entries_of(entries: &[u8]) -> core::slice::Iter<'_, [u8; PollEntry::SIZE]> {
 fn slot_events(cspace: SpaceId, slot: u32, events: u16) -> u16 {
     let found = match objects::find_object(cspace, slot) {
         Some(object) => events_of(&object),
-        // An empty slot, nothing in the registry (a memory capability),
-        // or released since the capability was found.
+        // An empty slot, no kernel object (a memory capability), or
+        // released since the capability was found.
         None => INVALID,
     };
     found & (events | ALWAYS)

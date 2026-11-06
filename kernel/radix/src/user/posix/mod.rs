@@ -271,7 +271,7 @@ pub fn tree_place(pid: u64) -> Option<(u64, u64, u64, bool)> {
 }
 
 /// The process numbered `pid` if it has ended and its parent has not
-/// waited for it (a zombie), for `/processes`: the registry holds a process
+/// waited for it (a zombie), for `/processes`: the store keeps a process
 /// only while a capability names it, which a zombie's seldom does.
 pub fn zombie(pid: u64) -> Option<ProcessRef> {
     with_tree(|tree| {

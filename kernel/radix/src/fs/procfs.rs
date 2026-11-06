@@ -287,7 +287,7 @@ impl Listing for ProcessDir {
     }
 }
 
-/// The process numbered `number`: one the registry holds, or a zombie,
+/// The process numbered `number`: one the store keeps, or a zombie,
 /// which `/processes` shows as Linux's does until its parent waits for it.
 fn process_by_number(number: u64) -> Option<ProcessRef> {
     objects::process_by_number(number).or_else(|| posix::zombie(number))

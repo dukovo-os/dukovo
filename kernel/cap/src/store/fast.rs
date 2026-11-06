@@ -12,7 +12,7 @@
 
 use core::alloc::Allocator;
 
-use super::objects::{Entry, Objects};
+use super::objects::{Entry, Indexes};
 use super::slots::{Slot, SpaceState, two_slots};
 use super::{Capabilities, Extent, Released, SlotRef, SpaceId};
 use crate::cap::Capability;
@@ -153,24 +153,27 @@ impl<A: Allocator + Clone, K> SpaceView<'_, A, K> {
     }
 
     /// Makes a new kernel object as [`SpaceView::create_with_rights`]
-    /// does, and runs `record` with its name and the registry, in the same
-    /// hold of the object table's lock, before its capability is put in
-    /// `at`: for the kernel to record what the name stands for. If `record`
-    /// fails, the object is unmade and nothing is put in `at`.
+    /// does, and runs `record` with its name, to fill in what the kernel
+    /// keeps of it in its record, before its capability is put in `at`: so
+    /// nobody finds the capability without what the kernel keeps. If
+    /// `record` fails, the object is unmade and nothing is put in `at`.
     pub fn create_recorded<T>(
         &mut self,
         at: SlotRef,
         kind: ObjectKind,
         rights: Rights,
-        record: impl FnOnce(ObjectId, &mut K) -> Result<T, CapError>,
+        record: impl FnOnce(ObjectId, &mut Option<K>) -> Result<T, CapError>,
     ) -> Result<(ObjectId, T), CapError> {
         if kind.is_range() || kind.from_memory() {
             return Err(CapError::InvalidArgument);
         }
         let index = self.empty(at)?;
         // Nobody can name the object before its capability is in the slot,
-        // which this space's lock keeps from everyone else.
-        let recorded = make_recorded(&mut self.store.objects.lock(), kind, record)?;
+        // which this space's lock keeps from everyone else. Its index comes
+        // from the space's spares.
+        let mut from = Indexes::Spare(&mut self.state.spare);
+        let recorded =
+            self.store.objects.insert(&mut from, Entry::new(kind, None, None), record)?;
         let id = recorded.0;
         let mut cap = Capability::original(Object { kind, target: Target::Object(id) });
         cap.rights = rights.intersection(kind.rights());
@@ -178,10 +181,10 @@ impl<A: Allocator + Clone, K> SpaceView<'_, A, K> {
         Ok(recorded)
     }
 
-    /// Runs `f` on what the kernel keeps beside the object table, with the
-    /// table's lock held after this space's ([`Capabilities::with_registry`]).
-    pub fn with_registry<T>(&self, f: impl FnOnce(&mut K) -> T) -> T {
-        self.store.with_registry(f)
+    /// Runs `f` on what the kernel keeps of the object `id`
+    /// ([`Capabilities::with_kept`]), with this space's lock held too.
+    pub fn with_kept<T>(&self, id: ObjectId, f: impl FnOnce(&mut K) -> T) -> Option<T> {
+        self.store.with_kept(id, f)
     }
 
     /// Makes a memory object for `pages` pages from page frame `base`,
@@ -198,7 +201,9 @@ impl<A: Allocator + Clone, K> SpaceView<'_, A, K> {
         }
         let index = self.empty(at)?;
         let extent = Some(Extent { base, pages });
-        let id = self.store.objects.lock().insert(Entry::new(ObjectKind::Memory, extent, None))?;
+        let mut from = Indexes::Spare(&mut self.state.spare);
+        let entry = Entry::new(ObjectKind::Memory, extent, None);
+        let (id, ()) = self.store.objects.insert(&mut from, entry, |_, _| Ok(()))?;
         let cap =
             Capability::original(Object { kind: ObjectKind::Memory, target: Target::Object(id) });
         self.state.slots[index].put_unlinked(cap);
@@ -234,7 +239,7 @@ impl<A: Allocator + Clone, K> SpaceView<'_, A, K> {
     pub fn delete(
         &mut self,
         at: SlotRef,
-        released: &mut dyn FnMut(Released, &mut K),
+        released: &mut dyn FnMut(Released, Option<K>),
     ) -> Result<Fast<()>, CapError> {
         let index = self.full(at)?;
         if self.state.slots[index].marks.linked {
@@ -243,7 +248,8 @@ impl<A: Allocator + Clone, K> SpaceView<'_, A, K> {
         let taken = self.state.slots[index].take_unlinked();
         self.stale |= taken.cached;
         if let Some(id) = taken.cap.as_ref().and_then(Capability::id) {
-            self.store.objects.lock().release(id, released);
+            let mut to = Indexes::Spare(&mut self.state.spare);
+            self.store.objects.release(id, &mut to, released);
         }
         Ok(Fast::Done(()))
     }
@@ -305,22 +311,4 @@ pub(super) fn move_unlinked(src: &mut Slot, dst: &mut Slot, stale: &mut bool) ->
         dst.put_unlinked(cap);
     }
     Fast::Done(())
-}
-
-/// Makes a new object of `kind` in `objects`, and has `record` record it
-/// in the registry in the same hold of the table's lock; unmakes it if
-/// `record` fails.
-pub(super) fn make_recorded<A: Allocator, K, T>(
-    objects: &mut Objects<A, K>,
-    kind: ObjectKind,
-    record: impl FnOnce(ObjectId, &mut K) -> Result<T, CapError>,
-) -> Result<(ObjectId, T), CapError> {
-    let id = objects.insert(Entry::new(kind, None, None))?;
-    match record(id, &mut objects.registry) {
-        Ok(recorded) => Ok((id, recorded)),
-        Err(err) => {
-            objects.unmake(id);
-            Err(err)
-        }
-    }
 }

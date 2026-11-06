@@ -13,13 +13,13 @@
 //! arrival [`wait`](radix_abi::device::WAIT) reports, and a network card
 //! is attached to its interface through a link (`net::program`).
 //!
-//! When the capability's last copy goes the registry marks it closed, under
-//! the store's locks, and the store's caller stops it once the locks have
-//! gone ([`close_deferred`]), in this order, so that the card reaches
-//! nothing it should not at any point: the link is taken from the
-//! interface, the card's bus mastering and MSI are turned off, its
-//! interrupt is freed, its pages leave the driver's space, and only then
-//! is its DMA memory given back, and the card free to open again.
+//! When the capability's last copy goes the store's release marks it
+//! closed, under the store's locks, and the store's caller stops it once
+//! the locks have gone ([`close_deferred`]), in this order, so that the
+//! card reaches nothing it should not at any point: the link is taken
+//! from the interface, the card's bus mastering and MSI are turned off,
+//! its interrupt is freed, its pages leave the driver's space, and only
+//! then is its DMA memory given back, and the card free to open again.
 //!
 //! Lock order: a device's state, then a network stack's, then an address
 //! space's regions.

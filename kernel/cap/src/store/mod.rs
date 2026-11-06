@@ -21,19 +21,23 @@
 //! - Moving a capability keeps its place in the tree.
 //!
 //! Kernel objects (every kind but the hardware ranges: interrupt lines,
-//! I/O ports and device registers) have an entry in the object table
+//! I/O ports and device registers) have a record in the object table
 //! that counts the capabilities naming them and the objects retyped from
-//! them. When both counts reach zero the object is gone, and the store
-//! tells the caller through a [`Released`], so the kernel can give its
-//! memory back.
+//! them, beside what the kernel keeps of them (`K`). When both counts
+//! reach zero the object is gone, and the store tells the caller through
+//! a [`Released`], with what the kernel kept, so the kernel can close the
+//! object and give its memory back.
 //!
 //! # Locks (ADR 0369)
 //!
 //! Each space has its own lock (S), over what its slots hold; one lock
 //! (T) guards each linked slot's place in the tree, which crosses spaces;
-//! and the object table has a lock of its own (O). They are taken in that
-//! order, spaces by increasing index, and a thread holding a space's lock
-//! never waits for the tree's.
+//! the object table has a lock of its own (O), over its free indexes; and
+//! each object's record has its own spin lock, over its counts and what
+//! the kernel keeps of it. They are taken in that order, spaces by
+//! increasing index, and a thread holding a space's lock never waits for
+//! the tree's. Each space keeps a few free object indexes, so the fast
+//! path takes O only now and then, to fill or empty them.
 //!
 //! - The fast path ([`Capabilities::in_space`], [`SpaceView`]) takes one
 //!   space's lock: looking capabilities up, slot flags, making an object,
@@ -48,8 +52,9 @@
 //!
 //! `kernel/cap/tla/CapabilityLocks.tla` checks that these locks keep every
 //! invariant of the tree. Operations that delete capabilities report the
-//! objects that went to a `released` callback, which runs with the object
-//! table's lock held and must not call back into the store.
+//! objects that went to a `released` callback, which runs with the
+//! operation's space and tree locks held, but no record's, and must not
+//! call back into the store.
 
 mod audit;
 mod fast;
@@ -74,7 +79,8 @@ use crate::rights::Rights;
 pub use fast::{Fast, SpaceView};
 pub use slow::TreeView;
 
-use objects::Objects;
+pub use objects::{OBJECT_BLOCK, OBJECT_BLOCKS};
+use objects::{Objects, Spare};
 use slots::{Forest, Slot, SpaceState, Tree};
 
 /// The longest chain of derivations: a capability is at most this many
@@ -242,8 +248,9 @@ struct Space<A: Allocator> {
 /// behind its own lock (see the module's documentation).
 ///
 /// Operations that delete capabilities report the objects that went with
-/// them to a `released` callback, which runs with the object table's lock
-/// held and must not call back into the store.
+/// them to a `released` callback, with what the kernel kept of each (`K`).
+/// It runs with the locks of the spaces the operation changed held, but no
+/// object record's, and must not call back into the store.
 pub struct Capabilities<A: Allocator + Clone, K = ()> {
     alloc: A,
     /// The tree lock (T), over every slot's place in the tree and the
@@ -252,8 +259,9 @@ pub struct Capabilities<A: Allocator + Clone, K = ()> {
     /// The spaces, by index, in blocks made when a space first needs them
     /// and never moved, so finding a space's lock takes no lock.
     blocks: Vec<Once<Vec<Space<A>, A>>, A>,
-    /// The object table's lock (O).
-    objects: Mutex<Objects<A, K>>,
+    /// The object table: its records, each behind its own lock, and its
+    /// free indexes behind the table's (O).
+    objects: Objects<A, K>,
     /// Moves on whenever a capability looked up to be cached leaves its
     /// slot, before the lock that guarded the slot goes.
     version: AtomicU64,
@@ -277,19 +285,19 @@ fn fill<T, A: Allocator>(vec: &mut Vec<T, A>, len: usize, mut value: impl FnMut(
 }
 
 impl<A: Allocator + Clone, K> Capabilities<A, K> {
-    /// An empty store whose memory comes from `alloc`, with `registry`
-    /// beside its object table, under the table's lock: what the kernel
-    /// keeps of each object, told of each object made and released. Fails
-    /// if there is no memory for the store's table of space blocks, a few
-    /// tens of KiB.
-    pub fn new(alloc: A, registry: K) -> Result<Self, CapError> {
+    /// An empty store whose memory comes from `alloc`. Each object's
+    /// record keeps a `K` beside it for the kernel: what the kernel keeps
+    /// of the object, put there when the object is made and handed back
+    /// when it goes. Fails if there is no memory for the store's tables of
+    /// space and object blocks, a few tens of KiB.
+    pub fn new(alloc: A) -> Result<Self, CapError> {
         let mut blocks = Vec::new_in(alloc.clone());
         blocks.try_reserve_exact(BLOCKS).map_err(|_| CapError::NoMemory)?;
         fill(&mut blocks, BLOCKS, Once::new);
         Ok(Capabilities {
             tree: Mutex::new(Forest { spaces: Vec::new_in(alloc.clone()), free: None }),
             blocks,
-            objects: Mutex::new(Objects::new(alloc.clone(), registry)),
+            objects: Objects::new(alloc.clone())?,
             version: AtomicU64::new(0),
             alloc,
         })
@@ -317,8 +325,12 @@ impl<A: Allocator + Clone, K> Capabilities<A, K> {
         for _ in 0..BLOCK {
             // Every space's lock is made on this line: one class for the
             // lock-order checker.
-            let state =
-                SpaceState { generation: 1, live: false, slots: Vec::new_in(self.alloc.clone()) };
+            let state = SpaceState {
+                generation: 1,
+                live: false,
+                slots: Vec::new_in(self.alloc.clone()),
+                spare: Spare::default(),
+            };
             let _ = block.push_within_capacity(Space { state: Mutex::new(state) });
         }
         // Only the tree lock's holder makes blocks, so nobody else can
@@ -332,6 +344,12 @@ impl<A: Allocator + Clone, K> Capabilities<A, K> {
     /// what the heap holds.
     pub fn space_blocks(&self) -> usize {
         self.blocks.iter().filter(|block| block.get().is_some()).count()
+    }
+
+    /// How many blocks of the object table have been made: each holds
+    /// [`OBJECT_BLOCK`] records and stays once made, as the space table's.
+    pub fn object_blocks(&self) -> usize {
+        self.objects.blocks_made()
     }
 
     /// Takes the lock of the space with index `index`, as the `nth` space
@@ -386,20 +404,40 @@ impl<A: Allocator + Clone, K> Capabilities<A, K> {
         self.version.fetch_add(1, Ordering::Release);
     }
 
-    /// Runs `f` on what the kernel keeps beside the object table, with the
-    /// table's lock held: for the kernel's own lookups. Called with a
-    /// space's lock held too, it comes after it, as ADR 0369's order has
-    /// it; it must not be called from a view that holds the table already
-    /// ([`Capabilities::with_all`]), which has its own
-    /// ([`TreeView::with_registry`]).
-    pub fn with_registry<T>(&self, f: impl FnOnce(&mut K) -> T) -> T {
-        f(&mut self.objects.lock().registry)
+    /// Runs `f` on what the kernel keeps of the object `id`, if the object
+    /// lives and the kernel keeps something of it, with the object's record
+    /// locked: last of the store's locks, so `f` must not sleep or call
+    /// back into the store.
+    pub fn with_kept<T>(&self, id: ObjectId, f: impl FnOnce(&mut K) -> T) -> Option<T> {
+        self.objects.with_kept(id, f)
     }
 
-    /// [`Capabilities::with_registry`], giving up rather than wait for the
-    /// lock: for a debugger, which may have stopped the CPU that holds it.
-    pub fn try_with_registry<T>(&self, f: impl FnOnce(&mut K) -> T) -> Option<T> {
-        Some(f(&mut self.objects.try_lock()?.registry))
+    /// Runs `f` on every living object's name and what the kernel keeps of
+    /// it, one record's lock at a time, as [`Capabilities::with_kept`]
+    /// does: an object made or released meanwhile may be seen or not.
+    pub fn each_kept(&self, mut f: impl FnMut(ObjectId, &mut K)) {
+        self.objects.each(self.objects.made(), |id, _, kept| {
+            if let Some(kept) = kept {
+                f(id, kept);
+            }
+        });
+    }
+
+    /// [`Capabilities::each_kept`], but giving up (`None`) at the first
+    /// lock held elsewhere rather than wait for it: for a debugger, which
+    /// may have stopped the CPU that holds one. `f` may have seen some
+    /// objects by then.
+    pub fn try_each_kept(&self, mut f: impl FnMut(ObjectId, &mut K)) -> Option<()> {
+        let made = self.objects.free.try_lock()?.made;
+        for index in 0..made {
+            let Some(record) = self.objects.record(index) else { continue };
+            let mut inner = record.try_lock()?;
+            let id = ObjectId { index, generation: record.generation() };
+            if let (Some(_), Some(kept)) = (inner.entry, inner.kept.as_mut()) {
+                f(id, kept);
+            }
+        }
+        Some(())
     }
 
     // ---- One operation at a time ----
@@ -487,8 +525,7 @@ impl<A: Allocator + Clone, K> Capabilities<A, K> {
 
     /// What the store knows about the kernel object `id`.
     pub fn object(&self, id: ObjectId) -> Option<ObjectInfo> {
-        let objects = self.objects.lock();
-        let entry = objects.entry(id)?;
+        let entry = self.objects.entry(id)?;
         Some(ObjectInfo {
             kind: entry.kind,
             caps: entry.caps,
@@ -617,7 +654,7 @@ impl<A: Allocator + Clone, K> Capabilities<A, K> {
     pub fn delete(
         &self,
         at: SlotRef,
-        released: &mut dyn FnMut(Released, &mut K),
+        released: &mut dyn FnMut(Released, Option<K>),
     ) -> Result<(), CapError> {
         if self.in_space(at.space, |view| view.delete(at, released))?? == Fast::Linked {
             self.with_tree(&[at.space], |tree| tree.delete(at, released))?;
