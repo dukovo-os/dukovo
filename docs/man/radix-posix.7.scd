@@ -195,6 +195,18 @@ file makes it first. So that two threads opening at once never choose
 the same descriptor, the thread that chose one holds it until the kernel
 has filled it, and other threads choose the next.
 
+The C library keeps which descriptors are taken itself, a bit each, so
+an *open* makes one system call (ADR 0403). It reads them from the
+kernel when the program starts and in a child after *fork*, and marks
+them as it opens and closes descriptors. A capability that reaches a
+free slot some other way is found when the kernel answers *occupied* to
+the call that would fill it, and the C library marks that descriptor
+taken and chooses the next. One emptied some other way, such as a
+capability revoked from outside the program, stays taken until the
+program closes it: a new descriptor is then the lowest free one after
+it, never the same one twice. A program with the dynamic linker shares
+one table between it and the C library, since both open files.
+
 The C library keeps the working directory as a canonical string. It
 hands the kernel an absolute path, or a relative one joined to the
 working directory, as a path beneath the root directory, and the kernel

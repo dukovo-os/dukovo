@@ -23,6 +23,22 @@
 
 #include "radix.hpp"
 
+// The table of taken descriptors (radix::FdTable): the dynamic linker's,
+// which the shared C library uses, or a static program's own.
+#if defined(MLIBC_BUILDING_RTLD) || defined(MLIBC_STATIC_BUILD)
+// Hidden, so that the dynamic linker's own code reaches it with no
+// relocation that names a symbol: it relocates itself before it can look
+// one up, and only knows relocations that add its base. The same table
+// goes to the shared C library under the name __radix_fd_table.
+extern "C" [[gnu::visibility("hidden")]] radix::FdTable __radix_fd_table_here;
+radix::FdTable __radix_fd_table_here;
+extern "C" [[gnu::alias("__radix_fd_table_here"), gnu::visibility("default")]]
+radix::FdTable __radix_fd_table;
+#else
+// The dynamic linker's, found when it relocates the C library.
+extern "C" [[gnu::visibility("default")]] radix::FdTable __radix_fd_table;
+#endif
+
 namespace radix {
 
 namespace {
@@ -91,75 +107,124 @@ void set_files_limit(uint64_t limit) {
 
 namespace {
 
-// The file descriptors threads have claimed (SlotClaim), a bit each. They
-// are claimed and let go with atomic operations alone, as the notes of
-// directory paths below are taken: open and close are async-signal-safe.
-uint64_t claimed[(MAX_FDS + 63) / 64];
+// The table (radix.hpp's FdTable).
+#if defined(MLIBC_BUILDING_RTLD) || defined(MLIBC_STATIC_BUILD)
+constexpr FdTable &table = __radix_fd_table_here;
+#else
+constexpr FdTable &table = __radix_fd_table;
+#endif
 
-// Claims descriptor `fd` for the running thread: false if another thread
-// holds it.
-bool claim_fd(int fd) {
-	uint64_t bit = UINT64_C(1) << (fd % 64);
-	return !(__atomic_fetch_or(&claimed[fd / 64], bit, __ATOMIC_ACQUIRE) & bit);
+// The word of the table with descriptor `fd`'s bit, and the bit.
+uint64_t *word_of(int fd) {
+	return &table.taken[fd / 64];
+}
+
+uint64_t bit_of(int fd) {
+	return UINT64_C(1) << (fd % 64);
 }
 
 } // namespace
 
 SlotClaim::~SlotClaim() {
-	if(slot_ == NO_SLOT)
-		return;
-	int fd = static_cast<int>(slot_ - FD_BASE);
-	__atomic_fetch_and(&claimed[fd / 64], ~(UINT64_C(1) << (fd % 64)), __ATOMIC_RELEASE);
+	if(slot_ != NO_SLOT && !kept_)
+		fd_freed(static_cast<int>(slot_ - FD_BASE));
 }
 
-void forget_claims() {
-	for(uint64_t &word : claimed)
+void SlotClaim::keep_if_full() {
+	// The 64 slots from the word's first: one call, on a path taken only
+	// when another capability came first.
+	int fd = static_cast<int>(slot_ - FD_BASE);
+	struct radix_process_slots_used_results used;
+	uint32_t first = FD_BASE + static_cast<uint32_t>(fd / 64 * 64);
+	if(!radix_process_slots_used(SLOT_PROCESS, first, &used) && (used.used & bit_of(fd)))
+		keep();
+}
+
+void fd_taken(int fd) {
+	__atomic_fetch_or(word_of(fd), bit_of(fd), __ATOMIC_ACQUIRE);
+}
+
+void fd_freed(int fd) {
+	__atomic_fetch_and(word_of(fd), ~bit_of(fd), __ATOMIC_RELEASE);
+}
+
+uint64_t delete_fd(int fd) {
+	uint64_t status = radix_capability_delete(slot_of(fd));
+	// Free whatever the kernel said: a slot it could not empty answers
+	// `occupied` to the next call that fills it, which marks it again.
+	fd_freed(fd);
+	return status;
+}
+
+void read_fd_table() {
+	for(uint64_t &word : table.taken)
 		__atomic_store_n(&word, 0, __ATOMIC_RELAXED);
+	for(int fd = 0; fd < MAX_FDS; fd += 64) {
+		struct radix_process_slots_used_results used;
+		uint32_t first = FD_BASE + static_cast<uint32_t>(fd);
+		if(radix_process_slots_used(SLOT_PROCESS, first, &used))
+			break;
+		__atomic_store_n(&table.slots, used.slots, __ATOMIC_RELAXED);
+		if(first >= used.slots)
+			break;
+		__atomic_store_n(word_of(fd), used.used, __ATOMIC_RELAXED);
+	}
+	__atomic_store_n(&table.read, true, __ATOMIC_RELAXED);
+}
+
+int reach_slot(uint32_t slot) {
+	uint32_t slots = __atomic_load_n(&table.slots, __ATOMIC_RELAXED);
+	if(slot < slots)
+		return 0;
+	if(slot >= MAX_SLOTS)
+		return EMFILE;
+	// Twice as many as it has, as many as it needs, at most MAX_SLOTS. A
+	// space never shrinks: asking for fewer than it has (another thread
+	// grew it) changes nothing.
+	uint32_t want = slots * 2 > slot + 1 ? slots * 2 : slot + 1;
+	if(want < RADIX_PROCESS_MIN_SLOTS)
+		want = RADIX_PROCESS_MIN_SLOTS;
+	if(want > MAX_SLOTS)
+		want = MAX_SLOTS;
+	struct radix_process_grow_results grown;
+	if(uint64_t status = radix_process_grow(SLOT_PROCESS, want, &grown); status) {
+		int e = to_errno(status);
+		return e == ENOMEM ? EMFILE : e;
+	}
+	// What the space has now, which another thread's growing may have
+	// made more than this asked for.
+	__atomic_store_n(&table.slots, grown.slots, __ATOMIC_RELAXED);
+	return slot < grown.slots ? 0 : EMFILE;
 }
 
 int free_slot(int min_fd, SlotClaim *claim) {
 	if(min_fd < 0 || min_fd >= MAX_FDS)
 		return EINVAL;
-	uint32_t first = FD_BASE + static_cast<uint32_t>(min_fd);
-	uint32_t end = FD_BASE + static_cast<uint32_t>(files_limit());
-	for(;;) {
-		if(first >= end)
-			return EMFILE;
-		struct radix_process_slots_used_results used;
-		if(uint64_t status = radix_process_slots_used(SLOT_PROCESS, first, &used); status)
-			return to_errno(status);
-		if(first < used.slots) {
-			// Only the slots the space has count as free.
-			uint32_t room = used.slots - first;
-			uint64_t free = ~used.used;
-			if(room < 64)
-				free &= (UINT64_C(1) << room) - 1;
-			// The lowest of them that no other thread has claimed.
-			for(; free; free &= free - 1) {
-				uint32_t slot = first + static_cast<uint32_t>(__builtin_ctzll(free));
-				if(slot >= end)
-					return EMFILE;
-				if(claim_fd(static_cast<int>(slot - FD_BASE))) {
-					claim->slot_ = slot;
-					return 0;
-				}
-			}
-			first += 64;
-			if(first < used.slots)
-				continue;
-			if(first >= end)
+	// The dynamic linker's first open, before the C library has started.
+	if(!__atomic_load_n(&table.read, __ATOMIC_RELAXED))
+		read_fd_table();
+	int limit = files_limit();
+	for(int first = min_fd / 64 * 64; first < limit; first += 64) {
+		uint64_t seen = __atomic_load_n(word_of(first), __ATOMIC_RELAXED);
+		// The descriptors below min_fd count as taken.
+		if(first < min_fd)
+			seen |= bit_of(min_fd) - 1;
+		while(~seen) {
+			int fd = first + __builtin_ctzll(~seen);
+			if(fd >= limit)
 				return EMFILE;
-		}
-		// Every slot is taken: twice as many, up to the most there may be.
-		if(used.slots >= MAX_SLOTS)
-			return EMFILE;
-		uint32_t want = used.slots * 2 < MAX_SLOTS ? used.slots * 2 : MAX_SLOTS;
-		struct radix_process_grow_results grown;
-		if(uint64_t status = radix_process_grow(SLOT_PROCESS, want, &grown); status) {
-			int e = to_errno(status);
-			return e == ENOMEM ? EMFILE : e;
+			// Taken for this thread, unless another took it first.
+			uint64_t before = __atomic_fetch_or(word_of(fd), bit_of(fd), __ATOMIC_ACQUIRE);
+			if(before & bit_of(fd)) {
+				seen |= before;
+				continue;
+			}
+			claim->slot_ = FD_BASE + static_cast<uint32_t>(fd);
+			// A claim that cannot be had is free again as it goes.
+			return reach_slot(claim->slot_);
 		}
 	}
+	return EMFILE;
 }
 
 namespace {

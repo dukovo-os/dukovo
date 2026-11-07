@@ -2,8 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 // The C library's start (crt1.S calls it): the working directory from the
-// auxiliary vector, then the dynamic linker's work (or, in a static
-// program, its own relocation and TLS), then main.
+// auxiliary vector and the descriptors the program has, then the dynamic
+// linker's work (or, in a static program, its own relocation and TLS),
+// then main.
 
 #include <bits/ensure.h>
 #include <mlibc/elf/startup.h>
@@ -35,6 +36,8 @@ extern "C" void __mlibc_entry(int (*main_fn)(int argc, char *argv[], char *env[]
 	// neither TLS nor anything the C library's relocation changes (the
 	// kernel relocates a static program before it starts).
 	radix::init_from_auxv(auxv_of(entry_stack));
+	// Before constructors too, which may open files.
+	radix::read_fd_table();
 	__dlapi_enter(entry_stack);
 	auto result = main_fn(mlibc::entry_stack.argc, mlibc::entry_stack.argv, environ);
 	exit(result);

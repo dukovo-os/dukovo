@@ -150,6 +150,9 @@ int receive_bytes(radix_syscall_fn *syscall, int fd, void *buffer, size_t size, 
 				flags, &r);
 		if(!status) {
 			*got = r.count;
+			// The kernel put them in the lowest free slots it found.
+			for(size_t i = files->count; i < files->count + r.files; i++)
+				radix::fd_taken(static_cast<int>(files->slots[i] - radix::FD_BASE));
 			files->count += r.files;
 			files->lost = files->lost || r.lost;
 		}
@@ -260,11 +263,16 @@ int make_pair(uint32_t flags, int *fds) {
 			return e;
 		uint32_t second = second_end.slot();
 		uint64_t status = radix_process_socket_pair(radix::SLOT_PROCESS, first, second, flags);
-		// Another thread took a slot first.
-		if(is(status, RADIX_KERNEL_OCCUPIED))
+		// Something else filled one of them first: that one stays taken.
+		if(is(status, RADIX_KERNEL_OCCUPIED)) {
+			first_end.keep_if_full();
+			second_end.keep_if_full();
 			continue;
+		}
 		if(status)
 			return radix::to_errno(status);
+		first_end.keep();
+		second_end.keep();
 		fds[0] = static_cast<int>(first - radix::FD_BASE);
 		fds[1] = static_cast<int>(second - radix::FD_BASE);
 		return 0;
@@ -1344,11 +1352,14 @@ int Sysdeps<Accept>::operator()(int fd, int *newfd, struct sockaddr *addr, sockl
 			return e;
 		uint32_t to = claim.slot();
 		uint64_t status = radix_file_accept_with(radix::cancellable, slot, to, kernel);
-		// Another thread took the slot first.
-		if(is(status, RADIX_KERNEL_OCCUPIED))
+		// Something else filled the slot first: it stays taken.
+		if(is(status, RADIX_KERNEL_OCCUPIED)) {
+			claim.keep();
 			continue;
+		}
 		if(status)
 			return socket_errno(status);
+		claim.keep();
 		*newfd = static_cast<int>(to - radix::FD_BASE);
 		radix::forget_dir_path(*newfd);
 		break;

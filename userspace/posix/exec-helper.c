@@ -32,6 +32,11 @@ int main(int argc, char **argv) {
 		CHECK(fcntl(kept, F_GETFD) == 0);
 		CHECK_ERROR(fcntl(closed, F_GETFD), EBADF);
 		CHECK(write(kept, "kept", 4) == 4);
+		// The C library starts with the numbers the program was given
+		// (ADR 0403): new ones go around them.
+		CHECK(fcntl(0, F_DUPFD, kept) > kept);
+		int fresh = open("/devices/null", O_RDONLY);
+		CHECK(fresh > 2 && fresh != kept);
 	} else if(!strcmp(mode, "signals")) {
 		struct sigaction action;
 		CHECK(sigaction(SIGUSR1, NULL, &action) == 0 && action.sa_handler == SIG_DFL);

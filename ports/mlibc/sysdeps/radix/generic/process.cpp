@@ -142,7 +142,7 @@ int Sysdeps<Fork>::operator()(pid_t *child) {
 		return radix::to_errno(status);
 	if(!r.child) {
 		radix::forget_pid();
-		radix::forget_claims();
+		radix::read_fd_table();
 	}
 	*child = static_cast<pid_t>(r.child);
 	return 0;
