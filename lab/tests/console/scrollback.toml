@@ -1,0 +1,43 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "Shift+Page Up shows the lines that scrolled off the console, and Shift+Page Down goes back to the live screen"
+time = "4m"
+
+# Sign in as the lab account, at the console.
+[[step]]
+screen = "Name:"
+[[step]]
+type = "lab\n"
+[[step]]
+screen = "Password:"
+[[step]]
+type = "{password}\n"
+[[step]]
+serial = "authd: lab signed in on pts/"
+[[step]]
+screen = "lab@dukovo ~ $"
+# 200 numbered lines, more than the screen holds, then a line that says
+# they are all out.
+[[step]]
+type = "seq 1 200; echo \"all\"\"-printed\"\n"
+[[step]]
+screen = "all-printed"
+[[step]]
+keys = ["shift-pgup"]
+[[step]]
+screen_gone = "all-printed"
+[[step]]
+screenshot = "scrolled-back"
+[[step]]
+keys = ["shift-pgdn"]
+[[step]]
+screen = "all-printed"
+
+# Sign out, which brings the sign-in back for the next test.
+[[step]]
+type = "exit\n"
+[[step]]
+serial = "authd: lab signed out on pts/"
+[[step]]
+screen = "Name:"

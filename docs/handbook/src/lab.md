@@ -96,7 +96,7 @@ A test is a file at `lab/tests/<category>/<name>.toml`. The categories,
 their order and their titles on the runner page are in
 `lab/tests/categories.toml`: boot and power, hardware and drivers, disks
 and filesystems, network, SSH, services and logs, accounts and elevate,
-commands, and performance against Linux. Add one there when a new kind of test needs it. This test
+commands, the console, installing, and performance against Linux. Add one there when a new kind of test needs it. This test
 pulls the network cable:
 
 ```toml
@@ -121,13 +121,51 @@ expect = "LOWER_UP"
 `root = true`, which runs the command through `elevate -S` with the lab
 password; `serial` waits for text on the serial console; `power`,
 `link`, `usb` (a stick holding an image, or a blank one of a size),
-`keys` and `screenshot` work the machine, `wait` waits for it to be
+`keys`, `type`, `point`, `click` and `screenshot` work the machine,
+`screen` waits for text on its screen (below), `wait` waits for it to be
 ready, to turn itself off, or for a time, and `bench` measures it
 against Linux (below). A new feature is complete only
 with its lab tests ([Contributing](https://github.com/dukovo-os/dukovo/blob/main/CONTRIBUTING.md)). The harness's
 [test file reference](https://github.com/dukovo-os/lab/blob/main/docs/test-files.md)
 lists every key, and `./ob lab show <test>` shows which machines can run
 a test. A new file needs no other change.
+
+## The screen and the installer
+
+`screen = "text"` waits until the screen shows the text, and
+`screen_gone` until it no longer does. The harness reads the console's
+text from screenshots with no OCR: consoled says on the serial console
+where its cells are, and each cell is looked up in the console's own
+fonts in `kernel/lib/fbcon/fonts`, which `./ob lab` passes. `type`
+types on a US keyboard, with `\n` for Enter and `{password}` for the
+lab password, which is never shown or kept; `point = [x, y]` and
+`click = "left"` work a USB tablet, which `/devices/mouse` reads. The
+tests in `lab/tests/console` sign in at the console this way:
+
+```toml
+[[step]]
+type = "lab\n"
+[[step]]
+screen = "Password:"
+[[step]]
+type = "{password}\n"
+[[step]]
+serial = "authd: lab signed in on pts/"
+[[step]]
+type = "echo \"in\"\": $(whoami)\"\n"
+[[step]]
+screen = "in: lab"
+```
+
+Splitting the label in two means only the command's output, not the
+command line that typed it, holds it whole. A test that signs in signs
+out at its end, so the next test finds the sign-in a fresh boot leaves.
+
+A test with `boot = "stick"` boots the install stick, which `./ob lab`
+builds beside the lab image, with a blank disk (`disk = "8G"` by
+default). `install/erase-disk` answers every installer screen by keys,
+pulls the stick, restarts from the Done page and signs in on the
+installed system with the account the screens made.
 
 ## Performance tests
 

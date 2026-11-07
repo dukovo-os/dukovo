@@ -1,0 +1,16 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "Ctrl+Alt+Delete opens consoled's own menu on the bottom line, which no program sees, and Esc closes it"
+time = "3m"
+
+[[step]]
+screen = "Name:"
+[[step]]
+keys = ["ctrl-alt-delete"]
+[[step]]
+screen = ["Ctrl+Alt+Delete", "Enter: sign in", "R: restart", "P: power off", "Esc: back"]
+[[step]]
+keys = ["esc"]
+[[step]]
+screen_gone = "R: restart"

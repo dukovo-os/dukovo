@@ -1,0 +1,37 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "Ctrl+C at the console stops the program running in the foreground, which ends by the signal"
+time = "4m"
+
+# Sign in as the lab account, at the console.
+[[step]]
+screen = "Name:"
+[[step]]
+type = "lab\n"
+[[step]]
+screen = "Password:"
+[[step]]
+type = "{password}\n"
+[[step]]
+serial = "authd: lab signed in on pts/"
+[[step]]
+screen = "lab@dukovo ~ $"
+[[step]]
+type = "sleep 600\n"
+[[step]]
+wait = "2s"
+[[step]]
+keys = ["ctrl-c"]
+[[step]]
+type = "echo \"status\"\": $?\"\n"
+[[step]]
+screen = "status: 130"
+
+# Sign out, which brings the sign-in back for the next test.
+[[step]]
+type = "exit\n"
+[[step]]
+serial = "authd: lab signed out on pts/"
+[[step]]
+screen = "Name:"

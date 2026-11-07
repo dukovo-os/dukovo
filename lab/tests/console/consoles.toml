@@ -1,0 +1,61 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "Alt+F3 and Alt+F1 switch between consoles, each with its own sign-in and session, which keep what was typed there while the other shows"
+time = "6m"
+
+# The first console waits for the password.
+[[step]]
+screen = "Name:"
+[[step]]
+type = "lab\n"
+[[step]]
+screen = "Password:"
+# The third console has a sign-in of its own, where lab signs in.
+[[step]]
+keys = ["alt-f3"]
+[[step]]
+screen_gone = "Password:"
+[[step]]
+screen = "Name:"
+[[step]]
+type = "lab\n"
+[[step]]
+screen = "Password:"
+[[step]]
+type = "{password}\n"
+[[step]]
+serial = "authd: lab signed in on pts/"
+[[step]]
+type = "echo \"third\"\": $(tty)\"\n"
+[[step]]
+screen = "third: /devices/pts/"
+# Back on the first, its password prompt is as it was, and the password
+# signs in there too.
+[[step]]
+keys = ["alt-f1"]
+[[step]]
+screen_gone = "third: /devices/pts/"
+[[step]]
+screen = "Password:"
+[[step]]
+type = "{password}\n"
+[[step]]
+serial = "authd: lab signed in on pts/"
+[[step]]
+type = "exit\n"
+[[step]]
+serial = "authd: lab signed out on pts/"
+# The third console's session is still there; sign it out too.
+[[step]]
+keys = ["alt-f3"]
+[[step]]
+screen = "third: /devices/pts/"
+[[step]]
+type = "exit\n"
+[[step]]
+serial = "authd: lab signed out on pts/"
+[[step]]
+keys = ["alt-f1"]
+[[step]]
+screen = "Name:"
