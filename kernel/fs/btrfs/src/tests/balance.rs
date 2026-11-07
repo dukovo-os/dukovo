@@ -101,6 +101,54 @@ fn a_balance_moves_compressed_extents_as_they_are() {
 }
 
 #[test]
+fn an_empty_filesystem_converted_still_has_a_data_chunk_to_write_to() {
+    // As the installer's mirror layout does: a new filesystem, which
+    // holds no data, is given a second disk and converted before
+    // anything is written. Its one data chunk is empty, and moving it
+    // must not leave the filesystem without one (Linux's balance makes
+    // one first).
+    let mut disks = disks_of(&mkfs_disks(1, &["-d", "single", "-m", "dup"]));
+    let fs = mount_all(&disks, true, false).unwrap();
+    let second = disks_of(&mkfs_disks(1, &[]));
+    assert_eq!(fs.add_disk(second[0].clone()), Ok(2));
+    disks.push(second[0].clone());
+    balanced_all(&fs, &every(kind::RAID1), "an empty filesystem converted to RAID1");
+    let data = chunks(&fs).into_iter().filter(|c| c.1 & kind::DATA != 0).collect::<Vec<_>>();
+    assert_eq!(data.len(), 1, "{:?}", chunks(&fs));
+    assert!(data[0].1 & kind::RAID1 != 0, "{data:?}");
+    let mut model = Model::new();
+    write_file(&fs, &mut model, "after", 1, 3 << 20);
+    fs.sync().unwrap();
+    drop(fs);
+    let images = images_of(&disks);
+    assert_checks(&images, "an empty filesystem converted to RAID1");
+    for i in 0..2 {
+        let fs = mount_all(&disks_of(&images[i..=i]), false, true).unwrap();
+        let read = model_of(&fs.root());
+        for (path, thing) in &model {
+            assert!(read[path] == *thing, "disk {i} alone: {path} differs");
+        }
+    }
+}
+
+#[test]
+fn an_empty_filesystem_balanced_keeps_its_data_profile() {
+    // The same with no convert: the new data chunk takes the profile of
+    // the one it replaces.
+    let disks = disks_of(&mkfs_disks(2, &["-d", "raid1", "-m", "raid1"]));
+    let fs = mount_all(&disks, true, false).unwrap();
+    balanced_all(&fs, &every(0), "an empty filesystem balanced");
+    let data = chunks(&fs).into_iter().filter(|c| c.1 & kind::DATA != 0).collect::<Vec<_>>();
+    assert_eq!(data.len(), 1, "{:?}", chunks(&fs));
+    assert!(data[0].1 & kind::RAID1 != 0, "{data:?}");
+    let mut model = Model::new();
+    write_file(&fs, &mut model, "after", 1, 3 << 20);
+    fs.sync().unwrap();
+    drop(fs);
+    assert_checks(&images_of(&disks), "an empty filesystem balanced");
+}
+
+#[test]
 fn one_disk_gets_a_second_and_converts_to_raid1() {
     let mut disks = disks_of(&mkfs_disks(1, &["-d", "single", "-m", "dup"]));
     let fs = mount_all(&disks, true, false).unwrap();

@@ -18,7 +18,7 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use super::rdisk::{self, FormField, PartForm, Rdisk};
 use crate::answers::{self, Account, Answers, Change, Disk, Fixed, Layout, Network, Role};
 use crate::log::{Event, Step};
-use crate::machine::{Holds, Machine};
+use crate::machine::{DiskInfo, Holds, Machine};
 use crate::messages::{self, Arg};
 use crate::plan;
 use crate::windows::{Refused, Windows};
@@ -119,6 +119,10 @@ pub enum Id {
     Beside,
     /// Disk: the space Dukovo takes next to Windows, in GiB.
     Space,
+    /// Disk: the mirror layout, of two disks.
+    Mirror,
+    /// Disk: the mirror layout's second disk.
+    MirrorDisk,
     /// Disk: the free-space layout.
     Free,
     /// Disk: the manual layout, on the rdisk screen.
@@ -377,9 +381,12 @@ pub struct App {
     /// The space Dukovo takes next to Windows, in GiB, as typed: a
     /// suggestion when the layout is first chosen.
     pub space: String,
-    /// How the disk is laid out: guided, next to Windows, free space or
-    /// manual.
+    /// How the disk is laid out: guided, next to Windows, a mirror, free
+    /// space or manual.
     pub layout: Layout,
+    /// The mirror layout's second disk, by its place in the machine's
+    /// list: another disk than the target, and not the stick.
+    pub mirror: Option<usize>,
     /// The rdisk screen, once the manual layout has shown it.
     pub rdisk: Option<Rdisk>,
     /// The administrator's full name.
@@ -463,6 +470,7 @@ impl App {
             swap: swap.to_string(),
             space: String::new(),
             layout: Layout::Guided,
+            mirror: None,
             rdisk: None,
             name: String::new(),
             user: String::new(),
@@ -699,6 +707,7 @@ impl App {
             ),
         ]);
         rows.extend(self.beside_rows());
+        rows.extend(self.mirror_rows());
         rows.extend([
             Row::Field(Field {
                 id: Id::Free,
@@ -722,23 +731,39 @@ impl App {
             ]);
         }
         if let Some(disk) = self.disk.and_then(|i| self.machine.disks.get(i)) {
-            let name = Arg::Text(&disk.name);
-            let warning = match disk.holds() {
-                _ if self.layout != Layout::Guided => None,
-                Holds::Nothing => None,
-                Holds::Windows => Some(messages::with("disk-erase-windows", &[("disk", name)])),
-                Holds::Dukovo | Holds::Linux | Holds::Other => {
-                    Some(messages::with("disk-erase", &[("disk", name)]))
-                }
+            // The guided layout erases the disk, and the mirror layout
+            // both of its disks.
+            let erased: Vec<&DiskInfo> = match self.layout {
+                Layout::Guided => vec![disk],
+                Layout::Mirror => std::iter::once(disk).chain(self.mirror_disk()).collect(),
+                _ => Vec::new(),
             };
-            if let Some(warning) = warning {
-                rows.extend([Row::Blank, Row::Text(warning, Look::Danger)]);
+            if self.layout == Layout::Mirror {
+                rows.extend([
+                    Row::Blank,
+                    Row::Text(messages::text("disk-mirror-both"), Look::Plain),
+                ]);
             }
+            for erased in &erased {
+                let name = Arg::Text(&erased.name);
+                let warning = match erased.holds() {
+                    Holds::Nothing => None,
+                    Holds::Windows => Some(messages::with("disk-erase-windows", &[("disk", name)])),
+                    Holds::Dukovo | Holds::Linux | Holds::Other => {
+                        Some(messages::with("disk-erase", &[("disk", name)]))
+                    }
+                };
+                if let Some(warning) = warning {
+                    rows.extend([Row::Blank, Row::Text(warning, Look::Danger)]);
+                }
+            }
+            let mirrored = self.mirror_disk().filter(|_| self.layout == Layout::Mirror);
             let others: Vec<String> = self
                 .machine
                 .disks
                 .iter()
                 .filter(|other| other.name != disk.name && !other.stick)
+                .filter(|other| mirrored.is_none_or(|mirror| mirror.name != other.name))
                 .map(|other| other.name.clone())
                 .collect();
             if !others.is_empty() && self.layout != Layout::Manual {
@@ -804,6 +829,68 @@ impl App {
             rows.push(Row::Text(messages::text("disk-windows-ready"), Look::Good));
         }
         rows
+    }
+
+    /// The rows of the mirror layout: its choice, and once it is chosen,
+    /// the second disk, which Left and Right change.
+    fn mirror_rows(&self) -> Vec<Row> {
+        let candidates = self.mirror_candidates();
+        let chosen = self.disk.and_then(|i| self.machine.disks.get(i));
+        let note = if candidates.is_empty() {
+            messages::text("disk-mirror-alone")
+        } else if chosen.is_some_and(|disk| {
+            candidates.iter().any(|&i| self.machine.disks[i].bytes == disk.bytes)
+        }) {
+            messages::text("disk-mirror-note")
+        } else {
+            messages::text("disk-mirror-sizes")
+        };
+        let mut rows = vec![Row::Field(Field {
+            id: Id::Mirror,
+            kind: Kind::Choice(self.layout == Layout::Mirror),
+            label: messages::text("disk-mirror"),
+            note,
+            enabled: !candidates.is_empty(),
+        })];
+        if self.layout == Layout::Mirror
+            && let Some(second) = self.mirror_disk()
+        {
+            let value = format!("{}  {}", second.name, size(second.bytes));
+            let field = field(Id::MirrorDisk, Kind::Cycle(value), "disk-mirror-onto", "");
+            if let Row::Field(mut field) = field {
+                field.label = format!("    {}", field.label);
+                field.note = holds(second.holds(), second.partitions.len());
+                rows.push(Row::Field(field));
+            }
+        }
+        rows
+    }
+
+    /// The disks the mirror layout can take as its second, by their place
+    /// in the machine's list: every disk but the target and the stick.
+    fn mirror_candidates(&self) -> Vec<usize> {
+        (0..self.machine.disks.len())
+            .filter(|&i| Some(i) != self.disk && !self.machine.disks[i].stick)
+            .collect()
+    }
+
+    /// The mirror layout's second disk, if one can be chosen: the one
+    /// chosen, or the first there is.
+    fn mirror_disk(&self) -> Option<&DiskInfo> {
+        let candidates = self.mirror_candidates();
+        let i = self.mirror.filter(|i| candidates.contains(i)).or(candidates.first().copied())?;
+        self.machine.disks.get(i)
+    }
+
+    /// Checks the mirror layout of the two disks chosen, as the install
+    /// will lay them out.
+    fn check_mirror(&self) -> Result<(), String> {
+        let disk = self
+            .disk
+            .and_then(|i| self.machine.disks.get(i))
+            .ok_or_else(|| messages::text("disk-none"))?;
+        let second = self.mirror_disk().ok_or_else(|| messages::text("disk-mirror-alone"))?;
+        plan::mirror(disk, second, self.swap_gib(), self.root_bytes()).map(drop)
     }
 
     /// Windows on the disk chosen, if it is there.
@@ -934,6 +1021,7 @@ impl App {
         let (mut rows, bios_boot) = match answers.disk.layout {
             Layout::Manual => self.review_changes(&answers.disk.changes, target),
             Layout::Beside => (self.review_beside(answers, target), false),
+            Layout::Mirror => (self.review_mirror(answers), true),
             layout => self.review_layout(layout, answers.disk.swap_gib, target),
         };
         rows.push(Row::Text(
@@ -949,6 +1037,7 @@ impl App {
         ));
         let grub = match answers.disk.layout {
             Layout::Beside => "review-grub-beside",
+            Layout::Mirror => "review-grub-mirror",
             _ if bios_boot => "review-grub",
             _ => "review-grub-uefi",
         };
@@ -970,8 +1059,9 @@ impl App {
         )];
         people.extend(answers.users.iter().map(|user| format!("{} ({})", user.user, user.name)));
         rows.push(Row::Text(label("review-accounts", people.join(", ")), Look::Plain));
-        let changed: Vec<&str> =
+        let mut changed: Vec<&str> =
             answers.disk.changes.iter().map(|change| change.disk.as_str()).collect();
+        changed.extend(answers.mirror().filter(|_| answers.disk.layout == Layout::Mirror));
         for other in self.machine.disks.iter().filter(|other| {
             other.name != target && !other.stick && !changed.contains(&other.name.as_str())
         }) {
@@ -1026,6 +1116,52 @@ impl App {
             rows.extend(made_rows(&change, disk.sector_size));
         }
         (rows, true)
+    }
+
+    /// The review's lines of the mirror layout: each of its two disks
+    /// erased, and each partition made on it, the root as half of the
+    /// RAID1.
+    fn review_mirror(&self, answers: &Answers) -> Vec<Row> {
+        let label = |id: &str, rest: String| format!("{:<10}{rest}", messages::text(id));
+        let find = |name: &str| self.machine.disks.iter().find(|disk| disk.name == name);
+        let (Some(first), Some(second)) = (find(answers.target()), answers.mirror().and_then(find))
+        else {
+            return Vec::new();
+        };
+        let Ok(changes) = plan::mirror(first, second, answers.disk.swap_gib, self.root_bytes())
+        else {
+            return Vec::new();
+        };
+        let mut rows = Vec::new();
+        for (disk, change) in [first, second].into_iter().zip(&changes) {
+            let erase = match disk.holds() {
+                Holds::Windows => messages::text("review-erase-windows"),
+                Holds::Nothing => String::new(),
+                _ => messages::text("review-erase-all"),
+            };
+            rows.push(Row::Text(
+                label("review-erase", format!("{}  {}  {erase}", disk.name, disk.model)),
+                Look::Danger,
+            ));
+            rows.push(Row::Text(
+                label(
+                    "review-create",
+                    messages::with("review-on", &[("disk", Arg::Text(&disk.name))]),
+                ),
+                Look::Plain,
+            ));
+            for mut row in made_rows(change, disk.sector_size) {
+                // The root is half of the RAID1.
+                if let Row::Text(text, _) = &mut row
+                    && text.ends_with(&messages::text("review-root-note"))
+                {
+                    let cut = text.len() - messages::text("review-root-note").len();
+                    text.replace_range(cut.., &messages::text("review-mirror-note"));
+                }
+                rows.push(row);
+            }
+        }
+        rows
     }
 
     /// The review's lines of the layout next to Windows on `target`: the
@@ -1219,7 +1355,10 @@ impl App {
             disk: Disk {
                 layout: self.layout,
                 target: disk.name.clone(),
-                mirror: None,
+                mirror: match self.layout {
+                    Layout::Mirror => self.mirror_disk().map(|disk| disk.name.clone()),
+                    _ => None,
+                },
                 swap_gib: match self.layout {
                     Layout::Manual => 0,
                     _ => self.swap.trim().parse().unwrap_or(u32::MAX),
@@ -1279,6 +1418,10 @@ impl App {
                     self.check_space()?;
                     &["disk"]
                 }
+                Layout::Mirror => {
+                    self.check_mirror()?;
+                    &["disk"]
+                }
                 _ => &["disk"],
             },
             Page::You => {
@@ -1292,7 +1435,7 @@ impl App {
                 if self.confirm.trim() != answers.target() {
                     // Only the guided layout erases the whole disk.
                     let id = match answers.disk.layout {
-                        Layout::Guided => "review-type",
+                        Layout::Guided | Layout::Mirror => "review-type",
                         _ => "review-type-change",
                     };
                     return Err(messages::with(id, &[("disk", Arg::Text(answers.target()))]));
@@ -1480,12 +1623,30 @@ impl App {
         let (index, count) = match id {
             Id::Keyboard => (&mut self.keyboard, self.machine.layouts.len()),
             Id::Zone => (&mut self.zone, self.machine.zones.len()),
+            Id::MirrorDisk => {
+                self.cycle_mirror(by);
+                return;
+            }
             _ => return,
         };
         *index = (*index as isize + by).rem_euclid(count.max(1) as isize) as usize;
         if id == Id::Keyboard {
             self.keyboard_changed();
         }
+    }
+
+    /// Moves the mirror layout's second disk by `by` among the disks it
+    /// can be.
+    fn cycle_mirror(&mut self, by: isize) {
+        let candidates = self.mirror_candidates();
+        let at = self
+            .mirror_disk()
+            .and_then(|disk| self.machine.disks.iter().position(|d| d.name == disk.name))
+            .and_then(|i| candidates.iter().position(|&c| c == i))
+            .unwrap_or(0);
+        let next = (at as isize + by).rem_euclid(candidates.len().max(1) as isize) as usize;
+        self.mirror = candidates.get(next).copied();
+        self.problem = None;
     }
 
     /// Moves the cycle field `id` to the next entry after the current one
@@ -1550,6 +1711,12 @@ impl App {
                 if self.space.is_empty() {
                     self.space = self.suggested_space();
                 }
+            }
+            Id::Mirror => {
+                self.layout = Layout::Mirror;
+                self.mirror = self
+                    .mirror_disk()
+                    .and_then(|disk| self.machine.disks.iter().position(|d| d.name == disk.name));
             }
             Id::Free => self.layout = Layout::Free,
             Id::Manual => self.layout = Layout::Manual,

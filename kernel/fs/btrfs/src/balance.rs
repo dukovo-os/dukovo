@@ -119,13 +119,26 @@ pub(crate) fn balance(inner: &Inner, plan: &Balance) -> Result<Balanced> {
     }
     let mut done = Balanced::default();
     let mut result = Ok(());
-    for &(start, _, flags) in &groups {
-        done.considered += 1;
+    let moves = |&(_, _, flags): &(u64, u64, u64)| {
         let at = Grown::target_at(flags);
         let (a, target) = (args[at], targets[at]);
         let converted = target.is_some_and(|t| t & kind::PROFILE == flags & kind::PROFILE);
-        if !a.on || (a.soft && converted) {
+        a.on && !(a.soft && converted)
+    };
+    // The last data chunk the balance moves: before it moves, another
+    // is made if there is none ([`keep_a_data_chunk`]).
+    let last_data = groups.iter().rposition(|g| g.2 & kind::DATA != 0 && moves(g));
+    for (i, group) in groups.iter().enumerate() {
+        done.considered += 1;
+        if !moves(group) {
             continue;
+        }
+        let start = group.0;
+        if Some(i) == last_data {
+            result = keep_a_data_chunk(inner, start);
+            if result.is_err() {
+                break;
+            }
         }
         result = relocate(inner, start);
         if result.is_err() {
@@ -137,6 +150,22 @@ pub(crate) fn balance(inner: &Inner, plan: &Balance) -> Result<Balanced> {
         txn.writer.grown.targets = [None; 3];
     }
     result.map(|()| done)
+}
+
+/// Makes a data chunk, of the profile the balance converts data to if
+/// it does, unless the filesystem has one besides block group `start`,
+/// the last data chunk a balance moves. Moving it when it is empty, as a
+/// new filesystem's is, would otherwise leave the filesystem no data
+/// chunk, and no profile to make one of: its first write would find no
+/// room. Linux's balance makes one first too (`chunk_reserved` in
+/// `__btrfs_balance`). A chunk that holds data would have one made as
+/// its data moves, so this makes none the move would not.
+fn keep_a_data_chunk(inner: &Inner, start: u64) -> Result<()> {
+    let groups = inner.reading().ok_or(Error::ReadOnly)?.writer.space.groups()?;
+    if groups.iter().any(|g| g.2 & kind::DATA != 0 && g.0 != start) {
+        return Ok(());
+    }
+    inner.alone(false, |txn| txn.writer.new_chunk(&inner.volume, kind::DATA, 0))
 }
 
 /// Adds `device` as a disk of the filesystem, as Linux's `btrfs device

@@ -77,7 +77,7 @@ fn from_answers(file: &Path, release: Option<&Path>) -> u8 {
                 "installed-line",
                 &[
                     ("version", Arg::Text(&source.release.version)),
-                    ("disk", Arg::Text(answers.target())),
+                    ("disk", Arg::Text(&answers.disks())),
                 ],
             ));
             0
