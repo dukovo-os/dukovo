@@ -65,3 +65,23 @@ pub fn put_file(device: Device, path: &str, data: &[u8]) -> Result<(), String> {
     }
     fs.sync().map_err(describe)
 }
+
+/// Whether the FAT on `device` holds the file `path` (names split by
+/// `/`, in any case, as FAT finds them), as the installer looks for
+/// Windows Boot Manager on an EFI system partition. Nothing is written.
+///
+/// # Errors
+///
+/// If `device` holds no FAT, or one too damaged to read.
+pub fn has_file(device: Device, path: &str) -> Result<bool, String> {
+    let fs = FatFs::mount(BlockFile::new(device, true).into_ref(), true).map_err(describe)?;
+    let mut node = fs.root();
+    for name in path.split('/').filter(|name| !name.is_empty()) {
+        node = match node.lookup(name) {
+            Ok(found) => found,
+            Err(Error::NotFound | Error::NotDirectory) => return Ok(false),
+            Err(err) => return Err(describe(err)),
+        };
+    }
+    Ok(node.kind() == Kind::File)
+}

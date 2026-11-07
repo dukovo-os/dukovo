@@ -368,6 +368,12 @@ const INSTALL_TARGET: u8 = 25;
 /// the stick in would. It is the case's first disk.
 const INSTALL_FIRST_DISK: u8 = 26;
 
+/// [`Disk::fat`] for a disk as Windows lays one out, with C: an NTFS
+/// of [`ntfs_files`], that dukovo-install(8) installs Dukovo next to:
+/// the case's second boot boots from it alone, as [`INSTALL_TARGET`]'s
+/// ([`cases::install_beside`], ADR 0314). It is the case's first disk.
+const INSTALL_BESIDE_WINDOWS: u8 = 27;
+
 /// The program of a version of lighthouse that answers its health check,
 /// with `nc` listening on its socket.
 macro_rules! lighthouse_answers {
@@ -3543,8 +3549,10 @@ fn run_case(
     };
     // A second boot from a copy of the test image, or from the disk
     // Dukovo was installed on, boots that disk alone.
-    let from_disk =
-        case.disks.first().is_some_and(|disk| matches!(disk.fat, GRUBLESS | INSTALL_TARGET));
+    let from_disk = case
+        .disks
+        .first()
+        .is_some_and(|disk| matches!(disk.fat, GRUBLESS | INSTALL_TARGET | INSTALL_BESIDE_WINDOWS));
     let disk_machine = from_disk.then(|| Machine {
         firmware: case.firmware,
         media: Media::Disk,
@@ -3728,6 +3736,12 @@ fn make_disks(
             std::fs::File::create(&image.path)
                 .and_then(|file| file.set_len(image.bytes))
                 .map_err(|err| format!("writing {}: {err}", image.path.display()))?;
+            let tool = btrfs::tool(ctx).map_err(|err| err.to_string())?;
+            made.push(DiskImage { btrfs: Some(tool), ..image });
+            continue;
+        }
+        if disk.fat == INSTALL_BESIDE_WINDOWS {
+            cases::install_beside::make(disk, &image.path)?;
             let tool = btrfs::tool(ctx).map_err(|err| err.to_string())?;
             made.push(DiskImage { btrfs: Some(tool), ..image });
             continue;

@@ -1,0 +1,34 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "The installer's Disk page offers Install next to Windows, and on a blank disk, with no Windows to shrink, says so and leaves the layout unchosen; nothing is written. A machine that holds Windows tests the install itself, which the install-beside boot test runs under QEMU"
+time = "5m"
+boot = "stick"
+disk = "8G"
+
+# The stick's menu starts the installer by itself; the first two pages
+# keep their answers.
+[[step]]
+serial = "consoled: install: the installer's screens on tty1"
+[[step]]
+screen = ["Step 1 of 5", "How do you want to install?"]
+[[step]]
+keys = ["ret"]
+[[step]]
+screen = ["Step 2 of 5", "Network cards found:"]
+[[step]]
+keys = ["ret"]
+
+# Disk: the blank disk is chosen, and the layout next to Windows says
+# there is no Windows on it.
+[[step]]
+screen = ["Step 3 of 5", "Erase the disk", "Install next to Windows"]
+[[step]]
+keys = ["spc"]
+[[step]]
+screen = ["Install next to Windows", "no Windows on"]
+[[step]]
+screen_gone = "Space for Dukovo (GiB)"
+[[step]]
+screenshot = "no-windows"
+

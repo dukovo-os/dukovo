@@ -20,6 +20,7 @@ use std::process::Command;
 use std::sync::mpsc::Sender;
 use std::time::Instant;
 
+use crate::answers::Layout;
 use crate::messages::{self, Arg};
 
 /// Where the log is written while the installer runs.
@@ -32,6 +33,8 @@ pub enum Step {
     Release,
     /// The target disk is checked.
     Disk,
+    /// Windows' volume is shrunk, to install next to it.
+    Shrink,
     /// The disk is partitioned.
     Partition,
     /// Its filesystems are made.
@@ -50,9 +53,10 @@ pub enum Step {
 
 impl Step {
     /// Every step, in the order they run.
-    pub const ALL: [Step; 9] = [
+    pub const ALL: [Step; 10] = [
         Step::Release,
         Step::Disk,
+        Step::Shrink,
         Step::Partition,
         Step::Format,
         Step::Subvolumes,
@@ -62,11 +66,18 @@ impl Step {
         Step::Save,
     ];
 
+    /// The steps an install of `layout` runs, in order: Windows' volume
+    /// is shrunk only next to it.
+    pub fn of(layout: Layout) -> impl Iterator<Item = Step> {
+        Step::ALL.into_iter().filter(move |&step| step != Step::Shrink || layout == Layout::Beside)
+    }
+
     /// The id of its title among the installer's messages.
     fn message(self) -> &'static str {
         match self {
             Step::Release => "step-release",
             Step::Disk => "step-disk",
+            Step::Shrink => "step-shrink",
             Step::Partition => "step-partition",
             Step::Format => "step-format",
             Step::Subvolumes => "step-subvolumes",
@@ -92,7 +103,7 @@ impl Step {
     pub fn share(self) -> u32 {
         match self {
             Step::Copy => 70,
-            Step::Format | Step::Grub => 8,
+            Step::Format | Step::Grub | Step::Shrink => 8,
             Step::Release => 6,
             Step::Partition | Step::Subvolumes | Step::Settings => 2,
             Step::Disk | Step::Save => 1,

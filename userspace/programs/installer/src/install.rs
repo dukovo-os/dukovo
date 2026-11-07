@@ -6,9 +6,12 @@
 //! make its filesystems and subvolumes, copy the system into its slot,
 //! checking every file, write the settings and accounts, put GRUB on the
 //! disk with the menu that starts the slot (ADR 0307), and save the
-//! answers and the install log in the new system. Each step runs the
-//! system's own tools (rdisk, mkfs-fat, mkswap, mkfs-btrfs, mount,
-//! subvolume and rgrub-setup), so the log shows each command as it ran.
+//! answers and the install log in the new system. Next to Windows, its
+//! volume is shrunk before the disk is partitioned, and a UEFI boot entry
+//! starts Dukovo's GRUB, whose menu starts Windows too (ADR 0314). Each
+//! step runs the system's own tools (resize-ntfs, rdisk, mkfs-fat,
+//! mkswap, mkfs-btrfs, mount, subvolume, rgrub-setup and efiboot), so the
+//! log shows each command as it ran.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -55,13 +58,24 @@ struct Planned {
 }
 
 /// The install's partitions on the target, by their names in `/devices`,
-/// and whether the target has a BIOS boot partition for GRUB.
+/// whether the target has a BIOS boot partition for GRUB, and, next to
+/// Windows, the number of the EFI system partition the firmware's boot
+/// entry names.
 struct Parts {
     disk: String,
     efi: String,
     root: String,
     bios_boot: bool,
+    boot_entry: Option<u32>,
 }
+
+/// The description of Dukovo's UEFI boot entry, as the firmware's boot
+/// menu shows it.
+const BOOT_ENTRY: &str = "Dukovo";
+
+/// GRUB's environment block on the EFI system partition, where the menu
+/// keeps the entry chosen last: 1024 bytes, as `grub-editenv` makes it.
+const GRUBENV: &str = "boot/grub/grubenv";
 
 /// Finds the release, in `release` or on the stick, and checks it
 /// against the root the system trusts: every signature and version, and
@@ -109,6 +123,7 @@ pub fn install(answers: &Answers, source: &Source, log: &mut Log) -> Result<(), 
     log.step(Step::Disk);
     let planned = plan_disks(answers, source)?;
     fs::create_dir_all(WORK).map_err(|err| format!("making {WORK}: {err}"))?;
+    shrink(&planned, log)?;
     let parts = partition(&planned, disk, log)?;
     format(&planned, log)?;
     let root = Path::new(WORK).join("root");
@@ -133,7 +148,15 @@ fn plan_disks(answers: &Answers, source: &Source) -> Result<Vec<Planned>, String
         Layout::Guided => vec![plan::guided(&target, swap_gib)?],
         Layout::Free => vec![plan::free_space(&target, swap_gib, root_bytes)?],
         Layout::Manual => answers.disk.changes.clone(),
-        Layout::Mirror | Layout::Beside => return Err("disk.layout: not ready yet".into()),
+        Layout::Beside => {
+            let space = u64::from(answers.disk.space_gib.unwrap_or(0)) << 30;
+            let entries = machine::boot_entries();
+            vec![
+                plan::beside(&target, entries, swap_gib, space, root_bytes)
+                    .map_err(|why| format!("disk: {why}"))?,
+            ]
+        }
+        Layout::Mirror => return Err("disk.layout: not ready yet".into()),
     };
     let mut planned = Vec::new();
     for change in changes {
@@ -174,6 +197,29 @@ fn plan_disks(answers: &Answers, source: &Source) -> Result<Vec<Planned>, String
     Ok(planned)
 }
 
+/// Shrinks Windows' volume, on a disk whose change shrinks its partition,
+/// with resize-ntfs(8): checked before and after, its files kept. The
+/// volume is left marked for Windows to check at its next start, as after
+/// `ntfsresize`; the partition is shrunk to match when the table is
+/// written.
+fn shrink(planned: &[Planned], log: &mut Log) -> Result<(), String> {
+    for p in planned {
+        let Some(shrink) = p.change.shrink else { continue };
+        log.step(Step::Shrink);
+        let partition = disks::partition(&p.disk.name, shrink.number);
+        let device = path(&disks::device(&partition));
+        let bytes = shrink.sectors * u64::from(p.disk.sector_size);
+        log.note(&format!(
+            "shrinking Windows' volume on {partition} to {bytes} bytes ({} MiB)",
+            bytes >> 20
+        ));
+        log.run("resize-ntfs", &["--check", &device])?;
+        log.run("resize-ntfs", &["--no-progress-bar", "--size", &bytes.to_string(), &device])?;
+        log.run("resize-ntfs", &["--check", &device])?;
+    }
+    Ok(())
+}
+
 /// Writes each disk's new table with rdisk(8), from a layout file that
 /// gives every new partition's place, and waits for its partitions.
 fn partition(planned: &[Planned], target: &str, log: &mut Log) -> Result<Parts, String> {
@@ -207,6 +253,7 @@ fn partition(planned: &[Planned], target: &str, log: &mut Log) -> Result<Parts, 
         efi: disks::partition(target, numbered(Role::Efi).ok_or("no EFI system partition")?),
         root: disks::partition(target, numbered(Role::Root).ok_or("no root partition")?),
         bios_boot: p.after.partitions.iter().any(|part| Some(part.kind) == bios_boot),
+        boot_entry: p.change.shrink.and(numbered(Role::Efi)),
     })
 }
 
@@ -305,9 +352,58 @@ fn install_grub(parts: &Parts, slot: &Path, log: &mut Log) -> Result<(), String>
             0o644,
         )
     });
+    // The menu remembers the entry chosen last in GRUB's environment
+    // block, which must be there, whole, for GRUB to write it.
+    let environment =
+        written.and_then(|()| settings::write_file(&esp.join(GRUBENV), &grub_environment(), 0o644));
     log.note(&format!("the menu starts the root {uuid}"));
     let unmounted = run_when_free(log, "umount", &[&path(&esp)]);
-    written.and(unmounted)
+    environment.and(unmounted)?;
+    if let Some(number) = parts.boot_entry {
+        boot_entry(&parts.disk, number, log)?;
+    }
+    Ok(())
+}
+
+/// GRUB's empty environment block: its first line, then `#` to 1024
+/// bytes.
+fn grub_environment() -> String {
+    let mut block = String::from("# GRUB Environment Block\n");
+    block.push_str(&"#".repeat(1024 - block.len()));
+    block
+}
+
+/// Makes the firmware's boot entry for Dukovo first in its boot order,
+/// starting GRUB on the EFI system partition `number` of `disk`, as
+/// efiboot(8) makes one: Windows Boot Manager, which was first, then
+/// starts from Dukovo's menu. An entry an earlier install made for Dukovo
+/// is taken out first, as Linux's grub-install does.
+fn boot_entry(disk: &str, number: u32, log: &mut Log) -> Result<(), String> {
+    let listed = log.run("efiboot", &[])?;
+    for old in earlier_entries(&listed) {
+        log.run("efiboot", &["--bootnum", &old, "--delete-bootnum", "--quiet"])?;
+    }
+    let number = number.to_string();
+    log.run(
+        "efiboot",
+        &["--create", "--disk", disk, "--part", &number, "--label", BOOT_ENTRY, "--quiet"],
+    )?;
+    log.run("efiboot", &["--verbose"]).map(drop)
+}
+
+/// The numbers of the boot entries efiboot lists in `listed` as Dukovo's,
+/// by their description: `Boot0003* Dukovo`.
+fn earlier_entries(listed: &str) -> Vec<String> {
+    listed
+        .lines()
+        .filter_map(|line| {
+            let rest = line.strip_prefix("Boot")?;
+            let (number, label) = (rest.get(..4)?, rest.get(4..)?);
+            let label = label.strip_prefix('*').or_else(|| label.strip_prefix(' '))?;
+            let hex = number.bytes().all(|b| b.is_ascii_hexdigit());
+            (hex && label.trim() == BOOT_ENTRY).then(|| number.to_string())
+        })
+        .collect()
 }
 
 /// The UUID of the Btrfs on the partition `name`, from its superblock,
@@ -378,4 +474,25 @@ fn mount(name: &str, dir: &Path, options: &[&str], log: &mut Log) -> Result<(), 
 /// A path as a command's argument.
 fn path(path: &Path) -> String {
     path.display().to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_earlier_installs_boot_entries_are_found_by_their_description() {
+        let listed = "BootCurrent: 0001\nBootOrder: 0003,0000,0001\n\
+                      Boot0000* Windows Boot Manager\nBoot0001* UEFI QEMU HARDDISK\n\
+                      Boot0003* Dukovo\nBoot000A  Dukovo\nBoot0004* Dukovo lab\n";
+        assert_eq!(earlier_entries(listed), ["0003", "000A"]);
+        assert!(earlier_entries("BootOrder: 0003\n").is_empty());
+    }
+
+    #[test]
+    fn grubs_environment_block_is_whole() {
+        let block = grub_environment();
+        assert_eq!(block.len(), 1024, "GRUB writes it only when it is 1024 bytes");
+        assert!(block.starts_with("# GRUB Environment Block\n#"));
+    }
 }

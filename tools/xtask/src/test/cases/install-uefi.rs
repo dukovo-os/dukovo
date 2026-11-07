@@ -62,7 +62,7 @@ pub const INSTALL_DISKS: &[Disk] = &[Disk {
 const ANSWERS: &str = "/system/tests/install/answers.json";
 
 /// alice's password.
-const PASSWORD: &str = "queen of hearts";
+pub const PASSWORD: &str = "queen of hearts";
 
 /// How long the install may take, in seconds: it copies the whole system.
 const INSTALL_SECONDS: u64 = 240;
@@ -258,7 +258,13 @@ pub fn holds_install(disk: &DiskImage, log: &str, layout: &[&str]) -> Result<(),
     }
 
     let at = |alias: &str| layout.iter().position(|name| *name == alias).map(part);
-    let esp = at("efi").ok_or("the layout has no EFI system partition")?;
+    // Dukovo's EFI system partition is the last: next to Windows, Windows'
+    // own comes first.
+    let esp = layout
+        .iter()
+        .rposition(|name| *name == "efi")
+        .map(part)
+        .ok_or("the layout has no EFI system partition")?;
     let root = at("dukovo-root").ok_or("the layout has no Dukovo root")?;
     let mut uuid = [0u8; 16];
     // A Btrfs superblock is 64 KiB in, with its filesystem's UUID 32

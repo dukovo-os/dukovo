@@ -57,10 +57,14 @@ it does not know is a problem, so that a mistyped one is not missed.
 	boot partition, an EFI system partition, swap and the Dukovo
 	root; *free*, which keeps the disk's partitions and makes the
 	same four in its largest free space, on a GPT disk that does not
-	start a system already; or *manual*, the partitions *changes*
-	lists, as the installer's rdisk screen chooses them. *mirror*,
-	two disks as one Btrfs RAID1, and *beside*, Dukovo next to
-	Windows, come later.
+	start a system already; *beside*, next to Windows, which shrinks
+	Windows' volume, C:, by *space_gib* and makes in the space it
+	gives an EFI system partition of Dukovo's own, swap and the root,
+	keeping Windows' partitions, on a GPT disk whose Windows starts by
+	UEFI, with the install stick started by UEFI too; or *manual*,
+	the partitions *changes* lists, as the installer's rdisk screen
+	chooses them. *mirror*, two disks as one Btrfs RAID1, comes
+	later.
 
 	*target*: the disk's name, as *lsblk*(8) lists it, with or
 	without _/dev/_ in front: *vda*, */dev/nvme0n1*. For *manual*,
@@ -71,6 +75,13 @@ it does not know is a problem, so that a mistyped one is not missed.
 	*swap_gib*: the swap partition's size in GiB, up to 64; *0*, or
 	left out, for none. Not for *manual*, whose swap partition, if
 	any, is in *changes*.
+
+	*space_gib*: for *beside* only, and needed there: the space
+	Dukovo takes from Windows, in GiB. It is at least 20, and leaves
+	Windows 10 GiB free beyond what its files use; the root gets at
+	least 8 GiB beyond the swap. Windows that BitLocker encrypts, that
+	hibernated or shut down with Fast Startup, or whose volume is
+	marked to be checked is refused, with what to do in Windows.
 
 	*changes*: for *manual* only, what becomes of each disk changed,
 	in a list (see *CHANGES* below).
