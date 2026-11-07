@@ -290,6 +290,10 @@ impl RegionTable {
 pub struct Frames {
     zones: [Zone; MAX_NODES * KINDS],
     platform: Once<&'static dyn Platform>,
+    /// The platform's [`Platform::direct_map`], kept when it is registered:
+    /// the heap needs it on every free, and asking is a call through the
+    /// platform's table.
+    direct_map: AtomicUsize,
     building: SpinLock<RegionTable>,
     regions: Once<RegionTable>,
     /// For each section of physical memory, 1 + the index of the first
@@ -325,6 +329,7 @@ impl Frames {
         Frames {
             zones: [const { Zone::new() }; MAX_NODES * KINDS],
             platform: Once::new(),
+            direct_map: AtomicUsize::new(0),
             building: SpinLock::new(RegionTable::new()),
             regions: Once::new(),
             sections: [const { AtomicU8::new(0) }; SECTIONS],
@@ -346,12 +351,24 @@ impl Frames {
 
     /// Registers the machine. Call before [`Frames::start`].
     pub fn set_platform(&self, platform: &'static dyn Platform) {
-        let _ = self.platform.set(platform);
+        // Called once, at boot: the direct map is kept before the platform
+        // is published, so that whoever finds the platform finds it too.
+        if self.platform.get().is_none() {
+            self.direct_map.store(platform.direct_map(), Ordering::Relaxed);
+            let _ = self.platform.set(platform);
+        }
     }
 
     /// The machine, once registered.
     pub fn platform(&self) -> Option<&'static dyn Platform> {
         self.platform.get().copied()
+    }
+
+    /// The registered platform's [`Platform::direct_map`], which does not
+    /// change: kept, so that asking costs a load. The caller has found the
+    /// platform with [`Frames::platform`], which orders the store before.
+    pub(crate) fn direct_map(&self) -> usize {
+        self.direct_map.load(Ordering::Relaxed)
     }
 
     /// Sets the number of nodes and their distances (ACPI SLIT values: 10

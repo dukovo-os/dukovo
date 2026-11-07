@@ -229,7 +229,7 @@ impl Heap {
 
     fn env(&self) -> Option<(&'static dyn Platform, Env<'static>)> {
         let platform = self.frames.platform()?;
-        Some((platform, Env { frames: self.frames, direct_map: platform.direct_map() }))
+        Some((platform, Env { frames: self.frames, direct_map: self.frames.direct_map() }))
     }
 
     fn report(&self, corruption: Corruption) {
@@ -249,10 +249,8 @@ impl Heap {
     }
 
     fn alloc_inner(&self, layout: Layout, flags: Flags) -> Result<NonNull<u8>, AllocError> {
-        // The direct map only off the magazines' path: asking for it is a
-        // call through the platform.
         let platform = self.frames.platform().ok_or(AllocError)?;
-        let env = || Env { frames: self.frames, direct_map: platform.direct_map() };
+        let env = || Env { frames: self.frames, direct_map: self.frames.direct_map() };
         let Some(class) = Class::for_layout(layout.size(), layout.align()) else {
             return self.alloc_large(env(), layout, flags);
         };
