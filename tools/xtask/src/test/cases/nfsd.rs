@@ -197,7 +197,10 @@ impl Mount {
 impl Drop for Mount {
     fn drop(&mut self) {
         let target = self.at.to_string_lossy().into_owned();
-        let _ = as_root(&["umount", "-l", &target]).stdout(Stdio::null()).status();
+        // `-f -l` and a timeout of its own: force the unmount even if the
+        // server is gone, detach it lazily, and never let `drop` block for
+        // ever on a share whose nfsd has died.
+        let _ = run(as_root(&["umount", "-f", "-l", &target]), &format!("unmount {target}"));
     }
 }
 
@@ -269,10 +272,7 @@ fn nfsd(vm: &mut Vm, case: &Case) -> Result<(), String> {
     if not_root.is_none() {
         for name in ["root", "public", "readonly"] {
             let at = dir.join(name).to_string_lossy().into_owned();
-            let _ = as_root(&["umount", "-l", &at])
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status();
+            let _ = run(as_root(&["umount", "-f", "-l", &at]), &format!("unmount {at}"));
         }
     }
     if dir.exists() {
