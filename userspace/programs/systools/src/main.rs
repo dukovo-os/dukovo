@@ -39,8 +39,9 @@
 //! exFAT filesystems, and `fsck-fat` checks and mends FAT ones, with the
 //! disk engine (ADRs 0300 to 0302); `mkfs-btrfs` makes a Btrfs, and
 //! `fsck-btrfs` checks one, with the kernel's Btrfs crate (ADRs 0304 and
-//! 0305); `rgrub-setup` puts GRUB on a disk or an EFI system partition
-//! (ADR 0306).
+//! 0305); `resize-ntfs` checks and shrinks an NTFS volume with the
+//! kernel's NTFS crate (ADR 0312); `rgrub-setup` puts GRUB on a disk or
+//! an EFI system partition (ADR 0306).
 //! `bundle` makes, signs, installs and runs bundles, which `bundled`
 //! installs, seals and removes (ADRs 0221 to 0223 and 0225); called by a
 //! name that is no tool's, through a link in a commands folder of
@@ -103,6 +104,7 @@ mod netd;
 mod netlog;
 mod nic;
 mod notifyd;
+mod ntfs;
 mod nvme;
 mod pidstat;
 mod ping;
@@ -244,6 +246,7 @@ const TOOLS: &[(&str, Tool)] = &[
     ("notifications", notifyd::notifications),
     ("notify-send", notifyd::notify_send),
     ("notifyd", notifyd::main),
+    ("ntfsresize", ntfs::resize_ntfs),
     ("nvme", nvme::main),
     ("passwd", account::passwd),
     ("pgrep", signals::pgrep),
@@ -258,6 +261,7 @@ const TOOLS: &[(&str, Tool)] = &[
     ("remount", remount::main),
     ("renice", priority::renice),
     ("replace", replace::main),
+    ("resize-ntfs", ntfs::resize_ntfs),
     ("resolvectl", resolvectl::main),
     ("resolved", resolved::main),
     ("rgrub-setup", rgrub::main),

@@ -202,6 +202,7 @@ dependencies = [
  "radix-block",
  "radix-btrfs",
  "radix-fat",
+ "radix-ntfs",
  "radix-vfs",
  "serde",
  "serde_json",
@@ -479,6 +480,16 @@ name = "radix-mm"
 version = "0.13.0"
 dependencies = [
  "radix-sync",
+]
+
+[[package]]
+name = "radix-ntfs"
+version = "0.13.0"
+dependencies = [
+ "radix-block",
+ "radix-hw",
+ "radix-sync",
+ "radix-vfs",
 ]
 
 [[package]]

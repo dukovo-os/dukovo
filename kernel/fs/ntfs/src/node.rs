@@ -710,11 +710,16 @@ impl NtfsNode {
     }
 
     /// Puts its data's attribute, as memory has it, in its record `buf`,
-    /// for data of `size` bytes; when the record has no room for where its
-    /// clusters are and `spread` allows, in extension records, which its
-    /// attribute list names (ADR 0239). Returns the extension records it
-    /// no longer takes, to free once `buf` is written. A record it then
-    /// takes is written now; `buf` is the caller's to write.
+    /// for data of `size` bytes. When the record has no room for where its
+    /// clusters are and `spread` allows, room is made as Windows makes it:
+    /// its streams leave the record for clusters of their own, the largest
+    /// first, and if that is not enough, its data's runs go to extension
+    /// records, which its attribute list names (ADR 0239). Returns the
+    /// extension records it no longer takes, to free once `buf` is
+    /// written. Streams it moves, and records it takes, are written now;
+    /// `buf` is the caller's to write. If the caller then fails to write
+    /// it, the clusters and records they took stay in use, named by no
+    /// record, until `chkdsk` frees them.
     fn put_data(
         &self,
         st: &mut State,
@@ -745,29 +750,36 @@ impl NtfsNode {
             unit: stream.unit,
             packed: stream.flags,
         };
-        if !st.list {
-            match replace_stream(buf, kind::DATA, &stream.runs, clusters, sizes) {
-                Err(Error::NoSpace) if spread => {}
-                done => return done.map(|()| mem::vec()),
-            }
-        } else {
-            // All of it back in the record, its list gone, if it fits.
-            let mut whole = mem::copy(buf)?;
-            list::remove(&mut whole);
-            list::remove_data(&mut whole);
-            match replace_stream(&mut whole, kind::DATA, &stream.runs, clusters, sizes) {
-                Ok(()) => {
-                    buf.copy_from_slice(&whole);
-                    st.list = false;
-                    let freed = collect(st.extents.iter().map(|e| record_of(e.reference)))?;
-                    st.extents.clear();
-                    return Ok(freed);
+        match put_runs(st, buf, sizes) {
+            Err(Error::NoSpace) if spread => {}
+            done => return done,
+        }
+        // The room is made in a copy, so that `buf` is left as it was if
+        // none can be.
+        let mut out = mem::copy(buf)?;
+        let mut taken = mem::vec();
+        let made = (|| {
+            while let Some(got) = self.stream_out(&mut out)? {
+                for run in got {
+                    mem::push(&mut taken, run)?;
                 }
-                Err(Error::NoSpace) if spread => {}
-                Err(err) => return Err(err),
+                match put_runs(st, &mut out, sizes) {
+                    Err(Error::NoSpace) => {}
+                    done => return done,
+                }
+            }
+            self.spread(st, &mut out, sizes)
+        })();
+        match made {
+            Ok(freed) => {
+                buf.copy_from_slice(&out);
+                Ok(freed)
+            }
+            Err(err) => {
+                self.give_back(&taken);
+                Err(err)
             }
         }
-        self.spread(st, buf, sizes)
     }
 
     /// The run lists' budget of an extension record of `stream`'s piece:
@@ -978,18 +990,26 @@ impl NtfsNode {
     }
 
     /// Fails with [`Error::NoSpace`] if its records have no room for
-    /// where the clusters of its data `stream` are: its base record, or
-    /// extension records its base record's attribute list has room to
-    /// name (ADR 0239).
+    /// where the clusters of its data `stream` are: its base record, once
+    /// its streams leave it if they must, or extension records its base
+    /// record's attribute list has room to name (ADR 0239), as
+    /// [`Self::put_data`] makes room when its record is next stored.
     fn runs_fit(&self, stream: &Stream) -> Result<()> {
         let buf = self.read_rec()?;
         let packed = stream.runs.pack(0, stream.runs.clusters())?;
         let header = if stream.packed() { 0x48 } else { 0x40 };
         let len = (header + packed.len()).next_multiple_of(8);
-        let mut others = mem::copy(&buf)?;
-        list::remove(&mut others);
-        list::remove_data(&mut others);
-        if edit::used(&others) + len <= buf.len() {
+        let in_base = |buf: &[u8]| -> Result<bool> {
+            let mut others = mem::copy(buf)?;
+            list::remove(&mut others);
+            list::remove_data(&mut others);
+            Ok(edit::used(&others) + len <= buf.len())
+        };
+        if in_base(&buf)? {
+            return Ok(());
+        }
+        let buf = self.streams_moved(&buf)?;
+        if in_base(&buf)? {
             return Ok(());
         }
         let cuts = stream.runs.cuts(0, stream.grain(), self.piece_budget(stream))?;
@@ -1113,6 +1133,30 @@ impl NtfsNode {
         fs.vol.write_record(number, &buf, false)?;
         fs.give_record(number)
     }
+}
+
+/// [`NtfsNode::put_data`] in the base record `buf` alone, of a file in
+/// state `st`: where all its data's clusters are, in place of its
+/// attribute list if it has one. Returns the extension records it no
+/// longer takes. Fails with [`Error::NoSpace`] if the record has no room,
+/// leaving it as it was.
+fn put_runs(st: &mut State, buf: &mut [u8], sizes: edit::Sizes) -> Result<KVec<u64>> {
+    let Some(Data::Clusters(stream)) = &st.data else { return Err(Error::Corrupt) };
+    let clusters = stream.runs.clusters();
+    if !st.list {
+        replace_stream(buf, kind::DATA, &stream.runs, clusters, sizes)?;
+        return Ok(mem::vec());
+    }
+    // All of it back in the record, its list gone, if it fits.
+    let mut whole = mem::copy(buf)?;
+    list::remove(&mut whole);
+    list::remove_data(&mut whole);
+    replace_stream(&mut whole, kind::DATA, &stream.runs, clusters, sizes)?;
+    buf.copy_from_slice(&whole);
+    st.list = false;
+    let freed = collect(st.extents.iter().map(|e| record_of(e.reference)))?;
+    st.extents.clear();
+    Ok(freed)
 }
 
 /// The items of `iter`, in a vector.

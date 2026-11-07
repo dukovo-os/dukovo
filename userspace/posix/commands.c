@@ -78,6 +78,8 @@ static const char *const ELSEWHERE[][2] = {
 		{"mkfs.btrfs", "the btrfs-tools boot test's: it runs mkfs-btrfs by btrfs-progs' name"},
 		{"fsck-btrfs", "the btrfs-tools boot test's: it checks the Btrfs mkfs-btrfs made"},
 		{"btrfsck", "the btrfs-tools boot test's: it runs fsck-btrfs by btrfs-progs' old name"},
+		{"resize-ntfs", "the ntfs-resize boot test's: it shrinks an NTFS disk the host made, which no other test has"},
+		{"ntfsresize", "the ntfs-resize boot test's: it runs resize-ntfs by ntfs-3g's name"},
 		{"smbd", "the smbd boot test's service: the host's smbclient reaches it only through QEMU's network"},
 		{"share", "the smbd and nfsd boot tests': they share folders, set sharing passwords and turn smbd and nfsd on and off"},
 		{"nfsd", "the nfsd boot test's service: the host's NFS client reaches it only through QEMU's network"},

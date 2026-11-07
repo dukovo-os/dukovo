@@ -347,19 +347,7 @@ impl NtfsNode {
         let mut taken = mem::vec();
         let moved = (|| {
             while edit::room(buf) < need {
-                // Only a value longer than where its clusters are saves
-                // room.
-                let at = edit::find_all(buf, kind::DATA)
-                    .filter(|&at| buf[at + 8] == 0 && buf[at + 9] != 0)
-                    .filter(|&at| u32_at(buf, at + 0x10) as usize > OUT_MIN)
-                    .max_by_key(|&at| u32_at(buf, at + 0x10))
-                    .ok_or(Error::NoSpace)?;
-                let units = mem::copy(edit::name_at(buf, at))?;
-                let value = mem::copy(edit::value_mut(buf, at))?;
-                let instance = u16_at(buf, at + 0x0e);
-                self.fs.changing()?;
-                edit::remove(buf, at);
-                let got = self.put_clusters(buf, &units, instance, &value, 0)?;
+                let got = self.stream_out(buf)?.ok_or(Error::NoSpace)?;
                 for run in got {
                     mem::push(&mut taken, run)?;
                 }
@@ -373,6 +361,38 @@ impl NtfsNode {
                 Err(err)
             }
         }
+    }
+
+    /// Moves the largest of its streams in its record `buf` that moving
+    /// saves room for to clusters of its own: the clusters it took, or
+    /// `None` if it has no such stream. On failure `buf` is the caller's
+    /// to drop.
+    pub(super) fn stream_out(&self, buf: &mut [u8]) -> Result<Option<KVec<(u64, u64)>>> {
+        let Some(at) = largest_movable(buf) else { return Ok(None) };
+        let units = mem::copy(edit::name_at(buf, at))?;
+        let value = mem::copy(edit::value_mut(buf, at))?;
+        let instance = u16_at(buf, at + 0x0e);
+        self.fs.changing()?;
+        edit::remove(buf, at);
+        self.put_clusters(buf, &units, instance, &value, 0).map(Some)
+    }
+
+    /// A copy of its record `buf` as it would be with all the streams
+    /// [`Self::stream_out`] moves moved, each one's runs as long as they
+    /// can be ([`RUNS_ROOM`]): what is left of the record to measure, not
+    /// to write, as its runs are blank.
+    pub(super) fn streams_moved(&self, buf: &[u8]) -> Result<KVec<u8>> {
+        let mut out = mem::copy(buf)?;
+        while let Some(at) = largest_movable(&out) {
+            let units = mem::copy(edit::name_at(&out, at))?;
+            let instance = u16_at(&out, at + 0x0e);
+            edit::remove(&mut out, at);
+            let blank = [0; RUNS_ROOM];
+            let sizes = edit::Sizes::default();
+            let attr = edit::non_resident(kind::DATA, &units, instance, 0, 0, 0, &blank, sizes)?;
+            edit::insert_in(&mut out, &attr, &self.fs.upcase)?;
+        }
+        Ok(out)
     }
 
     /// Gives back the clusters `runs` (runs of `(lcn, clusters)`).
@@ -419,4 +439,14 @@ impl NtfsNode {
         }
         Ok(held)
     }
+}
+
+/// Where in the record `buf` its largest stream is that moving to
+/// clusters saves room for: one in the record, its value longer than
+/// where its clusters would be.
+fn largest_movable(buf: &[u8]) -> Option<usize> {
+    edit::find_all(buf, kind::DATA)
+        .filter(|&at| buf[at + 8] == 0 && buf[at + 9] != 0)
+        .filter(|&at| u32_at(buf, at + 0x10) as usize > OUT_MIN)
+        .max_by_key(|&at| u32_at(buf, at + 0x10))
 }

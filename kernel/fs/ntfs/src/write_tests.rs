@@ -31,8 +31,8 @@ use crate::tests::{
 };
 use crate::windows_tests::{self, Found, Listed};
 
-const DIR: Access = Access::default_for(Kind::Directory);
-const FILE: Access = Access::default_for(Kind::File);
+pub(crate) const DIR: Access = Access::default_for(Kind::Directory);
+pub(crate) const FILE: Access = Access::default_for(Kind::File);
 
 /// 2026-10-22 00:42:22 UTC, for files' times.
 fn clock() -> u64 {
@@ -40,13 +40,13 @@ fn clock() -> u64 {
 }
 
 /// A volume mounted writable, on a RAM disk.
-struct Volume {
-    disk: KArc<RamDisk>,
-    fs: KArc<NtfsFs>,
+pub(crate) struct Volume {
+    pub(crate) disk: KArc<RamDisk>,
+    pub(crate) fs: KArc<NtfsFs>,
 }
 
 impl Volume {
-    fn mount_in(block: u32, image: &[u8], read_only: bool) -> Result<Volume, Error> {
+    pub(crate) fn mount_in(block: u32, image: &[u8], read_only: bool) -> Result<Volume, Error> {
         Volume::mount_with(block, image, Options { read_only, ..Options::default() })
     }
 
@@ -60,23 +60,23 @@ impl Volume {
         Ok(Volume { disk, fs })
     }
 
-    fn new_in(block: u32, image: &[u8]) -> Volume {
+    pub(crate) fn new_in(block: u32, image: &[u8]) -> Volume {
         Volume::mount_in(block, image, false).unwrap()
     }
 
-    fn root(&self) -> NodeRef {
+    pub(crate) fn root(&self) -> NodeRef {
         self.fs.root()
     }
 
     /// The disk's bytes as they are.
-    fn raw(&self) -> Vec<u8> {
+    pub(crate) fn raw(&self) -> Vec<u8> {
         let mut image = vec![0u8; (self.disk.info().sectors * 512) as usize];
         self.disk.dump(0, &mut image);
         image
     }
 
     /// The disk's bytes, after a sync.
-    fn image(&self) -> Vec<u8> {
+    pub(crate) fn image(&self) -> Vec<u8> {
         self.fs.sync().unwrap();
         self.raw()
     }
@@ -96,7 +96,7 @@ fn write_all(node: &NodeRef, offset: u64, data: &[u8]) {
 
 /// A file `name` in `dir` holding `data`, written in pieces of `piece`
 /// bytes.
-fn make_file(dir: &NodeRef, name: &str, data: &[u8], piece: usize) -> NodeRef {
+pub(crate) fn make_file(dir: &NodeRef, name: &str, data: &[u8], piece: usize) -> NodeRef {
     let node = dir.create(name, Kind::File, FILE).unwrap();
     for (i, part) in data.chunks(piece.max(1)).enumerate() {
         write_all(&node, (i * piece) as u64, part);
@@ -125,7 +125,7 @@ impl Drop for Scratch {
 /// (`ntfsresize --info`, which fails on a cluster in use that no file
 /// holds or a file's cluster not in use) and its `$MFTMirr` the same as
 /// `$MFT` (`ntfsfix -n`, which fails if not, or if the volume is dirty).
-fn ntfs_3g_check(image: &[u8]) {
+pub(crate) fn ntfs_3g_check(image: &[u8]) {
     let file = Scratch::new(image);
     let out =
         Command::new(tool("ntfsresize")).args(["-i", "-f", "-n"]).arg(&file.0).output().unwrap();
@@ -214,7 +214,18 @@ fn stream_of(path: &str) -> Option<(&str, &str)> {
 /// and The Sleuth Kit read it, and as Radix reads it mounted again: a
 /// path `file:stream` is a stream, which Radix reads as the attribute
 /// `user.stream` (ADR 0241).
-fn check(image: &[u8], block: u32, expected: &BTreeMap<String, Vec<u8>>) {
+pub(crate) fn check(image: &[u8], block: u32, expected: &BTreeMap<String, Vec<u8>>) {
+    let find = check_here(image, block, expected);
+    windows_tests::keep(image, &find, Listed::All);
+}
+
+/// [`check`], but for keeping the volume for Windows' `chkdsk`: returns
+/// what Windows must find on it.
+pub(crate) fn check_here<'a>(
+    image: &[u8],
+    block: u32,
+    expected: &'a BTreeMap<String, Vec<u8>>,
+) -> Vec<(&'a str, Found<'a>)> {
     ntfs_3g_check(image);
     let seen = sleuthkit_files(image);
     assert_eq!(seen.keys().collect::<Vec<_>>(), expected.keys().collect::<Vec<_>>());
@@ -241,7 +252,7 @@ fn check(image: &[u8], block: u32, expected: &BTreeMap<String, Vec<u8>>) {
             find.push((path.as_str(), Found::Dir));
         }
     }
-    windows_tests::keep(image, &find, Listed::All);
+    find
 }
 
 #[test]
@@ -669,7 +680,7 @@ fn what_ntfs_3g_wrote_is_written_to() {
 }
 
 /// Sets `node`'s attribute `name` to `value`, as `how` says.
-fn set(node: &NodeRef, name: &str, value: &[u8], how: Setting) {
+pub(crate) fn set(node: &NodeRef, name: &str, value: &[u8], how: Setting) {
     node.set_attribute(name.as_bytes(), value, how).unwrap();
 }
 
@@ -1023,7 +1034,7 @@ fn in_use(mft: &[u8], number: u64, size: usize) -> bool {
 /// written a cluster of each in turn, so that each takes every
 /// `names.len()`th cluster: as many runs as clusters, more than a record
 /// holds where of them. Their data, by name.
-fn interleaved(
+pub(crate) fn interleaved(
     dir: &NodeRef,
     names: &[&str],
     clusters: usize,
@@ -1571,4 +1582,46 @@ proptest! {
             let _ = volume.fs.sync();
         }
     }
+}
+
+/// A compressed file whose stream fills its record, its data then
+/// growing past the room left for where its clusters are: the stream
+/// leaves the record for clusters of its own, as Windows makes room, and
+/// both are written back whole. A random test found the write-back
+/// failing with no room.
+#[test]
+fn a_stream_makes_room_for_compressed_data_that_grows() {
+    let image = Image::mkntfs(16, 512, 1024);
+    let volume = Volume::new_in(512, &image.bytes());
+    let rs = volume.fs.geometry().record_size as usize;
+    let root = volume.root();
+    radix_vfs::downcast::<NtfsNode>(&*root).unwrap().mark_compressed().unwrap();
+    make_file(&root, "file 1.dat", &[], 4096);
+    let mut data = pattern(2, 729);
+    let file = make_file(&root, "file 2.dat", &data, 4096);
+    let value = pattern(3, 625);
+    file.set_attribute(b"user.another", &value, Setting::Either).unwrap();
+    let part = pattern(4, 7098);
+    write_all(&file, 9287, &part);
+    data.resize(9287 + part.len(), 0);
+    data[9287..].copy_from_slice(&part);
+    volume.fs.sync().unwrap();
+    let id = file.stat().id;
+    drop((root, file));
+    let image = volume.image();
+    // The stream is in clusters, and the data's runs in the file's own
+    // record, with no list.
+    let rec = record_in(&mft(&image), id, rs);
+    let rec = crate::record::Record::new(&rec).unwrap();
+    let attrs: Vec<_> = rec.attrs().map(Result::unwrap).collect();
+    let stream = attrs.iter().find(|a| a.kind() == 0x80 && !a.unnamed()).unwrap();
+    assert!(stream.non_resident(), "the stream stayed in the record");
+    assert!(attrs.iter().any(|a| a.kind() == 0x80 && a.unnamed()), "the data left the record");
+    assert!(!attrs.iter().any(|a| a.kind() == 0x20), "the file has a list");
+    let expected = BTreeMap::from([
+        (String::from("file 1.dat"), Vec::new()),
+        (String::from("file 2.dat"), data),
+        (String::from("file 2.dat:another"), value),
+    ]);
+    check(&image, 512, &expected);
 }
