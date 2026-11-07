@@ -15,6 +15,7 @@ use std::io::{BufRead, BufReader, Read, Seek, Write};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -4649,6 +4650,52 @@ fn mtools_image(disk: &DiskImage) -> String {
 }
 
 /// A running test machine.
+/// Kills QEMU from a thread of its own if a case runs long past its
+/// deadline. [`Vm::expect`] already gives up at the deadline, but only
+/// while the main thread is in it: a case whose main thread is blocked in
+/// a host-side call the deadline cannot reach — unmounting an NFS share
+/// whose server has gone away, say — could hang for as long as that call
+/// does. Ending QEMU ends the guest, so the host's `soft` mount errors
+/// out and its umount returns, and the next [`Vm::expect`] sees QEMU gone.
+struct Watchdog {
+    /// Set when the case finishes in time, so the thread kills nothing.
+    disarmed: Arc<AtomicBool>,
+    thread: Option<JoinHandle<()>>,
+}
+
+impl Watchdog {
+    /// Watches QEMU process `pid`, killing it at `fire` unless disarmed
+    /// first. `fire` is well past the case's own deadline, so the watchdog
+    /// only ever ends a case that is truly wedged, never one merely slow.
+    fn arm(pid: u32, fire: Instant) -> Watchdog {
+        let disarmed = Arc::new(AtomicBool::new(false));
+        let watched = Arc::clone(&disarmed);
+        let thread = std::thread::spawn(move || {
+            while !watched.load(Ordering::Relaxed) {
+                if Instant::now() >= fire {
+                    // `kill(1)`, not `Child::kill`: the main thread owns the
+                    // child and may be blocked, so this thread ends it by id.
+                    let _ = std::process::Command::new("kill")
+                        .args(["-KILL", &pid.to_string()])
+                        .status();
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(200));
+            }
+        });
+        Watchdog { disarmed, thread: Some(thread) }
+    }
+
+    /// Stops watching: the case ended in time. Joins the thread first, so
+    /// no `kill` can land on a process id reused after QEMU is reaped.
+    fn disarm(&mut self) {
+        self.disarmed.store(true, Ordering::Relaxed);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
 pub struct Vm {
     child: Child,
     stdin: Option<ChildStdin>,
@@ -4659,6 +4706,9 @@ pub struct Vm {
     cursor: usize,
     deadline: Instant,
     timeout: Duration,
+    /// Ends QEMU if the case runs far past its deadline while the main
+    /// thread is blocked where the deadline cannot reach.
+    watchdog: Option<Watchdog>,
     stderr_log: PathBuf,
     screenshot: PathBuf,
     /// Whether QEMU runs the guest with KVM.
@@ -4719,6 +4769,11 @@ impl Vm {
                 sink.lock().expect("the log lock is not poisoned").extend_from_slice(&buf[..n]);
             }
         });
+        let deadline = Instant::now() + timeout;
+        // The watchdog waits a second whole budget past the deadline, so a
+        // case doing slow but honest work after its last `expect` is never
+        // cut short; only a true wedge reaches it.
+        let watchdog = Some(Watchdog::arm(child.id(), deadline + timeout));
         Ok(Vm {
             stdin: child.stdin.take(),
             child,
@@ -4726,8 +4781,9 @@ impl Vm {
             reader: Some(reader),
             qmp: machine.qmp.clone(),
             cursor: 0,
-            deadline: Instant::now() + timeout,
+            deadline,
             timeout,
+            watchdog,
             stderr_log,
             screenshot: dir.join(format!("{name}.ppm")),
             kvm: machine.kvm,
@@ -5035,6 +5091,10 @@ impl Vm {
     fn stop(&mut self) {
         if let Some(peer) = self.peer.as_deref_mut() {
             peer.stop();
+        }
+        // Before reaping QEMU, so no late `kill` lands on a reused id.
+        if let Some(mut watchdog) = self.watchdog.take() {
+            watchdog.disarm();
         }
         if self.exited().is_none() {
             let _ = self.child.kill();
@@ -9603,6 +9663,36 @@ fn microcode(vm: &mut Vm, case: &Case) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Polls `child` until it exits or `within` passes; whether it exited.
+    fn exits_within(child: &mut Child, within: Duration) -> bool {
+        let deadline = Instant::now() + within;
+        while Instant::now() < deadline {
+            if child.try_wait().ok().flatten().is_some() {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        false
+    }
+
+    #[test]
+    fn the_watchdog_ends_a_wedged_process_and_spares_one_that_finishes() {
+        // A process that would far outlast the test stands in for a wedged
+        // QEMU. Past its fire time the watchdog kills it.
+        let mut wedged = std::process::Command::new("sleep").arg("60").spawn().unwrap();
+        let mut watchdog = Watchdog::arm(wedged.id(), Instant::now() + Duration::from_millis(50));
+        assert!(exits_within(&mut wedged, Duration::from_secs(5)), "the watchdog ends a wedge");
+        watchdog.disarm();
+
+        // Disarmed before it fires, the watchdog kills nothing.
+        let mut spared = std::process::Command::new("sleep").arg("60").spawn().unwrap();
+        let mut watchdog = Watchdog::arm(spared.id(), Instant::now() + Duration::from_secs(30));
+        watchdog.disarm();
+        assert!(spared.try_wait().unwrap().is_none(), "a disarmed watchdog spares the process");
+        let _ = spared.kill();
+        let _ = spared.wait();
+    }
 
     /// Every member of the kernel workspace with host tests is in
     /// KERNEL_LIBRARIES, so that `ob test unit` runs them and `ob lint`
