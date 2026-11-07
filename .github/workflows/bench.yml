@@ -71,8 +71,11 @@ jobs:
         id: ports-key
         run: echo "clang=$(clang-20 --version | head -n1 | tr -c 'A-Za-z0-9.\n' -)" >> "$GITHUB_OUTPUT"
 
+      # On main too: this job saves nothing, so the build job's rule that
+      # main builds the ports from scratch does not need it to. Building
+      # them there made ./ob bench take 38 minutes, against 11 on a pull
+      # request.
       - name: Restore the built ports
-        if: github.event_name != 'push'
         uses: actions/cache/restore@v4
         with:
           path: |
