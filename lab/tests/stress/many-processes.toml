@@ -1,0 +1,13 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "Three hundred processes at once: each starts and ends, and the system answers throughout"
+time = "10m"
+
+[[step]]
+run = "sh -c 'for i in $(seq 1 300); do sleep 20 & done; echo \"started\"\": $(ps -e | wc -l)\"; wait; echo \"all\"\"-ended\"'"
+expect = ["started: ", "all-ended"]
+expect_not = "fork"
+[[step]]
+run = "sh -c 'echo \"left\"\": $(ps -e | grep -c sleep)\"'"
+expect = "left: 0"

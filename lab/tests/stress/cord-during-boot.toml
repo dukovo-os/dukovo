@@ -1,0 +1,24 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "The power cord pulled while the system is starting, just after it mounted its root: the next boot is whole"
+time = "10m"
+
+[[step]]
+power = "reset"
+[[step]]
+serial = "/system is Dukovo's root on"
+[[step]]
+power = "cut"
+[[step]]
+power = "on"
+[[step]]
+wait = "ready"
+[[step]]
+run = "scrub start -B -r /users"
+root = true
+expect = "no errors found"
+[[step]]
+run = "service --status-all"
+root = true
+expect = "[ + ]  sshd"

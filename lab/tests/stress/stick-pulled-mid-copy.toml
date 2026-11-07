@@ -1,0 +1,58 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "A USB stick pulled out while a file is being copied onto it: the copy fails rather than hangs, the stick is gone, and the next stick works"
+time = "8m"
+
+[[step]]
+usb = "plug"
+blank = "256M"
+[[step]]
+wait = "5s"
+[[step]]
+run = "lsblk -dn | awk '$2 == \"256M\" && $4 == \"disk\" { print $1 }' > ~/lab-stick && cat ~/lab-stick"
+expect = "sd"
+[[step]]
+run = "sh -c 'mkfs-fat -n PULLED /devices/$(cat /users/lab/lab-stick) && mkdir -p /volumes/lab-pulled && mount /devices/$(cat /users/lab/lab-stick) /volumes/lab-pulled'"
+root = true
+# Copies in the background, by a shell of its own, one after another
+# until one fails, which notes in the lab's home that it did. Each is
+# synced to the stick, so the stick is pulled mid-write.
+[[step]]
+run = "sh -c 'sh -c \"$0\" < /dev/null > /dev/null 2>&1 &' 'while dd if=/dev/zero of=/volumes/lab-pulled/big bs=64k count=512 conv=fsync 2> /dev/null; do :; done; echo \"copy failed\" > /users/lab/copy-status'"
+root = true
+[[step]]
+wait = "3s"
+[[step]]
+usb = "unplug"
+[[step]]
+wait = "20s"
+# The copy ended with an error rather than hanging, and the stick is no
+# longer a disk.
+[[step]]
+run = "cat /users/lab/copy-status"
+expect = "copy failed"
+[[step]]
+run = "lsblk -dn"
+expect_not = "256M"
+[[step]]
+run = "sh -c 'umount /volumes/lab-pulled; rmdir /volumes/lab-pulled; echo \"tidied\"'"
+root = true
+expect = "tidied"
+# Another stick plugged in afterwards shows up and takes a filesystem.
+[[step]]
+usb = "plug"
+blank = "64M"
+[[step]]
+wait = "5s"
+[[step]]
+run = "lsblk -dn | awk '$2 == \"64M\" && $4 == \"disk\" { print $1 }' > ~/lab-stick && cat ~/lab-stick"
+expect = "sd"
+[[step]]
+run = "sh -c 'mkfs-fat -n AFTER /devices/$(cat /users/lab/lab-stick)'"
+root = true
+expect = "label AFTER"
+[[step]]
+usb = "unplug"
+[[step]]
+run = "rm -f /users/lab/lab-stick /users/lab/copy-status"

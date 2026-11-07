@@ -1,0 +1,53 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "The network cable pulled and plugged in five times in quick succession: the network comes back and SSH answers"
+time = "6m"
+
+[[step]]
+link = "down"
+[[step]]
+wait = "2s"
+[[step]]
+link = "up"
+[[step]]
+wait = "2s"
+[[step]]
+link = "down"
+[[step]]
+wait = "2s"
+[[step]]
+link = "up"
+[[step]]
+wait = "2s"
+[[step]]
+link = "down"
+[[step]]
+wait = "2s"
+[[step]]
+link = "up"
+[[step]]
+wait = "2s"
+[[step]]
+link = "down"
+[[step]]
+wait = "2s"
+[[step]]
+link = "up"
+[[step]]
+wait = "2s"
+[[step]]
+link = "down"
+[[step]]
+wait = "2s"
+[[step]]
+link = "up"
+[[step]]
+wait = "10s"
+[[step]]
+run = "ip link"
+expect = "LOWER_UP"
+expect_not = "NO-CARRIER"
+[[step]]
+run = "ip route"
+expect = "default via"

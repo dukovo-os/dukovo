@@ -1,0 +1,9 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "Twenty minutes of files made, written, read and removed: the disk space and the free memory at the end are what they were at the start"
+time = "40m"
+
+[[step]]
+run = "sh -c 'free_kib() { grep \"^free:\" /processes/meminfo | tr -s \" \" | cut -d \" \" -f 2; }; space() { df -Pk /users | tail -n 1 | tr -s \" \" | cut -d \" \" -f 4; }; mkdir -p /users/lab/soak; mem=$(free_kib); disk=$(space); end=$(($(date +%s) + 1200)); n=0; while [ $(date +%s) -lt $end ]; do for i in 1 2 3 4 5 6 7 8; do echo \"soak $n $i\" > /users/lab/soak/f$i; cat /users/lab/soak/f$i > /dev/null; done; rm /users/lab/soak/f*; n=$((n + 1)); done; rmdir /users/lab/soak; sync; mem2=$(free_kib); disk2=$(space); echo \"$n rounds; free $mem then $mem2 KiB; disk $disk then $disk2 KiB\"; [ $mem2 -ge $((mem - mem / 20)) ] && [ $disk2 -ge $((disk - disk / 100)) ] && echo \"space\"\"-kept\"'"
+expect = "space-kept"

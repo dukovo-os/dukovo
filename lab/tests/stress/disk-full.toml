@@ -1,0 +1,26 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "The lab account fills the disk: the write stops with no space left, the system keeps working, and the space comes back once the file goes"
+time = "15m"
+
+[[step]]
+run = "dd if=/dev/zero of=/users/lab/fill bs=1M"
+exit = 1
+expect = "No space left on device"
+# Everything else still works with the disk full.
+[[step]]
+run = "sh -c 'echo \"still\"\"-here\"'"
+expect = "still-here"
+[[step]]
+run = "service --status-all"
+root = true
+expect = "[ + ]  sshd"
+[[step]]
+run = "rm /users/lab/fill"
+[[step]]
+run = "sh -c 'sync; avail=$(df -Pk /users | tail -n 1 | tr -s \" \" | cut -d \" \" -f 4); [ \"$avail\" -gt 0 ] && echo \"space\"\": $avail KiB back\"'"
+expect = "KiB back"
+[[step]]
+run = "sh -c 'dd if=/dev/zero of=/users/lab/after bs=1M count=64 && rm /users/lab/after && echo \"writes\"\"-again\"'"
+expect = "writes-again"

@@ -1,0 +1,11 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "Twenty minutes of programs starting and ending, one after another: the free memory at the end is what it was at the start"
+time = "40m"
+
+# Free memory before and after, in KiB, with programs run back to back
+# between; a twentieth lost is a leak worth a look.
+[[step]]
+run = "sh -c 'free_kib() { grep \"^free:\" /processes/meminfo | tr -s \" \" | cut -d \" \" -f 2; }; before=$(free_kib); end=$(($(date +%s) + 1200)); n=0; while [ $(date +%s) -lt $end ]; do /system/commands/true; n=$((n + 1)); done; sync; after=$(free_kib); echo \"ran $n programs; free before $before KiB, after $after KiB\"; [ $after -ge $((before - before / 20)) ] && echo \"memory\"\"-kept\"'"
+expect = "memory-kept"
