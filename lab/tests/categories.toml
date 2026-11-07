@@ -56,6 +56,11 @@ title = "The console"
 about = "Signing in at the machine's own screen and keyboard, consoles and typing"
 
 [[category]]
+name = "stress"
+title = "Stress and soak"
+about = "Power cut mid-write and mid-boot, resets in a row, a full disk, many processes, a flapping cable, a stick pulled mid-copy, and long runs that must not leak"
+
+[[category]]
 name = "performance"
 title = "Performance against Linux"
 about = "Dukovo's time for each operation, held to Linux's on the same machine"

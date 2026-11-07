@@ -1,0 +1,9 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "Twenty minutes of TCP connections over the loopback, each carrying a little data: every one gets through and the free memory stays"
+time = "40m"
+
+[[step]]
+run = "sh -c 'free_kib() { grep \"^free:\" /processes/meminfo | tr -s \" \" | cut -d \" \" -f 2; }; mem=$(free_kib); end=$(($(date +%s) + 1200)); n=0; bad=0; while [ $(date +%s) -lt $end ]; do nc -l 127.0.0.1 7031 > /users/lab/soak-got & sleep 0.2; echo \"soak $n\" | nc -N 127.0.0.1 7031; wait; grep -q \"soak $n\" /users/lab/soak-got || bad=$((bad + 1)); n=$((n + 1)); done; rm -f /users/lab/soak-got; mem2=$(free_kib); echo \"$n connections, $bad lost; free $mem then $mem2 KiB\"; [ $bad -eq 0 ] && [ $mem2 -ge $((mem - mem / 20)) ] && echo \"all\"\"-through\"'"
+expect = "all-through"

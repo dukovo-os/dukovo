@@ -1,0 +1,21 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "Three resets in a row, each one once the system is up: it boots back every time"
+time = "15m"
+
+[[step]]
+power = "reset"
+[[step]]
+wait = "ready"
+[[step]]
+power = "reset"
+[[step]]
+wait = "ready"
+[[step]]
+power = "reset"
+[[step]]
+wait = "ready"
+[[step]]
+run = "uname -a"
+expect = "Dukovo"

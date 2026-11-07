@@ -1,0 +1,33 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "The power cord pulled while files are being written: the machine boots again, its Btrfs scrubs clean, and every file reads back"
+time = "10m"
+
+# Four files written over and over, each followed by a sync, by a shell
+# of its own in the background so the step returns. (A `( ... ) &`
+# subshell would not do: nukesh's subshell keeps the command's output
+# open until it ends, and SSH waits for it.)
+[[step]]
+run = "sh -c 'sh -c \"$0\" < /dev/null > /dev/null 2>&1 &' 'i=0; while true; do i=$((i + 1)); dd if=/dev/zero of=/users/lab/cord-$((i % 4)) bs=64k count=32; sync; done'"
+[[step]]
+wait = "15s"
+[[step]]
+run = "ls /users/lab"
+expect = "cord-"
+[[step]]
+power = "cut"
+[[step]]
+power = "on"
+[[step]]
+wait = "ready"
+# Every block checked against its checksum, mending nothing.
+[[step]]
+run = "scrub start -B -r /users"
+root = true
+expect = ["Status:           finished", "no errors found"]
+[[step]]
+run = "sh -c 'cat /users/lab/cord-* > /dev/null && echo \"read\"\"-back\"'"
+expect = "read-back"
+[[step]]
+run = "sh -c 'rm -f /users/lab/cord-*'"
