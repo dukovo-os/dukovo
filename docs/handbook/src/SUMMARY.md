@@ -38,5 +38,6 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 - [Supported hardware](hardware.md)
 - [Debugging the kernel](debugging.md)
+- [Lab tests](lab.md)
 - [Manual pages](man-pages.md)
 - [For developers](developers.md)

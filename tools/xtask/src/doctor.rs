@@ -704,6 +704,14 @@ pub fn doctor(ctx: &Ctx) -> Result<()> {
         "the nfs-kerberos boot test, which checks only the guest's part without them",
         "krb5-user and nfs-common",
     );
+    match crate::lab::tool_found() {
+        Some(path) => println!("  ok       {:<15} {}", "dukovo-lab", path.display()),
+        None => println!(
+            "  note     {:<15} not installed; only `./ob lab` needs it: {}",
+            "dukovo-lab",
+            crate::lab::DOCTOR_NOTE
+        ),
+    }
     if qemu::kvm_available() {
         println!("  ok       {:<15} /dev/kvm is usable", "KVM");
     } else {
