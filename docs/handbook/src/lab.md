@@ -27,10 +27,17 @@ Then, from this repository:
 ./ob lab run --all     # build the lab image and run every test on QEMU
 ./ob lab run boot/     # one category
 ./ob lab run drivers/link-pull --machine qemu,qemu-bios
+./ob lab run --preset quick         # the presets are in lab/tests/presets.toml
+./ob lab ui                         # the runner page, in a browser on this PC
 ```
 
-`./ob lab run` builds the lab image, `out/dukovo-0.13.0-x86_64-lab.img`,
-first; `--no-build` tests the one already there. Each run leaves a
+`./ob lab run` and `./ob lab ui` build the lab image,
+`out/dukovo-0.13.0-x86_64-lab.img`, first; `--no-build` tests the one
+already there. The runner page picks machines and tests, runs them,
+shows each run as it goes and what failed, and lists past runs; each of
+its buttons is a `dukovo-lab` command, which it shows. A long run can
+also go in the background: `./ob lab run --all --detach`, then
+`./ob lab status --wait`, `./ob lab results --failed` or `./ob lab stop`. Each run leaves a
 bundle with the results, every machine's serial log and the screenshots
 of failures under `~/.local/share/dukovo-lab/runs`. Without KVM, QEMU is
 some four times slower, and the time limits stretch to match.

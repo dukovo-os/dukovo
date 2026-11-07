@@ -159,11 +159,22 @@ fn set_mode(path: &Path, mode: u32) -> Result<()> {
         .context(|| format!("setting the mode of {}", path.display()))
 }
 
-/// The dukovo-lab commands that test an image, and so need one built.
-const NEEDS_IMAGE: &[&str] = &["run"];
+/// The dukovo-lab commands that test an image, and so need one built:
+/// `run`, and `ui`, the runner page, which starts runs.
+const NEEDS_IMAGE: &[&str] = &["run", "ui"];
 
 /// dukovo-lab's options that take a value, which is not its command.
-const VALUED: &[&str] = &["--tests", "--config", "--store", "--image", "--machine", "--build"];
+const VALUED: &[&str] = &[
+    "--tests",
+    "--config",
+    "--store",
+    "--image",
+    "--machine",
+    "--build",
+    "--preset",
+    "--port",
+    "--limit",
+];
 
 /// `ob lab`: runs dukovo-lab on `lab/tests`, building the lab image first
 /// for the commands that need one.
@@ -191,7 +202,7 @@ pub fn command(ctx: &Ctx, args: &mut Args) -> Result<()> {
             }
         };
         if !image.is_file() {
-            bail!("no lab image at {}: run `./ob lab run` without --no-build", ctx.display(&image));
+            bail!("no lab image at {}: leave out --no-build to build one", ctx.display(&image));
         }
         lab.arg("--image").arg(image);
         lab.args(["--build", &format!("{VERSION} {}", bench::commit(ctx))]);
@@ -280,6 +291,8 @@ mod tests {
         assert_eq!(lab_command(&words("--machine run --json run boot/")), Some("run"));
         assert_eq!(lab_command(&words("--json list")), Some("list"));
         assert_eq!(lab_command(&words("--machine qemu")), None);
+        assert_eq!(lab_command(&words("--port 7421 ui")), Some("ui"));
+        assert_eq!(lab_command(&words("--preset quick run")), Some("run"));
         assert_eq!(
             option_value(&words("run --config /a --all --config /b"), "--config"),
             Some("/b")

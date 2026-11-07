@@ -1,0 +1,13 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# Sets of lab tests to run together: `./ob lab run --preset <name>`, or
+# the preset list on the runner page (`./ob lab ui`). Tests are named as
+# `run` takes them: by id or by category. The lab's docs/test-files.md
+# describes the file.
+
+[[preset]]
+name = "quick"
+title = "Quick check"
+about = "A few minutes on QEMU: boots, signs in over SSH, runs commands, pulls the cable"
+tests = ["boot", "features/ssh-command", "drivers/link-pull"]
