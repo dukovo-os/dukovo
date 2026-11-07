@@ -471,13 +471,15 @@ and take minutes.
               <dukovo-lab command> [options]
 
 Runs dukovo-lab, the Dukovo Lab's harness (github.com/dukovo-os/lab), on
-this tree's tests in lab/tests (ADR 0401). For `run`, builds the lab image
-first, as `./ob image --lab` does, and passes it on with this tree's
-version and commit; the other commands (list, show, machines) pass
-through as they are. Each test boots the image on a machine of the lab's,
-QEMU by default, and the run leaves a bundle of results and logs under
+this tree's tests in lab/tests (ADR 0401). For `run` and `ui` (the runner
+page), builds the lab image first, as `./ob image --lab` does, and passes
+it on with this tree's version and commit; the other commands (list,
+show, machines, status, stop, done, results, runs) pass through as they
+are. Each test boots the image on a machine of the lab's, QEMU by
+default, and the run leaves a bundle of results and logs under
 ~/.local/share/dukovo-lab/runs. ob exits as dukovo-lab does: 0 every test
-passed, 1 a test failed, 2 a bad request or test file, 3 the lab broke.
+passed, 1 a test failed, 2 a bad request or test file, 3 the lab broke,
+4 a machine was busy with another run.
 dukovo-lab is found on PATH, or at OB_LAB; install it with
 `cargo install --locked --git https://github.com/dukovo-os/lab`, then
 make the lab key once with `dukovo-lab key`.
@@ -490,7 +492,9 @@ Examples:
   ./ob lab list
   ./ob lab run --all
   ./ob lab run boot/ drivers/link-pull --machine qemu,qemu-bios
-  ./ob lab run --all --json"
+  ./ob lab run --preset quick --detach
+  ./ob lab status --wait
+  ./ob lab ui"
         }
         "fixture" => {
             "Usage: ./ob fixture btrfs-log|btrfs-radix-log|ntfs-3g [--linux-kernel <file>]
