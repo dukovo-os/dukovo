@@ -1,0 +1,21 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "pgrep finds a process by name, kill and pkill end it, and kill lists the signals"
+time = "2m"
+
+[[step]]
+run = "kill -l 9"
+expect = "KILL"
+[[step]]
+run = "kill -l"
+expect = ["SIGHUP", "SIGKILL"]
+# Start a sleep this session owns, find it by name and by its whole command
+# line, then end it and see that it is gone.
+[[step]]
+run = "sleep 120 >/dev/null 2>&1 </dev/null & P=$!; sleep 1; pgrep -x sleep | grep -qx $P && echo FOUND; pgrep -af sleep; kill $P; sleep 1; ps -p $P -o comm=; echo GONE-rc=$?"
+expect = ["FOUND", "sleep 120", "GONE-rc=1"]
+# pkill ends the process by name.
+[[step]]
+run = "sleep 131 >/dev/null 2>&1 </dev/null & P=$!; sleep 1; pkill -x sleep; sleep 1; ps -p $P -o comm=; echo PK-rc=$?"
+expect = "PK-rc=1"
