@@ -1604,8 +1604,10 @@ _target/userspace/_).
 		close a file each, in a tmpfs directory each, all at once. The
 		report, in _out/bench-scaling/report.md_ and *--summary*'s file,
 		gives the slowest worker's time per open and close on each side,
-		their ratio, and each side's time over one worker's. It is a
-		report, not part of *--gate*; CI runs it after the benchmarks.
+		their ratio, and each side's time over one worker's. With
+		*--gate* it fails unless Radix's time is at most Linux's on every
+		row, measuring both again (up to 6 more runs) while one is over;
+		CI runs it so after the benchmarks.
 
 	*--from* _file_
 		Measure nothing, and report the numbers of a real machine

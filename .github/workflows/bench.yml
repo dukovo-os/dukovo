@@ -101,12 +101,11 @@ jobs:
         run: ./ob bench --gate --summary "$GITHUB_STEP_SUMMARY"
 
       # How open and close scale with 1, 4 and 8 workers at once on 4
-      # CPUs, next to Linux: the measurement behind splitting the
-      # capability store's lock. A report only, so it never fails the job.
-      - name: ./ob bench --scaling
-        if: always()
-        continue-on-error: true
-        run: ./ob bench --scaling --summary "$GITHUB_STEP_SUMMARY"
+      # CPUs, next to Linux: every row held to Linux's time, as the
+      # operations above are (ADR 0409).
+      - name: ./ob bench --scaling --gate
+        if: ${{ !cancelled() }}
+        run: ./ob bench --scaling --gate --summary "$GITHUB_STEP_SUMMARY"
 
       - name: Upload the benchmark numbers
         if: always()

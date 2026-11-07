@@ -466,17 +466,20 @@ pub fn command(ctx: &Ctx, args: &mut Args) -> Result<()> {
         return crate::shellbench::command(ctx, summary.as_deref());
     }
     if scaling {
-        if gate || instructions || from.is_some() {
+        if instructions || from.is_some() {
             crate::bail!(
-                "--scaling reports numbers, it is no gate, so it takes only --no-linux, \
-                          --runs, --linux-kernel and --summary"
+                "--scaling takes only --gate, --no-linux, --runs, --linux-kernel and --summary"
             );
+        }
+        if gate && !linux {
+            crate::bail!("--gate compares with Linux, so it cannot go with --no-linux");
         }
         return crate::scaling::command(
             ctx,
             profile,
             runs,
             linux,
+            gate,
             given_kernel,
             summary.as_deref(),
         );
@@ -802,7 +805,7 @@ fn over_gate(numbers: &Numbers) -> Vec<String> {
 
 /// A ratio to two decimals, or to three where two would hide that it is
 /// over the gate (1.004 is not 1.00).
-fn shown(ratio: f64) -> String {
+pub(crate) fn shown(ratio: f64) -> String {
     let two = format!("{ratio:.2}");
     if ratio > GATE_RATIO && two.parse::<f64>().is_ok_and(|r| r <= GATE_RATIO) {
         format!("{ratio:.3}")
