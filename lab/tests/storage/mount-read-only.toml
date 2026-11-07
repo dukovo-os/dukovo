@@ -1,0 +1,55 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "A stick mounted read-only refuses writes though its disk could take them; mounted read-write it takes them, and mount lists it by kind"
+time = "4m"
+
+[[step]]
+usb = "plug"
+blank = "64M"
+[[step]]
+wait = "5s"
+# Find the stick by its size, which no system disk has, and keep its name
+# in the lab's home for the steps below, which root runs: each account has
+# a /tmp of its own. Nothing is formatted unless a stick was found.
+[[step]]
+run = "lsblk -dn | awk '$2 == \"64M\" && $4 == \"disk\" { print $1 }' > ~/lab-stick && cat ~/lab-stick"
+expect = "sd"
+[[step]]
+run = "sh -c 'mkfs-fat -n LABMNT /devices/$(cat /users/lab/lab-stick)'"
+root = true
+expect = ["made FAT", "label LABMNT"]
+# -r mounts it read-only, so a write fails although the disk itself is writable.
+[[step]]
+run = "sh -c 'mkdir -p /volumes/lab-stick && mount -r /devices/$(cat /users/lab/lab-stick) /volumes/lab-stick'"
+root = true
+[[step]]
+run = "findmnt /volumes/lab-stick"
+expect = ["vfat", "ro"]
+[[step]]
+run = "touch /volumes/lab-stick/x"
+root = true
+exit = 1
+expect = "Read-only file system"
+# Mounted again without -r, the same filesystem takes the write.
+[[step]]
+run = "sh -c 'umount /volumes/lab-stick && mount /devices/$(cat /users/lab/lab-stick) /volumes/lab-stick && touch /volumes/lab-stick/x && echo WROTE'"
+root = true
+expect = "WROTE"
+[[step]]
+run = "findmnt /volumes/lab-stick"
+expect = ["vfat", "rw"]
+# With no source, mount lists the mounts; -t narrows to a kind, -l adds labels.
+# mount names a FAT filesystem "fat" (findmnt and blkid name it "vfat").
+# (remount(8), which re-mounts a volume volumed owns read-only or read-write,
+# wants a plugged, pre-formatted volume; the lab plugs only blank sticks, so a
+# remount test waits on a fixture-stick harness change.)
+[[step]]
+run = "mount -l -t fat"
+root = true
+expect = ["/volumes/lab-stick", "fat", "LABMNT"]
+[[step]]
+run = "sh -c 'umount /volumes/lab-stick'"
+root = true
+[[step]]
+usb = "unplug"

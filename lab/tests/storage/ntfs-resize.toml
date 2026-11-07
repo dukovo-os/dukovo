@@ -1,0 +1,15 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "resize-ntfs is on the system and refuses a device that holds no NTFS, changing nothing"
+time = "2m"
+
+# A full NTFS shrink is driven by the dukovo suite's ntfs-resize boot case,
+# which attaches an NTFS fixture disk the host's mkntfs makes. The lab plugs
+# only blank sticks, so here we check resize-ntfs is present and guards a
+# device that is not NTFS; a lab shrink waits on an NTFS fixture stick.
+[[step]]
+run = "resize-ntfs --info /devices/sda"
+root = true
+exit = 1
+expect = "no NTFS volume"

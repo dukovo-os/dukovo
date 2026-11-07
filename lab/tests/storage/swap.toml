@@ -1,0 +1,41 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "A swap area made on a stick turns on, shows in the swap list and in free, and turns off again"
+time = "5m"
+
+[[step]]
+usb = "plug"
+blank = "64M"
+[[step]]
+wait = "5s"
+# Find the stick by its size, which no system disk has, and keep its name
+# in the lab's home for the steps below, which root runs: each account has
+# a /tmp of its own. Nothing is formatted unless a stick was found.
+[[step]]
+run = "lsblk -dn | awk '$2 == \"64M\" && $4 == \"disk\" { print $1 }' > ~/lab-stick && cat ~/lab-stick"
+expect = "sd"
+[[step]]
+run = "sh -c 'mkswap -L LABSWAP /devices/$(cat /users/lab/lab-stick)'"
+root = true
+expect = ["swapspace version 1", "LABEL=LABSWAP"]
+# Turn it on: the kernel can move memory out to it from now on.
+[[step]]
+run = "sh -c 'swapon /devices/$(cat /users/lab/lab-stick) && swapon --show'"
+root = true
+expect = ["partition", "/devices/"]
+[[step]]
+run = "swapon -s"
+root = true
+expect = ["Filename", "partition"]
+[[step]]
+run = "free"
+root = true
+expect = "Swap:"
+# Turn it off: every page swapped out is read back first, then the list empties.
+[[step]]
+run = "sh -c 'swapoff /devices/$(cat /users/lab/lab-stick) && echo rows=$(swapon --show --noheadings | wc -l)'"
+root = true
+expect = "rows=0"
+[[step]]
+usb = "unplug"

@@ -1,0 +1,28 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "The tools that read a disk's own facts: rdisk shows the partition table and the types it knows, diskhealth reads SMART, nvme lists namespaces"
+time = "3m"
+
+[[step]]
+run = "rdisk -l /devices/sda"
+root = true
+expect = ["Partition table: gpt", "Dukovo root"]
+[[step]]
+run = "rdisk --list-types"
+expect = ["EFI System", "Linux swap"]
+# A SATA disk keeps SMART, which diskhealth reads and judges.
+[[step]]
+run = "diskhealth"
+root = true
+expect = ["DISK", "HEALTH", "sda", "PASSED"]
+[[step]]
+run = "diskhealth -a sda"
+root = true
+expect = ["QEMU HARDDISK", "Health: PASSED", "Reallocated sectors"]
+# The QEMU lab machine has no NVMe drive, so the list is empty; its heading
+# shows nvme is there and lists the namespaces when a drive is.
+[[step]]
+run = "nvme list"
+root = true
+expect = ["Node", "Model"]
