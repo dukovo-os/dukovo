@@ -152,7 +152,7 @@ _target/userspace/_).
 	commands of your own on the kernel, such as cargo-deny's, which CI
 	runs after it.
 
-*image* [*--iso* | *--installed*] [*--cmdline* _flags_] [*--microcode* _path_] [*--disk-check* _serial_] [*--debug* | *--release*]
+*image* [*--iso* | *--installed* | *--lab* [*--lab-key* _file_]] [*--cmdline* _flags_] [*--microcode* _path_] [*--disk-check* _serial_] [*--debug* | *--release*]
 	Build the kernel, then the install stick's image
 	_out/dukovo-VERSION-x86_64.img_, which starts under UEFI and under
 	legacy BIOS into the live system, and carries the signed release of
@@ -202,6 +202,22 @@ _target/userspace/_).
 		from memory (ADR 0307). Its EFI system partition holds only GRUB,
 		its menu and the microcode, if any. See *Installed systems* in
 		*dukovo-boot*(7).
+
+	*--lab*
+		Make the Dukovo Lab's test image,
+		_out/dukovo-VERSION-x86_64-lab.img_, instead: an installed
+		system's disk as *--installed* makes it, with three things beside
+		the system's slot, which stays a release's: an administrator's
+		account *lab*, whose password no one knows, so that it signs in
+		only over SSH with the lab's key; sshd turned on by an override
+		file; and a sign-in banner that says the image is a test image
+		(ADR 0400). *lab run* tests it. Never give it to anyone as a
+		release.
+
+	*--lab-key* _file_
+		The lab's public key, one *ssh-ed25519* line, instead of
+		_~/.config/dukovo-lab/lab_ed25519.pub_, which *dukovo-lab key*
+		makes. The private key never goes into the image.
 
 	*--cmdline* _flags_
 		Kernel command-line flags instead of *boot.cmdline*, such as
@@ -1425,6 +1441,32 @@ _target/userspace/_).
 		Fail a boot test that has not finished after this long. The
 		default is 300.
 
+*lab* [*--no-build* | *--image* _file_] [*--lab-key* _file_] [*--debug* | *--release*] _command_ [_options_]
+	Run *dukovo-lab*, the Dukovo Lab's harness (from
+	_https://github.com/dukovo-os/lab_), on this tree's tests in
+	_lab/tests_ (ADR 0400). For *run*, first build the lab image as
+	*image --lab* does, and pass it on with this tree's version and
+	commit; *list*, *show* and *machines* pass through as they are. Each
+	test boots the image on one of the lab's machines, QEMU by default,
+	and the run leaves a bundle of results, logs and screenshots under
+	_~/.local/share/dukovo-lab/runs_. *ob* exits as *dukovo-lab* does: 0
+	when every test passed, 1 when one failed, 2 for a bad request or
+	test file, 3 when the lab itself broke.
+
+	*dukovo-lab* is found on *PATH*, or at *OB_LAB*. Install it with
+	*cargo install --locked --git https://github.com/dukovo-os/lab*, then
+	make the lab's key once with *dukovo-lab key*. The handbook's Lab
+	tests chapter shows how to write a test.
+
+	*--no-build*
+		Test the lab image already in _out_.
+
+	*--image* _file_
+		Test this image instead of building one.
+
+	*--lab-key* _file_
+		The lab's public key, as *image --lab* takes it.
+
 *bench* [*--gate*] [*--linux-kernel* _file_] [*--runs* _n_] [*--no-linux*] [*--instructions*] [*--shell*] [*--scaling*] [*--from* _file_] [*--summary* _file_] [*--debug* | *--release*]
 	Measure what system calls, IPC round trips, context switches, fresh
 	pages, TLB shootdowns, memory copies, files and POSIX calls cost on
@@ -1843,6 +1885,10 @@ fails the build.
 
 *OB_CONTAINER_ENGINE*
 	Program to use for *--container*, such as *podman* or *docker*.
+
+*OB_LAB*
+	The *dukovo-lab* program *lab* runs, when it is not the first on
+	*PATH*.
 
 *OB_LINUX_KERNEL*
 	The Linux kernel *bench* and *fixture* boot, when *--linux-kernel* is

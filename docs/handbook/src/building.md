@@ -217,6 +217,9 @@ small RISC-V program on QEMU's `virt` machine (it needs QEMU's RISC-V
 emulator, the `qemu-system-misc` package), so that nothing x86-only slips
 into the kernel's common code; CI runs that too.
 
+Tests that pull cables, cut power or need real machines are the Dukovo
+Lab's: `./ob lab run --all` runs them on QEMU (see [Lab tests](lab.md)).
+
 ## Building the boot image
 
 ```sh

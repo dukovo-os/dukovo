@@ -25,6 +25,7 @@ mod image;
 mod kernel;
 mod krelocs;
 mod ksyms;
+mod lab;
 mod libc_check;
 mod licenses;
 mod lint;
@@ -68,6 +69,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("run", "Boot the image in QEMU with the serial console on this terminal"),
     ("test", "Run unit tests, then boot the image in QEMU under UEFI and BIOS"),
     ("catalog", "Make and sign the catalog's TUF repository, with YubiKeys"),
+    ("lab", "Run the Dukovo Lab's tests (lab/tests) on its machines with dukovo-lab"),
     ("bench", "Measure system calls and IPC round trips on Radix and on this machine's Linux"),
     ("fixture", "Make test data that only Linux makes, such as a Btrfs log of fsyncs"),
     ("docs", "Build the man pages and the handbook into out/docs"),
@@ -168,7 +170,7 @@ the Cargo.lock of each bundle's port in Rust with cargo-audit.
   --rebuild <name>   Build this port even if nothing changed; repeat for more"
         }
         "image" => {
-            "Usage: ./ob image [--iso | --installed] [--cmdline <flags>] [--microcode <path>]
+            "Usage: ./ob image [--iso | --installed | --lab [--lab-key <file>]] [--cmdline <flags>] [--microcode <path>]
                   [--disk-check <serial>] [--user <name> [--full-name <name>]
                   [--password-file <path>] [--test-cost]] [--debug | --release]
 
@@ -177,6 +179,7 @@ legacy BIOS from a USB stick, a hard disk or optical media:
   out/dukovo-<version>-x86_64.img             (default)
   out/dukovo-<version>-x86_64.iso             (with --iso)
   out/dukovo-<version>-x86_64-installed.img   (with --installed)
+  out/dukovo-<version>-x86_64-lab.img         (with --lab)
 The .img is the install stick: its menu starts the live system, and its
 DUKOVO_LIVE partition holds the signed release the installer installs
 (ADR 0308).
@@ -186,6 +189,13 @@ DUKOVO_LIVE partition holds the signed release the installer installs
   --installed          The disk of an installed system instead: GRUB starts the
                        kernel and the startup archive from the root's system slot,
                        and the system runs from the disk, not from memory (ADR 0307)
+  --lab                An installed system's disk for the Dukovo Lab, never a
+                       release: beside the system's slot, an administrator's
+                       account `lab` that signs in only over SSH with the lab's
+                       key, sshd turned on and a banner saying so (ADR 0400)
+  --lab-key <file>     The lab's public key (default
+                       ~/.config/dukovo-lab/lab_ed25519.pub, which
+                       `dukovo-lab key` makes)
   --cmdline <flags>    Kernel flags instead of boot.cmdline (dukovo-boot(7))
   --microcode <path>   Intel microcode file or directory instead of image.microcode
   --disk-check <serial>
@@ -452,6 +462,32 @@ and take minutes.
                       the dukovo-bench.txt of the disk check's run.sh
   --summary <file>    Also append the Markdown report to <file> (CI passes
                       $GITHUB_STEP_SUMMARY)"
+        }
+        "lab" => {
+            "Usage: ./ob lab [--no-build | --image <file>] [--lab-key <file>] [--debug | --release]
+              <dukovo-lab command> [options]
+
+Runs dukovo-lab, the Dukovo Lab's harness (github.com/dukovo-os/lab), on
+this tree's tests in lab/tests (ADR 0400). For `run`, builds the lab image
+first, as `./ob image --lab` does, and passes it on with this tree's
+version and commit; the other commands (list, show, machines) pass
+through as they are. Each test boots the image on a machine of the lab's,
+QEMU by default, and the run leaves a bundle of results and logs under
+~/.local/share/dukovo-lab/runs. ob exits as dukovo-lab does: 0 every test
+passed, 1 a test failed, 2 a bad request or test file, 3 the lab broke.
+dukovo-lab is found on PATH, or at OB_LAB; install it with
+`cargo install --locked --git https://github.com/dukovo-os/lab`, then
+make the lab key once with `dukovo-lab key`.
+
+  --no-build         Test the lab image already in out/
+  --image <file>     Test this image instead of building one
+  --lab-key <file>   The lab's public key, as ./ob image --lab takes it
+
+Examples:
+  ./ob lab list
+  ./ob lab run --all
+  ./ob lab run boot/ drivers/link-pull --machine qemu,qemu-bios
+  ./ob lab run --all --json"
         }
         "fixture" => {
             "Usage: ./ob fixture btrfs-log|btrfs-radix-log|ntfs-3g [--linux-kernel <file>]
@@ -822,14 +858,19 @@ fn dispatch(argv: Vec<String>) -> Result<()> {
             ports::build_and_pack(&ctx, &rebuild).map(|_| ())
         }
         "image" => {
-            let kind = match (args.flag("--iso"), args.flag("--installed")) {
-                (true, true) => bail!("--iso and --installed cannot be combined"),
-                (true, false) => image::Kind::Iso,
-                (false, true) => image::Kind::Installed,
-                (false, false) => image::Kind::Stick,
+            let kind = match (args.flag("--iso"), args.flag("--installed"), args.flag("--lab")) {
+                (true, false, false) => image::Kind::Iso,
+                (false, true, false) => image::Kind::Installed,
+                (false, false, true) => image::Kind::Lab,
+                (false, false, false) => image::Kind::Stick,
+                _ => bail!("--iso, --installed and --lab cannot be combined"),
             };
+            let lab_key = args.value("--lab-key")?;
+            if lab_key.is_some() && kind != image::Kind::Lab {
+                bail!("--lab-key goes with --lab");
+            }
             let account = account::Options::from_args(&mut args)?;
-            if kind != image::Kind::Installed && account.any() {
+            if !kind.installed() && account.any() {
                 bail!(
                     "--user makes an account in an installed system's root, which only --installed \
                      makes: the stick and the ISO run the live system, which keeps no accounts"
@@ -840,13 +881,19 @@ fn dispatch(argv: Vec<String>) -> Result<()> {
                 microcode: args.value("--microcode")?,
                 disk_check: args.value("--disk-check")?,
                 account: None,
+                lab: None,
             };
             let profile = args.profile(&ctx.config)?;
             args.finish()?;
             overrides.account = account.account(&ctx)?;
+            if kind == image::Kind::Lab {
+                overrides.lab = Some(lab::Key::read(lab_key.as_deref())?);
+            }
             let path = image::build_release(&ctx, profile, kind, &overrides)?;
             println!("\nImage ready: {}", ctx.display(&path));
-            if kind == image::Kind::Installed {
+            if kind == image::Kind::Lab {
+                println!("A test image, never a release: test it with ./ob lab run.");
+            } else if kind == image::Kind::Installed {
                 println!("Boot it with ./ob run --installed, or write it to a disk of its own.");
             } else {
                 println!(
@@ -858,6 +905,7 @@ fn dispatch(argv: Vec<String>) -> Result<()> {
         "run" => qemu::run_command(&ctx, &mut args),
         "test" => test::command(&ctx, &mut args),
         "bench" => bench::command(&ctx, &mut args),
+        "lab" => lab::command(&ctx, &mut args),
         "fixture" => fixture::command(&ctx, &mut args),
         "docs" => {
             let check = args.flag("--check");

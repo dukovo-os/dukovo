@@ -1,0 +1,16 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "A fresh disk boots to the sign-in prompt, and the lab signs in over SSH"
+time = "5m"
+fresh = true
+
+# The boot itself, which the runner starts this test with, waits for the
+# kernel's "Boot complete." and then for SSH. These check what came between.
+[[step]]
+serial = "Radix"
+[[step]]
+serial = "Test image of the Dukovo Lab"
+[[step]]
+run = "whoami"
+expect = "lab"

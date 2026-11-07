@@ -1,0 +1,19 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "Commands over SSH give their output and exit status back"
+time = "2m"
+
+[[step]]
+run = "uname -s"
+expect = "Radix"
+[[step]]
+run = "echo $((6 * 7)) answers"
+expect = "42 answers"
+[[step]]
+run = "ls /no/such/folder"
+exit = 1
+expect = "No such file"
+[[step]]
+run = "id"
+expect = ["uid=", "(lab)", "(admins)"]

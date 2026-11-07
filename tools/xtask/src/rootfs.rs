@@ -5,7 +5,10 @@
 //! own Btrfs crate (ADR 0304): made as Dukovo's mkfs-btrfs makes one,
 //! then mounted by the crate's writer, as Radix mounts it, which makes
 //! the subvolumes and writes the staging tree into them, compressed. No
-//! btrfs-progs is needed, and every file is root's (ADR 0213).
+//! btrfs-progs is needed, and every file is root's (ADR 0213) but the
+//! trees an [`Owned`] names: the lab account's home in a lab image (ADR
+//! 0400), whose SSH key sshd reads only from a home that is the account's
+//! or root's and that authd, finding it there, leaves as it is.
 
 use std::io::Read as _;
 use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
@@ -50,11 +53,21 @@ pub fn failed(what: &str, err: radix_vfs::Error) -> Error {
     Error::new(format!("{what}: {}", disk::btrfs::describe(err)))
 }
 
+/// A tree of the staging folder that is an account's, not root's.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Owned {
+    /// Its path, relative to the staging folder: `@users/lab`.
+    pub path: std::path::PathBuf,
+    pub owner: u32,
+    pub group: u32,
+}
+
 /// Makes a Btrfs labelled `label` in the file `output`, of `bytes`, at
 /// `time` (seconds since 1970): the subvolumes `subvolumes` in its top
 /// directory, each holding what the directory of its name in `staging`
 /// holds, and the first made read-only. Returns its UUID, which the
-/// boot menu of an installed system finds it by (ADR 0307).
+/// boot menu of an installed system finds it by (ADR 0307). Files are
+/// root's but those in the trees `owned` names.
 ///
 /// # Errors
 ///
@@ -66,6 +79,7 @@ pub fn make(
     label: &str,
     subvolumes: &[&str],
     time: u64,
+    owned: &[Owned],
 ) -> Result<[u8; 16]> {
     host_clock(time);
     let _ = std::fs::remove_file(output);
@@ -95,7 +109,7 @@ pub fn make(
     for name in subvolumes {
         top.make_subvolume(name).map_err(|err| failed(&format!("making {name}"), err))?;
         let subvolume = top.lookup(name).map_err(|err| failed(name, err))?;
-        copy(&staging.join(name), &subvolume)?;
+        copy_owned(&staging.join(name), &subvolume, Path::new(name), owned)?;
     }
     if let Some(first) = subvolumes.first() {
         let node = top.lookup(first).map_err(|err| failed(first, err))?;
@@ -107,9 +121,14 @@ pub fn make(
     Ok(options.fsid)
 }
 
-/// The access of `meta` for a file of root's.
-fn access_of(meta: &std::fs::Metadata) -> Access {
-    Access { owner: 0, group: 0, mode: (meta.permissions().mode() & 0o7777) as u16 }
+/// The access of `meta` for the file at `path`, relative to the staging
+/// folder: root's unless it is in a tree `owned` names.
+fn access_of(meta: &std::fs::Metadata, path: &Path, owned: &[Owned]) -> Access {
+    let (owner, group) = owned
+        .iter()
+        .find(|tree| path.starts_with(&tree.path))
+        .map_or((0, 0), |tree| (tree.owner, tree.group));
+    Access { owner, group, mode: (meta.permissions().mode() & 0o7777) as u16 }
 }
 
 /// The nanoseconds since 1970 of `meta`'s last change of contents.
@@ -120,8 +139,14 @@ fn modified(meta: &std::fs::Metadata) -> u64 {
 
 /// Writes what the directory `from` holds into `to`, in the order of its
 /// names, so the same tree is the same filesystem: the Dukovo root's
-/// Btrfs, or an image's EFI system partition (FAT).
+/// Btrfs, or an image's EFI system partition (FAT). Every file is root's.
 pub fn copy(from: &Path, to: &NodeRef) -> Result<()> {
+    copy_owned(from, to, Path::new(""), &[])
+}
+
+/// As [`copy`], `from` being `at` in the staging folder, with the trees
+/// `owned` names given to their accounts.
+fn copy_owned(from: &Path, to: &NodeRef, at: &Path, owned: &[Owned]) -> Result<()> {
     let mut names: Vec<_> = std::fs::read_dir(from)
         .context(|| format!("reading {}", from.display()))?
         .map(|entry| entry.map(|e| e.file_name()))
@@ -130,6 +155,7 @@ pub fn copy(from: &Path, to: &NodeRef) -> Result<()> {
     names.sort();
     for name in names {
         let path = from.join(&name);
+        let staged = at.join(&name);
         let name = name
             .to_str()
             .ok_or_else(|| Error::new(format!("the name of {} is not UTF-8", path.display())))?;
@@ -145,14 +171,14 @@ pub fn copy(from: &Path, to: &NodeRef) -> Result<()> {
             to.make_link(name, target, link).map_err(|err| failed(&shown, err))?;
         } else if kind.is_dir() {
             let dir = to
-                .create(name, Kind::Directory, access_of(&meta))
+                .create(name, Kind::Directory, access_of(&meta, &staged, owned))
                 .map_err(|err| failed(&shown, err))?;
-            copy(&path, &dir)?;
+            copy_owned(&path, &dir, &staged, owned)?;
             dir.set_times(None, Some(modified(&meta))).map_err(|err| failed(&shown, err))?;
         } else if kind.is_file() {
             let data = std::fs::read(&path).context(|| format!("reading {shown}"))?;
-            let file =
-                to.create(name, Kind::File, access_of(&meta)).map_err(|err| failed(&shown, err))?;
+            let access = access_of(&meta, &staged, owned);
+            let file = to.create(name, Kind::File, access).map_err(|err| failed(&shown, err))?;
             let written = file.write(0, &Slice(&data)).map_err(|err| failed(&shown, err))?;
             if written != data.len() {
                 return Err(Error::new(format!(
@@ -214,7 +240,12 @@ mod tests {
         std::fs::write(staging.join("@b/passwd"), "root:x:0:0::/:/bin/sh\n").unwrap();
 
         let output = dir.join("root.btrfs");
-        make(&staging, &output, 160 << 20, "test-root", &["@a", "@b"], 1_793_592_777).unwrap();
+        std::fs::create_dir_all(staging.join("@b/home/.ssh")).unwrap();
+        std::fs::write(staging.join("@b/home/.ssh/authorized_keys"), "ssh-ed25519 AAAA lab\n")
+            .unwrap();
+        let owned = [Owned { path: "@b/home".into(), owner: 1001, group: 1002 }];
+        make(&staging, &output, 160 << 20, "test-root", &["@a", "@b"], 1_793_592_777, &owned)
+            .unwrap();
 
         if let Some(btrfs) = btrfs_tool() {
             let out = Command::new(btrfs)
@@ -252,6 +283,12 @@ mod tests {
         let passwd = top.lookup("@b").unwrap().lookup("passwd").unwrap();
         assert_eq!(passwd.access().owner, 0);
         assert!(passwd.create("x", Kind::File, Access::default_for(Kind::File)).is_err());
+        // The owned tree is its account's, the folder and what is in it.
+        let home = top.lookup("@b").unwrap().lookup("home").unwrap();
+        let keys = home.lookup(".ssh").unwrap().lookup("authorized_keys").unwrap();
+        for node in [&home, &keys] {
+            assert_eq!((node.access().owner, node.access().group), (1001, 1002));
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

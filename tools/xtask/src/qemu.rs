@@ -286,6 +286,7 @@ pub fn run_command(ctx: &Ctx, args: &mut Args) -> Result<()> {
         microcode: args.value("--microcode")?,
         disk_check: None,
         account: None,
+        lab: None,
     };
     let account = account::Options::from_args(args)?;
     if !installed && account.any() {
