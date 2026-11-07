@@ -3284,7 +3284,14 @@ fn test_root(ctx: &Ctx, built: &Built, dir: &Path, cases: &[&Case]) -> Result<Op
     }
     let path = dir.join("root.btrfs");
     let staging = dir.join("root-staging");
-    let uuid = image::make_root(ctx, &built.kernel, &built.programs, &staging, &path, None)?;
+    let uuid = image::make_root(
+        ctx,
+        &built.kernel,
+        &built.programs,
+        &staging,
+        &path,
+        image::Extras::default(),
+    )?;
     Ok(Some(TestRoot { path, uuid }))
 }
 

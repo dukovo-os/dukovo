@@ -33,7 +33,9 @@ use crate::process::{self, step};
 use disk::blockfile::BlockFile;
 
 use crate::grub::{self, Grub};
-use crate::{Context, Ctx, Error, Result, VERSION, kernel, licenses, release, rootfs, userspace};
+use crate::{
+    Context, Ctx, Error, Result, VERSION, kernel, lab, licenses, release, rootfs, userspace,
+};
 
 /// What goes into an image and where it is written.
 pub struct ImageSpec<'a> {
@@ -121,6 +123,18 @@ pub enum Kind {
     /// The disk of an installed system: the layout dukovo-install leaves,
     /// less the swap, starting from the root's slot (ADR 0307).
     Installed,
+    /// An installed system's disk for the Dukovo Lab: the lab's account,
+    /// key and sshd beside the system's slot, which is a release's
+    /// (ADR 0401). Never a release itself.
+    Lab,
+}
+
+impl Kind {
+    /// Whether the image is an installed system's disk, which boots its
+    /// root rather than the live system.
+    pub fn installed(self) -> bool {
+        matches!(self, Self::Installed | Self::Lab)
+    }
 }
 
 /// File name of a release image.
@@ -129,6 +143,7 @@ pub fn file_name(kind: Kind) -> String {
         Kind::Stick => format!("dukovo-{VERSION}-x86_64.img"),
         Kind::Iso => format!("dukovo-{VERSION}-x86_64.iso"),
         Kind::Installed => format!("dukovo-{VERSION}-x86_64-installed.img"),
+        Kind::Lab => format!("dukovo-{VERSION}-x86_64-lab.img"),
     }
 }
 
@@ -146,6 +161,8 @@ pub struct Overrides {
     pub disk_check: Option<String>,
     /// An account to make in the root (ADR 0218).
     pub account: Option<Account>,
+    /// The lab key a [`Kind::Lab`] image trusts (ADR 0401).
+    pub lab: Option<lab::Key>,
 }
 
 /// Builds the kernel and the release image described by dukovo.toml.
@@ -161,20 +178,25 @@ pub fn build_release(
     } else {
         Some(read_microcode(ctx, Path::new(microcode_source))?)
     };
-    if overrides.account.is_some() && kind != Kind::Installed {
+    if overrides.account.is_some() && !kind.installed() {
         crate::bail!(
             "an account goes into an installed system's root, which only --installed makes: \
              the stick and the ISO run the live system, which keeps no accounts"
         );
     }
+    // The lab's bits go into the lab image alone, and it needs them all.
+    if overrides.lab.is_some() != (kind == Kind::Lab) {
+        crate::bail!("the lab key goes into the lab image, and the lab image needs one");
+    }
     let kernel = kernel::build(ctx, profile)?;
     let programs = userspace::build(ctx, profile)?;
     let (root, live) = (ctx.out.join("root.btrfs"), ctx.out.join("live.btrfs"));
     let menu = match kind {
-        Kind::Installed => {
+        Kind::Installed | Kind::Lab => {
             let staging = ctx.out.join("root-staging");
-            let account = overrides.account.as_ref();
-            Menu::Installed(make_root(ctx, &kernel, &programs, &staging, &root, account)?)
+            let extras =
+                Extras { account: overrides.account.as_ref(), lab: overrides.lab.as_ref() };
+            Menu::Installed(make_root(ctx, &kernel, &programs, &staging, &root, extras)?)
         }
         Kind::Stick => {
             make_live(ctx, &kernel, &programs, &ctx.out.join("live-staging"), &live)?;
@@ -194,7 +216,7 @@ pub fn build_release(
             microcode,
             programs: Some(&programs),
             disk_check: overrides.disk_check.as_deref(),
-            root: (kind == Kind::Installed).then_some(root.as_path()),
+            root: kind.installed().then_some(root.as_path()),
             live: (kind == Kind::Stick).then_some(live.as_path()),
             menu,
             staging: ctx.out.join("image-root"),
@@ -804,19 +826,28 @@ pub const SLOT_KERNEL: &str = "radix";
 /// The startup archive's name in [`SLOT_STARTUP`].
 pub const SLOT_ARCHIVE: &str = "archive";
 
+/// What [`make_root`] adds to an installed system's root beside its slot.
+#[derive(Clone, Copy, Default)]
+pub struct Extras<'a> {
+    /// An account to make (`ob image --user`, ADR 0218).
+    pub account: Option<&'a Account>,
+    /// The lab's account, home and sshd, trusting this key (ADR 0401).
+    pub lab: Option<&'a lab::Key>,
+}
+
 /// Makes the Dukovo root's Btrfs in the file `output`, of [`ROOT_BYTES`],
 /// with the kernel's own Btrfs crate ([`rootfs::make`], ADR 0304):
 /// `@system.a` holds the system's slot as [`stage_system`] stages it in
-/// `staging` first; the other [`SUBVOLUMES`] are empty but for the files
-/// of `account`, if there is one. Data is compressed with zstd, and every
-/// file is root's. Returns the Btrfs's UUID.
+/// `staging` first; the other [`SUBVOLUMES`] are empty but for what
+/// `extras` adds. Data is compressed with zstd, and every file is root's
+/// but the lab account's home. Returns the Btrfs's UUID.
 pub fn make_root(
     ctx: &Ctx,
     kernel: &Path,
     programs: &userspace::Programs,
     staging: &Path,
     output: &Path,
-    account: Option<&Account>,
+    extras: Extras<'_>,
 ) -> Result<[u8; 16]> {
     step(&format!("Making the Dukovo root's Btrfs {}", ctx.display(output)));
     fresh_dir(staging)?;
@@ -826,12 +857,19 @@ pub fn make_root(
     }
     let system = staging.join(SUBVOLUMES[0]);
     stage_system(ctx, kernel, programs, &system)?;
-    if let Some(account) = account {
-        let subvolume = |name: &str| staging.join(name);
+    let subvolume = |name: &str| staging.join(name);
+    if let Some(account) = extras.account {
         account::add(&system, &subvolume(SUBVOLUMES[1]), &subvolume(SUBVOLUMES[2]), account)?;
     }
+    // The lab's account comes after the one asked for, so that one keeps
+    // the first user's number, as on a disk without the lab's.
+    let mut owned = Vec::new();
+    if let Some(key) = extras.lab {
+        step("Adding the Dukovo Lab's account, key and sshd (a test image)");
+        owned.push(lab::stage(staging, &system, key)?);
+    }
     let time = image_time(ctx);
-    let made = rootfs::make(staging, output, ROOT_BYTES, ROOT_LABEL, &SUBVOLUMES, time);
+    let made = rootfs::make(staging, output, ROOT_BYTES, ROOT_LABEL, &SUBVOLUMES, time, &owned);
     let _ = std::fs::remove_dir_all(staging);
     made
 }
@@ -865,6 +903,7 @@ pub fn make_live(
         LIVE_LABEL,
         &[release::SUBVOLUME],
         image_time(ctx),
+        &[],
     );
     let _ = std::fs::remove_dir_all(staging);
     made.map(|_| ())
@@ -1293,6 +1332,7 @@ mod tests {
         assert_eq!(file_name(Kind::Stick), format!("dukovo-{VERSION}-x86_64.img"));
         assert_eq!(file_name(Kind::Iso), format!("dukovo-{VERSION}-x86_64.iso"));
         assert_eq!(file_name(Kind::Installed), format!("dukovo-{VERSION}-x86_64-installed.img"));
+        assert_eq!(file_name(Kind::Lab), format!("dukovo-{VERSION}-x86_64-lab.img"));
         let label = volume_id();
         assert!(label.len() <= 32);
         assert!(label.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_'));

@@ -1,0 +1,20 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "The network cable comes out and goes back in, and the network comes back"
+time = "3m"
+
+[[step]]
+run = "ip link"
+expect = "LOWER_UP"
+[[step]]
+link = "down"
+[[step]]
+wait = "10s"
+[[step]]
+link = "up"
+# SSH answering again shows the network is back.
+[[step]]
+run = "ip link"
+expect = "LOWER_UP"
+expect_not = "NO-CARRIER"

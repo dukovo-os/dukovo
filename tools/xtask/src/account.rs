@@ -214,20 +214,45 @@ fn salt() -> Result<[u8; hash::SALT]> {
 /// subvolume's passwd and group, which start as the defaults the `system`
 /// subvolume has, so that Spark adds none over them at the first boot;
 /// and its hash in the `state` subvolume's `authd/passwords`, which only
-/// authd reads.
-pub fn add(system: &Path, settings: &Path, state: &Path, account: &Account) -> Result<()> {
+/// authd reads. A second account (`--user` with `--lab`) is added to what
+/// the first wrote. Gives the account's user and group numbers.
+pub fn add(system: &Path, settings: &Path, state: &Path, account: &Account) -> Result<(u32, u32)> {
     let defaults = userspace::DEFAULTS_DIR.strip_prefix("system/").expect("in the system");
-    let (mut users, mut groups) = read_tables(&system.join(defaults))?;
+    let tables = if settings.join("passwd").exists() {
+        settings.to_path_buf()
+    } else {
+        system.join(defaults)
+    };
+    let (mut users, mut groups) = read_tables(&tables)?;
     let Account { name, full_name, hash } = account;
-    accounts::add(&mut users, &mut groups, name, full_name, true, &[]).map_err(Error::new)?;
-    let mut passwords = accounts::passwords("");
+    let user =
+        accounts::add(&mut users, &mut groups, name, full_name, true, &[]).map_err(Error::new)?;
+    let authd = state.join("authd");
+    let passwords_file = authd.join("passwords");
+    let written = std::fs::read_to_string(&passwords_file).unwrap_or_default();
+    let mut passwords = accounts::passwords(&written);
     passwords.push(accounts::Password { name: name.clone(), hash: hash.clone() });
     write(&settings.join("passwd"), &users.text(), 0o644)?;
     write(&settings.join("group"), &groups.text(), 0o644)?;
-    let authd = state.join("authd");
-    crate::process::create_dir(&authd)?;
+    if !authd.exists() {
+        crate::process::create_dir(&authd)?;
+    }
     set_mode(&authd, 0o700)?;
-    write(&authd.join("passwords"), &passwords.text(), 0o600)
+    write(&passwords_file, &passwords.text(), 0o600)?;
+    Ok((user.uid, user.gid))
+}
+
+/// The hash of a password no one knows: 32 random bytes, thrown away
+/// once hashed. An account with it signs in only with a key.
+pub fn unknown_password_hash() -> Result<String> {
+    let mut password = [0u8; 32];
+    std::fs::File::open("/dev/urandom")
+        .and_then(|mut random| random.read_exact(&mut password))
+        .context(|| "reading /dev/urandom".to_string())?;
+    let hashed =
+        salt().and_then(|salt| hash::hash(&password, &salt, Cost::DEFAULT).map_err(Error::new));
+    password.fill(0);
+    hashed
 }
 
 /// Writes `text` to the file at `path` with `mode`.
@@ -268,7 +293,7 @@ mod tests {
             let at = |name: &str| staging.join(name);
             super::add(&at("@system.a"), &at("@settings"), &at("@state"), account)
         };
-        add(&account).unwrap();
+        assert_eq!(add(&account).unwrap(), (1000, 1000));
         let read = |path: &str| std::fs::read_to_string(staging.join(path)).unwrap();
         assert_eq!(
             read("@settings/passwd"),
@@ -285,6 +310,14 @@ mod tests {
             [mode("@settings/passwd"), mode("@state/authd"), mode("@state/authd/passwords")],
             [0o644, 0o700, 0o600]
         );
+        // A second account goes beside the first.
+        let lab = Account { name: "lab".into(), full_name: "Dukovo Lab".into(), hash: "x".into() };
+        assert_eq!(add(&lab).unwrap(), (1001, 1001));
+        assert!(
+            read("@settings/passwd")
+                .ends_with("lab:x:1001:1001:Dukovo Lab:/users/lab:/system/commands/nukesh\n")
+        );
+        assert_eq!(read("@state/authd/passwords"), format!("chase:{}:\nlab:x:\n", account.hash));
         // The defaults' names are taken.
         let root_account = Account { name: "root".into(), ..account };
         assert!(add(&root_account).is_err());
