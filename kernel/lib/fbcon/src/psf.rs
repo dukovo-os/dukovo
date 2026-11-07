@@ -224,6 +224,30 @@ impl<'a> Font<'a> {
         self.latin1 = latin1;
     }
 
+    /// Calls `f` with every character the font draws: each its table
+    /// maps to a glyph, those it lacks that Dukovo [`added`], and the
+    /// first 256 code points for a font with no table. A character the
+    /// table maps more than once comes more than once. For the boot menu's
+    /// fonts, which are made from these (ADR 0402).
+    pub fn each_char(&self, mut f: impl FnMut(char)) {
+        if self.table == Table::None {
+            (0..self.count.min(256))
+                .filter_map(|code| char::from_u32(code as u32))
+                .for_each(&mut f);
+        } else {
+            self.scan_table(|glyph, code| {
+                if let Some(c) = char::from_u32(code).filter(|_| glyph < self.count) {
+                    f(c);
+                }
+                false
+            });
+        }
+        ADDED
+            .iter()
+            .filter(|&&c| self.lookup(c).is_none() && added(c, self.width, self.height).is_some())
+            .for_each(|&c| f(c));
+    }
+
     /// The glyph index for `c`, if the font has one.
     pub fn lookup(&self, c: char) -> Option<usize> {
         let code = u32::from(c);
@@ -241,10 +265,21 @@ impl<'a> Font<'a> {
         found.filter(|&glyph| glyph < self.count)
     }
 
-    /// The bitmap of the glyph for `c`; when the font lacks it, a band
-    /// [`band`] draws, or `?`.
+    /// The bitmap of the glyph for `c`; when the font lacks it, one of
+    /// those Dukovo [`added`], a band [`band`] draws, or `?`.
     pub fn glyph(&self, c: char) -> Glyph<'a> {
-        let index = match self.lookup(c) {
+        let found = self.lookup(c);
+        if found.is_none()
+            && let Some(bytes) = added(c, self.width, self.height)
+        {
+            return Glyph {
+                bytes,
+                bytes_per_row: self.bytes_per_row,
+                width: self.width,
+                band: None,
+            };
+        }
+        let index = match found {
             Some(index) => index,
             None => match band(c, self.height) {
                 Some(rows) => {
@@ -266,6 +301,179 @@ impl<'a> Font<'a> {
             band: None,
         }
     }
+}
+
+/// The characters Dukovo adds glyphs for where Spleen lacks them: ✓, the
+/// check mark the installer's steps and progress tick, in each built-in
+/// size, and ↑ and ↓, which the 12x24 size lacks, for the boot menu's
+/// hints (ADR 0402).
+const ADDED: [char; 3] = ['\u{2713}', '\u{2191}', '\u{2193}'];
+
+/// The glyph Dukovo adds for `c` ([`ADDED`]) in a font of `width` by
+/// `height`, if there is one, drawn in Spleen's strokes. The glyphs are
+/// the project's own, under its licence, not Spleen's.
+fn added(c: char, width: usize, height: usize) -> Option<&'static [u8]> {
+    // One row a line, as the larger ones are.
+    #[rustfmt::skip]
+    const CHECK_8X16: [u8; 16] = bitmap(&[
+        "........",
+        "........",
+        "........",
+        "........",
+        "......##",
+        "......##",
+        ".....##.",
+        ".....##.",
+        "##..##..",
+        ".##.##..",
+        "..###...",
+        "...#....",
+        "........",
+        "........",
+        "........",
+        "........",
+    ]);
+    const CHECK_12X24: [u8; 48] = bitmap(&[
+        "............",
+        "............",
+        "............",
+        "............",
+        "............",
+        "............",
+        "..........##",
+        ".........###",
+        ".........##.",
+        "........###.",
+        "........##..",
+        ".......###..",
+        ".##....##...",
+        ".###..###...",
+        "..###.##....",
+        "...#####....",
+        "....###.....",
+        ".....#......",
+        "............",
+        "............",
+        "............",
+        "............",
+        "............",
+        "............",
+    ]);
+    const CHECK_16X32: [u8; 64] = bitmap(&[
+        "................",
+        "................",
+        "................",
+        "................",
+        "................",
+        "................",
+        "................",
+        "................",
+        ".............###",
+        "............###.",
+        "............###.",
+        "...........###..",
+        "...........###..",
+        "..........###...",
+        "..........###...",
+        ".........###....",
+        ".##......###....",
+        ".###....###.....",
+        "..###...###.....",
+        "...###.###......",
+        "....######......",
+        ".....####.......",
+        "......###.......",
+        ".......#........",
+        "................",
+        "................",
+        "................",
+        "................",
+        "................",
+        "................",
+        "................",
+        "................",
+    ]);
+    const UP_12X24: [u8; 48] = bitmap(&[
+        "............",
+        "............",
+        "............",
+        "............",
+        ".....##.....",
+        "....####....",
+        "...######...",
+        "..##.##.##..",
+        ".##..##..##.",
+        ".....##.....",
+        ".....##.....",
+        ".....##.....",
+        ".....##.....",
+        ".....##.....",
+        ".....##.....",
+        ".....##.....",
+        ".....##.....",
+        ".....##.....",
+        ".....##.....",
+        "............",
+        "............",
+        "............",
+        "............",
+        "............",
+    ]);
+    const DOWN_12X24: [u8; 48] = bitmap(&[
+        "............",
+        "............",
+        "............",
+        "............",
+        ".....##.....",
+        ".....##.....",
+        ".....##.....",
+        ".....##.....",
+        ".....##.....",
+        ".....##.....",
+        ".....##.....",
+        ".....##.....",
+        ".....##.....",
+        ".....##.....",
+        ".##..##..##.",
+        "..##.##.##..",
+        "...######...",
+        "....####....",
+        ".....##.....",
+        "............",
+        "............",
+        "............",
+        "............",
+        "............",
+    ]);
+    match (c, width, height) {
+        ('\u{2713}', 8, 16) => Some(&CHECK_8X16),
+        ('\u{2713}', 12, 24) => Some(&CHECK_12X24),
+        ('\u{2713}', 16, 32) => Some(&CHECK_16X32),
+        ('\u{2191}', 12, 24) => Some(&UP_12X24),
+        ('\u{2193}', 12, 24) => Some(&DOWN_12X24),
+        _ => None,
+    }
+}
+
+/// The bytes of a glyph drawn as text, a row a string, `#` for a pixel
+/// that is lit: whole bytes a row, the leftmost pixel in the high bit, as
+/// PSF lays them out.
+const fn bitmap<const N: usize>(rows: &[&str]) -> [u8; N] {
+    let mut bytes = [0; N];
+    let bytes_per_row = N / rows.len();
+    let mut y = 0;
+    while y < rows.len() {
+        let row = rows[y].as_bytes();
+        let mut x = 0;
+        while x < row.len() {
+            if row[x] == b'#' {
+                bytes[y * bytes_per_row + x / 8] |= 0x80 >> (x % 8);
+            }
+            x += 1;
+        }
+        y += 1;
+    }
+    bytes
 }
 
 /// The rows, from `top` to before `bottom`, lit across the whole cell

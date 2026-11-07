@@ -21,6 +21,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
 use super::app::size;
+use super::look;
 use crate::answers::{Change, Format, Part, Role};
 use crate::disks;
 use crate::machine::{DiskInfo, Machine};
@@ -667,12 +668,13 @@ fn size_text(bytes: u64) -> String {
     }
 }
 
-/// The colours of the screens' design, as draw.rs has them.
-const ACCENT: Color = Color::Indexed(173);
-const DIM: Color = Color::Indexed(245);
-const WARNING: Color = Color::Indexed(179);
-const DANGER: Color = Color::Indexed(210);
-const KEPT: Color = Color::Indexed(60);
+/// The design's colours, as [`look`] names them: tan for what is new,
+/// sand for what is formatted, coral for what is deleted, steel for what
+/// is kept.
+const NEW: Color = look::TAN;
+const FORMAT: Color = look::SAND;
+const DELETE: Color = look::CORAL;
+const DIM: Color = look::GREY;
 
 /// Draws the rdisk screen's rows in `area`.
 pub fn draw(frame: &mut Frame<'_>, rdisk: &Rdisk, machine: &Machine, area: Rect) {
@@ -721,7 +723,7 @@ pub fn draw(frame: &mut Frame<'_>, rdisk: &Rdisk, machine: &Machine, area: Rect)
     let skip = rdisk.done.len().saturating_sub(3);
     for (i, said) in rdisk.done.iter().enumerate().skip(skip) {
         let text: String = format!("  {}  {said}", i + 1).chars().take(width).collect();
-        lines.push(Line::from(Span::styled(text, Style::new().fg(ACCENT))));
+        lines.push(Line::from(Span::styled(text, Style::new().fg(NEW))));
     }
     lines.push(Line::from(Span::styled(messages::text("rdisk-nothing-yet"), Style::new().fg(DIM))));
     frame.render_widget(Paragraph::new(lines), area);
@@ -732,11 +734,7 @@ fn tabs(rdisk: &Rdisk, machine: &Machine) -> Line<'static> {
     let mut spans = vec![Span::raw(format!("{}  ", messages::text("rdisk-disks")))];
     for (i, disk) in machine.disks.iter().enumerate().filter(|(_, disk)| !disk.stick) {
         let text = format!(" {} {} ", disk.name, size(disk.bytes));
-        let style = if i == rdisk.disk {
-            Style::new().fg(Color::Black).bg(ACCENT).add_modifier(Modifier::BOLD)
-        } else {
-            Style::new()
-        };
+        let style = if i == rdisk.disk { look::focus() } else { Style::new() };
         spans.extend([Span::styled(text, style), Span::raw(" ")]);
     }
     spans.push(Span::styled(messages::text("rdisk-tab"), Style::new().fg(DIM)));
@@ -764,15 +762,15 @@ fn bar(edit: &Edit, disk: &DiskInfo, width: usize) -> Line<'static> {
         if cells == 0 {
             break;
         }
-        let colour = match slot.state {
-            State::New(_) => ACCENT,
-            State::Format(_) => WARNING,
-            _ => KEPT,
+        let style = match slot.state {
+            State::New(_) => Style::new().fg(look::SLATE).bg(NEW),
+            State::Format(_) => Style::new().fg(look::SLATE).bg(FORMAT),
+            _ => look::field(),
         };
         let mut text: String = slot.name.chars().take(cells.saturating_sub(1)).collect();
         text.insert(0, ' ');
         let text = format!("{text:<cells$}").chars().take(cells).collect::<String>();
-        spans.push(Span::styled(text, Style::new().fg(Color::Black).bg(colour)));
+        spans.push(Span::styled(text, style));
         used += cells;
         at = slot.first + slot.sectors;
     }
@@ -791,9 +789,9 @@ fn slot_line(slot: &Slot, chosen: bool, disk: &DiskInfo, width: usize) -> Line<'
     let will = |using: Use| (using.filesystem().to_string(), using.mount(&partition));
     let ((filesystem, mount), change, colour) = match slot.state {
         State::Keep => (now(), "rdisk-keep", None),
-        State::Delete => (now(), "rdisk-delete", Some(DANGER)),
-        State::New(using) => (will(using), "rdisk-new", Some(ACCENT)),
-        State::Format(using) => (will(using), "rdisk-format", Some(WARNING)),
+        State::Delete => (now(), "rdisk-delete", Some(DELETE)),
+        State::New(using) => (will(using), "rdisk-new", Some(NEW)),
+        State::Format(using) => (will(using), "rdisk-format", Some(FORMAT)),
     };
     let mark = if chosen { '>' } else { ' ' };
     let text = format!(
@@ -807,7 +805,7 @@ fn slot_line(slot: &Slot, chosen: bool, disk: &DiskInfo, width: usize) -> Line<'
     );
     let text: String = text.chars().take(width).collect();
     let style = match (chosen, colour) {
-        (true, _) => Style::new().fg(Color::Black).bg(ACCENT),
+        (true, _) => look::focus(),
         (false, Some(colour)) => Style::new().fg(colour),
         (false, None) => Style::new(),
     };

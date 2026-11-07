@@ -548,7 +548,7 @@ fn the_progress_follows_the_log_to_the_end() {
     assert_eq!(app.progress.percent(), 6 + 1 + 2 + 8 + 2 + 35);
     let shown = screen(&app);
     for needle in [
-        "√  Partitioning vda",
+        "✓  Partitioning vda",
         "•  Copying Dukovo 0.14.0 into its slot",
         "○  Installing GRUB",
         "54%",
@@ -564,7 +564,7 @@ fn the_progress_follows_the_log_to_the_end() {
     for needle in [
         "Dukovo is installed",
         "100%",
-        "√  Saving the answers",
+        "✓  Saving the answers",
         "Remove the install stick, then restart.",
         "< Restart >",
     ] {
@@ -625,4 +625,38 @@ fn names_make_user_names_and_text_wraps() {
     assert_eq!(wrap("one two three", 7), ["one two", "three"]);
     assert_eq!(wrap("abcdefghij", 4), ["abcd", "efgh", "ij"]);
     assert_eq!(wrap("  one two", 7), ["  one", "  two"]);
+}
+
+/// What `paint` draws on a terminal of 100 by 31, a line a row.
+fn painted(paint: impl FnOnce(&mut ratatui::Frame<'_>)) -> String {
+    let mut terminal = Terminal::new(TestBackend::new(100, 31)).unwrap();
+    terminal.draw(paint).unwrap();
+    let buffer = terminal.backend().buffer().clone();
+    let mut text = String::new();
+    for y in 0..buffer.area.height {
+        for x in 0..buffer.area.width {
+            text.push_str(buffer[(x, y)].symbol());
+        }
+        text.push('\n');
+    }
+    assert_no_missing_messages(&text);
+    text
+}
+
+#[test]
+fn the_startup_screen_fills_its_bar_and_tells_why_it_cannot_start() {
+    let shown = painted(|frame| draw::startup(frame, 1, 3, "Looking for setup files"));
+    assert!(shown.contains("D U K O V O"), "{shown}");
+    assert!(shown.contains(&format!("{}{}", "█".repeat(10), "░".repeat(22))), "{shown}");
+    assert!(shown.contains("Starting the installer"), "{shown}");
+    assert!(shown.contains("Looking for setup files"), "{shown}");
+
+    let why = "no disk has a DUKOVO_LIVE partition: start the computer from the install \
+               stick, or give the release's folder with --release";
+    let shown = painted(|frame| draw::cannot_start(frame, why));
+    assert!(shown.contains("The installer cannot start"), "{shown}");
+    assert!(shown.contains("no disk has a DUKOVO_LIVE partition"), "{shown}");
+    // The reason wraps at 72 columns, so its end is on a line of its own.
+    assert!(shown.contains("--release"), "{shown}");
+    assert!(shown.contains("Enter leaves the installer for a shell"), "{shown}");
 }

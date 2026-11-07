@@ -30,8 +30,16 @@ how the boot tests install one.
 
 The stick's boot menu starts the screens on tty1 with its first entry,
 *Install Dukovo*, and *Live console* on their first page leaves them
-for a shell, where *dukovo-install* starts them again. A bar at the top
-shows the five steps:
+for a shell, where *dukovo-install* starts them again. They first show
+a startup screen, whose bar fills as the release on the stick is found
+and its signatures checked, the computer's disks and network cards are
+read, and the stick's setup files are listed; when the installer cannot
+start, as on a computer not started from the stick, it says why there
+and waits for Enter, which leaves it for a shell. The screens are drawn in
+the approved design's sixteen colours, which they set as the terminal's
+palette while they show and give back when they end, a slate background
+edge to edge and the keys' hints on a steel bar along the bottom (ADR
+0402). A bar at the top shows the five steps:
 
 . *Welcome*: the language, the keyboard layout, which the keys type in
   at once, a box to try it, and whether to answer step by step or

@@ -6,10 +6,14 @@
 //!
 //! The grid is centred on the screen in the Spleen font the kernel's log
 //! used, chosen the same way (radix-fbcon), so the screen looks the same
-//! when consoled takes it over. Each row of cells that changed since it
-//! was last drawn is drawn into a buffer as tall as a row and the width of
+//! when consoled takes it over; the installer's screens ask for a larger
+//! one where it fits them. Each row of cells that changed since it was
+//! last drawn is drawn into a buffer as tall as a row and the width of
 //! the screen, and written to the framebuffer in one write; the
-//! framebuffer is never read.
+//! framebuffer is never read. The colours are those of the shown
+//! console's palette, and the margins round the grid are its colour 0, the
+//! background, so that a program that changes the palette colours the
+//! screen edge to edge.
 
 use std::fs::{File, OpenOptions};
 use std::io;
@@ -17,44 +21,12 @@ use std::os::fd::AsRawFd;
 use std::os::unix::fs::FileExt;
 
 use radix_abi::framebuffer::{self as abi, FramebufferInfo};
-use radix_fbcon::{Font, builtin_font, choose_font};
+use radix_fbcon::{Font, builtin_font, choose_font_for};
 
 use crate::sys;
-use crate::term::{BOLD, Cell, DIM, REVERSE, Terminal, UNDERLINE, WIDE_TAIL};
-
-/// The 16 colours of Linux's console (the VGA palette), then xterm's 240.
-fn palette_rgb(index: u8) -> (u8, u8, u8) {
-    const BASIC: [(u8, u8, u8); 16] = [
-        (0x00, 0x00, 0x00),
-        (0xaa, 0x00, 0x00),
-        (0x00, 0xaa, 0x00),
-        (0xaa, 0x55, 0x00),
-        (0x00, 0x00, 0xaa),
-        (0xaa, 0x00, 0xaa),
-        (0x00, 0xaa, 0xaa),
-        (0xaa, 0xaa, 0xaa),
-        (0x55, 0x55, 0x55),
-        (0xff, 0x55, 0x55),
-        (0x55, 0xff, 0x55),
-        (0xff, 0xff, 0x55),
-        (0x55, 0x55, 0xff),
-        (0xff, 0x55, 0xff),
-        (0x55, 0xff, 0xff),
-        (0xff, 0xff, 0xff),
-    ];
-    match index {
-        0..=15 => BASIC[usize::from(index)],
-        16..=231 => {
-            let n = index - 16;
-            let step = |i: u8| if i == 0 { 0 } else { 55 + 40 * i };
-            (step(n / 36), step(n / 6 % 6), step(n % 6))
-        }
-        _ => {
-            let level = 8 + 10 * (index - 232);
-            (level, level, level)
-        }
-    }
-}
+use crate::term::{
+    BOLD, Cell, DIM, Palette, REVERSE, Terminal, UNDERLINE, WIDE_TAIL, default_palette,
+};
 
 /// The layout of the framebuffer's pixels.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -115,7 +87,9 @@ pub struct Screen {
     cols: usize,
     rows: usize,
     origin: (usize, usize),
-    /// Each palette colour as pixel bytes.
+    /// The palette the screen is drawn in: the shown console's.
+    palette: Palette,
+    /// Each colour of `palette` as pixel bytes.
     colours: Vec<[u8; 4]>,
     /// One row of cells' pixels, the screen's width.
     band: Vec<u8>,
@@ -135,8 +109,10 @@ pub fn layout(format: &Format, font: &Font<'_>) -> (usize, usize, (usize, usize)
 }
 
 impl Screen {
-    /// Opens _/devices/fb0_ and takes the screen from the kernel's log.
-    pub fn open(path: &str) -> io::Result<Screen> {
+    /// Opens _/devices/fb0_ and takes the screen from the kernel's log,
+    /// with the largest font that gives a grid of `grid`'s columns and rows
+    /// at least, or the smallest.
+    pub fn open(path: &str, grid: (usize, usize)) -> io::Result<Screen> {
         let file = OpenOptions::new().read(true).write(true).open(path)?;
         let fd = file.as_raw_fd();
         let mut info = [0u8; FramebufferInfo::SIZE];
@@ -145,14 +121,15 @@ impl Screen {
         if !(2..=4).contains(&format.bpp) || format.pitch < format.width * format.bpp {
             return Err(io::Error::other(format!("an unusual framebuffer: {format:?}")));
         }
-        let font_name = choose_font(format.width, format.height);
+        let font_name = choose_font_for(format.width, format.height, grid);
         let font = builtin_font(font_name).ok_or_else(|| io::Error::other("no built-in font"))?;
         let (cols, rows, origin) = layout(&format, &font);
         if cols < 16 || rows < 4 {
             return Err(io::Error::other("the screen is too small for a console"));
         }
         sys::control(fd, abi::TAKE, 0, &mut [])?;
-        let colours = (0..=255u8).map(|i| format.encode(palette_rgb(i))).collect();
+        let palette = default_palette();
+        let colours = palette.iter().map(|&rgb| format.encode(rgb)).collect();
         let mut screen = Screen {
             file,
             format,
@@ -161,6 +138,7 @@ impl Screen {
             cols,
             rows,
             origin,
+            palette,
             colours,
             band: vec![0; format.pitch * font.height],
             drawn: vec![None; cols * rows],
@@ -190,19 +168,41 @@ impl Screen {
         )
     }
 
-    /// Paints the whole screen black, and forgets what was drawn.
+    /// Paints the whole screen in the palette's background, colour 0, and
+    /// forgets what was drawn. The row buffer is painted too, so that the
+    /// margins beside each row of cells, which each row's write covers,
+    /// stay that colour.
     fn clear(&mut self) -> io::Result<()> {
-        let zeros = vec![0u8; self.format.pitch * 64];
-        let total = self.format.pitch * self.format.height;
+        let (bpp, pitch, width) = (self.format.bpp, self.format.pitch, self.format.width);
+        let pixel = self.colours[0];
+        let paint = |buffer: &mut [u8]| {
+            for line in buffer.chunks_exact_mut(pitch) {
+                for px in line[..width * bpp].chunks_exact_mut(bpp) {
+                    px.copy_from_slice(&pixel[..bpp]);
+                }
+            }
+        };
+        paint(&mut self.band);
+        let mut lines = vec![0u8; pitch * 64];
+        paint(&mut lines);
+        let total = pitch * self.format.height;
         let mut at = 0;
         while at < total {
-            let len = zeros.len().min(total - at);
-            self.file.write_all_at(&zeros[..len], at as u64)?;
+            let len = lines.len().min(total - at);
+            self.file.write_all_at(&lines[..len], at as u64)?;
             at += len;
         }
         self.drawn.fill(None);
         self.drawn_cursor = None;
         Ok(())
+    }
+
+    /// Draws in `palette` from now on: every cell again, and the margins in
+    /// its background.
+    fn set_palette(&mut self, palette: &Palette) -> io::Result<()> {
+        self.palette = *palette;
+        self.colours = palette.iter().map(|&rgb| self.format.encode(rgb)).collect();
+        self.clear()
     }
 
     /// Forgets what is on the screen, so the next draw draws every cell:
@@ -216,6 +216,11 @@ impl Screen {
     /// cells over its last row if there are any: a notification
     /// (`notices`).
     pub fn draw(&mut self, term: &Terminal, bottom: Option<&[Cell]>) -> io::Result<()> {
+        // Another console's colours, or the program changed them: rare, so
+        // the whole screen is painted again.
+        if term.palette() != &self.palette {
+            self.set_palette(term.palette())?;
+        }
         let reverse = term.modes().reverse_screen;
         if reverse != self.drawn_reverse {
             self.invalidate();
@@ -265,7 +270,7 @@ impl Screen {
             }
             let mut fg_px = self.colours[usize::from(fg)];
             if cell.flags & DIM != 0 {
-                let (r, g, b) = palette_rgb(fg);
+                let (r, g, b) = self.palette[usize::from(fg)];
                 fg_px = self.format.encode((r / 2, g / 2, b / 2));
             }
             let bg_px = self.colours[usize::from(bg)];
@@ -313,13 +318,6 @@ mod tests {
     }
 
     #[test]
-    fn the_palette_is_linux_s_then_xterm_s() {
-        assert_eq!(palette_rgb(7), (0xaa, 0xaa, 0xaa));
-        assert_eq!(palette_rgb(196), (0xff, 0, 0));
-        assert_eq!(palette_rgb(244), (128, 128, 128));
-    }
-
-    #[test]
     fn lays_out_as_the_kernel_does() {
         let format = Format {
             width: 1280,
@@ -330,7 +328,7 @@ mod tests {
             green: (8, 8),
             blue: (0, 8),
         };
-        let name = choose_font(format.width, format.height);
+        let name = choose_font_for(format.width, format.height, radix_fbcon::MIN_GRID);
         let font = builtin_font(name).unwrap();
         assert_eq!(
             layout(&format, &font),

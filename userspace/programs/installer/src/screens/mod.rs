@@ -14,26 +14,29 @@
 //! Install.
 //!
 //! - [`app`] keeps the answers and acts on each key.
-//! - [`draw`] draws them.
+//! - [`draw`] draws them, and the startup screen before the first page.
+//! - [`look`] has the design's colours, which the screens set as the
+//!   terminal's palette while they show.
 //! - [`rdisk`] is the manual layout's screen, where each partition is
 //!   chosen (ADR 0311).
 //! - [`stick`] reads and saves setup files on the stick.
 
 pub mod app;
 pub mod draw;
+pub mod look;
 pub mod rdisk;
 pub mod stick;
 #[cfg(test)]
 mod tests;
 
-use std::io;
+use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::mpsc::{self, Receiver};
 use std::time::Duration;
 
 use ratatui::DefaultTerminal;
-use ratatui::crossterm::event::{self, Event as Input, KeyEventKind};
+use ratatui::crossterm::event::{self, Event as Input, KeyCode, KeyEventKind};
 
 use self::app::{App, Outcome};
 use crate::answers::{self, Answers};
@@ -52,26 +55,6 @@ const TICK: Duration = Duration::from_millis(200);
 /// or the install finished.
 #[must_use]
 pub fn run(release: Option<&Path>) -> u8 {
-    println!("{}", messages::text("starting"));
-    let mut log = match Log::create(Path::new(log::LIVE_PATH), false) {
-        Ok(log) => log,
-        Err(why) => {
-            eprintln!("dukovo-install: {why}");
-            return 1;
-        }
-    };
-    let source = match install::find_release(release, &mut log) {
-        Ok(source) => source,
-        Err(why) => {
-            log.problem(&why);
-            eprintln!("dukovo-install: {why}");
-            return 1;
-        }
-    };
-    let mut app = App::new(Machine::probe(), &source.release.version, source.release.bytes());
-    app.setup_files = stick::setup_files(source.stick.as_deref());
-    // The release's signatures were checked before the first page.
-    app.told(Event::Step(Step::Release));
     let mut terminal = match ratatui::try_init() {
         Ok(terminal) => terminal,
         Err(err) => {
@@ -79,17 +62,90 @@ pub fn run(release: Option<&Path>) -> u8 {
             return 1;
         }
     };
+    // The design's colours, for as long as the screens show.
+    send(&look::set_palette());
     // The consoles keep no second screen for full-screen programs, so
     // the screens clear what was there before them, and what they drew
-    // once they end, before the shell's prompt comes.
-    let ended = terminal.clear().and_then(|()| show(&mut terminal, &mut app, log, source));
-    let _ = terminal.clear();
+    // once they end, and give the colours back, before the shell's
+    // prompt comes.
+    let ended = terminal.clear().map_err(|err| format!("the terminal: {err}")).and_then(|()| {
+        let (mut app, log, source) = get_ready(&mut terminal, release)
+            .inspect_err(|why| cannot_start(&mut terminal, why))?;
+        show(&mut terminal, &mut app, log, source).map_err(|err| format!("the terminal: {err}"))
+    });
+    // What is printed next, a problem or the shell's prompt, starts at
+    // the top left.
+    let _ = terminal.clear().and_then(|()| terminal.set_cursor_position((0, 0)));
+    send(look::RESET_PALETTE);
     ratatui::restore();
     match ended {
         Ok(status) => status,
-        Err(err) => {
-            eprintln!("dukovo-install: the terminal: {err}");
+        Err(why) => {
+            eprintln!("dukovo-install: {why}");
             1
+        }
+    }
+}
+
+/// Sends `codes` to the terminal, past the screens' drawing.
+fn send(codes: &str) {
+    let mut out = io::stdout();
+    let _ = out.write_all(codes.as_bytes()).and_then(|()| out.flush());
+}
+
+/// What the startup screen tells, in order, while the installer gets
+/// ready for the first page: its bar fills a part for each.
+const STARTING: [&str; 3] = ["starting-release", "starting-machine", "starting-setup"];
+
+/// Gets the screens ready, the startup screen showing what is being done:
+/// the release on the stick found and its signatures checked, the
+/// machine's disks and network cards read, and the setup files on the
+/// stick listed. Gives the screens' answers, the install log and the
+/// release, or why the installer cannot go on.
+fn get_ready(
+    terminal: &mut DefaultTerminal,
+    release: Option<&Path>,
+) -> Result<(App, Log, Source), String> {
+    let mut step = |done: usize| {
+        terminal
+            .draw(|frame| {
+                draw::startup(frame, done, STARTING.len(), &messages::text(STARTING[done]));
+            })
+            .map(|_| ())
+            .map_err(|err| format!("the terminal: {err}"))
+    };
+    step(0)?;
+    let mut log = Log::create(Path::new(log::LIVE_PATH), false)?;
+    let source = install::find_release(release, &mut log).inspect_err(|why| log.problem(why))?;
+    step(1)?;
+    let machine = Machine::probe();
+    step(2)?;
+    let mut app = App::new(machine, &source.release.version, source.release.bytes());
+    app.setup_files = stick::setup_files(source.stick.as_deref());
+    // The release's signatures were checked before the first page.
+    app.told(Event::Step(Step::Release));
+    Ok((app, log, source))
+}
+
+/// Tells on the startup screen why the installer cannot start, `why`,
+/// and waits for Enter or Esc. Printed once the screens end, it would not
+/// be read on the stick: the shell consoled starts on tty1 then clears
+/// the screen.
+fn cannot_start(terminal: &mut DefaultTerminal, why: &str) {
+    loop {
+        if terminal.draw(|frame| draw::cannot_start(frame, why)).is_err() {
+            return;
+        }
+        match event::read() {
+            Ok(Input::Key(key))
+                if key.kind == KeyEventKind::Press
+                    && matches!(key.code, KeyCode::Enter | KeyCode::Esc) =>
+            {
+                return;
+            }
+            // Any other key, or the screen's size changed: drawn again.
+            Ok(_) => {}
+            Err(_) => return,
         }
     }
 }

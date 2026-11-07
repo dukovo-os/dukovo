@@ -11,8 +11,11 @@
 //! (16 colours, and the 256 of xterm's palette, which Linux maps to its
 //! 16 and this console draws as they are), the DEC line drawing set as G1
 //! (`ESC ) 0` with SO and SI, as ncurses draws boxes), the cursor and
-//! keypad modes, and the device status replies. Lines that scroll off the
-//! top of the whole screen are kept, for Shift+Page Up to look back at.
+//! keypad modes, and the device status replies. A program can change the
+//! colours each palette index shows, as xterm's OSC 4 and OSC 104 and
+//! Linux's `ESC ] P` and `ESC ] R` do, for this console alone: the
+//! installer sets its design's sixteen. Lines that scroll off the top of
+//! the whole screen are kept, for Shift+Page Up to look back at.
 //! [vte](https://github.com/alacritty/vte), Alacritty's parser, splits the
 //! bytes into characters and sequences.
 
@@ -38,6 +41,52 @@ pub const WIDE_TAIL: u8 = 16;
 
 /// How many lines that scrolled off the top are kept.
 pub const SCROLLBACK_LINES: usize = 1000;
+
+/// A colour: red, green and blue, each 0 to 255.
+pub type Rgb = (u8, u8, u8);
+
+/// The colour each of the 256 palette indices shows.
+pub type Palette = [Rgb; 256];
+
+/// The colour palette index `index` shows until a program changes it: the
+/// 16 colours of Linux's console (the VGA palette), then xterm's 240.
+pub fn default_colour(index: u8) -> Rgb {
+    const BASIC: [Rgb; 16] = [
+        (0x00, 0x00, 0x00),
+        (0xaa, 0x00, 0x00),
+        (0x00, 0xaa, 0x00),
+        (0xaa, 0x55, 0x00),
+        (0x00, 0x00, 0xaa),
+        (0xaa, 0x00, 0xaa),
+        (0x00, 0xaa, 0xaa),
+        (0xaa, 0xaa, 0xaa),
+        (0x55, 0x55, 0x55),
+        (0xff, 0x55, 0x55),
+        (0x55, 0xff, 0x55),
+        (0xff, 0xff, 0x55),
+        (0x55, 0x55, 0xff),
+        (0xff, 0x55, 0xff),
+        (0x55, 0xff, 0xff),
+        (0xff, 0xff, 0xff),
+    ];
+    match index {
+        0..=15 => BASIC[usize::from(index)],
+        16..=231 => {
+            let n = index - 16;
+            let step = |i: u8| if i == 0 { 0 } else { 55 + 40 * i };
+            (step(n / 36), step(n / 6 % 6), step(n % 6))
+        }
+        _ => {
+            let level = 8 + 10 * (index - 232);
+            (level, level, level)
+        }
+    }
+}
+
+/// The palette before a program changes it.
+pub fn default_palette() -> Palette {
+    std::array::from_fn(|i| default_colour(i as u8))
+}
 
 /// One character position on the screen.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -140,6 +189,8 @@ struct State {
     scrollback: VecDeque<Vec<Cell>>,
     /// How many lines back the screen shows; 0 for the live screen.
     view: usize,
+    /// The colour each palette index shows on this console.
+    palette: Palette,
 }
 
 /// A virtual console's terminal.
@@ -178,6 +229,7 @@ impl Terminal {
             replies: Vec::new(),
             scrollback: VecDeque::new(),
             view: 0,
+            palette: default_palette(),
         };
         state.reset_tabs();
         Terminal { parser: Parser::new(), state }
@@ -225,6 +277,11 @@ impl Terminal {
     /// The modes the program set.
     pub fn modes(&self) -> Modes {
         self.state.modes
+    }
+
+    /// The colour each palette index shows on this console.
+    pub fn palette(&self) -> &Palette {
+        &self.state.palette
     }
 
     /// Takes the replies to send to the program.
@@ -407,6 +464,42 @@ fn nearest(r: u16, g: u16, b: u16) -> u8 {
     if grey_error < cube_error((r, g, b)) { (232 + grey) as u8 } else { cube as u8 }
 }
 
+/// The colour an xterm colour specification names: `rgb:R/G/B`, each
+/// part one to four hex digits, the fraction of full they make, or
+/// `#RRGGBB`.
+fn parse_colour(spec: &[u8]) -> Option<Rgb> {
+    let text = std::str::from_utf8(spec).ok()?;
+    if let Some(hex) = text.strip_prefix('#') {
+        return hex_colour(hex);
+    }
+    let mut parts = text.strip_prefix("rgb:")?.split('/');
+    let mut part = || -> Option<u8> {
+        let digits = parts.next()?;
+        if !(1..=4).contains(&digits.len()) || !digits.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return None;
+        }
+        let value = u32::from_str_radix(digits, 16).ok()?;
+        let full = (1 << (4 * digits.len())) - 1;
+        u8::try_from((value * 255 + full / 2) / full).ok()
+    };
+    let colour = (part()?, part()?, part()?);
+    parts.next().is_none().then_some(colour)
+}
+
+/// The colour six hex digits name, `RRGGBB`.
+fn hex_colour(hex: &str) -> Option<Rgb> {
+    if hex.len() != 6 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    let byte = |at: usize| u8::from_str_radix(&hex[at..at + 2], 16).ok();
+    Some((byte(0)?, byte(2)?, byte(4)?))
+}
+
+/// The palette index a decimal OSC parameter names.
+fn palette_index(param: &[u8]) -> Option<u8> {
+    std::str::from_utf8(param).ok()?.parse().ok()
+}
+
 impl State {
     fn index(&self, x: usize, y: usize) -> usize {
         y * self.cols + x
@@ -444,6 +537,9 @@ impl State {
         };
         self.modes = Modes::DEFAULT;
         self.view = 0;
+        // As xterm's reset does: a program that ended without giving the
+        // colours back leaves them to nobody after it.
+        self.palette = default_palette();
     }
 
     /// Rows `from..=to` move up `n`, the top ones going; blanks come in at
@@ -861,6 +957,50 @@ impl Perform for State {
         }
     }
 
+    /// The operating system commands: those that change the palette.
+    fn osc_dispatch(&mut self, params: &[&[u8]], bell_terminated: bool) {
+        match params {
+            // OSC 4 ; index ; colour, as many pairs as come: each index
+            // shows the colour from now on, or, for `?`, its colour is
+            // told back, as xterm tells it.
+            [b"4", pairs @ ..] => {
+                for [index, colour] in pairs.as_chunks::<2>().0 {
+                    let Some(index) = palette_index(index) else { continue };
+                    if *colour == b"?" {
+                        let (r, g, b) = self.palette[usize::from(index)];
+                        let end = if bell_terminated { "\x07" } else { "\x1b\\" };
+                        self.reply(&format!(
+                            "\x1b]4;{index};rgb:{r:02x}{r:02x}/{g:02x}{g:02x}/{b:02x}{b:02x}{end}"
+                        ));
+                    } else if let Some(colour) = parse_colour(colour) {
+                        self.palette[usize::from(index)] = colour;
+                    }
+                }
+            }
+            // OSC 104 gives every index its colour back, or those it names.
+            [b"104"] | [b"104", b""] => self.palette = default_palette(),
+            [b"104", indices @ ..] => {
+                for index in indices.iter().filter_map(|param| palette_index(param)) {
+                    self.palette[usize::from(index)] = default_colour(index);
+                }
+            }
+            // Linux's own: `ESC ] P nrrggbb` sets one of the sixteen, `ESC ]
+            // R` gives them back. Linux needs nothing after them; here they
+            // end at the next escape sequence or BEL, as vte reads them.
+            [linux] if linux.len() == 8 && linux[0] == b'P' => {
+                // Read byte by byte: the bytes are a program's, and need
+                // not be text.
+                let index = char::from(linux[1]).to_digit(16).and_then(|d| u8::try_from(d).ok());
+                let colour = std::str::from_utf8(&linux[2..]).ok().and_then(hex_colour);
+                if let (Some(index), Some(colour)) = (index, colour) {
+                    self.palette[usize::from(index)] = colour;
+                }
+            }
+            [b"R"] => self.palette = default_palette(),
+            _ => {}
+        }
+    }
+
     fn esc_dispatch(&mut self, intermediates: &[u8], ignore: bool, byte: u8) {
         if ignore {
             return;
@@ -1027,6 +1167,52 @@ mod tests {
         // Parameters past 255 are 255, not an overflow.
         let term = term("\x1b[38;2;65535;65535;65535mw");
         assert_eq!(term.cell(0, 0).fg, 231);
+    }
+
+    #[test]
+    fn the_palette_is_linux_s_then_xterm_s() {
+        assert_eq!(default_colour(7), (0xaa, 0xaa, 0xaa));
+        assert_eq!(default_colour(196), (0xff, 0, 0));
+        assert_eq!(default_colour(244), (128, 128, 128));
+    }
+
+    #[test]
+    fn programs_change_the_palette_and_give_it_back() {
+        // xterm's OSC 4, in each of its colour forms, ended by ST or BEL.
+        let mut term =
+            term("\x1b]4;0;rgb:15/18/1c\x1b\\\x1b]4;3;#C8873A\x07\x1b]4;7;rgb:f/8/0\x07");
+        assert_eq!(term.palette()[0], (0x15, 0x18, 0x1c));
+        assert_eq!(term.palette()[3], (0xc8, 0x87, 0x3a));
+        assert_eq!(term.palette()[7], (0xff, 0x88, 0x00));
+        // Several pairs in one, and four digits a part.
+        term.feed(b"\x1b]4;1;rgb:ffff/0000/8000;2;#000000\x1b\\");
+        assert_eq!((term.palette()[1], term.palette()[2]), ((0xff, 0, 0x80), (0, 0, 0)));
+        // What is not a colour changes nothing, and the text goes on.
+        term.feed(b"\x1b]4;5;red\x07\x1b]4;300;#ffffff\x07x");
+        assert_eq!(term.palette()[5], default_colour(5));
+        assert_eq!(term.row_text(0), "x");
+        // Asked, it tells the colour as xterm does.
+        term.feed(b"\x1b]4;3;?\x07");
+        assert_eq!(term.take_replies(), b"\x1b]4;3;rgb:c8c8/8787/3a3a\x07");
+        // OSC 104 gives back those it names, then all.
+        term.feed(b"\x1b]104;3\x1b\\");
+        assert_eq!(term.palette()[3], default_colour(3));
+        assert_eq!(term.palette()[0], (0x15, 0x18, 0x1c));
+        term.feed(b"\x1b]104\x1b\\");
+        assert_eq!(term.palette(), &default_palette());
+        // Linux's own, and its reset.
+        term.feed(b"\x1b]P1112233\x1b[m");
+        assert_eq!(term.palette()[1], (0x11, 0x22, 0x33));
+        term.feed(b"\x1b]R\x07");
+        assert_eq!(term.palette()[1], default_colour(1));
+        // Bytes that are not its hex digits, text or not, change nothing.
+        term.feed("\x1b]Pé12345\x07".as_bytes());
+        term.feed(b"\x1b]P\xff123456\x07");
+        assert_eq!(term.palette(), &default_palette());
+        // A new session starts with the colours as they were.
+        term.feed(b"\x1b]4;0;#ffffff\x07");
+        term.reset();
+        assert_eq!(term.palette()[0], (0, 0, 0));
     }
 
     #[test]

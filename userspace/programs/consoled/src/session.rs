@@ -134,7 +134,9 @@ impl Console {
         let sign_in = shell.sign_in && once.is_none();
         let number = self.number;
         let issue = match &shell.welcome {
-            _ if once.is_some() => String::new(),
+            // A program run once draws the whole screen; until it starts
+            // to, no cursor blinks on the empty one.
+            _ if once.is_some() => "\x1b[?25l".to_string(),
             Some(welcome) if sign_in => {
                 welcome.render(self.term.cols(), self.term.rows(), &|text: &str| {
                     expand_issue(text, number)
