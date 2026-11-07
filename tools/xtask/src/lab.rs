@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 The Dukovo contributors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! The Dukovo Lab's side of `ob` (ADR 0400): `ob image --lab`, the image
+//! The Dukovo Lab's side of `ob` (ADR 0401): `ob image --lab`, the image
 //! the lab tests, and `ob lab`, which runs the lab's harness on this
 //! tree's tests in `lab/tests`.
 //!
@@ -125,7 +125,7 @@ pub fn stage(staging: &Path, system: &Path, key: &Key) -> Result<Owned> {
     std::fs::create_dir_all(&overrides).context(|| format!("making {}", overrides.display()))?;
     write(
         &overrides.join("sshd.toml"),
-        "# The lab image: the lab signs in over SSH (ADR 0400).\nenabled = true\n",
+        "# The lab image: the lab signs in over SSH (ADR 0401).\nenabled = true\n",
         0o644,
     )?;
 

@@ -7,7 +7,7 @@
 //! the subvolumes and writes the staging tree into them, compressed. No
 //! btrfs-progs is needed, and every file is root's (ADR 0213) but the
 //! trees an [`Owned`] names: the lab account's home in a lab image (ADR
-//! 0400), whose SSH key sshd reads only from a home that is the account's
+//! 0401), whose SSH key sshd reads only from a home that is the account's
 //! or root's and that authd, finding it there, leaves as it is.
 
 use std::io::Read as _;

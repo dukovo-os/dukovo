@@ -9,7 +9,7 @@ The boot tests run in QEMU on every change. The Dukovo Lab's tests go
 further: they pull network cables, cut power, plug in USB sticks and run
 on real machines as well as in QEMU. Each test is a small TOML file in
 `lab/tests`, and `dukovo-lab`, the lab's harness, runs them
-([ADR 0400](https://github.com/dukovo-os/dukovo/blob/main/docs/adr/0400-the-lab-tests-a-lab-image-over-ssh-with-dukovo-lab.md)).
+([ADR 0401](https://github.com/dukovo-os/dukovo/blob/main/docs/adr/0401-the-lab-tests-a-lab-image-over-ssh-with-dukovo-lab.md)).
 
 ## Running them
 

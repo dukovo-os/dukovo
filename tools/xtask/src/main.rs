@@ -192,7 +192,7 @@ DUKOVO_LIVE partition holds the signed release the installer installs
   --lab                An installed system's disk for the Dukovo Lab, never a
                        release: beside the system's slot, an administrator's
                        account `lab` that signs in only over SSH with the lab's
-                       key, sshd turned on and a banner saying so (ADR 0400)
+                       key, sshd turned on and a banner saying so (ADR 0401)
   --lab-key <file>     The lab's public key (default
                        ~/.config/dukovo-lab/lab_ed25519.pub, which
                        `dukovo-lab key` makes)
@@ -468,7 +468,7 @@ and take minutes.
               <dukovo-lab command> [options]
 
 Runs dukovo-lab, the Dukovo Lab's harness (github.com/dukovo-os/lab), on
-this tree's tests in lab/tests (ADR 0400). For `run`, builds the lab image
+this tree's tests in lab/tests (ADR 0401). For `run`, builds the lab image
 first, as `./ob image --lab` does, and passes it on with this tree's
 version and commit; the other commands (list, show, machines) pass
 through as they are. Each test boots the image on a machine of the lab's,

@@ -211,7 +211,7 @@ _target/userspace/_).
 		account *lab*, whose password no one knows, so that it signs in
 		only over SSH with the lab's key; sshd turned on by an override
 		file; and a sign-in banner that says the image is a test image
-		(ADR 0400). *lab run* tests it. Never give it to anyone as a
+		(ADR 0401). *lab run* tests it. Never give it to anyone as a
 		release.
 
 	*--lab-key* _file_
@@ -1444,7 +1444,7 @@ _target/userspace/_).
 *lab* [*--no-build* | *--image* _file_] [*--lab-key* _file_] [*--debug* | *--release*] _command_ [_options_]
 	Run *dukovo-lab*, the Dukovo Lab's harness (from
 	_https://github.com/dukovo-os/lab_), on this tree's tests in
-	_lab/tests_ (ADR 0400). For *run*, first build the lab image as
+	_lab/tests_ (ADR 0401). For *run*, first build the lab image as
 	*image --lab* does, and pass it on with this tree's version and
 	commit; *list*, *show* and *machines* pass through as they are. Each
 	test boots the image on one of the lab's machines, QEMU by default,

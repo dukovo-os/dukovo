@@ -3,7 +3,7 @@ SPDX-FileCopyrightText: 2026 The Dukovo contributors
 SPDX-License-Identifier: Apache-2.0 OR MIT
 -->
 
-# 0400. The Dukovo Lab tests a lab image over SSH, with tests kept here
+# 0401. The Dukovo Lab tests a lab image over SSH, with tests kept here
 
 - Status: Accepted
 - Date: 2026-11-07

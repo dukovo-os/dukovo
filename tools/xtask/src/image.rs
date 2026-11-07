@@ -125,7 +125,7 @@ pub enum Kind {
     Installed,
     /// An installed system's disk for the Dukovo Lab: the lab's account,
     /// key and sshd beside the system's slot, which is a release's
-    /// (ADR 0400). Never a release itself.
+    /// (ADR 0401). Never a release itself.
     Lab,
 }
 
@@ -161,7 +161,7 @@ pub struct Overrides {
     pub disk_check: Option<String>,
     /// An account to make in the root (ADR 0218).
     pub account: Option<Account>,
-    /// The lab key a [`Kind::Lab`] image trusts (ADR 0400).
+    /// The lab key a [`Kind::Lab`] image trusts (ADR 0401).
     pub lab: Option<lab::Key>,
 }
 
@@ -821,7 +821,7 @@ pub const SLOT_ARCHIVE: &str = "archive";
 pub struct Extras<'a> {
     /// An account to make (`ob image --user`, ADR 0218).
     pub account: Option<&'a Account>,
-    /// The lab's account, home and sshd, trusting this key (ADR 0400).
+    /// The lab's account, home and sshd, trusting this key (ADR 0401).
     pub lab: Option<&'a lab::Key>,
 }
 
