@@ -468,33 +468,42 @@ and take minutes.
         }
         "lab" => {
             "Usage: ./ob lab [--no-build | --image <file>] [--lab-key <file>] [--debug | --release]
-              <dukovo-lab command> [options]
+              [<dukovo-lab command>] [options]
 
 Runs dukovo-lab, the Dukovo Lab's harness (github.com/dukovo-os/lab), on
-this tree's tests in lab/tests (ADR 0401). For `run` and `ui` (the runner
-page), builds the lab image first, as `./ob image --lab` does, and passes
-it on with this tree's version and commit; the other commands (list,
-show, machines, status, stop, done, results, runs) pass through as they
-are. Each test boots the image on a machine of the lab's, QEMU by
+this tree's tests in lab/tests (ADR 0401).
+
+Plain ./ob lab, with no command, sets up the lab and opens it: it checks
+QEMU, OVMF, OpenSSH, git and gzip are installed (printing the apt line if
+not), installs dukovo-lab or updates it to the newest, makes the lab key,
+clones dukovo-os/lab-results for Send (over SSH, else HTTPS; the PC's
+GitHub account needs push access, and without it Send stays off), then
+does what ./ob lab ui does. Each setup step is skipped once done.
+
+For `run` and `ui` (the runner page), builds the lab image first, as
+`./ob image --lab` does, and passes it on with this tree's version and
+commit; the other commands (list, show, machines, status, stop, done,
+results, runs, findings, send) pass through as they are. Each test boots the image on a machine of the lab's, QEMU by
 default, and the run leaves a bundle of results and logs under
 ~/.local/share/dukovo-lab/runs. ob exits as dukovo-lab does: 0 every test
 passed, 1 a test failed, 2 a bad request or test file, 3 the lab broke,
 4 a machine was busy with another run.
-dukovo-lab is found on PATH, or at OB_LAB; install it with
-`cargo install --locked --git https://github.com/dukovo-os/lab`, then
-make the lab key once with `dukovo-lab key`.
+dukovo-lab is found on PATH, in ~/.cargo/bin, or at OB_LAB (which plain
+./ob lab then leaves as it is).
 
   --no-build         Test the lab image already in out/
   --image <file>     Test this image instead of building one
   --lab-key <file>   The lab's public key, as ./ob image --lab takes it
 
 Examples:
+  ./ob lab                  # set up, then open the runner page
   ./ob lab list
   ./ob lab run --all
   ./ob lab run boot/ drivers/link-pull --machine qemu,qemu-bios
   ./ob lab run --preset quick --detach
   ./ob lab status --wait
-  ./ob lab ui"
+  ./ob lab findings
+  ./ob lab send --all"
         }
         "fixture" => {
             "Usage: ./ob fixture btrfs-log|btrfs-radix-log|ntfs-3g [--linux-kernel <file>]

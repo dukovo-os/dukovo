@@ -13,14 +13,23 @@ on real machines as well as in QEMU. Each test is a small TOML file in
 
 ## Running them
 
-Install the harness and make the lab's key once:
+One command sets the lab up and opens it:
 
 ```sh
-cargo install --locked --git https://github.com/dukovo-os/lab
-dukovo-lab key
+./ob lab
 ```
 
-Then, from this repository:
+It checks that QEMU, OVMF, OpenSSH, git and gzip are installed (and
+prints the `apt install` line if not), installs `dukovo-lab` or updates
+it to the newest, makes the lab's key, clones the private
+dukovo-os/lab-results repository that Send uses, builds the lab image
+and opens the runner page. Each setup step is skipped once it is done,
+so after the first time it only builds and opens. The clone needs this
+PC's GitHub account to have push access to lab-results, through an SSH
+key on GitHub or a sign-in git keeps (`gh auth login`); without it the
+page still opens, with Send off.
+
+The same from a terminal, a command at a time:
 
 ```sh
 ./ob lab list          # every test
@@ -29,6 +38,8 @@ Then, from this repository:
 ./ob lab run drivers/link-pull --machine qemu,qemu-bios
 ./ob lab run --preset quick         # the presets are in lab/tests/presets.toml
 ./ob lab ui                         # the runner page, in a browser on this PC
+./ob lab findings                   # what failed, each failure with the runs it came back in
+./ob lab send --all                 # new findings and their runs, to lab-results
 ```
 
 `./ob lab run` and `./ob lab ui` build the lab image,
@@ -42,7 +53,11 @@ can also go in the background: `./ob lab run --all --detach`, then
 `./ob lab stop`. A run keeps testing the image it started with even if
 the image is rebuilt meanwhile. Each run leaves a bundle with the
 results, every machine's serial log and the screenshots of failures
-under `~/.local/share/dukovo-lab/runs`. Without KVM, QEMU is
+under `~/.local/share/dukovo-lab/runs`. Each failure belongs to a
+*finding*: the same test failing the same way, so one that comes back
+joins it rather than making a new one. On the page, a finding can be
+sent to lab-results, where a thread proposes a fix that waits for the
+maintainer's approval, or marked not a bug. Without KVM, QEMU is
 some four times slower, and the time limits stretch to match.
 
 ## The lab image
