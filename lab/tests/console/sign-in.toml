@@ -1,0 +1,33 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "The console signs the lab account in with its password, runs its shell on a terminal of its own, and signs it out again"
+time = "4m"
+
+# Sign in as the lab account, at the console.
+[[step]]
+screen = "Name:"
+[[step]]
+type = "lab\n"
+[[step]]
+screen = "Password:"
+[[step]]
+type = "{password}\n"
+[[step]]
+serial = "authd: lab signed in on pts/"
+[[step]]
+screen = "lab@dukovo ~ $"
+# The shell is the lab account's, on a pseudo-terminal. The label is split
+# in two so that only the output, not the command line, holds it whole.
+[[step]]
+type = "echo \"in\"\": $(whoami) $(tty)\"\n"
+[[step]]
+screen = "in: lab /devices/pts/"
+
+# Sign out, which brings the sign-in back for the next test.
+[[step]]
+type = "exit\n"
+[[step]]
+serial = "authd: lab signed out on pts/"
+[[step]]
+screen = "Name:"

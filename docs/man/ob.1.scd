@@ -1481,6 +1481,14 @@ _target/userspace/_).
 	When the kit cannot be built, *ob* says why and the performance tests
 	skip. A *--linux* given after _command_ is passed on instead.
 
+	For *run* and *ui*, also pass the console's fonts,
+	_kernel/lib/fbcon/fonts_, with *--fonts*, which the *screen* steps
+	read the console's text with, and build the install stick as *image*
+	does and pass it with *--stick*, for the installer's tests (those
+	with *boot = "stick"*). With *--no-build*, the stick already in
+	_out_ is used; with *--image*, none is built, and the installer's
+	tests skip unless a *--stick* is given after _command_.
+
 	*dukovo-lab* is found on *PATH*, or at *OB_LAB*. The handbook's Lab
 	tests chapter shows how to write a test.
 

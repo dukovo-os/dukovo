@@ -1,0 +1,91 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "elevate at the console asks for the password on consoled's bottom line and runs the command as root; Ctrl+Alt+Delete clears what was typed, Esc gives up, and the terminal stays unlocked for its session alone"
+time = "8m"
+
+# Sign in as the lab account, at the console.
+[[step]]
+screen = "Name:"
+[[step]]
+type = "lab\n"
+[[step]]
+screen = "Password:"
+[[step]]
+type = "{password}\n"
+[[step]]
+serial = "authd: lab signed in on pts/"
+[[step]]
+screen = "lab@dukovo ~ $"
+
+# The password, asked for on the bottom line, runs the command as root.
+[[step]]
+type = "elevate id\n"
+[[step]]
+screen = "[elevate] Password for lab, to run /system/commands/id"
+[[step]]
+type = "{password}\n"
+[[step]]
+screen = "uid=0(root) gid=0(root)"
+[[step]]
+serial = "authd: lab elevated on pts/"
+# The terminal stays unlocked: -n, which never asks, now works.
+[[step]]
+type = "elevate -n true; echo \"kept\"\": $?\"\n"
+[[step]]
+screen = "kept: 0"
+
+# Ctrl+Alt+Delete at the prompt clears what was typed there: the right
+# password typed after it works. -k forgets the password typed above.
+[[step]]
+type = "elevate -k id; echo \"cleared\"\": $?\"\n"
+[[step]]
+screen = "[elevate] Password for lab"
+[[step]]
+type = "not-it"
+[[step]]
+keys = ["ctrl-alt-delete"]
+[[step]]
+type = "{password}\n"
+[[step]]
+screen = "cleared: 0"
+# Esc closes the prompt, and elevate gives up.
+[[step]]
+type = "elevate -k id; echo \"closed\"\": $?\"\n"
+[[step]]
+screen = "[elevate] Password for lab"
+[[step]]
+keys = ["esc"]
+[[step]]
+screen_gone = "[elevate] Password for lab"
+[[step]]
+screen = ["elevate: no password was typed", "closed: 1"]
+
+# A new session on the same console is another terminal pane: elevate
+# asks again.
+[[step]]
+type = "exit\n"
+[[step]]
+serial = "authd: lab signed out on pts/"
+[[step]]
+screen = "Name:"
+[[step]]
+type = "lab\n"
+[[step]]
+screen = "Password:"
+[[step]]
+type = "{password}\n"
+[[step]]
+serial = "authd: lab signed in on pts/"
+[[step]]
+type = "elevate -n true; echo \"again\"\": $?\"\n"
+[[step]]
+screen = ["a password is needed, and -n says not to ask for one", "again: 1"]
+
+# Sign out, which brings the sign-in back for the next test.
+[[step]]
+type = "exit\n"
+[[step]]
+serial = "authd: lab signed out on pts/"
+[[step]]
+screen = "Name:"

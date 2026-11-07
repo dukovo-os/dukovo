@@ -305,6 +305,9 @@ pub fn command(ctx: &Ctx, args: &mut Args) -> Result<()> {
     let mut lab = Command::new(&tool);
     lab.arg("--tests").arg(ctx.root.join("lab/tests"));
     if lab_command(&rest).is_some_and(|command| NEEDS_IMAGE.contains(&command)) {
+        // An image given by hand has no stick of its own: one comes only
+        // with --stick.
+        let built_here = given_image.is_none();
         let image = match given_image {
             Some(image) => PathBuf::from(image),
             None if no_build => ctx.out.join(image::file_name(image::Kind::Lab)),
@@ -340,6 +343,32 @@ pub fn command(ctx: &Ctx, args: &mut Args) -> Result<()> {
                 Err(why) => eprintln!("    note: performance tests will skip: {why}"),
             }
         }
+        // The console's fonts, the kernel's and consoled's own, for the
+        // steps that read the screen.
+        if !rest.iter().any(|arg| arg == "--fonts") {
+            lab.arg("--fonts").arg(ctx.root.join(CONSOLE_FONTS));
+        }
+        // The install stick of the same tree, for the installer's tests.
+        if built_here && !rest.iter().any(|arg| arg == "--stick") {
+            let stick = if no_build {
+                let stick = ctx.out.join(image::file_name(image::Kind::Stick));
+                if stick.is_file() {
+                    Ok(stick)
+                } else {
+                    Err("no install stick was built yet, and --no-build builds none".to_string())
+                }
+            } else {
+                step("Building the install stick, for the installer's tests");
+                image::build_release(ctx, profile, image::Kind::Stick, &Overrides::default())
+                    .map_err(|e| e.to_string())
+            };
+            match stick {
+                Ok(stick) => {
+                    lab.arg("--stick").arg(stick);
+                }
+                Err(why) => eprintln!("    note: the installer's tests will skip: {why}"),
+            }
+        }
     }
     lab.args(&rest);
     // dukovo-lab's own exit status says how the run went (0 passed, 1 a
@@ -351,6 +380,10 @@ pub fn command(ctx: &Ctx, args: &mut Args) -> Result<()> {
         None => bail!("{} was stopped by a signal", tool.display()),
     }
 }
+
+/// The console's fonts, which dukovo-lab reads the screen's text with:
+/// the PSF files the kernel and consoled draw in.
+const CONSOLE_FONTS: &str = "kernel/lib/fbcon/fonts";
 
 /// The file in a Linux kit's folder that describes it, as dukovo-lab reads
 /// it.
@@ -675,6 +708,19 @@ mod tests {
         assert!(bench::LINUX_CMDLINE.contains("console=ttyS0"));
         assert!(kit.contains(&format!("cmdline = \"{}\"\n", bench::LINUX_CMDLINE)), "{kit}");
         assert!(kit.contains("done = \"linux-bench: done\"\n"), "{kit}");
+    }
+
+    #[test]
+    fn the_console_fonts_are_where_the_lab_reads_them() {
+        // dukovo-lab reads the screen with every PSF font in the folder;
+        // one moved elsewhere would leave the screen steps with none.
+        let folder =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").join(CONSOLE_FONTS);
+        let fonts = std::fs::read_dir(&folder)
+            .unwrap()
+            .filter(|entry| entry.as_ref().unwrap().path().extension().is_some_and(|e| e == "psfu"))
+            .count();
+        assert!(fonts > 0, "no .psfu fonts in {}", folder.display());
     }
 
     #[test]

@@ -1,9 +1,13 @@
 # SPDX-FileCopyrightText: 2026 The Dukovo contributors
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 
-about = "A USB stick plugged in shows up as a disk, and goes when pulled out"
+about = "A USB stick plugged in shows up as a USB device and a disk, and both go when it is pulled out"
 time = "3m"
 
+# How many USB devices there are before, kept in the lab's home: the
+# machine has others, such as the pointer.
+[[step]]
+run = "sh -c 'lsusb | wc -l > ~/usb-before'"
 [[step]]
 usb = "plug"
 blank = "64M"
@@ -13,8 +17,8 @@ wait = "5s"
 run = "lsblk -dn"
 expect = "64M"
 [[step]]
-run = "lsusb"
-expect = "Bus 00"
+run = "sh -c 'echo \"more\"\": $(( $(lsusb | wc -l) - $(cat ~/usb-before) ))\"'"
+expect = "more: 1"
 [[step]]
 usb = "unplug"
 [[step]]
@@ -22,3 +26,6 @@ wait = "5s"
 [[step]]
 run = "lsblk -dn"
 expect_not = "64M"
+[[step]]
+run = "sh -c 'echo \"more\"\": $(( $(lsusb | wc -l) - $(cat ~/usb-before) ))\"; rm ~/usb-before'"
+expect = "more: 0"

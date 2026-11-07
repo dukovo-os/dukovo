@@ -1,0 +1,112 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "The install stick's installer erases a blank disk and installs Dukovo, every screen answered by keys; with the stick pulled the disk boots, and the account made in the screens signs in"
+time = "30m"
+boot = "stick"
+disk = "8G"
+
+# The stick's menu starts the installer by itself.
+[[step]]
+serial = "consoled: install: the installer's screens on tty1"
+[[step]]
+screen = ["Step 1 of 5", "How do you want to install?", "Step by step"]
+# F1 shows the page's help, and Esc closes it.
+[[step]]
+keys = ["f1"]
+[[step]]
+screen = ["Live console leaves the installer for a shell", "Esc closes"]
+[[step]]
+keys = ["esc"]
+[[step]]
+screen_gone = "Esc closes"
+
+# Network: the computer's name, then its time zone found by the start of
+# its name.
+[[step]]
+keys = ["ret"]
+[[step]]
+screen = ["Step 2 of 5", "Network cards found:", "Automatic (DHCP)"]
+[[step]]
+keys = ["down", "down", "down", "backspace", "backspace", "backspace", "backspace", "backspace", "backspace"]
+[[step]]
+type = "lab-installed"
+[[step]]
+keys = ["down"]
+[[step]]
+type = "america/denver"
+[[step]]
+screen = "America/Denver"
+
+# Disk: the stick cannot be chosen; the blank disk can.
+[[step]]
+keys = ["ret"]
+[[step]]
+screen = ["Step 3 of 5", "the install stick, can't be chosen", "Erase the disk"]
+[[step]]
+screenshot = "disks"
+[[step]]
+keys = ["spc", "ret"]
+
+# The administrator: the name makes the user name, and the password is
+# the lab's, typed and never shown.
+[[step]]
+screen = ["Step 4 of 5", "The administrator account."]
+[[step]]
+type = "Ada Lovelace"
+[[step]]
+keys = ["tab", "tab"]
+[[step]]
+type = "{password}"
+[[step]]
+keys = ["tab"]
+[[step]]
+type = "{password}"
+[[step]]
+keys = ["ret"]
+
+# Review: everything the install does, and the disk's name to confirm it.
+[[step]]
+screen = ["Step 5 of 5", "ada (Ada Lovelace), administrator", "America/Denver", "lab-installed", "Type sda to confirm"]
+[[step]]
+type = "sda\n"
+[[step]]
+screen = "Installing Dukovo"
+[[step]]
+screen = ["Remove the install stick, then restart.", "Dukovo is installed"]
+[[step]]
+screenshot = "installed"
+
+# Pull the stick and restart from the Done page: the disk boots alone.
+[[step]]
+usb = "unplug"
+[[step]]
+keys = ["ret"]
+[[step]]
+serial = "asked to restart the machine"
+[[step]]
+serial = "consoled: started /system/commands/login on tty1"
+[[step]]
+screen = "Name:"
+[[step]]
+type = "ada\n"
+[[step]]
+screen = "Password:"
+[[step]]
+type = "{password}\n"
+[[step]]
+serial = "authd: ada signed in on pts/"
+# The answers given in the screens, each label split so that only the
+# output holds it whole.
+[[step]]
+type = "echo \"host\"\": $(cat /system/settings/hostname)\"\n"
+[[step]]
+screen = "host: lab-installed"
+[[step]]
+type = "echo \"zone\"\": $(readlink /system/settings/localtime)\"\n"
+[[step]]
+screen = "zone: /system/resources/zoneinfo/America/Denver"
+[[step]]
+type = "echo \"admins\"\": $(grep '^admins:' /system/settings/group)\"\n"
+[[step]]
+screen = "admins: admins:x:10:ada"

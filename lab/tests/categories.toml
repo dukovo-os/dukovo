@@ -11,6 +11,11 @@ title = "Boot and power"
 about = "Starting up, restarting and turning off, cleanly and not"
 
 [[category]]
+name = "install"
+title = "Installing"
+about = "The install stick: its menu, the installer's screens, and the installed system's first boot"
+
+[[category]]
 name = "hardware"
 title = "Hardware and drivers"
 about = "The devices found and working: controllers, disks, USB, CPUs and memory"
@@ -44,6 +49,11 @@ about = "Accounts made and removed, groups, and running as root"
 name = "commands"
 title = "Commands"
 about = "The command-line tools: files, text, archives, git, the shell and help"
+
+[[category]]
+name = "console"
+title = "The console"
+about = "Signing in at the machine's own screen and keyboard, consoles and typing"
 
 [[category]]
 name = "performance"
