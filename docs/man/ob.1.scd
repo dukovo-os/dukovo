@@ -1510,7 +1510,9 @@ _target/userspace/_).
 		counting (*-icount shift=0,align=off*, no KVM), where each
 		instruction moves the guest's clock by a nanosecond, so each
 		benchmark gives the user and kernel instructions an operation
-		took, the same on every machine. The report goes to
+		took, the same on every machine. The kernel is given
+		*norandmaps* (*dukovo-boot*(7)), so that programs' memory is in
+		the same places every run. The report goes to
 		_out/bench/instructions.md_; no Linux runs. With *--gate*, fail
 		if an operation on one CPU takes more instructions than its
 		budget (*BUDGETS* in _tools/xtask/src/bench.rs_: what it took

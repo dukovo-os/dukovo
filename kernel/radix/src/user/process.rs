@@ -571,13 +571,7 @@ impl ProcessObject {
     pub fn set_args(&self, args: &[u8]) {
         let kept = &args[..args.len().min(ARGS_KEPT)];
         let mut copy = Vec::new_in(kmalloc());
-        let copy = copy.try_reserve_exact(kept.len()).ok().map(|()| {
-            for &byte in kept {
-                // Room was reserved above.
-                let _ = copy.push_within_capacity(byte);
-            }
-            copy
-        });
+        let copy = radix_mm::bytes::extend(&mut copy, kept).ok().map(|()| copy);
         let old = core::mem::replace(&mut *self.args.lock(), copy);
         drop(old);
     }
@@ -595,10 +589,10 @@ impl ProcessObject {
             return;
         }
         if let Some(args) = parent.args.lock().as_ref() {
-            // Room was reserved above for as many as it had then.
-            for &byte in args.iter().take(len) {
-                let _ = copy.push_within_capacity(byte);
-            }
+            // Copied whole, not a byte at a time, and no more than the
+            // room reserved above for as many as it had then, so this
+            // never allocates with the lock held: it cannot fail.
+            let _ = radix_mm::bytes::extend(&mut copy, &args[..len.min(args.len())]);
         }
         let old = self.args.lock().replace(copy);
         drop(old);

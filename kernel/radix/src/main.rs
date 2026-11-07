@@ -119,6 +119,9 @@ pub struct Settings {
     pub lockdep: Option<bool>,
     /// `fuzz-seed=number`: the first seed of `selftest=fuzz`.
     pub fuzz_seed: Option<u64>,
+    /// Programs' memory goes to random places, unless `norandmaps` keeps
+    /// it in the same places every boot (`user::random::place`).
+    pub random_maps: bool,
 }
 
 static SETTINGS: Once<Settings> = Once::new();
@@ -144,6 +147,7 @@ pub fn settings() -> Settings {
         selftest: None,
         lockdep: None,
         fuzz_seed: None,
+        random_maps: true,
     })
 }
 
@@ -183,6 +187,7 @@ pub extern "Rust" fn radix_kernel_main(mut params: BootParams) -> ! {
             _ => None,
         },
         fuzz_seed: flags.value("fuzz-seed").and_then(|v| v.parse().ok()),
+        random_maps: !flags.has("norandmaps"),
     };
     let _ = SETTINGS.set(settings);
     if let Some(level) = flags.value("loglevel") {
@@ -217,6 +222,9 @@ pub extern "Rust" fn radix_kernel_main(mut params: BootParams) -> ! {
         && !matches!(value, "on" | "off")
     {
         warn!("Unknown lockdep setting `{value}`; it is on or off");
+    }
+    if !settings.random_maps {
+        info!("User memory: in the same places every boot (norandmaps)");
     }
 
     HEAP.set_corruption_handler(on_heap_corruption);
