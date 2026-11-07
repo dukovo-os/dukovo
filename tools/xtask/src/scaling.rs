@@ -16,8 +16,11 @@
 //! nothing keeps it at one worker's time up to [`CPUS`] workers, and at
 //! twice that with 8 (two workers a CPU).
 //!
-//! It is the measurement that decides whether the capability store's
-//! one lock is worth splitting. It reports, and gates nothing.
+//! It is the measurement that decided whether the capability store's
+//! one lock was worth splitting. With `--gate` it fails unless Radix
+//! takes at most Linux's time on every row ([`bench::GATE_RATIO`]),
+//! measuring both again while a row is over, as `ob bench --gate` does
+//! (ADR 0107, ADR 0409).
 
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -53,6 +56,7 @@ pub fn command(
     profile: Profile,
     runs: u32,
     linux: bool,
+    gate: bool,
     given_kernel: Option<String>,
     summary: Option<&str>,
 ) -> Result<()> {
@@ -85,11 +89,12 @@ pub fn command(
         None
     };
     let (mut radix, mut linux_vm, mut counts) = (Vec::new(), Vec::new(), Vec::new());
-    for run in 1..=runs {
-        let of = if runs > 1 { format!(", run {run} of {runs}") } else { String::new() };
+    // One run: Radix, then Linux; each row keeps its fastest so far on
+    // each side.
+    let mut measure = |radix: &mut Vec<Measurement>, linux_vm: &mut Vec<Measurement>, of: &str| {
         step(&format!("Booting Radix with the open/close scaling benchmark on {CPUS} CPUs{of}"));
         let (measured, counted) = boot(ctx, &dir, Side::Radix(&image), kvm)?;
-        bench::keep_best(&mut radix, measured);
+        bench::keep_best(radix, measured);
         // The kernel's counts of the first run: they count the same work
         // every run, unlike the times.
         if counts.is_empty() {
@@ -98,14 +103,40 @@ pub fn command(
         if let Some((kernel, initrd)) = &vm_kernel {
             step(&format!("Measuring the same on Linux on {CPUS} CPUs{of}"));
             let (measured, _) = boot(ctx, &dir, Side::Linux(kernel, initrd), true)?;
-            bench::keep_best(&mut linux_vm, measured);
+            bench::keep_best(linux_vm, measured);
+        }
+        Ok::<(), crate::Error>(())
+    };
+    for run in 1..=runs {
+        let of = if runs > 1 { format!(", run {run} of {runs}") } else { String::new() };
+        measure(&mut radix, &mut linux_vm, &of)?;
+    }
+    // A row over the gate is measured again, on both sides, up to
+    // `MORE_RUNS` more times: a run can only lower each side's fastest
+    // time, so what the host slowed is set aside and a real difference
+    // stays (ADR 0107).
+    let mut measured = runs;
+    if gate && !linux_vm.is_empty() {
+        while measured < runs + bench::MORE_RUNS {
+            let over = over_gate(&radix, &linux_vm);
+            if over.is_empty() {
+                break;
+            }
+            step(&format!(
+                "Over the gate after {measured} runs: {}. Measuring both again",
+                over.join("; ")
+            ));
+            measured += 1;
+            let of = format!(", run {measured} of at most {}", runs + bench::MORE_RUNS);
+            measure(&mut radix, &mut linux_vm, &of)?;
         }
     }
+    drop(measure);
     let release = match &vm_kernel {
         Some((kernel, _)) => Some(bench::release_of(kernel)?),
         None => None,
     };
-    let mut report = report(ctx, &radix, &linux_vm, release.as_deref(), runs, kvm);
+    let mut report = report(ctx, &radix, &linux_vm, release.as_deref(), measured, kvm);
     report.push_str(&counts_report(&counts));
     let markdown = dir.join("report.md");
     std::fs::write(&markdown, &report).context(|| format!("writing {}", markdown.display()))?;
@@ -114,6 +145,54 @@ pub fn command(
     }
     eprintln!("\n{report}");
     step(&format!("Scaling report in {}", ctx.display(&markdown)));
+    if gate {
+        check_gate(&radix, &linux_vm, measured)?;
+        step(
+            "Scaling gate passed: Radix opens and closes files as fast as Linux in the same \
+             virtual machine, or faster, with every number of workers",
+        );
+    }
+    Ok(())
+}
+
+/// Every row's name, threads first, as the report shows them.
+fn rows() -> impl Iterator<Item = String> {
+    [true, false].into_iter().flat_map(|threads| WORKERS.map(|workers| name(threads, workers)))
+}
+
+/// The rows over the gate, each with its ratio (or that it is missing).
+fn over_gate(radix: &[Measurement], linux: &[Measurement]) -> Vec<String> {
+    let ns = |of: &[Measurement], name: &str| of.iter().find(|m| m.name == name).map(|m| m.ns);
+    let mut over = Vec::new();
+    for row in rows() {
+        match (ns(radix, &row), ns(linux, &row)) {
+            (Some(r), Some(l)) if l > 0.0 && r / l <= bench::GATE_RATIO => {}
+            (Some(r), Some(l)) if l > 0.0 => {
+                over.push(format!("{row} ({} times Linux)", bench::shown(r / l)));
+            }
+            _ => over.push(format!("{row} (not measured)")),
+        }
+    }
+    over
+}
+
+/// Fails unless Linux was measured and every row of Radix's took at most
+/// [`bench::GATE_RATIO`] times Linux's time.
+fn check_gate(radix: &[Measurement], linux: &[Measurement], runs: u32) -> Result<()> {
+    if linux.is_empty() {
+        crate::bail!(
+            "the scaling gate needs Linux measured in the same virtual machine, under KVM, and \
+             that did not run"
+        );
+    }
+    let over = over_gate(radix, linux);
+    if !over.is_empty() {
+        crate::bail!(
+            "the scaling gate failed: Radix is slower than Linux in the same virtual machine \
+             after {runs} runs at {}",
+            over.join("; ")
+        );
+    }
     Ok(())
 }
 
@@ -322,6 +401,37 @@ mod tests {
             "| 4 threads | 0.250 | 0.000 | 0.000 | 0.750 | 0.500 | 0.200 | 0.300 | 0.000 |"
         ));
         assert!(counts_report(&[]).is_empty());
+    }
+
+    /// Every row at `ns`, as the C program prints it, but for the rows
+    /// `change` gives another time or (with `None`) leaves out.
+    fn measured(ns: f64, change: &[(usize, Option<f64>)]) -> Vec<Measurement> {
+        let mut text = String::new();
+        for (at, row) in rows().enumerate() {
+            let time = change.iter().find(|(which, _)| *which == at).map_or(Some(ns), |c| c.1);
+            if let Some(time) = time {
+                let _ = writeln!(text, "BENCH name={row} ns={time} iterations=1000");
+            }
+        }
+        bench::parse(&text)
+    }
+
+    #[test]
+    fn the_gate_holds_every_row_to_linux() {
+        let linux = measured(600.0, &[]);
+        // Level with Linux passes.
+        assert!(over_gate(&measured(600.0, &[]), &linux).is_empty());
+        assert!(check_gate(&measured(600.0, &[]), &linux, 3).is_ok());
+        // One row over fails, and says by how much: the fourth row is
+        // one process.
+        let slow = measured(590.0, &[(3, Some(606.0))]);
+        assert_eq!(over_gate(&slow, &linux), ["posix_open_close_processes_1 (1.01 times Linux)"]);
+        assert!(check_gate(&slow, &linux, 9).is_err());
+        // A row Radix did not print is over too.
+        let missing = measured(500.0, &[(0, None)]);
+        assert_eq!(over_gate(&missing, &linux), ["posix_open_close_threads_1 (not measured)"]);
+        // No Linux, no gate.
+        assert!(check_gate(&linux, &[], 3).is_err());
     }
 
     #[test]

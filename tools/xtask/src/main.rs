@@ -453,7 +453,8 @@ and take minutes.
   --shell             Only time nukesh next to bash on this machine
   --scaling           Only time open and close by 1, 4 and 8 threads and
                       processes at once, on 4 CPUs, Radix next to Linux
-                      (out/bench-scaling/report.md); a report, no gate
+                      (out/bench-scaling/report.md); with --gate, every
+                      row is held to Linux's time
   --gate              Fail if Radix takes longer than Linux in the same
                       virtual machine at any operation, measuring both
                       again (up to 6 more runs) while one is over
