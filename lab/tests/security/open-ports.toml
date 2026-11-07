@@ -1,0 +1,18 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "To the private network, the machine answers on SSH and nothing else probed"
+time = "6m"
+fresh = true
+
+# SSH is open to a machine on the same network.
+[[step]]
+attack = "nc -z -w3 {target} 22"
+# Services the machine does not run are not listening: a closed port
+# refuses the connection, so nc exits non-zero.
+[[step]]
+attack = "nc -z -w3 {target} 23"
+exit = 1
+[[step]]
+attack = "nc -z -w3 {target} 80"
+exit = 1

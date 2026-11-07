@@ -1,0 +1,16 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "SSH's key exchange, host key and cipher are modern and strong, with no SHA-1"
+time = "6m"
+fresh = true
+
+# `ssh -vv` prints the algorithms the two sides settled on before it tries
+# to sign in (and it never does: keys only). The key exchange is SHA-256
+# based, the host key is Ed25519, and the cipher is ChaCha20-Poly1305;
+# nothing settled on uses SHA-1. `grep` leaves only the `kex:` lines, and
+# its match makes the step's exit status, so the failed sign-in does not.
+[[step]]
+attack = "sh -c 'ssh -vv -o BatchMode=yes -o StrictHostKeyChecking=no lab@{target} true 2>&1 | grep -i \"kex:\"'"
+expect = ["sha256", "ssh-ed25519", "chacha20-poly1305@openssh.com"]
+expect_not = "sha1"

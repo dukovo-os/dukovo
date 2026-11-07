@@ -61,6 +61,11 @@ title = "Stress and soak"
 about = "Power cut mid-write and mid-boot, resets in a row, a full disk, many processes, a flapping cable, a stick pulled mid-copy, and long runs that must not leak"
 
 [[category]]
+name = "security"
+title = "Security"
+about = "Probing the machine from a private network only an attacker shares with it: open ports, and SSH's sign-in and crypto"
+
+[[category]]
 name = "performance"
 title = "Performance against Linux"
 about = "Dukovo's time for each operation, held to Linux's on the same machine"

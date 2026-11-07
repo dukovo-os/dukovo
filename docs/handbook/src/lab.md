@@ -37,6 +37,7 @@ The same from a terminal, a command at a time:
 ./ob lab run boot/     # one category
 ./ob lab run network/link-pull --machine qemu,qemu-bios
 ./ob lab run --preset quick         # the presets are in lab/tests/presets.toml
+./ob lab attack                     # the security range: run the security category
 ./ob lab ui                         # the runner page, in a browser on this PC
 ./ob lab findings                   # what failed, each failure with the runs it came back in
 ./ob lab send --all                 # new findings and their runs, to lab-results
@@ -96,9 +97,9 @@ A test is a file at `lab/tests/<category>/<name>.toml`. The categories,
 their order and their titles on the runner page are in
 `lab/tests/categories.toml`: boot and power, hardware and drivers, disks
 and filesystems, network, SSH, services and logs, accounts and elevate,
-commands, the console, installing, stress and soak, and performance
-against Linux. Add one there when a new kind of test needs it. This test
-pulls the network cable:
+commands, the console, installing, stress and soak, security, and
+performance against Linux. Add one there when a new kind of test needs
+it. This test pulls the network cable:
 
 ```toml
 about = "The network cable comes out and goes back in, and the network comes back"
@@ -194,3 +195,34 @@ parity, unless the step gives a `limit`. On QEMU without KVM the numbers
 are kept but the steps skip, as an emulator's numbers say nothing about
 either system. When the kit cannot be built (no network for the kernel,
 say), `./ob lab` says so and the performance tests skip.
+
+## Security tests
+
+The tests in `lab/tests/security` probe the machine the way someone on
+the same network would. `./ob lab attack` runs them (it is a name for
+`./ob lab run security`). A test with an `attack` step gets a security
+range: the machine boots with a second network port on a private network
+only it and an *attacker* share, reachable from nowhere else, and the
+runner stands up the attacker on it — under QEMU, a second Dukovo guest
+started for the test. The step runs its command on the attacker, and
+`{target}` becomes the machine's address on that network:
+
+```toml
+about = "To the private network, the machine answers on SSH and nothing else probed"
+time = "6m"
+fresh = true
+
+[[step]]
+attack = "nc -z -w3 {target} 22"
+[[step]]
+attack = "nc -z -w3 {target} 23"
+exit = 1
+```
+
+An attack test always boots afresh and its boot is not shared, so the
+private port never shows up in another test. The first `attack` step
+gives each side its address, as root, so the lab needs its password (as
+a root step does). The first scans check that only SSH answers, that it
+turns away a password sign-in, and that its key exchange, host key and
+cipher are modern. The lab's `docs/test-files.md` describes the `attack`
+step in full.
