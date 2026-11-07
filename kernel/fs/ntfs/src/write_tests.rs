@@ -1583,3 +1583,45 @@ proptest! {
         }
     }
 }
+
+/// A compressed file whose stream fills its record, its data then
+/// growing past the room left for where its clusters are: the stream
+/// leaves the record for clusters of its own, as Windows makes room, and
+/// both are written back whole. A random test found the write-back
+/// failing with no room.
+#[test]
+fn a_stream_makes_room_for_compressed_data_that_grows() {
+    let image = Image::mkntfs(16, 512, 1024);
+    let volume = Volume::new_in(512, &image.bytes());
+    let rs = volume.fs.geometry().record_size as usize;
+    let root = volume.root();
+    radix_vfs::downcast::<NtfsNode>(&*root).unwrap().mark_compressed().unwrap();
+    make_file(&root, "file 1.dat", &[], 4096);
+    let mut data = pattern(2, 729);
+    let file = make_file(&root, "file 2.dat", &data, 4096);
+    let value = pattern(3, 625);
+    file.set_attribute(b"user.another", &value, Setting::Either).unwrap();
+    let part = pattern(4, 7098);
+    write_all(&file, 9287, &part);
+    data.resize(9287 + part.len(), 0);
+    data[9287..].copy_from_slice(&part);
+    volume.fs.sync().unwrap();
+    let id = file.stat().id;
+    drop((root, file));
+    let image = volume.image();
+    // The stream is in clusters, and the data's runs in the file's own
+    // record, with no list.
+    let rec = record_in(&mft(&image), id, rs);
+    let rec = crate::record::Record::new(&rec).unwrap();
+    let attrs: Vec<_> = rec.attrs().map(Result::unwrap).collect();
+    let stream = attrs.iter().find(|a| a.kind() == 0x80 && !a.unnamed()).unwrap();
+    assert!(stream.non_resident(), "the stream stayed in the record");
+    assert!(attrs.iter().any(|a| a.kind() == 0x80 && a.unnamed()), "the data left the record");
+    assert!(!attrs.iter().any(|a| a.kind() == 0x20), "the file has a list");
+    let expected = BTreeMap::from([
+        (String::from("file 1.dat"), Vec::new()),
+        (String::from("file 2.dat"), data),
+        (String::from("file 2.dat:another"), value),
+    ]);
+    check(&image, 512, &expected);
+}
