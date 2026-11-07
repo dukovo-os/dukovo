@@ -239,7 +239,11 @@ const BLOCK: usize = 256;
 /// `BLOCK * BLOCKS`.
 const BLOCKS: usize = 1024;
 
-/// One capability space's lock and what it guards.
+/// One capability space's lock and what it guards, on cache lines of its
+/// own: the spaces of a block sit side by side, and processes on other
+/// CPUs, each taking its own space's lock, would otherwise pass the lines
+/// they share between them on every operation.
+#[repr(align(64))]
 struct Space<A: Allocator> {
     state: Mutex<SpaceState<A>>,
 }

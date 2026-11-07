@@ -65,6 +65,14 @@ takes: a process's object, its capability spaces and its top page table,
 an endpoint, or a notification. A creation that would pass the domain's
 limit fails with *no_memory*. The charge goes back when the object goes.
 
+A process's charges are counted in bytes, and its domain in whole pages:
+the domain is charged a page as the process's bytes reach into one. A
+process keeps one page more than its bytes take once they fall back, so
+that opening and closing a file with nothing else charged does not charge
+and give back a page of its domain each time, which every CPU running the
+domain's processes would contend for. A domain's usage is its processes'
+bytes, rounded up to pages, and at most one page more for each process.
+
 # LOADING A PROGRAM
 
 Programs are statically linked ELF64 executables. A *position-
