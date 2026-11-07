@@ -1445,21 +1445,26 @@ _target/userspace/_).
 		Fail a boot test that has not finished after this long. The
 		default is 300.
 
-*lab* [*--no-build* | *--image* _file_] [*--lab-key* _file_] [*--debug* | *--release*] _command_ [_options_]
+*lab* [*--no-build* | *--image* _file_] [*--lab-key* _file_] [*--debug* | *--release*] [_command_ [_options_]]
 	Run *dukovo-lab*, the Dukovo Lab's harness (from
 	_https://github.com/dukovo-os/lab_), on this tree's tests in
-	_lab/tests_ (ADR 0401). For *run*, first build the lab image as
-	*image --lab* does, and pass it on with this tree's version and
-	commit; *list*, *show* and *machines* pass through as they are. Each
-	test boots the image on one of the lab's machines, QEMU by default,
-	and the run leaves a bundle of results, logs and screenshots under
+	_lab/tests_ (ADR 0401). For *run* and *ui*, first build the lab image
+	as *image --lab* does, and pass it on with this tree's version and
+	commit; every other command (*list*, *show*, *machines*, *findings*,
+	*send*, *schedule* and the rest) passes through as it is. Each test
+	boots the image on one of the lab's machines, QEMU by default, and
+	the run leaves a bundle of results, logs and screenshots under
 	_~/.local/share/dukovo-lab/runs_. *ob* exits as *dukovo-lab* does: 0
 	when every test passed, 1 when one failed, 2 for a bad request or
-	test file, 3 when the lab itself broke.
+	test file, 3 when the lab itself broke, 4 when a machine is busy.
 
-	*dukovo-lab* is found on *PATH*, or at *OB_LAB*. Install it with
-	*cargo install --locked --git https://github.com/dukovo-os/lab*, then
-	make the lab's key once with *dukovo-lab key*. The handbook's Lab
+	With no _command_, set the lab up and open it: install or update
+	*dukovo-lab*, make the lab's key if there is none, clone lab-results
+	for sending findings, check QEMU, put in place the systemd user timer
+	that starts schedules (*dukovo-lab schedule install*), then build the
+	image and open the runner page. Each step is skipped once it is done.
+
+	*dukovo-lab* is found on *PATH*, or at *OB_LAB*. The handbook's Lab
 	tests chapter shows how to write a test.
 
 	*--no-build*
