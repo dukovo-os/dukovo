@@ -270,8 +270,12 @@ fn set_up(ctx: &Ctx, args: &[String]) -> Result<()> {
     step("Checking what the lab needs on this PC");
     let missing = missing_needs();
     if !missing.is_empty() {
-        let mut packages: Vec<&str> = missing.iter().map(|(_, package)| *package).collect();
-        packages.dedup();
+        let mut packages: Vec<&str> = Vec::new();
+        for (_, package) in &missing {
+            if !packages.contains(package) {
+                packages.push(package);
+            }
+        }
         let programs: Vec<&str> = missing.iter().map(|(program, _)| *program).collect();
         return Err(Error::new(format!("the lab needs {} on this PC", programs.join(", "))).hint(
             format!(
@@ -360,6 +364,16 @@ fn set_up(ctx: &Ctx, args: &[String]) -> Result<()> {
                  sign-in git keeps (such as `gh auth login`). ./ob lab tries again next time."
             );
         }
+    }
+    // Send commits as the person on this PC, so git needs their name.
+    let mut email = Command::new("git");
+    email.args(["config", "user.email"]);
+    if clone.join(".git").exists() && process::output(ctx, email.current_dir(&clone)).is_err() {
+        eprintln!(
+            "    note: git has no name and email to commit findings with, so Send will fail: \
+             `git config --global user.name \"Your Name\"` and \
+             `git config --global user.email you@example.org`"
+        );
     }
     step("Building the lab image and opening the runner page");
     Ok(())
