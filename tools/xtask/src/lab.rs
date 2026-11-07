@@ -20,14 +20,20 @@
 //! it on PATH (or at `OB_LAB`), builds the lab image and passes it on.
 //! When `ob lab run` fails before a test starts, run `dukovo-lab` with
 //! the same arguments to see its own message.
+//!
+//! Plain `ob lab`, with no dukovo-lab command, is the one command a person
+//! needs: it sets up what is missing (dukovo-lab, the lab key, the
+//! lab-results clone that Send uses), checks QEMU, then builds the image
+//! and opens the runner page. Each step is skipped once it is done.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::account::{self, Account};
 use crate::image::{self, Overrides};
+use crate::process::{self, step};
 use crate::rootfs::Owned;
-use crate::{Args, Context as _, Ctx, Error, Result, VERSION, bail, bench};
+use crate::{Args, Context as _, Ctx, Error, Result, VERSION, bail, bench, doctor, qemu};
 
 /// The lab's account.
 pub const ACCOUNT: &str = "lab";
@@ -47,8 +53,31 @@ const PUBLIC_KEY: &str = "lab_ed25519.pub";
 pub const BANNER: &str = "Test image of the Dukovo Lab: the lab account signs in over SSH \
                           with the lab's key. Never use it as a release.";
 
+/// Where dukovo-lab comes from.
+const LAB_REPO: &str = "https://github.com/dukovo-os/lab";
+
 /// How dukovo-lab is installed when `ob lab` cannot find it.
 const INSTALL: &str = "cargo install --locked --git https://github.com/dukovo-os/lab";
+
+/// dukovo-lab's store, under the home folder, when its `--store` does not
+/// name another.
+const STORE: &str = ".local/share/dukovo-lab";
+
+/// The private repository Send pushes findings to, over SSH and then
+/// HTTPS: whichever way this PC's GitHub sign-in works.
+const RESULTS_REPO: [&str; 2] =
+    ["git@github.com:dukovo-os/lab-results.git", "https://github.com/dukovo-os/lab-results.git"];
+
+/// What the lab runs on this PC, each with the Debian or Ubuntu package
+/// that brings it.
+const NEEDS: &[(&str, &str)] = &[
+    ("qemu-system-x86_64", "qemu-system-x86"),
+    ("qemu-img", "qemu-utils"),
+    ("ssh", "openssh-client"),
+    ("ssh-keygen", "openssh-client"),
+    ("git", "git"),
+    ("gzip", "gzip"),
+];
 
 /// The lab's public key, which a lab image trusts.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -174,6 +203,9 @@ const VALUED: &[&str] = &[
     "--preset",
     "--port",
     "--limit",
+    "--run",
+    "--results",
+    "--note",
 ];
 
 /// `ob lab`: runs dukovo-lab on `lab/tests`, building the lab image first
@@ -185,6 +217,10 @@ pub fn command(ctx: &Ctx, args: &mut Args) -> Result<()> {
     let profile = args.profile(&ctx.config)?;
     let mut rest = args.rest();
     rest.extend(args.take_passthrough());
+    if wants_setup(&rest) {
+        set_up(ctx, &rest)?;
+        rest.push("ui".into());
+    }
     let tool = find_tool()?;
 
     let mut lab = Command::new(&tool);
@@ -218,6 +254,151 @@ pub fn command(ctx: &Ctx, args: &mut Args) -> Result<()> {
     }
 }
 
+/// Whether `args` hold no dukovo-lab command, nor ask for its help: plain
+/// `ob lab`, which sets the lab up and opens the runner page.
+fn wants_setup(args: &[String]) -> bool {
+    let asks = |word: &String| matches!(word.as_str(), "--help" | "-h" | "--version" | "-V");
+    lab_command(args).is_none() && !args.iter().any(asks)
+}
+
+/// Sets up what the lab needs and is not there yet, for plain `ob lab`:
+/// the programs it runs, dukovo-lab itself (installed, or updated to the
+/// newest), the lab key, and the lab-results clone that Send uses. `args`
+/// are the options for dukovo-lab, whose `--config`, `--store` and
+/// `--results` it follows.
+fn set_up(ctx: &Ctx, args: &[String]) -> Result<()> {
+    step("Checking what the lab needs on this PC");
+    let missing = missing_needs();
+    if !missing.is_empty() {
+        let mut packages: Vec<&str> = Vec::new();
+        for (_, package) in &missing {
+            if !packages.contains(package) {
+                packages.push(package);
+            }
+        }
+        let programs: Vec<&str> = missing.iter().map(|(program, _)| *program).collect();
+        return Err(Error::new(format!("the lab needs {} on this PC", programs.join(", "))).hint(
+            format!(
+                "on Linux Mint, Debian or Ubuntu: `sudo apt install {}`, then ./ob lab again",
+                packages.join(" ")
+            ),
+        ));
+    }
+    if !qemu::kvm_available() {
+        eprintln!(
+            "    note: /dev/kvm is not usable, so tests run under QEMU's emulator, some four times slower"
+        );
+    }
+
+    // dukovo-lab: the newest from its repository. cargo builds it only
+    // when there is a newer commit, and an update that fails (offline,
+    // say) leaves the one installed.
+    if std::env::var_os("OB_LAB").is_none() {
+        let installed = find_tool().is_ok();
+        step(if installed {
+            "Updating dukovo-lab, if there is a newer one"
+        } else {
+            "Installing dukovo-lab, the lab's harness"
+        });
+        // With this tree's pinned toolchain, which ob setup installed.
+        let mut cargo = Command::new("cargo");
+        cargo
+            .args(["install", "--locked", "--git", LAB_REPO])
+            .env("RUSTUP_TOOLCHAIN", doctor::toolchain_channel(ctx)?);
+        if installed {
+            // Up to date is the usual answer, and cargo's words for it
+            // ("Ignored package ... use --force") read like a problem.
+            cargo.arg("--quiet");
+        }
+        match process::run(ctx, &mut cargo) {
+            Ok(()) => {}
+            Err(err) if installed => {
+                eprintln!("    note: keeping the dukovo-lab already installed: {err}");
+            }
+            Err(err) => return Err(err),
+        }
+    }
+    let tool = find_tool()?;
+
+    // The lab key, which lab images trust.
+    let config = match option_value(args, "--config") {
+        Some(config) => PathBuf::from(config),
+        None => home()?.join(CONFIG),
+    };
+    if !config.join("lab_ed25519").is_file() {
+        step("Making the lab key");
+        let mut key = Command::new(&tool);
+        key.arg("--config").arg(&config).arg("key");
+        process::run(ctx, &mut key)?;
+    }
+
+    // The lab-results clone, without which Send is off. A clone that
+    // fails is not the end: the page opens, and says Send needs it.
+    let clone = match (option_value(args, "--results"), option_value(args, "--store")) {
+        (Some(results), _) => PathBuf::from(results),
+        (None, Some(store)) => Path::new(store).join("lab-results"),
+        (None, None) => home()?.join(STORE).join("lab-results"),
+    };
+    if !clone.join(".git").exists() {
+        step("Cloning lab-results, where Send puts findings");
+        if let Some(parent) = clone.parent() {
+            std::fs::create_dir_all(parent).context(|| format!("making {}", parent.display()))?;
+        }
+        // Over SSH first, quietly: no key for GitHub is no error, and
+        // github.com's host key is taken on first use, as a person
+        // answering yes would. Then over HTTPS, where git may ask for a
+        // sign-in in the terminal.
+        let mut ssh = Command::new("git");
+        ssh.args(["clone", "-q", RESULTS_REPO[0]])
+            .arg(&clone)
+            .env("GIT_SSH_COMMAND", "ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new");
+        let cloned = process::output(ctx, &mut ssh).is_ok() || {
+            let mut https = Command::new("git");
+            https.args(["clone", "-q", RESULTS_REPO[1]]).arg(&clone);
+            process::run(ctx, &mut https).is_ok()
+        };
+        if !cloned {
+            eprintln!(
+                "    note: could not clone lab-results, so Send stays off. This PC's GitHub account \
+                 needs push access to dukovo-os/lab-results, through an SSH key on GitHub or a \
+                 sign-in git keeps (such as `gh auth login`). ./ob lab tries again next time."
+            );
+        }
+    }
+    // Send commits as the person on this PC, so git needs their name.
+    let mut email = Command::new("git");
+    email.args(["config", "user.email"]);
+    if clone.join(".git").exists() && process::output(ctx, email.current_dir(&clone)).is_err() {
+        eprintln!(
+            "    note: git has no name and email to commit findings with, so Send will fail: \
+             `git config --global user.name \"Your Name\"` and \
+             `git config --global user.email you@example.org`"
+        );
+    }
+    step("Building the lab image and opening the runner page");
+    Ok(())
+}
+
+/// The programs in [`NEEDS`] not on PATH, and OVMF if it is not there.
+fn missing_needs() -> Vec<(&'static str, &'static str)> {
+    let mut missing: Vec<(&str, &str)> = NEEDS
+        .iter()
+        .copied()
+        .filter(|(program, _)| process::find_program(program).is_none())
+        .collect();
+    if qemu::find_ovmf().is_none() {
+        missing.push(("OVMF (UEFI firmware for QEMU)", "ovmf"));
+    }
+    missing
+}
+
+/// The home folder.
+fn home() -> Result<PathBuf> {
+    std::env::var_os("HOME").map(PathBuf::from).ok_or_else(|| {
+        Error::new("HOME is not set: give dukovo-lab's folders with --config and --store")
+    })
+}
+
 /// The value `args` give the dukovo-lab option `name`, if any; the last
 /// one, as dukovo-lab takes the last.
 fn option_value<'a>(args: &'a [String], name: &str) -> Option<&'a str> {
@@ -238,18 +419,24 @@ fn lab_command(args: &[String]) -> Option<&str> {
     None
 }
 
-/// dukovo-lab: `OB_LAB`, or the first on PATH.
+/// dukovo-lab: `OB_LAB`, or the first on PATH, or where `cargo install`
+/// puts it (which is not on every PC's PATH).
 fn find_tool() -> Result<PathBuf> {
     if let Some(path) = std::env::var_os("OB_LAB") {
         return Ok(PathBuf::from(path));
     }
     let path = std::env::var_os("PATH").unwrap_or_default();
+    let cargo_bin = std::env::var_os("CARGO_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| Path::new(&home).join(".cargo")))
+        .map(|cargo| cargo.join("bin"));
     std::env::split_paths(&path)
+        .chain(cargo_bin)
         .map(|dir| dir.join("dukovo-lab"))
         .find(|candidate| candidate.is_file())
         .ok_or_else(|| {
             Error::new(format!(
-                "dukovo-lab, the lab's harness, is not installed: `{INSTALL}`, then `dukovo-lab key` once"
+                "dukovo-lab, the lab's harness, is not installed: run ./ob lab, which installs it, or `{INSTALL}`"
             ))
         })
 }
@@ -282,6 +469,17 @@ mod tests {
         ] {
             assert!(Key::parse(bad).is_err(), "{bad:?}");
         }
+    }
+
+    #[test]
+    fn plain_ob_lab_sets_up_and_opens_the_page() {
+        let words = |line: &str| line.split_whitespace().map(String::from).collect::<Vec<_>>();
+        assert!(wants_setup(&words("")));
+        assert!(wants_setup(&words("--store /tmp/lab --results /tmp/clone")));
+        assert!(!wants_setup(&words("list")));
+        assert!(!wants_setup(&words("--store /tmp/lab ui")));
+        assert!(!wants_setup(&words("--help")));
+        assert!(!wants_setup(&words("findings --run 20261107-153012-4f2a")));
     }
 
     #[test]

@@ -126,7 +126,7 @@ fn program_version(program: &str, flag: &str) -> Option<String> {
     Some(version.unwrap_or_else(|| path.display().to_string()))
 }
 
-fn toolchain_channel(ctx: &Ctx) -> Result<String> {
+pub fn toolchain_channel(ctx: &Ctx) -> Result<String> {
     let path = ctx.root.join("rust-toolchain.toml");
     let text = std::fs::read_to_string(&path)
         .map_err(|err| Error::new(format!("reading {}: {err}", path.display())))?;
