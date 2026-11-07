@@ -504,11 +504,14 @@ typed_lookup!(
 );
 
 /// The store released an object, and gave back what it kept of it: the
-/// object is closed, with the store's locks held but not its record's
-/// (`caps::release`). If a CPU's cache may hold it, the version moves
-/// first, before the operation that released it returns; its index is
-/// not handed out again until then either.
-pub fn released(kept: Option<Recorded>) {
+/// object is closed, with no lock of its record's held, and the store's
+/// other locks held or not (`caps::release`). If a CPU's cache may hold
+/// it, the version moves first, before the operation that released it
+/// returns; its index is not handed out again until then either. What it
+/// was charged goes back to the stock of the thread that released it,
+/// `by`, if it was charged to that thread's process, and to its account
+/// otherwise.
+pub fn released(kept: Option<Recorded>, by: Option<&super::UserThread>) {
     let Some(Recorded { cached, object, charge }) = kept else { return };
     if cached {
         caps::mark_stale();
@@ -545,7 +548,13 @@ pub fn released(kept: Option<Recorded>) {
         | Object::Firewall => {}
     }
     // What it was charged is given back once it has closed.
-    drop(charge);
+    match (charge, by) {
+        (Some(charge), Some(by)) => {
+            debug_assert!(super::runs(by), "a stock touched by another thread than its own");
+            by.stock.take_back(by.process.account(), charge);
+        }
+        (charge, _) => drop(charge),
+    }
 }
 
 /// Extra room [`gather`] reserves, for processes made while it counts.

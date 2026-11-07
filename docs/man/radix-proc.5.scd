@@ -75,7 +75,9 @@ _/processes/_*n*_/status_
 
 	*kernel_memory*
 		The kernel memory charged for it, in bytes, followed by
-		*bytes*.
+		*bytes*. It counts up to 2 KiB more for each of its
+		threads, which keep a stock of it for the files they
+		open, given back when they end.
 
 	*user*, *user_group*
 		The user and group it acts for (*radix-names*(2)).

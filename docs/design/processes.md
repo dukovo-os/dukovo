@@ -153,6 +153,16 @@ in the store's record of it and gives the bytes back when the object
 goes, after it has closed. A new process gets an account of its own in the
 target's domain, for what it makes in turn.
 
+The files a thread opens are charged from a stock the thread keeps
+(`Stock`, ADR 0405): bytes charged to its process's account a batch
+(1 KiB) at a time, which the files of its process it closes give back
+to, so that threads of one process opening and closing files on several
+CPUs do not pass their account's cache line between them each time. A
+stock keeps at most two batches, giving the account back all but one
+when it would hold more, and goes back to the account when its thread
+ends. The account's count, and `/processes`' `kernel_memory`, include
+what its threads' stocks hold.
+
 ## Loading a program
 
 The kernel's loader (`user/loader.rs`) starts Spark and the self-tests'

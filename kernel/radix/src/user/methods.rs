@@ -242,7 +242,7 @@ fn capability(user: &UserRef, at: SlotRef, label: u32, args: &[u64; 8]) -> Resul
                 },
                 _ => None,
             };
-            caps::delete(at).map_err(cap_error)?;
+            caps::delete_by(user, at).map_err(cap_error)?;
             if let Some(file) = file {
                 crate::fs::locks::process_gone(process.number(), Some(&file.at.node));
             }

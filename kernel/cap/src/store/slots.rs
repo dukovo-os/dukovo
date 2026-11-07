@@ -18,7 +18,6 @@
 use alloc::vec::Vec;
 use core::alloc::Allocator;
 
-use super::objects::Spare;
 use crate::cap::Capability;
 
 /// A slot of a space by index, inside the store.
@@ -129,14 +128,17 @@ pub(super) struct Taken {
 }
 
 /// A capability space, under its own lock.
+///
+/// It starts a cache line of its own, so the lock's word, before it, has
+/// one too (ADR 0405): threads waiting for the lock read the word, and
+/// would otherwise take this line from the thread that holds the lock
+/// and reads it.
+#[repr(align(64))]
 pub(super) struct SpaceState<A: Allocator> {
     /// Moves on when the space is destroyed, so its old name stays wrong.
     pub(super) generation: u32,
     pub(super) live: bool,
     pub(super) slots: Vec<Slot, A>,
-    /// Free object indexes the space keeps, so that making and releasing
-    /// objects with its lock held needs no other lock most of the time.
-    pub(super) spare: Spare,
 }
 
 /// The tree part of every slot, by space and slot, and the list of free

@@ -57,7 +57,7 @@ use crate::{Hooks, SpinLock, hooks};
 pub const LINES: usize = 64;
 
 /// The rows of the table, one for each CPU the kernel can run.
-pub const CPUS: usize = 256;
+pub const CPUS: usize = crate::cpu::CPUS;
 
 /// One CPU's counts, a line of 256 bytes, so that no two CPUs' rows share
 /// a cache line.

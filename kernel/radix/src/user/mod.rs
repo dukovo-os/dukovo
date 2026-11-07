@@ -119,6 +119,16 @@ pub struct UserThread {
     /// Its scheduling as POSIX names it, which its scheduler side follows
     /// (Phase 8).
     pub(crate) scheduling: Mutex<Scheduling>,
+    /// Bytes charged to its process's account that the files it opens are
+    /// charged from (ADR 0405), given back when it ends.
+    pub(crate) stock: account::Stock,
+}
+
+impl Drop for UserThread {
+    fn drop(&mut self) {
+        // A thread that never ran, or one whose stock its end missed.
+        self.stock.drain(self.process.account());
+    }
 }
 
 impl UserThread {
@@ -174,6 +184,13 @@ fn current() -> Option<(ThreadRef, UserRef)> {
     Some((thread, user))
 }
 
+/// Whether `user` is the running thread's program side: only that thread
+/// charges from its stock or gives back to it (`account::Stock`).
+fn runs(user: &UserThread) -> bool {
+    sched::current()
+        .is_some_and(|thread| thread.user().is_some_and(|me| core::ptr::eq(Arc::as_ptr(me), user)))
+}
+
 /// Registers the system call, fault and return handlers, and reports user
 /// mode. Called once at boot.
 pub fn init() {
@@ -224,6 +241,9 @@ fn set_ready(user: &UserThread) {
 /// and may end with it.
 fn exit_current(user: UserRef, status: u64, how: Ending) -> ! {
     ipc::exiting(&user);
+    // What its stock holds goes back now, not when the last reference to
+    // its side goes.
+    user.stock.drain(user.process.account());
     let process = user.process.clone();
     drop(user);
     if let Some(me) = sched::current() {

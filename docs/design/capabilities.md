@@ -147,7 +147,7 @@ which crosses spaces, and the list of free space indexes. Each object's
 record in the object table has a spin lock of its own, over the
 object's counts and what the caller keeps of it (the store's `K`; the
 kernel's is `user::objects::Recorded`). The table has a lock too (O),
-over the free records no space keeps and the making of the table's
+over the free records no CPU keeps and the making of the table's
 blocks. They are taken in that order: T, then the spaces by increasing
 index, then O, then a record's. A thread holding a space's lock never
 waits for the tree's.
@@ -158,6 +158,16 @@ waits for the tree's.
   `SpaceView` has no way to reach the tree at all. Finding the slot
   linked, it answers `Fast::Linked`, and the caller lets go and asks the
   slow path.
+- **Opening and closing** (`create_in`, and `delete` of an unlinked
+  capability) hold the space's lock only to fill or empty the slot
+  (ADR 0405). `create_in` makes the object, counting the capability
+  about to be placed, before it takes the lock, then places the
+  capability and sets the slot's flags under it; if the slot is full it
+  unmakes the object once the lock has gone. `delete` takes the
+  capability out under the lock and gives back its count after, so the
+  object goes, and `Released` is called, with no lock of the store's
+  held. While either is under way, an object's count may stand one above
+  the capabilities naming it, never below.
 - The **slow path** (`with_tree`, a `TreeView`) takes the tree lock and
   the locks of up to four spaces it names (a fork names four: the
   parent's two and the child's two): deriving, sealing, retyping,
@@ -170,12 +180,19 @@ waits for the tree's.
 A record's lock is held only while a count moves or the record changes,
 a few loads and stores. The records live in blocks of 512, made the
 first time one is needed and never moved, so finding a record takes no
-lock. Each space keeps up to eight free records of its own, under its
-lock: both paths make and release objects with those, and take O only
-to fill or empty them, four at a time. Making an object fills in what the caller keeps of it
-(`create_recorded`) before its capability is placed, so nobody finds
-the capability without it. Releasing one takes that out of its record,
-and the `Released` callback is given it, with no record's lock held.
+lock. Each CPU keeps up to eight free records of its own (ADR 0405), on
+a line of their own, which only that CPU touches, with interrupts off
+(`radix_sync::cpu::HeldCpu`; host builds, whose threads share CPU
+numbers, take a spin lock instead): every path makes and releases
+objects with those, and takes O only to fill or empty them, four at a
+time. A record freed on a CPU is the next one that CPU makes, so its
+lines stay there. Making an object fills in what the caller keeps of it
+(`create_recorded`, `create_in`) before its capability is placed, so
+nobody finds the capability without it. Releasing one takes that out of
+its record, and the `Released` callback is given it, with no record's
+lock held. A space's state starts a line of its own, apart from its
+lock's word, so threads waiting for the lock do not take the line its
+holder reads.
 Every space's lock is made on one line, so the kernel's lock-order
 checker sees one class, and the second, third and fourth an operation
 takes are taken nested (`lock_nested`); every record's lock is made on
@@ -542,6 +559,12 @@ it holds (`FastPathAlone`) and changes nothing outside its own slots
 (`FastPathTouchesOnlyItsSlots`), the leaf a revoke deletes is still a
 leaf (`LeafStays`), and the lock order holds (`LockOrder`), with deadlock
 checking on: about 7.9 million states, a minute and a half on 4 CPUs.
+Since ADR 0405 it models each record's count too, with the fast path's
+create made before and finished after the space's lock and its delete
+giving the count back after: every count is the capabilities naming its
+object plus the operations under way that hold one (`CountsAccounted`),
+and a free record's object is named by nothing
+(`FreeRecordsNameNothing`).
 Each of these seeded bugs is caught: a derive that does not lock its
 source's space and a fast path that skips the bit (`FastPathAlone`, and
 `EmptySlotsAreBlank` without it), a delete that clears the bit of a
@@ -575,10 +598,11 @@ KVM it takes about a tenth of a second.
   tree, one for the object table's free records and one in each
   object's record (ADR 0369). Opens and closes in different processes
   take their own space's lock and their own object's record's; the
-  table's lock is the only one they share, and a space takes it once
+  table's lock is the only one they share, and a CPU takes it once
   every few objects, to fill or empty its spare records. Threads of one
   process take turns at their space's lock, as Linux's threads do at
-  their file table's. Deriving, revoking, and deleting or moving linked
+  their file table's, for no more than filling or emptying a slot
+  (ADR 0405). Deriving, revoking, and deleting or moving linked
   capabilities take turns at the tree lock.
 - The space, tree and table locks are mutexes (since Phase 4), and the
   store allocates under them with `MaySleep`. Each record's lock is a

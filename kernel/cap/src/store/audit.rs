@@ -12,7 +12,7 @@
 use alloc::vec::Vec;
 use core::alloc::Allocator;
 
-use super::objects::{Free, Spare};
+use super::objects::{CpuSpare, Free};
 use super::slots::{Link, Slot, Tree};
 use super::{Capabilities, Census, Inconsistency, MAX_DEPTH, MAX_SLOTS, SlotRef, SpaceId};
 use crate::object::{ObjectKind, Target};
@@ -21,7 +21,6 @@ use crate::object::{ObjectKind, Target};
 struct Copied<A: Allocator> {
     generation: u32,
     slots: Vec<Slot, A>,
-    spare: Spare,
 }
 
 impl<A: Allocator + Clone, K> Capabilities<A, K> {
@@ -104,7 +103,7 @@ impl<A: Allocator + Clone, K> Capabilities<A, K> {
                     for &slot in &state.slots {
                         let _ = slots.push_within_capacity(slot);
                     }
-                    Some(Copied { generation: state.generation, slots, spare: state.spare })
+                    Some(Copied { generation: state.generation, slots })
                 }
                 _ => {
                     if !trees.slots.is_empty() {
@@ -232,7 +231,7 @@ impl<A: Allocator + Clone, K> Capabilities<A, K> {
         if children_listed != non_roots {
             return Err(fail("a capability is missing from its parent's children", None));
         }
-        check_objects(objects, &free, &copies, &mut counts, &mut census)?;
+        check_objects(objects, &free, &mut counts, &mut census)?;
         Ok(census)
     }
 }
@@ -240,11 +239,10 @@ impl<A: Allocator + Clone, K> Capabilities<A, K> {
 /// The object table's part of the audit: every retyped object lies in its
 /// memory's used part, every object's counts are those found, and every
 /// record without an object is free once, on the table's list or among a
-/// space's spares.
+/// CPU's spares.
 fn check_objects<A: Allocator + Clone, K>(
     objects: &super::objects::Objects<A, K>,
     free: &Free<A>,
-    copies: &[Option<Copied<A>>],
     counts: &mut [(u32, u32)],
     census: &mut Census,
 ) -> Result<(), Inconsistency> {
@@ -268,11 +266,11 @@ fn check_objects<A: Allocator + Clone, K>(
             counts[origin.index as usize].1 += 1;
         }
     }
-    // Free indexes: each listed once, on the table's list or a space's
+    // Free indexes: each listed once, on the table's list or a CPU's
     // spares, and none of them holding an object. The second count of an
     // index with no object is free to mark it listed.
-    let spares = copies.iter().flatten().flat_map(|copy| copy.spare.indexes());
-    for &index in free.indexes.iter().chain(spares) {
+    let spares = objects.cpu_spares().iter().flat_map(CpuSpare::indexes);
+    for index in free.indexes.iter().copied().chain(spares) {
         let Some(count) = counts.get_mut(index as usize) else {
             return Err(fail("a free object index was never made"));
         };
