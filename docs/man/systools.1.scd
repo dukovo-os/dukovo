@@ -91,6 +91,8 @@ error that starts with the tool's name.
 :  the system at a glance, beside Duke
 |  *ectool*(8)
 :  set the embedded controller's fans, fan curves, LEDs and ARGB header
+|  *efiboot*(8), *efibootmgr*(8)
+:  list and change the firmware's boot entries
 |  *eject*(1)
 :  unmount a volume so that its disk can be pulled out
 |  *elevate*(8)

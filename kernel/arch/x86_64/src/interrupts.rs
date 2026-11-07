@@ -509,7 +509,10 @@ fn handle(vector: u8, frame: &mut TrapFrame) {
         }
         2 => nmi(frame),
         3 => breakpoint(frame),
-        13 | 14 => match msr_fixup(vector, frame).or_else(|| copy_fixup(vector, frame)) {
+        13 | 14 => match msr_fixup(vector, frame)
+            .or_else(|| copy_fixup(vector, frame))
+            .or_else(|| crate::efi::fault(vector, frame))
+        {
             Some(resume) => frame.rip = resume,
             None => fatal_exception(frame),
         },
@@ -518,7 +521,14 @@ fn handle(vector: u8, frame: &mut TrapFrame) {
             radix_mca::Verdict::EndProgram(page) => crate::user::machine_check(frame, page),
             radix_mca::Verdict::Fatal => fatal_exception(frame),
         },
-        0..32 => fatal_exception(frame),
+        // A double fault runs on a stack of its own, and cannot resume.
+        8 => fatal_exception(frame),
+        // Any other exception in the firmware's code during a call ends
+        // the call instead of the kernel (ADR 0313).
+        0..32 => match crate::efi::fault(vector, frame) {
+            Some(resume) => frame.rip = resume,
+            None => fatal_exception(frame),
+        },
         v => {
             radix_klog::tracepoint!("irq.unexpected", v);
             crate::apic::end_of_interrupt();

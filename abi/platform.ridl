@@ -6,7 +6,9 @@
 //! keeps: its fans' duties and curves, its LEDs, and the addressable LEDs
 //! of its ARGB header. On the Framework Desktop these are Framework's
 //! embedded controller's (ADR 0207). It also reads the firmware's SMBIOS
-//! tables whole, serial numbers and all (ADR 0231).
+//! tables whole, serial numbers and all (ADR 0231), and its UEFI
+//! variables, where the boot manager keeps its entries, which it writes
+//! too (ADR 0313).
 //!
 //! The kernel gives Spark the one capability to them when it starts.
 //! Spark gives a service a copy in SLOT_PLATFORM, with the read and
@@ -67,9 +69,43 @@ enum SmbiosTable: u32 {
     structures = 1;
 }
 
+/// The UEFI global variable vendor, 8be4df61-93ca-11d2-aa0d-00e098032b8c,
+/// whose variables the boot manager reads, as its two halves are passed:
+/// the GUID's first 8 bytes as they lie in memory, little-endian, then the
+/// other 8.
+const GLOBAL_VARIABLE_LOW: u64 = 0x11d2_93ca_8be4_df61;
+/// See GLOBAL_VARIABLE_LOW.
+const GLOBAL_VARIABLE_HIGH: u64 = 0x8c2b_0398_e000_0daa;
+
+/// The longest UEFI variable `efi_variable` reads and `set_efi_variable`
+/// writes, in bytes: a firmware's whole store is seldom larger.
+const EFI_VARIABLE_MAX: u32 = 262144;
+
+/// The longest UEFI variable name the methods take, in bytes of UCS-2,
+/// without the NUL that ends it.
+const EFI_NAME_MAX: u32 = 1024;
+
+/// A UEFI variable's attributes (UEFI 2.10, section 8.2).
+flags EfiAttributes: u32 {
+    /// Kept across restarts.
+    non_volatile = 0;
+    /// Readable before the firmware's boot services end.
+    boot_service_access = 1;
+    /// Readable after: every variable the methods reach has it.
+    runtime_access = 2;
+    /// A hardware error record.
+    hardware_error_record = 3;
+    /// Written with a counter of writes and a signature (deprecated).
+    authenticated_write_access = 4;
+    /// Written with a time and a signature, as Secure Boot's keys are.
+    time_based_authenticated_write_access = 5;
+    /// Each write adds to the value instead of replacing it.
+    append_write = 6;
+}
+
 /// The machine's platform controls. Each method needs the read right to
 /// ask, or the control right to change something.
-interface platform = 0x0010 version 2 {
+interface platform = 0x0010 version 3 {
     kind = platform;
     /// What the embedded controller has: its controls, its fans and its
     /// temperature sensors (a bit for each, by its number from 0 in the
@@ -141,4 +177,57 @@ interface platform = 0x0010 version 2 {
     method smbios = 10 (table: SmbiosTable, buffer: out bytes) -> (length: u64)
         raises [no_such_slot, empty_slot, wrong_kind, missing_rights, invalid_argument,
                 bad_address, not_supported];
+    /// Reads the firmware's UEFI variable `name` of the vendor whose GUID
+    /// is `vendor_low` and `vendor_high` (as GLOBAL_VARIABLE_LOW says)
+    /// into `data`, and returns its attributes and length. `name` is
+    /// UCS-2, little-endian, without a NUL, at most EFI_NAME_MAX bytes.
+    /// If `data` is shorter than the variable, nothing is copied and
+    /// `length` says how long it is. Fails with not_found where there is
+    /// no such variable; with not_supported where the kernel cannot call
+    /// the firmware's runtime services: under BIOS, or where the boot
+    /// loader passed no UEFI memory map; with io where the firmware fails
+    /// or once it has faulted (the kernel log says). Needs the read
+    /// right.
+    method efi_variable = 11 (vendor_low: u64, vendor_high: u64, name: in bytes,
+                              data: out bytes) -> (attributes: EfiAttributes, length: u64)
+        raises [no_such_slot, empty_slot, wrong_kind, missing_rights, invalid_argument,
+                bad_address, no_memory, not_supported, not_found, io];
+    /// Writes the firmware's UEFI variable `name` of the vendor `vendor_low`
+    /// and `vendor_high` with `attributes` and `data`, at most
+    /// EFI_VARIABLE_MAX bytes, or deletes it if `data` is empty. The
+    /// kernel writes only what the boot manager reads from the global
+    /// vendor (ADR 0313): `Boot####`, `BootOrder`, `BootNext`, `Timeout`,
+    /// `Driver####`, `DriverOrder`, `SysPrep####`, `SysPrepOrder` and
+    /// `OsIndications`; any other fails with not_permitted. A write that
+    /// would leave the firmware less than 5 KiB of room fails with
+    /// no_space, as Linux refuses it: some firmware no longer starts with
+    /// its store full. Fails with read_only where the firmware will not
+    /// write the variable now, with not_permitted where its Secure Boot
+    /// rules forbid the write, and as `efi_variable` does. Needs the
+    /// control right.
+    method set_efi_variable = 12 (vendor_low: u64, vendor_high: u64, name: in bytes,
+                                  attributes: EfiAttributes, data: in bytes) -> ()
+        raises [no_such_slot, empty_slot, wrong_kind, missing_rights, invalid_argument,
+                bad_address, no_memory, not_supported, not_permitted, not_found, read_only,
+                no_space, io];
+    /// The variable after `name` of the vendor `vendor_low` and
+    /// `vendor_high`, in the firmware's order: copies its name into
+    /// `next` and returns its vendor and the name's length, in bytes of
+    /// UCS-2 without the NUL. An empty `name` asks for the first. If
+    /// `next` is too short, nothing is copied and `length` says how long
+    /// the name is. Fails with not_found after the last. Needs the read
+    /// right.
+    method next_efi_variable = 13 (vendor_low: u64, vendor_high: u64, name: in bytes,
+                                   next: out bytes)
+        -> (vendor_low: u64, vendor_high: u64, length: u64)
+        raises [no_such_slot, empty_slot, wrong_kind, missing_rights, invalid_argument,
+                bad_address, not_supported, not_found, io];
+    /// How much room the firmware has for variables with `attributes`:
+    /// its storage for them, what is free, and the longest one it takes,
+    /// in bytes. Fails with not_supported for firmware older than UEFI 2.
+    /// Needs the read right.
+    method efi_variable_space = 14 (attributes: EfiAttributes)
+        -> (total: u64, remaining: u64, largest: u64)
+        raises [no_such_slot, empty_slot, wrong_kind, missing_rights, invalid_argument,
+                not_supported, io];
 }

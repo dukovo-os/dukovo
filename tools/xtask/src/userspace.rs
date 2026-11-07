@@ -143,6 +143,8 @@ pub const STD_LINKS: &[(&str, &str)] = &[
     ("system/commands/dukofetch", "systools"),
     ("system/commands/e1000d", "systools"),
     ("system/commands/ectool", "systools"),
+    ("system/commands/efiboot", "systools"),
+    ("system/commands/efibootmgr", "systools"),
     ("system/commands/eject", "systools"),
     ("system/commands/elevate", "systools"),
     ("system/commands/findmnt", "systools"),

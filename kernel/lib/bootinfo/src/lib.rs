@@ -191,6 +191,23 @@ impl<'a> BootInfo<'a> {
         read_u64(self.tag(tag_type::EFI64_SYSTEM_TABLE)?.data, 0).filter(|&address| address != 0)
     }
 
+    /// The UEFI memory map, which says where the firmware's runtime
+    /// services and their data are: the boot loader passes it when it
+    /// ended the firmware's boot services itself, as GRUB does. `None`
+    /// without it, or if its descriptors are of a version or size this
+    /// crate does not know.
+    pub fn efi_memory_map(&self) -> Option<EfiMemoryMap<'a>> {
+        let data = self.tag(tag_type::EFI_MEMORY_MAP)?.data;
+        let size = read_u32(data, 0)? as usize;
+        let version = read_u32(data, 4)?;
+        // Version 1 is the only one UEFI has defined; firmware may make
+        // each descriptor longer than the fields, but never shorter.
+        if version != EfiMemoryDescriptor::VERSION || size < EfiMemoryDescriptor::ENCODED_SIZE {
+            return None;
+        }
+        Some(EfiMemoryMap { descriptors: data.get(8..)?, size })
+    }
+
     /// The modules the boot loader loaded.
     pub fn modules(&self) -> impl Iterator<Item = Module<'a>> + 'a {
         self.tags().filter(|tag| tag.typ == tag_type::MODULE).filter_map(|tag| {
@@ -319,6 +336,85 @@ impl MemoryRegion {
     pub const ENCODED_SIZE: usize = 24;
 }
 
+/// The UEFI memory map from the boot information: the firmware's own
+/// descriptors, as it gave them when its boot services ended.
+#[derive(Clone, Copy, Debug)]
+pub struct EfiMemoryMap<'a> {
+    descriptors: &'a [u8],
+    size: usize,
+}
+
+impl<'a> EfiMemoryMap<'a> {
+    /// Iterates over the descriptors in the order the firmware gave them.
+    pub fn descriptors(&self) -> impl Iterator<Item = EfiMemoryDescriptor> + 'a {
+        self.descriptors.chunks_exact(self.size).filter_map(|entry| {
+            Some(EfiMemoryDescriptor {
+                kind: read_u32(entry, 0)?,
+                // Four bytes of padding come before the addresses.
+                physical_start: read_u64(entry, 8)?,
+                pages: read_u64(entry, 24)?,
+                attributes: read_u64(entry, 32)?,
+            })
+        })
+    }
+}
+
+/// One descriptor of the UEFI memory map (UEFI 2.10, section 7.2,
+/// `EFI_MEMORY_DESCRIPTOR`). Its virtual address is left out: it is the
+/// firmware's only after `SetVirtualAddressMap`, which nothing calls.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EfiMemoryDescriptor {
+    /// What the memory is: one of [`efi_memory_type`].
+    pub kind: u32,
+    /// Physical address of the first byte, on a 4 KiB boundary.
+    pub physical_start: u64,
+    /// Length in 4 KiB pages, whatever the machine's page size.
+    pub pages: u64,
+    /// The `EFI_MEMORY_*` bits: how the memory may be cached, and
+    /// [`EfiMemoryDescriptor::RUNTIME`].
+    pub attributes: u64,
+}
+
+impl EfiMemoryDescriptor {
+    /// The descriptor version this crate reads.
+    pub const VERSION: u32 = 1;
+    /// Bytes of the fields this crate reads: the least a descriptor holds.
+    pub const ENCODED_SIZE: usize = 40;
+    /// `EFI_MEMORY_RUNTIME`: the firmware's runtime services use this
+    /// memory, so it must stay mapped for them.
+    pub const RUNTIME: u64 = 1 << 63;
+    /// `EFI_MEMORY_UC`: the memory may be mapped uncached.
+    pub const UNCACHED: u64 = 1 << 0;
+    /// `EFI_MEMORY_WB`: the memory may be mapped write-back.
+    pub const WRITE_BACK: u64 = 1 << 3;
+
+    /// Whether the runtime services use this memory.
+    pub fn is_runtime(&self) -> bool {
+        self.attributes & Self::RUNTIME != 0
+    }
+
+    /// The physical addresses the descriptor covers; `None` if the end
+    /// would pass the top of the address space.
+    pub fn range(&self) -> Option<core::ops::Range<u64>> {
+        let end = self.pages.checked_mul(4096)?.checked_add(self.physical_start)?;
+        Some(self.physical_start..end)
+    }
+}
+
+/// The types of memory in a UEFI memory map that the kernel tells apart.
+pub mod efi_memory_type {
+    /// The firmware's runtime code.
+    pub const RUNTIME_SERVICES_CODE: u32 = 5;
+    /// The firmware's runtime data.
+    pub const RUNTIME_SERVICES_DATA: u32 = 6;
+    /// RAM free for the operating system.
+    pub const CONVENTIONAL: u32 = 7;
+    /// Device registers the runtime services use.
+    pub const MEMORY_MAPPED_IO: u32 = 11;
+    /// I/O ports the runtime services reach through memory.
+    pub const MEMORY_MAPPED_IO_PORT_SPACE: u32 = 12;
+}
+
 fn read_u32(bytes: &[u8], offset: usize) -> Option<u32> {
     let raw = bytes.get(offset..offset.checked_add(4)?)?;
     Some(u32::from_le_bytes(raw.try_into().ok()?))
@@ -444,6 +540,86 @@ mod tests {
             modules,
             [Module { start: 0x0010_0000, end: 0x0010_2000, command_line: "microcode" }]
         );
+    }
+
+    /// An EFI memory map tag's payload: descriptors of `size` bytes and
+    /// `version`, from (type, start, pages, attributes).
+    fn efi_memory_map(size: u32, version: u32, descriptors: &[(u32, u64, u64, u64)]) -> Vec<u8> {
+        let mut v = Vec::new();
+        v.extend_from_slice(&size.to_le_bytes());
+        v.extend_from_slice(&version.to_le_bytes());
+        for &(kind, start, pages, attributes) in descriptors {
+            let first = v.len();
+            v.extend_from_slice(&kind.to_le_bytes());
+            v.extend_from_slice(&0u32.to_le_bytes());
+            v.extend_from_slice(&start.to_le_bytes());
+            // The virtual address, which the parser leaves out.
+            v.extend_from_slice(&0xdead_beefu64.to_le_bytes());
+            v.extend_from_slice(&pages.to_le_bytes());
+            v.extend_from_slice(&attributes.to_le_bytes());
+            v.resize(first + size as usize, 0xee);
+        }
+        v
+    }
+
+    #[test]
+    fn reads_the_efi_memory_map() {
+        const RT: u64 = EfiMemoryDescriptor::RUNTIME;
+        // Firmware gives 48-byte descriptors, longer than the fields.
+        let bytes = build(&[(
+            tag_type::EFI_MEMORY_MAP,
+            efi_memory_map(
+                48,
+                1,
+                &[
+                    (efi_memory_type::CONVENTIONAL, 0x10_0000, 0x100, 0xf),
+                    (efi_memory_type::RUNTIME_SERVICES_CODE, 0x7f9e_0000, 0x10, RT | 0xf),
+                    (efi_memory_type::MEMORY_MAPPED_IO, 0xffc0_0000, 0x400, RT | 1),
+                ],
+            ),
+        )]);
+        let info = BootInfo::parse(&bytes).unwrap();
+        assert_eq!(info.firmware(), Firmware::Uefi);
+        let descriptors: Vec<_> = info.efi_memory_map().unwrap().descriptors().collect();
+        assert_eq!(descriptors.len(), 3);
+        assert!(!descriptors[0].is_runtime());
+        assert_eq!(
+            descriptors[1],
+            EfiMemoryDescriptor {
+                kind: efi_memory_type::RUNTIME_SERVICES_CODE,
+                physical_start: 0x7f9e_0000,
+                pages: 0x10,
+                attributes: RT | 0xf,
+            }
+        );
+        assert!(descriptors[1].is_runtime());
+        assert_eq!(descriptors[1].range(), Some(0x7f9e_0000..0x7f9f_0000));
+        assert_eq!(descriptors[2].range(), Some(0xffc0_0000..0x1_0000_0000));
+    }
+
+    #[test]
+    fn refuses_efi_memory_maps_it_cannot_read() {
+        let map = |size, version| {
+            let payload = efi_memory_map(size, version, &[(7, 0, 1, 0)]);
+            BootInfo::parse(&build(&[(tag_type::EFI_MEMORY_MAP, payload)]))
+                .unwrap()
+                .efi_memory_map()
+                .is_some()
+        };
+        assert!(map(40, 1));
+        // A descriptor shorter than its fields, or of another version.
+        assert!(!map(32, 1));
+        assert!(!map(48, 2));
+        // No tag at all, as under BIOS.
+        assert!(BootInfo::parse(&build(&[])).unwrap().efi_memory_map().is_none());
+        // A range past the top of the address space.
+        let past = EfiMemoryDescriptor {
+            kind: 5,
+            physical_start: u64::MAX - 4095,
+            pages: 2,
+            attributes: EfiMemoryDescriptor::RUNTIME,
+        };
+        assert_eq!(past.range(), None);
     }
 
     #[test]
