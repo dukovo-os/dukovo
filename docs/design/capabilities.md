@@ -576,11 +576,14 @@ KVM it takes about a tenth of a second.
   object's record (ADR 0369). Opens and closes in different processes
   take their own space's lock and their own object's record's; the
   table's lock is the only one they share, and a space takes it once
-  every few objects, to fill or empty its spare records. Threads of one process take turns at their space's lock,
-  as Linux's threads do at their file table's. Deriving, revoking, and
-  deleting or moving linked capabilities take turns at the tree lock.
-- The locks are mutexes (since Phase 4), and the store allocates under
-  them with `MaySleep`. Retyping frames records them under the locks but
+  every few objects, to fill or empty its spare records. Threads of one
+  process take turns at their space's lock, as Linux's threads do at
+  their file table's. Deriving, revoking, and deleting or moving linked
+  capabilities take turns at the tree lock.
+- The space, tree and table locks are mutexes (since Phase 4), and the
+  store allocates under them with `MaySleep`. Each record's lock is a
+  spin lock, held for a few loads and stores, under which nothing
+  allocates. Retyping frames records them under the locks but
   zeroes them after they are let go (since Phase 6): the retyping thread zeroes
   them in steps of 64 pages before its call returns, a thread that maps
   one sooner zeroes the rest itself, and deleting a frame part-way waits

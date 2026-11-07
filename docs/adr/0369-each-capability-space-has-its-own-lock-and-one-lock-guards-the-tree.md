@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 # 0369. Each capability space has its own lock, and one lock guards the tree
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-11-06
 
 ## Context
@@ -221,13 +221,46 @@ deadlock checking on.
   count. Whatever refuses the retype after the carve takes it back, with
   the objects already made, so a refused retype changes nothing.
 
+## Results
+
+`ob bench --scaling` again, on the last run before this ADR was accepted
+(#234, KVM, EPYC 9V74), beside the run that started it (#225, KVM, EPYC
+7763). The runners differ, so the ratios to Linux in the same virtual
+machine are what compare:
+
+| Workers | #225: Dukovo | Linux | Ratio | #234: Dukovo | Linux | Ratio |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1 thread | 776 ns | 622 ns | 1.25 | 614 ns | 474 ns | 1.30 |
+| 4 threads | 4.68 µs | 1.37 µs | 3.43 | 3.33 µs | 941 ns | 3.54 |
+| 8 threads | 9.30 µs | 2.71 µs | 3.43 | 6.49 µs | 1.85 µs | 3.51 |
+| 1 process | | | | 615 ns | 465 ns | 1.32 |
+| 4 processes | 3.63 µs | 1.15 µs | 3.17 | 1.20 µs | 762 ns | 1.57 |
+| 8 processes | 6.94 µs | 2.29 µs | 3.03 | 2.37 µs | 1.48 µs | 1.60 |
+
+- Processes no longer take turns at the store. With 4 or 8 processes
+  an open and close finds no mutex taken (0.000 times, from 2.1 at
+  the start and 1.16 after the split, step 4, when O was the last lock
+  they shared). 4 processes take 1.94 times one process's time, where
+  Linux's take 1.64: what is left is outside the store's locks.
+- Threads of one process are where they were, as this ADR expected:
+  they take turns at their space's lock, found taken 2.4 times per open
+  and close. Linux's threads share a file table too, and take its spin
+  lock to open and close, but only for a few instructions each time: 4
+  of them take 1.99 times one thread's time, where Dukovo's take 5.43.
+  That is the next lock to look at; it is not this ADR's.
+- One worker alone costs what it did before the split: the CI gate's
+  open and close row (one process, beside Linux in the same machine)
+  passes, and counted under TCG an open and close takes 3,878
+  instructions, against 3,891 before the split.
+
 ## Consequences
 
 - Opens and closes in different processes no longer take turns: each
   takes its own space's lock and its own object's record's. Since step
   3 they share only O, which a space takes once every few objects to
-  fill or empty its spare records. Threads of one process still take turns at their space's
-  lock, as Linux's threads do at their file table's.
+  fill or empty its spare records. Threads of one process still take
+  turns at their space's lock, as Linux's threads do at their file
+  table's.
 - Deriving, revoking, and deleting or moving linked capabilities still
   take turns, at T, and take one or two locks more than now. They are
   rarer than opens and closes: `fork`, copies, passing capabilities over
