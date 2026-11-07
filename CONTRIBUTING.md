@@ -70,6 +70,11 @@ A change merges when:
   and is unit-tested there; behaviour that needs a machine gets a boot test
   case in `tools/xtask/src/test.rs`, which can follow the serial console,
   type `kdb` commands and read the screen.
+- A new feature has every lab test it needs in `lab/tests/` (boot, drivers,
+  features, performance, screen or security, as fits), passing in `ob lab`
+  on QEMU, and on the lab's real machines once those are set up. A feature
+  is not complete without them. The handbook's
+  [lab chapter](docs/handbook/src/lab.md#writing-a-test) says how to write one.
 - Every new command, file format, kernel command-line flag, `kdb` command
   or interface has a man page in `docs/man/` (see "Man pages" below), and
   the handbook is updated where users would look. `./ob docs --check`

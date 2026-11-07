@@ -23,8 +23,10 @@
 //!
 //! Plain `ob lab`, with no dukovo-lab command, is the one command a person
 //! needs: it sets up what is missing (dukovo-lab, the lab key, the
-//! lab-results clone that Send uses), checks QEMU, then builds the image
-//! and opens the runner page. Each step is skipped once it is done.
+//! lab-results clone that Send uses), checks QEMU, puts in place the
+//! timer that starts schedules, then builds the image and opens the
+//! runner page. Each setup step is skipped once it is done; the timer is
+//! made again each time, quietly, so it names the dukovo-lab of now.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -206,6 +208,11 @@ const VALUED: &[&str] = &[
     "--run",
     "--results",
     "--note",
+    "--at",
+    "--days",
+    "--title",
+    "--schedule",
+    "--run-id",
 ];
 
 /// `ob lab`: runs dukovo-lab on `lab/tests`, building the lab image first
@@ -375,8 +382,41 @@ fn set_up(ctx: &Ctx, args: &[String]) -> Result<()> {
              `git config --global user.email you@example.org`"
         );
     }
+    turn_on_schedules(ctx, &tool, args);
     step("Building the lab image and opening the runner page");
     Ok(())
+}
+
+/// Puts in place the systemd timer that starts the lab's schedules
+/// (`dukovo-lab schedule install`). It runs each time, so the timer
+/// always names the dukovo-lab installed now; a PC where it cannot (no
+/// systemd) still opens the page, and only its schedules wait.
+fn turn_on_schedules(ctx: &Ctx, tool: &Path, args: &[String]) {
+    let timer = std::env::var_os("XDG_CONFIG_HOME")
+        .filter(|dir| !dir.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| home().ok().map(|home| home.join(".config")))
+        .map(|config| config.join("systemd/user/dukovo-lab-schedules.timer"));
+    if !timer.is_some_and(|timer| timer.is_file()) {
+        step("Turning on the timer that starts schedules");
+    }
+    let mut install = Command::new(tool);
+    for option in ["--config", "--store", "--results"] {
+        if let Some(value) = option_value(args, option) {
+            install.arg(option).arg(value);
+        }
+    }
+    install.args(["schedule", "install"]);
+    match process::output(ctx, &mut install) {
+        // It says so when schedules can run only while someone is signed
+        // in: that is worth passing on.
+        Ok(output) => {
+            for line in String::from_utf8_lossy(&output.stdout).lines().skip(1) {
+                eprintln!("    note: {line}");
+            }
+        }
+        Err(err) => eprintln!("    note: schedules cannot start by themselves on this PC: {err}"),
+    }
 }
 
 /// The programs in [`NEEDS`] not on PATH, and OVMF if it is not there.
