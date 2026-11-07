@@ -35,9 +35,20 @@
 (* with the leaf's space locked. Between turns it lets go of every lock.   *)
 (*                                                                         *)
 (* Rights, badges and retyping are those of the slow path's derive, so the *)
-(* model derives with every right and no badge. The object table is       *)
-(* guarded by a lock of its own, taken last and only around a step, so it  *)
-(* is part of the steps here.                                              *)
+(* model derives with every right and no badge.                            *)
+(*                                                                         *)
+(* Each object has a record in the object table that counts the            *)
+(* capabilities naming it; a record whose count is 0 is free, and the      *)
+(* object it named is gone (ADR 0405). Each record has a lock of its own,  *)
+(* taken last and only around one change of its count, so each change is  *)
+(* one step here. The slow path changes counts inside its step, with its   *)
+(* locks held. The fast path changes them outside its space's lock: a      *)
+(* create makes its object's record before it takes the lock, and gives    *)
+(* the record back after it if the slot was full; a delete gives back its  *)
+(* capability's count after the lock has gone. So a count may stand above  *)
+(* the capabilities naming its object while an operation is under way,     *)
+(* never below them, and a record is free only once nothing names its      *)
+(* object.                                                                 *)
 (***************************************************************************)
 EXTENDS Naturals, FiniteSets, TLC
 
@@ -64,10 +75,11 @@ VARIABLES
     tree,       \* the thread holding the tree lock, or None
     held,       \* the thread holding each space's lock, or None
     pc,         \* where each thread is
-    op          \* what each thread is doing
+    op,         \* what each thread is doing
+    count       \* each object's record: the capabilities it counts, 0 = free
 
 store == <<cap, parent, depth, revoking, origin, src>>
-vars == <<cap, parent, depth, revoking, origin, src, linked, tree, held, pc, op>>
+vars == <<cap, parent, depth, revoking, origin, src, linked, tree, held, pc, op, count>>
 
 C == INSTANCE Capabilities
 
@@ -80,9 +92,12 @@ Unlinked(s) == parent[s] = None /\ \A x \in Slots : parent[x] # s
 \* What a thread does. `a` is the slot it works on, `b` the other one
 \* (where a move or a derive puts the capability, the leaf a revoke
 \* deletes), `o` the object a create makes, `slow` says whether it is on
-\* the slow path, and `begun` whether a revoke has set its mark.
+\* the slow path, `begun` whether a revoke has set its mark, and `fin` the
+\* record whose count the fast path gives back once its lock has gone
+\* (None for none).
 Kinds == {"create", "delete", "move", "derive", "revoke"}
-Ops == [kind : Kinds, a : Slots, b : Slots, o : Objects, slow : BOOLEAN, begun : BOOLEAN]
+Ops == [kind : Kinds, a : Slots, b : Slots, o : Objects, slow : BOOLEAN, begun : BOOLEAN,
+        fin : Objects \cup {None}]
 
 \* The spaces whose locks an operation takes: those of the slots it fills
 \* or empties. A revoke takes them one at a time, as it goes.
@@ -96,14 +111,17 @@ Needed(o) ==
 \* nothing else.
 Nothing == [kind |-> "create", a |-> CHOOSE s \in Slots : TRUE,
             b |-> CHOOSE s \in Slots : TRUE, o |-> CHOOSE o \in Objects : TRUE,
-            slow |-> FALSE, begun |-> FALSE]
+            slow |-> FALSE, begun |-> FALSE, fin |-> None]
+
+\* The capabilities naming `o`.
+Named(o) == Cardinality({x \in C!Full : cap[x].obj = o})
 
 HeldBy(t) == {x \in Spaces : held[x] = t}
 
 Least(set) == CHOOSE x \in set : \A y \in set : x <= y
 
-Steps == {"idle", "tree", "spaces", "check", "commit", "release",
-          "revoke", "mark", "again", "down", "leaf"}
+Steps == {"idle", "make", "tree", "spaces", "check", "commit", "release",
+          "finish", "revoke", "mark", "again", "down", "leaf"}
 
 TypeOK ==
     /\ C!TypeOK
@@ -112,6 +130,7 @@ TypeOK ==
     /\ held \in [Spaces -> Threads \cup {None}]
     /\ pc \in [Threads -> Steps]
     /\ op \in [Threads -> Ops]
+    /\ count \in [Objects -> Nat]
 
 Init ==
     /\ C!Init
@@ -120,6 +139,7 @@ Init ==
     /\ held = [x \in Spaces |-> None]
     /\ pc = [t \in Threads |-> "idle"]
     /\ op = [t \in Threads |-> Nothing]
+    /\ count = [o \in Objects |-> 0]
 
 -----------------------------------------------------------------------------
 (* Taking and letting go of locks.                                         *)
@@ -127,19 +147,37 @@ Init ==
 \* A thread picks what to do next, from what it sees of the store with no
 \* lock held (which may change before it acts). Creating, deleting and
 \* moving try the fast path; deriving and revoking go straight to the slow
-\* one.
+\* one. A create first makes its object's record.
 Start(t) ==
     /\ pc[t] = "idle"
-    /\ \E k \in Kinds, a \in Slots, b \in Slots, o \in Objects :
+    /\ \E k \in Kinds, a \in Slots, b \in Slots :
           /\ (k = "create") = (a \notin C!Full)
           /\ k \in {"move", "derive"} => a # b /\ b \notin C!Full
           /\ k \notin {"move", "derive"} => b = a
-          /\ k = "create" => o \notin C!Live
-          /\ k # "create" => o = CHOOSE x \in Objects : TRUE
-          /\ op' = [op EXCEPT ![t] = [kind |-> k, a |-> a, b |-> b, o |-> o,
+          /\ op' = [op EXCEPT ![t] = [kind |-> k, a |-> a, b |-> b,
+                                      o |-> CHOOSE x \in Objects : TRUE,
                                       slow |-> k \in {"derive", "revoke"},
-                                      begun |-> FALSE]]
-          /\ pc' = [pc EXCEPT ![t] = IF k \in {"derive", "revoke"} THEN "tree" ELSE "spaces"]
+                                      begun |-> FALSE, fin |-> None]]
+          /\ pc' = [pc EXCEPT ![t] = CASE k \in {"derive", "revoke"} -> "tree"
+                                        [] k = "create" -> "make"
+                                        [] OTHER -> "spaces"]
+    /\ UNCHANGED <<store, linked, tree, held, count>>
+
+\* A create takes a free record, with no lock but the record's, and counts
+\* the capability it will place: nobody else can take the record now, and
+\* nothing names its object. With no record free it gives up (the kernel
+\* makes a new record then, or answers that memory ran out).
+Make(t) ==
+    /\ pc[t] = "make"
+    /\ IF \E o \in Objects : count[o] = 0
+       THEN \E o \in Objects :
+               /\ count[o] = 0
+               /\ count' = [count EXCEPT ![o] = 1]
+               /\ op' = [op EXCEPT ![t].o = o]
+               /\ pc' = [pc EXCEPT ![t] = "spaces"]
+       ELSE /\ pc' = [pc EXCEPT ![t] = "idle"]
+            /\ op' = [op EXCEPT ![t] = Nothing]
+            /\ UNCHANGED count
     /\ UNCHANGED <<store, linked, tree, held>>
 
 \* The tree lock, holding no space's lock (`LockOrder`).
@@ -148,7 +186,7 @@ TakeTree(t) ==
     /\ tree = None
     /\ tree' = t
     /\ pc' = [pc EXCEPT ![t] = IF op[t].kind = "revoke" THEN "revoke" ELSE "spaces"]
-    /\ UNCHANGED <<store, linked, held, op>>
+    /\ UNCHANGED <<store, linked, held, op, count>>
 
 \* The spaces' locks, lowest first. Then the fast path checks its slot,
 \* and the slow path acts.
@@ -162,17 +200,31 @@ TakeSpaces(t) ==
            ELSE /\ held[Least(want)] = None
                 /\ held' = [held EXCEPT ![Least(want)] = t]
                 /\ UNCHANGED pc
-    /\ UNCHANGED <<store, linked, tree, op>>
+    /\ UNCHANGED <<store, linked, tree, op, count>>
 
 \* Every lock the thread holds goes at once (the order of letting go
-\* does not matter).
+\* does not matter). A fast path with a record to give back does that
+\* next.
 Release(t) ==
     /\ pc[t] = "release"
     /\ tree' = IF tree = t THEN None ELSE tree
     /\ held' = [x \in Spaces |-> IF held[x] = t THEN None ELSE held[x]]
+    /\ IF op[t].fin = None
+       THEN /\ pc' = [pc EXCEPT ![t] = "idle"]
+            /\ op' = [op EXCEPT ![t] = Nothing]
+       ELSE /\ pc' = [pc EXCEPT ![t] = "finish"]
+            /\ UNCHANGED op
+    /\ UNCHANGED <<store, linked, count>>
+
+\* With no lock but the record's: the count the fast path took out of a
+\* slot (a delete), or counted for a slot it found full (a create), goes.
+\* A record whose count reaches 0 is free.
+Finish(t) ==
+    /\ pc[t] = "finish"
+    /\ count' = [count EXCEPT ![op[t].fin] = @ - 1]
     /\ pc' = [pc EXCEPT ![t] = "idle"]
     /\ op' = [op EXCEPT ![t] = Nothing]
-    /\ UNCHANGED <<store, linked>>
+    /\ UNCHANGED <<store, linked, tree, held>>
 
 -----------------------------------------------------------------------------
 (* The fast path: its space's lock only.                                   *)
@@ -194,24 +246,29 @@ Check(t) ==
              [] OTHER ->
                     /\ pc' = [pc EXCEPT ![t] = "commit"]
                     /\ UNCHANGED <<held, op>>
-    /\ UNCHANGED <<store, linked, tree>>
+    /\ UNCHANGED <<store, linked, tree, count>>
 
 \* The new object's original capability, in an empty slot, with no
-\* relatives: the store's create, which links nothing.
-FastCreate(o) ==
-    IF o.a \notin C!Full /\ o.o \notin C!Live
+\* relatives: the store's create, which links nothing. Its record was
+\* made before the lock, and counts it already. A slot filled meanwhile
+\* leaves the record to be given back once the lock has gone.
+FastCreate(t, o) ==
+    IF o.a \notin C!Full
     THEN /\ cap' = [cap EXCEPT ![o.a] = [obj |-> o.o, rights |-> Rights, badge |-> 0]]
          /\ origin' = [origin EXCEPT ![o.o] = None]
-         /\ UNCHANGED <<parent, depth, revoking, src, linked>>
-    ELSE UNCHANGED <<store, linked>>
+         /\ UNCHANGED <<parent, depth, revoking, src, linked, op>>
+    ELSE /\ op' = [op EXCEPT ![t].fin = o.o]
+         /\ UNCHANGED <<store, linked>>
 
 \* Empties the slot and touches nothing else: no link is followed or
-\* changed.
-FastDelete(o) ==
+\* changed, and the capability's count is given back once the lock has
+\* gone.
+FastDelete(t, o) ==
     /\ cap' = [cap EXCEPT ![o.a] = NoCap]
     /\ depth' = [depth EXCEPT ![o.a] = 0]
     /\ revoking' = [revoking EXCEPT ![o.a] = FALSE]
     /\ src' = [src EXCEPT ![o.a] = {}]
+    /\ op' = [op EXCEPT ![t].fin = cap[o.a].obj]
     /\ UNCHANGED <<parent, origin, linked>>
 
 \* Carries the capability and its depth to the other slot, which may be
@@ -220,7 +277,7 @@ FastMove(o) ==
     /\ cap' = [cap EXCEPT ![o.b] = cap[o.a], ![o.a] = NoCap]
     /\ depth' = [depth EXCEPT ![o.b] = depth[o.a], ![o.a] = 0]
     /\ src' = [src EXCEPT ![o.b] = src[o.a], ![o.a] = {}]
-    /\ UNCHANGED <<parent, revoking, origin, linked>>
+    /\ UNCHANGED <<parent, revoking, origin, linked, count>>
 
 -----------------------------------------------------------------------------
 (* The slow path: the tree lock, then the spaces' locks.                   *)
@@ -244,31 +301,39 @@ DeriveOK(f, s) ==
     /\ C!Distance(f) < MaxDepth
     /\ ~C!Blocked(f)
 
+\* The slow path's delete: the capability's count goes in the same step.
+SlowRemove(s) ==
+    /\ C!Remove(s)
+    /\ ClearParent(s)
+    /\ count' = [count EXCEPT ![cap[s].obj] = @ - 1]
+
 SlowStep(o) ==
     CASE o.kind = "delete" ->
-            IF o.a \in C!Full THEN C!Remove(o.a) /\ ClearParent(o.a)
-            ELSE UNCHANGED <<store, linked>>
+            IF o.a \in C!Full THEN SlowRemove(o.a)
+            ELSE UNCHANGED <<store, linked, count>>
       [] o.kind = "move" ->
             IF o.a \in C!Full /\ o.b \notin C!Full /\ ~revoking[o.a]
             THEN /\ C!Move(o.a, o.b)
                  /\ linked' = [linked EXCEPT ![o.b] = linked[o.a], ![o.a] = FALSE]
-            ELSE UNCHANGED <<store, linked>>
+                 /\ UNCHANGED count
+            ELSE UNCHANGED <<store, linked, count>>
       [] o.kind = "derive" ->
             IF DeriveOK(o.a, o.b)
             THEN /\ C!Derive(o.a, o.b, Rights, 0)
                  /\ linked' = [linked EXCEPT ![o.a] = TRUE, ![o.b] = TRUE]
-            ELSE UNCHANGED <<store, linked>>
+                 /\ count' = [count EXCEPT ![cap[o.a].obj] = @ + 1]
+            ELSE UNCHANGED <<store, linked, count>>
 
 \* The step itself, with every lock it needs held.
 Commit(t) ==
     /\ pc[t] = "commit"
     /\ LET o == op[t]
-       IN  CASE o.kind = "create" -> FastCreate(o)
-             [] o.slow -> SlowStep(o)
-             [] o.kind = "delete" -> FastDelete(o)
-             [] o.kind = "move" -> FastMove(o)
+       IN  CASE o.kind = "create" -> FastCreate(t, o) /\ UNCHANGED count
+             [] o.slow -> SlowStep(o) /\ UNCHANGED op
+             [] o.kind = "delete" -> FastDelete(t, o) /\ UNCHANGED count
+             [] o.kind = "move" -> FastMove(o) /\ UNCHANGED op
     /\ pc' = [pc EXCEPT ![t] = "release"]
-    /\ UNCHANGED <<tree, held, op>>
+    /\ UNCHANGED <<tree, held>>
 
 \* A revoke holds the tree lock through each turn and one space's lock at
 \* a time: the capability's, to set the mark, to look at it again on each
@@ -281,7 +346,7 @@ Revoke(t) ==
        IN  /\ held[x] = None
            /\ held' = [held EXCEPT ![x] = t]
     /\ pc' = [pc EXCEPT ![t] = IF op[t].begun THEN "again" ELSE "mark"]
-    /\ UNCHANGED <<store, linked, tree, op>>
+    /\ UNCHANGED <<store, linked, tree, op, count>>
 
 \* Lets go of everything between turns; the next turn starts with the
 \* tree lock again.
@@ -302,7 +367,7 @@ Mark(t) ==
                 /\ NextTurn(t)
            ELSE /\ pc' = [pc EXCEPT ![t] = "release"]
                 /\ UNCHANGED <<store, tree, held, op>>
-    /\ UNCHANGED linked
+    /\ UNCHANGED <<linked, count>>
 
 \* Each later turn looks at the mark again, as `continue_revoke` does.
 \* Without it (another revoke of the capability finished, or the
@@ -327,7 +392,7 @@ Again(t) ==
                     /\ held' = [x \in Spaces |-> IF held[x] = t THEN None ELSE held[x]]
                     /\ pc' = [pc EXCEPT ![t] = "down"]
                     /\ UNCHANGED <<store, linked>>
-    /\ UNCHANGED <<tree, op>>
+    /\ UNCHANGED <<tree, op, count>>
 
 \* The walk down the tree follows links, under the tree lock alone; the
 \* leaf it reaches is deleted with the leaf's space locked.
@@ -339,20 +404,20 @@ Down(t) ==
           /\ held' = [held EXCEPT ![SpaceOf(l)] = t]
           /\ op' = [op EXCEPT ![t].b = l]
           /\ pc' = [pc EXCEPT ![t] = "leaf"]
-    /\ UNCHANGED <<store, linked, tree>>
+    /\ UNCHANGED <<store, linked, tree, count>>
 
 Leaf(t) ==
     /\ pc[t] = "leaf"
-    /\ C!Remove(op[t].b)
-    /\ ClearParent(op[t].b)
+    /\ SlowRemove(op[t].b)
     /\ NextTurn(t)
     /\ UNCHANGED op
 
 -----------------------------------------------------------------------------
 
 Thread(t) ==
-    \/ Start(t) \/ TakeTree(t) \/ TakeSpaces(t) \/ Check(t) \/ Commit(t)
-    \/ Release(t) \/ Revoke(t) \/ Mark(t) \/ Again(t) \/ Down(t) \/ Leaf(t)
+    \/ Start(t) \/ Make(t) \/ TakeTree(t) \/ TakeSpaces(t) \/ Check(t)
+    \/ Commit(t) \/ Release(t) \/ Finish(t) \/ Revoke(t) \/ Mark(t)
+    \/ Again(t) \/ Down(t) \/ Leaf(t)
 
 Next == \E t \in Threads : Thread(t)
 
@@ -408,6 +473,23 @@ LockOrder ==
               \A x \in HeldBy(t), y \in Needed(op[t]) \ HeldBy(t) : x < y
         /\ pc[t] \in {"revoke", "down"} => tree = t /\ HeldBy(t) = {}
         /\ pc[t] \in {"mark", "again", "leaf"} => tree = t /\ Cardinality(HeldBy(t)) = 1
+
+\* Every record counts exactly the capabilities naming its object, and the
+\* operations under way that hold a count of it: a create's, made before
+\* its capability is placed, and the count a fast path gives back after
+\* its lock. So a count never falls below the capabilities naming its
+\* object, and once nothing is under way it is exact.
+Holds(t, o) ==
+    \/ op[t].fin = o /\ pc[t] \in {"release", "finish"}
+    \/ op[t].kind = "create" /\ op[t].o = o /\ pc[t] \in {"spaces", "commit"}
+CountsAccounted ==
+    \A o \in Objects :
+        count[o] = Named(o) + Cardinality({t \in Threads : Holds(t, o)})
+
+\* A free record's object is named by no capability, so the create that
+\* takes the record next makes an object nobody can reach yet.
+FreeRecordsNameNothing ==
+    \A o \in Objects : count[o] = 0 => o \notin C!Live
 
 \* A step on the fast path changes nothing outside its own slots: no link,
 \* no other slot, in any space.
