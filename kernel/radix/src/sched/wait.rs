@@ -54,11 +54,14 @@
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
 
+use radix_hal::{CpuLocal, MAX_CPUS};
 use radix_mm::Kmalloc;
 use radix_sync::{RawMutex, SpinLock};
 
 use super::thread::ThreadRef;
 use super::{current, registry_find, set_boost};
+use crate::Arch;
+use crate::percpu::{PerCpu, Slot};
 
 /// The longest chain of mutex owners a priority is lent along.
 const MAX_CHAIN: usize = 16;
@@ -154,12 +157,50 @@ impl Table {
 }
 
 static TABLE: SpinLock<Option<Table>> = SpinLock::new(None);
-static WAKEUPS: AtomicU64 = AtomicU64::new(0);
-static HANDOFFS: AtomicU64 = AtomicU64::new(0);
-static MUTEX_CONTENDED: AtomicU64 = AtomicU64::new(0);
-static MUTEX_WAITS: AtomicU64 = AtomicU64::new(0);
-static MUTEX_WAKES: AtomicU64 = AtomicU64::new(0);
-static BOOSTS: AtomicU64 = AtomicU64::new(0);
+
+/// What the table counts, on each CPU, for the debugger and
+/// `/processes/stat`.
+///
+/// Each CPU counts on its own line, and the counts are added up when read
+/// (ADR 0405): threads of one process, contending for its capability
+/// space's lock on several CPUs, would otherwise pass one line between
+/// them on every open and close. A thread moved to another CPU between
+/// reading its number and counting adds to the first CPU's line, which
+/// the atomic add keeps right.
+struct Counts {
+    wakeups: AtomicU64,
+    handoffs: AtomicU64,
+    mutex_contended: AtomicU64,
+    mutex_waits: AtomicU64,
+    mutex_wakes: AtomicU64,
+    boosts: AtomicU64,
+}
+
+impl Counts {
+    const fn new() -> Counts {
+        Counts {
+            wakeups: AtomicU64::new(0),
+            handoffs: AtomicU64::new(0),
+            mutex_contended: AtomicU64::new(0),
+            mutex_waits: AtomicU64::new(0),
+            mutex_wakes: AtomicU64::new(0),
+            boosts: AtomicU64::new(0),
+        }
+    }
+}
+
+static COUNTS: PerCpu<Counts> = PerCpu::new([const { Slot::new(Counts::new()) }; MAX_CPUS]);
+
+/// Counts one more of what `count` picks, on the running CPU.
+#[inline(always)]
+fn count(count: impl FnOnce(&Counts) -> &AtomicU64) {
+    count(COUNTS.get(Arch::current_cpu())).fetch_add(1, Ordering::Relaxed);
+}
+
+/// What `count` picks, added up over every CPU.
+fn total(count: impl Fn(&Counts) -> &AtomicU64) -> u64 {
+    (0..MAX_CPUS).map(|cpu| count(COUNTS.get(cpu)).load(Ordering::Relaxed)).sum()
+}
 
 /// Sets the table up with room for `room` waiters.
 pub(super) fn init(room: usize, alloc: Kmalloc) -> bool {
@@ -260,7 +301,7 @@ pub fn wake_all(key: usize) {
     while index < table.waiters.len() {
         if table.waiters[index].key == key && table.waiters[index].owner == 0 {
             let waiter = table.waiters.swap_remove(index);
-            WAKEUPS.fetch_add(1, Ordering::Relaxed);
+            count(|c| &c.wakeups);
             super::wake(&waiter.thread);
         } else {
             index += 1;
@@ -275,7 +316,7 @@ pub fn wake_all(key: usize) {
 pub(super) fn mutex_wait(mutex: &RawMutex) {
     // Counted here, off the fast path: taking a free mutex costs nothing
     // more for it.
-    MUTEX_CONTENDED.fetch_add(1, Ordering::Relaxed);
+    count(|c| &c.mutex_contended);
     let Some(me) = current() else { return spin(mutex, super::NO_TOKEN) };
     let token = me.token();
     // The waiter keeps its place in the queue each time it tries again.
@@ -354,7 +395,7 @@ fn queue(mutex: &RawMutex, me: &ThreadRef, seq: &mut Option<u64>, starved: bool)
     });
     table.push(Waiter { thread: me.clone(), key, prio, seq, owner, starved });
     me.blocked_on.store(key, Ordering::Relaxed);
-    MUTEX_WAITS.fetch_add(1, Ordering::Relaxed);
+    count(|c| &c.mutex_waits);
     lend(table, owner, prio);
     Queued::Waiting
 }
@@ -401,7 +442,7 @@ fn lend(table: &mut Table, mut owner: usize, mut prio: u8) {
         if !set_boost(&thread, lent) {
             return;
         }
-        BOOSTS.fetch_add(1, Ordering::Relaxed);
+        count(|c| &c.boosts);
         let key = thread.blocked_on.load(Ordering::Relaxed);
         if key == 0 {
             return;
@@ -461,7 +502,7 @@ fn hand_over(table: &mut Table, mutex: &RawMutex, index: usize) {
     }
     mutex.word().store(token | if more { RawMutex::WAITERS } else { 0 }, Ordering::Release);
     next.thread.blocked_on.store(0, Ordering::Release);
-    HANDOFFS.fetch_add(1, Ordering::Relaxed);
+    count(|c| &c.handoffs);
     let inherited = table.lent_to(token);
     set_boost(&next.thread, inherited);
     super::wake(&next.thread);
@@ -482,7 +523,7 @@ fn let_go_to_waiters(table: &mut Table, mutex: &RawMutex, index: usize) {
     }
     mutex.word().store(if more { RawMutex::WAITERS } else { 0 }, Ordering::Release);
     next.thread.blocked_on.store(0, Ordering::Release);
-    MUTEX_WAKES.fetch_add(1, Ordering::Relaxed);
+    count(|c| &c.mutex_wakes);
     super::wake(&next.thread);
 }
 
@@ -539,11 +580,7 @@ fn spin(mutex: &RawMutex, token: usize) {
 /// Counts for the debugger: wake-ups through the table, mutex handoffs,
 /// and priority loans.
 pub fn stats() -> (u64, u64, u64) {
-    (
-        WAKEUPS.load(Ordering::Relaxed),
-        HANDOFFS.load(Ordering::Relaxed),
-        BOOSTS.load(Ordering::Relaxed),
-    )
+    (total(|c| &c.wakeups), total(|c| &c.handoffs), total(|c| &c.boosts))
 }
 
 /// How contended the kernel's mutexes have been since boot.
@@ -564,10 +601,10 @@ pub struct MutexCounts {
 /// The mutex counts now.
 pub fn mutex_counts() -> MutexCounts {
     MutexCounts {
-        contended: MUTEX_CONTENDED.load(Ordering::Relaxed),
-        waits: MUTEX_WAITS.load(Ordering::Relaxed),
-        handoffs: HANDOFFS.load(Ordering::Relaxed),
-        wakes: MUTEX_WAKES.load(Ordering::Relaxed),
+        contended: total(|c| &c.mutex_contended),
+        waits: total(|c| &c.mutex_waits),
+        handoffs: total(|c| &c.handoffs),
+        wakes: total(|c| &c.mutex_wakes),
     }
 }
 

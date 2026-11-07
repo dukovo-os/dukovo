@@ -742,6 +742,7 @@ impl ProcessObject {
             signals: SpinLock::new(signals),
             futex_woken: AtomicBool::new(false),
             scheduling: Mutex::new(scheduling),
+            stock: super::account::Stock::new(),
         };
         let user: UserRef =
             Arc::try_new_in(user, kmalloc()).map_err(|_| error(Kernel::NoMemory))?;

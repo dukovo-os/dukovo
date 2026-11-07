@@ -15,7 +15,10 @@
 //! tree (looking one up, making an object, deleting or moving a
 //! capability nothing was derived from) takes that space's lock alone
 //! ([`in_space`]), so programs in different spaces never wait for each
-//! other. Work that follows or changes a link (deriving, a delete or a
+//! other; and a program's open and close hold it only to fill or empty
+//! the slot (ADR 0405): the file's object is made before ([`create_in`])
+//! and closed after ([`delete_by`]), so its threads wait for each other
+//! only that long. Work that follows or changes a link (deriving, a delete or a
 //! move of a capability with relatives, a revoke) takes the tree lock and
 //! the spaces it names ([`with_tree`]). The locks are mutexes, so a
 //! thread waiting for one sleeps, and the store may allocate with
@@ -42,8 +45,9 @@
 //! is. So programs on different CPUs using their capabilities at once do
 //! not contend, and opening and closing files does not empty the caches.
 //!
-//! What the store releases is closed under its locks, but some of the
-//! work that follows waits until they have gone ([`finish`]): processes
+//! What the store releases is closed under its locks, or after them on a
+//! fast-path delete, but some of the work that follows waits until they
+//! have gone ([`finish`]): processes
 //! with no thread left are finished, removed files dropped, cards
 //! stopped and parents told.
 //!
@@ -63,6 +67,7 @@ use radix_mm::{FRAMES, Flags, HEAP, Kmalloc, Owner, PAGE_SHIFT};
 use radix_sync::Once;
 
 use crate::domains::{self, DomainError, DomainRef, Settings};
+use crate::user::UserThread;
 use crate::user::objects::{self, Recorded};
 
 /// The store's type in the kernel, which keeps each kernel object in its
@@ -111,6 +116,22 @@ pub fn in_space<R>(space: SpaceId, f: impl FnOnce(&mut Space<'_>) -> R) -> Resul
     let result = store()?.in_space(space, f);
     finish();
     result
+}
+
+/// Makes a kernel object of `kind` and puts its original capability, with
+/// `rights` and the slot flags `flags`, in `at`, holding `at`'s space's
+/// lock only to place it ([`Store::create_in`], ADR 0405): `record` fills
+/// in what the kernel keeps of the object before. If `at` is full, the
+/// object is unmade, and what `record` kept dropped, with no lock of the
+/// store's held.
+pub fn create_in<T>(
+    at: SlotRef,
+    kind: ObjectKind,
+    rights: Rights,
+    flags: u8,
+    record: impl FnOnce(ObjectId, &mut Option<Recorded>) -> Result<T, CapError>,
+) -> Result<(ObjectId, T), CapError> {
+    store()?.create_in(at, kind, rights, flags, record)
 }
 
 /// Runs `f` with the tree lock and the locks of `spaces` held (at most
@@ -259,18 +280,26 @@ pub fn write_census(line: &mut dyn FnMut(fmt::Arguments<'_>)) {
     }
 }
 
-/// Gives back what the store released, with the locks of the spaces it
-/// changed held but no object record's: kernel objects close, given back
-/// in `kept` (`user::objects`), memory objects' pages return to the frame
+/// Gives back what the store released, with no object record's lock
+/// held, and the locks of the spaces it changed held unless it was a
+/// fast-path delete (ADR 0405): kernel objects close, given back in
+/// `kept` (`user::objects`), memory objects' pages return to the frame
 /// allocator, and domains leave the domain table. Every operation that
-/// may release objects takes this.
+/// may release objects takes this, or [`delete_by`]'s.
 pub fn release(released: Released, kept: Option<Recorded>) {
+    release_by(released, kept, None);
+}
+
+/// [`release`], for an object a program's thread released, `by`: what it
+/// was charged goes back to the thread's stock if it was charged to the
+/// thread's process (`user::objects::released`).
+fn release_by(released: Released, kept: Option<Recorded>, by: Option<&UserThread>) {
     if released.kind == ObjectKind::ResourceDomain {
         domains::released(released.id);
     }
     // Kernel objects close first: a frame is unmapped before its memory
     // can go back.
-    objects::released(kept);
+    objects::released(kept, by);
     let Some(memory) = released.memory else { return };
     let order = memory.pages.trailing_zeros();
     if let Err(err) = FRAMES.free(memory.base << PAGE_SHIFT, order, Owner::Memory) {
@@ -330,6 +359,15 @@ pub fn move_cap(from: SlotRef, to: SlotRef) -> Result<(), CapError> {
 /// Deletes the capability in `at`.
 pub fn delete(at: SlotRef) -> Result<(), CapError> {
     let deleted = store()?.delete(at, &mut release);
+    finish();
+    deleted
+}
+
+/// Deletes the capability in `at` for `user`, the running thread: what an
+/// object it releases was charged to the thread's process goes back to
+/// the thread's stock (ADR 0405). A program's close.
+pub fn delete_by(user: &UserThread, at: SlotRef) -> Result<(), CapError> {
+    let deleted = store()?.delete(at, &mut |released, kept| release_by(released, kept, Some(user)));
     finish();
     deleted
 }

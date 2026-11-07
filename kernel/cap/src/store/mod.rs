@@ -36,14 +36,20 @@
 //! each object's record has its own spin lock, over its counts and what
 //! the kernel keeps of it. They are taken in that order, spaces by
 //! increasing index, and a thread holding a space's lock never waits for
-//! the tree's. Each space keeps a few free object indexes, so the fast
-//! path takes O only now and then, to fill or empty them.
+//! the tree's. Each CPU keeps a few free object indexes (ADR 0405), so
+//! making and releasing objects takes O only now and then, to fill or
+//! empty them.
 //!
 //! - The fast path ([`Capabilities::in_space`], [`SpaceView`]) takes one
 //!   space's lock: looking capabilities up, slot flags, making an object,
 //!   and deleting or moving a capability whose slot is not linked. It
 //!   cannot reach the tree at all. Finding the slot linked, it answers
 //!   [`Fast::Linked`], and the caller lets go and asks the slow path.
+//! - [`Capabilities::create_in`] and [`Capabilities::delete`] hold the
+//!   space's lock only to fill or empty the slot (ADR 0405): the object
+//!   is made before the lock, and its count given back after, so while
+//!   one is under way the object's count may stand one above the
+//!   capabilities naming it, never below.
 //! - The slow path ([`Capabilities::with_tree`], [`TreeView`]) takes the
 //!   tree lock and the locks of the spaces it names: deriving, sealing,
 //!   retyping, and deleting or moving a linked capability.
@@ -51,10 +57,12 @@
 //!   turn and one space's lock at a time.
 //!
 //! `kernel/cap/tla/CapabilityLocks.tla` checks that these locks keep every
-//! invariant of the tree. Operations that delete capabilities report the
-//! objects that went to a `released` callback, which runs with the
-//! operation's space and tree locks held, but no record's, and must not
-//! call back into the store.
+//! invariant of the tree, and the counts. Operations that delete
+//! capabilities report the objects that went to a `released` callback,
+//! which runs with no record's lock held, and must not call back into the
+//! store: after [`Capabilities::delete`]'s fast path, with no store lock
+//! held at all; otherwise with the operation's space and tree locks
+//! held.
 
 mod audit;
 mod fast;
@@ -73,14 +81,14 @@ use radix_sync::{Mutex, MutexGuard, Once};
 
 use crate::cap::{Capability, Derivation};
 use crate::error::CapError;
-use crate::object::{KINDS, ObjectId, ObjectKind};
+use crate::object::{KINDS, Object, ObjectId, ObjectKind, Target};
 use crate::rights::Rights;
 
 pub use fast::{Fast, SpaceView};
 pub use slow::TreeView;
 
+use objects::{Entry, Indexes, Objects};
 pub use objects::{OBJECT_BLOCK, OBJECT_BLOCKS};
-use objects::{Objects, Spare};
 use slots::{Forest, Slot, SpaceState, Tree};
 
 /// The longest chain of derivations: a capability is at most this many
@@ -253,8 +261,9 @@ struct Space<A: Allocator> {
 ///
 /// Operations that delete capabilities report the objects that went with
 /// them to a `released` callback, with what the kernel kept of each (`K`).
-/// It runs with the locks of the spaces the operation changed held, but no
-/// object record's, and must not call back into the store.
+/// It runs with no object record's lock held, and must not call back into
+/// the store; the locks of the spaces the operation changed may be held
+/// (see the module's documentation).
 pub struct Capabilities<A: Allocator + Clone, K = ()> {
     alloc: A,
     /// The tree lock (T), over every slot's place in the tree and the
@@ -329,12 +338,8 @@ impl<A: Allocator + Clone, K> Capabilities<A, K> {
         for _ in 0..BLOCK {
             // Every space's lock is made on this line: one class for the
             // lock-order checker.
-            let state = SpaceState {
-                generation: 1,
-                live: false,
-                slots: Vec::new_in(self.alloc.clone()),
-                spare: Spare::default(),
-            };
+            let state =
+                SpaceState { generation: 1, live: false, slots: Vec::new_in(self.alloc.clone()) };
             let _ = block.push_within_capacity(Space { state: Mutex::new(state) });
         }
         // Only the tree lock's holder makes blocks, so nobody else can
@@ -555,6 +560,39 @@ impl<A: Allocator + Clone, K> Capabilities<A, K> {
         self.in_space(at.space, |view| view.create_with_rights(at, kind, rights))?
     }
 
+    /// Makes a new kernel object as [`SpaceView::create_recorded`] does,
+    /// and puts its original capability in `at` with the slot flags
+    /// `flags`, but holds `at`'s space's lock only for that (ADR 0405):
+    /// the object is made, and `record` run, before the lock is taken.
+    /// Nobody can name the object until its capability is in the slot. If
+    /// `record` fails, nothing is made; if `at` is full, or its space has
+    /// gone, the object is unmade once the lock has gone, and what the
+    /// kernel kept of it dropped there.
+    pub fn create_in<T>(
+        &self,
+        at: SlotRef,
+        kind: ObjectKind,
+        rights: Rights,
+        flags: u8,
+        record: impl FnOnce(ObjectId, &mut Option<K>) -> Result<T, CapError>,
+    ) -> Result<(ObjectId, T), CapError> {
+        if kind.is_range() || kind.from_memory() {
+            return Err(CapError::InvalidArgument);
+        }
+        // Counting the capability about to be placed.
+        let entry = Entry::new(kind, None, None);
+        let (id, made) = self.objects.insert(&mut Indexes::Cpu, entry, record)?;
+        let mut cap = Capability::original(Object { kind, target: Target::Object(id) });
+        cap.rights = rights.intersection(kind.rights());
+        match self.in_space(at.space, |view| view.place(at, cap, flags)).and_then(|placed| placed) {
+            Ok(()) => Ok((id, made)),
+            Err(err) => {
+                self.objects.unmake(id, &mut Indexes::Cpu);
+                Err(err)
+            }
+        }
+    }
+
     /// [`SpaceView::create_memory`].
     pub fn create_memory(&self, at: SlotRef, base: u64, pages: u64) -> Result<ObjectId, CapError> {
         self.in_space(at.space, |view| view.create_memory(at, base, pages))?
@@ -654,14 +692,18 @@ impl<A: Allocator + Clone, K> Capabilities<A, K> {
     /// as children of its parent. If it was the last capability to its
     /// object, and nothing retyped from the object is left, the object
     /// goes too and `released` hears of it. One with no relatives goes
-    /// with only its space's lock.
+    /// with only its space's lock, held only to take it out of its slot
+    /// (ADR 0405): its object's count is given back, and `released` runs,
+    /// once the lock has gone.
     pub fn delete(
         &self,
         at: SlotRef,
         released: &mut dyn FnMut(Released, Option<K>),
     ) -> Result<(), CapError> {
-        if self.in_space(at.space, |view| view.delete(at, released))?? == Fast::Linked {
-            self.with_tree(&[at.space], |tree| tree.delete(at, released))?;
+        match self.in_space(at.space, |view| view.take_out(at))?? {
+            Fast::Done(Some(id)) => self.objects.release(id, &mut Indexes::Cpu, released),
+            Fast::Done(None) => {}
+            Fast::Linked => self.with_tree(&[at.space], |tree| tree.delete(at, released))?,
         }
         Ok(())
     }

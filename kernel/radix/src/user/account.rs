@@ -20,6 +20,15 @@
 //! of the domains above it, would pass the domain's count between their
 //! CPUs. A domain's usage is its accounts' bytes, rounded up to pages,
 //! and at most one page more for each account.
+//!
+//! And each thread keeps a stock of bytes charged to its process's account
+//! ([`Stock`], ADR 0405), which the files it opens are charged from and
+//! the files of its process it closes give back to, so that threads of one
+//! process opening and closing files on several CPUs do not pass their
+//! account's line between them each time. A stock takes [`BATCH`] bytes
+//! from the account when it runs out, keeps at most two batches, and goes
+//! back to the account when its thread ends. The account's bytes count
+//! what its threads' stocks hold.
 
 use alloc::sync::Arc;
 use core::mem::ManuallyDrop;
@@ -67,7 +76,9 @@ fn held(word: u64) -> u64 {
 /// brings the count back to zero drops it. Each charge with bytes keeps
 /// the count above zero, so the account lives as long as it, and opening
 /// a file costs no reference count of the account's (two locked
-/// instructions).
+/// instructions). A thread's [`Stock`] keeps the count above zero too,
+/// while it holds bytes, but holds no charge: its bytes go back through
+/// one when the thread ends.
 pub struct Charge {
     /// The account, as a reference that is not counted: dropped only by
     /// the charge that takes the count to zero, in place of the shared one.
@@ -77,6 +88,62 @@ pub struct Charge {
 
 fn pages(bytes: u64) -> u64 {
     bytes.div_ceil(PAGE_SIZE as u64)
+}
+
+/// What a thread's [`Stock`] takes from its account when it runs out, and
+/// half the most it keeps: a few files' worth.
+const BATCH: u64 = 1024;
+
+/// Bytes a thread has charged to its process's account for objects it has
+/// yet to make, or took back from objects of the process it closed (see
+/// the module's documentation).
+///
+/// Only its own thread charges from it or gives back to it, in its own
+/// system calls, so its count is loaded and stored, never locked: an
+/// atomic only so the thread's side may be shared.
+pub struct Stock {
+    bytes: AtomicU64,
+}
+
+impl Stock {
+    /// An empty stock.
+    pub const fn new() -> Stock {
+        Stock { bytes: AtomicU64::new(0) }
+    }
+
+    /// Takes back `charge`, of an object the thread closed: into the stock
+    /// if it was charged to `account`, the thread's process's, keeping at
+    /// most two batches and giving back all but one when it would hold
+    /// more; otherwise to its own account. Called by the stock's thread.
+    #[inline]
+    pub fn take_back(&self, account: &AccountRef, mut charge: Charge) {
+        if !Arc::ptr_eq(&charge.account, account) {
+            return;
+        }
+        // The bytes move to the stock, and the account's count, which
+        // holds both, stays.
+        let have = self.bytes.load(Ordering::Relaxed) + core::mem::take(&mut charge.bytes);
+        if have > 2 * BATCH {
+            self.bytes.store(BATCH, Ordering::Relaxed);
+            // The charge gives the rest back as it is dropped.
+            charge.bytes = have - BATCH;
+        } else {
+            self.bytes.store(have, Ordering::Relaxed);
+        }
+    }
+
+    /// Gives everything the stock holds back to `account`, the thread's
+    /// process's: for a thread that ends. Called by the stock's thread, or
+    /// once nothing else can reach it.
+    pub fn drain(&self, account: &AccountRef) {
+        let bytes = self.bytes.load(Ordering::Relaxed);
+        if bytes > 0 {
+            self.bytes.store(0, Ordering::Relaxed);
+            // Its bytes keep the account's count above zero: a charge of
+            // them takes the shared reference along if they are the last.
+            drop(Charge::new(account, false, bytes));
+        }
+    }
 }
 
 impl Account {
@@ -119,7 +186,7 @@ impl Account {
                 Ordering::Relaxed,
                 Ordering::Relaxed,
             ) {
-                Ok(_) => return Ok(Charge::new(account, charged, bytes)),
+                Ok(_) => return Ok(Charge::new(account, charged == 0, bytes)),
                 Err(now) => {
                     // Another charge or release came first: give back
                     // the pages taken for the count it changed.
@@ -130,6 +197,34 @@ impl Account {
                 }
             }
         }
+    }
+
+    /// Charges `bytes` from `stock`, the running thread's, when `account`
+    /// is its process's: the stock takes [`BATCH`] more from the account
+    /// when it runs out, unless a domain's limit refuses that, when only
+    /// `bytes` are charged.
+    #[inline]
+    pub fn charge_from(account: &AccountRef, stock: &Stock, bytes: u64) -> Result<Charge> {
+        let have = stock.bytes.load(Ordering::Relaxed);
+        if have >= bytes {
+            stock.bytes.store(have - bytes, Ordering::Relaxed);
+            // The stock's bytes kept the count above zero, so the shared
+            // reference is made already.
+            return Ok(Charge::new(account, false, bytes));
+        }
+        Account::charge_batch(account, stock, bytes)
+    }
+
+    /// [`Account::charge_from`] for a stock that has run out.
+    #[inline(never)]
+    fn charge_batch(account: &AccountRef, stock: &Stock, bytes: u64) -> Result<Charge> {
+        let Ok(mut charge) = Account::charge(account, bytes + BATCH) else {
+            return Account::charge(account, bytes);
+        };
+        // The batch stays in the account's count, held by the stock now.
+        charge.bytes = bytes;
+        stock.bytes.store(stock.bytes.load(Ordering::Relaxed) + BATCH, Ordering::Relaxed);
+        Ok(charge)
     }
 }
 
@@ -145,11 +240,11 @@ impl Drop for Account {
 }
 
 impl Charge {
-    /// The charge of `bytes` that took `account`'s count up from
-    /// `charged`.
+    /// A charge of `bytes` to `account`, counted there already; `first`
+    /// if it took the count up from zero.
     #[allow(unsafe_code)]
-    fn new(account: &AccountRef, charged: u64, bytes: u64) -> Charge {
-        if charged == 0 && bytes > 0 {
+    fn new(account: &AccountRef, first: bool, bytes: u64) -> Charge {
+        if first && bytes > 0 {
             // The count left zero: the shared reference is made.
             core::mem::forget(account.clone());
         }

@@ -169,11 +169,9 @@ impl<A: Allocator + Clone, K> SpaceView<'_, A, K> {
         }
         let index = self.empty(at)?;
         // Nobody can name the object before its capability is in the slot,
-        // which this space's lock keeps from everyone else. Its index comes
-        // from the space's spares.
-        let mut from = Indexes::Spare(&mut self.state.spare);
+        // which this space's lock keeps from everyone else.
         let recorded =
-            self.store.objects.insert(&mut from, Entry::new(kind, None, None), record)?;
+            self.store.objects.insert(&mut Indexes::Cpu, Entry::new(kind, None, None), record)?;
         let id = recorded.0;
         let mut cap = Capability::original(Object { kind, target: Target::Object(id) });
         cap.rights = rights.intersection(kind.rights());
@@ -201,9 +199,8 @@ impl<A: Allocator + Clone, K> SpaceView<'_, A, K> {
         }
         let index = self.empty(at)?;
         let extent = Some(Extent { base, pages });
-        let mut from = Indexes::Spare(&mut self.state.spare);
         let entry = Entry::new(ObjectKind::Memory, extent, None);
-        let (id, ()) = self.store.objects.insert(&mut from, entry, |_, _| Ok(()))?;
+        let (id, ()) = self.store.objects.insert(&mut Indexes::Cpu, entry, |_, _| Ok(()))?;
         let cap =
             Capability::original(Object { kind: ObjectKind::Memory, target: Target::Object(id) });
         self.state.slots[index].put_unlinked(cap);
@@ -235,23 +232,51 @@ impl<A: Allocator + Clone, K> SpaceView<'_, A, K> {
 
     /// Deletes the capability in `at` if its slot is not linked, and its
     /// object with it if that was the object's last capability (and
-    /// nothing retyped from it is left), which `released` hears of.
+    /// nothing retyped from it is left), which `released` hears of, with
+    /// this space's lock still held. [`Capabilities::delete`] lets go of
+    /// the lock first.
     pub fn delete(
         &mut self,
         at: SlotRef,
         released: &mut dyn FnMut(Released, Option<K>),
     ) -> Result<Fast<()>, CapError> {
+        let Fast::Done(held) = self.take_out(at)? else { return Ok(Fast::Linked) };
+        if let Some(id) = held {
+            self.store.objects.release(id, &mut Indexes::Cpu, released);
+        }
+        Ok(Fast::Done(()))
+    }
+
+    /// Takes the capability out of `at` if its slot is not linked, and
+    /// gives the object it named, whose count still holds it: the first
+    /// step of a fast-path delete (ADR 0405), whose second gives the count
+    /// back ([`super::objects::Objects::release`]). Until then the
+    /// object's count stands one above the capabilities that name it.
+    pub(super) fn take_out(&mut self, at: SlotRef) -> Result<Fast<Option<ObjectId>>, CapError> {
         let index = self.full(at)?;
         if self.state.slots[index].marks.linked {
             return Ok(Fast::Linked);
         }
         let taken = self.state.slots[index].take_unlinked();
         self.stale |= taken.cached;
-        if let Some(id) = taken.cap.as_ref().and_then(Capability::id) {
-            let mut to = Indexes::Spare(&mut self.state.spare);
-            self.store.objects.release(id, &mut to, released);
-        }
-        Ok(Fast::Done(()))
+        Ok(Fast::Done(taken.cap.as_ref().and_then(Capability::id)))
+    }
+
+    /// Puts `cap`, the original capability of an object made already, in
+    /// the empty slot `at`, with the slot flags `flags`: the second step
+    /// of a fast-path create (ADR 0405), whose first made the object
+    /// counting this capability ([`Capabilities::create_in`]).
+    pub(super) fn place(
+        &mut self,
+        at: SlotRef,
+        cap: Capability,
+        flags: u8,
+    ) -> Result<(), CapError> {
+        let index = self.empty(at)?;
+        let slot = &mut self.state.slots[index];
+        slot.put_unlinked(cap);
+        slot.marks.flags = flags;
+        Ok(())
     }
 
     /// Moves the capability in `from` to the empty slot `to` of the same

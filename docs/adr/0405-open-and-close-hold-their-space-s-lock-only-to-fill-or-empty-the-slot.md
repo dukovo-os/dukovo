@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 # 0405. Open and close hold their space's lock only to fill or empty the slot
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-11-07
 
 ## Context
@@ -74,12 +74,14 @@ record's object is named by nothing (`FreeRecordsNameNothing`), beside
 every invariant of the tree it checked before.
 
 **Spare object indexes are kept for each CPU, not for each space.** Each
-CPU keeps up to eight, which only that CPU touches, with interrupts off;
-it fills and empties them from the table's list under the table's lock
-(O), four at a time, as each space did. A record freed on a CPU is the
-next that CPU makes, so its lines stay on that CPU. Host builds, whose
-threads may share a CPU number, take a spin lock around each CPU's
-spares instead.
+CPU keeps up to eight, on a line of their own, which only that CPU
+touches, with interrupts off (`radix_sync::cpu::HeldCpu`, whose two
+functions the kernel defines and fat LTO inlines, as with the mount
+counts of ADR 0404); it fills and empties them from the table's list
+under the table's lock (O), four at a time, as each space did. A record
+freed on a CPU is the next that CPU makes, so its lines stay on that
+CPU. Host builds, whose threads may share a CPU number, take a spin lock
+around each CPU's spares instead.
 
 **S's word has a line of its own,** apart from the state it guards, so
 threads waiting for S no longer take that state's line from the holder;
@@ -88,12 +90,14 @@ read.
 
 **Each thread charges its process's account from a stock of its own.**
 A thread opening a file takes the file's bytes from its stock, charging
-the account a batch more only when the stock runs out; closing a file
-of its own process puts the bytes back in the stock, giving the account
-back what is over a batch. A thread gives its stock back when it ends.
-The account still holds every byte charged and its domain the pages for
-them, with up to a batch more for each thread; a charge whose object is
-closed elsewhere goes back to the account itself, as now.
+the account a batch (1 KiB) more only when the stock runs out; closing a
+file of its own process puts the bytes back in the stock, giving the
+account back all but a batch once the stock would hold more than two. A
+thread gives its stock back when it ends. The account still counts
+every byte charged, its threads' stocks among them, and its domain the
+pages for them, with up to two batches more for each thread; a charge
+whose object is closed by another process, or by the kernel, goes back
+to the account itself, as now.
 
 ## Consequences
 
@@ -112,8 +116,9 @@ closed elsewhere goes back to the account itself, as now.
 - An object's count, read while a fast path is under way, may be one too
   many for a moment. Nothing decides by a count but the release of the
   record, which happens only when it reaches zero.
-- A process's account may hold up to a batch more for each of its
-  threads, given back when the thread ends.
+- A process's account may hold up to two batches (2 KiB) more for each
+  of its threads, given back when the thread ends; `/processes`'s
+  `kernel_memory` counts them.
 - If threads still take longer than Linux's after this, the next step is
   a lock for each slot, so that open and close take no space-wide lock
   at all (the plan's PR 4).

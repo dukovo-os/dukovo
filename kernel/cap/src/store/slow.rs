@@ -17,12 +17,12 @@
 //! a space take the tree lock and that space's.
 //!
 //! An operation that makes or releases objects takes their records'
-//! indexes from the spares of the space whose slots it fills or empties,
-//! and gives them back there ([`TreeView::indexes`]). The spares take the
-//! object table's lock only to fill or empty themselves, unless the view
-//! holds that lock throughout ([`Capabilities::with_all`]): for a caller
-//! that takes a spin lock inside, where a mutex may not be taken. Each
-//! object's record has a lock of its own, taken last.
+//! indexes from the running CPU's spares, and gives them back there
+//! ([`TreeView::indexes`]). The spares take the object table's lock only
+//! to fill or empty themselves, unless the view holds that lock throughout
+//! ([`Capabilities::with_all`]): for a caller that takes a spin lock
+//! inside, where a mutex may not be taken. Each object's record has a lock
+//! of its own, taken last.
 
 use core::alloc::Allocator;
 
@@ -48,13 +48,11 @@ pub const MAX_HELD: usize = 4;
 const FEW: usize = 8;
 
 /// What [`TreeView::unretype`] takes back: the memory retyped, how many
-/// objects were counted to it, its watermark before, and the space whose
-/// spares the objects' records came from.
+/// objects were counted to it, and its watermark before.
 struct Unretype {
     memory: ObjectId,
     count: u32,
     before: u64,
-    space: u32,
 }
 
 /// What hears of each object a retype makes, with its name and extent,
@@ -71,7 +69,7 @@ pub struct TreeView<'v, A: Allocator + Clone, K = ()> {
     pub(super) forest: &'v mut Forest<A>,
     pub(super) held: [Held<'v, A>; MAX_HELD],
     /// The object table's free list, when this view holds its lock
-    /// throughout ([`Capabilities::with_all`]); otherwise the spaces'
+    /// throughout ([`Capabilities::with_all`]); otherwise the CPUs'
     /// spares take the lock when they need it ([`TreeView::indexes`]).
     pub(super) table: Option<&'v mut Free<A>>,
     /// A capability a cache may hold left its slot: the store's version
@@ -169,7 +167,7 @@ impl<A: Allocator + Clone, K> TreeView<'_, A, K> {
         let link = self.empty(at)?;
         let entry = Entry::new(kind, None, None);
         let store = self.store;
-        let mut from = self.indexes(link.space);
+        let mut from = self.indexes();
         let recorded = store.objects.insert(&mut from, entry, record)?;
         let id = recorded.0;
         let mut cap = Capability::original(crate::object::Object {
@@ -275,7 +273,7 @@ impl<A: Allocator + Clone, K> TreeView<'_, A, K> {
             Ok((extent.base + offset, before))
         });
         let (base, before) = carved.ok_or(CapError::Empty)??;
-        let undo = Unretype { memory: memory_id, count, before, space: first.space };
+        let undo = Unretype { memory: memory_id, count, before };
         if let Err(err) = self.may_derive(src, &cap, memory.space != to.space) {
             self.unretype(&undo, &[]);
             return Err(err);
@@ -295,13 +293,11 @@ impl<A: Allocator + Clone, K> TreeView<'_, A, K> {
             super::fill(&mut many, count as usize, || ObjectId { index: 0, generation: 0 });
             &mut many
         };
-        // Each object's record comes from the spares of the space its
-        // capability goes to.
         for i in 0..count as usize {
             let extent = Extent { base: base + ((i as u64) << order), pages: 1 << order };
             let entry = Entry::new(kind, Some(extent), Some(memory_id));
             let keep = |id, kept: &mut Option<K>| record(id, extent, kept);
-            match objects.insert(&mut self.indexes(first.space), entry, keep) {
+            match objects.insert(&mut self.indexes(), entry, keep) {
                 Ok((id, ())) => made[i] = id,
                 Err(err) => {
                     self.unretype(&undo, &made[..i]);
@@ -326,7 +322,7 @@ impl<A: Allocator + Clone, K> TreeView<'_, A, K> {
     fn unretype(&mut self, undo: &Unretype, made: &[ObjectId]) {
         let objects = &self.store.objects;
         for &id in made {
-            objects.unmake(id, &mut self.indexes(undo.space));
+            objects.unmake(id, &mut self.indexes());
         }
         objects.update(undo.memory, |parent| {
             parent.children -= undo.count;
@@ -375,19 +371,15 @@ impl<A: Allocator + Clone, K> TreeView<'_, A, K> {
 
     // ---- Internals ----
 
-    /// Where work on the slots of the space with index `space`, which
-    /// this view holds, takes free object indexes from and gives them
-    /// back to: the space's spares, and the table's own list too when this
-    /// view holds the table's lock ([`Capabilities::with_all`]), since
-    /// filling or emptying the spares would take that lock again.
-    fn indexes(&mut self, space: u32) -> Indexes<'_, A> {
-        let held = self.held.iter_mut().flatten().find(|(held, _)| *held == space);
-        let Some(state) = held.and_then(|(_, state)| state.as_deref_mut()) else {
-            unreachable!("object indexes for a space the view does not hold");
-        };
+    /// Where this view's work takes free object indexes from and gives
+    /// them back to: the running CPU's spares, and the table's own list
+    /// too when this view holds the table's lock
+    /// ([`Capabilities::with_all`]), since filling or emptying the spares
+    /// would take that lock again.
+    fn indexes(&mut self) -> Indexes<'_, A> {
         match self.table.as_deref_mut() {
-            Some(free) => Indexes::Both(&mut state.spare, free),
-            None => Indexes::Spare(&mut state.spare),
+            Some(free) => Indexes::CpuOrTable(free),
+            None => Indexes::Cpu,
         }
     }
 
@@ -658,10 +650,8 @@ impl<A: Allocator + Clone, K> TreeView<'_, A, K> {
             self.unlink_if_alone(parent);
         }
         if let Some(id) = held {
-            // The index goes to the spares of the space whose slot this
-            // was.
             let store = self.store;
-            store.objects.release(id, &mut self.indexes(link.space), released);
+            store.objects.release(id, &mut self.indexes(), released);
         }
     }
 
@@ -937,8 +927,6 @@ impl<A: Allocator + Clone, K> Capabilities<A, K> {
         if view.stale {
             self.bump_version();
         }
-        // Its spare object indexes go back to the table.
-        self.objects.give_back(&mut state.spare);
         state.slots = Vec::new_in(self.alloc.clone());
         state.live = false;
         state.generation = bump(state.generation);

@@ -1315,9 +1315,9 @@ fn attribute_status(err: radix_vfs::Error) -> radix_abi::Status {
 }
 
 /// Puts a capability with `rights` to `object`, a file or directory
-/// object of `kind`, in `to`, charged to the caller's process; with
-/// `close_on_exec`, the slot gets that flag in the same step, so that no
-/// `fork` copies it without.
+/// object of `kind`, in `to`, charged to the caller's process from the
+/// stock of `user`, the running thread; with `close_on_exec`, the slot
+/// gets that flag in the same step, so that no `fork` copies it without.
 pub fn install_file(
     user: &UserThread,
     to: SlotRef,
@@ -1326,23 +1326,20 @@ pub fn install_file(
     object: FileRef,
     close_on_exec: bool,
 ) -> Result<()> {
-    let charge = Account::charge(user.process.account(), size_of::<FileObject>() as u64)?;
+    // From the thread's own stock of its process's charges (ADR 0405).
+    debug_assert!(super::runs(user), "a stock touched by another thread than its own");
+    let bytes = size_of::<FileObject>() as u64;
+    let charge = Account::charge_from(user.process.account(), &user.stock, bytes)?;
     let mut object = Some(match kind {
         ObjectKind::Directory => Object::Directory(object),
         _ => Object::File(object),
     });
-    // Made and flagged under one hold of the space's lock, so no exec
-    // finds the descriptor without its close_on_exec.
-    let made = caps::in_space(to.space, |space| {
-        let record = |_, kept: &mut _| objects::record(kept, &mut object, Some(charge));
-        space.create_recorded(to, kind, rights, record)?;
-        if close_on_exec {
-            space.set_slot_flags(to, SlotFlags::CLOSE_ON_EXEC.0 as u8)?;
-        }
-        Ok(())
-    })
-    .and_then(|made| made)
-    .map_err(cap_error);
+    // Made before the space's lock is taken, then placed and flagged under
+    // one hold of it (ADR 0405), so no exec finds the descriptor without
+    // its close_on_exec.
+    let flags = if close_on_exec { SlotFlags::CLOSE_ON_EXEC.0 as u8 } else { 0 };
+    let record = |_, kept: &mut _| objects::record(kept, &mut object, Some(charge));
+    let made = caps::create_in(to, kind, rights, flags, record).map(drop).map_err(cap_error);
     // Not made: it goes now, with the store's locks gone.
     drop(object);
     made

@@ -18,7 +18,9 @@
 //!   read far more often than it changes.
 //!
 //! [`cpu_ref`] counts references to a value on each CPU, as Linux's
-//! `percpu_ref` does, for values that every CPU references at once.
+//! `percpu_ref` does, for values that every CPU references at once, and
+//! [`cpu::HeldCpu`] holds the running CPU for state each CPU keeps for
+//! itself.
 //!
 //! All of them work before any other part of the kernel is initialised.
 //! Once the kernel runs threads it registers [`Hooks`]: from then on a held
@@ -51,6 +53,7 @@
 
 extern crate alloc;
 
+pub mod cpu;
 pub mod cpu_ref;
 mod hooks;
 mod mutex;

@@ -326,7 +326,7 @@ fn object_records_fill_blocks_and_come_back() {
     // Each object's record keeps what was put there with it.
     let id = caps.get(at(a, 7)).unwrap().id().unwrap();
     assert_eq!(caps.with_kept(id, |kept| *kept), Some(id.index));
-    // Deleted, their indexes go to the space's spares and the table's.
+    // Deleted, their indexes go to the CPU's spares and the table's.
     let mut back = Vec::new();
     for slot in 0..count {
         caps.delete(at(a, slot), &mut |gone, kept| back.push((gone.id.index, kept))).unwrap();
@@ -341,16 +341,16 @@ fn object_records_fill_blocks_and_come_back() {
     assert_eq!(caps.object_blocks(), 3);
     caps.audit().unwrap();
     // Deleted with the table's lock held, as IPC holds it, the indexes go
-    // to the table's own list, not to the space's spares, whose emptying
-    // would take that lock again.
-    // Sixteen: more than a space keeps spare.
+    // to the table's own list once the CPU's spares are full, since
+    // emptying them would take that lock again.
+    // Sixteen: more than a CPU keeps spare.
     caps.with_all(&[a], |tree| {
         for slot in 0..16 {
             tree.delete(at(a, slot), &mut |_, _| {}).unwrap();
         }
     });
     caps.audit().unwrap();
-    // A space that goes gives its spares back.
+    // A space that goes releases what is left in it.
     caps.destroy_space(a, &mut |_, _| {}).unwrap();
     let census = caps.audit().unwrap();
     assert_eq!(census.total_objects(), 0);
@@ -510,6 +510,77 @@ fn slot_flags_stay_with_the_slot() {
     caps.audit().unwrap();
 }
 
+/// An object made before its space's lock is taken (ADR 0405) gets its
+/// capability and the slot's flags in one hold of the lock, and is unmade
+/// if the slot is full or the space has gone, giving back what the kernel
+/// kept of it.
+#[test]
+fn objects_made_before_the_lock_are_placed_or_unmade() {
+    let caps = Capabilities::<Global, u32>::new(Global).unwrap();
+    let a = caps.create_space(4).unwrap();
+    let kind = ObjectKind::File;
+    let keep = |id: ObjectId, kept: &mut Option<u32>| {
+        *kept = Some(id.index);
+        Ok(id.index)
+    };
+    // EXECUTE is not a file's right, so it is dropped.
+    let rights = Rights::READ | Rights::EXECUTE;
+    let (id, index) = caps.create_in(at(a, 0), kind, rights, 1, keep).unwrap();
+    assert_eq!(id.index, index);
+    let cap = caps.get(at(a, 0)).unwrap();
+    assert_eq!((cap.id(), cap.rights()), (Some(id), Rights::READ));
+    assert_eq!(caps.slot_flags(at(a, 0)), Ok(1));
+    assert_eq!(caps.with_kept(id, |kept| *kept), Some(id.index));
+    caps.audit().unwrap();
+    // Into a full slot: made, then unmade, and nothing else changed.
+    let before = caps.census();
+    assert_eq!(caps.create_in(at(a, 0), kind, Rights::READ, 0, keep), Err(CapError::Occupied));
+    assert_eq!(caps.census().total_objects(), before.total_objects());
+    assert_eq!(caps.slot_flags(at(a, 0)), Ok(1));
+    caps.audit().unwrap();
+    // A record that fails makes nothing.
+    let fails = |_: ObjectId, _: &mut Option<u32>| Err::<(), _>(CapError::NoMemory);
+    assert_eq!(caps.create_in(at(a, 1), kind, Rights::READ, 0, fails), Err(CapError::NoMemory));
+    assert_eq!(caps.get(at(a, 1)), Err(CapError::Empty));
+    // Kinds made from memory, and ranges, are not made this way.
+    let memory = caps.create_in(at(a, 1), ObjectKind::Frame, Rights::READ, 0, keep);
+    assert_eq!(memory, Err(CapError::InvalidArgument));
+    caps.audit().unwrap();
+    // Into a space that has gone.
+    caps.destroy_space(a, &mut |_, _| {}).unwrap();
+    assert_eq!(caps.create_in(at(a, 1), kind, Rights::READ, 0, keep), Err(CapError::NoSuchSpace));
+    let census = caps.audit().unwrap();
+    assert_eq!(census.total_objects(), 0);
+}
+
+/// A capability with no relatives is deleted with its space's lock held
+/// only to take it out of the slot: its object is released once every
+/// lock of the store has gone (ADR 0405).
+#[test]
+fn a_fast_delete_releases_with_no_lock_held() {
+    let caps = store();
+    let a = caps.create_space(4).unwrap();
+    caps.create(at(a, 0), ObjectKind::Endpoint).unwrap();
+    caps.create(at(a, 1), ObjectKind::Endpoint).unwrap();
+    caps.derive(at(a, 1), at(a, 2), Derivation::COPY).unwrap();
+    // A census that gives up rather than wait for a lock finds none held.
+    let mut free = Vec::new();
+    caps.delete(at(a, 0), &mut |_, _| free.push(caps.try_census().is_some())).unwrap();
+    assert_eq!(free, [true]);
+    // The slow path still holds its locks: a linked capability's object
+    // goes with the tree lock held.
+    caps.delete(at(a, 2), &mut |_, _| panic!("a capability's copy is left")).unwrap();
+    caps.derive(at(a, 1), at(a, 2), Derivation::COPY).unwrap();
+    caps.delete(at(a, 1), &mut |_, _| panic!("a capability's copy is left")).unwrap();
+    let mut free = Vec::new();
+    caps.with_tree(&[a], |tree| {
+        tree.delete(at(a, 2), &mut |_, _| free.push(caps.try_census().is_some())).unwrap();
+    });
+    assert_eq!(free, [false]);
+    let census = caps.audit().unwrap();
+    assert_eq!(census.total_objects(), 0);
+}
+
 #[test]
 fn the_linked_bit_says_which_slots_have_relatives() {
     let caps = store();
@@ -631,8 +702,21 @@ fn device_ranges_narrow() {
     caps.audit().unwrap();
 }
 
+/// Makes an endpoint in `at` that keeps its own index in its record, the
+/// object made before the space's lock is taken
+/// ([`Capabilities::create_in`]).
+fn make_first(caps: &Capabilities<Global, u32>, at: SlotRef) -> Result<ObjectId, CapError> {
+    let keep = |id: ObjectId, kept: &mut Option<u32>| {
+        *kept = Some(id.index);
+        Ok(())
+    };
+    let kind = ObjectKind::Endpoint;
+    caps.create_in(at, kind, kind.rights(), 0, keep).map(|(id, ())| id)
+}
+
 /// Threads at once, as on four CPUs: each opens and closes in its own
-/// space (the fast path), copies into its own slots and into the next
+/// space (the fast path, making objects under the space's lock and before
+/// it), copies into its own slots and into the next
 /// thread's (the slow path, crossing spaces), moves, deletes what the
 /// thread before it copied in, revokes, and copies from a capability every
 /// thread shares. Whatever each operation answers, the store must stay
@@ -694,8 +778,13 @@ fn threads_at_once_keep_the_store_whole() {
                     let inbox = at(next, OWN + (r >> 24) as u32 % (SLOTS - OWN - 1));
                     let mine = at(me, OWN + (r >> 32) as u32 % (SLOTS - OWN - 1));
                     match r % 9 {
-                        0 | 1 => {
+                        0 => {
                             if let Ok(Ok(_)) = caps.in_space(me, |space| make(space, own)) {
+                                made.fetch_add(1, Ordering::Relaxed);
+                            }
+                        }
+                        1 => {
+                            if make_first(&caps, own).is_ok() {
                                 made.fetch_add(1, Ordering::Relaxed);
                             }
                         }
@@ -753,6 +842,99 @@ fn threads_at_once_keep_the_store_whole() {
     let mut left = 0;
     caps.each_kept(|_, _| left += 1);
     assert_eq!(left, 0, "a record kept something of an object that went");
+}
+
+/// Threads of one process at once: four threads share one space, as the
+/// threads of a process share its capability space, and open and close in
+/// it (objects made before the space's lock and released after it, ADR
+/// 0405), copy and move between its slots and look capabilities up to
+/// cache them. The store must stay whole, and every object made must come
+/// back once, with its own record.
+#[test]
+fn threads_of_one_space_keep_the_store_whole() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Barrier};
+
+    const THREADS: usize = 4;
+    const ROUNDS: usize = 100_000;
+    const SLOTS: u32 = 32;
+    let caps = Arc::new(Capabilities::<Global, u32>::new(Global).unwrap());
+    let space = caps.create_space(SLOTS).unwrap();
+    let back = |released: &Released, kept: Option<u32>| {
+        assert_eq!(kept, Some(released.id.index), "an object came back without its own record");
+    };
+    let made = Arc::new(AtomicUsize::new(0));
+    let released = Arc::new(AtomicUsize::new(0));
+    let barrier = Arc::new(Barrier::new(THREADS));
+    let threads: Vec<_> = (0..THREADS)
+        .map(|t| {
+            let (caps, made, released, barrier) =
+                (caps.clone(), made.clone(), released.clone(), barrier.clone());
+            std::thread::spawn(move || {
+                let mut sink = |gone: Released, kept: Option<u32>| {
+                    back(&gone, kept);
+                    released.fetch_add(1, Ordering::Relaxed);
+                };
+                // xorshift64, seeded per thread.
+                let mut seed = 0x2545_f491_4f6c_dd1du64 ^ (t as u64 + 1);
+                let mut next_random = move || {
+                    seed ^= seed << 13;
+                    seed ^= seed >> 7;
+                    seed ^= seed << 17;
+                    seed
+                };
+                barrier.wait();
+                for _ in 0..ROUNDS {
+                    let r = next_random();
+                    let one = at(space, (r >> 8) as u32 % SLOTS);
+                    let other = at(space, (r >> 16) as u32 % SLOTS);
+                    match r % 10 {
+                        0..=2 => {
+                            if make_first(&caps, one).is_ok() {
+                                made.fetch_add(1, Ordering::Relaxed);
+                            }
+                        }
+                        3 => {
+                            let kind = ObjectKind::Notification;
+                            let made_here = caps.in_space(space, |view| {
+                                view.create_recorded(one, kind, kind.rights(), |id, kept| {
+                                    *kept = Some(id.index);
+                                    Ok(())
+                                })
+                            });
+                            if let Ok(Ok(_)) = made_here {
+                                made.fetch_add(1, Ordering::Relaxed);
+                            }
+                        }
+                        4..=6 => {
+                            let _ = caps.delete(one, &mut sink);
+                        }
+                        7 => {
+                            let _ = caps.derive(one, other, Derivation::COPY);
+                        }
+                        8 => {
+                            let _ = caps.move_cap(one, other);
+                        }
+                        _ => {
+                            let _ = caps.get_to_cache(one);
+                        }
+                    }
+                }
+            })
+        })
+        .collect();
+    for thread in threads {
+        thread.join().unwrap();
+    }
+    caps.audit().unwrap();
+    caps.destroy_space(space, &mut |gone, kept| {
+        back(&gone, kept);
+        released.fetch_add(1, Ordering::Relaxed);
+    })
+    .unwrap();
+    let census = caps.audit().unwrap();
+    assert_eq!((census.total_caps(), census.total_objects()), (0, 0));
+    assert_eq!(made.load(Ordering::Relaxed), released.load(Ordering::Relaxed));
 }
 
 // ---- Random operation sequences against a model ----

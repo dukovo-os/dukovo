@@ -64,6 +64,36 @@ pub extern "Rust" fn radix_count_here(count: &radix_sync::cpu_ref::CpuCount, del
     counted
 }
 
+// Each CPU's state that `radix_sync::cpu` keeps is picked by the CPU's
+// number modulo its `CPUS`: no two CPUs may share it.
+const _: () = assert!(radix_sync::cpu::CPUS >= radix_hal::MAX_CPUS);
+
+/// Holds the running CPU for state it keeps for itself
+/// (`radix_sync::cpu::HeldCpu`, ADR 0405): interrupts go off, so nothing
+/// else runs on the CPU, and no thread moves off it, until
+/// [`radix_let_go_cpu`]. Gives the CPU's number shifted up one, with bit 0
+/// set if interrupts were on. Every open and close of a file does it, and
+/// fat LTO inlines it there.
+// `radix_sync::cpu` declares this symbol with the same signature, so
+// exporting it unmangled is sound.
+#[allow(unsafe_code)]
+#[unsafe(no_mangle)]
+pub extern "Rust" fn radix_hold_cpu() -> usize {
+    let were = Arch::disable_interrupts();
+    (Arch::current_cpu() << 1) | usize::from(were)
+}
+
+/// Lets go of the CPU [`radix_hold_cpu`] held: interrupts come back on if
+/// they were. As in [`radix_count_here`], nothing held off can have asked
+/// for a reschedule but the interrupt that brings it.
+// `radix_sync::cpu` declares this symbol with the same signature, so
+// exporting it unmangled is sound.
+#[allow(unsafe_code)]
+#[unsafe(no_mangle)]
+pub extern "Rust" fn radix_let_go_cpu(were: bool) {
+    Arch::restore_interrupts(were);
+}
+
 /// Whether the lock checker is on.
 pub fn lockdep_enabled() -> bool {
     CHECKER.enabled()

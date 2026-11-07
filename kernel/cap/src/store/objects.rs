@@ -17,18 +17,22 @@
 //! the capability without it, and taken out when the object goes, so the
 //! kernel can close it.
 //!
-//! Free records are found by index. Each space keeps a few spare indexes
-//! under its own lock ([`Spare`]), so operations make and release objects
-//! without the table's own lock (O), which guards the indexes no space
-//! keeps and the making of blocks; a space takes it only to fill or empty
-//! its spares, a few at a time. An operation that holds O throughout
-//! (the store's `with_all`) uses the spares and O's list both
-//! ([`Indexes::Both`]).
+//! Free records are found by index. Each CPU keeps a few spare indexes
+//! ([`CpuSpare`], ADR 0405), so operations make and release objects
+//! without the table's own lock (O), which guards the indexes no CPU keeps
+//! and the making of blocks; a CPU's spares take it only to fill or empty
+//! themselves, a few at a time. A record freed on a CPU is the next one
+//! that CPU makes, so its lines stay there, and threads of one process
+//! making and releasing objects on several CPUs at once pass no record
+//! between them. An operation that holds O throughout (the store's
+//! `with_all`) uses the spares and O's list both
+//! ([`Indexes::CpuOrTable`]).
 
 use alloc::vec::Vec;
 use core::alloc::Allocator;
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
 
+use radix_sync::cpu::{CPUS, HeldCpu};
 use radix_sync::{Mutex, MutexGuard, Once, SpinLock, SpinLockGuard};
 
 use super::{Extent, Released, bump};
@@ -43,8 +47,8 @@ pub const OBJECT_BLOCK: usize = 512;
 /// is `OBJECT_BLOCK * OBJECT_BLOCKS`, about a million.
 pub const OBJECT_BLOCKS: usize = 2048;
 
-/// Indexes a space keeps spare, and how many it takes from or gives back
-/// to the table's at once.
+/// Indexes a CPU keeps spare, and how many it takes from or gives back to
+/// the table's at once.
 const SPARE: usize = 8;
 const BATCH: usize = SPARE / 2;
 
@@ -140,64 +144,122 @@ pub(super) struct Free<A: Allocator> {
     pub(super) made: u32,
 }
 
-/// A few free indexes a space keeps, under its own lock.
-#[derive(Clone, Copy, Debug, Default)]
-pub(super) struct Spare {
-    indexes: [u32; SPARE],
-    len: u8,
+/// The few free indexes one CPU keeps, on a line of its own.
+///
+/// In the kernel only the CPU itself touches them, and only while it is
+/// held ([`HeldCpu`]), so nothing else runs on it meanwhile: the atomics
+/// are loaded and stored, never locked, and cost what plain memory does.
+/// They are atomics so that the audit may read another CPU's. In the
+/// host's builds, whose threads share CPU numbers, `busy` locks them.
+#[repr(align(64))]
+pub(super) struct CpuSpare {
+    /// Taken while a thread works on them, in the host's builds only.
+    busy: AtomicBool,
+    len: AtomicU8,
+    indexes: [AtomicU32; SPARE],
 }
 
-impl Spare {
-    /// The indexes it keeps.
-    pub(super) fn indexes(&self) -> &[u32] {
-        &self.indexes[..self.len as usize]
+impl CpuSpare {
+    fn new() -> CpuSpare {
+        CpuSpare {
+            busy: AtomicBool::new(false),
+            len: AtomicU8::new(0),
+            indexes: [const { AtomicU32::new(0) }; SPARE],
+        }
     }
 
-    /// Takes the index put in last; there must be one.
-    #[inline]
-    fn pop(&mut self) -> u32 {
-        self.len -= 1;
-        self.indexes[self.len as usize]
+    /// The indexes it keeps now, for the audit, which needs a store nobody
+    /// changes meanwhile.
+    pub(super) fn indexes(&self) -> impl Iterator<Item = u32> + '_ {
+        let len = self.len.load(Ordering::Relaxed) as usize;
+        self.indexes[..len.min(SPARE)].iter().map(|index| index.load(Ordering::Relaxed))
     }
 
-    /// Keeps `index`; there must be room.
-    #[inline]
-    fn push(&mut self, index: u32) {
-        self.indexes[self.len as usize] = index;
-        self.len += 1;
+    /// Works on these spares as `f` does, with the CPU they belong to
+    /// held, and in the host's builds with `busy` taken too.
+    #[inline(always)]
+    fn with<R>(&self, f: impl FnOnce(&CpuSpare) -> R) -> R {
+        if HeldCpu::ALONE {
+            return f(self);
+        }
+        while self
+            .busy
+            .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
+            core::hint::spin_loop();
+        }
+        let result = f(self);
+        self.busy.store(false, Ordering::Release);
+        result
+    }
+
+    /// Takes the index put in last, if there is one.
+    #[inline(always)]
+    fn pop(&self) -> Option<u32> {
+        let len = self.len.load(Ordering::Relaxed);
+        if len == 0 {
+            return None;
+        }
+        self.len.store(len - 1, Ordering::Relaxed);
+        Some(self.indexes[len as usize - 1].load(Ordering::Relaxed))
+    }
+
+    /// Keeps `index`, if there is room.
+    #[inline(always)]
+    fn push(&self, index: u32) -> bool {
+        let len = self.len.load(Ordering::Relaxed);
+        if len as usize == SPARE {
+            return false;
+        }
+        self.indexes[len as usize].store(index, Ordering::Relaxed);
+        self.len.store(len + 1, Ordering::Relaxed);
+        true
     }
 }
 
 /// Where an operation takes free indexes from and gives them back to.
 pub(super) enum Indexes<'a, A: Allocator> {
-    /// A space's spares, with its lock held: the table's lock is taken
-    /// only to fill or empty them.
-    Spare(&'a mut Spare),
-    /// A space's spares, then the table's own when they run out or are
-    /// full, with both locks held: for an operation that holds the
-    /// table's lock already, which filling or emptying the spares would
-    /// take again.
-    Both(&'a mut Spare, &'a mut Free<A>),
+    /// The running CPU's spares: the table's lock is taken only to fill
+    /// or empty them.
+    Cpu,
+    /// The running CPU's spares, then the table's own when they run out
+    /// or are full, with the table's lock held: for an operation that
+    /// holds it already, which filling or emptying the spares would take
+    /// again.
+    CpuOrTable(&'a mut Free<A>),
 }
 
 /// One block of records, made once and never moved.
 type Block<A, K> = Vec<Record<K>, A>;
 
-/// The table: its blocks, and its free indexes behind its lock.
+/// The table: its blocks, the spare indexes of each CPU, and its free
+/// indexes behind its lock.
 pub(super) struct Objects<A: Allocator, K> {
     alloc: A,
     blocks: Vec<Once<Block<A, K>>, A>,
+    /// Each CPU's spare indexes, by its number.
+    spares: Vec<CpuSpare, A>,
     pub(super) free: Mutex<Free<A>>,
 }
 
 impl<A: Allocator + Clone, K> Objects<A, K> {
-    /// An empty table. Fails if there is no memory for its list of blocks.
+    /// An empty table. Fails if there is no memory for its list of blocks
+    /// and the CPUs' spares.
     pub(super) fn new(alloc: A) -> Result<Self, CapError> {
         let mut blocks = Vec::new_in(alloc.clone());
         blocks.try_reserve_exact(OBJECT_BLOCKS).map_err(|_| CapError::NoMemory)?;
         super::fill(&mut blocks, OBJECT_BLOCKS, Once::new);
+        let mut spares = Vec::new_in(alloc.clone());
+        spares.try_reserve_exact(CPUS).map_err(|_| CapError::NoMemory)?;
+        super::fill(&mut spares, CPUS, CpuSpare::new);
         let free = Free { indexes: Vec::new_in(alloc.clone()), made: 0 };
-        Ok(Objects { alloc, blocks, free: Mutex::new(free) })
+        Ok(Objects { alloc, blocks, spares, free: Mutex::new(free) })
+    }
+
+    /// Every CPU's spares, for the audit.
+    pub(super) fn cpu_spares(&self) -> &[CpuSpare] {
+        &self.spares
     }
 
     /// The record at `index`, if its block was made.
@@ -220,74 +282,84 @@ impl<A: Allocator + Clone, K> Objects<A, K> {
 
     // ---- Free indexes ----
 
+    /// Works on the running CPU's spares as `f` does, with the CPU held.
+    #[inline(always)]
+    fn with_spare<R>(&self, f: impl FnOnce(&CpuSpare) -> R) -> R {
+        let cpu = HeldCpu::here();
+        self.spares[cpu.index()].with(f)
+    }
+
     /// A free index, from `from`.
     #[inline]
     pub(super) fn take(&self, from: &mut Indexes<'_, A>) -> Result<u32, CapError> {
+        if let Some(index) = self.with_spare(CpuSpare::pop) {
+            return Ok(index);
+        }
         match from {
-            Indexes::Spare(spare) => {
-                if spare.len == 0 {
-                    self.fill(spare)?;
-                }
-                Ok(spare.pop())
-            }
-            Indexes::Both(spare, free) => {
-                if spare.len == 0 {
-                    return self.take_from_table(free);
-                }
-                Ok(spare.pop())
-            }
+            Indexes::Cpu => self.refill(),
+            Indexes::CpuOrTable(free) => self.take_from_table(free),
         }
     }
 
     /// Gives the free index `index` back to `to`.
     #[inline]
     pub(super) fn give(&self, index: u32, to: &mut Indexes<'_, A>) {
+        if self.with_spare(|spare| spare.push(index)) {
+            return;
+        }
         match to {
-            Indexes::Spare(spare) => {
-                if spare.len as usize == SPARE {
-                    self.empty(spare, BATCH);
-                }
-                spare.push(index);
-            }
-            Indexes::Both(spare, free) => {
-                if spare.len as usize == SPARE {
-                    return give_to_table(free, index);
-                }
-                spare.push(index);
-            }
+            Indexes::Cpu => self.spill(index),
+            Indexes::CpuOrTable(free) => give_to_table(free, index),
         }
     }
 
-    /// Gives all of `spare`'s indexes back to the table: for a space that
-    /// goes. The table's lock must not be held.
-    pub(super) fn give_back(&self, spare: &mut Spare) {
-        if spare.len > 0 {
-            self.empty(spare, spare.len as usize);
-        }
-    }
-
-    /// Takes up to [`BATCH`] indexes from the table into the empty `spare`,
-    /// at least one.
+    /// Takes up to [`BATCH`] indexes from the table, when the running
+    /// CPU's spares have none: gives one and keeps the rest there. The
+    /// table's lock must not be held.
     #[inline(never)]
-    fn fill(&self, spare: &mut Spare) -> Result<(), CapError> {
+    fn refill(&self) -> Result<u32, CapError> {
         let mut free = self.free.lock();
-        while (spare.len as usize) < BATCH {
+        let first = self.take_from_table(&mut free)?;
+        let mut more = [0u32; BATCH - 1];
+        let mut taken = 0;
+        while taken < more.len() {
             match self.take_from_table(&mut free) {
-                Ok(index) => spare.push(index),
+                Ok(index) => more[taken] = index,
                 // The first is enough.
-                Err(_) if spare.len > 0 => break,
-                Err(err) => return Err(err),
+                Err(_) => break,
             }
+            taken += 1;
         }
-        Ok(())
+        // Kept for the CPU the caller runs on now. What does not fit (a
+        // host thread that shares the CPU's number filled them meanwhile)
+        // goes back.
+        let kept =
+            self.with_spare(|spare| more[..taken].iter().take_while(|&&i| spare.push(i)).count());
+        for &index in &more[kept..taken] {
+            give_to_table(&mut free, index);
+        }
+        Ok(first)
     }
 
-    /// Gives `count` of `spare`'s indexes back to the table.
+    /// Gives `index` and [`BATCH`] of the running CPU's spares back to the
+    /// table, when the spares are full. The table's lock must not be held.
     #[inline(never)]
-    fn empty(&self, spare: &mut Spare, count: usize) {
+    fn spill(&self, index: u32) {
+        let mut out = [0u32; BATCH];
+        let count = self.with_spare(|spare| {
+            let mut count = 0;
+            while count < BATCH
+                && let Some(spare_index) = spare.pop()
+            {
+                out[count] = spare_index;
+                count += 1;
+            }
+            count
+        });
         let mut free = self.free.lock();
-        for _ in 0..count {
-            give_to_table(&mut free, spare.pop());
+        give_to_table(&mut free, index);
+        for &spare_index in &out[..count] {
+            give_to_table(&mut free, spare_index);
         }
     }
 
