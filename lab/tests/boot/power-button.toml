@@ -1,0 +1,19 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "A press of the power button shuts the machine down cleanly, as a person would expect"
+time = "6m"
+
+# Spark stops every service before the kernel turns the power off.
+[[step]]
+power = "button"
+[[step]]
+serial = "every service has stopped"
+[[step]]
+serial = "asked to power off the machine; syncing the filesystems"
+[[step]]
+wait = "off"
+[[step]]
+power = "on"
+[[step]]
+wait = "ready"

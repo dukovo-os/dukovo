@@ -1,0 +1,33 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "The firewall shows what listens, and takes a rule and lets it go again"
+time = "3m"
+
+[[step]]
+run = "firewall status"
+exit = 2
+expect = "elevate"
+[[step]]
+run = "firewall status"
+root = true
+expect = ["Firewall:", "rules", "tcp 22", "/system/commands/sshd"]
+[[step]]
+run = "firewall list"
+root = true
+expect = "No rules"
+# A rule for a port nothing uses, so the lab's own SSH is never at risk.
+[[step]]
+run = "firewall deny tcp 7008"
+root = true
+[[step]]
+run = "firewall list"
+root = true
+expect = "7008"
+[[step]]
+run = "firewall remove 1"
+root = true
+[[step]]
+run = "firewall list"
+root = true
+expect = "No rules"

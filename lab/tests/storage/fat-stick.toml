@@ -1,0 +1,42 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "A USB stick formatted FAT holds a file through unmounting, and its check finds no fault"
+time = "4m"
+
+[[step]]
+usb = "plug"
+blank = "64M"
+[[step]]
+wait = "5s"
+# Find the stick by its size, which no system disk has, and keep its name
+# in the lab's home for the steps below, which root runs: each account has
+# a /tmp of its own. Nothing is formatted unless a stick was found.
+[[step]]
+run = "lsblk -dn | awk '$2 == \"64M\" && $4 == \"disk\" { print $1 }' > ~/lab-stick && cat ~/lab-stick"
+expect = "sd"
+[[step]]
+run = "sh -c 'mkfs-fat -n LABSTICK /devices/$(cat /users/lab/lab-stick)'"
+root = true
+expect = ["made FAT16", "label LABSTICK"]
+[[step]]
+run = "sh -c 'mkdir -p /volumes/lab-stick && mount /devices/$(cat /users/lab/lab-stick) /volumes/lab-stick && echo on-the-stick > /volumes/lab-stick/hello.txt'"
+root = true
+[[step]]
+run = "findmnt /volumes/lab-stick"
+expect = ["vfat", "rw"]
+# What was written is still there after unmounting and mounting again.
+[[step]]
+run = "sh -c 'umount /volumes/lab-stick && mount /devices/$(cat /users/lab/lab-stick) /volumes/lab-stick && cat /volumes/lab-stick/hello.txt && umount /volumes/lab-stick'"
+root = true
+expect = "on-the-stick"
+[[step]]
+run = "sh -c 'fsck-fat -n /devices/$(cat /users/lab/lab-stick)'"
+root = true
+expect = "1 files"
+[[step]]
+run = "sh -c 'blkid /devices/$(cat /users/lab/lab-stick)'"
+root = true
+expect = ["LABEL=\"LABSTICK\"", "TYPE=\"vfat\""]
+[[step]]
+usb = "unplug"

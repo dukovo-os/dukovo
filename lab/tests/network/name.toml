@@ -1,0 +1,12 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "The machine has its name, and its resolver has a server from DHCP"
+time = "2m"
+
+[[step]]
+run = "hostname"
+expect = "dukovo"
+[[step]]
+run = "resolvectl"
+expect = "DNS"

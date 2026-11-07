@@ -1,0 +1,14 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "The kernel's log tells of the boot, and only an administrator reads it"
+time = "2m"
+
+[[step]]
+run = "dmesg"
+exit = 1
+expect = "elevate dmesg"
+[[step]]
+run = "dmesg"
+root = true
+expect = ["Radix", "Firmware: UEFI", "Boot complete."]

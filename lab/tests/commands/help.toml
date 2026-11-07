@@ -1,0 +1,18 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "Help is there: man pages for the commands, and their --help"
+time = "2m"
+
+[[step]]
+run = "man -w ls elevate service"
+expect = ["ls.1", "elevate.8", "service.8"]
+[[step]]
+run = "man ls | head -5"
+expect = "ls"
+[[step]]
+run = "ls --help"
+expect = "Usage"
+[[step]]
+run = "nano --version"
+expect = "nano"

@@ -1,0 +1,26 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "elevate reboot restarts the machine, which boots back to SSH with a fresh /tmp"
+time = "6m"
+
+# A file in /tmp, which is memory, shows below whether the machine really
+# went through a boot.
+[[step]]
+run = "touch /tmp/lab-before-restart && ls /tmp/lab-before-restart"
+expect = "lab-before-restart"
+# Restart a moment after the command returns, so SSH hands back its exit
+# status before the connection goes.
+[[step]]
+run = "sh -c '(sleep 2; reboot) > /dev/null 2>&1 &'"
+root = true
+[[step]]
+serial = "asked to restart the machine"
+[[step]]
+serial = "Boot complete."
+[[step]]
+wait = "ready"
+[[step]]
+run = "ls /tmp/lab-before-restart"
+exit = 2
+expect = "No such file"

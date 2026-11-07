@@ -1,0 +1,13 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "sshd listens on port 22, and a program can listen and connect on the loopback"
+time = "2m"
+
+[[step]]
+run = "ss -tln"
+expect = ":22"
+[[step]]
+# nc listens in the background; the second nc sends it a line.
+run = "nc -l 127.0.0.1 7007 > /tmp/lab-nc < /dev/null & sleep 1; echo over-lo | nc -N 127.0.0.1 7007; sleep 1; cat /tmp/lab-nc"
+expect = "over-lo"

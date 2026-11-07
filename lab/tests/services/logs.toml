@@ -1,0 +1,19 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "The log keeps what programs say: each account sees its own, an administrator all"
+time = "3m"
+
+[[step]]
+run = "logger lab-says-hello && sleep 1 && log | tail -n 20"
+expect = ["lab", "lab-says-hello", "you see only the records of your own programs"]
+# An administrator sees every program's records, sign-ins and elevations
+# among them, which is the audit trail.
+[[step]]
+run = "log"
+root = true
+expect = ["sshd:", "authd: lab signed in over SSH", "lab elevated on no terminal (password typed)", "lab-says-hello"]
+[[step]]
+run = "journalctl -n 50"
+root = true
+expect = ["authd:", "lab elevated"]

@@ -1,0 +1,22 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "Files and folders: made, copied, moved, linked, given modes and removed"
+time = "2m"
+
+[[step]]
+run = "rm -rf /tmp/lab-files && mkdir -p /tmp/lab-files/a/b && cd /tmp/lab-files && echo one > a/b/f && cp a/b/f g && mv g h && ln -s h l && cat l && readlink l"
+expect = ["one", "h"]
+[[step]]
+run = "cd /tmp/lab-files && chmod 640 h && stat -c '%a %s' h"
+expect = "640 4"
+[[step]]
+run = "find /tmp/lab-files -type f | sort"
+expect = ["/tmp/lab-files/a/b/f", "/tmp/lab-files/h"]
+[[step]]
+run = "du -s /tmp/lab-files && tree /tmp/lab-files"
+expect = ["/tmp/lab-files", "directories"]
+[[step]]
+run = "rm -r /tmp/lab-files && ls /tmp/lab-files"
+exit = 2
+expect = "No such file"

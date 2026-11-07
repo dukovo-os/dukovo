@@ -1,0 +1,22 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "The root is Dukovo's Btrfs: the system read-only, settings, state and homes writable"
+time = "2m"
+
+[[step]]
+run = "findmnt /system"
+expect = ["btrfs", "ro"]
+[[step]]
+run = "touch /system/lab-was-here"
+exit = 1
+expect = "Read-only file system"
+[[step]]
+run = "echo kept > ~/lab-file && cat ~/lab-file && rm ~/lab-file"
+expect = "kept"
+[[step]]
+run = "lsblk"
+expect = ["disk", "part", "/system"]
+[[step]]
+run = "df -h /users"
+expect = "/users"

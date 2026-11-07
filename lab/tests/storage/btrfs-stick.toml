@@ -1,0 +1,56 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "A USB stick formatted Btrfs takes subvolumes and read-only snapshots, and checks clean"
+time = "5m"
+
+# A Btrfs needs 109 MiB at least.
+[[step]]
+usb = "plug"
+blank = "256M"
+[[step]]
+wait = "5s"
+# Find the stick by its size, which no system disk has, and keep its name
+# in the lab's home for the steps below, which root runs: each account has
+# a /tmp of its own. Nothing is formatted unless a stick was found.
+[[step]]
+run = "lsblk -dn | awk '$2 == \"256M\" && $4 == \"disk\" { print $1 }' > ~/lab-stick && cat ~/lab-stick"
+expect = "sd"
+[[step]]
+run = "sh -c 'mkfs-btrfs -f -L LABBT /devices/$(cat /users/lab/lab-stick)'"
+root = true
+expect = ["Label:              LABBT", "Filesystem size:    256.00MiB"]
+[[step]]
+run = "sh -c 'mkdir -p /volumes/lab-stick && mount /devices/$(cat /users/lab/lab-stick) /volumes/lab-stick'"
+root = true
+[[step]]
+run = "findmnt /volumes/lab-stick"
+expect = ["btrfs", "rw"]
+[[step]]
+run = "sh -c 'subvolume create /volumes/lab-stick/work && echo first > /volumes/lab-stick/work/note.txt'"
+root = true
+expect = "Create subvolume"
+# A read-only snapshot keeps the note as it was, and takes no writes.
+[[step]]
+run = "subvolume snapshot -r /volumes/lab-stick/work /volumes/lab-stick/before"
+root = true
+expect = "Create a readonly snapshot"
+[[step]]
+run = "sh -c 'echo second > /volumes/lab-stick/work/note.txt && cat /volumes/lab-stick/before/note.txt /volumes/lab-stick/work/note.txt'"
+root = true
+expect = ["first", "second"]
+[[step]]
+run = "touch /volumes/lab-stick/before/new"
+root = true
+exit = 1
+expect = "Read-only file system"
+[[step]]
+run = "subvolume delete /volumes/lab-stick/before"
+root = true
+expect = "Delete subvolume"
+[[step]]
+run = "sh -c 'umount /volumes/lab-stick && fsck-btrfs /devices/$(cat /users/lab/lab-stick)'"
+root = true
+expect = "no error found"
+[[step]]
+usb = "unplug"

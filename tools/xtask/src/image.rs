@@ -161,8 +161,9 @@ pub struct Overrides {
     pub disk_check: Option<String>,
     /// An account to make in the root (ADR 0218).
     pub account: Option<Account>,
-    /// The lab key a [`Kind::Lab`] image trusts (ADR 0401).
-    pub lab: Option<lab::Key>,
+    /// The lab key and password a [`Kind::Lab`] image trusts (ADRs 0401
+    /// and 0406).
+    pub lab: Option<lab::Access>,
 }
 
 /// Builds the kernel and the release image described by dukovo.toml.
@@ -831,8 +832,9 @@ pub const SLOT_ARCHIVE: &str = "archive";
 pub struct Extras<'a> {
     /// An account to make (`ob image --user`, ADR 0218).
     pub account: Option<&'a Account>,
-    /// The lab's account, home and sshd, trusting this key (ADR 0401).
-    pub lab: Option<&'a lab::Key>,
+    /// The lab's account, home and sshd, trusting this key and password
+    /// (ADRs 0401 and 0406).
+    pub lab: Option<&'a lab::Access>,
 }
 
 /// Makes the Dukovo root's Btrfs in the file `output`, of [`ROOT_BYTES`],
@@ -864,9 +866,9 @@ pub fn make_root(
     // The lab's account comes after the one asked for, so that one keeps
     // the first user's number, as on a disk without the lab's.
     let mut owned = Vec::new();
-    if let Some(key) = extras.lab {
+    if let Some(access) = extras.lab {
         step("Adding the Dukovo Lab's account, key and sshd (a test image)");
-        owned.push(lab::stage(staging, &system, key)?);
+        owned.push(lab::stage(staging, &system, access)?);
     }
     let time = image_time(ctx);
     let made = rootfs::make(staging, output, ROOT_BYTES, ROOT_LABEL, &SUBVOLUMES, time, &owned);

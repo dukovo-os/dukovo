@@ -1,0 +1,17 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "git keeps history in a repository of its own: commits, branches, merges and the log"
+time = "3m"
+
+[[step]]
+run = "rm -rf /tmp/lab-git && git init -q -b main /tmp/lab-git && cd /tmp/lab-git && git config user.name Lab && git config user.email lab@lab && echo one > f && git add f && git commit -q -m first && git log --oneline"
+expect = "first"
+[[step]]
+run = "cd /tmp/lab-git && git switch -q -c side && echo two >> f && git commit -q -am second && git switch -q main && git merge -q side && git log --oneline | wc -l && cat f"
+expect = ["2", "one", "two"]
+[[step]]
+run = "cd /tmp/lab-git && git status --short && git branch"
+expect = ["main", "side"]
+[[step]]
+run = "rm -rf /tmp/lab-git"

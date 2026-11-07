@@ -1,0 +1,46 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# The lab's categories, in the order the runner page's left side and
+# `./ob lab list` show them. Each is a folder of tests here; a new folder
+# needs its entry. The lab's docs/test-files.md describes the file.
+
+[[category]]
+name = "boot"
+title = "Boot and power"
+about = "Starting up, restarting and turning off, cleanly and not"
+
+[[category]]
+name = "hardware"
+title = "Hardware and drivers"
+about = "The devices found and working: controllers, disks, USB, CPUs and memory"
+
+[[category]]
+name = "storage"
+title = "Disks and filesystems"
+about = "The root's Btrfs, and filesystems made, written and read back on sticks"
+
+[[category]]
+name = "network"
+title = "Network"
+about = "Addresses, routes, ports, the firewall and the cable"
+
+[[category]]
+name = "ssh"
+title = "SSH"
+about = "Signing in and running commands over SSH, and SSH's own tools"
+
+[[category]]
+name = "services"
+title = "Services and logs"
+about = "Spark's services: listed, stopped and started, and what they log"
+
+[[category]]
+name = "accounts"
+title = "Accounts and elevate"
+about = "Accounts made and removed, groups, and running as root"
+
+[[category]]
+name = "commands"
+title = "Commands"
+about = "The command-line tools: files, text, archives, git, the shell and help"

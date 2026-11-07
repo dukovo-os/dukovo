@@ -10,4 +10,4 @@
 name = "quick"
 title = "Quick check"
 about = "A few minutes on QEMU: boots, signs in over SSH, runs commands, pulls the cable"
-tests = ["boot", "features/ssh-command", "drivers/link-pull"]
+tests = ["boot/reaches-ready", "ssh/commands", "network/link-pull"]

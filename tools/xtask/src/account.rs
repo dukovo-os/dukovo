@@ -242,6 +242,11 @@ pub fn add(system: &Path, settings: &Path, state: &Path, account: &Account) -> R
     Ok((user.uid, user.gid))
 }
 
+/// The hash of `password`, as authd keeps it, with a new salt.
+pub fn hash_password(password: &[u8]) -> Result<String> {
+    salt().and_then(|salt| hash::hash(password, &salt, Cost::DEFAULT).map_err(Error::new))
+}
+
 /// The hash of a password no one knows: 32 random bytes, thrown away
 /// once hashed. An account with it signs in only with a key.
 pub fn unknown_password_hash() -> Result<String> {

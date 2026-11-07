@@ -1,0 +1,30 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "A service restarted by hand comes back running, and Spark counts the restart"
+time = "3m"
+
+# timed is safe to restart: nothing waits on it.
+[[step]]
+run = "service timed restart"
+root = true
+[[step]]
+run = "service timed status"
+root = true
+expect = ["timed - Network time", "Active: active (running)", "restarts so far"]
+# Stopping and starting by hand work too.
+[[step]]
+run = "service timed stop"
+root = true
+[[step]]
+run = "service timed status"
+root = true
+exit = 3
+expect = "inactive"
+[[step]]
+run = "service timed start"
+root = true
+[[step]]
+run = "service timed status"
+root = true
+expect = "Active: active (running)"

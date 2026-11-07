@@ -1,0 +1,50 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "An administrator adds an account, turns it off and on, and removes it with its home"
+time = "4m"
+
+# With no terminal, user add takes the password from its standard input.
+[[step]]
+run = "sh -c 'echo lab-test-password | user add --full-name \"Lab Test\" labtest'"
+root = true
+expect = ["Made labtest", "home /users/labtest"]
+[[step]]
+run = "user list"
+root = true
+expect = ["labtest", "user", "enabled", "/users/labtest", "Lab Test"]
+[[step]]
+run = "id labtest"
+expect = ["uid=", "(labtest)"]
+expect_not = "admins"
+# A home only its owner reads.
+[[step]]
+run = "ls -ld /users/labtest"
+expect = ["drwx------", "labtest labtest"]
+[[step]]
+run = "user disable --yes labtest"
+root = true
+[[step]]
+run = "user list"
+root = true
+expect = "disabled"
+[[step]]
+run = "user enable labtest"
+root = true
+[[step]]
+run = "user remove --delete-home --yes labtest"
+root = true
+expect = "labtest is removed"
+[[step]]
+run = "user list && ls /users"
+root = true
+expect_not = "labtest"
+# Only root changes accounts: authd refuses anyone else, password or not.
+[[step]]
+run = "echo some-password | user add someone"
+exit = 1
+expect_not = "Made someone"
+[[step]]
+run = "user list"
+root = true
+expect_not = "someone"
