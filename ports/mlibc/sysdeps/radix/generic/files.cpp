@@ -146,7 +146,7 @@ int open_path(const radix::Path &path, int flags, mode_t mode, int *fd) {
 				radix_directory_check_access(radix::slot_of(*fd), ".", 1, 0, RADIX_DIRECTORY_READ_OK);
 		if(!status)
 			return 0;
-		radix_capability_delete(radix::slot_of(*fd));
+		radix::delete_fd(*fd);
 		return radix::to_errno(status);
 	};
 	// A directory opened for reading gets the write right too, where its
@@ -170,7 +170,7 @@ int open_path(const radix::Path &path, int flags, mode_t mode, int *fd) {
 	if(!read_only) {
 		// POSIX opens a directory for reading only; the write right a
 		// directory capability has is for making files beneath it.
-		radix_capability_delete(radix::slot_of(*fd));
+		radix::delete_fd(*fd);
 		return EISDIR;
 	}
 	radix::set_dir_cursor(*fd, 0);
@@ -183,8 +183,13 @@ int open_path(const radix::Path &path, int flags, mode_t mode, int *fd) {
 				&again)) {
 			uint32_t slot = radix::slot_of(*fd);
 			radix_capability_delete(slot);
-			if(radix_capability_move_to(radix::slot_of(wider), slot))
+			if(radix_capability_move_to(radix::slot_of(wider), slot)) {
+				// It stays in the other descriptor.
+				radix::fd_freed(*fd);
 				*fd = wider;
+			} else {
+				radix::fd_freed(wider);
+			}
 		}
 	}
 	radix::note_dir_path(*fd, path);
@@ -738,7 +743,7 @@ int Sysdeps<Close>::operator()(int fd) {
 	if(slot == radix::NO_SLOT)
 		return EBADF;
 	radix::forget_dir_path(fd);
-	return radix::to_errno(radix_capability_delete(slot));
+	return radix::to_errno(radix::delete_fd(fd));
 }
 
 int Sysdeps<Dup>::operator()(int fd, int flags, int *newfd) {
@@ -766,13 +771,13 @@ int Sysdeps<Dup2>::operator()(int fd, int flags, int newfd) {
 			continue;
 		if(is(status, RADIX_KERNEL_NO_SUCH_SLOT)) {
 			// Past the space's end: grow it, then try again.
-			radix::SlotClaim grown;
-			if(int e = radix::free_slot(newfd, &grown); e)
+			if(int e = radix::reach_slot(to); e)
 				return e;
 			continue;
 		}
 		return radix::to_errno(status);
 	}
+	radix::fd_taken(newfd);
 	radix::set_dir_cursor(newfd, radix::dir_cursor(fd));
 	radix::copy_dir_path(fd, newfd);
 	if(flags & O_CLOEXEC) {
@@ -1398,10 +1403,16 @@ int Sysdeps<Pipe>::operator()(int *fds, int flags) {
 		uint32_t write_slot = write_end.slot();
 		uint64_t status = radix_process_pipe(radix::SLOT_PROCESS, read_slot, write_slot,
 				pipe_flags);
-		if(is(status, RADIX_KERNEL_OCCUPIED))
+		// Something else filled one of them first: that one stays taken.
+		if(is(status, RADIX_KERNEL_OCCUPIED)) {
+			read_end.keep_if_full();
+			write_end.keep_if_full();
 			continue;
+		}
 		if(status)
 			return radix::to_errno(status);
+		read_end.keep();
+		write_end.keep();
 		fds[0] = static_cast<int>(read_slot - radix::FD_BASE);
 		fds[1] = static_cast<int>(write_slot - radix::FD_BASE);
 		return 0;

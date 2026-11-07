@@ -620,6 +620,11 @@ static void passing(void) {
 	struct stat st;
 	CHECK(fstat(got[1], &st) == 0 && S_ISDIR(st.st_mode));
 	CHECK(fstatat(got[1], "socket-passed", &st, 0) == 0 && st.st_size == 8);
+	// The numbers they came in are taken: a new descriptor goes past them
+	// (ADR 0402).
+	int next = open("/devices/null", O_RDONLY);
+	CHECK(next >= 0 && next != got[0] && next != got[1]);
+	close(next);
 	close(got[0]);
 	close(got[1]);
 	close(dir);

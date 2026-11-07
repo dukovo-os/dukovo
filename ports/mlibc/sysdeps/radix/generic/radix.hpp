@@ -80,9 +80,35 @@ int files_limit();
 // Notes that setrlimit made `limit` the soft RLIMIT_NOFILE.
 void set_files_limit(uint64_t limit);
 
-// A file descriptor's slot that free_slot chose for the running thread:
-// no other thread's free_slot chooses it while the claim lasts, until it
-// goes out of scope once the thread has filled the slot or failed to.
+// The C library keeps which file descriptors are taken (ADR 0402), so
+// that an open finds the lowest free one without asking the kernel: a bit
+// for each, set from the kernel's slots when the program starts and in a
+// child after fork (read_fd_table), and by the C library as it opens and
+// closes descriptors. A capability that reaches a slot some other way is
+// found when a call to fill the slot answers `occupied`, which marks it
+// taken; one emptied some other way stays taken until the program closes
+// it. The C library's opens look past such a descriptor, which is never
+// handed out twice.
+//
+// The dynamic linker opens files too, the libraries a program needs and
+// dlopen's, with its own copy of this layer: a program that has one
+// shares one table, the dynamic linker's (radix.cpp).
+struct FdTable {
+	// A bit for each descriptor, set while it is taken. Set and cleared
+	// with atomic operations alone, as the notes of directory paths are
+	// taken: open and close are async-signal-safe.
+	uint64_t taken[(MAX_FDS + 63) / 64];
+	// How many slots the capability space has, as last read or grown to.
+	// Descriptors at or past it need the space grown (reach_slot).
+	uint32_t slots;
+	// Whether read_fd_table has filled it: not before the program starts,
+	// when the dynamic linker opens the first library.
+	bool read;
+};
+
+// A file descriptor's slot that free_slot chose and marked taken for the
+// running thread. Unless the thread keeps it (keep: the slot was filled),
+// it is free again once the claim goes out of scope.
 //
 // The kernel fills a slot only when the call that fills it has done its
 // work: an open looks that the slot is empty, makes the file, and then
@@ -102,22 +128,49 @@ public:
 		return slot_;
 	}
 
+	// The slot holds a capability now, the one the thread put there or
+	// another (`occupied`): its descriptor stays taken.
+	void keep() {
+		kept_ = true;
+	}
+
+	// After a call that fills two slots at once answered `occupied`: keeps
+	// the slot if it is full, which the kernel is asked.
+	void keep_if_full();
+
 private:
 	friend int free_slot(int min_fd, SlotClaim *claim);
 	uint32_t slot_ = NO_SLOT;
+	bool kept_ = false;
 };
 
-// Finds the lowest free file descriptor from `min_fd` that no other
-// thread has claimed, growing the capability space when every slot is
-// taken, and claims it for the running thread. Returns 0 with the slot in
-// `claim`, a new claim, or EMFILE if there is none below files_limit().
-// A capability may still reach the slot some other way first: callers
-// that get `occupied` look again (`place`).
+// Finds the lowest free file descriptor from `min_fd`, marks it taken for
+// the running thread, and grows the capability space if the slot is past
+// its end. Returns 0 with the slot in `claim`, a new claim, or EMFILE if
+// there is none below files_limit(). A capability may still reach the
+// slot some other way first: callers that get `occupied` keep the claim
+// and look again (`place`).
 int free_slot(int min_fd, SlotClaim *claim);
 
-// Forgets every claim, in a child after fork: the threads that held them
-// are not in it.
-void forget_claims();
+// Grows the capability space, if need be, until it has slot `slot`.
+// Returns 0, or EMFILE if it cannot.
+int reach_slot(uint32_t slot);
+
+// Marks descriptor `fd`, which a call just filled, taken.
+void fd_taken(int fd);
+
+// Marks descriptor `fd`, whose slot a call just emptied, free.
+void fd_freed(int fd);
+
+// Empties descriptor `fd`'s slot and marks it free: close, without the
+// directory path it may have. Returns the kernel's status.
+uint64_t delete_fd(int fd);
+
+// Reads which descriptors are taken from the kernel's slots: when the
+// program starts, and in a child after fork, where the threads that were
+// opening and closing descriptors are not. Only while no other thread
+// runs.
+void read_fd_table();
 
 // Forgets the path of directory descriptor `fd` (below).
 void forget_dir_path(int fd);
@@ -133,15 +186,18 @@ int place(int min_fd, int *fd, F put) {
 			return e;
 		uint64_t status = put(claim.slot());
 		if(!status) {
+			claim.keep();
 			*fd = static_cast<int>(claim.slot() - FD_BASE);
 			// A new descriptor has no directory path until it is given one.
 			forget_dir_path(*fd);
 			return 0;
 		}
-		// Something else filled it first.
+		// Something else filled it first: it stays taken.
 		if(RADIX_STATUS_DOMAIN(status) == RADIX_KERNEL_ERROR_DOMAIN
-				&& RADIX_STATUS_CODE(status) == RADIX_KERNEL_OCCUPIED)
+				&& RADIX_STATUS_CODE(status) == RADIX_KERNEL_OCCUPIED) {
+			claim.keep();
 			continue;
+		}
 		return to_errno(status);
 	}
 }
