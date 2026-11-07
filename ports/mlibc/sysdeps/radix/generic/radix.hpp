@@ -80,7 +80,7 @@ int files_limit();
 // Notes that setrlimit made `limit` the soft RLIMIT_NOFILE.
 void set_files_limit(uint64_t limit);
 
-// The C library keeps which file descriptors are taken (ADR 0402), so
+// The C library keeps which file descriptors are taken (ADR 0403), so
 // that an open finds the lowest free one without asking the kernel: a bit
 // for each, set from the kernel's slots when the program starts and in a
 // child after fork (read_fd_table), and by the C library as it opens and

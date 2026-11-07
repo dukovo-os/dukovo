@@ -196,7 +196,7 @@ the same descriptor, the thread that chose one holds it until the kernel
 has filled it, and other threads choose the next.
 
 The C library keeps which descriptors are taken itself, a bit each, so
-an *open* makes one system call (ADR 0402). It reads them from the
+an *open* makes one system call (ADR 0403). It reads them from the
 kernel when the program starts and in a child after *fork*, and marks
 them as it opens and closes descriptors. A capability that reaches a
 free slot some other way is found when the kernel answers *occupied* to

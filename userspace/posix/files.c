@@ -119,7 +119,7 @@ static void saved_and_restored(void) {
 }
 
 // Each new descriptor takes the lowest free number, as POSIX asks; the C
-// library picks it from its own table of numbers in use (ADR 0402),
+// library picks it from its own table of numbers in use (ADR 0403),
 // which must stay right after closes, after dup2 to a high number, past
 // the table's first 16 and 64 numbers, and in a forked child.
 static void numbers(void) {

@@ -3,7 +3,7 @@ SPDX-FileCopyrightText: 2026 The Dukovo contributors
 SPDX-License-Identifier: Apache-2.0 OR MIT
 -->
 
-# 0402. The C library keeps its own table of file descriptors
+# 0403. The C library keeps its own table of file descriptors
 
 - Status: Accepted
 - Date: 2026-11-07

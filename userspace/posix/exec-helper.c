@@ -33,7 +33,7 @@ int main(int argc, char **argv) {
 		CHECK_ERROR(fcntl(closed, F_GETFD), EBADF);
 		CHECK(write(kept, "kept", 4) == 4);
 		// The C library starts with the numbers the program was given
-		// (ADR 0402): new ones go around them.
+		// (ADR 0403): new ones go around them.
 		CHECK(fcntl(0, F_DUPFD, kept) > kept);
 		int fresh = open("/devices/null", O_RDONLY);
 		CHECK(fresh > 2 && fresh != kept);
