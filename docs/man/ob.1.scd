@@ -1472,6 +1472,15 @@ _target/userspace/_).
 	install*), then build the image and open the runner page. Each step
 	is skipped once it is done.
 
+	For *run* and *ui*, also build the Linux kit that the performance
+	tests' *bench* steps hold Dukovo to, in _out/lab-linux_, and pass it
+	with *--linux*: the Linux kernel *bench* measures against (the one in
+	*OB_LINUX_KERNEL* when it is set, else fetched as *bench* fetches it) and an
+	initramfs whose only process is _tools/linux-bench_, running the same
+	POSIX benchmarks. With *--no-build*, the kit already in _out_ is used.
+	When the kit cannot be built, *ob* says why and the performance tests
+	skip. A *--linux* given after _command_ is passed on instead.
+
 	*dukovo-lab* is found on *PATH*, or at *OB_LAB*. The handbook's Lab
 	tests chapter shows how to write a test.
 

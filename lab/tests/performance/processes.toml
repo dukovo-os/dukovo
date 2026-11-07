@@ -1,0 +1,13 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "Making a process and running a program take no longer than on Linux"
+time = "10m"
+
+# The POSIX benchmarks: the C program `ob bench` runs on both systems
+# (userspace/posix/bench.c), here on the machine under test, against the
+# same program built for Linux in the Linux kit. Every row is held to
+# parity, as `ob bench --gate` holds it.
+[[step]]
+bench = "/system/tests/posix/bench"
+rows = ["posix_fork_wait", "posix_fork_exec_wait"]

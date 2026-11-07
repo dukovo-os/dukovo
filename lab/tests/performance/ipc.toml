@@ -1,0 +1,21 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "Pipes, signals, poll and futexes take no longer than on Linux"
+time = "10m"
+
+# The POSIX benchmarks: the C program `ob bench` runs on both systems
+# (userspace/posix/bench.c), here on the machine under test, against the
+# same program built for Linux in the Linux kit. Every row is held to
+# parity, as `ob bench --gate` holds it.
+[[step]]
+bench = "/system/tests/posix/bench"
+rows = [
+    "posix_pipe_mib",
+    "posix_signal",
+    "posix_poll",
+    "posix_futex_same_cpu",
+    "posix_futex_cross_cpu",
+    "posix_futex_shared_same_cpu",
+    "posix_futex_shared_cross_cpu",
+]

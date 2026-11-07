@@ -9,8 +9,9 @@
 //! all outside the system's slot, so that no release (which is made from
 //! the slot alone) can ever carry them:
 //!
-//! - the `lab` account, an administrator's whose password no one knows,
-//!   so that it signs in only over SSH with the lab key;
+//! - the `lab` account, an administrator's that signs in over SSH with
+//!   the lab key, whose password is the lab password (ADR 0406), for tests
+//!   that run as root, or without one a password no one knows;
 //! - its home, the account's, holding the lab's public key in
 //!   `~/.ssh/authorized_keys`;
 //! - sshd turned on, through an override file, and a sign-in banner that
@@ -27,6 +28,11 @@
 //! timer that starts schedules, then builds the image and opens the
 //! runner page. Each setup step is skipped once it is done; the timer is
 //! made again each time, quietly, so it names the dukovo-lab of now.
+//!
+//! The commands that build the image also build the Linux kit that
+//! performance tests hold Dukovo to ([`linux_kit`]), and pass it on with
+//! `--linux`. A kit that will not build (offline the first time, say) only
+//! makes those tests skip.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -35,7 +41,7 @@ use crate::account::{self, Account};
 use crate::image::{self, Overrides};
 use crate::process::{self, step};
 use crate::rootfs::Owned;
-use crate::{Args, Context as _, Ctx, Error, Result, VERSION, bail, bench, doctor, qemu};
+use crate::{Args, Context as _, Ctx, Error, Result, VERSION, bail, baseline, bench, doctor, qemu};
 
 /// The lab's account.
 pub const ACCOUNT: &str = "lab";
@@ -319,6 +325,21 @@ pub fn command(ctx: &Ctx, args: &mut Args) -> Result<()> {
         }
         lab.arg("--image").arg(image);
         lab.args(["--build", &format!("{VERSION} {}", bench::commit(ctx))]);
+        // Without the kit, performance tests skip and say why; a kit that
+        // will not build is no reason to run nothing.
+        if !rest.iter().any(|arg| arg == "--linux") {
+            let kit = if no_build {
+                existing_kit(ctx)
+            } else {
+                linux_kit(ctx).map_err(|e| e.to_string())
+            };
+            match kit {
+                Ok(kit) => {
+                    lab.arg("--linux").arg(kit);
+                }
+                Err(why) => eprintln!("    note: performance tests will skip: {why}"),
+            }
+        }
     }
     lab.args(&rest);
     // dukovo-lab's own exit status says how the run went (0 passed, 1 a
@@ -328,6 +349,69 @@ pub fn command(ctx: &Ctx, args: &mut Args) -> Result<()> {
         Some(0) => Ok(()),
         Some(code) => std::process::exit(code),
         None => bail!("{} was stopped by a signal", tool.display()),
+    }
+}
+
+/// The file in a Linux kit's folder that describes it, as dukovo-lab reads
+/// it.
+const KIT_FILE: &str = "kit.toml";
+
+/// What Linux's init, linux-bench, prints once every benchmark has run.
+const KIT_DONE: &str = "linux-bench: done";
+
+/// Builds the Linux kit that performance tests hold Dukovo to, and gives
+/// its folder, `out/lab-linux`, for dukovo-lab's `--linux`: the kernel
+/// `ob bench` holds Radix to (`--linux-kernel`'s, else the pinned
+/// baseline of ADR 0290), and an initramfs whose init is linux-bench,
+/// which runs the POSIX benchmarks built for Linux, prints their lines on
+/// the serial console and `linux-bench: done`, and powers off. So the lab
+/// measures against the same Linux, with the same benchmark program, as
+/// CI's `ob bench --gate`.
+pub fn linux_kit(ctx: &Ctx) -> Result<PathBuf> {
+    step("Building the Linux kit that performance tests hold Dukovo to");
+    let dir = ctx.out.join("lab-linux");
+    process::create_dir(&dir)?;
+    let posix = bench::posix_for_linux(ctx, &dir)?;
+    let (kernel, modules) = match bench::linux_kernel(None)? {
+        Some(kernel) => (kernel, None),
+        None => {
+            let pinned = baseline::fetch(ctx)?;
+            (pinned.kernel, Some(pinned.modules))
+        }
+    };
+    let initrd = bench::linux_init(ctx, &dir, Some(&posix), None, &kernel, modules.as_deref())?;
+    // dukovo-lab takes the kit's files from beside its kit.toml.
+    let copy = dir.join("vmlinuz");
+    std::fs::copy(&kernel, &copy).context(|| {
+        format!("copying the Linux kernel {} to {}", kernel.display(), copy.display())
+    })?;
+    let initrd_name = initrd.file_name().map_or_default(|name| name.to_string_lossy());
+    std::fs::write(dir.join(KIT_FILE), kit_file("vmlinuz", &initrd_name))
+        .context(|| format!("writing {}", dir.join(KIT_FILE).display()))?;
+    Ok(dir)
+}
+
+/// The kit's `kit.toml`, naming its kernel and initramfs, the files beside
+/// it, in the form dukovo-lab's `--linux` reads.
+fn kit_file(kernel: &str, initrd: &str) -> String {
+    format!(
+        "# The Linux that the lab's performance tests hold Dukovo to: `ob lab` makes\n\
+         # this folder, and dukovo-lab boots it with --linux.\n\
+         kernel = \"{kernel}\"\n\
+         initrd = \"{initrd}\"\n\
+         cmdline = \"{}\"\n\
+         done = \"{KIT_DONE}\"\n",
+        bench::LINUX_CMDLINE
+    )
+}
+
+/// The kit an earlier `ob lab` built, for `--no-build`.
+fn existing_kit(ctx: &Ctx) -> std::result::Result<PathBuf, String> {
+    let dir = ctx.out.join("lab-linux");
+    if dir.join(KIT_FILE).is_file() {
+        Ok(dir)
+    } else {
+        Err("no Linux kit was built yet, and --no-build builds none".into())
     }
 }
 
@@ -579,6 +663,18 @@ mod tests {
         ] {
             assert!(Key::parse(bad).is_err(), "{bad:?}");
         }
+    }
+
+    #[test]
+    fn the_linux_kit_names_its_files_and_sends_linux_to_the_serial_port() {
+        let kit = kit_file("vmlinuz", "linux-bench.cpio");
+        assert!(kit.contains("kernel = \"vmlinuz\"\n"), "{kit}");
+        assert!(kit.contains("initrd = \"linux-bench.cpio\"\n"), "{kit}");
+        // dukovo-lab reads Linux's numbers from the first serial port, and
+        // stops waiting at the line linux-bench prints last.
+        assert!(bench::LINUX_CMDLINE.contains("console=ttyS0"));
+        assert!(kit.contains(&format!("cmdline = \"{}\"\n", bench::LINUX_CMDLINE)), "{kit}");
+        assert!(kit.contains("done = \"linux-bench: done\"\n"), "{kit}");
     }
 
     #[test]
