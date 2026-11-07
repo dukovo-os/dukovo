@@ -22,12 +22,12 @@ One command sets the lab up and opens it:
 It checks that QEMU, OVMF, OpenSSH, git and gzip are installed (and
 prints the `apt install` line if not), installs `dukovo-lab` or updates
 it to the newest, makes the lab's key, clones the private
-dukovo-os/lab-results repository that Send uses, builds the lab image
-and opens the runner page. Each setup step is skipped once it is done,
-so after the first time it only builds and opens. The clone needs this
-PC's GitHub account to have push access to lab-results, through an SSH
-key on GitHub or a sign-in git keeps (`gh auth login`); without it the
-page still opens, with Send off.
+dukovo-os/lab-results repository that Send uses, turns on the timer that
+starts schedules, builds the lab image and opens the runner page. Each
+setup step is skipped once it is done, so after the first time it only
+builds and opens. The clone needs this PC's GitHub account to have push
+access to lab-results, through an SSH key on GitHub or a sign-in git
+keeps (`gh auth login`); without it the page still opens, with Send off.
 
 The same from a terminal, a command at a time:
 
@@ -40,6 +40,8 @@ The same from a terminal, a command at a time:
 ./ob lab ui                         # the runner page, in a browser on this PC
 ./ob lab findings                   # what failed, each failure with the runs it came back in
 ./ob lab send --all                 # new findings and their runs, to lab-results
+./ob lab schedule                   # the schedules: when each runs next, how it went last
+./ob lab schedule save nightly --preset quick --at 01:00   # every night at 1:00 AM, Mountain Time
 ```
 
 `./ob lab run` and `./ob lab ui` build the lab image,
@@ -59,6 +61,17 @@ joins it rather than making a new one. On the page, a finding can be
 sent to lab-results, where a thread proposes a fix that waits for the
 maintainer's approval, or marked not a bug. Without KVM, QEMU is
 some four times slower, and the time limits stretch to match.
+
+Schedules run tests by themselves, with the page closed: at a time of
+day in Mountain Time, or on each new build on main. A systemd timer
+starts them. Each scheduled run brings the lab's own Dukovo checkout
+(`~/.local/share/dukovo-lab/dukovo`, never one to work in) up to main,
+builds the lab image there and runs that commit's tests, waiting first
+if a run holds its machines; then it sends its findings to lab-results,
+or holds them for the page, as the schedule says. They are made and
+changed on the page (Schedules) or with `./ob lab schedule save`; the
+lab's [Schedules](https://github.com/dukovo-os/lab/blob/main/docs/schedules.md)
+page has the rest.
 
 ## The lab image
 
