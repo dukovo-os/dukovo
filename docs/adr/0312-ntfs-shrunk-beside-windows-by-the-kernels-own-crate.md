@@ -105,7 +105,9 @@ often halfway, and needs Windows started and the person to do it there.
   cut power at forty points and in each of the last dozen requests, and
   check each volume with radix-ntfs, ntfs-3g (`ntfsresize --info`,
   `ntfsfix`, `ntfscat`) and The Sleuth Kit; the CI's Windows job runs
-  `chkdsk` on the volumes they keep.
+  `chkdsk` on the volumes they keep. The `ntfs-resize` boot test shrinks
+  a disk the host made with `mkntfs` and `ntfscp`, at the console with
+  `resize-ntfs` and `ntfsresize`, and ntfs-3g checks it on the host.
 
 ## Alternatives considered
 
