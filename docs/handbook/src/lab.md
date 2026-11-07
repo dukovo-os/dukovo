@@ -68,7 +68,8 @@ wait = "10s"
 [[step]]
 link = "up"
 [[step]]
-serial = "link is up again"
+run = "ip link"
+expect = "LOWER_UP"
 ```
 
 `run` steps are commands over SSH as the `lab` account; `serial` waits

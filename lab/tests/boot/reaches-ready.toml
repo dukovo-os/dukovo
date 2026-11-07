@@ -10,7 +10,8 @@ fresh = true
 [[step]]
 serial = "Radix"
 [[step]]
-serial = "Test image of the Dukovo Lab"
+run = "cat /system/settings/issue"
+expect = "Test image of the Dukovo Lab"
 [[step]]
 run = "whoami"
 expect = "lab"

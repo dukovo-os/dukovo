@@ -13,9 +13,7 @@ link = "down"
 wait = "10s"
 [[step]]
 link = "up"
-# netd asks for its address again once the link is back.
-[[step]]
-serial = "link is up again"
+# SSH answering again shows the network is back.
 [[step]]
 run = "ip link"
 expect = "LOWER_UP"

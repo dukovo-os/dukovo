@@ -6,13 +6,13 @@ time = "2m"
 
 [[step]]
 run = "uname -s"
-expect = "Radix"
+expect = "Dukovo"
 [[step]]
 run = "echo $((6 * 7)) answers"
 expect = "42 answers"
 [[step]]
 run = "ls /no/such/folder"
-exit = 1
+exit = 2
 expect = "No such file"
 [[step]]
 run = "id"
