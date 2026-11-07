@@ -904,20 +904,12 @@ impl UserMode for Arch {
         user::enter_user(entry, stack_top, arg)
     }
 
-    fn set_syscall_handler(handler: fn(&mut SyscallRegs)) {
-        user::set_syscall_handler(handler);
-    }
-
     fn set_user_fault_handler(handler: fn(&UserFault)) {
         user::set_fault_handler(handler);
     }
 
     fn set_user_page_handler(handler: fn(u64, bool) -> bool) {
         user::set_page_handler(handler);
-    }
-
-    fn set_user_return_handler(handler: fn()) {
-        user::set_return_handler(handler);
     }
 
     fn user_registers() -> Option<Self::UserRegisters> {

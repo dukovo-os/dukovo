@@ -72,7 +72,8 @@ unsafe impl<V: Send + Sync, A: Allocator + Clone + Send + Sync> Sync for RcuMap<
 unsafe impl<V: Send + Sync, A: Allocator + Clone + Send + Sync> Send for RcuMap<V, A> {}
 
 /// The hash of `key`: FxHash's, a word at a time, which is quick for the
-/// short names of a directory.
+/// short names of a directory. The bytes after the last whole word go in
+/// as one more word ([`tail`]), not a step for each.
 fn hash(key: &[u8]) -> u64 {
     const K: u64 = 0x517c_c1b7_2722_0a95;
     let mut hash = key.len() as u64;
@@ -80,16 +81,38 @@ fn hash(key: &[u8]) -> u64 {
     for word in words {
         hash = (hash.rotate_left(5) ^ u64::from_le_bytes(*word)).wrapping_mul(K);
     }
-    for &byte in rest {
-        hash = (hash.rotate_left(5) ^ u64::from(byte)).wrapping_mul(K);
+    if !rest.is_empty() {
+        let (low, high) = tail(rest);
+        hash = (hash.rotate_left(5) ^ (low | high << 32)).wrapping_mul(K);
     }
     hash
 }
 
-/// Whether `a` and `b` hold the same bytes: a loop, which for a short
-/// name costs less than the call `==` makes.
+/// The bytes of `rest`, fewer than 8 and not none, in two loads that
+/// between them cover each one, as two words: its first four bytes and its
+/// last four, which overlap, for four to seven; for one to three, its
+/// first, middle and last byte, which cover them. A loop over the bytes
+/// costs a step for each; two loads cost the same whatever the length.
+fn tail(rest: &[u8]) -> (u64, u64) {
+    let n = rest.len();
+    if let (Some(first), Some(last)) = (rest.first_chunk::<4>(), rest.last_chunk::<4>()) {
+        (u64::from(u32::from_le_bytes(*first)), u64::from(u32::from_le_bytes(*last)))
+    } else {
+        let byte = |at: usize| rest.get(at).copied().map_or(0, u64::from);
+        (byte(0) | byte(n / 2) << 8 | byte(n.wrapping_sub(1)) << 16, 0)
+    }
+}
+
+/// Whether `a` and `b` hold the same bytes: a word at a time, which for a
+/// short name costs less than the call `==` makes.
 fn same(a: &[u8], b: &[u8]) -> bool {
-    a.len() == b.len() && a.iter().zip(b).all(|(x, y)| x == y)
+    if a.len() != b.len() {
+        return false;
+    }
+    let (a_words, a_rest) = a.as_chunks::<8>();
+    let (b_words, b_rest) = b.as_chunks::<8>();
+    a_words.iter().zip(b_words).all(|(x, y)| x == y)
+        && (a_rest.is_empty() || tail(a_rest) == tail(b_rest))
 }
 
 /// Frees a link that left its chain, from its deferred call.
@@ -357,6 +380,25 @@ mod tests {
     use std::sync::atomic::AtomicBool;
 
     use super::*;
+
+    /// `same` agrees with `==` for keys of every length up to a few
+    /// words, differing in any one byte or not at all.
+    #[test]
+    fn keys_compare_a_word_at_a_time() {
+        for len in 0..=20usize {
+            let key: Vec<u8> = (0..len).map(|i| b'a' + i as u8).collect();
+            assert!(same(&key, &key.clone()));
+            assert_eq!(hash(&key), hash(&key.clone()));
+            for at in 0..len {
+                let mut other = key.clone();
+                other[at] ^= 0x20;
+                assert!(!same(&key, &other), "length {len}, byte {at}");
+            }
+            let mut longer = key.clone();
+            longer.push(b'z');
+            assert!(!same(&key, &longer));
+        }
+    }
 
     #[test]
     fn names_go_in_come_out_and_survive_growth() {

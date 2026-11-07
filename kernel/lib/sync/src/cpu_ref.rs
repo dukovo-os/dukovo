@@ -24,9 +24,12 @@
 //! `radix_count_here`, which the kernel defines and fat LTO inlines into
 //! every clone and drop: it holds off interrupts around the count, which
 //! no grace period passes, and finds the CPU in one load, where a read
-//! section through the hooks costs three calls through pointers.
-//! Elsewhere, as in the host's tests, it is a read section through the
-//! hooks. To know how many references there are, the owner pauses the
+//! section through the hooks costs three calls through pointers. A row is
+//! changed only by its own CPU, held so (the slow way's drops too), so
+//! the kernel changes a count with a plain load and store, not an atomic
+//! add (ADR 0406). Elsewhere, as in the host's tests, it is a read
+//! section through the hooks, and an atomic add, as threads share CPU
+//! numbers there. To know how many references there are, the owner pauses the
 //! counting
 //! ([`CpuRef::pause`]) and waits for a grace period
 //! ([`crate::rcu::synchronize`]): every clone and drop that saw the old
@@ -50,7 +53,8 @@ use core::mem::ManuallyDrop;
 use core::ops::Deref;
 use core::sync::atomic::{AtomicU8, AtomicU32, AtomicU64, Ordering};
 
-use crate::{Hooks, SpinLock, hooks};
+use crate::SpinLock;
+use crate::cpu::HeldCpu;
 
 /// Values that can be counted on the CPUs at once: the lines of the table.
 /// A value counted when all are taken stays the `Arc`'s.
@@ -109,7 +113,12 @@ impl CpuCount {
     /// back, and the caller drops the `Arc` reference the counts held.
     fn drop_slow(&self) -> bool {
         let _slow = SLOW.lock();
-        here(self.line()).fetch_sub(1, Ordering::Relaxed);
+        {
+            // In the running CPU's row, held, as `count_on` changes it: no
+            // other CPU changes a row while its own may be counting there.
+            let held = HeldCpu::here();
+            add(count_of(held.index(), self.line()), u32::MAX);
+        }
         self.state.load(Ordering::Relaxed) == STOPPED && self.give_back_if_none()
     }
 
@@ -152,22 +161,31 @@ fn count_of(cpu: usize, line: usize) -> &'static AtomicU32 {
     &COUNTS[cpu % CPUS].0[line % LINES]
 }
 
-/// The count of `line` in the running CPU's row, for the slow way, which
-/// may move to another CPU after: any row's count does for it.
-fn here(line: usize) -> &'static AtomicU32 {
-    count_of(hooks::active().map_or(0, Hooks::current_cpu), line)
+/// Adds `delta` to `count`, a count in the row of the CPU the caller
+/// holds. In the kernel only that CPU changes its row, with interrupts
+/// off, so a plain load and store do, where an atomic add would lock the
+/// line for some twenty cycles (ADR 0406); in the host's builds threads
+/// share CPU numbers, and it is an atomic add.
+#[inline(always)]
+fn add(count: &AtomicU32, delta: u32) {
+    if HeldCpu::ALONE {
+        count.store(count.load(Ordering::Relaxed).wrapping_add(delta), Ordering::Relaxed);
+    } else {
+        count.fetch_add(delta, Ordering::Relaxed);
+    }
 }
 
 /// The count of a reference on CPU `cpu`, the running one, inside an RCU
-/// read section: adds `delta` (1, or `u32::MAX` to take one away) to the
-/// value's count in that CPU's row, if the value is counted on the CPUs,
-/// and says whether it was. The kernel's `radix_count_here` calls it.
+/// read section with the CPU held: adds `delta` (1, or `u32::MAX` to take
+/// one away) to the value's count in that CPU's row, if the value is
+/// counted on the CPUs, and says whether it was. The kernel's
+/// `radix_count_here` calls it, with interrupts off.
 #[inline(always)]
 pub fn count_on(cpu: usize, count: &CpuCount, delta: u32) -> bool {
     if count.state.load(Ordering::Acquire) != ON_CPUS {
         return false;
     }
-    count_of(cpu, count.line()).fetch_add(delta, Ordering::Relaxed);
+    add(count_of(cpu, count.line()), delta);
     true
 }
 

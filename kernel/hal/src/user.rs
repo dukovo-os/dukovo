@@ -191,6 +191,22 @@ impl fmt::Display for UserFault {
 
 /// User mode, implemented by the architecture alongside
 /// [`crate::Threads`], whose contexts user threads run in.
+///
+/// Two of the kernel's handlers the architecture calls by name, as every
+/// system call runs both: the kernel defines them, unmangled, and fat LTO
+/// inlines them into the entry path, where a registered pointer cost each
+/// call two calls through it (ADR 0406).
+///
+/// - `radix_syscall(regs: &mut SyscallRegs)` handles a system call. It
+///   runs on the thread's kernel stack with interrupts masked and a
+///   preemption count of 0; it may turn interrupts on, sleep, and switch
+///   threads.
+/// - `radix_user_return()` runs, with interrupts masked, just before a
+///   system call, an interrupt or a fault returns to user mode: the
+///   kernel stops threads and delivers signals there. It may turn
+///   interrupts on, but returns with them masked.
+///
+/// Neither runs before the kernel first enters user mode.
 pub trait UserMode: crate::Threads {
     /// A program's address space: page tables for the user half. A handle
     /// that can be shared; the tables are freed when the last handle goes.
@@ -375,11 +391,6 @@ pub trait UserMode: crate::Threads {
     /// have a space attached and be running in it.
     fn enter_user(entry: u64, stack_top: u64, arg: u64) -> !;
 
-    /// Registers the system call handler. It runs on the thread's kernel
-    /// stack with interrupts masked and a preemption count of 0; it may
-    /// turn interrupts on, sleep, and switch threads.
-    fn set_syscall_handler(handler: fn(&mut SyscallRegs));
-
     /// Registers the handler of faults in user mode. It runs on the
     /// thread's kernel stack with interrupts masked; when it returns, the
     /// return handler runs and the thread goes back to user mode (to run
@@ -392,12 +403,6 @@ pub trait UserMode: crate::Threads {
     /// write, it returns whether it made the page reachable, so that the
     /// copy goes on. It runs with interrupts on and may sleep.
     fn set_user_page_handler(handler: fn(u64, bool) -> bool);
-
-    /// Registers the function called, with interrupts masked, just before
-    /// a system call, an interrupt or a fault returns to user mode: the
-    /// kernel stops threads and delivers signals there. It may turn
-    /// interrupts on, but returns with them masked.
-    fn set_user_return_handler(handler: fn());
 
     /// The running thread's user registers as it came into the kernel. For
     /// a system call only the registers the call keeps are meaningful: the

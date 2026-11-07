@@ -242,6 +242,17 @@ fn power_off() {
     if std::process::id() != 1 {
         return;
     }
+    // Let the serial port send the last lines first. A write to the
+    // console returns once the bytes are queued, and the kernel prints
+    // its own "reboot: Power down" straight to the port, which landed in
+    // the middle of "linux-bench: done" and hid it from `ob bench`.
+    std::io::stdout().flush().ok();
+    std::io::stderr().flush().ok();
+    for fd in [libc::STDOUT_FILENO, libc::STDERR_FILENO] {
+        // SAFETY: tcdrain only waits; on a descriptor that is not a
+        // terminal it fails at once, which is fine here.
+        unsafe { libc::tcdrain(fd) };
+    }
     // SAFETY: as process 1, this program may power the machine off.
     unsafe { libc::reboot(libc::LINUX_REBOOT_CMD_POWER_OFF) };
     loop {

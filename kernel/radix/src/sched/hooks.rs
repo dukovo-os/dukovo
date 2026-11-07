@@ -94,6 +94,35 @@ pub extern "Rust" fn radix_let_go_cpu(were: bool) {
     Arch::restore_interrupts(were);
 }
 
+// The hooks every lock calls, which `radix_sync` calls by these names
+// rather than through `Hooks` (ADR 0406), so that fat LTO inlines them
+// into each lock: `KernelHooks` calls the same functions, so the two ways
+// agree. `radix_sync::hooks` declares each symbol with the same
+// signature, so exporting them unmangled is sound.
+
+/// Holds off preemption on the running CPU ([`Hooks::preempt_disable`]):
+/// one instruction.
+#[allow(unsafe_code)]
+#[unsafe(no_mangle)]
+pub extern "Rust" fn radix_preempt_disable() {
+    Arch::preempt_disable();
+}
+
+/// Lets preemption back ([`Hooks::preempt_enable`]), switching threads if
+/// that was the last hold and a more urgent thread waits.
+#[allow(unsafe_code)]
+#[unsafe(no_mangle)]
+pub extern "Rust" fn radix_preempt_enable() {
+    super::preempt_enable();
+}
+
+/// The running thread's token ([`Hooks::current_thread`]): one load.
+#[allow(unsafe_code)]
+#[unsafe(no_mangle)]
+pub extern "Rust" fn radix_current_thread() -> usize {
+    super::current_token()
+}
+
 /// Whether the lock checker is on.
 pub fn lockdep_enabled() -> bool {
     CHECKER.enabled()
@@ -159,11 +188,11 @@ impl Hooks for KernelHooks {
     }
 
     fn preempt_disable(&self) {
-        Arch::preempt_disable();
+        radix_preempt_disable();
     }
 
     fn preempt_enable(&self) {
-        super::preempt_enable();
+        radix_preempt_enable();
     }
 
     fn lock_acquire(&self, lock: Acquire<'_>) {
@@ -185,7 +214,7 @@ impl Hooks for KernelHooks {
     }
 
     fn current_thread(&self) -> usize {
-        super::current_token()
+        radix_current_thread()
     }
 
     fn current_cpu(&self) -> usize {

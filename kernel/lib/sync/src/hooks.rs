@@ -96,6 +96,12 @@ pub struct Acquire<'a> {
 /// The kernel services the locks use. Every method has a default that does
 /// nothing (or spins), which is how the locks behave before the kernel
 /// registers its hooks.
+///
+/// In a kernel build (a target without an operating system) the locks
+/// reach [`Hooks::preempt_disable`], [`Hooks::preempt_enable`] and
+/// [`Hooks::current_thread`] through functions the kernel defines by name
+/// instead (ADR 0406): its hooks must be the only ones such a build
+/// registers, and call the same functions.
 pub trait Hooks: Sync {
     /// Masks interrupts on this CPU and returns whether they were enabled.
     fn disable_interrupts(&self) -> bool {
@@ -194,6 +200,62 @@ pub(crate) fn active() -> Option<&'static dyn Hooks> {
         return None;
     }
     HOOKS.get().copied()
+}
+
+// The hooks every lock calls, the kernel's own (ADR 0406). A call through
+// `dyn Hooks` loads its target from a table, and the caller saves the
+// registers it keeps around a call it cannot see into: an open and close
+// of a file made some twenty of them, which cost more than the one or two
+// instructions most of them run. The kernel defines these with the same
+// code as its `Hooks`, the only hooks a kernel build registers, and fat
+// LTO inlines them, as with `cpu_ref`'s count. The locks call them only
+// once `active` gives hooks: before that the kernel may not be able to
+// run them (they read the CPU's own data).
+#[cfg(target_os = "none")]
+#[allow(unsafe_code)]
+unsafe extern "Rust" {
+    /// [`Hooks::preempt_disable`].
+    safe fn radix_preempt_disable();
+    /// [`Hooks::preempt_enable`].
+    safe fn radix_preempt_enable();
+    /// [`Hooks::current_thread`].
+    safe fn radix_current_thread() -> usize;
+}
+
+/// `hooks.preempt_disable()`, for the active hooks: inline in the kernel.
+#[inline(always)]
+pub(crate) fn preempt_disable(hooks: &'static dyn Hooks) {
+    #[cfg(target_os = "none")]
+    {
+        let _ = hooks;
+        radix_preempt_disable();
+    }
+    #[cfg(not(target_os = "none"))]
+    hooks.preempt_disable();
+}
+
+/// `hooks.preempt_enable()`, for the active hooks: inline in the kernel.
+#[inline(always)]
+pub(crate) fn preempt_enable(hooks: &'static dyn Hooks) {
+    #[cfg(target_os = "none")]
+    {
+        let _ = hooks;
+        radix_preempt_enable();
+    }
+    #[cfg(not(target_os = "none"))]
+    hooks.preempt_enable();
+}
+
+/// `hooks.current_thread()`, for the active hooks, or 0 with none: inline
+/// in the kernel.
+#[inline(always)]
+pub(crate) fn current_thread(hooks: Option<&'static dyn Hooks>) -> usize {
+    #[cfg(target_os = "none")]
+    {
+        if hooks.is_some() { radix_current_thread() } else { 0 }
+    }
+    #[cfg(not(target_os = "none"))]
+    hooks.map_or(0, Hooks::current_thread)
 }
 
 /// Whether the locks tell the hooks about each acquisition and release.
