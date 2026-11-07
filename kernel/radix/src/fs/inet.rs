@@ -363,6 +363,10 @@ struct Options {
     packet_info: bool,
     /// IP_RECVERR and IPV6_RECVERR (ADR 0345).
     receive_errors: bool,
+    /// IP_TOS and IPV6_TCLASS: the type of service its packets would
+    /// carry. Taken and read back, though every packet still goes with 0
+    /// (ADR 0345, ADR 0410).
+    type_of_service: u8,
 }
 
 impl Options {
@@ -385,6 +389,7 @@ impl Options {
         reuse_port: false,
         packet_info: false,
         receive_errors: false,
+        type_of_service: 0,
     };
 
     /// Whether a datagram socket shares its port (ADR 0336).
@@ -1588,6 +1593,7 @@ impl InetSocket {
             SocketOption::NoDelay => flag(options.no_delay),
             SocketOption::Broadcast => flag(options.broadcast),
             SocketOption::TimeToLive => u64::from(options.time_to_live),
+            SocketOption::TypeOfService => u64::from(options.type_of_service),
             SocketOption::ReceiveTimeout => options.receive_timeout_ns,
             SocketOption::SendTimeout => options.send_timeout_ns,
             SocketOption::MulticastInterface => u64::from(options.multicast_interface),
@@ -1700,6 +1706,8 @@ impl InetSocket {
             SocketOption::MulticastLoop => options.multicast_loop = value != 0,
             SocketOption::ReusePort => options.reuse_port = value != 0,
             SocketOption::PacketInfo => options.packet_info = value != 0,
+            // Its low byte, as Linux keeps; every packet still goes with 0.
+            SocketOption::TypeOfService => options.type_of_service = value as u8,
             // Taken, and changing nothing.
             _ => {}
         }

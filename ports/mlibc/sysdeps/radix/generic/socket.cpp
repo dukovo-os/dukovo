@@ -1057,7 +1057,8 @@ int inet_getsockopt(uint32_t slot, int type, int layer, int number, void *buffer
 		default: value = state.listening; break;
 		}
 	} else if(type_of_service(layer, number)) {
-		value = 0;
+		if(int e = get_option(slot, RADIX_SOCKET_OPTION_TYPE_OF_SERVICE, &value); e)
+			return e;
 	} else if(inet_option(layer, number, &option, &time)) {
 		if(int e = get_option(slot, option, &value); e)
 			return e;
@@ -1106,15 +1107,24 @@ int inet_setsockopt(uint32_t slot, int layer, int number, const void *buffer, so
 	if(layer == IPPROTO_IPV6
 			&& (number == IPV6_ADD_MEMBERSHIP || number == IPV6_DROP_MEMBERSHIP))
 		return socket_group(slot, number == IPV6_ADD_MEMBERSHIP, true, buffer, size);
-	// The type of service and traffic class are 0, the default, alone:
-	// the kernel sends every packet with 0 (ADR 0345), as mtr(8) asks
-	// for unless told otherwise.
+	// The type of service and traffic class are taken and read back, as
+	// on Linux, though every packet still goes with 0 (ADR 0345, ADR 0410):
+	// IPV6_TCLASS takes -1 for the default and 0 to 255, IP_TOS any int,
+	// keeping its low byte.
 	if(type_of_service(layer, number)) {
 		int as_int;
 		if(size < sizeof(int))
 			return EINVAL;
 		memcpy(&as_int, buffer, sizeof(int));
-		return as_int == 0 || (layer == IPPROTO_IPV6 && as_int == -1) ? 0 : ENOPROTOOPT;
+		if(layer == IPPROTO_IPV6) {
+			if(as_int == -1)
+				as_int = 0;
+			else if(as_int < 0 || as_int > 255)
+				return EINVAL;
+		} else {
+			as_int &= 0xff;
+		}
+		return set_option(slot, RADIX_SOCKET_OPTION_TYPE_OF_SERVICE, static_cast<uint64_t>(as_int));
 	}
 	enum radix_socket_option option;
 	bool time;
