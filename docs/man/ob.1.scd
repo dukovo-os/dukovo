@@ -1472,6 +1472,13 @@ _target/userspace/_).
 	install*), then build the image and open the runner page. Each step
 	is skipped once it is done.
 
+	*attack* [_test_...] is a name for running the security range. It
+	becomes *run* of the *security* category, or of the tests named in it
+	(a bare _test_ is one under *security/*), on a freshly built image.
+	Those tests probe the machine from an attacker on a private network
+	only the two share, reachable from nowhere else: open ports, SSH's
+	sign-in and its crypto.
+
 	For *run* and *ui*, also build the Linux kit that the performance
 	tests' *bench* steps hold Dukovo to, in _out/lab-linux_, and pass it
 	with *--linux*: the Linux kernel *bench* measures against (the one in

@@ -300,6 +300,12 @@ pub fn command(ctx: &Ctx, args: &mut Args) -> Result<()> {
         set_up(ctx, &rest)?;
         rest.push("ui".into());
     }
+    // `ob lab attack` is a name for running the security range: it becomes
+    // a dukovo-lab `run` of the `security` category (or the named tests in
+    // it) on a freshly built image.
+    if lab_command(&rest) == Some("attack") {
+        rest = attack_to_run(&rest);
+    }
     let tool = find_tool()?;
 
     let mut lab = Command::new(&tool);
@@ -632,6 +638,47 @@ fn option_value<'a>(args: &'a [String], name: &str) -> Option<&'a str> {
     args.windows(2).rev().find(|pair| pair[0] == name).map(|pair| pair[1].as_str())
 }
 
+/// Turns `ob lab attack [tests...]` into the dukovo-lab command it means:
+/// `run` of the `security` category, or of the named tests in it. Options
+/// are left as they are; a bare test name becomes `security/<name>`, and
+/// one already under `security` is left alone. With no test named, the
+/// whole `security` category runs.
+fn attack_to_run(args: &[String]) -> Vec<String> {
+    let mut out = Vec::with_capacity(args.len() + 1);
+    let mut named = 0;
+    let mut seen_command = false;
+    let mut skip_value = false;
+    for word in args {
+        if skip_value {
+            skip_value = false;
+            out.push(word.clone());
+            continue;
+        }
+        if VALUED.contains(&word.as_str()) {
+            skip_value = true;
+            out.push(word.clone());
+        } else if word.starts_with('-') {
+            out.push(word.clone());
+        } else if !seen_command {
+            // The `attack` word itself.
+            seen_command = true;
+            out.push("run".into());
+        } else {
+            // A test to run, named under the security category.
+            named += 1;
+            out.push(if word == "security" || word.starts_with("security/") {
+                word.clone()
+            } else {
+                format!("security/{word}")
+            });
+        }
+    }
+    if named == 0 {
+        out.push("security".into());
+    }
+    out
+}
+
 /// The dukovo-lab command among `args`: the first word that is neither
 /// an option nor an option's value.
 fn lab_command(args: &[String]) -> Option<&str> {
@@ -732,6 +779,26 @@ mod tests {
         assert!(!wants_setup(&words("--store /tmp/lab ui")));
         assert!(!wants_setup(&words("--help")));
         assert!(!wants_setup(&words("findings --run 20261107-153012-4f2a")));
+    }
+
+    #[test]
+    fn attack_runs_the_security_category_or_its_named_tests() {
+        let words = |line: &str| line.split(' ').map(String::from).collect::<Vec<_>>();
+        // Plain `attack` runs the whole security category.
+        assert_eq!(attack_to_run(&words("attack")), words("run security"));
+        // A bare name is a test in that category; one already under it is left.
+        assert_eq!(
+            attack_to_run(&words("attack ssh-keys-only security/open-ports")),
+            words("run security/ssh-keys-only security/open-ports")
+        );
+        // Options and their values are kept, and still no name means the
+        // whole category.
+        assert_eq!(
+            attack_to_run(&words("--machine qemu attack --json")),
+            words("--machine qemu run --json security")
+        );
+        // `security` itself names the category, not a test in it.
+        assert_eq!(attack_to_run(&words("attack security")), words("run security"));
     }
 
     #[test]

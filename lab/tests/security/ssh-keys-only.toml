@@ -1,0 +1,13 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "SSH turns away a password sign-in: the machine takes keys alone"
+time = "6m"
+fresh = true
+
+# From the attacker, a sign-in forced to try a password (and no key) is
+# refused: sshd offers only publickey, so it answers "Permission denied".
+[[step]]
+attack = "ssh -o BatchMode=yes -o StrictHostKeyChecking=no -o PreferredAuthentications=password -o PubkeyAuthentication=no lab@{target} true"
+exit = 255
+expect = "Permission denied (publickey)"
