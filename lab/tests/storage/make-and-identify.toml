@@ -1,0 +1,39 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "mkfs makes a filesystem of the kind asked for, and blkid reads back its type and label by value, token and label"
+time = "4m"
+
+[[step]]
+usb = "plug"
+blank = "64M"
+[[step]]
+wait = "5s"
+# Find the stick by its size, which no system disk has, and keep its name
+# in the lab's home for the steps below, which root runs: each account has
+# a /tmp of its own. Nothing is formatted unless a stick was found.
+[[step]]
+run = "lsblk -dn | awk '$2 == \"64M\" && $4 == \"disk\" { print $1 }' > ~/lab-stick && cat ~/lab-stick"
+expect = "sd"
+# mkfs -t exfat routes to mkfs-exfat; -V names the tool it runs.
+[[step]]
+run = "sh -c 'mkfs -t exfat -V -L LABMK /devices/$(cat /users/lab/lab-stick)'"
+root = true
+expect = ["made exFAT", "label LABMK"]
+# -o value with -s TYPE prints the type alone.
+[[step]]
+run = "sh -c 'blkid -o value -s TYPE /devices/$(cat /users/lab/lab-stick)'"
+root = true
+expect = "exfat"
+# -t TYPE=exfat shows only a device whose type matches.
+[[step]]
+run = "sh -c 'blkid -t TYPE=exfat /devices/$(cat /users/lab/lab-stick)'"
+root = true
+expect = "LABEL=\"LABMK\""
+# -L prints the path of the device whose filesystem has the label.
+[[step]]
+run = "blkid -L LABMK"
+root = true
+expect = "/devices/"
+[[step]]
+usb = "unplug"

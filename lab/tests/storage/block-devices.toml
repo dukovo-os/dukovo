@@ -1,0 +1,33 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "The disks, partitions and filesystems line up: lsblk, blkid, findmnt and df all show the root Btrfs"
+time = "3m"
+
+[[step]]
+run = "lsblk"
+expect = ["sda", "disk", "part", "/system"]
+[[step]]
+run = "lsblk -o NAME,SIZE,TYPE,MOUNTPOINTS sda"
+expect = ["sda", "/users"]
+# blkid reads a device's own marks, so it runs as root.
+[[step]]
+run = "blkid /devices/sda3"
+root = true
+expect = ["LABEL=\"dukovo-root\"", "TYPE=\"btrfs\""]
+[[step]]
+run = "blkid /devices/sda2"
+root = true
+expect = "TYPE=\"vfat\""
+# blkid finds a device by the label of the filesystem on it.
+[[step]]
+run = "blkid -L dukovo-root"
+root = true
+expect = "/devices/sda3"
+# The system is mounted read-only; the writable trees share the same disk.
+[[step]]
+run = "findmnt -t btrfs -o TARGET,SOURCE,FSTYPE,OPTIONS"
+expect = ["/system", "/users", "btrfs", "ro", "rw"]
+[[step]]
+run = "df -hT /users"
+expect = ["btrfs", "/users"]

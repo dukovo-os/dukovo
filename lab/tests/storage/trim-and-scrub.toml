@@ -1,0 +1,21 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "fstrim discards a Btrfs filesystem's free space, and a read-only scrub of the system reads every block clean"
+time = "3m"
+
+# Trimming needs the control right on the directory, so these run as root.
+[[step]]
+run = "fstrim -v /users"
+root = true
+expect = ["/users", "trimmed"]
+[[step]]
+run = "fstrim -v /shared"
+root = true
+expect = ["/shared", "trimmed"]
+# /system is mounted read-only, so it is scrubbed read-only: read and check
+# every block, write nothing.
+[[step]]
+run = "scrub start -r /system"
+root = true
+expect = "no errors found"

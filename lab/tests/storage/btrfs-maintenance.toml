@@ -1,0 +1,52 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "On a Btrfs stick a scrub reads every block clean, and simple quotas switch on, count each subvolume, and switch off"
+time = "5m"
+
+# A Btrfs needs 109 MiB at least.
+[[step]]
+usb = "plug"
+blank = "256M"
+[[step]]
+wait = "5s"
+# Find the stick by its size, which no system disk has, and keep its name
+# in the lab's home for the steps below, which root runs: each account has
+# a /tmp of its own. Nothing is formatted unless a stick was found.
+[[step]]
+run = "lsblk -dn | awk '$2 == \"256M\" && $4 == \"disk\" { print $1 }' > ~/lab-stick && cat ~/lab-stick"
+expect = "sd"
+[[step]]
+run = "sh -c 'mkfs-btrfs -f -L LABMAINT /devices/$(cat /users/lab/lab-stick)'"
+root = true
+expect = ["Label:              LABMAINT", "Filesystem size:    256.00MiB"]
+# Mount it, make a subvolume and write a little, so there are blocks to read
+# and a second quota group to count.
+[[step]]
+run = "sh -c 'mkdir -p /volumes/lab-stick && mount /devices/$(cat /users/lab/lab-stick) /volumes/lab-stick && subvolume create /volumes/lab-stick/work && echo data > /volumes/lab-stick/work/note.txt && sync'"
+root = true
+expect = "Create subvolume"
+# Scrub reads and checksums every block of the last commit; a clean one is clean.
+[[step]]
+run = "scrub start -B /volumes/lab-stick"
+root = true
+expect = "no errors found"
+# Simple quotas: each subvolume (the root 0/5 and work 0/256) gets a group,
+# counting from zero.
+[[step]]
+run = "sh -c 'quota enable /volumes/lab-stick && quota show /volumes/lab-stick'"
+root = true
+expect = ["Qgroupid", "Referenced", "0/5"]
+[[step]]
+run = "quota disable /volumes/lab-stick"
+root = true
+# Unmount and check: a clean filesystem finds no fault.
+[[step]]
+run = "umount /volumes/lab-stick"
+root = true
+[[step]]
+run = "sh -c 'fsck-btrfs /devices/$(cat /users/lab/lab-stick)'"
+root = true
+expect = "no error found"
+[[step]]
+usb = "unplug"
