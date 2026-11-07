@@ -122,6 +122,17 @@ mounted on it or anything holds a place on it: the table and the call
 hold two references to the mount, and any more is a handle. A rename
 never crosses mounts, and a mount point cannot be removed.
 
+Every open file holds a reference to its mount, so while a mount is in
+the tree its references are counted on each CPU, in a row of counts of
+the CPU's own (ADR 0404, `radix_sync::cpu_ref`), as Linux counts its
+mounts' (`mnt_pcp`): processes opening files on one mount on different
+CPUs do not pass a count between them. To see how many there are,
+`unmount` pauses that counting and waits for an RCU grace period, after
+which every reference counts where it adds them up; a mount still in
+use goes back to counting on the CPUs. A mount that has left the tree is
+freed by the last of its references, which adds the counts up as it
+goes.
+
 ## Directory and file objects
 
 A directory or file capability names a `FileObject`: a `Location`. Its
