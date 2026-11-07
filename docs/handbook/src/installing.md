@@ -12,11 +12,13 @@ answers file, a JSON file that answers every question the screens ask.
 The full references are dukovo-install(8) and install-answers(5)
 ([ADR 0309](https://github.com/dukovo-os/dukovo/blob/main/docs/adr/0309-dukovo-install-installs-the-signed-release-as-an-answers-file-says.md),
 [ADR 0310](https://github.com/dukovo-os/dukovo/blob/main/docs/adr/0310-the-installer-s-screens.md),
-[ADR 0311](https://github.com/dukovo-os/dukovo/blob/main/docs/adr/0311-the-free-space-and-manual-layouts-and-swap-at-every-start.md)).
+[ADR 0311](https://github.com/dukovo-os/dukovo/blob/main/docs/adr/0311-the-free-space-and-manual-layouts-and-swap-at-every-start.md),
+[ADR 0314](https://github.com/dukovo-os/dukovo/blob/main/docs/adr/0314-installing-next-to-windows.md)).
 
-The guided layout **erases the disk it installs onto**. The free-space
-layout keeps what the disk holds, and the manual layout changes only
-what you choose.
+The guided layout **erases the disk it installs onto**. The layout next
+to Windows shrinks Windows and keeps its files, the free-space layout
+keeps what the disk holds, and the manual layout changes only what you
+choose.
 
 ## Installing with the screens
 
@@ -39,12 +41,23 @@ throughout.
 
 ## Choosing the layout
 
-The Disk step offers three layouts:
+The Disk step offers four layouts:
 
 - **The guided layout** erases the disk and gives it a BIOS boot
   partition, an EFI system partition, the swap asked for and the Dukovo
   root, and puts GRUB on it for both UEFI and legacy BIOS, so the disk
   starts either way.
+- **Install next to Windows** shrinks Windows' C: and puts Dukovo in
+  the space it gives: an EFI system partition of Dukovo's own, the swap
+  and the root. Type the space for Dukovo, at least 20 GiB; Windows
+  keeps 10 GiB free beyond what its files use. Before you start the
+  installer, in Windows: turn BitLocker off on C:, turn Fast Startup
+  off (Control Panel, Power Options, *Choose what the power buttons
+  do*), and shut Windows down; the page says which of these is left.
+  Start the stick by UEFI, from the firmware's boot menu. At each start
+  a menu then offers Dukovo, *Windows Boot Manager* and the firmware's
+  settings, and picks the one you chose last. Windows checks C: once at
+  its first start after the install.
 - **Use the free space** keeps every partition on the disk and makes the
   same four in its largest free space. It is for a disk of data: one
   that starts a system already, with an EFI system partition or a BIOS
@@ -100,9 +113,10 @@ read -s pw; echo "$pw" | dukovo-install --hash-password; unset pw
 ```
 
 `lsblk` lists the disks, to find the target's name. The layout is
-`guided` or `free`, as on the screens, or `manual`, whose `changes` list
-each partition taken out, made or formatted, as the rdisk screen saves
-them: install-answers(5) describes them.
+`guided` or `free`, as on the screens; `beside`, next to Windows, with
+`space_gib`, the space Dukovo takes from Windows; or `manual`, whose
+`changes` list each partition taken out, made or formatted, as the rdisk
+screen saves them: install-answers(5) describes them.
 
 ## Installing from an answers file
 

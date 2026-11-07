@@ -16,6 +16,7 @@ use ratatui::widgets::{Block, Clear, Paragraph};
 use super::app::{App, Field, Id, Kind, Look, Modal, Page, Row};
 use super::look::{self, BLUE_GREY, CORAL, GREY, MINT, SAND, TAN, WHITE};
 use super::rdisk::{self, FormField};
+use crate::answers::Layout;
 use crate::log::{self, Step};
 use crate::messages::{self, Arg};
 
@@ -412,7 +413,8 @@ fn draw_progress(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let disk = app.answers().map_or_else(|_| String::new(), |answers| answers.target().to_string());
     let failed = matches!(progress.finished, Some(Err(_)));
     let done = matches!(progress.finished, Some(Ok(_)));
-    for step in Step::ALL {
+    let layout = app.answers().map_or(Layout::Guided, |answers| answers.disk.layout);
+    for step in Step::of(layout) {
         let place = progress.started.iter().position(|s| *s == step);
         let last = place.is_some() && place == progress.started.len().checked_sub(1);
         let (mark, style) = match place {

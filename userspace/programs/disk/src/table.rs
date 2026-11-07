@@ -463,6 +463,47 @@ impl Table {
         Ok(gone)
     }
 
+    /// Makes partition `number` `sectors` long, from where it starts: a
+    /// shrink gives the rest of it back as free space, as the installer
+    /// makes room beside Windows once its volume is shrunk (ADR 0312),
+    /// and a growth takes free space after it. Nothing else changes: its
+    /// type, GUID, name and attributes stay, so the systems that know it
+    /// by them still find it.
+    ///
+    /// # Errors
+    ///
+    /// If there is none, it is a logical or an extended one, `sectors` is
+    /// 0, or it would reach another partition or past the usable sectors.
+    pub fn resize(&mut self, number: u32, sectors: u64) -> Result<(), Error> {
+        let last_usable = self.last_usable;
+        let partition = self.get_mut(number)?;
+        if partition.kind.is_extended() {
+            return error(format!("partition {number} is extended: it holds logical partitions"));
+        }
+        if sectors == 0 {
+            return error("a partition has at least one sector");
+        }
+        let first = partition.first;
+        let Some(last) = first.checked_add(sectors - 1).filter(|&last| last <= last_usable) else {
+            return error(format!(
+                "partition {number} would end past the last usable sector, {last_usable}"
+            ));
+        };
+        let next = self
+            .partitions
+            .iter()
+            .filter(|p| !p.logical && p.number != number && p.first > first)
+            .map(|p| (p.first, p.number))
+            .min();
+        if let Some((start, other)) = next.filter(|&(start, _)| last >= start) {
+            return error(format!(
+                "partition {number} would reach partition {other}, which starts at sector {start}"
+            ));
+        }
+        self.get_mut(number)?.last = last;
+        Ok(())
+    }
+
     /// Sets partition `number`'s type.
     ///
     /// # Errors
@@ -695,6 +736,32 @@ mod tests {
         assert!(gpt.set_name(1, &"x".repeat(37)).is_err());
         gpt.set_name(1, "Dukovo").unwrap();
         assert_eq!(gpt.get(1).unwrap().name, "Dukovo");
+    }
+
+    #[test]
+    fn a_partition_shrinks_and_grows_in_place() {
+        let mut rng = Rng::seeded(5);
+        let mut table = Table::new(Scheme::Gpt, 512, 1 << 21, &mut rng).unwrap();
+        let data = kind("windows-data", Scheme::Gpt);
+        table.add(New::of(data, End::Sectors(1 << 20)), &mut rng).unwrap();
+        let mut after = New::of(kind("linux", Scheme::Gpt), End::Sectors(2048));
+        after.first = Some(2048 + (1 << 20) + 4096);
+        table.add(after, &mut rng).unwrap();
+        let was = table.get(1).unwrap().clone();
+        // Shrunk, it keeps its start, type, GUID and name; the rest is free.
+        table.resize(1, 1 << 19).unwrap();
+        let now = table.get(1).unwrap();
+        assert_eq!((now.first, now.sectors()), (2048, 1 << 19));
+        assert_eq!((now.kind, now.guid, &now.name), (was.kind, was.guid, &was.name));
+        assert_eq!(table.free()[1], (2048 + (1 << 19), 2048 + (1 << 20) + 4095));
+        // Grown up to the next partition, and no further.
+        table.resize(1, (1 << 20) + 4096).unwrap();
+        let reach = table.resize(1, (1 << 20) + 4097).unwrap_err();
+        assert!(reach.0.contains("would reach partition 2"), "{reach}");
+        assert!(table.resize(2, 1 << 22).unwrap_err().0.contains("last usable sector"));
+        assert!(table.resize(1, 0).is_err());
+        assert!(table.resize(3, 2048).unwrap_err().0.contains("no partition 3"));
+        assert!(table.verify().is_empty(), "{:?}", table.verify());
     }
 
     #[test]

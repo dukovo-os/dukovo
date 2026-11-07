@@ -13,6 +13,7 @@ use super::draw::{self, wrap};
 use crate::answers::{Answers, Layout, Network};
 use crate::log::{Event, Step};
 use crate::machine::{Card, DiskInfo, Machine};
+use crate::windows::{Refused, Windows};
 
 /// A GPT on a disk of `gib` GiB, with a partition of each `(alias, MiB)`
 /// in turn.
@@ -28,8 +29,9 @@ fn table(gib: u64, parts: &[(&str, u64)]) -> disk::Table {
     table
 }
 
-/// A computer with a Windows SSD, the install stick, a blank disk, a
-/// disk with a data partition and room beside it, and a network card.
+/// A computer with a Windows SSD, its 100 GiB C: 41 GiB full, the
+/// install stick, a blank disk, a disk with a data partition and room
+/// beside it, and a network card; it started the stick by UEFI.
 fn machine() -> Machine {
     let disk = |name: &str, gib: u64, model: &str, table: Option<disk::Table>, stick: bool| {
         let partitions = table.iter().flat_map(|t| &t.partitions);
@@ -42,13 +44,23 @@ fn machine() -> Machine {
             stick,
             sector_size: 512,
             table,
+            windows: None,
         }
     };
     let windows =
         table(128, &[("efi", 100), ("windows-reserved", 16), ("windows-data", 100 << 10)]);
+    let mut ssd = disk("sda", 128, "SK hynix SC311", Some(windows), false);
+    ssd.windows = Some(Windows {
+        partition: 3,
+        bytes: 100 << 30,
+        used: 41 << 30,
+        smallest: 42 << 30,
+        refused: None,
+        boot_manager: 1,
+    });
     Machine {
         disks: vec![
-            disk("sda", 128, "SK hynix SC311", Some(windows), false),
+            ssd,
             disk("sdb", 16, "SanDisk Ultra", Some(table(16, &[("dukovo-live", 2048)])), true),
             disk("vda", 4, "", None, false),
             disk("vdb", 16, "", Some(table(16, &[("linux", 4096)])), false),
@@ -63,6 +75,7 @@ fn machine() -> Machine {
         memory: 1 << 30,
         layouts: vec![("us".into(), "English (US)".into()), ("de".into(), "German".into())],
         zones: vec!["UTC".into(), "America/Denver".into(), "Europe/Berlin".into()],
+        boot_entries: true,
     }
 }
 
@@ -659,4 +672,109 @@ fn the_startup_screen_fills_its_bar_and_tells_why_it_cannot_start() {
     // The reason wraps at 72 columns, so its end is on a line of its own.
     assert!(shown.contains("--release"), "{shown}");
     assert!(shown.contains("Enter leaves the installer for a shell"), "{shown}");
+}
+
+/// Chooses the layout next to Windows on sda, the Windows SSD.
+fn choose_beside(app: &mut App) {
+    app.page = Page::Disk;
+    focus(app, Id::Disk(0));
+    press(app, KeyCode::Char(' '));
+    focus(app, Id::Beside);
+    press(app, KeyCode::Char(' '));
+}
+
+/// Types `text` into the field `id`, in place of what it held.
+fn retype(app: &mut App, id: Id, text: &str) {
+    focus(app, id);
+    for _ in 0..8 {
+        press(app, KeyCode::Backspace);
+    }
+    type_text(app, text);
+}
+
+#[test]
+fn next_to_windows_shrinks_it_and_reviews_each_change() {
+    let mut app = app();
+    choose_beside(&mut app);
+    let shown = screen(&app);
+    for needle in [
+        "Install next to Windows",
+        "shrinks Windows; a menu picks at startup",
+        "Space for Dukovo (GiB)",
+        "20.0 GiB to 49.0 GiB",
+        "✓ BitLocker is off on C:",
+        "✓ Windows was shut down fully",
+    ] {
+        assert!(shown.contains(needle), "{needle}:\n{shown}");
+    }
+    assert!(!shown.contains("Erasing"), "nothing is erased:\n{shown}");
+    // Windows keeps 10 GiB beyond the 41 its files use: 49 at most, which
+    // is suggested, as 60 does not fit.
+    assert_eq!(app.space, "49");
+    retype(&mut app, Id::Space, "60");
+    press(&mut app, KeyCode::Enter);
+    let problem = app.problem.clone().unwrap_or_default();
+    assert!(problem.contains("between 20 and 49 GiB"), "{problem}");
+    // The root needs 8 GiB beyond the swap and Dukovo's boot partition.
+    retype(&mut app, Id::Swap, "16");
+    retype(&mut app, Id::Space, "20");
+    press(&mut app, KeyCode::Enter);
+    let problem = app.problem.clone().unwrap_or_default();
+    assert!(problem.contains("beyond the swap"), "{problem}");
+    retype(&mut app, Id::Swap, "1");
+    retype(&mut app, Id::Space, "30");
+    press(&mut app, KeyCode::Enter);
+    answer_you(&mut app);
+    let shown = screen(&app);
+    for needle in [
+        "Shrink    Windows (C:) on sda from 100 GiB to 70.0 GiB",
+        "41.0 GiB in use; its files are kept",
+        "Keep      efi, windows-reserved",
+        "Create    on sda:",
+        "4  Dukovo boot       512 MiB   FAT32",
+        "5  Swap              1.0 GiB",
+        "6  Dukovo root",
+        "(Windows Boot Manager found on sda1)",
+        "GRUB for UEFI on Dukovo boot and a UEFI boot entry \"Dukovo\"",
+    ] {
+        assert!(shown.contains(needle), "{needle}:\n{shown}");
+    }
+    let answers = app.answers().unwrap();
+    answers.check().unwrap();
+    assert_eq!((answers.disk.layout, answers.disk.space_gib), (Layout::Beside, Some(30)));
+    focus(&mut app, Id::Install);
+    press(&mut app, KeyCode::Enter);
+    assert!(app.problem.as_deref().is_some_and(|p| p.contains("confirm the changes")));
+}
+
+#[test]
+fn windows_that_cannot_be_shrunk_says_what_to_do() {
+    let mut machine = machine();
+    let windows = machine.disks[0].windows.as_mut().unwrap();
+    windows.refused = Some(Refused::FastStartup);
+    let mut app = App::new(machine.clone(), "0.14.0", 600 << 20);
+    app.page = Page::Disk;
+    focus(&mut app, Id::Disk(0));
+    press(&mut app, KeyCode::Char(' '));
+    let shown = screen(&app);
+    assert!(shown.contains("Windows can't be shrunk yet: see below"), "{shown}");
+    assert!(shown.contains("Fast Startup, so it still holds C: open"), "{shown}");
+    assert!(!app.focusable().contains(&Id::Beside), "it cannot be chosen");
+    // Started by a BIOS, no boot entry can be made.
+    machine.disks[0].windows.as_mut().unwrap().refused = None;
+    machine.boot_entries = false;
+    let mut app = App::new(machine, "0.14.0", 600 << 20);
+    app.page = Page::Disk;
+    focus(&mut app, Id::Disk(0));
+    press(&mut app, KeyCode::Char(' '));
+    let shown = screen(&app);
+    assert!(shown.contains("needs the stick started by UEFI"), "{shown}");
+    assert!(!app.focusable().contains(&Id::Beside));
+    // A disk with no Windows.
+    let mut other = self::app();
+    other.page = Page::Disk;
+    focus(&mut other, Id::Disk(3));
+    press(&mut other, KeyCode::Char(' '));
+    assert!(screen(&other).contains("no Windows on vdb"));
+    assert!(!other.focusable().contains(&Id::Beside));
 }

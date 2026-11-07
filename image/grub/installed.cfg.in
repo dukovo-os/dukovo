@@ -15,6 +15,16 @@
 set timeout=@TIMEOUT@
 set default=0
 
+# The entry chosen last, Dukovo or Windows, is chosen again: GRUB keeps it
+# in its environment block beside this file, which the installer makes
+# (ADR 0314). The other entries are never remembered.
+if [ -f "${prefix}/grubenv" ]; then
+    load_env saved_entry
+fi
+if [ -n "${saved_entry}" ]; then
+    set default="${saved_entry}"
+fi
+
 # Mirror the menu on the first serial port, where Radix also writes.
 if serial --unit=0 --speed=115200; then
     terminal_input --append serial
@@ -35,11 +45,36 @@ search --no-floppy --fs-uuid --set=system @ROOT_UUID@
 
 # An installed system restarts 10 seconds after a panic, so that a machine
 # nobody is at comes back by itself.
-menuentry "Dukovo Server @VERSION@ (Radix)" {
+menuentry "Dukovo Server @VERSION@ (Radix)" --id dukovo {
+    if [ -f "${prefix}/grubenv" -a "${saved_entry}" != dukovo ]; then
+        set saved_entry=dukovo
+        save_env saved_entry
+    fi
     multiboot2 ($system)/@system.a/startup/radix root=UUID=@ROOT_UUID@ panic=10 @CMDLINE@
     module2 ($system)/@system.a/startup/archive bootfs
 @MODULES@    boot
 }
+
+# Windows, when this computer has it: Windows Boot Manager on Windows'
+# own EFI system partition, which GRUB starts as the firmware would, and
+# Windows' boot files are left as they are. With Windows here the menu
+# always shows, long enough to choose (ADR 0314).
+if [ "${grub_platform}" = "efi" ]; then
+    if search --no-floppy --file --set=windows /EFI/Microsoft/Boot/bootmgfw.efi; then
+        set timeout_style=menu
+        if [ "${timeout}" -lt 5 ]; then
+            set timeout=5
+        fi
+        menuentry "Windows Boot Manager" --id windows {
+            if [ -f "${prefix}/grubenv" -a "${saved_entry}" != windows ]; then
+                set saved_entry=windows
+                save_env saved_entry
+            fi
+            chainloader ($windows)/EFI/Microsoft/Boot/bootmgfw.efi
+            boot
+        }
+    fi
+fi
 
 # For a lost administrator's password (ADR 0253). The flags come first,
 # so they are the kernel's whatever the command line holds after a lone
@@ -49,3 +84,13 @@ menuentry "Dukovo Server @VERSION@: startup trouble" {
     module2 ($system)/@system.a/startup/archive bootfs
 @MODULES@    boot
 }
+
+# The firmware's own settings, where the firmware lets GRUB restart into
+# them.
+if [ "${grub_platform}" = "efi" ]; then
+    if fwsetup --is-supported; then
+        menuentry "UEFI firmware settings" --id uefi-settings {
+            fwsetup
+        }
+    fi
+fi

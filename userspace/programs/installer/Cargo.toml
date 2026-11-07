@@ -22,8 +22,10 @@ unic-langid = "0.9.6"
 # ob patches in from the rust-crates port (MIT).
 ratatui = { version = "0.30.2", default-features = false, features = ["crossterm"] }
 # Partition tables, read and planned with the engine rdisk(8) writes
-# them with (ADR 0300).
-disk = { path = "../disk" }
+# them with (ADR 0300); and next to Windows, its NTFS volume checked by
+# the kernel's own crate and Windows Boot Manager found on its EFI system
+# partition (ADR 0314).
+disk = { path = "../disk", features = ["ntfs", "fat"] }
 # The keyboard layouts the screens offer (keymap(1)).
 keymap = { path = "../keymap" }
 # The SHA-256 of each file as it is copied, ring's, which ob patches in

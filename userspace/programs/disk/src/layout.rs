@@ -20,8 +20,10 @@
 //! rdisk's `n` places one: on the first whole MiB of free space it fits
 //! in, unless its `start` says where. `"keep": true` keeps the disk's
 //! partitions and adds these in its free space, after taking out those
-//! `delete` names, as the installer's "Use free space" does. Unknown
-//! names are refused, so that a mistyped one is not missed.
+//! `delete` names, as the installer's "Use free space" does, and giving
+//! those `resize` names their new sizes, as it shrinks Windows' partition
+//! to install beside it. Unknown names are refused, so that a mistyped
+//! one is not missed.
 
 use serde::{Deserialize, Serialize};
 
@@ -55,6 +57,10 @@ pub struct Layout {
     /// With `keep`, the partitions to take out first, by number.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub delete: Vec<u32>,
+    /// With `keep`, the partitions given a new size next, each keeping
+    /// its start.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub resize: Vec<Resize>,
     /// The partitions to add, in order.
     #[serde(default)]
     pub partitions: Vec<Part>,
@@ -91,6 +97,18 @@ pub struct Part {
     /// `bit-N` for bit N.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attributes: Vec<String>,
+}
+
+/// A partition a layout file gives a new size, keeping where it starts
+/// and everything else its entry says. Only the table changes: what is
+/// in it must be shrunk first, as resize-ntfs(8) shrinks an NTFS volume.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Resize {
+    /// Its number.
+    pub number: u32,
+    /// Its new size: `100GiB`, `2048s`.
+    pub size: String,
 }
 
 /// The layout file `text`.
@@ -200,6 +218,9 @@ pub fn apply(
         if !layout.delete.is_empty() {
             return Err("\"delete\" takes partitions out of a table kept with \"keep\"".to_string());
         }
+        if !layout.resize.is_empty() {
+            return Err("\"resize\" changes partitions of a table kept with \"keep\"".to_string());
+        }
         let mut table = Table::new(scheme, sector_size, sectors, rng).map_err(|e| e.0)?;
         if let Some(existing) = existing {
             table.boot_code.clone_from(&existing.boot_code);
@@ -211,6 +232,18 @@ pub fn apply(
     }
     for &number in &layout.delete {
         table.delete(number).map_err(|e| format!("\"delete\": {e}"))?;
+    }
+    for resize in &layout.resize {
+        let amount = size::parse(&resize.size).ok_or_else(|| {
+            format!("\"resize\": \"{}\" is not a size, such as 100GiB or 2048s", resize.size)
+        })?;
+        let sectors = amount.sectors(sector_size).ok_or_else(|| {
+            format!(
+                "\"resize\": \"{}\" is not a whole number of {sector_size}-byte sectors",
+                resize.size
+            )
+        })?;
+        table.resize(resize.number, sectors).map_err(|e| format!("\"resize\": {e}"))?;
     }
     for (i, part) in layout.partitions.iter().enumerate() {
         let which = format!("partition {} of the file ({})", i + 1, part.kind);
@@ -315,6 +348,7 @@ pub fn dump(table: &Table) -> Result<Layout, String> {
         uuid: Some(uuid),
         keep: false,
         delete: Vec::new(),
+        resize: Vec::new(),
         partitions,
     })
 }
@@ -389,6 +423,33 @@ mod tests {
         assert!(err.unwrap_err().contains("\"gpt\" or \"mbr\""));
         let err = bad(r#"{"table":"gpt","delete":[1]}"#);
         assert!(err.unwrap_err().contains("keep"));
+        let err = bad(r#"{"table":"gpt","resize":[{"number":1,"size":"1GiB"}]}"#);
+        assert!(err.unwrap_err().contains("keep"));
+    }
+
+    #[test]
+    fn resize_shrinks_a_partition_where_it_is() {
+        let mut rng = Rng::seeded(8);
+        let windows = r#"{"table":"gpt","partitions":[
+            {"type":"efi","size":"100MiB"},
+            {"type":"windows-data","size":"600MiB","name":"Basic data partition"},
+            {"type":"windows-recovery","size":"rest"}]}"#;
+        let table = apply(&parse(windows).unwrap(), 512, 1 << 21, None, &mut rng).unwrap();
+        let beside = r#"{"table":"gpt","keep":true,
+            "resize":[{"number":2,"size":"200MiB"}],
+            "partitions":[{"type":"efi","size":"rest","name":"Dukovo boot"}]}"#;
+        let layout = parse(beside).unwrap();
+        let kept = apply(&layout, 512, 1 << 21, Some(&table), &mut rng).unwrap();
+        let (was, now) = (table.get(2).unwrap(), kept.get(2).unwrap());
+        assert_eq!((now.first, now.sectors()), (was.first, 200 << 11));
+        assert_eq!((now.guid, &now.name), (was.guid, &was.name), "the same partition");
+        // The new one takes the space the shrink gave back.
+        assert_eq!(kept.get(4).unwrap().first, now.last + 1);
+        assert_eq!(kept.get(4).unwrap().last, kept.get(3).unwrap().first - 1);
+        let mut grown = layout.clone();
+        grown.resize[0].size = "800MiB".into();
+        let err = apply(&grown, 512, 1 << 21, Some(&table), &mut rng).unwrap_err();
+        assert!(err.contains("\"resize\": partition 2 would reach partition 3"), "{err}");
     }
 
     #[test]

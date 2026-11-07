@@ -1257,6 +1257,19 @@ mod tests {
         // The startup-trouble entry names the same root, with its flag first.
         assert_eq!(cfg.matches(&format!("root=UUID={uuid} panic=10 quiet")).count(), 2);
         assert!(cfg.contains("radix startup-trouble root=UUID="));
+        // Windows, when GRUB finds its boot manager, between the two, and
+        // the firmware's settings last; Dukovo and Windows are remembered.
+        let windows = cfg.find("menuentry \"Windows Boot Manager\" --id windows {").unwrap();
+        assert!(cfg.find("--id dukovo {").unwrap() < windows);
+        assert!(windows < cfg.find("startup trouble\" {").unwrap());
+        assert!(
+            cfg.contains(
+                "search --no-floppy --file --set=windows /EFI/Microsoft/Boot/bootmgfw.efi"
+            )
+        );
+        assert!(cfg.contains("chainloader ($windows)/EFI/Microsoft/Boot/bootmgfw.efi"));
+        assert_eq!(cfg.matches("save_env saved_entry").count(), 2);
+        assert!(cfg.trim_end().ends_with("fwsetup\n        }\n    fi\nfi"), "{cfg}");
     }
 
     #[test]

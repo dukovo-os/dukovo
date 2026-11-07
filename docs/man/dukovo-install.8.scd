@@ -47,11 +47,13 @@ edge to edge and the keys' hints on a steel bar along the bottom (ADR
 . *Network and name*: the network cards found, DHCP or a fixed address
   for the card chosen, the computer's name and its time zone.
 . *Disk*: the disk to install on and how: the guided layout, which
-  erases it; its free space, which keeps its partitions; or Manual,
-  which opens the rdisk screen. The guided and free-space layouts take
-  the swap's size. The stick and a disk too small cannot be chosen, a
-  disk that holds Windows says so in red, and the free space says why
-  when it cannot be used.
+  erases it; next to Windows, which shrinks Windows and takes the space
+  typed, between the least and the most the page shows; its free
+  space, which keeps its partitions; or Manual, which opens the rdisk
+  screen. The guided, next-to-Windows and free-space layouts take the
+  swap's size. The stick and a disk too small cannot be chosen, a disk
+  that holds Windows says so in red, and the layouts that cannot be
+  used say why: next to Windows, what to do in Windows first.
 . *You*: the administrator, whose user name follows the name typed
   until it is typed itself, a password typed twice, whether the saved
   answers keep the passwords' hashes, and other people.
@@ -111,6 +113,10 @@ An install then runs these steps, each printed as it starts:
 . *Checking* the disk: it must be a whole disk, not the stick, and
   its layout must fit: the root big enough for the system and a GiB
   more.
+. *Shrinking Windows (C:) on* _disk_, for the layout next to Windows:
+  *resize-ntfs*(8) checks Windows' volume, shrinks it by the space
+  Dukovo takes, and checks it again. The volume stays marked to be
+  checked, so Windows runs *chkdsk* once at its next start.
 . *Partitioning* the disk, and each other disk the manual layout
   changes, as *rdisk --script* applies a layout file
   (*rdisk-layout*(5)) the installer writes and logs. The guided layout
@@ -119,8 +125,11 @@ An install then runs these steps, each printed as it starts:
   in the rest; the free-space layout makes the same four in the disk's
   largest free space and keeps the rest, numbering the EFI system
   partition 2, where the BIOS's GRUB finds its files, or leaving out the
-  BIOS boot partition if the disk has a partition 2; the manual layout makes the
-  answers' *changes*.
+  BIOS boot partition if the disk has a partition 2; the layout next
+  to Windows cuts Windows' partition to its shrunk volume and makes a
+  512 MiB EFI system partition of Dukovo's own, *Dukovo boot*, the
+  swap and the root in the space it gave, keeping Windows' partitions;
+  the manual layout makes the answers' *changes*.
 . *Making the filesystems*: FAT32 on the EFI system partition, a swap
   area, the root's Btrfs, and the data partitions the manual layout
   formats, with *mkfs-fat*(8), *mkswap*(8), *mkfs-btrfs*(8) and
@@ -136,12 +145,17 @@ An install then runs these steps, each printed as it starts:
   network cards in _/system/settings_, and the accounts, the
   administrator's and the others', with their passwords' hashes, where
   only *authd*(8) reads them.
-. *Installing GRUB for UEFI and BIOS*: GRUB for a BIOS in the first sector and
-  the BIOS boot partition, and for UEFI in the EFI system partition, with
+. *Installing GRUB*: GRUB for a BIOS in the first sector and the BIOS
+  boot partition, and for UEFI in the EFI system partition, with
   *rgrub-setup*(8), so that the disk starts under either firmware, and
   the menu that starts the slot, naming the root by its UUID (ADR 0307).
-  A disk the manual layout gives no BIOS boot partition gets GRUB for
-  UEFI alone.
+  A disk given no BIOS boot partition, by the manual layout or next to
+  Windows, gets GRUB for UEFI alone. Under UEFI the menu also offers
+  *Windows Boot Manager* when it finds Windows, and the firmware's
+  settings; it then always shows, and chooses again the system chosen
+  last. Next to Windows, *efiboot*(8) also makes the firmware's boot
+  entry *Dukovo*, first in its boot order, and Windows' boot files are
+  left as they are (ADR 0314).
 . *Saving the answers and the install log* in the new system.
 
 It ends with the line to act on:
@@ -203,4 +217,5 @@ the install failed, and 2 for a usage error.
 # SEE ALSO
 
 *install-answers*(5), *system-release*(8), *rdisk*(8), *rgrub-setup*(8),
+*resize-ntfs*(8), *efiboot*(8),
 *spark*(8), *consoled*(8), *dukovo-boot*(7), *keymap*(1)

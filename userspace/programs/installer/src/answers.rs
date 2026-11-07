@@ -91,6 +91,10 @@ pub struct Disk {
     /// the EFI system partition, and any other disk's.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub changes: Vec<Change>,
+    /// The space Dukovo takes next to Windows, in GiB, for the layout
+    /// next to it: what Windows' volume is shrunk by.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub space_gib: Option<u32>,
 }
 
 /// What the manual layout changes on one disk. Partitions it does not
@@ -111,6 +115,20 @@ pub struct Change {
     /// kept but formatted, with neither.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub partitions: Vec<Part>,
+    /// Windows' partition, shrunk to make room next to it: the layout next
+    /// to Windows works it out, and an answers file cannot ask for it.
+    #[serde(skip)]
+    pub shrink: Option<Shrink>,
+}
+
+/// A partition shrunk, after the filesystem in it: Windows', once
+/// resize-ntfs(8) has shrunk its volume to fit.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Shrink {
+    /// Its number.
+    pub number: u32,
+    /// Its new size, in the disk's logical sectors.
+    pub sectors: u64,
 }
 
 /// A partition the manual layout makes or formats.
@@ -345,10 +363,17 @@ impl Answers {
     /// whether a partition fits, the install checks before it writes.
     fn check_disk(&self) -> Result<(), String> {
         match self.disk.layout {
-            Layout::Guided | Layout::Free | Layout::Manual => {}
-            Layout::Mirror | Layout::Beside => {
+            Layout::Guided | Layout::Free | Layout::Manual | Layout::Beside => {}
+            Layout::Mirror => {
                 return Err("this layout is not ready yet; use \"guided\"".into());
             }
+        }
+        match (self.disk.layout, self.disk.space_gib) {
+            (Layout::Beside, None) => {
+                return Err("space_gib gives the space Dukovo takes next to Windows".into());
+            }
+            (Layout::Beside, Some(_)) | (_, None) => {}
+            (_, Some(_)) => return Err("space_gib is for the layout next to Windows only".into()),
         }
         if !is_name(self.target(), 32) {
             return Err(format!(
@@ -696,6 +721,18 @@ pub(crate) mod tests {
         let guided = MANUAL.replace(r#""layout": "manual""#, r#""layout": "guided""#);
         assert!(problem(guided).contains("changes are the manual layout's only"));
         with_disk(r#"{ "layout": "free", "target": "vda", "swap_gib": 2 }"#).unwrap();
+    }
+
+    #[test]
+    fn next_to_windows_names_the_space_dukovo_takes() {
+        let beside =
+            r#"{ "layout": "beside", "target": "nvme0n1", "swap_gib": 2, "space_gib": 40 }"#;
+        with_disk(beside).unwrap();
+        let problem = |disk: &str| with_disk(disk).unwrap_err().join("; ");
+        let no_size = beside.replace(r#", "space_gib": 40"#, "");
+        assert!(problem(&no_size).contains("space_gib gives the space"));
+        let guided = beside.replace(r#""beside""#, r#""guided""#);
+        assert!(problem(&guided).contains("next to Windows only"));
     }
 
     #[test]

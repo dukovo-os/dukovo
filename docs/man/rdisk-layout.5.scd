@@ -50,6 +50,15 @@ missed.
 	With *keep*, the partitions to take out first, by number:
 	*[3, 4]*.
 
+*resize*
+	With *keep*, the partitions given a new size next, each by its
+	*number* and its new *size*, written as a partition's:
+	*[ { "number": 3, "size": "200GiB" } ]*. Each keeps its start, type,
+	GUID, name and attributes; shrunk, it gives the rest back as free
+	space, and grown, it takes free space after it. Only the table
+	changes: shrink what the partition holds first, as *resize-ntfs*(8)
+	shrinks an NTFS volume, or what is past its new end is lost.
+
 *partitions*
 	The partitions to add, in order.
 
@@ -97,6 +106,16 @@ A partition for data in the free space of the disk there is:
   "partitions": [ { "type": "linux", "size": "rest", "name": "Data" } ] }
 ```
 
+Windows' volume, partition 3, shrunk to 200 GiB by *resize-ntfs*(8)
+already, and its partition shrunk to match, with a partition for data
+in the space it gives back:
+
+```
+{ "table": "gpt", "keep": true,
+  "resize": [ { "number": 3, "size": "200GiB" } ],
+  "partitions": [ { "type": "linux", "size": "rest", "name": "Data" } ] }
+```
+
 A stick for Windows and Linux alike:
 
 ```
@@ -106,4 +125,4 @@ A stick for Windows and Linux alike:
 
 # SEE ALSO
 
-*rdisk*(8), *mkfs*(8)
+*rdisk*(8), *mkfs*(8), *resize-ntfs*(8)
