@@ -19,21 +19,36 @@
 set timeout=@TIMEOUT@
 set default=@DEFAULT@
 
-# Mirror the menu on the first serial port, where Radix also writes.
-if serial --unit=0 --speed=115200; then
-    terminal_input --append serial
-    terminal_output --append serial
-fi
-
 # Only the firmware's video drivers, GOP under UEFI and VESA under BIOS,
 # with the mode UEFI set kept for Radix's console, as on an installed
-# system.
+# system. UEFI's menu keeps that mode too; a BIOS's takes the first of
+# these its card has, each wide enough for the menu's box.
 if [ "${grub_platform}" = "efi" ]; then
     insmod efi_gop
     insmod efi_uga
     set gfxpayload=keep
+    set gfxmode=auto
 else
     insmod vbe
+    set gfxmode=1280x800,1024x768,800x600,auto
+fi
+
+# The menu drawn in Dukovo's colours and the console's font, as the
+# installer's screens are (ADR 0402): `ob image` writes the theme and its
+# fonts into boot/grub/theme. Where the screen cannot be drawn on, the
+# plain menu shows.
+if loadfont ${prefix}/theme/spleen-24.pf2; then
+    loadfont ${prefix}/theme/spleen-32.pf2
+    if terminal_output gfxterm; then
+        set theme=${prefix}/theme/theme.txt
+    fi
+fi
+
+# Mirror the menu on the first serial port, where Radix also writes. It
+# keeps GRUB's plain menu.
+if serial --unit=0 --speed=115200; then
+    terminal_input --append serial
+    terminal_output --append serial
 fi
 
 # The installer's screens on tty1, and a shell on the other consoles

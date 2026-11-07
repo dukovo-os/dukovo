@@ -320,6 +320,10 @@ pub const LIVE_CFG: &str = "image/grub/live.cfg.in";
 /// The boot tests' and the disk check's GRUB configuration.
 const TESTS_CFG: &str = "image/grub/grub.cfg.in";
 
+/// Where the live menu's theme is, beside its grub.cfg (ADR 0402):
+/// [`LIVE_CFG`] loads it from there.
+const THEME_DIR: &str = "boot/grub/theme";
+
 /// [`INSTALLED_CFG`] with the root's UUID in it, the other placeholders
 /// left for [`render_grub_cfg`].
 fn installed_template(ctx: &Ctx, uuid: [u8; 16]) -> Result<String> {
@@ -538,6 +542,12 @@ pub fn build(ctx: &Ctx, spec: &ImageSpec<'_>) -> Result<()> {
     let grub_cfg = render_grub_cfg(&template, spec.timeout, spec.cmdline, &modules, &entries)?;
     let cfg_path = spec.staging.join("boot/grub/grub.cfg");
     process::create_dir(cfg_path.parent().expect("grub.cfg has a parent"))?;
+    // The live menu is drawn in Dukovo's colours, its box as tall as its
+    // entries (ADR 0402).
+    if let Menu::Live(_) = spec.menu {
+        let entries = grub_cfg.lines().filter(|l| l.trim_start().starts_with("menuentry ")).count();
+        crate::grub_theme::write(&spec.staging.join(THEME_DIR), VERSION, entries)?;
+    }
     std::fs::write(&cfg_path, grub_cfg).context(|| format!("writing {}", cfg_path.display()))?;
     if let Some(parent) = spec.output.parent() {
         process::create_dir(parent)?;
@@ -1300,6 +1310,17 @@ mod tests {
         // The modules those need are built into GRUB.
         assert!(crate::grub::MODULES.contains(&"chain"));
         assert!(crate::grub::PC_MODULES.contains(&"drivemap"));
+        // The screen's menu is themed, from where the image writes the
+        // theme; the serial port's is not.
+        let theme = format!(
+            "set theme=${{prefix}}/{}/theme.txt",
+            THEME_DIR.trim_start_matches("boot/grub/")
+        );
+        assert!(cfg.contains(&theme), "{cfg}");
+        assert!(cfg.contains("loadfont ${prefix}/theme/spleen-24.pf2"), "{cfg}");
+        assert!(crate::grub::MODULES.contains(&"gfxmenu") && crate::grub::MODULES.contains(&"png"));
+        let gfxterm = cfg.find("terminal_output gfxterm").unwrap();
+        assert!(gfxterm < cfg.find("terminal_output --append serial").unwrap());
         // The boot tests' live image tries the system instead.
         let tests = live_template(&template, LiveStart::Try);
         let cfg = render_grub_cfg(&tests, 0, "quiet", &modules, "").unwrap();

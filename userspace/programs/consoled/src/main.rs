@@ -19,7 +19,7 @@
 //! _/system/settings/keyboard_ names (keymap(1), ADR 0149), read again on
 //! SIGHUP, which `service consoled reload` sends. With the kernel flag
 //! `install`, tty1 runs the installer's screens before its shell
-//! (dukovo-install(8)). Notifications from
+//! (dukovo-install(8)), in the largest font they fit. Notifications from
 //! notifyd(8) show on the bottom line (`notices`, ADR 0212). When
 //! consoled ends, the screen is the kernel log's again. Spark starts it as
 //! a service (spark(8)).
@@ -71,6 +71,11 @@ const LOGIN: &str = "/system/commands/login";
 
 /// What tty1 runs first under the kernel flag `install`.
 const INSTALLER: &str = "/system/commands/dukovo-install";
+
+/// The columns and rows the installer's screens are drawn for: under the
+/// kernel flag `install`, the font is the largest that gives this many
+/// (ADR 0402), where the console's own wants 100 by 40.
+const INSTALLER_GRID: (usize, usize) = (100, 30);
 
 /// welcome.toml(5), when the banner shows on this boot. A file that is not
 /// there is the defaults; its mistakes are logged, and leave their keys at
@@ -532,7 +537,9 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    let screen = match Screen::open("/devices/fb0") {
+    let install = kernel_flag("install");
+    let grid = if install { INSTALLER_GRID } else { radix_fbcon::MIN_GRID };
+    let screen = match Screen::open("/devices/fb0", grid) {
         Ok(screen) => screen,
         Err(err) => {
             // No screen to draw on, as with a serial console only: nothing
@@ -575,7 +582,7 @@ fn main() -> ExitCode {
         (1..=options.consoles).map(|n| Console::new(n, cols, rows)).collect();
     // The install stick's Install Dukovo entry: the installer's screens
     // on tty1, then root's shell there (ADR 0310).
-    if kernel_flag("install") {
+    if install {
         eprintln!("consoled: install: the installer's screens on tty1");
         consoles[0].once = Some(INSTALLER.to_string());
     }

@@ -91,15 +91,11 @@ pub type SignalActions = Actions<Vec<Action, Kmalloc>>;
 /// that may not sleep: their memory is taken without sleeping.
 pub type PendingSignals = Pending<Vec<Info, Kmalloc>, Kmalloc>;
 
-/// `count` copies of `value` on the kernel's heap.
+/// `count` copies of `value` on the kernel's heap, written at once rather
+/// than pushed one at a time: each process and thread gets a table of
+/// every signal, and pushing them cost a fork some 2,000 instructions.
 fn filled<T: Copy>(value: T, count: usize) -> Option<Vec<T, Kmalloc>> {
-    let mut storage = Vec::new_in(kmalloc());
-    storage.try_reserve_exact(count).ok()?;
-    while storage.len() < count {
-        // Room was reserved above.
-        let _ = storage.push_within_capacity(value);
-    }
-    Some(storage)
+    radix_mm::bytes::filled(value, count, kmalloc()).ok()
 }
 
 /// Every signal at its default action. `None` if there is no memory.

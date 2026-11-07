@@ -16,6 +16,9 @@ bench = false
 [features]
 # Host memory instead of the kernel's, for tests on the host.
 host = ["radix-vfs/host", "radix-block/host"]
+# Checking volumes and shrinking them, for resize-ntfs and the installer
+# (ADR 0312).
+shrink = ["host"]
 
 [dependencies]
 radix-block = { path = "../block" }

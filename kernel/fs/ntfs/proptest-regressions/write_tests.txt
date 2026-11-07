@@ -1,0 +1,10 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+#
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 31cca9f17d76424d0f656ef4c93e148ee84b8f5e7f2b159751695a56f96f2ad2 # a compressed file's stream filled its record; see a_stream_makes_room_for_compressed_data_that_grows

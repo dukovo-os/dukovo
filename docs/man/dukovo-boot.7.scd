@@ -490,6 +490,13 @@ them to *init*, and the kernel does not read them.
 	addresses instead of random ones (see *KASLR*). For debugging; *ob
 	run --gdb* adds it.
 
+*norandmaps*
+	Put every program's stack, its image (if it is position-independent)
+	and its anonymous memory in the same places every boot, the top or
+	the start of each one's window, instead of random ones: Linux's flag
+	of the same name. For measuring; *ob bench --instructions* adds it,
+	so that a fork builds the same page tables every run.
+
 *nopcid*
 	Do not tag TLB entries with process-context identifiers (PCIDs), even
 	when the CPU has them: every switch between address spaces then

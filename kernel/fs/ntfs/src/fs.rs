@@ -77,6 +77,10 @@ pub mod records {
     pub const ROOT: u64 = 5;
     /// Which clusters are in use.
     pub const BITMAP: u64 = 6;
+    /// The volume's first clusters: its boot sector and the code after.
+    pub const BOOT: u64 = 7;
+    /// The bad clusters, in its `$Bad` stream.
+    pub const BAD_CLUSTERS: u64 = 8;
     /// The up-case table.
     pub const UPCASE: u64 = 10;
     /// The first record of a file of the user's: those before are the
@@ -316,10 +320,13 @@ fn take(loaded: &mut Loaded, attr: &Attr<'_>, clusters: u64) -> Result<()> {
     Ok(())
 }
 
-/// The master file table's clusters and how many records it has.
+/// The master file table's clusters and how many records it has, and
+/// `$MFTMirr`, on a volume mounted to write. A shrink moves both (ADR
+/// 0312), so both are under the one lock.
 struct Mft {
     runs: Runs,
     records: u64,
+    mirror: Option<Mirror>,
 }
 
 /// The copy of the first records, and how many it has.
@@ -333,14 +340,34 @@ pub(crate) struct Volume {
     pub(crate) geo: Geometry,
     pub(crate) cache: BlockCache,
     mft: Mutex<Mft>,
-    /// `$MFTMirr`, on a volume mounted to write.
-    mirror: Option<Mirror>,
 }
 
 impl Volume {
     /// How many records the master file table has.
     pub(crate) fn records(&self) -> u64 {
         self.mft.lock().records
+    }
+
+    #[cfg(any(test, feature = "shrink"))]
+    /// A copy of the master file table's runs.
+    pub(crate) fn mft_runs(&self) -> Result<Runs> {
+        self.mft.lock().runs.copy()
+    }
+
+    #[cfg(any(test, feature = "shrink"))]
+    /// Reads and writes the master file table at `runs` from now on: a
+    /// shrink has copied it there ([`crate::shrink`]).
+    pub(crate) fn move_mft(&self, runs: Runs) {
+        self.mft.lock().runs = runs;
+    }
+
+    #[cfg(any(test, feature = "shrink"))]
+    /// Writes the copies of the first records to `runs` from now on: a
+    /// shrink has copied `$MFTMirr`'s data there ([`crate::shrink`]).
+    pub(crate) fn move_mirror(&self, runs: Runs) {
+        if let Some(mirror) = &mut self.mft.lock().mirror {
+            mirror.runs = runs;
+        }
     }
 
     /// Reads record `number` into `buf`, its update sequence put back.
@@ -376,20 +403,18 @@ impl Volume {
         let rs = u64::from(self.geo.record_size);
         let mut out = mem::copy(buf)?;
         fix_down(&mut out)?;
-        let records = self.mft.lock().records;
-        if number >= records {
+        let mft = self.mft.lock();
+        if number >= mft.records {
             return Err(Error::Corrupt);
         }
-        let mirrored = self.mirror.as_ref().filter(|mirror| number < mirror.records);
+        let mirrored = mft.mirror.as_ref().filter(|mirror| number < mirror.records);
         for mirror in [mirror_first, !mirror_first] {
-            if mirror {
-                if let Some(copy) = mirrored {
-                    write_runs(&self.cache, &self.geo, &copy.runs, number * rs, &out, through)?;
-                }
-            } else {
-                let mft = self.mft.lock();
-                write_runs(&self.cache, &self.geo, &mft.runs, number * rs, &out, through)?;
-            }
+            let runs = match (mirror, mirrored) {
+                (true, Some(copy)) => &copy.runs,
+                (true, None) => continue,
+                (false, _) => &mft.runs,
+            };
+            write_runs(&self.cache, &self.geo, runs, number * rs, &out, through)?;
         }
         Ok(())
     }
@@ -671,7 +696,7 @@ pub(crate) struct Scratch {
 pub(crate) struct Space {
     pub(crate) clusters: Clusters,
     /// The master file table's `$BITMAP`, on a volume mounted to write.
-    records: Option<Stream>,
+    pub(crate) records: Option<Stream>,
     /// Where to look for a free record first.
     record_hint: u64,
     /// Whether `$Volume` on the disk says the volume is dirty.
@@ -698,8 +723,9 @@ pub(crate) struct Inner {
     /// The volume's flags as the mount found them.
     flags: u16,
     /// Whether the volume stays marked dirty, for Windows to check at
-    /// its next start: one written although Windows hibernated with it.
-    keep_dirty: AtomicBool,
+    /// its next start: one written although Windows hibernated with it,
+    /// or shrunk (ADR 0312).
+    pub(crate) keep_dirty: AtomicBool,
 }
 
 impl Inner {
@@ -1106,7 +1132,7 @@ pub(crate) fn replace_named(
 
 /// A mounted NTFS volume.
 pub struct NtfsFs {
-    inner: KArc<Inner>,
+    pub(crate) inner: KArc<Inner>,
     root: KArc<NtfsNode>,
     /// Its label, in UTF-16.
     label: KVec<u16>,
@@ -1261,7 +1287,7 @@ fn open(device: DeviceRef, read_only: bool, forced: bool) -> Result<Opened> {
         return Err(Error::NotSupported);
     }
     let (mft, records, growable) = load_mft(&cache, &geo)?;
-    let vol = Volume { geo, cache, mft: Mutex::new(Mft { runs: mft, records }), mirror: None };
+    let vol = Volume { geo, cache, mft: Mutex::new(Mft { runs: mft, records, mirror: None }) };
     let upcase = load_upcase(&vol)?;
     let about = about(&vol)?;
     let bitmap = load_bitmap(&vol)?;
@@ -1326,7 +1352,7 @@ fn assemble(
     let geo = vol.geo;
     let (log, records) = match writable {
         Some(Writable { mirror, log, records, .. }) => {
-            vol.mirror = Some(mirror);
+            vol.mft.get_mut().mirror = Some(mirror);
             (Some(log), Some(records))
         }
         None => (None, None),

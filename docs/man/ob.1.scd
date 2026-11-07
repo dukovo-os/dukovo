@@ -1430,9 +1430,13 @@ _target/userspace/_).
 		Run only this boot test; repeat the option for more.
 
 	*--shard* _part_/_parts_
-		Run every _parts_th boot test, from the _part_th: *--shard 2/3*
-		runs the second, fifth, eighth and so on. CI runs the boot tests
-		in three jobs this way. It needs *boot*.
+		Split the boot tests into _parts_ shares that take about as long,
+		and run share _part_: *--shard 2/5* runs the second of five. The
+		times come from _tools/xtask/src/test/times.txt_, how long each
+		test takes on CI; a test it does not name counts as 40 seconds.
+		Tests that install the catalog's bundles tend to land together,
+		as the first of them in a run packs the bundles. CI runs the boot
+		tests in five jobs this way. It needs *boot*.
 
 	*--list*
 		Name every boot test and what it checks, and run none.
@@ -1548,7 +1552,9 @@ _target/userspace/_).
 		counting (*-icount shift=0,align=off*, no KVM), where each
 		instruction moves the guest's clock by a nanosecond, so each
 		benchmark gives the user and kernel instructions an operation
-		took, the same on every machine. The report goes to
+		took, the same on every machine. The kernel is given
+		*norandmaps* (*dukovo-boot*(7)), so that programs' memory is in
+		the same places every run. The report goes to
 		_out/bench/instructions.md_; no Linux runs. With *--gate*, fail
 		if an operation on one CPU takes more instructions than its
 		budget (*BUDGETS* in _tools/xtask/src/bench.rs_: what it took

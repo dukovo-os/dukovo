@@ -920,10 +920,18 @@ impl<A: Allocator + Clone, K> Capabilities<A, K> {
         let mut state = self.lock_space(space, 0)?;
         let mut view = TreeView::one(self, &mut forest, space.index, &mut state);
         let len = view.space(space)?.slots.len() as u32;
-        for slot in 0..len {
-            let link = Link { space: space.index, slot };
-            if view.slot(link).cap.is_some() {
-                view.remove(link, released);
+        // Sixty-four slots at a time, the full ones found in one pass over
+        // the space's slots: looking each slot up through the view cost a
+        // process's exit some 3,000 instructions. A removal empties only
+        // its own slot, but each is checked again before it goes.
+        for first in (0..len).step_by(64) {
+            let mut used = view.used_slots(space, first)?;
+            while used != 0 {
+                let link = Link { space: space.index, slot: first + used.trailing_zeros() };
+                used &= used - 1;
+                if view.slot(link).cap.is_some() {
+                    view.remove(link, released);
+                }
             }
         }
         if view.stale {

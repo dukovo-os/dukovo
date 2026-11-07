@@ -2,14 +2,14 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 // Files through the C library: open and its flags, reading, writing and
-// seeking, descriptions that share an offset, stdio, directories and
-// their descriptors, temporary files, renaming and removing, times,
-// symbolic links, `..` beneath directory descriptors and fchdir, reading
-// into and writing from memory not made yet, the root's folders by their
-// names and by Unix's, descriptors by their names in /devices/fd, and
-// owners, groups and modes, extended attributes and access lists, on the
-// tmpfs at /tmp and the read-only /system; and what each refuses, with
-// Linux's errors.
+// seeking, descriptions that share an offset, the lowest free numbers,
+// stdio, directories and their descriptors, temporary files, renaming
+// and removing, times, symbolic links, `..` beneath directory
+// descriptors and fchdir, reading into and writing from memory not made
+// yet, the root's folders by their names and by Unix's, descriptors by
+// their names in /devices/fd, and owners, groups and modes, extended
+// attributes and access lists, on the tmpfs at /tmp and the read-only
+// /system; and what each refuses, with Linux's errors.
 
 #include <dirent.h>
 #include <fcntl.h>
@@ -116,6 +116,54 @@ static void saved_and_restored(void) {
 	CHECK_CHILD(pid);
 	close(copy);
 	close(fd);
+}
+
+// Each new descriptor takes the lowest free number, as POSIX asks; the C
+// library picks it from its own table of numbers in use (ADR 0403),
+// which must stay right after closes, after dup2 to a high number, past
+// the table's first 16 and 64 numbers, and in a forked child.
+static void numbers(void) {
+	enum { MANY = 100 };
+	int fds[MANY];
+	for(int i = 0; i < MANY; i++) {
+		fds[i] = open("/devices/null", O_RDONLY);
+		CHECK(fds[i] >= 0);
+		if(fds[i] < 0)
+			return;
+	}
+	// Numbers given out in a row, past 64, are each the next one up:
+	// the first open filled any gap below.
+	for(int i = 1; i < MANY; i++)
+		CHECK(fds[i] == fds[i - 1] + 1);
+	// A closed number is the next one given out, the lowest first.
+	CHECK(close(fds[70]) == 0 && close(fds[10]) == 0);
+	CHECK(open("/devices/null", O_RDONLY) == fds[10]);
+	CHECK(open("/devices/null", O_RDONLY) == fds[70]);
+	// A pipe takes the two lowest.
+	CHECK(close(fds[90]) == 0 && close(fds[20]) == 0);
+	int ends[2];
+	CHECK(pipe(ends) == 0 && ends[0] == fds[20] && ends[1] == fds[90]);
+	// dup2 to a number far above the rest: opens still take the lowest,
+	// and F_DUPFD from there skips the number dup2 took until it closes.
+	CHECK(dup2(fds[0], 1000) == 1000);
+	CHECK(close(fds[30]) == 0);
+	CHECK(open("/devices/null", O_RDONLY) == fds[30]);
+	CHECK(fcntl(fds[0], F_DUPFD, 1000) == 1001);
+	CHECK(close(1001) == 0 && close(1000) == 0);
+	CHECK(fcntl(fds[0], F_DUPFD, 1000) == 1000 && close(1000) == 0);
+	// A child starts with its parent's numbers, gaps and all.
+	CHECK(close(fds[40]) == 0);
+	pid_t pid = check_fork();
+	if(pid == 0) {
+		CHECK(open("/devices/null", O_RDONLY) == fds[40]);
+		CHECK(open("/devices/null", O_RDONLY) == fds[MANY - 1] + 1);
+		check_exit_child();
+	}
+	CHECK_CHILD(pid);
+	// The child's opens were its own.
+	CHECK(open("/devices/null", O_RDONLY) == fds[40]);
+	for(int i = 0; i < MANY; i++)
+		CHECK(close(fds[i]) == 0);
 }
 
 static void standard_io(void) {
@@ -1134,6 +1182,7 @@ int main(void) {
 	RUN(basics);
 	RUN(descriptions);
 	RUN(saved_and_restored);
+	RUN(numbers);
 	RUN(standard_io);
 	RUN(directories);
 	RUN(directory_descriptors);

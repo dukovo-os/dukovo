@@ -8,7 +8,12 @@
 
 ## Around every page
 
-starting = Checking the system release on the install stick…
+starting = Starting the installer
+starting-release = Checking the system release on the install stick…
+starting-machine = Looking at this computer's disks and network cards…
+starting-setup = Looking for setup files on the stick…
+cannot-start = The installer cannot start
+cannot-start-leave = Enter leaves the installer for a shell
 title = Install Dukovo { $version }
 step-of = Step { $step } of { $steps } · { $name }
 more = … more

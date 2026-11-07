@@ -3,7 +3,7 @@
 
 [package]
 name = "disk"
-description = "Dukovo's disk tools' engine (ADR 0300): GPT and MBR partition tables, layout files, and the FAT and exFAT formats, for rdisk(8), mkfs-fat(8), fsck-fat(8), mkfs-exfat(8), mkfs-btrfs(8), fsck-btrfs(8) and rgrub-setup(8) on Dukovo and for ./ob image on Linux"
+description = "Dukovo's disk tools' engine (ADR 0300): GPT and MBR partition tables, layout files, and the FAT and exFAT formats, for rdisk(8), mkfs-fat(8), fsck-fat(8), mkfs-exfat(8), mkfs-btrfs(8), fsck-btrfs(8), resize-ntfs(8) and rgrub-setup(8) on Dukovo and for ./ob image on Linux"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -20,11 +20,15 @@ btrfs = ["kernel", "dep:radix-btrfs"]
 # Files put in an EFI system partition's FAT by the kernel's own crate
 # (ADR 0306), for rgrub-setup.
 fat = ["kernel", "dep:radix-fat"]
+# NTFS volumes checked and shrunk by the kernel's own crate (ADR 0312),
+# for resize-ntfs and the installer's "Install next to Windows".
+ntfs = ["kernel", "dep:radix-ntfs"]
 
 [dependencies]
 radix-block = { path = "../../../kernel/fs/block", features = ["host"], optional = true }
 radix-btrfs = { path = "../../../kernel/fs/btrfs", features = ["make", "check"], optional = true }
 radix-fat = { path = "../../../kernel/fs/fat", features = ["host"], optional = true }
+radix-ntfs = { path = "../../../kernel/fs/ntfs", features = ["shrink"], optional = true }
 radix-vfs = { path = "../../../kernel/fs/vfs", features = ["host"], optional = true }
 # Layout files (rdisk-layout(5)) are JSON (both MIT OR Apache-2.0).
 serde = { version = "1.0.229", features = ["derive"] }

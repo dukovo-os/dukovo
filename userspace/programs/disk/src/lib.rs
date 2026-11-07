@@ -18,6 +18,9 @@
 //! - `btrfs` (feature `btrfs`) makes and checks Btrfs with the kernel's
 //!   own Btrfs crate (ADRs 0304 and 0305), on a `blockfile::BlockFile`
 //!   (feature `kernel`), as which the kernel's filesystems see a device.
+//! - `ntfs` (feature `ntfs`) checks NTFS volumes and shrinks them with
+//!   the kernel's own NTFS crate (ADR 0312), for resize-ntfs(8) and the
+//!   installer's "Install next to Windows".
 //! - [`grub`] puts GRUB on a disk for a PC's BIOS, as grub-bios-setup
 //!   does, for rgrub-setup(8) and `./ob image` (ADR 0306), and `esp`
 //!   (feature `fat`) puts files in an EFI system partition's FAT with
@@ -45,6 +48,8 @@ pub mod grub;
 pub mod guid;
 pub mod layout;
 pub mod mbr;
+#[cfg(feature = "ntfs")]
+pub mod ntfs;
 pub mod rng;
 pub mod signatures;
 pub mod size;

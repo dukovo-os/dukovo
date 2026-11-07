@@ -48,9 +48,15 @@ Linux and Dukovo then shows its streams alike in both.
   it, so that storing it later cannot fail.
 - **A full record makes room as Windows does**: when a stream, or a
   name, has no room, the file's own data leaves the record for clusters
-  first, then its other streams do, the largest first. A file whose
-  data spread over extension records ([ADR 0239]) keeps its streams in
-  its base record, and its attribute list names them.
+  first, then its other streams do, the largest first. When the data's
+  runs outgrow the room left (a compressed file's units written back, a
+  sparse file's holes filled), its streams leave first, the largest
+  first, and only then does the data spread over extension records
+  ([ADR 0239]). The checks that the file's records have room for its
+  runs count the room the streams would leave, so that they agree with
+  what storing the record does. A file whose data spread over
+  extension records keeps its streams in its base record, and its
+  attribute list names them.
 - **Names are sorted as NTFS sorts them**: a record's attributes of one
   type, and its attribute list's entries, are ordered by their names'
   upper cases (the volume's `$UpCase`), then unit by unit, as Windows

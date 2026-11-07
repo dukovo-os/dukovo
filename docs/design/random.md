@@ -26,7 +26,12 @@ generator, a static behind a `radix-sync` spin lock, used through
 capability's `read` and `words`, and a ring's `random` operation) go to
 a generator per CPU instead (`radix_random::Local`, kept in
 `kernel/radix/src/user/random.rs`), so that CPUs asking at once never
-wait for each other.
+wait for each other. So do the random places a new address space puts
+its anonymous memory, its stack and a position-independent program
+(`user::random::place` and `place_bits`), which would otherwise make a
+ChaCha20 block of the kernel's generator, some 1,300 instructions, for
+each fork and exec. The `norandmaps` flag puts each at the first of its
+places instead (dukovo-boot(7)), for counting instructions.
 
 ## Per-CPU generators
 
