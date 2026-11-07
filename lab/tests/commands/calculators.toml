@@ -1,0 +1,15 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "Numbers and data: bc, expr, factor, seq and jq"
+time = "2m"
+
+[[step]]
+run = "echo 'scale=3; 22/7' | bc"
+expect = "3.142"
+[[step]]
+run = "expr 6 \\* 7 && factor 360"
+expect = ["42", "360: 2 2 2 3 3 5"]
+[[step]]
+run = "echo '{\"lab\": {\"tests\": [1, 2, 3]}}' | jq '.lab.tests | add'"
+expect = "6"

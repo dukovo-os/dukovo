@@ -1,0 +1,35 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "Spark has every default service running; the off-by-default ones stay off"
+time = "2m"
+
+# Only an administrator reads Spark's control file.
+[[step]]
+run = "service --status-all"
+exit = 1
+expect = "Permission denied"
+[[step]]
+run = "service --status-all"
+root = true
+expect = [
+    "[ + ]  logd",
+    "[ + ]  authd",
+    "[ + ]  bundled",
+    "[ + ]  consoled",
+    "[ + ]  netd",
+    "[ + ]  resolved",
+    "[ + ]  timed",
+    "[ + ]  discoverd",
+    "[ + ]  sshd",
+    "[ + ]  volumed",
+    "[ + ]  diskhealth",
+    "[ + ]  notifyd",
+    # Sharing folders is off until someone turns it on.
+    "[ - ]  nfsd",
+    "[ - ]  smbd",
+]
+[[step]]
+run = "service sshd status"
+root = true
+expect = ["sshd - Sign-in over SSH", "Active: active (running)"]

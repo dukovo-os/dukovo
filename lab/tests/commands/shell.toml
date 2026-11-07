@@ -1,0 +1,24 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "Nukesh, the shell: variables, pipes, redirections, exit statuses, loops and functions"
+time = "2m"
+
+[[step]]
+run = "x=lab; echo \"hello $x\" > /tmp/lab-sh; cat < /tmp/lab-sh"
+expect = "hello lab"
+[[step]]
+run = "false || echo recovered; true && echo chained"
+expect = ["recovered", "chained"]
+[[step]]
+run = "for i in 1 2 3; do printf '%s,' $i; done; echo"
+expect = "1,2,3,"
+[[step]]
+run = "f() { echo \"in $1\"; }; f function"
+expect = "in function"
+[[step]]
+run = "sh -c 'exit 7'"
+exit = 7
+[[step]]
+run = "echo $(( 2 ** 10 )) $(echo nested)"
+expect = "1024 nested"

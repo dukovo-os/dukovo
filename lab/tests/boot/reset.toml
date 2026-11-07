@@ -1,0 +1,21 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "After the reset button the machine boots again, and what was synced before is still there"
+time = "6m"
+
+[[step]]
+run = "echo kept > ~/lab-before-reset && sync"
+[[step]]
+power = "reset"
+[[step]]
+serial = "Boot complete."
+[[step]]
+wait = "ready"
+# What was synced before the reset is still there.
+[[step]]
+run = "cat ~/lab-before-reset && rm ~/lab-before-reset"
+expect = "kept"
+[[step]]
+run = "findmnt /system"
+expect = ["btrfs", "ro"]

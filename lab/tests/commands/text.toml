@@ -1,0 +1,28 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "Text tools: sort, uniq, grep, sed, awk, cut, tr, wc, head and tail give what GNU's do"
+time = "2m"
+
+[[step]]
+run = "printf 'b\\na\\nb\\nc\\n' | sort | uniq -c | sort -rn | head -1"
+expect = "2 b"
+[[step]]
+run = "printf 'alpha\\nbeta\\ngamma\\n' | grep -c a"
+expect = "3"
+[[step]]
+run = "echo 'hello world' | sed 's/world/lab/' | tr a-z A-Z"
+expect = "HELLO LAB"
+[[step]]
+run = "printf '1 2\\n3 4\\n' | awk '{ s += $1 * $2 } END { print s }'"
+expect = "14"
+[[step]]
+run = "echo 'a:b:c' | cut -d: -f2"
+expect = "b"
+[[step]]
+run = "seq 1 100 | tail -n 3 | wc -l"
+expect = "3"
+[[step]]
+run = "printf 'x\\ny\\n' > /tmp/lab-a && printf 'x\\nz\\n' > /tmp/lab-b && diff /tmp/lab-a /tmp/lab-b"
+exit = 1
+expect = ["< y", "> z"]

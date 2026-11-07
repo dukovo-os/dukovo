@@ -152,7 +152,7 @@ _target/userspace/_).
 	commands of your own on the kernel, such as cargo-deny's, which CI
 	runs after it.
 
-*image* [*--iso* | *--installed* | *--lab* [*--lab-key* _file_]] [*--cmdline* _flags_] [*--microcode* _path_] [*--disk-check* _serial_] [*--debug* | *--release*]
+*image* [*--iso* | *--installed* | *--lab* [*--lab-key* _file_] [*--lab-password* _file_]] [*--cmdline* _flags_] [*--microcode* _path_] [*--disk-check* _serial_] [*--debug* | *--release*]
 	Build the kernel, then the install stick's image
 	_out/dukovo-VERSION-x86_64.img_, which starts under UEFI and under
 	legacy BIOS into the live system, and carries the signed release of
@@ -208,16 +208,23 @@ _target/userspace/_).
 		_out/dukovo-VERSION-x86_64-lab.img_, instead: an installed
 		system's disk as *--installed* makes it, with three things beside
 		the system's slot, which stays a release's: an administrator's
-		account *lab*, whose password no one knows, so that it signs in
-		only over SSH with the lab's key; sshd turned on by an override
-		file; and a sign-in banner that says the image is a test image
-		(ADR 0401). *lab run* tests it. Never give it to anyone as a
-		release.
+		account *lab*, which signs in over SSH with the lab's key and
+		whose password, the lab's own, lets tests run commands as root
+		through *elevate*(8); sshd turned on by an override file; and a
+		sign-in banner that says the image is a test image (ADRs 0401 and
+		0406). *lab run* tests it. Never give it to anyone as a release.
 
 	*--lab-key* _file_
 		The lab's public key, one *ssh-ed25519* line, instead of
 		_~/.config/dukovo-lab/lab_ed25519.pub_, which *dukovo-lab key*
 		makes. The private key never goes into the image.
+
+	*--lab-password* _file_
+		The lab account's password, the file's first line, instead of
+		_~/.config/dukovo-lab/lab_password_, which *dukovo-lab key* makes
+		too. Only its hash goes into the image. Without either, the
+		account's password is one no one knows, and tests that run as
+		root refuse.
 
 	*--cmdline* _flags_
 		Kernel command-line flags instead of *boot.cmdline*, such as
@@ -1445,7 +1452,7 @@ _target/userspace/_).
 		Fail a boot test that has not finished after this long. The
 		default is 300.
 
-*lab* [*--no-build* | *--image* _file_] [*--lab-key* _file_] [*--debug* | *--release*] [_command_ [_options_]]
+*lab* [*--no-build* | *--image* _file_] [*--lab-key* _file_] [*--lab-password* _file_] [*--debug* | *--release*] [_command_ [_options_]]
 	Run *dukovo-lab*, the Dukovo Lab's harness (from
 	_https://github.com/dukovo-os/lab_), on this tree's tests in
 	_lab/tests_ (ADR 0401). For *run* and *ui*, first build the lab image
@@ -1459,10 +1466,11 @@ _target/userspace/_).
 	test file, 3 when the lab itself broke, 4 when a machine is busy.
 
 	With no _command_, set the lab up and open it: install or update
-	*dukovo-lab*, make the lab's key if there is none, clone lab-results
-	for sending findings, check QEMU, put in place the systemd user timer
-	that starts schedules (*dukovo-lab schedule install*), then build the
-	image and open the runner page. Each step is skipped once it is done.
+	*dukovo-lab*, make the lab's key and password if they are missing,
+	clone lab-results for sending findings, check QEMU, put in place the
+	systemd user timer that starts schedules (*dukovo-lab schedule
+	install*), then build the image and open the runner page. Each step
+	is skipped once it is done.
 
 	*dukovo-lab* is found on *PATH*, or at *OB_LAB*. The handbook's Lab
 	tests chapter shows how to write a test.
@@ -1475,6 +1483,9 @@ _target/userspace/_).
 
 	*--lab-key* _file_
 		The lab's public key, as *image --lab* takes it.
+
+	*--lab-password* _file_
+		The lab's password, as *image --lab* takes it.
 
 *bench* [*--gate*] [*--linux-kernel* _file_] [*--runs* _n_] [*--no-linux*] [*--instructions*] [*--shell*] [*--scaling*] [*--from* _file_] [*--summary* _file_] [*--debug* | *--release*]
 	Measure what system calls, IPC round trips, context switches, fresh

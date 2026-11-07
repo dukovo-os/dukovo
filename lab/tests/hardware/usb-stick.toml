@@ -1,0 +1,24 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "A USB stick plugged in shows up as a disk, and goes when pulled out"
+time = "3m"
+
+[[step]]
+usb = "plug"
+blank = "64M"
+[[step]]
+wait = "5s"
+[[step]]
+run = "lsblk -dn"
+expect = "64M"
+[[step]]
+run = "lsusb"
+expect = "Bus 00"
+[[step]]
+usb = "unplug"
+[[step]]
+wait = "5s"
+[[step]]
+run = "lsblk -dn"
+expect_not = "64M"

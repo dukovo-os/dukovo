@@ -1,0 +1,28 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "elevate runs a command as root for an administrator who gives the password, and no one else"
+time = "3m"
+
+[[step]]
+run = "id"
+root = true
+expect = "uid=0(root) gid=0(root)"
+# Without a password, elevate refuses; -n says not to ask.
+[[step]]
+run = "elevate -n true"
+exit = 1
+expect = "a password is needed"
+# A wrong password is refused after authd's wait for wrong passwords.
+[[step]]
+run = "echo not-the-password | elevate -S true"
+exit = 1
+expect = "Sorry, try again."
+# The elevated command gets root's own environment, not the caller's.
+[[step]]
+run = "env"
+root = true
+expect = ["HOME=/root", "USER=root", "PATH=/system/commands:/applications/commands"]
+[[step]]
+run = "groups"
+expect = ["lab", "admins"]

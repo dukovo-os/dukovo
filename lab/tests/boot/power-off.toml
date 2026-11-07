@@ -1,0 +1,22 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "elevate poweroff turns the machine off cleanly, and it boots again when turned on"
+time = "6m"
+
+[[step]]
+run = "sh -c '(sleep 2; poweroff) > /dev/null 2>&1 &'"
+root = true
+[[step]]
+serial = "asked to power off the machine; syncing the filesystems"
+[[step]]
+wait = "off"
+[[step]]
+power = "on"
+[[step]]
+serial = "Boot complete."
+[[step]]
+wait = "ready"
+[[step]]
+run = "uptime"
+expect = "up"

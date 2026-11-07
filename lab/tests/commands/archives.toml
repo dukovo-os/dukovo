@@ -1,0 +1,25 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "Archives and compressors: what each packs, it unpacks again, byte for byte"
+time = "3m"
+
+[[step]]
+run = "rm -rf /tmp/lab-arc && mkdir -p /tmp/lab-arc/in && cd /tmp/lab-arc && seq 1 20000 > in/numbers && sha256sum in/numbers > sum && tar czf in.tar.gz in && rm -r in && tar xzf in.tar.gz && sha256sum -c sum"
+expect = "in/numbers: OK"
+[[step]]
+run = "cd /tmp/lab-arc/in && for z in gzip bzip2 xz zstd lz4; do $z -q -k numbers || exit 1; done; ls"
+expect = ["numbers.gz", "numbers.bz2", "numbers.xz", "numbers.zst", "numbers.lz4"]
+[[step]]
+run = "cd /tmp/lab-arc/in && gzip -dc numbers.gz | cmp - numbers && bzip2 -dc numbers.bz2 | cmp - numbers && xz -dc numbers.xz | cmp - numbers && zstd -dcq numbers.zst | cmp - numbers && lz4 -dc numbers.lz4 | cmp - numbers && echo all-same"
+expect = "all-same"
+[[step]]
+run = "rm /tmp/lab-arc/in/numbers.*"
+[[step]]
+run = "cd /tmp/lab-arc && zip -q -r in.zip in && rm -r in && unzip -q in.zip && sha256sum -c sum"
+expect = "in/numbers: OK"
+[[step]]
+run = "cd /tmp/lab-arc && 7zz a -bd in.7z in > /dev/null && rm -r in && 7zz x -bd in.7z > /dev/null && sha256sum -c sum"
+expect = "in/numbers: OK"
+[[step]]
+run = "rm -r /tmp/lab-arc"

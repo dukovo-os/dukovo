@@ -1,0 +1,36 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "A USB stick formatted exFAT holds a file through unmounting"
+time = "4m"
+
+[[step]]
+usb = "plug"
+blank = "64M"
+[[step]]
+wait = "5s"
+# Find the stick by its size, which no system disk has, and keep its name
+# for the steps below. Nothing is formatted unless one was found.
+[[step]]
+run = "lsblk -dn | awk '$2 == \"64M\" && $4 == \"disk\" { print $1 }' > /tmp/stick && cat /tmp/stick"
+expect = "sd"
+[[step]]
+run = "sh -c 'mkfs-exfat -L LABEX /devices/$(cat /tmp/stick)'"
+root = true
+expect = ["made exFAT", "label LABEX"]
+[[step]]
+run = "sh -c 'mkdir -p /volumes/lab-stick && mount /devices/$(cat /tmp/stick) /volumes/lab-stick && echo on-the-stick > /volumes/lab-stick/hello.txt'"
+root = true
+[[step]]
+run = "findmnt /volumes/lab-stick"
+expect = ["exfat", "rw"]
+[[step]]
+run = "sh -c 'umount /volumes/lab-stick && mount /devices/$(cat /tmp/stick) /volumes/lab-stick && cat /volumes/lab-stick/hello.txt && umount /volumes/lab-stick'"
+root = true
+expect = "on-the-stick"
+[[step]]
+run = "sh -c 'blkid /devices/$(cat /tmp/stick)'"
+root = true
+expect = ["LABEL=\"LABEX\"", "TYPE=\"exfat\""]
+[[step]]
+usb = "unplug"

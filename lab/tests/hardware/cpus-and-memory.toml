@@ -1,0 +1,19 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "The CPUs and the memory are found, and the tools that show them agree"
+time = "2m"
+
+[[step]]
+run = "lscpu"
+expect = ["Architecture:", "x86_64", "CPU(s):"]
+[[step]]
+# Every CPU lscpu lists is one programs can use.
+run = "test $(nproc) -eq $(lscpu -p | grep -vc '^#') && echo same"
+expect = "same"
+[[step]]
+run = "free -m"
+expect = ["Mem:", "Swap:"]
+[[step]]
+run = "hwinfo"
+expect = ["System", "Manufacturer:"]

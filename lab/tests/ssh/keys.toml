@@ -1,0 +1,29 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "ssh-keygen makes a key, and ssh and scp to this machine sign in with it; root never signs in"
+time = "3m"
+
+[[step]]
+run = "ssh -V"
+expect = "OpenSSH"
+[[step]]
+run = "rm -f /tmp/labk /tmp/labk.pub && ssh-keygen -t ed25519 -N '' -C lab-loopback -f /tmp/labk -q && ssh-keygen -lf /tmp/labk.pub"
+expect = ["256 SHA256:", "lab-loopback", "(ED25519)"]
+# Allow the new key for a moment, and take it away again at the end.
+[[step]]
+run = "cat /tmp/labk.pub >> ~/.ssh/authorized_keys"
+[[step]]
+run = "ssh -i /tmp/labk -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o BatchMode=yes -o LogLevel=ERROR lab@127.0.0.1 echo looped-back"
+expect = "looped-back"
+[[step]]
+run = "scp -i /tmp/labk -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o BatchMode=yes -q /system/settings/issue lab@127.0.0.1:/tmp/issue-copy && cmp /system/settings/issue /tmp/issue-copy && echo same"
+expect = "same"
+[[step]]
+run = "ssh -i /tmp/labk -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o BatchMode=yes -o LogLevel=ERROR root@127.0.0.1 true"
+exit = 255
+expect = "Permission denied"
+[[step]]
+run = "sed -i /lab-loopback/d ~/.ssh/authorized_keys && grep -c lab-loopback ~/.ssh/authorized_keys"
+exit = 1
+expect = "0"

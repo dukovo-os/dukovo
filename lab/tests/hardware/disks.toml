@@ -1,0 +1,22 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "Each disk reports its health, and its partitions show what filesystems they hold"
+time = "2m"
+
+[[step]]
+run = "diskhealth"
+exit = 1
+expect = "Permission denied"
+[[step]]
+run = "diskhealth"
+root = true
+expect = ["DISK", "HEALTH", "PASSED"]
+[[step]]
+run = "blkid"
+root = true
+expect = ["PTTYPE=\"gpt\"", "LABEL=\"dukovo-root\"", "TYPE=\"btrfs\"", "TYPE=\"vfat\""]
+[[step]]
+run = "lsblk -f"
+root = true
+expect = ["vfat", "btrfs", "dukovo-root"]

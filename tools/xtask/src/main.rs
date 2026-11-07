@@ -171,7 +171,7 @@ the Cargo.lock of each bundle's port in Rust with cargo-audit.
   --rebuild <name>   Build this port even if nothing changed; repeat for more"
         }
         "image" => {
-            "Usage: ./ob image [--iso | --installed | --lab [--lab-key <file>]]
+            "Usage: ./ob image [--iso | --installed | --lab [--lab-key <file>] [--lab-password <file>]]
                   [--cmdline <flags>] [--microcode <path>] [--disk-check <serial>]
                   [--user <name> [--full-name <name>] [--password-file <path>]
                   [--test-cost]] [--debug | --release]
@@ -198,6 +198,11 @@ DUKOVO_LIVE partition holds the signed release the installer installs
   --lab-key <file>     The lab's public key (default
                        ~/.config/dukovo-lab/lab_ed25519.pub, which
                        `dukovo-lab key` makes)
+  --lab-password <file>
+                       The lab account's password, its first line, for tests
+                       that run as root (default ~/.config/dukovo-lab/lab_password,
+                       which `dukovo-lab key` makes too; without it the
+                       account's password is one no one knows; ADR 0406)
   --cmdline <flags>    Kernel flags instead of boot.cmdline (dukovo-boot(7))
   --microcode <path>   Intel microcode file or directory instead of image.microcode
   --disk-check <serial>
@@ -467,7 +472,8 @@ and take minutes.
                       $GITHUB_STEP_SUMMARY)"
         }
         "lab" => {
-            "Usage: ./ob lab [--no-build | --image <file>] [--lab-key <file>] [--debug | --release]
+            "Usage: ./ob lab [--no-build | --image <file>] [--lab-key <file>] [--lab-password <file>]
+              [--debug | --release]
               [<dukovo-lab command>] [options]
 
 Runs dukovo-lab, the Dukovo Lab's harness (github.com/dukovo-os/lab), on
@@ -475,10 +481,10 @@ this tree's tests in lab/tests (ADR 0401).
 
 Plain ./ob lab, with no command, sets up the lab and opens it: it checks
 QEMU, OVMF, OpenSSH, git and gzip are installed (printing the apt line if
-not), installs dukovo-lab or updates it to the newest, makes the lab key,
-clones dukovo-os/lab-results for Send (over SSH, else HTTPS; the PC's
-GitHub account needs push access, and without it Send stays off), then
-does what ./ob lab ui does. Each setup step is skipped once done.
+not), installs dukovo-lab or updates it to the newest, makes the lab key
+and password, clones dukovo-os/lab-results for Send (over SSH, else HTTPS;
+the PC's GitHub account needs push access, and without it Send stays off),
+then does what ./ob lab ui does. Each setup step is skipped once done.
 
 For `run` and `ui` (the runner page), builds the lab image first, as
 `./ob image --lab` does, and passes it on with this tree's version and
@@ -494,6 +500,8 @@ dukovo-lab is found on PATH, in ~/.cargo/bin, or at OB_LAB (which plain
   --no-build         Test the lab image already in out/
   --image <file>     Test this image instead of building one
   --lab-key <file>   The lab's public key, as ./ob image --lab takes it
+  --lab-password <file>
+                     The lab's password, as ./ob image --lab takes it
 
 Examples:
   ./ob lab                  # set up, then open the runner page
@@ -882,8 +890,9 @@ fn dispatch(argv: Vec<String>) -> Result<()> {
                 _ => bail!("--iso, --installed and --lab cannot be combined"),
             };
             let lab_key = args.value("--lab-key")?;
-            if lab_key.is_some() && kind != image::Kind::Lab {
-                bail!("--lab-key goes with --lab");
+            let lab_password = args.value("--lab-password")?;
+            if (lab_key.is_some() || lab_password.is_some()) && kind != image::Kind::Lab {
+                bail!("--lab-key and --lab-password go with --lab");
             }
             let account = account::Options::from_args(&mut args)?;
             if !kind.installed() && account.any() {
@@ -903,7 +912,8 @@ fn dispatch(argv: Vec<String>) -> Result<()> {
             args.finish()?;
             overrides.account = account.account(&ctx)?;
             if kind == image::Kind::Lab {
-                overrides.lab = Some(lab::Key::read(lab_key.as_deref(), None)?);
+                overrides.lab =
+                    Some(lab::Access::read(lab_key.as_deref(), lab_password.as_deref(), None)?);
             }
             let path = image::build_release(&ctx, profile, kind, &overrides)?;
             println!("\nImage ready: {}", ctx.display(&path));

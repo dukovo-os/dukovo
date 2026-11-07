@@ -50,6 +50,10 @@ const CONFIG: &str = ".config/dukovo-lab";
 /// The lab key's public half in that folder (`dukovo-lab key` makes it).
 const PUBLIC_KEY: &str = "lab_ed25519.pub";
 
+/// The lab password in that folder (`dukovo-lab key` makes it too):
+/// the lab account's, which tests that run as root give elevate (ADR 0406).
+const PASSWORD: &str = "lab_password";
+
 /// What a lab image's console says before signing in, after the default
 /// banner.
 pub const BANNER: &str = "Test image of the Dukovo Lab: the lab account signs in over SSH \
@@ -81,6 +85,71 @@ const NEEDS: &[(&str, &str)] = &[
     ("gzip", "gzip"),
 ];
 
+/// How a lab image lets the lab in: the lab's public key, for SSH, and
+/// the hash of the lab's password, for elevate (ADR 0406). Without a
+/// password the account's is one no one knows, and only tests that run
+/// nothing as root pass.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Access {
+    pub key: Key,
+    password_hash: Option<String>,
+}
+
+impl Access {
+    /// Reads the key from `key_file` (`--lab-key`) and the password from
+    /// `password_file` (`--lab-password`), each else from dukovo-lab's
+    /// configuration folder `config` (its `--config`), or from the folder
+    /// it uses when given none. A password not given and not there is
+    /// none; one given and not there is an error.
+    pub fn read(
+        key_file: Option<&str>,
+        password_file: Option<&str>,
+        config: Option<&str>,
+    ) -> Result<Access> {
+        let key = Key::read(key_file, config)?;
+        let path = match password_file {
+            Some(path) => PathBuf::from(path),
+            None => config_dir(config)?.join(PASSWORD),
+        };
+        if password_file.is_none() && !path.exists() {
+            eprintln!(
+                "    note: no lab password at {}, so tests that run as root will refuse: \
+                 `dukovo-lab key` makes it",
+                path.display()
+            );
+            return Ok(Access { key, password_hash: None });
+        }
+        // The hash is all the image holds; the password stays on this PC.
+        let mut text = std::fs::read(&path)
+            .context(|| format!("reading the lab password {}", path.display()))?;
+        let end = text.iter().position(|&b| b == b'\n').unwrap_or(text.len());
+        let line = text[..end].strip_suffix(b"\r").unwrap_or(&text[..end]);
+        let hashed = if line.is_empty() {
+            Err(Error::new(format!(
+                "{} is empty: remove it, and `dukovo-lab key` makes a new one",
+                path.display()
+            )))
+        } else {
+            account::hash_password(line)
+        };
+        accounts::wipe(&mut text);
+        Ok(Access { key, password_hash: Some(hashed?) })
+    }
+}
+
+/// dukovo-lab's configuration folder: `config` (its `--config`), or the
+/// one it uses when given none.
+fn config_dir(config: Option<&str>) -> Result<PathBuf> {
+    match config {
+        Some(config) => Ok(PathBuf::from(config)),
+        None => {
+            let home = std::env::var_os("HOME")
+                .ok_or_else(|| Error::new("HOME is not set: give the key with --lab-key"))?;
+            Ok(Path::new(&home).join(CONFIG))
+        }
+    }
+}
+
 /// The lab's public key, which a lab image trusts.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Key {
@@ -93,14 +162,9 @@ impl Key {
     /// configuration folder `config` (its `--config`), or from the folder
     /// it uses when given none.
     pub fn read(file: Option<&str>, config: Option<&str>) -> Result<Key> {
-        let path = match (file, config) {
-            (Some(path), _) => PathBuf::from(path),
-            (None, Some(config)) => Path::new(config).join(PUBLIC_KEY),
-            (None, None) => {
-                let home = std::env::var_os("HOME")
-                    .ok_or_else(|| Error::new("HOME is not set: give the key with --lab-key"))?;
-                Path::new(&home).join(CONFIG).join(PUBLIC_KEY)
-            }
+        let path = match file {
+            Some(path) => PathBuf::from(path),
+            None => config_dir(config)?.join(PUBLIC_KEY),
         };
         let text = std::fs::read_to_string(&path).context(|| {
             format!(
@@ -137,13 +201,14 @@ impl Key {
 /// staged in `staging`, whose subvolumes are named as `ob image` names
 /// them; `system` is its staged system slot, which is not changed. Gives
 /// the home, which must be the account's.
-pub fn stage(staging: &Path, system: &Path, key: &Key) -> Result<Owned> {
+pub fn stage(staging: &Path, system: &Path, access: &Access) -> Result<Owned> {
     let settings = staging.join("@settings");
-    let account = Account {
-        name: ACCOUNT.into(),
-        full_name: FULL_NAME.into(),
-        hash: account::unknown_password_hash()?,
+    let key = &access.key;
+    let hash = match &access.password_hash {
+        Some(hash) => hash.clone(),
+        None => account::unknown_password_hash()?,
     };
+    let account = Account { name: ACCOUNT.into(), full_name: FULL_NAME.into(), hash };
     let (owner, group) = account::add(system, &settings, &staging.join("@state"), &account)?;
 
     // Its home, made as authd makes one (the folders a home starts with)
@@ -221,6 +286,7 @@ pub fn command(ctx: &Ctx, args: &mut Args) -> Result<()> {
     let no_build = args.flag("--no-build");
     let given_image = args.value("--image")?;
     let key_file = args.value("--lab-key")?;
+    let password_file = args.value("--lab-password")?;
     let profile = args.profile(&ctx.config)?;
     let mut rest = args.rest();
     rest.extend(args.take_passthrough());
@@ -239,8 +305,12 @@ pub fn command(ctx: &Ctx, args: &mut Args) -> Result<()> {
             None => {
                 // The key dukovo-lab will sign in with is the one in the
                 // folder it is given, so the image trusts that one.
-                let key = Key::read(key_file.as_deref(), option_value(&rest, "--config"))?;
-                let overrides = Overrides { lab: Some(key), ..Overrides::default() };
+                let access = Access::read(
+                    key_file.as_deref(),
+                    password_file.as_deref(),
+                    option_value(&rest, "--config"),
+                )?;
+                let overrides = Overrides { lab: Some(access), ..Overrides::default() };
                 image::build_release(ctx, profile, image::Kind::Lab, &overrides)?
             }
         };
@@ -332,8 +402,8 @@ fn set_up(ctx: &Ctx, args: &[String]) -> Result<()> {
         Some(config) => PathBuf::from(config),
         None => home()?.join(CONFIG),
     };
-    if !config.join("lab_ed25519").is_file() {
-        step("Making the lab key");
+    if !config.join("lab_ed25519").is_file() || !config.join(PASSWORD).is_file() {
+        step("Making the lab key and password");
         let mut key = Command::new(&tool);
         key.arg("--config").arg(&config).arg("key");
         process::run(ctx, &mut key)?;
@@ -556,7 +626,8 @@ mod tests {
         for name in ["passwd", "group", "issue"] {
             std::fs::copy(root.join("userspace/defaults").join(name), defaults.join(name)).unwrap();
         }
-        let owned = stage(&staging, &system, &Key::parse(KEY).unwrap()).unwrap();
+        let access = Access { key: Key::parse(KEY).unwrap(), password_hash: None };
+        let owned = stage(&staging, &system, &access).unwrap();
         assert_eq!(owned, Owned { path: "@users/lab".into(), owner: 1000, group: 1000 });
 
         let read = |path: &str| std::fs::read_to_string(staging.join(path)).unwrap();

@@ -1,0 +1,12 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "The PCI devices are found and named: a network card, a USB controller and a SATA controller"
+time = "2m"
+
+[[step]]
+run = "lspci"
+expect = ["Ethernet controller", "USB controller", "SATA controller"]
+[[step]]
+run = "lspci -nn"
+expect = "]: "
