@@ -322,8 +322,9 @@ fn map_4k(root: u64, virt: u64, phys: u64, flags: u64) -> Result<(), MapError> {
 }
 
 fn map_large(root: u64, virt: u64, phys: u64, flags: u64, level: u32) -> Result<(), MapError> {
-    // In large-page entries the PAT bit moves to bit 12; the kernel only
-    // maps write-back memory with large pages, so it stays clear.
+    // In large-page entries the PAT bit moves to bit 12; the kernel maps
+    // only write-back memory and the firmware's uncached registers with
+    // large pages, and neither needs that bit, so it stays clear.
     entry(root, virt, level, false)?.store(phys | flags | LARGE, Ordering::Relaxed);
     Ok(())
 }
@@ -706,6 +707,40 @@ pub fn unmap_identity(phys: u64) {
     }
     drop(state);
     shootdown(phys..phys + PAGE);
+}
+
+/// Builds the page table the firmware's runtime services run under
+/// (ADR 0313) and returns its PML4: the kernel's half as every address
+/// space has it, and each of `regions` mapped where it is, virtual
+/// address = physical, as UEFI requires of a caller that never called
+/// `SetVirtualAddressMap`. Firmware code and data may share a page, so
+/// every page is writable and executable, as Linux maps them without the
+/// firmware's attributes table; the table is live only while the kernel
+/// calls the firmware. Pages are not global, so they leave the TLB when
+/// the CPU switches back. 2 MiB pages map what fits them.
+///
+/// The regions must not overlap. On failure the tables made so far stay
+/// allocated: a few pages, once, at boot.
+pub(crate) fn firmware_table(regions: &[(Range<u64>, Cache)]) -> Result<u64, MapError> {
+    let root = new_table(true)?;
+    let kernel = table(kernel_pml4());
+    for (index, entry) in table(root).iter().enumerate().skip(256) {
+        entry.store(kernel[index].load(Ordering::Relaxed), Ordering::Relaxed);
+    }
+    for (range, cache) in regions {
+        let flags = PRESENT | WRITABLE | cache.bits();
+        let mut phys = range.start & !(PAGE - 1);
+        while phys < range.end {
+            if phys.is_multiple_of(LARGE_PAGE) && phys + LARGE_PAGE <= range.end {
+                map_large(root, phys, phys, flags, 2)?;
+                phys += LARGE_PAGE;
+            } else {
+                map_4k(root, phys, phys, flags)?;
+                phys += PAGE;
+            }
+        }
+    }
+    Ok(root)
 }
 
 /// Maps a page for the SMEP or SMAP self-test at a user address: a `ret`

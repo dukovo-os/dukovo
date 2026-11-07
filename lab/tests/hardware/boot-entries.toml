@@ -1,0 +1,31 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "The firmware's boot entries: efiboot lists them and the one the machine started from, and makes an entry out of the boot order, shows its path and deletes it"
+time = "2m"
+
+# The firmware's own listing: the entry it started, and its order.
+[[step]]
+run = "efiboot"
+root = true
+expect = ["BootCurrent: ", "BootOrder: ", "Boot0"]
+
+# An entry for the first disk's first partition, out of the order (-C),
+# so the firmware never starts it; a number far from the firmware's own.
+[[step]]
+run = "sh -c 'd=$(ls /devices | grep -m1 -E \"^(sd[a-z]|nvme[0-9]+n[0-9]+)$\"); efiboot -C -b 0D0C -d $d -p 1 -L \"Dukovo lab\" -q'"
+root = true
+[[step]]
+run = "efibootmgr -v"
+root = true
+expect = ['Boot0D0C* Dukovo lab', '/File(\EFI\BOOT\BOOTX64.EFI)', 'HD(1,']
+[[step]]
+run = "sh -c 'efiboot | grep BootOrder'"
+root = true
+expect_not = "0D0C"
+
+# Deleted, it is gone.
+[[step]]
+run = "efiboot -b 0D0C -B"
+root = true
+expect_not = "Boot0D0C"

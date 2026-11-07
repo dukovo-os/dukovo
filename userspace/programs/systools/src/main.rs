@@ -41,7 +41,8 @@
 //! `fsck-btrfs` checks one, with the kernel's Btrfs crate (ADRs 0304 and
 //! 0305); `resize-ntfs` checks and shrinks an NTFS volume with the
 //! kernel's NTFS crate (ADR 0312); `rgrub-setup` puts GRUB on a disk or
-//! an EFI system partition (ADR 0306).
+//! an EFI system partition (ADR 0306); `efiboot`, and `efibootmgr` by
+//! its name, lists and changes the firmware's boot entries (ADR 0313).
 //! `bundle` makes, signs, installs and runs bundles, which `bundled`
 //! installs, seals and removes (ADRs 0221 to 0223 and 0225); called by a
 //! name that is no tool's, through a link in a commands folder of
@@ -69,6 +70,7 @@ mod dmesg;
 mod dukofetch;
 mod e1000d;
 mod ectool;
+mod efiboot;
 mod eject;
 mod elevate;
 mod facl;
@@ -188,6 +190,8 @@ const TOOLS: &[(&str, Tool)] = &[
     ("dukofetch", dukofetch::main),
     ("e1000d", e1000d::main),
     ("ectool", ectool::main),
+    ("efiboot", efiboot::main),
+    ("efibootmgr", efiboot::main),
     ("eject", eject::main),
     ("elevate", elevate::main),
     ("findmnt", findmnt::main),

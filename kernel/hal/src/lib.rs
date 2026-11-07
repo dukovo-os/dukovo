@@ -419,6 +419,51 @@ pub struct Smbios {
     pub table: &'static [u8],
 }
 
+/// Why a call to the firmware's variable services failed (Phase 14, ADR
+/// 0313): the UEFI status it gave, or why the kernel did not call.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VariableError {
+    /// The machine has no runtime services the kernel can call: it
+    /// started under BIOS, the boot loader passed no UEFI memory map, or
+    /// the firmware does not offer the service.
+    NotSupported,
+    /// No such variable, or no variable after the one named.
+    NotFound,
+    /// The buffer was too short: the variable, or the next name, needs
+    /// this many bytes (or UCS-2 characters, for a name). Nothing was
+    /// copied.
+    TooSmall(usize),
+    /// The firmware refused the arguments: an attribute it does not take,
+    /// or a name or a value it finds malformed.
+    InvalidParameter,
+    /// The variable cannot be written now: one only the firmware sets,
+    /// or one read-only once its boot services ended.
+    WriteProtected,
+    /// The firmware has no room left for the variable.
+    NoSpace,
+    /// The firmware could not reach its storage.
+    Device,
+    /// The firmware refused a write its Secure Boot rules do not allow.
+    SecurityViolation,
+    /// The firmware faulted in an earlier call, so the kernel calls it no
+    /// more until the machine restarts.
+    Faulted,
+    /// Any other UEFI status.
+    Other(u64),
+}
+
+/// How much room the firmware has for variables of some attributes, as
+/// `QueryVariableInfo` says (Phase 14, ADR 0313).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct VariableSpace {
+    /// Bytes of storage for such variables.
+    pub total: u64,
+    /// Bytes of it still free.
+    pub remaining: u64,
+    /// The longest such variable the firmware takes, name and all.
+    pub largest: u64,
+}
+
 /// One transaction on the SMBus (Phase 11e, ADR 0232), by the names of
 /// the SMBus specification's protocols.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -889,6 +934,52 @@ pub trait Platform {
     /// gave where it did not fault (as under QEMU without KVM), or what
     /// went wrong. `None` where the architecture has no such registers.
     fn self_test_msr() -> Option<Result<Option<u64>, &'static str>>;
+
+    /// Reads the firmware's variable `name` of vendor `vendor` (UEFI's
+    /// runtime services, ADR 0313) into `data`, giving its attributes and
+    /// length. `name` is UCS-2 and ends in a NUL; `vendor` is the GUID's
+    /// 16 bytes as they lie in memory. Where the firmware has none, as
+    /// every architecture but x86-64 for now, it fails with
+    /// [`VariableError::NotSupported`].
+    fn firmware_variable(
+        vendor: &[u8; 16],
+        name: &[u16],
+        data: &mut [u8],
+    ) -> Result<(u32, usize), VariableError> {
+        let _ = (vendor, name, data);
+        Err(VariableError::NotSupported)
+    }
+
+    /// Writes the firmware's variable `name` of `vendor` with
+    /// `attributes` and `data`, or deletes it if `data` is empty. Callers
+    /// check what may be written first (the platform capability does).
+    fn set_firmware_variable(
+        vendor: &[u8; 16],
+        name: &[u16],
+        attributes: u32,
+        data: &[u8],
+    ) -> Result<(), VariableError> {
+        let _ = (vendor, name, attributes, data);
+        Err(VariableError::NotSupported)
+    }
+
+    /// Replaces `vendor` and `name` (a NUL alone for the first) with the
+    /// next variable's, in the firmware's order, and gives the new
+    /// name's length in UCS-2 characters, its NUL included. Fails with
+    /// [`VariableError::NotFound`] after the last.
+    fn next_firmware_variable(
+        vendor: &mut [u8; 16],
+        name: &mut [u16],
+    ) -> Result<usize, VariableError> {
+        let _ = (vendor, name);
+        Err(VariableError::NotSupported)
+    }
+
+    /// How much room the firmware has for variables with `attributes`.
+    fn firmware_variable_space(attributes: u32) -> Result<VariableSpace, VariableError> {
+        let _ = attributes;
+        Err(VariableError::NotSupported)
+    }
 }
 
 /// Signature of the kernel's entry point, `radix_kernel_main`, which the

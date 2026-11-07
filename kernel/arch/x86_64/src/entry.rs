@@ -11,7 +11,7 @@
 
 use core::sync::atomic::Ordering;
 
-use radix_bootinfo::{BootInfo, MULTIBOOT2_MAGIC, framebuffer_type};
+use radix_bootinfo::{BootInfo, EfiMemoryMap, MULTIBOOT2_MAGIC, framebuffer_type};
 use radix_hal::cmdline::CommandLine;
 use radix_hal::{BootModule, BootParams, Channel, Firmware, Framebuffer, PixelFormat};
 use radix_sync::{Once, TakeOnce};
@@ -48,6 +48,9 @@ pub static RSDP_COPY: Once<&'static [u8]> = Once::new();
 
 /// The UEFI system table's physical address, from the boot information.
 pub static EFI_SYSTEM_TABLE: Once<u64> = Once::new();
+
+/// The UEFI memory map from the boot information, which stays reserved.
+pub static EFI_MEMORY_MAP: Once<EfiMemoryMap<'static>> = Once::new();
 
 /// Most boot modules the kernel hands on.
 const MAX_MODULES: usize = 8;
@@ -253,6 +256,9 @@ extern "C" fn radix_arch_entry(magic: u32, info_phys: u32, slide: u64) -> ! {
     }
     if let Some(address) = info.efi64_system_table() {
         let _ = EFI_SYSTEM_TABLE.set(address);
+    }
+    if let Some(map) = info.efi_memory_map() {
+        let _ = EFI_MEMORY_MAP.set(map);
     }
     let (framebuffer, text_screen) = framebuffer(&info);
     let modules = MODULES.take().expect("the boot CPU starts once");

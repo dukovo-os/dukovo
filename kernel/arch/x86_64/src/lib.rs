@@ -35,6 +35,7 @@ mod boot;
 mod cpu;
 mod devices;
 mod ec;
+mod efi;
 mod entry;
 mod firmware;
 mod fpu;
@@ -1060,6 +1061,8 @@ impl Platform for Arch {
             acpi.and_then(|acpi| acpi.srat.as_ref()),
             acpi.and_then(|acpi| acpi.slit.as_ref()),
         );
+        // The firmware's page table and stack come from the allocator.
+        efi::init(entry::EFI_SYSTEM_TABLE.get().copied(), entry::EFI_MEMORY_MAP.get().copied());
         if let Some(report) = memory::handover() {
             let nodes = radix_mm::FRAMES.nodes();
             let plural = |count: usize| if count == 1 { "" } else { "s" };
@@ -1219,6 +1222,36 @@ impl Platform for Arch {
     #[inline(never)]
     fn self_test_msr() -> Option<Result<Option<u64>, &'static str>> {
         Some(cpu::self_test_rdmsr_safe())
+    }
+
+    fn firmware_variable(
+        vendor: &[u8; 16],
+        name: &[u16],
+        data: &mut [u8],
+    ) -> Result<(u32, usize), radix_hal::VariableError> {
+        efi::variable(vendor, name, data)
+    }
+
+    fn set_firmware_variable(
+        vendor: &[u8; 16],
+        name: &[u16],
+        attributes: u32,
+        data: &[u8],
+    ) -> Result<(), radix_hal::VariableError> {
+        efi::set_variable(vendor, name, attributes, data)
+    }
+
+    fn next_firmware_variable(
+        vendor: &mut [u8; 16],
+        name: &mut [u16],
+    ) -> Result<usize, radix_hal::VariableError> {
+        efi::next_variable(vendor, name)
+    }
+
+    fn firmware_variable_space(
+        attributes: u32,
+    ) -> Result<radix_hal::VariableSpace, radix_hal::VariableError> {
+        efi::variable_space(attributes)
     }
 
     // Not inlined, so that the fault's backtrace names it.
