@@ -53,12 +53,13 @@ Phase 13c (ADR 0347).
   `@users` of the root. The system's slot, `@system.a`, which is what a
   release is made from (ADR 0308), is staged exactly as for
   `--installed`, and a unit test checks that the lab's files leave it as
-  it was. The lab image is never signed as a release, and `--lab` does
-  not combine with `--iso`, the stick, or `--installed`.
+  it was. The lab image is never signed as a release, and `--lab` is an
+  image of its own: it does not combine with `--iso` or `--installed`.
 - **The key stays in the lab.** `dukovo-lab key` makes an Ed25519 key in
   the lab computer's own settings. `ob image --lab` reads only its public
-  half, `~/.config/dukovo-lab/lab_ed25519.pub` or `--lab-key`, and checks
-  that it is one `ssh-ed25519` line. The private key is never in this
+  half, `~/.config/dukovo-lab/lab_ed25519.pub` or `--lab-key` (`ob lab`
+  takes it from dukovo-lab's `--config` folder when one is given), and
+  checks that it is one `ssh-ed25519` line. The private key is never in this
   repository, an image, a log or a bundle.
 - **`ob lab`** runs dukovo-lab on `lab/tests`. For `run`, it builds the lab
   image first and passes it on, with this tree's version and commit for
@@ -77,9 +78,13 @@ Phase 13c (ADR 0347).
 
 - A test is written once and runs on QEMU and on the real machines; the
   machines it needs a control for that it lacks skip it.
-- The lab account is an administrator's, but elevating to root over
-  SSH needs a password, which it has none of. Tests that need root wait
-  for the lab's later pull requests (PR 4), which will decide how.
+- The lab account is an administrator's, but `elevate` asks for the
+  account's password, which no one knows. Tests that need root wait for
+  the lab's later pull requests (PR 4), which will decide how.
+- Since the lab account is there from the start, a lab image never shows
+  the first boot's "This computer has no account yet" page. Tests of
+  that page need an image without the lab account, which a later pull
+  request will add.
 - The lab image differs from a release only outside the system's slot,
   so what the lab tests is the system a person installs.
 - Anyone with the lab's private key can sign in to a machine running a

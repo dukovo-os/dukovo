@@ -171,9 +171,10 @@ the Cargo.lock of each bundle's port in Rust with cargo-audit.
   --rebuild <name>   Build this port even if nothing changed; repeat for more"
         }
         "image" => {
-            "Usage: ./ob image [--iso | --installed | --lab [--lab-key <file>]] [--cmdline <flags>] [--microcode <path>]
-                  [--disk-check <serial>] [--user <name> [--full-name <name>]
-                  [--password-file <path>] [--test-cost]] [--debug | --release]
+            "Usage: ./ob image [--iso | --installed | --lab [--lab-key <file>]]
+                  [--cmdline <flags>] [--microcode <path>] [--disk-check <serial>]
+                  [--user <name> [--full-name <name>] [--password-file <path>]
+                  [--test-cost]] [--debug | --release]
 
 Builds the kernel, then a hybrid boot image that starts under UEFI and
 legacy BIOS from a USB stick, a hard disk or optical media:
@@ -889,7 +890,7 @@ fn dispatch(argv: Vec<String>) -> Result<()> {
             args.finish()?;
             overrides.account = account.account(&ctx)?;
             if kind == image::Kind::Lab {
-                overrides.lab = Some(lab::Key::read(lab_key.as_deref())?);
+                overrides.lab = Some(lab::Key::read(lab_key.as_deref(), None)?);
             }
             let path = image::build_release(&ctx, profile, kind, &overrides)?;
             println!("\nImage ready: {}", ctx.display(&path));

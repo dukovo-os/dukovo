@@ -35,9 +35,12 @@ pub const ACCOUNT: &str = "lab";
 /// Its full name, as `user list` shows it.
 const FULL_NAME: &str = "Dukovo Lab";
 
-/// Where dukovo-lab keeps the lab key's public half, under the home
-/// folder (`dukovo-lab key` makes it).
-const PUBLIC_KEY: &str = ".config/dukovo-lab/lab_ed25519.pub";
+/// dukovo-lab's configuration folder, under the home folder, when its
+/// `--config` does not name another.
+const CONFIG: &str = ".config/dukovo-lab";
+
+/// The lab key's public half in that folder (`dukovo-lab key` makes it).
+const PUBLIC_KEY: &str = "lab_ed25519.pub";
 
 /// What a lab image's console says before signing in, after the default
 /// banner.
@@ -55,15 +58,17 @@ pub struct Key {
 }
 
 impl Key {
-    /// Reads the key from `file` (`--lab-key`), or where dukovo-lab keeps
-    /// it.
-    pub fn read(file: Option<&str>) -> Result<Key> {
-        let path = match file {
-            Some(path) => PathBuf::from(path),
-            None => {
+    /// Reads the key from `file` (`--lab-key`), or from dukovo-lab's
+    /// configuration folder `config` (its `--config`), or from the folder
+    /// it uses when given none.
+    pub fn read(file: Option<&str>, config: Option<&str>) -> Result<Key> {
+        let path = match (file, config) {
+            (Some(path), _) => PathBuf::from(path),
+            (None, Some(config)) => Path::new(config).join(PUBLIC_KEY),
+            (None, None) => {
                 let home = std::env::var_os("HOME")
                     .ok_or_else(|| Error::new("HOME is not set: give the key with --lab-key"))?;
-                Path::new(&home).join(PUBLIC_KEY)
+                Path::new(&home).join(CONFIG).join(PUBLIC_KEY)
             }
         };
         let text = std::fs::read_to_string(&path).context(|| {
@@ -79,8 +84,9 @@ impl Key {
     /// Checks that `text` is one Ed25519 public key, as `ssh-keygen` writes
     /// it. sshd passes over lines with options, so none is allowed here.
     fn parse(text: &str) -> std::result::Result<Key, String> {
-        let line = text.trim_end_matches('\n');
-        if line.contains('\n') {
+        // A copy made on Windows ends its line with \r\n.
+        let line = text.trim();
+        if line.contains(['\n', '\r']) {
             return Err("holds more than one line; the lab key is one".into());
         }
         let mut words = line.split(' ');
@@ -177,7 +183,9 @@ pub fn command(ctx: &Ctx, args: &mut Args) -> Result<()> {
             Some(image) => PathBuf::from(image),
             None if no_build => ctx.out.join(image::file_name(image::Kind::Lab)),
             None => {
-                let key = Key::read(key_file.as_deref())?;
+                // The key dukovo-lab will sign in with is the one in the
+                // folder it is given, so the image trusts that one.
+                let key = Key::read(key_file.as_deref(), option_value(&rest, "--config"))?;
                 let overrides = Overrides { lab: Some(key), ..Overrides::default() };
                 image::build_release(ctx, profile, image::Kind::Lab, &overrides)?
             }
@@ -197,6 +205,12 @@ pub fn command(ctx: &Ctx, args: &mut Args) -> Result<()> {
         Some(code) => std::process::exit(code),
         None => bail!("{} was stopped by a signal", tool.display()),
     }
+}
+
+/// The value `args` give the dukovo-lab option `name`, if any; the last
+/// one, as dukovo-lab takes the last.
+fn option_value<'a>(args: &'a [String], name: &str) -> Option<&'a str> {
+    args.windows(2).rev().find(|pair| pair[0] == name).map(|pair| pair[1].as_str())
 }
 
 /// The dukovo-lab command among `args`: the first word that is neither
@@ -246,6 +260,8 @@ mod tests {
     #[test]
     fn takes_one_ed25519_key() {
         assert_eq!(Key::parse(KEY).unwrap().line, KEY.trim_end());
+        let windows = KEY.replace('\n', "\r\n");
+        assert_eq!(Key::parse(&windows).unwrap().line, KEY.trim_end());
         for bad in [
             "",
             "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQ lab",
@@ -264,6 +280,11 @@ mod tests {
         assert_eq!(lab_command(&words("--machine run --json run boot/")), Some("run"));
         assert_eq!(lab_command(&words("--json list")), Some("list"));
         assert_eq!(lab_command(&words("--machine qemu")), None);
+        assert_eq!(
+            option_value(&words("run --config /a --all --config /b"), "--config"),
+            Some("/b")
+        );
+        assert_eq!(option_value(&words("run --all"), "--config"), None);
     }
 
     #[test]
