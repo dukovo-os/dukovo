@@ -18,11 +18,12 @@ expect = "a password is needed"
 run = "echo not-the-password | elevate -S true"
 exit = 1
 expect = "Sorry, try again."
-# The elevated command gets root's own environment, not the caller's.
+# The elevated command gets root's own environment, not the caller's:
+# root's home is / (its account in /system/settings/passwd).
 [[step]]
 run = "env"
 root = true
-expect = ["HOME=/root", "USER=root", "PATH=/system/commands:/applications/commands"]
+expect = ["HOME=/\n", "USER=root", "SUDO_USER=lab", "PATH=/system/commands:/applications/commands"]
 [[step]]
 run = "groups"
 expect = ["lab", "admins"]

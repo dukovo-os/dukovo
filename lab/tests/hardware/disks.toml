@@ -6,7 +6,7 @@ time = "2m"
 
 [[step]]
 run = "diskhealth"
-exit = 1
+exit = 2
 expect = "Permission denied"
 [[step]]
 run = "diskhealth"

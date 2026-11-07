@@ -6,7 +6,7 @@ time = "3m"
 
 [[step]]
 run = "firewall status"
-exit = 1
+exit = 2
 expect = "elevate"
 [[step]]
 run = "firewall status"

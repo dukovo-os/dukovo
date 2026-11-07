@@ -609,6 +609,35 @@ mod tests {
     }
 
     #[test]
+    fn reads_the_lab_password_as_its_hash_alone() {
+        let config = std::env::temp_dir().join(format!("ob-lab-access-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&config);
+        std::fs::create_dir_all(&config).unwrap();
+        std::fs::write(config.join(PUBLIC_KEY), KEY).unwrap();
+        let dir = config.to_str().unwrap();
+
+        // No password file: the account keeps one no one knows.
+        let access = Access::read(None, None, Some(dir)).unwrap();
+        assert_eq!(access.password_hash, None);
+
+        // A password file: its first line, hashed as authd hashes, and
+        // nothing of the password itself.
+        std::fs::write(config.join(PASSWORD), "Sesame0pen\n").unwrap();
+        let hash = Access::read(None, None, Some(dir)).unwrap().password_hash.unwrap();
+        assert!(hash.starts_with("$argon2id$"), "{hash}");
+        assert!(!hash.contains("Sesame0pen"));
+        assert_eq!(accounts::hash::verify(b"Sesame0pen", &hash), Ok(true));
+        assert_eq!(accounts::hash::verify(b"Sesame0pen\n", &hash), Ok(false));
+
+        // An empty file is an error, as is a --lab-password that is not there.
+        std::fs::write(config.join(PASSWORD), "\n").unwrap();
+        assert!(Access::read(None, None, Some(dir)).is_err());
+        let missing = config.join("missing").to_str().unwrap().to_string();
+        assert!(Access::read(None, Some(&missing), Some(dir)).is_err());
+        std::fs::remove_dir_all(&config).unwrap();
+    }
+
+    #[test]
     fn stages_the_account_home_key_sshd_and_banner_beside_the_system() {
         let staging = std::env::temp_dir().join(format!("ob-lab-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&staging);

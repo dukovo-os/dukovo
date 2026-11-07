@@ -11,16 +11,17 @@ blank = "256M"
 [[step]]
 wait = "5s"
 # Find the stick by its size, which no system disk has, and keep its name
-# for the steps below. Nothing is formatted unless one was found.
+# in the lab's home for the steps below, which root runs: each account has
+# a /tmp of its own. Nothing is formatted unless a stick was found.
 [[step]]
-run = "lsblk -dn | awk '$2 == \"256M\" && $4 == \"disk\" { print $1 }' > /tmp/stick && cat /tmp/stick"
+run = "lsblk -dn | awk '$2 == \"256M\" && $4 == \"disk\" { print $1 }' > ~/lab-stick && cat ~/lab-stick"
 expect = "sd"
 [[step]]
-run = "sh -c 'mkfs-btrfs -f -L LABBT /devices/$(cat /tmp/stick)'"
+run = "sh -c 'mkfs-btrfs -f -L LABBT /devices/$(cat /users/lab/lab-stick)'"
 root = true
 expect = ["Label:              LABBT", "Filesystem size:    256.00MiB"]
 [[step]]
-run = "sh -c 'mkdir -p /volumes/lab-stick && mount /devices/$(cat /tmp/stick) /volumes/lab-stick'"
+run = "sh -c 'mkdir -p /volumes/lab-stick && mount /devices/$(cat /users/lab/lab-stick) /volumes/lab-stick'"
 root = true
 [[step]]
 run = "findmnt /volumes/lab-stick"
@@ -48,7 +49,7 @@ run = "subvolume delete /volumes/lab-stick/before"
 root = true
 expect = "Delete subvolume"
 [[step]]
-run = "sh -c 'umount /volumes/lab-stick && fsck-btrfs /devices/$(cat /tmp/stick)'"
+run = "sh -c 'umount /volumes/lab-stick && fsck-btrfs /devices/$(cat /users/lab/lab-stick)'"
 root = true
 expect = "no error found"
 [[step]]

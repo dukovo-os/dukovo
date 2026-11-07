@@ -39,8 +39,12 @@ expect = "labtest is removed"
 run = "user list && ls /users"
 root = true
 expect_not = "labtest"
-# Only root changes accounts.
+# Only root changes accounts: authd refuses anyone else, password or not.
 [[step]]
-run = "user add someone"
+run = "echo some-password | user add someone"
 exit = 1
-expect = "elevate"
+expect_not = "Made someone"
+[[step]]
+run = "user list"
+root = true
+expect_not = "someone"

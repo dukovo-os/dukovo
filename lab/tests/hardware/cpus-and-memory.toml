@@ -9,7 +9,7 @@ run = "lscpu"
 expect = ["Architecture:", "x86_64", "CPU(s):"]
 [[step]]
 # Every CPU lscpu lists is one programs can use.
-run = "test $(nproc) -eq $(lscpu -p | grep -vc '^#') && echo same"
+run = '''test "$(nproc)" = "$(lscpu | awk '/^CPU\(s\):/ { print $2 }')" && echo same'''
 expect = "same"
 [[step]]
 run = "free -m"

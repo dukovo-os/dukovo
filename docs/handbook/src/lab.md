@@ -21,7 +21,7 @@ One command sets the lab up and opens it:
 
 It checks that QEMU, OVMF, OpenSSH, git and gzip are installed (and
 prints the `apt install` line if not), installs `dukovo-lab` or updates
-it to the newest, makes the lab's key, clones the private
+it to the newest, makes the lab's key and password, clones the private
 dukovo-os/lab-results repository that Send uses, turns on the timer that
 starts schedules, builds the lab image and opens the runner page. Each
 setup step is skipped once it is done, so after the first time it only
@@ -35,7 +35,7 @@ The same from a terminal, a command at a time:
 ./ob lab list          # every test
 ./ob lab run --all     # build the lab image and run every test on QEMU
 ./ob lab run boot/     # one category
-./ob lab run drivers/link-pull --machine qemu,qemu-bios
+./ob lab run network/link-pull --machine qemu,qemu-bios
 ./ob lab run --preset quick         # the presets are in lab/tests/presets.toml
 ./ob lab ui                         # the runner page, in a browser on this PC
 ./ob lab findings                   # what failed, each failure with the runs it came back in
@@ -78,19 +78,26 @@ page has the rest.
 `./ob image --lab` is an installed system's disk with three things more,
 all outside the system's slot that a release is made from:
 
-- an administrator's account, `lab`, that signs in only over SSH with
-  the lab's key, since no one knows its password;
+- an administrator's account, `lab`, that signs in over SSH with the
+  lab's key, and whose password, which elevate asks for, is the lab
+  password (ADR 0406);
 - sshd turned on;
 - a sign-in banner that says it is a test image.
 
-The lab's private key stays on the lab computer: the image holds only
-the public half. Never give a lab image to anyone as a release.
+The lab's private key and password stay on the lab computer, in
+`~/.config/dukovo-lab`: the image holds only the public half of the key
+and the password's hash. Without a password file the account's password
+is one no one knows, and tests that run as root refuse to start. Never
+give a lab image to anyone as a release.
 
 ## Writing a test
 
-A test is a file at `lab/tests/<category>/<name>.toml`. The categories
-are `boot`, `drivers`, `features`, `performance`, `stress`, `security`,
-`console`, `web` and `desktop`. This one pulls the network cable:
+A test is a file at `lab/tests/<category>/<name>.toml`. The categories,
+their order and their titles on the runner page are in
+`lab/tests/categories.toml`: boot and power, hardware and drivers, disks
+and filesystems, network, SSH, services and logs, accounts and elevate,
+and commands. Add one there when a new kind of test needs it. This test
+pulls the network cable:
 
 ```toml
 about = "The network cable comes out and goes back in, and the network comes back"
@@ -110,9 +117,13 @@ run = "ip link"
 expect = "LOWER_UP"
 ```
 
-`run` steps are commands over SSH as the `lab` account; `serial` waits
-for text on the serial console; `power`, `link`, `usb`, `keys` and
-`screenshot` work the machine. The harness's
+`run` steps are commands over SSH as the `lab` account, or as root with
+`root = true`, which runs the command through `elevate -S` with the lab
+password; `serial` waits for text on the serial console; `power`,
+`link`, `usb` (a stick holding an image, or a blank one of a size),
+`keys` and `screenshot` work the machine, and `wait` waits for it to be
+ready, to turn itself off, or for a time. A new feature is complete only
+with its lab tests ([Contributing](https://github.com/dukovo-os/dukovo/blob/main/CONTRIBUTING.md)). The harness's
 [test file reference](https://github.com/dukovo-os/lab/blob/main/docs/test-files.md)
 lists every key, and `./ob lab show <test>` shows which machines can run
 a test. A new file needs no other change.
