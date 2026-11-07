@@ -39,7 +39,7 @@ use radix_hal::UserMode;
 use radix_klog::info;
 use radix_mm::{Flags, HEAP};
 use radix_vfs::attributes;
-use radix_vfs::mount::{Location, OpenFlags as VfsOpen};
+use radix_vfs::mount::{Location, Mount, OpenFlags as VfsOpen};
 use radix_vfs::{
     Access, AccessChange, FsKind, In, Kind, NodeRef, Out, PATH_MAX, Setting, Who, want,
 };
@@ -531,8 +531,13 @@ pub fn directory_method(
             let dir = directory_of(found, Rights::READ)?;
             let mut path = Path::Empty;
             let path = path.copy(a.path)?;
-            let at = resolve(&who(found.cap.rights(), dir)?, &dir.at, path.as_str()?, a.flags)?;
-            put_status(&at, a.buffer)?;
+            let who = who(found.cap.rights(), dir)?;
+            let follow = !a.flags.contains(PathFlags::NO_FOLLOW);
+            vfs()?
+                .look_at(&who, &dir.at, path.as_str()?, follow, |mount, node| {
+                    put_status(mount, node, a.buffer)
+                })
+                .map_err(fs::status)??;
             answer(label, 0, [0; 8])
         }
         directory::SET_TIMES => {
@@ -1422,7 +1427,7 @@ pub fn file_method(user: &UserRef, found: &Found, label: u32, args: &[u64; 8]) -
         file::STAT => {
             let a = file::StatArgs::decode(args)?;
             let file = file_of(found, Rights::NONE)?;
-            put_status(&file.at, a.buffer)?;
+            put_status(&file.at.mount, &file.at.node, a.buffer)?;
             answer(label, 0, [0; 8])
         }
         file::SET_TIMES => {
@@ -2405,11 +2410,11 @@ fn refused_as_not_permitted(err: radix_vfs::Error) -> radix_abi::Status {
     }
 }
 
-/// Writes what the node at `at` is to the caller's `buffer` as a
+/// Writes what `node`, on `mount`, is to the caller's `buffer` as a
 /// FileStatus.
-fn put_status(at: &Location, buffer: UserBuffer) -> Result<()> {
+fn put_status(mount: &Mount, node: &NodeRef, buffer: UserBuffer) -> Result<()> {
     use directory::FileStatus as S;
-    let (stat, access, mount) = (at.node.stat(), at.node.access(), at.mount.id);
+    let (stat, access, mount) = (node.stat(), node.access(), mount.id);
     let (address, len) = user_range(buffer)?;
     if len < S::SIZE {
         return Err(error(Kernel::InvalidArgument));

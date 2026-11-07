@@ -43,6 +43,27 @@ pub(super) fn init(lockdep: bool) {
     radix_sync::set_hooks(&HOOKS);
 }
 
+/// Counts a reference to a value counted on the CPUs, such as a mount
+/// (`radix_sync::cpu_ref`, ADR 0404), on the running CPU. Every open and
+/// close of a file does it once, and fat LTO inlines it there.
+///
+/// Interrupts are held off around the count, not preemption: no timer
+/// tick, switch or idle can come between, so no grace period passes on
+/// the CPU (`super::rcu`), and it is the RCU read section the count needs.
+/// Letting interrupts in again needs no check for a reschedule, as
+/// letting preemption back does: nothing in between asks for one, and one
+/// another CPU asks for comes as the interrupt that was held off.
+// `radix_sync::cpu_ref` declares this symbol with the same signature, so
+// exporting it unmangled is sound.
+#[allow(unsafe_code)]
+#[unsafe(no_mangle)]
+pub extern "Rust" fn radix_count_here(count: &radix_sync::cpu_ref::CpuCount, delta: u32) -> bool {
+    let were = Arch::disable_interrupts();
+    let counted = radix_sync::cpu_ref::count_on(Arch::current_cpu(), count, delta);
+    Arch::restore_interrupts(were);
+    counted
+}
+
 /// Whether the lock checker is on.
 pub fn lockdep_enabled() -> bool {
     CHECKER.enabled()
@@ -135,6 +156,10 @@ impl Hooks for KernelHooks {
 
     fn current_thread(&self) -> usize {
         super::current_token()
+    }
+
+    fn current_cpu(&self) -> usize {
+        Arch::current_cpu()
     }
 
     fn mutex_wait(&self, mutex: &RawMutex) {

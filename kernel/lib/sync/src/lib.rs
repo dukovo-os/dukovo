@@ -17,6 +17,9 @@
 //! - [`rcu`], read-copy-update: readers that never wait, for data that is
 //!   read far more often than it changes.
 //!
+//! [`cpu_ref`] counts references to a value on each CPU, as Linux's
+//! `percpu_ref` does, for values that every CPU references at once.
+//!
 //! All of them work before any other part of the kernel is initialised.
 //! Once the kernel runs threads it registers [`Hooks`]: from then on a held
 //! [`SpinLock`] keeps its holder from being preempted, [`SpinLock::lock_irq`]
@@ -48,6 +51,7 @@
 
 extern crate alloc;
 
+pub mod cpu_ref;
 mod hooks;
 mod mutex;
 mod once;
@@ -145,6 +149,13 @@ pub(crate) mod testing {
             if outermost {
                 self.slot().store(0, Ordering::SeqCst);
             }
+        }
+
+        /// Four "CPUs", by thread: host threads are not pinned, so a
+        /// thread's references change the counts of the CPU it is said to
+        /// be on, wherever it runs.
+        fn current_cpu(&self) -> usize {
+            (self.current_thread() >> 1) % 4
         }
 
         fn current_thread(&self) -> usize {

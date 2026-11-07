@@ -15,13 +15,13 @@ use proptest::prelude::*;
 
 use crate::bootfs::BootFs;
 use crate::cache::{Backing, FileCache};
-use crate::mount::{Location, OpenFlags, Vfs};
+use crate::mount::{Location, MountRef, OpenFlags, Vfs};
 use crate::path::{self, Component};
 use crate::synthetic::{FixedDir, Generated, Link, Null, SyntheticFs, Zero};
 use crate::tmpfs::Tmpfs;
 use crate::{
-    APPEND, Access, AccessChange, Error, FileSystem, FsKind, FsRef, Kind, Node, NodeRef, Result,
-    Slice, SliceMut, Who, mem, want,
+    APPEND, Access, AccessChange, Error, FileSystem, FsKind, FsRef, KArc, Kind, Node, NodeRef,
+    Result, Slice, SliceMut, Who, mem, want,
 };
 
 /// The owner, group and mode of the directories, files and links the
@@ -732,6 +732,53 @@ fn mounts_join_filesystems() {
     let mut count = 0;
     vfs.mounts(|_| count += 1);
     assert_eq!(count, 1);
+}
+
+/// Mounts in the tree are counted on each CPU (ADR 0404): an unmount still
+/// sees a handle opened on another thread, and a tree dropped with mounts
+/// in it, and handles still open on them, frees each with its last
+/// reference.
+#[test]
+fn mounts_counted_on_the_cpus_are_seen_and_freed() {
+    let other = tmpfs(1 << 16);
+    let vfs = vfs();
+    let root = vfs.root();
+    vfs.make_directory(&K, &root, "mnt", DIR).unwrap();
+    drop(vfs.mount(&K, &root, "mnt", other.clone(), "test", false).unwrap());
+    let handle = std::thread::scope(|scope| {
+        scope.spawn(|| vfs.open(&K, &root, "mnt", OpenFlags::default()).unwrap()).join().unwrap()
+    });
+    assert_eq!(vfs.unmount(&K, &root, "mnt"), Err(Error::InUse));
+    // The mount, and the filesystem, stay while the handle does.
+    drop(root);
+    drop(vfs);
+    assert_eq!(KArc::strong_count(&other), 2);
+    std::thread::spawn(move || drop(handle)).join().unwrap();
+    assert_eq!(KArc::strong_count(&other), 1);
+}
+
+/// A look at a place takes no reference to the mount it stays on, and
+/// crosses onto a mount on the way as a walk does.
+#[test]
+fn a_look_takes_no_reference_to_its_mount() {
+    let vfs = vfs();
+    let root = vfs.root();
+    vfs.make_directory(&K, &root, "mnt", DIR).unwrap();
+    write(&vfs, &root, "file", b"f").unwrap();
+    let before = MountRef::references(&root.mount);
+    let during = vfs.look_at(&K, &root, "file", true, |mount, node| {
+        assert_eq!(mount.id, root.mount.id);
+        assert_eq!(node.kind(), Kind::File);
+        MountRef::references(&root.mount)
+    });
+    assert_eq!(during, Ok(before));
+    vfs.mount(&K, &root, "mnt", tmpfs(1 << 16), "tmpfs", false).unwrap();
+    let on = vfs.look_at(&K, &root, "mnt", true, |mount, _| mount.id).unwrap();
+    assert_ne!(on, root.mount.id);
+    assert_eq!(on, vfs.resolve(&K, &root, "mnt").unwrap().mount.id);
+    // `..` takes the walk with a chain, which ends in the same place.
+    let back = vfs.look_at(&K, &root, "mnt/../file", true, |mount, _| mount.id);
+    assert_eq!(back, Ok(root.mount.id));
 }
 
 /// Many mount points on one filesystem share bits of its filter: each

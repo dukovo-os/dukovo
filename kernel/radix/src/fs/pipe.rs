@@ -596,7 +596,12 @@ pub(super) fn mount() -> radix_vfs::Result<MountRef> {
     let fs: FsRef = mem::arc(PipeFs { root })?;
     let mount = radix_vfs::mount::Mount::detached(fs, "pipefs")?;
     Ok(match MOUNT.set(mount) {
-        Ok(mount) => mount.clone(),
+        Ok(mount) => {
+            // Never unmounted, and every pipe and socket holds it: counted
+            // on each CPU for good, as a mount in the tree is (ADR 0404).
+            MountRef::count_on_cpus(mount);
+            mount.clone()
+        }
         Err(mount) => mount,
     })
 }

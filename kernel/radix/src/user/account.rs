@@ -9,8 +9,17 @@
 //! the bytes the kernel uses for it, and gives them back when it goes,
 //! wherever its capabilities have travelled by then. Domains count pages,
 //! so an account charges its domain a page each time its bytes reach into
-//! a new one: the domain's usage is the accounts' bytes, rounded up, and a
-//! domain at its limit refuses new objects, as it refuses new threads.
+//! a new one, and a domain at its limit refuses new objects, as it refuses
+//! new threads.
+//!
+//! An account gives a page back only once its bytes have fallen a whole
+//! page below what it holds: it keeps one spare. A process whose bytes go
+//! back and forth across a page's edge, as one opening and closing a file
+//! with nothing else charged does, would otherwise charge and give back a
+//! page of its domain's each time, and every process of the domain, and
+//! of the domains above it, would pass the domain's count between their
+//! CPUs. A domain's usage is its accounts' bytes, rounded up to pages,
+//! and at most one page more for each account.
 
 use alloc::sync::Arc;
 use core::mem::ManuallyDrop;
@@ -25,15 +34,29 @@ use crate::domains::DomainRef;
 /// An account, shared by a process and the objects charged to it.
 pub type AccountRef = Arc<Account, Kmalloc>;
 
-/// Kernel memory charged to a domain on behalf of one process.
+/// Kernel memory charged to a domain on behalf of one process, on a cache
+/// line of its own: every open and close of the process changes its
+/// count, and accounts made one after another would otherwise share lines,
+/// which their processes on other CPUs would pass between them.
+#[repr(align(64))]
 pub struct Account {
     domain: DomainRef,
-    /// The bytes charged. Each change is one compare-and-swap, and the
-    /// domain is charged or given back the pages that change moves the
-    /// count across, so the domain holds the pages of what the account
-    /// holds once no change is under way (opening a file charges and
-    /// gives back one object's bytes, on its fast path).
+    /// The bytes charged, and [`SPARE`]. Each change is one
+    /// compare-and-swap, and the domain is charged or given back the pages
+    /// that change moves the count across, so the domain holds the pages
+    /// of what the account holds once no change is under way (opening a
+    /// file charges and gives back one object's bytes, on its fast path).
     bytes: AtomicU64,
+}
+
+/// The bit of an account's `bytes` that says its domain holds a page more
+/// for it than its bytes take: the spare it keeps (see the module's
+/// documentation). No account charges anywhere near 2^63 bytes.
+const SPARE: u64 = 1 << 63;
+
+/// The pages the domain holds for an account whose `bytes` word is `word`.
+fn held(word: u64) -> u64 {
+    pages(word & !SPARE) + u64::from(word & SPARE != 0)
 }
 
 /// Bytes charged to an account, given back when it is dropped: kept by
@@ -70,22 +93,29 @@ impl Account {
 
     /// The bytes charged now.
     pub fn bytes(&self) -> u64 {
-        self.bytes.load(Ordering::Relaxed)
+        self.bytes.load(Ordering::Relaxed) & !SPARE
     }
 
     /// Charges `bytes`, unless the domain or one above it would pass its
     /// limit.
     pub fn charge(account: &AccountRef, bytes: u64) -> Result<Charge> {
-        let mut charged = account.bytes.load(Ordering::Relaxed);
+        let mut word = account.bytes.load(Ordering::Relaxed);
         loop {
-            let after = charged.checked_add(bytes).ok_or(error(Kernel::NoMemory))?;
-            let more = pages(after) - pages(charged);
+            let charged = word & !SPARE;
+            let after = charged
+                .checked_add(bytes)
+                .filter(|after| after & SPARE == 0)
+                .ok_or(error(Kernel::NoMemory))?;
+            // A spare page takes the new bytes before the domain is asked.
+            let more = pages(after).saturating_sub(held(word));
             if more > 0 {
                 account.domain.charge(more).map_err(|_| error(Kernel::NoMemory))?;
             }
+            // The spare stays one if the new bytes did not reach into it.
+            let spare = if held(word) > pages(after) { SPARE } else { 0 };
             match account.bytes.compare_exchange_weak(
-                charged,
-                after,
+                word,
+                after | spare,
                 Ordering::Relaxed,
                 Ordering::Relaxed,
             ) {
@@ -96,9 +126,20 @@ impl Account {
                     if more > 0 {
                         account.domain.uncharge(more);
                     }
-                    charged = now;
+                    word = now;
                 }
             }
+        }
+    }
+}
+
+impl Drop for Account {
+    fn drop(&mut self) {
+        // Every charge has gone, as each one keeps the account: what the
+        // domain still holds for it is the spare page.
+        let held = held(*self.bytes.get_mut());
+        if held > 0 {
+            self.domain.uncharge(held);
         }
     }
 }
@@ -139,17 +180,21 @@ impl Drop for Charge {
             // other charges'.
             return;
         }
-        let mut charged = self.account.bytes.load(Ordering::Relaxed);
+        let mut word = self.account.bytes.load(Ordering::Relaxed);
         loop {
-            let after = charged - bytes;
+            let after = (word & !SPARE) - bytes;
+            // The domain keeps one page more than the bytes left take, if
+            // it held one: the spare. The rest goes back.
+            let over = held(word) - pages(after);
+            let spare = if over > 0 { SPARE } else { 0 };
             match self.account.bytes.compare_exchange_weak(
-                charged,
-                after,
+                word,
+                after | spare,
                 Ordering::Relaxed,
                 Ordering::Relaxed,
             ) {
                 Ok(_) => {
-                    let fewer = pages(charged) - pages(after);
+                    let fewer = over.saturating_sub(1);
                     if fewer > 0 {
                         self.account.domain.uncharge(fewer);
                     }
@@ -164,7 +209,7 @@ impl Drop for Charge {
                     }
                     return;
                 }
-                Err(now) => charged = now,
+                Err(now) => word = now,
             }
         }
     }

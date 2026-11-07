@@ -47,6 +47,15 @@ pub fn read_lock() -> ReadGuard {
     ReadGuard { hooks, _not_send: PhantomData }
 }
 
+impl ReadGuard {
+    /// The index of the CPU the read section runs on, which it stays on
+    /// ([`Hooks::current_cpu`]): 0 before the kernel registers its hooks.
+    #[inline]
+    pub fn cpu(&self) -> usize {
+        self.hooks.map_or(0, Hooks::current_cpu)
+    }
+}
+
 impl Drop for ReadGuard {
     fn drop(&mut self) {
         if let Some(hooks) = self.hooks {

@@ -126,6 +126,13 @@ pub trait Hooks: Sync {
         0
     }
 
+    /// The index of the CPU running the caller, below 256: the row of
+    /// counts a [`crate::cpu_ref::CpuRef`] changes. A caller that must
+    /// stay on that CPU holds off preemption.
+    fn current_cpu(&self) -> usize {
+        0
+    }
+
     /// Waits until the caller owns `mutex`, whose owner word is held by
     /// someone else. The word holds the owner's token, with
     /// [`RawMutex::WAITERS`] set while anyone waits; the implementation

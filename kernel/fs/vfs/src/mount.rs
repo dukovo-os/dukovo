@@ -34,10 +34,11 @@
 use core::fmt;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
-use radix_sync::Mutex;
+use radix_sync::cpu_ref::{CpuCount, CpuCounted, CpuRef};
+use radix_sync::{Mutex, rcu};
 
 use crate::attributes::{self, Inherited};
-use crate::mem::{self, KArc, KVec};
+use crate::mem::{self, KVec};
 use crate::path::{self, Component};
 use crate::{
     Access, Error, FsRef, Kind, ListFn, MAX_LINKS, NodeRef, PATH_MAX, Result, Stat, Who, address,
@@ -72,6 +73,15 @@ pub struct Mount {
     covered: [AtomicU64; FILTER_WORDS],
     /// What it attaches, if it is a view's.
     pub(crate) view: Option<crate::view::View>,
+    /// How its references are counted: on each CPU while it is in the
+    /// tree (ADR 0404), by its `Arc` otherwise.
+    count: CpuCount,
+}
+
+impl CpuCounted for Mount {
+    fn cpu_count(&self) -> &CpuCount {
+        &self.count
+    }
 }
 
 /// The words of a mount's filter of mount points: 128 bits, enough that
@@ -86,8 +96,10 @@ fn filter_bit(address: usize) -> (usize, u64) {
     ((hash >> 6) as usize % FILTER_WORDS, 1 << (hash & 63))
 }
 
-/// A mount, shared.
-pub type MountRef = KArc<Mount>;
+/// A mount, shared. While the mount is in the tree its references are
+/// counted on each CPU, as every file opened on it holds one (ADR 0404):
+/// [`Vfs::unmount`] pauses that to see whether any but its own are left.
+pub type MountRef = CpuRef<Mount, mem::Alloc>;
 
 impl Mount {
     /// A mount of `fs` that is in no tree, for files that live outside
@@ -95,7 +107,7 @@ impl Mount {
     /// ever resolved through this one.
     pub fn detached(fs: FsRef, source: &str) -> Result<MountRef> {
         let root = fs.root();
-        Ok(mem::arc(Mount {
+        Ok(MountRef::new(mem::arc(Mount {
             id: crate::next_id(),
             fs,
             root,
@@ -107,14 +119,15 @@ impl Mount {
             lost: AtomicBool::new(false),
             covered: [const { AtomicU64::new(0) }; FILTER_WORDS],
             view: None,
-        })?)
+            count: CpuCount::new(),
+        })?))
     }
 
     /// A view's mount of `fs`, in no tree and read-only to everything but
     /// the view's own calls ([`crate::view`]).
     pub(crate) fn of_view(fs: FsRef, view: crate::view::View) -> Result<MountRef> {
         let root = fs.root();
-        Ok(mem::arc(Mount {
+        Ok(MountRef::new(mem::arc(Mount {
             id: crate::next_id(),
             fs,
             root,
@@ -126,7 +139,8 @@ impl Mount {
             lost: AtomicBool::new(false),
             covered: [const { AtomicU64::new(0) }; FILTER_WORDS],
             view: Some(view),
-        })?)
+            count: CpuCount::new(),
+        })?))
     }
 
     /// Whether nothing on it may change.
@@ -157,6 +171,11 @@ impl Mount {
     }
 
     /// Marks its node at `address` as one something may be on.
+    /// Whether it is mounted on a directory of `mount`.
+    fn is_on(&self, mount: &MountRef) -> bool {
+        self.on.as_ref().is_some_and(|(on, _)| MountRef::ptr_eq(on, mount))
+    }
+
     pub(crate) fn cover(&self, address: usize) {
         let (word, bit) = filter_bit(address);
         self.covered[word].fetch_or(bit, Ordering::Release);
@@ -173,6 +192,21 @@ pub struct Location {
     /// Whether it was reached through a view's read-only entry, which
     /// makes it, and every place beneath it, read-only too (ADR 0215).
     pub(crate) read_only: bool,
+}
+
+/// Where a walk from a base ended ([`Vfs::reach`]), but for what it
+/// shares with the base: the mount once the walk crossed onto another,
+/// and the node once it moved.
+struct Reached {
+    mount: Option<MountRef>,
+    node: Option<NodeRef>,
+    read_only: bool,
+}
+
+impl From<Location> for Reached {
+    fn from(at: Location) -> Reached {
+        Reached { mount: Some(at.mount), node: Some(at.node), read_only: at.read_only }
+    }
 }
 
 impl Location {
@@ -205,7 +239,7 @@ impl Location {
 
     /// Whether it is the same place as `other`.
     pub fn same(&self, other: &Location) -> bool {
-        KArc::ptr_eq(&self.mount, &other.mount) && address(&self.node) == address(&other.node)
+        MountRef::ptr_eq(&self.mount, &other.mount) && address(&self.node) == address(&other.node)
     }
 
     /// Its path from the tree's root if it is the root of a mount in the
@@ -343,7 +377,7 @@ impl Vfs {
     /// A tree whose root is `fs`'s root, mounted from `source`.
     pub fn new(fs: FsRef, source: &str) -> Result<Vfs> {
         let root = fs.root();
-        let mount = mem::arc(Mount {
+        let mount = MountRef::new(mem::arc(Mount {
             id: crate::next_id(),
             fs,
             root: root.clone(),
@@ -355,9 +389,13 @@ impl Vfs {
             lost: AtomicBool::new(false),
             covered: [const { AtomicU64::new(0) }; FILTER_WORDS],
             view: None,
-        })?;
+            count: CpuCount::new(),
+        })?);
         let mut mounts = mem::vec();
-        mem::push(&mut mounts, mount.clone())?;
+        mounts.try_reserve(1).map_err(|_| Error::NoMemory)?;
+        // In the tree: counted on each CPU from now on.
+        MountRef::count_on_cpus(&mount);
+        let _ = mounts.push_within_capacity(mount.clone());
         Ok(Vfs { root: Location::new(mount, root), mounts: Mutex::new(mounts) })
     }
 
@@ -377,7 +415,7 @@ impl Vfs {
             .iter()
             .find(|m| {
                 m.on.as_ref().is_some_and(|(on, covered)| {
-                    core::ptr::eq(KArc::as_ptr(on), mount) && address(covered) == node
+                    core::ptr::eq(MountRef::as_ptr(on), mount) && address(covered) == node
                 })
             })
             .cloned()
@@ -518,10 +556,52 @@ impl Vfs {
     }
 
     fn resolve_as(&self, who: &Who, base: &Location, path: &str, follow: bool) -> Result<Location> {
+        self.reach(who, base, path, follow, |reached| Location {
+            mount: reached.mount.unwrap_or_else(|| base.mount.clone()),
+            node: reached.node.unwrap_or_else(|| base.node.clone()),
+            read_only: reached.read_only,
+        })
+    }
+
+    /// What `f` makes of the node `path` leads to from `base` for `who`,
+    /// and of its mount: the place [`resolve`] finds, or [`resolve_link`]
+    /// unless `follow`. A walk that stays on `base`'s mount takes no
+    /// reference to the mount, which a stat needs no more than this.
+    ///
+    /// [`resolve`]: Vfs::resolve
+    /// [`resolve_link`]: Vfs::resolve_link
+    pub fn look_at<T>(
+        &self,
+        who: &Who,
+        base: &Location,
+        path: &str,
+        follow: bool,
+        f: impl FnOnce(&Mount, &NodeRef) -> T,
+    ) -> Result<T> {
+        self.reach(who, base, path, follow, |reached| {
+            let mount = reached.mount.as_deref().unwrap_or(&base.mount);
+            f(mount, reached.node.as_ref().unwrap_or(&base.node))
+        })
+    }
+
+    /// What `end` makes of where `path` leads from `base`, as
+    /// [`Vfs::resolve_as`] finds it, given only what is not `base`'s own.
+    /// Inline in its two callers, with `end` inline where the walk ends:
+    /// handing back what it found through memory instead cost an open
+    /// some 50 instructions.
+    #[inline(always)]
+    fn reach<T>(
+        &self,
+        who: &Who,
+        base: &Location,
+        path: &str,
+        follow: bool,
+        end: impl FnOnce(Reached) -> T,
+    ) -> Result<T> {
         // `.` alone is `base` itself, as a descriptor's own directory is
         // to fstat(2): it needs no search of it.
         if path == "." {
-            return Ok(base.clone());
+            return Ok(end(Reached { mount: None, node: None, read_only: base.read_only }));
         }
         // Where the walk is, when it has left `base`: a name moves the
         // node on, and a mount there the mount too; a view's read-only
@@ -538,13 +618,15 @@ impl Vfs {
                 Component::Current => {}
                 // Only `..` and symbolic links need the chain: `..` to
                 // step back along, and a link to start again from.
-                Component::Parent => return self.walk_to_end(who, base, path, follow),
+                Component::Parent => {
+                    return self.walk_to_end(who, base, path, follow).map(|at| end(at.into()));
+                }
                 Component::Name(name) => {
                     let found = here.lookup(name)?;
                     if found.kind() == Kind::Symlink
                         && (!components.at_end() || follow || components.trailing_slash())
                     {
-                        return self.walk_to_end(who, base, path, follow);
+                        return self.walk_to_end(who, base, path, follow).map(|at| end(at.into()));
                     }
                     match self.over(mount.as_ref().unwrap_or(&base.mount), &found) {
                         Some(top) => {
@@ -557,11 +639,7 @@ impl Vfs {
                 }
             }
         }
-        Ok(Location {
-            mount: mount.unwrap_or_else(|| base.mount.clone()),
-            node: node.unwrap_or_else(|| base.node.clone()),
-            read_only,
-        })
+        Ok(end(Reached { mount, node, read_only }))
     }
 
     /// Where the walk of `path` from `base` ends.
@@ -729,7 +807,7 @@ impl Vfs {
             return Err(Error::Exists);
         }
         dir.writable()?;
-        if !KArc::ptr_eq(&from.mount, &dir.mount) {
+        if !MountRef::ptr_eq(&from.mount, &dir.mount) {
             return Err(Error::CrossMount);
         }
         may_change(to_who, &dir)?;
@@ -951,7 +1029,7 @@ impl Vfs {
     ) -> Result<()> {
         let (source, from_name) = self.resolve_parent(who, base, from)?;
         let (target, to_name) = self.resolve_parent(to_who, to_base, to)?;
-        if !KArc::ptr_eq(&source.mount, &target.mount) {
+        if !MountRef::ptr_eq(&source.mount, &target.mount) {
             return Err(Error::CrossMount);
         }
         source.writable()?;
@@ -981,13 +1059,13 @@ impl Vfs {
 
     /// What `path` beneath `base` is.
     pub fn stat(&self, who: &Who, base: &Location, path: &str) -> Result<Stat> {
-        Ok(self.resolve(who, base, path)?.node.stat())
+        self.look_at(who, base, path, true, |_, node| node.stat())
     }
 
     /// What `path` beneath `base` is, the link itself if it is a symbolic
     /// link.
     pub fn stat_link(&self, who: &Who, base: &Location, path: &str) -> Result<Stat> {
-        Ok(self.resolve_link(who, base, path)?.node.stat())
+        self.look_at(who, base, path, false, |_, node| node.stat())
     }
 
     /// Lists the directory at `at` from `cursor`, which `who` must be able
@@ -1069,7 +1147,7 @@ impl Vfs {
         if at.node.kind() != Kind::Directory {
             return Err(Error::NotDirectory);
         }
-        let mount = mem::arc(Mount {
+        let mount = MountRef::new(mem::arc(Mount {
             id: crate::next_id(),
             fs,
             root,
@@ -1081,14 +1159,15 @@ impl Vfs {
             lost: AtomicBool::new(false),
             covered: [const { AtomicU64::new(0) }; FILTER_WORDS],
             view: None,
-        })?;
+            count: CpuCount::new(),
+        })?);
         let mut mounts = self.mounts.lock();
         // `at` is what is on top already, so a second mount on the same
         // directory stacks on the first, as on Linux; nothing is ever
         // mounted twice on one node.
         let taken = mounts.iter().any(|m| {
             m.on.as_ref().is_some_and(|(on, covered)| {
-                KArc::ptr_eq(on, &at.mount) && address(covered) == address(&at.node)
+                MountRef::ptr_eq(on, &at.mount) && address(covered) == address(&at.node)
             })
         });
         if taken {
@@ -1099,6 +1178,8 @@ impl Vfs {
         // either, and one that sees it set looks in the table.
         let (word, bit) = filter_bit(address(&at.node));
         at.mount.covered[word].fetch_or(bit, Ordering::Release);
+        // In the tree: counted on each CPU from now on.
+        MountRef::count_on_cpus(&mount);
         let _ = mounts.push_within_capacity(mount.clone());
         Ok(mount)
     }
@@ -1142,15 +1223,26 @@ impl Vfs {
         let mount = at.mount.clone();
         drop(at);
         let mut mounts = self.mounts.lock();
-        if mounts.iter().any(|m| m.on.as_ref().is_some_and(|(on, _)| KArc::ptr_eq(on, &mount))) {
+        if mounts.iter().any(|m| m.is_on(&mount)) {
             return Err(Error::InUse);
         }
+        // Its references, exactly: none can be made from the table while
+        // its lock is held, and once the counting on the CPUs is paused
+        // and every clone and drop that began before has ended, each one
+        // counts where `references` adds them up.
+        MountRef::pause(&mount);
+        rcu::synchronize();
         // The table and `mount` hold it; anything more is a handle.
-        if KArc::strong_count(&mount) > 2 {
+        if MountRef::references(&mount) > 2 {
+            MountRef::resume(&mount);
             return Err(Error::InUse);
         }
-        Self::sync_before_unmount(&mount)?;
-        mounts.retain(|m| !KArc::ptr_eq(m, &mount));
+        if let Err(err) = Self::sync_before_unmount(&mount) {
+            MountRef::resume(&mount);
+            return Err(err);
+        }
+        mounts.retain(|m| !MountRef::ptr_eq(m, &mount));
+        MountRef::stop(&mount);
         if let Some((on, _)) = &mount.on {
             refilter(&mounts, on);
         }
@@ -1176,7 +1268,7 @@ impl Vfs {
         let beneath = |mount: &MountRef| {
             let mut at = mount;
             loop {
-                if KArc::ptr_eq(at, &top) {
+                if MountRef::ptr_eq(at, &top) {
                     return true;
                 }
                 match &at.on {
@@ -1189,22 +1281,37 @@ impl Vfs {
         for mount in mounts.iter().filter(|m| beneath(m)) {
             let _ = doomed.push_within_capacity(mount.clone());
         }
+        // Their references, exactly, as `unmount` counts them: one grace
+        // period for all.
+        for mount in &doomed {
+            MountRef::pause(mount);
+        }
+        rcu::synchronize();
+        let resume = || {
+            for mount in &doomed {
+                MountRef::resume(mount);
+            }
+        };
         // Each is held by the table, by `doomed`, by every mount on it,
         // and `top` by `top` too; anything more is a handle.
         for mount in &doomed {
-            let on_it = doomed
-                .iter()
-                .filter(|m| m.on.as_ref().is_some_and(|(on, _)| KArc::ptr_eq(on, mount)))
-                .count();
-            let expected = 2 + on_it + usize::from(KArc::ptr_eq(mount, &top));
-            if KArc::strong_count(mount) > expected {
+            let on_it = doomed.iter().filter(|m| m.is_on(mount)).count();
+            let expected = 2 + on_it + usize::from(MountRef::ptr_eq(mount, &top));
+            if MountRef::references(mount) > expected {
+                resume();
                 return Err(Error::InUse);
             }
         }
         for mount in &doomed {
-            Self::sync_before_unmount(mount)?;
+            if let Err(err) = Self::sync_before_unmount(mount) {
+                resume();
+                return Err(err);
+            }
         }
-        mounts.retain(|m| !doomed.iter().any(|d| KArc::ptr_eq(m, d)));
+        mounts.retain(|m| !doomed.iter().any(|d| MountRef::ptr_eq(m, d)));
+        for mount in &doomed {
+            MountRef::stop(mount);
+        }
         if let Some((on, _)) = &top.on {
             refilter(&mounts, on);
         }
@@ -1271,6 +1378,22 @@ impl Vfs {
     }
 }
 
+impl Drop for Vfs {
+    /// Takes the mounts still in the tree out of counting on the CPUs, as
+    /// an unmount does, so that the last reference to each frees it: for
+    /// a tree dropped with mounts in it, as the tests drop theirs.
+    fn drop(&mut self) {
+        let mounts = self.mounts.get_mut();
+        for mount in mounts.iter() {
+            MountRef::pause(mount);
+        }
+        rcu::synchronize();
+        for mount in mounts.iter() {
+            MountRef::stop(mount);
+        }
+    }
+}
+
 /// Puts what of `bytes` fits in `out` at `at`.
 fn put_within(out: &mut dyn crate::Out, at: usize, bytes: &[u8]) -> Result<()> {
     let room = out.len().saturating_sub(at).min(bytes.len());
@@ -1301,7 +1424,7 @@ fn refilter(mounts: &[MountRef], mount: &MountRef) {
     let mut words = [0u64; FILTER_WORDS];
     for m in mounts {
         if let Some((on, covered)) = &m.on
-            && KArc::ptr_eq(on, mount)
+            && MountRef::ptr_eq(on, mount)
         {
             let (word, bit) = filter_bit(address(covered));
             words[word] |= bit;
