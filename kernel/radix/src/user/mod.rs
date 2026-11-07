@@ -191,13 +191,12 @@ fn runs(user: &UserThread) -> bool {
         .is_some_and(|thread| thread.user().is_some_and(|me| core::ptr::eq(Arc::as_ptr(me), user)))
 }
 
-/// Registers the system call, fault and return handlers, and reports user
-/// mode. Called once at boot.
+/// Registers the fault handlers, and reports user mode. Called once at
+/// boot. The system call and return handlers the architecture calls by
+/// name ([`radix_syscall`], [`radix_user_return`]).
 pub fn init() {
-    Arch::set_syscall_handler(syscall::handle);
     Arch::set_user_fault_handler(on_fault);
     Arch::set_user_page_handler(on_user_page);
-    Arch::set_user_return_handler(on_return);
     Arch::describe_user_mode(&mut |args| info!("{args}"));
     // The ABI numbers object kinds as the store does.
     for kind in radix_cap::ObjectKind::ALL {
@@ -350,9 +349,30 @@ pub(crate) fn lend<R>(
     user.space.lend(address, len, write, with)
 }
 
+/// The system call handler, which the architecture calls by name
+/// (`radix_hal::UserMode`, ADR 0406) for every system call: fat LTO
+/// inlines it into the entry path.
+// The architecture declares this symbol with the same signature, so
+// exporting it unmangled is sound.
+#[allow(unsafe_code)]
+#[unsafe(no_mangle)]
+pub extern "Rust" fn radix_syscall(regs: &mut radix_hal::SyscallRegs) {
+    syscall::handle(regs);
+}
+
+/// The return handler, which the architecture calls by name on the way
+/// back to user mode ([`on_return`]).
+// As for `radix_syscall`.
+#[allow(unsafe_code)]
+#[unsafe(no_mangle)]
+pub extern "Rust" fn radix_user_return() {
+    on_return();
+}
+
 /// On the way back to user mode, from a system call, an interrupt or a
 /// fault: a thread asked to stop ends here, and one with signals to take
 /// takes them (`posix::signal::deliver`).
+#[inline(always)]
 fn on_return() {
     let Some(me) = sched::running() else { return };
     if me.interrupted() {

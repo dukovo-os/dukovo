@@ -479,14 +479,18 @@ unsafe extern "C" {
     static radix_user_copy_back_end: u8;
 }
 
-static SYSCALL_HANDLER: Once<fn(&mut SyscallRegs)> = Once::new();
 static FAULT_HANDLER: Once<fn(&UserFault)> = Once::new();
 static PAGE_HANDLER: Once<fn(u64, bool) -> bool> = Once::new();
-static RETURN_HANDLER: Once<fn()> = Once::new();
 
-/// Registers the system call handler.
-pub fn set_syscall_handler(handler: fn(&mut SyscallRegs)) {
-    let _ = SYSCALL_HANDLER.set(handler);
+// The kernel's system call and return handlers, which every system call
+// runs, called by name (`radix_hal::UserMode`, ADR 0406): fat LTO inlines
+// them here. The kernel defines both with these signatures.
+#[allow(unsafe_code)]
+unsafe extern "Rust" {
+    /// Handles the system call in `regs`.
+    safe fn radix_syscall(regs: &mut SyscallRegs);
+    /// Runs on the way back to user mode.
+    safe fn radix_user_return();
 }
 
 /// Registers the user fault handler.
@@ -499,17 +503,11 @@ pub fn set_page_handler(handler: fn(u64, bool) -> bool) {
     let _ = PAGE_HANDLER.set(handler);
 }
 
-/// Registers the user return handler.
-pub fn set_return_handler(handler: fn()) {
-    let _ = RETURN_HANDLER.set(handler);
-}
-
-/// Runs the user return handler, if there is one, and leaves interrupts
-/// masked: on the way back to user mode.
+/// Runs the kernel's return handler and leaves interrupts masked: on the
+/// way back to user mode.
+#[inline(always)]
 pub fn on_return() {
-    if let Some(handler) = RETURN_HANDLER.get() {
-        handler();
-    }
+    radix_user_return();
     cpu::mask_interrupts();
 }
 
@@ -549,15 +547,10 @@ fn user_flags(rflags: u64) -> u64 {
 #[unsafe(no_mangle)]
 extern "C" fn radix_syscall_dispatch(frame: *mut SyscallFrame) -> u64 {
     thread::set_user_entry(UserEntry::Syscall);
-    match SYSCALL_HANDLER.get() {
-        // SAFETY: the stub passes the frame it has just saved at the top
-        // of this thread's kernel stack, which nothing else uses while the
-        // call runs; the borrow of its registers ends when the handler
-        // returns.
-        Some(handler) => handler(unsafe { &mut (*frame).regs }),
-        // SAFETY: as above, for one write.
-        None => unsafe { (*frame).regs.number = u64::MAX },
-    }
+    // SAFETY: the stub passes the frame it has just saved at the top of
+    // this thread's kernel stack, which nothing else uses while the call
+    // runs; the borrow of its registers ends when the handler returns.
+    radix_syscall(unsafe { &mut (*frame).regs });
     // Back to the program with interrupts masked from here to the return.
     cpu::mask_interrupts();
     on_return();

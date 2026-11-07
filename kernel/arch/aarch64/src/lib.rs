@@ -506,13 +506,9 @@ impl UserMode for Arch {
         Self::halt()
     }
 
-    fn set_syscall_handler(_: fn(&mut SyscallRegs)) {}
-
     fn set_user_fault_handler(_: fn(&UserFault)) {}
 
     fn set_user_page_handler(_: fn(u64, bool) -> bool) {}
-
-    fn set_user_return_handler(_: fn()) {}
 
     fn user_registers() -> Option<()> {
         None

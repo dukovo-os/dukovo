@@ -27,7 +27,11 @@ function pointers:
   loads its target from the table, and the caller saves the registers
   it keeps around a call it cannot see into.
 - Every heap allocation and free holds interrupts off through the
-  memory manager's `dyn Platform` (`enter` and `restore_interrupts`).
+  memory manager's `dyn Platform` (`enter` and `restore_interrupts`),
+  and a free asks the platform for its direct map through the same
+  table.
+- Every system call reaches the kernel's handler, and then its return
+  handler, through pointers the kernel registered with the architecture.
 - Counting a reference to a mount on the CPU (ADR 0404) is a locked add
   on the CPU's own count, twice per open and close, although only that
   CPU writes its row.
@@ -56,6 +60,16 @@ kernel's build the heap's allocation and free hold interrupts off and
 read the CPU's number through `HeldCpu`, inline, instead of through the
 platform's table; the kernel's platform does the same thing.
 
+**The frame allocator keeps the direct map.** It reads the platform's
+direct map once, when it is given the platform, and the heap reads it
+from there with a load: it cannot change once the kernel runs.
+
+**The architecture calls the kernel's system call and return handlers
+by name.** `radix_hal::UserMode` no longer registers them: the x86-64
+entry calls `radix_syscall` and `radix_user_return`, which the kernel
+defines (`user`), so fat LTO inlines them into the entry path as it does
+the hooks. The fault handlers, which few calls reach, stay registered.
+
 **A CPU changes its own counts with plain instructions.** The counts of
 `radix_sync::cpu_ref` are changed only by their own CPU, held, with
 interrupts off: the fast path already held it, and the slow way's drop
@@ -72,13 +86,15 @@ between them cover them, not a step for each byte.
 
 ## Consequences
 
-- Under QEMU an open and close runs 3,717 instructions (from 3,884) and
-  12 locked read-modify-writes (from 14); every lock and allocation in
-  the kernel saves its calls through a table.
+- Under QEMU an open and close runs 3,675 instructions (from 3,884) and
+  12 locked read-modify-writes (from 14); every lock, allocation and
+  system call in the kernel saves its calls through a table.
 - `radix_sync` declares three more symbols that a kernel build must
   define, beside `radix_count_here`, `radix_hold_cpu` and
   `radix_let_go_cpu`; only the `radix` kernel links `radix_sync` for a
-  target without an operating system, and it defines them all.
+  target without an operating system, and it defines them all. The
+  x86-64 architecture declares two, `radix_syscall` and
+  `radix_user_return`, which the kernel defines too.
 - A kernel build whose locks registered other hooks than the kernel's
   would not reach them for preemption or the running thread; there is
   none, and the hooks' documentation says so.
