@@ -38,17 +38,26 @@ pub fn builtin_font(name: &str) -> Option<Font<'static>> {
 }
 
 /// Columns and rows the console should have at least, if a font allows.
-const MIN_GRID: (usize, usize) = (100, 40);
+pub const MIN_GRID: (usize, usize) = (100, 40);
 
 /// Picks the largest built-in font that still gives a grid of at least 100
 /// columns by 40 rows on a `width` x `height` screen, or the smallest font
 /// if none does. Returns the font's name.
 pub fn choose_font(width: usize, height: usize) -> &'static str {
+    choose_font_for(width, height, MIN_GRID)
+}
+
+/// Picks the largest built-in font that still gives a grid of at least
+/// `grid`'s columns and rows on a `width` x `height` screen, or the
+/// smallest font if none does: for a program that needs fewer cells than
+/// the console, such as the installer's screens of 100 by 30. Returns the
+/// font's name.
+pub fn choose_font_for(width: usize, height: usize, grid: (usize, usize)) -> &'static str {
     FONTS
         .iter()
         .rev()
         .filter_map(|&(name, bytes)| Some((name, Font::parse(bytes).ok()?)))
-        .find(|(_, font)| width / font.width >= MIN_GRID.0 && height / font.height >= MIN_GRID.1)
+        .find(|(_, font)| width / font.width >= grid.0 && height / font.height >= grid.1)
         .map_or(FONTS[0].0, |(name, _)| name)
 }
 
@@ -426,6 +435,45 @@ mod tests {
         assert_eq!(choose_font(1366, 768), "8x16");
         assert_eq!(choose_font(1920, 1080), "12x24");
         assert_eq!(choose_font(3840, 2160), "16x32");
+        // The installer's 100 by 30 fits larger fonts.
+        let screens = (100, 30);
+        assert_eq!(choose_font_for(1024, 768, screens), "8x16");
+        assert_eq!(choose_font_for(1280, 800, screens), "12x24");
+        assert_eq!(choose_font_for(1920, 1080, screens), "16x32");
+    }
+
+    #[test]
+    fn every_font_draws_a_check_mark() {
+        for (name, _) in FONTS {
+            let font = builtin_font(name).unwrap();
+            // Spleen has none: Dukovo's own is drawn, not `?`.
+            assert!(font.lookup('\u{2713}').is_none(), "{name} has \u{2713} now: drop ours");
+            let check = font.glyph('\u{2713}');
+            let question = font.glyph('?');
+            let rows =
+                |glyph: Glyph<'_>| (0..font.height).map(|y| glyph.row_bits(y)).collect::<Vec<_>>();
+            let lit = rows(check).iter().filter(|&&bits| bits != 0).count();
+            assert!(lit >= font.height / 3, "{name}: \u{2713} is {lit} rows high");
+            assert_ne!(rows(check), rows(question), "{name}: \u{2713} is drawn as ?");
+            // Its top right and its bottom left of centre, as a tick.
+            let top = rows(check).into_iter().position(|bits| bits != 0).unwrap();
+            assert!(check.pixel(font.width - 2, top), "{name}: \u{2713} starts at the right");
+        }
+    }
+
+    #[test]
+    fn every_font_draws_arrows_and_lists_what_it_draws() {
+        for (name, _) in FONTS {
+            let font = builtin_font(name).unwrap();
+            let question = font.glyph('?');
+            let mut chars = Vec::new();
+            font.each_char(|c| chars.push(c));
+            for c in ['\u{2191}', '\u{2193}', '\u{2713}', 'A', '\u{2500}'] {
+                assert!(chars.contains(&c), "{name} does not list {c}");
+                let drawn = (0..font.height).map(|y| font.glyph(c).row_bits(y));
+                assert!(!drawn.eq((0..font.height).map(|y| question.row_bits(y))), "{name}: {c}");
+            }
+        }
     }
 
     #[test]

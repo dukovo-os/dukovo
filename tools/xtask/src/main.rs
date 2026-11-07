@@ -21,6 +21,7 @@ mod elf;
 mod fixture;
 mod frames;
 mod grub;
+mod grub_theme;
 mod image;
 mod kernel;
 mod krelocs;

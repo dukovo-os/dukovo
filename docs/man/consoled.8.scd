@@ -82,10 +82,13 @@ volume, can turn it off; the boot tests do, to type at root's shell.
 With *install* on the kernel's command line, as the install stick's
 *Install Dukovo* entry starts the live system, tty1's first session runs
 *dukovo-install*(8)'s screens as root in the shell's place, with no
-issue text, and consoled logs *install: the installer's screens on
-tty1*. When they end, by Live console on their first page or at the end
-of the install, tty1 clears and runs the shell as the other consoles do
-(ADR 0310).
+issue text and no cursor until they draw, and consoled logs *install:
+the installer's screens on tty1*. The font is then the largest that
+gives the screens' 100 columns by 30 rows, where the consoles' own
+wants 40 rows: 12x24 on a 1280x800 screen, 16x32 on 1920x1080. When the
+screens end, by Live console on their first page or at the end of the
+install, tty1 clears and runs the shell as the other consoles do (ADRs
+0310 and 0402).
 
 # NOTIFICATIONS
 
@@ -196,6 +199,17 @@ and keypad modes, and SGR's bold, dim, underline, reverse, the 16
 colours, the 256 colours and true colour, the latter two shown as the
 nearest of the 256. Wide characters take two cells. The parser is the
 vte crate's, from the Alacritty project.
+
+A program can change the colour each of the 256 shows, on its own
+console, as xterm and the Linux console let it: *ESC ] 4 ;* _n_ *;*
+_colour_ *ST* sets index _n_ to _colour_, *rgb:*_rr_*/*_gg_*/*_bb_ (one
+to four hex digits each) or *#*_rrggbb_, or with *?* asks for it; *ESC ]
+104 ST* gives every index its own colour back, or with indices, those;
+the Linux console's *ESC ] P* _nrrggbb_ and *ESC ] R* do the same for
+the first sixteen, and end at the next escape sequence. The screen's
+margins round the cells are index 0's colour, the background. A new
+session, and *ESC c*, start with the colours as they were. The
+installer's screens set their design's sixteen while they show.
 
 # OPTIONS
 

@@ -65,7 +65,7 @@ const PLATFORMS: [(&str, &str, &str); 2] =
 /// The modules every image's GRUB holds (ADR 0306): partition tables,
 /// the filesystems it reads (the EFI system partition's FAT, the root's
 /// Btrfs, a disc's ISO 9660), Multiboot2 to load Radix, the environment
-/// block, `search`, the terminals and the menu.
+/// block, `search`, the terminals and the menu, plain or themed.
 pub const MODULES: &[&str] = &[
     "part_gpt",
     "part_msdos",
@@ -79,6 +79,10 @@ pub const MODULES: &[&str] = &[
     "search_label",
     "search_fs_file",
     "gfxterm",
+    // The install stick's menu in Dukovo's colours: GRUB's themed menu
+    // and the pictures its theme draws with (ADR 0402).
+    "gfxmenu",
+    "png",
     "serial",
     "terminal",
     "normal",
