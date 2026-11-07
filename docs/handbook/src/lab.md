@@ -80,7 +80,7 @@ all outside the system's slot that a release is made from:
 
 - an administrator's account, `lab`, that signs in over SSH with the
   lab's key, and whose password, which elevate asks for, is the lab
-  password (ADR 0406);
+  password (ADR 0408);
 - sshd turned on;
 - a sign-in banner that says it is a test image.
 

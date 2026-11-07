@@ -10,7 +10,7 @@
 //! the slot alone) can ever carry them:
 //!
 //! - the `lab` account, an administrator's that signs in over SSH with
-//!   the lab key, whose password is the lab password (ADR 0406), for tests
+//!   the lab key, whose password is the lab password (ADR 0408), for tests
 //!   that run as root, or without one a password no one knows;
 //! - its home, the account's, holding the lab's public key in
 //!   `~/.ssh/authorized_keys`;
@@ -57,7 +57,7 @@ const CONFIG: &str = ".config/dukovo-lab";
 const PUBLIC_KEY: &str = "lab_ed25519.pub";
 
 /// The lab password in that folder (`dukovo-lab key` makes it too):
-/// the lab account's, which tests that run as root give elevate (ADR 0406).
+/// the lab account's, which tests that run as root give elevate (ADR 0408).
 const PASSWORD: &str = "lab_password";
 
 /// What a lab image's console says before signing in, after the default
@@ -92,7 +92,7 @@ const NEEDS: &[(&str, &str)] = &[
 ];
 
 /// How a lab image lets the lab in: the lab's public key, for SSH, and
-/// the hash of the lab's password, for elevate (ADR 0406). Without a
+/// the hash of the lab's password, for elevate (ADR 0408). Without a
 /// password the account's is one no one knows, and only tests that run
 /// nothing as root pass.
 #[derive(Clone, Debug, PartialEq, Eq)]
