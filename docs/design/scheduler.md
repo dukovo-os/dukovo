@@ -174,7 +174,10 @@ host in a virtual machine. The reaper looks again after a millisecond
 only if a dead thread's lock was held while it looked.
 
 **Preemption.** Spin locks and RCU read sections raise the CPU's
-preemption count; nothing else holds off preemption. `need_resched` is
+preemption count; nothing else holds off preemption. They reach it, and
+mutexes the running thread's token, through functions the kernel defines
+by name, which fat LTO inlines into each lock, not through the hooks'
+table (ADR 0406). `need_resched` is
 acted on as the interrupt that set it returns, if the count is 0, or when
 the last spin lock is let go: the guard restores the interrupt flag
 first and then drops the count, so the reschedule it may trigger runs

@@ -42,7 +42,7 @@ pub struct ReadGuard {
 pub fn read_lock() -> ReadGuard {
     let hooks = hooks::active();
     if let Some(hooks) = hooks {
-        hooks.preempt_disable();
+        hooks::preempt_disable(hooks);
     }
     ReadGuard { hooks, _not_send: PhantomData }
 }
@@ -59,7 +59,7 @@ impl ReadGuard {
 impl Drop for ReadGuard {
     fn drop(&mut self) {
         if let Some(hooks) = self.hooks {
-            hooks.preempt_enable();
+            hooks::preempt_enable(hooks);
         }
     }
 }

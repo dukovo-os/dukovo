@@ -112,7 +112,7 @@ impl<T: ?Sized> Mutex<T> {
         if let Some(hooks) = hooks::checking(hooks) {
             hooks.lock_acquire(self.acquire_info(at, subclass, false));
         }
-        let me = hooks.map_or(0, Hooks::current_thread);
+        let me = hooks::current_thread(hooks);
         let token = if me == 0 { NO_THREAD } else { me };
         if self.claim(token) {
             return self.guard(hooks, token);
@@ -130,7 +130,7 @@ impl<T: ?Sized> Mutex<T> {
     #[track_caller]
     pub fn try_lock(&self) -> Option<MutexGuard<'_, T>> {
         let hooks = hooks::active();
-        let me = hooks.map_or(0, Hooks::current_thread);
+        let me = hooks::current_thread(hooks);
         let token = if me == 0 { NO_THREAD } else { me };
         if !self.claim(token) {
             return None;

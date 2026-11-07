@@ -207,7 +207,7 @@ impl<T: ?Sized> SpinLock<T> {
 /// on, when they were masked.
 fn enter(hooks: Option<&'static dyn Hooks>, irq: bool) -> Option<bool> {
     let hooks = hooks?;
-    hooks.preempt_disable();
+    hooks::preempt_disable(hooks);
     irq.then(|| hooks.disable_interrupts())
 }
 
@@ -218,7 +218,7 @@ fn leave(hooks: Option<&'static dyn Hooks>, irq: Option<bool>) {
         if let Some(were_enabled) = irq {
             hooks.restore_interrupts(were_enabled);
         }
-        hooks.preempt_enable();
+        hooks::preempt_enable(hooks);
     }
 }
 
