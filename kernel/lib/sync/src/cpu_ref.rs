@@ -249,12 +249,19 @@ impl<T: CpuCounted, A: AllocatorClone> CpuRef<T, A> {
         if count.state.load(Ordering::Relaxed) != ARC {
             return false;
         }
-        // The lowest clear bit, set.
-        let Ok(taken) = TAKEN.try_update(Ordering::Acquire, Ordering::Relaxed, |taken| {
-            (taken != u64::MAX).then(|| taken | (taken + 1))
-        }) else {
-            return false;
-        };
+        // The lowest clear bit, set. (A loop of its own: the update
+        // functions of the pinned nightly and of Kani's have other names.)
+        let mut taken = TAKEN.load(Ordering::Relaxed);
+        loop {
+            if taken == u64::MAX {
+                return false;
+            }
+            let with = taken | (taken + 1);
+            match TAKEN.compare_exchange_weak(taken, with, Ordering::Acquire, Ordering::Relaxed) {
+                Ok(_) => break,
+                Err(now) => taken = now,
+            }
+        }
         // At most 63, which fits.
         count.line.store((!taken).trailing_zeros() as u8, Ordering::Relaxed);
         // The counts' reference: held until they come to none after

@@ -51,8 +51,6 @@
 
 extern crate alloc;
 
-// Kani's older nightly has no `AllocatorClone`, and no proof uses it.
-#[cfg(not(kani))]
 pub mod cpu_ref;
 mod hooks;
 mod mutex;
