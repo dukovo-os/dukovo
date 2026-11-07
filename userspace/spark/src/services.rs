@@ -186,19 +186,34 @@ fn convert(dir: &Dir, name: &str) -> Result<(), String> {
     let text = String::from_utf8(text).map_err(|_| String::from("it is not UTF-8 text"))?;
     let converted = manifest::legacy::convert(&text).map_err(|err| err.to_string())?;
     write_new(dir, &format!("{name}.toml"), &converted)?;
-    dir.rename(&old, dir, &format!("{old}.old")).map_err(|err| format!("{err}"))
+    dir.rename(&old, dir, &format!("{old}.old")).map_err(|err| format!("{err}"))?;
+    // Sync so the conversion survives a power loss as a whole: the new
+    // .toml is already synced by write_new, and this lands the rename.
+    dir.sync().map_err(|err| format!("{err}"))
 }
 
 /// Writes `text` to `path` in `dir` whole or not at all: to a new file
-/// first, then renamed over it.
+/// first, synced to the disk, then renamed over it, and the rename
+/// synced too. Without the syncs an unclean power loss can leave the
+/// file renamed but empty, because the rename reaches the disk while
+/// the new file's data is still in the cache behind it; a boot then
+/// reads the file as present but blank. (A power cut just after boot
+/// used to wipe the service files this way, so no service started.)
 fn write_new(dir: &Dir, path: &str, text: &str) -> Result<(), String> {
     let new = format!("{path}.new");
-    dir.write_file(&new, text.as_bytes()).and_then(|()| dir.rename(&new, dir, path)).map_err(
-        |err| {
+    dir.create(&new)
+        .and_then(|file| {
+            file.write_all_at(0, text.as_bytes())?;
+            // The new file's data must be on the disk before the rename,
+            // and the rename on the disk after it.
+            file.sync()?;
+            dir.rename(&new, dir, path)?;
+            dir.sync()
+        })
+        .map_err(|err| {
             let _ = dir.remove(&new);
             format!("cannot write {path}: {err}")
-        },
-    )
+        })
 }
 
 /// The texts a service is read from: its file, and the file in
