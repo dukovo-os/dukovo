@@ -21,6 +21,11 @@ title = "Hardware and drivers"
 about = "The devices found and working: controllers, disks, USB, CPUs and memory"
 
 [[category]]
+name = "processes"
+title = "Processes and monitors"
+about = "The running processes and the tools that show them: ps, top, kill, free, who and the rest"
+
+[[category]]
 name = "storage"
 title = "Disks and filesystems"
 about = "The root's Btrfs, and filesystems made, written and read back on sticks"

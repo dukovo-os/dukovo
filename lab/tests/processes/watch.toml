@@ -1,0 +1,10 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "watch runs a command again and again, and with -g stops when its output changes"
+time = "2m"
+
+# date's nanoseconds differ every run, so -g sees a change and exits at once.
+[[step]]
+run = "watch -t -g -n 0.2 'date +%N'; echo WATCH-rc=$?"
+expect = "WATCH-rc=0"

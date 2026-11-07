@@ -1,0 +1,21 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "free shows the memory in use and free; uptime shows how long the system has been up and its load"
+time = "2m"
+
+[[step]]
+run = "free"
+expect = ["total", "used", "free", "available", "Mem:", "Swap:"]
+[[step]]
+run = "free -b"
+expect = ["Mem:", "Swap:"]
+[[step]]
+run = "free -h"
+expect = ["Mem:", "Swap:"]
+[[step]]
+run = "uptime"
+expect = ["up", "load average:"]
+[[step]]
+run = "uptime -p"
+expect = "up"
