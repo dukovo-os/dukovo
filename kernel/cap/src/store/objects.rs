@@ -76,6 +76,13 @@ impl Entry {
 
 /// One record: the object's generation, and the rest behind a lock of
 /// its own.
+///
+/// Each record has whole cache lines to itself (ADR 0407). Records sit
+/// side by side in their block, and the objects of two of them may be
+/// used on two CPUs at once, as when two processes each open and close a
+/// file: sharing a line, every lock and change of one record took the
+/// line from the other CPU, although they share nothing else.
+#[repr(align(64))]
 pub(super) struct Record<K> {
     /// Moves on when the object goes, so its old name stays wrong. It
     /// changes only with the record locked, and is read with it locked,
@@ -579,4 +586,18 @@ impl<A: Allocator + Clone, K> Objects<A, K> {
 fn give_to_table<A: Allocator>(free: &mut Free<A>, index: u32) {
     let pushed = free.indexes.push_within_capacity(index);
     debug_assert!(pushed.is_ok(), "the free list has room for every record");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn each_record_has_cache_lines_of_its_own() {
+        // Whatever the kernel keeps in it, a record starts a cache line
+        // and fills whole ones, so its neighbours in the block share none.
+        assert_eq!(align_of::<Record<u64>>(), 64);
+        assert_eq!(size_of::<Record<u64>>() % 64, 0);
+        assert_eq!(size_of::<Record<[u64; 5]>>() % 64, 0);
+    }
 }
