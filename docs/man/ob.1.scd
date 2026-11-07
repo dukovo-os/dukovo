@@ -212,7 +212,7 @@ _target/userspace/_).
 		whose password, the lab's own, lets tests run commands as root
 		through *elevate*(8); sshd turned on by an override file; and a
 		sign-in banner that says the image is a test image (ADRs 0401 and
-		0406). *lab run* tests it. Never give it to anyone as a release.
+		0408). *lab run* tests it. Never give it to anyone as a release.
 
 	*--lab-key* _file_
 		The lab's public key, one *ssh-ed25519* line, instead of
@@ -1471,6 +1471,15 @@ _target/userspace/_).
 	systemd user timer that starts schedules (*dukovo-lab schedule
 	install*), then build the image and open the runner page. Each step
 	is skipped once it is done.
+
+	For *run* and *ui*, also build the Linux kit that the performance
+	tests' *bench* steps hold Dukovo to, in _out/lab-linux_, and pass it
+	with *--linux*: the Linux kernel *bench* measures against (the one in
+	*OB_LINUX_KERNEL* when it is set, else fetched as *bench* fetches it) and an
+	initramfs whose only process is _tools/linux-bench_, running the same
+	POSIX benchmarks. With *--no-build*, the kit already in _out_ is used.
+	When the kit cannot be built, *ob* says why and the performance tests
+	skip. A *--linux* given after _command_ is passed on instead.
 
 	*dukovo-lab* is found on *PATH*, or at *OB_LAB*. The handbook's Lab
 	tests chapter shows how to write a test.

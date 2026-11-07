@@ -80,7 +80,7 @@ all outside the system's slot that a release is made from:
 
 - an administrator's account, `lab`, that signs in over SSH with the
   lab's key, and whose password, which elevate asks for, is the lab
-  password (ADR 0406);
+  password (ADR 0408);
 - sshd turned on;
 - a sign-in banner that says it is a test image.
 
@@ -96,7 +96,7 @@ A test is a file at `lab/tests/<category>/<name>.toml`. The categories,
 their order and their titles on the runner page are in
 `lab/tests/categories.toml`: boot and power, hardware and drivers, disks
 and filesystems, network, SSH, services and logs, accounts and elevate,
-and commands. Add one there when a new kind of test needs it. This test
+commands, and performance against Linux. Add one there when a new kind of test needs it. This test
 pulls the network cable:
 
 ```toml
@@ -121,9 +121,37 @@ expect = "LOWER_UP"
 `root = true`, which runs the command through `elevate -S` with the lab
 password; `serial` waits for text on the serial console; `power`,
 `link`, `usb` (a stick holding an image, or a blank one of a size),
-`keys` and `screenshot` work the machine, and `wait` waits for it to be
-ready, to turn itself off, or for a time. A new feature is complete only
+`keys` and `screenshot` work the machine, `wait` waits for it to be
+ready, to turn itself off, or for a time, and `bench` measures it
+against Linux (below). A new feature is complete only
 with its lab tests ([Contributing](https://github.com/dukovo-os/dukovo/blob/main/CONTRIBUTING.md)). The harness's
 [test file reference](https://github.com/dukovo-os/lab/blob/main/docs/test-files.md)
 lists every key, and `./ob lab show <test>` shows which machines can run
 a test. A new file needs no other change.
+
+## Performance tests
+
+The tests in `lab/tests/performance` hold Dukovo to Linux on the same
+machine. A `bench` step runs one of the test image's benchmark programs
+over SSH and names the rows it holds to Linux's:
+
+```toml
+about = "fork and exec cost no more than on Linux on the same machine"
+time = "10m"
+
+[[step]]
+bench = "/system/tests/posix/bench"
+rows = ["posix_fork_wait", "posix_fork_exec_wait"]
+```
+
+Linux's numbers come from the machine's Linux twin, booted once a run
+from a kit that `./ob lab` builds in `out/lab-linux`: the same Linux
+kernel `./ob bench` holds Radix to (ADR 0290) and an initramfs whose
+first program is `tools/linux-bench`, running the same POSIX benchmarks
+built from the same file. So the lab and CI measure against the same
+Linux, and the lab adds the machines CI cannot: each real machine in
+the lab, under its own firmware and devices. A row passes at 1.00,
+parity, unless the step gives a `limit`. On QEMU without KVM the numbers
+are kept but the steps skip, as an emulator's numbers say nothing about
+either system. When the kit cannot be built (no network for the kernel,
+say), `./ob lab` says so and the performance tests skip.

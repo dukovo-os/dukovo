@@ -3,7 +3,7 @@ SPDX-FileCopyrightText: 2026 The Dukovo contributors
 SPDX-License-Identifier: Apache-2.0 OR MIT
 -->
 
-# 0406. Lab tests run commands as root with the lab's own password
+# 0408. Lab tests run commands as root with the lab's own password
 
 - Status: Accepted
 - Date: 2026-11-07

@@ -162,7 +162,7 @@ pub struct Overrides {
     /// An account to make in the root (ADR 0218).
     pub account: Option<Account>,
     /// The lab key and password a [`Kind::Lab`] image trusts (ADRs 0401
-    /// and 0406).
+    /// and 0408).
     pub lab: Option<lab::Access>,
 }
 
@@ -833,7 +833,7 @@ pub struct Extras<'a> {
     /// An account to make (`ob image --user`, ADR 0218).
     pub account: Option<&'a Account>,
     /// The lab's account, home and sshd, trusting this key and password
-    /// (ADRs 0401 and 0406).
+    /// (ADRs 0401 and 0408).
     pub lab: Option<&'a lab::Access>,
 }
 

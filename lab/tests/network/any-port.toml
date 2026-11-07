@@ -1,0 +1,14 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "A program can listen on a port the kernel picks for it, as on Linux"
+time = "2m"
+
+# Binding port 0 asks the kernel for a free port, which a program then
+# listens on: servers that print their own address do this, and so do the
+# POSIX benchmarks' TCP rows. nc listens in the background; ss shows its
+# port. The resolver listens on 127.0.0.53, so "127.0.0.1:" is nc's.
+[[step]]
+run = "nc -l 127.0.0.1 0 < /dev/null & sleep 1; ss -tln; kill $! 2> /dev/null; true"
+expect = "127.0.0.1:"
+expect_not = "Permission denied"

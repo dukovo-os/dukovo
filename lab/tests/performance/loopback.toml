@@ -1,0 +1,21 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "TCP and UDP over the loopback interface take no longer than on Linux"
+time = "10m"
+
+# The POSIX benchmarks: the C program `ob bench` runs on both systems
+# (userspace/posix/bench.c), here on the machine under test, against the
+# same program built for Linux in the Linux kit. Every row is held to
+# parity, as `ob bench --gate` holds it.
+# With --network it also times connections and round trips to 127.0.0.1.
+[[step]]
+bench = "/system/tests/posix/bench --network"
+rows = [
+    "posix_tcp_connect",
+    "posix_tcp_roundtrip_same_cpu",
+    "posix_tcp_roundtrip_cross_cpu",
+    "posix_udp_roundtrip_same_cpu",
+    "posix_udp_roundtrip_cross_cpu",
+    "posix_tcp_mib",
+]

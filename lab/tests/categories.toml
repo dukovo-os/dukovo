@@ -44,3 +44,8 @@ about = "Accounts made and removed, groups, and running as root"
 name = "commands"
 title = "Commands"
 about = "The command-line tools: files, text, archives, git, the shell and help"
+
+[[category]]
+name = "performance"
+title = "Performance against Linux"
+about = "Dukovo's time for each operation, held to Linux's on the same machine"

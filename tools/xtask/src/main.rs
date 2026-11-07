@@ -202,7 +202,7 @@ DUKOVO_LIVE partition holds the signed release the installer installs
                        The lab account's password, its first line, for tests
                        that run as root (default ~/.config/dukovo-lab/lab_password,
                        which `dukovo-lab key` makes too; without it the
-                       account's password is one no one knows; ADR 0406)
+                       account's password is one no one knows; ADR 0408)
   --cmdline <flags>    Kernel flags instead of boot.cmdline (dukovo-boot(7))
   --microcode <path>   Intel microcode file or directory instead of image.microcode
   --disk-check <serial>
