@@ -1,0 +1,19 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "top, vmstat, iostat and pidstat report what the system and its processes are doing"
+time = "3m"
+
+# top refreshes forever on a terminal; -b -n1 writes one frame and stops.
+[[step]]
+run = "top -b -n1"
+expect = ["Tasks:", "%Cpu", "MiB Mem", "PID", "COMMAND", "spark"]
+[[step]]
+run = "vmstat"
+expect = ["procs", "memory", "swpd", "free", "us", "sy", "id"]
+[[step]]
+run = "iostat -d"
+expect = ["Device", "tps", "kB_read"]
+[[step]]
+run = "pidstat -p SELF"
+expect = ["PID", "%CPU", "Command", "pidstat"]

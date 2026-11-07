@@ -1,0 +1,27 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "who, users and w show who is signed in; last shows the sign-in history"
+time = "2m"
+
+# Over SSH there is no controlling terminal, so no login session is counted;
+# the tools still run and print their headings. The console tests sign in at
+# the screen, where who and w have a session to show.
+[[step]]
+run = "who -H"
+expect = ["NAME", "LINE", "TIME"]
+[[step]]
+run = "who; echo WHO-rc=$?"
+expect = "WHO-rc=0"
+[[step]]
+run = "users; echo USERS-rc=$?"
+expect = "USERS-rc=0"
+[[step]]
+run = "w"
+expect = ["load average:", "USER", "TTY", "WHAT"]
+[[step]]
+run = "last"
+expect = ["reboot", "system boot", "still running"]
+[[step]]
+run = "last reboot"
+expect = ["reboot", "system boot"]

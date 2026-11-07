@@ -1,0 +1,18 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "renice changes a process's nice level; taskset gets and sets which CPUs it runs on"
+time = "2m"
+
+# renice a sleep this session owns, and read its new nice level back with ps.
+[[step]]
+run = "sleep 120 >/dev/null 2>&1 </dev/null & P=$!; sleep 1; renice -n 5 -p $P; echo after-ni=$(ps -o ni= -p $P); kill $P"
+expect = ["old priority 0, new priority 5", "after-ni=5"]
+# taskset reads a process's CPU affinity, as a mask and as a list.
+[[step]]
+run = "sleep 120 >/dev/null 2>&1 </dev/null & P=$!; sleep 1; taskset -p $P; taskset -c -p $P; kill $P"
+expect = ["current affinity mask:", "current affinity list:"]
+# taskset launches a command pinned to a CPU, then moves a running one.
+[[step]]
+run = "taskset -c 1 sleep 120 >/dev/null 2>&1 </dev/null & P=$!; sleep 1; taskset -c -p $P; taskset -c -p 0 $P; taskset -c -p $P; kill $P"
+expect = ["affinity list: 1", "new affinity list: 0", "affinity list: 0"]

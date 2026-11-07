@@ -1,0 +1,21 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "ps lists the processes, in the columns and order asked for"
+time = "2m"
+
+[[step]]
+run = "ps -p 1 -o comm="
+expect = "spark"
+[[step]]
+run = "ps -e -o comm --no-headers"
+expect = ["spark", "authd", "sshd", "netd"]
+[[step]]
+run = "ps -ef"
+expect = ["UID", "PID", "PPID", "STIME", "CMD"]
+[[step]]
+run = "ps -C sshd -o pid,comm --no-headers"
+expect = "sshd"
+[[step]]
+run = "ps -o pid=PROCESS -o comm=NAME -p 1"
+expect = ["PROCESS", "NAME", "spark"]
