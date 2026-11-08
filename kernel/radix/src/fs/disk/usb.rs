@@ -34,6 +34,18 @@
 //! for has its transfer stopped, which resets the Bulk-Only interface, or
 //! has the UAS device reset; either way it goes again.
 //!
+//! A logical unit whose medium comes and goes (ADR 0430), a card
+//! reader's slot or a stick that says its medium is removable, is a drive
+//! ([`super::removable`]): it takes its letter whether or not a medium is
+//! in it, and an empty one is a device of no sectors. The thread looks at
+//! each drive every two seconds when it has nothing else to send, with
+//! TEST UNIT READY, as Linux's `sd` does: a medium put in gets a queue of
+//! its own and takes the empty device's place, with its partitions, and
+//! one taken out goes as an unplugged stick's disk does, and leaves the
+//! drive empty. While anything uses the medium, PREVENT ALLOW MEDIUM
+//! REMOVAL locks it in, where the drive can; eject(1) has the thread let
+//! it go and eject it.
+//!
 //! When the stick is unplugged, every request in flight and after fails,
 //! the disks and their partitions leave `/devices` and `/kernel/block`,
 //! their letters are free again, and the thread ends.
@@ -42,17 +54,20 @@ use alloc::boxed::Box;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
-use radix_block::{DeviceRef, Error, Info, SECTOR, partition};
+use radix_block::mem::KVec;
+use radix_block::{DeviceRef, Empty, Error, Info, SECTOR, partition};
 use radix_klog::{TextBuf, info, warn};
 use radix_mm::{Flags, HEAP, Kmalloc};
 use radix_scsi::{
-    Absent, Cdb, Data, Found, Meaning, Reply, Transport, TransportError, key, probe, reported_luns,
+    Absent, Cdb, Data, Found, Inquiry, Meaning, Reply, Transport, TransportError, identify, key,
+    look, medium, prevent_removal, reported_luns,
 };
 use radix_sync::SpinLock;
 use radix_usb::storage::uas::{MAX_TAGS, OneAtATime, STATUS_LENGTH, Uas};
 use radix_usb::storage::{Bot, MAX_LUNS};
 
 use super::queue::{self, Controller, Disk, Op, Outcome, Part, Request, SLOTS, Volume};
+use super::removable::{self, DriveRef};
 use super::{Entry, Ident, Name, Size, register};
 use crate::sched::{self, ThreadRef};
 use crate::usb::storage::{Link, LinkRef, Protocol, StickPipes, UasPipes};
@@ -79,6 +94,12 @@ const IDLE_NS: u64 = 1_000_000_000;
 const READY_NS: u64 = 1_000_000_000;
 /// How many times the partition table's reads go.
 const TRIES: u32 = 3;
+/// How often a drive is looked at for a medium put in or taken out:
+/// udisks' two seconds, as Linux polls a removable disk for it.
+const LOOK_NS: u64 = 2_000_000_000;
+/// How soon a medium taken out is tried again while the mount table is
+/// busy ([`super::replace`]).
+const BUSY_NS: u64 = 100_000_000;
 /// How much of a REPORT LUNS answer is read: its header and 63 units.
 const REPORT_LENGTH: usize = 512;
 
@@ -183,12 +204,9 @@ impl Controller for UsbLun {
     }
 }
 
-/// A logical unit with a disk, as its stick's thread keeps it.
-struct Lun {
-    number: u8,
-    name: Name,
-    /// Its `sd` letter.
-    letter: u32,
+/// A logical unit's medium, as its stick's thread keeps it: a disk's, or
+/// the one put in a drive, and its queue.
+struct Medium {
     found: Found,
     shared: Arc<Shared, Kmalloc>,
     disk: Arc<Disk<UsbLun>, Kmalloc>,
@@ -203,7 +221,47 @@ struct Lun {
     ended: bool,
 }
 
-impl Lun {
+/// A logical unit with a disk, or a drive whose medium comes and goes, as
+/// its stick's thread keeps it.
+struct Lun {
+    number: u8,
+    name: Name,
+    /// Its `sd` letter.
+    letter: u32,
+    /// What it says it is.
+    inquiry: Inquiry,
+    /// How many requests it has in flight at most.
+    jobs: usize,
+    /// Its medium: a disk's, always; a drive's, while one is in it.
+    medium: Option<Medium>,
+    /// For a drive, what the thread keeps of it.
+    watch: Option<Watch>,
+}
+
+/// What the thread keeps of a drive whose medium comes and goes.
+struct Watch {
+    drive: DriveRef,
+    /// The device the drive is while empty.
+    empty: DeviceRef,
+    /// When it is looked at next.
+    next: u64,
+    /// A request found that its medium was taken out or changed: the next
+    /// look takes it out first.
+    changed: bool,
+    /// Its medium is locked in.
+    locked: bool,
+    /// It takes the lock: one that refused it is not asked again, as
+    /// Linux's `sd` asks no more.
+    lockable: bool,
+    /// The medium in it is left alone, until the drive says one was taken
+    /// out or put in: it was ejected, or could not be used.
+    left: bool,
+    /// Its medium was taken out, `why`, and its requests fail, but it is
+    /// still in `/devices` while the mount table is busy.
+    out: Option<&'static str>,
+}
+
+impl Medium {
     /// Takes the first request waiting, if one is: where it is, its slot,
     /// what it does, its first sector and its length in bytes, its
     /// buffers into `frames` if given.
@@ -238,7 +296,7 @@ impl Lun {
     }
 
     /// Hands back request `at`, which ended with `outcome`; its queue
-    /// hears of it at [`Lun::collect`].
+    /// hears of it at [`Medium::collect`].
     fn finish(&mut self, at: usize, outcome: Outcome, why: Option<&'static str>) {
         {
             let mut jobs = self.shared.jobs.lock_irq();
@@ -260,22 +318,216 @@ impl Lun {
         }
     }
 
-    /// The stick is gone: fails the requests it has, and every one after.
-    fn gone(&self) {
+    /// The medium is gone, `why`: its stick was unplugged, or it was
+    /// taken out of its drive. Fails the requests it has, and every one
+    /// after.
+    fn gone(&self, why: &'static str) {
         {
             let mut jobs = self.shared.jobs.lock_irq();
-            let Jobs { jobs, why, gone } = &mut *jobs;
+            let Jobs { jobs, why: whys, gone } = &mut *jobs;
             *gone = true;
             for job in jobs.iter_mut() {
                 if let Stage::Waiting(slot) | Stage::Running(slot) = job.stage {
                     job.stage = Stage::Done(slot, Outcome::Failed);
-                    if let Some(entry) = why.get_mut(usize::from(slot)) {
-                        *entry = Some("its USB device was unplugged");
+                    if let Some(entry) = whys.get_mut(usize::from(slot)) {
+                        *entry = Some(why);
                     }
                 }
             }
         }
         self.disk.collect(0);
+    }
+}
+
+/// Why a medium's requests fail once it is gone.
+const UNPLUGGED: &str = "its USB device was unplugged";
+const TAKEN_OUT: &str = "its medium was taken out";
+const EJECTED: &str = "its medium was ejected";
+
+impl Lun {
+    /// Looks at the drive if it is one and is due, ejects its medium if
+    /// eject(1) asked, and locks the medium in while it is used, with
+    /// commands that `transport` carries one at a time. Returns when the
+    /// drive is due next: never, for a disk.
+    fn tend(&mut self, link: &LinkRef, transport: &mut dyn Transport, now: u64) -> u64 {
+        if !self.finish_out() {
+            return now.saturating_add(BUSY_NS);
+        }
+        let Some(watch) = &self.watch else { return u64::MAX };
+        let eject = watch.drive.eject_asked();
+        if !eject && !watch.changed && now < watch.next {
+            return watch.next;
+        }
+        if eject {
+            self.eject(transport);
+        }
+        self.look(link, transport);
+        self.lock(transport);
+        let Some(watch) = self.watch.as_mut() else { return u64::MAX };
+        watch.next = sched::now_ns().saturating_add(LOOK_NS);
+        watch.next
+    }
+
+    /// Looks whether a medium is in the drive, as Linux's `sd_check_events`
+    /// does: one taken out, or changed, is taken out of the kernel, and
+    /// one put in is put in.
+    fn look(&mut self, link: &LinkRef, transport: &mut dyn Transport) {
+        let Ok(found) = look(transport, self.number) else { return };
+        let Some(watch) = self.watch.as_mut() else { return };
+        // What a request found counts once.
+        let changed = core::mem::take(&mut watch.changed) || found.changed;
+        match found.medium {
+            // The transport failed: the next look says.
+            None => {}
+            Some(false) => {
+                watch.left = false;
+                self.take_out(TAKEN_OUT);
+            }
+            Some(true) => {
+                if changed {
+                    watch.left = false;
+                    self.take_out(TAKEN_OUT);
+                }
+                let left = self.watch.as_ref().is_some_and(|watch| watch.left);
+                if self.medium.is_none() && !left {
+                    self.put_in(link, transport);
+                }
+            }
+        }
+    }
+
+    /// The medium in the drive, found by [`look`], is put in: it gets a
+    /// queue, and takes the empty drive's place with its partitions. One
+    /// that cannot be used is left alone until it is taken out.
+    fn put_in(&mut self, link: &LinkRef, transport: &mut dyn Transport) {
+        let mut wait = |ms: u32| sched::sleep_ns(u64::from(ms) * 1_000_000);
+        let found = match medium(transport, self.number, self.inquiry, &mut wait) {
+            Ok(found) => found,
+            // Taken out again, or the stick unplugged: the next look says.
+            Err(Absent::NoMedium | Absent::Gone) => return,
+            Err(why) => {
+                info!("Disk: {}: a medium went in, but {why}; not used", self.name);
+                self.leave();
+                return;
+            }
+        };
+        let (medium, device) = match new_medium(link, self.jobs, found, &self.name) {
+            Ok(made) => made,
+            Err(why) => {
+                warn!("Disk: {}: a medium went in, but {why}", self.name);
+                self.leave();
+                return;
+            }
+        };
+        let info = device.info();
+        info!(
+            "Disk: {}: a medium of {} went in, {} bytes a block{}{}{}",
+            self.name,
+            Size(info.sectors * SECTOR),
+            info.block_size,
+            super::sector_note(&info),
+            if found.read_only { ", write-protected" } else { "" },
+            if found.write_cache { ", write cache" } else { "" },
+        );
+        let parts = read_table(transport, self.number, &found, &self.name, &device);
+        let Some(watch) = &self.watch else { return };
+        let parts = parts.as_deref().unwrap_or(&[]);
+        // The drive was empty: nothing was mounted from it to lose.
+        match super::replace(&self.name, device, parts, (&watch.drive, false)) {
+            super::Replaced::Done => self.medium = Some(medium),
+            _ => medium.gone(TAKEN_OUT),
+        }
+    }
+
+    /// Leaves the medium in the drive alone until it is taken out.
+    fn leave(&mut self) {
+        if let Some(watch) = self.watch.as_mut() {
+            watch.left = true;
+        }
+    }
+
+    /// Takes the drive's medium out of the kernel, if one is in: its
+    /// requests fail `why` from now on, and the drive is empty, once the
+    /// mount table lets what was mounted from it be lost.
+    fn take_out(&mut self, why: &'static str) {
+        let Some(watch) = &mut self.watch else { return };
+        let Some(medium) = self.medium.take() else { return };
+        // First, so that an unmount that syncs it, with the mount table
+        // held, fails at once and lets the table go.
+        medium.gone(why);
+        // A drive locked takes the lock off with the medium.
+        watch.locked = false;
+        watch.out = Some(why);
+        self.finish_out();
+    }
+
+    /// Finishes taking out the medium [`Lun::take_out`] took out: what was
+    /// mounted from it is lost, and the drive is empty in `/devices`.
+    /// False while the mount table is busy.
+    fn finish_out(&mut self) -> bool {
+        let Some(watch) = &mut self.watch else { return true };
+        let Some(why) = watch.out else { return true };
+        let lost = super::replace(&self.name, watch.empty.clone(), &[], (&watch.drive, true));
+        if lost == super::Replaced::Busy {
+            return false;
+        }
+        watch.out = None;
+        info!("Disk: {}: {why}", self.name);
+        true
+    }
+
+    /// Locks the drive's medium in while anything uses it or its
+    /// partitions, and lets it go when nothing does, as Linux's `sd` does
+    /// while its disk is open. A drive that refuses the lock is not asked
+    /// again.
+    fn lock(&mut self, transport: &mut dyn Transport) {
+        let used = match self.medium {
+            None => false,
+            // The mount table is busy: the next look says.
+            Some(_) => match super::in_use_now(self.name.as_str()) {
+                Some(used) => used,
+                None => return,
+            },
+        };
+        let Some(watch) = self.watch.as_mut() else { return };
+        if !watch.lockable || used == watch.locked {
+            return;
+        }
+        match prevent_removal(transport, self.number, used) {
+            Ok(true) => watch.locked = used,
+            Ok(false) => {
+                (watch.lockable, watch.locked) = (false, false);
+                info!("Disk: {}: its drive does not lock its medium in", self.name);
+            }
+            // The next look tries again.
+            Err(_) => {}
+        }
+    }
+
+    /// Ejects the drive's medium, as eject(1) asked through EJECT: lets
+    /// the lock go, ejects it, takes it out of the kernel, and answers
+    /// the one who asked. A drive that refuses to eject lets the medium
+    /// go all the same, as a card reader's slot does: it can be taken
+    /// out.
+    fn eject(&mut self, transport: &mut dyn Transport) {
+        let ejected = match radix_scsi::eject(transport, self.number) {
+            Ok(()) => true,
+            Err(Absent::Failed(_, sense)) => {
+                let empty = sense.is_some_and(|s| matches!(s.meaning(), Meaning::NoMedium));
+                if self.medium.is_some() && !empty {
+                    info!("Disk: {}: its drive does not eject; its medium is let go", self.name);
+                }
+                true
+            }
+            Err(_) => false,
+        };
+        if ejected {
+            self.leave();
+            self.take_out(EJECTED);
+        }
+        if let Some(watch) = &self.watch {
+            watch.drive.answer(ejected);
+        }
     }
 }
 
@@ -287,11 +539,16 @@ enum Then {
     Ready,
     /// It had stopped: a START STOP UNIT.
     Start,
+    /// It says its medium was taken out, or changed: a drive's request
+    /// fails, and the drive is looked at.
+    Changed,
 }
 
 /// How a command that ended with `reply` ends its request, as Linux's SCSI
 /// layer has it for a USB disk, and what its next try waits for: a
-/// `flush` the disk does not take did not need doing.
+/// `flush` the disk does not take did not need doing. A drive's request
+/// that finds its medium changed fails instead (`Then::Changed`), as
+/// Linux's does for a removable disk.
 fn judge(
     reply: Result<Reply, TransportError>,
     flush: bool,
@@ -314,6 +571,9 @@ fn judge(
     match sense.meaning() {
         Meaning::Fine => (Outcome::Done, None, Then::Nothing),
         Meaning::Unsupported if flush => (Outcome::Done, None, Then::Nothing),
+        Meaning::Attention if sense.medium_changed() => {
+            (Outcome::Retry, Some("its medium may have changed"), Then::Changed)
+        }
         Meaning::Attention | Meaning::Aborted => {
             (Outcome::Retry, Some(sense.key_name()), Then::Nothing)
         }
@@ -324,7 +584,7 @@ fn judge(
         Meaning::Error if sense.key == key::HARDWARE_ERROR => {
             (Outcome::Retry, Some(sense.key_name()), Then::Nothing)
         }
-        Meaning::NoMedium => (Outcome::Failed, Some("its medium was taken out"), Then::Nothing),
+        Meaning::NoMedium => (Outcome::Failed, Some(TAKEN_OUT), Then::Changed),
         Meaning::WriteProtected => {
             (Outcome::Failed, Some("its medium is write-protected"), Then::Nothing)
         }
@@ -409,7 +669,12 @@ pub fn run(link: &LinkRef) {
     let Some(mut stick) = stick else { return };
     stick.serve();
     for lun in &stick.luns {
-        lun.gone();
+        if let Some(medium) = &lun.medium {
+            medium.gone(UNPLUGGED);
+        }
+        if lun.watch.is_some() {
+            removable::remove(lun.name.as_str());
+        }
         super::unregister(lun.name.as_str());
         super::give_back_sd_letter(lun.letter);
         info!("Disk: {} is gone with its USB device", lun.name);
@@ -460,9 +725,26 @@ impl<'a> Stick<'a> {
             if count > 1 || number > 0 {
                 let _ = core::fmt::Write::write_fmt(&mut lun, format_args!(" LUN {number}"));
             }
-            let found = match wire.one(|transport| probe(transport, number, &mut wait)) {
-                Ok(found) => found,
+            let inquiry = match wire.one(|transport| identify(transport, number)) {
+                Ok(inquiry) if inquiry.is_disk() => inquiry,
+                Ok(inquiry) => {
+                    let why = Absent::NotDisk(inquiry.device_type);
+                    info!("Disk: USB {}{lun}: {why}; not used", link.place);
+                    continue;
+                }
                 Err(Absent::Gone) => break,
+                Err(why) => {
+                    info!("Disk: USB {}{lun}: {why}; not used", link.place);
+                    continue;
+                }
+            };
+            // A drive with no medium in it, or one that cannot be used,
+            // is a drive all the same: one put in later fills it.
+            let found = match wire.one(|transport| medium(transport, number, inquiry, &mut wait)) {
+                Ok(found) => Ok(found),
+                Err(Absent::Gone) => break,
+                Err(Absent::NoMedium) => Err(None),
+                Err(why) if inquiry.removable => Err(Some(why)),
                 Err(why) => {
                     info!("Disk: USB {}{lun}: {why}; not used", link.place);
                     continue;
@@ -472,7 +754,7 @@ impl<'a> Stick<'a> {
                 warn!("Disk: USB {}{lun}: out of memory", link.place);
                 break;
             }
-            match add(link, &mut wire, (number, jobs), found, &lun) {
+            match add(link, &mut wire, (number, jobs), inquiry, found, &lun) {
                 Ok(added) => {
                     let _ = luns.push_within_capacity(added);
                 }
@@ -493,23 +775,29 @@ impl<'a> Stick<'a> {
         }
     }
 
-    /// Serves the requests one at a time, over Bulk-Only.
+    /// Serves the requests one at a time, over Bulk-Only, and looks at
+    /// the drives between them.
     fn serve_one_at_a_time(&mut self) {
         while !self.link.is_gone() {
             let mut served = false;
             for at in 0..self.luns.len() {
-                let Some((job, _, op, sector, _)) = self.luns[at].take(Some(&mut self.work.frames))
-                else {
+                let Some(medium) = &self.luns[at].medium else { continue };
+                let Some((job, _, op, sector, _)) = medium.take(Some(&mut self.work.frames)) else {
                     continue;
                 };
                 served = true;
                 self.link.forget_abort();
                 let (outcome, why) = self.execute(at, op, sector);
-                self.luns[at].finish(job, outcome, why);
-                self.luns[at].collect();
+                if let Some(medium) = self.luns[at].medium.as_mut() {
+                    medium.finish(job, outcome, why);
+                    medium.collect();
+                }
             }
+            let Stick { link, wire, luns, .. } = self;
+            let next = wire.one(|transport| tend(link, transport, luns));
             if !served {
-                sched::block_until(sched::now_ns().saturating_add(IDLE_NS), "usb-storage");
+                let idle = sched::now_ns().saturating_add(IDLE_NS);
+                sched::block_until(idle.min(next), "usb-storage");
             }
         }
     }
@@ -518,14 +806,17 @@ impl<'a> Stick<'a> {
     /// the disk at `at`, one command at a time; returns how it ended, and
     /// why if it did not work.
     fn execute(&mut self, at: usize, op: Op, sector: u64) -> (Outcome, Option<&'static str>) {
-        let Lun { number, found, .. } = self.luns[at];
+        let number = self.luns[at].number;
+        let Some(found) = self.luns[at].medium.as_ref().map(|medium| medium.found) else {
+            return (Outcome::Failed, Some(TAKEN_OUT));
+        };
         let into_host = match op {
             Op::Read => true,
             Op::Write | Op::WriteThrough => false,
             Op::Flush => {
                 let cdb = Cdb::synchronize_cache();
                 let reply = self.wire.one(|t| t.command(number, &cdb, Data::None, TIMEOUT_MS));
-                return self.after(number, judge(reply, true));
+                return self.after(at, judge(reply, true));
             }
             Op::Discard(_) => return (Outcome::Failed, Some("it does not discard")),
             Op::Smart(_) => return (Outcome::Failed, Some("it keeps no SMART record")),
@@ -548,7 +839,7 @@ impl<'a> Stick<'a> {
             };
             let data = Data::Frames { into_host, frames: &self.work.part };
             let reply = self.wire.one(|t| t.command(number, &cdb, data, TIMEOUT_MS));
-            let (outcome, why) = self.after(number, judge(reply, false));
+            let (outcome, why) = self.after(at, judge(reply, false));
             if outcome != Outcome::Done {
                 return (outcome, why);
             }
@@ -557,20 +848,28 @@ impl<'a> Stick<'a> {
         (Outcome::Done, None)
     }
 
-    /// Does what a request of logical unit `number` waits for before it
-    /// goes again, one command at a time: a second for a disk becoming
-    /// ready, a START STOP UNIT for one that stopped.
+    /// Does what a request of the logical unit at `at` waits for before
+    /// it goes again, one command at a time: a second for a disk becoming
+    /// ready, a START STOP UNIT for one that stopped. A drive's request
+    /// that found its medium changed fails, and the drive is looked at.
     fn after(
         &mut self,
-        number: u8,
+        at: usize,
         (outcome, why, then): (Outcome, Option<&'static str>, Then),
     ) -> (Outcome, Option<&'static str>) {
+        let number = self.luns[at].number;
         match then {
             Then::Nothing => {}
             Then::Ready => sched::sleep_ns(READY_NS),
             Then::Start => {
                 let start = Cdb::start_stop_unit(true, false);
                 let _ = self.wire.one(|t| t.command(number, &start, Data::None, TIMEOUT_MS));
+            }
+            Then::Changed => {
+                if let Some(watch) = self.luns[at].watch.as_mut() {
+                    watch.changed = true;
+                    return (Outcome::Failed, why);
+                }
             }
         }
         (outcome, why)
@@ -611,14 +910,31 @@ impl<'a> Stick<'a> {
             busy |= queued.finish_all(luns);
             busy |= queued.begin(luns);
             busy |= queued.pipes.act(&mut queued.uas);
-            for lun in luns.iter_mut() {
-                lun.collect();
+            for medium in luns.iter_mut().filter_map(|lun| lun.medium.as_mut()) {
+                medium.collect();
+            }
+            // The drives are looked at while no command is in flight, as
+            // a command one at a time takes the device to itself.
+            let mut next = u64::MAX;
+            if queued.uas.in_flight() == 0 && !queued.uas.is_gone() && queued.uas.broken().is_none()
+            {
+                let Queued { uas, pipes, .. } = &mut *queued;
+                next = tend(link, &mut OneAtATime { uas, pipes }, luns);
             }
             if !busy {
-                sched::block_until(sched::now_ns().saturating_add(IDLE_NS), "usb-storage");
+                let idle = sched::now_ns().saturating_add(IDLE_NS);
+                sched::block_until(idle.min(next), "usb-storage");
             }
         }
     }
+}
+
+/// Tends the drives among `luns`, the logical units of the stick `link`,
+/// with commands `transport` carries one at a time ([`Lun::tend`]).
+/// Returns when the first is due next.
+fn tend(link: &LinkRef, transport: &mut dyn Transport, luns: &mut [Lun]) -> u64 {
+    let now = sched::now_ns();
+    luns.iter_mut().map(|lun| lun.tend(link, transport, now)).min().unwrap_or(u64::MAX)
 }
 
 impl Queued<'_> {
@@ -642,28 +958,39 @@ impl Queued<'_> {
     ) {
         let (at, job, flush) = match carried {
             Carried::Start { lun } => {
-                luns[lun].starting = false;
+                if let Some(medium) = luns[lun].medium.as_mut() {
+                    medium.starting = false;
+                }
                 return;
             }
             Carried::Flush { lun, job } => (lun, job, true),
             Carried::Part { lun, job, .. } => (lun, job, false),
         };
-        let (outcome, why, then) = judge(reply, flush);
+        // A medium is taken out only while no command is in flight: the
+        // command was its.
+        let Lun { number, medium, watch, .. } = &mut luns[at];
+        let Some(medium) = medium.as_mut() else { return };
+        let (mut outcome, why, then) = judge(reply, flush);
         if let (Outcome::Done, Carried::Part { into_host, first, blocks, done, count, .. }) =
             (outcome, carried)
             && done + count < blocks
         {
             // The next part goes under the tag this one freed.
-            self.part(luns, (at, job), (into_host, first, blocks), done + count);
+            self.part(medium, (at, *number, job), (into_host, first, blocks), done + count);
             return;
         }
-        let lun = &mut luns[at];
         match then {
             Then::Nothing => {}
-            Then::Ready => lun.not_before = sched::now_ns().saturating_add(READY_NS),
-            Then::Start => lun.start = true,
+            Then::Ready => medium.not_before = sched::now_ns().saturating_add(READY_NS),
+            Then::Start => medium.start = true,
+            Then::Changed => {
+                if let Some(watch) = watch.as_mut() {
+                    watch.changed = true;
+                    outcome = Outcome::Failed;
+                }
+            }
         }
-        lun.finish(job, outcome, why);
+        medium.finish(job, outcome, why);
     }
 
     /// Starts the requests waiting, as the free tags let them, and the
@@ -671,24 +998,26 @@ impl Queued<'_> {
     fn begin(&mut self, luns: &mut [Lun]) -> bool {
         let now = sched::now_ns();
         let mut any = false;
-        for at in 0..luns.len() {
-            if luns[at].start
-                && !luns[at].starting
+        for (at, lun) in luns.iter_mut().enumerate() {
+            let number = lun.number;
+            let Some(medium) = lun.medium.as_mut() else { continue };
+            if medium.start
+                && !medium.starting
                 && let Some(tag) = self.uas.free_tag()
             {
                 let start = Cdb::start_stop_unit(true, false);
-                if self.command(tag, luns[at].number, &start, None, Carried::Start { lun: at }) {
-                    (luns[at].start, luns[at].starting) = (false, true);
+                if self.command(tag, number, &start, None, Carried::Start { lun: at }) {
+                    (medium.start, medium.starting) = (false, true);
                     any = true;
                 }
             }
-            if luns[at].start || luns[at].starting || now < luns[at].not_before {
+            if medium.start || medium.starting || now < medium.not_before {
                 continue;
             }
             while let Some(tag) = self.uas.free_tag() {
-                let Some((job, _, op, sector, bytes)) = luns[at].take(None) else { break };
+                let Some((job, _, op, sector, bytes)) = medium.take(None) else { break };
                 any = true;
-                let found = luns[at].found;
+                let found = medium.found;
                 let block = u64::from(found.capacity.block_length);
                 let first = sector / (block / SECTOR);
                 let into_host = match op {
@@ -697,42 +1026,42 @@ impl Queued<'_> {
                     Op::Flush => {
                         let cdb = Cdb::synchronize_cache();
                         let carried = Carried::Flush { lun: at, job };
-                        if !self.command(tag, luns[at].number, &cdb, None, carried) {
-                            luns[at].finish(job, Outcome::Retry, Some("its device is being reset"));
+                        if !self.command(tag, number, &cdb, None, carried) {
+                            medium.finish(job, Outcome::Retry, Some("its device is being reset"));
                         }
                         continue;
                     }
                     Op::Discard(_) => {
-                        luns[at].finish(job, Outcome::Failed, Some("it does not discard"));
+                        medium.finish(job, Outcome::Failed, Some("it does not discard"));
                         continue;
                     }
                     Op::Smart(_) => {
-                        luns[at].finish(job, Outcome::Failed, Some("it keeps no SMART record"));
+                        medium.finish(job, Outcome::Failed, Some("it keeps no SMART record"));
                         continue;
                     }
                 };
                 let blocks = bytes / block;
                 if blocks == 0 {
-                    luns[at].finish(job, Outcome::Done, None);
+                    medium.finish(job, Outcome::Done, None);
                     continue;
                 }
-                self.part(luns, (at, job), (into_host, first, blocks), 0);
+                self.part(medium, (at, number, job), (into_host, first, blocks), 0);
             }
         }
         any
     }
 
-    /// Starts the part of request `job` of the disk at `lun` from its
-    /// block `done`, of a request that reads (or writes) `blocks` blocks
-    /// from block `first`.
+    /// Starts the part of request `job` of `medium`, the medium of the
+    /// logical unit `number` at `at`, from its block `done`, of a request
+    /// that reads (or writes) `blocks` blocks from block `first`.
     fn part(
         &mut self,
-        luns: &mut [Lun],
-        (at, job): (usize, usize),
+        medium: &mut Medium,
+        (at, number, job): (usize, u8, usize),
         (into_host, first, blocks): (bool, u64, u64),
         done: u64,
     ) {
-        let found = luns[at].found;
+        let found = medium.found;
         let block = u64::from(found.capacity.block_length);
         let (start, count) = part_of(&found, first + done, blocks - done);
         let cdb = if into_host {
@@ -742,19 +1071,19 @@ impl Queued<'_> {
         };
         let Some(cdb) = cdb else {
             let why = "its blocks are past what a command reaches";
-            luns[at].finish(job, Outcome::Failed, Some(why));
+            medium.finish(job, Outcome::Failed, Some(why));
             return;
         };
         let Some(tag) = self.uas.free_tag() else {
-            luns[at].finish(job, Outcome::Retry, Some("its device is being reset"));
+            medium.finish(job, Outcome::Retry, Some("its device is being reset"));
             return;
         };
-        luns[at].part(job, done * block, count * block, &mut self.part);
+        medium.part(job, done * block, count * block, &mut self.part);
         self.pipes.set_data(tag, &self.part);
         let data = Some((into_host, (count * block) as u32));
         let carried = Carried::Part { lun: at, job, into_host, first, blocks, done, count };
-        if !self.command(tag, luns[at].number, &cdb, data, carried) {
-            luns[at].finish(job, Outcome::Retry, Some("its device is being reset"));
+        if !self.command(tag, number, &cdb, data, carried) {
+            medium.finish(job, Outcome::Retry, Some("its device is being reset"));
         }
     }
 
@@ -847,15 +1176,18 @@ fn logical_units(wire: &mut Wire<'_>, numbers: &mut [u8; MAX_LUNS]) -> Option<us
     Some(usize::from(max_lun) + 1)
 }
 
-/// Gives the disk at logical unit `number`, as `found` says it is, a name
-/// and its queue of `jobs` requests in flight, and registers it and its
-/// partitions.
+/// Gives the logical unit `number`, a disk or a drive as `inquiry` says
+/// it is, a name and, with the medium `found` in it, a queue of `jobs`
+/// requests in flight, and registers it and the medium's partitions. A
+/// unit with no medium in it, or with one that cannot be used (`why`), is
+/// a drive, registered empty.
 #[inline(never)]
 fn add(
     link: &LinkRef,
     wire: &mut Wire<'_>,
     (number, jobs): (u8, usize),
-    found: Found,
+    inquiry: Inquiry,
+    found: Result<Found, Option<Absent>>,
     lun: &TextBuf<16>,
 ) -> Result<Lun, &'static str> {
     // The SATA disks found at boot are named first, then the sticks'
@@ -863,9 +1195,81 @@ fn add(
     super::wait_for_scan();
     crate::usb::storage::wait_for_turn(link);
     let (letter, name) = super::take_sd_name().ok_or("too many SATA and USB disks")?;
-    let (added, device) = add_named(link, (number, jobs), found, (name, letter), lun)
-        .inspect_err(|_| super::give_back_sd_letter(letter))?;
-    read_partitions(wire, &added, &device);
+    add_named(link, wire, (number, jobs), inquiry, found, (name, letter), lun)
+        .inspect_err(|_| super::give_back_sd_letter(letter))
+}
+
+/// [`add`]'s part with the unit named `name`, after `letter`.
+fn add_named(
+    link: &LinkRef,
+    wire: &mut Wire<'_>,
+    (number, jobs): (u8, usize),
+    inquiry: Inquiry,
+    found: Result<Found, Option<Absent>>,
+    (name, letter): (Name, u32),
+    lun: &TextBuf<16>,
+) -> Result<Lun, &'static str> {
+    let heap = HEAP.with(Flags::MAY_SLEEP);
+    let made = match found {
+        Ok(found) => Some(new_medium(link, jobs, found, &name)?),
+        Err(_) => None,
+    };
+    // A drive whose medium comes and goes: one that says so, or that has
+    // none in it now, as a card reader's empty slot.
+    let watch = if inquiry.removable || made.is_none() {
+        let empty: DeviceRef = Arc::try_new_in(Empty, heap).map_err(|_| "out of memory")?;
+        let thread = sched::current().ok_or("it has no thread")?;
+        let drive = removable::add(&name, thread).ok_or("out of memory")?;
+        let next = sched::now_ns().saturating_add(LOOK_NS);
+        let left = matches!(found, Err(Some(_)));
+        let (changed, locked, lockable, out) = (false, false, true, None);
+        Some(Watch { drive, empty, next, changed, locked, lockable, left, out })
+    } else {
+        None
+    };
+    let how = match link.protocol {
+        Protocol::Uas { .. } => ", USB Attached SCSI",
+        Protocol::Bot { .. } => "",
+    };
+    let ident = Some(ident(link, &inquiry));
+    let mut added = Lun { number, name, letter, inquiry, jobs, medium: None, watch };
+    let Some((medium, device)) = made else {
+        let (name, place) = (&added.name, &link.place);
+        let (vendor, product, revision) = (inquiry.vendor(), inquiry.product(), inquiry.revision());
+        info!(
+            "Disk: {name} is a USB drive with no medium in it on {place}{lun}: {vendor} {product} \
+             {revision}{how}"
+        );
+        if let Err(Some(why)) = found {
+            info!("Disk: {name}: the medium in it {why}; not used until it is taken out");
+        }
+        let empty = added.watch.as_ref().map(|watch| watch.empty.clone());
+        let device = empty.ok_or("it has no device")?;
+        register(Entry { name: added.name.clone(), device, place: None, ident });
+        return Ok(added);
+    };
+    let found = medium.found;
+    let info = device.info();
+    info!(
+        "Disk: {} is a USB disk of {} on {}{lun}: {} {} {}, {} bytes a block{}{}{}{}{how}",
+        added.name,
+        Size(info.sectors * SECTOR),
+        link.place,
+        inquiry.vendor(),
+        inquiry.product(),
+        inquiry.revision(),
+        info.block_size,
+        super::sector_note(&info),
+        if inquiry.removable { ", removable" } else { "" },
+        if found.read_only { ", write-protected" } else { "" },
+        if found.write_cache { ", write cache" } else { "" },
+    );
+    register(Entry { name: added.name.clone(), device: device.clone(), place: None, ident });
+    added.medium = Some(medium);
+    let parts = wire.one(|t| read_table(t, number, &found, &added.name, &device));
+    for part in parts.iter().flatten() {
+        super::add_partition(&added.name, &device, part);
+    }
     Ok(added)
 }
 
@@ -887,14 +1291,15 @@ fn jobs(count: usize, segments: usize) -> Option<Jobs> {
     Some(Jobs { jobs, why, gone: false })
 }
 
-/// [`add`]'s part with the disk named `name`, after `letter`.
-fn add_named(
+/// The queue of the medium `found` in a logical unit of the stick `link`,
+/// the disk `name`, with `count` requests in flight: the
+/// medium as the thread keeps it, and its block device.
+fn new_medium(
     link: &LinkRef,
-    (number, count): (u8, usize),
+    count: usize,
     found: Found,
-    (name, letter): (Name, u32),
-    lun: &TextBuf<16>,
-) -> Result<(Lun, DeviceRef), &'static str> {
+    name: &Name,
+) -> Result<(Medium, DeviceRef), &'static str> {
     let heap = HEAP.with(Flags::MAY_SLEEP);
     let capacity = found.capacity;
     let unit = u64::from(capacity.block_length) / SECTOR;
@@ -922,49 +1327,20 @@ fn add_named(
     let disk = Disk::new(once, info, found.write_cache, false, true, name.clone(), link.source)
         .ok_or("out of memory")?;
     let disk = Arc::try_new_in(disk, heap).map_err(|_| "out of memory")?;
-    let inquiry = found.inquiry;
-    let how = match link.protocol {
-        Protocol::Uas { .. } => ", USB Attached SCSI",
-        Protocol::Bot { .. } => "",
-    };
-    info!(
-        "Disk: {name} is a USB disk of {} on {}{lun}: {} {} {}, {} bytes a block{}{}{}{}{how}",
-        Size(info.sectors * SECTOR),
-        link.place,
-        inquiry.vendor(),
-        inquiry.product(),
-        inquiry.revision(),
-        info.block_size,
-        super::sector_note(&info),
-        if inquiry.removable { ", removable" } else { "" },
-        if found.read_only { ", write-protected" } else { "" },
-        if found.write_cache { ", write cache" } else { "" },
-    );
     let volume = Volume::new(disk.clone(), 0, info).ok_or("out of memory")?;
     let device: DeviceRef = Arc::try_new_in(volume, heap).map_err(|_| "out of memory")?;
-    let ident = Some(ident(link, &found));
-    register(Entry { name: name.clone(), device: device.clone(), place: None, ident });
-    let lun = Lun {
-        number,
-        name,
-        letter,
-        found,
-        shared,
-        disk,
-        start: false,
-        starting: false,
-        not_before: 0,
-        ended: false,
-    };
-    Ok((lun, device))
+    let medium =
+        Medium { found, shared, disk, start: false, starting: false, not_before: 0, ended: false };
+    Ok((medium, device))
 }
 
-/// What a USB disk says it is, as `/kernel/block` shows it: its vendor
-/// and product as the model, its revision as the firmware's, and its
-/// device's serial number, as Linux's udev gives it (`ID_SERIAL_SHORT`).
-fn ident(link: &Link, found: &Found) -> Ident {
+/// What a USB disk says it is (`inquiry`), as `/kernel/block` shows it:
+/// its vendor and product as the model, its revision as the firmware's,
+/// and its device's serial number, as Linux's udev gives it
+/// (`ID_SERIAL_SHORT`).
+fn ident(link: &Link, inquiry: &Inquiry) -> Ident {
     let mut model = [b' '; 40];
-    let (vendor, product) = (found.inquiry.vendor(), found.inquiry.product());
+    let (vendor, product) = (inquiry.vendor(), inquiry.product());
     let words = [vendor.as_bytes(), b" ", product.as_bytes()];
     let mut at = 0;
     for byte in words.iter().flat_map(|word| word.iter()) {
@@ -974,30 +1350,38 @@ fn ident(link: &Link, found: &Found) -> Ident {
         }
     }
     let mut firmware = [b' '; 8];
-    let revision = found.inquiry.revision().as_bytes();
+    let revision = inquiry.revision().as_bytes();
     let n = revision.len().min(firmware.len());
     firmware[..n].copy_from_slice(&revision[..n]);
     Ident { model, serial: super::padded(link.serial.as_str().as_bytes()), firmware }
 }
 
-/// Reads the partition table of the disk `lun`, whose block device is
-/// `device`, and registers its partitions: through `wire` itself, since
-/// the thread that would serve the disk's queue is this one.
-fn read_partitions(wire: &mut Wire<'_>, lun: &Lun, device: &DeviceRef) {
+/// The partitions of the medium `found` in the logical unit `number`, the
+/// disk `name` whose block device is `device`, as its table has them,
+/// logged; `None` if it has none. The table is read through `transport`
+/// itself, since the thread that would serve the disk's queue is this
+/// one.
+fn read_table(
+    transport: &mut dyn Transport,
+    number: u8,
+    found: &Found,
+    name: &Name,
+    device: &DeviceRef,
+) -> Option<KVec<partition::Partition>> {
     let heap = HEAP.with(Flags::MAY_SLEEP);
-    let block = lun.found.capacity.block_length as usize;
+    let block = found.capacity.block_length as usize;
     let mut buffer = Vec::new_in(heap);
     if buffer.try_reserve_exact(block).is_err() {
-        warn!("Disk: {}: out of memory for its partition table", lun.name);
-        return;
+        warn!("Disk: {name}: out of memory for its partition table");
+        return None;
     }
     while buffer.len() < block && buffer.push_within_capacity(0u8).is_ok() {}
     let unit = (block / SECTOR as usize) as u64;
     let mut read = |sector: u64, out: &mut [u8; SECTOR as usize]| {
-        let cdb = Cdb::read(sector / unit, 1, lun.found.sixteen).ok_or(partition::Error::Io)?;
+        let cdb = Cdb::read(sector / unit, 1, found.sixteen).ok_or(partition::Error::Io)?;
         for _ in 0..TRIES {
             let data = Data::In(&mut buffer);
-            match wire.one(|t| t.command(lun.number, &cdb, data, TIMEOUT_MS)) {
+            match transport.command(number, &cdb, data, TIMEOUT_MS) {
                 Ok(Reply::Good { residue: 0 }) => {
                     let at = ((sector % unit) * SECTOR) as usize;
                     out.copy_from_slice(&buffer[at..at + SECTOR as usize]);
@@ -1009,5 +1393,5 @@ fn read_partitions(wire: &mut Wire<'_>, lun: &Lun, device: &DeviceRef) {
         }
         Err(partition::Error::Io)
     };
-    super::partitions_read(&lun.name, device, &mut read);
+    super::table(name, device, &mut read)
 }

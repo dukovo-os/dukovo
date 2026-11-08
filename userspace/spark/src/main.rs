@@ -655,6 +655,15 @@ fn mount_disks(root: &Dir, compress: &[&str], live_only: bool) -> Vec<(String, M
     };
     let mut btrfs = Vec::new();
     for name in devices.iter().filter(|name| !partitioned(name)) {
+        // An empty drive, such as a card reader's slot with no card in
+        // it, has no sectors: volumed mounts what is put in it (ADR 0430).
+        if root
+            .read_file(&format!("kernel/block/{name}/size"))
+            .is_ok_and(|size| size.trim_ascii() == b"0")
+        {
+            println!("spark: {name} has no medium in it; volumed mounts one put in");
+            continue;
+        }
         let kind = swap::part_type(root, name);
         if EFI_SYSTEM.contains(&kind.as_str()) {
             println!("spark: {name} is an EFI system partition; left alone");

@@ -1191,6 +1191,22 @@ impl Vfs {
     /// out. Returns how many there were.
     pub fn lose(&self, gone: impl Fn(&str) -> bool) -> usize {
         let mounts = self.mounts.lock();
+        Self::lose_in(&mounts, gone)
+    }
+
+    /// [`Vfs::lose`], without waiting for the mount table: `None` while
+    /// another holds it, as an unmount does while it syncs what it
+    /// unmounts. For a disk's driver whose thread serves the disks the
+    /// sync may be waiting for, and so must not wait for the sync (ADR
+    /// 0430).
+    pub fn try_lose(&self, gone: impl Fn(&str) -> bool) -> Option<usize> {
+        let mounts = self.mounts.try_lock()?;
+        Some(Self::lose_in(&mounts, gone))
+    }
+
+    /// Marks each of `mounts` that `gone` says is from a device gone as
+    /// lost; returns how many there were.
+    fn lose_in(mounts: &[MountRef], gone: impl Fn(&str) -> bool) -> usize {
         let mut lost = 0;
         for mount in mounts.iter().filter(|m| gone(m.source())) {
             mount.lost.store(true, Ordering::Release);
@@ -1324,6 +1340,16 @@ impl Vfs {
         for mount in mounts.iter() {
             f(mount);
         }
+    }
+
+    /// [`Vfs::mounts`], without waiting for the mount table: `None`, and
+    /// `f` not called, while another holds it ([`Vfs::try_lose`]).
+    pub fn try_mounts(&self, mut f: impl FnMut(&Mount)) -> Option<()> {
+        let mounts = self.mounts.try_lock()?;
+        for mount in mounts.iter() {
+            f(mount);
+        }
+        Some(())
     }
 
     /// Syncs every filesystem with changes, as the machine powers off;

@@ -2,17 +2,25 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 //! Finding out what the disk behind a transport is, as Linux's SCSI scan
-//! and `sd` do for a USB stick: what it is (INQUIRY), that it is ready
-//! (TEST UNIT READY, starting it if it asks to be), how big it is (READ
-//! CAPACITY), and whether it is write-protected and has a write cache
-//! (MODE SENSE).
+//! and `sd` do for a USB stick: what it is (INQUIRY, [`identify`]), that
+//! it is ready (TEST UNIT READY, starting it if it asks to be), how big
+//! it is (READ CAPACITY), and whether it is write-protected and has a
+//! write cache (MODE SENSE): [`medium`], which [`probe`] does after
+//! [`identify`].
+//!
+//! A drive whose medium comes and goes (ADR 0430), a card reader's slot or
+//! a stick that says its medium is removable, is looked at now and then
+//! as Linux's `sd_check_events` does ([`look`]): TEST UNIT READY says
+//! whether a medium is in it, and a UNIT ATTENTION of a medium put in or
+//! taken out that one was changed meanwhile. [`prevent_removal`] locks the
+//! medium in while it is used, and [`eject`] lets it go and ejects it.
 
 use core::fmt;
 
 use crate::{
     ALL_PAGES, CAPACITY_10_LENGTH, CAPACITY_16_LENGTH, Capacity, Cdb, Data, INQUIRY_LENGTH,
     Inquiry, MODE_SENSE_ALL_LENGTH, Meaning, Reply, Sense, Transport, TransportError, device_type,
-    write_cache, write_protected,
+    key, write_cache, write_protected,
 };
 
 /// How long a command of the probe may take: what Linux gives TEST UNIT
@@ -130,14 +138,25 @@ fn ask<T: Transport + ?Sized>(
     last
 }
 
-/// Finds out what the disk at logical unit `lun` behind `transport` is.
-/// `wait` waits that many milliseconds, while a device that is not ready
-/// gets ready.
+/// Finds out what the disk at logical unit `lun` behind `transport` is:
+/// [`identify`], then [`medium`] for a disk. `wait` waits that many
+/// milliseconds, while a device that is not ready gets ready.
 pub fn probe<T: Transport + ?Sized>(
     transport: &mut T,
     lun: u8,
     wait: &mut dyn FnMut(u32),
 ) -> Result<Found, Absent> {
+    let inquiry = identify(transport, lun)?;
+    if !inquiry.is_disk() {
+        return Err(Absent::NotDisk(inquiry.device_type));
+    }
+    medium(transport, lun, inquiry, wait)
+}
+
+/// What the device at logical unit `lun` behind `transport` says it is
+/// (INQUIRY): a disk or another kind, and whether its medium can be taken
+/// out. Fails with [`Absent::NoUnit`] if nothing answers as the unit.
+pub fn identify<T: Transport + ?Sized>(transport: &mut T, lun: u8) -> Result<Inquiry, Absent> {
     let mut bytes = [0u8; INQUIRY_LENGTH as usize];
     let inquiry = match ask(transport, lun, &Cdb::inquiry(INQUIRY_LENGTH), &mut bytes)? {
         Asked::Came(came) => Inquiry::parse(&bytes[..came]),
@@ -147,9 +166,19 @@ pub fn probe<T: Transport + ?Sized>(
     if !inquiry.present() {
         return Err(Absent::NoUnit);
     }
-    if !inquiry.is_disk() {
-        return Err(Absent::NotDisk(inquiry.device_type));
-    }
+    Ok(inquiry)
+}
+
+/// The medium in the disk at logical unit `lun`, which `inquiry` says it
+/// is: that it is ready (waiting for it, as `wait` waits), how big it is,
+/// and whether it is write-protected and has a write cache. Fails with
+/// [`Absent::NoMedium`] if none is in it: an empty card reader's slot.
+pub fn medium<T: Transport + ?Sized>(
+    transport: &mut T,
+    lun: u8,
+    inquiry: Inquiry,
+    wait: &mut dyn FnMut(u32),
+) -> Result<Found, Absent> {
     ready(transport, lun, wait)?;
     let capacity = capacity(transport, lun)?;
     if !capacity.usable() {
@@ -157,6 +186,90 @@ pub fn probe<T: Transport + ?Sized>(
     }
     let (read_only, write_cache) = modes(transport, lun)?;
     Ok(Found { inquiry, capacity, read_only, write_cache, sixteen: capacity.needs_16() })
+}
+
+/// What a look at a drive whose medium comes and goes found ([`look`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Look {
+    /// Whether a medium is in it: `None` when it did not say, as when the
+    /// transport failed.
+    pub medium: Option<bool>,
+    /// Whether it said that its medium may have changed since it was last
+    /// asked ([`Sense::medium_changed`]): what is in it now is not what
+    /// was, though it may look the same.
+    pub changed: bool,
+}
+
+/// Looks whether a medium is in the drive at logical unit `lun`, as
+/// Linux's `sd_check_events` does: TEST UNIT READY, again after a UNIT
+/// ATTENTION, up to [`LOOK_TRIES`] times. A medium is in unless the drive
+/// says none is (sense code 3Ah), as Linux has it: one getting ready, or
+/// stopped, is in. A UNIT ATTENTION of a medium put in or taken out says
+/// it changed; one of a reset alone does not, so that a reset of the
+/// transport (after a command that took too long) does not take a mounted
+/// medium away. Fails only if the device is gone.
+pub fn look<T: Transport + ?Sized>(transport: &mut T, lun: u8) -> Result<Look, TransportError> {
+    let mut found = Look { medium: None, changed: false };
+    for _ in 0..LOOK_TRIES {
+        match transport.command(lun, &Cdb::test_unit_ready(), Data::None, TIMEOUT_MS) {
+            Ok(Reply::Good { .. }) => {
+                found.medium = Some(true);
+                return Ok(found);
+            }
+            Ok(Reply::Failed(Some(sense))) if sense.key == key::UNIT_ATTENTION => {
+                found.changed |= sense.medium_changed();
+            }
+            Ok(Reply::Failed(Some(sense))) if sense.asc == 0x3a => {
+                found.medium = Some(false);
+                return Ok(found);
+            }
+            Ok(Reply::Failed(_)) => {
+                found.medium = Some(true);
+                return Ok(found);
+            }
+            Err(TransportError::Gone) => return Err(TransportError::Gone),
+            // Whether one is in is not known: the next look says.
+            Err(TransportError::Failed(_)) => return Ok(found),
+        }
+    }
+    Ok(found)
+}
+
+/// How many TEST UNIT READYs a [`look`] sends at most: a drive with a new
+/// medium answers two UNIT ATTENTIONs first, as QEMU's do (medium not
+/// present, then medium changed).
+const LOOK_TRIES: u32 = 4;
+
+/// Locks the medium of the drive at logical unit `lun` in (`prevent`), or
+/// lets it go, as Linux's `sd` does while its disk is open: PREVENT ALLOW
+/// MEDIUM REMOVAL. Returns whether the drive took it: one that refuses it
+/// does not lock, and is asked no more (Linux's `lockable`).
+pub fn prevent_removal<T: Transport + ?Sized>(
+    transport: &mut T,
+    lun: u8,
+    prevent: bool,
+) -> Result<bool, TransportError> {
+    let cdb = Cdb::prevent_allow_medium_removal(prevent);
+    match ask(transport, lun, &cdb, &mut [])? {
+        Asked::Came(_) => Ok(true),
+        Asked::Failed(_) => Ok(false),
+    }
+}
+
+/// Lets the medium of the drive at logical unit `lun` go and ejects it, as
+/// util-linux's eject does through Linux's `CDROMEJECT`: PREVENT ALLOW
+/// MEDIUM REMOVAL to allow it, then START STOP UNIT with LoEj, which
+/// stops the medium and opens a tray, or has a card reader or a stick
+/// report no medium until one is put in again. Fails with
+/// [`Absent::Failed`] if the drive refuses, as a reader that cannot eject
+/// does.
+pub fn eject<T: Transport + ?Sized>(transport: &mut T, lun: u8) -> Result<(), Absent> {
+    // A drive that does not lock refuses this too: the eject says.
+    let _ = prevent_removal(transport, lun, false)?;
+    match ask(transport, lun, &Cdb::start_stop_unit(false, true), &mut [])? {
+        Asked::Came(_) => Ok(()),
+        Asked::Failed(sense) => Err(Absent::Failed("START STOP UNIT", sense)),
+    }
 }
 
 /// Waits for the device to be ready, starting it once if it asks to be,

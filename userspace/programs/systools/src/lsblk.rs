@@ -20,6 +20,7 @@ const COLUMNS: &[(&str, bool)] = &[
     ("KNAME", false),
     ("PATH", false),
     ("PKNAME", false),
+    ("RM", true),
     ("SIZE", true),
     ("RO", true),
     ("TYPE", false),
@@ -90,6 +91,8 @@ impl Device {
                 .and_then(|n| n.parse::<u64>().ok())
                 .map_or_else(String::new, |sectors| size(sectors * 512)),
             "RO" => probe::block_text(&self.name, "ro").unwrap_or_default(),
+            // A drive whose medium comes and goes, and its partitions.
+            "RM" => self.of_disk("removable"),
             "TYPE" => if self.disk.is_some() { "part" } else { "disk" }.into(),
             "MOUNTPOINT" => self.mounts.first().cloned().unwrap_or_default(),
             "MOUNTPOINTS" => self.mounts.join("\n"),

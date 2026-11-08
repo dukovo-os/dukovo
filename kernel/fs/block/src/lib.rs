@@ -546,6 +546,58 @@ impl BlockDevice for Slice {
     }
 }
 
+/// A drive with no medium in it (ADR 0430): a card reader's empty slot,
+/// or a stick ejected. It has no sectors, as an empty drive has none on
+/// Linux, so every read and write fails with [`Error::Io`], as Linux's
+/// fail with ENOMEDIUM; a flush has nothing to write and does nothing.
+/// The drive's driver puts the device of a medium in its place, under the
+/// same name, when one goes in.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Empty;
+
+impl Empty {
+    /// What an empty drive is: no sectors, of 512 bytes.
+    pub const INFO: Info = Info {
+        sectors: 0,
+        logical_block: SECTOR as u32,
+        block_size: SECTOR as u32,
+        read_only: false,
+        max_segments: 1,
+        discard_sectors: 0,
+        rotational: true,
+    };
+}
+
+impl BlockDevice for Empty {
+    fn info(&self) -> Info {
+        Empty::INFO
+    }
+
+    fn read(&self, _sector: u64, _segments: &mut [SegmentMut<'_>]) -> Result<(), Error> {
+        Err(Error::Io)
+    }
+
+    fn write(&self, _sector: u64, _segments: &[Segment<'_>]) -> Result<(), Error> {
+        Err(Error::Io)
+    }
+
+    fn flush(&self) -> Result<(), Error> {
+        Ok(())
+    }
+
+    fn read_frames(&self, _sector: u64, _frames: &[(u64, u32)]) -> Result<(), Error> {
+        Err(Error::Io)
+    }
+
+    fn write_frames(&self, _sector: u64, _frames: &[(u64, u32)]) -> Result<(), Error> {
+        Err(Error::Io)
+    }
+
+    fn discard(&self, _sector: u64, _count: u64) -> Result<(), Error> {
+        Err(Error::Io)
+    }
+}
+
 /// Reads sector `sector` of `device` into `out`, through a page: for
 /// partition tables and superblocks. On a device with larger logical
 /// blocks, the whole block that holds it is read.

@@ -84,6 +84,22 @@ const IN_USE_BTRFS: u32 = 4;
 /// (UNLOCK).
 const IN_USE_UNLOCKED: u32 = 8;
 
+/// Ejects the medium of a drive whose medium comes and goes, such as a
+/// card reader's slot or a stick that says its medium is removable
+/// (eject(1), Linux's CDROMEJECT, ADR 0430). The drive lets go of the
+/// lock it holds on the medium while the medium is used, and ejects it:
+/// a tray opens, and a card reader or a stick says it has no medium until
+/// one is put in again. The drive stays, empty, with a size of 0, and its
+/// partitions leave `/devices` and `/kernel/block`. A drive that cannot
+/// eject lets the medium go all the same, and stays empty until the
+/// medium is taken out and put back. The argument is not used, and the
+/// request needs no write right, as on Linux. Fails with
+/// invalid_argument on a partition, not_supported on a disk whose medium
+/// does not come and go, in_use if the drive, one of its partitions or
+/// a volume unlocked on them is in use (GET_IN_USE), and io if the drive
+/// does not answer or was unplugged.
+const EJECT: u32 = 0x5309;
+
 /// What the disk says of its health (diskhealth(8), ADR 0157): Dukovo's
 /// own request, as Linux leaves it to commands passed through raw. It
 /// writes HEALTH_SIZE bytes: a u32 kind, HEALTH_ATA or HEALTH_NVME; a u32
