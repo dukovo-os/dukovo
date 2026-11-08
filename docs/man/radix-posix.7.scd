@@ -332,7 +332,11 @@ ports of its range and listens there. A program given none fails to
 make a network socket at all. A socket that connects or sends unbound
 is bound to a port the kernel picks, from 49152 to 65535; one that
 listens unbound is bound to such a port through a capability with the
-receive right first, as Linux binds it.
+receive right first, as Linux binds it. A *bind* of a TCP socket to port
+0 goes through a capability with the receive right too, one whose range
+holds every port the kernel may pick if there is one, so *listen* after
+it works. Listening on a picked port needs the receive right on that
+port, as on a named one (ADR 0415).
 
 *connect* waits for the connection, or on a non-blocking socket fails
 with EINPROGRESS, after which *poll* says the socket is writable once

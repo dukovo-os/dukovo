@@ -937,24 +937,16 @@ impl InetSocket {
             ports::take_on(self.kind.protocol(), versions, port, state.options.device, reuse)
                 .ok_or(status(Kernel::AddressInUse))?
         };
-        // Whether the kernel picked the port, from a bind to port 0.
-        let chose_port = port == 0;
         let port = held.port();
         if self.kind == Kind::Datagram {
             // It receives from now on.
             state.datagram_parts(address, port)?;
         }
+        // Listening needs the receive right for the port it holds, whether
+        // the program named it or the kernel picked it: a holder granted
+        // only some ports offers nothing on any other (ADR 0183, ADR 0415).
         state.may_listen = self.kind != Kind::Ping
-            && authority.is_some_and(|authority| {
-                // A port the kernel picked (bind to 0) is the holder's to
-                // listen on if it may receive at all, as on Linux; a port
-                // it named must be in its range (ADR 0183, ADR 0412).
-                if chose_port {
-                    authority.rights.contains(Rights::RECEIVE)
-                } else {
-                    authority.receives_on(port)
-                }
-            });
+            && authority.is_some_and(|authority| authority.receives_on(port));
         state.inbound = state.may_listen
             && authority.is_some_and(|authority| authority.rights.contains(Rights::INBOUND));
         state.local = Some((address, port));
