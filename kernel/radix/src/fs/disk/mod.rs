@@ -256,6 +256,8 @@ pub fn init() {
                 }
             } else if device_type(&function) == Some(radix_virtio::device_type::NET) {
                 crate::net::bind(&function);
+            } else if device_type(&function) == Some(radix_virtio::device_type::SOUND) {
+                crate::audio::virtio::bind(&function);
             } else if vmd::is_vmd(&function) {
                 vmd::bind(&function, &mut controllers, &mut functions);
             } else if function.class() == radix_ahci::PCI_CLASS {

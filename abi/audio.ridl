@@ -1,0 +1,196 @@
+// SPDX-FileCopyrightText: 2026 The Dukovo contributors
+// SPDX-License-Identifier: Apache-2.0 OR MIT
+
+//! Sound (Phase 14b.1, ADR 0320): the outputs a program plays samples
+//! through, as OSS's _/dev/dsp_ on FreeBSD.
+//!
+//! _/devices/audio_ (radix-files(7)) has a file for each output the
+//! kernel drives: `virtio0` and on for a virtio sound card in a virtual
+//! machine (ADR 0321). `default` is a link to the output in use, which
+//! MAKE_DEFAULT changes, and `speech` plays on it for the screen reader
+//! (below). The files are root's alone, mode 0600: a service is given the
+//! ones it needs by its service file (service.toml(5)).
+//!
+//! A program plays by writing samples: signed 16-bit little-endian
+//! numbers, a frame of one for each channel at a time, at the rate and
+//! channel count it set with SPEED and CHANNELS. The kernel converts
+//! nothing: SPEED takes the rate the output can play nearest the one
+//! asked, CHANNELS the nearest count it can play, and both write back
+//! what they took, as OSS does, so the program converts to that. A write
+//! waits for room in the output's buffer, unless the file is
+//! non-blocking, when it writes what fits or fails with would_block; it
+//! never waits for the samples to be played, which SYNC does. `poll`
+//! finds the file writable while a fragment's worth of room is free.
+//!
+//! One program plays at a time. Opening a file holds nothing; the first
+//! write, or the first request that sets the rate, format, channels or
+//! fragments, makes the description the output's player, and fails with
+//! busy while another description plays on it. A player that closes
+//! leaves what it wrote to play out. `speech` is the exception, for the
+//! screen reader, which reads every trusted prompt: its first write or
+//! request takes the output from whoever plays on it, whose queued
+//! samples are dropped and whose next write or request fails with busy.
+//! Nothing else can keep speech from being heard, and since the files are
+//! root's, only a service given `speech` takes an output that way.
+//!
+//! The requests are OSS's (FreeBSD's _sys/soundcard.h_ documents them),
+//! with the numbers Linux's _<sys/soundcard.h>_ gives them, so that a
+//! program written for OSS plays unchanged: radix-file(2)'s `control`
+//! with the request, and `buffer` the int, or the OutputSpace, it reads
+//! and writes. Volumes are a channel's percent, 0 to 100, the left in
+//! bits 0 to 7 and the right in bits 8 to 15. Where the output has no
+//! volume of its own, as a virtio card has none, the kernel scales the
+//! samples as it copies them, by the cube of the volume's fraction, so
+//! that each step sounds as loud a change as the last. GET_INFO and
+//! MAKE_DEFAULT are Dukovo's own.
+
+module audio;
+
+/// Stops playing at once and drops what was written but not yet played
+/// (SNDCTL_DSP_RESET and SNDCTL_DSP_HALT).
+const HALT: u32 = 0x5000;
+/// Waits until everything written has been played (SNDCTL_DSP_SYNC). A
+/// fragment written only in part is filled out with silence.
+const SYNC: u32 = 0x5001;
+/// Sets the rate in frames a second from the int at `buffer`, and writes
+/// back the rate taken (SNDCTL_DSP_SPEED).
+const SPEED: u32 = 0xc0045002;
+/// Writes the bytes of a fragment to the int at `buffer`
+/// (SNDCTL_DSP_GETBLKSIZE).
+const GET_BLOCK_SIZE: u32 = 0xc0045004;
+/// Sets the sample format from the int at `buffer`, and writes back the
+/// format taken: always FORMAT_S16_LE (SNDCTL_DSP_SETFMT). FORMAT_QUERY
+/// changes nothing.
+const SET_FORMAT: u32 = 0xc0045005;
+/// Sets the channel count from the int at `buffer`, and writes back the
+/// count taken (SNDCTL_DSP_CHANNELS).
+const CHANNELS: u32 = 0xc0045006;
+/// Starts playing a fragment written only in part, filled out with
+/// silence, without waiting (SNDCTL_DSP_POST).
+const POST: u32 = 0x5008;
+/// Asks for fragments of 2^n bytes, n in bits 0 to 15 of the int at
+/// `buffer`, and at most as many as bits 16 to 31 say
+/// (SNDCTL_DSP_SETFRAGMENT). The kernel keeps them between 256 bytes and
+/// 64 KiB, and between 2 and 32 of them.
+const SET_FRAGMENT: u32 = 0xc004500a;
+/// Writes the formats the output plays to the int at `buffer`:
+/// FORMAT_S16_LE (SNDCTL_DSP_GETFMTS).
+const GET_FORMATS: u32 = 0x8004500b;
+/// Writes an OutputSpace: how much can be written without waiting
+/// (SNDCTL_DSP_GETOSPACE).
+const GET_OUTPUT_SPACE: u32 = 0x8010500c;
+/// Makes the description non-blocking, as fcntl's O_NONBLOCK does
+/// (SNDCTL_DSP_NONBLOCK).
+const NON_BLOCK: u32 = 0x500e;
+/// Writes what the output can do to the int at `buffer`: CAPABILITY_OUTPUT
+/// and the revision, 1 (SNDCTL_DSP_GETCAPS).
+const GET_CAPABILITIES: u32 = 0x8004500f;
+/// Writes how many bytes written are still to be played to the int at
+/// `buffer` (SNDCTL_DSP_GETODELAY).
+const GET_OUTPUT_DELAY: u32 = 0x80045017;
+/// Writes the output's volume to the int at `buffer`
+/// (SNDCTL_DSP_GETPLAYVOL).
+const GET_PLAY_VOLUME: u32 = 0x80045018;
+/// Sets the output's volume from the int at `buffer`, and writes back
+/// the volume taken (SNDCTL_DSP_SETPLAYVOL). It needs no player: any
+/// description of the output sets it, as the volume keys do.
+const SET_PLAY_VOLUME: u32 = 0xc0045018;
+/// Stops playing at once and drops what was not yet played
+/// (SNDCTL_DSP_HALT_OUTPUT).
+const HALT_OUTPUT: u32 = 0x5022;
+
+/// Dukovo's own: writes an OutputInfo to `buffer`. It needs no player.
+const GET_INFO: u32 = 0x41550001;
+/// Dukovo's own: makes this output the one `default` leads to, and that
+/// `speech` plays on. It needs no player.
+const MAKE_DEFAULT: u32 = 0x41550002;
+
+/// SET_FORMAT's request for the format in use, which changes nothing.
+const FORMAT_QUERY: u32 = 0;
+/// Signed 16-bit little-endian samples (AFMT_S16_LE), the one format.
+const FORMAT_S16_LE: u32 = 0x10;
+
+/// GET_CAPABILITIES' revision of the requests.
+const CAPABILITY_REVISION: u32 = 1;
+/// GET_CAPABILITIES' flag of an output (PCM_CAP_OUTPUT).
+const CAPABILITY_OUTPUT: u32 = 0x00020000;
+
+/// The loudest a channel's volume is.
+const VOLUME_MAX: u32 = 100;
+
+/// OutputInfo's `rates`: a bit for each rate an output plays.
+const RATE_5512: u32 = 0x1;
+/// 8,000 frames a second.
+const RATE_8000: u32 = 0x2;
+/// 11,025 frames a second.
+const RATE_11025: u32 = 0x4;
+/// 16,000 frames a second.
+const RATE_16000: u32 = 0x8;
+/// 22,050 frames a second, eSpeak NG's.
+const RATE_22050: u32 = 0x10;
+/// 32,000 frames a second.
+const RATE_32000: u32 = 0x20;
+/// 44,100 frames a second, a CD's.
+const RATE_44100: u32 = 0x40;
+/// 48,000 frames a second, which most outputs play.
+const RATE_48000: u32 = 0x80;
+/// 64,000 frames a second.
+const RATE_64000: u32 = 0x100;
+/// 88,200 frames a second.
+const RATE_88200: u32 = 0x200;
+/// 96,000 frames a second.
+const RATE_96000: u32 = 0x400;
+/// 176,400 frames a second.
+const RATE_176400: u32 = 0x800;
+/// 192,000 frames a second.
+const RATE_192000: u32 = 0x1000;
+/// 384,000 frames a second.
+const RATE_384000: u32 = 0x2000;
+
+/// OutputInfo's `kind`: a virtio sound card (ADR 0321).
+const KIND_VIRTIO: u8 = 1;
+
+/// OutputInfo's `flags`: it is the output `default` leads to.
+const FLAG_DEFAULT: u8 = 1;
+/// A program plays on it.
+const FLAG_PLAYING: u8 = 2;
+/// The program that plays on it is the screen reader, through `speech`.
+const FLAG_SPEECH: u8 = 4;
+/// Its volume is the output's own, not the kernel's scaling.
+const FLAG_HARDWARE_VOLUME: u8 = 8;
+
+/// GET_OUTPUT_SPACE's answer (OSS's audio_buf_info).
+struct OutputSpace {
+    /// Whole fragments that can be written without waiting.
+    fragments: i32;
+    /// The fragments of the buffer.
+    total: i32;
+    /// The bytes of a fragment.
+    fragment_bytes: i32;
+    /// The bytes that can be written without waiting.
+    bytes: i32;
+}
+
+/// GET_INFO's answer: what an output is and does.
+struct OutputInfo {
+    /// The rates it plays: RATE_* bits.
+    rates: u32;
+    /// Its volume, as GET_PLAY_VOLUME gives it.
+    volume: u32;
+    /// The bytes it has played since it was found.
+    played: u64;
+    /// How many times it ran out of samples while a program played.
+    underruns: u32;
+    /// The fewest channels it plays.
+    channels_min: u8;
+    /// The most channels it plays.
+    channels_max: u8;
+    /// What it is: a KIND_*.
+    kind: u8;
+    /// FLAG_* bits.
+    flags: u8;
+    /// Its name in _/devices/audio_, padded with zeros.
+    name: [u8; 16];
+    /// What it is, in words, padded with zeros: "virtio sound card".
+    model: [u8; 32];
+}

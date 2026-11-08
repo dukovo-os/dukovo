@@ -1,0 +1,44 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "audio sets the volume and mutes: kept in /system/state/audio/audio.toml, which only an administrator changes, and followed by audiod, which always runs"
+time = "3m"
+
+[[step]]
+run = "service audiod status"
+root = true
+expect = ["audiod - Sound", "Active: active (running)"]
+[[step]]
+run = "audio volume"
+expect = "70%"
+# The sound is the system's: only an administrator changes it.
+[[step]]
+run = "audio volume 40"
+exit = 1
+expect = "Permission denied"
+[[step]]
+run = "audio volume 40"
+root = true
+expect = "40%"
+[[step]]
+run = "audio volume +5 && grep -E '^(volume|muted) ' /system/state/audio/audio.toml"
+root = true
+expect = ["45%", "volume = 45", "muted = false"]
+[[step]]
+run = "audio mute && audio volume"
+root = true
+expect = ["muted", "45% (muted)"]
+# audiod looks at the file every two seconds and gives the outputs (if
+# the machine has any yet) what it says.
+[[step]]
+run = "sleep 3 && log | grep audiod: | tail -n 5"
+root = true
+expect = "audiod: volume 45%, muted"
+[[step]]
+run = "audio mute off && audio volume 70"
+root = true
+expect = ["unmuted", "70%"]
+[[step]]
+run = "audio volume loud"
+exit = 1
+expect = "not a volume: loud"

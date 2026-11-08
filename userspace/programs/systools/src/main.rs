@@ -138,6 +138,7 @@ mod sessions;
 mod share;
 mod signals;
 mod signin;
+mod sound;
 mod ss;
 mod ssh_askpass;
 mod sshkeys;
@@ -175,6 +176,8 @@ type Tool = fn(&mut Args) -> Result<i32, Fail>;
 
 /// The tools, by name, in order.
 const TOOLS: &[(&str, Tool)] = &[
+    ("audio", sound::main),
+    ("audiod", sound::daemon),
     ("authd", authd::main),
     ("balance", balance::main),
     ("blkid", blkid::main),

@@ -61,6 +61,7 @@ members = [
     "ipc",
     "net",
     "lib/acpi",
+    "lib/audio",
     "lib/bootinfo",
     "lib/bootfs",
     "lib/elf",

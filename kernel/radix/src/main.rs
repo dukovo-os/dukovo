@@ -52,6 +52,7 @@
 extern crate alloc;
 
 mod acpi;
+mod audio;
 mod caps;
 mod captest;
 mod console;

@@ -184,7 +184,13 @@ changed, kept by tmpfs and Btrfs; FAT and exFAT give *modified*.
 	_ttyS0_, at 115200 baud until its settings change it, on which
 	*serial-console*(8) runs the installer, a shell or the sign-in; the
 	kernel log stays off the line while a program has it open (ADR
-	0318).
+	0318). From Phase 14b _audio_ holds the sound outputs, root's alone
+	(mode 0600): _virtio_*N* for a virtio sound card, _default_, a link
+	to the one in use, and _speech_, which plays on it for the screen
+	reader and takes it from any other program. A program plays on one
+	by writing signed 16-bit samples, set up with OSS's requests
+	(*radix-audio*(2), ADR 0320); one plays at a time, and the others
+	are refused with *busy*. *audio*(1) works them.
 
 *bootfs*
 	The boot archive (*radix-processes*(7)), read-only, with the
