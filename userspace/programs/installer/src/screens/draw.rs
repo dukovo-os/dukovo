@@ -20,6 +20,34 @@ use crate::answers::Layout;
 use crate::log::{self, Step};
 use crate::messages::{self, Arg};
 
+/// The drawing's symbols that a terminal on a serial line may not show,
+/// with the plain ASCII the design draws them in there (ADR 0318): a
+/// terminal program at the far end of a cable, or a BMC's console, is not
+/// sure to read UTF-8, as TERM=vt220 says.
+const PLAIN: [(&str, &str); 21] = [
+    ("─", "-"),
+    ("│", "|"),
+    ("┌", "+"),
+    ("┐", "+"),
+    ("└", "+"),
+    ("┘", "+"),
+    ("├", "+"),
+    ("┤", "+"),
+    ("·", "-"),
+    ("•", "*"),
+    ("✓", "*"),
+    ("‹", "<"),
+    ("›", ">"),
+    ("…", "."),
+    ("█", "#"),
+    ("░", "."),
+    ("○", "o"),
+    ("▲", "^"),
+    ("▼", "v"),
+    ("↑", "^"),
+    ("↓", "v"),
+];
+
 /// The box's size at most, in columns and rows: with the key bar under
 /// it, the design's 100 by 30.
 const WIDTH: u16 = 100;
@@ -30,6 +58,18 @@ const LABEL: usize = 24;
 
 /// How wide an input's or a list's box is.
 const BOX: usize = 40;
+
+/// The screen drawn in `buffer` in plain ASCII, for a serial console:
+/// its boxes of `+`, `-` and `|`, and marks such as `(*)` and `[x]`
+/// (ADR 0318). Other characters, such as those of a name typed in, are
+/// left as they are.
+pub fn plain(buffer: &mut ratatui::buffer::Buffer) {
+    for cell in &mut buffer.content {
+        if let Some((_, ascii)) = PLAIN.iter().find(|(symbol, _)| cell.symbol() == *symbol) {
+            cell.set_symbol(ascii);
+        }
+    }
+}
 
 /// Draws `app` on `frame`.
 pub fn draw(frame: &mut Frame<'_>, app: &App) {
@@ -43,7 +83,9 @@ pub fn draw(frame: &mut Frame<'_>, app: &App) {
         height: above.min(HEIGHT),
     };
     let border = Style::new().fg(BLUE_GREY);
-    let title = messages::with("title", &[("version", Arg::Text(&app.version))]);
+    // On the serial port the title says so, as the boot menu's entry does.
+    let title = if app.machine.serial_console { "title-serial" } else { "title" };
+    let title = messages::with(title, &[("version", Arg::Text(&app.version))]);
     // The title starts a cell in from the corner, as the design has it.
     let block = Block::bordered().border_style(border).title(Line::from(vec![
         Span::styled("─", border),

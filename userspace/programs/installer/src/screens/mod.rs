@@ -35,8 +35,8 @@ use std::process::Command;
 use std::sync::mpsc::{self, Receiver};
 use std::time::Duration;
 
-use ratatui::DefaultTerminal;
 use ratatui::crossterm::event::{self, Event as Input, KeyCode, KeyEventKind};
+use ratatui::{DefaultTerminal, Frame};
 
 use self::app::{App, Outcome};
 use crate::answers::{self, Answers};
@@ -65,13 +65,15 @@ pub fn run(release: Option<&Path>) -> u8 {
     };
     // The design's colours, for as long as the screens show.
     send(&look::set_palette());
+    // On the serial port, the screens are drawn in plain ASCII.
+    let plain = crate::machine::on_serial_console();
     // The consoles keep no second screen for full-screen programs, so
     // the screens clear what was there before them, and what they drew
     // once they end, and give the colours back, before the shell's
     // prompt comes.
     let ended = terminal.clear().map_err(|err| format!("the terminal: {err}")).and_then(|()| {
-        let (mut app, log, source) = get_ready(&mut terminal, release)
-            .inspect_err(|why| cannot_start(&mut terminal, why))?;
+        let (mut app, log, source) = get_ready(&mut terminal, release, plain)
+            .inspect_err(|why| cannot_start(&mut terminal, why, plain))?;
         show(&mut terminal, &mut app, log, source).map_err(|err| format!("the terminal: {err}"))
     });
     // What is printed next, a problem or the shell's prompt, starts at
@@ -88,6 +90,23 @@ pub fn run(release: Option<&Path>) -> u8 {
     }
 }
 
+/// Draws a screen with `draw`, in plain ASCII if `plain`, as on a serial
+/// console ([`draw::plain`]).
+fn draw_screen(
+    terminal: &mut DefaultTerminal,
+    plain: bool,
+    draw: impl FnOnce(&mut Frame<'_>),
+) -> io::Result<()> {
+    terminal
+        .draw(|frame| {
+            draw(frame);
+            if plain {
+                draw::plain(frame.buffer_mut());
+            }
+        })
+        .map(|_| ())
+}
+
 /// Sends `codes` to the terminal, past the screens' drawing.
 fn send(codes: &str) {
     let mut out = io::stdout();
@@ -102,18 +121,17 @@ const STARTING: [&str; 3] = ["starting-release", "starting-machine", "starting-s
 /// the release on the stick found and its signatures checked, the
 /// machine's disks and network cards read, and the setup files on the
 /// stick listed. Gives the screens' answers, the install log and the
-/// release, or why the installer cannot go on.
+/// release, or why the installer cannot go on. `plain` draws in ASCII.
 fn get_ready(
     terminal: &mut DefaultTerminal,
     release: Option<&Path>,
+    plain: bool,
 ) -> Result<(App, Log, Source), String> {
     let mut step = |done: usize| {
-        terminal
-            .draw(|frame| {
-                draw::startup(frame, done, STARTING.len(), &messages::text(STARTING[done]));
-            })
-            .map(|_| ())
-            .map_err(|err| format!("the terminal: {err}"))
+        draw_screen(terminal, plain, |frame| {
+            draw::startup(frame, done, STARTING.len(), &messages::text(STARTING[done]));
+        })
+        .map_err(|err| format!("the terminal: {err}"))
     };
     step(0)?;
     let mut log = Log::create(Path::new(log::LIVE_PATH), false)?;
@@ -133,10 +151,10 @@ fn get_ready(
 /// Tells on the startup screen why the installer cannot start, `why`,
 /// and waits for Enter or Esc. Printed once the screens end, it would not
 /// be read on the stick: the shell consoled starts on tty1 then clears
-/// the screen.
-fn cannot_start(terminal: &mut DefaultTerminal, why: &str) {
+/// the screen. `plain` draws in ASCII.
+fn cannot_start(terminal: &mut DefaultTerminal, why: &str, plain: bool) {
     loop {
-        if terminal.draw(|frame| draw::cannot_start(frame, why)).is_err() {
+        if draw_screen(terminal, plain, |frame| draw::cannot_start(frame, why)).is_err() {
             return;
         }
         match event::read() {
@@ -165,7 +183,8 @@ fn show(terminal: &mut DefaultTerminal, app: &mut App, log: Log, source: Source)
     let mut ready = Some((log, source));
     let mut running: Option<Running> = None;
     loop {
-        terminal.draw(|frame| draw::draw(frame, app))?;
+        // The machine says whether the screens run on the serial port.
+        draw_screen(terminal, app.machine.serial_console, |frame| draw::draw(frame, app))?;
         if event::poll(TICK)?
             && let Input::Key(key) = event::read()?
             && key.kind == KeyEventKind::Press

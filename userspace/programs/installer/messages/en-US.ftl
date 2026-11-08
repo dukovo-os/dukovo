@@ -15,6 +15,7 @@ starting-setup = Looking for setup files on the stick…
 cannot-start = The installer cannot start
 cannot-start-leave = Enter leaves the installer for a shell
 title = Install Dukovo { $version }
+title-serial = Install Dukovo { $version } (serial console)
 step-of = Step { $step } of { $steps } · { $name }
 more = … more
 hints = Tab move · Space select · Enter next · Esc back · F1 help · Alt+F2 shell

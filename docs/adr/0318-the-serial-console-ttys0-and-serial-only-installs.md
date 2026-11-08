@@ -64,6 +64,10 @@ ports already were terminals whose master is a kernel thread (ADR
 - **consoled leaves the installer to the serial line** when the
   command line has both `install` and `console=ttyS0` and the machine
   has COM1, so that the screens never run twice; tty1 runs the shell.
+- **On the serial line the screens are plain ASCII**, as the approved
+  design draws them there: boxes of `+`, `-` and `|`, `(*)` for a
+  chosen option, and *(serial console)* after the title. A terminal
+  program, and above all a BMC's console, is not sure to show UTF-8.
 - **The stick's menu has *Install Dukovo (serial console)***, with
   `live install console=ttyS0 console-sign-in=off`, named as its
   *Try Dukovo (live console)* is, and after it, so that the entries a

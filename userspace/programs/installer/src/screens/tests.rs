@@ -201,6 +201,29 @@ fn an_install_over_the_serial_port_keeps_a_console_there() {
 }
 
 #[test]
+fn the_serial_ports_screens_are_plain_ascii() {
+    let app = App::new(Machine { serial_console: true, ..machine() }, "0.14.0", 600 << 20);
+    let mut terminal = Terminal::new(TestBackend::new(100, 31)).unwrap();
+    terminal
+        .draw(|frame| {
+            draw::draw(frame, &app);
+            draw::plain(frame.buffer_mut());
+        })
+        .unwrap();
+    let buffer = terminal.backend().buffer();
+    let shown: String = (0..buffer.area.height)
+        .flat_map(|y| (0..buffer.area.width).map(move |x| (x, y)))
+        .map(|at| buffer[at].symbol())
+        .collect();
+    // The box, its title and the marks, as the design draws them there.
+    assert!(shown.contains("+- Install Dukovo 0.14.0 (serial console) ---"), "{shown}");
+    assert!(shown.contains("Step 1 of 6 - Welcome"), "{shown}");
+    assert!(shown.contains("< English (US) >"), "{shown}");
+    assert!(shown.contains("(*) Step by step"), "{shown}");
+    assert!(shown.is_ascii(), "{shown}");
+}
+
+#[test]
 fn every_step_is_answered_by_keys_and_the_answers_check() {
     let mut app = app();
     let shown = screen(&app);

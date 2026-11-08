@@ -102,7 +102,9 @@ The stick's *Install Dukovo (serial console)* entry starts the screens
 on the first serial port instead, for a computer with no screen, where
 *serial-console*(8) runs them, and root's shell after them; any
 terminal program at the cable's other end shows them, at the size it
-says it is, or 80 columns by 24 rows, which they fit. The review's
+says it is, or 80 columns by 24 rows, which they fit. There they are
+drawn in plain ASCII, boxes of + - and |, since the terminal is not sure
+to show UTF-8, and the title ends with *(serial console)*. The review's
 settings then end with *serial console ttyS0*: the installed system
 keeps *console=ttyS0* in its boot menu, so that its sign-in is on the
 serial port too (*install-answers*(5)'s *serial_console*, ADR 0318).

@@ -79,7 +79,11 @@ fn screens(vm: &mut Vm, _case: &Case) -> Result<(), String> {
     // asks its size; GRUB and the firmware are done with the port.
     vm.serial_terminal(COLS, ROWS);
     vm.expect("spark: the live system: /system is the boot archive, in memory, and no disk is the root")?;
-    let welcome = [&format!("Install Dukovo {VERSION}") as &str, "Step 1 of 6", "How do you want to install?"];
+    let welcome = [
+        &format!("Install Dukovo {VERSION} (serial console)") as &str,
+        "Step 1 of 6 - Welcome",
+        "How do you want to install?",
+    ];
     vm.expect_terminal_within(&welcome, START_SECONDS)?;
 
     // Live console, the button three before the first field, leaves the
@@ -126,12 +130,13 @@ fn screens(vm: &mut Vm, _case: &Case) -> Result<(), String> {
     vm.send(ENTER)?;
 
     // Review: the system keeps the serial console it was installed
-    // over, and the disk's name confirms the install.
+    // over, and the disk's name confirms the install. On the port the
+    // screens are plain ASCII, the dots between the settings dashes.
     vm.expect_terminal(&[
         "Step 6 of 6",
         "Erase     vda",
         "alice (Alice Liddell), administrator",
-        "America/Denver · keyboard us · serial console ttyS0",
+        "America/Denver - keyboard us - serial console ttyS0",
         "Type vda to confirm",
     ])?;
     vm.send("vda")?;
