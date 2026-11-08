@@ -1,0 +1,121 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# DEBUG, not to be merged: runs the userspace-e1000 boot test over and
+# over with the stall's instrumentation, and prints what the serial log
+# says of the cards and the echo, to find why the TCP echo through net1
+# can stop for good after e1000d is restarted.
+name: e1000 debug
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: e1000-debug-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  MDBOOK_VERSION: 0.4.52
+
+jobs:
+  e1000:
+    name: userspace-e1000, again and again
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Allow QEMU to use KVM
+        run: |
+          if [ -e /dev/kvm ]; then
+            echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+              | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+            sudo udevadm control --reload-rules
+            sudo udevadm trigger --name-match=kvm
+          fi
+
+      - name: Install host packages
+        uses: ./.github/actions/apt-install
+        with:
+          packages: >-
+            qemu-system-x86 ovmf gcc flex gawk
+            xorriso mtools dosfstools exfatprogs gdisk fdisk sleuthkit btrfs-progs e2fsprogs ntfs-3g dislocker libbde-utils openssh-server samba smbclient nfs-kernel-server krb5-kdc krb5-admin-server krb5-user scdoc mandoc
+            udftools udfclient genisoimage
+            clang-20 lld-20 llvm-20 libclang-rt-20-dev meson ninja-build cmake bison pkgconf autoconf
+
+      - name: Let the tests listen on port 445
+        run: |
+          sudo systemctl stop smbd.service
+          sudo sysctl -w net.ipv4.ip_unprivileged_port_start=445
+
+      - name: Start Linux's NFS server
+        run: sudo systemctl start nfs-server.service
+
+      - name: Cache GRUB
+        uses: actions/cache@v4
+        with:
+          path: .cache/grub
+          key: grub-${{ hashFiles('tools/xtask/src/grub.rs') }}
+
+      - name: Install mdBook
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSfL \
+            "https://github.com/rust-lang/mdBook/releases/download/v${MDBOOK_VERSION}/mdbook-v${MDBOOK_VERSION}-x86_64-unknown-linux-gnu.tar.gz" \
+            | sudo tar -xz -C /usr/local/bin mdbook
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+          shared-key: boot
+          save-if: false
+
+      - name: Note the port toolchain's version
+        id: ports-key
+        run: echo "clang=$(clang-20 --version | head -n1 | tr -c 'A-Za-z0-9.\n' -)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore the built ports
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            out/sysroot
+            out/toolchain
+            out/ports
+            target/ports/sources
+          key: ports-host-${{ steps.ports-key.outputs.clang }}-${{ hashFiles('ports/**', 'abi/**', 'tools/**', 'rust-toolchain.toml') }}
+          restore-keys: ports-host-${{ steps.ports-key.outputs.clang }}-
+
+      - name: ./ob setup
+        run: ./ob setup
+
+      - name: ./ob ports
+        timeout-minutes: 45
+        run: ./ob ports
+
+      # The shard the stall was seen in ran usb-ethernet, smbd and
+      # nfs-kerberos just before; then the test alone, again and again.
+      - name: userspace-e1000 after its shard's neighbours, then alone
+        run: |
+          show() {
+            grep -E "nics:|e1000d:|netd: net[12]|Net: net[12]|spark: (e1000d|starting e1000d)|Device: " \
+              out/test/boot-userspace-e1000.log | cut -c1-400 | tail -n 300 || true
+          }
+          passed=0 failed=0
+          if ./ob test boot --case usb-ethernet --case smbd --case nfs-kerberos --case userspace-e1000; then
+            echo "=== RUN 0 (after neighbours) PASS"; passed=$((passed + 1))
+          else
+            echo "=== RUN 0 (after neighbours) FAIL"; failed=$((failed + 1))
+          fi
+          show
+          for run in $(seq 1 14); do
+            if ./ob test boot --case userspace-e1000; then
+              echo "=== RUN $run PASS"; passed=$((passed + 1))
+            else
+              echo "=== RUN $run FAIL"; failed=$((failed + 1))
+            fi
+            show
+          done
+          echo "=== $passed passed, $failed failed"
