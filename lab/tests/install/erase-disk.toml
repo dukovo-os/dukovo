@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 The Dukovo contributors
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 
-about = "The install stick's installer erases a blank disk and installs Dukovo, every screen answered by keys; with the stick pulled the disk boots, and the account made in the screens signs in"
+about = "The install stick's installer erases a blank disk and installs Dukovo, every screen answered by keys and File sharing ticked; with the stick pulled the disk boots, and the account made in the screens signs in"
 time = "30m"
 boot = "stick"
 disk = "8G"
@@ -10,7 +10,7 @@ disk = "8G"
 [[step]]
 serial = "consoled: install: the installer's screens on tty1"
 [[step]]
-screen = ["Step 1 of 5", "How do you want to install?", "Step by step"]
+screen = ["Step 1 of 6", "How do you want to install?", "Step by step"]
 # F1 shows the page's help, and Esc closes it.
 [[step]]
 keys = ["f1"]
@@ -26,7 +26,7 @@ screen_gone = "Esc closes"
 [[step]]
 keys = ["ret"]
 [[step]]
-screen = ["Step 2 of 5", "Network cards found:", "Automatic (DHCP)"]
+screen = ["Step 2 of 6", "Network cards found:", "Automatic (DHCP)"]
 [[step]]
 keys = ["down", "down", "down", "backspace", "backspace", "backspace", "backspace", "backspace", "backspace"]
 [[step]]
@@ -42,16 +42,27 @@ screen = "America/Denver"
 [[step]]
 keys = ["ret"]
 [[step]]
-screen = ["Step 3 of 5", "the install stick, can't be chosen", "Erase the disk"]
+screen = ["Step 3 of 6", "the install stick, can't be chosen", "Erase the disk"]
 [[step]]
 screenshot = "disks"
 [[step]]
 keys = ["spc", "ret"]
 
+# Software: the Server profile, File sharing ticked, then Next past the
+# web console's box and Back.
+[[step]]
+screen = ["Step 4 of 6", "What is this machine for?", "[ ] File sharing"]
+[[step]]
+keys = ["down", "down", "down", "spc"]
+[[step]]
+screen = "[x] File sharing"
+[[step]]
+keys = ["tab", "tab", "tab", "ret"]
+
 # The administrator: the name makes the user name, and the password is
 # the lab's, typed and never shown.
 [[step]]
-screen = ["Step 4 of 5", "The administrator account."]
+screen = ["Step 5 of 6", "The administrator account."]
 [[step]]
 type = "Ada Lovelace"
 [[step]]
@@ -67,7 +78,7 @@ keys = ["ret"]
 
 # Review: everything the install does, and the disk's name to confirm it.
 [[step]]
-screen = ["Step 5 of 5", "ada (Ada Lovelace), administrator", "America/Denver", "lab-installed", "Type sda to confirm"]
+screen = ["Step 6 of 6", "ada (Ada Lovelace), administrator", "America/Denver", "lab-installed", "web console on (from release 0.16)", "Type sda to confirm"]
 [[step]]
 type = "sda\n"
 [[step]]
@@ -110,3 +121,9 @@ screen = "zone: /system/resources/zoneinfo/America/Denver"
 type = "echo \"admins\"\": $(grep '^admins:' /system/settings/group)\"\n"
 [[step]]
 screen = "admins: admins:x:10:ada"
+# File sharing, ticked on the Software page, is added, and its services
+# started at this first boot.
+[[step]]
+type = "feature list | tail -1\n"
+[[step]]
+screen = "file-sharing  added      File sharing"

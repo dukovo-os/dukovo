@@ -13,7 +13,8 @@
 //! sound. The second boot is from that disk alone, without the stick:
 //! alice signs in on the console with her password, and finds the
 //! system, the settings and the saved answers the install left, without
-//! the password's hash.
+//! the password's hash, and File sharing, which the answers' Server
+//! profile added, running.
 
 use std::process::Command;
 
@@ -114,10 +115,24 @@ pub fn install(vm: &mut Vm, _case: &Case) -> Result<(), String> {
 
 /// The second boot, from the installed disk alone, now a SATA disk: GRUB
 /// finds the root by its UUID, Spark turns on its swap, alice signs in
-/// with her password, and the system, its settings and the saved answers
-/// are as the install left them. install-bios's second boot is the same.
+/// with her password, and the system, its settings, the saved answers
+/// and the feature they added are as the install left them.
+/// install-bios's second boot is the same.
 pub fn installed(vm: &mut Vm, _case: &Case) -> Result<(), String> {
     signed_in(vm)?;
+    // The answers' Server profile added File sharing, so Spark started
+    // its services at this first boot (ADR 0317), and the web console
+    // they turned off is saved as off.
+    vm.expect_anywhere("spark: started smbd (/system/commands/smbd) as process ")?;
+    vm.expect_anywhere("spark: started nfsd (/system/commands/nfsd) as process ")?;
+    answer_prompt(vm, "$", "clear; feature list | tail -1")?;
+    vm.expect_screen(&["file-sharing  added      File sharing"])?;
+    answer_prompt(
+        vm,
+        "$",
+        "echo \"console\"\": $(grep -c '\"web_console\": false' /system/settings/install/answers.json)\"",
+    )?;
+    vm.expect_screen(&["console: 1"])?;
     power_off(vm)
 }
 

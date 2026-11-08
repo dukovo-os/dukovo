@@ -22,6 +22,8 @@ again the same way, or copied to the next machine with a new host name.
   "disk": { "layout": "guided", "target": "/dev/nvme0n1", "swap_gib": 8 },
   "hostname": "web01",
   "time_zone": "America/Denver",
+  "profile": "server",
+  "features": { "add": ["file-sharing"] },
   "network": {
     "net0": { "address": "10.0.0.20/24", "gateway": "10.0.0.1", "dns": ["10.0.0.1"] }
   },
@@ -121,6 +123,30 @@ it does not know is a problem, so that a mistyped one is not missed.
 	same passwords; left out, the saved answers have none, and anyone
 	may read them.
 
+*profile*
+	What the machine is for: *minimal*, the base system with nothing
+	listening; *server*, Minimal and the web console; or *cloud*,
+	Server set up at first boot from the cloud's data, with the web
+	console off. *minimal* if not given. A profile is a starting set
+	of features; each of this release's starts with none, and offers
+	them all.
+
+*features*
+	The features added to the profile's, by their IDs in *add*, and
+	those of the profile left out, in *remove* (*feature*(8),
+	*feature.toml*(5)): ++
+_"features": { "add": ["file-sharing"] }_ ++
+The install turns on each service a feature lists, in the new
+system's settings, so that they start at its first boot. A feature
+that installs bundles is added after the first boot, with *feature
+add*, as the new system reaches a catalog only once it runs; the
+installer refuses it, as it refuses an ID the release lacks.
+
+*web_console*
+	*true* turns Dukovo Admin, the web console, on; *false* leaves it
+	off; left out, the profile says. Dukovo Admin arrives in release
+	0.16, which turns it on if the saved answers say so.
+
 # CHANGES
 
 Each entry of *changes* changes one disk:
@@ -173,9 +199,9 @@ numbered 2, where the BIOS's GRUB finds its files; without one, it
 starts by UEFI alone.
 Nothing is written to any disk before the whole file is checked.
 
-Server installs will add the keys *profile*, *features*, *web_console*,
-*ssh*, *updates* and *firmware*, which this installer does not take yet.
+Later installers will add the keys *ssh*, *updates* and *firmware*,
+which this installer does not take yet.
 
 # SEE ALSO
 
-*dukovo-install*(8), *rdisk-layout*(5), *hostname*(5), *network*(5)
+*dukovo-install*(8), *feature*(8), *feature.toml*(5), *rdisk-layout*(5), *hostname*(5), *network*(5)

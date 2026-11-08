@@ -24,6 +24,7 @@ use system_release::list::Release;
 use crate::answers::{Answers, Change, Format, Layout, Role};
 use crate::copy;
 use crate::disks;
+use crate::features;
 use crate::log::{Log, Step};
 use crate::machine::{self, DiskInfo};
 use crate::plan;
@@ -134,6 +135,9 @@ pub fn install(answers: &Answers, source: &Source, log: &mut Log) -> Result<(), 
     let disk = answers.target();
     log.installing(&answers.disks(), &source.release.version);
     log.step(Step::Disk);
+    // The live system is the release copied: what it lacks, the new
+    // system would too, and this is the last moment nothing is written.
+    features::check(answers, Path::new("/system"))?;
     let planned = plan_disks(answers, source)?;
     fs::create_dir_all(WORK).map_err(|err| format!("making {WORK}: {err}"))?;
     shrink(&planned, log)?;
@@ -367,6 +371,7 @@ fn fill_root(
         state: &root.join("@state"),
     };
     settings::write(answers, &target)?;
+    features::turn_on(answers, &target, log)?;
     install_grub(parts, &root.join("@system.a"), log)?;
     save(answers, &target, log)
 }

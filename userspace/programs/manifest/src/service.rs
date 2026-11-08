@@ -688,6 +688,28 @@ pub fn check_account(name: &str) -> Result<(), String> {
     }
 }
 
+/// `text`, a service file, with its `enabled` line saying `on`, or one
+/// added after its `program` line.
+pub fn with_enabled(text: &str, on: bool) -> String {
+    let line = format!("enabled = {on}");
+    let mut lines: Vec<String> = text.lines().map(String::from).collect();
+    // The top-level keys: those before the first table.
+    let top = lines.iter().position(|l| l.trim_start().starts_with('[')).unwrap_or(lines.len());
+    let key_of = |l: &str| l.split_once('=').map(|(key, _)| key.trim().to_owned());
+    if let Some(at) = lines[..top].iter().position(|l| key_of(l).as_deref() == Some("enabled")) {
+        lines[at] = line;
+    } else {
+        let at = lines[..top]
+            .iter()
+            .position(|l| key_of(l).as_deref() == Some("program"))
+            .map_or(0, |at| at + 1);
+        lines.insert(at, line);
+    }
+    let mut text = lines.join("\n");
+    text.push('\n');
+    text
+}
+
 /// Checks a service's name, the name of its file without `.toml`: it
 /// names its resource domain and its log lines too.
 pub fn check_name(name: &str) -> Result<(), String> {

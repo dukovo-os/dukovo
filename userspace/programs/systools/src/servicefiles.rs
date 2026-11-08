@@ -383,27 +383,9 @@ pub fn text(name: &str) -> Result<String, Fail> {
     }
 }
 
-/// `text`, a service file, with its `enabled` line saying `on`, or one
-/// added after its `program` line.
-pub(crate) fn with_enabled(text: &str, on: bool) -> String {
-    let line = format!("enabled = {on}");
-    let mut lines: Vec<String> = text.lines().map(String::from).collect();
-    // The top-level keys: those before the first table.
-    let top = lines.iter().position(|l| l.trim_start().starts_with('[')).unwrap_or(lines.len());
-    let key_of = |l: &str| l.split_once('=').map(|(key, _)| key.trim().to_string());
-    if let Some(at) = lines[..top].iter().position(|l| key_of(l).as_deref() == Some("enabled")) {
-        lines[at] = line;
-    } else {
-        let at = lines[..top]
-            .iter()
-            .position(|l| key_of(l).as_deref() == Some("program"))
-            .map_or(0, |at| at + 1);
-        lines.insert(at, line);
-    }
-    let mut text = lines.join("\n");
-    text.push('\n');
-    text
-}
+// `with_enabled` is shared with the installer, which turns on the
+// services of the features chosen at install.
+pub(crate) use manifest::service::with_enabled;
 
 /// Turns service `name` on or off: its file says whether it starts at
 /// boot, and Spark starts or stops it now. The file changes only if it
@@ -465,19 +447,6 @@ fn name_ok(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn enabled_is_set_in_place_or_after_program() {
-        let file = "# smbd\nservice_version = 1\nprogram = \"/system/commands/smbd\"\nenabled = false\n\n[permissions]\nenabled = 1\n";
-        let on = with_enabled(file, true);
-        assert!(on.contains("\nenabled = true\n\n[permissions]\nenabled = 1\n"), "{on}");
-        assert_eq!(with_enabled(&on, false), file);
-        let without = "service_version = 1\nprogram = \"/x\"\norder = 40\n";
-        assert_eq!(
-            with_enabled(without, true),
-            "service_version = 1\nprogram = \"/x\"\nenabled = true\norder = 40\n"
-        );
-    }
 
     #[test]
     fn only_a_services_name_is_enabled() {

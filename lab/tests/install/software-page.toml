@@ -1,0 +1,54 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "The installer's Software page offers the Minimal, Server and Cloud and VM profiles, the release's features as boxes and the web console's switch: Server is chosen with the web console on, File sharing ticks and unticks, Minimal turns the web console off, and Back keeps the choices; nothing is written. The install that adds a feature is install/erase-disk's"
+time = "5m"
+boot = "stick"
+disk = "8G"
+
+# The stick's menu starts the installer by itself; the first pages keep
+# their answers, and the blank disk is chosen.
+[[step]]
+serial = "consoled: install: the installer's screens on tty1"
+[[step]]
+screen = ["Step 1 of 6", "How do you want to install?"]
+[[step]]
+keys = ["ret"]
+[[step]]
+screen = ["Step 2 of 6", "Network cards found:"]
+[[step]]
+keys = ["ret"]
+[[step]]
+screen = ["Step 3 of 6", "Erase the disk"]
+[[step]]
+keys = ["spc", "ret"]
+
+# Software: Server, with the web console, and every feature unticked.
+[[step]]
+screen = ["Step 4 of 6", "What is this machine for?", "Server", "Cloud and VM", "[ ] File sharing", "turns on smbd and nfsd", "[x] Turn on Dukovo Admin, the web console"]
+[[step]]
+screenshot = "software"
+[[step]]
+keys = ["down", "down", "down", "spc"]
+[[step]]
+screen = "[x] File sharing"
+[[step]]
+keys = ["spc"]
+[[step]]
+screen = "[ ] File sharing"
+
+# Minimal turns the web console's box off.
+[[step]]
+keys = ["up", "up", "up", "spc"]
+[[step]]
+screen = ["[ ] Turn on Dukovo Admin, the web console"]
+
+# Back to the Disk page, and on again: the choices are kept.
+[[step]]
+keys = ["esc"]
+[[step]]
+screen = ["Step 3 of 6", "Erase the disk"]
+[[step]]
+keys = ["ret"]
+[[step]]
+screen = ["Step 4 of 6", "[ ] Turn on Dukovo Admin, the web console"]

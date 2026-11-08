@@ -11,18 +11,18 @@ disk = "8G"
 [[step]]
 serial = "consoled: install: the installer's screens on tty1"
 [[step]]
-screen = ["Step 1 of 5", "How do you want to install?"]
+screen = ["Step 1 of 6", "How do you want to install?"]
 [[step]]
 keys = ["ret"]
 [[step]]
-screen = ["Step 2 of 5", "Network cards found:"]
+screen = ["Step 2 of 6", "Network cards found:"]
 [[step]]
 keys = ["ret"]
 
 # Disk: the blank disk is chosen, and the layout next to Windows says
 # there is no Windows on it.
 [[step]]
-screen = ["Step 3 of 5", "Erase the disk", "Install next to Windows"]
+screen = ["Step 3 of 6", "Erase the disk", "Install next to Windows"]
 [[step]]
 keys = ["spc"]
 [[step]]

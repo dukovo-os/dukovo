@@ -40,6 +40,7 @@ use ratatui::crossterm::event::{self, Event as Input, KeyCode, KeyEventKind};
 
 use self::app::{App, Outcome};
 use crate::answers::{self, Answers};
+use crate::features;
 use crate::install::{self, Source};
 use crate::log::{self, Event, Log, Step};
 use crate::machine::Machine;
@@ -122,6 +123,8 @@ fn get_ready(
     step(2)?;
     let mut app = App::new(machine, &source.release.version, source.release.bytes());
     app.setup_files = stick::setup_files(source.stick.as_deref());
+    // The live system is the release the install copies.
+    app.features = features::offered(Path::new("/system"));
     // The release's signatures were checked before the first page.
     app.told(Event::Step(Step::Release));
     Ok((app, log, source))

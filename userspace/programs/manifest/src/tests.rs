@@ -585,3 +585,16 @@ fn broken_files_never_panic() {
         }
     }
 }
+
+#[test]
+fn enabled_is_set_in_place_or_after_program() {
+    let file = "# smbd\nservice_version = 1\nprogram = \"/system/commands/smbd\"\nenabled = false\n\n[permissions]\nenabled = 1\n";
+    let on = service::with_enabled(file, true);
+    assert!(on.contains("\nenabled = true\n\n[permissions]\nenabled = 1\n"), "{on}");
+    assert_eq!(service::with_enabled(&on, false), file);
+    let without = "service_version = 1\nprogram = \"/x\"\norder = 40\n";
+    assert_eq!(
+        service::with_enabled(without, true),
+        "service_version = 1\nprogram = \"/x\"\nenabled = true\norder = 40\n"
+    );
+}

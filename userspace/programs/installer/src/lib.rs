@@ -13,6 +13,7 @@
 //! - [`copy`] copies the release into the new slot, checking each file
 //!   against the signed list as it is written.
 //! - [`settings`] writes the new system's settings and accounts.
+//! - [`features`] turns on the services of the features chosen.
 //! - [`plan`] works out what an install does to the disks, from the
 //!   layout the answers name, before anything is written.
 //! - [`disks`] finds the stick, names disks and partitions, and reads
@@ -28,6 +29,7 @@
 pub mod answers;
 pub mod copy;
 pub mod disks;
+pub mod features;
 pub mod install;
 pub mod log;
 pub mod machine;

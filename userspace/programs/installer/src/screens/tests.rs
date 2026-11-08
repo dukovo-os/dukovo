@@ -10,7 +10,10 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use super::app::{App, Id, Modal, Outcome, Page, Row, SetupFile, user_name};
 use super::draw::{self, wrap};
-use crate::answers::{Answers, Layout, Network};
+use manifest::feature;
+
+use crate::answers::{Answers, Layout, Network, Profile};
+use crate::features::Offered;
 use crate::log::{Event, Step};
 use crate::machine::{Card, DiskInfo, Machine};
 use crate::windows::{Refused, Windows};
@@ -80,7 +83,29 @@ fn machine() -> Machine {
 }
 
 fn app() -> App {
-    App::new(machine(), "0.14.0", 600 << 20)
+    let mut app = App::new(machine(), "0.14.0", 600 << 20);
+    app.features = offered();
+    app
+}
+
+/// The features a release offers: File sharing, and one whose bundles
+/// come from a catalog.
+fn offered() -> Vec<Offered> {
+    let sharing = "feature_version = 1\nname = \"File sharing\"\nabout = \"Shares \
+                   folders.\"\nservices = [\"smbd\", \"nfsd\"]\n";
+    let mail = "feature_version = 1\nname = \"Mail\"\nabout = \"Mail.\"\nbundles = \
+                [\"org.postfix.postfix\"]\n";
+    [("file-sharing", sharing), ("mail", mail)]
+        .into_iter()
+        .map(|(id, text)| Offered { id: id.into(), feature: feature::from_toml(text).unwrap() })
+        .collect()
+}
+
+/// Goes on from the Software page as it is.
+fn through_software(app: &mut App) {
+    assert_eq!(app.page, Page::Software, "{:?}", app.problem);
+    focus(app, Id::Next);
+    press(app, KeyCode::Enter);
 }
 
 /// What the screens show, a line a row.
@@ -145,6 +170,7 @@ fn to_review(app: &mut App) {
     focus(app, Id::Disk(2));
     press(app, KeyCode::Char(' '));
     press(app, KeyCode::Enter);
+    through_software(app);
     assert_eq!(app.page, Page::You, "{:?}", app.problem);
     type_text(app, "Alice Liddell");
     press(app, KeyCode::Tab);
@@ -161,7 +187,7 @@ fn every_step_is_answered_by_keys_and_the_answers_check() {
     let mut app = app();
     let shown = screen(&app);
     assert!(shown.contains("Install Dukovo 0.14.0"), "{shown}");
-    assert!(shown.contains("Step 1 of 5 · Welcome"), "{shown}");
+    assert!(shown.contains("Step 1 of 6 · Welcome"), "{shown}");
     assert!(shown.contains("‹ English (US) ›"), "{shown}");
     assert!(shown.contains("< Next >"), "{shown}");
     to_review(&mut app);
@@ -288,6 +314,7 @@ fn each_page_refuses_what_an_answers_file_would() {
         press(&mut app, KeyCode::Backspace);
     }
     press(&mut app, KeyCode::Enter);
+    through_software(&mut app);
     assert_eq!(app.page, Page::You, "{:?}", app.problem);
     // Passwords typed differently are refused, and a name must be given.
     type_text(&mut app, "Alice");
@@ -338,6 +365,7 @@ fn choose_layout(app: &mut App, disk: usize, layout: Id) {
 
 /// Answers the You page, so that the review shows.
 fn answer_you(app: &mut App) {
+    through_software(app);
     assert_eq!(app.page, Page::You, "{:?}", app.problem);
     type_text(app, "Alice Liddell");
     press(app, KeyCode::Enter);
@@ -383,7 +411,7 @@ fn the_manual_layout_is_chosen_on_the_rdisk_screen() {
     assert_eq!(app.page, Page::Rdisk, "{:?}", app.problem);
     let shown = screen(&app);
     for needle in [
-        "Step 3 of 5 · Partitions (rdisk)",
+        "Step 3 of 6 · Partitions (rdisk)",
         " vdb 16.0 GiB ",
         "#  Name",
         "1  linux                Linux filesystem",
@@ -455,8 +483,10 @@ fn the_manual_layout_is_chosen_on_the_rdisk_screen() {
     assert_eq!((answers.disk.layout, answers.target()), (Layout::Manual, "vdb"));
     assert_eq!(answers.disk.changes.len(), 1);
     assert_eq!(answers.disk.changes[0].partitions.len(), 3);
-    // Back from You is the rdisk screen, with its edits.
+    // Back from Software is the rdisk screen, with its edits.
     press(&mut app, KeyCode::Esc);
+    press(&mut app, KeyCode::Esc);
+    assert_eq!(app.page, Page::Software);
     press(&mut app, KeyCode::Esc);
     assert_eq!(app.page, Page::Rdisk);
     assert!(screen(&app).contains("Pending changes: 3"));
@@ -546,6 +576,52 @@ fn a_setup_file_is_reviewed_before_it_installs() {
 }
 
 #[test]
+fn a_setup_files_features_must_be_this_releases() {
+    let mut app = app();
+    let with = |features: &str| {
+        let text = format!(
+            r#"{{"version": 1, "disk": {{"layout": "guided", "target": "vda"}}, "profile": "server",
+            "features": {{"add": [{features}]}},
+            "admin": {{"name": "Admin", "user": "admin", "password_hash": ""}}}}"#
+        );
+        let answers = Answers::parse(text.as_bytes()).unwrap();
+        vec![SetupFile { place: "install.json on this USB stick".into(), answers: Ok(answers) }]
+    };
+    app.page = Page::SetupFile;
+    // A feature the release lacks, or one with bundles, is refused here,
+    // before the review.
+    for (features, problem) in [
+        (r#""databases""#, "no feature databases; it has file-sharing, mail"),
+        (r#""mail""#, "feature add mail"),
+    ] {
+        app.setup_files = with(features);
+        focus(&mut app, Id::Load);
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.page, Page::SetupFile);
+        assert!(app.problem.as_deref().is_some_and(|p| p.contains(problem)), "{:?}", app.problem);
+    }
+    app.setup_files = with(r#""file-sharing""#);
+    focus(&mut app, Id::Load);
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(app.page, Page::Review, "{:?}", app.problem);
+    assert!(screen(&app).contains("Software  Server · File sharing · web console on"));
+}
+
+#[test]
+fn the_bar_of_steps_fits_a_serial_console() {
+    let mut app = app();
+    app.page = Page::Done;
+    let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+    terminal.draw(|frame| draw::draw(frame, &app)).unwrap();
+    let buffer = terminal.backend().buffer().clone();
+    let bar: String = (0..buffer.area.width).map(|x| buffer[(x, 1)].symbol()).collect();
+    for step in ["✓ Welcome", "✓ Network", "✓ Disk", "✓ Software", "✓ You", "✓ Review"]
+    {
+        assert!(bar.contains(step), "{step}:\n{bar}");
+    }
+}
+
+#[test]
 fn the_progress_follows_the_log_to_the_end() {
     let mut app = app();
     to_review(&mut app);
@@ -608,6 +684,7 @@ fn every_page_has_its_help() {
         Page::SetupFile,
         Page::Network,
         Page::Disk,
+        Page::Software,
         Page::You,
         Page::Review,
         Page::Done,
@@ -849,4 +926,65 @@ fn a_mirror_erases_both_disks_and_reviews_each() {
     focus(&mut app, Id::Install);
     press(&mut app, KeyCode::Enter);
     assert!(app.problem.as_deref().is_some_and(|p| p.contains("confirm that it is erased")));
+}
+
+#[test]
+fn the_software_page_picks_a_profile_and_its_features() {
+    let mut app = app();
+    app.page = Page::Software;
+    app.focus = 0;
+    let shown = screen(&app);
+    for needle in [
+        "Step 4 of 6 · Software",
+        "What is this machine for?",
+        "(•) Server",
+        "( ) Minimal",
+        "Cloud and VM",
+        "[ ] File sharing",
+        "turns on smbd and nfsd",
+        "after installing: feature add mail",
+        "[x] Turn on Dukovo Admin, the web console",
+    ] {
+        assert!(shown.contains(needle), "{needle}:\n{shown}");
+    }
+    // A feature with bundles cannot be ticked: it is added after.
+    assert!(app.focusable().contains(&Id::Feature(0)));
+    assert!(!app.focusable().contains(&Id::Feature(1)));
+    focus(&mut app, Id::Feature(0));
+    press(&mut app, KeyCode::Char(' '));
+    assert!(screen(&app).contains("[x] File sharing"));
+    // Minimal turns the web console off, and it can be turned on again.
+    focus(&mut app, Id::Profile(0));
+    press(&mut app, KeyCode::Char(' '));
+    assert_eq!(app.profile, Profile::Minimal);
+    assert!(!app.web_console);
+    focus(&mut app, Id::WebConsole);
+    press(&mut app, KeyCode::Char(' '));
+    assert!(app.web_console);
+    // The answers carry them, and the review says them.
+    let answers = app.answers().unwrap();
+    assert_eq!(answers.profile, Profile::Minimal);
+    assert_eq!(answers.chosen_features(), ["file-sharing"]);
+    assert!(answers.web_console());
+    focus(&mut app, Id::Next);
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(app.page, Page::You, "{:?}", app.problem);
+    answer_you_here(&mut app);
+    let shown = screen(&app);
+    assert!(
+        shown.contains("Software  Minimal · File sharing · web console on (from release 0.16)"),
+        "{shown}"
+    );
+    // Back from You is the Software page, as it was left.
+    app.page = Page::You;
+    press(&mut app, KeyCode::Esc);
+    assert_eq!(app.page, Page::Software);
+    assert!(screen(&app).contains("[x] File sharing"));
+}
+
+/// Answers the You page, already shown, so that the review shows.
+fn answer_you_here(app: &mut App) {
+    type_text(app, "Alice Liddell");
+    press(app, KeyCode::Enter);
+    assert_eq!(app.page, Page::Review, "{:?}", app.problem);
 }

@@ -5,6 +5,9 @@
   "disk": { "layout": "guided", "target": "/dev/vda", "swap_gib": 1 },
   "hostname": "installed",
   "time_zone": "America/Denver",
+  "profile": "server",
+  "features": { "add": ["file-sharing"] },
+  "web_console": false,
   "admin": {
     "name": "Alice Liddell",
     "user": "alice",

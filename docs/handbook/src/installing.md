@@ -25,8 +25,10 @@ choose.
 1. Start the computer from the install stick
    ([Creating USB install media](usb-media.md)). Its first menu entry,
    *Install Dukovo*, starts in a few seconds and shows the installer.
-2. Answer the five steps: the keyboard layout, the network and the
-   computer's name, the disk, your account, and the review. Tab moves,
+2. Answer the six steps: the keyboard layout, the network and the
+   computer's name, the disk, what the machine is for (a profile, and
+   features such as File sharing to tick), your account, and the
+   review. Tab moves,
    Space chooses, Enter goes on, Esc goes back, and F1 explains the page.
    On the time zone, type the start of its name, such as `america/den`.
 3. At the review, check what will be erased or changed, type the

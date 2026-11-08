@@ -39,7 +39,7 @@ and waits for Enter, which leaves it for a shell. The screens are drawn in
 the approved design's sixteen colours, which they set as the terminal's
 palette while they show and give back when they end, a slate background
 edge to edge and the keys' hints on a steel bar along the bottom (ADR
-0402). A bar at the top shows the five steps:
+0402). A bar at the top shows the six steps:
 
 . *Welcome*: the language, the keyboard layout, which the keys type in
   at once, a box to try it, and whether to answer step by step or
@@ -55,6 +55,12 @@ edge to edge and the keys' hints on a steel bar along the bottom (ADR
   swap's size. The stick and a disk too small cannot be chosen, a disk
   that holds Windows says so in red, and the layouts that cannot be
   used say why: next to Windows, what to do in Windows first.
+. *Software*: what the machine is for, a profile: Minimal, Server or
+  Cloud and VM; the release's features as boxes to tick, each with the
+  services it turns on, and those that install bundles dimmed, to add
+  after the first boot with *feature add*; and whether to turn on the
+  web console, which the profile chooses until it is changed and which
+  release 0.16 brings (ADR 0317).
 . *You*: the administrator, whose user name follows the name typed
   until it is typed itself, a password typed twice, whether the saved
   answers keep the passwords' hashes, and other people.
@@ -89,7 +95,8 @@ next computer, without the passwords' hashes unless they were kept.
 A setup file is an answers file called _install.json_ at the top of the
 stick's EFI system partition, which any computer can write. *From a
 setup file* on the first page shows the one the stick holds and what is
-wrong with it, if anything; Load goes to the review.
+wrong with it, if anything; Load checks that each feature it adds is
+one this release offers at install, then goes to the review.
 
 Every message the screens show is in a Fluent file built into the
 program, one a language, so that a translation is a copy of one file.
