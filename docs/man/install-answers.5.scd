@@ -10,7 +10,11 @@ install-answers - the answers to the installer's questions, in a file
 # DESCRIPTION
 
 An answers file answers every question the installer asks, in JSON, so
-that *dukovo-install --answers* installs by itself (*dukovo-install*(8)).
+that *dukovo-install --answers* installs by itself (*dukovo-install*(8)),
+from a file or from an _https://_ address, checked against the SHA-256
+*--sha256* gives (ADR 0319). Saved as _install.json_ at the top of the
+install stick's EFI system partition, it is a setup file, which the
+installer's screens offer; they also download one from the web.
 Every install saves its answers in the installed system as
 _/system/settings/install/answers.json_, so a system can be installed
 again the same way, or copied to the next machine with a new host name.

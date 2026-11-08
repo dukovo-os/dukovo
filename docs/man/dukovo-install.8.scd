@@ -11,7 +11,7 @@ dukovo-install - install Dukovo onto a disk from the install stick
 
 *dukovo-install* [*--release* _dir_]
 
-*dukovo-install --answers* _file_ [*--release* _dir_]
+*dukovo-install --answers* _file_|_address_ [*--sha256* _hex_] [*--release* _dir_]
 
 *dukovo-install --hash-password* [*--test-cost*] < _file_
 
@@ -93,10 +93,16 @@ computer, or saves the answers as a setup file on the stick for the
 next computer, without the passwords' hashes unless they were kept.
 
 A setup file is an answers file called _install.json_ at the top of the
-stick's EFI system partition, which any computer can write. *From a
-setup file* on the first page shows the one the stick holds and what is
-wrong with it, if anything; Load checks that each feature it adds is
-one this release offers at install, then goes to the review.
+stick's EFI system partition, which any computer can write, or on a web
+server. *From a setup file* on the first page shows the one the stick
+holds and what is wrong with it, if anything, then *Download it from a
+web address*, which is chosen when the stick holds none: an _https://_
+address, and the SHA-256 the file must have, if one is given, as
+*sha256sum*(1) prints it. Load downloads the file over HTTPS and
+refuses it if its SHA-256 differs, as *--answers* does (see ANSWERS
+FILES, ADR 0319); the review then says where it came from and whether
+it was checked. Load checks that each feature a setup file adds is one
+this release offers at install, then goes to the review.
 
 The stick's *Install Dukovo (serial console)* entry starts the screens
 on the first serial port instead, for a computer with no screen, where
@@ -121,6 +127,27 @@ each problem by its key:
 # dukovo-install --answers web01.json
 dukovo-install: web01.json: time_zone: "America/Denvr" is not a time zone's name, such as America/Denver
 ```
+
+The answers file can also be on a web server, for a fleet that keeps
+one file a machine: *--answers* then takes its _https://_ address, and
+*--sha256* the SHA-256 it must have, which the person who wrote it
+gives with it (ADR 0319):
+
+```
+# dukovo-install --answers https://setup.example.org/web01.json \
+    --sha256 4f2a3b0c95e1d8a7f6c4b3a2e1d0c9b8a7f6e5d4c3b2a1f0e9d8c7b6a5f4e3d2
+dukovo-install: https://setup.example.org/web01.json: The SHA-256 does not match the downloaded file. It was not used.
+```
+
+Nothing signs an answers file, so only HTTPS is used, so that it cannot
+be changed on the way: an _http://_ address, or a redirect to one, is
+refused, and so is a server whose certificate is not from a root the
+system trusts (*dukovo-certificates*(7)). With *--sha256*, a file that
+differs is refused before a word of it is read, which also catches a
+server that serves another file than the one meant. A file larger than
+1 MiB is not an answers file and is refused too. The log names where the
+answers came from, with the file's SHA-256 and whether it was checked;
+*--sha256* checks a file on a disk the same way.
 
 An install then runs these steps, each printed as it starts:
 
@@ -194,8 +221,14 @@ dukovo-install: Dukovo 0.14.0 is installed on vda. Remove the install stick, the
 
 # OPTIONS
 
-*--answers* _file_
-	Install as the answers file _file_ says, with no screens.
+*--answers* _file_|_address_
+	Install as the answers file says, with no screens: _file_, or the
+	file downloaded from _address_, which must start with _https://_.
+
+*--sha256* _hex_
+	With *--answers*, the SHA-256 the answers file must have: 64
+	hexadecimal digits, as *sha256sum*(1) prints them. A file that
+	differs is refused, and nothing is installed.
 
 *--release* _dir_
 	Install the release in _dir_, a release's repository as
@@ -236,14 +269,17 @@ _/system/settings/install/answers.json_
 _install.json_
 	A setup file, at the top of the install stick's EFI system
 	partition: the screens offer it, and their Done page writes it.
+	The screens also download one from a web address.
 
 # EXIT STATUS
 
-0 when the install finished, 1 when the answers file has problems or
-the install failed, and 2 for a usage error.
+0 when the install finished, 1 when the answers file could not be
+downloaded, differs from its SHA-256 or has problems, or the install
+failed, and 2 for a usage error.
 
 # SEE ALSO
 
 *install-answers*(5), *system-release*(8), *rdisk*(8), *rgrub-setup*(8),
 *resize-ntfs*(8), *efiboot*(8), *device*(8), *balance*(8),
-*spark*(8), *consoled*(8), *serial-console*(8), *dukovo-boot*(7), *keymap*(1)
+*spark*(8), *consoled*(8), *serial-console*(8), *dukovo-boot*(7), *keymap*(1),
+*dukovo-certificates*(7), *sha256sum*(1)

@@ -932,6 +932,7 @@ dependencies = [
  "serde",
  "serde_json",
  "system-release",
+ "tuf",
  "unic-langid",
 ]
 

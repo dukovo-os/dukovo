@@ -14,7 +14,8 @@ The full references are dukovo-install(8) and install-answers(5)
 [ADR 0310](https://github.com/dukovo-os/dukovo/blob/main/docs/adr/0310-the-installer-s-screens.md),
 [ADR 0311](https://github.com/dukovo-os/dukovo/blob/main/docs/adr/0311-the-free-space-and-manual-layouts-and-swap-at-every-start.md),
 [ADR 0314](https://github.com/dukovo-os/dukovo/blob/main/docs/adr/0314-installing-next-to-windows.md),
-[ADR 0318](https://github.com/dukovo-os/dukovo/blob/main/docs/adr/0318-the-serial-console-ttys0-and-serial-only-installs.md)).
+[ADR 0318](https://github.com/dukovo-os/dukovo/blob/main/docs/adr/0318-the-serial-console-ttys0-and-serial-only-installs.md),
+[ADR 0319](https://github.com/dukovo-os/dukovo/blob/main/docs/adr/0319-setup-files-from-the-web-over-https-checked-by-sha-256.md)).
 
 The guided layout **erases the disk it installs onto**. The layout next
 to Windows shrinks Windows and keeps its files, the free-space layout
@@ -97,6 +98,14 @@ The Done page can also save your answers on the stick as a setup file,
 hashes. On the next computer, choose *From a setup file* on the first
 page: the installer goes straight to the review.
 
+A setup file can also be on a web server, which suits many machines
+with a file each. On the *From a setup file* page, choose *Download it
+from a web address*, type its `https://` address and, to be sure it is
+the file you meant, its SHA-256, which `sha256sum install.json` prints
+where you wrote it. The installer downloads it over HTTPS only, so that
+nobody can change it on the way, refuses it if its SHA-256 differs, and
+the review then says where it came from and whether it was checked.
+
 ## Writing the answers
 
 An answers file names the disk, the machine's name, its time zone and
@@ -168,6 +177,18 @@ and `console=ttyS0,9600n8` on the command line runs it at another speed.
    ```sh
    dukovo-install --answers /volumes/MYSTICK/answers.json
    ```
+
+The answers file can also come from a web server, over HTTPS only,
+checked against its SHA-256 if you give it; a file that differs is
+refused before anything is installed:
+
+```sh
+dukovo-install --answers https://setup.example.org/web01.json --sha256 "$(cat web01.json.sha256)"
+```
+
+The server's certificate must be from an authority the system trusts:
+any public one, or your own once it is added as dukovo-certificates(7)
+says.
 
 The installer checks the whole answers file first, and names each
 problem by its key, before it touches the disk. It then checks the

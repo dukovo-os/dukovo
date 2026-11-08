@@ -3,14 +3,16 @@
 
 //! dukovo-install's command line (dukovo-install(8)): with no arguments
 //! it shows the installer's screens, `--answers FILE` installs as the
-//! answers file says, and `--hash-password` makes the password hash an
-//! answers file gives.
+//! answers file says, a file or an `https://` address, checked against
+//! `--sha256` when given (ADR 0319), and `--hash-password` makes the
+//! password hash an answers file gives.
 
 use std::io::BufRead as _;
 use std::path::Path;
 use std::process::ExitCode;
 
 use dukovo_install::answers::Answers;
+use dukovo_install::download;
 use dukovo_install::install;
 use dukovo_install::log::{self, Log};
 use dukovo_install::messages::{self, Arg};
@@ -18,7 +20,7 @@ use dukovo_install::screens;
 
 const USAGE: &str = "\
 usage: dukovo-install [--release DIR]
-       dukovo-install --answers FILE [--release DIR]
+       dukovo-install --answers FILE|https://ADDRESS [--sha256 HEX] [--release DIR]
        dukovo-install --hash-password [--test-cost] < FILE";
 
 fn main() -> ExitCode {
@@ -27,10 +29,13 @@ fn main() -> ExitCode {
     let status = match words.as_slice() {
         [] => screens::run(None),
         ["--release", dir] => screens::run(Some(Path::new(dir))),
-        ["--answers", file] => from_answers(Path::new(file), None),
-        ["--answers", file, "--release", dir] => {
-            from_answers(Path::new(file), Some(Path::new(dir)))
-        }
+        ["--answers", from, options @ ..] => match answers_options(options) {
+            Some((sha256, release)) => from_answers(from, sha256, release),
+            None => {
+                eprintln!("{USAGE}");
+                2
+            }
+        },
         ["--hash-password"] => hash_password(accounts::hash::Cost::DEFAULT),
         ["--hash-password", "--test-cost"] => hash_password(accounts::hash::Cost::TEST),
         ["--help" | "-h"] => {
@@ -45,14 +50,27 @@ fn main() -> ExitCode {
     ExitCode::from(status)
 }
 
-/// Installs as the answers file at `file` says, from the release in
+/// The options after `--answers FROM`: `--sha256 HEX` and `--release
+/// DIR`, each once, in that order. None if they are something else.
+fn answers_options<'a>(options: &[&'a str]) -> Option<(Option<&'a str>, Option<&'a Path>)> {
+    match options {
+        [] => Some((None, None)),
+        ["--sha256", hex] => Some((Some(*hex), None)),
+        ["--release", dir] => Some((None, Some(Path::new(*dir)))),
+        ["--sha256", hex, "--release", dir] => Some((Some(*hex), Some(Path::new(*dir)))),
+        _ => None,
+    }
+}
+
+/// Installs as the answers file `from` says, a file or an `https://`
+/// address, checked against `sha256` when given, from the release in
 /// `release` or on the install stick.
-fn from_answers(file: &Path, release: Option<&Path>) -> u8 {
-    let answers = match read_answers(file) {
-        Ok(answers) => answers,
+fn from_answers(from: &str, sha256: Option<&str>, release: Option<&Path>) -> u8 {
+    let (answers, source) = match read_answers(from, sha256) {
+        Ok(read) => read,
         Err(problems) => {
             for problem in problems {
-                eprintln!("dukovo-install: {}: {problem}", file.display());
+                eprintln!("dukovo-install: {from}: {problem}");
             }
             return 1;
         }
@@ -64,11 +82,7 @@ fn from_answers(file: &Path, release: Option<&Path>) -> u8 {
             return 1;
         }
     };
-    log.note(&format!(
-        "answers from {}:\n{}",
-        file.display(),
-        String::from_utf8_lossy(&answers.to_saved())
-    ));
+    log.note(&format!("answers from {source}:\n{}", String::from_utf8_lossy(&answers.to_saved())));
     let done = install::find_release(release, &mut log)
         .and_then(|source| install::install(&answers, &source, &mut log).map(|()| source));
     match done {
@@ -90,12 +104,24 @@ fn from_answers(file: &Path, release: Option<&Path>) -> u8 {
     }
 }
 
-/// Reads and checks the answers file.
-fn read_answers(file: &Path) -> Result<Answers, Vec<String>> {
-    let bytes = std::fs::read(file).map_err(|err| vec![err.to_string()])?;
-    let answers = Answers::parse(&bytes).map_err(|why| vec![why])?;
+/// Reads the answers file `from`, a file or an `https://` address,
+/// checks it against `sha256` when given, and checks its answers. Gives
+/// them, and where they came from for the log: the file or address, with
+/// the file's SHA-256 and whether it was checked.
+fn read_answers(from: &str, sha256: Option<&str>) -> Result<(Answers, String), Vec<String>> {
+    let expected = download::sha256(sha256.unwrap_or_default()).map_err(|why| vec![why])?;
+    // An address is anything with a scheme; only https:// is fetched.
+    let file = if from.contains("://") {
+        let url = download::address(from).map_err(|why| vec![why])?;
+        download::fetch(&url, expected)
+    } else {
+        let bytes = std::fs::read(from).map_err(|err| vec![err.to_string()])?;
+        download::checked(bytes, expected)
+    }
+    .map_err(|why| vec![why])?;
+    let answers = Answers::parse(&file.bytes).map_err(|why| vec![why])?;
     answers.check()?;
-    Ok(answers)
+    Ok((answers, file.source(from)))
 }
 
 /// Prints the Argon2id hash, at `cost`, of the password on the first line

@@ -8,6 +8,8 @@
 //! - [`screens`] asks the questions, on the console, and shows the
 //!   install's progress.
 //! - [`answers`] reads and checks the answers file.
+//! - [`download`] fetches a setup file from an `https://` address and
+//!   checks it against its SHA-256 (ADR 0319).
 //! - [`install`] runs the steps, in order, from checking the release's
 //!   signatures to saving the answers in the new system; start there.
 //! - [`copy`] copies the release into the new slot, checking each file
@@ -29,6 +31,7 @@
 pub mod answers;
 pub mod copy;
 pub mod disks;
+pub mod download;
 pub mod features;
 pub mod install;
 pub mod log;
