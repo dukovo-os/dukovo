@@ -3,7 +3,7 @@ SPDX-FileCopyrightText: 2026 The Dukovo contributors
 SPDX-License-Identifier: Apache-2.0 OR MIT
 -->
 
-# 0411. A socket may listen on a port the kernel picked for it
+# 0412. A socket may listen on a port the kernel picked for it
 
 - Status: Accepted
 - Date: 2026-11-08

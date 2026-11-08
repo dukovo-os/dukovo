@@ -948,7 +948,7 @@ impl InetSocket {
             && authority.is_some_and(|authority| {
                 // A port the kernel picked (bind to 0) is the holder's to
                 // listen on if it may receive at all, as on Linux; a port
-                // it named must be in its range (ADR 0183, ADR 0411).
+                // it named must be in its range (ADR 0183, ADR 0412).
                 if chose_port {
                     authority.rights.contains(Rights::RECEIVE)
                 } else {
