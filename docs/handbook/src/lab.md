@@ -222,7 +222,9 @@ exit = 1
 An attack test always boots afresh and its boot is not shared, so the
 private port never shows up in another test. The first `attack` step
 gives each side its address, as root, so the lab needs its password (as
-a root step does). The first scans check that only SSH answers, that it
-turns away a password sign-in, and that its key exchange, host key and
-cipher are modern. The lab's `docs/test-files.md` describes the `attack`
-step in full.
+a root step does). The first scans check that only SSH answers, of the
+ports services usually offer, and that nothing but sshd listens for
+other machines; that SSH turns away a password sign-in; and that its key
+exchange, host key and cipher are modern, and the server offers nothing
+with SHA-1, CBC or MD5. The lab's `docs/test-files.md` describes the
+`attack` step in full.

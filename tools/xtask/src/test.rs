@@ -4896,8 +4896,18 @@ impl Vm {
         clean_log(&String::from_utf8_lossy(&self.output.lock().expect("not poisoned")))
     }
 
+    /// QEMU's exit status, once it has exited. Finding that out reaps it,
+    /// which frees its process id for another process, so the watchdog is
+    /// disarmed then: a case that goes on after QEMU ends (`expect_exit`)
+    /// must not leave a `kill` by that id armed until `stop`.
     fn exited(&mut self) -> Option<std::process::ExitStatus> {
-        self.child.try_wait().ok().flatten()
+        let status = self.child.try_wait().ok().flatten();
+        if status.is_some()
+            && let Some(mut watchdog) = self.watchdog.take()
+        {
+            watchdog.disarm();
+        }
+        status
     }
 
     fn qemu_stderr(&self) -> String {
