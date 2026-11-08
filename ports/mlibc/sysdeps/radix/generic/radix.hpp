@@ -106,6 +106,12 @@ struct FdTable {
 	bool read;
 };
 
+// Marks descriptor `fd`, which a call just filled, taken.
+void fd_taken(int fd);
+
+// Marks descriptor `fd`, whose slot a call just emptied, free.
+void fd_freed(int fd);
+
 // A file descriptor's slot that free_slot chose and marked taken for the
 // running thread. Unless the thread keeps it (keep: the slot was filled),
 // it is free again once the claim goes out of scope.
@@ -121,7 +127,12 @@ public:
 	SlotClaim() = default;
 	SlotClaim(const SlotClaim &) = delete;
 	SlotClaim &operator=(const SlotClaim &) = delete;
-	~SlotClaim();
+	// Here rather than in radix.cpp, so that the claim of every open,
+	// which is kept, costs a test and not a call.
+	~SlotClaim() {
+		if(slot_ != NO_SLOT && !kept_)
+			fd_freed(static_cast<int>(slot_ - FD_BASE));
+	}
 
 	// The slot, or NO_SLOT until free_slot chose one.
 	uint32_t slot() const {
@@ -150,21 +161,22 @@ private:
 // there is none below files_limit(). A capability may still reach the
 // slot some other way first: callers that get `occupied` keep the claim
 // and look again (`place`).
+//
+// The descriptor it chose has no directory path (below) from then on: a
+// new one has none until it is given one.
 int free_slot(int min_fd, SlotClaim *claim);
 
 // Grows the capability space, if need be, until it has slot `slot`.
 // Returns 0, or EMFILE if it cannot.
 int reach_slot(uint32_t slot);
 
-// Marks descriptor `fd`, which a call just filled, taken.
-void fd_taken(int fd);
-
-// Marks descriptor `fd`, whose slot a call just emptied, free.
-void fd_freed(int fd);
-
 // Empties descriptor `fd`'s slot and marks it free: close, without the
 // directory path it may have. Returns the kernel's status.
 uint64_t delete_fd(int fd);
+
+// Closes descriptor `fd`: forgets its directory path, empties its slot
+// and marks it free. Returns 0 or an errno.
+int close_fd(int fd);
 
 // Reads which descriptors are taken from the kernel's slots: when the
 // program starts, and in a child after fork, where the threads that were
@@ -188,8 +200,6 @@ int place(int min_fd, int *fd, F put) {
 		if(!status) {
 			claim.keep();
 			*fd = static_cast<int>(claim.slot() - FD_BASE);
-			// A new descriptor has no directory path until it is given one.
-			forget_dir_path(*fd);
 			return 0;
 		}
 		// Something else filled it first: it stays taken.
@@ -203,11 +213,25 @@ int place(int min_fd, int *fd, F put) {
 }
 
 // A path as the kernel takes it: the directory slot it starts from and the
-// path beneath it, never starting with `/` (`.` for the directory itself).
+// `len` bytes of the path beneath it, never starting with `/` (`.` for the
+// directory itself), with a NUL after them.
+//
+// `text` is the caller's own string when the kernel can take it as it is,
+// which most paths are: one beneath a directory descriptor, or an
+// absolute one past its slashes. resolve makes the others in `own`. (A
+// thread that changes its string while another opens by it changes what
+// the kernel is given, as with any system call's buffer; the kernel never
+// takes a path above the directory it starts from.)
 struct Path {
 	uint32_t dir;
 	size_t len;
-	char text[PATH_MAX_BYTES];
+	const char *text;
+	char own[PATH_MAX_BYTES];
+
+	Path() = default;
+	// Never copied: `text` may point into `own`.
+	Path(const Path &) = delete;
+	Path &operator=(const Path &) = delete;
 };
 
 // Resolves `path`, relative to the directory `dirfd` (AT_FDCWD for the
@@ -215,7 +239,8 @@ struct Path {
 // directory, becomes a path beneath the root, whose `.`, `..` and
 // symbolic links the kernel works out. A path with a `..` in it,
 // relative to a directory descriptor whose path is known, becomes one
-// beneath the root too. Returns 0 or an errno.
+// beneath the root too. Returns 0 or an errno. `out` may point into
+// `path`, which then has to last as long as `out` is used.
 int resolve(int dirfd, const char *path, Path *out);
 
 // The paths of directory descriptors (ADR 0089). The kernel resolves a

@@ -62,6 +62,10 @@ int io_errno(uint64_t status, bool writing) {
 
 // The kernel's OpenFlags for `flags`.
 uint32_t open_flags(int flags) {
+	// Most opens ask for no more than an access mode and close-on-exec:
+	// those skip the other eight tests.
+	if(!(flags & ~(O_ACCMODE | O_CLOEXEC)))
+		return (flags & O_CLOEXEC) ? RADIX_OPEN_FLAGS_CLOSE_ON_EXEC : 0;
 	uint32_t out = 0;
 	if(flags & O_CREAT)
 		out |= RADIX_OPEN_FLAGS_CREATE;
@@ -92,9 +96,11 @@ uint32_t mode_bits(mode_t mode) {
 
 // Opens `path` with `flags` (the kernel's) and `rights` into the lowest
 // free descriptor, making a file with `mode` if `flags` say to; returns 0
-// and the descriptor and what it is.
-int open_rights(const radix::Path &path, uint32_t flags, uint64_t rights, mode_t mode, int *fd,
-		uint8_t *kind) {
+// and the descriptor and what it is. Inlined into open_path: as a call of
+// its own it spent 25 of its 64 instructions saving and restoring
+// registers.
+[[gnu::always_inline]] inline int open_rights(const radix::Path &path, uint32_t flags,
+		uint64_t rights, mode_t mode, int *fd, uint8_t *kind) {
 	return radix::place(0, fd, [&](uint32_t slot) {
 		struct radix_directory_open_results r;
 		uint64_t status = radix_directory_open(path.dir, path.text, path.len, flags, rights,
@@ -739,11 +745,9 @@ int Sysdeps<Seek>::operator()(int fd, off_t offset, int whence, off_t *new_offse
 }
 
 int Sysdeps<Close>::operator()(int fd) {
-	uint32_t slot = radix::slot_of(fd);
-	if(slot == radix::NO_SLOT)
+	if(radix::slot_of(fd) == radix::NO_SLOT)
 		return EBADF;
-	radix::forget_dir_path(fd);
-	return radix::to_errno(radix::delete_fd(fd));
+	return radix::close_fd(fd);
 }
 
 int Sysdeps<Dup>::operator()(int fd, int flags, int *newfd) {

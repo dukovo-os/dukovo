@@ -1371,7 +1371,6 @@ int Sysdeps<Accept>::operator()(int fd, int *newfd, struct sockaddr *addr, sockl
 			return socket_errno(status);
 		claim.keep();
 		*newfd = static_cast<int>(to - radix::FD_BASE);
-		radix::forget_dir_path(*newfd);
 		break;
 	}
 	if(addr && length) {
