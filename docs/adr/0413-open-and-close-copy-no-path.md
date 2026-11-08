@@ -82,6 +82,11 @@ endpoint copies them, as before.
 - Under QEMU an open and close runs 4,044 instructions (from 4,178):
   433 in the C library (from 538) and 3,611 in the kernel (from 3,640),
   of which `radix_syscall` runs 402 (from 432).
+- On the EPYC 9V74 runners the process rows went to 0.93, 0.95 and
+  0.98 (from 0.98, 0.99 and 1.01): Radix's eight process row took
+  1,452 ns against Linux's 1,478, from 1,487 against 1,477. On the
+  EPYC 7763 runners they were 0.92 to 0.94, 0.87 to 0.88 and 0.87 to
+  0.89, and on the Xeon Platinum 8573C 0.94, 0.71 and 0.70.
 - A descriptor that a pipe, a socket pair or an accepted connection
   takes has no directory path left from an earlier descriptor of that
   number, as an opened one never had.
