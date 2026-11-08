@@ -1,0 +1,19 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "timedatectl shows the local and universal time, the zone, and the clock and NTP state, and lists the zones"
+time = "2m"
+
+[[step]]
+run = "timedatectl"
+expect = [
+    "Local time:",
+    "Universal time:",
+    "Time zone:",
+    "System clock synchronized:",
+    "NTP service:",
+]
+# The zone database holds every IANA zone to choose from.
+[[step]]
+run = "timedatectl list-timezones"
+expect = ["Africa/Abidjan", "America/Denver", "Europe/London"]

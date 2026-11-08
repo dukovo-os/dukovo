@@ -1,0 +1,12 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "logtrim keeps the log to its age limit and reports what it freed and the size left"
+time = "2m"
+
+# A fresh machine has no record old enough to drop (the default keeps 90
+# days), so none is freed, and logtrim says so and gives the size.
+[[step]]
+run = "logtrim"
+root = true
+expect = ["Freed 0", "the log takes up"]
