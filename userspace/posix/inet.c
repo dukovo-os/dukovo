@@ -737,14 +737,18 @@ static void icmp_errors(void) {
 	CHECK_ERROR(recv(fd, buffer, sizeof(buffer), MSG_ERRQUEUE), EAGAIN);
 	CHECK_ERROR(recv(fd, buffer, sizeof(buffer), MSG_DONTWAIT), ECONNREFUSED);
 	CHECK_ERROR(recv(fd, buffer, sizeof(buffer), MSG_DONTWAIT), EAGAIN);
-	// Packets go with no type of service but the default.
+	// The type of service is taken and read back, as on Linux, though
+	// every packet still goes with 0 (ADR 0345, ADR 0410).
 	value = -1;
 	size = sizeof(value);
 	CHECK(getsockopt(fd, SOL_IP, IP_TOS, &value, &size) == 0 && value == 0);
 	value = 0;
 	CHECK(setsockopt(fd, SOL_IP, IP_TOS, &value, sizeof(value)) == 0);
 	value = 0x10;
-	CHECK_ERROR(setsockopt(fd, SOL_IP, IP_TOS, &value, sizeof(value)), ENOPROTOOPT);
+	CHECK(setsockopt(fd, SOL_IP, IP_TOS, &value, sizeof(value)) == 0);
+	value = -1;
+	size = sizeof(value);
+	CHECK(getsockopt(fd, SOL_IP, IP_TOS, &value, &size) == 0 && value == 0x10);
 	close(fd);
 
 	// IPv6, to a port of ::1's that no socket has.
@@ -773,6 +777,11 @@ static void icmp_errors(void) {
 	value = -1;
 	size = sizeof(value);
 	CHECK(getsockopt(six, SOL_IPV6, IPV6_TCLASS, &value, &size) == 0 && value == 0);
+	value = 0x20;
+	CHECK(setsockopt(six, SOL_IPV6, IPV6_TCLASS, &value, sizeof(value)) == 0);
+	value = -1;
+	size = sizeof(value);
+	CHECK(getsockopt(six, SOL_IPV6, IPV6_TCLASS, &value, &size) == 0 && value == 0x20);
 	close(six);
 }
 
