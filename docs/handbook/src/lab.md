@@ -98,8 +98,8 @@ their order and their titles on the runner page are in
 `lab/tests/categories.toml`: boot and power, hardware and drivers,
 processes and monitors, disks and filesystems, network, SSH, services and
 logs, time and date, accounts and elevate, commands, the console,
-installing, stress and soak, security, and performance against Linux. Add one there when a new kind of test needs
-it. This test pulls the network cable:
+installing, stress and soak, security, performance against Linux, and
+file sharing. Add one there when a new kind of test needs it. This test pulls the network cable:
 
 ```toml
 about = "The network cable comes out and goes back in, and the network comes back"
@@ -228,3 +228,42 @@ other machines; that SSH turns away a password sign-in; and that its key
 exchange, host key and cipher are modern, and the server offers nothing
 with SHA-1, CBC or MD5. The lab's `docs/test-files.md` describes the
 `attack` step in full.
+
+## Tests with the lab PC as a peer
+
+File sharing, WireGuard and Kerberos need a computer at the other
+end. A `host` step runs its command on the lab PC itself, in a
+folder of the test's own, so a test stands that end up with the lab
+PC's own programs and checks Dukovo against them both ways: Dukovo's
+`smb` and `nfs` against the lab PC's Samba and NFS-Ganesha, the lab
+PC's `smbclient` and kernel NFS client against Dukovo's `smbd` and
+`nfsd`, `wgd` against the lab PC's WireGuard, and `kinit` against the
+lab PC's MIT KDC. A server started with `background = true` runs until the test
+ends, which stops it. `{peer}` is the lab PC's address as the machine
+sees it, `{port:NAME}` a free port of the lab PC's for one of the test's
+servers, and `{machine}` with `{machine-port:N}` where the lab PC
+reaches the machine's port N (under QEMU, a port it forwards):
+
+```toml
+host_needs = ["smbd", "pdbedit", "nc"]
+
+[[step]]
+host = "sh {here}/samba.sh {port:smb}"
+background = true
+ready = "samba ready"
+[[step]]
+run = "smb ls -o user=alice,password=alice-share-pass //{peer}:{port:smb}/share"
+expect = "from-lab-pc.txt"
+```
+
+The scripts that set the lab PC's side up sit beside the tests that use
+them, as `lab/tests/sharing/samba.sh`, and keep everything in the
+test's folder: they never change the lab PC's own settings or
+services. A lab PC without a program a test names in `host_needs` skips
+the test, and a host command that exits with 77 skips it for a lab PC
+that cannot do its part, such as one whose kernel has no NFS client.
+The NFS and WireGuard tests run their servers, mounts and tunnels as
+root on the lab PC: as the lab is, or through `sudo` with no password,
+else they are skipped. Plain `./ob lab` names the packages these tests
+want and the lab PC lacks. The lab's `docs/test-files.md` describes
+`host` steps in full.

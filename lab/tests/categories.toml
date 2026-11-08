@@ -33,7 +33,7 @@ about = "The root's Btrfs, and filesystems made, written and read back on sticks
 [[category]]
 name = "network"
 title = "Network"
-about = "Addresses, routes, ports, the firewall and the cable"
+about = "Addresses, routes, ports, the firewall, the cable, and WireGuard tunnels to the lab PC"
 
 [[category]]
 name = "ssh"
@@ -53,7 +53,7 @@ about = "The clock, the time zone, and keeping time by NTP"
 [[category]]
 name = "accounts"
 title = "Accounts and elevate"
-about = "Accounts made and removed, groups, and running as root"
+about = "Accounts made and removed, groups, running as root, the keyring, and Kerberos tickets from the lab PC's KDC"
 
 [[category]]
 name = "commands"
@@ -79,3 +79,8 @@ about = "Probing the machine from a private network only an attacker shares with
 name = "performance"
 title = "Performance against Linux"
 about = "Dukovo's time for each operation, held to Linux's on the same machine"
+
+[[category]]
+name = "sharing"
+title = "File sharing"
+about = "SMB and NFS shares, both ways, with the lab PC's Samba and NFS server"

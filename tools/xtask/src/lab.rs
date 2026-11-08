@@ -91,6 +91,24 @@ const NEEDS: &[(&str, &str)] = &[
     ("gzip", "gzip"),
 ];
 
+/// What some tests run on this PC as the far end of what they check (their
+/// `host_needs`: a file server, a client), each with the package that
+/// brings it. A test is skipped where one is missing, so the lab only
+/// notes what is.
+const PEER_WANTS: &[(&str, &str)] = &[
+    ("smbd", "samba"),
+    ("pdbedit", "samba"),
+    ("smbclient", "smbclient"),
+    ("ganesha.nfsd", "nfs-ganesha nfs-ganesha-vfs"),
+    ("mount.nfs4", "nfs-common"),
+    ("nc", "netcat-openbsd"),
+    ("wg", "wireguard-tools"),
+    ("ip", "iproute2"),
+    ("krb5kdc", "krb5-kdc"),
+    ("kdb5_util", "krb5-kdc"),
+    ("kadmin.local", "krb5-admin-server"),
+];
+
 /// How a lab image lets the lab in: the lab's public key, for SSH, and
 /// the hash of the lab's password, for elevate (ADR 0408). Without a
 /// password the account's is one no one knows, and only tests that run
@@ -470,12 +488,7 @@ fn set_up(ctx: &Ctx, args: &[String]) -> Result<()> {
     step("Checking what the lab needs on this PC");
     let missing = missing_needs();
     if !missing.is_empty() {
-        let mut packages: Vec<&str> = Vec::new();
-        for (_, package) in &missing {
-            if !packages.contains(package) {
-                packages.push(package);
-            }
-        }
+        let packages = packages(&missing);
         let programs: Vec<&str> = missing.iter().map(|(program, _)| *program).collect();
         return Err(Error::new(format!("the lab needs {} on this PC", programs.join(", "))).hint(
             format!(
@@ -487,6 +500,15 @@ fn set_up(ctx: &Ctx, args: &[String]) -> Result<()> {
     if !qemu::kvm_available() {
         eprintln!(
             "    note: /dev/kvm is not usable, so tests run under QEMU's emulator, some four times slower"
+        );
+    }
+    let wanted = missing_peer_wants();
+    if !wanted.is_empty() {
+        eprintln!(
+            "    note: tests that use this PC as the machine's peer are skipped without {}: \
+             `sudo apt install {}`",
+            wanted.iter().map(|(program, _)| *program).collect::<Vec<_>>().join(", "),
+            packages(&wanted).join(" ")
         );
     }
 
@@ -612,6 +634,33 @@ fn turn_on_schedules(ctx: &Ctx, tool: &Path, args: &[String]) {
     }
 }
 
+/// The packages that bring `programs`, each once, in order.
+fn packages<'a>(programs: &[(&str, &'a str)]) -> Vec<&'a str> {
+    let mut packages: Vec<&str> = Vec::new();
+    for package in programs.iter().flat_map(|(_, package)| package.split(' ')) {
+        if !packages.contains(&package) {
+            packages.push(package);
+        }
+    }
+    packages
+}
+
+/// The programs in [`PEER_WANTS`] not on PATH, nor in the sbin folders an
+/// ordinary account's PATH may leave out, as dukovo-lab looks for them.
+fn missing_peer_wants() -> Vec<(&'static str, &'static str)> {
+    let in_sbin = |program: &str| {
+        ["/usr/local/sbin", "/usr/sbin", "/sbin"].iter().any(|dir| {
+            let path = Path::new(dir).join(program);
+            path.is_file()
+        })
+    };
+    PEER_WANTS
+        .iter()
+        .copied()
+        .filter(|(program, _)| process::find_program(program).is_none() && !in_sbin(program))
+        .collect()
+}
+
 /// The programs in [`NEEDS`] not on PATH, and OVMF if it is not there.
 fn missing_needs() -> Vec<(&'static str, &'static str)> {
     let mut missing: Vec<(&str, &str)> = NEEDS
@@ -728,6 +777,20 @@ mod tests {
     use super::*;
 
     const KEY: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGv8yKkzUYtD3Q5jzN7mKpWv0bL3Vx2m5C9E4fQwZr8T dukovo-lab\n";
+
+    #[test]
+    fn names_each_package_once() {
+        let missing = [
+            ("smbd", "samba"),
+            ("pdbedit", "samba"),
+            ("ganesha.nfsd", "nfs-ganesha nfs-ganesha-vfs"),
+            ("ssh", "openssh-client"),
+        ];
+        assert_eq!(
+            packages(&missing),
+            ["samba", "nfs-ganesha", "nfs-ganesha-vfs", "openssh-client"]
+        );
+    }
 
     #[test]
     fn takes_one_ed25519_key() {

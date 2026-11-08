@@ -1,0 +1,89 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# nfs(1) and mount(8) against the lab PC's NFS-Ganesha (ganesha.sh beside
+# this file), which the machine reaches at {peer}. Its folder /lab is
+# owned by number 1000, the lab account's, so the lab account writes
+# there as its own over AUTH_SYS, while root, served as no one, may not;
+# /lab-ro is only to read.
+about = "nfs lists and mounts the lab PC's NFS 4 folders: the lab account writes, links and copies there as its own, root is served as no one, and a read-only mount refuses writes"
+time = "10m"
+host_needs = ["ganesha.nfsd", "nc", "seq", "cmp", "stat"]
+
+[[step]]
+host = "sh {here}/ganesha.sh {port:nfs}"
+root = true
+background = true
+ready = "ganesha ready"
+
+# Listing: the server's root, a folder, and one that is not there.
+[[step]]
+run = "nfs ls -o port={port:nfs} {peer}:/"
+expect = ["lab/", "lab-ro/"]
+[[step]]
+run = "nfs ls -o port={port:nfs} {peer}:/lab"
+expect = ["folder/", "from-lab-pc.txt"]
+[[step]]
+run = "nfs ls nfs://{peer}:{port:nfs}/lab/folder"
+expect = "inner.txt"
+[[step]]
+run = "nfs ls -o port={port:nfs} {peer}:/no-such-folder"
+exit = 1
+expect = "No such file or directory"
+[[step]]
+run = "nfs"
+exit = 2
+expect = "usage: nfs mount"
+
+# Mounted, the files are number 1000's, which the lab account is.
+[[step]]
+run = "mkdir -p nfs-share"
+[[step]]
+run = "nfs mount -o port={port:nfs} {peer}:/lab /users/lab/nfs-share"
+root = true
+[[step]]
+run = "mount"
+expect = "{peer}:/lab on /users/lab/nfs-share type fuse (rw)"
+[[step]]
+run = "ls -l nfs-share"
+expect = ["lab lab", "from-lab-pc.txt", "folder"]
+[[step]]
+run = "cat nfs-share/from-lab-pc.txt nfs-share/folder/inner.txt"
+expect = ["from the lab PC", "inside"]
+[[step]]
+run = "echo from dukovo > nfs-share/from-dukovo.txt && mkdir nfs-share/made && mv nfs-share/from-dukovo.txt nfs-share/made/ && ln -s made/from-dukovo.txt nfs-share/link && chmod 600 nfs-share/made/from-dukovo.txt && cat nfs-share/link"
+expect = "from dukovo"
+[[step]]
+run = "seq 1 500000 > nfs-share/big.txt && seq 1 500000 | cmp - nfs-share/big.txt && echo the big file reads back whole"
+expect = "the big file reads back whole"
+# Root on the machine is no one on the server: refused in number 1000's folder.
+[[step]]
+run = "sh -c 'echo root > /users/lab/nfs-share/by-root.txt'"
+root = true
+exit = 1
+expect = "Permission denied"
+[[step]]
+host = "stat -c '%u %g %a %n' export/made/from-dukovo.txt export/big.txt && readlink export/link && cat export/made/from-dukovo.txt && seq 1 500000 | cmp - export/big.txt && echo the lab PC has it whole"
+expect = ["1000 1000 600 export/made/from-dukovo.txt", "made/from-dukovo.txt", "from dukovo", "the lab PC has it whole"]
+expect_not = "by-root.txt"
+[[step]]
+run = "umount /users/lab/nfs-share"
+root = true
+[[step]]
+run = "mount"
+expect_not = "nfs-share"
+
+# mount(8) runs nfs for -t nfs, here only to read.
+[[step]]
+run = "mount -t nfs -o ro,port={port:nfs} {peer}:/lab-ro /users/lab/nfs-share"
+root = true
+[[step]]
+run = "cat nfs-share/read-only.txt"
+expect = "only to read"
+[[step]]
+run = "echo no > nfs-share/refused.txt"
+exit = 1
+expect = "Read-only file system"
+[[step]]
+run = "umount /users/lab/nfs-share"
+root = true

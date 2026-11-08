@@ -1,0 +1,80 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# nfsd(8) and share(1) against the lab PC's own kernel NFS client, which
+# mounts the machine's nfsd as root (nfs-mount.sh beside this file)
+# through {machine-port:2049}. The lab account's folder is shared over
+# NFS to the lab PC's address alone ({peer}, where the machine sees it
+# from) and again to a network the lab PC is not on, which its mount
+# must not show. On the lab PC, number 1000 (the lab account's on
+# Dukovo) reads and writes there, and root, served as no one, is refused.
+# A lab PC whose kernel cannot mount NFS 4 skips the test after the
+# machine's side.
+about = "nfsd serves a folder of the lab account's over NFS 4.2 to the lab PC's kernel, to its address alone, with root served as no one"
+time = "15m"
+host_needs = ["mount.nfs4", "setpriv", "umount", "grep"]
+
+[[step]]
+run = "mkdir -p nfs-shared && echo from dukovo > nfs-shared/from-dukovo.txt && chmod 755 nfs-shared"
+[[step]]
+run = "share add --nfs {peer} Exported /users/lab/nfs-shared"
+root = true
+expect = "NFS clients on {peer} mount it as :/Exported."
+[[step]]
+run = "share add --nfs 10.99.0.0/16 Elsewhere /users/lab/nfs-shared"
+root = true
+expect = "NFS clients on 10.99.0.0/16 mount it as :/Elsewhere."
+[[step]]
+run = "share add --nfs nowhere Bad /users/lab/nfs-shared"
+root = true
+exit = 1
+expect = "nowhere is not an address"
+# Only root turns NFS on.
+[[step]]
+run = "share nfs on"
+exit = 1
+[[step]]
+run = "share nfs on"
+root = true
+expect = "NFS is on"
+[[step]]
+run = "share"
+expect = ["Exported", "Elsewhere", "NFS is on"]
+
+# The lab PC's kernel mounts the root of the machine's nfsd.
+[[step]]
+host = "sh {here}/nfs-mount.sh {machine} {machine-port:2049}"
+root = true
+background = true
+ready = "mounted"
+[[step]]
+host = "ls mnt"
+root = true
+expect = "Exported"
+expect_not = "Elsewhere"
+[[step]]
+# In the share first, as root: the test's folder may be in a folder
+# number 1000 cannot pass through.
+host = "cd mnt/Exported && setpriv --reuid=1000 --regid=1000 --clear-groups sh -c 'cat from-dukovo.txt && echo from the lab PC > from-lab-pc.txt && mkdir made && mv from-lab-pc.txt made/ && ls made'"
+root = true
+expect = ["from dukovo", "from-lab-pc.txt"]
+[[step]]
+host = "echo root > mnt/Exported/by-root.txt"
+root = true
+exit = 1
+expect = "Permission denied"
+
+# On the machine, what the lab PC wrote is the lab account's.
+[[step]]
+run = "ls -l nfs-shared/made && cat nfs-shared/made/from-lab-pc.txt"
+expect = ["lab lab", "from the lab PC"]
+[[step]]
+run = "ls nfs-shared"
+expect_not = "by-root.txt"
+[[step]]
+run = "share nfs off"
+root = true
+expect = "NFS is off"
+[[step]]
+run = "sh -c 'share remove Exported && share remove Elsewhere'"
+root = true

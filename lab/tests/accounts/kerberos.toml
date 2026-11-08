@@ -1,0 +1,81 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# kinit, klist, kvno and kdestroy against the lab PC's KDC (kerberos.sh
+# beside this file), MIT's krb5kdc for the realm DUKOVO.TEST. Tickets live
+# in the keyring, which a key-only SSH session finds locked and which
+# closes when the session ends: so each step that touches tickets opens
+# it first with the lab account's password, the first line of its input,
+# read by the shell a line at a time (keyring unlock would read all of
+# it). The KDC's own log then shows each exchange as MIT saw it.
+about = "kinit, klist, kvno and kdestroy against the lab PC's MIT KDC: a password with pre-authentication, the ticket kept sealed in the keyring across sessions, a wrong password and an unknown name refused, a service ticket and its key's version, a keytab fetched, listed and signed in with, an aes128-cts principal, and every ticket thrown away"
+time = "10m"
+host_needs = ["krb5kdc", "kdb5_util", "kadmin.local", "nc"]
+
+[[step]]
+host = "sh {here}/kerberos.sh {port:kdc} {port:keytab}"
+background = true
+ready = "kdc ready"
+
+# The realm's KDC, at the lab PC, in krb5.conf.
+[[step]]
+run = "sh -c 'cat > /system/settings/krb5.conf'"
+root = true
+input = """
+[libdefaults]
+  default_realm = DUKOVO.TEST
+[realms]
+  DUKOVO.TEST = {
+    kdc = {peer}:{port:kdc}
+  }
+"""
+
+# Alice's password gets her ticket, which her keyring keeps.
+[[step]]
+run = "sh -c 'read pw; read kp; echo \"$pw\" | keyring unlock && echo \"$kp\" | kinit alice && klist && keyring list'"
+input = "{password}\ndrink-me\n"
+expect = ["Ticket cache: keyring", "Default principal: alice@DUKOVO.TEST", "krbtgt/DUKOVO.TEST@DUKOVO.TEST", "Flags: IA", "krb5 alice@DUKOVO.TEST krbtgt/DUKOVO.TEST@DUKOVO.TEST"]
+
+# The session's end closed the keyring: the ticket is out of reach until
+# it opens again, and then it is there.
+[[step]]
+run = "sh -c 'klist; echo \"locked $?\"; read pw; echo \"$pw\" | keyring unlock && klist -s && echo kept'"
+input = "{password}\n"
+expect = ["your keyring is locked", "locked 1", "kept"]
+
+# A wrong password and an unknown name are refused, and the ticket stays;
+# a service's ticket, taken with hers, names its key's version.
+[[step]]
+run = "sh -c 'read pw; read kp; echo \"$pw\" | keyring unlock || exit; echo \"$kp\" | kinit alice; echo \"wrong $?\"; echo x | kinit nobody; echo \"unknown $?\"; klist -s; echo \"kept $?\"; kvno nfs/server.dukovo.test && keyring list'"
+input = "{password}\ndrink-you\n"
+expect = ["alice@DUKOVO.TEST: the password or key is wrong", "wrong 1", "unknown 1", "kept 0", "nfs/server.dukovo.test@DUKOVO.TEST: kvno = 2", "krb5 alice@DUKOVO.TEST nfs/server.dukovo.test@DUKOVO.TEST"]
+
+# The service's keytab, fetched from the lab PC, listed, and signed in
+# with.
+[[step]]
+run = "sh -c 'nc -d {peer} {port:keytab} > nfs.keytab && klist -k -e nfs.keytab'"
+expect = "   2 nfs/server.dukovo.test@DUKOVO.TEST (aes256-cts-hmac-sha1-96)"
+[[step]]
+run = "sh -c 'read pw; echo \"$pw\" | keyring unlock && kinit -V -k -t nfs.keytab nfs/server.dukovo.test && klist'"
+input = "{password}\n"
+expect = ["Authenticated to Kerberos v5 as nfs/server.dukovo.test@DUKOVO.TEST", "Default principal: nfs/server.dukovo.test@DUKOVO.TEST"]
+
+# Bob, with only an aes128-cts key, in place of the service.
+[[step]]
+run = "sh -c 'read pw; read kp; echo \"$pw\" | keyring unlock && echo \"$kp\" | kinit -V bob && klist -e'"
+input = "{password}\neat-me\n"
+expect = ["Authenticated to Kerberos v5 as bob@DUKOVO.TEST", "Default principal: bob@DUKOVO.TEST"]
+
+# Every ticket thrown away; the keyring's other entries stay.
+[[step]]
+run = "sh -c 'read pw; echo \"$pw\" | keyring unlock || exit; kdestroy; klist; echo \"status $?\"; klist -s; echo \"silent $?\"; echo \"left $(keyring list | grep -c krb5)\"'"
+input = "{password}\n"
+expect = ["your keyring holds no Kerberos tickets", "status 1", "silent 1", "left 0"]
+
+# The KDC saw it all as the steps say.
+[[step]]
+host = "grep -c 'NEEDED_PREAUTH: alice@DUKOVO.TEST' kdc.log && grep -c 'PREAUTH_FAILED: alice@DUKOVO.TEST' kdc.log && grep -c 'CLIENT_NOT_FOUND: nobody@DUKOVO.TEST' kdc.log && grep -c 'TGS_REQ.*ISSUE.*alice@DUKOVO.TEST for nfs/server.dukovo.test@DUKOVO.TEST' kdc.log && grep -c 'AS_REQ.*ISSUE.*nfs/server.dukovo.test@DUKOVO.TEST for krbtgt' kdc.log && grep -c 'AS_REQ.*ISSUE.*rep=aes128-cts-hmac-sha1-96(17).*bob@DUKOVO.TEST' kdc.log"
+
+[[step]]
+run = "sh -c 'rm nfs.keytab /system/settings/krb5.conf'"
+root = true
