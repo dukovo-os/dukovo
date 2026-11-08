@@ -23,9 +23,15 @@ env:
 
 jobs:
   e1000:
-    name: userspace-e1000, again and again
+    name: userspace-e1000, again and again (${{ matrix.load }})
     runs-on: ubuntu-24.04
     timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        # The stall came in CI's fifth boot shard, two times of three, and
+        # never alone: the host's CPUs busy may be what brings it.
+        load: [none, two-cpus, all-cpus]
     steps:
       - uses: actions/checkout@v4
 
@@ -44,7 +50,7 @@ jobs:
           packages: >-
             qemu-system-x86 ovmf gcc flex gawk
             xorriso mtools dosfstools exfatprogs gdisk fdisk sleuthkit btrfs-progs e2fsprogs ntfs-3g dislocker libbde-utils openssh-server samba smbclient nfs-kernel-server krb5-kdc krb5-admin-server krb5-user scdoc mandoc
-            udftools udfclient genisoimage
+            udftools udfclient genisoimage tcpdump stress-ng
             clang-20 lld-20 llvm-20 libclang-rt-20-dev meson ninja-build cmake bison pkgconf autoconf
 
       - name: Let the tests listen on port 445
@@ -95,27 +101,58 @@ jobs:
         timeout-minutes: 45
         run: ./ob ports
 
-      # The shard the stall was seen in ran usb-ethernet, smbd and
-      # nfs-kerberos just before; then the test alone, again and again.
-      - name: userspace-e1000 after its shard's neighbours, then alone
+      # QEMU with every frame on net1's wire, both ways, kept in a file:
+      # a QEMU of the test's own ahead of the system's on PATH.
+      - name: Capture net1's wire
+        run: |
+          sudo tee /usr/local/bin/qemu-system-x86_64 > /dev/null <<'WRAPPER'
+          #!/bin/sh
+          case " $* " in
+            *"e1000,netdev=n1,"*)
+              exec /usr/bin/qemu-system-x86_64 "$@" -object \
+                filter-dump,id=dbg1,netdev=n1,maxlen=128,file=/tmp/e1000-net1.pcap ;;
+          esac
+          exec /usr/bin/qemu-system-x86_64 "$@"
+          WRAPPER
+          sudo chmod 755 /usr/local/bin/qemu-system-x86_64
+          command -v qemu-system-x86_64
+
+      - name: userspace-e1000, 30 times
         run: |
           show() {
             grep -E "nics:|e1000d:|netd: net[12]|Net: net[12]|spark: (e1000d|starting e1000d)|Device: " \
-              out/test/boot-userspace-e1000.log | cut -c1-400 | tail -n 300 || true
+              out/test/boot-userspace-e1000.log | cut -c1-400 | tail -n 400 || true
           }
+          wire() {
+            echo "--- net1's echo connection, packets a second (guest to QEMU / QEMU to guest):"
+            tcpdump -r /tmp/e1000-net1.pcap -nn -tt 'tcp port 7 and src host 10.0.3.15' 2>/dev/null \
+              | awk '{ print int($1) }' | uniq -c | tail -n 60 | tr '\n' ' ' || true; echo
+            tcpdump -r /tmp/e1000-net1.pcap -nn -tt 'tcp port 7 and dst host 10.0.3.15' 2>/dev/null \
+              | awk '{ print int($1) }' | uniq -c | tail -n 60 | tr '\n' ' ' || true; echo
+            echo "--- the last 250 packets of the echo:"
+            tcpdump -r /tmp/e1000-net1.pcap -nn -tt 'tcp port 7' 2>/dev/null | tail -n 250 || true
+            echo "--- the last 40 other frames:"
+            tcpdump -r /tmp/e1000-net1.pcap -nn -tt 'not tcp' 2>/dev/null | tail -n 40 || true
+          }
+          case "${{ matrix.load }}" in
+            two-cpus) stress-ng --cpu 2 --timeout 3h --quiet & ;;
+            all-cpus) stress-ng --cpu "$(nproc)" --timeout 3h --quiet & ;;
+          esac
           passed=0 failed=0
-          if ./ob test boot --case usb-ethernet --case smbd --case nfs-kerberos --case userspace-e1000; then
-            echo "=== RUN 0 (after neighbours) PASS"; passed=$((passed + 1))
-          else
-            echo "=== RUN 0 (after neighbours) FAIL"; failed=$((failed + 1))
-          fi
-          show
-          for run in $(seq 1 14); do
-            if ./ob test boot --case userspace-e1000; then
-              echo "=== RUN $run PASS"; passed=$((passed + 1))
+          for run in $(seq 1 30); do
+            rm -f /tmp/e1000-net1.pcap
+            if ./ob test boot --case userspace-e1000 > run.out 2>&1; then
+              passed=$((passed + 1))
+              echo "=== RUN $run PASS: $(grep -o 'net1 echoed 2 MiB.*' out/test/boot-userspace-e1000.log | head -n 1)"
+              if [ "$run" = 1 ]; then
+                tcpdump -r /tmp/e1000-net1.pcap -nn 2>/dev/null | wc -l || true
+              fi
             else
-              echo "=== RUN $run FAIL"; failed=$((failed + 1))
+              failed=$((failed + 1))
+              echo "=== RUN $run FAIL"
+              tail -n 20 run.out
+              show
+              wire
             fi
-            show
           done
-          echo "=== $passed passed, $failed failed"
+          echo "=== ${{ matrix.load }}: $passed passed, $failed failed"
