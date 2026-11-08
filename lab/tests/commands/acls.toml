@@ -1,0 +1,32 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "POSIX access lists: getfacl shows them, setfacl adds, changes and removes entries, and --test writes nothing"
+time = "2m"
+
+# A fresh file starts with just the base entries that its mode gives.
+[[step]]
+run = "cd ~ && rm -f lab-acl && umask 022 && touch lab-acl && getfacl lab-acl"
+expect = ["# file: lab-acl", "# owner: lab", "user::rw-", "group::r--", "other::r--"]
+# -m adds a named user, and a mask appears over the group class.
+[[step]]
+run = "cd ~ && setfacl -m u:root:rwx lab-acl && getfacl lab-acl"
+expect = ["user::rw-", "user:root:rwx", "mask::rwx", "other::r--"]
+# Narrowing the named entry recomputes the mask to the group class.
+[[step]]
+run = "cd ~ && setfacl -m u:root:r-- lab-acl && getfacl lab-acl"
+expect = ["user:root:r--", "mask::r--"]
+# -x takes the named entry away again.
+[[step]]
+run = "cd ~ && setfacl -x u:root lab-acl && getfacl lab-acl"
+expect = ["user::rw-", "group::r--"]
+expect_not = "user:root"
+# --test prints what the change would be, with a * before any default entries.
+[[step]]
+run = "cd ~ && setfacl --test -m g:admins:r lab-acl"
+expect = ["lab-acl:", "m::r--", "*"]
+# ...and it wrote nothing: no named group entry is on the file.
+[[step]]
+run = "cd ~ && getfacl lab-acl && rm -f lab-acl"
+expect = ["# file: lab-acl", "user::rw-"]
+expect_not = "group:admins"

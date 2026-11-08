@@ -1,0 +1,36 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "passwd changes a password: as root for any account, refused for other people's, warned about a short one, and told when the account is unknown"
+time = "3m"
+
+# An account that is not there is told so, before any password is asked.
+[[step]]
+run = "passwd no-such-acct-xyz"
+exit = 1
+expect = "there is no account no-such-acct-xyz"
+# Someone who is not root cannot change another account's password.
+[[step]]
+run = "printf 'wrongpass\\nnewpw12345\\n' | passwd root"
+exit = 1
+expect = "only its owner, or an administrator inside elevate, changes a password"
+# Root makes a throwaway account to change.
+[[step]]
+run = "sh -c 'echo first-pass-123 | user add labpw'"
+root = true
+expect = "Made labpw"
+# Root changes its password without being asked for the old one.
+[[step]]
+run = "sh -c 'printf \"a-strong-password\\n\" | passwd labpw'"
+root = true
+expect = "The password of labpw is changed."
+# A short password is warned about but still taken: no rules are forced on it.
+[[step]]
+run = "sh -c 'printf \"xy\\n\" | passwd labpw'"
+root = true
+expect = ["This password has 2 characters", "The password of labpw is changed."]
+# Clean up the throwaway account and its home.
+[[step]]
+run = "user remove --delete-home --yes labpw"
+root = true
+expect = "labpw is removed"
