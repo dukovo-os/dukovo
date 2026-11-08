@@ -1,0 +1,25 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "lsmem lays the RAM out in memory blocks, with a summary, in bytes, and a block at a time"
+time = "2m"
+
+# The default: the RAM in runs of blocks, then the summary. Radix never
+# takes memory offline, so every block is online.
+[[step]]
+run = "lsmem"
+expect = ["RANGE", "SIZE", "STATE", "BLOCK", "online", "Memory block size:", "Total online memory:", "Total offline memory:"]
+# --summary shows only the totals, not the table.
+[[step]]
+run = "lsmem --summary"
+expect = ["Memory block size:", "Total online memory:", "Total offline memory:"]
+expect_not = "RANGE"
+# -b gives the sizes in bytes rather than in units of 1024.
+[[step]]
+run = "lsmem -b"
+expect = ["online", "Memory block size:", "Total offline memory:"]
+# -a lists each block on its own; --summary=never leaves the totals off.
+[[step]]
+run = "lsmem -a --summary=never"
+expect = ["RANGE", "online", "0x0000000000000000"]
+expect_not = "Memory block size:"

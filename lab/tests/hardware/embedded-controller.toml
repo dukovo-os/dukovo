@@ -1,0 +1,20 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "ectool shows its usage and the commands it has, and reports how many fans the embedded controller has"
+time = "1m"
+
+# With no command it points at the help.
+[[step]]
+run = "ectool"
+exit = 1
+expect = ["Usage: ectool <command>", "Use 'ectool help'"]
+# help lists every command.
+[[step]]
+run = "ectool help"
+exit = 1
+expect = ["Commands:", "autofanctrl", "fanduty", "led", "pwmgetfanrpm", "pwmgetnumfans", "rgbkbd"]
+# pwmgetnumfans reports the fan count: 0 on a machine with no Framework EC.
+[[step]]
+run = "ectool pwmgetnumfans"
+expect = "Number of fans = "
