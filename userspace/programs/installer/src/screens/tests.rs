@@ -617,6 +617,129 @@ fn a_setup_file_is_reviewed_before_it_installs() {
 }
 
 #[test]
+fn a_setup_file_from_the_web_is_checked_before_its_review() {
+    let mut app = app();
+    let text = br#"{"version": 1, "disk": {"layout": "guided", "target": "vda"},
+        "admin": {"name": "Admin", "user": "admin", "password_hash": ""}}"#;
+    let sha = crate::download::checked(text.to_vec(), None).unwrap().sha256;
+    focus(&mut app, Id::FromFile);
+    press(&mut app, KeyCode::Char(' '));
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(app.page, Page::SetupFile);
+    // With none on the stick, the web is chosen, and its fields shown.
+    let shown = screen(&app);
+    assert!(shown.contains("No setup file was found on this stick."), "{shown}");
+    assert!(shown.contains("(•) Download it from a web address"), "{shown}");
+    assert!(shown.contains("HTTPS only"), "{shown}");
+    assert!(shown.contains("SHA-256 (optional)"), "{shown}");
+    assert!(shown.contains("refused if it differs"), "{shown}");
+
+    // http:// is refused before anything is fetched, and so is a SHA-256
+    // that is not one, each with its field focused.
+    focus(&mut app, Id::SetupUrl);
+    type_text(&mut app, "http://setup.example/install.json");
+    focus(&mut app, Id::Load);
+    assert_eq!(press(&mut app, KeyCode::Enter), Outcome::Stay);
+    assert!(app.problem.as_deref().is_some_and(|p| p.starts_with("Only https://")));
+    assert_eq!(app.focused(), Some(Id::SetupUrl));
+    app.setup_url = "https://setup.example/install.json".into();
+    focus(&mut app, Id::SetupSha);
+    type_text(&mut app, "abc");
+    focus(&mut app, Id::Load);
+    press(&mut app, KeyCode::Enter);
+    assert!(app.problem.as_deref().is_some_and(|p| p.contains("64 hexadecimal digits")));
+    assert_eq!(app.focused(), Some(Id::SetupSha));
+
+    // A good address and SHA-256 ask for the download, saying so.
+    app.setup_sha = sha.to_uppercase();
+    focus(&mut app, Id::Load);
+    let Outcome::Download(url, expected) = press(&mut app, KeyCode::Enter) else {
+        panic!("no download: {:?}", app.problem)
+    };
+    assert_eq!(url.host(), "setup.example");
+    assert!(screen(&app).contains("Downloading the setup file…"));
+
+    // A file that differs is not used.
+    app.downloaded(crate::download::checked(b"{}".to_vec(), expected));
+    assert_eq!(app.page, Page::SetupFile);
+    assert_eq!(
+        app.problem.as_deref(),
+        Some("The SHA-256 does not match the downloaded file. It was not used.")
+    );
+    assert!(!screen(&app).contains("Downloading"));
+
+    // The one that matches is reviewed, which says where it came from.
+    app.downloaded(crate::download::checked(text.to_vec(), expected));
+    assert_eq!(app.page, Page::Review, "{:?}", app.problem);
+    let shown = screen(&app);
+    assert!(
+        shown.contains(
+            "Downloaded from https://setup.example/install.json, and its SHA-256 matches."
+        ),
+        "{shown}"
+    );
+    assert!(shown.contains("admin (Admin), administrator"), "{shown}");
+    // Back forgets it; without a SHA-256, the review says it was not
+    // checked.
+    press(&mut app, KeyCode::Esc);
+    assert_eq!(app.page, Page::SetupFile);
+    assert!(app.loaded.is_none() && app.loaded_from.is_none());
+    app.downloaded(crate::download::checked(text.to_vec(), None));
+    assert!(screen(&app).contains("not checked: no SHA-256 was given"));
+}
+
+#[test]
+fn a_setup_file_from_the_web_must_be_one() {
+    let mut app = app();
+    app.page = Page::SetupFile;
+    app.setup_url = "https://setup.example/install.json".into();
+    // Why it could not be downloaded is said as it came.
+    app.downloaded(Err("The setup file could not be downloaded: refused".into()));
+    assert_eq!(app.problem.as_deref(), Some("The setup file could not be downloaded: refused"));
+    // A file that is no answers file, or whose answers do not check.
+    app.downloaded(crate::download::checked(b"<html>".to_vec(), None));
+    assert_eq!(app.page, Page::SetupFile);
+    assert_eq!(
+        app.problem.as_deref(),
+        Some("The downloaded file is not a setup file: expected value at line 1 column 1")
+    );
+    app.downloaded(crate::download::checked(br#"{"version": 1}"#.to_vec(), None));
+    assert_eq!(app.page, Page::SetupFile);
+    assert!(app.problem.is_some());
+}
+
+#[test]
+fn the_stick_or_the_web_is_chosen() {
+    let mut app = app();
+    let text = r#"{"version": 1, "disk": {"layout": "guided", "target": "vda"},
+        "admin": {"name": "Admin", "user": "admin", "password_hash": ""}}"#;
+    let answers = Answers::parse(text.as_bytes()).unwrap();
+    app.setup_files =
+        vec![SetupFile { place: "install.json on this USB stick".into(), answers: Ok(answers) }];
+    app.page = Page::SetupFile;
+    // The stick's file first, and the web's fields only once it is
+    // chosen.
+    let shown = screen(&app);
+    assert!(shown.contains("(•) install.json on this USB stick"), "{shown}");
+    assert!(shown.contains("( ) Download it from a web address"), "{shown}");
+    assert!(!shown.contains("SHA-256 (optional)"), "{shown}");
+    focus(&mut app, Id::SetupWeb);
+    press(&mut app, KeyCode::Char(' '));
+    let shown = screen(&app);
+    assert!(shown.contains("( ) install.json on this USB stick"), "{shown}");
+    assert!(shown.contains("SHA-256 (optional)"), "{shown}");
+    focus(&mut app, Id::Load);
+    assert_eq!(press(&mut app, KeyCode::Enter), Outcome::Stay);
+    assert!(app.problem.as_deref().is_some_and(|p| p.starts_with("Only https://")));
+    focus(&mut app, Id::SetupFile(0));
+    press(&mut app, KeyCode::Char(' '));
+    focus(&mut app, Id::Load);
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(app.page, Page::Review, "{:?}", app.problem);
+    assert!(app.loaded_from.is_none());
+}
+
+#[test]
 fn a_setup_files_features_must_be_this_releases() {
     let mut app = app();
     let with = |features: &str| {

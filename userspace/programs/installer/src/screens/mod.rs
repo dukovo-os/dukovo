@@ -19,7 +19,8 @@
 //!   terminal's palette while they show.
 //! - [`rdisk`] is the manual layout's screen, where each partition is
 //!   chosen (ADR 0311).
-//! - [`stick`] reads and saves setup files on the stick.
+//! - [`stick`] reads and saves setup files on the stick; a setup file
+//!   from the web is [`crate::download`]'s.
 
 pub mod app;
 pub mod draw;
@@ -40,6 +41,7 @@ use ratatui::{DefaultTerminal, Frame};
 
 use self::app::{App, Outcome};
 use crate::answers::{self, Answers};
+use crate::download;
 use crate::features;
 use crate::install::{self, Source};
 use crate::log::{self, Event, Log, Step};
@@ -201,6 +203,22 @@ fn show(terminal: &mut DefaultTerminal, app: &mut App, log: Log, source: Source)
                         Ok(answers) => stick::save(stick.as_deref(), &answers),
                         Err(why) => why,
                     });
+                }
+                Outcome::Download(url, sha256) => {
+                    // Drawn first, so that the page says it is
+                    // downloading for as long as it is.
+                    draw_screen(terminal, app.machine.serial_console, |frame| {
+                        draw::draw(frame, app);
+                    })?;
+                    let fetched = download::fetch(&url, sha256);
+                    if let Some((log, _)) = ready.as_mut() {
+                        let address = app.setup_url.trim();
+                        log.note(&match &fetched {
+                            Ok(file) => format!("setup file from {}", file.source(address)),
+                            Err(why) => format!("setup file from {address}: {why}"),
+                        });
+                    }
+                    app.downloaded(fetched);
                 }
                 Outcome::Install => {
                     if let Some((log, source)) = ready.take() {

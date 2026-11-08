@@ -383,8 +383,37 @@ fn request(url: &Url) -> String {
 /// [`Error::NotFound`] when the server says the file is not there; any
 /// other failure to connect or to get a 200 answer.
 pub fn get(url: &Url) -> Result<Body, Error> {
+    fetch(url, false)
+}
+
+/// Fetches `url` as [`get`] does, over TLS only: an `http://` address,
+/// or a redirect to one, is refused before anything is asked of it. For
+/// what no signature checks, such as an installer's setup file, whose
+/// only protection on the way is TLS.
+///
+/// # Errors
+///
+/// [`Error::Url`] for an address or a redirect that is not `https://`;
+/// otherwise as [`get`].
+pub fn get_https(url: &Url) -> Result<Body, Error> {
+    fetch(url, true)
+}
+
+/// Whether `url` may be fetched: any http or https address, or only an
+/// https one when `https_only`.
+fn allowed(url: &Url, https_only: bool) -> Result<(), Error> {
+    if https_only && url.scheme() != "https" {
+        return Err(Error::Url(format!("{}: only https:// addresses are used", url.scheme())));
+    }
+    Ok(())
+}
+
+/// [`get`], over TLS only when `https_only`, the first address and every
+/// redirect alike.
+fn fetch(url: &Url, https_only: bool) -> Result<Body, Error> {
     let mut url = url.clone();
     for _ in 0..=REDIRECTS {
+        allowed(&url, https_only)?;
         let mut connection = connect(&url)?;
         connection.write_all(request(&url).as_bytes())?;
         connection.flush()?;
@@ -421,6 +450,18 @@ mod tests {
         let mut out = Vec::new();
         Body::new(reader, framing).read_to_end(&mut out)?;
         Ok(out)
+    }
+
+    #[test]
+    fn only_https_is_fetched_when_asked() {
+        let plain = Url::parse("http://example.org/install.json").unwrap();
+        let secure = Url::parse("https://example.org/install.json").unwrap();
+        assert!(allowed(&plain, false).is_ok());
+        assert!(allowed(&secure, true).is_ok());
+        let refused = allowed(&plain, true).unwrap_err().to_string();
+        assert_eq!(refused, "http: only https:// addresses are used");
+        // Refused before any connection is made.
+        assert!(matches!(get_https(&plain), Err(Error::Url(_))));
     }
 
     #[test]

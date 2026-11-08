@@ -43,6 +43,9 @@ serde_json = "1.0.140"
 # The signed release on the install stick, read from the root the system
 # trusts (ADR 0308).
 system-release = { path = "../system-release" }
+# Setup files from the web, fetched over https only by the update
+# client's HTTP (ADR 0319).
+tuf = { path = "../tuf" }
 
 [lints]
 workspace = true

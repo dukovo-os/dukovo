@@ -1,0 +1,59 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "The installer's setup file page downloads a setup file from the web over HTTPS only (ADR 0319), from dukovo.org over the lab's own network, its DNS and the public roots real: a file that differs from the SHA-256 typed is refused before it is read, one that is no answers file is refused, and an http:// address is refused before anything is fetched; nothing is written. Installing from a file on the web is the install-bios and install-web boot tests'"
+time = "5m"
+boot = "stick"
+disk = "8G"
+
+# The stick's menu starts the installer by itself; From a setup file
+# offers the web, chosen as the stick holds no setup file.
+[[step]]
+serial = "consoled: install: the installer's screens on tty1"
+[[step]]
+screen = ["Step 1 of 6", "How do you want to install?", "From a setup file"]
+[[step]]
+keys = ["down", "down", "down", "down", "spc", "ret"]
+[[step]]
+screen = ["Install from a setup file", "No setup file was found on this stick.", "Download it from a web address", "HTTPS only", "SHA-256 (optional)"]
+[[step]]
+screenshot = "web-setup-file"
+
+# The website's page, downloaded over HTTPS, is not the file a SHA-256
+# of zeros names: refused before it is read.
+[[step]]
+keys = ["down"]
+[[step]]
+type = "https://dukovo.org/"
+[[step]]
+keys = ["down"]
+[[step]]
+type = "0000000000000000000000000000000000000000000000000000000000000000"
+[[step]]
+keys = ["ret"]
+[[step]]
+screen = "The SHA-256 does not match the downloaded file. It was not used."
+
+# Without a SHA-256 it is read, and it is no answers file.
+[[step]]
+keys = ["backspace", "backspace", "backspace", "backspace", "backspace", "backspace", "backspace", "backspace", "backspace", "backspace", "backspace", "backspace", "backspace", "backspace", "backspace", "backspace", "backspace", "backspace", "backspace", "backspace", "backspace", "backspace", "backspace", "backspace", "backspace", "backspace", "backspace", "backspace", "backspace", "backspace", "backspace", "backspace", "backspace", "backspace", "backspace", "backspace", "backspace", "backspace", "backspace", "backspace", "backspace", "backspace", "backspace", "backspace", "backspace", "backspace", "backspace", "backspace", "backspace", "backspace", "backspace", "backspace", "backspace", "backspace", "backspace", "backspace", "backspace", "backspace", "backspace", "backspace", "backspace", "backspace", "backspace", "backspace"]
+[[step]]
+keys = ["ret"]
+[[step]]
+screen = "The downloaded file is not a setup file: expected value at line"
+[[step]]
+screen_gone = "Step 6 of 6"
+
+# http:// is refused before anything is fetched.
+[[step]]
+keys = ["up"]
+[[step]]
+keys = ["backspace", "backspace", "backspace", "backspace", "backspace", "backspace", "backspace", "backspace", "backspace", "backspace", "backspace", "backspace", "backspace", "backspace", "backspace", "backspace", "backspace", "backspace", "backspace"]
+[[step]]
+type = "http://dukovo.org/"
+[[step]]
+keys = ["ret"]
+[[step]]
+screen = "Only https:// addresses are used, so the file can't be changed on the way."
+[[step]]
+screenshot = "web-refused"

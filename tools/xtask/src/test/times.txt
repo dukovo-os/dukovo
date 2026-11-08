@@ -60,13 +60,14 @@ git-keyring 127
 gpio 11
 i2c 22
 install-beside 150
-install-bios 99
+install-bios 115
 install-free 110
 install-manual 112
 install-mirror 180
 install-screens 94
 install-serial 100
 install-uefi 99
+install-web 60
 installed-bios 29
 installed-uefi 26
 interfaces 17

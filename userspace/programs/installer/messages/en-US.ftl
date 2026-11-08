@@ -66,7 +66,7 @@ welcome-how = How do you want to install?
 welcome-steps = Step by step
 welcome-steps-note = answer six short screens
 welcome-file = From a setup file
-welcome-file-note = install.json on this stick's EFI partition
+welcome-file-note = install.json on this stick's EFI partition or the web
 
 ## Setup file
 
@@ -77,6 +77,23 @@ setup-on-stick = { $file } on this USB stick
 setup-no-esp = This stick has no EFI partition for a setup file.
 setup-saved = Saved as install.json on the stick, with the passwords' hashes.
 setup-saved-no-hashes = Saved as install.json on the stick, without the passwords' hashes: add them (dukovo-install --hash-password) before it installs.
+setup-web = Download it from a web address
+setup-web-note = HTTPS only
+setup-web-address-label = Address
+setup-web-address-hint = https://
+setup-web-sha-label = SHA-256 (optional)
+setup-web-sha-hint = 64 digits, as sha256sum prints them
+setup-web-explain = With a SHA-256, the file is checked before it is used, and refused if it differs.
+setup-web-downloading = Downloading the setup file…
+setup-web-not-https = Only https:// addresses are used, so the file can't be changed on the way.
+setup-web-address = That is not a web address: https://, the server's name, then the file's path.
+setup-web-sha = A SHA-256 is 64 hexadecimal digits, 0 to 9 and a to f, as sha256sum prints it.
+setup-web-mismatch = The SHA-256 does not match the downloaded file. It was not used.
+setup-web-too-large = The file is larger than 1 MiB, far more than a setup file, so it was not used.
+setup-web-failed = The setup file could not be downloaded: { $why }
+setup-web-not-answers = The downloaded file is not a setup file: { $why }
+setup-web-checked = Downloaded from { $address }, and its SHA-256 matches.
+setup-web-unchecked = Downloaded from { $address }, not checked: no SHA-256 was given.
 
 ## Network
 
@@ -327,10 +344,11 @@ hint-log = Up, Down, Page Up and Page Down scroll · Esc closes
 help-welcome =
     Tab and Shift+Tab, or Up and Down, move between the fields and the buttons. Space chooses, Enter goes on, Esc goes back.
     Left and Right change the keyboard layout; the keys type in it at once, so try them in the box below it.
-    Step by step asks six short screens. A setup file answers them all: install.json on this stick's EFI partition, as the Done page saves one.
+    Step by step asks six short screens. A setup file answers them all: install.json on this stick's EFI partition, as the Done page saves one, or on a web server.
     Live console leaves the installer for a shell, where dukovo-install starts it again.
 help-setup-file =
     A setup file is an answers file (install-answers(5)) called install.json at the top of the stick's EFI partition.
+    It can also be downloaded from a web server, over HTTPS only, so that it cannot be changed on the way. Give its SHA-256 (sha256sum install.json) and it is checked before it is used: a file that differs is refused.
     Load checks every answer and shows the review; nothing is written before you confirm it there.
 help-network =
     The installed system asks DHCP for an address on every card unless a card is given a fixed one.

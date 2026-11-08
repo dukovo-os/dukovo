@@ -60,7 +60,7 @@ pub const INSTALL_DISKS: &[Disk] = &[Disk {
 /// The answers file the tests install by, from
 /// userspace/programs/installer/tests/install. Its administrator, alice,
 /// has the password [`PASSWORD`], hashed at the tests' low cost.
-const ANSWERS: &str = "/system/tests/install/answers.json";
+pub const ANSWERS: &str = "/system/tests/install/answers.json";
 
 /// alice's password.
 pub const PASSWORD: &str = "queen of hearts";
@@ -75,16 +75,29 @@ pub fn nothing(_case: &Case, _disks: &[DiskImage]) -> Result<(), String> {
 
 /// The first boot, from the stick: the live system installs Dukovo onto
 /// `vda` as the answers file says, then powers off. install-bios's first
-/// boot is the same.
+/// boot is the same, with the answers file from the web.
 pub fn install(vm: &mut Vm, _case: &Case) -> Result<(), String> {
+    live_shell(vm)?;
+    install_by(vm, ANSWERS, None)
+}
+
+/// Waits for root's shell on tty1 of the live system the stick started.
+pub fn live_shell(vm: &mut Vm) -> Result<(), String> {
     vm.expect("spark: the live system: /system is the boot archive, in memory, and no disk is the root")?;
     vm.expect("spark: started consoled (/system/commands/consoled) as process ")?;
-    vm.expect_screen(&[&format!("{RELEASE} {VERSION} (tty1)"), "# "])?;
+    vm.expect_screen(&[&format!("{RELEASE} {VERSION} (tty1)"), "# "])
+}
 
+/// Installs Dukovo onto `vda` from the live system's shell as the answers
+/// file `from` says, a file or an address, checked against `sha256` if
+/// given; checks that the log says where the answers came from, and that
+/// the disk holds the install; then powers off.
+pub fn install_by(vm: &mut Vm, from: &str, sha256: Option<&str>) -> Result<(), String> {
+    let check = sha256.map_or_default(|sha256| format!(" --sha256 {sha256}"));
     // The shell shows each command as it is typed, so the answer is a sum
     // the command line does not hold.
     vm.type_text(&format!(
-        "dukovo-install --answers {ANSWERS} > /tmp/out 2>&1; echo \"install: $((100 + $?))\"\n"
+        "dukovo-install --answers {from}{check} > /tmp/out 2>&1; echo \"install: $((100 + $?))\"\n"
     ))?;
     wait_for_screen(vm, "install: 1", INSTALL_SECONDS)?;
     if !vm.screen()?.iter().any(|line| line.trim() == "install: 100") {
@@ -98,6 +111,19 @@ pub fn install(vm: &mut Vm, _case: &Case) -> Result<(), String> {
         &format!("dukovo-install: Copying Dukovo {VERSION} into its slot, checking every file"),
         "is installed on vda. Remove the install stick, then restart.",
     ])?;
+
+    // The log names the answers file, with its SHA-256, checked when one
+    // was given (ADR 0319). Each label is split, so the command line does
+    // not hold it whole.
+    let checked = match sha256 {
+        Some(sha256) => format!("SHA-256 {sha256}, checked)"),
+        None => "not checked: none was given)".to_string(),
+    };
+    vm.type_text(&format!(
+        "clear; echo \"fr\"\"om: $(grep -c -F 'answers from {from} (' /tmp/install.log)\"; \
+         echo \"che\"\"ck: $(grep -c -F '{checked}' /tmp/install.log)\"\n"
+    ))?;
+    vm.expect_screen(&["from: 1", "check: 1"])?;
 
     // The root holds the subvolumes, the slot among them and its copy
     // gone. `mount -o compress` finds the Btrfs without `-t`, as Linux's.

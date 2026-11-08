@@ -19,6 +19,7 @@ use super::rdisk::{self, FormField, PartForm, Rdisk};
 use crate::answers::{
     self, Account, Answers, Change, Disk, Features, Fixed, Layout, Network, Profile, Role,
 };
+use crate::download::{self, Downloaded};
 use crate::features::{self, Offered};
 use crate::log::{Event, Step};
 use crate::machine::{DiskInfo, Holds, Machine};
@@ -102,6 +103,12 @@ pub enum Id {
     FromFile,
     /// Setup file: the setup file found, by its place in the list.
     SetupFile(usize),
+    /// Setup file: download it from a web address (ADR 0319).
+    SetupWeb,
+    /// Setup file: the web address, `https://` only.
+    SetupUrl,
+    /// Setup file: the SHA-256 the file must have, if one is given.
+    SetupSha,
     /// Network: a card, by its place in the machine's list.
     Card(usize),
     /// Network: the card asks DHCP.
@@ -302,6 +309,10 @@ pub enum Outcome {
     Restart,
     /// Save the answers as a setup file on the stick.
     SaveSetup,
+    /// Download the setup file at this address, over TLS only, and check
+    /// it against this SHA-256 if one is given; [`App::downloaded`] takes
+    /// what came.
+    Download(tuf::Url, Option<[u8; 32]>),
 }
 
 /// A setup file found on the stick.
@@ -373,6 +384,13 @@ pub struct App {
     pub setup_files: Vec<SetupFile>,
     /// The setup file chosen, by its place in the list.
     pub setup_file: usize,
+    /// Whether the setup file is downloaded from a web address, not one
+    /// found on the stick: always when none was found.
+    pub setup_web: bool,
+    /// The web address of the setup file.
+    pub setup_url: String,
+    /// The SHA-256 it must have, if one is given, in hexadecimal.
+    pub setup_sha: String,
     /// The network card set up, by its place in the machine's list.
     pub card: usize,
     /// Whether it has a fixed address, not DHCP.
@@ -430,6 +448,9 @@ pub struct App {
     pub confirm: String,
     /// The answers of the setup file chosen, if the install is from one.
     pub loaded: Option<Answers>,
+    /// Where they were downloaded from and whether they were checked, as
+    /// the review says it, if they came from the web.
+    pub loaded_from: Option<String>,
     /// How the install is going.
     pub progress: Progress,
     /// The letters typed in a row on a list field, to find a name by its
@@ -481,6 +502,9 @@ impl App {
             from_file: false,
             setup_files: Vec::new(),
             setup_file: 0,
+            setup_web: false,
+            setup_url: String::new(),
+            setup_sha: String::new(),
             card: 0,
             fixed: false,
             address: String::new(),
@@ -507,6 +531,7 @@ impl App {
             people: Vec::new(),
             confirm: String::new(),
             loaded: None,
+            loaded_from: None,
             progress: Progress::default(),
             seeking: None,
         }
@@ -629,13 +654,45 @@ impl App {
             };
             rows.push(Row::Field(Field {
                 id: Id::SetupFile(i),
-                kind: Kind::Choice(self.setup_file == i),
+                kind: Kind::Choice(!self.web_chosen() && self.setup_file == i),
                 label: found.place.clone(),
                 note,
                 enabled: true,
             }));
         }
+        rows.push(field(
+            Id::SetupWeb,
+            Kind::Choice(self.web_chosen()),
+            "setup-web",
+            &messages::text("setup-web-note"),
+        ));
+        if self.web_chosen() {
+            rows.extend([
+                input(
+                    Id::SetupUrl,
+                    "setup-web-address-label",
+                    &self.setup_url,
+                    false,
+                    &messages::text("setup-web-address-hint"),
+                ),
+                input(
+                    Id::SetupSha,
+                    "setup-web-sha-label",
+                    &self.setup_sha,
+                    false,
+                    &messages::text("setup-web-sha-hint"),
+                ),
+                Row::Text(messages::text("setup-web-explain"), Look::Dim),
+            ]);
+        }
         rows
+    }
+
+    /// Whether the setup file is downloaded from the web: when chosen, or
+    /// when the stick has none.
+    #[must_use]
+    pub fn web_chosen(&self) -> bool {
+        self.setup_web || self.setup_files.is_empty()
     }
 
     fn network_rows(&self) -> Vec<Row> {
@@ -1073,6 +1130,9 @@ impl App {
 
     fn review_rows(&self) -> Vec<Row> {
         let mut rows = vec![Row::Text(messages::text("review-intro"), Look::Warning), Row::Blank];
+        if let Some(from) = &self.loaded_from {
+            rows.extend([Row::Text(from.clone(), Look::Dim), Row::Blank]);
+        }
         if let Ok(answers) = self.answers() {
             rows.extend(self.review_lines(&answers));
             rows.extend([
@@ -1691,6 +1751,8 @@ impl App {
     fn input_mut(&mut self, id: Id) -> Option<&mut String> {
         Some(match id {
             Id::TryKeys => &mut self.try_keys,
+            Id::SetupUrl => &mut self.setup_url,
+            Id::SetupSha => &mut self.setup_sha,
             Id::Address => &mut self.address,
             Id::Gateway => &mut self.gateway,
             Id::Dns => &mut self.dns,
@@ -1806,7 +1868,11 @@ impl App {
         match id {
             Id::StepByStep => self.from_file = false,
             Id::FromFile => self.from_file = true,
-            Id::SetupFile(i) => self.setup_file = i,
+            Id::SetupFile(i) => {
+                self.setup_file = i;
+                self.setup_web = false;
+            }
+            Id::SetupWeb => self.setup_web = true,
             Id::Card(i) => self.card = i,
             Id::Dhcp => self.fixed = false,
             Id::Fixed => self.fixed = true,
@@ -1865,23 +1931,12 @@ impl App {
                 Outcome::Stay
             }
             Id::Live => Outcome::Quit,
+            Id::Load if self.web_chosen() => self.download(),
             Id::Load => {
-                let found = self.setup_files.get(self.setup_file).map(|found| {
-                    // The features it adds must be this release's, which
-                    // only the install stick knows, not the file's checks.
-                    found.answers.clone().and_then(|answers| {
-                        features::check_offered(&answers, &self.features)
-                            .map(|_| answers)
-                            .map_err(|problem| vec![problem])
-                    })
-                });
+                let found =
+                    self.setup_files.get(self.setup_file).map(|found| found.answers.clone());
                 match found {
-                    Some(Ok(answers)) => {
-                        self.loaded = Some(answers);
-                        self.confirm.clear();
-                        self.show(Page::Review);
-                    }
-                    Some(Err(problems)) => self.problem = problems.first().cloned(),
+                    Some(answers) => self.load(answers, None),
                     None => self.problem = Some(messages::text("setup-none")),
                 }
                 Outcome::Stay
@@ -1908,6 +1963,73 @@ impl App {
             }
             Id::SaveSetup => Outcome::SaveSetup,
             _ => Outcome::Stay,
+        }
+    }
+
+    /// Load, with the web chosen: checks the address and the SHA-256 and
+    /// asks for the file to be downloaded, saying so while it is.
+    fn download(&mut self) -> Outcome {
+        let asked =
+            download::address(&self.setup_url).map_err(|why| (Id::SetupUrl, why)).and_then(|url| {
+                let sha = download::sha256(&self.setup_sha).map_err(|why| (Id::SetupSha, why))?;
+                Ok((url, sha))
+            });
+        match asked {
+            Ok((url, sha)) => {
+                self.problem = None;
+                self.said = Some(messages::text("setup-web-downloading"));
+                Outcome::Download(url, sha)
+            }
+            Err((id, why)) => {
+                self.problem = Some(why);
+                self.focus_on(id);
+                Outcome::Stay
+            }
+        }
+    }
+
+    /// The setup file downloaded from the web, or why it could not be:
+    /// loaded, as one found on the stick, and the review shows where it
+    /// came from.
+    pub fn downloaded(&mut self, fetched: Result<Downloaded, String>) {
+        self.said = None;
+        let address = self.setup_url.trim().to_string();
+        match fetched {
+            Ok(file) => {
+                let from = if file.checked { "setup-web-checked" } else { "setup-web-unchecked" };
+                let from = messages::with(from, &[("address", Arg::Text(&address))]);
+                // A page that is not JSON says so in JSON's terms, so
+                // what it is not is said first.
+                let answers = Answers::parse(&file.bytes)
+                    .map_err(|why| {
+                        vec![messages::with("setup-web-not-answers", &[("why", Arg::Text(&why))])]
+                    })
+                    .and_then(|answers| answers.check().map(|()| answers));
+                self.load(answers, Some(from));
+            }
+            Err(why) => self.problem = Some(why),
+        }
+    }
+
+    /// Loads a setup file's answers, read and checked, and shows the
+    /// review; or says the first reason they cannot be used. `from` is
+    /// where they were downloaded from, for the review.
+    fn load(&mut self, answers: Result<Answers, Vec<String>>, from: Option<String>) {
+        // The features it adds must be this release's, which only the
+        // install stick knows, not the file's checks.
+        let answers = answers.and_then(|answers| {
+            features::check_offered(&answers, &self.features)
+                .map(|_| answers)
+                .map_err(|problem| vec![problem])
+        });
+        match answers {
+            Ok(answers) => {
+                self.loaded = Some(answers);
+                self.loaded_from = from;
+                self.confirm.clear();
+                self.show(Page::Review);
+            }
+            Err(problems) => self.problem = problems.first().cloned(),
         }
     }
 
@@ -1964,7 +2086,10 @@ impl App {
             Page::Software if self.layout == Layout::Manual => Page::Rdisk,
             Page::Software => Page::Disk,
             Page::You => Page::Software,
-            Page::Review if self.loaded.take().is_some() => Page::SetupFile,
+            Page::Review if self.loaded.take().is_some() => {
+                self.loaded_from = None;
+                Page::SetupFile
+            }
             Page::Review => Page::You,
             other => other,
         };
