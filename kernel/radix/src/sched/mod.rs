@@ -1327,6 +1327,12 @@ fn reschedule(why: Switch) {
     drop(guard);
     drop(state);
     arm(cpu);
+    if count == 0 || switching {
+        // A file the thread's call borrowed without counting a reference
+        // is counted before the CPU passes a quiescent state or leaves the
+        // thread (ADR 0414).
+        crate::user::objects::count_borrowed(cpu);
+    }
     if count == 0 {
         // Outside any RCU read section, switching or not.
         rcu::quiescent(cpu);
@@ -1451,8 +1457,10 @@ fn on_timer(tick: bool) {
             sample(slot);
         }
         // The interrupted code could have been preempted, so it was not in
-        // an RCU read section.
+        // an RCU read section; what its call borrowed is counted first
+        // (ADR 0414).
         if Arch::preempt_count() == 0 && Arch::interrupt_depth() <= 1 {
+            crate::user::objects::count_borrowed(cpu);
             rcu::quiescent(cpu);
         }
         balance::tick(cpu, now);

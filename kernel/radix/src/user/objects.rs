@@ -25,13 +25,24 @@
 //! reach their objects. A capability a CPU found leaving its slot, or an
 //! object a CPU found leaving the store, moves the version (`caps`); one
 //! nobody looked up, such as a file opened and closed again, does not.
+//!
+//! A call on a file or directory capability of a process with one thread
+//! borrows the object without counting a reference, as Linux's light
+//! descriptor lookup does ([`find_holding`], ADR 0414): nobody but that
+//! thread can empty the slot while the call runs, so the store's reference
+//! keeps the object. Before its CPU passes an RCU quiescent state or
+//! switches threads, the borrow is counted ([`count_borrowed`]), so a
+//! revoke from a program, or a thread another process starts in this one,
+//! waits for a grace period before it can empty the slot.
 
 use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
+use core::mem::ManuallyDrop;
+use core::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
 
 use radix_abi::errors::Kernel;
 use radix_cap::{CapError, Capability, ObjectId, ObjectKind, Rights, SlotRef, SpaceId};
-use radix_hal::MAX_CPUS;
+use radix_hal::{Cpu, CpuLocal, MAX_CPUS};
 use radix_mm::{Flags, HEAP, Kmalloc};
 
 use super::account::Charge;
@@ -42,6 +53,7 @@ use super::notify::{Notification, NotificationRef};
 use super::process::{ProcessObject, ProcessRef};
 use super::ring::{RingObject, RingRef};
 use super::{Result, cap_error, error};
+use crate::Arch;
 use crate::caps;
 use crate::fs::{FileObject, FileRef};
 use crate::percpu::{Own, PerCpu, Slot};
@@ -286,7 +298,60 @@ pub struct Found {
     /// Whether the capability designates the process the caller said it
     /// holds ([`find_holding`]), which `object` then leaves out.
     pub held: bool,
+    /// Whether `object` is borrowed without a reference of its own
+    /// ([`find_holding`]), which only a [`Lent`] holds.
+    borrowed: bool,
 }
+
+/// Where [`find_holding`] puts what a system call finds, which the call
+/// may borrow without a reference of its own, and gives back when it ends
+/// ([`Lent::end`]). Only this holds a borrowed [`Found`], and lends it out
+/// shared, so nothing can take the uncounted object out of it; a plain
+/// [`Found`], which every other lookup makes, has nothing to give back
+/// and drops as it is. Dropped without `end`, it would forget what it
+/// holds: a leak, never a reference dropped twice.
+#[derive(Default)]
+pub struct Lent(ManuallyDrop<Option<Found>>);
+
+impl Lent {
+    /// Ends the call: gives back what it borrowed ([`give_back`]), then
+    /// drops what it found. The system call ends each call with this, at
+    /// the one place every way out of it passes.
+    #[inline(always)]
+    pub fn end(mut self) {
+        give_back(&mut self.0);
+        // Dropped where it is, rather than moved out to drop.
+        *self.0 = None;
+    }
+}
+
+/// Gives back the object a call borrowed ([`find_holding`]), as the call
+/// ends: one the scheduler counted meanwhile ([`count_borrowed`]) stays
+/// in `found`, to drop that reference as any other `object` does; one it
+/// did not is taken out and forgotten, as nothing counted it.
+#[inline(always)]
+fn give_back(found: &mut Option<Found>) {
+    if let Some(found) = found
+        && found.borrowed
+        && !counted_since()
+    {
+        // Written over without being read or dropped.
+        core::mem::forget(found.object.take());
+    }
+}
+
+/// The file or directory object the thread running on each CPU borrowed
+/// without counting a reference ([`find_holding`]), or null. Only its own
+/// CPU reads or writes it: the thread, with preemption off, and the
+/// scheduler, with interrupts off and the thread's preemption count at
+/// zero or the thread leaving the CPU ([`count_borrowed`]), so plain loads
+/// and stores do.
+static BORROWED: PerCpu<AtomicPtr<FileObject>> =
+    PerCpu::new([const { Slot::new(AtomicPtr::new(core::ptr::null_mut())) }; MAX_CPUS]);
+
+/// Revokes programs asked for that are under way ([`revoking`]): while
+/// there is one, calls count their references.
+static REVOKES: AtomicUsize = AtomicUsize::new(0);
 
 /// The capability in slot `slot` of `cspace`, and the object it
 /// designates if `wanted` says its kind's is needed, found in `place`.
@@ -312,22 +377,50 @@ pub fn find(
     wanted: impl Fn(ObjectKind) -> bool,
     place: &mut Option<Found>,
 ) -> Result<&mut Found> {
-    find_holding(cspace, slot, wanted, None, place)
+    find_in(cspace, slot, wanted, None, place)
 }
 
-/// As [`find`], for a caller that holds a reference to `process`: if this
-/// CPU's cache finds the capability designating it, the lookup takes no
-/// second reference (two atomic read-modify-writes on a line every
-/// thread of the process shares) but says it is the one held, in
-/// [`Found::held`]. A POSIX program's system calls are methods of its own
-/// process.
+/// As [`find`], for a system call of a thread of `process`, which holds a
+/// reference to it and names the slot in its space, `cspace`. What it
+/// finds is only lent: the call uses it and lets it go.
 ///
-/// That is sound because the reference keeps the process's memory where it
-/// is: the cache's weak reference to the same address is to the same
-/// object, which the capability designated at the version the store has
-/// now.
+/// If this CPU's cache finds the capability designating `process`, the
+/// lookup takes no second reference (two atomic read-modify-writes on a
+/// line every thread of the process shares) but says it is the one held,
+/// in [`Found::held`]. A POSIX program's system calls are methods of its
+/// own process. That is sound because the reference keeps the process's
+/// memory where it is: the cache's weak reference to the same address is
+/// to the same object, which the capability designated at the version
+/// the store has now.
+///
+/// If it finds a file or directory capability, and the thread is its
+/// process's only one, and no revoke a program asked for is under way, it
+/// borrows the object without counting a reference either, as Linux's
+/// light descriptor lookup does when no other thread shares the table (ADR
+/// 0414). The capability keeps the store's reference, and nobody but the
+/// thread can empty its slot while the call runs: the process's other
+/// threads would have to exist, a revoke waits for a grace period first
+/// ([`revoking`]), and so does a thread another process starts in this
+/// one (`process::ProcessObject::start`). The borrow is counted before
+/// this CPU passes a quiescent state or switches threads
+/// ([`count_borrowed`]), so a grace period that starts after the version
+/// was read ends only once the borrow holds a reference of its own. All
+/// that is decided in one read section, with preemption off: no quiescent
+/// state can come between the version read and the borrow recorded.
 #[inline(always)]
 pub fn find_holding<'a>(
+    cspace: SpaceId,
+    slot: u32,
+    wanted: impl Fn(ObjectKind) -> bool,
+    process: &ProcessRef,
+    place: &'a mut Lent,
+) -> Result<&'a Found> {
+    find_in(cspace, slot, wanted, Some(process), &mut place.0).map(|found| &*found)
+}
+
+/// [`find`], or [`find_holding`] with the caller's own `process`.
+#[inline(always)]
+fn find_in<'a>(
     cspace: SpaceId,
     slot: u32,
     wanted: impl Fn(ObjectKind) -> bool,
@@ -335,10 +428,11 @@ pub fn find_holding<'a>(
     place: &'a mut Option<Found>,
 ) -> Result<&'a mut Found> {
     let at = SlotRef::new(cspace, slot);
-    let now = caps::version();
     let index = cache_index(at);
     'cached: {
         let Some(cache) = CACHE.own() else { break 'cached };
+        // Read with preemption off, for a borrow: see `find_holding`.
+        let now = caps::version();
         let Some(entry) = &cache[index] else { break 'cached };
         if entry.at != at || entry.version != now {
             break 'cached;
@@ -348,7 +442,14 @@ pub fn find_holding<'a>(
                 if process.is_some_and(|held| core::ptr::eq(kept.as_ptr(), Arc::as_ptr(held)))
                     && wanted(entry.cap.kind()) =>
             {
-                return Ok(place.insert(Found { cap: entry.cap, object: None, held: true }));
+                let found = Found { cap: entry.cap, object: None, held: true, borrowed: false };
+                return Ok(place.insert(found));
+            }
+            Some(Kept::File(file)) if lends(process) && wanted(entry.cap.kind()) => {
+                return Ok(place.insert(borrow(entry.cap, file, false)));
+            }
+            Some(Kept::Directory(dir)) if lends(process) && wanted(entry.cap.kind()) => {
+                return Ok(place.insert(borrow(entry.cap, dir, true)));
             }
             Some(kept) if wanted(entry.cap.kind()) => match kept.upgrade() {
                 Some(object) => Some(object),
@@ -357,13 +458,109 @@ pub fn find_holding<'a>(
             },
             _ => None,
         };
-        return Ok(place.insert(Found { cap: entry.cap, object, held: false }));
+        return Ok(place.insert(Found { cap: entry.cap, object, held: false, borrowed: false }));
     }
     let found = place.insert(fill(at, index)?);
     if !wanted(found.cap.kind()) {
         found.object = None;
     }
     Ok(found)
+}
+
+/// Whether a call of a thread of `process`, its own, may borrow a file
+/// or directory object without counting a reference ([`find_holding`]):
+/// with preemption off, in the read section that found the capability.
+#[inline(always)]
+fn lends(process: Option<&ProcessRef>) -> bool {
+    process.is_some_and(|own| own.thread_count() == 1) && REVOKES.load(Ordering::Relaxed) == 0
+}
+
+/// Borrows the file or directory object `kept` holds, which capability
+/// `cap` in this CPU's cache designates, without counting a reference
+/// (ADR 0414), and records the borrow for the scheduler to count. With
+/// preemption off, in the read section that found the capability at the
+/// store's version ([`find_holding`]).
+#[inline(always)]
+fn borrow(cap: Capability, kept: &Weak<FileObject, Kmalloc>, directory: bool) -> Found {
+    let at = BORROWED.this();
+    debug_assert!(at.load(Ordering::Relaxed).is_null(), "a CPU borrowed two objects at once");
+    at.store(kept.as_ptr().cast_mut(), Ordering::Relaxed);
+    // SAFETY: the cache's weak reference keeps the memory, and the
+    // capability, found in its slot at the store's version, keeps the
+    // store's reference to the object: nobody but this thread empties the
+    // slot before this CPU passes a quiescent state, and before that the
+    // borrow is counted (`find_holding`). The `Arc` made here is dropped
+    // only if it was counted; otherwise it is forgotten (`give_back`).
+    #[allow(unsafe_code)]
+    let file = unsafe { Arc::from_raw_in(kept.as_ptr(), *Weak::allocator(kept)) };
+    let object = if directory { Object::Directory(file) } else { Object::File(file) };
+    Found { cap, object: Some(object), held: false, borrowed: true }
+}
+
+/// Ends the running thread's borrow ([`borrow`]) as its call ends, and
+/// says whether the scheduler counted it meanwhile ([`count_borrowed`]),
+/// on this CPU or one it ran on before.
+#[inline(always)]
+fn counted_since() -> bool {
+    // With interrupts off, the thread stays on this CPU and no quiescent
+    // state can count the borrow in between: a few instructions, where
+    // letting preemption back on would check for a reschedule.
+    let were = Arch::disable_interrupts();
+    let at = BORROWED.this();
+    let borrowed = at.load(Ordering::Relaxed);
+    at.store(core::ptr::null_mut(), Ordering::Relaxed);
+    Arch::restore_interrupts(were);
+    borrowed.is_null()
+}
+
+/// Counts the object the thread running on CPU `cpu` borrowed without
+/// counting a reference, if it did ([`find_holding`], ADR 0414). The
+/// scheduler calls it with interrupts off on that CPU, before the CPU
+/// passes a quiescent state and before it switches threads, while the
+/// thread's preemption count is zero or the thread is leaving the CPU: the
+/// store's reference still keeps the object, so the count is above zero.
+/// Its call drops the reference when it ends ([`give_back`]), on whatever
+/// CPU it then runs.
+#[inline(always)]
+pub fn count_borrowed(cpu: usize) {
+    let at = BORROWED.get(cpu);
+    let borrowed = at.load(Ordering::Relaxed);
+    if !borrowed.is_null() {
+        at.store(core::ptr::null_mut(), Ordering::Relaxed);
+        count(borrowed);
+    }
+}
+
+#[cold]
+#[inline(never)]
+fn count(file: *const FileObject) {
+    // SAFETY: a borrow's object, live as `count_borrowed` says. Counting
+    // takes no memory, so the allocator given is never used.
+    #[allow(unsafe_code)]
+    unsafe {
+        Arc::increment_strong_count_in(file, HEAP.with(Flags::ATOMIC));
+    }
+}
+
+/// Whether the running thread borrows `file` ([`borrow`]).
+fn borrowed_here(file: &FileRef) -> bool {
+    Arch::preempt_disable();
+    let borrowed = BORROWED.this().load(Ordering::Relaxed);
+    crate::sched::preempt_enable();
+    core::ptr::eq(borrowed, Arc::as_ptr(file))
+}
+
+/// Runs `revoke`, a revoke a program asked for, once every call that
+/// borrowed an object without counting a reference has counted one or
+/// ended (ADR 0414): a revoke deletes capabilities in other processes'
+/// spaces, which their calls may be borrowing from. Calls that start while
+/// it runs count their references.
+pub fn revoking<R>(revoke: impl FnOnce() -> R) -> R {
+    REVOKES.fetch_add(1, Ordering::SeqCst);
+    crate::sched::rcu::synchronize();
+    let done = revoke();
+    REVOKES.fetch_sub(1, Ordering::Release);
+    done
 }
 
 /// The object the capability in slot `slot` of `cspace` designates, if
@@ -403,7 +600,7 @@ fn fill(at: SlotRef, index: usize) -> Result<Found> {
     // be the last reference to an object's memory.
     let before = CACHE.with_own(|cache| cache[index].replace(kept));
     drop(before);
-    Ok(Found { cap, object, held: false })
+    Ok(Found { cap, object, held: false, borrowed: false })
 }
 
 /// The capability in slot `slot` of `cspace`, if it may be used on a
@@ -515,6 +712,12 @@ pub fn released(kept: Option<Recorded>, by: Option<&super::UserThread>) {
     let Some(Recorded { cached, object, charge }) = kept else { return };
     if cached {
         caps::mark_stale();
+    }
+    if cfg!(debug_assertions)
+        && let (Some(_), Object::File(file) | Object::Directory(file)) = (by, &object)
+    {
+        // The thread's own call never empties the slot it borrows from.
+        assert!(!borrowed_here(file), "a call released the object it borrowed");
     }
     match object {
         Object::Endpoint(endpoint) => endpoint.close(),
