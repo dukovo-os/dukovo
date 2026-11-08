@@ -11,6 +11,7 @@ use std::fs;
 use std::path::Path;
 
 use crate::disks;
+use crate::windows::{self, Windows};
 
 /// Where the kernel lists disks and partitions.
 const BLOCK: &str = "/kernel/block";
@@ -45,6 +46,8 @@ pub struct DiskInfo {
     /// Its partition table, as rdisk(8) reads it, if it has one: what the
     /// free-space layout and the rdisk screen work from.
     pub table: Option<disk::Table>,
+    /// Windows on it, if it is there, for the layout next to it.
+    pub windows: Option<Windows>,
 }
 
 /// What a disk holds, as far as its partitions' kinds tell.
@@ -138,6 +141,10 @@ pub struct Machine {
     pub layouts: Vec<(String, String)>,
     /// The time zones, by name, sorted, `UTC` first.
     pub zones: Vec<String>,
+    /// Whether the firmware's boot entries can be made: the computer
+    /// started by UEFI and the kernel reaches its variables, as efiboot(8)
+    /// lists them. Installing next to Windows needs one.
+    pub boot_entries: bool,
 }
 
 impl Machine {
@@ -150,6 +157,9 @@ impl Machine {
             // A disk whose table cannot be read is offered as an empty one,
             // which only the guided layout, erasing it, can use.
             disk.table = disks::read_table(&disk.name, disk.bytes, disk.sector_size).ok().flatten();
+            if disk.holds() == Holds::Windows && !disk.stick {
+                disk.windows = windows::find(disk);
+            }
         }
         Machine {
             disks,
@@ -157,8 +167,21 @@ impl Machine {
             memory: read_memory(Path::new(MEMINFO)),
             layouts: layouts(),
             zones: read_zones(Path::new(ZONES)),
+            boot_entries: boot_entries(),
         }
     }
+}
+
+/// Whether efiboot(8) lists the firmware's boot entries: it fails when
+/// the computer started by a BIOS, or the firmware's variables are out of
+/// the kernel's reach.
+#[must_use]
+pub fn boot_entries() -> bool {
+    std::process::Command::new("/system/commands/efiboot")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
 }
 
 /// What the kernel says of `name` in its file `attribute` under `block`,
@@ -184,6 +207,9 @@ pub fn read_disk(name: &str) -> Result<DiskInfo, String> {
         .find(|disk| disk.name == name)
         .ok_or_else(|| format!("there is no disk {name}: lsblk lists them"))?;
     disk.table = disks::read_table(&disk.name, disk.bytes, disk.sector_size)?;
+    if disk.holds() == Holds::Windows {
+        disk.windows = windows::find(&disk);
+    }
     Ok(disk)
 }
 
@@ -219,6 +245,7 @@ fn read_disks(block: &Path, stick: Option<&str>) -> Vec<DiskInfo> {
                     .and_then(|size| size.parse().ok())
                     .unwrap_or(512),
                 table: None,
+                windows: None,
             }
         })
         // A disk of no size is a card reader with no card in it.

@@ -114,6 +114,23 @@ disk-partitions = { $count ->
 disk-how = How should it be set up?
 disk-guided = Erase the disk and use the guided layout
 disk-guided-note = recommended
+disk-beside = Install next to Windows
+disk-beside-note = shrinks Windows; a menu picks at startup
+disk-beside-none = no Windows on { $disk }
+disk-beside-refused = Windows can't be shrunk yet: see below
+disk-beside-bios = needs the stick started by UEFI
+disk-beside-full = Windows has too little free space: { $size } to give, and Dukovo needs 20 GiB
+disk-space = Space for Dukovo (GiB)
+disk-space-note = { $least } to { $most }; Windows keeps the rest of its { $size } and uses { $used }
+disk-space-range = Give Dukovo between { $least } and { $most } GiB, so that Windows keeps 10 GiB free.
+disk-space-root = Leave at least { $gib } GiB beyond the swap for Dukovo itself.
+disk-windows-ready = ✓ BitLocker is off on C:   ✓ Fast Startup is off   ✓ Windows was shut down fully
+disk-windows-bitlocker = BitLocker encrypts Windows (C:). Turn BitLocker off in Windows' settings, let it finish decrypting, then start the installer again.
+disk-windows-fast-startup = Windows was hibernated, or shut down with Fast Startup, so it still holds C: open. Turn Fast Startup off in Windows' power options (Choose what the power buttons do), shut Windows down, then start the installer again.
+disk-windows-dirty = Windows did not finish with C: and must check it first. In Windows, run chkdsk C: /f, restart, shut Windows down, then start the installer again.
+disk-windows-damaged = The check of C: found a problem ({ $problem }). In Windows, run chkdsk C: /f, restart, shut Windows down, then start the installer again.
+disk-windows-other = C: can't be shrunk: { $why }.
+disk-windows-bios = This computer started the stick by BIOS, and Dukovo needs a UEFI boot entry next to Windows. Choose the stick's UEFI entry in the firmware's boot menu.
 disk-free = Use the free space and keep what is there
 disk-free-note = { $size } free in one piece
 disk-manual = Manual: choose the partitions yourself
@@ -230,6 +247,11 @@ review-install = Install
 review-release = Dukovo { $version }, the stick's signed system release
 review-grub = GRUB for UEFI and BIOS
 review-grub-uefi = GRUB for UEFI (the disk has no BIOS boot partition)
+review-grub-beside = GRUB for UEFI on Dukovo boot and a UEFI boot entry "Dukovo"; Windows' boot files are not touched
+review-shrink = Shrink
+review-shrink-windows = Windows (C:) on { $disk } from { $from } to { $to } ({ $used } in use; its files are kept)
+review-keep = Keep
+review-boot-menu = A boot menu at startup chooses Dukovo or Windows (Windows Boot Manager found on { $partition })
 review-settings = Settings
 review-dhcp = { $card } DHCP
 review-keyboard = keyboard { $layout }
@@ -244,12 +266,13 @@ review-type-change = Type { $disk } in the box to confirm the changes to it.
 
 step-release = Checking the signatures of the system release
 step-disk = Checking { $disk }
+step-shrink = Shrinking Windows (C:) on { $disk }
 step-partition = Partitioning { $disk }
 step-format = Making the filesystems
 step-subvolumes = Making the subvolumes
 step-copy = Copying Dukovo { $version } into its slot, checking every file
 step-settings = Writing the settings and accounts
-step-grub = Installing GRUB for UEFI and BIOS
+step-grub = Installing GRUB
 step-save = Saving the answers and the install log
 installed-line = Dukovo { $version } is installed on { $disk }. Remove the install stick, then restart.
 done-saved = Your answers were saved as /system/settings/install/answers.json.
@@ -276,6 +299,7 @@ help-network =
 help-disk =
     The guided layout erases the disk and makes a BIOS boot partition, an EFI system partition, swap, and the Dukovo root on Btrfs, which starts under UEFI and a BIOS alike.
     Use the free space keeps every partition on the disk and makes the same ones in its largest free space. It is for a disk of data: a disk that starts a system already needs Manual.
+    Install next to Windows checks that BitLocker and Fast Startup are off and that Windows was shut down fully, shrinks Windows (C:) by the space you give Dukovo, keeping its files, and puts Dukovo in that space with its own small boot partition. A menu at startup chooses Dukovo or Windows. Windows keeps 10 GiB free, and Windows' own boot files are not touched.
     Manual opens the rdisk screen, where you choose every partition yourself.
     Other disks stay as they are. The install stick cannot be chosen.
 help-rdisk =

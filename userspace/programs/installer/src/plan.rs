@@ -6,7 +6,9 @@
 //! disk it touches: the partitions it makes, formats and takes out. The
 //! guided layout is a new table; the free-space layout adds Dukovo's
 //! partitions in the largest free space of a disk that keeps the rest;
-//! the manual layout is the changes made on the rdisk screen.
+//! the layout next to Windows shrinks Windows' partition, once its volume
+//! is shrunk, and adds them in the space it gives back (ADR 0314); the
+//! manual layout is the changes made on the rdisk screen.
 //!
 //! [`after`] applies a change to the disk's table in memory, with the
 //! disk engine rdisk(8) itself uses, from the layout file
@@ -15,11 +17,12 @@
 //! show is the table rdisk writes. Every new partition's place is given
 //! in sectors, so nothing is left for rdisk to choose.
 
-use disk::layout::{Layout as LayoutFile, Part as LayoutPart};
+use disk::layout::{Layout as LayoutFile, Part as LayoutPart, Resize};
 use disk::{End, New, Rng, Scheme, Table, types};
 
-use crate::answers::{Change, Format, Part, Role};
+use crate::answers::{Change, Format, Part, Role, Shrink};
 use crate::machine::DiskInfo;
+use crate::windows::Windows;
 
 /// A mebibyte.
 const MIB: u64 = 1 << 20;
@@ -42,6 +45,24 @@ pub const ROOM: u64 = 1 << 30;
 /// What new partitions may lose to rounding up to whole MiB, at most one
 /// MiB each, as each starts on one.
 const ALIGNMENT_SLACK: u64 = 4 * MIB;
+
+/// A gibibyte.
+const GIB: u64 = 1 << 30;
+
+/// The least space Dukovo takes next to Windows (ADR 0314).
+pub const BESIDE_LEAST: u64 = 20 * GIB;
+
+/// What Windows keeps free when it is shrunk, beyond what its files use,
+/// for its updates and its page file.
+pub const WINDOWS_FREE: u64 = 10 * GIB;
+
+/// The least Dukovo's root gets next to Windows, beyond its boot
+/// partition and swap.
+pub const BESIDE_ROOT_LEAST: u64 = 8 * GIB;
+
+/// The name of Dukovo's own EFI system partition next to Windows', which
+/// it leaves as it is.
+pub const DUKOVO_BOOT: &str = "Dukovo boot";
 
 /// The partitions an install makes before the root, with swap of
 /// `swap_gib` if any: the BIOS boot partition, the EFI system partition
@@ -73,9 +94,9 @@ pub fn needed(swap_gib: u32, root_bytes: u64) -> u64 {
 pub fn guided(disk: &DiskInfo, swap_gib: u32) -> Result<Change, String> {
     let mut table = Table::new(Scheme::Gpt, disk.sector_size, disk.sectors(), &mut Rng::seeded(1))
         .map_err(|err| format!("{}: {err}", disk.name))?;
-    let partitions = place(&mut table, &before_root(swap_gib), None)
+    let partitions = place(&mut table, &before_root(swap_gib), None, End::Rest)
         .map_err(|why| format!("{}: {why}", disk.name))?;
-    Ok(Change { disk: disk.name.clone(), new_table: true, delete: Vec::new(), partitions })
+    Ok(Change { disk: disk.name.clone(), new_table: true, partitions, ..Change::default() })
 }
 
 /// Why the free-space layout cannot use `disk`, if it cannot: it needs a
@@ -143,15 +164,109 @@ pub fn free_room(disk: &DiskInfo, swap_gib: u32, root_bytes: u64) -> Result<(u64
 pub fn free_space(disk: &DiskInfo, swap_gib: u32, root_bytes: u64) -> Result<Change, String> {
     let (start, _) = free_room(disk, swap_gib, root_bytes)?;
     let mut table = disk.table.clone().ok_or("no table")?;
-    let partitions = place(&mut table, &before_root(swap_gib), Some(start))
+    let partitions = place(&mut table, &before_root(swap_gib), Some(start), End::Rest)
         .map_err(|why| format!("{}: {why}", disk.name))?;
-    Ok(Change { disk: disk.name.clone(), new_table: false, delete: Vec::new(), partitions })
+    Ok(Change { disk: disk.name.clone(), partitions, ..Change::default() })
 }
 
-/// Adds `parts` to `table`, then the root in the rest of the free space
-/// the last one ends in: from `start` on, one after another, or where the
-/// table's first free space lets them. Returns them as the change lists
-/// new partitions, each with its place.
+/// The space Dukovo can take next to Windows on `disk`, the least and the
+/// most, in bytes, when `boot_entries` says the firmware's boot entries
+/// can be made: Windows keeps [`WINDOWS_FREE`] beyond what its files use,
+/// and never shrinks below the smallest its volume can be.
+///
+/// # Errors
+///
+/// Why Dukovo cannot go next to Windows there, in words the screens
+/// show: no Windows, a volume that cannot be shrunk now, no boot entries,
+/// or too little room.
+pub fn beside_room(disk: &DiskInfo, boot_entries: bool) -> Result<(u64, u64), String> {
+    let Some(windows) = &disk.windows else {
+        return Err(format!("{} has no Windows that starts by UEFI", disk.name));
+    };
+    if let Some(refused) = &windows.refused {
+        return Err(format!("Windows on {} cannot be shrunk now: {refused}", disk.name));
+    }
+    if !boot_entries {
+        return Err("this computer did not start the stick by UEFI, which the boot entry for \
+                    Dukovo next to Windows needs: start it by UEFI from the firmware's boot menu"
+            .into());
+    }
+    let keeps = (windows.used + WINDOWS_FREE).max(windows.smallest);
+    let most = windows.bytes.saturating_sub(keeps) / MIB * MIB;
+    if most < BESIDE_LEAST {
+        return Err(format!(
+            "Windows on {} has {} it can give, and Dukovo needs {} while Windows keeps {} free",
+            disk.name,
+            disk::size::human(most),
+            disk::size::human(BESIDE_LEAST),
+            disk::size::human(WINDOWS_FREE)
+        ));
+    }
+    Ok((BESIDE_LEAST, most))
+}
+
+/// The layout next to Windows on `disk`: Windows' partition shrunk by
+/// `bytes`, kept on a whole MiB, and in the space it gives back Dukovo's
+/// own EFI system partition, [`DUKOVO_BOOT`], swap of `swap_gib` if any,
+/// and the root in the rest, which must hold `root_bytes`. Windows' own
+/// EFI system partition, its recovery partition and the rest are kept as
+/// they are; no BIOS boot partition is made, as Windows starts by UEFI.
+///
+/// # Errors
+///
+/// Why not: Dukovo cannot go next to Windows there ([`beside_room`]),
+/// `bytes` is outside the room, or the root would be too small.
+pub fn beside(
+    disk: &DiskInfo,
+    boot_entries: bool,
+    swap_gib: u32,
+    bytes: u64,
+    root_bytes: u64,
+) -> Result<Change, String> {
+    let (least, most) = beside_room(disk, boot_entries)?;
+    let windows: &Windows = disk.windows.as_ref().ok_or("no Windows")?;
+    if !(least..=most).contains(&bytes) {
+        return Err(format!(
+            "give Dukovo between {} and {} GiB, so that Windows keeps {} GiB free",
+            least / GIB,
+            most / GIB,
+            WINDOWS_FREE / GIB
+        ));
+    }
+    let around = EFI_BYTES + (u64::from(swap_gib) << 30) + ALIGNMENT_SLACK;
+    if bytes < around + BESIDE_ROOT_LEAST.max(root_bytes) {
+        return Err(format!(
+            "leave at least {} GiB beyond the swap for Dukovo itself",
+            (EFI_BYTES + ALIGNMENT_SLACK + BESIDE_ROOT_LEAST.max(root_bytes)).div_ceil(GIB)
+        ));
+    }
+    let mut table = disk.table.clone().ok_or("no table")?;
+    let was = table.get(windows.partition).ok_or("Windows' partition is gone")?.clone();
+    let sector = u64::from(table.sector_size);
+    let sectors = (windows.bytes - bytes) / MIB * (MIB / sector);
+    table.resize(windows.partition, sectors).map_err(|err| format!("{}: {err}", disk.name))?;
+    let start = (was.first + sectors).div_ceil(table.alignment()) * table.alignment();
+    let mut parts = vec![(Role::Efi, EFI_BYTES, DUKOVO_BOOT)];
+    if swap_gib > 0 {
+        parts.push((Role::Swap, u64::from(swap_gib) << 30, "Swap"));
+    }
+    // The root ends where Windows' partition did: Dukovo takes the space
+    // asked for, and free space the disk had elsewhere stays free.
+    let partitions = place(&mut table, &parts, Some(start), End::Last(was.last))
+        .map_err(|why| format!("{}: {why}", disk.name))?;
+    Ok(Change {
+        disk: disk.name.clone(),
+        partitions,
+        shrink: Some(Shrink { number: windows.partition, sectors }),
+        ..Change::default()
+    })
+}
+
+/// Adds `parts` to `table`, then the root to `root_end`: in the rest of
+/// the free space the last one ends in, or to a sector. They go from
+/// `start` on, one after another, or where the table's first free space
+/// lets them. Returns them as the change lists new partitions, each with
+/// its place.
 ///
 /// The EFI system partition takes number 2, [`ESP_NUMBER`], for a BIOS's
 /// GRUB to find; if the table has a partition 2 already, the BIOS boot
@@ -161,6 +276,7 @@ fn place(
     table: &mut Table,
     parts: &[(Role, u64, &'static str)],
     start: Option<u64>,
+    root_end: End,
 ) -> Result<Vec<Part>, String> {
     let sector = u64::from(table.sector_size);
     let align = table.alignment();
@@ -170,7 +286,7 @@ fn place(
     let bios = table.get(ESP_NUMBER).is_none();
     let parts = parts.iter().filter(|(role, _, _)| bios || *role != Role::BiosBoot);
     for &(role, bytes, name) in parts.chain(std::iter::once(&root)) {
-        let end = if role == Role::Root { End::Rest } else { End::Sectors(bytes.div_ceil(sector)) };
+        let end = if role == Role::Root { root_end } else { End::Sectors(bytes.div_ceil(sector)) };
         let kind = types::parse(type_alias(role, None), table.scheme).ok_or("no such type")?;
         let number = match role {
             Role::Efi if bios => ESP_NUMBER,
@@ -279,11 +395,17 @@ pub fn layout(disk: &DiskInfo, change: &Change) -> LayoutFile {
             attributes: Vec::new(),
         });
     }
+    let resize = change
+        .shrink
+        .iter()
+        .map(|shrink| Resize { number: shrink.number, size: format!("{}s", shrink.sectors) })
+        .collect();
     LayoutFile {
         table: scheme.name().to_string(),
         uuid: None,
         keep: kept.is_some(),
         delete,
+        resize,
         partitions,
     }
 }
@@ -340,6 +462,7 @@ mod tests {
             stick: false,
             sector_size: 512,
             table,
+            windows: None,
         }
     }
 
@@ -417,6 +540,93 @@ mod tests {
         );
     }
 
+    /// A 128 GiB disk as Windows lays it out: its EFI system partition,
+    /// its reserved partition, C: of 100 GiB, 41 GiB full, and recovery
+    /// after it, with free space at the end.
+    fn windows_disk() -> DiskInfo {
+        let mut table =
+            Table::new(Scheme::Gpt, 512, (128 << 30) / 512, &mut Rng::seeded(2)).unwrap();
+        for (alias, mib) in [
+            ("efi", 100),
+            ("windows-reserved", 16),
+            ("windows-data", 100 << 10),
+            ("windows-recovery", 600),
+        ] {
+            let kind = types::parse(alias, Scheme::Gpt).unwrap();
+            table.add(New::of(kind, End::Sectors(mib << 11)), &mut Rng::seeded(2)).unwrap();
+        }
+        let mut disk = disk("nvme0n1", 128, Some(table));
+        disk.windows = Some(Windows {
+            partition: 3,
+            bytes: 100 << 30,
+            used: 41 << 30,
+            smallest: 42 << 30,
+            refused: None,
+            boot_manager: 1,
+        });
+        disk
+    }
+
+    #[test]
+    fn next_to_windows_shrinks_it_and_fills_the_space_it_gives() {
+        let disk = windows_disk();
+        // Windows keeps 10 GiB free beyond the 41 GiB its files use.
+        assert_eq!(beside_room(&disk, true).unwrap(), (20 << 30, 49 << 30));
+        let change = beside(&disk, true, 2, 30 << 30, 2 << 30).unwrap();
+        assert!(!change.new_table && change.delete.is_empty());
+        assert_eq!(roles(&change), [Role::Efi, Role::Swap, Role::Root]);
+        let names: Vec<_> = change.partitions.iter().map(|p| p.name.as_deref()).collect();
+        assert_eq!(names, [Some(DUKOVO_BOOT), Some("Swap"), Some("Dukovo root")]);
+        let numbers: Vec<u32> = change.partitions.iter().map(|part| part.number).collect();
+        assert_eq!(numbers, [5, 6, 7], "after Windows' own four");
+        let sectors = (70 << 30) / 512;
+        assert_eq!(change.shrink, Some(Shrink { number: 3, sectors }));
+        let before = disk.table.as_ref().unwrap();
+        let table = after(&disk, &change).unwrap();
+        check_bios_boot("nvme0n1", &table).unwrap();
+        let c = table.get(3).unwrap();
+        assert_eq!((c.first, c.sectors()), (before.get(3).unwrap().first, sectors));
+        for kept in [1, 2, 4] {
+            assert_eq!(table.get(kept), before.get(kept), "partition {kept} is kept as it was");
+        }
+        let boot = table.get(5).unwrap();
+        assert_eq!(boot.first, c.last + 1, "Dukovo's boot partition starts where C: now ends");
+        assert_eq!(boot.sectors(), EFI_BYTES / 512);
+        assert_eq!(
+            table.get(7).unwrap().last,
+            before.get(3).unwrap().last,
+            "the root ends where C: did, and the free space at the end stays free"
+        );
+        let file = layout(&disk, &change);
+        assert!(file.keep);
+        assert_eq!(file.resize.len(), 1);
+        assert_eq!((file.resize[0].number, file.resize[0].size.as_str()), (3, "146800640s"));
+        // No swap: the root takes what the swap would have.
+        let change = beside(&disk, true, 0, 20 << 30, 2 << 30).unwrap();
+        assert_eq!(roles(&change), [Role::Efi, Role::Root]);
+    }
+
+    #[test]
+    fn next_to_windows_says_why_not() {
+        let disk = windows_disk();
+        let range = beside(&disk, true, 2, 60 << 30, 2 << 30).unwrap_err();
+        assert!(range.contains("between 20 and 49 GiB"), "{range}");
+        let root = beside(&disk, true, 16, 20 << 30, 2 << 30).unwrap_err();
+        assert!(root.contains("beyond the swap"), "{root}");
+        let bios = beside(&disk, false, 2, 30 << 30, 2 << 30).unwrap_err();
+        assert!(bios.contains("did not start the stick by UEFI"), "{bios}");
+        let mut full = windows_disk();
+        full.windows.as_mut().unwrap().used = 85 << 30;
+        let full = beside_room(&full, true).unwrap_err();
+        assert!(full.contains("has 5 GiB it can give"), "{full}");
+        let mut refused = windows_disk();
+        refused.windows.as_mut().unwrap().refused = Some(crate::windows::Refused::Dirty);
+        assert!(beside_room(&refused, true).unwrap_err().contains("cannot be shrunk now"));
+        let mut none = windows_disk();
+        none.windows = None;
+        assert!(beside_room(&none, true).unwrap_err().contains("has no Windows"));
+    }
+
     #[test]
     fn a_manual_change_formats_takes_out_and_makes() {
         let mut table = with_one(8, "linux");
@@ -447,6 +657,7 @@ mod tests {
                     format: None,
                 },
             ],
+            ..Change::default()
         };
         let file = layout(&two, &change);
         assert_eq!(file.delete, [2, 1], "the EFI partition is made again with its type");

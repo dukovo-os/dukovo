@@ -16,11 +16,12 @@ use std::time::{Duration, Instant};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use super::rdisk::{self, FormField, PartForm, Rdisk};
-use crate::answers::{self, Account, Answers, Disk, Fixed, Layout, Network, Role};
+use crate::answers::{self, Account, Answers, Change, Disk, Fixed, Layout, Network, Role};
 use crate::log::{Event, Step};
 use crate::machine::{Holds, Machine};
 use crate::messages::{self, Arg};
 use crate::plan;
+use crate::windows::{Refused, Windows};
 
 /// A page of the installer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -114,6 +115,10 @@ pub enum Id {
     Disk(usize),
     /// Disk: the guided layout.
     Guided,
+    /// Disk: the layout next to Windows.
+    Beside,
+    /// Disk: the space Dukovo takes next to Windows, in GiB.
+    Space,
     /// Disk: the free-space layout.
     Free,
     /// Disk: the manual layout, on the rdisk screen.
@@ -369,7 +374,11 @@ pub struct App {
     pub disk: Option<usize>,
     /// The swap's size in GiB, as typed.
     pub swap: String,
-    /// How the disk is laid out: guided, free space or manual.
+    /// The space Dukovo takes next to Windows, in GiB, as typed: a
+    /// suggestion when the layout is first chosen.
+    pub space: String,
+    /// How the disk is laid out: guided, next to Windows, free space or
+    /// manual.
     pub layout: Layout,
     /// The rdisk screen, once the manual layout has shown it.
     pub rdisk: Option<Rdisk>,
@@ -452,6 +461,7 @@ impl App {
             zone,
             disk,
             swap: swap.to_string(),
+            space: String::new(),
             layout: Layout::Guided,
             rdisk: None,
             name: String::new(),
@@ -687,6 +697,9 @@ impl App {
                 "disk-guided",
                 &messages::text("disk-guided-note"),
             ),
+        ]);
+        rows.extend(self.beside_rows());
+        rows.extend([
             Row::Field(Field {
                 id: Id::Free,
                 kind: Kind::Choice(self.layout == Layout::Free),
@@ -752,6 +765,103 @@ impl App {
             .ok_or_else(|| messages::text("disk-none"))?;
         let (_, sectors) = plan::free_room(disk, self.swap_gib(), self.root_bytes())?;
         Ok(sectors * u64::from(disk.sector_size))
+    }
+
+    /// The rows of the layout next to Windows: its choice, and under it
+    /// why Windows cannot be shrunk now, if it cannot, or once it is
+    /// chosen, the space for Dukovo and the checks Windows passed.
+    fn beside_rows(&self) -> Vec<Row> {
+        let room = self.beside_room();
+        let note = match &room {
+            Ok(_) => messages::text("disk-beside-note"),
+            Err(why) => why.clone(),
+        };
+        let mut rows = vec![Row::Field(Field {
+            id: Id::Beside,
+            kind: Kind::Choice(self.layout == Layout::Beside),
+            label: messages::text("disk-beside"),
+            note,
+            enabled: room.is_ok(),
+        })];
+        let Some(windows) = self.windows() else { return rows };
+        if let Some(refused) = &windows.refused {
+            rows.push(Row::Text(refusal(refused), Look::Warning));
+        } else if !self.machine.boot_entries {
+            rows.push(Row::Text(messages::text("disk-windows-bios"), Look::Warning));
+        } else if let (Ok((least, most)), Layout::Beside) = (room, self.layout) {
+            let field = input(Id::Space, "disk-space", &self.space, false, "");
+            let Row::Field(mut field) = field else { return rows };
+            field.note = messages::with(
+                "disk-space-note",
+                &[
+                    ("least", Arg::Text(&size(least))),
+                    ("most", Arg::Text(&size(most))),
+                    ("size", Arg::Text(&size(windows.bytes))),
+                    ("used", Arg::Text(&size(windows.used))),
+                ],
+            );
+            rows.push(Row::Field(field));
+            rows.push(Row::Text(messages::text("disk-windows-ready"), Look::Good));
+        }
+        rows
+    }
+
+    /// Windows on the disk chosen, if it is there.
+    fn windows(&self) -> Option<&Windows> {
+        self.disk.and_then(|i| self.machine.disks.get(i)).and_then(|disk| disk.windows.as_ref())
+    }
+
+    /// The space Dukovo can take next to Windows on the disk chosen, the
+    /// least and the most, in bytes, or why it cannot go there, as the
+    /// layout's note says it.
+    fn beside_room(&self) -> Result<(u64, u64), String> {
+        let disk = self
+            .disk
+            .and_then(|i| self.machine.disks.get(i))
+            .ok_or_else(|| messages::text("disk-none"))?;
+        let Some(windows) = &disk.windows else {
+            return Err(messages::with("disk-beside-none", &[("disk", Arg::Text(&disk.name))]));
+        };
+        if windows.refused.is_some() {
+            return Err(messages::text("disk-beside-refused"));
+        }
+        if !self.machine.boot_entries {
+            return Err(messages::text("disk-beside-bios"));
+        }
+        plan::beside_room(disk, true).map_err(|_| {
+            let keeps = (windows.used + plan::WINDOWS_FREE).max(windows.smallest);
+            let gives = size(windows.bytes.saturating_sub(keeps));
+            messages::with("disk-beside-full", &[("size", Arg::Text(&gives))])
+        })
+    }
+
+    /// The space Dukovo is given next to Windows, in GiB, as typed.
+    fn space_gib(&self) -> Option<u32> {
+        self.space.trim().parse().ok()
+    }
+
+    /// Checks the space typed for Dukovo next to Windows, as the layout
+    /// will use it: within the room Windows gives, and holding Dukovo's
+    /// boot partition, the swap and a root of 8 GiB at least.
+    fn check_space(&self) -> Result<(), String> {
+        let (least, most) = self.beside_room()?;
+        let gib = |bytes: u64| (bytes >> 30).to_string();
+        let range = || {
+            messages::with(
+                "disk-space-range",
+                &[("least", Arg::Text(&gib(least))), ("most", Arg::Text(&gib(most)))],
+            )
+        };
+        let bytes = u64::from(self.space_gib().ok_or_else(range)?) << 30;
+        if !(least..=most).contains(&bytes) {
+            return Err(range());
+        }
+        let beyond = plan::EFI_BYTES + plan::BESIDE_ROOT_LEAST.max(self.root_bytes()) + (1 << 30);
+        if bytes < (u64::from(self.swap_gib()) << 30) + beyond {
+            return Err(messages::with("disk-space-root", &[("gib", Arg::Text(&gib(beyond)))]));
+        }
+        let disk = self.disk.and_then(|i| self.machine.disks.get(i)).ok_or("no disk")?;
+        plan::beside(disk, true, self.swap_gib(), bytes, self.root_bytes()).map(drop)
     }
 
     /// The swap asked for, in GiB, within what the installer makes.
@@ -823,6 +933,7 @@ impl App {
         let label = |id: &str, rest: String| format!("{:<10}{rest}", messages::text(id));
         let (mut rows, bios_boot) = match answers.disk.layout {
             Layout::Manual => self.review_changes(&answers.disk.changes, target),
+            Layout::Beside => (self.review_beside(answers, target), false),
             layout => self.review_layout(layout, answers.disk.swap_gib, target),
         };
         rows.push(Row::Text(
@@ -836,7 +947,11 @@ impl App {
             ),
             Look::Plain,
         ));
-        let grub = if bios_boot { "review-grub" } else { "review-grub-uefi" };
+        let grub = match answers.disk.layout {
+            Layout::Beside => "review-grub-beside",
+            _ if bios_boot => "review-grub",
+            _ => "review-grub-uefi",
+        };
         rows.push(Row::Text(format!("{:10}{}", "", messages::text(grub)), Look::Plain));
         let mut settings = vec![answers.hostname().to_string()];
         for (card, network) in &answers.network {
@@ -907,22 +1022,69 @@ impl App {
                 Look::Plain,
             ),
         ];
-        let sector = u64::from(disk.sector_size);
-        for part in change.map_or_else(|_| Vec::new(), |change| change.partitions) {
-            let bytes = part.sectors.unwrap_or_default() * sector;
-            rows.push(Row::Text(
-                format!(
-                    "{:12}{}  {:<16}{:>9}   {}",
-                    "",
-                    part.number,
-                    part.name.clone().unwrap_or_default(),
-                    size(bytes),
-                    holds_what(part.role, part.format)
-                ),
-                Look::Plain,
-            ));
+        if let Ok(change) = change {
+            rows.extend(made_rows(&change, disk.sector_size));
         }
         (rows, true)
+    }
+
+    /// The review's lines of the layout next to Windows on `target`: the
+    /// shrink of Windows' partition, the partitions kept, each partition
+    /// made, and the boot menu that chooses between them.
+    fn review_beside(&self, answers: &Answers, target: &str) -> Vec<Row> {
+        let label = |id: &str, rest: String| format!("{:<10}{rest}", messages::text(id));
+        let Some(disk) = self.machine.disks.iter().find(|disk| disk.name == target) else {
+            return Vec::new();
+        };
+        let (Some(windows), Some(table)) = (&disk.windows, &disk.table) else {
+            return Vec::new();
+        };
+        let space = u64::from(answers.disk.space_gib.unwrap_or(0)) << 30;
+        let Ok(change) = plan::beside(
+            disk,
+            self.machine.boot_entries,
+            answers.disk.swap_gib,
+            space,
+            self.root_bytes(),
+        ) else {
+            return Vec::new();
+        };
+        let sector = u64::from(disk.sector_size);
+        let to = change.shrink.map_or(windows.bytes, |shrink| shrink.sectors * sector);
+        let shrink = messages::with(
+            "review-shrink-windows",
+            &[
+                ("disk", Arg::Text(target)),
+                ("from", Arg::Text(&size(windows.bytes))),
+                ("to", Arg::Text(&size(to))),
+                ("used", Arg::Text(&size(windows.used))),
+            ],
+        );
+        let kept: Vec<String> = table
+            .partitions
+            .iter()
+            .filter(|p| p.number != windows.partition)
+            .map(|p| if p.name.is_empty() { p.kind.name().to_string() } else { p.name.clone() })
+            .collect();
+        let manager = crate::disks::partition(target, windows.boot_manager);
+        let mut rows = vec![
+            Row::Text(label("review-shrink", shrink), Look::Warning),
+            Row::Text(label("review-keep", kept.join(", ")), Look::Good),
+            Row::Text(
+                label("review-create", messages::with("review-on", &[("disk", Arg::Text(target))])),
+                Look::Plain,
+            ),
+        ];
+        rows.extend(made_rows(&change, disk.sector_size));
+        rows.push(Row::Text(
+            format!(
+                "{:10}{}",
+                "",
+                messages::with("review-boot-menu", &[("partition", Arg::Text(&manager))])
+            ),
+            Look::Plain,
+        ));
+        rows
     }
 
     /// The review's lines of the manual layout's `changes`: each disk
@@ -997,6 +1159,14 @@ impl App {
         (rows, bios_boot)
     }
 
+    /// The space suggested for Dukovo next to Windows, in GiB: 60, within
+    /// the room Windows gives.
+    fn suggested_space(&self) -> String {
+        const SUGGESTED: u64 = 60 << 30;
+        self.beside_room()
+            .map_or(String::new(), |(least, most)| (SUGGESTED.clamp(least, most) >> 30).to_string())
+    }
+
     /// The size the guided layout needs: its first partitions, the swap
     /// asked for, the release and room to spare.
     fn needed(&self) -> u64 {
@@ -1058,6 +1228,10 @@ impl App {
                     (Some(rdisk), Layout::Manual) => rdisk.changes(&self.machine),
                     _ => Vec::new(),
                 },
+                space_gib: match self.layout {
+                    Layout::Beside => Some(self.space_gib().unwrap_or(0)),
+                    _ => None,
+                },
             },
             hostname: Some(self.hostname.trim().to_string()),
             time_zone: Some(self.machine.zones[self.zone].clone()),
@@ -1099,6 +1273,10 @@ impl App {
                 Layout::Manual => return Ok(()),
                 Layout::Free => {
                     self.free_room()?;
+                    &["disk"]
+                }
+                Layout::Beside => {
+                    self.check_space()?;
                     &["disk"]
                 }
                 _ => &["disk"],
@@ -1265,6 +1443,7 @@ impl App {
             Id::Dns => &mut self.dns,
             Id::Hostname => &mut self.hostname,
             Id::Swap => &mut self.swap,
+            Id::Space => &mut self.space,
             Id::Name => &mut self.name,
             Id::User => &mut self.user,
             Id::Password => &mut self.password,
@@ -1366,6 +1545,12 @@ impl App {
             }
             Id::KeepHashes => self.keep_hashes = !self.keep_hashes,
             Id::Guided => self.layout = Layout::Guided,
+            Id::Beside => {
+                self.layout = Layout::Beside;
+                if self.space.is_empty() {
+                    self.space = self.suggested_space();
+                }
+            }
             Id::Free => self.layout = Layout::Free,
             Id::Manual => self.layout = Layout::Manual,
             _ => {}
@@ -1782,6 +1967,46 @@ fn holds(holds: Holds, partitions: usize) -> String {
 
 /// What a partition for `role` holds, with `format` for data, as the
 /// review says it.
+/// The review's lines of each partition `change` makes, on a disk of
+/// `sector_size`-byte sectors: its number, name, size and what it holds.
+fn made_rows(change: &Change, sector_size: u32) -> Vec<Row> {
+    let sector = u64::from(sector_size);
+    change
+        .partitions
+        .iter()
+        .map(|part| {
+            let bytes = part.sectors.unwrap_or_default() * sector;
+            Row::Text(
+                format!(
+                    "{:12}{}  {:<16}{:>9}   {}",
+                    "",
+                    part.number,
+                    part.name.clone().unwrap_or_default(),
+                    size(bytes),
+                    holds_what(part.role, part.format)
+                ),
+                Look::Plain,
+            )
+        })
+        .collect()
+}
+
+/// What the disk page says of Windows that cannot be shrunk now: what is
+/// in the way, and how to put it right in Windows.
+fn refusal(refused: &Refused) -> String {
+    match refused {
+        Refused::BitLocker => messages::text("disk-windows-bitlocker"),
+        Refused::FastStartup => messages::text("disk-windows-fast-startup"),
+        Refused::Dirty => messages::text("disk-windows-dirty"),
+        Refused::Damaged(problem) => {
+            messages::with("disk-windows-damaged", &[("problem", Arg::Text(problem))])
+        }
+        Refused::Kept(why) | Refused::Unreadable(why) => {
+            messages::with("disk-windows-other", &[("why", Arg::Text(why))])
+        }
+    }
+}
+
 fn holds_what(role: Role, format: Option<answers::Format>) -> String {
     match role {
         Role::BiosBoot => "-".to_string(),

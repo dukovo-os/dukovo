@@ -18,6 +18,8 @@
 //! - [`disks`] finds the stick, names disks and partitions, and reads
 //!   their tables.
 //! - [`machine`] reads what the computer has, for the screens to offer.
+//! - [`windows`] finds Windows on a disk, for the layout next to it: its
+//!   volume, whether it can be shrunk now, and Windows Boot Manager.
 //! - [`messages`] holds every message the screens show, in Fluent.
 //! - [`log`] keeps the install log, `/tmp/install.log` while it runs and
 //!   `/system/state/log/install.log` in the installed system: when an
@@ -33,3 +35,4 @@ pub mod messages;
 pub mod plan;
 pub mod screens;
 pub mod settings;
+pub mod windows;

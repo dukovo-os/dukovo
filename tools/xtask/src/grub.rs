@@ -100,8 +100,10 @@ pub const MODULES: &[&str] = &[
 /// disk".
 pub const PC_MODULES: &[&str] = &["biosdisk", "vbe", "drivemap"];
 
-/// The modules UEFI needs more: the firmware's video.
-pub const EFI_MODULES: &[&str] = &["efi_gop", "efi_uga"];
+/// The modules UEFI needs more: the firmware's video, and `fwsetup`,
+/// which restarts into the firmware's settings from an installed system's
+/// menu (ADR 0314).
+pub const EFI_MODULES: &[&str] = &["efi_gop", "efi_uga", "efifwsetup"];
 
 /// Where a disk's GRUB finds its files under a PC's BIOS: the directory
 /// `boot/grub` of the disk's second partition, its EFI system partition,

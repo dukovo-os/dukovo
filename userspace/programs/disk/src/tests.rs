@@ -757,5 +757,13 @@ fn files_go_in_an_efi_system_partitions_fat() {
         assert!(ok && text == "smaller", "{text}");
         let (ok, text) = run("mdir", &["-i", image.path(), "-b", "::/EFI/BOOT"]);
         assert!(ok && text.lines().count() == 1, "{text}");
+        // Found in any case, as Windows Boot Manager is looked for; a
+        // directory, or a name not there, is no file.
+        assert_eq!(crate::esp::has_file(image.device(512), "EFI/Boot/bootx64.efi"), Ok(true));
+        assert_eq!(crate::esp::has_file(image.device(512), "EFI/BOOT"), Ok(false));
+        assert_eq!(crate::esp::has_file(image.device(512), "EFI/Microsoft/Boot"), Ok(false));
+        assert_eq!(crate::esp::has_file(image.device(512), "EFI/BOOT/BOOTX64.EFI/x"), Ok(false));
     }
+    let blank = Image::new(1 << 20);
+    assert!(crate::esp::has_file(blank.device(512), "EFI/BOOT/BOOTX64.EFI").is_err());
 }
