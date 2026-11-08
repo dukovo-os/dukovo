@@ -147,6 +147,7 @@ pub const STD_LINKS: &[(&str, &str)] = &[
     ("system/commands/efibootmgr", "systools"),
     ("system/commands/eject", "systools"),
     ("system/commands/elevate", "systools"),
+    ("system/commands/feature", "systools"),
     ("system/commands/findmnt", "systools"),
     ("system/commands/firewall", "systools"),
     ("system/commands/fsck-btrfs", "systools"),
@@ -272,6 +273,11 @@ pub const SHELL_CASES_DIR: &str = "system/tests/shell";
 /// `/system/settings` (spark(8)).
 pub const DEFAULTS: &str = "userspace/defaults";
 pub const DEFAULTS_DIR: &str = "system/resources/default-settings";
+
+/// The system's features (feature.toml(5), ADR 0316), and where in the
+/// boot archive they go, beside the rest of the signed system.
+pub const FEATURES: &str = "userspace/features";
+pub const FEATURES_DIR: &str = "system/resources/features";
 
 /// The service files of the boot tests that Spark is pointed at with
 /// `--service-dir` (spark(8)), and where in the boot archive they go.
@@ -524,6 +530,7 @@ pub fn build(ctx: &Ctx, profile: Profile) -> Result<Programs> {
     let ports = ports::build_all(ctx, &[])?;
     let mut files = build_posix(ctx, &ports.toolchain)?;
     install_tree(ctx, DEFAULTS, DEFAULTS_DIR, &mut files)?;
+    install_tree(ctx, FEATURES, FEATURES_DIR, &mut files)?;
     files.extend(dukovo_catalog(ctx)?);
     // The root this system trusts its releases by (ADR 0308).
     files.push(crate::release::trusted_root(ctx)?);

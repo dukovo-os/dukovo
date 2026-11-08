@@ -5,8 +5,9 @@
 //! that reads them (ADR 0216): service files (service.toml(5)), which
 //! Spark and the service command read, and the manifests of bundles
 //! (manifest.json(5), feature `bundle`), whose services take the same
-//! settings; and the shares file (shares.toml(5)), which share(1) writes
-//! and smbd(8) reads.
+//! settings; the shares file (shares.toml(5)), which share(1) writes
+//! and smbd(8) reads; and features (feature.toml(5)), which feature(8)
+//! adds and the installer offers.
 //!
 //! People write TOML, with comments; tools write JSON. Both come through
 //! the same types, so the two can never drift apart. An error says which
@@ -18,6 +19,7 @@ extern crate alloc;
 
 #[cfg(feature = "bundle")]
 pub mod bundle;
+pub mod feature;
 pub mod legacy;
 pub mod service;
 pub mod shares;

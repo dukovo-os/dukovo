@@ -74,6 +74,7 @@ mod efiboot;
 mod eject;
 mod elevate;
 mod facl;
+mod feature;
 mod findmnt;
 mod firewall;
 mod fstrim;
@@ -194,6 +195,7 @@ const TOOLS: &[(&str, Tool)] = &[
     ("efibootmgr", efiboot::main),
     ("eject", eject::main),
     ("elevate", elevate::main),
+    ("feature", feature::main),
     ("findmnt", findmnt::main),
     ("firewall", firewall::main),
     ("fsck-btrfs", btrfs::fsck_btrfs),

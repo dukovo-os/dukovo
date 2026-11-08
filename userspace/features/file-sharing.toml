@@ -1,0 +1,12 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+#
+# File sharing: the folders share(1) lists, served to Windows PCs, Macs
+# and Linux machines over SMB 3 by smbd(8), and to the networks a share
+# names over NFS 4.2 by nfsd(8). Both are part of the base system, so
+# the feature installs no bundle. feature.toml(5) explains each setting.
+
+feature_version = 1
+name = "File sharing"
+about = "Shares folders with Windows PCs, Macs and Linux machines over SMB, and with Unix machines over NFS. `share add` picks the folders."
+services = ["smbd", "nfsd"]

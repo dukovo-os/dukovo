@@ -721,7 +721,7 @@ fn sign_unsigned(archive: &str, file: &File) -> Result<Option<(File, PathBuf)>, 
 
 /// `bundle install ID`: bundled fetches the newest version a catalog
 /// lists, then shows its sheet and asks, as for a file.
-fn get(id: &str, from: Option<String>, everyone: bool, yes: bool) -> Result<i32, Fail> {
+pub(crate) fn get(id: &str, from: Option<String>, everyone: bool, yes: bool) -> Result<i32, Fail> {
     bundle::check_full_id(id).map_err(|why| {
         usage(format!(
             "{id}: neither a file nor a bundle's ID ({why}); `bundle search` finds a bundle's ID"
@@ -980,6 +980,21 @@ pub fn count() -> Option<usize> {
     }
 }
 
+/// The IDs of the bundles installed for everyone, as feature(8) asks.
+pub(crate) fn installed_for_everyone() -> Result<Vec<String>, Fail> {
+    let (_stream, mut input) = ask(&Request::List, None).map_err(fail)?;
+    let mut ids = Vec::new();
+    loop {
+        match answer(&mut input)? {
+            Answer::Listed(listed) if listed.place == Place::Everyone => ids.push(listed.id),
+            Answer::Listed(_) => {}
+            Answer::Ok(_) => return Ok(ids),
+            Answer::Error(why) => return Err(fail(format!("bundled: {why}"))),
+            _ => return Err(fail("bundled answered out of turn".into())),
+        }
+    }
+}
+
 /// `bundle list`: the bundles this person can run, theirs and everyone's.
 fn list() -> Result<i32, Fail> {
     let (_stream, mut input) = ask(&Request::List, None).map_err(fail)?;
@@ -1187,7 +1202,7 @@ fn info(id: &str) -> Result<i32, Fail> {
 
 /// `bundle remove ID`: removes it, after asking whether to delete its
 /// settings and data unless `--keep-data` or `--purge` answers.
-fn remove(id: &str, everyone: bool, data: Option<bool>) -> Result<i32, Fail> {
+pub(crate) fn remove(id: &str, everyone: bool, data: Option<bool>) -> Result<i32, Fail> {
     bundle::check_full_id(id).map_err(usage)?;
     let purge = match data {
         Some(purge) => purge,
