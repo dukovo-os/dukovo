@@ -219,7 +219,7 @@ fn start(app: &mut App, log: Log, source: Source) -> Running {
                 "installed-line",
                 &[
                     ("version", Arg::Text(&source.release.version)),
-                    ("disk", Arg::Text(answers.target())),
+                    ("disk", Arg::Text(&answers.disks())),
                 ],
             ))
         });

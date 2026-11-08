@@ -8,10 +8,12 @@
 //! disk with the menu that starts the slot (ADR 0307), and save the
 //! answers and the install log in the new system. Next to Windows, its
 //! volume is shrunk before the disk is partitioned, and a UEFI boot entry
-//! starts Dukovo's GRUB, whose menu starts Windows too (ADR 0314). Each
-//! step runs the system's own tools (resize-ntfs, rdisk, mkfs-fat,
-//! mkswap, mkfs-btrfs, mount, subvolume, rgrub-setup and efiboot), so the
-//! log shows each command as it ran.
+//! starts Dukovo's GRUB, whose menu starts Windows too (ADR 0314). The
+//! mirror layout gives two disks the same partitions and GRUB, and makes
+//! their roots one Btrfs RAID1 (ADR 0315). Each step runs the system's
+//! own tools (resize-ntfs, rdisk, mkfs-fat, mkswap, mkfs-btrfs, device,
+//! balance, mount, subvolume, rgrub-setup and efiboot), so the log shows
+//! each command as it ran.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -57,16 +59,27 @@ struct Planned {
     after: disk::Table,
 }
 
-/// The install's partitions on the target, by their names in `/devices`,
-/// whether the target has a BIOS boot partition for GRUB, and, next to
-/// Windows, the number of the EFI system partition the firmware's boot
-/// entry names.
+/// The install's partitions, by their names in `/devices`: the disks
+/// that start the system, the root, the mirror layout's second root, and,
+/// next to Windows, the number of the EFI system partition the firmware's
+/// boot entry names.
 struct Parts {
+    /// The target, then the mirror layout's second disk: each gets GRUB
+    /// and the menu, so that either starts the system alone.
+    boot: Vec<BootDisk>,
+    root: String,
+    /// The second disk's root partition, which the root's Btrfs takes as
+    /// its mirror.
+    mirror: Option<String>,
+    boot_entry: Option<u32>,
+}
+
+/// A disk that starts the system: its EFI system partition, and whether
+/// it has a BIOS boot partition for GRUB.
+struct BootDisk {
     disk: String,
     efi: String,
-    root: String,
     bios_boot: bool,
-    boot_entry: Option<u32>,
 }
 
 /// The description of Dukovo's UEFI boot entry, as the firmware's boot
@@ -119,16 +132,17 @@ pub fn find_release(release: Option<&Path>, log: &mut Log) -> Result<Source, Str
 /// the installer must run again.
 pub fn install(answers: &Answers, source: &Source, log: &mut Log) -> Result<(), String> {
     let disk = answers.target();
-    log.installing(disk, &source.release.version);
+    log.installing(&answers.disks(), &source.release.version);
     log.step(Step::Disk);
     let planned = plan_disks(answers, source)?;
     fs::create_dir_all(WORK).map_err(|err| format!("making {WORK}: {err}"))?;
     shrink(&planned, log)?;
     let parts = partition(&planned, disk, log)?;
-    format(&planned, log)?;
+    format(&planned, disk, log)?;
     let root = Path::new(WORK).join("root");
     mount(&parts.root, &root, &["-t", "btrfs", "-o", "compress"], log)?;
-    let done = fill_root(answers, source, &parts, &root, log);
+    let done =
+        mirror(&parts, &root, log).and_then(|()| fill_root(answers, source, &parts, &root, log));
     // The root is unmounted whatever happened, so that its writes reach
     // the disk and the installer can run again.
     let unmounted = run_when_free(log, "umount", &[&path(&root)]);
@@ -156,7 +170,13 @@ fn plan_disks(answers: &Answers, source: &Source) -> Result<Vec<Planned>, String
                     .map_err(|why| format!("disk: {why}"))?,
             ]
         }
-        Layout::Mirror => return Err("disk.layout: not ready yet".into()),
+        Layout::Mirror => {
+            let name = answers.mirror().ok_or("disk.mirror: no second disk")?;
+            let second = machine::read_disk(name).map_err(|why| format!("disk.mirror: {why}"))?;
+            plan::mirror(&target, &second, swap_gib, root_bytes)
+                .map_err(|why| format!("disk: {why}"))?
+                .into()
+        }
     };
     let mut planned = Vec::new();
     for change in changes {
@@ -244,25 +264,52 @@ fn partition(planned: &[Planned], target: &str, log: &mut Log) -> Result<Parts, 
         }
     }
     let p = planned.iter().find(|p| p.disk.name == target).ok_or("the target is not changed")?;
-    let numbered = |role: Role| {
-        p.change.partitions.iter().find(|part| part.role == role).map(|part| part.number)
+    let root = numbered(p, Role::Root).ok_or("no root partition")?;
+    let mut parts = Parts {
+        boot: vec![boot_disk(p)?],
+        root: disks::partition(target, root),
+        mirror: None,
+        boot_entry: p.change.shrink.and(numbered(p, Role::Efi)),
     };
+    // The mirror layout's second disk has a root too, and starts the
+    // system as the target does.
+    for other in planned.iter().filter(|other| other.disk.name != target) {
+        if let Some(number) = numbered(other, Role::Root) {
+            parts.mirror = Some(disks::partition(&other.disk.name, number));
+            parts.boot.push(boot_disk(other)?);
+        }
+    }
+    Ok(parts)
+}
+
+/// The number of the partition for `role` that `p`'s change makes or
+/// formats, if it has one.
+fn numbered(p: &Planned, role: Role) -> Option<u32> {
+    p.change.partitions.iter().find(|part| part.role == role).map(|part| part.number)
+}
+
+/// The disk `p` changes as one that starts the system.
+fn boot_disk(p: &Planned) -> Result<BootDisk, String> {
+    let name = &p.disk.name;
+    let efi = numbered(p, Role::Efi).ok_or_else(|| format!("no EFI system partition on {name}"))?;
     let bios_boot = disk::types::parse("bios-boot", disk::Scheme::Gpt);
-    Ok(Parts {
-        disk: target.to_string(),
-        efi: disks::partition(target, numbered(Role::Efi).ok_or("no EFI system partition")?),
-        root: disks::partition(target, numbered(Role::Root).ok_or("no root partition")?),
+    Ok(BootDisk {
+        disk: name.clone(),
+        efi: disks::partition(name, efi),
         bios_boot: p.after.partitions.iter().any(|part| Some(part.kind) == bios_boot),
-        boot_entry: p.change.shrink.and(numbered(Role::Efi)),
     })
 }
 
 /// Makes the filesystems each change asks for: FAT32 on the EFI system
-/// partition, swap, the root's Btrfs, and those of data partitions.
-fn format(planned: &[Planned], log: &mut Log) -> Result<(), String> {
+/// partition, swap, the root's Btrfs on the `target`, and those of data
+/// partitions. The mirror layout's second root is left for [`mirror`].
+fn format(planned: &[Planned], target: &str, log: &mut Log) -> Result<(), String> {
     log.step(Step::Format);
     for p in planned {
         for part in &p.change.partitions {
+            if part.role == Role::Root && p.disk.name != target {
+                continue;
+            }
             let device = path(&disks::device(&disks::partition(&p.disk.name, part.number)));
             let (program, args): (&str, &[&str]) = match (part.role, part.format) {
                 (Role::Efi, _) => ("mkfs-fat", &["-F", "32", "-n", "DUKOVO_EFI"]),
@@ -278,6 +325,24 @@ fn format(planned: &[Planned], log: &mut Log) -> Result<(), String> {
             log.run(program, &args)?;
         }
     }
+    Ok(())
+}
+
+/// Makes the root's Btrfs, mounted at `root`, a RAID1 of two disks, for
+/// the mirror layout: device(8) adds the second disk's root partition,
+/// and balance(8) converts the chunks the new filesystem has, of data,
+/// metadata and the chunk tree, to RAID1, a copy on each disk. The root
+/// is all but empty, so the balance moves a few MiB; every chunk written
+/// after is RAID1 too. Either disk then holds every byte, and the system
+/// starts from either alone (ADR 0153).
+fn mirror(parts: &Parts, root: &Path, log: &mut Log) -> Result<(), String> {
+    let Some(second) = &parts.mirror else { return Ok(()) };
+    log.step(Step::Mirror);
+    let root = path(root);
+    // -f: the partition is new, but may hold an earlier install's root.
+    log.run("device", &["add", "-f", &path(&disks::device(second)), &root])?;
+    log.run("balance", &["start", "-dconvert=raid1", "-mconvert=raid1", &root])?;
+    log.note(&format!("the root is a Btrfs RAID1 of {} and {second}", parts.root));
     Ok(())
 }
 
@@ -323,46 +388,52 @@ fn copy_system(source: &Source, root: &Path, log: &mut Log) -> Result<(), String
     run_when_free(log, "subvolume", &["delete", &path(&new)])
 }
 
-/// Puts GRUB on the disk for a BIOS, if it has a BIOS boot partition,
-/// and on its EFI system partition for UEFI, from the new slot's own GRUB,
-/// and the menu that starts the slot, which names the root by its Btrfs
-/// UUID (ADR 0307).
+/// Puts GRUB on each disk that starts the system ([`Parts::boot`]): for
+/// a BIOS, if it has a BIOS boot partition, and on its EFI system
+/// partition for UEFI, from the new slot's own GRUB, with the menu that
+/// starts the slot, which names the root by its Btrfs UUID (ADR 0307).
+/// The two disks of a mirror have one UUID, so either one's menu finds
+/// the root on whichever disk is there.
 fn install_grub(parts: &Parts, slot: &Path, log: &mut Log) -> Result<(), String> {
     log.step(Step::Grub);
-    let images = path(&slot.join("boot/grub"));
-    if parts.bios_boot {
-        log.run("rgrub-setup", &["-d", &images, &path(&disks::device(&parts.disk))])?;
-    } else {
-        log.note(&format!(
-            "{} has no BIOS boot partition: it starts by UEFI only, with no GRUB for a BIOS",
-            parts.disk
-        ));
-    }
-    log.run("rgrub-setup", &["--efi", "-d", &images, &path(&disks::device(&parts.efi))])?;
     let uuid = btrfs_uuid(&parts.root)?;
     let template = slot.join("boot/grub/installed.cfg");
     let menu =
         fs::read_to_string(&template).map_err(|err| format!("{}: {err}", template.display()))?;
+    let menu = menu.replace("@ROOT_UUID@", &uuid);
+    for disk in &parts.boot {
+        grub_on(disk, slot, &menu, log)?;
+    }
+    log.note(&format!("the menu starts the root {uuid}"));
+    if let (Some(number), Some(first)) = (parts.boot_entry, parts.boot.first()) {
+        boot_entry(&first.disk, number, log)?;
+    }
+    Ok(())
+}
+
+/// Puts GRUB from the slot on `disk`, and `menu` with GRUB's environment
+/// block on its EFI system partition.
+fn grub_on(disk: &BootDisk, slot: &Path, menu: &str, log: &mut Log) -> Result<(), String> {
+    let images = path(&slot.join("boot/grub"));
+    if disk.bios_boot {
+        log.run("rgrub-setup", &["-d", &images, &path(&disks::device(&disk.disk))])?;
+    } else {
+        log.note(&format!(
+            "{} has no BIOS boot partition: it starts by UEFI only, with no GRUB for a BIOS",
+            disk.disk
+        ));
+    }
+    log.run("rgrub-setup", &["--efi", "-d", &images, &path(&disks::device(&disk.efi))])?;
     let esp = Path::new(WORK).join("esp");
-    mount(&parts.efi, &esp, &["-t", "fat"], log)?;
-    let written = settings::make_dir(&esp.join("boot/grub"), 0o755).and_then(|()| {
-        settings::write_file(
-            &esp.join("boot/grub/grub.cfg"),
-            &menu.replace("@ROOT_UUID@", &uuid),
-            0o644,
-        )
-    });
+    mount(&disk.efi, &esp, &["-t", "fat"], log)?;
+    let written = settings::make_dir(&esp.join("boot/grub"), 0o755)
+        .and_then(|()| settings::write_file(&esp.join("boot/grub/grub.cfg"), menu, 0o644));
     // The menu remembers the entry chosen last in GRUB's environment
     // block, which must be there, whole, for GRUB to write it.
     let environment =
         written.and_then(|()| settings::write_file(&esp.join(GRUBENV), &grub_environment(), 0o644));
-    log.note(&format!("the menu starts the root {uuid}"));
     let unmounted = run_when_free(log, "umount", &[&path(&esp)]);
-    environment.and(unmounted)?;
-    if let Some(number) = parts.boot_entry {
-        boot_entry(&parts.disk, number, log)?;
-    }
-    Ok(())
+    environment.and(unmounted)
 }
 
 /// GRUB's empty environment block: its first line, then `#` to 1024

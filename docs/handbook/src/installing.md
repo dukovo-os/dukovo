@@ -41,7 +41,7 @@ throughout.
 
 ## Choosing the layout
 
-The Disk step offers four layouts:
+The Disk step offers five layouts:
 
 - **The guided layout** erases the disk and gives it a BIOS boot
   partition, an EFI system partition, the swap asked for and the Dukovo
@@ -58,6 +58,16 @@ The Disk step offers four layouts:
   a menu then offers Dukovo, *Windows Boot Manager* and the firmware's
   settings, and picks the one you chose last. Windows checks C: once at
   its first start after the install.
+- **Mirror two disks** erases the disk chosen and a second one, which
+  *Mirror onto* picks with Left and Right, and gives each the guided
+  layout and GRUB. The two roots are one Btrfs RAID1, with a copy of
+  everything on each disk, as big as the smaller disk; the larger one's
+  extra space stays free. If a disk fails, the computer starts from the
+  other, Dukovo runs as before and the kernel log warns that a disk is
+  missing. Rebuilding the mirror onto a new disk is done by hand for
+  now: rdisk(8) gives it the same partitions, replace(8) rebuilds the
+  root onto it, and rgrub-setup(8) puts GRUB on it. Each disk has its
+  own swap.
 - **Use the free space** keeps every partition on the disk and makes the
   same four in its largest free space. It is for a disk of data: one
   that starts a system already, with an EFI system partition or a BIOS
@@ -114,7 +124,8 @@ read -s pw; echo "$pw" | dukovo-install --hash-password; unset pw
 
 `lsblk` lists the disks, to find the target's name. The layout is
 `guided` or `free`, as on the screens; `beside`, next to Windows, with
-`space_gib`, the space Dukovo takes from Windows; or `manual`, whose
+`space_gib`, the space Dukovo takes from Windows; `mirror`, with
+`mirror` naming the second disk; or `manual`, whose
 `changes` list each partition taken out, made or formatted, as the rdisk
 screen saves them: install-answers(5) describes them.
 

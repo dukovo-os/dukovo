@@ -39,6 +39,8 @@ pub enum Step {
     Partition,
     /// Its filesystems are made.
     Format,
+    /// The root's Btrfs is made a RAID1 of the mirror layout's two disks.
+    Mirror,
     /// The root's subvolumes are made.
     Subvolumes,
     /// The system is copied into its slot, every file checked.
@@ -53,12 +55,13 @@ pub enum Step {
 
 impl Step {
     /// Every step, in the order they run.
-    pub const ALL: [Step; 10] = [
+    pub const ALL: [Step; 11] = [
         Step::Release,
         Step::Disk,
         Step::Shrink,
         Step::Partition,
         Step::Format,
+        Step::Mirror,
         Step::Subvolumes,
         Step::Copy,
         Step::Settings,
@@ -67,9 +70,14 @@ impl Step {
     ];
 
     /// The steps an install of `layout` runs, in order: Windows' volume
-    /// is shrunk only next to it.
+    /// is shrunk only next to it, and the root mirrored only by the
+    /// mirror layout.
     pub fn of(layout: Layout) -> impl Iterator<Item = Step> {
-        Step::ALL.into_iter().filter(move |&step| step != Step::Shrink || layout == Layout::Beside)
+        Step::ALL.into_iter().filter(move |&step| match step {
+            Step::Shrink => layout == Layout::Beside,
+            Step::Mirror => layout == Layout::Mirror,
+            _ => true,
+        })
     }
 
     /// The id of its title among the installer's messages.
@@ -80,6 +88,7 @@ impl Step {
             Step::Shrink => "step-shrink",
             Step::Partition => "step-partition",
             Step::Format => "step-format",
+            Step::Mirror => "step-mirror",
             Step::Subvolumes => "step-subvolumes",
             Step::Copy => "step-copy",
             Step::Settings => "step-settings",
@@ -105,7 +114,7 @@ impl Step {
             Step::Copy => 70,
             Step::Format | Step::Grub | Step::Shrink => 8,
             Step::Release => 6,
-            Step::Partition | Step::Subvolumes | Step::Settings => 2,
+            Step::Partition | Step::Mirror | Step::Subvolumes | Step::Settings => 2,
             Step::Disk | Step::Save => 1,
         }
     }

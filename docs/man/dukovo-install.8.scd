@@ -48,9 +48,10 @@ edge to edge and the keys' hints on a steel bar along the bottom (ADR
   for the card chosen, the computer's name and its time zone.
 . *Disk*: the disk to install on and how: the guided layout, which
   erases it; next to Windows, which shrinks Windows and takes the space
-  typed, between the least and the most the page shows; its free
-  space, which keeps its partitions; or Manual, which opens the rdisk
-  screen. The guided, next-to-Windows and free-space layouts take the
+  typed, between the least and the most the page shows; a mirror of
+  two disks, which erases both, with the second disk chosen with Left
+  and Right; its free space, which keeps its partitions; or Manual,
+  which opens the rdisk screen. Every layout but Manual takes the
   swap's size. The stick and a disk too small cannot be chosen, a disk
   that holds Windows says so in red, and the layouts that cannot be
   used say why: next to Windows, what to do in Windows first.
@@ -110,9 +111,9 @@ An install then runs these steps, each printed as it starts:
   trusts, _/system/resources/updates/root.json_, as *system-release
   check* does (*system-release*(8)). A release that fails is not
   installed.
-. *Checking* the disk: it must be a whole disk, not the stick, and
-  its layout must fit: the root big enough for the system and a GiB
-  more.
+. *Checking* the disk, or both disks of a mirror: each must be a whole
+  disk, not the stick, and its layout must fit: the root big enough for
+  the system and a GiB more.
 . *Shrinking Windows (C:) on* _disk_, for the layout next to Windows:
   *resize-ntfs*(8) checks Windows' volume, shrinks it by the space
   Dukovo takes, and checks it again. The volume stays marked to be
@@ -129,11 +130,18 @@ An install then runs these steps, each printed as it starts:
   to Windows cuts Windows' partition to its shrunk volume and makes a
   512 MiB EFI system partition of Dukovo's own, *Dukovo boot*, the
   swap and the root in the space it gave, keeping Windows' partitions;
-  the manual layout makes the answers' *changes*.
+  the mirror layout erases both disks and makes the guided layout's
+  four partitions on each, the two roots of one size, the most the
+  smaller disk holds; the manual layout makes the answers' *changes*.
 . *Making the filesystems*: FAT32 on the EFI system partition, a swap
   area, the root's Btrfs, and the data partitions the manual layout
   formats, with *mkfs-fat*(8), *mkswap*(8), *mkfs-btrfs*(8) and
-  *mkfs-exfat*(8).
+  *mkfs-exfat*(8). A mirror's second root is left for the next step.
+. *Mirroring the root on both disks (Btrfs RAID1)*, for the mirror
+  layout: *device add* puts the second disk's root partition in the
+  root's Btrfs, and *balance start -dconvert=raid1 -mconvert=raid1*
+  makes the few chunks it has RAID1, a copy on each disk (*device*(8),
+  *balance*(8)). Every chunk written after is RAID1 too.
 . *Making the subvolumes* of the root, as an installed system has them
   (*spark*(8)).
 . *Copying Dukovo* _version_ *into its slot, checking every file*:
@@ -155,7 +163,9 @@ An install then runs these steps, each printed as it starts:
   settings; it then always shows, and chooses again the system chosen
   last. Next to Windows, *efiboot*(8) also makes the firmware's boot
   entry *Dukovo*, first in its boot order, and Windows' boot files are
-  left as they are (ADR 0314).
+  left as they are (ADR 0314). A mirror gets GRUB and the menu on both
+  disks, so that either starts the system when the other has failed
+  (ADR 0315).
 . *Saving the answers and the install log* in the new system.
 
 It ends with the line to act on:
@@ -217,5 +227,5 @@ the install failed, and 2 for a usage error.
 # SEE ALSO
 
 *install-answers*(5), *system-release*(8), *rdisk*(8), *rgrub-setup*(8),
-*resize-ntfs*(8), *efiboot*(8),
+*resize-ntfs*(8), *efiboot*(8), *device*(8), *balance*(8),
 *spark*(8), *consoled*(8), *dukovo-boot*(7), *keymap*(1)

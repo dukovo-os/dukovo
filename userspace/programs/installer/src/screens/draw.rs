@@ -252,7 +252,9 @@ fn draw_rows(frame: &mut Frame<'_>, app: &App, area: Rect) {
         .unwrap_or(0)
         .min(width / 2);
     let mut lines: Vec<Line<'static>> = Vec::new();
-    let mut focus_line = 0;
+    // With no row focused, a button has the focus: the page then shows
+    // its end, where its warnings are, as Tab reaches the buttons last.
+    let mut focus_line = None;
     let mut cursor = None;
     for row in &rows {
         match row {
@@ -265,7 +267,7 @@ fn draw_rows(frame: &mut Frame<'_>, app: &App, area: Rect) {
             Row::Field(field) => {
                 let has_focus = focused == Some(field.id) && field.enabled;
                 if has_focus {
-                    focus_line = lines.len();
+                    focus_line = Some(lines.len());
                     if let Kind::Input { value, .. } = &field.kind {
                         // After the value, past the field's margin.
                         let typed = value.chars().count().min(BOX - 2);
@@ -277,6 +279,7 @@ fn draw_rows(frame: &mut Frame<'_>, app: &App, area: Rect) {
         }
     }
     let height = usize::from(area.height);
+    let focus_line = focus_line.unwrap_or(lines.len().saturating_sub(1));
     let top = if lines.len() > height { (focus_line + 1).saturating_sub(height) } else { 0 };
     let more = lines.len() > top + height;
     let shown: Vec<Line<'static>> = lines.into_iter().skip(top).take(height).collect();

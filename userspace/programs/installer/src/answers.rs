@@ -82,8 +82,9 @@ pub struct Disk {
     /// The second disk, for the mirror layout.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mirror: Option<String>,
-    /// The swap partition's size in GiB, 0 for none, in the guided and
-    /// free-space layouts; the manual layout lists its own.
+    /// The swap partition's size in GiB, 0 for none, in the guided,
+    /// free-space, mirror and next-to-Windows layouts; the manual layout
+    /// lists its own. The mirror layout makes it on each disk.
     #[serde(default)]
     pub swap_gib: u32,
     /// The manual layout's changes, a disk at a time, as the installer's
@@ -204,7 +205,8 @@ pub enum Layout {
     Free,
     /// The partitions are chosen on the rdisk screen.
     Manual,
-    /// Two disks are mirrored with Btrfs RAID1.
+    /// Two disks are erased and each gets the guided layout; their roots
+    /// are one Btrfs RAID1, so that either disk starts the system alone.
     Mirror,
     /// Dukovo goes next to Windows, which is shrunk.
     Beside,
@@ -316,6 +318,30 @@ impl Answers {
         target.strip_prefix("/dev/").or_else(|| target.strip_prefix("/devices/")).unwrap_or(target)
     }
 
+    /// The mirror layout's second disk's name, without `/dev/` or
+    /// `/devices/`, if the answers name one.
+    #[must_use]
+    pub fn mirror(&self) -> Option<&str> {
+        self.disk.mirror.as_deref().map(|mirror| {
+            mirror
+                .strip_prefix("/dev/")
+                .or_else(|| mirror.strip_prefix("/devices/"))
+                .unwrap_or(mirror)
+        })
+    }
+
+    /// The disks the install goes on, as the install's messages name
+    /// them: the target, or a mirror's two, `vda and vdb`.
+    #[must_use]
+    pub fn disks(&self) -> String {
+        match self.mirror() {
+            Some(mirror) if self.disk.layout == Layout::Mirror => {
+                format!("{} and {mirror}", self.target())
+            }
+            _ => self.target().to_string(),
+        }
+    }
+
     /// Checks every answer this installer can check without the disks,
     /// and gives each problem, naming its key.
     ///
@@ -362,12 +388,6 @@ impl Answers {
     /// Checks the disk's answers. What only the disks can tell, as
     /// whether a partition fits, the install checks before it writes.
     fn check_disk(&self) -> Result<(), String> {
-        match self.disk.layout {
-            Layout::Guided | Layout::Free | Layout::Manual | Layout::Beside => {}
-            Layout::Mirror => {
-                return Err("this layout is not ready yet; use \"guided\"".into());
-            }
-        }
         match (self.disk.layout, self.disk.space_gib) {
             (Layout::Beside, None) => {
                 return Err("space_gib gives the space Dukovo takes next to Windows".into());
@@ -381,8 +401,23 @@ impl Answers {
                 self.disk.target
             ));
         }
-        if self.disk.mirror.is_some() {
-            return Err("mirror names the second disk of the mirror layout only".into());
+        match (self.disk.layout, self.mirror()) {
+            (Layout::Mirror, None) => {
+                return Err("mirror names the second disk of the mirror layout".into());
+            }
+            (Layout::Mirror, Some(mirror)) if !is_name(mirror, 32) => {
+                return Err(format!(
+                    "mirror {:?} is not a disk's name, such as vdb: lsblk lists them",
+                    self.disk.mirror.as_deref().unwrap_or_default()
+                ));
+            }
+            (Layout::Mirror, Some(mirror)) if mirror == self.target() => {
+                return Err("mirror names a second disk, not the target again".into());
+            }
+            (Layout::Mirror, Some(_)) | (_, None) => {}
+            (_, Some(_)) => {
+                return Err("mirror names the second disk of the mirror layout only".into());
+            }
         }
         if self.disk.swap_gib > SWAP_MAX_GIB {
             return Err(format!("swap_gib is at most {SWAP_MAX_GIB}"));
@@ -733,6 +768,24 @@ pub(crate) mod tests {
         assert!(problem(&no_size).contains("space_gib gives the space"));
         let guided = beside.replace(r#""beside""#, r#""guided""#);
         assert!(problem(&guided).contains("next to Windows only"));
+    }
+
+    #[test]
+    fn a_mirror_names_its_second_disk() {
+        let mirror =
+            r#"{ "layout": "mirror", "target": "vda", "mirror": "/dev/vdb", "swap_gib": 1 }"#;
+        with_disk(mirror).unwrap();
+        let text = EXAMPLE
+            .replace(r#"{ "layout": "guided", "target": "/dev/vda", "swap_gib": 1 }"#, mirror);
+        assert_eq!(Answers::parse(text.as_bytes()).unwrap().mirror(), Some("vdb"));
+        let problem = |disk: &str| with_disk(disk).unwrap_err().join("; ");
+        let alone = mirror.replace(r#", "mirror": "/dev/vdb""#, "");
+        assert!(problem(&alone).contains("mirror names the second disk"));
+        let twice = mirror.replace("/dev/vdb", "vda");
+        assert!(problem(&twice).contains("not the target again"));
+        let guided = mirror.replace(r#""layout": "mirror""#, r#""layout": "guided""#);
+        assert!(problem(&guided).contains("mirror layout only"));
+        assert!(problem(&mirror.replace("/dev/vdb", "v d b")).contains("not a disk's name"));
     }
 
     #[test]

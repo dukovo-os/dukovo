@@ -120,6 +120,12 @@ disk-beside-none = no Windows on { $disk }
 disk-beside-refused = Windows can't be shrunk yet: see below
 disk-beside-bios = needs the stick started by UEFI
 disk-beside-full = Windows has too little free space: { $size } to give, and Dukovo needs 20 GiB
+disk-mirror = Mirror two disks (Btrfs RAID1)
+disk-mirror-note = recommended for servers
+disk-mirror-sizes = the smaller disk sets the size
+disk-mirror-alone = needs a second disk
+disk-mirror-onto = Mirror onto
+disk-mirror-both = Both disks are erased. If one fails, Dukovo keeps running from the other and tells you.
 disk-space = Space for Dukovo (GiB)
 disk-space-note = { $least } to { $most }; Windows keeps the rest of its { $size } and uses { $used }
 disk-space-range = Give Dukovo between { $least } and { $most } GiB, so that Windows keeps 10 GiB free.
@@ -247,6 +253,8 @@ review-install = Install
 review-release = Dukovo { $version }, the stick's signed system release
 review-grub = GRUB for UEFI and BIOS
 review-grub-uefi = GRUB for UEFI (the disk has no BIOS boot partition)
+review-grub-mirror = GRUB for UEFI and BIOS on both disks, so that either starts the computer
+review-mirror-note = Btrfs RAID1, at /
 review-grub-beside = GRUB for UEFI on Dukovo boot and a UEFI boot entry "Dukovo"; Windows' boot files are not touched
 review-shrink = Shrink
 review-shrink-windows = Windows (C:) on { $disk } from { $from } to { $to } ({ $used } in use; its files are kept)
@@ -269,6 +277,7 @@ step-disk = Checking { $disk }
 step-shrink = Shrinking Windows (C:) on { $disk }
 step-partition = Partitioning { $disk }
 step-format = Making the filesystems
+step-mirror = Mirroring the root on both disks (Btrfs RAID1)
 step-subvolumes = Making the subvolumes
 step-copy = Copying Dukovo { $version } into its slot, checking every file
 step-settings = Writing the settings and accounts
@@ -300,6 +309,7 @@ help-disk =
     The guided layout erases the disk and makes a BIOS boot partition, an EFI system partition, swap, and the Dukovo root on Btrfs, which starts under UEFI and a BIOS alike.
     Use the free space keeps every partition on the disk and makes the same ones in its largest free space. It is for a disk of data: a disk that starts a system already needs Manual.
     Install next to Windows checks that BitLocker and Fast Startup are off and that Windows was shut down fully, shrinks Windows (C:) by the space you give Dukovo, keeping its files, and puts Dukovo in that space with its own small boot partition. A menu at startup chooses Dukovo or Windows. Windows keeps 10 GiB free, and Windows' own boot files are not touched.
+    Mirror two disks erases both and gives each the guided layout, GRUB included; the two roots are one Btrfs RAID1, a copy of everything on each disk, as big as the smaller disk. If a disk fails, Dukovo starts and runs from the other and warns. Swap is made on each disk.
     Manual opens the rdisk screen, where you choose every partition yourself.
     Other disks stay as they are. The install stick cannot be chosen.
 help-rdisk =
@@ -312,7 +322,7 @@ help-you =
     The installed system keeps your answers without the passwords' hashes unless you ask it to keep them, for a repeat install.
     An empty password means none: anyone at the keyboard can then sign in as you.
 help-review =
-    Type the disk's name to confirm that it is erased, then Install.
+    Type the disk's name to confirm that it is erased, then Install. A mirror asks for the first disk's name, and erases both.
     Each step's commands go to the install log, /tmp/install.log, which L shows during the install.
 help-installing =
     The install runs each step with the system's own tools. L shows the log; Alt+F2 has a shell.

@@ -8,7 +8,7 @@ use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use super::app::{App, Id, Modal, Outcome, Page, SetupFile, user_name};
+use super::app::{App, Id, Modal, Outcome, Page, Row, SetupFile, user_name};
 use super::draw::{self, wrap};
 use crate::answers::{Answers, Layout, Network};
 use crate::log::{Event, Step};
@@ -777,4 +777,76 @@ fn windows_that_cannot_be_shrunk_says_what_to_do() {
     press(&mut other, KeyCode::Char(' '));
     assert!(screen(&other).contains("no Windows on vdb"));
     assert!(!other.focusable().contains(&Id::Beside));
+}
+
+#[test]
+fn a_mirror_erases_both_disks_and_reviews_each() {
+    let mut app = app();
+    app.page = Page::Disk;
+    focus(&mut app, Id::Disk(2));
+    press(&mut app, KeyCode::Char(' '));
+    focus(&mut app, Id::Mirror);
+    press(&mut app, KeyCode::Char(' '));
+    // The first disk there is, the Windows SSD, is offered first, and
+    // its Windows would go.
+    let shown = screen(&app);
+    for needle in [
+        "Mirror two disks (Btrfs RAID1)",
+        "the smaller disk sets the size",
+        "Mirror onto          ‹ sda  128 GiB ›",
+        "Windows, 3 partitions",
+        "Both disks are erased. If one fails, Dukovo keeps running from the other",
+    ] {
+        assert!(shown.contains(needle), "{needle}:\n{shown}");
+    }
+    // The warnings are at the page's end.
+    let bottom = |app: &mut App| {
+        focus(app, Id::Next);
+        let shown = screen(app);
+        focus(app, Id::MirrorDisk);
+        shown
+    };
+    let shown = bottom(&mut app);
+    assert!(shown.contains("Erasing sda deletes Windows and everything on it."), "{shown}");
+    assert!(shown.contains("vdb stays untouched"), "{shown}");
+    // Right takes the next disk; the stick is never one.
+    press(&mut app, KeyCode::Right);
+    let shown = bottom(&mut app);
+    assert!(shown.contains("Erasing vdb deletes everything on it."), "{shown}");
+    assert!(shown.contains("sda stays untouched"), "{shown}");
+    press(&mut app, KeyCode::Right);
+    assert!(bottom(&mut app).contains("Erasing sda deletes Windows"), "back to the first");
+    press(&mut app, KeyCode::Left);
+    press(&mut app, KeyCode::Enter);
+    answer_you(&mut app);
+    // The review is longer than the test's terminal: its rows' text.
+    let shown: String = app
+        .rows()
+        .into_iter()
+        .filter_map(|row| match row {
+            Row::Text(text, _) => Some(text + "\n"),
+            _ => None,
+        })
+        .collect();
+    for needle in [
+        "Erase     vda",
+        "Create    on vda:",
+        "Erase     vdb",
+        "(everything on it is deleted)",
+        "Create    on vdb:",
+        "2  EFI system        512 MiB   FAT32",
+        "Btrfs RAID1, at /",
+        "GRUB for UEFI and BIOS on both disks",
+        "Untouched sda",
+    ] {
+        assert!(shown.contains(needle), "{needle}:\n{shown}");
+    }
+    assert_eq!(shown.matches("Btrfs RAID1, at /").count(), 2, "a root on each:\n{shown}");
+    let answers = app.answers().unwrap();
+    answers.check().unwrap();
+    assert_eq!((answers.disk.layout, answers.target()), (Layout::Mirror, "vda"));
+    assert_eq!(answers.mirror(), Some("vdb"));
+    focus(&mut app, Id::Install);
+    press(&mut app, KeyCode::Enter);
+    assert!(app.problem.as_deref().is_some_and(|p| p.contains("confirm that it is erased")));
 }

@@ -99,6 +99,58 @@ pub fn guided(disk: &DiskInfo, swap_gib: u32) -> Result<Change, String> {
     Ok(Change { disk: disk.name.clone(), new_table: true, partitions, ..Change::default() })
 }
 
+/// The mirror layout of `first` and `second` (ADR 0315): each disk gets
+/// the guided layout's new GPT, with a BIOS boot partition, an EFI system
+/// partition second and swap of `swap_gib` if any, so that either disk
+/// starts the computer alone. The two roots are made one Btrfs RAID1, so
+/// they are the same size: the most the smaller disk holds. The larger
+/// disk's space beyond it is left free.
+///
+/// # Errors
+///
+/// If the two are one disk, or either is too small for the partitions and
+/// a root of `root_bytes`.
+pub fn mirror(
+    first: &DiskInfo,
+    second: &DiskInfo,
+    swap_gib: u32,
+    root_bytes: u64,
+) -> Result<[Change; 2], String> {
+    if first.name == second.name {
+        return Err(format!("{} cannot be its own mirror: choose a second disk", first.name));
+    }
+    // Each disk's root as the guided layout would make it; the smaller of
+    // the two is the size of both.
+    let mut roots = Vec::new();
+    for disk in [first, second] {
+        let change = guided(disk, swap_gib)?;
+        let root = change.partitions.iter().find(|part| part.role == Role::Root);
+        let sectors = root.and_then(|root| root.sectors).ok_or("the guided layout has no root")?;
+        roots.push(sectors * u64::from(disk.sector_size));
+    }
+    // Whole MiB, as every partition starts on one.
+    let bytes = roots.into_iter().min().unwrap_or(0) / MIB * MIB;
+    if bytes < root_bytes {
+        let small = if first.bytes <= second.bytes { first } else { second };
+        return Err(format!(
+            "{} leaves {} for the mirrored root, and Dukovo needs {}",
+            small.name,
+            disk::size::human(bytes),
+            disk::size::human(root_bytes)
+        ));
+    }
+    let made = |disk: &DiskInfo| -> Result<Change, String> {
+        let mut table =
+            Table::new(Scheme::Gpt, disk.sector_size, disk.sectors(), &mut Rng::seeded(1))
+                .map_err(|err| format!("{}: {err}", disk.name))?;
+        let root_end = End::Sectors(bytes / u64::from(disk.sector_size));
+        let partitions = place(&mut table, &before_root(swap_gib), None, root_end)
+            .map_err(|why| format!("{}: {why}", disk.name))?;
+        Ok(Change { disk: disk.name.clone(), new_table: true, partitions, ..Change::default() })
+    };
+    Ok([made(first)?, made(second)?])
+}
+
 /// Why the free-space layout cannot use `disk`, if it cannot: it needs a
 /// GPT that starts no system yet, with free space for the partitions
 /// before the root, swap of `swap_gib`, and a root of `root_bytes`.
@@ -497,6 +549,33 @@ mod tests {
         assert!(!file.keep);
         assert_eq!(file.partitions[2].kind, "swap");
         assert_eq!(guided(&blank, 0).unwrap().partitions.len(), 3);
+    }
+
+    #[test]
+    fn a_mirror_gives_each_disk_the_guided_layout_with_roots_of_one_size() {
+        let small = disk("vda", 8, Some(with_one(8, "linux")));
+        let mut large = disk("sda", 12, None);
+        large.sector_size = 4096;
+        let [first, second] = mirror(&small, &large, 1, 2 << 30).unwrap();
+        for change in [&first, &second] {
+            assert!(change.new_table);
+            assert_eq!(roles(change), [Role::BiosBoot, Role::Efi, Role::Swap, Role::Root]);
+            assert_eq!(change.partitions[1].number, ESP_NUMBER, "each disk starts by a BIOS too");
+        }
+        let root_bytes =
+            |change: &Change, sector: u64| change.partitions[3].sectors.unwrap() * sector;
+        let bytes = root_bytes(&first, 512);
+        assert_eq!(bytes, root_bytes(&second, 4096), "a RAID1 holds what its smaller disk does");
+        assert_eq!(bytes % MIB, 0);
+        let table = after(&small, &first).unwrap();
+        assert!(table.last_usable - table.partitions[3].last < MIB / 512);
+        let table = after(&large, &second).unwrap();
+        assert!(table.partitions[3].last < table.last_usable, "the larger disk's rest stays free");
+
+        assert!(mirror(&small, &small, 1, 2 << 30).unwrap_err().contains("its own mirror"));
+        let tiny = disk("vdb", 2, None);
+        let err = mirror(&small, &tiny, 1, 2 << 30).unwrap_err();
+        assert!(err.contains("vdb"), "{err}");
     }
 
     #[test]
