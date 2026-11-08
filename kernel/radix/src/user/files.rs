@@ -1547,6 +1547,24 @@ pub fn file_method(user: &UserRef, found: &Found, label: u32, args: &[u64; 8]) -
                     fs::capture::control(file, a.request, a.size, copy_in, copy_out)?;
                     0
                 }
+                Target::Audio => {
+                    let may_write = found.cap.check(ObjectKind::File, Rights::WRITE).is_ok();
+                    let size = a.size;
+                    let mut copy_in = |bytes: &mut [u8]| {
+                        if size < bytes.len() as u64 || !Arch::copy_from_user(bytes, a.buffer) {
+                            return Err(error(Kernel::BadAddress));
+                        }
+                        Ok(())
+                    };
+                    let mut copy_out = |bytes: &[u8]| {
+                        if size < bytes.len() as u64 || !Arch::copy_to_user(a.buffer, bytes) {
+                            return Err(error(Kernel::BadAddress));
+                        }
+                        Ok(())
+                    };
+                    crate::audio::control(file, a.request, may_write, &mut copy_in, &mut copy_out)?;
+                    0
+                }
                 Target::Node if matches!(a.request, file::CLONE | file::CLONE_RANGE) => {
                     clone_file(user, found, file, &a)?;
                     0
@@ -2174,6 +2192,8 @@ enum Target<'a> {
     Tunnel,
     /// A packet capture's file.
     Capture,
+    /// A sound output, or `speech`.
+    Audio,
     /// A file of the tree, through its node.
     Node,
 }
@@ -2201,6 +2221,8 @@ fn target(file: &FileObject) -> Target<'_> {
         Target::Tunnel
     } else if file.is_capture() {
         Target::Capture
+    } else if file.is_audio() {
+        Target::Audio
     } else {
         Target::Node
     }
@@ -2262,7 +2284,7 @@ fn read_special(
         Target::Fuse => fs::fuse::read(file, out, non_blocking).map(|n| n as u64),
         Target::Tunnel => fs::tunnel::read(file, out, non_blocking).map(|n| n as u64),
         Target::Capture => fs::capture::read(file, out, non_blocking).map(|n| n as u64),
-        Target::Framebuffer | Target::Node => Ok(0),
+        Target::Framebuffer | Target::Audio | Target::Node => Ok(0),
     }
 }
 
@@ -2325,6 +2347,7 @@ fn write_special(
         Target::Fuse => fs::fuse::write(file, data).map(|n| n as u64),
         Target::Tunnel => fs::tunnel::write(file, data).map(|n| n as u64),
         Target::Capture => Err(error(Kernel::NotSupported)),
+        Target::Audio => crate::audio::write(file, data, non_blocking).map(|n| n as u64),
         Target::Framebuffer if offset == file::CURRENT => {
             let mut at = file.offset.lock();
             let written = fs::framebuffer::write(file, *at, data)? as u64;

@@ -43,6 +43,9 @@ manifest = { path = "../../userspace/programs/manifest", features = ["bundle"] }
 # The catalog's bundles of ports, signed and packed as bundle(1) packs them
 # (ADR 0370).
 dkv = { path = "../../userspace/programs/dkv" }
+# WAV files and the tones' detection, for the audio boot tests' check of
+# what the guest played (ADR 0320).
+audio = { path = "../../userspace/programs/audio" }
 # The interface compiler, for the man(2) pages and C headers of abi/*.ridl.
 ridlc = { path = "../ridlc" }
 rustc-demangle = "0.1"

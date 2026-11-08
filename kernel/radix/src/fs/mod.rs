@@ -134,6 +134,8 @@ enum Special {
     Tunnel,
     /// A packet capture's file (ADR 0346).
     Capture,
+    /// A sound output of `/devices/audio`, or `speech` (ADR 0320).
+    Audio,
 }
 
 /// The most bytes of a path an [`Opened`] keeps.
@@ -369,6 +371,7 @@ impl FileObject {
             Kind::CharDevice if fuse::channel_of(&at.node).is_some() => Special::Fuse,
             Kind::CharDevice if tunnel::end_of(&at.node).is_some() => Special::Tunnel,
             Kind::CharDevice if capture::end_of(&at.node).is_some() => Special::Capture,
+            Kind::CharDevice if crate::audio::is_audio(&at.node) => Special::Audio,
             _ => Special::No,
         };
         // The devices are the last kinds: one comparison for the others.
@@ -476,6 +479,11 @@ impl FileObject {
         self.special == Special::Capture
     }
 
+    /// Whether it is of a sound output, or of `speech`.
+    pub fn is_audio(&self) -> bool {
+        self.special == Special::Audio
+    }
+
     /// Whether its reads and writes are a pipe's, a socket's, a terminal's
     /// or a device's, not a node's: one comparison, for the paths that
     /// plain files take.
@@ -503,6 +511,7 @@ impl Drop for FileObject {
         match self.special {
             Special::Kmsg => kmsg::closed(),
             Special::Framebuffer => framebuffer::closed(self.address()),
+            Special::Audio => crate::audio::closed(self),
             _ => {}
         }
         if self.locked.load(Ordering::Acquire) {

@@ -290,8 +290,17 @@ We implement these from their published descriptions. No code is copied.
   which FAT's dates are converted with.
 - The OASIS Virtual I/O Device (virtio) specification, version 1.2: its
   modern PCI transport, split virtqueues, block device
-  ([ADR 0053](docs/adr/0053-modern-virtio-only.md)) and network device
-  ([ADR 0181](docs/adr/0181-virtio-net-copies-frames-through-slots-of-its-own.md)).
+  ([ADR 0053](docs/adr/0053-modern-virtio-only.md)), network device
+  ([ADR 0181](docs/adr/0181-virtio-net-copies-frames-through-slots-of-its-own.md))
+  and sound device ([ADR 0321](docs/adr/0321-the-virtio-sound-card.md)).
+- The Open Sound System's interface as FreeBSD documents it in
+  `sys/sys/soundcard.h` (BSD-2-Clause), with the request numbers Linux's
+  `<sys/soundcard.h>` gives them, which the files of `/devices/audio`
+  take ([ADR 0320](docs/adr/0320-sound-through-devices-audio-and-audiod.md)).
+  We use no code of either: the requests are written anew in
+  `abi/audio.ridl`. Goertzel's algorithm (Gerald Goertzel, "An Algorithm
+  for the Evaluation of Finite Trigonometric Series", 1958) finds the
+  test tones in the boot test's recording.
 - Intel's Serial ATA Advanced Host Controller Interface (AHCI)
   specification, revision 1.3.1, the INCITS ATA/ATAPI Command Set
   (ACS-4) and the Serial ATA Revision 3 specification (SATA-IO), from

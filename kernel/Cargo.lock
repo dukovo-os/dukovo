@@ -253,6 +253,7 @@ dependencies = [
  "radix-arch-riscv64",
  "radix-arch-x86_64",
  "radix-atheros-net",
+ "radix-audio",
  "radix-bitlocker",
  "radix-block",
  "radix-bootfs",
@@ -391,6 +392,13 @@ version = "0.13.0"
 dependencies = [
  "radix-hw",
  "radix-nic",
+]
+
+[[package]]
+name = "radix-audio"
+version = "0.13.0"
+dependencies = [
+ "radix-abi",
 ]
 
 [[package]]

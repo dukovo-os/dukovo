@@ -18,6 +18,8 @@
 //! comes and goes with its pseudo-terminal, a USB disk and its
 //! partitions with the disk (Phase 11b), and a USB serial port's
 //! terminal, `ttyACM0` or `ttyUSB0` and on, with the port (Phase 11g).
+//! Since Phase 14b, `audio` holds the sound outputs (ADR 0320, from
+//! `crate::audio`), which come with their devices.
 
 use radix_block::DeviceRef;
 use radix_klog::{error, warn};
@@ -55,6 +57,8 @@ pub fn init() {
         let fuse: NodeRef = mem::arc(super::fuse::Fuse(next_id()))?;
         root.add("fuse", fuse)?;
         root.add("disk", Link::make(next_id(), DISK_LINKS)?)?;
+        let audio: NodeRef = crate::audio::dir()?;
+        root.add("audio", audio)?;
         super::tty::init(&root)?;
         Ok(root)
     })();

@@ -123,6 +123,8 @@ pub const STD_LINKS: &[(&str, &str)] = &[
     ("system/commands/bash", "nukesh"),
     ("system/commands/sh", "nukesh"),
     ("system/commands/rnukesh", "nukesh"),
+    ("system/commands/audio", "systools"),
+    ("system/commands/audiod", "systools"),
     ("system/commands/authd", "systools"),
     ("system/commands/balance", "systools"),
     ("system/commands/blkid", "systools"),
@@ -380,6 +382,7 @@ pub const STD_MANIFEST: &str = "userspace/programs/Cargo.toml";
 /// host: what they test does not need Radix.
 pub const HOST_TESTED: &[&str] = &[
     "accounts",
+    "audio",
     "catalog-repo",
     "consoled",
     "disk",

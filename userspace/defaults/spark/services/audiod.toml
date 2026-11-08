@@ -1,0 +1,29 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+#
+# Sound: audiod(8) gives the outputs of /devices/audio the volume
+# audio.toml(5) keeps, points /devices/audio/default at the output it
+# names (or the one plugged in last), and turns the keyboard's volume
+# keys into changes of it (ADR 0320).
+#
+# service.toml(5) explains each setting. `service check audiod` checks
+# this file, and `service edit audiod` checks it as you save.
+
+service_version = 1
+description = "Sound"
+program = "/system/commands/audiod"
+# Before consoled, so that the volume is set before anything plays.
+order = 8
+# Started again whenever it ends: always, on-failure or never.
+restart = "always"
+
+[limits]
+memory = "16M"
+
+# What it holds beyond what every service reads (service.toml(5)): the
+# sound outputs, to set their volume and the default; the keyboard, for
+# the volume keys; and the folder of audio.toml(5), which it writes when
+# a key changes the volume. Spark makes the folder the first time.
+[permissions]
+files.read = ["/devices/kbd"]
+files.read-write = ["/devices/audio", "/system/state/audio"]

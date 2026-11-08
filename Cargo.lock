@@ -54,6 +54,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "audio"
+version = "0.13.0"
+
+[[package]]
 name = "base64ct"
 version = "1.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -747,6 +751,7 @@ name = "xtask"
 version = "0.13.0"
 dependencies = [
  "accounts",
+ "audio",
  "disk",
  "dkv",
  "manifest",

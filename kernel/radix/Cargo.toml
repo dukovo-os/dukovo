@@ -49,6 +49,7 @@ radix-gve = { path = "../drivers/gve" }
 radix-i2c = { path = "../drivers/i2c" }
 radix-hal = { path = "../hal" }
 radix-hw = { path = "../lib/hw" }
+radix-audio = { path = "../lib/audio" }
 radix-hid = { path = "../lib/hid" }
 radix-input = { path = "../lib/input" }
 radix-intel-net = { path = "../drivers/intel" }

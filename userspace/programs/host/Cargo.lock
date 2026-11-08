@@ -161,6 +161,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "audio"
+version = "0.13.0"
+
+[[package]]
 name = "autocfg"
 version = "1.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3300,6 +3304,7 @@ version = "0.13.0"
 dependencies = [
  "accounts",
  "acl",
+ "audio",
  "base64",
  "boringtun",
  "catalog-repo",

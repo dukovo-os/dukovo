@@ -11,6 +11,9 @@ repository.workspace = true
 publish.workspace = true
 
 [dependencies]
+# audio(1)'s WAV files, conversion and resampling, and audio.toml(5),
+# which audiod(8) keeps (ADR 0320).
+audio = { path = "../audio" }
 # getfacl(1)'s and setfacl(1)'s access lists, in their attributes (ADR
 # 0256).
 acl = { path = "../acl" }
