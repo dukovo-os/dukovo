@@ -18,6 +18,7 @@ rows on CI's AMD EPYC 7763 runners went over:
 |---|---:|---:|---:|
 | Before ADR 0313 (two runs) | 575 and 590 ns | 601 and 606 ns | 0.96 and 0.97 |
 | After ADR 0313 (two runs) | 612 and 614 ns | 610 and 603 ns | 1.004 and 1.02 |
+| After ADR 0315 (one run) | 603 ns | 615 ns | 0.98 |
 
 The one thread row moved the same way, from 0.94 to 0.98. Linux's time
 stayed where it was on the same runners, and Radix's became 4 to 6 %
@@ -38,10 +39,11 @@ Zen 3, the EPYC 7763's core, fetches and caches decoded instructions by
 aligned 32- and 64-byte windows. Where a hot function falls in those
 windows can change how many it spans and how fast it runs. So a change to
 the firmware's variables turned the open and close gate red, and the next
-unrelated change could as easily turn it green again. Linux has a debug
-option that starts every function at a 64-byte boundary for the same
-reason: so that a change in speed can be told apart from a change in
-where the code fell.
+change to the kernel, to Btrfs's balance (ADR 0315), which open and close
+do not run either, moved them again and brought the row back under.
+Linux has a debug option that starts every function at a 64-byte
+boundary for the same reason: so that a change in speed can be told
+apart from a change in where the code fell.
 
 ## Decision
 
