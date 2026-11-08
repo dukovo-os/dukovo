@@ -1,0 +1,84 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# wgd(8) and wg(8) against the lab PC's WireGuard (wireguard.sh beside
+# this file): the machine, at 10.213.77.2, reaches the lab PC's end at
+# 10.213.77.1 through a tunnel to {peer}, with a preshared key and a
+# keepalive, and the lab PC learns the machine's endpoint from its
+# packets. The keys are the test's own, of no use elsewhere. A
+# connection the machine makes through the tunnel reaches the lab PC from
+# the machine's tunnel address, so it went sealed through the tunnel.
+about = "wgd brings up a WireGuard tunnel to the lab PC: pings both ways and a connection go through it, wg shows the handshake, and the tunnel goes when its file does"
+time = "10m"
+host_needs = ["wg", "ip", "nc"]
+
+[[step]]
+host = "sh {here}/wireguard.sh {port:wg}"
+root = true
+background = true
+ready = "wireguard ready"
+
+# The keys: a private key's public key, and new keys of the right size.
+[[step]]
+run = "echo CNoXvVI0mTg7nhwKAvD7d13bYMAYA0wVpd5lEOodEVI= | wg pubkey"
+expect = "sE3zt+aLAMgH49aIWem8AnakrtrNgjYsrHgn4Lylih0="
+[[step]]
+run = "wg genkey | wg pubkey | wc -c; wg genpsk | wc -c"
+expect = "45\n45"
+
+# The tunnel's file, then wgd reads its files again.
+[[step]]
+run = "sh -c 'mkdir -p /system/state/wireguard && cat > /system/state/wireguard/lab0.conf && chmod 600 /system/state/wireguard/lab0.conf && service wgd reload'"
+root = true
+input = """
+[Interface]
+PrivateKey = CNoXvVI0mTg7nhwKAvD7d13bYMAYA0wVpd5lEOodEVI=
+Address = 10.213.77.2/24
+
+[Peer]
+PublicKey = fsMwDTiMIGqoPoMQUFbfu1D49uoA7Im12w0UawrkkxE=
+PresharedKey = i36PFj7+L+F5oEcXMP17y1SyhwSqDqqULqDwqAeOo54=
+AllowedIPs = 10.213.77.1/32
+Endpoint = {peer}:{port:wg}
+PersistentKeepalive = 5
+"""
+[[step]]
+run = "sh -c 'for i in 1 2 3 4 5 6 7 8 9 10; do ip link show lab0 > /dev/null 2>&1 && break; sleep 1; done; ip link show lab0; ip -br addr show lab0'"
+expect = ["POINTOPOINT", "UP", "mtu 1420", "10.213.77.2/24"]
+[[step]]
+run = "ip route"
+expect = "10.213.77.0/24 dev lab0"
+[[step]]
+run = "journalctl"
+root = true
+expect = "wgd: lab0 is up, on UDP port"
+
+# Through the tunnel, both ways.
+[[step]]
+run = "ping -c 3 10.213.77.1"
+expect = "3 packets transmitted, 3 received"
+[[step]]
+run = "wg show lab0"
+root = true
+expect = ["peer: fsMwDTiMIGqoPoMQUFbfu1D49uoA7Im12w0UawrkkxE=", "preshared key: (hidden)", "endpoint: {peer}:{port:wg}", "latest handshake:", "persistent keepalive: every 5 seconds"]
+[[step]]
+host = "wg show $(cat interface) && ping -c 2 10.213.77.2"
+root = true
+expect = ["peer: sE3zt+aLAMgH49aIWem8AnakrtrNgjYsrHgn4Lylih0=", "latest handshake:", "2 packets transmitted, 2 received"]
+[[step]]
+host = "nc -l -v 10.213.77.1 {port:tunnel} > got.txt 2> who.txt & echo listening; wait"
+background = true
+ready = "listening"
+[[step]]
+run = "echo hello through the tunnel | nc -w 3 10.213.77.1 {port:tunnel}"
+[[step]]
+host = "sleep 1; cat got.txt who.txt"
+expect = ["hello through the tunnel", "Connection received on 10.213.77.2"]
+
+# Its file gone, the tunnel goes.
+[[step]]
+run = "sh -c 'rm /system/state/wireguard/lab0.conf && service wgd reload'"
+root = true
+[[step]]
+run = "sh -c 'for i in 1 2 3 4 5 6 7 8 9 10; do ip link show lab0 > /dev/null 2>&1 || break; sleep 1; done; ip link; ip route'"
+expect_not = ["lab0", "10.213.77.0/24"]

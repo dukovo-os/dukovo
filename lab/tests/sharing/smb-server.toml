@@ -1,0 +1,106 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# smbd(8) and share(1) against the lab PC's smbclient, Samba's, which
+# reaches the machine's port 445 at {machine}:{machine-port:445}. The lab
+# account shares two folders of its home and sets its sharing password;
+# the lab PC lists the shares, copies files both ways and makes a folder
+# over SMB 3, and is refused a wrong password, a write to the read-only
+# share and SMB 1. The lab account then finds what the lab PC wrote, as
+# its own, and the sign-ins in last(1) and lastb(1).
+about = "smbd serves the lab account's shares to the lab PC's smbclient over SMB 3, refusing a wrong password, a read-only write and SMB 1"
+time = "15m"
+host_needs = ["smbclient", "seq", "cmp"]
+
+[[step]]
+run = "mkdir -p shared/inside readonly && echo from dukovo > shared/from-dukovo.txt && echo kept > readonly/kept.txt"
+[[step]]
+run = "share add --comment 'The lab account' Lab /users/lab/shared"
+root = true
+expect = "Shared /users/lab/shared as Lab, read-write."
+[[step]]
+run = "share add --read-only Kept /users/lab/readonly"
+root = true
+expect = "Shared /users/lab/readonly as Kept, read-only."
+# A name that cannot be a share's, and one that is taken, are refused.
+[[step]]
+run = "share add 'bad/name' /users/lab/shared"
+root = true
+exit = 1
+expect = "cannot hold `/`"
+[[step]]
+run = "share add Lab /users/lab/readonly"
+root = true
+exit = 1
+expect = "there is a share called Lab already"
+# The lab account's own sharing password, after its login password.
+[[step]]
+run = "share password"
+input = "{password}\nlab-share-pass\nlab-share-pass\n"
+expect = "The sharing password of lab is set."
+[[step]]
+run = "share on"
+root = true
+expect = "Sharing is on"
+[[step]]
+run = "share"
+expect = ["Sharing is on", "Lab   /users/lab/shared    read-write  The lab account", "Kept  /users/lab/readonly  read-only"]
+
+# The lab PC's client, with none of the lab PC's own Samba settings.
+[[step]]
+host = "smbclient --configfile=/dev/null -L //{machine} -p {machine-port:445} -U lab%lab-share-pass -m SMB3"
+expect = ["Lab             Disk      The lab account", "Kept            Disk"]
+[[step]]
+host = "echo from the lab PC > up.txt && seq 1 500000 > big.txt && smbclient --configfile=/dev/null //{machine}/Lab -p {machine-port:445} -U lab%lab-share-pass -m SMB3 -c 'get from-dukovo.txt got.txt; put up.txt; put big.txt; get big.txt back.txt; mkdir made; ls' && cat got.txt && cmp big.txt back.txt && echo the big file came back whole"
+expect = ["up.txt", "big.txt", "made", "from dukovo", "the big file came back whole"]
+[[step]]
+host = "smbclient --configfile=/dev/null //{machine}/Lab -p {machine-port:445} -U lab%not-it -m SMB3 -c ls"
+exit = 1
+expect = "NT_STATUS_LOGON_FAILURE"
+[[step]]
+host = "smbclient --configfile=/dev/null //{machine}/Kept -p {machine-port:445} -U lab%lab-share-pass -m SMB3 -c 'get kept.txt; put up.txt' && cat kept.txt"
+exit = 1
+expect = "NT_STATUS_ACCESS_DENIED opening remote file \\up.txt"
+# SMB 1, which the client is let speak here, is refused.
+[[step]]
+host = "smbclient --configfile=/dev/null --option='client min protocol=NT1' //{machine}/Lab -p {machine-port:445} -U lab%lab-share-pass -m NT1 -c ls"
+exit = 1
+expect = "Protocol negotiation"
+expect_not = "from-dukovo.txt"
+
+# On the machine: what the lab PC wrote is the lab account's.
+[[step]]
+run = "ls -l shared"
+expect = ["lab lab", "up.txt", "big.txt", "made"]
+[[step]]
+run = "cat shared/up.txt && seq 1 500000 | cmp - shared/big.txt && echo the same big file"
+expect = ["from the lab PC", "the same big file"]
+[[step]]
+run = "ls readonly"
+expect = "kept.txt"
+expect_not = "up.txt"
+[[step]]
+run = "last"
+expect = ["smb", "{peer}"]
+[[step]]
+run = "lastb"
+root = true
+expect = ["smb", "{peer}"]
+
+# Off: the sessions end and the port closes.
+[[step]]
+run = "share off"
+root = true
+expect = "Sharing is off"
+[[step]]
+host = "smbclient --configfile=/dev/null -L //{machine} -p {machine-port:445} -U lab%lab-share-pass -m SMB3"
+exit = 1
+expect = "Protocol negotiation"
+expect_not = "Lab             Disk"
+[[step]]
+run = "sh -c 'share remove Kept && share remove Lab && share password --clear lab'"
+root = true
+[[step]]
+run = "share"
+expect = "Sharing is off"
+expect_not = ["Lab ", "Kept "]

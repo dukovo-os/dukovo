@@ -1,0 +1,86 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# smb(1) and mount(8) against the lab PC's Samba (samba.sh beside this
+# file), which the machine reaches at {peer}: the lab account mounts the
+# share through elevate with its own user and group, as smb(1)'s
+# example does, writes in it, and the lab PC finds what it wrote.
+about = "smb lists, browses and mounts the lab PC's Samba share, writes in it, and is refused a wrong password and a read-only write"
+time = "10m"
+host_needs = ["smbd", "pdbedit", "nc"]
+
+[[step]]
+host = "sh {here}/samba.sh {port:smb}"
+background = true
+ready = "samba ready"
+
+# The server's shares and a folder of one, signed in as alice.
+[[step]]
+run = "smb shares -o user=alice,password=alice-share-pass //{peer}:{port:smb}"
+expect = ["share", "The lab PC's test share", "ro", "The same folder only to read"]
+expect_not = "IPC$"
+[[step]]
+run = "smb ls -o user=alice,password=alice-share-pass //{peer}:{port:smb}/share"
+expect = ["folder/", "from-lab-pc.txt"]
+[[step]]
+run = "smb ls -o user=alice,password=alice-share-pass smb://{peer}:{port:smb}/share/folder"
+expect = "inner.txt"
+
+# A wrong password and a share that is not there are refused.
+[[step]]
+run = "smb ls -o user=alice,password=not-it //{peer}:{port:smb}/share"
+exit = 1
+expect = "LOGON_FAILURE"
+[[step]]
+run = "smb ls -o user=alice,password=alice-share-pass //{peer}:{port:smb}/no-such-share"
+exit = 1
+expect = "BAD_NETWORK_NAME"
+
+# Mounted as the lab account's, it reads the lab PC's file and writes,
+# renames into a new folder, and removes.
+[[step]]
+run = "mkdir -p smb-share"
+[[step]]
+run = "smb mount -o user=alice,password=alice-share-pass,uid=$(id -u),gid=$(id -g) //{peer}:{port:smb}/share /users/lab/smb-share"
+root = true
+[[step]]
+run = "mount"
+expect = "//{peer}/share on /users/lab/smb-share type fuse (rw)"
+[[step]]
+run = "ls -l smb-share"
+expect = ["lab lab", "from-lab-pc.txt", "folder"]
+[[step]]
+run = "cat smb-share/from-lab-pc.txt smb-share/folder/inner.txt"
+expect = ["from the lab PC", "inside"]
+[[step]]
+run = "echo from dukovo > smb-share/from-dukovo.txt && mkdir smb-share/made && mv smb-share/from-dukovo.txt smb-share/made/ && echo scratch > smb-share/scratch.txt && rm smb-share/scratch.txt && ls smb-share smb-share/made"
+expect = ["made", "from-dukovo.txt"]
+expect_not = "scratch.txt"
+[[step]]
+host = "cat share/made/from-dukovo.txt; ls share"
+expect = "from dukovo"
+expect_not = "scratch.txt"
+[[step]]
+run = "umount /users/lab/smb-share"
+root = true
+[[step]]
+run = "mount"
+expect_not = "smb-share"
+
+# mount(8) runs smb for -t cifs, here only to read: a write is refused.
+[[step]]
+run = "mount -t cifs -o ro,user=alice,password=alice-share-pass,port={port:smb},uid=$(id -u) //{peer}/ro /users/lab/smb-share"
+root = true
+[[step]]
+run = "cat smb-share/made/from-dukovo.txt"
+expect = "from dukovo"
+[[step]]
+run = "echo no > smb-share/refused.txt"
+exit = 1
+expect = "Read-only file system"
+[[step]]
+run = "umount /users/lab/smb-share"
+root = true
+[[step]]
+host = "ls share"
+expect_not = "refused.txt"
