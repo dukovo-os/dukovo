@@ -235,6 +235,11 @@ enum SocketOption: u32 {
     /// protocol_unreachable, prohibited and the like). Turning it off
     /// throws away those that wait. (Since Phase 12, ADR 0345.)
     receive_errors = 23;
+    /// IP_TOS and IPV6_TCLASS: the type of service a socket's packets
+    /// would carry, 0 to 255. It is taken and read back, as on Linux, but
+    /// every packet still goes with 0 (ADR 0345, ADR 0410): what is on the
+    /// wire is the kernel's to choose.
+    type_of_service = 24;
 }
 
 /// The most files one `send_files` sends, as Linux's SCM_MAX_FD.

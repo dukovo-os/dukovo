@@ -514,6 +514,19 @@ fn tcp(checks: &mut Checks, out: u32) {
         quick.option(SocketOption::Kind) == Ok(u64::from(SocketType::Stream.raw())),
         "the socket's kind",
     );
+    // The type of service is 0 to begin with; it is taken and read back,
+    // though every packet still goes out with 0 (ADR 0345, ADR 0410).
+    checks.check(
+        quick.option(SocketOption::TypeOfService) == Ok(0),
+        "the type of service begins at 0",
+    );
+    checks
+        .worked(quick.set_option(SocketOption::TypeOfService, 184), "setting the type of service");
+    checks.check(
+        quick.option(SocketOption::TypeOfService) == Ok(184),
+        "the type of service reads back as it was set",
+    );
+    println!("sockets: tcp: the type of service is taken and read back");
     drop(taken);
     println!("sockets: tcp: a socket that does not wait connected, and said when it had");
 }
