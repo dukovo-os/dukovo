@@ -617,6 +617,14 @@ fn rights(checks: &mut Checks, out: u32, listen: u32) {
     );
     checks.worked(b.bind(listen, LOOPBACK, 8001), "binding to a port in the range");
     checks.worked(b.listen(), "listening on it");
+    // A port the kernel picks (bind to 0) is in reach to listen on if the
+    // capability may receive at all, as on Linux, though its range stops
+    // short of the kernel's ephemeral ports (ADR 0412).
+    if let Some(picked) = checks.worked(stream(listen), "making a socket for a kernel-picked port")
+    {
+        checks.worked(picked.bind(listen, LOOPBACK, 0), "binding it to a port the kernel picks");
+        checks.worked(picked.listen(), "listening on the kernel-picked port");
+    }
     let made = Socket::new(listen, SocketType::Datagram, PipeFlags::NONE);
     if let Some(datagrams) = checks.worked(made, "making a datagram socket to listen") {
         checks.refused(
