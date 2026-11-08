@@ -1,18 +1,32 @@
 # SPDX-FileCopyrightText: 2026 The Dukovo contributors
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 
-about = "To the private network, the machine answers on SSH and nothing else probed"
-time = "6m"
+about = "To the private network, the machine answers on SSH alone: of the well-known service ports, only 22 is open, and nothing but sshd listens for other machines"
+time = "8m"
 fresh = true
 
 # SSH is open to a machine on the same network.
 [[step]]
 attack = "nc -z -w3 {target} 22"
-# Services the machine does not run are not listening: a closed port
-# refuses the connection, so nc exits non-zero.
+# Services the machine does not run are not listening: the firewall drops
+# a connection to a closed port, so nc gives up and exits non-zero.
 [[step]]
 attack = "nc -z -w3 {target} 23"
 exit = 1
 [[step]]
 attack = "nc -z -w3 {target} 80"
 exit = 1
+# The ports services usually offer, each tried from the attacker. The
+# firewall drops what it does not let in, so each closed port costs a
+# one-second wait; the list is what a scan would try first. Only SSH
+# answers. (The trailing dot keeps "open: 22" from matching "open: 22 80".)
+[[step]]
+attack = "sh -c 'open=; for port in 21 22 23 25 53 80 110 111 135 139 143 443 445 631 993 2049 3306 5432 5900 6000 8000 8080 8443 9090; do nc -z -w1 {target} $port 2> /dev/null && open=\"$open $port\"; done; echo \"open:$open.\"'"
+expect = "open: 22."
+# On the machine itself: every TCP listener but sshd's is for this machine
+# alone (a loopback address), so a port this list does not name is not
+# open to the network either. awk prints the other listeners, and the
+# count must be none.
+[[step]]
+run = "sh -c 'ss -tlnH | awk \"{ print \\$4 }\" | grep -v -e \"^127\\.\" -e \"^\\[::1\\]\" -e \":22\\$\" | wc -l | sed \"s/^/others: /; s/$/./\"'"
+expect = "others: 0."

@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 The Dukovo contributors
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 
-about = "SSH's key exchange, host key and cipher are modern and strong, with no SHA-1"
+about = "SSH's key exchange, host key and cipher are modern and strong, and the server offers nothing with SHA-1, CBC or MD5"
 time = "6m"
 fresh = true
 
@@ -14,3 +14,13 @@ fresh = true
 attack = "sh -c 'ssh -vv -o BatchMode=yes -o StrictHostKeyChecking=no lab@{target} true 2>&1 | grep -i \"kex:\"'"
 expect = ["sha256", "ssh-ed25519", "chacha20-poly1305@openssh.com"]
 expect_not = "sha1"
+# What was settled on is what this client prefers. What the server would
+# accept from any client is its own offer, which `ssh -vv` prints as the
+# peer server's KEXINIT proposal: sed keeps that part alone (the client's
+# own proposal comes first, and may list weaker ones). The server offers
+# no SHA-1 key exchange, host key signature or MAC, no CBC cipher and no
+# MD5.
+[[step]]
+attack = "sh -c 'ssh -vv -o BatchMode=yes -o StrictHostKeyChecking=no lab@{target} true 2>&1 | sed -n \"/peer server KEXINIT proposal/,/first_kex_follows/p\"'"
+expect = ["peer server KEXINIT proposal", "KEX algorithms:", "host key algorithms:", "ciphers ctos:", "MACs ctos:"]
+expect_not = ["sha1", "-cbc", "md5", "ssh-rsa", "ssh-dss", "arcfour", "3des"]
