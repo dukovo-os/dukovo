@@ -1,0 +1,25 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "chown changes a file's owner and chgrp its group: a plain user may not give a file away, but root may, with either the owner:group form or the two commands"
+time = "2m"
+
+# A plain user cannot hand a file to someone else.
+[[step]]
+run = "cd /tmp; rm -f lab-owned; touch lab-owned; chown root lab-owned"
+exit = 1
+expect = ["chown:", "Operation not permitted"]
+
+# As root: chown sets the owner, chgrp sets the group. elevate raises only the
+# first command of a step, so the whole line runs under sh -c; and the file is
+# made inside the same root step, since root's /tmp is its own.
+[[step]]
+run = "sh -c 'cd /tmp; rm -f owned-a; touch owned-a; chown lab owned-a; chgrp admins owned-a; ls -l owned-a'"
+root = true
+expect = ["lab", "admins", "owned-a"]
+
+# The owner:group form sets both at once, here from root:root to lab:admins.
+[[step]]
+run = "sh -c 'cd /tmp; rm -f owned-b; touch owned-b; chown lab:admins owned-b; ls -l owned-b'"
+root = true
+expect = ["lab", "admins", "owned-b"]

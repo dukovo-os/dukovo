@@ -1,0 +1,21 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "which finds a command's path, fails on an unknown name, and -a lists every match"
+time = "1m"
+
+# which prints where a command on the PATH lives.
+[[step]]
+run = "which ls"
+expect = "/system/commands/ls"
+
+# An unknown name prints nothing and exits non-zero.
+[[step]]
+run = "which no-such-command-xyz"
+exit = 1
+expect_not = "/system/commands"
+
+# -a lists every match for the name; the shell lives among the system commands.
+[[step]]
+run = "which -a sh"
+expect = "/system/commands/sh"

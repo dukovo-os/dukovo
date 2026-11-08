@@ -1,0 +1,11 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "column -t lays whitespace-separated input out as a table, padding each column to its widest cell so the next column lines up"
+time = "1m"
+
+# The names differ in length, so column pads each to the width of the longest
+# ("alice") and the "age" column starts at the same offset on every row.
+[[step]]
+run = "printf 'name age city\\nalice 30 denver\\nbob 25 ogden\\n' | column -t"
+expect = ["name   age", "alice  30", "bob    25", "denver", "ogden"]
