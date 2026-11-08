@@ -16,7 +16,10 @@ use std::time::{Duration, Instant};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use super::rdisk::{self, FormField, PartForm, Rdisk};
-use crate::answers::{self, Account, Answers, Change, Disk, Fixed, Layout, Network, Role};
+use crate::answers::{
+    self, Account, Answers, Change, Disk, Features, Fixed, Layout, Network, Profile, Role,
+};
+use crate::features::{self, Offered};
 use crate::log::{Event, Step};
 use crate::machine::{DiskInfo, Holds, Machine};
 use crate::messages::{self, Arg};
@@ -36,6 +39,9 @@ pub enum Page {
     Disk,
     /// The manual layout's partitions, on the rdisk screen.
     Rdisk,
+    /// What the machine is for: a profile, its features and the web
+    /// console.
+    Software,
     /// The administrator and the other accounts.
     You,
     /// Everything the install will do, and the disk's name typed to
@@ -51,8 +57,8 @@ pub enum Page {
 
 impl Page {
     /// The pages the bar at the top names, in order.
-    pub const STEPS: [Page; 5] =
-        [Page::Welcome, Page::Network, Page::Disk, Page::You, Page::Review];
+    pub const STEPS: [Page; 6] =
+        [Page::Welcome, Page::Network, Page::Disk, Page::Software, Page::You, Page::Review];
 
     /// The id of its name among the messages.
     #[must_use]
@@ -63,6 +69,7 @@ impl Page {
             Page::Network => "page-network",
             Page::Disk => "page-disk",
             Page::Rdisk => "page-rdisk",
+            Page::Software => "page-software",
             Page::You => "page-you",
             Page::Review => "page-review",
             Page::Installing => "page-installing",
@@ -129,6 +136,12 @@ pub enum Id {
     Manual,
     /// Disk: the swap's size in GiB.
     Swap,
+    /// Software: a profile, by its place in [`Profile::ALL`].
+    Profile(usize),
+    /// Software: a feature, by its place in the release's list.
+    Feature(usize),
+    /// Software: turn the web console on.
+    WebConsole,
     /// You: the administrator's full name.
     Name,
     /// You: the administrator's user name.
@@ -389,6 +402,15 @@ pub struct App {
     pub mirror: Option<usize>,
     /// The rdisk screen, once the manual layout has shown it.
     pub rdisk: Option<Rdisk>,
+    /// What the machine is for.
+    pub profile: Profile,
+    /// The features the release offers, read from the live system.
+    pub features: Vec<Offered>,
+    /// The features ticked, by their IDs.
+    pub picked: Vec<String>,
+    /// Whether the web console is to be turned on: the profile's choice
+    /// until it is changed.
+    pub web_console: bool,
     /// The administrator's full name.
     pub name: String,
     /// The administrator's user name.
@@ -472,6 +494,10 @@ impl App {
             layout: Layout::Guided,
             mirror: None,
             rdisk: None,
+            profile: Profile::Server,
+            features: Vec::new(),
+            picked: Vec::new(),
+            web_console: Profile::Server.web_console(),
             name: String::new(),
             user: String::new(),
             user_typed: false,
@@ -495,6 +521,7 @@ impl App {
             Page::Network => self.network_rows(),
             Page::Disk => self.disk_rows(),
             Page::Rdisk => Vec::new(),
+            Page::Software => self.software_rows(),
             Page::You => self.you_rows(),
             Page::Review => self.review_rows(),
             Page::Installing | Page::Done | Page::Failed => Vec::new(),
@@ -511,7 +538,9 @@ impl App {
             Page::Installing => &[],
             Page::Done => &[Id::Restart, Id::ShowLog, Id::SaveSetup],
             Page::Failed => &[Id::ShowLog, Id::Live],
-            Page::Network | Page::Disk | Page::Rdisk | Page::You => &[Id::Back, Id::Next, Id::Help],
+            Page::Network | Page::Disk | Page::Rdisk | Page::Software | Page::You => {
+                &[Id::Back, Id::Next, Id::Help]
+            }
         };
         ids.iter().map(|id| (*id, messages::text(button_name(*id)))).collect()
     }
@@ -961,6 +990,52 @@ impl App {
         self.release_bytes + plan::ROOM
     }
 
+    fn software_rows(&self) -> Vec<Row> {
+        let mut rows = vec![Row::Text(messages::text("software-intro"), Look::Bold)];
+        for (i, profile) in Profile::ALL.into_iter().enumerate() {
+            let id = format!("software-{}", profile.id());
+            rows.push(field(
+                Id::Profile(i),
+                Kind::Choice(self.profile == profile),
+                &id,
+                &messages::text(&format!("{id}-note")),
+            ));
+        }
+        rows.extend([
+            Row::Text(messages::text("software-base"), Look::Dim),
+            Row::Blank,
+            Row::Text(messages::text("software-features"), Look::Bold),
+        ]);
+        if self.features.is_empty() {
+            rows.push(Row::Text(messages::text("software-none"), Look::Dim));
+        }
+        for (i, offered) in self.features.iter().enumerate() {
+            let note = if offered.at_install() {
+                let services = offered.feature.services.join(" and ");
+                messages::with("software-turns-on", &[("services", Arg::Text(&services))])
+            } else {
+                messages::with("software-after", &[("id", Arg::Text(&offered.id))])
+            };
+            rows.push(Row::Field(Field {
+                id: Id::Feature(i),
+                kind: Kind::Toggle(self.picked.contains(&offered.id)),
+                label: offered.feature.name.clone(),
+                note,
+                enabled: offered.at_install(),
+            }));
+        }
+        rows.extend([
+            Row::Blank,
+            field(
+                Id::WebConsole,
+                Kind::Toggle(self.web_console),
+                "software-web-console",
+                &messages::text("software-web-console-note"),
+            ),
+        ]);
+        rows
+    }
+
     fn you_rows(&self) -> Vec<Row> {
         let mut rows = vec![
             text(messages::text("you-intro")),
@@ -1059,6 +1134,7 @@ impl App {
         )];
         people.extend(answers.users.iter().map(|user| format!("{} ({})", user.user, user.name)));
         rows.push(Row::Text(label("review-accounts", people.join(", ")), Look::Plain));
+        rows.push(Row::Text(label("review-software", self.review_software(answers)), Look::Plain));
         let mut changed: Vec<&str> =
             answers.disk.changes.iter().map(|change| change.disk.as_str()).collect();
         changed.extend(answers.mirror().filter(|_| answers.disk.layout == Layout::Mirror));
@@ -1071,6 +1147,21 @@ impl App {
             ));
         }
         rows
+    }
+
+    /// The review's line of what the machine is for: its profile, each
+    /// feature added, by name, and the web console.
+    fn review_software(&self, answers: &Answers) -> String {
+        let mut parts = vec![messages::text(&format!("software-{}", answers.profile.id()))];
+        parts.extend(answers.chosen_features().into_iter().map(|id| {
+            self.features
+                .iter()
+                .find(|offered| offered.id == id)
+                .map_or(id, |offered| offered.feature.name.clone())
+        }));
+        let console = if answers.web_console() { "on" } else { "off" };
+        parts.push(messages::text(&format!("review-web-console-{console}")));
+        parts.join(" · ")
     }
 
     /// The review's lines of the guided or free-space layout on `target`
@@ -1378,6 +1469,18 @@ impl App {
             admin: account(&self.name, &self.user),
             users: self.people.iter().map(|person| account(&person.name, &person.user)).collect(),
             keep_password_hashes: self.keep_hashes,
+            profile: self.profile,
+            features: Features {
+                // In the release's order, as the page lists them.
+                add: self
+                    .features
+                    .iter()
+                    .filter(|offered| self.picked.contains(&offered.id))
+                    .map(|offered| offered.id.clone())
+                    .collect(),
+                remove: Vec::new(),
+            },
+            web_console: Some(self.web_console),
             later: std::collections::BTreeMap::new(),
         })
     }
@@ -1424,6 +1527,7 @@ impl App {
                 }
                 _ => &["disk"],
             },
+            Page::Software => &["features"],
             Page::You => {
                 if self.password != self.repeat {
                     return Err(messages::text("you-mismatch"));
@@ -1705,6 +1809,23 @@ impl App {
                 self.confirm.clear();
             }
             Id::KeepHashes => self.keep_hashes = !self.keep_hashes,
+            Id::Profile(i) => {
+                if let Some(profile) = Profile::ALL.get(i) {
+                    self.profile = *profile;
+                    self.web_console = profile.web_console();
+                }
+            }
+            Id::Feature(i) => {
+                if let Some(offered) = self.features.get(i) {
+                    match self.picked.iter().position(|id| *id == offered.id) {
+                        Some(at) => {
+                            self.picked.remove(at);
+                        }
+                        None => self.picked.push(offered.id.clone()),
+                    }
+                }
+            }
+            Id::WebConsole => self.web_console = !self.web_console,
             Id::Guided => self.layout = Layout::Guided,
             Id::Beside => {
                 self.layout = Layout::Beside;
@@ -1739,7 +1860,16 @@ impl App {
             }
             Id::Live => Outcome::Quit,
             Id::Load => {
-                match self.setup_files.get(self.setup_file).map(|found| found.answers.clone()) {
+                let found = self.setup_files.get(self.setup_file).map(|found| {
+                    // The features it adds must be this release's, which
+                    // only the install stick knows, not the file's checks.
+                    found.answers.clone().and_then(|answers| {
+                        features::check_offered(&answers, &self.features)
+                            .map(|_| answers)
+                            .map_err(|problem| vec![problem])
+                    })
+                });
+                match found {
                     Some(Ok(answers)) => {
                         self.loaded = Some(answers);
                         self.confirm.clear();
@@ -1792,7 +1922,7 @@ impl App {
                 }
                 Page::Rdisk
             }
-            Page::Disk => Page::You,
+            Page::Disk => Page::Software,
             Page::Rdisk => {
                 let Some(rdisk) = &self.rdisk else { return Outcome::Stay };
                 match rdisk.done(&self.machine, self.root_bytes()) {
@@ -1801,7 +1931,7 @@ impl App {
                         // review asks to have typed.
                         self.disk = Some(target);
                         self.confirm.clear();
-                        Page::You
+                        Page::Software
                     }
                     Err(problem) => {
                         self.problem = Some(problem);
@@ -1809,6 +1939,7 @@ impl App {
                     }
                 }
             }
+            Page::Software => Page::You,
             Page::You => Page::Review,
             Page::Review => return self.press(Id::Install),
             Page::SetupFile => return self.press(Id::Load),
@@ -1824,8 +1955,9 @@ impl App {
             Page::SetupFile | Page::Network => Page::Welcome,
             Page::Disk => Page::Network,
             Page::Rdisk => Page::Disk,
-            Page::You if self.layout == Layout::Manual => Page::Rdisk,
-            Page::You => Page::Disk,
+            Page::Software if self.layout == Layout::Manual => Page::Rdisk,
+            Page::Software => Page::Disk,
+            Page::You => Page::Software,
             Page::Review if self.loaded.take().is_some() => Page::SetupFile,
             Page::Review => Page::You,
             other => other,

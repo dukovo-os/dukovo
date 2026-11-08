@@ -179,7 +179,7 @@ fn step_bar(app: &App) -> Line<'static> {
         if i > 0 {
             spans.push(Span::styled(" › ", Style::new().fg(GREY)));
         }
-        let name = messages::text(page.name());
+        let name = messages::text(&page.name().replacen("page-", "bar-", 1));
         spans.push(match at {
             Some(at) if i < at => Span::styled(format!(" ✓ {name} "), Style::new().fg(MINT)),
             Some(at) if i == at => Span::styled(format!(" {name} "), look::focus()),
@@ -189,7 +189,7 @@ fn step_bar(app: &App) -> Line<'static> {
     Line::from(spans)
 }
 
-/// The page's heading: `Step 2 of 5 · Network and name`.
+/// The page's heading: `Step 2 of 6 · Network and name`.
 fn heading(app: &App) -> String {
     let name = messages::text(app.page.name());
     match (app.page.step(), app.page) {

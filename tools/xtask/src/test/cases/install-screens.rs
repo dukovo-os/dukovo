@@ -7,20 +7,22 @@
 //! them for root's shell on tty1, where *dukovo-install* shows them
 //! again. Each page is answered by keys as a person would: a computer
 //! name, a time zone found by typing the start of its name, the blank
-//! virtio disk, and alice with a password typed twice; the review takes
+//! virtio disk, the Server profile with File sharing ticked (ADR 0317),
+//! and alice with a password typed twice; the review takes
 //! the disk's name to confirm, and the progress runs to the Done page.
 //! L shows the install log, and the Done page saves the answers as a
 //! setup file on the stick, which the shell on tty2 finds there. The
 //! host finds the disk sound, as *install-uefi* does, and the second
 //! boot is from that disk alone: alice signs in with the password typed
-//! in the screens and finds the settings they made.
+//! in the screens and finds the settings they made, and File sharing
+//! added, its services started at that first boot.
 
 use super::super::*;
 use super::install_uefi::{INSTALL_DISKS, wait_for_screen};
 
 pub const CASE: Case = Case {
     name: "install-screens",
-    about: "The installer's screens on tty1 install Dukovo onto a blank disk under UEFI, every page answered by keys: Live console and back, a time zone typed by name, the disk confirmed by its name, the progress to Done, the log, and a setup file saved on the stick; the disk boots alone, where alice signs in with the password typed in the screens",
+    about: "The installer's screens on tty1 install Dukovo onto a blank disk under UEFI, every page answered by keys: Live console and back, a time zone typed by name, the Server profile with File sharing, the disk confirmed by its name, the progress to Done, the log, and a setup file saved on the stick; the disk boots alone, where alice signs in with the password typed in the screens",
     firmware: Firmware::Uefi,
     media: Media::Usb,
     // As the Install Dukovo entry gives it: the test image's menu starts
@@ -53,7 +55,7 @@ fn screens(vm: &mut Vm, _case: &Case) -> Result<(), String> {
     vm.expect("spark: the live system: /system is the boot archive, in memory, and no disk is the root")?;
     vm.expect_anywhere("consoled: install: the installer's screens on tty1")?;
     vm.expect_anywhere("consoled: started /system/commands/dukovo-install on tty1 as process ")?;
-    let welcome = ["Step 1 of 5", "How do you want to install?", "Step by step"];
+    let welcome = ["Step 1 of 6", "How do you want to install?", "Step by step"];
     vm.expect_screen(&[&format!("Install Dukovo {VERSION}"), welcome[0], welcome[1]])?;
 
     // F1 shows the page's help, and Esc closes it.
@@ -72,7 +74,7 @@ fn screens(vm: &mut Vm, _case: &Case) -> Result<(), String> {
     // Network: the card, DHCP and fixed, then the computer's name and
     // its time zone, found by the start of its name.
     vm.press(&["ret"])?;
-    vm.expect_screen(&["Step 2 of 5", "Network cards found:", "Automatic (DHCP)"])?;
+    vm.expect_screen(&["Step 2 of 6", "Network cards found:", "Automatic (DHCP)"])?;
     vm.press(&["down", "down", "down"])?;
     vm.press(&["backspace"; 6])?;
     vm.type_text(HOSTNAME)?;
@@ -82,11 +84,25 @@ fn screens(vm: &mut Vm, _case: &Case) -> Result<(), String> {
 
     // Disk: the stick cannot be chosen; the blank disk is.
     vm.press(&["ret"])?;
-    vm.expect_screen(&["Step 3 of 5", "the install stick, can't be chosen", "vda", "Erase the disk"])?;
+    vm.expect_screen(&["Step 3 of 6", "the install stick, can't be chosen", "vda", "Erase the disk"])?;
     vm.press(&["spc", "ret"])?;
 
+    // Software: the Server profile, with the web console, and File
+    // sharing ticked; Tab goes on to Next past the web console and Back.
+    vm.expect_screen(&[
+        "Step 4 of 6",
+        "What is this machine for?",
+        "Server",
+        "[ ] File sharing",
+        "turns on smbd and nfsd",
+        "[x] Turn on Dukovo Admin, the web console",
+    ])?;
+    vm.press(&["down", "down", "down", "spc"])?;
+    vm.expect_screen(&["[x] File sharing"])?;
+    vm.press(&["tab", "tab", "tab", "ret"])?;
+
     // You: the name makes the user name.
-    vm.expect_screen(&["Step 4 of 5", "The administrator account."])?;
+    vm.expect_screen(&["Step 5 of 6", "The administrator account."])?;
     vm.type_text("Alice Liddell")?;
     vm.press(&["tab", "tab"])?;
     vm.type_text(PASSWORD)?;
@@ -97,10 +113,11 @@ fn screens(vm: &mut Vm, _case: &Case) -> Result<(), String> {
     // Review: everything the install does, and the disk's name to
     // confirm it.
     vm.expect_screen(&[
-        "Step 5 of 5",
+        "Step 6 of 6",
         "Erase     vda",
         "alice (Alice Liddell), administrator",
         "America/Denver",
+        "web console on (from release 0.16)",
         "Type vda to confirm",
     ])?;
     vm.expect_screen(&[HOSTNAME])?;
@@ -167,6 +184,20 @@ fn installed(vm: &mut Vm, _case: &Case) -> Result<(), String> {
          ! grep -q argon2 /system/settings/install/answers.json; echo \"saved: $((10 + $?))\"",
     )?;
     vm.expect_screen(&["saved: 10"])?;
+
+    // File sharing was added: Spark started its services at this first
+    // boot, and the web console's choice waits in the answers.
+    vm.expect_anywhere("spark: started smbd (/system/commands/smbd) as process ")?;
+    vm.expect_anywhere("spark: started nfsd (/system/commands/nfsd) as process ")?;
+    answer_prompt(vm, "$", "clear; feature list | tail -1")?;
+    vm.expect_screen(&["file-sharing  added      File sharing"])?;
+    answer_prompt(
+        vm,
+        "$",
+        "echo \"chose\"\": $(grep -c -e '\"profile\": \"server\"' -e '\"web_console\": true' \
+         /system/settings/install/answers.json)\"",
+    )?;
+    vm.expect_screen(&["chose: 2"])?;
 
     vm.press_power_button()?;
     vm.expect("spark: every service has stopped")?;

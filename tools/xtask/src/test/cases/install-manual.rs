@@ -82,11 +82,11 @@ fn screens(vm: &mut Vm, _case: &Case) -> Result<(), String> {
 
     // Welcome and Network as they are; the Disk page's Manual.
     vm.type_text("clear; dukovo-install\n")?;
-    vm.expect_screen(&["Step 1 of 5", "How do you want to install?"])?;
+    vm.expect_screen(&["Step 1 of 6", "How do you want to install?"])?;
     vm.press(&["ret"])?;
-    vm.expect_screen(&["Step 2 of 5"])?;
+    vm.expect_screen(&["Step 2 of 6"])?;
     vm.press(&["ret"])?;
-    vm.expect_screen(&["Step 3 of 5", "vda", "Manual: choose the partitions yourself"])?;
+    vm.expect_screen(&["Step 3 of 6", "vda", "Manual: choose the partitions yourself"])?;
     // The disk, then Manual: the second choice after the guided layout,
     // or the third if the disk's free space is room enough for the
     // free-space layout, which the size of the release decides.
@@ -124,8 +124,13 @@ fn screens(vm: &mut Vm, _case: &Case) -> Result<(), String> {
     vm.expect_screen(&["make Dukovo root on vda", "Pending changes: 5"])?;
     vm.press(&["ret"])?;
 
+    // Software: Server as it starts, on to You: Up from the first field
+    // wraps round to Help, then Next.
+    vm.expect_screen(&["Step 4 of 6", "What is this machine for?"])?;
+    vm.press(&["up", "up", "ret"])?;
+
     // You: the name makes the user name.
-    vm.expect_screen(&["Step 4 of 5", "The administrator account."])?;
+    vm.expect_screen(&["Step 5 of 6", "The administrator account."])?;
     vm.type_text("Alice Liddell")?;
     vm.press(&["tab", "tab"])?;
     vm.type_text(PASSWORD)?;
@@ -136,7 +141,7 @@ fn screens(vm: &mut Vm, _case: &Case) -> Result<(), String> {
     // Review: each change, and UEFI's GRUB alone, as the disk has no
     // BIOS boot partition.
     vm.expect_screen(&[
-        "Step 5 of 5",
+        "Step 6 of 6",
         "Change    vda",
         "delete  2  Old",
         "make    2  EFI system",

@@ -12,6 +12,7 @@
 
 use std::collections::BTreeMap;
 
+use manifest::feature;
 use serde::{Deserialize, Serialize};
 
 /// The version of the answers file this installer reads.
@@ -26,9 +27,9 @@ pub const DEFAULT_TIME_ZONE: &str = "UTC";
 /// The most swap the installer makes, in GiB.
 pub const SWAP_MAX_GIB: u32 = 64;
 
-/// The keys of what the installer's server installs will add: a profile,
-/// its features, the web console, SSH, updates and closed firmware.
-const LATER: [&str; 6] = ["profile", "features", "web_console", "ssh", "updates", "firmware"];
+/// The keys of what later parts of the installer will add: SSH, updates
+/// and closed firmware.
+const LATER: [&str; 3] = ["ssh", "updates", "firmware"];
 
 /// An answers file.
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -63,11 +64,88 @@ pub struct Answers {
     /// repeat install sets the same passwords.
     #[serde(default, skip_serializing_if = "is_false")]
     pub keep_password_hashes: bool,
+    /// What the machine is for (ADR 0317): [`Profile::Minimal`] if not
+    /// given.
+    #[serde(default)]
+    pub profile: Profile,
+    /// The features added to the profile's, and taken from them.
+    #[serde(default, skip_serializing_if = "Features::is_empty")]
+    pub features: Features,
+    /// Whether Dukovo Admin, the web console, is turned on: the profile's
+    /// choice if not given. Saved for release 0.16, which brings it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub web_console: Option<bool>,
     /// Every other key: those of [`LATER`], which this installer takes
     /// none of yet, and mistyped ones, which [`Answers::check`] names.
     /// (serde cannot refuse unknown keys beside a flattened map.)
     #[serde(flatten)]
     pub later: BTreeMap<String, serde_json::Value>,
+}
+
+/// What the machine is for: a starting set of features (ADR 0317).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Profile {
+    /// The base system, Nukesh, the administration commands and updates,
+    /// with nothing listening.
+    #[default]
+    Minimal,
+    /// Minimal and the web console, with every feature offered.
+    Server,
+    /// Server, set up at first boot from the cloud's data, with the web
+    /// console off.
+    Cloud,
+}
+
+impl Profile {
+    /// Every profile, in the order the installer offers them.
+    pub const ALL: [Profile; 3] = [Profile::Minimal, Profile::Server, Profile::Cloud];
+
+    /// Its name in the answers file.
+    #[must_use]
+    pub fn id(self) -> &'static str {
+        match self {
+            Profile::Minimal => "minimal",
+            Profile::Server => "server",
+            Profile::Cloud => "cloud",
+        }
+    }
+
+    /// Whether it turns the web console on unless the answers say.
+    #[must_use]
+    pub fn web_console(self) -> bool {
+        self == Profile::Server
+    }
+
+    /// The features it starts with, ticked on the Software page. Every
+    /// 1.0 profile starts with none, as the plan has it: each feature is
+    /// offered, off until picked. Desktop, in release 1.1, starts with
+    /// some, which `remove` takes away.
+    #[must_use]
+    pub fn features(self) -> &'static [&'static str] {
+        &[]
+    }
+}
+
+/// Features added to a profile's, and taken from them, by their IDs, as
+/// feature(8) names them.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Features {
+    /// The features added.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub add: Vec<String>,
+    /// The profile's features left out.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub remove: Vec<String>,
+}
+
+impl Features {
+    /// Whether it adds and takes away nothing.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.add.is_empty() && self.remove.is_empty()
+    }
 }
 
 /// The disk the system goes on.
@@ -311,6 +389,27 @@ impl Answers {
         self.time_zone.as_deref().unwrap_or(DEFAULT_TIME_ZONE)
     }
 
+    /// The features the install adds, by their IDs: the profile's, less
+    /// those removed, and those added, each once.
+    #[must_use]
+    pub fn chosen_features(&self) -> Vec<String> {
+        let mut chosen: Vec<String> = Vec::new();
+        let starting = self.profile.features().iter().map(|id| (*id).to_string());
+        for id in starting.chain(self.features.add.iter().cloned()) {
+            if !self.features.remove.contains(&id) && !chosen.contains(&id) {
+                chosen.push(id);
+            }
+        }
+        chosen
+    }
+
+    /// Whether the web console is turned on: as the answers say, or as
+    /// the profile does.
+    #[must_use]
+    pub fn web_console(&self) -> bool {
+        self.web_console.unwrap_or(self.profile.web_console())
+    }
+
     /// The target disk's name, without `/dev/` or `/devices/`.
     #[must_use]
     pub fn target(&self) -> &str {
@@ -381,6 +480,9 @@ impl Answers {
                 problem(&format!("network.{card}"), why);
             }
         }
+        if let Err(why) = check_features(&self.features) {
+            problem("features", why);
+        }
         check_accounts(self, &mut problem);
         if problems.is_empty() { Ok(()) } else { Err(problems) }
     }
@@ -449,6 +551,24 @@ pub fn hash_password(password: &[u8], cost: accounts::hash::Cost) -> Result<Stri
     ring::rand::SecureRandom::fill(&ring::rand::SystemRandom::new(), &mut salt)
         .map_err(|_| "the system gave no random numbers for the salt".to_string())?;
     accounts::hash::hash(password, &salt, cost)
+}
+
+/// Checks the features' IDs: whether the release has each, the install
+/// checks before it writes ([`crate::features::check`]).
+fn check_features(features: &Features) -> Result<(), String> {
+    for (i, id) in features.add.iter().enumerate() {
+        feature::check_id(id)?;
+        if features.add[..i].contains(id) {
+            return Err(format!("{id} is added twice"));
+        }
+        if features.remove.contains(id) {
+            return Err(format!("{id} is both added and removed"));
+        }
+    }
+    for id in &features.remove {
+        feature::check_id(id)?;
+    }
+    Ok(())
 }
 
 /// Checks the accounts: their names, their full names and their
@@ -680,14 +800,45 @@ pub(crate) mod tests {
             .replace("America/Denver", "../etc")
             .replace("\"bob\"", "\"alice\"")
             .replace("\"swap_gib\": 1", "\"swap_gib\": 65")
-            .replace("\"version\": 1,", "\"version\": 1, \"profile\": \"server\",");
+            .replace("\"version\": 1,", "\"version\": 1, \"ssh\": true,");
         let problems = Answers::parse(text.as_bytes()).unwrap().check().unwrap_err();
         let keys: Vec<&str> = problems.iter().map(|p| p.split(':').next().unwrap()).collect();
-        assert_eq!(
-            keys,
-            ["profile", "hostname", "time_zone", "disk", "users[0].user"],
-            "{problems:?}"
+        assert_eq!(keys, ["ssh", "hostname", "time_zone", "disk", "users[0].user"], "{problems:?}");
+    }
+
+    #[test]
+    fn a_profile_and_its_features() {
+        let answers = Answers::parse(EXAMPLE.as_bytes()).unwrap();
+        // Left out, the profile is Minimal: no feature, no web console.
+        assert_eq!(answers.profile, Profile::Minimal);
+        assert!(answers.chosen_features().is_empty());
+        assert!(!answers.web_console());
+        let text = EXAMPLE.replace(
+            "\"version\": 1,",
+            r#""version": 1, "profile": "server", "features": { "add": ["file-sharing"] },"#,
         );
+        let server = Answers::parse(text.as_bytes()).unwrap();
+        server.check().unwrap();
+        assert_eq!(server.chosen_features(), ["file-sharing"]);
+        assert!(server.web_console());
+        let off = Answers { web_console: Some(false), ..server.clone() };
+        assert!(!off.web_console());
+        // They are saved, and read back the same.
+        let saved = Answers::parse(&server.to_saved()).unwrap();
+        assert_eq!((saved.profile, saved.features), (Profile::Server, server.features.clone()));
+        // Each ID is checked, and named once.
+        let problem = |features: &str| {
+            let text = EXAMPLE.replace("\"version\": 1,", &format!("\"version\": 1, {features},"));
+            Answers::parse(text.as_bytes()).unwrap().check().unwrap_err().join("; ")
+        };
+        assert!(problem(r#""features": { "add": ["File sharing"] }"#).contains("feature's ID"));
+        let twice = r#""features": { "add": ["file-sharing", "file-sharing"] }"#;
+        assert!(problem(twice).contains("added twice"));
+        let both = r#""features": { "add": ["file-sharing"], "remove": ["file-sharing"] }"#;
+        assert!(problem(both).contains("both added and removed"));
+        let unknown = r#""profile": "desktop""#;
+        let text = EXAMPLE.replace("\"version\": 1,", &format!("\"version\": 1, {unknown},"));
+        assert!(Answers::parse(text.as_bytes()).unwrap_err().contains("unknown variant"));
     }
 
     #[test]

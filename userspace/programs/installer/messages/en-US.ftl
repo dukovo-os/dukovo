@@ -26,12 +26,21 @@ page-welcome = Welcome
 page-setup-file = Install from a setup file
 page-network = Network and name
 page-disk = Disk
+page-software = Software
 page-you = You
 page-review = Review
 page-rdisk = Partitions (rdisk)
 page-installing = Installing Dukovo
 page-done = Dukovo is installed
 page-failed = The install did not finish
+# The bar of steps at the top names each step in a word, so that the six
+# fit an 80-column serial console with their ticks.
+bar-welcome = Welcome
+bar-network = Network
+bar-disk = Disk
+bar-software = Software
+bar-you = You
+bar-review = Review
 
 button-live = Live console
 button-back = Back
@@ -54,7 +63,7 @@ welcome-try = Try your keyboard
 welcome-try-hint = type here to check the layout
 welcome-how = How do you want to install?
 welcome-steps = Step by step
-welcome-steps-note = answer five short screens
+welcome-steps-note = answer six short screens
 welcome-file = From a setup file
 welcome-file-note = install.json on this stick's EFI partition
 
@@ -204,6 +213,23 @@ rdisk-root-small = The Dukovo root needs { $size } at least.
 rdisk-on-target = The EFI system and swap partitions go on { $disk }, with the root.
 rdisk-efi-second = A BIOS's GRUB looks on partition 2 of { $disk }: make the EFI system partition partition 2, or take out the BIOS boot partition.
 
+## Software
+
+software-intro = What is this machine for?
+software-minimal = Minimal
+software-minimal-note = the base system, Nukesh, admin commands and updates; nothing listening
+software-server = Server
+software-server-note = Minimal and the web console; pick features below
+software-cloud = Cloud and VM
+software-cloud-note = Server, set up at first boot from the cloud's data; web console off
+software-base = Every profile has Go, WireGuard, sqlite3, git and the admin commands. Nothing is locked in: feature add and feature remove change it later.
+software-features = Features:
+software-none = This release offers no features yet.
+software-turns-on = turns on { $services }
+software-after = after installing: feature add { $id }
+software-web-console = Turn on Dukovo Admin, the web console
+software-web-console-note = port 9090; Dukovo Admin comes in release 0.16, which turns it on then
+
 ## You
 
 you-intro = The administrator account. It signs in like any other and can elevate to change the system.
@@ -264,6 +290,9 @@ review-settings = Settings
 review-dhcp = { $card } DHCP
 review-keyboard = keyboard { $layout }
 review-accounts = Accounts
+review-software = Software
+review-web-console-on = web console on (from release 0.16)
+review-web-console-off = web console off
 review-admin = { $user } ({ $name }), administrator
 review-untouched = Untouched
 review-confirm = Type { $disk } to confirm
@@ -296,7 +325,7 @@ hint-log = Up, Down, Page Up and Page Down scroll · Esc closes
 help-welcome =
     Tab and Shift+Tab, or Up and Down, move between the fields and the buttons. Space chooses, Enter goes on, Esc goes back.
     Left and Right change the keyboard layout; the keys type in it at once, so try them in the box below it.
-    Step by step asks five short screens. A setup file answers them all: install.json on this stick's EFI partition, as the Done page saves one.
+    Step by step asks six short screens. A setup file answers them all: install.json on this stick's EFI partition, as the Done page saves one.
     Live console leaves the installer for a shell, where dukovo-install starts it again.
 help-setup-file =
     A setup file is an answers file (install-answers(5)) called install.json at the top of the stick's EFI partition.
@@ -317,6 +346,11 @@ help-rdisk =
     Up and Down choose a partition. N makes one in the free space. D marks one for deletion; D again keeps it. F formats one for a use. G lays out the guided partitions on this disk. U undoes the last change. Tab shows the next disk.
     Dukovo needs a Dukovo root and an EFI system partition on the same GPT disk. Swap is optional, and a BIOS boot partition lets a BIOS start the disk. Data partitions are mounted at /volumes/<partition>.
     Enter is done. Esc goes back to the Disk step and keeps the changes.
+help-software =
+    A profile is a starting set of features. Minimal listens on nothing. Server adds the web console. Cloud and VM is Server, set up at first boot from the cloud's metadata, with the web console off.
+    A feature turns on the services it lists, which open their own ports in the firewall while they run. Features that install bundles from a catalog are added after the first boot, with feature add.
+    Nothing is locked in: feature list, feature add and feature remove change all of this on the installed system.
+    Dukovo Admin, the web console, arrives in release 0.16. This choice is saved in answers.json, and that release turns it on if you said yes.
 help-you =
     The administrator signs in like anyone and elevates to change the system.
     The installed system keeps your answers without the passwords' hashes unless you ask it to keep them, for a repeat install.

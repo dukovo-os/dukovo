@@ -26,6 +26,9 @@ ratatui = { version = "0.30.2", default-features = false, features = ["crossterm
 # the kernel's own crate and Windows Boot Manager found on its EFI system
 # partition (ADR 0314).
 disk = { path = "../disk", features = ["ntfs", "fat"] }
+# The features the Software page offers (feature.toml(5)), and the
+# service files their services are turned on in.
+manifest = { path = "../manifest" }
 # The keyboard layouts the screens offer (keymap(1)).
 keymap = { path = "../keymap" }
 # The SHA-256 of each file as it is copied, ring's, which ob patches in
