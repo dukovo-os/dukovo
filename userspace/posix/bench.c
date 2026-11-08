@@ -862,9 +862,12 @@ static void git_status(const char *git, uint64_t rounds) {
 // close a file at once, each its own file in its own directory, so that
 // no file or directory is shared and what they share is the kernel's:
 // on Radix the capability store, on Linux the descriptor table (threads
-// only). Each worker is pinned to a CPU in turn. A row's time is the
-// slowest worker's per open and close: what each one sees while the
-// others run, the same as one worker alone if nothing is shared.
+// only). Each worker is pinned to a CPU in turn. A row's time runs from
+// the moment the workers are let go together until the last of them is
+// done, per open and close: how long the work of all of them takes, the
+// same as one worker's alone up to a worker a CPU if nothing is shared,
+// and twice that with two a CPU (ADR 0416). Which of two workers on a
+// CPU happens to start first and end last does not move it.
 #define SCALING_MOST 8
 #define SCALING_ROUNDS 50000
 
@@ -873,7 +876,8 @@ struct scaling {
 	int workers, threads;
 	int cpus[SCALING_MOST], cpu_count;
 	int dirs[SCALING_MOST];
-	uint64_t elapsed[SCALING_MOST];
+	// When the workers were let go, and when each was done.
+	uint64_t started, ended[SCALING_MOST];
 };
 
 // The kernel's counts that show where workers wait for each other, as
@@ -916,14 +920,13 @@ static void scaling_work(struct scaling *shared, int index) {
 	__atomic_add_fetch(&shared->ready, 1, __ATOMIC_SEQ_CST);
 	while(!__atomic_load_n(&shared->go, __ATOMIC_ACQUIRE))
 		sched_yield();
-	uint64_t began = now_ns();
 	for(uint64_t i = 0; i < SCALING_ROUNDS; i++) {
 		int fd = openat(dir, "file", O_RDONLY | O_CLOEXEC);
 		if(fd < 0)
 			fail("openat");
 		close(fd);
 	}
-	shared->elapsed[index] = now_ns() - began;
+	shared->ended[index] = now_ns();
 }
 
 static void *scaling_thread(void *argument) {
@@ -937,7 +940,7 @@ static void scaling_run(struct scaling *shared, int workers, int threads) {
 	shared->go = 0;
 	shared->workers = workers;
 	shared->threads = threads;
-	memset(shared->elapsed, 0, sizeof(shared->elapsed));
+	memset(shared->ended, 0, sizeof(shared->ended));
 	pthread_t thread[SCALING_MOST];
 	struct scaling_worker worker[SCALING_MOST];
 	pid_t child[SCALING_MOST];
@@ -961,6 +964,7 @@ static void scaling_run(struct scaling *shared, int workers, int threads) {
 	}
 	while(__atomic_load_n(&shared->ready, __ATOMIC_ACQUIRE) < workers)
 		sched_yield();
+	shared->started = now_ns();
 	__atomic_store_n(&shared->go, 1, __ATOMIC_RELEASE);
 	for(int i = 0; i < workers; i++) {
 		if(threads) {
@@ -973,13 +977,14 @@ static void scaling_run(struct scaling *shared, int workers, int threads) {
 		}
 	}
 	counted = counted && read_scaling_counts(after);
-	uint64_t slowest = 0;
+	uint64_t last = shared->started;
 	for(int i = 0; i < workers; i++)
-		if(shared->elapsed[i] > slowest)
-			slowest = shared->elapsed[i];
+		if(shared->ended[i] > last)
+			last = shared->ended[i];
 	const char *kind = threads ? "threads" : "processes";
 	printf("BENCH name=posix_open_close_%s_%d ns=%.2f iterations=%llu\n", kind, workers,
-	       (double)slowest / (double)SCALING_ROUNDS, (unsigned long long)SCALING_ROUNDS);
+	       (double)(last - shared->started) / (double)SCALING_ROUNDS,
+	       (unsigned long long)SCALING_ROUNDS);
 	// The counts cover every worker's opens and closes, and the starting
 	// and ending of the workers, which is small next to them.
 	if(counted) {

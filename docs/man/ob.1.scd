@@ -1618,8 +1618,9 @@ _target/userspace/_).
 		threads of one process and then processes of their own, open and
 		close a file each, in a tmpfs directory each, all at once. The
 		report, in _out/bench-scaling/report.md_ and *--summary*'s file,
-		gives the slowest worker's time per open and close on each side,
-		their ratio, and each side's time over one worker's. With
+		gives, on each side, the time from the workers' common start until
+		the last of them is done, per open and close, the two sides'
+		ratio, and each side's time over one worker's. With
 		*--gate* it fails unless Radix's time is at most Linux's on every
 		row, measuring both again (up to 6 more runs) while one is over;
 		CI runs it so after the benchmarks.

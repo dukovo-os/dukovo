@@ -12,7 +12,8 @@
 //! so what they share is the kernel's own state: on Radix the
 //! capability store, which one lock guards; on Linux the descriptor
 //! table, which threads share and processes do not. Each row is the
-//! slowest worker's time per open and close; a kernel that shares
+//! time from the moment the workers are let go together until the last
+//! of them is done, per open and close (ADR 0416); a kernel that shares
 //! nothing keeps it at one worker's time up to [`CPUS`] workers, and at
 //! twice that with 8 (two workers a CPU).
 //!
@@ -282,9 +283,9 @@ fn report(
         out,
         "Radix {VERSION} at {}, in QEMU with {CPUS} CPUs{}, on {}; Linux {} in the same \
          virtual machine. Each worker opens and closes its own file in its own tmpfs \
-         directory; a row is the slowest worker's time per open and close, fastest of {runs} \
-         run(s). \"Scaling\" is that time over one worker's: 1.00 up to {CPUS} workers, and \
-         2.00 with 8, if nothing is shared.\n",
+         directory; a row is the time from their common start until the last of them is done, \
+         per open and close, fastest of {runs} run(s). \"Scaling\" is that time over one \
+         worker's: 1.00 up to {CPUS} workers, and 2.00 with 8, if nothing is shared.\n",
         bench::commit(ctx),
         if kvm { ", KVM" } else { ", no KVM (emulated)" },
         bench::host_cpu(),

@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 # 0409. The open and close scaling rows are gated at parity with Linux
 
-- Status: Accepted
+- Status: Accepted; a row is timed from the workers' common start since [0416](0416-the-scaling-rows-are-timed-from-one-start.md)
 - Date: 2026-11-07
 
 ## Context
