@@ -1235,6 +1235,23 @@ static void only(uint32_t first, uint32_t count, uint64_t rights) {
 	drop_network(slot);
 }
 
+// Shapes the process's network as a signed-in session's is (systools'
+// give_network): the send right on every port in one network slot, and
+// the receive right from port 1024 up in the slot after it.
+static void as_a_session(void) {
+	uint32_t receive = RADIX_STARTUP_SLOT_NETWORK + RADIX_STARTUP_NETWORK_SLOTS - 1;
+	uint32_t send = receive - 1;
+	uint64_t kept = RADIX_RIGHTS_COPY | RADIX_RIGHTS_TRANSFER;
+	radix_capability_delete(send);
+	radix_capability_delete(receive);
+	CHECK(radix_network_restrict(RADIX_STARTUP_SLOT_NETWORK, send, 0, 65536,
+			RADIX_RIGHTS_SEND | kept) == 0);
+	CHECK(radix_network_restrict(RADIX_STARTUP_SLOT_NETWORK, receive, 1024, 65536 - 1024,
+			RADIX_RIGHTS_RECEIVE | kept) == 0);
+	for(uint32_t slot = RADIX_STARTUP_SLOT_NETWORK; slot < send; slot++)
+		radix_capability_delete(slot);
+}
+
 static void capabilities(void) {
 	// The runner was given the network, and so was this test.
 	struct radix_network_ports_results ports;
@@ -1322,8 +1339,37 @@ static void capabilities(void) {
 		int d = socket(AF_INET, SOCK_DGRAM, 0);
 		CHECK_ERROR(sendto(d, "x", 1, 0, (struct sockaddr *)&to, sizeof(to)), EACCES);
 		close(d);
+		// A port the kernel picks is outside that range, so a socket
+		// bound to one cannot listen there (ADR 0183, ADR 0415).
+		int picked = socket(AF_INET, SOCK_STREAM, 0);
+		at = loopback(0);
+		CHECK(bind(picked, (struct sockaddr *)&at, sizeof(at)) == 0);
+		CHECK_ERROR(listen(picked, 1), EACCES);
+		close(picked);
 		check_exit_child();
 	}
+	CHECK_CHILD(pid);
+	// Shaped as a signed-in session, with the send right first: a socket
+	// bound to a port the kernel picks is bound through the receive right,
+	// so it listens there, as `nc -l 0` does; it still connects out.
+	pid = check_fork();
+	if(pid == 0) {
+		as_a_session();
+		int fd = socket(AF_INET, SOCK_STREAM, 0);
+		struct sockaddr_in at = loopback(0);
+		CHECK(bind(fd, (struct sockaddr *)&at, sizeof(at)) == 0);
+		CHECK(port_of(fd) >= 49152);
+		CHECK(listen(fd, 1) == 0);
+		close(fd);
+		int client = connected(port);
+		CHECK(write(client, "session", 7) == 7);
+		close(client);
+		check_exit_child();
+	}
+	accepted = accept(server, NULL, NULL);
+	CHECK(accepted >= 0);
+	CHECK(read(accepted, buffer, sizeof(buffer)) == 7);
+	close(accepted);
 	CHECK_CHILD(pid);
 	close(server);
 }

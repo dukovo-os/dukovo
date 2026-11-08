@@ -617,13 +617,27 @@ fn rights(checks: &mut Checks, out: u32, listen: u32) {
     );
     checks.worked(b.bind(listen, LOOPBACK, 8001), "binding to a port in the range");
     checks.worked(b.listen(), "listening on it");
-    // A port the kernel picks (bind to 0) is in reach to listen on if the
-    // capability may receive at all, as on Linux, though its range stops
-    // short of the kernel's ephemeral ports (ADR 0412).
+    // A port the kernel picks (bind to 0) is listened on only through a
+    // capability that may receive on it: this one's range stops short of
+    // the kernel's ephemeral ports (ADR 0183, ADR 0415).
     if let Some(picked) = checks.worked(stream(listen), "making a socket for a kernel-picked port")
     {
         checks.worked(picked.bind(listen, LOOPBACK, 0), "binding it to a port the kernel picks");
-        checks.worked(picked.listen(), "listening on the kernel-picked port");
+        checks.refused(
+            picked.listen(),
+            Kernel::MissingRights,
+            "listening on a kernel-picked port outside the range",
+        );
+    }
+    // One whose range holds the ephemeral ports may.
+    if let Some(picked) =
+        checks.worked(stream(SLOT_NETWORK), "making a socket for a kernel-picked port in range")
+    {
+        checks.worked(
+            picked.bind(SLOT_NETWORK, LOOPBACK, 0),
+            "binding it to a port the kernel picks, in range",
+        );
+        checks.worked(picked.listen(), "listening on a kernel-picked port in the range");
     }
     let made = Socket::new(listen, SocketType::Datagram, PipeFlags::NONE);
     if let Some(datagrams) = checks.worked(made, "making a datagram socket to listen") {

@@ -533,6 +533,45 @@ int inet_name(uint32_t slot, bool peer, struct sockaddr *addr, socklen_t max, so
 	return 0;
 }
 
+// Whether network capability `network` has the receive right on every
+// port the kernel may pick, so a socket bound through it to port 0 may
+// listen on whichever port it gets.
+bool receives_on_picked_ports(uint32_t network) {
+	struct radix_network_ports_results ports;
+	if(radix_network_ports(network, &ports))
+		return false;
+	uint64_t past = static_cast<uint64_t>(ports.first) + ports.count;
+	return ports.first <= RADIX_NETWORK_EPHEMERAL_FIRST && past >= 65536;
+}
+
+// Binds network socket `slot` to `address`, whose port is 0 for one the
+// kernel picks, through a network capability with the receive right, as
+// a socket that is to listen must be: the kernel lets it listen only if
+// the capability it was bound through may receive on the port it got
+// (ADR 0183, ADR 0415). One that receives on every port the kernel may
+// pick comes first, then any other with the receive right. EACCES if
+// there is none.
+int bind_receiving(uint32_t slot, const struct radix_address *address) {
+	uint32_t chosen = 0;
+	for(uint32_t i = 0; i < RADIX_STARTUP_NETWORK_SLOTS; i++) {
+		uint32_t network = RADIX_STARTUP_SLOT_NETWORK + i;
+		struct radix_capability_info_results info;
+		if(radix_capability_info(network, &info) || info.kind != RADIX_OBJECT_KIND_NETWORK
+				|| !(info.rights & RADIX_RIGHTS_RECEIVE))
+			continue;
+		if(receives_on_picked_ports(network)) {
+			chosen = network;
+			break;
+		}
+		if(!chosen)
+			chosen = network;
+	}
+	if(!chosen)
+		return EACCES;
+	uint64_t status = radix_file_bind_address(slot, chosen, address, sizeof(*address));
+	return status ? inet_errno(status) : 0;
+}
+
 // Binds network socket `slot`, of `family` (an AddressFamily), to any
 // address and a port the kernel picks, through a network capability with
 // the receive right, as Linux binds a socket that listens unbound. EACCES
@@ -541,16 +580,7 @@ int bind_to_listen(uint32_t slot, uint32_t family) {
 	struct radix_address any;
 	memset(&any, 0, sizeof(any));
 	any.family = family;
-	for(uint32_t i = 0; i < RADIX_STARTUP_NETWORK_SLOTS; i++) {
-		uint32_t network = RADIX_STARTUP_SLOT_NETWORK + i;
-		struct radix_capability_info_results info;
-		if(radix_capability_info(network, &info) || info.kind != RADIX_OBJECT_KIND_NETWORK
-				|| !(info.rights & RADIX_RIGHTS_RECEIVE))
-			continue;
-		uint64_t status = radix_file_bind_address(slot, network, &any, sizeof(any));
-		return status ? inet_errno(status) : 0;
-	}
-	return EACCES;
+	return bind_receiving(slot, &any);
 }
 
 // The bytes of the `count` buffers at `iov` gathered into one buffer of
@@ -1267,10 +1297,22 @@ int Sysdeps<Bind>::operator()(int fd, const struct sockaddr *addr, socklen_t len
 	uint32_t slot;
 	if(int e = slot_of(fd, &slot); e)
 		return e;
-	if(is_inet(slot)) {
+	int type;
+	if(is_inet(slot, &type)) {
 		struct radix_address address;
 		if(int e = inet_address(addr, length, &address); e)
 			return e;
+		// A stream socket bound to a port the kernel picks is likely to
+		// listen next (a server that prints its own address, `nc -l 0`),
+		// so it is bound through a capability that may receive, if there
+		// is one. Any capability allows a bind to port 0, and the first
+		// one, often a send-only one, would leave it unable to listen. A
+		// signed-in session holds the send right first and the receive
+		// right from port 1024 up after it.
+		if(type == SOCK_STREAM && address.port == 0) {
+			if(int e = bind_receiving(slot, &address); e != EACCES)
+				return e;
+		}
 		return through_network([&](uint32_t network) {
 			return radix_file_bind_address(slot, network, &address, sizeof(address));
 		});

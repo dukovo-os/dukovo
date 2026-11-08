@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 # 0412. A socket may listen on a port the kernel picked for it
 
-- Status: Accepted
+- Status: Superseded by [0415](0415-a-socket-listens-on-a-picked-port-only-in-its-range.md)
 - Date: 2026-11-08
 
 ## Context
