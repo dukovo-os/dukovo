@@ -40,6 +40,8 @@ const STARTUP_ARCHIVE_KIB: u64 = 1024;
 /// its memory budget, then powers off. installed-bios boots the same way.
 pub fn installed(vm: &mut Vm, _case: &Case) -> Result<(), String> {
     vm.expect("Init: the boot archive is ")?;
+    // The rest of the line may not have come yet when its start has.
+    vm.expect(" entries; starting ")?;
     let archive = archive_kib(&vm.log())?;
     if archive > STARTUP_ARCHIVE_KIB {
         return Err(format!(

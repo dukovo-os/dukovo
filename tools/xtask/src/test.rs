@@ -4918,11 +4918,21 @@ impl Vm {
 
     /// Waits until `needle` appears after the previous match.
     pub fn expect(&mut self, needle: &str) -> Result<(), String> {
+        // How much QEMU had printed at the last look. The log is cleaned
+        // and searched again only once there is more: cleaning all of a
+        // Radix boot's log every 50 ms took 1 to 5 ms of a host CPU each
+        // time, which the host took from the guest's CPUs when they were
+        // all busy (ADR 0416).
+        let mut looked = None;
         loop {
-            let log = self.log();
-            if let Some(at) = log.get(self.cursor..).and_then(|rest| rest.find(needle)) {
-                self.cursor += at + needle.len();
-                return Ok(());
+            let printed = self.output.lock().expect("not poisoned").len();
+            if looked != Some(printed) {
+                looked = Some(printed);
+                let log = self.log();
+                if let Some(at) = log.get(self.cursor..).and_then(|rest| rest.find(needle)) {
+                    self.cursor += at + needle.len();
+                    return Ok(());
+                }
             }
             if let Some(status) = self.exited() {
                 // Let the reader collect the last output, then look again.
