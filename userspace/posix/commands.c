@@ -110,6 +110,8 @@ static const char *const ELSEWHERE[][2] = {
 		{"klist", "the kerberos boot test's: it lists the tickets kinit keeps in the keyring"},
 		{"kvno", "the kerberos boot test's: it asks the host's KDC for a service ticket"},
 		{"kdestroy", "the kerberos boot test's: it removes the tickets kinit keeps in the keyring"},
+		{"audio", "the audio-virtio boot test's: it plays through the virtio sound card only that test has"},
+		{"audiod", "the audio-virtio boot test's service: it gives that test's sound card its volume and reads the volume keys"},
 };
 
 enum { ELSEWHERE_COUNT = sizeof(ELSEWHERE) / sizeof(ELSEWHERE[0]) };
