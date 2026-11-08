@@ -1,0 +1,17 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "date shows the time in UTC, in a custom format, and as RFC-3339"
+time = "2m"
+
+[[step]]
+run = "date -u"
+expect = "UTC"
+# A custom format: the labels are literal and the values fill in.
+[[step]]
+run = "date -u +'year=%Y month=%m day=%d'"
+expect = ["year=", "month=", "day="]
+# RFC-3339 in UTC ends in the +00:00 offset.
+[[step]]
+run = "date -u --rfc-3339=seconds"
+expect = "+00:00"

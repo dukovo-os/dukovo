@@ -46,6 +46,11 @@ title = "Services and logs"
 about = "Spark's services: listed, stopped and started, and what they log"
 
 [[category]]
+name = "time"
+title = "Time and date"
+about = "The clock, the time zone, and keeping time by NTP"
+
+[[category]]
 name = "accounts"
 title = "Accounts and elevate"
 about = "Accounts made and removed, groups, and running as root"

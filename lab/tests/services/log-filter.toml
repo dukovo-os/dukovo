@@ -1,0 +1,29 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "The log is read filtered — by the program that wrote a record, by service, and the kernel's alone"
+time = "3m"
+
+# A record of our own, tagged, to find again by that tag.
+[[step]]
+run = "logger -t labfilter batch4-filter-needle && sleep 1"
+# journalctl -t keeps only the records a given program wrote.
+[[step]]
+run = "journalctl -t labfilter -n 5"
+root = true
+expect = ["labfilter", "batch4-filter-needle"]
+# -u keeps a service's unit; sshd has a record for every sign-in.
+[[step]]
+run = "journalctl -u sshd -n 20"
+root = true
+expect = ["sshd:", "signed in"]
+# log's own -s does the same from the other tool.
+[[step]]
+run = "log -s sshd -n 20"
+root = true
+expect = ["sshd:", "signed in"]
+# -k keeps the kernel's records alone.
+[[step]]
+run = "journalctl -k -n 10"
+root = true
+expect = "kernel:"

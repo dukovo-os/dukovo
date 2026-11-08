@@ -97,8 +97,8 @@ A test is a file at `lab/tests/<category>/<name>.toml`. The categories,
 their order and their titles on the runner page are in
 `lab/tests/categories.toml`: boot and power, hardware and drivers,
 processes and monitors, disks and filesystems, network, SSH, services and
-logs, accounts and elevate, commands, the console, installing, stress and
-soak, security, and performance against Linux. Add one there when a new kind of test needs
+logs, time and date, accounts and elevate, commands, the console,
+installing, stress and soak, security, and performance against Linux. Add one there when a new kind of test needs
 it. This test pulls the network cable:
 
 ```toml
