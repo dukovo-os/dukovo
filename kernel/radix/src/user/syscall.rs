@@ -191,6 +191,12 @@ fn answered(registers: &mut [u64; 10], answer: Result<Answer>) -> Result<Done> {
     }
 }
 
+/// The eight data words of a `cap_call`, after its capability and info
+/// word.
+fn data_words(args: &[u64; 10]) -> &[u64; 8] {
+    args[2..].try_into().expect("ten words less two are eight")
+}
+
 /// The info word of a message a program sends.
 fn message_info(word: u64) -> Result<Info> {
     Info::decode(word).map_err(|_| Kernel::InvalidArgument.status(1))
@@ -210,6 +216,10 @@ fn dispatch(me: &ThreadRef, user: &UserRef, number: u64, args: &mut [u64; 10]) -
     match number {
         sys::CAP_CALL => {
             let a = sys::CapCallArgs::decode(args)?;
+            // The data words where they are, in the argument registers:
+            // methods read them there, rather than from `a.words`, a copy
+            // that every method call would pay for.
+            let words = data_words(args);
             let info = message_info(a.info)?;
             if info.is_reserved() {
                 // radix-capability(2)'s methods, on a capability of any
@@ -217,7 +227,8 @@ fn dispatch(me: &ThreadRef, user: &UserRef, number: u64, args: &mut [u64; 10]) -
                 if info.caps > 0 || info.move_caps || info.no_block {
                     return Err(Kernel::InvalidArgument.status(1));
                 }
-                return answered(args, methods::call_capability(user, a.cap, info, a.words));
+                let answer = methods::call_capability(user, a.cap, info, words);
+                return answered(args, answer);
             }
             // One look at this CPU's cache finds the capability and, for
             // an endpoint, a file, a directory or another process, its
@@ -234,7 +245,7 @@ fn dispatch(me: &ThreadRef, user: &UserRef, number: u64, args: &mut [u64; 10]) -
                     };
                     let message = Message {
                         info,
-                        words: a.words,
+                        words: *words,
                         badge: cap.badge(),
                         call: true,
                         grant: cap.rights().contains(Rights::GRANT),
@@ -250,7 +261,8 @@ fn dispatch(me: &ThreadRef, user: &UserRef, number: u64, args: &mut [u64; 10]) -
             if info.caps > 0 || info.move_caps || info.no_block {
                 return Err(Kernel::InvalidArgument.status(1));
             }
-            answered(args, methods::call(me, user, a.cap, found, info, a.words))
+            let answer = methods::call(me, user, a.cap, found, info, words);
+            answered(args, answer)
         }
         sys::SEND => {
             let a = sys::SendArgs::decode(args)?;

@@ -5,11 +5,11 @@
 // seeking, descriptions that share an offset, the lowest free numbers,
 // stdio, directories and their descriptors, temporary files, renaming
 // and removing, times, symbolic links, `..` beneath directory
-// descriptors and fchdir, reading into and writing from memory not made
-// yet, the root's folders by their names and by Unix's, descriptors by
-// their names in /devices/fd, and owners, groups and modes, extended
-// attributes and access lists, on the tmpfs at /tmp and the read-only
-// /system; and what each refuses, with Linux's errors.
+// descriptors and fchdir, each form of path, reading into and writing
+// from memory not made yet, the root's folders by their names and by
+// Unix's, descriptors by their names in /devices/fd, and owners, groups
+// and modes, extended attributes and access lists, on the tmpfs at /tmp
+// and the read-only /system; and what each refuses, with Linux's errors.
 
 #include <dirent.h>
 #include <fcntl.h>
@@ -713,6 +713,63 @@ static void climbing(void) {
 	CHECK(rmdir("/tmp/files-up/c") == 0 && rmdir("/tmp/files-up") == 0);
 }
 
+// Whether `path`, from the directory `dirfd` (or AT_FDCWD), opens the
+// file /tmp/files-forms/f.
+static int opens_f(int dirfd, const char *path) {
+	struct stat st, want;
+	int fd = openat(dirfd, path, O_RDONLY);
+	if(fd < 0)
+		return 0;
+	int same = fstat(fd, &st) == 0 && stat("/tmp/files-forms/f", &want) == 0
+			&& st.st_ino == want.st_ino && st.st_dev == want.st_dev;
+	close(fd);
+	return same;
+}
+
+// Each form of path the C library gives the kernel (ADR 0413): most as
+// the program wrote them (absolute ones past their slashes, and those
+// beneath a directory descriptor or the root as the working directory),
+// and the others joined to the working directory's path.
+static void path_forms(void) {
+	CHECK(mkdir("/tmp/files-forms", 0755) == 0);
+	int made = open("/tmp/files-forms/f", O_WRONLY | O_CREAT | O_EXCL, 0644);
+	CHECK(made >= 0);
+	close(made);
+
+	int root = open("/", O_RDONLY | O_DIRECTORY);
+	CHECK(root >= 0 && same_dir(root, "/"));
+	int slashes = open("///", O_RDONLY | O_DIRECTORY);
+	CHECK(slashes >= 0 && same_dir(slashes, "/"));
+	CHECK(opens_f(AT_FDCWD, "/tmp/files-forms/f"));
+	CHECK(opens_f(AT_FDCWD, "//tmp///files-forms//f"));
+
+	char saved[PATH_MAX];
+	CHECK(getcwd(saved, sizeof(saved)) != NULL);
+	CHECK(chdir("/") == 0);
+	CHECK(opens_f(AT_FDCWD, "tmp/files-forms/f"));
+	CHECK(chdir("/tmp") == 0);
+	CHECK(opens_f(AT_FDCWD, "files-forms/./f"));
+	CHECK(opens_f(AT_FDCWD, "files-forms/../files-forms/f"));
+	CHECK_ERROR(open("files-forms/g", O_RDONLY), ENOENT);
+	CHECK(chdir(saved) == 0);
+
+	int dir = open("/tmp/files-forms", O_RDONLY | O_DIRECTORY);
+	CHECK(dir >= 0);
+	CHECK(opens_f(dir, "f"));
+	CHECK(opens_f(dir, "./f"));
+	CHECK(opens_f(dir, "../files-forms/f"));
+	CHECK(opens_f(root, "tmp/files-forms/f"));
+	// An absolute path leaves the descriptor aside.
+	CHECK(opens_f(dir, "/tmp/files-forms/f"));
+	CHECK_ERROR(openat(dir, "g", O_RDONLY), ENOENT);
+	CHECK_ERROR(openat(dir, "", O_RDONLY), ENOENT);
+
+	close(dir);
+	close(slashes);
+	close(root);
+	CHECK(unlink("/tmp/files-forms/f") == 0 && rmdir("/tmp/files-forms") == 0);
+}
+
 // Reading into and writing from memory none of whose pages are there yet,
 // so that the copies fault: new anonymous memory, and private mappings of
 // the very file read or written, whose faults read that file.
@@ -1192,6 +1249,7 @@ int main(void) {
 	RUN(hard_links);
 	RUN(special_files);
 	RUN(climbing);
+	RUN(path_forms);
 	RUN(mapped);
 	RUN(folder_names);
 	RUN(named_descriptors);

@@ -125,11 +125,6 @@ uint64_t bit_of(int fd) {
 
 } // namespace
 
-SlotClaim::~SlotClaim() {
-	if(slot_ != NO_SLOT && !kept_)
-		fd_freed(static_cast<int>(slot_ - FD_BASE));
-}
-
 void SlotClaim::keep_if_full() {
 	// The 64 slots from the word's first: one call, on a path taken only
 	// when another capability came first.
@@ -154,6 +149,12 @@ uint64_t delete_fd(int fd) {
 	// `occupied` to the next call that fills it, which marks it again.
 	fd_freed(fd);
 	return status;
+}
+
+int close_fd(int fd) {
+	// One call from close's system layer, which these are inlined into.
+	forget_dir_path(fd);
+	return to_errno(delete_fd(fd));
 }
 
 void read_fd_table() {
@@ -213,13 +214,15 @@ int free_slot(int min_fd, SlotClaim *claim) {
 			int fd = first + __builtin_ctzll(~seen);
 			if(fd >= limit)
 				return EMFILE;
-			// Taken for this thread, unless another took it first.
-			uint64_t before = __atomic_fetch_or(word_of(fd), bit_of(fd), __ATOMIC_ACQUIRE);
-			if(before & bit_of(fd)) {
-				seen |= before;
+			// Taken for this thread, unless another took it first. Only
+			// the one bit is tested, which x86-64 does with one locked
+			// bit-test-and-set rather than a compare-and-swap loop.
+			if(__atomic_fetch_or(word_of(fd), bit_of(fd), __ATOMIC_ACQUIRE) & bit_of(fd)) {
+				seen |= __atomic_load_n(word_of(fd), __ATOMIC_RELAXED) | bit_of(fd);
 				continue;
 			}
 			claim->slot_ = FD_BASE + static_cast<uint32_t>(fd);
+			forget_dir_path(fd);
 			// A claim that cannot be had is free again as it goes.
 			return reach_slot(claim->slot_);
 		}
@@ -312,13 +315,15 @@ int resolve(int dirfd, const char *path, Path *out) {
 		// library knows it (ADR 0089); one that climbs above a directory
 		// without a path fails with EXDEV.
 		if(climbs(path, total)) {
-			if(size_t len = dir_path(dirfd, out->text); len) {
+			if(size_t len = dir_path(dirfd, out->own); len) {
 				out->dir = SLOT_ROOT;
-				out->len = join(out->text, len, path, total);
+				out->text = out->own;
+				out->len = join(out->own, len, path, total);
 				return out->len ? 0 : ENAMETOOLONG;
 			}
 		}
-		memcpy(out->text, path, total + 1);
+		// The kernel takes it as it is.
+		out->text = path;
 		out->len = total;
 		return 0;
 	}
@@ -327,25 +332,26 @@ int resolve(int dirfd, const char *path, Path *out) {
 	// path. The kernel works out `.`, `..` and symbolic links, as a link
 	// changes where a `..` after it leads.
 	out->dir = SLOT_ROOT;
-	size_t len = 0;
-	if(path[0] == '/') {
-		while(*path == '/')
-			path++;
-	} else if(current_dir[1]) {
+	if(path[0] != '/' && current_dir[1]) {
 		size_t dir = strlen(current_dir + 1);
-		memcpy(out->text, current_dir + 1, dir);
-		out->text[dir] = '/';
-		len = dir + 1;
+		if(dir + 1 + total >= PATH_MAX_BYTES)
+			return ENAMETOOLONG;
+		memcpy(out->own, current_dir + 1, dir);
+		out->own[dir] = '/';
+		memcpy(out->own + dir + 1, path, total + 1);
+		out->text = out->own;
+		out->len = dir + 1 + total;
+		return 0;
 	}
-	size_t rest = strlen(path);
-	if(len + rest >= PATH_MAX_BYTES)
-		return ENAMETOOLONG;
-	memcpy(out->text + len, path, rest);
-	len += rest;
-	if(!len)
-		out->text[len++] = '.';
-	out->text[len] = 0;
-	out->len = len;
+	// Already beneath the root, past its slashes: as it is. The root
+	// itself is `.`.
+	const char *rest = path;
+	while(*rest == '/')
+		rest++;
+	out->len = total - static_cast<size_t>(rest - path);
+	out->text = out->len ? rest : ".";
+	if(!out->len)
+		out->len = 1;
 	return 0;
 }
 

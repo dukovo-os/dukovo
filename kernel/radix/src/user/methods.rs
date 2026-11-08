@@ -97,8 +97,8 @@ fn arguments(info: Info, words: &[u64; 8]) -> [u64; 8] {
 
 /// Calls the method of radix-capability(2) that `info`'s label (a reserved
 /// one) names, on the capability in `slot`, whatever its kind.
-pub fn call_capability(user: &UserRef, slot: u32, info: Info, words: [u64; 8]) -> Result<Answer> {
-    let args = arguments(info, &words);
+pub fn call_capability(user: &UserRef, slot: u32, info: Info, words: &[u64; 8]) -> Result<Answer> {
+    let args = arguments(info, words);
     capability(user, SlotRef::new(user.cspace, slot), info.label, &args)
 }
 
@@ -116,9 +116,9 @@ pub fn call(
     slot: u32,
     found: &Found,
     info: Info,
-    words: [u64; 8],
+    words: &[u64; 8],
 ) -> Result<Answer> {
-    let args = arguments(info, &words);
+    let args = arguments(info, words);
     let at = SlotRef::new(user.cspace, slot);
     let cap = &found.cap;
     let kind = cap.kind();
