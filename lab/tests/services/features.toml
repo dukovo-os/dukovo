@@ -1,0 +1,36 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "feature adds File sharing, whose smbd and nfsd then run, and removes it again (ADR 0316)"
+time = "2m"
+
+[[step]]
+run = "feature list"
+expect = "file-sharing  not added  File sharing"
+[[step]]
+run = "feature info file-sharing"
+expect = ["File sharing (file-sharing): not added", "service smbd: off", "service nfsd: off"]
+# Only an administrator adds a feature.
+[[step]]
+run = "feature add file-sharing"
+exit = 1
+expect = "only root adds features"
+[[step]]
+run = "feature add file-sharing"
+root = true
+expect = "File sharing is added: smbd and nfsd run, and start at each boot."
+[[step]]
+run = "service --status-all"
+root = true
+expect = ["[ + ]  nfsd", "[ + ]  smbd"]
+[[step]]
+run = "feature list"
+expect = "file-sharing  added      File sharing"
+[[step]]
+run = "feature remove file-sharing"
+root = true
+expect = "File sharing is removed."
+[[step]]
+run = "service --status-all"
+root = true
+expect = ["[ - ]  nfsd", "[ - ]  smbd"]

@@ -50,6 +50,7 @@ elevate 86
 exfat-write 42
 ext4-power-cut 36
 ext4-write 32
+feature 20
 fpu 15
 framework-ec 15
 fuse 19
