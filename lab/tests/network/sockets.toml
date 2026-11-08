@@ -1,0 +1,20 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "ss lists the UDP listeners, every socket with its protocol, and the TCP sockets by state"
+time = "2m"
+
+# The resolver binds 127.0.0.53:53 for UDP, so a UDP listener is always
+# there to see.
+[[step]]
+run = "ss -uln"
+expect = ["State", "UNCONN", "127.0.0.53:53"]
+# -a shows TCP and UDP together, so each row carries its protocol in the
+# Netid column; the lab's own SSH is an established TCP socket on port 22.
+[[step]]
+run = "ss -a"
+expect = ["Netid", "tcp", "udp", "LISTEN", "ESTAB", ":22"]
+# -tan is every TCP socket, numeric, listening and connected alike.
+[[step]]
+run = "ss -tan"
+expect = ["LISTEN", "ESTAB", ":22"]

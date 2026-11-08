@@ -1,0 +1,13 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "traceroute finds the loopback in one hop, named, and traces the way to the default gateway"
+time = "3m"
+
+[[step]]
+run = "traceroute 127.0.0.1"
+expect = ["traceroute to 127.0.0.1 (127.0.0.1)", "hops max", "localhost (127.0.0.1)"]
+# -n keeps traceroute from naming each hop, so no reverse lookup is needed.
+[[step]]
+run = "traceroute -n \"$(ip -4 route | awk '/^default/ { print $3; exit }')\""
+expect = ["traceroute to ", "hops max", " ms"]

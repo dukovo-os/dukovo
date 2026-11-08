@@ -1,0 +1,24 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "dig and host resolve localhost through the resolver, and dig reads back a reverse address"
+time = "2m"
+
+# dig asks the resolver at 127.0.0.53 and prints the answer section.
+[[step]]
+run = "dig localhost"
+expect = [
+    "status: NOERROR",
+    ";; ANSWER SECTION:",
+    "localhost.",
+    "127.0.0.1",
+    "SERVER: 127.0.0.53",
+]
+# -x looks the address up backwards, through in-addr.arpa, for its name.
+[[step]]
+run = "dig -x 127.0.0.1"
+expect = ["1.0.0.127.in-addr.arpa", "PTR", "localhost."]
+# host prints the plain answer, both addresses of the name.
+[[step]]
+run = "host localhost"
+expect = ["localhost has address 127.0.0.1", "localhost has IPv6 address ::1"]
