@@ -304,7 +304,7 @@ pub unsafe fn wrmsr(msr: u32, value: u64) {
 core::arch::global_asm!(
     r#"
     .section .text
-    .balign 16
+    .balign 64
     .global radix_rdmsr_safe
 radix_rdmsr_safe:
     mov ecx, edi

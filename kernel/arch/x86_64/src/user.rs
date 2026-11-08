@@ -239,10 +239,12 @@ mod layout {
 /// moving the stack pointer.
 const RED_ZONE: u64 = 128;
 
+// The system call entry and the copies to and from user memory. The
+// block starts a cache line, as every kernel function does (ADR 0411).
 core::arch::global_asm!(
     r#"
     .section .text
-    .balign 16
+    .balign 64
     .global radix_syscall_entry
 radix_syscall_entry:
     swapgs

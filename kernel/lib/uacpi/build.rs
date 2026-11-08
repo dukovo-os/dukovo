@@ -63,6 +63,9 @@ const KERNEL: &[&str] = &[
     "-fno-stack-protector",
     "-fno-asynchronous-unwind-tables",
     "-fstack-size-section",
+    // Every kernel function starts a cache line, as rustc's are made to
+    // (ADR 0411).
+    "-falign-functions=64",
 ];
 
 /// The flags of the host's build, for the tests.
