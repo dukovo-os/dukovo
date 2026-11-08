@@ -1,0 +1,29 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "The keyring stays locked for a key-only SSH session; its commands say so, and the help lists them all"
+time = "1m"
+
+# Over SSH with a key, no password was typed, so the keyring is locked.
+[[step]]
+run = "keyring list"
+exit = 1
+expect = "your keyring is locked"
+[[step]]
+run = "keyring get no-such-secret"
+exit = 1
+expect = "your keyring is locked"
+# With no subcommand it asks which, and lists them.
+[[step]]
+run = "keyring"
+exit = 1
+expect = ["which? set, get, list, remove, unlock or lock", "Usage: keyring set NAME"]
+# --help prints the usage and succeeds.
+[[step]]
+run = "keyring --help"
+expect = ["keyring get NAME", "keyring unlock", "keyring lock"]
+# An unknown subcommand is named back.
+[[step]]
+run = "keyring frobnicate"
+exit = 1
+expect = "no such command: frobnicate"

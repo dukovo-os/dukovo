@@ -1,0 +1,35 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "notify-send posts a notification and notifications lists what notifyd is holding, with urgency, the sender's name and JSON"
+time = "2m"
+
+# A notification shows up in the list, with its sender, title and body.
+[[step]]
+run = 'notify-send "Lab note" "a line of body"; notifications -n 1'
+expect = ["notify-send: Lab note", "a line of body"]
+# A critical one is marked, and keeps its body.
+[[step]]
+run = 'notify-send -u critical "Urgent thing" "be quick"; notifications -n 1'
+expect = ["notify-send [critical]: Urgent thing", "be quick"]
+# The name a program gives itself shows after notify-send's own.
+[[step]]
+run = 'notify-send -a backupd "App note"; notifications -n 1'
+expect = "notify-send (backupd): App note"
+# --print-id writes the new notification's number.
+[[step]]
+run = 'id=$(notify-send -p "With id"); [ "$id" -ge 1 ] && echo "id ok: $id"'
+expect = "id ok:"
+# A notification needs a title.
+[[step]]
+run = "notify-send"
+exit = 1
+expect = "no title given"
+# --json gives the whole record, fields and all.
+[[step]]
+run = 'notify-send "Json note" "jbody"; notifications --json -n 1'
+expect = ['"name":"notify-send"', '"title":"Json note"', '"urgency":"normal"']
+# The last few come back in the order they were sent.
+[[step]]
+run = 'notify-send "First one" x; notify-send "Second one" y; notifications -n 2'
+expect = ["First one", "Second one"]
