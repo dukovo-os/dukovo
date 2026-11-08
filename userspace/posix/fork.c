@@ -4,14 +4,17 @@
 // fork and wait: the child is a copy whose writes the parent does not
 // see, except in shared memory, which both see and whose futexes wake
 // across them, and the parent waits for its children in every way
-// waitpid has.
+// waitpid has. The child's descriptors are capabilities derived from the
+// parent's, which the parent can revoke while the child uses them.
 
 #include <fcntl.h>
 #include <pthread.h>
+#include <radix/radix.h>
 #include <sched.h>
 #include <semaphore.h>
 #include <stdint.h>
 #include <sys/mman.h>
+#include <sys/stat.h>
 
 #include "check.h"
 
@@ -316,6 +319,52 @@ static void descriptors(void) {
 	unlink("/tmp/fork-offset");
 }
 
+// A child's descriptor is a capability derived from its parent's, so the
+// parent's revoke takes it from the child, even while the child's calls
+// use it. The child has one thread, so each of its calls on the
+// directory borrows it without counting a reference, and the revoke
+// waits for those calls to count theirs before it deletes (ADR 0414): the
+// child's opens then fail, and the parent's own descriptor stays.
+static void revoked_while_used(void) {
+	CHECK(mkdir("/tmp/fork-revoke", 0755) == 0);
+	int made = open("/tmp/fork-revoke/f", O_WRONLY | O_CREAT | O_EXCL, 0644);
+	CHECK(made >= 0);
+	close(made);
+	int dir = open("/tmp/fork-revoke", O_RDONLY | O_DIRECTORY);
+	CHECK(dir >= 0);
+	int fds[2];
+	CHECK(pipe(fds) == 0);
+	pid_t pid = check_fork();
+	if(pid == 0) {
+		close(fds[0]);
+		// Opens beneath it until it goes, for 60 s at most.
+		struct timespec start, now;
+		clock_gettime(CLOCK_MONOTONIC, &start);
+		for(long opened = 1;; opened++) {
+			int fd = openat(dir, "f", O_RDONLY);
+			if(fd < 0)
+				_exit(opened > 100 && errno == EBADF ? 0 : 1);
+			close(fd);
+			if(opened == 100)
+				CHECK(write(fds[1], "r", 1) == 1);
+			clock_gettime(CLOCK_MONOTONIC, &now);
+			if(now.tv_sec - start.tv_sec > 60)
+				_exit(2);
+		}
+	}
+	close(fds[1]);
+	char ready;
+	CHECK(read(fds[0], &ready, 1) == 1);
+	CHECK(radix_capability_revoke(RADIX_STARTUP_SLOT_FD_BASE + (uint32_t)dir) == 0);
+	CHECK_CHILD(pid);
+	int fd = openat(dir, "f", O_RDONLY);
+	CHECK(fd >= 0);
+	close(fd);
+	close(fds[0]);
+	close(dir);
+	CHECK(unlink("/tmp/fork-revoke/f") == 0 && rmdir("/tmp/fork-revoke") == 0);
+}
+
 // A child whose parent ends loses its parent, and its process group and
 // session stay.
 static void orphans(void) {
@@ -373,6 +422,7 @@ int main(void) {
 	RUN(statuses);
 	RUN(waits);
 	RUN(descriptors);
+	RUN(revoked_while_used);
 	RUN(orphans);
 	RUN(many);
 	return check_end();

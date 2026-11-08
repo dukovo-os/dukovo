@@ -376,7 +376,9 @@ pub fn delete_by(user: &UserThread, at: SlotRef) -> Result<(), CapError> {
 /// [`REVOKE_STEP`] with the locks let go in between. Returns how many
 /// steps it took. A step after the first goes on only while the slot
 /// keeps its revoke mark, so a capability another thread puts in the
-/// slot meanwhile keeps its descendants.
+/// slot meanwhile keeps its descendants. A revoke that may reach file or
+/// directory capabilities, as one a program asks for may, runs inside
+/// `user::objects::revoking` (ADR 0414).
 pub fn revoke(at: SlotRef) -> Result<u32, CapError> {
     let store = store()?;
     let mut steps = 0;

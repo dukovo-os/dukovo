@@ -209,6 +209,59 @@ fn delivered(delivery: Delivery) -> [u64; 10] {
     sys::RecvResults { badge: delivery.badge, info: delivery.info, words: delivery.words }.encode()
 }
 
+/// `cap_call`, other than radix-capability(2)'s methods: a message to an
+/// endpoint, or a method of the object the capability in `slot`
+/// designates, with the message info `info` and the data words in `args`.
+/// What it finds goes in `place`, which the caller ends
+/// ([`objects::Lent::end`]) once this has returned, whichever way.
+#[inline(always)]
+fn cap_call(
+    me: &ThreadRef,
+    user: &UserRef,
+    slot: u32,
+    info: Info,
+    args: &mut [u64; 10],
+    place: &mut objects::Lent,
+) -> Result<Done> {
+    let cspace = user.cspace;
+    // The data words where they are, in the argument registers: methods
+    // read them there, rather than from `a.words`, a copy that every
+    // method call would pay for.
+    let words = data_words(args);
+    // One look at this CPU's cache finds the capability and, for an
+    // endpoint, a file, a directory or another process, its object, which
+    // the call borrows where the lookup put it (a file or directory
+    // without counting a reference, if the process has no other thread:
+    // ADR 0414).
+    let found = objects::find_holding(cspace, slot, methods::takes_object, &user.process, place)?;
+    let cap = &found.cap;
+    match cap.check(ObjectKind::Endpoint, Rights::SEND) {
+        Ok(()) => {
+            let Some(Object::Endpoint(endpoint)) = &found.object else {
+                return Err(error(Kernel::Gone));
+            };
+            let message = Message {
+                info,
+                words: *words,
+                badge: cap.badge(),
+                call: true,
+                grant: cap.rights().contains(Rights::GRANT),
+                cspace,
+            };
+            let reply = ipc::send(me, user, endpoint, message)?;
+            let reply = reply.expect("a call ends with a reply or an error");
+            return results(args, delivered(reply));
+        }
+        Err(CapError::WrongKind { .. }) => {}
+        Err(err) => return Err(cap_error(err)),
+    }
+    if info.caps > 0 || info.move_caps || info.no_block {
+        return Err(Kernel::InvalidArgument.status(1));
+    }
+    let answer = methods::call(me, user, slot, found, info, words);
+    answered(args, answer)
+}
+
 /// Runs system call `number` on the arguments in `args`, and leaves its
 /// results there.
 fn dispatch(me: &ThreadRef, user: &UserRef, number: u64, args: &mut [u64; 10]) -> Result<Done> {
@@ -216,10 +269,6 @@ fn dispatch(me: &ThreadRef, user: &UserRef, number: u64, args: &mut [u64; 10]) -
     match number {
         sys::CAP_CALL => {
             let a = sys::CapCallArgs::decode(args)?;
-            // The data words where they are, in the argument registers:
-            // methods read them there, rather than from `a.words`, a copy
-            // that every method call would pay for.
-            let words = data_words(args);
             let info = message_info(a.info)?;
             if info.is_reserved() {
                 // radix-capability(2)'s methods, on a capability of any
@@ -227,42 +276,15 @@ fn dispatch(me: &ThreadRef, user: &UserRef, number: u64, args: &mut [u64; 10]) -
                 if info.caps > 0 || info.move_caps || info.no_block {
                     return Err(Kernel::InvalidArgument.status(1));
                 }
-                let answer = methods::call_capability(user, a.cap, info, words);
+                let answer = methods::call_capability(user, a.cap, info, data_words(args));
                 return answered(args, answer);
             }
-            // One look at this CPU's cache finds the capability and, for
-            // an endpoint, a file, a directory or another process, its
-            // object, which the call borrows where the lookup put it.
-            let mut place = None;
-            let process = Some(&user.process);
-            let found =
-                objects::find_holding(cspace, a.cap, methods::takes_object, process, &mut place)?;
-            let cap = &found.cap;
-            match cap.check(ObjectKind::Endpoint, Rights::SEND) {
-                Ok(()) => {
-                    let Some(Object::Endpoint(endpoint)) = &found.object else {
-                        return Err(error(Kernel::Gone));
-                    };
-                    let message = Message {
-                        info,
-                        words: *words,
-                        badge: cap.badge(),
-                        call: true,
-                        grant: cap.rights().contains(Rights::GRANT),
-                        cspace,
-                    };
-                    let reply = ipc::send(me, user, endpoint, message)?;
-                    let reply = reply.expect("a call ends with a reply or an error");
-                    return results(args, delivered(reply));
-                }
-                Err(CapError::WrongKind { .. }) => {}
-                Err(err) => return Err(cap_error(err)),
-            }
-            if info.caps > 0 || info.move_caps || info.no_block {
-                return Err(Kernel::InvalidArgument.status(1));
-            }
-            let answer = methods::call(me, user, a.cap, found, info, words);
-            answered(args, answer)
+            // What the call finds, and may borrow, goes in one place, given
+            // back here, whichever way the call ends.
+            let mut place = objects::Lent::default();
+            let done = cap_call(me, user, a.cap, info, args, &mut place);
+            place.end();
+            done
         }
         sys::SEND => {
             let a = sys::SendArgs::decode(args)?;
