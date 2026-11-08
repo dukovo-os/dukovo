@@ -3187,8 +3187,10 @@ fn cmdline_slot() -> String {
 }
 
 /// How many of a test image's boot menu entries hold the command line:
-/// the system's and its startup-trouble entry (dukovo-boot(7)).
-const CMDLINE_ENTRIES: usize = 2;
+/// an installed system's and its startup-trouble entry, or the live
+/// menu's Install Dukovo, Try Dukovo and Install Dukovo (serial console)
+/// (dukovo-boot(7)).
+const CMDLINE_ENTRIES: usize = 3;
 
 /// A copy of a test image with `cmdline` in its command-line slots, one
 /// in each menu entry that holds it.
@@ -3202,7 +3204,7 @@ pub fn with_cmdline(image: &[u8], cmdline: &str) -> Result<Vec<u8>, String> {
         .collect();
     if found.is_empty() || found.len() > CMDLINE_ENTRIES {
         return Err(format!(
-            "the test image holds the command-line slot {} times, not once or twice",
+            "the test image holds the command-line slot {} times, not one to three",
             found.len()
         ));
     }
@@ -3219,14 +3221,52 @@ pub fn with_cmdline(image: &[u8], cmdline: &str) -> Result<Vec<u8>, String> {
     Ok(copy)
 }
 
+/// What a terminal sends as one key each, in `text`: an escape sequence
+/// whole (ESC, then `[` and its parameters up to the final letter, `O` and
+/// one letter, or the one character Alt was held with), a character's
+/// UTF-8 bytes together, and every other byte alone.
+fn keys_of(text: &[u8]) -> Vec<&[u8]> {
+    let mut keys = Vec::new();
+    let mut at = 0;
+    while at < text.len() {
+        let length = match text[at..] {
+            // A control sequence: its final byte is from `@` to `~`.
+            [0x1b, b'[', ref rest @ ..] => {
+                2 + rest
+                    .iter()
+                    .position(|b| (0x40..=0x7e).contains(b))
+                    .map_or(rest.len(), |i| i + 1)
+            }
+            [0x1b, b'O', _, ..] => 3,
+            [0x1b, next, ..] if next != 0x1b => 1 + utf8_length(next),
+            [first, ..] => utf8_length(first),
+            [] => unreachable!("the loop stops at the end"),
+        };
+        let end = (at + length).min(text.len());
+        keys.push(&text[at..end]);
+        at = end;
+    }
+    keys
+}
+
+/// How many bytes the UTF-8 character that starts with `first` has.
+fn utf8_length(first: u8) -> usize {
+    match first {
+        0xf0.. => 4,
+        0xe0.. => 3,
+        0xc0.. => 2,
+        _ => 1,
+    }
+}
+
 /// A copy of a test image whose menu starts *Boot from first disk* when
-/// nobody chooses: its third entry, after *Install Dukovo* and *Try
-/// Dukovo* (dukovo-boot(7)). The menu's `set default=try` becomes
-/// `set default=2`, padded with spaces to its length, so that nothing
-/// else in the image moves.
+/// nobody chooses: its fourth entry, after *Install Dukovo*, *Try
+/// Dukovo* and *Install Dukovo (serial console)* (dukovo-boot(7)). The
+/// menu's `set default=try` becomes `set default=3`, padded with spaces
+/// to its length, so that nothing else in the image moves.
 fn booting_first_disk(mut image: Vec<u8>) -> Result<Vec<u8>, String> {
     const TRY: &[u8] = b"\nset default=try\n";
-    const FIRST_DISK: &[u8] = b"\nset default=2  \n";
+    const FIRST_DISK: &[u8] = b"\nset default=3  \n";
     let found: Vec<usize> = image
         .windows(TRY.len())
         .enumerate()
@@ -4712,8 +4752,13 @@ impl Watchdog {
 
 pub struct Vm {
     child: Child,
-    stdin: Option<ChildStdin>,
+    /// QEMU's input, the serial port's: shared with the reader thread,
+    /// which answers for [`Vm::serial_terminal`]'s terminal.
+    stdin: Arc<Mutex<Option<ChildStdin>>>,
     output: Arc<Mutex<Vec<u8>>>,
+    /// The terminal at the serial port's far end, once the case asks for
+    /// one: the reader thread feeds it what the port carries.
+    terminal: Arc<Mutex<Option<crate::vt::Terminal>>>,
     reader: Option<JoinHandle<()>>,
     qmp: Option<PathBuf>,
     /// End of the last match in the cleaned log.
@@ -4774,13 +4819,33 @@ impl Vm {
         }
         let mut child = cmd.spawn().map_err(|err| format!("cannot start QEMU: {err}"))?;
         let mut stdout = child.stdout.take().expect("stdout is piped");
+        let stdin = Arc::new(Mutex::new(child.stdin.take()));
         let output = Arc::new(Mutex::new(Vec::new()));
-        let sink = Arc::clone(&output);
+        let terminal: Arc<Mutex<Option<crate::vt::Terminal>>> = Arc::new(Mutex::new(None));
+        let (sink, answers, keyboard) =
+            (Arc::clone(&output), Arc::clone(&terminal), Arc::clone(&stdin));
         let reader = std::thread::spawn(move || {
             let mut buf = [0u8; 4096];
             while let Ok(n @ 1..) = stdout.read(&mut buf) {
                 let _ = log.write_all(&buf[..n]);
-                sink.lock().expect("the log lock is not poisoned").extend_from_slice(&buf[..n]);
+                // The terminal takes in what the log does, under the log's
+                // lock, so that one made meanwhile sees each byte once.
+                let replies = {
+                    let mut sink = sink.lock().expect("the log lock is not poisoned");
+                    sink.extend_from_slice(&buf[..n]);
+                    let mut terminal = answers.lock().expect("the terminal is not poisoned");
+                    terminal.as_mut().map(|terminal| {
+                        terminal.feed(&buf[..n]);
+                        terminal.take_replies()
+                    })
+                };
+                // What it answers goes back at once, as a terminal's does.
+                if let Some(replies) = replies.filter(|replies| !replies.is_empty())
+                    && let Some(input) =
+                        keyboard.lock().expect("the input is not poisoned").as_mut()
+                {
+                    let _ = input.write_all(&replies).and_then(|()| input.flush());
+                }
             }
         });
         let deadline = Instant::now() + timeout;
@@ -4789,9 +4854,10 @@ impl Vm {
         // cut short; only a true wedge reaches it.
         let watchdog = Some(Watchdog::arm(child.id(), deadline + timeout));
         Ok(Vm {
-            stdin: child.stdin.take(),
+            stdin,
             child,
             output,
+            terminal,
             reader: Some(reader),
             qmp: machine.qmp.clone(),
             cursor: 0,
@@ -4891,14 +4957,63 @@ impl Vm {
 
     /// Types `text` on the serial port.
     pub fn send(&mut self, text: &str) -> Result<(), String> {
-        let stdin = self.stdin.as_mut().ok_or("QEMU's input is closed")?;
-        // A terminal sends what is typed a byte at a time; so does this, a
+        // A terminal sends what is typed a key at a time; so does this, a
         // little apart, so the guest's 16-byte receive FIFO never overflows.
-        for byte in text.bytes() {
-            stdin.write_all(&[byte]).and_then(|()| stdin.flush()).map_err(|e| e.to_string())?;
+        // A key's bytes go together, as a terminal sends them: an arrow
+        // key's escape sequence split in two would reach a program as Esc
+        // and two letters.
+        for key in keys_of(text.as_bytes()) {
+            let mut stdin = self.stdin.lock().expect("the input is not poisoned");
+            let stdin = stdin.as_mut().ok_or("QEMU's input is closed")?;
+            stdin.write_all(key).and_then(|()| stdin.flush()).map_err(|e| e.to_string())?;
             std::thread::sleep(Duration::from_millis(2));
         }
         Ok(())
+    }
+
+    /// Puts a terminal of `cols` by `rows` at the serial port's far end,
+    /// as a person with a terminal program would have, which takes in
+    /// what the port carried so far and from now on, and answers cursor
+    /// reports: serial-console asks the terminal's size with one (ADR
+    /// 0318). [`Vm::expect_terminal`] reads it.
+    pub fn serial_terminal(&mut self, cols: usize, rows: usize) {
+        let output = self.output.lock().expect("the log lock is not poisoned");
+        let mut terminal = crate::vt::Terminal::new(cols, rows);
+        terminal.feed(&output);
+        // What it would have answered before is long past.
+        let _ = terminal.take_replies();
+        *self.terminal.lock().expect("the terminal is not poisoned") = Some(terminal);
+    }
+
+    /// The serial port's terminal's rows, as [`Vm::serial_terminal`]
+    /// made it.
+    pub fn terminal_lines(&self) -> Result<Vec<String>, String> {
+        let terminal = self.terminal.lock().expect("the terminal is not poisoned");
+        terminal.as_ref().map(crate::vt::Terminal::lines).ok_or_else(|| {
+            "the case has no terminal on the serial port (Vm::serial_terminal)".into()
+        })
+    }
+
+    /// Waits until the serial port's terminal shows each of `needles`,
+    /// for up to `seconds`.
+    pub fn expect_terminal_within(&mut self, needles: &[&str], seconds: u64) -> Result<(), String> {
+        let deadline = Instant::now() + Duration::from_secs(seconds);
+        loop {
+            let lines = self.terminal_lines()?;
+            match screen_shows(&lines, needles) {
+                Ok(()) => return Ok(()),
+                Err(err) if Instant::now() >= deadline || self.exited().is_some() => {
+                    return Err(format!("on the serial terminal, {err}"));
+                }
+                Err(_) => std::thread::sleep(Duration::from_millis(200)),
+            }
+        }
+    }
+
+    /// Waits until the serial port's terminal shows each of `needles`,
+    /// for up to 15 seconds, as [`Vm::expect_screen`] waits.
+    pub fn expect_terminal(&mut self, needles: &[&str]) -> Result<(), String> {
+        self.expect_terminal_within(needles, 15)
     }
 
     /// Presses keys on the PS/2 keyboard through QMP's `send-key`: each
@@ -5114,7 +5229,7 @@ impl Vm {
             let _ = self.child.kill();
             let _ = self.child.wait();
         }
-        self.stdin = None;
+        *self.stdin.lock().expect("the input is not poisoned") = None;
         if let Some(reader) = self.reader.take() {
             let _ = reader.join();
         }
@@ -5493,7 +5608,7 @@ fn consoles(vm: &mut Vm, case: &Case) -> Result<(), String> {
     vm.expect("Boot complete.")?;
     vm.expect("spark: Spark v2 is process ")?;
     vm.expect("spark: listening at /system/live/spark/control")?;
-    vm.expect("spark: 18 services in /system/settings/spark/services, 15 enabled")?;
+    vm.expect("spark: 19 services in /system/settings/spark/services, 16 enabled")?;
     vm.expect("spark: started consoled (/system/commands/consoled) as process ")?;
     vm.expect("consoled: console of ")?;
     vm.expect("consoled: started /system/commands/nukesh on tty1 as process ")?;
@@ -8977,7 +9092,7 @@ fn principals(vm: &mut Vm, case: &Case) -> Result<(), String> {
 fn services(vm: &mut Vm, case: &Case) -> Result<(), String> {
     boot_report(vm, case)?;
     vm.expect("Boot complete.")?;
-    vm.expect_anywhere("spark: 18 services in /system/settings/spark/services, 15 enabled")?;
+    vm.expect_anywhere("spark: 19 services in /system/settings/spark/services, 16 enabled")?;
     vm.expect_ahead("spark: started /system/tests/posix/servicetest as process ")?;
     let code = program_line(vm, "(/system/tests/posix/servicetest) exited with code ")?;
     let log = vm.log();
@@ -9678,6 +9793,26 @@ fn microcode(vm: &mut Vm, case: &Case) -> Result<(), String> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn a_keys_bytes_go_to_the_serial_port_together() {
+        // Esc pressed alone, then Down, goes as two keys.
+        let keys = keys_of("a\x1b[A\x1b[1;5C\x1bOP\x1bx\x1b\x1b[B·\r".as_bytes());
+        let expected: [&[u8]; 9] = [
+            b"a",
+            b"\x1b[A",
+            b"\x1b[1;5C",
+            b"\x1bOP",
+            b"\x1bx",
+            b"\x1b",
+            b"\x1b[B",
+            "·".as_bytes(),
+            b"\r",
+        ];
+        assert_eq!(keys, expected);
+        // A sequence cut short at the end goes as it is.
+        assert_eq!(keys_of(b"\x1b[1;"), [b"\x1b[1;"]);
+    }
+
     /// Polls `child` until it exits or `within` passes; whether it exited.
     fn exits_within(child: &mut Child, within: Duration) -> bool {
         let deadline = Instant::now() + within;
@@ -9879,8 +10014,14 @@ mod tests {
         let filled = String::from_utf8(with_cmdline(&twice, "kdb").unwrap()).unwrap();
         assert_eq!(filled.matches("kdb ").count(), 2);
         assert!(filled.contains("radix startup-trouble kdb "));
+        // The live menu's three entries that start Dukovo are filled too.
         let thrice = format!("{slot}{slot}{slot}").into_bytes();
-        assert!(with_cmdline(&thrice, "x").is_err());
+        assert_eq!(
+            String::from_utf8(with_cmdline(&thrice, "x").unwrap()).unwrap().matches("x ").count(),
+            3
+        );
+        let four_times = format!("{slot}{slot}{slot}{slot}").into_bytes();
+        assert!(with_cmdline(&four_times, "x").is_err());
         // Padded by bytes, so a line with wider characters fills it too.
         let wide = String::from_utf8(with_cmdline(&image, "hostname=Dukovó").unwrap()).unwrap();
         assert_eq!(wide.len(), image.len());

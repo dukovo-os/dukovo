@@ -10,7 +10,8 @@
 //! echoes (ECHO), and says which signal a signal character asks for
 //! (ISIG); given what programs write, it makes what the screen needs
 //! (OPOST). Its settings are a [`Settings`], which reads and writes the C
-//! library's `struct termios` (radix-terminal(2)'s Termios).
+//! library's `struct termios` (radix-terminal(2)'s Termios). [`line`]
+//! reads what they say of a serial line, for the serial drivers.
 //!
 //! The crate knows nothing of processes, locks or user memory: the kernel
 //! (`radix::fs::tty`) holds an `Ldisc` behind a lock, feeds it, sends the
@@ -21,6 +22,7 @@
 #![forbid(unsafe_code)]
 
 mod ldisc;
+pub mod line;
 mod ring;
 #[cfg(test)]
 mod tests;

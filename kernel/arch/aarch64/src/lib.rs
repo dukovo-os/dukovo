@@ -324,6 +324,18 @@ impl Devices for Arch {
         false
     }
 
+    fn start_serial_line(_byte: fn(u8)) -> Option<&'static str> {
+        None
+    }
+
+    fn serial_line_open(_open: bool) {}
+
+    fn serial_line_send(_bytes: &[u8]) -> usize {
+        0
+    }
+
+    fn serial_line_set(_divisor: u16, _control: u8) {}
+
     fn start_power_button(_pressed: fn()) -> Option<&'static str> {
         None
     }

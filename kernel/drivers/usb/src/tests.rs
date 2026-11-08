@@ -517,31 +517,10 @@ fn ftdi_ports_are_each_interface() {
 }
 
 #[test]
-fn lines_are_read_from_cflag() {
-    use serial::{B9600, Line, Parity, Stop, cflag};
-    // A serial port's start: B9600 | CS8 | CREAD | HUPCL | CLOCAL.
+fn lines_go_to_acm_as_its_line_coding() {
+    use serial::{B9600, Line, cflag};
     let start = Line::from_cflag(B9600 | cflag::CSIZE | 0o200 | cflag::HUPCL | cflag::CLOCAL, 0);
-    assert_eq!(
-        start,
-        Line { rate: 9600, data_bits: 8, parity: Parity::None, stop: Stop::One, rts_cts: false }
-    );
-    // 7E2 at 115200 with RTS and CTS.
     let flags = 0o10002 | 0o40 | cflag::PARENB | cflag::CSTOPB | cflag::CRTSCTS;
-    let line = Line::from_cflag(flags, 0);
-    assert_eq!(
-        line,
-        Line { rate: 115_200, data_bits: 7, parity: Parity::Even, stop: Stop::Two, rts_cts: true }
-    );
-    // Mark parity, five bits and a half stop bit more, and a speed of its own.
-    let line = Line::from_cflag(
-        cflag::BOTHER | cflag::PARENB | cflag::PARODD | cflag::CMSPAR | cflag::CSTOPB,
-        250_000,
-    );
-    assert_eq!(
-        (line.rate, line.data_bits, line.parity, line.stop),
-        (250_000, 5, Parity::Mark, Stop::OneAndHalf)
-    );
-    assert_eq!(Line::from_cflag(0, 0).rate, 0);
     assert_eq!(serial::acm::line_coding(&start), [0x80, 0x25, 0, 0, 0, 0, 8]);
     let coding = serial::acm::line_coding(&Line::from_cflag(flags, 0));
     assert_eq!(coding, [0x00, 0xc2, 0x01, 0x00, 2, 2, 7]);

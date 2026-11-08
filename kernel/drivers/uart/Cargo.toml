@@ -3,7 +3,7 @@
 
 [package]
 name = "radix-uart"
-description = "16550-compatible serial ports on PCI for the Radix kernel: serial cards such as the ASIX AX99100's, and Intel AMT's Serial-over-LAN port"
+description = "16550-compatible serial ports for the Radix kernel: serial cards on PCI such as the ASIX AX99100's, Intel AMT's Serial-over-LAN port, and the registers that set any 16550's line"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -15,6 +15,8 @@ bench = false
 
 [dependencies]
 radix-hw = { path = "../../lib/hw" }
+# What a terminal's settings say of a serial line (ADR 0318).
+radix-tty = { path = "../../lib/tty" }
 
 [dev-dependencies]
 radix-hw = { path = "../../lib/hw", features = ["fake"] }

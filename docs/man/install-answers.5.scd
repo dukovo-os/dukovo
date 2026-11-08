@@ -147,6 +147,16 @@ installer refuses it, as it refuses an ID the release lacks.
 	off; left out, the profile says. Dukovo Admin arrives in release
 	0.16, which turns it on if the saved answers say so.
 
+*serial_console*
+	*true* keeps a console on the first serial port on the installed
+	system: its boot menu starts the kernel with *console=ttyS0*, so that
+	*serial-console*(8) runs the sign-in there as well as on the screen's
+	consoles, and the startup-trouble menu shows there too; *false* keeps
+	none. Left out, it is as the installer runs: true when it runs on
+	the serial port, as the stick's *Install Dukovo (serial console)*
+	entry starts it, with that entry's speed (ADR 0318). The screens
+	save it as they ran.
+
 # CHANGES
 
 Each entry of *changes* changes one disk:
@@ -204,4 +214,4 @@ which this installer does not take yet.
 
 # SEE ALSO
 
-*dukovo-install*(8), *feature*(8), *feature.toml*(5), *rdisk-layout*(5), *hostname*(5), *network*(5)
+*dukovo-install*(8), *feature*(8), *feature.toml*(5), *rdisk-layout*(5), *hostname*(5), *network*(5), *serial-console*(8)

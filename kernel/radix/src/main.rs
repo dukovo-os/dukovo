@@ -79,6 +79,7 @@ mod schedtest;
 mod selftest;
 mod swap;
 mod symbols;
+mod ttys;
 mod uart;
 mod usb;
 mod user;
@@ -265,6 +266,7 @@ pub extern "Rust" fn radix_kernel_main(mut params: BootParams) -> ! {
     fs::writeback::start();
     fs::kmsg::start();
     fs::keyboard::start();
+    ttys::start();
     // After the PCI scan, which the AML's PCI regions reach through, and
     // before the power button.
     acpi::start(flags.value("aml") == Some("off"));

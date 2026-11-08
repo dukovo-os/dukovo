@@ -35,9 +35,11 @@
 //! programs wrote to send it ([`Tty::line_take`]), and sets the line as
 //! the terminal's settings say ([`Tty::line_settings`]). Its node is
 //! `/devices/ttyACM0` or `/devices/ttyUSB0`, as Linux names it, and it
-//! starts at 9600 baud with CLOCAL, as Linux's serial ports do. The
-//! terminal wakes its driver whenever something changes; when the device
-//! goes, the node goes, and the terminal hangs up as when a master goes
+//! starts at 9600 baud with CLOCAL, as Linux's serial ports do. The PC's
+//! own COM1 is `/devices/ttyS0` (ADR 0318, `crate::ttys`), which keeps
+//! the 115200 baud the kernel log runs it at. The terminal wakes its
+//! driver whenever something changes; when the device goes, the node
+//! goes, and the terminal hangs up as when a master goes
 //! ([`Tty::line_gone`]).
 //!
 //! Lock order: a terminal's state, then the process tree. Signals are sent
@@ -740,6 +742,15 @@ impl Tty {
             // Both sides tell, the terminal's for `ttyname`.
             // A serial line is no pseudo-terminal.
             abi::GET_PTY_NUMBER if this.line.is_none() => put(&this.number.to_le_bytes()),
+            // A serial line tells its own name instead, for `ttyname`.
+            abi::GET_LINE_NAME => {
+                let line = this.line.as_ref().ok_or(Kernel::NotTerminal.status(0))?;
+                let mut name = [0u8; abi::LINE_NAME_SIZE as usize];
+                let text = line.name.as_str().as_bytes();
+                let length = text.len().min(name.len());
+                name[..length].copy_from_slice(&text[..length]);
+                put(&name)
+            }
             abi::SET_PTY_LOCK if master => {
                 let lock = word_in()? != 0;
                 this.state.lock().locked = lock;
@@ -1023,19 +1034,28 @@ fn make() -> radix_vfs::Result<TtyRef> {
 
 /// The control flags a serial line starts with, as Linux's: B9600, CS8,
 /// CREAD, HUPCL and CLOCAL.
-const LINE_CFLAG: u32 = 0o15 | 0o60 | 0o200 | 0o2000 | 0o4000;
+pub const LINE_CFLAG: u32 = 0o15 | 0o60 | 0o200 | 0o2000 | 0o4000;
 
 /// Makes the terminal of a serial line, whose driver is its master, and
-/// its node `/devices/{name}`; `wake(argument)` wakes the driver whenever
-/// the terminal changes. The driver lets go of it with [`Tty::line_gone`].
-pub fn make_line(name: &str, wake: fn(usize), argument: usize) -> radix_vfs::Result<TtyRef> {
+/// its node `/devices/{name}`, with the control flags `cflag` and the
+/// speed they name (as [`LINE_CFLAG`] for a USB adapter; the PC's COM1
+/// keeps the 115200 baud it already runs at, ADR 0318); `wake(argument)`
+/// wakes the driver whenever the terminal changes. The driver lets go of
+/// it with [`Tty::line_gone`].
+pub fn make_line(
+    name: &str,
+    cflag: u32,
+    wake: fn(usize),
+    argument: usize,
+) -> radix_vfs::Result<TtyRef> {
     let input = buffer(INPUT).ok_or(radix_vfs::Error::NoMemory)?;
     let output = buffer(OUTPUT).ok_or(radix_vfs::Error::NoMemory)?;
     let mut ldisc = Ldisc::new(input);
     let mut settings = Settings::new();
-    settings.cflag = LINE_CFLAG;
-    settings.ispeed = 0o15;
-    settings.ospeed = 0o15;
+    settings.cflag = cflag;
+    let speed = cflag & radix_tty::line::cflag::CBAUD;
+    settings.ispeed = speed;
+    settings.ospeed = speed;
     ldisc.set(settings);
     let mut text = radix_klog::TextBuf::<16>::new();
     let _ = core::fmt::Write::write_str(&mut text, name);

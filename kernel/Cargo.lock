@@ -795,6 +795,7 @@ name = "radix-uart"
 version = "0.13.0"
 dependencies = [
  "radix-hw",
+ "radix-tty",
 ]
 
 [[package]]
@@ -817,6 +818,7 @@ version = "0.13.0"
 dependencies = [
  "proptest",
  "radix-scsi",
+ "radix-tty",
 ]
 
 [[package]]

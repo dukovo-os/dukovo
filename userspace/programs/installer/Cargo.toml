@@ -31,6 +31,9 @@ disk = { path = "../disk", features = ["ntfs", "fat"] }
 manifest = { path = "../manifest" }
 # The keyboard layouts the screens offer (keymap(1)).
 keymap = { path = "../keymap" }
+# ttyname(3), which tells whether the installer runs on the serial port
+# (MIT OR Apache-2.0).
+libc = "0.2.191"
 # The SHA-256 of each file as it is copied, ring's, which ob patches in
 # from the rust-crates port (ADR 0192).
 ring = "0.17.14"

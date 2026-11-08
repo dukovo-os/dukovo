@@ -47,6 +47,7 @@ mod tla;
 mod tuf;
 mod upstream;
 mod userspace;
+mod vt;
 
 use std::fmt;
 use std::io;

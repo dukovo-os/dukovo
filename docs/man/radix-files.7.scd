@@ -180,6 +180,11 @@ changed, kept by tmpfs and Btrfs; FAT and exFAT give *modified*.
 	they are plugged in, their lines set by their termios settings, as
 	*stty*(1) sets them (ADR 0246). From Phase 13f _fuse_ makes a
 	connection for a program that serves a filesystem (*fuse*, below).
+	From Phase 14 the board's first serial port, COM1, is the terminal
+	_ttyS0_, at 115200 baud until its settings change it, on which
+	*serial-console*(8) runs the installer, a shell or the sign-in; the
+	kernel log stays off the line while a program has it open (ADR
+	0318).
 
 *bootfs*
 	The boot archive (*radix-processes*(7)), read-only, with the

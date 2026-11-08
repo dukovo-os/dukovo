@@ -504,6 +504,22 @@ impl Devices for Arch {
         i8042::send(byte)
     }
 
+    fn start_serial_line(byte: fn(u8)) -> Option<&'static str> {
+        serial::start_line(byte)
+    }
+
+    fn serial_line_open(open: bool) {
+        serial::line_open(open);
+    }
+
+    fn serial_line_send(bytes: &[u8]) -> usize {
+        serial::line_send(bytes)
+    }
+
+    fn serial_line_set(divisor: u16, control: u8) {
+        serial::line_set(divisor, control);
+    }
+
     fn start_power_button(pressed: fn()) -> Option<&'static str> {
         sci::start(pressed)
     }

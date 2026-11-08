@@ -65,6 +65,7 @@ install-free 110
 install-manual 112
 install-mirror 180
 install-screens 94
+install-serial 100
 install-uefi 99
 installed-bios 29
 installed-uefi 26

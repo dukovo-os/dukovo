@@ -325,13 +325,18 @@ const TESTS_CFG: &str = "image/grub/grub.cfg.in";
 /// [`LIVE_CFG`] loads it from there.
 const THEME_DIR: &str = "boot/grub/theme";
 
-/// [`INSTALLED_CFG`] with the root's UUID in it, the other placeholders
-/// left for [`render_grub_cfg`].
+/// The installed menu's placeholder for the serial console's flag, which
+/// the installer fills with ` console=ttyS0` on a system it installs over
+/// the first serial port, and with nothing otherwise (ADR 0318).
+const CONSOLE: &str = "@CONSOLE@";
+
+/// [`INSTALLED_CFG`] with the root's UUID in it and no serial console,
+/// the other placeholders left for [`render_grub_cfg`].
 fn installed_template(ctx: &Ctx, uuid: [u8; 16]) -> Result<String> {
     let path = ctx.root.join(INSTALLED_CFG);
     let template =
         std::fs::read_to_string(&path).context(|| format!("reading {}", path.display()))?;
-    Ok(template.replace("@ROOT_UUID@", &uuid_text(uuid)))
+    Ok(template.replace("@ROOT_UUID@", &uuid_text(uuid)).replace(CONSOLE, ""))
 }
 
 /// The live menu's template with the entry `start` as its default.
@@ -345,8 +350,8 @@ fn live_template(template: &str, start: LiveStart) -> String {
 pub const INSTALLER_MENU: &str = "installed.cfg";
 
 /// Writes [`INSTALLER_MENU`] into `dir`: [`INSTALLED_CFG`] with this
-/// build's timeout and command line, and `@ROOT_UUID@` left for the
-/// installer. Gives its path.
+/// build's timeout and command line, and `@ROOT_UUID@` and `@CONSOLE@`
+/// left for the installer. Gives its path.
 pub fn installer_menu(ctx: &Ctx, dir: &Path) -> Result<PathBuf> {
     let path = ctx.root.join(INSTALLED_CFG);
     let template =
@@ -360,12 +365,15 @@ pub fn installer_menu(ctx: &Ctx, dir: &Path) -> Result<PathBuf> {
 }
 
 /// The text of [`INSTALLER_MENU`]: [`render_grub_cfg`] refuses a
-/// placeholder it does not fill, so the root's is held out of its sight
-/// and put back after.
+/// placeholder it does not fill, so the installer's are held out of its
+/// sight and put back after.
 fn installer_menu_text(template: &str, timeout: u32, cmdline: &str) -> Result<String> {
-    const HELD: &str = "\u{1}ROOT_UUID\u{1}";
-    let held = template.replace("@ROOT_UUID@", HELD);
-    Ok(render_grub_cfg(&held, timeout, cmdline, &[], "")?.replace(HELD, "@ROOT_UUID@"))
+    const HELD_ROOT: &str = "\u{1}ROOT_UUID\u{1}";
+    const HELD_CONSOLE: &str = "\u{1}CONSOLE\u{1}";
+    let held = template.replace("@ROOT_UUID@", HELD_ROOT).replace(CONSOLE, HELD_CONSOLE);
+    Ok(render_grub_cfg(&held, timeout, cmdline, &[], "")?
+        .replace(HELD_ROOT, "@ROOT_UUID@")
+        .replace(HELD_CONSOLE, CONSOLE))
 }
 
 /// A UUID as GRUB's `search --fs-uuid`, Linux's `blkid` and the kernel's
@@ -1240,7 +1248,7 @@ mod tests {
         let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../", "image/grub/installed.cfg.in");
         let template = std::fs::read_to_string(path).unwrap();
         let uuid = "90c9a303-3954-4174-8f8b-ee75a92a9eb0";
-        let filled = template.replace("@ROOT_UUID@", uuid);
+        let filled = template.replace("@ROOT_UUID@", uuid).replace(CONSOLE, "");
         let modules = [(MICROCODE_PATH, "microcode")];
         let cfg = render_grub_cfg(&filled, 0, "quiet", &modules, "").unwrap();
         assert!(cfg.contains(&format!("search --no-floppy --fs-uuid --set=system {uuid}\n")));
@@ -1278,9 +1286,11 @@ mod tests {
         let template = std::fs::read_to_string(path).unwrap();
         let menu = installer_menu_text(&template, 5, "quiet").unwrap();
         assert!(menu.contains("search --no-floppy --fs-uuid --set=system @ROOT_UUID@\n"), "{menu}");
-        assert!(menu.contains("root=UUID=@ROOT_UUID@ panic=10 quiet\n"), "{menu}");
+        assert!(menu.contains("root=UUID=@ROOT_UUID@ panic=10@CONSOLE@ quiet\n"), "{menu}");
         assert!(!menu.contains("@VERSION@") && !menu.contains("@CMDLINE@"));
         assert!(!menu.contains('\u{1}'));
+        // Both Dukovo entries take the serial console's flag (ADR 0318).
+        assert_eq!(menu.matches("panic=10@CONSOLE@ quiet").count(), 2);
     }
 
     #[test]
@@ -1298,6 +1308,16 @@ mod tests {
             userspace::BOOTFS_WORD
         );
         assert!(cfg.contains(&install), "{cfg}");
+        // The installer on the first serial port instead, its flags first
+        // too (ADR 0318).
+        assert!(cfg.contains(&format!(
+            "menuentry \"Install Dukovo {VERSION} (serial console)\" --id install-serial {{"
+        )));
+        let serial = format!(
+            "    multiboot2 /boot/radix live install console=ttyS0 console-sign-in=off quiet\n    module2 /boot/bootfs {}\n    boot\n",
+            userspace::BOOTFS_WORD
+        );
+        assert!(cfg.contains(&serial), "{cfg}");
         assert!(
             cfg.contains(&format!("Try Dukovo {VERSION} (live console)\" --id try {{")),
             "{cfg}"

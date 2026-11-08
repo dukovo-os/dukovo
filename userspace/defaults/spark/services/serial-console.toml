@@ -1,0 +1,43 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+#
+# A console on the PC's first serial port, /devices/ttyS0, for a computer
+# with no screen: serial-console(8). It runs only when the kernel was
+# started with `console=ttyS0`, as the install stick's "Install Dukovo
+# (serial console)" entry and a system installed from it are: the
+# installer's screens there under `install`, then root's shell or the
+# sign-in, as on the screen's consoles.
+#
+# service.toml(5) explains each setting. `service check serial-console`
+# checks this file, and `service edit serial-console` checks it as you
+# save.
+
+service_version = 1
+description = "Serial console"
+program = "/system/commands/serial-console"
+# With the screen's consoles, before the services they show starting.
+order = 10
+# Without `console=ttyS0`, or without a serial port, serial-console exits
+# with 0 and stays stopped.
+restart = "on-failure"
+
+[limits]
+# The shells and all they run share its domain, as consoled's do, so it
+# has no memory limit; twice the default CPU weight keeps typing quick
+# when services are busy.
+cpu_weight = 200
+memory = "none"
+
+# What it holds: the whole tree, as consoled(8) does, since it runs the
+# installer, login(1) and root's shell as root (serial-console(8)).
+[permissions]
+runs-with-your-access = true
+# Root's shells may use the network, listen on any port and set the
+# interfaces up with ip(8), set the fans, the LEDs and the ARGB header
+# with ectool(8), and set the clock with date(1) and timedatectl(1), as
+# on the screen's consoles.
+network.outbound = true
+network.listen = ["1-65535"]
+admin.network = true
+admin.hardware = true
+admin.time = true

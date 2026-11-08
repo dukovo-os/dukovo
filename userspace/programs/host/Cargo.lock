@@ -927,6 +927,7 @@ dependencies = [
  "disk",
  "fluent-bundle",
  "keymap",
+ "libc",
  "manifest",
  "ratatui",
  "ring",

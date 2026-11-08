@@ -1127,6 +1127,9 @@ impl App {
         settings.push(answers.time_zone().to_string());
         settings
             .push(messages::with("review-keyboard", &[("layout", Arg::Text(&answers.keyboard))]));
+        if answers.serial_console(self.machine.serial_console) {
+            settings.push(messages::text("review-serial-console"));
+        }
         rows.push(Row::Text(label("review-settings", settings.join(" · ")), Look::Plain));
         let mut people = vec![messages::with(
             "review-admin",
@@ -1481,6 +1484,9 @@ impl App {
                 remove: Vec::new(),
             },
             web_console: Some(self.web_console),
+            // A system installed over the serial port keeps a console there
+            // (ADR 0318).
+            serial_console: Some(self.machine.serial_console),
             later: std::collections::BTreeMap::new(),
         })
     }

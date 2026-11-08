@@ -145,6 +145,10 @@ pub struct Machine {
     /// started by UEFI and the kernel reaches its variables, as efiboot(8)
     /// lists them. Installing next to Windows needs one.
     pub boot_entries: bool,
+    /// Whether the installer runs on the first serial port, as the
+    /// install stick's "Install Dukovo (serial console)" entry starts it: the
+    /// installed system then keeps a console there (ADR 0318).
+    pub serial_console: bool,
 }
 
 impl Machine {
@@ -168,8 +172,44 @@ impl Machine {
             layouts: layouts(),
             zones: read_zones(Path::new(ZONES)),
             boot_entries: boot_entries(),
+            serial_console: on_serial_console(),
         }
     }
+}
+
+/// The first serial port, as a terminal: where serial-console(8) runs the
+/// installer under the kernel flag `console=ttyS0`.
+pub const SERIAL_LINE: &str = "/devices/ttyS0";
+
+/// Whether the installer's terminal is the first serial port.
+#[must_use]
+pub fn on_serial_console() -> bool {
+    // SAFETY: ttyname returns a C string the C library keeps, or null;
+    // the installer asks before it starts any thread that would.
+    let name = unsafe { libc::ttyname(0) };
+    // SAFETY: a non-null result is a C string, which is read at once.
+    !name.is_null()
+        && unsafe { std::ffi::CStr::from_ptr(name) }.to_bytes() == SERIAL_LINE.as_bytes()
+}
+
+/// The kernel flag that keeps a console on the first serial port, for the
+/// installed system's menu: the live system's own `console=ttyS0` word,
+/// with its speed if it gives one, or plain `console=ttyS0`.
+#[must_use]
+pub fn serial_console_flag() -> String {
+    let line = fs::read_to_string("/kernel/cmdline").unwrap_or_default();
+    console_word(&line).unwrap_or("console=ttyS0").to_string()
+}
+
+/// The last `console=ttyS0` word, with or without options, among the
+/// kernel flags of command line `line`, those before a lone `--`.
+fn console_word(line: &str) -> Option<&str> {
+    line.split_whitespace()
+        .take_while(|word| *word != "--")
+        .filter(|word| {
+            word.strip_prefix("console=ttyS0").is_some_and(|r| r.is_empty() || r.starts_with(','))
+        })
+        .last()
 }
 
 /// Whether efiboot(8) lists the firmware's boot entries: it fails when
@@ -332,6 +372,20 @@ fn layouts() -> Vec<(String, String)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_serial_consoles_flag_is_the_live_systems_own() {
+        assert_eq!(
+            console_word("live install console=ttyS0 console-sign-in=off"),
+            Some("console=ttyS0")
+        );
+        assert_eq!(
+            console_word("console=ttyS0 console=ttyS0,9600n8 quiet"),
+            Some("console=ttyS0,9600n8")
+        );
+        assert_eq!(console_word("console=tty0 console=ttyS1"), None);
+        assert_eq!(console_word("live -- console=ttyS0"), None);
+    }
 
     fn write(dir: &Path, file: &str, text: &str) {
         let path = dir.join(file);
