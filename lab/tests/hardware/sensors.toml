@@ -1,0 +1,13 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# What the sensors actually read is hardware-specific (a machine with no
+# hardware monitors, QEMU among them, finds none), so this checks the
+# command's own output rather than any one machine's temperatures.
+about = "sensors prints a usage that lists its options"
+time = "1m"
+
+[[step]]
+run = "sensors -h"
+exit = 1
+expect = ["Usage: sensors [OPTION]", "--fahrenheit", "--no-adapter", "raw output", "JSON output"]
