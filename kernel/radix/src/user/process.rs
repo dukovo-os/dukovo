@@ -790,7 +790,7 @@ impl ProcessObject {
             )
             .map_err(fail)?;
         }
-        {
+        let joins = {
             let mut state = process.state.lock();
             if !matches!(state.phase, ProcessState::Created | ProcessState::Running) {
                 drop(state);
@@ -800,10 +800,23 @@ impl ProcessObject {
                 drop(state);
                 return Err(fail(error(Kernel::NoMemory)));
             }
+            let joins = !state.threads.is_empty();
             // Room was reserved above.
             let _ = state.threads.push_within_capacity(thread.clone());
             process.live_threads.store(state.threads.len(), Ordering::Release);
             state.phase = ProcessState::Running;
+            joins
+        };
+        // A thread that was alone in the process may be in a call that
+        // borrowed a file without counting a reference, from a slot only
+        // it could empty (ADR 0414): one started from outside the process
+        // runs once that call has counted it or ended. One of its own
+        // threads starting another is not in such a call.
+        let from_inside = sched::current()
+            .and_then(|me| me.user().map(|starter| Arc::ptr_eq(&starter.process, process)))
+            .unwrap_or(false);
+        if joins && !from_inside {
+            sched::rcu::synchronize();
         }
         set_ready(&user);
         sched::release(&thread);

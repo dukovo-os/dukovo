@@ -43,6 +43,7 @@ pub const MODELS: &[(&str, &str)] = &[
     ("kernel/radix/tla/FileLocks.tla", "FileLocks.cfg"),
     ("kernel/radix/tla/Join.tla", "Join.cfg"),
     ("kernel/radix/tla/Mutex.tla", "Mutex.cfg"),
+    ("kernel/radix/tla/LightBorrow.tla", "LightBorrow.cfg"),
 ];
 
 /// How to install Java.

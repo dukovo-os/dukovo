@@ -250,7 +250,10 @@ fn capability(user: &UserRef, at: SlotRef, label: u32, args: &[u64; 8]) -> Resul
         }
         abi_cap::REVOKE => {
             abi_cap::RevokeArgs::decode(args)?;
-            caps::revoke(at).map_err(cap_error)?;
+            // It may empty other processes' slots, which a call there may
+            // borrow from without counting a reference: it waits for those
+            // to be counted first (ADR 0414).
+            objects::revoking(|| caps::revoke(at)).map_err(cap_error)?;
             answer(label, 0, [0; 8])
         }
         abi_cap::FLAGS => {

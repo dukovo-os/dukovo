@@ -242,6 +242,15 @@ fn send(tty: &TtyRef, carried: &mut Carried) -> bool {
             if carried.sending_len == 0 {
                 return false;
             }
+            // A program may have opened the terminal since this round
+            // began, and what was just taken may be its first writes. The
+            // receive interrupt goes on before they go out, not in the
+            // next round: a question such as serial-console's size query
+            // gets its answer at once, and the next round's opening would
+            // empty the receive FIFO of that answer. A program opens the
+            // terminal before it writes, so what it wrote being here means
+            // its opening shows here too.
+            opened_or_closed(tty, carried);
         }
         let from = carried.sending_at;
         let sent = Arch::serial_line_send(&carried.sending[from..from + carried.sending_len]);

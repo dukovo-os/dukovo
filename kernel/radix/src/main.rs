@@ -30,15 +30,17 @@
 //! crate stays portable). The command-line flags are listed in
 //! `radix_hal::cmdline::FLAGS` and documented in dukovo-boot(7).
 //!
-//! The crate needs `unsafe` in six places only, each allowed where it is
-//! used: exporting the entry point under a fixed name, switching the locks
-//! into panic mode, the context switch (`sched::switch`), which reaches
-//! the two threads' contexts through pointers the scheduler keeps valid,
-//! borrowing the running thread from its CPU's record without counting a
-//! reference (`sched::running`), building an open file in the allocation
-//! no other reference reaches yet (`fs::FileObject::opened`), and per-CPU
-//! values only their own CPU uses (`percpu::Own`), which need no lock
-//! because no other CPU reaches them.
+//! The crate needs `unsafe` in a few places only, each allowed where it is
+//! used, among them: exporting the entry point under a fixed name,
+//! switching the locks into panic mode, the context switch
+//! (`sched::switch`), which reaches the two threads' contexts through
+//! pointers the scheduler keeps valid, borrowing the running thread from
+//! its CPU's record without counting a reference (`sched::running`),
+//! borrowing a call's file from its CPU's capability cache the same way
+//! (`user::objects::find_holding`, ADR 0414), building an open file in
+//! the allocation no other reference reaches yet
+//! (`fs::FileObject::opened`), and per-CPU values only their own CPU uses
+//! (`percpu::Own`), which need no lock because no other CPU reaches them.
 
 #![no_std]
 #![no_main]
