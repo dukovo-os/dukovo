@@ -17,7 +17,8 @@ management engine carries over the network to a management console;
 QEMU's *pci-serial*, *pci-serial-2x* and *pci-serial-4x*; and the first
 port of any other card whose PCI class says it is a 16550, 16650,
 16750, 16850 or 16950. Only ports in I/O space are used. COM1, the
-serial port of a machine's board, is the kernel's own and not these.
+serial port of a machine's board, is the kernel's own and not these:
+programs open it as _/devices/ttyS0_ (*serial-console*(8)).
 
 The kernel finds the ports on the PCI bus as it starts, checks that each
 answers, and sets it to 115200 baud, 8 data bits, no parity and one
@@ -43,4 +44,4 @@ set up in the machine's management engine menu.
 
 # SEE ALSO
 
-*radix-debug*(7), *lspci*(8)
+*radix-debug*(7), *lspci*(8), *serial-console*(8)

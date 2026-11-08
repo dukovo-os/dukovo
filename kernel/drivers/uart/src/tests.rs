@@ -506,3 +506,42 @@ fn a_full_console_turns_a_port_away() {
     assert!(!console.add(Uart::probe(Fake::new(Tx::Fast), 0).unwrap()));
     assert_eq!(console.len(), 1);
 }
+
+#[test]
+fn a_line_is_set_by_its_divisor_and_line_control() {
+    use radix_tty::line::{B9600, B115200, Line, Parity, Stop, cflag};
+    let read = 0o200;
+    // COM1's own: 115200 baud, 8N1, as GRUB and the kernel's log set it.
+    let line = Line::from_cflag(B115200 | cflag::CSIZE | read | cflag::CLOCAL, 0);
+    assert_eq!(line_registers(&line), Some(LineRegisters { divisor: 1, control: 0x03 }));
+    // A serial port's usual start, 9600 baud: divisor 12.
+    let line = Line::from_cflag(B9600 | cflag::CSIZE | read, 0);
+    assert_eq!(line_registers(&line), Some(LineRegisters { divisor: 12, control: 0x03 }));
+    // 7E2 at 38400 (code 0o17): divisor 3, 7 bits, two stop bits, even.
+    let line = Line::from_cflag(0o17 | 0o40 | cflag::PARENB | cflag::CSTOPB, 0);
+    assert_eq!(line_registers(&line), Some(LineRegisters { divisor: 3, control: 0x1e }));
+    // Odd, mark and space parity, and five bits with one and a half stop
+    // bits, which the same bit gives.
+    let with =
+        |data_bits, parity, stop| Line { rate: 115_200, data_bits, parity, stop, rts_cts: false };
+    assert_eq!(line_registers(&with(8, Parity::Odd, Stop::One)).map(|r| r.control), Some(0x0b));
+    assert_eq!(line_registers(&with(8, Parity::Mark, Stop::One)).map(|r| r.control), Some(0x2b));
+    assert_eq!(line_registers(&with(8, Parity::Space, Stop::One)).map(|r| r.control), Some(0x3b));
+    assert_eq!(
+        line_registers(&with(5, Parity::None, Stop::OneAndHalf)).map(|r| r.control),
+        Some(0x04)
+    );
+    // 110 baud rounds to divisor 1047, 0.03% off; 50 baud's 2304 is exact.
+    let slow = |rate| Line { rate, ..with(8, Parity::None, Stop::One) };
+    assert_eq!(line_registers(&slow(110)).map(|r| r.divisor), Some(1047));
+    assert_eq!(line_registers(&slow(50)).map(|r| r.divisor), Some(2304));
+    // Past the base clock, a rate no divisor comes near, and B0, which
+    // hangs up: the line stays as it is.
+    assert_eq!(line_registers(&slow(230_400)), None);
+    assert_eq!(line_registers(&slow(80_000)), None);
+    assert_eq!(line_registers(&slow(0)), None);
+    // Rates a divisor gives within 2%: 56000 is 2 (57600, 2.9% off), so
+    // not; 57600 is.
+    assert_eq!(line_registers(&slow(56_000)), None);
+    assert_eq!(line_registers(&slow(57_600)).map(|r| r.divisor), Some(2));
+}

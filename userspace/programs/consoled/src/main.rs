@@ -19,7 +19,9 @@
 //! _/system/settings/keyboard_ names (keymap(1), ADR 0149), read again on
 //! SIGHUP, which `service consoled reload` sends. With the kernel flag
 //! `install`, tty1 runs the installer's screens before its shell
-//! (dukovo-install(8)), in the largest font they fit. Notifications from
+//! (dukovo-install(8)), in the largest font they fit, unless `console=ttyS0`
+//! puts them on the serial port, where serial-console(8) runs them (ADR
+//! 0318). Notifications from
 //! notifyd(8) show on the bottom line (`notices`, ADR 0212). When
 //! consoled ends, the screen is the kernel log's again. Spark starts it as
 //! a service (spark(8)).
@@ -167,6 +169,24 @@ fn kernel_flag(flag: &str) -> bool {
 /// `--`, have `flag`.
 fn has_flag(line: &str, flag: &str) -> bool {
     line.split_whitespace().take_while(|w| *w != "--").any(|w| w == flag)
+}
+
+/// Whether the kernel flags of command line `line` ask for a console on
+/// the serial port, `console=ttyS0` with or without Linux's options after
+/// a comma, which serial-console(8) keeps.
+fn has_serial_console(line: &str) -> bool {
+    line.split_whitespace().take_while(|w| *w != "--").any(|w| {
+        w.strip_prefix("console=ttyS0").is_some_and(|r| r.is_empty() || r.starts_with(','))
+    })
+}
+
+/// Whether the installer's screens run on the serial port rather than on
+/// tty1: the kernel was started with `console=ttyS0`, as the install
+/// stick's "Install Dukovo (serial console)" entry starts it, and the
+/// computer has the port (ADR 0318).
+fn installs_on_serial() -> bool {
+    let line = std::fs::read_to_string("/kernel/cmdline").unwrap_or_default();
+    has_serial_console(&line) && std::path::Path::new("/devices/ttyS0").exists()
 }
 
 /// Root's shell and home from the user database, as login(1) reads them.
@@ -537,7 +557,10 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    let install = kernel_flag("install");
+    let install = kernel_flag("install") && !installs_on_serial();
+    if kernel_flag("install") && !install {
+        eprintln!("consoled: install: the installer's screens are on the serial port, ttyS0");
+    }
     let grid = if install { INSTALLER_GRID } else { radix_fbcon::MIN_GRID };
     let screen = match Screen::open("/devices/fb0", grid) {
         Ok(screen) => screen,
@@ -607,7 +630,7 @@ fn main() -> ExitCode {
 
 #[cfg(test)]
 mod tests {
-    use super::has_flag;
+    use super::{has_flag, has_serial_console};
 
     #[test]
     fn sign_in_is_off_only_by_a_kernel_flag() {
@@ -624,5 +647,14 @@ mod tests {
         assert!(has_flag("live install console-sign-in=off quiet", "install"));
         assert!(!has_flag("live installer quiet", "install"));
         assert!(!has_flag("live -- install", "install"));
+    }
+
+    #[test]
+    fn the_serial_console_is_asked_for_with_or_without_options() {
+        assert!(has_serial_console("live install console=ttyS0 console-sign-in=off"));
+        assert!(has_serial_console("console=tty0 console=ttyS0,115200n8"));
+        assert!(!has_serial_console("console=tty0 console=ttyS1"));
+        assert!(!has_serial_console("console=ttyS00"));
+        assert!(!has_serial_console("live -- console=ttyS0"));
     }
 }

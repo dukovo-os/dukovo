@@ -231,11 +231,23 @@ int Sysdeps<Ioctl>::operator()(int fd, unsigned long request, void *arg, int *re
 }
 
 int Sysdeps<Ttyname>::operator()(int fd, char *buf, size_t size) {
-	// Every terminal is a pseudo-terminal, /devices/pts/N.
+	// A pseudo-terminal is /devices/pts/N.
 	uint32_t number;
-	if(int e = pty_number(fd, &number); e)
+	if(pty_number(fd, &number) == 0)
+		return pts_path(number, buf, size);
+	// A serial line, such as the first serial port, says its own name in
+	// /devices (ADR 0318).
+	char name[RADIX_TERMINAL_LINE_NAME_SIZE + 1] = {};
+	if(int e = control(fd, RADIX_TERMINAL_GET_LINE_NAME, 0, name, RADIX_TERMINAL_LINE_NAME_SIZE); e)
 		return e;
-	return pts_path(number, buf, size);
+	const char prefix[] = "/devices/";
+	size_t len = sizeof(prefix) - 1;
+	size_t name_len = strlen(name);
+	if(size < len + name_len + 1)
+		return ERANGE;
+	memcpy(buf, prefix, len);
+	memcpy(buf + len, name, name_len + 1);
+	return 0;
 }
 
 int Sysdeps<Ptsname>::operator()(int fd, char *buffer, size_t length) {

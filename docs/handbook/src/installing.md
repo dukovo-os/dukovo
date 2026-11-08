@@ -13,7 +13,8 @@ The full references are dukovo-install(8) and install-answers(5)
 ([ADR 0309](https://github.com/dukovo-os/dukovo/blob/main/docs/adr/0309-dukovo-install-installs-the-signed-release-as-an-answers-file-says.md),
 [ADR 0310](https://github.com/dukovo-os/dukovo/blob/main/docs/adr/0310-the-installer-s-screens.md),
 [ADR 0311](https://github.com/dukovo-os/dukovo/blob/main/docs/adr/0311-the-free-space-and-manual-layouts-and-swap-at-every-start.md),
-[ADR 0314](https://github.com/dukovo-os/dukovo/blob/main/docs/adr/0314-installing-next-to-windows.md)).
+[ADR 0314](https://github.com/dukovo-os/dukovo/blob/main/docs/adr/0314-installing-next-to-windows.md),
+[ADR 0318](https://github.com/dukovo-os/dukovo/blob/main/docs/adr/0318-the-serial-console-ttys0-and-serial-only-installs.md)).
 
 The guided layout **erases the disk it installs onto**. The layout next
 to Windows shrinks Windows and keeps its files, the free-space layout
@@ -130,6 +131,29 @@ read -s pw; echo "$pw" | dukovo-install --hash-password; unset pw
 `mirror` naming the second disk; or `manual`, whose
 `changes` list each partition taken out, made or formatted, as the rdisk
 screen saves them: install-answers(5) describes them.
+
+## Installing over a serial port
+
+A server with no screen installs over its first serial port, COM1, or
+over a BMC's serial-over-LAN, which the board shows as COM1:
+
+1. Connect a terminal program on another computer to the port at
+   115200 baud, 8 data bits, no parity and one stop bit, as
+   `screen /dev/ttyUSB0 115200` or PuTTY does. Make its window at least
+   80 columns by 24 rows. The stick's menu shows there as it does on a
+   screen.
+2. Choose *Install Dukovo (serial console)*, the third entry. The
+   installer's screens show on the port, the size of the terminal's
+   window, and take the same keys.
+3. Install as with the screens. The review's settings line ends with
+   *serial console ttyS0*: the installed system keeps `console=ttyS0`
+   on its command line, so that its sign-in is on the port too.
+
+*Live console* on the first page gives root's shell on the port, where
+`dukovo-install` starts the installer again. An answers file's
+`serial_console` key makes the same choice for an install from a file
+(install-answers(5)). serial-console(8) describes the port's console,
+and `console=ttyS0,9600n8` on the command line runs it at another speed.
 
 ## Installing from an answers file
 

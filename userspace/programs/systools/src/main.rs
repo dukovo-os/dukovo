@@ -34,7 +34,10 @@
 //! `authd` keeps the accounts, which `user` and `passwd` change, `login`
 //! signs people in through it, and `elevate`, and `sudo` in front of it,
 //! run a command as an administrator (ADRs 0218, 0250 and 0219); `last`,
-//! `lastb` and `lastlog` show the sign-ins it records (ADR 0254).
+//! `lastb` and `lastlog` show the sign-ins it records (ADR 0254);
+//! `serial-console` runs the installer, a shell or the sign-in on the
+//! PC's serial port when the kernel is started with `console=ttyS0` (ADR
+//! 0318).
 //! `rdisk` partitions disks, `mkfs-fat` and `mkfs-exfat` make FAT and
 //! exFAT filesystems, and `fsck-fat` checks and mends FAT ones, with the
 //! disk engine (ADRs 0300 to 0302); `mkfs-btrfs` makes a Btrfs, and
@@ -129,6 +132,7 @@ mod rtrace;
 mod script;
 mod scrub;
 mod sensors;
+mod serial_console;
 mod servicefiles;
 mod sessions;
 mod share;
@@ -275,6 +279,7 @@ const TOOLS: &[(&str, Tool)] = &[
     ("script", script::main),
     ("scrub", scrub::main),
     ("sensors", sensors::main),
+    ("serial-console", serial_console::main),
     ("service", power::service),
     ("setfacl", facl::setfacl),
     ("share", share::main),

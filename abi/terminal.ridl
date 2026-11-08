@@ -66,6 +66,13 @@ const GET_PTY_NUMBER: u32 = 0x80045430;
 /// On a master: locks (non-zero 32-bit number at `buffer`) or unlocks
 /// `/devices/pts/N`; it starts unlocked.
 const SET_PTY_LOCK: u32 = 0x40045431;
+/// A serial line's name in `/devices`, such as `ttyS0` or `ttyUSB0`, as
+/// LINE_NAME_SIZE bytes at `buffer`, padded with NULs: Dukovo's own
+/// request, for `ttyname`, as GET_PTY_NUMBER is for a pseudo-terminal,
+/// which has no line name (ADR 0318).
+const GET_LINE_NAME: u32 = 0x80105240;
+/// The bytes GET_LINE_NAME writes.
+const LINE_NAME_SIZE: u32 = 16;
 
 /// The number of `c_cc` entries.
 const NCCS: u32 = 32;

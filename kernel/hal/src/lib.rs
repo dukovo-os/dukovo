@@ -615,6 +615,30 @@ pub trait Devices {
     /// not take it in time.
     fn keyboard_send(byte: u8) -> bool;
 
+    /// Makes the machine's own serial port the line of a terminal, if it
+    /// has one: on a PC, COM1, which the kernel log and `kdb` already use
+    /// (ADR 0318). `byte` is called, in an interrupt handler with
+    /// interrupts masked, with each byte the port receives once
+    /// [`Devices::serial_line_open`] has turned its interrupt on. Returns
+    /// what the port is, for the log, or `None` if the machine has none
+    /// or its interrupt could not be routed.
+    fn start_serial_line(byte: fn(u8)) -> Option<&'static str>;
+
+    /// The serial line's terminal was opened (`open`), or closed for the
+    /// last time. While it is open the port takes typing by interrupt and
+    /// the kernel log stays off the line, which a program draws on; `kdb`
+    /// and a panic report still go out on it.
+    fn serial_line_open(open: bool);
+
+    /// Hands the serial line as much of `bytes` as its transmitter takes
+    /// now, without waiting. Returns how many it took.
+    fn serial_line_send(bytes: &[u8]) -> usize;
+
+    /// Sets the serial line's speed and character format: on a PC, the
+    /// divisor of a 16550's 115200-baud clock and its line control
+    /// register (`radix_uart::line_registers`).
+    fn serial_line_set(divisor: u16, control: u8);
+
     /// Hears the machine's power button, if the kernel can: on a PC the
     /// ACPI button that is a fixed feature, through the System Control
     /// Interrupt (Phase 11). `pressed` is called, in an interrupt handler

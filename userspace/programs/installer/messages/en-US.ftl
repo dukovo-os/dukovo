@@ -293,6 +293,7 @@ review-accounts = Accounts
 review-software = Software
 review-web-console-on = web console on (from release 0.16)
 review-web-console-off = web console off
+review-serial-console = serial console ttyS0
 review-admin = { $user } ({ $name }), administrator
 review-untouched = Untouched
 review-confirm = Type { $disk } to confirm

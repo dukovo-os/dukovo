@@ -75,6 +75,12 @@ pub struct Answers {
     /// choice if not given. Saved for release 0.16, which brings it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub web_console: Option<bool>,
+    /// Whether the installed system keeps a console on the first serial
+    /// port, with `console=ttyS0` on its kernel's command line (ADR
+    /// 0318): its sign-in and the startup-trouble menu show there too. As
+    /// the installer itself runs, on the serial port or not, if not given.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub serial_console: Option<bool>,
     /// Every other key: those of [`LATER`], which this installer takes
     /// none of yet, and mistyped ones, which [`Answers::check`] names.
     /// (serde cannot refuse unknown keys beside a flattened map.)
@@ -408,6 +414,13 @@ impl Answers {
     #[must_use]
     pub fn web_console(&self) -> bool {
         self.web_console.unwrap_or(self.profile.web_console())
+    }
+
+    /// Whether the installed system keeps a console on the first serial
+    /// port: as the answers say, or as the installer runs, `on_serial`.
+    #[must_use]
+    pub fn serial_console(&self, on_serial: bool) -> bool {
+        self.serial_console.unwrap_or(on_serial)
     }
 
     /// The target disk's name, without `/dev/` or `/devices/`.
@@ -839,6 +852,20 @@ pub(crate) mod tests {
         let unknown = r#""profile": "desktop""#;
         let text = EXAMPLE.replace("\"version\": 1,", &format!("\"version\": 1, {unknown},"));
         assert!(Answers::parse(text.as_bytes()).unwrap_err().contains("unknown variant"));
+    }
+
+    #[test]
+    fn the_serial_console_follows_the_installer_unless_the_answers_say() {
+        let answers = Answers::parse(EXAMPLE.as_bytes()).unwrap();
+        assert!(!answers.serial_console(false));
+        assert!(answers.serial_console(true));
+        let off = Answers { serial_console: Some(false), ..answers.clone() };
+        assert!(!off.serial_console(true));
+        let on = Answers { serial_console: Some(true), ..answers };
+        assert!(on.serial_console(false));
+        let saved = String::from_utf8(on.to_saved()).unwrap();
+        assert!(saved.contains("\"serial_console\": true"), "{saved}");
+        assert_eq!(Answers::parse(saved.as_bytes()).unwrap().serial_console, Some(true));
     }
 
     #[test]

@@ -98,6 +98,15 @@ setup file* on the first page shows the one the stick holds and what is
 wrong with it, if anything; Load checks that each feature it adds is
 one this release offers at install, then goes to the review.
 
+The stick's *Install Dukovo (serial console)* entry starts the screens
+on the first serial port instead, for a computer with no screen, where
+*serial-console*(8) runs them, and root's shell after them; any
+terminal program at the cable's other end shows them, at the size it
+says it is, or 80 columns by 24 rows, which they fit. The review's
+settings then end with *serial console ttyS0*: the installed system
+keeps *console=ttyS0* in its boot menu, so that its sign-in is on the
+serial port too (*install-answers*(5)'s *serial_console*, ADR 0318).
+
 Every message the screens show is in a Fluent file built into the
 program, one a language, so that a translation is a copy of one file.
 
@@ -235,4 +244,4 @@ the install failed, and 2 for a usage error.
 
 *install-answers*(5), *system-release*(8), *rdisk*(8), *rgrub-setup*(8),
 *resize-ntfs*(8), *efiboot*(8), *device*(8), *balance*(8),
-*spark*(8), *consoled*(8), *dukovo-boot*(7), *keymap*(1)
+*spark*(8), *consoled*(8), *serial-console*(8), *dukovo-boot*(7), *keymap*(1)

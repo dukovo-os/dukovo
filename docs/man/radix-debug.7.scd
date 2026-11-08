@@ -190,6 +190,12 @@ for example *./ob run --cmdline kdb*. The kernel then enters *kdb*:
 - at a breakpoint instruction (*int3*), with the registers it saved;
 - after a panic, with the panic's registers and backtrace.
 
+COM1 is also the terminal _/devices/ttyS0_ (*serial-console*(8), ADR
+0318). While a program has it open the kernel log stays off the line,
+which the program draws on, but *kdb* and a panic report still go out
+on it, and at a breakpoint what is typed on COM1 is *kdb*'s until it is
+left.
+
 Only the CPU that entered *kdb* stops; the others keep running, except
 after a panic. Without a debug console *kdb* says so in the log and does
 not run; with the *dbc* flag it first waits up to 5 s at the end of boot

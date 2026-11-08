@@ -114,7 +114,7 @@ impl Controller {
         let made = (|| {
             let mut held = Vec::new_in(heap);
             held.try_reserve_exact(READ_LENGTH).map_err(|_| Why::Device("out of memory"))?;
-            let tty = tty::make_line(name.as_str(), wake, self.bus - 1)
+            let tty = tty::make_line(name.as_str(), tty::LINE_CFLAG, wake, self.bus - 1)
                 .map_err(|_| Why::Device("its terminal could not be made"))?;
             Ok::<_, Why>((held, tty))
         })();

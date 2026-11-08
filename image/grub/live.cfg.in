@@ -11,7 +11,8 @@
 # from the boot archive, in memory, with `live` on the command line, so
 # that Spark takes no disk's root and mounts no disk but the stick's own
 # DUKOVO_LIVE partition, read-only. With `install` too, consoled starts
-# the installer's screens on tty1 (ADR 0310). DEFAULT is the entry
+# the installer's screens on tty1 (ADR 0310), or serial-console on the
+# first serial port with `console=ttyS0` (ADR 0318). DEFAULT is the entry
 # started when nobody chooses one: `install` on a release's stick and
 # ISO, `try` in the boot tests' image, whose cases add `install` to
 # their own command line when they test the screens.
@@ -62,6 +63,15 @@ menuentry "Install Dukovo @VERSION@" --id install {
 # accounts, and nothing on it outlives the boot.
 menuentry "Try Dukovo @VERSION@ (live console)" --id try {
     multiboot2 /boot/radix live console-sign-in=off @CMDLINE@
+@MODULES@    boot
+}
+
+# The installer's screens on the first serial port, ttyS0, for a
+# computer with no screen, and a shell there after them (ADR 0318); this
+# menu already shows on that port. The installed system keeps
+# `console=ttyS0`, so that its sign-in is on the port too.
+menuentry "Install Dukovo @VERSION@ (serial console)" --id install-serial {
+    multiboot2 /boot/radix live install console=ttyS0 console-sign-in=off @CMDLINE@
 @MODULES@    boot
 }
 

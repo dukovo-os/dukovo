@@ -35,6 +35,10 @@
 //! a Serial-over-LAN session open, and a card's may when its far end
 //! holds it up, and the others must not wait on it.
 //!
+//! [`line_registers`] gives the divisor and the line control register
+//! that set any 16550's line as a terminal's settings say, for the PC's
+//! own COM1 when a program opens it as `/devices/ttyS0` (ADR 0318).
+//!
 //! The crate is a compartment with no `unsafe` code; its tests run it
 //! against simulated ports.
 
@@ -45,6 +49,7 @@
 mod tests;
 
 use radix_hw::IoPorts;
+use radix_tty::line::{self, Parity, Stop};
 
 /// The PCI class and subclass of a serial controller.
 pub const PCI_CLASS: (u8, u8) = (0x07, 0x00);
@@ -182,6 +187,69 @@ const STATUS_DATA_READY: u8 = 1 << 0;
 const STATUS_TX_EMPTY: u8 = 1 << 5;
 /// What a port that no longer answers reads as.
 const GONE: u8 = 0xff;
+
+/// The clock a 16550's divisor divides, in bits per second: its
+/// 1.8432 MHz crystal over 16.
+pub const BASE_RATE: u32 = 115_200;
+
+/// How far the rate a divisor gives may be from the rate asked for, in
+/// thousandths: a receiver samples each bit in its middle, and keeps in
+/// step through a character up to about 3% apart.
+const RATE_TOLERANCE: u32 = 20;
+
+/// What a 16550's registers hold for a [`line::Line`]: the divisor of
+/// [`BASE_RATE`] and the line control register's character format.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LineRegisters {
+    /// The divisor latch, 1 for 115200 baud.
+    pub divisor: u16,
+    /// The line control register, with DLAB off: the character's size in
+    /// bits 0 and 1, two stop bits (one and a half for five-bit
+    /// characters) in bit 2, and the parity in bits 3 to 5.
+    pub control: u8,
+}
+
+/// The registers that set a 16550's line as `line` says (ADR 0318), or
+/// `None` for a rate its divisor cannot give within [`RATE_TOLERANCE`],
+/// above [`BASE_RATE`], or 0, which hangs the line up and leaves it as it
+/// is. The divisor is rounded to the nearest, as Linux's 8250 driver
+/// rounds it. A 16550 has no flow control of its own, so `rts_cts` is
+/// not set here.
+pub fn line_registers(line: &line::Line) -> Option<LineRegisters> {
+    if line.rate == 0 || line.rate > BASE_RATE {
+        return None;
+    }
+    let divisor = (BASE_RATE + line.rate / 2) / line.rate;
+    let divisor = u16::try_from(divisor).ok().filter(|&d| d > 0)?;
+    let given = BASE_RATE / u32::from(divisor);
+    if given.abs_diff(line.rate) * 1000 > line.rate * RATE_TOLERANCE {
+        return None;
+    }
+    // Bits 0 and 1: 5 to 8 data bits as 0 to 3.
+    let mut control = line.data_bits.clamp(5, 8) - 5;
+    if line.stop != Stop::One {
+        control |= LINE_TWO_STOP;
+    }
+    control |= match line.parity {
+        Parity::None => 0,
+        Parity::Odd => LINE_PARITY,
+        Parity::Even => LINE_PARITY | LINE_EVEN,
+        // A stuck parity bit is the opposite of the even bit: 1 (mark)
+        // without it, 0 (space) with it.
+        Parity::Mark => LINE_PARITY | LINE_STICK,
+        Parity::Space => LINE_PARITY | LINE_EVEN | LINE_STICK,
+    };
+    Some(LineRegisters { divisor, control })
+}
+
+/// Line control: two stop bits.
+const LINE_TWO_STOP: u8 = 1 << 2;
+/// Line control: a parity bit is sent and checked.
+const LINE_PARITY: u8 = 1 << 3;
+/// Line control: even parity.
+const LINE_EVEN: u8 = 1 << 4;
+/// Line control: stick parity.
+const LINE_STICK: u8 = 1 << 5;
 
 /// One 16550-compatible port: eight registers from `base` in `regs`.
 #[derive(Debug)]

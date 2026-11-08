@@ -1,0 +1,36 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "The first serial port, COM1, is the terminal /devices/ttyS0 at 115200 baud, the speed GRUB and the kernel log run: stty reads its speed and sets another, and serial-console, the console a computer with no screen uses, stays stopped when the kernel was not started with console=ttyS0. Needs a machine with COM1"
+time = "2m"
+
+# The kernel made the terminal when it found COM1, at the log's speed.
+[[step]]
+run = "sh -c 'echo \"ma\"\"de: $(dmesg | grep -c \"is the terminal /devices/ttyS0, at 115200 baud\")\"'"
+root = true
+expect = "made: 1"
+[[step]]
+run = "stty -F /devices/ttyS0 -a"
+root = true
+expect = "speed 115200 baud"
+
+# Another speed takes, and the line goes back to the log's own at once.
+[[step]]
+run = "sh -c 'stty -F /devices/ttyS0 9600; echo \"no\"\"w: $(stty -F /devices/ttyS0 -a | head -n 1)\"; stty -F /devices/ttyS0 115200'"
+root = true
+expect = "now: speed 9600 baud"
+[[step]]
+run = "stty -F /devices/ttyS0 -a"
+root = true
+expect = "speed 115200 baud"
+
+# Without console=ttyS0 the serial console has nothing to do: Spark
+# started it, it ended with 0, and it stays stopped.
+[[step]]
+run = "serial-console"
+expect = "the kernel was not started with console=ttyS0: no serial console"
+[[step]]
+run = "service serial-console status"
+root = true
+exit = 3
+expect = ["serial-console - Serial console", "Active: inactive (dead)", "Last: ended with wait status 0x0"]

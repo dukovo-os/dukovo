@@ -38,8 +38,10 @@ that the installer installs (*system-release*(8), ADR 0308). The boot
 menu, from _image/grub/live.cfg.in_, starts the live system with *live*
 on the command line: *Install Dukovo*, the default, adds *install*, so
 that tty1 shows the installer's screens (*dukovo-install*(8), ADR 0310);
-*Try Dukovo (live console)* gives a shell on every console. *Boot from
-first disk* starts the machine's own system as if the stick were not
+*Try Dukovo (live console)* gives a shell on every console; *Install
+Dukovo (serial console)* adds *install* and *console=ttyS0*, so that
+the screens are on the first serial port instead, for a computer with no
+screen (*serial-console*(8), ADR 0318). *Boot from first disk* starts the machine's own system as if the stick were not
 there: under UEFI, the _EFI/BOOT/BOOTX64.EFI_ of the first EFI system
 partition, on any disk, that holds no _boot/radix_ as a Dukovo stick's
 does, and under a BIOS, the first sector of the disk after the stick.
@@ -408,7 +410,9 @@ The kernel writes every message to all of these at once:
 
 *Serial port*
 	COM1, I/O port 0x3F8, 115200 baud, 8 data bits, no parity, 1 stop bit,
-	when the port exists. The kernel debugger also runs here.
+	when the port exists. The kernel debugger also runs here. Programs
+	open it as the terminal _/devices/ttyS0_; while one has it open,
+	as *serial-console*(8) does, the log stays off it (ADR 0318).
 
 *Framebuffer*
 	The linear framebuffer GRUB set up, under UEFI and BIOS. Text is drawn
@@ -601,6 +605,19 @@ them to *init*, and the kernel does not read them.
 	that the command line could not open already: the words after *--*
 	start any program as root.
 
+*console*=*ttyS0*[,_options_]
+	Read by *serial-console*(8) and *consoled*(8), not the kernel: a
+	console on the first serial port, _/devices/ttyS0_, as on Linux. With
+	*install*, the installer's screens run there and not on tty1;
+	otherwise the sign-in, or root's shell with *console-sign-in=off*,
+	runs there as well as on the screen's consoles. The install stick's
+	*Install Dukovo (serial console)* entry gives it, and a system
+	installed that way keeps it in its boot menu. _options_ are Linux's:
+	the speed, 300 to 115200, then optionally the parity, *n*, *o* or
+	*e*, and the data bits, *7* or *8*, as in *115200n8*, the line's
+	setting when none are given (ADR 0318). Other *console=* flags, as
+	*console=tty0*, are passed over.
+
 *netlog*=_host_[:_port_]
 	Read by *netlog*(8), not the kernel: send the log over UDP to this
 	computer as it is written, to port 6666 when no port is given, as
@@ -631,7 +648,9 @@ them to *init*, and the kernel does not read them.
 	once they end, as Live console on their first page or the end of
 	the install leaves them. The install stick's entry gives
 	*console-sign-in=off* with it, so that the other consoles have
-	root's shell for a look around during the install.
+	root's shell for a look around during the install. With
+	*console=ttyS0* too, *serial-console*(8) runs the screens on the
+	first serial port instead, and tty1 has the shell (ADR 0318).
 
 *startup-trouble*
 	Read by *login*(1) and *authd*(8), not the kernel: the sign-in at
@@ -1197,7 +1216,7 @@ the steps of a smoke test and its results.
 
 # SEE ALSO
 
-*spark*(8), *radix-processes*(7), *radix-debug*(7), *radix-capabilities*(7), *radix-scheduling*(7), *ob*(1), *dukovo.toml*(5), *rgrub-setup*(8)
+*spark*(8), *radix-processes*(7), *radix-debug*(7), *radix-capabilities*(7), *radix-scheduling*(7), *ob*(1), *dukovo.toml*(5), *rgrub-setup*(8), *serial-console*(8)
 
 The Multiboot2 specification:
 https://www.gnu.org/software/grub/manual/multiboot2/

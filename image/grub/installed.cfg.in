@@ -4,8 +4,10 @@
 # GRUB configuration of an installed Dukovo Server @VERSION@, on its EFI
 # system partition. `ob image --installed` generates boot/grub/grub.cfg
 # from image/grub/installed.cfg.in by filling in the VERSION, TIMEOUT,
-# CMDLINE, MODULES and ROOT_UUID placeholders. See dukovo-boot(7) and
-# ADR 0307.
+# CMDLINE, MODULES, ROOT_UUID and CONSOLE placeholders. See dukovo-boot(7)
+# and ADR 0307. CONSOLE is ` console=ttyS0` on a system installed over
+# the first serial port, whose sign-in is then there too, and nothing
+# otherwise (ADR 0318).
 #
 # GRUB finds the Dukovo root by its Btrfs UUID and loads the kernel and
 # the startup archive from the system's slot, @system.a, so that they
@@ -50,7 +52,7 @@ menuentry "Dukovo Server @VERSION@ (Radix)" --id dukovo {
         set saved_entry=dukovo
         save_env saved_entry
     fi
-    multiboot2 ($system)/@system.a/startup/radix root=UUID=@ROOT_UUID@ panic=10 @CMDLINE@
+    multiboot2 ($system)/@system.a/startup/radix root=UUID=@ROOT_UUID@ panic=10@CONSOLE@ @CMDLINE@
     module2 ($system)/@system.a/startup/archive bootfs
 @MODULES@    boot
 }
@@ -80,7 +82,7 @@ fi
 # so they are the kernel's whatever the command line holds after a lone
 # `--`.
 menuentry "Dukovo Server @VERSION@: startup trouble" {
-    multiboot2 ($system)/@system.a/startup/radix startup-trouble root=UUID=@ROOT_UUID@ panic=10 @CMDLINE@
+    multiboot2 ($system)/@system.a/startup/radix startup-trouble root=UUID=@ROOT_UUID@ panic=10@CONSOLE@ @CMDLINE@
     module2 ($system)/@system.a/startup/archive bootfs
 @MODULES@    boot
 }

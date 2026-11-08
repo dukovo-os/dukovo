@@ -79,6 +79,7 @@ fn machine() -> Machine {
         layouts: vec![("us".into(), "English (US)".into()), ("de".into(), "German".into())],
         zones: vec!["UTC".into(), "America/Denver".into(), "Europe/Berlin".into()],
         boot_entries: true,
+        serial_console: false,
     }
 }
 
@@ -180,6 +181,23 @@ fn to_review(app: &mut App) {
     type_text(app, "queen of hearts");
     press(app, KeyCode::Enter);
     assert_eq!(app.page, Page::Review, "{:?}", app.problem);
+}
+
+#[test]
+fn an_install_over_the_serial_port_keeps_a_console_there() {
+    let mut app = App::new(Machine { serial_console: true, ..machine() }, "0.14.0", 600 << 20);
+    app.features = offered();
+    to_review(&mut app);
+    let shown = screen(&app);
+    let settings = "web01 · net0 DHCP · America/Denver · keyboard us · serial console ttyS0";
+    assert!(shown.contains(settings), "{shown}");
+    let answers = app.answers().unwrap();
+    assert_eq!(answers.serial_console, Some(true));
+    // The screen's installs say nothing of it, and keep none.
+    let mut app = self::app();
+    to_review(&mut app);
+    assert!(!screen(&app).contains("serial console"));
+    assert_eq!(app.answers().unwrap().serial_console, Some(false));
 }
 
 #[test]

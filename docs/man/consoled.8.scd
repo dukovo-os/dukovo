@@ -88,7 +88,11 @@ gives the screens' 100 columns by 30 rows, where the consoles' own
 wants 40 rows: 12x24 on a 1280x800 screen, 16x32 on 1920x1080. When the
 screens end, by Live console on their first page or at the end of the
 install, tty1 clears and runs the shell as the other consoles do (ADRs
-0310 and 0402).
+0310 and 0402). With *console=ttyS0* as well, as the stick's *Install
+Dukovo (serial console)* entry gives it, and a first serial port to put
+them on, the screens are *serial-console*(8)'s there instead: tty1 runs
+the shell from the start, and consoled logs *install: the installer's
+screens are on the serial port, ttyS0* (ADR 0318).
 
 # NOTIFICATIONS
 
@@ -258,4 +262,5 @@ _/system/live/authd/socket_
 *login*(1), *authd*(8), *elevate*(8), *spark*(8), *reboot*(8),
 *keymap*(1), *keymap*(5), *welcome.toml*(5), *nukesh*(1), *dmesg*(1),
 *notifyd*(8), *notify-send*(1), *dukovo-boot*(7),
-*radix-framebuffer*(2), *radix-input*(2), *radix-files*(7)
+*radix-framebuffer*(2), *radix-input*(2), *radix-files*(7),
+*serial-console*(8)

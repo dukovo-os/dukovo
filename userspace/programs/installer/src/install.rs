@@ -372,7 +372,8 @@ fn fill_root(
     };
     settings::write(answers, &target)?;
     features::turn_on(answers, &target, log)?;
-    install_grub(parts, &root.join("@system.a"), log)?;
+    let console = answers.serial_console(machine::on_serial_console());
+    install_grub(parts, &root.join("@system.a"), console, log)?;
     save(answers, &target, log)
 }
 
@@ -398,14 +399,25 @@ fn copy_system(source: &Source, root: &Path, log: &mut Log) -> Result<(), String
 /// partition for UEFI, from the new slot's own GRUB, with the menu that
 /// starts the slot, which names the root by its Btrfs UUID (ADR 0307).
 /// The two disks of a mirror have one UUID, so either one's menu finds
-/// the root on whichever disk is there.
-fn install_grub(parts: &Parts, slot: &Path, log: &mut Log) -> Result<(), String> {
+/// the root on whichever disk is there. With `serial_console`, the menu's
+/// Dukovo entries start the kernel with `console=ttyS0`, so that the
+/// system's sign-in is on the serial port too (ADR 0318).
+fn install_grub(
+    parts: &Parts,
+    slot: &Path,
+    serial_console: bool,
+    log: &mut Log,
+) -> Result<(), String> {
     log.step(Step::Grub);
     let uuid = btrfs_uuid(&parts.root)?;
     let template = slot.join("boot/grub/installed.cfg");
     let menu =
         fs::read_to_string(&template).map_err(|err| format!("{}: {err}", template.display()))?;
-    let menu = menu.replace("@ROOT_UUID@", &uuid);
+    let console = serial_console.then(machine::serial_console_flag);
+    let menu = fill_menu(&menu, &uuid, console.as_deref());
+    if let Some(flag) = &console {
+        log.note(&format!("the system keeps a console on the serial port: {flag}"));
+    }
     for disk in &parts.boot {
         grub_on(disk, slot, &menu, log)?;
     }
@@ -414,6 +426,14 @@ fn install_grub(parts: &Parts, slot: &Path, log: &mut Log) -> Result<(), String>
         boot_entry(&first.disk, number, log)?;
     }
     Ok(())
+}
+
+/// The installed system's menu, from the slot's template `template`: its
+/// root `uuid`, and the serial console's kernel flag `console`, if it
+/// keeps one, in their placeholders.
+fn fill_menu(template: &str, uuid: &str, console: Option<&str>) -> String {
+    let console = console.map_or_default(|flag| format!(" {flag}"));
+    template.replace("@ROOT_UUID@", uuid).replace("@CONSOLE@", &console)
 }
 
 /// Puts GRUB from the slot on `disk`, and `menu` with GRUB's environment
@@ -563,6 +583,20 @@ mod tests {
                       Boot0003* Dukovo\nBoot000A  Dukovo\nBoot0004* Dukovo lab\n";
         assert_eq!(earlier_entries(listed), ["0003", "000A"]);
         assert!(earlier_entries("BootOrder: 0003\n").is_empty());
+    }
+
+    #[test]
+    fn the_menu_keeps_the_serial_console_only_when_asked() {
+        let template = "radix root=UUID=@ROOT_UUID@ panic=10@CONSOLE@ quiet\n";
+        let uuid = "90c9a303-3954-4174-8f8b-ee75a92a9eb0";
+        assert_eq!(
+            fill_menu(template, uuid, None),
+            format!("radix root=UUID={uuid} panic=10 quiet\n")
+        );
+        assert_eq!(
+            fill_menu(template, uuid, Some("console=ttyS0,9600")),
+            format!("radix root=UUID={uuid} panic=10 console=ttyS0,9600 quiet\n")
+        );
     }
 
     #[test]
