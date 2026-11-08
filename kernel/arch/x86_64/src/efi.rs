@@ -150,7 +150,7 @@ static SAVED_RSP: AtomicU64 = AtomicU64::new(0);
 core::arch::global_asm!(
     r#"
     .section .text
-    .balign 16
+    .balign 64
     .global radix_efi_call
 radix_efi_call:
     push rbp

@@ -101,12 +101,14 @@ pub struct TrapFrame {
 }
 
 // The stubs. Each is 16 bytes long, so the stub for vector v is at
-// `isr_stubs + 16 * v`. Vectors 8, 10-14, 17, 21, 29 and 30 come with an
-// error code from the CPU; the others push a zero in its place.
+// `isr_stubs + 16 * v`, and the table starts a cache line, as every
+// kernel function does (ADR 0411). Vectors 8, 10-14, 17, 21, 29 and 30
+// come with an error code from the CPU; the others push a zero in its
+// place.
 core::arch::global_asm!(
     r#"
     .section .text.isr, "ax"
-    .balign 16
+    .balign 64
     .global radix_isr_stubs
 radix_isr_stubs:
     .set vector, 0

@@ -37,9 +37,11 @@ pub fn target_args(ctx: &Ctx) -> Vec<String> {
         // LLVM records each function's stack frame in `.stack_sizes`,
         // which `ob` holds to the kernel's frame budget after linking
         // (ADR 0058), and AES is done in software, as the kernel uses no
-        // SSE (ADR 0240).
+        // SSE (ADR 0240). Every function starts a 64-byte cache line, so
+        // that code added anywhere else in the kernel cannot move a hot
+        // path within its lines and change its speed (ADR 0411).
         format!(
-            r#"target.{TARGET_NAME}.rustflags=["--cfg","no_global_oom_handling","-Zemit-stack-sizes","--cfg","aes_force_soft"]"#
+            r#"target.{TARGET_NAME}.rustflags=["--cfg","no_global_oom_handling","-Zemit-stack-sizes","--cfg","aes_force_soft","-Zmin-function-alignment=64"]"#
         ),
     ]
 }
