@@ -1,0 +1,22 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "hexdump and xxd show a file's raw bytes; the input is fixed, so the dump is the same on every machine"
+time = "1m"
+
+# -C is the canonical view: the offset, the bytes in pairs, then an ASCII
+# panel on the right. "Dukovo\n" is 7 bytes, 44 75 6b 6f 76 6f 0a.
+[[step]]
+run = "printf 'Dukovo\\n' | hexdump -C"
+expect = ["00000000", "44 75 6b 6f 76 6f 0a", "|Dukovo.|", "00000007"]
+
+# Plain hexdump groups the bytes into 16-bit words, little-endian, so the
+# pairs read back swapped (75 44 -> 7544).
+[[step]]
+run = "printf 'Dukovo\\n' | hexdump"
+expect = ["0000000", "7544", "6f6b", "6f76", "000a", "0000007"]
+
+# xxd writes the offset with a colon, the bytes in pairs, and the ASCII column.
+[[step]]
+run = "printf 'Dukovo\\n' | xxd"
+expect = ["00000000:", "4475 6b6f 766f 0a", "Dukovo."]
