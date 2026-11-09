@@ -97,6 +97,19 @@ example *"bold blue"*, *"red underline"*, *"bold bright-white on red"*.
 *[ls]* *directory*, *program*, *link*, *broken-link*, *archive*, *pipe*, *socket*, *device*
 	*LS_COLORS*, and an alias *ls --color=auto*.
 
+*[ls]* *read*, *write*, *run*, *special-bit*, *denied*, *octal*, *small-file*, *big-file*, *huge-file*, *today*, *old*, *header*
+	*LS_FIELD_COLORS*: on a terminal, *ls -l* colours each permission
+	letter (*r*, *w*, *x*, *s* or *t*, and *-* in *denied*), *--octal*'s
+	digits, sizes under a KiB, of a MiB or more and of a GiB or more,
+	times in the last day and over a week ago, and *--header*'s titles.
+	The type letter at the front of a mode takes *directory*, *link* or
+	*device* (*coreutils*(1)).
+
+*[ls]* *icons =* *true* | *false*
+	*true* makes the alias *ls --color=auto --icons*, which shows a Nerd
+	Font icon before each name on a terminal. The terminal must use a
+	Nerd Font, or each icon shows as a box. *false* as shipped.
+
 *[grep]* *match*, *file*, *line*, *separator*
 	*GREP_COLORS*, and an alias *grep --color=auto*.
 

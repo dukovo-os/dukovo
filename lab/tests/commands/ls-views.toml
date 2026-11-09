@@ -1,0 +1,58 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "ls's own views (ADR 0440): column titles, octal modes, colours by meaning and icons, and GNU's output in a pipe"
+time = "2m"
+
+# Over SSH there is no terminal: what is asked for shows, nothing else.
+[[step]]
+run = "rm -rf /tmp/lab-ls && mkdir -p /tmp/lab-ls/Docs && cd /tmp/lab-ls && echo hi > notes.txt && chmod 640 notes.txt && touch -d 2020-01-01 notes.txt && truncate -s 2M big.img && echo made"
+expect = "made"
+[[step]]
+run = "ls -l --header --octal /tmp/lab-ls"
+expect = ["Octal Permissions Links Owner Group", "0640  -rw-r-----"]
+# A person's /tmp is theirs, mode 1777 (ADR 0255): the sticky bit shows
+# in the digits and as a t.
+[[step]]
+run = "ls -ld --octal /tmp"
+expect = "1777 drwxrwxrwt"
+[[step]]
+run = "ls -l --header --time=atime /tmp/lab-ls | head -2 | tail -1"
+expect = "Accessed"
+[[step]]
+run = "ls -l -i -s --header /tmp/lab-ls | head -2 | tail -1"
+expect = "Inode"
+[[step]]
+run = "ls -l /tmp/lab-ls"
+expect_not = ["Permissions", "0640"]
+# Coloured fields only when asked for, since this is a pipe: yellow r,
+# red w, faint dashes, a big size in yellow and the old time faint; the
+# sticky t in magenta.
+[[step]]
+run = "ls -l --field-colors=always /tmp/lab-ls | cat -v"
+expect = ["^[[33mr^[[0m^[[31mw^[[0m^[[90m-^[[0m^[[33mr^[[0m^[[90m-----^[[0m", "^[[33m2097152^[[0m", "^[[90mJan  1  2020^[[0m"]
+[[step]]
+run = "ls -ld --field-colors=always /tmp | cat -v"
+expect = "^[[35mt^[[0m"
+[[step]]
+run = "ls -l --color=always /tmp/lab-ls | cat -v"
+expect_not = ["^[[33mr", "^[[90m"]
+[[step]]
+run = "LS_FIELD_COLORS='read=1;36' ls -l --field-colors=always /tmp/lab-ls/notes.txt | cat -v"
+expect = "^[[1;36mr^[[0m"
+[[step]]
+run = "LS_FIELD_COLORS= ls -l --field-colors=always /tmp/lab-ls/notes.txt"
+expect = "-rw-r----- 1"
+# Icons: U+F07B for a folder, U+F15C for a text file.
+[[step]]
+run = "ls --icons=always /tmp/lab-ls | od -An -tx1 | head -1"
+expect = "ef 81 bb 20 44 6f 63 73"
+[[step]]
+run = "ls --icons=always /tmp/lab-ls/notes.txt | od -An -tx1"
+expect = "ef 85 9c 20"
+[[step]]
+run = "ls --icons /tmp/lab-ls | od -c | head -1"
+expect = "D   o   c   s  \\n"
+[[step]]
+run = "rm -r /tmp/lab-ls && echo gone"
+expect = "gone"

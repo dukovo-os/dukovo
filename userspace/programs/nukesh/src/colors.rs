@@ -317,6 +317,18 @@ const SECTIONS: &[Section] = &[
             key("pipe", "yellow", "named pipes"),
             key("socket", "magenta", "sockets"),
             key("device", "bold yellow", "devices"),
+            key("read", "yellow", "r in ls -l's permissions"),
+            key("write", "red", "w in ls -l's permissions"),
+            key("run", "green", "x in ls -l's permissions"),
+            key("special-bit", "magenta", "s and t: set-user-ID, set-group-ID, sticky"),
+            key("denied", "bright-black", "- for a permission not given"),
+            key("octal", "bright-black", "ls --octal's digits"),
+            key("small-file", "bright-black", "sizes under a kibibyte"),
+            key("big-file", "yellow", "sizes of a mebibyte or more"),
+            key("huge-file", "bold red", "sizes of a gibibyte or more"),
+            key("today", "bold", "times in the last day"),
+            key("old", "bright-black", "times over a week ago"),
+            key("header", "underline", "ls --header's column titles"),
         ],
     },
     Section {
@@ -361,6 +373,9 @@ const SUGGEST: &[(&str, &str)] = &[
     ("options", "what an option does, after the cursor as you type it"),
 ];
 
+/// What `[ls]`'s `icons` does, for the preview.
+const LS_ICONS_ABOUT: &str = "Nerd Font icons before names (the terminal needs such a font)";
+
 /// The numbers: section, key, default and what it is.
 pub const NUMBERS: &[(&str, &str, u64, &str)] =
     &[("prompt", "took-after", 3, "seconds a command takes before the right prompt says how long")];
@@ -395,6 +410,13 @@ pub const THEMES: &[Theme] = &[
             ("ls.directory", "bold bright-blue"),
             ("ls.program", "bold bright-green"),
             ("ls.link", "bold bright-cyan"),
+            ("ls.read", "bold bright-yellow"),
+            ("ls.write", "bold bright-red"),
+            ("ls.run", "bold bright-green"),
+            ("ls.denied", "white"),
+            ("ls.octal", "white"),
+            ("ls.small-file", "white"),
+            ("ls.old", "white"),
             ("grep.match", "bold bright-white on red"),
             ("grep.separator", "white"),
             ("diff.added", "bold bright-green"),
@@ -418,6 +440,8 @@ pub const THEMES: &[Theme] = &[
             ("line.hint", "bright-black italic"),
             ("ls.pipe", "magenta"),
             ("ls.device", "bold magenta"),
+            ("ls.read", "blue"),
+            ("ls.big-file", "magenta"),
             ("grep.line", "blue"),
             ("ip.mac", "magenta"),
         ],
@@ -438,6 +462,11 @@ pub const THEMES: &[Theme] = &[
             ("ls.program", "bold yellow"),
             ("ls.broken-link", "yellow reverse"),
             ("ls.archive", "magenta"),
+            ("ls.read", "cyan"),
+            ("ls.write", "yellow"),
+            ("ls.run", "blue"),
+            ("ls.big-file", "magenta"),
+            ("ls.huge-file", "bold yellow"),
             ("grep.match", "bold yellow"),
             ("grep.line", "blue"),
             ("diff.added", "blue"),
@@ -462,6 +491,8 @@ pub struct Colors {
     pub history_hints: bool,
     pub did_you_mean: bool,
     pub option_help: bool,
+    /// `[ls]`'s `icons`: whether `ls` shows Nerd Font icons (ADR 0440).
+    pub ls_icons: bool,
     /// The theme the keys started from.
     pub theme: &'static str,
     /// The numbers, as `section.key`.
@@ -484,6 +515,7 @@ impl Default for Colors {
             history_hints: true,
             did_you_mean: true,
             option_help: true,
+            ls_icons: false,
             theme: "default",
             numbers: NUMBERS.iter().map(|(s, k, n, _)| (format!("{s}.{k}"), *n)).collect(),
         }
@@ -565,6 +597,13 @@ impl Colors {
                                 None => {
                                     problems.push(format!("[{section}] enabled: true or false"));
                                 }
+                            }
+                            continue;
+                        }
+                        if section == "ls" && key == "icons" {
+                            match value.as_bool() {
+                                Some(on) => self.ls_icons = on,
+                                None => problems.push("[ls] icons: true or false".into()),
                             }
                             continue;
                         }
@@ -661,6 +700,33 @@ impl Colors {
             let _ = write!(out, ":*.{ext}={}", s("archive"));
         }
         out
+    }
+
+    /// `LS_FIELD_COLORS`, for the colours of `ls -l`'s fields: its
+    /// permission letters, sizes and times (ADR 0440). The letter at the
+    /// front of a mode takes the colour of its kind's names.
+    pub fn ls_field_colors(&self) -> String {
+        const KEYS: [(&str, &str); 15] = [
+            ("read", "read"),
+            ("write", "write"),
+            ("run", "run"),
+            ("special", "special-bit"),
+            ("none", "denied"),
+            ("directory", "directory"),
+            ("link", "link"),
+            ("device", "device"),
+            ("octal", "octal"),
+            ("small", "small-file"),
+            ("big", "big-file"),
+            ("huge", "huge-file"),
+            ("today", "today"),
+            ("old", "old"),
+            ("header", "header"),
+        ];
+        KEYS.iter()
+            .map(|(name, key)| format!("{name}={}", self.style(&format!("ls.{key}")).sgr()))
+            .collect::<Vec<_>>()
+            .join(":")
     }
 
     /// `GREP_COLORS`, for `grep --color`.
@@ -781,25 +847,31 @@ pub fn color_the_tools(shell: &mut crate::shell::Shell) {
     if !colors.enabled || shell.get("NO_COLOR").is_some_and(|v| !v.is_empty()) {
         return;
     }
-    let mut tool = |section: &str, alias: String, variable: Option<(&str, String)>| {
+    let mut tool = |section: &str, alias: String, variables: Vec<(&str, String)>| {
         if !colors.on(section) {
             return;
         }
         if !shell.aliases.contains_key(section) {
             shell.aliases.insert(section.to_string(), alias);
         }
-        if let Some((name, value)) = variable
-            && shell.get(name).is_none()
-        {
-            let var = shell.vars.entry(name);
-            var.value = Some(crate::vars::Value::Str(value));
-            var.attrs |= crate::vars::attr::EXPORT;
+        for (name, value) in variables {
+            if shell.get(name).is_none() {
+                let var = shell.vars.entry(name);
+                var.value = Some(crate::vars::Value::Str(value));
+                var.attrs |= crate::vars::attr::EXPORT;
+            }
         }
     };
-    tool("ls", "ls --color=auto".into(), Some(("LS_COLORS", colors.ls_colors())));
-    tool("grep", "grep --color=auto".into(), Some(("GREP_COLORS", colors.grep_colors())));
-    tool("diff", format!("diff --color=auto --palette='{}'", colors.diff_palette()), None);
-    tool("ip", "ip -color=auto".into(), Some(("IP_COLORS", colors.ip_colors())));
+    // `--icons` alone shows them only on a terminal (ADR 0440).
+    let ls = if colors.ls_icons { "ls --color=auto --icons" } else { "ls --color=auto" };
+    tool(
+        "ls",
+        ls.into(),
+        vec![("LS_COLORS", colors.ls_colors()), ("LS_FIELD_COLORS", colors.ls_field_colors())],
+    );
+    tool("grep", "grep --color=auto".into(), vec![("GREP_COLORS", colors.grep_colors())]);
+    tool("diff", format!("diff --color=auto --palette='{}'", colors.diff_palette()), vec![]);
+    tool("ip", "ip -color=auto".into(), vec![("IP_COLORS", colors.ip_colors())]);
 }
 
 /// `nukesh --colors [--check] [file]`: shows every key in its colour, or
@@ -876,6 +948,9 @@ pub fn preview(colors: &Colors, paint: bool) -> String {
         for (_, key, _, about) in NUMBERS.iter().filter(|n| n.0 == section.name) {
             let number = colors.number(&format!("{}.{key}", section.name));
             let _ = writeln!(out, "{key:<12} {number:<28} {about}");
+        }
+        if section.name == "ls" {
+            let _ = writeln!(out, "{:<12} {:<28} {}", "icons", colors.ls_icons, LS_ICONS_ABOUT);
         }
     }
     let _ = writeln!(out, "\n[suggest]");
@@ -963,6 +1038,21 @@ mod tests {
         assert_eq!(colors.grep_colors(), "ms=1;31:mc=1;31:fn=35:ln=32:bn=32:se=90");
         assert_eq!(colors.diff_palette(), "ad=32:de=31:hd=1:ln=36");
         assert_eq!(colors.ip_colors(), "name=36:up=32:down=31:address=35:address6=34:mac=33");
+        assert_eq!(
+            colors.ls_field_colors(),
+            "read=33:write=31:run=32:special=35:none=90:directory=1;34:link=36:device=1;33:\
+             octal=90:small=90:big=33:huge=1;31:today=1:old=90:header=4"
+        );
+    }
+
+    #[test]
+    fn ls_icons_are_a_switch() {
+        let mut colors = Colors::default();
+        assert!(!colors.ls_icons);
+        assert!(colors.apply("[ls]\nicons = true\n").is_empty());
+        assert!(colors.ls_icons);
+        assert_eq!(colors.apply("[ls]\nicons = \"yes\"\n"), ["[ls] icons: true or false"]);
+        assert!(preview(&colors, false).contains("icons        true"));
     }
 
     #[test]
@@ -1008,6 +1098,7 @@ mod tests {
         assert!(
             colors.enabled && colors.history_hints && colors.did_you_mean && colors.option_help
         );
+        assert!(!colors.ls_icons && SHIPPED.contains("icons = false"));
         assert_eq!(colors.numbers, defaults.numbers);
         assert_eq!(colors.theme, "default");
         for (section, key, number, _) in NUMBERS {
