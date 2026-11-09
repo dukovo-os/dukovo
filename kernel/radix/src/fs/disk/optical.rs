@@ -21,19 +21,24 @@
 //! volumed(8) to say.
 //!
 //! A drive on an AHCI port or an IDE channel has a thread of its own, as a
-//! USB stick does, since the drive takes one command at a time and some take seconds (a
-//! disc spinning up). The thread serves the reads of the disc's queue
-//! ([`DiscLane`] hands them over), as READ(10) of the queue's buffers by
-//! DMA, and between them looks at the drive every two seconds for a disc
-//! put in or taken out, with TEST UNIT READY, as Linux polls an optical
-//! drive. While anything uses the disc, PREVENT ALLOW MEDIUM REMOVAL
-//! keeps the tray shut; eject(1) has the thread let it go and open the
-//! tray. Each command is waited for asleep: an AHCI port's interrupt wakes
-//! the thread (`radix_ahci::Hba::quiet`), or, on a controller without
-//! one and on an IDE channel, which is polled, the thread looks again
-//! after a wait that doubles to 4 ms. A drive on an IDE channel borrows
-//! the channel for each command from the disk on its other end
-//! ([`super::ide::IdeLink`]).
+//! USB stick does, since the drive takes one command at a time and some
+//! take seconds (a disc spinning up). The thread looks at the drive every
+//! two seconds for a disc put in or taken out, with TEST UNIT READY, as
+//! Linux polls an optical drive. While anything uses the disc, PREVENT
+//! ALLOW MEDIUM REMOVAL keeps the tray shut; eject(1) has the thread let
+//! it go and open the tray. Each command is waited for asleep: an AHCI
+//! port's interrupt wakes the thread (`radix_ahci::Hba::quiet`), or, on a
+//! controller without one and on an IDE channel, which is polled, the
+//! thread looks again after a wait that doubles to 4 ms. A drive on an IDE
+//! channel borrows the channel for each command from the disk on its
+//! other end ([`super::ide::IdeLink`]).
+//!
+//! A disc's reads are READ(10) of the queue's buffers by DMA. On an AHCI
+//! port they go out from the thread that reads and end in the port's
+//! interrupt, which starts the next one, as Linux's libata has them; the
+//! thread takes the port for its own commands between them
+//! ([`super::optical_port`], ADR 0434). On an IDE channel, the thread
+//! serves them between its looks ([`DiscLane`] hands them over).
 //!
 //! Before each look, a drive that has media events is asked for them
 //! (GET EVENT STATUS NOTIFICATION, [`ask_events`]), as Linux's `sr` asks:
@@ -65,6 +70,7 @@ use radix_scsi::{
 use radix_sync::SpinLock;
 
 use super::ide::IdeLink;
+use super::optical_port::{DiscReads, Gone, OpticalPort};
 use super::queue::{self, Controller, Disk, Op, Outcome, SLOTS, Volume};
 use super::removable::{self, Disc, Drive, DriveRef};
 use super::{Entry, Ident, Name, Size, register};
@@ -82,7 +88,7 @@ const LOOK_NS: u64 = 2_000_000_000;
 const BUSY_NS: u64 = 100_000_000;
 /// How long a drive that says it is becoming ready is given before a read
 /// goes again.
-const READY_NS: u64 = 1_000_000_000;
+pub(super) const READY_NS: u64 = 1_000_000_000;
 /// How long the end of boot waits for the drives' first looks: a disc
 /// spins up in a few seconds.
 pub const FIRST_LOOK_NS: u64 = 15_000_000_000;
@@ -92,7 +98,7 @@ const MAX_DRIVES: usize = 8;
 /// Why a disc's reads fail once it is gone.
 const TAKEN_OUT: &str = "its disc was taken out";
 const EJECTED: &str = "its disc was ejected";
-const STOPPED: &str = "its drive stopped answering";
+pub(super) const STOPPED: &str = "its drive stopped answering";
 
 /// The `cd` numbers taken, a bit each.
 static CD_NUMBERS: AtomicU32 = AtomicU32::new(0);
@@ -353,15 +359,29 @@ impl Controller for DiscLane {
 /// The disc of data in a drive, as its thread keeps it.
 struct Loaded {
     medium: Medium,
-    shared: Arc<Shared, Kmalloc>,
-    disk: Arc<Disk<DiscLane>, Kmalloc>,
+    reads: Reads,
+}
+
+/// How a disc's reads reach its drive.
+enum Reads {
+    /// Through the drive's thread, which takes each and carries it out:
+    /// on an IDE channel, which the drive borrows for each command.
+    Handed { shared: Arc<Shared, Kmalloc>, disk: Arc<Disk<DiscLane>, Kmalloc> },
+    /// Straight to the drive's AHCI port, from the threads that read, and
+    /// back from the port's interrupt ([`super::optical_port`]).
+    Sent {
+        port: Arc<OpticalPort, Kmalloc>,
+        gone: Arc<Gone, Kmalloc>,
+        disk: Arc<Disk<DiscReads>, Kmalloc>,
+    },
 }
 
 impl Loaded {
-    /// Takes the read waiting, if one is: its slot, what it does, its
-    /// first sector, and its buffers into `frames`.
+    /// Takes the read handed to the thread, if one waits: what it does,
+    /// its first sector, and its buffers into `frames`.
     fn take(&self, frames: &mut Vec<(u64, u32), Kmalloc>) -> Option<(Op, u64)> {
-        let mut job = self.shared.job.lock_irq();
+        let Reads::Handed { shared, .. } = &self.reads else { return None };
+        let mut job = shared.job.lock_irq();
         let Stage::Waiting(slot) = job.stage else { return None };
         job.stage = Stage::Running(slot);
         frames.clear();
@@ -372,40 +392,82 @@ impl Loaded {
         Some((job.op, job.sector))
     }
 
-    /// Hands back the read running, which ended with `outcome`, and tells
-    /// its queue.
+    /// Hands back the read the thread ran, which ended with `outcome`,
+    /// and tells its queue.
     fn finish(&self, outcome: Outcome, why: Option<&'static str>) {
+        let Reads::Handed { shared, disk } = &self.reads else { return };
         {
-            let mut job = self.shared.job.lock_irq();
+            let mut job = shared.job.lock_irq();
             let Stage::Running(slot) = job.stage else { return };
             job.stage = Stage::Done(slot, outcome);
             if let Some(entry) = job.why.get_mut(usize::from(slot)) {
                 *entry = why;
             }
         }
-        self.disk.collect(0);
+        disk.collect(0);
     }
 
-    /// The disc is gone, `why`: fails the read it has, and every one
-    /// after.
+    /// The disc is gone, `why`: its reads fail from now on, those waiting
+    /// at once. One already on an AHCI port ends as the drive has it, and
+    /// the port lets go of the disc once it has.
     fn gone(&self, why: &'static str) {
-        {
-            let mut job = self.shared.job.lock_irq();
-            job.gone = Some(why);
-            if let Stage::Waiting(slot) | Stage::Running(slot) = job.stage {
-                job.stage = Stage::Done(slot, Outcome::Failed);
-                if let Some(entry) = job.why.get_mut(usize::from(slot)) {
-                    *entry = Some(why);
+        match &self.reads {
+            Reads::Handed { shared, disk } => {
+                {
+                    let mut job = shared.job.lock_irq();
+                    job.gone = Some(why);
+                    if let Stage::Waiting(slot) | Stage::Running(slot) = job.stage {
+                        job.stage = Stage::Done(slot, Outcome::Failed);
+                        if let Some(entry) = job.why.get_mut(usize::from(slot)) {
+                            *entry = Some(why);
+                        }
+                    }
                 }
+                disk.collect(0);
+            }
+            Reads::Sent { port, gone, disk } => {
+                gone.set(why);
+                disk.collect(0);
+                port.forget_disc();
             }
         }
-        self.disk.collect(0);
     }
+}
+
+/// The queue of a disc that `info` says what it is of, in the drive
+/// `name` of the controller at `source`, driven by `lane`; its
+/// completions raise an interrupt if `interrupt`.
+fn queue_of<C: Controller>(
+    lane: C,
+    info: Info,
+    interrupt: bool,
+    name: &Name,
+    source: Address,
+) -> Result<Arc<Disk<C>, Kmalloc>, &'static str> {
+    let part = queue::part(lane).ok_or("out of memory")?;
+    let once = core::iter::once(part);
+    let disk = Disk::new(once, info, false, false, interrupt, name.clone(), source)
+        .ok_or("out of memory")?;
+    Arc::try_new_in(disk, HEAP.with(Flags::MAY_SLEEP)).map_err(|_| "out of memory")
+}
+
+/// The block device of the disc whose queue is `disk`, read from
+/// `session`, its last session's first sector.
+fn device_of<C: Controller + 'static>(
+    disk: &Arc<Disk<C>, Kmalloc>,
+    info: Info,
+    session: u64,
+) -> Result<DeviceRef, &'static str> {
+    let volume = Volume::new(disk.clone(), 0, info).ok_or("out of memory")?;
+    let volume = volume.with_last_session(session);
+    let device: DeviceRef =
+        Arc::try_new_in(volume, HEAP.with(Flags::MAY_SLEEP)).map_err(|_| "out of memory")?;
+    Ok(device)
 }
 
 /// What a read waits for after its command ended.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Then {
+pub(super) enum Then {
     Nothing,
     /// The drive is becoming ready: a second.
     Ready,
@@ -416,7 +478,7 @@ enum Then {
 
 /// How a read that ended with `reply` ends, as Linux's SCSI layer has it
 /// for an optical drive, and what its next try waits for.
-fn judge(reply: Result<Reply, TransportError>) -> (Outcome, Option<&'static str>, Then) {
+pub(super) fn judge(reply: Result<Reply, TransportError>) -> (Outcome, Option<&'static str>, Then) {
     let sense = match reply {
         Ok(Reply::Good { residue: 0 }) => return (Outcome::Done, None, Then::Nothing),
         Ok(Reply::Good { .. }) => {
@@ -452,8 +514,8 @@ fn judge(reply: Result<Reply, TransportError>) -> (Outcome, Option<&'static str>
 
 /// What carries an optical drive's commands.
 enum Link {
-    /// An AHCI port.
-    Ahci(Port),
+    /// An AHCI port, which its disc's reads share.
+    Ahci(Arc<OpticalPort, Kmalloc>),
     /// An end of an IDE channel.
     Ide(IdeLink),
 }
@@ -462,7 +524,7 @@ impl Link {
     /// What the drive said of itself in IDENTIFY PACKET DEVICE.
     fn identity(&self) -> Option<PacketIdentity> {
         match self {
-            Link::Ahci(port) => port.packet_identity().copied(),
+            Link::Ahci(port) => Some(*port.identity()),
             Link::Ide(link) => Some(*link.identity()),
         }
     }
@@ -483,11 +545,33 @@ impl Link {
         }
     }
 
+    /// Looks into a disc's read the port's interrupt found in trouble,
+    /// on an AHCI port ([`OpticalPort::settle`]).
+    fn settle(&self) {
+        if let Link::Ahci(port) = self {
+            port.settle();
+        }
+    }
+
+    /// Whether a disc's read on an AHCI port found the disc taken out or
+    /// changed.
+    fn disc_changed(&self) -> bool {
+        match self {
+            Link::Ahci(port) => port.disc_changed(),
+            Link::Ide(_) => false,
+        }
+    }
+
     /// Runs `f` with the drive's commands, which wait asleep.
     fn with<R>(&mut self, f: impl FnOnce(&mut dyn Transport) -> R) -> R {
         let mut wait = wait_us;
         match self {
-            Link::Ahci(port) => f(&mut Packets::new(port, &mut wait)),
+            Link::Ahci(shared) => {
+                let mut port = shared.take();
+                let reply = f(&mut Packets::new(&mut port, &mut wait));
+                shared.put_back(port);
+                reply
+            }
             Link::Ide(link) => f(&mut link.packets(&mut wait)),
         }
     }
@@ -511,20 +595,26 @@ static HANDOFFS: SpinLock<[Option<Box<Handoff, Kmalloc>>; MAX_DRIVES]> =
     SpinLock::new([const { None }; MAX_DRIVES]);
 
 /// Sets up the optical drive on `port`, the AHCI port `number` of the
-/// controller at `source`: names it, registers it empty, and starts its
-/// thread, which is returned for the port's interrupt to wake. Its
-/// thread is held until the caller has noted it, and released by
-/// [`release`]. Kept out of the frame of the controller's scan.
+/// controller at `source`, which raises interrupts if `interrupt`: names
+/// it, registers it empty, and starts its thread. Returns the thread and
+/// the port as its users share it, for the port's interrupt
+/// ([`OpticalPort::interrupt`]). The thread is held until the caller has
+/// noted the port, and released by [`release`]. Kept out of the frame of
+/// the controller's scan.
 #[inline(never)]
 pub(super) fn add_ahci(
     port: Port,
     number: usize,
     source: Address,
-) -> Result<ThreadRef, &'static str> {
+    interrupt: bool,
+) -> Result<(ThreadRef, Arc<OpticalPort, Kmalloc>), &'static str> {
     let identity = *port.packet_identity().ok_or("it is not an optical drive")?;
+    let shared = OpticalPort::new(port, interrupt).ok_or("out of memory")?;
     let mut place = TextBuf::new();
     let _ = write!(place, "AHCI port {number} at {source}");
-    add(Link::Ahci(port), identity, place, source)
+    let thread = add(Link::Ahci(shared.clone()), identity, place, source)?;
+    shared.set_thread(thread.clone());
+    Ok((thread, shared))
 }
 
 /// Sets up the optical drive `link` reaches on an IDE channel, `place`
@@ -639,7 +729,7 @@ struct OpticalDrive {
 
 /// Waits `us` microseconds, or until the port's interrupt wakes the
 /// thread.
-fn wait_us(us: u32) {
+pub(super) fn wait_us(us: u32) {
     sched::block_until(sched::now_ns().saturating_add(u64::from(us) * 1_000), "optical");
 }
 
@@ -707,6 +797,7 @@ impl OpticalDrive {
                 self.stopped();
                 return;
             }
+            self.link.settle();
             let served = self.serve_one();
             let next = self.tend(sched::now_ns());
             if !served {
@@ -759,6 +850,9 @@ impl OpticalDrive {
     fn tend(&mut self, now: u64) -> u64 {
         if !self.finish_out() {
             return now.saturating_add(BUSY_NS);
+        }
+        if self.link.disc_changed() {
+            self.changed = true;
         }
         let eject = self.drive.eject_asked();
         if !eject && !self.changed && now < self.next {
@@ -849,12 +943,43 @@ impl OpticalDrive {
     }
 
     /// The queue of the disc of data `medium`, as `found` says it is, and
-    /// its block device.
+    /// its block device: on an AHCI port, its reads go straight to the
+    /// port; on an IDE channel, through the thread.
     fn load(&self, medium: Medium, found: &Found) -> Result<(Loaded, DeviceRef), &'static str> {
-        let heap = HEAP.with(Flags::MAY_SLEEP);
         let info = info(&medium, self.link.max_segments());
+        let session = last_session(found, &medium);
+        let (reads, device) = match &self.link {
+            Link::Ahci(port) => self.sent(port, medium.capacity.block_length, info, session)?,
+            Link::Ide(_) => self.handed(info, session)?,
+        };
+        Ok((Loaded { medium, reads }, device))
+    }
+
+    /// The queue of a disc read in blocks of `block` bytes on the AHCI
+    /// `port`, and its device: its reads go to the port. Kept out of the
+    /// thread's frame, as the queue is built on the stack before it moves.
+    #[inline(never)]
+    fn sent(
+        &self,
+        port: &Arc<OpticalPort, Kmalloc>,
+        block: u32,
+        info: Info,
+        session: u64,
+    ) -> Result<(Reads, DeviceRef), &'static str> {
+        let (lane, gone) = DiscReads::new(port, block, info.max_segments).ok_or("out of memory")?;
+        let disk = queue_of(lane, info, port.has_interrupt(), &self.name, self.source)?;
+        let device = device_of(&disk, info, session)?;
+        port.set_disc(disk.clone());
+        Ok((Reads::Sent { port: port.clone(), gone, disk }, device))
+    }
+
+    /// The queue of a disc on an IDE channel, and its device: its reads
+    /// go to the drive's thread. Kept out of the thread's frame.
+    #[inline(never)]
+    fn handed(&self, info: Info, session: u64) -> Result<(Reads, DeviceRef), &'static str> {
+        let heap = HEAP.with(Flags::MAY_SLEEP);
         let mut frames = Vec::new_in(heap);
-        frames.try_reserve_exact(self.link.max_segments()).map_err(|_| "out of memory")?;
+        frames.try_reserve_exact(info.max_segments).map_err(|_| "out of memory")?;
         let job = Job {
             stage: Stage::Idle,
             op: Op::Read,
@@ -866,15 +991,10 @@ impl OpticalDrive {
         let thread = sched::current().ok_or("it has no thread")?;
         let shared = Shared { job: SpinLock::new(job), thread };
         let shared = Arc::try_new_in(shared, heap).map_err(|_| "out of memory")?;
-        let part = queue::part(DiscLane { shared: shared.clone() }).ok_or("out of memory")?;
-        let once = core::iter::once(part);
-        let disk = Disk::new(once, info, false, false, true, self.name.clone(), self.source)
-            .ok_or("out of memory")?;
-        let disk = Arc::try_new_in(disk, heap).map_err(|_| "out of memory")?;
-        let volume = Volume::new(disk.clone(), 0, info).ok_or("out of memory")?;
-        let volume = volume.with_last_session(last_session(found, &medium));
-        let device: DeviceRef = Arc::try_new_in(volume, heap).map_err(|_| "out of memory")?;
-        Ok((Loaded { medium, shared, disk }, device))
+        let lane = DiscLane { shared: shared.clone() };
+        let disk = queue_of(lane, info, true, &self.name, self.source)?;
+        let device = device_of(&disk, info, session)?;
+        Ok((Reads::Handed { shared, disk }, device))
     }
 
     /// Leaves the disc in the drive alone until it is taken out. One of

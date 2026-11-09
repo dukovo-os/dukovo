@@ -15,10 +15,11 @@
 //! recovered is left alone, its interrupts off until it runs again. A
 //! controller without MSI is polled by the threads waiting for it.
 //!
-//! A port with an optical drive on it (ATAPI) is handed to the drive's
-//! own thread ([`super::optical`]), named `cd0` and on: its interrupt
-//! turns the port's interrupts off and wakes the thread, which looks at
-//! the port itself.
+//! A port with an optical drive on it (ATAPI) is the drive's, named
+//! `cd0` and on ([`super::optical`]), which its thread and its disc's reads
+//! share ([`super::optical_port`]): its interrupt hands a read that ended
+//! back to the disc's queue, or wakes the thread, which looks at the port
+//! itself.
 
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -33,10 +34,10 @@ use radix_klog::{TextBuf, info, warn};
 use radix_mm::{Flags, HEAP, Kmalloc};
 use radix_sync::Once;
 
+use super::optical_port::OpticalPort;
 use super::queue::{self, Controller, Disk, Op, Outcome, Part, Request, Volume};
 use super::{Entry, Ident, Name, Size, optical, partitions, register};
 use crate::Arch;
-use crate::sched::{self, ThreadRef};
 
 /// The most AHCI controllers.
 const MAX_HOSTS: usize = 4;
@@ -54,10 +55,10 @@ struct Host {
 /// The controllers, for their interrupt handlers: set once each.
 static HOSTS: [Once<Arc<Host, Kmalloc>>; MAX_HOSTS] = [const { Once::new() }; MAX_HOSTS];
 
-/// The threads of the optical drives on each controller's ports, for its
-/// interrupt handler: set once each. Apart from [`Host`], which is built
-/// on the stack before it moves.
-static DRIVES: [[Once<ThreadRef>; PORTS]; MAX_HOSTS] =
+/// The optical drives on each controller's ports, for its interrupt
+/// handler: set once each. Apart from [`Host`], which is built on the
+/// stack before it moves.
+static DRIVES: [[Once<Arc<OpticalPort, Kmalloc>>; PORTS]; MAX_HOSTS] =
     [const { [const { Once::new() }; PORTS] }; MAX_HOSTS];
 
 fn on_interrupt(index: usize) {
@@ -72,13 +73,10 @@ fn on_interrupt(index: usize) {
         left &= left - 1;
         if let Some(disk) = host.disks[port].get() {
             disk.collect(0);
+        } else if let Some(drive) = DRIVES[index][port].get() {
+            drive.interrupt(&host.hba, port);
         } else {
-            // An optical drive's thread looks at the port when it wakes,
-            // and turns its interrupts on again with its next command.
             host.hba.quiet(port);
-            if let Some(thread) = DRIVES[index][port].get() {
-                sched::wake(thread);
-            }
         }
     }
     host.hba.acknowledge(pending);
@@ -283,7 +281,7 @@ pub fn bind(
     let mut alloc = |pages: usize| <Arch as Devices>::alloc_dma(source, pages, false);
     host.hba.probe(&mut ports, &mut alloc, &mut queue::delay, &mut |number, found| match found {
         Ok(port) if port.packet_identity().is_some() => {
-            if add_drive(&host, index, number, port) {
+            if add_drive(&host, index, number, port, interrupt.is_some()) {
                 *drives += 1;
             }
         }
@@ -304,12 +302,13 @@ pub fn bind(
 }
 
 /// Sets up the optical drive on port `number` of `host`, the controller
-/// at `index`, which its own thread runs. Kept out of the frame of [`bind`]'s scan.
+/// at `index`, which raises interrupts if `interrupt`. Kept out of the
+/// frame of [`bind`]'s scan.
 #[inline(never)]
-fn add_drive(host: &Host, index: usize, number: usize, port: Port) -> bool {
-    match optical::add_ahci(port, number, host.source) {
-        Ok(thread) => {
-            let _ = DRIVES[index][number].set(thread.clone());
+fn add_drive(host: &Host, index: usize, number: usize, port: Port, interrupt: bool) -> bool {
+    match optical::add_ahci(port, number, host.source, interrupt) {
+        Ok((thread, drive)) => {
+            let _ = DRIVES[index][number].set(drive);
             optical::release(&thread);
             true
         }

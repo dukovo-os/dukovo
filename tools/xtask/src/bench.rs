@@ -52,12 +52,17 @@ const CMDLINE: &str = "qemu-exit selftest=bench";
 /// The kernel command line of the POSIX benchmark boot: Spark runs the C
 /// program of [`POSIX_SOURCE`] from the boot archive, and nothing else,
 /// giving it a network capability for the loopback benchmarks, with the
-/// benchmarks' disks ([`disk_args`]), the Btrfs one where Spark
-/// mounts it, to compress what is written to it, as Linux mounts it,
-/// and the image's git for the git benchmark.
+/// benchmarks' disks and disc ([`disk_args`]), the Btrfs disk where
+/// Spark mounts it, to compress what is written to it, as Linux mounts
+/// it, and the image's git for the git benchmark.
 const POSIX_CMDLINE: &str = "-- --compress vdb --posix --network /system/tests/posix/bench --network \
-                             --disk /devices/vda --nvme /devices/nvme0n1 --btrfs /volumes/vdb \
-                             --git /bin/git";
+                             --disk /devices/vda --nvme /devices/nvme0n1 --disc /devices/cd0 \
+                             --btrfs /volumes/vdb --git /bin/git";
+
+/// What Linux's init, `linux-bench`, is given after its kernel command
+/// line ([`LINUX_CMDLINE`]): the DVD drive of the disc benchmarks, which
+/// it waits for, as the AHCI module probes its ports in the background.
+const LINUX_INIT_ARGS: &str = "-- --disc /dev/sr0";
 
 /// The size of each disk both systems' POSIX benchmarks read and write:
 /// the 32 MiB they go through, with room.
@@ -420,6 +425,8 @@ const ROWS: &[Row] = &[
     disk("posix_nvme_write_64k", "Disk: 64 KiB written raw to an NVMe disk"),
     disk("posix_nvme_read_mib", "Disk: 1 MiB read raw from an NVMe disk"),
     disk("posix_nvme_write_mib", "Disk: 1 MiB written raw to an NVMe disk"),
+    disk("posix_disc_read_64k", "Disc: 64 KiB read raw from a DVD in an AHCI drive"),
+    disk("posix_disc_read_mib", "Disc: 1 MiB read raw from a DVD in an AHCI drive"),
     btrfs(
         "posix_btrfs_read_mib",
         "Btrfs: a 1 MiB file read from a virtio disk, its checksums checked, per file",
@@ -1061,8 +1068,9 @@ fn git_for_linux(ctx: &Ctx) -> Result<PathBuf> {
 /// Builds `linux-bench` as a static program and writes the initramfs
 /// that makes it the Linux virtual machine's init process, with the
 /// POSIX benchmarks at `posix` beside it (an empty file without them),
-/// git at `git` for the git benchmark (likewise), and the modules `kernel` needs to mount the Btrfs disk, from
-/// `modules_dir` if given ([`linux_modules`]).
+/// git at `git` for the git benchmark (likewise), and the modules `kernel`
+/// needs for the benchmarks' disks and disc, from `modules_dir` if given
+/// ([`linux_modules`]).
 pub(crate) fn linux_init(
     ctx: &Ctx,
     dir: &Path,
@@ -1094,11 +1102,16 @@ pub(crate) fn linux_init(
     Ok(initrd)
 }
 
-/// The modules the Linux kernel `kernel` loads to mount Btrfs, in the
-/// order they load: none when it has Btrfs built in, else Btrfs's and
-/// those it needs, from the directory of its modules (`modules`, else
-/// `OB_LINUX_MODULES`, else `/lib/modules/<release>`), as its
-/// `modules.dep` lists them.
+/// The modules Linux needs for the benchmarks' disks and disc, where the
+/// kernel has them as modules rather than built in: Btrfs's, to mount the
+/// Btrfs disk, and AHCI's and the SCSI CD driver's, to read the DVD drive.
+const LINUX_MODULES: [&str; 3] = ["btrfs", "ahci", "sr_mod"];
+
+/// The modules the Linux kernel `kernel` loads for the benchmarks' disks
+/// and disc ([`LINUX_MODULES`]), in the order they load: each it does not
+/// have built in, after those it needs, from the directory of its modules
+/// (`modules`, else `OB_LINUX_MODULES`, else `/lib/modules/<release>`),
+/// as its `modules.dep` lists them.
 fn linux_modules(kernel: &Path, modules: Option<&Path>) -> Result<Vec<PathBuf>> {
     let image = std::fs::read(kernel).context(|| format!("reading {}", kernel.display()))?;
     let Some(release) = kernel_release(&image) else {
@@ -1110,20 +1123,35 @@ fn linux_modules(kernel: &Path, modules: Option<&Path>) -> Result<Vec<PathBuf>> 
             .map_or_else(|| Path::new("/lib/modules").join(&release), PathBuf::from),
     };
     let builtin = std::fs::read_to_string(dir.join("modules.builtin")).unwrap_or_default();
-    if builtin.lines().any(|line| line.ends_with("/btrfs.ko")) {
+    let wanted: Vec<&str> = LINUX_MODULES
+        .into_iter()
+        .filter(|name| !builtin.lines().any(|line| line.ends_with(&format!("/{name}.ko"))))
+        .collect();
+    if wanted.is_empty() {
         return Ok(Vec::new());
     }
     let deps = dir.join("modules.dep");
     let listed = std::fs::read_to_string(&deps).context(|| {
         format!(
-            "reading {}, for the module Linux {release} mounts the Btrfs disk with \
+            "reading {}, for the modules Linux {release} reads the benchmarks' disks with \
              (OB_LINUX_MODULES names another directory of its modules)",
             deps.display()
         )
     })?;
-    let Some(order) = load_order(&listed, "btrfs") else {
-        crate::bail!("{} lists no Btrfs module", deps.display());
-    };
+    let mut order: Vec<String> = Vec::new();
+    for name in wanted {
+        let Some(needed) = load_order(&listed, name) else {
+            crate::bail!(
+                "{} lists no {name} module, and Linux {release} has none built in",
+                deps.display()
+            );
+        };
+        for module in needed {
+            if !order.contains(&module) {
+                order.push(module);
+            }
+        }
+    }
     Ok(order.iter().map(|module| dir.join(module)).collect())
 }
 
@@ -1232,7 +1260,7 @@ fn linux_vm_numbers(
         direct: Some(DirectBoot {
             kernel: kernel.to_path_buf(),
             initrd: initrd.to_path_buf(),
-            cmdline: LINUX_CMDLINE.into(),
+            cmdline: format!("{LINUX_CMDLINE} {LINUX_INIT_ARGS}"),
         }),
     };
     let mut vm = Vm::start(ctx, &machine, dir, "linux", TIMEOUT).map_err(crate::Error::new)?;
@@ -1454,15 +1482,18 @@ fn radix_posix_numbers(
 /// than holes, which the host would read faster, and returns QEMU's
 /// arguments for them: a virtio block device, `vda` on both systems
 /// (`/devices/vda` on Radix, `/dev/vda` on Linux), an NVMe controller
-/// with one namespace, `nvme0n1`, and a second virtio block device,
-/// `vdb`, a copy of the Btrfs disk `btrfs` ([`btrfs_disk`]). Each boot
-/// gets the same disks.
+/// with one namespace, `nvme0n1`, a second virtio block device, `vdb`,
+/// a copy of the Btrfs disk `btrfs` ([`btrfs_disk`]), and a DVD drive on
+/// q35's AHCI controller holding a disc of the same bytes as the first
+/// two, read only: `cd0` on Radix, `/dev/sr0` on Linux. Each boot gets
+/// the same disks and disc.
 fn disk_args(dir: &Path, btrfs: &Path) -> Result<Vec<String>> {
     let mut args = Vec::new();
-    for (name, device) in [
-        ("bench-disk", "virtio-blk-pci,drive=bench-disk"),
-        ("bench-nvme", "nvme,serial=bench,drive=bench-nvme"),
-        ("bench-btrfs", "virtio-blk-pci,drive=bench-btrfs"),
+    for (name, device, media) in [
+        ("bench-disk", "virtio-blk-pci,drive=bench-disk", ""),
+        ("bench-nvme", "nvme,serial=bench,drive=bench-nvme", ""),
+        ("bench-btrfs", "virtio-blk-pci,drive=bench-btrfs", ""),
+        ("bench-disc", "ide-cd,drive=bench-disc,bus=ide.0", ",media=cdrom,readonly=on"),
     ] {
         let disk = dir.join(format!("{name}.img"));
         if name == "bench-btrfs" {
@@ -1473,7 +1504,7 @@ fn disk_args(dir: &Path, btrfs: &Path) -> Result<Vec<String>> {
         }
         args.extend([
             "-drive".into(),
-            format!("file={},if=none,id={name},format=raw", qemu::option_value(&disk)),
+            format!("file={},if=none,id={name},format=raw{media}", qemu::option_value(&disk)),
             "-device".into(),
             device.into(),
         ]);
@@ -2087,6 +2118,55 @@ mod tests {
         // A loop in the listing still ends, with each module once.
         let looped = "a.ko: b.ko\nb.ko: a.ko\n";
         assert_eq!(load_order(looped, "a").unwrap(), ["a.ko", "b.ko"]);
+    }
+
+    #[test]
+    fn linux_loads_each_module_it_lacks_once() {
+        let dir = std::env::temp_dir().join(format!("ob-bench-modules-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut image = vec![0u8; 0x1000];
+        image[0x202..0x206].copy_from_slice(b"HdrS");
+        image[0x20e..0x210].copy_from_slice(&0x0400u16.to_le_bytes());
+        image[0x600..0x612].copy_from_slice(b"7.0.0-1017-azure \0");
+        let kernel = dir.join("vmlinuz");
+        std::fs::write(&kernel, &image).unwrap();
+        // The SCSI CD driver is built in, as in Ubuntu's kernels; Btrfs
+        // and AHCI are modules, which both need what loads first.
+        std::fs::write(dir.join("modules.builtin"), "kernel/drivers/scsi/sr_mod.ko\n").unwrap();
+        std::fs::write(
+            dir.join("modules.dep"),
+            "kernel/crypto/xor.ko.zst:\n\
+             kernel/fs/btrfs/btrfs.ko.zst: kernel/crypto/xor.ko.zst\n\
+             kernel/drivers/ata/libahci.ko.zst: kernel/crypto/xor.ko.zst\n\
+             kernel/drivers/ata/ahci.ko.zst: kernel/drivers/ata/libahci.ko.zst\n\
+             kernel/drivers/ata/ahci_platform.ko.zst: kernel/drivers/ata/libahci.ko.zst\n",
+        )
+        .unwrap();
+        let loaded = linux_modules(&kernel, Some(&dir));
+        let all_built_in = {
+            std::fs::write(
+                dir.join("modules.builtin"),
+                "kernel/fs/btrfs/btrfs.ko\nkernel/drivers/ata/ahci.ko\nkernel/drivers/scsi/sr_mod.ko\n",
+            )
+            .unwrap();
+            linux_modules(&kernel, Some(&dir))
+        };
+        let _ = std::fs::remove_dir_all(&dir);
+        let names: Vec<String> = loaded
+            .unwrap()
+            .iter()
+            .map(|path| path.strip_prefix(&dir).unwrap().display().to_string())
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "kernel/crypto/xor.ko.zst",
+                "kernel/fs/btrfs/btrfs.ko.zst",
+                "kernel/drivers/ata/libahci.ko.zst",
+                "kernel/drivers/ata/ahci.ko.zst",
+            ]
+        );
+        assert!(all_built_in.unwrap().is_empty());
     }
 
     #[test]

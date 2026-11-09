@@ -14,7 +14,7 @@ use radix_scsi::{Cdb, Data, Reply, Sense, Transport, TransportError, identify, k
 
 use super::{Disk, PortRegs, Sim, buffers, checksum, no_delay, one_port, probe, read_mem};
 use crate::ata::{self, command};
-use crate::{PACKET_BUFFER_SIZE, Packets};
+use crate::{PACKET_BUFFER_SIZE, PacketEnd, Packets};
 
 /// A CD holds at most this many blocks: a disc of more is a DVD, as QEMU
 /// has it.
@@ -435,4 +435,126 @@ fn a_drive_that_does_not_answer_has_its_link_reset_and_one_gone_is_gone() {
     assert_eq!(reply, Err(TransportError::Gone));
     let reply = packets.command(0, &Cdb::test_unit_ready(), Data::None, 100);
     assert_eq!(reply, Err(TransportError::Gone));
+}
+
+#[test]
+fn a_read_sent_without_waiting_is_looked_at_and_answered_after() {
+    let (sim, _hba, mut port) = drive(1000, |d| d.bad = std::vec![5]);
+    let mut wait = no_delay;
+    let (memory, frames) = buffers(2);
+    let read = Data::Frames { into_host: true, frames: &frames };
+    port.send_packet(&Cdb::read(10, 4, false).unwrap(), &read, true).unwrap();
+    // The simulated drive answers at once; the port's interrupt is on.
+    sim.with(|s| assert_ne!(s.ports[1].ie, 0, "its interrupt on with the read"));
+    let end = port.packet_ended();
+    assert_eq!(end, Some(PacketEnd::Done(8192)));
+    assert_eq!(port.packet_ended(), Some(PacketEnd::Done(8192)), "over, and stays so");
+    let reply = port.packet_reply(end.unwrap(), 8192, &mut wait);
+    assert_eq!(reply, Ok(Reply::Good { residue: 0 }));
+    let mut bytes = std::vec![0u8; 8192];
+    memory.read(0, &mut bytes);
+    assert_eq!(&bytes[..2048], block_pattern(10));
+    // A read the drive fails stops the port, its interrupt off; the reply
+    // restarts it and asks the drive why.
+    port.send_packet(&Cdb::read(4, 4, false).unwrap(), &read, true).unwrap();
+    let end = port.packet_ended().unwrap();
+    assert!(matches!(end, PacketEnd::Stopped(_)), "{end:?}");
+    sim.with(|s| assert_eq!(s.ports[1].ie, 0, "its interrupt off while stopped"));
+    let reply = port.packet_reply(end, 8192, &mut wait);
+    let unrecovered = Sense { key: key::MEDIUM_ERROR, asc: 0x11, ascq: 0 };
+    assert_eq!(reply, Ok(Reply::Failed(Some(unrecovered))));
+    sim.with(|s| assert_eq!(s.ports[1].cmd & 1, 1, "running again"));
+    // A read not answered runs until its link is reset; then reads work.
+    sim.disk(1, |disk| disk.hold = true);
+    port.send_packet(&Cdb::read(10, 4, false).unwrap(), &read, true).unwrap();
+    assert_eq!(port.packet_ended(), None);
+    sim.disk(1, |disk| disk.hold = false);
+    assert!(matches!(port.packet_timed_out(&mut wait), TransportError::Failed(_)));
+    port.send_packet(&Cdb::read(10, 4, false).unwrap(), &read, true).unwrap();
+    assert_eq!(port.packet_ended(), Some(PacketEnd::Done(8192)));
+    // The one held was never taken in.
+    assert_eq!(packets_sent(&sim).iter().filter(|p| p.0 == op::READ_10).count(), 3);
+}
+
+#[test]
+fn a_read_sent_to_be_polled_ends_in_memory_with_its_interrupt_off() {
+    let (sim, _hba, mut port) = drive(1000, |d| d.bad = std::vec![5]);
+    let mut wait = no_delay;
+    let (memory, frames) = buffers(2);
+    let read = Data::Frames { into_host: true, frames: &frames };
+    let cdb = Cdb::read(10, 4, false).unwrap();
+    port.send_packet(&cdb, &read, false).unwrap();
+    sim.with(|s| assert_eq!(s.ports[1].ie, 0, "its interrupt off"));
+    assert_eq!(port.packet_over(false), Some(PacketEnd::Done(8192)));
+    let mut bytes = std::vec![0u8; 2048];
+    memory.read(0, &mut bytes);
+    assert_eq!(&bytes[..], block_pattern(10));
+    // The last read's answer is forgotten when the next goes: one the
+    // drive holds is not over.
+    sim.disk(1, |disk| disk.hold = true);
+    port.send_packet(&cdb, &read, false).unwrap();
+    assert_eq!(port.packet_over(false), None);
+    // A thread about to sleep for it turns the interrupt on; it goes
+    // unanswered, and the link is reset.
+    port.interrupt_at_end();
+    sim.with(|s| assert_ne!(s.ports[1].ie, 0, "its interrupt on"));
+    sim.disk(1, |disk| disk.hold = false);
+    assert!(matches!(port.packet_timed_out(&mut wait), TransportError::Failed(_)));
+    // A read the drive fails shows its error in memory, and how the port
+    // stopped in the registers.
+    port.send_packet(&Cdb::read(4, 4, false).unwrap(), &read, false).unwrap();
+    let end = port.packet_over(false).unwrap();
+    assert!(matches!(end, PacketEnd::Stopped(_)), "{end:?}");
+    let reply = port.packet_reply(end, 8192, &mut wait);
+    let unrecovered = Sense { key: key::MEDIUM_ERROR, asc: 0x11, ascq: 0 };
+    assert_eq!(reply, Ok(Reply::Failed(Some(unrecovered))));
+    // Sent with its interrupt on, a read is over only once its interrupt
+    // came.
+    port.send_packet(&cdb, &read, true).unwrap();
+    sim.with(|s| assert_ne!(s.ports[1].ie, 0));
+    assert_eq!(port.packet_over(false), None, "the interrupt not come");
+    assert_eq!(port.packet_over(true), Some(PacketEnd::Done(8192)));
+    // Data by PIO cannot be polled for: its interrupt stays on.
+    let mut small = [0u8; 2048];
+    port.send_packet(&Cdb::read(10, 1, false).unwrap(), &Data::In(&mut small), false).unwrap();
+    sim.with(|s| assert_ne!(s.ports[1].ie, 0, "a PIO read's interrupt on"));
+    assert_eq!(port.packet_over(true), Some(PacketEnd::Done(2048)));
+}
+
+#[test]
+fn a_read_sent_with_the_interrupt_on_writes_only_its_command() {
+    let (sim, hba, mut port) = drive(1000, |_| {});
+    let (_memory, frames) = buffers(2);
+    let read = Data::Frames { into_host: true, frames: &frames };
+    let cdb = Cdb::read(10, 4, false).unwrap();
+    port.send_packet(&cdb, &read, true).unwrap();
+    assert_eq!(port.packet_ended(), Some(PacketEnd::Done(8192)));
+    // Marks: the interrupt mask cut to one bit, and a status bit the port
+    // raises no interrupt for ("descriptor processed"). Writing either
+    // register would lose its mark.
+    const MASK: u32 = 1;
+    const PROCESSED: u32 = 1 << 5;
+    sim.with(|s| {
+        s.ports[1].ie = MASK;
+        s.ports[1].is = PROCESSED;
+    });
+    port.send_packet(&cdb, &read, true).unwrap();
+    sim.with(|s| {
+        assert_eq!(s.ports[1].ie, MASK, "the interrupt left as it was");
+        assert_ne!(s.ports[1].is & PROCESSED, 0, "the status left as it was");
+    });
+    assert_eq!(port.packet_ended(), Some(PacketEnd::Done(8192)));
+    // The controller's handler quiets the port behind the port's back
+    // while a thread has it; once it is told, the next read turns the
+    // interrupt on again.
+    hba.quiet(1);
+    port.forget_interrupts();
+    port.send_packet(&cdb, &read, true).unwrap();
+    sim.with(|s| assert_ne!(s.ports[1].ie & 1, 0, "its interrupt on again"));
+    assert_eq!(port.packet_ended(), Some(PacketEnd::Done(8192)));
+    // The port's own quiet is remembered.
+    port.quiet();
+    sim.with(|s| assert_eq!(s.ports[1].ie, 0));
+    port.send_packet(&cdb, &read, true).unwrap();
+    sim.with(|s| assert_ne!(s.ports[1].ie & 1, 0, "its interrupt on again"));
 }

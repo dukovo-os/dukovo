@@ -24,7 +24,9 @@
 //!   through the cache (FUA) and TRIM, which the disk takes only while
 //!   nothing else is in flight; and recovery after an error.
 //! - [`Packets`] carries the SCSI commands of an optical drive on a port
-//!   (ATAPI) in ATA packets, one at a time (ADR 0431).
+//!   (ATAPI) in ATA packets, one at a time (ADR 0431); a disc's reads go
+//!   out without waiting ([`Port::send_packet`]), and the interrupt looks
+//!   for their end ([`Port::packet_ended`], ADR 0434).
 //! - [`ata`] builds the commands and reads what a disk says of itself.
 //!
 //! The crate is a compartment: it has no `unsafe` code, and reaches the
@@ -47,7 +49,7 @@ mod tests;
 
 use core::fmt;
 
-pub use port::{Info, MAX_SEGMENTS, Op, Outcome, PACKET_BUFFER_SIZE, Packets, Port};
+pub use port::{Info, MAX_SEGMENTS, Op, Outcome, PACKET_BUFFER_SIZE, PacketEnd, Packets, Port};
 use radix_hw::{Dma, Mmio};
 
 /// The PCI class, subclass and programming interface of an AHCI

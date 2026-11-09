@@ -168,6 +168,7 @@ install-bios userspace/programs/systools/src/efiboot.rs userspace/programs/systo
 install-bios userspace/programs/systools/src/rdisk.rs
 install-dvd image/grub/installed.cfg.in image/grub/live.cfg.in kernel/drivers/ide/
 install-dvd kernel/fs/iso9660/ kernel/radix/src/fs/disk/ide.rs kernel/radix/src/fs/disk/optical.rs
+install-dvd kernel/radix/src/fs/disk/optical_port.rs
 install-dvd tools/xtask/src/image.rs tools/xtask/src/release.rs userspace/programs/disk/
 install-dvd userspace/programs/installer/
 install-dvd userspace/programs/systools/src/efiboot.rs userspace/programs/systools/src/mkfs.rs
@@ -238,6 +239,7 @@ live-bios image/grub/live.cfg.in tools/xtask/src/release.rs userspace/programs/s
 live-bios userspace/programs/systools/src/releases.rs
 live-dvd image/grub/live.cfg.in kernel/drivers/ahci/ kernel/drivers/scsi/ kernel/fs/iso9660/
 live-dvd kernel/radix/src/fs/disk/optical.rs tools/xtask/src/image.rs tools/xtask/src/release.rs
+live-dvd kernel/radix/src/fs/disk/optical_port.rs
 live-dvd userspace/programs/system-release/ userspace/programs/systools/src/releases.rs
 live-uefi image/grub/live.cfg.in tools/xtask/src/release.rs userspace/programs/system-release/
 live-uefi userspace/programs/systools/src/releases.rs
@@ -316,6 +318,7 @@ ntfs-write userspace/storage/
 oom kernel/mm/
 optical kernel/drivers/ahci/ kernel/drivers/scsi/ kernel/drivers/usb/ kernel/drivers/xhci/
 optical kernel/radix/src/fs/disk/optical.rs kernel/radix/src/fs/disk/usb.rs
+optical kernel/radix/src/fs/disk/optical_port.rs
 optical kernel/fs/iso9660/ kernel/fs/udf/ userspace/programs/systools/src/eject.rs
 optical userspace/programs/systools/src/lsblk.rs userspace/programs/systools/src/volumed.rs
 optical-ide kernel/drivers/ide/ kernel/drivers/scsi/ kernel/fs/iso9660/ kernel/fs/udf/

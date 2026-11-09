@@ -52,6 +52,7 @@ mod ahci;
 mod ide;
 mod nvme;
 mod optical;
+mod optical_port;
 mod queue;
 pub mod removable;
 mod sdhci;

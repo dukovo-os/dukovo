@@ -5,7 +5,8 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 # 0431. Optical drives read a disc whole, from its last session
 
-- Status: Accepted
+- Status: Accepted; a disc's reads on an AHCI port go out from the reading
+  thread and end in the port's interrupt since [0434](0434-optical-reads-are-held-to-linux-s-in-ob-bench.md)
 - Date: 2026-11-09
 
 ## Context

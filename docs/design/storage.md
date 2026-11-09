@@ -392,6 +392,14 @@ off, for as long as the lane's recent waits suggest (Linux's haltpoll
 rule, at most 200 µs): the sleep and the interrupt that would end it are
 each an exit to the hypervisor. It stops as soon as another thread wants
 the CPU, and the interrupt comes back on before it sleeps (ADR 0365).
+The limit counts from the lane's last completion, so a transfer whose
+requests the device takes one after another is polled through. An
+optical drive's reads on an AHCI port are polled the same way, in the
+frame the controller copies to memory at a command's end, with the
+port's interrupt off (ADR 0434). A thread waiting for any other disk
+sleeps at once: a look at the device finds no more than its interrupt
+brings, and where the look reads the controller's registers, as AHCI's
+does, each read is an exit too.
 
 `ioctl` on a block device takes Linux's requests (radix-block(2)): the
 size in bytes and in sectors, the logical and physical sector sizes, the
