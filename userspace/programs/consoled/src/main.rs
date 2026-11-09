@@ -22,11 +22,14 @@
 //! (dukovo-install(8)), in the largest font they fit, unless `console=ttyS0`
 //! puts them on the serial port, where serial-console(8) runs them (ADR
 //! 0318). Notifications from
-//! notifyd(8) show on the bottom line (`notices`, ADR 0212). When
+//! notifyd(8) show on the bottom line (`notices`, ADR 0212). A braille
+//! display reads the shown console, and types on it, through BRLTTY
+//! (`braille`, ADR 0326). When
 //! consoled ends, the screen is the kernel log's again. Spark starts it as
 //! a service (spark(8)).
 
 mod access;
+mod braille;
 mod keys;
 mod notices;
 mod prompts;
@@ -46,6 +49,7 @@ use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::time::Instant;
 
 use access::{Access, Size};
+use braille::Braille;
 use keymap::Keymap;
 use keys::{Action, Keyboard, SlowKeys};
 use notices::Notices;
@@ -295,6 +299,8 @@ struct Consoled {
     /// ADR 0325).
     access: Access,
     slow: SlowKeys,
+    /// The braille display's connection, through BRLTTY (ADR 0326).
+    braille: Braille,
 }
 
 impl Consoled {
@@ -366,7 +372,13 @@ impl Consoled {
         if value == PRESSED {
             self.notices.key();
         }
-        match self.keyboard.key(code, value, modes) {
+        let action = self.keyboard.key(code, value, modes);
+        self.act(action);
+    }
+
+    /// What a key does, from the keyboard or a braille display.
+    fn act(&mut self, action: Action) {
+        match action {
             Action::None => {}
             // consoled's own line takes the keys first, as it shows: the
             // shown console's password prompt, then the menu. What is
@@ -410,6 +422,45 @@ impl Consoled {
             }
             Action::Latch(word) => self.reader.now(word),
         }
+    }
+
+    /// What a braille display's keys ask for (ADR 0326): a key, as if
+    /// typed on the keyboard, or another console.
+    fn braille_input(&mut self, input: braille::Input) {
+        match input {
+            braille::Input::Key { name, shift, ctrl, alt } => {
+                let modes = self.consoles[self.active].term.modes();
+                match keys::named(&name, (shift, ctrl, alt), modes) {
+                    Some(action) => {
+                        self.notices.key();
+                        self.act(action);
+                    }
+                    None => {
+                        eprintln!("consoled: the braille display sent {name}, which no key types");
+                    }
+                }
+            }
+            braille::Input::Switch(number) => self.switch(number - 1),
+        }
+    }
+
+    /// Sends the braille display the shown console and the bottom line,
+    /// `bottom`, if they changed.
+    fn show_braille(&mut self, bottom: Option<&[term::Cell]>) {
+        if !self.braille.connected() {
+            return;
+        }
+        // The cursor is on consoled's own line while it asks for an
+        // answer there: a password, or a choice from its menu.
+        let asking = if self.prompts.as_ref().is_some_and(|p| p.shown(self.active).is_some()) {
+            Some(braille::Asking::Prompt)
+        } else if self.bar == Some(Bar::Menu) {
+            Some(braille::Asking::Menu)
+        } else {
+            None
+        };
+        let console = &self.consoles[self.active];
+        self.braille.show(braille::screen(console.number, &console.term, bottom, asking));
     }
 
     /// Ctrl+Alt+Plus (`step` 1) or Ctrl+Alt+Minus (-1): the text a step
@@ -626,7 +677,8 @@ impl Consoled {
         let mut events = vec![0u8; Event::SIZE * 32];
         loop {
             // The wake pipe, the keyboard, notifyd, authd's prompts,
-            // readerd, then each console's master.
+            // readerd, the braille display's socket and its connection,
+            // then each console's master.
             let mut fds =
                 vec![libc::pollfd { fd: wake.as_raw_fd(), events: libc::POLLIN, revents: 0 }];
             fds.push(libc::pollfd {
@@ -638,6 +690,10 @@ impl Consoled {
             let prompts_fd = self.prompts.as_ref().map_or(-1, Prompts::fd);
             fds.push(libc::pollfd { fd: prompts_fd, events: libc::POLLIN, revents: 0 });
             fds.push(libc::pollfd { fd: self.reader.fd(), events: libc::POLLIN, revents: 0 });
+            let listener = self.braille.listener_fd();
+            fds.push(libc::pollfd { fd: listener, events: libc::POLLIN, revents: 0 });
+            let (display, wanted) = self.braille.client_fd();
+            fds.push(libc::pollfd { fd: display, events: wanted, revents: 0 });
             for (i, console) in self.consoles.iter().enumerate() {
                 let held = i == self.active && self.keyboard.scroll;
                 let fd = console.master_fd().filter(|_| !held).unwrap_or(-1);
@@ -711,8 +767,19 @@ impl Consoled {
             if fds[4].revents != 0 {
                 self.reader.read(now);
             }
+            if fds[5].revents != 0 {
+                self.braille.accept();
+            }
+            if fds[6].revents & libc::POLLOUT != 0 {
+                self.braille.flush();
+            }
+            if fds[6].revents & !libc::POLLOUT != 0 {
+                for input in self.braille.read() {
+                    self.braille_input(input);
+                }
+            }
             for (i, console) in self.consoles.iter_mut().enumerate() {
-                if fds[5 + i].revents != 0 {
+                if fds[7 + i].revents != 0 {
                     console.read();
                 }
             }
@@ -729,6 +796,7 @@ impl Consoled {
             // Only the cells that changed are drawn.
             let bottom = self.bottom();
             self.screen.draw(&self.consoles[self.active].term, bottom.as_deref())?;
+            self.show_braille(bottom.as_deref());
         }
     }
 }
@@ -832,6 +900,7 @@ fn main() -> ExitCode {
         speaking: None,
         access,
         slow,
+        braille: Braille::listen(braille::SOCKET),
     };
     consoled.lights();
     consoled.switch(0);

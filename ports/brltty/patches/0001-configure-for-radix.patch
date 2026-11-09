@@ -1,0 +1,46 @@
+SPDX-FileCopyrightText: 2026 The Dukovo contributors
+SPDX-License-Identifier: Apache-2.0 OR MIT
+
+Radix to BRLTTY's configure: programs are linked without exporting their
+symbols (BRLTTY is built with its drivers in it, so it loads none), a
+shared object or library would be made with -shared as on the other ELF
+systems, and the screen driver is Dukovo's, dk (ADR 0326).
+
+--- a/configure.ac
++++ b/configure.ac
+@@ -447,6 +447,7 @@
+    openbsd* ) LDFLAGS_DYNAMIC="-export-dynamic";;
+    osf*     ) LDFLAGS_DYNAMIC="";;
+    *qnx*    ) LDFLAGS_DYNAMIC="-export-dynamic";;
++   radix*   ) LDFLAGS_DYNAMIC="";;
+    solaris* ) LDFLAGS_DYNAMIC="";;
+    *) AC_MSG_ERROR([dynamic linkage not supported for ${host_os}]);;
+ esac
+@@ -505,7 +506,7 @@
+ AC_CACHE_CHECK([for shared object creation command], [brltty_cv_prog_make_object_shared], [dnl
+    case "${host_os}"
+    in
+-      linux*|gnu*|openbsd*|freebsd*|kfreebsd*|netbsd*|*qnx*|cygwin*|mingw*|msdos*|elf*|haiku*)
++      linux*|gnu*|openbsd*|freebsd*|kfreebsd*|netbsd*|*qnx*|cygwin*|mingw*|msdos*|elf*|haiku*|radix*)
+          brltty_mkshr_ld_make="-shared"
+          ;;
+       solaris*)
+@@ -544,7 +545,7 @@
+ AC_CACHE_CHECK([for dynamic library creation command], [brltty_cv_prog_mklib], [dnl
+ case "${host_os}"
+ in
+-   linux*|gnu*|openbsd*|freebsd*|kfreebsd*|netbsd*|*qnx*|elf*|haiku*)
++   linux*|gnu*|openbsd*|freebsd*|kfreebsd*|netbsd*|*qnx*|elf*|haiku*|radix*)
+       brltty_mklib_ld_make="-shared"
+       brltty_mklib_ld_options="-soname"
+       ;;
+@@ -1896,6 +1897,9 @@
+    elf*)
+       BRLTTY_SCREEN_DRIVER([gb], [Grub])
+       ;;
++   radix*)
++      BRLTTY_SCREEN_DRIVER([dk], [Dukovo])
++      ;;
+    *)
+       AC_MSG_WARN([no native screen driver for ${host_os}])
+       ;;

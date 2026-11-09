@@ -1,0 +1,16 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# BRLTTY's screen driver for Dukovo (ADR 0326): the consoles, as
+# consoled(8) shows them. build.sh copies this directory into BRLTTY's
+# tree as Drivers/Screen/Dukovo, where configure finds it.
+
+DRIVER_CODE = dk
+DRIVER_NAME = Dukovo
+DRIVER_USAGE = the consoles of Dukovo
+DRIVER_VERSION =
+DRIVER_DEVELOPERS = The Dukovo contributors
+include $(SRC_TOP)screen.mk
+
+screen.$O:
+	$(CC) $(DRIVER_CFLAGS) -c $(SRC_DIR)/screen.c

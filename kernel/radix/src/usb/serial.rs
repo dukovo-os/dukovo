@@ -102,9 +102,10 @@ fn take_number(which: usize) -> Option<u32> {
 
 impl Controller {
     /// Starts the serial port `port` of the configured device in slot
-    /// `slot`: makes its terminal and starts reading it.
+    /// `slot`: makes its terminal and starts reading it. Gives the
+    /// terminal's number.
     #[inline(never)]
-    pub(super) fn start_serial(&mut self, slot: u8, port: Port) -> Result<(), Why> {
+    pub(super) fn start_serial(&mut self, slot: u8, port: Port) -> Result<u32, Why> {
         let at = self.find(slot).ok_or(Why::Device("it is gone"))?;
         let which = usize::from(matches!(port.protocol, Protocol::Ftdi { .. }));
         let number = take_number(which).ok_or(Why::Device("too many serial ports"))?;
@@ -168,7 +169,7 @@ impl Controller {
         }
         // The line set, and its modem lines lowered until it is opened.
         self.serial_settings(at, index);
-        self.serial_listen(at, index)
+        self.serial_listen(at, index).map(|()| number)
     }
 
     /// Starts the read on serial port `index` of the device at `at`.

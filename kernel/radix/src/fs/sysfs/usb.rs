@@ -12,7 +12,11 @@
 //! (`manufacturer`, `product`, `serial`), its `busnum`, `devnum`,
 //! `devpath`, `speed` (in Mb/s) and, for a hub, `maxchild`; an
 //! interface's descriptor, and its `driver`, a link to `drivers/hub`,
-//! `drivers/usbhid`, `drivers/usb-storage` or `drivers/uas`.
+//! `drivers/usbhid` or another of [`DRIVERS`]. A serial port's interface
+//! holds its terminal's directory, where Linux's does: `ttyUSB0` for an
+//! FTDI chip, `tty/ttyACM0` for CDC-ACM. That is how a program finds the
+//! terminal of a device it knows by its IDs, as brailled(8) does a
+//! braille display's (ADR 0326).
 //!
 //! A file is read from what the controller's thread keeps of the device
 //! ([`crate::usb::shown`]), so a device unplugged fails to read.
@@ -27,7 +31,18 @@ use super::value;
 use crate::usb::shown::{self, Shown};
 
 /// The drivers an interface may have, as Linux names them.
-const DRIVERS: [&str; 4] = ["hub", "usbhid", "usb-storage", "uas"];
+const DRIVERS: [&str; 10] = [
+    "hub",
+    "usbhid",
+    "usb-storage",
+    "uas",
+    "cdc_acm",
+    "ftdi_sio",
+    "cdc_ether",
+    "cdc_ncm",
+    "ax88179_178a",
+    "snd-usb-audio",
+];
 
 /// Adds `usb` to `bus`.
 pub(super) fn add(bus: &FixedDir) -> Result<()> {
@@ -212,6 +227,15 @@ fn interface_dir(device: &str, interface: &str) -> Result<NodeRef> {
         let mut target = TextBuf::<32>::new();
         let _ = write!(target, "../../drivers/{driver}");
         dir.add("driver", Link::make(next_id(), target.as_str())?)?;
+    }
+    if let Some(number) = found.tty.number() {
+        // CDC-ACM's terminals are `ttyACM0`, in a `tty` directory;
+        // usb-serial's, FTDI's, are `ttyUSB0`, in the interface's own.
+        let acm = found.driver == Some("cdc_acm");
+        let mut name = TextBuf::<16>::new();
+        let _ = write!(name, "{}{number}", if acm { "ttyACM" } else { "ttyUSB" });
+        let holder = if acm { dir.add_dir("tty", next_id())? } else { dir.clone() };
+        holder.add_dir(name.as_str(), next_id())?;
     }
     Ok(dir)
 }

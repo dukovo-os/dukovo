@@ -190,8 +190,15 @@ _/kernel/bus/usb/devices/_*name*:*c*.*i*_/bInterfaceNumber_, _bInterfaceClass_, 
 	Linux shows them (_bInterfaceNumber_, _bAlternateSetting_,
 	_bNumEndpoints_, _bInterfaceClass_, _bInterfaceSubClass_,
 	_bInterfaceProtocol_), and _driver_, a link to the driver that took
-	it in _/kernel/bus/usb/drivers_: *hub*, *usbhid*, *usb-storage* or
-	*uas*.
+	it in _/kernel/bus/usb/drivers_: *hub*, *usbhid*, *usb-storage*,
+	*uas*, *cdc\_acm*, *ftdi\_sio*, *cdc\_ether*, *cdc\_ncm*,
+	*ax88179\_178a* or *snd-usb-audio*.
+
+_/kernel/bus/usb/devices/_*name*:*c*.*i*_/ttyUSB_*n*, _tty/ttyACM_*n*
+	The terminal a serial port's interface is, where Linux shows it: an
+	FTDI chip's, _/devices/ttyUSB_*n*, as a folder in the interface's
+	own; a CDC-ACM device's, _/devices/ttyACM_*n*, in its _tty_ folder.
+	*brailled*(8) finds a braille display's terminal so (ADR 0326).
 
 _/kernel/bus/usb/devices/usb_*n*
 	Bus _n_'s root hub: _busnum_; _devnum_ *1*; _devpath_ *0*; _speed_ and

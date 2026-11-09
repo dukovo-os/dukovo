@@ -57,6 +57,7 @@ mod authd;
 mod balance;
 mod blkid;
 mod blockdev;
+mod braille;
 mod btrfs;
 mod bundled;
 mod bundles;
@@ -183,6 +184,8 @@ const TOOLS: &[(&str, Tool)] = &[
     ("authd", authd::main),
     ("balance", balance::main),
     ("blkid", blkid::main),
+    ("braille", braille::main),
+    ("brailled", braille::daemon),
     ("btrfsck", btrfs::fsck_btrfs),
     ("bundle", bundles::main),
     ("bundled", bundled::main),

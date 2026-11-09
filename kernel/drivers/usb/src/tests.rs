@@ -517,6 +517,29 @@ fn ftdi_ports_are_each_interface() {
 }
 
 #[test]
+fn braille_displays_built_on_ftdi_chips_are_serial_ports() {
+    // Baum's SuperVario 40, as QEMU's usb-braille is: an FT232BM under an
+    // FTDI product ID of Baum's.
+    let (mut display, bytes) = ftdi_device(0xfe72, 0x0400, 1);
+    let config = Configuration::parse(&bytes).unwrap();
+    let mut ports = [serial::Port {
+        protocol: serial::Protocol::Acm { control: 0 },
+        data: 0,
+        bulk_in: EndpointDescriptor::default(),
+        bulk_out: EndpointDescriptor::default(),
+    }];
+    assert_eq!(serial::ports(&display, &config, &mut ports), 1);
+    let chip = serial::ftdi::Chip::Bm;
+    assert_eq!(ports[0].protocol, serial::Protocol::Ftdi { chip, index: 0 });
+    // Baum's EcoVario 40, under Baum's own vendor ID.
+    (display.vendor, display.product) = (0x0904, 0x2002);
+    assert_eq!(serial::ftdi::chip(&display), Some(chip));
+    // Baum's SuperVario2 is a HID device, not an FTDI chip.
+    display.product = 0x6001;
+    assert_eq!(serial::ftdi::chip(&display), None);
+}
+
+#[test]
 fn lines_go_to_acm_as_its_line_coding() {
     use serial::{B9600, Line, cflag};
     let start = Line::from_cflag(B9600 | cflag::CSIZE | 0o200 | cflag::HUPCL | cflag::CLOCAL, 0);

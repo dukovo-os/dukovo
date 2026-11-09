@@ -56,7 +56,7 @@ use super::hid::{self, Hid, HidPlan, MAX_HIDS};
 use super::hub::Hub;
 use super::net::{self, Ethernet};
 use super::serial::{self, MAX_SERIALS, Serial};
-use super::shown::{self, Interface, MAX_INTERFACES, RootHub, Shown};
+use super::shown::{self, Interface, MAX_INTERFACES, RootHub, Shown, Tty};
 use super::storage::{LinkRef, StoragePlan};
 use crate::Arch;
 use crate::sched;
@@ -751,8 +751,9 @@ impl Controller {
         }
         for &port in plan.serials() {
             match self.start_serial(slot, port) {
-                Ok(()) => {
+                Ok(number) => {
                     shown::set_driver(self.bus, path, port.data, port.driver());
+                    shown::set_tty(self.bus, path, port.data, number);
                     if let radix_usb::serial::Protocol::Acm { control } = port.protocol {
                         shown::set_driver(self.bus, path, control, port.driver());
                     }
@@ -922,7 +923,7 @@ pub(super) fn read_device(
     for interface in config.interfaces().filter(|i| i.descriptor.alternate == 0) {
         let d = interface.descriptor;
         if let Some(slot) = listed.get_mut(listed_count) {
-            *slot = Interface { descriptor: d, driver: None };
+            *slot = Interface { descriptor: d, driver: None, tty: Tty::NONE };
             listed_count += 1;
         }
         let this = class_name(d.class, d.subclass, d.protocol);
