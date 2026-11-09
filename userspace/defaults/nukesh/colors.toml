@@ -81,9 +81,10 @@ options = true
 
 # ls (LS_COLORS). `enabled = false` leaves ls without colour. On a
 # terminal, ls -l also colours its fields (LS_FIELD_COLORS): the
-# permission letters, sizes by how big and times by how long ago, and
-# --header's titles. `icons = true` shows a Nerd Font icon before each
-# name on a terminal; the terminal must use such a font.
+# permission letters, sizes by how big and times by how long ago,
+# --header's titles, --git's letters and --tree's lines. `icons = true`
+# shows a Nerd Font icon before each name on a terminal; the terminal
+# must use such a font.
 [ls]
 enabled = true
 directory = "bold blue"
@@ -106,6 +107,13 @@ huge-file = "bold red"
 today = "bold"
 old = "bright-black"
 header = "underline"
+git-new = "green"
+git-modified = "blue"
+git-deleted = "red"
+git-renamed = "yellow"
+git-ignored = "bright-black"
+git-conflict = "bold red"
+tree = "bright-black"
 icons = false
 
 # grep (GREP_COLORS).

@@ -1,0 +1,60 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "ls's trees, git column and folder sizes (ADR 0441), and GNU's output without them"
+time = "2m"
+
+# Two folders and four files, one of them a second name for another.
+[[step]]
+run = "rm -rf /tmp/lab-tree && mkdir -p /tmp/lab-tree/a/b && cd /tmp/lab-tree && printf 12345 > a/b/c.txt && printf 123 > a/d.txt && ln a/d.txt a/b/d-again && printf 123456 > e.txt && echo made"
+expect = "made"
+[[step]]
+run = "ls --tree /tmp/lab-tree"
+expect = ["├── a", "│   ├── b", "│   │   ├── c.txt", "│   │   └── d-again", "│   └── d.txt", "└── e.txt", "2 folders, 4 files"]
+[[step]]
+run = "ls --level=1 /tmp/lab-tree"
+expect = ["├── a", "└── e.txt", "1 folder, 1 file"]
+expect_not = "d.txt"
+[[step]]
+run = "ls -l --tree --header /tmp/lab-tree"
+expect = ["Permissions", "│   │   ├── c.txt"]
+expect_not = "total"
+# A folder that cannot be read is said so, and shown empty.
+[[step]]
+run = "sh -c 'mkdir -p /tmp/lab-tree/locked/in && chmod 000 /tmp/lab-tree/locked && ls --tree /tmp/lab-tree 2>&1; echo \"status $?\"; chmod 755 /tmp/lab-tree/locked && rm -r /tmp/lab-tree/locked'"
+expect = ["cannot open directory '/tmp/lab-tree/locked': Permission denied", "└── locked", "3 folders, 4 files", "status 1"]
+
+# a holds 5 and 3 bytes: the second name of d.txt counts once.
+[[step]]
+run = "sh -c 'echo \"a holds $(ls -ld --total-size /tmp/lab-tree/a | cut -d\" \" -f5)\"; echo \"first: $(ls -S --total-size /tmp/lab-tree | head -1)\"'"
+expect = ["a holds 8", "first: a"]
+
+# A repository with each kind of change.
+[[step]]
+run = "cd /tmp/lab-tree && git init -q -b main . && git config user.name Lab && git config user.email lab@lab && echo '*.o' > .gitignore && git add . && git commit -q -m first && echo more >> e.txt && echo new > n.txt && echo x > x.o && git rm -q a/d.txt && echo staged > s.txt && git add s.txt && echo ready"
+expect = "ready"
+[[step]]
+run = "ls -l --git /tmp/lab-tree"
+expect = ["D- a", "-M e.txt", "-N n.txt", "N- s.txt", "-I x.o"]
+[[step]]
+run = "ls -l --git --header /tmp/lab-tree | head -2 | tail -1"
+expect = "Git Name"
+[[step]]
+run = "ls -l --git --field-colors=always /tmp/lab-tree | cat -v"
+expect = "^[[90m-^[[0m^[[34mM^[[0m e.txt"
+[[step]]
+run = "ls --tree --field-colors=always /tmp/lab-tree | cat -v"
+expect = "^[[90mM-bM-^TM-^TM-bM-^TM-^@M-bM-^TM-^@^[[0m x.o"
+# Outside a repository there is no column.
+[[step]]
+run = "ls -l --git --header /tmp | head -2 | tail -1"
+expect = "Name"
+expect_not = "Git"
+# Without the flags, GNU's output.
+[[step]]
+run = "ls -l /tmp/lab-tree"
+expect = "e.txt"
+expect_not = ["-M e.txt", "├", "folders"]
+[[step]]
+run = "rm -rf /tmp/lab-tree && echo gone"
+expect = "gone"
