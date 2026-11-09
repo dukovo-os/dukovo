@@ -21,9 +21,10 @@ host = "sh {here}/line-in.sh record {machine}"
 background = true
 ready = "recording"
 # Quiet enough for any line in; the volume goes back to what the other
-# sound tests expect.
+# sound tests expect. The jack is the first HD Audio output's, whichever
+# is the default (a USB headset plugged in would be).
 [[step]]
-run = "sh -c 'audio volume 30 && audio test; audio volume 70'"
+run = "sh -c 'audio volume 30 && audio test $(ls /devices/audio | grep -m1 ^hda); audio volume 70'"
 root = true
 expect = ["left: 440 Hz", "right: 660 Hz"]
 [[step]]

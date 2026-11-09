@@ -7,12 +7,12 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 Each sound output the kernel drives is a file in `/devices/audio`:
 `hda0` for a computer's built-in sound (Intel HD Audio, in nearly every
-PC since 2004), `virtio0` for a virtual machine's virtio sound card, and
-from the next release `usb0` for a USB headset.
-`/devices/audio/default` leads to the one in use. audiod keeps the
-outputs as `/system/state/audio/audio.toml` says: which one plays, how
-loud, and whether it is muted. The full references are audio(1),
-audiod(8), audio.toml(5) and ADRs 0320 to 0322.
+PC since 2004), `usb0` for a USB headset, speaker or DAC, and `virtio0`
+for a virtual machine's virtio sound card. `/devices/audio/default`
+leads to the one in use. audiod keeps the outputs as
+`/system/state/audio/audio.toml` says: which one plays, how loud, and
+whether it is muted. The full references are audio(1), audiod(8),
+audio.toml(5) and ADRs 0320 to 0323.
 
 ## Listing and testing
 
@@ -46,6 +46,23 @@ Its volume is the sound chip's own, in its steps. The microphone, line
 in, and sound over HDMI or DisplayPort are not played or recorded yet:
 a graphics card's own HD Audio, which only has HDMI, is listed by
 `lspci` and left alone.
+
+## USB headsets and speakers
+
+A USB headset, speaker or DAC plays as soon as it is plugged in, and
+becomes the default output a moment later, since audiod picks the one
+plugged in last. The kernel's log says what it is:
+
+```
+Audio: usb0 is a USB headset at 1-3, USB Audio Class 1: 2 channels of 16 bits, 44100 to 48000 frames a second on the host's clock, volume on the device
+```
+
+Its volume is the device's own, in its steps. Unplugging it takes
+`usb0` away, and `default` goes back to another output; plugging in the
+same headset or another one makes it `usb0` again. A program that was
+playing through it when it was unplugged is told so ("No such device or
+address") and can start again on the default output. A headset's
+microphone is not recorded yet.
 
 ## Volume and mute
 

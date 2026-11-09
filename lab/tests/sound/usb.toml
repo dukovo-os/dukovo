@@ -1,0 +1,33 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# USB speakers, headsets and DACs (USB Audio Class 1 and 2, ADR 0323)
+# plugged into the lab's machines: each device whose interfaces the
+# kernel takes as snd-usb-audio is an output, usb0 and on, that plays
+# 48 kHz or 44.1 kHz in two channels (or one), and plays audio test's
+# tones without an underrun; the kernel's log says what it found. A
+# device that could not be set up is a failure. A machine with no USB
+# audio device, or a QEMU guest, passes each step with nothing to check.
+# Unplugging and plugging in again need a hand, so the audio-usb boot
+# test checks them under QEMU's USB speaker.
+about = "Each USB speaker, headset or DAC is an output, usb0 and on, that plays 48 kHz or 44.1 kHz cleanly; the kernel's log says what it is"
+time = "3m"
+
+[[step]]
+run = '''sh -c 'd=$(lsusb -t | grep -c "If [0-9]*, Class=Audio, Driver=snd-usb-audio"); u=$(ls /devices/audio | grep -c "^usb"); echo "USB audio interfaces $d, outputs $u"; { [ "$d" -eq 0 ] || [ "$u" -ge 1 ]; } && echo "outputs"-found' '''
+expect = "outputs-found"
+[[step]]
+run = '''sh -c 'for o in $(ls /devices/audio | grep "^usb"); do audio info "$o" | grep -E "^(Output|Model|Channels|Rates):"; audio info "$o" | grep -qE "^Rates: .*(48|44\.1)(,| kHz)" || echo "$o plays neither 48 nor 44.1 kHz"; done; echo "outputs"-checked' '''
+expect = "outputs-checked"
+expect_not = "plays neither"
+[[step]]
+run = '''sh -c 'dmesg | grep -E "Audio: usb|sound output"; [ ! -e /devices/audio/usb0 ] || dmesg | grep -q "Audio: usb0 is a USB" && echo "device"-logged' '''
+root = true
+expect = "device-logged"
+expect_not = "its sound output cannot be used"
+# The packets keep up: a device that fell behind would count underruns.
+[[step]]
+run = '''sh -c 'if [ ! -e /devices/audio/usb0 ]; then echo "no USB audio: played"-cleanly; exit 0; fi; audio volume 30 && audio test usb0; audio volume 70; u=$(audio info usb0 | awk "/^Underruns:/ { print \$2 }"); echo "underruns $u"; [ "$u" = 0 ] && echo "played"-cleanly' '''
+root = true
+expect = "played-cleanly"
+expect_not = "audio:"

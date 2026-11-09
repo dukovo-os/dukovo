@@ -19,9 +19,10 @@
 //! on the root ports and behind hubs ([`hub`], ADR 0147), reads the
 //! keyboards, mice and tablets among them ([`hid`], ADR 0148), and
 //! carries the transfers of the sticks and disks among them for their
-//! own threads ([`storage`], ADR 0161), and carries the bytes of the
-//! serial ports among them for their terminals ([`serial`], ADR 0246).
-//! With the
+//! own threads ([`storage`], ADR 0161), carries the bytes of the
+//! serial ports among them for their terminals ([`serial`], ADR 0246),
+//! and plays the sound of the speakers and headsets among them for their
+//! outputs' workers ([`audio`], ADR 0323). With the
 //! `dbc` flag, the first controller with a Debug Capability carries the
 //! console to a second computer ([`dbc`], ADR 0160). Bus numbers
 //! count controllers from 1, and a device is named as Linux names one, by
@@ -46,6 +47,7 @@ use crate::Arch;
 use crate::ioports::IoWindow;
 use crate::sched::{self, Options, Policy, ThreadRef};
 
+mod audio;
 mod controller;
 pub mod dbc;
 mod hid;

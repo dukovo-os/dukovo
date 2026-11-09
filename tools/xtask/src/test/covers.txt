@@ -30,6 +30,9 @@ audio-hda tools/xtask/src/test/cases/audio-virtio.rs userspace/programs/systools
 audio-hda-ich9 kernel/drivers/hda/ kernel/lib/audio/ kernel/radix/src/audio/
 audio-hda-ich9 tools/xtask/src/test/cases/audio-hda.rs tools/xtask/src/test/cases/audio-virtio.rs
 audio-hda-ich9 userspace/programs/audio/ userspace/programs/systools/src/sound.rs
+audio-usb kernel/drivers/usb/src/audio/ kernel/drivers/xhci/ kernel/lib/audio/ kernel/radix/src/audio/
+audio-usb kernel/radix/src/usb/ userspace/programs/audio/ userspace/programs/systools/src/sound.rs
+audio-usb tools/xtask/src/test/cases/audio-virtio.rs
 audio-virtio kernel/drivers/virtio/ kernel/lib/audio/ kernel/radix/src/audio/
 audio-virtio userspace/programs/audio/ userspace/programs/systools/src/sound.rs
 bios-cdrom image/grub/grub.cfg.in kernel/arch/ kernel/fs/iso9660/ kernel/hal/ kernel/lib/acpi/
