@@ -67,8 +67,8 @@ mod tests;
 use core::fmt;
 
 pub use device::{
-    BUFFER_SIZE, Device, HubSlot, MAX_ENDPOINTS, MAX_STREAM_ENDPOINTS, MAX_STREAM_TD_BUFFERS,
-    MAX_TD_BUFFERS, Place, Td, endpoint_index, interval,
+    BUFFER_SIZE, Device, HubSlot, MAX_ENDPOINTS, MAX_ISOCH_BUFFERS, MAX_STREAM_ENDPOINTS,
+    MAX_STREAM_TD_BUFFERS, MAX_TD_BUFFERS, Place, Td, endpoint_index, interval,
 };
 use radix_hw::{Dma, Mmio, PAGE_SIZE};
 use radix_usb::Speed;
@@ -263,6 +263,12 @@ pub mod code {
     pub const ENDPOINT_NOT_ENABLED: u8 = 12;
     /// Short Packet: less came than the TRB asked for.
     pub const SHORT_PACKET: u8 = 13;
+    /// Ring Underrun: an isochronous OUT endpoint's ring held no TD when
+    /// its interval came.
+    pub const RING_UNDERRUN: u8 = 14;
+    /// Ring Overrun: an isochronous IN endpoint's ring held no TD when
+    /// its interval came.
+    pub const RING_OVERRUN: u8 = 15;
     /// Parameter Error.
     pub const PARAMETER: u8 = 17;
     /// Context State Error: the command does not fit the endpoint's or
@@ -272,6 +278,9 @@ pub mod code {
     pub const EVENT_RING_FULL: u8 = 21;
     /// Incompatible Device.
     pub const INCOMPATIBLE: u8 = 22;
+    /// Missed Service: an isochronous TD came too late for its interval,
+    /// and was skipped.
+    pub const MISSED_SERVICE: u8 = 23;
     /// Command Ring Stopped.
     pub const COMMAND_RING_STOPPED: u8 = 24;
     /// Command Aborted.
@@ -300,6 +309,9 @@ pub mod code {
             SLOT_NOT_ENABLED => "slot not enabled",
             ENDPOINT_NOT_ENABLED => "endpoint not enabled",
             SHORT_PACKET => "short packet",
+            RING_UNDERRUN => "ring underrun",
+            RING_OVERRUN => "ring overrun",
+            MISSED_SERVICE => "missed service interval",
             PARAMETER => "parameter error",
             CONTEXT_STATE => "context state error",
             EVENT_RING_FULL => "event ring full",

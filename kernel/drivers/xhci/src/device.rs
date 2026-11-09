@@ -34,7 +34,10 @@
 //! the doorbell with the stream's number, as a USB Attached SCSI device
 //! moves each command's status and data on its own stream (ADR 0162).
 //! [`Device::cancel_stream`] takes back a TD on one stream while the
-//! others go on. [`Device::set_interface`] changes an interface's
+//! others go on. An isochronous endpoint (a sound device's) is given a TD
+//! for each service interval ahead, [`Device::queue_isoch`], each started
+//! in the interval after the one before, and its doorbell is rung once
+//! for them ([`Device::doorbell`]). [`Device::set_interface`] changes an interface's
 //! alternate setting, its endpoints with it, and [`Device::reset`] brings
 //! a device whose port was reset back as it was (Reset Device, Address
 //! Device, its endpoints and streams again, empty).
@@ -140,6 +143,10 @@ pub const MAX_TD_BUFFERS: usize = 128;
 /// stream's ring, less its Link TRB, since a stream carries one TD at a
 /// time.
 pub const MAX_STREAM_TD_BUFFERS: usize = STREAM_RING_TRBS - 1;
+/// The most buffers an isochronous TD of [`Device::queue_isoch`] has: a
+/// packet's bytes may wrap around the end of a ring of samples and cross
+/// a 64 KiB boundary once.
+pub const MAX_ISOCH_BUFFERS: usize = 3;
 
 /// An endpoint's streams.
 struct EndpointStreams {
@@ -646,6 +653,108 @@ impl Device {
         // The doorbell's target names the stream in its high half.
         xhci.ring(slot, u32::from(index) | (stream as u32) << 16);
         Ok(Td { first, last, ring, size, trbs: frames.len() })
+    }
+
+    /// Queues an isochronous TD on the endpoint at device context index
+    /// `index`, IN if it is odd: the packets of one of its service
+    /// intervals, to or from `buffers` (physical address and length, at
+    /// most [`MAX_ISOCH_BUFFERS`], each within 64 KiB of memory that no
+    /// 64 KiB boundary crosses), as an Isoch TRB for the first buffer and
+    /// a Normal TRB for each after it, chained (4.11.2.3). The TD goes in
+    /// the next interval after the TD before it, or the next interval
+    /// free if the ring had run dry (Start Isoch ASAP). With `interrupt`
+    /// its last TRB raises an event when it is done; an error, a missed
+    /// interval say, raises one whatever it asks. Returns where it is,
+    /// for its events.
+    ///
+    /// The doorbell is not rung: a driver queues the TDs of the intervals
+    /// ahead and rings it once ([`Device::doorbell`]). It keeps the TRBs it
+    /// has queued and not seen done fewer than the ring holds, less its
+    /// Link TRB ([`crate::ring::RING_TRBS`]` - 1`).
+    pub fn queue_isoch(
+        &mut self,
+        xhci: &Xhci,
+        index: u8,
+        buffers: &[(u64, u32)],
+        interrupt: bool,
+    ) -> Result<Td, Error> {
+        let crosses = |&(phys, len): &(u64, u32)| {
+            len == 0 || len > 0x1_0000 || (phys & 0xffff) + u64::from(len) > 0x1_0000
+        };
+        if index == EP0
+            || buffers.is_empty()
+            || buffers.len() > MAX_ISOCH_BUFFERS
+            || buffers.iter().any(crosses)
+        {
+            return Err(Error::BadRequest);
+        }
+        let version = xhci.info().version;
+        let speed = self.place.speed;
+        let endpoint = self.endpoint(index).ok_or(Error::BadRequest)?;
+        let descriptor = endpoint.descriptor;
+        if descriptor.transfer_type() != TransferType::Isochronous {
+            return Err(Error::BadRequest);
+        }
+        let into_host = index & 1 != 0;
+        let max_packet = u64::from(descriptor.max_packet().max(1));
+        let total: u64 = buffers.iter().map(|&(_, len)| u64::from(len)).sum();
+        // The TD's packets, and the bursts they go in: a SuperSpeed
+        // endpoint's bursts, or a high-speed one's transactions in a
+        // microframe, as its context's Max Burst Size says.
+        let packets = total.div_ceil(max_packet).max(1);
+        let burst = if speed.is_super() {
+            u64::from(descriptor.max_burst.min(15)) + 1
+        } else if speed == Speed::High {
+            u64::from(descriptor.extra_transactions().min(2)) + 1
+        } else {
+            1
+        };
+        let bursts = packets.div_ceil(burst);
+        let last_burst = match packets % burst {
+            0 => burst,
+            n => n,
+        };
+        // Before version 1.0 the fields are reserved.
+        let counts = if version < 0x0100 {
+            0
+        } else {
+            control::burst_count((bursts - 1) as u32)
+                | control::last_burst_packets((last_burst - 1) as u32)
+        };
+        let before = |i: usize| buffers[..i].iter().map(|&(_, len)| u64::from(len)).sum::<u64>();
+        let trb = |i: usize| {
+            let (phys, len) = buffers[i];
+            let last = i + 1 == buffers.len();
+            // TD Size, as for a Normal TRB (4.11.2.4).
+            let left = if last {
+                0
+            } else if version < 0x0100 {
+                (total - before(i)) >> 10
+            } else {
+                packets - (before(i) + u64::from(len)) / max_packet
+            };
+            let first = if i == 0 {
+                control::kind(kind::ISOCH) | control::SIA | counts
+            } else {
+                control::kind(kind::NORMAL)
+            };
+            Trb {
+                parameter: phys,
+                status: len | (left.min(31) as u32) << 17,
+                control: first
+                    | if into_host { control::ISP } else { 0 }
+                    | if last && interrupt { control::IOC } else { 0 },
+            }
+        };
+        let (first, last) = endpoint.ring.push_td(buffers.len(), trb);
+        let ring = endpoint.ring.phys();
+        Ok(Td { first, last, ring, size: RING_TRBS, trbs: buffers.len() })
+    }
+
+    /// Rings the doorbell of the endpoint at device context index `index`:
+    /// the controller reads the TDs queued on its ring.
+    pub fn doorbell(&self, xhci: &Xhci, index: u8) {
+        xhci.ring(self.slot, u32::from(index));
     }
 
     /// The rings of the streams of the endpoint at device context index
