@@ -1,0 +1,180 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# CHECK, not to be merged: runs the userspace-e1000 boot test over and
+# over under a busy host, as the runs that found the stall did, to see
+# that with ADR 0417's fix the echo comes back at once after e1000d is
+# restarted. A slow run or a failure prints the log and net1's wire.
+name: e1000 check
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: e1000-check-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  MDBOOK_VERSION: 0.4.52
+
+jobs:
+  e1000:
+    name: userspace-e1000, again and again (${{ matrix.load }}, ${{ matrix.part }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        # The stall came in CI's fifth boot shard, two times of three, and
+        # never alone: the host's CPUs busy may be what brings it.
+        load: [all-cpus, twice-cpus]
+        part: [1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Allow QEMU to use KVM
+        run: |
+          if [ -e /dev/kvm ]; then
+            echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+              | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+            sudo udevadm control --reload-rules
+            sudo udevadm trigger --name-match=kvm
+          fi
+
+      - name: Install host packages
+        uses: ./.github/actions/apt-install
+        with:
+          packages: >-
+            qemu-system-x86 ovmf gcc flex gawk
+            xorriso mtools dosfstools exfatprogs gdisk fdisk sleuthkit btrfs-progs e2fsprogs ntfs-3g dislocker libbde-utils openssh-server samba smbclient nfs-kernel-server krb5-kdc krb5-admin-server krb5-user scdoc mandoc
+            udftools udfclient genisoimage
+            clang-20 lld-20 llvm-20 libclang-rt-20-dev meson ninja-build cmake bison pkgconf autoconf
+
+      - name: Let the tests listen on port 445
+        run: |
+          sudo systemctl stop smbd.service
+          sudo sysctl -w net.ipv4.ip_unprivileged_port_start=445
+
+      - name: Start Linux's NFS server
+        run: sudo systemctl start nfs-server.service
+
+      - name: Cache GRUB
+        uses: actions/cache@v4
+        with:
+          path: .cache/grub
+          key: grub-${{ hashFiles('tools/xtask/src/grub.rs') }}
+
+      - name: Install mdBook
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSfL \
+            "https://github.com/rust-lang/mdBook/releases/download/v${MDBOOK_VERSION}/mdbook-v${MDBOOK_VERSION}-x86_64-unknown-linux-gnu.tar.gz" \
+            | sudo tar -xz -C /usr/local/bin mdbook
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+          shared-key: boot
+          save-if: false
+
+      - name: Note the port toolchain's version
+        id: ports-key
+        run: echo "clang=$(clang-20 --version | head -n1 | tr -c 'A-Za-z0-9.\n' -)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore the built ports
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            out/sysroot
+            out/toolchain
+            out/ports
+            target/ports/sources
+          key: ports-host-${{ steps.ports-key.outputs.clang }}-${{ hashFiles('ports/**', 'abi/**', 'tools/**', 'rust-toolchain.toml') }}
+          restore-keys: ports-host-${{ steps.ports-key.outputs.clang }}-
+
+      - name: ./ob setup
+        run: ./ob setup
+
+      - name: ./ob ports
+        timeout-minutes: 45
+        run: ./ob ports
+
+      # QEMU with every frame on net1's wire, both ways, kept in a file:
+      # a QEMU of the test's own ahead of the system's on PATH.
+      # Installed after the ports are built, which may look at what the
+      # host has: before, ./ob ports took 25 minutes instead of 2.
+      - name: Capture net1's wire
+        run: |
+          sudo apt-get install -y --no-install-recommends tcpdump stress-ng > /dev/null
+          sudo tee /usr/local/bin/qemu-system-x86_64 > /dev/null <<'WRAPPER'
+          #!/bin/sh
+          case " $* " in
+            *"e1000,netdev=n1,"*)
+              exec /usr/bin/qemu-system-x86_64 "$@" -object \
+                filter-dump,id=dbg1,netdev=n1,maxlen=128,file=/tmp/e1000-net1.pcap ;;
+          esac
+          exec /usr/bin/qemu-system-x86_64 "$@"
+          WRAPPER
+          sudo chmod 755 /usr/local/bin/qemu-system-x86_64
+          command -v qemu-system-x86_64
+
+      - name: userspace-e1000, 10 times
+        run: |
+          show() {
+            grep -E "nics:|e1000d:|netd: net[12]|Net: net[12]|spark: (e1000d|starting e1000d)|Device: " \
+              out/test/boot-userspace-e1000.log | cut -c1-400 | tail -n 400 || true
+          }
+          wire() {
+            echo "--- net1's echo connection, packets a second (guest to QEMU / QEMU to guest):"
+            tcpdump -r /tmp/e1000-net1.pcap -nn -tt 'tcp port 7 and src host 10.0.3.15' 2>/dev/null \
+              | awk '{ print int($1) }' | uniq -c | tail -n 60 | tr '\n' ' ' || true; echo
+            tcpdump -r /tmp/e1000-net1.pcap -nn -tt 'tcp port 7 and dst host 10.0.3.15' 2>/dev/null \
+              | awk '{ print int($1) }' | uniq -c | tail -n 60 | tr '\n' ' ' || true; echo
+            echo "--- the echo from 30 packets before its first gap of 0.15 s to 40 after its last:"
+            tcpdump -r /tmp/e1000-net1.pcap -nn -tt 'tcp port 7' 2>/dev/null > /tmp/echo.txt || true
+            awk 'NR > 1 && $1 - last > 0.15 { if (!first) first = NR; final = NR } { last = $1 }
+                 END { print (first ? first : 1), (final ? final : NR) }' /tmp/echo.txt > /tmp/gaps.txt
+            read -r first final < /tmp/gaps.txt
+            from=$((first > 30 ? first - 30 : 1)); to=$((final + 40))
+            if [ $((to - from)) -gt 500 ]; then
+              sed -n "${from},$((from + 250))p" /tmp/echo.txt; echo "[...]"; sed -n "$((to - 250)),${to}p" /tmp/echo.txt
+            else
+              sed -n "${from},${to}p" /tmp/echo.txt
+            fi
+            echo "--- the last 30 packets of the echo:"
+            tail -n 30 /tmp/echo.txt
+            echo "--- the last 40 other frames:"
+            tcpdump -r /tmp/e1000-net1.pcap -nn -tt 'not tcp' 2>/dev/null | tail -n 40 || true
+          }
+          case "${{ matrix.load }}" in
+            two-cpus) stress-ng --cpu 2 --timeout 3h --quiet & ;;
+            all-cpus) stress-ng --cpu "$(nproc)" --timeout 3h --quiet & ;;
+            twice-cpus) stress-ng --cpu "$(($(nproc) * 2))" --timeout 3h --quiet & ;;
+          esac
+          passed=0 failed=0
+          for run in $(seq 1 10); do
+            rm -f /tmp/e1000-net1.pcap
+            if ./ob test boot --case userspace-e1000 > run.out 2>&1; then
+              passed=$((passed + 1))
+              line=$(grep -o 'net1 echoed 2 MiB.*' out/test/boot-userspace-e1000.log | head -n 1 || true)
+              echo "=== RUN $run PASS: $line"
+              # A slow one went the way of a stall, and came back: shown
+              # whole, as a failure would be.
+              took=$(echo "$line" | grep -o '[0-9]* ms' | grep -o '[0-9]*' || echo 0)
+              if [ "${took:-0}" -gt 4000 ]; then
+                echo "=== RUN $run SLOW ($took ms)"
+                show
+                wire
+              fi
+            else
+              failed=$((failed + 1))
+              echo "=== RUN $run FAIL"
+              tail -n 20 run.out
+              show
+              wire
+            fi
+          done
+          echo "=== ${{ matrix.load }} ${{ matrix.part }}: $passed passed, $failed failed"
