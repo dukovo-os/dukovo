@@ -87,6 +87,30 @@ Debian's or Ubuntu's `intel-microcode` package:
 Machine-specific settings, such as turning Secure Boot off, are in
 [Supported hardware](hardware.md).
 
+## The install DVD
+
+For a computer that starts from a DVD drive, `./ob image --iso` builds
+`out/dukovo-<version>-x86_64.iso`: the same menu, live system and
+installer, and in its `release` directory the same signed release, on a
+disc labelled `DUKOVO_LIVE` ([ADR
+0433](https://github.com/dukovo-os/dukovo/blob/main/docs/adr/0433-the-install-dvd-carries-the-signed-release-and-is-found-by-its-label.md)).
+Burn it to a blank DVD or CD with any burning program's "burn image"
+choice, or on Linux with `xorriso`, replacing `sr0` with the drive's
+name:
+
+```sh
+xorriso -as cdrecord -v dev=/dev/sr0 out/dukovo-0.13.0-x86_64.iso
+```
+
+Start the computer from the DVD drive as from the stick above. The live
+system mounts the disc read-only at `/volumes/` and the drive's name,
+such as `cd0`, and the installer installs from it as from the stick. To
+check that the disc was burned whole:
+
+```sh
+system-release check /volumes/cd0/release
+```
+
 ## Trying the image without a stick
 
 `./ob run` boots the same image in QEMU, attached as a virtual USB stick on

@@ -480,7 +480,7 @@ fn draw_progress(frame: &mut Frame<'_>, app: &App, area: Rect) {
         Some(Ok(_)) => {
             for (id, look) in [("done-saved", Look::Plain), ("done-remove", Look::Bold)] {
                 lines.extend(
-                    wrap(&messages::text(id), width)
+                    wrap(&app.say(id), width)
                         .into_iter()
                         .map(|t| Line::from(Span::styled(t, look_style(look)))),
                 );
@@ -510,7 +510,8 @@ fn draw_modal(frame: &mut Frame<'_>, app: &App, modal: &Modal, area: Rect) {
     let (title, lines, hint) = match modal {
         Modal::Help(page) => {
             let id = format!("help-{}", page.name().trim_start_matches("page-"));
-            let lines = messages::text(&id)
+            let lines = app
+                .say(&id)
                 .lines()
                 .flat_map(|line| wrap(line, usize::from(width) - 4))
                 .map(Line::raw)

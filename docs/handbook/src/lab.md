@@ -167,7 +167,11 @@ A test with `boot = "stick"` boots the install stick, which `./ob lab`
 builds beside the lab image, with a blank disk (`disk = "8G"` by
 default). `install/erase-disk` answers every installer screen by keys,
 pulls the stick, restarts from the Done page and signs in on the
-installed system with the account the screens made.
+installed system with the account the screens made. A test with `boot =
+"dvd"` boots the install DVD, which `./ob lab` builds too, from the
+machine's optical drive in the same way; `install/from-dvd` installs
+from it, takes the disc out with `disc = "eject"` and restarts from the
+disk.
 
 ## Performance tests
 

@@ -92,6 +92,7 @@ fn from_answers(from: &str, sha256: Option<&str>, release: Option<&Path>) -> u8 
                 &[
                     ("version", Arg::Text(&source.release.version)),
                     ("disk", Arg::Text(&answers.disks())),
+                    ("medium", Arg::Text(source.medium())),
                 ],
             ));
             0

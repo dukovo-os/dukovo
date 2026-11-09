@@ -183,7 +183,9 @@ pub enum TestImage {
     Installed,
     /// The install stick (ADR 0308): the live system's menu, and the
     /// DUKOVO_LIVE partition after the image's own, holding the signed
-    /// release, unless the case boots it as a CD.
+    /// release; or for a case that boots it as a CD, the install DVD,
+    /// labelled DUKOVO_LIVE, holding the release in its `release`
+    /// directory (ADR 0433).
     Live,
 }
 
@@ -1188,7 +1190,8 @@ const SWAP_KIB: u64 = 1 << 20;
 const SWAP_UUID: &str = "6c6f9a34-1b7e-4f0e-9a51-0d2f3c5b8e17";
 
 /// The `root` test's disk: a copy of the test image with a Dukovo root
-/// partition, its third, as a virtio disk: `vda3`.
+/// partition, its third, as a virtio disk: `vda3`. For a case that boots
+/// a CD, whose test image is an ISO, the root is the whole disk: `vda`.
 const ROOT_DISKS: &[Disk] =
     &[Disk { label: image::ROOT_LABEL, ..btrfs_disk(Bus::Virtio, 512, ROOT, root_checked) }];
 
@@ -3257,7 +3260,17 @@ pub fn build_test_image(
         }
     };
     let output = dir.join(format!("{name}.{}", if iso { "iso" } else { "img" }));
-    image::build(
+    // The live DVD carries the signed release, as the stick's DUKOVO_LIVE
+    // does (ADR 0433).
+    let staging = dir.join(format!("{name}-release"));
+    let release = match (kind, iso) {
+        (TestImage::Live, true) => {
+            Some(image::stage_release(ctx, &built.kernel, &built.programs, &staging)?)
+        }
+        _ => None,
+    };
+    let release = release.as_deref();
+    let built_image = image::build(
         ctx,
         &ImageSpec {
             kernel: &built.kernel,
@@ -3268,12 +3281,15 @@ pub fn build_test_image(
             disk_check: None,
             root: None,
             live: None,
+            release,
             menu: if kind == TestImage::Live { Menu::Live(LiveStart::Try) } else { Menu::Tests },
             staging: dir.join(format!("{name}-root")),
             output: output.clone(),
             iso,
         },
-    )?;
+    );
+    let _ = std::fs::remove_dir_all(&staging);
+    built_image?;
     std::fs::read(&output).map_err(|err| Error::new(format!("reading {}: {err}", output.display())))
 }
 
@@ -3300,6 +3316,7 @@ fn build_installed_test_image(
             disk_check: None,
             root: None,
             live: None,
+            release: None,
             menu: Menu::Installed(uuid),
             staging: dir.join("dukovo-test-installed-root"),
             output: output.clone(),
@@ -3423,7 +3440,7 @@ fn test_images(
 ) -> Result<TestImages> {
     let mut images: TestImages = Vec::new();
     for case in cases {
-        let key = (case.image, case.media == Media::Cdrom);
+        let key = (case.image, case.media.is_cd());
         if images.iter().any(|(made, _)| *made == key) {
             continue;
         }
@@ -3474,7 +3491,7 @@ fn test_root(ctx: &Ctx, built: &Built, dir: &Path, cases: &[&Case]) -> Result<Op
 /// signed release of the test build, if a case of `cases` boots the stick
 /// from a disk.
 fn test_live(ctx: &Ctx, built: &Built, dir: &Path, cases: &[&Case]) -> Result<Option<PathBuf>> {
-    if !cases.iter().any(|case| case.image == TestImage::Live && case.media != Media::Cdrom) {
+    if !cases.iter().any(|case| case.image == TestImage::Live && !case.media.is_cd()) {
         return Ok(None);
     }
     let path = dir.join("live.btrfs");
@@ -3496,7 +3513,7 @@ fn append_own(
             let root = root.ok_or("the Dukovo root's filesystem was not made")?;
             image::append_root(image, root).map_err(|err| err.to_string())?;
         }
-        TestImage::Live if case.media != Media::Cdrom => {
+        TestImage::Live if !case.media.is_cd() => {
             let live = live.ok_or("the DUKOVO_LIVE filesystem was not made")?;
             image::append_live(image, live).map_err(|err| err.to_string())?;
         }
@@ -3515,7 +3532,7 @@ fn case_images(ctx: &Ctx, built: &Built, cases: &[&Case]) -> Result<()> {
     let live = test_live(ctx, built, &dir, cases)?;
     let images = test_images(ctx, built, &dir, cases, root.as_ref())?;
     for case in cases {
-        let iso = case.media == Media::Cdrom;
+        let iso = case.media.is_cd();
         let base = &images.iter().find(|(made, _)| *made == (case.image, iso)).expect("built").1;
         let path = dir.join(format!("{}.{}", case.name, if iso { "iso" } else { "img" }));
         let image = with_cmdline(base, case.cmdline).map_err(Error::new)?;
@@ -3551,7 +3568,7 @@ fn boot_tests(ctx: &Ctx, built: &Built, cases: &[&Case], timeout: Duration) -> R
     ));
     let mut failures = 0;
     for case in cases {
-        let key = (case.image, case.media == Media::Cdrom);
+        let key = (case.image, case.media.is_cd());
         let base = &images.iter().find(|(made, _)| *made == key).expect("built above").1;
         let started = Instant::now();
         let root = root.as_ref().map(|root| root.path.as_path());
@@ -3948,9 +3965,24 @@ fn make_disks(
         }
         if disk.fat == ROOT {
             let root = root.ok_or("the Dukovo root's filesystem was not made")?;
-            std::fs::write(&image.path, base)
+            let first = if case.media.is_cd() {
+                // A CD's test image is an ISO, with no GPT to add the
+                // root to: the root is the whole disk, which Spark finds
+                // as it finds a partition.
+                (|| {
+                    let mut from = std::fs::File::open(root)?;
+                    let len = from.metadata()?.len().min(image::ROOT_BYTES);
+                    let mut to = std::fs::File::create(&image.path)?;
+                    to.set_len(image::ROOT_BYTES)?;
+                    image::copy_sparse(&mut from, 0, &mut to, 0, len)
+                })()
                 .map_err(|err| format!("writing {}: {err}", image.path.display()))?;
-            let first = image::append_root(&image.path, root).map_err(|err| err.to_string())?;
+                0
+            } else {
+                std::fs::write(&image.path, base)
+                    .map_err(|err| format!("writing {}: {err}", image.path.display()))?;
+                image::append_root(&image.path, root).map_err(|err| err.to_string())?
+            };
             let tool = btrfs::tool(ctx).map_err(|err| err.to_string())?;
             made.push(DiskImage {
                 offset: first * 512,

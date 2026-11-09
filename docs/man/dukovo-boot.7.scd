@@ -47,7 +47,9 @@ partition, on any disk, that holds no _boot/radix_ as a Dukovo stick's
 does, and under a BIOS, the first sector of the disk after the stick.
 The boot tests' live image starts *Try Dukovo* when nobody chooses, and the cases that test the installer add *install* themselves. *rgrub-setup*(8) puts the same GRUB on other disks.
 *ob image --iso* builds an ISO for optical media instead, which El Torito boots
-under either firmware, holding the same files and no release. The boot
+under either firmware, holding the same files, and the release in its
+_release_ directory on a disc labelled *DUKOVO_LIVE*, which the live
+system takes as the stick's DUKOVO_LIVE (ADR 0433). The boot
 tests' images have the menu of _image/grub/grub.cfg.in_ instead, which
 takes a Dukovo root from a disk if one holds it, and some carry such a
 root (GPT type 90C9A303-3954-4174-8F8B-EE75A92A9EB0). The files GRUB

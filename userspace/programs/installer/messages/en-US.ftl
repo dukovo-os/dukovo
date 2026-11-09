@@ -9,9 +9,9 @@
 ## Around every page
 
 starting = Starting the installer
-starting-release = Checking the system release on the install stick…
+starting-release = Checking the signed system release…
 starting-machine = Looking at this computer's disks and network cards…
-starting-setup = Looking for setup files on the stick…
+starting-setup = Looking for setup files…
 cannot-start = The installer cannot start
 cannot-start-leave = Enter leaves the installer for a shell
 title = Install Dukovo { $version }
@@ -66,12 +66,21 @@ welcome-how = How do you want to install?
 welcome-steps = Step by step
 welcome-steps-note = answer six short screens
 welcome-file = From a setup file
-welcome-file-note = install.json on this stick's EFI partition or the web
+welcome-file-note = { $medium ->
+    [disc] install.json on the web
+   *[stick] install.json on this stick's EFI partition or the web
+}
 
 ## Setup file
 
-setup-intro = A setup file (install.json) answers every question, so the install runs by itself once you confirm it. It is looked for at the top of this stick's EFI partition, which any computer can write.
-setup-none = No setup file was found on this stick.
+setup-intro = A setup file (install.json) answers every question, so the install runs by itself once you confirm it. { $medium ->
+    [disc] A disc holds none: it is downloaded from the web.
+   *[stick] It is looked for at the top of this stick's EFI partition, which any computer can write.
+}
+setup-none = { $medium ->
+    [disc] The install disc holds no setup file.
+   *[stick] No setup file was found on this stick.
+}
 setup-ready = found, and every answer checks
 setup-on-stick = { $file } on this USB stick
 setup-no-esp = This stick has no EFI partition for a setup file.
@@ -120,7 +129,10 @@ network-offline = An offline install needs no network: the installed system uses
 disk-which = Which disk should Dukovo go on?
 disk-stick = the install stick, can't be chosen
 disk-too-small = too small: the install needs { $size }
-disk-none = No disk can take Dukovo: each is the stick or too small.
+disk-none = { $medium ->
+    [disc] No disk can take Dukovo: each is too small.
+   *[stick] No disk can take Dukovo: each is the stick or too small.
+}
 disk-empty = no partitions
 disk-windows = { $count ->
     [one] Windows, 1 partition
@@ -145,7 +157,10 @@ disk-beside = Install next to Windows
 disk-beside-note = shrinks Windows; a menu picks at startup
 disk-beside-none = no Windows on { $disk }
 disk-beside-refused = Windows can't be shrunk yet: see below
-disk-beside-bios = needs the stick started by UEFI
+disk-beside-bios = { $medium ->
+    [disc] needs the disc started by UEFI
+   *[stick] needs the stick started by UEFI
+}
 disk-beside-full = Windows has too little free space: { $size } to give, and Dukovo needs 20 GiB
 disk-mirror = Mirror two disks (Btrfs RAID1)
 disk-mirror-note = recommended for servers
@@ -163,7 +178,10 @@ disk-windows-fast-startup = Windows was hibernated, or shut down with Fast Start
 disk-windows-dirty = Windows did not finish with C: and must check it first. In Windows, run chkdsk C: /f, restart, shut Windows down, then start the installer again.
 disk-windows-damaged = The check of C: found a problem ({ $problem }). In Windows, run chkdsk C: /f, restart, shut Windows down, then start the installer again.
 disk-windows-other = C: can't be shrunk: { $why }.
-disk-windows-bios = This computer started the stick by BIOS, and Dukovo needs a UEFI boot entry next to Windows. Choose the stick's UEFI entry in the firmware's boot menu.
+disk-windows-bios = { $medium ->
+    [disc] This computer started the disc by BIOS, and Dukovo needs a UEFI boot entry next to Windows. Choose the disc's UEFI entry in the firmware's boot menu.
+   *[stick] This computer started the stick by BIOS, and Dukovo needs a UEFI boot entry next to Windows. Choose the stick's UEFI entry in the firmware's boot menu.
+}
 disk-free = Use the free space and keep what is there
 disk-free-note = { $size } free in one piece
 disk-manual = Manual: choose the partitions yourself
@@ -294,7 +312,10 @@ review-root = Dukovo root
 review-root-note = Btrfs, at /
 review-subvolumes = Btrfs subvolumes: @system.a @settings @state @applications @users @shared @snapshots
 review-install = Install
-review-release = Dukovo { $version }, the stick's signed system release
+review-release = { $medium ->
+    [disc] Dukovo { $version }, the disc's signed system release
+   *[stick] Dukovo { $version }, the stick's signed system release
+}
 review-grub = GRUB for UEFI and BIOS
 review-grub-uefi = GRUB for UEFI (the disk has no BIOS boot partition)
 review-grub-mirror = GRUB for UEFI and BIOS on both disks, so that either starts the computer
@@ -331,9 +352,15 @@ step-copy = Copying Dukovo { $version } into its slot, checking every file
 step-settings = Writing the settings and accounts
 step-grub = Installing GRUB
 step-save = Saving the answers and the install log
-installed-line = Dukovo { $version } is installed on { $disk }. Remove the install stick, then restart.
+installed-line = { $medium ->
+    [disc] Dukovo { $version } is installed on { $disk }. Remove the install disc, then restart.
+   *[stick] Dukovo { $version } is installed on { $disk }. Remove the install stick, then restart.
+}
 done-saved = Your answers were saved as /system/settings/install/answers.json.
-done-remove = Remove the install stick, then restart.
+done-remove = { $medium ->
+    [disc] Remove the install disc, then restart.
+   *[stick] Remove the install stick, then restart.
+}
 failed-log = Nothing more is written. The log is { $log }: L shows it, and the shell on Alt+F2 can read it whole.
 
 ## Help
@@ -344,11 +371,17 @@ hint-log = Up, Down, Page Up and Page Down scroll · Esc closes
 help-welcome =
     Tab and Shift+Tab, or Up and Down, move between the fields and the buttons. Space chooses, Enter goes on, Esc goes back.
     Left and Right change the keyboard layout; the keys type in it at once, so try them in the box below it.
-    Step by step asks six short screens. A setup file answers them all: install.json on this stick's EFI partition, as the Done page saves one, or on a web server.
+    Step by step asks six short screens. { $medium ->
+        [disc] A setup file answers them all: install.json on a web server.
+       *[stick] A setup file answers them all: install.json on this stick's EFI partition, as the Done page saves one, or on a web server.
+    }
     Live console leaves the installer for a shell, where dukovo-install starts it again.
 help-setup-file =
-    A setup file is an answers file (install-answers(5)) called install.json at the top of the stick's EFI partition.
-    It can also be downloaded from a web server, over HTTPS only, so that it cannot be changed on the way. Give its SHA-256 (sha256sum install.json) and it is checked before it is used: a file that differs is refused.
+    A setup file is an answers file (install-answers(5)) called install.json, { $medium ->
+        [disc] downloaded from a web server over HTTPS only, so that it cannot be changed on the way.
+       *[stick] at the top of the stick's EFI partition, or downloaded from a web server over HTTPS only, so that it cannot be changed on the way.
+    }
+    Give its SHA-256 (sha256sum install.json) and it is checked before it is used: a file that differs is refused.
     Load checks every answer and shows the review; nothing is written before you confirm it there.
 help-network =
     The installed system asks DHCP for an address on every card unless a card is given a fixed one.
@@ -360,7 +393,10 @@ help-disk =
     Install next to Windows checks that BitLocker and Fast Startup are off and that Windows was shut down fully, shrinks Windows (C:) by the space you give Dukovo, keeping its files, and puts Dukovo in that space with its own small boot partition. A menu at startup chooses Dukovo or Windows. Windows keeps 10 GiB free, and Windows' own boot files are not touched.
     Mirror two disks erases both and gives each the guided layout, GRUB included; the two roots are one Btrfs RAID1, a copy of everything on each disk, as big as the smaller disk. If a disk fails, Dukovo starts and runs from the other and warns. Swap is made on each disk.
     Manual opens the rdisk screen, where you choose every partition yourself.
-    Other disks stay as they are. The install stick cannot be chosen.
+    Other disks stay as they are. { $medium ->
+        [disc] Optical drives are not listed.
+       *[stick] The install stick cannot be chosen.
+    }
 help-rdisk =
     The same disk engine as rdisk on the command line. Every change goes into the pending list, and nothing is written until Install.
     Up and Down choose a partition. N makes one in the free space. D marks one for deletion; D again keeps it. F formats one for a use. G lays out the guided partitions on this disk. U undoes the last change. Tab shows the next disk.
@@ -381,6 +417,6 @@ help-review =
 help-installing =
     The install runs each step with the system's own tools. L shows the log; Alt+F2 has a shell.
 help-done =
-    Remove the install stick, then restart: the computer starts Dukovo from the disk.
+    Remove the install stick or disc, then restart: the computer starts Dukovo from the disk.
 help-failed =
     The log names the step that failed and why. Nothing is written after a failure; the disk must be installed again.

@@ -32,7 +32,8 @@ pub const CASE: Case = Case {
 };
 
 /// The live system starts from the stick, takes no root, and checks the
-/// stick's release, then powers off. live-bios boots the same way.
+/// stick's release, then powers off. live-bios boots the same way, and
+/// live-dvd from the install DVD.
 pub fn live(vm: &mut Vm, _case: &Case) -> Result<(), String> {
     vm.expect("spark: the live system: /system is the boot archive, in memory, and no disk is the root")?;
     vm.expect("spark: built the hierarchy of ")?;
@@ -47,7 +48,7 @@ pub fn live(vm: &mut Vm, _case: &Case) -> Result<(), String> {
     vm.expect("spark: started consoled (/system/commands/consoled) as process ")?;
     vm.expect_screen(&[&format!("{RELEASE} {VERSION} (tty1)"), "# "])?;
 
-    // The stick's partition alone is in /volumes.
+    // The live medium alone is in /volumes.
     vm.type_text("echo \"volumes: $(ls /volumes | wc -l)\"\n")?;
     vm.expect_screen(&["volumes: 1"])?;
 
@@ -63,7 +64,7 @@ pub fn live(vm: &mut Vm, _case: &Case) -> Result<(), String> {
         vm.type_text("tail -n 4 /tmp/check\n")?;
         let _ = vm.expect_screen(&["system-release: "]);
         return Err(format!(
-            "system-release check failed on the stick's release: {}",
+            "system-release check failed on the live medium's release: {}",
             vm.screen()?.join(" | ")
         ));
     }
@@ -84,14 +85,16 @@ pub fn live(vm: &mut Vm, _case: &Case) -> Result<(), String> {
     vm.expect_exit(QEMU_EXIT_POWER_OFF)
 }
 
-/// The name of the stick's DUKOVO_LIVE partition, from Spark's line
-/// `spark: mounted the Btrfs filesystem of <name> at /volumes/<name>,
-/// read-only`.
+/// The name of the live medium, the stick's DUKOVO_LIVE partition or the
+/// install DVD's drive, from Spark's line `spark: mounted the <kind>
+/// filesystem of <name> at /volumes/<name>, read-only`: a Btrfs on the
+/// stick, ISO 9660 on the DVD.
 fn live_medium(log: &str) -> Result<String, String> {
     log.lines()
-        .filter_map(|line| line.split("spark: mounted the Btrfs filesystem of ").nth(1))
+        .filter_map(|line| line.split("spark: mounted the ").nth(1))
+        .filter_map(|rest| rest.split_once(" filesystem of ").map(|(_, rest)| rest))
         .find(|rest| rest.ends_with(", read-only"))
         .and_then(|rest| rest.split(' ').next())
         .map(str::to_string)
-        .ok_or_else(|| "Spark did not mount the stick's DUKOVO_LIVE partition read-only".into())
+        .ok_or_else(|| "Spark did not mount the live medium read-only".into())
 }
