@@ -114,6 +114,7 @@ pub const KERNEL_LIBRARIES: &[&str] = &[
     "radix-fbcon",
     "radix-gpio",
     "radix-gve",
+    "radix-hda",
     "radix-i2c",
     "radix-ide",
     "radix-hal",

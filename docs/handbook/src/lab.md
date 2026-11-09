@@ -267,3 +267,17 @@ root on the lab PC: as the lab is, or through `sudo` with no password,
 else they are skipped. Plain `./ob lab` names the packages these tests
 want and the lab PC lacks. The lab's `docs/test-files.md` describes
 `host` steps in full.
+
+The lab PC also listens. `sound/tone` plays `audio test` on a machine
+whose headphone or line out jack is cabled to the lab PC's line in, and
+the lab PC records it with `arecord` and checks that 440 Hz came out on
+the left alone and 660 Hz on the right alone. Which machines have the
+cable is the lab's to say, one machine a line in
+`~/.config/dukovo-lab/line-in`: its address and the ALSA device that
+records it.
+
+```
+192.168.50.21 hw:1,0
+```
+
+A machine with no line there, and every QEMU guest, skips the test.

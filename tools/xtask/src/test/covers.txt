@@ -25,8 +25,13 @@ acpi-power userspace/programs/systools/src/power.rs
 acpi-thermal kernel/lib/acpi/ kernel/lib/sensors/ kernel/lib/uacpi/ tools/xtask/src/acpi/
 acpi-thermal userspace/programs/systools/src/power.rs userspace/programs/systools/src/sensors.rs
 aml-off kernel/lib/acpi/ userspace/programs/systools/src/power.rs
-audio-virtio kernel/drivers/virtio/ kernel/lib/audio/ userspace/programs/audio/
-audio-virtio userspace/programs/systools/src/sound.rs
+audio-hda kernel/drivers/hda/ kernel/lib/audio/ kernel/radix/src/audio/ userspace/programs/audio/
+audio-hda tools/xtask/src/test/cases/audio-virtio.rs userspace/programs/systools/src/sound.rs
+audio-hda-ich9 kernel/drivers/hda/ kernel/lib/audio/ kernel/radix/src/audio/
+audio-hda-ich9 tools/xtask/src/test/cases/audio-hda.rs tools/xtask/src/test/cases/audio-virtio.rs
+audio-hda-ich9 userspace/programs/audio/ userspace/programs/systools/src/sound.rs
+audio-virtio kernel/drivers/virtio/ kernel/lib/audio/ kernel/radix/src/audio/
+audio-virtio userspace/programs/audio/ userspace/programs/systools/src/sound.rs
 bios-cdrom image/grub/grub.cfg.in kernel/arch/ kernel/fs/iso9660/ kernel/hal/ kernel/lib/acpi/
 bios-cdrom kernel/lib/bootinfo/ tools/xtask/src/grub.rs
 bios-usb image/grub/grub.cfg.in kernel/arch/ kernel/drivers/scsi/ kernel/drivers/usb/

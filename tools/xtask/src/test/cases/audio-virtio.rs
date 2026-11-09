@@ -61,7 +61,8 @@ fn audio_virtio(vm: &mut Vm, case: &Case) -> Result<(), String> {
     )?;
     vm.expect_screen(&["tested-42"])?;
     vm.monitor("stopcapture 0")?;
-    check_tones(&recording)?;
+    // Half the volume, the cube of a half: an eighth of the amplitude.
+    check_tones(&recording, 0.10..=0.15, "an eighth")?;
     // The volume keys, through audiod.
     vm.press(&["volumeup"])?;
     vm.expect_anywhere("audiod: volume 55%")?;
@@ -123,8 +124,14 @@ fn runs(samples: &[i16], which: usize, rate: usize) -> Vec<Run> {
 }
 
 /// Checks the recording: left, right, left, right, each 0.6 s of its tone
-/// with the other channel silent, the second pair an eighth as loud.
-fn check_tones(path: &Path) -> Result<(), String> {
+/// with the other channel silent, the second pair as loud as `ratio` of
+/// the first (which `expected` says in words). The HD Audio tests use it
+/// too.
+pub(super) fn check_tones(
+    path: &Path,
+    ratio: std::ops::RangeInclusive<f64>,
+    expected: &str,
+) -> Result<(), String> {
     let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
     let wav = audio::wav::parse(&bytes).map_err(|e| format!("{}: {e}", path.display()))?;
     if (wav.rate, wav.channels) != (48000, 2) {
@@ -173,11 +180,10 @@ fn check_tones(path: &Path) -> Result<(), String> {
         }
         loudness[i] = audio::detect::rms(this);
     }
-    // Half the volume, the cube of a half: an eighth of the amplitude.
-    for (i, ratio) in [loudness[2] / loudness[0], loudness[3] / loudness[1]].iter().enumerate() {
-        if !(0.10..=0.15).contains(ratio) {
+    for (i, found) in [loudness[2] / loudness[0], loudness[3] / loudness[1]].iter().enumerate() {
+        if !ratio.contains(found) {
             return Err(format!(
-                "at half volume the {} tone is {ratio:.3} as loud, not an eighth",
+                "at half volume the {} tone is {found:.3} as loud, not {expected}",
                 if i == 0 { "left" } else { "right" }
             ));
         }
