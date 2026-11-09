@@ -150,8 +150,11 @@ fn with_speech(vm: &mut Vm, _case: &Case) -> Result<(), String> {
     vm.type_text("vda")?;
     vm.press(&["ret"])?;
     vm.expect("readerd: says: Installing Dukovo.")?;
-    // A step may be said with the one before it, if both started at once.
-    vm.expect("Writing the settings and accounts.")?;
+    // The steps as they start. A step may be said with the one before it,
+    // if both started at once, and the last ones not at all when the Done
+    // page comes in the same draw, as it does under KVM: copying the
+    // release, which takes seconds, is said.
+    vm.expect("Copying Dukovo")?;
     wait_for_screen(vm, "Remove the install stick, then restart.", INSTALL_SECONDS)?;
     vm.expect("readerd: says: Dukovo is installed.")?;
 
