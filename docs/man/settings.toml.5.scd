@@ -68,7 +68,8 @@ it is when it starts, and the key keeps its default.
 *[accessibility]* *screen-reader =* *true* | *false*
 	No colours, faded hints or right prompt, and a prompt of words
 	(*~/src, failed 1, admin #*) for screen readers (ADR 0269). The
-	default is *false*.
+	default is *false*; while the system's screen reader speaks
+	(*reader*(1), ADR 0324), it is *true* whatever the files say.
 
 *[terminal]* *marks =* *true* | *false*, *links =* *true* | *false*
 	*marks* writes OSC 133 marks around each prompt, the line typed

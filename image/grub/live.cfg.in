@@ -52,10 +52,23 @@ if serial --unit=0 --speed=115200; then
     terminal_output --append serial
 fi
 
+# A short rising tune on the PC speaker as the menu shows, for a person
+# who cannot see the screen: S then starts the installer with the screen
+# reader (ADR 0324).
+play 480 523 1 659 1 784 1 1047 2
+
 # The installer's screens on tty1, and a shell on the other consoles
 # with no sign-in: the live system has no accounts.
 menuentry "Install Dukovo @VERSION@" --id install {
     multiboot2 /boot/radix live install console-sign-in=off @CMDLINE@
+@MODULES@    boot
+}
+
+# The same, with the screen reader speaking from the first screen
+# (readerd(8)): the hotkey S starts it at once, without finding it in
+# the menu.
+menuentry "Install Dukovo @VERSION@ with speech" --id install-speech --hotkey=s {
+    multiboot2 /boot/radix live install speech console-sign-in=off @CMDLINE@
 @MODULES@    boot
 }
 

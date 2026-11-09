@@ -3333,9 +3333,9 @@ fn cmdline_slot() -> String {
 
 /// How many of a test image's boot menu entries hold the command line:
 /// an installed system's and its startup-trouble entry, or the live
-/// menu's Install Dukovo, Try Dukovo and Install Dukovo (serial console)
-/// (dukovo-boot(7)).
-const CMDLINE_ENTRIES: usize = 3;
+/// menu's Install Dukovo, Install Dukovo with speech, Try Dukovo and
+/// Install Dukovo (serial console) (dukovo-boot(7)).
+const CMDLINE_ENTRIES: usize = 4;
 
 /// A copy of a test image with `cmdline` in its command-line slots, one
 /// in each menu entry that holds it.
@@ -3349,7 +3349,7 @@ pub fn with_cmdline(image: &[u8], cmdline: &str) -> Result<Vec<u8>, String> {
         .collect();
     if found.is_empty() || found.len() > CMDLINE_ENTRIES {
         return Err(format!(
-            "the test image holds the command-line slot {} times, not one to three",
+            "the test image holds the command-line slot {} times, not one to four",
             found.len()
         ));
     }
@@ -3405,13 +3405,14 @@ fn utf8_length(first: u8) -> usize {
 }
 
 /// A copy of a test image whose menu starts *Boot from first disk* when
-/// nobody chooses: its fourth entry, after *Install Dukovo*, *Try
-/// Dukovo* and *Install Dukovo (serial console)* (dukovo-boot(7)). The
-/// menu's `set default=try` becomes `set default=3`, padded with spaces
-/// to its length, so that nothing else in the image moves.
+/// nobody chooses: its fifth entry, after *Install Dukovo*, *Install
+/// Dukovo with speech*, *Try Dukovo* and *Install Dukovo (serial
+/// console)* (dukovo-boot(7)). The menu's `set default=try` becomes `set
+/// default=4`, padded with spaces to its length, so that nothing else in
+/// the image moves.
 fn booting_first_disk(mut image: Vec<u8>) -> Result<Vec<u8>, String> {
     const TRY: &[u8] = b"\nset default=try\n";
-    const FIRST_DISK: &[u8] = b"\nset default=3  \n";
+    const FIRST_DISK: &[u8] = b"\nset default=4  \n";
     let found: Vec<usize> = image
         .windows(TRY.len())
         .enumerate()
@@ -5803,7 +5804,7 @@ fn consoles(vm: &mut Vm, case: &Case) -> Result<(), String> {
     vm.expect("Boot complete.")?;
     vm.expect("spark: Spark v2 is process ")?;
     vm.expect("spark: listening at /system/live/spark/control")?;
-    vm.expect("spark: 20 services in /system/settings/spark/services, 17 enabled")?;
+    vm.expect("spark: 21 services in /system/settings/spark/services, 18 enabled")?;
     vm.expect("spark: started consoled (/system/commands/consoled) as process ")?;
     vm.expect("consoled: console of ")?;
     vm.expect("consoled: started /system/commands/nukesh on tty1 as process ")?;
@@ -9331,7 +9332,7 @@ fn principals(vm: &mut Vm, case: &Case) -> Result<(), String> {
 fn services(vm: &mut Vm, case: &Case) -> Result<(), String> {
     boot_report(vm, case)?;
     vm.expect("Boot complete.")?;
-    vm.expect_anywhere("spark: 20 services in /system/settings/spark/services, 17 enabled")?;
+    vm.expect_anywhere("spark: 21 services in /system/settings/spark/services, 18 enabled")?;
     vm.expect_ahead("spark: started /system/tests/posix/servicetest as process ")?;
     let code = program_line(vm, "(/system/tests/posix/servicetest) exited with code ")?;
     let log = vm.log();
@@ -10253,14 +10254,17 @@ mod tests {
         let filled = String::from_utf8(with_cmdline(&twice, "kdb").unwrap()).unwrap();
         assert_eq!(filled.matches("kdb ").count(), 2);
         assert!(filled.contains("radix startup-trouble kdb "));
-        // The live menu's three entries that start Dukovo are filled too.
-        let thrice = format!("{slot}{slot}{slot}").into_bytes();
-        assert_eq!(
-            String::from_utf8(with_cmdline(&thrice, "x").unwrap()).unwrap().matches("x ").count(),
-            3
-        );
+        // The live menu's four entries that start Dukovo are filled too.
         let four_times = format!("{slot}{slot}{slot}{slot}").into_bytes();
-        assert!(with_cmdline(&four_times, "x").is_err());
+        assert_eq!(
+            String::from_utf8(with_cmdline(&four_times, "x").unwrap())
+                .unwrap()
+                .matches("x ")
+                .count(),
+            4
+        );
+        let five_times = format!("{slot}{slot}{slot}{slot}{slot}").into_bytes();
+        assert!(with_cmdline(&five_times, "x").is_err());
         // Padded by bytes, so a line with wider characters fills it too.
         let wide = String::from_utf8(with_cmdline(&image, "hostname=Dukovó").unwrap()).unwrap();
         assert_eq!(wide.len(), image.len());

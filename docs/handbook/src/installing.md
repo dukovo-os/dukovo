@@ -43,6 +43,14 @@ choose.
 4. When the Done page shows, remove the stick and press Enter to
    restart, then sign in with the account you made.
 
+To hear the installer, start the stick and wait for a short rising tune
+from the computer's speaker: the menu is showing. Press S for *Install
+Dukovo with speech*, and the screen reader says each screen as it shows,
+in English, through the computer's sound output or a USB headset. Hold
+Caps Lock and press H for the reader's keys ([The screen
+reader](screen-reader.md)). A computer with no PC speaker plays no tune;
+press S a few seconds after starting from the stick.
+
 Nothing is written to any disk before the review's Install. *Live
 console* on the first page leaves the installer for a shell, where
 `dukovo-install` starts it again, and the shell on Alt+F2 works
@@ -156,7 +164,7 @@ over a BMC's serial-over-LAN, which the board shows as COM1:
    `screen /dev/ttyUSB0 115200` or PuTTY does. Make its window at least
    80 columns by 24 rows. The stick's menu shows there as it does on a
    screen.
-2. Choose *Install Dukovo (serial console)*, the third entry. The
+2. Choose *Install Dukovo (serial console)*, the fourth entry. The
    installer's screens show on the port, the size of the terminal's
    window, and take the same keys.
 3. Install as with the screens. The review's settings line ends with

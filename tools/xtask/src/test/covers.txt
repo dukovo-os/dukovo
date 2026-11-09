@@ -361,6 +361,8 @@ sched-mutex kernel/lib/sync/ kernel/sched/
 sched-pi kernel/sched/
 sched-rt kernel/sched/
 screen kernel/lib/fbcon/ tools/xtask/src/screen.rs userspace/hello/
+screen-reader kernel/drivers/virtio/ kernel/radix/src/audio/ ports/espeak-ng/ userspace/defaults/spark/services/readerd.toml
+screen-reader userspace/programs/audio/ userspace/programs/consoled/ userspace/programs/systools/src/reader.rs
 service-bundle image/grub/installed.cfg.in tools/xtask/src/bundles.rs tools/xtask/src/grub.rs
 service-bundle tools/xtask/src/grub_theme.rs tools/xtask/src/release.rs userspace/programs/dkv/
 service-bundle userspace/programs/installer/ userspace/programs/manifest/

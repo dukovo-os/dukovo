@@ -1,0 +1,29 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# The screen reader's voice on the lab's machines (ADR 0324): eSpeak NG
+# speaks with the voice data of every language, writes a WAV file that
+# audio plays, and readerd, turned on by reader, says a line on the
+# default output, which counts what it played. A machine with no sound
+# output, or a QEMU guest with none, passes the last step with nothing to
+# check. The screen-reader boot test follows what consoled has readerd
+# say, and finds the trusted sound in what QEMU recorded.
+about = "eSpeak NG speaks every language from its data, audio plays its WAV, and readerd says a line on the default output"
+time = "2m"
+
+[[step]]
+run = '''sh -c 'espeak-ng --version; n=$(espeak-ng --voices | wc -l); echo "voices $n"; [ "$n" -gt 100 ] && echo "voices"-found' '''
+expect = ["eSpeak NG text-to-speech: 1.52.0", "/system/resources/espeak-ng-data", "voices-found"]
+[[step]]
+run = '''sh -c 'f=/tmp/lab-speech.wav; espeak-ng -w $f "The disk is ready." && s=$(stat -c %s $f); echo "bytes $s"; rm -f $f; [ "$s" -gt 20000 ] && echo "wav"-written' '''
+expect = "wav-written"
+[[step]]
+run = '''sh -c 'if [ ! -e /devices/audio/default ]; then echo "no sound output: spoken"-heard; exit 0; fi; audio volume 30; espeak-ng --stdout "Dukovo speaks." | audio play - && echo "spoken"-heard; audio volume 70' '''
+root = true
+expect = "spoken-heard"
+expect_not = "audio:"
+[[step]]
+run = '''sh -c 'if [ ! -e /devices/audio/default ]; then echo "no sound output: reader"-spoke; exit 0; fi; reader on && sleep 1; reader status | grep -E "^(Voice|Rate|readerd):"; a=$(audio info | grep ^Played); audio volume 30; reader say "The lab hears the screen reader."; sleep 4; b=$(audio info | grep ^Played); audio volume 70; reader off; echo "$a then $b"; [ "$a" != "$b" ] && echo "reader"-spoke' '''
+root = true
+expect = ["readerd:       running", "reader-spoke"]
+expect_not = "not running"

@@ -93,6 +93,9 @@ pub const MODULES: &[&str] = &[
     "boot",
     // The install stick's "Boot from first disk" (ADR 0308).
     "chain",
+    // The install stick's tune before its menu, for Install with speech
+    // (ADR 0324).
+    "play",
 ];
 
 /// The modules a PC's BIOS needs more: its disks, VESA's video, and the

@@ -23,6 +23,7 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 - [Your keyring](keyring.md)
 - [Networking](networking.md)
 - [Sound](sound.md)
+- [The screen reader](screen-reader.md)
 - [Updates, snapshots, backups and recovery]()
 - [The Dukovo Admin web console]()
 - [Running services: web, databases and certificates]()

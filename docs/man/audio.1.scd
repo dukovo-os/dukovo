@@ -62,8 +62,8 @@ saying which as it does, so that one hears both speakers and which is
 which. It ends once the tones have played.
 
 *play* plays WAV files, one after another, on the default output or the
-one *--output* names: PCM of 8, 16, 24 or 32 bits, or 32-bit floats, of
-any rate and channels. audio converts the samples to the 16-bit ones the
+one *--output* names, with *-* for standard input: PCM of 8, 16, 24 or
+32 bits, or 32-bit floats, of any rate and channels. audio converts the samples to the 16-bit ones the
 kernel takes, maps the channels (mono to both sides, more to fewer) and
 changes the rate to the nearest the output plays.
 
