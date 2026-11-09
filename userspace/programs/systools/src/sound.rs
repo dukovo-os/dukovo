@@ -55,7 +55,7 @@ const USAGE: &str = "usage: audio [list]
 
 /// A request with `value` as its buffer, which the kernel reads and
 /// writes.
-fn control(output: &File, request: u32, value: &mut [u8]) -> io::Result<()> {
+pub(crate) fn control(output: &File, request: u32, value: &mut [u8]) -> io::Result<()> {
     let address = value.as_mut_ptr() as u64;
     let slot = sys::slot_of(output.as_raw_fd());
     file::control(&SYS, slot, request, address, address, value.len() as u64)
@@ -65,7 +65,7 @@ fn control(output: &File, request: u32, value: &mut [u8]) -> io::Result<()> {
 
 /// A request whose buffer is an int: returns the int the kernel wrote
 /// back.
-fn int_request(output: &File, request: u32, value: u32) -> io::Result<u32> {
+pub(crate) fn int_request(output: &File, request: u32, value: u32) -> io::Result<u32> {
     let mut bytes = value.to_le_bytes();
     control(output, request, &mut bytes)?;
     Ok(u32::from_le_bytes(bytes))
@@ -90,7 +90,9 @@ fn text(bytes: &[u8]) -> String {
     String::from_utf8_lossy(&bytes[..end]).into_owned()
 }
 
-fn info(output: &File) -> io::Result<Info> {
+/// What GET_INFO says of `output`, an output's file or the speech file,
+/// which answers for the output it plays on.
+pub fn info(output: &File) -> io::Result<Info> {
     let mut b = [0u8; OutputInfo::SIZE];
     control(output, abi::GET_INFO, &mut b)?;
     let u32_at = |at: usize| u32::from_le_bytes([b[at], b[at + 1], b[at + 2], b[at + 3]]);
@@ -409,10 +411,14 @@ fn play(operands: &[String]) -> Result<i32, Fail> {
     }
     let name = chosen(name.as_deref())?;
     for path in files {
+        // `-` is standard input, as a synthesizer's --stdout writes it.
         let mut bytes = Vec::new();
-        File::open(&path)
-            .and_then(|mut f| f.read_to_end(&mut bytes))
-            .map_err(|e| util::failed(&path, e))?;
+        let read = if path == "-" {
+            std::io::stdin().lock().read_to_end(&mut bytes)
+        } else {
+            File::open(&path).and_then(|mut f| f.read_to_end(&mut bytes))
+        };
+        read.map_err(|e| util::failed(&path, e))?;
         let wav = wav::parse(&bytes).map_err(|e| fail(format!("{path}: {e}")))?;
         let from = usize::from(wav.channels);
         let mut player = Player::open(&name, wav.rate, from)?;

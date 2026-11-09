@@ -1,0 +1,30 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+#
+# The screen reader's voice: readerd(8) speaks what consoled(8) sends it,
+# through eSpeak NG, on /devices/audio/speech (ADR 0324). It runs when
+# reader.toml(5) says `on = true`, as `reader on` sets it, or the kernel
+# has the flag `speech`; otherwise it ends at once and stays stopped.
+#
+# service.toml(5) explains each setting. `service check readerd` checks
+# this file, and `service edit readerd` checks it as you save.
+
+service_version = 1
+description = "Screen reader"
+program = "/system/commands/readerd"
+# Before consoled, which speaks through it from its first screen on.
+order = 9
+# Started again only if it fails: off, it ends with 0.
+restart = "on-failure"
+
+[limits]
+# Speech must keep up with the keys.
+cpu_weight = 200
+memory = "32M"
+
+# What it holds beyond what every service reads (service.toml(5)): the
+# speech file, which takes the output from any other player and names
+# it; its socket's folder; and the folder of reader.toml(5), which
+# `reader` writes. Spark makes the folders the first time.
+[permissions]
+files.read-write = ["/devices/audio/speech", "/system/live/readerd", "/system/state/reader"]

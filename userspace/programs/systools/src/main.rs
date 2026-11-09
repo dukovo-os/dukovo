@@ -122,6 +122,7 @@ mod prompt;
 mod ps;
 mod quota;
 mod rdisk;
+mod reader;
 mod releases;
 mod remount;
 mod replace;
@@ -270,6 +271,8 @@ const TOOLS: &[(&str, Tool)] = &[
     ("ps", ps::main),
     ("quota", quota::main),
     ("rdisk", rdisk::main),
+    ("reader", reader::main),
+    ("readerd", reader::daemon),
     ("reboot", power::reboot),
     ("remount", remount::main),
     ("renice", priority::renice),

@@ -1,0 +1,22 @@
+SPDX-FileCopyrightText: 2026 The Dukovo contributors
+SPDX-License-Identifier: Apache-2.0 OR MIT
+
+Lets the build say where espeak-ng finds its voice data, with
+ESPEAK_DATA_DIR, rather than always under the prefix's share/: Dukovo
+keeps it in /system/resources/espeak-ng-data (radix-files(7)). Left
+unset, it is where it was.
+
+--- a/src/libespeak-ng/CMakeLists.txt
++++ b/src/libespeak-ng/CMakeLists.txt
+@@ -69,7 +69,10 @@
+   target_compile_definitions(espeak-ng INTERFACE "LIBESPEAK_NG_EXPORT=1")
+ endif()
+ 
+-target_compile_definitions(espeak-ng PRIVATE "PATH_ESPEAK_DATA=\"${CMAKE_INSTALL_PREFIX}/share/espeak-ng-data\"")
++if (NOT ESPEAK_DATA_DIR)
++  set(ESPEAK_DATA_DIR "${CMAKE_INSTALL_PREFIX}/share/espeak-ng-data")
++endif()
++target_compile_definitions(espeak-ng PRIVATE "PATH_ESPEAK_DATA=\"${ESPEAK_DATA_DIR}\"")
+ 
+ if (USE_ASYNC)
+   target_sources(espeak-ng PRIVATE

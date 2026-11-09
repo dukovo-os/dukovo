@@ -1359,6 +1359,19 @@ mod tests {
             userspace::BOOTFS_WORD
         );
         assert!(cfg.contains(&serial), "{cfg}");
+        // The installer with the screen reader, on the key S, after a tune
+        // the menu plays first (ADR 0324).
+        assert!(cfg.contains(&format!(
+            "menuentry \"Install Dukovo {VERSION} with speech\" --id install-speech --hotkey=s {{"
+        )));
+        let speech = format!(
+            "    multiboot2 /boot/radix live install speech console-sign-in=off quiet\n    module2 /boot/bootfs {}\n    boot\n",
+            userspace::BOOTFS_WORD
+        );
+        assert!(cfg.contains(&speech), "{cfg}");
+        let tune = cfg.find("\nplay 480 ").expect("the tune");
+        assert!(tune < cfg.find("menuentry ").unwrap());
+        assert!(crate::grub::MODULES.contains(&"play"));
         assert!(
             cfg.contains(&format!("Try Dukovo {VERSION} (live console)\" --id try {{")),
             "{cfg}"

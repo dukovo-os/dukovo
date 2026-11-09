@@ -41,7 +41,12 @@ that tty1 shows the installer's screens (*dukovo-install*(8), ADR 0310);
 *Try Dukovo (live console)* gives a shell on every console; *Install
 Dukovo (serial console)* adds *install* and *console=ttyS0*, so that
 the screens are on the first serial port instead, for a computer with no
-screen (*serial-console*(8), ADR 0318). *Boot from first disk* starts the machine's own system as if the stick were not
+screen (*serial-console*(8), ADR 0318); *Install Dukovo with speech*,
+which the key *S* starts at once, adds *install* and *speech*, so that the
+screen reader says the installer's screens from the first (*readerd*(8),
+ADR 0324). Before the menu shows, GRUB plays a short rising tune on the
+PC speaker, so that a person who cannot see the screen knows to press
+*S*. *Boot from first disk* starts the machine's own system as if the stick were not
 there: under UEFI, the _EFI/BOOT/BOOTX64.EFI_ of the first EFI system
 partition, on any disk, that holds no _boot/radix_ as a Dukovo stick's
 does, and under a BIOS, the first sector of the disk after the stick.
@@ -653,6 +658,16 @@ them to *init*, and the kernel does not read them.
 	root's shell for a look around during the install. With
 	*console=ttyS0* too, *serial-console*(8) runs the screens on the
 	first serial port instead, and tty1 has the shell (ADR 0318).
+
+*speech*
+	Read by *readerd*(8), not the kernel: the screen reader speaks from
+	the first screen, whatever *reader.toml*(5) says, as the install
+	stick's *Install Dukovo with speech* entry starts it (ADR 0324).
+
+*reader-log*
+	Read by *readerd*(8), not the kernel: log what the screen reader
+	says, for the boot tests. The log may then hold what the screen
+	showed.
 
 *startup-trouble*
 	Read by *login*(1) and *authd*(8), not the kernel: the sign-in at

@@ -29,6 +29,7 @@
 mod keys;
 mod notices;
 mod prompts;
+mod reader;
 mod screen;
 mod session;
 mod sys;
@@ -48,6 +49,7 @@ use keys::{Action, Keyboard};
 use notices::Notices;
 use prompts::{Prompts, Typed};
 use radix_abi::input::{Event, PRESSED, SET_LEDS};
+use reader::Reader;
 use screen::Screen;
 use session::{Console, Shell};
 
@@ -277,6 +279,10 @@ struct Consoled {
     /// Passwords asked for authd, while sign-in is on.
     prompts: Option<Prompts>,
     bar: Option<Bar>,
+    /// What the screen reader says, while readerd runs (ADR 0324).
+    reader: Reader,
+    /// The console whose text is kept for the reader, while it listens.
+    speaking: Option<usize>,
 }
 
 impl Consoled {
@@ -298,6 +304,8 @@ impl Consoled {
         if index != self.active {
             self.active = index;
             self.screen.invalidate();
+            let console = &mut self.consoles[index];
+            self.reader.switched(console.number, &mut console.term);
         }
     }
 
@@ -326,6 +334,14 @@ impl Consoled {
         let value =
             u16::from_le_bytes([event[Event::OFFSET_VALUE], event[Event::OFFSET_VALUE + 1]]);
         let modes = self.consoles[self.active].term.modes();
+        // The screen reader's keys are its own, while it listens: the
+        // reader key and those pressed with it.
+        let console = &self.consoles[self.active];
+        let value = match self.reader.key(code, value, console.number, &console.term) {
+            reader::Key::Taken => return,
+            reader::Key::Passed => value,
+            reader::Key::Itself => PRESSED,
+        };
         // A key takes a notification that waits for one off the line; the
         // key itself goes on as usual.
         if value == PRESSED {
@@ -334,13 +350,20 @@ impl Consoled {
         match self.keyboard.key(code, value, modes) {
             Action::None => {}
             // consoled's own line takes the keys first, as it shows: the
-            // shown console's password prompt, then the menu.
+            // shown console's password prompt, then the menu. What is
+            // typed there is never said.
             Action::Send(bytes)
                 if self
                     .prompts
                     .as_mut()
-                    .is_some_and(|p| p.key(self.active, &bytes) == Typed::Taken) => {}
-            Action::Send(bytes) if self.bar.is_some() => self.bar_key(&bytes),
+                    .is_some_and(|p| p.key(self.active, &bytes) == Typed::Taken) =>
+            {
+                self.reader.forget();
+            }
+            Action::Send(bytes) if self.bar.is_some() => {
+                self.reader.forget();
+                self.bar_key(&bytes);
+            }
             Action::Send(bytes) => {
                 let console = &mut self.consoles[self.active];
                 console.term.reset_view();
@@ -351,7 +374,11 @@ impl Consoled {
                 let half = (self.screen.rows() / 2).max(1) as isize;
                 self.consoles[self.active].term.scroll_view(direction * half);
             }
-            Action::Attention => self.attention(),
+            // What consoled shows next is said, not where the cursor was.
+            Action::Attention => {
+                self.reader.forget();
+                self.attention();
+            }
             Action::Lights => self.lights(),
         }
     }
@@ -433,6 +460,50 @@ impl Consoled {
             .map(|shown| shown.cells(cols))
     }
 
+    /// Tells the screen reader what changed: readerd started or went, the
+    /// shown console's text, and the bottom line.
+    fn speak(&mut self, now: Instant) {
+        let connected = self.reader.connect(now);
+        // Only the shown console's text is kept, and only while readerd
+        // listens.
+        let speaking = self.reader.connected().then_some(self.active);
+        if self.speaking != speaking {
+            if let Some(old) = self.speaking {
+                self.consoles[old].term.set_speaking(false);
+            }
+            if let Some(new) = speaking {
+                self.consoles[new].term.set_speaking(true);
+            }
+            self.speaking = speaking;
+        }
+        if !self.reader.connected() {
+            return;
+        }
+        let console = &mut self.consoles[self.active];
+        if connected {
+            self.reader.screen(console.number, &mut console.term);
+        }
+        self.reader.written(&mut console.term, now);
+        // consoled's own line, as it shows: its prompt, menu or note,
+        // after the trusted sound; then a notification, as any other text.
+        let ask = self.prompts.as_ref().and_then(|p| p.shown(self.active));
+        self.reader.prompt(ask.map(|ask| (ask.id(), ask.spoken())));
+        let bar = match self.bar {
+            Some(Bar::Menu) => Some(prompts::menu_text(self.shell.sign_in)),
+            Some(Bar::Note(text)) => Some(text),
+            None => None,
+        };
+        self.reader.bar(bar.filter(|_| ask.is_none()));
+        let here = self.consoles[self.active].terminal();
+        let notice = self
+            .notices
+            .shown
+            .as_ref()
+            .filter(|shown| shown.terminal.is_none() || shown.terminal.as_deref() != here)
+            .map(|shown| shown.text.as_str());
+        self.reader.notice(notice);
+    }
+
     /// Reaps the ended children and starts new sessions for them.
     fn reap(&mut self) {
         loop {
@@ -454,8 +525,8 @@ impl Consoled {
     fn run(&mut self, wake: &mut File) -> io::Result<()> {
         let mut events = vec![0u8; Event::SIZE * 32];
         loop {
-            // The wake pipe, the keyboard, notifyd, authd's prompts, then
-            // each console's master.
+            // The wake pipe, the keyboard, notifyd, authd's prompts,
+            // readerd, then each console's master.
             let mut fds =
                 vec![libc::pollfd { fd: wake.as_raw_fd(), events: libc::POLLIN, revents: 0 }];
             fds.push(libc::pollfd {
@@ -466,6 +537,7 @@ impl Consoled {
             fds.push(libc::pollfd { fd: self.notices.fd(), events: libc::POLLIN, revents: 0 });
             let prompts_fd = self.prompts.as_ref().map_or(-1, Prompts::fd);
             fds.push(libc::pollfd { fd: prompts_fd, events: libc::POLLIN, revents: 0 });
+            fds.push(libc::pollfd { fd: self.reader.fd(), events: libc::POLLIN, revents: 0 });
             for (i, console) in self.consoles.iter().enumerate() {
                 let held = i == self.active && self.keyboard.scroll;
                 let fd = console.master_fd().filter(|_| !held).unwrap_or(-1);
@@ -478,6 +550,7 @@ impl Consoled {
                 .filter_map(|c| c.retry_at)
                 .chain(self.notices.deadline())
                 .chain(self.prompts.as_ref().and_then(Prompts::deadline))
+                .chain(self.reader.deadline())
                 .min();
             let timeout =
                 next.map_or(-1, |at| at.saturating_duration_since(now).as_millis() as i32);
@@ -528,8 +601,11 @@ impl Consoled {
                     consoles.iter().position(|c| c.terminal() == Some(terminal))
                 });
             }
+            if fds[4].revents != 0 {
+                self.reader.read(now);
+            }
             for (i, console) in self.consoles.iter_mut().enumerate() {
-                if fds[4 + i].revents != 0 {
+                if fds[5 + i].revents != 0 {
                     console.read();
                 }
             }
@@ -542,6 +618,7 @@ impl Consoled {
             if let Some(prompts) = self.prompts.as_mut() {
                 prompts.tick(now);
             }
+            self.speak(now);
             // Only the cells that changed are drawn.
             let bottom = self.bottom();
             self.screen.draw(&self.consoles[self.active].term, bottom.as_deref())?;
@@ -614,8 +691,19 @@ fn main() -> ExitCode {
     // Passwords are asked on the consoles only where people sign in;
     // root's shells need none.
     let prompts = shell.sign_in.then(|| Prompts::new(Instant::now()));
-    let mut consoled =
-        Consoled { screen, consoles, active: 0, keyboard, kbd, shell, notices, prompts, bar: None };
+    let mut consoled = Consoled {
+        screen,
+        consoles,
+        active: 0,
+        keyboard,
+        kbd,
+        shell,
+        notices,
+        prompts,
+        bar: None,
+        reader: Reader::new(Instant::now()),
+        speaking: None,
+    };
     consoled.lights();
     consoled.switch(0);
     eprintln!("consoled: {} consoles; tty1 is shown", options.consoles);

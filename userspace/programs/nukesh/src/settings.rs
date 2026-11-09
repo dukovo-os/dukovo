@@ -17,6 +17,23 @@
 
 use crate::colors::Problem;
 
+/// The system's screen reader's settings (reader.toml(5), ADR 0324).
+const READER_FILE: &str = "/system/state/reader/reader.toml";
+
+/// Whether the system's screen reader speaks, by its settings file
+/// `reader` (`on = true`) and the kernel's command line `cmdline` (the
+/// flag `speech`, before any `--`).
+fn reader_speaks(reader: Option<&str>, cmdline: Option<&str>) -> bool {
+    let on = reader
+        .and_then(|text| text.parse::<toml::Table>().ok())
+        .and_then(|table| table.get("on").and_then(toml::Value::as_bool))
+        .unwrap_or(false);
+    let flag = cmdline.is_some_and(|line| {
+        line.split_whitespace().take_while(|word| *word != "--").any(|word| word == "speech")
+    });
+    on || flag
+}
+
 /// The system's settings file.
 pub const SYSTEM_FILE: &str = "/system/settings/nukesh/settings.toml";
 
@@ -118,6 +135,13 @@ impl Settings {
                 }
             }
         }
+        // While the system's screen reader speaks, the shell is plain
+        // whatever the files say: its faded hints and right prompt would
+        // be read out at each key.
+        settings.screen_reader |= reader_speaks(
+            std::fs::read_to_string(READER_FILE).ok().as_deref(),
+            std::fs::read_to_string("/kernel/cmdline").ok().as_deref(),
+        );
         (settings, problems)
     }
 
@@ -230,6 +254,16 @@ const SHIPPED: &str = include_str!("../../../defaults/nukesh/settings.toml");
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_shell_is_plain_while_the_screen_reader_speaks() {
+        assert!(reader_speaks(Some("on = true\nvoice = \"en\"\n"), None));
+        assert!(!reader_speaks(Some("on = false\n"), Some("live install")));
+        assert!(reader_speaks(None, Some("live install speech console-sign-in=off")));
+        // A word after `--` is the first program's, not a flag.
+        assert!(!reader_speaks(None, Some("quiet -- speech")));
+        assert!(!reader_speaks(Some("not toml ="), None));
+    }
 
     #[test]
     fn the_shipped_file_says_the_defaults() {
