@@ -1051,29 +1051,7 @@ To be offered upstream.
      /// Return the amount of octets queued in the transmit buffer.
      ///
      /// Note that the Berkeley sockets interface does not have an equivalent of this API.
-@@ -1393,11 +1697,117 @@
-         self.tx_buffer.len()
-     }
- 
-+    /// DEBUG (the e1000 stall's investigation, not to be merged): the
-+    /// sending side's state: its timer (0 idle, 1 retransmit, 2 fast
-+    /// retransmit, 3 zero-window probe, 4 close), the window the other end
-+    /// offers, the octets in flight, the congestion window, and the RTO in
-+    /// milliseconds.
-+    pub fn debug_sending(&self) -> (u8, usize, usize, usize, u32) {
-+        let timer = match self.timer {
-+            Timer::Idle { .. } => 0,
-+            Timer::Retransmit { .. } => 1,
-+            Timer::FastRetransmit => 2,
-+            Timer::ZeroWindowProbe { .. } => 3,
-+            Timer::Close { .. } => 4,
-+        };
-+        let cwnd = self.congestion_controller.inner().window();
-+        (timer, self.remote_win_len, self.flight_size(), cwnd, self.rtte.rto)
-+    }
-+
-     /// Number of octets transmitted but not yet ACKed.
-     fn flight_size(&self) -> usize {
+@@ -1398,6 +1702,95 @@
          self.remote_last_seq - self.local_seq_no
      }
  
@@ -1169,7 +1147,7 @@ To be offered upstream.
      fn cwnd_remaining(&self) -> usize {
          self.congestion_controller
              .inner()
-@@ -1474,9 +1884,15 @@
+@@ -1474,9 +1867,15 @@
  
      fn ack_reply(&mut self, ip_repr: &IpRepr, repr: &TcpRepr) -> (IpRepr, TcpRepr<'static>) {
          let (mut ip_reply_repr, mut reply_repr) = Self::reply(ip_repr, repr);
@@ -1188,7 +1166,7 @@ To be offered upstream.
  
          // From RFC 793:
          // [...] an empty acknowledgment segment containing the current send-sequence number
-@@ -1529,6 +1945,33 @@
+@@ -1529,6 +1928,33 @@
                      .next()
                      .map(|(left, right)| (left.0 as u32, right.0 as u32));
              }
@@ -1222,7 +1200,7 @@ To be offered upstream.
          }
  
          // Since the sACK option may have changed the length of the payload, update that.
-@@ -1552,6 +1995,36 @@
+@@ -1552,6 +1978,36 @@
          Some(self.ack_reply(ip_repr, repr))
      }
  
@@ -1259,7 +1237,7 @@ To be offered upstream.
      pub(crate) fn accepts(&self, _cx: &mut Context, ip_repr: &IpRepr, repr: &TcpRepr) -> bool {
          if self.state == State::Closed {
              return false;
-@@ -1576,7 +2049,7 @@
+@@ -1576,7 +2032,7 @@
              // We're listening, reject packets not matching the listen endpoint.
              let addr_ok = match self.listen_endpoint.addr {
                  Some(addr) => ip_repr.dst_addr() == addr,
@@ -1268,7 +1246,7 @@ To be offered upstream.
              };
              addr_ok && repr.dst_port != 0 && repr.dst_port == self.listen_endpoint.port
          }
-@@ -1715,6 +2188,13 @@
+@@ -1715,6 +2171,13 @@
          let (payload, payload_offset) = match self.state {
              // In LISTEN and SYN-SENT states, we have not yet synchronized with the remote end.
              State::Listen | State::SynSent => (&[][..], 0),
@@ -1282,7 +1260,7 @@ To be offered upstream.
              _ => {
                  // https://www.rfc-editor.org/rfc/rfc9293.html#name-segment-acceptability-tests
                  let segment_in_window = match (
-@@ -2008,6 +2488,10 @@
+@@ -2008,6 +2471,10 @@
              (State::FinWait1, TcpControl::Fin) => {
                  self.remote_seq_no += 1;
                  self.rx_fin_received = true;
@@ -1293,7 +1271,7 @@ To be offered upstream.
                  if ack_of_fin {
                      self.set_state(State::TimeWait);
                      self.timer.set_for_close(cx.now());
-@@ -2022,6 +2506,8 @@
+@@ -2022,6 +2489,8 @@
              (State::FinWait2, TcpControl::Fin) => {
                  self.remote_seq_no += 1;
                  self.rx_fin_received = true;
@@ -1302,7 +1280,7 @@ To be offered upstream.
                  self.set_state(State::TimeWait);
                  self.timer.set_for_close(cx.now());
              }
-@@ -2058,6 +2544,7 @@
+@@ -2058,6 +2527,7 @@
  
          // Update remote state.
          self.remote_last_ts = Some(cx.now());
@@ -1310,7 +1288,7 @@ To be offered upstream.
  
          // RFC 1323: The window field (SEG.WND) in the header of every incoming segment, with the
          // exception of SYN segments, is left-shifted by Snd.Wind.Scale bits before updating SND.WND.
-@@ -2116,7 +2603,8 @@
+@@ -2116,7 +2586,8 @@
                          }
                      );
  
@@ -1320,7 +1298,7 @@ To be offered upstream.
                          self.timer.set_for_fast_retransmit();
                          net_debug!("started fast retransmit");
                      }
-@@ -2139,8 +2627,12 @@
+@@ -2139,8 +2610,12 @@
                      }
                      self.local_rx_last_ack = Some(ack_number);
  
@@ -1335,7 +1313,7 @@ To be offered upstream.
                      let new_flight_size = self.flight_size().saturating_sub(ack_len);
                      self.congestion_controller.inner_mut().on_ack(
                          cx.now(),
-@@ -2163,11 +2655,21 @@
+@@ -2163,11 +2638,21 @@
              if self.remote_last_seq < self.local_seq_no {
                  self.remote_last_seq = self.local_seq_no
              }
@@ -1359,7 +1337,7 @@ To be offered upstream.
          }
  
          // update timers.
-@@ -2289,16 +2791,39 @@
+@@ -2289,16 +2774,39 @@
          }
      }
  
@@ -1402,7 +1380,7 @@ To be offered upstream.
              return true;
          }
  
-@@ -2461,13 +2986,20 @@
+@@ -2461,13 +2969,20 @@
              // but from the first transmitted one.
              self.remote_last_ts = Some(cx.now());
          }
@@ -1424,7 +1402,7 @@ To be offered upstream.
              // If a timeout expires, we should abort the connection.
              net_debug!("timeout exceeded");
              self.set_state(State::Closed);
-@@ -2484,8 +3016,12 @@
+@@ -2484,8 +2999,12 @@
  
                  // Rewind "last sequence number sent", as if we never
                  // had sent them. This will cause all data in the queue
@@ -1438,7 +1416,7 @@ To be offered upstream.
  
                  // Inform RTTE, so that it can can handle RTO backoff
                  self.rtte.on_rto();
-@@ -2567,10 +3103,7 @@
+@@ -2567,10 +3086,7 @@
              max_seg_size: None,
              sack_permitted: false,
              sack_ranges: [None, None, None],
@@ -1450,7 +1428,7 @@ To be offered upstream.
              payload: &[],
          };
  
-@@ -2631,14 +3164,33 @@
+@@ -2631,14 +3147,33 @@
                  let local_mss = cx.ip_mtu() - ip_repr.header_len() - TCP_HEADER_LEN;
                  let effective_mss = local_mss.min(self.remote_mss).saturating_sub(options_len);
  
@@ -1484,7 +1462,7 @@ To be offered upstream.
                  } else {
                      // Right edge of window, ie the max sequence number we're allowed to send.
                      let win_right_edge = self.local_seq_no + self.remote_win_len;
-@@ -2791,8 +3343,13 @@
+@@ -2791,8 +3326,13 @@
          emit(cx, packet_meta, (ip_repr, repr))?;
  
          // We've sent something, whether useful data or a keep-alive packet, so rewind
@@ -1500,7 +1478,7 @@ To be offered upstream.
  
          // Reset delayed-ack timer
          match self.ack_delay_timer {
-@@ -2862,7 +3419,7 @@
+@@ -2862,7 +3402,7 @@
          if self.tuple.is_none() {
              // No one to talk to, nothing to transmit.
              PollAt::Ingress
@@ -1509,7 +1487,7 @@ To be offered upstream.
              // Socket stopped being quiet recently, we need to acquire a timestamp.
              PollAt::Now
          } else if self.state == State::Closed {
-@@ -2887,7 +3444,9 @@
+@@ -2887,7 +3427,9 @@
              let timeout_poll_at = match (self.remote_last_ts, self.timeout) {
                  // If we're transmitting or retransmitting data, we need to poll at the moment
                  // when the timeout would expire.
@@ -1520,7 +1498,7 @@ To be offered upstream.
                  // Otherwise we have no timeout.
                  (_, _) => PollAt::Ingress,
              };
-@@ -4682,6 +5241,57 @@
+@@ -4682,6 +5224,57 @@
      }
  
      #[test]
@@ -1578,7 +1556,7 @@ To be offered upstream.
      fn test_established_sack_no_overflow_on_near_max_seqnumber() {
          let mut s = socket_established();
          s.remote_has_sack = true;
-@@ -5808,6 +6418,114 @@
+@@ -5808,6 +6401,114 @@
          assert_eq!(s.state, State::Closed);
      }
  
@@ -1693,7 +1671,7 @@ To be offered upstream.
      // =========================================================================================//
      // Tests for the CLOSE-WAIT state.
      // =========================================================================================//
-@@ -7327,6 +8045,206 @@
+@@ -7327,6 +8028,206 @@
          recv_nothing!(s);
      }
  
@@ -1900,7 +1878,7 @@ To be offered upstream.
      #[test]
      fn test_retransmit_exponential_backoff() {
          let mut s = socket_established();
-@@ -8606,10 +9524,8 @@
+@@ -8606,10 +9507,8 @@
          let mut s = socket_established();
          s.set_timeout(Some(Duration::from_millis(2000)));
          recv_nothing!(s, time 250);
@@ -1913,7 +1891,7 @@ To be offered upstream.
          s.send_slice(b"abcdef").unwrap();
          assert_eq!(s.socket.poll_at(&mut s.cx), PollAt::Now);
          recv!(s, time 255, Ok(TcpRepr {
-@@ -8642,6 +9558,32 @@
+@@ -8642,6 +9541,32 @@
      }
  
      #[test]
@@ -1946,7 +1924,7 @@ To be offered upstream.
      fn test_established_keep_alive_timeout() {
          let mut s = socket_established();
          s.set_keep_alive(Some(Duration::from_millis(50)));
-@@ -8689,6 +9631,58 @@
+@@ -8689,6 +9614,58 @@
      }
  
      #[test]
@@ -2005,7 +1983,7 @@ To be offered upstream.
      fn test_fin_wait_1_timeout() {
          let mut s = socket_fin_wait_1();
          s.set_timeout(Some(Duration::from_millis(1000)));
-@@ -9585,6 +10579,17 @@
+@@ -9585,6 +10562,17 @@
      }
  
      #[test]
@@ -2023,7 +2001,7 @@ To be offered upstream.
      fn test_set_get_congestion_control() {
          let mut s = socket_established();
  
-@@ -9662,6 +10667,168 @@
+@@ -9662,6 +10650,168 @@
      }
  
      #[test]

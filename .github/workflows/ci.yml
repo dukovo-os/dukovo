@@ -5,9 +5,10 @@
 # same way. See CONTRIBUTING.md.
 name: CI
 
-# DEBUG (the e1000 stall): off on this pull request while
-# e1000-debug.yml runs; put back before it is reviewed.
 on:
+  push:
+    branches: [main]
+  pull_request:
   workflow_dispatch:
 
 permissions:

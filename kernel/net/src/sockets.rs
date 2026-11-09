@@ -186,9 +186,6 @@ pub struct Shown {
     pub send_queue: usize,
     /// The bytes that came, not yet read.
     pub receive_queue: usize,
-    /// DEBUG (the e1000 stall): a TCP socket's sending state, as
-    /// smoltcp's `debug_sending` gives it; zeros for UDP's.
-    pub debug: (u8, usize, usize, usize, u32),
 }
 
 impl Shown {
@@ -228,7 +225,6 @@ impl Shown {
                     state,
                     send_queue: socket.send_queue(),
                     receive_queue: socket.recv_queue(),
-                    debug: socket.debug_sending(),
                 })
             }
             Socket::Udp(socket) => {
@@ -241,7 +237,6 @@ impl Shown {
                     state: tcp::State::Closed,
                     send_queue: socket.send_queue(),
                     receive_queue: socket.recv_queue(),
-                    debug: (0, 0, 0, 0, 0),
                 })
             }
             Socket::Icmp(_) => None,

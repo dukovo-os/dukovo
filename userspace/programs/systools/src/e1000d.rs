@@ -136,8 +136,6 @@ struct Running {
     card: Card,
     interrupt: Interrupt,
     link: Mapped,
-    /// DEBUG (the e1000 stall): the card's registers, to show its rings.
-    regs: Mmio,
 }
 
 /// DMA memory goes back with the card, when its capability goes: nothing
@@ -186,7 +184,6 @@ fn start(slot: u32, address: u32, model: Model) -> Result<Running, String> {
         Some(unsafe { Dma::new(given.at as usize, given.device_address, pages * PAGE, 0, keep) })
     };
     let mut delay = |us: u32| thread::sleep(Duration::from_micros(us.into()));
-    let debug_regs = regs.clone();
     let card =
         radix_intel_net::start(model, regs, interrupt, fallback_mac(), &mut alloc, &mut delay)
             .map_err(|err| format!("{err}"))?;
@@ -207,39 +204,18 @@ fn start(slot: u32, address: u32, model: Model) -> Result<Running, String> {
         "e1000d: {name} is the {} at {at}, MAC {a:02x}:{b:02x}:{c:02x}:{d:02x}:{e:02x}:{f:02x}, {how}",
         model.name
     );
-    Ok(Running { slot, name, card, interrupt, link, regs: debug_regs })
+    Ok(Running { slot, name, card, interrupt, link })
 }
 
 /// Drives `running` until its card fails or the kernel breaks its link;
 /// returns why it stopped.
 fn drive(running: Running) -> String {
-    let Running { slot, name, mut card, interrupt, link, regs } = running;
+    let Running { slot, name, mut card, interrupt, link } = running;
     let link = &link;
     let mut driver = Driver::new();
     let mut frame = [0u8; link::SLOT];
     let mut shown: Option<Link> = None;
-    // DEBUG (the e1000 stall): what moved each second, and the rings.
-    let (mut from_card, mut to_card, mut passes) = (0u64, 0u64, 0u64);
-    let mut next_report = util::now_ns() + 1_000_000_000;
     loop {
-        let now_ns = util::now_ns();
-        if now_ns >= next_report {
-            eprintln!(
-                "e1000d: DEBUG {name}: {from_card} in, {to_card} out, {passes} passes; \
-                 RDH {} RDT {} TDH {} TDT {} RCTL {:#x} TCTL {:#x}; to send waiting {}, link full {}",
-                regs.read32(0x2810),
-                regs.read32(0x2818),
-                regs.read32(0x3810),
-                regs.read32(0x3818),
-                regs.read32(0x0100),
-                regs.read32(0x0400),
-                driver.sending(link),
-                !driver.can_receive(link),
-            );
-            (from_card, to_card, passes) = (0, 0, 0);
-            next_report = now_ns + 1_000_000_000;
-        }
-        passes += 1;
         let mut wake = false;
         let now = card.link();
         if shown != Some(now) {
@@ -265,8 +241,6 @@ fn drive(running: Running) -> String {
                 sent += 1;
             }
         }
-        from_card += u64::from(received);
-        to_card += u64::from(sent);
         if sent > 0 {
             card.flush();
         }

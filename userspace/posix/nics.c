@@ -126,23 +126,6 @@ static void kill_driver(const char *card, uint32_t got) {
 	to_kill = NULL;
 }
 
-// DEBUG (the e1000 stall): what the stack and card show while the echo
-// through `card` stalls: its counters and every TCP socket's state.
-static void dump_stall(const char *card, int stalls, uint32_t sent, uint32_t got) {
-	printf("nics: DEBUG stall %d on %s: sent %u got %u rx_packets %lld tx_packets %lld "
-			"tx_dropped %lld\n",
-			stalls, card, sent, got, card_number(card, "statistics/rx_packets"),
-			card_number(card, "statistics/tx_packets"), card_number(card, "statistics/tx_dropped"));
-	static char text[4096];
-	if(read_text("/processes/net/tcp", text, sizeof(text)) == 0) {
-		char *line = strtok(text, "\n");
-		while(line) {
-			printf("nics: DEBUG tcp %s\n", line);
-			line = strtok(NULL, "\n");
-		}
-	}
-}
-
 // Sends ECHOED bytes through `card` to `cat` at `echo` port 7 and reads
 // them back, as they come, checking each.
 static void echo_through(const char *card, const char *address, const char *echo, uint32_t seed) {
@@ -170,8 +153,6 @@ static void echo_through(const char *card, const char *address, const char *echo
 		int ready = poll(&entry, 1, 1000);
 		if(ready <= 0) {
 			stalls++;
-			if(stalls == 2 || stalls % 5 == 0)
-				dump_stall(card, stalls, sent, got);
 			continue;
 		}
 		stalls = 0;

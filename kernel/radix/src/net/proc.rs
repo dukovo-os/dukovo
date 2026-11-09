@@ -353,15 +353,6 @@ fn socket_lines(text: &mut Text, tcp: bool, v6: bool) -> fmt::Result {
             " {state:02X} {:08X}:{:08X} 00:00000000 00000000 {:>5} {:>8} 0",
             socket.send_queue, socket.receive_queue, 0, 0,
         )?;
-        // DEBUG (the e1000 stall): the sending side's state, on a line
-        // of its own after the socket's.
-        let (timer, window, flight, cwnd, rto) = socket.debug;
-        if tcp {
-            writeln!(
-                text,
-                "    debug: timer {timer} window {window} flight {flight} cwnd {cwnd} rto {rto}"
-            )?;
-        }
     }
     Ok(())
 }
