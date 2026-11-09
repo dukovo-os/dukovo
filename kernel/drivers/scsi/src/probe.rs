@@ -25,7 +25,7 @@ use crate::{
 
 /// How long a command of the probe may take: what Linux gives TEST UNIT
 /// READY and READ CAPACITY.
-const TIMEOUT_MS: u32 = 30_000;
+pub(crate) const TIMEOUT_MS: u32 = 30_000;
 /// How long a device that is not ready has to become ready: Linux's.
 const READY_MS: u32 = 100_000;
 /// How long between looks at a device that is not ready yet.

@@ -278,7 +278,7 @@ pub fn init() {
                     );
                 }
             } else if is_ide(&function) {
-                if let Err(why) = ide::bind(&function, &mut ide) {
+                if let Err(why) = ide::bind(&function, (&mut ide, &mut optical)) {
                     warn!(
                         "Disk: could not set up the IDE controller at {}: {why}",
                         function.address()

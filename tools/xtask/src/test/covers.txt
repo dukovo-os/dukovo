@@ -286,8 +286,12 @@ ntfs-write kernel/fs/block/ kernel/fs/fat/ kernel/fs/ntfs/ userspace/programs/sy
 ntfs-write userspace/storage/
 oom kernel/mm/
 optical kernel/drivers/ahci/ kernel/drivers/scsi/ kernel/drivers/usb/ kernel/drivers/xhci/
+optical kernel/radix/src/fs/disk/optical.rs kernel/radix/src/fs/disk/usb.rs
 optical kernel/fs/iso9660/ kernel/fs/udf/ userspace/programs/systools/src/eject.rs
 optical userspace/programs/systools/src/lsblk.rs userspace/programs/systools/src/volumed.rs
+optical-ide kernel/drivers/ide/ kernel/drivers/scsi/ kernel/fs/iso9660/ kernel/fs/udf/
+optical-ide kernel/radix/src/fs/disk/ide.rs kernel/radix/src/fs/disk/optical.rs
+optical-ide userspace/programs/systools/src/eject.rs userspace/programs/systools/src/volumed.rs
 page-fault kernel/mm/
 pci-serial kernel/drivers/uart/
 posix docs/man/ kernel/lib/posix/ ports/7zip/ ports/bc/ ports/bzip2/ ports/curl/ ports/db1/
@@ -397,6 +401,7 @@ storage kernel/drivers/virtio/ kernel/fs/block/ kernel/fs/fat/ userspace/storage
 storage-4k kernel/drivers/nvme/ kernel/drivers/virtio/ kernel/fs/block/ kernel/fs/fat/
 storage-4k userspace/programs/systools/src/nvme.rs userspace/storage/
 storage-ide kernel/drivers/ide/ kernel/fs/block/ userspace/storage/
+storage-ide kernel/radix/src/fs/disk/ide.rs
 storage-nvme kernel/drivers/nvme/ kernel/fs/block/ userspace/programs/systools/src/nvme.rs
 storage-nvme userspace/storage/
 storage-sata kernel/drivers/ahci/ kernel/fs/block/ userspace/storage/

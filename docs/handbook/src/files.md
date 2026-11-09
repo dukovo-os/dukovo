@@ -251,14 +251,15 @@ the next card:
 0
 ```
 
-A CD, DVD or Blu-ray drive, on SATA or USB, is such a drive too, named
-`cd0` and on, a `rom` under lsblk's `TYPE` (ADR 0431). A disc of data,
-ISO 9660 or UDF, is mounted read-only: at `/volumes/cd0` when it is in
-the drive at boot, and at its label when put in later. A disc written in
-several sessions is read from its last, which holds all of it. While it
-is mounted, the drive keeps it in; `eject` unmounts it and opens the
-tray. `/kernel/block/cd0/disc` says what is in the drive, and a music CD
-or a blank disc is said, not mounted:
+A CD, DVD or Blu-ray drive, on SATA, IDE or USB, is such a drive too,
+named `cd0` and on, a `rom` under lsblk's `TYPE` (ADR 0431, ADR 0432).
+A disc of data, ISO 9660 or UDF, is mounted read-only: at `/volumes/cd0`
+when it is in the drive at boot, and at its label when put in later. A
+disc written in several sessions is read from its last, which holds all
+of it. While it is mounted, the drive keeps it in; `eject`, or the
+drive's own eject button, unmounts it and opens the tray, unless a
+program is using it. `/kernel/block/cd0/disc` says what is in the drive,
+and a music CD or a blank disc is said, not mounted:
 
 ```
 # cat /kernel/block/cd0/disc
@@ -266,6 +267,16 @@ dvd-rom data
 # eject cd0
 # dmesg | tail -2
 Disk: cd0: its disc was ejected
+volumed: cd0 has no disc in it now
+```
+
+With a disc mounted again, the drive's button does the same:
+
+```
+# dmesg | tail -4
+Disk: cd0: its eject button was pressed
+Disk: cd0: its disc was ejected
+volumed: the eject button of cd0 was pressed; unmounted /volumes/HOLIDAY_2026
 volumed: cd0 has no disc in it now
 ```
 

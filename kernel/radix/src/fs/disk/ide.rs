@@ -25,23 +25,34 @@
 //! channel, with no queuing, hot-plug or link power management: when a
 //! disk says it is Serial ATA, the log suggests setting the controller to
 //! AHCI in the firmware's setup, as the installer will.
+//!
+//! An optical drive on a channel (ADR 0432) is run by a thread of its
+//! own, as one on an AHCI port is ([`super::optical`]), which carries its
+//! SCSI commands in PACKET commands ([`IdeLink`]). It shares the channel
+//! with a disk on the other end: the thread borrows the channel from the
+//! disks' queue between the disks' commands ([`Share`]), and while it
+//! waits for it the queue starts no new one, so that neither waits for
+//! long; it gives the channel back after each command and the sense of
+//! one that failed.
 
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::fmt::Write;
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
-use radix_ahci::ata::trimmed;
+use radix_ahci::ata::{PacketIdentity, trimmed};
 use radix_block::{DeviceRef, Error, Info};
 use radix_hal::{Devices, UserMode};
 use radix_hw::Dma;
 use radix_hw::pci::{Bar, Function, command};
-use radix_ide::{Channel, Device, Op as IdeOp, interface};
+use radix_ide::{Channel, Device, Op as IdeOp, Transfer, interface};
 use radix_klog::{TextBuf, info, warn};
 use radix_mm::{Flags, HEAP, Kmalloc};
+use radix_scsi::{Cdb, Data, Reply, Sense, Transport, TransportError};
+use radix_sync::SpinLock;
 
 use super::queue::{self, Controller, Disk, Op, Outcome, Part, Request, Volume};
-use super::{Entry, Ident, Name, Size, partitions, register};
+use super::{Entry, Ident, Name, Size, optical, partitions, register};
 use crate::Arch;
 use crate::ioports::IoWindow;
 
@@ -52,6 +63,41 @@ const PAGE: usize = 4096;
 /// The legacy ports are taken: by the first controller in compatibility
 /// mode on each channel.
 static LEGACY: [AtomicBool; 2] = [const { AtomicBool::new(false) }; 2];
+
+/// A channel, as its two ends share it: one command at a time, a disk's
+/// from the disks' queue or an optical drive's from its thread.
+pub(super) struct Share {
+    channel: SpinLock<Channel<IoWindow>>,
+    /// The end whose optical drive has borrowed the channel, plus one; 0
+    /// while none has.
+    holder: AtomicU8,
+    /// The ends whose optical drives wait for the channel, a bit each:
+    /// the disks' queue starts no new command meanwhile.
+    wants: AtomicU8,
+}
+
+impl Share {
+    /// Lends the channel to the optical drive at `end`, if no other has
+    /// it and, as `disks_idle` says, no disk's command is in flight; if
+    /// not, notes that it waits.
+    fn lend(&self, end: u8, disks_idle: bool) -> bool {
+        let bit = 1 << end;
+        if disks_idle
+            && self.holder.compare_exchange(0, end + 1, Ordering::AcqRel, Ordering::Acquire).is_ok()
+        {
+            self.wants.fetch_and(!bit, Ordering::AcqRel);
+            return true;
+        }
+        self.wants.fetch_or(bit, Ordering::AcqRel);
+        false
+    }
+
+    /// Whether the disks' queue may start a command: no optical drive has
+    /// the channel or waits for it.
+    fn free(&self) -> bool {
+        self.holder.load(Ordering::Acquire) == 0 && self.wants.load(Ordering::Acquire) == 0
+    }
+}
 
 /// What the channel knows of a disk on it.
 #[derive(Clone, Copy, Default)]
@@ -72,7 +118,7 @@ struct Flight {
 
 /// A channel as the queue drives it.
 pub struct IdeChannel {
-    channel: Channel<IoWindow>,
+    share: Arc<Share, Kmalloc>,
     drives: [Drive; 2],
     flight: Option<Flight>,
     /// A request done without the disk: a flush of one with no cache.
@@ -93,6 +139,13 @@ pub struct IdeChannel {
 }
 
 impl IdeChannel {
+    /// Lends the channel to the optical drive at `end` if no disk's
+    /// command is in flight ([`Share::lend`]). Runs under the queue's
+    /// lock, as its requests start.
+    fn lend(&self, end: u8) -> bool {
+        self.share.lend(end, self.flight.is_none() && self.done.is_none())
+    }
+
     /// Copies a bounced read's bytes to its buffers.
     fn copy_back(&mut self) {
         let mut at = self.bounce.phys();
@@ -136,7 +189,7 @@ impl IdeChannel {
 
 impl Controller for IdeChannel {
     fn room(&self, _op: Op, _segments: usize) -> bool {
-        self.flight.is_none() && self.done.is_none()
+        self.flight.is_none() && self.done.is_none() && self.share.free()
     }
 
     fn submit(&mut self, slot: u8, request: &Request<'_>, _more: bool) -> Result<(), Error> {
@@ -168,7 +221,8 @@ impl Controller for IdeChannel {
         } else {
             self.place_buffers(request.data, op == IdeOp::Write)? && op == IdeOp::Read
         };
-        self.channel.start(drive, op, lba, count, &self.prds).map_err(|err| match err {
+        let started = self.share.channel.lock().start(drive, op, lba, count, &self.prds);
+        started.map_err(|err| match err {
             radix_ide::Error::BadRequest => Error::OutOfRange,
             _ => Error::Io,
         })?;
@@ -181,7 +235,7 @@ impl Controller for IdeChannel {
             return Some(done);
         }
         let flight = self.flight?;
-        let result = self.channel.poll()?;
+        let result = self.share.channel.lock().poll()?;
         self.flight = None;
         match result {
             Ok(()) => {
@@ -213,7 +267,7 @@ impl Controller for IdeChannel {
 
     fn reset(lanes: &mut [Part<IdeChannel>]) -> bool {
         for lane in lanes {
-            let ready = lane.channel.reset(&mut queue::delay);
+            let ready = lane.share.channel.lock().reset(&mut queue::delay);
             if let Some(flight) = lane.flight.take() {
                 lane.done = Some((flight.slot, Outcome::Retry));
             }
@@ -239,10 +293,14 @@ fn io_bar(function: &Function, index: usize) -> Option<(u16, u16)> {
     }
 }
 
-/// Sets up the IDE controller `function` and the disks on its channels,
-/// counting them in `next`. Kept out of the frame of `init`'s scan.
+/// Sets up the IDE controller `function`, the disks on its channels,
+/// counting them in `next`, and its optical drives, counting them in
+/// `drives`. Kept out of the frame of `init`'s scan.
 #[inline(never)]
-pub fn bind(function: &Function, next: &mut usize) -> Result<(), &'static str> {
+pub fn bind(
+    function: &Function,
+    (next, drives): (&mut usize, &mut usize),
+) -> Result<(), &'static str> {
     let (_, _, programming) = function.class();
     if programming & interface::BUS_MASTER == 0 {
         return Err("it has no bus-master DMA, which the kernel needs");
@@ -283,7 +341,7 @@ pub fn bind(function: &Function, next: &mut usize) -> Result<(), &'static str> {
             IoWindow::new(control, 1),
             IoWindow::new(bus_master + u16::from(number) * 8, radix_ide::BUS_MASTER_PORTS),
         );
-        match add_channel(function, windows, &place, next) {
+        match add_channel(function, windows, &place, (&mut *next, &mut *drives)) {
             Ok(found) => serial |= found,
             Err(why) => warn!("Disk: IDE {place}: {why}"),
         }
@@ -305,13 +363,14 @@ struct Found {
 }
 
 /// Sets up the channel of `windows` (its command block, control port and
-/// bus-master registers) and its disks; whether one is Serial ATA.
+/// bus-master registers), its disks, counted in `next`, and its optical
+/// drives, counted in `drives`; whether a disk is Serial ATA.
 #[inline(never)]
 fn add_channel(
     function: &Function,
     (command, control, bus_master): (IoWindow, IoWindow, IoWindow),
     place: &TextBuf<40>,
-    next: &mut usize,
+    (next, drives): (&mut usize, &mut usize),
 ) -> Result<bool, &'static str> {
     let source = function.address();
     let mut alloc = |pages: usize, below: bool| <Arch as Devices>::alloc_dma(source, pages, below);
@@ -327,34 +386,74 @@ fn add_channel(
     let found = Found {
         devices: [channel.identify(0, &mut queue::delay), channel.identify(1, &mut queue::delay)],
     };
-    let mut drives = [Drive::default(); 2];
+    let share = new_share(channel)?;
+    let mut ends = [Drive::default(); 2];
     let mut serial = false;
     for (end, device) in found.devices.iter().enumerate() {
         let which = if end == 0 { "master" } else { "slave" };
         match device {
-            Device::Absent => {}
-            Device::Atapi => {
-                info!("Disk: IDE {place}, {which}: an optical drive (ATAPI), not driven yet");
-            }
+            Device::Absent | Device::Atapi(_) => {}
             Device::Unsupported(why) => {
                 let why = radix_ahci::Absent::Unsupported(*why);
                 info!("Disk: IDE {place}, {which}: {why}; not used");
             }
             Device::Ata { identity, serial: sata } => {
-                drives[end] =
-                    Drive { present: true, flush: identity.write_cache && identity.flush };
+                ends[end] = Drive { present: true, flush: identity.write_cache && identity.flush };
                 serial |= sata;
             }
         }
     }
-    if drives.iter().all(|drive| !drive.present) {
-        return Ok(serial);
+    let disks = if ends.iter().any(|end| end.present) {
+        Some(add_disks(source, &share, ends, &found, place, next)?)
+    } else {
+        None
+    };
+    for (end, device) in found.devices.iter().enumerate() {
+        let Device::Atapi(identity) = device else { continue };
+        let which = if end == 0 { "master" } else { "slave" };
+        let link = new_link(source, share.clone(), disks.clone(), end as u8, *identity);
+        let mut at = TextBuf::new();
+        let _ = write!(at, "the IDE {place}, {which}");
+        match link.and_then(|link| optical::add_ide(link, at, source)) {
+            Ok(thread) => {
+                optical::release(&thread);
+                *drives += 1;
+            }
+            Err(why) => warn!("Disk: IDE {place}, {which}: {why}"),
+        }
     }
-    let bounce = alloc(SEGMENTS, true).ok_or("out of memory below 4 GiB")?;
-    let controller = new_channel(channel, drives, bounce, place.clone())?;
+    Ok(serial)
+}
+
+/// The channel, shared by its two ends, on the heap.
+#[inline(never)]
+fn new_share(channel: Channel<IoWindow>) -> Result<Arc<Share, Kmalloc>, &'static str> {
+    let share = Share {
+        channel: SpinLock::new(channel),
+        holder: AtomicU8::new(0),
+        wants: AtomicU8::new(0),
+    };
+    Arc::try_new_in(share, HEAP.with(Flags::MAY_SLEEP)).map_err(|_| "out of memory")
+}
+
+/// Sets up the disks at the `ends` of the channel `share` that are disks,
+/// as `found` says, counting them in `next`: one queue for both. Returns
+/// the queue.
+#[inline(never)]
+fn add_disks(
+    source: radix_hw::pci::Address,
+    share: &Arc<Share, Kmalloc>,
+    ends: [Drive; 2],
+    found: &Found,
+    place: &TextBuf<40>,
+    next: &mut usize,
+) -> Result<Arc<Disk<IdeChannel>, Kmalloc>, &'static str> {
+    let bounce =
+        <Arch as Devices>::alloc_dma(source, SEGMENTS, true).ok_or("out of memory below 4 GiB")?;
+    let controller = new_channel(share.clone(), ends, bounce, place.clone())?;
     // Each disk's name; the queue is named after the first.
     let mut names: [Option<(u32, Name)>; 2] = [None, None];
-    for (end, drive) in drives.iter().enumerate() {
+    for (end, drive) in ends.iter().enumerate() {
         if drive.present {
             names[end] = super::take_sd_name();
         }
@@ -364,12 +463,12 @@ fn add_channel(
             super::give_back_sd_letter(*letter);
         }
     };
-    if drives.iter().zip(&names).any(|(drive, name)| drive.present && name.is_none()) {
+    if ends.iter().zip(&names).any(|(drive, name)| drive.present && name.is_none()) {
         give_back(&names);
         return Err("too many SATA and USB disks");
     }
     let first = names.iter().flatten().next().map_or_else(Name::new, |(_, name)| name.clone());
-    let cache = drives.iter().any(|drive| drive.flush);
+    let cache = ends.iter().any(|drive| drive.flush);
     let template = Info {
         sectors: 0,
         logical_block: 512,
@@ -393,13 +492,13 @@ fn add_channel(
             *next += 1;
         }
     }
-    Ok(serial)
+    Ok(disk)
 }
 
 /// The channel's part of the queue, on the heap.
 #[inline(never)]
 fn new_channel(
-    channel: Channel<IoWindow>,
+    share: Arc<Share, Kmalloc>,
     drives: [Drive; 2],
     bounce: Dma,
     place: TextBuf<40>,
@@ -415,7 +514,7 @@ fn new_channel(
         let _ = copy.push_within_capacity(0);
     }
     let controller = IdeChannel {
-        channel,
+        share,
         drives,
         flight: None,
         done: None,
@@ -489,4 +588,319 @@ fn add_disk(
     register(Entry { name: name.clone(), device: device.clone(), place: None, ident: Some(ident) });
     partitions(name, &device);
     Ok(())
+}
+
+/// How long REQUEST SENSE after a failed command may take.
+const SENSE_US: u32 = 10_000_000;
+/// How long a packet command is first waited for, in microseconds; each
+/// wait after doubles, to [`PACKET_LONGEST_US`].
+const PACKET_FIRST_US: u32 = 10;
+const PACKET_LONGEST_US: u32 = 4_000;
+/// How often an optical drive's thread asks again for its channel while
+/// a disk's command has it.
+const BORROW_US: u32 = 500;
+
+/// An optical drive on an IDE channel, as its thread reaches it.
+pub(super) struct IdeLink {
+    share: Arc<Share, Kmalloc>,
+    /// The queue of the disks on the channel, if any: the channel is
+    /// borrowed from it.
+    disks: Option<Arc<Disk<IdeChannel>, Kmalloc>>,
+    /// Which end it is: 0, the master, or 1.
+    end: u8,
+    identity: PacketIdentity,
+    /// Below 4 GiB, for reads by DMA into memory the bus master does not
+    /// reach: [`SEGMENTS`] pages.
+    bounce: Dma,
+    /// A read's bytes by PIO, or a page between its buffers and the
+    /// bounce buffer: [`SEGMENTS`] pages.
+    copy: Vec<u8, Kmalloc>,
+    /// The drive stopped answering, and its channel did not come back.
+    dead: bool,
+}
+
+/// The link to the optical drive at `end` of the channel `share`, whose
+/// disks' queue, if any, is `disks`. Kept out of `add_channel`'s frame.
+#[inline(never)]
+fn new_link(
+    source: radix_hw::pci::Address,
+    share: Arc<Share, Kmalloc>,
+    disks: Option<Arc<Disk<IdeChannel>, Kmalloc>>,
+    end: u8,
+    identity: PacketIdentity,
+) -> Result<IdeLink, &'static str> {
+    let bounce =
+        <Arch as Devices>::alloc_dma(source, SEGMENTS, true).ok_or("out of memory below 4 GiB")?;
+    let mut copy = Vec::new_in(HEAP.with(Flags::MAY_SLEEP));
+    copy.try_reserve_exact(SEGMENTS * PAGE).map_err(|_| "out of memory")?;
+    while copy.len() < SEGMENTS * PAGE {
+        let _ = copy.push_within_capacity(0);
+    }
+    Ok(IdeLink { share, disks, end, identity, bounce, copy, dead: false })
+}
+
+impl IdeLink {
+    /// What the drive said of itself.
+    pub(super) fn identity(&self) -> &PacketIdentity {
+        &self.identity
+    }
+
+    /// Whether the drive stopped answering for good.
+    pub(super) fn dead(&self) -> bool {
+        self.dead
+    }
+
+    /// The most buffers of a read, each at most a page.
+    pub(super) const MAX_SEGMENTS: usize = SEGMENTS;
+
+    /// The drive's commands, which wait with `wait`.
+    pub(super) fn packets<'a>(&'a mut self, wait: &'a mut dyn FnMut(u32)) -> IdePackets<'a> {
+        IdePackets { link: self, wait }
+    }
+
+    /// Borrows the channel, waiting while a disk's command or the other
+    /// end's has it, for at most `limit_us`.
+    fn borrow(&mut self, limit_us: u32, wait: &mut dyn FnMut(u32)) -> bool {
+        let mut waited = 0u32;
+        loop {
+            let lent = match &self.disks {
+                Some(disks) => disks.controller(|c| c.lend(self.end)).unwrap_or(false),
+                None => self.share.lend(self.end, true),
+            };
+            if lent {
+                return true;
+            }
+            if waited >= limit_us {
+                self.share.wants.fetch_and(!(1 << self.end), Ordering::AcqRel);
+                if let Some(disks) = &self.disks {
+                    disks.collect(0);
+                }
+                return false;
+            }
+            wait(BORROW_US);
+            waited = waited.saturating_add(BORROW_US);
+        }
+    }
+
+    /// Gives the channel back, and wakes the disks' requests that waited
+    /// for it.
+    fn give_back(&self) {
+        self.share.holder.store(0, Ordering::Release);
+        if let Some(disks) = &self.disks {
+            disks.collect(0);
+        }
+    }
+
+    /// Resets the channel, after a command the drive left unanswered or
+    /// garbled; whether a device is ready after.
+    fn reset(&mut self) -> bool {
+        let ready = self.share.channel.lock().reset(&mut queue::delay);
+        if !ready {
+            self.dead = true;
+        }
+        ready
+    }
+
+    /// Runs the packet `bytes`, moving `transfer`, to its end, for at
+    /// most `limit_us`: the bytes moved, or the error register of a
+    /// command the drive failed.
+    fn exchange(
+        &mut self,
+        bytes: &[u8],
+        mut transfer: Transfer<'_>,
+        limit_us: u32,
+        wait: &mut dyn FnMut(u32),
+    ) -> Result<Result<u32, u8>, TransportError> {
+        let dmadir = self.identity.dmadir;
+        let started = self.share.channel.lock().start_packet(self.end, bytes, &transfer, dmadir);
+        if started.is_err() {
+            return Err(TransportError::Failed("its channel refused the command"));
+        }
+        let (mut waited, mut step) = (0u32, PACKET_FIRST_US);
+        loop {
+            let polled = self.share.channel.lock().poll_packet(&mut transfer);
+            match polled {
+                Some(Ok(moved)) => return Ok(Ok(moved)),
+                Some(Err(radix_ide::Error::Device { error, .. })) => return Ok(Err(error)),
+                Some(Err(radix_ide::Error::Bus)) => {
+                    return Err(TransportError::Failed("the bus master could not reach memory"));
+                }
+                Some(Err(_)) => {
+                    return if self.reset() {
+                        Err(TransportError::Failed(
+                            "it did not follow the packet protocol; the channel was reset",
+                        ))
+                    } else {
+                        Err(TransportError::Gone)
+                    };
+                }
+                None => {}
+            }
+            if waited >= limit_us {
+                return if self.reset() {
+                    Err(TransportError::Failed("it did not answer in time; the channel was reset"))
+                } else {
+                    Err(TransportError::Gone)
+                };
+            }
+            wait(step);
+            waited = waited.saturating_add(step);
+            step = step.saturating_mul(2).min(PACKET_LONGEST_US);
+        }
+    }
+
+    /// Runs `cdb` with `data`, by PIO, or by DMA for buffers in memory
+    /// when the drive does DMA and the length is a multiple of 16 bytes
+    /// (Linux's libata's rule: many drives fail DMA of less), through the
+    /// bounce buffer for those the bus master does not reach.
+    fn run(
+        &mut self,
+        cdb: &Cdb,
+        data: Data<'_>,
+        limit_us: u32,
+        wait: &mut dyn FnMut(u32),
+    ) -> Result<Result<u32, u8>, TransportError> {
+        let bytes = cdb.bytes();
+        let (into_host, frames) = match data {
+            Data::None => return self.exchange(bytes, Transfer::None, limit_us, wait),
+            Data::In(buffer) => return self.exchange(bytes, Transfer::In(buffer), limit_us, wait),
+            Data::Out(buffer) => {
+                return self.exchange(bytes, Transfer::Out(buffer), limit_us, wait);
+            }
+            Data::Frames { into_host, frames } => (into_host, frames),
+        };
+        let total: usize = frames.iter().map(|&(_, len)| len as usize).sum();
+        if frames.len() > SEGMENTS || total > self.copy.len() {
+            return Err(TransportError::Failed("more data than a command takes"));
+        }
+        if self.identity.dma && total.is_multiple_of(16) {
+            let reached = frames.iter().all(|&(phys, len)| phys + u64::from(len) <= 1 << 32);
+            if reached {
+                let mut buffers = [(0u32, 0u32); SEGMENTS];
+                for (slot, &(phys, len)) in buffers.iter_mut().zip(frames) {
+                    *slot = (phys as u32, len);
+                }
+                let transfer = Transfer::Dma { into_host, buffers: &buffers[..frames.len()] };
+                return self.exchange(bytes, transfer, limit_us, wait);
+            }
+            // Through the bounce buffer, a page at a time.
+            let at = self.bounce.phys();
+            if !into_host {
+                self.bounce_out(frames);
+            }
+            let buffers = [(at as u32, total as u32)];
+            let transfer = Transfer::Dma { into_host, buffers: &buffers };
+            let done = self.exchange(bytes, transfer, limit_us, wait)?;
+            if into_host && done.is_ok() {
+                self.bounce_in(frames);
+            }
+            return Ok(done);
+        }
+        if !into_host {
+            let mut at = 0;
+            for &(phys, len) in frames {
+                <Arch as UserMode>::read_frames(phys, &mut self.copy[at..at + len as usize]);
+                at += len as usize;
+            }
+        }
+        // Out of the link while the command borrows it; nothing is
+        // allocated in its place.
+        let mut buffer =
+            core::mem::replace(&mut self.copy, Vec::new_in(HEAP.with(Flags::MAY_SLEEP)));
+        let transfer = if into_host {
+            Transfer::In(&mut buffer[..total])
+        } else {
+            Transfer::Out(&buffer[..total])
+        };
+        let done = self.exchange(bytes, transfer, limit_us, wait);
+        if into_host && let Ok(Ok(moved)) = done {
+            let mut at = 0;
+            for &(phys, len) in frames {
+                let end = (at + len as usize).min(moved as usize);
+                if end > at {
+                    <Arch as UserMode>::write_frames(phys, &buffer[at..end]);
+                }
+                at += len as usize;
+            }
+        }
+        self.copy = buffer;
+        done
+    }
+
+    /// Copies `frames` into the bounce buffer, for a write.
+    fn bounce_out(&mut self, frames: &[(u64, u32)]) {
+        let mut at = self.bounce.phys();
+        for &(phys, len) in frames {
+            let page = &mut self.copy[..len as usize];
+            <Arch as UserMode>::read_frames(phys, page);
+            <Arch as UserMode>::write_frames(at, page);
+            at += u64::from(len);
+        }
+    }
+
+    /// Copies the bounce buffer out to `frames`, after a read.
+    fn bounce_in(&mut self, frames: &[(u64, u32)]) {
+        let mut at = self.bounce.phys();
+        for &(phys, len) in frames {
+            let page = &mut self.copy[..len as usize];
+            <Arch as UserMode>::read_frames(at, page);
+            <Arch as UserMode>::write_frames(phys, page);
+            at += u64::from(len);
+        }
+    }
+
+    /// Why the drive failed a command whose error register is `error`:
+    /// what REQUEST SENSE says, or the sense key in the register's upper
+    /// bits if it says nothing.
+    fn sense(&mut self, error: u8, wait: &mut dyn FnMut(u32)) -> Result<Sense, TransportError> {
+        let fallback = Sense { key: error >> 4, asc: 0, ascq: 0 };
+        let mut bytes = [0u8; radix_scsi::SENSE_LENGTH as usize];
+        let cdb = Cdb::request_sense(radix_scsi::SENSE_LENGTH);
+        Ok(match self.exchange(cdb.bytes(), Transfer::In(&mut bytes), SENSE_US, wait)? {
+            Ok(moved) => Sense::parse(&bytes[..moved as usize]).unwrap_or(fallback),
+            Err(_) => fallback,
+        })
+    }
+}
+
+/// The optical drive on an IDE channel, as the [`Transport`] that carries
+/// its SCSI commands (MMC-6) in PACKET commands, one at a time, on the
+/// channel it borrows for each. A command the drive fails is followed by
+/// REQUEST SENSE, whose answer is the reply's sense, as Linux's libata
+/// gets it. Its one logical unit is 0.
+pub(super) struct IdePackets<'a> {
+    link: &'a mut IdeLink,
+    wait: &'a mut dyn FnMut(u32),
+}
+
+impl Transport for IdePackets<'_> {
+    fn command(
+        &mut self,
+        lun: u8,
+        cdb: &Cdb,
+        data: Data<'_>,
+        timeout_ms: u32,
+    ) -> Result<Reply, TransportError> {
+        if lun != 0 {
+            let none = Sense { key: radix_scsi::key::ILLEGAL_REQUEST, asc: 0x25, ascq: 0 };
+            return Ok(Reply::Failed(Some(none)));
+        }
+        if self.link.dead {
+            return Err(TransportError::Gone);
+        }
+        let total = data.len() as u32;
+        let limit_us = timeout_ms.saturating_mul(1_000);
+        if !self.link.borrow(limit_us, self.wait) {
+            return Err(TransportError::Failed("its channel stayed busy with a disk's commands"));
+        }
+        let reply = match self.link.run(cdb, data, limit_us, self.wait) {
+            Ok(Ok(moved)) => Ok(Reply::Good { residue: total.saturating_sub(moved) }),
+            Ok(Err(error)) => {
+                self.link.sense(error, self.wait).map(|sense| Reply::Failed(Some(sense)))
+            }
+            Err(why) => Err(why),
+        };
+        self.link.give_back();
+        reply
+    }
 }

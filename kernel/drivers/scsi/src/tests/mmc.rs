@@ -12,8 +12,8 @@ use std::vec::Vec;
 
 use super::Sim;
 use crate::mmc::{
-    self, BLOCK, Configuration, Content, DiscInformation, Family, MediaEvent, MediaStatus, Profile,
-    Status, Toc, last_session, toc_format,
+    self, BLOCK, Configuration, Content, DiscInformation, Events, Family, MediaEvent, MediaStatus,
+    Profile, Status, Toc, last_session, toc_format,
 };
 use crate::*;
 
@@ -36,7 +36,8 @@ pub(super) struct Disc {
     old: bool,
     /// Refuses READ CAPACITY.
     pub(super) no_capacity: bool,
-    /// Media events to report, code and status, in order.
+    /// Media events to report, code and status, in order; a code with
+    /// its top bit set says no event is available.
     events: Vec<(u8, u8)>,
 }
 
@@ -67,14 +68,19 @@ impl Disc {
     pub(super) fn answer(&mut self, cdb: &[u8], no_medium: bool, out: &mut Vec<u8>) -> Reply {
         let illegal = |asc| Sim::sense(key::ILLEGAL_REQUEST, asc, 0);
         match cdb[0] {
-            op::GET_EVENT_STATUS_NOTIFICATION => {
+            op::GET_EVENT_STATUS_NOTIFICATION if !self.old => {
                 assert_eq!((cdb[1] & 1, cdb[4]), (1, 0x10), "polled, of the media class");
                 let (code, status) = if self.events.is_empty() {
                     (0, if no_medium { 0 } else { 2 })
                 } else {
                     self.events.remove(0)
                 };
-                out.extend([0, 6, 4, 0x10, code, status, 0, 0]);
+                if code & 0x80 != 0 {
+                    // No event available: a drive without the media class.
+                    out.extend([0, 2, 0x80, 0]);
+                } else {
+                    out.extend([0, 6, 4, 0x10, code, status, 0, 0]);
+                }
                 Reply::Good { residue: 0 }
             }
             op::GET_CONFIGURATION if !self.old => {
@@ -521,4 +527,54 @@ proptest! {
         let _ = DiscInformation::parse(&bytes);
         let _ = MediaStatus::parse(&bytes);
     }
+}
+
+#[test]
+fn the_eject_button_is_said_among_the_drives_events_until_it_has_none() {
+    // Nothing to say: one question.
+    let mut sim = Sim::drive(Disc::data(Profile::DVD_ROM, 5000));
+    assert_eq!(mmc::events(&mut sim, 0), Ok(Some(Events::default())));
+    assert_eq!(sim.sent, [op::GET_EVENT_STATUS_NOTIFICATION]);
+
+    // A disc put in, then the button: both read, until nothing is left.
+    let mut disc = Disc::data(Profile::DVD_ROM, 5000);
+    disc.events = std::vec![(2, 2), (1, 2)];
+    let mut sim = Sim::drive(disc);
+    assert_eq!(mmc::events(&mut sim, 0), Ok(Some(Events { eject_request: true, changed: false })));
+    assert_eq!(sim.sent, [op::GET_EVENT_STATUS_NOTIFICATION; 3]);
+    assert_eq!(mmc::events(&mut sim, 0), Ok(Some(Events::default())));
+
+    // A drive that keeps saying something is asked no more than four times.
+    let mut disc = Disc::data(Profile::DVD_ROM, 5000);
+    disc.events = std::vec![(4, 2); 9];
+    let mut sim = Sim::drive(disc);
+    assert_eq!(mmc::events(&mut sim, 0), Ok(Some(Events::default())));
+    assert_eq!(sim.sent.len(), 4);
+}
+
+#[test]
+fn a_drive_without_media_events_is_not_asked_for_them() {
+    // Too old for the command.
+    let mut disc = Disc::data(Profile::CD_ROM, 5000);
+    disc.old = true;
+    assert_eq!(mmc::events(&mut Sim::drive(disc), 0), Ok(None));
+    // No event of the media class: the drive does not report them.
+    let mut disc = Disc::data(Profile::CD_ROM, 5000);
+    disc.events = std::vec![(0x80, 0)];
+    assert_eq!(mmc::events(&mut Sim::drive(disc), 0), Ok(None));
+    // A transport that fails says nothing of it.
+    let mut sim = Sim::drive(Disc::data(Profile::CD_ROM, 5000));
+    sim.gone = true;
+    assert_eq!(mmc::events(&mut sim, 0), Err(TransportError::Gone));
+}
+
+#[test]
+fn a_unit_attention_answered_to_the_events_is_kept_for_the_look() {
+    // A drive that answers the attentions of a disc put in to every
+    // command, as MMC has it not do.
+    let mut sim = Sim::drive(Disc::data(Profile::DVD_ROM, 5000));
+    sim.changes = std::vec![0x3a, 0x28];
+    let events = mmc::events(&mut sim, 0).unwrap().unwrap();
+    assert_eq!(events, Events { eject_request: false, changed: true });
+    assert_eq!(sim.sent, [op::GET_EVENT_STATUS_NOTIFICATION; 3]);
 }

@@ -20,6 +20,13 @@
 //! the count moves, what was on the drive is gone and what is on it now
 //! came, though the names be the same: the old medium's volumes are
 //! unmounted, and the new one's mounted.
+//!
+//! An optical drive keeps its disc in while it is mounted, and when its
+//! eject button is pressed, the kernel counts the press in
+//! `/kernel/block/<drive>/eject_requests` (ADR 0432). When that count
+//! moves, volumed unmounts the disc's volumes and ejects it, as eject(1)
+//! does; a volume that cannot be unmounted keeps the disc in, and
+//! volumed says why.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{File, OpenOptions};
@@ -37,7 +44,7 @@ use crate::probe::{self, BLOCKS};
 use crate::proc::{self, Mount};
 use crate::sys::{self, SYS};
 use crate::util::{self, Fail};
-use crate::{df, links};
+use crate::{df, eject, links};
 
 /// How often `/kernel/block` is looked at.
 const PERIOD: Duration = Duration::from_secs(1);
@@ -72,6 +79,9 @@ struct Present {
     /// For each drive whose medium comes and goes, how many times one went
     /// in or came out.
     changes: BTreeMap<String, u64>,
+    /// For each optical drive, how many times its eject button was pressed
+    /// while its disc was locked in.
+    requests: BTreeMap<String, u64>,
 }
 
 /// The disks and partitions there are now.
@@ -82,14 +92,20 @@ fn names() -> BTreeSet<String> {
     )
 }
 
-/// How many times the medium of each of `drives` went in or came out.
-fn changes<'a>(drives: impl Iterator<Item = &'a String>) -> BTreeMap<String, u64> {
+/// The count `/kernel/block/<drive>/<file>` holds for each of `drives`
+/// that has it.
+fn counts<'a>(drives: impl Iterator<Item = &'a String>, file: &str) -> BTreeMap<String, u64> {
     drives
         .filter_map(|drive| {
-            let count = probe::block_text(drive, "media_changes")?.parse().ok()?;
+            let count = probe::block_text(drive, file)?.parse().ok()?;
             Some((drive.clone(), count))
         })
         .collect()
+}
+
+/// How many times the medium of each of `drives` went in or came out.
+fn changes<'a>(drives: impl Iterator<Item = &'a String>) -> BTreeMap<String, u64> {
+    counts(drives, "media_changes")
 }
 
 /// What `/kernel/block` has now. `drives` says of each name seen whether
@@ -119,6 +135,8 @@ fn present(drives: &mut BTreeMap<String, bool>) -> Present {
             break;
         }
     }
+    let drives = drives.iter().filter(|(_, drive)| **drive).map(|(name, _)| name);
+    now.requests = counts(drives, "eject_requests");
     now
 }
 
@@ -325,11 +343,49 @@ fn repartitioned(name: &str, known: &BTreeSet<String>) -> bool {
     disk != name && known.contains(disk)
 }
 
+/// The drives in `now` whose count moved since `known`: one new to `now`
+/// has not moved.
+fn moved(known: &BTreeMap<String, u64>, now: &BTreeMap<String, u64>) -> BTreeSet<String> {
+    let moved = |(drive, count): (&String, &u64)| known.get(drive).is_some_and(|was| was != count);
+    now.iter().filter(|&entry| moved(entry)).map(|(drive, _)| drive.clone()).collect()
+}
+
 /// The drives of `now` whose medium went in or came out since `known`.
 fn swapped(known: &Present, now: &Present) -> BTreeSet<String> {
-    let moved =
-        |(drive, count): (&String, &u64)| known.changes.get(drive).is_some_and(|was| was != count);
-    now.changes.iter().filter(|&entry| moved(entry)).map(|(drive, _)| drive.clone()).collect()
+    moved(&known.changes, &now.changes)
+}
+
+/// The optical drives of `now` whose eject button was pressed since
+/// `known`.
+fn pressed(known: &Present, now: &Present) -> BTreeSet<String> {
+    moved(&known.requests, &now.requests)
+}
+
+/// Unmounts the volumes of the disc in the optical drive `drive`, whose
+/// eject button was pressed while the disc was locked in, and ejects it,
+/// as eject(1) does (ADR 0432): what volumed says of it. A volume that
+/// cannot be unmounted keeps the disc in.
+fn eject_pressed(drive: &str) -> String {
+    let pressed = format!("the eject button of {drive} was pressed");
+    let mut unmounted = Vec::new();
+    let mounts = volume_mounts().unwrap_or_default();
+    for mount in mounts.iter().filter(|mount| of_disk(drive, &mount.source)) {
+        let path = df::mount_path(mount);
+        if let Err(why) = unmount(&path) {
+            let path = path.display();
+            return format!("{pressed}, but {path} cannot be unmounted: {why}; the disc stays in");
+        }
+        unmounted.push(path.display().to_string());
+    }
+    let said = if unmounted.is_empty() {
+        pressed
+    } else {
+        format!("{pressed}; unmounted {}", unmounted.join(", "))
+    };
+    match eject::eject(drive) {
+        Ok(()) => said,
+        Err(why) => format!("{said}, but cannot eject the disc: {why}"),
+    }
 }
 
 /// What volumed says of `drive`, whose medium went in or came out.
@@ -408,6 +464,11 @@ fn watch() -> Result<i32, Fail> {
         if now.names != known.names || !swapped.is_empty() {
             links::refresh_quietly();
         }
+        // The eject button: the disc's volumes are unmounted and it is
+        // ejected; the next look finds the drive empty.
+        for drive in pressed(&known, &now) {
+            writeln!(out, "{}", eject_pressed(&drive))?;
+        }
         known = now;
     }
 }
@@ -464,12 +525,25 @@ mod tests {
     #[test]
     fn only_drives_whose_count_moved_are_swapped() {
         let counts = |pairs: &[(&str, u64)]| Present {
-            names: BTreeSet::new(),
             changes: pairs.iter().map(|&(d, c)| (d.to_string(), c)).collect(),
+            ..Present::default()
         };
         let known = counts(&[("sdb", 0), ("sdc", 2)]);
         let now = counts(&[("sdb", 1), ("sdc", 2), ("sdd", 0)]);
         assert_eq!(swapped(&known, &now), BTreeSet::from(["sdb".to_string()]));
+        assert!(pressed(&known, &now).is_empty());
+    }
+
+    #[test]
+    fn only_drives_whose_button_count_moved_were_pressed() {
+        let counts = |pairs: &[(&str, u64)]| Present {
+            requests: pairs.iter().map(|&(d, c)| (d.to_string(), c)).collect(),
+            ..Present::default()
+        };
+        let known = counts(&[("cd0", 0), ("cd1", 3)]);
+        let now = counts(&[("cd0", 0), ("cd1", 4), ("cd2", 1)]);
+        assert_eq!(pressed(&known, &now), BTreeSet::from(["cd1".to_string()]));
+        assert!(swapped(&known, &now).is_empty());
     }
 
     #[test]
