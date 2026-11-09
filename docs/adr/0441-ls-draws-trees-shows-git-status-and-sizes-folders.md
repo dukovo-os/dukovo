@@ -10,8 +10,8 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 ## Context
 
-This is the second part of the eza features Chase approved on
-2026-11-09 (ADR 0440 has the first). eza can list a folder as a tree,
+This is the second part of the features `ls` takes from eza (ADR
+0440 has the first). eza can list a folder as a tree,
 show each file's git status in the long listing, and show a folder's
 size as what it holds. With GNU's `ls` each of these takes another
 program: `tree`, `git status`, `du`. As in ADR 0440, eza is under the

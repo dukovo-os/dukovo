@@ -10,9 +10,8 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 ## Context
 
-This is the last of the `ls` features Chase approved on 2026-11-09
-(ADRs 0440 to 0442 have the others). The mockup asked one question of a
-file: who can reach it? On Linux the answer is spread over `ls -l`,
+This is the last of the new `ls` features (ADRs 0440 to 0442 have the
+others). It answers one question of a file: who can reach it? On Linux the answer is spread over `ls -l`,
 `getfacl` and every folder above the file, and nothing says what a
 person's apps may do. On Dukovo the second half matters as much as the
 first: an app runs in a sandbox that holds only the folders it was

@@ -10,8 +10,8 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 ## Context
 
-This is the third part of the `ls` features Chase approved on
-2026-11-09 (ADRs 0440 and 0441 have the first two). Those came from eza;
+This is the third part of the new `ls` features (ADRs 0440 and 0441
+have the first two). Those came from eza;
 these two come from Dukovo itself, and eza has nothing like them.
 
 A Dukovo app is a bundle installed sealed in `/applications/ID` or a
@@ -56,11 +56,10 @@ Two additions to `ls`, in a third patch of the port
   read-only]` after one where nothing can be changed, as `/system`.
   `WHEN` is `always`, `never` or `auto`, the default, which is when
   standard output is a terminal: `ls -l /` at the console shows the
-  marks, as the mockup did, and a pipe gets GNU's text. A subvolume's
-  top folder is inode 256 of its own tree, which Linux shows as
-  `st_ino` 256 and Radix as 256 in the low 40 bits, and the folder must
-  be on a Btrfs mount by the mount table, as other filesystems use 256
-  too. Read-only is what `access(2)` says to writing: `EROFS`, whether
+  marks, and a pipe gets GNU's text. A subvolume's top folder is inode
+  256 of its own tree, which Linux shows as `st_ino` 256 and Radix as
+  256 in the low 40 bits, and the folder must be on a Btrfs mount by
+  the mount table, as other filesystems use 256 too. Read-only is what `access(2)` says to writing: `EROFS`, whether
   the subvolume or its mount is, and not a want of permission.
 
 The field colours (ADR 0440) gain four keys: `app-sealed` (green),
