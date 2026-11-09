@@ -114,6 +114,7 @@ pub const KERNEL_LIBRARIES: &[&str] = &[
     "radix-fbcon",
     "radix-gpio",
     "radix-gve",
+    "radix-hda",
     "radix-i2c",
     "radix-ide",
     "radix-hal",
@@ -182,7 +183,9 @@ pub enum TestImage {
     Installed,
     /// The install stick (ADR 0308): the live system's menu, and the
     /// DUKOVO_LIVE partition after the image's own, holding the signed
-    /// release, unless the case boots it as a CD.
+    /// release; or for a case that boots it as a CD, the install DVD,
+    /// labelled DUKOVO_LIVE, holding the release in its `release`
+    /// directory (ADR 0433).
     Live,
 }
 
@@ -610,6 +613,25 @@ enum Bus {
     /// 32-bit descriptors, holding an `sd-card`): `mmcblk0` and on, in
     /// order. QEMU takes only cards whose size is a power of two.
     Sd,
+    /// A disc in an optical drive on a port of the AHCI controller of the
+    /// case's own (QEMU's `ide-cd`), after its SATA disks' ports: `cd0`
+    /// and on, in order, before the USB ones (ADR 0431).
+    SataCd,
+    /// A disc in an optical drive at the next end of the IDE controller
+    /// of the case's own (QEMU's `ide-cd` on `piix3-ide`), counted with
+    /// the [`Bus::Ide`] disks' ends: named `cd` and a number after the
+    /// AHCI ones, before the USB ones (ADR 0432).
+    IdeCd,
+    /// A disc in a USB optical drive over Bulk-Only (QEMU's `usb-bot`
+    /// with a `scsi-cd`) at this QEMU port, as [`Bus::Usb`]: named `cd`
+    /// and a number after the SATA ones, in the order the controller
+    /// finds them.
+    UsbCd(&'static str),
+    /// A disc in logical unit `n` of a USB optical drive that speaks USB
+    /// Attached SCSI (a `scsi-cd` on QEMU's `usb-uas`), at this QEMU port
+    /// of a case with [`UAS_PORTS`], as [`Bus::Uas`]; named as
+    /// [`Bus::UsbCd`] is.
+    UasCd(&'static str, u8),
 }
 
 impl Disk {
@@ -657,6 +679,11 @@ impl Disk {
         }
     }
 
+    /// Whether it is a disc in an optical drive.
+    fn optical(&self) -> bool {
+        matches!(self.bus, Bus::SataCd | Bus::IdeCd | Bus::UsbCd(_) | Bus::UasCd(..))
+    }
+
     /// Whether the kernel takes it for solid state: an NVMe disk, or a
     /// SATA one with QEMU's rotation rate of 1.
     fn solid(&self) -> bool {
@@ -676,7 +703,7 @@ fn uas_devices(disks: &[Disk]) -> Vec<&'static str> {
     let mut ports: Vec<&str> = disks
         .iter()
         .filter_map(|disk| match disk.bus {
-            Bus::Uas(port, _) => Some(port),
+            Bus::Uas(port, _) | Bus::UasCd(port, _) => Some(port),
             _ => None,
         })
         .collect();
@@ -722,18 +749,29 @@ pub struct DiskImage {
 /// The names the kernel gives a case's disks: `vda`, `vdb` and on for
 /// virtio ones, `sda`, `sdb` and on for SATA ones, then USB ones after
 /// the boot stick's, each in their order, `nvme<n>n1` and on for each
-/// NVMe controller's namespaces, and `mmcblk0` and on for SD cards.
+/// NVMe controller's namespaces, `mmcblk0` and on for SD cards, and
+/// `cd0` and on for discs, the SATA drives', then the IDE ones', before
+/// the USB ones'.
 fn disk_names(disks: &[Disk]) -> Vec<String> {
     let sata_disks =
         disks.iter().filter(|disk| matches!(disk.bus, Bus::Sata | Bus::Ide)).count() as u8;
     let (mut virtio, mut sata, mut usb) = (b'a', b'a', b'a' + sata_disks + 1);
     let mut namespaces = [0u32; 256];
     let mut cards = 0..;
+    let sata_drives = disks.iter().filter(|disk| disk.bus == Bus::SataCd).count();
+    let ide_drives = disks.iter().filter(|disk| disk.bus == Bus::IdeCd).count();
+    let (mut sata_cd, mut ide_cd) = (0.., sata_drives..);
+    let mut usb_cd = sata_drives + ide_drives..;
     disks
         .iter()
         .map(|disk| {
             let (prefix, letter) = match disk.bus {
                 Bus::Sd => return format!("mmcblk{}", cards.next().unwrap_or_default()),
+                Bus::SataCd => return format!("cd{}", sata_cd.next().unwrap_or_default()),
+                Bus::IdeCd => return format!("cd{}", ide_cd.next().unwrap_or_default()),
+                Bus::UsbCd(_) | Bus::UasCd(..) => {
+                    return format!("cd{}", usb_cd.next().unwrap_or_default());
+                }
                 Bus::Virtio => ("vd", &mut virtio),
                 Bus::Sata | Bus::Ide => ("sd", &mut sata),
                 Bus::Usb(_) | Bus::Uas(..) => ("sd", &mut usb),
@@ -772,7 +810,9 @@ const UAS_PORTS: &[&str] = &["-global", "qemu-xhci.p3=2"];
 fn uas_place(disks: &[Disk], port: &str, lun: u8) -> String {
     let root: u8 = port.parse().expect("a root port's number");
     let place = if root <= 2 { format!("1-{root}") } else { format!("1-{}", root + 2) };
-    let units = disks.iter().filter(|disk| matches!(disk.bus, Bus::Uas(p, _) if p == port));
+    let units = disks
+        .iter()
+        .filter(|disk| matches!(disk.bus, Bus::Uas(p, _) | Bus::UasCd(p, _) if p == port));
     if units.count() > 1 { format!("{place} LUN {lun}") } else { place }
 }
 
@@ -1150,7 +1190,8 @@ const SWAP_KIB: u64 = 1 << 20;
 const SWAP_UUID: &str = "6c6f9a34-1b7e-4f0e-9a51-0d2f3c5b8e17";
 
 /// The `root` test's disk: a copy of the test image with a Dukovo root
-/// partition, its third, as a virtio disk: `vda3`.
+/// partition, its third, as a virtio disk: `vda3`. For a case that boots
+/// a CD, whose test image is an ISO, the root is the whole disk: `vda`.
 const ROOT_DISKS: &[Disk] =
     &[Disk { label: image::ROOT_LABEL, ..btrfs_disk(Bus::Virtio, 512, ROOT, root_checked) }];
 
@@ -3219,7 +3260,17 @@ pub fn build_test_image(
         }
     };
     let output = dir.join(format!("{name}.{}", if iso { "iso" } else { "img" }));
-    image::build(
+    // The live DVD carries the signed release, as the stick's DUKOVO_LIVE
+    // does (ADR 0433).
+    let staging = dir.join(format!("{name}-release"));
+    let release = match (kind, iso) {
+        (TestImage::Live, true) => {
+            Some(image::stage_release(ctx, &built.kernel, &built.programs, &staging)?)
+        }
+        _ => None,
+    };
+    let release = release.as_deref();
+    let built_image = image::build(
         ctx,
         &ImageSpec {
             kernel: &built.kernel,
@@ -3230,12 +3281,15 @@ pub fn build_test_image(
             disk_check: None,
             root: None,
             live: None,
+            release,
             menu: if kind == TestImage::Live { Menu::Live(LiveStart::Try) } else { Menu::Tests },
             staging: dir.join(format!("{name}-root")),
             output: output.clone(),
             iso,
         },
-    )?;
+    );
+    let _ = std::fs::remove_dir_all(&staging);
+    built_image?;
     std::fs::read(&output).map_err(|err| Error::new(format!("reading {}: {err}", output.display())))
 }
 
@@ -3262,6 +3316,7 @@ fn build_installed_test_image(
             disk_check: None,
             root: None,
             live: None,
+            release: None,
             menu: Menu::Installed(uuid),
             staging: dir.join("dukovo-test-installed-root"),
             output: output.clone(),
@@ -3278,9 +3333,9 @@ fn cmdline_slot() -> String {
 
 /// How many of a test image's boot menu entries hold the command line:
 /// an installed system's and its startup-trouble entry, or the live
-/// menu's Install Dukovo, Try Dukovo and Install Dukovo (serial console)
-/// (dukovo-boot(7)).
-const CMDLINE_ENTRIES: usize = 3;
+/// menu's Install Dukovo, Install Dukovo with speech, Try Dukovo and
+/// Install Dukovo (serial console) (dukovo-boot(7)).
+const CMDLINE_ENTRIES: usize = 4;
 
 /// A copy of a test image with `cmdline` in its command-line slots, one
 /// in each menu entry that holds it.
@@ -3294,7 +3349,7 @@ pub fn with_cmdline(image: &[u8], cmdline: &str) -> Result<Vec<u8>, String> {
         .collect();
     if found.is_empty() || found.len() > CMDLINE_ENTRIES {
         return Err(format!(
-            "the test image holds the command-line slot {} times, not one to three",
+            "the test image holds the command-line slot {} times, not one to four",
             found.len()
         ));
     }
@@ -3350,13 +3405,14 @@ fn utf8_length(first: u8) -> usize {
 }
 
 /// A copy of a test image whose menu starts *Boot from first disk* when
-/// nobody chooses: its fourth entry, after *Install Dukovo*, *Try
-/// Dukovo* and *Install Dukovo (serial console)* (dukovo-boot(7)). The
-/// menu's `set default=try` becomes `set default=3`, padded with spaces
-/// to its length, so that nothing else in the image moves.
+/// nobody chooses: its fifth entry, after *Install Dukovo*, *Install
+/// Dukovo with speech*, *Try Dukovo* and *Install Dukovo (serial
+/// console)* (dukovo-boot(7)). The menu's `set default=try` becomes `set
+/// default=4`, padded with spaces to its length, so that nothing else in
+/// the image moves.
 fn booting_first_disk(mut image: Vec<u8>) -> Result<Vec<u8>, String> {
     const TRY: &[u8] = b"\nset default=try\n";
-    const FIRST_DISK: &[u8] = b"\nset default=3  \n";
+    const FIRST_DISK: &[u8] = b"\nset default=4  \n";
     let found: Vec<usize> = image
         .windows(TRY.len())
         .enumerate()
@@ -3385,7 +3441,7 @@ fn test_images(
 ) -> Result<TestImages> {
     let mut images: TestImages = Vec::new();
     for case in cases {
-        let key = (case.image, case.media == Media::Cdrom);
+        let key = (case.image, case.media.is_cd());
         if images.iter().any(|(made, _)| *made == key) {
             continue;
         }
@@ -3436,7 +3492,7 @@ fn test_root(ctx: &Ctx, built: &Built, dir: &Path, cases: &[&Case]) -> Result<Op
 /// signed release of the test build, if a case of `cases` boots the stick
 /// from a disk.
 fn test_live(ctx: &Ctx, built: &Built, dir: &Path, cases: &[&Case]) -> Result<Option<PathBuf>> {
-    if !cases.iter().any(|case| case.image == TestImage::Live && case.media != Media::Cdrom) {
+    if !cases.iter().any(|case| case.image == TestImage::Live && !case.media.is_cd()) {
         return Ok(None);
     }
     let path = dir.join("live.btrfs");
@@ -3458,7 +3514,7 @@ fn append_own(
             let root = root.ok_or("the Dukovo root's filesystem was not made")?;
             image::append_root(image, root).map_err(|err| err.to_string())?;
         }
-        TestImage::Live if case.media != Media::Cdrom => {
+        TestImage::Live if !case.media.is_cd() => {
             let live = live.ok_or("the DUKOVO_LIVE filesystem was not made")?;
             image::append_live(image, live).map_err(|err| err.to_string())?;
         }
@@ -3477,7 +3533,7 @@ fn case_images(ctx: &Ctx, built: &Built, cases: &[&Case]) -> Result<()> {
     let live = test_live(ctx, built, &dir, cases)?;
     let images = test_images(ctx, built, &dir, cases, root.as_ref())?;
     for case in cases {
-        let iso = case.media == Media::Cdrom;
+        let iso = case.media.is_cd();
         let base = &images.iter().find(|(made, _)| *made == (case.image, iso)).expect("built").1;
         let path = dir.join(format!("{}.{}", case.name, if iso { "iso" } else { "img" }));
         let image = with_cmdline(base, case.cmdline).map_err(Error::new)?;
@@ -3513,7 +3569,7 @@ fn boot_tests(ctx: &Ctx, built: &Built, cases: &[&Case], timeout: Duration) -> R
     ));
     let mut failures = 0;
     for case in cases {
-        let key = (case.image, case.media == Media::Cdrom);
+        let key = (case.image, case.media.is_cd());
         let base = &images.iter().find(|(made, _)| *made == key).expect("built above").1;
         let started = Instant::now();
         let root = root.as_ref().map(|root| root.path.as_path());
@@ -3603,10 +3659,10 @@ fn run_case(
         std::fs::write(&path, bytes).map_err(|e| format!("{}: {e}", path.display()))?;
         *arg = format!("file={}", qemu::option_value(&path));
     }
-    if case.disks.iter().any(|disk| disk.bus == Bus::Sata) {
+    if case.disks.iter().any(|disk| matches!(disk.bus, Bus::Sata | Bus::SataCd)) {
         extra.extend(["-device".into(), "ich9-ahci,id=sata".into()]);
     }
-    if case.disks.iter().any(|disk| disk.bus == Bus::Ide) {
+    if case.disks.iter().any(|disk| matches!(disk.bus, Bus::Ide | Bus::IdeCd)) {
         extra.extend(["-device".into(), "piix3-ide,id=pata".into()]);
     }
     // A reader for each card, before them; each card names its reader's
@@ -3614,9 +3670,10 @@ fn run_case(
     for n in 0..case.disks.iter().filter(|disk| disk.bus == Bus::Sd).count() {
         extra.extend(["-device".into(), format!("sdhci-pci,id=sd{n}")]);
     }
-    if case.disks.iter().any(|disk| matches!(disk.bus, Bus::Usb(_) | Bus::Uas(..)))
-        && case.media != Media::Usb
-    {
+    let usb = |disk: &Disk| {
+        matches!(disk.bus, Bus::Usb(_) | Bus::Uas(..) | Bus::UsbCd(_) | Bus::UasCd(..))
+    };
+    if case.disks.iter().any(usb) && case.media != Media::Usb {
         return Err("a case with USB disks boots from USB, whose controller they are on".into());
     }
     for port in uas_devices(case.disks) {
@@ -3638,7 +3695,12 @@ fn run_case(
         // Discards reach the disk's file as holes, which read as zeros.
         extra.push("-drive".into());
         let ro = if disk.read_only { ",readonly=on" } else { "" };
-        extra.push(format!("file={file},if=none,id=disk{i},format=raw,discard=unmap{ro}"));
+        let cd = if disk.optical() { ",media=cdrom" } else { "" };
+        extra.push(format!("file={file},if=none,id=disk{i},format=raw,discard=unmap{ro}{cd}"));
+        // A USB optical drive over Bulk-Only: the device, then its drive.
+        if let Bus::UsbCd(port) = disk.bus {
+            extra.extend(["-device".into(), format!("usb-bot,bus=xhci.0,port={port},id=bot{i}")]);
+        }
         extra.push("-device".into());
         let device = match disk.sector {
             512 => disk.device.to_string(),
@@ -3650,10 +3712,19 @@ fn run_case(
                 port += 1;
                 format!("ide-hd,drive=disk{i},bus=sata.{}{device}", port - 1)
             }
-            Bus::Ide => {
+            Bus::SataCd => {
+                port += 1;
+                format!("ide-cd,drive=disk{i},bus=sata.{}{device}", port - 1)
+            }
+            Bus::UsbCd(_) => format!("scsi-cd,drive=disk{i},bus=bot{i}.0{device}"),
+            Bus::UasCd(port, lun) => {
+                format!("scsi-cd,drive=disk{i},bus=uas{port}.0,scsi-id=0,lun={lun}{device}")
+            }
+            Bus::Ide | Bus::IdeCd => {
                 end += 1;
                 let (channel, unit) = ((end - 1) / 2, (end - 1) % 2);
-                format!("ide-hd,drive=disk{i},bus=pata.{channel},unit={unit}{device}")
+                let kind = if disk.bus == Bus::IdeCd { "ide-cd" } else { "ide-hd" };
+                format!("{kind},drive=disk{i},bus=pata.{channel},unit={unit}{device}")
             }
             Bus::Nvme(n) => {
                 namespaces[usize::from(n)] += 1;
@@ -3895,9 +3966,24 @@ fn make_disks(
         }
         if disk.fat == ROOT {
             let root = root.ok_or("the Dukovo root's filesystem was not made")?;
-            std::fs::write(&image.path, base)
+            let first = if case.media.is_cd() {
+                // A CD's test image is an ISO, with no GPT to add the
+                // root to: the root is the whole disk, which Spark finds
+                // as it finds a partition.
+                (|| {
+                    let mut from = std::fs::File::open(root)?;
+                    let len = from.metadata()?.len().min(image::ROOT_BYTES);
+                    let mut to = std::fs::File::create(&image.path)?;
+                    to.set_len(image::ROOT_BYTES)?;
+                    image::copy_sparse(&mut from, 0, &mut to, 0, len)
+                })()
                 .map_err(|err| format!("writing {}: {err}", image.path.display()))?;
-            let first = image::append_root(&image.path, root).map_err(|err| err.to_string())?;
+                0
+            } else {
+                std::fs::write(&image.path, base)
+                    .map_err(|err| format!("writing {}: {err}", image.path.display()))?;
+                image::append_root(&image.path, root).map_err(|err| err.to_string())?
+            };
             let tool = btrfs::tool(ctx).map_err(|err| err.to_string())?;
             made.push(DiskImage {
                 offset: first * 512,
@@ -5718,7 +5804,7 @@ fn consoles(vm: &mut Vm, case: &Case) -> Result<(), String> {
     vm.expect("Boot complete.")?;
     vm.expect("spark: Spark v2 is process ")?;
     vm.expect("spark: listening at /system/live/spark/control")?;
-    vm.expect("spark: 20 services in /system/settings/spark/services, 17 enabled")?;
+    vm.expect("spark: 21 services in /system/settings/spark/services, 18 enabled")?;
     vm.expect("spark: started consoled (/system/commands/consoled) as process ")?;
     vm.expect("consoled: console of ")?;
     vm.expect("consoled: started /system/commands/nukesh on tty1 as process ")?;
@@ -7199,6 +7285,17 @@ fn disks_found(vm: &mut Vm, case: &Case) -> Result<(), String> {
                     format!(", {unit}: QEMU HARDDISK, 512 bytes a block, write cache"),
                 )
             }
+            Bus::IdeCd => {
+                end += 1;
+                let channel = if end <= 2 { "primary" } else { "secondary" };
+                let unit = if end % 2 == 1 { "master" } else { "slave" };
+                (
+                    line_of(&format!(
+                        "Disk: {name} is a DVD drive on the IDE {channel} channel at "
+                    ))?,
+                    format!(", {unit}: QEMU DVD-ROM "),
+                )
+            }
             Bus::Nvme(_) => (
                 line_of(&format!("Disk: {name} is an NVMe namespace of {size}: QEMU NVMe Ctrl, "))?,
                 format!("{} bytes a block{sectors}{ro}, write cache, deallocates", disk.sector),
@@ -7232,11 +7329,38 @@ fn disks_found(vm: &mut Vm, case: &Case) -> Result<(), String> {
                     if disk.read_only { ", write-protected" } else { "" }
                 ),
             ),
+            // QEMU's ATAPI drive says it reads DVDs; its SCSI one, which
+            // says the same, names itself a CD-ROM.
+            Bus::SataCd => {
+                port += 1;
+                (
+                    line_of(&format!("Disk: {name} is a DVD drive on AHCI port {} at ", port - 1))?,
+                    ": QEMU DVD-ROM ".to_string(),
+                )
+            }
+            Bus::UsbCd(port) => (
+                line_of(&format!("Disk: {name} is a USB optical drive on {}: ", usb_place(port)))?,
+                ": QEMU QEMU CD-ROM ".to_string(),
+            ),
+            Bus::UasCd(port, lun) => (
+                line_of(&format!(
+                    "Disk: {name} is a USB optical drive on {}: ",
+                    uas_place(case.disks, port, lun)
+                ))?,
+                ", USB Attached SCSI".to_string(),
+            ),
         };
         // Only a SATA or IDE disk's line says whether it is solid state.
         let says_solid = matches!(disk.bus, Bus::Sata | Bus::Ide) && disk.solid();
         if !line.contains(&want) || line.ends_with(", solid state") != says_solid {
             return Err(format!("the kernel described {name} as \"{line}\""));
+        }
+        // A disc is read whole, with no partition table looked for. QEMU
+        // says a disc of up to a CD's 360,000 blocks is a CD-ROM.
+        if disk.optical() {
+            let kind = if disk.kib > 720_000 { "dvd-rom" } else { "cd-rom" };
+            line_of(&format!("Disk: {name}: a disc of data ({kind}) of {size} "))?;
+            continue;
         }
         let part = partition_name(&name, 1);
         let size = disk_size(partition_sectors(disk) / 2);
@@ -7265,6 +7389,10 @@ fn disks_found(vm: &mut Vm, case: &Case) -> Result<(), String> {
     };
     if on(Bus::Sd) > 0 {
         ide += &format!(", {}", plural(on(Bus::Sd), "SD card"));
+    }
+    let drives = on(Bus::SataCd) + on(Bus::IdeCd);
+    if drives > 0 {
+        ide += &format!(", {}", plural(drives, "optical drive"));
     }
     line_of(&format!(
         "; {}, {}, {}{ide}",
@@ -7393,6 +7521,8 @@ fn storage_write(vm: &mut Vm, case: &Case) -> Result<(), String> {
             Bus::Nvme(_) => "QEMU NVMe Ctrl",
             Bus::Usb(_) | Bus::Uas(..) => "QEMU QEMU HARDDISK",
             Bus::Sd => "QEMU!",
+            Bus::SataCd | Bus::IdeCd => "QEMU DVD-ROM",
+            Bus::UsbCd(_) | Bus::UasCd(..) => "QEMU QEMU CD-ROM",
             Bus::Virtio => "",
         };
         if disk.table == Table::None && !model.is_empty() {
@@ -9202,7 +9332,7 @@ fn principals(vm: &mut Vm, case: &Case) -> Result<(), String> {
 fn services(vm: &mut Vm, case: &Case) -> Result<(), String> {
     boot_report(vm, case)?;
     vm.expect("Boot complete.")?;
-    vm.expect_anywhere("spark: 20 services in /system/settings/spark/services, 17 enabled")?;
+    vm.expect_anywhere("spark: 21 services in /system/settings/spark/services, 18 enabled")?;
     vm.expect_ahead("spark: started /system/tests/posix/servicetest as process ")?;
     let code = program_line(vm, "(/system/tests/posix/servicetest) exited with code ")?;
     let log = vm.log();
@@ -10124,14 +10254,17 @@ mod tests {
         let filled = String::from_utf8(with_cmdline(&twice, "kdb").unwrap()).unwrap();
         assert_eq!(filled.matches("kdb ").count(), 2);
         assert!(filled.contains("radix startup-trouble kdb "));
-        // The live menu's three entries that start Dukovo are filled too.
-        let thrice = format!("{slot}{slot}{slot}").into_bytes();
-        assert_eq!(
-            String::from_utf8(with_cmdline(&thrice, "x").unwrap()).unwrap().matches("x ").count(),
-            3
-        );
+        // The live menu's four entries that start Dukovo are filled too.
         let four_times = format!("{slot}{slot}{slot}{slot}").into_bytes();
-        assert!(with_cmdline(&four_times, "x").is_err());
+        assert_eq!(
+            String::from_utf8(with_cmdline(&four_times, "x").unwrap())
+                .unwrap()
+                .matches("x ")
+                .count(),
+            4
+        );
+        let five_times = format!("{slot}{slot}{slot}{slot}{slot}").into_bytes();
+        assert!(with_cmdline(&five_times, "x").is_err());
         // Padded by bytes, so a line with wider characters fills it too.
         let wide = String::from_utf8(with_cmdline(&image, "hostname=Dukovó").unwrap()).unwrap();
         assert_eq!(wide.len(), image.len());

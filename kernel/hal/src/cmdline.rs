@@ -191,6 +191,18 @@ pub const FLAGS: &[Flag] = &[
         summary: "for consoled, not the kernel: tty1 runs the installer's screens, as the install \
                   stick's Install Dukovo entry starts them, and root's shell once they end",
     },
+    Flag {
+        name: "speech",
+        value: None,
+        summary: "for readerd, not the kernel: the screen reader speaks from the first screen, \
+                  whatever reader.toml says, as the install stick's Install with speech entry \
+                  starts it",
+    },
+    Flag {
+        name: "reader-log",
+        value: None,
+        summary: "for readerd, not the kernel: log what the screen reader says, for the boot tests",
+    },
 ];
 
 /// The self-tests `selftest=name` runs; radix-debug(7) describes them.

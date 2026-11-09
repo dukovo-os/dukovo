@@ -125,13 +125,16 @@ Init: /system/commands/spark is process 1
   with Linux's udisks (ADR 0161). A Dukovo live partition, the install
   stick's DUKOVO_LIVE, whose _parttype_ is
   *5894c662-af90-4b47-baaf-2e3396443b25*, is always mounted read-only and
-  is never Dukovo's root, nor compressed (ADR 0308). A swap partition,
+  is never Dukovo's root, nor compressed (ADR 0308). So is the install
+  DVD: a disc in an optical drive, whose _/kernel/block/_*name*_/disc_
+  says what is in it, whose ISO 9660 volume is labelled *DUKOVO_LIVE*
+  (ADR 0433). A swap partition,
   of _parttype_ *0x82* or *0657fd6d-a4ab-43c4-84e5-0933c84b4f4f*, holds
   no filesystem and is not mounted.
-. When the kernel's command line has the flag *live*, as the install
-  stick's boot menu gives it, Spark starts the live system: no disk is
-  Dukovo's root, and the only disk it mounts is the stick's DUKOVO_LIVE,
-  read-only. The machine's own disks stay unmounted, as an installer and
+. When the kernel's command line has the flag *live*, as the boot menus
+  of the install stick and DVD give it, Spark starts the live system: no
+  disk is Dukovo's root, and the only volume it mounts is the stick's
+  DUKOVO_LIVE or the DVD, read-only. The machine's own disks stay unmounted, as an installer and
   a rescue shell need them; *mount*(8) mounts one by hand.
 . The first Btrfs mounted read-write whose top holds the subvolumes
   _@system.a_, _@settings_, _@state_, _@applications_, _@users_ and

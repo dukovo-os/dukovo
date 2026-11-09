@@ -1,0 +1,35 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# Intel HD Audio (PCI class 04/03, ADR 0322) on the lab's own machines:
+# each controller with an analog codec is an output, hda0 and on, that
+# plays 16-bit stereo at 48 kHz, and the kernel's log says what it found
+# and which jack plays. A controller whose codecs are all a display's
+# (HDMI, DisplayPort) is left for later, and the log says so; one that
+# could not be set up is a failure. A machine with no HD Audio (a QEMU
+# guest, as the lab runs it) passes each step with nothing to check. The
+# audio-hda boot tests check the same under QEMU's own HDA devices.
+about = "Each HD Audio controller with an analog codec is an output, hda0 and on, that plays 48 kHz stereo cleanly; the kernel's log names the codec and the jack it plays through"
+time = "3m"
+
+[[step]]
+run = '''sh -c 'c=$(lspci -n -d ::0403 | wc -l); h=$(ls /devices/audio | grep -c "^hda"); echo "HD Audio controllers $c, outputs $h"; { [ "$c" -eq 0 ] || [ "$h" -ge 1 ]; } && echo "outputs"-found' '''
+expect = "outputs-found"
+# What audiod plays at: 48 kHz, in two channels.
+[[step]]
+run = '''sh -c 'for o in $(ls /devices/audio | grep "^hda"); do audio info "$o" | grep -E "^(Output|Model|Channels|Rates):"; audio info "$o" | grep -q "^Channels:   2 to 2" && audio info "$o" | grep -qE "^Rates: .* 48(,| kHz)" || echo "$o does not play 48 kHz stereo"; done; echo "outputs"-checked' '''
+expect = "outputs-checked"
+expect_not = "does not play"
+[[step]]
+run = '''sh -c 'dmesg | grep "Audio: "; [ ! -e /devices/audio/hda0 ] || dmesg | grep -q "Audio: hda0 plays through" && echo "route"-logged' '''
+root = true
+expect = "route-logged"
+expect_not = "could not set up the HD Audio controller"
+# Playing moves the controller's engine along: a stream that stood still
+# would leave the output failed, and one that fell behind would count
+# underruns.
+[[step]]
+run = '''sh -c 'if [ ! -e /devices/audio/hda0 ]; then echo "no HD Audio: played"-cleanly; exit 0; fi; audio volume 30 && audio test hda0; audio volume 70; u=$(audio info hda0 | awk "/^Underruns:/ { print \$2 }"); echo "underruns $u"; [ "$u" = 0 ] && echo "played"-cleanly' '''
+root = true
+expect = "played-cleanly"
+expect_not = "audio:"

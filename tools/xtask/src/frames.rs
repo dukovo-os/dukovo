@@ -35,6 +35,10 @@ const ALLOWED: &[(&str, &str)] = &[
         "sets up a sound card at boot, on the boot CPU's 64 KiB stack",
     ),
     (
+        "radix::audio::hda::try_bind",
+        "sets up an HD Audio controller at boot, on the boot CPU's 64 KiB stack",
+    ),
+    (
         "radix::net::bind",
         "sets up a network card and its stack at boot, on the boot CPU's 64 KiB stack",
     ),
@@ -55,6 +59,11 @@ const ALLOWED: &[(&str, &str)] = &[
         "radix::net::program::attach_usb",
         "gives a USB Ethernet adapter its interface on its xHCI controller's thread, whose stack \
          is 48 KiB (radix::usb::XHCI_STACK_PAGES)",
+    ),
+    (
+        "<radix::audio::usb::Link>::new",
+        "builds a USB sound output's stream, with room for a transfer ring's TDs, on its xHCI \
+         controller's thread, whose stack is 48 KiB (radix::usb::XHCI_STACK_PAGES)",
     ),
     (
         "radix::net::start_loopback",

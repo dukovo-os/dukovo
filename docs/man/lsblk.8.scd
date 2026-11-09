@@ -22,7 +22,9 @@ shows a disk with its partitions, or a partition alone. Radix gives
 disks no device numbers, so there is no *MAJ:MIN* column. *RM*, *1* for
 a drive whose medium comes and goes, such as a card reader, and for its
 partitions (ADR 0430), shows only when asked for with *-o*, so that the
-default columns stay as they were.
+default columns stay as they were. *TYPE* is *disk*, *part* for a
+partition, or *rom* for a CD, DVD or Blu-ray drive (ADR 0431), as on
+Linux.
 
 ```
 $ lsblk

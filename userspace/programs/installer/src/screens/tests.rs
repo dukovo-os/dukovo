@@ -823,7 +823,38 @@ fn the_progress_follows_the_log_to_the_end() {
     ] {
         assert!(shown.contains(needle), "{needle}:\n{shown}");
     }
+    assert!(shown.contains("< Save setup file to the stick >"), "{shown}");
+    // Started from the install DVD, it says to take the disc out, and
+    // offers no setup file to save on it.
+    app.from_disc = true;
+    let shown = screen(&app);
+    assert!(shown.contains("Remove the install disc, then restart."), "{shown}");
+    assert!(!shown.contains("Save setup file"), "{shown}");
     assert_eq!(press(&mut app, KeyCode::Enter), Outcome::Restart);
+}
+
+#[test]
+fn from_the_install_dvd_the_pages_name_the_disc() {
+    let mut app = app();
+    app.from_disc = true;
+    let shown = screen(&app);
+    assert!(shown.contains("install.json on the web"), "{shown}");
+    // A disc holds no setup file: the web is the only place for one.
+    focus(&mut app, Id::FromFile);
+    press(&mut app, KeyCode::Char(' '));
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(app.page, Page::SetupFile);
+    let shown = screen(&app);
+    assert!(shown.contains("A disc holds none: it is downloaded from the web."), "{shown}");
+    assert!(shown.contains("The install disc holds no setup file."), "{shown}");
+    assert!(shown.contains("(•) Download it from a web address"), "{shown}");
+    // The review names the disc's release.
+    let mut app = self::app();
+    app.from_disc = true;
+    to_review(&mut app);
+    let shown = screen(&app);
+    assert!(shown.contains("Dukovo 0.14.0, the disc's signed system release"), "{shown}");
+    assert!(!shown.contains("stick"), "{shown}");
 }
 
 #[test]

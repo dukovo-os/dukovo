@@ -80,6 +80,19 @@ impl Device {
         probe::block_text(self.disk.as_deref().unwrap_or(&self.name), what).unwrap_or_default()
     }
 
+    /// Its TYPE, as Linux's lsblk has it: `part` for a partition, `rom`
+    /// for an optical drive (whose `/kernel/block` entry says what disc is
+    /// in it, ADR 0431), `disk` for the rest.
+    fn kind(&self) -> &'static str {
+        if self.disk.is_some() {
+            "part"
+        } else if probe::block_text(&self.name, "disc").is_some() {
+            "rom"
+        } else {
+            "disk"
+        }
+    }
+
     fn cell(&self, column: &str, bytes: bool) -> String {
         let size = |n: u64| if bytes { n.to_string() } else { util::human(n, false) };
         let number = |what: &str| self.of_disk(what).parse::<u64>().ok();
@@ -93,7 +106,7 @@ impl Device {
             "RO" => probe::block_text(&self.name, "ro").unwrap_or_default(),
             // A drive whose medium comes and goes, and its partitions.
             "RM" => self.of_disk("removable"),
-            "TYPE" => if self.disk.is_some() { "part" } else { "disk" }.into(),
+            "TYPE" => self.kind().into(),
             "MOUNTPOINT" => self.mounts.first().cloned().unwrap_or_default(),
             "MOUNTPOINTS" => self.mounts.join("\n"),
             "FSTYPE" => self.tag("TYPE"),

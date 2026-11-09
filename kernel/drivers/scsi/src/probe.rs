@@ -25,7 +25,7 @@ use crate::{
 
 /// How long a command of the probe may take: what Linux gives TEST UNIT
 /// READY and READ CAPACITY.
-const TIMEOUT_MS: u32 = 30_000;
+pub(crate) const TIMEOUT_MS: u32 = 30_000;
 /// How long a device that is not ready has to become ready: Linux's.
 const READY_MS: u32 = 100_000;
 /// How long between looks at a device that is not ready yet.
@@ -68,6 +68,9 @@ pub enum Absent {
     Transport(&'static str),
     /// It says a capacity the kernel cannot use.
     BadCapacity(Capacity),
+    /// It is an optical drive whose disc holds no data to read: a blank
+    /// disc, or music ([`crate::mmc::disc`]).
+    NotData(crate::mmc::Content),
 }
 
 impl From<TransportError> for Absent {
@@ -95,12 +98,16 @@ impl fmt::Display for Absent {
                 "it says it has {} blocks of {} bytes",
                 capacity.blocks, capacity.block_length
             ),
+            Absent::NotData(crate::mmc::Content::Audio) => {
+                f.write_str("its disc holds music, not files to read")
+            }
+            Absent::NotData(_) => f.write_str("its disc is blank"),
         }
     }
 }
 
 /// How a command the probe sent ended.
-enum Asked {
+pub(crate) enum Asked {
     /// It worked, and this many bytes came.
     Came(usize),
     /// It failed, with why if the device said.
@@ -110,7 +117,7 @@ enum Asked {
 /// Sends `cdb` to `lun`, its data coming into `buffer` (none if it is
 /// empty), again after a UNIT ATTENTION, an abort or a reset of the
 /// transport, up to [`TRIES`] times.
-fn ask<T: Transport + ?Sized>(
+pub(crate) fn ask<T: Transport + ?Sized>(
     transport: &mut T,
     lun: u8,
     cdb: &Cdb,
@@ -274,7 +281,7 @@ pub fn eject<T: Transport + ?Sized>(transport: &mut T, lun: u8) -> Result<(), Ab
 
 /// Waits for the device to be ready, starting it once if it asks to be,
 /// for up to [`READY_MS`].
-fn ready<T: Transport + ?Sized>(
+pub(crate) fn ready<T: Transport + ?Sized>(
     transport: &mut T,
     lun: u8,
     wait: &mut dyn FnMut(u32),

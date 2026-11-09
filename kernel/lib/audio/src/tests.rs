@@ -103,6 +103,21 @@ fn volumes_encode_as_oss_does() {
 }
 
 #[test]
+fn attenuation_is_as_loud_as_the_gain() {
+    // Within half a quarter of a decibel of 60 log10(p / 100), the
+    // decibels of the gain, and never louder at a lower volume.
+    for percent in 1..=100u8 {
+        let exact = -60.0 * (f64::from(percent) / 100.0).log10() * 4.0;
+        let table = f64::from(attenuation(percent));
+        assert!((table - exact).abs() <= 0.5, "{percent}: {table} for {exact}");
+        if percent > 1 {
+            assert!(attenuation(percent) <= attenuation(percent - 1));
+        }
+    }
+    assert_eq!((attenuation(100), attenuation(50), attenuation(0)), (0, 72, 480));
+}
+
+#[test]
 fn gain_is_the_cube_of_the_fraction() {
     assert_eq!(gain(100), 65536);
     assert_eq!(gain(0), 0);

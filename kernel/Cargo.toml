@@ -27,6 +27,7 @@ members = [
     "drivers/ena",
     "drivers/gpio",
     "drivers/gve",
+    "drivers/hda",
     "drivers/i2c",
     "drivers/ide",
     "drivers/intel",

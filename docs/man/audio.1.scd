@@ -26,15 +26,18 @@ audio - the sound outputs: list them, set the volume, test and play
 # DESCRIPTION
 
 audio works the sound outputs of _/devices/audio_ (ADR 0320): one for each
-sound card the kernel drives, such as *virtio0* for a virtual machine's
-virtio sound card. _default_ leads to the one in use. It needs root's
-access, as the outputs are root's.
+sound card the kernel drives, such as *hda0* for a computer's built-in
+sound (Intel HD Audio, ADR 0322), *usb0* for a USB headset, speaker or
+DAC (ADR 0323), or *virtio0* for a virtual machine's virtio sound card.
+A USB output comes and goes with its device. _default_ leads to the one
+in use. It needs root's access, as the outputs are root's.
 
 *list*, or no command, lists the outputs, the one in use marked *\**,
 with what each is, its volume and whether a program plays on it (or the
 screen reader speaks):
 ```
-* virtio0    virtio sound card     70%
+  hda0       Realtek HD Audio      70%
+* usb0       USB headset           70%
 ```
 
 *info* says more of one output, the default one unless named: its
@@ -59,8 +62,8 @@ saying which as it does, so that one hears both speakers and which is
 which. It ends once the tones have played.
 
 *play* plays WAV files, one after another, on the default output or the
-one *--output* names: PCM of 8, 16, 24 or 32 bits, or 32-bit floats, of
-any rate and channels. audio converts the samples to the 16-bit ones the
+one *--output* names, with *-* for standard input: PCM of 8, 16, 24 or
+32 bits, or 32-bit floats, of any rate and channels. audio converts the samples to the 16-bit ones the
 kernel takes, maps the channels (mono to both sides, more to fewer) and
 changes the rate to the nearest the output plays.
 

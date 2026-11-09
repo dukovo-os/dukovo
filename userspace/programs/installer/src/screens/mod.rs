@@ -142,7 +142,12 @@ fn get_ready(
     let machine = Machine::probe();
     step(2)?;
     let mut app = App::new(machine, &source.release.version, source.release.bytes());
-    app.setup_files = stick::setup_files(source.stick.as_deref());
+    // A disc holds no setup file: it has no EFI system partition to put
+    // one on.
+    if !source.disc {
+        app.setup_files = stick::setup_files(source.stick.as_deref());
+    }
+    app.from_disc = source.disc;
     // The live system is the release the install copies.
     app.features = features::offered(Path::new("/system"));
     // The release's signatures were checked before the first page.
@@ -260,6 +265,7 @@ fn start(app: &mut App, log: Log, source: Source) -> Running {
                 &[
                     ("version", Arg::Text(&source.release.version)),
                     ("disk", Arg::Text(&answers.disks())),
+                    ("medium", Arg::Text(source.medium())),
                 ],
             ))
         });

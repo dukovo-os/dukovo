@@ -25,8 +25,16 @@ acpi-power userspace/programs/systools/src/power.rs
 acpi-thermal kernel/lib/acpi/ kernel/lib/sensors/ kernel/lib/uacpi/ tools/xtask/src/acpi/
 acpi-thermal userspace/programs/systools/src/power.rs userspace/programs/systools/src/sensors.rs
 aml-off kernel/lib/acpi/ userspace/programs/systools/src/power.rs
-audio-virtio kernel/drivers/virtio/ kernel/lib/audio/ userspace/programs/audio/
-audio-virtio userspace/programs/systools/src/sound.rs
+audio-hda kernel/drivers/hda/ kernel/lib/audio/ kernel/radix/src/audio/ userspace/programs/audio/
+audio-hda tools/xtask/src/test/cases/audio-virtio.rs userspace/programs/systools/src/sound.rs
+audio-hda-ich9 kernel/drivers/hda/ kernel/lib/audio/ kernel/radix/src/audio/
+audio-hda-ich9 tools/xtask/src/test/cases/audio-hda.rs tools/xtask/src/test/cases/audio-virtio.rs
+audio-hda-ich9 userspace/programs/audio/ userspace/programs/systools/src/sound.rs
+audio-usb kernel/drivers/usb/src/audio/ kernel/drivers/xhci/ kernel/lib/audio/ kernel/radix/src/audio/
+audio-usb kernel/radix/src/usb/ userspace/programs/audio/ userspace/programs/systools/src/sound.rs
+audio-usb tools/xtask/src/test/cases/audio-virtio.rs
+audio-virtio kernel/drivers/virtio/ kernel/lib/audio/ kernel/radix/src/audio/
+audio-virtio userspace/programs/audio/ userspace/programs/systools/src/sound.rs
 bios-cdrom image/grub/grub.cfg.in kernel/arch/ kernel/fs/iso9660/ kernel/hal/ kernel/lib/acpi/
 bios-cdrom kernel/lib/bootinfo/ tools/xtask/src/grub.rs
 bios-usb image/grub/grub.cfg.in kernel/arch/ kernel/drivers/scsi/ kernel/drivers/usb/
@@ -154,6 +162,12 @@ install-bios image/grub/installed.cfg.in tools/xtask/src/grub.rs tools/xtask/src
 install-bios userspace/programs/consoled/ userspace/programs/disk/ userspace/programs/installer/
 install-bios userspace/programs/systools/src/efiboot.rs userspace/programs/systools/src/mkfs.rs
 install-bios userspace/programs/systools/src/rdisk.rs
+install-dvd image/grub/installed.cfg.in image/grub/live.cfg.in kernel/drivers/ide/
+install-dvd kernel/fs/iso9660/ kernel/radix/src/fs/disk/ide.rs kernel/radix/src/fs/disk/optical.rs
+install-dvd tools/xtask/src/image.rs tools/xtask/src/release.rs userspace/programs/disk/
+install-dvd userspace/programs/installer/
+install-dvd userspace/programs/systools/src/efiboot.rs userspace/programs/systools/src/mkfs.rs
+install-dvd userspace/programs/systools/src/rdisk.rs
 install-free image/grub/installed.cfg.in tools/xtask/src/grub.rs tools/xtask/src/grub_theme.rs
 install-free userspace/programs/consoled/ userspace/programs/disk/ userspace/programs/installer/
 install-free userspace/programs/systools/src/efiboot.rs userspace/programs/systools/src/mkfs.rs
@@ -216,6 +230,9 @@ keyring userspace/programs/systools/src/authd.rs userspace/programs/systools/src
 keyring userspace/programs/systools/src/keyring.rs userspace/programs/systools/src/unlock.rs
 live-bios image/grub/live.cfg.in tools/xtask/src/release.rs userspace/programs/system-release/
 live-bios userspace/programs/systools/src/releases.rs
+live-dvd image/grub/live.cfg.in kernel/drivers/ahci/ kernel/drivers/scsi/ kernel/fs/iso9660/
+live-dvd kernel/radix/src/fs/disk/optical.rs tools/xtask/src/image.rs tools/xtask/src/release.rs
+live-dvd userspace/programs/system-release/ userspace/programs/systools/src/releases.rs
 live-uefi image/grub/live.cfg.in tools/xtask/src/release.rs userspace/programs/system-release/
 live-uefi userspace/programs/systools/src/releases.rs
 lockdep kernel/lib/lockdep/ kernel/lib/sync/
@@ -291,6 +308,13 @@ ntfs-resize userspace/programs/systools/src/mount.rs userspace/programs/systools
 ntfs-write kernel/fs/block/ kernel/fs/fat/ kernel/fs/ntfs/ userspace/programs/systools/src/ntfs.rs
 ntfs-write userspace/storage/
 oom kernel/mm/
+optical kernel/drivers/ahci/ kernel/drivers/scsi/ kernel/drivers/usb/ kernel/drivers/xhci/
+optical kernel/radix/src/fs/disk/optical.rs kernel/radix/src/fs/disk/usb.rs
+optical kernel/fs/iso9660/ kernel/fs/udf/ userspace/programs/systools/src/eject.rs
+optical userspace/programs/systools/src/lsblk.rs userspace/programs/systools/src/volumed.rs
+optical-ide kernel/drivers/ide/ kernel/drivers/scsi/ kernel/fs/iso9660/ kernel/fs/udf/
+optical-ide kernel/radix/src/fs/disk/ide.rs kernel/radix/src/fs/disk/optical.rs
+optical-ide userspace/programs/systools/src/eject.rs userspace/programs/systools/src/volumed.rs
 page-fault kernel/mm/
 pci-serial kernel/drivers/uart/
 posix docs/man/ kernel/lib/posix/ ports/7zip/ ports/bc/ ports/bzip2/ ports/curl/ ports/db1/
@@ -348,6 +372,8 @@ sched-mutex kernel/lib/sync/ kernel/sched/
 sched-pi kernel/sched/
 sched-rt kernel/sched/
 screen kernel/lib/fbcon/ tools/xtask/src/screen.rs userspace/hello/
+screen-reader kernel/drivers/virtio/ kernel/radix/src/audio/ ports/espeak-ng/ userspace/defaults/spark/services/readerd.toml
+screen-reader userspace/programs/audio/ userspace/programs/consoled/ userspace/programs/systools/src/reader.rs
 service-bundle image/grub/installed.cfg.in tools/xtask/src/bundles.rs tools/xtask/src/grub.rs
 service-bundle tools/xtask/src/grub_theme.rs tools/xtask/src/release.rs userspace/programs/dkv/
 service-bundle userspace/programs/installer/ userspace/programs/manifest/
@@ -400,6 +426,7 @@ storage kernel/drivers/virtio/ kernel/fs/block/ kernel/fs/fat/ userspace/storage
 storage-4k kernel/drivers/nvme/ kernel/drivers/virtio/ kernel/fs/block/ kernel/fs/fat/
 storage-4k userspace/programs/systools/src/nvme.rs userspace/storage/
 storage-ide kernel/drivers/ide/ kernel/fs/block/ userspace/storage/
+storage-ide kernel/radix/src/fs/disk/ide.rs
 storage-nvme kernel/drivers/nvme/ kernel/fs/block/ userspace/programs/systools/src/nvme.rs
 storage-nvme userspace/storage/
 storage-sata kernel/drivers/ahci/ kernel/fs/block/ userspace/storage/

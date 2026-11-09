@@ -271,6 +271,7 @@ dependencies = [
  "radix-gpio",
  "radix-gve",
  "radix-hal",
+ "radix-hda",
  "radix-hid",
  "radix-hw",
  "radix-i2c",
@@ -332,6 +333,7 @@ name = "radix-ahci"
 version = "0.13.0"
 dependencies = [
  "radix-hw",
+ "radix-scsi",
 ]
 
 [[package]]
@@ -552,6 +554,14 @@ dependencies = [
  "radix-hw",
  "radix-pstate",
  "radix-sensors",
+]
+
+[[package]]
+name = "radix-hda"
+version = "0.13.0"
+dependencies = [
+ "radix-audio",
+ "radix-hw",
 ]
 
 [[package]]

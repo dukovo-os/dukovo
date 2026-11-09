@@ -68,6 +68,32 @@ volumed: sdc1 is gone; unmounted /volumes/SDCARD
 volumed: sdc has no medium in it now
 ```
 
+A CD, DVD or Blu-ray drive (ADR 0431) is such a drive, named *cd0* and
+on, and volumed says what disc went in it from its _disc_ file. A disc
+of data has no partitions: the drive itself is mounted, read-only, at
+the disc's label. A music CD or blank disc is not read, and only said:
+
+```
+volumed: a disc (dvd-rom) went in cd0
+volumed: mounted the UDF filesystem of cd0 at /volumes/HOLIDAY_2026, read-only
+volumed: cd0 has no disc in it now
+volumed: a music CD went in cd0; its tracks are not files, and it is not mounted
+volumed: a blank disc (dvd+r) went in cd0; nothing to mount
+volumed: a disc went in cd0, but it cannot be read
+```
+
+A drive keeps a mounted disc in, and when its eject button is pressed,
+the kernel counts the press in its _eject_requests_ file (ADR 0432).
+When that count moves, volumed unmounts the disc's volumes and ejects
+it, as *eject*(1) does; a volume that cannot be unmounted, being in
+use, keeps the disc in:
+
+```
+volumed: the eject button of cd0 was pressed; unmounted /volumes/HOLIDAY_2026
+volumed: cd0 has no disc in it now
+volumed: the eject button of cd0 was pressed, but /volumes/HOLIDAY_2026 cannot be unmounted: Device or resource busy; the disc stays in
+```
+
 volumed takes the disks there are when it starts as done: Spark has
 mounted them. It looks at _/kernel/block_ (*radix-sysfs*(5)) every
 second for disks and partitions that come or go, and writes a line of

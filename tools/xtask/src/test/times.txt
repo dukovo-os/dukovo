@@ -34,6 +34,7 @@ bundle-run 112
 bundle-update 68
 bundles 116
 caps 15
+card-reader 70
 catalog-bundles 64
 catalog-install 70
 consoles 38
@@ -102,6 +103,8 @@ ntfs 16
 ntfs-power-cut 36
 ntfs-write 35
 oom 12
+optical 115
+optical-ide 105
 page-fault 11
 pci-serial 18
 posix 70

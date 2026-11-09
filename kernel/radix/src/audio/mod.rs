@@ -4,9 +4,11 @@
 //! Sound (Phase 14b.1, ADR 0320): `/devices/audio`, the outputs programs
 //! play through.
 //!
-//! Each output a driver finds (a virtio sound card, `virtio`, in 6a) is a
-//! file in `/devices/audio`: `virtio0` and on. `default` is a link to the
-//! one in use, and `speech` plays on it for the screen reader. The files
+//! Each output a driver finds is a file in `/devices/audio`: a virtio
+//! sound card's `virtio0` and on (ADR 0321), an Intel HD Audio
+//! controller's `hda0` and on (ADR 0322), a USB speaker's or headset's
+//! `usb0` and on (ADR 0323). `default` is a link to the one in use, and
+//! `speech` plays on it for the screen reader. The files
 //! take OSS's requests, with Linux's numbers (the ABI's `audio` module
 //! and radix-audio(2)); the arithmetic behind them, which is tested on
 //! the host, is `radix-audio`'s.
@@ -34,7 +36,17 @@
 //!
 //! Every change the worker or a request makes that a writer or a poll
 //! may wait for moves the output's *progress* count and wakes them.
+//!
+//! A USB output comes and goes with its device ([`attach`], [`detach`]).
+//! One that goes keeps its index and its name, and its worker waits: the
+//! next device of its kind plugged in takes them, so that `usb0` is the
+//! headset plugged in whatever was plugged before. Its file goes from
+//! `/devices/audio` meanwhile, `default` leads to another output, and
+//! what was written to it is dropped; its player's writes and requests
+//! fail with ENXIO.
 
+pub mod hda;
+pub mod usb;
 pub mod virtio;
 
 use alloc::boxed::Box;
@@ -45,7 +57,7 @@ use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 use radix_abi::Status;
 use radix_abi::audio::{self as abi, OutputInfo};
-use radix_abi::errors::Kernel;
+use radix_abi::errors::{File as FileError, Kernel};
 use radix_audio::{
     Format, Fragments, MAX_BUFFER, Playback, Volume, apply_gain, nearest_channels, nearest_rate,
 };
@@ -112,6 +124,10 @@ pub trait Driver: Send {
     fn set_volume(&mut self, _volume: Volume) -> bool {
         false
     }
+    /// Does what the device needs now and then, at each of the worker's
+    /// looks (an HDA codec reads its jacks); `name` is the output's, for
+    /// the log.
+    fn look(&mut self, _name: &str) {}
 }
 
 /// What an output can play, found when it was set up.
@@ -159,6 +175,8 @@ struct State {
     running: bool,
     /// Whether the device failed, which the worker says once.
     failed: bool,
+    /// Whether the device was unplugged.
+    gone: bool,
 }
 
 /// An output: a file of `/devices/audio` and the device behind it.
@@ -166,7 +184,13 @@ pub struct Output {
     index: usize,
     name: [u8; 16],
     name_len: usize,
-    caps: Caps,
+    /// What the device plays: another device's when one of the kind
+    /// takes a gone output's place.
+    caps: Mutex<Caps>,
+    /// Whether a device is behind the output: false once it is unplugged.
+    present: AtomicBool,
+    /// Moves on each time another device takes the output's place.
+    generation: AtomicU64,
     state: Mutex<State>,
     /// The device's driver, until the worker takes it.
     driver: Mutex<Option<Box<dyn Driver, Kmalloc>>>,
@@ -182,8 +206,11 @@ static OUTPUTS: [Once<Arc<Output, Kmalloc>>; MAX_OUTPUTS] = [const { Once::new()
 static COUNT: AtomicUsize = AtomicUsize::new(0);
 /// The index of the output `default` leads to.
 static DEFAULT: AtomicUsize = AtomicUsize::new(0);
-/// Whether `default` was made: by the first output added.
+/// Whether `default` was made: by the first output added. False again
+/// while no output is there.
 static DIR_DEFAULT: AtomicBool = AtomicBool::new(false);
+/// Held while an output comes or goes.
+static PLUGGING: Mutex<()> = Mutex::new(());
 /// `/devices/audio`.
 static DIR: Once<KArc<FixedDir>> = Once::new();
 /// What polls of the outputs' files wait on: one for all of them.
@@ -197,6 +224,9 @@ fn kmalloc() -> Kmalloc {
 pub struct AudioNode {
     id: u64,
     index: Option<usize>,
+    /// The output's generation the file was made for: a file of a device
+    /// unplugged is not the next one's.
+    generation: u64,
 }
 
 impl Node for AudioNode {
@@ -252,7 +282,7 @@ pub fn dir() -> radix_vfs::Result<KArc<FixedDir>> {
         return Ok(dir.clone());
     }
     let dir = FixedDir::new(next_id())?;
-    let speech: NodeRef = mem::arc(AudioNode { id: next_id(), index: None })?;
+    let speech: NodeRef = mem::arc(AudioNode { id: next_id(), index: None, generation: 0 })?;
     dir.add("speech", speech)?;
     Ok(match DIR.set(dir) {
         Ok(set) => set.clone(),
@@ -263,6 +293,16 @@ pub fn dir() -> radix_vfs::Result<KArc<FixedDir>> {
 impl Output {
     fn name(&self) -> &str {
         core::str::from_utf8(&self.name[..self.name_len]).unwrap_or("audio")
+    }
+
+    /// What the device behind it plays.
+    fn caps(&self) -> Caps {
+        *self.caps.lock()
+    }
+
+    /// Whether a device is behind it.
+    fn present(&self) -> bool {
+        self.present.load(Ordering::Acquire)
     }
 
     /// Wakes the worker.
@@ -339,7 +379,7 @@ impl Output {
     /// The format a player starts in: 48 kHz stereo, or what the output
     /// plays nearest.
     fn default_format(&self) -> Format {
-        let caps = self.caps;
+        let caps = self.caps();
         Format {
             rate: nearest_rate(caps.rates, Format::DEFAULT.rate).unwrap_or(Format::DEFAULT.rate),
             channels: nearest_channels(caps.channels_min, caps.channels_max, 2),
@@ -386,7 +426,7 @@ impl Output {
         if state.holder != 0 && state.speech {
             flags |= abi::FLAG_SPEECH;
         }
-        if self.caps.hardware_volume {
+        if self.caps().hardware_volume {
             flags |= abi::FLAG_HARDWARE_VOLUME;
         }
         flags
@@ -420,7 +460,7 @@ pub fn add(
     let number = OUTPUTS[..index]
         .iter()
         .filter_map(Once::get)
-        .filter(|output| output.caps.kind == caps.kind)
+        .filter(|output| output.caps().kind == caps.kind)
         .count();
     let mut name = [0u8; 16];
     let mut text = radix_klog::TextBuf::<16>::new();
@@ -445,12 +485,15 @@ pub fn add(
         played: 0,
         running: false,
         failed: false,
+        gone: false,
     };
     let output = Output {
         index,
         name,
         name_len,
-        caps,
+        caps: Mutex::new(caps),
+        present: AtomicBool::new(true),
+        generation: AtomicU64::new(0),
         state: Mutex::new(state),
         driver: Mutex::new(Some(driver)),
         kick: AtomicBool::new(false),
@@ -465,10 +508,7 @@ pub fn add(
         return Err("its index was taken");
     }
     let output: &'static Output = OUTPUTS[index].get().ok_or("its index was taken")?;
-    let node: NodeRef =
-        mem::arc(AudioNode { id: next_id(), index: Some(index) }).map_err(|_| "out of memory")?;
-    let dir = dir().map_err(|_| "no /devices/audio")?;
-    dir.add(output.name(), node).map_err(|_| "out of memory")?;
+    show(output)?;
     if DIR_DEFAULT.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire).is_ok() {
         make_default(output);
     }
@@ -476,6 +516,105 @@ pub fn add(
     sched::spawn("audio", worker, index, Options::new().policy(policy))
         .map_err(|_| "could not start its thread")?;
     Ok(output.name())
+}
+
+/// Puts `output`'s file in `/devices/audio`, for its generation.
+fn show(output: &Output) -> Result<(), &'static str> {
+    let generation = output.generation.load(Ordering::Acquire);
+    let node = AudioNode { id: next_id(), index: Some(output.index), generation };
+    let node: NodeRef = mem::arc(node).map_err(|_| "out of memory")?;
+    let dir = dir().map_err(|_| "no /devices/audio")?;
+    dir.add(output.name(), node).map_err(|_| "out of memory")
+}
+
+/// Adds an output that comes and goes with its device, as a USB one
+/// does: called `prefix` and a number, driven by `driver`. It takes the
+/// place of an output of its kind whose device went, with its index and
+/// name, or else is added as [`add`] adds one. Returns its index and its
+/// name.
+pub fn attach(
+    prefix: &str,
+    caps: Caps,
+    driver: Box<dyn Driver, Kmalloc>,
+) -> Result<(usize, &'static str), &'static str> {
+    let _plugging = PLUGGING.lock();
+    let gone = (0..MAX_OUTPUTS)
+        .filter_map(output)
+        .find(|output| !output.present() && output.caps().kind == caps.kind);
+    let Some(output) = gone else {
+        let index = reserve().ok_or("too many sound outputs")?;
+        return Ok((index, add(index, prefix, caps, driver)?));
+    };
+    if caps.rates == 0 {
+        return Err("it plays no rate");
+    }
+    *output.caps.lock() = caps;
+    output.generation.fetch_add(1, Ordering::AcqRel);
+    {
+        let mut state = output.state.lock();
+        let format = output.default_format();
+        state.playback.configure(format, Fragments::default_for(format));
+        state.asked = None;
+        state.holder = 0;
+        state.speech = false;
+        state.volume_changed = true;
+        state.flush = false;
+        state.epoch += 1;
+        state.underruns = 0;
+        state.running = false;
+        state.failed = false;
+        state.gone = false;
+    }
+    *output.driver.lock() = Some(driver);
+    output.present.store(true, Ordering::Release);
+    show(output)?;
+    if DIR_DEFAULT.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire).is_ok() {
+        make_default(output);
+    }
+    output.kick();
+    output.moved();
+    Ok((output.index, output.name()))
+}
+
+/// The device behind output `index` was unplugged: its file goes, what
+/// was written to it is dropped, its player's next write or request
+/// fails, `default` leads to another output, and the worker lets go of
+/// the driver. The output waits for [`attach`] to give it another.
+pub fn detach(index: usize) {
+    let _plugging = PLUGGING.lock();
+    let Some(gone) = output(index) else { return };
+    if !gone.present.swap(false, Ordering::AcqRel) {
+        return;
+    }
+    if let Some(dir) = DIR.get() {
+        dir.remove_entry(gone.name());
+    }
+    {
+        let mut state = gone.state.lock();
+        state.playback.clear();
+        state.holder = 0;
+        state.speech = false;
+        state.flush = false;
+        state.epoch += 1;
+        state.failed = true;
+        state.gone = true;
+    }
+    if DEFAULT.load(Ordering::Acquire) == index {
+        match (0..MAX_OUTPUTS).filter_map(output).find(|o| o.present()) {
+            Some(other) => {
+                make_default(other);
+                info!("Audio: {} is the default output", other.name());
+            }
+            None => {
+                if let Some(dir) = DIR.get() {
+                    dir.remove_entry("default");
+                }
+                DIR_DEFAULT.store(false, Ordering::Release);
+            }
+        }
+    }
+    gone.kick();
+    gone.moved();
 }
 
 /// Makes `output` the one `default` leads to.
@@ -510,7 +649,14 @@ fn output_of(file: &FileObject) -> Result<(&'static Output, bool), Status> {
         radix_vfs::downcast::<AudioNode>(&*file.at.node).ok_or(Kernel::NotTerminal.status(0))?;
     let none = || Kernel::NotSupported.status(0);
     match node.index {
-        Some(index) => Ok((output(index).ok_or_else(none)?, false)),
+        Some(index) => {
+            let output = output(index).ok_or_else(none)?;
+            let generation = output.generation.load(Ordering::Acquire);
+            if !output.present() || generation != node.generation {
+                return Err(gone_status());
+            }
+            Ok((output, false))
+        }
         None => {
             let mut bound = file.offset.lock();
             if *bound == 0 {
@@ -520,7 +666,12 @@ fn output_of(file: &FileObject) -> Result<(&'static Output, bool), Status> {
                 *bound = DEFAULT.load(Ordering::Acquire) as u64 + 1;
             }
             let index = (*bound - 1) as usize;
-            Ok((output(index).ok_or_else(none)?, true))
+            let output = output(index).ok_or_else(none)?;
+            if !output.present() {
+                // The screen reader opens `speech` again, for `default`.
+                return Err(gone_status());
+            }
+            Ok((output, true))
         }
     }
 }
@@ -548,8 +699,11 @@ pub fn write(file: &FileObject, data: &dyn In, non_blocking: bool) -> Result<usi
             let seen = output.progress.load(Ordering::Acquire);
             let taken = {
                 let mut state = output.state.lock();
+                if state.gone && done + put == 0 {
+                    return Err(gone_status());
+                }
                 if state.holder != me {
-                    // Pushed aside by `speech`.
+                    // Pushed aside by `speech`, or its device went.
                     drop(state);
                     return if done + put > 0 {
                         Ok(done + put)
@@ -585,6 +739,11 @@ pub fn write(file: &FileObject, data: &dyn In, non_blocking: bool) -> Result<usi
         done += step;
     }
     Ok(done)
+}
+
+/// The error a player of an output whose device went is given: ENXIO.
+fn gone_status() -> Status {
+    FileError::NoDevice.status(0)
 }
 
 /// What `poll` finds on `file`: writable while a fragment's worth of
@@ -659,7 +818,7 @@ pub fn control(
             }
             output.claim(me, speech)?;
             let format = output.state.lock().playback.format();
-            let caps = output.caps;
+            let caps = output.caps();
             let (format, fragments, answer) = match request {
                 abi::SPEED => {
                     let rate = nearest_rate(caps.rates, asked).unwrap_or(format.rate);
@@ -754,23 +913,24 @@ pub fn control(
             Ok(())
         }
         abi::GET_INFO => {
+            let caps = output.caps();
             let state = output.state.lock();
             let mut bytes = [0u8; OutputInfo::SIZE];
             let put32 = |bytes: &mut [u8], at: usize, value: u32| {
                 bytes[at..at + 4].copy_from_slice(&value.to_le_bytes());
             };
-            put32(&mut bytes, OutputInfo::OFFSET_RATES, output.caps.rates);
+            put32(&mut bytes, OutputInfo::OFFSET_RATES, caps.rates);
             put32(&mut bytes, OutputInfo::OFFSET_VOLUME, state.volume.encode());
             bytes[OutputInfo::OFFSET_PLAYED..][..8].copy_from_slice(&state.played.to_le_bytes());
             put32(&mut bytes, OutputInfo::OFFSET_UNDERRUNS, state.underruns);
-            bytes[OutputInfo::OFFSET_CHANNELS_MIN] = output.caps.channels_min;
-            bytes[OutputInfo::OFFSET_CHANNELS_MAX] = output.caps.channels_max;
-            bytes[OutputInfo::OFFSET_KIND] = output.caps.kind;
+            bytes[OutputInfo::OFFSET_CHANNELS_MIN] = caps.channels_min;
+            bytes[OutputInfo::OFFSET_CHANNELS_MAX] = caps.channels_max;
+            bytes[OutputInfo::OFFSET_KIND] = caps.kind;
             bytes[OutputInfo::OFFSET_FLAGS] = output.flags(&state);
             drop(state);
             bytes[OutputInfo::OFFSET_NAME..][..output.name_len]
                 .copy_from_slice(&output.name[..output.name_len]);
-            let model = output.caps.model.as_bytes();
+            let model = caps.model.as_bytes();
             let model = &model[..model.len().min(31)];
             bytes[OutputInfo::OFFSET_MODEL..][..model.len()].copy_from_slice(model);
             copy_out(&bytes)
@@ -822,21 +982,39 @@ struct Device {
 /// An output's worker: moves the samples to the device and back.
 fn worker(index: usize) {
     let Some(output) = output(index) else { return };
-    let Some(mut driver) = output.driver.lock().take() else { return };
     let Ok(mut staging) = radix_mm::bytes::zeroed(radix_audio::MAX_FRAGMENT as usize, kmalloc())
     else {
         warn!("Audio: no memory for {}'s worker", output.name());
         return;
     };
-    let mut device = Device { prepared: None, epoch: 0, running: false };
     loop {
+        // The driver of the device behind the output, until it goes.
+        let driver = output.driver.lock().take();
+        if let Some(mut driver) = driver {
+            let mut device = Device { prepared: None, epoch: 0, running: false };
+            while output.present() {
+                output.kick.store(false, Ordering::Release);
+                step(output, &mut *driver, &mut staging, &mut device);
+                let wait = if device.running { PLAYING_LOOK_NS } else { IDLE_LOOK_NS };
+                let deadline = sched::now_ns() + wait;
+                wait::wait_until_or_timeout(output.kick_key(), "audio", deadline, || {
+                    output.kick.load(Ordering::Acquire)
+                });
+            }
+            // Unplugged: the stream goes with the driver.
+            if device.running {
+                driver.stop();
+            }
+            if device.prepared.is_some() {
+                driver.release();
+            }
+            drop(driver);
+            output.state.lock().running = false;
+            output.moved();
+        }
+        // Until another device takes the output's place.
+        wait::wait_until(output.kick_key(), "audio", || output.kick.load(Ordering::Acquire));
         output.kick.store(false, Ordering::Release);
-        step(output, &mut *driver, &mut staging, &mut device);
-        let wait = if device.running { PLAYING_LOOK_NS } else { IDLE_LOOK_NS };
-        let deadline = sched::now_ns() + wait;
-        wait::wait_until_or_timeout(output.kick_key(), "audio", deadline, || {
-            output.kick.load(Ordering::Acquire)
-        });
     }
 }
 
@@ -845,7 +1023,8 @@ fn step(output: &Output, driver: &mut dyn Driver, staging: &mut [u8], device: &m
     let mut changed = false;
     if driver.failed() {
         let mut state = output.state.lock();
-        if !state.failed {
+        // An unplugged device's driver fails too, which is no news.
+        if !state.failed && !state.gone {
             state.failed = true;
             state.playback.clear();
             drop(state);
@@ -854,6 +1033,7 @@ fn step(output: &Output, driver: &mut dyn Driver, staging: &mut [u8], device: &m
         }
         return;
     }
+    driver.look(output.name());
     // What was queued was dropped: so are the device's periods.
     let (epoch, volume_changed, volume) = {
         let mut state = output.state.lock();
@@ -870,7 +1050,8 @@ fn step(output: &Output, driver: &mut dyn Driver, staging: &mut [u8], device: &m
         device.epoch = epoch;
         changed = true;
     }
-    if volume_changed && output.caps.hardware_volume {
+    let hardware_volume = output.caps().hardware_volume;
+    if volume_changed && hardware_volume {
         driver.set_volume(volume);
     }
     // The periods played.
@@ -916,7 +1097,7 @@ fn step(output: &Output, driver: &mut dyn Driver, staging: &mut [u8], device: &m
             (state.playback.take(staging), state.volume)
         };
         let Some(bytes) = taken else { break };
-        if !output.caps.hardware_volume {
+        if !hardware_volume {
             apply_gain(&mut staging[..bytes], format.channels, volume);
         }
         if !driver.submit(&staging[..bytes]) {

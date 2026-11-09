@@ -356,3 +356,55 @@ fn names_decode_as_their_trees_have_them() {
     format::plain_name(&[0], &mut name);
     assert_eq!(name.name(), None);
 }
+
+/// A disc of two sessions, as a CD-R written twice: the first holds
+/// `first`, the second, from block `at`, `second`, its volume naming the
+/// first session's files too (mkisofs's `-C` and `-M`, as growisofs and
+/// Brasero write one).
+fn two_sessions(first: &Path, second: &Path) -> (Vec<u8>, u64) {
+    let earlier = scratch("first.iso");
+    let mut image = xorriso(first, &["-R", "-J"]);
+    std::fs::write(&earlier, &image).unwrap();
+    let at = (image.len() as u64 / 2048).div_ceil(16) * 16;
+    let arg = format!("0,{at}");
+    let path = earlier.to_str().unwrap();
+    let later = xorriso(second, &["-R", "-J", "-C", &arg, "-M", path]);
+    let _ = std::fs::remove_file(&earlier);
+    image.resize(at as usize * 2048, 0);
+    image.extend_from_slice(&later);
+    (image, at)
+}
+
+#[test]
+fn a_disc_of_several_sessions_is_read_from_its_last() {
+    let (first, second) = (scratch("session-1"), scratch("session-2"));
+    std::fs::create_dir_all(&first).unwrap();
+    std::fs::create_dir_all(&second).unwrap();
+    std::fs::write(first.join("early"), pattern(3000, 7)).unwrap();
+    std::fs::write(second.join("late"), pattern(5000, 8)).unwrap();
+    let (image, at) = two_sessions(&first, &second);
+    for block in [2048, 512] {
+        let disk = mem::arc(RamDisk::with_blocks(image.len() as u64 / 512, false, block)).unwrap();
+        disk.load(0, &image).unwrap();
+        disk.set_last_session(at * 4);
+        let device: DeviceRef = disk;
+        let fs = IsoFs::mount(device, true).unwrap();
+        let top = fs.root();
+        let want = vec![("early".to_string(), Kind::File), ("late".to_string(), Kind::File)];
+        assert_eq!(names(&top), want, "blocks of {block}");
+        assert_eq!(read_all(&walk(&top, "early").unwrap(), 4096), pattern(3000, 7));
+        assert_eq!(read_all(&walk(&top, "late").unwrap(), 4096), pattern(5000, 8));
+    }
+    // Without the session, the disc is what its first one was.
+    let fs = mount(&image, 2048).unwrap();
+    assert_eq!(names(&fs.root()), vec![("early".to_string(), Kind::File)]);
+    // A session that holds no volume: the first is read.
+    let disk = mem::arc(RamDisk::with_blocks(image.len() as u64 / 512, false, 2048)).unwrap();
+    disk.load(0, &image).unwrap();
+    disk.set_last_session(4 * 4);
+    let device: DeviceRef = disk;
+    let fs = IsoFs::mount(device, true).unwrap();
+    assert_eq!(names(&fs.root()), vec![("early".to_string(), Kind::File)]);
+    std::fs::remove_dir_all(first).unwrap();
+    std::fs::remove_dir_all(second).unwrap();
+}

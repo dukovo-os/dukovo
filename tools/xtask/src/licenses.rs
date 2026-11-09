@@ -72,7 +72,8 @@ const FIRMWARE_ALLOW: &[&str] = &["LicenseRef-Intel-Microcode"];
 /// advertising (BSD-4-Clause-Shortened, BSD-4.3RENO, BSD-4.3TAHOE and the
 /// 4-clause ones), and others' BSD-style notices, each of which their
 /// LicenseRef-libpcap-notices and LicenseRef-tcpdump-notices keep as the
-/// files have it (ADR 0346).
+/// files have it (ADR 0346). eSpeak NG builds Unicode's character data
+/// into itself, under Unicode's license for its data files (ADR 0324).
 const PORT_EXTRA_ALLOW: &[&str] = &[
     "CC0-1.0",
     "GPL-2.0-only",
@@ -104,6 +105,7 @@ const PORT_EXTRA_ALLOW: &[&str] = &[
     "BSD-4.3TAHOE",
     "LicenseRef-libpcap-notices",
     "LicenseRef-tcpdump-notices",
+    "Unicode-DFS-2016",
 ];
 
 /// Crates from crates.io that compile another project's C code into what

@@ -20,7 +20,14 @@
 //! The commands are ATA's (ACS-4): IDENTIFY DEVICE, in PIO, then READ DMA
 //! EXT, WRITE DMA EXT and FLUSH CACHE EXT, with 48-bit addresses; what
 //! IDENTIFY says is read by `radix_ahci::ata`, which AHCI's disks share.
-//! Packet (ATAPI) devices, optical drives, are found and left alone.
+//! A packet (ATAPI) device, an optical drive, answers IDENTIFY PACKET
+//! DEVICE, and takes SCSI commands in PACKET commands (ACS-4, 7.18, and
+//! the PACKET protocol of ATA8-APT): after the command, the device asks
+//! for the packet, the command descriptor block, through the data
+//! register, and then moves its data there by PIO, as many bytes at a
+//! time as it says in the byte count registers, or by bus-master DMA
+//! ([`Channel::start_packet`], [`Channel::poll_packet`]). The two ends
+//! of a channel share it, one command at a time, whichever kind.
 //!
 //! The channel's interrupt is off (nIEN): the kernel routes neither the
 //! legacy IRQs 14 and 15 nor INTx, so a command is done when the device
@@ -34,7 +41,7 @@
 #[cfg(test)]
 mod tests;
 
-use radix_ahci::ata::{self, Identity, Unsupported, command};
+use radix_ahci::ata::{self, Identity, PacketIdentity, Taskfile, Unsupported, command};
 use radix_hw::{Dma, IoPorts, device_barrier};
 
 /// The PCI class and subclass of an IDE controller; its programming
@@ -66,6 +73,8 @@ pub mod interface {
 mod reg {
     pub const DATA: u16 = 0;
     pub const ERROR: u16 = 1;
+    /// Written, the error register's port is the features register.
+    pub const FEATURES: u16 = 1;
     pub const COUNT: u16 = 2;
     pub const LBA0: u16 = 3;
     pub const LBA1: u16 = 4;
@@ -122,6 +131,12 @@ fn serial(words: &[u16; 256]) -> bool {
     (capabilities != 0 && capabilities != 0xffff) || words[222] >> 12 == 1
 }
 
+/// Whether `status` says a command failed: an error (a packet device's
+/// CHK) or a device fault.
+fn status_failed(status: u8) -> bool {
+    status & (ata::STATUS_ERR | reg::DF) != 0
+}
+
 /// What is on one end of a channel.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Device {
@@ -136,8 +151,9 @@ pub enum Device {
         /// controller is a SATA controller set to IDE mode.
         serial: bool,
     },
-    /// A packet device (an optical drive), which is left alone.
-    Atapi,
+    /// A packet device (an optical drive), as it says it is in IDENTIFY
+    /// PACKET DEVICE.
+    Atapi(PacketIdentity),
     /// An ATA device the driver does not drive.
     Unsupported(Unsupported),
 }
@@ -170,6 +186,9 @@ pub enum Error {
     },
     /// The bus master could not reach memory.
     Bus,
+    /// A packet device did not follow the PACKET protocol: it asked for
+    /// what the command did not have; the channel needs a reset.
+    Protocol,
 }
 
 /// The command in flight on a channel.
@@ -177,6 +196,67 @@ pub enum Error {
 struct Flight {
     drive: u8,
     dma: bool,
+    /// A packet command's progress; `None` for a disk's command.
+    packet: Option<Packet>,
+}
+
+/// A packet command in flight.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Packet {
+    /// The command descriptor block, `length` bytes of it.
+    bytes: [u8; 16],
+    length: u8,
+    /// Whether the device has taken it.
+    sent: bool,
+    /// Whether its data go by DMA, and which way.
+    into_host: bool,
+    /// The bytes its data phases have moved by PIO.
+    moved: u32,
+}
+
+/// What a packet command moves, and how.
+#[derive(Debug)]
+pub enum Transfer<'a> {
+    /// Nothing.
+    None,
+    /// By PIO, from the device into the slice: at most its length, the
+    /// rest the device sends read and dropped.
+    In(&'a mut [u8]),
+    /// By PIO, the slice's bytes to the device.
+    Out(&'a [u8]),
+    /// By bus-master DMA, into memory (`into_host`) or from it, through
+    /// the buffers: physical address below 4 GiB, and length.
+    Dma {
+        /// Whether the data come from the device.
+        into_host: bool,
+        /// The buffers.
+        buffers: &'a [(u32, u32)],
+    },
+}
+
+impl Transfer<'_> {
+    /// How many bytes it moves.
+    pub fn len(&self) -> u64 {
+        match self {
+            Transfer::None => 0,
+            Transfer::In(bytes) => bytes.len() as u64,
+            Transfer::Out(bytes) => bytes.len() as u64,
+            Transfer::Dma { buffers, .. } => buffers.iter().map(|&(_, len)| u64::from(len)).sum(),
+        }
+    }
+
+    /// Whether it moves nothing.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
+/// The interrupt reason, in the count register while a packet command
+/// asks for something (ATA8-APT): it wants the command (CoD), and data
+/// go to the host (I/O).
+mod reason {
+    pub const COD: u8 = 1 << 0;
+    pub const IO: u8 = 1 << 1;
 }
 
 /// An IDE channel and its two devices, reached through its command block,
@@ -285,32 +365,68 @@ impl<P: IoPorts> Channel<P> {
         }
         let signature = (self.command.read8(reg::LBA1), self.command.read8(reg::LBA2));
         if ATAPI.contains(&signature) {
-            return Device::Atapi;
+            return self.identify_packet(delay);
         }
-        for register in [reg::COUNT, reg::LBA0, reg::LBA1, reg::LBA2] {
+        let words = match self.identify_words(command::IDENTIFY_DEVICE, delay) {
+            Ok(words) => words,
+            // A packet device aborts IDENTIFY DEVICE, and shows its
+            // signature.
+            Err(true) => {
+                let signature = (self.command.read8(reg::LBA1), self.command.read8(reg::LBA2));
+                if !ATAPI.contains(&signature) {
+                    return Device::Absent;
+                }
+                return self.identify_packet(delay);
+            }
+            Err(false) => return Device::Absent,
+        };
+        match ata::identify(&words) {
+            Ok(identity) => {
+                self.sector[usize::from(drive)] = identity.logical_sector;
+                Device::Ata { identity, serial: serial(&words) }
+            }
+            Err(why) => Device::Unsupported(why),
+        }
+    }
+
+    /// Asks the packet device picked IDENTIFY PACKET DEVICE, by PIO.
+    fn identify_packet(&mut self, delay: &mut dyn FnMut(u32)) -> Device {
+        match self.identify_words(command::IDENTIFY_PACKET_DEVICE, delay) {
+            Ok(words) => match ata::identify_packet(&words) {
+                Ok(identity) => Device::Atapi(identity),
+                Err(why) => Device::Unsupported(why),
+            },
+            Err(_) => Device::Absent,
+        }
+    }
+
+    /// Runs `code`, IDENTIFY DEVICE or IDENTIFY PACKET DEVICE, on the
+    /// device picked, and reads its 256 words by PIO; `Err(true)` if the
+    /// device refused it, `Err(false)` if nothing answered.
+    fn identify_words(&mut self, code: u8, delay: &mut dyn FnMut(u32)) -> Result<[u16; 256], bool> {
+        for register in [reg::FEATURES, reg::COUNT, reg::LBA0, reg::LBA1, reg::LBA2] {
             self.command.write8(register, 0);
         }
-        self.command.write8(reg::COMMAND, command::IDENTIFY_DEVICE);
+        self.command.write8(reg::COMMAND, code);
         if self.status() == 0 {
-            return Device::Absent;
+            return Err(false);
         }
         let mut waited = 0;
         loop {
             let status = self.status();
             if status & ata::STATUS_BSY == 0 {
                 if status & ata::STATUS_ERR != 0 {
-                    let signature = (self.command.read8(reg::LBA1), self.command.read8(reg::LBA2));
-                    return if ATAPI.contains(&signature) { Device::Atapi } else { Device::Absent };
+                    return Err(true);
                 }
                 if status & ata::STATUS_DRQ != 0 {
                     break;
                 }
                 if status == 0 {
-                    return Device::Absent;
+                    return Err(false);
                 }
             }
             if waited >= IDENTIFY_US {
-                return Device::Absent;
+                return Err(false);
             }
             delay(POLL_US);
             waited += POLL_US;
@@ -321,13 +437,7 @@ impl<P: IoPorts> Channel<P> {
         }
         // Reading the status ends the command.
         self.command.read8(reg::STATUS);
-        match ata::identify(&words) {
-            Ok(identity) => {
-                self.sector[usize::from(drive)] = identity.logical_sector;
-                Device::Ata { identity, serial: serial(&words) }
-            }
-            Err(why) => Device::Unsupported(why),
-        }
+        Ok(words)
     }
 
     /// Whether a command is in flight.
@@ -399,8 +509,184 @@ impl<P: IoPorts> Channel<P> {
             let direction = if op == Op::Read { bm::INTO_MEMORY } else { 0 };
             self.bus_master.write8(bm::COMMAND, direction | bm::START);
         }
-        self.flight = Some(Flight { drive, dma });
+        self.flight = Some(Flight { drive, dma, packet: None });
         Ok(())
+    }
+
+    /// Starts the packet command `bytes`, a SCSI command descriptor block
+    /// of at most 16 bytes, on the packet device `drive`, moving
+    /// `transfer`; with `dmadir`, a DMA command that moves data to the
+    /// host says so (DMADIR), for a device that asks for it. The device
+    /// asks for the packet and moves the data as [`Channel::poll_packet`]
+    /// finds it ready.
+    pub fn start_packet(
+        &mut self,
+        drive: u8,
+        bytes: &[u8],
+        transfer: &Transfer<'_>,
+        dmadir: bool,
+    ) -> Result<(), Error> {
+        if self.flight.is_some() {
+            return Err(Error::Busy);
+        }
+        if drive > 1 || bytes.is_empty() || bytes.len() > 16 {
+            return Err(Error::BadRequest);
+        }
+        let total = u32::try_from(transfer.len()).map_err(|_| Error::BadRequest)?;
+        let (dma, into_host) = match *transfer {
+            Transfer::Dma { into_host, buffers } => {
+                if self.write_prds(buffers)? != u64::from(total) {
+                    return Err(Error::BadRequest);
+                }
+                (true, into_host)
+            }
+            Transfer::In(_) => (false, true),
+            Transfer::None | Transfer::Out(_) => (false, false),
+        };
+        self.select(drive, false);
+        if self.status() & (ata::STATUS_BSY | ata::STATUS_DRQ) != 0 {
+            return Err(Error::Busy);
+        }
+        if dma {
+            self.bus_master.write32(bm::PRD, self.prds.phys() as u32);
+            let status = self.bus_master.read8(bm::STATUS) & bm::DMA_CAPABLE;
+            self.bus_master.write8(bm::STATUS, status | bm::ERROR | bm::INTERRUPT);
+            let direction = if into_host { bm::INTO_MEMORY } else { 0 };
+            self.bus_master.write8(bm::COMMAND, direction);
+        }
+        // The byte count limit goes in LBA mid and high, for PIO.
+        let taskfile = Taskfile::packet(dma, dmadir && into_host, total);
+        let [limit_low, limit_high, ..] = (taskfile.lba >> 8).to_le_bytes();
+        for (register, value) in [
+            (reg::FEATURES, taskfile.features as u8),
+            (reg::COUNT, 0),
+            (reg::LBA0, 0),
+            (reg::LBA1, limit_low),
+            (reg::LBA2, limit_high),
+        ] {
+            self.command.write8(register, value);
+        }
+        device_barrier();
+        self.command.write8(reg::COMMAND, command::PACKET);
+        let mut packet =
+            Packet { bytes: [0; 16], length: bytes.len() as u8, sent: false, into_host, moved: 0 };
+        packet.bytes[..bytes.len()].copy_from_slice(bytes);
+        self.flight = Some(Flight { drive, dma, packet: Some(packet) });
+        Ok(())
+    }
+
+    /// The packet command in flight, moved on as far as the device is
+    /// ready: the packet sent when it asks for it, and data moved by PIO
+    /// into or out of `transfer`, the one it was started with. `None`
+    /// while it runs; once done, the bytes moved (all of them, for DMA),
+    /// or how it failed: the device's error register then holds the
+    /// sense key in its upper four bits.
+    pub fn poll_packet(&mut self, transfer: &mut Transfer<'_>) -> Option<Result<u32, Error>> {
+        let mut flight = self.flight?;
+        let mut packet = flight.packet?;
+        let mut confused = false;
+        loop {
+            let status = self.status();
+            if status & ata::STATUS_BSY != 0 {
+                return None;
+            }
+            if status & ata::STATUS_DRQ == 0 {
+                break;
+            }
+            let why = self.command.read8(reg::COUNT);
+            let count = u32::from(self.command.read8(reg::LBA1))
+                | u32::from(self.command.read8(reg::LBA2)) << 8;
+            if why & reason::COD != 0 && why & reason::IO == 0 && !packet.sent {
+                // It asks for the packet: the padding goes too, to the
+                // length the device takes, and DMA starts after it.
+                let length = usize::from(packet.length).max(12).next_multiple_of(2);
+                for pair in packet.bytes[..length].as_chunks::<2>().0 {
+                    self.command.write16(reg::DATA, u16::from_le_bytes(*pair));
+                }
+                packet.sent = true;
+                if flight.dma {
+                    let direction = if packet.into_host { bm::INTO_MEMORY } else { 0 };
+                    device_barrier();
+                    self.bus_master.write8(bm::COMMAND, direction | bm::START);
+                }
+            } else if flight.dma || !packet.sent || why & reason::COD != 0 || count == 0 {
+                // Data by PIO on a DMA command or before the packet, the
+                // packet asked for twice, or a phase of no bytes: the
+                // device does not follow the protocol, and the command
+                // goes no further.
+                confused = true;
+                break;
+            } else {
+                packet.moved +=
+                    self.move_data(transfer, packet.moved, count, why & reason::IO != 0);
+            }
+            flight.packet = Some(packet);
+            self.flight = Some(flight);
+        }
+        let bus = if flight.dma { self.bus_master.read8(bm::STATUS) } else { 0 };
+        let failed = confused || status_failed(self.status()) || bus & bm::ERROR != 0;
+        if flight.dma && bus & bm::ACTIVE != 0 && !failed {
+            return None;
+        }
+        device_barrier();
+        self.flight = None;
+        // Reading the status ends the command.
+        let status = self.command.read8(reg::STATUS);
+        let error = self.command.read8(reg::ERROR);
+        if flight.dma {
+            self.stop_dma();
+        }
+        if bus & bm::ERROR != 0 {
+            return Some(Err(Error::Bus));
+        }
+        if confused || !packet.sent {
+            return Some(Err(Error::Protocol));
+        }
+        if status_failed(status) {
+            return Some(Err(Error::Device { status, error }));
+        }
+        Some(Ok(if flight.dma { transfer.len() as u32 } else { packet.moved }))
+    }
+
+    /// One PIO data phase of `count` bytes, from `at` in `transfer`: into
+    /// it when `to_host`. Bytes beyond it are read and dropped, or sent
+    /// as zeros. How many bytes of it moved.
+    fn move_data(
+        &mut self,
+        transfer: &mut Transfer<'_>,
+        at: u32,
+        count: u32,
+        to_host: bool,
+    ) -> u32 {
+        let words = count.div_ceil(2);
+        let at = at as usize;
+        let mut moved = 0u32;
+        for i in 0..words as usize {
+            let offset = at + 2 * i;
+            match transfer {
+                Transfer::In(bytes) if to_host => {
+                    let [low, high] = self.command.read16(reg::DATA).to_le_bytes();
+                    for (k, byte) in [low, high].into_iter().enumerate() {
+                        if let Some(slot) = bytes.get_mut(offset + k) {
+                            *slot = byte;
+                            moved += 1;
+                        }
+                    }
+                }
+                Transfer::Out(bytes) if !to_host => {
+                    let low = bytes.get(offset).copied().unwrap_or(0);
+                    let high = bytes.get(offset + 1).copied().unwrap_or(0);
+                    moved += u32::from(offset < bytes.len()) + u32::from(offset + 1 < bytes.len());
+                    self.command.write16(reg::DATA, u16::from_le_bytes([low, high]));
+                }
+                _ if to_host => {
+                    self.command.read16(reg::DATA);
+                }
+                _ => self.command.write16(reg::DATA, 0),
+            }
+        }
+        // An odd count's last word holds one byte.
+        moved.min(count)
     }
 
     /// Fills the PRD table with `buffers`, which hold the command's
@@ -440,13 +726,13 @@ impl<P: IoPorts> Channel<P> {
     /// The command in flight, if it is done: how it ended. `None` while
     /// it runs, or when none is.
     pub fn poll(&mut self) -> Option<Result<(), Error>> {
-        let flight = self.flight?;
+        let flight = self.flight.filter(|flight| flight.packet.is_none())?;
         let status = self.status();
         if status & ata::STATUS_BSY != 0 {
             return None;
         }
         let bus = if flight.dma { self.bus_master.read8(bm::STATUS) } else { 0 };
-        let failed = status & (ata::STATUS_ERR | reg::DF) != 0 || bus & bm::ERROR != 0;
+        let failed = status_failed(status) || bus & bm::ERROR != 0;
         if flight.dma && bus & bm::ACTIVE != 0 && !failed {
             return None;
         }
@@ -461,10 +747,15 @@ impl<P: IoPorts> Channel<P> {
         if bus & bm::ERROR != 0 {
             return Some(Err(Error::Bus));
         }
-        if status & (ata::STATUS_ERR | reg::DF) != 0 {
+        if status_failed(status) {
             return Some(Err(Error::Device { status, error }));
         }
         Some(Ok(()))
+    }
+
+    /// Whether the command in flight is a packet command.
+    pub fn packet_in_flight(&self) -> bool {
+        self.flight.is_some_and(|flight| flight.packet.is_some())
     }
 
     /// The drive of the command in flight.

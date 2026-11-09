@@ -1,0 +1,137 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "The install DVD starts from the optical drive into the installer, which names the disc, lists no optical drive among the disks and offers no setup file to save on the disc; it erases a blank disk and installs Dukovo from the release on the disc, and with the disc taken out the disk boots, and the account made in the screens signs in"
+time = "30m"
+boot = "dvd"
+disk = "8G"
+
+# The disc's menu starts the installer by itself, from the release on
+# the disc; a setup file can come only from the web.
+[[step]]
+serial = "spark: mounted the ISO 9660 filesystem of cd0"
+[[step]]
+serial = "consoled: install: the installer's screens on tty1"
+[[step]]
+screen = ["Step 1 of 6", "How do you want to install?", "Step by step", "install.json on the web"]
+# F1 shows the page's help, which names no stick's EFI partition for a
+# setup file, and Esc closes it.
+[[step]]
+keys = ["f1"]
+[[step]]
+screen = ["A setup file answers them all", "Esc closes"]
+[[step]]
+screen_gone = "EFI partition"
+[[step]]
+keys = ["esc"]
+[[step]]
+screen_gone = "Esc closes"
+
+# Network: the computer's name, then its time zone found by the start of
+# its name.
+[[step]]
+keys = ["ret"]
+[[step]]
+screen = ["Step 2 of 6", "Network cards found:", "Automatic (DHCP)"]
+[[step]]
+keys = ["down", "down", "down", "backspace", "backspace", "backspace", "backspace", "backspace", "backspace"]
+[[step]]
+type = "lab-installed"
+[[step]]
+keys = ["down"]
+[[step]]
+type = "america/denver"
+[[step]]
+screen = "America/Denver"
+
+# Disk: the DVD drive is not listed; the blank disk is.
+[[step]]
+keys = ["ret"]
+[[step]]
+screen = ["Step 3 of 6", "sda", "Erase the disk"]
+[[step]]
+screenshot = "disks"
+[[step]]
+keys = ["spc", "ret"]
+
+# Software: the Server profile, File sharing ticked, then Next past the
+# web console's box and Back.
+[[step]]
+screen = ["Step 4 of 6", "What is this machine for?", "[ ] File sharing"]
+[[step]]
+keys = ["down", "down", "down", "spc"]
+[[step]]
+screen = "[x] File sharing"
+[[step]]
+keys = ["tab", "tab", "tab", "ret"]
+
+# The administrator: the name makes the user name, and the password is
+# the lab's, typed and never shown.
+[[step]]
+screen = ["Step 5 of 6", "The administrator account."]
+[[step]]
+type = "Ada Lovelace"
+[[step]]
+keys = ["tab", "tab"]
+[[step]]
+type = "{password}"
+[[step]]
+keys = ["tab"]
+[[step]]
+type = "{password}"
+[[step]]
+keys = ["ret"]
+
+# Review: everything the install does, and the disk's name to confirm it.
+[[step]]
+screen = ["Step 6 of 6", "the disc's signed system release", "ada (Ada Lovelace), administrator", "America/Denver", "lab-installed", "Type sda to confirm"]
+[[step]]
+type = "sda\n"
+[[step]]
+screen = "Installing Dukovo"
+[[step]]
+screen = ["Remove the install disc, then restart.", "Dukovo is installed", "< Restart >"]
+[[step]]
+screen_gone = "Save setup file"
+[[step]]
+screenshot = "installed"
+
+# Take the disc out and restart from the Done page: the disk boots alone.
+[[step]]
+disc = "eject"
+[[step]]
+keys = ["ret"]
+[[step]]
+serial = "asked to restart the machine"
+[[step]]
+serial = "consoled: started /system/commands/login on tty1"
+[[step]]
+screen = "Name:"
+[[step]]
+type = "ada\n"
+[[step]]
+screen = "Password:"
+[[step]]
+type = "{password}\n"
+[[step]]
+serial = "authd: ada signed in on pts/"
+# The answers given in the screens, each label split so that only the
+# output holds it whole.
+[[step]]
+type = "echo \"host\"\": $(cat /system/settings/hostname)\"\n"
+[[step]]
+screen = "host: lab-installed"
+[[step]]
+type = "echo \"zone\"\": $(readlink /system/settings/localtime)\"\n"
+[[step]]
+screen = "zone: /system/resources/zoneinfo/America/Denver"
+[[step]]
+type = "echo \"admins\"\": $(grep '^admins:' /system/settings/group)\"\n"
+[[step]]
+screen = "admins: admins:x:10:ada"
+# File sharing, ticked on the Software page, is added, and its services
+# started at this first boot.
+[[step]]
+type = "feature list | tail -1\n"
+[[step]]
+screen = "file-sharing  added      File sharing"

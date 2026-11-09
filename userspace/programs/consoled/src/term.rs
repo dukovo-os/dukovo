@@ -42,6 +42,10 @@ pub const WIDE_TAIL: u8 = 16;
 /// How many lines that scrolled off the top are kept.
 pub const SCROLLBACK_LINES: usize = 1000;
 
+/// A place no character is written: the reader's `follows` before it has
+/// heard one.
+const NOWHERE: (usize, usize) = (usize::MAX, usize::MAX);
+
 /// A colour: red, green and blue, each 0 to 255.
 pub type Rgb = (u8, u8, u8);
 
@@ -191,6 +195,20 @@ struct State {
     view: usize,
     /// The colour each palette index shows on this console.
     palette: Palette,
+    /// The text written since it was last taken, for the screen reader
+    /// (ADR 0324): None while nobody listens. A character not written
+    /// just after the one before starts a new line, so that the words a
+    /// full-screen program puts here and there are read apart.
+    spoken: Option<String>,
+    /// What the screen reader has heard in each cell, while it listens:
+    /// the screen as it was when the reader last took what was written,
+    /// with what it took since. A line editor that erases its line and
+    /// writes it again for each key writes the same characters back, and
+    /// they are not said again; what it erased for good is blank by the
+    /// next time. Clearing the whole screen forgets it at once.
+    heard: Vec<char>,
+    /// Where the next character goes if it follows the last one said.
+    follows: (usize, usize),
 }
 
 /// A virtual console's terminal.
@@ -230,6 +248,9 @@ impl Terminal {
             scrollback: VecDeque::new(),
             view: 0,
             palette: default_palette(),
+            spoken: None,
+            heard: Vec::new(),
+            follows: NOWHERE,
         };
         state.reset_tabs();
         Terminal { parser: Parser::new(), state }
@@ -308,8 +329,36 @@ impl Terminal {
         self.state.view
     }
 
-    /// The text of live row `y`, without trailing blanks: for the tests.
-    #[cfg(test)]
+    /// Starts or stops keeping the text written, for the screen reader:
+    /// what the screen shows already counts as heard.
+    pub fn set_speaking(&mut self, on: bool) {
+        let s = &mut self.state;
+        s.spoken = on.then(String::new);
+        s.heard = if on { s.cells.iter().map(|cell| cell.c).collect() } else { Vec::new() };
+        s.follows = NOWHERE;
+    }
+
+    /// Takes the text written since the last time, a line of the screen
+    /// or a run of characters written one after another on each line.
+    /// What the screen shows now is heard, from here on.
+    pub fn take_spoken(&mut self) -> String {
+        let s = &mut self.state;
+        let Some(spoken) = s.spoken.as_mut() else {
+            return String::new();
+        };
+        let taken = std::mem::take(spoken);
+        for (heard, cell) in s.heard.iter_mut().zip(&s.cells) {
+            *heard = cell.c;
+        }
+        taken
+    }
+
+    /// Where the cursor is on the live screen, shown or not.
+    pub fn position(&self) -> (usize, usize) {
+        (self.state.x, self.state.y)
+    }
+
+    /// The text of live row `y`, without trailing blanks.
     pub fn row_text(&self, y: usize) -> String {
         let s = &self.state;
         let row: String = s.cells[y * s.cols..(y + 1) * s.cols]
@@ -518,6 +567,7 @@ impl State {
     fn full_reset(&mut self) {
         let blank = Cell::BLANK;
         self.cells.fill(blank);
+        self.heard.fill(' ');
         self.x = 0;
         self.y = 0;
         self.wrap_pending = false;
@@ -563,6 +613,10 @@ impl State {
         self.cells.copy_within((from + n) * cols..(to + 1) * cols, from * cols);
         let blank = self.blank();
         self.cells[(to + 1 - n) * cols..(to + 1) * cols].fill(blank);
+        if !self.heard.is_empty() {
+            self.heard.copy_within((from + n) * cols..(to + 1) * cols, from * cols);
+            self.heard[(to + 1 - n) * cols..(to + 1) * cols].fill(' ');
+        }
     }
 
     /// Rows `from..=to` move down `n`, the bottom ones going; blanks come
@@ -573,6 +627,10 @@ impl State {
         self.cells.copy_within(from * cols..(to + 1 - n) * cols, (from + n) * cols);
         let blank = self.blank();
         self.cells[from * cols..(from + n) * cols].fill(blank);
+        if !self.heard.is_empty() {
+            self.heard.copy_within(from * cols..(to + 1 - n) * cols, (from + n) * cols);
+            self.heard[from * cols..(from + n) * cols].fill(' ');
+        }
     }
 
     /// Moves down a line, scrolling the region at its bottom.
@@ -624,6 +682,8 @@ impl State {
         if self.wrap_pending && self.modes.autowrap {
             self.x = 0;
             self.line_feed();
+            // A line that runs on is still one line to the reader.
+            self.follows = (self.x, self.y);
         }
         self.wrap_pending = false;
         if width == 2 && self.x + 1 >= self.cols {
@@ -638,6 +698,25 @@ impl State {
             }
         }
         let row = self.y * self.cols;
+        // The reader hears what changes on the screen: a character written
+        // where the reader heard the same one, as a shell's line editor
+        // does as it draws its line again for each key, is not said again,
+        // unless it goes on from one that was, as the spaces between new
+        // words do.
+        if let Some(spoken) = self.spoken.as_mut() {
+            let continues = self.follows == (self.x, self.y);
+            let heard = self.heard.get(row + self.x).copied();
+            if self.modes.insert || continues || heard != Some(c) {
+                if !continues && !spoken.is_empty() && !spoken.ends_with('\n') {
+                    spoken.push('\n');
+                }
+                spoken.push(c);
+                self.follows = (self.x + width, self.y);
+                if let Some(cell) = self.heard.get_mut(row + self.x) {
+                    *cell = c;
+                }
+            }
+        }
         if self.modes.insert {
             let end = row + self.cols;
             let at = row + self.x;
@@ -797,6 +876,11 @@ impl Perform for State {
                 if self.modes.newline {
                     self.x = 0;
                 }
+                if let Some(spoken) = self.spoken.as_mut()
+                    && !spoken.ends_with('\n')
+                {
+                    spoken.push('\n');
+                }
             }
             0x0d => {
                 self.x = 0;
@@ -872,9 +956,15 @@ impl Perform for State {
                 match param(params, 0, 0) {
                     0 => self.erase(at, cols * rows),
                     1 => self.erase(0, at + 1),
-                    2 => self.erase(0, cols * rows),
+                    // A cleared screen is new to the reader: what comes is
+                    // said, even where it is what was there before.
+                    2 => {
+                        self.erase(0, cols * rows);
+                        self.heard.fill(' ');
+                    }
                     3 => {
                         self.erase(0, cols * rows);
+                        self.heard.fill(' ');
                         self.scrollback.clear();
                         self.view = 0;
                     }
@@ -1221,5 +1311,57 @@ mod tests {
         let mut term = term("\x1b[?6h\x1b7\x1b[3;5r\x1b8\x1b[6n");
         assert_eq!(term.take_replies(), b"\x1b[1;1R");
         assert_eq!(term.cursor().map(|(_, y)| y), Some(2));
+    }
+
+    #[test]
+    fn the_reader_hears_what_changes_on_the_screen() {
+        let mut term = Terminal::new(40, 5);
+        term.set_speaking(true);
+        term.feed(b"total 2\r\nboot  system\r\n# ec");
+        assert_eq!(term.take_spoken(), "total 2\nboot  system\n# ec");
+        // A line editor draws the line again for each key: only the new
+        // character is heard.
+        term.feed(b"\r# ech");
+        assert_eq!(term.take_spoken(), "h");
+        term.feed(b"\r# ech\x1b[K");
+        assert_eq!(term.take_spoken(), "");
+        // Off, nothing is kept.
+        term.set_speaking(false);
+        term.feed(b"o hi");
+        assert_eq!(term.take_spoken(), "");
+    }
+
+    #[test]
+    fn the_reader_does_not_hear_a_line_erased_and_drawn_again() {
+        let mut term = Terminal::new(40, 5);
+        term.feed(b"$ ");
+        // What the screen shows when the reader starts is heard already.
+        term.set_speaking(true);
+        assert_eq!(term.take_spoken(), "");
+        // A line editor that erases the line and draws all of it again,
+        // prompt too, for each key.
+        term.feed(b"\r\x1b[J$ e");
+        assert_eq!(term.take_spoken(), "e");
+        term.feed(b"\r\x1b[J$ ec");
+        assert_eq!(term.take_spoken(), "c");
+        term.feed(b"\r\x1b[2K$ ech");
+        assert_eq!(term.take_spoken(), "h");
+        // Backspace: nothing new is drawn. The same key again is heard,
+        // as the screen showed a blank there in between.
+        term.feed(b"\r\x1b[J$ ec");
+        assert_eq!(term.take_spoken(), "");
+        term.feed(b"\r\x1b[J$ ech");
+        assert_eq!(term.take_spoken(), "h");
+        // Its output, then the next prompt, which comes on a new line; the
+        // line feed first ends the line typed.
+        term.feed(b"\r\nhi\r\n$ ");
+        assert_eq!(term.take_spoken(), "\nhi\n$ ");
+        // What scrolls goes with what was heard: the same prompt again,
+        // where it went a line up, is not new.
+        term.feed(b"\r\n\r\n\r\n\x1b[3A\r$ ");
+        assert_eq!(term.take_spoken(), "\n");
+        // A cleared screen is new: the same prompt again is said.
+        term.feed(b"\x1b[H\x1b[2J$ ");
+        assert_eq!(term.take_spoken(), "$ ");
     }
 }

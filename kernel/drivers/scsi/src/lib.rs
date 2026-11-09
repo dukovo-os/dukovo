@@ -20,6 +20,8 @@
 //!   stick that says its medium is removable (ADR 0430): [`look`], which
 //!   asks whether a medium is in it, [`prevent_removal`], which locks it
 //!   in while it is used, and [`eject`].
+//! - For a CD, DVD or Blu-ray drive (ADR 0431), [`mmc`]: what the disc in
+//!   it is, and where its last session starts.
 //!
 //! The crate knows nothing of the kernel or of USB, so its tests run on
 //! the host. Nothing a device sends is trusted without checking its
@@ -30,6 +32,7 @@
 
 use core::fmt;
 
+pub mod mmc;
 mod probe;
 #[cfg(test)]
 mod tests;
@@ -69,6 +72,17 @@ pub mod op {
     pub const READ_CAPACITY_16: u8 = 0x10;
     /// REPORT LUNS: the logical units a target has.
     pub const REPORT_LUNS: u8 = 0xa0;
+    /// READ TOC/PMA/ATIP: an optical disc's tracks and sessions (MMC).
+    pub const READ_TOC: u8 = 0x43;
+    /// GET CONFIGURATION: the kind of disc in an optical drive, and the
+    /// kinds it has (MMC).
+    pub const GET_CONFIGURATION: u8 = 0x46;
+    /// GET EVENT STATUS NOTIFICATION: what happened to an optical drive's
+    /// disc or tray (MMC).
+    pub const GET_EVENT_STATUS_NOTIFICATION: u8 = 0x4a;
+    /// READ DISC INFORMATION: whether an optical disc is blank, and its
+    /// sessions (MMC).
+    pub const READ_DISC_INFORMATION: u8 = 0x51;
 }
 
 /// Peripheral device types, of an [`Inquiry`].
@@ -325,6 +339,12 @@ impl Inquiry {
         self.qualifier == 0
     }
 
+    /// Whether it is a CD, DVD or Blu-ray drive, which [`mmc`] speaks
+    /// to.
+    pub fn is_optical(&self) -> bool {
+        self.device_type == device_type::CD
+    }
+
     /// Whether it is read and written as a disk.
     pub fn is_disk(&self) -> bool {
         matches!(
@@ -472,7 +492,7 @@ pub enum Meaning {
 
 /// Words for the additional sense codes the log meets most, by code and
 /// qualifier.
-const CODES: [((u8, u8), &str); 20] = [
+const CODES: [((u8, u8), &str); 24] = [
     ((0x00, 0x00), "no additional sense information"),
     ((0x04, 0x00), "not ready, cause not reportable"),
     ((0x04, 0x01), "becoming ready"),
@@ -487,12 +507,16 @@ const CODES: [((u8, u8), &str); 20] = [
     ((0x27, 0x00), "write protected"),
     ((0x28, 0x00), "the medium may have changed"),
     ((0x29, 0x00), "power on or reset"),
+    ((0x30, 0x00), "incompatible medium installed"),
+    ((0x30, 0x02), "cannot read medium, incompatible format"),
     ((0x3a, 0x00), "medium not present"),
     ((0x3a, 0x01), "medium not present, tray closed"),
     ((0x3a, 0x02), "medium not present, tray open"),
     ((0x44, 0x00), "internal target failure"),
     ((0x53, 0x02), "medium removal prevented"),
     ((0x5a, 0x01), "operator medium removal request"),
+    ((0x64, 0x00), "illegal mode for this track"),
+    ((0x6f, 0x03), "read of scrambled sector without authentication"),
 ];
 
 impl Sense {

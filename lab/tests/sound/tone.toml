@@ -1,0 +1,32 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# The machine's sound, heard: a cable from its headphone or line out
+# jack to the lab PC's line in carries the two tones of `audio test`,
+# which the lab PC records (line-in.sh) and measures (line-in.py): 440 Hz
+# on the left, then 660 Hz on the right, each in its own channel and at
+# the pitch the machine meant, so the rate, the channel order and the
+# jack are all right. Which machines have the cable is the lab's to say,
+# in ~/.config/dukovo-lab/line-in: a machine's address and the lab PC's
+# capture device for it, one machine a line ("192.168.50.21 hw:1,0"). A
+# machine with no line there, or a QEMU guest, skips the test.
+about = "The tones of audio test come out of the machine's jack: 440 Hz on the left alone, then 660 Hz on the right alone"
+time = "3m"
+host_needs = ["arecord", "python3"]
+
+[[step]]
+host = "sh {here}/line-in.sh check {machine}"
+[[step]]
+host = "sh {here}/line-in.sh record {machine}"
+background = true
+ready = "recording"
+# Quiet enough for any line in; the volume goes back to what the other
+# sound tests expect. The jack is the first HD Audio output's, whichever
+# is the default (a USB headset plugged in would be).
+[[step]]
+run = "sh -c 'audio volume 30 && audio test $(ls /devices/audio | grep -m1 ^hda); audio volume 70'"
+root = true
+expect = ["left: 440 Hz", "right: 660 Hz"]
+[[step]]
+host = "sh {here}/line-in.sh hear"
+expect = ["left: 440 Hz", "left alone", "right: 660 Hz", "right alone"]

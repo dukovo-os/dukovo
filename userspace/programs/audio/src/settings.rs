@@ -43,8 +43,9 @@ impl Default for Settings {
     }
 }
 
-/// A line's key and value, if it is a `key = value` line.
-fn entry(line: &str) -> Option<(&str, &str)> {
+/// A line's key and value, if it is a `key = value` line. reader.toml(5)
+/// is read the same way.
+pub fn entry(line: &str) -> Option<(&str, &str)> {
     let line = line.trim();
     if line.starts_with('#') || line.is_empty() {
         return None;
@@ -61,7 +62,7 @@ fn entry(line: &str) -> Option<(&str, &str)> {
 }
 
 /// A quoted string's contents, with `\"` and `\\` undone.
-fn string(value: &str) -> Option<String> {
+pub fn string(value: &str) -> Option<String> {
     let inner = value.strip_prefix('"')?;
     let mut out = String::new();
     let mut chars = inner.chars();

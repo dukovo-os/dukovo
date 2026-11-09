@@ -155,7 +155,7 @@ impl Machine {
     /// Reads what this computer has.
     #[must_use]
     pub fn probe() -> Machine {
-        let stick = disks::live_partition().ok().map(|(name, _)| disks::disk_of(&name));
+        let stick = disks::live_medium().ok().map(|medium| medium.disk);
         let mut disks = read_disks(Path::new(BLOCK), stick.as_deref());
         for disk in &mut disks {
             // A disk whose table cannot be read is offered as an empty one,
@@ -241,7 +241,7 @@ pub fn read_disk(name: &str) -> Result<DiskInfo, String> {
     if disks::is_partition(name) {
         return Err(format!("{name} is a partition; name its disk, {}", disks::disk_of(name)));
     }
-    let stick = disks::live_partition().ok().map(|(part, _)| disks::disk_of(&part));
+    let stick = disks::live_medium().ok().map(|medium| medium.disk);
     let mut disk = read_disks(Path::new(BLOCK), stick.as_deref())
         .into_iter()
         .find(|disk| disk.name == name)
@@ -255,7 +255,9 @@ pub fn read_disk(name: &str) -> Result<DiskInfo, String> {
 
 /// The whole disks in `block`, each with its partitions' kinds; the disk
 /// named `stick` is marked as the install stick. Their tables are read
-/// apart, from the disks themselves.
+/// apart, from the disks themselves. Optical drives, whose `disc` file
+/// says what is in them, are no disks to install onto, and are left out
+/// with the install DVD in one of them.
 fn read_disks(block: &Path, stick: Option<&str>) -> Vec<DiskInfo> {
     let mut names: Vec<String> = fs::read_dir(block)
         .into_iter()
@@ -268,6 +270,7 @@ fn read_disks(block: &Path, stick: Option<&str>) -> Vec<DiskInfo> {
         names.iter().partition(|name| attribute(block, name, "partition").is_some());
     whole
         .into_iter()
+        .filter(|name| attribute(block, name, "disc").is_none())
         .map(|name| {
             let sectors = attribute(block, name, "size").and_then(|s| s.parse::<u64>().ok());
             DiskInfo {
@@ -416,6 +419,9 @@ mod tests {
         write(&dir, "sdb1/parttype", "5894c662-af90-4b47-baaf-2e3396443b25\n");
         write(&dir, "vda/size", "8388608\n");
         write(&dir, "sr0/size", "0\n");
+        // An optical drive with a disc in it, the install DVD or another.
+        write(&dir, "cd0/size", "8388608\n");
+        write(&dir, "cd0/disc", "dvd-rom data\n");
         let disks = read_disks(&dir, Some("sdb"));
         let names: Vec<&str> = disks.iter().map(|d| d.name.as_str()).collect();
         assert_eq!(names, ["sda", "sdb", "vda"]);

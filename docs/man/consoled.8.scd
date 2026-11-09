@@ -151,6 +151,57 @@ meanwhile, and on any other terminal, as over SSH, elevate asks itself.
 With root's shell on each console and no sign-in, consoled asks for no
 passwords.
 
+# SCREEN READER
+
+While *readerd*(8) runs, consoled tells it what to say (ADR 0324):
+
+- what programs write to the shown console, each line as it ends and
+  the rest once the console has been quiet for 80 ms, so that a typed
+  character is said as the shell echoes it; past 40 lines at once, the
+  rest are summed up as *and 12 more lines*;
+- what a key moved the cursor onto when the program wrote nothing in
+  answer: the character for *Left*, *Right*, *Backspace* and *Delete*,
+  the line for *Up*, *Down*, *Home* and *End*;
+- *Console 2* and the cursor's line when another console is shown, and
+  the whole screen when readerd starts listening;
+- notifications, as they show;
+- consoled's own prompts, menu and notes, all their words and the keys
+  that answer them, after the trusted sound: two rising tones that only
+  consoled's words are said after. No program can have them said after
+  it, so a program that draws a prompt like consoled's is never mistaken
+  for it. What is typed at a password prompt is never said.
+
+Any key pressed for a program stops what was being said, and *Ctrl*
+alone stops it too. The reader key, *Caps Lock* or *Insert*, makes the
+keys pressed while it is held the reader's, which no program receives:
+
+*Up*, *Down*
+	The line above or below the review cursor, which starts at the
+	cursor each time a program writes.
+
+*Left*, *Right*
+	The word before or after it.
+
+*Comma*, *Period*
+	The character before or after it.
+
+*L*, *A*
+	The line again, or every line from it down.
+
+*T*
+	Which console is shown.
+
+*Page Up*, *Page Down*
+	Faster and slower, by 25 words a minute, which readerd keeps.
+
+*H*
+	The reader's keys.
+
+Pressed twice within 0.4 seconds, Caps Lock or Insert is itself, for the
+program. consoled logs *the screen reader is listening* when it finds
+readerd, and tries again every 2 seconds while it is not running; until
+then the keys are the programs' as always.
+
 # KEYS
 
 *Alt+F1* to *Alt+F6*
@@ -178,7 +229,9 @@ passwords.
 
 *Caps Lock*, *Num Lock*
 	As on any keyboard; every keyboard's lights follow them. The keypad
-	types digits while Num Lock is on, which it is from the start.
+	types digits while Num Lock is on, which it is from the start. While
+	the screen reader runs, Caps Lock is its key, and pressed twice is
+	Caps Lock (*SCREEN READER*).
 
 The keys type in the layout _/system/settings/keyboard_ names, US
 English unless it names another (*keymap*(1)), which every keyboard
@@ -257,10 +310,13 @@ _/system/live/notify/socket_
 _/system/live/authd/socket_
 	authd's socket, which consoled asks for prompts and answers them on.
 
+_/system/live/readerd/socket_
+	readerd's socket, which consoled tells what to say.
+
 # SEE ALSO
 
 *login*(1), *authd*(8), *elevate*(8), *spark*(8), *reboot*(8),
 *keymap*(1), *keymap*(5), *welcome.toml*(5), *nukesh*(1), *dmesg*(1),
-*notifyd*(8), *notify-send*(1), *dukovo-boot*(7),
+*notifyd*(8), *notify-send*(1), *readerd*(8), *reader*(1), *dukovo-boot*(7),
 *radix-framebuffer*(2), *radix-input*(2), *radix-files*(7),
 *serial-console*(8)

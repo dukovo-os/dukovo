@@ -124,6 +124,32 @@ impl Ask {
         }
     }
 
+    /// authd's number for it, which tells one prompt from the next.
+    pub fn id(&self) -> u64 {
+        self.id
+    }
+
+    /// What the screen reader says of it (ADR 0324): all of its words,
+    /// none of them cut, and the keys that answer it.
+    pub fn spoken(&self) -> String {
+        match &self.what {
+            Asking::Password { name, shown, .. } if shown.is_empty() => {
+                format!("Elevate. Password for {name}, to unlock elevate in this pane.")
+            }
+            Asking::Password { name, shown, .. } => {
+                format!("Elevate. Password for {name}, to run {shown}.")
+            }
+            Asking::Choose { question, text } => {
+                let (label, keys) = match question {
+                    Question::Permission => ("Permission", "O: once. A: always. D: don't allow."),
+                    Question::Warning => ("Warning", "O: once. A: always. D: don't allow."),
+                    Question::Grant => ("Permission", "Y: yes. N: no."),
+                };
+                format!("{label}. {text}. {keys}")
+            }
+        }
+    }
+
     /// What was typed at a password prompt so far.
     #[cfg(test)]
     fn typed(&self) -> &[u8] {
@@ -431,12 +457,16 @@ fn answer(id: u64, typed: Prompted) {
 /// The Ctrl+Alt+Delete menu on the bottom line, consoled's own: `sign_in`
 /// says whether Enter signs in.
 pub fn menu_cells(cols: usize, sign_in: bool) -> Vec<Cell> {
-    let text = if sign_in {
+    note_cells(cols, menu_text(sign_in))
+}
+
+/// The Ctrl+Alt+Delete menu's words.
+pub fn menu_text(sign_in: bool) -> &'static str {
+    if sign_in {
         "Ctrl+Alt+Delete    Enter: sign in    R: restart    P: power off    Esc: back"
     } else {
         "Ctrl+Alt+Delete    R: restart    P: power off    Esc: back"
-    };
-    note_cells(cols, text)
+    }
 }
 
 /// `text` on the bottom line, in the colours of consoled's own prompts.
