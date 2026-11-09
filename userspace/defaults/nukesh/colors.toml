@@ -79,7 +79,11 @@ history = true
 did-you-mean = true
 options = true
 
-# ls (LS_COLORS). `enabled = false` leaves ls without colour.
+# ls (LS_COLORS). `enabled = false` leaves ls without colour. On a
+# terminal, ls -l also colours its fields (LS_FIELD_COLORS): the
+# permission letters, sizes by how big and times by how long ago, and
+# --header's titles. `icons = true` shows a Nerd Font icon before each
+# name on a terminal; the terminal must use such a font.
 [ls]
 enabled = true
 directory = "bold blue"
@@ -90,6 +94,19 @@ archive = "red"
 pipe = "yellow"
 socket = "magenta"
 device = "bold yellow"
+read = "yellow"
+write = "red"
+run = "green"
+special-bit = "magenta"
+denied = "bright-black"
+octal = "bright-black"
+small-file = "bright-black"
+big-file = "yellow"
+huge-file = "bold red"
+today = "bold"
+old = "bright-black"
+header = "underline"
+icons = false
 
 # grep (GREP_COLORS).
 [grep]
