@@ -1,0 +1,38 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# The machine sends zeros to the lab PC over TCP as fast as it can, and
+# the cable comes out. What the card could not send stays in its ring,
+# and the stack has more to send that the card has no room for: for a
+# millisecond it polls the card again at once, then every 10 ms, rather
+# than keep a CPU busy for as long as the cable is out (ADR 0418). nc
+# waits for the window to open, so all the machine's CPUs together must
+# be busy for less than a second of the five measured.
+about = "With its cable out, a machine that has data to send leaves its CPUs idle: under a second busy in five"
+time = "3m"
+host_needs = ["nc"]
+
+[[step]]
+host = "sh {here}/send-with-cable-out.sh {port:sink}"
+background = true
+ready = "sink ready"
+
+# The machine sends in the background, by a shell of its own so that the
+# step returns.
+[[step]]
+run = "sh -c 'sh -c \"$0\" < /dev/null > /dev/null 2>&1 &' 'nc {peer} {port:sink} < /dev/zero'"
+[[step]]
+wait = "5s"
+[[step]]
+link = "down"
+[[step]]
+wait = "3s"
+# The CPUs' time busy, user and kernel, over five seconds with the cable
+# out.
+[[step]]
+run = '''sh -c 'busy() { awk "/^(user|system)_ns:/ { s += \$2 } END { printf \"%.0f\n\", s }" /processes/stat; }; first=$(busy); sleep 5; ms=$(( ($(busy) - first) / 1000000 )); echo "busy $ms ms of 5000"; [ "$ms" -lt 1000 ] && echo "idle""-enough"' '''
+expect = "idle-enough"
+[[step]]
+link = "up"
+[[step]]
+run = "sh -c 'pkill -x nc; true'"
