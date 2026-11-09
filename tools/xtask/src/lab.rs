@@ -107,6 +107,8 @@ const PEER_WANTS: &[(&str, &str)] = &[
     ("krb5kdc", "krb5-kdc"),
     ("kdb5_util", "krb5-kdc"),
     ("kadmin.local", "krb5-admin-server"),
+    ("arecord", "alsa-utils"),
+    ("python3", "python3"),
 ];
 
 /// How a lab image lets the lab in: the lab's public key, for SSH, and

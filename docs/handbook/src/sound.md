@@ -6,12 +6,13 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 # Sound
 
 Each sound output the kernel drives is a file in `/devices/audio`:
-`virtio0` for a virtual machine's virtio sound card, and from the next
-releases `hda0` for a computer's built-in sound and `usb0` for a USB
-headset. `/devices/audio/default` leads to the one in use. audiod keeps
-the outputs as `/system/state/audio/audio.toml` says: which one plays,
-how loud, and whether it is muted. The full references are audio(1),
-audiod(8), audio.toml(5) and ADR 0320.
+`hda0` for a computer's built-in sound (Intel HD Audio, in nearly every
+PC since 2004), `virtio0` for a virtual machine's virtio sound card, and
+from the next release `usb0` for a USB headset.
+`/devices/audio/default` leads to the one in use. audiod keeps the
+outputs as `/system/state/audio/audio.toml` says: which one plays, how
+loud, and whether it is muted. The full references are audio(1),
+audiod(8), audio.toml(5) and ADRs 0320 to 0322.
 
 ## Listing and testing
 
@@ -27,6 +28,24 @@ right: 660 Hz on virtio0
 the right, so you hear both, and which is which. `audio info` says what
 an output plays, how much it has played, and how often it ran out of
 sound while a program played (an underrun, heard as a gap).
+
+## Built-in sound
+
+A computer's built-in sound plays through its speakers, its headphone
+jack and its line out at once, as the computer's maker wired them, and
+plugging in headphones turns the speakers off within a quarter of a
+second; the kernel's log says each time what plays (`dmesg | grep
+Audio:` as root):
+
+```
+Audio: hda0 is an HD Audio codec at 0000:00:1f.3 (Realtek HD Audio 10ec:0256, card 1028:0a6e): speaker 0x14 from 0x02, headphones 0x21 from 0x02; 44100 to 192000 frames a second, volume on the codec, polled
+Audio: hda0 plays through the headphones
+```
+
+Its volume is the sound chip's own, in its steps. The microphone, line
+in, and sound over HDMI or DisplayPort are not played or recorded yet:
+a graphics card's own HD Audio, which only has HDMI, is listed by
+`lspci` and left alone.
 
 ## Volume and mute
 

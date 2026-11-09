@@ -4,8 +4,9 @@
 //! Sound (Phase 14b.1, ADR 0320): `/devices/audio`, the outputs programs
 //! play through.
 //!
-//! Each output a driver finds (a virtio sound card, `virtio`, in 6a) is a
-//! file in `/devices/audio`: `virtio0` and on. `default` is a link to the
+//! Each output a driver finds is a file in `/devices/audio`: a virtio
+//! sound card's `virtio0` and on (ADR 0321), an Intel HD Audio
+//! controller's `hda0` and on (ADR 0322). `default` is a link to the
 //! one in use, and `speech` plays on it for the screen reader. The files
 //! take OSS's requests, with Linux's numbers (the ABI's `audio` module
 //! and radix-audio(2)); the arithmetic behind them, which is tested on
@@ -35,6 +36,7 @@
 //! Every change the worker or a request makes that a writer or a poll
 //! may wait for moves the output's *progress* count and wakes them.
 
+pub mod hda;
 pub mod virtio;
 
 use alloc::boxed::Box;
@@ -112,6 +114,10 @@ pub trait Driver: Send {
     fn set_volume(&mut self, _volume: Volume) -> bool {
         false
     }
+    /// Does what the device needs now and then, at each of the worker's
+    /// looks (an HDA codec reads its jacks); `name` is the output's, for
+    /// the log.
+    fn look(&mut self, _name: &str) {}
 }
 
 /// What an output can play, found when it was set up.
@@ -854,6 +860,7 @@ fn step(output: &Output, driver: &mut dyn Driver, staging: &mut [u8], device: &m
         }
         return;
     }
+    driver.look(output.name());
     // What was queued was dropped: so are the device's periods.
     let (epoch, volume_changed, volume) = {
         let mut state = output.state.lock();

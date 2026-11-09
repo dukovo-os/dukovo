@@ -35,6 +35,10 @@ const ALLOWED: &[(&str, &str)] = &[
         "sets up a sound card at boot, on the boot CPU's 64 KiB stack",
     ),
     (
+        "radix::audio::hda::try_bind",
+        "sets up an HD Audio controller at boot, on the boot CPU's 64 KiB stack",
+    ),
+    (
         "radix::net::bind",
         "sets up a network card and its stack at boot, on the boot CPU's 64 KiB stack",
     ),

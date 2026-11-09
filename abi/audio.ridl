@@ -149,6 +149,8 @@ const RATE_384000: u32 = 0x2000;
 
 /// OutputInfo's `kind`: a virtio sound card (ADR 0321).
 const KIND_VIRTIO: u8 = 1;
+/// OutputInfo's `kind`: an Intel High Definition Audio codec (ADR 0322).
+const KIND_HDA: u8 = 2;
 
 /// OutputInfo's `flags`: it is the output `default` leads to.
 const FLAG_DEFAULT: u8 = 1;

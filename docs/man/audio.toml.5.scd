@@ -28,7 +28,7 @@ muted = false
 
 *output*
 	The output to play through, by its name in _/devices/audio_, such
-	as *virtio0*. Empty, or an output that is not there, for the one
+	as *hda0* or *virtio0*. Empty, or an output that is not there, for the one
 	plugged in last, or else the first.
 
 *volume*
