@@ -285,6 +285,9 @@ ntfs-resize userspace/programs/systools/src/mount.rs userspace/programs/systools
 ntfs-write kernel/fs/block/ kernel/fs/fat/ kernel/fs/ntfs/ userspace/programs/systools/src/ntfs.rs
 ntfs-write userspace/storage/
 oom kernel/mm/
+optical kernel/drivers/ahci/ kernel/drivers/scsi/ kernel/drivers/usb/ kernel/drivers/xhci/
+optical kernel/fs/iso9660/ kernel/fs/udf/ userspace/programs/systools/src/eject.rs
+optical userspace/programs/systools/src/lsblk.rs userspace/programs/systools/src/volumed.rs
 page-fault kernel/mm/
 pci-serial kernel/drivers/uart/
 posix docs/man/ kernel/lib/posix/ ports/7zip/ ports/bc/ ports/bzip2/ ports/curl/ ports/db1/

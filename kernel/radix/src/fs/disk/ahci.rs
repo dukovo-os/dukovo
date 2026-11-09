@@ -14,6 +14,11 @@
 //! some, then clears the controller's status for them; a port being
 //! recovered is left alone, its interrupts off until it runs again. A
 //! controller without MSI is polled by the threads waiting for it.
+//!
+//! A port with an optical drive on it (ATAPI) is handed to the drive's
+//! own thread ([`super::optical`]), named `cd0` and on: its interrupt
+//! turns the port's interrupts off and wakes the thread, which looks at
+//! the port itself.
 
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -29,8 +34,9 @@ use radix_mm::{Flags, HEAP, Kmalloc};
 use radix_sync::Once;
 
 use super::queue::{self, Controller, Disk, Op, Outcome, Part, Request, Volume};
-use super::{Entry, Ident, Name, Size, partitions, register};
+use super::{Entry, Ident, Name, Size, optical, partitions, register};
 use crate::Arch;
+use crate::sched::{self, ThreadRef};
 
 /// The most AHCI controllers.
 const MAX_HOSTS: usize = 4;
@@ -48,6 +54,12 @@ struct Host {
 /// The controllers, for their interrupt handlers: set once each.
 static HOSTS: [Once<Arc<Host, Kmalloc>>; MAX_HOSTS] = [const { Once::new() }; MAX_HOSTS];
 
+/// The threads of the optical drives on each controller's ports, for its
+/// interrupt handler: set once each. Apart from [`Host`], which is built
+/// on the stack before it moves.
+static DRIVES: [[Once<ThreadRef>; PORTS]; MAX_HOSTS] =
+    [const { [const { Once::new() }; PORTS] }; MAX_HOSTS];
+
 fn on_interrupt(index: usize) {
     let Some(host) = HOSTS.get(index).and_then(Once::get) else { return };
     let pending = host.hba.pending();
@@ -60,6 +72,13 @@ fn on_interrupt(index: usize) {
         left &= left - 1;
         if let Some(disk) = host.disks[port].get() {
             disk.collect(0);
+        } else {
+            // An optical drive's thread looks at the port when it wakes,
+            // and turns its interrupts on again with its next command.
+            host.hba.quiet(port);
+            if let Some(thread) = DRIVES[index][port].get() {
+                sched::wake(thread);
+            }
         }
     }
     host.hba.acknowledge(pending);
@@ -204,10 +223,14 @@ impl SataPort {
     }
 }
 
-/// Sets up the AHCI controller `function` and the disks on it, counting
-/// them in `next`. Kept out of the frame of `init`'s scan.
+/// Sets up the AHCI controller `function` and the disks and optical
+/// drives on it, counting them in `next` and `drives`. Kept out of the
+/// frame of `init`'s scan.
 #[inline(never)]
-pub fn bind(function: &Function, next: &mut usize) -> Result<(), &'static str> {
+pub fn bind(
+    function: &Function,
+    (next, drives): (&mut usize, &mut usize),
+) -> Result<(), &'static str> {
     let index = HOSTS.iter().position(|host| host.get().is_none()).ok_or("too many controllers")?;
     function.enable_memory_and_dma();
     let Some(Bar::Memory { address, size, .. }) = function.bar(radix_ahci::BAR) else {
@@ -259,6 +282,11 @@ pub fn bind(function: &Function, next: &mut usize) -> Result<(), &'static str> {
     }
     let mut alloc = |pages: usize| <Arch as Devices>::alloc_dma(source, pages, false);
     host.hba.probe(&mut ports, &mut alloc, &mut queue::delay, &mut |number, found| match found {
+        Ok(port) if port.packet_identity().is_some() => {
+            if add_drive(&host, index, number, port) {
+                *drives += 1;
+            }
+        }
         Ok(port) => {
             if let Err(why) = add(&host, number, port, next, interrupt.is_some()) {
                 warn!("Disk: AHCI port {number} at {}: {why}", function.address());
@@ -273,6 +301,23 @@ pub fn bind(function: &Function, next: &mut usize) -> Result<(), &'static str> {
         Err(why) => info!("Disk: AHCI port {number} at {}: {why}; not used", function.address()),
     });
     Ok(())
+}
+
+/// Sets up the optical drive on port `number` of `host`, the controller
+/// at `index`, which its own thread runs. Kept out of the frame of [`bind`]'s scan.
+#[inline(never)]
+fn add_drive(host: &Host, index: usize, number: usize, port: Port) -> bool {
+    match optical::add_ahci(port, number, host.source) {
+        Ok(thread) => {
+            let _ = DRIVES[index][number].set(thread.clone());
+            optical::release(&thread);
+            true
+        }
+        Err(why) => {
+            warn!("Disk: AHCI port {number} at {}: {why}", host.source);
+            false
+        }
+    }
 }
 
 /// Sets up the disk on port `number` of `host`, counted in `next`.

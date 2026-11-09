@@ -20,7 +20,9 @@
 //!   `/sys/block/<disk>/stat` (block/stat.rst), which iostat(1) reads;
 //!   and `removable`, 1 for a drive whose medium comes and goes, which
 //!   has `media_changes` too, how many times one went in or came out
-//!   (Radix's own, which volumed(8) watches, ADR 0430);
+//!   (Radix's own, which volumed(8) watches, ADR 0430), and for a CD,
+//!   DVD or Blu-ray drive `disc`, what is in it (`none`, `dvd-rom data`,
+//!   `cd-rom audio`, `dvd+r blank`, `unreadable`; ADR 0431);
 //! - `/kernel/bus/pci/devices/<address>/vendor`, `device`, `class`,
 //!   `revision`, `subsystem_vendor` and `subsystem_device`, in
 //!   hexadecimal, for every PCI function the scan found;
@@ -126,6 +128,7 @@ use radix_vfs::{Error, FsKind, FsRef, KArc, Kind, NodeRef, Result, Text, mem, ne
 use radix_uacpi::thermal::STEPS;
 
 use super::disk;
+use super::disk::removable::Disc;
 use crate::acpi::{devices, thermal, ucsi};
 
 mod net;
@@ -522,6 +525,13 @@ impl Listing for Blocks {
         let removable = u8::from(drive.is_some());
         dir.add("removable", value(move |text| writeln!(text, "{removable}"))?)?;
         if let Some(drive) = drive {
+            // An optical drive says what disc is in it (ADR 0431).
+            if drive.disc().is_some() {
+                let disc = drive.clone();
+                let what =
+                    value(move |text| writeln!(text, "{}", disc.disc().unwrap_or(Disc::None)))?;
+                dir.add("disc", what)?;
+            }
             dir.add("media_changes", value(move |text| writeln!(text, "{}", drive.changes()))?)?;
         }
         // What the disk says it is, where Linux has an NVMe controller's.

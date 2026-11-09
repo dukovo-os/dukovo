@@ -11,6 +11,8 @@ use std::vec::Vec;
 
 use crate::*;
 
+mod mmc;
+
 /// A simulated logical unit, answering as a USB stick's firmware does.
 struct Sim {
     qualifier: u8,
@@ -46,6 +48,8 @@ struct Sim {
     gone: bool,
     /// The operation codes it was sent, in order.
     sent: Vec<u8>,
+    /// The disc of an optical drive, which answers MMC's commands.
+    disc: Option<mmc::Disc>,
 }
 
 impl Sim {
@@ -72,6 +76,7 @@ impl Sim {
             broken: 0,
             gone: false,
             sent: Vec::new(),
+            disc: None,
         }
     }
 
@@ -138,6 +143,9 @@ impl Sim {
                 self.locked = cdb[4] & 1 != 0;
                 Reply::Good { residue: 0 }
             }
+            op::READ_CAPACITY_10 if self.disc.as_ref().is_some_and(|d| d.no_capacity) => {
+                Sim::sense(key::ILLEGAL_REQUEST, 0x20, 0)
+            }
             op::READ_CAPACITY_10 => {
                 if self.no_medium {
                     return Sim::sense(key::NOT_READY, 0x3a, 0);
@@ -172,6 +180,15 @@ impl Sim {
                     out[0] = (out.len() - 1) as u8;
                 }
                 Reply::Good { residue: 0 }
+            }
+            op::READ_TOC
+            | op::GET_CONFIGURATION
+            | op::READ_DISC_INFORMATION
+            | op::GET_EVENT_STATUS_NOTIFICATION
+                if self.disc.is_some() =>
+            {
+                let no_medium = self.no_medium;
+                self.disc.as_mut().unwrap().answer(cdb, no_medium, out)
             }
             _ => Sim::sense(key::ILLEGAL_REQUEST, 0x20, 0),
         }

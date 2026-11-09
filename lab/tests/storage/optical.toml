@@ -1,0 +1,62 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "A disc put in the optical drive is mounted at its label, read-only, ejected by eject, and unmounted when pulled out; the drive stays, empty"
+time = "5m"
+
+# The disc, optical.iso beside this file, is an ISO 9660 with Rock Ridge
+# and Joliet, labelled LABDISC, holding hello.txt (ADR 0431). The drive
+# is looked at every two seconds, and a disc spins up first.
+[[step]]
+disc = "insert"
+image = "optical.iso"
+[[step]]
+wait = "8s"
+[[step]]
+run = "findmnt /volumes/LABDISC"
+expect = ["iso9660", "ro"]
+[[step]]
+run = "cat /volumes/LABDISC/hello.txt"
+expect = "Read from a disc in the lab."
+# The drive is a `rom`, and says what disc is in it. Keep its name in the
+# lab's home for the steps below, which root runs: each account has a
+# /tmp of its own.
+[[step]]
+run = "lsblk -dn -o NAME,TYPE | awk '$2 == \"rom\" { print $1 }' > ~/lab-drive && cat ~/lab-drive"
+expect = "cd"
+[[step]]
+run = "sh -c 'cat /kernel/block/$(cat ~/lab-drive)/disc'"
+expect = "cd-rom data"
+# A disc is never written.
+[[step]]
+run = "sh -c 'echo no > /volumes/LABDISC/new.txt && echo written || echo refused'"
+root = true
+expect = "refused"
+# eject unmounts it and opens the tray: the drive stays, empty, and
+# nothing is left at /volumes.
+[[step]]
+run = "eject LABDISC"
+root = true
+[[step]]
+run = "sh -c 'test \"$(cat /kernel/block/$(cat ~/lab-drive)/size)\" = 0 && echo empty; cat /kernel/block/$(cat ~/lab-drive)/disc; ls /volumes'"
+expect = ["empty", "none"]
+expect_not = "LABDISC"
+# Taken out of the open tray and put back, it is mounted again.
+[[step]]
+disc = "eject"
+[[step]]
+disc = "reinsert"
+[[step]]
+wait = "8s"
+[[step]]
+run = "cat /volumes/LABDISC/hello.txt"
+expect = "Read from a disc in the lab."
+# Pulled out by force while mounted, it is unmounted all the same.
+[[step]]
+disc = "eject"
+[[step]]
+wait = "5s"
+[[step]]
+run = "sh -c 'test \"$(cat /kernel/block/$(cat ~/lab-drive)/size)\" = 0 && echo empty; ls /volumes'"
+expect = "empty"
+expect_not = "LABDISC"

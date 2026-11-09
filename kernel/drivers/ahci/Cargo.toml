@@ -3,7 +3,7 @@
 
 [package]
 name = "radix-ahci"
-description = "AHCI for the Radix kernel: the Serial ATA host controller and the ATA disks on it, with native command queuing"
+description = "AHCI for the Radix kernel: the Serial ATA host controller, the ATA disks on it, with native command queuing, and its optical drives"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -15,6 +15,7 @@ bench = false
 
 [dependencies]
 radix-hw = { path = "../../lib/hw" }
+radix-scsi = { path = "../scsi" }
 
 [dev-dependencies]
 radix-hw = { path = "../../lib/hw", features = ["fake"] }

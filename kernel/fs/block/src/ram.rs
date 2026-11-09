@@ -32,6 +32,8 @@ pub struct RamDisk {
     /// Fail every request after this many more (u32::MAX: never), to test
     /// what sits above against a failing disk.
     fail_after: AtomicU32,
+    /// Where its last session starts, in sectors, as a disc's.
+    last_session: AtomicU64,
 }
 
 impl RamDisk {
@@ -65,7 +67,14 @@ impl RamDisk {
             flushes: AtomicU64::new(0),
             discarded: AtomicU64::new(0),
             fail_after: AtomicU32::new(u32::MAX),
+            last_session: AtomicU64::new(0),
         }
+    }
+
+    /// Has it hold a disc of several sessions, the last of which starts at
+    /// `sector` ([`BlockDevice::last_session`]).
+    pub fn set_last_session(&self, sector: u64) {
+        self.last_session.store(sector, Ordering::Relaxed);
     }
 
     /// Copies `bytes` onto the disk from byte `offset`, bypassing the
@@ -152,6 +161,10 @@ fn page_mut(pages: &mut PageMap<CachePage>, index: u64) -> Result<&mut CachePage
 }
 
 impl BlockDevice for RamDisk {
+    fn last_session(&self) -> u64 {
+        self.last_session.load(Ordering::Relaxed)
+    }
+
     fn info(&self) -> Info {
         Info {
             sectors: self.sectors,

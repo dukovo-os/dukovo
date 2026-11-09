@@ -14,6 +14,8 @@ use radix_hw::{Dma, Mmio, Registers, fake_memory, fake_memory_write};
 use crate::ata::{self, Taskfile, command};
 use crate::{Absent, Error, Hba, Op, Outcome, Port};
 
+mod atapi;
+
 const PORTS: usize = 4;
 const ABAR: usize = 0x100 + PORTS * 0x80;
 const SECTORS: u64 = 1 << 24;
@@ -44,6 +46,8 @@ struct Disk {
     trims: Vec<(u64, u64)>,
     /// The commands it was sent: code, device register, count register.
     commands: Vec<(u8, u8, u16)>,
+    /// An optical drive's: the disc and what it answers.
+    drive: Option<atapi::Drive>,
 }
 
 /// What sector `sector` holds before it is written.
@@ -70,6 +74,7 @@ impl Disk {
             flushes: 0,
             trims: Vec::new(),
             commands: Vec::new(),
+            drive: None,
         }
     }
 }
@@ -225,8 +230,13 @@ impl PortRegs {
                 (u64_at(entry), (u32_at(entry + 12) & 0x3f_ffff) as usize + 1)
             })
             .collect();
-        let disk = self.disk.as_mut().expect("a command to a port with no disk");
+        // A device unplugged answers nothing.
+        let Some(disk) = self.disk.as_mut() else { return };
         disk.commands.push((code, device, count));
+        if disk.drive.is_some() {
+            self.run_packet(slot, flags, table, &fis, &buffers);
+            return;
+        }
         let queued = matches!(code, command::READ_FPDMA_QUEUED | command::WRITE_FPDMA_QUEUED);
         if queued {
             assert_eq!(usize::from(count >> 3), slot, "an NCQ tag is its slot");
@@ -669,9 +679,9 @@ fn register_frames_and_trim_ranges_are_laid_out_as_ata_has_them() {
 
 #[test]
 fn probing_finds_the_disks_and_says_why_a_device_is_not_used() {
-    let mut atapi = Disk::new();
-    atapi.signature = 0xeb14_0101;
-    let sim = Sim::new(std::vec![(0, Disk::new()), (2, atapi)]);
+    let mut multiplier = Disk::new();
+    multiplier.signature = 0x9669_0101;
+    let sim = Sim::new(std::vec![(0, Disk::new()), (2, multiplier)]);
     let (hba, found) = probe(&sim);
     assert_eq!(hba.slots(), 32);
     assert!(hba.ncq() && hba.wide());
@@ -687,7 +697,7 @@ fn probing_finds_the_disks_and_says_why_a_device_is_not_used() {
     assert_eq!(info.depth, 32);
     assert!(info.queued && info.write_cache && info.fua);
     assert_eq!(info.trim_sectors, 64 * 0xffff);
-    assert!(matches!(found[1], (2, Err(Absent::Atapi))));
+    assert!(matches!(found[1], (2, Err(Absent::PortMultiplier))));
     // The port is running and takes interrupts.
     sim.with(|s| {
         assert_eq!(s.ports[0].cmd & 0x11, 0x11);

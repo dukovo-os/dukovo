@@ -41,6 +41,16 @@ $ eject SDCARD
 $ eject sdc
 ```
 
+A CD, DVD or Blu-ray drive is such a drive (ADR 0431). While its disc
+is mounted, the drive keeps it in, and its button does nothing; eject
+unmounts the disc and opens the tray. Its name opens an empty drive's
+tray too.
+
+```
+$ eject HOLIDAY_2026
+$ eject cd0
+```
+
 # OPTIONS
 
 *-v*, *--verbose*

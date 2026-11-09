@@ -44,12 +44,14 @@ use radix_mm::{Flags, HEAP, Kmalloc};
 use radix_sync::{Mutex, SpinLock};
 use radix_virtio::device_type;
 
+pub use self::optical::wait_for_discs;
 use self::removable::Drive;
 use crate::Arch;
 
 mod ahci;
 mod ide;
 mod nvme;
+mod optical;
 mod queue;
 pub mod removable;
 mod sdhci;
@@ -242,6 +244,7 @@ pub fn init() {
     let mut functions = 0;
     let mut disks = 0;
     let mut sata = 0;
+    let mut optical = 0;
     let mut ide = 0;
     let mut cards = 0;
     let mut controllers = 0;
@@ -268,7 +271,7 @@ pub fn init() {
             } else if vmd::is_vmd(&function) {
                 vmd::bind(&function, &mut controllers, &mut functions);
             } else if function.class() == radix_ahci::PCI_CLASS {
-                if let Err(why) = ahci::bind(&function, &mut sata) {
+                if let Err(why) = ahci::bind(&function, (&mut sata, &mut optical)) {
                     warn!(
                         "Disk: could not set up the AHCI controller at {}: {why}",
                         function.address()
@@ -303,12 +306,15 @@ pub fn init() {
     }
     crate::usb::bind_found();
     let plural = |n: usize, one: &'static str, many: &'static str| if n == 1 { one } else { many };
-    let mut on_ide = TextBuf::<40>::new();
+    let mut on_ide = TextBuf::<64>::new();
     if ide > 0 {
         let _ = write!(on_ide, ", {ide} IDE {}", plural(ide, "disk", "disks"));
     }
     if cards > 0 {
         let _ = write!(on_ide, ", {cards} SD {}", plural(cards, "card", "cards"));
+    }
+    if optical > 0 {
+        let _ = write!(on_ide, ", {optical} optical {}", plural(optical, "drive", "drives"));
     }
     info!(
         "PCI: {functions} {} on {count} {}; {disks} virtio {}, {sata} SATA {}, {controllers} NVMe \
@@ -572,11 +578,16 @@ fn unregister(name: &str) {
 }
 
 /// Whether `other` is the disk `disk`, one of its partitions, or a
-/// BitLocker volume unlocked on them: `sdb`, `sdb1`, `sdb1-unlocked`.
+/// BitLocker volume unlocked on them: `sdb`, `sdb1`, `sdb1-unlocked`,
+/// `nvme0n1p2`. A disk whose name ends in a digit has a `p` before its
+/// partitions' numbers, so that `cd1` is not taken for `cd10`'s disk, nor
+/// `nvme0n1` for `nvme0n10`'s.
 fn of_disk(disk: &str, other: &str) -> bool {
-    let rest = other.strip_prefix(disk).map(|rest| rest.strip_suffix(UNLOCKED).unwrap_or(rest));
-    let rest = rest.map(|rest| rest.strip_prefix('p').unwrap_or(rest));
-    rest.is_some_and(|rest| rest.bytes().all(|b| b.is_ascii_digit()))
+    let Some(rest) = other.strip_prefix(disk) else { return false };
+    let rest = rest.strip_suffix(UNLOCKED).unwrap_or(rest);
+    let digit = disk.ends_with(|c: char| c.is_ascii_digit());
+    let number = if digit && !rest.is_empty() { rest.strip_prefix('p') } else { Some(rest) };
+    number.is_some_and(|number| number.bytes().all(|b| b.is_ascii_digit()))
 }
 
 /// How a [`replace`] went.

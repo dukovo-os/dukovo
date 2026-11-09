@@ -31,6 +31,11 @@ pub mod command {
     pub const SMART: u8 = 0xb0;
     /// IDENTIFY DEVICE: 512 bytes of what the disk is.
     pub const IDENTIFY_DEVICE: u8 = 0xec;
+    /// PACKET: an ATAPI device's command, a SCSI command descriptor block
+    /// that follows the register frame.
+    pub const PACKET: u8 = 0xa0;
+    /// IDENTIFY PACKET DEVICE: 512 bytes of what an ATAPI device is.
+    pub const IDENTIFY_PACKET_DEVICE: u8 = 0xa1;
 }
 
 /// SMART's feature codes, for the features register.
@@ -74,6 +79,14 @@ pub const FIS_H2D_LEN: usize = 20;
 /// Its second byte's command bit: the frame carries a command (not a
 /// device control register change).
 const FIS_COMMAND: u8 = 1 << 7;
+
+/// PACKET's features bit that says the data move to the host, for a
+/// device that needs to be told (DMADIR, IDENTIFY PACKET DEVICE word 62
+/// bit 15).
+pub const PACKET_DMADIR: u16 = 1 << 2;
+/// The most bytes a PIO packet command's device sends between
+/// interrupts, in its byte count registers: Linux's libata's.
+pub const PACKET_PIO_BYTES: u32 = 63 * 1024;
 
 /// The most sectors one TRIM range covers.
 pub const TRIM_RANGE_MAX: u64 = 0xffff;
@@ -182,6 +195,23 @@ impl Taskfile {
         Taskfile { command: command::IDENTIFY_DEVICE, ..Taskfile::default() }
     }
 
+    /// IDENTIFY PACKET DEVICE.
+    pub fn identify_packet() -> Taskfile {
+        Taskfile { command: command::IDENTIFY_PACKET_DEVICE, ..Taskfile::default() }
+    }
+
+    /// PACKET, whose command descriptor block moves `bytes` bytes: by DMA
+    /// with `dma` (and DMADIR set for data to the host, on a device that
+    /// asks for it, `dmadir`), else by PIO, the device sending at most
+    /// [`PACKET_PIO_BYTES`] between interrupts. The byte count goes in the
+    /// LBA mid and high registers whichever way, as Linux's libata sets
+    /// it: some controllers look at it for DMA too.
+    pub fn packet(dma: bool, dmadir: bool, bytes: u32) -> Taskfile {
+        let features = u16::from(dma) | if dma && dmadir { PACKET_DMADIR } else { 0 };
+        let limit = u64::from(bytes.min(PACKET_PIO_BYTES));
+        Taskfile { command: command::PACKET, features, lba: limit << 8, count: 0, device: 0 }
+    }
+
     /// SMART with feature `feature`, which reads one 512-byte page.
     pub fn smart(feature: u8) -> Taskfile {
         Taskfile {
@@ -228,6 +258,8 @@ pub enum Unsupported {
     SectorSize(u32),
     /// It reports no sectors.
     Empty,
+    /// It is not an ATAPI device (word 0's bits 15 and 14).
+    NotAtapi,
 }
 
 /// What a disk says of itself in IDENTIFY DEVICE (ACS-4, 7.13.7).
@@ -367,6 +399,66 @@ pub fn identify(id: &[u16; 256]) -> Result<Identity, Unsupported> {
     })
 }
 
+/// What an ATAPI device says of itself in IDENTIFY PACKET DEVICE (ACS-4,
+/// 7.14.7): an optical drive, or another device that takes SCSI commands
+/// in ATA packets.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PacketIdentity {
+    /// Its SCSI peripheral device type: 5, a CD, DVD or Blu-ray drive.
+    pub device_type: u8,
+    /// Whether its medium can be taken out.
+    pub removable: bool,
+    /// The length of its command packets: 12 bytes, or 16.
+    pub packet_length: u8,
+    /// Whether it moves data by DMA.
+    pub dma: bool,
+    /// Whether a DMA command that moves data to the host must say so
+    /// (DMADIR), as some SATA bridges to parallel ATA drives need.
+    pub dmadir: bool,
+    /// Its model, serial number and firmware revision, in ASCII, padded
+    /// with spaces.
+    pub model: [u8; 40],
+    /// Its serial number.
+    pub serial: [u8; 20],
+    /// Its firmware revision.
+    pub firmware: [u8; 8],
+}
+
+/// Reads IDENTIFY PACKET DEVICE data.
+pub fn identify_packet(id: &[u16; 256]) -> Result<PacketIdentity, Unsupported> {
+    if id[255] & 0xff == 0xa5 {
+        let sum = id.iter().fold(0u8, |sum, word| {
+            let [low, high] = word.to_le_bytes();
+            sum.wrapping_add(low).wrapping_add(high)
+        });
+        if sum != 0 {
+            return Err(Unsupported::Checksum);
+        }
+    }
+    // Word 0: 10b in bits 15 and 14 for ATAPI, the device type in bits 12
+    // to 8, removable in bit 7, and the packet's length in bits 1 and 0
+    // (00b for 12 bytes, 01b for 16).
+    let general = id[0];
+    if general >> 14 != 0b10 {
+        return Err(Unsupported::NotAtapi);
+    }
+    let packet_length = match general & 3 {
+        0 => 12,
+        1 => 16,
+        _ => return Err(Unsupported::NotAtapi),
+    };
+    Ok(PacketIdentity {
+        device_type: ((general >> 8) & 0x1f) as u8,
+        removable: bit(id, 0, 7),
+        packet_length,
+        dma: bit(id, 49, 8),
+        dmadir: bit(id, 62, 15),
+        model: string(id, 27),
+        serial: string(id, 10),
+        firmware: string(id, 23),
+    })
+}
+
 /// The words of IDENTIFY DEVICE data from its 512 bytes, little-endian.
 pub fn words(bytes: &[u8; 512]) -> [u16; 256] {
     let mut words = [0u16; 256];
@@ -402,6 +494,19 @@ mod proofs {
             assert!((found.logical_sector..=65_536).contains(&found.physical_sector));
             assert!(found.queue_depth <= 32);
             assert!((found.trim_blocks > 0) == (id[169] & 1 != 0));
+        }
+    }
+
+    /// Whatever an ATAPI device answers to IDENTIFY PACKET DEVICE, reading
+    /// it does not panic, and one it accepts has packets of 12 or 16
+    /// bytes.
+    #[kani::proof]
+    #[kani::unwind(257)]
+    fn identify_packet_reads_any_answer() {
+        let id: [u16; 256] = kani::any();
+        if let Ok(found) = identify_packet(&id) {
+            assert!(found.packet_length == 12 || found.packet_length == 16);
+            assert!(found.device_type < 32);
         }
     }
 

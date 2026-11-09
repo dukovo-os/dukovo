@@ -23,6 +23,8 @@
 //!   commands one at a time when it does not; cache flushes, writes
 //!   through the cache (FUA) and TRIM, which the disk takes only while
 //!   nothing else is in flight; and recovery after an error.
+//! - [`Packets`] carries the SCSI commands of an optical drive on a port
+//!   (ATAPI) in ATA packets, one at a time (ADR 0431).
 //! - [`ata`] builds the commands and reads what a disk says of itself.
 //!
 //! The crate is a compartment: it has no `unsafe` code, and reaches the
@@ -45,7 +47,7 @@ mod tests;
 
 use core::fmt;
 
-pub use port::{Info, MAX_SEGMENTS, Op, Outcome, Port};
+pub use port::{Info, MAX_SEGMENTS, Op, Outcome, PACKET_BUFFER_SIZE, Packets, Port};
 use radix_hw::{Dma, Mmio};
 
 /// The PCI class, subclass and programming interface of an AHCI
@@ -156,8 +158,6 @@ pub enum Absent {
     NoLink,
     /// The disk stayed busy.
     NotReady,
-    /// An optical drive or another device that speaks ATAPI.
-    Atapi,
     /// A port multiplier, which the driver does not handle.
     PortMultiplier,
     /// Some other signature.
@@ -177,7 +177,6 @@ impl fmt::Display for Absent {
         match self {
             Absent::NoLink => f.write_str("no link"),
             Absent::NotReady => f.write_str("the disk stayed busy"),
-            Absent::Atapi => f.write_str("an ATAPI device (an optical drive)"),
             Absent::PortMultiplier => f.write_str("a port multiplier"),
             Absent::Unknown(signature) => write!(f, "an unknown device (signature {signature:#x})"),
             Absent::NoIdentity => f.write_str("the disk did not say what it is"),
@@ -189,12 +188,16 @@ impl fmt::Display for Absent {
                     write!(f, "its sectors are {size} bytes, and only 512 and 4096 are supported")
                 }
                 ata::Unsupported::Empty => f.write_str("it has no sectors"),
+                ata::Unsupported::NotAtapi => f.write_str("not an ATAPI device"),
             },
             Absent::Stuck => f.write_str("the port would not start"),
             Absent::NoMemory => f.write_str("out of memory"),
         }
     }
 }
+
+/// A port's interrupt enable register, from its base.
+const PORT_IE: usize = 0x14;
 
 /// An AHCI controller, taken over from the firmware and reset.
 pub struct Hba {
@@ -404,5 +407,15 @@ impl Hba {
     /// Clears the controller's interrupt status for `ports`.
     pub fn acknowledge(&self, ports: u32) {
         self.regs.write32(hba::IS, ports);
+    }
+
+    /// Turns off the interrupt of port `index`, whose optical drive's
+    /// thread the interrupt handler then wakes: the port's status stays
+    /// for the thread to read, and the port raises no interrupt until
+    /// the thread's next command turns it on again.
+    pub fn quiet(&self, index: usize) {
+        if let Some(regs) = self.port_regs(index) {
+            regs.write32(PORT_IE, 0);
+        }
     }
 }
