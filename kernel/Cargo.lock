@@ -560,6 +560,7 @@ dependencies = [
 name = "radix-hda"
 version = "0.13.0"
 dependencies = [
+ "radix-audio",
  "radix-hw",
 ]
 

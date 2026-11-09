@@ -18,7 +18,8 @@
 //!   SET_FRAGMENT;
 //! - volumes as OSS encodes them ([`Volume`]), and the scaling of samples
 //!   by the cube of a volume's fraction, for outputs with no volume of
-//!   their own ([`apply_gain`]);
+//!   their own ([`apply_gain`]), and the attenuation a device's own
+//!   volume is set to for the same loudness ([`attenuation`]);
 //! - the buffer of samples written and not yet played ([`Playback`]): a
 //!   ring of bytes not yet handed to the device, and counters of the
 //!   bytes written, handed over and played, from which the room for more,
@@ -213,6 +214,27 @@ impl Volume {
 pub fn gain(percent: u8) -> u32 {
     let p = u64::from(percent.min(VOLUME_MAX));
     (p * p * p * 65536 / 1_000_000) as u32
+}
+
+/// The attenuation of each volume from 1 to 100 percent, in quarters of a
+/// decibel: 60 log10(v / 100), the decibels of the cube of the fraction,
+/// so that a device's own volume sounds as the kernel's scaling does
+/// ([`gain`]).
+const ATTENUATION: [u16; 100] = [
+    480, 408, 365, 336, 312, 293, 277, 263, 251, 240, 230, 221, 213, 205, 198, 191, 185, 179, 173,
+    168, 163, 158, 153, 149, 144, 140, 136, 133, 129, 125, 122, 119, 116, 112, 109, 106, 104, 101,
+    98, 96, 93, 90, 88, 86, 83, 81, 79, 77, 74, 72, 70, 68, 66, 64, 62, 60, 59, 57, 55, 53, 52, 50,
+    48, 47, 45, 43, 42, 40, 39, 37, 36, 34, 33, 31, 30, 29, 27, 26, 25, 23, 22, 21, 19, 18, 17, 16,
+    15, 13, 12, 11, 10, 9, 8, 6, 5, 4, 3, 2, 1, 0,
+];
+
+/// How far below full a device's own volume sets its sound for `percent`
+/// (1 to 100; 0, which mutes, is taken as 1), in quarters of a decibel:
+/// as far as [`gain`] scales the samples, so that 50% is 18 dB down. An
+/// HD Audio codec's amplifiers and a USB device's feature unit both
+/// follow it.
+pub fn attenuation(percent: u8) -> u16 {
+    ATTENUATION[usize::from(percent.clamp(1, VOLUME_MAX)) - 1]
 }
 
 /// Scales the samples of `bytes` (whole frames of `channels` signed

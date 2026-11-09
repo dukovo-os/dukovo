@@ -27,16 +27,17 @@ audio - the sound outputs: list them, set the volume, test and play
 
 audio works the sound outputs of _/devices/audio_ (ADR 0320): one for each
 sound card the kernel drives, such as *hda0* for a computer's built-in
-sound (Intel HD Audio, ADR 0322) or *virtio0* for a virtual machine's
-virtio sound card. _default_ leads to the one in use. It needs root's
-access, as the outputs are root's.
+sound (Intel HD Audio, ADR 0322), *usb0* for a USB headset, speaker or
+DAC (ADR 0323), or *virtio0* for a virtual machine's virtio sound card.
+A USB output comes and goes with its device. _default_ leads to the one
+in use. It needs root's access, as the outputs are root's.
 
 *list*, or no command, lists the outputs, the one in use marked *\**,
 with what each is, its volume and whether a program plays on it (or the
 screen reader speaks):
 ```
-* hda0       Realtek HD Audio      70%
-  virtio0    virtio sound card     70%
+  hda0       Realtek HD Audio      70%
+* usb0       USB headset           70%
 ```
 
 *info* says more of one output, the default one unless named: its

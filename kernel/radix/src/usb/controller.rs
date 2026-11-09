@@ -51,6 +51,7 @@ use radix_usb::{
 use radix_xhci::{BUFFER_SIZE, Device, Event, Handoff, Host, MAX_ENDPOINTS, Place, Xhci, code};
 
 use super::STARTS;
+use super::audio::{self, Sound};
 use super::hid::{self, Hid, HidPlan, MAX_HIDS};
 use super::hub::Hub;
 use super::net::{self, Ethernet};
@@ -168,6 +169,8 @@ pub(super) struct Attached {
     pub(super) serials: Vec<Serial, Kmalloc>,
     /// Its Ethernet adapter, if it is one that is carried (ADR 0199).
     pub(super) ethernet: Option<Ethernet>,
+    /// Its sound output, if it has one that plays (ADR 0323).
+    pub(super) audio: Option<Box<Sound, Kmalloc>>,
 }
 
 /// A controller, as its thread runs it.
@@ -241,6 +244,8 @@ pub(super) struct Plan {
     serial_count: usize,
     /// Its Ethernet adapter's interfaces (ADR 0199).
     pub(super) net: Option<radix_usb::net::Port>,
+    /// Its first sound output (ADR 0323).
+    pub(super) audio: Option<radix_usb::audio::Output>,
 }
 
 impl Plan {
@@ -283,7 +288,8 @@ pub fn run(index: usize) {
             | controller.lights()
             | controller.storage()
             | controller.serial()
-            | controller.net();
+            | controller.net()
+            | controller.audio();
         if controller.xhci.failed() {
             if controller.dbc {
                 super::dbc::stop();
@@ -294,6 +300,7 @@ pub fn run(index: usize) {
             for device in &mut controller.devices {
                 serial::gone(&mut device.serials);
                 net::gone(&mut device.ethernet);
+                audio::gone(device.audio.take());
             }
             for device in &controller.devices {
                 shown::remove(controller.bus, device.path);
@@ -521,6 +528,7 @@ impl Controller {
             self.hid_report(at, index, code, residual);
         } else if !self.serial_transfer(at, trb, endpoint, code, residual)
             && !self.net_transfer(at, trb, endpoint, code, residual)
+            && !self.audio_transfer(at, trb, endpoint, code, residual)
         {
             self.storage_transfer(at, trb, endpoint, code, residual);
         }
@@ -557,8 +565,11 @@ impl Controller {
             if let Some(link) = gone.storage.take() {
                 link.gone();
             }
+            let sound = gone.audio.take();
             let slot = gone.device.slot();
             self.give_back(gone.device, gone.path);
+            // Once the controller is done with its ring.
+            audio::gone(sound);
             // A hub's queued ports are not looked at: its slot may be
             // given to another device.
             self.work.retain(|&(hub, _)| hub != slot);
@@ -698,6 +709,7 @@ impl Controller {
             storage: None,
             serials: serial::none(),
             ethernet: None,
+            audio: None,
         };
         let _ = self.devices.push_within_capacity(attached);
         if let Some(shown) = &shown
@@ -762,6 +774,19 @@ impl Controller {
                     "USB: {}: interface {}: its network adapter cannot be used: {why}",
                     Name(self.bus, path),
                     port.control
+                ),
+            }
+        }
+        if let Some(output) = plan.audio {
+            match self.start_audio(slot, output) {
+                Ok(()) => {
+                    shown::set_driver(self.bus, path, output.control, "snd-usb-audio");
+                    shown::set_driver(self.bus, path, output.streaming, "snd-usb-audio");
+                }
+                Err(why) => warn!(
+                    "USB: {}: interface {}: its sound output cannot be used: {why}",
+                    Name(self.bus, path),
+                    output.streaming
                 ),
             }
         }
@@ -887,6 +912,7 @@ pub(super) fn read_device(
             let model = radix_usb::net::asix::identify(found.vendor, found.product, found.release)?;
             radix_usb::net::asix::port(&config, model)
         }),
+        audio: radix_usb::audio::find(&config),
     };
     let mut named: [&str; 4] = [""; 4];
     let mut count = 0;

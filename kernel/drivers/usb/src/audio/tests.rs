@@ -471,6 +471,39 @@ fn the_transfer_ring_is_never_overfilled() {
     assert!(stream.next_packet(8, false, &mut out).is_some());
 }
 
+#[test]
+fn periods_play_in_turn() {
+    let mut periods = Periods::default();
+    assert!(!periods.collect(u64::MAX));
+    assert!(periods.push(1920) && periods.push(3840));
+    assert_eq!(periods.len(), 2);
+    assert!(!periods.collect(1919));
+    assert!(periods.collect(2000));
+    assert!(!periods.collect(2000));
+    assert!(periods.collect(3840));
+    assert!(periods.is_empty());
+    for n in 0..MAX_PERIODS as u64 {
+        assert!(periods.push(n));
+    }
+    assert!(!periods.push(99));
+    periods.clear();
+    assert!(periods.is_empty());
+}
+
+#[test]
+fn samples_are_widened_into_the_high_bytes() {
+    let samples = [0x34, 0x12, 0xcd, 0xab];
+    let mut out = [0xffu8; 8];
+    assert_eq!(widen(&samples, 2, &mut out), 4);
+    assert_eq!(out[..4], samples);
+    assert_eq!(widen(&samples, 3, &mut out), 6);
+    assert_eq!(out[..6], [0, 0x34, 0x12, 0, 0xcd, 0xab]);
+    assert_eq!(widen(&samples, 4, &mut out), 8);
+    assert_eq!(out, [0, 0, 0x34, 0x12, 0, 0, 0xcd, 0xab]);
+    // Only whole samples fit.
+    assert_eq!(widen(&samples, 4, &mut out[..6]), 4);
+}
+
 proptest! {
     /// Whatever a device sends, reading it for an output neither panics
     /// nor loops, and what it finds is a setting the kernel plays.

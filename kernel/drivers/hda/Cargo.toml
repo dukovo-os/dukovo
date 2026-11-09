@@ -14,6 +14,8 @@ publish.workspace = true
 bench = false
 
 [dependencies]
+# The attenuation each volume is set to (ADR 0320).
+radix-audio = { path = "../../lib/audio" }
 radix-hw = { path = "../../lib/hw" }
 
 [dev-dependencies]

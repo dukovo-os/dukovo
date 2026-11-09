@@ -61,6 +61,11 @@ const ALLOWED: &[(&str, &str)] = &[
          is 48 KiB (radix::usb::XHCI_STACK_PAGES)",
     ),
     (
+        "<radix::audio::usb::Link>::new",
+        "builds a USB sound output's stream, with room for a transfer ring's TDs, on its xHCI \
+         controller's thread, whose stack is 48 KiB (radix::usb::XHCI_STACK_PAGES)",
+    ),
+    (
         "radix::net::start_loopback",
         "sets up the loopback interface and its stack at boot, on the boot CPU's 64 KiB stack",
     ),

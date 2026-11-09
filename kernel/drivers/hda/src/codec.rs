@@ -774,20 +774,8 @@ fn set_out_amp(
     Ok(())
 }
 
-/// The attenuation of each volume from 1 to 100 percent, in quarters of a
-/// decibel: 60 log10(v / 100), the decibels of the cube of the fraction,
-/// so that a hardware volume sounds as the kernel's scaling does
-/// (radix-audio's `gain`).
-const ATTENUATION: [u16; 100] = [
-    480, 408, 365, 336, 312, 293, 277, 263, 251, 240, 230, 221, 213, 205, 198, 191, 185, 179, 173,
-    168, 163, 158, 153, 149, 144, 140, 136, 133, 129, 125, 122, 119, 116, 112, 109, 106, 104, 101,
-    98, 96, 93, 90, 88, 86, 83, 81, 79, 77, 74, 72, 70, 68, 66, 64, 62, 60, 59, 57, 55, 53, 52, 50,
-    48, 47, 45, 43, 42, 40, 39, 37, 36, 34, 33, 31, 30, 29, 27, 26, 25, 23, 22, 21, 19, 18, 17, 16,
-    15, 13, 12, 11, 10, 9, 8, 6, 5, 4, 3, 2, 1, 0,
-];
-
 /// The step of an amplifier of `caps` for `percent` volume: as many steps
-/// below the 0 dB one as the attenuation needs, rounded, and never above
+/// below the 0 dB one as the attenuation needs (radix-audio's), rounded, and never above
 /// it. `None`, muted, for 0 when the amplifier can mute; the lowest step
 /// when it cannot.
 pub fn step(caps: AmpCaps, percent: u8) -> Option<u8> {
@@ -796,7 +784,7 @@ pub fn step(caps: AmpCaps, percent: u8) -> Option<u8> {
         return if caps.mute() { None } else { Some(0) };
     }
     let quarter = caps.quarter_db();
-    let attenuation = u32::from(ATTENUATION[usize::from(percent.min(100)) - 1]);
+    let attenuation = u32::from(radix_audio::attenuation(percent));
     let down = (attenuation + quarter / 2) / quarter;
     Some(u32::from(top).saturating_sub(down) as u8)
 }

@@ -33,7 +33,9 @@
 //!   packets from: what the kernel wrote into it, what is queued as TDs
 //!   and what they have played. It cuts each packet's bytes into the
 //!   pieces a TD takes, where the ring wraps and where 64 KiB of memory
-//!   end, and keeps the transfer ring from overfilling.
+//!   end, and keeps the transfer ring from overfilling. [`Periods`] says
+//!   which of the kernel's periods have played, and [`widen`] turns its
+//!   16-bit samples into a setting's wider ones.
 //!
 //! The specifications are the USB Implementers Forum's; FreeBSD's
 //! uaudio(4) (BSD-2-Clause) was read for what devices do that the
@@ -972,6 +974,16 @@ impl Stream {
         }
     }
 
+    /// The ring's bytes.
+    pub fn size(&self) -> u32 {
+        self.size
+    }
+
+    /// The bytes of a frame.
+    pub fn frame(&self) -> u32 {
+        self.frame
+    }
+
     /// Bytes the kernel may write now: the ring's room.
     pub fn room(&self) -> u32 {
         self.size - (self.written - self.done) as u32
@@ -1001,6 +1013,11 @@ impl Stream {
     /// Bytes played (or skipped) since the stream started.
     pub fn played(&self) -> u64 {
         self.done
+    }
+
+    /// Bytes written since the stream started.
+    pub fn written(&self) -> u64 {
+        self.written
     }
 
     /// TDs queued and not yet seen done.
@@ -1083,8 +1100,87 @@ impl Stream {
     }
 
     /// Forgets everything written and queued: the stream starts again,
-    /// empty. Its TDs must be gone from the transfer ring.
+    /// empty. Its TDs must be gone from the transfer ring. The TDs' slots
+    /// are left as they are, unused, rather than built again on the stack.
     pub fn clear(&mut self) {
-        *self = Stream::new(self.base, self.size, self.frame);
+        self.written = 0;
+        self.queued = 0;
+        self.done = 0;
+        self.first = 0;
+        self.count = 0;
+        self.trbs = 0;
     }
+}
+
+/// The most periods [`Periods`] keeps.
+pub const MAX_PERIODS: usize = 32;
+
+/// The kernel's periods written into a [`Stream`] and not yet played:
+/// where in the stream each ends.
+#[derive(Clone, Copy, Debug)]
+pub struct Periods {
+    ends: [u64; MAX_PERIODS],
+    first: usize,
+    count: usize,
+}
+
+impl Default for Periods {
+    fn default() -> Periods {
+        Periods { ends: [0; MAX_PERIODS], first: 0, count: 0 }
+    }
+}
+
+impl Periods {
+    /// Periods written and not yet played.
+    pub fn len(&self) -> usize {
+        self.count
+    }
+
+    /// Whether none waits.
+    pub fn is_empty(&self) -> bool {
+        self.count == 0
+    }
+
+    /// Notes a period written, which ends at stream position `end`; false
+    /// if [`MAX_PERIODS`] wait already.
+    pub fn push(&mut self, end: u64) -> bool {
+        if self.count == MAX_PERIODS {
+            return false;
+        }
+        self.ends[(self.first + self.count) % MAX_PERIODS] = end;
+        self.count += 1;
+        true
+    }
+
+    /// Takes the oldest period if the stream has played to its end, at
+    /// `played`.
+    pub fn collect(&mut self, played: u64) -> bool {
+        if self.count == 0 || self.ends[self.first] > played {
+            return false;
+        }
+        self.first = (self.first + 1) % MAX_PERIODS;
+        self.count -= 1;
+        true
+    }
+
+    /// Forgets them all.
+    pub fn clear(&mut self) {
+        *self = Periods::default();
+    }
+}
+
+/// Writes the signed 16-bit samples of `samples` into `out` as samples
+/// of `subframe` bytes (2 to 4), each the same value in the highest
+/// bytes, the low ones 0: says how many bytes it wrote, as many as
+/// `out` has whole samples' room for.
+pub fn widen(samples: &[u8], subframe: u8, out: &mut [u8]) -> usize {
+    let size = usize::from(subframe.clamp(2, 4));
+    let mut written = 0;
+    for (sample, slot) in samples.as_chunks::<2>().0.iter().zip(out.chunks_exact_mut(size)) {
+        let (low, high) = slot.split_at_mut(size - 2);
+        low.fill(0);
+        high.copy_from_slice(sample);
+        written += size;
+    }
+    written
 }
