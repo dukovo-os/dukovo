@@ -254,6 +254,25 @@ impl Console {
         true
     }
 
+    /// Makes the console `cols` by `rows` cells, as a new text size leaves
+    /// it (ADR 0325), and tells its program by the terminal's window size,
+    /// which sends it SIGWINCH.
+    pub fn resize(&mut self, cols: usize, rows: usize) {
+        self.term.resize(cols, rows);
+        let Some(fd) = self.master_fd() else { return };
+        let size = libc::winsize {
+            ws_row: self.term.rows() as u16,
+            ws_col: self.term.cols() as u16,
+            ws_xpixel: 0,
+            ws_ypixel: 0,
+        };
+        // SAFETY: TIOCSWINSZ reads the winsize, which lives through the call.
+        if unsafe { libc::ioctl(fd, libc::TIOCSWINSZ, &raw const size) } < 0 {
+            let error = io::Error::last_os_error();
+            eprintln!("consoled: tty{}: cannot set the window size: {error}", self.number);
+        }
+    }
+
     /// Sends `bytes` to the session as typed. What the terminal has no room
     /// for is dropped, as a program that does not read its input loses
     /// keys typed at it.

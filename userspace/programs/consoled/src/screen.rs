@@ -14,6 +14,11 @@
 //! console's palette, and the margins round the grid are its colour 0, the
 //! background, so that a program that changes the palette colours the
 //! screen edge to edge.
+//!
+//! The text can be made one or two steps bigger (accessibility.toml(5),
+//! ADR 0325): the steps are the built-in fonts and then the two larger ones
+//! drawn at twice their size, each pixel two by two, so that a screen too
+//! big for the largest font still has bigger text to give.
 
 use std::fs::{File, OpenOptions};
 use std::io;
@@ -23,6 +28,7 @@ use std::os::unix::fs::FileExt;
 use radix_abi::framebuffer::{self as abi, FramebufferInfo};
 use radix_fbcon::{Font, builtin_font, choose_font_for};
 
+use crate::access::Size;
 use crate::sys;
 use crate::term::{
     BOLD, Cell, DIM, Palette, REVERSE, Terminal, UNDERLINE, WIDE_TAIL, default_palette,
@@ -78,12 +84,26 @@ impl Format {
     }
 }
 
+/// The text sizes, smallest first: a built-in font, and how many times
+/// its size it is drawn.
+const LADDER: [(&str, usize); 5] =
+    [("8x16", 1), ("12x24", 1), ("16x32", 1), ("12x24", 2), ("16x32", 2)];
+
+/// The fewest columns and rows a bigger text size leaves: past them, it
+/// is a step smaller.
+const SMALLEST_GRID: (usize, usize) = (40, 12);
+
 /// The console on the screen.
 pub struct Screen {
     file: File,
     format: Format,
     font: Font<'static>,
     font_name: &'static str,
+    /// Each of the font's pixels is drawn `scale` by `scale`.
+    scale: usize,
+    /// The font the screen's size chooses, as a step of [`LADDER`]: the
+    /// normal text size.
+    normal: usize,
     cols: usize,
     rows: usize,
     origin: (usize, usize),
@@ -102,9 +122,32 @@ pub struct Screen {
 /// The cells of a framebuffer of `format` in `font`: columns, rows and
 /// the top-left cell's pixel, the grid centred, as radix-fbcon's.
 pub fn layout(format: &Format, font: &Font<'_>) -> (usize, usize, (usize, usize)) {
-    let cols = format.width / font.width;
-    let rows = format.height / font.height;
-    let origin = ((format.width - cols * font.width) / 2, (format.height - rows * font.height) / 2);
+    grid(format, font, 1)
+}
+
+/// The step of [`LADDER`] that text `size` is on a framebuffer of
+/// `format` whose normal size is step `normal`: `size`'s steps above it,
+/// or fewer if that leaves less than [`SMALLEST_GRID`].
+fn size_step(format: &Format, normal: usize, size: Size) -> usize {
+    (normal..=(normal + size.steps()).min(LADDER.len() - 1))
+        .rev()
+        .find(|&step| {
+            let (name, scale) = LADDER[step];
+            builtin_font(name).is_some_and(|font| {
+                let (cols, rows, _) = grid(format, &font, scale);
+                cols >= SMALLEST_GRID.0 && rows >= SMALLEST_GRID.1
+            })
+        })
+        .unwrap_or(normal)
+}
+
+/// The cells of a framebuffer of `format` in `font` drawn `scale` times
+/// its size, as [`layout`].
+fn grid(format: &Format, font: &Font<'_>, scale: usize) -> (usize, usize, (usize, usize)) {
+    let (width, height) = (font.width * scale, font.height * scale);
+    let cols = format.width / width;
+    let rows = format.height / height;
+    let origin = ((format.width - cols * width) / 2, (format.height - rows * height) / 2);
     (cols, rows, origin)
 }
 
@@ -123,6 +166,7 @@ impl Screen {
         }
         let font_name = choose_font_for(format.width, format.height, grid);
         let font = builtin_font(font_name).ok_or_else(|| io::Error::other("no built-in font"))?;
+        let normal = LADDER.iter().position(|&(name, scale)| name == font_name && scale == 1);
         let (cols, rows, origin) = layout(&format, &font);
         if cols < 16 || rows < 4 {
             return Err(io::Error::other("the screen is too small for a console"));
@@ -135,6 +179,8 @@ impl Screen {
             format,
             font,
             font_name,
+            scale: 1,
+            normal: normal.unwrap_or(0),
             cols,
             rows,
             origin,
@@ -162,10 +208,33 @@ impl Screen {
     /// What the console's geometry log line says, in the words of the
     /// kernel's own (the boot tests read the screen by it).
     pub fn describe(&self) -> String {
+        // Drawn twice its size, as the biggest text sizes are: the boot
+        // tests read the screen by this too.
+        let doubled = if self.scale > 1 { " doubled" } else { "" };
         format!(
-            "console of {}x{} cells with font {} at ({}, {})",
+            "console of {}x{} cells with font {}{doubled} at ({}, {})",
             self.cols, self.rows, self.font_name, self.origin.0, self.origin.1
         )
+    }
+
+    /// Makes the text `size`, or the biggest below it that still leaves
+    /// [`SMALLEST_GRID`]; the screen is cleared, to be drawn again. Gives
+    /// whether the grid changed.
+    pub fn set_size(&mut self, size: Size) -> io::Result<bool> {
+        let (name, scale) = LADDER[size_step(&self.format, self.normal, size)];
+        if (name, scale) == (self.font_name, self.scale) {
+            return Ok(false);
+        }
+        let font = builtin_font(name).ok_or_else(|| io::Error::other("no built-in font"))?;
+        let (cols, rows, origin) = grid(&self.format, &font, scale);
+        self.font = font;
+        self.font_name = name;
+        self.scale = scale;
+        (self.cols, self.rows, self.origin) = (cols, rows, origin);
+        self.band = vec![0; self.format.pitch * self.font.height * scale];
+        self.drawn = vec![None; cols * rows];
+        self.clear()?;
+        Ok(true)
     }
 
     /// Paints the whole screen in the palette's background, colour 0, and
@@ -256,7 +325,8 @@ impl Screen {
         cursor: Option<usize>,
         reverse: bool,
     ) -> io::Result<()> {
-        let (fw, fh, bpp) = (self.font.width, self.font.height, self.format.bpp);
+        let scale = self.scale;
+        let (fw, fh, bpp) = (self.font.width * scale, self.font.height * scale, self.format.bpp);
         let pitch = self.format.pitch;
         for x in 0..cols {
             let cell = shown(x);
@@ -278,12 +348,13 @@ impl Screen {
             let glyph = (cell.flags & WIDE_TAIL == 0).then(|| self.font.glyph(cell.c));
             let left = (self.origin.0 + x * fw) * bpp;
             for gy in 0..fh {
-                let bits = glyph.map_or(0, |glyph| glyph.row_bits(gy));
-                let underline = cell.flags & UNDERLINE != 0 && gy == fh - 1;
-                let caret = cursor == Some(x) && gy + 2 >= fh;
+                let bits = glyph.map_or(0, |glyph| glyph.row_bits(gy / scale));
+                let underline = cell.flags & UNDERLINE != 0 && gy + scale >= fh;
+                let caret = cursor == Some(x) && gy + 2 * scale >= fh;
                 let line = &mut self.band[gy * pitch + left..gy * pitch + left + fw * bpp];
                 for gx in 0..fw {
-                    let lit = bits & (1 << (fw - 1 - gx)) != 0 || underline || caret;
+                    let bit = 1 << (self.font.width - 1 - gx / scale);
+                    let lit = bits & bit != 0 || underline || caret;
                     let px = if lit { &fg_px } else { &bg_px };
                     line[gx * bpp..(gx + 1) * bpp].copy_from_slice(&px[..bpp]);
                 }
@@ -315,6 +386,38 @@ mod tests {
             u16::from_le_bytes(rgb565.encode((0xff, 0xff, 0xff))[..2].try_into().unwrap()),
             0xffff
         );
+    }
+
+    #[test]
+    fn bigger_text_steps_through_the_fonts_then_doubles_them() {
+        let format = |width: usize, height: usize| Format {
+            width,
+            height,
+            pitch: width * 4,
+            bpp: 4,
+            red: (16, 8),
+            green: (8, 8),
+            blue: (0, 8),
+        };
+        let step = |format: &Format, size: Size| {
+            let normal = choose_font_for(format.width, format.height, radix_fbcon::MIN_GRID);
+            let normal = LADDER.iter().position(|&(name, scale)| (name, scale) == (normal, 1));
+            LADDER[size_step(format, normal.unwrap(), size)]
+        };
+        let hd = format(1920, 1080);
+        assert_eq!(step(&hd, Size::Normal), ("12x24", 1));
+        assert_eq!(step(&hd, Size::Larger), ("16x32", 1));
+        assert_eq!(step(&hd, Size::Largest), ("12x24", 2));
+        let uhd = format(3840, 2160);
+        assert_eq!(step(&uhd, Size::Normal), ("16x32", 1));
+        assert_eq!(step(&uhd, Size::Largest), ("16x32", 2));
+        // A small screen: the largest that leaves 40 by 12 cells.
+        let small = format(600, 400);
+        assert_eq!(step(&small, Size::Normal), ("8x16", 1));
+        assert_eq!(step(&small, Size::Larger), ("12x24", 1));
+        assert_eq!(step(&small, Size::Largest), ("12x24", 1));
+        let font = builtin_font("12x24").unwrap();
+        assert_eq!(grid(&hd, &font, 2), (80, 22, (0, (1080 - 22 * 48) / 2)));
     }
 
     #[test]

@@ -307,7 +307,18 @@ impl Reader {
     /// moved the cursor onto.
     pub fn written(&mut self, term: &mut Terminal, now: Instant) {
         let text = term.take_spoken();
+        let named = term.take_named();
         if !self.connected() {
+            return;
+        }
+        // What the program named has the focus now (ADR 0325): it is said
+        // at once, over what was being said, and the review cursor starts
+        // at the terminal's cursor again. What it drew with it is its
+        // own, and not read.
+        if let Some(named) = named {
+            self.forget();
+            self.review = term.position();
+            self.now(&named);
             return;
         }
         if !text.is_empty() {
@@ -418,7 +429,12 @@ impl Reader {
     pub fn bar(&mut self, text: Option<&str>) {
         // The menu's keys are set apart by runs of spaces: said, by pauses.
         let text = text.map(|text| {
-            text.split("  ").map(str::trim).filter(|s| !s.is_empty()).collect::<Vec<_>>().join(". ")
+            let parts: Vec<&str> = text
+                .split("  ")
+                .map(|part| part.trim().trim_end_matches('.'))
+                .filter(|s| !s.is_empty())
+                .collect();
+            parts.join(". ")
         });
         if self.said_bar != text {
             if let Some(text) = &text {
@@ -655,6 +671,19 @@ mod tests {
         assert_eq!(heard(&mut theirs), "");
         reader.written(&mut term, now + SETTLE);
         assert_eq!(heard(&mut theirs), "say #\n");
+    }
+
+    #[test]
+    fn what_a_program_names_is_said_at_once_and_its_drawing_is_not() {
+        let (mut reader, mut theirs) = listening();
+        let mut term = Terminal::new(40, 5);
+        term.set_speaking(true);
+        let now = Instant::now();
+        term.feed(b"\x1b[?1049h\x1b[2J  Network  > Disk\x1b]7700;Disk, step 3 of 6\x1b\\");
+        reader.written(&mut term, now);
+        assert_eq!(heard(&mut theirs), "now Disk, step 3 of 6\n");
+        reader.written(&mut term, now + SETTLE);
+        assert_eq!(heard(&mut theirs), "");
     }
 
     #[test]

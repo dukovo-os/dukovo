@@ -1,0 +1,74 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# The consoles' text size and sticky keys on the lab's real screens and
+# keyboards (ADR 0325): Ctrl+Alt+Plus makes the text a step bigger, which
+# the shell is told as its size, Shift five times turns sticky keys on,
+# and then Shift alone holds for the next key. Everything is put back as
+# it was for the next test. The console-access boot test covers slow
+# keys and the screen reader's part.
+about = "Ctrl+Alt+Plus makes the console's text bigger and the shell sees fewer columns; Shift five times turns sticky keys on, and Shift then types one capital"
+time = "5m"
+
+# Sign in as the lab account, at the console.
+[[step]]
+screen = "Name:"
+[[step]]
+type = "lab\n"
+[[step]]
+screen = "Password:"
+[[step]]
+type = "{password}\n"
+[[step]]
+serial = "authd: lab signed in on pts/"
+[[step]]
+screen = "lab@dukovo ~ $"
+[[step]]
+type = "echo \"cols\"-before $(tput cols)\n"
+[[step]]
+screen = "cols-before"
+[[step]]
+keys = ["ctrl-alt-equal"]
+[[step]]
+serial = "consoled: text size larger"
+[[step]]
+screenshot = "text-larger"
+# Fewer columns than before, as the shell now sees them.
+[[step]]
+type = "b=$(tput cols); echo \"cols\"-now $b; [ $b -lt 100 ] && echo \"fewer\"-columns\n"
+[[step]]
+screen = "fewer-columns"
+[[step]]
+keys = ["ctrl-alt-minus"]
+[[step]]
+serial = "consoled: text size normal"
+
+# Sticky keys: Shift five times, then Shift alone and a letter.
+[[step]]
+keys = ["shift", "shift", "shift", "shift", "shift"]
+[[step]]
+screen = "Sticky keys on"
+[[step]]
+keys = ["esc"]
+[[step]]
+type = "echo sticky-"
+[[step]]
+keys = ["shift"]
+[[step]]
+type = "x\n"
+[[step]]
+screen = "sticky-X"
+[[step]]
+keys = ["shift", "shift", "shift", "shift", "shift"]
+[[step]]
+screen = "Sticky keys off"
+[[step]]
+keys = ["esc"]
+
+# Sign out, which brings the sign-in back for the next test.
+[[step]]
+type = "exit\n"
+[[step]]
+serial = "authd: lab signed out on pts/"
+[[step]]
+screen = "Name:"

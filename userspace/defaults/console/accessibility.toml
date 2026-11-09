@@ -1,0 +1,21 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+#
+# The consoles for those who need bigger text, or cannot hold two keys or
+# press one briefly (accessibility.toml(5), consoled(8)). consoled reads
+# this file as it starts and on `service consoled reload`, and writes the
+# text size and sticky keys back as they are changed from the keyboard.
+
+# How big the text is: "normal" (the font the screen's size chooses),
+# "larger" or "largest". Ctrl+Alt+Plus and Ctrl+Alt+Minus change it.
+text-size = "normal"
+
+# Shift, Ctrl and Alt pressed and let go alone hold for the next key;
+# pressed twice, until pressed again. Shift pressed five times turns it on
+# or off.
+sticky-keys = false
+
+# A key counts only once it has been held for slow-keys-delay
+# milliseconds (100 to 2000), so that a key brushed types nothing.
+slow-keys = false
+slow-keys-delay = 300

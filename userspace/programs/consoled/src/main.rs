@@ -26,6 +26,7 @@
 //! consoled ends, the screen is the kernel log's again. Spark starts it as
 //! a service (spark(8)).
 
+mod access;
 mod keys;
 mod notices;
 mod prompts;
@@ -44,8 +45,9 @@ use std::process::ExitCode;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::time::Instant;
 
+use access::{Access, Size};
 use keymap::Keymap;
-use keys::{Action, Keyboard};
+use keys::{Action, Keyboard, SlowKeys};
 use notices::Notices;
 use prompts::{Prompts, Typed};
 use radix_abi::input::{Event, PRESSED, SET_LEDS};
@@ -268,6 +270,12 @@ enum Bar {
     Note(&'static str),
 }
 
+/// The note sticky keys turning on shows, and the reader says.
+const STICKY_ON: &str =
+    "Sticky keys on: Shift, Ctrl and Alt hold for the next key.    Shift five times: off";
+/// The note sticky keys turning off shows.
+const STICKY_OFF: &str = "Sticky keys off.    Shift five times: on";
+
 struct Consoled {
     screen: Screen,
     consoles: Vec<Console>,
@@ -283,6 +291,10 @@ struct Consoled {
     reader: Reader,
     /// The console whose text is kept for the reader, while it listens.
     speaking: Option<usize>,
+    /// The text size, sticky keys and slow keys (accessibility.toml(5),
+    /// ADR 0325).
+    access: Access,
+    slow: SlowKeys,
 }
 
 impl Consoled {
@@ -329,10 +341,17 @@ impl Consoled {
         }
     }
 
-    fn key(&mut self, event: &[u8]) {
+    /// A key event from the keyboard, as slow keys let it through.
+    fn key_event(&mut self, event: &[u8], now: Instant) {
         let code = u16::from_le_bytes([event[Event::OFFSET_CODE], event[Event::OFFSET_CODE + 1]]);
         let value =
             u16::from_le_bytes([event[Event::OFFSET_VALUE], event[Event::OFFSET_VALUE + 1]]);
+        for (code, value) in self.slow.event(code, value, now) {
+            self.key(code, value);
+        }
+    }
+
+    fn key(&mut self, code: u16, value: u16) {
         let modes = self.consoles[self.active].term.modes();
         // The screen reader's keys are its own, while it listens: the
         // reader key and those pressed with it.
@@ -380,6 +399,87 @@ impl Consoled {
                 self.attention();
             }
             Action::Lights => self.lights(),
+            Action::TextSize(step) => self.text_size(step),
+            Action::Sticky(on) => {
+                eprintln!("consoled: sticky keys {}", if on { "on" } else { "off" });
+                self.access.sticky = on;
+                if let Err(err) = access::save("sticky-keys", if on { "true" } else { "false" }) {
+                    eprintln!("consoled: {}: {err}", access::SETTINGS);
+                }
+                self.bar = Some(Bar::Note(if on { STICKY_ON } else { STICKY_OFF }));
+            }
+            Action::Latch(word) => self.reader.now(word),
+        }
+    }
+
+    /// Ctrl+Alt+Plus (`step` 1) or Ctrl+Alt+Minus (-1): the text a step
+    /// bigger or smaller, kept in accessibility.toml(5).
+    fn text_size(&mut self, step: isize) {
+        let steps = self.access.size.steps().saturating_add_signed(step).min(2);
+        let size = Size::from_steps(steps);
+        if size == self.access.size {
+            self.reader.now(if step > 0 { "Text is at its largest" } else { "Text is normal" });
+            return;
+        }
+        self.access.size = size;
+        self.apply_size();
+        if let Err(err) = access::save("text-size", &format!("\"{}\"", size.name())) {
+            eprintln!("consoled: {}: {err}", access::SETTINGS);
+        }
+        self.reader.now(&format!("Text {}", size.name()));
+    }
+
+    /// Draws the text in the size the settings say, as far as the screen
+    /// allows, each console as many cells as then fit.
+    fn apply_size(&mut self) {
+        match self.screen.set_size(self.access.size) {
+            Ok(true) => {}
+            Ok(false) => return,
+            Err(err) => {
+                eprintln!("consoled: cannot change the text size: {err}");
+                return;
+            }
+        }
+        eprintln!("consoled: text size {}", self.access.size.name());
+        eprintln!("consoled: {}", self.screen.describe());
+        let (cols, rows) = (self.screen.cols(), self.screen.rows());
+        for console in &mut self.consoles {
+            console.resize(cols, rows);
+        }
+    }
+
+    /// accessibility.toml(5) again, on SIGHUP: its text size, sticky keys
+    /// and slow keys from now on.
+    fn reload_access(&mut self) {
+        let access = Access::read();
+        if access == self.access {
+            return;
+        }
+        if access.sticky != self.access.sticky {
+            self.keyboard.set_sticky(access.sticky);
+            eprintln!("consoled: sticky keys {}", if access.sticky { "on" } else { "off" });
+            self.reader.now(if access.sticky { "Sticky keys on" } else { "Sticky keys off" });
+        }
+        if access.slow != self.access.slow {
+            self.slow.set(access.slow);
+            match access.slow {
+                Some(delay) => {
+                    eprintln!(
+                        "consoled: slow keys on: a key counts once held {} ms",
+                        delay.as_millis()
+                    );
+                    self.reader.now("Slow keys on");
+                }
+                None => {
+                    eprintln!("consoled: slow keys off");
+                    self.reader.now("Slow keys off");
+                }
+            }
+        }
+        let resize = access.size != self.access.size;
+        self.access = access;
+        if resize {
+            self.apply_size();
         }
     }
 
@@ -551,6 +651,7 @@ impl Consoled {
                 .chain(self.notices.deadline())
                 .chain(self.prompts.as_ref().and_then(Prompts::deadline))
                 .chain(self.reader.deadline())
+                .chain(self.slow.deadline())
                 .min();
             let timeout =
                 next.map_or(-1, |at| at.saturating_duration_since(now).as_millis() as i32);
@@ -568,6 +669,7 @@ impl Consoled {
             }
             if RELOAD.swap(false, Ordering::Relaxed) {
                 self.keyboard.set_keymap(chosen_keymap());
+                self.reload_access();
             }
             self.reap();
             if fds[1].revents != 0
@@ -576,8 +678,9 @@ impl Consoled {
                 match kbd.read(&mut events) {
                     Ok(n) => {
                         let batch = events[..n].to_vec();
+                        let now = Instant::now();
                         for event in batch.as_chunks::<{ Event::SIZE }>().0 {
-                            self.key(event);
+                            self.key_event(event, now);
                         }
                     }
                     // Fell behind: the next read goes on with what is kept.
@@ -590,6 +693,10 @@ impl Consoled {
                 }
             }
             let now = Instant::now();
+            // Keys held long enough, with slow keys.
+            for (code, value) in self.slow.tick(now) {
+                self.key(code, value);
+            }
             if fds[2].revents != 0 {
                 self.notices.read(now);
             }
@@ -639,7 +746,7 @@ fn main() -> ExitCode {
         eprintln!("consoled: install: the installer's screens are on the serial port, ttyS0");
     }
     let grid = if install { INSTALLER_GRID } else { radix_fbcon::MIN_GRID };
-    let screen = match Screen::open("/devices/fb0", grid) {
+    let mut screen = match Screen::open("/devices/fb0", grid) {
         Ok(screen) => screen,
         Err(err) => {
             // No screen to draw on, as with a serial console only: nothing
@@ -649,6 +756,17 @@ fn main() -> ExitCode {
         }
     };
     eprintln!("consoled: {}", screen.describe());
+    // The text size accessibility.toml(5) asks for, before the consoles
+    // take their size from the screen.
+    let access = Access::read();
+    match screen.set_size(access.size) {
+        Ok(true) => {
+            eprintln!("consoled: text size {}", access.size.name());
+            eprintln!("consoled: {}", screen.describe());
+        }
+        Ok(false) => {}
+        Err(err) => eprintln!("consoled: cannot change the text size: {err}"),
+    }
     let kbd = OpenOptions::new()
         .read(true)
         .write(true)
@@ -686,7 +804,16 @@ fn main() -> ExitCode {
         eprintln!("consoled: install: the installer's screens on tty1");
         consoles[0].once = Some(INSTALLER.to_string());
     }
-    let keyboard = Keyboard::new(chosen_keymap());
+    let mut keyboard = Keyboard::new(chosen_keymap());
+    keyboard.set_sticky(access.sticky);
+    let mut slow = SlowKeys::default();
+    slow.set(access.slow);
+    if access.sticky {
+        eprintln!("consoled: sticky keys on");
+    }
+    if let Some(delay) = access.slow {
+        eprintln!("consoled: slow keys on: a key counts once held {} ms", delay.as_millis());
+    }
     let notices = Notices::new(Instant::now());
     // Passwords are asked on the consoles only where people sign in;
     // root's shells need none.
@@ -703,6 +830,8 @@ fn main() -> ExitCode {
         bar: None,
         reader: Reader::new(Instant::now()),
         speaking: None,
+        access,
+        slow,
     };
     consoled.lights();
     consoled.switch(0);
