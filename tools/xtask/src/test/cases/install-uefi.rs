@@ -93,6 +93,17 @@ pub fn live_shell(vm: &mut Vm) -> Result<(), String> {
 /// given; checks that the log says where the answers came from, and that
 /// the disk holds the install; then powers off.
 pub fn install_by(vm: &mut Vm, from: &str, sha256: Option<&str>) -> Result<(), String> {
+    install_from(vm, from, sha256, "stick")
+}
+
+/// As [`install_by`], from the live system on `medium`, the install
+/// `stick` or `disc`, which dukovo-install says to remove at the end.
+pub fn install_from(
+    vm: &mut Vm,
+    from: &str,
+    sha256: Option<&str>,
+    medium: &str,
+) -> Result<(), String> {
     let check = sha256.map_or_default(|sha256| format!(" --sha256 {sha256}"));
     // The shell shows each command as it is typed, so the answer is a sum
     // the command line does not hold.
@@ -109,7 +120,7 @@ pub fn install_by(vm: &mut Vm, from: &str, sha256: Option<&str>) -> Result<(), S
     vm.expect_screen(&[
         "dukovo-install: Checking the signatures of the system release",
         &format!("dukovo-install: Copying Dukovo {VERSION} into its slot, checking every file"),
-        "is installed on vda. Remove the install stick, then restart.",
+        &format!("is installed on vda. Remove the install {medium}, then restart."),
     ])?;
 
     // The log names the answers file, with its SHA-256, checked when one

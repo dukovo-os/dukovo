@@ -185,6 +185,14 @@ impl Machine {
                 "usb-storage,bus=xhci.0,drive=boot,removable=on,bootindex=0".into(),
             ]),
             Media::Cdrom => args.extend(["-device".into(), "ide-cd,drive=boot,bootindex=0".into()]),
+            // q35 has no IDE controller of its own: a PIIX3's, with the
+            // drive as its secondary channel's master, where a PC has it.
+            Media::IdeCdrom => args.extend([
+                "-device".into(),
+                "piix3-ide,id=boot-ide".into(),
+                "-device".into(),
+                "ide-cd,drive=boot,bus=boot-ide.1,unit=0,bootindex=0".into(),
+            ]),
             Media::Disk => args.extend(["-device".into(), "ide-hd,drive=boot,bootindex=0".into()]),
         }
     }
@@ -276,7 +284,7 @@ pub fn run_command(ctx: &Ctx, args: &mut Args) -> Result<()> {
         None if installed => Media::Disk,
         None => ctx.config.run.media,
     };
-    if installed && media == Media::Cdrom {
+    if installed && media.is_cd() {
         crate::bail!("an installed system's disk is not a CD-ROM; give --media usb or disk");
     }
     let headless = args.flag("--headless") || !has_display();
@@ -316,7 +324,7 @@ pub fn run_command(ctx: &Ctx, args: &mut Args) -> Result<()> {
     require_qemu()?;
     // A CD-ROM holds the ISO; a USB stick or a disk the disk image.
     let kind = match media {
-        Media::Cdrom => image::Kind::Iso,
+        Media::Cdrom | Media::IdeCdrom => image::Kind::Iso,
         _ if installed => image::Kind::Installed,
         _ => image::Kind::Stick,
     };

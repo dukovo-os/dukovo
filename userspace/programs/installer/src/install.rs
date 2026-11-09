@@ -44,12 +44,26 @@ const SUBVOLUMES: [&str; 6] =
 
 /// Where the release was found and what it is.
 pub struct Source {
-    /// The repository: the stick's `release` folder.
+    /// The repository: the `release` folder of the stick's DUKOVO_LIVE
+    /// partition or of the install DVD.
     pub repo: PathBuf,
-    /// The disk it is on, which is never installed onto.
+    /// The disk the live system started from, the stick or the DVD's
+    /// drive, which is never installed onto.
     pub stick: Option<String>,
+    /// Whether that is the install DVD's drive, which the messages call a
+    /// disc.
+    pub disc: bool,
     /// The release, its signatures checked.
     pub release: Release,
+}
+
+impl Source {
+    /// What the messages call the medium the live system started from:
+    /// `disc` for the install DVD, `stick` otherwise.
+    #[must_use]
+    pub fn medium(&self) -> &'static str {
+        if self.disc { "disc" } else { "stick" }
+    }
 }
 
 /// A disk the install changes: what it is now, the change, and the
@@ -91,7 +105,7 @@ const BOOT_ENTRY: &str = "Dukovo";
 /// keeps the entry chosen last: 1024 bytes, as `grub-editenv` makes it.
 const GRUBENV: &str = "boot/grub/grubenv";
 
-/// Finds the release, in `release` or on the stick, and checks it
+/// Finds the release, in `release` or on the stick or DVD, and checks it
 /// against the root the system trusts: every signature and version, and
 /// the list's hash. Its files are checked as they are copied.
 ///
@@ -100,15 +114,15 @@ const GRUBENV: &str = "boot/grub/grubenv";
 /// If there is no release, or it is not signed by the trusted root.
 pub fn find_release(release: Option<&Path>, log: &mut Log) -> Result<Source, String> {
     log.step(Step::Release);
-    let (repo, stick) = match release {
-        Some(dir) => {
-            (dir.to_path_buf(), disks::live_partition().ok().map(|(name, _)| disks::disk_of(&name)))
-        }
+    let (repo, medium) = match release {
+        Some(dir) => (dir.to_path_buf(), disks::live_medium().ok()),
         None => {
-            let (name, mounted) = disks::live_partition()?;
-            (mounted.join("release"), Some(disks::disk_of(&name)))
+            let medium = disks::live_medium()?;
+            (medium.mounted.join("release"), Some(medium))
         }
     };
+    let disc = medium.as_ref().is_some_and(|medium| medium.disc);
+    let stick = medium.map(|medium| medium.disk);
     let root =
         fs::read(TRUSTED_ROOT).map_err(|err| format!("the trusted root {TRUSTED_ROOT}: {err}"))?;
     let opened = system_release::repo::open(&repo, &root, None)?;
@@ -122,7 +136,7 @@ pub fn find_release(release: Option<&Path>, log: &mut Log) -> Result<Source, Str
         opened.release.bytes() >> 20,
         repo.display()
     ));
-    Ok(Source { repo, stick, release: opened.release })
+    Ok(Source { repo, stick, disc, release: opened.release })
 }
 
 /// Installs the release onto the disk the answers name.

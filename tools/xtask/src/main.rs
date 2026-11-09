@@ -220,7 +220,7 @@ DUKOVO_LIVE partition holds the signed release the installer installs
                        is quick to check under emulation, and to guess"
         }
         "run" => {
-            "Usage: ./ob run [--bios | --uefi] [--media usb|cdrom|disk] [--installed] [--headless]
+            "Usage: ./ob run [--bios | --uefi] [--media usb|cdrom|ide-cdrom|disk] [--installed] [--headless]
                 [--gdb] [--no-net] [--cmdline <flags>] [--microcode <path>] [--user <name> ...]
                 [--debug | --release] [-- <extra QEMU arguments>]
 
@@ -229,7 +229,8 @@ press Ctrl-A then X to quit QEMU. KVM is used when /dev/kvm is accessible.
 
   --bios               Boot through SeaBIOS (legacy BIOS)
   --uefi               Boot through OVMF (UEFI)
-  --media <kind>       Attach the image as a USB stick, CD-ROM or SATA disk
+  --media <kind>       Attach the image as a USB stick, SATA or IDE CD-ROM (ide-cdrom),
+                       or SATA disk
   --installed          Boot the disk of an installed system (./ob image --installed),
                        as a SATA disk unless --media says otherwise
   --headless           Do not open a QEMU window (automatic without a display)
@@ -928,6 +929,10 @@ fn dispatch(argv: Vec<String>) -> Result<()> {
                 println!("A test image, never a release: test it with ./ob lab run.");
             } else if kind == image::Kind::Installed {
                 println!("Boot it with ./ob run --installed, or write it to a disk of its own.");
+            } else if kind == image::Kind::Iso {
+                println!(
+                    "Burn it to a DVD as the handbook shows (Creating USB install media, The install DVD), or boot it with ./ob run --media cdrom."
+                );
             } else {
                 println!(
                     "Write it to a USB stick as shown in ob(1), EXAMPLES, or boot it with ./ob run."

@@ -5,7 +5,7 @@ dukovo-install(8) "Dukovo" "Dukovo Manual"
 
 # NAME
 
-dukovo-install - install Dukovo onto a disk from the install stick
+dukovo-install - install Dukovo onto a disk from the install stick or DVD
 
 # SYNOPSIS
 
@@ -18,11 +18,15 @@ dukovo-install - install Dukovo onto a disk from the install stick
 # DESCRIPTION
 
 dukovo-install installs Dukovo onto a disk from the signed release on
-the install stick: from the live system the stick starts, or from any
-Dukovo system that has the stick plugged in. With no arguments it shows
-its screens, which ask what to install and where (ADR 0310); with
-*--answers*, it installs as an answers file says (*install-answers*(5)),
-with no questions asked (ADR 0309). The same answers install the same
+the install stick or DVD: from the live system the stick or DVD starts,
+or from any Dukovo system that has the stick plugged in. The DVD, as
+*./ob image --iso* makes it, carries the release in its _release_
+directory and is found by its volume's label, *DUKOVO_LIVE* (ADR 0433);
+what this page says of the stick holds for it, except that a disc holds
+no setup file: a setup file comes from the web, and the Done page saves
+none. With no arguments it shows its screens, which ask what to install
+and where (ADR 0310); with *--answers*, it installs as an answers file
+says (*install-answers*(5)), with no questions asked (ADR 0309). The same answers install the same
 system every time, which is how a fleet of servers is installed, and
 how the boot tests install one.
 
@@ -152,10 +156,10 @@ answers came from, with the file's SHA-256 and whether it was checked;
 An install then runs these steps, each printed as it starts:
 
 . *Checking the signatures of the system release*: the release in the
-  stick's DUKOVO_LIVE partition, against the root the running system
-  trusts, _/system/resources/updates/root.json_, as *system-release
-  check* does (*system-release*(8)). A release that fails is not
-  installed.
+  stick's DUKOVO_LIVE partition or on the DVD, against the root the
+  running system trusts, _/system/resources/updates/root.json_, as
+  *system-release check* does (*system-release*(8)). A release that
+  fails is not installed.
 . *Checking* the disk, or both disks of a mirror: each must be a whole
   disk, not the stick, and its layout must fit: the root big enough for
   the system and a GiB more.
@@ -219,6 +223,8 @@ It ends with the line to act on:
 dukovo-install: Dukovo 0.14.0 is installed on vda. Remove the install stick, then restart.
 ```
 
+From the DVD, it says to remove the install disc.
+
 # OPTIONS
 
 *--answers* _file_|_address_
@@ -233,7 +239,7 @@ dukovo-install: Dukovo 0.14.0 is installed on vda. Remove the install stick, the
 *--release* _dir_
 	Install the release in _dir_, a release's repository as
 	*system-release*(8) describes it, instead of the one on the
-	install stick.
+	install stick or DVD.
 
 *--hash-password*
 	Print the Argon2id hash of the password on the first line of

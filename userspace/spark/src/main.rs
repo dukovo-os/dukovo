@@ -37,11 +37,13 @@
 //!    installed system stops after Spark. The swap partitions of the
 //!    disk that holds the root are turned on (`swap`, ADR 0311), and
 //!    left out of the filesystems mounted. A partition of the type
-//!    "Dukovo live", an install stick's DUKOVO_LIVE, is mounted
-//!    read-only and is never the root. With `live` on the command line,
-//!    as the install stick's boot menu starts the live system (ADR 0308),
-//!    no disk is the root and none is mounted but such a partition: the
-//!    machine's disks are the owner's, for the installer or mount(8);
+//!    "Dukovo live", an install stick's DUKOVO_LIVE, and the install DVD,
+//!    a disc whose ISO 9660 volume is labelled DUKOVO_LIVE (ADR 0433), are
+//!    mounted read-only and are never the root. With `live` on the
+//!    command line, as the install stick's and the DVD's boot menus start
+//!    the live system (ADR 0308), no disk is the root and none is mounted
+//!    but such a partition or disc: the machine's disks are the owner's,
+//!    for the installer or mount(8);
 //! 3. listens for requests at `/system/live/spark/control` and, with no
 //!    arguments (a normal boot), starts the services the TOML files in
 //!    `/system/settings/spark/services` describe (`services`,
@@ -621,13 +623,44 @@ const EFI_SYSTEM: [&str; 2] = ["c12a7328-f81f-11d2-ba4b-00a0c93ec93b", "0xef"];
 /// signed release the installer installs, which nothing may write.
 const DUKOVO_LIVE: &str = "5894c662-af90-4b47-baaf-2e3396443b25";
 
+/// The label of the install DVD's ISO 9660 volume, as `ob image --iso`
+/// makes it (ADR 0433): the DVD's counterpart of the stick's DUKOVO_LIVE
+/// partition, holding the same signed release in its `release` directory.
+const LIVE_DISC_LABEL: &[u8] = b"DUKOVO_LIVE";
+
+/// Where a disc's ISO 9660 primary volume descriptor is, in bytes (the
+/// 2,048-byte sector 16), how it starts (its type, 1, and `CD001`), and
+/// where in it the volume's label is, padded with spaces (ECMA-119 8.4).
+const ISO_PVD: u64 = 16 * 2048;
+const ISO_PVD_LEN: usize = 2048;
+const ISO_PVD_START: &[u8] = b"\x01CD001";
+const ISO_VOLUME_ID: core::ops::Range<usize> = 40..72;
+
+/// Whether `/devices/<name>` is the install DVD: an optical drive, as its
+/// `/kernel/block/<name>/disc` file says, whose disc has an ISO 9660
+/// volume labelled [`LIVE_DISC_LABEL`] (ADR 0433). Only a disc counts: a
+/// disk with such a volume on it is not the medium Dukovo started from.
+fn live_disc(root: &Dir, name: &str) -> bool {
+    if root.read_file(&format!("kernel/block/{name}/disc")).is_err() {
+        return false;
+    }
+    let Ok(device) = root.open(&format!("devices/{name}"), OpenFlags::NONE, Rights::READ) else {
+        return false;
+    };
+    let mut pvd = alloc::vec![0u8; ISO_PVD_LEN];
+    device.read_at(ISO_PVD, &mut pvd).is_ok_and(|got| got == pvd.len())
+        && pvd.starts_with(ISO_PVD_START)
+        && pvd[ISO_VOLUME_ID].trim_ascii_end() == LIVE_DISC_LABEL
+}
+
 /// Mounts the FAT, exFAT, NTFS, Btrfs or ext4 filesystem of each disk
 /// partition, or of each disk with no partitions, at `/volumes/<name>`:
 /// a Btrfs of several disks once, at the first of them. EFI system
 /// partitions are left alone: what boots the machine is no volume of the
 /// user's, as Windows, macOS and Linux's udisks have it. An install
-/// stick's DUKOVO_LIVE partition is mounted read-only, and with
-/// `live_only`, as the live system starts, it is the only one mounted.
+/// stick's DUKOVO_LIVE partition, or the install DVD ([`live_disc`]), is
+/// mounted read-only, and with `live_only`, as the live system starts, it
+/// is the only one mounted.
 /// Returns the names of those it mounted Btrfs from that may hold
 /// Dukovo's root, and how.
 fn mount_disks(root: &Dir, compress: &[&str], live_only: bool) -> Vec<(String, MountFlags)> {
@@ -673,7 +706,7 @@ fn mount_disks(root: &Dir, compress: &[&str], live_only: bool) -> Vec<(String, M
             println!("spark: {name} is an EFI system partition; left alone");
             continue;
         }
-        let medium = kind == DUKOVO_LIVE;
+        let medium = kind == DUKOVO_LIVE || live_disc(root, name);
         if live_only && !medium {
             continue;
         }

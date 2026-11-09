@@ -13,14 +13,15 @@
 //!
 //! The stick and the ISO boot the kernel and the whole boot archive from
 //! the EFI system partition, as the live system ([`LIVE_CFG`]), which
-//! takes no disk's root; the stick also carries the signed release the
-//! installer installs, on its DUKOVO_LIVE partition ([`make_live`], ADR
-//! 0308). An installed system's disk (`ob image --installed`) boots from
-//! its root instead: GRUB finds the root by its Btrfs UUID and loads the
-//! kernel and the startup archive from the system's slot,
-//! `@system.a/startup` (ADR 0307). When an image will not start, look
-//! first at its grub.cfg, made from `image/grub/`, and at what
-//! [`stage_system`] put in the slot.
+//! takes no disk's root; both also carry the signed release the
+//! installer installs: the stick on its DUKOVO_LIVE partition
+//! ([`make_live`], ADR 0308), the ISO in its `release` directory, on a
+//! disc labelled DUKOVO_LIVE ([`stage_release`], ADR 0433). An installed
+//! system's disk (`ob image --installed`) boots from its root instead:
+//! GRUB finds the root by its Btrfs UUID and loads the kernel and the
+//! startup archive from the system's slot, `@system.a/startup` (ADR
+//! 0307). When an image will not start, look first at its grub.cfg, made
+//! from `image/grub/`, and at what [`stage_system`] put in the slot.
 
 use std::fmt::Write;
 use std::io::{Read, Seek, SeekFrom, Write as _};
@@ -60,6 +61,10 @@ pub struct ImageSpec<'a> {
     /// ([`make_live`]), to put after the image's partitions
     /// ([`append_live`]).
     pub live: Option<&'a Path>,
+    /// For an ISO, the signed release's repository ([`stage_release`]),
+    /// put in the disc's `release` directory; the disc is then labelled
+    /// DUKOVO_LIVE, which the live system looks for (ADR 0433).
+    pub release: Option<&'a Path>,
     /// The boot menu, and so how the image starts the system.
     pub menu: Menu,
     /// Staging directory, recreated on every build.
@@ -117,8 +122,9 @@ pub enum Kind {
     /// its DUKOVO_LIVE partition the signed release the installer
     /// installs (ADR 0308).
     Stick,
-    /// An ISO for optical media and virtual machines: the live system
-    /// alone.
+    /// An ISO for optical media and virtual machines: the live system,
+    /// and in its `release` directory the signed release the installer
+    /// installs, on a disc labelled DUKOVO_LIVE (ADR 0433).
     Iso,
     /// The disk of an installed system: the layout dukovo-install leaves,
     /// less the swap, starting from the root's slot (ADR 0307).
@@ -205,6 +211,11 @@ pub fn build_release(
         }
         Kind::Iso => Menu::Live(LiveStart::Install),
     };
+    // The ISO's release, staged where the stick's is.
+    let release = match kind {
+        Kind::Iso => Some(stage_release(ctx, &kernel, &programs, &ctx.out.join("live-staging"))?),
+        _ => None,
+    };
     // The features' flags go on whichever command line the image boots.
     let cmdline = overrides.cmdline.as_deref().unwrap_or(&ctx.config.boot.cmdline);
     let cmdline = ctx.config.features.cmdline(cmdline);
@@ -219,6 +230,7 @@ pub fn build_release(
             disk_check: overrides.disk_check.as_deref(),
             root: kind.installed().then_some(root.as_path()),
             live: (kind == Kind::Stick).then_some(live.as_path()),
+            release: release.as_deref(),
             menu,
             staging: ctx.out.join("image-root"),
             output: ctx.out.join(file_name(kind)),
@@ -227,6 +239,7 @@ pub fn build_release(
     );
     let _ = std::fs::remove_file(&root);
     let _ = std::fs::remove_file(&live);
+    let _ = std::fs::remove_dir_all(ctx.out.join("live-staging"));
     built?;
     Ok(ctx.out.join(file_name(kind)))
 }
@@ -738,15 +751,27 @@ fn make_iso(ctx: &Ctx, spec: &ImageSpec<'_>, grub: &Grub, time: u64) -> Result<(
         .map_err(|why| Error::new(format!("{shown}: {why}")))?;
     fill_fat(device, &tree, time, &shown)?;
 
+    // A disc that carries the release is the install DVD, which the live
+    // system finds by its label (ADR 0433).
+    let label = if spec.release.is_some() { LIVE_LABEL.to_string() } else { volume_id() };
     let mut cmd = Command::new("xorriso");
-    cmd.args(["-as", "mkisofs", "-quiet", "-R", "-V", &volume_id()])
+    cmd.args(["-as", "mkisofs", "-quiet", "-R", "-V", &label])
         .arg(format!("--modification-date={date}"))
         .args(["-b", ELTORITO, "-no-emul-boot", "-boot-load-size", "4", "-boot-info-table"])
         .args(["-eltorito-alt-boot", "-e", EFI_IMAGE, "-no-emul-boot"])
         .arg("-o")
-        .arg(&spec.output)
-        .arg(&spec.staging)
-        .env("SOURCE_DATE_EPOCH", time.to_string());
+        .arg(&spec.output);
+    match spec.release {
+        // The repository goes in as it is, without a copy: Rock Ridge
+        // keeps its files' names and modes.
+        Some(release) => {
+            let mut graft = std::ffi::OsString::from(format!("/{}=", release::SUBVOLUME));
+            graft.push(release);
+            cmd.arg("-graft-points").arg(&spec.staging).arg(graft)
+        }
+        None => cmd.arg(&spec.staging),
+    }
+    .env("SOURCE_DATE_EPOCH", time.to_string());
     let output = process::output(ctx, &mut cmd)?;
     if ctx.verbose {
         eprint!("{}", String::from_utf8_lossy(&output.stderr));
@@ -897,11 +922,7 @@ pub fn make_live(
     staging: &Path,
     output: &Path,
 ) -> Result<()> {
-    fresh_dir(staging)?;
-    let system = staging.join("system");
-    stage_system(ctx, kernel, programs, &system)?;
-    let repository = staging.join("filesystem").join(release::SUBVOLUME);
-    release::make(ctx, &system, &repository)?;
+    let repository = stage_release(ctx, kernel, programs, staging)?;
     step(&format!("Making the DUKOVO_LIVE Btrfs {}", ctx.display(output)));
     // Room for the release a quarter over, before zstd shrinks it, and
     // what Btrfs keeps for itself.
@@ -917,6 +938,26 @@ pub fn make_live(
     );
     let _ = std::fs::remove_dir_all(staging);
     made.map(|_| ())
+}
+
+/// Stages the signed release of the system's slot of `kernel` and
+/// `programs` in `staging`, made afresh, as the update server will serve
+/// it: the slot in `staging/system`, and the release's repository, which
+/// it returns, in `staging/filesystem/release`. The stick's DUKOVO_LIVE
+/// is a Btrfs of `staging/filesystem` ([`make_live`]); an ISO carries
+/// the repository in its `release` directory (ADR 0433).
+pub fn stage_release(
+    ctx: &Ctx,
+    kernel: &Path,
+    programs: &userspace::Programs,
+    staging: &Path,
+) -> Result<PathBuf> {
+    fresh_dir(staging)?;
+    let system = staging.join("system");
+    stage_system(ctx, kernel, programs, &system)?;
+    let repository = staging.join("filesystem").join(release::SUBVOLUME);
+    release::make(ctx, &system, &repository)?;
+    Ok(repository)
 }
 
 /// Stages the system's slot in `system`, a new directory: what the boot

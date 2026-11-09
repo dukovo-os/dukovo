@@ -382,6 +382,10 @@ pub struct App {
     pub from_file: bool,
     /// The setup files found on the stick.
     pub setup_files: Vec<SetupFile>,
+    /// Whether the live system started from the install DVD, not a stick:
+    /// the messages that name the medium say disc, and the Done page
+    /// offers no setup file to save on it.
+    pub from_disc: bool,
     /// The setup file chosen, by its place in the list.
     pub setup_file: usize,
     /// Whether the setup file is downloaded from a web address, not one
@@ -501,6 +505,7 @@ impl App {
             try_keys: String::new(),
             from_file: false,
             setup_files: Vec::new(),
+            from_disc: false,
             setup_file: 0,
             setup_web: false,
             setup_url: String::new(),
@@ -561,6 +566,8 @@ impl App {
             Page::SetupFile => &[Id::Back, Id::Load, Id::Help],
             Page::Review => &[Id::Back, Id::Install, Id::Help],
             Page::Installing => &[],
+            // A disc is read-only: no setup file is saved on it.
+            Page::Done if self.from_disc => &[Id::Restart, Id::ShowLog],
             Page::Done => &[Id::Restart, Id::ShowLog, Id::SaveSetup],
             Page::Failed => &[Id::ShowLog, Id::Live],
             Page::Network | Page::Disk | Page::Rdisk | Page::Software | Page::You => {
@@ -568,6 +575,19 @@ impl App {
             }
         };
         ids.iter().map(|id| (*id, messages::text(button_name(*id)))).collect()
+    }
+
+    /// The medium the live system started from, as the messages that name
+    /// it select by: `disc` for the install DVD, `stick` otherwise.
+    #[must_use]
+    pub fn medium(&self) -> &'static str {
+        if self.from_disc { "disc" } else { "stick" }
+    }
+
+    /// The message `id`, which may name the medium.
+    #[must_use]
+    pub fn say(&self, id: &str) -> String {
+        messages::with(id, &[("medium", Arg::Text(self.medium()))])
     }
 
     /// The ids of what takes the focus, in order: the enabled fields,
@@ -637,15 +657,15 @@ impl App {
                 Id::FromFile,
                 Kind::Choice(self.from_file),
                 "welcome-file",
-                &messages::text("welcome-file-note"),
+                &self.say("welcome-file-note"),
             ),
         ]
     }
 
     fn setup_file_rows(&self) -> Vec<Row> {
-        let mut rows = vec![text(messages::text("setup-intro")), Row::Blank];
+        let mut rows = vec![text(self.say("setup-intro")), Row::Blank];
         if self.setup_files.is_empty() {
-            rows.push(Row::Text(messages::text("setup-none"), Look::Dim));
+            rows.push(Row::Text(self.say("setup-none"), Look::Dim));
         }
         for (i, found) in self.setup_files.iter().enumerate() {
             let note = match &found.answers {
@@ -873,7 +893,7 @@ impl App {
         let disk = self
             .disk
             .and_then(|i| self.machine.disks.get(i))
-            .ok_or_else(|| messages::text("disk-none"))?;
+            .ok_or_else(|| self.say("disk-none"))?;
         let (_, sectors) = plan::free_room(disk, self.swap_gib(), self.root_bytes())?;
         Ok(sectors * u64::from(disk.sector_size))
     }
@@ -898,7 +918,7 @@ impl App {
         if let Some(refused) = &windows.refused {
             rows.push(Row::Text(refusal(refused), Look::Warning));
         } else if !self.machine.boot_entries {
-            rows.push(Row::Text(messages::text("disk-windows-bios"), Look::Warning));
+            rows.push(Row::Text(self.say("disk-windows-bios"), Look::Warning));
         } else if let (Ok((least, most)), Layout::Beside) = (room, self.layout) {
             let field = input(Id::Space, "disk-space", &self.space, false, "");
             let Row::Field(mut field) = field else { return rows };
@@ -974,7 +994,7 @@ impl App {
         let disk = self
             .disk
             .and_then(|i| self.machine.disks.get(i))
-            .ok_or_else(|| messages::text("disk-none"))?;
+            .ok_or_else(|| self.say("disk-none"))?;
         let second = self.mirror_disk().ok_or_else(|| messages::text("disk-mirror-alone"))?;
         plan::mirror(disk, second, self.swap_gib(), self.root_bytes()).map(drop)
     }
@@ -991,7 +1011,7 @@ impl App {
         let disk = self
             .disk
             .and_then(|i| self.machine.disks.get(i))
-            .ok_or_else(|| messages::text("disk-none"))?;
+            .ok_or_else(|| self.say("disk-none"))?;
         let Some(windows) = &disk.windows else {
             return Err(messages::with("disk-beside-none", &[("disk", Arg::Text(&disk.name))]));
         };
@@ -999,7 +1019,7 @@ impl App {
             return Err(messages::text("disk-beside-refused"));
         }
         if !self.machine.boot_entries {
-            return Err(messages::text("disk-beside-bios"));
+            return Err(self.say("disk-beside-bios"));
         }
         plan::beside_room(disk, true).map_err(|_| {
             let keeps = (windows.used + plan::WINDOWS_FREE).max(windows.smallest);
@@ -1166,7 +1186,10 @@ impl App {
         rows.push(Row::Text(
             label(
                 "review-install",
-                messages::with("review-release", &[("version", Arg::Text(&self.version))]),
+                messages::with(
+                    "review-release",
+                    &[("version", Arg::Text(&self.version)), ("medium", Arg::Text(self.medium()))],
+                ),
             ),
             Look::Plain,
         ));
@@ -1476,7 +1499,7 @@ impl App {
         let disk = self
             .disk
             .and_then(|i| self.machine.disks.get(i))
-            .ok_or_else(|| messages::text("disk-none"))?;
+            .ok_or_else(|| self.say("disk-none"))?;
         let mut network = std::collections::BTreeMap::new();
         if let Some(card) = self.machine.cards.get(self.card) {
             let setup = if self.fixed {
@@ -1937,7 +1960,7 @@ impl App {
                     self.setup_files.get(self.setup_file).map(|found| found.answers.clone());
                 match found {
                     Some(answers) => self.load(answers, None),
-                    None => self.problem = Some(messages::text("setup-none")),
+                    None => self.problem = Some(self.say("setup-none")),
                 }
                 Outcome::Stay
             }
@@ -2045,7 +2068,7 @@ impl App {
             Page::Network => Page::Disk,
             Page::Disk if self.layout == Layout::Manual => {
                 if !self.open_rdisk() {
-                    self.problem = Some(messages::text("disk-none"));
+                    self.problem = Some(self.say("disk-none"));
                     return Outcome::Stay;
                 }
                 Page::Rdisk

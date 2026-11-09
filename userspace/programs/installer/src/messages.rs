@@ -102,6 +102,70 @@ mod tests {
         assert_eq!(with("step-partition", &[("disk", Arg::Text("vda"))]), "Partitioning vda");
         assert_eq!(with("disk-partitions", &[("count", Arg::Number(1))]), "1 partition");
         assert_eq!(with("disk-partitions", &[("count", Arg::Number(4))]), "4 partitions");
+        for (medium, said) in [("stick", "stick"), ("disc", "disc")] {
+            let line = with(
+                "installed-line",
+                &[
+                    ("version", Arg::Text("0.14.0")),
+                    ("disk", Arg::Text("vda")),
+                    ("medium", Arg::Text(medium)),
+                ],
+            );
+            assert_eq!(
+                line,
+                format!(
+                    "Dukovo 0.14.0 is installed on vda. Remove the install {said}, then restart."
+                )
+            );
+        }
+    }
+
+    #[test]
+    fn from_a_disc_no_message_names_the_stick() {
+        // Shown only from a stick: its line in the disks, and its setup
+        // files; and the Done page's help, which names both.
+        const STICK_ONLY: [&str; 7] = [
+            "disk-stick",
+            "button-save-setup",
+            "setup-on-stick",
+            "setup-no-esp",
+            "setup-saved",
+            "setup-saved-no-hashes",
+            "help-done",
+        ];
+        let bundle = bundle();
+        let mut args = FluentArgs::new();
+        args.set("medium", "disc");
+        let ids = ENGLISH.lines().filter_map(|line| line.split_once(" =")).map(|(id, _)| id);
+        let mut checked = 0;
+        for id in ids.filter(|id| !id.starts_with([' ', '#', '-']) && !STICK_ONLY.contains(id)) {
+            let Some(pattern) = bundle.get_message(id).and_then(|message| message.value()) else {
+                continue;
+            };
+            // Other variables a message has show as their names.
+            let said = bundle.format_pattern(pattern, Some(&args), &mut Vec::new());
+            assert!(!said.contains("stick"), "{id}: {said}");
+            checked += 1;
+        }
+        assert!(checked > 100, "{checked} messages");
+        // A choice inside a help page keeps the page's lines.
+        let help = with("help-setup-file", &[("medium", Arg::Text("disc"))]);
+        let lines: Vec<&str> = help.lines().collect();
+        assert_eq!(lines.len(), 3, "{help}");
+        assert_eq!(
+            lines[0],
+            "A setup file is an answers file (install-answers(5)) called install.json, downloaded from a web server over HTTPS only, so that it cannot be changed on the way."
+        );
+        assert!(lines[1].starts_with("Give its SHA-256"), "{help}");
+        let help = with("help-disk", &[("medium", Arg::Text("stick"))]);
+        assert!(
+            help.ends_with("Other disks stay as they are. The install stick cannot be chosen.")
+        );
+        // A stick's own wording is still there for a stick.
+        assert_eq!(
+            with("setup-none", &[("medium", Arg::Text("stick"))]),
+            "No setup file was found on this stick."
+        );
     }
 
     #[test]

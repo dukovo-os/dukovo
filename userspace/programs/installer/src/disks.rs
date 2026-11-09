@@ -2,18 +2,32 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 //! The disks, as the kernel lists them in `/kernel/block` (radix-sysfs(5)):
-//! the install stick's DUKOVO_LIVE partition, which holds the release, the
-//! disk it is on, which is never installed onto, and the names and sizes of
-//! disks and their partitions. A disk's partition table is read as rdisk(8)
-//! reads it, with the same engine, so that the layouts are worked out from
-//! what rdisk will find.
+//! the medium the live system started from, which holds the release (the
+//! install stick's DUKOVO_LIVE partition, or the install DVD), the disk or
+//! drive it is on, which is never installed onto, and the names and sizes
+//! of disks and their partitions. A disk's partition table is read as
+//! rdisk(8) reads it, with the same engine, so that the layouts are worked
+//! out from what rdisk will find.
 
+use std::os::unix::fs::FileExt as _;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 /// The GPT type of an install stick's DUKOVO_LIVE partition, "Dukovo
 /// live" (ADR 0308), as `/kernel/block/<name>/parttype` gives it.
 pub const DUKOVO_LIVE: &str = "5894c662-af90-4b47-baaf-2e3396443b25";
+
+/// The label of the stick's DUKOVO_LIVE Btrfs, and of the install DVD's
+/// ISO 9660 volume (ADR 0433).
+const LIVE_LABEL: &str = "DUKOVO_LIVE";
+
+/// Where a disc's ISO 9660 primary volume descriptor is, in bytes (the
+/// 2,048-byte sector 16), how it starts (its type, 1, and `CD001`), and
+/// where in it the volume's label is, padded with spaces (ECMA-119 8.4).
+const ISO_PVD: u64 = 16 * 2048;
+const ISO_PVD_LEN: usize = 2048;
+const ISO_PVD_START: &[u8] = b"\x01CD001";
+const ISO_VOLUME_ID: std::ops::Range<usize> = 40..72;
 
 /// Where the kernel lists disks and partitions.
 const BLOCK: &str = "/kernel/block";
@@ -63,6 +77,13 @@ pub fn partition(disk: &str, number: u32) -> String {
     } else {
         format!("{disk}{number}")
     }
+}
+
+/// Whether `name` is an optical drive, which reads discs and is never a
+/// disk to install onto: the kernel gives it a `disc` file.
+#[must_use]
+pub fn is_disc(name: &str) -> bool {
+    attribute(name, "disc").is_some()
 }
 
 /// The disk the partition `name` is on.
@@ -123,23 +144,76 @@ pub fn device(name: &str) -> PathBuf {
     Path::new("/devices").join(name)
 }
 
-/// The install stick's DUKOVO_LIVE partition: its name and where Spark
-/// mounted it, read-only.
+/// The medium the live system started from, which holds the signed
+/// release: the install stick's DUKOVO_LIVE partition, or the install DVD
+/// (ADR 0433).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Medium {
+    /// Its name in `/devices`: the stick's partition, or the DVD's drive.
+    pub name: String,
+    /// Where it is mounted, read-only.
+    pub mounted: PathBuf,
+    /// The disk it is on, which is never installed onto: the stick, or
+    /// the drive.
+    pub disk: String,
+    /// Whether it is the install DVD.
+    pub disc: bool,
+}
+
+/// The medium the live system started from: the stick's DUKOVO_LIVE
+/// partition, or a drive with the install DVD in it.
 ///
 /// # Errors
 ///
-/// If no partition is one, as when the system was not started from an
-/// install stick.
-pub fn live_partition() -> Result<(String, PathBuf), String> {
+/// If there is neither, as when the system was not started from an
+/// install stick or DVD.
+pub fn live_medium() -> Result<Medium, String> {
     for name in names()? {
-        if attribute(&name, "parttype").is_some_and(|kind| kind.eq_ignore_ascii_case(DUKOVO_LIVE)) {
-            let mounted = Path::new("/volumes").join(&name);
-            return Ok((name, mounted));
+        let stick =
+            attribute(&name, "parttype").is_some_and(|kind| kind.eq_ignore_ascii_case(DUKOVO_LIVE));
+        let disc = !stick && is_live_disc(&name);
+        if stick || disc {
+            let disk = if disc { name.clone() } else { disk_of(&name) };
+            return Ok(Medium { mounted: mounted_at(&name), disk, disc, name });
         }
     }
-    Err("no disk has a DUKOVO_LIVE partition: start the computer from the install stick, \
-         or give the release's folder with --release"
+    Err("no disk has a DUKOVO_LIVE partition, and no drive holds the install DVD: start \
+         the computer from the install stick or DVD, or give the release's folder with \
+         --release"
         .into())
+}
+
+/// Whether `name` is a drive holding the install DVD: an optical drive
+/// whose disc has an ISO 9660 volume labelled DUKOVO_LIVE, as `ob image
+/// --iso` makes it (ADR 0433).
+fn is_live_disc(name: &str) -> bool {
+    if !is_disc(name) {
+        return false;
+    }
+    let Ok(file) = std::fs::File::open(device(name)) else { return false };
+    let mut pvd = [0u8; ISO_PVD_LEN];
+    file.read_exact_at(&mut pvd, ISO_PVD).is_ok() && is_live_volume(&pvd)
+}
+
+/// Whether `pvd`, a disc's sector 16, is the primary volume descriptor of
+/// an ISO 9660 volume labelled DUKOVO_LIVE.
+fn is_live_volume(pvd: &[u8]) -> bool {
+    pvd.len() >= ISO_VOLUME_ID.end
+        && pvd.starts_with(ISO_PVD_START)
+        && pvd[ISO_VOLUME_ID].trim_ascii_end() == LIVE_LABEL.as_bytes()
+}
+
+/// Where the live medium `name` is mounted: at its name, where Spark
+/// mounts it as the live system starts, or else at its label, where
+/// volumed mounts it when it is put in again.
+fn mounted_at(name: &str) -> PathBuf {
+    let volumes = Path::new("/volumes");
+    let label = volumes.join(LIVE_LABEL);
+    if !volumes.join(name).exists() && label.join("release").is_dir() {
+        label
+    } else {
+        volumes.join(name)
+    }
 }
 
 /// Waits until the device file of `name` is there, as after a partition
@@ -177,5 +251,26 @@ mod tests {
         {
             assert_eq!(disk_of(part), disk);
         }
+    }
+
+    #[test]
+    fn knows_the_install_dvd_by_its_volume_label() {
+        let mut pvd = vec![b' '; ISO_PVD_LEN];
+        pvd[..6].copy_from_slice(ISO_PVD_START);
+        pvd[40..40 + LIVE_LABEL.len()].copy_from_slice(LIVE_LABEL.as_bytes());
+        assert!(is_live_volume(&pvd));
+        // Another label, a label that only starts so, another descriptor
+        // type, and no ISO 9660 at all.
+        let mut other = pvd.clone();
+        other[40..51].copy_from_slice(b"DUKOVO_0_14");
+        assert!(!is_live_volume(&other));
+        let mut longer = pvd.clone();
+        longer[51] = b'X';
+        assert!(!is_live_volume(&longer));
+        let mut supplementary = pvd.clone();
+        supplementary[0] = 2;
+        assert!(!is_live_volume(&supplementary));
+        assert!(!is_live_volume(&[0; ISO_PVD_LEN]));
+        assert!(!is_live_volume(&pvd[..40]));
     }
 }

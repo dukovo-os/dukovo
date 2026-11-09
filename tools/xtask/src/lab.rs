@@ -331,8 +331,8 @@ pub fn command(ctx: &Ctx, args: &mut Args) -> Result<()> {
     let mut lab = Command::new(&tool);
     lab.arg("--tests").arg(ctx.root.join("lab/tests"));
     if lab_command(&rest).is_some_and(|command| NEEDS_IMAGE.contains(&command)) {
-        // An image given by hand has no stick of its own: one comes only
-        // with --stick.
+        // An image given by hand has no stick or DVD of its own: one comes
+        // only with --stick or --dvd.
         let built_here = given_image.is_none();
         let image = match given_image {
             Some(image) => PathBuf::from(image),
@@ -393,6 +393,28 @@ pub fn command(ctx: &Ctx, args: &mut Args) -> Result<()> {
                     lab.arg("--stick").arg(stick);
                 }
                 Err(why) => eprintln!("    note: the installer's tests will skip: {why}"),
+            }
+        }
+        // The install DVD of the same tree, for the installer's tests that
+        // start from a disc (ADR 0433).
+        if built_here && !rest.iter().any(|arg| arg == "--dvd") {
+            let dvd = if no_build {
+                let dvd = ctx.out.join(image::file_name(image::Kind::Iso));
+                if dvd.is_file() {
+                    Ok(dvd)
+                } else {
+                    Err("no install DVD was built yet, and --no-build builds none".to_string())
+                }
+            } else {
+                step("Building the install DVD, for the installer's tests");
+                image::build_release(ctx, profile, image::Kind::Iso, &Overrides::default())
+                    .map_err(|e| e.to_string())
+            };
+            match dvd {
+                Ok(dvd) => {
+                    lab.arg("--dvd").arg(dvd);
+                }
+                Err(why) => eprintln!("    note: the installer's DVD tests will skip: {why}"),
             }
         }
     }

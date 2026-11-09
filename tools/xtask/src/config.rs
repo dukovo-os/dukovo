@@ -192,6 +192,10 @@ pub enum Media {
     Usb,
     /// A CD-ROM on the SATA controller.
     Cdrom,
+    /// A CD-ROM on an IDE controller's secondary channel, as an older PC
+    /// or one whose SATA controller is set to IDE mode has it (ADR 0432).
+    #[serde(rename = "ide-cdrom")]
+    IdeCdrom,
     /// A SATA hard disk.
     Disk,
 }
@@ -202,9 +206,17 @@ impl Media {
         match value {
             "usb" => Ok(Media::Usb),
             "cdrom" => Ok(Media::Cdrom),
+            "ide-cdrom" => Ok(Media::IdeCdrom),
             "disk" => Ok(Media::Disk),
-            _ => Err(Error::new(format!("unknown media `{value}`; use usb, cdrom or disk"))),
+            _ => Err(Error::new(format!(
+                "unknown media `{value}`; use usb, cdrom, ide-cdrom or disk"
+            ))),
         }
+    }
+
+    /// Whether it is a CD-ROM, which holds an ISO.
+    pub fn is_cd(self) -> bool {
+        matches!(self, Media::Cdrom | Media::IdeCdrom)
     }
 }
 
@@ -213,6 +225,7 @@ impl fmt::Display for Media {
         f.write_str(match self {
             Media::Usb => "usb",
             Media::Cdrom => "cdrom",
+            Media::IdeCdrom => "ide-cdrom",
             Media::Disk => "disk",
         })
     }

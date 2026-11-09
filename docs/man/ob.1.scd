@@ -159,8 +159,10 @@ _target/userspace/_).
 	the system that the installer installs (ADR 0308). Write it to a USB
 	stick as shown in *EXAMPLES*. With *--iso*, the image is
 	_out/dukovo-VERSION-x86_64.iso_ instead, for optical media, which
-	El Torito starts under either firmware. *dukovo-boot*(7) lists what
-	the image contains.
+	El Torito starts under either firmware, and which carries the same
+	release in its _release_ directory, on a disc labelled
+	*DUKOVO_LIVE* (ADR 0433). *dukovo-boot*(7) lists what the image
+	contains.
 
 	Both boot with GRUB 2.12, which *ob* builds from the GNU project's
 	tarball the first time, checked against its pinned SHA-256, into
@@ -191,7 +193,10 @@ _target/userspace/_).
 	*--iso*
 		Make an ISO, _out/dukovo-VERSION-x86_64.iso_, instead, for
 		virtual machines and optical media, with *xorriso*(1). It runs
-		the same live system but carries no release.
+		the same live system, and carries the signed release in its
+		_release_ directory, on a disc labelled DUKOVO_LIVE, which the
+		live system mounts read-only and the installer installs from (ADR
+		0433). Burnt to a DVD, it installs Dukovo as the stick does.
 
 	*--installed*
 		Make the disk of an installed system,
@@ -273,7 +278,9 @@ _target/userspace/_).
 	*--media* _kind_
 		Attach the image as *usb* (a USB stick on an xHCI controller, the
 		default), *cdrom* (a SATA CD-ROM, which holds the ISO that
-		*image --iso* makes) or *disk* (a SATA hard disk).
+		*image --iso* makes), *ide-cdrom* (the same ISO in a CD-ROM on an
+		IDE controller's secondary channel, as an older PC has it) or
+		*disk* (a SATA hard disk).
 
 	*--installed*
 		Boot the disk of an installed system that *image --installed*
@@ -1512,11 +1519,13 @@ _target/userspace/_).
 
 	For *run* and *ui*, also pass the console's fonts,
 	_kernel/lib/fbcon/fonts_, with *--fonts*, which the *screen* steps
-	read the console's text with, and build the install stick as *image*
-	does and pass it with *--stick*, for the installer's tests (those
-	with *boot = "stick"*). With *--no-build*, the stick already in
-	_out_ is used; with *--image*, none is built, and the installer's
-	tests skip unless a *--stick* is given after _command_.
+	read the console's text with, and build the install stick and the
+	install DVD as *image* and *image --iso* do and pass them with
+	*--stick* and *--dvd*, for the installer's tests (those with *boot =
+	"stick"* or *boot = "dvd"*). With *--no-build*, the stick and DVD
+	already in _out_ are used; with *--image*, neither is built, and the
+	installer's tests skip unless a *--stick* or *--dvd* is given after
+	_command_.
 
 	*dukovo-lab* is found on *PATH*, or at *OB_LAB*. The handbook's Lab
 	tests chapter shows how to write a test.
