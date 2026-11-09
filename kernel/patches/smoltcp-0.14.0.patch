@@ -158,6 +158,27 @@ For traceroute and mtr (ADR 0345):
   socket's metadata does too, with `send_slice_with_hop_limit`; the
   socket's is for those without.
 
+For neighbours (ADR 0417):
+
+- `update_ip_addrs` emptied the neighbour cache at each change, and an
+  interface's addresses change often after its link comes back: its DHCP
+  address again, each IPv6 address it makes, each router. It now
+  forgets only the neighbours on no network the interface is still on,
+  as Linux keeps them when an address changes; `flush_neighbor_cache`
+  forgets them all, for a link that went down.
+- A reply made on receipt, as a TCP socket's duplicate ACK for a
+  retransmission, whose next hop was not in the cache was lost: the
+  token it was to go with asked for the neighbour instead, and nothing
+  sent it again. The interface now keeps a copy of the last four, of up
+  to 128 bytes each, for three seconds, and sends each once its
+  neighbour answers, as Linux holds packets for a neighbour it asks for.
+- A window-0 ACK that acknowledged nothing new while the retransmission
+  timer ran started no zero-window probe, and at the timeout the socket
+  went back to sending nothing: with the window update lost, the
+  connection waited for ever. It now probes the window at the timeout,
+  and on with the timeout backed off, as Linux's retransmission timer
+  does when the window is shut.
+
 To be offered upstream.
 
 --- a/src/iface/interface/tcp.rs
@@ -1051,7 +1072,29 @@ To be offered upstream.
      /// Return the amount of octets queued in the transmit buffer.
      ///
      /// Note that the Berkeley sockets interface does not have an equivalent of this API.
-@@ -1398,6 +1702,95 @@
+@@ -1393,11 +1697,117 @@
+         self.tx_buffer.len()
+     }
+ 
++    /// DEBUG (the e1000 stall's investigation, not to be merged): the
++    /// sending side's state: its timer (0 idle, 1 retransmit, 2 fast
++    /// retransmit, 3 zero-window probe, 4 close), the window the other end
++    /// offers, the octets in flight, the congestion window, and the RTO in
++    /// milliseconds.
++    pub fn debug_sending(&self) -> (u8, usize, usize, usize, u32) {
++        let timer = match self.timer {
++            Timer::Idle { .. } => 0,
++            Timer::Retransmit { .. } => 1,
++            Timer::FastRetransmit => 2,
++            Timer::ZeroWindowProbe { .. } => 3,
++            Timer::Close { .. } => 4,
++        };
++        let cwnd = self.congestion_controller.inner().window();
++        (timer, self.remote_win_len, self.flight_size(), cwnd, self.rtte.rto)
++    }
++
+     /// Number of octets transmitted but not yet ACKed.
+     fn flight_size(&self) -> usize {
          self.remote_last_seq - self.local_seq_no
      }
  
@@ -1147,7 +1190,7 @@ To be offered upstream.
      fn cwnd_remaining(&self) -> usize {
          self.congestion_controller
              .inner()
-@@ -1474,9 +1867,15 @@
+@@ -1474,9 +1884,15 @@
  
      fn ack_reply(&mut self, ip_repr: &IpRepr, repr: &TcpRepr) -> (IpRepr, TcpRepr<'static>) {
          let (mut ip_reply_repr, mut reply_repr) = Self::reply(ip_repr, repr);
@@ -1166,7 +1209,7 @@ To be offered upstream.
  
          // From RFC 793:
          // [...] an empty acknowledgment segment containing the current send-sequence number
-@@ -1529,6 +1928,33 @@
+@@ -1529,6 +1945,33 @@
                      .next()
                      .map(|(left, right)| (left.0 as u32, right.0 as u32));
              }
@@ -1200,7 +1243,7 @@ To be offered upstream.
          }
  
          // Since the sACK option may have changed the length of the payload, update that.
-@@ -1552,6 +1978,36 @@
+@@ -1552,6 +1995,36 @@
          Some(self.ack_reply(ip_repr, repr))
      }
  
@@ -1237,7 +1280,7 @@ To be offered upstream.
      pub(crate) fn accepts(&self, _cx: &mut Context, ip_repr: &IpRepr, repr: &TcpRepr) -> bool {
          if self.state == State::Closed {
              return false;
-@@ -1576,7 +2032,7 @@
+@@ -1576,7 +2049,7 @@
              // We're listening, reject packets not matching the listen endpoint.
              let addr_ok = match self.listen_endpoint.addr {
                  Some(addr) => ip_repr.dst_addr() == addr,
@@ -1246,7 +1289,7 @@ To be offered upstream.
              };
              addr_ok && repr.dst_port != 0 && repr.dst_port == self.listen_endpoint.port
          }
-@@ -1715,6 +2171,13 @@
+@@ -1715,6 +2188,13 @@
          let (payload, payload_offset) = match self.state {
              // In LISTEN and SYN-SENT states, we have not yet synchronized with the remote end.
              State::Listen | State::SynSent => (&[][..], 0),
@@ -1260,7 +1303,7 @@ To be offered upstream.
              _ => {
                  // https://www.rfc-editor.org/rfc/rfc9293.html#name-segment-acceptability-tests
                  let segment_in_window = match (
-@@ -2008,6 +2471,10 @@
+@@ -2008,6 +2488,10 @@
              (State::FinWait1, TcpControl::Fin) => {
                  self.remote_seq_no += 1;
                  self.rx_fin_received = true;
@@ -1271,7 +1314,7 @@ To be offered upstream.
                  if ack_of_fin {
                      self.set_state(State::TimeWait);
                      self.timer.set_for_close(cx.now());
-@@ -2022,6 +2489,8 @@
+@@ -2022,6 +2506,8 @@
              (State::FinWait2, TcpControl::Fin) => {
                  self.remote_seq_no += 1;
                  self.rx_fin_received = true;
@@ -1280,7 +1323,7 @@ To be offered upstream.
                  self.set_state(State::TimeWait);
                  self.timer.set_for_close(cx.now());
              }
-@@ -2058,6 +2527,7 @@
+@@ -2058,6 +2544,7 @@
  
          // Update remote state.
          self.remote_last_ts = Some(cx.now());
@@ -1288,7 +1331,7 @@ To be offered upstream.
  
          // RFC 1323: The window field (SEG.WND) in the header of every incoming segment, with the
          // exception of SYN segments, is left-shifted by Snd.Wind.Scale bits before updating SND.WND.
-@@ -2116,7 +2586,8 @@
+@@ -2116,7 +2603,8 @@
                          }
                      );
  
@@ -1298,7 +1341,7 @@ To be offered upstream.
                          self.timer.set_for_fast_retransmit();
                          net_debug!("started fast retransmit");
                      }
-@@ -2139,8 +2610,12 @@
+@@ -2139,8 +2627,12 @@
                      }
                      self.local_rx_last_ack = Some(ack_number);
  
@@ -1313,7 +1356,7 @@ To be offered upstream.
                      let new_flight_size = self.flight_size().saturating_sub(ack_len);
                      self.congestion_controller.inner_mut().on_ack(
                          cx.now(),
-@@ -2163,11 +2638,21 @@
+@@ -2163,11 +2655,21 @@
              if self.remote_last_seq < self.local_seq_no {
                  self.remote_last_seq = self.local_seq_no
              }
@@ -1337,7 +1380,7 @@ To be offered upstream.
          }
  
          // update timers.
-@@ -2289,16 +2774,39 @@
+@@ -2289,16 +2791,39 @@
          }
      }
  
@@ -1380,7 +1423,7 @@ To be offered upstream.
              return true;
          }
  
-@@ -2461,13 +2969,20 @@
+@@ -2461,13 +2986,20 @@
              // but from the first transmitted one.
              self.remote_last_ts = Some(cx.now());
          }
@@ -1402,7 +1445,7 @@ To be offered upstream.
              // If a timeout expires, we should abort the connection.
              net_debug!("timeout exceeded");
              self.set_state(State::Closed);
-@@ -2484,8 +2999,12 @@
+@@ -2484,8 +3016,12 @@
  
                  // Rewind "last sequence number sent", as if we never
                  // had sent them. This will cause all data in the queue
@@ -1416,7 +1459,26 @@ To be offered upstream.
  
                  // Inform RTTE, so that it can can handle RTO backoff
                  self.rtte.on_rto();
-@@ -2567,10 +3086,7 @@
+@@ -2508,6 +3044,18 @@
+             // can't actually do anything.
+             self.timer.set_for_idle(cx.now(), self.keep_alive);
+ 
++            // With the other end's window shut, nothing would go again, and
++            // nothing would come to open it if the update that opens it was
++            // lost: the socket waited for ever. Probe the window now, and on
++            // from the timeout backed off, as Linux's retransmit timer sends
++            // its probe when the window is shut (tcp_retransmit_timer).
++            if self.remote_win_len == 0 && !self.tx_buffer.is_empty() {
++                self.timer = Timer::ZeroWindowProbe {
++                    expires_at: cx.now(),
++                    delay: self.rtte.retransmission_timeout(),
++                };
++            }
++
+             // Inform RTTE, so that it can avoid bogus measurements.
+             self.rtte.on_retransmit();
+         }
+@@ -2567,10 +3115,7 @@
              max_seg_size: None,
              sack_permitted: false,
              sack_ranges: [None, None, None],
@@ -1428,7 +1490,7 @@ To be offered upstream.
              payload: &[],
          };
  
-@@ -2631,14 +3147,33 @@
+@@ -2631,14 +3176,33 @@
                  let local_mss = cx.ip_mtu() - ip_repr.header_len() - TCP_HEADER_LEN;
                  let effective_mss = local_mss.min(self.remote_mss).saturating_sub(options_len);
  
@@ -1462,7 +1524,7 @@ To be offered upstream.
                  } else {
                      // Right edge of window, ie the max sequence number we're allowed to send.
                      let win_right_edge = self.local_seq_no + self.remote_win_len;
-@@ -2791,8 +3326,13 @@
+@@ -2791,8 +3355,13 @@
          emit(cx, packet_meta, (ip_repr, repr))?;
  
          // We've sent something, whether useful data or a keep-alive packet, so rewind
@@ -1478,7 +1540,7 @@ To be offered upstream.
  
          // Reset delayed-ack timer
          match self.ack_delay_timer {
-@@ -2862,7 +3402,7 @@
+@@ -2862,7 +3431,7 @@
          if self.tuple.is_none() {
              // No one to talk to, nothing to transmit.
              PollAt::Ingress
@@ -1487,7 +1549,7 @@ To be offered upstream.
              // Socket stopped being quiet recently, we need to acquire a timestamp.
              PollAt::Now
          } else if self.state == State::Closed {
-@@ -2887,7 +3427,9 @@
+@@ -2887,7 +3456,9 @@
              let timeout_poll_at = match (self.remote_last_ts, self.timeout) {
                  // If we're transmitting or retransmitting data, we need to poll at the moment
                  // when the timeout would expire.
@@ -1498,7 +1560,7 @@ To be offered upstream.
                  // Otherwise we have no timeout.
                  (_, _) => PollAt::Ingress,
              };
-@@ -4682,6 +5224,57 @@
+@@ -4682,6 +5253,57 @@
      }
  
      #[test]
@@ -1556,7 +1618,7 @@ To be offered upstream.
      fn test_established_sack_no_overflow_on_near_max_seqnumber() {
          let mut s = socket_established();
          s.remote_has_sack = true;
-@@ -5808,6 +6401,114 @@
+@@ -5808,6 +6430,114 @@
          assert_eq!(s.state, State::Closed);
      }
  
@@ -1671,7 +1733,7 @@ To be offered upstream.
      // =========================================================================================//
      // Tests for the CLOSE-WAIT state.
      // =========================================================================================//
-@@ -7327,6 +8028,206 @@
+@@ -7327,6 +8057,206 @@
          recv_nothing!(s);
      }
  
@@ -1878,7 +1940,72 @@ To be offered upstream.
      #[test]
      fn test_retransmit_exponential_backoff() {
          let mut s = socket_established();
-@@ -8606,10 +9507,8 @@
+@@ -8226,6 +9156,64 @@
+     }
+ 
+     #[test]
++    fn test_zero_window_probe_after_rto() {
++        let mut s = socket_established();
++        s.send_slice(b"abcdef").unwrap();
++        recv!(s, time 0, [TcpRepr {
++            seq_number: LOCAL_SEQ + 1,
++            ack_number: Some(REMOTE_SEQ + 1),
++            payload: &b"abcdef"[..],
++            ..RECV_TEMPL
++        }]);
++        assert!(s.timer.is_retransmit());
++
++        // The other end shuts its window and acknowledges nothing new,
++        // while the retransmission timer runs.
++        send!(s, time 10, TcpRepr {
++            seq_number: REMOTE_SEQ + 1,
++            ack_number: Some(LOCAL_SEQ + 1),
++            window_len: 0,
++            ..SEND_TEMPL
++        });
++        assert!(s.timer.is_retransmit());
++
++        // At the timeout, with the window shut, a one-byte probe goes: the
++        // update that opens the window may have been lost.
++        recv_nothing!(s, time 999);
++        recv!(s, time 1000, [TcpRepr {
++            seq_number: LOCAL_SEQ + 1,
++            ack_number: Some(REMOTE_SEQ + 1),
++            payload: &b"a"[..],
++            ..RECV_TEMPL
++        }]);
++        assert!(s.timer.is_zero_window_probe());
++
++        // The probes go on, backed off from the doubled timeout.
++        recv_nothing!(s, time 4999);
++        recv!(s, time 5000, [TcpRepr {
++            seq_number: LOCAL_SEQ + 1,
++            ack_number: Some(REMOTE_SEQ + 1),
++            payload: &b"a"[..],
++            ..RECV_TEMPL
++        }]);
++
++        // The window opens: the data goes.
++        send!(s, time 5010, TcpRepr {
++            seq_number: REMOTE_SEQ + 1,
++            ack_number: Some(LOCAL_SEQ + 1),
++            window_len: 6,
++            ..SEND_TEMPL
++        });
++        assert!(!s.timer.is_zero_window_probe());
++        recv!(s, time 5010, [TcpRepr {
++            seq_number: LOCAL_SEQ + 1,
++            ack_number: Some(REMOTE_SEQ + 1),
++            payload: &b"abcdef"[..],
++            ..RECV_TEMPL
++        }]);
++    }
++
++    #[test]
+     fn test_zero_window_probe_enter_on_send() {
+         let mut s = socket_established();
+ 
+@@ -8606,10 +9594,8 @@
          let mut s = socket_established();
          s.set_timeout(Some(Duration::from_millis(2000)));
          recv_nothing!(s, time 250);
@@ -1891,7 +2018,7 @@ To be offered upstream.
          s.send_slice(b"abcdef").unwrap();
          assert_eq!(s.socket.poll_at(&mut s.cx), PollAt::Now);
          recv!(s, time 255, Ok(TcpRepr {
-@@ -8642,6 +9541,32 @@
+@@ -8642,6 +9628,32 @@
      }
  
      #[test]
@@ -1924,7 +2051,7 @@ To be offered upstream.
      fn test_established_keep_alive_timeout() {
          let mut s = socket_established();
          s.set_keep_alive(Some(Duration::from_millis(50)));
-@@ -8689,6 +9614,58 @@
+@@ -8689,6 +9701,58 @@
      }
  
      #[test]
@@ -1983,7 +2110,7 @@ To be offered upstream.
      fn test_fin_wait_1_timeout() {
          let mut s = socket_fin_wait_1();
          s.set_timeout(Some(Duration::from_millis(1000)));
-@@ -9585,6 +10562,17 @@
+@@ -9585,6 +10649,17 @@
      }
  
      #[test]
@@ -2001,7 +2128,7 @@ To be offered upstream.
      fn test_set_get_congestion_control() {
          let mut s = socket_established();
  
-@@ -9662,6 +10650,168 @@
+@@ -9662,6 +10737,168 @@
      }
  
      #[test]
@@ -3283,7 +3410,65 @@ To be offered upstream.
              MldReportState::ToSpecificQuery { group, timeout } if self.inner.now >= timeout => {
 --- a/src/iface/interface/mod.rs
 +++ b/src/iface/interface/mod.rs
-@@ -542,7 +542,9 @@
+@@ -37,6 +37,8 @@
+ 
+ #[cfg(any(feature = "medium-ethernet", feature = "medium-ieee802154"))]
+ use super::neighbor::{Answer as NeighborAnswer, Cache as NeighborCache};
++#[cfg(feature = "medium-ethernet")]
++use super::neighbor::{HELD_TIME, Held};
+ use super::socket_set::SocketSet;
+ use crate::config::{
+     IFACE_MAX_ADDR_COUNT, IFACE_MAX_PREFIX_COUNT, IFACE_MAX_SIXLOWPAN_ADDRESS_CONTEXT_COUNT,
+@@ -132,6 +134,9 @@
+ 
+     #[cfg(any(feature = "medium-ethernet", feature = "medium-ieee802154"))]
+     neighbor_cache: NeighborCache,
++    /// Replies made on receipt that wait for their neighbor to answer.
++    #[cfg(feature = "medium-ethernet")]
++    held: Held,
+     hardware_addr: HardwareAddress,
+     #[cfg(feature = "medium-ieee802154")]
+     sequence_no: u8,
+@@ -278,6 +283,8 @@
+                 routes: Routes::new(),
+                 #[cfg(any(feature = "medium-ethernet", feature = "medium-ieee802154"))]
+                 neighbor_cache: NeighborCache::new(),
++                #[cfg(feature = "medium-ethernet")]
++                held: Held::new(),
+                 #[cfg(feature = "multicast")]
+                 multicast: multicast::State::new(),
+                 #[cfg(feature = "medium-ieee802154")]
+@@ -393,11 +400,15 @@
+ 
+     /// Update the IP addresses of the interface.
+     ///
++    /// The neighbors on a network the interface is no longer on are
++    /// forgotten; the others stay, as Linux keeps them when an address
++    /// changes.
++    ///
+     /// # Panics
+     /// This function panics if any of the addresses are not unicast.
+     pub fn update_ip_addrs<F: FnOnce(&mut Vec<IpCidr, IFACE_MAX_ADDR_COUNT>)>(&mut self, f: F) {
+         f(&mut self.inner.ip_addrs);
+-        InterfaceInner::flush_neighbor_cache(&mut self.inner);
++        InterfaceInner::forget_gone_neighbors(&mut self.inner);
+         InterfaceInner::check_ip_addrs(&self.inner.ip_addrs);
+ 
+         #[cfg(all(
+@@ -410,6 +421,12 @@
+         }
+     }
+ 
++    /// Forget every neighbor the interface knows, as when its link went
++    /// down and may come back on another network.
++    pub fn flush_neighbor_cache(&mut self) {
++        InterfaceInner::flush_neighbor_cache(&mut self.inner);
++    }
++
+     /// Check whether the interface has the given IP address assigned.
+     pub fn has_ip_addr<T: Into<IpAddress>>(&self, addr: T) -> bool {
+         self.inner.has_ip_addr(addr)
+@@ -542,11 +559,65 @@
          }
  
          #[cfg(feature = "multicast")]
@@ -3291,6 +3476,593 @@ To be offered upstream.
 +        if self.inner.multicast.needs_egress() {
 +            self.multicast_egress(device);
 +        }
++
++        #[cfg(feature = "medium-ethernet")]
++        if self.inner.held.len() > 0 {
++            self.held_egress(device);
++        }
  
          self.socket_egress(device, sockets)
      }
+ 
++    /// Sends the replies held for neighbors that answered since, and drops
++    /// those whose neighbor did not answer in time (see [`Held`]). The
++    /// others stay, in the order they came.
++    #[cfg(feature = "medium-ethernet")]
++    fn held_egress(&mut self, device: &mut (impl Device + ?Sized)) {
++        let now = self.inner.now;
++        let mut exhausted = false;
++        for _ in 0..self.inner.held.len() {
++            let Some(reply) = self.inner.held.take() else {
++                break;
++            };
++            if reply.expires_at <= now {
++                net_debug!("dropping a reply to {}: no answer", reply.neighbor);
++                continue;
++            }
++            let NeighborAnswer::Found(HardwareAddress::Ethernet(dst_addr)) =
++                self.inner.neighbor_cache.lookup(&reply.neighbor, now)
++            else {
++                self.inner.held.put_back(reply);
++                continue;
++            };
++            let token = if exhausted {
++                None
++            } else {
++                device.transmit(now)
++            };
++            let Some(token) = token else {
++                // The device takes no more now: it goes at the next poll.
++                exhausted = true;
++                self.inner.held.put_back(reply);
++                continue;
++            };
++            let src_addr = self.inner.hardware_addr.ethernet_or_panic();
++            let packet = reply.packet();
++            token.consume(EthernetFrame::<&[u8]>::buffer_len(packet.len()), |buffer| {
++                let mut frame = EthernetFrame::new_unchecked(buffer);
++                frame.set_src_addr(src_addr);
++                frame.set_dst_addr(dst_addr);
++                frame.set_ethertype(match packet[0] >> 4 {
++                    6 => EthernetProtocol::Ipv6,
++                    _ => EthernetProtocol::Ipv4,
++                });
++                frame.payload_mut()[..packet.len()].copy_from_slice(packet);
++            });
++        }
++    }
++
+     /// Process one incoming packet queued in the device.
+     ///
+     /// Returns a value indicating:
+@@ -661,10 +732,17 @@
+                     if let Some(packet) =
+                         self.inner
+                             .process_ethernet(sockets, rx_meta, frame, &mut self.fragments)
+-                        && let Err(err) =
+-                            self.inner.dispatch(tx_token, packet, &mut self.fragmenter)
+                     {
+-                        net_debug!("Failed to send response: {:?}", err);
++                        // A reply whose neighbor is not known yet waits for
++                        // it, while the token asks for it below (see `Held`).
++                        if let EthernetPacket::Ip(packet) = &packet {
++                            self.inner.hold_reply(packet);
++                        }
++                        if let Err(err) =
++                            self.inner.dispatch(tx_token, packet, &mut self.fragmenter)
++                        {
++                            net_debug!("Failed to send response: {:?}", err);
++                        }
+                     }
+                 }
+                 #[cfg(feature = "medium-ip")]
+@@ -1211,6 +1289,56 @@
+         self.neighbor_cache.flush()
+     }
+ 
++    /// Forgets the neighbors on no network the interface is on, after its
++    /// addresses changed. A neighbor on one it is still on keeps its
++    /// entry, as on Linux, which forgets neighbors only when the link goes
++    /// down (`arp_evict_nocarrier`): forgetting them all at each change,
++    /// as each IPv6 address that comes and goes is one, lost every reply
++    /// made on receipt to them until they were asked for again.
++    fn forget_gone_neighbors(&mut self) {
++        #[cfg(any(feature = "medium-ethernet", feature = "medium-ieee802154"))]
++        {
++            let ip_addrs = &self.ip_addrs;
++            self.neighbor_cache
++                .retain(|addr| ip_addrs.iter().any(|cidr| cidr.contains_addr(addr)));
++        }
++    }
++
++    /// Keeps a copy of `packet`, a reply to one received, when its next
++    /// hop is not in the neighbor cache, so that it goes once the
++    /// neighbor answers rather than never (see [`Held`]).
++    #[cfg(feature = "medium-ethernet")]
++    fn hold_reply(&mut self, packet: &Packet) {
++        let ip_repr = packet.ip_repr();
++        let dst_addr = ip_repr.dst_addr();
++        // Broadcast and multicast replies need no neighbor.
++        if !dst_addr.is_unicast() || self.is_broadcast(&dst_addr) {
++            return;
++        }
++        let Some(neighbor) = self.route(&dst_addr, self.now) else {
++            return;
++        };
++        if !neighbor.is_unicast()
++            || self.is_broadcast(&neighbor)
++            || self.neighbor_cache.lookup(&neighbor, self.now).found()
++        {
++            return;
++        }
++        let len = ip_repr.buffer_len();
++        if len > self.caps.ip_mtu() {
++            return;
++        }
++        let caps = self.caps.clone();
++        let expires_at = self.now + HELD_TIME;
++        let held = self.held.hold(neighbor, expires_at, len, |buffer| {
++            ip_repr.emit(&mut *buffer, &caps.checksum);
++            packet.emit_payload(&ip_repr, &mut buffer[ip_repr.header_len()..], &caps);
++        });
++        if held {
++            net_debug!("holding a reply to {} until it answers", neighbor);
++        }
++    }
++
+     fn dispatch_ip<Tx: TxToken>(
+         &mut self,
+         // NOTE(unused_mut): tx_token isn't always mutated, depending on
+--- a/src/iface/neighbor.rs
++++ b/src/iface/neighbor.rs
+@@ -172,6 +172,119 @@
+     pub(crate) fn flush(&mut self) {
+         self.storage.clear()
+     }
++
++    /// Keeps only the neighbors whose protocol address `keep` says to.
++    pub(crate) fn retain(&mut self, mut keep: impl FnMut(&IpAddress) -> bool) {
++        // A neighbor cache holds a few dozen entries at most, so looking
++        // for the first to go again after each removal costs little.
++        loop {
++            let gone = self.storage.keys().find(|addr| !keep(addr)).copied();
++            let Some(gone) = gone else { break };
++            self.storage.remove(&gone);
++        }
++    }
++}
++
++/// How many replies [`Held`] keeps: enough for the three duplicate ACKs
++/// that start the other end's fast retransmit (RFC 5681), and one more.
++pub(crate) const HELD_COUNT: usize = 4;
++
++/// The longest reply [`Held`] keeps, IP header included: an IPv6 ACK
++/// with timestamps and three SACK blocks is 102 bytes, a ping's echo
++/// reply 84. A longer one is dropped, as every reply was before.
++pub(crate) const HELD_LEN: usize = 128;
++
++/// How long [`Held`] keeps a reply whose neighbor does not answer: as
++/// long as Linux asks before it gives up on one (three requests a
++/// second apart).
++pub(crate) const HELD_TIME: Duration = Duration::from_millis(3_000);
++
++/// Replies the interface made to packets it received, kept while the
++/// neighbor each goes to is asked for, and sent once it answers.
++///
++/// The interface answers a packet at once, with the token the device
++/// handed it with the packet, and when the next hop of the answer is not
++/// in the neighbor cache it sends a request for it with the token
++/// instead: the answer was lost. A socket sends again what it did not
++/// get out, once the neighbor answers; an answer made on receipt, as a
++/// TCP socket's duplicate ACK for a retransmission is, was never sent
++/// again, and the other end waited for its next retransmission, seconds
++/// later. Linux keeps such packets until the neighbor answers
++/// (`unres_qlen`), and so does this, the last [`HELD_COUNT`] of them.
++#[derive(Debug)]
++pub(crate) struct Held {
++    replies: heapless::Deque<HeldReply, HELD_COUNT>,
++}
++
++/// A reply [`Held`] keeps: its IP packet, header and all.
++#[derive(Debug)]
++pub(crate) struct HeldReply {
++    /// The neighbor it goes to, its next hop.
++    pub(crate) neighbor: IpAddress,
++    /// When it is dropped if the neighbor has not answered.
++    pub(crate) expires_at: Instant,
++    len: usize,
++    packet: [u8; HELD_LEN],
++}
++
++impl HeldReply {
++    /// Its IP packet.
++    pub(crate) fn packet(&self) -> &[u8] {
++        &self.packet[..self.len]
++    }
++}
++
++impl Held {
++    pub(crate) const fn new() -> Self {
++        Held {
++            replies: heapless::Deque::new(),
++        }
++    }
++
++    /// Keeps a reply of `len` bytes to `neighbor` until `expires_at`,
++    /// which `emit` writes; the oldest kept goes when there are already
++    /// [`HELD_COUNT`], as Linux drops its oldest. Returns false and keeps
++    /// nothing when the reply is longer than [`HELD_LEN`].
++    pub(crate) fn hold(
++        &mut self,
++        neighbor: IpAddress,
++        expires_at: Instant,
++        len: usize,
++        emit: impl FnOnce(&mut [u8]),
++    ) -> bool {
++        if len > HELD_LEN {
++            return false;
++        }
++        if self.replies.is_full() {
++            self.replies.pop_front();
++        }
++        let mut reply = HeldReply {
++            neighbor,
++            expires_at,
++            len,
++            packet: [0; HELD_LEN],
++        };
++        emit(&mut reply.packet[..len]);
++        // NOTE(unwrap): there is room, as one went above if there was none.
++        self.replies.push_back(reply).ok().unwrap();
++        true
++    }
++
++    /// How many replies it keeps.
++    pub(crate) fn len(&self) -> usize {
++        self.replies.len()
++    }
++
++    /// Takes the oldest reply it keeps.
++    pub(crate) fn take(&mut self) -> Option<HeldReply> {
++        self.replies.pop_front()
++    }
++
++    /// Keeps `reply` again, as the newest.
++    pub(crate) fn put_back(&mut self, reply: HeldReply) {
++        // NOTE(unwrap): it was taken from here, so there is room for it.
++        self.replies.push_back(reply).ok().unwrap();
++    }
+ }
+ 
+ #[cfg(feature = "medium-ethernet")]
+--- a/src/iface/interface/tests/ipv4.rs
++++ b/src/iface/interface/tests/ipv4.rs
+@@ -558,7 +558,7 @@
+ #[rstest]
+ #[case(Medium::Ethernet)]
+ #[cfg(feature = "medium-ethernet")]
+-fn test_arp_flush_after_update_ip(#[case] medium: Medium) {
++fn test_arp_after_update_ip(#[case] medium: Medium) {
+     let (mut iface, mut sockets, _device) = setup(medium);
+ 
+     let mut eth_bytes = vec![0u8; 42];
+@@ -612,19 +612,219 @@
+         Ok((HardwareAddress::Ethernet(remote_hw_addr), MockTxToken))
+     );
+ 
+-    // Update IP addrs to trigger ARP cache flush
+-    let local_ip_addr_new = Ipv4Address::new(0x7f, 0x00, 0x00, 0x01);
++    // A new address on the neighbor's network: it stays.
+     iface.update_ip_addrs(|addrs| {
+         addrs.iter_mut().next().map(|addr| {
+-            *addr = IpCidr::Ipv4(Ipv4Cidr::new(local_ip_addr_new, 24));
++            *addr = IpCidr::Ipv4(Ipv4Cidr::new(Ipv4Address::new(0x7f, 0x00, 0x00, 0x05), 24));
+         });
+     });
++    assert!(iface.inner.has_neighbor(&IpAddress::Ipv4(remote_ip_addr)));
+ 
+-    // ARP cache flush after address change
++    // No address on its network: it goes, and stays gone when one comes back.
++    iface.update_ip_addrs(|addrs| {
++        addrs.retain(|addr| !addr.contains_addr(&IpAddress::Ipv4(remote_ip_addr)));
++    });
++    iface.update_ip_addrs(|addrs| {
++        addrs
++            .push(IpCidr::Ipv4(Ipv4Cidr::new(local_ip_addr, 8)))
++            .unwrap();
++    });
+     assert!(!iface.inner.has_neighbor(&IpAddress::Ipv4(remote_ip_addr)));
+ }
+ 
+ #[rstest]
++#[case(Medium::Ethernet)]
++#[cfg(feature = "medium-ethernet")]
++fn test_arp_flush_neighbor_cache(#[case] medium: Medium) {
++    let (mut iface, _sockets, _device) = setup(medium);
++    let remote_ip_addr = IpAddress::v4(192, 168, 1, 2);
++    let remote_hw_addr = EthernetAddress([0x52, 0x54, 0x00, 0x00, 0x00, 0x00]);
++    iface.inner.neighbor_cache.fill(
++        remote_ip_addr,
++        HardwareAddress::Ethernet(remote_hw_addr),
++        Instant::ZERO,
++    );
++    assert!(iface.inner.has_neighbor(&remote_ip_addr));
++    iface.flush_neighbor_cache();
++    assert!(!iface.inner.has_neighbor(&remote_ip_addr));
++}
++
++/// The MAC address of 192.168.1.2, the neighbor the held replies go to.
++#[cfg(feature = "medium-ethernet")]
++const HELD_NEIGHBOR_HW: EthernetAddress = EthernetAddress([0x52, 0x54, 0x00, 0x12, 0x34, 0x56]);
++
++/// An echo request from 192.168.1.2 to the interface, numbered `seq_no`.
++#[cfg(feature = "medium-ethernet")]
++fn held_echo_request(seq_no: u16) -> Vec<u8> {
++    let icmp_repr = Icmpv4Repr::EchoRequest {
++        ident: 0x1234,
++        seq_no,
++        data: &[0xaa; 16],
++    };
++    let ip_repr = Ipv4Repr {
++        src_addr: Ipv4Address::new(192, 168, 1, 2),
++        dst_addr: Ipv4Address::new(192, 168, 1, 1),
++        next_header: IpProtocol::Icmp,
++        payload_len: icmp_repr.buffer_len(),
++        hop_limit: 64,
++    };
++    let eth_repr = EthernetRepr {
++        src_addr: HELD_NEIGHBOR_HW,
++        dst_addr: EthernetAddress([0x02, 0x02, 0x02, 0x02, 0x02, 0x02]),
++        ethertype: EthernetProtocol::Ipv4,
++    };
++    let mut bytes = vec![0u8; eth_repr.buffer_len() + ip_repr.buffer_len() + icmp_repr.buffer_len()];
++    let mut frame = EthernetFrame::new_unchecked(&mut bytes[..]);
++    eth_repr.emit(&mut frame);
++    let checksum = ChecksumCapabilities::default();
++    let mut packet = Ipv4Packet::new_unchecked(frame.payload_mut());
++    ip_repr.emit(&mut packet, &checksum);
++    icmp_repr.emit(&mut Icmpv4Packet::new_unchecked(packet.payload_mut()), &checksum);
++    bytes
++}
++
++/// 192.168.1.2's answer to the interface's ARP request.
++#[cfg(feature = "medium-ethernet")]
++fn held_arp_reply() -> Vec<u8> {
++    let arp_repr = ArpRepr::EthernetIpv4 {
++        operation: ArpOperation::Reply,
++        source_hardware_addr: HELD_NEIGHBOR_HW,
++        source_protocol_addr: Ipv4Address::new(192, 168, 1, 2),
++        target_hardware_addr: EthernetAddress([0x02, 0x02, 0x02, 0x02, 0x02, 0x02]),
++        target_protocol_addr: Ipv4Address::new(192, 168, 1, 1),
++    };
++    let eth_repr = EthernetRepr {
++        src_addr: HELD_NEIGHBOR_HW,
++        dst_addr: EthernetAddress([0x02, 0x02, 0x02, 0x02, 0x02, 0x02]),
++        ethertype: EthernetProtocol::Arp,
++    };
++    let mut bytes = vec![0u8; eth_repr.buffer_len() + arp_repr.buffer_len()];
++    let mut frame = EthernetFrame::new_unchecked(&mut bytes[..]);
++    eth_repr.emit(&mut frame);
++    arp_repr.emit(&mut ArpPacket::new_unchecked(frame.payload_mut()));
++    bytes
++}
++
++/// What the interface sent: the ARP requests it made for 192.168.1.2, and
++/// the sequence numbers of the echo replies it sent to it.
++#[cfg(feature = "medium-ethernet")]
++fn held_sent(device: &mut crate::tests::TestingDevice) -> (usize, Vec<u16>) {
++    let (mut requests, mut replies) = (0, Vec::new());
++    for frame in recv_all(device, Instant::ZERO) {
++        let frame = EthernetFrame::new_checked(&frame[..]).unwrap();
++        match frame.ethertype() {
++            EthernetProtocol::Arp => {
++                let arp = ArpRepr::parse(&ArpPacket::new_checked(frame.payload()).unwrap()).unwrap();
++                let ArpRepr::EthernetIpv4 {
++                    operation,
++                    target_protocol_addr,
++                    ..
++                } = arp;
++                assert_eq!(operation, ArpOperation::Request);
++                assert_eq!(target_protocol_addr, Ipv4Address::new(192, 168, 1, 2));
++                requests += 1;
++            }
++            EthernetProtocol::Ipv4 => {
++                assert_eq!(frame.dst_addr(), HELD_NEIGHBOR_HW);
++                let packet = Ipv4Packet::new_checked(frame.payload()).unwrap();
++                let checksum = ChecksumCapabilities::default();
++                let ip_repr = Ipv4Repr::parse(&packet, &checksum).unwrap();
++                assert_eq!(ip_repr.dst_addr, Ipv4Address::new(192, 168, 1, 2));
++                let icmp = Icmpv4Packet::new_checked(packet.payload()).unwrap();
++                match Icmpv4Repr::parse(&icmp, &checksum).unwrap() {
++                    Icmpv4Repr::EchoReply { seq_no, data, .. } => {
++                        assert_eq!(data, &[0xaa; 16]);
++                        replies.push(seq_no);
++                    }
++                    other => panic!("not an echo reply: {other:?}"),
++                }
++            }
++            // The interface's own MLD reports, for the groups of its
++            // IPv6 addresses.
++            EthernetProtocol::Ipv6 => {}
++            other => panic!("unexpected frame of {other}"),
++        }
++    }
++    (requests, replies)
++}
++
++#[rstest]
++#[case(Medium::Ethernet)]
++#[cfg(all(feature = "medium-ethernet", feature = "auto-icmp-echo-reply"))]
++fn test_held_reply_goes_once_the_neighbor_answers(#[case] medium: Medium) {
++    let (mut iface, mut sockets, mut device) = setup(medium);
++
++    // An echo request from a neighbor the interface does not know: it
++    // asks for it, and the reply waits.
++    device.rx_queue.push_back(held_echo_request(1));
++    iface.poll(Instant::from_millis(0), &mut device, &mut sockets);
++    assert_eq!(held_sent(&mut device), (1, vec![]));
++
++    // The neighbor answers: the reply goes.
++    device.rx_queue.push_back(held_arp_reply());
++    iface.poll(Instant::from_millis(5), &mut device, &mut sockets);
++    assert_eq!(held_sent(&mut device), (0, vec![1]));
++
++    // Once only.
++    iface.poll(Instant::from_millis(10), &mut device, &mut sockets);
++    assert_eq!(held_sent(&mut device), (0, vec![]));
++}
++
++#[rstest]
++#[case(Medium::Ethernet)]
++#[cfg(all(feature = "medium-ethernet", feature = "auto-icmp-echo-reply"))]
++fn test_held_replies_keep_the_last_four(#[case] medium: Medium) {
++    let (mut iface, mut sockets, mut device) = setup(medium);
++
++    // Six requests while the neighbor is asked for, once: the last four
++    // replies wait, in order.
++    for seq_no in 1..=6 {
++        device.rx_queue.push_back(held_echo_request(seq_no));
++    }
++    iface.poll(Instant::from_millis(0), &mut device, &mut sockets);
++    assert_eq!(held_sent(&mut device), (1, vec![]));
++
++    device.rx_queue.push_back(held_arp_reply());
++    iface.poll(Instant::from_millis(5), &mut device, &mut sockets);
++    assert_eq!(held_sent(&mut device), (0, vec![3, 4, 5, 6]));
++}
++
++#[rstest]
++#[case(Medium::Ethernet)]
++#[cfg(all(feature = "medium-ethernet", feature = "auto-icmp-echo-reply"))]
++fn test_held_reply_dropped_without_an_answer(#[case] medium: Medium) {
++    let (mut iface, mut sockets, mut device) = setup(medium);
++
++    device.rx_queue.push_back(held_echo_request(1));
++    iface.poll(Instant::from_millis(0), &mut device, &mut sockets);
++    assert_eq!(held_sent(&mut device), (1, vec![]));
++
++    // An answer three seconds on is too late for it.
++    device.rx_queue.push_back(held_arp_reply());
++    iface.poll(Instant::from_millis(3_000), &mut device, &mut sockets);
++    assert_eq!(held_sent(&mut device), (0, vec![]));
++}
++
++#[rstest]
++#[case(Medium::Ethernet)]
++#[cfg(all(feature = "medium-ethernet", feature = "auto-icmp-echo-reply"))]
++fn test_reply_to_a_known_neighbor_not_held(#[case] medium: Medium) {
++    let (mut iface, mut sockets, mut device) = setup(medium);
++    iface.inner.neighbor_cache.fill(
++        IpAddress::v4(192, 168, 1, 2),
++        HardwareAddress::Ethernet(HELD_NEIGHBOR_HW),
++        Instant::ZERO,
++    );
++
++    device.rx_queue.push_back(held_echo_request(1));
++    iface.poll(Instant::from_millis(0), &mut device, &mut sockets);
++    assert_eq!(held_sent(&mut device), (0, vec![1]));
++    assert_eq!(iface.inner.held.len(), 0);
++}
++
++
++
++#[rstest]
+ #[case(Medium::Ip)]
+ #[cfg(all(
+     feature = "socket-icmp",
+--- a/src/iface/interface/tests/ipv6.rs
++++ b/src/iface/interface/tests/ipv6.rs
+@@ -841,6 +841,93 @@
+     );
+ }
+ 
++/// An IPv6 packet from fdbe::2, whose MAC address is `remote_hw_addr`, to
++/// the interface's fdbe::1, carrying `icmp`, in an Ethernet frame.
++#[cfg(feature = "medium-ethernet")]
++fn held_frame(remote_hw_addr: EthernetAddress, icmp: Icmpv6Repr) -> Vec<u8> {
++    let local_ip_addr = Ipv6Address::new(0xfdbe, 0, 0, 0, 0, 0, 0, 1);
++    let remote_ip_addr = Ipv6Address::new(0xfdbe, 0, 0, 0, 0, 0, 0, 2);
++    let ip_repr = IpRepr::Ipv6(Ipv6Repr {
++        src_addr: remote_ip_addr,
++        dst_addr: local_ip_addr,
++        next_header: IpProtocol::Icmpv6,
++        hop_limit: 0xff,
++        payload_len: icmp.buffer_len(),
++    });
++    let mut bytes = vec![0u8; 14 + ip_repr.buffer_len()];
++    let mut frame = EthernetFrame::new_unchecked(&mut bytes[..]);
++    frame.set_dst_addr(EthernetAddress([0x02, 0x02, 0x02, 0x02, 0x02, 0x02]));
++    frame.set_src_addr(remote_hw_addr);
++    frame.set_ethertype(EthernetProtocol::Ipv6);
++    ip_repr.emit(frame.payload_mut(), &ChecksumCapabilities::default());
++    icmp.emit(
++        &remote_ip_addr,
++        &local_ip_addr,
++        &mut Icmpv6Packet::new_unchecked(&mut frame.payload_mut()[ip_repr.header_len()..]),
++        &ChecksumCapabilities::default(),
++    );
++    bytes
++}
++
++#[rstest]
++#[case(Medium::Ethernet)]
++#[cfg(all(feature = "medium-ethernet", feature = "auto-icmp-echo-reply"))]
++fn test_held_reply_goes_once_the_neighbor_advertises(#[case] medium: Medium) {
++    let (mut iface, mut sockets, mut device) = setup(medium);
++    let remote_ip_addr = Ipv6Address::new(0xfdbe, 0, 0, 0, 0, 0, 0, 2);
++    let remote_hw_addr = EthernetAddress([0x52, 0x54, 0x00, 0x12, 0x34, 0x56]);
++    let request = Icmpv6Repr::EchoRequest {
++        ident: 0x1234,
++        seq_no: 7,
++        data: &[0xaa; 16],
++    };
++
++    // What the interface sent to fdbe::2: neighbor solicitations for it,
++    // and echo replies to it, by sequence number.
++    let sent = |device: &mut crate::tests::TestingDevice| {
++        let (mut solicits, mut replies) = (0, Vec::new());
++        for frame in recv_all(device, Instant::ZERO) {
++            let frame = EthernetFrame::new_checked(&frame[..]).unwrap();
++            assert_eq!(frame.ethertype(), EthernetProtocol::Ipv6);
++            let packet = Ipv6Packet::new_checked(frame.payload()).unwrap();
++            let ip_repr = Ipv6Repr::parse(&packet).unwrap();
++            if ip_repr.next_header != IpProtocol::Icmpv6 {
++                continue;
++            }
++            let icmp = Icmpv6Packet::new_checked(packet.payload()).unwrap();
++            let checksum = ChecksumCapabilities::default();
++            match Icmpv6Repr::parse(&ip_repr.src_addr, &ip_repr.dst_addr, &icmp, &checksum) {
++                Ok(Icmpv6Repr::Ndisc(NdiscRepr::NeighborSolicit { target_addr, .. }))
++                    if target_addr == remote_ip_addr =>
++                {
++                    solicits += 1
++                }
++                Ok(Icmpv6Repr::EchoReply { seq_no, .. }) => {
++                    assert_eq!(frame.dst_addr(), remote_hw_addr);
++                    assert_eq!(ip_repr.dst_addr, remote_ip_addr);
++                    replies.push(seq_no);
++                }
++                // Its MLD reports.
++                _ => {}
++            }
++        }
++        (solicits, replies)
++    };
++
++    device.rx_queue.push_back(held_frame(remote_hw_addr, request));
++    iface.poll(Instant::from_millis(0), &mut device, &mut sockets);
++    assert_eq!(sent(&mut device), (1, vec![]));
++
++    let advert = Icmpv6Repr::Ndisc(NdiscRepr::NeighborAdvert {
++        flags: NdiscNeighborFlags::SOLICITED,
++        target_addr: remote_ip_addr,
++        lladdr: Some(remote_hw_addr.into()),
++    });
++    device.rx_queue.push_back(held_frame(remote_hw_addr, advert));
++    iface.poll(Instant::from_millis(5), &mut device, &mut sockets);
++    assert_eq!(sent(&mut device), (0, vec![7]));
++}
++
+ #[rstest]
+ #[case(Medium::Ethernet)]
+ #[cfg(feature = "proto-ipv6-slaac")]

@@ -301,6 +301,12 @@ impl Link for Card {
             Card::Loopback(link) => link.loopback(),
         }
     }
+
+    fn carrier(&mut self) -> bool {
+        // A link with no wire of its own (a bridge's, a VLAN's, a
+        // tunnel's, the loopback link's) is always up.
+        self.wire().is_none_or(|wire| wire.up)
+    }
 }
 
 /// Only a card whose setup failed is dropped: the card stops, and its

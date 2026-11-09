@@ -1,0 +1,43 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# A TCP stream from the lab PC to the machine, 20 MiB over about 20
+# seconds (stream-across-cable-pull.sh beside this file), with the cable
+# out for three seconds in the middle. The lab PC sends again what the
+# cable lost, waiting longer each time, and the machine must answer each
+# resend at once, though its link came back with every neighbour
+# forgotten and netd asking for its addresses again (ADR 0417): an answer
+# it dropped while it asked for the lab PC's MAC address, or an ARP
+# cache emptied by each address that came back, left the stream waiting
+# for the next resend, seconds later.
+about = "A TCP stream from the lab PC goes on after the cable is out for three seconds: every byte arrives, within a minute"
+time = "5m"
+host_needs = ["nc"]
+
+[[step]]
+host = "sh {here}/stream-across-cable-pull.sh {port:stream}"
+background = true
+ready = "stream ready"
+
+# The machine reads the stream in the background, by a shell of its own
+# so that the step returns, and notes when it began and ended.
+[[step]]
+run = "sh -c 'sh -c \"$0\" < /dev/null > /dev/null 2>&1 &' 'cd /users/lab; rm -f stream-*; date +%s > stream-start; for try in 1 2 3; do nc -d {peer} {port:stream} > stream-got && break; sleep 1; done; date +%s > stream-end'"
+[[step]]
+wait = "8s"
+[[step]]
+run = "sh -c 'test -s /users/lab/stream-got && echo \"stream\"\"-flowing\"'"
+expect = "stream-flowing"
+[[step]]
+link = "down"
+[[step]]
+wait = "3s"
+[[step]]
+link = "up"
+[[step]]
+wait = "45s"
+# Every byte, and the stream over within a minute of its start: one
+# that waited for the lab PC's later resends would take longer.
+[[step]]
+run = "sh -c 'cd /users/lab; test -e stream-end && took=$(($(cat stream-end) - $(cat stream-start))) && echo \"$(wc -c < stream-got) bytes in $took s\" && [ $took -le 60 ] && echo \"in\"\"-time\"; rm -f stream-*'"
+expect = ["20971520 bytes", "in-time"]
