@@ -10,13 +10,22 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+  # Every boot test, and every other job, on main each night (ADR 0419):
+  # pull requests run only the boot tests their changes reach.
+  schedule:
+    - cron: "11 3 * * *"
 
 permissions:
   contents: read
 
+# A pull request's new push cancels its run before. Main's runs are not
+# cancelled: each runs every boot test (ADR 0419), so a merge waits for
+# the run before it rather than ending it, and only the newest of those
+# waiting is kept, as it holds the others' changes. Merges never wait
+# for main's run.
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_TERM_COLOR: always
@@ -155,7 +164,7 @@ jobs:
           retention-days: 3
 
   # The host unit tests and the boot tests run beside the lint job, the
-  # boot tests split between three machines, so that a pull request's CI
+  # boot tests split between several machines, so that a pull request's CI
   # takes the time of its slowest job rather than of all of them in turn.
   unit:
     name: Unit tests
@@ -302,17 +311,25 @@ jobs:
           path: ${{ runner.temp }}/smbd/serial.log
           retention-days: 14
 
+  # A pull request runs the boot tests its changes reach (ADR 0419), on
+  # as many machines as they need; main and the nightly run run them all
+  # on five. --shard gives each the same amount of work by the times in
+  # tools/xtask/src/test/times.txt.
   boot:
-    name: Boot tests (${{ matrix.shard }}/5)
+    name: Boot tests (${{ matrix.shard }}/${{ needs.scope.outputs.boot-parts }})
+    needs: scope
+    if: needs.scope.outputs.boot-parts != '0'
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
-      # Five jobs, which --shard gives the same amount of work by the
-      # times in tools/xtask/src/test/times.txt.
       matrix:
-        shard: [1, 2, 3, 4, 5]
+        shard: ${{ fromJSON(needs.scope.outputs.boot-shards) }}
     steps:
+      # The merge commit and main's commit under it, which --affected
+      # compares.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
 
       - name: Allow QEMU to use KVM
         run: |
@@ -399,12 +416,19 @@ jobs:
         timeout-minutes: 45
         run: ./ob ports
 
-      - name: ./ob test boot --shard ${{ matrix.shard }}/5
+      - name: ./ob test boot --shard ${{ matrix.shard }}/${{ needs.scope.outputs.boot-parts }}
         # A shard takes about 25 minutes once the ports are built, a few
         # of them building the system; one that hangs fails here, with
         # its logs, instead of running until the job's six hours.
         timeout-minutes: 45
-        run: ./ob test boot --shard ${{ matrix.shard }}/5
+        env:
+          SHARD: ${{ matrix.shard }}/${{ needs.scope.outputs.boot-parts }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
+            ./ob test boot --affected HEAD^1 --shard "$SHARD"
+          else
+            ./ob test boot --shard "$SHARD"
+          fi
 
       - name: Show the host's processes and kernel log
         if: failure()
@@ -425,8 +449,11 @@ jobs:
   # The cost of system calls and IPC round trips on Radix, held to Linux
   # in the same kind of virtual machine (ADR 0039): the job is
   # bench.yml's, which also runs every night on main (ADR 0290).
+  # bench.yml runs on its own each night, so the nightly run of this
+  # workflow leaves it out.
   bench:
     name: Benchmarks
+    if: github.event_name != 'schedule'
     uses: ./.github/workflows/bench.yml
 
   # Instructions per operation, counted by QEMU (`ob bench --instructions`,
@@ -510,6 +537,8 @@ jobs:
       kani: ${{ steps.scope.outputs.kani }}
       tla: ${{ steps.scope.outputs.tla }}
       container: ${{ steps.scope.outputs.container }}
+      boot-parts: ${{ steps.boot.outputs.parts }}
+      boot-shards: ${{ steps.boot.outputs.shards }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -538,6 +567,31 @@ jobs:
             echo "tla=$(needs '(^|/)tla/|^tools/xtask/src/tla\.rs')"
             echo "container=$(needs '^(tools/container/|tools/xtask/src/(doctor|ports)\.rs|ports/|rust-toolchain\.toml)')"
           } | tee -a "$GITHUB_OUTPUT"
+
+      # ob chooses a pull request's boot tests (ADR 0419), so this job
+      # builds it; its own cache keeps that to a minute or so.
+      - name: Install the pinned Rust toolchain
+        if: github.event_name == 'pull_request'
+        run: rustup toolchain install
+
+      - uses: Swatinem/rust-cache@v2
+        if: github.event_name == 'pull_request'
+        with:
+          workspaces: ". -> target"
+          shared-key: scope
+
+      # A pull request's boot tests are those its changes reach, compared
+      # with main's commit under the merge commit, and the number of
+      # machines they need; ob lists each changed file and what it adds.
+      # Everything else runs all of them on five.
+      - name: Choose the boot tests
+        id: boot
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
+            ./ob test boot --affected HEAD^1 --plan | tee -a "$GITHUB_OUTPUT"
+          else
+            printf 'parts=5\nshards=[1,2,3,4,5]\n' | tee -a "$GITHUB_OUTPUT"
+          fi
 
   kani:
     name: Kani proofs

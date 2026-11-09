@@ -1257,6 +1257,7 @@ const MICROCODE_REVISION: u32 = 0x7f;
 // Each phase that is built in parallel with others adds its boot tests to
 // a file of its own, so that two pull requests do not add theirs at the
 // same place in CASES. They run after CASES, in the order of the phases.
+mod affected;
 mod phase11;
 mod phase12;
 mod phase13;
@@ -2935,7 +2936,10 @@ pub fn command(ctx: &Ctx, args: &mut Args) -> Result<()> {
     while let Some(name) = args.value("--case")? {
         selected.push(name);
     }
-    if args.flag("--list") {
+    let affected = args.value("--affected")?;
+    let list = args.flag("--list");
+    let plan = args.flag("--plan");
+    if list && affected.is_none() {
         args.finish()?;
         for case in all_cases() {
             println!("{:<24} {}", case.name, case.about);
@@ -2950,6 +2954,75 @@ pub fn command(ctx: &Ctx, args: &mut Args) -> Result<()> {
     let profile = args.profile(&ctx.config)?;
     let which = args.positional();
     args.finish()?;
+    if plan && affected.is_none() {
+        crate::bail!("--plan tells CI how many machines --affected's tests need; give --affected");
+    }
+    if let Some(commit) = &affected {
+        if which.as_deref() != Some("boot") {
+            crate::bail!("--affected chooses boot tests; give `boot` with it");
+        }
+        if !selected.is_empty() || image_only {
+            crate::bail!(
+                "--affected chooses the boot tests itself; leave out --case and --image-only"
+            );
+        }
+        let changed = affected::changed_files(ctx, commit)?;
+        let choice = affected::choose(&changed);
+        eprintln!(
+            "{} files changed since {commit}; what each adds to the boot tests (ADR 0419):",
+            changed.len()
+        );
+        for reason in &choice.reasons {
+            eprintln!("  {reason}");
+        }
+        if choice.sample {
+            eprintln!("  so the broad sample runs (SAMPLE in tools/xtask/src/test/affected.rs)");
+        }
+        let unmapped = affected::unmapped();
+        if !choice.cases.is_empty() && !unmapped.is_empty() {
+            eprintln!(
+                "  with the tests tools/xtask/src/test/covers.txt does not name: {}",
+                unmapped.join(", ")
+            );
+        }
+        eprintln!(
+            "{} of {} boot tests, about {} minutes on CI by test/times.txt",
+            choice.cases.len(),
+            all_cases().count(),
+            cases_seconds(&choice.cases).div_ceil(60)
+        );
+        if plan {
+            if shard.is_some() || list {
+                crate::bail!("--plan prints the plan alone; leave out --shard and --list");
+            }
+            print!("{}", affected::plan(&choice.cases));
+            return Ok(());
+        }
+        if list {
+            for case in &choice.cases {
+                println!("{:<24} {}", case.name, case.about);
+            }
+            return Ok(());
+        }
+        if choice.cases.is_empty() {
+            println!("No boot test reads what changed.");
+            return Ok(());
+        }
+        let mut cases = choice.cases;
+        if let Some((part, parts)) = shard {
+            cases = in_shard(cases, part, parts);
+            eprintln!(
+                "Shard {part}/{parts}: {} boot tests, about {} minutes on CI by test/times.txt",
+                cases.len(),
+                cases_seconds(&cases).div_ceil(60)
+            );
+            if cases.is_empty() {
+                println!("No boot test falls to this shard.");
+                return Ok(());
+            }
+        }
+        return boot_tests_of(ctx, profile, &cases, Duration::from_secs(timeout));
+    }
     if image_only && (which.as_deref() != Some("boot") || selected.is_empty()) {
         crate::bail!(
             "--image-only writes the images of boot tests; give `boot` and --case with it"
@@ -3003,22 +3076,38 @@ pub fn command(ctx: &Ctx, args: &mut Args) -> Result<()> {
         unit_tests(ctx)?;
     }
     if boot {
-        let built = Built {
-            kernel: kernel::build(ctx, profile)?,
-            programs: userspace::build(ctx, profile)?,
-        };
-        // The catalog's bundles are packed only for a case that installs
-        // them: packing builds a bundle's port again when what it packs
-        // from is gone, as it is after a restored cache.
-        if cases.iter().any(|case| needs_packing(case)) {
-            crate::ports::build_and_pack(ctx, &[])?;
-        }
+        let built = build_for(ctx, profile, &cases)?;
         if image_only {
             return case_images(ctx, &built, &cases);
         }
         boot_tests(ctx, &built, &cases, Duration::from_secs(timeout))?;
     }
     Ok(())
+}
+
+/// Builds the kernel and the programs for `cases`, and packs the catalog's
+/// bundles if one of them installs them.
+fn build_for(ctx: &Ctx, profile: crate::config::Profile, cases: &[&Case]) -> Result<Built> {
+    let built =
+        Built { kernel: kernel::build(ctx, profile)?, programs: userspace::build(ctx, profile)? };
+    // The catalog's bundles are packed only for a case that installs
+    // them: packing builds a bundle's port again when what it packs
+    // from is gone, as it is after a restored cache.
+    if cases.iter().any(|case| needs_packing(case)) {
+        crate::ports::build_and_pack(ctx, &[])?;
+    }
+    Ok(built)
+}
+
+/// Builds for `cases` and runs them.
+fn boot_tests_of(
+    ctx: &Ctx,
+    profile: crate::config::Profile,
+    cases: &[&Case],
+    timeout: Duration,
+) -> Result<()> {
+    let built = build_for(ctx, profile, cases)?;
+    boot_tests(ctx, &built, cases, timeout)
 }
 
 fn unit_tests(ctx: &Ctx) -> Result<()> {

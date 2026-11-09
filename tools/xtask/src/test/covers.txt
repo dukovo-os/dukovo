@@ -1,0 +1,437 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+#
+# What each boot test covers: the files and folders whose changes it is
+# run for on a pull request (ADR 0419, `ob test boot --affected`). A line
+# is a test's name and paths from the repository's root, a folder ending
+# in /; a test may have several lines. A change to a path here runs the
+# tests that name it and the smoke tests; one to a path no test names
+# runs the broad sample of tools/xtask/src/test/affected.rs, as does one
+# to what every boot stands on (the kernel, the C library, Spark, the
+# harness), besides the tests that name it. A test's own file in cases/
+# runs it without a line here, and a test with no line runs on every
+# pull request that runs any boot test. Main runs every test after each
+# merge, so a test left out here is still run within hours.
+#
+# Name what a test exercises beyond the boot every test makes: its own
+# programs and their test programs, the commands it types, the drivers
+# and filesystems it uses. Each path must exist (a unit test checks).
+accounts userspace/defaults/group userspace/defaults/passwd userspace/posix/accounttest.c
+accounts userspace/posix/authd.h userspace/programs/accounts/
+accounts userspace/programs/systools/src/account.rs userspace/programs/systools/src/authd.rs
+accounts userspace/programs/systools/src/authd/
+acpi-power kernel/lib/acpi/ kernel/lib/uacpi/ tools/xtask/src/acpi/
+acpi-power userspace/programs/systools/src/power.rs
+acpi-thermal kernel/lib/acpi/ kernel/lib/sensors/ kernel/lib/uacpi/ tools/xtask/src/acpi/
+acpi-thermal userspace/programs/systools/src/power.rs userspace/programs/systools/src/sensors.rs
+aml-off kernel/lib/acpi/ userspace/programs/systools/src/power.rs
+audio-virtio kernel/drivers/virtio/ kernel/lib/audio/ userspace/programs/audio/
+audio-virtio userspace/programs/systools/src/sound.rs
+bios-cdrom image/grub/grub.cfg.in kernel/arch/ kernel/fs/iso9660/ kernel/hal/ kernel/lib/acpi/
+bios-cdrom kernel/lib/bootinfo/ tools/xtask/src/grub.rs
+bios-usb image/grub/grub.cfg.in kernel/arch/ kernel/drivers/scsi/ kernel/drivers/usb/
+bios-usb kernel/drivers/xhci/ kernel/hal/ kernel/lib/acpi/ kernel/lib/bootinfo/
+bios-usb tools/xtask/src/grub.rs
+bitlocker kernel/fs/bitlocker/ userspace/programs/systools/src/nvme.rs
+bitlocker userspace/programs/systools/src/unlock.rs userspace/programs/systools/src/volumed.rs
+btrfs kernel/fs/block/ kernel/fs/btrfs/ userspace/programs/systools/src/btrfs.rs
+btrfs userspace/programs/systools/src/nvme.rs userspace/programs/systools/src/subvolume.rs
+btrfs userspace/storage/
+btrfs-log kernel/fs/block/ kernel/fs/btrfs/ userspace/programs/systools/src/btrfs.rs
+btrfs-log userspace/storage/
+btrfs-power-cut kernel/fs/block/ kernel/fs/btrfs/ userspace/programs/systools/src/btrfs.rs
+btrfs-power-cut userspace/storage/
+btrfs-raid kernel/fs/block/ kernel/fs/btrfs/ userspace/programs/systools/src/balance.rs
+btrfs-raid userspace/programs/systools/src/btrfs.rs userspace/programs/systools/src/replace.rs
+btrfs-raid userspace/programs/systools/src/scrub.rs userspace/storage/
+btrfs-raid-pull kernel/fs/block/ kernel/fs/btrfs/ userspace/programs/systools/src/balance.rs
+btrfs-raid-pull userspace/programs/systools/src/btrfs.rs userspace/programs/systools/src/nvme.rs
+btrfs-raid-pull userspace/programs/systools/src/replace.rs userspace/programs/systools/src/scrub.rs
+btrfs-raid-pull userspace/storage/
+btrfs-stress kernel/fs/btrfs/ userspace/posix/torture.c userspace/programs/systools/src/btrfs.rs
+btrfs-stress userspace/programs/systools/src/nvme.rs
+btrfs-tools kernel/fs/btrfs/ userspace/programs/disk/ userspace/programs/systools/src/btrfs.rs
+btrfs-tools userspace/programs/systools/src/mkfs.rs
+btrfs-write kernel/fs/block/ kernel/fs/btrfs/ kernel/fs/fat/
+btrfs-write userspace/programs/systools/src/btrfs.rs userspace/storage/
+bundle-feed ports/bat/ ports/ripgrep/ tools/xtask/src/bundles.rs tools/xtask/src/catalog.rs
+bundle-feed userspace/programs/catalog-repo/ userspace/programs/dkv/ userspace/programs/manifest/
+bundle-feed userspace/programs/systools/src/bundled.rs userspace/programs/systools/src/bundles.rs
+bundle-feed userspace/programs/systools/src/bundles/ userspace/programs/systools/src/netd.rs
+bundle-feed userspace/programs/tuf/
+bundle-grants tools/xtask/src/bundles.rs userspace/programs/dkv/ userspace/programs/manifest/
+bundle-grants userspace/programs/systools/src/bundled.rs userspace/programs/systools/src/bundles.rs
+bundle-grants userspace/programs/systools/src/bundles/
+bundle-keyring tools/xtask/src/bundles.rs userspace/programs/dkv/ userspace/programs/manifest/
+bundle-keyring userspace/programs/systools/src/authd.rs userspace/programs/systools/src/authd/
+bundle-keyring userspace/programs/systools/src/bundled.rs userspace/programs/systools/src/bundles.rs
+bundle-keyring userspace/programs/systools/src/bundles/ userspace/programs/systools/src/keyring.rs
+bundle-lines tools/xtask/src/bundles.rs userspace/programs/dkv/ userspace/programs/manifest/
+bundle-lines userspace/programs/systools/src/bundled.rs userspace/programs/systools/src/bundles.rs
+bundle-lines userspace/programs/systools/src/bundles/
+bundle-run tools/xtask/src/bundles.rs userspace/posix/netgrant.c userspace/programs/dkv/
+bundle-run userspace/programs/manifest/ userspace/programs/systools/src/bundled.rs
+bundle-run userspace/programs/systools/src/bundles.rs userspace/programs/systools/src/bundles/
+bundle-run userspace/programs/systools/src/discoverd.rs userspace/programs/systools/src/firewall.rs
+bundle-run userspace/programs/systools/src/modes.rs
+bundle-update tools/xtask/src/bundles.rs userspace/programs/dkv/ userspace/programs/manifest/
+bundle-update userspace/programs/systools/src/bundled.rs userspace/programs/systools/src/bundles.rs
+bundle-update userspace/programs/systools/src/bundles/ userspace/programs/tuf/
+bundles tools/xtask/src/bundles.rs userspace/posix/authd.h userspace/posix/signintest.c
+bundles userspace/programs/accounts/ userspace/programs/consoled/ userspace/programs/dkv/
+bundles userspace/programs/manifest/ userspace/programs/systools/src/authd.rs
+bundles userspace/programs/systools/src/authd/ userspace/programs/systools/src/bundled.rs
+bundles userspace/programs/systools/src/bundles.rs userspace/programs/systools/src/bundles/
+bundles userspace/programs/systools/src/elevate.rs userspace/programs/systools/src/login.rs
+bundles userspace/programs/systools/src/prompt.rs userspace/programs/systools/src/sessions.rs
+bundles userspace/programs/systools/src/signin.rs
+caps kernel/cap/
+card-reader kernel/drivers/scsi/ kernel/drivers/usb/ kernel/drivers/usbhc/ kernel/drivers/xhci/
+card-reader userspace/programs/systools/src/eject.rs userspace/programs/systools/src/mkfs.rs
+card-reader userspace/programs/systools/src/volumed.rs
+catalog-bundles ports/bat/ ports/ripgrep/ tools/xtask/src/bundles.rs tools/xtask/src/catalog.rs
+catalog-bundles userspace/programs/catalog-repo/ userspace/programs/dkv/
+catalog-bundles userspace/programs/manifest/ userspace/programs/systools/src/bundled.rs
+catalog-bundles userspace/programs/systools/src/bundles.rs userspace/programs/systools/src/bundles/
+catalog-install ports/bat/ ports/ripgrep/ tools/xtask/src/bundles.rs tools/xtask/src/catalog.rs
+catalog-install userspace/programs/catalog-repo/ userspace/programs/dkv/
+catalog-install userspace/programs/manifest/ userspace/programs/systools/src/bundled.rs
+catalog-install userspace/programs/systools/src/bundles.rs userspace/programs/systools/src/bundles/
+consoles kernel/lib/fbcon/ kernel/lib/hid/ kernel/lib/input/ kernel/lib/tty/
+consoles tools/xtask/src/screen.rs tools/xtask/src/vt.rs userspace/defaults/console/
+consoles userspace/defaults/keyboard/ userspace/defaults/nukesh/ userspace/programs/consoled/
+consoles userspace/programs/keymap/ userspace/programs/nukesh/
+consoles userspace/programs/systools/src/keymaps.rs userspace/programs/systools/src/notifyd.rs
+consoles userspace/programs/systools/src/xxd.rs
+crash-log-bios kernel/lib/klog/
+crash-log-uefi kernel/lib/klog/
+dhcp kernel/net/ userspace/posix/dhcp.c userspace/programs/systools/src/dhcp.rs
+dhcp userspace/programs/systools/src/dhcp6.rs userspace/programs/systools/src/ip.rs
+dhcp userspace/programs/systools/src/netd.rs userspace/spark/tests/services/dhcp/
+discs kernel/fs/block/ kernel/fs/iso9660/ kernel/fs/udf/ userspace/programs/systools/src/nvme.rs
+discs userspace/storage/
+disk-check image/crosscheck/ tools/linux-bench/ tools/xtask/src/bench.rs userspace/posix/bench.c
+disk-check userspace/posix/disktest.c userspace/programs/systools/src/nvme.rs
+disk-errors kernel/drivers/ahci/ kernel/drivers/nvme/ kernel/fs/block/
+disk-errors userspace/programs/systools/src/nvme.rs userspace/storage/
+disk-health kernel/drivers/nvme/ userspace/programs/systools/src/diskhealth.rs
+disk-health userspace/programs/systools/src/nvme.rs
+disk-raw kernel/drivers/ahci/ kernel/drivers/nvme/ kernel/fs/block/ kernel/fs/fat/
+disk-raw userspace/programs/systools/src/nvme.rs userspace/storage/
+disk-raw-4k kernel/drivers/nvme/ kernel/fs/block/ userspace/programs/systools/src/nvme.rs
+disk-raw-4k userspace/storage/
+efi-boot-entries kernel/arch/ kernel/lib/bootinfo/ userspace/programs/systools/src/efiboot.rs
+elevate userspace/posix/authd.h userspace/posix/signintest.c userspace/programs/accounts/
+elevate userspace/programs/consoled/ userspace/programs/systools/src/authd.rs
+elevate userspace/programs/systools/src/authd/ userspace/programs/systools/src/elevate.rs
+elevate userspace/programs/systools/src/login.rs userspace/programs/systools/src/prompt.rs
+elevate userspace/programs/systools/src/sessions.rs userspace/programs/systools/src/signin.rs
+exfat-write kernel/fs/block/ kernel/fs/exfat/ kernel/fs/fat/ userspace/programs/systools/src/mkfs.rs
+exfat-write userspace/storage/
+ext4-power-cut kernel/fs/block/ kernel/fs/ext4/ userspace/storage/
+ext4-write kernel/fs/block/ kernel/fs/ext4/ kernel/fs/fat/ userspace/storage/
+feature userspace/features/ userspace/programs/manifest/ userspace/programs/nfsd/
+feature userspace/programs/smbd/ userspace/programs/systools/src/feature.rs
+feature userspace/programs/systools/src/share.rs
+fpu kernel/arch/
+framework-ec kernel/drivers/crosec/ tools/xtask/src/acpi/ userspace/programs/systools/src/ectool.rs
+fuse kernel/fs/fuse/ userspace/programs/fuse-test/
+fuzz kernel/ipc/ userspace/usertests/
+git-https kernel/net/ ports/ca-certificates/ ports/curl/ ports/git/ ports/rustls-ffi/
+git-https userspace/programs/git-https-test/ userspace/programs/systools/src/git_credential.rs
+git-keyring ports/ca-certificates/ ports/curl/ ports/git/ ports/rustls-ffi/
+git-keyring userspace/programs/git-https-test/ userspace/programs/systools/src/authd.rs
+git-keyring userspace/programs/systools/src/authd/ userspace/programs/systools/src/git_credential.rs
+git-keyring userspace/programs/systools/src/keyring.rs userspace/programs/systools/src/unlock.rs
+gpio kernel/drivers/gpio/ tools/xtask/src/acpi/
+i2c kernel/drivers/i2c/ tools/xtask/src/acpi/
+install-beside image/grub/installed.cfg.in kernel/fs/ntfs/ tools/xtask/src/grub.rs
+install-beside tools/xtask/src/grub_theme.rs userspace/programs/consoled/ userspace/programs/disk/
+install-beside userspace/programs/installer/ userspace/programs/systools/src/efiboot.rs
+install-beside userspace/programs/systools/src/mkfs.rs userspace/programs/systools/src/ntfs.rs
+install-beside userspace/programs/systools/src/rdisk.rs
+install-bios image/grub/installed.cfg.in tools/xtask/src/grub.rs tools/xtask/src/grub_theme.rs
+install-bios userspace/programs/consoled/ userspace/programs/disk/ userspace/programs/installer/
+install-bios userspace/programs/systools/src/efiboot.rs userspace/programs/systools/src/mkfs.rs
+install-bios userspace/programs/systools/src/rdisk.rs
+install-free image/grub/installed.cfg.in tools/xtask/src/grub.rs tools/xtask/src/grub_theme.rs
+install-free userspace/programs/consoled/ userspace/programs/disk/ userspace/programs/installer/
+install-free userspace/programs/systools/src/efiboot.rs userspace/programs/systools/src/mkfs.rs
+install-free userspace/programs/systools/src/rdisk.rs
+install-manual image/grub/installed.cfg.in tools/xtask/src/grub.rs tools/xtask/src/grub_theme.rs
+install-manual userspace/programs/consoled/ userspace/programs/disk/ userspace/programs/installer/
+install-manual userspace/programs/systools/src/efiboot.rs userspace/programs/systools/src/mkfs.rs
+install-manual userspace/programs/systools/src/mount.rs userspace/programs/systools/src/rdisk.rs
+install-mirror image/grub/installed.cfg.in kernel/fs/btrfs/ tools/xtask/src/grub.rs
+install-mirror tools/xtask/src/grub_theme.rs userspace/programs/consoled/ userspace/programs/disk/
+install-mirror userspace/programs/installer/ userspace/programs/systools/src/balance.rs
+install-mirror userspace/programs/systools/src/blkid.rs userspace/programs/systools/src/btrfs.rs
+install-mirror userspace/programs/systools/src/efiboot.rs userspace/programs/systools/src/mkfs.rs
+install-mirror userspace/programs/systools/src/rdisk.rs userspace/programs/systools/src/replace.rs
+install-mirror userspace/programs/systools/src/scrub.rs
+install-screens image/grub/installed.cfg.in tools/xtask/src/grub.rs tools/xtask/src/grub_theme.rs
+install-screens userspace/features/ userspace/programs/consoled/ userspace/programs/disk/
+install-screens userspace/programs/installer/ userspace/programs/manifest/
+install-screens userspace/programs/systools/src/dig.rs userspace/programs/systools/src/efiboot.rs
+install-screens userspace/programs/systools/src/feature.rs userspace/programs/systools/src/mkfs.rs
+install-screens userspace/programs/systools/src/rdisk.rs
+install-serial image/grub/installed.cfg.in kernel/drivers/uart/ tools/xtask/src/grub.rs
+install-serial tools/xtask/src/grub_theme.rs userspace/programs/consoled/ userspace/programs/disk/
+install-serial userspace/programs/installer/ userspace/programs/systools/src/efiboot.rs
+install-serial userspace/programs/systools/src/last.rs userspace/programs/systools/src/mkfs.rs
+install-serial userspace/programs/systools/src/rdisk.rs
+install-serial userspace/programs/systools/src/serial_console.rs
+install-uefi image/grub/installed.cfg.in tools/xtask/src/grub.rs tools/xtask/src/grub_theme.rs
+install-uefi userspace/features/ userspace/programs/consoled/ userspace/programs/disk/
+install-uefi userspace/programs/installer/ userspace/programs/manifest/
+install-uefi userspace/programs/systools/src/dig.rs userspace/programs/systools/src/efiboot.rs
+install-uefi userspace/programs/systools/src/feature.rs userspace/programs/systools/src/mkfs.rs
+install-uefi userspace/programs/systools/src/rdisk.rs
+install-web image/grub/installed.cfg.in ports/openssl/ tools/xtask/src/grub.rs
+install-web tools/xtask/src/grub_theme.rs userspace/programs/consoled/ userspace/programs/disk/
+install-web userspace/programs/installer/ userspace/programs/systools/src/efiboot.rs
+install-web userspace/programs/systools/src/mkfs.rs userspace/programs/systools/src/rdisk.rs
+install-web userspace/programs/tuf/
+installed-bios image/grub/installed.cfg.in tools/xtask/src/grub.rs tools/xtask/src/grub_theme.rs
+installed-bios tools/xtask/src/release.rs userspace/programs/accounts/ userspace/programs/installer/
+installed-bios userspace/programs/system-release/ userspace/programs/systools/src/dig.rs
+installed-bios userspace/programs/systools/src/releases.rs
+installed-uefi image/grub/installed.cfg.in tools/xtask/src/grub.rs tools/xtask/src/grub_theme.rs
+installed-uefi tools/xtask/src/release.rs userspace/programs/accounts/ userspace/programs/installer/
+installed-uefi userspace/programs/system-release/ userspace/programs/systools/src/dig.rs
+installed-uefi userspace/programs/systools/src/releases.rs
+interfaces kernel/drivers/virtio/ kernel/net/ userspace/posix/interfaces.c
+interfaces userspace/programs/systools/src/ip.rs userspace/programs/systools/src/netd.rs
+interfaces userspace/programs/systools/src/ss.rs
+iommu kernel/drivers/nvme/ kernel/drivers/vtd/ kernel/fs/block/ kernel/lib/iopt/
+iommu userspace/programs/systools/src/nvme.rs userspace/storage/
+iommu-amd kernel/drivers/amdvi/ kernel/drivers/nvme/ kernel/fs/block/ kernel/lib/iopt/
+iommu-amd userspace/programs/systools/src/nvme.rs userspace/storage/
+ipc kernel/ipc/ userspace/usertests/
+kdb kernel/lib/kdb/ kernel/lib/ksyms/ tools/xtask/src/ksyms.rs
+kerberos userspace/programs/kerberos/ userspace/programs/systools/src/authd.rs
+kerberos userspace/programs/systools/src/authd/ userspace/programs/systools/src/kerberos.rs
+kerberos userspace/programs/systools/src/keyring.rs userspace/programs/systools/src/netd.rs
+keyring userspace/programs/systools/src/authd.rs userspace/programs/systools/src/authd/
+keyring userspace/programs/systools/src/keyring.rs userspace/programs/systools/src/unlock.rs
+live-bios image/grub/live.cfg.in tools/xtask/src/release.rs userspace/programs/system-release/
+live-bios userspace/programs/systools/src/releases.rs
+live-uefi image/grub/live.cfg.in tools/xtask/src/release.rs userspace/programs/system-release/
+live-uefi userspace/programs/systools/src/releases.rs
+lockdep kernel/lib/lockdep/ kernel/lib/sync/
+logging kernel/lib/klog/ userspace/defaults/log/ userspace/posix/logtest.c
+logging userspace/programs/systools/src/dmesg.rs userspace/programs/systools/src/log.rs
+logging userspace/programs/systools/src/logd.rs userspace/programs/systools/src/logger.rs
+logging userspace/programs/systools/src/logtrim.rs userspace/programs/systools/src/notifyd.rs
+machine-check kernel/lib/mca/
+machine-check-program kernel/lib/mca/ userspace/posix/memfail.c
+microcode kernel/lib/microcode/
+mm-stress kernel/mm/
+msr kernel/arch/
+net kernel/net/
+network-capture kernel/net/ ports/libpcap/ ports/tcpdump/ userspace/posix/capturetest.c
+network-cards kernel/drivers/intel/ kernel/drivers/nic/ kernel/drivers/realtek/
+network-cards kernel/drivers/virtio/ kernel/drivers/vmxnet3/ kernel/net/ userspace/posix/nics.c
+network-cards userspace/programs/systools/src/dhcp.rs userspace/programs/systools/src/dhcp6.rs
+network-cards userspace/programs/systools/src/netd.rs userspace/spark/tests/services/dhcp/
+network-discovery kernel/net/ userspace/posix/discotest.c userspace/programs/netproto/
+network-discovery userspace/programs/systools/src/discover.rs
+network-discovery userspace/programs/systools/src/discoverd.rs
+network-discovery userspace/programs/systools/src/netd.rs userspace/programs/systools/src/probe.rs
+network-discovery userspace/programs/systools/src/resolved.rs
+network-discovery userspace/spark/tests/services/discovery/
+network-pair kernel/net/ ports/curl/ userspace/defaults/firewall/ userspace/posix/pairtest.c
+network-pair userspace/programs/sshd/ userspace/programs/systools/src/firewall.rs
+network-pair userspace/programs/systools/src/netd.rs userspace/spark/tests/services/pair/
+network-services kernel/net/ ports/curl/ userspace/defaults/hosts userspace/defaults/netlog/
+network-services userspace/defaults/resolved/ userspace/defaults/timed/ userspace/programs/netproto/
+network-services userspace/programs/netservices-test/ userspace/programs/systools/src/netlog.rs
+network-services userspace/programs/systools/src/resolved.rs
+network-services userspace/programs/systools/src/timed.rs
+network-services userspace/programs/systools/src/timedatectl.rs
+network-tools kernel/net/ ports/iperf3/ ports/openssl/ userspace/posix/nettooltest.c
+network-tools userspace/programs/netproto/ userspace/programs/systools/src/dig.rs
+network-tools userspace/programs/systools/src/netd.rs userspace/programs/systools/src/nic.rs
+network-tools userspace/programs/systools/src/whois.rs userspace/spark/tests/services/tools/
+network-trace kernel/net/ ports/mtr/ userspace/posix/tracetest.c
+network-trace userspace/programs/systools/src/traceroute.rs
+network-wireguard kernel/net/ userspace/posix/wgtest.c userspace/programs/systools/src/netd.rs
+network-wireguard userspace/programs/systools/src/wg.rs userspace/programs/systools/src/wgd.rs
+network-wireguard userspace/programs/systools/src/wireguard.rs
+network-wireguard userspace/spark/tests/services/wireguard/
+nfs kernel/net/ userspace/posix/nfstest.c userspace/programs/nfs/ userspace/programs/nfsd/
+nfs userspace/programs/systools/src/modes.rs userspace/programs/systools/src/mount.rs
+nfs-kerberos userspace/programs/kerberos/ userspace/programs/nfs/ userspace/programs/nfsd/
+nfs-kerberos userspace/programs/systools/src/dig.rs userspace/programs/systools/src/dmesg.rs
+nfs-kerberos userspace/programs/systools/src/kerberos.rs userspace/programs/systools/src/mount.rs
+nfs-kerberos userspace/programs/systools/src/netd.rs userspace/programs/systools/src/signals.rs
+nfsd kernel/net/ userspace/posix/nfsdtest.c userspace/programs/acl/ userspace/programs/nfsd/
+nfsd userspace/programs/systools/src/dig.rs userspace/programs/systools/src/mount.rs
+nfsd userspace/programs/systools/src/netd.rs userspace/programs/systools/src/share.rs
+nfsd userspace/programs/systools/src/signals.rs
+ntfs kernel/fs/block/ kernel/fs/ntfs/ userspace/programs/systools/src/ntfs.rs
+ntfs userspace/programs/systools/src/nvme.rs userspace/storage/
+ntfs-power-cut kernel/fs/block/ kernel/fs/ntfs/ userspace/programs/systools/src/ntfs.rs
+ntfs-power-cut userspace/storage/
+ntfs-resize image/grub/installed.cfg.in kernel/fs/ntfs/ tools/xtask/src/grub.rs
+ntfs-resize tools/xtask/src/grub_theme.rs userspace/programs/disk/ userspace/programs/installer/
+ntfs-resize userspace/programs/systools/src/mount.rs userspace/programs/systools/src/ntfs.rs
+ntfs-write kernel/fs/block/ kernel/fs/fat/ kernel/fs/ntfs/ userspace/programs/systools/src/ntfs.rs
+ntfs-write userspace/storage/
+oom kernel/mm/
+page-fault kernel/mm/
+pci-serial kernel/drivers/uart/
+posix docs/man/ kernel/lib/posix/ ports/7zip/ ports/bc/ ports/bzip2/ ports/curl/ ports/db1/
+posix ports/diffutils/ ports/file/ ports/git/ ports/grep/ ports/gzip/ ports/iperf3/ ports/jq/
+posix ports/less/ ports/libarchive/ ports/libc-test/ ports/libevent/ ports/libpcap/ ports/locales/
+posix ports/lua/ ports/lz4/ ports/mandoc/ ports/mlibc-tests/ ports/mtr/ ports/nano/ ports/ncurses/
+posix ports/netcat/ ports/nvi/ ports/onetrueawk/ ports/openssh/ ports/openssl/ ports/patch/
+posix ports/pciids/ ports/sed/ ports/tcpdump/ ports/tmux/ ports/tzdata/ ports/usbids/
+posix ports/uutils-coreutils/ ports/uutils-findutils/ ports/xz/ ports/zip/ ports/zstd/
+posix userspace/posix/admin.c userspace/posix/cancel.c userspace/posix/commands.c
+posix userspace/posix/cxx.cpp userspace/posix/dynamic/ userspace/posix/exec-helper.c
+posix userspace/posix/exec.c userspace/posix/expected/ userspace/posix/files.c
+posix userspace/posix/fork.c userspace/posix/format-cases.h userspace/posix/format.c
+posix userspace/posix/hello.c userspace/posix/inet.c userspace/posix/job.c userspace/posix/library.c
+posix userspace/posix/limits.c userspace/posix/locks.c userspace/posix/pipe.c userspace/posix/poll.c
+posix userspace/posix/programs.h userspace/posix/run.c userspace/posix/signal.c
+posix userspace/posix/socket.c userspace/posix/spawn.c userspace/posix/thread.c
+posix userspace/posix/time.c userspace/posix/tty.c userspace/posix/utilities.c
+posix userspace/posix/zones.c userspace/programs/acl/ userspace/programs/nukesh/
+posix userspace/programs/std-test/ userspace/programs/systools/src/balance.rs
+posix userspace/programs/systools/src/blkid.rs userspace/programs/systools/src/column.rs
+posix userspace/programs/systools/src/df.rs userspace/programs/systools/src/diskhealth.rs
+posix userspace/programs/systools/src/dmesg.rs userspace/programs/systools/src/dukofetch.rs
+posix userspace/programs/systools/src/dukofetch/ userspace/programs/systools/src/ectool.rs
+posix userspace/programs/systools/src/findmnt.rs userspace/programs/systools/src/fstrim.rs
+posix userspace/programs/systools/src/hexdump.rs userspace/programs/systools/src/hwinfo.rs
+posix userspace/programs/systools/src/iostat.rs userspace/programs/systools/src/ip.rs
+posix userspace/programs/systools/src/lsblk.rs userspace/programs/systools/src/lscpu.rs
+posix userspace/programs/systools/src/lsmem.rs userspace/programs/systools/src/lsof.rs
+posix userspace/programs/systools/src/lspci.rs userspace/programs/systools/src/lsusb.rs
+posix userspace/programs/systools/src/modes.rs userspace/programs/systools/src/mount.rs
+posix userspace/programs/systools/src/nvme.rs userspace/programs/systools/src/pidstat.rs
+posix userspace/programs/systools/src/ping.rs userspace/programs/systools/src/priority.rs
+posix userspace/programs/systools/src/ps.rs userspace/programs/systools/src/quota.rs
+posix userspace/programs/systools/src/replace.rs userspace/programs/systools/src/rtrace.rs
+posix userspace/programs/systools/src/scrub.rs userspace/programs/systools/src/sensors.rs
+posix userspace/programs/systools/src/sessions.rs userspace/programs/systools/src/signals.rs
+posix userspace/programs/systools/src/ss.rs userspace/programs/systools/src/subvolume.rs
+posix userspace/programs/systools/src/swap.rs userspace/programs/systools/src/top.rs
+posix userspace/programs/systools/src/tree.rs userspace/programs/systools/src/watch.rs
+posix userspace/programs/systools/src/watchdog.rs userspace/programs/systools/src/xxd.rs
+power-button kernel/lib/acpi/ kernel/lib/uacpi/ userspace/programs/systools/src/power.rs
+principals userspace/posix/names.h userspace/posix/principals.c
+rcu kernel/lib/sync/
+rdisk userspace/programs/disk/ userspace/programs/systools/src/mkfs.rs
+rdisk userspace/programs/systools/src/rdisk.rs userspace/programs/systools/src/swap.rs
+rdisk userspace/programs/systools/src/volumed.rs
+rgrub-setup image/grub/ tools/xtask/src/grub.rs userspace/programs/disk/
+rgrub-setup userspace/programs/systools/src/mkfs.rs userspace/programs/systools/src/rgrub.rs
+root kernel/fs/block/ kernel/fs/btrfs/ userspace/programs/systools/src/btrfs.rs
+root userspace/programs/systools/src/nvme.rs userspace/storage/
+sched-balance kernel/sched/
+sched-fair kernel/sched/
+sched-mutex kernel/lib/sync/ kernel/sched/
+sched-pi kernel/sched/
+sched-rt kernel/sched/
+screen kernel/lib/fbcon/ tools/xtask/src/screen.rs userspace/hello/
+service-bundle image/grub/installed.cfg.in tools/xtask/src/bundles.rs tools/xtask/src/grub.rs
+service-bundle tools/xtask/src/grub_theme.rs tools/xtask/src/release.rs userspace/programs/dkv/
+service-bundle userspace/programs/installer/ userspace/programs/manifest/
+service-bundle userspace/programs/system-release/ userspace/programs/systools/src/bundled.rs
+service-bundle userspace/programs/systools/src/bundles.rs userspace/programs/systools/src/bundles/
+service-bundle userspace/programs/systools/src/releases.rs
+service-update image/grub/installed.cfg.in tools/xtask/src/bundles.rs tools/xtask/src/grub.rs
+service-update tools/xtask/src/grub_theme.rs tools/xtask/src/release.rs userspace/programs/dkv/
+service-update userspace/programs/installer/ userspace/programs/manifest/
+service-update userspace/programs/system-release/ userspace/programs/systools/src/bundled.rs
+service-update userspace/programs/systools/src/bundles.rs userspace/programs/systools/src/bundles/
+service-update userspace/programs/systools/src/releases.rs userspace/programs/tuf/
+services userspace/defaults/spark/ userspace/posix/servicetest.c userspace/programs/manifest/
+services userspace/programs/systools/src/servicefiles.rs
+signin ports/tmux/ userspace/defaults/group userspace/defaults/passwd userspace/posix/authd.h
+signin userspace/posix/signintest.c userspace/programs/accounts/ userspace/programs/consoled/
+signin userspace/programs/systools/src/authd.rs userspace/programs/systools/src/authd/
+signin userspace/programs/systools/src/dmesg.rs userspace/programs/systools/src/elevate.rs
+signin userspace/programs/systools/src/last.rs userspace/programs/systools/src/logger.rs
+signin userspace/programs/systools/src/login.rs userspace/programs/systools/src/prompt.rs
+signin userspace/programs/systools/src/sessions.rs userspace/programs/systools/src/signin.rs
+smap kernel/arch/
+smb kernel/net/ userspace/posix/smbtest.c userspace/programs/smb/ userspace/programs/smbd/
+smb userspace/programs/systools/src/modes.rs userspace/programs/systools/src/mount.rs
+smb userspace/programs/systools/src/share.rs userspace/programs/systools/src/signals.rs
+smbd kernel/net/ userspace/posix/smbdtest.c userspace/programs/accounts/ userspace/programs/acl/
+smbd userspace/programs/smbd/ userspace/programs/systools/src/dig.rs
+smbd userspace/programs/systools/src/netd.rs userspace/programs/systools/src/share.rs
+smbd userspace/programs/systools/src/signals.rs
+smbios kernel/lib/smbios/ userspace/programs/systools/src/hwinfo.rs
+smbus kernel/drivers/smbus/ kernel/lib/spd/ userspace/programs/systools/src/hwinfo.rs
+smep kernel/arch/
+sockets kernel/net/ userspace/sockets/
+spark userspace/hello/
+spark-network userspace/posix/netgrant.c userspace/spark/tests/services/network/
+spark-oom kernel/mm/ userspace/posix/hog.c userspace/spark/tests/services/hog.toml
+spark-stop userspace/spark/tests/services/stop/
+ssh kernel/net/ ports/openssh/ userspace/posix/sshtest.c
+ssh-keyring ports/openssh/ userspace/programs/systools/src/authd.rs
+ssh-keyring userspace/programs/systools/src/authd/ userspace/programs/systools/src/keyring.rs
+ssh-keyring userspace/programs/systools/src/ssh_askpass.rs
+ssh-keyring userspace/programs/systools/src/sshkeys.rs
+sshd kernel/net/ ports/openssh/ userspace/defaults/ssh/ userspace/posix/sshdtest.c
+sshd userspace/posix/sshtest.c userspace/programs/accounts/ userspace/programs/sshd/
+sshd userspace/programs/systools/src/dig.rs userspace/programs/systools/src/last.rs
+sshd userspace/programs/systools/src/netd.rs userspace/programs/systools/src/signals.rs
+stack-overflow kernel/arch/
+startup-trouble userspace/programs/consoled/
+storage kernel/drivers/virtio/ kernel/fs/block/ kernel/fs/fat/ userspace/storage/
+storage-4k kernel/drivers/nvme/ kernel/drivers/virtio/ kernel/fs/block/ kernel/fs/fat/
+storage-4k userspace/programs/systools/src/nvme.rs userspace/storage/
+storage-ide kernel/drivers/ide/ kernel/fs/block/ userspace/storage/
+storage-nvme kernel/drivers/nvme/ kernel/fs/block/ userspace/programs/systools/src/nvme.rs
+storage-nvme userspace/storage/
+storage-sata kernel/drivers/ahci/ kernel/fs/block/ userspace/storage/
+storage-sd kernel/drivers/sdhci/ kernel/fs/block/ userspace/storage/
+storage-tools userspace/programs/disk/ userspace/programs/systools/src/blkid.rs
+storage-tools userspace/programs/systools/src/findmnt.rs userspace/programs/systools/src/fstrim.rs
+storage-tools userspace/programs/systools/src/iostat.rs userspace/programs/systools/src/lsblk.rs
+storage-tools userspace/programs/systools/src/replace.rs
+storage-uas kernel/drivers/scsi/ kernel/drivers/usb/ kernel/drivers/usbhc/ kernel/drivers/xhci/
+storage-uas kernel/fs/block/ userspace/storage/
+storage-usb kernel/drivers/scsi/ kernel/drivers/usb/ kernel/drivers/usbhc/ kernel/drivers/xhci/
+storage-usb kernel/fs/block/ userspace/storage/
+swap kernel/mm/ userspace/posix/swaptest.c userspace/programs/systools/src/swap.rs
+tlb kernel/arch/ kernel/mm/
+tls kernel/net/ ports/ca-certificates/ userspace/programs/tls-test/
+uefi-cdrom image/grub/grub.cfg.in kernel/arch/ kernel/fs/iso9660/ kernel/hal/ kernel/lib/acpi/
+uefi-cdrom kernel/lib/bootinfo/ kernel/lib/uacpi/ tools/xtask/src/grub.rs
+uefi-usb image/grub/grub.cfg.in kernel/arch/ kernel/drivers/scsi/ kernel/drivers/usb/
+uefi-usb kernel/drivers/xhci/ kernel/hal/ kernel/lib/acpi/ kernel/lib/bootinfo/
+uefi-usb tools/xtask/src/grub.rs
+usb-c kernel/drivers/ucsi/ kernel/drivers/usb/ kernel/drivers/usbhc/ kernel/drivers/xhci/
+usb-c tools/xtask/src/acpi/
+usb-companions kernel/drivers/usb/ kernel/drivers/usbhc/ kernel/drivers/xhci/ ports/usbids/
+usb-companions userspace/programs/systools/src/lsusb.rs
+usb-devices kernel/drivers/usb/ kernel/drivers/usbhc/ kernel/drivers/xhci/ ports/usbids/
+usb-devices userspace/programs/systools/src/lsusb.rs
+usb-ehci kernel/drivers/usb/ kernel/drivers/usbhc/ kernel/drivers/xhci/ ports/usbids/
+usb-ehci userspace/programs/systools/src/lsusb.rs
+usb-ethernet kernel/drivers/nic/ kernel/drivers/usb/ kernel/drivers/usbhc/ kernel/drivers/xhci/
+usb-ethernet kernel/net/ userspace/posix/nics.c userspace/programs/systools/src/dhcp.rs
+usb-ethernet userspace/programs/systools/src/dhcp6.rs userspace/programs/systools/src/netd.rs
+usb-ethernet userspace/spark/tests/services/dhcp/
+usb-input kernel/drivers/usb/ kernel/drivers/usbhc/ kernel/drivers/xhci/ kernel/lib/hid/
+usb-input kernel/lib/input/ userspace/programs/systools/src/hexdump.rs
+usb-ohci kernel/drivers/usb/ kernel/drivers/usbhc/ kernel/drivers/xhci/ ports/usbids/
+usb-ohci userspace/programs/systools/src/lsusb.rs
+usb-serial kernel/drivers/uart/ kernel/drivers/usb/ kernel/drivers/usbhc/ kernel/drivers/xhci/
+usb-serial ports/usbids/ userspace/programs/systools/src/lsusb.rs
+user kernel/ipc/ userspace/usertests/
+userspace-e1000 kernel/drivers/intel/ kernel/drivers/nic/ kernel/net/ userspace/posix/nics.c
+userspace-e1000 userspace/programs/systools/src/e1000d.rs userspace/programs/systools/src/netd.rs
+userspace-e1000 userspace/spark/tests/services/e1000d/
+views userspace/posix/names.h userspace/posix/views.c
+volumes userspace/posix/volumetest.c userspace/programs/systools/src/nvme.rs
+volumes userspace/programs/systools/src/volumed.rs
+watchdog kernel/drivers/watchdog/ userspace/programs/systools/src/watchdog.rs
+watchdog-tco kernel/drivers/watchdog/ userspace/programs/systools/src/watchdog.rs

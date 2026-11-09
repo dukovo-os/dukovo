@@ -306,7 +306,7 @@ _target/userspace/_).
 		Pass everything after *--* to *qemu-system-x86_64*(1) unchanged,
 		for example *-- -d int* to log interrupts.
 
-*test* [*unit* | *boot* | *kani* | *tla* | *tuf* | *corpus* | *riscv*] [*--case* _name_]... [*--shard* _part_/_parts_] [*--timeout* _seconds_] [*--image-only*] [*--debug* | *--release*] | *--list*
+*test* [*unit* | *boot* | *kani* | *tla* | *tuf* | *corpus* | *riscv*] [*--case* _name_]... [*--affected* _commit_ [*--plan*]] [*--shard* _part_/_parts_] [*--timeout* _seconds_] [*--image-only*] [*--debug* | *--release*] | *--list*
 	Run the unit tests of the build tool and the kernel libraries on this
 	machine, then the boot tests: build a test image and boot it in QEMU
 	once per case below. Each case follows the serial console, types
@@ -1445,8 +1445,30 @@ _target/userspace/_).
 		as the first of them in a run packs the bundles. CI runs the boot
 		tests in five jobs this way. It needs *boot*.
 
+	*--affected* _commit_
+		Run only the boot tests that the changes since _commit_ reach, as
+		CI does for a pull request (ADR 0419): the changes since HEAD
+		left _commit_, with the working tree's changes and new files.
+		A change no boot test reads (writing, the lab's tests, the TLA+
+		models) adds none; a test's own file in
+		_tools/xtask/src/test/cases/_ adds that test; a path that tests
+		name in _tools/xtask/src/test/covers.txt_ adds them; any other
+		path, and one the kernel, the C library, Spark, the harness or
+		CI holds, adds a broad sample of about 14 minutes. When any test
+		runs, the smoke tests and every test _covers.txt_ does not name
+		run too. It prints each changed file and what it adds. It needs
+		*boot*, and goes with *--shard* and *--list*, which then name
+		the tests it chose: *ob test boot --affected origin/main --list*.
+
+	*--plan*
+		With *--affected*, run nothing: print how many of CI's machines
+		the chosen tests need, one for each ten minutes of them by
+		_times.txt_ and at most five, as _parts=_ and _shards=_ lines
+		for _$GITHUB_OUTPUT_.
+
 	*--list*
-		Name every boot test and what it checks, and run none.
+		Name every boot test and what it checks, and run none; with
+		*--affected*, the tests it chose.
 
 	*--timeout* _seconds_
 		Fail a boot test that has not finished after this long. The
