@@ -14,7 +14,7 @@ use radix_scsi::{Cdb, Data, Reply, Sense, Transport, TransportError, identify, k
 
 use super::{Disk, PortRegs, Sim, buffers, checksum, no_delay, one_port, probe, read_mem};
 use crate::ata::{self, command};
-use crate::{PACKET_BUFFER_SIZE, Packets};
+use crate::{PACKET_BUFFER_SIZE, PacketEnd, Packets};
 
 /// A CD holds at most this many blocks: a disc of more is a DVD, as QEMU
 /// has it.
@@ -435,4 +435,43 @@ fn a_drive_that_does_not_answer_has_its_link_reset_and_one_gone_is_gone() {
     assert_eq!(reply, Err(TransportError::Gone));
     let reply = packets.command(0, &Cdb::test_unit_ready(), Data::None, 100);
     assert_eq!(reply, Err(TransportError::Gone));
+}
+
+#[test]
+fn a_read_sent_without_waiting_is_looked_at_and_answered_after() {
+    let (sim, _hba, mut port) = drive(1000, |d| d.bad = std::vec![5]);
+    let mut wait = no_delay;
+    let (memory, frames) = buffers(2);
+    let read = Data::Frames { into_host: true, frames: &frames };
+    port.send_packet(&Cdb::read(10, 4, false).unwrap(), &read).unwrap();
+    // The simulated drive answers at once; the port's interrupt is on.
+    sim.with(|s| assert_ne!(s.ports[1].ie, 0, "its interrupt on with the read"));
+    let end = port.packet_ended();
+    assert_eq!(end, Some(PacketEnd::Done(8192)));
+    assert_eq!(port.packet_ended(), Some(PacketEnd::Done(8192)), "over, and stays so");
+    let reply = port.packet_reply(end.unwrap(), 8192, &mut wait);
+    assert_eq!(reply, Ok(Reply::Good { residue: 0 }));
+    let mut bytes = std::vec![0u8; 8192];
+    memory.read(0, &mut bytes);
+    assert_eq!(&bytes[..2048], block_pattern(10));
+    // A read the drive fails stops the port, its interrupt off; the reply
+    // restarts it and asks the drive why.
+    port.send_packet(&Cdb::read(4, 4, false).unwrap(), &read).unwrap();
+    let end = port.packet_ended().unwrap();
+    assert!(matches!(end, PacketEnd::Stopped(_)), "{end:?}");
+    sim.with(|s| assert_eq!(s.ports[1].ie, 0, "its interrupt off while stopped"));
+    let reply = port.packet_reply(end, 8192, &mut wait);
+    let unrecovered = Sense { key: key::MEDIUM_ERROR, asc: 0x11, ascq: 0 };
+    assert_eq!(reply, Ok(Reply::Failed(Some(unrecovered))));
+    sim.with(|s| assert_eq!(s.ports[1].cmd & 1, 1, "running again"));
+    // A read not answered runs until its link is reset; then reads work.
+    sim.disk(1, |disk| disk.hold = true);
+    port.send_packet(&Cdb::read(10, 4, false).unwrap(), &read).unwrap();
+    assert_eq!(port.packet_ended(), None);
+    sim.disk(1, |disk| disk.hold = false);
+    assert!(matches!(port.packet_timed_out(&mut wait), TransportError::Failed(_)));
+    port.send_packet(&Cdb::read(10, 4, false).unwrap(), &read).unwrap();
+    assert_eq!(port.packet_ended(), Some(PacketEnd::Done(8192)));
+    // The one held was never taken in.
+    assert_eq!(packets_sent(&sim).iter().filter(|p| p.0 == op::READ_10).count(), 3);
 }

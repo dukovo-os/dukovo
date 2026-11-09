@@ -18,12 +18,16 @@ ADR 0432 brought optical drives on AHCI, IDE and USB, and the install
 DVD (ADR 0433) is read whole when Dukovo is installed from it, so a
 drive's reads now matter as a disk's do.
 
-An optical drive takes SCSI commands in ATAPI packets. On Radix each
-drive has a thread of its own, which takes a read from the disk queue,
-sends it, sleeps until the port's interrupt and gives the read back; on
-Linux, libata sends the packet for the SCSI CD driver (`sr`) from the
-reading thread and completes it from the interrupt. What a read costs
-beyond the drive's own time is what the two do differently.
+An optical drive takes SCSI commands in ATAPI packets, one at a time.
+ADR 0431 gave each drive a thread of its own, which took a read from the
+disk queue, sent it, slept until the port's interrupt and gave the read
+back. On Linux, libata sends the packet for the SCSI CD driver (`sr`)
+from the reading thread and completes it from the interrupt. What a read
+costs beyond the drive's own time is what the two do differently: under
+KVM in CI, with every read going through the drive's thread, Radix took
+1.07 times Linux's time to read 64 KiB and 1.20 times to read 1 MiB,
+whose eight commands of 128 KiB each woke the reader and the drive's
+thread in turn.
 
 ## Decision
 
@@ -42,6 +46,19 @@ beyond the drive's own time is what the two do differently.
   pinned Ubuntu kernel builds `sr_mod` in and AHCI as a module), and
   `linux-bench`, given the drive after `--` on its command line, waits
   up to ten seconds for it, as AHCI probes its ports in the background.
+- **A disc's reads on an AHCI port go as Linux's do.** The thread that
+  reads sends its READ(10) to the port itself
+  (`radix_ahci::Port::send_packet`), and the port's interrupt hands the
+  read back to the disc's queue and sends the next one waiting, so a
+  large read's commands follow one another with no thread woken between
+  them (`kernel/radix/src/fs/disk/optical_port.rs`). The drive's thread
+  keeps all that may sleep: for its own commands it takes the port once
+  the read on it is over, and the reads that come meanwhile wait their
+  turn; a read the drive fails, or that goes unanswered for 30 s, is the
+  thread's to restart the port for, ask the drive why (REQUEST SENSE) and
+  hand back judged as before. A drive on an IDE channel, which borrows
+  the channel from a disk for each command (ADR 0432), keeps its reads in
+  its thread.
 - **The rows are gated** as the disk rows are: Radix may take no longer
   than Linux (ADR 0107).
 
@@ -50,6 +67,14 @@ beyond the drive's own time is what the two do differently.
 - A change to the optical drive's thread, the ATAPI path of AHCI or the
   disk queue that makes a disc's reads slower than Linux's fails the
   gate.
+- A disc's read on an AHCI port costs what a SATA disk's read costs the
+  kernel: sent where it is asked for, ended in the interrupt. The drive's
+  look every two seconds waits for the read on the port, and the reads
+  that come during the look wait for it, a few hundred microseconds.
+- Three parties share the port (the reader, the interrupt and the
+  drive's thread) under one lock, and the drive's thread lets go of a
+  disc's queue only once no interrupt handler holds it, so that its last
+  reference never goes in an interrupt.
 - Under TCG, where the numbers measure the emulator, Radix read 64 KiB
   in 0.55 of Linux's time and 1 MiB in 0.60, as with the virtio and NVMe
   disks; the gate holds the numbers CI measures under KVM.
@@ -62,12 +87,15 @@ beyond the drive's own time is what the two do differently.
 
 ## Alternatives considered
 
+- **Reads kept in the drive's thread, which chains the next read without
+  waking the reader.** It takes away the reader's wake between a large
+  read's commands, but each read still crosses to the thread and back,
+  the cost that put the 64 KiB row over Linux's.
 - **Reading files from an ISO 9660 disc**, as a copy from a disc does.
   That measures the filesystem too, which the Btrfs rows already do for
   their filesystem; the raw reads isolate the drive's path.
 - **A USB DVD drive.** QEMU's USB mass storage spends most of each read
   in the emulated xHCI, so the row would measure QEMU; USB storage is
   measured by its own work later.
-- **Reported only until parity** (ADR 0294). Radix reads the disc as
-  fast as Linux does from the start, under TCG at least, so the rows
-  are gated from the start, as the NVMe rows were.
+- **Reported only until parity** (ADR 0294). The gate holds a disc's
+  reads from the start, as it held the NVMe rows from theirs.

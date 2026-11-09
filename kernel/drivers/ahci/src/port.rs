@@ -33,9 +33,14 @@
 //! ([`Outcome::Retry`]).
 //!
 //! An optical drive on a port (an ATAPI device, ADR 0431) takes SCSI
-//! commands in ATA packets, one at a time, from the thread that runs it:
-//! [`Packets`] carries them as a [`Transport`], waiting for each in the
-//! kernel's way, woken by the port's interrupt ([`crate::Hba::quiet`]).
+//! commands in ATA packets, one at a time, on slot 0. The thread that runs
+//! the drive sends its own through [`Packets`], a [`Transport`] that waits
+//! for each in the kernel's way, woken by the port's interrupt
+//! ([`crate::Hba::quiet`]). A disc's reads go out without waiting
+//! ([`Port::send_packet`]) from the thread that reads, and the port's
+//! interrupt looks for their end ([`Port::packet_ended`]); the drive's
+//! thread then has a failed one answered ([`Port::packet_reply`]), as
+//! Linux's libata does (ADR 0434).
 
 use radix_hw::{Dma, Mmio, device_barrier};
 use radix_scsi::{Cdb, Data, Reply, SENSE_LENGTH, Sense, Transport, TransportError};
@@ -907,35 +912,28 @@ impl Port {
     }
 }
 
-/// How a packet command went.
-enum Packet {
-    /// It worked, and this many bytes moved.
+/// How a packet command [`Port::send_packet`] started stands once it is
+/// over ([`Port::packet_ended`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PacketEnd {
+    /// It is done, and the controller says this many bytes moved.
     Done(u32),
-    /// The drive failed it: its error register, whose top four bits hold
-    /// the sense key.
-    Failed(u8),
-    /// The link or the controller failed, `why`; the port was restarted.
-    Broken(&'static str),
+    /// An error stopped the port, with this interrupt status. The port's
+    /// interrupt is off until [`Port::packet_reply`] restarts it.
+    Stopped(u32),
 }
 
 impl Port {
-    /// Carries out `cdb` on the optical drive on the port, with `data`,
-    /// alone, on slot 0, waiting up to `timeout_us` for it with `wait`,
-    /// which the port's interrupt may end early. Data in or out of the
-    /// caller's memory go through the port's own buffer, by PIO; data in
-    /// buffers it reaches go by DMA if the drive has it and the length is
-    /// a multiple of 16 bytes (Linux's libata's rule: many drives fail
-    /// DMA of less), else by PIO. A command the drive fails, or the link
-    /// breaks, restarts the port; one not answered in time resets the
-    /// link. Fails with [`TransportError::Gone`] once the port does not
-    /// come back.
-    fn packet(
-        &mut self,
-        cdb: &Cdb,
-        data: &mut Data<'_>,
-        timeout_us: u32,
-        wait: &mut dyn FnMut(u32),
-    ) -> Result<Packet, TransportError> {
+    /// Starts `cdb` on the optical drive on the port, with `data`, alone,
+    /// on slot 0, and turns the port's interrupt on. [`Port::packet_ended`]
+    /// says when it is over, and [`Port::packet_reply`] how it went. Data
+    /// in or out of the caller's memory go through the port's own buffer,
+    /// by PIO; data in buffers it reaches go by DMA if the drive has it
+    /// and the length is a multiple of 16 bytes (Linux's libata's rule:
+    /// many drives fail DMA of less), else by PIO. Nothing goes to a
+    /// drive that is gone ([`TransportError::Gone`]), nor a command longer
+    /// than the drive's packets, nor buffers the controller cannot take.
+    pub fn send_packet(&mut self, cdb: &Cdb, data: &Data<'_>) -> Result<(), TransportError> {
         let identity = self.packet.ok_or(TransportError::Failed("it is not an optical drive"))?;
         if self.dead {
             return Err(TransportError::Gone);
@@ -984,44 +982,147 @@ impl Port {
         self.regs.write32(reg::IS, u32::MAX);
         self.regs.write32(reg::IE, irq::ENABLED);
         self.regs.write32(reg::CI, 1);
-        let (mut waited, mut step) = (0u32, PACKET_FIRST_US);
-        let stopped = loop {
-            let status = self.regs.read32(reg::IS);
-            if status & irq::STOPS != 0 {
-                break status;
-            }
-            if self.regs.read32(reg::CI) & 1 == 0 {
-                device_barrier();
-                let moved = self.mem().read32(header + HEADER_PRDBC).min(total as u32);
-                if let Data::In(bytes) = data {
-                    self.mem().read(PACKET_BUFFER, &mut bytes[..moved as usize]);
-                }
-                return Ok(Packet::Done(moved));
-            }
-            if waited >= timeout_us {
-                self.errors = self.errors.wrapping_add(1);
-                if !self.restart(true, wait) {
-                    self.dead = true;
-                    return Err(TransportError::Gone);
-                }
-                return Err(TransportError::Failed(
-                    "it did not answer in time; the link was reset",
-                ));
-            }
-            wait(step);
-            waited = waited.saturating_add(step);
-            step = step.saturating_mul(2).min(PACKET_LONGEST_US);
-        };
-        // The drive's own error leaves the link up; anything else of the
-        // link or the controller resets it.
+        Ok(())
+    }
+
+    /// Whether the packet command [`Port::send_packet`] started is over,
+    /// without waiting: `None` while it runs. Runs in the port's interrupt
+    /// handler as well as in threads. Clears the port's interrupt status,
+    /// so that what happens next raises a new interrupt; an error that
+    /// stopped the port turns its interrupt off.
+    pub fn packet_ended(&mut self) -> Option<PacketEnd> {
+        let status = self.regs.read32(reg::IS);
+        if status != 0 {
+            self.regs.write32(reg::IS, status);
+        }
+        if status & irq::STOPS != 0 {
+            self.regs.write32(reg::IE, 0);
+            return Some(PacketEnd::Stopped(status));
+        }
+        if self.regs.read32(reg::CI) & 1 != 0 {
+            return None;
+        }
+        device_barrier();
+        Some(PacketEnd::Done(self.mem().read32(COMMAND_LIST + HEADER_PRDBC)))
+    }
+
+    /// How the packet command [`Port::send_packet`] started with `total`
+    /// bytes went, now that it ended so: a short transfer says its
+    /// residue. After an error, restarts the port: the drive's own error
+    /// leaves the link up, and its sense is asked for (REQUEST SENSE), as
+    /// Linux's libata asks; a drive that does not answer that has the
+    /// sense key of its error register. Any other error resets the link.
+    /// Fails with [`TransportError::Gone`] once the port does not come
+    /// back. `wait` waits the given number of microseconds, or until the
+    /// port's interrupt, whichever comes first.
+    pub fn packet_reply(
+        &mut self,
+        end: PacketEnd,
+        total: u32,
+        wait: &mut dyn FnMut(u32),
+    ) -> Result<Reply, TransportError> {
+        match end {
+            PacketEnd::Done(moved) => Ok(Reply::Good { residue: total - moved.min(total) }),
+            PacketEnd::Stopped(status) => match self.restart_after(status, wait)? {
+                Some(error) => Ok(Reply::Failed(Some(self.sense(error, wait)))),
+                None => Err(TransportError::Failed("the link failed")),
+            },
+        }
+    }
+
+    /// Resets the link of a port whose packet command went unanswered:
+    /// what the command's reply is then.
+    pub fn packet_timed_out(&mut self, wait: &mut dyn FnMut(u32)) -> TransportError {
+        self.regs.write32(reg::IE, 0);
+        self.errors = self.errors.wrapping_add(1);
+        if !self.restart(true, wait) {
+            self.dead = true;
+            return TransportError::Gone;
+        }
+        TransportError::Failed("it did not answer in time; the link was reset")
+    }
+
+    /// Restarts the port after the error `status` stopped it: the drive's
+    /// error register when the drive failed the command itself, `None`
+    /// when the link or the controller failed, and the link was reset.
+    fn restart_after(
+        &mut self,
+        status: u32,
+        wait: &mut dyn FnMut(u32),
+    ) -> Result<Option<u8>, TransportError> {
         let error = (self.regs.read32(reg::TFD) >> 8) as u8;
-        let own_error = stopped & irq::TFES != 0 && stopped & irq::FATAL == 0;
+        let own_error = status & irq::TFES != 0 && status & irq::FATAL == 0;
         self.errors = self.errors.wrapping_add(1);
         if !self.restart(!own_error, wait) {
             self.dead = true;
             return Err(TransportError::Gone);
         }
-        Ok(if own_error { Packet::Failed(error) } else { Packet::Broken("the link failed") })
+        Ok(own_error.then_some(error))
+    }
+
+    /// Waits up to `timeout_us` with `wait` for the packet command
+    /// [`Port::send_packet`] started to end, waiting longer each time it
+    /// looks, up to 4 ms; resets the link if it does not.
+    fn wait_packet(
+        &mut self,
+        timeout_us: u32,
+        wait: &mut dyn FnMut(u32),
+    ) -> Result<PacketEnd, TransportError> {
+        let (mut waited, mut step) = (0u32, PACKET_FIRST_US);
+        loop {
+            if let Some(end) = self.packet_ended() {
+                return Ok(end);
+            }
+            if waited >= timeout_us {
+                return Err(self.packet_timed_out(wait));
+            }
+            wait(step);
+            waited = waited.saturating_add(step);
+            step = step.saturating_mul(2).min(PACKET_LONGEST_US);
+        }
+    }
+
+    /// Carries out `cdb` with `data` as [`Port::send_packet`] has it,
+    /// waiting up to `timeout_us` for it with `wait`, and copies what came
+    /// into the port's own buffer to `data`'s.
+    fn packet(
+        &mut self,
+        cdb: &Cdb,
+        data: &mut Data<'_>,
+        timeout_us: u32,
+        wait: &mut dyn FnMut(u32),
+    ) -> Result<Reply, TransportError> {
+        self.send_packet(cdb, data)?;
+        let total = data.len() as u32;
+        let end = self.wait_packet(timeout_us, wait)?;
+        if let (PacketEnd::Done(moved), Data::In(bytes)) = (end, data) {
+            let moved = moved.min(total) as usize;
+            self.mem().read(PACKET_BUFFER, &mut bytes[..moved]);
+        }
+        self.packet_reply(end, total, wait)
+    }
+
+    /// Why the drive failed a command whose error register is `error`:
+    /// its answer to REQUEST SENSE, or the sense key of the register if
+    /// it does not answer that.
+    fn sense(&mut self, error: u8, wait: &mut dyn FnMut(u32)) -> Sense {
+        let fallback = Sense { key: error >> 4, asc: 0, ascq: 0 };
+        let mut bytes = [0u8; SENSE_LENGTH as usize];
+        let cdb = Cdb::request_sense(SENSE_LENGTH);
+        let sent = self.send_packet(&cdb, &Data::In(&mut bytes));
+        match sent.and_then(|()| self.wait_packet(SENSE_US, wait)) {
+            Ok(PacketEnd::Done(moved)) => {
+                let moved = (moved as usize).min(bytes.len());
+                self.mem().read(PACKET_BUFFER, &mut bytes[..moved]);
+                Sense::parse(&bytes[..moved]).unwrap_or(fallback)
+            }
+            // Not asked again: the port is restarted, and the key said.
+            Ok(PacketEnd::Stopped(status)) => {
+                let _ = self.restart_after(status, wait);
+                fallback
+            }
+            Err(_) => fallback,
+        }
     }
 }
 
@@ -1030,10 +1131,9 @@ const SENSE_US: u32 = 10_000_000;
 
 /// The optical drive on a port, as the [`Transport`] that carries its
 /// SCSI commands (MMC-6; [`radix_scsi::mmc`]) in ATA packets, one at a
-/// time. A command the drive fails is followed by REQUEST SENSE, whose
-/// answer is the reply's sense, as Linux's libata gets it; a drive that
-/// does not answer that has the sense key of its error register. Its one
-/// logical unit is 0.
+/// time, from the thread that runs the drive. A command the drive fails is
+/// followed by REQUEST SENSE, whose answer is the reply's sense
+/// ([`Port::packet_reply`]). Its one logical unit is 0.
 pub struct Packets<'a> {
     port: &'a mut Port,
     wait: &'a mut dyn FnMut(u32),
@@ -1045,18 +1145,6 @@ impl<'a> Packets<'a> {
     /// port's interrupt, whichever comes first.
     pub fn new(port: &'a mut Port, wait: &'a mut dyn FnMut(u32)) -> Packets<'a> {
         Packets { port, wait }
-    }
-
-    /// Why the drive failed a command whose error register is `error`.
-    fn sense(&mut self, error: u8) -> Sense {
-        let fallback = Sense { key: error >> 4, asc: 0, ascq: 0 };
-        let mut bytes = [0u8; SENSE_LENGTH as usize];
-        let cdb = Cdb::request_sense(SENSE_LENGTH);
-        let mut data = Data::In(&mut bytes);
-        match self.port.packet(&cdb, &mut data, SENSE_US, self.wait) {
-            Ok(Packet::Done(moved)) => Sense::parse(&bytes[..moved as usize]).unwrap_or(fallback),
-            _ => fallback,
-        }
     }
 }
 
@@ -1072,13 +1160,7 @@ impl Transport for Packets<'_> {
             let none = Sense { key: radix_scsi::key::ILLEGAL_REQUEST, asc: 0x25, ascq: 0 };
             return Ok(Reply::Failed(Some(none)));
         }
-        let total = data.len() as u32;
-        let timeout_us = timeout_ms.saturating_mul(1_000);
-        match self.port.packet(cdb, &mut data, timeout_us, self.wait)? {
-            Packet::Done(moved) => Ok(Reply::Good { residue: total - moved }),
-            Packet::Failed(error) => Ok(Reply::Failed(Some(self.sense(error)))),
-            Packet::Broken(why) => Err(TransportError::Failed(why)),
-        }
+        self.port.packet(cdb, &mut data, timeout_ms.saturating_mul(1_000), self.wait)
     }
 }
 
