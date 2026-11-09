@@ -10,7 +10,7 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 ## Context
 
-Chase asked for syntax mistakes to show red before Enter.
+Syntax mistakes should show red before Enter.
 
 ## Decision
 

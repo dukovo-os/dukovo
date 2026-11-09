@@ -6,16 +6,21 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 # Installing
 
 This chapter describes installing Dukovo onto a computer's disk from the
-install stick, as of Phase 14a of the roadmap: `dukovo-install`, whose
-screens ask a few questions and install, or which installs from an
-answers file, a JSON file that answers every question the screens ask.
-The full references are dukovo-install(8) and install-answers(5)
-([ADR 0309](https://github.com/dukovo-os/dukovo/blob/main/docs/adr/0309-dukovo-install-installs-the-signed-release-as-an-answers-file-says.md),
-[ADR 0310](https://github.com/dukovo-os/dukovo/blob/main/docs/adr/0310-the-installer-s-screens.md),
-[ADR 0311](https://github.com/dukovo-os/dukovo/blob/main/docs/adr/0311-the-free-space-and-manual-layouts-and-swap-at-every-start.md),
-[ADR 0314](https://github.com/dukovo-os/dukovo/blob/main/docs/adr/0314-installing-next-to-windows.md),
-[ADR 0318](https://github.com/dukovo-os/dukovo/blob/main/docs/adr/0318-the-serial-console-ttys0-and-serial-only-installs.md),
-[ADR 0319](https://github.com/dukovo-os/dukovo/blob/main/docs/adr/0319-setup-files-from-the-web-over-https-checked-by-sha-256.md)).
+install stick with `dukovo-install`, whose screens ask a few questions
+and install, or which installs from an answers file, a JSON file that
+answers every question the screens ask. The full references are
+dukovo-install(8) and install-answers(5) ([ADR
+0309](https://github.com/dukovo-os/dukovo/blob/main/docs/adr/0309-dukovo-install-installs-the-signed-release-as-an-answers-file-says.md),
+[ADR
+0310](https://github.com/dukovo-os/dukovo/blob/main/docs/adr/0310-the-installer-s-screens.md),
+[ADR
+0311](https://github.com/dukovo-os/dukovo/blob/main/docs/adr/0311-the-free-space-and-manual-layouts-and-swap-at-every-start.md),
+[ADR
+0314](https://github.com/dukovo-os/dukovo/blob/main/docs/adr/0314-installing-next-to-windows.md),
+[ADR
+0318](https://github.com/dukovo-os/dukovo/blob/main/docs/adr/0318-the-serial-console-ttys0-and-serial-only-installs.md),
+[ADR
+0319](https://github.com/dukovo-os/dukovo/blob/main/docs/adr/0319-setup-files-from-the-web-over-https-checked-by-sha-256.md)).
 
 The guided layout **erases the disk it installs onto**. The layout next
 to Windows shrinks Windows and keeps its files, the free-space layout

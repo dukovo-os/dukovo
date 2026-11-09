@@ -49,13 +49,8 @@ off; anything else sent on its own is a bug:
 | resolved | Only the names programs look up, to the DNS servers DHCP gave or that you name, over DNS over TLS when they take it; `localhost` and `.local` names never leave the machine | It sends nothing on its own |
 | timed | A request for the time to `time.cloudflare.com`, `nts.netnod.se` or `ptbtime1.ptb.de`, over Network Time Security, every 1 to 17 minutes, and to `pool.ntp.org` over plain NTP only while none of them answers; the requests carry random numbers and the server's own cookies, nothing about the machine | Other servers, or none, in timed(5); `enabled = false` in its service file |
 | netlog | The log, to a computer you name, only when you name one to debug a machine | It sends nothing by default |
-
-Still to come, each to be listed here in full before it ships:
-
-| Service | What it will send, and where | Roadmap |
-| --- | --- | --- |
-| Discovery | The machine's name, announced on the local network only, so that `ssh name.local` works | Phase 12 |
-| updated | A check for updates at `updates.dukovo.org`, which can be turned off | Phase 13 |
+| discoverd | The machine's name and addresses, by multicast DNS on the local network only, so that `ssh name.local` works, and WS-Discovery probes that find Windows machines, printers and scanners there; nothing leaves the local network | `enabled = false` in its service file (discoverd(8)) |
+| bundled | For bundles installed from a catalog, a daily read of that catalog for updates and known flaws, at `updates.dukovo.org` for Dukovo's own | Nothing is read while no catalog bundle is installed; updates by themselves stay off unless you turn them on with `bundle update --automatic on` (bundle(1)) |
 
 ## Reporting a security problem
 

@@ -19,12 +19,12 @@ T1650, driven by a harness on a lab computer, with QEMU machines beside
 them so that every test can be written and proven before the hardware
 is wired up.
 
-Chase approved the lab runner's design on 2026-11-05: the harness,
-dukovo-lab, lives in its own repository, dukovo-os/lab; the tests live
-here, next to the code they test, as small TOML files; and each run's
-results go to a private repository as a bundle. He then chose to split
-the first pull request in two: the harness in dukovo-os/lab, and
-here the image it tests, `ob lab`, and the first tests.
+The lab runner's design: the harness, dukovo-lab, lives in its own
+repository, dukovo-os/lab; the tests live here, next to the code they
+test, as small TOML files; and each run's results go to a private
+repository as a bundle. The first pull request is split in two: the
+harness in dukovo-os/lab, and here the image it tests, `ob lab`, and the
+first tests.
 
 A test needs to run commands on the machine and read their output. The
 serial console shows the boot, but its shell wants a person to sign in

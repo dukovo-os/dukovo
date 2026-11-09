@@ -97,11 +97,10 @@ reads compiled glibc locales (ADR 0073), which only C.UTF-8 had.
   names Unicode's CLDR: mlibc reads glibc's compiled format and nothing
   converts CLDR to it, while glibc's sources carry the same dates,
   numbers and sorting order for English, and the Free Software
-  Foundation claims no copyright in them; their character tables are
-  the Unicode Character Database's, under the Unicode License v3. CLDR
-  can come with the desktop's own formatting (ICU4X) and the
-  translations after 1.0. This departs from the roadmap's wording, and
-  the pull request asks for the maintainer's word on it.
+  Foundation claims no copyright in them; their character tables are the
+  Unicode Character Database's, under the Unicode License v3. CLDR can
+  come with the desktop's own formatting (ICU4X) and the translations
+  after 1.0. This departs from the roadmap's wording.
 
 ## Consequences
 

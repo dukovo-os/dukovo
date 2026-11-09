@@ -18,11 +18,11 @@ not in the kernel as Linux's `cifs` is. The kernel needs a way for a
 program to serve a filesystem that every other program then uses as any
 other.
 
-Chase chose, on 2026-11-02, a bridge in the kernel that speaks Linux's
-FUSE protocol, over a protocol of our own: programs written for Linux's
-FUSE, and libraries such as fuser and libfuse, then serve filesystems on
-Dukovo with few changes, and the protocol's handling of signals, lost
-programs and unmounts is one that a decade of programs already expect.
+Dukovo uses a bridge in the kernel that speaks Linux's FUSE protocol,
+over a protocol of our own: programs written for Linux's FUSE, and
+libraries such as fuser and libfuse, then serve filesystems on Dukovo
+with few changes, and the protocol's handling of signals, lost programs
+and unmounts is one that a decade of programs already expect.
 
 ## Decision
 

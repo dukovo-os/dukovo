@@ -16,8 +16,8 @@ A timestamp is good for a day, so the server must sign one every few
 hours, with nobody there.
 
 The server is updates.dukovo.org: one small virtual machine, running
-Ubuntu, that Chase set up with his own login, an SSH key, and no root
-login.
+Ubuntu, set up with a personal administrator login, an SSH key, and no
+root login.
 
 13e's plan had CI deploy to it with a key of its own. But what a deploy
 carries exists only on the signer's computer:

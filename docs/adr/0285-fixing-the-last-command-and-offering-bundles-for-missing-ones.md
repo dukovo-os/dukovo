@@ -10,7 +10,7 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 ## Context
 
-Chase asked for a one-key fix of the last command, as thefuck does, and for missing commands to name the package that has them.
+Nukesh should fix the last command with one key, as thefuck does, and a missing command should name the package that has it.
 
 ## Decision
 

@@ -10,7 +10,7 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 ## Context
 
-crossterm 0.29, under reedline, loops for ever when `read` on a terminal that hung up returns 0 or EIO. Nukesh catches SIGHUP for its traps, so a shell whose window or ssh link went away spun at full CPU and never saved its history. Chase also asked for a private mode.
+crossterm 0.29, under reedline, loops for ever when `read` on a terminal that hung up returns 0 or EIO. Nukesh catches SIGHUP for its traps, so a shell whose window or ssh link went away spun at full CPU and never saved its history. A private mode, which keeps no history, is added at the same time.
 
 ## Decision
 

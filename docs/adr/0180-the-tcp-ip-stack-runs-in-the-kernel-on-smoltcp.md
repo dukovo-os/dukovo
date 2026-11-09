@@ -26,7 +26,7 @@ network can send data to.
   is a bug in the kernel. The disks' drivers and Btrfs already run there
   (ADR 0127), and every benchmark row must match Linux (ADR 0107).
 
-Chase chose the kernel on 2026-10-30, after the trade-off above.
+The kernel was chosen, after the trade-off above.
 
 **smoltcp in the kernel.** smoltcp 0.14 (0BSD) is a TCP/IP stack in safe
 Rust (`#![deny(unsafe_code)]`) for systems without an operating system:

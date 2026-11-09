@@ -22,11 +22,11 @@ sign-in, signing and encryption, and the files.
 
 Two things must not change for it. A person's login password stays an
 Argon2id hash that only authd reads (ADR 0218); NTLMv2 needs the
-password's NT hash (MD4 of its UTF-16), which is a password's
-equivalent and must never be the login password's. And each person sees
-in a share only what their own permissions let them, as at their own
-shell, which a server running as root and checking modes itself would
-get wrong somewhere. Chase chose a separate sharing password.
+password's NT hash (MD4 of its UTF-16), which is a password's equivalent
+and must never be the login password's. And each person sees in a share
+only what their own permissions let them, as at their own shell, which a
+server running as root and checking modes itself would get wrong
+somewhere. Shares therefore use a separate sharing password.
 
 ## Decision
 

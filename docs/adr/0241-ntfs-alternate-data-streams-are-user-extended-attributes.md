@@ -14,13 +14,13 @@ Phase 11f. An NTFS file has more data than its own: named `$DATA`
 attributes, its alternate data streams, which Windows opens as
 `file:stream`. Windows keeps where a download came from there
 (`Zone.Identifier`, which makes it warn before running one), and apps
-keep their own data, from thumbnails to macOS's resource forks copied
-by SMB. [ADR 0236] read NTFS, and [ADR 0237] and [ADR 0238] wrote it,
+keep their own data, from thumbnails to macOS's resource forks copied by
+SMB. [ADR 0236] read NTFS, and [ADR 0237] and [ADR 0238] wrote it,
 keeping a file's streams as they were but showing none: Radix's VFS had
 no way to name them. Phase 13b.7 gave it Linux's extended attributes
 ([ADR 0256]): `user.`, `trusted.` and `security.` names, and POSIX
-access lists, which Btrfs, ext4 and tmpfs keep. Chase chose on
-2026-10-31 to make the streams writable in Phase 11.
+access lists, which Btrfs, ext4 and tmpfs keep. The streams become
+writable in Phase 11.
 
 ntfs-3g shows streams the same way, with its `streams_interface=xattr`
 option (its default): the attribute `user.NAME` is the stream `NAME`,

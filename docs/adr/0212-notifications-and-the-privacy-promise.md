@@ -19,9 +19,8 @@ unless the user starts it, update checks are the only automatic network
 calls and can be turned off, and crash reports are kept locally and
 shared only by hand. The security design (section 11) lists
 `notifications` as a permission that is always allowed and can be turned
-off per app, through notifyd's interface. The prep doc settled with
-Chase how the console shows one: on the bottom line, for 8 seconds
-(question 5).
+off per app, through notifyd's interface. The console shows a
+notification on its bottom line, for 8 seconds.
 
 A notification is shown to whoever is at the screen, so who sent it
 must be what the kernel says, not what the sender claims, as with the

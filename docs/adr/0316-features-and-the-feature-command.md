@@ -10,12 +10,12 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 ## Context
 
-The plan's *Install profiles and features* (Chase, 2026-10-30) lets the
-person decide what each machine does: features are named groups such as
-Web server, Databases or File sharing, profiles are starting sets of
-them, and nothing is locked in, since the `feature` command adds and
-removes them at any time. Phase 14 PR 5c builds features and the
-command; 5d builds the installer's profile step on top.
+The plan's *Install profiles and features* lets the person decide what
+each machine does: features are named groups such as Web server,
+Databases or File sharing, profiles are starting sets of them, and
+nothing is locked in, since the `feature` command adds and removes them
+at any time. Phase 14 PR 5c builds features and the command; 5d builds
+the installer's profile step on top.
 
 What a feature is made of already exists: services that Spark runs from
 their files (ADR 0216), with the ports each listens on in its file, so

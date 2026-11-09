@@ -15,9 +15,8 @@ kernel's ring through `/devices/kmsg`, mode 0666 by default, and logd's
 records through its socket, which answered anyone the same (ADRs 0210
 and 0211). With sign-in (ADR 0250) more than one person uses a machine,
 and the log says who signed in when, which commands each administrator
-ran with elevate, and what the services and the hardware did. The Phase
-13 prep doc's question 3, which Chase accepted on 2026-10-30, settles
-it: the logs and `dmesg` are for administrators, through elevate, and
+ran with elevate, and what the services and the hardware did. The rule
+is: the logs and `dmesg` are for administrators, through elevate, and
 everyone reads their own programs' logs. That is how Ubuntu does it:
 only the `adm` group reads the whole journal, a user's `journalctl`
 shows their own, and `dmesg` needs root (`kernel.dmesg_restrict`).
