@@ -47,6 +47,17 @@ _/kernel/block/_*name*_/size_
 _/kernel/block/_*name*_/ro_
 	*1* if the device is read-only, *0* if not.
 
+_/kernel/block/_*name*_/removable_
+	For a disk: *1* for a drive whose medium comes and goes, such as a
+	card reader's slot or a USB stick that says its medium is removable,
+	*0* for any other, as on Linux (ADR 0430). With no medium in it, the
+	drive's _size_ is *0*.
+
+_/kernel/block/_*name*_/media_changes_
+	For a drive whose medium comes and goes: how many times a medium
+	went in or came out since the drive was found. *volumed*(8) mounts
+	and unmounts when it moves. Radix's own: Linux tells udev instead.
+
 _/kernel/block/_*name*_/partition_, _start_
 	For a partition: its number in its disk's table, the one its name
 	ends in, and its first sector on the disk, in 512-byte sectors. A

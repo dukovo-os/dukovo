@@ -19,8 +19,10 @@ does: by default its name, size, whether it is read-only, its type and
 where it is mounted (_/processes/mounts_, *radix-proc*(5)), or *[SWAP]*
 for a swap area in use. A _device_ named, as _sda_ or _/devices/sda_,
 shows a disk with its partitions, or a partition alone. Radix gives
-disks no device numbers, so there is no *MAJ:MIN* column, and knows of
-no removable disks yet, so there is no *RM*.
+disks no device numbers, so there is no *MAJ:MIN* column. *RM*, *1* for
+a drive whose medium comes and goes, such as a card reader, and for its
+partitions (ADR 0430), shows only when asked for with *-o*, so that the
+default columns stay as they were.
 
 ```
 $ lsblk
@@ -41,7 +43,7 @@ and the space from *statvfs*(3) on where it is mounted.
 
 *-o*, *--output* _column_,...
 	Show these columns, or, after a *+*, these as well: *NAME*, *KNAME*,
-	*PATH*, *PKNAME* (a partition's disk), *SIZE*, *RO*, *TYPE*,
+	*PATH*, *PKNAME* (a partition's disk), *RM*, *SIZE*, *RO*, *TYPE*,
 	*MOUNTPOINT*, *MOUNTPOINTS*, *FSTYPE*, *FSVER*, *LABEL*, *UUID*,
 	*FSAVAIL*, *FSSIZE*, *FSUSED*, *FSUSE%*, *PTUUID*, *PTTYPE*,
 	*PARTUUID*, *PARTLABEL*, *PARTN*, *START*, *MODEL*, *SERIAL*, *REV*,

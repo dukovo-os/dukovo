@@ -21,6 +21,9 @@
 //! after a name that ends in a digit, `nvme0n1p1`, `mmcblk0p1`), read from its MBR or
 //! GPT (`radix_block::partition`); every one appears in `/devices` and
 //! `/kernel/block`, and leaves them with its disk ([`unregister`]).
+//! A drive whose medium comes and goes ([`removable`], ADR 0430) keeps
+//! its name while it is empty; each medium put in it takes the place of
+//! the one before ([`replace`]), with its own partitions.
 //! Requests to every disk go through the same queue
 //! ([`queue`]), whatever drives it. Before the machine is powered off,
 //! [`shutdown`] empties every disk's write cache and shuts the NVMe
@@ -41,12 +44,14 @@ use radix_mm::{Flags, HEAP, Kmalloc};
 use radix_sync::{Mutex, SpinLock};
 use radix_virtio::device_type;
 
+use self::removable::Drive;
 use crate::Arch;
 
 mod ahci;
 mod ide;
 mod nvme;
 mod queue;
+pub mod removable;
 mod sdhci;
 pub mod usb;
 mod virtio;
@@ -406,18 +411,31 @@ fn partitions(name: &Name, device: &DeviceRef) {
 /// [`partitions`], with the table's sectors read by `read`: a USB disk's
 /// thread reads them itself.
 fn partitions_read(name: &Name, device: &DeviceRef, read: partition::ReadSector<'_>) {
+    for part in table(name, device, read).iter().flatten() {
+        add_partition(name, device, part);
+    }
+}
+
+/// The partitions of the disk `name`, whose block device is `device`, as
+/// its table read by `read` has them, logged; `None` if it has no table,
+/// or the table could not be read.
+fn table(
+    name: &Name,
+    device: &DeviceRef,
+    read: partition::ReadSector<'_>,
+) -> Option<radix_block::mem::KVec<partition::Partition>> {
     let info = device.info();
     let (scheme, found) = match partition::read(info.sectors, info.unit(), read) {
         Ok(read) => read,
         Err(err) => {
             warn!("Disk: {name}: {err}");
-            return;
+            return None;
         }
     };
     let scheme = match scheme {
         partition::Scheme::None => {
             info!("Disk: {name} has no partition table; it is used whole");
-            return;
+            return None;
         }
         partition::Scheme::Mbr => "an MBR",
         partition::Scheme::Gpt => "a GPT",
@@ -433,19 +451,23 @@ fn partitions_read(name: &Name, device: &DeviceRef, read: partition::ReadSector<
         "Disk: {name} has {scheme} with {count} {}",
         if count == 1 { "partition" } else { "partitions" }
     );
-    for part in &found {
-        add_partition(name, device, part);
-    }
+    Some(found)
 }
 
 /// Registers partition `part` of the disk `name`, whose block device is
 /// `device`, and logs it.
-#[inline(never)]
 fn add_partition(name: &Name, device: &DeviceRef, part: &partition::Partition) {
-    let Some(slice) = radix_block::Slice::new(device.clone(), part.first, part.sectors) else {
-        return;
-    };
-    let Ok(slice) = radix_vfs::mem::arc(slice) else { return };
+    if let Some(entry) = partition_entry(name, device, part) {
+        register(entry);
+    }
+}
+
+/// The entry of partition `part` of the disk `name`, whose block device
+/// is `device`, logged; `None` when memory runs out.
+#[inline(never)]
+fn partition_entry(name: &Name, device: &DeviceRef, part: &partition::Partition) -> Option<Entry> {
+    let slice = radix_block::Slice::new(device.clone(), part.first, part.sectors)?;
+    let slice = radix_vfs::mem::arc(slice).ok()?;
     let mut part_name = Name::new();
     let digit = name.as_str().ends_with(|c: char| c.is_ascii_digit());
     let _ = write!(part_name, "{name}{}{}", if digit { "p" } else { "" }, part.number);
@@ -474,7 +496,7 @@ fn add_partition(name: &Name, device: &DeviceRef, part: &partition::Partition) {
     );
     let device: DeviceRef = slice;
     let place = Place { number: part.number, first: part.first, kind: part.kind };
-    register(Entry { name: part_name, device, place: Some(place), ident: None });
+    Some(Entry { name: part_name, device, place: Some(place), ident: None })
 }
 
 /// A size for the log, in the largest binary unit it reaches, with a
@@ -518,13 +540,7 @@ fn register(entry: Entry) {
 /// them, and their requests fail; what is mounted from them is lost, and
 /// unmounts though it cannot be written (ADR 0163).
 fn unregister(name: &str) {
-    // The disk, its partitions, and the BitLocker volumes unlocked on
-    // them.
-    let ours = |disk: &str| {
-        let rest = disk.strip_prefix(name).map(|rest| rest.strip_suffix(UNLOCKED).unwrap_or(rest));
-        let rest = rest.map(|rest| rest.strip_prefix('p').unwrap_or(rest));
-        rest.is_some_and(|rest| rest.bytes().all(|b| b.is_ascii_digit()))
-    };
+    let ours = |other: &str| of_disk(name, other);
     // Before they leave the list, so that whoever sees them gone may
     // unmount what was mounted from them.
     if let Some(vfs) = super::vfs() {
@@ -551,6 +567,148 @@ fn unregister(name: &str) {
     for entry in &names {
         super::devfs::remove_block(entry.name.as_str());
     }
+}
+
+/// Whether `other` is the disk `disk`, one of its partitions, or a
+/// BitLocker volume unlocked on them: `sdb`, `sdb1`, `sdb1-unlocked`.
+fn of_disk(disk: &str, other: &str) -> bool {
+    let rest = other.strip_prefix(disk).map(|rest| rest.strip_suffix(UNLOCKED).unwrap_or(rest));
+    let rest = rest.map(|rest| rest.strip_prefix('p').unwrap_or(rest));
+    rest.is_some_and(|rest| rest.bytes().all(|b| b.is_ascii_digit()))
+}
+
+/// How a [`replace`] went.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Replaced {
+    Done,
+    /// The mount table is busy: nothing changed, and the driver tries
+    /// again soon.
+    Busy,
+    /// The drive is gone.
+    Gone,
+}
+
+/// Puts `device`, a medium's with the partitions `parts`, in the place of
+/// the drive `name`'s, under the same name, and counts the change on
+/// `drive`: a medium went in or came out (ADR 0430). The medium before
+/// goes as an unplugged disk does: with `lose`, what was mounted from it
+/// is lost first; its partitions and the BitLocker volumes unlocked on it
+/// leave `/devices` and `/kernel/block`, retired, so that whoever still
+/// has one open writes nowhere. Whoever has its own device open keeps it,
+/// and its driver fails their requests.
+///
+/// The driver's thread calls this, and the thread may serve the disks an
+/// unmount is syncing, with the mount table held: the mounts are lost
+/// only if the table is free ([`radix_vfs::mount::Vfs::try_lose`]), and
+/// nothing changes if it is not.
+///
+/// The list changes, and the count with it, under one hold of its lock,
+/// so that volumed(8), which reads the count before and after the list,
+/// never sees a medium's partitions without the count that says a medium
+/// went in, and takes them for partitions made by partitioning the disk.
+fn replace(
+    name: &Name,
+    device: DeviceRef,
+    parts: &[partition::Partition],
+    (drive, lose): (&Drive, bool),
+) -> Replaced {
+    let heap = HEAP.with(Flags::MAY_SLEEP);
+    let (mut coming, mut nodes, mut gone) = (
+        alloc::vec::Vec::new_in(heap),
+        alloc::vec::Vec::new_in(heap),
+        alloc::vec::Vec::new_in(heap),
+    );
+    if coming.try_reserve(parts.len()).is_err() || nodes.try_reserve(parts.len()).is_err() {
+        warn!("Disk: {name}: out of memory for its medium's partitions");
+    }
+    for part in parts {
+        if coming.len() < coming.capacity()
+            && let Some(entry) = partition_entry(name, &device, part)
+        {
+            let _ = nodes.push_within_capacity((entry.name.clone(), entry.device.clone()));
+            let _ = coming.push_within_capacity(entry);
+        }
+    }
+    let name = name.as_str();
+    if lose
+        && let Some(vfs) = super::vfs()
+        && vfs.try_lose(|other| of_disk(name, other)).is_none()
+    {
+        return Replaced::Busy;
+    }
+    // Dropped after the lock is let go, as its last reference may be.
+    let mut old = None;
+    {
+        let mut disks = DISKS.lock();
+        let Some(disks) = disks.as_mut() else { return Replaced::Gone };
+        if gone.try_reserve(disks.len()).is_err() || disks.try_reserve(coming.len()).is_err() {
+            // As if the drive had gone: its medium's requests fail.
+            warn!("Disk: {name}: out of memory changing its medium");
+            return Replaced::Gone;
+        }
+        let mut at = 0;
+        while at < disks.len() {
+            let other = disks[at].name.as_str();
+            if other == name {
+                old = Some(core::mem::replace(&mut disks[at].device, device.clone()));
+                at += 1;
+            } else if of_disk(name, other) {
+                let _ = gone.push_within_capacity(disks.remove(at));
+            } else {
+                at += 1;
+            }
+        }
+        if old.is_some() {
+            while !coming.is_empty() {
+                let _ = disks.push_within_capacity(coming.remove(0));
+            }
+            drive.changed();
+        }
+    }
+    for entry in &gone {
+        super::devfs::remove_block(entry.name.as_str());
+        entry.device.retire();
+    }
+    if old.is_none() {
+        return Replaced::Gone;
+    }
+    // In place of the node there, with no moment without one.
+    super::devfs::add_block(name, device);
+    for (part, device) in nodes {
+        super::devfs::add_block(part.as_str(), device);
+    }
+    Replaced::Done
+}
+
+/// Whether anything uses the disk `name`, one of its partitions, or a
+/// BitLocker volume unlocked on them, as GET_IN_USE says of each: a
+/// drive's medium is not ejected while one does (ADR 0430).
+pub fn in_use(name: &str) -> bool {
+    devices_of(name).iter().any(|device| super::uses(device) != 0)
+}
+
+/// [`in_use`], for the drive's driver's thread, which locks its medium in
+/// while it is used: without waiting for the mount table, `None` while
+/// another holds it ([`super::uses_now`]).
+fn in_use_now(name: &str) -> Option<bool> {
+    let mut used = false;
+    for device in &devices_of(name) {
+        used |= super::uses_now(device)? != 0;
+    }
+    Some(used)
+}
+
+/// The devices of the disk `name`: it, its partitions, and the BitLocker
+/// volumes unlocked on them.
+fn devices_of(name: &str) -> alloc::vec::Vec<DeviceRef, Kmalloc> {
+    let mut devices = alloc::vec::Vec::new_in(HEAP.with(Flags::MAY_SLEEP));
+    for_each(|entry| {
+        if of_disk(name, entry.name.as_str()) && devices.try_reserve(1).is_ok() {
+            let _ = devices.push_within_capacity(entry.device.clone());
+        }
+    });
+    // Used without the list's lock, which `uses` takes.
+    devices
 }
 
 /// Readies every disk for the power to go: empties each one's write
@@ -729,8 +887,8 @@ fn reread(device: &DeviceRef) -> Result<(), Status> {
 /// caller's address of the value a request writes or reads, and
 /// `may_write` whether the caller's capability has the write right, which
 /// DISCARD, FLUSH, SWAP_ON, SWAP_OFF and REREAD_PARTITIONS need, and
-/// UNLOCK but to unlock read-only. Any other request is not one of a
-/// block device.
+/// UNLOCK but to unlock read-only; EJECT does not, as on Linux. Any other
+/// request is not one of a block device.
 pub fn control(
     device: &DeviceRef,
     request: u32,
@@ -797,8 +955,32 @@ pub fn control(
         request::GET_IN_USE => put(&super::uses(device).to_le_bytes()),
         request::REREAD_PARTITIONS => reread(device),
         request::UNLOCK => unlock(device, argument, may_write),
+        request::EJECT => eject(device),
         _ => Err(Kernel::NotTerminal.status(0)),
     }
+}
+
+/// EJECT: ejects the medium of the drive `device` is (ADR 0430), through
+/// its driver's thread, which empties the drive. Refused with `in_use`
+/// while the drive, a partition of it or a volume unlocked on them is in
+/// use, `invalid_argument` on a partition (or a medium's device that is
+/// no longer in the drive), and `not_supported` on a disk whose medium
+/// does not come and go.
+fn eject(device: &DeviceRef) -> Result<(), Status> {
+    let mut found = None;
+    for_each(|entry| {
+        if Arc::ptr_eq(&entry.device, device) {
+            found = Some((entry.name.clone(), entry.place.is_none()));
+        }
+    });
+    let Some((name, true)) = found else { return Err(Kernel::InvalidArgument.status(0)) };
+    let Some(drive) = removable::find(name.as_str()) else {
+        return Err(Kernel::NotSupported.status(0));
+    };
+    if in_use(name.as_str()) {
+        return Err(FileError::InUse.status(0));
+    }
+    drive.eject().map_err(block_status)
 }
 
 /// UNLOCK: unlocks the BitLocker volume on `device` with the method and

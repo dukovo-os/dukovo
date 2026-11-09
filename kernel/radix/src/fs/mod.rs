@@ -891,12 +891,34 @@ fn free_disk(
 /// nothing does. For rdisk(8), and for re-reading a partition table
 /// (ADR 0301), which leaves alone what is in use.
 pub fn uses(device: &radix_block::DeviceRef) -> u32 {
+    uses_waiting(device, true).unwrap_or(0)
+}
+
+/// [`uses`], without waiting for the mount table: `None` while another
+/// holds it, as an unmount does while it syncs. For a disk's driver's
+/// thread, which locks a drive's medium in while it is used (ADR 0430):
+/// the sync may be waiting for that thread. A Btrfs mounted from another
+/// of the device's disks is not looked for: the reference to it this
+/// would hold for a moment could be its last, and the thread the one to
+/// unmount it.
+pub fn uses_now(device: &radix_block::DeviceRef) -> Option<u32> {
+    uses_waiting(device, false)
+}
+
+/// [`uses`], waiting for the mount table if `wait`, else `None` if
+/// another holds it, and without the Btrfs mounts then ([`uses_now`]).
+fn uses_waiting(device: &radix_block::DeviceRef, wait: bool) -> Option<u32> {
     use radix_abi::block as request;
     let mut uses = 0;
     let name = disk::name_of(device);
     let mut mounted = false;
     if let (Some(name), Some(vfs)) = (&name, vfs()) {
-        vfs.mounts(|mount| mounted |= mount.source() == name.as_str());
+        let from_it = |mount: &radix_vfs::mount::Mount| mount.source() == name.as_str();
+        if wait {
+            vfs.mounts(|mount| mounted |= from_it(mount));
+        } else {
+            vfs.try_mounts(|mount| mounted |= from_it(mount))?;
+        }
     }
     if mounted {
         uses |= request::IN_USE_MOUNTED;
@@ -907,9 +929,11 @@ pub fn uses(device: &radix_block::DeviceRef) -> u32 {
     // Dropped once the lock is let go: the last reference unmounts.
     let mut held = mem::vec();
     let mut btrfs = false;
-    for fs in BTRFS.lock().iter().flatten().filter_map(|m| m.fs.upgrade()) {
-        btrfs |= fs.has_disk(device);
-        let _ = mem::push(&mut held, fs);
+    if wait {
+        for fs in BTRFS.lock().iter().flatten().filter_map(|m| m.fs.upgrade()) {
+            btrfs |= fs.has_disk(device);
+            let _ = mem::push(&mut held, fs);
+        }
     }
     drop(held);
     if btrfs && !mounted {
@@ -918,7 +942,7 @@ pub fn uses(device: &radix_block::DeviceRef) -> u32 {
     if name.as_ref().is_some_and(|name| disk::is_unlocked(name.as_str())) {
         uses |= request::IN_USE_UNLOCKED;
     }
-    uses
+    Some(uses)
 }
 
 /// Warns when the Btrfs `fs`, mounted from `name`, mounted with disks

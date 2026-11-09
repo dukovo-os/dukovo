@@ -16,6 +16,10 @@
 //!   Bulk-Only Transport, `radix_usb::storage`), and [`probe`], which finds
 //!   out what the disk behind one is, as Linux's `sd` does when it scans a
 //!   USB stick.
+//! - For a drive whose medium comes and goes, a card reader's slot or a
+//!   stick that says its medium is removable (ADR 0430): [`look`], which
+//!   asks whether a medium is in it, [`prevent_removal`], which locks it
+//!   in while it is used, and [`eject`].
 //!
 //! The crate knows nothing of the kernel or of USB, so its tests run on
 //! the host. Nothing a device sends is trusted without checking its
@@ -30,7 +34,7 @@ mod probe;
 #[cfg(test)]
 mod tests;
 
-pub use probe::{Absent, Found, probe};
+pub use probe::{Absent, Found, Look, eject, identify, look, medium, prevent_removal, probe};
 
 /// Operation codes.
 pub mod op {
@@ -45,6 +49,8 @@ pub mod op {
     pub const MODE_SENSE_6: u8 = 0x1a;
     /// START STOP UNIT: spins the medium up or down, or ejects it.
     pub const START_STOP_UNIT: u8 = 0x1b;
+    /// PREVENT ALLOW MEDIUM REMOVAL: locks the medium in, or lets it go.
+    pub const PREVENT_ALLOW_MEDIUM_REMOVAL: u8 = 0x1e;
     /// READ CAPACITY(10): the last block and the block length.
     pub const READ_CAPACITY_10: u8 = 0x25;
     /// READ(10).
@@ -178,6 +184,13 @@ impl Cdb {
     pub fn start_stop_unit(start: bool, eject: bool) -> Cdb {
         let bits = u8::from(eject) << 1 | u8::from(start);
         Cdb::new(&[op::START_STOP_UNIT, 0, 0, 0, bits, 0])
+    }
+
+    /// PREVENT ALLOW MEDIUM REMOVAL: with `prevent`, the drive keeps its
+    /// medium in until it is let go (SPC-6, 6.15: a tray stays shut, an
+    /// eject button does nothing); without, it lets it go.
+    pub fn prevent_allow_medium_removal(prevent: bool) -> Cdb {
+        Cdb::new(&[op::PREVENT_ALLOW_MEDIUM_REMOVAL, 0, 0, 0, u8::from(prevent), 0])
     }
 
     /// READ CAPACITY(10).
@@ -459,7 +472,7 @@ pub enum Meaning {
 
 /// Words for the additional sense codes the log meets most, by code and
 /// qualifier.
-const CODES: [((u8, u8), &str); 18] = [
+const CODES: [((u8, u8), &str); 20] = [
     ((0x00, 0x00), "no additional sense information"),
     ((0x04, 0x00), "not ready, cause not reportable"),
     ((0x04, 0x01), "becoming ready"),
@@ -478,6 +491,8 @@ const CODES: [((u8, u8), &str); 18] = [
     ((0x3a, 0x01), "medium not present, tray closed"),
     ((0x3a, 0x02), "medium not present, tray open"),
     ((0x44, 0x00), "internal target failure"),
+    ((0x53, 0x02), "medium removal prevented"),
+    ((0x5a, 0x01), "operator medium removal request"),
 ];
 
 impl Sense {
@@ -516,6 +531,16 @@ impl Sense {
             (key::ABORTED_COMMAND, _, _) => Meaning::Aborted,
             _ => Meaning::Error,
         }
+    }
+
+    /// Whether it says the medium may have changed: a UNIT ATTENTION of a
+    /// medium put in (28h, "not ready to ready change, medium may have
+    /// changed") or taken out (3Ah, as QEMU's drives say first when one
+    /// is put in). A drive says so once, to the first command after: what
+    /// is in it now is not what was, as Linux's `sd` takes it of a
+    /// removable disk.
+    pub fn medium_changed(&self) -> bool {
+        self.key == key::UNIT_ATTENTION && matches!(self.asc, 0x28 | 0x3a)
     }
 
     /// The sense key's name.

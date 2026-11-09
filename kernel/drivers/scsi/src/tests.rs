@@ -27,6 +27,15 @@ struct Sim {
     protected: bool,
     /// UNIT ATTENTIONs to answer the next commands with, as after a reset.
     attentions: u32,
+    /// UNIT ATTENTIONs of a medium changed to answer the next commands
+    /// with, their additional sense codes in order, as QEMU's drives
+    /// answer when one is put in (3Ah, then 28h).
+    changes: Vec<u8>,
+    /// Takes PREVENT ALLOW MEDIUM REMOVAL; whether it keeps its medium in.
+    lockable: bool,
+    locked: bool,
+    /// Takes START STOP UNIT's LoEj: ejecting leaves it with no medium.
+    ejectable: bool,
     /// Refuses MODE SENSE of every page; with `no_mode_sense`, of any.
     no_all_pages: bool,
     no_mode_sense: bool,
@@ -53,6 +62,10 @@ impl Sim {
             no_medium: false,
             protected: false,
             attentions: 0,
+            changes: Vec::new(),
+            lockable: true,
+            locked: false,
+            ejectable: true,
             no_all_pages: false,
             no_mode_sense: false,
             cache: None,
@@ -72,6 +85,10 @@ impl Sim {
         if self.attentions > 0 {
             self.attentions -= 1;
             return Sim::sense(key::UNIT_ATTENTION, 0x29, 0);
+        }
+        if !self.changes.is_empty() {
+            let asc = self.changes.remove(0);
+            return Sim::sense(key::UNIT_ATTENTION, asc, 0);
         }
         match cdb[0] {
             op::INQUIRY => {
@@ -99,9 +116,26 @@ impl Sim {
                 }
             }
             op::START_STOP_UNIT => {
-                if cdb[4] & 1 != 0 {
+                let (start, eject) = (cdb[4] & 1 != 0, cdb[4] & 2 != 0);
+                if eject && !self.ejectable {
+                    return Sim::sense(key::ILLEGAL_REQUEST, 0x24, 0);
+                }
+                if eject && !start && self.locked {
+                    return Sim::sense(key::ILLEGAL_REQUEST, 0x53, 0x02);
+                }
+                if eject && !start {
+                    self.no_medium = true;
+                }
+                if start {
                     self.stopped = false;
                 }
+                Reply::Good { residue: 0 }
+            }
+            op::PREVENT_ALLOW_MEDIUM_REMOVAL => {
+                if !self.lockable {
+                    return Sim::sense(key::ILLEGAL_REQUEST, 0x20, 0);
+                }
+                self.locked = cdb[4] & 1 != 0;
                 Reply::Good { residue: 0 }
             }
             op::READ_CAPACITY_10 => {
@@ -311,6 +345,99 @@ fn what_is_not_a_disk_is_left_alone() {
     let found = probe_sim(&mut sim).0;
     assert!(matches!(found, Err(Absent::BadCapacity(_))));
     assert_eq!(found.unwrap_err().to_string(), "it says it has 4194304 blocks of 520 bytes");
+}
+
+#[test]
+fn identify_says_what_any_unit_is_and_medium_what_is_in_a_disk() {
+    let mut sim = Sim { device_type: device_type::CD, ..Sim::stick() };
+    let inquiry = identify(&mut sim, 0).unwrap();
+    assert_eq!(inquiry.device_type, device_type::CD);
+    assert!(inquiry.removable);
+    assert_eq!(sim.sent, [op::INQUIRY]);
+    let mut sim = Sim { qualifier: 3, ..Sim::stick() };
+    assert_eq!(identify(&mut sim, 0), Err(Absent::NoUnit));
+    // An empty slot is a disk with no medium, found again once one is in.
+    let mut sim = Sim { no_medium: true, ..Sim::stick() };
+    let inquiry = identify(&mut sim, 0).unwrap();
+    assert_eq!(medium(&mut sim, 0, inquiry, &mut |_| {}), Err(Absent::NoMedium));
+    sim.no_medium = false;
+    let found = medium(&mut sim, 0, inquiry, &mut |_| {}).unwrap();
+    assert_eq!(found.inquiry, inquiry);
+    assert_eq!(found.capacity.blocks, 0x40_0000);
+}
+
+#[test]
+fn a_look_says_whether_a_medium_is_in_and_whether_it_changed() {
+    let mut sim = Sim::stick();
+    assert_eq!(look(&mut sim, 0), Ok(Look { medium: Some(true), changed: false }));
+    assert_eq!(sim.sent, [op::TEST_UNIT_READY]);
+    let mut sim = Sim { no_medium: true, ..Sim::stick() };
+    assert_eq!(look(&mut sim, 0), Ok(Look { medium: Some(false), changed: false }));
+    // A medium put in: QEMU's drives say none is there, then that it
+    // changed, then that it is ready.
+    let mut sim = Sim { changes: std::vec![0x3a, 0x28], ..Sim::stick() };
+    assert_eq!(look(&mut sim, 0), Ok(Look { medium: Some(true), changed: true }));
+    assert_eq!(sim.sent, [op::TEST_UNIT_READY; 3]);
+    // One taken out and another put in between two looks.
+    let mut sim = Sim { changes: std::vec![0x28], ..Sim::stick() };
+    assert_eq!(look(&mut sim, 0), Ok(Look { medium: Some(true), changed: true }));
+    // A reset is no change of medium.
+    let mut sim = Sim { attentions: 1, ..Sim::stick() };
+    assert_eq!(look(&mut sim, 0), Ok(Look { medium: Some(true), changed: false }));
+    // One still getting ready, or stopped, is in, as on Linux.
+    let mut sim = Sim { becoming: 1, ..Sim::stick() };
+    assert_eq!(look(&mut sim, 0).unwrap().medium, Some(true));
+    let mut sim = Sim { stopped: true, ..Sim::stick() };
+    assert_eq!(look(&mut sim, 0).unwrap().medium, Some(true));
+    // A transport that failed, or attentions without end, say nothing.
+    let mut sim = Sim { broken: 1, ..Sim::stick() };
+    assert_eq!(look(&mut sim, 0), Ok(Look { medium: None, changed: false }));
+    let mut sim = Sim { attentions: 10, ..Sim::stick() };
+    assert_eq!(look(&mut sim, 0), Ok(Look { medium: None, changed: false }));
+    assert_eq!(sim.sent.len(), 4);
+    let mut sim = Sim { gone: true, ..Sim::stick() };
+    assert_eq!(look(&mut sim, 0), Err(TransportError::Gone));
+}
+
+#[test]
+fn a_medium_is_locked_in_while_used_and_ejected_when_let_go() {
+    let mut sim = Sim::stick();
+    assert_eq!(prevent_removal(&mut sim, 0, true), Ok(true));
+    assert!(sim.locked);
+    assert_eq!(
+        Cdb::prevent_allow_medium_removal(true).bytes(),
+        [op::PREVENT_ALLOW_MEDIUM_REMOVAL, 0, 0, 0, 1, 0]
+    );
+    // Eject lets it go first, then ejects: the drive is empty after.
+    assert_eq!(eject(&mut sim, 0), Ok(()));
+    assert!(!sim.locked && sim.no_medium);
+    assert_eq!(
+        sim.sent,
+        [op::PREVENT_ALLOW_MEDIUM_REMOVAL, op::PREVENT_ALLOW_MEDIUM_REMOVAL, op::START_STOP_UNIT]
+    );
+    assert_eq!(look(&mut sim, 0).unwrap().medium, Some(false));
+    // A drive that does not lock says so, and still ejects.
+    let mut sim = Sim { lockable: false, ..Sim::stick() };
+    assert_eq!(prevent_removal(&mut sim, 0, true), Ok(false));
+    assert_eq!(eject(&mut sim, 0), Ok(()));
+    // One that cannot eject says why.
+    let mut sim = Sim { ejectable: false, ..Sim::stick() };
+    let sense = Sense { key: key::ILLEGAL_REQUEST, asc: 0x24, ascq: 0 };
+    assert_eq!(eject(&mut sim, 0), Err(Absent::Failed("START STOP UNIT", Some(sense))));
+    let mut sim = Sim { gone: true, ..Sim::stick() };
+    assert_eq!(eject(&mut sim, 0), Err(Absent::Gone));
+    // The sense of a removal prevented reads as such.
+    let prevented = Sense { key: key::ILLEGAL_REQUEST, asc: 0x53, ascq: 0x02 };
+    assert_eq!(prevented.to_string(), "illegal request, medium removal prevented (53/02)");
+}
+
+#[test]
+fn only_attentions_of_a_medium_put_in_or_taken_out_are_changes() {
+    for (asc, changed) in [(0x28, true), (0x3a, true), (0x29, false), (0x2a, false)] {
+        let sense = Sense { key: key::UNIT_ATTENTION, asc, ascq: 0 };
+        assert_eq!(sense.medium_changed(), changed, "{asc:#x}");
+    }
+    assert!(!Sense { key: key::NOT_READY, asc: 0x3a, ascq: 0 }.medium_changed());
 }
 
 #[test]

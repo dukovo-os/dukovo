@@ -1,0 +1,67 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "A card in the card reader is mounted at its label when put in, ejected by eject, and unmounted when pulled out; the reader stays, empty"
+time = "5m"
+
+# The reader with no card in it is a drive of no size whose medium comes
+# and goes (ADR 0430). Keep its name in the lab's home for the steps
+# below, which root runs: each account has a /tmp of its own.
+[[step]]
+run = "lsblk -dbn -o NAME,SIZE,RM | awk '$2 == \"0\" && $3 == \"1\" { print $1 }' > ~/lab-reader && cat ~/lab-reader"
+expect = "sd"
+# A blank card, found within a look or two, and formatted in the reader.
+[[step]]
+card = "insert"
+blank = "64M"
+[[step]]
+wait = "5s"
+[[step]]
+run = "sh -c 'lsblk -dbn -o SIZE /devices/$(cat ~/lab-reader)'"
+expect = "67108864"
+[[step]]
+run = "sh -c 'mkfs-fat -n LABCARD /devices/$(cat /users/lab/lab-reader)'"
+root = true
+expect = ["made FAT16", "label LABCARD"]
+# Taken out and put back, it holds a FAT, which volumed mounts at its
+# label.
+[[step]]
+card = "remove"
+[[step]]
+card = "reinsert"
+[[step]]
+wait = "5s"
+[[step]]
+run = "findmnt /volumes/LABCARD"
+expect = ["vfat", "rw"]
+[[step]]
+run = "sh -c 'echo on-the-card > /volumes/LABCARD/hello.txt'"
+root = true
+# eject unmounts it and has the reader let it go: the reader stays,
+# empty, and nothing is left at /volumes.
+[[step]]
+run = "eject LABCARD"
+root = true
+[[step]]
+run = "sh -c 'test \"$(cat /kernel/block/$(cat ~/lab-reader)/size)\" = 0 && echo empty; ls /volumes'"
+expect = "empty"
+expect_not = "LABCARD"
+# Put back, it holds what was written before the eject.
+[[step]]
+card = "remove"
+[[step]]
+card = "reinsert"
+[[step]]
+wait = "5s"
+[[step]]
+run = "cat /volumes/LABCARD/hello.txt"
+expect = "on-the-card"
+# Pulled out while mounted, it is unmounted all the same.
+[[step]]
+card = "remove"
+[[step]]
+wait = "5s"
+[[step]]
+run = "sh -c 'test \"$(cat /kernel/block/$(cat ~/lab-reader)/size)\" = 0 && echo empty; ls /volumes'"
+expect = "empty"
+expect_not = "LABCARD"
