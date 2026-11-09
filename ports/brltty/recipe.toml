@@ -1,0 +1,22 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# BRLTTY (ADR 0326): it drives a braille display, showing it the shown
+# console and typing what its keys type, through its screen driver for
+# Dukovo (Dukovo/), which reads the consoles from consoled(8). braille(8)
+# starts it when a display is plugged in. BRLTTY, its braille drivers and
+# its tables are under version 2.1 of the LGPL or later; the screen
+# driver for Dukovo is the project's own (Apache-2.0 OR MIT), built into
+# it.
+name = "brltty"
+version = "6.9.1"
+summary = "BRLTTY, which drives braille displays, and its tables"
+license = "LGPL-2.1-or-later AND (Apache-2.0 OR MIT)"
+homepage = "https://brltty.app"
+depends = ["mlibc"]
+notices = ["LICENSE-LGPL"]
+
+[source]
+git = "https://github.com/brltty/brltty.git"
+commit = "4fddd533bf6023820266879203839db511808d63"
+tag = "BRLTTY-6.9.1"

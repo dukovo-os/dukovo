@@ -162,6 +162,106 @@ fn function_number(code: u16) -> Option<u16> {
     }
 }
 
+/// What a cursor key sends: `ESC [` and its letter, or `ESC O` and it
+/// while the program asked for the application cursor keys.
+fn cursor(letter: u8, modes: Modes) -> Action {
+    let lead: &[u8] = if modes.app_cursor { b"\x1bO" } else { b"\x1b[" };
+    Action::Send([lead, &[letter]].concat())
+}
+
+/// What Enter sends: CR, or CR LF in the newline mode.
+fn enter(modes: Modes) -> Action {
+    send(if modes.newline { b"\r\n" } else { b"\r" })
+}
+
+/// What the function, cursor and editing keys and Escape, Enter,
+/// Backspace and Tab do with the modifiers held (Shift, Ctrl, Alt), the
+/// same from the keyboard and from a braille display (ADR 0326); `None`
+/// for any other key.
+fn special(code: u16, (shift, ctrl, alt): (bool, bool, bool), modes: Modes) -> Option<Action> {
+    if let Some(n) = function_number(code) {
+        return Some(if alt { Action::Switch(usize::from(n - 1)) } else { send(function(n)) });
+    }
+    Some(match code {
+        KEY_ESC => send(b"\x1b"),
+        KEY_ENTER => enter(modes),
+        KEY_BACKSPACE => match (ctrl, alt) {
+            (true, _) => send(b"\x08"),
+            (_, true) => send(b"\x1b\x7f"),
+            _ => send(b"\x7f"),
+        },
+        KEY_TAB if shift => send(b"\x1b[Z"),
+        KEY_TAB => send(b"\t"),
+        KEY_UP => cursor(b'A', modes),
+        KEY_DOWN => cursor(b'B', modes),
+        KEY_LEFT if alt => send(b"\x1b[1;3D"),
+        KEY_RIGHT if alt => send(b"\x1b[1;3C"),
+        KEY_RIGHT => cursor(b'C', modes),
+        KEY_LEFT => cursor(b'D', modes),
+        KEY_HOME => send(b"\x1b[1~"),
+        KEY_INSERT => send(b"\x1b[2~"),
+        KEY_DELETE if ctrl && alt => Action::Attention,
+        KEY_DELETE => send(b"\x1b[3~"),
+        KEY_END => send(b"\x1b[4~"),
+        KEY_PAGEUP if shift => Action::Page(1),
+        KEY_PAGEDOWN if shift => Action::Page(-1),
+        KEY_PAGEUP => send(b"\x1b[5~"),
+        KEY_PAGEDOWN => send(b"\x1b[6~"),
+        _ => return None,
+    })
+}
+
+/// What a braille display's key does (ADR 0326), by the name BRLTTY's
+/// screen driver gives it (`crate::braille`), with the modifiers held:
+/// a character, `U+0061`, is typed as itself, as a control character
+/// with Ctrl and after ESC with Alt, whatever the keyboard's layout; the
+/// other keys are the keyboard's. `None` for a name it does not know.
+pub fn named(name: &str, held: (bool, bool, bool), modes: Modes) -> Option<Action> {
+    let (_, ctrl, alt) = held;
+    if let Some(hex) = name.strip_prefix("U+") {
+        let c = char::from_u32(u32::from_str_radix(hex, 16).ok()?)?;
+        // A control character comes as the key that types it.
+        if c.is_control() {
+            return None;
+        }
+        let mut bytes = Vec::with_capacity(8);
+        if alt {
+            bytes.push(0x1b);
+        }
+        match control(c).filter(|_| ctrl) {
+            Some(byte) => bytes.push(byte),
+            None => bytes.extend(utf8(c)),
+        }
+        return Some(Action::Send(bytes));
+    }
+    let code = match name {
+        "enter" => KEY_ENTER,
+        "tab" => KEY_TAB,
+        "backspace" => KEY_BACKSPACE,
+        "escape" => KEY_ESC,
+        "left" => KEY_LEFT,
+        "right" => KEY_RIGHT,
+        "up" => KEY_UP,
+        "down" => KEY_DOWN,
+        "pageup" => KEY_PAGEUP,
+        "pagedown" => KEY_PAGEDOWN,
+        "home" => KEY_HOME,
+        "end" => KEY_END,
+        "insert" => KEY_INSERT,
+        "delete" => KEY_DELETE,
+        _ => {
+            let n: u16 = name.strip_prefix('f')?.parse().ok()?;
+            match n {
+                1..=10 => KEY_F1 + n - 1,
+                11 => KEY_F11,
+                12 => KEY_F12,
+                _ => return None,
+            }
+        }
+    };
+    special(code, held, modes)
+}
+
 impl Keyboard {
     /// A keyboard of `keymap`'s layout with Num Lock on, so the keypad
     /// types digits.
@@ -364,21 +464,14 @@ impl Keyboard {
         let (shift, ctrl, alt) = (self.shift(), self.ctrl(), self.alt());
         // Any other key than a layout's lets go of a dead key.
         let dead = self.dead.take();
-        if let Some(n) = function_number(code) {
-            if alt {
-                return Action::Switch(usize::from(n - 1));
-            }
-            return send(function(n));
-        }
-        let cursor = |letter: u8| {
-            let lead: &[u8] = if modes.app_cursor { b"\x1bO" } else { b"\x1b[" };
-            Action::Send([lead, &[letter]].concat())
-        };
         if ctrl
             && alt
             && let Some(step) = self.size_key(code)
         {
             return Action::TextSize(step);
+        }
+        if let Some(action) = special(code, (shift, ctrl, alt), modes) {
+            return action;
         }
         let applic = modes.app_keypad && !shift;
         // The keypad: digits with Num Lock, the editing keys without.
@@ -392,47 +485,17 @@ impl Keyboard {
             }
         };
         match code {
-            KEY_ESC => send(b"\x1b"),
-            KEY_ENTER | KEY_KPENTER => {
-                if code == KEY_KPENTER && applic {
-                    send(b"\x1bOM")
-                } else if modes.newline {
-                    send(b"\r\n")
-                } else {
-                    send(b"\r")
-                }
-            }
-            KEY_BACKSPACE => match (ctrl, alt) {
-                (true, _) => send(b"\x08"),
-                (_, true) => send(b"\x1b\x7f"),
-                _ => send(b"\x7f"),
-            },
-            KEY_TAB if shift => send(b"\x1b[Z"),
-            KEY_TAB => send(b"\t"),
-            KEY_UP => cursor(b'A'),
-            KEY_DOWN => cursor(b'B'),
-            KEY_LEFT if alt => Action::Send(b"\x1b[1;3D".to_vec()),
-            KEY_RIGHT if alt => Action::Send(b"\x1b[1;3C".to_vec()),
-            KEY_RIGHT => cursor(b'C'),
-            KEY_LEFT => cursor(b'D'),
-            KEY_HOME => send(b"\x1b[1~"),
-            KEY_INSERT => send(b"\x1b[2~"),
-            KEY_DELETE if ctrl && alt => Action::Attention,
-            KEY_DELETE => send(b"\x1b[3~"),
-            KEY_END => send(b"\x1b[4~"),
-            KEY_PAGEUP if shift => Action::Page(1),
-            KEY_PAGEDOWN if shift => Action::Page(-1),
-            KEY_PAGEUP => send(b"\x1b[5~"),
-            KEY_PAGEDOWN => send(b"\x1b[6~"),
+            KEY_KPENTER if applic => send(b"\x1bOM"),
+            KEY_KPENTER => enter(modes),
             KEY_KP0 => keypad('0', b'p', send(b"\x1b[2~")),
             KEY_KP1 => keypad('1', b'q', send(b"\x1b[4~")),
-            KEY_KP2 => keypad('2', b'r', cursor(b'B')),
+            KEY_KP2 => keypad('2', b'r', cursor(b'B', modes)),
             KEY_KP3 => keypad('3', b's', send(b"\x1b[6~")),
-            KEY_KP4 => keypad('4', b't', cursor(b'D')),
+            KEY_KP4 => keypad('4', b't', cursor(b'D', modes)),
             KEY_KP5 => keypad('5', b'u', send(b"\x1b[G")),
-            KEY_KP6 => keypad('6', b'v', cursor(b'C')),
+            KEY_KP6 => keypad('6', b'v', cursor(b'C', modes)),
             KEY_KP7 => keypad('7', b'w', send(b"\x1b[1~")),
-            KEY_KP8 => keypad('8', b'x', cursor(b'A')),
+            KEY_KP8 => keypad('8', b'x', cursor(b'A', modes)),
             KEY_KP9 => keypad('9', b'y', send(b"\x1b[5~")),
             KEY_KPDOT if ctrl && alt => Action::Attention,
             KEY_KPDOT => keypad(self.keymap.keypad_decimal(), b'n', send(b"\x1b[3~")),
@@ -747,6 +810,30 @@ mod tests {
         keyboard.key(KEY_LEFTSHIFT, PRESSED, PLAIN);
         assert_eq!(keyboard.key(KEY_PAGEUP, PRESSED, PLAIN), Action::Page(1));
         assert_eq!(bytes(&keyboard.key(KEY_TAB, PRESSED, PLAIN)), b"\x1b[Z");
+    }
+
+    #[test]
+    fn a_braille_displays_keys_type_as_the_keyboards() {
+        let none = (false, false, false);
+        let named = |name: &str, held| named(name, held, PLAIN);
+        // Characters are themselves, whatever the layout.
+        assert_eq!(named("U+0061", none), Some(Action::Send(b"a".to_vec())));
+        assert_eq!(named("U+00E9", none), Some(Action::Send("é".as_bytes().to_vec())));
+        assert_eq!(named("U+0063", (false, true, false)), Some(Action::Send(vec![3])));
+        assert_eq!(named("U+0078", (false, false, true)), Some(Action::Send(b"\x1bx".to_vec())));
+        // The other keys are the keyboard's.
+        assert_eq!(named("enter", none), Some(Action::Send(b"\r".to_vec())));
+        assert_eq!(named("tab", (true, false, false)), Some(Action::Send(b"\x1b[Z".to_vec())));
+        assert_eq!(named("f12", none), Some(Action::Send(b"\x1b[24~".to_vec())));
+        assert_eq!(named("f2", (false, false, true)), Some(Action::Switch(1)));
+        assert_eq!(named("delete", (false, true, true)), Some(Action::Attention));
+        assert_eq!(named("pageup", (true, false, false)), Some(Action::Page(1)));
+        let app = Modes { app_cursor: true, ..PLAIN };
+        assert_eq!(super::named("up", none, app), Some(Action::Send(b"\x1bOA".to_vec())));
+        // Nothing for what is not a key.
+        for name in ["U+000D", "U+D800", "U+zz", "f13", "f0", "menu", ""] {
+            assert_eq!(named(name, none), None, "{name}");
+        }
     }
 
     fn layout(name: &str) -> Keyboard {

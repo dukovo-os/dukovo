@@ -128,6 +128,8 @@ pub const STD_LINKS: &[(&str, &str)] = &[
     ("system/commands/authd", "systools"),
     ("system/commands/balance", "systools"),
     ("system/commands/blkid", "systools"),
+    ("system/commands/braille", "systools"),
+    ("system/commands/brailled", "systools"),
     ("system/commands/btrfsck", "systools"),
     ("system/commands/bundle", "systools"),
     ("system/commands/bundled", "systools"),

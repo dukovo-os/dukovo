@@ -245,6 +245,34 @@ waits, Shift and the others too.
 The screen reader says each change: *Text larger*, *shift*, *shift
 locked*, *Sticky keys on*.
 
+# BRAILLE DISPLAYS
+
+consoled shows a braille display the consoles through *brltty*(1),
+which *brailled*(8) starts when one is plugged in (ADR 0326). It listens
+on _/system/live/consoled/braille_, which only root can open, for one
+display at a time, and each time what the shown console shows changes
+it sends the screen whole, a line of its number, size and cursor:
+```
+screen NUMBER COLUMNS ROWS X Y
+```
+then each row as text. The rows are the console's as the screen shows
+them, the scrollback while it is moved back, and one more at the
+bottom: consoled's own line, with its prompts, its menu, its notes and
+the notifications, or blank. No program writes that row. While consoled
+asks for something there, the cursor is on it, after a prompt's words
+or at the start of the menu. Only the newest screen waits for a display
+that reads slowly.
+
+The display types back through consoled, a line for each key:
+*key* _name_, then *shift*, *ctrl* and *alt* as held, where _name_ is a
+character as *U+0041*, or a key: *enter*, *tab*, *backspace*, *escape*,
+*insert*, *delete*, *home*, *end*, *pageup*, *pagedown*, *up*, *down*,
+*left*, *right* or *f1* to *f12*; and *switch* _n_ shows console _n_.
+consoled takes each as from its keyboard, so its prompts and menu take
+them first: a person answers elevate's password and reaches the menu
+from the display. A key no keyboard has, or a control character, is
+refused, and a line that is not one of these is dropped.
+
 # KEYS
 
 *Alt+F1* to *Alt+F6*
@@ -361,11 +389,15 @@ _/system/live/authd/socket_
 _/system/live/readerd/socket_
 	readerd's socket, which consoled tells what to say.
 
+_/system/live/consoled/braille_
+	The socket a braille display's BRLTTY reads the consoles on.
+
 # SEE ALSO
 
 *login*(1), *authd*(8), *elevate*(8), *spark*(8), *reboot*(8),
 *keymap*(1), *keymap*(5), *welcome.toml*(5), *accessibility.toml*(5),
 *nukesh*(1), *dmesg*(1),
-*notifyd*(8), *notify-send*(1), *readerd*(8), *reader*(1), *dukovo-boot*(7),
+*notifyd*(8), *notify-send*(1), *readerd*(8), *reader*(1), *brailled*(8),
+*braille*(1), *brltty*(1), *dukovo-boot*(7),
 *radix-framebuffer*(2), *radix-input*(2), *radix-files*(7),
 *serial-console*(8)

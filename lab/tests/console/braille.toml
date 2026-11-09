@@ -1,0 +1,41 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# Braille displays on the lab's machines (ADR 0326): brailled runs, BRLTTY
+# is there with its tables, consoled's socket for it is root's alone, and
+# a display plugged in by USB that brailled knows is found, BRLTTY is
+# started for it and connects to consoled. A machine with no display
+# passes the last steps with nothing to check. The braille boot test
+# answers as a display in Baum's protocol and reads its cells.
+about = "brailled runs and knows the displays; BRLTTY and its tables are installed; consoled's braille socket is root's; a display plugged in is found and BRLTTY reads the console for it"
+time = "2m"
+
+[[step]]
+run = "service brailled status"
+root = true
+expect = ["brailled - Braille displays", "Active: active (running)"]
+[[step]]
+run = "braille displays"
+expect = ["0403:fe72  bm  Baum SuperVario 40", "1c71:c005  hw  HumanWare Brailliant", "BRLTTY's drivers"]
+[[step]]
+run = '''sh -c 'brltty -V -e 2>&1 | grep -m 1 "BRLTTY 6"; ls /system/resources/brltty/Text/en-nabcc.ttb /system/resources/brltty/Text/de.ttb && echo "tables"-found' '''
+expect = ["BRLTTY 6.9.1", "tables-found"]
+[[step]]
+run = "stat -c '%a %U' /system/live/consoled/braille"
+root = true
+expect = "600 root"
+# A person's program cannot read the consoles through it.
+[[step]]
+run = "sh -c 'cat < /system/live/consoled/braille'"
+exit = 1
+expect = "Permission denied"
+[[step]]
+run = "braille"
+expect = ["Braille: on", "Table:   en-nabcc", "Display: "]
+
+# With a display plugged in: brailled started BRLTTY for it, and BRLTTY
+# reached consoled.
+[[step]]
+run = '''sh -c 'if ! braille | grep -q "^Display: .* on /devices/"; then echo "no braille display: display"-checked; exit 0; fi; journalctl -u brailled -n 200 | grep -E "brailled: found .* starting BRLTTY" | tail -n 1; journalctl -u consoled -n 500 | grep -q "consoled: braille display connected" && echo "display"-checked' '''
+root = true
+expect = "display-checked"

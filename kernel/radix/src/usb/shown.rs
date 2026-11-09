@@ -36,6 +36,32 @@ pub struct Interface {
     /// The driver that took it, as Linux names it: `hub`, `usbhid`,
     /// `usb-storage` or `uas`.
     pub driver: Option<&'static str>,
+    /// The terminal its serial port is, if it is one (ADR 0326).
+    pub tty: Tty,
+}
+
+/// The number of the terminal an interface's serial port is, `ttyUSB0`'s
+/// 0, or none. Its kind, `ttyUSB` or `ttyACM`, is the interface's
+/// driver's. It is one byte, which fits in [`Interface`]'s padding, so that
+/// a device's interfaces take no more room on the controller thread's
+/// stack than before (ADR 0058).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Tty(u8);
+
+impl Tty {
+    /// No terminal.
+    pub const NONE: Tty = Tty(u8::MAX);
+
+    /// Terminal `number`; none if it does not fit, though the numbers of
+    /// each kind stay under 32.
+    pub fn new(number: u32) -> Tty {
+        Tty(u8::try_from(number).unwrap_or(u8::MAX))
+    }
+
+    /// Its number, if there is a terminal.
+    pub fn number(self) -> Option<u8> {
+        (self != Tty::NONE).then_some(self.0)
+    }
 }
 
 impl Interface {
@@ -51,6 +77,7 @@ impl Interface {
             string: 0,
         },
         driver: None,
+        tty: Tty::NONE,
     };
 }
 
@@ -196,6 +223,20 @@ pub fn set_driver(bus: usize, path: Path, interface: u8, driver: &'static str) {
             shown.interfaces[..count].iter_mut().find(|i| i.descriptor.number == interface)
         {
             i.driver = Some(driver);
+        }
+    });
+}
+
+/// Says that interface `interface` of the device at `path` is the
+/// terminal numbered `number` of its driver's kind: 0 for `ttyUSB0`.
+#[inline(never)]
+pub fn set_tty(bus: usize, path: Path, interface: u8, number: u32) {
+    change(bus, path, |shown| {
+        let count = usize::from(shown.listed).min(MAX_INTERFACES);
+        if let Some(i) =
+            shown.interfaces[..count].iter_mut().find(|i| i.descriptor.number == interface)
+        {
+            i.tty = Tty::new(number);
         }
     });
 }

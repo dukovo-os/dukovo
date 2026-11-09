@@ -1,0 +1,31 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+#
+# Braille displays: brailled(8) starts BRLTTY when a display is plugged
+# in, which shows it the console and types what its keys type (ADR 0326).
+# It runs while braille.toml(5) says `on = true`, as it does unless
+# `braille off` set it; otherwise it ends at once and stays stopped.
+#
+# service.toml(5) explains each setting. `service check brailled` checks
+# this file, and `service edit brailled` checks it as you save.
+
+service_version = 1
+description = "Braille displays"
+program = "/system/commands/brailled"
+# After consoled, whose socket BRLTTY reads the consoles from.
+order = 11
+# Started again only if it fails: off, it ends with 0.
+restart = "on-failure"
+
+[limits]
+# A display must keep up with the keys, as speech does.
+cpu_weight = 200
+memory = "32M"
+
+# What it holds beyond what every service reads (service.toml(5)): the
+# terminals, where a display's serial port comes and goes under a name
+# the kernel gives it; consoled's folder, where its socket for BRLTTY is,
+# made by Spark if consoled has not made it yet; BRLTTY's folders; and
+# the folder of braille.toml(5), which `braille` writes.
+[permissions]
+files.read-write = ["/devices", "/system/live/consoled", "/system/live/brltty", "/system/state/brltty", "/system/state/braille"]

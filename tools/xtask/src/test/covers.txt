@@ -42,6 +42,8 @@ bios-usb kernel/drivers/xhci/ kernel/hal/ kernel/lib/acpi/ kernel/lib/bootinfo/
 bios-usb tools/xtask/src/grub.rs
 bitlocker kernel/fs/bitlocker/ userspace/programs/systools/src/nvme.rs
 bitlocker userspace/programs/systools/src/unlock.rs userspace/programs/systools/src/volumed.rs
+braille kernel/drivers/usb/ kernel/drivers/xhci/ kernel/radix/src/usb/ kernel/radix/src/fs/sysfs/usb.rs ports/brltty/
+braille userspace/defaults/spark/services/brailled.toml userspace/programs/consoled/ userspace/programs/systools/src/braille.rs
 btrfs kernel/fs/block/ kernel/fs/btrfs/ userspace/programs/systools/src/btrfs.rs
 btrfs userspace/programs/systools/src/nvme.rs userspace/programs/systools/src/subvolume.rs
 btrfs userspace/storage/

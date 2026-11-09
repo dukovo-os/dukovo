@@ -238,6 +238,39 @@ pub mod ftdi {
     /// (and QEMU's), FT2232, FT4232H, FT232H and the FT-X series.
     pub const PRODUCTS: [u16; 5] = [0x6001, 0x6010, 0x6011, 0x6014, 0x6015];
 
+    /// Braille displays (ADR 0326) that are an FTDI chip under an ID of
+    /// their maker's, as BRLTTY's table of USB serial adapters lists them:
+    /// Hedo's MobilLine and ProfiLine, Papenmeier's displays, and Baum's
+    /// Vario, SuperVario, VarioPro, EcoVario, VarioConnect and
+    /// Refreshabraille 18, some under FTDI's vendor ID and some under
+    /// Baum's (0x0904). Each is a serial line, which BRLTTY drives as any
+    /// other.
+    pub const DISPLAYS: [(u16, u16); 23] = [
+        (0x0403, 0xde58),
+        (0x0403, 0xde59),
+        (0x0403, 0xf208),
+        (0x0403, 0xfe70),
+        (0x0403, 0xfe71),
+        (0x0403, 0xfe72),
+        (0x0403, 0xfe73),
+        (0x0403, 0xfe74),
+        (0x0403, 0xfe75),
+        (0x0403, 0xfe76),
+        (0x0403, 0xfe77),
+        (0x0904, 0x2000),
+        (0x0904, 0x2001),
+        (0x0904, 0x2002),
+        (0x0904, 0x2007),
+        (0x0904, 0x2008),
+        (0x0904, 0x2009),
+        (0x0904, 0x2010),
+        (0x0904, 0x2011),
+        (0x0904, 0x2014),
+        (0x0904, 0x2015),
+        (0x0904, 0x2016),
+        (0x0904, 0x3000),
+    ];
+
     /// The chips, as bcdDevice tells them apart.
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     pub enum Chip {
@@ -291,7 +324,8 @@ pub mod ftdi {
 
     /// The chip `device` is, if it is one of FTDI's.
     pub fn chip(device: &DeviceDescriptor) -> Option<Chip> {
-        if device.vendor != VENDOR_ID || !PRODUCTS.contains(&device.product) {
+        let stock = device.vendor == VENDOR_ID && PRODUCTS.contains(&device.product);
+        if !stock && !DISPLAYS.contains(&(device.vendor, device.product)) {
             return None;
         }
         Some(match device.release {

@@ -74,6 +74,8 @@ const FIRMWARE_ALLOW: &[&str] = &["LicenseRef-Intel-Microcode"];
 /// LicenseRef-libpcap-notices and LicenseRef-tcpdump-notices keep as the
 /// files have it (ADR 0346). eSpeak NG builds Unicode's character data
 /// into itself, under Unicode's license for its data files (ADR 0324).
+/// BRLTTY and its tables are under the LGPL, as a program of its own with
+/// the project's screen driver built in (ADR 0326).
 const PORT_EXTRA_ALLOW: &[&str] = &[
     "CC0-1.0",
     "GPL-2.0-only",

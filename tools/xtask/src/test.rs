@@ -64,6 +64,12 @@ const UCSI_TABLE: &str = "file=ucsi.aml";
 /// `usb-serial` case). QEMU plugs a USB serial port in only once its
 /// character device is connected, which a UDP one never is.
 const SERIAL_LINE: [&str; 2] = ["<serial line 0>", "<serial line 1>"];
+/// A braille display's line, as `-chardev`'s argument: the character
+/// device `braille`, a Unix socket `<case>.braille` in the test's
+/// directory that QEMU listens on, and the script connects to as the
+/// display ([`braille_line`], the `braille` case). QEMU plugs the display
+/// in once the script connects.
+const BRAILLE_LINE: &str = "<braille line>";
 /// In a case's `qemu`, what comes after this boots a second machine, the
 /// peer, from the same image beside the first once QEMU has started it:
 /// the peer's command line, then its own arguments. The script reaches
@@ -3610,6 +3616,12 @@ fn boot_tests(ctx: &Ctx, built: &Built, cases: &[&Case], timeout: Duration) -> R
     Ok(())
 }
 
+/// The socket of case `name`'s braille display's line ([`BRAILLE_LINE`])
+/// in the test's directory `dir`.
+pub fn braille_line(dir: &Path, name: &str) -> PathBuf {
+    dir.join(format!("{name}.braille"))
+}
+
 /// How the reason a case's second boot failed starts.
 const AFTER_THE_REBOOT: &str = "after the reboot";
 
@@ -3631,7 +3643,10 @@ fn run_case(
     let cable = qemu::option_value(&cable_path);
     let dump = qemu::option_value(&dir.join(format!("{}.pcap", case.name)));
     for arg in &mut extra {
-        if *arg == SERIAL_LINE[0] {
+        if *arg == BRAILLE_LINE {
+            let line = qemu::option_value(&braille_line(dir, case.name));
+            *arg = format!("socket,id=braille,path={line},server=on,wait=off");
+        } else if *arg == SERIAL_LINE[0] {
             *arg = format!("socket,id=line0,path={socket},server=on,wait=off");
         } else if *arg == SERIAL_LINE[1] {
             *arg = format!("socket,id=line1,path={socket},reconnect=1");
@@ -5804,7 +5819,7 @@ fn consoles(vm: &mut Vm, case: &Case) -> Result<(), String> {
     vm.expect("Boot complete.")?;
     vm.expect("spark: Spark v2 is process ")?;
     vm.expect("spark: listening at /system/live/spark/control")?;
-    vm.expect("spark: 21 services in /system/settings/spark/services, 18 enabled")?;
+    vm.expect("spark: 22 services in /system/settings/spark/services, 19 enabled")?;
     vm.expect("spark: started consoled (/system/commands/consoled) as process ")?;
     vm.expect("consoled: console of ")?;
     vm.expect("consoled: started /system/commands/nukesh on tty1 as process ")?;
@@ -9332,7 +9347,7 @@ fn principals(vm: &mut Vm, case: &Case) -> Result<(), String> {
 fn services(vm: &mut Vm, case: &Case) -> Result<(), String> {
     boot_report(vm, case)?;
     vm.expect("Boot complete.")?;
-    vm.expect_anywhere("spark: 21 services in /system/settings/spark/services, 18 enabled")?;
+    vm.expect_anywhere("spark: 22 services in /system/settings/spark/services, 19 enabled")?;
     vm.expect_ahead("spark: started /system/tests/posix/servicetest as process ")?;
     let code = program_line(vm, "(/system/tests/posix/servicetest) exited with code ")?;
     let log = vm.log();
