@@ -10,21 +10,21 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 ## Context
 
-Phase 13b.4. Since Phase 9 Spark has read service files of `key =
-value` lines (ADR 0101), which grew `memory`, `oom`, `weight` and, in
-12a.2, `network.outbound` and `network.listen` (ADR 0183). The security
-design's section 8 and its decision 7 (Chase, 2026-10-26) settle the
-format: TOML for the files people edit by hand, JSON for a bundle's
-`manifest.json` and for anything tools write, one schema for both, so
-that a service in `/system/settings` and a bundle's service read the
-same and use the same permission names. Chase's condition is that both
-be easy to use, so the tooling ships with the format: one set of Rust
-types that every reader shares; the same parser everywhere; a mistake
-never takes a service down, and Spark says which line is wrong and why
-in plain words; `service edit` checks before anything changes, as
-visudo does; `service check` and `service new`; files that explain
-themselves, with nano highlighting TOML; today's files converted with
-their comments; and CI that checks every shipped file.
+Phase 13b.4. Since Phase 9 Spark has read service files of `key = value`
+lines (ADR 0101), which grew `memory`, `oom`, `weight` and, in 12a.2,
+`network.outbound` and `network.listen` (ADR 0183). The security
+design's section 8 and its decision 7 settle the format: TOML for the
+files people edit by hand, JSON for a bundle's `manifest.json` and for
+anything tools write, one schema for both, so that a service in
+`/system/settings` and a bundle's service read the same and use the same
+permission names. Both must be easy to use, so the tooling ships with
+the format: one set of Rust types that every reader shares; the same
+parser everywhere; a mistake never takes a service down, and Spark says
+which line is wrong and why in plain words; `service edit` checks before
+anything changes, as visudo does; `service check` and `service new`;
+files that explain themselves, with nano highlighting TOML; today's
+files converted with their comments; and CI that checks every shipped
+file.
 
 13b.4 also gives each service the capabilities its file declares, in a
 view (ADR 0215), and its secrets as read-only files. That half is 13b.4b
@@ -54,9 +54,9 @@ view (ADR 0215), and its secrets as read-only files. That half is 13b.4b
   at most eight grants in all). The names are the permission list's, so
   a bundle's service asks for the same words.
 - **Versioned.** Every file starts with `service_version = 1`, as every
-  manifest starts with `manifest_version` (Chase, 2026-10-24): a later
-  Dukovo reads every earlier version, and a file for a newer one is
-  refused with a message to update Dukovo.
+  manifest starts with `manifest_version`: a later Dukovo reads every
+  earlier version, and a file for a newer one is refused with a message
+  to update Dukovo.
 - **Strict, and plain.** A key the format does not know is an error, so
   a misspelt setting is never silently ignored. Each error names its line
   and says what is wrong in words, not in the parser's: "line 6: restart

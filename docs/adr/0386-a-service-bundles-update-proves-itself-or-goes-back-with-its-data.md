@@ -16,15 +16,15 @@ restarted the services: a new version that failed stayed failed, the
 data it changed was not kept as the version before left it, and an
 administrator's change to a service file was lost.
 
-Chase decided on 2026-11-03 that the app rules of section 10 of the
-updates design come in 13e: a service bundle's new version must pass its
-declared health check within 60 seconds of starting, or the previous
-version and its data snapshot come back at once and the owner is told;
-and a snapshot is kept until the next update or for 30 days, whichever
-is later. The roadmap adds, from 2026-10-26, that updates never ask
-about edited settings: the administrator's file stays, the new default
-lands beside it, and our own TOML files take override files in a
-`settings.d` folder, so most changes never touch the shipped file.
+The app rules of section 10 of the updates design come in 13e: a service
+bundle's new version must pass its declared health check within 60
+seconds of starting, or the previous version and its data snapshot come
+back at once and the owner is told; and a snapshot is kept until the
+next update or for 30 days, whichever is later. The roadmap adds, from
+2026-10-26, that updates never ask about edited settings: the
+administrator's file stays, the new default lands beside it, and our own
+TOML files take override files in a `settings.d` folder, so most changes
+never touch the shipped file.
 
 ## Decision
 

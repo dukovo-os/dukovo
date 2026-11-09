@@ -21,9 +21,9 @@ reserved a permission for the rest, "Use keychain items another app
 saved", asked with a warning; until now an app in a sandbox could not
 reach authd at all, as its view holds no `/system/live/authd`.
 
-On 2026-11-06 Chase chose that apps in a sandbox reach only their own
-entries, and more only if allowed on the trusted console prompt, while
-programs outside a sandbox reach every entry, as on Linux.
+Apps in a sandbox reach only their own entries, and more only if allowed
+on the trusted console prompt, while programs outside a sandbox reach
+every entry, as on Linux.
 
 ## Decision
 

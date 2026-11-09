@@ -10,24 +10,23 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 ## Context
 
-Phase 13b.6. Since ADR 0250 people sign in at the consoles, each
-session acting for its own user without the bypass right, so the
-owner's account, an administrator's, can no longer make accounts, read
-another user's files, or set the fans with ectool: only root can, and
-root's shell is there only with sign-in turned off. The security design
-says an admin is a user in the admins group, "which only means they
-may elevate"; that `elevate` runs one command, or one marked shell
-pane, with the admin set after the password; that inside it the
-process reports number 0, so scripts that check `id -u` behave as with
-sudo; that the unlocked minutes belong to one terminal pane, never to
-the user or an app; that it runs with a fixed PATH of
-`/system/commands` and `/applications/commands` and a reset
-environment, as sudo's `secure_path` does; and that every use goes into
-the audit log. Chase chose 15 minutes for the unlock (the Phase 13
-prep doc's question 6), sudo's per-terminal default on Ubuntu. There is
-no setuid program, and Radix has no call that raises a running
-process's name: a name is given by the names capability, before a
-process starts (ADR 0214).
+Phase 13b.6. Since ADR 0250 people sign in at the consoles, each session
+acting for its own user without the bypass right, so the owner's
+account, an administrator's, can no longer make accounts, read another
+user's files, or set the fans with ectool: only root can, and root's
+shell is there only with sign-in turned off. The security design says an
+admin is a user in the admins group, "which only means they may
+elevate"; that `elevate` runs one command, or one marked shell pane,
+with the admin set after the password; that inside it the process
+reports number 0, so scripts that check `id -u` behave as with sudo;
+that the unlocked minutes belong to one terminal pane, never to the user
+or an app; that it runs with a fixed PATH of `/system/commands` and
+`/applications/commands` and a reset environment, as sudo's
+`secure_path` does; and that every use goes into the audit log. The
+unlock lasts 15 minutes, sudo's per-terminal default on Ubuntu. There is
+no setuid program, and Radix has no call that raises a running process's
+name: a name is given by the names capability, before a process starts
+(ADR 0214).
 
 ## Decision
 

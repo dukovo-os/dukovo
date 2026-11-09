@@ -10,13 +10,13 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 ## Context
 
-Chase asked for a fun ASCII art version of the logo above the first
-prompt a person sees when the system boots, with the tagline and the OS
-version, and approved the mock (design/nukesh/welcome-banner-mock) on
-2026-10-31: Duke and the name, "A bright future. A human future." and
-"Dukovo Server 0.10.4", directly above the sign-in prompt, without the
-host's name, the CPU or a welcome sentence. The consoles showed
-/system/settings/issue's line, `Dukovo Server 0.10.4 (tty1)`.
+The first prompt a person sees when the system boots should greet them
+with an ASCII art version of the logo, the tagline and the OS version.
+The approved mock (design/nukesh/welcome-banner-mock) shows Duke and the
+name, "A bright future. A human future." and "Dukovo Server 0.10.4",
+directly above the sign-in prompt, without the host's name, the CPU or a
+welcome sentence. The consoles showed /system/settings/issue's line,
+`Dukovo Server 0.10.4 (tty1)`.
 
 ## Decision
 

@@ -10,9 +10,9 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 ## Context
 
-Chase asked for high-contrast, light and colour-blind presets, and for
-option help as you type, from the completion files every program has
-(ADR 0102).
+Nukesh needs high-contrast, light and colour-blind presets, and option
+help as you type, from the completion files every program has (ADR
+0102).
 
 ## Decision
 

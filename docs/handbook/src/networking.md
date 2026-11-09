@@ -5,13 +5,12 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 # Networking
 
-This chapter describes networking in Dukovo as of Phase 12c of the
-roadmap: the cards of 12b, and IPv6, bridges, VLANs and the firewall. Phase 12 builds it up in steps:
-sockets for programs, TCP that matches Linux, `netd` with DHCP, DNS and
-`curl`, the time service, the Realtek, Intel and USB Ethernet cards,
-IPv6, the firewall and WireGuard. This page grows with each.
+This chapter describes networking in Dukovo: sockets for programs, TCP
+that matches Linux, `netd` with DHCP, DNS and `curl`, the time service,
+the Realtek, Intel and USB Ethernet cards, IPv6, bridges, VLANs, the
+firewall and WireGuard.
 
-## What works now
+## What works
 
 - **virtio network cards**, the ones QEMU and clouds on KVM give a
   virtual machine. The PCI scan finds each card and gives it a kernel

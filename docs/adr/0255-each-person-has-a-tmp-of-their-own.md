@@ -10,13 +10,13 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 ## Context
 
-Phase 13b.7. The security design, which Chase accepted on 2026-10-26,
-gives each sign-in "a private /tmp", and ADR 0215 made views for it: a
-session's `/tmp` "is a directory of its own, attached at `tmp` in place
-of the system's, as Linux's pam_namespace makes `/tmp` one per user";
-authd was to build each session's view. Until now a session's root was
-the whole tree, stamped for the person without the bypass right (ADR
-0250), so everyone shared one `/tmp`, mode 1777.
+Phase 13b.7. The security design gives each sign-in "a private /tmp",
+and ADR 0215 made views for it: a session's `/tmp` "is a directory of
+its own, attached at `tmp` in place of the system's, as Linux's
+pam_namespace makes `/tmp` one per user"; authd was to build each
+session's view. Until now a session's root was the whole tree, stamped
+for the person without the bypass right (ADR 0250), so everyone shared
+one `/tmp`, mode 1777.
 
 A shared `/tmp` is where users meet: one reads what another left
 readable, or makes a file or a link first at a name another program

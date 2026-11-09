@@ -30,13 +30,15 @@ itself and is run from the shell or from a browser:
 - an installer with the `rdisk` partitioner, delivered as a USB image,
   and images for clouds and virtual machines.
 
-The **Lumen** compositor, and the graphical side that builds on it, follow
-in Dukovo 1.1.
+Go software and Linux containers through Podman complete 1.0. The
+**Lumen** compositor, and the graphical side that builds on it, follow
+in release 1.1.
 
 ## Where the project is
 
-Dukovo is built in phases, each ending in something that runs. This
-handbook describes **Phase 9**.
+Dukovo is built in phases, each ending in something that runs. Phases 0
+to 13 are done, and Phase 14, the installer and install media, is under
+way.
 
 - **Boot and hardware.** The Radix kernel boots through GRUB under UEFI
   and legacy BIOS at a random address, starts every CPU and reads the
@@ -52,9 +54,10 @@ handbook describes **Phase 9**.
   channels and rings (see `radix-ipc(7)`).
 - **Processes.** Each program runs in a process of its own. Spark starts
   them from a boot archive (see `radix-processes(7)` and `spark(8)`).
-- **Files.** Files are reached through directory capabilities: tmpfs,
-  FAT on virtual disks, `/processes` and `/kernel` (see `radix-files(7)` and the
-  Files chapter).
+- **Files.** Files are reached through directory capabilities, on
+  Dukovo's own Btrfs with snapshots, compression and mirroring, and on
+  FAT, exFAT, ext4 and NTFS disks (see `radix-files(7)` and the Files
+  chapter).
 - **POSIX.** Programs written for Unix run on a POSIX layer with fork,
   exec, signals, pipes, terminals and job control (see `radix-posix(7)`),
   through the mlibc C library and a port of Rust's standard library.
@@ -64,8 +67,12 @@ handbook describes **Phase 9**.
   Spark supervises the services it starts (see `service(8)`).
 - **Debugging.** Crash reports, a kernel debugger and a crash log help
   when things go wrong.
+- **Networking.** IPv4 and IPv6 with DHCP, DNS over TLS, a firewall and
+  WireGuard (see the Networking chapter).
+- **Users and apps.** Accounts that sign in at the consoles or over SSH,
+  a keyring, shared folders, and bundles installed from signed catalogs
+  (see the Users, SSH and Bundles chapters).
 
-Native storage, Btrfs on NVMe and SATA disks, arrives in Phase 10.
 Chapters for later phases are listed in the table of contents and are
 written as those phases land. The full plan is in
 [`docs/roadmap.md`](https://github.com/dukovo-os/dukovo/blob/main/docs/roadmap.md).

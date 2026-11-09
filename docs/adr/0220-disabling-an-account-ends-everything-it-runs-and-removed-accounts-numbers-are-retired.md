@@ -12,11 +12,10 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 Phase 13b.7. With sign-in (ADR 0250) and elevate (ADR 0219), accounts
 are made, but not disabled, removed, renamed or changed. The security
-design's third look, row 13, which Chase accepted on 2026-10-26, says:
-"disabling an account revokes its capabilities, which stops its
-sessions, SSH workers, SMB connections and jobs at once, removing one
-asks whether to keep, archive or delete the home". Its exit check: a
-disabled account's shell ends at once.
+design's third review, row 13, says: "disabling an account revokes its
+capabilities, which stops its sessions, SSH workers, SMB connections and
+jobs at once, removing one asks whether to keep, archive or delete the
+home". Its exit check: a disabled account's shell ends at once.
 
 On Linux, `usermod -L` puts `!` in front of the hash in `/etc/shadow`,
 and nothing more: what the account runs goes on, and an administrator

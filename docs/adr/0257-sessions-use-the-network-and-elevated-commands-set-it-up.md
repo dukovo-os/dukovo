@@ -46,8 +46,8 @@ CAP_NET_ADMIN.
 
 - People use the network from their sessions, and their programs
   listen on high ports, without elevate.
-- Network administration is an administrator's, through elevate, as
-  Chase's design has it; services that set the network up ask for
+- Network administration is an administrator's, through elevate, as the
+  security design has it; services that set the network up ask for
   `admin.network` themselves, as before.
 - Apps from bundles get the network only as their permissions say
   (Phase 13d), from the session's or Spark's.

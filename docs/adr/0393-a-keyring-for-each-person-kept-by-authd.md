@@ -68,9 +68,9 @@ starts and reaps every session.
   its person's own access, as on Linux: it could read their files and
   their processes' memory, so a limit on it would only look like one,
   and every such program reaches every entry of its person's keyring. An
-  app in its sandbox reaches only its own entries, and others only as its
-  person allows on the trusted prompt (Chase, 2026-11-06), in a later
-  pull request of 13g.
+  app in its sandbox reaches only its own entries, and others only as
+  its person allows on the trusted prompt, in a later pull request of
+  13g.
 
 ## Consequences
 

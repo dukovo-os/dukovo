@@ -34,12 +34,12 @@ identity and date. Radix runs `/bin/git`; Linux runs the
 same git release, built static on glibc by `ob bench` from the port's
 source and put in the initramfs at `/git`, which linux-bench passes on.
 
-**The row is reported only until Radix reaches parity** (Chase,
-2026-11-01). A row has a `gated` flag; this one starts with it off, so
-its ratio shows in the report, marked "not gated yet", and never fails
-the gate or calls for more runs. The first time CI shows it at or under
-1.00, the flag turns on, in its own pull request, and stays on: the row
-is then held to the gate like every other.
+**The row is reported only until Radix reaches parity.** A row has a
+`gated` flag; this one starts with it off, so its ratio shows in the
+report, marked "not gated yet", and never fails the gate or calls for
+more runs. The first time CI shows it at or under 1.00, the flag turns
+on, in its own pull request, and stays on: the row is then held to the
+gate like every other.
 
 ## Consequences
 

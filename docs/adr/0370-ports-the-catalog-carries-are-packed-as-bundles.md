@@ -10,17 +10,16 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 ## Context
 
-The plan's Catalog ports track (Chase, 2026-11-03) brings popular
-console tools to Dukovo as bundles of the catalog, never in the base
-image: ripgrep and bat first, which 13e seeds its catalog with, then fd,
-hyperfine, dust, delta, eza, zoxide, tealdeer and starship, and the C
-and C++ tools after them. Phase 13d already reads manifests (ADR 0221),
-signs and packs `.dkv` files (ADR 0222), installs them (ADR 0223) and
-runs them in a sandbox or, for a command-line tool, with the person's
-access, after asking (ADR 0225). What was missing is the way from a
-port, which `ob` builds into the sysroot for the image, to a bundle, and
-a way to keep each port's pin up with its upstream once dozens of them
-are in the catalog.
+The plan's Catalog ports track brings popular console tools to Dukovo as
+bundles of the catalog, never in the base image: ripgrep and bat first,
+which 13e seeds its catalog with, then fd, hyperfine, dust, delta, eza,
+zoxide, tealdeer and starship, and the C and C++ tools after them. Phase
+13d already reads manifests (ADR 0221), signs and packs `.dkv` files
+(ADR 0222), installs them (ADR 0223) and runs them in a sandbox or, for
+a command-line tool, with the person's access, after asking (ADR 0225).
+What was missing is the way from a port, which `ob` builds into the
+sysroot for the image, to a bundle, and a way to keep each port's pin up
+with its upstream once dozens of them are in the catalog.
 
 The signing and packing code lived in systools, a program for Radix,
 which `ob` cannot run on the build machine.
@@ -57,13 +56,12 @@ which `ob` cannot run on the build machine.
   what it publishes with its own keys.
 - **Licenses decide how a tool is built.** bat and delta call
   ansi_colours, which is under the LGPL; linked statically, it would
-  oblige every bundle to ship objects to relink with. Chase chose
-  (2026-11-03) that Dukovo write its own: `ports/bat/ansi_colours`,
-  Apache-2.0 OR MIT, written from xterm's 256-colour palette alone,
-  which bat's build takes with Cargo's `[patch]`. bat is built without
-  its Git markers, whose libgit2 carries LGPL code (a question for delta,
-  which needs libgit2), and without `--diagnostic`, whose report reads
-  Linux's /proc.
+  oblige every bundle to ship objects to relink with, so Dukovo writes
+  its own: `ports/bat/ansi_colours`, Apache-2.0 OR MIT, written from
+  xterm's 256-colour palette alone, which bat's build takes with Cargo's
+  `[patch]`. bat is built without its Git markers, whose libgit2 carries
+  LGPL code (a question for delta, which needs libgit2), and without
+  `--diagnostic`, whose report reads Linux's /proc.
 - **Keeping up.** `ob ports outdated` asks each port's git repository
   for its tags and lists the ports whose upstream has a newer release of
   the same series (a letter release such as tzdata's 2026f counts;

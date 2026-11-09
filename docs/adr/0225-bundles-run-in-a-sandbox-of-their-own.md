@@ -12,8 +12,8 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 ## Context
 
 Phase 13d.3b. bundled installs, seals and removes bundles (ADR 0223),
-but nothing runs them yet. The security design (sections 9 and 10,
-locked by Chase on 2026-10-26) asks that:
+but nothing runs them yet. The security design (sections 9 and 10) asks
+that:
 
 - a bundle's program runs in a sandbox of its own: it sees the system's
   commands and libraries, its own folder, read-only, and its own data

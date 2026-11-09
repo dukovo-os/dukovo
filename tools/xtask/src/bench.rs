@@ -438,7 +438,7 @@ const ROWS: &[Row] = &[
         radix: "posix_git_status",
         what: "git: `git status` in a repository of 1,000 committed files, none changed",
         linux: Some(("posix_git_status", "the same git release, built static on glibc")),
-        // Reported only until Radix reaches parity (Chase, 2026-11-01).
+        // Reported only until Radix reaches parity (ADR 0294).
         gated: false,
     },
 ];

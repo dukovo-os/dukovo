@@ -16,10 +16,9 @@ installing a newer file replaced the old one, which was gone.
 
 The roadmap asks 13e for app updates with rollback, holds and a history,
 the old version kept beside the new, and updates that run by themselves
-for those who want them. Chase decided on 2026-11-03 that an app's data
-is kept as each version left it, for 30 days, so that going back brings
-the data back too, and that the health check with its rollback is for
-service bundles.
+for those who want them. An app's data is kept as each version left it,
+for 30 days, so that going back brings the data back too, and that the
+health check with its rollback is for service bundles.
 
 ## Decision
 

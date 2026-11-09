@@ -27,10 +27,9 @@ trip.
 
 Two ways were weighed. The kernel could choose the slot, as Linux's
 does, which changes the calls of every object that makes a descriptor
-and their ABI. Or the C library could keep the table it was already
-half keeping, its bits of claimed descriptors, and make them a bit per
-taken descriptor. Chase chose the second, the C library's own table, on
-2026-11-07.
+and their ABI. Or the C library could keep the table it was already half
+keeping, its bits of claimed descriptors, and make them a bit per taken
+descriptor. The second, the C library's own table, was chosen.
 
 ## Decision
 

@@ -13,12 +13,11 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 The roadmap's 12c asks for "a small ordered packet-filter ruleset that
 denies inbound connections by default (enabling sshd opens only port
 22), managed with a firewall command that lists, adds and removes rules
-and logs dropped packets to logd, documented in firewall(8)", and,
-from Chase on 2026-10-26: "a program a user runs stays reachable from
-this machine, and when it listens beyond it, firewall status lists it
-and one command allows it from other machines, remembered per
-program". It is done when inbound is blocked and sshd's port 22 opens
-only when sshd is on.
+and logs dropped packets to logd, documented in firewall(8)", and adds:
+"a program a user runs stays reachable from this machine, and when it
+listens beyond it, firewall status lists it and one command allows it
+from other machines, remembered per program". It is done when inbound is
+blocked and sshd's port 22 opens only when sshd is on.
 
 A firewall that needs a rule per service drifts from what runs: a
 service enabled and its port forgotten, or a port left open after the

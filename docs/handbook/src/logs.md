@@ -5,10 +5,9 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 # Logs, monitoring and troubleshooting
 
-This chapter describes the system's log and its notifications as of
-Phase 13 of the roadmap. The full references are logd(8), log(1),
-journalctl(1), logger(1), logtrim(8), log(5), dmesg(1), notifyd(8),
-notify-send(1) and notifications(1).
+This chapter describes the system's log and its notifications. The full
+references are logd(8), log(1), journalctl(1), logger(1), logtrim(8),
+log(5), dmesg(1), notifyd(8), notify-send(1) and notifications(1).
 
 ## What the log holds
 

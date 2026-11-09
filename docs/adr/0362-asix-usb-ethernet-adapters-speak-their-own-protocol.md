@@ -65,10 +65,10 @@ design on USB 2.
 
 ## Consequences
 
-- TP-Link's UE306, which the maintainer bought for the test lab, and the
-  other AX88179 adapters get an interface as they are plugged in, named
-  in the log as `ASIX AX88179`, with Linux's `ax88179_178a` as their
-  interfaces' driver in /kernel/bus/usb.
+- TP-Link's UE306, which the test lab uses, and the other AX88179
+  adapters get an interface as they are plugged in, named in the log as
+  `ASIX AX88179`, with Linux's `ax88179_178a` as their interfaces'
+  driver in /kernel/bus/usb.
 - QEMU emulates none of these chips, so the driver is tested on the host
   only until an adapter is plugged into a lab box (roadmap 14f).
 - A page a transfer, one at a time, is slower than the chip can go: a

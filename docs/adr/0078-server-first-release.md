@@ -22,7 +22,7 @@ the desktop needs later anyway.
 ## Decision
 
 - Dukovo 1.0 is a headless server operating system, in the spirit of
-  Ubuntu Server, decided by the maintainer on 2026-10-23.
+  Ubuntu Server.
 - Phases 0 to 15 keep their numbers. Some of them grow for servers:
   - Phase 9: server-grade Nukesh and the administration command set;
   - Phase 10: Btrfs RAID1 and RAID10, and disk health;

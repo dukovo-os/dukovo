@@ -5,10 +5,9 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 # Files, the directory hierarchy and /volumes
 
-This chapter describes files in Dukovo as of Phase 10 of the roadmap:
-the layout and the rules that the shell and every program see. The full
-reference is radix-files(7); `/processes` and `/kernel` are in
-radix-proc(5) and radix-sysfs(5).
+This chapter describes files in Dukovo: the layout and the rules that
+the shell and every program see. The full reference is radix-files(7);
+`/processes` and `/kernel` are in radix-proc(5) and radix-sysfs(5).
 
 ## The directory hierarchy
 
@@ -113,8 +112,8 @@ room only for what changes since. A read-only snapshot of `/users`:
 subvolume snapshot -r /users /volumes/sda5/@snapshots/users-monday
 ```
 
-Phase 15's `snap` makes, lists, restores and prunes snapshots on its
-own.
+Atomic updates (Phase 15) add `snap`, which makes, lists, restores and
+prunes snapshots on its own.
 
 A copy within Btrfs is a clone too: `cp` makes the copy share the
 original's blocks, as `cp --reflink=auto` does on Linux, so a copy of a
@@ -141,13 +140,13 @@ only until it stops:
 
 Dukovo has no global root that every program can reach. A program gets
 *directory capabilities*, handles to directories, and can reach only
-what lies beneath them: a path that starts with `/`, or whose `..` climbs
-above the directory it started from, is refused. A symbolic link cannot
-lead out either: one whose target starts with `/` is followed from the
-directory the program started from, as if that were the root. Spark
-holds the root and decides what each program gets. When bundles arrive
-(Phase 13), this is how an application that asked for
-`documents: read-write` gets your documents folder and nothing else.
+what lies beneath them: a path that starts with `/`, or whose `..`
+climbs above the directory it started from, is refused. A symbolic link
+cannot lead out either: one whose target starts with `/` is followed
+from the directory the program started from, as if that were the root.
+Spark holds the root and decides what each program gets. This is how a
+bundled application that asked for `documents: read-write` gets your
+documents folder and nothing else.
 
 ## /volumes
 
@@ -267,10 +266,9 @@ A disk or partition can also be swap, as on Linux: `mkswap /devices/vdb`
 makes a swap area of it (one Linux made works too), `swapon
 /devices/vdb` turns it on, and `swapoff` turns it off again, reading
 back what was swapped out first. While it is on, programs' memory moves
-out to it when memory runs short, and `free` and `swapon --show` show how
-much is there; the disk itself cannot be written or mounted then.
-Dukovo does not turn swap on at boot yet: the installer's swap partition
-(Phase 14) brings that.
+out to it when memory runs short, and `free` and `swapon --show` show
+how much is there; the disk itself cannot be written or mounted then. An
+installed system turns its swap partition on at every start (ADR 0311).
 
 ## Partitioning and formatting disks
 

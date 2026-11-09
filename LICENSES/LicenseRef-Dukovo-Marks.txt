@@ -1,0 +1,15 @@
+The Dukovo name and logo
+
+The Dukovo name and the Dukovo logo, including Duke, the mascot, are marks
+of the Dukovo project. They identify Dukovo and its official releases.
+
+They are not licensed under Apache-2.0, MIT or any other license that
+covers Dukovo's code or documentation, and no right to use them is granted
+by those licenses.
+
+You may use the name and the unmodified logo to refer to Dukovo, for
+example in an article, a talk or a link to the project, without suggesting
+that the Dukovo project made or endorses your work.
+
+Any other use, including in a product, a modified distribution or a modified
+logo, needs written permission from the project.

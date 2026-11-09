@@ -35,9 +35,14 @@ RUN test -n "$RUST_TOOLCHAIN" \
             --target aarch64-unknown-none \
     && chmod -R a+rX /usr/local/rustup /usr/local/cargo
 
-RUN curl --proto '=https' --tlsv1.2 -sSfL \
+# GitHub's release downloads sometimes answer 504 for a while; build the
+# same pinned version from crates.io when they do.
+RUN if ! curl --proto '=https' --tlsv1.2 -sSfL --retry 3 --retry-all-errors --retry-delay 10 \
         "https://github.com/rust-lang/mdBook/releases/download/v${MDBOOK_VERSION}/mdbook-v${MDBOOK_VERSION}-x86_64-unknown-linux-gnu.tar.gz" \
-        | tar -xz -C /usr/local/bin mdbook \
+        | tar -xz -C /usr/local/bin mdbook; then \
+      cargo install mdbook --version "${MDBOOK_VERSION}" --locked --root /usr/local \
+      && rm -rf /usr/local/cargo/registry; \
+    fi \
     && mdbook --version
 
 WORKDIR /src

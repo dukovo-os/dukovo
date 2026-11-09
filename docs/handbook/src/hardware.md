@@ -22,17 +22,17 @@ service tag, with the two SSDs it has now in place of the factory disks.
 
 | Component | Part | Dukovo support |
 | --- | --- | --- |
-| Processor | Intel Core i7-8550U (4 cores, 8 threads) | All 8 threads started from Phase 1; early microcode with the optional firmware |
-| Memory | 8 GB DDR4-2400, one module | Managed by the frame allocator and kernel heap from Phase 2 (one NUMA node) |
-| Graphics | Intel UHD Graphics 620 | Firmware framebuffer console from Phase 1; no native GPU driver in 1.0 |
-| SSD | 128 GB Samsung PM871b, M.2 SATA (the factory part was an SK hynix SC311) | AHCI driver, Phase 10; Dukovo installs here |
-| Second SSD | 512 GB TEAM T253, 2.5" SATA (in place of the factory 1 TB hard disk) | AHCI driver, Phase 10; kept for `/shared` |
-| USB | Intel xHCI | Phase 11 |
-| Keyboard | Built-in, PS/2 (i8042) | Phase 9 |
-| Touchpad | Likely I2C-HID (Intel Serial IO) | Phase 11, to be confirmed |
-| Wired network | Built-in 10/100 Ethernet, likely Realtek | Phase 12, chip to be confirmed |
+| Processor | Intel Core i7-8550U (4 cores, 8 threads) | All 8 threads; early microcode with the optional firmware |
+| Memory | 8 GB DDR4-2400, one module | Managed by the frame allocator and kernel heap (one NUMA node) |
+| Graphics | Intel UHD Graphics 620 | Firmware framebuffer console; no native GPU driver in 1.0 |
+| SSD | 128 GB Samsung PM871b, M.2 SATA (the factory part was an SK hynix SC311) | AHCI driver; Dukovo installs here |
+| Second SSD | 512 GB TEAM T253, 2.5" SATA (in place of the factory 1 TB hard disk) | AHCI driver; kept for `/shared` |
+| USB | Intel xHCI | xHCI driver |
+| Keyboard | Built-in, PS/2 (i8042) | i8042 driver |
+| Touchpad | I2C-HID (Intel Serial IO) | With Lumen, in release 1.1; a USB mouse works until then |
+| Wired network | Realtek RTL810xE Fast Ethernet (PCI ID `10ec:8136`) | Realtek driver |
 | Wi-Fi and Bluetooth | Qualcomm QCA9377 (Dell Wireless 1810) | After 1.0; needs closed firmware |
-| Audio | Realtek ALC3246 | After 1.0 |
+| Audio | Realtek ALC3246 | HDA driver in 1.0 |
 | Serial port | None | Kernel output goes to the screen, and to the crash log for the next boot |
 
 ### Firmware settings
@@ -139,9 +139,7 @@ issue for anything that fails, with the photos.
 
 | Phase | Date | Commit | UEFI | Legacy BIOS | Notes |
 | --- | --- | --- | --- | --- | --- |
-| 1 | not yet run | | | | |
-| 2 | not yet run | | | | |
-| 6 | 2026-10-22 | `daa2682` (Phase 6) | not recorded | not recorded | The project lead reported that it boots without issue. Which firmware mode, and the individual checks above, were not recorded. |
+| 6 | 2026-10-22 | `daa2682` | not recorded | not recorded | It booted without issue. Which firmware mode, and the individual checks above, were not recorded. |
 
 ### Disk check
 
@@ -198,20 +196,6 @@ Linux live system, Linux Mint or Ubuntu 22.04 or later.
    ./ob bench --from dukovo-bench.txt
    ```
 
-### Help wanted: the Ethernet chip
-
-The network driver for Phase 12 depends on the exact Ethernet controller,
-which the parts list does not name; the roadmap expects a Realtek RTL810x
-(PCI ID `10ec:8136`). From Phase 7, the boot log's `PCI:` lines show it
-(class `020000`, Ethernet controller). Or, from any Linux live USB on the
-laptop, run:
-
-```sh
-lspci -nn | grep -i -E 'ethernet|network'
-```
-
-and report the output in an issue on the repository.
-
 ## Framework Desktop
 
 The second reference machine, from Framework's published specifications.
@@ -220,20 +204,19 @@ USB when the machine is set up.
 
 | Component | Part | Dukovo support |
 | --- | --- | --- |
-| Processor | AMD Ryzen AI Max+ 395 (Zen 5, 16 cores, 32 threads) | SMP from Phase 1; AMD-Vi and machine checks in Phase 11 |
-| Memory | 128 GB LPDDR5x-8000, shared with the GPU | Frame allocator and kernel heap from Phase 2 |
-| Storage | Two M.2 NVMe PCIe 4.0 slots | NVMe driver, with a queue and an interrupt for each of up to 16 CPUs, Phase 10; Btrfs RAID1 across both, Phase 10 |
-| Wired network | Realtek RTL8126 5 GbE | Phase 12 |
-| Platform | AMD FCH, SMU sensors, Framework embedded controller (open source) | Fans, LEDs, sensors and the watchdog, Phase 11 |
-| USB | Two USB4 Type-C, two USB-A 3.2 Gen 2 | xHCI in Phase 11; USB4 tunneling after 1.0 |
+| Processor | AMD Ryzen AI Max+ 395 (Zen 5, 16 cores, 32 threads) | All 32 threads; AMD-Vi and machine checks |
+| Memory | 128 GB LPDDR5x-8000, shared with the GPU | Frame allocator and kernel heap |
+| Storage | Two M.2 NVMe PCIe 4.0 slots | NVMe driver, with a queue and an interrupt for each of up to 16 CPUs; Btrfs RAID1 across both |
+| Wired network | Realtek RTL8126 5 GbE | Realtek driver |
+| Platform | AMD FCH, SMU sensors, Framework embedded controller (open source) | Fans, LEDs, sensors and the watchdog |
+| USB | Two USB4 Type-C, two USB-A 3.2 Gen 2 | xHCI; USB4 tunneling after 1.0 |
 | Graphics | Radeon 8060S (RDNA 3.5) | Firmware framebuffer console; GPU driver after 1.0 |
-| Audio | Realtek ALC623 | Screen-reader speech in 1.0; full audio after 1.0 |
+| Audio | Realtek ALC623 | HDA driver in 1.0; full audio in release 1.5 |
 | Wi-Fi and Bluetooth | MediaTek MT7925 | After 1.0; needs closed firmware |
 | Firmware | Insyde UEFI, UEFI boot only | Turn Secure Boot off; boot the USB stick from the F12 menu |
 | Serial port | None | Screen, crash log, and later netlog and the xHCI debug console |
 
-This machine serves other work until Dukovo runs containers (Phase 20),
+This machine serves other work until Dukovo runs containers (Phase 18),
 so Phase 10's checks run on the Dell. From then, the
 [disk check](#disk-check) runs on this machine too, on the one NVMe drive
-agreed for testing; the other drive is written only when the project
-lead says so.
+agreed for testing; the other drive is written only by agreement.

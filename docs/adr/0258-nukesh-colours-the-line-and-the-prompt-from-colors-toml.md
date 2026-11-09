@@ -11,14 +11,14 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 ## Context
 
 The plan's Phase 14c paragraph "Nukesh default colors" asks for a shell
-that helps as you type, and Chase asked for it ahead of Phase 14, with a
-config file so that every default can be changed. The approved mock
+that helps as you type. It comes ahead of Phase 14, with a config file
+so that every default can be changed. The approved mock
 (design/nukesh/nukesh-colors-mock) shows commands, options, strings,
 variables and operators in colour, an unknown command red with an
 underline before Enter, a badge with the exit status after a failure,
 and an admin badge while elevated. Until now the editor used a
-highlighter that coloured nothing, and the prompt was `$ ` or `# `.
-fish and zsh's syntax highlighting do this; bash does not.
+highlighter that coloured nothing, and the prompt was `$ ` or `# `. fish
+and zsh's syntax highlighting do this; bash does not.
 
 ## Decision
 

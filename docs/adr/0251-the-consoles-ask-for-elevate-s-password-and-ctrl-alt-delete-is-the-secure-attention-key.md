@@ -12,16 +12,15 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 Phase 13b.6. With ADR 0219 elevate(8) asks for its person's password
 itself, on the terminal, as sudo does. Any program the user runs can
-draw the same words and read what is typed after them, so a program
-left running in a pane, or a command named like elevate earlier in a
-`PATH`, can take an administrator's password. The security design says
-the password for elevate is typed into a prompt that no program draws
-or reads, and the Phase 13 prep doc's question 2, which Chase accepted
-on 2026-10-30, makes Ctrl+Alt+Delete the secure attention key: it
-"always brings up the real sign-in or password prompt, which no program
-ever receives", and restarting moves to `reboot` and the sign-in
-screen's menu. Until now Ctrl+Alt+Delete on the consoles ran reboot(8),
-as on Linux.
+draw the same words and read what is typed after them, so a program left
+running in a pane, or a command named like elevate earlier in a `PATH`,
+can take an administrator's password. The security design says the
+password for elevate is typed into a prompt that no program draws or
+reads, and Ctrl+Alt+Delete becomes the secure attention key: it "always
+brings up the real sign-in or password prompt, which no program ever
+receives", and restarting moves to `reboot` and the sign-in screen's
+menu. Until now Ctrl+Alt+Delete on the consoles ran reboot(8), as on
+Linux.
 
 consoled already reads every key from the keyboard before any program
 does, and draws the screen's bottom line itself for notifications (ADR

@@ -23,9 +23,9 @@ volume must stay one that Windows mounts without a check, and that
   starts afresh at its next mount. A volume whose log holds changes to
   replay, or that Windows left dirty or hibernated with, ntfs-3g mounts
   read-only, since writing would lose or undo Windows' changes.
-- Chase chose that way on 2026-10-31 ("Clean log, as ntfs-3g does"),
-  over journaling Windows' way, which would need the log's format worked
-  out from what Windows writes.
+- Dukovo empties the log as ntfs-3g does, rather than journaling
+  Windows' way, which would need the log's format worked out from what
+  Windows writes.
 - Without a journal, a crash in the middle of a change can leave the
   volume inconsistent. Windows then checks it at its next mount, since
   the volume stays marked dirty until the change is done.

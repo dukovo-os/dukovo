@@ -20,8 +20,8 @@ version in `/kernel/version`, the uptime and memory in `/processes`,
 the CPUs in `/kernel/cpus`, the PCI functions in `/kernel/bus/pci`, the
 interfaces in `/kernel/class/net`, and the bundles bundled(8) keeps.
 
-The logo is the brand's: Duke, Dukovo's mascot. The maintainer approved
-a mock of the output first, as every change to what people see is.
+The logo is the brand's: Duke, Dukovo's mascot. A mock of the output was
+approved first, as every change to what people see is.
 
 ## Decision
 

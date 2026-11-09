@@ -22,10 +22,9 @@ component by its ecosystem and name, as a package URL does, and the
 versions it affects as ranges or lists.
 
 A catalog's targets are signed offline, by the YubiKeys of ADR 0381,
-when bundles are added: advisories change every day. Chase also asked
-for a `support` field in the manifest (2026-11-02), an email or web
-address, so that problem reports about a catalog app reach its
-publisher.
+when bundles are added: advisories change every day. The manifest also
+gains a `support` field, an email or web address, so that problem
+reports about a catalog app reach its publisher.
 
 ## Decision
 

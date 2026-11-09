@@ -10,7 +10,7 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 ## Context
 
-Chase asked for a Tab that is case and typo tolerant, and `...` for `../..`.
+Tab should be case and typo tolerant, and `...` should mean `../..`.
 
 ## Decision
 

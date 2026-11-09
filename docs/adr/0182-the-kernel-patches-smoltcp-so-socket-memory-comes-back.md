@@ -24,12 +24,12 @@ smoltcp's socket set also panics when it is full, and when a handle is
 not one of its sockets or names a socket of another kind. A kernel
 that panics because a program opened one socket too many is broken.
 
-The phase's prep doc keeps smoltcp as a pinned fork, with its fixes
-offered upstream as the mlibc patches are. The ports already patch
-crates from crates.io for Radix (ADR 0080), but the ports build after
-the kernel, with a toolchain of their own, and the kernel builds without
-them. Copying smoltcp's source into the repository would add 57,000
-lines that are not Dukovo's and hide what was changed.
+Phase 12 keeps smoltcp as a pinned fork, with its fixes offered upstream
+as the mlibc patches are. The ports already patch crates from crates.io
+for Radix (ADR 0080), but the ports build after the kernel, with a
+toolchain of their own, and the kernel builds without them. Copying
+smoltcp's source into the repository would add 57,000 lines that are not
+Dukovo's and hide what was changed.
 
 Getting memory back from a `&'static mut` slice takes `unsafe` code,
 and holding the slice again is not all it takes. Rust lets a function

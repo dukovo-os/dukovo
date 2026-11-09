@@ -12,16 +12,14 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 RISC-V is release 1.15's port (the roadmap's phase 37: SBI, PLIC or AIA,
 QEMU's `virt` machine, then one board). Since Phase 1, CI has compiled
-the architecture-independent kernel against AArch64 stubs of the HAL,
-so that x86-64 details cannot reach past the HAL unseen. That catches
-what does not compile; it says nothing of a boot path. Chase asked
-(2026-10-26) for a RISC-V smoke test alongside Phase 11, so that
-release 1.15 stays a port of size M and not a rewrite: a riscv64
-target next to the AArch64 stubs,
-booting through OpenSBI on QEMU `virt`, printing a banner over the SBI
-console, turning Sv39 paging on, taking one SBI timer interrupt and
-powering off through SBI, cross-built and booted under TCG by CI on
-every push.
+the architecture-independent kernel against AArch64 stubs of the HAL, so
+that x86-64 details cannot reach past the HAL unseen. That catches what
+does not compile; it says nothing of a boot path. A RISC-V smoke test
+runs alongside Phase 11, so that release 1.15 stays a port of size M and
+not a rewrite: a riscv64 target next to the AArch64 stubs, booting
+through OpenSBI on QEMU `virt`, printing a banner over the SBI console,
+turning Sv39 paging on, taking one SBI timer interrupt and powering off
+through SBI, cross-built and booted under TCG by CI on every push.
 
 OpenSBI (BSD-2-Clause) is the SBI implementation QEMU ships and starts
 in machine mode; it jumps to 0x80200000 in supervisor mode with the
