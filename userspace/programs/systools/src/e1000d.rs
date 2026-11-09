@@ -241,9 +241,12 @@ fn drive(running: Running) -> String {
                 sent += 1;
             }
         }
-        if sent > 0 {
-            card.flush();
-        }
+        // Tell the card of the frames handed to it and of the receive
+        // slots given back, whether or not anything was sent: a card
+        // fills only the slots it was told of, and QEMU's e1000 holds
+        // what it receives until it is told, so that a driver that only
+        // received starved it. Nothing is written when nothing changed.
+        card.flush();
         let waiting = driver.sending(link);
         if received > 0 || wake {
             let _ = device::wake(&SYS, slot);

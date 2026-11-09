@@ -82,6 +82,8 @@ mod tests6;
 #[cfg(test)]
 mod tests_multicast;
 #[cfg(test)]
+mod tests_neighbours;
+#[cfg(test)]
 mod tests_reports;
 #[cfg(test)]
 mod tests_tap;
@@ -163,6 +165,12 @@ pub trait Link {
     /// [`Link::send`] and [`Link::receive`].
     fn loopback(&mut self) -> Option<&mut Loopback> {
         None
+    }
+    /// Whether the card's link is up, as its driver says now: true for a
+    /// link with no wire, as the loopback link's. The stack asks once a
+    /// second at most, as asking can cost a register read.
+    fn carrier(&mut self) -> bool {
+        true
     }
 }
 
@@ -302,7 +310,16 @@ pub struct Stack<L: Link> {
     /// copy of smoltcp's, which a poll has lent to it.
     own: [IpAddress; ADDRESSES],
     owned: usize,
+    /// Whether the card's link was up when it was last asked, and when
+    /// to ask again ([`Stack::watch_carrier`]).
+    carrier: bool,
+    carrier_at: u64,
 }
+
+/// How often a stack asks its card whether its link is up, in
+/// nanoseconds: a link down for less than that is not seen, and could
+/// hardly have been moved to another network.
+const CARRIER_NS: u64 = 1_000_000_000;
 
 /// The most multicast groups an interface's sockets join between them:
 /// smoltcp's table has room for the solicited-node groups of its
@@ -684,6 +701,8 @@ impl<L: Link> Stack<L> {
             tap: None,
             own: [IpAddress::Ipv4(Ipv4Address::UNSPECIFIED); ADDRESSES],
             owned: 0,
+            carrier: true,
+            carrier_at: now_ns,
         }
     }
 
@@ -1004,6 +1023,7 @@ impl<L: Link> Stack<L> {
     /// answer go through in one call.
     pub fn poll(&mut self, now_ns: u64) -> bool {
         let mut changed = false;
+        self.watch_carrier(now_ns);
         self.send_above();
         let verify = self.link.needs_checksums();
         for _ in 0..POLL_ROUNDS {
@@ -1046,6 +1066,24 @@ impl<L: Link> Stack<L> {
         }
         // New addresses may let sockets send what waited for one.
         changed | self.sync_ipv6()
+    }
+
+    /// Asks the card whether its link is up, once every [`CARRIER_NS`],
+    /// and forgets every neighbour when it went down since: the link may
+    /// come back on another network, where an address the stack knew has
+    /// another MAC address, as Linux forgets them (`arp_evict_nocarrier`,
+    /// `ndisc_evict_nocarrier`). An address that changes leaves the
+    /// neighbours on the networks the interface is still on (ADR 0417).
+    fn watch_carrier(&mut self, now_ns: u64) {
+        if now_ns < self.carrier_at {
+            return;
+        }
+        self.carrier_at = now_ns.saturating_add(CARRIER_NS);
+        let up = self.link.carrier();
+        if self.carrier && !up {
+            self.iface.flush_neighbor_cache();
+        }
+        self.carrier = up;
     }
 
     /// Sends what the interfaces above it have for its link, while the

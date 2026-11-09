@@ -69,7 +69,7 @@ fn leak<T: Clone>(value: T, len: usize) -> &'static mut [T] {
     Box::leak(std::vec![value; len].into_boxed_slice())
 }
 
-fn memory() -> Memory {
+pub(crate) fn memory() -> Memory {
     Memory {
         receive: leak(0u8, FRAME),
         transmit: leak(0u8, FRAME),
@@ -77,7 +77,7 @@ fn memory() -> Memory {
     }
 }
 
-fn ping_memory() -> PingMemory {
+pub(crate) fn ping_memory() -> PingMemory {
     PingMemory {
         receive_meta: leak(icmp::PacketMetadata::EMPTY, 4),
         receive: leak(0u8, 256),
@@ -94,6 +94,16 @@ pub(crate) fn pair() -> (Stack<End>, Stack<End>) {
 /// Two stacks on one wire, as [`pair`], which make and check checksums or
 /// not, as `checksums` says.
 fn wire(checksums: bool) -> (Stack<End>, Stack<End>) {
+    let (a, b) = ends(checksums);
+    let mut a = Stack::new(a, memory(), 1, 0);
+    let mut b = Stack::new(b, memory(), 2, 0);
+    a.set_ipv4(Ipv4Cidr::new(Ipv4Address::new(10, 0, 0, 1), 24), None);
+    b.set_ipv4(Ipv4Cidr::new(Ipv4Address::new(10, 0, 0, 2), 24), None);
+    (a, b)
+}
+
+/// The two ends of a wire, with MAC addresses 2:0:0:0:0:1 and 2:0:0:0:0:2.
+pub(crate) fn ends(checksums: bool) -> (End, End) {
     let (a_to_b, b_to_a): (Queue, Queue) = Default::default();
     let a = End {
         mac: [2, 0, 0, 0, 0, 1],
@@ -111,10 +121,6 @@ fn wire(checksums: bool) -> (Stack<End>, Stack<End>) {
         flushes: 0,
         checksums,
     };
-    let mut a = Stack::new(a, memory(), 1, 0);
-    let mut b = Stack::new(b, memory(), 2, 0);
-    a.set_ipv4(Ipv4Cidr::new(Ipv4Address::new(10, 0, 0, 1), 24), None);
-    b.set_ipv4(Ipv4Cidr::new(Ipv4Address::new(10, 0, 0, 2), 24), None);
     (a, b)
 }
 
