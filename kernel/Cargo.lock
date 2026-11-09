@@ -332,6 +332,7 @@ name = "radix-ahci"
 version = "0.13.0"
 dependencies = [
  "radix-hw",
+ "radix-scsi",
 ]
 
 [[package]]

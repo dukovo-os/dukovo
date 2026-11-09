@@ -58,6 +58,16 @@ _/kernel/block/_*name*_/media_changes_
 	went in or came out since the drive was found. *volumed*(8) mounts
 	and unmounts when it moves. Radix's own: Linux tells udev instead.
 
+_/kernel/block/_*name*_/disc_
+	For a CD, DVD or Blu-ray drive (ADR 0431): what is in it. *none*
+	for no disc; *unreadable* for a disc the drive cannot read; or the
+	disc's kind, as MMC's profiles name it (*cd-rom*, *cd-r*, *cd-rw*,
+	*dvd-rom*, *dvd+r*, *dvd-r-dl*, *bd-rom*, *bd-re* and the others),
+	and what it holds: *data*, *audio* for a music CD, *mixed* for a CD
+	of both, or *blank*. Only a disc of data is read: with any other,
+	the drive's _size_ is *0*. Radix's own: Linux's udev has it as
+	_ID_CDROM_MEDIA_ and its kin.
+
 _/kernel/block/_*name*_/partition_, _start_
 	For a partition: its number in its disk's table, the one its name
 	ends in, and its first sector on the disk, in 512-byte sectors. A

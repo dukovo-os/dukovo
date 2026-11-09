@@ -286,6 +286,7 @@ pub extern "Rust" fn radix_kernel_main(mut params: BootParams) -> ! {
     check_timers(online);
     check_ipis(online);
     usb::wait_for_disks();
+    fs::disk::wait_for_discs();
 
     if let Some(name) = settings.selftest {
         selftest::run(name);

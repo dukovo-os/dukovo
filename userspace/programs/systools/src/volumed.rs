@@ -123,12 +123,12 @@ fn present(drives: &mut BTreeMap<String, bool>) -> Present {
 }
 
 /// Whether `name` is the disk `disk` or one of its partitions: `sdb1` of
-/// `sdb`, `mmcblk0p1` of `mmcblk0`.
+/// `sdb`, `mmcblk0p1` of `mmcblk0`; `cd10` is not `cd1`'s.
 fn of_disk(disk: &str, name: &str) -> bool {
     let Some(rest) = name.strip_prefix(disk) else { return false };
     let digit = disk.ends_with(|c: char| c.is_ascii_digit());
-    let rest = if digit { rest.strip_prefix('p').unwrap_or(rest) } else { rest };
-    rest.bytes().all(|b| b.is_ascii_digit())
+    let rest = if digit && !rest.is_empty() { rest.strip_prefix('p') } else { Some(rest) };
+    rest.is_some_and(|rest| rest.bytes().all(|b| b.is_ascii_digit()))
 }
 
 /// Whether `name` is a volume: a partition, or a disk with none, that is
@@ -332,6 +332,39 @@ fn swapped(known: &Present, now: &Present) -> BTreeSet<String> {
     now.changes.iter().filter(|&entry| moved(entry)).map(|(drive, _)| drive.clone()).collect()
 }
 
+/// What volumed says of `drive`, whose medium went in or came out.
+fn swap_note(drive: &str) -> String {
+    let empty = probe::block_text(drive, "size").as_deref() == Some("0");
+    disc_note(drive, empty, probe::block_text(drive, "disc").as_deref()).unwrap_or_else(|| {
+        if empty {
+            format!("{drive} has no medium in it now")
+        } else {
+            format!("a medium went in {drive}")
+        }
+    })
+}
+
+/// What volumed says of the optical drive `drive`, `empty` or not, whose
+/// disc went in or came out, as its `/kernel/block/<drive>/disc` says
+/// what is in it (ADR 0431): `none`, a disc's kind and what it holds
+/// (`dvd-rom data`, `cd-rom audio`, `dvd+r blank`), or `unreadable`.
+/// `None` for another drive.
+fn disc_note(drive: &str, empty: bool, disc: Option<&str>) -> Option<String> {
+    let disc = disc?.trim();
+    let (kind, holds) = disc.split_once(' ').unwrap_or((disc, ""));
+    Some(match (kind, holds) {
+        ("none", _) => format!("{drive} has no disc in it now"),
+        ("unreadable", _) => format!("a disc went in {drive}, but it cannot be read"),
+        (_, "audio") => {
+            format!("a music CD went in {drive}; its tracks are not files, and it is not mounted")
+        }
+        (kind, "blank") => format!("a blank disc ({kind}) went in {drive}; nothing to mount"),
+        (kind, _) if !empty => format!("a disc ({kind}) went in {drive}"),
+        // A disc of data the kernel could not set up: its log says why.
+        (kind, _) => format!("a disc ({kind}) went in {drive}, but it is not used"),
+    })
+}
+
 /// Watches `/kernel/block` for good.
 fn watch() -> Result<i32, Fail> {
     let mut drives = BTreeMap::new();
@@ -358,11 +391,7 @@ fn watch() -> Result<i32, Fail> {
             writeln!(out, "{line}")?;
         }
         for drive in &swapped {
-            if probe::block_text(drive, "size").as_deref() == Some("0") {
-                writeln!(out, "{drive} has no medium in it now")?;
-            } else {
-                writeln!(out, "a medium went in {drive}")?;
-            }
+            writeln!(out, "{}", swap_note(drive))?;
         }
         let came = now.names.iter().filter(|name| !known.names.contains(*name) || on_swapped(name));
         for name in came.filter(|name| is_volume(name, &now.names)) {
@@ -426,6 +455,10 @@ mod tests {
         assert!(of_disk("mmcblk0", "mmcblk0p2"));
         assert!(!of_disk("sdb", "sdc1"));
         assert!(!of_disk("sdb", "sdb1-unlocked"));
+        assert!(of_disk("cd1", "cd1"));
+        assert!(!of_disk("cd1", "cd10"));
+        assert!(!of_disk("nvme0n1", "nvme0n10"));
+        assert!(of_disk("nvme0n1", "nvme0n1p10"));
     }
 
     #[test]
@@ -437,6 +470,21 @@ mod tests {
         let known = counts(&[("sdb", 0), ("sdc", 2)]);
         let now = counts(&[("sdb", 1), ("sdc", 2), ("sdd", 0)]);
         assert_eq!(swapped(&known, &now), BTreeSet::from(["sdb".to_string()]));
+    }
+
+    #[test]
+    fn a_drive_says_what_disc_went_in() {
+        let note = |empty, disc| disc_note("cd0", empty, disc);
+        assert_eq!(note(true, None), None);
+        assert_eq!(note(true, Some("none\n")).unwrap(), "cd0 has no disc in it now");
+        assert_eq!(note(false, Some("dvd-rom data")).unwrap(), "a disc (dvd-rom) went in cd0");
+        assert!(note(true, Some("cd-rom audio")).unwrap().starts_with("a music CD went in cd0"));
+        assert_eq!(
+            note(true, Some("dvd+r blank")).unwrap(),
+            "a blank disc (dvd+r) went in cd0; nothing to mount"
+        );
+        assert!(note(true, Some("unreadable")).unwrap().contains("cannot be read"));
+        assert!(note(true, Some("bd-rom data")).unwrap().ends_with("but it is not used"));
     }
 
     #[test]

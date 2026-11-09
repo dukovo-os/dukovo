@@ -8,7 +8,9 @@
 //! headers of 32 bytes), the area the controller copies the disk's frames
 //! into, a command table per slot (the command's register frame and up to
 //! [`MAX_SEGMENTS`] buffer entries), and a 512-byte buffer of the port's
-//! own, for the data of IDENTIFY DEVICE, READ LOG EXT and TRIM.
+//! own, for the data of IDENTIFY DEVICE, READ LOG EXT and TRIM, and a
+//! [`PACKET_BUFFER_SIZE`]-byte one for the data of an optical drive's
+//! smaller commands.
 //!
 //! Reads and writes go out as NCQ commands when the disk queues: a slot's
 //! number is its command's tag, its bit is set in the port's SActive
@@ -29,10 +31,16 @@
 //! could not read or find its sectors ([`ata::ERROR_MEDIA`]); the others,
 //! and that one after any other error, are handed back to be issued again
 //! ([`Outcome::Retry`]).
+//!
+//! An optical drive on a port (an ATAPI device, ADR 0431) takes SCSI
+//! commands in ATA packets, one at a time, from the thread that runs it:
+//! [`Packets`] carries them as a [`Transport`], waiting for each in the
+//! kernel's way, woken by the port's interrupt ([`crate::Hba::quiet`]).
 
 use radix_hw::{Dma, Mmio, device_barrier};
+use radix_scsi::{Cdb, Data, Reply, SENSE_LENGTH, Sense, Transport, TransportError};
 
-use crate::ata::{self, Identity, Taskfile};
+use crate::ata::{self, Identity, PacketIdentity, Taskfile};
 use crate::{Absent, Error, hba, wait_for};
 
 /// Port registers, from the port's base (AHCI 1.3.1, 3.3).
@@ -136,7 +144,12 @@ const PRD_SIZE: usize = 16;
 const TABLE_SIZE: usize = TABLE_PRDT + MAX_SEGMENTS * PRD_SIZE;
 const BUFFER: usize = TABLES + 32 * TABLE_SIZE;
 const BUFFER_SIZE: usize = 512;
-const MEMORY: usize = BUFFER + BUFFER_SIZE;
+const PACKET_BUFFER: usize = BUFFER + BUFFER_SIZE;
+/// The most bytes an optical drive's command moves through the port's
+/// own buffer: a command whose data are in the caller's memory
+/// ([`Data::In`] and [`Data::Out`]), a TOC or a configuration.
+pub const PACKET_BUFFER_SIZE: usize = 2048;
+const MEMORY: usize = PACKET_BUFFER + PACKET_BUFFER_SIZE;
 /// Pages of DMA memory a port takes.
 pub const MEMORY_PAGES: usize = MEMORY.div_ceil(4096);
 
@@ -144,6 +157,14 @@ pub const MEMORY_PAGES: usize = MEMORY.div_ceil(4096);
 /// data go to the device.
 const HEADER_CFL: u32 = (ata::FIS_H2D_LEN / 4) as u32;
 const HEADER_WRITE: u32 = 1 << 6;
+/// Command header bit: the command is a packet, whose command descriptor
+/// block is in the table at [`TABLE_ACMD`].
+const HEADER_ATAPI: u32 = 1 << 5;
+/// Where a packet's command descriptor block is in a command table.
+const TABLE_ACMD: usize = 0x40;
+/// The command header's word where the controller counts the bytes moved
+/// (PRDBC).
+const HEADER_PRDBC: usize = 4;
 
 /// How long a link reset is held: at least a millisecond (10.4.2).
 pub const COMRESET_US: u32 = 1_000;
@@ -163,6 +184,12 @@ const READY_US: u32 = 10_000_000;
 const COMMAND_US: u32 = 5_000_000;
 const COMMAND_POLL_US: u32 = 100;
 const POLL_US: u32 = 1_000;
+/// How long a packet command is first waited for, and the longest wait
+/// between looks after: each wait doubles, so that a command answered at
+/// once is seen at once and one that spins a disc up costs few looks.
+/// The port's interrupt ends a wait early.
+const PACKET_FIRST_US: u32 = 10;
+const PACKET_LONGEST_US: u32 = 4_000;
 
 /// What a request does.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -230,6 +257,8 @@ pub struct Port {
     memory: Option<Dma>,
     cap: u32,
     identity: Option<Identity>,
+    /// What an optical drive on the port says it is.
+    packet: Option<PacketIdentity>,
     info: Info,
     /// Slots in flight.
     busy: u32,
@@ -267,6 +296,7 @@ impl Port {
             memory: Some(memory),
             cap,
             identity: None,
+            packet: None,
             info: Info {
                 sectors: 0,
                 sector_size: 512,
@@ -349,9 +379,10 @@ impl Port {
     }
 
     /// Readies the disk on a port whose link is up: waits until it is not
-    /// busy, checks that it is an ATA disk, starts the command engine and
-    /// asks the disk what it is. The port's interrupts are on afterwards.
-    /// Its buffers stay out of the frame of [`crate::Hba::probe`].
+    /// busy, checks that it is an ATA disk or an optical drive, starts the
+    /// command engine and asks the device what it is. The port's
+    /// interrupts are on afterwards. Its buffers stay out of the frame of
+    /// [`crate::Hba::probe`].
     #[inline(never)]
     pub(crate) fn start(&mut self, delay: &mut dyn FnMut(u32)) -> Result<(), Absent> {
         // The link reset left its mark in both (PxSERR.DIAG.X, and PxIS.PCS
@@ -363,7 +394,7 @@ impl Port {
         }
         match self.regs.read32(reg::SIG) {
             SIG_ATA => {}
-            SIG_ATAPI => return Err(Absent::Atapi),
+            SIG_ATAPI => return self.start_packet(delay),
             SIG_PORT_MULTIPLIER => return Err(Absent::PortMultiplier),
             other => return Err(Absent::Unknown(other)),
         }
@@ -393,6 +424,24 @@ impl Port {
         self.identity = Some(identity);
         self.regs.write32(reg::IS, u32::MAX);
         self.regs.write32(reg::IE, irq::ENABLED);
+        Ok(())
+    }
+
+    /// Readies the optical drive on the port: asks it what it is (IDENTIFY
+    /// PACKET DEVICE), and turns its interrupts on.
+    fn start_packet(&mut self, delay: &mut dyn FnMut(u32)) -> Result<(), Absent> {
+        if !self.start_engine() {
+            return Err(Absent::Stuck);
+        }
+        let mut bytes = [0u8; BUFFER_SIZE];
+        self.command_waited(Taskfile::identify_packet(), delay, &mut bytes)
+            .ok_or(Absent::NoIdentity)?;
+        let identity = ata::identify_packet(&ata::words(&bytes)).map_err(Absent::Unsupported)?;
+        self.packet = Some(identity);
+        // Its interrupts come on with each command (`Port::packet`), once
+        // its thread is there to wait for them.
+        self.regs.write32(reg::IS, u32::MAX);
+        self.regs.write32(reg::IE, 0);
         Ok(())
     }
 
@@ -485,6 +534,13 @@ impl Port {
     /// What the disk says of itself.
     pub fn identity(&self) -> Option<&Identity> {
         self.identity.as_ref()
+    }
+
+    /// What the optical drive on the port says of itself, if it has one
+    /// (an ATAPI device), which takes commands through [`Packets`]
+    /// instead of requests.
+    pub fn packet_identity(&self) -> Option<&PacketIdentity> {
+        self.packet.as_ref()
     }
 
     /// Whether `op` with `segments` buffers would find room now. A command
@@ -848,6 +904,181 @@ impl Port {
         let mut page = [0u8; BUFFER_SIZE];
         self.command_waited(Taskfile::read_log(ata::LOG_NCQ_ERROR), delay, &mut page)?;
         Some(ata::ncq_error(&page))
+    }
+}
+
+/// How a packet command went.
+enum Packet {
+    /// It worked, and this many bytes moved.
+    Done(u32),
+    /// The drive failed it: its error register, whose top four bits hold
+    /// the sense key.
+    Failed(u8),
+    /// The link or the controller failed, `why`; the port was restarted.
+    Broken(&'static str),
+}
+
+impl Port {
+    /// Carries out `cdb` on the optical drive on the port, with `data`,
+    /// alone, on slot 0, waiting up to `timeout_us` for it with `wait`,
+    /// which the port's interrupt may end early. Data in or out of the
+    /// caller's memory go through the port's own buffer, by PIO; data in
+    /// buffers it reaches go by DMA if the drive has it and the length is
+    /// a multiple of 16 bytes (Linux's libata's rule: many drives fail
+    /// DMA of less), else by PIO. A command the drive fails, or the link
+    /// breaks, restarts the port; one not answered in time resets the
+    /// link. Fails with [`TransportError::Gone`] once the port does not
+    /// come back.
+    fn packet(
+        &mut self,
+        cdb: &Cdb,
+        data: &mut Data<'_>,
+        timeout_us: u32,
+        wait: &mut dyn FnMut(u32),
+    ) -> Result<Packet, TransportError> {
+        let identity = self.packet.ok_or(TransportError::Failed("it is not an optical drive"))?;
+        if self.dead {
+            return Err(TransportError::Gone);
+        }
+        let command = cdb.bytes();
+        if command.len() > usize::from(identity.packet_length) {
+            return Err(TransportError::Failed("a command longer than the drive's packets"));
+        }
+        let total = data.len();
+        let into_host = data.into_host();
+        let own = [(self.mem().phys() + PACKET_BUFFER as u64, total as u32)];
+        let (frames, dma): (&[(u64, u32)], bool) = match data {
+            Data::None => (&[], false),
+            Data::In(bytes) if bytes.len() <= PACKET_BUFFER_SIZE => (&own, false),
+            Data::Out(bytes) if bytes.len() <= PACKET_BUFFER_SIZE => {
+                self.mem().write(PACKET_BUFFER, bytes);
+                (&own, false)
+            }
+            Data::In(_) | Data::Out(_) => {
+                return Err(TransportError::Failed("more data than the port's buffer holds"));
+            }
+            Data::Frames { frames, .. } => {
+                let even = frames
+                    .iter()
+                    .all(|&(phys, len)| len > 0 && len.is_multiple_of(2) && phys.is_multiple_of(2));
+                let wide = self.cap & hba::CAP_S64A != 0;
+                let reached = |&(phys, len): &(u64, u32)| wide || phys + u64::from(len) <= 1 << 32;
+                if frames.is_empty() || frames.len() > MAX_SEGMENTS || !even {
+                    return Err(TransportError::Failed("a malformed request"));
+                }
+                if !frames.iter().all(reached) {
+                    return Err(TransportError::Failed("a buffer the controller cannot reach"));
+                }
+                (frames, identity.dma && total.is_multiple_of(16))
+            }
+        };
+        let taskfile = Taskfile::packet(dma, identity.dmadir && into_host, total as u32);
+        self.fill(0, taskfile, frames, total > 0 && !into_host);
+        let memory = self.mem();
+        let mut acmd = [0u8; 16];
+        acmd[..command.len()].copy_from_slice(command);
+        memory.write(TABLES + TABLE_ACMD, &acmd);
+        let header = COMMAND_LIST;
+        memory.write32(header, memory.read32(header) | HEADER_ATAPI);
+        device_barrier();
+        self.regs.write32(reg::IS, u32::MAX);
+        self.regs.write32(reg::IE, irq::ENABLED);
+        self.regs.write32(reg::CI, 1);
+        let (mut waited, mut step) = (0u32, PACKET_FIRST_US);
+        let stopped = loop {
+            let status = self.regs.read32(reg::IS);
+            if status & irq::STOPS != 0 {
+                break status;
+            }
+            if self.regs.read32(reg::CI) & 1 == 0 {
+                device_barrier();
+                let moved = self.mem().read32(header + HEADER_PRDBC).min(total as u32);
+                if let Data::In(bytes) = data {
+                    self.mem().read(PACKET_BUFFER, &mut bytes[..moved as usize]);
+                }
+                return Ok(Packet::Done(moved));
+            }
+            if waited >= timeout_us {
+                self.errors = self.errors.wrapping_add(1);
+                if !self.restart(true, wait) {
+                    self.dead = true;
+                    return Err(TransportError::Gone);
+                }
+                return Err(TransportError::Failed(
+                    "it did not answer in time; the link was reset",
+                ));
+            }
+            wait(step);
+            waited = waited.saturating_add(step);
+            step = step.saturating_mul(2).min(PACKET_LONGEST_US);
+        };
+        // The drive's own error leaves the link up; anything else of the
+        // link or the controller resets it.
+        let error = (self.regs.read32(reg::TFD) >> 8) as u8;
+        let own_error = stopped & irq::TFES != 0 && stopped & irq::FATAL == 0;
+        self.errors = self.errors.wrapping_add(1);
+        if !self.restart(!own_error, wait) {
+            self.dead = true;
+            return Err(TransportError::Gone);
+        }
+        Ok(if own_error { Packet::Failed(error) } else { Packet::Broken("the link failed") })
+    }
+}
+
+/// How long REQUEST SENSE after a failed command may take.
+const SENSE_US: u32 = 10_000_000;
+
+/// The optical drive on a port, as the [`Transport`] that carries its
+/// SCSI commands (MMC-6; [`radix_scsi::mmc`]) in ATA packets, one at a
+/// time. A command the drive fails is followed by REQUEST SENSE, whose
+/// answer is the reply's sense, as Linux's libata gets it; a drive that
+/// does not answer that has the sense key of its error register. Its one
+/// logical unit is 0.
+pub struct Packets<'a> {
+    port: &'a mut Port,
+    wait: &'a mut dyn FnMut(u32),
+}
+
+impl<'a> Packets<'a> {
+    /// The commands of the optical drive on `port`, which wait with
+    /// `wait`: it waits the given number of microseconds, or until the
+    /// port's interrupt, whichever comes first.
+    pub fn new(port: &'a mut Port, wait: &'a mut dyn FnMut(u32)) -> Packets<'a> {
+        Packets { port, wait }
+    }
+
+    /// Why the drive failed a command whose error register is `error`.
+    fn sense(&mut self, error: u8) -> Sense {
+        let fallback = Sense { key: error >> 4, asc: 0, ascq: 0 };
+        let mut bytes = [0u8; SENSE_LENGTH as usize];
+        let cdb = Cdb::request_sense(SENSE_LENGTH);
+        let mut data = Data::In(&mut bytes);
+        match self.port.packet(&cdb, &mut data, SENSE_US, self.wait) {
+            Ok(Packet::Done(moved)) => Sense::parse(&bytes[..moved as usize]).unwrap_or(fallback),
+            _ => fallback,
+        }
+    }
+}
+
+impl Transport for Packets<'_> {
+    fn command(
+        &mut self,
+        lun: u8,
+        cdb: &Cdb,
+        mut data: Data<'_>,
+        timeout_ms: u32,
+    ) -> Result<Reply, TransportError> {
+        if lun != 0 {
+            let none = Sense { key: radix_scsi::key::ILLEGAL_REQUEST, asc: 0x25, ascq: 0 };
+            return Ok(Reply::Failed(Some(none)));
+        }
+        let total = data.len() as u32;
+        let timeout_us = timeout_ms.saturating_mul(1_000);
+        match self.port.packet(cdb, &mut data, timeout_us, self.wait)? {
+            Packet::Done(moved) => Ok(Reply::Good { residue: total - moved }),
+            Packet::Failed(error) => Ok(Reply::Failed(Some(self.sense(error)))),
+            Packet::Broken(why) => Err(TransportError::Failed(why)),
+        }
     }
 }
 

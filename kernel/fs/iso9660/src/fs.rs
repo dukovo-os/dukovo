@@ -117,14 +117,29 @@ fn rock_indicator(cache: &BlockCache, at: u64) -> Option<u8> {
     rock::indicator(format::record(&first[..len])?.system_use)
 }
 
-/// The volume's primary descriptor, and its Joliet one if it has one.
+/// The volume's primary descriptor, and its Joliet one if it has one:
+/// those of the device's last session, on a disc of several (ADR 0431),
+/// whose volume holds every session's files at their places on the disc,
+/// as Linux's isofs reads one; the first session's if the last has none.
 #[inline(never)]
 fn descriptors(cache: &BlockCache) -> Result<(Volume, Option<Volume>)> {
+    let session = cache.device().last_session() * radix_block::SECTOR / SECTOR;
+    if session > 0
+        && let Ok(found) = descriptors_from(cache, session)
+    {
+        return Ok(found);
+    }
+    descriptors_from(cache, 0)
+}
+
+/// [`descriptors`] of the session that starts at block `session`.
+fn descriptors_from(cache: &BlockCache, session: u64) -> Result<(Volume, Option<Volume>)> {
     let size = cache.device().info().sectors * radix_block::SECTOR;
     let mut primary = None;
     let mut joliet: Option<(Volume, u8)> = None;
     let mut sector = zeroed(SECTOR as usize)?;
-    for n in FIRST_DESCRIPTOR..FIRST_DESCRIPTOR + MAX_DESCRIPTORS {
+    let first = session + FIRST_DESCRIPTOR;
+    for n in first..first + MAX_DESCRIPTORS {
         if (n + 1) * SECTOR > size {
             break;
         }

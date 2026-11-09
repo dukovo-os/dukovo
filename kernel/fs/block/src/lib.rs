@@ -263,6 +263,14 @@ pub trait BlockDevice: Send + Sync {
         None
     }
 
+    /// Where the last session of a disc of several sessions starts, in
+    /// sectors: a CD or DVD written more than once, whose last session's
+    /// volume describes the files of all of them (ADR 0431). 0, which the
+    /// default is, for every other device.
+    fn last_session(&self) -> u64 {
+        0
+    }
+
     /// Ends the device: a partition that left its disk's table when the
     /// table was read again (ADR 0301). Its requests fail with
     /// [`Error::Io`] from then on, as a disk's do once it is unplugged, so

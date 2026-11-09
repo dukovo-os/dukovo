@@ -17,10 +17,12 @@
 
 use alloc::sync::Arc;
 use alloc::vec::Vec;
+use core::fmt;
 use core::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 
 use radix_mm::{Flags, HEAP, Kmalloc};
-use radix_sync::Mutex;
+use radix_scsi::mmc::{Content, Profile};
+use radix_sync::{Mutex, SpinLock};
 
 use super::Name;
 use crate::sched::{self, ThreadRef, wait};
@@ -39,6 +41,30 @@ const EJECTED: u8 = 2;
 /// The thread could not: the transport failed.
 const FAILED: u8 = 3;
 
+/// What is in an optical drive.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Disc {
+    /// Nothing.
+    None,
+    /// A disc of this kind, holding this: data, which is read, or music
+    /// or nothing (a blank disc), which is not.
+    In(Profile, Content),
+    /// A disc the drive could not read.
+    Unreadable,
+}
+
+impl fmt::Display for Disc {
+    /// As `/kernel/block/<drive>/disc` has it: `none`, `dvd-rom data`,
+    /// `cd-rom audio`, `dvd+r blank`, `unreadable`.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Disc::None => f.write_str("none"),
+            Disc::In(profile, content) => write!(f, "{profile} {}", content.name()),
+            Disc::Unreadable => f.write_str("unreadable"),
+        }
+    }
+}
+
 /// A drive whose medium comes and goes, as the rest of the kernel sees
 /// it. Its driver's thread keeps the rest.
 pub struct Drive {
@@ -52,17 +78,37 @@ pub struct Drive {
     one: Mutex<()>,
     /// The driver's thread, which an eject wakes.
     thread: ThreadRef,
+    /// For an optical drive, the disc in it; `None` for another drive.
+    disc: SpinLock<Option<Disc>>,
 }
 
 impl Drive {
-    /// A drive whose driver's thread is `thread`.
-    pub fn new(thread: ThreadRef) -> Drive {
+    /// A drive whose driver's thread is `thread`; with `optical`, a CD,
+    /// DVD or Blu-ray drive, empty until it says otherwise.
+    pub fn new(thread: ThreadRef, optical: bool) -> Drive {
         Drive {
             changes: AtomicU64::new(0),
             eject: AtomicU8::new(IDLE),
             one: Mutex::new(()),
             thread,
+            disc: SpinLock::new(optical.then_some(Disc::None)),
         }
+    }
+
+    /// For an optical drive, the disc in it.
+    pub fn disc(&self) -> Option<Disc> {
+        *self.disc.lock_irq()
+    }
+
+    /// An optical drive's driver says what disc is in it now; returns
+    /// whether that is not what it said before.
+    pub fn set_disc(&self, disc: Disc) -> bool {
+        let mut now = self.disc.lock_irq();
+        let differs = now.is_some_and(|was| was != disc);
+        if now.is_some() {
+            *now = Some(disc);
+        }
+        differs
     }
 
     /// How many times a medium went in or came out.
@@ -122,11 +168,11 @@ pub type DriveRef = Arc<Drive, Kmalloc>;
 /// Every drive whose medium comes and goes, by name.
 static DRIVES: Mutex<Option<Vec<(Name, DriveRef), Kmalloc>>> = Mutex::new(None);
 
-/// Adds the drive `name`, of the driver whose thread is `thread`;
-/// `None` when memory runs out.
-pub fn add(name: &Name, thread: ThreadRef) -> Option<DriveRef> {
+/// Adds the drive `name`, of the driver whose thread is `thread`, an
+/// optical drive with `optical`; `None` when memory runs out.
+pub fn add(name: &Name, thread: ThreadRef, optical: bool) -> Option<DriveRef> {
     let heap = HEAP.with(Flags::MAY_SLEEP);
-    let drive = Arc::try_new_in(Drive::new(thread), heap).ok()?;
+    let drive = Arc::try_new_in(Drive::new(thread, optical), heap).ok()?;
     let mut drives = DRIVES.lock();
     let drives = drives.get_or_insert_with(|| Vec::new_in(heap));
     drives.try_reserve(1).ok()?;

@@ -610,6 +610,20 @@ enum Bus {
     /// 32-bit descriptors, holding an `sd-card`): `mmcblk0` and on, in
     /// order. QEMU takes only cards whose size is a power of two.
     Sd,
+    /// A disc in an optical drive on a port of the AHCI controller of the
+    /// case's own (QEMU's `ide-cd`), after its SATA disks' ports: `cd0`
+    /// and on, in order, before the USB ones (ADR 0431).
+    SataCd,
+    /// A disc in a USB optical drive over Bulk-Only (QEMU's `usb-bot`
+    /// with a `scsi-cd`) at this QEMU port, as [`Bus::Usb`]: named `cd`
+    /// and a number after the SATA ones, in the order the controller
+    /// finds them.
+    UsbCd(&'static str),
+    /// A disc in logical unit `n` of a USB optical drive that speaks USB
+    /// Attached SCSI (a `scsi-cd` on QEMU's `usb-uas`), at this QEMU port
+    /// of a case with [`UAS_PORTS`], as [`Bus::Uas`]; named as
+    /// [`Bus::UsbCd`] is.
+    UasCd(&'static str, u8),
 }
 
 impl Disk {
@@ -657,6 +671,11 @@ impl Disk {
         }
     }
 
+    /// Whether it is a disc in an optical drive.
+    fn optical(&self) -> bool {
+        matches!(self.bus, Bus::SataCd | Bus::UsbCd(_) | Bus::UasCd(..))
+    }
+
     /// Whether the kernel takes it for solid state: an NVMe disk, or a
     /// SATA one with QEMU's rotation rate of 1.
     fn solid(&self) -> bool {
@@ -676,7 +695,7 @@ fn uas_devices(disks: &[Disk]) -> Vec<&'static str> {
     let mut ports: Vec<&str> = disks
         .iter()
         .filter_map(|disk| match disk.bus {
-            Bus::Uas(port, _) => Some(port),
+            Bus::Uas(port, _) | Bus::UasCd(port, _) => Some(port),
             _ => None,
         })
         .collect();
@@ -722,18 +741,25 @@ pub struct DiskImage {
 /// The names the kernel gives a case's disks: `vda`, `vdb` and on for
 /// virtio ones, `sda`, `sdb` and on for SATA ones, then USB ones after
 /// the boot stick's, each in their order, `nvme<n>n1` and on for each
-/// NVMe controller's namespaces, and `mmcblk0` and on for SD cards.
+/// NVMe controller's namespaces, `mmcblk0` and on for SD cards, and
+/// `cd0` and on for discs, the SATA drives' before the USB ones'.
 fn disk_names(disks: &[Disk]) -> Vec<String> {
     let sata_disks =
         disks.iter().filter(|disk| matches!(disk.bus, Bus::Sata | Bus::Ide)).count() as u8;
     let (mut virtio, mut sata, mut usb) = (b'a', b'a', b'a' + sata_disks + 1);
     let mut namespaces = [0u32; 256];
     let mut cards = 0..;
+    let sata_drives = disks.iter().filter(|disk| disk.bus == Bus::SataCd).count();
+    let (mut sata_cd, mut usb_cd) = (0.., sata_drives..);
     disks
         .iter()
         .map(|disk| {
             let (prefix, letter) = match disk.bus {
                 Bus::Sd => return format!("mmcblk{}", cards.next().unwrap_or_default()),
+                Bus::SataCd => return format!("cd{}", sata_cd.next().unwrap_or_default()),
+                Bus::UsbCd(_) | Bus::UasCd(..) => {
+                    return format!("cd{}", usb_cd.next().unwrap_or_default());
+                }
                 Bus::Virtio => ("vd", &mut virtio),
                 Bus::Sata | Bus::Ide => ("sd", &mut sata),
                 Bus::Usb(_) | Bus::Uas(..) => ("sd", &mut usb),
@@ -772,7 +798,9 @@ const UAS_PORTS: &[&str] = &["-global", "qemu-xhci.p3=2"];
 fn uas_place(disks: &[Disk], port: &str, lun: u8) -> String {
     let root: u8 = port.parse().expect("a root port's number");
     let place = if root <= 2 { format!("1-{root}") } else { format!("1-{}", root + 2) };
-    let units = disks.iter().filter(|disk| matches!(disk.bus, Bus::Uas(p, _) if p == port));
+    let units = disks
+        .iter()
+        .filter(|disk| matches!(disk.bus, Bus::Uas(p, _) | Bus::UasCd(p, _) if p == port));
     if units.count() > 1 { format!("{place} LUN {lun}") } else { place }
 }
 
@@ -3603,7 +3631,7 @@ fn run_case(
         std::fs::write(&path, bytes).map_err(|e| format!("{}: {e}", path.display()))?;
         *arg = format!("file={}", qemu::option_value(&path));
     }
-    if case.disks.iter().any(|disk| disk.bus == Bus::Sata) {
+    if case.disks.iter().any(|disk| matches!(disk.bus, Bus::Sata | Bus::SataCd)) {
         extra.extend(["-device".into(), "ich9-ahci,id=sata".into()]);
     }
     if case.disks.iter().any(|disk| disk.bus == Bus::Ide) {
@@ -3614,9 +3642,10 @@ fn run_case(
     for n in 0..case.disks.iter().filter(|disk| disk.bus == Bus::Sd).count() {
         extra.extend(["-device".into(), format!("sdhci-pci,id=sd{n}")]);
     }
-    if case.disks.iter().any(|disk| matches!(disk.bus, Bus::Usb(_) | Bus::Uas(..)))
-        && case.media != Media::Usb
-    {
+    let usb = |disk: &Disk| {
+        matches!(disk.bus, Bus::Usb(_) | Bus::Uas(..) | Bus::UsbCd(_) | Bus::UasCd(..))
+    };
+    if case.disks.iter().any(usb) && case.media != Media::Usb {
         return Err("a case with USB disks boots from USB, whose controller they are on".into());
     }
     for port in uas_devices(case.disks) {
@@ -3638,7 +3667,12 @@ fn run_case(
         // Discards reach the disk's file as holes, which read as zeros.
         extra.push("-drive".into());
         let ro = if disk.read_only { ",readonly=on" } else { "" };
-        extra.push(format!("file={file},if=none,id=disk{i},format=raw,discard=unmap{ro}"));
+        let cd = if disk.optical() { ",media=cdrom" } else { "" };
+        extra.push(format!("file={file},if=none,id=disk{i},format=raw,discard=unmap{ro}{cd}"));
+        // A USB optical drive over Bulk-Only: the device, then its drive.
+        if let Bus::UsbCd(port) = disk.bus {
+            extra.extend(["-device".into(), format!("usb-bot,bus=xhci.0,port={port},id=bot{i}")]);
+        }
         extra.push("-device".into());
         let device = match disk.sector {
             512 => disk.device.to_string(),
@@ -3649,6 +3683,14 @@ fn run_case(
             Bus::Sata => {
                 port += 1;
                 format!("ide-hd,drive=disk{i},bus=sata.{}{device}", port - 1)
+            }
+            Bus::SataCd => {
+                port += 1;
+                format!("ide-cd,drive=disk{i},bus=sata.{}{device}", port - 1)
+            }
+            Bus::UsbCd(_) => format!("scsi-cd,drive=disk{i},bus=bot{i}.0{device}"),
+            Bus::UasCd(port, lun) => {
+                format!("scsi-cd,drive=disk{i},bus=uas{port}.0,scsi-id=0,lun={lun}{device}")
             }
             Bus::Ide => {
                 end += 1;
@@ -7232,11 +7274,38 @@ fn disks_found(vm: &mut Vm, case: &Case) -> Result<(), String> {
                     if disk.read_only { ", write-protected" } else { "" }
                 ),
             ),
+            // QEMU's ATAPI drive says it reads DVDs; its SCSI one, which
+            // says the same, names itself a CD-ROM.
+            Bus::SataCd => {
+                port += 1;
+                (
+                    line_of(&format!("Disk: {name} is a DVD drive on AHCI port {} at ", port - 1))?,
+                    ": QEMU DVD-ROM ".to_string(),
+                )
+            }
+            Bus::UsbCd(port) => (
+                line_of(&format!("Disk: {name} is a USB optical drive on {}: ", usb_place(port)))?,
+                ": QEMU QEMU CD-ROM ".to_string(),
+            ),
+            Bus::UasCd(port, lun) => (
+                line_of(&format!(
+                    "Disk: {name} is a USB optical drive on {}: ",
+                    uas_place(case.disks, port, lun)
+                ))?,
+                ", USB Attached SCSI".to_string(),
+            ),
         };
         // Only a SATA or IDE disk's line says whether it is solid state.
         let says_solid = matches!(disk.bus, Bus::Sata | Bus::Ide) && disk.solid();
         if !line.contains(&want) || line.ends_with(", solid state") != says_solid {
             return Err(format!("the kernel described {name} as \"{line}\""));
+        }
+        // A disc is read whole, with no partition table looked for. QEMU
+        // says a disc of up to a CD's 360,000 blocks is a CD-ROM.
+        if disk.optical() {
+            let kind = if disk.kib > 720_000 { "dvd-rom" } else { "cd-rom" };
+            line_of(&format!("Disk: {name}: a disc of data ({kind}) of {size} "))?;
+            continue;
         }
         let part = partition_name(&name, 1);
         let size = disk_size(partition_sectors(disk) / 2);
@@ -7265,6 +7334,9 @@ fn disks_found(vm: &mut Vm, case: &Case) -> Result<(), String> {
     };
     if on(Bus::Sd) > 0 {
         ide += &format!(", {}", plural(on(Bus::Sd), "SD card"));
+    }
+    if on(Bus::SataCd) > 0 {
+        ide += &format!(", {}", plural(on(Bus::SataCd), "optical drive"));
     }
     line_of(&format!(
         "; {}, {}, {}{ide}",
@@ -7393,6 +7465,8 @@ fn storage_write(vm: &mut Vm, case: &Case) -> Result<(), String> {
             Bus::Nvme(_) => "QEMU NVMe Ctrl",
             Bus::Usb(_) | Bus::Uas(..) => "QEMU QEMU HARDDISK",
             Bus::Sd => "QEMU!",
+            Bus::SataCd => "QEMU DVD-ROM",
+            Bus::UsbCd(_) | Bus::UasCd(..) => "QEMU QEMU CD-ROM",
             Bus::Virtio => "",
         };
         if disk.table == Table::None && !model.is_empty() {

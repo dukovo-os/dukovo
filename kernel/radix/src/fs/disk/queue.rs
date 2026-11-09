@@ -1000,6 +1000,9 @@ pub struct Volume<C> {
     target: u32,
     info: Info,
     counters: Counters,
+    /// Where the last session of a disc of several starts, in sectors
+    /// ([`BlockDevice::last_session`]).
+    last_session: u64,
 }
 
 /// What a volume has done ([`Stats`]), counted as its calls end: a call
@@ -1123,7 +1126,13 @@ impl<C: Controller> Volume<C> {
         let discard_sectors = info.discard_sectors / unit * unit;
         let info = Info { max_segments: disk.info.max_segments, discard_sectors, ..info };
         let counters = Counters::new(disk.lanes.len())?;
-        Some(Volume { disk, target, info, counters })
+        Some(Volume { disk, target, info, counters, last_session: 0 })
+    }
+
+    /// The volume of a disc of several sessions, the last of which starts
+    /// at sector `sector` (ADR 0431).
+    pub fn with_last_session(self, sector: u64) -> Self {
+        Volume { last_session: sector, ..self }
     }
 
     /// Runs `f`, counted ([`Counters::count`]) in this CPU's lane.
@@ -1212,6 +1221,10 @@ impl<C: Controller> Volume<C> {
 impl<C: Controller> BlockDevice for Volume<C> {
     fn info(&self) -> Info {
         self.info
+    }
+
+    fn last_session(&self) -> u64 {
+        self.last_session
     }
 
     fn read(&self, sector: u64, segments: &mut [SegmentMut<'_>]) -> Result<(), Error> {

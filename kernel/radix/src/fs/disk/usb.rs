@@ -46,6 +46,13 @@
 //! REMOVAL locks it in, where the drive can; eject(1) has the thread let
 //! it go and eject it.
 //!
+//! A logical unit that is a CD, DVD or Blu-ray drive (ADR 0431) is a
+//! drive too, named `cd0` and on ([`super::optical`]): the thread asks
+//! the disc in it what it is with the commands of MMC, reads a disc of
+//! data whole, read-only, from the start of its last session, and reads
+//! no partition table on it, as Linux's `sr` reads none. A blank disc or
+//! a music CD leaves the drive empty, and the drive says what is in it.
+//!
 //! When the stick is unplugged, every request in flight and after fails,
 //! the disks and their partitions leave `/devices` and `/kernel/block`,
 //! their letters are free again, and the thread ends.
@@ -67,8 +74,8 @@ use radix_usb::storage::uas::{MAX_TAGS, OneAtATime, STATUS_LENGTH, Uas};
 use radix_usb::storage::{Bot, MAX_LUNS};
 
 use super::queue::{self, Controller, Disk, Op, Outcome, Part, Request, SLOTS, Volume};
-use super::removable::{self, DriveRef};
-use super::{Entry, Ident, Name, Size, register};
+use super::removable::{self, Disc, DriveRef};
+use super::{Entry, Ident, Name, Size, optical, register};
 use crate::sched::{self, ThreadRef};
 use crate::usb::storage::{Link, LinkRef, Protocol, StickPipes, UasPipes};
 
@@ -226,8 +233,8 @@ struct Medium {
 struct Lun {
     number: u8,
     name: Name,
-    /// Its `sd` letter.
-    letter: u32,
+    /// Its `sd` letter, or its `cd` number.
+    named: Named,
     /// What it says it is.
     inquiry: Inquiry,
     /// How many requests it has in flight at most.
@@ -236,6 +243,34 @@ struct Lun {
     medium: Option<Medium>,
     /// For a drive, what the thread keeps of it.
     watch: Option<Watch>,
+}
+
+/// What a logical unit's name was made of, given back when it goes.
+#[derive(Clone, Copy, Debug)]
+enum Named {
+    /// A disk's or a drive's `sd` letter.
+    Sd(u32),
+    /// An optical drive's `cd` number.
+    Cd(u32),
+}
+
+impl Named {
+    fn give_back(self) {
+        match self {
+            Named::Sd(letter) => super::give_back_sd_letter(letter),
+            Named::Cd(number) => optical::give_back_cd_number(number),
+        }
+    }
+}
+
+/// What the probe found of an optical drive: what is in it, and of a
+/// disc of data, where its last session starts, in sectors, and how many
+/// sessions it has.
+#[derive(Clone, Copy, Debug)]
+struct Optical {
+    disc: Disc,
+    last_session: u64,
+    sessions: u16,
 }
 
 /// What the thread keeps of a drive whose medium comes and goes.
@@ -381,7 +416,7 @@ impl Lun {
             None => {}
             Some(false) => {
                 watch.left = false;
-                self.take_out(TAKEN_OUT);
+                self.emptied(TAKEN_OUT);
             }
             Some(true) => {
                 if changed {
@@ -401,35 +436,64 @@ impl Lun {
     /// that cannot be used is left alone until it is taken out.
     fn put_in(&mut self, link: &LinkRef, transport: &mut dyn Transport) {
         let mut wait = |ms: u32| sched::sleep_ns(u64::from(ms) * 1_000_000);
-        let found = match medium(transport, self.number, self.inquiry, &mut wait) {
-            Ok(found) => found,
+        let (number, inquiry) = (self.number, self.inquiry);
+        let mut disc = None;
+        let probed = if inquiry.is_optical() {
+            let (what, probed) = optical::probe(transport, number, inquiry, &mut wait);
+            if let Some(watch) = &self.watch {
+                let _ = watch.drive.set_disc(what);
+            }
+            probed.map(|(medium, found)| {
+                disc = Some(optical::describe(&found, &medium));
+                (medium, optical::last_session(&found, &medium))
+            })
+        } else {
+            medium(transport, number, inquiry, &mut wait).map(|found| (found, 0))
+        };
+        let (found, last_session) = match probed {
+            Ok(probed) => probed,
             // Taken out again, or the stick unplugged: the next look says.
             Err(Absent::NoMedium | Absent::Gone) => return,
+            Err(Absent::NotData(content)) => {
+                info!("Disk: {}: {}", self.name, optical::not_data(content));
+                self.unusable();
+                return;
+            }
             Err(why) => {
                 info!("Disk: {}: a medium went in, but {why}; not used", self.name);
-                self.leave();
+                self.unusable();
                 return;
             }
         };
-        let (medium, device) = match new_medium(link, self.jobs, found, &self.name) {
+        let made = new_medium(link, self.jobs, found, last_session, &self.name);
+        let (medium, device) = match made {
             Ok(made) => made,
             Err(why) => {
                 warn!("Disk: {}: a medium went in, but {why}", self.name);
-                self.leave();
+                self.unusable();
                 return;
             }
         };
         let info = device.info();
-        info!(
-            "Disk: {}: a medium of {} went in, {} bytes a block{}{}{}",
-            self.name,
-            Size(info.sectors * SECTOR),
-            info.block_size,
-            super::sector_note(&info),
-            if found.read_only { ", write-protected" } else { "" },
-            if found.write_cache { ", write cache" } else { "" },
-        );
-        let parts = read_table(transport, self.number, &found, &self.name, &device);
+        if let Some(disc) = disc {
+            info!("Disk: {}: {disc} went in", self.name);
+        } else {
+            info!(
+                "Disk: {}: a medium of {} went in, {} bytes a block{}{}{}",
+                self.name,
+                Size(info.sectors * SECTOR),
+                info.block_size,
+                super::sector_note(&info),
+                if found.read_only { ", write-protected" } else { "" },
+                if found.write_cache { ", write cache" } else { "" },
+            );
+        }
+        // A disc has no partition table, as Linux's `sr` reads none.
+        let parts = if inquiry.is_optical() {
+            None
+        } else {
+            read_table(transport, self.number, &found, &self.name, &device)
+        };
         let Some(watch) = &self.watch else { return };
         let parts = parts.as_deref().unwrap_or(&[]);
         // The drive was empty: nothing was mounted from it to lose.
@@ -443,6 +507,33 @@ impl Lun {
     fn leave(&mut self) {
         if let Some(watch) = self.watch.as_mut() {
             watch.left = true;
+        }
+    }
+
+    /// Leaves the medium that went in, which cannot be used, alone until
+    /// it is taken out. In an optical drive, it counts as a change, so
+    /// that volumed(8) reads what the drive says is in it and says so.
+    fn unusable(&mut self) {
+        self.leave();
+        if let Some(watch) = &self.watch
+            && self.inquiry.is_optical()
+        {
+            watch.drive.changed();
+        }
+    }
+
+    /// The drive has no medium in it now, or none to use, `why`: its
+    /// medium is taken out of the kernel, and an optical drive's disc of
+    /// no data, left alone, counts a change as it goes, as one of data
+    /// does.
+    fn emptied(&mut self, why: &'static str) {
+        let Some(watch) = &self.watch else { return };
+        let drive = watch.drive.clone();
+        let counted = self.medium.is_some();
+        let differs = drive.set_disc(Disc::None);
+        self.take_out(why);
+        if differs && !counted {
+            drive.changed();
         }
     }
 
@@ -522,8 +613,8 @@ impl Lun {
             Err(_) => false,
         };
         if ejected {
+            self.emptied(EJECTED);
             self.leave();
-            self.take_out(EJECTED);
         }
         if let Some(watch) = &self.watch {
             watch.drive.answer(ejected);
@@ -676,7 +767,7 @@ pub fn run(link: &LinkRef) {
             removable::remove(lun.name.as_str());
         }
         super::unregister(lun.name.as_str());
-        super::give_back_sd_letter(lun.letter);
+        lun.named.give_back();
         info!("Disk: {} is gone with its USB device", lun.name);
     }
 }
@@ -726,7 +817,7 @@ impl<'a> Stick<'a> {
                 let _ = core::fmt::Write::write_fmt(&mut lun, format_args!(" LUN {number}"));
             }
             let inquiry = match wire.one(|transport| identify(transport, number)) {
-                Ok(inquiry) if inquiry.is_disk() => inquiry,
+                Ok(inquiry) if inquiry.is_disk() || inquiry.is_optical() => inquiry,
                 Ok(inquiry) => {
                     let why = Absent::NotDisk(inquiry.device_type);
                     info!("Disk: USB {}{lun}: {why}; not used", link.place);
@@ -740,11 +831,21 @@ impl<'a> Stick<'a> {
             };
             // A drive with no medium in it, or one that cannot be used,
             // is a drive all the same: one put in later fills it.
-            let found = match wire.one(|transport| medium(transport, number, inquiry, &mut wait)) {
+            let (found, optical) = if inquiry.is_optical() {
+                let probe = |t: &mut dyn Transport| optical::probe(t, number, inquiry, &mut wait);
+                let (disc, probed) = wire.one(probe);
+                let last_session = probed.as_ref().map_or(0, |(m, f)| optical::last_session(f, m));
+                let sessions = probed.as_ref().map_or(0, |(_, found)| found.sessions);
+                let optical = Optical { disc, last_session, sessions };
+                (probed.map(|(medium, _)| medium), Some(optical))
+            } else {
+                (wire.one(|transport| medium(transport, number, inquiry, &mut wait)), None)
+            };
+            let found = match found {
                 Ok(found) => Ok(found),
                 Err(Absent::Gone) => break,
                 Err(Absent::NoMedium) => Err(None),
-                Err(why) if inquiry.removable => Err(Some(why)),
+                Err(why) if inquiry.removable || optical.is_some() => Err(Some(why)),
                 Err(why) => {
                     info!("Disk: USB {}{lun}: {why}; not used", link.place);
                     continue;
@@ -754,7 +855,7 @@ impl<'a> Stick<'a> {
                 warn!("Disk: USB {}{lun}: out of memory", link.place);
                 break;
             }
-            match add(link, &mut wire, (number, jobs), inquiry, found, &lun) {
+            match add(link, &mut wire, (number, jobs), (inquiry, optical), found, &lun) {
                 Ok(added) => {
                     let _ = luns.push_within_capacity(added);
                 }
@@ -1177,49 +1278,61 @@ fn logical_units(wire: &mut Wire<'_>, numbers: &mut [u8; MAX_LUNS]) -> Option<us
 }
 
 /// Gives the logical unit `number`, a disk or a drive as `inquiry` says
-/// it is, a name and, with the medium `found` in it, a queue of `jobs`
-/// requests in flight, and registers it and the medium's partitions. A
-/// unit with no medium in it, or with one that cannot be used (`why`), is
-/// a drive, registered empty.
+/// it is (an optical drive with what `optical` says is in it), a name
+/// and, with the medium `found` in it, a queue of `jobs` requests in
+/// flight, and registers it and the medium's partitions. A unit with no
+/// medium in it, or with one that cannot be used (`why`), is a drive,
+/// registered empty.
 #[inline(never)]
 fn add(
     link: &LinkRef,
     wire: &mut Wire<'_>,
     (number, jobs): (u8, usize),
-    inquiry: Inquiry,
+    (inquiry, optical): (Inquiry, Option<Optical>),
     found: Result<Found, Option<Absent>>,
     lun: &TextBuf<16>,
 ) -> Result<Lun, &'static str> {
-    // The SATA disks found at boot are named first, then the sticks'
-    // in the order they were found.
+    // The SATA disks and drives found at boot are named first, then the
+    // sticks' in the order they were found.
     super::wait_for_scan();
     crate::usb::storage::wait_for_turn(link);
-    let (letter, name) = super::take_sd_name().ok_or("too many SATA and USB disks")?;
-    add_named(link, wire, (number, jobs), inquiry, found, (name, letter), lun)
-        .inspect_err(|_| super::give_back_sd_letter(letter))
+    let (named, name) = if optical.is_some() {
+        let (number, name) = optical::take_cd_name().ok_or("too many optical drives")?;
+        (Named::Cd(number), name)
+    } else {
+        let (letter, name) = super::take_sd_name().ok_or("too many SATA and USB disks")?;
+        (Named::Sd(letter), name)
+    };
+    add_named(link, wire, (number, jobs), (inquiry, optical), found, (name, named), lun)
+        .inspect_err(|_| named.give_back())
 }
 
-/// [`add`]'s part with the unit named `name`, after `letter`.
+/// [`add`]'s part with the unit named `name`, after `named`.
 fn add_named(
     link: &LinkRef,
     wire: &mut Wire<'_>,
     (number, jobs): (u8, usize),
-    inquiry: Inquiry,
+    (inquiry, optical): (Inquiry, Option<Optical>),
     found: Result<Found, Option<Absent>>,
-    (name, letter): (Name, u32),
+    (name, named): (Name, Named),
     lun: &TextBuf<16>,
 ) -> Result<Lun, &'static str> {
     let heap = HEAP.with(Flags::MAY_SLEEP);
+    let last_session = optical.map_or(0, |optical| optical.last_session);
     let made = match found {
-        Ok(found) => Some(new_medium(link, jobs, found, &name)?),
+        Ok(found) => Some(new_medium(link, jobs, found, last_session, &name)?),
         Err(_) => None,
     };
-    // A drive whose medium comes and goes: one that says so, or that has
-    // none in it now, as a card reader's empty slot.
-    let watch = if inquiry.removable || made.is_none() {
+    // A drive whose medium comes and goes: one that says so, an optical
+    // drive, or one that has none in it now, as a card reader's empty
+    // slot.
+    let watch = if inquiry.removable || optical.is_some() || made.is_none() {
         let empty: DeviceRef = Arc::try_new_in(Empty, heap).map_err(|_| "out of memory")?;
         let thread = sched::current().ok_or("it has no thread")?;
-        let drive = removable::add(&name, thread).ok_or("out of memory")?;
+        let drive = removable::add(&name, thread, optical.is_some()).ok_or("out of memory")?;
+        if let Some(optical) = optical {
+            let _ = drive.set_disc(optical.disc);
+        }
         let next = sched::now_ns().saturating_add(LOOK_NS);
         let left = matches!(found, Err(Some(_)));
         let (changed, locked, lockable, out) = (false, false, true, None);
@@ -1232,16 +1345,39 @@ fn add_named(
         Protocol::Bot { .. } => "",
     };
     let ident = Some(ident(link, &inquiry));
-    let mut added = Lun { number, name, letter, inquiry, jobs, medium: None, watch };
-    let Some((medium, device)) = made else {
+    let mut added = Lun { number, name, named, inquiry, jobs, medium: None, watch };
+    let (vendor, product, revision) = (inquiry.vendor(), inquiry.product(), inquiry.revision());
+    if let Some(optical) = optical {
         let (name, place) = (&added.name, &link.place);
-        let (vendor, product, revision) = (inquiry.vendor(), inquiry.product(), inquiry.revision());
         info!(
-            "Disk: {name} is a USB drive with no medium in it on {place}{lun}: {vendor} {product} \
+            "Disk: {name} is a USB optical drive on {place}{lun}: {vendor} {product} \
              {revision}{how}"
         );
-        if let Err(Some(why)) = found {
-            info!("Disk: {name}: the medium in it {why}; not used until it is taken out");
+        match (&made, found, optical.disc) {
+            (Some((_, device)), _, Disc::In(profile, _)) => {
+                let sectors = device.info().sectors;
+                let disc = optical::described(profile, optical.sessions, sectors);
+                info!("Disk: {name}: {disc} is in it");
+            }
+            (None, Err(Some(Absent::NotData(content))), _) => {
+                info!("Disk: {name}: {}", optical::not_data(content));
+            }
+            (None, Err(Some(why)), _) => {
+                info!("Disk: {name}: the disc in it {why}; not used until it is taken out");
+            }
+            _ => {}
+        }
+    }
+    let Some((medium, device)) = made else {
+        let (name, place) = (&added.name, &link.place);
+        if optical.is_none() {
+            info!(
+                "Disk: {name} is a USB drive with no medium in it on {place}{lun}: {vendor} \
+                 {product} {revision}{how}"
+            );
+            if let Err(Some(why)) = found {
+                info!("Disk: {name}: the medium in it {why}; not used until it is taken out");
+            }
         }
         let empty = added.watch.as_ref().map(|watch| watch.empty.clone());
         let device = empty.ok_or("it has no device")?;
@@ -1250,25 +1386,28 @@ fn add_named(
     };
     let found = medium.found;
     let info = device.info();
-    info!(
-        "Disk: {} is a USB disk of {} on {}{lun}: {} {} {}, {} bytes a block{}{}{}{}{how}",
-        added.name,
-        Size(info.sectors * SECTOR),
-        link.place,
-        inquiry.vendor(),
-        inquiry.product(),
-        inquiry.revision(),
-        info.block_size,
-        super::sector_note(&info),
-        if inquiry.removable { ", removable" } else { "" },
-        if found.read_only { ", write-protected" } else { "" },
-        if found.write_cache { ", write cache" } else { "" },
-    );
+    if optical.is_none() {
+        info!(
+            "Disk: {} is a USB disk of {} on {}{lun}: {vendor} {product} {revision}, {} bytes a \
+             block{}{}{}{}{how}",
+            added.name,
+            Size(info.sectors * SECTOR),
+            link.place,
+            info.block_size,
+            super::sector_note(&info),
+            if inquiry.removable { ", removable" } else { "" },
+            if found.read_only { ", write-protected" } else { "" },
+            if found.write_cache { ", write cache" } else { "" },
+        );
+    }
     register(Entry { name: added.name.clone(), device: device.clone(), place: None, ident });
     added.medium = Some(medium);
-    let parts = wire.one(|t| read_table(t, number, &found, &added.name, &device));
-    for part in parts.iter().flatten() {
-        super::add_partition(&added.name, &device, part);
+    // A disc has no partition table, as Linux's `sr` reads none.
+    if optical.is_none() {
+        let parts = wire.one(|t| read_table(t, number, &found, &added.name, &device));
+        for part in parts.iter().flatten() {
+            super::add_partition(&added.name, &device, part);
+        }
     }
     Ok(added)
 }
@@ -1292,12 +1431,15 @@ fn jobs(count: usize, segments: usize) -> Option<Jobs> {
 }
 
 /// The queue of the medium `found` in a logical unit of the stick `link`,
-/// the disk `name`, with `count` requests in flight: the
-/// medium as the thread keeps it, and its block device.
+/// the disk `name`, with `count` requests in flight, its volume read from
+/// `last_session` (where a disc's last session starts, in sectors; 0 on
+/// anything else): the medium as the thread keeps it, and its block
+/// device.
 fn new_medium(
     link: &LinkRef,
     count: usize,
     found: Found,
+    last_session: u64,
     name: &Name,
 ) -> Result<(Medium, DeviceRef), &'static str> {
     let heap = HEAP.with(Flags::MAY_SLEEP);
@@ -1328,6 +1470,7 @@ fn new_medium(
         .ok_or("out of memory")?;
     let disk = Arc::try_new_in(disk, heap).map_err(|_| "out of memory")?;
     let volume = Volume::new(disk.clone(), 0, info).ok_or("out of memory")?;
+    let volume = volume.with_last_session(last_session);
     let device: DeviceRef = Arc::try_new_in(volume, heap).map_err(|_| "out of memory")?;
     let medium =
         Medium { found, shared, disk, start: false, starting: false, not_before: 0, ended: false };

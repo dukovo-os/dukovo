@@ -661,7 +661,11 @@ fn mount_disks(root: &Dir, compress: &[&str], live_only: bool) -> Vec<(String, M
             .read_file(&format!("kernel/block/{name}/size"))
             .is_ok_and(|size| size.trim_ascii() == b"0")
         {
-            println!("spark: {name} has no medium in it; volumed mounts one put in");
+            let disc = root.read_file(&format!("kernel/block/{name}/disc")).ok();
+            match disc.as_deref().and_then(|disc| disc_note(disc.trim_ascii())) {
+                Some(note) => println!("spark: {name} {note}"),
+                None => println!("spark: {name} has no medium in it; volumed mounts one put in"),
+            }
             continue;
         }
         let kind = swap::part_type(root, name);
@@ -686,6 +690,22 @@ fn mount_disks(root: &Dir, compress: &[&str], live_only: bool) -> Vec<(String, M
         }
     }
     btrfs
+}
+
+/// What Spark says of an optical drive with no disc of data in it, as its
+/// `/kernel/block/<drive>/disc` says what is in it (ADR 0431): `none`, a
+/// disc's kind and what it holds (`cd-rom audio`, `dvd+r blank`), or
+/// `unreadable`. `None` for a drive that has none of these to say.
+fn disc_note(disc: &[u8]) -> Option<String> {
+    let disc = core::str::from_utf8(disc).ok()?;
+    let (kind, holds) = disc.split_once(' ').unwrap_or((disc, ""));
+    Some(match (kind, holds) {
+        ("none", _) => "has no disc in it; volumed mounts one put in".into(),
+        ("unreadable", _) => "has a disc in it that cannot be read; left alone".into(),
+        (_, "audio") => "holds a music CD; its tracks are not files, and it is not mounted".into(),
+        (kind, "blank") => format!("holds a blank disc ({kind}); nothing to mount"),
+        _ => return None,
+    })
 }
 
 /// Whether the kernel's command line has `live`, as the install stick's

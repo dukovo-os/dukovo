@@ -113,6 +113,14 @@ path = "kernel/fs/ntfs/src/fixtures/*.sectors"
 SPDX-FileCopyrightText = "2026 The Dukovo contributors"
 SPDX-License-Identifier = "Apache-2.0 OR MIT"
 
+# The disc image the lab's optical drive test puts in the machine's drive
+# (lab/tests/storage/optical.toml), made by xorriso: an ISO 9660 with
+# Rock Ridge and Joliet, labelled LABDISC, holding hello.txt.
+[[annotations]]
+path = "lab/tests/storage/optical.iso"
+SPDX-FileCopyrightText = "2026 The Dukovo contributors"
+SPDX-License-Identifier = "Apache-2.0 OR MIT"
+
 # uACPI 7.0.0 at commit c0edece, https://github.com/uACPI/uACPI, unmodified
 # but for the build files left out: the AML interpreter the kernel links
 # (ADR 0200). Its files carry no headers; its license file is

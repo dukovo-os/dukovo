@@ -251,6 +251,24 @@ the next card:
 0
 ```
 
+A CD, DVD or Blu-ray drive, on SATA or USB, is such a drive too, named
+`cd0` and on, a `rom` under lsblk's `TYPE` (ADR 0431). A disc of data,
+ISO 9660 or UDF, is mounted read-only: at `/volumes/cd0` when it is in
+the drive at boot, and at its label when put in later. A disc written in
+several sessions is read from its last, which holds all of it. While it
+is mounted, the drive keeps it in; `eject` unmounts it and opens the
+tray. `/kernel/block/cd0/disc` says what is in the drive, and a music CD
+or a blank disc is said, not mounted:
+
+```
+# cat /kernel/block/cd0/disc
+dvd-rom data
+# eject cd0
+# dmesg | tail -2
+Disk: cd0: its disc was ejected
+volumed: cd0 has no disc in it now
+```
+
 When the machine is turned off or restarted, every disk's cache is
 written out first, and each NVMe drive is told to shut down, as Linux
 does, so that it does not count an unsafe shutdown. A read or write a
