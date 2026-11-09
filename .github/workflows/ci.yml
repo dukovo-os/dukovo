@@ -31,6 +31,8 @@ env:
 jobs:
   build:
     name: Lint, build, docs and image
+    needs: scope
+    if: needs.scope.outputs.code == 'true'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -154,11 +156,47 @@ jobs:
           path: out/test/smbd.img
           retention-days: 3
 
+  # A pull request that changes only documentation runs this job in place
+  # of the build job above: the same doc checks, without building the
+  # system or its image.
+  docs:
+    name: Docs
+    needs: scope
+    if: needs.scope.outputs.code == 'false'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install host packages
+        uses: ./.github/actions/apt-install
+        with:
+          packages: scdoc mandoc
+
+      - name: Install mdBook
+        run: |
+          # GitHub's release downloads sometimes answer 504 for a while;
+          # build the same pinned version from crates.io when they do.
+          if ! curl --proto '=https' --tlsv1.2 -sSfL --retry 3 --retry-all-errors --retry-delay 10 \
+            "https://github.com/rust-lang/mdBook/releases/download/v${MDBOOK_VERSION}/mdbook-v${MDBOOK_VERSION}-x86_64-unknown-linux-gnu.tar.gz" \
+            | sudo tar -xz -C /usr/local/bin mdbook; then
+            cargo install mdbook --version "${MDBOOK_VERSION}" --locked --root "$RUNNER_TEMP/mdbook"
+            sudo install "$RUNNER_TEMP/mdbook/bin/mdbook" /usr/local/bin/mdbook
+          fi
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+
+      - name: ./ob docs --check
+        run: ./ob docs --check
+
   # The host unit tests and the boot tests run beside the lint job, the
   # boot tests split between three machines, so that a pull request's CI
   # takes the time of its slowest job rather than of all of them in turn.
   unit:
     name: Unit tests
+    needs: scope
+    if: needs.scope.outputs.code == 'true'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -275,7 +313,8 @@ jobs:
   # files both ways and changes an access list.
   smb-windows:
     name: Windows file sharing
-    needs: build
+    needs: [build, scope]
+    if: needs.scope.outputs.code == 'true'
     runs-on: windows-2025
     steps:
       - uses: actions/checkout@v4
@@ -304,6 +343,8 @@ jobs:
 
   boot:
     name: Boot tests (${{ matrix.shard }}/5)
+    needs: scope
+    if: needs.scope.outputs.code == 'true'
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
@@ -427,6 +468,8 @@ jobs:
   # bench.yml's, which also runs every night on main (ADR 0290).
   bench:
     name: Benchmarks
+    needs: scope
+    if: needs.scope.outputs.code == 'true'
     uses: ./.github/workflows/bench.yml
 
   # Instructions per operation, counted by QEMU (`ob bench --instructions`,
@@ -434,6 +477,8 @@ jobs:
   # here even when the timings above are within their noise.
   instructions:
     name: Instruction budgets
+    needs: scope
+    if: needs.scope.outputs.code == 'true'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -510,6 +555,7 @@ jobs:
       kani: ${{ steps.scope.outputs.kani }}
       tla: ${{ steps.scope.outputs.tla }}
       container: ${{ steps.scope.outputs.container }}
+      code: ${{ steps.scope.outputs.code }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -530,6 +576,17 @@ jobs:
               echo false
             fi
           }
+          # `needs_code` says false only for a pull request whose files
+          # are all documentation that no build or test reads.
+          needs_code() {
+            if [ "$GITHUB_EVENT_NAME" = pull_request ] \
+              && ! git diff --name-only "$BASE" HEAD \
+                | grep -qvE '^[^/]+\.md$|^docs/(handbook|adr|design|images)/|^docs/roadmap\.md$|^LICENSES/|^REUSE\.toml$'; then
+              echo false
+            else
+              echo true
+            fi
+          }
           {
             # The Kani proofs are in the kernel's libraries, which build
             # from kernel/ and tools/ridlc/ alone; doctor.rs pins Kani.
@@ -537,6 +594,10 @@ jobs:
             # TLC checks the models in the tla/ folders, not the code.
             echo "tla=$(needs '(^|/)tla/|^tools/xtask/src/tla\.rs')"
             echo "container=$(needs '^(tools/container/|tools/xtask/src/(doctor|ports)\.rs|ports/|rust-toolchain\.toml)')"
+            # A pull request that changes only documentation skips the
+            # jobs that test code: the build job still checks the docs.
+            # Man pages count as code, since they ship in the image.
+            echo "code=$(needs_code)"
           } | tee -a "$GITHUB_OUTPUT"
 
   kani:
@@ -608,6 +669,8 @@ jobs:
 
   corpus:
     name: Shell corpus
+    needs: scope
+    if: needs.scope.outputs.code == 'true'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -778,7 +841,7 @@ jobs:
   passed:
     name: CI passed
     if: always()
-    needs: [build, unit, chkdsk, smb-windows, boot, instructions, scope, kani, tla, corpus, container, checks]
+    needs: [build, docs, unit, chkdsk, smb-windows, boot, instructions, scope, kani, tla, corpus, container, checks]
     runs-on: ubuntu-24.04
     steps:
       - name: Check that every job passed or was skipped
