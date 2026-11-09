@@ -206,7 +206,7 @@ diff --git a/src/uu/ls/src/display.rs b/src/uu/ls/src/display.rs
 +        if config.octal {
 +            fields::write_octal(
 +                config.field_colors.as_ref(),
-+                fields::mode_of(md),
++                md.mode(),
 +                padding.octal,
 +                &mut state.display_buf,
 +            );
@@ -364,7 +364,7 @@ diff --git a/src/uu/ls/src/fields.rs b/src/uu/ls/src/fields.rs
 new file mode 100644
 --- /dev/null
 +++ b/src/uu/ls/src/fields.rs
-@@ -0,0 +1,524 @@
+@@ -0,0 +1,523 @@
 +// This file is part of the uutils coreutils package.
 +//
 +// For the full copyright and license information, please view the LICENSE
@@ -390,7 +390,6 @@ new file mode 100644
 +//! `display_item_long` pads.
 +
 +use std::fmt::Write as _;
-+use std::os::unix::fs::MetadataExt;
 +use std::time::{Duration, SystemTime};
 +
 +use ansi_width::ansi_width;
@@ -468,7 +467,7 @@ new file mode 100644
 +            today: code("1"),
 +            old: code("90"),
 +            header: code("4"),
-+            end: code("\x1b[0m"),
++            end: "\x1b[0m".to_string(),
 +        }
 +    }
 +}
@@ -618,6 +617,10 @@ new file mode 100644
 +            .iter()
 +            .rposition(|&b| b != b' ')
 +            .map_or(start, |i| i + 1);
++        if start == end {
++            out.extend(text);
++            return;
++        }
 +        out.extend(&text[..start]);
 +        self.paint(code, &String::from_utf8_lossy(&text[start..end]), out);
 +        out.extend(&text[end..]);
@@ -656,11 +659,6 @@ new file mode 100644
 +        b' ',
 +        column.saturating_sub(digits.len()) + 1,
 +    ));
-+}
-+
-+/// The mode of a file's metadata, for `--octal`.
-+pub(crate) fn mode_of(metadata: &std::fs::Metadata) -> u32 {
-+    metadata.mode()
 +}
 +
 +/// The titles `--header` writes over the long listing's columns.
@@ -717,9 +715,10 @@ new file mode 100644
 +    padding.octal = OCTAL_WIDTH.max(width(&titles.octal));
 +    padding.permissions_title = padding.permissions.max(width(&titles.permissions));
 +    padding.link_count = padding.link_count.max(width(&titles.links));
-+    if config.long.owner || config.long.author {
++    if config.long.owner {
 +        padding.uname = padding.uname.max(width(&titles.owner));
 +    }
++    // Author shares the owner's width (display_item_long pads both alike).
 +    if config.long.author {
 +        padding.uname = padding.uname.max(width(&titles.author));
 +    }
@@ -1088,7 +1087,7 @@ new file mode 100644
 +    // A link is shown as a link, whatever it leads to; a dangling one too.
 +    match path.file_type() {
 +        Some(kind) => {
-+            if let Some(glyph) = glyph_for_type(kind) {
++            if let Some(glyph) = glyph_for_type(*kind) {
 +                return glyph;
 +            }
 +        }
@@ -1115,7 +1114,7 @@ new file mode 100644
 +    }
 +}
 +
-+fn glyph_for_type(kind: &FileType) -> Option<char> {
++fn glyph_for_type(kind: FileType) -> Option<char> {
 +    if kind.is_dir() {
 +        Some(glyph::FOLDER)
 +    } else if kind.is_symlink() {
