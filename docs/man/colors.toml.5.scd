@@ -105,6 +105,16 @@ example *"bold blue"*, *"red underline"*, *"bold bright-white on red"*.
 	The type letter at the front of a mode takes *directory*, *link* or
 	*device* (*coreutils*(1)).
 
+*[ls]* *git-new*, *git-modified*, *git-deleted*, *git-renamed*, *git-ignored*, *git-conflict*, *tree*
+	Also in *LS_FIELD_COLORS*: *ls -l --git*'s letters, *N*, *M* (and
+	*T*), *D*, *R*, *I* and *U* (a *-* takes *denied*), and *ls --tree*'s
+	lines.
+
+*[ls]* *app-sealed*, *app-unsealed*, *app-data*, *subvolume*
+	Also in *LS_FIELD_COLORS*: *ls -l --app*'s words *sealed*, *not
+	sealed*, and *data* and *temp* (a *-* takes *denied*), and the
+	*[subvolume]* mark after a Btrfs subvolume's folder.
+
 *[ls]* *icons =* *true* | *false*
 	*true* makes the alias *ls --color=auto --icons*, which shows a Nerd
 	Font icon before each name on a terminal. The terminal must use a

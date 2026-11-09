@@ -32,7 +32,8 @@ root's lists the links with Unix's names, such as _/dev_ and _/etc_
 names.
 
 Dukovo's *ls* also takes these options, none of which changes its output
-unless it is given (ADR 0440):
+unless it is given or, for *--subvolumes*, on a terminal (ADRs 0440 to
+0443):
 
 *--header*
 	With *-l*, a line of column titles over the listing.
@@ -50,14 +51,71 @@ unless it is given (ADR 0440):
 	terminal, so that *--color=always* into a pipe is as GNU's. The
 	colours come from *LS_FIELD_COLORS*, as *read=33:write=31*, with the
 	keys *read*, *write*, *run*, *special*, *none*, *directory*, *link*,
-	*device*, *octal*, *small*, *big*, *huge*, *today*, *old* and
-	*header*; set empty, it turns them off. Nukesh makes it from
-	*colors.toml*(5).
+	*device*, *octal*, *small*, *big*, *huge*, *today*, *old*, *header*,
+	*git-new*, *git-modified*, *git-deleted*, *git-renamed*,
+	*git-ignored*, *git-conflict*, *tree*, *app-sealed*, *app-unsealed*,
+	*app-data* and *subvolume*; set empty, it turns them off. Nukesh makes it from *colors.toml*(5).
 
 *--icons*[=_when_]
 	A Nerd Font icon before each name, by its type, name or ending.
 	_when_ is *always*, *auto* (on a terminal, and what *--icons* alone
 	means) or *never*, the default. The terminal must use a Nerd Font.
+
+*--tree*
+	Each folder named, with everything beneath it drawn as a tree under
+	it, a name a line, and a last line counting its folders and files.
+	With *-l*, each line keeps its columns. The names in each folder are
+	those *ls* would list there, in the same order; *-a* adds the hidden
+	ones but not *.* and *..*. A link to a folder is followed only with
+	*-L*.
+
+*--level*=_depth_
+	With *--tree*, go no more than _depth_ folders down, from *1*, the
+	folder's own names. On its own, it means *--tree* too.
+
+*--git*
+	With *-l*, in a git repository, a column of two letters for each
+	file, as *git status --short* gives them: what is staged, then what
+	is changed and not staged. *N* new, *M* modified, *D* deleted, *R*
+	renamed, *T* its type changed, *U* in conflict, *I* ignored, *-*
+	unchanged. A folder shows the most telling of what it holds. A
+	listing with nothing in a repository has no column. *ls* runs
+	*git*(1) for this, once a repository, with its *core.fsmonitor*
+	program turned off; otherwise git trusts the repository's own
+	settings as *git status* does, so use it, as git, only in
+	repositories you trust.
+
+*--total-size*
+	With *-l*, a folder's size is what it holds: the lengths of all the
+	files beneath it, each counted once and only on the folder's
+	filesystem; *du -s -x --apparent-size* gives a little more, as it
+	also counts each folder's own entry. *-S* sorts by it. *.* and *..*
+	keep their own sizes.
+
+*--app*
+	With *-l*, a column with the app each file belongs to, before its
+	name: *sealed* inside an installed bundle, in _/applications_ or a
+	person's _applications_ folder, that is root's and read-only;
+	*not sealed* inside one that is not, which *bundle*(1) will not
+	start; *data* in an app's _app-data_ folder; *temp* in its
+	_/tmp/.app-_ folder; *-* for a file of no app. A listing with no
+	file of an app has no column. The app is named as its sealed
+	manifest names it, otherwise by its ID.
+
+*--subvolumes*[=_when_]
+	With *-l*, *[subvolume]* after each folder that is the top of a
+	Btrfs subvolume, or *[subvolume, read-only]* when nothing in it can
+	be changed, as _/system_. _when_ is *always*, *never*, or *auto*,
+	the default: when standard output is a terminal. Which subvolumes
+	are snapshots is not shown yet.
+
+*--grants*
+	Instead of listing each _file_, or the current folder, say who can
+	reach it: each account that may read or change it, by the owners,
+	modes and access lists on the way to it, and each of your apps that
+	would when you run it, by what you allowed it. *reach*(1) answers,
+	and its output and exit status are *ls*'s; the other options do
+	not count.
 
 # OPTIONS
 
@@ -80,8 +138,8 @@ _/system/commands/coreutils_, and a link by each utility's name.
 
 # SEE ALSO
 
-*systools*(1), for the administration tools, *colors.toml*(5), and
-*radix-posix*(7).
+*systools*(1), for the administration tools, *reach*(1), *colors.toml*(5),
+and *radix-posix*(7).
 
 uutils coreutils, by the uutils contributors, under the MIT licence:
 https://github.com/uutils/coreutils

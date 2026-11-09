@@ -1,0 +1,1333 @@
+SPDX-FileCopyrightText: The uutils developers
+SPDX-FileCopyrightText: 2026 The Dukovo contributors
+SPDX-License-Identifier: MIT
+
+`ls` takes three more of eza's ideas, written anew for Dukovo (ADR
+0441), none of which changes what GNU's ls prints unless it is asked
+for:
+
+- `--tree` and `--level=N`: each folder with everything beneath it drawn
+  as a tree, a name a line, in one column or as the long listing, and a
+  count of its folders and files at the end.
+- `--git`: in the long listing, each file's state in its git repository,
+  two letters as `git status --short` gives them, asked of git once a
+  repository with its fsmonitor program turned off.
+- `--total-size`: a folder's size, in the long listing and for `-S`, as
+  the lengths of all it holds on its own filesystem.
+
+The code is in tree.rs, git.rs and total_size.rs; display.rs writes the
+tree's lines and the git column, and fields.rs gives them colours.
+Dukovo only. Applies after 0009.
+
+diff --git a/src/uu/ls/locales/en-US.ftl b/src/uu/ls/locales/en-US.ftl
+--- a/src/uu/ls/locales/en-US.ftl
++++ b/src/uu/ls/locales/en-US.ftl
+@@ -146,13 +146,29 @@ smack-error-label-retrieval-failure = failed to get SMACK label: { $error }
+ smack-error-label-set-failure = failed to set SMACK label to '{ $context }': { $error }
+ smack-error-no-label-set = no SMACK label set
+ 
+-# Dukovo's additions (ADR 0440)
++# Dukovo's additions (ADRs 0440 and 0441)
+ ls-help-header = with -l, print a line of column titles over the listing
+ ls-help-octal = with -l, print each file's mode in octal, as 0755, before its letters
+ ls-help-icons = print a Nerd Font icon before each file name WHEN; --icons alone means auto,
+   on a terminal
+ ls-help-field-colors = with -l, colour the permission letters, sizes and times by what they say
+   WHEN; auto is when the names are coloured and on a terminal; LS_FIELD_COLORS gives the colours
++ls-help-tree = list each folder's insides beneath it as a tree, a name a line; with -l, each
++  line keeps its columns
++ls-help-level = with --tree, go no more than DEPTH folders down; on its own, --tree too
++ls-help-git = with -l, in a git repository, show each file's state: what is staged, then what
++  is changed and not: N new, M modified, D deleted, R renamed, T type changed, U in conflict,
++  I ignored, - unchanged; a folder shows what it holds
++ls-help-total-size = with -l, show a folder's size as the sizes of all it holds, on its
++  filesystem, and sort by that with -S
++ls-tree-summary = { $folders ->
++    [one] 1 folder
++   *[other] { $folders } folders
++  }, { $files ->
++    [one] 1 file
++   *[other] { $files } files
++  }
++ls-header-git = Git
+ ls-header-inode = Inode
+ ls-header-blocks = Blocks
+ ls-header-octal = Octal
+diff --git a/src/uu/ls/src/config.rs b/src/uu/ls/src/config.rs
+--- a/src/uu/ls/src/config.rs
++++ b/src/uu/ls/src/config.rs
+@@ -123,6 +123,11 @@ pub mod options {
+     pub static OCTAL: &str = "octal";
+     pub static ICONS: &str = "icons";
+     pub static FIELD_COLORS: &str = "field-colors";
++    // Dukovo's (ADR 0441).
++    pub static TREE: &str = "tree";
++    pub static LEVEL: &str = "level";
++    pub static GIT: &str = "git";
++    pub static TOTAL_SIZE: &str = "total-size";
+ }
+ 
+ const DEFAULT_TERM_WIDTH: u16 = 80;
+@@ -243,6 +248,14 @@ pub struct Config {
+     pub(crate) icons: bool,
+     /// The colours of the long listing's fields, when names are coloured.
+     pub(crate) field_colors: Option<FieldColors>,
++    /// `--tree`: each folder's insides beneath it (ADR 0441).
++    pub(crate) tree: bool,
++    /// `--level`: how many folders deep a tree goes; `None` for all.
++    pub(crate) tree_level: Option<usize>,
++    /// `--git`: a column of each file's state in its git repository.
++    pub(crate) git: bool,
++    /// `--total-size`: a folder's size is what it holds.
++    pub(crate) total_size: bool,
+ }
+ 
+ /// Extracts the format to display the information based on the options provided.
+@@ -983,6 +996,18 @@ impl Config {
+             return Err(Box::new(LsError::DiredAndZeroAreIncompatible));
+         }
+ 
++        // Dukovo: a tree shows each folder's insides beneath it, a name a
++        // line, so it takes the place of -R and of columns; --level asks
++        // for one too. Emacs could not read one, so --dired goes without
++        // (ADR 0441).
++        let tree_level = options
++            .get_one::<u32>(options::LEVEL)
++            .map(|&levels| levels as usize);
++        let tree = (options.get_flag(options::TREE) || tree_level.is_some()) && !dired;
++        if tree && format != Format::Long {
++            format = Format::OneLine;
++        }
++
+         let dereference = if options.get_flag(options::dereference::ALL) {
+             Dereference::All
+         } else if options.get_flag(options::dereference::ARGS) {
+@@ -1012,7 +1037,7 @@ impl Config {
+             format,
+             files,
+             sort,
+-            recursive: options.get_flag(options::RECURSIVE),
++            recursive: options.get_flag(options::RECURSIVE) && !tree,
+             reverse: options.get_flag(options::REVERSE),
+             dereference,
+             ignore_patterns,
+@@ -1046,6 +1071,10 @@ impl Config {
+             octal: options.get_flag(options::OCTAL),
+             icons: extract_icons(options) && !dired,
+             field_colors,
++            tree,
++            tree_level,
++            git: options.get_flag(options::GIT),
++            total_size: options.get_flag(options::TOTAL_SIZE),
+         })
+     }
+ }
+diff --git a/src/uu/ls/src/display.rs b/src/uu/ls/src/display.rs
+--- a/src/uu/ls/src/display.rs
++++ b/src/uu/ls/src/display.rs
+@@ -46,12 +46,16 @@ use uucore::{
+     quoting_style::{QuotingStyle, locale_aware_escape_dir_name, locale_aware_escape_name},
+     show,
+     time::{FormatSystemTimeFallback, format_system_time},
++    translate,
+ };
+ 
+ use crate::colors::{StyleManager, color_name};
+ use crate::config::Files;
+ use crate::dired::{self, DiredOutput};
+ use crate::fields::{self, OCTAL_WIDTH, Titles};
++use crate::git::{self, Mark};
++use crate::total_size::shown_size;
++use crate::tree::Tree;
+ use crate::{Config, ListState, LsError, PathData, get_block_size};
+ use lscolors::Indicator;
+ 
+@@ -92,6 +96,18 @@ pub(crate) struct PaddingCollection {
+     pub(crate) octal: usize,
+     pub(crate) permissions_title: usize,
+     pub(crate) time: usize,
++    /// `--git`'s column (ADR 0441): its width, or 0 when the listing has
++    /// none, as when nothing in it is in a repository.
++    pub(crate) git: usize,
++}
++
++/// What a line of the long listing has beyond GNU's (ADR 0441).
++#[derive(Clone, Copy, Default)]
++struct LineParts<'a> {
++    /// `--git`'s letters, when the listing has the column.
++    git: Option<Mark>,
++    /// `--tree`'s lines before the name.
++    branch: &'a str,
+ }
+ 
+ pub(crate) struct DisplayItemName {
+@@ -257,7 +273,7 @@ fn display_dir_entry_size(
+ ) -> (usize, usize, usize, usize, usize, usize) {
+     // TODO: Cache/memorize the display_* results so we don't have to recalculate them.
+     if let Some(md) = entry.metadata() {
+-        let (size_len, major_len, minor_len) = match display_len_or_rdev(md, config) {
++        let (size_len, major_len, minor_len) = match display_len_or_rdev(entry, md, config) {
+             SizeOrDeviceId::Device(major, minor) => {
+                 (major.len() + minor.len() + 2usize, major.len(), minor.len())
+             }
+@@ -335,6 +351,42 @@ pub fn display_items(
+     state: &mut ListState,
+     dired: &mut DiredOutput,
+ ) -> UResult<()> {
++    display_lines(items, &[], config, state, dired)
++}
++
++/// Writes `--tree`'s listing (ADR 0441): the folder and each name beneath
++/// it with its lines, then how many folders and files there are, as
++/// `tree` ends.
++pub(crate) fn display_tree(
++    tree: &Tree,
++    config: &Config,
++    state: &mut ListState,
++    dired: &mut DiredOutput,
++) -> UResult<()> {
++    display_lines(&tree.items, &tree.branches, config, state, dired)?;
++    let summary = translate!(
++        "ls-tree-summary",
++        "folders" => tree.folders,
++        "files" => tree.files
++    );
++    write!(
++        state.out,
++        "{}{summary}{}",
++        config.line_ending, config.line_ending
++    )?;
++    Ok(())
++}
++
++/// Writes `items` as the listing's format has them, each name after its
++/// branch in `branches` when it is a tree.
++fn display_lines(
++    items: &[PathData],
++    branches: &[String],
++    config: &Config,
++    state: &mut ListState,
++    dired: &mut DiredOutput,
++) -> UResult<()> {
++    let branch = |i: usize| branches.get(i).map_or("", String::as_str);
+     // `-Z`, `--context`:
+     // Display the SELinux security context or '?' if none is found. When used with the `-l`
+     // option, print the security context to the left of the size column.
+@@ -347,6 +399,18 @@ pub fn display_items(
+     if config.format == Format::Long {
+         let mut padding_collection = calculate_padding_collection(items, config, state);
+ 
++        // Dukovo: each file's git letters, in a column only when something
++        // listed is in a repository (ADR 0441). One outside a repository
++        // among them has none.
++        let marks: Vec<Option<Mark>> = if config.git {
++            items.iter().map(|item| state.git.mark(item)).collect()
++        } else {
++            Vec::new()
++        };
++        if marks.iter().any(Option::is_some) {
++            padding_collection.git = git::WIDTH;
++        }
++
+         // Dukovo: column titles over the listing (ADR 0440).
+         if config.header && !items.is_empty() {
+             let titles = Titles::new(config.time);
+@@ -357,7 +421,7 @@ pub fn display_items(
+             state.display_buf.clear();
+         }
+ 
+-        for item in items {
++        for (i, item) in items.iter().enumerate() {
+             #[cfg(unix)]
+             let should_display_leading_info = config.inode || config.alloc_size;
+             #[cfg(not(unix))]
+@@ -367,7 +431,19 @@ pub fn display_items(
+                 display_additional_leading_info(item, &padding_collection, config, &mut state.out)?;
+             }
+ 
+-            display_item_long(item, &padding_collection, config, state, dired, quoted)?;
++            let parts = LineParts {
++                git: (padding_collection.git > 0).then(|| marks[i].unwrap_or(git::OUTSIDE)),
++                branch: branch(i),
++            };
++            display_item_long(
++                item,
++                &padding_collection,
++                config,
++                state,
++                dired,
++                quoted,
++                parts,
++            )?;
+         }
+     } else {
+         let mut longest_context_len = 1;
+@@ -395,14 +471,22 @@ pub fn display_items(
+         #[cfg(not(unix))]
+         let should_display_leading_info = config.alloc_size;
+ 
+-        for i in items {
+-            let more_info = if should_display_leading_info {
++        for (index, i) in items.iter().enumerate() {
++            let mut more_info = if should_display_leading_info {
+                 let mut s = Vec::new();
+                 display_additional_leading_info(i, &padding, config, &mut s)?;
+                 Some(String::from_utf8(s).unwrap()) // Should always be UTF-8
+             } else {
+                 None
+             };
++            // Dukovo: a tree's lines go just before the name (ADR 0441).
++            if !branch(index).is_empty() {
++                let mut drawn = Vec::new();
++                write_branch(branch(index), config, &mut drawn);
++                more_info
++                    .get_or_insert_default()
++                    .push_str(&String::from_utf8_lossy(&drawn));
++            }
+             // it's okay to set current column to zero which is used to decide
+             // whether text will wrap or not, because when format is grid or
+             // column ls will try to place the item name in a new line if it
+@@ -652,7 +736,7 @@ fn display_date(
+     format_system_time(out, time, fmt, FormatSystemTimeFallback::Integer)
+ }
+ 
+-fn display_len_or_rdev(metadata: &Metadata, config: &Config) -> SizeOrDeviceId {
++fn display_len_or_rdev(item: &PathData, metadata: &Metadata, config: &Config) -> SizeOrDeviceId {
+     #[cfg(unix)]
+     {
+         let ft = metadata.file_type();
+@@ -664,9 +748,11 @@ fn display_len_or_rdev(metadata: &Metadata, config: &Config) -> SizeOrDeviceId {
+             return SizeOrDeviceId::Device(major.to_string(), minor.to_string());
+         }
+     }
++    // Dukovo: with `--total-size`, what a folder holds (ADR 0441).
++    let len = shown_size(item, metadata, config);
+     let len_adjusted = {
+-        let d = metadata.len() / config.file_size_block_size;
+-        let r = metadata.len() % config.file_size_block_size;
++        let d = len / config.file_size_block_size;
++        let r = len % config.file_size_block_size;
+         if r == 0 { d } else { d + 1 }
+     };
+     SizeOrDeviceId::Size(display_size(len_adjusted, config))
+@@ -901,6 +987,7 @@ fn display_item_name(
+ /// that decide the maximum possible character count of each field.
+ #[allow(clippy::write_literal)]
+ #[allow(clippy::cognitive_complexity)]
++#[allow(clippy::too_many_arguments)]
+ fn display_item_long(
+     item: &PathData,
+     padding: &PaddingCollection,
+@@ -908,6 +995,7 @@ fn display_item_long(
+     state: &mut ListState,
+     dired: &mut DiredOutput,
+     quoted: bool,
++    parts: LineParts,
+ ) -> UResult<()> {
+     // apply normal color to non filename outputs
+     if let Some(style_manager) = &mut state.style_manager {
+@@ -983,7 +1071,7 @@ fn display_item_long(
+             );
+         }
+ 
+-        match display_len_or_rdev(md, config) {
++        match display_len_or_rdev(item, md, config) {
+             SizeOrDeviceId::Size(size) => {
+                 state.display_buf.push(b' ');
+                 // Dukovo: sizes coloured by how big they are (ADR 0440).
+@@ -991,7 +1079,7 @@ fn display_item_long(
+                     Some(colors) => {
+                         let mut padded = Vec::with_capacity(padding.size);
+                         padded.extend_pad_left(&size, padding.size);
+-                        let code = colors.size_code(md.len());
++                        let code = colors.size_code(shown_size(item, md, config));
+                         colors.paint_padded(code, &padded, &mut state.display_buf);
+                     }
+                     None => state.display_buf.extend_pad_left(&size, padding.size),
+@@ -1028,6 +1116,7 @@ fn display_item_long(
+             display_date(md, config, &state.recent_time_range, &mut state.display_buf)?;
+         }
+         state.display_buf.push(b' ');
++        write_line_parts(parts, padding, config, &mut state.display_buf);
+ 
+         let item_display = display_item_name(
+             item,
+@@ -1161,6 +1250,7 @@ fn display_item_long(
+         state.display_buf.push(b' ');
+         state.display_buf.extend_pad_left("?", date_len);
+         state.display_buf.push(b' ');
++        write_line_parts(parts, padding, config, &mut state.display_buf);
+ 
+         if config.dired {
+             update_dired_for_item(
+@@ -1324,6 +1414,7 @@ fn calculate_padding_collection(
+         octal: OCTAL_WIDTH,
+         permissions_title: 0,
+         time: 0,
++        git: 0,
+     };
+ 
+     for item in items {
+@@ -1410,6 +1501,7 @@ fn calculate_padding_collection(
+         octal: OCTAL_WIDTH,
+         permissions_title: 0,
+         time: 0,
++        git: 0,
+     };
+ 
+     for item in items {
+@@ -1483,6 +1575,36 @@ fn time_column_width(items: &[PathData], config: &Config, state: &ListState) ->
+     widest
+ }
+ 
++/// Writes what comes after the time and before the name (ADR 0441):
++/// `--git`'s letters and a space, then `--tree`'s lines.
++fn write_line_parts(
++    parts: LineParts,
++    padding: &PaddingCollection,
++    config: &Config,
++    out: &mut Vec<u8>,
++) {
++    if let Some(mark) = parts.git {
++        match &config.field_colors {
++            Some(colors) => colors.paint_git(mark, out),
++            None => out.extend(mark),
++        }
++        out.extend(iter::repeat_n(b' ', padding.git - git::WIDTH + 1));
++    }
++    write_branch(parts.branch, config, out);
++}
++
++/// Writes a tree's lines before a name, in the `tree` colour when the
++/// fields are coloured (ADR 0441).
++fn write_branch(branch: &str, config: &Config, out: &mut Vec<u8>) {
++    if branch.is_empty() {
++        return;
++    }
++    match &config.field_colors {
++        Some(colors) => colors.paint_tree(branch, out),
++        None => out.extend(branch.as_bytes()),
++    }
++}
++
+ fn os_str_starts_with(haystack: &OsStr, needle: &[u8]) -> bool {
+     os_str_as_bytes_lossy(haystack).starts_with(needle)
+ }
+diff --git a/src/uu/ls/src/fields.rs b/src/uu/ls/src/fields.rs
+--- a/src/uu/ls/src/fields.rs
++++ b/src/uu/ls/src/fields.rs
+@@ -74,6 +74,17 @@ pub(crate) struct FieldColors {
+     old: String,
+     /// `--header`'s titles.
+     header: String,
++    /// `--git`'s letters (ADR 0441): `N` new, `M` modified (and `T`, its
++    /// type changed), `D` deleted, `R` renamed, `I` ignored, `U` in
++    /// conflict; a `-` takes `none`.
++    git_new: String,
++    git_modified: String,
++    git_deleted: String,
++    git_renamed: String,
++    git_ignored: String,
++    git_conflict: String,
++    /// `--tree`'s lines.
++    tree: String,
+     /// What ends each coloured field: a reset, then `LS_COLORS`' normal
+     /// colour (`no=`) when it sets one, so the rest of the line keeps it.
+     end: String,
+@@ -100,6 +111,13 @@ impl Default for FieldColors {
+             today: code("1"),
+             old: code("90"),
+             header: code("4"),
++            git_new: code("32"),
++            git_modified: code("34"),
++            git_deleted: code("31"),
++            git_renamed: code("33"),
++            git_ignored: code("90"),
++            git_conflict: code("1;31"),
++            tree: code("90"),
+             end: "\x1b[0m".to_string(),
+         }
+     }
+@@ -159,6 +177,13 @@ impl FieldColors {
+             "today" => &mut self.today,
+             "old" => &mut self.old,
+             "header" => &mut self.header,
++            "git-new" => &mut self.git_new,
++            "git-modified" => &mut self.git_modified,
++            "git-deleted" => &mut self.git_deleted,
++            "git-renamed" => &mut self.git_renamed,
++            "git-ignored" => &mut self.git_ignored,
++            "git-conflict" => &mut self.git_conflict,
++            "tree" => &mut self.tree,
+             _ => return None,
+         })
+     }
+@@ -221,6 +246,38 @@ impl FieldColors {
+         }
+     }
+ 
++    /// Writes `--git`'s two letters, each in its colour; two in one
++    /// colour, as `--`, share one span.
++    pub(crate) fn paint_git(&self, mark: [u8; 2], out: &mut Vec<u8>) {
++        let [staged, unstaged] = mark.map(|letter| self.git_code(letter));
++        if staged == unstaged {
++            self.paint(staged, &String::from_utf8_lossy(&mark), out);
++        } else {
++            self.paint(staged, &char::from(mark[0]).to_string(), out);
++            self.paint(unstaged, &char::from(mark[1]).to_string(), out);
++        }
++    }
++
++    /// The colour of one of `--git`'s letters.
++    fn git_code(&self, letter: u8) -> &str {
++        match letter {
++            b'N' => &self.git_new,
++            b'M' | b'T' => &self.git_modified,
++            b'D' => &self.git_deleted,
++            b'R' => &self.git_renamed,
++            b'I' => &self.git_ignored,
++            b'U' => &self.git_conflict,
++            b'-' => &self.none,
++            _ => "",
++        }
++    }
++
++    /// Writes a tree's lines in their colour, the spaces around them
++    /// plain.
++    pub(crate) fn paint_tree(&self, branch: &str, out: &mut Vec<u8>) {
++        self.paint_padded(&self.tree, branch.as_bytes(), out);
++    }
++
+     /// The colour of a size of `bytes`, or `""` for one in between.
+     pub(crate) fn size_code(&self, bytes: u64) -> &str {
+         match bytes {
+@@ -307,6 +364,7 @@ pub(crate) struct Titles {
+     pub(crate) author: String,
+     pub(crate) size: String,
+     pub(crate) time: String,
++    pub(crate) git: String,
+     pub(crate) name: String,
+ }
+ 
+@@ -329,6 +387,7 @@ impl Titles {
+                 MetadataTimeField::Change => translate!("ls-header-changed"),
+                 MetadataTimeField::Birth => translate!("ls-header-created"),
+             },
++            git: translate!("ls-header-git"),
+             name: translate!("ls-header-name"),
+         }
+     }
+@@ -359,6 +418,9 @@ pub(crate) fn widen_for_header(padding: &mut PaddingCollection, config: &Config,
+     padding.context = padding.context.max(width(&titles.context));
+     padding.size = padding.size.max(width(&titles.size));
+     padding.time = padding.time.max(width(&titles.time));
++    if padding.git > 0 {
++        padding.git = padding.git.max(width(&titles.git));
++    }
+ }
+ 
+ /// Writes `--header`'s line: each column's title, aligned as its values
+@@ -400,6 +462,9 @@ pub(crate) fn write_header(
+     }
+     line.right(&titles.size, padding.size);
+     line.left(&titles.time, padding.time);
++    if padding.git > 0 {
++        line.left(&titles.git, padding.git);
++    }
+     line.left(&titles.name, 0);
+     // The name is the last column: no spaces after it.
+     while line.out.last() == Some(&b' ') {
+@@ -513,6 +578,19 @@ mod tests {
+         assert_eq!(colors.time_code(now + Duration::from_secs(60), now), "");
+     }
+ 
++    #[test]
++    fn git_letters_and_tree_lines_take_their_colours() {
++        let colors = FieldColors::default();
++        let mut out = Vec::new();
++        colors.paint_git(*b"NM", &mut out);
++        colors.paint_git(*b"--", &mut out);
++        colors.paint_tree("│   └── ", &mut out);
++        assert_eq!(
++            String::from_utf8(out).unwrap(),
++            "\x1b[32mN\x1b[0m\x1b[34mM\x1b[0m\x1b[90m--\x1b[0m\x1b[90m│   └──\x1b[0m "
++        );
++    }
++
+     #[test]
+     fn padding_stays_outside_the_colour() {
+         let colors = FieldColors::default();
+diff --git a/src/uu/ls/src/git.rs b/src/uu/ls/src/git.rs
+new file mode 100644
+--- /dev/null
++++ b/src/uu/ls/src/git.rs
+@@ -0,0 +1,329 @@
++// This file is part of the uutils coreutils package.
++//
++// For the full copyright and license information, please view the LICENSE
++// file that was distributed with this source code.
++
++// spell-checker:ignore (Dukovo) toplevel fsmonitor porcelain
++
++//! `--git` (ADR 0441): a column in the long listing with each file's state
++//! in its git repository, two letters as in `git status --short`: what is
++//! staged, then what is changed and not staged. `N` new, `M` modified, `D`
++//! deleted, `R` renamed, `T` type changed, `U` in conflict, `I` ignored,
++//! `-` unchanged. A folder shows the most telling state of what it holds.
++//!
++//! `ls` asks git itself, once a repository: `git rev-parse --show-toplevel`
++//! finds a folder's repository, and `git status --porcelain=v1 -z` lists
++//! what is not clean in all of it. A file outside any repository, or with
++//! no git installed, has no letters, and a listing with none leaves the
++//! column out. If the letters look wrong, compare `git status --short
++//! --ignored` run in the same folder.
++//!
++//! A repository's own settings must not run anything: `core.fsmonitor`
++//! names a program git would start, so it is turned off, and git's checks
++//! of who owns a repository stay as they are.
++
++use std::collections::BTreeMap;
++use std::ffi::OsStr;
++use std::os::unix::ffi::OsStrExt;
++use std::path::{Path, PathBuf};
++use std::process::{Command, Stdio};
++
++use rustc_hash::FxHashMap;
++
++use crate::PathData;
++
++/// A file's two letters: staged, then not staged.
++pub(crate) type Mark = [u8; 2];
++
++/// A file with nothing to report.
++const CLEAN: Mark = *b"--";
++
++/// A file outside any repository, in a listing with the column.
++pub(crate) const OUTSIDE: Mark = *b"  ";
++
++/// The column's width: two letters.
++pub(crate) const WIDTH: usize = 2;
++
++/// The repositories `ls` has asked git about, so that each is asked once.
++#[derive(Default)]
++pub(crate) struct Repositories {
++    /// Each repository's root, and what git said is not clean in it.
++    found: Vec<Repository>,
++    /// Each folder asked about, as given: its real path and its
++    /// repository in `found`, or `None` outside one.
++    folders: FxHashMap<PathBuf, Option<(PathBuf, usize)>>,
++}
++
++struct Repository {
++    root: PathBuf,
++    /// Paths from the root, as git writes them: a folder git reports as
++    /// a whole (untracked or ignored) ends in `/`.
++    changes: BTreeMap<Vec<u8>, Mark>,
++}
++
++impl Repositories {
++    /// `item`'s letters, or `None` outside a repository.
++    pub(crate) fn mark(&mut self, item: &PathData) -> Option<Mark> {
++        let is_folder = item.file_type().is_some_and(std::fs::FileType::is_dir);
++        // `.` and `..` are folders of their own.
++        if item.is_dot_dir {
++            return self.mark_in(item.path(), None, true);
++        }
++        // Anything else is a name in its folder, so that a link is
++        // looked up as itself, not as what it points to. A repository's
++        // own folder, named from outside it (`ls -ld --git repo`, or a
++        // tree's top), is looked up from inside instead.
++        let folder = match item.path().parent() {
++            Some(parent) if parent.as_os_str().is_empty() => Path::new("."),
++            Some(parent) => parent,
++            None => return self.mark_in(item.path(), None, true),
++        };
++        self.mark_in(folder, item.path().file_name(), is_folder)
++            .or_else(|| {
++                is_folder
++                    .then(|| self.mark_in(item.path(), None, true))
++                    .flatten()
++            })
++    }
++
++    /// The letters of `name` in `folder`, or of `folder` itself without a
++    /// name.
++    fn mark_in(&mut self, folder: &Path, name: Option<&OsStr>, is_folder: bool) -> Option<Mark> {
++        let (real_folder, index) = self.folder(folder)?;
++        let repository = &self.found[index];
++        let mut relative = real_folder
++            .strip_prefix(&repository.root)
++            .ok()?
++            .to_path_buf();
++        if let Some(name) = name {
++            relative.push(name);
++        }
++        Some(repository.mark(relative.as_os_str().as_bytes(), is_folder))
++    }
++
++    /// The real path of `folder` and the repository it is in.
++    fn folder(&mut self, folder: &Path) -> Option<(PathBuf, usize)> {
++        if let Some(known) = self.folders.get(folder) {
++            return known.clone();
++        }
++        let found = self.find(folder);
++        self.folders.insert(folder.to_path_buf(), found.clone());
++        found
++    }
++
++    fn find(&mut self, folder: &Path) -> Option<(PathBuf, usize)> {
++        let real_folder = folder.canonicalize().ok()?;
++        // A folder beneath a repository already asked about is in it, so
++        // a tree asks git once, not once a folder; unless a `.git` of its
++        // own comes between, as a submodule's.
++        if let Some(index) = self.holding(&real_folder) {
++            return Some((real_folder, index));
++        }
++        let root = PathBuf::from(OsStr::from_bytes(trim_line(&git(
++            &real_folder,
++            &["rev-parse", "--show-toplevel"],
++        )?)));
++        // Compared with real paths below, so it must be one too.
++        let root = root.canonicalize().unwrap_or(root);
++        if let Some(index) = self.found.iter().position(|r| r.root == root) {
++            return Some((real_folder, index));
++        }
++        let status = git(
++            &root,
++            &[
++                "status",
++                "--porcelain=v1",
++                "-z",
++                "--ignored=matching",
++                "--untracked-files=normal",
++            ],
++        )?;
++        self.found.push(Repository {
++            root,
++            changes: parse_status(&status),
++        });
++        Some((real_folder, self.found.len() - 1))
++    }
++}
++
++impl Repositories {
++    /// The repository already found that holds `real_folder`, the
++    /// innermost if one is inside another.
++    fn holding(&self, real_folder: &Path) -> Option<usize> {
++        let (index, repository) = self
++            .found
++            .iter()
++            .enumerate()
++            .filter(|(_, r)| real_folder.starts_with(&r.root))
++            .max_by_key(|(_, r)| r.root.as_os_str().len())?;
++        let own_git = real_folder
++            .ancestors()
++            .take_while(|folder| *folder != repository.root)
++            .any(|folder| {
++                // Inside `.git` itself is not a work tree; git says so.
++                folder.file_name() == Some(OsStr::new(".git"))
++                    || folder.join(".git").symlink_metadata().is_ok()
++            });
++        (!own_git).then_some(index)
++    }
++}
++
++impl Repository {
++    /// The letters of the path `relative` from the root.
++    fn mark(&self, relative: &[u8], is_folder: bool) -> Mark {
++        // Beneath a folder git reports whole, everything takes its mark.
++        for (i, _) in relative.iter().enumerate().filter(|(_, b)| **b == b'/') {
++            if let Some(mark) = self.changes.get(&relative[..=i]) {
++                return *mark;
++            }
++        }
++        if let Some(mark) = self.changes.get(relative) {
++            return *mark;
++        }
++        if !is_folder {
++            return CLEAN;
++        }
++        let mut folder = relative.to_vec();
++        if !folder.is_empty() {
++            folder.push(b'/');
++        }
++        if let Some(mark) = self.changes.get(&folder) {
++            return *mark;
++        }
++        self.changes
++            .range(folder.clone()..)
++            .take_while(|(path, _)| path.starts_with(&folder))
++            .map(|(_, mark)| *mark)
++            .fold(CLEAN, |held, mark| {
++                [stronger(held[0], mark[0]), stronger(held[1], mark[1])]
++            })
++    }
++}
++
++/// The more telling of two letters for a folder's column. What is
++/// ignored inside a folder says nothing of the folder, so `I` counts as
++/// unchanged here.
++fn stronger(a: u8, b: u8) -> u8 {
++    const ORDER: &[u8] = b"UDMRTN";
++    let rank = |letter: u8| {
++        ORDER
++            .iter()
++            .position(|&l| l == letter)
++            .unwrap_or(ORDER.len())
++    };
++    if rank(b) < rank(a) { b } else { a }
++}
++
++/// Reads `git status --porcelain=v1 -z`: entries of `XY path`, each ended
++/// by a NUL, a rename's or copy's followed by its old path.
++fn parse_status(status: &[u8]) -> BTreeMap<Vec<u8>, Mark> {
++    let mut changes = BTreeMap::new();
++    let mut fields = status.split(|&b| b == 0);
++    while let Some(field) = fields.next() {
++        let [x, y, b' ', path @ ..] = field else {
++            continue;
++        };
++        if matches!(x, b'R' | b'C') || matches!(y, b'R' | b'C') {
++            fields.next();
++        }
++        changes.insert(path.to_vec(), letters(*x, *y));
++    }
++    changes
++}
++
++/// The column's letters for git's status letters `x` (the index) and `y`
++/// (the work tree).
++fn letters(x: u8, y: u8) -> Mark {
++    // Both sides changed it: git's unmerged pairs (DD, AU, UD, UA, DU,
++    // AA, UU).
++    if x == b'U' || y == b'U' || (x == y && matches!(x, b'A' | b'D')) {
++        return *b"UU";
++    }
++    let staged = match x {
++        b'A' | b'C' => b'N',
++        b'M' | b'D' | b'R' | b'T' => x,
++        _ => b'-',
++    };
++    let unstaged = match y {
++        b'?' | b'A' => b'N',
++        b'!' => b'I',
++        b'M' | b'D' | b'T' | b'R' => y,
++        _ => b'-',
++    };
++    [staged, unstaged]
++}
++
++/// Runs git in `folder` and gives what it printed, or `None` if it could
++/// not run or failed, as outside a repository.
++fn git(folder: &Path, arguments: &[&str]) -> Option<Vec<u8>> {
++    let output = Command::new("git")
++        .arg("--no-optional-locks")
++        .args(["-c", "core.fsmonitor=false", "-C"])
++        .arg(folder)
++        .args(arguments)
++        .stdin(Stdio::null())
++        .stderr(Stdio::null())
++        .output()
++        .ok()?;
++    output.status.success().then_some(output.stdout)
++}
++
++fn trim_line(text: &[u8]) -> &[u8] {
++    text.strip_suffix(b"\n").unwrap_or(text)
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    fn repository(status: &[u8]) -> Repository {
++        Repository {
++            root: PathBuf::from("/r"),
++            changes: parse_status(status),
++        }
++    }
++
++    #[test]
++    fn letters_say_staged_then_not() {
++        assert_eq!(&letters(b'A', b' '), b"N-");
++        assert_eq!(&letters(b' ', b'M'), b"-M");
++        assert_eq!(&letters(b'M', b'M'), b"MM");
++        assert_eq!(&letters(b'?', b'?'), b"-N");
++        assert_eq!(&letters(b'!', b'!'), b"-I");
++        assert_eq!(&letters(b'R', b' '), b"R-");
++        assert_eq!(&letters(b'U', b'U'), b"UU");
++        assert_eq!(&letters(b'A', b'A'), b"UU");
++    }
++
++    #[test]
++    fn renames_skip_their_old_name() {
++        let repo = repository(b"R  new.txt\0old.txt\0 M docs/a.md\0");
++        assert_eq!(&repo.mark(b"new.txt", false), b"R-");
++        assert_eq!(&repo.mark(b"old.txt", false), b"--");
++        assert_eq!(&repo.mark(b"docs/a.md", false), b"-M");
++    }
++
++    #[test]
++    fn folders_show_what_they_hold() {
++        let repo = repository(
++            b" M docs/a.md\0A  docs/b.md\0!! target/\0?? notes/\0!! src/x.o\0 D src/old.rs\0",
++        );
++        assert_eq!(&repo.mark(b"docs", true), b"NM");
++        assert_eq!(&repo.mark(b"target", true), b"-I");
++        assert_eq!(&repo.mark(b"target/debug/ls", false), b"-I");
++        assert_eq!(&repo.mark(b"notes", true), b"-N");
++        assert_eq!(&repo.mark(b"notes/todo.txt", false), b"-N");
++        // An ignored file inside says nothing of its folder.
++        assert_eq!(&repo.mark(b"src", true), b"-D");
++        assert_eq!(&repo.mark(b"src/x.o", false), b"-I");
++        assert_eq!(&repo.mark(b"clean", true), b"--");
++        // The root holds everything.
++        assert_eq!(&repo.mark(b"", true), b"ND");
++    }
++
++    #[test]
++    fn a_folder_is_not_matched_by_a_longer_name() {
++        let repo = repository(b" M docs2/a.md\0");
++        assert_eq!(&repo.mark(b"docs", true), b"--");
++    }
++}
+diff --git a/src/uu/ls/src/ls.rs b/src/uu/ls/src/ls.rs
+--- a/src/uu/ls/src/ls.rs
++++ b/src/uu/ls/src/ls.rs
+@@ -49,18 +49,22 @@ mod config;
+ mod dired;
+ mod display;
+ mod fields;
++mod git;
+ mod icons;
++mod total_size;
++mod tree;
+ 
+ pub mod output;
+ pub use config::{Config, options};
+ pub use display::Format;
+ pub use output::{EntryInfo, LsOutput, StreamMode, StreamingOutput};
++pub use tree::Tree;
+ 
+ use colors::StyleManager;
+ use config::options::QUOTING_STYLE;
+ use config::{Dereference, Files, Sort};
+ use dired::DiredOutput;
+-use display::{display_items, display_size, should_display, show_dir_name};
++use display::{display_items, display_size, display_tree, should_display, show_dir_name};
+ 
+ #[derive(Error, Debug)]
+ enum LsError {
+@@ -824,6 +828,31 @@ pub fn uu_app() -> Command {
+             .value_name("WHEN")
+             .overrides_with(options::FIELD_COLORS),
+     )
++    .arg(
++        Arg::new(options::TREE)
++            .long(options::TREE)
++            .help(translate!("ls-help-tree"))
++            .action(ArgAction::SetTrue),
++    )
++    .arg(
++        Arg::new(options::LEVEL)
++            .long(options::LEVEL)
++            .help(translate!("ls-help-level"))
++            .value_name("DEPTH")
++            .value_parser(clap::value_parser!(u32).range(1..)),
++    )
++    .arg(
++        Arg::new(options::GIT)
++            .long(options::GIT)
++            .help(translate!("ls-help-git"))
++            .action(ArgAction::SetTrue),
++    )
++    .arg(
++        Arg::new(options::TOTAL_SIZE)
++            .long(options::TOTAL_SIZE)
++            .help(translate!("ls-help-total-size"))
++            .action(ArgAction::SetTrue),
++    )
+     // Positional arguments
+     .arg(
+         Arg::new(options::PATHS)
+@@ -866,6 +895,9 @@ pub struct PathData<'a> {
+     must_dereference: bool,
+     command_line: bool,
+     is_dot_dir: bool,
++    /// What a folder holds, for `--total-size` (ADR 0441), counted when
++    /// first asked for.
++    total_size: OnceCell<u64>,
+ }
+ 
+ impl<'a> PathData<'a> {
+@@ -956,6 +988,7 @@ impl<'a> PathData<'a> {
+             must_dereference,
+             command_line,
+             is_dot_dir,
++            total_size: OnceCell::new(),
+         }
+     }
+ 
+@@ -1074,6 +1107,8 @@ struct ListState<'a> {
+     gid_cache: (),
+     recent_time_range: RangeInclusive<SystemTime>,
+     display_buf: Vec<u8>,
++    /// The repositories `--git` has asked about (ADR 0441).
++    git: git::Repositories,
+ }
+ 
+ /// Text output implementation that formats entries for terminal display.
+@@ -1108,6 +1143,7 @@ impl<'a> TextOutput<'a> {
+                 } else {
+                     0
+                 }),
++                git: git::Repositories::default(),
+             },
+             dired: DiredOutput::default(),
+         }
+@@ -1119,6 +1155,13 @@ impl LsOutput for TextOutput<'_> {
+         display_items(entries, config, &mut self.state, &mut self.dired)
+     }
+ 
++    fn write_tree(&mut self, tree: &Tree, config: &Config, is_first: bool) -> UResult<()> {
++        if !is_first {
++            writeln!(self.state.out)?;
++        }
++        display_tree(tree, config, &mut self.state, &mut self.dired)
++    }
++
+     fn write_dir_header(
+         &mut self,
+         path_data: &PathData,
+@@ -1284,6 +1327,14 @@ pub fn list_with_output<O: LsOutput>(
+             Ok(rd) => rd,
+         };
+ 
++        // Dukovo: a tree of each folder, which names itself at its top
++        // and so needs no heading (ADR 0441).
++        if config.tree {
++            let tree = tree::walk(path_data, read_dir, config, output)?;
++            output.write_tree(&tree, config, pos == 0 && files.is_empty())?;
++            continue;
++        }
++
+         // Write dir heading for multiple arguments or recursive mode
+         if initial_locs_len > 1 || config.recursive {
+             let is_first = pos == 0 && files.is_empty();
+@@ -1557,11 +1608,14 @@ fn sort_entries(entries: &mut [PathData], config: &Config) {
+             )
+         }),
+         Sort::Size => {
++            // Dukovo: with `--total-size`, folders by what they hold
++            // (ADR 0441).
++            let size = |p: &PathData| {
++                p.metadata()
++                    .map_or(0, |md| total_size::shown_size(p, md, config))
++            };
+             entries.sort_unstable_by(|a, b| {
+-                b.metadata()
+-                    .map_or(0, Metadata::len)
+-                    .cmp(&a.metadata().map_or(0, Metadata::len))
+-                    .then(a.file_name().cmp(b.file_name()))
++                size(b).cmp(&size(a)).then(a.file_name().cmp(b.file_name()))
+             });
+         }
+         // The default sort in GNU ls is case insensitive
+diff --git a/src/uu/ls/src/output.rs b/src/uu/ls/src/output.rs
+--- a/src/uu/ls/src/output.rs
++++ b/src/uu/ls/src/output.rs
+@@ -46,7 +46,7 @@
+ //! Alternatively, use [`StreamingOutput`] when you want a reusable streaming sink
+ //! that collects `EntryInfo` objects as they arrive.
+ 
+-use crate::{Config, PathData};
++use crate::{Config, PathData, Tree};
+ use std::ffi::OsString;
+ use std::fs::{FileType, Metadata};
+ use std::path::PathBuf;
+@@ -151,6 +151,16 @@ pub trait LsOutput {
+         Ok(())
+     }
+ 
++    /// Called with `--tree`'s listing of a folder (ADR 0441): the folder,
++    /// then everything beneath it in the order written. `is_first` is as
++    /// for [`write_dir_header`](Self::write_dir_header).
++    ///
++    /// Default implementation writes the entries as one batch, without
++    /// the lines drawn to them.
++    fn write_tree(&mut self, tree: &Tree, config: &Config, _is_first: bool) -> UResult<()> {
++        self.write_entries(&tree.items, config)
++    }
++
+     /// Called when entering a directory (for recursive listings or multiple arguments).
+     ///
+     /// # Arguments
+diff --git a/src/uu/ls/src/total_size.rs b/src/uu/ls/src/total_size.rs
+new file mode 100644
+--- /dev/null
++++ b/src/uu/ls/src/total_size.rs
+@@ -0,0 +1,99 @@
++// This file is part of the uutils coreutils package.
++//
++// For the full copyright and license information, please view the LICENSE
++// file that was distributed with this source code.
++
++//! `--total-size` (ADR 0441): a folder's size in the long listing is what
++//! it holds, the lengths of all the files beneath it added up, not the few
++//! bytes of the folder's own entry, so that the folder taking the space
++//! stands out without du.
++//!
++//! The count is of each file's length (what `du --apparent-size` counts
++//! for a file), each file once however many hard links it has, and stays
++//! on the folder's filesystem, as `du -x` does, so that a folder with a
++//! disk mounted in it, or `/` with `/processes` beneath it, counts only
++//! its own. The folders' own entries count nothing, so an empty folder is
++//! 0. A folder that cannot be read counts as empty; nothing is said of
++//! it, since `ls` is not checking the tree. If a size looks too small,
++//! compare it with `du -s -x --apparent-size`, which also counts each
++//! folder's own entry.
++
++use std::fs::{self, Metadata};
++use std::os::unix::fs::MetadataExt;
++use std::path::{Path, PathBuf};
++
++use rustc_hash::FxHashSet;
++
++use crate::{Config, PathData};
++
++/// The size the long listing shows for `item`, and `-S` sorts by: what a
++/// folder holds with `--total-size`, the length of anything else. `.` and
++/// `..` keep their own lengths: `..` would count the whole parent.
++pub(crate) fn shown_size(item: &PathData, metadata: &Metadata, config: &Config) -> u64 {
++    if config.total_size && metadata.is_dir() && !item.is_dot_dir {
++        *item
++            .total_size
++            .get_or_init(|| folder_size(item.path(), metadata.dev()))
++    } else {
++        metadata.len()
++    }
++}
++
++/// The lengths of all the files beneath `folder` on the device `device`,
++/// each counted once.
++fn folder_size(folder: &Path, device: u64) -> u64 {
++    let mut total = 0;
++    // Files with more than one name, by device and inode, so that a file
++    // linked twice beneath the folder counts once.
++    let mut linked = FxHashSet::default();
++    let mut folders: Vec<PathBuf> = vec![folder.to_path_buf()];
++    while let Some(folder) = folders.pop() {
++        let Ok(entries) = fs::read_dir(&folder) else {
++            continue;
++        };
++        for entry in entries.flatten() {
++            // The entry's own metadata: a link to a folder is not followed.
++            let Ok(metadata) = entry.metadata() else {
++                continue;
++            };
++            if metadata.dev() != device {
++                continue;
++            }
++            if metadata.is_dir() {
++                folders.push(entry.path());
++            } else if metadata.nlink() < 2 || linked.insert((metadata.dev(), metadata.ino())) {
++                total += metadata.len();
++            }
++        }
++    }
++    total
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn files_count_once_and_folders_add_up() {
++        let dir = std::env::temp_dir().join(format!("ls-total-size-{}", std::process::id()));
++        let _ = fs::remove_dir_all(&dir);
++        fs::create_dir_all(dir.join("a/b")).unwrap();
++        fs::write(dir.join("one"), [0; 100]).unwrap();
++        fs::write(dir.join("a/two"), [0; 20]).unwrap();
++        fs::write(dir.join("a/b/three"), [0; 3]).unwrap();
++        // A second name for `one` adds nothing, nor does a link to a folder.
++        fs::hard_link(dir.join("one"), dir.join("a/one-again")).unwrap();
++        std::os::unix::fs::symlink(dir.join("a"), dir.join("a/b/up")).unwrap();
++        let device = fs::metadata(&dir).unwrap().dev();
++        let up_length = fs::symlink_metadata(dir.join("a/b/up")).unwrap().len();
++        assert_eq!(folder_size(&dir, device), 123 + up_length);
++        assert_eq!(folder_size(&dir.join("a/b"), device), 3 + up_length);
++        fs::remove_dir_all(&dir).unwrap();
++    }
++
++    #[test]
++    fn another_filesystem_counts_nothing() {
++        let dir = std::env::temp_dir();
++        assert_eq!(folder_size(&dir, u64::MAX), 0);
++    }
++}
+diff --git a/src/uu/ls/src/tree.rs b/src/uu/ls/src/tree.rs
+new file mode 100644
+--- /dev/null
++++ b/src/uu/ls/src/tree.rs
+@@ -0,0 +1,160 @@
++// This file is part of the uutils coreutils package.
++//
++// For the full copyright and license information, please view the LICENSE
++// file that was distributed with this source code.
++
++//! `--tree` (ADR 0441): a folder and everything beneath it, each name
++//! under its folder with lines drawn to it, as `tree` draws them, in
++//! one column or as the long listing. `--level=N` stops N folders down.
++//!
++//! The folder is read first and written after, so that the long
++//! listing's columns line up over the whole tree; a folder that cannot
++//! be read is reported and shown with nothing beneath it. Each folder is
++//! read as `ls` reads one: the same names hidden and the same order,
++//! with `-a`'s `.` and `..` left out, as they are not beneath it.
++//!
++//! A link to a folder is followed only when `-L` says so, and a folder
++//! inside itself that way is reported, as `-R` does, and not entered
++//! again. If the lines look wrong, start in [`walk`].
++
++use std::fs::{self, FileType, ReadDir};
++use std::iter::Peekable;
++use std::os::unix::fs::MetadataExt;
++use std::vec;
++
++use uucore::error::UResult;
++use uucore::show;
++
++use crate::{Config, LsError, LsOutput, PathData, collect_directory_entries};
++
++/// Before a name with more after it in its folder.
++const BRANCH: &str = "├── ";
++/// Before the last name in its folder.
++const LAST: &str = "└── ";
++/// Beneath a name with more after it: its folder's line goes on down.
++const LINE: &str = "│   ";
++/// Beneath the last name: nothing more to draw.
++const SPACE: &str = "    ";
++
++/// A folder and everything beneath it, in the order written.
++pub struct Tree {
++    /// The folder first, then each name beneath it.
++    pub(crate) items: Vec<PathData<'static>>,
++    /// What to draw before each item's name; empty for the folder.
++    pub(crate) branches: Vec<String>,
++    /// How many folders and other files are beneath it.
++    pub(crate) folders: usize,
++    pub(crate) files: usize,
++}
++
++/// A folder being written: what is left of it, and the lines its
++/// names go beneath.
++struct Level {
++    children: Peekable<vec::IntoIter<PathData<'static>>>,
++    indent: String,
++    /// The folder's device and inode, so a link back to it is seen.
++    id: Option<(u64, u64)>,
++}
++
++/// Reads `folder` and everything beneath it, `read_dir` being `folder`
++/// already opened.
++pub(crate) fn walk<O: LsOutput>(
++    folder: &PathData,
++    read_dir: ReadDir,
++    config: &Config,
++    output: &mut O,
++) -> UResult<Tree> {
++    let root = PathData::new(
++        folder.path().to_path_buf().into(),
++        None,
++        None,
++        config,
++        folder.command_line,
++        false,
++    );
++    let mut stack = vec![open(&root, read_dir, String::new(), config, output)?];
++    let mut tree = Tree {
++        items: vec![root],
++        branches: vec![String::new()],
++        folders: 0,
++        files: 0,
++    };
++
++    loop {
++        let depth = stack.len();
++        let Some(level) = stack.last_mut() else {
++            break;
++        };
++        let Some(child) = level.children.next() else {
++            stack.pop();
++            continue;
++        };
++        let last = level.children.peek().is_none();
++        let branch = format!("{}{}", level.indent, if last { LAST } else { BRANCH });
++        let indent = format!("{}{}", level.indent, if last { SPACE } else { LINE });
++
++        let is_folder = child.file_type().is_some_and(FileType::is_dir);
++        let mut beneath = None;
++        if is_folder {
++            tree.folders += 1;
++            if config.tree_level.is_none_or(|levels| depth < levels) {
++                beneath = enter(&child, &stack, indent, config, output)?;
++            }
++        } else {
++            tree.files += 1;
++        }
++        tree.items.push(child);
++        tree.branches.push(branch);
++        if let Some(beneath) = beneath {
++            stack.push(beneath);
++        }
++    }
++    Ok(tree)
++}
++
++/// Opens the folder `item` to write what is beneath it, or `None` if
++/// it cannot be read or is one of the folders it is beneath.
++fn enter<O: LsOutput>(
++    item: &PathData,
++    above: &[Level],
++    indent: String,
++    config: &Config,
++    output: &mut O,
++) -> UResult<Option<Level>> {
++    let id = item.metadata().map(|md| (md.dev(), md.ino()));
++    if id.is_some() && above.iter().any(|level| level.id == id) {
++        output.flush()?;
++        show!(LsError::AlreadyListedError(item.path().to_path_buf()));
++        return Ok(None);
++    }
++    match fs::read_dir(item.path()) {
++        Ok(read_dir) => Ok(Some(open(item, read_dir, indent, config, output)?)),
++        Err(err) => {
++            output.flush()?;
++            show!(LsError::IOErrorContext(
++                item.path().to_path_buf(),
++                err,
++                item.command_line
++            ));
++            Ok(None)
++        }
++    }
++}
++
++/// The names in `folder`, as `ls` lists them, to go beneath it.
++fn open<O: LsOutput>(
++    folder: &PathData,
++    mut read_dir: ReadDir,
++    indent: String,
++    config: &Config,
++    output: &mut O,
++) -> UResult<Level> {
++    let mut children = Vec::new();
++    collect_directory_entries(&mut children, folder, config, output, &mut read_dir)?;
++    children.retain(|child| !child.is_dot_dir);
++    Ok(Level {
++        children: children.into_iter().peekable(),
++        indent,
++        id: folder.metadata().map(|md| (md.dev(), md.ino())),
++    })
++}

@@ -329,6 +329,17 @@ const SECTIONS: &[Section] = &[
             key("today", "bold", "times in the last day"),
             key("old", "bright-black", "times over a week ago"),
             key("header", "underline", "ls --header's column titles"),
+            key("git-new", "green", "N in ls --git: a file new to the repository"),
+            key("git-modified", "blue", "M and T in ls --git: changed"),
+            key("git-deleted", "red", "D in ls --git: deleted"),
+            key("git-renamed", "yellow", "R in ls --git: renamed"),
+            key("git-ignored", "bright-black", "I in ls --git: ignored"),
+            key("git-conflict", "bold red", "U in ls --git: in conflict"),
+            key("tree", "bright-black", "ls --tree's lines"),
+            key("app-sealed", "green", "sealed in ls --app: a sealed app's own files"),
+            key("app-unsealed", "bold red", "not sealed in ls --app: an app no one sealed"),
+            key("app-data", "bright-black", "data and temp in ls --app: what an app keeps"),
+            key("subvolume", "cyan", "ls's [subvolume] after a Btrfs subvolume"),
         ],
     },
     Section {
@@ -417,6 +428,17 @@ pub const THEMES: &[Theme] = &[
             ("ls.octal", "white"),
             ("ls.small-file", "white"),
             ("ls.old", "white"),
+            ("ls.git-new", "bold bright-green"),
+            ("ls.git-modified", "bold bright-blue"),
+            ("ls.git-deleted", "bold bright-red"),
+            ("ls.git-renamed", "bold bright-yellow"),
+            ("ls.git-ignored", "white"),
+            ("ls.git-conflict", "bold bright-white on red"),
+            ("ls.tree", "white"),
+            ("ls.app-sealed", "bold bright-green"),
+            ("ls.app-unsealed", "bold bright-white on red"),
+            ("ls.app-data", "white"),
+            ("ls.subvolume", "bold bright-cyan"),
             ("grep.match", "bold bright-white on red"),
             ("grep.separator", "white"),
             ("diff.added", "bold bright-green"),
@@ -442,6 +464,7 @@ pub const THEMES: &[Theme] = &[
             ("ls.device", "bold magenta"),
             ("ls.read", "blue"),
             ("ls.big-file", "magenta"),
+            ("ls.git-renamed", "magenta"),
             ("grep.line", "blue"),
             ("ip.mac", "magenta"),
         ],
@@ -467,6 +490,13 @@ pub const THEMES: &[Theme] = &[
             ("ls.run", "blue"),
             ("ls.big-file", "magenta"),
             ("ls.huge-file", "bold yellow"),
+            ("ls.git-new", "blue"),
+            ("ls.git-modified", "cyan"),
+            ("ls.git-deleted", "yellow"),
+            ("ls.git-renamed", "magenta"),
+            ("ls.git-conflict", "bold yellow"),
+            ("ls.app-sealed", "blue"),
+            ("ls.app-unsealed", "bold yellow"),
             ("grep.match", "bold yellow"),
             ("grep.line", "blue"),
             ("diff.added", "blue"),
@@ -703,10 +733,12 @@ impl Colors {
     }
 
     /// `LS_FIELD_COLORS`, for the colours of `ls -l`'s fields: its
-    /// permission letters, sizes and times (ADR 0440). The letter at the
-    /// front of a mode takes the colour of its kind's names.
+    /// permission letters, sizes and times (ADR 0440), and `--git`'s
+    /// letters and `--tree`'s lines (ADR 0441), and `--app`'s words and
+    /// the subvolume mark (ADR 0442). The letter at the front of a mode
+    /// takes the colour of its kind's names.
     pub fn ls_field_colors(&self) -> String {
-        const KEYS: [(&str, &str); 15] = [
+        const KEYS: [(&str, &str); 26] = [
             ("read", "read"),
             ("write", "write"),
             ("run", "run"),
@@ -722,6 +754,17 @@ impl Colors {
             ("today", "today"),
             ("old", "old"),
             ("header", "header"),
+            ("git-new", "git-new"),
+            ("git-modified", "git-modified"),
+            ("git-deleted", "git-deleted"),
+            ("git-renamed", "git-renamed"),
+            ("git-ignored", "git-ignored"),
+            ("git-conflict", "git-conflict"),
+            ("tree", "tree"),
+            ("app-sealed", "app-sealed"),
+            ("app-unsealed", "app-unsealed"),
+            ("app-data", "app-data"),
+            ("subvolume", "subvolume"),
         ];
         KEYS.iter()
             .map(|(name, key)| format!("{name}={}", self.style(&format!("ls.{key}")).sgr()))
@@ -1041,7 +1084,9 @@ mod tests {
         assert_eq!(
             colors.ls_field_colors(),
             "read=33:write=31:run=32:special=35:none=90:directory=1;34:link=36:device=1;33:\
-             octal=90:small=90:big=33:huge=1;31:today=1:old=90:header=4"
+             octal=90:small=90:big=33:huge=1;31:today=1:old=90:header=4:git-new=32:\
+             git-modified=34:git-deleted=31:git-renamed=33:git-ignored=90:git-conflict=1;31:\
+             tree=90:app-sealed=32:app-unsealed=1;31:app-data=90:subvolume=36"
         );
     }
 

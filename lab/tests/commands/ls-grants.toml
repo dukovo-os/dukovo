@@ -1,0 +1,64 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "ls --grants and reach(1) say who can reach a file (ADR 0443): its owner, an account its access list names, the administrators, the lab account's own app by its data, files and /tmp, every app for /system/commands, and no one else in a person's own /tmp"
+time = "4m"
+
+# A second account, whose file the lab account is let read. A run that
+# stopped part way left it.
+[[step]]
+run = "sh -c 'user remove --delete-home --yes labreach > /dev/null 2>&1; echo lab-reach-password | user add labreach > /dev/null && echo plan > /users/labreach/plan.txt && chown labreach:labreach /users/labreach/plan.txt && chmod 600 /users/labreach/plan.txt && setfacl -m u:lab:x /users/labreach && setfacl -m u:lab:r /users/labreach/plan.txt && echo shared'"
+root = true
+expect = "shared"
+
+# Its owner, then the lab account by its access list; no one else, and
+# none of the lab account's apps. `tr` squeezes the columns' spaces, so
+# the lines read the same whatever the widths.
+[[step]]
+run = "sh -c 'ls --grants /users/labreach/plan.txt | tr -s \" \"'"
+expect = ["/users/labreach/plan.txt", "Accounts:", "labreach read and write owner", "lab read its access list", "Administrators reach every file with elevate:", "Your apps:", "None of them reaches it."]
+expect_not = "everyone"
+# reach says the same.
+[[step]]
+run = "sh -c 'ls --grants /users/labreach/plan.txt > /tmp/lab-grants-1; reach /users/labreach/plan.txt > /tmp/lab-grants-2; cmp /tmp/lab-grants-1 /tmp/lab-grants-2 && echo same; rm -f /tmp/lab-grants-*'"
+expect = "same"
+
+# A file of the lab account's own, in its home: its alone.
+[[step]]
+run = "sh -c 'echo mine > ~/lab-grants.txt && chmod 644 ~/lab-grants.txt && reach ~/lab-grants.txt | tr -s \" \"'"
+expect = ["lab read and write owner", "None of them reaches it."]
+expect_not = ["labreach", "everyone"]
+
+# An app of its own, run once so that its data and /tmp folders are
+# made: it reaches them, and its own files to read.
+[[step]]
+run = "sh -c 'bundle remove --purge org.example.lsreach > /dev/null 2>&1; rm -rf /tmp/lab-reach && mkdir /tmp/lab-reach && cd /tmp/lab-reach && bundle new org.example.lsreach --name \"Lab Reach\" > /dev/null && printf \"#!/bin/sh\\necho lsreach ran\\n\" > lsreach/bin/lsreach && chmod 755 lsreach/bin/lsreach && bundle pack lsreach -o lsreach.dkv > /dev/null && bundle install --yes lsreach.dkv | tail -1 && cd && rm -r /tmp/lab-reach && bundle run org.example.lsreach'"
+expect = ["installed org.example.lsreach 0.1.0, for you", "lsreach ran"]
+[[step]]
+run = "sh -c 'reach ~/app-data/org.example.lsreach ~/applications/org.example.lsreach/manifest.json /tmp/.app-org.example.lsreach | tr -s \" \"'"
+expect = ["Lab Reach read and write its own data", "Lab Reach read its own files", "Lab Reach read and write its /tmp", "It is in lab's own /tmp, which no one else's sessions hold."]
+
+# The current folder when none is named.
+[[step]]
+run = "sh -c 'cd ~/applications && ls --grants | head -1'"
+expect = ". (/users/lab/applications)"
+
+# The system's commands: everyone and every app may read them, and
+# nothing can change them.
+[[step]]
+run = "sh -c 'reach /system/commands | tr -s \" \"'"
+expect = ["everyone read", "every app read /system/commands, which every app sees", "Nothing can change it: it is on a filesystem or subvolume kept read-only."]
+
+# A file that is not there.
+[[step]]
+run = "sh -c 'ls --grants /lab-grants-nothing 2>&1'"
+exit = 1
+expect = "reach: /lab-grants-nothing: No such file or directory"
+
+[[step]]
+run = "sh -c 'bundle remove --purge org.example.lsreach > /dev/null && rm -rf ~/lab-grants.txt /tmp/.app-org.example.lsreach* && echo gone'"
+expect = "gone"
+[[step]]
+run = "user remove --delete-home --yes labreach"
+root = true
+expect = "labreach is removed"

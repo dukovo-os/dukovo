@@ -1,0 +1,1125 @@
+SPDX-FileCopyrightText: The uutils developers
+SPDX-FileCopyrightText: 2026 The Dukovo contributors
+SPDX-License-Identifier: MIT
+
+`ls` learns two things of Dukovo's own (ADR 0442), neither of which
+changes what GNU's ls prints into a pipe unless it is asked for:
+
+- `--app`: in the long listing, a column with the app each file belongs
+  to and how: sealed inside an installed bundle, not sealed inside one
+  that is not, data in its app-data folder, temp in its /tmp folder, or
+  `-`. The app's name comes only from a sealed bundle's manifest, made
+  safe to show; otherwise it is the bundle's ID.
+- `--subvolumes[=WHEN]`: `[subvolume]` or `[subvolume, read-only]` after
+  each folder of the long listing that is the top of a Btrfs subvolume,
+  on a terminal unless WHEN says otherwise.
+
+The code is in apps.rs and subvolumes.rs; display.rs writes the column
+and the marks, and fields.rs gives them colours. Dukovo only. Applies
+after 0010.
+
+diff --git a/src/uu/ls/locales/en-US.ftl b/src/uu/ls/locales/en-US.ftl
+--- a/src/uu/ls/locales/en-US.ftl
++++ b/src/uu/ls/locales/en-US.ftl
+@@ -146,7 +146,7 @@ smack-error-label-retrieval-failure = failed to get SMACK label: { $error }
+ smack-error-label-set-failure = failed to set SMACK label to '{ $context }': { $error }
+ smack-error-no-label-set = no SMACK label set
+ 
+-# Dukovo's additions (ADRs 0440 and 0441)
++# Dukovo's additions (ADRs 0440 to 0442)
+ ls-help-header = with -l, print a line of column titles over the listing
+ ls-help-octal = with -l, print each file's mode in octal, as 0755, before its letters
+ ls-help-icons = print a Nerd Font icon before each file name WHEN; --icons alone means auto,
+@@ -168,6 +168,17 @@ ls-tree-summary = { $folders ->
+     [one] 1 file
+    *[other] { $files } files
+   }
++ls-help-app = with -l, show the app each file belongs to: inside an installed bundle, sealed
++  or not, or in an app's data or its /tmp
++ls-help-subvolumes = with -l, mark each folder that is the top of a Btrfs subvolume WHEN;
++  auto is when standard output is a terminal
++ls-app-sealed = sealed
++ls-app-unsealed = not sealed
++ls-app-data = data
++ls-app-temp = temp
++ls-subvolume = subvolume
++ls-subvolume-read-only = subvolume, read-only
++ls-header-app = App
+ ls-header-git = Git
+ ls-header-inode = Inode
+ ls-header-blocks = Blocks
+diff --git a/src/uu/ls/src/apps.rs b/src/uu/ls/src/apps.rs
+new file mode 100644
+--- /dev/null
++++ b/src/uu/ls/src/apps.rs
+@@ -0,0 +1,534 @@
++// This file is part of the uutils coreutils package.
++//
++// For the full copyright and license information, please view the LICENSE
++// file that was distributed with this source code.
++
++// spell-checker:ignore (Dukovo) dkv
++
++//! `--app` (ADR 0442): a column of the long listing with the app a file
++//! belongs to on Dukovo, and how:
++//!
++//! - **sealed**: inside an installed bundle, `/applications/ID` or `ID` in
++//!   a person's `applications` folder, root's and read-only, as bundled
++//!   seals it (ADR 0223);
++//! - **not sealed**: inside such a folder but writable or not root's, as
++//!   one unpacked by hand or changed since; the bundle runtime will not
++//!   start it (ADR 0225);
++//! - **data**: in an app's data folder, `app-data/ID` in a person's home,
++//!   which only that app changes;
++//! - **temp**: in an app's own `/tmp/.app-ID`.
++//!
++//! The name is the one the bundle's manifest gives (ADR 0221), read only
++//! from a sealed bundle, since anyone may write a manifest in a folder of
++//! their own; otherwise, or with no bundle installed, it is the ID. A
++//! name is cut to [`NAME_WIDTH`] columns, and a control character in it
++//! is shown as `?`, so that a manifest cannot write to the terminal.
++//!
++//! The places are told by path: `applications` and `app-data` count in
++//! `/` and in a person's home, which is a folder whose owner's home it
++//! is. If a file shows no app where one is expected, start in
++//! [`Apps::of`].
++
++use std::fs::{self, File, Metadata};
++use std::io::Read;
++use std::os::unix::fs::MetadataExt;
++use std::path::{Component, Path, PathBuf};
++
++use ansi_width::ansi_width;
++use rustc_hash::FxHashMap;
++use uucore::entries::{Locate, Passwd};
++use uucore::translate;
++
++use crate::PathData;
++
++/// The widest a name is shown, in columns.
++const NAME_WIDTH: usize = 24;
++
++/// The most of a manifest read for its name.
++const MANIFEST_MOST: u64 = 64 * 1024;
++
++/// How a file belongs to its app.
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub(crate) enum Kind {
++    Sealed,
++    Unsealed,
++    Data,
++    Temp,
++}
++
++/// The app a file belongs to: its name, as shown, and how, with the word
++/// that says so.
++#[derive(Clone, Debug, PartialEq, Eq)]
++pub(crate) struct App {
++    pub(crate) name: String,
++    pub(crate) kind: Kind,
++    pub(crate) word: String,
++}
++
++impl App {
++    fn new(name: String, kind: Kind) -> Self {
++        let word = match kind {
++            Kind::Sealed => translate!("ls-app-sealed"),
++            Kind::Unsealed => translate!("ls-app-unsealed"),
++            Kind::Data => translate!("ls-app-data"),
++            Kind::Temp => translate!("ls-app-temp"),
++        };
++        Self { name, kind, word }
++    }
++
++    /// How wide `--app`'s column must be for it: the name, a space and
++    /// the word.
++    pub(crate) fn width(&self) -> usize {
++        ansi_width(&self.name) + 1 + ansi_width(&self.word)
++    }
++}
++
++/// What `--app` has looked up, so that each folder is asked about once.
++#[derive(Default)]
++pub(crate) struct Apps {
++    /// Each folder's real path.
++    real: FxHashMap<PathBuf, Option<PathBuf>>,
++    /// Whether each folder is a person's home.
++    homes: FxHashMap<PathBuf, bool>,
++    /// Each bundle folder's name, when it is sealed.
++    names: FxHashMap<PathBuf, Option<String>>,
++}
++
++impl Apps {
++    /// The app `item` belongs to, if any.
++    pub(crate) fn of(&mut self, item: &PathData) -> Option<App> {
++        let path = self.real_path(item)?;
++        let parts: Vec<&str> = path
++            .components()
++            .skip(1)
++            .map(|part| match part {
++                Component::Normal(name) => name.to_str().unwrap_or(""),
++                _ => "",
++            })
++            .collect();
++
++        // An app's own /tmp, and the keyring folder beside it.
++        if let ["tmp", folder, ..] = parts.as_slice() {
++            if let Some(id) = temp_id(folder) {
++                let home = self.home_of_owner(&Path::new("/tmp").join(folder));
++                return Some(App::new(self.name_of(id, home.as_deref()), Kind::Temp));
++            }
++        }
++
++        for (i, part) in parts.iter().enumerate() {
++            let Some(id) = parts.get(i + 1).copied().filter(|id| is_id(id)) else {
++                continue;
++            };
++            let above = place_above(&parts[..i]);
++            match *part {
++                "applications" if above == Path::new("/") || self.is_home(&above) => {
++                    let bundle = above.join("applications").join(id);
++                    let metadata = item.metadata()?;
++                    // Only a sealed folder's own manifest names it.
++                    let kind = if is_sealed(metadata) && is_sealed_bundle(&bundle) {
++                        Kind::Sealed
++                    } else {
++                        Kind::Unsealed
++                    };
++                    let name = match kind {
++                        Kind::Sealed => self.name_in(&bundle).unwrap_or_else(|| id.to_string()),
++                        _ => id.to_string(),
++                    };
++                    return Some(App::new(name, kind));
++                }
++                "app-data" if self.is_home(&above) => {
++                    return Some(App::new(self.name_of(id, Some(&above)), Kind::Data));
++                }
++                _ => {}
++            }
++        }
++        None
++    }
++
++    /// Where `item` really is: its folder's real path and its own name,
++    /// so that a link is looked up as itself.
++    fn real_path(&mut self, item: &PathData) -> Option<PathBuf> {
++        let path = item.path();
++        let (folder, name) = match (path.parent(), path.file_name()) {
++            (Some(parent), Some(name)) if !item.is_dot_dir => (parent, Some(name)),
++            _ => (path, None),
++        };
++        let folder = if folder.as_os_str().is_empty() {
++            Path::new(".")
++        } else {
++            folder
++        };
++        let real = self
++            .real
++            .entry(folder.to_path_buf())
++            .or_insert_with(|| folder.canonicalize().ok())
++            .clone()?;
++        Some(match name {
++            Some(name) => real.join(name),
++            None => real,
++        })
++    }
++
++    /// Whether `folder` is a person's home: their account says so, and
++    /// it is theirs.
++    fn is_home(&mut self, folder: &Path) -> bool {
++        if let Some(&known) = self.homes.get(folder) {
++            return known;
++        }
++        let home = fs::symlink_metadata(folder)
++            .ok()
++            .and_then(|metadata| Passwd::locate(metadata.uid()).ok())
++            .and_then(|account| account.user_dir)
++            .is_some_and(|dir| Path::new(&dir) == folder);
++        self.homes.insert(folder.to_path_buf(), home);
++        home
++    }
++
++    /// The home of whoever owns `path`, as an app's /tmp is its person's.
++    fn home_of_owner(&mut self, path: &Path) -> Option<PathBuf> {
++        let metadata = fs::symlink_metadata(path).ok()?;
++        let home = PathBuf::from(Passwd::locate(metadata.uid()).ok()?.user_dir?);
++        self.is_home(&home).then_some(home)
++    }
++
++    /// App `id`'s name: from its sealed bundle in `home`, then from the
++    /// one for everyone, as `bundle run` finds it; or the ID.
++    fn name_of(&mut self, id: &str, home: Option<&Path>) -> String {
++        let places = home
++            .map(|home| home.join("applications"))
++            .into_iter()
++            .chain([PathBuf::from("/applications")]);
++        for place in places {
++            let bundle = place.join(id);
++            if is_sealed_bundle(&bundle) {
++                if let Some(name) = self.name_in(&bundle) {
++                    return name;
++                }
++            }
++        }
++        id.to_string()
++    }
++
++    /// The name in `bundle`'s manifest, if it is sealed and gives one, made
++    /// safe to show.
++    fn name_in(&mut self, bundle: &Path) -> Option<String> {
++        self.names
++            .entry(bundle.to_path_buf())
++            .or_insert_with(|| {
++                let manifest = bundle.join("manifest.json");
++                let metadata = fs::symlink_metadata(&manifest).ok()?;
++                if !metadata.is_file() || !is_sealed(&metadata) {
++                    return None;
++                }
++                let mut json = Vec::new();
++                File::open(&manifest)
++                    .ok()?
++                    .take(MANIFEST_MOST)
++                    .read_to_end(&mut json)
++                    .ok()?;
++                manifest_name(&json).map(|name| shown(&name))
++            })
++            .clone()
++    }
++}
++
++/// The app whose temporary folder in /tmp `folder` is: `.app-ID`, or
++/// `.app-ID.keyring-N`, the keyring `bundle run` serves it for one run.
++fn temp_id(folder: &str) -> Option<&str> {
++    let id = folder.strip_prefix(".app-")?;
++    let id = match id.rsplit_once(".keyring-") {
++        Some((id, run)) if !run.is_empty() && run.bytes().all(|b| b.is_ascii_digit()) => id,
++        _ => id,
++    };
++    is_id(id).then_some(id)
++}
++
++/// The folder `parts` names, from `/`.
++fn place_above(parts: &[&str]) -> PathBuf {
++    let mut place = PathBuf::from("/");
++    place.extend(parts);
++    place
++}
++
++/// Whether `bundle` is a folder bundled sealed: root's and read-only,
++/// not through a link.
++fn is_sealed_bundle(bundle: &Path) -> bool {
++    fs::symlink_metadata(bundle).is_ok_and(|metadata| metadata.is_dir() && is_sealed(&metadata))
++}
++
++/// Whether a file is as bundled leaves it: root's, and no one may write
++/// it. A link's own mode means nothing, so a link of root's is sealed
++/// when its folder is.
++fn is_sealed(metadata: &Metadata) -> bool {
++    metadata.uid() == 0 && (metadata.is_symlink() || metadata.mode() & 0o222 == 0)
++}
++
++/// Whether `id` is a bundle's ID: two or more parts of lowercase letters,
++/// digits and `-`, joined by dots (manifest.json(5)).
++fn is_id(id: &str) -> bool {
++    let mut parts = 0;
++    for part in id.split('.') {
++        if part.is_empty()
++            || !part
++                .bytes()
++                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
++        {
++            return false;
++        }
++        parts += 1;
++    }
++    parts >= 2
++}
++
++/// `name` as it may go on a terminal: each control character as `?`, and
++/// each that turns the text's direction or hides in it too, so that the
++/// name reads as it is; cut to [`NAME_WIDTH`] columns with an ellipsis.
++fn shown(name: &str) -> String {
++    let safe: String = name
++        .chars()
++        .map(|c| {
++            if c.is_control() || is_invisible(c) {
++                '?'
++            } else {
++                c
++            }
++        })
++        .collect();
++    if ansi_width(&safe) <= NAME_WIDTH {
++        return safe;
++    }
++    let mut out = String::new();
++    let mut width = 0;
++    for c in safe.chars() {
++        let w = ansi_width(c.encode_utf8(&mut [0; 4]));
++        if width + w > NAME_WIDTH - 1 {
++            break;
++        }
++        width += w;
++        out.push(c);
++    }
++    out.push('…');
++    out
++}
++
++/// Whether `c` changes how the text around it shows without showing
++/// itself: the marks and overrides of direction, and the zero-width
++/// characters.
++fn is_invisible(c: char) -> bool {
++    matches!(
++        c,
++        '\u{061C}'
++            | '\u{200B}'..='\u{200F}'
++            | '\u{202A}'..='\u{202E}'
++            | '\u{2060}'..='\u{2069}'
++            | '\u{FEFF}'
++    )
++}
++
++/// The top-level `"name"` of a manifest, read only as far as it.
++fn manifest_name(json: &[u8]) -> Option<String> {
++    let mut json = Json { bytes: json, at: 0 };
++    json.expect(b'{')?;
++    loop {
++        if json.peek()? == b'}' {
++            return None;
++        }
++        let key = json.string()?;
++        json.expect(b':')?;
++        if key == "name" {
++            return json.string();
++        }
++        json.skip_value()?;
++        match json.next()? {
++            b',' => {}
++            _ => return None,
++        }
++    }
++}
++
++/// A reader of JSON (RFC 8259), enough to find one field: what it skips
++/// it checks only as far as finding where it ends.
++struct Json<'a> {
++    bytes: &'a [u8],
++    at: usize,
++}
++
++impl Json<'_> {
++    /// The next byte that is not white space, without taking it.
++    fn peek(&mut self) -> Option<u8> {
++        while let Some(b' ' | b'\t' | b'\n' | b'\r') = self.bytes.get(self.at) {
++            self.at += 1;
++        }
++        self.bytes.get(self.at).copied()
++    }
++
++    /// Takes the next byte that is not white space.
++    fn next(&mut self) -> Option<u8> {
++        let byte = self.peek()?;
++        self.at += 1;
++        Some(byte)
++    }
++
++    fn expect(&mut self, byte: u8) -> Option<()> {
++        (self.next()? == byte).then_some(())
++    }
++
++    /// A string, its escapes undone.
++    fn string(&mut self) -> Option<String> {
++        self.expect(b'"')?;
++        let mut text = Vec::new();
++        loop {
++            let byte = *self.bytes.get(self.at)?;
++            self.at += 1;
++            match byte {
++                b'"' => return String::from_utf8(text).ok(),
++                b'\\' => {
++                    let escaped = *self.bytes.get(self.at)?;
++                    self.at += 1;
++                    let c = match escaped {
++                        b'"' => '"',
++                        b'\\' => '\\',
++                        b'/' => '/',
++                        b'b' => '\u{8}',
++                        b'f' => '\u{c}',
++                        b'n' => '\n',
++                        b'r' => '\r',
++                        b't' => '\t',
++                        b'u' => self.unicode()?,
++                        _ => return None,
++                    };
++                    text.extend(c.encode_utf8(&mut [0; 4]).as_bytes());
++                }
++                0..0x20 => return None,
++                _ => text.push(byte),
++            }
++        }
++    }
++
++    /// The character of a `\u` escape, whose `\u` is taken, joining a
++    /// surrogate pair.
++    fn unicode(&mut self) -> Option<char> {
++        let first = self.hex4()?;
++        if (0xD800..0xDC00).contains(&first) {
++            if self.bytes.get(self.at..self.at + 2)? != b"\\u" {
++                return None;
++            }
++            self.at += 2;
++            let second = self.hex4()?;
++            if !(0xDC00..0xE000).contains(&second) {
++                return None;
++            }
++            return char::from_u32(0x10000 + ((first - 0xD800) << 10) + (second - 0xDC00));
++        }
++        char::from_u32(first)
++    }
++
++    fn hex4(&mut self) -> Option<u32> {
++        let digits = std::str::from_utf8(self.bytes.get(self.at..self.at + 4)?).ok()?;
++        self.at += 4;
++        u32::from_str_radix(digits, 16).ok()
++    }
++
++    /// Skips a value: a string, an object or array with all it holds, or
++    /// a number, `true`, `false` or `null`.
++    fn skip_value(&mut self) -> Option<()> {
++        match self.peek()? {
++            b'"' => self.string().map(drop),
++            b'{' | b'[' => {
++                let mut depth = 0usize;
++                loop {
++                    match self.peek()? {
++                        b'"' => {
++                            self.string()?;
++                        }
++                        b'{' | b'[' => {
++                            depth += 1;
++                            self.at += 1;
++                        }
++                        b'}' | b']' => {
++                            depth -= 1;
++                            self.at += 1;
++                            if depth == 0 {
++                                return Some(());
++                            }
++                        }
++                        _ => self.at += 1,
++                    }
++                }
++            }
++            _ => {
++                let start = self.at;
++                while let Some(&byte) = self.bytes.get(self.at) {
++                    if matches!(byte, b',' | b'}' | b']' | b' ' | b'\t' | b'\n' | b'\r') {
++                        break;
++                    }
++                    self.at += 1;
++                }
++                (self.at > start).then_some(())
++            }
++        }
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn the_name_is_found_past_what_comes_before_it() {
++        let json = br#"{
++            "manifest_version": 1,
++            "id": "org.example.notes",
++            "programs": {"notes": {"path": {"x86_64": "bin/notes"}, "name": "not this"}},
++            "list": [1, 2.5e3, true, null, "]", {"a": "}"}],
++            "name": "Notes \u00e9 \ud83d\ude00 \"quoted\"",
++            "summary": "x"
++        }"#;
++        assert_eq!(
++            manifest_name(json).as_deref(),
++            Some("Notes é 😀 \"quoted\"")
++        );
++    }
++
++    #[test]
++    fn a_manifest_without_a_name_has_none() {
++        assert_eq!(
++            manifest_name(br#"{"id": "a.b", "programs": {"name": "x"}}"#),
++            None
++        );
++        assert_eq!(manifest_name(br#"{"name": 7}"#), None);
++        assert_eq!(manifest_name(b"[\"name\"]"), None);
++        assert_eq!(manifest_name(br#"{"name": "cut"#), None);
++    }
++
++    #[test]
++    fn names_are_made_safe_and_short() {
++        assert_eq!(shown("Notes"), "Notes");
++        assert_eq!(shown("evil\x1b[2Jname"), "evil?[2Jname");
++        assert_eq!(shown("abc\u{202E}fdp.exe"), "abc?fdp.exe");
++        assert_eq!(shown("in\u{200B}visible"), "in?visible");
++        assert_eq!(shown(&"x".repeat(24)), "x".repeat(24));
++        assert_eq!(shown(&"x".repeat(30)), format!("{}…", "x".repeat(23)));
++    }
++
++    #[test]
++    fn ids_are_reverse_domain_names() {
++        assert!(is_id("org.example.notes"));
++        assert!(is_id("com.my-app.x2"));
++        assert!(!is_id("notes"));
++        assert!(!is_id(".installing-x7"));
++        assert!(!is_id("Org.Example"));
++        assert!(!is_id("org..x"));
++    }
++
++    #[test]
++    fn an_apps_temp_folders_are_its_own() {
++        assert_eq!(temp_id(".app-org.example.notes"), Some("org.example.notes"));
++        assert_eq!(
++            temp_id(".app-org.example.notes.keyring-412"),
++            Some("org.example.notes")
++        );
++        assert_eq!(temp_id(".app-notes"), None);
++        assert_eq!(temp_id("org.example.notes"), None);
++    }
++}
+diff --git a/src/uu/ls/src/config.rs b/src/uu/ls/src/config.rs
+--- a/src/uu/ls/src/config.rs
++++ b/src/uu/ls/src/config.rs
+@@ -128,6 +128,9 @@ pub mod options {
+     pub static LEVEL: &str = "level";
+     pub static GIT: &str = "git";
+     pub static TOTAL_SIZE: &str = "total-size";
++    // Dukovo's (ADR 0442).
++    pub static APP: &str = "app";
++    pub static SUBVOLUMES: &str = "subvolumes";
+ }
+ 
+ const DEFAULT_TERM_WIDTH: u16 = 80;
+@@ -256,6 +259,10 @@ pub struct Config {
+     pub(crate) git: bool,
+     /// `--total-size`: a folder's size is what it holds.
+     pub(crate) total_size: bool,
++    /// `--app`: a column of the app each file belongs to (ADR 0442).
++    pub(crate) app: bool,
++    /// Whether a subvolume's top folder is marked after its name.
++    pub(crate) subvolumes: bool,
+ }
+ 
+ /// Extracts the format to display the information based on the options provided.
+@@ -503,10 +510,13 @@ fn extract_hyperlink(options: &clap::ArgMatches) -> bool {
+ /// Whether `--icons[=WHEN]` asks for icons: `--icons` alone means on a
+ /// terminal, since the icons are no use to a program reading the names.
+ fn extract_icons(options: &clap::ArgMatches) -> bool {
+-    match options
+-        .get_one::<String>(options::ICONS)
+-        .map(String::as_str)
+-    {
++    extract_when(options, options::ICONS)
++}
++
++/// Whether an option of Dukovo's that takes `always`, `auto` or `never`
++/// is on: `auto` is when standard output is a terminal.
++fn extract_when(options: &clap::ArgMatches, option: &str) -> bool {
++    match options.get_one::<String>(option).map(String::as_str) {
+         Some("always" | "yes" | "force") => true,
+         Some("auto" | "tty" | "if-tty") => stdout().is_terminal(),
+         _ => false,
+@@ -1075,6 +1085,10 @@ impl Config {
+             tree_level,
+             git: options.get_flag(options::GIT),
+             total_size: options.get_flag(options::TOTAL_SIZE),
++            app: options.get_flag(options::APP),
++            // Text after names Emacs would read as theirs: not with
++            // --dired.
++            subvolumes: extract_when(options, options::SUBVOLUMES) && !dired,
+         })
+     }
+ }
+diff --git a/src/uu/ls/src/display.rs b/src/uu/ls/src/display.rs
+--- a/src/uu/ls/src/display.rs
++++ b/src/uu/ls/src/display.rs
+@@ -49,11 +49,13 @@ use uucore::{
+     translate,
+ };
+ 
++use crate::apps::App;
+ use crate::colors::{StyleManager, color_name};
+ use crate::config::Files;
+ use crate::dired::{self, DiredOutput};
+ use crate::fields::{self, OCTAL_WIDTH, Titles};
+ use crate::git::{self, Mark};
++use crate::subvolumes::Subvolume;
+ use crate::total_size::shown_size;
+ use crate::tree::Tree;
+ use crate::{Config, ListState, LsError, PathData, get_block_size};
+@@ -99,17 +101,34 @@ pub(crate) struct PaddingCollection {
+     /// `--git`'s column (ADR 0441): its width, or 0 when the listing has
+     /// none, as when nothing in it is in a repository.
+     pub(crate) git: usize,
++    /// `--app`'s column (ADR 0442): its width, or 0 when nothing listed
++    /// belongs to an app.
++    pub(crate) app: usize,
+ }
+ 
+-/// What a line of the long listing has beyond GNU's (ADR 0441).
++/// What a line of the long listing has beyond GNU's (ADRs 0441 and
++/// 0442).
+ #[derive(Clone, Copy, Default)]
+ struct LineParts<'a> {
+     /// `--git`'s letters, when the listing has the column.
+     git: Option<Mark>,
++    /// `--app`'s cell.
++    app: AppCell<'a>,
+     /// `--tree`'s lines before the name.
+     branch: &'a str,
+ }
+ 
++/// `--app`'s cell in a line of the long listing.
++#[derive(Clone, Copy, Default)]
++enum AppCell<'a> {
++    /// The listing has no App column.
++    #[default]
++    NoColumn,
++    /// The file belongs to no app: `-`.
++    NoApp,
++    App(&'a App),
++}
++
+ pub(crate) struct DisplayItemName {
+     pub(crate) displayed: OsString,
+     pub(crate) dired_name_len: usize,
+@@ -411,6 +430,15 @@ fn display_lines(
+             padding_collection.git = git::WIDTH;
+         }
+ 
++        // Dukovo: the app each file belongs to, in a column only when one
++        // does (ADR 0442).
++        let apps: Vec<Option<App>> = if config.app {
++            items.iter().map(|item| state.apps.of(item)).collect()
++        } else {
++            Vec::new()
++        };
++        padding_collection.app = apps.iter().flatten().map(App::width).max().unwrap_or(0);
++
+         // Dukovo: column titles over the listing (ADR 0440).
+         if config.header && !items.is_empty() {
+             let titles = Titles::new(config.time);
+@@ -433,6 +461,11 @@ fn display_lines(
+ 
+             let parts = LineParts {
+                 git: (padding_collection.git > 0).then(|| marks[i].unwrap_or(git::OUTSIDE)),
++                app: match apps.get(i) {
++                    _ if padding_collection.app == 0 => AppCell::NoColumn,
++                    Some(Some(app)) => AppCell::App(app),
++                    _ => AppCell::NoApp,
++                },
+                 branch: branch(i),
+             };
+             display_item_long(
+@@ -1154,6 +1187,12 @@ fn display_item_long(
+         };
+ 
+         write_os_str(&mut state.display_buf, &displayed_item)?;
++        // Dukovo: a subvolume's top folder says so (ADR 0442).
++        if config.subvolumes {
++            if let Some(subvolume) = state.subvolumes.of(item) {
++                write_subvolume(subvolume, config, &mut state.display_buf);
++            }
++        }
+         state.display_buf.push(config.line_ending as u8);
+     } else {
+         #[cfg(unix)]
+@@ -1415,6 +1454,7 @@ fn calculate_padding_collection(
+         permissions_title: 0,
+         time: 0,
+         git: 0,
++        app: 0,
+     };
+ 
+     for item in items {
+@@ -1502,6 +1542,7 @@ fn calculate_padding_collection(
+         permissions_title: 0,
+         time: 0,
+         git: 0,
++        app: 0,
+     };
+ 
+     for item in items {
+@@ -1575,8 +1616,9 @@ fn time_column_width(items: &[PathData], config: &Config, state: &ListState) ->
+     widest
+ }
+ 
+-/// Writes what comes after the time and before the name (ADR 0441):
+-/// `--git`'s letters and a space, then `--tree`'s lines.
++/// Writes what comes after the time and before the name (ADRs 0441 and
++/// 0442): `--git`'s letters and `--app`'s cell, each with a space after,
++/// then `--tree`'s lines.
+ fn write_line_parts(
+     parts: LineParts,
+     padding: &PaddingCollection,
+@@ -1590,9 +1632,48 @@ fn write_line_parts(
+         }
+         out.extend(iter::repeat_n(b' ', padding.git - git::WIDTH + 1));
+     }
++    let colors = config.field_colors.as_ref();
++    let used = match parts.app {
++        AppCell::NoColumn => None,
++        AppCell::NoApp => {
++            match colors {
++                Some(colors) => colors.paint_none("-", out),
++                None => out.push(b'-'),
++            }
++            Some(1)
++        }
++        AppCell::App(app) => {
++            out.extend(app.name.as_bytes());
++            out.push(b' ');
++            match colors {
++                Some(colors) => colors.paint_app_word(app.kind, &app.word, out),
++                None => out.extend(app.word.as_bytes()),
++            }
++            Some(app.width())
++        }
++    };
++    if let Some(used) = used {
++        out.extend(iter::repeat_n(b' ', padding.app.saturating_sub(used) + 1));
++    }
+     write_branch(parts.branch, config, out);
+ }
+ 
++/// Writes the mark after a subvolume's top folder: ` [subvolume]`, or
++/// ` [subvolume, read-only]` (ADR 0442).
++fn write_subvolume(subvolume: Subvolume, config: &Config, out: &mut Vec<u8>) {
++    let words = if subvolume.read_only {
++        translate!("ls-subvolume-read-only")
++    } else {
++        translate!("ls-subvolume")
++    };
++    let mark = format!("[{words}]");
++    out.push(b' ');
++    match &config.field_colors {
++        Some(colors) => colors.paint_subvolume(&mark, out),
++        None => out.extend(mark.as_bytes()),
++    }
++}
++
+ /// Writes a tree's lines before a name, in the `tree` colour when the
+ /// fields are coloured (ADR 0441).
+ fn write_branch(branch: &str, config: &Config, out: &mut Vec<u8>) {
+diff --git a/src/uu/ls/src/fields.rs b/src/uu/ls/src/fields.rs
+--- a/src/uu/ls/src/fields.rs
++++ b/src/uu/ls/src/fields.rs
+@@ -30,6 +30,7 @@ use uucore::fsext::MetadataTimeField;
+ use uucore::translate;
+ 
+ use crate::Config;
++use crate::apps::Kind;
+ use crate::display::PaddingCollection;
+ 
+ /// Sizes below this are small (`small`): under a kibibyte.
+@@ -85,6 +86,13 @@ pub(crate) struct FieldColors {
+     git_conflict: String,
+     /// `--tree`'s lines.
+     tree: String,
++    /// `--app`'s words after an app's name (ADR 0442): `sealed`, `not
++    /// sealed`, and `data` and `temp`.
++    app_sealed: String,
++    app_unsealed: String,
++    app_data: String,
++    /// The mark after a subvolume's top folder.
++    subvolume: String,
+     /// What ends each coloured field: a reset, then `LS_COLORS`' normal
+     /// colour (`no=`) when it sets one, so the rest of the line keeps it.
+     end: String,
+@@ -118,6 +126,10 @@ impl Default for FieldColors {
+             git_ignored: code("90"),
+             git_conflict: code("1;31"),
+             tree: code("90"),
++            app_sealed: code("32"),
++            app_unsealed: code("1;31"),
++            app_data: code("90"),
++            subvolume: code("36"),
+             end: "\x1b[0m".to_string(),
+         }
+     }
+@@ -184,6 +196,10 @@ impl FieldColors {
+             "git-ignored" => &mut self.git_ignored,
+             "git-conflict" => &mut self.git_conflict,
+             "tree" => &mut self.tree,
++            "app-sealed" => &mut self.app_sealed,
++            "app-unsealed" => &mut self.app_unsealed,
++            "app-data" => &mut self.app_data,
++            "subvolume" => &mut self.subvolume,
+             _ => return None,
+         })
+     }
+@@ -272,6 +288,27 @@ impl FieldColors {
+         }
+     }
+ 
++    /// Writes `--app`'s word for how a file belongs to its app.
++    pub(crate) fn paint_app_word(&self, kind: Kind, word: &str, out: &mut Vec<u8>) {
++        let code = match kind {
++            Kind::Sealed => &self.app_sealed,
++            Kind::Unsealed => &self.app_unsealed,
++            Kind::Data | Kind::Temp => &self.app_data,
++        };
++        self.paint(code, word, out);
++    }
++
++    /// Writes the mark after a subvolume's top folder.
++    pub(crate) fn paint_subvolume(&self, mark: &str, out: &mut Vec<u8>) {
++        self.paint(&self.subvolume, mark, out);
++    }
++
++    /// Writes `text` in the colour of a permission not given, as `--app`'s
++    /// `-` for a file of no app.
++    pub(crate) fn paint_none(&self, text: &str, out: &mut Vec<u8>) {
++        self.paint(&self.none, text, out);
++    }
++
+     /// Writes a tree's lines in their colour, the spaces around them
+     /// plain.
+     pub(crate) fn paint_tree(&self, branch: &str, out: &mut Vec<u8>) {
+@@ -365,6 +402,7 @@ pub(crate) struct Titles {
+     pub(crate) size: String,
+     pub(crate) time: String,
+     pub(crate) git: String,
++    pub(crate) app: String,
+     pub(crate) name: String,
+ }
+ 
+@@ -388,6 +426,7 @@ impl Titles {
+                 MetadataTimeField::Birth => translate!("ls-header-created"),
+             },
+             git: translate!("ls-header-git"),
++            app: translate!("ls-header-app"),
+             name: translate!("ls-header-name"),
+         }
+     }
+@@ -421,6 +460,9 @@ pub(crate) fn widen_for_header(padding: &mut PaddingCollection, config: &Config,
+     if padding.git > 0 {
+         padding.git = padding.git.max(width(&titles.git));
+     }
++    if padding.app > 0 {
++        padding.app = padding.app.max(width(&titles.app));
++    }
+ }
+ 
+ /// Writes `--header`'s line: each column's title, aligned as its values
+@@ -465,6 +507,9 @@ pub(crate) fn write_header(
+     if padding.git > 0 {
+         line.left(&titles.git, padding.git);
+     }
++    if padding.app > 0 {
++        line.left(&titles.app, padding.app);
++    }
+     line.left(&titles.name, 0);
+     // The name is the last column: no spaces after it.
+     while line.out.last() == Some(&b' ') {
+diff --git a/src/uu/ls/src/ls.rs b/src/uu/ls/src/ls.rs
+--- a/src/uu/ls/src/ls.rs
++++ b/src/uu/ls/src/ls.rs
+@@ -44,6 +44,7 @@ use uucore::{
+     version_cmp::version_cmp,
+ };
+ 
++mod apps;
+ mod colors;
+ mod config;
+ mod dired;
+@@ -51,6 +52,7 @@ mod display;
+ mod fields;
+ mod git;
+ mod icons;
++mod subvolumes;
+ mod total_size;
+ mod tree;
+ 
+@@ -853,6 +855,28 @@ pub fn uu_app() -> Command {
+             .help(translate!("ls-help-total-size"))
+             .action(ArgAction::SetTrue),
+     )
++    .arg(
++        Arg::new(options::APP)
++            .long(options::APP)
++            .help(translate!("ls-help-app"))
++            .action(ArgAction::SetTrue),
++    )
++    .arg(
++        Arg::new(options::SUBVOLUMES)
++            .long(options::SUBVOLUMES)
++            .help(translate!("ls-help-subvolumes"))
++            .value_parser(ShortcutValueParser::new([
++                PossibleValue::new("always").alias("yes").alias("force"),
++                PossibleValue::new("auto").alias("tty").alias("if-tty"),
++                PossibleValue::new("never").alias("no").alias("none"),
++            ]))
++            .require_equals(true)
++            .num_args(0..=1)
++            .default_missing_value("always")
++            .default_value("auto")
++            .value_name("WHEN")
++            .overrides_with(options::SUBVOLUMES),
++    )
+     // Positional arguments
+     .arg(
+         Arg::new(options::PATHS)
+@@ -1109,6 +1133,9 @@ struct ListState<'a> {
+     display_buf: Vec<u8>,
+     /// The repositories `--git` has asked about (ADR 0441).
+     git: git::Repositories,
++    /// What `--app` and the subvolume marks have looked up (ADR 0442).
++    apps: apps::Apps,
++    subvolumes: subvolumes::Subvolumes,
+ }
+ 
+ /// Text output implementation that formats entries for terminal display.
+@@ -1144,6 +1171,8 @@ impl<'a> TextOutput<'a> {
+                     0
+                 }),
+                 git: git::Repositories::default(),
++                apps: apps::Apps::default(),
++                subvolumes: subvolumes::Subvolumes::default(),
+             },
+             dired: DiredOutput::default(),
+         }
+diff --git a/src/uu/ls/src/subvolumes.rs b/src/uu/ls/src/subvolumes.rs
+new file mode 100644
+--- /dev/null
++++ b/src/uu/ls/src/subvolumes.rs
+@@ -0,0 +1,129 @@
++// This file is part of the uutils coreutils package.
++//
++// For the full copyright and license information, please view the LICENSE
++// file that was distributed with this source code.
++
++// spell-checker:ignore (Dukovo) subvolume subvolumes EROFS
++
++//! Btrfs subvolumes in the long listing (ADR 0442): a folder that is the
++//! top of a subvolume has `[subvolume]` after its name, or `[subvolume,
++//! read-only]` when nothing in it can be changed, as `@system.a` on
++//! `/system`. On a terminal by default, as `--subvolumes=auto`; into a
++//! pipe only with `--subvolumes=always`, so that scripts get GNU's text.
++//!
++//! A subvolume's top folder is inode 256 of its own tree (Linux's
++//! `BTRFS_FIRST_FREE_OBJECTID`): Linux shows it as `st_ino` 256 with a
++//! device of its own, and Radix as 256 with the subvolume's number from
++//! bit 40 (its Btrfs driver's `id_of`), so the low 40 bits are 256 on
++//! both. Other filesystems use inode 256 too, so the folder must also be
++//! on a Btrfs mount, by the mount table. Read-only is what access(2)
++//! says to writing: `EROFS`, whether the subvolume or its mount is.
++//!
++//! Which subvolumes are snapshots needs the subvolume's parent UUID,
++//! which Radix does not tell programs yet; Phase 15's `snap` brings it.
++
++use std::ffi::CString;
++use std::os::unix::ffi::OsStrExt;
++use std::os::unix::fs::MetadataExt;
++use std::path::{Path, PathBuf};
++
++use uucore::fsext::read_fs_list;
++use uucore::libc;
++
++use crate::PathData;
++
++/// The inode number of a subvolume's top folder.
++const TOP_INODE: u64 = 256;
++
++/// The bits of `st_ino` that are the inode's own number on Radix.
++const INODE_BITS: u64 = (1 << 40) - 1;
++
++/// A subvolume's top folder, as the listing marks it.
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub(crate) struct Subvolume {
++    pub(crate) read_only: bool,
++}
++
++/// The mount table, read the first time a folder might be a subvolume.
++#[derive(Default)]
++pub(crate) struct Subvolumes {
++    /// Each mount's folder, and whether it is Btrfs; `None` until read.
++    mounts: Option<Vec<(PathBuf, bool)>>,
++}
++
++impl Subvolumes {
++    /// `item`, if it is a subvolume's top folder.
++    pub(crate) fn of(&mut self, item: &PathData) -> Option<Subvolume> {
++        let metadata = item.metadata()?;
++        if !metadata.is_dir() || metadata.ino() & INODE_BITS != TOP_INODE {
++            return None;
++        }
++        let real = item.path().canonicalize().ok()?;
++        let mounts = self.mounts.get_or_insert_with(|| {
++            read_fs_list()
++                .unwrap_or_default()
++                .into_iter()
++                .map(|mount| (PathBuf::from(mount.mount_dir), mount.fs_type == "btrfs"))
++                .collect()
++        });
++        if !on_btrfs(mounts, &real) {
++            return None;
++        }
++        Some(Subvolume {
++            read_only: refuses_writes(&real),
++        })
++    }
++}
++
++/// Whether the mount `path` is in, the one at its longest folder, is
++/// Btrfs. The last of two mounts at one folder is the one seen.
++fn on_btrfs(mounts: &[(PathBuf, bool)], path: &Path) -> bool {
++    let mut found = None;
++    for (folder, btrfs) in mounts {
++        let longer = found.is_none_or(|(at, _): (&PathBuf, bool)| {
++            folder.components().count() >= at.components().count()
++        });
++        if path.starts_with(folder) && longer {
++            found = Some((folder, *btrfs));
++        }
++    }
++    found.is_some_and(|(_, btrfs)| btrfs)
++}
++
++/// Whether writing in `folder` is refused because nothing there may
++/// change (`EROFS`), rather than for want of permission.
++fn refuses_writes(folder: &Path) -> bool {
++    let Ok(path) = CString::new(folder.as_os_str().as_bytes()) else {
++        return false;
++    };
++    // SAFETY: `path` is a valid C string for the call.
++    let status = unsafe { libc::access(path.as_ptr(), libc::W_OK) };
++    status != 0 && std::io::Error::last_os_error().raw_os_error() == Some(libc::EROFS)
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn the_deepest_mount_holds_a_path() {
++        let mounts = vec![
++            (PathBuf::from("/"), false),
++            (PathBuf::from("/users"), true),
++            (PathBuf::from("/users/shared"), false),
++            (PathBuf::from("/system"), true),
++        ];
++        assert!(on_btrfs(&mounts, Path::new("/users")));
++        assert!(on_btrfs(&mounts, Path::new("/users/alice")));
++        assert!(!on_btrfs(&mounts, Path::new("/users/shared/x")));
++        assert!(!on_btrfs(&mounts, Path::new("/usersx")));
++        assert!(!on_btrfs(&mounts, Path::new("/tmp")));
++        assert!(on_btrfs(&mounts, Path::new("/system")));
++    }
++
++    #[test]
++    fn a_later_mount_at_one_folder_hides_the_earlier() {
++        let mounts = vec![(PathBuf::from("/m"), true), (PathBuf::from("/m"), false)];
++        assert!(!on_btrfs(&mounts, Path::new("/m/x")));
++    }
++}

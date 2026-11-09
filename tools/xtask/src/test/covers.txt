@@ -242,7 +242,18 @@ logging kernel/lib/klog/ userspace/defaults/log/ userspace/posix/logtest.c
 logging userspace/programs/systools/src/dmesg.rs userspace/programs/systools/src/log.rs
 logging userspace/programs/systools/src/logd.rs userspace/programs/systools/src/logger.rs
 logging userspace/programs/systools/src/logtrim.rs userspace/programs/systools/src/notifyd.rs
-ls-views ports/uutils-coreutils/
+ls-apps kernel/fs/btrfs/ ports/uutils-coreutils/ userspace/programs/dkv/
+ls-apps userspace/programs/manifest/ userspace/programs/systools/src/bundled.rs
+ls-apps userspace/programs/systools/src/bundles.rs userspace/programs/systools/src/bundles/
+ls-apps userspace/programs/systools/src/elevate.rs
+ls-grants kernel/fs/btrfs/ ports/uutils-coreutils/ userspace/programs/acl/ userspace/programs/dkv/
+ls-grants userspace/programs/manifest/ userspace/programs/systools/src/account.rs
+ls-grants userspace/programs/systools/src/bundled.rs userspace/programs/systools/src/bundles.rs
+ls-grants userspace/programs/systools/src/bundles/ userspace/programs/systools/src/elevate.rs
+ls-grants userspace/programs/systools/src/reach.rs userspace/programs/systools/src/reach/
+ls-grants userspace/programs/systools/src/signin.rs
+ls-views ports/git/ ports/uutils-coreutils/ userspace/defaults/nukesh/colors.toml
+ls-views userspace/programs/nukesh/src/colors.rs
 machine-check kernel/lib/mca/
 machine-check-program kernel/lib/mca/ userspace/posix/memfail.c
 microcode kernel/lib/microcode/

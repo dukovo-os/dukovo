@@ -1,0 +1,59 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "ls -l --app names the app each file belongs to and --subvolumes marks Btrfs subvolumes (ADR 0442), and GNU's output without them"
+time = "3m"
+
+# A bundle of the lab account's own, run once so that its data and /tmp
+# folders are made. A run before that stopped part way left it installed.
+[[step]]
+run = "sh -c 'bundle remove --purge org.example.lsnotes > /dev/null 2>&1; rm -rf /tmp/lab-apps && mkdir /tmp/lab-apps && cd /tmp/lab-apps && bundle new org.example.lsnotes --name \"Lab Notes\" > /dev/null && printf \"#!/bin/sh\\necho lsnotes ran\\n\" > lsnotes/bin/lsnotes && chmod 755 lsnotes/bin/lsnotes && bundle pack lsnotes -o lsnotes.dkv > /dev/null && bundle install --yes lsnotes.dkv | tail -1 && cd && rm -r /tmp/lab-apps && bundle run org.example.lsnotes'"
+expect = ["installed org.example.lsnotes 0.1.0, for you", "lsnotes ran"]
+
+# Its files are the sealed app's, by its manifest's name. `tr` squeezes
+# the columns' spaces, so the lines read the same whatever the sizes.
+[[step]]
+run = "sh -c 'ls -l --app --header ~/applications/org.example.lsnotes | tr -s \" \"'"
+expect = ["Permissions Links Owner Group Size Modified App Name", "Lab Notes sealed bin", "Lab Notes sealed manifest.json"]
+# Its data and its /tmp folder, and a file of no app beside them.
+[[step]]
+run = "sh -c 'cd && echo mine > lab-mine.txt && ls -ld --app lab-mine.txt app-data/org.example.lsnotes /tmp/.app-org.example.lsnotes | tr -s \" \"'"
+expect = [" - lab-mine.txt", "Lab Notes data app-data/org.example.lsnotes", "Lab Notes temp /tmp/.app-org.example.lsnotes"]
+# A listing with nothing of an app has no column.
+[[step]]
+run = "sh -c 'ls -l --app --header /system | head -2 | tail -1 | tr -s \" \"'"
+expect = "Permissions Links Owner Group Size Modified Name"
+expect_not = "App"
+
+# Unsealed by an administrator, it is named by its ID.
+[[step]]
+run = "chmod 755 /users/lab/applications/org.example.lsnotes"
+root = true
+[[step]]
+run = "sh -c 'ls -l --app ~/applications/org.example.lsnotes | tr -s \" \"'"
+expect = "org.example.lsnotes not sealed manifest.json"
+expect_not = "Lab Notes"
+
+# The subvolumes, asked for: /system's cannot be changed, and a home is
+# a folder of /users'. Over SSH there is no terminal, so without
+# --subvolumes=always there are no marks.
+[[step]]
+run = "sh -c 'ls -ld --subvolumes=always /users /system | tr -s \" \"'"
+expect = ["/system [subvolume, read-only]", "/users [subvolume]"]
+[[step]]
+run = "sh -c 'ls -ld --subvolumes=always ~'"
+expect = "/users/lab"
+expect_not = "subvolume"
+[[step]]
+run = "ls -ld /users /system"
+expect = "/system"
+expect_not = "subvolume"
+
+# Without the flags, GNU's output.
+[[step]]
+run = "sh -c 'ls -l ~/applications/org.example.lsnotes'"
+expect = "manifest.json"
+expect_not = ["sealed", "Lab Notes"]
+[[step]]
+run = "sh -c 'bundle remove --purge org.example.lsnotes > /dev/null && rm -rf ~/lab-mine.txt /tmp/.app-org.example.lsnotes* && echo gone'"
+expect = "gone"

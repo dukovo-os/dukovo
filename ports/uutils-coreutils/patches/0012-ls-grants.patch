@@ -1,0 +1,131 @@
+SPDX-FileCopyrightText: The uutils developers
+SPDX-FileCopyrightText: 2026 The Dukovo contributors
+SPDX-License-Identifier: MIT
+
+`ls --grants` (Dukovo's own, ADR 0443) shows who can reach each file
+named instead of listing it: the accounts that may read or change it,
+and which of the caller's apps would. reach(1) answers; ls hands it the
+names, with `--` first, and gives back what it writes and its exit
+status. Nothing changes without the flag.
+
+diff --git a/src/uu/ls/locales/en-US.ftl b/src/uu/ls/locales/en-US.ftl
+--- a/src/uu/ls/locales/en-US.ftl
++++ b/src/uu/ls/locales/en-US.ftl
+@@ -172,6 +172,8 @@ ls-help-app = with -l, show the app each file belongs to: inside an installed bu
+   or not, or in an app's data or its /tmp
+ ls-help-subvolumes = with -l, mark each folder that is the top of a Btrfs subvolume WHEN;
+   auto is when standard output is a terminal
++ls-help-grants = show who can reach each file instead of listing it: the accounts that may
++  read or change it, and which of your apps would; reach(1) answers
+ ls-app-sealed = sealed
+ ls-app-unsealed = not sealed
+ ls-app-data = data
+@@ -195,3 +197,4 @@ ls-header-accessed = Accessed
+ ls-header-changed = Changed
+ ls-header-created = Created
+ ls-header-name = Name
++ls-error-grants = cannot run {$command}: {$error}
+diff --git a/src/uu/ls/src/config.rs b/src/uu/ls/src/config.rs
+--- a/src/uu/ls/src/config.rs
++++ b/src/uu/ls/src/config.rs
+@@ -131,6 +131,8 @@ pub mod options {
+     // Dukovo's (ADR 0442).
+     pub static APP: &str = "app";
+     pub static SUBVOLUMES: &str = "subvolumes";
++    // Dukovo's (ADR 0443).
++    pub static GRANTS: &str = "grants";
+ }
+ 
+ const DEFAULT_TERM_WIDTH: u16 = 80;
+diff --git a/src/uu/ls/src/grants.rs b/src/uu/ls/src/grants.rs
+new file mode 100644
+--- /dev/null
++++ b/src/uu/ls/src/grants.rs
+@@ -0,0 +1,45 @@
++// SPDX-FileCopyrightText: 2026 The Dukovo contributors
++// SPDX-License-Identifier: Apache-2.0 OR MIT
++
++//! `ls --grants` (Dukovo, ADR 0443): who can reach each file named.
++//!
++//! reach(1) gives the answer, from the owners, modes and access lists on
++//! the way to the file and from what the caller allowed their apps; ls
++//! only hands it the names. What reach writes, to standard output and to
++//! standard error, is ls's own, and so is its exit status. ls lists
++//! nothing itself with `--grants`, so its other options do not count.
++
++use std::ffi::OsString;
++use std::process::Command;
++
++use uucore::error::{UResult, USimpleError, set_exit_code, strip_errno};
++use uucore::translate;
++
++/// Where Dukovo keeps reach(1).
++const REACH: &str = "/system/commands/reach";
++
++/// Runs reach(1) on `files`, or on the current folder when none is
++/// named, and gives back its exit status as ls's.
++///
++/// # Errors
++///
++/// When reach cannot be started, as on a system that has none.
++pub fn show(files: Vec<&OsString>) -> UResult<()> {
++    let mut reach = Command::new(REACH);
++    // `--` first, so that a file whose name starts with `-` is a name.
++    reach.arg("--");
++    if files.is_empty() {
++        reach.arg(".");
++    } else {
++        reach.args(files);
++    }
++    let status = reach.status().map_err(|e| {
++        USimpleError::new(
++            2,
++            translate!("ls-error-grants", "command" => REACH, "error" => strip_errno(&e)),
++        )
++    })?;
++    // Killed by a signal, it has no status: that is serious trouble.
++    set_exit_code(status.code().unwrap_or(2));
++    Ok(())
++}
+diff --git a/src/uu/ls/src/ls.rs b/src/uu/ls/src/ls.rs
+--- a/src/uu/ls/src/ls.rs
++++ b/src/uu/ls/src/ls.rs
+@@ -51,6 +51,7 @@ mod dired;
+ mod display;
+ mod fields;
+ mod git;
++mod grants;
+ mod icons;
+ mod subvolumes;
+ mod total_size;
+@@ -127,6 +128,17 @@ impl UError for LsError {
+ pub fn uumain(args: impl uucore::Args) -> UResult<()> {
+     let matches = uucore::clap_localization::handle_clap_result_with_exit_code(uu_app(), args, 2)?;
+ 
++    // Dukovo's (ADR 0443): reach(1) answers, and ls lists nothing.
++    if matches.get_flag(options::GRANTS) {
++        return grants::show(
++            matches
++                .get_many::<OsString>(options::PATHS)
++                .into_iter()
++                .flatten()
++                .collect(),
++        );
++    }
++
+     let config = Config::from(&matches)?;
+ 
+     let locs = matches
+@@ -877,6 +889,12 @@ pub fn uu_app() -> Command {
+             .value_name("WHEN")
+             .overrides_with(options::SUBVOLUMES),
+     )
++    .arg(
++        Arg::new(options::GRANTS)
++            .long(options::GRANTS)
++            .help(translate!("ls-help-grants"))
++            .action(ArgAction::SetTrue),
++    )
+     // Positional arguments
+     .arg(
+         Arg::new(options::PATHS)
