@@ -30,12 +30,13 @@ whose eight commands of 128 KiB each woke the reader and the drive's
 thread in turn.
 
 Under KVM, each read or write of a controller's register is a trap to
-QEMU. For each read, libata writes the port's command issue register,
-and its interrupt handler reads and clears the controller's and the
-port's interrupt status and reads the command issue register again: six
-traps. Sent from the reader, with the port's interrupt turned on and its
-status cleared for each read, and the reader looking at the port once
-before it slept, Radix took ten, and 1.06 times Linux's time for 64 KiB.
+QEMU, a costly one in CI's nested virtual machines. For each read,
+libata writes the port's command issue register, and its interrupt
+handler reads and clears the controller's and the port's interrupt
+status and reads the command issue register again: six traps, with the
+CPU halted until the interrupt. Sent from the reader, Radix's reads took
+1.06 times Linux's time for 64 KiB with ten traps each, and 1.13 with
+six and the halt.
 
 ## Decision
 
@@ -67,16 +68,25 @@ before it slept, Radix took ten, and 1.06 times Linux's time for 64 KiB.
   hand back judged as before. A drive on an IDE channel, which borrows
   the channel from a disk for each command (ADR 0432), keeps its reads in
   its thread.
-- **A read traps as often as Linux's.** The port remembers the
-  interrupts it last turned on (`Port::quiet`, `Port::forget_interrupts`
-  for a port the controller's handler quieted while the drive's thread
-  had it), so a read sent while they are on writes the command issue
-  register alone. The reader then sleeps at once: the queue polls only a
-  controller that can turn its interrupt off (`Controller::POLLED`,
-  virtio's alone, ADR 0365), and a look at an AHCI port before sleeping
-  costs two traps to find what the interrupt brings anyway. An interrupt
-  that finds the read already handed back, and the port's status clear,
-  leaves the port and the drive's thread alone.
+- **In a virtual machine, a reader polls for its read in memory.** The
+  disc's queue is polled as a virtio disk's is (ADR 0365): while a
+  thread polls, reads go with the port's interrupt off, and a read's end
+  shows in the Register FIS the controller copies to the port's
+  received-frame area, which `Port::send_packet` clears first; one
+  register read then sees that the controller let go of the command
+  (`Port::packet_over`). A read so costs two traps, no interrupt and no
+  halt. The port remembers the interrupts it last set (`Port::quiet`,
+  and `Port::forget_interrupts` for a port the controller's handler
+  quieted while the drive's thread had it), so reads in a row write the
+  command issue register alone. The interrupt comes back on for the read
+  on the port before any thread sleeps for it, as the queue now has
+  every waiter for a polled controller ask (`Controller::POLLED`); a
+  read by PIO, which may end without that frame, keeps its interrupt.
+  The queue's polling limit counts from the lane's last completion, so
+  that a 1 MiB read's eight commands, which the drive takes one after
+  the other, are polled as eight reads of 128 KiB would be. A waiter for
+  a controller that cannot be polled sleeps at once, without a look at
+  it first.
 - **The rows are gated** as the disk rows are: Radix may take no longer
   than Linux (ADR 0107).
 
@@ -85,13 +95,19 @@ before it slept, Radix took ten, and 1.06 times Linux's time for 64 KiB.
 - A change to the optical drive's thread, the ATAPI path of AHCI or the
   disk queue that makes a disc's reads slower than Linux's fails the
   gate.
-- A disc's read on an AHCI port costs what a SATA disk's read costs the
-  kernel: sent where it is asked for, ended in the interrupt, six traps.
-- A thread waiting for an NVMe, AHCI, IDE, SD or USB disk no longer looks
+- A disc's read on an AHCI port is sent where it is asked for, and ends
+  in memory a poller watches or in the interrupt. The drive's look every
+  two seconds waits for the read on the port, and the reads that come
+  during the look wait for it, a few hundred microseconds.
+- A polled read leaves the port's interrupt status as it is; the status
+  is cleared when the interrupt comes back on with a read sent, and one
+  turned on for a read in flight may come once for old status, which
+  the handler finds nothing in.
+- A thread waiting for an NVMe, SATA, IDE, SD or USB disk no longer looks
   at its controller once before it sleeps in a virtual machine; the
-  interrupt it sleeps for brings the same completion. The drive's
-  look every two seconds waits for the read on the port, and the reads
-  that come during the look wait for it, a few hundred microseconds.
+  interrupt it sleeps for brings the same completion. A virtio disk's
+  waiters poll on while its requests keep ending within the limit of
+  each other, and learn from those gaps.
 - Three parties share the port (the reader, the interrupt and the
   drive's thread) under one lock, and the drive's thread lets go of a
   disc's queue only once no interrupt handler holds it, so that its last

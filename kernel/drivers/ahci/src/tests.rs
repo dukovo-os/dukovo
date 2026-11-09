@@ -351,8 +351,18 @@ impl PortRegs {
             self.is |= 1 << 3;
         } else {
             self.is |= 1;
+            self.post_d2h(0x50, 0);
         }
         self.tfd = 0x50;
+    }
+
+    /// Copies the Register FIS that ends a command to the received-frame
+    /// area, as a controller does: its type, the interrupt bit, the
+    /// status and the error.
+    fn post_d2h(&self, status: u8, error: u8) {
+        if self.fb != 0 {
+            fake_memory_write(self.fb + 0x40, &[0x34, 0x40, status, error]);
+        }
     }
 
     /// The disk reports an error: a queued command's aborts all the queued
@@ -363,6 +373,8 @@ impl PortRegs {
             disk.ncq_error = Some(slot);
         }
         self.tfd = u32::from(disk.error) << 8 | 0x51;
+        let error = disk.error;
+        self.post_d2h(0x51, error);
         self.is |= 1 << 30;
         self.cmd = (self.cmd & !(0x1f << 8)) | (slot as u32) << 8;
     }

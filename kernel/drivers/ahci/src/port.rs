@@ -172,6 +172,11 @@ const TABLE_ACMD: usize = 0x40;
 /// The command header's word where the controller counts the bytes moved
 /// (PRDBC).
 const HEADER_PRDBC: usize = 4;
+/// Where the controller copies the last Register FIS the device sent in
+/// the received-frame area (4.2.1), and that frame's type: a packet
+/// command's DMA ends with one, its status register in byte 2.
+const RECEIVED_D2H: usize = RECEIVED_FIS + 0x40;
+const FIS_TYPE_D2H: u8 = 0x34;
 
 /// How long a link reset is held: at least a millisecond (10.4.2).
 pub const COMRESET_US: u32 = 1_000;
@@ -266,9 +271,13 @@ pub struct Port {
     identity: Option<Identity>,
     /// What an optical drive on the port says it is.
     packet: Option<PacketIdentity>,
-    /// The interrupts the port raises, as this last set them: a disc's
-    /// read finds them on and writes only the command issue register.
-    interrupts: u32,
+    /// The interrupts the port raises, as this last set them; `None`
+    /// while unknown. A disc's read finds them as it wants them and
+    /// writes only the command issue register.
+    interrupts: Option<u32>,
+    /// Whether the packet command on the port went with its interrupt
+    /// off, to be polled for in memory ([`Port::packet_over`]).
+    polled: bool,
     info: Info,
     /// Slots in flight.
     busy: u32,
@@ -307,7 +316,8 @@ impl Port {
             cap,
             identity: None,
             packet: None,
-            interrupts: 0,
+            interrupts: None,
+            polled: false,
             info: Info {
                 sectors: 0,
                 sector_size: 512,
@@ -939,7 +949,15 @@ impl Port {
     /// many drives fail DMA of less), else by PIO. Nothing goes to a
     /// drive that is gone ([`TransportError::Gone`]), nor a command longer
     /// than the drive's packets, nor buffers the controller cannot take.
-    pub fn send_packet(&mut self, cdb: &Cdb, data: &Data<'_>) -> Result<(), TransportError> {
+    /// Without `interrupt`, a command that moves its data by DMA goes with
+    /// the port's interrupt off, for its sender to poll for its end in
+    /// memory ([`Port::packet_over`]); any other turns it on.
+    pub fn send_packet(
+        &mut self,
+        cdb: &Cdb,
+        data: &Data<'_>,
+        interrupt: bool,
+    ) -> Result<(), TransportError> {
         let identity = self.packet.ok_or(TransportError::Failed("it is not an optical drive"))?;
         if self.dead {
             return Err(TransportError::Gone);
@@ -984,19 +1002,69 @@ impl Port {
         memory.write(TABLES + TABLE_ACMD, &acmd);
         let header = COMMAND_LIST;
         memory.write32(header, memory.read32(header) | HEADER_ATAPI);
+        // The device's last answer forgotten, so that its next shows.
+        memory.write32(RECEIVED_D2H, 0);
         device_barrier();
+        // A DMA transfer ends with a Register FIS, which can be polled
+        // for; a PIO transfer's last status may come in a PIO Setup FIS.
+        self.polled = !interrupt && dma;
         // Each register written is a trap to the hypervisor in a virtual
-        // machine: a read sent while the interrupt is on, as the last
-        // read left it, writes only the command issue register, as
-        // Linux's libata does (ADR 0434).
-        if self.interrupts != irq::ENABLED {
-            // What the port said while its interrupt was off was looked
-            // at already, or is old.
-            self.regs.write32(reg::IS, u32::MAX);
-            self.set_interrupts(irq::ENABLED);
+        // machine: a read sent as the last read left the interrupt writes
+        // only the command issue register (ADR 0434).
+        let wanted = if self.polled { 0 } else { irq::ENABLED };
+        if self.interrupts != Some(wanted) {
+            if wanted != 0 {
+                // What the port said while its interrupt was off was
+                // looked at already, or is old.
+                self.regs.write32(reg::IS, u32::MAX);
+            }
+            self.set_interrupts(wanted);
         }
         self.regs.write32(reg::CI, 1);
         Ok(())
+    }
+
+    /// Whether the packet command [`Port::send_packet`] started is over,
+    /// as cheaply as can be told: one sent with the interrupt off from
+    /// what the controller wrote to memory, with one register read to see
+    /// that it let go of the command; one sent with the interrupt on from
+    /// the registers ([`Port::packet_ended`]) once its interrupt came
+    /// (`interrupted`), or once memory shows its end. `None` while it
+    /// runs.
+    pub fn packet_over(&mut self, interrupted: bool) -> Option<PacketEnd> {
+        // The frame's type and the device's status, in its first word.
+        let frame = self.mem().read32(RECEIVED_D2H);
+        let answered = frame as u8 == FIS_TYPE_D2H;
+        if self.polled && self.interrupts == Some(0) {
+            if !answered {
+                return None;
+            }
+            if (frame >> 16) as u8 & ata::STATUS_ERR != 0 {
+                // The error and how the port stopped are in the registers.
+                return self.packet_ended();
+            }
+            // The controller may copy the frame before it clears the
+            // command's bit.
+            if self.regs.read32(reg::CI) & 1 != 0 {
+                return None;
+            }
+            device_barrier();
+            return Some(PacketEnd::Done(self.mem().read32(COMMAND_LIST + HEADER_PRDBC)));
+        }
+        if interrupted || (self.polled && answered) {
+            return self.packet_ended();
+        }
+        None
+    }
+
+    /// Turns the port's interrupt on for the packet command sent with it
+    /// off ([`Port::send_packet`]), which a thread is about to sleep for.
+    /// Its status is left as it is, so that an end or an error already
+    /// there raises the interrupt at once.
+    pub fn interrupt_at_end(&mut self) {
+        if self.interrupts != Some(irq::ENABLED) {
+            self.set_interrupts(irq::ENABLED);
+        }
     }
 
     /// Whether the port has an interrupt status set: something it raised
@@ -1017,13 +1085,13 @@ impl Port {
     /// while the port was out of reach: the next packet command turns it
     /// on again.
     pub fn forget_interrupts(&mut self) {
-        self.interrupts = 0;
+        self.interrupts = None;
     }
 
     /// Sets the interrupts the port raises, and remembers them.
     fn set_interrupts(&mut self, mask: u32) {
         self.regs.write32(reg::IE, mask);
-        self.interrupts = mask;
+        self.interrupts = Some(mask);
     }
 
     /// Whether the packet command [`Port::send_packet`] started is over,
@@ -1136,7 +1204,7 @@ impl Port {
         // The interrupt handler may have quieted the port after the last
         // command a thread waited for, behind its back.
         self.forget_interrupts();
-        self.send_packet(cdb, data)?;
+        self.send_packet(cdb, data, true)?;
         let total = data.len() as u32;
         let end = self.wait_packet(timeout_us, wait)?;
         if let (PacketEnd::Done(moved), Data::In(bytes)) = (end, data) {
@@ -1154,7 +1222,7 @@ impl Port {
         let mut bytes = [0u8; SENSE_LENGTH as usize];
         let cdb = Cdb::request_sense(SENSE_LENGTH);
         self.forget_interrupts();
-        let sent = self.send_packet(&cdb, &Data::In(&mut bytes));
+        let sent = self.send_packet(&cdb, &Data::In(&mut bytes), true);
         match sent.and_then(|()| self.wait_packet(SENSE_US, wait)) {
             Ok(PacketEnd::Done(moved)) => {
                 let moved = (moved as usize).min(bytes.len());

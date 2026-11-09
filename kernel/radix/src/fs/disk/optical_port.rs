@@ -12,6 +12,14 @@
 //! turn in the order they came, and a large read's commands follow one
 //! another with no thread woken between them.
 //!
+//! In a virtual machine, where each register access is a trap to the
+//! hypervisor, a thread waiting for its read polls for it a while
+//! ([`Controller::poll`], ADR 0365): reads then go with the port's
+//! interrupt off, and their end shows in the frame the controller copies
+//! to memory ([`Port::packet_over`]), so a read costs two register
+//! accesses, no interrupt and no halt. The interrupt comes back on for
+//! the read on the port before any thread sleeps for it.
+//!
 //! The drive's thread ([`super::optical`]) still does all that takes long
 //! or sleeps. For its own commands (its look every two seconds, the
 //! disc's lock, an eject) it takes the port out once the read on it is
@@ -80,6 +88,9 @@ struct State {
     wanted: bool,
     /// The disc's queue, for the interrupt to hand its reads back to.
     disc: Option<Arc<Disk<DiscReads>, Kmalloc>>,
+    /// The port's interrupt came for the read on it, and the registers
+    /// are to be looked at ([`Port::packet_over`]).
+    signalled: bool,
 }
 
 impl State {
@@ -118,7 +129,8 @@ impl OpticalPort {
     /// the port has no optical drive.
     pub fn new(port: Port, interrupt: bool) -> Option<Arc<OpticalPort, Kmalloc>> {
         let identity = *port.packet_identity()?;
-        let state = State { port: Some(port), read: None, wanted: false, disc: None };
+        let state =
+            State { port: Some(port), read: None, wanted: false, disc: None, signalled: false };
         let shared = OpticalPort {
             state: SpinLock::new(state),
             identity,
@@ -171,7 +183,9 @@ impl OpticalPort {
             match (&mut state.port, &state.disc) {
                 (Some(_), Some(disc)) if running => {
                     self.collecting.fetch_add(1, Ordering::AcqRel);
-                    Some(disc.clone())
+                    let disc = disc.clone();
+                    state.signalled = true;
+                    Some(disc)
                 }
                 (Some(port), _) if state.read.is_none() && !port.status_set() => return,
                 (Some(port), _) => {
@@ -382,6 +396,10 @@ pub struct DiscReads {
     frames: Vec<(u64, u32), Kmalloc>,
     /// Whether one of this disc's reads is on the port.
     on_port: bool,
+    /// Whether reads go with the port's interrupt off, for the threads
+    /// that wait for them to poll for their end in memory
+    /// ([`Controller::poll`]).
+    polling: bool,
     /// Slots of reads the port refused, a bit each: handed back failed.
     refused: u64,
     /// Why the last read in each of the queue's slots failed or went
@@ -419,6 +437,7 @@ impl DiscReads {
             waiting: Ring::new(),
             frames,
             on_port: false,
+            polling: false,
             refused: 0,
             why,
         };
@@ -443,12 +462,13 @@ impl DiscReads {
             let bytes: u32 = frames.iter().map(|&(_, len)| len).sum();
             let data = Data::Frames { into_host: true, frames };
             let sent = match Cdb::read(u64::from(next.block), next.blocks, false) {
-                Some(cdb) => port.send_packet(&cdb, &data),
+                Some(cdb) => port.send_packet(&cdb, &data, !self.polling),
                 None => Err(TransportError::Failed("a read past what a command reaches")),
             };
             match sent {
                 Ok(()) => {
                     state.read = Some(Read { slot: next.slot, bytes, stage: Stage::Running });
+                    state.signalled = false;
                     self.on_port = true;
                     return;
                 }
@@ -474,8 +494,14 @@ impl DiscReads {
         let read = state.read?;
         let (outcome, why) = match read.stage {
             Stage::Running => {
+                let interrupted = core::mem::take(&mut state.signalled);
                 let port = state.port.as_mut()?;
-                match port.packet_ended()? {
+                let end = if self.port.interrupt {
+                    port.packet_over(interrupted)
+                } else {
+                    port.packet_ended()
+                };
+                match end? {
                     PacketEnd::Done(moved) => {
                         let residue = read.bytes - moved.min(read.bytes);
                         let (outcome, why, _) = judge(Ok(Reply::Good { residue }));
@@ -504,6 +530,33 @@ impl DiscReads {
 }
 
 impl Controller for DiscReads {
+    const POLLED: bool = true;
+
+    fn poll(&mut self, polled: bool) -> bool {
+        // Without an interrupt, the queue polls anyway.
+        if !self.port.interrupt {
+            return false;
+        }
+        if polled {
+            // The reads sent from now on go with the interrupt off.
+            self.polling = true;
+            return true;
+        }
+        // No thread polls. While no read is out, the interrupt stays off
+        // for the next to poll; one out is slept for, so reads go with the
+        // interrupt on again, and the one on the port turns it on.
+        if !self.on_port && self.waiting.count == 0 {
+            return true;
+        }
+        self.polling = false;
+        let mut state = self.port.state.lock_irq();
+        let running = state.read.is_some_and(|read| read.stage == Stage::Running);
+        if running && let Some(port) = state.port.as_mut() {
+            port.interrupt_at_end();
+        }
+        true
+    }
+
     fn room(&self, _op: Op, _segments: usize) -> bool {
         // A gone disc takes every read, to fail it.
         self.gone.get().is_some() || !self.waiting.full()
