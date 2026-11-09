@@ -223,6 +223,7 @@ logging kernel/lib/klog/ userspace/defaults/log/ userspace/posix/logtest.c
 logging userspace/programs/systools/src/dmesg.rs userspace/programs/systools/src/log.rs
 logging userspace/programs/systools/src/logd.rs userspace/programs/systools/src/logger.rs
 logging userspace/programs/systools/src/logtrim.rs userspace/programs/systools/src/notifyd.rs
+ls-views ports/uutils-coreutils/
 machine-check kernel/lib/mca/
 machine-check-program kernel/lib/mca/ userspace/posix/memfail.c
 microcode kernel/lib/microcode/

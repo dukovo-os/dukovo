@@ -255,7 +255,7 @@ and *#*, while the shell is root's; at the right of the line, how long
 the last command took when it took three seconds or more, the jobs, and
 the folder's git branch. An interactive shell also gives
 *ls*, *grep*, *diff* and *ip* colours on a terminal, through aliases
-and *LS_COLORS*, *GREP_COLORS* and *IP_COLORS*.
+and *LS_COLORS*, *LS_FIELD_COLORS*, *GREP_COLORS* and *IP_COLORS*.
 
 *colors.toml*(5) has every colour and switch: the system's file, then
 one's own, _~/.config/nukesh/colors.toml_. Only the terminal's 16

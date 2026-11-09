@@ -31,6 +31,34 @@ root's lists the links with Unix's names, such as _/dev_ and _/etc_
 (*radix-files*(7)), so that *ls /* shows the folders by their plain
 names.
 
+Dukovo's *ls* also takes these options, none of which changes its output
+unless it is given (ADR 0440):
+
+*--header*
+	With *-l*, a line of column titles over the listing.
+
+*--octal*
+	With *-l*, each mode as four octal digits, as *0755*, before its
+	letters.
+
+*--field-colors*[=_when_]
+	With *-l*, the permission letters, sizes and times in colours that
+	say what they are: *r* yellow, *w* red, *x* green; small sizes faint
+	and big ones yellow or red; times of the last day bold and of over
+	a week ago faint. _when_ is *always*, *never*, or *auto*, the
+	default: when the names are coloured and standard output is a
+	terminal, so that *--color=always* into a pipe is as GNU's. The
+	colours come from *LS_FIELD_COLORS*, as *read=33:write=31*, with the
+	keys *read*, *write*, *run*, *special*, *none*, *directory*, *link*,
+	*device*, *octal*, *small*, *big*, *huge*, *today*, *old* and
+	*header*; set empty, it turns them off. Nukesh makes it from
+	*colors.toml*(5).
+
+*--icons*[=_when_]
+	A Nerd Font icon before each name, by its type, name or ending.
+	_when_ is *always*, *auto* (on a terminal, and what *--icons* alone
+	means) or *never*, the default. The terminal must use a Nerd Font.
+
 # OPTIONS
 
 *--list*
@@ -52,7 +80,8 @@ _/system/commands/coreutils_, and a link by each utility's name.
 
 # SEE ALSO
 
-*systools*(1), for the administration tools, and *radix-posix*(7).
+*systools*(1), for the administration tools, *colors.toml*(5), and
+*radix-posix*(7).
 
 uutils coreutils, by the uutils contributors, under the MIT licence:
 https://github.com/uutils/coreutils
