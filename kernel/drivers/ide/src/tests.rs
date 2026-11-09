@@ -11,7 +11,7 @@ use std::vec::Vec;
 
 use radix_hw::{Dma, IoPorts, fake_memory, fake_memory_write};
 
-use super::{Channel, Device, Error, Op};
+use super::{Channel, Device, Error, Op, Transfer};
 
 thread_local! {
     /// The high half of the test's memory's host addresses: the PRDs hold
@@ -49,8 +49,12 @@ fn low(dma: &Dma) -> u32 {
 
 #[derive(Clone)]
 struct SimDisk {
+    /// A disk's 512-byte sectors, or an optical drive's disc of 2048-byte
+    /// blocks.
     sectors: Vec<u8>,
     atapi: bool,
+    /// An optical drive that does DMA.
+    dma: bool,
     /// It says it is Serial ATA, behind a SATA controller in IDE mode.
     serial: bool,
     /// Commands it fails, as a bad sector does.
@@ -63,6 +67,7 @@ impl SimDisk {
         SimDisk {
             sectors: vec![0; sectors * 512],
             atapi: false,
+            dma: false,
             serial: false,
             fails: false,
             flushes: 0,
@@ -73,6 +78,33 @@ impl SimDisk {
         SimDisk { atapi: true, ..SimDisk::new(0) }
     }
 
+    /// An optical drive that does DMA, holding a disc of `blocks` blocks
+    /// of 2048 bytes, each filled with its number's low byte.
+    fn drive(blocks: usize) -> SimDisk {
+        let mut sectors = vec![0; blocks * 2048];
+        for (block, bytes) in sectors.chunks_mut(2048).enumerate() {
+            bytes.fill(block as u8);
+        }
+        SimDisk { sectors, atapi: true, dma: true, ..SimDisk::new(0) }
+    }
+
+    /// IDENTIFY PACKET DEVICE: a removable CD/DVD device of 12-byte
+    /// packets.
+    fn identify_packet(&self) -> [u16; 256] {
+        let mut id = [0u16; 256];
+        id[0] = 0b10 << 14 | 5 << 8 | 1 << 7;
+        if self.dma {
+            id[49] = 1 << 8;
+        }
+        let model = b"QEMU DVD-ROM                            ";
+        for (i, pair) in model.chunks(2).enumerate() {
+            id[27 + i] = u16::from_be_bytes([pair[0], pair[1]]);
+        }
+        for (i, pair) in b"2.5+    ".chunks(2).enumerate() {
+            id[23 + i] = u16::from_be_bytes([pair[0], pair[1]]);
+        }
+        id
+    }
     fn identify(&self) -> [u16; 256] {
         let mut id = [0u16; 256];
         let count = (self.sectors.len() / 512) as u64;
@@ -132,12 +164,34 @@ struct State {
     prds: Vec<Vec<(u32, u32)>>,
     /// The LBAs and counts of the commands.
     commands: Vec<(u8, u64, u32)>,
+    /// The features register.
+    features: u8,
+    /// While a packet command waits for its packet, the bytes of it so
+    /// far.
+    packet: Option<Vec<u8>>,
+    /// The packets taken, and whether each was to go by DMA.
+    packets: Vec<(Vec<u8>, bool)>,
+    /// A packet command's byte count limit, and the most the device
+    /// sends in one phase.
+    limit: u32,
+    chunk: u32,
+    /// What is left of a packet command's answer by PIO.
+    pio: Option<VecDeque<u8>>,
+    /// A packet command's answer waiting for the bus master.
+    dma: Option<Vec<u8>>,
+    /// The sense of the last packet command that failed.
+    sense: (u8, u8),
+    /// The device asks for data in a phase of no bytes.
+    zero_phase: bool,
 }
 
 const READY: u8 = 1 << 6;
 const BSY: u8 = 1 << 7;
 const DRQ: u8 = 1 << 3;
 const ERR: u8 = 1 << 0;
+/// The interrupt reason: command or data, and towards the host.
+const COD: u8 = 1 << 0;
+const IO: u8 = 1 << 1;
 
 impl State {
     fn status(&self) -> u8 {
@@ -180,6 +234,16 @@ impl State {
                 self.disks[self.selected].as_mut().unwrap().flushes += 1;
                 self.status = READY;
             }
+            0xa1 if disk.atapi => {
+                self.data = disk.identify_packet().into_iter().collect();
+                self.status = READY | DRQ;
+            }
+            0xa0 if disk.atapi => {
+                self.packet = Some(Vec::new());
+                self.limit = u32::from(self.lba[1].now) | u32::from(self.lba[2].now) << 8;
+                self.count.now = COD;
+                self.status = READY | DRQ;
+            }
             _ => {
                 self.status = READY | ERR;
                 self.error = 1 << 2;
@@ -187,24 +251,107 @@ impl State {
         }
     }
 
+    /// The packet `cdb` has come: runs it.
+    fn run_packet(&mut self, cdb: &[u8]) {
+        let dma = self.features & 1 != 0;
+        self.packets.push((cdb.to_vec(), dma));
+        let disk = self.disks[self.selected].clone().unwrap();
+        let answer = match cdb[0] {
+            // TEST UNIT READY.
+            0x00 => Vec::new(),
+            // REQUEST SENSE: fixed format.
+            0x03 => {
+                let mut sense = vec![0u8; 18];
+                sense[0] = 0x70;
+                sense[2] = self.sense.0;
+                sense[7] = 10;
+                sense[12] = self.sense.1;
+                sense.truncate(usize::from(cdb[4]));
+                sense
+            }
+            // INQUIRY.
+            0x12 => {
+                let mut inquiry = vec![5u8, 0x80, 5, 2, 31, 0, 0, 0];
+                inquiry.extend_from_slice(b"QEMU    QEMU DVD-ROM    2.5+");
+                inquiry.truncate(usize::from(cdb[4]));
+                inquiry
+            }
+            // READ(10).
+            0x28 => {
+                let lba = u32::from_be_bytes(cdb[2..6].try_into().unwrap()) as usize;
+                let count = usize::from(u16::from_be_bytes([cdb[7], cdb[8]]));
+                let (start, end) = (lba * 2048, (lba + count) * 2048);
+                if end > disk.sectors.len() {
+                    // LOGICAL BLOCK ADDRESS OUT OF RANGE.
+                    return self.fail(5, 0x21);
+                }
+                disk.sectors[start..end].to_vec()
+            }
+            // INVALID COMMAND OPERATION CODE.
+            _ => return self.fail(5, 0x20),
+        };
+        if answer.is_empty() {
+            self.done();
+        } else if dma {
+            self.dma = Some(answer);
+            self.status = READY | BSY;
+        } else {
+            self.pio = Some(answer.into_iter().collect());
+            self.next_phase();
+        }
+    }
+
+    /// A packet command that ended well.
+    fn done(&mut self) {
+        self.pio = None;
+        self.status = READY;
+        self.count.now = COD | IO;
+    }
+
+    /// A packet command that failed with the sense key `key` and code
+    /// `asc`: CHK, and the key in the error register's upper bits, with
+    /// ABRT.
+    fn fail(&mut self, key: u8, asc: u8) {
+        self.sense = (key, asc);
+        self.pio = None;
+        self.status = READY | ERR;
+        self.error = key << 4 | 1 << 2;
+        self.count.now = COD | IO;
+    }
+
+    /// The next PIO data phase of a packet command's answer, or its end.
+    fn next_phase(&mut self) {
+        let Some(left) = self.pio.as_mut() else { return };
+        if left.is_empty() {
+            return self.done();
+        }
+        let most = if self.chunk == 0 { self.limit } else { self.limit.min(self.chunk) };
+        let size = (left.len() as u32).min(most & !1).max(1);
+        let bytes: Vec<u8> = left.drain(..size as usize).collect();
+        self.data =
+            bytes.chunks(2).map(|p| u16::from_le_bytes([p[0], *p.get(1).unwrap_or(&0)])).collect();
+        let size = if self.zero_phase { 0 } else { size };
+        self.lba[1].now = size as u8;
+        self.lba[2].now = (size >> 8) as u8;
+        self.count.now = IO;
+        self.status = READY | DRQ;
+    }
+
     /// Runs the pending transfer through the PRD table.
     fn transfer(&mut self) {
-        let Some((read, lba, count)) = self.pending.take() else { return };
-        let mut prds = Vec::new();
-        let mut at = self.prd;
-        loop {
-            let mut entry = [0u8; 8];
-            fake_memory(full(at), &mut entry);
-            let address = u32::from_le_bytes(entry[0..4].try_into().unwrap());
-            let flags = u32::from_le_bytes(entry[4..8].try_into().unwrap());
-            let size = if flags & 0xffff == 0 { 0x1_0000 } else { flags & 0xffff };
-            prds.push((address, size));
-            if flags & 1 << 31 != 0 {
-                break;
+        if let Some(answer) = self.dma.take() {
+            let prds = self.read_prds();
+            let mut offset = 0;
+            for (address, size) in prds {
+                let end = (offset + size as usize).min(answer.len());
+                fake_memory_write(full(address), &answer[offset..end]);
+                offset = end;
             }
-            at += 8;
+            self.bm_status &= !1;
+            return self.done();
         }
-        self.prds.push(prds.clone());
+        let Some((read, lba, count)) = self.pending.take() else { return };
+        let prds = self.read_prds();
         let disk = self.disks[self.selected].as_mut().unwrap();
         let start = lba as usize * 512;
         let end = start + count as usize * 512;
@@ -225,6 +372,26 @@ impl State {
             self.status = READY;
         }
         self.bm_status &= !1;
+    }
+
+    /// The PRD table's entries, recorded.
+    fn read_prds(&mut self) -> Vec<(u32, u32)> {
+        let mut prds = Vec::new();
+        let mut at = self.prd;
+        loop {
+            let mut entry = [0u8; 8];
+            fake_memory(full(at), &mut entry);
+            let address = u32::from_le_bytes(entry[0..4].try_into().unwrap());
+            let flags = u32::from_le_bytes(entry[4..8].try_into().unwrap());
+            let size = if flags & 0xffff == 0 { 0x1_0000 } else { flags & 0xffff };
+            prds.push((address, size));
+            if flags & 1 << 31 != 0 {
+                break;
+            }
+            at += 8;
+        }
+        self.prds.push(prds.clone());
+        prds
     }
 }
 
@@ -262,6 +429,7 @@ impl IoPorts for Port {
     fn write8(&self, offset: u16, value: u8) {
         let mut s = self.sim.lock().unwrap();
         match (self.block, offset) {
+            (Block::Command, 1) => s.features = value,
             (Block::Command, 2) => s.count.write(value),
             (Block::Command, o @ 3..=5) => s.lba[usize::from(o - 3)].write(value),
             (Block::Command, 6) => s.selected = usize::from(value >> 4 & 1),
@@ -306,11 +474,24 @@ impl IoPorts for Port {
         let word = s.data.pop_front().unwrap_or(0);
         if s.data.is_empty() {
             s.status &= !DRQ;
+            s.next_phase();
         }
         word
     }
 
-    fn write16(&self, _offset: u16, _value: u16) {}
+    fn write16(&self, offset: u16, value: u16) {
+        let mut s = self.sim.lock().unwrap();
+        if self.block != Block::Command || offset != 0 {
+            return;
+        }
+        let Some(packet) = s.packet.as_mut() else { return };
+        packet.extend_from_slice(&value.to_le_bytes());
+        if packet.len() == 12 {
+            let cdb = s.packet.take().unwrap();
+            s.status = READY | BSY;
+            s.run_packet(&cdb);
+        }
+    }
 
     fn read32(&self, offset: u16) -> u32 {
         let s = self.sim.lock().unwrap();
@@ -356,8 +537,164 @@ fn finds_a_disk_and_leaves_an_optical_drive() {
     assert_eq!(id.sectors, 2048);
     assert_eq!(radix_ahci::ata::trimmed(&id.model), "QEMU HARDDISK");
     assert!(id.write_cache && id.flush);
-    assert_eq!(rig.channel.identify(1, &mut delay), Device::Atapi);
+    let Device::Atapi(drive) = rig.channel.identify(1, &mut delay) else {
+        panic!("no optical drive")
+    };
+    assert_eq!(radix_ahci::ata::trimmed(&drive.model), "QEMU DVD-ROM");
+    assert_eq!((drive.device_type, drive.packet_length, drive.dma), (5, 12, false));
+    assert!(drive.removable);
     assert_eq!(rig.sim.lock().unwrap().control & 2, 2, "its interrupt is off");
+}
+
+#[test]
+fn an_optical_drive_as_master_shows_its_signature() {
+    let mut rig = rig([Some(SimDisk::drive(4)), None]);
+    assert!(rig.channel.reset(&mut delay));
+    let Device::Atapi(drive) = rig.channel.identify(0, &mut delay) else {
+        panic!("no optical drive")
+    };
+    assert!(drive.dma);
+    // Asked IDENTIFY PACKET DEVICE at once, from its signature.
+    assert!(rig.sim.lock().unwrap().packets.is_empty());
+}
+
+/// Runs the packet command `cdb` on `drive`, moving `transfer`, to its
+/// end.
+fn packet(rig: &mut Rig, drive: u8, cdb: &[u8], mut transfer: Transfer<'_>) -> Result<u32, Error> {
+    rig.channel.start_packet(drive, cdb, &transfer, false)?;
+    for _ in 0..1000 {
+        if let Some(done) = rig.channel.poll_packet(&mut transfer) {
+            return done;
+        }
+    }
+    panic!("the packet command never ended")
+}
+
+const INQUIRY: [u8; 6] = [0x12, 0, 0, 0, 36, 0];
+
+fn read10(lba: u32, blocks: u16) -> [u8; 10] {
+    let [a, b, c, d] = lba.to_be_bytes();
+    let [e, f] = blocks.to_be_bytes();
+    [0x28, 0, a, b, c, d, 0, e, f, 0]
+}
+
+#[test]
+fn a_packet_command_answers_by_pio() {
+    let mut rig = rig([Some(SimDisk::new(64)), Some(SimDisk::drive(4))]);
+    let mut answer = [0u8; 36];
+    assert_eq!(packet(&mut rig, 1, &INQUIRY, Transfer::In(&mut answer)), Ok(36));
+    assert_eq!(answer[0], 5, "a CD/DVD device");
+    assert_eq!(&answer[16..28], b"QEMU DVD-ROM");
+    let s = rig.sim.lock().unwrap();
+    // Six bytes of command, padded to the twelve of its packet.
+    assert_eq!(s.packets, [(vec![0x12, 0, 0, 0, 36, 0, 0, 0, 0, 0, 0, 0], false)]);
+    assert_eq!(s.limit, 36, "the byte count limit is what the buffer holds");
+    assert_eq!(s.selected, 1);
+}
+
+#[test]
+fn pio_comes_in_phases_of_what_the_device_says() {
+    let mut rig = rig([None, Some(SimDisk::drive(4))]);
+    rig.sim.lock().unwrap().chunk = 1000;
+    let mut blocks = vec![0u8; 2 * 2048];
+    assert_eq!(packet(&mut rig, 1, &read10(1, 2), Transfer::In(&mut blocks)), Ok(4096));
+    assert!(blocks[..2048].iter().all(|&b| b == 1) && blocks[2048..].iter().all(|&b| b == 2));
+}
+
+#[test]
+fn more_than_the_buffer_holds_is_dropped() {
+    let mut rig = rig([None, Some(SimDisk::drive(4))]);
+    let mut first = [0u8; 100];
+    assert_eq!(packet(&mut rig, 1, &read10(3, 1), Transfer::In(&mut first)), Ok(100));
+    assert!(first.iter().all(|&b| b == 3));
+    // The channel is free for the next.
+    let mut answer = [0u8; 36];
+    assert_eq!(packet(&mut rig, 1, &INQUIRY, Transfer::In(&mut answer)), Ok(36));
+}
+
+#[test]
+fn a_read_goes_by_dma() {
+    let mut rig = rig([Some(SimDisk::new(64)), Some(SimDisk::drive(8))]);
+    let buffer = alloc(2, true).unwrap();
+    let buffers = [(low(&buffer), 4096), (low(&buffer) + 4096, 2048)];
+    let read =
+        packet(&mut rig, 1, &read10(4, 3), Transfer::Dma { into_host: true, buffers: &buffers });
+    assert_eq!(read, Ok(6144));
+    let mut bytes = vec![0u8; 6144];
+    buffer.read(0, &mut bytes);
+    for (block, data) in bytes.chunks(2048).enumerate() {
+        assert!(data.iter().all(|&b| b == 4 + block as u8), "block {block}");
+    }
+    let s = rig.sim.lock().unwrap();
+    assert!(s.packets.last().unwrap().1, "by DMA");
+    assert_eq!(s.prds.last().unwrap(), &buffers);
+    assert_eq!(s.bm_command & 1, 0, "the bus master is stopped");
+}
+
+#[test]
+fn a_failed_packet_command_gives_its_sense_key_and_sense() {
+    let mut rig = rig([None, Some(SimDisk::drive(4))]);
+    let mut nothing = [0u8; 8];
+    let failed = packet(&mut rig, 1, &[0xff, 0, 0, 0, 0, 0], Transfer::In(&mut nothing));
+    assert_eq!(failed, Err(Error::Device { status: READY | ERR, error: 5 << 4 | 1 << 2 }));
+    let mut sense = [0u8; 18];
+    assert_eq!(packet(&mut rig, 1, &[0x03, 0, 0, 0, 18, 0], Transfer::In(&mut sense)), Ok(18));
+    assert_eq!((sense[2], sense[12]), (5, 0x20), "ILLEGAL REQUEST, INVALID COMMAND OPERATION CODE");
+    // Past the disc's end.
+    let failed = packet(&mut rig, 1, &read10(4, 1), Transfer::None);
+    assert!(matches!(failed, Err(Error::Device { .. })));
+}
+
+#[test]
+fn a_command_without_data_ends_at_once() {
+    let mut rig = rig([None, Some(SimDisk::drive(4))]);
+    assert_eq!(packet(&mut rig, 1, &[0; 6], Transfer::None), Ok(0));
+}
+
+#[test]
+fn a_disk_and_a_drive_share_the_channel_one_command_at_a_time() {
+    let mut rig = rig([Some(SimDisk::new(64)), Some(SimDisk::drive(4))]);
+    let buffer = alloc(1, true).unwrap();
+    rig.sim.lock().unwrap().hold = true;
+    rig.channel.start(0, Op::Read, 0, 1, &[(low(&buffer), 512)]).unwrap();
+    let mut answer = [0u8; 36];
+    let transfer = Transfer::In(&mut answer);
+    assert_eq!(rig.channel.start_packet(1, &INQUIRY, &transfer, false), Err(Error::Busy));
+    assert!(!rig.channel.packet_in_flight());
+    {
+        let mut s = rig.sim.lock().unwrap();
+        s.hold = false;
+        s.transfer();
+    }
+    assert_eq!(rig.channel.poll(), Some(Ok(())));
+    rig.channel.start_packet(1, &INQUIRY, &transfer, false).unwrap();
+    assert!(rig.channel.packet_in_flight());
+    assert_eq!(rig.channel.start(0, Op::Read, 0, 1, &[(low(&buffer), 512)]), Err(Error::Busy));
+    assert_eq!(rig.channel.poll(), None, "a disk's poll leaves a packet command alone");
+}
+
+#[test]
+fn a_device_that_breaks_the_protocol_ends_its_command() {
+    let mut rig = rig([None, Some(SimDisk::drive(4))]);
+    rig.sim.lock().unwrap().zero_phase = true;
+    let mut blocks = vec![0u8; 2048];
+    let failed = packet(&mut rig, 1, &read10(0, 1), Transfer::In(&mut blocks));
+    assert_eq!(failed, Err(Error::Protocol));
+    assert!(!rig.channel.busy());
+}
+
+#[test]
+fn bad_packets_are_refused() {
+    let mut rig = rig([None, Some(SimDisk::drive(4))]);
+    assert_eq!(
+        rig.channel.start_packet(2, &INQUIRY, &Transfer::None, false),
+        Err(Error::BadRequest)
+    );
+    assert_eq!(rig.channel.start_packet(1, &[], &Transfer::None, false), Err(Error::BadRequest));
+    assert_eq!(
+        rig.channel.start_packet(1, &[0; 17], &Transfer::None, false),
+        Err(Error::BadRequest)
+    );
 }
 
 #[test]

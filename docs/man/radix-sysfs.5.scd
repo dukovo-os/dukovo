@@ -68,6 +68,14 @@ _/kernel/block/_*name*_/disc_
 	the drive's _size_ is *0*. Radix's own: Linux's udev has it as
 	_ID_CDROM_MEDIA_ and its kin.
 
+_/kernel/block/_*name*_/eject_requests_
+	For a CD, DVD or Blu-ray drive (ADR 0432): how many times its eject
+	button was pressed while its disc was locked in, as the drive says
+	in its media events. The drive keeps a mounted disc in when its
+	button is pressed; *volumed*(8) unmounts the disc and ejects it when
+	the count moves. Radix's own: Linux tells udev of a press as
+	_DISK_EJECT_REQUEST_.
+
 _/kernel/block/_*name*_/partition_, _start_
 	For a partition: its number in its disk's table, the one its name
 	ends in, and its first sector on the disk, in 512-byte sectors. A

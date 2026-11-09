@@ -615,6 +615,11 @@ enum Bus {
     /// case's own (QEMU's `ide-cd`), after its SATA disks' ports: `cd0`
     /// and on, in order, before the USB ones (ADR 0431).
     SataCd,
+    /// A disc in an optical drive at the next end of the IDE controller
+    /// of the case's own (QEMU's `ide-cd` on `piix3-ide`), counted with
+    /// the [`Bus::Ide`] disks' ends: named `cd` and a number after the
+    /// AHCI ones, before the USB ones (ADR 0432).
+    IdeCd,
     /// A disc in a USB optical drive over Bulk-Only (QEMU's `usb-bot`
     /// with a `scsi-cd`) at this QEMU port, as [`Bus::Usb`]: named `cd`
     /// and a number after the SATA ones, in the order the controller
@@ -674,7 +679,7 @@ impl Disk {
 
     /// Whether it is a disc in an optical drive.
     fn optical(&self) -> bool {
-        matches!(self.bus, Bus::SataCd | Bus::UsbCd(_) | Bus::UasCd(..))
+        matches!(self.bus, Bus::SataCd | Bus::IdeCd | Bus::UsbCd(_) | Bus::UasCd(..))
     }
 
     /// Whether the kernel takes it for solid state: an NVMe disk, or a
@@ -743,7 +748,8 @@ pub struct DiskImage {
 /// virtio ones, `sda`, `sdb` and on for SATA ones, then USB ones after
 /// the boot stick's, each in their order, `nvme<n>n1` and on for each
 /// NVMe controller's namespaces, `mmcblk0` and on for SD cards, and
-/// `cd0` and on for discs, the SATA drives' before the USB ones'.
+/// `cd0` and on for discs, the SATA drives', then the IDE ones', before
+/// the USB ones'.
 fn disk_names(disks: &[Disk]) -> Vec<String> {
     let sata_disks =
         disks.iter().filter(|disk| matches!(disk.bus, Bus::Sata | Bus::Ide)).count() as u8;
@@ -751,13 +757,16 @@ fn disk_names(disks: &[Disk]) -> Vec<String> {
     let mut namespaces = [0u32; 256];
     let mut cards = 0..;
     let sata_drives = disks.iter().filter(|disk| disk.bus == Bus::SataCd).count();
-    let (mut sata_cd, mut usb_cd) = (0.., sata_drives..);
+    let ide_drives = disks.iter().filter(|disk| disk.bus == Bus::IdeCd).count();
+    let (mut sata_cd, mut ide_cd) = (0.., sata_drives..);
+    let mut usb_cd = sata_drives + ide_drives..;
     disks
         .iter()
         .map(|disk| {
             let (prefix, letter) = match disk.bus {
                 Bus::Sd => return format!("mmcblk{}", cards.next().unwrap_or_default()),
                 Bus::SataCd => return format!("cd{}", sata_cd.next().unwrap_or_default()),
+                Bus::IdeCd => return format!("cd{}", ide_cd.next().unwrap_or_default()),
                 Bus::UsbCd(_) | Bus::UasCd(..) => {
                     return format!("cd{}", usb_cd.next().unwrap_or_default());
                 }
@@ -3635,7 +3644,7 @@ fn run_case(
     if case.disks.iter().any(|disk| matches!(disk.bus, Bus::Sata | Bus::SataCd)) {
         extra.extend(["-device".into(), "ich9-ahci,id=sata".into()]);
     }
-    if case.disks.iter().any(|disk| disk.bus == Bus::Ide) {
+    if case.disks.iter().any(|disk| matches!(disk.bus, Bus::Ide | Bus::IdeCd)) {
         extra.extend(["-device".into(), "piix3-ide,id=pata".into()]);
     }
     // A reader for each card, before them; each card names its reader's
@@ -3693,10 +3702,11 @@ fn run_case(
             Bus::UasCd(port, lun) => {
                 format!("scsi-cd,drive=disk{i},bus=uas{port}.0,scsi-id=0,lun={lun}{device}")
             }
-            Bus::Ide => {
+            Bus::Ide | Bus::IdeCd => {
                 end += 1;
                 let (channel, unit) = ((end - 1) / 2, (end - 1) % 2);
-                format!("ide-hd,drive=disk{i},bus=pata.{channel},unit={unit}{device}")
+                let kind = if disk.bus == Bus::IdeCd { "ide-cd" } else { "ide-hd" };
+                format!("{kind},drive=disk{i},bus=pata.{channel},unit={unit}{device}")
             }
             Bus::Nvme(n) => {
                 namespaces[usize::from(n)] += 1;
@@ -7242,6 +7252,17 @@ fn disks_found(vm: &mut Vm, case: &Case) -> Result<(), String> {
                     format!(", {unit}: QEMU HARDDISK, 512 bytes a block, write cache"),
                 )
             }
+            Bus::IdeCd => {
+                end += 1;
+                let channel = if end <= 2 { "primary" } else { "secondary" };
+                let unit = if end % 2 == 1 { "master" } else { "slave" };
+                (
+                    line_of(&format!(
+                        "Disk: {name} is a DVD drive on the IDE {channel} channel at "
+                    ))?,
+                    format!(", {unit}: QEMU DVD-ROM "),
+                )
+            }
             Bus::Nvme(_) => (
                 line_of(&format!("Disk: {name} is an NVMe namespace of {size}: QEMU NVMe Ctrl, "))?,
                 format!("{} bytes a block{sectors}{ro}, write cache, deallocates", disk.sector),
@@ -7336,8 +7357,9 @@ fn disks_found(vm: &mut Vm, case: &Case) -> Result<(), String> {
     if on(Bus::Sd) > 0 {
         ide += &format!(", {}", plural(on(Bus::Sd), "SD card"));
     }
-    if on(Bus::SataCd) > 0 {
-        ide += &format!(", {}", plural(on(Bus::SataCd), "optical drive"));
+    let drives = on(Bus::SataCd) + on(Bus::IdeCd);
+    if drives > 0 {
+        ide += &format!(", {}", plural(drives, "optical drive"));
     }
     line_of(&format!(
         "; {}, {}, {}{ide}",
@@ -7466,7 +7488,7 @@ fn storage_write(vm: &mut Vm, case: &Case) -> Result<(), String> {
             Bus::Nvme(_) => "QEMU NVMe Ctrl",
             Bus::Usb(_) | Bus::Uas(..) => "QEMU QEMU HARDDISK",
             Bus::Sd => "QEMU!",
-            Bus::SataCd => "QEMU DVD-ROM",
+            Bus::SataCd | Bus::IdeCd => "QEMU DVD-ROM",
             Bus::UsbCd(_) | Bus::UasCd(..) => "QEMU QEMU CD-ROM",
             Bus::Virtio => "",
         };

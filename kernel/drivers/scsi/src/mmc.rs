@@ -13,7 +13,8 @@
 //! - [`DiscInformation`]: whether a recordable disc is blank, and how many
 //!   sessions it has (READ DISC INFORMATION).
 //! - [`MediaEvent`]: what the drive says happened to its disc or tray, of
-//!   which the eject button's request (GET EVENT STATUS NOTIFICATION).
+//!   which the eject button's request (GET EVENT STATUS NOTIFICATION);
+//!   [`events`] asks for them.
 //! - [`disc`]: what the disc in a drive is, as Linux's `sr` and `cdrom`
 //!   find out when one is put in: [`Disc`]; [`drive`], what the drive
 //!   reads.
@@ -24,8 +25,11 @@
 
 use core::fmt;
 
-use crate::probe::{Asked, ask, ready};
-use crate::{Absent, CAPACITY_10_LENGTH, Capacity, Cdb, Sense, Transport, op};
+use crate::probe::{Asked, TIMEOUT_MS, ask, ready};
+use crate::{
+    Absent, CAPACITY_10_LENGTH, Capacity, Cdb, Data, Reply, Sense, Transport, TransportError, key,
+    op,
+};
 
 /// The length of a block of a disc's data, in bytes.
 pub const BLOCK: u32 = 2048;
@@ -440,6 +444,67 @@ impl MediaStatus {
         let status = *bytes.get(5)?;
         Some(MediaStatus { event, present: status & 2 != 0, open: status & 1 != 0 })
     }
+}
+
+/// What an optical drive's media events said since it was last asked
+/// ([`events`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Events {
+    /// Someone pressed its eject button while its disc was locked in: the
+    /// drive asks for the disc to be let go, and keeps it in until then.
+    pub eject_request: bool,
+    /// It answered a UNIT ATTENTION that its disc may have changed, as it
+    /// would have answered the look's TEST UNIT READY
+    /// ([`Sense::medium_changed`]).
+    pub changed: bool,
+}
+
+/// How many times [`events`] asks at most: a drive keeps an event of each
+/// kind, and says the next at the next ask.
+const EVENT_TRIES: u32 = 4;
+
+/// Asks the drive at logical unit `lun` behind `transport` what happened
+/// to its disc since it was last asked, as Linux's `sr` does before its
+/// TEST UNIT READY: GET EVENT STATUS NOTIFICATION of the media class,
+/// polled, until the drive has nothing more to say, up to
+/// [`EVENT_TRIES`] times. `None` for a drive that does not take the
+/// command, or has no media events (an old drive), which need not be
+/// asked again. A disc put in or taken out is left to the look's TEST
+/// UNIT READY, which says it too; MMC has the command pass a UNIT
+/// ATTENTION by, and one a drive answers all the same is kept in
+/// [`Events::changed`] for the look.
+pub fn events<T: Transport + ?Sized>(
+    transport: &mut T,
+    lun: u8,
+) -> Result<Option<Events>, TransportError> {
+    let mut found = Events::default();
+    let mut bytes = [0u8; EVENT_LENGTH as usize];
+    let cdb = Cdb::get_event_status_media(EVENT_LENGTH);
+    for _ in 0..EVENT_TRIES {
+        bytes.fill(0);
+        let status = match transport.command(lun, &cdb, Data::In(&mut bytes), TIMEOUT_MS) {
+            Ok(Reply::Good { residue }) => {
+                let came = bytes.len().saturating_sub(residue as usize);
+                MediaStatus::parse(&bytes[..came])
+            }
+            Ok(Reply::Failed(Some(sense))) if sense.key == key::ILLEGAL_REQUEST => return Ok(None),
+            Ok(Reply::Failed(Some(sense))) if sense.key == key::UNIT_ATTENTION => {
+                found.changed |= sense.medium_changed();
+                continue;
+            }
+            // Busy, or another trouble: asked again at the next look.
+            Ok(Reply::Failed(_)) | Err(TransportError::Failed(_)) => break,
+            Err(TransportError::Gone) => return Err(TransportError::Gone),
+        };
+        // No media class: the drive has no media events to give.
+        let Some(status) = status else { return Ok(None) };
+        match status.event {
+            MediaEvent::Nothing => break,
+            MediaEvent::EjectRequest => found.eject_request = true,
+            _ => {}
+        }
+    }
+    Ok(Some(found))
 }
 
 /// The disc in a drive, as [`disc`] found it.

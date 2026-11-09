@@ -57,8 +57,9 @@ fn is_drive(name: &str) -> bool {
     probe::block_text(name, "removable").as_deref() == Some("1")
 }
 
-/// Ejects the medium of the drive `disk`.
-fn eject(disk: &str) -> Result<(), String> {
+/// Ejects the medium of the drive `disk`, as volumed(8) does too when an
+/// optical drive's eject button is pressed.
+pub fn eject(disk: &str) -> Result<(), String> {
     let device = File::open(format!("/devices/{disk}")).map_err(|e| util::strip_os_error(&e))?;
     match blockdev::control(&device, block::EJECT, &mut []) {
         Ok(()) => Ok(()),

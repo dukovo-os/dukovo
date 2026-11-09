@@ -10,11 +10,13 @@
 //! each disc whole and read-only, and Spark mounts each at the drive's
 //! name in `/volumes`, where a file reads as the host made it. lsblk says
 //! each drive is a `rom`, and `/kernel/block/<drive>/disc` what is in it.
-//! While mounted, a disc is locked in, so that QEMU refuses to eject it.
-//! eject(1) unmounts it and opens the drive's tray, and the drive says it
-//! is empty; a disc put in again is mounted by volumed at its label, and
-//! one pulled out by force while mounted is unmounted all the same. The
-//! USB drive over UAS ejects its disc too. No disc changes.
+//! While mounted, a disc is locked in, so that QEMU refuses to eject it
+//! and presses the drive's eject button instead (ADR 0432): the drive
+//! says so, and volumed unmounts the disc and ejects it, on AHCI as on
+//! USB. A disc put in again is mounted by volumed at its label; eject(1)
+//! unmounts it and opens the drive's tray, and the drive says it is
+//! empty; one pulled out by force while mounted is unmounted all the
+//! same. The USB drive over UAS ejects its disc too. No disc changes.
 
 use std::time::Duration;
 
@@ -22,7 +24,7 @@ use super::super::*;
 
 pub const CASE: Case = Case {
     name: "optical",
-    about: "Discs in an AHCI DVD drive and two USB optical drives are read whole and read-only and mounted at boot; a disc is locked in while mounted, ejected by eject, mounted at its label when put in again, and unmounted when pulled out by force",
+    about: "Discs in an AHCI DVD drive and two USB optical drives are read whole and read-only and mounted at boot; a disc is locked in while mounted, ejected by the drive's eject button and by eject, mounted at its label when put in again, and unmounted when pulled out by force",
     firmware: Firmware::Uefi,
     media: Media::Usb,
     // No program: Spark and volumed mount, as on a normal boot.
@@ -76,6 +78,24 @@ fn drive_says(vm: &mut Vm, drive: &str, size: &str, disc: &str, changes: u32) ->
     vm.expect_screen(&[&format!("{drive} size {size} disc {disc} changes {changes} rom")])
 }
 
+/// Presses the eject button of the drive `drive`, QEMU's `id`, whose
+/// disc is mounted and locked in: QEMU refuses to eject it and asks the
+/// guest, the drive says the button was pressed, and volumed unmounts the
+/// disc and ejects it, which the kernel says as `ejected` (ADR 0432).
+fn eject_button(vm: &mut Vm, id: &str, drive: &str, ejected: &str) -> Result<(), String> {
+    match vm.monitor(&format!("eject {id}")) {
+        Err(why) if why.contains("is locked") => {}
+        Err(why) => return Err(why),
+        Ok(()) => return Err("QEMU ejected the disc the drive should have locked in".into()),
+    }
+    vm.expect(&format!("Disk: {drive}: its eject button was pressed"))?;
+    vm.expect(&format!("Disk: {drive}: {ejected}"))?;
+    vm.expect(&format!(
+        "volumed: the eject button of {drive} was pressed; unmounted /volumes/{drive}"
+    ))?;
+    vm.expect(&format!("volumed: {drive} has no disc in it now"))
+}
+
 fn optical(vm: &mut Vm, case: &Case) -> Result<(), String> {
     disks_found(vm, case)?;
     for (disk, name) in case.disks.iter().zip(DRIVES) {
@@ -103,36 +123,45 @@ fn optical(vm: &mut Vm, case: &Case) -> Result<(), String> {
     }
 
     // The drive is looked at every two seconds: by the second look after
-    // the mount, the disc is locked in.
+    // the mount, the disc is locked in. QEMU, refused, presses the
+    // drive's eject button: volumed unmounts the disc and ejects it.
     std::thread::sleep(Duration::from_secs(5));
-    match vm.monitor("eject disk0") {
-        Err(why) if why.contains("is locked") => {}
-        Err(why) => return Err(why),
-        Ok(()) => return Err("QEMU ejected the disc the drive should have locked in".into()),
-    }
-
-    vm.type_text("clear; eject cd0; echo \"status $(( $? + 100 ))\"\n")?;
-    vm.expect("Disk: cd0: its disc was ejected")?;
-    vm.expect_screen(&["status 100"])?;
-    vm.expect("volumed: cd0 has no disc in it now")?;
+    eject_button(vm, "disk0", "cd0", "its disc was ejected")?;
     drive_says(vm, "cd0", "0", "none", 2)?;
 
     // Put in again: mounted at its label.
     let image = vm.dir().join("optical-disk0.img");
-    vm.monitor(&format!("change disk0 {} raw", image.display()))?;
-    vm.expect("Disk: cd0: a disc of data (cd-rom) of 4 MiB went in")?;
-    vm.expect("volumed: a disc (cd-rom) went in cd0")?;
-    vm.expect("volumed: mounted the ISO 9660 filesystem of cd0 at /volumes/RADIXISO, read-only")?;
-    vm.type_text("clear; cat /volumes/RADIXISO/hello.txt\n")?;
-    vm.expect_screen(&["Read from a disc."])?;
+    let put_in = |vm: &mut Vm| -> Result<(), String> {
+        vm.monitor(&format!("change disk0 {} raw", image.display()))?;
+        vm.expect("Disk: cd0: a disc of data (cd-rom) of 4 MiB went in")?;
+        vm.expect("volumed: a disc (cd-rom) went in cd0")?;
+        vm.expect(
+            "volumed: mounted the ISO 9660 filesystem of cd0 at /volumes/RADIXISO, read-only",
+        )?;
+        vm.type_text("clear; cat /volumes/RADIXISO/hello.txt\n")?;
+        vm.expect_screen(&["Read from a disc."])
+    };
+    put_in(vm)?;
     drive_says(vm, "cd0", "8192", "cd-rom data", 3)?;
 
+    // eject(1) unmounts it and opens the tray.
+    vm.type_text("clear; eject RADIXISO; echo \"status $(( $? + 100 ))\"\n")?;
+    vm.expect("Disk: cd0: its disc was ejected")?;
+    vm.expect_screen(&["status 100"])?;
+    vm.expect("volumed: cd0 has no disc in it now")?;
+    drive_says(vm, "cd0", "0", "none", 4)?;
+
     // Pulled out by force while mounted: lost, and unmounted all the same.
+    put_in(vm)?;
     vm.monitor("eject -f disk0")?;
     vm.expect("Disk: cd0: its disc was taken out")?;
     vm.expect("volumed: cd0 is gone; unmounted /volumes/RADIXISO")?;
     vm.expect("volumed: cd0 has no disc in it now")?;
-    drive_says(vm, "cd0", "0", "none", 4)?;
+    drive_says(vm, "cd0", "0", "none", 6)?;
+
+    // The USB drive over Bulk-Only has its eject button too.
+    eject_button(vm, "disk2", "cd2", "its medium was ejected")?;
+    drive_says(vm, "cd2", "0", "none", 1)?;
 
     // A USB drive's disc is ejected the same way.
     vm.type_text("clear; eject cd1; echo \"status $(( $? + 100 ))\"\n")?;

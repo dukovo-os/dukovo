@@ -2,13 +2,13 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 //! CD, DVD and Blu-ray drives (ADR 0431): what every optical drive
-//! shares, whatever carries its commands, and the drives on AHCI ports,
-//! which this module runs. A USB drive's thread is its stick's
-//! ([`super::usb`]).
+//! shares, whatever carries its commands, and the drives on AHCI ports
+//! and IDE channels (ADR 0432), which this module runs. A USB drive's
+//! thread is its stick's ([`super::usb`]).
 //!
 //! An optical drive is named `cd0`, `cd1` and on, the first number free,
-//! in the order the drives are found: the SATA drives in the PCI scan's
-//! order, then the USB drives. It is a drive whose medium comes and goes
+//! in the order the drives are found: the SATA and IDE drives in the PCI
+//! scan's order, then the USB drives. It is a drive whose medium comes and goes
 //! ([`super::removable`], ADR 0430), empty, a device of no sectors, until
 //! a disc of data is in it. Its driver asks the disc what it is
 //! (`radix_scsi::mmc::disc`): a disc of data, CD, DVD or Blu-ray, BDXL
@@ -20,17 +20,27 @@
 //! and `/kernel/block/<drive>/disc` says what is in it, for Spark and
 //! volumed(8) to say.
 //!
-//! A drive on an AHCI port has a thread of its own, as a USB stick does,
-//! since the drive takes one command at a time and some take seconds (a
+//! A drive on an AHCI port or an IDE channel has a thread of its own, as a
+//! USB stick does, since the drive takes one command at a time and some take seconds (a
 //! disc spinning up). The thread serves the reads of the disc's queue
 //! ([`DiscLane`] hands them over), as READ(10) of the queue's buffers by
 //! DMA, and between them looks at the drive every two seconds for a disc
 //! put in or taken out, with TEST UNIT READY, as Linux polls an optical
 //! drive. While anything uses the disc, PREVENT ALLOW MEDIUM REMOVAL
 //! keeps the tray shut; eject(1) has the thread let it go and open the
-//! tray. Each command is waited for asleep: the port's interrupt wakes
+//! tray. Each command is waited for asleep: an AHCI port's interrupt wakes
 //! the thread (`radix_ahci::Hba::quiet`), or, on a controller without
-//! one, the thread looks again after a wait that doubles to 4 ms.
+//! one and on an IDE channel, which is polled, the thread looks again
+//! after a wait that doubles to 4 ms. A drive on an IDE channel borrows
+//! the channel for each command from the disk on its other end
+//! ([`super::ide::IdeLink`]).
+//!
+//! Before each look, a drive that has media events is asked for them
+//! (GET EVENT STATUS NOTIFICATION, [`ask_events`]), as Linux's `sr` asks:
+//! a drive whose disc is locked in keeps it when its eject button is
+//! pressed, and says the button was pressed. The press is counted in
+//! `/kernel/block/<drive>/eject_requests`, and volumed(8) unmounts the
+//! disc and ejects it, as eject(1) does (ADR 0432).
 //!
 //! At the end of boot, before the first program, the kernel waits for
 //! each drive's first look, for at most [`FIRST_LOOK_NS`], so that a disc
@@ -42,7 +52,7 @@ use alloc::vec::Vec;
 use core::fmt::Write as _;
 use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 
-use radix_ahci::ata::trimmed;
+use radix_ahci::ata::{PacketIdentity, trimmed};
 use radix_ahci::{Packets, Port};
 use radix_block::{DeviceRef, Empty, Error, Info, SECTOR};
 use radix_hw::pci::Address;
@@ -54,8 +64,9 @@ use radix_scsi::{
 };
 use radix_sync::SpinLock;
 
+use super::ide::IdeLink;
 use super::queue::{self, Controller, Disk, Op, Outcome, SLOTS, Volume};
-use super::removable::{self, Disc, DriveRef};
+use super::removable::{self, Disc, Drive, DriveRef};
 use super::{Entry, Ident, Name, Size, register};
 use crate::sched::{self, Options, Policy, ThreadRef};
 
@@ -75,7 +86,7 @@ const READY_NS: u64 = 1_000_000_000;
 /// How long the end of boot waits for the drives' first looks: a disc
 /// spins up in a few seconds.
 pub const FIRST_LOOK_NS: u64 = 15_000_000_000;
-/// The most optical drives on AHCI ports.
+/// The most optical drives on AHCI ports and IDE channels.
 const MAX_DRIVES: usize = 8;
 
 /// Why a disc's reads fail once it is gone.
@@ -192,6 +203,40 @@ pub(super) fn not_data(content: Content) -> &'static str {
     }
 }
 
+/// Asks the optical drive at logical unit `lun` behind `transport`, the
+/// drive `name` is, for its media events before a look, if it has them
+/// (`*events`): a press of its eject button while its disc was locked in
+/// is said, and counted in `drive`, for volumed(8) to unmount the disc
+/// and eject it (ADR 0432). A drive without them is not asked again.
+/// Returns whether the drive said its disc may have changed, which the
+/// look takes as its TEST UNIT READY's.
+pub(super) fn ask_events(
+    transport: &mut dyn Transport,
+    lun: u8,
+    name: &Name,
+    drive: &Drive,
+    events: &mut bool,
+) -> bool {
+    if !*events {
+        return false;
+    }
+    match mmc::events(transport, lun) {
+        Ok(Some(said)) => {
+            if said.eject_request {
+                info!("Disk: {name}: its eject button was pressed");
+                drive.eject_requested();
+            }
+            said.changed
+        }
+        Ok(None) => {
+            *events = false;
+            false
+        }
+        // The look says.
+        Err(_) => false,
+    }
+}
+
 /// The block device of a disc of data, `medium`, as `found` says it is:
 /// its sectors, read-only, in requests of up to `max_segments` buffers.
 pub(super) fn info(medium: &Medium, max_segments: usize) -> Info {
@@ -215,7 +260,7 @@ pub(super) fn last_session(found: &Found, medium: &Medium) -> u64 {
     u64::from(found.last_session).saturating_mul(unit)
 }
 
-// ---- Drives on AHCI ports ----
+// ---- Drives on AHCI ports and IDE channels ----
 
 /// Where a read is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -253,8 +298,8 @@ struct Shared {
     thread: ThreadRef,
 }
 
-/// A disc in a drive on an AHCI port, as its queue drives it: the queue's
-/// requests go to the drive's thread.
+/// A disc in a drive on an AHCI port or an IDE channel, as its queue
+/// drives it: the queue's requests go to the drive's thread.
 pub struct DiscLane {
     shared: Arc<Shared, Kmalloc>,
 }
@@ -300,7 +345,7 @@ impl Controller for DiscLane {
 
     fn reset(_lanes: &mut [queue::Part<DiscLane>]) -> bool {
         // The drive's thread gives each read 30 s, and resets the port's
-        // link itself when one goes unanswered.
+        // link, or the channel, itself when one goes unanswered.
         true
     }
 }
@@ -405,14 +450,58 @@ fn judge(reply: Result<Reply, TransportError>) -> (Outcome, Option<&'static str>
     }
 }
 
-/// An optical drive on an AHCI port, handed to its thread.
+/// What carries an optical drive's commands.
+enum Link {
+    /// An AHCI port.
+    Ahci(Port),
+    /// An end of an IDE channel.
+    Ide(IdeLink),
+}
+
+impl Link {
+    /// What the drive said of itself in IDENTIFY PACKET DEVICE.
+    fn identity(&self) -> Option<PacketIdentity> {
+        match self {
+            Link::Ahci(port) => port.packet_identity().copied(),
+            Link::Ide(link) => Some(*link.identity()),
+        }
+    }
+
+    /// Whether the drive stopped answering for good.
+    fn dead(&self) -> bool {
+        match self {
+            Link::Ahci(port) => port.dead(),
+            Link::Ide(link) => link.dead(),
+        }
+    }
+
+    /// The most buffers of one read.
+    fn max_segments(&self) -> usize {
+        match self {
+            Link::Ahci(_) => radix_ahci::MAX_SEGMENTS,
+            Link::Ide(_) => IdeLink::MAX_SEGMENTS,
+        }
+    }
+
+    /// Runs `f` with the drive's commands, which wait asleep.
+    fn with<R>(&mut self, f: impl FnOnce(&mut dyn Transport) -> R) -> R {
+        let mut wait = wait_us;
+        match self {
+            Link::Ahci(port) => f(&mut Packets::new(port, &mut wait)),
+            Link::Ide(link) => f(&mut link.packets(&mut wait)),
+        }
+    }
+}
+
+/// An optical drive on an AHCI port or an IDE channel, handed to its
+/// thread.
 struct Handoff {
-    port: Port,
+    link: Link,
     name: Name,
     number: u32,
     source: Address,
-    /// Where it is, for the log: `AHCI port 2`.
-    place: TextBuf<40>,
+    /// Where it is, for the log: `AHCI port 2 at 0000:00:1f.2`.
+    place: TextBuf<64>,
     drive: DriveRef,
     empty: DeviceRef,
 }
@@ -433,9 +522,33 @@ pub(super) fn add_ahci(
     source: Address,
 ) -> Result<ThreadRef, &'static str> {
     let identity = *port.packet_identity().ok_or("it is not an optical drive")?;
-    let (cd, name) = take_cd_name().ok_or("too many optical drives")?;
     let mut place = TextBuf::new();
     let _ = write!(place, "AHCI port {number} at {source}");
+    add(Link::Ahci(port), identity, place, source)
+}
+
+/// Sets up the optical drive `link` reaches on an IDE channel, `place`
+/// (`the IDE secondary channel at 0000:00:01.1, master`), of the
+/// controller at `source`, as [`add_ahci`] does one on an AHCI port.
+#[inline(never)]
+pub(super) fn add_ide(
+    link: IdeLink,
+    place: TextBuf<64>,
+    source: Address,
+) -> Result<ThreadRef, &'static str> {
+    let identity = *link.identity();
+    add(Link::Ide(link), identity, place, source)
+}
+
+/// Names the drive `link` reaches, registers it empty, and starts its
+/// thread, held.
+fn add(
+    link: Link,
+    identity: PacketIdentity,
+    place: TextBuf<64>,
+    source: Address,
+) -> Result<ThreadRef, &'static str> {
+    let (cd, name) = take_cd_name().ok_or("too many optical drives")?;
     let heap = HEAP.with(Flags::MAY_SLEEP);
     let made = (|| {
         let empty: DeviceRef = Arc::try_new_in(Empty, heap).map_err(|_| "out of memory")?;
@@ -447,7 +560,7 @@ pub(super) fn add_ahci(
         let thread = sched::spawn("optical", drive_main, index, options)
             .map_err(|_| "its thread could not be started")?;
         let drive = removable::add(&name, thread.clone(), true).ok_or("out of memory")?;
-        let handoff = Handoff { port, name: name.clone(), number: cd, source, place, drive, empty };
+        let handoff = Handoff { link, name: name.clone(), number: cd, source, place, drive, empty };
         let handoff = Box::try_new_in(handoff, heap).map_err(|_| "out of memory")?;
         let ident = Ident {
             model: identity.model,
@@ -469,7 +582,7 @@ pub(super) fn add_ahci(
     made
 }
 
-/// Lets the thread of a drive [`add_ahci`] set up run.
+/// Lets the thread of a drive [`add_ahci`] or [`add_ide`] set up run.
 pub(super) fn release(thread: &ThreadRef) {
     LOOKING.fetch_add(1, Ordering::AcqRel);
     sched::release(thread);
@@ -478,7 +591,7 @@ pub(super) fn release(thread: &ThreadRef) {
 /// The thread of the drive handed over at `index`.
 fn drive_main(index: usize) {
     let Some(handoff) = HANDOFFS.lock_irq()[index].take() else { return };
-    let Some(mut drive) = AhciDrive::new(handoff) else {
+    let Some(mut drive) = OpticalDrive::new(handoff) else {
         LOOKING.fetch_sub(1, Ordering::AcqRel);
         return;
     };
@@ -486,13 +599,14 @@ fn drive_main(index: usize) {
     drive.serve();
 }
 
-/// An optical drive on an AHCI port, as its thread runs it.
-struct AhciDrive {
-    port: Port,
+/// An optical drive on an AHCI port or an IDE channel, as its thread
+/// runs it.
+struct OpticalDrive {
+    link: Link,
     name: Name,
     /// Its `cd` number, given back when it goes.
     number: u32,
-    place: TextBuf<40>,
+    place: TextBuf<64>,
     source: Address,
     drive: DriveRef,
     /// The device the drive is while empty.
@@ -509,6 +623,8 @@ struct AhciDrive {
     /// Its disc is locked in, and the drive takes the lock.
     locked: bool,
     lockable: bool,
+    /// It has media events, of which its eject button's ([`ask_events`]).
+    events: bool,
     /// The disc in it is left alone until it is taken out: ejected, of no
     /// data, or unreadable.
     left: bool,
@@ -532,18 +648,18 @@ fn wait_ms(ms: u32) {
     sched::sleep_ns(u64::from(ms) * 1_000_000);
 }
 
-impl AhciDrive {
+impl OpticalDrive {
     /// The drive `handoff` names, as its thread runs it; `None` when
     /// memory runs out.
-    fn new(handoff: Box<Handoff, Kmalloc>) -> Option<AhciDrive> {
-        let Handoff { port, name, number, source, place, drive, empty } = *handoff;
+    fn new(handoff: Box<Handoff, Kmalloc>) -> Option<OpticalDrive> {
+        let Handoff { link, name, number, source, place, drive, empty } = *handoff;
         let mut frames = Vec::new_in(HEAP.with(Flags::MAY_SLEEP));
-        if frames.try_reserve_exact(radix_ahci::MAX_SEGMENTS).is_err() {
+        if frames.try_reserve_exact(link.max_segments()).is_err() {
             warn!("Disk: {name}: out of memory for its reads");
             return None;
         }
-        Some(AhciDrive {
-            port,
+        Some(OpticalDrive {
+            link,
             name,
             number,
             place,
@@ -556,6 +672,7 @@ impl AhciDrive {
             changed: false,
             locked: false,
             lockable: true,
+            events: true,
             left: false,
             out: None,
             first: true,
@@ -565,14 +682,13 @@ impl AhciDrive {
 
     /// Runs `f` with the drive's commands.
     fn packets<R>(&mut self, f: impl FnOnce(&mut dyn Transport) -> R) -> R {
-        let mut wait = wait_us;
-        f(&mut Packets::new(&mut self.port, &mut wait))
+        self.link.with(f)
     }
 
     /// Says what the drive is, in the log.
     fn introduce(&mut self) {
         self.family = self.packets(|t| mmc::drive(t, 0)).unwrap_or(Family::Other);
-        let identity = self.port.packet_identity().copied();
+        let identity = self.link.identity();
         let model = identity.as_ref().map_or("", |id| trimmed(&id.model));
         let firmware = identity.as_ref().map_or("", |id| trimmed(&id.firmware));
         info!(
@@ -587,7 +703,7 @@ impl AhciDrive {
     /// until the drive stops answering.
     fn serve(&mut self) {
         loop {
-            if self.port.dead() {
+            if self.link.dead() {
                 self.stopped();
                 return;
             }
@@ -625,10 +741,10 @@ impl AhciDrive {
         else {
             return (Outcome::Failed, Some("a read past what a command reaches"));
         };
-        let mut wait = wait_us;
-        let mut packets = Packets::new(&mut self.port, &mut wait);
-        let data = Data::Frames { into_host: true, frames: &self.frames };
-        let (outcome, why, then) = judge(packets.command(0, &cdb, data, TIMEOUT_MS));
+        let frames = &self.frames;
+        let data = Data::Frames { into_host: true, frames };
+        let reply = self.link.with(|t| t.command(0, &cdb, data, TIMEOUT_MS));
+        let (outcome, why, then) = judge(reply);
         match then {
             Then::Nothing => {}
             Then::Ready => sched::sleep_ns(READY_NS),
@@ -660,12 +776,16 @@ impl AhciDrive {
         self.next
     }
 
-    /// Looks whether a disc is in the drive, as Linux's `sr` does: one
-    /// taken out, or changed, is taken out of the kernel, and one put in
-    /// is put in.
+    /// Looks whether a disc is in the drive, as Linux's `sr` does: its
+    /// media events first, of which its eject button's, then whether a
+    /// disc is in it. One taken out, or changed, is taken out of the
+    /// kernel, and one put in is put in.
     fn look(&mut self) {
+        let (name, drive, mut events) = (&self.name, &self.drive, self.events);
+        let said = self.link.with(|t| ask_events(t, 0, name, drive, &mut events));
+        self.events = events;
         let Ok(found) = self.packets(|t| radix_scsi::look(t, 0)) else { return };
-        let changed = core::mem::take(&mut self.changed) || found.changed;
+        let changed = core::mem::take(&mut self.changed) || found.changed || said;
         match found.medium {
             // The transport failed: the next look says.
             None => {}
@@ -685,7 +805,7 @@ impl AhciDrive {
         }
     }
 
-    /// The disc in the drive, found by [`AhciDrive::look`], is put in:
+    /// The disc in the drive, found by [`OpticalDrive::look`], is put in:
     /// one of data gets a queue, and takes the empty drive's place; one of
     /// none, or one that cannot be read, is left alone until it is taken
     /// out, and counted as a change, so that volumed(8) says what it is.
@@ -732,9 +852,9 @@ impl AhciDrive {
     /// its block device.
     fn load(&self, medium: Medium, found: &Found) -> Result<(Loaded, DeviceRef), &'static str> {
         let heap = HEAP.with(Flags::MAY_SLEEP);
-        let info = info(&medium, radix_ahci::MAX_SEGMENTS);
+        let info = info(&medium, self.link.max_segments());
         let mut frames = Vec::new_in(heap);
-        frames.try_reserve_exact(radix_ahci::MAX_SEGMENTS).map_err(|_| "out of memory")?;
+        frames.try_reserve_exact(self.link.max_segments()).map_err(|_| "out of memory")?;
         let job = Job {
             stage: Stage::Idle,
             op: Op::Read,
@@ -789,7 +909,7 @@ impl AhciDrive {
         self.finish_out();
     }
 
-    /// Finishes taking out the disc [`AhciDrive::take_out`] took out: what
+    /// Finishes taking out the disc [`OpticalDrive::take_out`] took out: what
     /// was mounted from it is lost, and the drive is empty in `/devices`.
     /// False while the mount table is busy.
     fn finish_out(&mut self) -> bool {

@@ -14,6 +14,11 @@
 //! or unmounts when it moves. eject(1) asks for the medium to be ejected
 //! through radix-block(2)'s EJECT, which [`Drive::eject`] hands to the
 //! driver's thread, since that thread is the one that talks to the drive.
+//!
+//! An optical drive keeps its disc in while it is locked, and asks for it
+//! to be let go when its eject button is pressed: its driver counts each
+//! request ([`Drive::eject_requested`]), and volumed unmounts the disc
+//! and ejects it, as eject(1) does (ADR 0432).
 
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -71,6 +76,9 @@ pub struct Drive {
     /// How many times a medium went in or came out since the drive was
     /// found: `/kernel/block/<drive>/media_changes`.
     changes: AtomicU64,
+    /// How many times an optical drive's eject button was pressed while
+    /// its disc was locked in: `/kernel/block/<drive>/eject_requests`.
+    eject_requests: AtomicU64,
     /// Where an eject asked of the thread is: [`IDLE`], [`ASKED`], or the
     /// thread's answer.
     eject: AtomicU8,
@@ -88,6 +96,7 @@ impl Drive {
     pub fn new(thread: ThreadRef, optical: bool) -> Drive {
         Drive {
             changes: AtomicU64::new(0),
+            eject_requests: AtomicU64::new(0),
             eject: AtomicU8::new(IDLE),
             one: Mutex::new(()),
             thread,
@@ -119,6 +128,18 @@ impl Drive {
     /// A medium went in, or came out: counted.
     pub fn changed(&self) {
         self.changes.fetch_add(1, Ordering::AcqRel);
+    }
+
+    /// How many times its eject button was pressed while its disc was
+    /// locked in.
+    pub fn eject_requests(&self) -> u64 {
+        self.eject_requests.load(Ordering::Acquire)
+    }
+
+    /// Its eject button was pressed while its disc was locked in: counted,
+    /// for volumed(8) to unmount the disc and eject it (ADR 0432).
+    pub fn eject_requested(&self) {
+        self.eject_requests.fetch_add(1, Ordering::AcqRel);
     }
 
     /// Ejects the drive's medium, as eject(1) asks: the driver's thread

@@ -288,6 +288,9 @@ struct Watch {
     /// It takes the lock: one that refused it is not asked again, as
     /// Linux's `sd` asks no more.
     lockable: bool,
+    /// An optical drive that has media events, of which its eject
+    /// button's ([`optical::ask_events`]).
+    events: bool,
     /// The medium in it is left alone, until the drive says one was taken
     /// out or put in: it was ejected, or could not be used.
     left: bool,
@@ -404,13 +407,17 @@ impl Lun {
     }
 
     /// Looks whether a medium is in the drive, as Linux's `sd_check_events`
-    /// does: one taken out, or changed, is taken out of the kernel, and
-    /// one put in is put in.
+    /// does, after an optical drive's media events, as `sr`'s: one taken
+    /// out, or changed, is taken out of the kernel, and one put in is put
+    /// in.
     fn look(&mut self, link: &LinkRef, transport: &mut dyn Transport) {
+        let Some(watch) = self.watch.as_mut() else { return };
+        let (name, number) = (&self.name, self.number);
+        let said = optical::ask_events(transport, number, name, &watch.drive, &mut watch.events);
         let Ok(found) = look(transport, self.number) else { return };
         let Some(watch) = self.watch.as_mut() else { return };
         // What a request found counts once.
-        let changed = core::mem::take(&mut watch.changed) || found.changed;
+        let changed = core::mem::take(&mut watch.changed) || found.changed || said;
         match found.medium {
             // The transport failed: the next look says.
             None => {}
@@ -1336,7 +1343,9 @@ fn add_named(
         let next = sched::now_ns().saturating_add(LOOK_NS);
         let left = matches!(found, Err(Some(_)));
         let (changed, locked, lockable, out) = (false, false, true, None);
-        Some(Watch { drive, empty, next, changed, locked, lockable, left, out })
+        // An optical drive is asked for its media events (ADR 0432).
+        let events = optical.is_some();
+        Some(Watch { drive, empty, next, changed, locked, lockable, events, left, out })
     } else {
         None
     };

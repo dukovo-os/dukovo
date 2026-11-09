@@ -525,12 +525,17 @@ impl Listing for Blocks {
         let removable = u8::from(drive.is_some());
         dir.add("removable", value(move |text| writeln!(text, "{removable}"))?)?;
         if let Some(drive) = drive {
-            // An optical drive says what disc is in it (ADR 0431).
+            // An optical drive says what disc is in it (ADR 0431), and
+            // how many times its eject button was pressed while its disc
+            // was locked in, which volumed(8) watches too (ADR 0432).
             if drive.disc().is_some() {
                 let disc = drive.clone();
                 let what =
                     value(move |text| writeln!(text, "{}", disc.disc().unwrap_or(Disc::None)))?;
                 dir.add("disc", what)?;
+                let pressed = drive.clone();
+                let count = value(move |text| writeln!(text, "{}", pressed.eject_requests()))?;
+                dir.add("eject_requests", count)?;
             }
             dir.add("media_changes", value(move |text| writeln!(text, "{}", drive.changes()))?)?;
         }
