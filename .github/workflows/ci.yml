@@ -10,7 +10,7 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
-  # Every boot test, and every other job, on main each night (ADR 0419):
+  # Every boot test, and every other job, on main each night (ADR 0421):
   # pull requests run only the boot tests their changes reach.
   schedule:
     - cron: "11 3 * * *"
@@ -19,7 +19,7 @@ permissions:
   contents: read
 
 # A pull request's new push cancels its run before. Main's runs are not
-# cancelled: each runs every boot test (ADR 0419), so a merge waits for
+# cancelled: each runs every boot test (ADR 0421), so a merge waits for
 # the run before it rather than ending it, and only the newest of those
 # waiting is kept, as it holds the others' changes. Merges never wait
 # for main's run.
@@ -311,7 +311,7 @@ jobs:
           path: ${{ runner.temp }}/smbd/serial.log
           retention-days: 14
 
-  # A pull request runs the boot tests its changes reach (ADR 0419), on
+  # A pull request runs the boot tests its changes reach (ADR 0421), on
   # as many machines as they need; main and the nightly run run them all
   # on five. --shard gives each the same amount of work by the times in
   # tools/xtask/src/test/times.txt.
@@ -568,7 +568,7 @@ jobs:
             echo "container=$(needs '^(tools/container/|tools/xtask/src/(doctor|ports)\.rs|ports/|rust-toolchain\.toml)')"
           } | tee -a "$GITHUB_OUTPUT"
 
-      # ob chooses a pull request's boot tests (ADR 0419), so this job
+      # ob chooses a pull request's boot tests (ADR 0421), so this job
       # builds it; its own cache keeps that to a minute or so.
       - name: Install the pinned Rust toolchain
         if: github.event_name == 'pull_request'

@@ -2969,7 +2969,7 @@ pub fn command(ctx: &Ctx, args: &mut Args) -> Result<()> {
         let changed = affected::changed_files(ctx, commit)?;
         let choice = affected::choose(&changed);
         eprintln!(
-            "{} files changed since {commit}; what each adds to the boot tests (ADR 0419):",
+            "{} files changed since {commit}; what each adds to the boot tests (ADR 0421):",
             changed.len()
         );
         for reason in &choice.reasons {

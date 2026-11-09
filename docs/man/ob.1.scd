@@ -1447,7 +1447,7 @@ _target/userspace/_).
 
 	*--affected* _commit_
 		Run only the boot tests that the changes since _commit_ reach, as
-		CI does for a pull request (ADR 0419): the changes since HEAD
+		CI does for a pull request (ADR 0421): the changes since HEAD
 		left _commit_, with the working tree's changes and new files.
 		A change no boot test reads (writing, the lab's tests, the TLA+
 		models) adds none; a test's own file in

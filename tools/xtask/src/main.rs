@@ -270,7 +270,7 @@ shares of the boot tests, as CI's parallel jobs do; the shares take about
 as long by the times in tools/xtask/src/test/times.txt. `boot --affected
 origin/main` runs only the boot tests the changes since origin/main reach,
 by tools/xtask/src/test/covers.txt, as CI does for a pull request (ADR
-0419); with --list it names them, and --plan prints how many of CI's
+0421); with --list it names them, and --plan prints how many of CI's
 machines they need. `boot --case smbd
 --image-only` boots nothing: it writes the case's image, its command line in
 place, to out/test/smbd.img, for CI's Windows job to boot. --list names every

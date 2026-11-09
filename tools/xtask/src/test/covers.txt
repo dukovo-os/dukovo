@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 #
 # What each boot test covers: the files and folders whose changes it is
-# run for on a pull request (ADR 0419, `ob test boot --affected`). A line
+# run for on a pull request (ADR 0421, `ob test boot --affected`). A line
 # is a test's name and paths from the repository's root, a folder ending
 # in /; a test may have several lines. A change to a path here runs the
 # tests that name it and the smoke tests; one to a path no test names

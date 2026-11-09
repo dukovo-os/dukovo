@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 //! `ob test boot --affected <commit>`: the boot tests that the changes
-//! since a commit can reach (ADR 0419), which a pull request runs in
+//! since a commit can reach (ADR 0421), which a pull request runs in
 //! place of all of them. Main runs every boot test after each merge and
 //! every night, so a test a pull request leaves out still runs within
 //! hours.
@@ -380,7 +380,7 @@ mod tests {
     #[test]
     fn writing_and_lab_tests_run_no_boot_test() {
         let choice = choose_for(&[
-            "docs/adr/0419-x.md",
+            "docs/adr/0421-x.md",
             "docs/handbook/src/a.md",
             "lab/tests/network/a.toml",
             "kernel/cap/tla/Capabilities.tla",
