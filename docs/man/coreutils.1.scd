@@ -32,7 +32,8 @@ root's lists the links with Unix's names, such as _/dev_ and _/etc_
 names.
 
 Dukovo's *ls* also takes these options, none of which changes its output
-unless it is given (ADRs 0440 and 0441):
+unless it is given or, for *--subvolumes*, on a terminal (ADRs 0440 to
+0442):
 
 *--header*
 	With *-l*, a line of column titles over the listing.
@@ -52,8 +53,8 @@ unless it is given (ADRs 0440 and 0441):
 	keys *read*, *write*, *run*, *special*, *none*, *directory*, *link*,
 	*device*, *octal*, *small*, *big*, *huge*, *today*, *old*, *header*,
 	*git-new*, *git-modified*, *git-deleted*, *git-renamed*,
-	*git-ignored*, *git-conflict* and *tree*; set empty, it turns them
-	off. Nukesh makes it from *colors.toml*(5).
+	*git-ignored*, *git-conflict*, *tree*, *app-sealed*, *app-unsealed*,
+	*app-data* and *subvolume*; set empty, it turns them off. Nukesh makes it from *colors.toml*(5).
 
 *--icons*[=_when_]
 	A Nerd Font icon before each name, by its type, name or ending.
@@ -90,6 +91,23 @@ unless it is given (ADRs 0440 and 0441):
 	filesystem; *du -s -x --apparent-size* gives a little more, as it
 	also counts each folder's own entry. *-S* sorts by it. *.* and *..*
 	keep their own sizes.
+
+*--app*
+	With *-l*, a column with the app each file belongs to, before its
+	name: *sealed* inside an installed bundle, in _/applications_ or a
+	person's _applications_ folder, that is root's and read-only;
+	*not sealed* inside one that is not, which *bundle*(1) will not
+	start; *data* in an app's _app-data_ folder; *temp* in its
+	_/tmp/.app-_ folder; *-* for a file of no app. A listing with no
+	file of an app has no column. The app is named as its sealed
+	manifest names it, otherwise by its ID.
+
+*--subvolumes*[=_when_]
+	With *-l*, *[subvolume]* after each folder that is the top of a
+	Btrfs subvolume, or *[subvolume, read-only]* when nothing in it can
+	be changed, as _/system_. _when_ is *always*, *never*, or *auto*,
+	the default: when standard output is a terminal. Which subvolumes
+	are snapshots is not shown yet.
 
 # OPTIONS
 
