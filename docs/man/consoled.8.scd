@@ -202,6 +202,47 @@ program. consoled logs *the screen reader is listening* when it finds
 readerd, and tries again every 2 seconds while it is not running; until
 then the keys are the programs' as always.
 
+A program that draws a whole screen, as the installer does, can name
+what has its focus better than its screen's changes would (ADR 0325):
+*ESC ] 7700 ;* _text_ *ST* (or ended by *BEL*) has the reader say _text_
+at once, over what it was saying. From then on, what the program draws
+is not read by its changes, until it leaves the alternate screen
+(*ESC [ ? 1049 l*), as every full-screen program does as it ends, or
+the terminal is reset (*ESC c*). Any program may; its words never come after
+the trusted sound. While readerd is not listening the sequence does
+nothing, and other terminals ignore it.
+
+# TEXT SIZE AND KEYS
+
+For those who need bigger text, or cannot hold two keys at once or
+press one briefly (ADR 0325), as _accessibility.toml_ sets
+(*accessibility.toml*(5)):
+
+*Ctrl+Alt+Plus*, *Ctrl+Alt+Minus*
+	Make the text a step bigger or smaller: *normal*, the font the
+	screen's size chooses, then *larger* and *largest*, the next of the
+	12x24 and 16x32 fonts and then those drawn twice their size, as far
+	as the screen keeps at least 40 by 12 cells. Each console gets as
+	many cells as then fit, and its program is told, as when a terminal
+	window is resized (SIGWINCH). The size is kept. *Plus* and *Minus*
+	are the keys that type them in the layout, or the keypad's; in US
+	English, *Ctrl+Alt+=* is Ctrl+Alt+Plus.
+
+*Shift*, five times
+	Turns sticky keys on or off, and says so on the bottom line. With
+	sticky keys, *Shift*, *Ctrl* and *Alt* pressed and let go alone hold
+	for the next key; pressed twice, they hold until pressed again, and
+	a third time lets go. *Ctrl*, *Alt*, then *Delete* is
+	Ctrl+Alt+Delete. A modifier held down with a key is as always.
+
+With slow keys, a key counts only once it has been held for the delay,
+300 ms unless the file says otherwise: a key brushed on the way to
+another types nothing, and one held on repeats as usual. Every key
+waits, Shift and the others too.
+
+The screen reader says each change: *Text larger*, *shift*, *shift
+locked*, *Sticky keys on*.
+
 # KEYS
 
 *Alt+F1* to *Alt+F6*
@@ -236,7 +277,7 @@ then the keys are the programs' as always.
 The keys type in the layout _/system/settings/keyboard_ names, US
 English unless it names another (*keymap*(1)), which every keyboard
 shares: consoled reads it when it starts and when it is sent SIGHUP,
-which *service consoled reload* does. In a layout that has them, Right
+which *service consoled reload* does, as it does *accessibility.toml*(5). In a layout that has them, Right
 Alt is AltGr, and a dead key puts its accent on the letter typed after
 it (*keymap*(5)). Ctrl with a key whose character has no control
 character sends the control character of the key's US one. The other
@@ -295,6 +336,11 @@ _/system/settings/issue_
 _/system/settings/console/welcome.toml_
 	The welcome banner (*welcome.toml*(5)).
 
+_/system/settings/console/accessibility.toml_
+	The text size, sticky keys and slow keys
+	(*accessibility.toml*(5)), which consoled writes as they are changed
+	from the keyboard.
+
 _/system/settings/keyboard_
 	The keyboard layout's setting (*keymap*(1)).
 
@@ -316,7 +362,8 @@ _/system/live/readerd/socket_
 # SEE ALSO
 
 *login*(1), *authd*(8), *elevate*(8), *spark*(8), *reboot*(8),
-*keymap*(1), *keymap*(5), *welcome.toml*(5), *nukesh*(1), *dmesg*(1),
+*keymap*(1), *keymap*(5), *welcome.toml*(5), *accessibility.toml*(5),
+*nukesh*(1), *dmesg*(1),
 *notifyd*(8), *notify-send*(1), *readerd*(8), *reader*(1), *dukovo-boot*(7),
 *radix-framebuffer*(2), *radix-input*(2), *radix-files*(7),
 *serial-console*(8)

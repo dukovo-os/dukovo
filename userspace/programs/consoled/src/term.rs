@@ -209,6 +209,13 @@ struct State {
     heard: Vec<char>,
     /// Where the next character goes if it follows the last one said.
     follows: (usize, usize),
+    /// What the program last named for the screen reader with `OSC 7700`
+    /// (ADR 0325), until it is taken.
+    named: Option<String>,
+    /// The program names what it shows itself: what it writes is not
+    /// read by its changes, until it leaves the alternate screen, as a
+    /// full-screen program does as it ends, or the terminal is reset.
+    names_itself: bool,
 }
 
 /// A virtual console's terminal.
@@ -251,6 +258,8 @@ impl Terminal {
             spoken: None,
             heard: Vec::new(),
             follows: NOWHERE,
+            named: None,
+            names_itself: false,
         };
         state.reset_tabs();
         Terminal { parser: Parser::new(), state }
@@ -351,6 +360,58 @@ impl Terminal {
             *heard = cell.c;
         }
         taken
+    }
+
+    /// Takes what the program named for the screen reader since the last
+    /// time, if it named anything (`OSC 7700`, ADR 0325).
+    pub fn take_named(&mut self) -> Option<String> {
+        self.state.named.take()
+    }
+
+    /// Makes the terminal `cols` by `rows` cells, as a new text size
+    /// leaves it (ADR 0325). Each row keeps the cells that fit, from the
+    /// left; when there are fewer rows, those above the cursor's that no
+    /// longer fit go to the scrollback, so that the cursor's line stays.
+    /// The scrolling region becomes the whole screen again and the tab
+    /// stops start afresh. The program is told by the terminal's window
+    /// size, which the console sets.
+    pub fn resize(&mut self, cols: usize, rows: usize) {
+        let s = &mut self.state;
+        let (cols, rows) = (cols.max(2), rows.max(2));
+        if (cols, rows) == (s.cols, s.rows) {
+            return;
+        }
+        let gone = (s.y + 1).saturating_sub(rows);
+        for row in 0..gone {
+            let start = row * s.cols;
+            if s.scrollback.len() == SCROLLBACK_LINES {
+                s.scrollback.pop_front();
+            }
+            s.scrollback.push_back(s.cells[start..start + s.cols].to_vec());
+        }
+        let kept = cols.min(s.cols);
+        let mut cells = vec![Cell::BLANK; cols * rows];
+        for y in 0..rows.min(s.rows - gone) {
+            let from = (y + gone) * s.cols;
+            cells[y * cols..y * cols + kept].copy_from_slice(&s.cells[from..from + kept]);
+        }
+        s.cells = cells;
+        s.cols = cols;
+        s.rows = rows;
+        s.y -= gone;
+        s.x = s.x.min(cols - 1);
+        s.wrap_pending = false;
+        s.top = 0;
+        s.bottom = rows - 1;
+        s.saved.x = s.saved.x.min(cols - 1);
+        s.saved.y = s.saved.y.saturating_sub(gone).min(rows - 1);
+        s.reset_tabs();
+        s.view = s.view.min(s.scrollback.len());
+        // What shows now has been heard: only what comes next is new.
+        if s.spoken.is_some() {
+            s.heard = s.cells.iter().map(|cell| cell.c).collect();
+        }
+        s.follows = NOWHERE;
     }
 
     /// Where the cursor is on the live screen, shown or not.
@@ -568,6 +629,8 @@ impl State {
         let blank = Cell::BLANK;
         self.cells.fill(blank);
         self.heard.fill(' ');
+        self.names_itself = false;
+        self.named = None;
         self.x = 0;
         self.y = 0;
         self.wrap_pending = false;
@@ -703,7 +766,9 @@ impl State {
         // does as it draws its line again for each key, is not said again,
         // unless it goes on from one that was, as the spaces between new
         // words do.
-        if let Some(spoken) = self.spoken.as_mut() {
+        if !self.names_itself
+            && let Some(spoken) = self.spoken.as_mut()
+        {
             let continues = self.follows == (self.x, self.y);
             let heard = self.heard.get(row + self.x).copied();
             if self.modes.insert || continues || heard != Some(c) {
@@ -816,6 +881,10 @@ impl State {
                 }
                 (true, 7) => self.modes.autowrap = on,
                 (true, 25) => self.modes.cursor_visible = on,
+                // There is no second screen, but a full-screen program
+                // that leaves it has ended: what comes next is read by its
+                // changes again (ADR 0325).
+                (true, 47 | 1047 | 1049) if !on => self.names_itself = false,
                 (false, 4) => self.modes.insert = on,
                 (false, 20) => self.modes.newline = on,
                 _ => {}
@@ -1047,7 +1116,8 @@ impl Perform for State {
         }
     }
 
-    /// The operating system commands: those that change the palette.
+    /// The operating system commands: those that change the palette, and
+    /// the one that names what has the focus.
     fn osc_dispatch(&mut self, params: &[&[u8]], bell_terminated: bool) {
         match params {
             // OSC 4 ; index ; colour, as many pairs as come: each index
@@ -1087,6 +1157,18 @@ impl Perform for State {
                 }
             }
             [b"R"] => self.palette = default_palette(),
+            // Dukovo's own (ADR 0325): `OSC 7700 ; text` has the screen
+            // reader say the text at once, as what has the focus in a
+            // full-screen program, such as the installer's, which names
+            // it better than its screen's changes would. Any program may;
+            // it never comes with the trusted sound. Kept only while the
+            // reader listens.
+            [b"7700", text @ ..] if self.spoken.is_some() => {
+                let text = String::from_utf8_lossy(&text.join(&b';')).into_owned();
+                let text: String = text.chars().filter(|c| !c.is_control()).collect();
+                self.named = Some(text);
+                self.names_itself = true;
+            }
             _ => {}
         }
     }
@@ -1363,5 +1445,56 @@ mod tests {
         // A cleared screen is new: the same prompt again is said.
         term.feed(b"\x1b[H\x1b[2J$ ");
         assert_eq!(term.take_spoken(), "$ ");
+    }
+
+    #[test]
+    fn a_program_names_what_has_the_focus() {
+        let mut term = Terminal::new(40, 5);
+        // Not kept while nobody listens.
+        term.feed(b"\x1b]7700;Disk\x1b\\");
+        assert_eq!(term.take_named(), None);
+        term.set_speaking(true);
+        term.feed(b"\x1b[?1049h\x1b]7700;Disk, 1 of 2; QEMU HARDDISK\x07");
+        assert_eq!(term.take_named().as_deref(), Some("Disk, 1 of 2; QEMU HARDDISK"));
+        assert_eq!(term.take_named(), None);
+        // What it draws is not read by its changes meanwhile.
+        term.feed(b"\x1b[2;3H> Disk 2");
+        assert_eq!(term.take_spoken(), "");
+        // Control characters are not said.
+        term.feed(b"\x1b]7700;a\x08b\x1b\\");
+        assert_eq!(term.take_named().as_deref(), Some("ab"));
+        // It leaves the alternate screen as it ends: read by the changes
+        // again.
+        term.feed(b"\x1b[?1049l\x1b[H\x1b[2J# ");
+        assert_eq!(term.take_spoken(), "# ");
+        // So after a full reset.
+        term.feed(b"\x1b]7700;Next\x1b\\\x1bc$ ");
+        assert_eq!(term.take_named(), None);
+        assert_eq!(term.take_spoken(), "$ ");
+    }
+
+    #[test]
+    fn a_new_size_keeps_the_cursors_line() {
+        let mut term = Terminal::new(10, 4);
+        term.feed(b"one\r\ntwo\r\nthree\r\nfour wide");
+        // Narrower and shorter: the top line goes to the scrollback.
+        term.resize(6, 3);
+        assert_eq!((term.cols(), term.rows()), (6, 3));
+        assert_eq!(term.row_text(0), "two");
+        assert_eq!(term.row_text(2), "four w");
+        assert_eq!(term.position(), (5, 2));
+        term.scroll_view(1);
+        assert_eq!(term.shown(0, 0).c, 'o');
+        term.reset_view();
+        // Wider and taller: blank cells to the right and below.
+        term.resize(12, 5);
+        assert_eq!(term.row_text(2), "four w");
+        assert_eq!(term.row_text(4), "");
+        term.feed(b"\r\n\r\nlast");
+        assert_eq!(term.row_text(4), "last");
+        // The scrolling region is the whole screen again.
+        term.feed(b"\r\nnext");
+        assert_eq!(term.row_text(4), "next");
+        assert_eq!(term.row_text(3), "last");
     }
 }
