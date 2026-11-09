@@ -33,7 +33,7 @@ names.
 
 Dukovo's *ls* also takes these options, none of which changes its output
 unless it is given or, for *--subvolumes*, on a terminal (ADRs 0440 to
-0442):
+0443):
 
 *--header*
 	With *-l*, a line of column titles over the listing.
@@ -109,6 +109,14 @@ unless it is given or, for *--subvolumes*, on a terminal (ADRs 0440 to
 	the default: when standard output is a terminal. Which subvolumes
 	are snapshots is not shown yet.
 
+*--grants*
+	Instead of listing each _file_, or the current folder, say who can
+	reach it: each account that may read or change it, by the owners,
+	modes and access lists on the way to it, and each of your apps that
+	would when you run it, by what you allowed it. *reach*(1) answers,
+	and its output and exit status are *ls*'s; the other options do
+	not count.
+
 # OPTIONS
 
 *--list*
@@ -130,8 +138,8 @@ _/system/commands/coreutils_, and a link by each utility's name.
 
 # SEE ALSO
 
-*systools*(1), for the administration tools, *colors.toml*(5), and
-*radix-posix*(7).
+*systools*(1), for the administration tools, *reach*(1), *colors.toml*(5),
+and *radix-posix*(7).
 
 uutils coreutils, by the uutils contributors, under the MIT licence:
 https://github.com/uutils/coreutils

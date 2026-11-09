@@ -217,6 +217,7 @@ pub const STD_LINKS: &[(&str, &str)] = &[
     ("system/commands/ps", "systools"),
     ("system/commands/quota", "systools"),
     ("system/commands/rdisk", "systools"),
+    ("system/commands/reach", "systools"),
     ("system/commands/reboot", "systools"),
     ("system/commands/remount", "systools"),
     ("system/commands/renice", "systools"),

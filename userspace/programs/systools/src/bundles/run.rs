@@ -99,7 +99,7 @@ pub const SHARED: &str = "/shared";
 
 /// The serial ports' terminals that `devices.serial` gives, by the
 /// beginnings of their names in `/devices` (ADR 0246).
-const SERIAL: &[&str] = &["ttyACM", "ttyUSB"];
+pub const SERIAL: &[&str] = &["ttyACM", "ttyUSB"];
 
 /// `bundle run [--command NAME] ID [ARGUMENT...]`.
 pub fn run(id: &str, command: Option<&str>, args: Vec<OsString>) -> Result<i32, Fail> {
@@ -1014,6 +1014,9 @@ mod sandbox {
         capability::derive(&SYS, startup::SLOT_ROOT, s.base, narrowed, 0)
             .map_err(failed("narrowing the root".into()))?;
         directory::make_view(&SYS, s.base, s.view).map_err(failed("making its view".into()))?;
+        // reach(1) lays out the same view to say which apps reach a file
+        // (`attached` in reach.rs): a place added or changed here is one
+        // to add or change there too.
         // Opens `path` of the root and attaches it at the same path.
         let attach = |path: &str, write: bool| -> Result<(), String> {
             let at = path.trim_start_matches('/');

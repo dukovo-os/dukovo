@@ -596,7 +596,7 @@ fn tell_bundled(key: &PublicKey) -> Result<(), String> {
 
 /// Sends `request` to bundled(8), with `archive` for an install; the
 /// connection, and a reader of its answers.
-fn ask(
+pub(crate) fn ask(
     request: &Request,
     archive: Option<&File>,
 ) -> Result<(UnixStream, BufReader<UnixStream>), String> {
@@ -614,7 +614,7 @@ fn ask(
 }
 
 /// The next answer, or why there is none.
-fn answer(input: &mut BufReader<UnixStream>) -> Result<Answer, Fail> {
+pub(crate) fn answer(input: &mut BufReader<UnixStream>) -> Result<Answer, Fail> {
     match Answer::read(input) {
         Ok(Some(answer)) => Ok(answer),
         Ok(None) => Err(fail("bundled gave no answer".into())),
