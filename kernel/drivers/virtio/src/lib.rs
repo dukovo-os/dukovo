@@ -1,8 +1,8 @@
 // SPDX-FileCopyrightText: 2026 The Dukovo contributors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! Virtio over PCI: the transport, virtqueues and the block and network
-//! drivers.
+//! Virtio over PCI: the transport, virtqueues and the block, network and
+//! sound drivers.
 //!
 //! Virtio (OASIS Virtual I/O Device specification, version 1.2) is how a
 //! virtual machine's devices talk to their hypervisor: a device and its
@@ -23,6 +23,9 @@
 //!   MSI-X interrupt for its completions.
 //! - [`net::Net`] is the network card (virtio-net) on its first pair of
 //!   queues, with one MSI-X interrupt for both.
+//! - [`snd::Snd`] is the sound card (virtio-snd), playing through its
+//!   first output stream, with one MSI-X interrupt for the samples it
+//!   has played.
 //!
 //! Nothing here waits: drivers submit requests and collect completions,
 //! and the kernel decides how threads wait for them (in `radix`, which
@@ -35,9 +38,12 @@
 pub mod blk;
 pub mod net;
 pub mod queue;
+pub mod snd;
 
 #[cfg(test)]
 mod net_tests;
+#[cfg(test)]
+mod snd_tests;
 #[cfg(test)]
 mod tests;
 
@@ -57,6 +63,8 @@ pub mod device_type {
     pub const NET: u16 = 1;
     /// A block device.
     pub const BLOCK: u16 = 2;
+    /// A sound card.
+    pub const SOUND: u16 = 25;
 }
 
 /// The virtio device type of a PCI function, if it is a virtio device: a
@@ -97,6 +105,10 @@ pub enum Error {
     Full,
     /// The request is outside the device or its limits.
     BadRequest,
+    /// The device did not answer a request in time, and was reset.
+    NoAnswer,
+    /// The device refused a request, with this status.
+    Refused(u32),
 }
 
 impl fmt::Display for Error {
@@ -112,6 +124,8 @@ impl fmt::Display for Error {
             Error::DeviceFailed => write!(f, "the device needs a reset"),
             Error::Full => write!(f, "the queue is full"),
             Error::BadRequest => write!(f, "the request is outside the device's limits"),
+            Error::NoAnswer => write!(f, "the device did not answer"),
+            Error::Refused(status) => write!(f, "the device refused the request ({status:#x})"),
         }
     }
 }

@@ -49,6 +49,25 @@ there at boot, and removes the directories. Unmount a volume with
 *eject*(1) before pulling its disk out, so that what it holds is
 written first.
 
+A drive whose medium comes and goes, such as a card reader's slot
+(_/kernel/block/_*drive*_/removable_ is *1*, ADR 0430), stays when its
+medium comes out; Spark leaves it alone at boot when it has none. Its
+_media_changes_ count moves each time a medium goes in or comes out, and
+when it has, volumed takes the drive's old partitions as gone and its
+new ones as plugged in, though a partition of the new medium may have an
+old one's name: a card put in is mounted as a stick plugged in, never
+taken as partitioned again, and one taken out has its volumes unmounted.
+volumed reads the counts before and after it lists _/kernel/block_, and
+lists again if they moved between, so that a medium swapped while it
+looked is not missed.
+
+```
+volumed: a medium went in sdc
+volumed: mounted the FAT filesystem of sdc1 at /volumes/SDCARD
+volumed: sdc1 is gone; unmounted /volumes/SDCARD
+volumed: sdc has no medium in it now
+```
+
 volumed takes the disks there are when it starts as done: Spark has
 mounted them. It looks at _/kernel/block_ (*radix-sysfs*(5)) every
 second for disks and partitions that come or go, and writes a line of

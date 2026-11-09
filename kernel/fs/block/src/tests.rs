@@ -17,7 +17,7 @@ use crate::mem::CachePage;
 use crate::pagemap::PageMap;
 use crate::partition::{self, Kind, Scheme};
 use crate::ram::RamDisk;
-use crate::{BlockDevice, DeviceRef, Error, SECTOR, SegmentMut, Slice, check};
+use crate::{BlockDevice, DeviceRef, Empty, Error, SECTOR, SegmentMut, Slice, check};
 
 fn shared(disk: RamDisk) -> (Arc<RamDisk>, DeviceRef) {
     let disk = Arc::new(disk);
@@ -152,6 +152,26 @@ fn a_retired_slice_fails_and_its_disk_goes_on() {
     device.retire();
     crate::read_sector(&*device, 10, &mut sector).unwrap();
     assert_eq!(&sector[..12], b"tenth sector");
+}
+
+#[test]
+fn an_empty_drive_has_no_sectors_and_fails_what_would_reach_them() {
+    let empty = Empty;
+    assert_eq!(empty.info().sectors, 0);
+    assert_eq!(empty.info().logical_block, 512);
+    let mut sector = [0u8; 512];
+    assert_eq!(crate::read_sector(&empty, 0, &mut sector), Err(Error::Io));
+    let page = CachePage::new().unwrap();
+    let seg = [crate::Segment { page: &page, offset: 0, len: 512 }];
+    assert_eq!(empty.write(0, &seg), Err(Error::Io));
+    assert_eq!(empty.read_frames(0, &[(0, 512)]), Err(Error::Io));
+    assert_eq!(empty.write_frames(0, &[(0, 512)]), Err(Error::Io));
+    assert_eq!(empty.discard(0, 1), Err(Error::Io));
+    // Nothing to write, so a flush, as at shutdown, works.
+    assert_eq!(empty.flush(), Ok(()));
+    // No partition fits on it.
+    let device: DeviceRef = crate::mem::arc(Empty).unwrap();
+    assert!(Slice::new(device, 0, 1).is_none());
 }
 
 #[test]

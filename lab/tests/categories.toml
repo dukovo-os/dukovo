@@ -21,6 +21,11 @@ title = "Hardware and drivers"
 about = "The devices found and working: controllers, disks, USB, CPUs and memory"
 
 [[category]]
+name = "sound"
+title = "Sound"
+about = "The sound outputs and their volume: audio and audiod"
+
+[[category]]
 name = "processes"
 title = "Processes and monitors"
 about = "The running processes and the tools that show them: ps, top, kill, free, who and the rest"

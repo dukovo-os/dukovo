@@ -187,7 +187,7 @@ pub fn open(operand: &OsStr, write: bool, sector: Option<u32>) -> Result<Opened,
 }
 
 /// Block request `request` on `device`, with `value` as its argument.
-fn control(device: &File, request: u32, value: &mut [u8]) -> Result<(), Status> {
+pub fn control(device: &File, request: u32, value: &mut [u8]) -> Result<(), Status> {
     let address = value.as_mut_ptr() as u64;
     let slot = sys::slot_of(device.as_raw_fd());
     file::control(&SYS, slot, request, address, address, value.len() as u64).map(drop)

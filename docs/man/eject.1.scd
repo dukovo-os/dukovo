@@ -5,7 +5,7 @@ eject(1) "Dukovo" "Dukovo Manual"
 
 # NAME
 
-eject - unmount a volume so that its disk can be pulled out
+eject - unmount a volume, and eject a drive's medium, so it can be taken out
 
 # SYNOPSIS
 
@@ -27,18 +27,36 @@ $ eject DUKOVOUSB
 Once a volume is ejected, *volumed*(8) leaves its disk alone until it is
 pulled out and plugged in again.
 
+A drive whose medium comes and goes, such as a card reader's slot or a
+stick that says its medium is removable (_/kernel/block/<drive>/removable_
+is 1, ADR 0430), is ejected whole: eject unmounts every volume on its
+medium, as util-linux's eject unmounts every partition of the disk, and
+then has the drive let go of the medium and eject it (*radix-block*(2)'s
+EJECT): a tray opens, and a card can be taken out. The drive stays,
+empty, and *volumed*(8) mounts the next medium put in. A drive's name
+ejects its medium with nothing of it mounted too.
+
+```
+$ eject SDCARD
+$ eject sdc
+```
+
 # OPTIONS
 
 *-v*, *--verbose*
-	Say what is unmounted.
+	Say what is unmounted, and which drive's medium is ejected.
 
 # EXIT STATUS
 
-0 when every volume named was unmounted; 1 when none is mounted at
-_/volumes_, when one could not be unmounted (a file on it is open, or
-what it holds could not be written), or for a mistake in the command
+0 when every volume named was unmounted, and every drive's medium
+ejected; 1 when none is mounted at _/volumes_ and nothing named is a
+drive, when one could not be unmounted (a file on it is open, or what it
+holds could not be written), when a drive could not eject (its medium or
+a partition of it is in use outside _/volumes_, as swap or a volume
+unlocked, or the drive did not answer), or for a mistake in the command
 line.
 
 # SEE ALSO
 
-*volumed*(8), *remount*(8), *findmnt*(8), *systools*(1)
+*volumed*(8), *remount*(8), *findmnt*(8), *lsblk*(8), *radix-block*(2),
+*systools*(1)

@@ -236,6 +236,22 @@ DUKOVOUSB  sda5
 # eject DUKOVOUSB
 ```
 
+A USB card reader, or a stick that says its medium is removable, is a
+drive: it keeps its name with no card in it, at a size of 0, and
+`lsblk -o NAME,SIZE,RM` shows `1` under `RM` (ADR 0430). The kernel looks
+at it every two seconds. A card put in is mounted at its label as a
+stick plugged in is, and one taken out has its volumes unmounted. While
+a card's volume is mounted, the drive is told to lock it in, so that a
+reader that can hold its card does; `eject` unmounts every volume on the
+card and then has the drive eject it, and the drive stays, empty, for
+the next card:
+
+```
+# eject SDCARD
+# cat /kernel/block/sdc/size
+0
+```
+
 When the machine is turned off or restarted, every disk's cache is
 written out first, and each NVMe drive is told to shut down, as Linux
 does, so that it does not count an unsafe shutdown. A read or write a

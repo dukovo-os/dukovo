@@ -1,0 +1,27 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# Which outputs a machine has depends on its sound card: the virtio card
+# is the audio-virtio boot test's, and the lab's machines are heard
+# through the cable to the lab PC once their own cards are driven (Intel
+# HDA, PR 6b). This checks what every machine has.
+about = "The sound outputs are files of /devices/audio, root's alone, with speech for the screen reader; audio lists them and names the default"
+time = "2m"
+
+[[step]]
+run = "stat -c '%a %U' /devices/audio/speech"
+expect = "600 root"
+# Only the services given an output may play through it.
+[[step]]
+run = "head -c 4 /devices/zero > /devices/audio/speech"
+exit = 1
+expect = "Permission denied"
+[[step]]
+run = "audio list && audio output"
+root = true
+expect_not = "audio:"
+[[step]]
+run = "audio output nothing-here"
+root = true
+exit = 1
+expect = "no output nothing-here; `audio list` lists them"

@@ -1,0 +1,17 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+[package]
+name = "radix-audio"
+description = "Sound for the Radix kernel: rates, fragments, volume and the buffer of samples an output plays"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+radix-abi = { path = "../../abi" }
+
+[lints]
+workspace = true

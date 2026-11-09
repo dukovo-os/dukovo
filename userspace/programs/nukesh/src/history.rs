@@ -513,6 +513,15 @@ impl Shell {
                 i += 1;
                 continue;
             }
+            // `$!`, the last background job's process ID, and `${!name}`
+            // name no event: bash leaves them alone too.
+            let after_dollar = (i >= 1 && chars[i - 1] == '$')
+                || (i >= 2 && chars[i - 2] == '$' && chars[i - 1] == '{');
+            if after_dollar {
+                out.push('!');
+                i += 1;
+                continue;
+            }
             let next = chars.get(i + 1).copied();
             if next.is_none_or(|n| {
                 matches!(n, ' ' | '\t' | '\n' | '=' | '(') || (in_double && n == '"')
@@ -1112,6 +1121,9 @@ mod tests {
         assert_eq!(run(&mut shell, "!ec:s/one/1/"), "echo 1 two");
         assert_eq!(run(&mut shell, "^one^1"), "echo 1 two");
         assert_eq!(run(&mut shell, "!nope"), "error !nope: event not found");
+        // The last background job's process ID and an indirect parameter.
+        assert_eq!(run(&mut shell, "sleep 1 & p=$!; wait $!; echo ${!p}"), "same");
+        assert_eq!(run(&mut shell, "kill $! !!"), "kill $! echo one two");
     }
 
     #[test]

@@ -13,8 +13,15 @@
 //! partitioning it (rdisk(8)), not plugged in, and is left unmounted for
 //! whoever made it. As disks come and go, volumed keeps the links of
 //! `/devices/disk` (ADR 0303).
+//!
+//! A drive whose medium comes and goes, such as a card reader's slot,
+//! stays while it is empty (ADR 0430). The kernel counts each medium that
+//! goes in or comes out, in `/kernel/block/<drive>/media_changes`; when
+//! the count moves, what was on the drive is gone and what is on it now
+//! came, though the names be the same: the old medium's volumes are
+//! unmounted, and the new one's mounted.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{File, OpenOptions};
 use std::io::{self, Write};
 use std::os::fd::AsRawFd;
@@ -57,21 +64,81 @@ pub const KINDS: [(&[u8], &str); 7] = [
     (b"iso9660", "ISO 9660"),
 ];
 
+/// What `/kernel/block` has.
+#[derive(Default)]
+struct Present {
+    /// Its disks and partitions.
+    names: BTreeSet<String>,
+    /// For each drive whose medium comes and goes, how many times one went
+    /// in or came out.
+    changes: BTreeMap<String, u64>,
+}
+
 /// The disks and partitions there are now.
-fn present() -> BTreeSet<String> {
+fn names() -> BTreeSet<String> {
     std::fs::read_dir(BLOCKS).map_or_else(
         |_| BTreeSet::new(),
         |entries| entries.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect(),
     )
 }
 
+/// How many times the medium of each of `drives` went in or came out.
+fn changes<'a>(drives: impl Iterator<Item = &'a String>) -> BTreeMap<String, u64> {
+    drives
+        .filter_map(|drive| {
+            let count = probe::block_text(drive, "media_changes")?.parse().ok()?;
+            Some((drive.clone(), count))
+        })
+        .collect()
+}
+
+/// What `/kernel/block` has now. `drives` says of each name seen whether
+/// it is a drive whose medium comes and goes, and learns the new ones'.
+/// The drives' counts are read before the names and after, and all again
+/// until they agree, so that the names are those of the media the counts
+/// say: the kernel changes a drive's medium and its count at once.
+fn present(drives: &mut BTreeMap<String, bool>) -> Present {
+    let is_drive = |name: &String| probe::block_text(name, "removable").as_deref() == Some("1");
+    let mut now = Present::default();
+    for _ in 0..5 {
+        let listed = |drives: &BTreeMap<String, bool>| {
+            changes(drives.iter().filter(|(_, drive)| **drive).map(|(name, _)| name))
+        };
+        let before = listed(drives);
+        now.names = names();
+        let new: Vec<String> =
+            now.names.iter().filter(|n| !drives.contains_key(*n)).cloned().collect();
+        for name in new {
+            let drive = is_drive(&name);
+            drives.insert(name, drive);
+        }
+        drives.retain(|name, _| now.names.contains(name));
+        now.changes = listed(drives);
+        if now.changes.iter().all(|(drive, count)| before.get(drive).is_none_or(|was| was == count))
+        {
+            break;
+        }
+    }
+    now
+}
+
+/// Whether `name` is the disk `disk` or one of its partitions: `sdb1` of
+/// `sdb`, `mmcblk0p1` of `mmcblk0`.
+fn of_disk(disk: &str, name: &str) -> bool {
+    let Some(rest) = name.strip_prefix(disk) else { return false };
+    let digit = disk.ends_with(|c: char| c.is_ascii_digit());
+    let rest = if digit { rest.strip_prefix('p').unwrap_or(rest) } else { rest };
+    rest.bytes().all(|b| b.is_ascii_digit())
+}
+
 /// Whether `name` is a volume: a partition, or a disk with none, that is
-/// no EFI system partition.
+/// no EFI system partition. An empty drive, which has no sectors, is none.
 fn is_volume(name: &str, present: &BTreeSet<String>) -> bool {
     let partitioned = probe::block_text(name, "partition").is_none()
         && present.iter().any(|other| other != name && probe::disk_of(other) == name);
     let efi = probe::block_text(name, "parttype").is_some_and(|kind| EFI_SYSTEM.contains(&&*kind));
-    !partitioned && !efi
+    let empty = probe::block_text(name, "size").as_deref() == Some("0");
+    !partitioned && !efi && !empty
 }
 
 /// The name a volume is mounted at: its filesystem's label, made a single
@@ -258,23 +325,48 @@ fn repartitioned(name: &str, known: &BTreeSet<String>) -> bool {
     disk != name && known.contains(disk)
 }
 
+/// The drives of `now` whose medium went in or came out since `known`.
+fn swapped(known: &Present, now: &Present) -> BTreeSet<String> {
+    let moved =
+        |(drive, count): (&String, &u64)| known.changes.get(drive).is_some_and(|was| was != count);
+    now.changes.iter().filter(|&entry| moved(entry)).map(|(drive, _)| drive.clone()).collect()
+}
+
 /// Watches `/kernel/block` for good.
 fn watch() -> Result<i32, Fail> {
-    let mut known = present();
+    let mut drives = BTreeMap::new();
+    let mut known = present(&mut drives);
     let mut out = io::stdout().lock();
     if let Err(err) = links::refresh() {
         writeln!(out, "cannot make the links of /devices/disk: {}", util::strip_os_error(&err))?;
     }
-    writeln!(out, "watching for volumes; {} disks and partitions now", known.len())?;
+    writeln!(out, "watching for volumes; {} disks and partitions now", known.names.len())?;
     loop {
         std::thread::sleep(PERIOD);
-        let now = present();
-        let gone: BTreeSet<String> = known.difference(&now).cloned().collect();
+        let now = present(&mut drives);
+        // What was on a drive whose medium changed is gone, and what is
+        // on it now came, though the names be the same.
+        let swapped = swapped(&known, &now);
+        let on_swapped = |name: &String| swapped.iter().any(|drive| of_disk(drive, name));
+        let gone: BTreeSet<String> = known
+            .names
+            .iter()
+            .filter(|name| !now.names.contains(*name) || on_swapped(name))
+            .cloned()
+            .collect();
         for line in unmount_gone(&gone) {
             writeln!(out, "{line}")?;
         }
-        for name in now.difference(&known).filter(|name| is_volume(name, &now)) {
-            if repartitioned(name, &known) {
+        for drive in &swapped {
+            if probe::block_text(drive, "size").as_deref() == Some("0") {
+                writeln!(out, "{drive} has no medium in it now")?;
+            } else {
+                writeln!(out, "a medium went in {drive}")?;
+            }
+        }
+        let came = now.names.iter().filter(|name| !known.names.contains(*name) || on_swapped(name));
+        for name in came.filter(|name| is_volume(name, &now.names)) {
+            if !on_swapped(name) && repartitioned(name, &known.names) {
                 let disk = probe::disk_of(name);
                 writeln!(
                     out,
@@ -284,7 +376,7 @@ fn watch() -> Result<i32, Fail> {
             }
             writeln!(out, "{}", mount(name))?;
         }
-        if now != known {
+        if now.names != known.names || !swapped.is_empty() {
             links::refresh_quietly();
         }
         known = now;
@@ -325,6 +417,26 @@ mod tests {
         assert_eq!(place_for(None, "sdb1", free), "sdb1");
         assert_eq!(place_for(Some(".."), "sdb1", free), "sdb1");
         assert_eq!(place_for(Some("DUKOVO"), "sdc", |at| at == "DUKOVO"), "DUKOVO-sdc");
+    }
+
+    #[test]
+    fn a_disk_has_its_partitions() {
+        assert!(of_disk("sdb", "sdb"));
+        assert!(of_disk("sdb", "sdb1"));
+        assert!(of_disk("mmcblk0", "mmcblk0p2"));
+        assert!(!of_disk("sdb", "sdc1"));
+        assert!(!of_disk("sdb", "sdb1-unlocked"));
+    }
+
+    #[test]
+    fn only_drives_whose_count_moved_are_swapped() {
+        let counts = |pairs: &[(&str, u64)]| Present {
+            names: BTreeSet::new(),
+            changes: pairs.iter().map(|&(d, c)| (d.to_string(), c)).collect(),
+        };
+        let known = counts(&[("sdb", 0), ("sdc", 2)]);
+        let now = counts(&[("sdb", 1), ("sdc", 2), ("sdd", 0)]);
+        assert_eq!(swapped(&known, &now), BTreeSet::from(["sdb".to_string()]));
     }
 
     #[test]

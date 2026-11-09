@@ -18,6 +18,9 @@
 //!   `serial` and `firmware_rev` it gives, for SATA, NVMe and USB disks;
 //!   and its `stat`, what it has done, in the 17 numbers of Linux's
 //!   `/sys/block/<disk>/stat` (block/stat.rst), which iostat(1) reads;
+//!   and `removable`, 1 for a drive whose medium comes and goes, which
+//!   has `media_changes` too, how many times one went in or came out
+//!   (Radix's own, which volumed(8) watches, ADR 0430);
 //! - `/kernel/bus/pci/devices/<address>/vendor`, `device`, `class`,
 //!   `revision`, `subsystem_vendor` and `subsystem_device`, in
 //!   hexadecimal, for every PCI function the scan found;
@@ -511,6 +514,15 @@ impl Listing for Blocks {
             dir.add("start", value(move |text| writeln!(text, "{}", place.first))?)?;
             dir.add("parttype", value(move |text| writeln!(text, "{}", place.kind))?)?;
             return Ok(dir);
+        }
+        // Whether its medium comes and goes, as Linux has it; for a drive
+        // whose does, how many times one went in or came out since it was
+        // found, which volumed(8) watches (ADR 0430).
+        let drive = disk::removable::find(name);
+        let removable = u8::from(drive.is_some());
+        dir.add("removable", value(move |text| writeln!(text, "{removable}"))?)?;
+        if let Some(drive) = drive {
+            dir.add("media_changes", value(move |text| writeln!(text, "{}", drive.changes()))?)?;
         }
         // What the disk says it is, where Linux has an NVMe controller's.
         if let Some(ident) = ident {

@@ -368,7 +368,8 @@ a lock, and the file is cut to *HISTFILESIZE* entries by writing a new
 one in its place. *HISTSIZE*, *HISTCONTROL* (*ignorespace*, *ignoredups*,
 *ignoreboth*, *erasedups*), *HISTIGNORE* and *HISTTIMEFORMAT* work as in
 bash, as do *history*, *fc*, and history expansion (*!!*, *!$*, *!*_n_,
-*^old^new*), which is off in POSIX mode.
+*^old^new*), which is off in POSIX mode and, as in bash, leaves *$!* and
+*${!*_name_*}* alone.
 
 ## Completion
 

@@ -95,7 +95,7 @@ give a lab image to anyone as a release.
 
 A test is a file at `lab/tests/<category>/<name>.toml`. The categories,
 their order and their titles on the runner page are in
-`lab/tests/categories.toml`: boot and power, hardware and drivers,
+`lab/tests/categories.toml`: boot and power, hardware and drivers, sound,
 processes and monitors, disks and filesystems, network, SSH, services and
 logs, time and date, accounts and elevate, commands, the console,
 installing, stress and soak, security, performance against Linux, and
