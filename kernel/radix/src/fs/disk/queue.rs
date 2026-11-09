@@ -50,7 +50,8 @@
 //! rule, learnt from every wait for a request): the sleep and the
 //! interrupt that ends it are each an exit to the hypervisor, which cost
 //! more there than the device's own time for a small transfer
-//! ([`Controller::poll`]; virtio disks).
+//! ([`Controller::poll`]; virtio disks). A thread waiting for a device
+//! that cannot be polled so sleeps at once ([`Controller::POLLED`]).
 //!
 //! A request the device fails ends in an I/O error, which the log tells
 //! of, with what the controller said of it, for at most
@@ -198,6 +199,13 @@ pub trait Controller: Send + Sized {
     fn poll(&mut self, _polled: bool) -> bool {
         false
     }
+
+    /// Whether [`Controller::poll`] can turn the device's interrupt off,
+    /// so that a waiter in a virtual machine polls it a while before it
+    /// sleeps. A waiter for one that cannot sleeps at once: looking first
+    /// finds no more than the interrupt brings, and where the device's
+    /// registers are read (AHCI's), each read is a trap to the hypervisor.
+    const POLLED: bool = false;
 
     /// The next finished request: its slot and how it ended.
     fn complete(&mut self) -> Option<(u8, Outcome)>;
@@ -578,14 +586,15 @@ impl<C: Controller> Disk<C> {
     }
 
     /// Polls `lane` until `ended` holds, with the device's interrupt off,
-    /// for at most the lane's learnt time, and only in a virtual machine
-    /// and while no other thread wants this CPU (`sched::cpu_to_itself`).
+    /// for at most the lane's learnt time, and only in a virtual machine,
+    /// for a controller that can be polled ([`Controller::POLLED`]) and
+    /// while no other thread wants this CPU (`sched::cpu_to_itself`).
     /// Turns the interrupt back on before it returns, and collects what
     /// finished meanwhile. Returns whether `ended` holds.
     fn poll_for(&self, lane: usize, ended: &impl Fn() -> bool) -> bool {
         let this = &self.lanes[lane];
         let limit = this.poll_ns.load(Ordering::Relaxed);
-        if limit == 0 || !sched::cpu_to_itself() {
+        if !C::POLLED || limit == 0 || !sched::cpu_to_itself() {
             return false;
         }
         let until = sched::now_ns().saturating_add(limit);

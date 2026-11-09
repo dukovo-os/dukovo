@@ -40,7 +40,9 @@
 //! ([`Port::send_packet`]) from the thread that reads, and the port's
 //! interrupt looks for their end ([`Port::packet_ended`]); the drive's
 //! thread then has a failed one answered ([`Port::packet_reply`]), as
-//! Linux's libata does (ADR 0434).
+//! Linux's libata does (ADR 0434). The port remembers the interrupts it
+//! last turned on, so that a read sent while they are on writes one
+//! register: each is a trap to the hypervisor in a virtual machine.
 
 use radix_hw::{Dma, Mmio, device_barrier};
 use radix_scsi::{Cdb, Data, Reply, SENSE_LENGTH, Sense, Transport, TransportError};
@@ -264,6 +266,9 @@ pub struct Port {
     identity: Option<Identity>,
     /// What an optical drive on the port says it is.
     packet: Option<PacketIdentity>,
+    /// The interrupts the port raises, as this last set them: a disc's
+    /// read finds them on and writes only the command issue register.
+    interrupts: u32,
     info: Info,
     /// Slots in flight.
     busy: u32,
@@ -302,6 +307,7 @@ impl Port {
             cap,
             identity: None,
             packet: None,
+            interrupts: 0,
             info: Info {
                 sectors: 0,
                 sector_size: 512,
@@ -323,7 +329,7 @@ impl Port {
             errors: 0,
             soft_errors: 0,
         };
-        port.regs.write32(reg::IE, 0);
+        port.set_interrupts(0);
         if !port.halt(delay) {
             return Err(Absent::Stuck);
         }
@@ -428,7 +434,7 @@ impl Port {
         };
         self.identity = Some(identity);
         self.regs.write32(reg::IS, u32::MAX);
-        self.regs.write32(reg::IE, irq::ENABLED);
+        self.set_interrupts(irq::ENABLED);
         Ok(())
     }
 
@@ -446,7 +452,7 @@ impl Port {
         // Its interrupts come on with each command (`Port::packet`), once
         // its thread is there to wait for them.
         self.regs.write32(reg::IS, u32::MAX);
-        self.regs.write32(reg::IE, 0);
+        self.set_interrupts(0);
         Ok(())
     }
 
@@ -717,7 +723,7 @@ impl Port {
             self.regs.write32(reg::IS, status);
         }
         if status & irq::STOPS != 0 {
-            self.regs.write32(reg::IE, 0);
+            self.set_interrupts(0);
             self.stopped = Some(status);
             return;
         }
@@ -779,7 +785,7 @@ impl Port {
     fn interrupts_on(&mut self) {
         if !self.dead {
             self.regs.write32(reg::IS, u32::MAX);
-            self.regs.write32(reg::IE, irq::ENABLED);
+            self.set_interrupts(irq::ENABLED);
         }
     }
 
@@ -835,7 +841,7 @@ impl Port {
     /// every request in flight is handed out to be issued again, or failed
     /// if the disk does not come back, or a different disk does.
     pub fn reset(&mut self, delay: &mut dyn FnMut(u32)) {
-        self.regs.write32(reg::IE, 0);
+        self.set_interrupts(0);
         let in_flight = self.busy;
         self.busy = 0;
         self.alone = false;
@@ -979,10 +985,45 @@ impl Port {
         let header = COMMAND_LIST;
         memory.write32(header, memory.read32(header) | HEADER_ATAPI);
         device_barrier();
-        self.regs.write32(reg::IS, u32::MAX);
-        self.regs.write32(reg::IE, irq::ENABLED);
+        // Each register written is a trap to the hypervisor in a virtual
+        // machine: a read sent while the interrupt is on, as the last
+        // read left it, writes only the command issue register, as
+        // Linux's libata does (ADR 0434).
+        if self.interrupts != irq::ENABLED {
+            // What the port said while its interrupt was off was looked
+            // at already, or is old.
+            self.regs.write32(reg::IS, u32::MAX);
+            self.set_interrupts(irq::ENABLED);
+        }
         self.regs.write32(reg::CI, 1);
         Ok(())
+    }
+
+    /// Whether the port has an interrupt status set: something it raised
+    /// its interrupt for that no one has looked at yet.
+    pub fn status_set(&self) -> bool {
+        self.regs.read32(reg::IS) != 0
+    }
+
+    /// Turns the port's interrupt off until its next packet command, so
+    /// that its status stays for a thread to read without the interrupt
+    /// coming again meanwhile.
+    pub fn quiet(&mut self) {
+        self.set_interrupts(0);
+    }
+
+    /// Forgets whether the port's interrupt is on, after the controller's
+    /// interrupt handler may have turned it off with [`crate::Hba::quiet`]
+    /// while the port was out of reach: the next packet command turns it
+    /// on again.
+    pub fn forget_interrupts(&mut self) {
+        self.interrupts = 0;
+    }
+
+    /// Sets the interrupts the port raises, and remembers them.
+    fn set_interrupts(&mut self, mask: u32) {
+        self.regs.write32(reg::IE, mask);
+        self.interrupts = mask;
     }
 
     /// Whether the packet command [`Port::send_packet`] started is over,
@@ -996,7 +1037,7 @@ impl Port {
             self.regs.write32(reg::IS, status);
         }
         if status & irq::STOPS != 0 {
-            self.regs.write32(reg::IE, 0);
+            self.set_interrupts(0);
             return Some(PacketEnd::Stopped(status));
         }
         if self.regs.read32(reg::CI) & 1 != 0 {
@@ -1033,7 +1074,7 @@ impl Port {
     /// Resets the link of a port whose packet command went unanswered:
     /// what the command's reply is then.
     pub fn packet_timed_out(&mut self, wait: &mut dyn FnMut(u32)) -> TransportError {
-        self.regs.write32(reg::IE, 0);
+        self.set_interrupts(0);
         self.errors = self.errors.wrapping_add(1);
         if !self.restart(true, wait) {
             self.dead = true;
@@ -1092,6 +1133,9 @@ impl Port {
         timeout_us: u32,
         wait: &mut dyn FnMut(u32),
     ) -> Result<Reply, TransportError> {
+        // The interrupt handler may have quieted the port after the last
+        // command a thread waited for, behind its back.
+        self.forget_interrupts();
         self.send_packet(cdb, data)?;
         let total = data.len() as u32;
         let end = self.wait_packet(timeout_us, wait)?;
@@ -1109,6 +1153,7 @@ impl Port {
         let fallback = Sense { key: error >> 4, asc: 0, ascq: 0 };
         let mut bytes = [0u8; SENSE_LENGTH as usize];
         let cdb = Cdb::request_sense(SENSE_LENGTH);
+        self.forget_interrupts();
         let sent = self.send_packet(&cdb, &Data::In(&mut bytes));
         match sent.and_then(|()| self.wait_packet(SENSE_US, wait)) {
             Ok(PacketEnd::Done(moved)) => {
@@ -1169,7 +1214,7 @@ impl Transport for Packets<'_> {
 /// back.
 impl Drop for Port {
     fn drop(&mut self) {
-        self.regs.write32(reg::IE, 0);
+        self.set_interrupts(0);
         // Without `delay`, it looks as many times as it would wait in
         // milliseconds; a port that has not stopped by then keeps its
         // memory.

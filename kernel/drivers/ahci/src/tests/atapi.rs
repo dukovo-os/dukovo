@@ -475,3 +475,41 @@ fn a_read_sent_without_waiting_is_looked_at_and_answered_after() {
     // The one held was never taken in.
     assert_eq!(packets_sent(&sim).iter().filter(|p| p.0 == op::READ_10).count(), 3);
 }
+
+#[test]
+fn a_read_sent_with_the_interrupt_on_writes_only_its_command() {
+    let (sim, hba, mut port) = drive(1000, |_| {});
+    let (_memory, frames) = buffers(2);
+    let read = Data::Frames { into_host: true, frames: &frames };
+    let cdb = Cdb::read(10, 4, false).unwrap();
+    port.send_packet(&cdb, &read).unwrap();
+    assert_eq!(port.packet_ended(), Some(PacketEnd::Done(8192)));
+    // Marks: the interrupt mask cut to one bit, and a status bit the port
+    // raises no interrupt for ("descriptor processed"). Writing either
+    // register would lose its mark.
+    const MASK: u32 = 1;
+    const PROCESSED: u32 = 1 << 5;
+    sim.with(|s| {
+        s.ports[1].ie = MASK;
+        s.ports[1].is = PROCESSED;
+    });
+    port.send_packet(&cdb, &read).unwrap();
+    sim.with(|s| {
+        assert_eq!(s.ports[1].ie, MASK, "the interrupt left as it was");
+        assert_ne!(s.ports[1].is & PROCESSED, 0, "the status left as it was");
+    });
+    assert_eq!(port.packet_ended(), Some(PacketEnd::Done(8192)));
+    // The controller's handler quiets the port behind the port's back
+    // while a thread has it; once it is told, the next read turns the
+    // interrupt on again.
+    hba.quiet(1);
+    port.forget_interrupts();
+    port.send_packet(&cdb, &read).unwrap();
+    sim.with(|s| assert_ne!(s.ports[1].ie & 1, 0, "its interrupt on again"));
+    assert_eq!(port.packet_ended(), Some(PacketEnd::Done(8192)));
+    // The port's own quiet is remembered.
+    port.quiet();
+    sim.with(|s| assert_eq!(s.ports[1].ie, 0));
+    port.send_packet(&cdb, &read).unwrap();
+    sim.with(|s| assert_ne!(s.ports[1].ie & 1, 0, "its interrupt on again"));
+}

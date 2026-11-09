@@ -29,6 +29,14 @@ KVM in CI, with every read going through the drive's thread, Radix took
 whose eight commands of 128 KiB each woke the reader and the drive's
 thread in turn.
 
+Under KVM, each read or write of a controller's register is a trap to
+QEMU. For each read, libata writes the port's command issue register,
+and its interrupt handler reads and clears the controller's and the
+port's interrupt status and reads the command issue register again: six
+traps. Sent from the reader, with the port's interrupt turned on and its
+status cleared for each read, and the reader looking at the port once
+before it slept, Radix took ten, and 1.06 times Linux's time for 64 KiB.
+
 ## Decision
 
 - **Both virtual machines get a DVD drive** on q35's AHCI controller,
@@ -59,6 +67,16 @@ thread in turn.
   hand back judged as before. A drive on an IDE channel, which borrows
   the channel from a disk for each command (ADR 0432), keeps its reads in
   its thread.
+- **A read traps as often as Linux's.** The port remembers the
+  interrupts it last turned on (`Port::quiet`, `Port::forget_interrupts`
+  for a port the controller's handler quieted while the drive's thread
+  had it), so a read sent while they are on writes the command issue
+  register alone. The reader then sleeps at once: the queue polls only a
+  controller that can turn its interrupt off (`Controller::POLLED`,
+  virtio's alone, ADR 0365), and a look at an AHCI port before sleeping
+  costs two traps to find what the interrupt brings anyway. An interrupt
+  that finds the read already handed back, and the port's status clear,
+  leaves the port and the drive's thread alone.
 - **The rows are gated** as the disk rows are: Radix may take no longer
   than Linux (ADR 0107).
 
@@ -68,7 +86,10 @@ thread in turn.
   disk queue that makes a disc's reads slower than Linux's fails the
   gate.
 - A disc's read on an AHCI port costs what a SATA disk's read costs the
-  kernel: sent where it is asked for, ended in the interrupt. The drive's
+  kernel: sent where it is asked for, ended in the interrupt, six traps.
+- A thread waiting for an NVMe, AHCI, IDE, SD or USB disk no longer looks
+  at its controller once before it sleeps in a virtual machine; the
+  interrupt it sleeps for brings the same completion. The drive's
   look every two seconds waits for the read on the port, and the reads
   that come during the look wait for it, a few hundred microseconds.
 - Three parties share the port (the reader, the interrupt and the

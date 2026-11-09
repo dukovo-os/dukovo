@@ -81,6 +81,8 @@ impl Controller for Virtio {
         }
     }
 
+    const POLLED: bool = true;
+
     fn poll(&mut self, polled: bool) -> bool {
         // A device without an interrupt is polled anyway.
         if self.vector.is_none() {

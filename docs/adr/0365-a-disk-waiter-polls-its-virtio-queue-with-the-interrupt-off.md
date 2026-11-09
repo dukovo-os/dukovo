@@ -5,7 +5,8 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 # 0365. In a virtual machine, a thread waiting for its disk polls the virtio queue with the interrupt off
 
-- Status: Accepted
+- Status: Accepted; a thread waiting for a controller that cannot be
+  polled sleeps at once, without a look first, since [0434](0434-optical-reads-are-held-to-linux-s-in-ob-bench.md)
 - Date: 2026-11-03
 
 ## Context

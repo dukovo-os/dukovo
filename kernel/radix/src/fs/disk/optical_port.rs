@@ -82,6 +82,16 @@ struct State {
     disc: Option<Arc<Disk<DiscReads>, Kmalloc>>,
 }
 
+impl State {
+    /// Puts back the port the thread had out. The interrupt handler may
+    /// have turned its interrupt off meanwhile, which only the
+    /// controller saw ([`Hba::quiet`]): the next read turns it on again.
+    fn put_back(&mut self, mut port: Port) {
+        port.forget_interrupts();
+        self.port = Some(port);
+    }
+}
+
 /// An optical drive's AHCI port, shared by the drive's thread, its disc's
 /// queue and the port's interrupt.
 pub struct OpticalPort {
@@ -149,19 +159,29 @@ impl OpticalPort {
 
     /// The port's interrupt, `number` on `hba`: hands the read that ended
     /// back to its disc's queue, which starts the next. Otherwise the
-    /// thread has the port, or a read is the thread's to look into: the
-    /// port's interrupt goes off until its next command, and the thread
-    /// is woken.
+    /// thread has the port, or a read is the thread's to look into, or
+    /// the port has news for the thread: the port's interrupt goes off
+    /// until its next command, and the thread is woken. An interrupt for
+    /// a read already handed back finds nothing to say and does nothing.
     pub fn interrupt(&self, hba: &Hba, number: usize) {
         let disc = {
-            let state = self.state.lock_irq();
+            let mut guard = self.state.lock_irq();
+            let state = &mut *guard;
             let running = state.read.is_some_and(|read| read.stage == Stage::Running);
-            match &state.disc {
-                Some(disc) if running && state.port.is_some() => {
+            match (&mut state.port, &state.disc) {
+                (Some(_), Some(disc)) if running => {
                     self.collecting.fetch_add(1, Ordering::AcqRel);
                     Some(disc.clone())
                 }
-                _ => None,
+                (Some(port), _) if state.read.is_none() && !port.status_set() => return,
+                (Some(port), _) => {
+                    port.quiet();
+                    None
+                }
+                (None, _) => {
+                    hba.quiet(number);
+                    None
+                }
             }
         };
         match disc {
@@ -170,10 +190,7 @@ impl OpticalPort {
                 drop(disc);
                 self.collecting.fetch_sub(1, Ordering::AcqRel);
             }
-            None => {
-                hba.quiet(number);
-                self.wake_thread();
-            }
+            None => self.wake_thread(),
         }
     }
 
@@ -191,7 +208,7 @@ impl OpticalPort {
         let port = self.take();
         let disc = {
             let mut state = self.state.lock_irq();
-            state.port = Some(port);
+            state.put_back(port);
             state.disc.take()
         };
         while self.collecting.load(Ordering::Acquire) != 0 {
@@ -227,7 +244,7 @@ impl OpticalPort {
     pub fn put_back(&self, port: Port) {
         let disc = {
             let mut state = self.state.lock_irq();
-            state.port = Some(port);
+            state.put_back(port);
             state.disc.clone()
         };
         if let Some(disc) = disc {
@@ -266,7 +283,7 @@ impl OpticalPort {
         }
         let disc = {
             let mut state = self.state.lock_irq();
-            state.port = Some(port);
+            state.put_back(port);
             state.read = Some(Read { stage: Stage::Judged(outcome, why), ..read });
             state.disc.clone()
         };
