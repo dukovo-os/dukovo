@@ -20,6 +20,7 @@ use crate::ring::{RING_TRBS, TRB_SIZE, kind};
 use crate::*;
 
 mod dbc;
+mod isoch;
 mod streams;
 
 /// Where the simulated controller's register blocks are.
@@ -323,6 +324,9 @@ struct State {
     td_sizes: Vec<(u8, Vec<u32>)>,
     /// Whether each Link TRB met in the middle of a TD had Chain set.
     links_in_tds: Vec<bool>,
+    /// Each isochronous TD's first TRB: its endpoint, status and control
+    /// words.
+    isoch: Vec<(u8, u32, u32)>,
 
     /// Its Debug Capability, and the debug host on its cable.
     dbc: Option<dbc::SimDbc>,
@@ -387,6 +391,7 @@ impl State {
             port_writes: Vec::new(),
             td_sizes: Vec::new(),
             links_in_tds: Vec::new(),
+            isoch: Vec::new(),
             dbc: None,
             max_psa_size: 7,
             stream_dequeues: Vec::new(),
@@ -1034,7 +1039,16 @@ impl State {
                     }
                     continue;
                 }
-                assert_eq!((control >> 10) & 0x3f, kind::NORMAL);
+                // An isochronous endpoint's TD starts with an Isoch TRB;
+                // every other TRB is a Normal one.
+                let isoch =
+                    matches!(self.slots[&slot].endpoints.get(&index).map(|e| e.kind), Some(1 | 5));
+                if isoch && trbs.is_empty() {
+                    assert_eq!((control >> 10) & 0x3f, kind::ISOCH);
+                    self.isoch.push((index, status, control));
+                } else {
+                    assert_eq!((control >> 10) & 0x3f, kind::NORMAL);
+                }
                 trbs.push((at, parameter, status, control));
                 at += TRB_SIZE as u64;
                 if control & control::CHAIN == 0 {

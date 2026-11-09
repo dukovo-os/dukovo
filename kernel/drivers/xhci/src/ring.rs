@@ -43,6 +43,8 @@ pub mod kind {
     pub const DATA_STAGE: u32 = 3;
     /// A control transfer's status stage.
     pub const STATUS_STAGE: u32 = 4;
+    /// Isoch: the first buffer of an isochronous TD.
+    pub const ISOCH: u32 = 5;
     /// Link: the ring goes on at the parameter's address.
     pub const LINK: u32 = 6;
     /// Event Data: raises an event that carries its parameter.
@@ -119,6 +121,20 @@ pub mod control {
     pub const TRT_IN: u32 = 3 << 16;
     /// Stop Endpoint: suspend.
     pub const SUSPEND: u32 = 1 << 23;
+    /// Isoch TRB: start the TD in the next service interval free (Start
+    /// Isoch ASAP), rather than in a frame it names.
+    pub const SIA: u32 = 1 << 31;
+
+    /// An Isoch TRB's Transfer Burst Count: the TD's bursts, less one.
+    pub const fn burst_count(bursts_less_one: u32) -> u32 {
+        (bursts_less_one & 3) << 7
+    }
+
+    /// An Isoch TRB's Transfer Last Burst Packet Count: the packets in
+    /// the TD's last burst, less one.
+    pub const fn last_burst_packets(packets_less_one: u32) -> u32 {
+        (packets_less_one & 0xf) << 16
+    }
 
     /// A TRB of type `kind`, as its control word holds it.
     pub const fn kind(kind: u32) -> u32 {

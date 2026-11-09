@@ -18,6 +18,8 @@
 //!   may be short, long or wrong; nothing here trusts a length the device
 //!   gave without checking it against the bytes that came.
 //! - [`class_name`]: words for a device's or an interface's class.
+//! - [`audio`]: sound outputs, of the Audio Device Class's releases 1.0
+//!   and 2.0 (Phase 14, ADR 0323).
 //! - [`hub`]: what hubs say of themselves and of their ports, and the
 //!   requests that drive them (Phase 11a, ADR 0147).
 //! - [`hid`]: what a HID interface says of itself, and the class's
@@ -41,6 +43,7 @@
 
 use core::fmt;
 
+pub mod audio;
 pub mod hid;
 pub mod host;
 pub mod hub;
