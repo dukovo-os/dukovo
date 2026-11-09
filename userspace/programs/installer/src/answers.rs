@@ -81,6 +81,11 @@ pub struct Answers {
     /// the installer itself runs, on the serial port or not, if not given.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub serial_console: Option<bool>,
+    /// The screen reader, text size, sticky keys and slow keys of the
+    /// installed system (ADR 0422): as they are when not given, but for
+    /// the screen reader, which is on if the installer runs with it.
+    #[serde(default, skip_serializing_if = "Accessibility::is_default")]
+    pub accessibility: Accessibility,
     /// Every other key: those of [`LATER`], which this installer takes
     /// none of yet, and mistyped ones, which [`Answers::check`] names.
     /// (serde cannot refuse unknown keys beside a flattened map.)
@@ -130,6 +135,120 @@ impl Profile {
     #[must_use]
     pub fn features(self) -> &'static [&'static str] {
         &[]
+    }
+}
+
+/// The installed system's accessibility (ADR 0422): the screen reader
+/// (reader(1)) and the consoles' text size and keys
+/// (accessibility.toml(5)).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Accessibility {
+    /// Whether the screen reader starts with the system: as the
+    /// installer runs, with speech or not, if not given.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub screen_reader: Option<bool>,
+    /// How big the consoles' text is.
+    #[serde(default, skip_serializing_if = "TextSize::is_normal")]
+    pub text_size: TextSize,
+    /// Whether Shift, Ctrl and Alt, pressed and let go alone, hold for
+    /// the next key.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub sticky_keys: bool,
+    /// Whether a key counts only once held for a moment.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub slow_keys: bool,
+}
+
+/// What the consoles' settings file says first, as the installer writes
+/// it.
+const CONSOLE_HEADER: &str = "\
+# The consoles' text size and keys (accessibility.toml(5)), as the install
+# set them. consoled reads it as it starts and on `service consoled
+# reload`, and writes the text size and sticky keys as they are changed
+# from the keyboard.
+";
+
+impl Accessibility {
+    /// Whether every setting is its default, which an answers file need
+    /// not give.
+    #[must_use]
+    pub fn is_default(&self) -> bool {
+        *self == Accessibility::default()
+    }
+
+    /// Whether the screen reader starts with the installed system: as the
+    /// answers say, or as the installer runs, `with_speech`.
+    #[must_use]
+    pub fn screen_reader(&self, with_speech: bool) -> bool {
+        self.screen_reader.unwrap_or(with_speech)
+    }
+
+    /// Whether the consoles' settings are all their defaults, which the
+    /// system's default settings file already gives.
+    #[must_use]
+    pub fn consoles_as_default(&self) -> bool {
+        self.text_size == TextSize::Normal && !self.sticky_keys && !self.slow_keys
+    }
+
+    /// The consoles' settings file, accessibility.toml(5), with these
+    /// settings, and slow keys' delay in milliseconds if `delay` gives
+    /// one.
+    #[must_use]
+    pub fn console_file(&self, delay: Option<u64>) -> String {
+        let mut text = format!(
+            "{CONSOLE_HEADER}text-size = \"{}\"\nsticky-keys = {}\nslow-keys = {}\n",
+            self.text_size.id(),
+            self.sticky_keys,
+            self.slow_keys
+        );
+        if let Some(delay) = delay {
+            text.push_str(&format!("slow-keys-delay = {delay}\n"));
+        }
+        text
+    }
+}
+
+/// How big the consoles' text is (accessibility.toml(5)): the font the
+/// screen's size chooses, or one or two steps bigger.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TextSize {
+    /// The font the screen's size chooses.
+    #[default]
+    Normal,
+    /// A step bigger.
+    Larger,
+    /// Two steps bigger.
+    Largest,
+}
+
+impl TextSize {
+    /// Every size, from the smallest.
+    pub const ALL: [TextSize; 3] = [TextSize::Normal, TextSize::Larger, TextSize::Largest];
+
+    /// Its name in the answers file and accessibility.toml(5).
+    #[must_use]
+    pub fn id(self) -> &'static str {
+        match self {
+            TextSize::Normal => "normal",
+            TextSize::Larger => "larger",
+            TextSize::Largest => "largest",
+        }
+    }
+
+    /// The size named `id`, if one is.
+    #[must_use]
+    pub fn from_id(id: &str) -> Option<TextSize> {
+        TextSize::ALL.into_iter().find(|size| size.id() == id)
+    }
+
+    #[expect(
+        clippy::trivially_copy_pass_by_ref,
+        reason = "serde's skip_serializing_if passes a reference"
+    )]
+    fn is_normal(&self) -> bool {
+        *self == TextSize::Normal
     }
 }
 
@@ -866,6 +985,42 @@ pub(crate) mod tests {
         let saved = String::from_utf8(on.to_saved()).unwrap();
         assert!(saved.contains("\"serial_console\": true"), "{saved}");
         assert_eq!(Answers::parse(saved.as_bytes()).unwrap().serial_console, Some(true));
+    }
+
+    #[test]
+    fn accessibility_is_as_the_answers_say_and_the_reader_as_the_installer_runs() {
+        let answers = Answers::parse(EXAMPLE.as_bytes()).unwrap();
+        assert!(answers.accessibility.is_default());
+        assert!(!answers.accessibility.screen_reader(false));
+        assert!(answers.accessibility.screen_reader(true));
+        // Left out, it is not saved.
+        assert!(!String::from_utf8(answers.to_saved()).unwrap().contains("accessibility"));
+        let text = EXAMPLE.replace(
+            "\"version\": 1,",
+            r#""version": 1, "accessibility": { "screen_reader": false, "text_size": "larger", "sticky_keys": true },"#,
+        );
+        let given = Answers::parse(text.as_bytes()).unwrap();
+        given.check().unwrap();
+        let access = given.accessibility;
+        assert!(!access.screen_reader(true));
+        assert_eq!(
+            (access.text_size, access.sticky_keys, access.slow_keys),
+            (TextSize::Larger, true, false)
+        );
+        assert!(!access.consoles_as_default());
+        let file = access.console_file(None);
+        assert!(
+            file.ends_with("text-size = \"larger\"\nsticky-keys = true\nslow-keys = false\n"),
+            "{file}"
+        );
+        assert!(access.console_file(Some(500)).ends_with("slow-keys-delay = 500\n"));
+        // Saved, and read back the same.
+        assert_eq!(Answers::parse(&given.to_saved()).unwrap().accessibility, access);
+        let typo = EXAMPLE.replace(
+            "\"version\": 1,",
+            r#""version": 1, "accessibility": { "text_size": "huge" },"#,
+        );
+        assert!(Answers::parse(typo.as_bytes()).unwrap_err().contains("unknown variant"));
     }
 
     #[test]

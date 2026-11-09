@@ -341,6 +341,9 @@ impl Reader {
             self.line(&rest);
         } else if let Some(moved) = moved
             && self.burst == 0
+            // A program that names what it shows says where a key moved
+            // to itself, after whatever the key has it do first.
+            && !term.names_itself()
         {
             self.review = term.position();
             self.moved(term, moved);
@@ -400,9 +403,20 @@ impl Reader {
     /// listening.
     pub fn screen(&mut self, number: usize, term: &mut Terminal) {
         term.take_spoken();
+        let named = term.take_named();
         self.forget();
         self.review = term.position();
         self.now(&format!("Console {number}"));
+        // A program that names what it shows (ADR 0325) is heard by what
+        // it named last, if anything since the reader last listened: the
+        // installer's page, when its Screen reader box starts the reader.
+        // Its drawing is not read.
+        if term.names_itself() {
+            if let Some(named) = named {
+                self.say(&named);
+            }
+            return;
+        }
         for y in 0..term.rows() {
             let line = term.row_text(y);
             if let Some(line) = sayable(&line) {
@@ -684,6 +698,30 @@ mod tests {
         assert_eq!(heard(&mut theirs), "now Disk, step 3 of 6\n");
         reader.written(&mut term, now + SETTLE);
         assert_eq!(heard(&mut theirs), "");
+        // A key that moves its cursor is not said by where the cursor
+        // went: the program names it, however long the key takes.
+        assert_eq!(reader.key(KEY_RIGHT, PRESSED, 1, &term), Key::Passed);
+        term.feed(b"\x1b[D");
+        reader.written(&mut term, now + SETTLE * 3);
+        assert_eq!(heard(&mut theirs), "stop\n");
+        term.feed(b"\x1b]7700;Larger.\x1b\\");
+        reader.written(&mut term, now + SETTLE * 4);
+        assert_eq!(heard(&mut theirs), "now Larger.\n");
+    }
+
+    #[test]
+    fn a_reader_started_anew_hears_what_a_program_named_not_its_drawing() {
+        let (mut reader, mut theirs) = listening();
+        let mut term = Terminal::new(40, 5);
+        // Named while nobody listened, as the installer names its page as
+        // its Screen reader box starts the reader.
+        term.feed(b"\x1b[?1049h\x1b[2J  > Screen reader\x1b]7700;Welcome, step 1 of 6\x1b\\");
+        term.set_speaking(true);
+        reader.screen(1, &mut term);
+        assert_eq!(heard(&mut theirs), "now Console 1\nsay Welcome, step 1 of 6\n");
+        // Shown again later, with nothing named since: the console alone.
+        reader.screen(1, &mut term);
+        assert_eq!(heard(&mut theirs), "now Console 1\n");
     }
 
     #[test]

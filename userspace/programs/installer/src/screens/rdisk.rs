@@ -780,10 +780,10 @@ fn bar(edit: &Edit, disk: &DiskInfo, width: usize) -> Line<'static> {
     Line::from(spans)
 }
 
-/// A partition's line in the list: the filesystem and mount it will
-/// have, or the type it has now if it is kept.
-fn slot_line(slot: &Slot, chosen: bool, disk: &DiskInfo, width: usize) -> Line<'static> {
-    let bytes = slot.sectors * u64::from(disk.sector_size);
+/// What a partition's line shows: the filesystem and mount it will
+/// have, or the type it has now if it is kept; the message of what
+/// becomes of it; and the colour that marks it.
+fn columns(slot: &Slot, disk: &DiskInfo) -> (String, String, &'static str, Option<Color>) {
     let partition = disks::partition(&disk.name, slot.number);
     let now = || (slot.now.clone(), "-".to_string());
     let will = |using: Use| (using.filesystem().to_string(), using.mount(&partition));
@@ -793,6 +793,36 @@ fn slot_line(slot: &Slot, chosen: bool, disk: &DiskInfo, width: usize) -> Line<'
         State::New(using) => (will(using), "rdisk-new", Some(NEW)),
         State::Format(using) => (will(using), "rdisk-format", Some(FORMAT)),
     };
+    (filesystem, mount, change, colour)
+}
+
+/// What the screen reader says of a partition (ADR 0422): its number and
+/// name, what it holds or will, its size, where it is mounted, and what
+/// becomes of it.
+#[must_use]
+pub fn slot_words(slot: &Slot, disk: &DiskInfo) -> String {
+    let (filesystem, mount, change, _) = columns(slot, disk);
+    let bytes = slot.sectors * u64::from(disk.sector_size);
+    let mut words = vec![
+        messages::with("speak-partition", &[("number", Arg::Number(u64::from(slot.number)))]),
+        slot.name.clone(),
+        filesystem,
+        size(bytes),
+    ];
+    if mount != "-" {
+        words.push(messages::with("speak-mounted", &[("mount", Arg::Text(&mount))]));
+    }
+    // Lower case, which a synthesizer might otherwise spell out.
+    words.push(messages::text(change).to_lowercase());
+    words.retain(|word| !word.is_empty());
+    words.join(", ")
+}
+
+/// A partition's line in the list: the filesystem and mount it will
+/// have, or the type it has now if it is kept.
+fn slot_line(slot: &Slot, chosen: bool, disk: &DiskInfo, width: usize) -> Line<'static> {
+    let bytes = slot.sectors * u64::from(disk.sector_size);
+    let (filesystem, mount, change, colour) = columns(slot, disk);
     let mark = if chosen { '>' } else { ' ' };
     let text = format!(
         "{mark} {:<3}{:<21}{:<22}{:>9}  {:<20}{}",

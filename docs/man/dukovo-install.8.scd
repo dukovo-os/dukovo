@@ -46,8 +46,10 @@ edge to edge and the keys' hints on a steel bar along the bottom (ADR
 0402). A bar at the top shows the six steps:
 
 . *Welcome*: the language, the keyboard layout, which the keys type in
-  at once, a box to try it, and whether to answer step by step or
-  install from a setup file.
+  at once, a box to try it, whether to answer step by step or install
+  from a setup file, and the accessibility: the screen reader, the text
+  size, sticky keys and slow keys, which change the live system at once
+  and are kept on the installed system (ADR 0422).
 . *Network and name*: the network cards found, DHCP or a fixed address
   for the card chosen, the computer's name and its time zone.
 . *Disk*: the disk to install on and how: the guided layout, which
@@ -88,7 +90,19 @@ page's help. Left and Right change a list, the time zone or the layout,
 and letters typed on it find the first name that starts with them,
 *america/den* for America/Denver. Each page's answers are checked as an
 answers file's are when Next leaves it, and what is wrong is shown above
-the buttons.
+the buttons. The field with the focus is marked with › in the margin as
+well as by its colours.
+
+With the screen reader on, from the stick's *Install Dukovo with speech*
+entry or the Welcome page, the screens tell it what they show with
+*consoled*(8)'s focus sequence (ADR 0325, ADR 0422): each page as it
+comes, its step and its text; each field as the focus reaches it, its
+label, its kind, its place among the choices beside it, its value and
+its note; the character typed or taken away, or the new value; each
+problem as it shows; and each step of the install as it starts. What a
+password field holds is never said: a character typed into it is
+"star". The reader's own keys, held with Caps Lock or Insert, still
+review the screen (*reader*(1)).
 
 The install then shows its steps, a bar of its progress and the log's
 last line; L shows the whole log, during the install and after, and the
@@ -288,4 +302,5 @@ failed, and 2 for a usage error.
 *install-answers*(5), *system-release*(8), *rdisk*(8), *rgrub-setup*(8),
 *resize-ntfs*(8), *efiboot*(8), *device*(8), *balance*(8),
 *spark*(8), *consoled*(8), *serial-console*(8), *dukovo-boot*(7), *keymap*(1),
+*reader*(1), *accessibility.toml*(5),
 *dukovo-certificates*(7), *sha256sum*(1)

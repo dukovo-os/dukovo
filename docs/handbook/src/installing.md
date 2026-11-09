@@ -51,6 +51,17 @@ Caps Lock and press H for the reader's keys ([The screen
 reader](screen-reader.md)). A computer with no PC speaker plays no tune;
 press S a few seconds after starting from the stick.
 
+The first page's *Accessibility* fields take effect at once and are
+kept on the installed system: *Screen reader* turns speech on or off,
+*Text size* makes the text larger (Ctrl+Alt+Plus and Ctrl+Alt+Minus do
+the same anywhere), *Sticky keys* lets Shift, Ctrl and Alt hold for the
+next key, and *Slow keys* counts a key only once it is held for a
+moment ([Text size and keys](text-size-and-keys.md)). With the reader
+on, the installer says each page, the field with the focus and what
+each key changes in it; it never says what a password field holds. The
+field with the focus is marked with › in the margin as well as by its
+colours.
+
 Nothing is written to any disk before the review's Install. *Live
 console* on the first page leaves the installer for a shell, where
 `dukovo-install` starts it again, and the shell on Alt+F2 works

@@ -67,6 +67,7 @@ install-manual 112
 install-mirror 180
 install-screens 94
 install-serial 100
+install-speech 80
 install-uefi 99
 install-web 60
 installed-bios 29

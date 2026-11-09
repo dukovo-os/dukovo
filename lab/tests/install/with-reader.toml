@@ -1,0 +1,130 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# The installer's accessibility (ADR 0422) on the lab's machines: the
+# Welcome page's Screen reader box starts the reader, which says the page
+# whole on the machine's speakers, and its Text size and Sticky keys
+# change the consoles at once. The installed system starts with all
+# three from the settings the install wrote. The install-speech boot test
+# hears the same through readerd's log, from the stick's speech entry.
+about = "The install stick's Welcome page starts the screen reader, makes the text larger and turns sticky keys on at once; the installed system starts with all three"
+time = "30m"
+boot = "stick"
+disk = "8G"
+
+# The stick's menu starts the installer by itself, without speech.
+[[step]]
+serial = "consoled: install: the installer's screens on tty1"
+[[step]]
+screen = ["Step 1 of 6", "[ ] Screen reader", "Normal", "[ ] Sticky keys"]
+
+# Screen reader, the sixth field: checked, readerd starts as the settings
+# say, and consoled hears it.
+[[step]]
+keys = ["down", "down", "down", "down", "down", "spc"]
+[[step]]
+serial = "readerd: speaking with eSpeak NG's en voice at 175 words a minute"
+[[step]]
+serial = "consoled: the screen reader is listening"
+[[step]]
+screen = "[x] Screen reader"
+
+# Text size, the next field: larger at once, the page drawn again at the
+# screen's new size.
+[[step]]
+keys = ["down", "right"]
+[[step]]
+serial = "consoled: text size larger"
+[[step]]
+screen = "Larger"
+
+# Sticky keys, the next field: on at once. Keys typed together still work
+# together.
+[[step]]
+keys = ["down", "spc"]
+[[step]]
+serial = "consoled: sticky keys on"
+[[step]]
+screen = "[x] Sticky keys"
+[[step]]
+screenshot = "welcome-accessibility"
+
+# Next, three fields on; the Network page as it comes.
+[[step]]
+keys = ["down", "down", "down", "ret"]
+[[step]]
+screen = ["Step 2 of 6", "Network cards found:"]
+[[step]]
+keys = ["ret"]
+
+# Disk: the blank disk; Software: Minimal, the first profile.
+[[step]]
+screen = ["Step 3 of 6", "Erase the disk"]
+[[step]]
+keys = ["spc", "ret"]
+[[step]]
+screen = ["Step 4 of 6", "What is this machine for?"]
+[[step]]
+keys = ["ret"]
+
+# The administrator, with capitals typed while sticky keys are on.
+[[step]]
+screen = ["Step 5 of 6", "The administrator account."]
+[[step]]
+type = "Ada Lovelace"
+[[step]]
+keys = ["tab", "tab"]
+[[step]]
+type = "{password}"
+[[step]]
+keys = ["tab"]
+[[step]]
+type = "{password}"
+[[step]]
+keys = ["ret"]
+
+# Review: the accessibility is listed with the settings.
+[[step]]
+screen = ["Step 6 of 6", "ada (Ada Lovelace), administrator", "screen reader", "larger", "sticky keys", "Type sda to confirm"]
+[[step]]
+type = "sda\n"
+[[step]]
+screen = "Installing Dukovo"
+[[step]]
+screen = ["Remove the install stick, then restart.", "Dukovo is installed"]
+
+# Pull the stick and restart from the Done page: the disk's consoles
+# start with the text larger and sticky keys on, and the screen reader
+# with them.
+[[step]]
+usb = "unplug"
+[[step]]
+keys = ["ret"]
+[[step]]
+serial = "asked to restart the machine"
+[[step]]
+serial = "consoled: text size larger"
+[[step]]
+serial = "consoled: sticky keys on"
+[[step]]
+serial = "consoled: the screen reader is listening"
+[[step]]
+screen = "Name:"
+[[step]]
+screenshot = "installed-accessibility"
+[[step]]
+type = "ada\n"
+[[step]]
+screen = "Password:"
+[[step]]
+type = "{password}\n"
+[[step]]
+serial = "authd: ada signed in on pts/"
+# The settings the install wrote, each label split so that only the
+# output holds it whole.
+[[step]]
+type = "echo \"set\"\": $(grep -c -e 'text-size = \"larger\"' -e 'sticky-keys = true' /system/settings/console/accessibility.toml) $(grep -c 'on = true' /system/state/reader/reader.toml)\"\n"
+[[step]]
+screen = "set: 2 1"
+[[step]]
+type = "exit\n"

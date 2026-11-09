@@ -8,11 +8,12 @@ use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use super::app::{App, Id, Modal, Outcome, Page, Row, SetupFile, user_name};
+use super::app::{Access, App, Id, Modal, Outcome, Page, Row, SetupFile, user_name};
 use super::draw::{self, wrap};
+use super::speak::{self, Heard};
 use manifest::feature;
 
-use crate::answers::{Answers, Layout, Network, Profile};
+use crate::answers::{Answers, Layout, Network, Profile, TextSize};
 use crate::features::Offered;
 use crate::log::{Event, Step};
 use crate::machine::{Card, DiskInfo, Machine};
@@ -80,6 +81,7 @@ fn machine() -> Machine {
         zones: vec!["UTC".into(), "America/Denver".into(), "Europe/Berlin".into()],
         boot_entries: true,
         serial_console: false,
+        speech: false,
     }
 }
 
@@ -111,7 +113,12 @@ fn through_software(app: &mut App) {
 
 /// What the screens show, a line a row.
 fn screen(app: &App) -> String {
-    let mut terminal = Terminal::new(TestBackend::new(100, 31)).unwrap();
+    screen_of(app, 100, 31)
+}
+
+/// What the screens show on a screen of `cols` by `rows`.
+fn screen_of(app: &App, cols: u16, rows: u16) -> String {
+    let mut terminal = Terminal::new(TestBackend::new(cols, rows)).unwrap();
     terminal.draw(|frame| draw::draw(frame, app)).unwrap();
     let buffer = terminal.backend().buffer().clone();
     let mut text = String::new();
@@ -271,6 +278,101 @@ fn every_step_is_answered_by_keys_and_the_answers_check() {
     assert_eq!(app.passwords(), ["queen of hearts"]);
     app.forget_passwords();
     assert_eq!(app.passwords(), [""]);
+}
+
+#[test]
+fn the_welcome_pages_accessibility_is_set_at_once_and_installed() {
+    let mut app = app();
+    assert_eq!(app.access, Access::default());
+    let shown = screen(&app);
+    for needle in
+        ["[ ] Screen reader", "Text size", "‹ Normal ›", "[ ] Sticky keys", "[ ] Slow keys"]
+    {
+        assert!(shown.contains(needle), "{needle}:\n{shown}");
+    }
+    // Each change is for the live system to take at once.
+    focus(&mut app, Id::TextSize);
+    assert_eq!(press(&mut app, KeyCode::Right), Outcome::Access);
+    assert_eq!(app.access.text_size, TextSize::Larger);
+    focus(&mut app, Id::StickyKeys);
+    assert_eq!(press(&mut app, KeyCode::Char(' ')), Outcome::Access);
+    assert!(app.access.sticky_keys);
+    focus(&mut app, Id::Reader);
+    assert_eq!(press(&mut app, KeyCode::Char(' ')), Outcome::Access);
+    // Moving the focus changes nothing.
+    assert_eq!(press(&mut app, KeyCode::Tab), Outcome::Stay);
+    // The focused field is marked in the margin, not by colour alone.
+    let shown = screen(&app);
+    let line = shown.lines().find(|line| line.contains("Text size")).unwrap();
+    assert!(line.contains("› Text size"), "{shown}");
+    // The installed system has them, and the review says so.
+    to_review(&mut app);
+    let shown = screen(&app);
+    assert!(shown.contains("keyboard us · screen reader · larger text ·"), "{shown}");
+    let access = app.answers().unwrap().accessibility;
+    assert_eq!(access.screen_reader, Some(true));
+    assert_eq!(
+        (access.text_size, access.sticky_keys, access.slow_keys),
+        (TextSize::Larger, true, false)
+    );
+    // With the reader off, an install without speech says nothing of it;
+    // one with speech says it is off.
+    let app = self::app();
+    assert_eq!(app.answers().map(|a| a.accessibility.screen_reader).ok(), Some(None));
+    let mut app = App::new(Machine { speech: true, ..machine() }, "0.14.0", 600 << 20);
+    assert!(app.access.reader);
+    focus(&mut app, Id::Reader);
+    press(&mut app, KeyCode::Char(' '));
+    assert_eq!(app.answers().map(|a| a.accessibility.screen_reader).ok(), Some(Some(false)));
+}
+
+#[test]
+fn the_screen_reader_hears_each_page_its_focus_and_each_key() {
+    let mut app = app();
+    let heard = Heard::of(&app);
+    let said = speak::speech(None, &heard).unwrap();
+    assert!(
+        said.starts_with("Install Dukovo 0.14.0. Welcome, step 1 of 6. This installs"),
+        "{said}"
+    );
+    assert!(said.contains("Escape back"), "{said}");
+    assert!(
+        said.ends_with(
+            "Language, list, English (United States). more languages come in a later release."
+        ),
+        "{said}"
+    );
+    // The focus moves: only the field is said.
+    press(&mut app, KeyCode::Tab);
+    let now = Heard::of(&app);
+    assert_eq!(
+        speak::speech(Some(&heard), &now).as_deref(),
+        Some("Keyboard layout, list, English (US).")
+    );
+    // A choice, with its place among those beside it.
+    focus(&mut app, Id::FromFile);
+    let heard = Heard::of(&app);
+    let said = speak::speech(Some(&now), &heard).unwrap();
+    assert!(said.starts_with("From a setup file, choice, 2 of 2, not selected."), "{said}");
+    press(&mut app, KeyCode::Char(' '));
+    let now = Heard::of(&app);
+    assert_eq!(speak::speech(Some(&heard), &now).as_deref(), Some("selected."));
+    // A new page is said whole; a password's characters never are.
+    focus(&mut app, Id::StepByStep);
+    press(&mut app, KeyCode::Char(' '));
+    to_review(&mut app);
+    press(&mut app, KeyCode::Esc);
+    assert_eq!(app.page, Page::You);
+    let heard = Heard::of(&app);
+    let said = speak::speech(None, &heard).unwrap();
+    assert!(said.starts_with("You, step 5 of 6."), "{said}");
+    focus(&mut app, Id::Password);
+    let before = Heard::of(&app);
+    let said = speak::speech(Some(&heard), &before).unwrap();
+    assert!(said.starts_with("Password, password, 15 characters."), "{said}");
+    press(&mut app, KeyCode::Char('x'));
+    let now = Heard::of(&app);
+    assert_eq!(speak::speech(Some(&before), &now).as_deref(), Some("star."));
 }
 
 #[test]
@@ -769,6 +871,34 @@ fn a_setup_files_features_must_be_this_releases() {
     press(&mut app, KeyCode::Enter);
     assert_eq!(app.page, Page::Review, "{:?}", app.problem);
     assert!(screen(&app).contains("Software  Server · File sharing · web console on"));
+}
+
+#[test]
+fn a_page_taller_than_the_screen_shows_the_focused_field_and_its_note() {
+    // The Welcome page with the text larger on a 1280x800 screen: 80 by
+    // 25. Each field, as the focus reaches it, shows with its note, and
+    // the line that says there is more is below them.
+    let mut app = app();
+    for (id, label, note) in [
+        (Id::Reader, "Screen reader", "speaks every screen"),
+        (Id::TextSize, "Text size", "Ctrl+Alt+Plus and Minus"),
+        (Id::StickyKeys, "Sticky keys", "Shift five times"),
+        (Id::SlowKeys, "Slow keys", "held for 300 ms"),
+    ] {
+        focus(&mut app, id);
+        let shown = screen_of(&app, 80, 25);
+        let lines: Vec<&str> = shown.lines().collect();
+        let at = lines.iter().position(|line| line.contains(label)).unwrap_or_else(|| {
+            panic!("{label}:\n{shown}");
+        });
+        // The note is beside the field, or below it if it is long.
+        let note_at = (at..=at + 1).find(|&y| lines[y].contains(note)).unwrap_or_else(|| {
+            panic!("{label}'s note:\n{shown}");
+        });
+        if let Some(more) = lines.iter().position(|line| line.contains("… more")) {
+            assert!(more > note_at, "{label}:\n{shown}");
+        }
+    }
 }
 
 #[test]

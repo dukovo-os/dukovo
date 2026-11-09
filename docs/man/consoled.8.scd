@@ -209,8 +209,10 @@ at once, over what it was saying. From then on, what the program draws
 is not read by its changes, until it leaves the alternate screen
 (*ESC [ ? 1049 l*), as every full-screen program does as it ends, or
 the terminal is reset (*ESC c*). Any program may; its words never come after
-the trusted sound. While readerd is not listening the sequence does
-nothing, and other terminals ignore it.
+the trusted sound. While readerd is not listening, the last _text_ is
+kept: when readerd starts, or the console is shown again, the reader
+says the console's number and that text, in place of the screen.
+Other terminals ignore the sequence.
 
 # TEXT SIZE AND KEYS
 

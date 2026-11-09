@@ -4,8 +4,9 @@
 //! The new system's settings, as the answers give them, written into its
 //! `@settings` and `@state` subvolumes before it first starts: its name
 //! (hostname(5)), keyboard layout (keymap(1)), time zone, network cards
-//! (network(5)) and accounts (ADR 0218). Spark copies every other default
-//! setting in at the first boot, and leaves these as they are.
+//! (network(5)), accounts (ADR 0218), and its consoles' text size and keys
+//! and screen reader (ADR 0422). Spark copies every other default setting
+//! in at the first boot, and leaves these as they are.
 
 use std::fmt::Write as _;
 use std::fs;
@@ -13,6 +14,7 @@ use std::os::unix::fs::{PermissionsExt as _, symlink};
 use std::path::Path;
 
 use crate::answers::{Account, Answers, Network};
+use crate::machine;
 
 /// Where a system's default settings are, in its slot.
 const DEFAULTS: &str = "resources/default-settings";
@@ -47,7 +49,36 @@ pub fn write(answers: &Answers, target: &Target) -> Result<(), String> {
     if !answers.network.is_empty() {
         write_file(&target.settings.join("network"), &network(answers), 0o644)?;
     }
+    accessibility(answers, target, machine::with_speech())?;
     accounts(answers, target)
+}
+
+/// What reader.toml(5) holds when the install turns the screen reader on:
+/// readerd's voice, rate and pitch are their defaults until `reader`
+/// changes them.
+const READER_ON: &str = "\
+# The screen reader (reader.toml(5)), turned on by the install. reader(1)
+# changes it; readerd(8) reads it.
+on = true
+";
+
+/// The consoles' accessibility.toml(5), if the answers change any of its
+/// settings, and reader.toml(5) turned on, if the screen reader starts
+/// with the system: as the answers say, or as the installer runs,
+/// `with_speech` (ADR 0422).
+fn accessibility(answers: &Answers, target: &Target, with_speech: bool) -> Result<(), String> {
+    let access = &answers.accessibility;
+    if !access.consoles_as_default() {
+        let console = target.settings.join("console");
+        make_dir(&console, 0o755)?;
+        write_file(&console.join("accessibility.toml"), &access.console_file(None), 0o644)?;
+    }
+    if access.screen_reader(with_speech) {
+        let reader = target.state.join("reader");
+        make_dir(&reader, 0o755)?;
+        write_file(&reader.join("reader.toml"), READER_ON, 0o644)?;
+    }
+    Ok(())
 }
 
 /// Links `localtime` to the zone, as timedatectl(1) does.
@@ -181,6 +212,34 @@ mod tests {
         assert_eq!(read("state/authd/passwords"), "alice::\nbob::\n");
         let mode = fs::metadata(dir.join("state/authd/passwords")).unwrap().permissions().mode();
         assert_eq!(mode & 0o777, 0o600);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn writes_the_consoles_settings_and_turns_the_reader_on_when_asked() {
+        let dir = std::env::temp_dir().join(format!("installer-access-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        for sub in ["settings", "state"] {
+            fs::create_dir_all(dir.join(sub)).unwrap();
+        }
+        let target =
+            Target { slot: &dir, settings: &dir.join("settings"), state: &dir.join("state") };
+        let mut answers = Answers::parse(EXAMPLE.as_bytes()).unwrap();
+        // The defaults write nothing: Spark copies the default file in.
+        accessibility(&answers, &target, false).unwrap();
+        assert!(!dir.join("settings/console").exists());
+        assert!(!dir.join("state/reader").exists());
+        // An installer that runs with speech turns the reader on.
+        accessibility(&answers, &target, true).unwrap();
+        let reader = fs::read_to_string(dir.join("state/reader/reader.toml")).unwrap();
+        assert!(reader.ends_with("on = true\n"), "{reader}");
+        fs::remove_dir_all(dir.join("state/reader")).unwrap();
+        answers.accessibility.screen_reader = Some(false);
+        answers.accessibility.text_size = crate::answers::TextSize::Largest;
+        accessibility(&answers, &target, true).unwrap();
+        assert!(!dir.join("state/reader").exists());
+        let console = fs::read_to_string(dir.join("settings/console/accessibility.toml")).unwrap();
+        assert!(console.contains("text-size = \"largest\"\n"), "{console}");
         fs::remove_dir_all(&dir).unwrap();
     }
 
