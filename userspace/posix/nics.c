@@ -211,15 +211,15 @@ static void card(const char *card, const char *net, uint32_t seed) {
 	int killing = to_kill != NULL;
 	echo_through(card, address, echo, seed);
 	// 2 MiB in frames of 1460 bytes at most is 1437 of them each way, and
-	// none was sent while the card had no slot for it, unless its driver
-	// was killed meanwhile.
+	// none was lost for want of a slot, even while its driver was gone:
+	// what the card has no room for waits until it has (ADR 0418).
 	CHECK(card_number(card, "statistics/rx_packets") - received >= 1437);
 	CHECK(card_number(card, "statistics/tx_packets") - sent >= 1437);
+	long long dropped = card_number(card, "statistics/tx_dropped") - lost;
 	if(killing)
 		printf("nics: %s dropped %lld frames to send while its driver was gone\n", card,
-				card_number(card, "statistics/tx_dropped") - lost);
-	else
-		CHECK(card_number(card, "statistics/tx_dropped") == lost);
+				dropped);
+	CHECK(dropped == 0);
 }
 
 int main(int argc, char **argv) {
