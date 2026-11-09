@@ -17,7 +17,8 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use super::rdisk::{self, FormField, PartForm, Rdisk};
 use crate::answers::{
-    self, Account, Answers, Change, Disk, Features, Fixed, Layout, Network, Profile, Role,
+    self, Accessibility, Account, Answers, Change, Disk, Features, Fixed, Layout, Network, Profile,
+    Role, TextSize,
 };
 use crate::download::{self, Downloaded};
 use crate::features::{self, Offered};
@@ -101,6 +102,14 @@ pub enum Id {
     StepByStep,
     /// Welcome: install from a setup file.
     FromFile,
+    /// Welcome: the screen reader speaks (ADR 0422).
+    Reader,
+    /// Welcome: the consoles' text size.
+    TextSize,
+    /// Welcome: sticky keys.
+    StickyKeys,
+    /// Welcome: slow keys.
+    SlowKeys,
     /// Setup file: the setup file found, by its place in the list.
     SetupFile(usize),
     /// Setup file: download it from a web address (ADR 0319).
@@ -313,6 +322,24 @@ pub enum Outcome {
     /// it against this SHA-256 if one is given; [`App::downloaded`] takes
     /// what came.
     Download(tuf::Url, Option<[u8; 32]>),
+    /// Set the live system's accessibility as [`App::access`] now says:
+    /// the screen reader on or off, the consoles' text size and keys.
+    Access,
+}
+
+/// The accessibility the Welcome page sets (ADR 0422): at once, for the
+/// installer as it runs, and for the system it installs.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Access {
+    /// The screen reader speaks.
+    pub reader: bool,
+    /// How big the consoles' text is.
+    pub text_size: TextSize,
+    /// Shift, Ctrl and Alt, pressed and let go alone, hold for the next
+    /// key.
+    pub sticky_keys: bool,
+    /// A key counts only once held for a moment.
+    pub slow_keys: bool,
 }
 
 /// A setup file found on the stick.
@@ -457,6 +484,9 @@ pub struct App {
     pub loaded_from: Option<String>,
     /// How the install is going.
     pub progress: Progress,
+    /// The screen reader, text size and keys, as the live system has
+    /// them and the installed system will.
+    pub access: Access,
     /// The letters typed in a row on a list field, to find a name by its
     /// start ([`Seek`]).
     seeking: Option<Seek>,
@@ -492,6 +522,8 @@ impl App {
         let disk = machine.disks.iter().position(|disk| !disk.stick);
         // As much swap as memory, rounded up, but no more than 8 GiB.
         let swap = machine.memory.div_ceil(1 << 30).clamp(1, SWAP_SUGGESTED_MAX);
+        // With speech, the screen reader speaks from the first screen.
+        let speech = machine.speech;
         App {
             machine,
             version: version.to_string(),
@@ -538,6 +570,7 @@ impl App {
             loaded: None,
             loaded_from: None,
             progress: Progress::default(),
+            access: Access { reader: speech, ..Access::default() },
             seeking: None,
         }
     }
@@ -658,6 +691,32 @@ impl App {
                 Kind::Choice(self.from_file),
                 "welcome-file",
                 &self.say("welcome-file-note"),
+            ),
+            Row::Blank,
+            Row::Text(messages::text("welcome-access"), Look::Bold),
+            field(
+                Id::Reader,
+                Kind::Toggle(self.access.reader),
+                "welcome-reader",
+                &messages::text("welcome-reader-note"),
+            ),
+            field(
+                Id::TextSize,
+                Kind::Cycle(text_size_name(self.access.text_size)),
+                "welcome-text-size",
+                &messages::text("welcome-text-size-note"),
+            ),
+            field(
+                Id::StickyKeys,
+                Kind::Toggle(self.access.sticky_keys),
+                "welcome-sticky",
+                &messages::text("welcome-sticky-note"),
+            ),
+            field(
+                Id::SlowKeys,
+                Kind::Toggle(self.access.slow_keys),
+                "welcome-slow",
+                &messages::text("welcome-slow-note"),
             ),
         ]
     }
@@ -1213,6 +1272,7 @@ impl App {
         if answers.serial_console(self.machine.serial_console) {
             settings.push(messages::text("review-serial-console"));
         }
+        settings.extend(review_access(answers.accessibility, self.machine.speech));
         rows.push(Row::Text(label("review-settings", settings.join(" · ")), Look::Plain));
         let mut people = vec![messages::with(
             "review-admin",
@@ -1494,7 +1554,13 @@ impl App {
     /// If no disk can be chosen.
     pub fn answers(&self) -> Result<Answers, String> {
         if let Some(loaded) = &self.loaded {
-            return Ok(loaded.clone());
+            let mut loaded = loaded.clone();
+            // A setup file that says nothing of accessibility takes the
+            // Welcome page's.
+            if loaded.accessibility.is_default() {
+                loaded.accessibility = self.accessibility();
+            }
+            return Ok(loaded);
         }
         let disk = self
             .disk
@@ -1570,8 +1636,23 @@ impl App {
             // A system installed over the serial port keeps a console there
             // (ADR 0318).
             serial_console: Some(self.machine.serial_console),
+            accessibility: self.accessibility(),
             later: std::collections::BTreeMap::new(),
         })
+    }
+
+    /// The installed system's accessibility, as the Welcome page set it.
+    /// The screen reader's choice is left out while it is off and the
+    /// installer runs without speech, as it would be off anyway: a saved
+    /// setup file stays as short as it can.
+    fn accessibility(&self) -> Accessibility {
+        let access = &self.access;
+        Accessibility {
+            screen_reader: (access.reader || self.machine.speech).then_some(access.reader),
+            text_size: access.text_size,
+            sticky_keys: access.sticky_keys,
+            slow_keys: access.slow_keys,
+        }
     }
 
     /// The passwords typed, the administrator's first and then each other
@@ -1662,8 +1743,16 @@ impl App {
         }
     }
 
-    /// Acts on `key`.
+    /// Acts on `key`: [`Outcome::Access`] if it changed the
+    /// accessibility, which the live system is then to take.
     pub fn key(&mut self, key: KeyEvent) -> Outcome {
+        let access = self.access;
+        let outcome = self.act(key);
+        if self.access != access && outcome == Outcome::Stay { Outcome::Access } else { outcome }
+    }
+
+    /// Acts on `key`.
+    fn act(&mut self, key: KeyEvent) -> Outcome {
         if self.modal.is_some() {
             return self.modal_key(key);
         }
@@ -1822,6 +1911,13 @@ impl App {
                 self.cycle_mirror(by);
                 return;
             }
+            Id::TextSize => {
+                let sizes = TextSize::ALL;
+                let at = sizes.iter().position(|size| *size == self.access.text_size).unwrap_or(0);
+                let next = (at as isize + by).rem_euclid(sizes.len() as isize) as usize;
+                self.access.text_size = sizes[next];
+                return;
+            }
             _ => return,
         };
         *index = (*index as isize + by).rem_euclid(count.max(1) as isize) as usize;
@@ -1904,6 +2000,9 @@ impl App {
                 self.confirm.clear();
             }
             Id::KeepHashes => self.keep_hashes = !self.keep_hashes,
+            Id::Reader => self.access.reader = !self.access.reader,
+            Id::StickyKeys => self.access.sticky_keys = !self.access.sticky_keys,
+            Id::SlowKeys => self.access.slow_keys = !self.access.slow_keys,
             Id::Profile(i) => {
                 if let Some(profile) = Profile::ALL.get(i) {
                     self.profile = *profile;
@@ -2353,6 +2452,38 @@ pub fn user_name(name: &str) -> String {
 }
 
 /// The message id of the button `id`'s label.
+/// What the text size `size` is called on the Welcome page.
+#[must_use]
+pub fn text_size_name(size: TextSize) -> String {
+    messages::text(match size {
+        TextSize::Normal => "text-size-normal",
+        TextSize::Larger => "text-size-larger",
+        TextSize::Largest => "text-size-largest",
+    })
+}
+
+/// What the review lists of the installed system's accessibility, if it
+/// has any: the screen reader if it starts with the system (as it does
+/// for an installer that runs `with_speech`, unless the answers say),
+/// the text size and the keys.
+fn review_access(access: Accessibility, with_speech: bool) -> Vec<String> {
+    let mut said = Vec::new();
+    if access.screen_reader(with_speech) {
+        said.push(messages::text("review-reader"));
+    }
+    if access.text_size != TextSize::Normal {
+        let size = text_size_name(access.text_size).to_lowercase();
+        said.push(messages::with("review-text-size", &[("size", Arg::Text(&size))]));
+    }
+    if access.sticky_keys {
+        said.push(messages::text("review-sticky"));
+    }
+    if access.slow_keys {
+        said.push(messages::text("review-slow"));
+    }
+    said
+}
+
 fn button_name(id: Id) -> &'static str {
     match id {
         Id::Live => "button-live",

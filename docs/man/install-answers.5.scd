@@ -161,6 +161,30 @@ installer refuses it, as it refuses an ID the release lacks.
 	entry starts it, with that entry's speed (ADR 0318). The screens
 	save it as they ran.
 
+*accessibility*
+	The installed system's screen reader and its consoles' text size
+	and keys (ADR 0422), as an object of these keys, each one optional:
+
+	*screen_reader*: *true* starts the screen reader with the system,
+	as *reader on* does (*reader*(1)); *false* does not. Left out, it is
+	as the installer runs: on when it speaks, as the stick's *Install
+	Dukovo with speech* entry starts it.++
+*text_size*: *"normal"*, *"larger"* or *"largest"*, the consoles'
+	text size (*accessibility.toml*(5)); *"normal"* if left out.++
+*sticky_keys*: *true* makes Shift, Ctrl and Alt, pressed and let go
+	alone, hold for the next key; *false* if left out.++
+*slow_keys*: *true* counts a key only once it has been held for a
+	moment; *false* if left out.
+
+	The screens' Welcome page sets them. They save *screen_reader*
+	unless the reader is off and the installer runs without speech, and
+	the others when they are not their defaults. A setup file without
+	the key takes the Welcome page's.
+
+```
+"accessibility": { "screen_reader": true, "text_size": "larger" }
+```
+
 # CHANGES
 
 Each entry of *changes* changes one disk:

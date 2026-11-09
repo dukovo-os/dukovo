@@ -149,6 +149,10 @@ pub struct Machine {
     /// install stick's "Install Dukovo (serial console)" entry starts it: the
     /// installed system then keeps a console there (ADR 0318).
     pub serial_console: bool,
+    /// Whether the installer runs with the screen reader, as the install
+    /// stick's "Install Dukovo with speech" entry starts it: the kernel
+    /// flag `speech` (ADR 0324).
+    pub speech: bool,
 }
 
 impl Machine {
@@ -173,6 +177,7 @@ impl Machine {
             zones: read_zones(Path::new(ZONES)),
             boot_entries: boot_entries(),
             serial_console: on_serial_console(),
+            speech: with_speech(),
         }
     }
 }
@@ -190,6 +195,21 @@ pub fn on_serial_console() -> bool {
     // SAFETY: a non-null result is a C string, which is read at once.
     !name.is_null()
         && unsafe { std::ffi::CStr::from_ptr(name) }.to_bytes() == SERIAL_LINE.as_bytes()
+}
+
+/// Whether the kernel has the flag `speech`, as the install stick's
+/// "Install Dukovo with speech" entry gives it: the screen reader speaks
+/// from the first screen on (ADR 0324).
+#[must_use]
+pub fn with_speech() -> bool {
+    let line = fs::read_to_string("/kernel/cmdline").unwrap_or_default();
+    has_flag(&line, "speech")
+}
+
+/// Whether the kernel flags of command line `line`, those before a lone
+/// `--`, have `flag`.
+fn has_flag(line: &str, flag: &str) -> bool {
+    line.split_whitespace().take_while(|word| *word != "--").any(|word| word == flag)
 }
 
 /// The kernel flag that keeps a console on the first serial port, for the
@@ -388,6 +408,13 @@ mod tests {
         );
         assert_eq!(console_word("console=tty0 console=ttyS1"), None);
         assert_eq!(console_word("live -- console=ttyS0"), None);
+    }
+
+    #[test]
+    fn speech_is_a_kernel_flag_of_its_own() {
+        assert!(has_flag("live install speech console-sign-in=off", "speech"));
+        assert!(!has_flag("live install speech-rate=2", "speech"));
+        assert!(!has_flag("live -- speech", "speech"));
     }
 
     fn write(dir: &Path, file: &str, text: &str) {

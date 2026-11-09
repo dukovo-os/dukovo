@@ -144,7 +144,9 @@ mod tests {
             };
             // Other variables a message has show as their names.
             let said = bundle.format_pattern(pattern, Some(&args), &mut Vec::new());
-            assert!(!said.contains("stick"), "{id}: {said}");
+            // The word, not "sticky keys".
+            let stick = said.split(|c: char| !c.is_alphanumeric()).any(|word| word == "stick");
+            assert!(!stick, "{id}: {said}");
             checked += 1;
         }
         assert!(checked > 100, "{checked} messages");

@@ -232,7 +232,7 @@ fn step_bar(app: &App) -> Line<'static> {
 }
 
 /// The page's heading: `Step 2 of 6 · Network and name`.
-fn heading(app: &App) -> String {
+pub(super) fn heading(app: &App) -> String {
     let name = messages::text(app.page.name());
     match (app.page.step(), app.page) {
         (Some(i), _) => messages::with(
@@ -248,7 +248,7 @@ fn heading(app: &App) -> String {
 }
 
 /// The keys' hints under the box.
-fn hints_text(app: &App) -> String {
+pub(super) fn hints_text(app: &App) -> String {
     messages::text(match app.page {
         Page::Installing => "hints-installing",
         Page::Done => "hints-done",
@@ -297,6 +297,8 @@ fn draw_rows(frame: &mut Frame<'_>, app: &App, area: Rect) {
     // With no row focused, a button has the focus: the page then shows
     // its end, where its warnings are, as Tab reaches the buttons last.
     let mut focus_line = None;
+    // Where the focused field's lines end: its note shows with it.
+    let mut focus_end = None;
     let mut cursor = None;
     for row in &rows {
         match row {
@@ -317,15 +319,34 @@ fn draw_rows(frame: &mut Frame<'_>, app: &App, area: Rect) {
                     }
                 }
                 lines.extend(field_lines(field, has_focus, choice_width, width));
+                if has_focus {
+                    focus_end = Some(lines.len());
+                }
             }
         }
     }
     let height = usize::from(area.height);
-    let focus_line = focus_line.unwrap_or(lines.len().saturating_sub(1));
-    let top = if lines.len() > height { (focus_line + 1).saturating_sub(height) } else { 0 };
+    // The focused field's line, if a field, not a button, has the focus.
+    let marked = focus_line;
+    let focus_end = focus_end.unwrap_or(lines.len());
+    // Scrolled so that the focused field and its note show whole, above
+    // the bottom line that says there is more, if more follows: on a
+    // small screen, or with the text larger.
+    let top = if lines.len() > height {
+        let more_line = usize::from(focus_end < lines.len());
+        (focus_end + more_line).saturating_sub(height)
+    } else {
+        0
+    };
     let more = lines.len() > top + height;
     let shown: Vec<Line<'static>> = lines.into_iter().skip(top).take(height).collect();
     frame.render_widget(Paragraph::new(shown), area);
+    if let Some(line) = marked
+        && (top..top + height).contains(&line)
+    {
+        let y = area.y + u16::try_from(line - top).unwrap_or(0);
+        mark_focus(frame, area.x.saturating_sub(2), y);
+    }
     if more {
         let at = Rect { x: area.x, y: area.bottom() - 1, width: area.width, height: 1 };
         frame.render_widget(Clear, at);
@@ -507,6 +528,8 @@ fn draw_modal(frame: &mut Frame<'_>, app: &App, modal: &Modal, area: Rect) {
     let small = matches!(modal, Modal::Partition(_));
     let width = area.width.saturating_sub(4).min(if small { 76 } else { 90 });
     let height = area.height.saturating_sub(4).min(26);
+    // The line of the focused field of a form, if it is one.
+    let mut marked = None;
     let (title, lines, hint) = match modal {
         Modal::Help(page) => {
             let id = format!("help-{}", page.name().trim_start_matches("page-"));
@@ -555,6 +578,7 @@ fn draw_modal(frame: &mut Frame<'_>, app: &App, modal: &Modal, area: Rect) {
                 lines
                     .push(Line::from(Span::styled(format!("! {problem}"), Style::new().fg(CORAL))));
             }
+            marked = Some(form.focus + 1);
             (messages::text("person-title"), lines, messages::text("hint-person"))
         }
         Modal::Partition(form) => {
@@ -583,6 +607,7 @@ fn draw_modal(frame: &mut Frame<'_>, app: &App, modal: &Modal, area: Rect) {
                 }
             }
             let title = if form.row.is_some() { "rdisk-format-title" } else { "rdisk-new-title" };
+            marked = Some(form.focus + 1);
             (messages::text(title), lines, messages::text("hint-partition"))
         }
     };
@@ -611,7 +636,23 @@ fn draw_modal(frame: &mut Frame<'_>, app: &App, modal: &Modal, area: Rect) {
         Paragraph::new(lines),
         Rect { x: inner.x + 1, width: inner.width.saturating_sub(2), ..inner },
     );
+    if let Some(line) = marked.and_then(|line| u16::try_from(line).ok())
+        && line < inner.height
+    {
+        mark_focus(frame, inner.x, inner.y + line);
+    }
     let _ = app;
+}
+
+/// Marks the focused field's line with `›` in the margin at `x`, `y`, so
+/// that the focus shows without its colours, as on a screen that shows
+/// few, or to a person who tells them apart poorly (ADR 0422). The serial
+/// console's plain drawing makes it `>`.
+fn mark_focus(frame: &mut Frame<'_>, x: u16, y: u16) {
+    let at = Rect { x, y, width: 1, height: 1 };
+    if frame.area().contains(Position { x, y }) {
+        frame.render_widget(Paragraph::new(Span::styled("›", Style::new().fg(TAN))), at);
+    }
 }
 
 /// A box to type in, holding `value`, with the hint of the message `hint`

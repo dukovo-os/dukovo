@@ -53,6 +53,31 @@ button-restart = Restart
 button-log = Show log
 button-save-setup = Save setup file to the stick
 
+## What the screens tell the screen reader (ADR 0422)
+
+speak-step = { $name }, step { $step } of { $steps }
+speak-button = button
+speak-choice = choice
+speak-of = { $place } of { $count }
+speak-chosen = selected
+speak-not-chosen = not selected
+speak-check-box = check box
+speak-checked = checked
+speak-not-checked = not checked
+speak-edit = edit
+speak-password = password
+speak-list = list
+speak-blank = blank
+speak-hidden = { $count ->
+    [one] 1 character
+   *[other] { $count } characters
+}
+speak-star = star
+speak-deleted = deleted
+speak-space = space
+speak-partition = Partition { $number }
+speak-mounted = mounted at { $mount }
+
 ## Welcome
 
 welcome-intro = This installs Dukovo { $version } on this computer. Nothing on any disk changes until you choose Install on the last step.
@@ -70,6 +95,18 @@ welcome-file-note = { $medium ->
     [disc] install.json on the web
    *[stick] install.json on this stick's EFI partition or the web
 }
+welcome-access = Accessibility, here and on the installed system
+welcome-reader = Screen reader
+welcome-reader-note = speaks every screen; Caps Lock or Insert with other keys reads more
+welcome-text-size = Text size
+welcome-text-size-note = Ctrl+Alt+Plus and Minus change it anywhere
+welcome-sticky = Sticky keys
+welcome-sticky-note = Shift, Ctrl and Alt hold for the next key; Shift five times turns them on or off
+welcome-slow = Slow keys
+welcome-slow-note = a key counts once held for 300 ms
+text-size-normal = Normal
+text-size-larger = Larger
+text-size-largest = Largest
 
 ## Setup file
 
@@ -333,6 +370,10 @@ review-software = Software
 review-web-console-on = web console on (from release 0.16)
 review-web-console-off = web console off
 review-serial-console = serial console ttyS0
+review-reader = screen reader
+review-text-size = { $size } text
+review-sticky = sticky keys
+review-slow = slow keys
 review-admin = { $user } ({ $name }), administrator
 review-untouched = Untouched
 review-confirm = Type { $disk } to confirm
@@ -376,6 +417,7 @@ help-welcome =
        *[stick] A setup file answers them all: install.json on this stick's EFI partition, as the Done page saves one, or on a web server.
     }
     Live console leaves the installer for a shell, where dukovo-install starts it again.
+    The accessibility choices take effect at once and the installed system keeps them: the screen reader, the text size, sticky keys and slow keys. Ctrl stops the screen reader for a moment; Caps Lock or Insert with H lists its keys.
 help-setup-file =
     A setup file is an answers file (install-answers(5)) called install.json, { $medium ->
         [disc] downloaded from a web server over HTTPS only, so that it cannot be changed on the way.

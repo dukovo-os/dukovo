@@ -345,6 +345,17 @@ impl Terminal {
         s.spoken = on.then(String::new);
         s.heard = if on { s.cells.iter().map(|cell| cell.c).collect() } else { Vec::new() };
         s.follows = NOWHERE;
+        // What the program named while the reader listened has been
+        // said; what it names from here on is kept for the next time.
+        if !on {
+            s.named = None;
+        }
+    }
+
+    /// Whether the program names what it shows itself (`OSC 7700`, ADR
+    /// 0325), so that its drawing is not read.
+    pub fn names_itself(&self) -> bool {
+        self.state.names_itself
     }
 
     /// Takes the text written since the last time, a line of the screen
@@ -1161,9 +1172,9 @@ impl Perform for State {
             // reader say the text at once, as what has the focus in a
             // full-screen program, such as the installer's, which names
             // it better than its screen's changes would. Any program may;
-            // it never comes with the trusted sound. Kept only while the
-            // reader listens.
-            [b"7700", text @ ..] if self.spoken.is_some() => {
+            // it never comes with the trusted sound. The last is kept
+            // while the reader does not listen, for when it starts.
+            [b"7700", text @ ..] => {
                 let text = String::from_utf8_lossy(&text.join(&b';')).into_owned();
                 let text: String = text.chars().filter(|c| !c.is_control()).collect();
                 self.named = Some(text);
@@ -1450,8 +1461,14 @@ mod tests {
     #[test]
     fn a_program_names_what_has_the_focus() {
         let mut term = Terminal::new(40, 5);
-        // Not kept while nobody listens.
+        // While nobody listens, only the last is kept, for when the
+        // reader starts; it is dropped once the reader goes.
+        term.feed(b"\x1b]7700;Disk\x1b\\\x1b]7700;Next\x1b\\");
+        assert!(term.names_itself());
+        assert_eq!(term.take_named().as_deref(), Some("Next"));
         term.feed(b"\x1b]7700;Disk\x1b\\");
+        term.set_speaking(true);
+        term.set_speaking(false);
         assert_eq!(term.take_named(), None);
         term.set_speaking(true);
         term.feed(b"\x1b[?1049h\x1b]7700;Disk, 1 of 2; QEMU HARDDISK\x07");
