@@ -146,8 +146,8 @@ processes are built, loaded and ended is in `radix-processes(7)` and
 
 ## POSIX programs, ports and Rust's standard library
 
-From Phase 8 on, C and Rust programs written for Unix run on Dukovo
-through the C library, mlibc, and Rust's standard library on top of it
+C and Rust programs written for Unix run on Dukovo through the C
+library, mlibc, and Rust's standard library on top of it
 (radix-posix(7), ADRs 0068 to 0071). `./ob build` writes a toolchain to
 `out/toolchain`: `x86_64-radix-cc` compiles and links C for Dukovo with
 the host's Clang, as a static position-independent program unless it is

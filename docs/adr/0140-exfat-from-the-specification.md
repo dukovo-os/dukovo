@@ -24,12 +24,12 @@ exFAT is patented. In 2019 Microsoft said it supports exFAT in the Linux
 kernel, and put its exFAT patents under the Open Invention Network's
 licence. That licence covers the "Linux System" as OIN defines it, a
 list of Linux packages. Radix is not Linux and is not on that list, so
-the grant does not cover Dukovo. The last of the exFAT patents found,
-US 8,321,439 ("Quick File Name Lookup Using Name Hash"), runs to
-2027-03-09 (Google Patents). The Phase 10 preparation suggested holding
-exFAT until a legal answer or the patent's end. Chase decided on
-2026-10-25 to build it from the specification and ship it in Phase 10
-like everything else, accepting the patent risk until 2027.
+the grant does not cover Dukovo. The last of the exFAT patents found, US
+8,321,439 ("Quick File Name Lookup Using Name Hash"), runs to 2027-03-09
+(Google Patents). The Phase 10 preparation suggested holding exFAT until
+a legal answer or the patent's end. Dukovo instead builds it from the
+specification and ships it in Phase 10 like everything else, accepting
+the patent risk until 2027.
 
 ## Decision
 
@@ -83,7 +83,7 @@ like everything else, accepting the patent risk until 2027.
 
 - Dukovo reads and writes cards, sticks and disks formatted with exFAT,
   with files larger than 4 GiB, and its volumes pass Linux's checker.
-- Dukovo carries the patent risk Chase accepted until 2027-03-09. If a
+- Dukovo carries the patent risk it accepted until 2027-03-09. If a
   legal answer comes before then, a later ADR records it.
 - Benign secondary entries that Radix does not know (vendor extensions)
   are kept while a file stays where it is, but not carried over when it

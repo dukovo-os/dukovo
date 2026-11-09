@@ -17,8 +17,8 @@ yet: a bundle installed only from a `.dkv` file, trusted by its key
 first install, and any other key after a warning.
 
 The roadmap asks for several catalogs, Dukovo's and others', and for
-sideloading to stay open. Chase decided that a third-party catalog, and
-a file from anywhere, go through the same checks as Dukovo's own.
+sideloading to stay open. A third-party catalog, and a file from
+anywhere, go through the same checks as Dukovo's own.
 
 ## Decision
 

@@ -13,16 +13,16 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 Phase 11c, its first part. Much of a PC is described only in AML, the
 bytecode of the DSDT and SSDTs, which an operating system runs: a
 laptop's battery (`_BIF`, `_BST`), its AC adapter (`_PSR`) and lid
-(`_LID`), its thermal zones and their trip points, a power button that is
-a device of the namespace, the embedded controller's events, the
+(`_LID`), its thermal zones and their trip points, a power button that
+is a device of the namespace, the embedded controller's events, the
 general-purpose events' methods, and what the firmware does before a
 sleep state (`_PTS`). ADR 0013 left the interpreter to the phase that
 first needs one, between the rust-osdev `aml` crate and uACPI in a
 compartment, and ADR 0142 heard the fixed power button without one.
-Chase chose uACPI on 2026-10-27: laptop firmware, the Dell's and the
-Framework's among it, is written for Windows and tested against it, and
-needs an interpreter that behaves as Windows does where the
-specification leaves room.
+uACPI was chosen because laptop firmware, the Dell's and the Framework's
+among it, is written for Windows and tested against it, and needs an
+interpreter that behaves as Windows does where the specification leaves
+room.
 
 uACPI, by Daniil Tatianin and its contributors (MIT), is some 26,000
 lines of C11 that a kernel builds into itself. It follows the NT

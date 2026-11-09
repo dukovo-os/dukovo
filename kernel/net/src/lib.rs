@@ -80,6 +80,8 @@ mod tests;
 #[cfg(test)]
 mod tests6;
 #[cfg(test)]
+mod tests_full;
+#[cfg(test)]
 mod tests_multicast;
 #[cfg(test)]
 mod tests_neighbours;
@@ -314,12 +316,30 @@ pub struct Stack<L: Link> {
     /// to ask again ([`Stack::watch_carrier`]).
     carrier: bool,
     carrier_at: u64,
+    /// Since when its card has had no room for what it has to send
+    /// ([`Stack::poll_delay`]).
+    full_since: Option<u64>,
 }
 
 /// How often a stack asks its card whether its link is up, in
 /// nanoseconds: a link down for less than that is not seen, and could
 /// hardly have been moved to another network.
 const CARRIER_NS: u64 = 1_000_000_000;
+
+/// How long a stack with something to send polls again at once while
+/// its card has no room for it, in nanoseconds: a card that sends frees
+/// a slot within a frame's time, a millisecond at 10 Mb/s, so its stack
+/// sends again as soon as it can, as before (ADR 0418).
+const FULL_NS: u64 = 1_000_000;
+
+/// How long it waits between polls after that, unless the card's
+/// interrupt or its driver wakes its thread first: a card that freed no
+/// slot in [`FULL_NS`] is not sending, as when its driver is gone or its
+/// link is down, and polling it again at once would keep a CPU busy for
+/// as long as that lasts (ADR 0418). As long as a card's thread sleeps
+/// when nothing is due; a full ring that drains this slowly still has
+/// frames to send when the stack fills it again.
+const STUCK_NS: u64 = 10_000_000;
 
 /// The most multicast groups an interface's sockets join between them:
 /// smoltcp's table has room for the solicited-node groups of its
@@ -703,6 +723,7 @@ impl<L: Link> Stack<L> {
             owned: 0,
             carrier: true,
             carrier_at: now_ns,
+            full_since: None,
         }
     }
 
@@ -1053,7 +1074,13 @@ impl<L: Link> Stack<L> {
         if self.ipv6.enabled() && self.link.medium() == Medium::Ethernet {
             let (link, counted, tap) = (&mut self.link, &self.counted, self.tap.as_ref());
             self.ipv6.poll(now_ns, &mut |frame| {
-                let sent = link.can_send() && link.send(frame);
+                // One the card has no room for is not lost: IPv6 sends it
+                // at its next poll, as smoltcp does what it could not
+                // send (ADR 0418).
+                if !link.can_send() {
+                    return false;
+                }
+                let sent = link.send(frame);
                 if sent {
                     counted.sent(frame.len());
                     Tap::saw(tap, frame, Medium::Ethernet, true);
@@ -1111,6 +1138,11 @@ impl<L: Link> Stack<L> {
     /// frame comes, in nanoseconds: `None` when only a frame can give it
     /// work, 0 when it has some now, as when the link has frames of the
     /// stack's own to receive.
+    ///
+    /// Asked after a poll, 0 otherwise means that something waits to be
+    /// sent that the card had no room for. That is so for [`FULL_NS`] at
+    /// most while the card sends; after that it waits [`STUCK_NS`]
+    /// between polls (ADR 0418).
     pub fn poll_delay(&mut self, now_ns: u64) -> Option<u64> {
         if self.link.pending() {
             return Some(0);
@@ -1120,10 +1152,16 @@ impl<L: Link> Stack<L> {
             .iface
             .poll_delay(instant(now_ns), &self.sockets)
             .map(|delay| delay.total_micros().saturating_mul(1_000));
-        match (ipv6, sockets) {
+        let delay = match (ipv6, sockets) {
             (Some(a), Some(b)) => Some(a.min(b)),
             (a, b) => a.or(b),
+        };
+        if delay != Some(0) || self.link.can_send() {
+            self.full_since = None;
+            return delay;
         }
+        let since = *self.full_since.get_or_insert(now_ns);
+        if now_ns.saturating_sub(since) < FULL_NS { Some(0) } else { Some(STUCK_NS) }
     }
 
     /// Adds `socket` to the stack, or gives it back if every socket slot

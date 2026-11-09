@@ -5,10 +5,9 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 # Users and administration
 
-This chapter describes accounts, signing in and administering as of
-Phase 13b of the roadmap. The full references are login(1), authd(8),
-user(8), passwd(1), elevate(8) and, for building an image with an
-account in it, ob(1).
+This chapter describes accounts, signing in and administering. The full
+references are login(1), authd(8), user(8), passwd(1), elevate(8) and,
+for building an image with an account in it, ob(1).
 
 ## Accounts
 

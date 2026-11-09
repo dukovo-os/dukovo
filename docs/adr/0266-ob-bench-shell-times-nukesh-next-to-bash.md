@@ -10,10 +10,10 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 ## Context
 
-Chase asked for a bench row for startup and prompt latency against
-bash. The kernel bench compares C programs in two VMs; bash does not
-run in the Linux VM's initramfs, and what is measured here is the
-shell, not the kernel.
+Nukesh's startup and prompt latency need a bench row against bash. The
+kernel bench compares C programs in two VMs; bash does not run in the
+Linux VM's initramfs, and what is measured here is the shell, not the
+kernel.
 
 ## Decision
 

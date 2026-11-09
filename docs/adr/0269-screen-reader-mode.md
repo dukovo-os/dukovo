@@ -10,7 +10,7 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 ## Context
 
-Chase asked for a screen-reader mode. Colours, faded hints, a right prompt and redraws are noise to a reader.
+Nukesh needs a screen-reader mode. Colours, faded hints, a right prompt and redraws are noise to a reader.
 
 ## Decision
 

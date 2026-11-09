@@ -10,10 +10,9 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 ## Context
 
-Phase 13d.3. A bundle has a manifest (ADR 0221), a signature over a
-list of its files, and travels as a `.dkv` file that a confined
-unpacker opens (ADR 0222). The security design (sections 9 and 10,
-locked by Chase on 2026-10-26) asks that:
+Phase 13d.3. A bundle has a manifest (ADR 0221), a signature over a list
+of its files, and travels as a `.dkv` file that a confined unpacker
+opens (ADR 0222). The security design (sections 9 and 10) asks that:
 
 - a bundle installs for everyone in `/applications`, by an
   administrator through elevate, or for oneself in `~/applications`;

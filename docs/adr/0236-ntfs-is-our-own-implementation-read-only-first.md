@@ -13,9 +13,9 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 Phase 11f, its first part. NTFS is what Windows formats its disks with,
 and many USB disks come with it; a Dukovo machine that replaces a
 Windows one will be asked to read the old disk, and a stick from a
-Windows machine should just work (Chase, 2026-10-28). The phase reads
-and writes NTFS, unlocks BitLocker and has Windows' chkdsk check what
-Dukovo writes; this part reads.
+Windows machine should just work. The phase reads and writes NTFS,
+unlocks BitLocker and has Windows' chkdsk check what Dukovo writes; this
+part reads.
 
 - Linux's ntfs3 and ntfs-3g are GPL, and are not read (the rule for
   every GPL source in this project). Microsoft publishes no

@@ -122,13 +122,11 @@ sign-offs from tool identities such as `noreply@anthropic.com` or GitHub
 Apps. When a tool writes a commit, it stays the commit's author or is
 credited with a `Co-Authored-By:` line, and the person who directed it,
 reviewed the change and submits it adds their own `Signed-off-by:`. That
-person is responsible for the change as if they had written it, including
-its licensing.
-The maintainer has told the AI assistant working for them to add the
-maintainer's own sign-off to the commits it writes for them. That is the
-maintainer's certification, given standing for those commits and backed by
-reviewing each pull request before it merges; no assistant adds anyone
-else's sign-off.
+person is responsible for the change as if they had written it,
+including its licensing. The maintainer's sign-off on commits written
+with an AI tool is the maintainer's own certification, given for those
+commits and backed by a review of each pull request before it merges. No
+tool adds anyone else's sign-off.
 
 ## Man pages
 

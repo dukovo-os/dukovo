@@ -36,10 +36,9 @@ With all of that, every row beats Linux on CI's KVM runners:
 | 4 processes | 0.96 | 0.92 |
 | 8 processes | 0.98 | 0.94 |
 
-Each is Radix's time over Linux's, from #249's runs.
-The goal (Chase, 2026-11-07) was that every row beat Linux and that CI
-then hold it there, as `ob bench --gate` holds every other operation
-(ADR 0107).
+Each is Radix's time over Linux's, from #249's runs. The goal was that
+every row beat Linux and that CI then hold it there, as `ob bench
+--gate` holds every other operation (ADR 0107).
 
 ## Decision
 

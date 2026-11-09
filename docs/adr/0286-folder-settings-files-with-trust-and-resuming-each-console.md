@@ -10,7 +10,7 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 ## Context
 
-Chase asked for direnv-style folder settings with a trust prompt, and for a new console to open where the last one there was.
+Nukesh should offer direnv-style folder settings with a trust prompt, and a new console should open where the last one there was.
 
 ## Decision
 

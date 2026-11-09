@@ -26,9 +26,9 @@ Dukovo has no utmp: who(1) and w(1) read the sessions from
 `/processes`. Sign-in goes through authd (ADR 0250), which starts each
 session as its own child and sees it end, and checks each password.
 
-Chase accepted, for the logs, that each person reads their own and
-administrators everything (ADR 0252), and a person's comings and goings
-are theirs as much as their programs' log lines are.
+For the logs, each person reads their own and administrators read
+everything (ADR 0252), and a person's comings and goings are theirs as
+much as their programs' log lines are.
 
 ## Decision
 

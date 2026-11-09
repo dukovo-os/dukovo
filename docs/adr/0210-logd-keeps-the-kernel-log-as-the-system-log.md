@@ -80,18 +80,17 @@ kernel log read exactly like volumed.
   still holds. Records the ring lost before logd read them are counted
   in a warning of logd's own. A line cut short by a crash is ended
   before the next one, and readers skip it.
-- **Reading through logd.** Programs never read the files: `log(1)`
-  and `journalctl(1)` send one request, a line of JSON, to the socket
+- **Reading through logd.** Programs never read the files: `log(1)` and
+  `journalctl(1)` send one request, a line of JSON, to the socket
   `/system/live/log/query` and read the matching records, a line of JSON
   each, until logd closes the connection or, for a follower, as they
   come. A request names the boots (this one by default, an offset such
-  as `-1`, a number, or all), services or programs, the kernel's
-  records alone, a level, a time range, an extended regular expression
-  and the last N; logd reads only the day files the times or the boot
-  allow. 32 requests are answered at once. When Dukovo has users (13b),
-  the socket's peer must be an administrator, which makes the log
-  administrators' only, as Chase decided (prep doc, question 3);
-  `dmesg` follows the same rule then.
+  as `-1`, a number, or all), services or programs, the kernel's records
+  alone, a level, a time range, an extended regular expression and the
+  last N; logd reads only the day files the times or the boot allow. 32
+  requests are answered at once. When Dukovo has users (13b), the
+  socket's peer must be an administrator, which makes the log
+  administrators' only (ADR 0252); `dmesg` follows the same rule then.
 - **The commands.** `log` has short options of its own (`-s` service,
   `-k`, `-p`, `-S`/`-U`, `-g`, `-n`, `-f`, `-b`, `--all`, `-r`, `-o`,
   `--json`, `--list-boots`, `--disk-usage`) and shows this boot by
@@ -121,9 +120,9 @@ kernel log read exactly like volumed.
   those lines until datagram sockets come; a program can write to
   `/devices/kmsg` meanwhile.
 - The log has no limit yet: trimming by size and age (10 % of the
-  filesystem, 4 GiB, 90 days, as the prep doc says) comes with 13a.2.
-  `--list-boots` and requests for older boots read every day file,
-  which is slow on a large log until an index comes with trimming.
+  filesystem, 4 GiB, 90 days) comes with 13a.2. `--list-boots` and
+  requests for older boots read every day file, which is slow on a large
+  log until an index comes with trimming.
 - Once services lose the kernel log capability (13b.4 gives each
   service only what its file declares), their output still reaches the
   log through Spark, and only programs given the capability can write

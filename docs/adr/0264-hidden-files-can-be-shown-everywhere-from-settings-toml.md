@@ -10,11 +10,10 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 ## Context
 
-Chase asked whether Nukesh can always show hidden files. Each place
-hides them its own way: `ls` without `-a`, globs without `dotglob`,
-and Tab, which also leaves out what a folder's `.hidden` lists (ADR
-0113). Three settings for one wish is not friendly, and colors.toml is
-for colours.
+Some people want Nukesh to always show hidden files. Each place hides
+them its own way: `ls` without `-a`, globs without `dotglob`, and Tab,
+which also leaves out what a folder's `.hidden` lists (ADR 0113). Three
+settings for one wish is not friendly, and colors.toml is for colours.
 
 ## Decision
 

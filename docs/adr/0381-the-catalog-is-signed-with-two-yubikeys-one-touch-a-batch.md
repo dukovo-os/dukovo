@@ -16,7 +16,7 @@ which say what Dukovo publishes, should be offline. The keys of snapshot
 and timestamp, which only say which targets are current and that they
 still are, must sign every few hours, so they are online.
 
-Chase chose (2026-11-03):
+The chosen design:
 
 - His two YubiKeys, either of which signs alone, the second kept away
   from the first.

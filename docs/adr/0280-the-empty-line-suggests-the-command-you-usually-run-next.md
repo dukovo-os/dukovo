@@ -10,7 +10,7 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 ## Context
 
-Chase asked for Warp-style next-command suggestions, without AI from the record, and ranked by Nebix when it runs.
+Nukesh offers Warp-style next-command suggestions, without AI from the record, and ranked by Nebix when it runs.
 
 ## Decision
 

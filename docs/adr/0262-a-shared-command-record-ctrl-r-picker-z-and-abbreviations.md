@@ -10,12 +10,11 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 ## Context
 
-Chase asked for Nukesh to be best in class at the prompt: fuzzy Ctrl+R
-ranked by folder (as atuin and fzf do), `z` (zoxide), Alt+←/→ folder
-history (fish), abbreviations (fish) and a right prompt with duration,
-jobs and git branch. bash's history file has none of a command's
-status, duration or folder, and each shell sees another's commands only
-when it exits.
+Nukesh aims to be best in class at the prompt: fuzzy Ctrl+R ranked by
+folder (as atuin and fzf do), `z` (zoxide), Alt+←/→ folder history
+(fish), abbreviations (fish) and a right prompt with duration, jobs and
+git branch. bash's history file has none of a command's status, duration
+or folder, and each shell sees another's commands only when it exits.
 
 ## Decision
 
@@ -54,7 +53,7 @@ when it exits.
   followed; a detached head is 7 hex digits), in `[prompt] took`,
   `jobs` and `branch`'s styles.
 
-- **On the console** (Chase, 2026-11-01): consoled no longer switches consoles with Alt+← and Alt+→; it sends them to the program as xterm does (`ESC [1;3D`, `ESC [1;3C`), so the folder keys work there too. Alt+F1 to Alt+F6 still switch.
+- **On the console**: consoled no longer switches consoles with Alt+← and Alt+→; it sends them to the program as xterm does (`ESC [1;3D`, `ESC [1;3C`), so the folder keys work there too. Alt+F1 to Alt+F6 still switch.
 
 ## Consequences
 
