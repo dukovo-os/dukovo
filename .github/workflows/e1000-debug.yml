@@ -31,7 +31,7 @@ jobs:
       matrix:
         # The stall came in CI's fifth boot shard, two times of three, and
         # never alone: the host's CPUs busy may be what brings it.
-        load: [none, two-cpus, all-cpus]
+        load: [two-cpus, all-cpus, twice-cpus]
     steps:
       - uses: actions/checkout@v4
 
@@ -50,7 +50,7 @@ jobs:
           packages: >-
             qemu-system-x86 ovmf gcc flex gawk
             xorriso mtools dosfstools exfatprogs gdisk fdisk sleuthkit btrfs-progs e2fsprogs ntfs-3g dislocker libbde-utils openssh-server samba smbclient nfs-kernel-server krb5-kdc krb5-admin-server krb5-user scdoc mandoc
-            udftools udfclient genisoimage tcpdump stress-ng
+            udftools udfclient genisoimage
             clang-20 lld-20 llvm-20 libclang-rt-20-dev meson ninja-build cmake bison pkgconf autoconf
 
       - name: Let the tests listen on port 445
@@ -103,8 +103,11 @@ jobs:
 
       # QEMU with every frame on net1's wire, both ways, kept in a file:
       # a QEMU of the test's own ahead of the system's on PATH.
+      # Installed after the ports are built, which may look at what the
+      # host has: before, ./ob ports took 25 minutes instead of 2.
       - name: Capture net1's wire
         run: |
+          sudo apt-get install -y --no-install-recommends tcpdump stress-ng > /dev/null
           sudo tee /usr/local/bin/qemu-system-x86_64 > /dev/null <<'WRAPPER'
           #!/bin/sh
           case " $* " in
@@ -129,23 +132,41 @@ jobs:
               | awk '{ print int($1) }' | uniq -c | tail -n 60 | tr '\n' ' ' || true; echo
             tcpdump -r /tmp/e1000-net1.pcap -nn -tt 'tcp port 7 and dst host 10.0.3.15' 2>/dev/null \
               | awk '{ print int($1) }' | uniq -c | tail -n 60 | tr '\n' ' ' || true; echo
-            echo "--- the last 250 packets of the echo:"
-            tcpdump -r /tmp/e1000-net1.pcap -nn -tt 'tcp port 7' 2>/dev/null | tail -n 250 || true
+            echo "--- the echo from 30 packets before its first gap of 0.15 s to 40 after its last:"
+            tcpdump -r /tmp/e1000-net1.pcap -nn -tt 'tcp port 7' 2>/dev/null > /tmp/echo.txt || true
+            awk 'NR > 1 && $1 - last > 0.15 { if (!first) first = NR; final = NR } { last = $1 }
+                 END { print (first ? first : 1), (final ? final : NR) }' /tmp/echo.txt > /tmp/gaps.txt
+            read -r first final < /tmp/gaps.txt
+            from=$((first > 30 ? first - 30 : 1)); to=$((final + 40))
+            if [ $((to - from)) -gt 500 ]; then
+              sed -n "${from},$((from + 250))p" /tmp/echo.txt; echo "[...]"; sed -n "$((to - 250)),${to}p" /tmp/echo.txt
+            else
+              sed -n "${from},${to}p" /tmp/echo.txt
+            fi
+            echo "--- the last 30 packets of the echo:"
+            tail -n 30 /tmp/echo.txt
             echo "--- the last 40 other frames:"
             tcpdump -r /tmp/e1000-net1.pcap -nn -tt 'not tcp' 2>/dev/null | tail -n 40 || true
           }
           case "${{ matrix.load }}" in
             two-cpus) stress-ng --cpu 2 --timeout 3h --quiet & ;;
             all-cpus) stress-ng --cpu "$(nproc)" --timeout 3h --quiet & ;;
+            twice-cpus) stress-ng --cpu "$(($(nproc) * 2))" --timeout 3h --quiet & ;;
           esac
           passed=0 failed=0
           for run in $(seq 1 30); do
             rm -f /tmp/e1000-net1.pcap
             if ./ob test boot --case userspace-e1000 > run.out 2>&1; then
               passed=$((passed + 1))
-              echo "=== RUN $run PASS: $(grep -o 'net1 echoed 2 MiB.*' out/test/boot-userspace-e1000.log | head -n 1)"
-              if [ "$run" = 1 ]; then
-                tcpdump -r /tmp/e1000-net1.pcap -nn 2>/dev/null | wc -l || true
+              line=$(grep -o 'net1 echoed 2 MiB.*' out/test/boot-userspace-e1000.log | head -n 1 || true)
+              echo "=== RUN $run PASS: $line"
+              # A slow one went the way of a stall, and came back: shown
+              # whole, as a failure would be.
+              took=$(echo "$line" | grep -o '[0-9]* ms' | grep -o '[0-9]*' || echo 0)
+              if [ "${took:-0}" -gt 4000 ]; then
+                echo "=== RUN $run SLOW ($took ms)"
+                show
+                wire
               fi
             else
               failed=$((failed + 1))
