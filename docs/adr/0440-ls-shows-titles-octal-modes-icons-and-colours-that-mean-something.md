@@ -10,10 +10,10 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 ## Context
 
-Chase asked which of [eza](https://github.com/eza-community/eza)'s
-features our `ls` should have, and approved mockups of them on
-2026-11-09. Our `ls` is uutils' (ADR 0080), which prints what GNU's
-prints, and scripts read that output. eza is under the EUPL-1.2, so we
+[eza](https://github.com/eza-community/eza) shows more in a listing
+than GNU's `ls`, and several of its features are worth having in ours.
+Our `ls` is uutils' (ADR 0080), which prints what GNU's prints, and
+scripts read that output. eza is under the EUPL-1.2, so we
 take its ideas, not its code.
 
 This first part covers how the long listing looks: column titles, the
