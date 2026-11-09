@@ -5,15 +5,14 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 # Bundles and permissions
 
-This chapter describes apps on Dukovo as of Phase 13e of the roadmap:
-how they are installed, from a catalog or from a file, what they may
-do, and how they update and go back. An app, a command-line tool or a
-service comes as a bundle: one `.dkv` file, signed by its publisher,
-which the `bundle` command installs, sealed and apart from the system.
-The full references are bundle(1), bundled(8), manifest.json(5) and
-service.toml(5).
+This chapter describes apps on Dukovo: how they are installed, from a
+catalog or from a file, what they may do, and how they update and go
+back. An app, a command-line tool or a service comes as a bundle: one
+`.dkv` file, signed by its publisher, which the `bundle` command
+installs, sealed and apart from the system. The full references are
+bundle(1), bundled(8), manifest.json(5) and service.toml(5).
 
-## What works now
+## What works
 
 - **Installing from a catalog**, by the bundle's ID, with `bundle
   search` to find it; the catalog is a signed repository that vouches

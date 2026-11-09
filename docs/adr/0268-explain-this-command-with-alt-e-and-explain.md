@@ -10,7 +10,7 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 ## Context
 
-Chase approved the Nebix "Explain this command" design (design draft, 2026-11-01): Alt+E, a pipeable `explain`, warnings first, secrets masked, local only, never runs anything, a plain answer from the manuals when Nebix is not running.
+The approved Nebix "Explain this command" design: Alt+E, a pipeable `explain`, warnings first, secrets masked, local only, never runs anything, a plain answer from the manuals when Nebix is not running.
 
 ## Decision
 

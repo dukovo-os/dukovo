@@ -11,11 +11,11 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 ## Context
 
 Phase 13d.1. A bundle is an app, a command-line tool or a service with
-everything it needs, in one folder or one `.dkv` file (Chase,
-2026-10-29: a bundle is one zip, and `.dkv` is its extension). Its
-`manifest.json` is the only thing Dukovo reads to install it, show it,
-or decide what it may do. The security design's sections 11 and 12 set
-what version 1 holds and the rules for changing it:
+everything it needs, in one folder or one `.dkv` file (a zip with the
+extension `.dkv`). Its `manifest.json` is the only thing Dukovo reads to
+install it, show it, or decide what it may do. The security design's
+sections 11 and 12 set what version 1 holds and the rules for changing
+it:
 
 - **Exactly what 1.0 uses:** identity, programs, commands, services,
   permissions, data, interfaces and updates.

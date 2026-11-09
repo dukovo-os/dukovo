@@ -13,10 +13,10 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 The roadmap's 12a is done when `curl https://` works in QEMU, and
 resolved's DNS over TLS and HTTPS (12a.5), timed's Network Time Security
 (12a.6), and later admind, certd and sshd's neighbours all need TLS.
-Chase chose rustls on ring for Phase 12 (2026-10-30): ring is the crypto
-boringtun, WireGuard's, needs too, so one crypto core serves both, where
-aws-lc-rs, rustls's default, brings a CMake build of AWS-LC's C. The
-plan names "rustls with the Mozilla CA bundle".
+Phase 12 uses rustls on ring: ring is the crypto boringtun, WireGuard's,
+needs too, so one crypto core serves both, where aws-lc-rs, rustls's
+default, brings a CMake build of AWS-LC's C. The plan names "rustls with
+the Mozilla CA bundle".
 
 ring builds C and assembly through the cc crate. Its build script picks
 the assembly by the operating system, from a list of those with Linux's

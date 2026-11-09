@@ -13,9 +13,9 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 Phase 13a.2. logd keeps every record of the kernel log for good (ADR
 0210), with no limit: a busy machine would fill its disk in time. The
 plan asks for trimming (`logtrim`) and for an audit log of security
-events, and the prep doc fixed the limits with Chase: the log keeps 90
-days, at most 4 GiB or 10 % of its file system, whichever is smaller,
-and the audit log keeps a year (questions 3 and 4).
+events. The limits are these: the log keeps 90 days, at most 4 GiB or 10
+% of its file system, whichever is smaller, and the audit log keeps a
+year.
 
 An audit log is only worth reading if what it holds is true: a program
 must not be able to put an event in it, as a program cannot pass its

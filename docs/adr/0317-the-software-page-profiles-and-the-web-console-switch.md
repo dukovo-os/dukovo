@@ -10,18 +10,18 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 ## Context
 
-The plan's *Install profiles and features* (Chase, 2026-10-30) has the
-installer ask what the machine is for, a profile, show that profile's
-features as boxes to tick, and let the person add or remove any of them
-before installing. 1.0 has three profiles: Minimal, the base system
-with nothing listening; Server, Minimal and the web console, with every
-feature offered and none ticked; and Cloud and VM, Server set up at
-first boot from the cloud's data, with the web console off. The answers
-file names a profile and adds or removes single features, and every
-install saves what was chosen. The approved installer design (Chase,
-2026-11-02) has six steps, Welcome, Network, Disk, Software, You and
-Review; until now the screens had five, without Software, and the
-answers file refused `profile`, `features` and `web_console` (ADR 0309).
+The plan's *Install profiles and features* has the installer ask what
+the machine is for, a profile, show that profile's features as boxes to
+tick, and let the person add or remove any of them before installing.
+1.0 has three profiles: Minimal, the base system with nothing listening;
+Server, Minimal and the web console, with every feature offered and none
+ticked; and Cloud and VM, Server set up at first boot from the cloud's
+data, with the web console off. The answers file names a profile and
+adds or removes single features, and every install saves what was
+chosen. The approved installer design has six steps, Welcome, Network,
+Disk, Software, You and Review; until now the screens had five, without
+Software, and the answers file refused `profile`, `features` and
+`web_console` (ADR 0309).
 
 Features and the `feature` command came in ADR 0316. Dukovo Admin, the
 web console, comes in Phase 16c (release 0.16): the plan has the server

@@ -24,8 +24,8 @@ and `system.posix_acl_default`, beside the user's own `user.` attributes
 that file managers, browsers (where a download came from) and backup
 tools write, and `trusted.` and `security.` ones. A disk Dukovo shares
 with Linux has them already: Btrfs keeps them as `XATTR_ITEM`s and ext4
-in the inode and in a block of their own. Chase chose on 2026-10-31 to
-finish the lists before the pause after 13b.
+in the inode and in a block of their own. The lists are finished before
+the pause after 13b.
 
 ## Decision
 

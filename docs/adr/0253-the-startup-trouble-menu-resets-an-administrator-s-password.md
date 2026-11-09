@@ -12,13 +12,12 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 Phase 13b.6. With sign-in (ADR 0250) and elevate (ADR 0219), the only
 way to act as root on a signed-in machine is an administrator's
-password. The owner must never be locked out of their own machine, and
-a server has no one else to ask. The security design's row for a lost
-administrator's password, which Chase accepted on 2026-10-26, says:
-"The startup-trouble menu at the console (the machine's own or a cloud
-provider's) offers 'Reset an admin password', like Linux's single-user
-mode; it is logged and shown at the next sign-in. Once disks are
-encrypted (1.4) it needs the recovery key."
+password. The owner must never be locked out of their own machine, and a
+server has no one else to ask. The security design's row for a lost
+administrator's password says: "The startup-trouble menu at the console
+(the machine's own or a cloud provider's) offers 'Reset an admin
+password', like Linux's single-user mode; it is logged and shown at the
+next sign-in. Once disks are encrypted (1.4) it needs the recovery key."
 
 ADR 0250 already lets anyone at the boot menu start root's shell with
 `console-sign-in=off`, as Linux's `init=/bin/sh`: the way back in for

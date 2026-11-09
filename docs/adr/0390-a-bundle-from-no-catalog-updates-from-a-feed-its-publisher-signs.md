@@ -18,13 +18,13 @@ from a file no catalog lists is bound to the key that signed its first
 install (ADR 0223); an update from a catalog (ADR 0384) is an install
 with every check an install has.
 
-The updates design that Chase accepted for 13e (2026-11-03, its section
-10) says how: "One TUF client for every feed. A third-party catalog or a
-bundle's own feed is a small TUF repository rooted in the publisher key
-the owner accepted at install, and a publisher may use one key for all
-its roles. Sideloaded apps get the same protection against old, frozen
-and faked updates." A catalog is such a repository already (ADRs 0380
-and 0383), made with catalog-repo (ADR 0381).
+The updates design for 13e (its section 10) says how: "One TUF client
+for every feed. A third-party catalog or a bundle's own feed is a small
+TUF repository rooted in the publisher key the owner accepted at
+install, and a publisher may use one key for all its roles. Sideloaded
+apps get the same protection against old, frozen and faked updates." A
+catalog is such a repository already (ADRs 0380 and 0383), made with
+catalog-repo (ADR 0381).
 
 ## Decision
 

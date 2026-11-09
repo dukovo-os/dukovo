@@ -34,11 +34,11 @@ It is still built without expat, so pushing over the old "dumb" WebDAV
 protocol (`git-http-push`) is not built; every forge speaks the smart
 protocol.
 
-**The system's gitconfig names `credential-cache` as the helper**, for
-8 hours (`cache --timeout=28800`): a token typed once is used without
-asking again for a working day, and never written to disk (Chase,
-2026-11-01, over a plain-text store or asking every time). A user's
-own `~/.gitconfig` can name another helper, or none.
+**The system's gitconfig names `credential-cache` as the helper**, for 8
+hours (`cache --timeout=28800`): a token typed once is used without
+asking again for a working day, and never written to disk, which is
+safer than a plain-text store and less tiring than asking every time. A
+user's own `~/.gitconfig` can name another helper, or none.
 
 **The keyring comes in Phase 13g**: a keyring for each user, kept by
 authd and unlocked at sign-in, with a `git-credential-keyring` helper

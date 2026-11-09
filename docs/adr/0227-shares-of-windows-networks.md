@@ -15,8 +15,7 @@ Samba and by nearly every NAS, are reached with SMB 2 and 3; SMB 1 is
 insecure, and Windows no longer turns it on. Linux mounts them with
 `cifs`, in its kernel, and `mount -t cifs`, whose options people's
 guides and mount tables are full of. Dukovo's kernel keeps the protocol
-out: a program serves the share through `/devices/fuse` (ADR 0226),
-which Chase chose for this.
+out: a program serves the share through `/devices/fuse` (ADR 0226).
 
 The client needs SMB 2.1 to 3.1.1, NTLMv2 sign-in, signing and
 encryption, which servers ask for more and more, and is best in Rust,

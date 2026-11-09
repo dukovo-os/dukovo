@@ -64,9 +64,9 @@ upstream), and Dukovo's decoder is its own (ADR 0128).
   on a filesystem other than Btrfs). A file with Btrfs's `COMPRESS` flag
   is compressed on any mount, one with `NOCOMPRESS` or `NODATASUM` never,
   as on Linux. Small files written inline stay as they are.
-- **Like Fedora: the root only** (Chase, 2026-10-28): Dukovo's own root
-  compresses once it is Btrfs (Phase 10c.3); another disk compresses only
-  when Spark's command line names it (`--compress <disk>`, spark(8)).
+- **Like Fedora: the root only**: Dukovo's own root compresses once it
+  is Btrfs (Phase 10c.3); another disk compresses only when Spark's
+  command line names it (`--compress <disk>`, spark(8)).
 - **The bench row** `posix_btrfs_write_zstd_mib`: 32 files of 1 MiB of
   text written in writes of 128 KiB and synced (`syncfs` on Linux, an
   `fsync` of their directory on Radix, which syncs its filesystem), per
@@ -80,7 +80,7 @@ Rejected:
   compartment that has none; the decoder is already the crate's own.
 - **Compressing on every Btrfs disk by default**: a disk shared with
   another system, or one holding media that does not compress, would pay
-  the CPU for nothing; Chase chose the root only.
+  the CPU for nothing, so only the root compresses by default.
 - **Marking a file `NOCOMPRESS` when its first chunk does not shrink**,
   as Linux does without `compress-force`: every chunk is tried instead,
   so a file whose start is already compressed and whose rest is text

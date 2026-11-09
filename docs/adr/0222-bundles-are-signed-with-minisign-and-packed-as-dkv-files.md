@@ -11,18 +11,18 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 ## Context
 
 Phase 13d.2. ADR 0221 gave bundles a manifest. Before anything installs
-them (13d.3), a bundle needs a signature, a single file to travel as, and
-a safe way to be opened. The security design (section 10, and rows 7 and
-21 of its third look, accepted by Chase on 2026-10-26) asks for:
+them (13d.3), a bundle needs a signature, a single file to travel as,
+and a safe way to be opened. The security design (section 10, and rows 7
+and 21 of its third review) asks for:
 
 - **A signature over the manifest and every file's SHA-256**, Ed25519,
   minisign-compatible. The publisher's key comes from the signature,
   never from the manifest's own claims. Whether to trust a key is the
   installer's question: a catalog's, a key bound to the bundle's ID at its
   first install, or a developer key only this machine trusts.
-- **One file, a zip underneath**, with the extension `.dkv` (Chase,
-  2026-10-26 and 2026-10-29). The signature covers every file inside, so
-  the folder and the file verify the same way.
+- **One file, a zip underneath**, with the extension `.dkv`. The
+  signature covers every file inside, so the folder and the file verify
+  the same way.
 - **An SBOM in every bundle**, in SPDX as /system's own.
 - **An unpacker that holds only the new folder's capability**, refuses
   links, device files and set-ID bits, caps the total size and the

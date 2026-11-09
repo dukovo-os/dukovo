@@ -21,9 +21,9 @@ the catalog's, firmware's and rollout's roles in the updates design.
 Bundles' minisign signatures (ADR 0222) say who made a bundle; TUF says
 whether it is the one the catalog lists now.
 
-Chase chose (2026-11-03) to use tough, AWS's TUF library, and to write
-Dukovo's own client if tough would not do, with the TUF conformance
-suite in CI either way.
+The plan was to use tough, AWS's TUF library, and to write Dukovo's own
+client if tough would not do, with the TUF conformance suite in CI
+either way.
 
 tough builds on aws-lc-rs, AWS's build of BoringSSL's C code, which
 does not build for Radix. Its API is ring's, and a 60-line patch builds

@@ -12,8 +12,7 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 Phase 13d.4, the rest of 13d. Bundles install sealed (ADR 0223) and run
 in a sandbox of their own (ADR 0225), but get only the permissions given
-at install. The security design (sections 6, 8 and 10, locked by Chase
-on 2026-10-26) asks that:
+at install. The security design (sections 6, 8 and 10) asks that:
 
 - a permission asked "on first use" or "with a warning" (your folders,
   drives, `/shared`, all of your files, other apps' data, serial ports)

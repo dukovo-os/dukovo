@@ -20,8 +20,8 @@ mid-write, and Dukovo never offers them (roadmap, risks).
 
 Linux will not mount a Btrfs with a disk missing unless the mount says
 `degraded`. A server whose disk died then stops at boot, at the very
-moment its copies were meant to keep it going. Chase chose on
-2026-10-28 that Dukovo mounts it anyway, and says so loudly.
+moment its copies were meant to keep it going. Dukovo mounts it anyway,
+and says so loudly.
 
 ## Decision
 

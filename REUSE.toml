@@ -168,3 +168,10 @@ path = [
 ]
 SPDX-FileCopyrightText = "2026 The Dukovo contributors"
 SPDX-License-Identifier = "Apache-2.0 OR MIT"
+
+# The Dukovo logo, for the README. The name and logo are the project's
+# marks: they identify Dukovo and are not covered by the code license.
+[[annotations]]
+path = "docs/images/dukovo-logo-*.svg"
+SPDX-FileCopyrightText = "2026 The Dukovo contributors"
+SPDX-License-Identifier = "LicenseRef-Dukovo-Marks"

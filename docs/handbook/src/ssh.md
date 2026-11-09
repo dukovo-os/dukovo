@@ -6,12 +6,12 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 # SSH and remote access
 
 This chapter describes signing in to a Dukovo computer from another one
-over SSH, as of Phase 13c of the roadmap: sshd, Dukovo's own SSH server,
-built on the [russh](https://github.com/Eugeny/russh) library, and the
-OpenSSH client that is already in the image. The full references are
-sshd(8), sshd_config(5), authd(8), ssh(1), sftp(1) and scp(1).
+over SSH: sshd, Dukovo's own SSH server, built on the
+[russh](https://github.com/Eugeny/russh) library, and the OpenSSH client
+that is already in the image. The full references are sshd(8),
+sshd_config(5), authd(8), ssh(1), sftp(1) and scp(1).
 
-## What works now
+## What works
 
 - **Signing in with a key**, from any computer with an SSH client:
   OpenSSH's on Linux, macOS and Windows, or any other. A shell, a
@@ -206,7 +206,7 @@ sshd: no one signed in from 192.168.1.20 port 51690: key SHA256:u/Neh65Oe1HIDfpd
 each came from, and `lastb` the passwords that were wrong. `ssh -v` on
 the client says what it tried.
 
-## Not yet
+## Limitations
 
 - Options in `authorized_keys`, RSA keys and certificates.
 - X11 and agent forwarding, forwarding Unix sockets, and
