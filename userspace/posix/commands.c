@@ -43,6 +43,7 @@ static const char *const ELSEWHERE[][2] = {
 		{"getfacl", "the signin boot test's: it shows the list a file took of its folder"},
 		{"netd", "the dhcp boot test's service: it sets a card up by DHCP, which only QEMU's network answers"},
 		{"bundled", "the bundles and bundle-run boot tests' service: it installs, seals and removes bundles"},
+		{"reach", "the ls-grants boot test's: it names the apps a person allowed, which needs bundled and a bundle installed"},
 		{"ssh", "the ssh boot test's: it signs in to the host's sshd, which only QEMU's network reaches"},
 		{"scp", "the ssh boot test's: it copies files to and from the host's sshd"},
 		{"sftp", "the ssh boot test's: it fetches a file from the host's sshd"},
