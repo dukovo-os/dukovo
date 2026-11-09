@@ -16,3 +16,8 @@ same time touch no line in common. The file holds
 
 It starts with `use super::super::*;` to reach the test harness. The tests
 here run after the others, in the order of their names.
+
+Give a new test a line in `../covers.txt` too, naming the programs,
+commands, drivers and filesystems it exercises, so that a pull request
+that changes them runs it (ADR 0421). Until it has one, it runs on every
+pull request that runs boot tests.

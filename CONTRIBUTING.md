@@ -168,7 +168,11 @@ phase's places, so that two of them do not edit the same lines:
 - Boot tests: a new test is a file of its own in
   `tools/xtask/src/test/cases/`, described by its `//!` lines, which
   `ob docs` makes into dukovo-boot-tests(7); no list names it (see the
-  README there). `./ob test --list` names every boot test.
+  README there). `./ob test --list` names every boot test. Give it a
+  line in `tools/xtask/src/test/covers.txt`, which says what each test
+  exercises: a pull request runs only the boot tests its changes reach
+  (`./ob test boot --affected origin/main --list` names them), and main
+  runs them all after each merge (ADR 0421).
 - ridl interface numbers: Phase 11 takes `0x0020` to `0x002f`, Phase 12
   `0x0030` to `0x003f` and Phase 13 `0x0040` to `0x004f`. Object kinds and
   Spark's slots are numbered without gaps, so the pull request that merges
