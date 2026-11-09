@@ -6,7 +6,7 @@
 //!
 //! ```text
 //! linux-bench [--rounds <count>] [--posix-bench <program>] [--git <program>]
-//!             [--only scaling]
+//!             [--disc <device>] [--only scaling]
 //! ```
 //!
 //! With `--only scaling` it runs only the POSIX benchmarks' open/close
@@ -38,7 +38,10 @@
 //! (`userspace/posix/bench.c`, built with this machine's C compiler and C
 //! library), given with `--posix-bench`, or at `/posix-bench` as process 1,
 //! where it also gives them the virtual machine's disks, `/dev/vda` and
-//! `/dev/nvme0n1`, for their disk benchmarks. They time TCP and UDP over
+//! `/dev/nvme0n1`, for their disk benchmarks, and with `--disc` the
+//! optical drive at that device, for their disc benchmarks, once the
+//! drive shows up (the AHCI controller's ports are probed after its module
+//! loads). They time TCP and UDP over
 //! the loopback interface too, which process 1 brings up first, as a
 //! booting system does, and `git status` with the git given with
 //! `--git`, or at `/git` as process 1 (ADR 0294).
@@ -82,6 +85,10 @@ const GIT: &str = "/git";
 const DISK: &str = "/dev/vda";
 const NVME: &str = "/dev/nvme0n1";
 
+/// How long an optical drive given with `--disc` may take to show up:
+/// the AHCI module probes its ports in the background.
+const DISC_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// The virtual machine's Btrfs disk, for the POSIX benchmarks' Btrfs
 /// benchmarks, and where it is mounted.
 const BTRFS_DISK: &str = "/dev/vdb";
@@ -101,6 +108,7 @@ fn main() {
     let mut posix = None;
     let mut btrfs_log = None;
     let mut git = None;
+    let mut disc = None;
     let mut scaling = false;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -111,6 +119,7 @@ fn main() {
             }
             ("--posix-bench", Some(program)) => posix = Some(PathBuf::from(program)),
             ("--git", Some(program)) => git = Some(PathBuf::from(program)),
+            ("--disc", Some(device)) => disc = Some(PathBuf::from(device)),
             ("--only", Some(what)) if what == "scaling" => scaling = true,
             ("--btrfs-log", Some(mode)) if mode == "make" || mode == "list" => {
                 btrfs_log = Some(mode);
@@ -118,7 +127,8 @@ fn main() {
             _ => {
                 eprintln!(
                     "usage: linux-bench [--rounds <count>] [--posix-bench <program>] \
-                     [--git <program>] [--btrfs-log make|list] [--only scaling]"
+                     [--git <program>] [--disc <device>] [--btrfs-log make|list] \
+                     [--only scaling]"
                 );
                 std::process::exit(2);
             }
@@ -202,6 +212,13 @@ fn main() {
         } else {
             Vec::new()
         };
+        if let Some(disc) = &disc {
+            let given = Instant::now();
+            while !disc.exists() && given.elapsed() < DISC_WAIT {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            disks.push(("--disc", disc.as_path()));
+        }
         disks.retain(|(_, disk)| {
             let there = disk.exists();
             if !there {

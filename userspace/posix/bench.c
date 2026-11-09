@@ -15,6 +15,8 @@
 // and writes that disk, with nothing cached between (the disk
 // benchmarks), and with --nvme <device> that NVMe disk; `ob bench` gives
 // both systems the same virtio disk and NVMe disk, files on the host.
+// With --disc <device> it reads the disc in that optical drive, a file on
+// the host too, in a DVD drive on each system's AHCI controller.
 // With --btrfs <directory> it reads, makes and removes files in that
 // directory, where `ob bench` has each system mount the same Btrfs disk.
 // With --network it also times TCP and UDP over the loopback interface
@@ -627,6 +629,33 @@ static void disk(const char *path, int nvme) {
 	close(fd);
 }
 
+// The disc benchmarks on the optical drive at `path`, opened as the disk
+// benchmarks open a disk, read only: a disc is read 2,048 bytes a sector,
+// and a drive reads a sector's whole, so 64 KiB and 1 MiB at a time, as
+// a copy from a disc asks for (ADR 0434).
+static void disc(const char *path) {
+	static const struct {
+		const char *name;
+		size_t size;
+		uint64_t rounds;
+	} runs[] = {
+		{"posix_disc_read_64k", 64 * 1024, 5000},
+		{"posix_disc_read_mib", 1 << 20, 500},
+	};
+	int fd = open(path, O_RDONLY | O_DIRECT);
+	if(fd < 0)
+		fail(path);
+	off_t size = lseek(fd, 0, SEEK_END);
+	if(size < (off_t)DISK_SPAN) {
+		printf("posix-bench: %s holds %lld bytes, fewer than %u\n", path, (long long)size,
+		       DISK_SPAN);
+		exit(1);
+	}
+	for(size_t i = 0; i < sizeof(runs) / sizeof(runs[0]); i++)
+		disk_transfers(fd, runs[i].name, 0, runs[i].size, runs[i].rounds);
+	close(fd);
+}
+
 // The files of the Btrfs disk `ob bench` makes with Linux's mkfs.btrfs,
 // each BTRFS_FILE bytes: `plain/<n>`, of bytes that do not compress, and
 // `zstd/<n>`, of text that zstd compresses, in 128 KiB extents as Linux
@@ -1040,7 +1069,8 @@ int main(int argc, char **argv) {
 		fflush(stdout);
 		return 0;
 	}
-	const char *disk_path = NULL, *nvme_path = NULL, *btrfs_path = NULL, *git = NULL;
+	const char *disk_path = NULL, *nvme_path = NULL, *disc_path = NULL, *btrfs_path = NULL;
+	const char *git = NULL;
 	int networked = 0;
 	for(int i = 1; i < argc; i++) {
 		if(!strcmp(argv[i], "--network"))
@@ -1049,6 +1079,8 @@ int main(int argc, char **argv) {
 			disk_path = argv[++i];
 		else if(i + 1 < argc && !strcmp(argv[i], "--nvme"))
 			nvme_path = argv[++i];
+		else if(i + 1 < argc && !strcmp(argv[i], "--disc"))
+			disc_path = argv[++i];
 		else if(i + 1 < argc && !strcmp(argv[i], "--btrfs"))
 			btrfs_path = argv[++i];
 		else if(i + 1 < argc && !strcmp(argv[i], "--git"))
@@ -1083,6 +1115,8 @@ int main(int argc, char **argv) {
 		disk(disk_path, 0);
 	if(nvme_path)
 		disk(nvme_path, 1);
+	if(disc_path)
+		disc(disc_path);
 	if(btrfs_path)
 		btrfs(btrfs_path);
 	if(git)
