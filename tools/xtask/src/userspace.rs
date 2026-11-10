@@ -163,6 +163,7 @@ pub const STD_LINKS: &[(&str, &str)] = &[
     ("system/commands/free", "systools"),
     ("system/commands/getfacl", "systools"),
     ("system/commands/git-credential-keyring", "systools"),
+    ("system/commands/guest-agent", "systools"),
     ("system/commands/hd", "systools"),
     ("system/commands/halt", "systools"),
     ("system/commands/hexdump", "systools"),

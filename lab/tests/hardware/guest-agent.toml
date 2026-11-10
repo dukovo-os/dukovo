@@ -1,0 +1,17 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "The QEMU guest agent answers the host on its virtio port: Proxmox's summary shows the machine's addresses, and its Shutdown button powers the machine off cleanly (ADR 0329). Needs a virtual machine with QEMU's guest agent channel (Proxmox's QEMU Guest Agent option, or virt-manager's channel); the last check is made at the host"
+time = "3m"
+
+[[step]]
+run = "service guest-agent status"
+expect = ["guest-agent - QEMU guest agent", "Active: active (running)"]
+[[step]]
+run = "log -s guest-agent"
+root = true
+expect = "guest-agent: answering the host on /devices/virtio-ports/org.qemu.guest_agent.0"
+# The address the host's summary should show, to compare by eye.
+[[step]]
+run = "ip -br address"
+expect = "net0"

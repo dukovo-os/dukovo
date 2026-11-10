@@ -141,6 +141,18 @@ $ qemu-system-x86_64 -machine q35 -m 2G -enable-kvm \
 
 A new `instance-id` sets the machine up again with the new files.
 
+**The QEMU guest agent.** Every Dukovo system runs guest-agent(8),
+which answers the host as Linux's qemu-ga does, on the virtio port
+`org.qemu.guest_agent.0`
+([ADR 0329](https://github.com/dukovo-os/dukovo/blob/main/docs/adr/0329-the-qemu-guest-agent-and-virtualbox-in-ci.md)).
+In Proxmox, turn on *QEMU Guest Agent* in the machine's *Options*: its
+summary then shows the machine's addresses, and *Shutdown* stops its
+services and powers it off cleanly. libvirt's `virsh domifaddr --source
+agent` and `virsh shutdown --mode agent` use it too. It does not run
+commands or copy files for the host, and does not freeze filesystems
+for Proxmox's backups, which then back the machine up as they would one
+without an agent.
+
 ### AWS
 
 AWS imports the raw `.img` as a snapshot, from an S3 bucket, then
@@ -175,7 +187,15 @@ from the metadata service.
 ### VMware and VirtualBox
 
 Use the `.vmdk` as the machine's disk, with a config disk or ISO
-labelled `cidata` for the account and keys. With none, cloud-setup
+labelled `cidata` for the account and keys. An ISO is made with
+`genisoimage -output cidata.iso -volid cidata -joliet -rock meta-data
+user-data`, and goes in the machine's disc drive. In VirtualBox, set
+the machine's chipset to ICH9 (Settings, System, Motherboard): Dukovo
+finds PCI devices through PCI Express's configuration space, which
+VirtualBox's default chipset, the PIIX3, does not describe, and with it
+the machine finds no disks. CI boots the image in VirtualBox so, under
+UEFI, on its SATA controller with an Intel PRO/1000 card on NAT. With
+no config disk, cloud-setup
 finds nothing to set up and only grows the root, and the machine has no
 account to sign in with, unless the image was made with one:
 `./ob image --cloud --user alice` makes an administrator's account as

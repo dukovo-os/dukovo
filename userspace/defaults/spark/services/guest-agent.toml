@@ -1,0 +1,31 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+#
+# The QEMU guest agent: guest-agent(8) answers the virtual machine's host
+# in QEMU's guest agent protocol on the virtio port
+# org.qemu.guest_agent.0, so that Proxmox, libvirt and OpenStack show the
+# machine's addresses and system and shut it down cleanly (ADR 0329).
+#
+# It is on: on a computer, or a virtual machine without the port, it ends
+# at once, saying there is nothing to answer.
+#
+# service.toml(5) explains each setting. `service check guest-agent`
+# checks this file, and `service edit guest-agent` checks it as you save.
+
+service_version = 1
+description = "QEMU guest agent"
+program = "/system/commands/guest-agent"
+# After the network, whose addresses it gives the host.
+order = 46
+# Again if it fails, as when the host takes the port away and gives it
+# back; not when it ends as there is no port.
+restart = "on-failure"
+
+[limits]
+memory = "16M"
+
+# What it holds: the whole tree, as Spark does, for the port in /devices
+# and Spark's control socket, through which the host's guest-shutdown
+# ends the machine.
+[permissions]
+runs-with-your-access = true
