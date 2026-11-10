@@ -38,7 +38,7 @@ on every change.
 
 Release 1.0 is a headless **server** system, in the spirit of Ubuntu
 Server, run from the Nukesh shell or the **Dukovo Admin** web console.
-The **Lumen** compositor and the desktop follow from release 1.1
+The window manager (`windowd`) and the desktop follow from release 1.1
 ([ADR 0078](docs/adr/0078-server-first-release.md)).
 
 > [!NOTE]
@@ -75,7 +75,7 @@ and on real machines in the project's test lab.
 | 17 | Go toolchain | Planned |
 | 18 | Linux containers through Podman: **Release 1.0** | Planned |
 
-After 1.0, releases 1.1 to 1.18 add the Lumen desktop, the UI kit and
+After 1.0, releases 1.1 to 1.18 add the desktop, the UI kit and
 Store, Linux desktop apps, developer tools, a local AI assistant, gaming,
 and AArch64 and RISC-V. Then Dukovo is 2.0.
 
