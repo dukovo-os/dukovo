@@ -236,7 +236,7 @@ An install then runs these steps, each printed as it starts:
 It ends with the line to act on:
 
 ```
-dukovo-install: Dukovo 0.14.0 is installed on vda. Remove the install stick, then restart.
+dukovo-install: Dukovo 0.14.1 is installed on vda. Remove the install stick, then restart.
 ```
 
 From the DVD, it says to remove the install disc.

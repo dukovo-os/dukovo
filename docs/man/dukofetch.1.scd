@@ -24,11 +24,11 @@ the brand's colours.
 ```
 $ dukofetch --no-logo
 chase@dell
-OS: Dukovo Server 0.14.0 (x86-64)
-Kernel: Radix 0.14.0
+OS: Dukovo Server 0.14.1 (x86-64)
+Kernel: Radix 0.14.1
 Uptime: 3 days, 4 hours, 12 mins
 Apps: 14 bundles
-Shell: Nukesh 0.14.0
+Shell: Nukesh 0.14.1
 Terminal: consoled (pts/0)
 CPU: Intel Core i7-8550U (8) @ 4.00 GHz
 GPU: Intel UHD Graphics 620
@@ -99,7 +99,7 @@ plain text, without Duke, as *--no-logo* shows above.
 	$ dukofetch --json | jq .kernel
 	{
 	  "name": "Radix",
-	  "version": "0.14.0"
+	  "version": "0.14.1"
 	}
 	```
 
