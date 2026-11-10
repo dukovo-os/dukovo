@@ -1,0 +1,76 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "Data written to a card in the SD card slot in large pieces reads back the same after the card is taken out and put back, whatever the reader: an SD host controller, or a Realtek card reader on PCI (ADR 0448), as many laptops have"
+time = "10m"
+
+# The slot with no card in it, named mmcblk at boot (ADR 0437), and the
+# reader the kernel's log names for it: an SD host controller's version,
+# or the Realtek chip. Keep its name in the lab's home for the steps
+# below, which root runs: each account has a /tmp of its own.
+[[step]]
+run = "lsblk -dbn -o NAME,SIZE,RM | awk '$1 ~ /^mmcblk/ && $2 == \"0\" && $3 == \"1\" { print $1 }' > ~/lab-slot && cat ~/lab-slot"
+expect = "mmcblk"
+[[step]]
+run = "sh -c 'dmesg | grep \"$(cat ~/lab-slot) is an empty slot of the SD card reader\"'"
+root = true
+expect = " reader"
+# A blank card, formatted in the slot.
+[[step]]
+sd = "insert"
+blank = "256M"
+[[step]]
+wait = "5s"
+[[step]]
+run = "sh -c 'lsblk -dbn -o SIZE /devices/$(cat ~/lab-slot)'"
+expect = "268435456"
+[[step]]
+run = "sh -c 'mkfs-fat -n LABDATA /devices/$(cat /users/lab/lab-slot)'"
+root = true
+expect = "label LABDATA"
+[[step]]
+sd = "remove"
+[[step]]
+sd = "reinsert"
+[[step]]
+wait = "5s"
+[[step]]
+run = "findmnt /volumes/LABDATA"
+expect = ["vfat", "rw"]
+# 64 MiB of noise, in writes of 1 MiB that the queue sends as requests of
+# many blocks, and its sum kept in the lab's home.
+[[step]]
+run = "sh -c 'dd if=/devices/urandom of=/volumes/LABDATA/data bs=1M count=64 conv=fsync && sha256sum /volumes/LABDATA/data > /users/lab/lab-sd.sum'"
+root = true
+# Taken out and put back, the card is read from itself, not the page
+# cache: the sum is the same.
+[[step]]
+sd = "remove"
+[[step]]
+wait = "5s"
+[[step]]
+sd = "reinsert"
+[[step]]
+wait = "5s"
+[[step]]
+run = "sha256sum -c /users/lab/lab-sd.sum"
+root = true
+expect = "OK"
+# Read whole from the device, as a backup tool reads it, in pieces of
+# 1 MiB: every block of the card answers.
+[[step]]
+run = "sh -c 'dd if=/devices/$(cat /users/lab/lab-slot) of=/dev/null bs=1M 2>&1'"
+root = true
+expect = "268435456 bytes"
+# Let go by eject, and taken out.
+[[step]]
+run = "eject LABDATA"
+root = true
+[[step]]
+sd = "remove"
+[[step]]
+wait = "5s"
+[[step]]
+run = "sh -c 'test \"$(cat /kernel/block/$(cat ~/lab-slot)/size)\" = 0 && echo empty; ls /volumes'"
+expect = "empty"
+expect_not = "LABDATA"

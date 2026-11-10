@@ -341,9 +341,10 @@ order they were found), _nvme0n1_, _nvme0n2_ for the
 namespaces of the first NVMe controller and _nvme1n1_ for the second's
 (those an Intel VMD keeps, when the firmware's storage is set to RST or
 RAID, named as the others are; ADR 0249),
-_mmcblk0_, _mmcblk1_ for the slots of SD card readers on PCI, each named
-at boot, empty or not, and keeping its name whatever card is in it (ADR
-0247, ADR 0437), and for an eMMC soldered to the board (ADR 0439),
+_mmcblk0_, _mmcblk1_ for the slots of SD card readers on PCI, SD host
+controllers and Realtek's readers alike, each named at boot, empty or
+not, and keeping its name whatever card is in it (ADR 0247, ADR 0437,
+ADR 0448), and for an eMMC soldered to the board (ADR 0439),
 _vda1_ for a partition, and _nvme0n1p1_ or _mmcblk0p1_ after a name that
 ends in a digit.
 A USB disk plugged in later appears then, and one unplugged leaves
@@ -508,7 +509,10 @@ segment, as _1000:e1:00.0 behind the VMD at 0000:00:0e.0_, and *polled*.
   SCSI (UAS), SD, SDHC, SDXC and MMC cards in SD card readers on PCI,
   put in at boot or later (ADR 0437), and eMMCs (ADR 0439), have
   drivers; a reader without ADMA2, or whose ADMA2 is broken, moves data
-  by SDMA (ADR 0445). Port multipliers, optical drives, disks with
+  by SDMA (ADR 0445). Realtek's card readers on PCI, the RTS5209,
+  RTS5227, RTS5229, RTS522A, RTS5249, RTS525A, RTL8402, RTL8411 and
+  RTL8411B, take SD, SDHC and SDXC cards at High Speed at most (ADR
+  0448); the RTS5260 and Realtek's newer readers are not driven. Port multipliers, optical drives, disks with
   logical sectors larger than 4096 bytes and NVMe namespaces with
   metadata are not supported. NVMe controllers behind an Intel VMD are
   polled, as the VMD's interrupts are not routed yet, and the AHCI

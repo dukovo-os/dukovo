@@ -299,6 +299,7 @@ dependencies = [
  "radix-random",
  "radix-realtek-net",
  "radix-rge-net",
+ "radix-rtsx",
  "radix-sched",
  "radix-scsi",
  "radix-sdhci",
@@ -780,6 +781,14 @@ version = "0.14.0"
 dependencies = [
  "radix-hw",
  "radix-nic",
+]
+
+[[package]]
+name = "radix-rtsx"
+version = "0.14.0"
+dependencies = [
+ "radix-hw",
+ "radix-sdhci",
 ]
 
 [[package]]

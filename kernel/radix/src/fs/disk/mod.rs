@@ -319,6 +319,14 @@ pub fn init() {
                         function.address()
                     );
                 }
+            } else if let Some(chip) = realtek_reader(&function) {
+                if let Err(why) = sdhci::bind_realtek(&function, chip, &mut cards) {
+                    warn!(
+                        "Disk: could not set up the Realtek {} card reader at {}: {why}",
+                        chip.name(),
+                        function.address()
+                    );
+                }
             } else if function.class() == radix_nvme::PCI_CLASS {
                 nvme::bind(&function, &mut controllers);
             } else if crate::i2c::designware::is_lpss(&function) {
@@ -370,6 +378,14 @@ fn is_ide(function: &Function) -> bool {
 fn is_sd_reader(function: &Function) -> bool {
     let (class, subclass, _) = function.class();
     (class, subclass) == radix_sdhci::PCI_CLASS
+}
+
+/// The Realtek card reader `function` is, if it is one of those
+/// `radix-rtsx` drives: no SD host controller, but a device of Realtek's
+/// own (ADR 0448).
+fn realtek_reader(function: &Function) -> Option<radix_rtsx::Chip> {
+    let (class, _, _) = function.class();
+    radix_rtsx::Chip::of(function.vendor_id(), function.device_id(), class)
 }
 
 /// Logs a function: where it is, its IDs and what its class says it is.

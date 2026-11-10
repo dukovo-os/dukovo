@@ -177,8 +177,6 @@ mod status {
     /// Every bit but the card's events, which a command clears before it
     /// goes and once it ends.
     pub const ALL_BUT_CARD: u16 = !CARD_EVENTS;
-    /// Error Interrupt Status: the command timed out.
-    pub const COMMAND_TIMEOUT: u16 = 1 << 0;
     /// Error Interrupt Status: the data's CRC or end bit was wrong, as a
     /// sampling point that drifted gives.
     pub const DATA_GARBLED: u16 = 1 << 5 | 1 << 6;
@@ -207,7 +205,7 @@ mod host2 {
 }
 
 /// The OCR's bits that ACMD41 asks with and the card answers.
-mod ocr {
+pub mod ocr {
     /// The card is ready.
     pub const READY: u32 = 1 << 31;
     /// Asked: the host takes high capacity cards; answered: it is one.
@@ -257,11 +255,11 @@ pub mod version {
 }
 
 /// The card status bits of an R1 response that say a command failed.
-const CARD_ERRORS: u32 = 0xfdf8_0000;
+pub const CARD_ERRORS: u32 = 0xfdf8_0000;
 /// The voltages ACMD41 offers: 2.7 to 3.6 V.
-const VOLTAGES: u32 = 0x00ff_8000;
+pub const VOLTAGES: u32 = 0x00ff_8000;
 /// CMD6's argument that changes no group's function.
-const NO_CHANGE: u32 = 0x00ff_ffff;
+pub const NO_CHANGE: u32 = 0x00ff_ffff;
 /// The Clock Control register's bit that runs the card's clock.
 const CLOCK_ON: u16 = 1 << 2;
 /// An SD card's tuning block: CMD19's 64 bytes.
@@ -284,18 +282,34 @@ pub enum Error {
     BadRequest,
 }
 
+/// The bits of [`Error::Command`] that [`Error::as_str`] words: those of
+/// an SD host controller's Error Interrupt Status, in which the driver of
+/// Realtek's card readers (radix-rtsx) says its failures too.
+pub mod failed {
+    /// The card did not answer the command.
+    pub const NO_ANSWER: u16 = 1 << 0;
+    /// The card's data did not come in time.
+    pub const DATA_TIMEOUT: u16 = 1 << 4;
+    /// The card's data was garbled: its CRC was wrong.
+    pub const DATA_CRC: u16 = 1 << 5;
+    /// The controller's DMA failed.
+    pub const DMA: u16 = 1 << 9;
+}
+
 impl Error {
     /// Why, in words.
     pub fn as_str(&self) -> &'static str {
         match self {
             Error::NoCard => "no card is in the slot",
             Error::Timeout => "the controller did not finish in time",
-            Error::Command(bits) if bits & status::COMMAND_TIMEOUT != 0 => {
-                "the card did not answer"
+            Error::Command(bits) if bits & failed::NO_ANSWER != 0 => "the card did not answer",
+            Error::Command(bits) if bits & failed::DMA != 0 => "the controller's DMA failed",
+            Error::Command(bits) if bits & failed::DATA_TIMEOUT != 0 => {
+                "the card's data did not come in time"
             }
-            Error::Command(bits) if bits & (1 << 9) != 0 => "the controller's DMA failed",
-            Error::Command(bits) if bits & (1 << 4) != 0 => "the card's data did not come in time",
-            Error::Command(bits) if bits & (1 << 5) != 0 => "the card's data was garbled (CRC)",
+            Error::Command(bits) if bits & failed::DATA_CRC != 0 => {
+                "the card's data was garbled (CRC)"
+            }
             Error::Command(_) => "the command failed",
             Error::Card(bits) if bits & (1 << 26) != 0 => "the card is write-protected",
             Error::Card(bits) if bits & (1 << 31) != 0 => "beyond the card's end",

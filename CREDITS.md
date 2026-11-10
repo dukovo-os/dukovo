@@ -527,6 +527,11 @@ We implement these from their published descriptions. No code is copied.
   Linux's `mmc_block` (GPL-2.0)
   ([ADR 0247](docs/adr/0247-sd-card-readers-are-polled-adma2-queues.md)).
   No code is taken from it.
+- OpenBSD's rtsx(4) (`sys/dev/ic/rtsx.c`, `rtsxreg.h` and
+  `sys/dev/pci/rtsx_pci.c`) by Uwe Stuehler and Stefan Sperling, under
+  the ISC licence, from which `radix-rtsx` sets up Realtek's card readers
+  on PCI and runs their commands, translated into Rust
+  ([ADR 0448](docs/adr/0448-realtek-card-readers-are-driven-from-openbsd-s-rtsx.md)).
 - The MBR partition table, and the GUID partition table of the UEFI
   specification with its CRC32 checks.
 - The System V ABI's ELF format and the x86-64 psABI, by Michael Matz,
