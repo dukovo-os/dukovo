@@ -137,6 +137,9 @@ pub fn delay_us(us: u64) {
 enum Reference {
     Hpet { counter: *const u64, period_fs: u64, wide: bool },
     PmTimer { register: GenericAddress, virt: usize, wide: bool },
+    /// Hyper-V's reference counter, in 100 ns steps (ADR 0423): a
+    /// Generation 2 machine has no HPET and no PIT.
+    HypervCounter,
     Pit,
 }
 
@@ -145,6 +148,7 @@ impl Reference {
         match self {
             Reference::Hpet { .. } => "HPET",
             Reference::PmTimer { .. } => "ACPI PM timer",
+            Reference::HypervCounter => "Hyper-V reference counter",
             Reference::Pit => "8254 PIT",
         }
     }
@@ -169,6 +173,7 @@ impl Reference {
                 };
                 u64::from(if wide { value } else { value & 0x00ff_ffff })
             }
+            Reference::HypervCounter => crate::hyperv::reference_counter(),
             Reference::Pit => 0,
         }
     }
@@ -186,6 +191,7 @@ impl Reference {
                 let ticks = to.wrapping_sub(from) & mask;
                 ticks * 1_000_000_000 / Fadt::PM_TIMER_HZ
             }
+            Reference::HypervCounter => to.wrapping_sub(from).saturating_mul(100),
             Reference::Pit => 0,
         }
     }
@@ -288,11 +294,17 @@ fn tsc_hz_from_cpuid() -> Option<u64> {
 }
 
 /// Calibrates the clocks. Called once, on the boot CPU, with the APIC
-/// initialised and interrupts off.
+/// initialised and interrupts off. Under Hyper-V, which gives both rates
+/// exactly (ADR 0423), nothing is measured.
 pub fn calibrate(hpet: Option<&Hpet>, fadt: Option<&Fadt>) {
+    if let Some((tsc_hz, apic_hz)) = crate::hyperv::frequencies() {
+        set(tsc_hz, apic_hz, "Hyper-V", false);
+        return;
+    }
     let reference = hpet
         .and_then(hpet_reference)
         .or_else(|| fadt.and_then(pm_timer_reference))
+        .or_else(|| crate::hyperv::has_reference_counter().then_some(Reference::HypervCounter))
         .unwrap_or(Reference::Pit);
     let (elapsed_ns, tsc_ticks, apic_ticks) = measure(&reference);
     apic::timer_stop();
@@ -303,16 +315,22 @@ pub fn calibrate(hpet: Option<&Hpet>, fadt: Option<&Fadt>) {
     let tsc_hz = exact.unwrap_or(measured).max(1);
     let apic_hz =
         (u128::from(apic_ticks) * 16 * 1_000_000_000 / u128::from(elapsed_ns.max(1))) as u64;
+    set(tsc_hz, apic_hz, reference.name(), exact.is_some());
+}
 
+/// Takes the TSC's rate, `tsc_hz`, and the local APIC timer's input rate,
+/// `apic_hz`, which came from `reference` (and from CPUID, if
+/// `from_cpuid`).
+fn set(tsc_hz: u64, apic_hz: u64, reference: &'static str, from_cpuid: bool) {
     TSC_HZ.store(tsc_hz, Ordering::Relaxed);
     NS_PER_TICK.store(clock::ns_per_tick(tsc_hz), Ordering::Relaxed);
     APIC_TIMER_HZ.store(apic_hz, Ordering::Relaxed);
     let per_tick = apic_hz / 16 / u64::from(TICK_HZ);
     TICK_COUNT.store(per_tick.clamp(1, u64::from(u32::MAX)) as u32, Ordering::Relaxed);
     let _ = CALIBRATION.set(Calibration {
-        reference: reference.name(),
+        reference,
         tsc_hz,
-        tsc_from_cpuid: exact.is_some(),
+        tsc_from_cpuid: from_cpuid,
         apic_timer_hz: apic_hz,
         invariant: cpu::feature::invariant_tsc(),
     });
