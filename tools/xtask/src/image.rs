@@ -133,13 +133,17 @@ pub enum Kind {
     /// key and sshd beside the system's slot, which is a release's
     /// (ADR 0401). Never a release itself.
     Lab,
+    /// A cloud machine's disk: an installed system's, with cloud-setup(8)
+    /// and sshd turned on, raw and in the formats of [`CLOUD_FORMATS`]
+    /// beside it (ADR 0328).
+    Cloud,
 }
 
 impl Kind {
     /// Whether the image is an installed system's disk, which boots its
     /// root rather than the live system.
     pub fn installed(self) -> bool {
-        matches!(self, Self::Installed | Self::Lab)
+        matches!(self, Self::Installed | Self::Lab | Self::Cloud)
     }
 }
 
@@ -150,7 +154,46 @@ pub fn file_name(kind: Kind) -> String {
         Kind::Iso => format!("dukovo-{VERSION}-x86_64.iso"),
         Kind::Installed => format!("dukovo-{VERSION}-x86_64-installed.img"),
         Kind::Lab => format!("dukovo-{VERSION}-x86_64-lab.img"),
+        Kind::Cloud => format!("dukovo-{VERSION}-x86_64-cloud.img"),
     }
+}
+
+/// The formats a cloud image is written in beside the raw one, each by
+/// the host's `qemu-img` (ADR 0328): its extension, qemu-img's name for
+/// it, its options, and what takes it.
+pub const CLOUD_FORMATS: [(&str, &str, &[&str], &str); 3] = [
+    ("qcow2", "qcow2", &["-c"], "KVM, Proxmox, OpenStack and DigitalOcean"),
+    ("vmdk", "vmdk", &["-o", "subformat=monolithicSparse"], "VMware and VirtualBox"),
+    ("vhdx", "vhdx", &["-o", "subformat=dynamic"], "Hyper-V and Azure"),
+];
+
+/// Writes the raw cloud image `raw` in each of [`CLOUD_FORMATS`] beside
+/// it, with the host's `qemu-img`, which runs on the build machine alone
+/// and is never shipped (GPL-2.0). Returns the files written.
+pub fn convert_cloud(raw: &Path) -> Result<Vec<PathBuf>> {
+    let mut written = Vec::new();
+    for (extension, format, options, _) in CLOUD_FORMATS {
+        let output = raw.with_extension(extension);
+        step(&format!("Writing the cloud image as {format}: {}", output.display()));
+        let _ = std::fs::remove_file(&output);
+        let status = std::process::Command::new("qemu-img")
+            .args(["convert", "-q", "-f", "raw", "-O", format])
+            .args(options)
+            .arg(raw)
+            .arg(&output)
+            .status()
+            .map_err(|err| {
+                Error::new(format!(
+                    "running qemu-img: {err} (install it: qemu-utils on Debian and Ubuntu, \
+                     qemu-img on Fedora)"
+                ))
+            })?;
+        if !status.success() {
+            crate::bail!("qemu-img could not write {}: {status}", output.display());
+        }
+        written.push(output);
+    }
+    Ok(written)
 }
 
 /// Path of the microcode module inside the image.
@@ -199,10 +242,13 @@ pub fn build_release(
     let programs = userspace::build(ctx, profile)?;
     let (root, live) = (ctx.out.join("root.btrfs"), ctx.out.join("live.btrfs"));
     let menu = match kind {
-        Kind::Installed | Kind::Lab => {
+        Kind::Installed | Kind::Lab | Kind::Cloud => {
             let staging = ctx.out.join("root-staging");
-            let extras =
-                Extras { account: overrides.account.as_ref(), lab: overrides.lab.as_ref() };
+            let extras = Extras {
+                account: overrides.account.as_ref(),
+                lab: overrides.lab.as_ref(),
+                cloud: kind == Kind::Cloud,
+            };
             Menu::Installed(make_root(ctx, &kernel, &programs, &staging, &root, extras)?)
         }
         Kind::Stick => {
@@ -241,7 +287,11 @@ pub fn build_release(
     let _ = std::fs::remove_file(&live);
     let _ = std::fs::remove_dir_all(ctx.out.join("live-staging"));
     built?;
-    Ok(ctx.out.join(file_name(kind)))
+    let output = ctx.out.join(file_name(kind));
+    if kind == Kind::Cloud {
+        convert_cloud(&output)?;
+    }
+    Ok(output)
 }
 
 /// Reads Intel microcode from a file of updates, or from every file in a
@@ -868,6 +918,9 @@ pub struct Extras<'a> {
     /// The lab's account, home and sshd, trusting this key and password
     /// (ADRs 0401 and 0408).
     pub lab: Option<&'a lab::Access>,
+    /// cloud-setup(8) and sshd turned on, as a cloud image has them (ADR
+    /// 0328).
+    pub cloud: bool,
 }
 
 /// Makes the Dukovo root's Btrfs in the file `output`, of [`ROOT_BYTES`],
@@ -903,10 +956,35 @@ pub fn make_root(
         step("Adding the Dukovo Lab's account, key and sshd (a test image)");
         owned.push(lab::stage(staging, &system, access)?);
     }
+    if extras.cloud {
+        step("Turning on cloud-setup and sshd (a cloud image)");
+        stage_cloud(&subvolume(SUBVOLUMES[1]))?;
+    }
     let time = image_time(ctx);
     let made = rootfs::make(staging, output, ROOT_BYTES, ROOT_LABEL, &SUBVOLUMES, time, &owned);
     let _ = std::fs::remove_dir_all(staging);
     made
+}
+
+/// Turns cloud-setup(8) and sshd(8) on in `settings`, a root's
+/// `@settings`, with override files, as `service NAME enable` does,
+/// without changing the system's files (ADR 0328).
+fn stage_cloud(settings: &Path) -> Result<()> {
+    let overrides = settings.join("spark/services/settings.d");
+    process::create_dir(&overrides)?;
+    for dir in ["spark", "spark/services", "spark/services/settings.d"] {
+        set_mode(&settings.join(dir), 0o755)?;
+    }
+    for name in ["cloud-setup", "sshd"] {
+        let path = overrides.join(format!("{name}.toml"));
+        let text = "# A cloud image: cloud-setup sets the machine up, and its owner signs in
+                    # over SSH with the keys the cloud gives (ADR 0328).
+enabled = true
+";
+        std::fs::write(&path, text).context(|| format!("writing {}", path.display()))?;
+        set_mode(&path, 0o644)?;
+    }
+    Ok(())
 }
 
 /// Makes the install stick's DUKOVO_LIVE filesystem in the file `output`

@@ -152,7 +152,7 @@ _target/userspace/_).
 	commands of your own on the kernel, such as cargo-deny's, which CI
 	runs after it.
 
-*image* [*--iso* | *--installed* | *--lab* [*--lab-key* _file_] [*--lab-password* _file_]] [*--cmdline* _flags_] [*--microcode* _path_] [*--disk-check* _serial_] [*--debug* | *--release*]
+*image* [*--iso* | *--installed* | *--cloud* | *--lab* [*--lab-key* _file_] [*--lab-password* _file_]] [*--cmdline* _flags_] [*--microcode* _path_] [*--disk-check* _serial_] [*--debug* | *--release*]
 	Build the kernel, then the install stick's image
 	_out/dukovo-VERSION-x86_64.img_, which starts under UEFI and under
 	legacy BIOS into the live system, and carries the signed release of
@@ -207,6 +207,19 @@ _target/userspace/_).
 		from memory (ADR 0307). Its EFI system partition holds only GRUB,
 		its menu and the microcode, if any. See *Installed systems* in
 		*dukovo-boot*(7).
+
+	*--cloud*
+		Make a cloud machine's disk,
+		_out/dukovo-VERSION-x86_64-cloud.img_, instead: an installed
+		system's disk as *--installed* makes it, with *cloud-setup*(8) and
+		*sshd*(8) turned on by override files, so that it sets itself up
+		at its first boot from a config disk labelled *cidata* or from its
+		cloud's metadata service, as *cloud-config*(5) says (ADR 0328). The
+		raw image is AWS's; the host's *qemu-img*, which the image never
+		carries, writes it beside as _.qcow2_ (compressed: KVM, Proxmox,
+		OpenStack, DigitalOcean), _.vmdk_ (VMware, VirtualBox) and _.vhdx_
+		(Hyper-V, Azure). The root grows over the cloud's larger disk at
+		boot.
 
 	*--lab*
 		Make the Dukovo Lab's test image,

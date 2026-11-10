@@ -121,6 +121,32 @@ fn administrators_come_and_go() {
 }
 
 #[test]
+fn an_administrator_may_elevate_without_a_password_as_a_cloud_account_does() {
+    let mut groups = groups("admins:x:10:alice,bob\ncarol:x:1002:\n");
+    let user = |name: &str, uid: u32| User {
+        name: name.into(),
+        uid,
+        gid: uid,
+        full_name: String::new(),
+        home: format!("/users/{name}"),
+        shell: SHELL.into(),
+    };
+    let (alice, carol) = (user("alice", 1000), user("carol", 1002));
+    assert!(!elevates_without_password(&alice, &groups));
+    set_without_password(&mut groups, "alice", true).unwrap();
+    set_without_password(&mut groups, "carol", true).unwrap();
+    assert_eq!(
+        groups.text(),
+        "admins:x:10:alice,bob\ncarol:x:1002:\nelevate-without-password:x:11:alice,carol\n"
+    );
+    assert!(elevates_without_password(&alice, &groups));
+    // Only an administrator elevates at all.
+    assert!(!elevates_without_password(&carol, &groups));
+    set_without_password(&mut groups, "alice", false).unwrap();
+    assert!(!elevates_without_password(&alice, &groups));
+}
+
+#[test]
 fn adding_accounts() {
     let mut users = users("root:x:0:0:root:/:/system/commands/nukesh\n");
     let mut groups = groups("root:x:0:\n");
@@ -285,9 +311,30 @@ fn requests_go_and_come_back() {
             home: "/shared/services/org.example.web".into(),
         },
         Request::Rename { name: "bob".into(), new: "robert".into() },
-        Request::Set { name: "bob".into(), full_name: Some("Bob Smith".into()), admin: None },
-        Request::Set { name: "bob".into(), full_name: Some(String::new()), admin: Some(true) },
-        Request::Set { name: "bob".into(), full_name: None, admin: Some(false) },
+        Request::Set {
+            name: "bob".into(),
+            full_name: Some("Bob Smith".into()),
+            admin: None,
+            without_password: None,
+        },
+        Request::Set {
+            name: "bob".into(),
+            full_name: Some(String::new()),
+            admin: Some(true),
+            without_password: None,
+        },
+        Request::Set {
+            name: "bob".into(),
+            full_name: None,
+            admin: Some(false),
+            without_password: None,
+        },
+        Request::Set {
+            name: "bob".into(),
+            full_name: None,
+            admin: None,
+            without_password: Some(true),
+        },
         Request::SharePassword {
             name: "alice".into(),
             current: b"s3cret".to_vec(),
@@ -391,8 +438,13 @@ fn requests_go_and_come_back() {
         b"rename\0bob\0rob\0"
     );
     assert_eq!(
-        Request::Set { name: "bob".into(), full_name: Some("Bob".into()), admin: Some(false) }
-            .encode(),
+        Request::Set {
+            name: "bob".into(),
+            full_name: Some("Bob".into()),
+            admin: Some(false),
+            without_password: None,
+        }
+        .encode(),
         b"set\0bob\0full-name\0Bob\0admin\0no\0"
     );
     assert_eq!(

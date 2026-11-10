@@ -1,0 +1,47 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "cloud-setup reads a NoCloud folder of meta-data, user data and a network configuration, and with --dry-run says all a cloud machine's first boot would do, the root's growing included, changing nothing; the service is off on a computer that is not a cloud image (ADR 0328)"
+time = "3m"
+
+# A folder as a config disk holds it, written as the lab account.
+[[step]]
+run = '''sh -c 'rm -rf /tmp/lab-cloud && mkdir /tmp/lab-cloud && cd /tmp/lab-cloud && printf "instance-id: lab-dry-run\nlocal-hostname: lab-cloud.example.org\npublic-keys:\n  - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAILabCloudDryRunKeyOnly lab-cloud\n" > meta-data && printf "#cloud-config\nusers:\n  - default\n  - name: labcloud\n    groups: users, sudo\n    sudo: ALL=(ALL) NOPASSWD:ALL\nwrite_files:\n  - path: /tmp/lab-cloud/written\n    content: never\nruncmd:\n  - touch /tmp/lab-cloud/ran\npackages: [nginx]\n" > user-data && printf "version: 2\nethernets:\n  eth0:\n    addresses: [192.0.2.10/24]\n    gateway4: 192.0.2.1\n" > network-config && ls' '''
+expect = ["meta-data", "network-config", "user-data"]
+[[step]]
+run = "cloud-setup --dry-run --source /tmp/lab-cloud"
+root = true
+expect = [
+    "cloud-setup: would run /system/commands/rdisk --grow",
+    "cloud-setup: would run /system/commands/device resize max /system/settings",
+    "cloud-setup: instance lab-dry-run from /tmp/lab-cloud",
+    "cloud-setup: left out packages: Dukovo installs apps with bundle(1)",
+    "cloud-setup: naming the machine lab-cloud",
+    "[net0]",
+    "address = 192.0.2.10/24",
+    "cloud-setup: making an administrator's account, dukovo, with 1 SSH key(s)",
+    "cloud-setup: making an administrator's account, labcloud, with 0 SSH key(s)",
+    "cloud-setup: writing /tmp/lab-cloud/written (5 bytes, mode 644)",
+    "cloud-setup: would run /bin/sh -c touch /tmp/lab-cloud/ran",
+    "cloud-setup: instance lab-dry-run set up",
+]
+# Nothing changed: the machine's name, the accounts, the files, the
+# instance kept.
+[[step]]
+run = "hostname"
+expect_not = "lab-cloud"
+[[step]]
+run = "sh -c 'id labcloud; id dukovo'"
+exit = 1
+expect_not = "uid="
+[[step]]
+run = "sh -c 'ls /tmp/lab-cloud; test -e /system/state/cloud-setup/instance || echo \"no instance\"-kept'"
+expect = "no instance-kept"
+expect_not = ["written", "ran"]
+# A computer that is not a cloud image has the service, off.
+[[step]]
+run = "service cloud-setup status"
+exit = 3
+expect = ["cloud-setup - Cloud machine setup", "Active: inactive (disabled)"]
+[[step]]
+run = "rm -rf /tmp/lab-cloud"

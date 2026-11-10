@@ -66,6 +66,7 @@ static const char *const ELSEWHERE[][2] = {
 		{"wg", "the network-wireguard boot test's: it shows and changes wgd's interfaces, and makes keys"},
 		{"firewall", "the network-pair boot test's: it needs the firewall capability and another machine to reach this one"},
 		{"rdisk", "the rdisk boot test's: it partitions a blank disk, which no other test has"},
+		{"cloud-setup", "the cloud boot tests' service: it sets a cloud machine up from its config disk or metadata"},
 		{"mkfs", "the rdisk boot test's: it makes filesystems on the partitions rdisk made"},
 		{"mkfs-fat", "the rdisk boot test's: it makes a FAT filesystem on a partition rdisk made"},
 		{"mkfs.fat", "the rdisk boot test's: it runs mkfs-fat by dosfstools' name"},

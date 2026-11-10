@@ -1,0 +1,40 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+#
+# A cloud machine's setup: cloud-setup(8) reads what the cloud says of the
+# machine, from a config disk labelled cidata or from DigitalOcean's or
+# AWS's metadata service, and sets it up once for each instance: its
+# name, its network cards, accounts with their SSH keys, files and
+# commands, in the style of cloud-init (cloud-config(5), ADR 0328). At
+# every boot it grows the root's partition and Btrfs to the disk's end.
+#
+# It is off but in the cloud images `ob image --cloud` makes, which turn
+# it on with an override file: a computer that is no cloud machine would
+# otherwise take a stick labelled cidata as its owner's word.
+#
+# service.toml(5) explains each setting. `service check cloud-setup`
+# checks this file, and `service edit cloud-setup` checks it as you save.
+
+service_version = 1
+description = "Cloud machine setup"
+program = "/system/commands/cloud-setup"
+# `service cloud-setup enable` and `service cloud-setup disable` set this.
+enabled = false
+# After the network, the volumes and sshd, which it may set up.
+order = 45
+# It runs once at each boot, and ends.
+restart = "never"
+
+[limits]
+memory = "128M"
+
+# What it holds: the whole tree, as Spark does, past the owners and modes
+# of files, as it writes the network's settings, the files the user data
+# names, and each account's SSH keys as the account's own; it asks authd
+# to make the accounts, grows the root's disk, and runs the user data's
+# commands as root. The network: it asks the metadata service, and the
+# commands may use it.
+[permissions]
+runs-with-your-access = true
+network.outbound = true
+admin.network = true

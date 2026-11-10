@@ -242,6 +242,8 @@ pub enum Request {
         full_name: Option<String>,
         /// Whether it is to be an administrator's.
         admin: Option<bool>,
+        /// Whether it is to elevate without a password (ADR 0328).
+        without_password: Option<bool>,
     },
     /// Run a command as an administrator, with the admin set (ADR 0219):
     /// an administrator's to ask, and after their password unless their
@@ -673,13 +675,17 @@ impl Request {
                 vec![b"service", name.as_bytes(), whose.as_bytes(), home.as_bytes()]
             }
             Request::Rename { name, new } => vec![b"rename", name.as_bytes(), new.as_bytes()],
-            Request::Set { name, full_name, admin } => {
+            Request::Set { name, full_name, admin, without_password } => {
                 let mut fields: Vec<&[u8]> = vec![b"set", name.as_bytes()];
                 if let Some(full_name) = full_name {
                     fields.extend([b"full-name".as_slice(), full_name.as_bytes()]);
                 }
+                let yes = |yes: bool| -> &[u8] { if yes { b"yes" } else { b"no" } };
                 if let Some(admin) = admin {
-                    fields.extend([b"admin".as_slice(), if *admin { b"yes" } else { b"no" }]);
+                    fields.extend([b"admin".as_slice(), yes(*admin)]);
+                }
+                if let Some(without) = without_password {
+                    fields.extend([b"without-password".as_slice(), yes(*without)]);
                 }
                 fields
             }
@@ -839,7 +845,7 @@ impl Request {
             }
             [b"rename", name, new] => Ok(Request::Rename { name: text(name)?, new: text(new)? }),
             [b"set", name, ref settings @ ..] => {
-                let (mut full_name, mut admin) = (None, None);
+                let (mut full_name, mut admin, mut without_password) = (None, None, None);
                 let (pairs, rest) = settings.as_chunks::<2>();
                 if !rest.is_empty() || pairs.is_empty() {
                     return Err(malformed());
@@ -852,10 +858,15 @@ impl Request {
                         (b"admin", value @ (b"yes" | b"no")) if admin.is_none() => {
                             admin = Some(value == b"yes");
                         }
+                        (b"without-password", value @ (b"yes" | b"no"))
+                            if without_password.is_none() =>
+                        {
+                            without_password = Some(value == b"yes");
+                        }
                         _ => return Err(malformed()),
                     }
                 }
-                Ok(Request::Set { name: text(name)?, full_name, admin })
+                Ok(Request::Set { name: text(name)?, full_name, admin, without_password })
             }
             [b"owner", name, full_name, password] => Ok(Request::Owner {
                 name: text(name)?,
@@ -1110,9 +1121,11 @@ impl std::fmt::Debug for Request {
             Request::Rename { name, new } => {
                 write!(f, "Rename {{ name: {name:?}, new: {new:?} }}")
             }
-            Request::Set { name, full_name, admin } => {
-                write!(f, "Set {{ name: {name:?}, full_name: {full_name:?}, admin: {admin:?} }}")
-            }
+            Request::Set { name, full_name, admin, without_password } => write!(
+                f,
+                "Set {{ name: {name:?}, full_name: {full_name:?}, admin: {admin:?}, \
+                 without_password: {without_password:?} }}"
+            ),
             Request::Owner { name, full_name, .. } => {
                 write!(f, "Owner {{ name: {name:?}, full_name: {full_name:?} }}")
             }

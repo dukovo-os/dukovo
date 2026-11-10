@@ -61,6 +61,7 @@ mod braille;
 mod btrfs;
 mod bundled;
 mod bundles;
+mod cloud;
 mod column;
 mod device;
 mod df;
@@ -192,6 +193,7 @@ const TOOLS: &[(&str, Tool)] = &[
     ("chgrp", modes::chgrp),
     ("chmod", modes::chmod),
     ("chown", modes::chown),
+    ("cloud-setup", cloud::main),
     ("column", column::main),
     ("df", df::main),
     ("device", device::main),
