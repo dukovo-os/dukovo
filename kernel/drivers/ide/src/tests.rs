@@ -60,6 +60,10 @@ struct SimDisk {
     /// Commands it fails, as a bad sector does.
     fails: bool,
     flushes: u32,
+    /// It takes 48-bit addresses; one that does not takes 28-bit ones.
+    lba48: bool,
+    /// It is a CompactFlash card in True IDE mode.
+    cfa: bool,
 }
 
 impl SimDisk {
@@ -71,7 +75,15 @@ impl SimDisk {
             serial: false,
             fails: false,
             flushes: 0,
+            lba48: true,
+            cfa: false,
         }
+    }
+
+    /// A CompactFlash card of `sectors`, of 28-bit addresses, as QEMU's
+    /// `ide-cf` is.
+    fn compact_flash(sectors: usize) -> SimDisk {
+        SimDisk { lba48: false, cfa: true, ..SimDisk::new(sectors) }
     }
 
     fn optical() -> SimDisk {
@@ -108,13 +120,25 @@ impl SimDisk {
     fn identify(&self) -> [u16; 256] {
         let mut id = [0u16; 256];
         let count = (self.sectors.len() / 512) as u64;
-        id[82] = 1 << 5;
-        id[83] = 0x4000 | 1 << 10 | 1 << 13;
-        id[85] = 1 << 5;
-        id[86] = 1 << 10 | 1 << 13;
+        id[49] = 1 << 9;
+        if self.lba48 {
+            id[82] = 1 << 5;
+            id[83] = 0x4000 | 1 << 10 | 1 << 13;
+            id[85] = 1 << 5;
+            id[86] = 1 << 10 | 1 << 13;
+            for (i, word) in id[100..104].iter_mut().enumerate() {
+                *word = (count >> (16 * i)) as u16;
+            }
+        } else {
+            // FLUSH CACHE, and no write cache, as QEMU's CompactFlash.
+            id[83] = 0x4000 | 1 << 12;
+            id[86] = 1 << 12;
+            id[60] = count as u16;
+            id[61] = (count >> 16) as u16;
+        }
         id[87] = 0x4000;
-        for (i, word) in id[100..104].iter_mut().enumerate() {
-            *word = (count >> (16 * i)) as u16;
+        if self.cfa {
+            id[0] = 0x848a;
         }
         if self.serial {
             // Serial ATA Gen 1 and 2.
@@ -181,6 +205,14 @@ struct State {
     dma: Option<Vec<u8>>,
     /// The sense of the last packet command that failed.
     sense: (u8, u8),
+    /// The device register, whose low four bits are a 28-bit address's
+    /// top ones.
+    device: u8,
+    /// A disk's PIO command: whether it reads, the sector it is at, and
+    /// how many are left.
+    sectors_pio: Option<(bool, u64, u32)>,
+    /// A PIO write's sector, as the host writes it.
+    incoming: Vec<u8>,
     /// The device asks for data in a phase of no bytes.
     zero_phase: bool,
 }
@@ -209,6 +241,52 @@ impl State {
         lba
     }
 
+    /// A 28-bit command's address and count: 0 for 256.
+    fn lba28(&self) -> (u64, u32) {
+        let lba = u64::from(self.lba[0].now)
+            | u64::from(self.lba[1].now) << 8
+            | u64::from(self.lba[2].now) << 16
+            | u64::from(self.device & 0x0f) << 24;
+        let count = u32::from(self.count.now);
+        (lba, if count == 0 { 256 } else { count })
+    }
+
+    /// A 48-bit command's count: 0 for 65,536.
+    fn count48(&self) -> u32 {
+        let count = u32::from(u16::from_le_bytes([self.count.now, self.count.before]));
+        if count == 0 { 65_536 } else { count }
+    }
+
+    /// Starts a disk's PIO command: `read`s, from `lba`, `count` sectors.
+    fn start_sectors(&mut self, code: u8, read: bool, lba: u64, count: u32) {
+        self.commands.push((code, lba, count));
+        let disk = self.disks[self.selected].as_ref().unwrap();
+        if disk.fails || (lba + u64::from(count)) * 512 > disk.sectors.len() as u64 {
+            self.status = READY | ERR;
+            self.error = if disk.fails { 1 << 6 } else { 1 << 4 };
+            return;
+        }
+        self.sectors_pio = Some((read, lba, count));
+        self.next_sector();
+    }
+
+    /// The next sector of a disk's PIO command, or its end.
+    fn next_sector(&mut self) {
+        let Some((read, lba, left)) = self.sectors_pio else { return };
+        if left == 0 {
+            self.sectors_pio = None;
+            self.status = READY;
+            return;
+        }
+        if read {
+            let disk = self.disks[self.selected].as_ref().unwrap();
+            let at = lba as usize * 512;
+            let sector = &disk.sectors[at..at + 512];
+            self.data = sector.chunks(2).map(|p| u16::from_le_bytes([p[0], p[1]])).collect();
+        }
+        self.status = READY | DRQ;
+    }
+
     fn command(&mut self, code: u8) {
         let Some(disk) = self.disks[self.selected].clone() else { return };
         match code {
@@ -222,15 +300,32 @@ impl State {
                 self.data = disk.identify().into_iter().collect();
                 self.status = READY | DRQ;
             }
-            0x25 | 0x35 => {
-                let count = u32::from(u16::from_le_bytes([self.count.now, self.count.before]));
-                let count = if count == 0 { 65_536 } else { count };
-                let lba = self.lba48();
+            0x25 | 0x35 if disk.lba48 => {
+                let (lba, count) = (self.lba48(), self.count48());
                 self.commands.push((code, lba, count));
                 self.pending = Some((code == 0x25, lba, count));
                 self.status = READY | BSY;
             }
-            0xea => {
+            0xc8 | 0xca => {
+                let (lba, count) = self.lba28();
+                self.commands.push((code, lba, count));
+                self.pending = Some((code == 0xc8, lba, count));
+                self.status = READY | BSY;
+            }
+            0x24 | 0x34 if disk.lba48 => {
+                let (lba, count) = (self.lba48(), self.count48());
+                self.start_sectors(code, code == 0x24, lba, count);
+            }
+            0x20 | 0x30 => {
+                let (lba, count) = self.lba28();
+                self.start_sectors(code, code == 0x20, lba, count);
+            }
+            0xe7 => {
+                self.commands.push((code, 0, 0));
+                self.disks[self.selected].as_mut().unwrap().flushes += 1;
+                self.status = READY;
+            }
+            0xea if disk.lba48 => {
                 self.disks[self.selected].as_mut().unwrap().flushes += 1;
                 self.status = READY;
             }
@@ -432,7 +527,10 @@ impl IoPorts for Port {
             (Block::Command, 1) => s.features = value,
             (Block::Command, 2) => s.count.write(value),
             (Block::Command, o @ 3..=5) => s.lba[usize::from(o - 3)].write(value),
-            (Block::Command, 6) => s.selected = usize::from(value >> 4 & 1),
+            (Block::Command, 6) => {
+                s.selected = usize::from(value >> 4 & 1);
+                s.device = value;
+            }
             (Block::Command, 7) => s.command(value),
             (Block::Control, 0) => {
                 if s.control & 4 != 0 && value & 4 == 0 {
@@ -474,6 +572,10 @@ impl IoPorts for Port {
         let word = s.data.pop_front().unwrap_or(0);
         if s.data.is_empty() {
             s.status &= !DRQ;
+            if let Some((true, lba, left)) = s.sectors_pio {
+                s.sectors_pio = Some((true, lba + 1, left - 1));
+                s.next_sector();
+            }
             s.next_phase();
         }
         word
@@ -482,6 +584,18 @@ impl IoPorts for Port {
     fn write16(&self, offset: u16, value: u16) {
         let mut s = self.sim.lock().unwrap();
         if self.block != Block::Command || offset != 0 {
+            return;
+        }
+        if let Some((false, lba, left)) = s.sectors_pio {
+            s.incoming.extend_from_slice(&value.to_le_bytes());
+            if s.incoming.len() == 512 {
+                let sector = std::mem::take(&mut s.incoming);
+                let selected = s.selected;
+                let disk = s.disks[selected].as_mut().unwrap();
+                disk.sectors[lba as usize * 512..][..512].copy_from_slice(&sector);
+                s.sectors_pio = Some((false, lba + 1, left - 1));
+                s.next_sector();
+            }
             return;
         }
         let Some(packet) = s.packet.as_mut() else { return };
@@ -839,4 +953,112 @@ fn bad_requests_are_refused() {
     assert_eq!(rig.channel.start(0, Op::Read, 0, 0, &[(at, 512)]), Err(Error::BadRequest));
     assert_eq!(rig.channel.start(0, Op::Read, 0, 1, &[(at, 100)]), Err(Error::BadRequest));
     assert_eq!(rig.channel.start(0, Op::Read, 0, 1, &[]), Err(Error::BadRequest));
+}
+
+/// Runs the PIO command in flight on `rig` through `buffer`, to its end.
+fn pio(rig: &mut Rig, buffer: &Dma) -> Result<(), Error> {
+    for _ in 0..1000 {
+        if let Some(done) = rig.channel.poll_pio(buffer) {
+            return done;
+        }
+    }
+    panic!("the PIO command never ended")
+}
+
+#[test]
+fn a_compactflash_card_moves_its_sectors_by_pio() {
+    let mut card = SimDisk::compact_flash(1024);
+    for (i, byte) in card.sectors.iter_mut().enumerate() {
+        *byte = (i * 7 % 251) as u8;
+    }
+    let want = card.sectors.clone();
+    let mut rig = rig([None, Some(card)]);
+    let Device::Ata { identity, .. } = rig.channel.identify(1, &mut delay) else {
+        panic!("no card")
+    };
+    assert!(identity.cfa && !identity.lba48);
+    assert_eq!(identity.sectors, 1024);
+    assert!(identity.flush && !identity.write_cache);
+    assert!(rig.channel.pio(1) && !rig.channel.pio(0));
+    // Its data do not go by DMA.
+    let buffer = alloc(3, true).unwrap();
+    let prds = [(low(&buffer), 1024)];
+    assert_eq!(rig.channel.start(1, Op::Read, 0, 2, &prds), Err(Error::BadRequest));
+    // Twenty sectors read, a sector to each DRQ block, eight at most in
+    // each poll.
+    rig.channel.start_pio(1, Op::Read, 5, 20).unwrap();
+    assert_eq!(rig.channel.poll(), None, "a PIO command is polled with poll_pio");
+    assert_eq!(rig.channel.poll_pio(&buffer), None);
+    assert_eq!(rig.channel.poll_pio(&buffer), None);
+    assert_eq!(rig.channel.poll_pio(&buffer), Some(Ok(())));
+    let mut got = vec![0u8; 20 * 512];
+    buffer.read(0, &mut got);
+    assert_eq!(got, want[5 * 512..25 * 512]);
+    // Two written, from the buffer's start.
+    buffer.write(0, &[0xa5; 1024]);
+    rig.channel.start_pio(1, Op::Write, 900, 2).unwrap();
+    assert_eq!(pio(&mut rig, &buffer), Ok(()));
+    {
+        let s = rig.sim.lock().unwrap();
+        let card = s.disks[1].as_ref().unwrap();
+        assert!(card.sectors[900 * 512..902 * 512].iter().all(|&b| b == 0xa5));
+        assert_eq!(card.sectors[902 * 512], want[902 * 512], "no more than asked");
+        assert_eq!(s.commands, [(0x20, 5, 20), (0x30, 900, 2)]);
+    }
+    // FLUSH CACHE, its 28-bit flush.
+    rig.channel.start(1, Op::Flush, 0, 0, &[]).unwrap();
+    assert_eq!(rig.channel.poll(), Some(Ok(())));
+    assert_eq!(rig.sim.lock().unwrap().disks[1].as_ref().unwrap().flushes, 1);
+}
+
+#[test]
+fn twenty_eight_bit_addresses_carry_their_top_bits_in_the_device_register() {
+    let mut rig = rig([Some(SimDisk::compact_flash(64)), None]);
+    rig.channel.identify(0, &mut delay);
+    let buffer = alloc(1, true).unwrap();
+    // At most 256 sectors a command, below 2^28.
+    assert_eq!(rig.channel.start_pio(0, Op::Read, 0, 257), Err(Error::BadRequest));
+    assert_eq!(rig.channel.start_pio(0, Op::Read, (1 << 28) - 1, 2), Err(Error::BadRequest));
+    assert_eq!(rig.channel.start_pio(0, Op::Read, 0, 0), Err(Error::BadRequest));
+    // Beyond the card: it says the sector is not there (IDNF).
+    rig.channel.start_pio(0, Op::Read, 0x0abc_def0, 256).unwrap();
+    assert_eq!(pio(&mut rig, &buffer), Err(Error::Device { status: READY | ERR, error: 1 << 4 }));
+    let s = rig.sim.lock().unwrap();
+    assert_eq!(s.commands, [(0x20, 0x0abc_def0, 256)]);
+    assert_eq!(s.device, 0xa0 | 1 << 6 | 0x0a, "the master, LBA, and the top bits");
+}
+
+#[test]
+fn a_card_that_fails_a_read_says_why() {
+    let card = SimDisk { fails: true, ..SimDisk::compact_flash(64) };
+    let mut rig = rig([Some(card), None]);
+    rig.channel.identify(0, &mut delay);
+    let buffer = alloc(1, true).unwrap();
+    rig.channel.start_pio(0, Op::Read, 1, 1).unwrap();
+    assert_eq!(pio(&mut rig, &buffer), Err(Error::Device { status: READY | ERR, error: 1 << 6 }));
+    // The channel is free again.
+    assert!(!rig.channel.busy());
+}
+
+#[test]
+fn a_disk_without_48_bit_addresses_takes_28_bit_dma_commands() {
+    let mut old = SimDisk { lba48: false, ..SimDisk::new(1024) };
+    old.sectors[300 * 512..301 * 512].fill(0x5a);
+    let mut rig = rig([Some(old), None]);
+    let Device::Ata { identity, .. } = rig.channel.identify(0, &mut delay) else {
+        panic!("no disk")
+    };
+    assert!(!identity.lba48 && !identity.cfa && !rig.channel.pio(0));
+    let buffer = alloc(32, true).unwrap();
+    // 256 sectors, written as a count of 0.
+    let prds = [(low(&buffer), 0x1_0000), (low(&buffer) + 0x1_0000, 0x1_0000)];
+    rig.channel.start(0, Op::Read, 100, 256, &prds).unwrap();
+    assert_eq!(rig.channel.poll(), Some(Ok(())));
+    let mut sector = vec![0u8; 512];
+    buffer.read(200 * 512, &mut sector);
+    assert!(sector.iter().all(|&b| b == 0x5a));
+    assert_eq!(rig.channel.start(0, Op::Read, 0, 257, &prds), Err(Error::BadRequest));
+    rig.channel.start(0, Op::Write, 7, 1, &[(low(&buffer), 512)]).unwrap();
+    assert_eq!(rig.channel.poll(), Some(Ok(())));
+    assert_eq!(rig.sim.lock().unwrap().commands, [(0xc8, 100, 256), (0xca, 7, 1)]);
 }

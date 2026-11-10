@@ -424,6 +424,10 @@ impl Port {
         }
         let identity = self.identify(delay).ok_or(Absent::NoIdentity)?;
         let identity = ata::identify(&identity).map_err(Absent::Unsupported)?;
+        // Its commands are the 48-bit ones.
+        if !identity.lba48 {
+            return Err(Absent::Unsupported(ata::Unsupported::No48Bit));
+        }
         let slots = ((self.cap >> 8) & 0x1f) as u8 + 1;
         let queued = self.cap & hba::CAP_SNCQ != 0 && identity.queue_depth > 1;
         let trim_entries = (BUFFER_SIZE / ata::TRIM_ENTRY) as u64;

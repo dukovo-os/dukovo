@@ -653,6 +653,11 @@ enum Bus {
     /// channel's master and slave, then the secondary's. Named `sd` and a
     /// letter, as SATA disks are, in that order.
     Ide,
+    /// A CompactFlash card at the next end of the IDE controller, counted
+    /// with the [`Bus::Ide`] disks' ends (QEMU's `ide-cf`, of 28-bit
+    /// addresses, which the kernel drives by PIO; ADR 0446). Named as they
+    /// are.
+    IdeCf,
     /// Logical unit `n` of a USB disk that speaks USB Attached SCSI
     /// (QEMU's `usb-uas`, with a `scsi-hd` for each unit), at this QEMU
     /// port of a case with [`UAS_PORTS`]: port `1` or `2` at SuperSpeed,
@@ -815,9 +820,10 @@ pub struct DiskImage {
 /// `cd0` and on for discs, the SATA drives', then the IDE ones', before
 /// the USB ones'.
 fn disk_names(disks: &[Disk]) -> Vec<String> {
-    let sata_disks =
-        disks.iter().filter(|disk| matches!(disk.bus, Bus::Sata | Bus::Ide | Bus::Scsi(_))).count()
-            as u8;
+    let sata_disks = disks
+        .iter()
+        .filter(|disk| matches!(disk.bus, Bus::Sata | Bus::Ide | Bus::IdeCf | Bus::Scsi(_)))
+        .count() as u8;
     let (mut virtio, mut sata, mut usb) = (b'a', b'a', b'a' + sata_disks + 1);
     let mut namespaces = [0u32; 256];
     let mut cards = 0..;
@@ -838,7 +844,7 @@ fn disk_names(disks: &[Disk]) -> Vec<String> {
                     return format!("cd{}", usb_cd.next().unwrap_or_default());
                 }
                 Bus::Virtio => ("vd", &mut virtio),
-                Bus::Sata | Bus::Ide | Bus::Scsi(_) => ("sd", &mut sata),
+                Bus::Sata | Bus::Ide | Bus::IdeCf | Bus::Scsi(_) => ("sd", &mut sata),
                 Bus::Usb(_) | Bus::Uas(..) => ("sd", &mut usb),
                 Bus::Nvme(n) => {
                     namespaces[usize::from(n)] += 1;
@@ -3797,7 +3803,7 @@ fn run_case(
     if case.disks.iter().any(|disk| matches!(disk.bus, Bus::Sata | Bus::SataCd)) {
         extra.extend(["-device".into(), "ich9-ahci,id=sata".into()]);
     }
-    if case.disks.iter().any(|disk| matches!(disk.bus, Bus::Ide | Bus::IdeCd)) {
+    if case.disks.iter().any(|disk| matches!(disk.bus, Bus::Ide | Bus::IdeCd | Bus::IdeCf)) {
         extra.extend(["-device".into(), "piix3-ide,id=pata".into()]);
     }
     let pvscsi = extra.iter().any(|arg| arg == PVSCSI);
@@ -3867,10 +3873,14 @@ fn run_case(
             Bus::UasCd(port, lun) => {
                 format!("scsi-cd,drive=disk{i},bus=uas{port}.0,scsi-id=0,lun={lun}{device}")
             }
-            Bus::Ide | Bus::IdeCd => {
+            Bus::Ide | Bus::IdeCd | Bus::IdeCf => {
                 end += 1;
                 let (channel, unit) = ((end - 1) / 2, (end - 1) % 2);
-                let kind = if disk.bus == Bus::IdeCd { "ide-cd" } else { "ide-hd" };
+                let kind = match disk.bus {
+                    Bus::IdeCd => "ide-cd",
+                    Bus::IdeCf => "ide-cf",
+                    _ => "ide-hd",
+                };
                 format!("{kind},drive=disk{i},bus=pata.{channel},unit={unit}{device}")
             }
             Bus::Nvme(n) => {
@@ -7459,6 +7469,23 @@ fn disks_found(vm: &mut Vm, case: &Case) -> Result<(), String> {
                     format!(", {unit}: QEMU HARDDISK, 512 bytes a block, write cache"),
                 )
             }
+            // QEMU's card has no 48-bit addresses and no write cache, and
+            // does not say whether it spins.
+            Bus::IdeCf => {
+                end += 1;
+                let channel = if end <= 2 { "primary" } else { "secondary" };
+                let unit = if end % 2 == 1 { "master" } else { "slave" };
+                (
+                    line_of(&format!(
+                        "Disk: {name} is a CompactFlash card of {size} on the IDE {channel} \
+                         channel at "
+                    ))?,
+                    format!(
+                        ", {unit}: QEMU MICRODRIVE, 512 bytes a block, solid state, 28-bit \
+                         addresses, by PIO"
+                    ),
+                )
+            }
             Bus::IdeCd => {
                 end += 1;
                 let channel = if end <= 2 { "primary" } else { "secondary" };
@@ -7590,7 +7617,7 @@ fn disks_found(vm: &mut Vm, case: &Case) -> Result<(), String> {
     let on = |bus: Bus| case.disks.iter().filter(|disk| disk.bus == bus).count();
     let plural =
         |count: usize, what: &str| format!("{count} {what}{}", if count == 1 { "" } else { "s" });
-    let mut ide = match on(Bus::Ide) {
+    let mut ide = match on(Bus::Ide) + on(Bus::IdeCf) {
         0 => String::new(),
         count => format!(", {}", plural(count, "IDE disk")),
     };
@@ -7729,6 +7756,7 @@ fn storage_write(vm: &mut Vm, case: &Case) -> Result<(), String> {
         vm.expect(&format!("storage: /kernel/block/{name}/size: "))?;
         let model = match disk.bus {
             Bus::Sata | Bus::Ide => "QEMU HARDDISK",
+            Bus::IdeCf => "QEMU MICRODRIVE",
             Bus::Nvme(_) => "QEMU NVMe Ctrl",
             Bus::Usb(_) | Bus::Uas(..) | Bus::Scsi(_) => "QEMU QEMU HARDDISK",
             Bus::Sd => "QEMU!",

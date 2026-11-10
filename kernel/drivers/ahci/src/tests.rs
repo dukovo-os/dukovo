@@ -641,10 +641,24 @@ fn identify_data_that_do_not_fit_are_refused() {
     id[3] ^= 1;
     assert_eq!(ata::identify(&id), Err(ata::Unsupported::Checksum));
 
+    // Without 48-bit addresses, the capacity is in words 60 and 61; and
+    // without LBA, there is none.
     let mut id = identify_words(64, 32, false);
     id[86] &= !(1 << 10);
+    id[60] = 0x2345;
+    id[61] = 0x0001;
     checksum(&mut id);
-    assert_eq!(ata::identify(&id), Err(ata::Unsupported::No48Bit));
+    let identity = ata::identify(&id).unwrap();
+    assert_eq!((identity.lba48, identity.sectors, identity.cfa), (false, 0x1_2345, false));
+    id[49] = 0;
+    checksum(&mut id);
+    assert_eq!(ata::identify(&id), Err(ata::Unsupported::NoLba));
+
+    // A CompactFlash card says so in word 0.
+    let mut id = identify_words(64, 32, false);
+    id[0] = 0x848a;
+    checksum(&mut id);
+    assert!(ata::identify(&id).unwrap().cfa);
 
     // 1,024-byte logical sectors: 512 words each.
     let mut id = identify_words(64, 32, false);
