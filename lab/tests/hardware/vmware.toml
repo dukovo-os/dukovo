@@ -1,0 +1,34 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "VMware's paravirtual disks and the guest's tools: the disks on the PVSCSI controller are sd disks, the toolbox runs and the host registers it, and the host is told the machine's address (ADR 0424). Needs a machine under ESXi, Workstation or Fusion with its disk on a VMware Paravirtual SCSI controller and a VMXNET3 card; at the host, check by hand that the machine's tools show as running (guest managed), that its IP address and uptime show, that Restart Guest restarts it cleanly, and that Shut Down Guest powers it off cleanly"
+time = "3m"
+
+# The tools: the backdoor answers, the host hears and registers them.
+[[step]]
+run = "sh -c 'dmesg | grep \"VMware: \"'"
+root = true
+expect = [
+    "VMware: backdoor version ",
+    "the toolbox runs",
+    "VMware: the host hears the toolbox",
+    "VMware: the host registered the toolbox",
+]
+expect_not = ["gives no guest RPC", "channel failed", "answers no backdoor"]
+# The disks, each with its target and logical unit.
+[[step]]
+run = "sh -c 'dmesg | grep \"on the VMware PVSCSI adapter\"'"
+root = true
+expect = ["Disk: sd", "is a SCSI disk of", "target 0 LUN 0", "VMware"]
+expect_not = ["did not answer", "refused"]
+# The network card, up, with its address, and its gateway answering.
+[[step]]
+run = "ip -br address"
+expect = ["net0", "UP"]
+[[step]]
+run = "sh -c 'ping -c 3 $(ip -4 route | grep default | cut -d\" \" -f3)'"
+expect = "3 packets transmitted, 3 received"
+# The root is on a PVSCSI disk, and writes reach it.
+[[step]]
+run = "sh -c 'dd if=/devices/zero of=/tmp/lab-vmware bs=1M count=64 2>/dev/null && sync && ls -l /tmp/lab-vmware && rm /tmp/lab-vmware'"
+expect = "67108864"

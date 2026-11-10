@@ -2348,6 +2348,7 @@ dependencies = [
  "radix-hw",
  "radix-pstate",
  "radix-sensors",
+ "radix-vmware",
 ]
 
 [[package]]
@@ -2425,6 +2426,10 @@ dependencies = [
  "radix-hw",
  "radix-sync",
 ]
+
+[[package]]
+name = "radix-vmware"
+version = "0.13.0"
 
 [[package]]
 name = "rand"

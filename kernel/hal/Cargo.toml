@@ -14,6 +14,7 @@ publish.workspace = true
 radix-hw = { path = "../lib/hw" }
 radix-pstate = { path = "../lib/pstate" }
 radix-sensors = { path = "../lib/sensors" }
+radix-vmware = { path = "../drivers/vmware" }
 
 [lints]
 workspace = true

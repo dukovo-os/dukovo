@@ -395,6 +395,8 @@ pub struct Shared;
 /// No Hyper-V here: the kernel speaks to it on x86 only (ADR 0423).
 impl radix_hal::Hyperv for Arch {}
 
+impl radix_hal::Vmware for Arch {}
+
 impl Aml for Arch {
     fn acpi_rsdp() -> Option<u64> {
         None

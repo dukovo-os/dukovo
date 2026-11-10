@@ -88,6 +88,7 @@ mod uart;
 mod usb;
 mod user;
 mod usertest;
+mod vmware;
 mod vports;
 mod watchdog;
 mod work;
@@ -278,6 +279,8 @@ pub extern "Rust" fn radix_kernel_main(mut params: BootParams) -> ! {
     // before the power button.
     acpi::start(flags.value("aml") == Some("off"));
     user::power::start();
+    // After the power thread, which the host's buttons wake.
+    vmware::start();
     acpi::finish_events();
     watchdog::find();
     gpio::find();

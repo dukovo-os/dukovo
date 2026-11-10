@@ -34,7 +34,10 @@
 //! its domain, then calls the power capability (radix-power(2)). Pressing
 //! the power button, which the kernel tells of through another
 //! notification (`notify_button`), powers the machine off the same way,
-//! at once, as systemd-logind's default HandlePowerKey=poweroff does.
+//! at once, as systemd-logind's default HandlePowerKey=poweroff does. The
+//! host of a virtual machine asking it to restart, which the kernel tells
+//! of through a third (`notify_restart`, ADR 0424), restarts it the same
+//! way, at once.
 //!
 //! Once it supervises, Spark starts the hardware watchdog, if the kernel
 //! drives one, with a timeout of WATCHDOG_SECONDS, and pets it each third
@@ -514,6 +517,9 @@ pub struct Supervisor {
     /// The notification the kernel signals when the power button is
     /// pressed, if it can hear it.
     button: Option<u32>,
+    /// The notification the kernel signals when the host of a virtual
+    /// machine asks it to restart.
+    restart: Option<u32>,
     listener: Option<File>,
     connections: Vec<Connection>,
     services: Vec<Service>,
@@ -560,6 +566,12 @@ impl Supervisor {
                     && power::notify_button(&SYS, power, slot).is_ok()
             })
         });
+        let restart = power.and_then(|power| {
+            slots::take().filter(|&slot| {
+                process::create(&SYS, SLOT_PROCESS, ObjectKind::Notification, 0, slot).is_ok()
+                    && power::notify_restart(&SYS, power, slot).is_ok()
+            })
+        });
         Supervisor {
             root,
             services_domain: holds(domain, ObjectKind::ResourceDomain).then_some(domain),
@@ -572,6 +584,7 @@ impl Supervisor {
             firewall: holds(firewall, ObjectKind::Firewall).then_some(firewall),
             children,
             button,
+            restart,
             listener: None,
             connections: Vec::new(),
             services: Vec::new(),
@@ -1331,6 +1344,18 @@ impl Supervisor {
         self.shutdown = Some(Shutdown::Pending { end: End::PowerOff, at: now() });
     }
 
+    /// The host of the virtual machine asked it to restart: restarts it
+    /// now, unless it is shutting down already. A shutdown set for later
+    /// is moved to now, and becomes a restart.
+    fn host_restart(&mut self) {
+        if let Some(Shutdown::Stopping { end, .. }) = self.shutdown {
+            println!("spark: the host asks for a restart; going to {} already", end.words());
+            return;
+        }
+        audit!("the host asks for a restart; restarting the machine");
+        self.shutdown = Some(Shutdown::Pending { end: End::Restart, at: now() });
+    }
+
     /// Ends the machine with the power capability.
     fn power(&mut self, end: End) -> ! {
         if let Some(slot) = self.power {
@@ -1489,8 +1514,8 @@ impl Supervisor {
     pub fn run(&mut self) -> ! {
         self.start_watchdog();
         loop {
-            // The children's notification, the power button's, the
-            // control socket, the connections, the services' outputs and
+            // The children's notification, the power button's, the host's
+            // restarts', the control socket, the connections, the services' outputs and
             // the program's terminal, in that order.
             let mut entries: Vec<(PollEntry, Source)> = Vec::new();
             let readable = PollEvents::READABLE.0 as u16;
@@ -1502,6 +1527,9 @@ impl Supervisor {
             }
             if let Some(slot) = self.button {
                 add(slot, Source::Button);
+            }
+            if let Some(slot) = self.restart {
+                add(slot, Source::Restart);
             }
             if let Some(listener) = &self.listener {
                 add(listener.slot(), Source::Listener);
@@ -1553,6 +1581,12 @@ impl Supervisor {
                             }
                             self.button_pressed();
                         }
+                        Source::Restart => {
+                            if let Some(slot) = self.restart {
+                                let _ = syscalls::wait(&SYS, slot, WaitFlags::POLL, 0);
+                            }
+                            self.host_restart();
+                        }
                         Source::Listener => self.accept(),
                         Source::Connection(i) => self.serve(i),
                         Source::Output(i) => {
@@ -1599,6 +1633,7 @@ impl Supervisor {
 enum Source {
     Children,
     Button,
+    Restart,
     Listener,
     Connection(usize),
     Output(usize),

@@ -653,6 +653,14 @@ pub fn interfaces() -> impl Iterator<Item = &'static Interface> {
         .filter(|interface| !interface.gone())
 }
 
+/// The first IPv4 address of the first card's interface that has one:
+/// the machine's address, as a hypervisor's tools show it.
+pub fn first_ipv4() -> Option<[u8; 4]> {
+    interfaces().filter(|interface| !interface.is_loopback()).find_map(|interface| {
+        interface.stack.lock().ipv4_addresses().next().map(|cidr| cidr.address().octets())
+    })
+}
+
 /// The interface numbered `index`, as Linux numbers them (`ifindex`),
 /// unless it was taken away.
 pub fn by_index(index: u32) -> Option<&'static Interface> {

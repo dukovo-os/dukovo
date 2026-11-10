@@ -205,6 +205,14 @@ account to sign in with, unless the image was made with one:
 `./ob image --cloud --user alice` makes an administrator's account as
 [Users and administration](users.md) shows.
 
+Under VMware's hypervisors, the disk may be on any of the machine's
+controllers, VMware's paravirtual one (PVSCSI) included, and the card
+either the E1000 or VMware's VMXNET3, the faster pair. The kernel runs
+the guest's side of VMware's tools itself (vmware(4)): the host shows
+the tools as running, so its Shut Down Guest and Restart Guest work,
+and shows the machine's IP address and uptime. Nothing is installed for
+them, and the host never offers to upgrade them.
+
 ### Hyper-V
 
 Make a generation 2 machine, which starts by UEFI, on the `.vhdx`, and

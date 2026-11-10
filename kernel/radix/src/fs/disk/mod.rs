@@ -53,6 +53,7 @@ mod ide;
 mod nvme;
 mod optical;
 mod optical_port;
+mod pvscsi;
 mod queue;
 pub mod removable;
 mod sdhci;
@@ -251,7 +252,7 @@ pub fn init() {
     let mut ide = 0;
     let mut cards = 0;
     let mut controllers = 0;
-    let (mut adapters, mut scsi) = (0, 0);
+    let (mut adapters, mut scsi, mut vmware) = (0, 0, 0);
     for segment in segments.iter().flatten() {
         let PciSegment { base, segment: number, first_bus, last_bus } = *segment;
         let mut map_bus = |bus: u8| {
@@ -274,6 +275,16 @@ pub fn init() {
                     );
                 }
                 adapters += 1;
+            } else if (function.vendor_id(), function.device_id())
+                == (radix_pvscsi::VENDOR, radix_pvscsi::DEVICE)
+            {
+                if let Err(why) = pvscsi::bind(&function, vmware, &mut scsi) {
+                    warn!(
+                        "Disk: could not set up the VMware PVSCSI adapter at {}: {why}",
+                        function.address()
+                    );
+                }
+                vmware += 1;
             } else if device_type(&function) == Some(radix_virtio::device_type::CONSOLE) {
                 crate::vports::bind(&function);
             } else if device_type(&function) == Some(radix_virtio::device_type::NET) {

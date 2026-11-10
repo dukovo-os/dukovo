@@ -94,6 +94,9 @@ const CABLE_DUMP: &str = "<cable dump>";
 /// the VMBus needs, the marker is left out and the machine is a plain
 /// one: the script tells the two apart by [`Vm::kvm`].
 pub const HYPERV: &str = "<hyperv>";
+/// In a case's `qemu`, its [`Bus::Scsi`] disks are on VMware's PVSCSI
+/// adapter (QEMU's `pvscsi`, ADR 0424) instead of a virtio SCSI one.
+pub const PVSCSI: &str = "<pvscsi>";
 /// The CPU of a [`HYPERV`] case: the host's, with Hyper-V's CPUID leaves,
 /// its hypercalls, reference counter, frequency registers and SynIC.
 const HYPERV_CPU: &str =
@@ -163,6 +166,7 @@ pub const KERNEL_LIBRARIES: &[&str] = &[
     "radix-nvme",
     "radix-posix",
     "radix-pstate",
+    "radix-pvscsi",
     "radix-random",
     "radix-realtek-net",
     "radix-relocs",
@@ -185,6 +189,7 @@ pub const KERNEL_LIBRARIES: &[&str] = &[
     "radix-vfs",
     "radix-virtio",
     "radix-vmd",
+    "radix-vmware",
     "radix-vmxnet3",
     "radix-vtd",
     "radix-watchdog",
@@ -3773,8 +3778,11 @@ fn run_case(
     if case.disks.iter().any(|disk| matches!(disk.bus, Bus::Ide | Bus::IdeCd)) {
         extra.extend(["-device".into(), "piix3-ide,id=pata".into()]);
     }
+    let pvscsi = extra.iter().any(|arg| arg == PVSCSI);
+    extra.retain(|arg| arg != PVSCSI);
     if case.disks.iter().any(|disk| matches!(disk.bus, Bus::Scsi(_))) {
-        extra.extend(["-device".into(), "virtio-scsi-pci,id=scsi0".into()]);
+        let adapter = if pvscsi { "pvscsi,id=scsi0" } else { "virtio-scsi-pci,id=scsi0" };
+        extra.extend(["-device".into(), adapter.into()]);
     }
     // A reader for each card, before them; each card names its reader's
     // bus by its path, as every reader's is called `sd-bus`.
@@ -7470,6 +7478,16 @@ fn disks_found(vm: &mut Vm, case: &Case) -> Result<(), String> {
                     uas_place(case.disks, port, lun)
                 ))?,
                 ", USB Attached SCSI".to_string(),
+            ),
+            Bus::Scsi(target) if case.qemu.contains(&PVSCSI) => (
+                line_of(&format!(
+                    "Disk: {name} is a SCSI disk of {size} on the VMware PVSCSI adapter at "
+                ))?,
+                format!(
+                    ", target {target} LUN 0: QEMU QEMU HARDDISK, {} bytes a \
+                     block{sectors}{ro}, write cache, MSI",
+                    disk.sector
+                ),
             ),
             Bus::Scsi(target) => (
                 line_of(&format!(

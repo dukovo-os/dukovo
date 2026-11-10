@@ -78,6 +78,12 @@ pub fn memory() -> Option<Memory> {
     MEMORY.get().copied()
 }
 
+/// The machine's maker, as the tables name it (`sys_vendor`), if they
+/// do.
+pub fn sys_vendor() -> Option<&'static [u8]> {
+    IDS.get().and_then(|ids| ids.sys_vendor).map(|name| name.0)
+}
+
 /// Whether there are tables, so `/kernel/class/dmi` has files.
 pub fn found() -> bool {
     IDS.get().is_some()

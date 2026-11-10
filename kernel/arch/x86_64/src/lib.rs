@@ -66,6 +66,7 @@ mod thread;
 mod time;
 mod user;
 mod vga;
+mod vmware;
 mod watchdog;
 
 use core::fmt;
@@ -610,6 +611,24 @@ impl radix_hal::Hyperv for Arch {
 
     fn hyperv_alloc(pages: usize) -> Option<radix_hw::Dma> {
         hyperv::alloc(pages)
+    }
+}
+
+impl radix_hal::Vmware for Arch {
+    fn vmware_signature() -> bool {
+        vmware::signature()
+    }
+
+    fn vmware_call(regs: &mut radix_hal::vmware::Regs) {
+        vmware::call(regs);
+    }
+
+    fn vmware_send(regs: &mut radix_hal::vmware::Regs, bytes: &[u8]) {
+        vmware::send(regs, bytes);
+    }
+
+    fn vmware_receive(regs: &mut radix_hal::vmware::Regs, bytes: &mut [u8]) {
+        vmware::receive(regs, bytes);
     }
 }
 

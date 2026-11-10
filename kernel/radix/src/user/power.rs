@@ -13,6 +13,10 @@
 //! cannot be done with interrupts masked. The watchdog's methods go to
 //! [`crate::watchdog`] (ADR 0143).
 //!
+//! The host of a virtual machine asks it to shut down ([`host_asked`]) as
+//! a press of the button, or to restart ([`host_asked_restart`], ADR 0424)
+//! through the notification Spark gave `notify_restart`.
+//!
 //! A thermal zone past its critical trip point ([`overheated`], ADR 0203)
 //! reaches Spark as a press of the button, and the thread powers the
 //! machine off itself if it is still on [`OVERHEAT_GRACE_NS`] later.
@@ -22,8 +26,8 @@ use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use radix_abi::errors::Kernel;
 use radix_abi::power::{
-    self as abi, HaltArgs, NotifyButtonArgs, PetWatchdogArgs, PowerOffArgs, RestartArgs,
-    StartWatchdogArgs, StartWatchdogResults, StopWatchdogArgs,
+    self as abi, HaltArgs, NotifyButtonArgs, NotifyRestartArgs, PetWatchdogArgs, PowerOffArgs,
+    RestartArgs, StartWatchdogArgs, StartWatchdogResults, StopWatchdogArgs,
 };
 use radix_cap::{Capability, ObjectKind, Rights};
 use radix_hal::{Cpu, Devices, Platform, Smp, Timer};
@@ -53,6 +57,11 @@ static PRESSES: AtomicU64 = AtomicU64::new(0);
 static PASSED: AtomicU64 = AtomicU64::new(0);
 /// The notification `notify_button` set, and the bits to set.
 static BUTTON: SpinLock<Option<(NotificationRef, u64)>> = SpinLock::new(None);
+/// Restarts the host asked for so far, and those passed on.
+static RESTARTS: AtomicU64 = AtomicU64::new(0);
+static RESTARTS_PASSED: AtomicU64 = AtomicU64::new(0);
+/// The notification `notify_restart` set, and the bits to set.
+static RESTART: SpinLock<Option<(NotificationRef, u64)>> = SpinLock::new(None);
 static THREAD: Once<ThreadRef> = Once::new();
 
 /// Starts the thread, then the power button.
@@ -87,11 +96,21 @@ pub fn start() {
 }
 
 /// The host asks the machine to shut down (Hyper-V's shutdown service,
-/// ADR 0423): Spark is asked to power it off, as for a press of the
-/// power button.
+/// ADR 0423, or VMware's Shut Down Guest, ADR 0424): Spark is asked to
+/// power it off, as for a press of the power button.
 pub fn host_asked() {
     info!("Power: the host asks the machine to shut down; Spark is asked to power it off");
     pressed();
+}
+
+/// The host asks the machine to restart (VMware's Restart Guest,
+/// ADR 0424): Spark is asked to restart it, as reboot(8) does.
+pub fn host_asked_restart() {
+    info!("Power: the host asks the machine to restart; Spark is asked to restart it");
+    RESTARTS.fetch_add(1, Ordering::AcqRel);
+    if let Some(thread) = THREAD.get() {
+        sched::wake(thread);
+    }
 }
 
 /// The platform's interrupt handler: one more press.
@@ -119,7 +138,13 @@ pub fn overheated(zone: &str) {
 
 /// Tells Spark of a press of the button. Returns whether it listens.
 fn tell_spark() -> bool {
-    let listener = BUTTON.lock().clone();
+    signal(&BUTTON)
+}
+
+/// Signals the notification `listener` holds, if it holds one. Returns
+/// whether it did.
+fn signal(listener: &SpinLock<Option<(NotificationRef, u64)>>) -> bool {
+    let listener = listener.lock().clone();
     match listener {
         Some((notification, badge)) => {
             notification.notify(badge);
@@ -138,6 +163,10 @@ fn run(_: usize) {
             if !tell_spark() {
                 warn!("Power: nothing listens for the power button");
             }
+        }
+        let restarts = RESTARTS.load(Ordering::Acquire);
+        if RESTARTS_PASSED.swap(restarts, Ordering::AcqRel) != restarts && !signal(&RESTART) {
+            warn!("Power: nothing listens for the host's restarts");
         }
         let deadline = OVERHEAT_DEADLINE.load(Ordering::Acquire);
         if deadline == 0 {
@@ -212,6 +241,14 @@ pub fn method(user: &UserRef, cap: &Capability, label: u32, args: &[u64; 8]) -> 
                 return Err(error(Kernel::NotSupported));
             }
             *BUTTON.lock() = Some((notification, notified.badge()));
+            return answer(label, 0, [0; 8]);
+        }
+        abi::NOTIFY_RESTART => {
+            let a = NotifyRestartArgs::decode(args)?;
+            cap.check(ObjectKind::Power, Rights::CONTROL).map_err(cap_error)?;
+            let (notified, notification) =
+                objects::notification(user.cspace, a.notification, Rights::SEND)?;
+            *RESTART.lock() = Some((notification, notified.badge()));
             return answer(label, 0, [0; 8]);
         }
         abi::START_WATCHDOG => {
