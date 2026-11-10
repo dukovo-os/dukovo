@@ -32,9 +32,10 @@ pub const CASE: Case = Case {
     second: None,
 };
 
-/// What the log holds on a machine under Hyper-V, each somewhere.
+/// What the log holds on a machine under Hyper-V, each somewhere: the
+/// TSC's rate as Hyper-V gave it, the hypervisor, and the channels.
 const UNDER_HYPERV: [&str; 4] = [
-    " MHz (Hyper-V)",
+    " MHz (from Hyper-V)",
     "Hyper-V: version ",
     "Hyper-V: dynamic memory (",
     "Hyper-V: 1 channel(s) offered; 0 SCSI controller(s), 0 disk(s)",
@@ -52,13 +53,23 @@ fn hyperv(vm: &mut Vm, case: &Case) -> Result<(), String> {
         return vm.expect_exit(QEMU_EXIT_SUCCESS);
     }
     // The boot waits for the channels the host offered, so all of this
-    // was logged before it completed.
-    for needle in UNDER_HYPERV {
-        if !log.contains(needle) {
-            return Err(format!("no \"{needle}\" under Hyper-V"));
-        }
-    }
+    // was logged before it completed. What is missing is said with every
+    // line about Hyper-V, since the serial log's tail shows none of them.
     let lines: Vec<&str> = log.lines().map(str::trim_end).collect();
+    let missing: Vec<&str> =
+        UNDER_HYPERV.into_iter().filter(|needle| !log.contains(needle)).collect();
+    if !missing.is_empty() {
+        let said: Vec<&str> = lines
+            .iter()
+            .copied()
+            .filter(|line| line.contains("Hyper-V") || line.contains("Time: TSC"))
+            .collect();
+        return Err(format!(
+            "no {} under Hyper-V; it said:\n{}",
+            missing.iter().map(|needle| format!("\"{needle}\"")).collect::<Vec<_>>().join(", "),
+            said.join("\n")
+        ));
+    }
     if !lines.iter().any(|line| line.contains("Hyper-V: VMBus ") && line.ends_with(" connected")) {
         return Err("the kernel did not connect to the VMBus".into());
     }
