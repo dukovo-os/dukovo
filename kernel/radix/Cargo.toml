@@ -49,6 +49,7 @@ radix-gpio = { path = "../drivers/gpio" }
 radix-gve = { path = "../drivers/gve" }
 radix-hda = { path = "../drivers/hda" }
 radix-hyperv = { path = "../drivers/hyperv" }
+radix-mana = { path = "../drivers/mana" }
 radix-i2c = { path = "../drivers/i2c" }
 radix-hal = { path = "../hal" }
 radix-hw = { path = "../lib/hw" }

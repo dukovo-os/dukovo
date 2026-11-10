@@ -13,7 +13,11 @@
 //! - the synthetic SCSI controller's disks, through the block queue
 //!   (`fs::disk::storvsc`);
 //! - the synthetic network card, through the network stack
-//!   (`net::attach_other`);
+//!   (`net::attach_other`), bonded to the virtual function Azure's
+//!   accelerated networking passes through for it, if any;
+//! - the virtual PCI bus that passes that function through (`vpci`), set
+//!   up once the others are, with the ones the host offers while the
+//!   machine runs, as after its maintenance;
 //! - the synthetic keyboard, whose keys go to `/devices/kbd` as a PS/2
 //!   keyboard's do;
 //! - the shutdown service, which presses the power button for the host;
@@ -39,12 +43,14 @@ use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 use radix_hal::{Hyperv, Synic, Timer};
 use radix_hw::Dma;
+use radix_hyperv::bond::Bond;
 use radix_hyperv::ic::{Action, Ic, Service};
 use radix_hyperv::ring::{self, INBAND, Rings};
 use radix_hyperv::vmbus::{self, FromHost, Offer, Request};
 use radix_hyperv::{Guid, PAGE, guid, keyboard, network};
 use radix_klog::{TextBuf, info, warn};
 use radix_mm::{Flags, HEAP, Kmalloc};
+use radix_nic::Nic;
 use radix_sync::{Once, SpinLock};
 
 use crate::Arch;
@@ -77,12 +83,17 @@ const SAMPLE_STEP_NS: u64 = 5_000_000_000;
 const STORAGE_RINGS: (usize, usize) = (16, 16);
 const NETWORK_RINGS: (usize, usize) = (32, 32);
 const SERVICE_RINGS: (usize, usize) = (4, 4);
+const PCI_RINGS: (usize, usize) = (4, 4);
+/// The most virtual PCI buses the host may offer while the machine runs
+/// before the thread sets them up.
+const LATE_BUSES: usize = 4;
 
 /// Where a channel's events go: the kind in the high byte, its number
 /// among those of its kind below.
 const ROUTE_DISKS: u32 = 1 << 24;
 const ROUTE_NETWORK: u32 = 2 << 24;
 const ROUTE_SERVICE: u32 = 3 << 24;
+const ROUTE_PCI: u32 = 4 << 24;
 
 static SYNIC: Once<Synic> = Once::new();
 static THREAD: Once<ThreadRef> = Once::new();
@@ -101,6 +112,13 @@ static SETTLED: AtomicBool = AtomicBool::new(false);
 static ROUTES: [AtomicU32; CHANNELS] = [const { AtomicU32::new(0) }; CHANNELS];
 /// The services with packets waiting, a bit each.
 static PENDING: AtomicU64 = AtomicU64::new(0);
+/// Virtual PCI buses the host offered while the machine runs, for the
+/// thread to set up.
+static LATE_BUSES_OFFERED: SpinLock<[Option<Offer>; LATE_BUSES]> =
+    SpinLock::new([None; LATE_BUSES]);
+/// Virtual PCI buses' channels the host took away, by relid plus one,
+/// for the thread to stop their functions before it lets them go.
+static PCI_RESCINDED: [AtomicU32; LATE_BUSES] = [const { AtomicU32::new(0) }; LATE_BUSES];
 /// The next GPADL's number: any the guest chooses, FreeBSD's first.
 static NEXT_GPADL: AtomicU32 = AtomicU32::new(0xe1e10);
 
@@ -166,6 +184,7 @@ fn on_interrupt(_: usize) {
                 PENDING.fetch_or(1 << number, Ordering::AcqRel);
                 wake = true;
             }
+            ROUTE_PCI => wake = true,
             _ => {}
         }
     });
@@ -230,11 +249,12 @@ fn post(request: &Request) -> bool {
     false
 }
 
-/// What the thread keeps: the services it set up, and a buffer their
-/// packets are read into.
+/// What the thread keeps: the services it set up, a buffer their
+/// packets are read into, and the virtual PCI buses.
 struct State {
     services: Vec<ServiceChannel, Kmalloc>,
     buffer: Vec<u8, Kmalloc>,
+    buses: crate::vpci::Buses,
 }
 
 /// A keyboard or integration service's channel.
@@ -269,22 +289,29 @@ fn run(_: usize) {
     for _ in 0..SERVICE_BUFFER {
         let _ = buffer.push_within_capacity(0);
     }
-    let mut state = State { services, buffer };
+    let mut state = State { services, buffer, buses: crate::vpci::Buses::new() };
+    let mut buses = None;
     match connect(synic) {
         Some(version) => {
             info!("Hyper-V: VMBus {}.{} connected", version >> 16, version & 0xffff);
-            set_up_offers(synic, &mut state);
+            buses = set_up_offers(synic, &mut state);
         }
         None => {
             warn!("Hyper-V: the host speaks no VMBus version the kernel does; VMBus is not used");
         }
     }
     SETTLED.store(true, Ordering::Release);
+    // The virtual PCI buses last: their functions join the network cards,
+    // and the boot does not wait for them.
+    for offer in buses.iter().flatten() {
+        set_up_pci(synic, &mut state, offer);
+    }
     loop {
         while let Some(message) = next_message(synic) {
             note(&message);
         }
         serve(&mut state);
+        serve_pci(synic, &mut state);
         sched::block_until(sched::now_ns().saturating_add(LOOK_NS), "vmbus");
     }
 }
@@ -323,9 +350,20 @@ fn wait_message(synic: &Synic, want: &mut dyn FnMut(&FromHost) -> bool) -> Optio
 }
 
 /// A message no one waits for. An offer once the boot's are set up is of
-/// a device added while the machine runs.
+/// a device added while the machine runs: a virtual PCI bus is kept for
+/// the thread to set up, as after the host's maintenance.
 fn note(message: &FromHost) {
     match message {
+        FromHost::Offer(offer) if SETTLED.load(Ordering::Acquire) && offer.kind == guid::PCI => {
+            let mut late = LATE_BUSES_OFFERED.lock_irq();
+            match late.iter_mut().find(|kept| kept.is_none()) {
+                Some(free) => *free = Some(*offer),
+                None => warn!(
+                    "Hyper-V: too many virtual PCI buses offered at once; {} is not used",
+                    offer.instance
+                ),
+            }
+        }
         FromHost::Offer(offer) if SETTLED.load(Ordering::Acquire) => info!(
             "Hyper-V: the host added {} ({}); devices added while the machine runs are not \
              used yet",
@@ -334,7 +372,18 @@ fn note(message: &FromHost) {
         ),
         FromHost::Rescinded { channel } => {
             info!("Hyper-V: the host took channel {channel} away");
-            route(*channel, 0);
+            let was =
+                ROUTES.get(*channel as usize).map_or(0, |route| route.swap(0, Ordering::AcqRel));
+            // A bus's functions are stopped first: the thread lets it go
+            // then.
+            if was & 0xff00_0000 == ROUTE_PCI
+                && PCI_RESCINDED.iter().any(|kept| {
+                    kept.compare_exchange(0, channel + 1, Ordering::AcqRel, Ordering::Acquire)
+                        .is_ok()
+                })
+            {
+                return;
+            }
             post(&vmbus::release(*channel));
         }
         _ => {}
@@ -375,12 +424,18 @@ fn connect(synic: &Synic) -> Option<u32> {
     None
 }
 
-/// Asks for the host's channels and sets each up.
-fn set_up_offers(synic: &Synic, state: &mut State) {
+/// Asks for the host's channels and sets each up, but the virtual PCI
+/// buses, which it returns for the thread to set up once the boot goes
+/// on.
+fn set_up_offers(synic: &Synic, state: &mut State) -> Option<Vec<Offer, Kmalloc>> {
     let mut offers = Vec::new_in(HEAP.with(Flags::MAY_SLEEP));
-    if offers.try_reserve_exact(OFFERS).is_err() || !post(&vmbus::request_offers()) {
+    let mut buses = Vec::new_in(HEAP.with(Flags::MAY_SLEEP));
+    if offers.try_reserve_exact(OFFERS).is_err()
+        || buses.try_reserve_exact(LATE_BUSES).is_err()
+        || !post(&vmbus::request_offers())
+    {
         warn!("Hyper-V: could not ask for VMBus's channels");
-        return;
+        return None;
     }
     let mut done = false;
     while !done {
@@ -423,6 +478,14 @@ fn set_up_offers(synic: &Synic, state: &mut State) {
             guid::SHUTDOWN => set_up_service(synic, state, offer, Some(Service::Shutdown)),
             guid::TIMESYNC => set_up_service(synic, state, offer, Some(Service::TimeSync)),
             guid::HEARTBEAT => set_up_service(synic, state, offer, Some(Service::Heartbeat)),
+            guid::PCI => {
+                if buses.push_within_capacity(*offer).is_err() {
+                    warn!(
+                        "Hyper-V: more than {LATE_BUSES} virtual PCI buses; {} is not used",
+                        offer.instance
+                    );
+                }
+            }
             kind => info!("Hyper-V: {} ({}) is not used", describe(&kind), offer.instance),
         }
     }
@@ -430,6 +493,7 @@ fn set_up_offers(synic: &Synic, state: &mut State) {
         "Hyper-V: {} channel(s) offered; {controllers} SCSI controller(s), {disks} disk(s)",
         offers.len()
     );
+    Some(buses)
 }
 
 /// Opens `offer`'s channel on rings of `pages` (outbound, inbound).
@@ -509,17 +573,58 @@ fn set_up_network(synic: &Synic, offer: &Offer) {
             let version = card.version();
             let mut bus = TextBuf::<48>::new();
             let _ = write!(bus, "VMBus {instance}");
-            if let Some(number) = crate::net::attach_other(card, "netvsc", bus.as_str()) {
+            // Bonded to the virtual function the host may pass through for
+            // it, which the stack then sends through (`vpci`).
+            let port = crate::vpci::port_for(card.info().mac);
+            let slot = port.index();
+            if let Some(number) =
+                crate::net::attach_other(Bond::new(card, port), "netvsc", bus.as_str())
+            {
                 route(relid, ROUTE_NETWORK | number as u32);
+                crate::vpci::attached(slot, number);
                 info!(
                     "Hyper-V: the synthetic network card {instance} speaks NVSP {}.{}",
                     version >> 16,
                     version & 0xffff
                 );
+            } else {
+                crate::vpci::forget(slot);
             }
         }
         Err(err) => warn!("Hyper-V: the synthetic network card {instance}: {err}"),
     }
+}
+
+/// Sets up the virtual PCI bus `offer` names, and the functions on it.
+#[inline(never)]
+fn set_up_pci(synic: &Synic, state: &mut State, offer: &Offer) {
+    if offer.channel as usize >= CHANNELS {
+        warn!("Hyper-V: channel {} is past those the kernel routes; not used", offer.channel);
+        return;
+    }
+    let Some(channel) = open(synic, offer, PCI_RINGS) else { return };
+    route(channel.relid, ROUTE_PCI);
+    crate::vpci::start(&mut state.buses, synic.vp_index, channel);
+}
+
+/// Sets up the virtual PCI buses the host offered while the machine
+/// runs, stops the functions of those it took away and lets their
+/// channels go, and answers the others' hosts.
+fn serve_pci(synic: &Synic, state: &mut State) {
+    for kept in &PCI_RESCINDED {
+        let relid = kept.swap(0, Ordering::AcqRel);
+        if relid != 0 {
+            crate::vpci::rescinded(&mut state.buses, relid - 1);
+            post(&vmbus::release(relid - 1));
+        }
+    }
+    loop {
+        let offer = LATE_BUSES_OFFERED.lock_irq().iter_mut().find_map(Option::take);
+        let Some(offer) = offer else { break };
+        info!("Hyper-V: the host added {} ({})", describe(&offer.kind), offer.instance);
+        set_up_pci(synic, state, &offer);
+    }
+    crate::vpci::serve(&mut state.buses);
 }
 
 /// Sets up the keyboard (`service` `None`) or the integration service
@@ -643,7 +748,7 @@ fn set_clock(unix_ns: u64, sync: bool) {
 
 /// Waits `us` microseconds while a card starts: asleep, for a
 /// millisecond or more.
-fn delay(us: u32) {
+pub fn delay(us: u32) {
     let us = u64::from(us);
     if us >= 1_000 {
         sched::sleep_ns(us * 1_000);

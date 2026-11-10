@@ -25,7 +25,10 @@
 //!   packet lists;
 //! - [`keyboard`], the synthetic keyboard: set 1 scan codes;
 //! - [`ic`], the integration services: the host's requests to shut down,
-//!   its heartbeat and its clock.
+//!   its heartbeat and its clock;
+//! - [`pci`], the virtual PCI bus, through which the host passes a device
+//!   through: Azure's network adapter, for accelerated networking, which
+//!   [`bond`] joins to its synthetic card.
 //!
 //! The layouts and sequences follow FreeBSD's Hyper-V drivers (BSD-2-Clause,
 //! credits/freebsd-hyperv.md) and Microsoft's Hypervisor Top Level
@@ -36,10 +39,12 @@
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
 
+pub mod bond;
 pub mod guid;
 pub mod ic;
 pub mod keyboard;
 pub mod network;
+pub mod pci;
 pub mod ring;
 pub mod storage;
 pub mod vmbus;

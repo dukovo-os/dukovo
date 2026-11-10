@@ -1,0 +1,36 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "Azure's accelerated networking: the kernel sets up the virtual PCI bus the host offers, starts Azure's network adapter (MANA) on it, and bonds its port to the synthetic network card with the same MAC address, which then sends through it (ADR 0425). Needs an Azure machine of a size with MANA, made with accelerated networking on (`az vm create --accelerated-networking true`); at the host, check by hand that the machine's network interface shows accelerated networking as enabled, and that a stop and start from the portal brings the machine back with its adapter set up again"
+time = "5m"
+
+# The bus, the adapter, and the synthetic card it joins.
+[[step]]
+run = "sh -c 'dmesg | grep \"Hyper-V: \"'"
+root = true
+expect = [
+    "speaks NVSP",
+    "Hyper-V: virtual PCI bus ",
+    " speaks vPCI ",
+    "Hyper-V: Azure's network adapter at ",
+    " accelerates the synthetic network card ",
+]
+expect_not = [
+    "no addresses",
+    "the host did not",
+    "refused",
+    "which no synthetic network card has",
+    "did not stop cleanly",
+]
+# One network card, as the stack sees it, up, with its address.
+[[step]]
+run = "ip -br address"
+expect = ["net0", "UP"]
+expect_not = "net1"
+# Its gateway answers, and a page comes over HTTPS through it.
+[[step]]
+run = "sh -c 'ping -c 3 $(ip -4 route | grep default | cut -d\" \" -f3)'"
+expect = "3 packets transmitted, 3 received"
+[[step]]
+run = "sh -c 'curl -sS -o /tmp/lab-mana https://dukovo.org/ && ls -l /tmp/lab-mana && rm /tmp/lab-mana'"
+expect = "lab-mana"

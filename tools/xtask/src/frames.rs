@@ -51,9 +51,29 @@ const ALLOWED: &[(&str, &str)] = &[
          (radix::usb::XHCI_STACK_PAGES)",
     ),
     (
-        "radix::net::attach_other::<radix_hyperv::network::Netvsc>",
-        "gives Hyper-V's synthetic network card its interface and stack on VMBus's thread, \
-         whose stack is 64 KiB (radix::hyperv::STACK_PAGES)",
+        "radix::net::attach_other::<radix_hyperv::bond::Bond<radix_hyperv::network::Netvsc, \
+         radix_mana::Mana, radix::vpci::Port>>",
+        "gives Hyper-V's synthetic network card, bonded to its virtual function, its interface \
+         and stack on VMBus's thread, whose stack is 64 KiB (radix::hyperv::STACK_PAGES)",
+    ),
+    (
+        "radix::hyperv::run",
+        "VMBus's thread itself, whose stack is 64 KiB (radix::hyperv::STACK_PAGES)",
+    ),
+    (
+        "radix::hyperv::set_up_network",
+        "sets up Hyper-V's synthetic network card on VMBus's thread, whose stack is 64 KiB \
+         (radix::hyperv::STACK_PAGES)",
+    ),
+    (
+        "radix::vpci::start",
+        "sets up a virtual PCI bus on VMBus's thread, whose stack is 64 KiB \
+         (radix::hyperv::STACK_PAGES)",
+    ),
+    (
+        "radix::vpci::pass",
+        "starts Azure's network adapter on VMBus's thread, whose stack is 64 KiB \
+         (radix::hyperv::STACK_PAGES)",
     ),
     (
         "radix::net::add_link",

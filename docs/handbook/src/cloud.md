@@ -265,9 +265,21 @@ machine does so, Azure takes its deployment to be still under way.
 
 Give the configuration as user data (`--user-data`): Azure's custom data
 (`--custom-data`) comes only on its provisioning disk, which cloud-setup
-does not read. Azure's accelerated networking, its MANA cards, is not
-driven yet: make the machine without it (the default for `az vm
-create` on most sizes), and its network card is Hyper-V's own.
+does not read.
+
+Accelerated networking is supported: the machine's network interface sends
+through Azure's network adapter, MANA, when Azure gives it one, and
+through Hyper-V's synthetic card while Azure takes the adapter away
+for its maintenance. It stays one interface, `net0`, with one address,
+either way. The kernel's log says when the adapter joins the card:
+
+```
+$ dmesg | grep accelerates
+Hyper-V: Azure's network adapter at 7870:00:00.0 accelerates the synthetic network card 00:0d:3a:12:34:56
+```
+
+Only the first network interface of a machine with several is
+accelerated; the others use the synthetic card alone. See mana(4).
 
 ## When something goes wrong
 

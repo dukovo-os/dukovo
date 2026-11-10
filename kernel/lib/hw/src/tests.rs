@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 use std::vec::Vec;
 
-use crate::pci::{self, Address, Bar, CONFIG_SIZE, Function, Msi, MsiX};
+use crate::pci::{self, Address, Bar, CONFIG_SIZE, Function, Given, Msi, MsiX};
 use crate::{Dma, Mmio, MsiMessage, Registers};
 
 /// A simulated ECAM window of one bus: per-function configuration bytes,
@@ -163,6 +163,69 @@ fn bars_are_sized() {
     // Sizing put the original values back.
     assert_eq!(virtio.read32(0x20), 0xfe00_000c);
     assert_eq!(virtio.read32(0x24), 0x1);
+}
+
+/// A function Hyper-V passes through: its own header reads all ones
+/// where the host gives what it is.
+#[test]
+fn a_passed_through_function_reads_what_its_host_gives() {
+    let mut bus = Bus::new();
+    let base = bus.add(
+        0,
+        0,
+        &[
+            (0x00, &le32(u32::MAX)),
+            (0x06, &le16(1 << 4)),
+            (0x08, &le32(u32::MAX)),
+            (0x10, &le32(0xc000_000c)),
+            (0x14, &le32(0x2)),
+            (0x2c, &le32(u32::MAX)),
+            (0x30, &le32(u32::MAX)),
+            (0x34, &[0x40]),
+            (0x3c, &le16(0xffff)),
+            (0x40, &[0x11, 0x00]),
+            (0x42, &le16(3)),
+            (0x44, &le32(0x1_0000)),
+        ],
+    );
+    bus.bar_masks.insert((base, 0x10), 0xfff0_0000);
+    bus.bar_masks.insert((base, 0x14), 0xffff_ffff);
+    let bus = Arc::new(bus);
+    let config = Mmio::fake(bus.clone(), CONFIG_SIZE);
+    let address = Address { segment: 1, bus: 0, device: 0, function: 0 };
+    // A missing function to a plain probe.
+    assert!(Function::probe(address, config.clone()).is_none());
+    let given = Given {
+        vendor: 0x1414,
+        device: 0x00ba,
+        revision: 1,
+        prog_if: 0,
+        subclass: 0,
+        class: 2,
+        subsystem: 0x00ba_1414,
+    };
+    let function = Function::probe_given(address, config, given).unwrap();
+    assert_eq!((function.vendor_id(), function.device_id()), (0x1414, 0x00ba));
+    assert_eq!(function.read32(0), 0x00ba_1414);
+    assert_eq!(function.class(), (2, 0, 0));
+    assert_eq!(function.revision(), 1);
+    assert_eq!(function.subsystem(), (0x1414, 0x00ba));
+    // No ROM, and no legacy interrupt.
+    assert_eq!(function.read32(0x30), 0);
+    assert_eq!(function.read16(0x3c), 0);
+    // The rest is the function's own: its BARs and its capabilities.
+    assert_eq!(
+        function.bar(0),
+        Some(Bar::Memory { address: 0x2_c000_0000, size: 0x10_0000, prefetchable: true })
+    );
+    assert_eq!(MsiX::find(&function).map(|m| m.entries()), Some(4));
+    // Writes to what the host gives are dropped; others reach it.
+    function.write32(0x2c, 0);
+    function.write16(0x00, 0);
+    assert_eq!(bus.read(0x2c, 4), u64::from(u32::MAX));
+    assert_eq!(bus.read(0x00, 4), u64::from(u32::MAX));
+    function.set_command(0x6);
+    assert_eq!(bus.read(0x04, 2), 0x6);
 }
 
 #[test]

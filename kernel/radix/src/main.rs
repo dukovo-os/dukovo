@@ -89,6 +89,7 @@ mod usb;
 mod user;
 mod usertest;
 mod vmware;
+mod vpci;
 mod vports;
 mod watchdog;
 mod work;
