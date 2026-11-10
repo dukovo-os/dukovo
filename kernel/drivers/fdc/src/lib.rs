@@ -39,6 +39,11 @@
 //! which the DMA controller's count ends; the kernel's buffer for it is
 //! below 16 MiB and within a 64 KiB line, as ISA DMA needs.
 //!
+//! A track is formatted with FORMAT TRACK ([`Fdc::format_track`], ADR
+//! 0436): the controller writes each sector's ID from a list the DMA
+//! controller hands it ([`Format::track_ids`]), then the sector, filled
+//! with [`format::FILLER`].
+//!
 //! When it breaks, the kernel log says what the controller answered: the
 //! error's name ([`Error::as_str`]) with its status bytes. The crate is a
 //! compartment with no `unsafe` code; its tests run it against a
@@ -109,6 +114,7 @@ mod cmd {
     pub const RECALIBRATE: u8 = 0x07;
     pub const SENSE_INTERRUPT: u8 = 0x08;
     pub const READ_ID: u8 = 0x0a;
+    pub const FORMAT: u8 = 0x0d;
     pub const SEEK: u8 = 0x0f;
     pub const VERSION: u8 = 0x10;
     pub const CONFIGURE: u8 = 0x13;
@@ -173,7 +179,8 @@ const BYTE_US: u32 = 50_000;
 const SEEK_US: u32 = 3_000_000;
 /// How long a transfer may take: a cylinder at 250 kbit/s is two and a
 /// half turns of the disk, 500 ms, and the turn that finds the first
-/// sector.
+/// sector. A format of a track takes the turn that finds the index hole
+/// and one more.
 const TRANSFER_US: u32 = 3_000_000;
 /// How long a reset is held, and how long the controller may take to be
 /// ready after it.
@@ -594,6 +601,46 @@ impl<P: IoPorts> Fdc<P> {
                 format.sectors,
                 format.gap,
                 WHOLE_SECTORS,
+            ],
+            wait,
+        );
+        let ended = sent.and_then(|()| self.execution(TRANSFER_US, wait));
+        let results = ended.and_then(|()| self.results(wait));
+        self.dma.stop();
+        let [st0, st1, st2, ..] = results?;
+        judge(st0, st1, st2)
+    }
+
+    /// Formats track `cylinder`, `head` of the disk in drive `unit`, whose
+    /// motor is up to speed, as a track of `format`: FORMAT TRACK at the
+    /// format's data rate, the IDs of its sectors read by DMA from
+    /// `buffer`, where the caller put what [`Format::track_ids`] writes.
+    /// What the track held is gone, its sectors filled with
+    /// [`format::FILLER`].
+    pub fn format_track(
+        &mut self,
+        unit: u8,
+        format: &Format,
+        (cylinder, head): (u8, u8),
+        buffer: u64,
+        wait: &mut dyn FnMut(u32),
+    ) -> Result<(), Error> {
+        if cylinder >= format.cylinders || head >= format.heads {
+            return Err(Error::BadRequest);
+        }
+        let bytes = usize::from(format.sectors) * format::ID_BYTES;
+        self.set_rate(format, wait)?;
+        self.seek(unit, cylinder, wait)?;
+        // The IDs go from memory to the controller, as a write's data do.
+        self.dma.start(buffer, bytes, false)?;
+        let sent = self.write_bytes(
+            &[
+                cmd::FORMAT | cmd::MFM,
+                head << 2 | unit,
+                format::SIZE_CODE,
+                format.sectors,
+                format.format_gap,
+                format::FILLER,
             ],
             wait,
         );

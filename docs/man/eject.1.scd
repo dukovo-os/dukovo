@@ -55,7 +55,8 @@ A floppy drive is such a drive too (ADR 0435), but has no motor to push
 the disk out: eject unmounts the disk and has the drive let it go. The
 drive is then empty, and stays empty, the disk still in it, until the
 disk is taken out. A floppy drive is never polled for a disk: one put in
-is found when the drive is looked at, as *rdisk --reread* asks.
+is found when the drive is looked at, as *floppy look* asks, or
+*rdisk --reread*.
 
 ```
 $ eject fd0
@@ -79,5 +80,5 @@ line.
 
 # SEE ALSO
 
-*volumed*(8), *remount*(8), *findmnt*(8), *lsblk*(8), *radix-block*(2),
-*systools*(1)
+*volumed*(8), *remount*(8), *findmnt*(8), *lsblk*(8), *floppy*(1),
+*radix-block*(2), *systools*(1)

@@ -35,6 +35,16 @@
 //! push it out: the drive is empty, and stays so, until the change line
 //! says the disk came out.
 //!
+//! A track is formatted when radix-block(2)'s FORMAT_TRACK asks (ADR
+//! 0436; floppy(1)): the thread takes the disk out of the kernel, since
+//! what it held is going, and formats the track with FORMAT TRACK, its
+//! sector IDs in the DMA buffer. The next look finds the disk formatted.
+//!
+//! The `fd` names are shared with USB floppy drives
+//! (`super::usb`, ADR 0436): a PC drive takes its number on the
+//! controller, and a USB one the first number free once the PC's drives
+//! are named ([`wait_for_names`]).
+//!
 //! When it breaks: the log says what the controller answered for a
 //! request that failed (`Disk: fd0: ...`), with the controller's status
 //! bytes, and `kdb`'s thread list shows the `floppy` thread's wait.
@@ -43,7 +53,7 @@ use alloc::boxed::Box;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::fmt::Write as _;
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 
 use radix_block::{DeviceRef, Empty, Info, SECTOR};
 use radix_fdc::{Direction, DriveKind, Error, Fdc, Format, Found, dma};
@@ -57,7 +67,7 @@ use radix_uacpi::power::Fields as _;
 
 use super::handed;
 use super::queue::{Op, Outcome};
-use super::removable::{self, DriveRef, Kind};
+use super::removable::{self, DriveRef, FormatError, Kind, SIZE_720K, SIZE_1440K, Size, Track};
 use super::{Entry, Name, register};
 use crate::Arch;
 use crate::ioports::IoWindow;
@@ -81,6 +91,9 @@ const BUSY_NS: u64 = 100_000_000;
 const TRIES: u32 = 3;
 /// The most buffers of one request.
 const MAX_SEGMENTS: usize = 32;
+/// The bytes of the most sector IDs a track's format takes: a 1.44 MB
+/// disk's 18.
+const MAX_IDS: usize = 18 * radix_fdc::format::ID_BYTES;
 /// How long the end of boot waits for the drives' first looks: a motor
 /// coming up to speed, and a try at each data rate.
 pub const FIRST_LOOK_NS: u64 = 15_000_000_000;
@@ -88,9 +101,58 @@ pub const FIRST_LOOK_NS: u64 = 15_000_000_000;
 /// Why a disk's requests fail once it is gone.
 const TAKEN_OUT: &str = "its disk was taken out";
 const LET_GO: &str = "its disk was let go, and may be taken out";
+const FORMATTING: &str = "its disk is being formatted";
 
 /// Drives whose first look is not done.
 static LOOKING: AtomicUsize = AtomicUsize::new(0);
+/// The `fd` numbers taken, a bit each, by PC and USB floppy drives.
+static FD_NUMBERS: AtomicU32 = AtomicU32::new(0);
+/// The PC's floppy drives are named: [`find`] is done.
+static NAMED: AtomicBool = AtomicBool::new(false);
+
+/// Takes the `fd` number `wanted`, or with `None` the first free; returns
+/// it and the drive's name. `None` if it is taken, or all 32 are.
+pub(super) fn take_fd_name(wanted: Option<u32>) -> Option<(u32, Name)> {
+    let mut taken = FD_NUMBERS.load(Ordering::Acquire);
+    loop {
+        let number = wanted.unwrap_or((!taken).trailing_zeros());
+        if number >= 32 || taken & 1 << number != 0 {
+            return None;
+        }
+        let with = taken | 1 << number;
+        match FD_NUMBERS.compare_exchange_weak(taken, with, Ordering::AcqRel, Ordering::Acquire) {
+            Ok(_) => {
+                let mut name = Name::new();
+                let _ = write!(name, "fd{number}");
+                return Some((number, name));
+            }
+            Err(now) => taken = now,
+        }
+    }
+}
+
+/// Gives back an `fd` number [`take_fd_name`] took.
+pub(super) fn give_back_fd_number(number: u32) {
+    FD_NUMBERS.fetch_and(!(1 << number), Ordering::AcqRel);
+}
+
+/// Waits until the PC's floppy drives are named, so that a USB floppy
+/// drive's name does not take theirs: `fd0` is the PC's first drive when
+/// it has one, each boot.
+pub(super) fn wait_for_names() {
+    while !NAMED.load(Ordering::Acquire) {
+        sched::sleep_ns(10_000_000);
+    }
+}
+
+/// The sizes of disk a drive of `kind` formats: those it reads.
+fn sizes(kind: DriveKind) -> &'static [Size] {
+    match kind.formats() {
+        [_, _] => &[SIZE_1440K, SIZE_720K],
+        [_] => &[SIZE_720K],
+        _ => &[],
+    }
+}
 
 /// At the end of boot: waits until every floppy drive found has been
 /// looked at, for at most [`FIRST_LOOK_NS`].
@@ -115,17 +177,18 @@ fn wait_us(us: u32) {
 /// drives, and starts the thread that runs them. Called once, after
 /// uACPI has started.
 pub fn find() {
-    if !crate::acpi::running() {
-        return;
-    }
     let mut found = None;
-    radix_uacpi::find_devices(c"PNP0700", &mut |node| {
-        found = found.or(Some(node));
-    });
-    let Some(node) = found else { return };
-    if let Err(why) = start(node) {
+    if crate::acpi::running() {
+        radix_uacpi::find_devices(c"PNP0700", &mut |node| {
+            found = found.or(Some(node));
+        });
+    }
+    if let Some(node) = found
+        && let Err(why) = start(node)
+    {
         warn!("Disk: could not set up the floppy disk controller {}: {why}", node.path());
     }
+    NAMED.store(true, Ordering::Release);
 }
 
 /// A drive the controller has, handed to its thread.
@@ -194,10 +257,13 @@ fn start(node: Node) -> Result<(), &'static str> {
             );
             continue;
         }
-        let mut name = Name::new();
-        let _ = write!(name, "fd{number}");
+        let Some((_, name)) = take_fd_name(Some(u32::from(number))) else {
+            warn!("Disk: drive {number} of the floppy disk controller: its name is taken");
+            continue;
+        };
         let empty: DeviceRef = Arc::try_new_in(Empty, heap).map_err(|_| "out of memory")?;
-        let drive = removable::add(&name, thread.clone(), Kind::Floppy).ok_or("out of memory")?;
+        let drive = removable::add(&name, thread.clone(), Kind::Floppy, sizes(kind))
+            .ok_or("out of memory")?;
         info!("Disk: {name} is {kind}, drive {number} of the floppy disk controller");
         register(Entry { name: name.clone(), device: empty.clone(), place: None, ident: None });
         units[usize::from(number)] = Some(Setup { number, kind, name, drive, empty });
@@ -396,6 +462,10 @@ impl Unit {
             }
             self.drive.looked(looked.is_ok());
         }
+        if let Some(track) = self.drive.format_asked() {
+            let formatted = self.format(hardware, track);
+            self.drive.formatted(formatted);
+        }
         if core::mem::take(&mut self.changed) {
             self.take_out(TAKEN_OUT);
             return Tended::Wanted(0);
@@ -499,6 +569,78 @@ impl Unit {
             super::Replaced::Done => self.loaded = Some(Loaded { format, read_only, queue }),
             _ => queue.gone(TAKEN_OUT),
         }
+        Ok(())
+    }
+
+    /// Formats `track` of the disk in the drive, as radix-block(2)'s
+    /// FORMAT_TRACK asks (ADR 0436): the disk leaves the kernel first, as
+    /// what it held goes, and the drive is empty until a look finds it
+    /// formatted. The track's sector IDs go to the controller from the
+    /// DMA buffer. Tried [`TRIES`] times, as a transfer is.
+    fn format(&mut self, hardware: &mut Hardware, track: Track) -> Result<(), FormatError> {
+        let formats = self.kind.formats();
+        let format = formats.iter().find(|f| f.total() == track.sectors);
+        let format = format.ok_or(FormatError::Unsupported)?;
+        let (Ok(cylinder), Ok(head)) = (u8::try_from(track.cylinder), u8::try_from(track.head))
+        else {
+            return Err(FormatError::OutOfRange);
+        };
+        if cylinder >= format.cylinders || head >= format.heads {
+            return Err(FormatError::OutOfRange);
+        }
+        self.take_out(FORMATTING);
+        // A disk let go and formatted is wanted after all.
+        self.left = false;
+        self.motor_on(hardware, true);
+        let failed = |name: &Name, err: Error| {
+            warn!(
+                "Disk: {name}: cylinder {cylinder}, head {head} not formatted: {}{}",
+                err.as_str(),
+                Status(err)
+            );
+            match err {
+                Error::WriteProtected => FormatError::WriteProtected,
+                _ => FormatError::Failed,
+            }
+        };
+        match hardware.fdc.disk_in(self.number, &mut wait_us) {
+            Ok(true) => {}
+            Ok(false) => return Err(FormatError::NoDisk),
+            Err(err) => return Err(failed(&self.name, err)),
+        }
+        match hardware.fdc.write_protected(self.number, &mut wait_us) {
+            Ok(false) => {}
+            Ok(true) => return Err(FormatError::WriteProtected),
+            Err(err) => return Err(failed(&self.name, err)),
+        }
+        if (cylinder, head) == (0, 0) {
+            info!("Disk: {}: formatting its disk as a {} one", self.name, format.name);
+        }
+        let mut ids = [0u8; MAX_IDS];
+        let len = format.track_ids(cylinder, head, &mut ids);
+        <Arch as UserMode>::write_frames(hardware.buffer, &ids[..len]);
+        let mut tries = 1;
+        loop {
+            let buffer = hardware.buffer;
+            let place = (cylinder, head);
+            let err =
+                match hardware.fdc.format_track(self.number, format, place, buffer, &mut wait_us) {
+                    Ok(()) => break,
+                    Err(err) => err,
+                };
+            let again = err.may_pass() || matches!(err, Error::Seek | Error::Timeout);
+            if !again || tries >= TRIES {
+                return Err(failed(&self.name, err));
+            }
+            tries += 1;
+            if err == Error::Timeout {
+                hardware.fdc.reset(&mut wait_us).map_err(|err| failed(&self.name, err))?;
+                self.motor_on(hardware, true);
+            } else {
+                let _ = hardware.fdc.recalibrate(self.number, &mut wait_us);
+            }
+        }
+        self.used = sched::now_ns();
         Ok(())
     }
 
@@ -650,6 +792,7 @@ impl Unit {
         info!("Disk: {}: its heads did not step; there is no drive", self.name);
         removable::remove(self.name.as_str());
         super::unregister(self.name.as_str());
+        give_back_fd_number(u32::from(self.number));
     }
 }
 

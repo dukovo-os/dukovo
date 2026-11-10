@@ -20,7 +20,7 @@ use core::fmt;
 use crate::{
     ALL_PAGES, CAPACITY_10_LENGTH, CAPACITY_16_LENGTH, Capacity, Cdb, Data, INQUIRY_LENGTH,
     Inquiry, MODE_SENSE_ALL_LENGTH, Meaning, Reply, Sense, Transport, TransportError, device_type,
-    key, write_cache, write_protected,
+    key, write_cache, write_protected, write_protected_10,
 };
 
 /// How long a command of the probe may take: what Linux gives TEST UNIT
@@ -130,6 +130,36 @@ pub(crate) fn ask<T: Transport + ?Sized>(
         match transport.command(lun, cdb, data, TIMEOUT_MS) {
             Ok(Reply::Good { residue }) => {
                 return Ok(Asked::Came(buffer.len().saturating_sub(residue as usize)));
+            }
+            Ok(Reply::Failed(sense)) => {
+                let again = sense.map(|s| s.meaning());
+                if !matches!(again, Some(Meaning::Attention | Meaning::Aborted)) {
+                    return Ok(Asked::Failed(sense));
+                }
+                last = Ok(Asked::Failed(sense));
+            }
+            Err(TransportError::Gone) => return Err(TransportError::Gone),
+            Err(err) => last = Err(err),
+        }
+    }
+    last
+}
+
+/// Sends `cdb` to `lun` with the bytes `out` going to the device, waiting
+/// at most `timeout_ms`, again after a UNIT ATTENTION, an abort or a
+/// reset of the transport, up to [`TRIES`] times.
+pub(crate) fn ask_out<T: Transport + ?Sized>(
+    transport: &mut T,
+    lun: u8,
+    cdb: &Cdb,
+    out: &[u8],
+    timeout_ms: u32,
+) -> Result<Asked, TransportError> {
+    let mut last = Err(TransportError::Failed("the command was not sent"));
+    for _ in 0..TRIES {
+        match transport.command(lun, cdb, Data::Out(out), timeout_ms) {
+            Ok(Reply::Good { residue }) => {
+                return Ok(Asked::Came(out.len().saturating_sub(residue as usize)));
             }
             Ok(Reply::Failed(sense)) => {
                 let again = sense.map(|s| s.meaning());
@@ -343,10 +373,12 @@ fn capacity<T: Transport + ?Sized>(transport: &mut T, lun: u8) -> Result<Capacit
 
 /// Whether the medium is write-protected, and whether the device has a
 /// write cache: MODE SENSE(6) of every page as usb-storage asks for it,
-/// then of page 0 as Linux tries next. A device that answers neither is
-/// taken to be writable, and one whose answer has no caching page to
-/// write through, as on Linux (whose usb-storage asks no device for the
-/// caching page alone, which some do not survive).
+/// then of page 0 as Linux tries next, then MODE SENSE(10) of every page,
+/// which is all a USB floppy drive has (UFI, ADR 0436), as Linux's
+/// `use_10_for_ms` asks it. A device that answers none is taken to be
+/// writable, and one whose answer has no caching page to write through,
+/// as on Linux (whose usb-storage asks no device for the caching page
+/// alone, which some do not survive).
 fn modes<T: Transport + ?Sized>(transport: &mut T, lun: u8) -> Result<(bool, bool), Absent> {
     let mut bytes = [0u8; MODE_SENSE_ALL_LENGTH as usize];
     for (page, length) in [(ALL_PAGES, MODE_SENSE_ALL_LENGTH), (0, 4)] {
@@ -356,6 +388,12 @@ fn modes<T: Transport + ?Sized>(transport: &mut T, lun: u8) -> Result<(bool, boo
         {
             return Ok((protected, write_cache(&bytes[..came]).unwrap_or(false)));
         }
+    }
+    let cdb = Cdb::mode_sense_10(ALL_PAGES, u16::from(MODE_SENSE_ALL_LENGTH));
+    if let Asked::Came(came) = ask(transport, lun, &cdb, &mut bytes)?
+        && let Some(protected) = write_protected_10(&bytes[..came])
+    {
+        return Ok((protected, false));
     }
     Ok((false, false))
 }

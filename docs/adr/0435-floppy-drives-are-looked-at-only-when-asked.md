@@ -113,9 +113,9 @@ The controller differs from every other drive in the kernel:
 - The lab test `storage/floppy` puts disks in and takes them out of a
   drive that stays, with the lab's `floppy` steps.
 - A disk put in a drive is not found until something asks:
-  `rdisk --reread`, or the `floppy` command of 11h's next step, which
-  looks and formats. A desktop that wants a disk found when it goes in
-  asks when the user opens the drive, as on Linux.
+  `rdisk --reread`, or `floppy look` (ADR 0436). A desktop that wants a
+  disk found when it goes in asks when the user opens the drive, as on
+  Linux.
 - `/kernel/block/fd0/removable` is 1 and `media_changes` counts disks in
   and out, as for every drive whose medium comes and goes.
 - A floppy disk's slow writes showed a race in the FAT, exFAT, NTFS and
@@ -124,9 +124,9 @@ The controller differs from every other drive in the kernel:
   do and returned, so an unmount could end, and the drive let its medium
   go, before the files were on it. Their syncs now take turns, as
   Btrfs's already did.
-- 2.88 MB and 5.25-inch disks, formatting and USB floppy drives (UFI)
-  are 11h's next step. Real drives are to be checked when the lab has
-  one.
+- Formatting and USB floppy drives (UFI) came next, in ADR 0436.
+  2.88 MB and 5.25-inch disks are not read. Real drives are to be
+  checked when the lab has one.
 
 ## Alternatives considered
 

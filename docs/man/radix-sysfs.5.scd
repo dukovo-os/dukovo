@@ -68,6 +68,12 @@ _/kernel/block/_*name*_/disc_
 	the drive's _size_ is *0*. Radix's own: Linux's udev has it as
 	_ID_CDROM_MEDIA_ and its kin.
 
+_/kernel/block/_*name*_/formats_
+	For a floppy drive, PC or USB (ADR 0436): the sizes of disk it
+	formats, as *floppy*(1) names them, on one line: *1.44M 720K* for a
+	3.5-inch high-density drive, *720K* for a double-density one.
+	Radix's own.
+
 _/kernel/block/_*name*_/eject_requests_
 	For a CD, DVD or Blu-ray drive (ADR 0432): how many times its eject
 	button was pressed while its disc was locked in, as the drive says

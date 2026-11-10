@@ -35,6 +35,12 @@
 //! [`radix_xhci::ring::MAX_STREAMS`]. A device reset is a port reset, then
 //! the slot reset and its endpoints, streams, configuration and setting
 //! set up again, as Linux's `usb_reset_device` does.
+//!
+//! A USB floppy drive (UFI, subclass 4; ADR 0436) speaks the
+//! Control/Bulk/Interrupt transport, or Bulk-Only: its commands go one at
+//! a time as a Bulk-Only interface's do, by the same asks, its command
+//! blocks on the default control pipe and its statuses on its interrupt
+//! pipe ([`StickPipes`]'s `InterruptPipe`).
 
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -46,6 +52,7 @@ use radix_klog::{TextBuf, info};
 use radix_mm::{Flags, HEAP, Kmalloc};
 use radix_scsi::Data;
 use radix_sync::SpinLock;
+use radix_usb::storage::cbi::{InterruptPipe, PROTOCOL_CB, PROTOCOL_CBI, SUBCLASS_UFI};
 use radix_usb::storage::uas::{self, Action, COMMAND_LENGTH, MAX_TAGS, Pipe, STATUS_LENGTH};
 use radix_usb::storage::{PROTOCOL_BULK_ONLY, PROTOCOL_UAS, PipeError, Pipes, SUBCLASS_SCSI};
 use radix_usb::{EndpointDescriptor, Interface, Setup, Speed, TransferType, class, descriptor};
@@ -66,6 +73,9 @@ const MAX_SETTING_ENDPOINTS: usize = 4;
 const STATUS_STRIDE: usize = 128;
 /// The streams a UAS interface asks for: Linux's 256 (`MAX_CMNDS`).
 const WANTED_STREAMS: usize = 256;
+/// The most bytes a control transfer of a stick's carries: a UFI
+/// command block's 12, padded.
+const CONTROL_BYTES: usize = 16;
 
 /// A mass storage interface in a device's configuration, and the settings
 /// it has that the kernel speaks.
@@ -79,6 +89,10 @@ pub(super) struct StoragePlan {
     /// Setting 0's bulk IN and OUT endpoints' addresses, if it speaks the
     /// Bulk-Only Transport.
     bot: Option<(u8, u8)>,
+    /// Setting 0's bulk IN and OUT endpoints' addresses and its interrupt
+    /// IN endpoint's, if it is a floppy drive of the CBI transport (none
+    /// over CB).
+    cbi: Option<(u8, u8, Option<u8>)>,
     /// A UAS setting: its number and its pipes' endpoints.
     uas: Option<(u8, [EndpointDescriptor; 4])>,
     /// Setting 0's endpoints' addresses, the first `setting0_count`: those
@@ -119,13 +133,22 @@ impl StoragePlan {
                 plan.setting0_count += 1;
             }
         }
-        if (d.subclass, d.protocol) == (SUBCLASS_SCSI, PROTOCOL_BULK_ONLY) {
-            let (mut bulk_in, mut bulk_out) = (None, None);
-            for endpoint in first.endpoints().filter(|e| e.transfer_type() == TransferType::Bulk) {
-                let pipe = if endpoint.is_in() { &mut bulk_in } else { &mut bulk_out };
-                pipe.get_or_insert(endpoint.address);
-            }
+        let (mut bulk_in, mut bulk_out) = (None, None);
+        for endpoint in first.endpoints().filter(|e| e.transfer_type() == TransferType::Bulk) {
+            let pipe = if endpoint.is_in() { &mut bulk_in } else { &mut bulk_out };
+            pipe.get_or_insert(endpoint.address);
+        }
+        let commands = matches!(d.subclass, SUBCLASS_SCSI | SUBCLASS_UFI);
+        if commands && d.protocol == PROTOCOL_BULK_ONLY {
             plan.bot = bulk_in.zip(bulk_out);
+        }
+        if d.subclass == SUBCLASS_UFI && matches!(d.protocol, PROTOCOL_CBI | PROTOCOL_CB) {
+            let interrupt = first
+                .endpoints()
+                .find(|e| e.is_in() && e.transfer_type() == TransferType::Interrupt)
+                .map(|e| e.address)
+                .filter(|_| d.protocol == PROTOCOL_CBI);
+            plan.cbi = bulk_in.zip(bulk_out).map(|(i, o)| (i, o, interrupt));
         }
         // The UAS setting, as Linux's uas_find_uas_alt_setting finds it.
         let uas = |s: &Interface<'_>| {
@@ -160,6 +183,17 @@ pub enum Protocol {
         /// Their streams.
         streams: Option<usize>,
     },
+    /// The Control/Bulk/Interrupt transport of a USB floppy drive: the
+    /// device context indexes of its bulk IN and OUT endpoints and of its
+    /// interrupt IN endpoint, which a drive of the CB protocol lacks.
+    Cbi {
+        /// The bulk IN endpoint's.
+        bulk_in: u8,
+        /// The bulk OUT endpoint's.
+        bulk_out: u8,
+        /// The interrupt IN endpoint's.
+        interrupt: Option<u8>,
+    },
 }
 
 /// What a Bulk-Only stick's thread asks of its controller's thread.
@@ -188,7 +222,7 @@ struct Mail {
     /// The buffers of a transfer asked for (physical address, length).
     frames: Vec<(u64, u32), Kmalloc>,
     /// A control transfer's data, in or out.
-    control: [u8; 8],
+    control: [u8; CONTROL_BYTES],
     /// The stick is gone: everything asked fails.
     gone: bool,
 }
@@ -236,6 +270,8 @@ pub struct Link {
     pub serial: TextBuf<SERIAL>,
     /// How its commands go.
     pub protocol: Protocol,
+    /// Whether it is a floppy drive, whose commands are UFI's (ADR 0436).
+    pub ufi: bool,
     /// Its interface's setting, and its device's configuration, which a
     /// reset sets again.
     alternate: u8,
@@ -367,8 +403,8 @@ fn mail(protocol: Protocol) -> Option<(Mail, UasMail)> {
     let heap = HEAP.with(Flags::MAY_SLEEP);
     let mut frames = Vec::new_in(heap);
     frames.try_reserve_exact(MAX_TD_BUFFERS).ok()?;
-    let mail =
-        Mail { ask: None, started: None, answer: None, frames, control: [0; 8], gone: false };
+    let control = [0; CONTROL_BYTES];
+    let mail = Mail { ask: None, started: None, answer: None, frames, control, gone: false };
     let mut uas = UasMail {
         asks: Vec::new_in(heap),
         reset: false,
@@ -429,6 +465,7 @@ impl Controller {
             speed,
             serial,
             protocol,
+            ufi: plan.subclass == SUBCLASS_UFI,
             alternate,
             configuration: plan.configuration,
             mail: SpinLock::new(mail),
@@ -455,7 +492,7 @@ impl Controller {
             Ok(thread) => {
                 self.devices[at].storage = Some(link);
                 let driver = match protocol {
-                    Protocol::Bot { .. } => "usb-storage",
+                    Protocol::Bot { .. } | Protocol::Cbi { .. } => "usb-storage",
                     Protocol::Uas { .. } => "uas",
                 };
                 super::shown::set_driver(self.bus, path, plan.interface, driver);
@@ -475,8 +512,8 @@ impl Controller {
     /// `at` go, as Linux's `uas_use_uas_driver` does, and sets it up: UAS
     /// if it has a UAS setting, and at SuperSpeed the controller has the
     /// streams it needs, or else the Bulk-Only Transport if setting 0
-    /// speaks it. Returns how, and the setting chosen; `None` if neither
-    /// is spoken, which the log says.
+    /// speaks it, or a floppy drive's CBI or CB. Returns how, and the
+    /// setting chosen; `None` if none is spoken, which the log says.
     #[inline(never)]
     fn storage_protocol(
         &mut self,
@@ -491,6 +528,11 @@ impl Controller {
         });
         if let Some((alternate, pipes)) = uas {
             return self.set_up_uas(at, plan, alternate, &pipes).map(Some);
+        }
+        if let Some((bulk_in, bulk_out, interrupt)) = plan.cbi {
+            let (bulk_in, bulk_out) = (endpoint_index(bulk_in), endpoint_index(bulk_out));
+            let interrupt = interrupt.map(endpoint_index);
+            return Ok(Some((Protocol::Cbi { bulk_in, bulk_out, interrupt }, 0)));
         }
         let what = match (plan.bot, plan.uas) {
             (Some((bulk_in, bulk_out)), uas) => {
@@ -507,7 +549,8 @@ impl Controller {
                 "it speaks USB Attached SCSI alone, which needs streams this controller lacks"
             }
             (None, None)
-                if (plan.subclass, plan.protocol) == (SUBCLASS_SCSI, PROTOCOL_BULK_ONLY) =>
+                if matches!(plan.subclass, SUBCLASS_SCSI | SUBCLASS_UFI)
+                    && matches!(plan.protocol, PROTOCOL_BULK_ONLY | PROTOCOL_CBI | PROTOCOL_CB) =>
             {
                 return Err(Why::Device("its mass storage interface lacks a bulk pipe"));
             }
@@ -897,7 +940,9 @@ impl<'a> StickPipes<'a> {
     /// The bulk endpoints' indexes, IN then OUT.
     fn endpoints(&self) -> (u8, u8) {
         match self.link.protocol {
-            Protocol::Bot { bulk_in, bulk_out } => (bulk_in, bulk_out),
+            Protocol::Bot { bulk_in, bulk_out } | Protocol::Cbi { bulk_in, bulk_out, .. } => {
+                (bulk_in, bulk_out)
+            }
             Protocol::Uas { .. } => (0, 0),
         }
     }
@@ -1003,11 +1048,11 @@ impl Pipes for StickPipes<'_> {
 
     fn control(&mut self, setup: Setup, data: Data<'_>) -> Result<usize, PipeError> {
         let length = usize::from(setup.length);
-        if length > 8 {
+        if length > CONTROL_BYTES {
             return Err(PipeError::Failed);
         }
         if let Data::Out(bytes) = &data {
-            let mut control = [0u8; 8];
+            let mut control = [0u8; CONTROL_BYTES];
             let n = bytes.len().min(length);
             control[..n].copy_from_slice(&bytes[..n]);
             self.link.mail.lock_irq().control = control;
@@ -1018,6 +1063,25 @@ impl Pipes for StickPipes<'_> {
             let n = came.min(buffer.len()).min(control.len());
             buffer[..n].copy_from_slice(&control[..n]);
         }
+        Ok(came)
+    }
+}
+
+impl InterruptPipe for StickPipes<'_> {
+    /// The status a CBI floppy drive sends on its interrupt pipe at the
+    /// end of a command: a transfer on that pipe, through the page, as a
+    /// bulk one is.
+    fn interrupt(&mut self, data: &mut [u8], timeout_ms: u32) -> Result<usize, PipeError> {
+        let Protocol::Cbi { interrupt: Some(index), .. } = self.link.protocol else {
+            return Err(PipeError::Failed);
+        };
+        if data.is_empty() || data.len() > PAGE_SIZE {
+            return Err(PipeError::Failed);
+        }
+        let page = self.page.phys();
+        let came = self.transfer(index, &[(page, data.len() as u32)], timeout_ms)?;
+        let came = came.min(data.len());
+        self.page.read(0, &mut data[..came]);
         Ok(came)
     }
 }

@@ -23,12 +23,15 @@
 //! CAPACITY, has what it says of that ignored from then on.
 //!
 //! USB 3 disks and their bridges speak USB Attached SCSI as well, which
-//! has many commands in flight at once ([`uas`], ADR 0162).
+//! has many commands in flight at once ([`uas`], ADR 0162). USB floppy
+//! drives speak the Control/Bulk/Interrupt transport instead ([`cbi`],
+//! ADR 0436).
 
 use radix_scsi::{Cdb, Data, Reply, SENSE_LENGTH, Sense, Transport, TransportError};
 
 use crate::{CLASS, DEVICE_TO_HOST, Setup, TO_INTERFACE};
 
+pub mod cbi;
 #[cfg(test)]
 mod tests;
 pub mod uas;
@@ -207,12 +210,21 @@ pub struct Bot<P> {
     /// Whether what its statuses say did not move is ignored: it said
     /// so of data that all moved.
     ignore_residue: bool,
+    /// The length its command blocks are padded to: 12 for a UFI drive.
+    pad: usize,
 }
 
 impl<P: Pipes> Bot<P> {
     /// The transport of interface `interface`, over `pipes`.
     pub fn new(pipes: P, interface: u8) -> Bot<P> {
-        Bot { pipes, interface, tag: 0, signature: None, ignore_residue: false }
+        Bot { pipes, interface, tag: 0, signature: None, ignore_residue: false, pad: 0 }
+    }
+
+    /// The transport of a UFI drive's interface: its command blocks are
+    /// padded to the 12 bytes each of a UFI drive's is, as Linux's
+    /// usb-storage pads them.
+    pub fn ufi(self) -> Bot<P> {
+        Bot { pad: cbi::COMMAND_LENGTH, ..self }
     }
 
     /// Its pipes.
@@ -314,7 +326,8 @@ impl<P: Pipes> Bot<P> {
         let tag = self.tag;
         let length = data.len() as u32;
         let into_host = data.into_host();
-        let cbw = Cbw { tag, length, into_host, lun, cdb: *cdb }.to_bytes();
+        let cdb = cdb.padded(self.pad);
+        let cbw = Cbw { tag, length, into_host, lun, cdb }.to_bytes();
         match self.pipes.bulk(Data::Out(&cbw), timeout_ms) {
             Ok(CBW_LENGTH) => {}
             Err(PipeError::Gone) => return Err(TransportError::Gone),

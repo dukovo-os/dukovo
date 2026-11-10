@@ -25,7 +25,13 @@
 //! it is not looked at every two seconds but when asked (ADR 0435):
 //! radix-block(2)'s REREAD_PARTITIONS on the drive has its driver's
 //! thread look ([`Drive::look`]), and a disk found takes the drive's
-//! place before the request returns.
+//! place before the request returns. A USB floppy drive finds a disk by
+//! the same change line, and is looked at the same way.
+//!
+//! A floppy drive formats its disk a track at a time, as radix-block(2)'s
+//! FORMAT_TRACK asks (ADR 0436): [`Drive::format`] hands each track to the
+//! driver's thread, and waits for it. The drive's formats, the sizes of
+//! disk it writes, are in `/kernel/block/<drive>/formats`.
 
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -46,6 +52,10 @@ const EJECT_NS: u64 = 40_000_000_000;
 /// drive's motor coming up to speed, its heads stepping, a try at each
 /// data rate, and a controller reset on the way.
 const LOOK_NS: u64 = 20_000_000_000;
+/// How long a track's format may take before the one who asked gives up:
+/// the motor, a seek, the format's two turns and a try again, or a USB
+/// drive's 30 seconds for the command.
+const FORMAT_NS: u64 = 40_000_000_000;
 
 /// The states of what is asked of a drive's thread, an eject or a look,
 /// in [`Drive::eject`]'s byte and [`Drive::look`]'s. Nothing is asked.
@@ -68,6 +78,49 @@ pub enum Kind {
     Optical,
     /// A floppy drive: looked at only when asked ([`Drive::look`]).
     Floppy,
+}
+
+/// A size of floppy disk a drive formats (ADR 0436): its name, as
+/// `/kernel/block/<drive>/formats` and floppy(1) give it, and its sectors
+/// of 512 bytes, which radix-block(2)'s FORMAT_TRACK names it by.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Size {
+    /// `1.44M`, `720K`.
+    pub name: &'static str,
+    /// Its sectors.
+    pub sectors: u32,
+}
+
+/// A 3.5-inch high-density disk.
+pub const SIZE_1440K: Size = Size { name: "1.44M", sectors: 2880 };
+/// A 3.5-inch double-density disk.
+pub const SIZE_720K: Size = Size { name: "720K", sectors: 1440 };
+
+/// A track of a floppy disk to format, as FORMAT_TRACK asks: the disk's
+/// size, in sectors, and the track's cylinder and head.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Track {
+    /// The size of disk the track is formatted for ([`Size::sectors`]).
+    pub sectors: u32,
+    /// Its cylinder, from 0.
+    pub cylinder: u32,
+    /// Its head, 0 or 1.
+    pub head: u32,
+}
+
+/// Why a track could not be formatted.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FormatError {
+    /// The drive has no disk in it.
+    NoDisk,
+    /// The disk is write-protected.
+    WriteProtected,
+    /// The drive does not format disks of that size.
+    Unsupported,
+    /// The track is not on a disk of that size.
+    OutOfRange,
+    /// The drive failed, or was unplugged, or did not answer.
+    Failed,
 }
 
 /// What is in an optical drive.
@@ -108,9 +161,18 @@ pub struct Drive {
     eject: AtomicU8,
     /// Where a look asked of a floppy drive's thread is, as `eject`.
     look: AtomicU8,
-    /// One eject or look at a time: a second waits for the first's answer.
+    /// Where a track's format asked of a floppy drive's thread is, as
+    /// `eject`; the track, and why it failed.
+    format: AtomicU8,
+    track: SpinLock<Option<Track>>,
+    format_failed: SpinLock<Option<FormatError>>,
+    /// For a floppy drive, the sizes of disk it formats; empty for
+    /// another drive.
+    formats: &'static [Size],
+    /// One eject, look or format at a time: a second waits for the
+    /// first's answer.
     one: Mutex<()>,
-    /// The driver's thread, which an eject or a look wakes.
+    /// The driver's thread, which an eject, a look or a format wakes.
     thread: ThreadRef,
     kind: Kind,
     /// For an optical drive, the disc in it; `None` for another drive.
@@ -118,14 +180,19 @@ pub struct Drive {
 }
 
 impl Drive {
-    /// A drive of `kind` whose driver's thread is `thread`; an optical
-    /// drive is empty until it says otherwise.
-    pub fn new(thread: ThreadRef, kind: Kind) -> Drive {
+    /// A drive of `kind` whose driver's thread is `thread`, which formats
+    /// disks of `formats` if it is a floppy drive; an optical drive is
+    /// empty until it says otherwise.
+    pub fn new(thread: ThreadRef, kind: Kind, formats: &'static [Size]) -> Drive {
         Drive {
             changes: AtomicU64::new(0),
             eject_requests: AtomicU64::new(0),
             eject: AtomicU8::new(IDLE),
             look: AtomicU8::new(IDLE),
+            format: AtomicU8::new(IDLE),
+            track: SpinLock::new(None),
+            format_failed: SpinLock::new(None),
+            formats,
             one: Mutex::new(()),
             thread,
             kind,
@@ -216,6 +283,45 @@ impl Drive {
         self.reply(&self.look, worked);
     }
 
+    /// The sizes of disk a floppy drive formats.
+    pub fn formats(&self) -> &'static [Size] {
+        self.formats
+    }
+
+    /// Has a floppy drive's thread format `track` of the disk in it (ADR
+    /// 0436), and waits for its answer, for up to [`FORMAT_NS`]. What the
+    /// disk held is gone, and the disk leaves the kernel: the drive is
+    /// empty until a look finds the disk formatted.
+    pub fn format(&self, track: Track) -> Result<(), FormatError> {
+        if !self.formats.iter().any(|size| size.sectors == track.sectors) {
+            return Err(FormatError::Unsupported);
+        }
+        let _one = self.one.lock();
+        *self.track.lock_irq() = Some(track);
+        *self.format_failed.lock_irq() = None;
+        match self.ask_held(&self.format, FORMAT_NS, "format") {
+            Ok(()) => Ok(()),
+            Err(_) => Err(self.format_failed.lock_irq().take().unwrap_or(FormatError::Failed)),
+        }
+    }
+
+    /// The track whose format waits for the driver's thread, if one does.
+    pub fn format_asked(&self) -> Option<Track> {
+        if self.format.load(Ordering::Acquire) != ASKED {
+            return None;
+        }
+        *self.track.lock_irq()
+    }
+
+    /// The driver's thread answers the format asked: how it went. Wakes
+    /// the one who asked.
+    pub fn formatted(&self, result: Result<(), FormatError>) {
+        if let Err(why) = result {
+            *self.format_failed.lock_irq() = Some(why);
+        }
+        self.reply(&self.format, result.is_ok());
+    }
+
     /// Asks the driver's thread for what `state` stands for, and waits
     /// for its answer as `what`, for up to `limit_ns`.
     fn ask(
@@ -225,6 +331,16 @@ impl Drive {
         what: &'static str,
     ) -> Result<(), radix_block::Error> {
         let _one = self.one.lock();
+        self.ask_held(state, limit_ns, what)
+    }
+
+    /// [`Drive::ask`], with `one` held already.
+    fn ask_held(
+        &self,
+        state: &AtomicU8,
+        limit_ns: u64,
+        what: &'static str,
+    ) -> Result<(), radix_block::Error> {
         state.store(ASKED, Ordering::Release);
         sched::wake(&self.thread);
         let deadline = sched::now_ns().saturating_add(limit_ns);
@@ -248,7 +364,7 @@ impl Drive {
         }
     }
 
-    /// What the one who asked for an eject or a look waits on.
+    /// What the one who asked for an eject, a look or a format waits on.
     fn key(&self) -> usize {
         core::ptr::from_ref(self) as usize
     }
@@ -261,10 +377,16 @@ pub type DriveRef = Arc<Drive, Kmalloc>;
 static DRIVES: Mutex<Option<Vec<(Name, DriveRef), Kmalloc>>> = Mutex::new(None);
 
 /// Adds the drive `name`, of `kind`, of the driver whose thread is
-/// `thread`; `None` when memory runs out.
-pub fn add(name: &Name, thread: ThreadRef, kind: Kind) -> Option<DriveRef> {
+/// `thread`, which formats disks of `formats` if it is a floppy drive;
+/// `None` when memory runs out.
+pub fn add(
+    name: &Name,
+    thread: ThreadRef,
+    kind: Kind,
+    formats: &'static [Size],
+) -> Option<DriveRef> {
     let heap = HEAP.with(Flags::MAY_SLEEP);
-    let drive = Arc::try_new_in(Drive::new(thread, kind), heap).ok()?;
+    let drive = Arc::try_new_in(Drive::new(thread, kind, formats), heap).ok()?;
     let mut drives = DRIVES.lock();
     let drives = drives.get_or_insert_with(|| Vec::new_in(heap));
     drives.try_reserve(1).ok()?;
@@ -272,8 +394,9 @@ pub fn add(name: &Name, thread: ThreadRef, kind: Kind) -> Option<DriveRef> {
     Some(drive)
 }
 
-/// Takes the drive `name` away: it was unplugged. Answers an eject or a
-/// look that waits for it, so that whoever asked need not wait it out.
+/// Takes the drive `name` away: it was unplugged. Answers an eject, a
+/// look or a format that waits for it, so that whoever asked need not
+/// wait it out.
 pub fn remove(name: &str) {
     let gone = {
         let mut drives = DRIVES.lock();
@@ -283,6 +406,7 @@ pub fn remove(name: &str) {
     };
     gone.1.answer(false);
     gone.1.looked(false);
+    gone.1.formatted(Err(FormatError::Failed));
 }
 
 /// The drive `name`, if it is one whose medium comes and goes.

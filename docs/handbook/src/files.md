@@ -287,19 +287,36 @@ named `fd0` or `fd1` after its number on the controller (ADR 0435). A
 1.44 MB or 720 KB disk is read and written whole, with no partition
 table, and mounted at `/volumes/fd0` when it is in the drive at boot,
 and at its label otherwise; a write-protected disk is mounted read-only.
-A floppy drive cannot say that a disk went in, so it is never polled:
-after putting a disk in, have the drive looked at with `rdisk --reread`.
-A disk taken out is found gone at the next read or look. `eject` lets
-the disk go, since a PC floppy drive has no motor to push it out; take
-it out by hand.
+A USB floppy drive is one too, named `fd` with the first number the
+PC's drives leave free (ADR 0436). A floppy drive cannot say that a
+disk went in, so it is never polled: after putting a disk in, have the
+drive looked at with `floppy look`, or `rdisk --reread`. A disk taken
+out is found gone at the next read or look. `eject` lets the disk go,
+since a PC floppy drive has no motor to push it out; take it out by
+hand.
 
 ```
-# rdisk --reread /devices/fd0
+# floppy look fd0
+fd0: a 1.44M disk
 # dmesg | tail -3
 Disk: fd0: a 1.44 MB disk went in
 volumed: a medium went in fd0
 volumed: mounted the FAT filesystem of fd0 at /volumes/DRIVERS
 # eject DRIVERS
+```
+
+`floppy` lists the floppy drives, the sizes of disk each formats and
+what is in it. `floppy format` formats the disk in a drive, reads it
+back, makes a FAT filesystem on it and mounts it, as DOS's `format`
+does; `-s 720K` formats a double-density disk, and `-n` gives the
+filesystem a label.
+
+```
+# floppy format -n BACKUP fd0
+floppy: formatting the disk in fd0 as a 1.44M disk
+floppy: reading the disk back
+floppy: making a FAT filesystem on it
+floppy: mounted the FAT filesystem of fd0 at /volumes/BACKUP
 ```
 
 `mkfs-fat` on a whole floppy disk writes a floppy's geometry in its

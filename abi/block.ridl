@@ -66,6 +66,10 @@ const FLUSH: u32 = 0x1261;
 /// fails with invalid_argument on a partition, in_use if a partition that
 /// would go or change is in use (GET_IN_USE), or the disk itself is, and
 /// changes nothing then, and corrupt if both copies of a GPT are damaged.
+/// On a floppy drive, whose disk has no partition table and which is
+/// never polled, it has the drive looked at for a disk put in or taken
+/// out instead (ADR 0435): a disk found is in `/devices` when it returns.
+/// That needs no write right, as EJECT does not.
 const REREAD_PARTITIONS: u32 = 0x125f;
 
 /// What uses the device, written as a u32 of the IN_USE flags, 0 for
@@ -99,6 +103,25 @@ const IN_USE_UNLOCKED: u32 = 8;
 /// a volume unlocked on them is in use (GET_IN_USE), and io if the drive
 /// does not answer or was unplugged.
 const EJECT: u32 = 0x5309;
+
+/// Formats a track of the disk in a floppy drive (floppy(1), ADR 0436):
+/// Dukovo's own request, as Linux has FDFMTTRK. It reads FORMAT_SIZE
+/// bytes, three u32s: the size of disk to format, in 512-byte sectors
+/// (2880 for a 1.44 MB disk, 1440 for a 720 KB one, of those the drive
+/// formats, as `/kernel/block/<drive>/formats` lists them); the track's
+/// cylinder, from 0; and its head, 0 or 1. What the track held is gone.
+/// The first track formatted takes the disk out of the kernel: the drive
+/// is empty, a device of no sectors, until REREAD_PARTITIONS looks and
+/// finds the disk formatted, so each track's request is made on the
+/// drive opened again. Needs the write right; fails with not_supported
+/// on a device that is not a floppy drive or a size the drive does not
+/// format, invalid_argument for a track not on a disk of that size,
+/// in_use if the drive is in use (GET_IN_USE), no_device if no disk is
+/// in the drive, read_only if the disk is write-protected, and io if the
+/// drive fails, does not answer, or was unplugged.
+const FORMAT_TRACK: u32 = 0x400c5206;
+/// The bytes FORMAT_TRACK reads.
+const FORMAT_SIZE: u32 = 12;
 
 /// What the disk says of its health (diskhealth(8), ADR 0157): Dukovo's
 /// own request, as Linux leaves it to commands passed through raw. It

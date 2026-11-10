@@ -22,7 +22,9 @@
 //!   has `media_changes` too, how many times one went in or came out
 //!   (Radix's own, which volumed(8) watches, ADR 0430), and for a CD,
 //!   DVD or Blu-ray drive `disc`, what is in it (`none`, `dvd-rom data`,
-//!   `cd-rom audio`, `dvd+r blank`, `unreadable`; ADR 0431);
+//!   `cd-rom audio`, `dvd+r blank`, `unreadable`; ADR 0431), and for a
+//!   floppy drive `formats`, the sizes of disk it formats (`1.44M 720K`;
+//!   ADR 0436);
 //! - `/kernel/bus/pci/devices/<address>/vendor`, `device`, `class`,
 //!   `revision`, `subsystem_vendor` and `subsystem_device`, in
 //!   hexadecimal, for every PCI function the scan found;
@@ -536,6 +538,18 @@ impl Listing for Blocks {
                 let pressed = drive.clone();
                 let count = value(move |text| writeln!(text, "{}", pressed.eject_requests()))?;
                 dir.add("eject_requests", count)?;
+            }
+            // A floppy drive says what sizes of disk it formats, which
+            // floppy(1) reads (ADR 0436).
+            if drive.kind() == disk::removable::Kind::Floppy {
+                let sizes = drive.formats();
+                let formats = value(move |text| {
+                    for (at, size) in sizes.iter().enumerate() {
+                        write!(text, "{}{}", if at == 0 { "" } else { " " }, size.name)?;
+                    }
+                    writeln!(text)
+                })?;
+                dir.add("formats", formats)?;
             }
             dir.add("media_changes", value(move |text| writeln!(text, "{}", drive.changes()))?)?;
         }

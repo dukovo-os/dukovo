@@ -3,7 +3,7 @@
 
 //! What a floppy drive is, and the disks it reads: their geometry, the
 //! data rate their tracks were written at, and the gaps between their
-//! sectors.
+//! sectors; and how a track of one is formatted ([`Format::track_ids`]).
 
 use core::fmt;
 
@@ -11,6 +11,12 @@ use core::fmt;
 pub const SECTOR: usize = 512;
 /// A sector's size as a command gives it: 128 << 2.
 pub(crate) const SIZE_CODE: u8 = 2;
+/// The byte a format fills each sector with: what DOS's `format` writes,
+/// and what a newly formatted disk reads as.
+pub const FILLER: u8 = 0xf6;
+/// The bytes of a sector's ID in the list FORMAT TRACK takes: its
+/// cylinder, head, number and size code.
+pub const ID_BYTES: usize = 4;
 
 /// The rate at which the controller reads and writes a track. The disk's
 /// tracks were written at one of them, and a read at another finds no
@@ -65,6 +71,9 @@ pub struct Format {
     pub rate: Rate,
     /// The gap a read or write leaves before each sector's data.
     pub(crate) gap: u8,
+    /// The gap a format leaves between sectors, longer than `gap`: the
+    /// 82077AA datasheet's figure for the format, as DOS and Linux use.
+    pub(crate) format_gap: u8,
     /// SPECIFY's first byte for its rate: the step rate in the high
     /// nibble and the head unload time in the low one.
     pub(crate) step: u8,
@@ -79,6 +88,7 @@ pub const HD_1440: Format = Format {
     sectors: 18,
     rate: Rate::K500,
     gap: 0x1b,
+    format_gap: 0x6c,
     step: 0xcf,
 };
 
@@ -91,6 +101,7 @@ pub const DD_720: Format = Format {
     sectors: 9,
     rate: Rate::K250,
     gap: 0x2a,
+    format_gap: 0x50,
     step: 0xdf,
 };
 
@@ -141,6 +152,23 @@ impl Format {
     pub fn left_in_cylinder(&self, number: u32) -> u32 {
         let cylinder = self.cylinder_sectors();
         cylinder - number % cylinder
+    }
+
+    /// The bytes of the sector IDs that FORMAT TRACK writes on track
+    /// `cylinder`, `head`: [`ID_BYTES`] for each sector, numbered from 1 in
+    /// order around the track, as DOS lays a track out. Returns how many
+    /// bytes it wrote into `out`; 0 if the track is not on the disk or
+    /// `out` is too small.
+    pub fn track_ids(&self, cylinder: u8, head: u8, out: &mut [u8]) -> usize {
+        let len = usize::from(self.sectors) * ID_BYTES;
+        if cylinder >= self.cylinders || head >= self.heads || out.len() < len {
+            return 0;
+        }
+        let (ids, _) = out.as_chunks_mut::<ID_BYTES>();
+        for (number, id) in (1..=self.sectors).zip(ids) {
+            *id = [cylinder, head, number, SIZE_CODE];
+        }
+        len
     }
 }
 
