@@ -37,10 +37,11 @@
 //! goes to them, and any other through a bounce buffer of [`SEGMENTS`]
 //! pages below 4 GiB, copied before a write and after a read.
 //!
-//! An SD card keeps no write cache the host can see: a flush is done at
-//! once, and every write is through. Discarding (the cards' ERASE) is
-//! left for later. A slot for a device soldered to the board (an eMMC's)
-//! is set up at boot only.
+//! An SD card keeps no write cache the host can see, and an eMMC's is left
+//! off: a flush is done at once, and every write is through. Discarding
+//! (the cards' ERASE) is left for later. An eMMC soldered to the board
+//! (ADR 0439) is a disk named as a card is, set up at boot; its slot has
+//! no card detect to watch, and only its user area is a disk.
 
 use alloc::boxed::Box;
 use alloc::sync::Arc;
@@ -54,7 +55,7 @@ use radix_hw::pci::{Address, Bar, Function, Msi};
 use radix_hw::{Dma, Mmio};
 use radix_klog::{TextBuf, info, warn};
 use radix_mm::{Flags, HEAP, Kmalloc};
-use radix_sdhci::{Card, Detect, Events, Op as SdOp, Presence, Slot};
+use radix_sdhci::{Card, Detect, Events, Family, Op as SdOp, Presence, Slot};
 use radix_sync::{Once, SpinLock};
 
 use super::queue::{self, Controller, Disk, Op, Outcome, Part, Request, Volume};
@@ -531,9 +532,14 @@ fn add_slot(
     match (&card, &loaded) {
         (Some(card), Some(loaded)) => {
             info!(
-                "Disk: {name} is an {} in the SD card reader at {place}: {}, a version \
-                 {major}.{minor:02} reader",
+                "Disk: {name} is an {} {} at {place}: {}, a version {major}.{minor:02} \
+                 reader",
                 Described(card),
+                if card.family == Family::Emmc {
+                    "on the SD host controller"
+                } else {
+                    "in the SD card reader"
+                },
                 details(card),
             );
             let device = loaded.device.clone();
@@ -786,13 +792,19 @@ impl Watcher {
     }
 }
 
-/// A card's kind and size, as the log says it: "SDHC card of 32 GiB".
+/// A card's kind and size, as the log says it: "SDHC card of 32 GiB", or
+/// "eMMC of 64 GiB".
 struct Described<'a>(&'a Card);
 
 impl core::fmt::Display for Described<'_> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         let card = self.0;
-        write!(f, "{} card of {}", card.kind(), Size(card.blocks * radix_block::SECTOR))
+        let size = Size(card.blocks * radix_block::SECTOR);
+        match card.family {
+            // Soldered to the board, not a card.
+            Family::Emmc => write!(f, "eMMC of {size}"),
+            Family::Sd | Family::Mmc => write!(f, "{} card of {size}", card.kind()),
+        }
     }
 }
 

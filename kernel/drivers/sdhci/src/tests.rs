@@ -5,7 +5,8 @@
 //! card says of itself, reads and writes through ADMA2's descriptors of
 //! both sizes, failures and the stop after them, the card detect, and the
 //! bus speed modes: High Speed, and UHS-I's after a switch to 1.8 V, tuned
-//! where they must be.
+//! where they must be; and MMCs and eMMCs, their bus's width, High Speed
+//! and HS200.
 
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
@@ -24,7 +25,8 @@ struct SimCard {
     /// It is SDHC: addressed in blocks.
     high: bool,
     write_protected: bool,
-    /// The SCR's SD_SPEC: 0 for a card of version 1.0x, without CMD6.
+    /// The SCR's SD_SPEC: 0 for a card of version 1.0x, without CMD6; an
+    /// MMC's CSD's SPEC_VERS, 4 and later with an EXT_CSD.
     spec: u8,
     /// CMD6's group 1, the bus speed modes it has (bit 1 High Speed or
     /// SDR25, 2 SDR50, 3 SDR104, 4 DDR50), and group 4, its current
@@ -37,6 +39,11 @@ struct SimCard {
     switch_fails: bool,
     /// Tuning finds no sampling point.
     tuning_fails: bool,
+    /// It is an MMC: CMD1 rather than ACMD41, and an EXT_CSD.
+    mmc: bool,
+    /// An MMC's EXT_CSD CARD_TYPE: bit 1 High Speed at 52 MHz, bit 4
+    /// HS200 at 1.8 V.
+    card_type: u8,
 }
 
 /// A simulated slot and its card.
@@ -66,8 +73,17 @@ struct State {
     /// CMD6's functions switched to: group 1's and group 4's.
     function: u8,
     limit: u8,
-    /// CMD19s sent.
+    /// CMD19s or CMD21s sent, and the last one's block size.
     tunes: u32,
+    tuning_size: u16,
+    /// An MMC's EXT_CSD BUS_WIDTH and HS_TIMING, and its last CMD6 was
+    /// refused.
+    bus_width: u8,
+    timing: u8,
+    switch_error: bool,
+    /// The data lines the slot has wired to the card: 8, or 4 where the
+    /// upper four go nowhere.
+    lines: u8,
 }
 
 struct Sim(Mutex<State>);
@@ -95,6 +111,11 @@ impl State {
             function: 0,
             limit: 0,
             tunes: 0,
+            tuning_size: 0,
+            bus_width: 0,
+            timing: 0,
+            switch_error: false,
+            lines: 8,
         }
     }
 
@@ -143,6 +164,78 @@ impl State {
         cid | 0x10 << 56 | 0xdead_beef << 24 | (24 << 4 | 6) << 8 | 1
     }
 
+    /// An MMC's CID: maker 0x15, OEM 1, "EMMC01" of revision 2.1, made in
+    /// June 2024 (year 11 from 2013).
+    fn mmc_cid() -> u128 {
+        let mut cid = 0x15u128 << 120 | 1 << 112 | 0x01 << 104;
+        for (i, &c) in b"EMMC01".iter().enumerate() {
+            cid |= u128::from(c) << (96 - 8 * i);
+        }
+        cid | 0x21 << 48 | 0xcafe_f00d << 16 | (6 << 4 | 0xb) << 8 | 1
+    }
+
+    /// An MMC's CSD: its capacity in C_SIZE up to 2 GB, beyond which it
+    /// says 2 GB and its EXT_CSD the rest.
+    fn mmc_csd(card: &SimCard) -> u128 {
+        let blocks = card.data.len() as u128 / 512;
+        let size = if card.high { 0xfff } else { blocks * 512 / (256 * 1024) - 1 };
+        3 << 126 | u128::from(card.spec) << 122 | 9 << 80 | size << 62 | 7 << 47 | 1
+    }
+
+    /// An MMC's EXT_CSD as it stands: revision 8 (5.1).
+    fn ext_csd(&self, card: &SimCard) -> [u8; 512] {
+        let mut ext = [0u8; 512];
+        ext[183] = self.bus_width;
+        ext[185] = self.timing;
+        ext[192] = 8;
+        ext[196] = card.card_type;
+        if card.high {
+            let sectors = (card.data.len() / 512) as u32;
+            ext[212..216].copy_from_slice(&sectors.to_le_bytes());
+        }
+        ext[504] = 0x5a;
+        ext
+    }
+
+    /// The host's and the MMC's bus are as wide as each other, and no
+    /// wider than the lines the slot wired.
+    fn widths_agree(&self) -> bool {
+        let control = self.regs[reg::HOST_CONTROL];
+        let host = if control & 1 << 5 != 0 {
+            8
+        } else if control & 1 << 1 != 0 {
+            4
+        } else {
+            1
+        };
+        let card = match self.bus_width {
+            2 => 8,
+            1 => 4,
+            _ => 1,
+        };
+        host == card && host <= self.lines
+    }
+
+    /// An MMC's CMD6: writes a byte of the EXT_CSD, or refuses it, as
+    /// CMD13 then says.
+    fn mmc_switch(&mut self, card: &SimCard, argument: u32) {
+        let (access, index, value) =
+            (argument >> 24 & 3, argument >> 16 & 0xff, argument >> 8 & 0xff);
+        let takes = match (access, index, value) {
+            (3, 183, 0..=2) => true,
+            (3, 185, 0) => true,
+            (3, 185, 1) => card.card_type & 1 << 1 != 0,
+            (3, 185, 2) => card.card_type & 1 << 4 != 0 && !card.switch_fails,
+            _ => false,
+        };
+        self.switch_error = !takes;
+        match (takes, index) {
+            (true, 183) => self.bus_width = value as u8,
+            (true, 185) => self.timing = value as u8,
+            _ => {}
+        }
+    }
+
     fn csd(card: &SimCard) -> u128 {
         let blocks = card.data.len() as u128 / 512;
         if card.high {
@@ -171,6 +264,9 @@ impl State {
             return Err(bits);
         }
         let card = self.card.clone().unwrap();
+        if card.mmc && !self.widths_agree() {
+            return Err(1 << 5);
+        }
         let wide = self.regs[reg::HOST_CONTROL] >> 3 & 3 == 3;
         let size = if wide { 12 } else { 8 };
         let mut table = self.get(reg::ADMA_ADDRESS, 4);
@@ -255,6 +351,23 @@ impl State {
         out
     }
 
+    /// A tuning block (CMD19 or CMD21): the controller finds a sampling
+    /// point on the fifth, or with `tuning_fails` gives up at the 40th.
+    fn tune(&mut self, card: &SimCard) {
+        self.respond([0x900, 0, 0, 0]);
+        self.tunes += 1;
+        self.tuning_size = self.get(reg::BLOCK_SIZE, 2) as u16;
+        let control2 = self.get(reg::HOST_CONTROL2, 2);
+        if control2 & 1 << 6 != 0 {
+            if self.tunes >= 5 && !card.tuning_fails {
+                self.put(reg::HOST_CONTROL2, 2, control2 & !(1 << 6) | 1 << 7);
+            } else if self.tunes >= 40 {
+                self.put(reg::HOST_CONTROL2, 2, control2 & !(1 << 6 | 1 << 7));
+            }
+        }
+        self.send_block(&std::vec![0x5a; usize::from(self.tuning_size)]);
+    }
+
     /// The command just written.
     fn command(&mut self, value: u16) {
         let index = (value >> 8 & 0x3f) as u8;
@@ -279,9 +392,48 @@ impl State {
                 self.switched = false;
                 self.function = 0;
                 self.limit = 0;
+                self.bus_width = 0;
+                self.timing = 0;
             }
-            (false, 8) if card.version2 => self.respond([argument & 0xfff, 0, 0, 0]),
+            (false, 8) if card.mmc && self.selected && card.spec >= 4 => {
+                r1(self, 0);
+                if !self.widths_agree() {
+                    self.set_status(status::ERROR, 1 << 5);
+                    return;
+                }
+                let ext = self.ext_csd(&card);
+                self.send_block(&ext);
+                return;
+            }
+            (false, 8) if card.version2 && !card.mmc => self.respond([argument & 0xfff, 0, 0, 0]),
             (false, 8) => return timeout(self),
+            (true, 41) if card.mmc => return timeout(self),
+            (false, 1) if card.mmc => {
+                self.tries += 1;
+                let mut ocr = 0x00ff_8080;
+                if self.tries >= 3 {
+                    ocr |= 1 << 31;
+                    if card.high && argument & 1 << 30 != 0 {
+                        ocr |= 1 << 30;
+                    }
+                }
+                self.respond([ocr, 0, 0, 0]);
+            }
+            (false, 2) if card.mmc => self.respond(Self::long(Self::mmc_cid())),
+            (false, 3) if card.mmc => {
+                self.rca = (argument >> 16) as u16;
+                r1(self, 0);
+            }
+            (false, 9) if card.mmc => self.respond(Self::long(Self::mmc_csd(&card))),
+            (false, 6) if card.mmc && self.selected && card.spec >= 4 => {
+                self.mmc_switch(&card, argument);
+                r1(self, 0);
+                busy = true;
+            }
+            (false, 13) if self.selected => {
+                let error = core::mem::take(&mut self.switch_error);
+                r1(self, if error { 1 << 7 } else { 0 });
+            }
             (false, 55) => {
                 self.app = true;
                 r1(self, 1 << 5);
@@ -319,19 +471,9 @@ impl State {
                 self.send_block(&status);
                 return;
             }
-            (false, 19) if self.selected => {
-                r1(self, 0);
-                self.tunes += 1;
-                let control2 = self.get(reg::HOST_CONTROL2, 2);
-                if control2 & 1 << 6 != 0 {
-                    if self.tunes >= 5 && !card.tuning_fails {
-                        self.put(reg::HOST_CONTROL2, 2, control2 & !(1 << 6) | 1 << 7);
-                    } else if self.tunes >= 40 {
-                        self.put(reg::HOST_CONTROL2, 2, control2 & !(1 << 6 | 1 << 7));
-                    }
-                }
-                self.send_block(&[0x5a; 64]);
-                return;
+            (false, 19) if self.selected && !card.mmc => return self.tune(&card),
+            (false, 21) if self.selected && card.mmc && self.timing == 2 => {
+                return self.tune(&card);
             }
             (false, 2) => self.respond(Self::long(Self::cid())),
             (false, 3) => {
@@ -518,6 +660,8 @@ fn card(blocks: usize, high: bool) -> SimCard {
         uhs: false,
         switch_fails: false,
         tuning_fails: false,
+        mmc: false,
+        card_type: 0,
     }
 }
 
@@ -685,8 +829,9 @@ fn csd_and_cid_are_read() {
     assert_eq!(Csd::parse(&State::long(2 << 126)), Csd::Ultra);
     assert_eq!(Csd::parse(&State::long(3 << 126)), Csd::Unknown);
     let cid = Cid::parse(&State::long(State::cid()));
-    assert_eq!(&cid.name, CID_NAME);
+    assert_eq!(&cid.name[..5], CID_NAME);
     let big = Card {
+        family: Family::Sd,
         rca: 1,
         high_capacity: true,
         blocks: 64 * 1_000_000_000 / 512,
@@ -917,4 +1062,158 @@ fn garbled_data_in_a_tuned_mode_tunes_the_slot_again() {
     let card = slot.card().unwrap();
     assert_eq!((card.speed, card.khz), (Speed::Sdr25, 50_000));
     assert_eq!(sim.0.lock().unwrap().function, 1);
+}
+
+/// An MMC of `blocks` blocks, addressed in sectors with `high`, of
+/// version 4 or later, with the speeds `card_type` gives.
+fn mmc(blocks: usize, high: bool, card_type: u8) -> SimCard {
+    SimCard { mmc: true, version2: false, spec: 4, modes: 0, card_type, ..card(blocks, high) }
+}
+
+/// CARD_TYPE's High Speed at 52 MHz and HS200 at 1.8 V.
+const HS_52: u8 = 1 << 1;
+const HS200: u8 = 1 << 4;
+
+/// An eMMC's slot: version 3.00 at 200 MHz with eight lines, 64-bit DMA,
+/// High Speed, 3.3 and 1.8 V and SDR104, soldered to the board.
+const EMMC_SLOT: u64 =
+    200 << 8 | 1 << 18 | 1 << 19 | 1 << 21 | 1 << 24 | 1 << 26 | 1 << 28 | 1 << 30 | SDR104;
+
+#[test]
+fn an_emmc_is_set_up_on_eight_bits_at_hs200() {
+    let emmc = mmc(8192, true, HS_52 | HS200);
+    let (mut slot, sim) = slot_with(version::V3, EMMC_SLOT, 0, Some(emmc));
+    assert!(!slot.removable());
+    let card = slot.identify(&mut |_| {}).unwrap();
+    assert_eq!((card.family, card.kind(), card.rca), (Family::Emmc, "eMMC", 1));
+    // Its capacity is the EXT_CSD's SEC_COUNT, not the CSD's 2 GB.
+    assert_eq!((card.blocks, card.high_capacity, card.read_only), (8192, true, false));
+    assert_eq!((card.width, card.speed, card.khz), (8, Speed::Hs200, 200_000));
+    assert_eq!(card.name(), "EMMC01");
+    assert_eq!((card.cid.maker, card.cid.oem, card.cid.serial), (0x15, [0, 1], 0xcafe_f00d));
+    assert_eq!((card.cid.year, card.cid.month, card.cid.revision), (2024, 6, 0x21));
+    let state = sim.0.lock().unwrap();
+    // No answer to CMD8 or ACMD41: CMD1 until ready, the EXT_CSD read on
+    // one bit and again on eight, HS200, and CMD21 until tuned.
+    let set_up = [0, 8, 55, 141, 0, 1, 1, 1, 2, 3, 9, 7, 8, 6, 13, 8, 6, 13];
+    assert_eq!(state.commands[..18], set_up);
+    assert_eq!(state.commands[18..], [21; 5]);
+    assert_eq!((state.bus_width, state.timing, state.rca, state.tuning_size), (2, 2, 1, 128));
+    assert_eq!(state.regs[reg::HOST_CONTROL] & (1 << 5 | 1 << 2), 1 << 5 | 1 << 2);
+    // 1.8 V, SDR104's timing, tuned.
+    assert_eq!(state.get(reg::HOST_CONTROL2, 2) & 0xff, 1 << 7 | 1 << 3 | 3);
+    drop(state);
+    // It moves blocks on eight bits, addressed in sectors.
+    let page = Dma::fake(4096);
+    page.write(0, &pattern(7, 1024));
+    slot.start(Op::Write, 7, 2, &[(page.phys(), 1024)], &mut |_| {}).unwrap();
+    assert_eq!(slot.poll(), Some(Ok(())));
+    let data = sim.0.lock().unwrap().card.as_ref().unwrap().data[7 * 512..9 * 512].to_vec();
+    assert_eq!(data, pattern(7, 1024));
+}
+
+#[test]
+fn a_slot_with_four_lines_wired_runs_the_bus_at_four_bits() {
+    let emmc = mmc(8192, true, HS_52 | HS200);
+    let (mut slot, sim) = slot_with(version::V3, EMMC_SLOT, 0, Some(emmc));
+    sim.0.lock().unwrap().lines = 4;
+    let card = slot.identify(&mut |_| {}).unwrap();
+    assert_eq!((card.width, card.speed), (4, Speed::Hs200));
+    let state = sim.0.lock().unwrap();
+    assert_eq!((state.bus_width, state.tuning_size), (1, 64));
+    assert_eq!(state.regs[reg::HOST_CONTROL] & (1 << 5 | 1 << 1), 1 << 1);
+    // The EXT_CSD was read on one bit, garbled on eight, and read on four
+    // (after the SD card's CMD8 that went unanswered).
+    assert_eq!(state.commands.iter().filter(|&&c| c == 8).count(), 4);
+}
+
+#[test]
+fn an_mmc_in_a_removable_slot_runs_at_high_speed() {
+    // A slot of four lines without 1.8 V: no HS200.
+    let (mut reader, sim) = slot(version::V3, 200, true, Some(mmc(4096, true, HS_52 | HS200)));
+    let card = reader.identify(&mut |_| {}).unwrap();
+    assert_eq!((card.family, card.kind()), (Family::Mmc, "MMC"));
+    // 52 MHz is 50 from 200 MHz.
+    assert_eq!((card.width, card.speed, card.khz), (4, Speed::MmcHigh, 50_000));
+    let state = sim.0.lock().unwrap();
+    assert_eq!((state.timing, state.tunes), (1, 0));
+    assert_eq!(state.regs[reg::HOST_CONTROL] & 0b110, 0b110);
+    drop(state);
+    // A device without High Speed stays at the default speed.
+    let (mut reader, sim) = slot(version::V3, 200, true, Some(mmc(4096, true, 0)));
+    let card = reader.identify(&mut |_| {}).unwrap();
+    assert_eq!((card.speed, card.khz), (Speed::Default, 25_000));
+    assert_eq!(sim.0.lock().unwrap().timing, 0);
+}
+
+#[test]
+fn small_and_old_mmcs_are_addressed_in_bytes() {
+    // 2 GB or less: addressed in bytes, its capacity in the CSD.
+    let (mut reader, sim) = slot(version::V3, 200, true, Some(mmc(8192, false, 0)));
+    let card = reader.identify(&mut |_| {}).unwrap();
+    assert!(!card.high_capacity);
+    assert_eq!((card.blocks, card.speed, card.khz, card.width), (8192, Speed::Default, 25_000, 4));
+    assert!(sim.0.lock().unwrap().commands.contains(&16));
+    let page = Dma::fake(4096);
+    page.write(0, &pattern(3, 512));
+    reader.start(Op::Write, 3, 1, &[(page.phys(), 512)], &mut |_| {}).unwrap();
+    assert_eq!(reader.poll(), Some(Ok(())));
+    let data = sim.0.lock().unwrap().card.as_ref().unwrap().data[3 * 512..4 * 512].to_vec();
+    assert_eq!(data, pattern(3, 512));
+    // Before version 4: no EXT_CSD and no CMD6, one bit at 20 MHz.
+    let old = SimCard { spec: 3, ..mmc(8192, false, 0) };
+    let (mut reader, sim) = slot(version::V3, 200, true, Some(old));
+    let card = reader.identify(&mut |_| {}).unwrap();
+    assert_eq!((card.blocks, card.width, card.khz), (8192, 1, 20_000));
+    let commands = sim.0.lock().unwrap().commands.clone();
+    assert_eq!(commands[4..], [0, 1, 1, 1, 2, 3, 9, 7, 16]);
+}
+
+#[test]
+fn hs200_refused_or_untuned_gives_way_to_high_speed() {
+    let tuning_fails = SimCard { tuning_fails: true, ..mmc(8192, true, HS_52 | HS200) };
+    let refused = SimCard { switch_fails: true, ..mmc(8192, true, HS_52 | HS200) };
+    for emmc in [tuning_fails, refused] {
+        let (mut slot, sim) = slot_with(version::V3, EMMC_SLOT, 0, Some(emmc));
+        let card = slot.identify(&mut |_| {}).unwrap();
+        assert_eq!((card.speed, card.khz, card.width), (Speed::MmcHigh, 50_000, 8));
+        let state = sim.0.lock().unwrap();
+        assert_eq!(state.timing, 1);
+        // The slot's timing back to the default's, untuned, its I/O
+        // still at 1.8 V.
+        assert_eq!(state.get(reg::HOST_CONTROL2, 2) & 0xcf, 1 << 3);
+    }
+}
+
+#[test]
+fn garbled_data_at_hs200_tunes_again_or_falls_back_to_high_speed() {
+    let emmc = mmc(8192, true, HS_52 | HS200);
+    let (mut slot, sim) = slot_with(version::V3, EMMC_SLOT, 0, Some(emmc));
+    assert_eq!(slot.identify(&mut |_| {}).unwrap().speed, Speed::Hs200);
+    let page = Dma::fake(4096);
+    let read = [(page.phys(), 512)];
+    let tunes = sim.0.lock().unwrap().tunes;
+    sim.0.lock().unwrap().fail = Some(1 << 5);
+    slot.start(Op::Read, 0, 1, &read, &mut |_| {}).unwrap();
+    assert!(matches!(slot.poll(), Some(Err(_))));
+    assert!(slot.retuning());
+    // The next transfer tunes first, with CMD21.
+    slot.start(Op::Read, 0, 1, &read, &mut |_| {}).unwrap();
+    assert_eq!(slot.poll(), Some(Ok(())));
+    assert!(!slot.retuning());
+    assert!(sim.0.lock().unwrap().tunes > tunes);
+    // Garbled again, and HS200 no longer tunes: High Speed.
+    {
+        let mut state = sim.0.lock().unwrap();
+        state.fail = Some(1 << 5);
+        state.card.as_mut().unwrap().tuning_fails = true;
+        state.tunes = 0;
+    }
+    slot.start(Op::Read, 0, 1, &read, &mut |_| {}).unwrap();
+    assert!(matches!(slot.poll(), Some(Err(_))));
+    slot.start(Op::Read, 0, 1, &read, &mut |_| {}).unwrap();
+    assert_eq!(slot.poll(), Some(Ok(())));
+    let card = slot.card().unwrap();
+    assert_eq!((card.speed, card.khz), (Speed::MmcHigh, 50_000));
+    assert_eq!(sim.0.lock().unwrap().timing, 1);
 }

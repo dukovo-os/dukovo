@@ -51,21 +51,27 @@
 //! error in a tuned mode has the slot tuned again before the next
 //! transfer, and one that no longer tunes falls back to SDR25.
 //!
-//! eMMC is left for later; so are cards of version 1 that are MMC cards,
-//! which do not answer ACMD41. The crate is a compartment with no
-//! `unsafe` code; its tests run it against a simulated controller and
-//! card.
+//! MMCs and eMMCs (ADR 0439, the [`mmc`] module): a card that does not
+//! answer ACMD41 is set up as an MMC, with CMD1, and an eMMC soldered to
+//! the board is one. Its EXT_CSD gives its capacity and speeds; its bus
+//! is made as wide as both it and the slot are, eight bits where the
+//! slot has them, and read back to check the lines, and it runs at
+//! HS200, tuned with CMD21, or High Speed's 52 MHz.
+//!
+//! The crate is a compartment with no `unsafe` code; its tests run it
+//! against a simulated controller and card.
 
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
 
 pub mod card;
+pub mod mmc;
 #[cfg(test)]
 mod tests;
 
 use radix_hw::{Dma, Mmio, device_barrier};
 
-pub use card::{Card, Cid, Csd, Speed};
+pub use card::{Card, Cid, Csd, Family, Speed};
 
 /// The PCI class and subclass of an SD host controller.
 pub const PCI_CLASS: (u8, u8) = (0x08, 0x05);
@@ -174,6 +180,9 @@ mod host {
     pub const WIDTH_4: u8 = 1 << 1;
     /// High Speed, and every UHS-I mode faster than SDR12.
     pub const HIGH_SPEED: u8 = 1 << 2;
+    /// The eight-bit bus, an embedded device's (Extended Data Transfer
+    /// Width).
+    pub const WIDTH_8: u8 = 1 << 5;
 }
 
 /// Host Control 2's bits (version 3.00 and later).
@@ -195,6 +204,8 @@ mod ocr {
     pub const HIGH_CAPACITY: u32 = 1 << 30;
     /// Asked: switch to 1.8 V (S18R); answered: the card will (S18A).
     pub const SWITCH_1_8: u32 = 1 << 24;
+    /// CMD1's: the MMC takes 1.70 to 1.95 V.
+    pub const MMC_1_8: u32 = 1 << 7;
 }
 
 /// The Normal Interrupt Signal Enable's bits while the slot interrupts:
@@ -207,6 +218,8 @@ const ERRORS_SIGNALLED: u16 = 0x03ff;
 
 /// Capabilities' bits.
 mod caps {
+    /// The slot has the eight lines an embedded device's bus can have.
+    pub const BUS_8: u64 = 1 << 18;
     pub const ADMA2: u64 = 1 << 19;
     pub const HIGH_SPEED: u64 = 1 << 21;
     pub const VOLTS_3_3: u64 = 1 << 24;
@@ -240,6 +253,8 @@ const VOLTAGES: u32 = 0x00ff_8000;
 const NO_CHANGE: u32 = 0x00ff_ffff;
 /// The Clock Control register's bit that runs the card's clock.
 const CLOCK_ON: u16 = 1 << 2;
+/// An SD card's tuning block: CMD19's 64 bytes.
+const SD_TUNING: (u16, u16) = (19, 64);
 
 /// How a slot or its card failed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -747,9 +762,8 @@ impl Slot {
         for _ in 0..100 {
             answer = match self.app_command(0, 41, asked, Response::R3, delay) {
                 Ok(long) => long[0],
-                Err(Error::Command(_) | Error::Timeout) => {
-                    return Err(Error::Unsupported("it is an MMC card, which is not driven yet"));
-                }
+                // An MMC has no ACMD41 (Physical Layer, 4.2.3).
+                Err(Error::Command(_) | Error::Timeout) => return self.set_up_mmc(delay).map(Some),
                 Err(err) => return Err(err),
             };
             if answer & ocr::READY != 0 {
@@ -784,7 +798,9 @@ impl Slot {
         let slowest = if low_voltage { Speed::Sdr12 } else { Speed::Default };
         let (speed, khz) = self.speed_up(rca, low_voltage, delay)?.unwrap_or((slowest, khz));
         let read_only = self.regs.read32(reg::PRESENT_STATE) & present::WRITABLE == 0;
-        let card = Card { rca, high_capacity, blocks, cid, speed, khz, width: 4, read_only };
+        let family = Family::Sd;
+        let card =
+            Card { family, rca, high_capacity, blocks, cid, speed, khz, width: 4, read_only };
         self.card = Some(card);
         Ok(Some(card))
     }
@@ -913,7 +929,7 @@ impl Slot {
         let khz = self.uhs_mode(speed, delay)?;
         let tunes =
             speed == Speed::Sdr104 || (speed == Speed::Sdr50 && self.caps & caps::TUNE_SDR50 != 0);
-        if tunes && !self.tune(delay) {
+        if tunes && !self.tune(SD_TUNING, delay) {
             self.uhs_mode(Speed::Sdr12, delay)?;
             return Ok(None);
         }
@@ -924,12 +940,13 @@ impl Slot {
     /// Sets the slot to UHS-I mode `speed`, with its clock stopped while
     /// the mode changes: the clock it runs at.
     fn uhs_mode(&mut self, speed: Speed, delay: &mut dyn FnMut(u32)) -> Result<u32, Error> {
+        // HS200 is timed as SDR104 is (Host Controller, 2.2.30).
         let mode = match speed {
             Speed::Sdr25 => 1,
             Speed::Sdr50 => 2,
-            Speed::Sdr104 => 3,
+            Speed::Sdr104 | Speed::Hs200 => 3,
             Speed::Ddr50 => 4,
-            Speed::Default | Speed::High | Speed::Sdr12 => 0,
+            Speed::Default | Speed::High | Speed::Sdr12 | Speed::MmcHigh => 0,
         };
         let regs = &self.regs;
         regs.write16(reg::CLOCK_CONTROL, regs.read16(reg::CLOCK_CONTROL) & !CLOCK_ON);
@@ -942,9 +959,10 @@ impl Slot {
     }
 
     /// Tunes the slot's sampling point for the mode it runs in (Host
-    /// Controller, 2.2.26): CMD19's blocks, 40 at most, until the
-    /// controller says it is done. True if it found one.
-    fn tune(&mut self, delay: &mut dyn FnMut(u32)) -> bool {
+    /// Controller, 2.2.26): the tuning blocks of `block` (its command and
+    /// size), 40 at most, until the controller says it is done. True if
+    /// it found one.
+    fn tune(&mut self, (command, size): (u16, u16), delay: &mut dyn FnMut(u32)) -> bool {
         let regs = &self.regs;
         let control2 = regs.read16(reg::HOST_CONTROL2) & !host2::SAMPLING_CLOCK;
         regs.write16(reg::HOST_CONTROL2, control2 | host2::EXECUTE_TUNING);
@@ -955,11 +973,11 @@ impl Slot {
             }
             regs.write16(reg::NORMAL_STATUS, status::ALL_BUT_CARD);
             regs.write16(reg::ERROR_STATUS, 0xffff);
-            regs.write16(reg::BLOCK_SIZE, 64);
+            regs.write16(reg::BLOCK_SIZE, size);
             regs.write16(reg::BLOCK_COUNT, 1);
             regs.write32(reg::ARGUMENT, 0);
             regs.write16(reg::TRANSFER_MODE, mode::READ);
-            regs.write16(reg::COMMAND, 19 << 8 | Response::R1.flags() | DATA_PRESENT);
+            regs.write16(reg::COMMAND, command << 8 | Response::R1.flags() | DATA_PRESENT);
             let done = status::BUFFER_READ_READY | status::ERROR;
             let came = wait(delay, 10_000, || regs.read16(reg::NORMAL_STATUS) & done != 0);
             regs.write16(reg::NORMAL_STATUS, status::ALL_BUT_CARD);
@@ -982,13 +1000,27 @@ impl Slot {
     }
 
     /// Tunes the slot again after a transfer came back garbled; a card
-    /// whose mode no longer tunes falls back to SDR25, which is not tuned.
+    /// whose mode no longer tunes falls back to SDR25, or an MMC to High
+    /// Speed, which are not tuned.
     fn retune(&mut self, delay: &mut dyn FnMut(u32)) -> Result<(), Error> {
         self.retune = false;
-        if self.tune(delay) {
+        let block = match self.card {
+            Some(card) if card.family != Family::Sd => mmc::tuning(card.width),
+            _ => SD_TUNING,
+        };
+        if self.tune(block, delay) {
             return Ok(());
         }
         self.tuned = false;
+        if let Some(card) = self.card
+            && card.family != Family::Sd
+        {
+            let speed = self.mmc_fall_back(delay)?;
+            if let Some(card) = &mut self.card {
+                (card.speed, card.khz) = speed;
+            }
+            return Ok(());
+        }
         let khz = self.uhs_mode(Speed::Sdr12, delay)?;
         let speed = match self.switch_uhs(Speed::Sdr25, 1, None, delay)? {
             Some(khz) => (Speed::Sdr25, khz),

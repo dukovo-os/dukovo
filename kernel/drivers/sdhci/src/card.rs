@@ -5,7 +5,10 @@
 //! Physical Layer Simplified Specification*, 5.2 and 5.3): its CID, which
 //! names it, and its CSD, which gives its capacity, as the controller
 //! hands them over in a 136-bit response with the CRC left out; and the
-//! speed it was set to run at ([`Speed`], 4.3.10 and 4.3.11).
+//! speed it was set to run at ([`Speed`], 4.3.10 and 4.3.11). An MMC's or
+//! eMMC's are laid out a little differently (JEDEC's *Embedded
+//! MultiMediaCard (e•MMC) Electrical Standard 5.1*, JESD84-B51, 7.2 and
+//! 7.3): [`Cid::parse_mmc`] and [`Csd::parse_mmc`].
 
 /// A 136-bit response (R2) as the controller holds it: bits 8 to 127 of
 /// the register, the first word the lowest.
@@ -30,10 +33,11 @@ pub fn bits(long: &Long, high: u32, low: u32) -> u32 {
 pub struct Cid {
     /// MID: its maker, as the SD Association numbers them.
     pub maker: u8,
-    /// OID: two characters naming the OEM or the application.
+    /// OID: two characters naming the OEM or the application; an MMC's
+    /// is one byte, in the second.
     pub oem: [u8; 2],
-    /// PNM: the product's name, five characters.
-    pub name: [u8; 5],
+    /// PNM: the product's name, five characters (an MMC's six).
+    pub name: [u8; 6],
     /// PRV: its revision, two BCD digits.
     pub revision: u8,
     /// PSN: its serial number.
@@ -51,11 +55,28 @@ impl Cid {
         Cid {
             maker: byte(127),
             oem: [byte(119), byte(111)],
-            name: [byte(103), byte(95), byte(87), byte(79), byte(71)],
+            name: [byte(103), byte(95), byte(87), byte(79), byte(71), 0],
             revision: byte(63),
             serial: bits(long, 55, 24),
             year: 2000 + bits(long, 19, 12) as u16,
             month: bits(long, 11, 8) as u8,
+        }
+    }
+
+    /// An MMC's CID in `long` (JESD84-B51, 7.2), its year counted from
+    /// 2013 for a device of `rev` 5 or later (EXT_CSD_REV), from 1997
+    /// before.
+    pub fn parse_mmc(long: &Long, rev: u8) -> Cid {
+        let byte = |high: u32| bits(long, high, high - 7) as u8;
+        let year = bits(long, 11, 8) as u16;
+        Cid {
+            maker: byte(127),
+            oem: [0, byte(111)],
+            name: [byte(103), byte(95), byte(87), byte(79), byte(71), byte(63)],
+            revision: byte(55),
+            serial: bits(long, 47, 16),
+            year: if rev >= 5 && year < 13 { 2013 + year } else { 1997 + year },
+            month: bits(long, 15, 12) as u8,
         }
     }
 }
@@ -92,10 +113,23 @@ impl Csd {
             _ => Csd::Unknown,
         }
     }
+
+    /// An MMC's CSD in `long` (JESD84-B51, 7.3): the version of the
+    /// standard it follows (SPEC_VERS, 4 and later having an EXT_CSD),
+    /// and its 512-byte blocks as its C_SIZE gives them, which a device
+    /// over 2 GB, addressed in sectors, gives in EXT_CSD's SEC_COUNT
+    /// instead.
+    pub fn parse_mmc(long: &Long) -> (u8, u64) {
+        let size = u64::from(bits(long, 73, 62)) + 1;
+        let multiplier = bits(long, 49, 47) + 2;
+        let length = bits(long, 83, 80);
+        (bits(long, 125, 122) as u8, (size << multiplier << length) / 512)
+    }
 }
 
 /// The bus speed mode a card runs in: a default and a High Speed one at
-/// 3.3 V, and UHS-I's at 1.8 V (Physical Layer, 4.3.10 and 4.3.11).
+/// 3.3 V, and UHS-I's at 1.8 V (Physical Layer, 4.3.10 and 4.3.11); an
+/// MMC's High Speed and HS200 (JESD84-B51, 5.3).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Speed {
     /// Up to 25 MHz: every card's.
@@ -112,6 +146,10 @@ pub enum Speed {
     Sdr104,
     /// Up to 50 MHz on both edges of the clock, function 4.
     Ddr50,
+    /// An MMC's High Speed: up to 52 MHz, HS_TIMING 1.
+    MmcHigh,
+    /// An eMMC's HS200: up to 200 MHz at 1.8 V, HS_TIMING 2, tuned.
+    Hs200,
 }
 
 impl Speed {
@@ -125,6 +163,8 @@ impl Speed {
             Speed::Sdr50 => "UHS-I SDR50",
             Speed::Sdr104 => "UHS-I SDR104",
             Speed::Ddr50 => "UHS-I DDR50",
+            Speed::MmcHigh => "High Speed",
+            Speed::Hs200 => "HS200",
         }
     }
 
@@ -135,17 +175,32 @@ impl Speed {
             Speed::High | Speed::Sdr25 | Speed::Ddr50 => 50_000,
             Speed::Sdr50 => 100_000,
             Speed::Sdr104 => 208_000,
+            Speed::MmcHigh => 52_000,
+            Speed::Hs200 => 200_000,
         }
     }
+}
+
+/// Which kind of memory a card is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Family {
+    /// An SD memory card.
+    Sd,
+    /// A MultiMediaCard in a slot it can be taken out of.
+    Mmc,
+    /// An eMMC: a MultiMediaCard soldered to the board.
+    Emmc,
 }
 
 /// A card the driver has set up.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Card {
+    /// SD, MMC or eMMC.
+    pub family: Family,
     /// The relative address it was given (CMD3).
     pub rca: u16,
-    /// It is an SDHC or SDXC card, addressed in blocks; a standard
-    /// capacity card is addressed in bytes.
+    /// It is an SDHC or SDXC card, or an MMC over 2 GB, addressed in
+    /// blocks; a standard capacity card is addressed in bytes.
     pub high_capacity: bool,
     /// Its 512-byte blocks.
     pub blocks: u64,
@@ -155,19 +210,23 @@ pub struct Card {
     pub speed: Speed,
     /// The clock it runs at, in kHz.
     pub khz: u32,
-    /// Its bus's width in bits: 1 or 4.
+    /// Its bus's width in bits: 1, 4 or 8 (an MMC's).
     pub width: u8,
-    /// Its write-protect switch is set.
+    /// Its write-protect switch is set (an SD card's: an MMC has none).
     pub read_only: bool,
 }
 
 impl Card {
-    /// What kind of card it is: SDSC, SDHC (up to 32 GB) or SDXC.
+    /// What kind of card it is: SDSC, SDHC (up to 32 GB) or SDXC, MMC or
+    /// eMMC.
     pub fn kind(&self) -> &'static str {
-        match (self.high_capacity, self.blocks > 32 * 1_000_000_000 / 512) {
-            (false, _) => "SD",
-            (true, false) => "SDHC",
-            (true, true) => "SDXC",
+        let big = self.blocks > 32 * 1_000_000_000 / 512;
+        match (self.family, self.high_capacity, big) {
+            (Family::Mmc, ..) => "MMC",
+            (Family::Emmc, ..) => "eMMC",
+            (Family::Sd, false, _) => "SD",
+            (Family::Sd, true, false) => "SDHC",
+            (Family::Sd, true, true) => "SDXC",
         }
     }
 
