@@ -40,7 +40,10 @@ timeout and the flags each test needs.
 
 *boot.timeout* = _seconds_
 	How long the GRUB menu waits before booting Dukovo, from 0 to 600.
-	The default is 3.
+	The default is 3. An installed system's menu waits this long only
+	when Shift is held as the computer starts, or when the computer has
+	Windows; otherwise it stays hidden for a second, or none with 0
+	(ADR 0426).
 
 *boot.cmdline* = "_flags_"
 	Kernel command-line flags, separated by spaces, such as

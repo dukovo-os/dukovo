@@ -1688,6 +1688,41 @@ _target/userspace/_).
 	*--debug*, *--release*
 		As for *build*.
 
+*soak* [*--hours* _n_] [*--summary* _file_] [*--debug* | *--release*]
+	Run an installed system under a mixed load for hours or days, and
+	check that what it uses does not creep (ADR 0427). Build an
+	installed system's test disk, as *test* does for *installed-uefi*,
+	boot it in QEMU on 2 CPUs with 1 GiB of memory and a virtio network
+	card on QEMU's user network, and run rounds of load from the shell
+	on tty1 until the time is up. Each round writes 128 MiB of random
+	bytes to a file in _/shared_, copies it, compares the two and
+	removes them, runs 300 programs one after another, takes 32 MiB
+	from a program of this machine's over the network, and then gives
+	the memory in use (neither free nor the page cache) and the space
+	_/shared_'s filesystem uses. Each round is a line of
+	_out/test/soak/rounds.csv_.
+
+	A round whose files differ, whose programs stop, or whose bytes do
+	not all come fails the soak at once, as does memory in use past
+	twice the first round's. At the end the last quarter of the rounds
+	is held to the second quarter, after the caches have warmed: the
+	memory in use may grow by a twentieth of it or 8 MiB, whichever is
+	more, and the disk space used by 64 MiB. Releases soak for seven
+	days on the lab's PC; CI soaks for five hours each week
+	(_.github/workflows/soak.yml_).
+
+	*--hours* _n_
+		How long the load runs, from a fraction of an hour to 720.
+		The default is 168, seven days. A verdict needs at least 8
+		rounds.
+
+	*--summary* _file_
+		Also append the Markdown report to _file_. CI passes
+		*$GITHUB_STEP_SUMMARY*.
+
+	*--debug*, *--release*
+		As for *build*.
+
 *catalog* *key* *yubikey* [*--serial* _n_] | *key* *new* _file_ _name_ [_role_]... | *root* [*--days* _n_] | *sign* [*--days* _n_] [*--remove* _path_]... [*--yes*] [_bundle_]... | *publish* | *status* | *server* *setup* | *deploy* | *check* [_url_]
 	Make and sign the catalog's TUF repository in _catalog/_ (ADR 0381),
 	with catalog-repo, which ob builds for this machine. Every command
@@ -2147,7 +2182,7 @@ Build the image and write it to a USB stick. Check the device name with
 ```
 ./ob image
 lsblk -d -o NAME,SIZE,MODEL,TRAN
-sudo dd if=out/dukovo-0.13.0-x86_64.img of=/dev/sdX bs=4M conv=fsync status=progress
+sudo dd if=out/dukovo-0.14.0-x86_64.img of=/dev/sdX bs=4M conv=fsync status=progress
 ```
 
 Graphical alternatives that write the same image are balenaEtcher, GNOME

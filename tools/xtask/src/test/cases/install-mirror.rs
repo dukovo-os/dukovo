@@ -120,11 +120,12 @@ fn first_disk_dies(_case: &Case, disks: &[DiskImage]) -> Result<(), String> {
 }
 
 /// The second boot, from the second disk alone, in the first's place: the
-/// firmware starts its own GRUB, the root mounts from it with a warning,
-/// and alice signs in, finds the install's settings and swap, and writes
-/// a file to her home.
+/// firmware starts its own GRUB, which starts the kernel with the root's
+/// UUID (its menu hidden, ADR 0426, so it prints nothing of its own), the
+/// root mounts from it with a warning, and alice signs in, finds the
+/// install's settings and swap, and writes a file to her home.
 fn from_the_second(vm: &mut Vm, _case: &Case) -> Result<(), String> {
-    vm.expect("Booting `Dukovo")?;
+    vm.expect("Command line: root=UUID=")?;
     vm.expect_anywhere(ONE_MISSING)?;
     signed_in(vm)?;
     answer_prompt(

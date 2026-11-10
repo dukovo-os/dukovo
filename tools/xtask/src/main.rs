@@ -73,6 +73,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("catalog", "Make and sign the catalog's TUF repository, with YubiKeys"),
     ("lab", "Run the Dukovo Lab's tests (lab/tests) on its machines with dukovo-lab"),
     ("bench", "Measure system calls and IPC round trips on Radix and on this machine's Linux"),
+    ("soak", "Run an installed system under load for hours or days, and check for creep"),
     ("fixture", "Make test data that only Linux makes, such as a Btrfs log of fsyncs"),
     ("docs", "Build the man pages and the handbook into out/docs"),
     ("lint", "Check formatting and run Clippy with warnings denied"),
@@ -485,6 +486,22 @@ and take minutes.
                       the dukovo-bench.txt of the disk check's run.sh
   --summary <file>    Also append the Markdown report to <file> (CI passes
                       $GITHUB_STEP_SUMMARY)"
+        }
+        "soak" => {
+            "Usage: ./ob soak [--hours <n>] [--summary <file>] [--debug | --release]
+
+Boots an installed system's disk in QEMU and runs a mixed load on it in
+rounds until the time is up: 128 MiB of files written, copied, compared
+and removed, 300 programs run, and 32 MiB taken over the network. Each
+round records the memory in use and the disk space used, in
+out/test/soak/rounds.csv. Fails at once when a round's load fails, and at
+the end when the last quarter of the rounds uses more memory or disk than
+the second quarter did, past a small slack (ADR 0427). Releases soak for
+seven days on the lab's PC; CI soaks for five hours each week.
+
+  --hours <n>        How long the load runs (default 168, seven days)
+  --summary <file>   Also append the Markdown report to <file> (CI passes
+                     $GITHUB_STEP_SUMMARY)"
         }
         "lab" => {
             "Usage: ./ob lab [--no-build | --image <file>] [--lab-key <file>] [--lab-password <file>]
@@ -967,6 +984,7 @@ fn dispatch(argv: Vec<String>) -> Result<()> {
         "run" => qemu::run_command(&ctx, &mut args),
         "test" => test::command(&ctx, &mut args),
         "bench" => bench::command(&ctx, &mut args),
+        "soak" => test::soak::command(&ctx, &mut args),
         "lab" => lab::command(&ctx, &mut args),
         "fixture" => fixture::command(&ctx, &mut args),
         "docs" => {

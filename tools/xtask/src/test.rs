@@ -1358,6 +1358,7 @@ mod affected;
 mod phase11;
 mod phase12;
 mod phase13;
+pub mod soak;
 
 /// The boot tests in test/cases, one file each, which build.rs lists (see
 /// test/cases/README.md): two pull requests that add a test each then
@@ -5531,6 +5532,12 @@ impl Vm {
     pub fn screen(&mut self) -> Result<Vec<String>, String> {
         let geometry = screen::Geometry::from_log(&self.log())
             .ok_or("the kernel did not report a framebuffer console")?;
+        let image = self.screenshot()?;
+        screen::read_text(&image, geometry)
+    }
+
+    /// Takes a screenshot, through QMP's `screendump`.
+    pub fn screenshot(&mut self) -> Result<screen::Image, String> {
         let socket = self.qmp.clone().ok_or("no QMP socket")?;
         let _ = std::fs::remove_file(&self.screenshot);
         let mut qmp = Qmp::connect(&socket)?;
@@ -5540,8 +5547,7 @@ impl Vm {
         ))?;
         let bytes = std::fs::read(&self.screenshot)
             .map_err(|err| format!("reading {}: {err}", self.screenshot.display()))?;
-        let image = screen::Image::parse_ppm(&bytes)?;
-        screen::read_text(&image, geometry)
+        screen::Image::parse_ppm(&bytes)
     }
 
     fn stop(&mut self) {

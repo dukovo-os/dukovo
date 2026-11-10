@@ -5,8 +5,16 @@
 //! the panic report takes over. Since Phase 9 a program may take the screen
 //! to draw on through `/devices/fb0` (`fs::framebuffer`): the log stays off it
 //! until the program gives it back.
+//!
+//! With the `quiet` flag, as an installed system starts (ADR 0426), the
+//! screen shows the startup screen instead: Dukovo's name and a bar that
+//! fills as the kernel and then Spark's services start ([`progress`],
+//! [`started_process`]). The log is kept, unseen, and shows again
+//! ([`reveal`]) when Esc is pressed, when an error is logged, or when no
+//! program has taken the screen a minute after the boot began; the serial
+//! port and dmesg(1) get it all either way.
 
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 use radix_fbcon::Console;
 use radix_hal::{Framebuffer, PixelFormat};
@@ -25,6 +33,24 @@ static SCREEN: SpinLock<Option<Console>> = SpinLock::new(None);
 static TAKEN_OVER: AtomicBool = AtomicBool::new(false);
 /// Set while a program holds the screen (`/devices/fb0`).
 static HANDED_OVER: AtomicBool = AtomicBool::new(false);
+/// Set while the startup screen shows in place of the log.
+static QUIET: AtomicBool = AtomicBool::new(false);
+/// How far the startup screen's bar is, of 1000.
+static PROGRESS: AtomicU32 = AtomicU32::new(0);
+/// When the startup screen gives way to the log if no program has taken
+/// the screen, in `sched::now_ns`; 0 while it does not show.
+static QUIET_UNTIL: AtomicU64 = AtomicU64::new(0);
+
+/// The startup screen's name and hint.
+const TITLE: &str = "Dukovo";
+const HINT: &str = "Esc shows the messages";
+/// How long after the boot began the startup screen gives way to the log,
+/// if no program has taken the screen: a boot that stops shows why.
+const QUIET_NS: u64 = 60_000_000_000;
+/// Where the bar is when Spark starts, of 1000; the services' processes
+/// fill it from there towards [`STARTED_MOST`].
+pub const SPARK_STARTS: u32 = 500;
+const STARTED_MOST: u32 = 950;
 
 /// The kernel log's framebuffer console.
 struct ScreenSink;
@@ -36,9 +62,16 @@ impl Sink for ScreenSink {
         }
         if let Some(console) = SCREEN.lock().as_mut() {
             console.write(text, style);
-            // Kept in the grid while a program holds the screen, for when
-            // it gives it back.
-            if !HANDED_OVER.load(Ordering::Relaxed) {
+            // An error shows the log behind the startup screen.
+            if style == Style::Error && QUIET.swap(false, Ordering::Relaxed) {
+                QUIET_UNTIL.store(0, Ordering::Relaxed);
+                if !HANDED_OVER.load(Ordering::Relaxed) {
+                    console.repaint();
+                }
+            }
+            // Kept in the grid while a program holds the screen, or the
+            // startup screen shows, for when it is shown.
+            if !HANDED_OVER.load(Ordering::Relaxed) && !QUIET.load(Ordering::Relaxed) {
                 console.flush();
             }
         }
@@ -93,6 +126,67 @@ pub fn report() {
     );
 }
 
+/// Shows the startup screen in place of the log (`quiet`, ADR 0426), if
+/// there is a framebuffer console, until a minute after the boot began.
+pub fn quiet() {
+    let mut screen = SCREEN.lock_irq();
+    let Some(console) = screen.as_mut() else { return };
+    QUIET.store(true, Ordering::Relaxed);
+    QUIET_UNTIL.store(QUIET_NS, Ordering::Relaxed);
+    console.draw_splash(TITLE, HINT, PROGRESS.load(Ordering::Relaxed));
+}
+
+/// Moves the startup screen's bar to `per_mille` of 1000, if it is
+/// further than the bar is.
+pub fn progress(per_mille: u32) {
+    let before = PROGRESS.fetch_max(per_mille, Ordering::Relaxed);
+    if before >= per_mille || !QUIET.load(Ordering::Relaxed) {
+        return;
+    }
+    let mut screen = SCREEN.lock_irq();
+    if let Some(console) = screen.as_mut()
+        && QUIET.load(Ordering::Relaxed)
+        && !HANDED_OVER.load(Ordering::Relaxed)
+        && !TAKEN_OVER.load(Ordering::Relaxed)
+    {
+        console.draw_progress(PROGRESS.load(Ordering::Relaxed));
+    }
+}
+
+/// A process was made: once Spark runs, each moves the startup screen's
+/// bar an eighth of the way that is left.
+pub fn started_process() {
+    if !QUIET.load(Ordering::Relaxed) {
+        return;
+    }
+    let now = PROGRESS.load(Ordering::Relaxed);
+    if now >= SPARK_STARTS {
+        progress(now + (STARTED_MOST.saturating_sub(now)).div_ceil(8));
+    }
+}
+
+/// When the startup screen gives way to the log, if it shows.
+pub fn quiet_until() -> Option<u64> {
+    match QUIET_UNTIL.load(Ordering::Relaxed) {
+        0 => None,
+        at => Some(at),
+    }
+}
+
+/// Shows the log in place of the startup screen, if it shows: for Esc, or
+/// once [`quiet_until`] has passed.
+pub fn reveal() {
+    let mut screen = SCREEN.lock_irq();
+    QUIET_UNTIL.store(0, Ordering::Relaxed);
+    if QUIET.swap(false, Ordering::Relaxed)
+        && let Some(console) = screen.as_mut()
+        && !HANDED_OVER.load(Ordering::Relaxed)
+        && !TAKEN_OVER.load(Ordering::Relaxed)
+    {
+        console.repaint();
+    }
+}
+
 /// Whether there is a framebuffer console.
 pub fn present() -> bool {
     SCREEN.lock_irq().is_some()
@@ -103,7 +197,9 @@ pub fn present() -> bool {
 pub fn take_over(draw: impl FnOnce(&mut Console)) {
     TAKEN_OVER.store(true, Ordering::Relaxed);
     if let Some(console) = SCREEN.lock_irq().as_mut() {
-        if HANDED_OVER.load(Ordering::Relaxed) {
+        // Over a program's drawing or the startup screen: the log first.
+        let quiet = QUIET.swap(false, Ordering::Relaxed);
+        if HANDED_OVER.load(Ordering::Relaxed) || quiet {
             console.repaint();
         }
         draw(console);
@@ -127,9 +223,12 @@ pub fn framebuffer_start() -> Option<u64> {
 }
 
 /// Gives the screen to a program (`/devices/fb0`): the log stops drawing on
-/// it.
+/// it, and the startup screen is done with, so that the log shows when the
+/// program gives the screen back.
 pub fn hand_over() {
     HANDED_OVER.store(true, Ordering::Relaxed);
+    QUIET.store(false, Ordering::Relaxed);
+    QUIET_UNTIL.store(0, Ordering::Relaxed);
 }
 
 /// Takes the screen back from the program that held it, and draws the log
@@ -171,6 +270,9 @@ pub fn update_line(row_from_bottom: usize, text: &str, style: Style) {
         return;
     }
     if let Some(console) = SCREEN.lock_irq().as_mut() {
+        if QUIET.swap(false, Ordering::Relaxed) {
+            console.repaint();
+        }
         let row = console.rows().saturating_sub(1 + row_from_bottom);
         console.fill_row(row, Style::Plain);
         console.set_position(0, row);

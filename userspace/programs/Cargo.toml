@@ -14,7 +14,7 @@ members = ["accounts", "acl", "audio", "catalog-repo", "consoled", "disk", "dkv"
 
 [workspace.package]
 # Keep in step with the root Cargo.toml (a unit test of ob checks it).
-version = "0.13.0"
+version = "0.14.0"
 edition = "2024"
 license = "Apache-2.0 OR MIT"
 repository = "https://github.com/dukovo-os/dukovo"

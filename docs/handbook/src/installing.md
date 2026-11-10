@@ -229,6 +229,17 @@ Remove the stick and restart: the computer starts the installed system,
 and the administrator signs in at the console with the password whose
 hash the answers gave.
 
+## Starting the installed system
+
+An installed system starts quietly. The boot menu stays hidden, and
+after the firmware's logo the screen shows Dukovo's name and a bar that
+fills as the system starts, then the sign-in. To see the menu, hold
+Shift as the computer starts, or press Esc in the second after the
+firmware's logo; on a computer with Windows the menu always shows. To
+see the messages the system prints as it starts, press Esc on the
+startup screen. They show by themselves when something goes wrong, and
+`dmesg` shows them afterwards (ADR 0426).
+
 ## When something goes wrong
 
 Every step, every command the installer ran and what it printed are in

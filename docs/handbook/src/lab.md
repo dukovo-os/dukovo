@@ -46,7 +46,7 @@ The same from a terminal, a command at a time:
 ```
 
 `./ob lab run` and `./ob lab ui` build the lab image,
-`out/dukovo-0.13.0-x86_64-lab.img`, first; `--no-build` tests the one
+`out/dukovo-0.14.0-x86_64-lab.img`, first; `--no-build` tests the one
 already there. The runner page picks machines and tests, runs them,
 shows each run as it goes and what failed, and lists past runs; each of
 its buttons is a `dukovo-lab` command, which it shows. After a rebuild,

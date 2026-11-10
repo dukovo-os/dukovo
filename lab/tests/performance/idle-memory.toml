@@ -1,0 +1,25 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "The idle system, its services settled, uses under 256 MiB of memory: neither free nor the page cache (ADR 0427)"
+time = "8m"
+
+# A boot of its own, not a fresh disk's first, whose setup takes longer:
+# restart a moment after the command returns, so SSH hands back its exit
+# status before the connection goes.
+[[step]]
+run = "sh -c '(sleep 2; reboot) > /dev/null 2>&1 &'"
+root = true
+[[step]]
+serial = "asked to restart the machine"
+[[step]]
+serial = "Boot complete."
+[[step]]
+wait = "ready"
+
+# A minute for the services to settle after the boot, then what is in
+# use; the label is split in the command so that only the answer shows
+# it whole.
+[[step]]
+run = "sh -c 'sleep 60; awk \"/^total:/ { t = \\$2 } /^free:/ { f = \\$2 } /^page_cache:/ { c = \\$2 } END { u = t - f - c; print \\\"in use: \\\" u \\\" KiB\\\"; if (u > 0 && u < 262144) print \\\"within\\\" \\\"-budget\\\" }\" /processes/meminfo'"
+expect = "within-budget"

@@ -8,8 +8,9 @@ covers Dukovo's code or documentation, and no right to use them is granted
 by those licenses.
 
 You may use the name and the unmodified logo to refer to Dukovo, for
-example in an article, a talk or a link to the project, without suggesting
-that the Dukovo project made or endorses your work.
+example in an article, a talk or a link to the project, and in the other
+uses the trademark policy allows (TRADEMARKS.md, in Dukovo's repository),
+without suggesting that the Dukovo project made or endorses your work.
 
 Any other use, including in a product, a modified distribution or a modified
 logo, needs written permission from the project.

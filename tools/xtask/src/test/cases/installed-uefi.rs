@@ -6,15 +6,17 @@
 //! its Btrfs UUID and loads the kernel and the startup archive, which
 //! holds Spark alone, from the system's slot, *@system.a/startup*. Spark
 //! mounts the root the command line names on */system* and starts the
-//! services from it. Idle, with the services running, the machine uses
-//! less than 100 MiB, counting the startup archive the boot loader keeps
-//! in memory, which must be under a MiB.
+//! services from it. Under KVM, the console service shows tty1 within
+//! 10 seconds of GRUB handing over, by the kernel's clock. Idle, with the
+//! services running, the machine uses less than 100 MiB, counting the
+//! startup archive the boot loader keeps in memory, which must be under
+//! a MiB. Both are budgets CI holds every change to (ADR 0427).
 
 use super::super::*;
 
 pub const CASE: Case = Case {
     name: "installed-uefi",
-    about: "An installed system's disk boots under UEFI: GRUB loads the kernel and the startup archive (Spark alone, under a MiB) from the root's slot, Spark runs the system from that root, and the idle machine uses under 100 MiB counting the archive",
+    about: "An installed system's disk boots under UEFI: GRUB loads the kernel and the startup archive (Spark alone, under a MiB) from the root's slot, Spark runs the system from that root, tty1 shows within 10 s under KVM, and the idle machine uses under 100 MiB counting the archive (ADR 0427)",
     firmware: Firmware::Uefi,
     media: Media::Disk,
     cmdline: "console-sign-in=off",
@@ -36,6 +38,14 @@ const IDLE_BUDGET_KIB: u64 = 100 * 1024;
 /// The largest startup archive, in KiB: Spark and its mount points.
 const STARTUP_ARCHIVE_KIB: u64 = 1024;
 
+/// The longest the boot may take under KVM, in seconds of the kernel's
+/// clock, from GRUB handing over to the console service showing tty1,
+/// where the sign-in is (ADR 0427). Without KVM it is only reported.
+const BOOT_BUDGET_S: f64 = 10.0;
+
+/// The console service's line once tty1 shows.
+const TTY1_SHOWN: &str = "; tty1 is shown";
+
 /// An installed system starts from its slot and runs from its root, within
 /// its memory budget, then powers off. installed-bios boots the same way.
 pub fn installed(vm: &mut Vm, _case: &Case) -> Result<(), String> {
@@ -51,6 +61,17 @@ pub fn installed(vm: &mut Vm, _case: &Case) -> Result<(), String> {
     }
     vm.expect("spark: /system is Dukovo's root on ")?;
     vm.expect("spark: started consoled (/system/commands/consoled) as process ")?;
+    vm.expect(TTY1_SHOWN)?;
+    let shown = log_seconds(&vm.log(), TTY1_SHOWN)?;
+    eprintln!(
+        "          GRUB to tty1: {shown:.2} s{}",
+        if vm.kvm { "" } else { " (no KVM, so not held to the budget)" }
+    );
+    if vm.kvm && shown > BOOT_BUDGET_S {
+        return Err(format!(
+            "tty1 showed {shown:.2} s after GRUB handed over, not within {BOOT_BUDGET_S} s"
+        ));
+    }
     vm.expect_screen(&[&format!("{RELEASE} {VERSION} (tty1)"), "# "])?;
 
     // The kernel and the archive GRUB loaded are the slot's own files.
@@ -92,6 +113,16 @@ fn archive_kib(log: &str) -> Result<u64, String> {
         .ok_or_else(|| "the kernel did not say how big the boot archive is".to_string())
 }
 
+/// The kernel's time, in seconds, on the first line of `log` that holds
+/// `needle`: the `[    3.386471]` it starts with.
+pub fn log_seconds(log: &str, needle: &str) -> Result<f64, String> {
+    log.lines()
+        .find(|line| line.contains(needle))
+        .and_then(|line| line.split_once('[')?.1.split_once(']'))
+        .and_then(|(time, _)| time.trim().parse().ok())
+        .ok_or_else(|| format!("no time on the log's line with \"{needle}\""))
+}
+
 /// The KiB the screen's `idle-used: N` line gives.
 fn idle_used_kib(screen: &[String]) -> Result<u64, String> {
     screen
@@ -99,4 +130,20 @@ fn idle_used_kib(screen: &[String]) -> Result<u64, String> {
         .find_map(|line| line.trim().strip_prefix("idle-used: "))
         .and_then(|kib| kib.trim().parse().ok())
         .ok_or_else(|| format!("no idle-used line on the screen: {}", screen.join(" | ")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reads_the_time_of_a_log_line() {
+        let log = "[    0.000000] Framebuffer: console of 160x50 cells\n\
+                   [    3.386471] cpu1: spark[1]: consoled: 6 consoles; tty1 is shown\n\
+                   [   20.000000] consoled: 6 consoles; tty1 is shown\n";
+        let shown = log_seconds(log, TTY1_SHOWN).unwrap();
+        assert!((shown - 3.386_471).abs() < 1e-9, "{shown}");
+        assert!(log_seconds(log, "no such line").is_err());
+        assert!(log_seconds("consoled: 6 consoles; tty1 is shown\n", TTY1_SHOWN).is_err());
+    }
 }

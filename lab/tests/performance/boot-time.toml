@@ -1,0 +1,26 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "The machine starts within 10 seconds of GRUB handing over: the console service shows tty1, with the sign-in, by then, by the kernel's clock (ADR 0427)"
+time = "8m"
+
+# A boot of its own, not a fresh disk's first, whose setup takes longer:
+# restart a moment after the command returns, so SSH hands back its exit
+# status before the connection goes.
+[[step]]
+run = "sh -c '(sleep 2; reboot) > /dev/null 2>&1 &'"
+root = true
+[[step]]
+serial = "asked to restart the machine"
+[[step]]
+serial = "Boot complete."
+[[step]]
+wait = "ready"
+
+# The time on the console service's line once tty1 shows, from that
+# boot; the label is split in the command so that only the answer shows
+# it whole.
+[[step]]
+run = "sh -c 'dmesg | awk -F \"[][]\" \"!t && /tty1 is shown/ { t = \\$2 + 0 } END { print \\\"tty1 at \\\" t \\\" s\\\"; if (t > 0 && t <= 10) print \\\"within\\\" \\\"-budget\\\" }\"'"
+root = true
+expect = "within-budget"

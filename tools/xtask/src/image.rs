@@ -318,10 +318,39 @@ pub fn build_release(
     let _ = std::fs::remove_dir_all(ctx.out.join("live-staging"));
     built?;
     let output = ctx.out.join(file_name(kind));
+    let mut written = vec![output.clone()];
     if kind == Kind::Cloud {
-        convert_cloud(&output)?;
+        written.extend(convert_cloud(&output)?);
+    }
+    for image in &written {
+        check_size(image)?;
     }
     Ok(output)
+}
+
+/// The size every image `ob image` writes is held under (ADR 0427):
+/// 4 GiB, the most a file on FAT32 can hold, so that an image copies to
+/// any stick or drive and downloads in minutes.
+pub const IMAGE_BUDGET: u64 = 4 << 30;
+
+/// Fails when the image at `path` is not under [`IMAGE_BUDGET`], and
+/// says how much of it the image takes.
+fn check_size(path: &Path) -> Result<()> {
+    let size = std::fs::metadata(path).context(|| format!("reading {}", path.display()))?.len();
+    let name = path.file_name().unwrap_or_default().to_string_lossy();
+    if size >= IMAGE_BUDGET {
+        crate::bail!(
+            "{name} is {} MiB, not under the {} MiB every image is held to (ADR 0427)",
+            size >> 20,
+            IMAGE_BUDGET >> 20
+        );
+    }
+    step(&format!(
+        "{name}: {} MiB, under the {} GiB budget",
+        size.div_ceil(1 << 20),
+        IMAGE_BUDGET >> 30
+    ));
+    Ok(())
 }
 
 /// Reads Intel microcode from a file of updates, or from every file in a
@@ -1372,6 +1401,19 @@ mod tests {
     }
 
     #[test]
+    fn an_image_of_4_gib_is_over_the_budget() {
+        // Sparse files, so that the test writes nothing.
+        let path = std::env::temp_dir().join(format!("ob-image-size-{}", std::process::id()));
+        let file = std::fs::File::create(&path).unwrap();
+        file.set_len(IMAGE_BUDGET - 1).unwrap();
+        assert!(check_size(&path).is_ok());
+        file.set_len(IMAGE_BUDGET).unwrap();
+        let err = check_size(&path).unwrap_err().to_string();
+        assert!(err.contains("4096 MiB, not under the 4096 MiB"), "{err}");
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
     fn renders_modules() {
         let cfg = render_grub_cfg(TEMPLATE, 0, "", &[(MICROCODE_PATH, "microcode")], "").unwrap();
         assert!(cfg.contains(&format!("    module2 {MICROCODE_PATH} microcode\n    boot\n")));
@@ -1399,11 +1441,12 @@ mod tests {
         let uuid = "90c9a303-3954-4174-8f8b-ee75a92a9eb0";
         let filled = template.replace("@ROOT_UUID@", uuid).replace(CONSOLE, "");
         let modules = [(MICROCODE_PATH, "microcode")];
-        let cfg = render_grub_cfg(&filled, 0, "quiet", &modules, "").unwrap();
+        let cfg = render_grub_cfg(&filled, 0, "lockdep", &modules, "").unwrap();
         assert!(cfg.contains(&format!("search --no-floppy --fs-uuid --set=system {uuid}\n")));
+        // Quiet (ADR 0426), with the build's flags after.
         let kernel = format!(
             "    multiboot2 ($system)/@system.a/{SLOT_STARTUP}/{SLOT_KERNEL} root=UUID={uuid} \
-             panic=10 quiet\n"
+             panic=10 quiet lockdep\n"
         );
         let archive = format!(
             "    module2 ($system)/@system.a/{SLOT_STARTUP}/{SLOT_ARCHIVE} {}\n",
@@ -1411,9 +1454,21 @@ mod tests {
         );
         let microcode = format!("    module2 {MICROCODE_PATH} microcode\n    boot\n");
         assert!(cfg.contains(&format!("{kernel}{archive}{microcode}")), "{cfg}");
-        // The startup-trouble entry names the same root, with its flag first.
-        assert_eq!(cfg.matches(&format!("root=UUID={uuid} panic=10 quiet")).count(), 2);
-        assert!(cfg.contains("radix startup-trouble root=UUID="));
+        // The startup-trouble entry names the same root, with its flag
+        // first, and shows the kernel's log.
+        assert_eq!(cfg.matches(&format!("root=UUID={uuid} panic=10")).count(), 2);
+        assert!(
+            cfg.contains(&format!("radix startup-trouble root=UUID={uuid} panic=10 lockdep\n"))
+        );
+        // The menu hidden for a second, or none with a zero timeout as
+        // here, and shown when Shift is held.
+        let hidden = cfg.find("set timeout_style=hidden\nset timeout=1\n").unwrap();
+        let none = cfg.find("if [ 0 -eq 0 ]; then\n    set timeout=0\nfi\n").unwrap();
+        let shift = cfg
+            .find("if keystatus --shift; then\n    set timeout_style=menu\n    set timeout=0\n")
+            .unwrap();
+        assert!(hidden < none && none < shift, "{cfg}");
+        assert!(shift < cfg.find("--id dukovo {").unwrap(), "{cfg}");
         // Windows, when GRUB finds its boot manager, between the two, and
         // the firmware's settings last; Dukovo and Windows are remembered.
         let windows = cfg.find("menuentry \"Windows Boot Manager\" --id windows {").unwrap();
@@ -1433,13 +1488,14 @@ mod tests {
     fn the_installers_menu_leaves_the_root_to_the_installer() {
         let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../", "image/grub/installed.cfg.in");
         let template = std::fs::read_to_string(path).unwrap();
-        let menu = installer_menu_text(&template, 5, "quiet").unwrap();
+        let menu = installer_menu_text(&template, 5, "lockdep").unwrap();
         assert!(menu.contains("search --no-floppy --fs-uuid --set=system @ROOT_UUID@\n"), "{menu}");
-        assert!(menu.contains("root=UUID=@ROOT_UUID@ panic=10@CONSOLE@ quiet\n"), "{menu}");
+        assert!(menu.contains("root=UUID=@ROOT_UUID@ panic=10 quiet@CONSOLE@ lockdep\n"), "{menu}");
+        assert!(menu.contains("root=UUID=@ROOT_UUID@ panic=10@CONSOLE@ lockdep\n"), "{menu}");
         assert!(!menu.contains("@VERSION@") && !menu.contains("@CMDLINE@"));
         assert!(!menu.contains('\u{1}'));
         // Both Dukovo entries take the serial console's flag (ADR 0318).
-        assert_eq!(menu.matches("panic=10@CONSOLE@ quiet").count(), 2);
+        assert_eq!(menu.matches("@CONSOLE@ lockdep").count(), 2);
     }
 
     #[test]

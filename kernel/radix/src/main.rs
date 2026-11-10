@@ -209,6 +209,12 @@ pub extern "Rust" fn radix_kernel_main(mut params: BootParams) -> ! {
     // without a serial port; it replays what was logged before.
     if let Some(framebuffer) = params.framebuffer.take() {
         console::init_framebuffer(framebuffer, flags.value("font"));
+        // The startup screen in place of the log (ADR 0426); the bar
+        // moves as the boot goes on, and the processes Spark starts fill
+        // it the rest of the way.
+        if flags.has("quiet") {
+            console::quiet();
+        }
     }
     crashlog::init();
 
@@ -237,6 +243,7 @@ pub extern "Rust" fn radix_kernel_main(mut params: BootParams) -> ! {
 
     HEAP.set_corruption_handler(on_heap_corruption);
     Arch::init(&params);
+    console::progress(100);
     report::frames();
     dmi::init();
     domains::init();
@@ -261,6 +268,7 @@ pub extern "Rust" fn radix_kernel_main(mut params: BootParams) -> ! {
         Arch::start_secondary_cpus(ap_main)
     };
     report::cpus(online);
+    console::progress(200);
     sched::start_threads();
     work::start();
     join::start();
@@ -270,6 +278,7 @@ pub extern "Rust" fn radix_kernel_main(mut params: BootParams) -> ! {
     usb::dbc::init(flags.has("dbc"));
     net::init(flags.value("ip"), flags.value("gateway"), flags.value("e1000"));
     fs::disk::init();
+    console::progress(300);
     // After the PCI scan: VMBus's disks take the `sd` letters after its.
     hyperv::start();
     fs::writeback::start();
@@ -279,6 +288,7 @@ pub extern "Rust" fn radix_kernel_main(mut params: BootParams) -> ! {
     // After the PCI scan, which the AML's PCI regions reach through, and
     // before the power button.
     acpi::start(flags.value("aml") == Some("off"));
+    console::progress(400);
     user::power::start();
     // After the power thread, which the host's buttons wake.
     vmware::start();
@@ -302,6 +312,7 @@ pub extern "Rust" fn radix_kernel_main(mut params: BootParams) -> ! {
     }
 
     info!("Boot complete.");
+    console::progress(console::SPARK_STARTS);
     // The first program, unless a self-test has the machine to itself:
     // `init-after-selftest` starts it after the test too, for the disk
     // check that also runs the benchmarks (ADR 0124).

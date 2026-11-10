@@ -220,6 +220,8 @@ An install then runs these steps, each printed as it starts:
   boot partition, and for UEFI in the EFI system partition, with
   *rgrub-setup*(8), so that the disk starts under either firmware, and
   the menu that starts the slot, naming the root by its UUID (ADR 0307).
+  The menu stays hidden unless Shift is held as the computer starts,
+  and the system starts quietly (ADR 0426).
   A disk given no BIOS boot partition, by the manual layout or next to
   Windows, gets GRUB for UEFI alone. Under UEFI the menu also offers
   *Windows Boot Manager* when it finds Windows, and the firmware's
