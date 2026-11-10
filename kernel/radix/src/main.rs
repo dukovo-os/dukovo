@@ -87,6 +87,7 @@ mod uart;
 mod usb;
 mod user;
 mod usertest;
+mod vports;
 mod watchdog;
 mod work;
 

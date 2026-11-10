@@ -44,6 +44,7 @@ dhcp 25
 discs 20
 disk-check 64
 disk-errors 23
+disk-grow 70
 disk-health 25
 disk-raw 17
 disk-raw-4k 16
@@ -146,6 +147,7 @@ storage-4k 36
 storage-ide 28
 storage-nvme 33
 storage-sata 44
+storage-scsi 30
 storage-sd 35
 storage-tools 54
 storage-uas 36
@@ -166,6 +168,7 @@ usb-serial 42
 user 15
 userspace-e1000 22
 views 15
+virtio-ports 40
 volumes 24
 watchdog 84
 watchdog-tco 61

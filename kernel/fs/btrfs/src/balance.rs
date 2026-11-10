@@ -221,6 +221,50 @@ pub(crate) fn add_disk(inner: &Inner, device: &DeviceRef) -> Result<u64> {
     })
 }
 
+/// Grows disk `devid` to `size` bytes, or with `size` 0 to all of its
+/// device, as Linux's `btrfs filesystem resize` does for a disk whose
+/// partition grew (ADR 0327): its device item says the new size, which
+/// the commit copies to its superblock, the superblock's total grows by
+/// as much, and new chunks may go in the room from then on. Returns its
+/// size, in whole sectors. A size it already has changes nothing.
+///
+/// Fails with [`Error::ReadOnly`] on a read-only mount,
+/// [`Error::NotFound`] when no disk that is there has that ID,
+/// [`Error::NoSpace`] when `size` is more than its device holds, and
+/// [`Error::NotSupported`] when `size` is less than it has: shrinking a
+/// disk moves chunks off its end, which is not done.
+pub(crate) fn resize_disk(inner: &Inner, devid: u64, size: u64) -> Result<u64> {
+    let volume = &*inner.volume;
+    if !inner.writable() {
+        return Err(Error::ReadOnly);
+    }
+    let disk = volume.disks().iter().find(|d| d.devid == devid && !d.gone());
+    let device = disk.and_then(|d| d.device()).ok_or(Error::NotFound)?;
+    let sector = u64::from(volume.superblock().sectorsize);
+    let most = device.info().sectors * SECTOR / sector * sector;
+    let want = if size == 0 { most } else { size / sector * sector };
+    if want > most {
+        return Err(Error::NoSpace);
+    }
+    // Reads and writes may reach the whole device from now on, which a
+    // device that grew since the mount holds more of.
+    if let Some(disk) = disk {
+        disk.grew(most);
+    }
+    inner.alone(false, |txn| {
+        let total = u64_at(&dev_item(volume, devid)?, DEV_TOTAL_AT);
+        if want < total {
+            return Err(Error::NotSupported);
+        }
+        if want > total {
+            let key = Key::new(DEV_ITEMS, item::DEV_ITEM, devid);
+            txn.writer.update(volume, tree::CHUNK, &key, |d| put_u64(d, DEV_TOTAL_AT, want))?;
+            txn.writer.device_grown(devid, want - total);
+        }
+        Ok(want)
+    })
+}
+
 /// Moves every chunk off the disk of device ID `devid`, there or
 /// missing, then takes it out of the filesystem, as Linux's `btrfs device
 /// remove` does: its device item goes, the commit counts one disk less,

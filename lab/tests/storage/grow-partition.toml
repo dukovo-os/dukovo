@@ -1,0 +1,52 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "rdisk --grow grows a mounted Btrfs partition into the free space after it, as a cloud machine's first boot does, and device resize max grows the Btrfs over it; grown once, neither grows again, and fsck-btrfs finds the Btrfs sound"
+time = "5m"
+
+[[step]]
+usb = "plug"
+blank = "512M"
+[[step]]
+wait = "5s"
+# Find the stick by its size, which no system disk has, and keep its name
+# in the lab's home for the steps below, which root runs.
+[[step]]
+run = "lsblk -dn | awk '$2 == \"512M\" && $4 == \"disk\" { print $1 }' > ~/lab-stick && cat ~/lab-stick"
+expect = "sd"
+# A GPT with one partition of 128 MiB, at the stick's start, and a Btrfs on
+# it, mounted: the rest of the stick is free.
+[[step]]
+run = '''sh -c 'printf "g\nn\n\n\n+128M\nw\n" | rdisk /devices/$(cat /users/lab/lab-stick)' '''
+root = true
+expect = ["Partition 1 is added", "The kernel has read it"]
+[[step]]
+run = "sh -c 'd=$(cat /users/lab/lab-stick); mkfs-btrfs -f -L LABGROW /devices/${d}1 && mkdir -p /volumes/lab-grow && mount /devices/${d}1 /volumes/lab-grow && echo kept > /volumes/lab-grow/kept'"
+root = true
+expect = "Label:              LABGROW"
+# Grown while mounted: the partition to the stick's end, then the Btrfs.
+[[step]]
+run = "sh -c 'rdisk --grow /devices/$(cat /users/lab/lab-stick)'"
+root = true
+expect = ["1 grows from 128 MiB to", "The kernel has read it"]
+[[step]]
+run = "device resize max /volumes/lab-grow"
+root = true
+expect = "Resized device id 1 of '/volumes/lab-grow' to"
+# 300 MB: more than the partition held at first.
+[[step]]
+run = "sh -c 'head -c 300000000 /devices/zero > /volumes/lab-grow/big && sync && cat /volumes/lab-grow/kept'"
+root = true
+expect = "kept"
+# Grown once, nothing more to grow, and that is no failure.
+[[step]]
+run = "sh -c 'rdisk --grow /devices/$(cat /users/lab/lab-stick) 1'"
+root = true
+expect = "already ends where it can"
+[[step]]
+run = "umount /volumes/lab-grow"
+root = true
+[[step]]
+run = "sh -c 'fsck-btrfs /devices/$(cat /users/lab/lab-stick)1'"
+root = true
+expect = "no error found"

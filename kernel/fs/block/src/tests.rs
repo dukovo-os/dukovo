@@ -155,6 +155,48 @@ fn a_retired_slice_fails_and_its_disk_goes_on() {
 }
 
 #[test]
+fn a_slice_grows_in_place_to_its_disks_end_and_no_further() {
+    let (disk, device) = shared(RamDisk::new(64, false));
+    disk.load(512 * 30, b"thirtieth sector").unwrap();
+    let slice = Slice::new(device.clone(), 8, 16).unwrap();
+    let mut sector = [0u8; 512];
+    // Sector 22 of the slice is past its end until it grows.
+    assert_eq!(crate::read_sector(&slice, 22, &mut sector), Err(Error::OutOfRange));
+    // Not past the disk's end, and never shorter.
+    assert!(!slice.grow(57));
+    assert!(!slice.grow(8));
+    assert_eq!(slice.info().sectors, 16);
+    assert!(slice.grow(56));
+    assert_eq!(slice.info().sectors, 56);
+    crate::read_sector(&slice, 22, &mut sector).unwrap();
+    assert_eq!(&sector[..16], b"thirtieth sector");
+    // Growing to what it has changes nothing; a disk never grows so.
+    assert!(!slice.grow(56));
+    assert!(!device.grow(128));
+    // A retired slice stays as it was.
+    let other = Slice::new(device.clone(), 0, 8).unwrap();
+    other.retire();
+    assert!(!other.grow(16));
+}
+
+#[test]
+fn a_cache_reaches_what_its_slice_grew_to() {
+    let (disk, device) = shared(RamDisk::new(64, false));
+    let slice = crate::mem::arc(Slice::new(device, 8, 16).unwrap()).unwrap();
+    let cache = BlockCache::new(slice.clone());
+    // Sector 30 of the slice is past its end, then on it once it grows.
+    assert_eq!(cache.write(30 * 512, b"grown"), Err(Error::OutOfRange));
+    assert!(slice.grow(56));
+    cache.write(30 * 512, b"grown").unwrap();
+    cache.sync().unwrap();
+    let mut raw = [0u8; 5];
+    disk.dump((8 + 30) * 512, &mut raw);
+    assert_eq!(&raw, b"grown");
+    // Still not past the disk's end.
+    assert_eq!(cache.write(56 * 512, b"x"), Err(Error::OutOfRange));
+}
+
+#[test]
 fn an_empty_drive_has_no_sectors_and_fails_what_would_reach_them() {
     let empty = Empty;
     assert_eq!(empty.info().sectors, 0);

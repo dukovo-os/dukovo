@@ -58,6 +58,7 @@ pub mod removable;
 mod sdhci;
 pub mod usb;
 mod virtio;
+mod virtio_scsi;
 mod vmd;
 
 /// A disk's name: `vda`, `vda1`, `nvme0n1p12-unlocked`.
@@ -249,6 +250,7 @@ pub fn init() {
     let mut ide = 0;
     let mut cards = 0;
     let mut controllers = 0;
+    let (mut adapters, mut scsi) = (0, 0);
     for segment in segments.iter().flatten() {
         let PciSegment { base, segment: number, first_bus, last_bus } = *segment;
         let mut map_bus = |bus: u8| {
@@ -263,6 +265,16 @@ pub fn init() {
                     Ok(()) => disks += 1,
                     Err(why) => warn!("Disk: could not set up a virtio block device: {why}"),
                 }
+            } else if device_type(&function) == Some(radix_virtio::device_type::SCSI) {
+                if let Err(why) = virtio_scsi::bind(&function, adapters, &mut scsi) {
+                    warn!(
+                        "Disk: could not set up the virtio SCSI adapter at {}: {why}",
+                        function.address()
+                    );
+                }
+                adapters += 1;
+            } else if device_type(&function) == Some(radix_virtio::device_type::CONSOLE) {
+                crate::vports::bind(&function);
             } else if device_type(&function) == Some(radix_virtio::device_type::NET) {
                 crate::net::bind(&function);
             } else if device_type(&function) == Some(radix_virtio::device_type::SOUND) {
@@ -313,6 +325,9 @@ pub fn init() {
     }
     if cards > 0 {
         let _ = write!(on_ide, ", {cards} SD {}", plural(cards, "card", "cards"));
+    }
+    if scsi > 0 {
+        let _ = write!(on_ide, ", {scsi} SCSI {}", plural(scsi, "disk", "disks"));
     }
     if optical > 0 {
         let _ = write!(on_ide, ", {optical} optical {}", plural(optical, "drive", "drives"));
@@ -511,7 +526,7 @@ fn partition_entry(name: &Name, device: &DeviceRef, part: &partition::Partition)
 /// A size for the log, in the largest binary unit it reaches, with a
 /// tenth when it is not a whole number of them: `1.4 MiB` for a floppy
 /// disk, `32 MiB`.
-struct Size(u64);
+pub(crate) struct Size(pub(crate) u64);
 
 impl core::fmt::Display for Size {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
@@ -807,6 +822,10 @@ fn reread(device: &DeviceRef) -> Result<(), Status> {
     // that would not.
     let mut going = alloc::vec::Vec::new_in(HEAP.with(Flags::MAY_SLEEP));
     let mut staying = alloc::vec::Vec::new_in(HEAP.with(Flags::MAY_SLEEP));
+    // Those that stay and reach further: grown in place, in use or not,
+    // as a cloud machine's root partition is once its disk is larger
+    // (ADR 0327).
+    let mut growing = alloc::vec::Vec::new_in(HEAP.with(Flags::MAY_SLEEP));
     let mut listed = Ok(());
     for_each(|entry| {
         let Some(place) = entry.place else { return };
@@ -814,11 +833,17 @@ fn reread(device: &DeviceRef) -> Result<(), Status> {
             return;
         }
         let sectors = entry.device.info().sectors;
-        let stays = found
-            .iter()
-            .any(|p| p.number == place.number && p.first == place.first && p.sectors == sectors);
+        let same = |p: &&partition::Partition| p.number == place.number && p.first == place.first;
+        let now = found.iter().find(same).map(|p| p.sectors);
+        let stays = now.is_some_and(|now| now >= sectors);
+        if let Some(now) = now.filter(|&now| now > sectors) {
+            listed = growing.try_reserve(1).map_err(|_| Kernel::NoMemory.status(0));
+            let _ = growing.push_within_capacity((entry.name.clone(), entry.device.clone(), now));
+        }
         let list = if stays { &mut staying } else { &mut going };
-        listed = list.try_reserve(1).map_err(|_| Kernel::NoMemory.status(0));
+        if listed.is_ok() {
+            listed = list.try_reserve(1).map_err(|_| Kernel::NoMemory.status(0));
+        }
         let _ = list.push_within_capacity((place.number, entry.device.clone()));
     });
     listed?;
@@ -882,16 +907,23 @@ fn reread(device: &DeviceRef) -> Result<(), Status> {
     for part in &coming {
         add_partition(&name, device, part);
     }
+    for (part, slice, sectors) in &growing {
+        if slice.grow(*sectors) {
+            info!("Disk: {part} grew to {}, in place", Size(sectors * radix_block::SECTOR));
+        }
+    }
     let scheme = match scheme {
         partition::Scheme::None => "no partition table",
         partition::Scheme::Mbr => "an MBR",
         partition::Scheme::Gpt | partition::Scheme::GptBackup => "a GPT",
     };
     info!(
-        "Disk: {name}'s partition table read again: {scheme} with {} {}, {} new, {} gone",
+        "Disk: {name}'s partition table read again: {scheme} with {} {}, {} new, {} grown, {} \
+         gone",
         found.len(),
         if found.len() == 1 { "partition" } else { "partitions" },
         coming.len(),
+        growing.len(),
         gone.len()
     );
     Ok(())

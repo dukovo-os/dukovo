@@ -610,6 +610,17 @@ impl Writer {
         Ok(())
     }
 
+    /// Notes disk `devid` grown by `bytes`: new chunks may go in them,
+    /// and the commit counts them in the superblock's total.
+    pub(crate) fn device_grown(&mut self, devid: u64, bytes: u64) {
+        if let Some(devices) = self.grown.devices.as_mut()
+            && let Some(device) = devices.list.iter_mut().find(|d| d.devid == devid)
+        {
+            device.total += bytes;
+        }
+        self.grown.disks.1 += bytes as i64;
+    }
+
     /// Notes disk `devid`, of `total` bytes, removed, with no chunk left
     /// on it.
     pub(crate) fn device_removed(&mut self, devid: u64, total: u64) {

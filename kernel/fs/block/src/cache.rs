@@ -23,6 +23,8 @@
 //! Clean pages can be dropped at any time ([`BlockCache::shrink`]); the
 //! cache drops some by itself once it holds [`SOFT_LIMIT`] pages.
 
+use core::sync::atomic::{AtomicU64, Ordering};
+
 use radix_sync::Mutex;
 
 use crate::mem::{CachePage, KVec};
@@ -59,7 +61,10 @@ struct State {
 /// A cache of a device's sectors.
 pub struct BlockCache {
     device: DeviceRef,
-    sectors: u64,
+    /// The device's sectors, as last read: a partition grown in place
+    /// (`BlockDevice::grow`) has more, read again when an access goes
+    /// past them.
+    sectors: AtomicU64,
     /// The sectors of the device's logical blocks.
     unit: u64,
     state: Mutex<State>,
@@ -123,7 +128,7 @@ impl BlockCache {
         let info = device.info();
         BlockCache {
             device,
-            sectors: info.sectors,
+            sectors: AtomicU64::new(info.sectors),
             unit: info.unit(),
             state: Mutex::new(State {
                 blocks: PageMap::new(),
@@ -142,7 +147,13 @@ impl BlockCache {
     /// the end.
     fn range(&self, offset: u64, len: usize) -> Result<u64, Error> {
         let end = offset.checked_add(len as u64).ok_or(Error::OutOfRange)?;
-        if end > self.sectors * SECTOR { Err(Error::OutOfRange) } else { Ok(end) }
+        if end <= self.sectors.load(Ordering::Relaxed) * SECTOR {
+            return Ok(end);
+        }
+        // Past the end as last read: the device may have grown since.
+        let now = self.device.info().sectors;
+        let sectors = self.sectors.fetch_max(now, Ordering::Relaxed).max(now);
+        if end > sectors * SECTOR { Err(Error::OutOfRange) } else { Ok(end) }
     }
 
     /// The block of page `index`, with the sectors `need` read.

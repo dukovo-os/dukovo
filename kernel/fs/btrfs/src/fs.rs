@@ -895,6 +895,10 @@ impl FileSystem for BtrfsFs {
         crate::balance::remove_disk(&self.inner, devid)
     }
 
+    fn resize_disk(&self, devid: u64, size: u64) -> Result<u64> {
+        crate::balance::resize_disk(&self.inner, devid, size)
+    }
+
     fn balance(&self, plan: &radix_vfs::Balance) -> Result<radix_vfs::Balanced> {
         crate::balance::balance(&self.inner, plan)
     }

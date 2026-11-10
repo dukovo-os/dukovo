@@ -823,4 +823,17 @@ interface directory = 0x000b version 9 {
         raises [no_such_slot, empty_slot, wrong_kind, missing_rights, invalid_argument, no_memory,
                 bad_address, not_found, not_directory, name_too_long, bad_name, outside, in_use,
                 too_many_links, denied, not_supported, not_connected];
+    /// Grows the disk of device ID `devid` of the directory's Btrfs
+    /// filesystem to `size` bytes, or with `size` 0 to all of its device,
+    /// as btrfs-filesystem(8)'s `resize` does once the disk's partition
+    /// has grown (ADR 0327), and returns its size, in whole sectors: its
+    /// device item and superblock say it, and new chunks may go in the
+    /// room. A size it already has changes nothing. Fails with not_found
+    /// if no disk that is there has that ID, no_space if `size` is more
+    /// than its device holds, not_supported if `size` is less than it has
+    /// (a disk is not shrunk) or on other filesystems, and read_only on a
+    /// read-only mount. Needs the control right.
+    method resize_disk = 41 (devid: u64, size: u64) -> (size: u64)
+        raises [no_such_slot, empty_slot, missing_rights, no_memory, not_found, not_supported,
+                read_only, no_space, io, corrupt];
 }

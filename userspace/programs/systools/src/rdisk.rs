@@ -6,9 +6,12 @@
 //! letters; with `--script` it applies a layout file (rdisk-layout(5)),
 //! as the installer does, and `--dump` writes one of the disk's table.
 //! Nothing is written until `w`, or the script asks, and never with
-//! `--dry-run`, which says what would be. A disk in use, or a partition
-//! in use that the new table would change or take away, is refused before
-//! anything is written; once the table is, the kernel reads it again
+//! `--dry-run`, which says what would be. `--grow` grows a partition into
+//! the free space after it, as a cloud image's first boot does on a disk
+//! larger than the image (ADR 0327). A disk in use, or a partition in use
+//! that the new table would move, shrink or take away, is refused before
+//! anything is written; one that only grows is not, since the kernel grows
+//! it in place. Once the table is written, the kernel reads it again
 //! (radix-block(2)'s REREAD_PARTITIONS, ADR 0301) and the links in
 //! `/devices/disk` follow.
 
@@ -33,6 +36,7 @@ enum Mode {
     Script,
     Dump,
     Reread,
+    Grow,
 }
 
 /// rdisk(8).
@@ -50,6 +54,7 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
             }
             Arg::Long(l) if l == "dump" => mode = Mode::Dump,
             Arg::Long(l) if l == "reread" => mode = Mode::Reread,
+            Arg::Long(l) if l == "grow" => mode = Mode::Grow,
             Arg::Short('n') => dry_run = true,
             Arg::Long(l) if l == "dry-run" => dry_run = true,
             Arg::Long(l) if l == "sector-size" => sector = Some(args.number()?),
@@ -67,10 +72,19 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
     if mode == Mode::List {
         return list(&mut out, &operands, sector);
     }
-    let [path] = operands.as_slice() else {
-        return Err(util::usage("say the one disk (or image file) to partition".into()));
+    // `--grow` takes the partition's number after the disk.
+    let (path, number) = match (mode, operands.as_slice()) {
+        (_, [path]) => (path, None),
+        (Mode::Grow, [path, number]) => {
+            let number = number.to_str().and_then(|n| n.parse::<u32>().ok()).ok_or_else(|| {
+                util::usage(format!("'{}' is not a partition number", number.display()))
+            })?;
+            (path, Some(number))
+        }
+        _ => return Err(util::usage("say the one disk (or image file) to partition".into())),
     };
-    let write = matches!(mode, Mode::Interactive | Mode::Script | Mode::Reread) && !dry_run;
+    let write =
+        matches!(mode, Mode::Interactive | Mode::Script | Mode::Reread | Mode::Grow) && !dry_run;
     let opened = blockdev::open(path, write, sector)?;
     if write && !opened.writable {
         return Err(util::fail(format!("{} refuses writes", opened.shown)));
@@ -95,6 +109,7 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
             reread(&mut out, &opened)?;
             Ok(0)
         }
+        Mode::Grow => grow(&mut out, &opened, number, dry_run),
         Mode::Script => {
             let source = script.unwrap_or_default();
             let text = if source == "-" {
@@ -123,6 +138,7 @@ fn help() -> Result<i32, Fail> {
          \x20      rdisk --script FILE [--dry-run] DISK   apply the layout file FILE (- for standard input)\n\
          \x20      rdisk --dump DISK                 write DISK's table as a layout file\n\
          \x20      rdisk --reread DISK               have the kernel read DISK's table again\n\
+         \x20      rdisk --grow [--dry-run] DISK [N] grow partition N, or the last, into the space after it\n\
          \x20      rdisk --list-types                list the partition types\n\
          An image file takes --sector-size N (512 if not given). rdisk-layout(5) describes layout files."
     );
@@ -290,8 +306,10 @@ fn list_types(out: &mut dyn Write, scheme: Option<Scheme>) -> io::Result<()> {
     writeln!(out, "A type may also be given as a GUID (GPT) or as a byte in hexadecimal (MBR).")
 }
 
-/// What uses the partitions of the disk `opened` that `table` changes
-/// or takes away, as the kernel has them: none for an image file.
+/// What uses the partitions of the disk `opened` that `table` moves,
+/// shrinks or takes away, as the kernel has them: none for an image file.
+/// A partition in use that only grows is let be: the kernel grows it in
+/// place when it reads the table again (ADR 0327).
 ///
 /// # Errors
 ///
@@ -315,7 +333,7 @@ fn refuse_in_use(opened: &Opened, table: &Table) -> Result<(), Fail> {
         };
         let stays = table
             .get(number)
-            .is_some_and(|p| p.first * unit == start && p.sectors() * unit == sectors);
+            .is_some_and(|p| p.first * unit == start && p.sectors() * unit >= sectors);
         if stays {
             continue;
         }
@@ -391,6 +409,42 @@ fn reread(out: &mut dyn Write, opened: &Opened) -> Result<(), Fail> {
             opened.shown
         ))),
     }
+}
+
+/// `--grow`: grows partition `number` of the disk `opened`, or the one
+/// that ends last, to the end of the free space after it: to the next
+/// partition, or to the disk's last usable sector, where a GPT's backup
+/// moves to the disk's end. The partition keeps its first sector, type,
+/// GUID and name, so it may be in use; the kernel grows it in place
+/// (ADR 0327), and the filesystem on it is grown after (`btrfs
+/// filesystem resize max`). A partition already as large as it can be is
+/// left as it is, which is no failure: a first boot may run this on every
+/// boot.
+fn grow(
+    out: &mut dyn Write,
+    opened: &Opened,
+    number: Option<u32>,
+    dry_run: bool,
+) -> Result<i32, Fail> {
+    let found = read(opened)?;
+    let Some(mut table) = found.table else {
+        return Err(util::fail(format!("{} has no partition table", opened.shown)));
+    };
+    let (number, before, after) =
+        table.grow(number).map_err(|e| util::fail(format!("{}: {e}", opened.shown)))?;
+    let (name, unit) = (part_name(opened, number), u64::from(table.sector_size));
+    if after == before {
+        writeln!(out, "{name} already ends where it can: it is {}.", size::human(before * unit))?;
+        return Ok(0);
+    }
+    writeln!(
+        out,
+        "{name} grows from {} to {}.",
+        size::human(before * unit),
+        size::human(after * unit)
+    )?;
+    write_table(out, opened, &table, dry_run)?;
+    Ok(0)
 }
 
 /// `--script`: applies the layout `text` to the disk `opened`.

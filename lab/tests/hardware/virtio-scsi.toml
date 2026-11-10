@@ -1,0 +1,16 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "The disks of a virtio SCSI adapter, as Google Cloud and Proxmox attach them, are sd disks that say their model and serial number. Needs a virtual machine with a virtio SCSI disk"
+time = "2m"
+
+# The kernel found a disk on the adapter, at a target and logical unit.
+[[step]]
+run = "sh -c 'dmesg | grep \"on the virtio SCSI adapter\" | head -1'"
+root = true
+expect = ["Disk: sd", "target", "LUN"]
+# Each says what it is, as a SATA disk does.
+[[step]]
+run = "sh -c 'for d in $(dmesg | grep -o \"Disk: sd[a-z]* is a SCSI disk\" | cut -d\" \" -f2); do echo $d $(cat /kernel/block/$d/device/model) serial=$(cat /kernel/block/$d/device/serial); done'"
+root = true
+expect = ["sd", "serial="]

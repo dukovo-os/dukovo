@@ -277,6 +277,15 @@ pub trait BlockDevice: Send + Sync {
     /// that what still has it open cannot write where another partition
     /// may be now. The default, a disk's, does nothing.
     fn retire(&self) {}
+
+    /// Grows the device to `sectors`, in place: a partition whose table
+    /// entry, read again, keeps its number and start and reaches further
+    /// (ADR 0327), as Linux's BLKPG_RESIZE_PARTITION grows one in use.
+    /// What has it open sees the new size at once. Returns whether it
+    /// grew; the default, a disk's, never does.
+    fn grow(&self, _sectors: u64) -> bool {
+        false
+    }
 }
 
 /// What a disk has done ([`BlockDevice::stats`]): for each kind of
@@ -447,7 +456,8 @@ mod proofs {
 pub struct Slice {
     device: DeviceRef,
     first: u64,
-    sectors: u64,
+    /// Its length, which only grows ([`BlockDevice::grow`]).
+    sectors: core::sync::atomic::AtomicU64,
     /// The sectors of the device's logical blocks.
     unit: u64,
     /// Whether it left its disk's table ([`BlockDevice::retire`]).
@@ -465,10 +475,15 @@ impl Slice {
         (sectors > 0 && end <= info.sectors && whole).then_some(Slice {
             device,
             first,
-            sectors,
+            sectors: core::sync::atomic::AtomicU64::new(sectors),
             unit,
             retired: core::sync::atomic::AtomicBool::new(false),
         })
+    }
+
+    /// Its length now.
+    fn sectors(&self) -> u64 {
+        self.sectors.load(core::sync::atomic::Ordering::Acquire)
     }
 
     /// [`Error::Io`] once it is retired.
@@ -483,20 +498,20 @@ impl Slice {
 
 impl BlockDevice for Slice {
     fn info(&self) -> Info {
-        Info { sectors: self.sectors, ..self.device.info() }
+        Info { sectors: self.sectors(), ..self.device.info() }
     }
 
     fn read(&self, sector: u64, segments: &mut [SegmentMut<'_>]) -> Result<(), Error> {
         self.live()?;
         let lengths = segments.iter().map(|s| (s.offset, s.len));
-        check(self.sectors, self.unit, usize::MAX, sector, lengths)?;
+        check(self.sectors(), self.unit, usize::MAX, sector, lengths)?;
         self.device.read(self.first + sector, segments)
     }
 
     fn write(&self, sector: u64, segments: &[Segment<'_>]) -> Result<(), Error> {
         self.live()?;
         let lengths = segments.iter().map(|s| (s.offset, s.len));
-        check(self.sectors, self.unit, usize::MAX, sector, lengths)?;
+        check(self.sectors(), self.unit, usize::MAX, sector, lengths)?;
         self.device.write(self.first + sector, segments)
     }
 
@@ -508,7 +523,7 @@ impl BlockDevice for Slice {
     fn write_through(&self, sector: u64, segments: &[Segment<'_>]) -> Result<(), Error> {
         self.live()?;
         let lengths = segments.iter().map(|s| (s.offset, s.len));
-        check(self.sectors, self.unit, usize::MAX, sector, lengths)?;
+        check(self.sectors(), self.unit, usize::MAX, sector, lengths)?;
         self.device.write_through(self.first + sector, segments)
     }
 
@@ -518,7 +533,7 @@ impl BlockDevice for Slice {
         moved.try_reserve(writes.len()).map_err(|_| Error::NoMemory)?;
         for write in writes {
             let lengths = write.segments.iter().map(|s| (s.offset, s.len));
-            check(self.sectors, self.unit, usize::MAX, write.sector, lengths)?;
+            check(self.sectors(), self.unit, usize::MAX, write.sector, lengths)?;
             // Room was made above.
             let _ =
                 moved.push_within_capacity(Write { sector: self.first + write.sector, ..*write });
@@ -528,19 +543,19 @@ impl BlockDevice for Slice {
 
     fn read_frames(&self, sector: u64, frames: &[(u64, u32)]) -> Result<(), Error> {
         self.live()?;
-        check_frames(self.sectors, self.unit, sector, frames)?;
+        check_frames(self.sectors(), self.unit, sector, frames)?;
         self.device.read_frames(self.first + sector, frames)
     }
 
     fn write_frames(&self, sector: u64, frames: &[(u64, u32)]) -> Result<(), Error> {
         self.live()?;
-        check_frames(self.sectors, self.unit, sector, frames)?;
+        check_frames(self.sectors(), self.unit, sector, frames)?;
         self.device.write_frames(self.first + sector, frames)
     }
 
     fn discard(&self, sector: u64, count: u64) -> Result<(), Error> {
         self.live()?;
-        check_discard(self.sectors, self.unit, sector, count)?;
+        check_discard(self.sectors(), self.unit, sector, count)?;
         self.device.discard(self.first + sector, count)
     }
 
@@ -551,6 +566,17 @@ impl BlockDevice for Slice {
 
     fn retire(&self) {
         self.retired.store(true, core::sync::atomic::Ordering::Release);
+    }
+
+    fn grow(&self, sectors: u64) -> bool {
+        let info = self.device.info();
+        let fits = self.first.checked_add(sectors).is_some_and(|end| end <= info.sectors);
+        if !fits || !sectors.is_multiple_of(self.unit) || self.live().is_err() {
+            return false;
+        }
+        // Only ever longer: a racing grow to less leaves the longer.
+        let before = self.sectors.fetch_max(sectors, core::sync::atomic::Ordering::AcqRel);
+        sectors > before
     }
 }
 

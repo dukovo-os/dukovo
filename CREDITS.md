@@ -291,8 +291,10 @@ We implement these from their published descriptions. No code is copied.
 - The OASIS Virtual I/O Device (virtio) specification, version 1.2: its
   modern PCI transport, split virtqueues, block device
   ([ADR 0053](docs/adr/0053-modern-virtio-only.md)), network device
-  ([ADR 0181](docs/adr/0181-virtio-net-copies-frames-through-slots-of-its-own.md))
-  and sound device ([ADR 0321](docs/adr/0321-the-virtio-sound-card.md)).
+  ([ADR 0181](docs/adr/0181-virtio-net-copies-frames-through-slots-of-its-own.md)),
+  sound device ([ADR 0321](docs/adr/0321-the-virtio-sound-card.md)), and
+  SCSI host and console devices
+  ([ADR 0327](docs/adr/0327-cloud-machines-get-virtio-scsi-disks-virtio-ports-and-disks-that-grow.md)).
 - The Open Sound System's interface as FreeBSD documents it in
   `sys/sys/soundcard.h` (BSD-2-Clause), with the request numbers Linux's
   `<sys/soundcard.h>` gives them, which the files of `/devices/audio`

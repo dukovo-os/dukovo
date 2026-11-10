@@ -239,6 +239,40 @@ fn a_disk_that_grew_gets_its_backup_moved_to_the_end() {
 }
 
 #[test]
+fn the_last_partition_grows_to_a_grown_disks_end_as_a_cloud_image_does() {
+    let image = Image::new(32 << 20);
+    let mut rng = Rng::seeded(14);
+    {
+        let disk = image.device(512);
+        let mut table = Table::new(Scheme::Gpt, 512, disk.sectors(), &mut rng).unwrap();
+        table.add(New::of(kind("efi", Scheme::Gpt), End::Sectors(2048 * 4)), &mut rng).unwrap();
+        table.add(New::of(kind("linux", Scheme::Gpt), End::Sectors(2048 * 8)), &mut rng).unwrap();
+        write(&disk, &table);
+        // Partition 1 grows only to partition 2.
+        let mut first = table.clone();
+        assert_eq!(first.grow(Some(1)).unwrap(), (1, 2048 * 4, 2048 * 4));
+        assert_eq!(first, table);
+    }
+    File::options().write(true).open(&image.0).unwrap().set_len(64 << 20).unwrap();
+    let disk = image.device(512);
+    let mut table = crate::read(&disk).unwrap().table.unwrap();
+    let before = table.get(2).unwrap().clone();
+    let (number, sectors, grown) = table.grow(None).unwrap();
+    assert_eq!((number, sectors), (2, 2048 * 8));
+    let after = table.get(2).unwrap();
+    assert_eq!(after.last, disk.sectors() - 34);
+    assert_eq!(grown, after.sectors());
+    assert_eq!((after.first, after.guid, &after.name), (before.first, before.guid, &before.name));
+    write(&disk, &table);
+    let (ok, text) = run("sgdisk", &["-v", image.path()]);
+    assert!(ok && text.contains("No problems found"), "{text}");
+    // Grown once, it grows no more.
+    let mut again = crate::read(&disk).unwrap().table.unwrap();
+    assert_eq!(again.grow(None).unwrap(), (2, grown, grown));
+    assert!(again.grow(Some(3)).is_err());
+}
+
+#[test]
 fn mbrs_with_logical_partitions_read_and_keep_them() {
     let image = Image::new(128 << 20);
     let script = "label: dos\nlabel-id: 0xdeadbeef\n\

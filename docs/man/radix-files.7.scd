@@ -190,7 +190,12 @@ changed, kept by tmpfs and Btrfs; FAT and exFAT give *modified*.
 	reader and takes it from any other program. A program plays on one
 	by writing signed 16-bit samples, set up with OSS's requests
 	(*radix-audio*(2), ADR 0320); one plays at a time, and the others
-	are refused with *busy*. *audio*(1) works them.
+	are refused with *busy*. *audio*(1) works them. From Phase 14d each
+	port of a virtio console is a terminal, _vport_*N*_p_*M* for port *M*
+	of console *N*, whose line carries bytes as they are, and a named
+	port is linked from _virtio-ports/_*name*, as on Linux:
+	_virtio-ports/org.qemu.guest_agent.0_ is the port QEMU's guest agent
+	is reached on (ADR 0327).
 
 *bootfs*
 	The boot archive (*radix-processes*(7)), read-only, with the
@@ -328,7 +333,9 @@ _/users_ and _/shared_ are empty directories of the root's tmpfs.
 
 At boot the kernel finds each disk, reads its partition table (MBR or
 GPT) and names the disk and its partitions as Linux does: _vda_, _vdb_ for
-virtio disks, _sda_, _sdb_ for SATA disks and then USB ones (sticks, card
+virtio disks, _sda_, _sdb_ for SATA disks and those on virtio SCSI
+adapters (ADR 0327), in their controllers' order on PCI, then USB ones
+(sticks, card
 readers and USB disks, each taking the lowest letter free, at boot in the
 order they were found), _nvme0n1_, _nvme0n2_ for the
 namespaces of the first NVMe controller and _nvme1n1_ for the second's
@@ -491,7 +498,8 @@ segment, as _1000:e1:00.0 behind the VMD at 0000:00:0e.0_, and *polled*.
 
 # LIMITS
 
-- virtio block devices, SATA disks on AHCI controllers, ATA and SATA
+- virtio block devices, disks on virtio SCSI adapters (found at boot),
+  SATA disks on AHCI controllers, ATA and SATA
   disks on IDE controllers (and SATA controllers in IDE mode), NVMe
   namespaces, USB disks, over the Bulk-Only Transport or USB Attached
   SCSI (UAS), and SD, SDHC and SDXC cards in SD card readers on PCI that

@@ -100,6 +100,12 @@ impl Disk {
         at.checked_add(len).is_some_and(|end| end <= self.bytes())
     }
 
+    /// Notes that its device holds `bytes` now, having grown under the
+    /// filesystem, as a partition grown in place does (ADR 0327).
+    pub(crate) fn grew(&self, bytes: u64) {
+        self.bytes.fetch_max(bytes, Ordering::Relaxed);
+    }
+
     /// The disk it was before [`Volume::replace`] put another in its
     /// place, if that one was there.
     pub(crate) fn replaced(&self) -> Option<&BlockCache> {

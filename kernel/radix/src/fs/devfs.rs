@@ -19,7 +19,10 @@
 //! partitions with the disk (Phase 11b), and a USB serial port's
 //! terminal, `ttyACM0` or `ttyUSB0` and on, with the port (Phase 11g).
 //! Since Phase 14b, `audio` holds the sound outputs (ADR 0320, from
-//! `crate::audio`), which come with their devices.
+//! `crate::audio`), which come with their devices; since Phase 14 PR 8,
+//! a virtio console's ports are terminals, `vport0p1` and on, and
+//! `virtio-ports` links each named one by its name (ADR 0327, from
+//! `crate::vports`), as udev links Linux's.
 
 use radix_block::DeviceRef;
 use radix_klog::{error, warn};
@@ -28,6 +31,8 @@ use radix_vfs::synthetic::{BlockNode, FixedDir, Link, Null, Random, SyntheticFs,
 use radix_vfs::{FsKind, FsRef, KArc, Kind, Node, NodeRef, Result, mem, next_id};
 
 static ROOT: Once<KArc<FixedDir>> = Once::new();
+/// `virtio-ports`: the links to the named virtio console ports.
+static PORTS: Once<KArc<FixedDir>> = Once::new();
 
 /// Where `/devices/disk` leads: a folder of memory that programs write,
 /// as the kernel's tree is not.
@@ -59,6 +64,10 @@ pub fn init() {
         root.add("disk", Link::make(next_id(), DISK_LINKS)?)?;
         let audio: NodeRef = crate::audio::dir()?;
         root.add("audio", audio)?;
+        let ports = FixedDir::new(next_id())?;
+        let node: NodeRef = ports.clone();
+        root.add("virtio-ports", node)?;
+        let _ = PORTS.set(ports);
         super::tty::init(&root)?;
         Ok(root)
     })();
@@ -113,6 +122,20 @@ pub fn remove_block(name: &str) {
 /// Adds the device `node` as `name`: a serial line's terminal.
 pub fn add(name: &str, node: NodeRef) -> Result<()> {
     ROOT.get().ok_or(radix_vfs::Error::NoMemory)?.add(name, node)
+}
+
+/// Links `virtio-ports/{name}` to `target`: a virtio console's port the
+/// host named, its terminal at `../vport0p1` or another (ADR 0327).
+pub fn add_port_link(name: &str, target: &str) -> Result<()> {
+    let ports = PORTS.get().ok_or(radix_vfs::Error::NoMemory)?;
+    ports.add(name, Link::make(next_id(), target)?)
+}
+
+/// Takes the link `virtio-ports/{name}` away: its port is gone.
+pub fn remove_port_link(name: &str) {
+    if let Some(ports) = PORTS.get() {
+        ports.remove_entry(name);
+    }
 }
 
 /// Takes the device `name` away.

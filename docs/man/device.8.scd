@@ -5,13 +5,15 @@ device(8) "Dukovo" "Dukovo Manual"
 
 # NAME
 
-device - add disks to a Btrfs filesystem and remove them
+device - add disks to a Btrfs filesystem, remove them and grow them
 
 # SYNOPSIS
 
 *device add* [*-f*] [*-K*] _disk_... _path_
 
 *device remove* _disk_|_devid_... _path_
+
+*device resize* [_devid_:]*max*|_size_ _path_
 
 # DESCRIPTION
 
@@ -34,7 +36,15 @@ be named by, or by its device. The disks left must be enough for every
 profile the filesystem uses: two for RAID1, three for RAID1C3, four
 for RAID1C4.
 
-Adding or removing a disk needs the control right on _path_'s directory
+*resize* grows the disk of device ID _devid_, 1 if none is given, to
+_size_ bytes, or with *max* to all of its device, as Linux's *btrfs
+filesystem resize* does (ADR 0327). It is for a disk whose partition
+has grown, as *rdisk --grow* grows it (*rdisk*(8)): the disk's device
+item and each superblock say the new size, and new chunks may go in the
+room. A size may end in K, M, G or T, for powers of 1024. A disk that is
+already that size is left as it is; a disk is not shrunk.
+
+Adding, removing or resizing a disk needs the control right on _path_'s directory
 (*radix-directory*(2)), which device takes from the program's root, as
 *replace*(8) does.
 
@@ -51,6 +61,8 @@ Adding or removing a disk needs the control right on _path_'s directory
 
 - *usage*, *scan*, *ready* and *stats* are not there.
 - *remove missing* is not there: name a missing disk by its device ID.
+- *resize* is *btrfs filesystem resize*. It grows a disk only, and to a
+  size, not by one: _+size_, _-size_ and *cancel* are not taken.
 - A disk removed has its chunks moved as *balance*(8) moves them, which
   copies what snapshots share once for each of them.
 - At most 16 disks can be the filesystem's between two mounts, those
@@ -59,9 +71,10 @@ Adding or removing a disk needs the control right on _path_'s directory
 
 # EXIT STATUS
 
-0 when every disk was added or removed; 1 when one could not be, or for
-a mistake in the command line.
+0 when every disk was added, removed or resized; 1 when one could not
+be, or for a mistake in the command line.
 
 # SEE ALSO
 
-*balance*(8), *radix-directory*(2), *replace*(8), *scrub*(8), *systools*(1)
+*balance*(8), *radix-directory*(2), *rdisk*(8), *replace*(8), *scrub*(8),
+*systools*(1)

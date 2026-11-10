@@ -70,6 +70,11 @@ const SERIAL_LINE: [&str; 2] = ["<serial line 0>", "<serial line 1>"];
 /// display ([`braille_line`], the `braille` case). QEMU plugs the display
 /// in once the script connects.
 const BRAILLE_LINE: &str = "<braille line>";
+/// A virtio console port's line, as `-chardev`'s argument: the character
+/// device `port`, a Unix socket `<case>.port` in the test's directory
+/// that QEMU listens on and the script connects to as the program on the
+/// host ([`port_line`], the `virtio-ports` case, ADR 0327).
+const PORT_LINE: &str = "<port line>";
 /// In a case's `qemu`, what comes after this boots a second machine, the
 /// peer, from the same image beside the first once QEMU has started it:
 /// the peer's command line, then its own arguments. The script reaches
@@ -638,6 +643,11 @@ enum Bus {
     /// of a case with [`UAS_PORTS`], as [`Bus::Uas`]; named as
     /// [`Bus::UsbCd`] is.
     UasCd(&'static str, u8),
+    /// Logical unit 0 of target `n` of the virtio SCSI adapter of the
+    /// case's own (QEMU's `virtio-scsi-pci`, a `scsi-hd` at each target),
+    /// as cloud machines attach disks: named `sd` and a letter, as SATA
+    /// disks are, in order (ADR 0327).
+    Scsi(u8),
 }
 
 impl Disk {
@@ -753,14 +763,15 @@ pub struct DiskImage {
 }
 
 /// The names the kernel gives a case's disks: `vda`, `vdb` and on for
-/// virtio ones, `sda`, `sdb` and on for SATA ones, then USB ones after
+/// virtio ones, `sda`, `sdb` and on for SATA (or virtio SCSI) ones, then USB ones after
 /// the boot stick's, each in their order, `nvme<n>n1` and on for each
 /// NVMe controller's namespaces, `mmcblk0` and on for SD cards, and
 /// `cd0` and on for discs, the SATA drives', then the IDE ones', before
 /// the USB ones'.
 fn disk_names(disks: &[Disk]) -> Vec<String> {
     let sata_disks =
-        disks.iter().filter(|disk| matches!(disk.bus, Bus::Sata | Bus::Ide)).count() as u8;
+        disks.iter().filter(|disk| matches!(disk.bus, Bus::Sata | Bus::Ide | Bus::Scsi(_))).count()
+            as u8;
     let (mut virtio, mut sata, mut usb) = (b'a', b'a', b'a' + sata_disks + 1);
     let mut namespaces = [0u32; 256];
     let mut cards = 0..;
@@ -779,7 +790,7 @@ fn disk_names(disks: &[Disk]) -> Vec<String> {
                     return format!("cd{}", usb_cd.next().unwrap_or_default());
                 }
                 Bus::Virtio => ("vd", &mut virtio),
-                Bus::Sata | Bus::Ide => ("sd", &mut sata),
+                Bus::Sata | Bus::Ide | Bus::Scsi(_) => ("sd", &mut sata),
                 Bus::Usb(_) | Bus::Uas(..) => ("sd", &mut usb),
                 Bus::Nvme(n) => {
                     namespaces[usize::from(n)] += 1;
@@ -3622,6 +3633,12 @@ pub fn braille_line(dir: &Path, name: &str) -> PathBuf {
     dir.join(format!("{name}.braille"))
 }
 
+/// The socket of case `name`'s virtio console port ([`PORT_LINE`]) in the
+/// test's directory `dir`.
+pub fn port_line(dir: &Path, name: &str) -> PathBuf {
+    dir.join(format!("{name}.port"))
+}
+
 /// How the reason a case's second boot failed starts.
 const AFTER_THE_REBOOT: &str = "after the reboot";
 
@@ -3646,6 +3663,9 @@ fn run_case(
         if *arg == BRAILLE_LINE {
             let line = qemu::option_value(&braille_line(dir, case.name));
             *arg = format!("socket,id=braille,path={line},server=on,wait=off");
+        } else if *arg == PORT_LINE {
+            let line = qemu::option_value(&port_line(dir, case.name));
+            *arg = format!("socket,id=port,path={line},server=on,wait=off");
         } else if *arg == SERIAL_LINE[0] {
             *arg = format!("socket,id=line0,path={socket},server=on,wait=off");
         } else if *arg == SERIAL_LINE[1] {
@@ -3679,6 +3699,9 @@ fn run_case(
     }
     if case.disks.iter().any(|disk| matches!(disk.bus, Bus::Ide | Bus::IdeCd)) {
         extra.extend(["-device".into(), "piix3-ide,id=pata".into()]);
+    }
+    if case.disks.iter().any(|disk| matches!(disk.bus, Bus::Scsi(_))) {
+        extra.extend(["-device".into(), "virtio-scsi-pci,id=scsi0".into()]);
     }
     // A reader for each card, before them; each card names its reader's
     // bus by its path, as every reader's is called `sd-bus`.
@@ -3755,6 +3778,12 @@ fn run_case(
             Bus::Sd => {
                 card += 1;
                 format!("sd-card,drive=disk{i},bus=pcie.0/sd{}/sd-bus", card - 1)
+            }
+            Bus::Scsi(target) => {
+                format!(
+                    "scsi-hd,drive=disk{i},bus=scsi0.0,channel=0,scsi-id={target},lun=0,\
+                     serial=dukovo-scsi-{target}{device}"
+                )
             }
         });
     }
@@ -7364,6 +7393,16 @@ fn disks_found(vm: &mut Vm, case: &Case) -> Result<(), String> {
                 ))?,
                 ", USB Attached SCSI".to_string(),
             ),
+            Bus::Scsi(target) => (
+                line_of(&format!(
+                    "Disk: {name} is a SCSI disk of {size} on the virtio SCSI adapter at "
+                ))?,
+                format!(
+                    ", target {target} LUN 0: QEMU QEMU HARDDISK, {} bytes a \
+                     block{sectors}{ro}, write cache, MSI-X vector ",
+                    disk.sector
+                ),
+            ),
         };
         // Only a SATA or IDE disk's line says whether it is solid state.
         let says_solid = matches!(disk.bus, Bus::Sata | Bus::Ide) && disk.solid();
@@ -7404,6 +7443,10 @@ fn disks_found(vm: &mut Vm, case: &Case) -> Result<(), String> {
     };
     if on(Bus::Sd) > 0 {
         ide += &format!(", {}", plural(on(Bus::Sd), "SD card"));
+    }
+    let scsi = case.disks.iter().filter(|disk| matches!(disk.bus, Bus::Scsi(_))).count();
+    if scsi > 0 {
+        ide += &format!(", {}", plural(scsi, "SCSI disk"));
     }
     let drives = on(Bus::SataCd) + on(Bus::IdeCd);
     if drives > 0 {
@@ -7534,7 +7577,7 @@ fn storage_write(vm: &mut Vm, case: &Case) -> Result<(), String> {
         let model = match disk.bus {
             Bus::Sata | Bus::Ide => "QEMU HARDDISK",
             Bus::Nvme(_) => "QEMU NVMe Ctrl",
-            Bus::Usb(_) | Bus::Uas(..) => "QEMU QEMU HARDDISK",
+            Bus::Usb(_) | Bus::Uas(..) | Bus::Scsi(_) => "QEMU QEMU HARDDISK",
             Bus::Sd => "QEMU!",
             Bus::SataCd | Bus::IdeCd => "QEMU DVD-ROM",
             Bus::UsbCd(_) | Bus::UasCd(..) => "QEMU QEMU CD-ROM",

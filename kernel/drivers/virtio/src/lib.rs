@@ -1,8 +1,8 @@
 // SPDX-FileCopyrightText: 2026 The Dukovo contributors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! Virtio over PCI: the transport, virtqueues and the block, network and
-//! sound drivers.
+//! Virtio over PCI: the transport, virtqueues and the block, network,
+//! sound, SCSI and console drivers.
 //!
 //! Virtio (OASIS Virtual I/O Device specification, version 1.2) is how a
 //! virtual machine's devices talk to their hypervisor: a device and its
@@ -26,6 +26,12 @@
 //! - [`snd::Snd`] is the sound card (virtio-snd), playing through its
 //!   first output stream, with one MSI-X interrupt for the samples it
 //!   has played.
+//! - [`scsi::Scsi`] is the SCSI host bus adapter (virtio-scsi), carrying
+//!   commands to its disks on its first request queue, with one MSI-X
+//!   interrupt for their completions.
+//! - [`console::Console`] is the console (virtio-console), whose named
+//!   ports carry bytes to and from programs on the host, with one MSI-X
+//!   interrupt for all its queues.
 //!
 //! Nothing here waits: drivers submit requests and collect completions,
 //! and the kernel decides how threads wait for them (in `radix`, which
@@ -36,12 +42,18 @@
 #![forbid(unsafe_code)]
 
 pub mod blk;
+pub mod console;
 pub mod net;
 pub mod queue;
+pub mod scsi;
 pub mod snd;
 
 #[cfg(test)]
+mod console_tests;
+#[cfg(test)]
 mod net_tests;
+#[cfg(test)]
+mod scsi_tests;
 #[cfg(test)]
 mod snd_tests;
 #[cfg(test)]
@@ -63,6 +75,10 @@ pub mod device_type {
     pub const NET: u16 = 1;
     /// A block device.
     pub const BLOCK: u16 = 2;
+    /// A console: serial ports to programs on the host.
+    pub const CONSOLE: u16 = 3;
+    /// A SCSI host bus adapter.
+    pub const SCSI: u16 = 8;
     /// A sound card.
     pub const SOUND: u16 = 25;
 }
