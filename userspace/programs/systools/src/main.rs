@@ -84,6 +84,7 @@ mod findmnt;
 mod firewall;
 mod fstrim;
 mod git_credential;
+mod guest_agent;
 mod hexdump;
 mod hwinfo;
 mod iostat;
@@ -220,6 +221,7 @@ const TOOLS: &[(&str, Tool)] = &[
     ("free", memory::free),
     ("getfacl", facl::getfacl),
     ("git-credential-keyring", git_credential::main),
+    ("guest-agent", guest_agent::main),
     ("halt", power::halt),
     ("hd", hexdump::hd),
     ("hexdump", hexdump::main),

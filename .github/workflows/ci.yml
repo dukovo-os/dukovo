@@ -61,7 +61,7 @@ jobs:
           packages: >-
             qemu-system-x86 ovmf gcc flex gawk
             xorriso mtools dosfstools exfatprogs gdisk fdisk sleuthkit btrfs-progs e2fsprogs ntfs-3g dislocker libbde-utils openssh-server samba smbclient scdoc mandoc
-            udftools udfclient genisoimage qemu-system-misc
+            udftools udfclient genisoimage qemu-system-misc qemu-utils
             clang-20 lld-20 llvm-20 libclang-rt-20-dev meson ninja-build cmake bison pkgconf autoconf
 
       # GRUB, which ./ob builds from its pinned source for the images
@@ -163,6 +163,20 @@ jobs:
         with:
           name: smbd-image
           path: out/test/smbd.img
+          retention-days: 3
+
+      # The cloud image, whose VMDK the VirtualBox job boots (ADR 0329).
+      - name: ./ob image --cloud
+        if: needs.scope.outputs.virtualbox == 'true'
+        run: ./ob image --cloud
+
+      - name: Upload the cloud image's VMDK
+        if: needs.scope.outputs.virtualbox == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: cloud-vmdk
+          path: out/dukovo-*-x86_64-cloud.vmdk
+          if-no-files-found: error
           retention-days: 3
 
   # A pull request that changes only documentation runs this job in place
@@ -348,6 +362,58 @@ jobs:
         with:
           name: smbd-windows-log
           path: ${{ runner.temp }}/smbd/serial.log
+          retention-days: 14
+
+  # The cloud image in VirtualBox (ADR 0329): its UEFI, its SATA
+  # controller and disc drive, its Intel card on NAT and its ACPI power
+  # button, with a NoCloud config disc in ISO 9660, which the boot tests
+  # leave to the FAT one. VirtualBox 7 needs the CPU's virtualization,
+  # which KVM holds while its modules are loaded, so they are unloaded
+  # first; Ubuntu's virtualbox-dkms builds VirtualBox's driver for the
+  # runner's kernel, with that kernel's headers.
+  virtualbox:
+    name: VirtualBox
+    needs: [build, scope]
+    if: needs.scope.outputs.code == 'true' && needs.scope.outputs.virtualbox == 'true'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            .github/actions
+            tools/virtualbox
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: cloud-vmdk
+          path: cloud-vmdk
+
+      - name: Note the kernel's release
+        id: kernel
+        run: echo "release=$(uname -r)" >> "$GITHUB_OUTPUT"
+
+      - name: Install VirtualBox
+        uses: ./.github/actions/apt-install
+        with:
+          packages: >-
+            linux-headers-${{ steps.kernel.outputs.release }}
+            virtualbox virtualbox-dkms genisoimage
+
+      - name: Hand the CPU's virtualization from KVM to VirtualBox
+        run: |
+          sudo modprobe -r kvm_amd kvm_intel kvm || true
+          sudo modprobe vboxdrv
+          VBoxManage --version
+
+      - name: The cloud image in VirtualBox
+        run: tools/virtualbox/cloud-boot.sh cloud-vmdk/dukovo-*-x86_64-cloud.vmdk
+
+      - name: Keep the machine's serial log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: virtualbox-serial-log
+          path: ${{ runner.temp }}/virtualbox/serial.log
           retention-days: 14
 
   # A pull request runs the boot tests its changes reach (ADR 0421), on
@@ -580,6 +646,7 @@ jobs:
       tla: ${{ steps.scope.outputs.tla }}
       container: ${{ steps.scope.outputs.container }}
       code: ${{ steps.scope.outputs.code }}
+      virtualbox: ${{ steps.scope.outputs.virtualbox }}
       boot-parts: ${{ steps.boot.outputs.parts }}
       boot-shards: ${{ steps.boot.outputs.shards }}
     steps:
@@ -624,6 +691,9 @@ jobs:
             # jobs that test code: the build job still checks the docs.
             # Man pages count as code, since they ship in the image.
             echo "code=$(needs_code)"
+            # VirtualBox boots the cloud image: cloud-setup, the guest
+            # agent, the image, and the drivers VirtualBox's machine uses.
+            echo "virtualbox=$(needs '^(userspace/programs/systools/src/(cloud|guest_agent)|userspace/defaults/spark/services/(cloud-setup|guest-agent)\.toml|tools/xtask/src/image\.rs|tools/virtualbox/|kernel/drivers/(ahci|intel)/)')"
           } | tee -a "$GITHUB_OUTPUT"
 
       # ob chooses a pull request's boot tests (ADR 0421), so this job
@@ -897,7 +967,7 @@ jobs:
   passed:
     name: CI passed
     if: always()
-    needs: [build, docs, unit, chkdsk, smb-windows, boot, instructions, scope, kani, tla, corpus, container, checks]
+    needs: [build, docs, unit, chkdsk, smb-windows, virtualbox, boot, instructions, scope, kani, tla, corpus, container, checks]
     runs-on: ubuntu-24.04
     steps:
       - name: Check that every job passed or was skipped
