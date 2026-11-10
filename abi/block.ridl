@@ -123,6 +123,64 @@ const FORMAT_TRACK: u32 = 0x400c5206;
 /// The bytes FORMAT_TRACK reads.
 const FORMAT_SIZE: u32 = 12;
 
+/// Reads the table of contents of the disc in an optical drive, as the
+/// drive's READ TOC/PMA/ATIP gives it (audiocd(1), ADR 0447): Dukovo's own
+/// request, as Linux leaves it to commands passed through raw beside its
+/// CDROMREADTOCENTRY. It reads READ_TOC_SIZE bytes: a u32 format,
+/// TOC_TRACKS, TOC_SESSIONS, TOC_FULL or TOC_CD_TEXT; a u32, the first
+/// track TOC_TRACKS lists (1 for all of them), 0 for another format; and
+/// two u64s, the address and the length of a buffer, of at most
+/// READ_TOC_MAX bytes. The buffer gets the drive's answer as MMC-6 lays it
+/// out, addresses as block numbers: two bytes, big-endian, that count the
+/// bytes after them, then the rest; the answer is cut to the buffer's
+/// length. Works on the drive with a music CD in it, which is a device of
+/// no sectors, and on one with a disc of data; needs the read right.
+/// Fails with not_supported on a device that is not an optical drive,
+/// no_device if the drive has no disc in it, invalid_argument for a format
+/// or track the drive does not have (a disc without CD-Text has none to
+/// give, and some drives refuse TOC_CD_TEXT for that) or a buffer too
+/// long, and io if the drive fails, does not answer, or was unplugged.
+const READ_TOC: u32 = 0x40185207;
+/// The bytes READ_TOC reads.
+const READ_TOC_SIZE: u32 = 24;
+/// The longest buffer READ_TOC fills: the most READ TOC's answer says it
+/// holds.
+const READ_TOC_MAX: u32 = 65535;
+/// READ_TOC's format of the tracks, each a descriptor of eight bytes
+/// whose second holds its control bits (4: data, else audio), third its
+/// number and last four its first block, then the lead-out's (number
+/// 0xaa), where the disc ends.
+const TOC_TRACKS: u32 = 0;
+/// READ_TOC's format of the sessions: where the last one starts.
+const TOC_SESSIONS: u32 = 1;
+/// READ_TOC's format of the full TOC, the lead-in's own entries, eleven
+/// bytes each, times as minutes, seconds and sectors.
+const TOC_FULL: u32 = 2;
+/// READ_TOC's format of CD-Text: packs of 18 bytes, each a type, a track,
+/// a sequence number, a block and character position, twelve bytes of
+/// text and a CRC.
+const TOC_CD_TEXT: u32 = 5;
+
+/// Reads sectors of audio from the music CD in an optical drive, whole,
+/// as the drive's READ CD gives them (audiocd(1), ADR 0447), as Linux's
+/// CDROMREADAUDIO does: 2,352 bytes each, 588 frames of two 16-bit
+/// samples, left then right, little-endian, 1/75 of a second at 44,100
+/// frames a second. It reads READ_AUDIO_SIZE bytes: a u32, the first
+/// sector's block number, as READ_TOC's TOC_TRACKS gives a track's start;
+/// a u32, how many sectors, from 1 to READ_AUDIO_MAX; and a u64, the
+/// address of a buffer of 2,352 bytes for each. Needs the read right.
+/// Fails with not_supported on a device that is not an optical drive,
+/// no_device if the drive has no disc in it, invalid_argument for a count
+/// of 0 or more than READ_AUDIO_MAX, or for sectors past the disc's end or
+/// of a data track, and io if the drive cannot read them, does not
+/// answer, or was unplugged.
+const READ_AUDIO: u32 = 0x40105208;
+/// The bytes READ_AUDIO reads.
+const READ_AUDIO_SIZE: u32 = 16;
+/// The most sectors a READ_AUDIO reads: 27, 63,504 bytes, a third of a
+/// second.
+const READ_AUDIO_MAX: u32 = 27;
+
 /// What the disk says of its health (diskhealth(8), ADR 0157): Dukovo's
 /// own request, as Linux leaves it to commands passed through raw. It
 /// writes HEALTH_SIZE bytes: a u32 kind, HEALTH_ATA or HEALTH_NVME; a u32

@@ -53,6 +53,7 @@
 
 mod account;
 mod args;
+mod audiocd;
 mod authd;
 mod balance;
 mod blkid;
@@ -183,6 +184,7 @@ type Tool = fn(&mut Args) -> Result<i32, Fail>;
 /// The tools, by name, in order.
 const TOOLS: &[(&str, Tool)] = &[
     ("audio", sound::main),
+    ("audiocd", audiocd::main),
     ("audiod", sound::daemon),
     ("authd", authd::main),
     ("balance", balance::main),

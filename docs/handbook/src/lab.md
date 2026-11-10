@@ -178,7 +178,11 @@ pulls a USB stick, `card` puts a memory card in a card reader, `disc` a
 disc in an optical drive, and `floppy` a floppy disk in a floppy drive,
 write-protected with `protected = true`. A test with `card`, `disc` or
 `floppy` steps boots a machine of its own with the drive, empty, so that
-no other test finds it. The tests in `lab/tests/storage` use them.
+no other test finds it. The tests in `lab/tests/storage` use them. A
+`disc` step whose image is a cue sheet puts a music CD in: QEMU's own
+drives hold none, so under QEMU it goes in an emulated USB CD drive that
+`./ob disc-drive` serves, and on a PC the person running the test burns
+the cue sheet to a CD-R with its CD-Text.
 
 ## Performance tests
 

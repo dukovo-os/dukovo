@@ -301,6 +301,24 @@ Disk: cd0: its disc was ejected
 volumed: cd0 has no disc in it now
 ```
 
+A music CD's tracks are not files: `audiocd` lists them, with their
+titles from the disc's CD-Text, plays them through the sound output,
+and rips them to FLAC files, lossless and tagged with the titles, or to
+WAV files with `--wav` (ADR 0447):
+
+```
+# audiocd
+cd0: Lab Sessions, by Dukovo Lab
+ 1   0:05  First Light
+ 2   0:02  Static
+2 tracks, 0:07
+# audiocd rip --to /home/sam/Music
+ 1   0:05  /home/sam/Music/01 First Light.flac
+ 2   0:02  /home/sam/Music/02 Static.flac
+# audiocd play 2
+ 2   0:02  Static
+```
+
 With a disc mounted again, the drive's button does the same:
 
 ```

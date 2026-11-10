@@ -25,6 +25,10 @@ acpi-power userspace/programs/systools/src/power.rs
 acpi-thermal kernel/lib/acpi/ kernel/lib/sensors/ kernel/lib/uacpi/ tools/xtask/src/acpi/
 acpi-thermal userspace/programs/systools/src/power.rs userspace/programs/systools/src/sensors.rs
 aml-off kernel/lib/acpi/ userspace/programs/systools/src/power.rs
+audio-cd kernel/drivers/scsi/ kernel/drivers/usb/ kernel/drivers/xhci/ kernel/radix/src/fs/disk/optical.rs
+audio-cd kernel/radix/src/fs/disk/removable.rs kernel/radix/src/fs/disk/usb.rs tools/xtask/src/disc_drive/
+audio-cd tools/xtask/src/disc_drive.rs userspace/programs/audio/ userspace/programs/systools/src/audiocd.rs
+audio-cd userspace/programs/systools/src/sound.rs
 audio-hda kernel/drivers/hda/ kernel/lib/audio/ kernel/radix/src/audio/ userspace/programs/audio/
 audio-hda tools/xtask/src/test/cases/audio-virtio.rs userspace/programs/systools/src/sound.rs
 audio-hda-ich9 kernel/drivers/hda/ kernel/lib/audio/ kernel/radix/src/audio/

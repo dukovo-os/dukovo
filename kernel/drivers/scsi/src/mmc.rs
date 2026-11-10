@@ -21,7 +21,9 @@
 //!
 //! The data a disc holds is read with READ(10) in blocks of [`BLOCK`]
 //! bytes, as every disc presents it: a CD's mode 1 and mode 2 form 1
-//! sectors, a DVD's and a Blu-ray's. Audio tracks hold no such blocks.
+//! sectors, a DVD's and a Blu-ray's. Audio tracks hold no such blocks:
+//! their sectors are read whole with READ CD ([`Cdb::read_cd_audio`]),
+//! [`AUDIO_SECTOR`] bytes of samples each (ADR 0447).
 
 use core::fmt;
 
@@ -33,6 +35,10 @@ use crate::{
 
 /// The length of a block of a disc's data, in bytes.
 pub const BLOCK: u32 = 2048;
+/// The length of a CD's sector of audio, in bytes: 588 frames of two
+/// 16-bit samples, left then right, little-endian (1/75 of a second at
+/// 44,100 frames a second).
+pub const AUDIO_SECTOR: u32 = 2352;
 
 /// The track number of the lead-out, in a TOC: where the disc's last
 /// session ends.
@@ -62,18 +68,42 @@ pub mod toc_format {
     pub const TOC: u8 = 0;
     /// The first track of the last complete session.
     pub const SESSION: u8 = 1;
+    /// The full TOC: the lead-in's Q subchannel, session by session.
+    pub const FULL: u8 = 2;
+    /// CD-Text: the packs of text the lead-in carries in its R-W
+    /// subchannel.
+    pub const CD_TEXT: u8 = 5;
 }
+
+/// READ CD's expected sector type of CD-DA, in bits 4:2 of byte 1: a
+/// sector of another type fails the command (ILLEGAL MODE FOR THIS
+/// TRACK).
+const EXPECT_CD_DA: u8 = 1 << 2;
+/// READ CD's field of user data, in byte 9: an audio sector's samples, all
+/// 2,352 bytes.
+const USER_DATA: u8 = 0x10;
 
 impl Cdb {
     /// READ TOC/PMA/ATIP of `format` ([`toc_format`]) from track or
     /// session `track`, `length` bytes, with addresses as block numbers.
     /// The format goes in byte 2, where MMC has it, and in the top bits of
     /// the control byte, where drives older than MMC-3 look (Linux's `sr`
-    /// sends it there, and QEMU's ATAPI drives read it there).
+    /// sends it there, and QEMU's ATAPI drives read it there); those two
+    /// bits hold formats 0 to 2 alone, so CD-Text's goes in byte 2 only.
     pub fn read_toc(format: u8, track: u8, length: u16) -> Cdb {
         let [h, l] = length.to_be_bytes();
         let format = format & 0xf;
-        Cdb::new(&[op::READ_TOC, 0, format, 0, 0, 0, track, h, l, (format & 3) << 6])
+        let old = if format <= toc_format::FULL { format << 6 } else { 0 };
+        Cdb::new(&[op::READ_TOC, 0, format, 0, 0, 0, track, h, l, old])
+    }
+
+    /// READ CD of `count` sectors of audio from block `lba`: each sector's
+    /// [`AUDIO_SECTOR`] bytes of samples, with no subchannel data and no
+    /// C2 error flags (MMC-6, 6.19). A data sector among them fails it.
+    pub fn read_cd_audio(lba: u32, count: u32) -> Cdb {
+        let [a, b, c, d] = lba.to_be_bytes();
+        let [_, h, m, l] = count.to_be_bytes();
+        Cdb::new(&[op::READ_CD, EXPECT_CD_DA, a, b, c, d, h, m, l, USER_DATA, 0, 0])
     }
 
     /// GET CONFIGURATION of every feature from the profile list on,

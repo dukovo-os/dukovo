@@ -15,6 +15,7 @@ mod bundles;
 mod catalog;
 mod config;
 mod corpus;
+mod disc_drive;
 mod docs;
 mod doctor;
 mod elf;
@@ -75,6 +76,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("bench", "Measure system calls and IPC round trips on Radix and on this machine's Linux"),
     ("soak", "Run an installed system under load for hours or days, and check for creep"),
     ("fixture", "Make test data that only Linux makes, such as a Btrfs log of fsyncs"),
+    ("disc-drive", "Plug an emulated USB CD drive into a machine in QEMU, for the lab's tests"),
     ("docs", "Build the man pages and the handbook into out/docs"),
     ("lint", "Check formatting and run Clippy with warnings denied"),
     ("fmt", "Format all Rust code"),
@@ -565,6 +567,23 @@ test read.
                       machine's own); it needs Btrfs, built in or as a
                       module in OB_LINUX_MODULES"
         }
+        "disc-drive" => {
+            "Usage: ./ob disc-drive <socket> [<disc>]
+
+Plugs an emulated USB CD drive (ADR 0447) into the machine whose QEMU
+listens on <socket> with a usb-redir device, as the lab's harness does for
+tests of audio CDs, which QEMU's own drives cannot play. <disc> is a cue
+sheet and the files it names (audio and data tracks, and CD-Text from its
+TITLE and PERFORMER lines) or an ISO image. Each line on standard input
+asks something of the drive:
+
+  insert <disc>   Put a disc in, the tray shut
+  take-out        Take the disc out, even one the machine locked in
+  button          Press the eject button: a locked disc stays, and the
+                  drive asks the machine to let it go
+  locked          Print \"locked yes\" or \"locked no\"
+  unplug          Unplug the drive and end, as the end of the input does"
+        }
         "docs" => {
             "Usage: ./ob docs [--check]
 
@@ -987,6 +1006,7 @@ fn dispatch(argv: Vec<String>) -> Result<()> {
         "soak" => test::soak::command(&ctx, &mut args),
         "lab" => lab::command(&ctx, &mut args),
         "fixture" => fixture::command(&ctx, &mut args),
+        "disc-drive" => disc_drive::command(&ctx, &mut args),
         "docs" => {
             let check = args.flag("--check");
             args.finish()?;

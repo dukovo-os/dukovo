@@ -61,6 +61,8 @@ error that starts with the tool's name.
 :- *What it does*
 |  *balance*(8)
 :  move a Btrfs filesystem's chunks, converting them to another profile
+|  *audiocd*(1)
+:  list, play and rip the music CD in an optical drive
 |  *authd*(8)
 :  keep the accounts and check passwords
 |  *blkid*(8)

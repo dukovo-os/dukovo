@@ -32,6 +32,12 @@
 //! FORMAT_TRACK asks (ADR 0436): [`Drive::format`] hands each track to the
 //! driver's thread, and waits for it. The drive's formats, the sizes of
 //! disk it writes, are in `/kernel/block/<drive>/formats`.
+//!
+//! An optical drive reads a disc's table of contents and a CD's audio
+//! when radix-block(2)'s READ_TOC and READ_AUDIO ask (ADR 0447):
+//! [`Drive::command`] hands the command the kernel made for the request,
+//! with the buffer for its answer, to the driver's thread, which runs it
+//! between its looks and the disc's reads.
 
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -39,6 +45,7 @@ use core::fmt;
 use core::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 
 use radix_mm::{Flags, HEAP, Kmalloc};
+use radix_scsi::Cdb;
 use radix_scsi::mmc::{Content, Profile};
 use radix_sync::{Mutex, SpinLock};
 
@@ -56,6 +63,9 @@ const LOOK_NS: u64 = 20_000_000_000;
 /// the motor, a seek, the format's two turns and a try again, or a USB
 /// drive's 30 seconds for the command.
 const FORMAT_NS: u64 = 40_000_000_000;
+/// How long a command asked of an optical drive may take: a disc spinning
+/// up, the 30 seconds a read is given, and its try again.
+const COMMAND_NS: u64 = 70_000_000_000;
 
 /// The states of what is asked of a drive's thread, an eject or a look,
 /// in [`Drive::eject`]'s byte and [`Drive::look`]'s. Nothing is asked.
@@ -123,6 +133,28 @@ pub enum FormatError {
     Failed,
 }
 
+/// A command a program's request has an optical drive's thread run (ADR
+/// 0447): READ TOC or READ CD, which the kernel makes from the request,
+/// never one a program sends, and the buffer for the drive's answer, of
+/// the length asked for.
+pub struct Asked {
+    pub cdb: Cdb,
+    pub data: Vec<u8, Kmalloc>,
+}
+
+/// Why a command asked of an optical drive failed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CommandError {
+    /// The drive has no disc in it.
+    NoDisc,
+    /// The drive refused it: a block past the disc's end, a sector of
+    /// another kind than asked (data read as audio), or a field it does
+    /// not take, such as a format of TOC it does not have.
+    Refused,
+    /// The drive failed, was unplugged, or did not answer.
+    Failed,
+}
+
 /// What is in an optical drive.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Disc {
@@ -166,11 +198,19 @@ pub struct Drive {
     format: AtomicU8,
     track: SpinLock<Option<Track>>,
     format_failed: SpinLock<Option<FormatError>>,
+    /// Where a command asked of an optical drive's thread is, as `eject`;
+    /// the command until the thread takes it, and its answer. Each command
+    /// has a number of its own, so that the answer to one whose asker gave
+    /// up is not taken for the next's.
+    command: AtomicU8,
+    commands: AtomicU64,
+    asked: SpinLock<Option<(u64, Asked)>>,
+    answer: SpinLock<Option<Result<Vec<u8, Kmalloc>, CommandError>>>,
     /// For a floppy drive, the sizes of disk it formats; empty for
     /// another drive.
     formats: &'static [Size],
-    /// One eject, look or format at a time: a second waits for the
-    /// first's answer.
+    /// One eject, look, format or command at a time: a second waits for
+    /// the first's answer.
     one: Mutex<()>,
     /// The driver's thread, which an eject, a look or a format wakes.
     thread: ThreadRef,
@@ -192,6 +232,10 @@ impl Drive {
             format: AtomicU8::new(IDLE),
             track: SpinLock::new(None),
             format_failed: SpinLock::new(None),
+            command: AtomicU8::new(IDLE),
+            commands: AtomicU64::new(0),
+            asked: SpinLock::new(None),
+            answer: SpinLock::new(None),
             formats,
             one: Mutex::new(()),
             thread,
@@ -322,6 +366,50 @@ impl Drive {
         self.reply(&self.format, result.is_ok());
     }
 
+    /// Has an optical drive's thread run `asked` (ADR 0447), and waits for
+    /// its answer, for up to [`COMMAND_NS`]: the buffer asked with, cut to
+    /// the bytes the drive gave.
+    pub fn command(&self, asked: Asked) -> Result<Vec<u8, Kmalloc>, CommandError> {
+        if self.kind != Kind::Optical {
+            return Err(CommandError::Refused);
+        }
+        let _one = self.one.lock();
+        let number = self.commands.fetch_add(1, Ordering::AcqRel) + 1;
+        *self.answer.lock_irq() = None;
+        *self.asked.lock_irq() = Some((number, asked));
+        let done = self.ask_held(&self.command, COMMAND_NS, "command");
+        // One the thread never took is dropped here.
+        drop(self.asked.lock_irq().take());
+        let answer = self.answer.lock_irq().take();
+        match (done, answer) {
+            (Ok(()), Some(Ok(data))) => Ok(data),
+            (_, Some(Err(why))) => Err(why),
+            _ => Err(CommandError::Failed),
+        }
+    }
+
+    /// The command that waits for the driver's thread, if one does, and
+    /// its number: taken, for the thread to run and answer with
+    /// [`Drive::commanded`].
+    pub fn command_asked(&self) -> Option<(u64, Asked)> {
+        if self.command.load(Ordering::Acquire) != ASKED {
+            return None;
+        }
+        self.asked.lock_irq().take()
+    }
+
+    /// The driver's thread answers the command `number` it took: the
+    /// buffer with the drive's answer, or why it failed. Wakes the one who
+    /// asked, if that one still waits for it.
+    pub fn commanded(&self, number: u64, result: Result<Vec<u8, Kmalloc>, CommandError>) {
+        if self.commands.load(Ordering::Acquire) != number {
+            return;
+        }
+        let done = result.is_ok();
+        *self.answer.lock_irq() = Some(result);
+        self.reply(&self.command, done);
+    }
+
     /// Asks the driver's thread for what `state` stands for, and waits
     /// for its answer as `what`, for up to `limit_ns`.
     fn ask(
@@ -395,7 +483,7 @@ pub fn add(
 }
 
 /// Takes the drive `name` away: it was unplugged. Answers an eject, a
-/// look or a format that waits for it, so that whoever asked need not
+/// look, a format or a command that waits for it, so that whoever asked need not
 /// wait it out.
 pub fn remove(name: &str) {
     let gone = {
@@ -407,6 +495,8 @@ pub fn remove(name: &str) {
     gone.1.answer(false);
     gone.1.looked(false);
     gone.1.formatted(Err(FormatError::Failed));
+    let number = gone.1.commands.load(Ordering::Acquire);
+    gone.1.commanded(number, Err(CommandError::Failed));
 }
 
 /// The drive `name`, if it is one whose medium comes and goes.

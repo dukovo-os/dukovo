@@ -1538,7 +1538,9 @@ _target/userspace/_).
 	"stick"* or *boot = "dvd"*). With *--no-build*, the stick and DVD
 	already in _out_ are used; with *--image*, neither is built, and the
 	installer's tests skip unless a *--stick* or *--dvd* is given after
-	_command_.
+	_command_. They also pass this tree's *ob* with *--ob*, whose
+	*disc-drive* holds the music CD of an audio CD test in the machine,
+	as QEMU's own drives hold none.
 
 	*dukovo-lab* is found on *PATH*, or at *OB_LAB*. The handbook's Lab
 	tests chapter shows how to write a test.
@@ -1815,6 +1817,22 @@ _target/userspace/_).
 	*--linux-kernel* _file_
 		As for *bench*; the kernel needs Btrfs, built in or as a module
 		in *OB_LINUX_MODULES*.
+
+*disc-drive* _socket_ [_disc_]
+	Plug an emulated USB CD drive into the machine whose QEMU listens on
+	the Unix socket _socket_ with a *usb-redir* device, as the lab's
+	harness does for tests of audio CDs, which QEMU's own drives cannot
+	play (ADR 0447). The drive speaks usbredir to QEMU, is a Bulk-Only
+	mass storage device to the machine, and answers a CD drive's SCSI
+	and MMC commands itself, READ CD and CD-Text among them. _disc_ is a
+	cue sheet and the files it names (audio tracks, data tracks of
+	2,048 or 2,352 bytes a sector, and CD-Text from its *TITLE* and
+	*PERFORMER* lines) or an ISO image. Each line on standard input asks
+	something of the drive: *insert* _disc_ puts a disc in; *take-out*
+	takes it out, even one the machine locked in; *button* presses the
+	eject button, so that a locked disc stays and the drive asks the
+	machine to let it go; *locked* prints *locked yes* or *locked no*;
+	and *unplug*, or the end of the input, unplugs the drive and ends.
 
 *docs* [*--check*]
 	Build the man pages from _docs/man/\*.scd_ into _out/docs/man/_ and the

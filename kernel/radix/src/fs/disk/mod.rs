@@ -30,6 +30,7 @@
 //! controllers down.
 
 use alloc::sync::Arc;
+use alloc::vec::Vec;
 use core::fmt::Write;
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
@@ -966,14 +967,14 @@ fn reread(device: &DeviceRef) -> Result<(), Status> {
 /// `may_write` whether the caller's capability has the write right, which
 /// DISCARD, FLUSH, SWAP_ON, SWAP_OFF, REREAD_PARTITIONS and FORMAT_TRACK
 /// need, and UNLOCK but to unlock read-only; EJECT does not, as on Linux,
-/// nor
-/// REREAD_PARTITIONS on a floppy drive, which looks for a disk. Any other
-/// request is not one of a block device.
+/// nor REREAD_PARTITIONS on a floppy drive, which looks for a disk.
+/// `may_read` is whether it has the read right, which READ_TOC and
+/// READ_AUDIO need. Any other request is not one of a block device.
 pub fn control(
     device: &DeviceRef,
     request: u32,
     argument: u64,
-    may_write: bool,
+    (may_read, may_write): (bool, bool),
 ) -> Result<(), Status> {
     let info = device.info();
     let put = |bytes: &[u8]| {
@@ -1006,6 +1007,9 @@ pub fn control(
         | request::FORMAT_TRACK
             if !may_write =>
         {
+            Err(Kernel::MissingRights.status(0))
+        }
+        request::READ_TOC | request::READ_AUDIO if !may_read => {
             Err(Kernel::MissingRights.status(0))
         }
         request::DISCARD => {
@@ -1041,8 +1045,93 @@ pub fn control(
         request::UNLOCK => unlock(device, argument, may_write),
         request::EJECT => eject(device),
         request::FORMAT_TRACK => format_track(device, argument),
+        request::READ_TOC => read_toc(device, argument),
+        request::READ_AUDIO => read_audio(device, argument),
         _ => Err(Kernel::NotTerminal.status(0)),
     }
+}
+
+/// The optical drive `device` is, if it is one, empty, with a music CD in
+/// it, or with a disc of data.
+fn optical_drive(device: &DeviceRef) -> Option<removable::DriveRef> {
+    let name = name_of(device)?;
+    removable::find(name.as_str()).filter(|drive| drive.kind() == removable::Kind::Optical)
+}
+
+/// Has the optical drive `device` is run `cdb` for a request (ADR 0447),
+/// with a buffer of `length` bytes for its answer, which goes to the
+/// caller's `buffer`.
+fn ask_drive(
+    device: &DeviceRef,
+    cdb: radix_scsi::Cdb,
+    length: usize,
+    buffer: u64,
+) -> Result<(), Status> {
+    use self::removable::{Asked, CommandError};
+    let drive = optical_drive(device).ok_or(Kernel::NotSupported.status(0))?;
+    let mut data = Vec::new_in(HEAP.with(Flags::MAY_SLEEP));
+    if data.try_reserve_exact(length).is_err() {
+        return Err(Kernel::NoMemory.status(0));
+    }
+    while data.len() < length && data.push_within_capacity(0u8).is_ok() {}
+    let data = drive.command(Asked { cdb, data }).map_err(|why| match why {
+        CommandError::NoDisc => FileError::NoDevice.status(0),
+        CommandError::Refused => Kernel::InvalidArgument.status(0),
+        CommandError::Failed => FileError::Io.status(0),
+    })?;
+    if <Arch as UserMode>::copy_to_user(buffer, &data) {
+        Ok(())
+    } else {
+        Err(Kernel::BadAddress.status(0))
+    }
+}
+
+/// READ_TOC: the table of contents of the disc in the optical drive
+/// `device` is, in the format the caller's `argument` names, into its
+/// buffer (ADR 0447).
+fn read_toc(device: &DeviceRef, argument: u64) -> Result<(), Status> {
+    use radix_scsi::{Cdb, mmc::toc_format};
+    let mut bytes = [0u8; request::READ_TOC_SIZE as usize];
+    if !<Arch as UserMode>::copy_from_user(&mut bytes, argument) {
+        return Err(Kernel::BadAddress.status(0));
+    }
+    let word =
+        |at: usize| u32::from_le_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]]);
+    let long = |at: usize| u64::from_le_bytes(bytes[at..at + 8].try_into().unwrap_or([0; 8]));
+    let (format, track, buffer, length) = (word(0), word(4), long(8), long(16));
+    let format = match format {
+        request::TOC_TRACKS => toc_format::TOC,
+        request::TOC_SESSIONS => toc_format::SESSION,
+        request::TOC_FULL => toc_format::FULL,
+        request::TOC_CD_TEXT => toc_format::CD_TEXT,
+        _ => return Err(Kernel::InvalidArgument.status(0)),
+    };
+    let (Ok(track), Ok(length)) = (u8::try_from(track), u16::try_from(length)) else {
+        return Err(Kernel::InvalidArgument.status(0));
+    };
+    if length == 0 {
+        return Ok(());
+    }
+    ask_drive(device, Cdb::read_toc(format, track, length), usize::from(length), buffer)
+}
+
+/// READ_AUDIO: the sectors of audio the caller's `argument` names, of the
+/// music CD in the optical drive `device` is, into its buffer (ADR 0447).
+fn read_audio(device: &DeviceRef, argument: u64) -> Result<(), Status> {
+    use radix_scsi::{Cdb, mmc::AUDIO_SECTOR};
+    let mut bytes = [0u8; request::READ_AUDIO_SIZE as usize];
+    if !<Arch as UserMode>::copy_from_user(&mut bytes, argument) {
+        return Err(Kernel::BadAddress.status(0));
+    }
+    let word =
+        |at: usize| u32::from_le_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]]);
+    let (first, count) = (word(0), word(4));
+    let buffer = u64::from_le_bytes(bytes[8..16].try_into().unwrap_or([0; 8]));
+    if count == 0 || count > request::READ_AUDIO_MAX {
+        return Err(Kernel::InvalidArgument.status(0));
+    }
+    let length = (count * AUDIO_SECTOR) as usize;
+    ask_drive(device, Cdb::read_cd_audio(first, count), length, buffer)
 }
 
 /// The floppy drive `device` is, if it is one, empty or not.

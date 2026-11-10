@@ -92,6 +92,9 @@ pub mod op {
     /// READ DISC INFORMATION: whether an optical disc is blank, and its
     /// sessions (MMC).
     pub const READ_DISC_INFORMATION: u8 = 0x51;
+    /// READ CD: a CD's sectors with the fields asked for, an audio
+    /// sector's samples among them (MMC).
+    pub const READ_CD: u8 = 0xbe;
 }
 
 /// Peripheral device types, of an [`Inquiry`].
