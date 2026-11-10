@@ -502,7 +502,8 @@ segment, as _1000:e1:00.0 behind the VMD at 0000:00:0e.0_, and *polled*.
 
 - virtio block devices, disks on virtio SCSI adapters (found at boot),
   SATA disks on AHCI controllers, ATA and SATA
-  disks on IDE controllers (and SATA controllers in IDE mode), NVMe
+  disks on IDE controllers (and SATA controllers in IDE mode), with
+  CompactFlash cards in IDE adapters (by PIO; ADR 0446), NVMe
   namespaces, USB disks, over the Bulk-Only Transport or USB Attached
   SCSI (UAS), SD, SDHC, SDXC and MMC cards in SD card readers on PCI,
   put in at boot or later (ADR 0437), and eMMCs (ADR 0439), have

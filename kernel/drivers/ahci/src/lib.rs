@@ -186,6 +186,7 @@ impl fmt::Display for Absent {
                 ata::Unsupported::Checksum => f.write_str("its identity's checksum is wrong"),
                 ata::Unsupported::NotAta => f.write_str("not an ATA device"),
                 ata::Unsupported::No48Bit => f.write_str("it has no 48-bit addresses"),
+                ata::Unsupported::NoLba => f.write_str("it has no logical block addresses"),
                 ata::Unsupported::SectorSize(size) => {
                     write!(f, "its sectors are {size} bytes, and only 512 and 4096 are supported")
                 }

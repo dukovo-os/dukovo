@@ -12,8 +12,22 @@
 pub mod command {
     /// DATA SET MANAGEMENT: with feature bit 0, TRIM (discard) ranges.
     pub const DATA_SET_MANAGEMENT: u8 = 0x06;
+    /// READ SECTORS: reads sectors by PIO, with 28-bit addresses.
+    pub const READ_SECTORS: u8 = 0x20;
+    /// READ SECTORS EXT: reads sectors by PIO, with 48-bit addresses.
+    pub const READ_SECTORS_EXT: u8 = 0x24;
     /// READ DMA EXT: reads sectors, with 48-bit addresses.
     pub const READ_DMA_EXT: u8 = 0x25;
+    /// WRITE SECTORS: writes sectors by PIO, with 28-bit addresses.
+    pub const WRITE_SECTORS: u8 = 0x30;
+    /// WRITE SECTORS EXT: writes sectors by PIO, with 48-bit addresses.
+    pub const WRITE_SECTORS_EXT: u8 = 0x34;
+    /// READ DMA: reads sectors, with 28-bit addresses.
+    pub const READ_DMA: u8 = 0xc8;
+    /// WRITE DMA: writes sectors, with 28-bit addresses.
+    pub const WRITE_DMA: u8 = 0xca;
+    /// FLUSH CACHE: FLUSH CACHE EXT's 28-bit counterpart.
+    pub const FLUSH_CACHE: u8 = 0xe7;
     /// READ LOG EXT: reads a page of a log.
     pub const READ_LOG_EXT: u8 = 0x2f;
     /// WRITE DMA EXT: writes sectors, with 48-bit addresses.
@@ -254,6 +268,9 @@ pub enum Unsupported {
     NotAta,
     /// It has no 48-bit addresses, which ATA-6 brought in 2002.
     No48Bit,
+    /// It has no logical block addresses, only cylinders, heads and
+    /// sectors, as disks before ATA-1 had.
+    NoLba,
     /// Its logical sectors are not 512 or 4096 bytes.
     SectorSize(u32),
     /// It reports no sectors.
@@ -277,7 +294,8 @@ pub struct Identity {
     pub queue_depth: u8,
     /// Whether it has a write cache that is on.
     pub write_cache: bool,
-    /// Whether it has FLUSH CACHE EXT.
+    /// Whether it has FLUSH CACHE EXT, or FLUSH CACHE where its addresses
+    /// are 28-bit.
     pub flush: bool,
     /// Whether it writes through its cache on request (FUA).
     pub fua: bool,
@@ -297,7 +315,16 @@ pub struct Identity {
     pub serial: [u8; 20],
     /// Its firmware revision.
     pub firmware: [u8; 8],
+    /// Whether it takes 48-bit addresses; one that does not takes 28-bit
+    /// ones, and at most 256 sectors a command.
+    pub lba48: bool,
+    /// Whether it is a CompactFlash card in True IDE mode: its word 0 is
+    /// 848Ah (*CF+ and CompactFlash Specification* 6.0, 6.2.1.6.1).
+    pub cfa: bool,
 }
+
+/// A CompactFlash card's word 0 in IDENTIFY DEVICE.
+const CFA_SIGNATURE: u16 = 0x848a;
 
 /// Whether word `w` of `id` has bit `bit` set.
 fn bit(id: &[u16; 256], w: usize, bit: u32) -> bool {
@@ -321,7 +348,9 @@ fn string<const N: usize>(id: &[u16; 256], from: usize) -> [u8; N] {
     out
 }
 
-/// Reads IDENTIFY DEVICE data.
+/// Reads IDENTIFY DEVICE data: a disk's, or a CompactFlash card's. One
+/// without 48-bit addresses gives its capacity in words 60 and 61, and
+/// is left for the caller to take or refuse ([`Identity::lba48`]).
 pub fn identify(id: &[u16; 256]) -> Result<Identity, Unsupported> {
     // Word 255 holds A5h and a checksum that makes the 512 bytes add up
     // to 0, or no signature, when the disk does not keep one.
@@ -334,21 +363,26 @@ pub fn identify(id: &[u16; 256]) -> Result<Identity, Unsupported> {
             return Err(Unsupported::Checksum);
         }
     }
-    if bit(id, 0, 15) {
+    let cfa = id[0] == CFA_SIGNATURE;
+    if bit(id, 0, 15) && !cfa {
         return Err(Unsupported::NotAta);
     }
     // Words 82 to 84 are valid when 83 says so, and 85 to 87 when 87
-    // does. 48-bit addresses must be there and on.
+    // does: 48-bit addresses there and on, or 28-bit ones (word 49).
     let supported = valid(id[83]);
     let enabled = valid(id[87]);
     let extended = valid(id[84]);
-    if !(supported && enabled && bit(id, 83, 10) && bit(id, 86, 10)) {
-        return Err(Unsupported::No48Bit);
-    }
-    let sectors = u64::from(id[100])
-        | u64::from(id[101]) << 16
-        | u64::from(id[102]) << 32
-        | u64::from(id[103]) << 48;
+    let lba48 = supported && enabled && bit(id, 83, 10) && bit(id, 86, 10);
+    let sectors = if lba48 {
+        u64::from(id[100])
+            | u64::from(id[101]) << 16
+            | u64::from(id[102]) << 32
+            | u64::from(id[103]) << 48
+    } else if bit(id, 49, 9) {
+        u64::from(id[60]) | u64::from(id[61]) << 16
+    } else {
+        return Err(Unsupported::NoLba);
+    };
     if sectors == 0 {
         return Err(Unsupported::Empty);
     }
@@ -388,7 +422,11 @@ pub fn identify(id: &[u16; 256]) -> Result<Identity, Unsupported> {
         physical_sector: physical,
         queue_depth,
         write_cache: bit(id, 82, 5) && enabled && bit(id, 85, 5),
-        flush: bit(id, 83, 13) && bit(id, 86, 13),
+        flush: if lba48 {
+            bit(id, 83, 13) && bit(id, 86, 13)
+        } else {
+            supported && bit(id, 83, 12)
+        },
         fua: extended && bit(id, 84, 6),
         trim_blocks: if bit(id, 169, 0) { id[105].max(1) } else { 0 },
         rotational,
@@ -396,6 +434,8 @@ pub fn identify(id: &[u16; 256]) -> Result<Identity, Unsupported> {
         model: string(id, 27),
         serial: string(id, 10),
         firmware: string(id, 23),
+        lba48,
+        cfa,
     })
 }
 

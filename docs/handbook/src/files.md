@@ -277,6 +277,11 @@ R5C822, R5U822 and R5U823 and JMicron's JMB38x, and the kernel drives
 them as they need (ADR 0445); a reader without ADMA2 moves data by
 SDMA. The kernel's log names such a reader, and what it does for it.
 
+A CompactFlash card in an IDE adapter is a disk named `sda` and on, as
+the disks beside it are, and is read and written by PIO, a few megabytes
+a second (ADR 0446). A CompactFlash card in a USB card reader is a USB
+disk, a CFast card a SATA disk, and a CFexpress card an NVMe disk.
+
 A CD, DVD or Blu-ray drive, on SATA, IDE or USB, is such a drive too,
 named `cd0` and on, a `rom` under lsblk's `TYPE` (ADR 0431, ADR 0432).
 A disc of data, ISO 9660 or UDF, is mounted read-only: at `/volumes/cd0`

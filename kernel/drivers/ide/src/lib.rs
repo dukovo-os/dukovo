@@ -18,8 +18,17 @@
 //! most 64 KiB that does not cross a 64 KiB line, and a start bit.
 //!
 //! The commands are ATA's (ACS-4): IDENTIFY DEVICE, in PIO, then READ DMA
-//! EXT, WRITE DMA EXT and FLUSH CACHE EXT, with 48-bit addresses; what
-//! IDENTIFY says is read by `radix_ahci::ata`, which AHCI's disks share.
+//! EXT, WRITE DMA EXT and FLUSH CACHE EXT, with 48-bit addresses, or READ
+//! DMA, WRITE DMA and FLUSH CACHE with 28-bit ones on a disk from before
+//! ATA-6; what IDENTIFY says is read by `radix_ahci::ata`, which AHCI's
+//! disks share.
+//!
+//! A CompactFlash card in an IDE adapter (ADR 0446) is such a disk, and
+//! says so in IDENTIFY. Its data move by PIO, through the data register:
+//! a passive adapter need not wire the DMA lines, and many cards have no
+//! DMA in True IDE mode. [`Channel::start_pio`] sends READ SECTORS or
+//! WRITE SECTORS, and [`Channel::poll_pio`] moves each sector the card is
+//! ready for between the data register and a buffer.
 //! A packet (ATAPI) device, an optical drive, answers IDENTIFY PACKET
 //! DEVICE, and takes SCSI commands in PACKET commands (ACS-4, 7.18, and
 //! the PACKET protocol of ATA8-APT): after the command, the device asks
@@ -116,6 +125,10 @@ const PRD_LAST: u32 = 1 << 31;
 /// The signatures a packet device leaves in LBA mid and high, parallel
 /// and Serial ATA.
 const ATAPI: [(u8, u8); 2] = [(0x14, 0xeb), (0x69, 0x96)];
+/// The most sectors [`Channel::poll_pio`] moves in one call: each is 256
+/// reads or writes of the data register, and its caller may hold a lock
+/// with interrupts off meanwhile.
+pub const PIO_BURST: u32 = 8;
 /// How long a reset or IDENTIFY may take, and how often the driver
 /// looks meanwhile, in microseconds.
 const RESET_US: u32 = 2_000_000;
@@ -198,6 +211,19 @@ struct Flight {
     dma: bool,
     /// A packet command's progress; `None` for a disk's command.
     packet: Option<Packet>,
+    /// A disk's PIO command's progress.
+    pio: Option<Pio>,
+}
+
+/// A disk's command whose data move by PIO.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Pio {
+    /// Whether its data come from the disk.
+    into_host: bool,
+    /// The sectors still to move.
+    left: u32,
+    /// The bytes moved.
+    moved: u32,
 }
 
 /// A packet command in flight.
@@ -271,6 +297,10 @@ pub struct Channel<P: IoPorts> {
     selected: Option<u8>,
     /// Each device's logical sector, in bytes, as IDENTIFY said.
     sector: [u32; 2],
+    /// Whether each device takes 48-bit addresses, as IDENTIFY said.
+    lba48: [bool; 2],
+    /// Whether each device's data move by PIO: a CompactFlash card's.
+    pio: [bool; 2],
 }
 
 impl<P: IoPorts> Channel<P> {
@@ -297,6 +327,8 @@ impl<P: IoPorts> Channel<P> {
             flight: None,
             selected: None,
             sector: [512; 2],
+            lba48: [true; 2],
+            pio: [false; 2],
         })
     }
 
@@ -382,7 +414,10 @@ impl<P: IoPorts> Channel<P> {
         };
         match ata::identify(&words) {
             Ok(identity) => {
-                self.sector[usize::from(drive)] = identity.logical_sector;
+                let end = usize::from(drive);
+                self.sector[end] = identity.logical_sector;
+                self.lba48[end] = identity.lba48;
+                self.pio[end] = identity.cfa;
                 Device::Ata { identity, serial: serial(&words) }
             }
             Err(why) => Device::Unsupported(why),
@@ -445,6 +480,48 @@ impl<P: IoPorts> Channel<P> {
         self.flight.is_some()
     }
 
+    /// Whether `drive`'s data move by PIO ([`Channel::start_pio`]) rather
+    /// than by DMA ([`Channel::start`]).
+    pub fn pio(&self, drive: u8) -> bool {
+        self.pio.get(usize::from(drive)).copied().unwrap_or(false)
+    }
+
+    /// Whether a read or write of `count` sectors from `lba` fits what
+    /// `drive` takes: up to 65,536 sectors a command below 2^48 with
+    /// 48-bit addresses, up to 256 below 2^28 with 28-bit ones.
+    fn fits(&self, drive: u8, lba: u64, count: u32) -> bool {
+        let (most, end) =
+            if self.lba48[usize::from(drive)] { (65_536, 1 << 48) } else { (256, 1 << 28) };
+        count > 0 && count <= most && lba + u64::from(count) <= end
+    }
+
+    /// Writes the address and count of a read or write of `count`
+    /// sectors from `lba`, on `drive`, which is picked: 48-bit, the high
+    /// bytes first, or 28-bit, the top four bits in the device register.
+    /// A count of the most a command takes is written as 0.
+    fn write_address(&mut self, drive: u8, lba: u64, count: u32) {
+        let [count_low, count_high] = ((count & 0xffff) as u16).to_le_bytes();
+        let lba = lba.to_le_bytes();
+        if self.lba48[usize::from(drive)] {
+            for (register, value) in [
+                (reg::COUNT, count_high),
+                (reg::LBA0, lba[3]),
+                (reg::LBA1, lba[4]),
+                (reg::LBA2, lba[5]),
+            ] {
+                self.command.write8(register, value);
+            }
+        } else {
+            let device = if drive == 1 { reg::SLAVE } else { 0 } | 0xa0 | ata::DEVICE_LBA;
+            self.command.write8(reg::DEVICE, device | lba[3] & 0x0f);
+        }
+        for (register, value) in
+            [(reg::COUNT, count_low), (reg::LBA0, lba[0]), (reg::LBA1, lba[1]), (reg::LBA2, lba[2])]
+        {
+            self.command.write8(register, value);
+        }
+    }
+
     /// Starts `op` on `drive`: for a read or write, of `count` of its
     /// logical sectors from `lba`, into or out of `buffers` (physical
     /// address below 4 GiB, and length), which hold exactly them.
@@ -459,12 +536,12 @@ impl<P: IoPorts> Channel<P> {
         if self.flight.is_some() {
             return Err(Error::Busy);
         }
-        if drive > 1 {
+        if drive > 1 || (op != Op::Flush && self.pio(drive)) {
             return Err(Error::BadRequest);
         }
         let dma = op != Op::Flush;
         if dma {
-            if count == 0 || count > 65_536 || lba >= 1 << 48 {
+            if !self.fits(drive, lba, count) {
                 return Err(Error::BadRequest);
             }
             let bytes = u64::from(count) * u64::from(self.sector[usize::from(drive)]);
@@ -476,10 +553,14 @@ impl<P: IoPorts> Channel<P> {
         if self.status() & (ata::STATUS_BSY | ata::STATUS_DRQ) != 0 {
             return Err(Error::Busy);
         }
-        let code = match op {
-            Op::Read => command::READ_DMA_EXT,
-            Op::Write => command::WRITE_DMA_EXT,
-            Op::Flush => command::FLUSH_CACHE_EXT,
+        let lba48 = self.lba48[usize::from(drive)];
+        let code = match (op, lba48) {
+            (Op::Read, true) => command::READ_DMA_EXT,
+            (Op::Write, true) => command::WRITE_DMA_EXT,
+            (Op::Flush, true) => command::FLUSH_CACHE_EXT,
+            (Op::Read, false) => command::READ_DMA,
+            (Op::Write, false) => command::WRITE_DMA,
+            (Op::Flush, false) => command::FLUSH_CACHE,
         };
         if dma {
             self.bus_master.write32(bm::PRD, self.prds.phys() as u32);
@@ -487,21 +568,7 @@ impl<P: IoPorts> Channel<P> {
             self.bus_master.write8(bm::STATUS, status | bm::ERROR | bm::INTERRUPT);
             let direction = if op == Op::Read { bm::INTO_MEMORY } else { 0 };
             self.bus_master.write8(bm::COMMAND, direction);
-            // A count of 65,536 is written as 0; the high bytes go first.
-            let [count_low, count_high] = ((count & 0xffff) as u16).to_le_bytes();
-            let lba = lba.to_le_bytes();
-            for (register, value) in [
-                (reg::COUNT, count_high),
-                (reg::LBA0, lba[3]),
-                (reg::LBA1, lba[4]),
-                (reg::LBA2, lba[5]),
-                (reg::COUNT, count_low),
-                (reg::LBA0, lba[0]),
-                (reg::LBA1, lba[1]),
-                (reg::LBA2, lba[2]),
-            ] {
-                self.command.write8(register, value);
-            }
+            self.write_address(drive, lba, count);
         }
         device_barrier();
         self.command.write8(reg::COMMAND, code);
@@ -509,8 +576,105 @@ impl<P: IoPorts> Channel<P> {
             let direction = if op == Op::Read { bm::INTO_MEMORY } else { 0 };
             self.bus_master.write8(bm::COMMAND, direction | bm::START);
         }
-        self.flight = Some(Flight { drive, dma, packet: None });
+        self.flight = Some(Flight { drive, dma, packet: None, pio: None });
         Ok(())
+    }
+
+    /// Starts a read or write by PIO on `drive`, of `count` of its
+    /// logical sectors from `lba`: READ SECTORS or WRITE SECTORS (their
+    /// EXT forms with 48-bit addresses). [`Channel::poll_pio`] then moves
+    /// them, as the drive is ready for each.
+    pub fn start_pio(&mut self, drive: u8, op: Op, lba: u64, count: u32) -> Result<(), Error> {
+        if self.flight.is_some() {
+            return Err(Error::Busy);
+        }
+        if drive > 1 || op == Op::Flush || !self.fits(drive, lba, count) {
+            return Err(Error::BadRequest);
+        }
+        self.select(drive, true);
+        if self.status() & (ata::STATUS_BSY | ata::STATUS_DRQ) != 0 {
+            return Err(Error::Busy);
+        }
+        let code = match (op == Op::Read, self.lba48[usize::from(drive)]) {
+            (true, true) => command::READ_SECTORS_EXT,
+            (false, true) => command::WRITE_SECTORS_EXT,
+            (true, false) => command::READ_SECTORS,
+            (false, false) => command::WRITE_SECTORS,
+        };
+        self.write_address(drive, lba, count);
+        self.command.write8(reg::COMMAND, code);
+        let pio = Pio { into_host: op == Op::Read, left: count, moved: 0 };
+        self.flight = Some(Flight { drive, dma: false, packet: None, pio: Some(pio) });
+        Ok(())
+    }
+
+    /// The PIO command in flight, moved on as far as the drive is ready,
+    /// by at most [`PIO_BURST`] sectors: each sector it is ready for read
+    /// into `buffer`, or written from it, from its start (ACS-4's PIO
+    /// data-in and data-out protocols, a sector to each DRQ block). `None`
+    /// while it runs; once done, how it ended.
+    pub fn poll_pio(&mut self, buffer: &Dma) -> Option<Result<(), Error>> {
+        let mut flight = self.flight?;
+        let mut pio = flight.pio?;
+        let sector = self.sector[usize::from(flight.drive)] as usize;
+        let mut confused = false;
+        for burst in 0.. {
+            if burst == PIO_BURST {
+                return None;
+            }
+            let status = self.status();
+            if status & ata::STATUS_BSY != 0 {
+                return None;
+            }
+            if status_failed(status) {
+                break;
+            }
+            if status & ata::STATUS_DRQ == 0 {
+                if pio.left == 0 {
+                    break;
+                }
+                // Between sectors: the drive has not yet said it is busy.
+                return None;
+            }
+            if pio.left == 0 || (pio.moved as usize + sector) > buffer.len() {
+                // It asks to move more than the command has.
+                confused = true;
+                break;
+            }
+            let mut block = [0u8; 512];
+            for part in (0..sector).step_by(block.len()) {
+                let at = pio.moved as usize + part;
+                if pio.into_host {
+                    for pair in block.as_chunks_mut::<2>().0 {
+                        *pair = self.command.read16(reg::DATA).to_le_bytes();
+                    }
+                    buffer.write(at, &block);
+                } else {
+                    buffer.read(at, &mut block);
+                    for pair in block.as_chunks::<2>().0 {
+                        self.command.write16(reg::DATA, u16::from_le_bytes(*pair));
+                    }
+                }
+            }
+            pio.moved += sector as u32;
+            pio.left -= 1;
+            flight.pio = Some(pio);
+            self.flight = Some(flight);
+            // The drive sets BSY within 400 ns of the block's last word:
+            // the alternate status, read once, gives it them.
+            self.status();
+        }
+        self.flight = None;
+        // Reading the status ends the command.
+        let status = self.command.read8(reg::STATUS);
+        let error = self.command.read8(reg::ERROR);
+        if status_failed(status) {
+            return Some(Err(Error::Device { status, error }));
+        }
+        if confused || pio.left != 0 {
+            return Some(Err(Error::Protocol));
+        }
+        Some(Ok(()))
     }
 
     /// Starts the packet command `bytes`, a SCSI command descriptor block
@@ -571,7 +735,7 @@ impl<P: IoPorts> Channel<P> {
         let mut packet =
             Packet { bytes: [0; 16], length: bytes.len() as u8, sent: false, into_host, moved: 0 };
         packet.bytes[..bytes.len()].copy_from_slice(bytes);
-        self.flight = Some(Flight { drive, dma, packet: Some(packet) });
+        self.flight = Some(Flight { drive, dma, packet: Some(packet), pio: None });
         Ok(())
     }
 
@@ -726,7 +890,8 @@ impl<P: IoPorts> Channel<P> {
     /// The command in flight, if it is done: how it ended. `None` while
     /// it runs, or when none is.
     pub fn poll(&mut self) -> Option<Result<(), Error>> {
-        let flight = self.flight.filter(|flight| flight.packet.is_none())?;
+        let flight =
+            self.flight.filter(|flight| flight.packet.is_none() && flight.pio.is_none())?;
         let status = self.status();
         if status & ata::STATUS_BSY != 0 {
             return None;

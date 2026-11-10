@@ -21,6 +21,13 @@
 //! any other through a bounce buffer of [`SEGMENTS`] pages below 4 GiB,
 //! copied before a write and after a read.
 //!
+//! A CompactFlash card in an IDE adapter (ADR 0446) is a disk named as the
+//! others are, whose sectors move by PIO: each request goes through the
+//! bounce buffer, which the channel reads into or writes from a few
+//! sectors at each poll. A card, or a disk from before ATA-6, without
+//! 48-bit addresses takes 28-bit commands, of at most 256 sectors: a
+//! request's [`SEGMENTS`] pages are no more.
+//!
 //! A SATA controller in IDE mode runs one command at a time on each
 //! channel, with no queuing, hot-plug or link power management: when a
 //! disk says it is Serial ATA, the log suggests setting the controller to
@@ -105,6 +112,9 @@ struct Drive {
     present: bool,
     /// It has a write cache that is on, which FLUSH CACHE EXT empties.
     flush: bool,
+    /// Its sectors move by PIO, through the bounce buffer: a CompactFlash
+    /// card's.
+    pio: bool,
 }
 
 /// The request in flight.
@@ -114,6 +124,8 @@ struct Flight {
     /// A read through the bounce buffer, whose bytes go to the request's
     /// buffers, kept in `buffers`, once it is done.
     bounced_read: bool,
+    /// Its sectors move by PIO.
+    pio: bool,
 }
 
 /// A channel as the queue drives it.
@@ -157,15 +169,21 @@ impl IdeChannel {
         }
     }
 
-    /// The PRDs' buffers for `data`: themselves when all lie below 4 GiB,
-    /// else the bounce buffer, filled for a write.
-    fn place_buffers(&mut self, data: &[(u64, u32)], write: bool) -> Result<bool, Error> {
+    /// The PRDs' buffers for `data`: themselves when all lie below 4 GiB
+    /// and the drive does DMA (`!pio`), else the bounce buffer, filled for
+    /// a write.
+    fn place_buffers(
+        &mut self,
+        data: &[(u64, u32)],
+        write: bool,
+        pio: bool,
+    ) -> Result<bool, Error> {
         self.prds.clear();
         self.buffers.clear();
         if data.len() > SEGMENTS || data.iter().any(|&(_, len)| len as usize > PAGE) {
             return Err(Error::OutOfRange);
         }
-        if data.iter().all(|&(phys, len)| phys + u64::from(len) <= 1 << 32) {
+        if !pio && data.iter().all(|&(phys, len)| phys + u64::from(len) <= 1 << 32) {
             for &(phys, len) in data {
                 let _ = self.prds.push_within_capacity((phys as u32, len));
             }
@@ -215,18 +233,25 @@ impl Controller for IdeChannel {
         let bytes: u64 = request.data.iter().map(|&(_, len)| u64::from(len)).sum();
         let sector = unit * radix_block::SECTOR;
         let count = u32::try_from(bytes / sector).map_err(|_| Error::OutOfRange)?;
+        let pio = known.pio && op != IdeOp::Flush;
         let bounced_read = if op == IdeOp::Flush {
             self.prds.clear();
             false
         } else {
-            self.place_buffers(request.data, op == IdeOp::Write)? && op == IdeOp::Read
+            self.place_buffers(request.data, op == IdeOp::Write, pio)? && op == IdeOp::Read
         };
-        let started = self.share.channel.lock().start(drive, op, lba, count, &self.prds);
+        let mut channel = self.share.channel.lock();
+        let started = if pio {
+            channel.start_pio(drive, op, lba, count)
+        } else {
+            channel.start(drive, op, lba, count, &self.prds)
+        };
+        drop(channel);
         started.map_err(|err| match err {
             radix_ide::Error::BadRequest => Error::OutOfRange,
             _ => Error::Io,
         })?;
-        self.flight = Some(Flight { slot, bounced_read });
+        self.flight = Some(Flight { slot, bounced_read, pio });
         Ok(())
     }
 
@@ -235,7 +260,11 @@ impl Controller for IdeChannel {
             return Some(done);
         }
         let flight = self.flight?;
-        let result = self.share.channel.lock().poll()?;
+        let result = if flight.pio {
+            self.share.channel.lock().poll_pio(&self.bounce)?
+        } else {
+            self.share.channel.lock().poll()?
+        };
         self.flight = None;
         match result {
             Ok(()) => {
@@ -247,6 +276,7 @@ impl Controller for IdeChannel {
             Err(err) => {
                 let why = match err {
                     radix_ide::Error::Bus => "the bus master could not reach memory",
+                    radix_ide::Error::Protocol => "the card asked to move more than was asked",
                     radix_ide::Error::Device { error, .. } if error & 1 << 6 != 0 => {
                         "the disk could not read a sector"
                     }
@@ -398,7 +428,8 @@ fn add_channel(
                 info!("Disk: IDE {place}, {which}: {why}; not used");
             }
             Device::Ata { identity, serial: sata } => {
-                ends[end] = Drive { present: true, flush: identity.write_cache && identity.flush };
+                let flush = identity.write_cache && identity.flush;
+                ends[end] = Drive { present: true, flush, pio: identity.cfa };
                 serial |= sata;
             }
         }
@@ -563,21 +594,28 @@ fn add_disk(
         read_only: false,
         max_segments: SEGMENTS,
         discard_sectors: 0,
-        // A disk that does not say spins, as Linux takes it.
-        rotational: identity.rotational.unwrap_or(true),
+        // A disk that does not say spins, as Linux takes it; a card is
+        // flash.
+        rotational: identity.rotational.unwrap_or(!identity.cfa),
     };
     let volume = Volume::new(disk.clone(), target, info).ok_or("out of memory")?;
     let volume =
         Arc::try_new_in(volume, HEAP.with(Flags::MAY_SLEEP)).map_err(|_| "out of memory")?;
+    let kind = match (identity.cfa, serial) {
+        (true, _) => "a CompactFlash card",
+        (false, true) => "a SATA disk",
+        (false, false) => "an ATA disk",
+    };
     info!(
-        "Disk: {name} is {} of {} on the IDE {place}, {which}: {}, {} bytes a block{}{}{}",
-        if serial { "a SATA disk" } else { "an ATA disk" },
+        "Disk: {name} is {kind} of {} on the IDE {place}, {which}: {}, {} bytes a block{}{}{}{}{}",
         Size(info.sectors * radix_block::SECTOR),
         trimmed(&identity.model),
         info.block_size,
         super::sector_note(&info),
         if identity.write_cache { ", write cache" } else { "" },
         if info.rotational { "" } else { ", solid state" },
+        if identity.lba48 { "" } else { ", 28-bit addresses" },
+        if identity.cfa { ", by PIO" } else { "" },
     );
     let device: DeviceRef = volume;
     let ident = Ident {

@@ -1,0 +1,33 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "A CompactFlash card in an IDE adapter is a disk read and written by PIO: formatted, mounted, written, and read back after a remount"
+time = "5m"
+# A blank card of 64 MB in an IDE adapter: QEMU's ide-cf, or the card a
+# machine has in one.
+cf = "64M"
+
+# The card is a disk named sd and a letter, and the kernel's log says it
+# is a CompactFlash card, moved by PIO (ADR 0446). Keep its name in the
+# lab's home for the steps below, which root runs: each account has a
+# /tmp of its own. Nothing is formatted unless a card was found.
+[[step]]
+run = '''sh -c 'dmesg | grep -o "sd[a-z]* is a CompactFlash card" | cut -d" " -f1 > ~/lab-cf && cat ~/lab-cf' '''
+expect = "sd"
+[[step]]
+run = '''sh -c 'dmesg | grep "is a CompactFlash card"' '''
+expect = "by PIO"
+[[step]]
+run = "sh -c 'mkfs-fat -n LABCF /devices/$(cat /users/lab/lab-cf)'"
+root = true
+expect = "label LABCF"
+# Written through one mount, read back through the next: every sector
+# went to the card and came back by PIO.
+[[step]]
+run = "sh -c 'mkdir -p /volumes/lab-cf && mount /devices/$(cat /users/lab/lab-cf) /volumes/lab-cf && dd if=/devices/urandom of=/volumes/lab-cf/data bs=64k count=64 && sha256sum /volumes/lab-cf/data > /users/lab/lab-cf.sum && umount /volumes/lab-cf'"
+root = true
+exit = 0
+[[step]]
+run = "sh -c 'mount /devices/$(cat /users/lab/lab-cf) /volumes/lab-cf && sha256sum -c /users/lab/lab-cf.sum && umount /volumes/lab-cf'"
+root = true
+expect = "OK"
