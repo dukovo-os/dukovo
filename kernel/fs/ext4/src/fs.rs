@@ -34,8 +34,9 @@
 //!
 //! # Locks
 //!
-//! A directory operation takes the namespace lock first (`ns`), which
-//! also holds its blocks' room. A file's page cache comes next; then the
+//! A sync holds `syncing` from start to end, taken before any other
+//! lock, so that two syncs take turns. A directory operation takes the
+//! namespace lock first (`ns`), which also holds its blocks' room. A file's page cache comes next; then the
 //! transaction, held by every change; then a node's own lock; then the
 //! node table, the nodes kept for the sync, the inodes to free, and the
 //! free space counts; then the block cache. Nothing that holds the
@@ -128,6 +129,11 @@ pub(crate) struct Inner {
     nodes: Mutex<KVec<(u32, Weak<Ext4Node, Alloc>)>>,
     /// Nodes with changes in memory, kept alive until they are synced.
     dirty: Mutex<KVec<KArc<Ext4Node>>>,
+    /// Held by each sync from start to end, so that syncs take turns: a
+    /// sync that finds the changed nodes taken by another, still writing
+    /// them, waits for it. An unmount's sync then returns only once every
+    /// change is on the disk, before a drive lets its medium go.
+    syncing: Mutex<()>,
     /// Inodes with no name whose last reference went: freed at the next
     /// commit.
     pub(crate) doomed: Mutex<KVec<u32>>,
@@ -505,6 +511,7 @@ impl Inner {
             space: Mutex::new(Space { free_blocks, free_inodes, reserved: 0, pending: 0 }),
             nodes: Mutex::new(mem::vec()),
             dirty: Mutex::new(mem::vec()),
+            syncing: Mutex::new(()),
             doomed: Mutex::new(mem::vec()),
             locs,
             overlay,
@@ -926,6 +933,7 @@ impl Inner {
         if self.read_only {
             return Ok(());
         }
+        let _syncing = self.syncing.lock();
         let pinned = core::mem::replace(&mut *self.dirty.lock(), mem::vec());
         let mut failed = None;
         for node in &pinned {

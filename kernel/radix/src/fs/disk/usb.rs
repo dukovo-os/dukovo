@@ -74,7 +74,7 @@ use radix_usb::storage::uas::{MAX_TAGS, OneAtATime, STATUS_LENGTH, Uas};
 use radix_usb::storage::{Bot, MAX_LUNS};
 
 use super::queue::{self, Controller, Disk, Op, Outcome, Part, Request, SLOTS, Volume};
-use super::removable::{self, Disc, DriveRef};
+use super::removable::{self, Disc, DriveRef, Kind};
 use super::{Entry, Ident, Name, Size, optical, register};
 use crate::sched::{self, ThreadRef};
 use crate::usb::storage::{Link, LinkRef, Protocol, StickPipes, UasPipes};
@@ -1336,7 +1336,8 @@ fn add_named(
     let watch = if inquiry.removable || optical.is_some() || made.is_none() {
         let empty: DeviceRef = Arc::try_new_in(Empty, heap).map_err(|_| "out of memory")?;
         let thread = sched::current().ok_or("it has no thread")?;
-        let drive = removable::add(&name, thread, optical.is_some()).ok_or("out of memory")?;
+        let kind = if optical.is_some() { Kind::Optical } else { Kind::Polled };
+        let drive = removable::add(&name, thread, kind).ok_or("out of memory")?;
         if let Some(optical) = optical {
             let _ = drive.set_disc(optical.disc);
         }

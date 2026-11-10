@@ -49,9 +49,9 @@ _/kernel/block/_*name*_/ro_
 
 _/kernel/block/_*name*_/removable_
 	For a disk: *1* for a drive whose medium comes and goes, such as a
-	card reader's slot or a USB stick that says its medium is removable,
-	*0* for any other, as on Linux (ADR 0430). With no medium in it, the
-	drive's _size_ is *0*.
+	card reader's slot, a floppy drive or a USB stick that says its
+	medium is removable, *0* for any other, as on Linux (ADR 0430). With
+	no medium in it, the drive's _size_ is *0*.
 
 _/kernel/block/_*name*_/media_changes_
 	For a drive whose medium comes and goes: how many times a medium

@@ -51,6 +51,17 @@ $ eject HOLIDAY_2026
 $ eject cd0
 ```
 
+A floppy drive is such a drive too (ADR 0435), but has no motor to push
+the disk out: eject unmounts the disk and has the drive let it go. The
+drive is then empty, and stays empty, the disk still in it, until the
+disk is taken out. A floppy drive is never polled for a disk: one put in
+is found when the drive is looked at, as *rdisk --reread* asks.
+
+```
+$ eject fd0
+$ rdisk --reread /devices/fd0
+```
+
 # OPTIONS
 
 *-v*, *--verbose*

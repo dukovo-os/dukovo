@@ -561,6 +561,14 @@ pub trait Devices {
     /// [`radix_hw::Page`] is dropped.
     fn alloc_cache_page() -> Option<radix_hw::Page>;
 
+    /// A buffer that ISA DMA reaches, kept at boot: below 16 MiB, within
+    /// one 64 KiB line, and RAM that nothing else uses, for the floppy
+    /// disk controller (ADR 0435). Its physical address and length;
+    /// `None` on a machine without ISA DMA, or with no room for one.
+    fn isa_dma_buffer() -> Option<(u64, usize)> {
+        None
+    }
+
     /// Allocates an interrupt vector whose interrupts call `handler(arg)`,
     /// with interrupts masked, on the CPU they arrive at, for the PCI
     /// function `source` to raise. Returns the vector's number and the

@@ -494,6 +494,30 @@ const BOOT_CODE: [u8; 31] = [
 const MESSAGE_AT: usize = 5;
 const MESSAGE: &[u8] = b"This is not a bootable disk. Press a key to try the next one.\r\n\0";
 
+/// The geometry a volume's parameter block gives when it is a whole
+/// floppy disk of `total` sectors of `sector` bytes: its sectors a track,
+/// heads and media byte, as DOS formats each size and `mkfs.fat` writes
+/// them. `None` for any other volume, which gets a hard disk's geometry.
+/// A floppy disk's own geometry matters: DOS and boot code find a sector
+/// by its track from it, and Radix's floppy driver takes a disk whose
+/// parameter block names a floppy geometry other than its tracks' for a
+/// format it does not read (ADR 0435).
+pub fn floppy_geometry(total: u64, sector: u32) -> Option<(u16, u16, u8)> {
+    if sector != 512 {
+        return None;
+    }
+    match total {
+        // 360 KB and 720 KB: 9 sectors a track.
+        720 => Some((9, 2, 0xfd)),
+        1440 => Some((9, 2, 0xf9)),
+        // 1.2 MB, 1.44 MB and 2.88 MB.
+        2400 => Some((15, 2, 0xf9)),
+        2880 => Some((18, 2, 0xf0)),
+        5760 => Some((36, 2, 0xf0)),
+        _ => None,
+    }
+}
+
 /// Makes a FAT filesystem on `device`, as `options` ask.
 ///
 /// # Errors
@@ -510,6 +534,10 @@ pub fn format(device: &Device, options: &Options, rng: &mut Rng) -> Result<Made,
     let hidden = options.hidden.unwrap_or(device.base() / u64::from(sector));
     let fats = u32::from(options.fats.unwrap_or(2));
     let s = sector as usize;
+    // A whole floppy disk has its own geometry; any other volume, a
+    // partition included, a hard disk's.
+    let (track, heads, media) =
+        floppy_geometry(total, sector).filter(|_| hidden == 0).unwrap_or((63, 255, 0xf8));
 
     let mut boot = vec![0u8; s];
     let code_at = if g.bits == 32 { 90 } else { 62 };
@@ -526,9 +554,9 @@ pub fn format(device: &Device, options: &Options, rng: &mut Rng) -> Result<Made,
         let total32 = u32::try_from(total).map_err(|_| "the volume is larger than FAT counts")?;
         boot[32..36].copy_from_slice(&total32.to_le_bytes());
     }
-    boot[21] = 0xf8;
-    boot[24..26].copy_from_slice(&63u16.to_le_bytes());
-    boot[26..28].copy_from_slice(&255u16.to_le_bytes());
+    boot[21] = media;
+    boot[24..26].copy_from_slice(&track.to_le_bytes());
+    boot[26..28].copy_from_slice(&heads.to_le_bytes());
     boot[28..32].copy_from_slice(&u32::try_from(hidden).unwrap_or(u32::MAX).to_le_bytes());
     let ebpb = if g.bits == 32 {
         boot[36..40].copy_from_slice(&g.fat_sectors.to_le_bytes());
@@ -594,9 +622,9 @@ pub fn format(device: &Device, options: &Options, rng: &mut Rng) -> Result<Made,
     // 0 and 1, which also say the volume was cleanly unmounted, and for
     // FAT32 the root directory's cluster, 2, a chain of one.
     let head: Vec<u8> = match g.bits {
-        12 => vec![0xf8, 0xff, 0xff],
-        16 => vec![0xf8, 0xff, 0xff, 0xff],
-        _ => vec![0xf8, 0xff, 0xff, 0x0f, 0xff, 0xff, 0xff, 0x0f, 0xff, 0xff, 0xff, 0x0f],
+        12 => vec![media, 0xff, 0xff],
+        16 => vec![media, 0xff, 0xff, 0xff],
+        _ => vec![media, 0xff, 0xff, 0x0f, 0xff, 0xff, 0xff, 0x0f, 0xff, 0xff, 0xff, 0x0f],
     };
     for n in 0..u64::from(fats) {
         write((u64::from(g.reserved) + n * u64::from(g.fat_sectors)) * sector64, &head)?;

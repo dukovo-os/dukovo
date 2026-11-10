@@ -180,9 +180,12 @@ pub fn place_for(label: Option<&str>, name: &str, taken: impl Fn(&str) -> bool) 
 /// is an install stick's DUKOVO_LIVE.
 fn open_device(name: &str) -> io::Result<(File, MountFlags)> {
     let path = format!("/devices/{name}");
-    if probe::block_text(name, "parttype")
-        .is_some_and(|kind| kind.eq_ignore_ascii_case(DUKOVO_LIVE))
-    {
+    let live = probe::block_text(name, "parttype")
+        .is_some_and(|kind| kind.eq_ignore_ascii_case(DUKOVO_LIVE));
+    // A device that refuses writes, as a write-protected card or floppy
+    // disk does, is mounted read-only, and said to be.
+    let refuses = probe::block_text(name, "ro").as_deref() == Some("1");
+    if live || refuses {
         return Ok((File::open(&path)?, MountFlags::READ_ONLY));
     }
     match OpenOptions::new().read(true).write(true).open(&path) {

@@ -208,7 +208,7 @@ extern "C" fn radix_arch_entry(magic: u32, info_phys: u32, slide: u64) -> ! {
     // Physical memory.
     let (image_start, image_end) =
         (&raw const __kernel_phys_start as u64, &raw const __kernel_phys_end as u64);
-    memory::reserve("first MiB (firmware, AP start-up)", 0, 1 << 20);
+    memory::reserve("first MiB (firmware, AP start-up, ISA DMA)", 0, memory::FIRST_MIB);
     memory::reserve("kernel image", image_start, image_end);
     memory::reserve(
         "boot information",
@@ -229,9 +229,11 @@ extern "C" fn radix_arch_entry(magic: u32, info_phys: u32, slide: u64) -> ! {
         memory::reserve("crash log", start, start + memory::CRASH_LOG_SIZE);
         crate::set_crash_log_region(start);
     }
-    if let Some(page) = memory::choose_trampoline_page() {
+    let trampoline = memory::choose_trampoline_page();
+    if let Some(page) = trampoline {
         smp::set_trampoline_page(page);
     }
+    memory::keep_isa_dma_region(trampoline);
     memory::init_allocator();
     radix_klog::tracepoint!("boot.memory", memory::memory_map().len());
 

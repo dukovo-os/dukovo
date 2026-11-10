@@ -125,7 +125,10 @@ grown.
 	with logical partitions (in an MBR's extended partition) cannot be.
 
 *--reread*
-	Ask the kernel to read the disk's table again.
+	Ask the kernel to read the disk's table again. For a floppy drive,
+	which is never polled and whose disk has no table, ask the kernel to
+	look in the drive: a disk put in is found, and one taken out lost,
+	before rdisk ends (ADR 0435).
 
 *--grow*
 	Grow partition _number_, or the last, into the free space after it

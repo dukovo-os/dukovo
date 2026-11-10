@@ -19,6 +19,13 @@
 //! to be let go when its eject button is pressed: its driver counts each
 //! request ([`Drive::eject_requested`]), and volumed unmounts the disc
 //! and ejects it, as eject(1) does (ADR 0432).
+//!
+//! A floppy drive cannot say that a disk went in: its disk change line
+//! comes down only when its heads step with a disk in, which is heard, so
+//! it is not looked at every two seconds but when asked (ADR 0435):
+//! radix-block(2)'s REREAD_PARTITIONS on the drive has its driver's
+//! thread look ([`Drive::look`]), and a disk found takes the drive's
+//! place before the request returns.
 
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -35,16 +42,33 @@ use crate::sched::{self, ThreadRef, wait};
 /// How long an eject may take before the one who asked gives up: the 30
 /// seconds a START STOP UNIT is given, and the lock let go before it.
 const EJECT_NS: u64 = 40_000_000_000;
+/// How long a look may take before the one who asked gives up: a floppy
+/// drive's motor coming up to speed, its heads stepping, a try at each
+/// data rate, and a controller reset on the way.
+const LOOK_NS: u64 = 20_000_000_000;
 
-/// The states of a drive's eject, in [`Drive::eject`]'s byte. No eject is
-/// asked.
+/// The states of what is asked of a drive's thread, an eject or a look,
+/// in [`Drive::eject`]'s byte and [`Drive::look`]'s. Nothing is asked.
 const IDLE: u8 = 0;
-/// One is asked, and the driver's thread has not answered yet.
+/// It is asked, and the driver's thread has not answered yet.
 const ASKED: u8 = 1;
-/// The thread ejected the medium, or let it go.
-const EJECTED: u8 = 2;
+/// The thread did it: ejected the medium, or let it go; or looked.
+const DONE: u8 = 2;
 /// The thread could not: the transport failed.
 const FAILED: u8 = 3;
+
+/// How a drive finds out that its medium went in or came out.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Kind {
+    /// A card reader's slot, or a stick or USB disk whose medium is
+    /// removable: its driver looks every two seconds.
+    Polled,
+    /// A CD, DVD or Blu-ray drive: looked at every two seconds too, and
+    /// it says what disc is in it.
+    Optical,
+    /// A floppy drive: looked at only when asked ([`Drive::look`]).
+    Floppy,
+}
 
 /// What is in an optical drive.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -82,26 +106,36 @@ pub struct Drive {
     /// Where an eject asked of the thread is: [`IDLE`], [`ASKED`], or the
     /// thread's answer.
     eject: AtomicU8,
-    /// One eject at a time: a second waits for the first's answer.
+    /// Where a look asked of a floppy drive's thread is, as `eject`.
+    look: AtomicU8,
+    /// One eject or look at a time: a second waits for the first's answer.
     one: Mutex<()>,
-    /// The driver's thread, which an eject wakes.
+    /// The driver's thread, which an eject or a look wakes.
     thread: ThreadRef,
+    kind: Kind,
     /// For an optical drive, the disc in it; `None` for another drive.
     disc: SpinLock<Option<Disc>>,
 }
 
 impl Drive {
-    /// A drive whose driver's thread is `thread`; with `optical`, a CD,
-    /// DVD or Blu-ray drive, empty until it says otherwise.
-    pub fn new(thread: ThreadRef, optical: bool) -> Drive {
+    /// A drive of `kind` whose driver's thread is `thread`; an optical
+    /// drive is empty until it says otherwise.
+    pub fn new(thread: ThreadRef, kind: Kind) -> Drive {
         Drive {
             changes: AtomicU64::new(0),
             eject_requests: AtomicU64::new(0),
             eject: AtomicU8::new(IDLE),
+            look: AtomicU8::new(IDLE),
             one: Mutex::new(()),
             thread,
-            disc: SpinLock::new(optical.then_some(Disc::None)),
+            kind,
+            disc: SpinLock::new((kind == Kind::Optical).then_some(Disc::None)),
         }
+    }
+
+    /// How it finds out that its medium went in or came out.
+    pub fn kind(&self) -> Kind {
+        self.kind
     }
 
     /// For an optical drive, the disc in it.
@@ -148,19 +182,7 @@ impl Drive {
     /// [`radix_block::Error::Io`] if the transport failed, the drive was
     /// unplugged, or no answer came.
     pub fn eject(&self) -> Result<(), radix_block::Error> {
-        let _one = self.one.lock();
-        self.eject.store(ASKED, Ordering::Release);
-        sched::wake(&self.thread);
-        let deadline = sched::now_ns().saturating_add(EJECT_NS);
-        wait::wait_until_or_timeout(self.key(), "eject", deadline, || {
-            self.eject.load(Ordering::Acquire) != ASKED
-        });
-        // An answer that comes after this finds the eject no longer
-        // asked, and is dropped.
-        match self.eject.swap(IDLE, Ordering::AcqRel) {
-            EJECTED => Ok(()),
-            _ => Err(radix_block::Error::Io),
-        }
+        self.ask(&self.eject, EJECT_NS, "eject")
     }
 
     /// Whether an eject waits for the driver's thread.
@@ -171,13 +193,62 @@ impl Drive {
     /// The driver's thread answers the eject asked: whether the medium
     /// was ejected. Wakes the one who asked.
     pub fn answer(&self, ejected: bool) {
-        let to = if ejected { EJECTED } else { FAILED };
-        if self.eject.compare_exchange(ASKED, to, Ordering::AcqRel, Ordering::Acquire).is_ok() {
+        self.reply(&self.eject, ejected);
+    }
+
+    /// Has a floppy drive's thread look whether a disk is in it (ADR
+    /// 0435): one found takes the drive's place, and one taken out
+    /// leaves it, before this returns. Waits for the thread's answer, for
+    /// up to [`LOOK_NS`]. Fails with [`radix_block::Error::Io`] if the
+    /// controller failed, the drive went, or no answer came.
+    pub fn look(&self) -> Result<(), radix_block::Error> {
+        self.ask(&self.look, LOOK_NS, "look")
+    }
+
+    /// Whether a look waits for the driver's thread.
+    pub fn look_asked(&self) -> bool {
+        self.look.load(Ordering::Acquire) == ASKED
+    }
+
+    /// The driver's thread answers the look asked: whether it could look.
+    /// Wakes the one who asked.
+    pub fn looked(&self, worked: bool) {
+        self.reply(&self.look, worked);
+    }
+
+    /// Asks the driver's thread for what `state` stands for, and waits
+    /// for its answer as `what`, for up to `limit_ns`.
+    fn ask(
+        &self,
+        state: &AtomicU8,
+        limit_ns: u64,
+        what: &'static str,
+    ) -> Result<(), radix_block::Error> {
+        let _one = self.one.lock();
+        state.store(ASKED, Ordering::Release);
+        sched::wake(&self.thread);
+        let deadline = sched::now_ns().saturating_add(limit_ns);
+        wait::wait_until_or_timeout(self.key(), what, deadline, || {
+            state.load(Ordering::Acquire) != ASKED
+        });
+        // An answer that comes after this finds nothing asked, and is
+        // dropped.
+        match state.swap(IDLE, Ordering::AcqRel) {
+            DONE => Ok(()),
+            _ => Err(radix_block::Error::Io),
+        }
+    }
+
+    /// Answers what `state` asked: whether it was done. Wakes the one who
+    /// asked.
+    fn reply(&self, state: &AtomicU8, done: bool) {
+        let to = if done { DONE } else { FAILED };
+        if state.compare_exchange(ASKED, to, Ordering::AcqRel, Ordering::Acquire).is_ok() {
             wait::wake_all(self.key());
         }
     }
 
-    /// What the one who asked for an eject waits on.
+    /// What the one who asked for an eject or a look waits on.
     fn key(&self) -> usize {
         core::ptr::from_ref(self) as usize
     }
@@ -189,11 +260,11 @@ pub type DriveRef = Arc<Drive, Kmalloc>;
 /// Every drive whose medium comes and goes, by name.
 static DRIVES: Mutex<Option<Vec<(Name, DriveRef), Kmalloc>>> = Mutex::new(None);
 
-/// Adds the drive `name`, of the driver whose thread is `thread`, an
-/// optical drive with `optical`; `None` when memory runs out.
-pub fn add(name: &Name, thread: ThreadRef, optical: bool) -> Option<DriveRef> {
+/// Adds the drive `name`, of `kind`, of the driver whose thread is
+/// `thread`; `None` when memory runs out.
+pub fn add(name: &Name, thread: ThreadRef, kind: Kind) -> Option<DriveRef> {
     let heap = HEAP.with(Flags::MAY_SLEEP);
-    let drive = Arc::try_new_in(Drive::new(thread, optical), heap).ok()?;
+    let drive = Arc::try_new_in(Drive::new(thread, kind), heap).ok()?;
     let mut drives = DRIVES.lock();
     let drives = drives.get_or_insert_with(|| Vec::new_in(heap));
     drives.try_reserve(1).ok()?;
@@ -201,8 +272,8 @@ pub fn add(name: &Name, thread: ThreadRef, optical: bool) -> Option<DriveRef> {
     Some(drive)
 }
 
-/// Takes the drive `name` away: it was unplugged. Answers an eject that
-/// waits for it, so that whoever asked need not wait it out.
+/// Takes the drive `name` away: it was unplugged. Answers an eject or a
+/// look that waits for it, so that whoever asked need not wait it out.
 pub fn remove(name: &str) {
     let gone = {
         let mut drives = DRIVES.lock();
@@ -211,6 +282,7 @@ pub fn remove(name: &str) {
         drives.remove(at)
     };
     gone.1.answer(false);
+    gone.1.looked(false);
 }
 
 /// The drive `name`, if it is one whose medium comes and goes.

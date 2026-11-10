@@ -24,6 +24,7 @@ members = [
     "drivers/atheros",
     "drivers/broadcom",
     "drivers/crosec",
+    "drivers/fdc",
     "drivers/ena",
     "drivers/gpio",
     "drivers/gve",

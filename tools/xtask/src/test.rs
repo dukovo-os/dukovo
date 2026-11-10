@@ -139,6 +139,7 @@ pub const KERNEL_LIBRARIES: &[&str] = &[
     "radix-fat",
     "radix-fuse",
     "radix-fbcon",
+    "radix-fdc",
     "radix-gpio",
     "radix-gve",
     "radix-hda",
@@ -681,6 +682,11 @@ enum Bus {
     /// as cloud machines attach disks: named `sd` and a letter, as SATA
     /// disks are, in order (ADR 0327).
     Scsi(u8),
+    /// A disk in a 3.5-inch 1.44 MB floppy drive of the case's own floppy
+    /// disk controller (QEMU's `isa-fdc`, with a `floppy` drive for each
+    /// disk), in order: drives 0 and 1 of the controller, named `fd0` and
+    /// `fd1` (ADR 0435).
+    Floppy,
 }
 
 impl Disk {
@@ -812,11 +818,13 @@ fn disk_names(disks: &[Disk]) -> Vec<String> {
     let ide_drives = disks.iter().filter(|disk| disk.bus == Bus::IdeCd).count();
     let (mut sata_cd, mut ide_cd) = (0.., sata_drives..);
     let mut usb_cd = sata_drives + ide_drives..;
+    let mut floppies = 0..;
     disks
         .iter()
         .map(|disk| {
             let (prefix, letter) = match disk.bus {
                 Bus::Sd => return format!("mmcblk{}", cards.next().unwrap_or_default()),
+                Bus::Floppy => return format!("fd{}", floppies.next().unwrap_or_default()),
                 Bus::SataCd => return format!("cd{}", sata_cd.next().unwrap_or_default()),
                 Bus::IdeCd => return format!("cd{}", ide_cd.next().unwrap_or_default()),
                 Bus::UsbCd(_) | Bus::UasCd(..) => {
@@ -3786,6 +3794,11 @@ fn run_case(
         let adapter = if pvscsi { "pvscsi,id=scsi0" } else { "virtio-scsi-pci,id=scsi0" };
         extra.extend(["-device".into(), adapter.into()]);
     }
+    // First, so that a drive of the case's own arguments has its
+    // controller.
+    if case.disks.iter().any(|disk| matches!(disk.bus, Bus::Floppy)) {
+        extra.splice(0..0, ["-device".to_string(), "isa-fdc,id=fdc".to_string()]);
+    }
     // A reader for each card, before them; each card names its reader's
     // bus by its path, as every reader's is called `sd-bus`.
     for n in 0..case.disks.iter().filter(|disk| disk.bus == Bus::Sd).count() {
@@ -3806,7 +3819,7 @@ fn run_case(
         extra.extend(["-device".into(), format!("nvme,id=nvme{n},serial=dukovo-test-{n}")]);
     }
     let mut namespaces = [0u32; 256];
-    let (mut port, mut end, mut card) = (0, 0, 0);
+    let (mut port, mut end, mut card, mut floppy) = (0, 0, 0, 0);
     for (i, (disk, image)) in case.disks.iter().zip(&disks).enumerate() {
         let mut file = qemu::option_value(&image.path);
         if disk.errors.is_some() {
@@ -3867,6 +3880,10 @@ fn run_case(
                     "scsi-hd,drive=disk{i},bus=scsi0.0,channel=0,scsi-id={target},lun=0,\
                      serial=dukovo-scsi-{target}{device}"
                 )
+            }
+            Bus::Floppy => {
+                floppy += 1;
+                format!("floppy,drive=disk{i},unit={},drive-type=144{device}", floppy - 1)
             }
         });
     }
@@ -7506,6 +7523,10 @@ fn disks_found(vm: &mut Vm, case: &Case) -> Result<(), String> {
                     disk.sector
                 ),
             ),
+            Bus::Floppy => (
+                line_of(&format!("Disk: {name} is a 3.5-inch 1.44 MB floppy drive, drive "))?,
+                " of the floppy disk controller".to_string(),
+            ),
         };
         // Only a SATA or IDE disk's line says whether it is solid state.
         let says_solid = matches!(disk.bus, Bus::Sata | Bus::Ide) && disk.solid();
@@ -7517,6 +7538,13 @@ fn disks_found(vm: &mut Vm, case: &Case) -> Result<(), String> {
         if disk.optical() {
             let kind = if disk.kib > 720_000 { "dvd-rom" } else { "cd-rom" };
             line_of(&format!("Disk: {name}: a disc of data ({kind}) of {size} "))?;
+            continue;
+        }
+        // A floppy disk is used whole too, with no table looked for.
+        if disk.bus == Bus::Floppy {
+            let format = if disk.kib == 720 { "720 KB" } else { "1.44 MB" };
+            let ro = if disk.read_only { ", write-protected" } else { "" };
+            line_of(&format!("Disk: {name}: a {format} disk went in{ro}"))?;
             continue;
         }
         let part = partition_name(&name, 1);
@@ -7684,7 +7712,8 @@ fn storage_write(vm: &mut Vm, case: &Case) -> Result<(), String> {
             Bus::Sd => "QEMU!",
             Bus::SataCd | Bus::IdeCd => "QEMU DVD-ROM",
             Bus::UsbCd(_) | Bus::UasCd(..) => "QEMU QEMU CD-ROM",
-            Bus::Virtio => "",
+            // A floppy drive says nothing of itself, as a virtio disk.
+            Bus::Virtio | Bus::Floppy => "",
         };
         if disk.table == Table::None && !model.is_empty() {
             vm.expect(&format!("storage: /kernel/block/{name}/device: {model}, serial "))?;
