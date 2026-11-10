@@ -65,7 +65,8 @@ _/kernel/block/_*name*_/disc_
 	*dvd-rom*, *dvd+r*, *dvd-r-dl*, *bd-rom*, *bd-re* and the others),
 	and what it holds: *data*, *audio* for a music CD, *mixed* for a CD
 	of both, or *blank*. Only a disc of data is read: with any other,
-	the drive's _size_ is *0*. Radix's own: Linux's udev has it as
+	the drive's _size_ is *0*, and *audiocd*(1) reads the tracks of a
+	disc of audio. Radix's own: Linux's udev has it as
 	_ID_CDROM_MEDIA_ and its kin.
 
 _/kernel/block/_*name*_/formats_

@@ -72,6 +72,7 @@ use alloc::vec::Vec;
 
 use radix_block::mem::KVec;
 use radix_block::{DeviceRef, Empty, Error, Info, SECTOR, partition};
+use radix_hw::Dma;
 use radix_klog::{TextBuf, info, warn};
 use radix_mm::{Flags, HEAP, Kmalloc};
 use radix_scsi::{
@@ -314,6 +315,9 @@ struct Watch {
     /// Its medium was taken out, `why`, and its requests fail, but it is
     /// still in `/devices` while the mount table is busy.
     out: Option<&'static str>,
+    /// For an optical drive, the DMA memory the commands programs ask of it
+    /// are run with, once one is (ADR 0447).
+    memory: Option<Dma>,
 }
 
 impl Medium {
@@ -411,8 +415,10 @@ impl Lun {
         if !self.finish_out() {
             return now.saturating_add(BUSY_NS);
         }
-        let Some(watch) = &self.watch else { return u64::MAX };
+        let Some(watch) = self.watch.as_mut() else { return u64::MAX };
         let drive = watch.drive.clone();
+        // A command a program asked of an optical drive (ADR 0447).
+        optical::serve_asked(&drive, transport, self.number, (&mut watch.memory, link.source));
         let (eject, asked) = (drive.eject_asked(), drive.look_asked());
         let format = drive.format_asked();
         // A track formatted is not looked at: the disk is found once
@@ -1447,7 +1453,8 @@ fn add_named(
         let (changed, locked, lockable, out) = (false, false, true, None);
         // An optical drive is asked for its media events (ADR 0432).
         let events = optical.is_some();
-        Some(Watch { drive, empty, next, changed, locked, lockable, events, left, out })
+        let memory = None;
+        Some(Watch { drive, empty, next, changed, locked, lockable, events, left, out, memory })
     } else {
         None
     };

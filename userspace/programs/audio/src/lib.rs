@@ -16,12 +16,17 @@
 //!   its loudness, which the boot test and the lab check the sound with.
 //! - [`settings`] reads and writes audio.toml(5), the output, volume and
 //!   mute that audiod(8) keeps.
+//! - [`cd`] reads a music CD's table of contents and CD-Text, as a drive
+//!   gives them, and [`flac`] writes FLAC files, lossless, and reads them
+//!   back: audiocd(1) rips a music CD's tracks to them (ADR 0447).
 //!
 //! None of it does any I/O, so its tests run on the host; audio(1) and
 //! audiod(8), in systools, do the rest.
 
+pub mod cd;
 pub mod convert;
 pub mod detect;
+pub mod flac;
 pub mod resample;
 pub mod settings;
 pub mod tone;

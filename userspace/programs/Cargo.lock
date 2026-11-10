@@ -163,6 +163,9 @@ dependencies = [
 [[package]]
 name = "audio"
 version = "0.14.0"
+dependencies = [
+ "md-5",
+]
 
 [[package]]
 name = "autocfg"

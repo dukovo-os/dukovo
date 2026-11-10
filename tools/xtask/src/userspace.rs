@@ -124,6 +124,7 @@ pub const STD_LINKS: &[(&str, &str)] = &[
     ("system/commands/sh", "nukesh"),
     ("system/commands/rnukesh", "nukesh"),
     ("system/commands/audio", "systools"),
+    ("system/commands/audiocd", "systools"),
     ("system/commands/audiod", "systools"),
     ("system/commands/authd", "systools"),
     ("system/commands/balance", "systools"),

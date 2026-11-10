@@ -178,6 +178,21 @@ fn mmc_commands_are_laid_out_as_mmc_has_them() {
         [op::READ_TOC, 0, 1, 0, 0, 0, 0, 0, 12, 0x40]
     );
     assert_eq!(
+        Cdb::read_toc(toc_format::FULL, 1, 2048).bytes(),
+        [op::READ_TOC, 0, 2, 0, 0, 0, 1, 0x08, 0, 0x80]
+    );
+    // CD-Text's format is in byte 2 alone: the control byte's two bits
+    // cannot hold it.
+    assert_eq!(
+        Cdb::read_toc(toc_format::CD_TEXT, 0, 0xffff).bytes(),
+        [op::READ_TOC, 0, 5, 0, 0, 0, 0, 0xff, 0xff, 0]
+    );
+    // CD-DA, user data alone: each sector's 2,352 bytes of samples.
+    assert_eq!(
+        Cdb::read_cd_audio(0x0001_0203, 27).bytes(),
+        [op::READ_CD, 0x04, 0, 1, 2, 3, 0, 0, 27, 0x10, 0, 0]
+    );
+    assert_eq!(
         Cdb::get_configuration(256).bytes(),
         [op::GET_CONFIGURATION, 0, 0, 0, 0, 0, 0, 1, 0, 0]
     );

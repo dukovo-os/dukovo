@@ -304,6 +304,7 @@ const VALUED: &[&str] = &[
     "--title",
     "--schedule",
     "--run-id",
+    "--ob",
 ];
 
 /// `ob lab`: runs dukovo-lab on `lab/tests`, building the lab image first
@@ -373,6 +374,11 @@ pub fn command(ctx: &Ctx, args: &mut Args) -> Result<()> {
         // steps that read the screen.
         if !rest.iter().any(|arg| arg == "--fonts") {
             lab.arg("--fonts").arg(ctx.root.join(CONSOLE_FONTS));
+        }
+        // ob itself, whose disc-drive holds a test's music CD in a QEMU
+        // machine, as QEMU's own drives hold none (ADR 0447).
+        if !rest.iter().any(|arg| arg == "--ob") {
+            lab.arg("--ob").arg(ctx.root.join("ob"));
         }
         // The install stick of the same tree, for the installer's tests.
         if built_here && !rest.iter().any(|arg| arg == "--stick") {

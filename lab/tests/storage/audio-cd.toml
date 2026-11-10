@@ -1,0 +1,60 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "audiocd lists a music CD's tracks by their CD-Text, rips them to FLAC and to WAV files of every sector, and plays one through the sound output; ejected, no drive has a music CD"
+time = "10m"
+
+# The disc, audio-cd.cue beside this file and the audio-cd.bin it names:
+# two tracks of tones, the second after a second of silence, with
+# CD-Text (ADR 0447). In QEMU it is in an emulated USB CD drive, as
+# QEMU's own drives hold no music CD; on a PC, a CD-R burned from the cue
+# sheet with its CD-Text. The drive is looked at every two seconds, and a
+# disc spins up first.
+[[step]]
+disc = "insert"
+image = "audio-cd.cue"
+[[step]]
+wait = "8s"
+# The drive is root's to read.
+[[step]]
+run = "audiocd"
+root = true
+expect = ["Lab Sessions, by Dukovo Lab", "0:05  First Light", "0:04  Hum", "2 tracks, 0:09"]
+# Ripped to FLAC and to WAV. A WAV file holds every sector of its track:
+# a drive's read offset may shift the samples a little, so the sizes are
+# checked, not the sums.
+[[step]]
+run = "sh -c 'rm -rf /tmp/rip && mkdir /tmp/rip && audiocd rip --to /tmp/rip && audiocd rip --wav --to /tmp/rip && echo ripped'"
+root = true
+expect = ["01 First Light.flac", "02 Hum.flac", "01 First Light.wav", "02 Hum.wav", "ripped"]
+[[step]]
+run = "sh -c 'cd /tmp/rip && stat -c \"%s %n\" *.wav && echo parts=$(ls | grep -c part)'"
+root = true
+expect = ["882044 01 First Light.wav", "705644 02 Hum.wav", "parts=0"]
+# FLAC compresses the tones and the silence.
+[[step]]
+run = "sh -c 'test $(stat -c %s \"/tmp/rip/01 First Light.flac\") -lt 441022 && echo smaller'"
+root = true
+expect = "smaller"
+# Played through the default sound output, to the end.
+[[step]]
+run = "sh -c 'audiocd play 2 && echo played'"
+root = true
+expect = ["0:04  Hum", "played"]
+# A track the disc does not have.
+[[step]]
+run = "sh -c 'audiocd rip --to /tmp/rip 7 2>&1; echo \"ended $?\"'"
+root = true
+expect = ["has no track 7", "ended 1"]
+# Ejected: the drive is empty, and no drive has a music CD.
+[[step]]
+run = "sh -c 'eject $(audiocd | head -1 | cut -d: -f1)'"
+root = true
+[[step]]
+wait = "4s"
+[[step]]
+run = "sh -c 'audiocd 2>&1; echo \"ended $?\"'"
+root = true
+expect = ["no drive has a music CD in it", "ended 1"]
+[[step]]
+disc = "eject"

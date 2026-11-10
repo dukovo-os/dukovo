@@ -141,7 +141,7 @@ fn default_output() -> Option<String> {
 }
 
 /// The output named, or the default one.
-fn chosen(name: Option<&str>) -> Result<String, Fail> {
+pub(crate) fn chosen(name: Option<&str>) -> Result<String, Fail> {
     match name {
         Some(name) => Ok(name.to_string()),
         None => default_output().ok_or_else(|| fail("no sound output".to_string())),
@@ -339,17 +339,18 @@ fn output(name: Option<&str>) -> Result<i32, Fail> {
     Ok(0)
 }
 
-/// A player on an output: its format as the kernel took it.
-struct Player {
+/// A player on an output: its format as the kernel took it. audiocd(1)
+/// plays music CDs with it too.
+pub(crate) struct Player {
     file: File,
-    rate: u32,
-    channels: usize,
+    pub(crate) rate: u32,
+    pub(crate) channels: usize,
 }
 
 impl Player {
     /// Opens `name` and asks for `rate` and `channels`, taking what the
     /// output gives nearest.
-    fn open(name: &str, rate: u32, channels: usize) -> Result<Player, Fail> {
+    pub(crate) fn open(name: &str, rate: u32, channels: usize) -> Result<Player, Fail> {
         let file = open(name)?;
         let failed = |e| util::failed(&name, e);
         int_request(&file, abi::SET_FORMAT, abi::FORMAT_S16_LE).map_err(failed)?;
@@ -359,12 +360,12 @@ impl Player {
     }
 
     /// Plays `samples`, at the player's rate and channels.
-    fn play(&mut self, samples: &[i16]) -> Result<(), Fail> {
+    pub(crate) fn play(&mut self, samples: &[i16]) -> Result<(), Fail> {
         self.file.write_all(&convert::to_bytes(samples)).map_err(|e| util::failed(&"write", e))
     }
 
     /// Waits until everything written has been played.
-    fn finish(&self) -> Result<(), Fail> {
+    pub(crate) fn finish(&self) -> Result<(), Fail> {
         control(&self.file, abi::SYNC, &mut []).map_err(|e| util::failed(&"sync", e))
     }
 }

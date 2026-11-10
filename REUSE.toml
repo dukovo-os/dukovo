@@ -121,6 +121,14 @@ path = "lab/tests/storage/optical.iso"
 SPDX-FileCopyrightText = "2026 The Dukovo contributors"
 SPDX-License-Identifier = "Apache-2.0 OR MIT"
 
+# The samples of the lab's music CD (lab/tests/storage/audio-cd.toml), which
+# audio-cd.cue beside it names: tones and silence, made by a few lines of
+# Python, as the cue sheet says.
+[[annotations]]
+path = "lab/tests/storage/audio-cd.bin"
+SPDX-FileCopyrightText = "2026 The Dukovo contributors"
+SPDX-License-Identifier = "Apache-2.0 OR MIT"
+
 # The floppy disk image the lab's floppy drive test puts in the machine's
 # drive, write-protected (lab/tests/storage/floppy.toml), made by
 # mkfs.fat and mtools: a 720 KB FAT12 labelled LAB720, holding hello.txt.

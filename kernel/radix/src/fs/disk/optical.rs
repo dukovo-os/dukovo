@@ -50,6 +50,13 @@
 //! At the end of boot, before the first program, the kernel waits for
 //! each drive's first look, for at most [`FIRST_LOOK_NS`], so that a disc
 //! in a drive at boot is there for Spark ([`wait_for_discs`]).
+//!
+//! Between its looks, the thread also runs the commands radix-block(2)'s
+//! READ_TOC and READ_AUDIO ask of the drive, a music CD's tracks and
+//! samples (ADR 0447): [`run_asked`] reads each one's answer into a few
+//! pages of DMA memory the thread keeps once it needs them
+//! ([`COMMAND_PAGES`]), and hands it to the one who asked. A USB drive's
+//! thread runs them the same way.
 
 use alloc::boxed::Box;
 use alloc::sync::Arc;
@@ -57,10 +64,13 @@ use alloc::vec::Vec;
 use core::fmt::Write as _;
 use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 
+use radix_abi::block as request;
 use radix_ahci::ata::{PacketIdentity, trimmed};
 use radix_ahci::{Packets, Port};
 use radix_block::{DeviceRef, Empty, Info, SECTOR};
+use radix_hal::Devices;
 use radix_hw::pci::Address;
+use radix_hw::{Dma, PAGE_SIZE};
 use radix_klog::{TextBuf, info, warn};
 use radix_mm::{Flags, HEAP, Kmalloc};
 use radix_scsi::mmc::{self, Content, Disc as Found, Family, Profile};
@@ -73,7 +83,7 @@ use super::handed;
 use super::ide::IdeLink;
 use super::optical_port::{DiscReads, Gone, OpticalPort};
 use super::queue::{self, Controller, Disk, Op, Outcome, Volume};
-use super::removable::{self, Disc, Drive, DriveRef, Kind};
+use super::removable::{self, Asked, CommandError, Disc, Drive, DriveRef, Kind};
 use super::{Entry, Ident, Name, Size, register};
 use crate::sched::{self, Options, Policy, ThreadRef};
 
@@ -95,6 +105,14 @@ pub(super) const READY_NS: u64 = 1_000_000_000;
 pub const FIRST_LOOK_NS: u64 = 15_000_000_000;
 /// The most optical drives on AHCI ports and IDE channels.
 const MAX_DRIVES: usize = 8;
+
+/// The pages of DMA memory a drive's thread reads the answer to a command
+/// asked of it into (ADR 0447): room for READ TOC's longest, 65,535 bytes,
+/// and for radix-block(2)'s READ_AUDIO_MAX sectors of audio.
+pub(super) const COMMAND_PAGES: usize = 16;
+const _: () = assert!(
+    request::READ_AUDIO_MAX as usize * mmc::AUDIO_SECTOR as usize <= COMMAND_PAGES * PAGE_SIZE
+);
 
 /// Why a disc's reads fail once it is gone.
 const TAKEN_OUT: &str = "its disc was taken out";
@@ -199,6 +217,75 @@ pub(super) fn described(profile: Profile, sessions: u16, sectors: u64) -> TextBu
         let _ = write!(text, " in {sessions} sessions, read from the last");
     }
     text
+}
+
+/// Runs `asked`, a command a program's request asked of the optical drive
+/// at logical unit `lun` behind `transport` (ADR 0447): its answer is read
+/// into `memory`, whose pages the transport reaches by DMA, and copied to
+/// the buffer asked with, cut to the bytes that came. A command that meets
+/// a change of disc goes again once, as the drive says the change only
+/// once.
+pub(super) fn run_asked(
+    transport: &mut dyn Transport,
+    lun: u8,
+    asked: Asked,
+    memory: &Dma,
+) -> Result<Vec<u8, Kmalloc>, CommandError> {
+    let Asked { cdb, mut data } = asked;
+    let length = data.len().min(memory.len());
+    let mut frames = [(0u64, 0u32); COMMAND_PAGES];
+    let mut count = 0;
+    for (at, frame) in (0..length).step_by(PAGE_SIZE).zip(frames.iter_mut()) {
+        *frame = (memory.phys() + at as u64, (length - at).min(PAGE_SIZE) as u32);
+        count += 1;
+    }
+    for _ in 0..2 {
+        let moved = Data::Frames { into_host: true, frames: &frames[..count] };
+        match transport.command(lun, &cdb, moved, TIMEOUT_MS) {
+            Ok(Reply::Good { residue }) => {
+                let came = length.saturating_sub(residue as usize);
+                memory.read(0, &mut data[..came]);
+                data.truncate(came);
+                return Ok(data);
+            }
+            Ok(Reply::Failed(Some(sense))) => match sense.meaning() {
+                // The disc changed since the drive last said: once more.
+                Meaning::Attention => {}
+                Meaning::NoMedium => return Err(CommandError::NoDisc),
+                Meaning::Unsupported => return Err(CommandError::Refused),
+                _ => return Err(CommandError::Failed),
+            },
+            Ok(Reply::Failed(None)) | Err(_) => return Err(CommandError::Failed),
+        }
+    }
+    Err(CommandError::Failed)
+}
+
+/// The DMA memory a drive's thread runs commands asked of it with
+/// ([`run_asked`]), kept in `kept` once made for the PCI function
+/// `source`; `None` when memory runs out.
+pub(super) fn command_memory(kept: &mut Option<Dma>, source: Address) -> Option<&Dma> {
+    if kept.is_none() {
+        *kept = <crate::Arch as Devices>::alloc_dma(source, COMMAND_PAGES, false);
+    }
+    kept.as_ref()
+}
+
+/// Has the drive's thread run the command asked of `drive`, if one waits
+/// (ADR 0447), with `transport` at logical unit `lun` and the memory kept
+/// in `kept` for the PCI function `source`.
+pub(super) fn serve_asked(
+    drive: &Drive,
+    transport: &mut dyn Transport,
+    lun: u8,
+    (kept, source): (&mut Option<Dma>, Address),
+) {
+    let Some((number, asked)) = drive.command_asked() else { return };
+    let result = match command_memory(kept, source) {
+        Some(memory) => run_asked(transport, lun, asked, memory),
+        None => Err(CommandError::Failed),
+    };
+    drive.commanded(number, result);
 }
 
 /// What the log says of a disc with no data that went in, as `why`
@@ -613,6 +700,9 @@ struct OpticalDrive {
     first: bool,
     /// The buffers of the read it runs.
     frames: Vec<(u64, u32), Kmalloc>,
+    /// The DMA memory the commands programs ask of it are run with, once
+    /// one is (ADR 0447).
+    memory: Option<Dma>,
 }
 
 /// Waits `us` microseconds, or until the port's interrupt wakes the
@@ -655,6 +745,7 @@ impl OpticalDrive {
             out: None,
             first: true,
             frames,
+            memory: None,
         })
     }
 
@@ -742,6 +833,9 @@ impl OpticalDrive {
         if self.link.disc_changed() {
             self.changed = true;
         }
+        // A command a program asked of the drive (ADR 0447).
+        let (drive, memory, source) = (&self.drive, &mut self.memory, self.source);
+        self.link.with(|t| serve_asked(drive, t, 0, (memory, source)));
         let eject = self.drive.eject_asked();
         if !eject && !self.changed && now < self.next {
             return self.next;

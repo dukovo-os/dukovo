@@ -70,6 +70,13 @@ const SERIAL_LINE: [&str; 2] = ["<serial line 0>", "<serial line 1>"];
 /// display ([`braille_line`], the `braille` case). QEMU plugs the display
 /// in once the script connects.
 const BRAILLE_LINE: &str = "<braille line>";
+/// The emulated USB CD drive's line (ADR 0447), as `-chardev`'s argument:
+/// the character device `discdrive`, a Unix socket `<case>.disc` in the
+/// test's directory that QEMU's `usb-redir` listens on, and the script
+/// connects to as the drive ([`disc_drive_line`],
+/// [`crate::disc_drive::DiscDrive::plug_in`]). QEMU plugs the drive in once
+/// the script connects.
+const DISC_DRIVE_LINE: &str = "<disc drive line>";
 /// A virtio console port's line, as `-chardev`'s argument: the character
 /// device `port`, a Unix socket `<case>.port` in the test's directory
 /// that QEMU listens on and the script connects to as the program on the
@@ -3732,6 +3739,12 @@ pub fn braille_line(dir: &Path, name: &str) -> PathBuf {
     dir.join(format!("{name}.braille"))
 }
 
+/// The socket of case `name`'s emulated USB CD drive ([`DISC_DRIVE_LINE`])
+/// in the test's directory `dir`.
+pub fn disc_drive_line(dir: &Path, name: &str) -> PathBuf {
+    dir.join(format!("{name}.disc"))
+}
+
 /// The socket of case `name`'s virtio console port ([`PORT_LINE`]) in the
 /// test's directory `dir`.
 pub fn port_line(dir: &Path, name: &str) -> PathBuf {
@@ -3762,6 +3775,9 @@ fn run_case(
         if *arg == BRAILLE_LINE {
             let line = qemu::option_value(&braille_line(dir, case.name));
             *arg = format!("socket,id=braille,path={line},server=on,wait=off");
+        } else if *arg == DISC_DRIVE_LINE {
+            let line = qemu::option_value(&disc_drive_line(dir, case.name));
+            *arg = format!("socket,id=discdrive,path={line},server=on,wait=off");
         } else if *arg == PORT_LINE {
             let line = qemu::option_value(&port_line(dir, case.name));
             *arg = format!("socket,id=port,path={line},server=on,wait=off");

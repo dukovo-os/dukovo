@@ -1588,7 +1588,8 @@ pub fn file_method(user: &UserRef, found: &Found, label: u32, args: &[u64; 8]) -
                         return Err(error(Kernel::NotTerminal));
                     };
                     let may_write = found.cap.check(ObjectKind::File, Rights::WRITE).is_ok();
-                    fs::disk::control(&device, a.request, a.argument, may_write)?;
+                    let may_read = found.cap.check(ObjectKind::File, Rights::READ).is_ok();
+                    fs::disk::control(&device, a.request, a.argument, (may_read, may_write))?;
                     0
                 }
                 _ => return Err(error(Kernel::NotTerminal)),
