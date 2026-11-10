@@ -282,6 +282,29 @@ volumed: the eject button of cd0 was pressed; unmounted /volumes/HOLIDAY_2026
 volumed: cd0 has no disc in it now
 ```
 
+A floppy drive on the PC's floppy disk controller is such a drive too,
+named `fd0` or `fd1` after its number on the controller (ADR 0435). A
+1.44 MB or 720 KB disk is read and written whole, with no partition
+table, and mounted at `/volumes/fd0` when it is in the drive at boot,
+and at its label otherwise; a write-protected disk is mounted read-only.
+A floppy drive cannot say that a disk went in, so it is never polled:
+after putting a disk in, have the drive looked at with `rdisk --reread`.
+A disk taken out is found gone at the next read or look. `eject` lets
+the disk go, since a PC floppy drive has no motor to push it out; take
+it out by hand.
+
+```
+# rdisk --reread /devices/fd0
+# dmesg | tail -3
+Disk: fd0: a 1.44 MB disk went in
+volumed: a medium went in fd0
+volumed: mounted the FAT filesystem of fd0 at /volumes/DRIVERS
+# eject DRIVERS
+```
+
+`mkfs-fat` on a whole floppy disk writes a floppy's geometry in its
+boot sector, as DOS's `format` does, so that other systems read it too.
+
 When the machine is turned off or restarted, every disk's cache is
 written out first, and each NVMe drive is told to shut down, as Linux
 does, so that it does not count an unsafe shutdown. A read or write a

@@ -416,6 +416,18 @@ fn fat_volumes_check_and_read_with_dosfstools_and_mtools() {
         let report = fatck::check(&device, fatck::Options::default()).unwrap();
         assert!(report.clean(), "{:?}", report.problems);
         assert_eq!(report.bits, bits);
+        // A floppy disk's own geometry and media byte, in the parameter
+        // block and the tables, as mkfs.fat writes them; a hard disk's
+        // for the others.
+        let bytes = std::fs::read(&image.0).unwrap();
+        let word = |at: usize| u16::from_le_bytes([bytes[at], bytes[at + 1]]);
+        let floppy = size == 1_474_560;
+        let (track, heads, media) = if floppy { (18, 2, 0xf0) } else { (63, 255, 0xf8) };
+        assert_eq!((word(24), word(26), bytes[21]), (track, heads, media), "{size}");
+        let (ok, text) = run("minfo", &["-i", image.path(), "::"]);
+        assert!(ok, "{text}");
+        assert!(text.contains(&format!("sectors per track: {track}")), "{text}");
+        assert!(text.contains(&format!("media descriptor byte: 0x{media:x}")), "{text}");
     }
 }
 

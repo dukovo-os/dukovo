@@ -1,0 +1,20 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+[package]
+name = "radix-fdc"
+description = "The PC's floppy disk controller for the Radix kernel: the 82077AA, with ISA DMA"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lib]
+bench = false
+
+[dependencies]
+radix-hw = { path = "../../lib/hw" }
+
+[lints]
+workspace = true

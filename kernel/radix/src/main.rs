@@ -293,6 +293,8 @@ pub extern "Rust" fn radix_kernel_main(mut params: BootParams) -> ! {
     // After the power thread, which the host's buttons wake.
     vmware::start();
     acpi::finish_events();
+    // Its first look runs while the rest of the hardware is found.
+    fs::disk::find_floppy_drives();
     watchdog::find();
     gpio::find();
     i2c::find();

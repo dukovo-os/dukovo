@@ -173,6 +173,13 @@ machine's optical drive in the same way; `install/from-dvd` installs
 from it, takes the disc out with `disc = "eject"` and restarts from the
 disk.
 
+Removable media go in and out with steps of their own: `usb` plugs and
+pulls a USB stick, `card` puts a memory card in a card reader, `disc` a
+disc in an optical drive, and `floppy` a floppy disk in a floppy drive,
+write-protected with `protected = true`. A test with `card`, `disc` or
+`floppy` steps boots a machine of its own with the drive, empty, so that
+no other test finds it. The tests in `lab/tests/storage` use them.
+
 ## Performance tests
 
 The tests in `lab/tests/performance` hold Dukovo to Linux on the same

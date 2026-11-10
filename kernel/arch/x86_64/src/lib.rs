@@ -457,6 +457,10 @@ impl Devices for Arch {
         devices::alloc_cache_page()
     }
 
+    fn isa_dma_buffer() -> Option<(u64, usize)> {
+        memory::isa_dma_region().map(|start| (start, memory::ISA_DMA_SIZE as usize))
+    }
+
     fn allocate_interrupt(
         source: radix_hal::PciAddress,
         handler: fn(usize),

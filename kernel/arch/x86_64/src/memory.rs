@@ -643,3 +643,52 @@ pub fn choose_trampoline_page() -> Option<u64> {
     }
     (1..0x9f).map(|n| n * PAGE).find(|&page| usable(page))
 }
+
+/// The end of the first MiB, which the kernel reserves whole: the
+/// firmware's, and the AP trampoline's.
+pub const FIRST_MIB: u64 = 1 << 20;
+
+/// The bytes kept for ISA DMA ([`keep_isa_dma_region`]): a cylinder of a
+/// 1.44 MB floppy disk, 18 KiB, rounded up to a power of two.
+pub const ISA_DMA_SIZE: u64 = 32 * 1024;
+
+/// Where the range for ISA DMA is, once [`keep_isa_dma_region`] found one.
+static ISA_DMA: Once<u64> = Once::new();
+
+/// Keeps a range below 1 MiB for ISA DMA, which reaches only the first
+/// 16 MiB and never crosses a 64 KiB line: the floppy disk controller's
+/// buffer (ADR 0435). The first MiB is reserved whole, so that the
+/// allocator never hands it out, and the range costs nothing: it is the
+/// first usable [`ISA_DMA_SIZE`] bytes from 64 KiB, on a boundary of their
+/// size, that hold neither the AP trampoline's page, `trampoline`, nor
+/// anything else reserved there (a module, the boot information). Called
+/// once at boot, after the reservations.
+pub fn keep_isa_dma_region(trampoline: Option<u64>) {
+    let usable = |range: &Range<u64>| {
+        memory_map()
+            .iter()
+            .any(|r| r.kind == MemoryKind::Usable && r.start <= range.start && range.end <= r.end)
+    };
+    let overlaps =
+        |range: &Range<u64>, other: &Range<u64>| range.start < other.end && other.start < range.end;
+    let reservations = RESERVATIONS.lock();
+    let reserved = &reservations.list[..reservations.len];
+    let found = (0x1_0000..0xa_0000).step_by(ISA_DMA_SIZE as usize).find(|&start| {
+        let range = start..start + ISA_DMA_SIZE;
+        usable(&range)
+            && trampoline.is_none_or(|page| !overlaps(&range, &(page..page + PAGE)))
+            && !reserved
+                .iter()
+                .filter(|r| (r.start, r.end) != (0, FIRST_MIB))
+                .any(|r| overlaps(&range, &(r.start..r.end)))
+    });
+    drop(reservations);
+    if let Some(start) = found {
+        ISA_DMA.call_once(|| start);
+    }
+}
+
+/// The range [`keep_isa_dma_region`] kept, if it found one.
+pub fn isa_dma_region() -> Option<u64> {
+    ISA_DMA.get().copied()
+}

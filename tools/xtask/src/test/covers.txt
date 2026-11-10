@@ -156,6 +156,9 @@ ext4-write kernel/fs/block/ kernel/fs/ext4/ kernel/fs/fat/ userspace/storage/
 feature userspace/features/ userspace/programs/manifest/ userspace/programs/nfsd/
 feature userspace/programs/smbd/ userspace/programs/systools/src/feature.rs
 feature userspace/programs/systools/src/share.rs
+floppy kernel/drivers/fdc/ kernel/radix/src/fs/disk/floppy.rs kernel/radix/src/fs/disk/handed.rs
+floppy kernel/radix/src/fs/disk/removable.rs kernel/fs/fat/ userspace/programs/systools/src/eject.rs
+floppy userspace/programs/systools/src/rdisk.rs userspace/programs/systools/src/volumed.rs
 fpu kernel/arch/
 framework-ec kernel/drivers/crosec/ tools/xtask/src/acpi/ userspace/programs/systools/src/ectool.rs
 fuse kernel/fs/fuse/ userspace/programs/fuse-test/
@@ -334,12 +337,12 @@ ntfs-write kernel/fs/block/ kernel/fs/fat/ kernel/fs/ntfs/ userspace/programs/sy
 ntfs-write userspace/storage/
 oom kernel/mm/
 optical kernel/drivers/ahci/ kernel/drivers/scsi/ kernel/drivers/usb/ kernel/drivers/xhci/
-optical kernel/radix/src/fs/disk/optical.rs kernel/radix/src/fs/disk/usb.rs
+optical kernel/radix/src/fs/disk/handed.rs kernel/radix/src/fs/disk/optical.rs kernel/radix/src/fs/disk/usb.rs
 optical kernel/radix/src/fs/disk/optical_port.rs
 optical kernel/fs/iso9660/ kernel/fs/udf/ userspace/programs/systools/src/eject.rs
 optical userspace/programs/systools/src/lsblk.rs userspace/programs/systools/src/volumed.rs
 optical-ide kernel/drivers/ide/ kernel/drivers/scsi/ kernel/fs/iso9660/ kernel/fs/udf/
-optical-ide kernel/radix/src/fs/disk/ide.rs kernel/radix/src/fs/disk/optical.rs
+optical-ide kernel/radix/src/fs/disk/handed.rs kernel/radix/src/fs/disk/ide.rs kernel/radix/src/fs/disk/optical.rs
 optical-ide userspace/programs/systools/src/eject.rs userspace/programs/systools/src/volumed.rs
 page-fault kernel/mm/
 pci-serial kernel/drivers/uart/

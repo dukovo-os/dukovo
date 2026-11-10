@@ -1,0 +1,111 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "A floppy disk is found when the drive is looked at, formatted, mounted at its label, ejected by eject and lost when pulled out; a write-protected one is mounted read-only; the drive stays, empty"
+time = "5m"
+
+# The drive with no disk in it is fd0, a drive of no size whose medium
+# comes and goes (ADR 0430). It is never polled (ADR 0435): rdisk
+# --reread has the kernel look in it, and a disk found is in /devices
+# when it returns.
+[[step]]
+run = "sh -c 'echo \"removable $(cat /kernel/block/fd0/removable) size $(cat /kernel/block/fd0/size)\"'"
+expect = "removable 1 size 0"
+# A blank 1.44 MB disk, found at a look, and formatted in the drive.
+[[step]]
+floppy = "insert"
+blank = "1.44M"
+[[step]]
+run = "rdisk --reread /devices/fd0"
+root = true
+[[step]]
+run = "cat /kernel/block/fd0/size"
+expect = "2880"
+[[step]]
+run = "mkfs-fat -n LABFLOPPY /devices/fd0"
+root = true
+expect = ["made FAT12", "label LABFLOPPY"]
+# Taken out and put back, it holds a FAT, which volumed mounts at its
+# label once a look finds it.
+[[step]]
+floppy = "eject"
+[[step]]
+floppy = "reinsert"
+[[step]]
+run = "rdisk --reread /devices/fd0"
+root = true
+[[step]]
+wait = "3s"
+[[step]]
+run = "findmnt /volumes/LABFLOPPY"
+expect = ["vfat", "rw"]
+[[step]]
+run = "sh -c 'echo on-the-floppy > /volumes/LABFLOPPY/hello.txt && seq 1 9000 > /volumes/LABFLOPPY/later.txt && sync'"
+root = true
+# eject unmounts it and has the drive let it go: the drive stays, empty,
+# and nothing is left at /volumes. A look leaves it empty while the disk
+# is still in it.
+[[step]]
+run = "eject LABFLOPPY"
+root = true
+[[step]]
+run = "sh -c 'echo \"size $(cat /kernel/block/fd0/size)\"; ls /volumes'"
+expect = "size 0"
+expect_not = "LABFLOPPY"
+[[step]]
+run = "rdisk --reread /devices/fd0"
+root = true
+[[step]]
+run = "sh -c 'echo \"size $(cat /kernel/block/fd0/size)\"'"
+expect = "size 0"
+# Taken out and put back, it holds what was written before the eject.
+[[step]]
+floppy = "eject"
+[[step]]
+floppy = "reinsert"
+[[step]]
+run = "rdisk --reread /devices/fd0"
+root = true
+[[step]]
+wait = "3s"
+[[step]]
+run = "cat /volumes/LABFLOPPY/hello.txt"
+expect = "on-the-floppy"
+# Pulled out while mounted, it is lost at the next read, which finds the
+# drive's change line up, and volumed unmounts it.
+[[step]]
+floppy = "eject"
+[[step]]
+run = "sh -c 'cat /volumes/LABFLOPPY/later.txt > /dev/null 2>&1; echo read'"
+expect = "read"
+[[step]]
+wait = "3s"
+[[step]]
+run = "sh -c 'echo \"size $(cat /kernel/block/fd0/size)\"; ls /volumes'"
+expect = "size 0"
+expect_not = "LABFLOPPY"
+# A write-protected 720 KB disk, floppy.img beside this file: a FAT12
+# labelled LAB720, holding hello.txt. It is read at the drive's lower
+# data rate, and mounted read-only.
+[[step]]
+floppy = "insert"
+image = "floppy.img"
+protected = true
+[[step]]
+run = "rdisk --reread /devices/fd0"
+root = true
+[[step]]
+wait = "3s"
+[[step]]
+run = "sh -c 'echo \"size $(cat /kernel/block/fd0/size) ro $(cat /kernel/block/fd0/ro)\"'"
+expect = "size 1440 ro 1"
+[[step]]
+run = "findmnt /volumes/LAB720"
+expect = ["vfat", "ro"]
+[[step]]
+run = "cat /volumes/LAB720/hello.txt"
+expect = "Read from a floppy disk in the lab."
+[[step]]
+run = "sh -c 'echo no > /volumes/LAB720/new.txt && echo written || echo refused'"
+root = true
+expect = "refused"

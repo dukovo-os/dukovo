@@ -44,11 +44,13 @@ use radix_mm::{Flags, HEAP, Kmalloc};
 use radix_sync::{Mutex, SpinLock};
 use radix_virtio::device_type;
 
-pub use self::optical::wait_for_discs;
+pub use self::floppy::find as find_floppy_drives;
 use self::removable::Drive;
 use crate::Arch;
 
 mod ahci;
+mod floppy;
+mod handed;
 mod ide;
 mod nvme;
 mod optical;
@@ -752,6 +754,14 @@ fn devices_of(name: &str) -> alloc::vec::Vec<DeviceRef, Kmalloc> {
     devices
 }
 
+/// At the end of boot, before the first program: waits for the first
+/// look of every optical drive and floppy drive found, so that a disc or
+/// a disk in one at boot is there for Spark.
+pub fn wait_for_discs() {
+    optical::wait_for_discs();
+    floppy::wait_for_disks();
+}
+
 /// Readies every disk for the power to go: empties each one's write
 /// cache, and tells each NVMe controller to shut down. Runs once the
 /// filesystems have written back what they hold, before the machine is
@@ -945,7 +955,8 @@ fn reread(device: &DeviceRef) -> Result<(), Status> {
 /// caller's address of the value a request writes or reads, and
 /// `may_write` whether the caller's capability has the write right, which
 /// DISCARD, FLUSH, SWAP_ON, SWAP_OFF and REREAD_PARTITIONS need, and
-/// UNLOCK but to unlock read-only; EJECT does not, as on Linux. Any other
+/// UNLOCK but to unlock read-only; EJECT does not, as on Linux, nor
+/// REREAD_PARTITIONS on a floppy drive, which looks for a disk. Any other
 /// request is not one of a block device.
 pub fn control(
     device: &DeviceRef,
@@ -973,6 +984,9 @@ pub fn control(
         }
         request::GET_READ_ONLY => put(&u32::from(info.read_only).to_le_bytes()),
         request::GET_ROTATIONAL => put(&u16::from(info.rotational).to_le_bytes()),
+        // A look for a disk in a floppy drive writes nothing, as EJECT
+        // does not: it needs no write right.
+        request::REREAD_PARTITIONS if floppy_drive(device).is_some() => look(device),
         request::DISCARD
         | request::FLUSH
         | request::SWAP_ON
@@ -1016,6 +1030,21 @@ pub fn control(
         request::EJECT => eject(device),
         _ => Err(Kernel::NotTerminal.status(0)),
     }
+}
+
+/// The floppy drive `device` is, if it is one, empty or not.
+fn floppy_drive(device: &DeviceRef) -> Option<removable::DriveRef> {
+    let name = name_of(device)?;
+    removable::find(name.as_str()).filter(|drive| drive.kind() == removable::Kind::Floppy)
+}
+
+/// REREAD_PARTITIONS on a floppy drive: a floppy disk has no partition
+/// table, and the drive is never polled, so its driver's thread looks for
+/// a disk put in or taken out (ADR 0435). A disk found is in `/devices`
+/// when this returns.
+fn look(device: &DeviceRef) -> Result<(), Status> {
+    let drive = floppy_drive(device).ok_or(Kernel::InvalidArgument.status(0))?;
+    drive.look().map_err(block_status)
 }
 
 /// EJECT: ejects the medium of the drive `device` is (ADR 0430), through

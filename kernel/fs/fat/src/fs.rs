@@ -20,6 +20,8 @@
 //!   chain), then `space` (free clusters; every table change), then the
 //!   block cache. Only one node's `meta` is held at a time, and `ns` is
 //!   taken before any of them, never after.
+//! - `syncing` is held by a sync from start to end, and taken before any
+//!   other lock, so that two syncs take turns.
 //! - `nodes` (the node table) and `dirty` (nodes waiting to sync) take
 //!   no other lock under them.
 //!
@@ -71,6 +73,11 @@ pub(crate) struct Inner {
     nodes: Mutex<KVec<(u64, Weak<FatNode, Alloc>)>>,
     /// Nodes with changes in memory, kept alive until they are synced.
     dirty: Mutex<KVec<KArc<FatNode>>>,
+    /// Held by each sync from start to end, so that syncs take turns: a
+    /// sync that finds the changed nodes taken by another, still writing
+    /// them, waits for it. An unmount's sync then returns only once every
+    /// change is on the disk, before a drive lets its medium go.
+    syncing: Mutex<()>,
 }
 
 /// A mounted FAT volume.
@@ -216,6 +223,7 @@ impl Inner {
             space: Mutex::new(Space { free: None, hint: 2, fsinfo_dirty: false }),
             nodes: Mutex::new(mem::vec()),
             dirty: Mutex::new(mem::vec()),
+            syncing: Mutex::new(()),
         })?)
     }
 
@@ -568,6 +576,7 @@ impl Inner {
         if self.read_only {
             return Ok(());
         }
+        let _syncing = self.syncing.lock();
         let pinned = core::mem::replace(&mut *self.dirty.lock(), mem::vec());
         let mut failed = None;
         for node in &pinned {
