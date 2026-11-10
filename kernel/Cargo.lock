@@ -285,6 +285,7 @@ dependencies = [
  "radix-klog",
  "radix-ksyms",
  "radix-lockdep",
+ "radix-mana",
  "radix-mca",
  "radix-mm",
  "radix-net",
@@ -663,6 +664,14 @@ name = "radix-lockdep"
 version = "0.13.0"
 dependencies = [
  "radix-sync",
+]
+
+[[package]]
+name = "radix-mana"
+version = "0.13.0"
+dependencies = [
+ "radix-hw",
+ "radix-nic",
 ]
 
 [[package]]

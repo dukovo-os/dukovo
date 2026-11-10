@@ -46,6 +46,8 @@ use crate::sched::{self, Options, Policy, ThreadRef, wait};
 
 /// Whether uACPI runs.
 static RUNNING: AtomicBool = AtomicBool::new(false);
+/// Whether [`start`] has returned: uACPI runs, or never will.
+static SETTLED: AtomicBool = AtomicBool::new(false);
 
 /// The CPU general-purpose events' methods run on.
 const EVENTS_CPU: usize = 0;
@@ -70,9 +72,30 @@ pub fn running() -> bool {
     RUNNING.load(Ordering::Acquire)
 }
 
+/// Waits until [`start`] has returned, for `ns` nanoseconds at most:
+/// for a thread that reads the namespace and may run before it is
+/// loaded. Returns whether uACPI runs.
+pub fn wait_started(ns: u64) -> bool {
+    let deadline = sched::now_ns().saturating_add(ns);
+    while !SETTLED.load(Ordering::Acquire) && sched::now_ns() < deadline {
+        sched::sleep_ns(10_000_000);
+    }
+    running()
+}
+
+/// Says that [`start`] has returned, however it returns.
+struct Settle;
+
+impl Drop for Settle {
+    fn drop(&mut self) {
+        SETTLED.store(true, Ordering::Release);
+    }
+}
+
 /// Starts uACPI, unless `off` (`aml=off`). Called once, after the PCI
 /// scan, from a thread.
 pub fn start(off: bool) {
+    let _settle = Settle;
     if off {
         info!("ACPI: the firmware's AML is not run (`aml=off`)");
         return;

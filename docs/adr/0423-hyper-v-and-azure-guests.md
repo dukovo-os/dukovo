@@ -104,6 +104,5 @@ SSH keys, and the user data.
   so those are tested by the library's unit tests and on real Hyper-V
   and Azure machines, in the lab.
 - Disks added while the machine runs, the mouse, the video device past
-  the firmware's screen, dynamic memory, key-value exchange and
-  accelerated networking (MANA) are left for later; Azure's machines
-  must be made without accelerated networking until MANA is driven.
+  the firmware's screen, dynamic memory and key-value exchange are left
+  for later. Accelerated networking (MANA) is driven since ADR 0425.

@@ -122,12 +122,61 @@ pub enum Bar {
     },
 }
 
+/// What a function's host says of it, read in place of its own header:
+/// a function Hyper-V passes through to a guest (vPCI) reads all ones
+/// there. The ROM BAR and the legacy interrupt's line and pin read zero,
+/// and writes to the IDs, the subsystem and the ROM BAR are dropped.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Given {
+    /// The vendor ID.
+    pub vendor: u16,
+    /// The device ID.
+    pub device: u16,
+    /// The revision.
+    pub revision: u8,
+    /// The programming interface.
+    pub prog_if: u8,
+    /// The subclass.
+    pub subclass: u8,
+    /// The base class.
+    pub class: u8,
+    /// The subsystem vendor ID in the low half, the subsystem ID in the
+    /// high half, as the header holds them.
+    pub subsystem: u32,
+}
+
+impl Given {
+    /// The byte of the header at `at` the host gives, if it gives it.
+    fn byte(&self, at: usize) -> Option<u8> {
+        let ids = u32::from(self.vendor) | u32::from(self.device) << 16;
+        let class = u32::from_le_bytes([self.revision, self.prog_if, self.subclass, self.class]);
+        let shift = 8 * (at % 4);
+        match at {
+            0x00..0x04 => Some((ids >> shift) as u8),
+            0x08..0x0c => Some((class >> shift) as u8),
+            0x2c..0x30 => Some((self.subsystem >> shift) as u8),
+            // The ROM BAR, and the legacy interrupt's line and pin: the
+            // function has only message-signalled interrupts.
+            0x30..0x34 | 0x3c..0x3e => Some(0),
+            _ => None,
+        }
+    }
+
+    /// Whether a write of `size` bytes at `offset` is dropped: the IDs,
+    /// the subsystem and the ROM BAR cannot be written.
+    fn drops(offset: usize, size: usize) -> bool {
+        offset < COMMAND || (offset >= SUBSYSTEM_VENDOR_ID && offset + size <= CAPABILITIES)
+    }
+}
+
 /// A PCI function, found by [`scan`].
 #[derive(Clone, Debug)]
 pub struct Function {
     address: Address,
     config: Mmio,
     bars: [Option<Bar>; 6],
+    /// What its host says of it, read in place of its own header.
+    given: Option<Given>,
 }
 
 impl Function {
@@ -139,9 +188,43 @@ impl Function {
         if config.len() < CONFIG_SIZE || config.read16(VENDOR_ID) == 0xffff {
             return None;
         }
-        let mut function = Function { address, config, bars: [None; 6] };
+        let mut function = Function { address, config, bars: [None; 6], given: None };
         function.bars = function.size_bars();
         Some(function)
+    }
+
+    /// The function whose configuration space is `config` and whose
+    /// header its host gives as `given` ([`Given`]): one Hyper-V passes
+    /// through. Its BARs are sized as [`Function::probe`] sizes them, once
+    /// the caller has given them addresses.
+    pub fn probe_given(address: Address, config: Mmio, given: Given) -> Option<Function> {
+        if config.len() < CONFIG_SIZE {
+            return None;
+        }
+        let mut function = Function { address, config, bars: [None; 6], given: Some(given) };
+        function.bars = function.size_bars();
+        Some(function)
+    }
+
+    /// Reads `size` bytes (1, 2 or 4) of its configuration space at
+    /// `offset`, with the bytes its host gives in place of its own.
+    fn read(&self, offset: usize, size: usize) -> u32 {
+        let own = match size {
+            1 => u32::from(self.config.read8(offset)),
+            2 => u32::from(self.config.read16(offset)),
+            _ => self.config.read32(offset),
+        };
+        let Some(given) = self.given else { return own };
+        (0..size).fold(own, |value, i| match given.byte(offset + i) {
+            Some(byte) => value & !(0xff << (8 * i)) | u32::from(byte) << (8 * i),
+            None => value,
+        })
+    }
+
+    /// Whether a write at `offset` reaches the function: not to the parts
+    /// of the header its host gives.
+    fn writable(&self, offset: usize, size: usize) -> bool {
+        self.given.is_none() || !Given::drops(offset, size)
     }
 
     /// Where it sits.
@@ -151,22 +234,22 @@ impl Function {
 
     /// Its vendor ID.
     pub fn vendor_id(&self) -> u16 {
-        self.config.read16(VENDOR_ID)
+        self.read16(VENDOR_ID)
     }
 
     /// Its device ID.
     pub fn device_id(&self) -> u16 {
-        self.config.read16(DEVICE_ID)
+        self.read16(DEVICE_ID)
     }
 
     /// Its subsystem vendor ID (header type 0 only, else 0).
     pub fn subsystem_vendor_id(&self) -> u16 {
-        if self.header_type() == 0 { self.config.read16(SUBSYSTEM_VENDOR_ID) } else { 0 }
+        if self.header_type() == 0 { self.read16(SUBSYSTEM_VENDOR_ID) } else { 0 }
     }
 
     /// Its subsystem ID (header type 0 only, else 0).
     pub fn subsystem_id(&self) -> u16 {
-        if self.header_type() == 0 { self.config.read16(SUBSYSTEM_ID) } else { 0 }
+        if self.header_type() == 0 { self.read16(SUBSYSTEM_ID) } else { 0 }
     }
 
     /// Its subsystem vendor and subsystem IDs, as Linux reads them: from
@@ -174,48 +257,48 @@ impl Function {
     /// (0, 0) for a function that has neither.
     pub fn subsystem(&self) -> (u16, u16) {
         match self.header_type() {
-            0 => (self.config.read16(SUBSYSTEM_VENDOR_ID), self.config.read16(SUBSYSTEM_ID)),
+            0 => (self.read16(SUBSYSTEM_VENDOR_ID), self.read16(SUBSYSTEM_ID)),
             1 => self
                 .find_capability(CAP_SUBSYSTEM)
-                .map_or((0, 0), |at| (self.config.read16(at + 4), self.config.read16(at + 6))),
+                .map_or((0, 0), |at| (self.read16(at + 4), self.read16(at + 6))),
             _ => (0, 0),
         }
     }
 
     /// Its class code: base class, subclass and programming interface.
     pub fn class(&self) -> (u8, u8, u8) {
-        (self.config.read8(CLASS), self.config.read8(SUBCLASS), self.config.read8(PROG_IF))
+        (self.read8(CLASS), self.read8(SUBCLASS), self.read8(PROG_IF))
     }
 
     /// Its revision.
     pub fn revision(&self) -> u8 {
-        self.config.read8(REVISION)
+        self.read8(REVISION)
     }
 
     /// Its header type without the multi-function bit: 0 for an endpoint,
     /// 1 for a PCI-to-PCI bridge.
     pub fn header_type(&self) -> u8 {
-        self.config.read8(HEADER_TYPE) & 0x7f
+        self.read8(HEADER_TYPE) & 0x7f
     }
 
     /// Whether the device has functions other than 0.
     pub fn multifunction(&self) -> bool {
-        self.config.read8(HEADER_TYPE) & 0x80 != 0
+        self.read8(HEADER_TYPE) & 0x80 != 0
     }
 
     /// The bus behind a bridge.
     pub fn secondary_bus(&self) -> Option<u8> {
-        (self.header_type() == 1).then(|| self.config.read8(SECONDARY_BUS))
+        (self.header_type() == 1).then(|| self.read8(SECONDARY_BUS))
     }
 
     /// The command register.
     pub fn command(&self) -> u16 {
-        self.config.read16(COMMAND)
+        self.read16(COMMAND)
     }
 
     /// Sets the command register.
     pub fn set_command(&self, value: u16) {
-        self.config.write16(COMMAND, value);
+        self.write16(COMMAND, value);
     }
 
     /// Lets the function answer accesses to its memory BARs and start DMA,
@@ -227,32 +310,38 @@ impl Function {
 
     /// Reads a byte of its configuration space.
     pub fn read8(&self, offset: usize) -> u8 {
-        self.config.read8(offset)
+        self.read(offset, 1) as u8
     }
 
     /// Reads 16 bits of its configuration space.
     pub fn read16(&self, offset: usize) -> u16 {
-        self.config.read16(offset)
+        self.read(offset, 2) as u16
     }
 
     /// Reads 32 bits of its configuration space.
     pub fn read32(&self, offset: usize) -> u32 {
-        self.config.read32(offset)
+        self.read(offset, 4)
     }
 
     /// Writes a byte of its configuration space.
     pub fn write8(&self, offset: usize, value: u8) {
-        self.config.write8(offset, value);
+        if self.writable(offset, 1) {
+            self.config.write8(offset, value);
+        }
     }
 
     /// Writes 16 bits of its configuration space.
     pub fn write16(&self, offset: usize, value: u16) {
-        self.config.write16(offset, value);
+        if self.writable(offset, 2) {
+            self.config.write16(offset, value);
+        }
     }
 
     /// Writes 32 bits of its configuration space.
     pub fn write32(&self, offset: usize, value: u32) {
-        self.config.write32(offset, value);
+        if self.writable(offset, 4) {
+            self.config.write32(offset, value);
+        }
     }
 
     /// BAR `index` (0 to 5), as sized when the function was found.
@@ -317,8 +406,8 @@ impl Function {
     /// list order. A list that loops or leaves the standard header's 256
     /// bytes ends early.
     pub fn capabilities(&self) -> Capabilities<'_> {
-        let first = if self.config.read16(STATUS) & STATUS_CAPABILITIES != 0 {
-            self.config.read8(CAPABILITIES) & !0x3
+        let first = if self.read16(STATUS) & STATUS_CAPABILITIES != 0 {
+            self.read8(CAPABILITIES) & !0x3
         } else {
             0
         };
@@ -347,8 +436,8 @@ impl Iterator for Capabilities<'_> {
         }
         let offset = usize::from(self.next);
         self.seen += 1;
-        let id = self.function.config.read8(offset);
-        self.next = self.function.config.read8(offset + 1) & !0x3;
+        let id = self.function.read8(offset);
+        self.next = self.function.read8(offset + 1) & !0x3;
         Some((id, offset))
     }
 }

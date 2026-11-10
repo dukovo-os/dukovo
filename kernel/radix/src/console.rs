@@ -119,6 +119,13 @@ pub fn screen() -> Option<(usize, usize, usize, PixelFormat)> {
     Some((fb.width, fb.height, fb.pitch, fb.format))
 }
 
+/// Where the framebuffer starts in physical memory, if there is a
+/// framebuffer console: addresses there are not given to devices.
+pub fn framebuffer_start() -> Option<u64> {
+    let screen = SCREEN.lock_irq();
+    Some(screen.as_ref()?.framebuffer().phys_addr)
+}
+
 /// Gives the screen to a program (`/devices/fb0`): the log stops drawing on
 /// it.
 pub fn hand_over() {

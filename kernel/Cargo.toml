@@ -32,6 +32,7 @@ members = [
     "drivers/i2c",
     "drivers/ide",
     "drivers/intel",
+    "drivers/mana",
     "drivers/nic",
     "drivers/nvme",
     "drivers/pvscsi",

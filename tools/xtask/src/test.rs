@@ -157,6 +157,7 @@ pub const KERNEL_LIBRARIES: &[&str] = &[
     "radix-klog",
     "radix-lockdep",
     "radix-ksyms",
+    "radix-mana",
     "radix-mca",
     "radix-microcode",
     "radix-mm",

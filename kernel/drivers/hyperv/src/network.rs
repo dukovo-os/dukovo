@@ -32,6 +32,16 @@
 //!
 //! The kernel turns on none of the card's offloads: it sends and takes
 //! whole frames with their checksums, as on a wire.
+//!
+//! From NVSP 5 the guest says it takes a virtual function (SR-IOV): the
+//! host may then pass a device through for the card, Azure's network
+//! adapter for accelerated networking, on a virtual PCI bus
+//! ([`crate::pci`]). The host says so in a VF_ASSOCIATION note, with the
+//! function's serial number, and says so again when it takes the
+//! function back. Frames reach the function only once the guest asks
+//! with SET_DATAPATH, which the host confirms with an empty completion;
+//! until then, and once the guest asks for the synthetic path again, they
+//! come through the card.
 
 use radix_hw::Dma;
 use radix_nic::{Info, Link, MAX_FRAME, MIN_FRAME, Nic, SLOT, Slots, wait_for};
@@ -52,6 +62,13 @@ mod nvs {
     pub const RNDIS: u32 = 107;
     pub const RNDIS_ACK: u32 = 108;
     pub const NDIS_CONFIG: u32 = 125;
+    pub const VF_ASSOCIATION: u32 = 128;
+    pub const SET_DATAPATH: u32 = 129;
+    /// NDIS_CONFIG's capability: the guest takes a virtual function.
+    pub const CAPABILITY_SRIOV: u64 = 0x4;
+    /// SET_DATAPATH's paths.
+    pub const PATH_SYNTHETIC: u32 = 0;
+    pub const PATH_VF: u32 = 1;
     /// A status: success.
     pub const OK: u32 = 1;
     /// The receive buffer's signature, which RECEIVE_BUFFER packets carry.
@@ -89,6 +106,15 @@ mod rndis {
     pub const PACKET_HEADER: usize = 44;
 }
 
+/// The path frames take, as the guest last asked the host.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Datapath {
+    /// Through the virtual function, rather than the card.
+    pub vf: bool,
+    /// Whether the host confirmed it.
+    pub confirmed: bool,
+}
+
 /// The receive buffer: 15 MiB, the most NVSP 2 and earlier take, in
 /// blocks of 4 MiB or less, as the kernel allocates contiguous memory.
 pub const RECEIVE_BUFFER_SIZE: usize = 15 << 20;
@@ -102,6 +128,10 @@ pub const TRANSMIT: usize = 64;
 /// Transaction numbers: a frame's slot is its own, below [`TRANSMIT`].
 const TRANSACTION_CONTROL: u64 = 0x1_0000_0000;
 const TRANSACTION_NVS: u64 = 0x2_0000_0000;
+const TRANSACTION_DATAPATH: u64 = 0x3_0000_0000;
+
+/// The first NVSP version whose guest may take a virtual function.
+const VERSION_SRIOV: u32 = 0x5_0000;
 
 /// How long the host has to answer a message while the card is set up.
 const ANSWER_US: u32 = 5_000_000;
@@ -175,6 +205,12 @@ pub struct Netvsc {
     nvs_answer: Option<[u8; 16]>,
     /// Whether to signal the host at the next flush.
     kick: bool,
+    /// The serial number of the virtual function the host associated
+    /// with the card, while it is associated.
+    vf: Option<u32>,
+    /// The path the guest last asked for, and whether the host confirmed
+    /// it.
+    datapath: Datapath,
     mac: [u8; 6],
     link: Link,
     version: u32,
@@ -229,6 +265,8 @@ pub fn start(
         answer: None,
         nvs_answer: None,
         kick: false,
+        vf: None,
+        datapath: Datapath::default(),
         mac: [0; 6],
         link: Link::default(),
         version: 0,
@@ -241,9 +279,13 @@ pub fn start(
         .ok_or(Error::Unsupported("any NVSP version the kernel speaks"))?;
     if card.version >= 0x3_0002 {
         let mut config = nvs_message(nvs::NDIS_CONFIG);
-        // The largest frame without its check sequence, and no
-        // capabilities: no VLAN tags taken out, no virtual functions.
+        // The largest frame without its check sequence, and the
+        // capabilities: no VLAN tags taken out, and from NVSP 5 a virtual
+        // function.
         config[4..8].copy_from_slice(&((MAX_FRAME - 4) as u32).to_le_bytes());
+        if card.version >= VERSION_SRIOV {
+            config[12..20].copy_from_slice(&nvs::CAPABILITY_SRIOV.to_le_bytes());
+        }
         card.send_nvs(&config, false)?;
     }
     let mut ndis = nvs_message(nvs::NDIS_INIT);
@@ -529,12 +571,29 @@ impl Netvsc {
                     self.acknowledge(header.transaction);
                     continue;
                 }
-                // Notes from the host (its send table, a virtual
-                // function), which the kernel does not use.
-                INBAND => {}
+                // Notes from the host: a virtual function's, and its send
+                // table, which the kernel does not use.
+                INBAND => self.note(&header),
                 _ => self.dropped += 1,
             }
             self.finish(&header);
+        }
+    }
+
+    /// Reads the note `header` heads: a virtual function associated with
+    /// the card, or taken back.
+    fn note(&mut self, header: &ring::Header) {
+        let mut note = [0u8; 12];
+        if header.data_len() < note.len() {
+            return;
+        }
+        self.rings.peek_bytes(header.header_len, &mut note);
+        if u32_at(&note, 0) == nvs::VF_ASSOCIATION {
+            match u32_at(&note, 4) {
+                0 => self.vf = None,
+                1 => self.vf = Some(u32_at(&note, 8)),
+                _ => {}
+            }
         }
     }
 
@@ -552,6 +611,8 @@ impl Netvsc {
         let transaction = header.transaction;
         if transaction < TRANSMIT as u64 {
             self.busy &= !(1 << transaction);
+        } else if transaction == TRANSACTION_DATAPATH {
+            self.datapath.confirmed = true;
         } else if transaction == TRANSACTION_NVS {
             let mut answer = [0u8; 16];
             let len = header.data_len().min(16);
@@ -576,6 +637,46 @@ impl Netvsc {
     /// The NVSP version agreed.
     pub fn version(&self) -> u32 {
         self.version
+    }
+
+    /// The serial number of the virtual function the host associated
+    /// with the card, while it is: the function's on its virtual PCI bus.
+    pub fn virtual_function(&self) -> Option<u32> {
+        self.vf
+    }
+
+    /// The path frames take, as the guest last asked.
+    pub fn datapath(&self) -> Datapath {
+        self.datapath
+    }
+
+    /// Asks the host to send the card's frames through its virtual
+    /// function (`vf`), or through the card; [`Netvsc::datapath`] says
+    /// once the host confirmed it. The virtual function's path is asked
+    /// for only while the host associates one. Returns whether it was
+    /// asked.
+    pub fn set_datapath(&mut self, vf: bool) -> bool {
+        if vf && self.vf.is_none() || self.failed {
+            return false;
+        }
+        let mut message = nvs_message(nvs::SET_DATAPATH);
+        put32(&mut message, 4, if vf { nvs::PATH_VF } else { nvs::PATH_SYNTHETIC });
+        match ring::send(&self.rings, &message, TRANSACTION_DATAPATH, true) {
+            Ok(signal) => {
+                self.kick |= signal;
+                self.flush_now();
+                self.datapath = Datapath { vf, confirmed: false };
+                true
+            }
+            Err(_) => false,
+        }
+    }
+
+    /// Signals the host now if a packet written since asks for it.
+    fn flush_now(&mut self) {
+        if core::mem::take(&mut self.kick) {
+            self.ring_doorbell();
+        }
     }
 
     /// Whether a packet waits in the inbound ring, with the host's
@@ -649,9 +750,7 @@ impl Nic for Netvsc {
     }
 
     fn flush(&mut self) {
-        if core::mem::take(&mut self.kick) {
-            self.ring_doorbell();
-        }
+        self.flush_now();
     }
 
     fn dropped(&self) -> u64 {

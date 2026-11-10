@@ -16,7 +16,7 @@ use crate::keyboard::{self, Message};
 use crate::ring::{self, ANSWER, COMPLETION, Full, INBAND, PAGES, Range, Rings};
 use crate::storage::{self, Direction};
 use crate::vmbus::{self, FromHost};
-use crate::{PAGE, network};
+use crate::{PAGE, bond, network, pci};
 
 fn u16_at(data: &[u8], at: usize) -> u16 {
     u16::from_le_bytes([data[at], data[at + 1]])
@@ -788,7 +788,10 @@ struct Host {
     unacknowledged: Vec<u64>,
     /// What the guest set up.
     mtu: u32,
+    capabilities: u64,
     ndis: (u32, u32),
+    /// The paths the guest asked for.
+    datapaths: Vec<u32>,
     filter: u32,
     /// The frames the guest sent.
     frames: Vec<Vec<u8>>,
@@ -807,7 +810,9 @@ impl Host {
             next_transaction: 0x100,
             unacknowledged: Vec::new(),
             mtu: 0,
+            capabilities: 0,
             ndis: (0, 0),
+            datapaths: Vec::new(),
             filter: 0,
             frames: Vec::new(),
             hold: None,
@@ -841,7 +846,16 @@ impl Host {
                     put32(&mut answer, 12, ok);
                     self.complete(&answer, transaction);
                 }
-                125 => self.mtu = u32_at(message, 4),
+                125 => {
+                    self.mtu = u32_at(message, 4);
+                    self.capabilities = u64_at(message, 12);
+                }
+                // SET_DATAPATH: confirmed with an empty completion.
+                129 => {
+                    assert_eq!(u16_at(packet, 6), ANSWER);
+                    self.datapaths.push(u32_at(message, 4));
+                    self.complete(&[], transaction);
+                }
                 100 => self.ndis = (u32_at(message, 4), u32_at(message, 8)),
                 // The receive buffer: its GPADL and its signature.
                 101 => {
@@ -1119,4 +1133,581 @@ fn frames_are_sent_from_their_slots() {
     assert!(card.failed());
     assert!(!card.can_send());
     assert!(!card.send(&frame(64, 0)));
+}
+
+// The virtual PCI bus.
+
+/// QUERY_PROTOCOL_VERSION and the other message types, as the host reads
+/// them.
+const PCI_VERSION: u32 = 0x4249_0013;
+const PCI_QUERY_RELATIONS: u32 = 0x4249_0001;
+const PCI_QUERY_RESOURCES: u32 = 0x4249_0005;
+const PCI_D0: u32 = 0x4249_0007;
+const PCI_EJECT: u32 = 0x4249_000b;
+const PCI_EJECTED: u32 = 0x4249_000f;
+const PCI_ASSIGNED: u32 = 0x4249_0010;
+const PCI_INTERRUPT: u32 = 0x4249_0014;
+const PCI_DELETE_INTERRUPT: u32 = 0x4249_0015;
+const PCI_ASSIGNED2: u32 = 0x4249_0016;
+const PCI_INTERRUPT3: u32 = 0x4249_001b;
+/// Where the guest puts the configuration window.
+const PCI_WINDOW: u64 = 0xf_e000_0000;
+/// Azure's network adapter, in slot 2, as the host lists it.
+const MANA_SLOT: u32 = 2;
+const MANA_SERIAL: u32 = 0x3c71_0001;
+/// What its BARs read with all ones written: a 64-bit, prefetchable BAR 0
+/// of 1 MiB.
+const MANA_PROBED: [u32; 6] = [0xfff0_000c, 0xffff_ffff, 0, 0, 0, 0];
+
+/// A Hyper-V host's virtual PCI bus with Azure's network adapter on it.
+struct PciHost {
+    rings: HostRings,
+    /// The versions it speaks.
+    speaks: Vec<u32>,
+    /// What it answers to any other version: STATUS_REVISION_MISMATCH.
+    refusal: u32,
+    /// The versions asked, in order.
+    asked: Vec<u32>,
+    /// The version agreed, which decides how it lists its functions.
+    version: u32,
+    /// The configuration window, once the guest named it.
+    window: Option<u64>,
+    /// RESOURCES_ASSIGNED messages: their type, slot and length.
+    assigned: Vec<(u32, u32, usize)>,
+    /// Interrupt messages and the other unanswered ones, whole.
+    messages: Vec<Vec<u8>>,
+}
+
+impl PciHost {
+    fn new(rings: &Rings, speaks: &[u32]) -> PciHost {
+        PciHost {
+            rings: HostRings::new(rings),
+            speaks: speaks.to_vec(),
+            refusal: 0xc000_0059,
+            asked: Vec::new(),
+            version: 0,
+            window: None,
+            assigned: Vec::new(),
+            messages: Vec::new(),
+        }
+    }
+
+    fn complete(&self, data: &[u8], transaction: u64) {
+        self.rings.put(&packet(COMPLETION, &[], data, 0, transaction));
+    }
+
+    /// Sends the host's INBAND message `data`.
+    fn tell(&self, data: &[u8]) {
+        self.rings.put(&packet(INBAND, &[], data, 0, 0));
+    }
+
+    /// BUS_RELATIONS, or BUS_RELATIONS2 from 1.4, with the adapter.
+    fn relations(&self) {
+        let mut function = vec![0u8; 20];
+        put16(&mut function, 0, 0x1414);
+        put16(&mut function, 2, 0x00ba);
+        function[4] = 1;
+        function[7] = 2;
+        put32(&mut function, 8, 0x00ba_1414);
+        put32(&mut function, 12, MANA_SLOT);
+        put32(&mut function, 16, MANA_SERIAL);
+        let mut data = vec![0u8; 8];
+        if self.version >= pci::VERSION_1_4 {
+            put32(&mut data, 0, 0x4249_0019);
+            function.resize(28, 0);
+        } else {
+            put32(&mut data, 0, 0x4249_0000);
+        }
+        put32(&mut data, 4, 1);
+        data.extend(function);
+        self.tell(&data);
+    }
+
+    fn serve(&mut self) {
+        while let Some(packet) = self.rings.take() {
+            let header_len = usize::from(u16_at(&packet, 2)) * 8;
+            let answer = u16_at(&packet, 6) == ANSWER;
+            let transaction = u64_at(&packet, 8);
+            let message = &packet[header_len..];
+            assert_eq!(u16_at(&packet, 0), INBAND);
+            let kind = u32_at(message, 0);
+            let ok = 0u32.to_le_bytes();
+            match kind {
+                PCI_VERSION => {
+                    assert!(answer);
+                    let version = u32_at(message, 4);
+                    self.asked.push(version);
+                    if self.speaks.contains(&version) {
+                        self.version = version;
+                        self.complete(&ok, transaction);
+                    } else {
+                        self.complete(&self.refusal.to_le_bytes(), transaction);
+                    }
+                }
+                PCI_QUERY_RELATIONS => {
+                    assert!(!answer, "the host answers with BUS_RELATIONS, not a completion");
+                    self.relations();
+                }
+                PCI_QUERY_RESOURCES => {
+                    assert_eq!(u32_at(message, 4), MANA_SLOT);
+                    let mut data = vec![0u8; 28];
+                    for (i, bar) in MANA_PROBED.iter().enumerate() {
+                        put32(&mut data, 4 + 4 * i, *bar);
+                    }
+                    self.complete(&data, transaction);
+                }
+                PCI_D0 => {
+                    self.window = Some(u64_at(message, 8));
+                    self.complete(&ok, transaction);
+                }
+                PCI_ASSIGNED | PCI_ASSIGNED2 => {
+                    // The message's own length: the packet is padded to 8.
+                    let len: usize = if kind == PCI_ASSIGNED { 148 } else { 202 };
+                    assert_eq!(message.len(), len.next_multiple_of(8));
+                    self.assigned.push((kind, u32_at(message, 4), len));
+                    self.complete(&ok, transaction);
+                }
+                PCI_INTERRUPT | PCI_INTERRUPT3 => {
+                    self.messages.push(message.to_vec());
+                    let mut data = vec![0u8; 24];
+                    put16(&mut data, 10, 1);
+                    put32(&mut data, 12, 0x4041);
+                    put64(&mut data, 16, 0xfee0_1000);
+                    self.complete(&data, transaction);
+                }
+                _ => {
+                    assert!(!answer);
+                    self.messages.push(message.to_vec());
+                }
+            }
+        }
+    }
+}
+
+/// Sets up a bus against a host that speaks `speaks`.
+fn pci_bus(speaks: &[u32]) -> (Result<pci::Bus, pci::Error>, RefCell<PciHost>) {
+    let rings = Rings::new(Dma::fake(8 * PAGE), 4);
+    let host = RefCell::new(PciHost::new(&rings, speaks));
+    let mut delay = |_us: u32| host.borrow_mut().serve();
+    let bus = pci::start(rings, CONNECTION, signal, PCI_WINDOW, &mut delay);
+    (bus, host)
+}
+
+#[test]
+fn a_virtual_pci_bus_is_set_up() {
+    let (bus, host) = pci_bus(&[pci::VERSION_1_4, pci::VERSION_1_1]);
+    let mut bus = bus.unwrap();
+    assert_eq!(bus.version(), pci::VERSION_1_4);
+    {
+        let host = host.borrow();
+        assert_eq!(host.asked, [pci::VERSION_1_4]);
+        assert_eq!(host.window, Some(PCI_WINDOW));
+        assert_eq!(host.assigned, [(PCI_ASSIGNED2, MANA_SLOT, 202)]);
+    }
+    let children: Vec<pci::Child> = bus.children().copied().collect();
+    assert_eq!(children.len(), 1);
+    let child = children[0];
+    assert_eq!(child.probed, MANA_PROBED);
+    let descriptor = child.descriptor;
+    assert_eq!((descriptor.vendor, descriptor.device, descriptor.class), (0x1414, 0x00ba, 2));
+    assert_eq!((descriptor.device_number(), descriptor.function_number()), (2, 0));
+    assert_eq!(descriptor.serial, MANA_SERIAL);
+    let given = descriptor.given();
+    assert_eq!((given.vendor, given.device, given.revision), (0x1414, 0x00ba, 1));
+    assert_eq!(given.subsystem, 0x00ba_1414);
+
+    // An interrupt on vector 0x52 of virtual processor 3.
+    let mut delay = |_us: u32| host.borrow_mut().serve();
+    let interrupt = bus.create_interrupt(MANA_SLOT, 0x52, 3, &mut delay).unwrap();
+    assert_eq!(interrupt, pci::Translated { address: 0xfee0_1000, data: 0x4041, count: 1 });
+    let message = host.borrow().messages[0].clone();
+    assert_eq!(u32_at(&message, 0), PCI_INTERRUPT3);
+    assert_eq!(message.len(), 88, "82 bytes, padded");
+    assert_eq!((u32_at(&message, 4), u32_at(&message, 8)), (MANA_SLOT, 0x52));
+    // One vector, on one processor: 3.
+    assert_eq!((u16_at(&message, 14), u16_at(&message, 16), u16_at(&message, 18)), (1, 1, 3));
+    bus.delete_interrupt(MANA_SLOT, &interrupt).unwrap();
+    host.borrow_mut().serve();
+    let message = host.borrow().messages[1].clone();
+    assert_eq!(u32_at(&message, 0), PCI_DELETE_INTERRUPT);
+    assert_eq!((u32_at(&message, 12), u64_at(&message, 16)), (0x4041, 0xfee0_1000));
+}
+
+#[test]
+fn an_older_host_speaks_version_1_1() {
+    let (bus, host) = pci_bus(&[pci::VERSION_1_1]);
+    let mut bus = bus.unwrap();
+    assert_eq!(bus.version(), pci::VERSION_1_1);
+    assert_eq!(host.borrow().asked, [pci::VERSION_1_4, pci::VERSION_1_1]);
+    assert_eq!(host.borrow().assigned, [(PCI_ASSIGNED, MANA_SLOT, 148)]);
+    // The 20-byte descriptors of BUS_RELATIONS.
+    let child = *bus.children().next().unwrap();
+    assert_eq!((child.descriptor.vendor, child.descriptor.serial), (0x1414, MANA_SERIAL));
+
+    let mut delay = |_us: u32| host.borrow_mut().serve();
+    bus.create_interrupt(MANA_SLOT, 0x60, 5, &mut delay).unwrap();
+    let message = host.borrow().messages[0].clone();
+    assert_eq!(u32_at(&message, 0), PCI_INTERRUPT);
+    assert_eq!(message.len(), 24);
+    assert_eq!((message[8], u16_at(&message, 10), u64_at(&message, 16)), (0x60, 1, 1 << 5));
+    // Before 1.4, a processor past 63 cannot be named.
+    assert!(matches!(
+        bus.create_interrupt(MANA_SLOT, 0x60, 64, &mut delay),
+        Err(pci::Error::Unsupported(_))
+    ));
+}
+
+#[test]
+fn a_host_that_refuses_the_version_is_left() {
+    let (bus, _) = pci_bus(&[0x1_0002]);
+    assert_eq!(bus.err(), Some(pci::Error::NoVersion));
+    // A refusal that is not a mismatch ends the asking.
+    let rings = Rings::new(Dma::fake(8 * PAGE), 4);
+    let host = RefCell::new(PciHost::new(&rings, &[]));
+    host.borrow_mut().refusal = 0xc000_0001;
+    let mut delay = |_us: u32| host.borrow_mut().serve();
+    let bus = pci::start(rings, CONNECTION, signal, PCI_WINDOW, &mut delay);
+    assert!(matches!(bus, Err(pci::Error::Refused(_, status)) if status as u32 == 0xc000_0001));
+    assert_eq!(host.borrow().asked, [pci::VERSION_1_4]);
+}
+
+#[test]
+fn an_ejection_is_answered() {
+    let (bus, host) = pci_bus(&[pci::VERSION_1_4]);
+    let mut bus = bus.unwrap();
+    assert_eq!(bus.next_event(), None);
+    let mut eject = [0u8; 8];
+    put32(&mut eject, 0, PCI_EJECT);
+    put32(&mut eject, 4, MANA_SLOT);
+    host.borrow().tell(&eject);
+    // Told twice, taken once; the relations that follow come after.
+    host.borrow().tell(&eject);
+    host.borrow().relations();
+    assert!(bus.arm());
+    assert_eq!(bus.next_event(), Some(pci::Event::Eject { slot: MANA_SLOT }));
+    assert!(matches!(bus.next_event(), Some(pci::Event::Relations(r)) if r.count == 1));
+    assert_eq!(bus.next_event(), None);
+    bus.ejection_complete(MANA_SLOT).unwrap();
+    assert_eq!(bus.children().count(), 0);
+    host.borrow_mut().serve();
+    let message = host.borrow().messages[0].clone();
+    assert_eq!((u32_at(&message, 0), u32_at(&message, 4)), (PCI_EJECTED, MANA_SLOT));
+}
+
+#[test]
+fn relations_cut_short_keep_what_fits() {
+    let mut data = vec![0u8; 8 + 20 + 10];
+    put32(&mut data, 0, 0x4249_0000);
+    put32(&mut data, 4, 2);
+    put16(&mut data, 8, 0x1414);
+    let Some(pci::FromHost::Relations(relations)) = pci::parse(&data) else { panic!() };
+    assert_eq!((relations.listed, relations.count), (2, 1));
+    assert_eq!(relations.functions[0].vendor, 0x1414);
+    assert_eq!(pci::parse(&[0; 4]), None);
+    assert_eq!(pci::slot(3, 1), 3 | 1 << 5);
+}
+
+#[test]
+fn a_virtual_function_takes_the_frames_once_asked() {
+    let (card, host) = card(0x6_0001);
+    let mut card = card.unwrap();
+    let mut host = host.into_inner();
+    // From NVSP 5 the guest takes a virtual function.
+    assert_eq!(host.capabilities, 0x4);
+    host.serve();
+    assert_eq!(card.virtual_function(), None);
+    // Not without a function associated.
+    assert!(!card.set_datapath(true));
+
+    let mut note = [0u8; 12];
+    put32(&mut note, 0, 128);
+    put32(&mut note, 4, 1);
+    put32(&mut note, 8, 0x3c71_0001);
+    host.rings.put(&packet(INBAND, &[], &note, 0, 0));
+    let mut buffer = [0u8; 2048];
+    assert_eq!(card.receive(&mut buffer), None);
+    assert_eq!(card.virtual_function(), Some(0x3c71_0001));
+    assert!(card.set_datapath(true));
+    assert_eq!(card.datapath(), network::Datapath { vf: true, confirmed: false });
+    host.serve();
+    assert_eq!(host.datapaths, [1]);
+    // The empty completion confirms it.
+    assert!(card.can_send());
+    assert_eq!(card.datapath(), network::Datapath { vf: true, confirmed: true });
+
+    // The host takes the function back; the guest asks for the card's
+    // path again.
+    put32(&mut note, 4, 0);
+    host.rings.put(&packet(INBAND, &[], &note, 0, 0));
+    assert_eq!(card.receive(&mut buffer), None);
+    assert_eq!(card.virtual_function(), None);
+    assert!(card.set_datapath(false));
+    host.serve();
+    assert_eq!(host.datapaths, [1, 0]);
+}
+
+#[test]
+fn an_nvsp_4_card_takes_no_virtual_function() {
+    let (card, host) = card(0x4_0000);
+    assert!(card.is_ok());
+    assert_eq!(host.borrow().capabilities, 0);
+}
+
+/// A network card for the bond's tests, whose state the test keeps a
+/// hold of: frames to receive, frames sent, and the paths asked for.
+#[derive(Default)]
+struct FakeNic {
+    incoming: std::collections::VecDeque<Vec<u8>>,
+    sent: Vec<Vec<u8>>,
+    /// The virtual function the host associates, for a synthetic card.
+    vf: Option<u32>,
+    /// The paths asked for: true for the virtual function's.
+    datapaths: Vec<bool>,
+    failed: bool,
+    stopped: bool,
+    flushes: u32,
+    dropped: u64,
+}
+
+type Shared<T> = std::sync::Arc<std::sync::Mutex<T>>;
+
+struct Fake(Shared<FakeNic>);
+
+impl Nic for Fake {
+    fn info(&self) -> radix_nic::Info {
+        radix_nic::Info {
+            model: "fake",
+            mac: [2, 0, 0, 0, 0, 1],
+            receive_slots: 8,
+            transmit_slots: 8,
+        }
+    }
+
+    fn link(&self) -> radix_nic::Link {
+        radix_nic::Link { up: true, mbps: 1000, full_duplex: true }
+    }
+
+    fn failed(&self) -> bool {
+        self.0.lock().unwrap().failed
+    }
+
+    fn receive(&mut self, frame: &mut [u8]) -> Option<usize> {
+        let data = self.0.lock().unwrap().incoming.pop_front()?;
+        frame[..data.len()].copy_from_slice(&data);
+        Some(data.len())
+    }
+
+    fn can_send(&mut self) -> bool {
+        true
+    }
+
+    fn send(&mut self, frame: &[u8]) -> bool {
+        self.0.lock().unwrap().sent.push(frame.to_vec());
+        true
+    }
+
+    fn flush(&mut self) {
+        self.0.lock().unwrap().flushes += 1;
+    }
+
+    fn dropped(&self) -> u64 {
+        self.0.lock().unwrap().dropped
+    }
+
+    fn stop(&mut self) {
+        self.0.lock().unwrap().stopped = true;
+    }
+}
+
+impl bond::Synthetic for Fake {
+    fn virtual_function(&self) -> Option<u32> {
+        self.0.lock().unwrap().vf
+    }
+
+    fn set_datapath(&mut self, vf: bool) -> bool {
+        self.0.lock().unwrap().datapaths.push(vf);
+        true
+    }
+}
+
+/// The kernel's side of the handoff: a function offered, whether it is
+/// asked back, and the one given back.
+#[derive(Default)]
+struct FakeHandoff {
+    offered: Option<Fake>,
+    asked_back: bool,
+    returned: Option<Fake>,
+}
+
+struct Handoff(Shared<FakeHandoff>);
+
+impl bond::Handoff<Fake> for Handoff {
+    fn take(&mut self) -> Option<Fake> {
+        self.0.lock().unwrap().offered.take()
+    }
+
+    fn asked_back(&self) -> bool {
+        self.0.lock().unwrap().asked_back
+    }
+
+    fn give_back(&mut self, vf: Fake) {
+        let mut handoff = self.0.lock().unwrap();
+        handoff.asked_back = false;
+        handoff.returned = Some(vf);
+    }
+}
+
+/// A bond of fake cards, as the tests drive it.
+type FakeBond = bond::Bond<Fake, Fake, Handoff>;
+
+/// A bond, its synthetic card's state, its handoff's, and a virtual
+/// function's, offered.
+fn bonded() -> (FakeBond, Shared<FakeNic>, Shared<FakeHandoff>, Shared<FakeNic>) {
+    let synthetic = Shared::default();
+    let handoff = Shared::<FakeHandoff>::default();
+    let vf = Shared::default();
+    handoff.lock().unwrap().offered = Some(Fake(vf.clone()));
+    let bond = bond::Bond::new(Fake(synthetic.clone()), Handoff(handoff.clone()));
+    (bond, synthetic, handoff, vf)
+}
+
+#[test]
+fn a_bond_without_a_virtual_function_is_its_synthetic_card() {
+    let (mut bond, synthetic, handoff, _) = bonded();
+    synthetic.lock().unwrap().incoming.push_back(vec![1; 60]);
+    let mut frame = [0u8; 1514];
+    assert_eq!(bond.receive(&mut frame), Some(60));
+    assert_eq!(bond.receive(&mut frame), None);
+    assert!(bond.can_send());
+    assert!(bond.send(&[2; 60]));
+    assert_eq!(synthetic.lock().unwrap().sent, [vec![2; 60]]);
+    // The host associates no function: the one offered is not taken.
+    assert!(!bond.has_vf());
+    assert!(handoff.lock().unwrap().offered.is_some());
+    assert!(synthetic.lock().unwrap().datapaths.is_empty());
+    assert_eq!(bond.info().mac, [2, 0, 0, 0, 0, 1]);
+}
+
+#[test]
+fn a_bond_takes_its_virtual_function_and_sends_through_it() {
+    let (mut bond, synthetic, handoff, vf) = bonded();
+    synthetic.lock().unwrap().vf = Some(0x3c71_0001);
+    let mut frame = [0u8; 1514];
+    assert_eq!(bond.receive(&mut frame), None);
+    assert!(bond.has_vf());
+    assert!(bond.sends_through_vf());
+    assert!(handoff.lock().unwrap().offered.is_none());
+    assert_eq!(synthetic.lock().unwrap().datapaths, [true]);
+
+    assert!(bond.send(&[3; 60]));
+    assert_eq!(vf.lock().unwrap().sent, [vec![3; 60]]);
+    assert!(synthetic.lock().unwrap().sent.is_empty());
+    bond.flush();
+    assert_eq!(vf.lock().unwrap().flushes, 1);
+    assert_eq!(synthetic.lock().unwrap().flushes, 1);
+
+    // Frames come from both cards, in turn, until neither has one.
+    for _ in 0..3 {
+        vf.lock().unwrap().incoming.push_back(vec![4; 64]);
+        synthetic.lock().unwrap().incoming.push_back(vec![5; 64]);
+    }
+    let mut from = Vec::new();
+    while let Some(len) = bond.receive(&mut frame) {
+        from.push(frame[..len][0]);
+    }
+    assert_eq!(from.len(), 6);
+    assert_eq!(from.iter().filter(|&&b| b == 4).count(), 3);
+    assert!(from.windows(2).all(|pair| pair[0] != pair[1]), "{from:?}");
+
+    vf.lock().unwrap().dropped = 2;
+    synthetic.lock().unwrap().dropped = 1;
+    assert_eq!(bond.dropped(), 3);
+}
+
+#[test]
+fn a_bond_gives_its_virtual_function_back_when_asked() {
+    let (mut bond, synthetic, handoff, vf) = bonded();
+    synthetic.lock().unwrap().vf = Some(7);
+    let mut frame = [0u8; 1514];
+    let _ = bond.receive(&mut frame);
+    assert!(bond.has_vf());
+
+    handoff.lock().unwrap().asked_back = true;
+    let _ = bond.receive(&mut frame);
+    assert!(!bond.has_vf());
+    assert_eq!(synthetic.lock().unwrap().datapaths, [true, false]);
+    assert!(handoff.lock().unwrap().returned.is_some());
+    // Given back running: the kernel's thread stops it.
+    assert!(!vf.lock().unwrap().stopped);
+
+    assert!(bond.send(&[6; 60]));
+    assert_eq!(synthetic.lock().unwrap().sent, [vec![6; 60]]);
+    assert!(vf.lock().unwrap().sent.is_empty());
+
+    // A function offered again, as after the host's maintenance, is
+    // taken again.
+    let again = Shared::default();
+    handoff.lock().unwrap().offered = Some(Fake(again.clone()));
+    bond.flush();
+    assert!(bond.has_vf());
+    assert_eq!(synthetic.lock().unwrap().datapaths, [true, false, true]);
+    assert!(bond.send(&[7; 60]));
+    assert_eq!(again.lock().unwrap().sent, [vec![7; 60]]);
+}
+
+#[test]
+fn a_bond_sends_through_its_synthetic_card_once_the_host_withdraws_the_function() {
+    let (mut bond, synthetic, _, vf) = bonded();
+    synthetic.lock().unwrap().vf = Some(7);
+    bond.flush();
+    assert!(bond.sends_through_vf());
+    // The host takes the association away before it ejects the function.
+    synthetic.lock().unwrap().vf = None;
+    assert!(!bond.sends_through_vf());
+    assert!(bond.send(&[8; 60]));
+    assert_eq!(synthetic.lock().unwrap().sent, [vec![8; 60]]);
+    // The function's frames still come in until it is asked back.
+    vf.lock().unwrap().incoming.push_back(vec![9; 64]);
+    let mut frame = [0u8; 1514];
+    let mut got = Vec::new();
+    while let Some(len) = bond.receive(&mut frame) {
+        got.push(frame[..len][0]);
+    }
+    assert_eq!(got, [9]);
+}
+
+#[test]
+fn a_bond_turns_away_from_a_virtual_function_that_failed() {
+    let (mut bond, synthetic, handoff, vf) = bonded();
+    synthetic.lock().unwrap().vf = Some(7);
+    bond.flush();
+    vf.lock().unwrap().failed = true;
+    assert!(!bond.sends_through_vf());
+    bond.flush();
+    bond.flush();
+    // The path goes back once; the function is kept until asked back.
+    assert_eq!(synthetic.lock().unwrap().datapaths, [true, false]);
+    assert!(bond.has_vf());
+    assert!(!bond.failed());
+    assert!(bond.send(&[1; 60]));
+    assert_eq!(synthetic.lock().unwrap().sent.len(), 1);
+    vf.lock().unwrap().incoming.push_back(vec![9; 64]);
+    let mut frame = [0u8; 1514];
+    assert_eq!(bond.receive(&mut frame), None);
+    handoff.lock().unwrap().asked_back = true;
+    bond.flush();
+    assert!(!bond.has_vf());
+    assert_eq!(synthetic.lock().unwrap().datapaths, [true, false, false]);
+}
+
+#[test]
+fn a_stopped_bond_gives_its_virtual_function_back() {
+    let (mut bond, synthetic, handoff, vf) = bonded();
+    synthetic.lock().unwrap().vf = Some(7);
+    bond.flush();
+    bond.stop();
+    assert!(synthetic.lock().unwrap().stopped);
+    assert!(!vf.lock().unwrap().stopped);
+    assert!(handoff.lock().unwrap().returned.is_some());
+    assert_eq!(synthetic.lock().unwrap().datapaths, [true, false]);
 }
