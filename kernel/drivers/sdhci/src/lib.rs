@@ -26,10 +26,19 @@
 //! [`Slot::poll`] says when it is done: the controller's interrupt is
 //! left off, and the kernel polls it as it does an IDE channel.
 //!
-//! Cards inserted later, UHS-I speeds and eMMC are left for later; so are
-//! cards of version 1 that are MMC cards, which do not answer ACMD41.
-//! The crate is a compartment with no `unsafe` code; its tests run it
-//! against a simulated controller and card.
+//! Cards come and go (ADR 0437). [`Detect`] is a slot's card detect, which
+//! the thread watching the slot reads apart from the slot moving the
+//! card's data: whether a card is in it and its write-protect switch
+//! ([`Detect::presence`]), and the card put in or taken out since the last
+//! look ([`Detect::events`]), two status bits that only it clears. A slot
+//! is polled by default; [`Detect::interrupts`] has it interrupt instead
+//! for a transfer's end, an error, and a card put in or taken out, on a
+//! controller whose interrupt reaches the kernel.
+//!
+//! UHS-I speeds and eMMC are left for later; so are cards of version 1
+//! that are MMC cards, which do not answer ACMD41. The crate is a
+//! compartment with no `unsafe` code; its tests run it against a
+//! simulated controller and card.
 
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
@@ -107,6 +116,8 @@ mod present {
     pub const COMMAND_INHIBIT: u32 = 1 << 0;
     pub const DATA_INHIBIT: u32 = 1 << 1;
     pub const CARD_INSERTED: u32 = 1 << 16;
+    /// The card detect is settled: the slot has debounced it.
+    pub const CARD_STABLE: u32 = 1 << 17;
     pub const WRITABLE: u32 = 1 << 19;
 }
 
@@ -114,10 +125,26 @@ mod present {
 mod status {
     pub const COMMAND_COMPLETE: u16 = 1 << 0;
     pub const TRANSFER_COMPLETE: u16 = 1 << 1;
+    pub const CARD_INSERTION: u16 = 1 << 6;
+    pub const CARD_REMOVAL: u16 = 1 << 7;
     pub const ERROR: u16 = 1 << 15;
+    /// A card went in or came out: [`super::Detect::events`] alone clears
+    /// them, as the thread watching the slot reads them.
+    pub const CARD_EVENTS: u16 = CARD_INSERTION | CARD_REMOVAL;
+    /// Every bit but the card's events, which a command clears before it
+    /// goes and once it ends.
+    pub const ALL_BUT_CARD: u16 = !CARD_EVENTS;
     /// Error Interrupt Status: the command timed out.
     pub const COMMAND_TIMEOUT: u16 = 1 << 0;
 }
+
+/// The Normal Interrupt Signal Enable's bits while the slot interrupts:
+/// a transfer's end, an error, and a card put in or taken out. A command
+/// without data is waited for by polling, while the slot is being set up.
+const SIGNALLED: u16 = status::TRANSFER_COMPLETE | status::CARD_EVENTS;
+/// The Error Interrupt Signal Enable's bits while the slot interrupts:
+/// every error the slot reports.
+const ERRORS_SIGNALLED: u16 = 0x03ff;
 
 /// Capabilities' bits.
 mod caps {
@@ -126,6 +153,9 @@ mod caps {
     pub const VOLTS_3_0: u64 = 1 << 25;
     pub const VOLTS_1_8: u64 = 1 << 26;
     pub const SYSTEM_64: u64 = 1 << 28;
+    /// Bits 30 and 31: the slot's type, 0 for a removable card's slot, 1
+    /// for a device soldered to the board (eMMC), 2 for a shared bus.
+    pub const SLOT_TYPE_SHIFT: u32 = 30;
 }
 
 /// The specification's versions, as the Version register says them.
@@ -251,6 +281,115 @@ pub struct Slot {
     stuck: bool,
 }
 
+/// Whether a card is in a slot, as its card detect says.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Presence {
+    /// No card is in it.
+    Empty,
+    /// A card is in it.
+    Card {
+        /// Its write-protect switch is set.
+        protected: bool,
+    },
+    /// The card detect is still settling: a card is going in or coming
+    /// out. Look again in a few milliseconds.
+    Settling,
+}
+
+/// What a slot's card detect said since it was last read: a card went in,
+/// came out, or both, as one taken out and another put in between two
+/// looks.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Events {
+    /// A card went in.
+    pub inserted: bool,
+    /// A card came out.
+    pub removed: bool,
+}
+
+impl Events {
+    /// Whether anything happened.
+    pub fn any(&self) -> bool {
+        self.inserted || self.removed
+    }
+}
+
+/// A slot's card detect, apart from the [`Slot`] that moves the card's
+/// data: the thread that watches the slot for cards put in and taken out
+/// reads it, and so does the controller's interrupt handler, while the
+/// slot itself is in the disk's queue. It reads Present State and the two
+/// card bits of Normal Interrupt Status, and clears those, which nothing
+/// else does; it powers a card taken out off.
+#[derive(Clone)]
+pub struct Detect {
+    regs: Mmio,
+}
+
+impl Detect {
+    /// The card detect of the slot whose registers are `regs`, which
+    /// [`Slot::new`] has set up.
+    pub fn new(regs: Mmio) -> Option<Detect> {
+        (regs.len() >= REGISTERS).then_some(Detect { regs })
+    }
+
+    /// Whether a card is in the slot.
+    pub fn presence(&self) -> Presence {
+        let state = self.regs.read32(reg::PRESENT_STATE);
+        if state & present::CARD_STABLE == 0 {
+            Presence::Settling
+        } else if state & present::CARD_INSERTED == 0 {
+            Presence::Empty
+        } else {
+            Presence::Card { protected: state & present::WRITABLE == 0 }
+        }
+    }
+
+    /// What the card detect said since the last call, cleared: a card
+    /// put in, or taken out. A controller holds a card put in back from
+    /// Present State until the removal before it is cleared (QEMU's
+    /// does), so the thread watching the slot clears them at each look.
+    pub fn events(&self) -> Events {
+        let bits = self.regs.read16(reg::NORMAL_STATUS) & status::CARD_EVENTS;
+        if bits != 0 {
+            self.regs.write16(reg::NORMAL_STATUS, bits);
+        }
+        Events {
+            inserted: bits & status::CARD_INSERTION != 0,
+            removed: bits & status::CARD_REMOVAL != 0,
+        }
+    }
+
+    /// Stops what the slot was doing, and turns the card's clock and
+    /// power off, as its card was taken out or let go (the controller may
+    /// have turned them off itself).
+    pub fn power_off(&self) {
+        self.regs.write8(reg::SOFTWARE_RESET, 6);
+        self.regs.write16(reg::CLOCK_CONTROL, 0);
+        self.regs.write8(reg::POWER_CONTROL, 0);
+    }
+
+    /// Has the slot interrupt, `on`, for a transfer's end, an error and a
+    /// card put in or taken out, or not, when it is polled. Its status is
+    /// reported either way. [`Slot::new`] turns it off.
+    pub fn interrupts(&self, on: bool) {
+        let (normal, errors) = if on { (SIGNALLED, ERRORS_SIGNALLED) } else { (0, 0) };
+        self.regs.write16(reg::ERROR_SIGNAL_ENABLE, errors);
+        self.regs.write16(reg::NORMAL_SIGNAL_ENABLE, normal);
+    }
+
+    /// Whether the slot raised its interrupt: a status bit it signals is
+    /// set. The slots of a controller share its interrupt, and the
+    /// handler asks each.
+    pub fn interrupting(&self) -> bool {
+        let normal = self.regs.read16(reg::NORMAL_STATUS);
+        if normal & self.regs.read16(reg::NORMAL_SIGNAL_ENABLE) != 0 {
+            return true;
+        }
+        normal & status::ERROR != 0
+            && self.regs.read16(reg::ERROR_STATUS) & self.regs.read16(reg::ERROR_SIGNAL_ENABLE) != 0
+    }
+}
+
 /// Waits until `done` or `us` microseconds have passed, `delay`ing 10 at
 /// a time; says whether it is done.
 fn wait(delay: &mut dyn FnMut(u32), us: u32, mut done: impl FnMut() -> bool) -> bool {
@@ -318,6 +457,18 @@ impl Slot {
         self.regs.read32(reg::PRESENT_STATE) & present::CARD_INSERTED != 0
     }
 
+    /// The slot's card detect, for the thread that watches it and the
+    /// interrupt handler.
+    pub fn detect(&self) -> Detect {
+        Detect { regs: self.regs.clone() }
+    }
+
+    /// Whether the slot takes a card that comes and goes; not one for a
+    /// device soldered to the board, or a shared bus's.
+    pub fn removable(&self) -> bool {
+        self.caps >> caps::SLOT_TYPE_SHIFT & 3 == 0
+    }
+
     /// The card set up, if there is one.
     pub fn card(&self) -> Option<&Card> {
         self.card.as_ref()
@@ -382,7 +533,7 @@ impl Slot {
         if !wait(delay, 10_000, || regs.read32(reg::PRESENT_STATE) & busy == 0) {
             return Err(Error::Timeout);
         }
-        regs.write16(reg::NORMAL_STATUS, 0xffff);
+        regs.write16(reg::NORMAL_STATUS, status::ALL_BUT_CARD);
         regs.write16(reg::ERROR_STATUS, 0xffff);
         regs.write32(reg::ARGUMENT, argument);
         regs.write16(reg::TRANSFER_MODE, 0);
@@ -395,7 +546,7 @@ impl Slot {
         if regs.read16(reg::NORMAL_STATUS) & status::ERROR != 0 {
             let error = regs.read16(reg::ERROR_STATUS);
             regs.write16(reg::ERROR_STATUS, 0xffff);
-            regs.write16(reg::NORMAL_STATUS, 0xffff);
+            regs.write16(reg::NORMAL_STATUS, status::ALL_BUT_CARD);
             self.reset_lines(true, delay);
             return Err(Error::Command(error));
         }
@@ -405,7 +556,7 @@ impl Slot {
             if !wait(delay, 1_000_000, || regs.read16(reg::NORMAL_STATUS) & done != 0) {
                 return Err(Error::Timeout);
             }
-            regs.write16(reg::NORMAL_STATUS, 0xffff);
+            regs.write16(reg::NORMAL_STATUS, status::ALL_BUT_CARD);
         }
         let long = core::array::from_fn(|i| regs.read32(reg::RESPONSE + 4 * i));
         if matches!(response, Response::R1 | Response::R1b)
@@ -595,7 +746,7 @@ impl Slot {
         regs.write32(reg::ADMA_ADDRESS + 4, (table >> 32) as u32);
         let dma = if self.adma64 { 0b11 << 3 } else { 0b10 << 3 };
         regs.write8(reg::HOST_CONTROL, regs.read8(reg::HOST_CONTROL) & !(0b11 << 3) | dma);
-        regs.write16(reg::NORMAL_STATUS, 0xffff);
+        regs.write16(reg::NORMAL_STATUS, status::ALL_BUT_CARD);
         regs.write16(reg::ERROR_STATUS, 0xffff);
         regs.write16(reg::BLOCK_SIZE, BLOCK as u16);
         regs.write16(reg::BLOCK_COUNT, count);
@@ -615,7 +766,7 @@ impl Slot {
         if normal & status::ERROR != 0 {
             let error = regs.read16(reg::ERROR_STATUS);
             regs.write16(reg::ERROR_STATUS, 0xffff);
-            regs.write16(reg::NORMAL_STATUS, 0xffff);
+            regs.write16(reg::NORMAL_STATUS, status::ALL_BUT_CARD);
             self.flight = None;
             self.stuck = true;
             return Some(Err(Error::Command(error)));
@@ -629,7 +780,7 @@ impl Slot {
         if normal & status::TRANSFER_COMPLETE == 0 {
             return None;
         }
-        regs.write16(reg::NORMAL_STATUS, 0xffff);
+        regs.write16(reg::NORMAL_STATUS, status::ALL_BUT_CARD);
         self.flight = None;
         match status {
             Some(bits) if bits & CARD_ERRORS != 0 => {

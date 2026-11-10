@@ -1577,9 +1577,10 @@ _target/userspace/_).
 	*poll*(2), futex round trips through semaphores between two
 	threads, and between two processes in shared memory, on one CPU and
 	on two, reads and writes of 4 KiB, 64 KiB and 1 MiB of a virtio
-	disk, _vda_ on both systems, a file on this machine, and reads of 64
-	KiB and 1 MiB of a disc, a file too, in a DVD drive on the AHCI
-	controller, _cd0_ on Radix and _sr0_ on Linux.
+	disk, _vda_ on both systems, a file on this machine, and of an SD
+	card, a file too, in QEMU's _sdhci-pci_ reader, _mmcblk0_ on both,
+	and reads of 64 KiB and 1 MiB of a disc, a file too, in a DVD drive
+	on the AHCI controller, _cd0_ on Radix and _sr0_ on Linux.
 
 	Then boot Linux in a virtual machine set up the same way, with
 	_tools/linux-bench_ built as a static program and run as its only
@@ -1589,8 +1590,8 @@ _target/userspace/_).
 	pipes, eventfds, futexes and Unix sockets, pinned the same way, pipe
 	round trips with a pair of threads on each CPU at once, the same file
 	calls on a tmpfs, and last the same POSIX benchmarks, built from the
-	same file with this machine's C library, with the same disk and disc
-	opened with *O_DIRECT*). This
+	same file with this machine's C library, with the same disk, card
+	and disc opened with *O_DIRECT*). This
 	Linux boots with *mitigations=off*, since Radix has no mitigations of
 	CPU vulnerabilities yet. Under KVM, Radix and this Linux are measured
 	three times in turn, and each operation counts its fastest run on

@@ -40,6 +40,8 @@ struct State {
     /// Addresses below 4 GiB that stand for host memory, for 32-bit
     /// descriptors: (low, host).
     aliases: Vec<(u32, u64)>,
+    /// The card detect has not settled.
+    settling: bool,
 }
 
 struct Sim(Mutex<State>);
@@ -62,6 +64,10 @@ impl State {
     }
 
     fn set_status(&mut self, normal: u16, error: u16) {
+        // A bit is set only while it is reported (2.2.18).
+        let normal = normal & self.get(reg::NORMAL_STATUS_ENABLE, 2) as u16;
+        let error = error & self.get(reg::ERROR_STATUS_ENABLE, 2) as u16;
+        let normal = if error != 0 { normal | status::ERROR } else { normal };
         let now = self.get(reg::NORMAL_STATUS, 2) as u16;
         self.put(reg::NORMAL_STATUS, 2, u64::from(now | normal));
         let now = self.get(reg::ERROR_STATUS, 2) as u16;
@@ -247,13 +253,30 @@ impl State {
     }
 }
 
+impl Sim {
+    /// Puts `card` in the slot, as a card detect says it.
+    fn insert(&self, card: SimCard) {
+        let mut state = self.0.lock().unwrap();
+        state.card = Some(card);
+        state.set_status(status::CARD_INSERTION, 0);
+    }
+
+    /// Takes the card out: the controller powers it off.
+    fn remove(&self) {
+        let mut state = self.0.lock().unwrap();
+        state.card = None;
+        state.regs[reg::POWER_CONTROL] = 0;
+        state.set_status(status::CARD_REMOVAL, 0);
+    }
+}
+
 impl Registers for Sim {
     fn read(&self, offset: usize, size: usize) -> u64 {
         let state = self.0.lock().unwrap();
         if offset == reg::PRESENT_STATE {
-            let mut value = 0u64;
+            let mut value = if state.settling { 0 } else { 1 << 17 };
             if let Some(card) = &state.card {
-                value |= 0x7 << 16;
+                value |= 0x5 << 16;
                 if !card.write_protected {
                     value |= 1 << 19;
                 }
@@ -306,6 +329,7 @@ fn slot(version: u8, base_mhz: u64, wide: bool, card: Option<SimCard>) -> (Slot,
         commands: Vec::new(),
         fail: None,
         aliases: Vec::new(),
+        settling: false,
     };
     let caps = base_mhz << 8 | 1 << 19 | 1 << 21 | 1 << 24 | if wide { 1 << 28 } else { 0 };
     state.put(reg::CAPABILITIES, 8, caps);
@@ -433,6 +457,7 @@ fn empty_slots_and_cards_of_other_kinds() {
         commands: Vec::new(),
         fail: None,
         aliases: Vec::new(),
+        settling: false,
     };
     state.put(reg::CAPABILITIES, 8, 200 << 8 | 1 << 22);
     let sim = Arc::new(Sim(Mutex::new(state)));
@@ -513,4 +538,86 @@ fn csd_and_cid_are_read() {
         read_only: false,
     };
     assert_eq!(big.kind(), "SDXC");
+}
+
+#[test]
+fn cards_put_in_and_taken_out_are_seen_once_each() {
+    let (mut slot, sim) = slot(version::V3, 200, true, None);
+    let detect = slot.detect();
+    assert!(slot.removable());
+    assert_eq!(detect.presence(), Presence::Empty);
+    assert!(!detect.events().any());
+    // A card goes in: seen once, and set up.
+    sim.insert(card(1024, true));
+    assert_eq!(detect.events(), Events { inserted: true, removed: false });
+    assert!(!detect.events().any());
+    assert_eq!(detect.presence(), Presence::Card { protected: false });
+    slot.identify(&mut |_| {}).unwrap();
+    // Taken out and another, write-protected, put in between two looks:
+    // the commands of the new card's set-up leave both events for the
+    // look.
+    sim.remove();
+    let mut locked = card(2048, true);
+    locked.write_protected = true;
+    sim.insert(locked);
+    let card = slot.identify(&mut |_| {}).unwrap();
+    assert!(card.read_only);
+    assert_eq!(detect.events(), Events { inserted: true, removed: true });
+    assert_eq!(detect.presence(), Presence::Card { protected: true });
+    // A card detect still settling says so.
+    sim.0.lock().unwrap().settling = true;
+    assert_eq!(detect.presence(), Presence::Settling);
+    // Taken out: its power is off.
+    sim.0.lock().unwrap().settling = false;
+    sim.remove();
+    detect.power_off();
+    assert_eq!(detect.presence(), Presence::Empty);
+    assert_eq!(sim.0.lock().unwrap().regs[reg::POWER_CONTROL], 0);
+    assert_eq!(slot.identify(&mut |_| {}), Err(Error::NoCard));
+}
+
+#[test]
+fn interrupts_signal_transfers_and_cards() {
+    let (mut slot, sim) = slot(version::V3, 200, true, Some(card(1024, true)));
+    slot.identify(&mut |_| {}).unwrap();
+    let detect = slot.detect();
+    // Polled: nothing is signalled, whatever happens.
+    let page = Dma::fake(4096);
+    slot.start(Op::Read, 0, 1, &[(page.phys(), 512)], &mut |_| {}).unwrap();
+    assert!(!detect.interrupting());
+    assert_eq!(slot.poll(), Some(Ok(())));
+    // Interrupting: a transfer's end, until it is collected.
+    detect.interrupts(true);
+    slot.start(Op::Read, 0, 1, &[(page.phys(), 512)], &mut |_| {}).unwrap();
+    assert!(detect.interrupting());
+    assert_eq!(slot.poll(), Some(Ok(())));
+    assert!(!detect.interrupting());
+    // An error.
+    sim.0.lock().unwrap().fail = Some(1 << 5);
+    slot.start(Op::Read, 0, 1, &[(page.phys(), 512)], &mut |_| {}).unwrap();
+    assert!(detect.interrupting());
+    assert_eq!(slot.poll(), Some(Err(Error::Command(1 << 5))));
+    assert!(!detect.interrupting());
+    // The card taken out, until its watcher looks.
+    sim.remove();
+    assert!(detect.interrupting());
+    assert!(detect.events().removed);
+    assert!(!detect.interrupting());
+    detect.interrupts(false);
+    sim.insert(card(1024, true));
+    assert!(!detect.interrupting());
+}
+
+#[test]
+fn soldered_slots_are_not_removable() {
+    let (slot, sim) = slot(version::V3, 200, true, Some(card(1024, true)));
+    assert!(slot.removable());
+    let mut state = sim.0.lock().unwrap();
+    let caps = state.get(reg::CAPABILITIES, 8) | 1 << 30;
+    state.put(reg::CAPABILITIES, 8, caps);
+    drop(state);
+    let regs = Mmio::fake(sim.clone(), REGISTERS);
+    let mut alloc = |_: usize, _: bool| Some(Dma::fake(4096));
+    let embedded = Slot::new(regs, &mut alloc, &mut |_| {}).unwrap();
+    assert!(!embedded.removable());
 }

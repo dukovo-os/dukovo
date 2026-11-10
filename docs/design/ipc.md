@@ -429,17 +429,21 @@ which is the whole of user space on Linux, brings `lo` up first. Given
 and 1 MiB at a time, one transfer after the other through its first 32
 MiB (`posix_disk_read_4k` to `posix_disk_write_mib`, ADR 0111), and
 given `--nvme`, an NVMe disk the same way (`posix_nvme_read_4k` to
-`posix_nvme_write_mib`, ADR 0115), and given `--disc`, the disc in an
+`posix_nvme_write_mib`, ADR 0115), given `--sd`, an SD card the same
+way with a quarter of the rounds (`posix_sd_read_4k` to
+`posix_sd_write_mib`, ADR 0437), and given `--disc`, the disc in an
 optical drive, read 64 KiB and 1 MiB at a time the same way
 (`posix_disc_read_64k`, `posix_disc_read_mib`, ADR 0434). Both systems
-get the same virtio disk and NVMe disk, each a 64 MiB file on the host
-made afresh for each boot, and a DVD drive on q35's AHCI controller
-holding a disc of the same bytes: `vda`, `nvme0n1` and `cd0`
-(`/devices/vda`, `/devices/nvme0n1`, `/devices/cd0`), raw on Radix, and
-`/dev/vda`, `/dev/nvme0n1` and `/dev/sr0`, opened with `O_DIRECT`, on
-Linux, so that neither has a cache between the program and the disk.
-Linux's init loads the AHCI module, and the SCSI CD driver where it is
-one, and waits for the drive. Given
+get the same virtio disk, NVMe disk and SD card in QEMU's `sdhci-pci`
+reader, each a 64 MiB file on the host made afresh for each boot, and a
+DVD drive on q35's AHCI controller holding a disc of the same bytes:
+`vda`, `nvme0n1`, `mmcblk0` and `cd0` (`/devices/vda`,
+`/devices/nvme0n1`, `/devices/mmcblk0`, `/devices/cd0`), raw on Radix,
+and `/dev/vda`, `/dev/nvme0n1`, `/dev/mmcblk0` and `/dev/sr0`, opened
+with `O_DIRECT`, on Linux, so that neither has a cache between the
+program and the disk. Linux's init loads the SD host's and MMC block
+modules and the AHCI module, and the SCSI CD driver where it is one,
+and waits for the card and the drive. Given
 `--btrfs`, a directory where a third virtio disk is mounted, it reads 32
 files of 1 MiB of noise, stored plain, and 32 of text, stored as zstd
 extents, each whole in 128 KiB reads (`posix_btrfs_read_mib`,

@@ -407,6 +407,8 @@ sched-rt kernel/sched/
 screen kernel/lib/fbcon/ tools/xtask/src/screen.rs userspace/hello/
 screen-reader kernel/drivers/virtio/ kernel/radix/src/audio/ ports/espeak-ng/ userspace/defaults/spark/services/readerd.toml
 screen-reader userspace/programs/audio/ userspace/programs/consoled/ userspace/programs/systools/src/reader.rs
+sd-card-change kernel/drivers/sdhci/ kernel/radix/src/fs/disk/sdhci.rs kernel/radix/src/fs/disk/removable.rs
+sd-card-change kernel/fs/fat/ userspace/programs/systools/src/eject.rs userspace/programs/systools/src/volumed.rs
 service-bundle image/grub/installed.cfg.in tools/xtask/src/bundles.rs tools/xtask/src/grub.rs
 service-bundle tools/xtask/src/grub_theme.rs tools/xtask/src/release.rs userspace/programs/dkv/
 service-bundle userspace/programs/installer/ userspace/programs/manifest/
@@ -467,7 +469,7 @@ storage-pvscsi kernel/radix/src/fs/disk/pvscsi.rs kernel/radix/src/fs/disk/virti
 storage-sata kernel/drivers/ahci/ kernel/fs/block/ userspace/storage/
 storage-scsi kernel/drivers/scsi/ kernel/drivers/virtio/ kernel/fs/block/ userspace/storage/
 storage-scsi kernel/radix/src/fs/disk/virtio_scsi.rs
-storage-sd kernel/drivers/sdhci/ kernel/fs/block/ userspace/storage/
+storage-sd kernel/drivers/sdhci/ kernel/fs/block/ kernel/radix/src/fs/disk/sdhci.rs userspace/storage/
 storage-tools userspace/programs/disk/ userspace/programs/systools/src/blkid.rs
 storage-tools userspace/programs/systools/src/findmnt.rs userspace/programs/systools/src/fstrim.rs
 storage-tools userspace/programs/systools/src/iostat.rs userspace/programs/systools/src/lsblk.rs

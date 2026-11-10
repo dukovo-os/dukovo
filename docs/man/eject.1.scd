@@ -63,6 +63,17 @@ $ eject fd0
 $ rdisk --reread /devices/fd0
 ```
 
+A slot of an SD card reader on PCI, _mmcblk0_ and on, is such a drive
+too (ADR 0437), and cannot push its card out either: eject unmounts the
+card, and the reader lets it go and turns its power off. The slot is
+then empty, the card still in it, until the card is taken out; one put
+in is found within two seconds.
+
+```
+$ eject CAMERA
+$ eject mmcblk0
+```
+
 # OPTIONS
 
 *-v*, *--verbose*

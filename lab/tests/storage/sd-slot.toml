@@ -1,0 +1,75 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "A card put in the SD card slot after boot is set up and mounted at its label, let go by eject until it is taken out, and unmounted when pulled out; the slot keeps its name, empty"
+time = "5m"
+
+# The slot with no card in it is a drive of no size whose card comes and
+# goes, named mmcblk at boot (ADR 0437). Keep its name in the lab's home
+# for the steps below, which root runs: each account has a /tmp of its
+# own.
+[[step]]
+run = "lsblk -dbn -o NAME,SIZE,RM | awk '$1 ~ /^mmcblk/ && $2 == \"0\" && $3 == \"1\" { print $1 }' > ~/lab-slot && cat ~/lab-slot"
+expect = "mmcblk"
+# A blank card, found by the slot's card detect, set up, and formatted in
+# the slot.
+[[step]]
+sd = "insert"
+blank = "64M"
+[[step]]
+wait = "5s"
+[[step]]
+run = "sh -c 'lsblk -dbn -o SIZE /devices/$(cat ~/lab-slot)'"
+expect = "67108864"
+[[step]]
+run = "sh -c 'cat /kernel/block/$(cat ~/lab-slot)/device/model'"
+exit = 0
+[[step]]
+run = "sh -c 'mkfs-fat -n LABSD /devices/$(cat /users/lab/lab-slot)'"
+root = true
+expect = ["made FAT16", "label LABSD"]
+# Taken out and put back, it holds a FAT, which volumed mounts at its
+# label.
+[[step]]
+sd = "remove"
+[[step]]
+sd = "reinsert"
+[[step]]
+wait = "5s"
+[[step]]
+run = "findmnt /volumes/LABSD"
+expect = ["vfat", "rw"]
+[[step]]
+run = "sh -c 'echo in-the-slot > /volumes/LABSD/hello.txt'"
+root = true
+# eject unmounts it and has the reader let it go, its power off: the
+# slot is empty, and stays so while the card is in it.
+[[step]]
+run = "eject LABSD"
+root = true
+[[step]]
+wait = "5s"
+[[step]]
+run = "sh -c 'test \"$(cat /kernel/block/$(cat ~/lab-slot)/size)\" = 0 && echo empty; ls /volumes'"
+expect = "empty"
+expect_not = "LABSD"
+# Taken out and put back, it holds what was written before the eject.
+[[step]]
+sd = "remove"
+[[step]]
+sd = "reinsert"
+[[step]]
+wait = "5s"
+[[step]]
+run = "cat /volumes/LABSD/hello.txt"
+expect = "in-the-slot"
+# Pulled out while mounted, it is unmounted all the same, and the slot
+# keeps its name.
+[[step]]
+sd = "remove"
+[[step]]
+wait = "5s"
+[[step]]
+run = "sh -c 'test \"$(cat /kernel/block/$(cat ~/lab-slot)/size)\" = 0 && echo empty; ls /volumes'"
+expect = "empty"
+expect_not = "LABSD"

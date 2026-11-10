@@ -573,6 +573,16 @@ fn register(entry: Entry) {
     super::devfs::add_block(name.as_str(), device);
 }
 
+/// Sets what the disk `name` says it is: an SD card slot's is the card's
+/// in it, and none while it is empty (ADR 0437).
+fn set_ident(name: &Name, ident: Option<Ident>) {
+    let mut disks = DISKS.lock();
+    let Some(disks) = disks.as_mut() else { return };
+    if let Some(entry) = disks.iter_mut().find(|entry| entry.name.as_str() == name.as_str()) {
+        entry.ident = ident;
+    }
+}
+
 /// Takes the disk `name` and its partitions out of the kernel's list,
 /// `/devices` and `/kernel/block`: it is gone. Those who opened them keep
 /// them, and their requests fail; what is mounted from them is lost, and

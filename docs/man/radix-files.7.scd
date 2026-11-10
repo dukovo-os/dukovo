@@ -341,7 +341,9 @@ order they were found), _nvme0n1_, _nvme0n2_ for the
 namespaces of the first NVMe controller and _nvme1n1_ for the second's
 (those an Intel VMD keeps, when the firmware's storage is set to RST or
 RAID, named as the others are; ADR 0249),
-_mmcblk0_, _mmcblk1_ for the cards in SD card readers on PCI (ADR 0247),
+_mmcblk0_, _mmcblk1_ for the slots of SD card readers on PCI, each named
+at boot, empty or not, and keeping its name whatever card is in it (ADR
+0247, ADR 0437),
 _vda1_ for a partition, and _nvme0n1p1_ or _mmcblk0p1_ after a name that
 ends in a digit.
 A USB disk plugged in later appears then, and one unplugged leaves
@@ -502,8 +504,8 @@ segment, as _1000:e1:00.0 behind the VMD at 0000:00:0e.0_, and *polled*.
   SATA disks on AHCI controllers, ATA and SATA
   disks on IDE controllers (and SATA controllers in IDE mode), NVMe
   namespaces, USB disks, over the Bulk-Only Transport or USB Attached
-  SCSI (UAS), and SD, SDHC and SDXC cards in SD card readers on PCI that
-  were in them at boot, have drivers. Port multipliers, optical drives, disks with
+  SCSI (UAS), and SD, SDHC and SDXC cards in SD card readers on PCI,
+  put in at boot or later (ADR 0437), have drivers. Port multipliers, optical drives, disks with
   logical sectors larger than 4096 bytes and NVMe namespaces with
   metadata are not supported. NVMe controllers behind an Intel VMD are
   polled, as the VMD's interrupts are not routed yet, and the AHCI
