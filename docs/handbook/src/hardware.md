@@ -29,7 +29,7 @@ service tag, with the two SSDs it has now in place of the factory disks.
 | Second SSD | 512 GB TEAM T253, 2.5" SATA (in place of the factory 1 TB hard disk) | AHCI driver; kept for `/shared` |
 | USB | Intel xHCI | xHCI driver |
 | Keyboard | Built-in, PS/2 (i8042) | i8042 driver |
-| Touchpad | I2C-HID (Intel Serial IO) | With Lumen, in release 1.1; a USB mouse works until then |
+| Touchpad | I2C-HID (Intel Serial IO) | With the window manager, in release 1.1; a USB mouse works until then |
 | Wired network | Realtek RTL810xE Fast Ethernet (PCI ID `10ec:8136`) | Realtek driver |
 | Wi-Fi and Bluetooth | Qualcomm QCA9377 (Dell Wireless 1810) | After 1.0; needs closed firmware |
 | Audio | Realtek ALC3246 | HDA driver in 1.0 |

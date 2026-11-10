@@ -31,7 +31,7 @@ itself and is run from the shell or from a browser:
   and images for clouds and virtual machines.
 
 Go software and Linux containers through Podman complete 1.0. The
-**Lumen** compositor, and the graphical side that builds on it, follow
+window manager (`windowd`), and the graphical side that builds on it, follow
 in release 1.1.
 
 ## Where the project is
