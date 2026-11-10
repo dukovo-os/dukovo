@@ -216,7 +216,9 @@ impl Slots {
     /// If `index` is not below [`Slots::count`] or the bytes run past the
     /// end of the slot.
     pub fn write_at(&self, index: usize, offset: usize, data: &[u8]) {
-        assert!(index < self.count && offset.checked_add(data.len()).is_some_and(|end| end <= SLOT));
+        assert!(
+            index < self.count && offset.checked_add(data.len()).is_some_and(|end| end <= SLOT)
+        );
         self.memory.write(index * SLOT + offset, data);
     }
 }

@@ -1171,7 +1171,9 @@ impl Platform for Arch {
                         "HPET" => "measured against the HPET",
                         "ACPI PM timer" => "measured against the ACPI PM timer",
                         "Hyper-V" => "from Hyper-V",
-                        "Hyper-V reference counter" => "measured against Hyper-V's reference counter",
+                        "Hyper-V reference counter" => {
+                            "measured against Hyper-V's reference counter"
+                        }
                         _ => "measured against the 8254 PIT",
                     }
                 },

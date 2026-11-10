@@ -56,6 +56,7 @@ mod optical_port;
 mod queue;
 pub mod removable;
 mod sdhci;
+pub mod storvsc;
 pub mod usb;
 mod virtio;
 mod virtio_scsi;

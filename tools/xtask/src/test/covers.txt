@@ -170,6 +170,8 @@ gpio kernel/drivers/gpio/ tools/xtask/src/acpi/
 guest-agent userspace/programs/systools/src/guest_agent.rs userspace/programs/systools/src/guest_agent/
 guest-agent userspace/defaults/spark/services/guest-agent.toml userspace/programs/systools/src/ip.rs
 guest-agent userspace/programs/systools/src/power.rs kernel/drivers/virtio/src/console.rs
+hyperv kernel/drivers/hyperv/ kernel/radix/src/hyperv.rs kernel/arch/x86_64/src/hyperv.rs
+hyperv kernel/arch/x86_64/src/time.rs kernel/radix/src/fs/disk/storvsc.rs
 i2c kernel/drivers/i2c/ tools/xtask/src/acpi/
 install-beside image/grub/installed.cfg.in kernel/fs/ntfs/ tools/xtask/src/grub.rs
 install-beside tools/xtask/src/grub_theme.rs userspace/programs/consoled/ userspace/programs/disk/

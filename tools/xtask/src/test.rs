@@ -88,6 +88,19 @@ const CABLE: [&str; 2] = ["<cable server>", "<cable client>"];
 /// A `-object` argument that dumps what goes over the first machine's
 /// end of the cable to `<case>.pcap` in the test's directory.
 const CABLE_DUMP: &str = "<cable dump>";
+/// In a case's `qemu`, the machine runs as under Hyper-V (ADR 0423):
+/// with KVM, its CPU has [`HYPERV_CPU`]'s enlightenments and the machine
+/// QEMU's VMBus with [`HYPERV_DEVICES`] on it. Without KVM, whose SynIC
+/// the VMBus needs, the marker is left out and the machine is a plain
+/// one: the script tells the two apart by [`Vm::kvm`].
+pub const HYPERV: &str = "<hyperv>";
+/// The CPU of a [`HYPERV`] case: the host's, with Hyper-V's CPUID leaves,
+/// its hypercalls, reference counter, frequency registers and SynIC.
+const HYPERV_CPU: &str =
+    "host,hv-relaxed,hv-vpindex,hv-time,hv-synic,hv-runtime,hv-frequencies,hv-stimer";
+/// The devices of a [`HYPERV`] case: QEMU's VMBus, and on it the one
+/// VMBus device QEMU makes, the dynamic memory service.
+const HYPERV_DEVICES: [&str; 4] = ["-device", "vmbus-bridge", "-device", "hv-balloon,id=balloon"];
 /// The SMBIOS memory device of the `smbus` case, which QEMU gives in place
 /// of its own ([`ddr4_device`]).
 const DDR4_DEVICE: &str = "file=ddr4.smbios";
@@ -3731,6 +3744,13 @@ fn run_case(
             *arg = format!("filter-dump,id=dump,netdev=cable,file={dump}");
         }
     }
+    let hyperv = extra.iter().any(|arg| arg == HYPERV);
+    extra.retain(|arg| arg != HYPERV);
+    let hyperv = hyperv && kvm && case.cpu_model.is_none();
+    if hyperv {
+        extra.extend(HYPERV_DEVICES.map(String::from));
+    }
+    let cpu_model = if hyperv { Some(HYPERV_CPU) } else { case.cpu_model };
     let mut peer = extra.iter().position(|arg| arg == PEER).map(|at| extra.split_off(at));
     for arg in &mut extra {
         let (name, bytes) = match arg.as_str() {
@@ -3860,7 +3880,7 @@ fn run_case(
         memory: case.memory.into(),
         cpus: case.cpus,
         kvm: kvm && case.cpu_model.is_none(),
-        cpu_model: case.cpu_model.map(str::to_string),
+        cpu_model: cpu_model.map(str::to_string),
         serial: Serial::Pipe,
         display: false,
         reboot: case.reboot,
@@ -3877,7 +3897,7 @@ fn run_case(
         memory: case.memory.into(),
         cpus: case.cpus,
         kvm: kvm && case.cpu_model.is_none(),
-        cpu_model: case.cpu_model.map(str::to_string),
+        cpu_model: cpu_model.map(str::to_string),
         serial: Serial::Pipe,
         display: false,
         reboot: case.reboot,

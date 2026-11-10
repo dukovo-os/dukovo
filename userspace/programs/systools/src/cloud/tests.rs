@@ -4,10 +4,10 @@
 //! Tests of cloud-setup's reading: YAML, the user data, the meta-data and
 //! the network configuration, as clouds and their users write them.
 
-use super::config::{self, Account, Command, MetaData, UserData, UserEntry, WriteFile};
+use super::config::{self, Account, Command, Config, MetaData, UserData, UserEntry, WriteFile};
 use super::network::network_file;
 use super::yaml::{Value, parse};
-use super::{Cloud, cloud_of, parse_answer};
+use super::{Cloud, GoalState, azure_user_data, cloud_of, goal_state, health_report, parse_answer};
 
 /// A scalar.
 fn t(text: &str) -> Value {
@@ -197,6 +197,7 @@ fn a_cloud_config_is_read_into_what_is_to_be_done() {
         instance: "i-1".into(),
         hostname: Some("ip-10-0-0-5.ec2.internal".into()),
         keys: vec!["ssh-ed25519 AAAAcloud owner".into(), "ssh-ed25519 AAAAextra extra@desk".into()],
+        user: None,
     };
     assert_eq!(config.hostname(&meta), Some("web01".into()));
     let accounts = config.accounts(&meta);
@@ -279,6 +280,7 @@ fn the_default_account_is_made_when_the_data_names_none() {
         instance: "x".into(),
         hostname: Some("droplet-1".into()),
         keys: vec!["k".into()],
+        user: None,
     };
     let accounts = config.accounts(&meta);
     assert_eq!(
@@ -320,7 +322,7 @@ package_upgrade: true
     let Ok(UserData::Config(config)) = config::user_data(text.as_bytes()) else {
         panic!("not read")
     };
-    let meta = MetaData { instance: "x".into(), hostname: None, keys: Vec::new() };
+    let meta = MetaData { instance: "x".into(), hostname: None, keys: Vec::new(), user: None };
     let accounts = config.accounts(&meta);
     assert_eq!(accounts.len(), 1);
     assert_eq!((accounts[0].name.as_str(), accounts[0].admin), ("chase", true));
@@ -370,6 +372,7 @@ fn meta_data_comes_from_nocloud_and_digitalocean() {
             instance: "iid-local01".into(),
             hostname: Some("cloudy.example".into()),
             keys: vec!["ssh-rsa AAAA a@b".into()],
+            user: None,
         }
     );
     // JSON, as some write it, and keys by name, as OpenStack does.
@@ -479,11 +482,76 @@ fn a_version_2_network_config_as_netplan_writes_it() {
 
 #[test]
 fn the_cloud_comes_from_the_firmwares_tables() {
-    assert_eq!(cloud_of("DigitalOcean\n", "DigitalOcean", "20171212"), Some(Cloud::DigitalOcean));
-    assert_eq!(cloud_of("Amazon EC2\n", "Amazon EC2", "1.0"), Some(Cloud::Aws));
-    assert_eq!(cloud_of("Xen", "Xen", "4.11.amazon"), Some(Cloud::Aws));
-    assert_eq!(cloud_of("QEMU", "SeaBIOS", "1.16.3"), None);
-    assert_eq!(cloud_of("", "", ""), None);
+    let firmware = |vendor: &str, version: &str| [vendor.to_string(), version.to_string()];
+    let digitalocean = firmware("DigitalOcean", "20171212");
+    assert_eq!(cloud_of("DigitalOcean\n", &digitalocean, ""), Some(Cloud::DigitalOcean));
+    assert_eq!(cloud_of("Amazon EC2\n", &firmware("Amazon EC2", "1.0"), ""), Some(Cloud::Aws));
+    assert_eq!(cloud_of("Xen", &firmware("Xen", "4.11.amazon"), ""), Some(Cloud::Aws));
+    let hyperv = firmware("Microsoft Corporation", "Hyper-V UEFI Release v4.1");
+    let azure = "7783-7084-3265-9085-8269-3286-77\n";
+    assert_eq!(cloud_of("Microsoft Corporation\n", &hyperv, azure), Some(Cloud::Azure));
+    // Hyper-V on someone's own machine has another asset tag.
+    assert_eq!(cloud_of("Microsoft Corporation", &hyperv, "1234-5678"), None);
+    assert_eq!(cloud_of("QEMU", &firmware("SeaBIOS", "1.16.3"), ""), None);
+    assert_eq!(cloud_of("", &firmware("", ""), ""), None);
+}
+
+#[test]
+fn azure_names_the_machine_its_account_and_keys() {
+    let meta = MetaData::azure(
+        br#"{"vmId": "02aab8a4-74ef-476e-8182-f6d2ba4166a6", "name": "examplevmname",
+             "osProfile": {"adminUsername": "azureuser", "computerName": "examplevmname"},
+             "publicKeys": [{"keyData": "ssh-rsa AAAAaz me", "path": "/home/azureuser/.ssh/authorized_keys"}]}"#,
+    )
+    .unwrap();
+    assert_eq!(
+        meta,
+        MetaData {
+            instance: "02aab8a4-74ef-476e-8182-f6d2ba4166a6".into(),
+            hostname: Some("examplevmname".into()),
+            keys: vec!["ssh-rsa AAAAaz me".into()],
+            user: Some("azureuser".into()),
+        }
+    );
+    // The default account takes the admin account's name, unless the user
+    // data names it.
+    let config = Config { users: vec![UserEntry::Default], ..Config::default() };
+    assert_eq!(config.accounts(&meta)[0].name, "azureuser");
+    let named = Config { default_name: Some("me".into()), ..config };
+    assert_eq!(named.accounts(&meta)[0].name, "me");
+    assert!(MetaData::azure(b"{}").unwrap_err().contains("vmId"));
+    // The user data, in base64.
+    assert_eq!(
+        azure_user_data(b"I2Nsb3VkLWNvbmZpZwo=\n").unwrap(),
+        Some(b"#cloud-config\n".to_vec())
+    );
+    assert_eq!(azure_user_data(b"").unwrap(), None);
+    assert!(azure_user_data(b"not base64!").is_err());
+}
+
+#[test]
+fn azure_is_told_the_machine_is_ready() {
+    let xml = "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<GoalState>\
+        <Version>2012-11-30</Version><Incarnation>1</Incarnation>\
+        <Machine><ExpectedState>Started</ExpectedState></Machine>\
+        <Container><ContainerId>b8b1fc77-1fa3-4a2c-b6e6-1ea9e2ba1e1e</ContainerId>\
+        <RoleInstanceList><RoleInstance><InstanceId>896f58f5.vm</InstanceId>\
+        </RoleInstance></RoleInstanceList></Container></GoalState>";
+    let state = goal_state(xml).unwrap();
+    assert_eq!(
+        state,
+        GoalState {
+            incarnation: "1".into(),
+            container: "b8b1fc77-1fa3-4a2c-b6e6-1ea9e2ba1e1e".into(),
+            instance: "896f58f5.vm".into(),
+        }
+    );
+    let report = health_report(&state);
+    assert!(report.contains("<GoalStateIncarnation>1</GoalStateIncarnation>"));
+    assert!(report.contains("<ContainerId>b8b1fc77-1fa3-4a2c-b6e6-1ea9e2ba1e1e</ContainerId>"));
+    assert!(report.contains("<InstanceId>896f58f5.vm</InstanceId>"));
+    assert!(report.contains("<State>Ready</State>"));
+    assert_eq!(goal_state("<GoalState><Incarnation>1</Incarnation></GoalState>"), None);
 }
 
 #[test]

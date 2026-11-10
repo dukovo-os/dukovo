@@ -134,8 +134,17 @@ pub const ORPHAN_NS: u64 = 60_000_000_000;
 /// 0339), or the loopback link.
 #[expect(clippy::large_enum_variant, reason = "each is made once, in its interface's place")]
 pub enum Card {
-    Virtio { net: Net, vector: Option<u32> },
-    Nic { nic: Box<dyn Nic, Kmalloc>, vector: Option<u32> },
+    Virtio {
+        net: Net,
+        vector: Option<u32>,
+    },
+    /// `vector` is its own interrupt's; a card `woken` by another's
+    /// (Hyper-V's, by VMBus's) has none of its own, and is not polled.
+    Nic {
+        nic: Box<dyn Nic, Kmalloc>,
+        vector: Option<u32>,
+        woken: bool,
+    },
     Program(program::Program),
     Virtual(links::Virtual),
     Tunnel(tunnel::Tunnel),
@@ -195,7 +204,8 @@ impl Card {
     /// stack itself.
     fn interrupts(&self) -> bool {
         match self {
-            Card::Virtio { vector, .. } | Card::Nic { vector, .. } => vector.is_some(),
+            Card::Virtio { vector, .. } => vector.is_some(),
+            Card::Nic { vector, woken, .. } => vector.is_some() || *woken,
             Card::Program(_) | Card::Virtual(_) | Card::Tunnel(_) => true,
             Card::Loopback(_) => false,
         }
@@ -318,7 +328,7 @@ impl Drop for Card {
                 net.reset();
                 *vector
             }
-            Card::Nic { nic, vector } => {
+            Card::Nic { nic, vector, .. } => {
                 nic.stop();
                 *vector
             }
@@ -1119,6 +1129,46 @@ fn on_interrupt(index: usize) {
     }
 }
 
+/// Card `index` has something for the stack: wakes its thread. For a
+/// card another's interrupt wakes, Hyper-V's; works from interrupt
+/// handlers.
+pub fn wake_card(index: usize) {
+    on_interrupt(index);
+}
+
+/// Gives a network card that is not on PCI, `nic`, an interface and its
+/// thread: Hyper-V's synthetic card (ADR 0423), which VMBus's interrupt
+/// wakes through [`wake_card`]. `driver` names its driver, and `place`
+/// where it is. Returns the card's number, for [`wake_card`]; `None`,
+/// logged, if it could not be given an interface. It builds the card's
+/// stack in its frame: VMBus's thread has the stack for it
+/// (`hyperv::STACK_PAGES`).
+#[inline(never)]
+pub fn attach_other(nic: impl Nic + 'static, driver: &'static str, place: &str) -> Option<usize> {
+    let index = COUNT.load(Ordering::Relaxed);
+    if index >= MAX_CARDS {
+        warn!("Net: too many network cards; the one at {place} is left alone");
+        return None;
+    }
+    let Some(nic) = boxed(nic) else {
+        warn!("Net: out of memory setting up the card at {place}");
+        return None;
+    };
+    let info = nic.info();
+    let mut about = About::new(driver, info.mac, info.receive_slots, info.transmit_slots);
+    let _ = about.model.write_str(info.model);
+    let _ = write!(about.what, "a {}", info.model);
+    let _ = about.how.write_str("VMBus events");
+    let card = Card::Nic { nic, vector: None, woken: true };
+    match attach(&place, index, card, &about) {
+        Ok(()) => Some(index),
+        Err(why) => {
+            warn!("Net: could not set up {} at {place}: {why}", about.what);
+            None
+        }
+    }
+}
+
 /// Sets up the virtio network card `function`. Its frame holds the stack
 /// before it goes in place: kept out of the PCI scan's
 /// (tools/xtask/src/frames.rs allows it).
@@ -1381,7 +1431,7 @@ fn start(function: &Function, index: usize) -> Result<(), Failure> {
         Some(vector) => write!(about.how, "MSI-X vector {vector:#x}"),
         None => about.how.write_str("polled"),
     };
-    attach(function, index, Card::Virtio { net, vector: interrupt }, &about)
+    attach(&function.address(), index, Card::Virtio { net, vector: interrupt }, &about)
 }
 
 /// The registers of `function`'s BAR `bar`, mapped.
@@ -1568,7 +1618,7 @@ fn start_card(function: &Function, card: Known, index: usize) -> Result<(), Fail
         Some(vector) => write!(about.how, "{kind} vector {vector:#x}"),
         None => about.how.write_str("polled"),
     };
-    attach(function, index, Card::Nic { nic, vector: interrupt }, &about)
+    attach(&function.address(), index, Card::Nic { nic, vector: interrupt, woken: false }, &about)
 }
 
 /// An MSI-X interrupt for `function`, the card numbered `index`, with
@@ -1619,11 +1669,17 @@ impl About {
     }
 }
 
-/// Gives the card `card`, numbered `index`, an interface and its thread.
-fn attach(function: &Function, index: usize, card: Card, about: &About) -> Result<(), Failure> {
+/// Gives the card `card`, numbered `index`, an interface and its thread;
+/// `place` says where it is: its PCI address.
+fn attach(
+    place: &dyn fmt::Display,
+    index: usize,
+    card: Card,
+    about: &About,
+) -> Result<(), Failure> {
     let interface = add_interface(index, card)?;
     let mut bus = TextBuf::new();
-    let _ = write!(bus, "{}", function.address());
+    let _ = write!(bus, "{place}");
     let _ = interface.hardware.set(Hardware {
         driver: about.driver,
         model: about.model.clone(),
@@ -1639,7 +1695,7 @@ fn attach(function: &Function, index: usize, card: Card, about: &About) -> Resul
         "Net: {name} is {} at {}, MAC {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}, \
          {} receive and {} transmit slots, {}",
         about.what,
-        function.address(),
+        place,
         mac[0],
         mac[1],
         mac[2],

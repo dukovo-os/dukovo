@@ -135,8 +135,16 @@ pub fn delay_us(us: u64) {
 
 /// A timer of known rate to measure the others against.
 enum Reference {
-    Hpet { counter: *const u64, period_fs: u64, wide: bool },
-    PmTimer { register: GenericAddress, virt: usize, wide: bool },
+    Hpet {
+        counter: *const u64,
+        period_fs: u64,
+        wide: bool,
+    },
+    PmTimer {
+        register: GenericAddress,
+        virt: usize,
+        wide: bool,
+    },
     /// Hyper-V's reference counter, in 100 ns steps (ADR 0423): a
     /// Generation 2 machine has no HPET and no PIT.
     HypervCounter,

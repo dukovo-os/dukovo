@@ -8,8 +8,8 @@
 //!
 //! 1. finds what the cloud says of the machine: a config disk labelled
 //!    `cidata` (NoCloud's, as Proxmox, libvirt and QEMU users attach), or
-//!    on DigitalOcean and AWS, by the firmware's maker, their metadata
-//!    service at 169.254.169.254 ([`find`]);
+//!    on DigitalOcean, AWS and Azure, by the firmware's tables, their
+//!    metadata service at 169.254.169.254 ([`find`]);
 //! 2. grows the root's partition to its disk's end and the root's Btrfs
 //!    over it, with `rdisk --grow` and `device resize max` (ADR 0327),
 //!    unless the user data says not to ([`grow`]);
@@ -18,7 +18,10 @@
 //!    cards, the accounts with their SSH keys, files to write, and
 //!    commands or a script to run. The instance's ID is kept in
 //!    [`STATE`], so a restart of the same machine does none of this
-//!    again, and a machine made from its disk does.
+//!    again, and a machine made from its disk does;
+//! 4. on Azure, tells its wire server the machine is ready, at each boot,
+//!    as Azure's agent does ([`azure_ready`]): until a new machine does,
+//!    Azure takes its deployment to be still under way.
 //!
 //! What the user data holds that cloud-setup does not do is said in the
 //! log, key by key ([`config::Config::left_out`]); cloud-config(5) lists
@@ -54,8 +57,15 @@ pub const STATE: &str = "/system/state/cloud-setup";
 /// The label of NoCloud's config disk, in any case.
 const CONFIG_LABEL: &str = "cidata";
 
-/// The metadata service of DigitalOcean and AWS.
+/// The metadata service of DigitalOcean, AWS and Azure.
 const METADATA: &str = "169.254.169.254:80";
+/// Azure's wire server, which a machine tells it is ready, and the
+/// version of its protocol that Azure's documentation uses.
+const WIRESERVER: &str = "168.63.129.16:80";
+const WIRESERVER_VERSION: &str = "2012-11-30";
+/// The asset tag Azure gives its machines' chassis: a machine under
+/// Hyper-V elsewhere has another.
+const AZURE_ASSET_TAG: &str = "7783-7084-3265-9085-8269-3286-77";
 
 /// How long a config disk the kernel found may take to be mounted, and
 /// the network to reach the metadata service.
@@ -92,6 +102,8 @@ pub struct Found {
     pub user_data: Option<Vec<u8>>,
     /// NoCloud's `network-config`, if the disk has one.
     pub network: Option<String>,
+    /// The cloud whose metadata service it came from.
+    pub cloud: Option<Cloud>,
 }
 
 /// The program: `cloud-setup [--source DIR] [--dry-run]`.
@@ -137,6 +149,9 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
     let done = fs::read_to_string(Path::new(STATE).join("instance")).ok();
     if done.as_deref().map(str::trim) == Some(found.meta.instance.as_str()) {
         say!("instance {} was set up at an earlier boot", found.meta.instance);
+        if found.cloud == Some(Cloud::Azure) {
+            ok &= azure_ready(dry_run);
+        }
         return Ok(i32::from(!ok));
     }
     ok &= set_up(&found, &user_data, dry_run);
@@ -154,6 +169,9 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
         found.meta.instance,
         if ok { "set up" } else { "set up, with the errors above" }
     );
+    if found.cloud == Some(Cloud::Azure) {
+        ok &= azure_ready(dry_run);
+    }
     Ok(i32::from(!ok))
 }
 
@@ -163,10 +181,11 @@ fn help() -> Result<i32, Fail> {
         "Usage: cloud-setup [--source DIR] [--dry-run]
 
 Sets a cloud machine up at its first boot from a config disk labelled
-cidata, or from DigitalOcean's or AWS's metadata service: its name, its
-network cards, accounts and their SSH keys, files and commands, in the
-style of cloud-init (cloud-config(5)). At every boot it grows the root's
-partition and Btrfs to the disk's end. The cloud-setup service runs it.
+cidata, or from DigitalOcean's, AWS's or Azure's metadata service: its
+name, its network cards, accounts and their SSH keys, files and commands,
+in the style of cloud-init (cloud-config(5)). At every boot it grows the
+root's partition and Btrfs to the disk's end, and on Azure tells Azure the
+machine is ready. The cloud-setup service runs it.
 
   --source DIR   Read meta-data, user-data and network-config from DIR
   -n, --dry-run  Say what would be done, and do nothing
@@ -193,8 +212,9 @@ fn find() -> Option<Found> {
     let found = match cloud {
         Cloud::DigitalOcean => digitalocean(),
         Cloud::Aws => aws(),
+        Cloud::Azure => azure(),
     };
-    found.map_err(|why| say!("{why}")).ok()
+    found.map(|found| Found { cloud: Some(cloud), ..found }).map_err(|why| say!("{why}")).ok()
 }
 
 /// Where a config disk labelled `cidata` is mounted, waiting for Spark or
@@ -239,14 +259,16 @@ fn read_nocloud(dir: &Path) -> Result<Found, Fail> {
         .ok_or_else(|| util::fail(format!("{} has no meta-data file", dir.display())))?;
     let meta = MetaData::nocloud(&String::from_utf8_lossy(&meta)).map_err(util::fail)?;
     let network = read("network-config")?.map(|bytes| String::from_utf8_lossy(&bytes).into_owned());
-    Ok(Found { origin: dir.display().to_string(), meta, user_data: read("user-data")?, network })
+    let user_data = read("user-data")?;
+    Ok(Found { origin: dir.display().to_string(), meta, user_data, network, cloud: None })
 }
 
 /// The clouds whose metadata services cloud-setup asks.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Cloud {
+pub enum Cloud {
     DigitalOcean,
     Aws,
+    Azure,
 }
 
 impl Cloud {
@@ -254,6 +276,7 @@ impl Cloud {
         match self {
             Cloud::DigitalOcean => "DigitalOcean",
             Cloud::Aws => "AWS",
+            Cloud::Azure => "Azure",
         }
     }
 }
@@ -263,13 +286,19 @@ impl Cloud {
 /// service that is not there.
 fn cloud() -> Option<Cloud> {
     let read = |name: &str| fs::read_to_string(Path::new(DMI).join(name)).unwrap_or_default();
-    cloud_of(&read("sys_vendor"), &read("bios_vendor"), &read("bios_version"))
+    let firmware = [read("bios_vendor"), read("bios_version")];
+    cloud_of(&read("sys_vendor"), &firmware, &read("chassis_asset_tag"))
 }
 
-/// The cloud of a machine whose maker, firmware's maker and firmware's
-/// version are these: AWS's Nitro machines say `Amazon EC2`, its older
-/// Xen ones have `amazon` in the firmware's version.
-fn cloud_of(vendor: &str, bios_vendor: &str, bios_version: &str) -> Option<Cloud> {
+/// The cloud of a machine whose maker, firmware's maker and version, and
+/// chassis's asset tag are these: AWS's Nitro machines say `Amazon EC2`,
+/// its older Xen ones have `amazon` in the firmware's version; Azure's
+/// are Microsoft's, with Azure's asset tag.
+fn cloud_of(
+    vendor: &str,
+    [bios_vendor, bios_version]: &[String; 2],
+    asset_tag: &str,
+) -> Option<Cloud> {
     let (vendor, bios_vendor) = (vendor.trim(), bios_vendor.trim());
     if vendor == "DigitalOcean" {
         Some(Cloud::DigitalOcean)
@@ -278,6 +307,8 @@ fn cloud_of(vendor: &str, bios_vendor: &str, bios_version: &str) -> Option<Cloud
         || bios_version.to_ascii_lowercase().contains("amazon")
     {
         Some(Cloud::Aws)
+    } else if vendor == "Microsoft Corporation" && asset_tag.trim() == AZURE_ASSET_TAG {
+        Some(Cloud::Azure)
     } else {
         None
     }
@@ -303,17 +334,32 @@ fn wait_for_service() -> bool {
 }
 
 /// Asks the metadata service `method path` with `headers`: the answer's
-/// status and body. HTTP/1.0, so that no answer comes in chunks.
+/// status and body.
 fn http(method: &str, path: &str, headers: &[(&str, &str)]) -> io::Result<(u16, Vec<u8>)> {
-    let address: SocketAddr = METADATA.parse().expect("the address is one");
+    http_to(METADATA, method, path, headers, &[])
+}
+
+/// Asks the service at `address` `method path` with `headers` and
+/// `body`: the answer's status and body. HTTP/1.0, so that no answer
+/// comes in chunks.
+fn http_to(
+    address: &str,
+    method: &str,
+    path: &str,
+    headers: &[(&str, &str)],
+    body: &[u8],
+) -> io::Result<(u16, Vec<u8>)> {
+    let host = address.split(':').next().unwrap_or(address);
+    let address: SocketAddr = address.parse().map_err(io::Error::other)?;
     let mut stream = TcpStream::connect_timeout(&address, Duration::from_secs(5))?;
     stream.set_read_timeout(Some(Duration::from_secs(10)))?;
-    let mut request = format!("{method} {path} HTTP/1.0\r\nHost: 169.254.169.254\r\n");
+    let mut request = format!("{method} {path} HTTP/1.0\r\nHost: {host}\r\n");
     for (name, value) in headers {
         request.push_str(&format!("{name}: {value}\r\n"));
     }
-    request.push_str("Content-Length: 0\r\n\r\n");
+    request.push_str(&format!("Content-Length: {}\r\n\r\n", body.len()));
     stream.write_all(request.as_bytes())?;
+    stream.write_all(body)?;
     let mut answer = Vec::new();
     stream.read_to_end(&mut answer)?;
     parse_answer(&answer).ok_or_else(|| io::Error::other("not an HTTP answer"))
@@ -349,7 +395,8 @@ fn get(path: &str, headers: &[(&str, &str)]) -> Result<Vec<u8>, String> {
 /// DigitalOcean's metadata, all in `/metadata/v1.json`.
 fn digitalocean() -> Result<Found, String> {
     let (meta, user_data) = MetaData::digitalocean(&get("/metadata/v1.json", &[])?)?;
-    Ok(Found { origin: "DigitalOcean's metadata service".into(), meta, user_data, network: None })
+    let origin = "DigitalOcean's metadata service".into();
+    Ok(Found { origin, meta, user_data, network: None, cloud: None })
 }
 
 /// AWS's metadata, from its instance metadata service, version 2: a
@@ -386,8 +433,137 @@ fn aws() -> Result<Found, String> {
         }
         Err(err) => return Err(format!("asking the metadata service for the user data: {err}")),
     };
-    let meta = MetaData { instance, hostname, keys };
-    Ok(Found { origin: "AWS's instance metadata service".into(), meta, user_data, network: None })
+    let meta = MetaData { instance, hostname, keys, user: None };
+    let origin = "AWS's instance metadata service".into();
+    Ok(Found { origin, meta, user_data, network: None, cloud: None })
+}
+
+/// The header every request to Azure's instance metadata service carries.
+const AZURE_METADATA: [(&str, &str); 1] = [("Metadata", "true")];
+
+/// Azure's metadata, from its instance metadata service: the machine's
+/// own, and the user data, which the service gives in base64. The custom
+/// data, which only Azure's provisioning disk carries, is not read.
+fn azure() -> Result<Found, String> {
+    let meta = MetaData::azure(&get(
+        "/metadata/instance/compute?api-version=2021-02-01",
+        &AZURE_METADATA,
+    )?)?;
+    let path = "/metadata/instance/compute/userData?api-version=2021-01-01&format=text";
+    let user_data = match http("GET", path, &AZURE_METADATA) {
+        Ok((200, body)) => azure_user_data(&body)?,
+        Ok((404, _)) => None,
+        Ok((status, _)) => {
+            return Err(format!("the metadata service answered {status} for the user data"));
+        }
+        Err(err) => return Err(format!("asking the metadata service for the user data: {err}")),
+    };
+    let origin = "Azure's instance metadata service".into();
+    Ok(Found { origin, meta, user_data, network: None, cloud: None })
+}
+
+/// The user data in Azure's answer `body`, base64; `None` if the machine
+/// has none.
+fn azure_user_data(body: &[u8]) -> Result<Option<Vec<u8>>, String> {
+    use base64::Engine as _;
+    let text = String::from_utf8_lossy(body);
+    let text = text.trim();
+    if text.is_empty() {
+        return Ok(None);
+    }
+    base64::engine::general_purpose::STANDARD
+        .decode(text)
+        .map(Some)
+        .map_err(|err| format!("Azure's user data is not base64: {err}"))
+}
+
+/// What Azure's wire server says the machine is to be: the goal state's
+/// incarnation, its container, and the machine's instance in it.
+#[derive(Debug, PartialEq, Eq)]
+pub struct GoalState {
+    pub incarnation: String,
+    pub container: String,
+    pub instance: String,
+}
+
+/// The text inside the first `<name>` element of `xml`.
+fn element<'a>(xml: &'a str, name: &str) -> Option<&'a str> {
+    let open = format!("<{name}>");
+    let start = xml.find(&open)? + open.len();
+    let end = xml[start..].find(&format!("</{name}>"))? + start;
+    Some(xml[start..end].trim())
+}
+
+/// The goal state in the wire server's answer `xml`.
+fn goal_state(xml: &str) -> Option<GoalState> {
+    Some(GoalState {
+        incarnation: element(xml, "Incarnation")?.to_string(),
+        container: element(xml, "ContainerId")?.to_string(),
+        instance: element(xml, "InstanceId")?.to_string(),
+    })
+}
+
+/// The health report that tells Azure's wire server the machine of
+/// `state` is ready, as Azure's documentation for machines without its
+/// agent gives it.
+fn health_report(state: &GoalState) -> String {
+    format!(
+        "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n\
+         <Health xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" \
+         xmlns:xsd=\"http://www.w3.org/2001/XMLSchema\">\n\
+         <GoalStateIncarnation>{}</GoalStateIncarnation>\n\
+         <Container><ContainerId>{}</ContainerId><RoleInstanceList><Role>\
+         <InstanceId>{}</InstanceId><Health><State>Ready</State></Health>\
+         </Role></RoleInstanceList></Container>\n\
+         </Health>\n",
+        state.incarnation, state.container, state.instance
+    )
+}
+
+/// Tells Azure's wire server the machine is ready: its goal state first,
+/// which names the machine's container and instance, then the health
+/// report. Whether it took it.
+fn azure_ready(dry_run: bool) -> bool {
+    let headers = [("x-ms-version", WIRESERVER_VERSION), ("x-ms-agent-name", "cloud-setup")];
+    let state = match http_to(WIRESERVER, "GET", "/machine/?comp=goalstate", &headers, &[]) {
+        Ok((200, body)) => goal_state(&String::from_utf8_lossy(&body)),
+        Ok((status, _)) => {
+            say!("Azure's wire server answered {status} for the goal state");
+            return false;
+        }
+        Err(err) => {
+            say!("asking Azure's wire server for the goal state: {err}");
+            return false;
+        }
+    };
+    let Some(state) = state else {
+        say!("Azure's goal state does not name the machine's container and instance");
+        return false;
+    };
+    if dry_run {
+        say!("would tell Azure instance {} is ready", state.instance);
+        return true;
+    }
+    let report = health_report(&state);
+    let headers = [
+        ("x-ms-version", WIRESERVER_VERSION),
+        ("x-ms-agent-name", "cloud-setup"),
+        ("Content-Type", "text/xml; charset=utf-8"),
+    ];
+    match http_to(WIRESERVER, "POST", "/machine/?comp=health", &headers, report.as_bytes()) {
+        Ok((200, _)) => {
+            say!("told Azure instance {} is ready", state.instance);
+            true
+        }
+        Ok((status, _)) => {
+            say!("Azure's wire server answered {status} for the health report");
+            false
+        }
+        Err(err) => {
+            say!("telling Azure the machine is ready: {err}");
+            false
+        }
+    }
 }
 
 /// Runs `program` with `args`, its output into the log; whether it ended

@@ -34,6 +34,9 @@ pub struct MetaData {
     pub hostname: Option<String>,
     /// The SSH keys of the machine's owner.
     pub keys: Vec<String>,
+    /// The name the cloud gives the default account: Azure's admin
+    /// account's.
+    pub user: Option<String>,
 }
 
 impl MetaData {
@@ -49,7 +52,7 @@ impl MetaData {
             .iter()
             .find_map(|key| value.get(key).and_then(Value::text))
             .map(str::to_string);
-        Ok(MetaData { instance, hostname, keys: public_keys(value.get("public-keys")) })
+        Ok(MetaData { instance, hostname, keys: public_keys(value.get("public-keys")), user: None })
     }
 
     /// Reads DigitalOcean's `/metadata/v1.json`: the meta-data, and the
@@ -71,7 +74,30 @@ impl MetaData {
             });
         let user_data =
             value.get("user_data").and_then(|u| u.as_str()).map(|u| u.as_bytes().to_vec());
-        Ok((MetaData { instance, hostname, keys }, user_data))
+        Ok((MetaData { instance, hostname, keys, user: None }, user_data))
+    }
+
+    /// Reads Azure's instance metadata, `/metadata/instance/compute`:
+    /// the machine's ID, its name, and its admin account's name and SSH
+    /// keys.
+    pub fn azure(json: &[u8]) -> Result<MetaData, String> {
+        let value: serde_json::Value =
+            serde_json::from_slice(json).map_err(|err| format!("Azure's metadata: {err}"))?;
+        let text = |pointer: &str| value.pointer(pointer).and_then(|v| v.as_str());
+        let instance = text("/vmId").ok_or("Azure's metadata has no vmId")?.to_string();
+        let hostname = text("/osProfile/computerName").map(str::to_string);
+        let user =
+            text("/osProfile/adminUsername").filter(|name| !name.is_empty()).map(str::to_string);
+        let keys = value.get("publicKeys").and_then(|keys| keys.as_array()).map_or_else(
+            Vec::new,
+            |keys| {
+                keys.iter()
+                    .filter_map(|key| key.get("keyData").and_then(|k| k.as_str()))
+                    .flat_map(key_lines)
+                    .collect()
+            },
+        );
+        Ok(MetaData { instance, hostname, keys, user })
     }
 }
 
@@ -304,7 +330,11 @@ impl Config {
             .iter()
             .map(|entry| match entry {
                 UserEntry::Default => Account {
-                    name: self.default_name.clone().unwrap_or_else(|| DEFAULT_ACCOUNT.into()),
+                    name: self
+                        .default_name
+                        .clone()
+                        .or_else(|| meta.user.clone())
+                        .unwrap_or_else(|| DEFAULT_ACCOUNT.into()),
                     full_name: String::new(),
                     admin: true,
                     without_password: true,

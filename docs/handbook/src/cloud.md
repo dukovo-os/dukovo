@@ -6,7 +6,8 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 # Cloud and virtual machines
 
 This chapter describes running Dukovo as a cloud machine: on AWS,
-DigitalOcean, Proxmox, OpenStack, VMware, VirtualBox or plain QEMU. One
+Azure, DigitalOcean, Proxmox, OpenStack, Hyper-V, VMware, VirtualBox or
+plain QEMU. One
 cloud image serves them all. At its first boot it sets itself up from
 what the cloud says of the machine, as Linux images do with cloud-init:
 its name, its network, an account with the owner's SSH keys, and
@@ -21,16 +22,17 @@ $ ./ob image --cloud
 ```
 
 This writes the disk of an installed system, with cloud-setup and sshd
-turned on, in four formats:
+turned on, in five formats:
 
 | File | For |
 | --- | --- |
 | `out/dukovo-0.13.0-x86_64-cloud.img` | raw: AWS, and any cloud that takes a raw disk |
 | `out/dukovo-0.13.0-x86_64-cloud.qcow2` | KVM, Proxmox, OpenStack and DigitalOcean |
 | `out/dukovo-0.13.0-x86_64-cloud.vmdk` | VMware and VirtualBox |
-| `out/dukovo-0.13.0-x86_64-cloud.vhdx` | Hyper-V and Azure, once Dukovo drives Hyper-V's devices |
+| `out/dukovo-0.13.0-x86_64-cloud.vhdx` | Hyper-V |
+| `out/dukovo-0.13.0-x86_64-cloud.vhd` | Azure: a fixed VHD, as large as the disk |
 
-The three last are written by the build machine's `qemu-img` (the
+The four last are written by the build machine's `qemu-img` (the
 `qemu-utils` package on Debian and Ubuntu, `qemu-img` on Fedora), which
 the image does not carry. The image starts under UEFI and under BIOS,
 as clouds use either.
@@ -52,6 +54,8 @@ order:
    machine's maker DigitalOcean.
 3. **AWS's instance metadata service**, version 2, when it names Amazon
    EC2.
+4. **Azure's instance metadata service**, when it names Microsoft, with
+   the chassis asset tag Azure gives its machines.
 
 It names the machine, sets the network cards up as the network
 configuration says (by DHCP when it says nothing), and makes the
@@ -201,10 +205,61 @@ account to sign in with, unless the image was made with one:
 `./ob image --cloud --user alice` makes an administrator's account as
 [Users and administration](users.md) shows.
 
-### Hyper-V and Azure
+### Hyper-V
 
-Both take the `.vhdx`, but Dukovo does not drive Hyper-V's VMBus
-devices yet, so it does not start there.
+Make a generation 2 machine, which starts by UEFI, on the `.vhdx`, and
+turn its Secure Boot off (Settings, Security), as Dukovo images are not
+signed for Secure Boot before 1.0:
+
+```
+PS> New-VM -Name dukovo -Generation 2 -MemoryStartupBytes 4GB `
+      -VHDPath .\dukovo-0.13.0-x86_64-cloud.vhdx -SwitchName "Default Switch"
+PS> Set-VMFirmware dukovo -EnableSecureBoot Off
+PS> Start-VM dukovo
+```
+
+Dukovo drives Hyper-V's own devices over its VMBus: the SCSI
+controller's disks, the network card, the keyboard, and the services
+that shut the machine down from Hyper-V Manager, keep its clock and
+report it alive (its heartbeat). A generation 2 machine has no other
+disk or network devices. Give it a config disk, as for VMware below,
+for the account and keys: Hyper-V has no metadata service of its own.
+
+Not driven yet: Hyper-V's mouse, its video device past the firmware's
+screen, dynamic memory, and the key-value exchange that shows the
+machine's addresses in Hyper-V Manager.
+
+### Azure
+
+Azure takes the fixed `.vhd`, uploaded as a page blob, and makes a
+generation 2 image from it, as its guide to uploading a generalized VHD
+shows:
+
+```
+$ az storage blob upload --type page --account-name mystorage \
+    --container-name images --name dukovo.vhd \
+    --file out/dukovo-0.13.0-x86_64-cloud.vhd
+$ az image create --resource-group mygroup --name dukovo-0.13.0 \
+    --os-type Linux --hyper-v-generation V2 \
+    --source https://mystorage.blob.core.windows.net/images/dukovo.vhd
+$ az vm create --resource-group mygroup --name web01 --image dukovo-0.13.0 \
+    --security-type Standard --admin-username azureuser \
+    --ssh-key-values ~/.ssh/id_ed25519.pub --user-data cloud.yaml
+```
+
+The machine needs its security type Standard, as trusted launch starts
+it with Secure Boot on. cloud-setup reads the machine's name, the admin
+account's name and keys, and the user data from Azure's instance
+metadata service, and makes the default account with the admin
+account's name, `azureuser` here. At each boot it then tells Azure's
+wire server the machine is ready, as Azure's agent does: until a new
+machine does so, Azure takes its deployment to be still under way.
+
+Give the configuration as user data (`--user-data`): Azure's custom data
+(`--custom-data`) comes only on its provisioning disk, which cloud-setup
+does not read. Azure's accelerated networking, its MANA cards, is not
+driven yet: make the machine without it (the default for `az vm
+create` on most sizes), and its network card is Hyper-V's own.
 
 ## When something goes wrong
 
@@ -217,6 +272,9 @@ cloud-setup: naming the machine web01
 cloud-setup: making an administrator's account, dukovo, with 1 SSH key(s)
 cloud-setup: instance i-0123456789abcdef0 set up
 ```
+
+On Hyper-V and Azure, the kernel's log (dmesg(1)) says which of
+Hyper-V's devices it found and drives, in its lines starting `Hyper-V:`.
 
 To check user data before giving it to a cloud, put it in a folder with
 a `meta-data` file and try it on any Dukovo machine:

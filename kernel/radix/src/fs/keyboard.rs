@@ -13,6 +13,9 @@
 //! each byte of that command waits for the keyboard's answer, which comes
 //! back through the interrupt.
 //!
+//! Hyper-V's synthetic keyboard (ADR 0423) hands [`set1_byte`] the same
+//! bytes from VMBus's thread.
+//!
 //! USB keyboards (Phase 11a, ADR 0148) hand their keys to [`usb_key`]
 //! from their controller's thread. A PS/2 keyboard repeats a key held down
 //! itself, a USB one does not, so the `kbd` thread repeats the last key a
@@ -164,6 +167,13 @@ fn byte(byte: u8) {
         EVENTS.push(Key { time_ns: sched::now_ns(), code: key.code, value: key.value });
     }
     wake_thread();
+}
+
+/// A byte of scan code set 1 from Hyper-V's synthetic keyboard (ADR
+/// 0423), which sends the bytes a PS/2 keyboard would: from VMBus's
+/// thread.
+pub fn set1_byte(byte: u8) {
+    self::byte(byte);
 }
 
 /// A USB keyboard's key `code` went down, or up: from its controller's

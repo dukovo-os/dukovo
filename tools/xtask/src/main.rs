@@ -183,7 +183,7 @@ legacy BIOS from a USB stick, a hard disk or optical media:
   out/dukovo-<version>-x86_64.iso             (with --iso)
   out/dukovo-<version>-x86_64-installed.img   (with --installed)
   out/dukovo-<version>-x86_64-lab.img         (with --lab)
-  out/dukovo-<version>-x86_64-cloud.img       (with --cloud; and .qcow2, .vmdk, .vhdx)
+  out/dukovo-<version>-x86_64-cloud.img       (with --cloud; and .qcow2, .vmdk, .vhdx, .vhd)
 The .img is the install stick: its menu starts the live system, and its
 DUKOVO_LIVE partition holds the signed release the installer installs
 (ADR 0308).
@@ -948,7 +948,7 @@ fn dispatch(argv: Vec<String>) -> Result<()> {
                 }
                 println!(
                     "The .img is raw, for AWS and any cloud that takes raw disks. Give the machine \
-                     a config disk labelled cidata, or run it on DigitalOcean or AWS, and \
+                     a config disk labelled cidata, or run it on DigitalOcean, AWS or Azure, and \
                      cloud-setup sets it up (the handbook's Cloud and virtual machines chapter)."
                 );
             } else if kind == image::Kind::Installed {

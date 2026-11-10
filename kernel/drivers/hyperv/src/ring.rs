@@ -219,7 +219,11 @@ impl Rings {
     /// to 8 bytes. Returns whether the host must be signalled. A packet
     /// that finds no room sets the pending send size, so that the host
     /// signals once that much is free; one that is written clears it.
-    pub fn write_with(&self, len: usize, fill: &mut dyn FnMut(&mut Writer<'_>)) -> Result<bool, Full> {
+    pub fn write_with(
+        &self,
+        len: usize,
+        fill: &mut dyn FnMut(&mut Writer<'_>),
+    ) -> Result<bool, Full> {
         let size = self.out_size();
         let padded = len.next_multiple_of(8);
         let need = padded + TRAILER;

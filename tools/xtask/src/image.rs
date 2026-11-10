@@ -160,40 +160,70 @@ pub fn file_name(kind: Kind) -> String {
 
 /// The formats a cloud image is written in beside the raw one, each by
 /// the host's `qemu-img` (ADR 0328): its extension, qemu-img's name for
-/// it, its options, and what takes it.
-pub const CLOUD_FORMATS: [(&str, &str, &[&str], &str); 3] = [
+/// it, its options, and what takes it. Azure takes only a fixed VHD
+/// (qemu-img's `vpc`) whose size is a whole number of MiB, which
+/// [`convert_cloud`] makes it (ADR 0423).
+pub const CLOUD_FORMATS: [(&str, &str, &[&str], &str); 4] = [
     ("qcow2", "qcow2", &["-c"], "KVM, Proxmox, OpenStack and DigitalOcean"),
     ("vmdk", "vmdk", &["-o", "subformat=monolithicSparse"], "VMware and VirtualBox"),
-    ("vhdx", "vhdx", &["-o", "subformat=dynamic"], "Hyper-V and Azure"),
+    ("vhdx", "vhdx", &["-o", "subformat=dynamic"], "Hyper-V"),
+    ("vhd", "vpc", &["-o", "subformat=fixed,force_size=on"], "Azure"),
 ];
+
+/// What Azure rounds nothing to: a VHD's size must be a multiple of it.
+const AZURE_ALIGN: u64 = 1 << 20;
 
 /// Writes the raw cloud image `raw` in each of [`CLOUD_FORMATS`] beside
 /// it, with the host's `qemu-img`, which runs on the build machine alone
 /// and is never shipped (GPL-2.0). Returns the files written.
+///
+/// The fixed VHD is made first at the raw image's size rounded up to a
+/// whole MiB (`force_size`, so that qemu-img keeps that size rather than
+/// rounding it to a disk geometry), and the image is written into it: its
+/// last bytes are zeros past the GPT's backup, which the root's growing
+/// at boot moves to the disk's end, as it does on any larger disk.
 pub fn convert_cloud(raw: &Path) -> Result<Vec<PathBuf>> {
     let mut written = Vec::new();
     for (extension, format, options, _) in CLOUD_FORMATS {
         let output = raw.with_extension(extension);
         step(&format!("Writing the cloud image as {format}: {}", output.display()));
         let _ = std::fs::remove_file(&output);
-        let status = std::process::Command::new("qemu-img")
-            .args(["convert", "-q", "-f", "raw", "-O", format])
-            .args(options)
-            .arg(raw)
-            .arg(&output)
-            .status()
-            .map_err(|err| {
-                Error::new(format!(
-                    "running qemu-img: {err} (install it: qemu-utils on Debian and Ubuntu, \
-                     qemu-img on Fedora)"
-                ))
-            })?;
-        if !status.success() {
-            crate::bail!("qemu-img could not write {}: {status}", output.display());
+        let mut convert: Vec<std::ffi::OsString> = vec!["convert".into(), "-q".into()];
+        if format == "vpc" {
+            let size = std::fs::metadata(raw)
+                .map_err(|err| Error::new(format!("reading {}: {err}", raw.display())))?
+                .len()
+                .next_multiple_of(AZURE_ALIGN);
+            let mut create: Vec<std::ffi::OsString> = vec!["create".into(), "-q".into()];
+            create.extend(["-f".into(), format.into()]);
+            create.extend(options.iter().map(Into::into));
+            create.extend([output.clone().into(), size.to_string().into()]);
+            qemu_img(&create, &output)?;
+            // Into the VHD just made, rather than a new one.
+            convert.push("-n".into());
+        } else {
+            convert.extend(options.iter().map(Into::into));
         }
+        convert.extend(["-f".into(), "raw".into(), "-O".into(), format.into()]);
+        convert.extend([raw.into(), output.clone().into()]);
+        qemu_img(&convert, &output)?;
         written.push(output);
     }
     Ok(written)
+}
+
+/// Runs the host's `qemu-img` with `args`, writing `output`.
+fn qemu_img(args: &[std::ffi::OsString], output: &Path) -> Result<()> {
+    let status = std::process::Command::new("qemu-img").args(args).status().map_err(|err| {
+        Error::new(format!(
+            "running qemu-img: {err} (install it: qemu-utils on Debian and Ubuntu, qemu-img on \
+             Fedora)"
+        ))
+    })?;
+    if !status.success() {
+        crate::bail!("qemu-img could not write {}: {status}", output.display());
+    }
+    Ok(())
 }
 
 /// Path of the microcode module inside the image.

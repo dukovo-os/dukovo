@@ -162,7 +162,10 @@ fn the_hosts_other_messages_read() {
         parse(&message(vmbus::kind::CONNECT_RESULT, &[0])),
         FromHost::Connected { accepted: false }
     ));
-    assert!(matches!(parse(&message(vmbus::kind::RESCIND_OFFER, &[14])), FromHost::Rescinded { channel: 14 }));
+    assert!(matches!(
+        parse(&message(vmbus::kind::RESCIND_OFFER, &[14])),
+        FromHost::Rescinded { channel: 14 }
+    ));
     assert!(matches!(
         parse(&message(vmbus::kind::GPADL_CREATED, &[14, 0xe1e10, 0])),
         FromHost::GpadlCreated { channel: 14, gpadl: 0xe1e10, status: 0 }
@@ -327,7 +330,11 @@ impl HostRings {
         self.copy_out(0, size, read, &mut packet);
         let mut trailer = [0u8; 8];
         self.copy_out(0, size, read + len, &mut trailer);
-        assert_eq!(u64_at(&trailer, 0), (read as u64) << 32, "the trailer holds where the packet began");
+        assert_eq!(
+            u64_at(&trailer, 0),
+            (read as u64) << 32,
+            "the trailer holds where the packet began"
+        );
         self.write32(4, ((read + len + 8) % size) as u32);
         Some(packet)
     }
@@ -588,8 +595,14 @@ fn a_reply_reads() {
 #[test]
 fn keys_turn_into_set_1_bytes() {
     assert_eq!(keyboard::protocol_request(), [1, 0, 0, 0, 0, 0, 1, 0]);
-    assert_eq!(keyboard::parse(&[2, 0, 0, 0, 1, 0, 0, 0]), Some(Message::Protocol { accepted: true }));
-    assert_eq!(keyboard::parse(&[2, 0, 0, 0, 0, 0, 0, 0]), Some(Message::Protocol { accepted: false }));
+    assert_eq!(
+        keyboard::parse(&[2, 0, 0, 0, 1, 0, 0, 0]),
+        Some(Message::Protocol { accepted: true })
+    );
+    assert_eq!(
+        keyboard::parse(&[2, 0, 0, 0, 0, 0, 0, 0]),
+        Some(Message::Protocol { accepted: false })
+    );
     let event = |code: u16, flags: u32| {
         let mut data = [0u8; 12];
         put32(&mut data, 0, 3);
@@ -845,7 +858,8 @@ impl Host {
                 // One range: its length, offset and page; then the NVSP
                 // message that carries the RNDIS one.
                 assert_eq!(u32_at(packet, 20), 1);
-                let (len, offset, page) = (u32_at(packet, 24), u32_at(packet, 28), u64_at(packet, 32));
+                let (len, offset, page) =
+                    (u32_at(packet, 24), u32_at(packet, 28), u64_at(packet, 32));
                 assert_eq!(u32_at(message, 0), 107);
                 assert_eq!(u32_at(message, 8), 0xffff_ffff);
                 let mut rndis = vec![0u8; len as usize];

@@ -98,9 +98,6 @@ const BLOCK: usize = 4 << 20;
 const BLOCKS: usize = RECEIVE_BUFFER_SIZE.div_ceil(BLOCK);
 /// Frames waiting to be sent, each in a slot of its own.
 pub const TRANSMIT: usize = 64;
-/// The most ranges of the receive buffer one packet hands over that the
-/// driver takes; the host sends fewer.
-const RANGES: usize = 256;
 
 /// Transaction numbers: a frame's slot is its own, below [`TRANSMIT`].
 const TRANSACTION_CONTROL: u64 = 0x1_0000_0000;
@@ -139,13 +136,14 @@ impl Buffer {
     }
 }
 
-/// A RECEIVE_BUFFER packet being read: its ranges, one RNDIS message
-/// each, and its transaction number for the acknowledgement.
+/// A RECEIVE_BUFFER packet being read, left at the head of the inbound
+/// ring until the RNDIS messages in all its ranges are: its header, its
+/// count of ranges, and the next to read.
+#[derive(Clone, Copy, Default)]
 struct Received {
-    ranges: [(u32, u32); RANGES],
+    header: Option<ring::Header>,
     count: usize,
     next: usize,
-    transaction: u64,
 }
 
 /// The answer to an RNDIS control message, as the receive path found it.
@@ -203,7 +201,13 @@ pub type Error = radix_nic::Error;
 
 /// Sets up the card on the channel whose rings are `rings` (open), which
 /// is signalled through `connection` with `signal`.
-pub fn start(rings: Rings, connection: u32, signal: Signal, kernel: Kernel<'_>) -> Result<Netvsc, Error> {
+#[inline(never)]
+pub fn start(
+    rings: Rings,
+    connection: u32,
+    signal: Signal,
+    kernel: Kernel<'_>,
+) -> Result<Netvsc, Error> {
     let Kernel { alloc, gpadl, delay } = kernel;
     let control = alloc(1).ok_or(Error::NoMemory)?;
     let transmit = Slots::new(TRANSMIT, alloc).ok_or(Error::NoMemory)?;
@@ -217,7 +221,7 @@ pub fn start(rings: Rings, connection: u32, signal: Signal, kernel: Kernel<'_>) 
         connection,
         signal,
         receive: Buffer { blocks },
-        received: Received { ranges: [(0, 0); RANGES], count: 0, next: 0, transaction: 0 },
+        received: Received::default(),
         transmit,
         busy: 0,
         control,
@@ -251,7 +255,8 @@ pub fn start(rings: Rings, connection: u32, signal: Signal, kernel: Kernel<'_>) 
     // The receive buffer, named to the host page by page.
     let firsts = card.receive.blocks.each_ref().map(|block| block.as_ref().map_or(0, Dma::phys));
     let page = |i: usize| (firsts[i * PAGE / BLOCK] + (i * PAGE % BLOCK) as u64) / PAGE as u64;
-    let number = gpadl(RECEIVE_BUFFER_SIZE / PAGE, &page).ok_or(Error::Device("the receive buffer's GPADL"))?;
+    let number = gpadl(RECEIVE_BUFFER_SIZE / PAGE, &page)
+        .ok_or(Error::Device("the receive buffer's GPADL"))?;
     let mut connect = nvs_message(nvs::RECEIVE_BUFFER);
     connect[4..8].copy_from_slice(&number.to_le_bytes());
     connect[8..10].copy_from_slice(&nvs::RECEIVE_SIGNATURE.to_le_bytes());
@@ -268,9 +273,8 @@ pub fn start(rings: Rings, connection: u32, signal: Signal, kernel: Kernel<'_>) 
     put32(&mut init, 12, 1);
     put32(&mut init, 20, SLOT as u32);
     card.control(rndis::INIT, &mut init, delay).ok_or(Error::Timeout("RNDIS's initialization"))?;
-    let mac = card
-        .query(rndis::OID_PERMANENT_ADDRESS, delay)
-        .ok_or(Error::Timeout("the MAC address"))?;
+    let mac =
+        card.query(rndis::OID_PERMANENT_ADDRESS, delay).ok_or(Error::Timeout("the MAC address"))?;
     if mac.1 < 6 {
         return Err(Error::Device("no MAC address"));
     }
@@ -287,7 +291,8 @@ pub fn start(rings: Rings, connection: u32, signal: Signal, kernel: Kernel<'_>) 
     put32(&mut filter, 16, 4);
     put32(&mut filter, 20, 20);
     put32(&mut filter, 28, rndis::FILTER);
-    let set = card.control(rndis::SET, &mut filter, delay).ok_or(Error::Timeout("the packet filter"))?;
+    let set =
+        card.control(rndis::SET, &mut filter, delay).ok_or(Error::Timeout("the packet filter"))?;
     if set.status != rndis::STATUS_SUCCESS {
         return Err(Error::Device("the host refused the packet filter"));
     }
@@ -365,7 +370,12 @@ impl Netvsc {
     /// Sends the RNDIS control message of type `kind` whose bytes from
     /// the request number on are `message` (its type, length and number
     /// are filled in), and waits for its answer.
-    fn control(&mut self, kind: u32, message: &mut [u8], delay: &mut dyn FnMut(u32)) -> Option<ControlAnswer> {
+    fn control(
+        &mut self,
+        kind: u32,
+        message: &mut [u8],
+        delay: &mut dyn FnMut(u32),
+    ) -> Option<ControlAnswer> {
         let request = self.next_request;
         self.next_request = self.next_request.wrapping_add(1).max(1);
         put32(message, 0, kind);
@@ -399,12 +409,11 @@ impl Netvsc {
         (answer.status == rndis::STATUS_SUCCESS).then_some((answer.info, answer.len))
     }
 
-    /// Acknowledges the RECEIVE_BUFFER packet that was read, so that the
-    /// host may use its ranges again.
-    fn acknowledge(&mut self) {
+    /// Acknowledges the RECEIVE_BUFFER packet `transaction`, which was
+    /// read, so that the host may use its ranges again.
+    fn acknowledge(&mut self, transaction: u64) {
         let mut ack = nvs_message(nvs::RNDIS_ACK);
         put32(&mut ack, 4, nvs::OK);
-        let transaction = self.received.transaction;
         // The host keeps room for acknowledgements; a few tries cover a
         // ring the frames being sent filled.
         for _ in 0..16 {
@@ -479,30 +488,27 @@ impl Netvsc {
     /// when none waits.
     fn take(&mut self, frame: &mut [u8]) -> Option<usize> {
         loop {
-            // The ranges of the packet being read first.
-            while self.received.next < self.received.count {
-                let (offset, len) = self.received.ranges[self.received.next];
-                self.received.next += 1;
-                if let Some(len) = self.message(offset as usize, len as usize, frame) {
-                    if self.received.next == self.received.count {
-                        self.acknowledge();
-                        self.received.count = 0;
-                        self.received.next = 0;
+            // The ranges of the packet being read first: the length and
+            // offset of each, after the buffer's signature and the count.
+            if let Some(header) = self.received.header {
+                while self.received.next < self.received.count {
+                    let mut range = [0u8; 8];
+                    self.rings.peek_bytes(ring::HEADER + 8 + self.received.next * 8, &mut range);
+                    self.received.next += 1;
+                    let (len, offset) = (u32_at(&range, 0), u32_at(&range, 4));
+                    if let Some(len) = self.message(offset as usize, len as usize, frame) {
+                        return Some(len);
                     }
-                    return Some(len);
                 }
-            }
-            if self.received.count > 0 {
-                self.acknowledge();
-                self.received.count = 0;
-                self.received.next = 0;
+                self.received = Received::default();
+                self.finish(&header);
+                self.acknowledge(header.transaction);
+                continue;
             }
             let header = self.rings.peek()?;
             match header.kind {
                 COMPLETION => self.completion(&header),
                 RECEIVE_BUFFER => {
-                    // The buffer's signature and the count of ranges,
-                    // then each range's length and offset.
                     let mut fields = [0u8; 8];
                     self.rings.peek_bytes(ring::HEADER, &mut fields);
                     let count = u32_at(&fields, 4) as usize;
@@ -513,36 +519,30 @@ impl Netvsc {
                         && fits
                         && u32_at(&kind, 0) == nvs::RNDIS
                     {
-                        let taken = count.min(RANGES);
-                        for i in 0..taken {
-                            let mut range = [0u8; 8];
-                            self.rings.peek_bytes(ring::HEADER + 8 + i * 8, &mut range);
-                            // Length, then offset.
-                            self.received.ranges[i] = (u32_at(&range, 4), u32_at(&range, 0));
-                        }
-                        self.dropped += (count - taken) as u64;
-                        self.received.count = taken;
-                        self.received.next = 0;
-                        self.received.transaction = header.transaction;
-                        if taken == 0 {
-                            self.received.count = 0;
-                        }
+                        // Read in place, then taken.
+                        self.received = Received { header: Some(header), count, next: 0 };
+                        continue;
                     }
+                    // Not one the driver reads: given back at once.
+                    self.dropped += 1;
+                    self.finish(&header);
+                    self.acknowledge(header.transaction);
+                    continue;
                 }
                 // Notes from the host (its send table, a virtual
                 // function), which the kernel does not use.
                 INBAND => {}
                 _ => self.dropped += 1,
             }
-            if self.rings.take(&header) {
-                self.ring_doorbell();
-            }
-            if header.kind == RECEIVE_BUFFER && self.received.count == 0 {
-                // A packet with no ranges is acknowledged at once.
-                let transaction = header.transaction;
-                self.received.transaction = transaction;
-                self.acknowledge();
-            }
+            self.finish(&header);
+        }
+    }
+
+    /// Takes the packet `header` heads off the inbound ring, signalling
+    /// the host if it waits for the room.
+    fn finish(&mut self, header: &ring::Header) {
+        if self.rings.take(header) {
+            self.ring_doorbell();
         }
     }
 
@@ -563,15 +563,13 @@ impl Netvsc {
     /// Takes the completions at the head of the inbound ring, up to the
     /// first packet that is not one, which is left for [`Nic::receive`].
     fn take_completions(&mut self) {
-        while self.received.count == 0 {
+        while self.received.header.is_none() {
             let Some(header) = self.rings.peek() else { return };
             if header.kind != COMPLETION {
                 return;
             }
             self.completion(&header);
-            if self.rings.take(&header) {
-                self.ring_doorbell();
-            }
+            self.finish(&header);
         }
     }
 
@@ -592,7 +590,8 @@ impl Nic for Netvsc {
         Info {
             model: "Hyper-V synthetic network card",
             mac: self.mac,
-            receive_slots: RANGES as u16,
+            // Room for this many of the largest frames.
+            receive_slots: (RECEIVE_BUFFER_SIZE / SLOT) as u16,
             transmit_slots: TRANSMIT as u16,
         }
     }

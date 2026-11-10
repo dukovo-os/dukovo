@@ -86,6 +86,14 @@ pub fn start() {
     }
 }
 
+/// The host asks the machine to shut down (Hyper-V's shutdown service,
+/// ADR 0423): Spark is asked to power it off, as for a press of the
+/// power button.
+pub fn host_asked() {
+    info!("Power: the host asks the machine to shut down; Spark is asked to power it off");
+    pressed();
+}
+
 /// The platform's interrupt handler: one more press.
 fn pressed() {
     PRESSES.fetch_add(1, Ordering::AcqRel);

@@ -364,14 +364,16 @@ pub struct Disk<C> {
     /// Its name, for the log.
     name: Name,
     /// Its controller's place on PCI: behind an IOMMU, the controller
-    /// reaches a request's buffers only while it is in flight.
-    source: PciAddress,
+    /// reaches a request's buffers only while it is in flight. `None` for
+    /// one that is not on PCI, Hyper-V's, whose host reaches memory past
+    /// any IOMMU.
+    source: Option<PciAddress>,
 }
 
 impl<C: Controller> Disk<C> {
     /// The disk `name` that `lanes` drive, one lane each (on the heap,
-    /// [`part`]), of the controller at `source`: what it is, whether it
-    /// has a write cache and writes through it, and whether its
+    /// [`part`]), of the controller at `source` (`None` off PCI): what it
+    /// is, whether it has a write cache and writes through it, and whether its
     /// completions raise an interrupt that calls [`Disk::collect`].
     /// `None` when memory runs out.
     pub fn new(
@@ -381,8 +383,9 @@ impl<C: Controller> Disk<C> {
         fua: bool,
         interrupt: bool,
         name: Name,
-        source: PciAddress,
+        source: impl Into<Option<PciAddress>>,
     ) -> Option<Disk<C>> {
+        let source = source.into();
         let count = lanes.len().max(1);
         let mut built = Vec::new_in(HEAP.with(Flags::MAY_SLEEP));
         built.try_reserve_exact(count).ok()?;
@@ -855,17 +858,20 @@ impl<C: Controller> Disk<C> {
         requests: &[Request<'_>],
         transfer: impl FnOnce() -> Result<(), Error>,
     ) -> Result<(), Error> {
+        // A controller that is not on PCI (Hyper-V's) reaches memory past
+        // any IOMMU.
+        let Some(source) = self.source else { return transfer() };
         for (at, request) in requests.iter().enumerate() {
-            if !request.data.is_empty() && !<Arch as Devices>::map_dma(self.source, request.data) {
+            if !request.data.is_empty() && !<Arch as Devices>::map_dma(source, request.data) {
                 for request in &requests[..at] {
-                    <Arch as Devices>::unmap_dma(self.source, request.data);
+                    <Arch as Devices>::unmap_dma(source, request.data);
                 }
                 return Err(Error::NoMemory);
             }
         }
         let result = transfer();
         for request in requests.iter().filter(|request| !request.data.is_empty()) {
-            <Arch as Devices>::unmap_dma(self.source, request.data);
+            <Arch as Devices>::unmap_dma(source, request.data);
         }
         result
     }

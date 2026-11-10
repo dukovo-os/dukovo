@@ -419,7 +419,8 @@ impl Dma {
     pub fn take64(&self, offset: usize) -> u64 {
         // SAFETY: as in `read16`; the word is aligned, as an atomic needs,
         // and only atomic and volatile accesses reach it.
-        let word = unsafe { core::sync::atomic::AtomicU64::from_ptr(self.word(offset, 8) as *mut u64) };
+        let word =
+            unsafe { core::sync::atomic::AtomicU64::from_ptr(self.word(offset, 8) as *mut u64) };
         word.swap(0, Ordering::AcqRel)
     }
 
@@ -428,7 +429,8 @@ impl Dma {
     #[allow(unsafe_code)]
     pub fn set64(&self, offset: usize, bits: u64) {
         // SAFETY: as in `take64`.
-        let word = unsafe { core::sync::atomic::AtomicU64::from_ptr(self.word(offset, 8) as *mut u64) };
+        let word =
+            unsafe { core::sync::atomic::AtomicU64::from_ptr(self.word(offset, 8) as *mut u64) };
         word.fetch_or(bits, Ordering::AcqRel);
     }
 
@@ -457,6 +459,17 @@ impl Dma {
         for offset in len & !7..len {
             self.write8(offset, 0);
         }
+    }
+}
+
+impl Dma {
+    /// The same memory, never given back once dropped: for memory a
+    /// device may go on using after its driver lets go of it, as a VMBus
+    /// host may write into a channel's rings while the channel is open.
+    pub fn kept(mut self) -> Dma {
+        fn keep(_virt: usize, _phys: u64, _len: usize, _tag: u32) {}
+        self.release = keep;
+        self
     }
 }
 
