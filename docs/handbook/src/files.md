@@ -223,10 +223,9 @@ run more slowly: setting it to AHCI in the firmware's setup is better,
 and changes nothing else for Dukovo. USB sticks, card readers and
 USB disks are disks too, named after the SATA ones (`sdc` and on, on the
 Dell), whether they speak the Bulk-Only Transport or, as USB 3 disks do,
-USB Attached SCSI. An SD card in a laptop's own card reader is
-`mmcblk0`, its partitions `mmcblk0p1` and on, as on Linux, when it is
-in the reader at boot. Those plugged in at boot are mounted as the others
-are. One plugged in later is mounted by its filesystem's label, at
+USB Attached SCSI. A card in a laptop's own SD card reader is
+`mmcblk0`, its partitions `mmcblk0p1` and on, as on Linux. Those plugged
+in at boot are mounted as the others are. One plugged in later is mounted by its filesystem's label, at
 `/volumes/<label>`, by volumed(8), which also unmounts the volumes of a
 stick pulled out. Before pulling one out, eject it, so that what it holds
 is written first:
@@ -252,6 +251,31 @@ the next card:
 # cat /kernel/block/sdc/size
 0
 ```
+
+A laptop's own SD card reader is such a drive too, a slot at a time:
+each slot is named `mmcblk0` and on at boot, with a card in it or not,
+and keeps its name whatever card is put in (ADR 0437). The kernel looks
+at each slot every two seconds, and at once when a reader that
+interrupts says a card went in or came out; a card put in is mounted at
+its label, and one taken out has its volumes unmounted. An SD card cannot be pushed out, so
+`eject` unmounts the card and has the reader let it go and turn its power
+off: the slot is then empty, the card still in it, until it is taken out
+and put in again. A card whose write-protect switch is set is mounted
+read-only.
+
+A card runs at the fastest bus speed both it and the reader have: High
+Speed, up to 50 MHz, and with a reader of version 3.00 or later and a
+UHS-I card, up to SDR104's 208 MHz at 1.8 V (ADR 0438). The kernel's log
+names it, as in `High Speed at 50 MHz on a 4-bit bus`.
+
+A laptop or board that boots from an eMMC, a MultiMediaCard soldered to
+the board, has it as `mmcblk0` too, set up at boot, on an eight-bit bus
+and at HS200's 200 MHz where both it and the controller can (ADR 0439).
+
+Some readers need more than the specification says, such as Ricoh's
+R5C822, R5U822 and R5U823 and JMicron's JMB38x, and the kernel drives
+them as they need (ADR 0445); a reader without ADMA2 moves data by
+SDMA. The kernel's log names such a reader, and what it does for it.
 
 A CD, DVD or Blu-ray drive, on SATA, IDE or USB, is such a drive too,
 named `cd0` and on, a `rom` under lsblk's `TYPE` (ADR 0431, ADR 0432).

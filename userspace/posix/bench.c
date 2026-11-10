@@ -597,23 +597,42 @@ static void disk_transfers(int fd, const char *name, int writing, size_t size, u
 	free(buffer);
 }
 
+// The device a disk option names: a path, as Linux's init gives them, or
+// a name alone, Radix's `/devices/<name>`, as Radix's kernel command line
+// gives them to fit in the boot's.
+static const char *device(const char *given) {
+	if(strchr(given, '/'))
+		return given;
+	static char paths[4][64];
+	static int used;
+	if(used == 4)
+		fail("too many disks");
+	snprintf(paths[used], sizeof(paths[used]), "/devices/%s", given);
+	return paths[used++];
+}
+
+// The kinds of disk the disk benchmarks run on, each with its own rows.
+enum disk_kind { DISK_VIRTIO, DISK_NVME, DISK_SD };
+
 // The disk benchmarks on the disk at `path`, opened as Linux's disk
 // tools open one to bypass the page cache (Radix's block devices are
 // always raw, and its C library takes O_DIRECT and ignores it): a
-// virtio disk's rows, or with `nvme` an NVMe disk's.
-static void disk(const char *path, int nvme) {
+// virtio disk's rows, an NVMe disk's or an SD card's. An SD card moves
+// its data far slower than the others, so it gets a quarter of the
+// rounds.
+static void disk(const char *path, enum disk_kind kind) {
 	static const struct {
-		const char *names[2];
+		const char *names[3];
 		int writing;
 		size_t size;
 		uint64_t rounds;
 	} runs[] = {
-		{{"posix_disk_read_4k", "posix_nvme_read_4k"}, 0, 4096, 20000},
-		{{"posix_disk_write_4k", "posix_nvme_write_4k"}, 1, 4096, 20000},
-		{{"posix_disk_read_64k", "posix_nvme_read_64k"}, 0, 64 * 1024, 5000},
-		{{"posix_disk_write_64k", "posix_nvme_write_64k"}, 1, 64 * 1024, 5000},
-		{{"posix_disk_read_mib", "posix_nvme_read_mib"}, 0, 1 << 20, 500},
-		{{"posix_disk_write_mib", "posix_nvme_write_mib"}, 1, 1 << 20, 500},
+		{{"posix_disk_read_4k", "posix_nvme_read_4k", "posix_sd_read_4k"}, 0, 4096, 20000},
+		{{"posix_disk_write_4k", "posix_nvme_write_4k", "posix_sd_write_4k"}, 1, 4096, 20000},
+		{{"posix_disk_read_64k", "posix_nvme_read_64k", "posix_sd_read_64k"}, 0, 64 * 1024, 5000},
+		{{"posix_disk_write_64k", "posix_nvme_write_64k", "posix_sd_write_64k"}, 1, 64 * 1024, 5000},
+		{{"posix_disk_read_mib", "posix_nvme_read_mib", "posix_sd_read_mib"}, 0, 1 << 20, 500},
+		{{"posix_disk_write_mib", "posix_nvme_write_mib", "posix_sd_write_mib"}, 1, 1 << 20, 500},
 	};
 	int fd = open(path, O_RDWR | O_DIRECT);
 	if(fd < 0)
@@ -624,8 +643,10 @@ static void disk(const char *path, int nvme) {
 		       DISK_SPAN);
 		exit(1);
 	}
-	for(size_t i = 0; i < sizeof(runs) / sizeof(runs[0]); i++)
-		disk_transfers(fd, runs[i].names[nvme], runs[i].writing, runs[i].size, runs[i].rounds);
+	for(size_t i = 0; i < sizeof(runs) / sizeof(runs[0]); i++) {
+		uint64_t rounds = kind == DISK_SD ? runs[i].rounds / 4 : runs[i].rounds;
+		disk_transfers(fd, runs[i].names[kind], runs[i].writing, runs[i].size, rounds);
+	}
 	close(fd);
 }
 
@@ -1069,18 +1090,21 @@ int main(int argc, char **argv) {
 		fflush(stdout);
 		return 0;
 	}
-	const char *disk_path = NULL, *nvme_path = NULL, *disc_path = NULL, *btrfs_path = NULL;
+	const char *disk_path = NULL, *nvme_path = NULL, *sd_path = NULL, *disc_path = NULL;
+	const char *btrfs_path = NULL;
 	const char *git = NULL;
 	int networked = 0;
 	for(int i = 1; i < argc; i++) {
 		if(!strcmp(argv[i], "--network"))
 			networked = 1;
 		else if(i + 1 < argc && !strcmp(argv[i], "--disk"))
-			disk_path = argv[++i];
+			disk_path = device(argv[++i]);
 		else if(i + 1 < argc && !strcmp(argv[i], "--nvme"))
-			nvme_path = argv[++i];
+			nvme_path = device(argv[++i]);
+		else if(i + 1 < argc && !strcmp(argv[i], "--sd"))
+			sd_path = device(argv[++i]);
 		else if(i + 1 < argc && !strcmp(argv[i], "--disc"))
-			disc_path = argv[++i];
+			disc_path = device(argv[++i]);
 		else if(i + 1 < argc && !strcmp(argv[i], "--btrfs"))
 			btrfs_path = argv[++i];
 		else if(i + 1 < argc && !strcmp(argv[i], "--git"))
@@ -1112,9 +1136,11 @@ int main(int argc, char **argv) {
 	if(networked)
 		network(cpus, count);
 	if(disk_path)
-		disk(disk_path, 0);
+		disk(disk_path, DISK_VIRTIO);
 	if(nvme_path)
-		disk(nvme_path, 1);
+		disk(nvme_path, DISK_NVME);
+	if(sd_path)
+		disk(sd_path, DISK_SD);
 	if(disc_path)
 		disc(disc_path);
 	if(btrfs_path)

@@ -124,6 +124,7 @@ sched-mutex 19
 sched-pi 20
 sched-rt 13
 screen 16
+sd-card-change 75
 service-bundle 74
 service-update 147
 services 12

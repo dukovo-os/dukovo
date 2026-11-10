@@ -200,7 +200,7 @@ pub const KERNEL_LIBRARIES: &[&str] = &[
 
 /// Length of the command-line slot in the test image's grub.cfg: room
 /// for the POSIX benchmarks' command line with `norandmaps` in front.
-const CMDLINE_SLOT: usize = 192;
+pub(crate) const CMDLINE_SLOT: usize = 192;
 
 /// Which test image a case boots.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -289,7 +289,8 @@ pub struct Disk {
     /// have too: 512, or 4096 for a disk of 4 KiB sectors, which QEMU
     /// gives virtio and NVMe disks but not SATA ones.
     sector: u64,
-    /// More of QEMU's properties of the disk's device, each after a comma.
+    /// More of QEMU's properties of the disk's device, each after a comma;
+    /// an SD card's are its reader's, as [`SDMA_READER`].
     device: &'static str,
     /// Errors for QEMU's blkdebug driver to inject, as its configuration
     /// file.
@@ -660,8 +661,9 @@ enum Bus {
     Uas(&'static str, u8),
     /// A card in an SD card reader of the case's own, one for each card
     /// (QEMU's `sdhci-pci`, a version 2.00 controller with one slot and
-    /// 32-bit descriptors, holding an `sd-card`): `mmcblk0` and on, in
-    /// order. QEMU takes only cards whose size is a power of two.
+    /// 32-bit descriptors, or SDMA alone with [`SDMA_READER`], holding an
+    /// `sd-card`): `mmcblk0` and on, in order. QEMU takes only cards whose
+    /// size is a power of two.
     Sd,
     /// A disc in an optical drive on a port of the AHCI controller of the
     /// case's own (QEMU's `ide-cd`), after its SATA disks' ports: `cd0`
@@ -903,6 +905,11 @@ const TWO_NODES: &[&str] = &[
     "-numa",
     "dist,src=0,dst=1,val=21",
 ];
+
+/// An SD card's [`Disk::device`] for a reader without ADMA2 (QEMU's
+/// `sdhci-pci` with its capabilities but bit 19), which moves data by
+/// SDMA (ADR 0445).
+pub const SDMA_READER: &str = ",capareg=0x057034b4";
 
 /// A FAT test disk on `bus`.
 const fn fat_disk(kib: u64, fat: u8, label: &'static str, table: Table, bus: Bus) -> Disk {
@@ -3806,8 +3813,9 @@ fn run_case(
     }
     // A reader for each card, before them; each card names its reader's
     // bus by its path, as every reader's is called `sd-bus`.
-    for n in 0..case.disks.iter().filter(|disk| disk.bus == Bus::Sd).count() {
-        extra.extend(["-device".into(), format!("sdhci-pci,id=sd{n}")]);
+    let readers = case.disks.iter().filter(|disk| disk.bus == Bus::Sd);
+    for (n, disk) in readers.enumerate() {
+        extra.extend(["-device".into(), format!("sdhci-pci,id=sd{n}{}", disk.device)]);
     }
     let usb = |disk: &Disk| {
         matches!(disk.bus, Bus::Usb(_) | Bus::Uas(..) | Bus::UsbCd(_) | Bus::UasCd(..))
@@ -7491,8 +7499,10 @@ fn disks_found(vm: &mut Vm, case: &Case) -> Result<(), String> {
                     "Disk: {name} is an SD card of {size} in the SD card reader at "
                 ))?,
                 format!(
-                    ", slot 1: QEMU!, 13 MHz on a 4-bit bus, a version 2.00 reader{}",
-                    if disk.read_only { ", write-protected" } else { "" }
+                    ", slot 1: QEMU!, High Speed at 26 MHz on a 4-bit bus{}, a version 2.00 \
+                     reader{}",
+                    if disk.read_only { ", write-protected" } else { "" },
+                    if disk.device == SDMA_READER { " moving data by SDMA" } else { "" },
                 ),
             ),
             // QEMU's ATAPI drive says it reads DVDs; its SCSI one, which

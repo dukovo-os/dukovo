@@ -52,17 +52,19 @@ const CMDLINE: &str = "qemu-exit selftest=bench";
 /// The kernel command line of the POSIX benchmark boot: Spark runs the C
 /// program of [`POSIX_SOURCE`] from the boot archive, and nothing else,
 /// giving it a network capability for the loopback benchmarks, with the
-/// benchmarks' disks and disc ([`disk_args`]), the Btrfs disk where
+/// benchmarks' disks, SD card and disc ([`disk_args`]), named without
+/// their `/devices/` to fit the boot's command line, the Btrfs disk where
 /// Spark mounts it, to compress what is written to it, as Linux mounts
 /// it, and the image's git for the git benchmark.
 const POSIX_CMDLINE: &str = "-- --compress vdb --posix --network /system/tests/posix/bench --network \
-                             --disk /devices/vda --nvme /devices/nvme0n1 --disc /devices/cd0 \
+                             --disk vda --nvme nvme0n1 --sd mmcblk0 --disc cd0 \
                              --btrfs /volumes/vdb --git /bin/git";
 
 /// What Linux's init, `linux-bench`, is given after its kernel command
-/// line ([`LINUX_CMDLINE`]): the DVD drive of the disc benchmarks, which
-/// it waits for, as the AHCI module probes its ports in the background.
-const LINUX_INIT_ARGS: &str = "-- --disc /dev/sr0";
+/// line ([`LINUX_CMDLINE`]): the SD card and the DVD drive of the SD card
+/// and disc benchmarks, which it waits for, as the SD host's module sets
+/// its card up, and the AHCI module probes its ports, in the background.
+const LINUX_INIT_ARGS: &str = "-- --sd /dev/mmcblk0 --disc /dev/sr0";
 
 /// The size of each disk both systems' POSIX benchmarks read and write:
 /// the 32 MiB they go through, with room.
@@ -425,6 +427,12 @@ const ROWS: &[Row] = &[
     disk("posix_nvme_write_64k", "Disk: 64 KiB written raw to an NVMe disk"),
     disk("posix_nvme_read_mib", "Disk: 1 MiB read raw from an NVMe disk"),
     disk("posix_nvme_write_mib", "Disk: 1 MiB written raw to an NVMe disk"),
+    disk("posix_sd_read_4k", "SD: 4 KiB read raw from an SD card in a PCI reader (`pread`)"),
+    disk("posix_sd_write_4k", "SD: 4 KiB written raw to an SD card in a PCI reader (`pwrite`)"),
+    disk("posix_sd_read_64k", "SD: 64 KiB read raw from an SD card in a PCI reader"),
+    disk("posix_sd_write_64k", "SD: 64 KiB written raw to an SD card in a PCI reader"),
+    disk("posix_sd_read_mib", "SD: 1 MiB read raw from an SD card in a PCI reader"),
+    disk("posix_sd_write_mib", "SD: 1 MiB written raw to an SD card in a PCI reader"),
     disk("posix_disc_read_64k", "Disc: 64 KiB read raw from a DVD in an AHCI drive"),
     disk("posix_disc_read_mib", "Disc: 1 MiB read raw from a DVD in an AHCI drive"),
     btrfs(
@@ -1104,8 +1112,9 @@ pub(crate) fn linux_init(
 
 /// The modules Linux needs for the benchmarks' disks and disc, where the
 /// kernel has them as modules rather than built in: Btrfs's, to mount the
-/// Btrfs disk, and AHCI's and the SCSI CD driver's, to read the DVD drive.
-const LINUX_MODULES: [&str; 3] = ["btrfs", "ahci", "sr_mod"];
+/// Btrfs disk, the SD host's and the MMC block driver's, to read the SD
+/// card, and AHCI's and the SCSI CD driver's, to read the DVD drive.
+const LINUX_MODULES: [&str; 5] = ["btrfs", "sdhci-pci", "mmc_block", "ahci", "sr_mod"];
 
 /// The modules the Linux kernel `kernel` loads for the benchmarks' disks
 /// and disc ([`LINUX_MODULES`]), in the order they load: each it does not
@@ -1483,16 +1492,18 @@ fn radix_posix_numbers(
 /// arguments for them: a virtio block device, `vda` on both systems
 /// (`/devices/vda` on Radix, `/dev/vda` on Linux), an NVMe controller
 /// with one namespace, `nvme0n1`, a second virtio block device, `vdb`,
-/// a copy of the Btrfs disk `btrfs` ([`btrfs_disk`]), and a DVD drive on
-/// q35's AHCI controller holding a disc of the same bytes as the first
-/// two, read only: `cd0` on Radix, `/dev/sr0` on Linux. Each boot gets
-/// the same disks and disc.
+/// a copy of the Btrfs disk `btrfs` ([`btrfs_disk`]), an SD card in an
+/// SD card reader on PCI (QEMU's `sdhci-pci`), `mmcblk0`, and a DVD drive
+/// on q35's AHCI controller, holding a disc of the same bytes as the
+/// first two, read only: `cd0` on Radix, `/dev/sr0` on Linux. Each boot
+/// gets the same disks, card and disc.
 fn disk_args(dir: &Path, btrfs: &Path) -> Result<Vec<String>> {
-    let mut args = Vec::new();
+    let mut args = vec!["-device".into(), "sdhci-pci,id=bench-reader".into()];
     for (name, device, media) in [
         ("bench-disk", "virtio-blk-pci,drive=bench-disk", ""),
         ("bench-nvme", "nvme,serial=bench,drive=bench-nvme", ""),
         ("bench-btrfs", "virtio-blk-pci,drive=bench-btrfs", ""),
+        ("bench-sd", "sd-card,drive=bench-sd,bus=pcie.0/bench-reader/sd-bus", ""),
         ("bench-disc", "ide-cd,drive=bench-disc,bus=ide.0", ",media=cdrom,readonly=on"),
     ] {
         let disk = dir.join(format!("{name}.img"));
@@ -2130,13 +2141,18 @@ mod tests {
         image[0x600..0x612].copy_from_slice(b"7.0.0-1017-azure \0");
         let kernel = dir.join("vmlinuz");
         std::fs::write(&kernel, &image).unwrap();
-        // The SCSI CD driver is built in, as in Ubuntu's kernels; Btrfs
-        // and AHCI are modules, which both need what loads first.
+        // The SCSI CD driver is built in, as in Ubuntu's kernels; Btrfs,
+        // the SD host's, the MMC block driver and AHCI are modules, which
+        // each need what loads first.
         std::fs::write(dir.join("modules.builtin"), "kernel/drivers/scsi/sr_mod.ko\n").unwrap();
         std::fs::write(
             dir.join("modules.dep"),
             "kernel/crypto/xor.ko.zst:\n\
              kernel/fs/btrfs/btrfs.ko.zst: kernel/crypto/xor.ko.zst\n\
+             kernel/drivers/mmc/host/sdhci.ko.zst:\n\
+             kernel/drivers/mmc/host/sdhci-pci.ko.zst: kernel/drivers/mmc/host/sdhci.ko.zst\n\
+             kernel/drivers/misc/rpmb-core.ko.zst:\n\
+             kernel/drivers/mmc/core/mmc_block.ko.zst: kernel/drivers/misc/rpmb-core.ko.zst\n\
              kernel/drivers/ata/libahci.ko.zst: kernel/crypto/xor.ko.zst\n\
              kernel/drivers/ata/ahci.ko.zst: kernel/drivers/ata/libahci.ko.zst\n\
              kernel/drivers/ata/ahci_platform.ko.zst: kernel/drivers/ata/libahci.ko.zst\n",
@@ -2146,7 +2162,9 @@ mod tests {
         let all_built_in = {
             std::fs::write(
                 dir.join("modules.builtin"),
-                "kernel/fs/btrfs/btrfs.ko\nkernel/drivers/ata/ahci.ko\nkernel/drivers/scsi/sr_mod.ko\n",
+                "kernel/fs/btrfs/btrfs.ko\nkernel/drivers/mmc/host/sdhci-pci.ko\n\
+                 kernel/drivers/mmc/core/mmc_block.ko\nkernel/drivers/ata/ahci.ko\n\
+                 kernel/drivers/scsi/sr_mod.ko\n",
             )
             .unwrap();
             linux_modules(&kernel, Some(&dir))
@@ -2162,6 +2180,10 @@ mod tests {
             [
                 "kernel/crypto/xor.ko.zst",
                 "kernel/fs/btrfs/btrfs.ko.zst",
+                "kernel/drivers/mmc/host/sdhci.ko.zst",
+                "kernel/drivers/mmc/host/sdhci-pci.ko.zst",
+                "kernel/drivers/misc/rpmb-core.ko.zst",
+                "kernel/drivers/mmc/core/mmc_block.ko.zst",
                 "kernel/drivers/ata/libahci.ko.zst",
                 "kernel/drivers/ata/ahci.ko.zst",
             ]
@@ -2177,6 +2199,13 @@ mod tests {
         let words = text(3, 1 << 16);
         assert_eq!(words.len(), 1 << 16);
         assert!(words.iter().all(|&b| b.is_ascii_lowercase() || b == b' ' || b == b'\n'));
+    }
+
+    #[test]
+    fn the_posix_command_line_fits_the_boots_slot() {
+        for accel in [Accel::Kvm, Accel::Count] {
+            assert!(accel.cmdline(POSIX_CMDLINE).len() <= test::CMDLINE_SLOT);
+        }
     }
 
     #[test]

@@ -103,7 +103,7 @@ _/kernel/block/_*name*_/device/model_, _serial_, _firmware_rev_
 	it, up to 64 bytes. An SD card's model is its product's name, its
 	serial number the CID's in hex (_0xdeadbeef_) and its firmware the
 	CID's revision (_1.0_), which Linux has as _name_, _serial_ and
-	_prv_. Linux has these for
+	_prv_; an empty slot has none (ADR 0437). Linux has these for
 	an NVMe disk; for a SATA disk it cuts the model to 16 characters and
 	keeps the serial number elsewhere. A tool that must write to one
 	particular disk should find it by its serial number, since disk names
@@ -141,7 +141,7 @@ _/kernel/block/_*name*_/stat_
 	Disks and partitions are named as Linux names them: _vda_, _vdb_ for
 	virtio disks, _sda_, _sdb_ for SATA and USB disks, _nvme0n1_ for the first
 	namespace of the first NVMe controller, _mmcblk0_ for the first SD
-	card, _vda1_ for the first partition of _vda_ and _nvme0n1p1_ for the
+	card reader's first slot, _vda1_ for the first partition of _vda_ and _nvme0n1p1_ for the
 	first of _nvme0n1_. Linux puts a
 	partition's directory inside its disk's (_/sys/block/vda/vda1_) and
 	lists both in _/sys/class/block_; Radix lists both here.

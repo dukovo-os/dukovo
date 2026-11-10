@@ -7,7 +7,8 @@
 //! card `mmcblk0` and on and says what it is, and the files written in the
 //! first boot are checked in the second (ADR 0247). With 5 GiB of memory,
 //! page caches lie above 4 GiB, and their requests go through the bounce
-//! buffer.
+//! buffer. The third card's reader has no ADMA2, and moves data by SDMA
+//! (ADR 0445).
 
 use super::super::*;
 
@@ -35,11 +36,11 @@ pub const CASE: Case = Case {
 };
 
 /// The storage test's disks as SD cards ([`Bus::Sd`]), whose sizes QEMU
-/// wants powers of two: FAT12, FAT16 and FAT32 on whole cards, and FAT32
-/// in a GPT partition.
+/// wants powers of two: FAT12, FAT16 and FAT32 on whole cards, the third
+/// in a reader that moves data by SDMA, and FAT32 in a GPT partition.
 const DISKS: &[Disk] = &[
     fat_disk(2 * 1024, 12, "RADIX12", Table::None, Bus::Sd),
     fat_disk(32 * 1024, 16, "RADIX16", Table::None, Bus::Sd),
-    fat_disk(64 * 1024, 32, "RADIX32", Table::None, Bus::Sd),
+    Disk { device: SDMA_READER, ..fat_disk(64 * 1024, 32, "RADIX32", Table::None, Bus::Sd) },
     fat_disk(128 * 1024, 32, "RADIXPART", Table::Gpt, Bus::Sd),
 ];

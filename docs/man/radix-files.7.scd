@@ -341,7 +341,9 @@ order they were found), _nvme0n1_, _nvme0n2_ for the
 namespaces of the first NVMe controller and _nvme1n1_ for the second's
 (those an Intel VMD keeps, when the firmware's storage is set to RST or
 RAID, named as the others are; ADR 0249),
-_mmcblk0_, _mmcblk1_ for the cards in SD card readers on PCI (ADR 0247),
+_mmcblk0_, _mmcblk1_ for the slots of SD card readers on PCI, each named
+at boot, empty or not, and keeping its name whatever card is in it (ADR
+0247, ADR 0437), and for an eMMC soldered to the board (ADR 0439),
 _vda1_ for a partition, and _nvme0n1p1_ or _mmcblk0p1_ after a name that
 ends in a digit.
 A USB disk plugged in later appears then, and one unplugged leaves
@@ -432,7 +434,7 @@ Disk: sdb is an ATA disk of 32 MiB on the IDE primary channel at 0000:00:03.0, m
 Disk: nvme0 is an NVMe 1.4 controller at 0000:00:04.0: QEMU NVMe Ctrl, firmware 8.2.2, 4 I/O queues of 63 commands, an MSI-X vector for each of 4 CPUs, shadow doorbells, scatter gather lists
 Disk: nvme0n1 is an NVMe namespace of 64 MiB: QEMU NVMe Ctrl, 512 bytes a block, write cache, deallocates
 Disk: the Intel VMD at 0000:00:0e.0 keeps PCI segment 1000, buses 224 to 225: 1 bridge, 1 device, in 1024 KiB of its memory and 0 KiB of its prefetchable memory
-Disk: mmcblk0 is an SD card of 64 MiB in the SD card reader at 0000:00:05.0, slot 1: QEMU!, 13 MHz on a 4-bit bus, a version 2.00 reader
+Disk: mmcblk0 is an SD card of 64 MiB in the SD card reader at 0000:00:05.0, slot 1: QEMU!, High Speed at 26 MHz on a 4-bit bus, a version 2.00 reader
 Files: mounted fat from vda on /volumes/vda, labelled RADIX16
 ```
 
@@ -502,8 +504,10 @@ segment, as _1000:e1:00.0 behind the VMD at 0000:00:0e.0_, and *polled*.
   SATA disks on AHCI controllers, ATA and SATA
   disks on IDE controllers (and SATA controllers in IDE mode), NVMe
   namespaces, USB disks, over the Bulk-Only Transport or USB Attached
-  SCSI (UAS), and SD, SDHC and SDXC cards in SD card readers on PCI that
-  were in them at boot, have drivers. Port multipliers, optical drives, disks with
+  SCSI (UAS), SD, SDHC, SDXC and MMC cards in SD card readers on PCI,
+  put in at boot or later (ADR 0437), and eMMCs (ADR 0439), have
+  drivers; a reader without ADMA2, or whose ADMA2 is broken, moves data
+  by SDMA (ADR 0445). Port multipliers, optical drives, disks with
   logical sectors larger than 4096 bytes and NVMe namespaces with
   metadata are not supported. NVMe controllers behind an Intel VMD are
   polled, as the VMD's interrupts are not routed yet, and the AHCI
