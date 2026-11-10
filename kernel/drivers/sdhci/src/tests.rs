@@ -3,8 +3,11 @@
 
 //! The driver against a simulated SD host controller and card: what the
 //! card says of itself, reads and writes through ADMA2's descriptors of
-//! both sizes, failures and the stop after them.
+//! both sizes, failures and the stop after them, the card detect, and the
+//! bus speed modes: High Speed, and UHS-I's after a switch to 1.8 V, tuned
+//! where they must be.
 
+use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use std::vec::Vec;
 
@@ -21,6 +24,19 @@ struct SimCard {
     /// It is SDHC: addressed in blocks.
     high: bool,
     write_protected: bool,
+    /// The SCR's SD_SPEC: 0 for a card of version 1.0x, without CMD6.
+    spec: u8,
+    /// CMD6's group 1, the bus speed modes it has (bit 1 High Speed or
+    /// SDR25, 2 SDR50, 3 SDR104, 4 DDR50), and group 4, its current
+    /// limits (bit 1 400 mA, 2 600 mA, 3 800 mA).
+    modes: u16,
+    currents: u16,
+    /// It switches to 1.8 V when asked (S18A).
+    uhs: bool,
+    /// It says it will switch, and then holds DAT0 to DAT3 low.
+    switch_fails: bool,
+    /// Tuning finds no sampling point.
+    tuning_fails: bool,
 }
 
 /// A simulated slot and its card.
@@ -42,6 +58,16 @@ struct State {
     aliases: Vec<(u32, u64)>,
     /// The card detect has not settled.
     settling: bool,
+    /// What the Buffer Data Port gives next, a word at a time.
+    buffer: VecDeque<u32>,
+    /// The card agreed to 1.8 V (S18A), and took CMD11 and switched.
+    agreed: bool,
+    switched: bool,
+    /// CMD6's functions switched to: group 1's and group 4's.
+    function: u8,
+    limit: u8,
+    /// CMD19s sent.
+    tunes: u32,
 }
 
 struct Sim(Mutex<State>);
@@ -49,6 +75,29 @@ struct Sim(Mutex<State>);
 const CID_NAME: &[u8; 5] = b"TEST1";
 
 impl State {
+    /// A slot holding `card`, its registers all 0.
+    fn new(card: Option<SimCard>) -> State {
+        State {
+            regs: [0; 256],
+            card,
+            app: false,
+            tries: 0,
+            rca: 0,
+            selected: false,
+            block_length: 0,
+            commands: Vec::new(),
+            fail: None,
+            aliases: Vec::new(),
+            settling: false,
+            buffer: VecDeque::new(),
+            agreed: false,
+            switched: false,
+            function: 0,
+            limit: 0,
+            tunes: 0,
+        }
+    }
+
     fn get(&self, at: usize, size: usize) -> u64 {
         let mut value = 0u64;
         for i in (0..size).rev() {
@@ -172,6 +221,40 @@ impl State {
         if done == total { Ok(()) } else { Err(1 << 9) }
     }
 
+    /// Puts `bytes`, a block the card sends, in the Buffer Data Port.
+    fn send_block(&mut self, bytes: &[u8]) {
+        let (words, _) = bytes.as_chunks::<4>();
+        self.buffer = words.iter().map(|word| u32::from_le_bytes(*word)).collect();
+        self.set_status(status::BUFFER_READ_READY, 0);
+    }
+
+    /// CMD6's 64-byte status for `argument` (Physical Layer, 4.3.10), and
+    /// in switch mode the switch.
+    fn switch(&mut self, card: &SimCard, argument: u32) -> [u8; 64] {
+        let mut out = [0u8; 64];
+        out[1] = 100;
+        out[6..8].copy_from_slice(&(0x8000 | card.currents | 1).to_be_bytes());
+        out[12..14].copy_from_slice(&(0x8000 | card.modes | 1).to_be_bytes());
+        let (group1, group4) = ((argument & 0xf) as u8, (argument >> 12 & 0xf) as u8);
+        let takes = |function: u8, of: u16| function == 0xf || (of | 1) & 1 << function != 0;
+        let (group1, group4) = if takes(group1, card.modes) && takes(group4, card.currents) {
+            (group1, group4)
+        } else {
+            (0xf, 0xf)
+        };
+        if argument & 1 << 31 != 0 && group1 != 0xf {
+            self.function = group1;
+        }
+        if argument & 1 << 31 != 0 && group4 != 0xf {
+            self.limit = group4;
+        }
+        let shown = |asked: u8, now: u8| if asked == 0xf { now } else { asked };
+        out[15] = shown(group4, self.limit) << 4;
+        out[16] =
+            if group1 == 0xf && argument & 0xf != 0xf { 0xf } else { shown(group1, self.function) };
+        out
+    }
+
     /// The command just written.
     fn command(&mut self, value: u16) {
         let index = (value >> 8 & 0x3f) as u8;
@@ -192,6 +275,10 @@ impl State {
                 self.tries = 0;
                 self.rca = 0;
                 self.selected = false;
+                self.agreed = false;
+                self.switched = false;
+                self.function = 0;
+                self.limit = 0;
             }
             (false, 8) if card.version2 => self.respond([argument & 0xfff, 0, 0, 0]),
             (false, 8) => return timeout(self),
@@ -207,8 +294,44 @@ impl State {
                     if card.high && argument & 1 << 30 != 0 {
                         ocr |= 1 << 30;
                     }
+                    if card.uhs && argument & 1 << 24 != 0 {
+                        ocr |= 1 << 24;
+                        self.agreed = true;
+                    }
                 }
                 self.respond([ocr, 0, 0, 0]);
+            }
+            (false, 11) if self.agreed => {
+                self.switched = !card.switch_fails;
+                r1(self, 0);
+            }
+            (true, 51) if self.selected => {
+                r1(self, 0);
+                let mut scr = [0u8; 8];
+                scr[0] = card.spec;
+                scr[1] = 0x05;
+                self.send_block(&scr);
+                return;
+            }
+            (false, 6) if self.selected && card.spec > 0 => {
+                r1(self, 0);
+                let status = self.switch(&card, argument);
+                self.send_block(&status);
+                return;
+            }
+            (false, 19) if self.selected => {
+                r1(self, 0);
+                self.tunes += 1;
+                let control2 = self.get(reg::HOST_CONTROL2, 2);
+                if control2 & 1 << 6 != 0 {
+                    if self.tunes >= 5 && !card.tuning_fails {
+                        self.put(reg::HOST_CONTROL2, 2, control2 & !(1 << 6) | 1 << 7);
+                    } else if self.tunes >= 40 {
+                        self.put(reg::HOST_CONTROL2, 2, control2 & !(1 << 6 | 1 << 7));
+                    }
+                }
+                self.send_block(&[0x5a; 64]);
+                return;
             }
             (false, 2) => self.respond(Self::long(Self::cid())),
             (false, 3) => {
@@ -272,13 +395,30 @@ impl Sim {
 
 impl Registers for Sim {
     fn read(&self, offset: usize, size: usize) -> u64 {
-        let state = self.0.lock().unwrap();
+        let mut state = self.0.lock().unwrap();
+        if offset == reg::BUFFER {
+            let word = state.buffer.pop_front().unwrap_or(0);
+            if state.buffer.is_empty() {
+                state.set_status(status::TRANSFER_COMPLETE, 0);
+            }
+            return u64::from(word);
+        }
         if offset == reg::PRESENT_STATE {
             let mut value = if state.settling { 0 } else { 1 << 17 };
             if let Some(card) = &state.card {
                 value |= 0x5 << 16;
                 if !card.write_protected {
                     value |= 1 << 19;
+                }
+                // A card that took CMD11 holds DAT0 to DAT3 low until its
+                // clock comes back at 1.8 V; one that fails holds them on.
+                let clocked = state.get(reg::CLOCK_CONTROL, 2) & 4 != 0;
+                let at_1_8 = state.get(reg::HOST_CONTROL2, 2) & 1 << 3 != 0;
+                let low = state.agreed
+                    && state.commands.contains(&11)
+                    && (!clocked || !at_1_8 || !state.switched);
+                if !low {
+                    value |= 0xf << 20;
                 }
             }
             return value;
@@ -318,21 +458,35 @@ impl Registers for Sim {
 /// A slot of a controller of `version`, `base_mhz` and, with `wide`, 64-bit
 /// DMA, holding `card`.
 fn slot(version: u8, base_mhz: u64, wide: bool, card: Option<SimCard>) -> (Slot, Arc<Sim>) {
-    let mut state = State {
-        regs: [0; 256],
-        card,
-        app: false,
-        tries: 0,
-        rca: 0,
-        selected: false,
-        block_length: 0,
-        commands: Vec::new(),
-        fail: None,
-        aliases: Vec::new(),
-        settling: false,
-    };
     let caps = base_mhz << 8 | 1 << 19 | 1 << 21 | 1 << 24 | if wide { 1 << 28 } else { 0 };
+    slot_with(version, caps, 0, card)
+}
+
+/// A slot of a controller of version 3.00, of 200 MHz, with 64-bit DMA,
+/// High Speed, 1.8 V and the UHS-I modes and tuning `uhs` says, giving
+/// `max_ma` at 3.3 V, holding `card`.
+fn uhs_slot(uhs: u64, max_ma: u64, card: SimCard) -> (Slot, Arc<Sim>) {
+    let caps = 200 << 8 | 1 << 19 | 1 << 21 | 1 << 24 | 1 << 26 | 1 << 28 | uhs;
+    slot_with(version::V3, caps, max_ma / 4, Some(card))
+}
+
+/// A UHS-I card of 4096 blocks with every mode and current limit.
+fn uhs_card() -> SimCard {
+    SimCard { uhs: true, modes: 0b1_1110, currents: 0b1110, ..card(4096, true) }
+}
+
+/// The UHS-I capabilities: SDR50, SDR104, DDR50, and SDR50 tuned.
+const SDR50: u64 = 1 << 32;
+const SDR104: u64 = 1 << 33;
+const DDR50: u64 = 1 << 34;
+const TUNE_SDR50: u64 = 1 << 45;
+
+/// A slot of a controller of `version` with capabilities `caps` and
+/// Maximum Current `current`, holding `card`.
+fn slot_with(version: u8, caps: u64, current: u64, card: Option<SimCard>) -> (Slot, Arc<Sim>) {
+    let mut state = State::new(card);
     state.put(reg::CAPABILITIES, 8, caps);
+    state.put(reg::MAX_CURRENT, 8, current);
     state.put(reg::VERSION, 2, u64::from(version));
     let sim = Arc::new(Sim(Mutex::new(state)));
     let regs = Mmio::fake(sim.clone(), REGISTERS);
@@ -350,8 +504,21 @@ fn slot(version: u8, base_mhz: u64, wide: bool, card: Option<SimCard>) -> (Slot,
     (slot, sim)
 }
 
+/// A card of `blocks` blocks, SDHC with `high`, of version 3.0x with High
+/// Speed and no UHS-I.
 fn card(blocks: usize, high: bool) -> SimCard {
-    SimCard { data: std::vec![0; blocks * 512], version2: true, high, write_protected: false }
+    SimCard {
+        data: std::vec![0; blocks * 512],
+        version2: true,
+        high,
+        write_protected: false,
+        spec: 2,
+        modes: 1 << 1,
+        currents: 0,
+        uhs: false,
+        switch_fails: false,
+        tuning_fails: false,
+    }
 }
 
 /// A pattern of `len` bytes for block `block` on.
@@ -371,10 +538,12 @@ fn sdhc_card_is_set_up_and_moves_blocks_with_wide_descriptors() {
     assert_eq!(card.kind(), "SDHC");
     assert_eq!((card.cid.maker, card.cid.oem, card.cid.serial), (3, *b"SD", 0xdead_beef));
     assert_eq!((card.cid.year, card.cid.month, card.cid.revision), (2024, 6, 0x10));
-    // 200 MHz over 2 × 4.
-    assert_eq!(card.khz, 25_000);
+    // High Speed: 200 MHz over 2 × 2, after the SCR and CMD6's check and
+    // switch.
+    assert_eq!((card.speed, card.khz), (Speed::High, 50_000));
+    assert_eq!(slot.regs.read8(reg::HOST_CONTROL) & 0b110, 0b110);
     let commands = sim.0.lock().unwrap().commands.clone();
-    assert_eq!(commands, [0, 8, 55, 141, 55, 141, 55, 141, 2, 3, 9, 7, 55, 106]);
+    assert_eq!(commands, [0, 8, 55, 141, 55, 141, 55, 141, 2, 3, 9, 7, 55, 106, 55, 151, 6, 6]);
     // Three buffers of five blocks, written from block 100, then read back.
     let pages: Vec<Dma> = (0..3).map(|_| Dma::fake(4096)).collect();
     let lens = [1024u32, 512, 1024];
@@ -403,12 +572,13 @@ fn sdhc_card_is_set_up_and_moves_blocks_with_wide_descriptors() {
 
 #[test]
 fn standard_capacity_cards_are_addressed_in_bytes_through_narrow_descriptors() {
-    // A version 2.00 controller of 52 MHz: 13 MHz is the most at 25.
+    // A version 2.00 controller of 52 MHz, as QEMU's: 26 MHz is the most
+    // at High Speed's 50.
     let (mut slot, sim) = slot(version::V2, 52, false, Some(card(8192, false)));
     assert!(!slot.reaches_64());
     let card = slot.identify(&mut |_| {}).unwrap();
     assert!(!card.high_capacity);
-    assert_eq!((card.blocks, card.khz, card.kind()), (8192, 13_000, "SD"));
+    assert_eq!((card.blocks, card.khz, card.kind()), (8192, 26_000, "SD"));
     assert_eq!(sim.0.lock().unwrap().block_length, 512);
     // Host memory above 4 GiB is refused; below, the simulator maps it.
     let page = Dma::fake(4096);
@@ -446,19 +616,7 @@ fn empty_slots_and_cards_of_other_kinds() {
     let page = Dma::fake(4096);
     assert_eq!(slot.start(Op::Read, 0, 1, &[(page.phys(), 512)], &mut |_| {}), Err(Error::NoCard));
     // Without ADMA2, the slot is not driven.
-    let mut state = State {
-        regs: [0; 256],
-        card: None,
-        app: false,
-        tries: 0,
-        rca: 0,
-        selected: false,
-        block_length: 0,
-        commands: Vec::new(),
-        fail: None,
-        aliases: Vec::new(),
-        settling: false,
-    };
+    let mut state = State::new(None);
     state.put(reg::CAPABILITIES, 8, 200 << 8 | 1 << 22);
     let sim = Arc::new(Sim(Mutex::new(state)));
     let mut alloc = |_: usize, _: bool| Some(Dma::fake(4096));
@@ -533,6 +691,7 @@ fn csd_and_cid_are_read() {
         high_capacity: true,
         blocks: 64 * 1_000_000_000 / 512,
         cid,
+        speed: Speed::Default,
         khz: 25_000,
         width: 4,
         read_only: false,
@@ -620,4 +779,142 @@ fn soldered_slots_are_not_removable() {
     let mut alloc = |_: usize, _: bool| Some(Dma::fake(4096));
     let embedded = Slot::new(regs, &mut alloc, &mut |_| {}).unwrap();
     assert!(!embedded.removable());
+}
+
+#[test]
+fn cards_and_slots_without_high_speed_stay_at_the_default_speed() {
+    // A card of version 1.0x has no CMD6.
+    let old = SimCard { spec: 0, ..card(1024, true) };
+    let (mut slot_a, sim) = slot(version::V3, 200, true, Some(old));
+    let card_a = slot_a.identify(&mut |_| {}).unwrap();
+    assert_eq!((card_a.speed, card_a.khz), (Speed::Default, 25_000));
+    assert!(!sim.0.lock().unwrap().commands.contains(&6));
+    // A card without High Speed is asked, and left.
+    let plain = SimCard { modes: 0, ..card(1024, true) };
+    let (mut slot_b, sim) = slot(version::V3, 200, true, Some(plain));
+    assert_eq!(slot_b.identify(&mut |_| {}).unwrap().speed, Speed::Default);
+    assert_eq!(sim.0.lock().unwrap().commands.iter().filter(|&&c| c == 6).count(), 1);
+    assert_eq!(slot_b.regs.read8(reg::HOST_CONTROL) & 0b100, 0);
+    // A slot without High Speed does not switch a card that has it.
+    let caps = 200 << 8 | 1 << 19 | 1 << 24 | 1 << 28;
+    let (mut slot_c, sim) = slot_with(version::V3, caps, 0, Some(card(1024, true)));
+    assert_eq!(slot_c.identify(&mut |_| {}).unwrap().speed, Speed::Default);
+    assert_eq!(sim.0.lock().unwrap().function, 0);
+}
+
+#[test]
+fn uhs_cards_switch_to_1_8_volts_and_tune_for_sdr104() {
+    let (mut slot, sim) = uhs_slot(SDR50 | SDR104 | DDR50, 800, uhs_card());
+    let card = slot.identify(&mut |_| {}).unwrap();
+    // 200 MHz is the most at SDR104's 208, with 800 mA asked for.
+    assert_eq!((card.speed, card.khz), (Speed::Sdr104, 200_000));
+    let state = sim.0.lock().unwrap();
+    assert!(state.switched);
+    assert_eq!((state.function, state.limit), (3, 3));
+    assert!(state.tunes >= 5);
+    let control2 = state.get(reg::HOST_CONTROL2, 2);
+    // 1.8 V, SDR104, tuning done with a sampling point found.
+    assert_eq!(control2 & 0xff, 1 << 7 | 1 << 3 | 3);
+    assert_eq!(state.regs[reg::HOST_CONTROL] & 0b110, 0b110);
+    let at = state.commands.iter().position(|&c| c == 11).unwrap();
+    assert_eq!(state.commands[at - 1], 141, "CMD11 follows ACMD41");
+    drop(state);
+    // It moves blocks.
+    let page = Dma::fake(4096);
+    slot.start(Op::Read, 8, 2, &[(page.phys(), 1024)], &mut |_| {}).unwrap();
+    assert_eq!(slot.poll(), Some(Ok(())));
+}
+
+#[test]
+fn a_mode_that_does_not_tune_gives_way_to_the_next() {
+    let card = SimCard { tuning_fails: true, ..uhs_card() };
+    let (mut slot, sim) = uhs_slot(SDR50 | SDR104 | DDR50, 800, card);
+    let card = slot.identify(&mut |_| {}).unwrap();
+    // SDR104 did not tune; DDR50 needs none.
+    assert_eq!((card.speed, card.khz), (Speed::Ddr50, 50_000));
+    let state = sim.0.lock().unwrap();
+    assert_eq!(state.function, 4);
+    assert_eq!(state.get(reg::HOST_CONTROL2, 2) & 0xc7, 4);
+}
+
+#[test]
+fn sdr50_is_tuned_only_where_the_controller_asks() {
+    let (mut slot, sim) = uhs_slot(SDR50, 800, uhs_card());
+    let card = slot.identify(&mut |_| {}).unwrap();
+    assert_eq!((card.speed, card.khz), (Speed::Sdr50, 100_000));
+    assert_eq!(sim.0.lock().unwrap().tunes, 0);
+    let (mut slot, sim) = uhs_slot(SDR50 | TUNE_SDR50, 800, uhs_card());
+    assert_eq!(slot.identify(&mut |_| {}).unwrap().speed, Speed::Sdr50);
+    assert!(sim.0.lock().unwrap().tunes >= 5);
+    // A controller with none of the card's faster modes runs it at SDR25.
+    let card = SimCard { modes: 0b1_0010, ..uhs_card() };
+    let (mut slot, _) = uhs_slot(SDR104, 800, card);
+    let card = slot.identify(&mut |_| {}).unwrap();
+    assert_eq!((card.speed, card.khz), (Speed::Sdr25, 50_000));
+}
+
+#[test]
+fn the_current_limit_is_what_both_the_card_and_slot_take() {
+    let limit = |max_ma: u64, currents: u16| {
+        let card = SimCard { currents, ..uhs_card() };
+        let (mut slot, sim) = uhs_slot(SDR104, max_ma, card);
+        slot.identify(&mut |_| {}).unwrap();
+        sim.0.lock().unwrap().limit
+    };
+    assert_eq!(limit(800, 0b1110), 3);
+    assert_eq!(limit(600, 0b1110), 2);
+    assert_eq!(limit(800, 0b0010), 1);
+    // A slot that does not say leaves the card's 200 mA.
+    assert_eq!(limit(0, 0b1110), 0);
+}
+
+#[test]
+fn a_card_that_does_not_switch_to_1_8_volts_is_set_up_again_at_3_3() {
+    let card = SimCard { switch_fails: true, ..uhs_card() };
+    let (mut slot, sim) = uhs_slot(SDR50 | SDR104 | DDR50, 800, card);
+    let card = slot.identify(&mut |_| {}).unwrap();
+    assert_eq!((card.speed, card.khz), (Speed::High, 50_000));
+    let state = sim.0.lock().unwrap();
+    // Powered off and set up from CMD0 again, without asking for 1.8 V.
+    assert_eq!(state.commands.iter().filter(|&&c| c == 0).count(), 2);
+    assert!(!state.agreed);
+    assert_eq!(state.get(reg::HOST_CONTROL2, 2) & 1 << 3, 0);
+}
+
+#[test]
+fn garbled_data_in_a_tuned_mode_tunes_the_slot_again() {
+    let (mut slot, sim) = uhs_slot(SDR104, 800, uhs_card());
+    assert_eq!(slot.identify(&mut |_| {}).unwrap().speed, Speed::Sdr104);
+    let page = Dma::fake(4096);
+    let read = [(page.phys(), 512)];
+    let tunes = sim.0.lock().unwrap().tunes;
+    sim.0.lock().unwrap().fail = Some(1 << 5);
+    slot.start(Op::Read, 0, 1, &read, &mut |_| {}).unwrap();
+    assert_eq!(slot.poll(), Some(Err(Error::Command(1 << 5))));
+    // The next transfer tunes first.
+    slot.start(Op::Read, 0, 1, &read, &mut |_| {}).unwrap();
+    assert_eq!(slot.poll(), Some(Ok(())));
+    assert!(sim.0.lock().unwrap().tunes > tunes);
+    // A timeout is not the sampling point's: no tuning.
+    let tunes = sim.0.lock().unwrap().tunes;
+    sim.0.lock().unwrap().fail = Some(1 << 4);
+    slot.start(Op::Read, 0, 1, &read, &mut |_| {}).unwrap();
+    assert!(matches!(slot.poll(), Some(Err(_))));
+    slot.start(Op::Read, 0, 1, &read, &mut |_| {}).unwrap();
+    assert_eq!(slot.poll(), Some(Ok(())));
+    assert_eq!(sim.0.lock().unwrap().tunes, tunes);
+    // Garbled again, and the mode no longer tunes: SDR25.
+    {
+        let mut state = sim.0.lock().unwrap();
+        state.fail = Some(1 << 5);
+        state.card.as_mut().unwrap().tuning_fails = true;
+        state.tunes = 0;
+    }
+    slot.start(Op::Read, 0, 1, &read, &mut |_| {}).unwrap();
+    assert!(matches!(slot.poll(), Some(Err(_))));
+    slot.start(Op::Read, 0, 1, &read, &mut |_| {}).unwrap();
+    assert_eq!(slot.poll(), Some(Ok(())));
+    let card = slot.card().unwrap();
+    assert_eq!((card.speed, card.khz), (Speed::Sdr25, 50_000));
+    assert_eq!(sim.0.lock().unwrap().function, 1);
 }

@@ -434,7 +434,7 @@ Disk: sdb is an ATA disk of 32 MiB on the IDE primary channel at 0000:00:03.0, m
 Disk: nvme0 is an NVMe 1.4 controller at 0000:00:04.0: QEMU NVMe Ctrl, firmware 8.2.2, 4 I/O queues of 63 commands, an MSI-X vector for each of 4 CPUs, shadow doorbells, scatter gather lists
 Disk: nvme0n1 is an NVMe namespace of 64 MiB: QEMU NVMe Ctrl, 512 bytes a block, write cache, deallocates
 Disk: the Intel VMD at 0000:00:0e.0 keeps PCI segment 1000, buses 224 to 225: 1 bridge, 1 device, in 1024 KiB of its memory and 0 KiB of its prefetchable memory
-Disk: mmcblk0 is an SD card of 64 MiB in the SD card reader at 0000:00:05.0, slot 1: QEMU!, 13 MHz on a 4-bit bus, a version 2.00 reader
+Disk: mmcblk0 is an SD card of 64 MiB in the SD card reader at 0000:00:05.0, slot 1: QEMU!, High Speed at 26 MHz on a 4-bit bus, a version 2.00 reader
 Files: mounted fat from vda on /volumes/vda, labelled RADIX16
 ```
 

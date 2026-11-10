@@ -7491,7 +7491,7 @@ fn disks_found(vm: &mut Vm, case: &Case) -> Result<(), String> {
                     "Disk: {name} is an SD card of {size} in the SD card reader at "
                 ))?,
                 format!(
-                    ", slot 1: QEMU!, 13 MHz on a 4-bit bus, a version 2.00 reader{}",
+                    ", slot 1: QEMU!, High Speed at 26 MHz on a 4-bit bus, a version 2.00 reader{}",
                     if disk.read_only { ", write-protected" } else { "" }
                 ),
             ),

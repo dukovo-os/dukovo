@@ -262,6 +262,10 @@ its label, and one taken out has its volumes unmounted. An SD card cannot be pus
 off: the slot is then empty, the card still in it, until it is taken out
 and put in again. A card whose write-protect switch is set is mounted
 read-only.
+A card runs at the fastest bus speed both it and the reader have: High
+Speed, up to 50 MHz, and with a reader of version 3.00 or later and a
+UHS-I card, up to SDR104's 208 MHz at 1.8 V (ADR 0438). The kernel's log
+names it, as in `High Speed at 50 MHz on a 4-bit bus`.
 
 A CD, DVD or Blu-ray drive, on SATA, IDE or USB, is such a drive too,
 named `cd0` and on, a `rom` under lsblk's `TYPE` (ADR 0431, ADR 0432).

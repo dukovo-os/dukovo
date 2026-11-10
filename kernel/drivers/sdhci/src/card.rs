@@ -4,7 +4,8 @@
 //! What an SD memory card says of itself (the *SD Specifications Part 1,
 //! Physical Layer Simplified Specification*, 5.2 and 5.3): its CID, which
 //! names it, and its CSD, which gives its capacity, as the controller
-//! hands them over in a 136-bit response with the CRC left out.
+//! hands them over in a 136-bit response with the CRC left out; and the
+//! speed it was set to run at ([`Speed`], 4.3.10 and 4.3.11).
 
 /// A 136-bit response (R2) as the controller holds it: bits 8 to 127 of
 /// the register, the first word the lowest.
@@ -93,6 +94,51 @@ impl Csd {
     }
 }
 
+/// The bus speed mode a card runs in: a default and a High Speed one at
+/// 3.3 V, and UHS-I's at 1.8 V (Physical Layer, 4.3.10 and 4.3.11).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Speed {
+    /// Up to 25 MHz: every card's.
+    Default,
+    /// Up to 50 MHz, CMD6's function 1 of group 1, at 3.3 V.
+    High,
+    /// UHS-I's modes, at 1.8 V: up to 25 MHz, a card's first.
+    Sdr12,
+    /// Up to 50 MHz, function 1.
+    Sdr25,
+    /// Up to 100 MHz, function 2, tuned where the controller asks.
+    Sdr50,
+    /// Up to 208 MHz, function 3, always tuned.
+    Sdr104,
+    /// Up to 50 MHz on both edges of the clock, function 4.
+    Ddr50,
+}
+
+impl Speed {
+    /// Its name, as the specifications give it.
+    pub fn name(self) -> &'static str {
+        match self {
+            Speed::Default => "default speed",
+            Speed::High => "High Speed",
+            Speed::Sdr12 => "UHS-I SDR12",
+            Speed::Sdr25 => "UHS-I SDR25",
+            Speed::Sdr50 => "UHS-I SDR50",
+            Speed::Sdr104 => "UHS-I SDR104",
+            Speed::Ddr50 => "UHS-I DDR50",
+        }
+    }
+
+    /// The most its clock runs at, in kHz.
+    pub fn khz(self) -> u32 {
+        match self {
+            Speed::Default | Speed::Sdr12 => 25_000,
+            Speed::High | Speed::Sdr25 | Speed::Ddr50 => 50_000,
+            Speed::Sdr50 => 100_000,
+            Speed::Sdr104 => 208_000,
+        }
+    }
+}
+
 /// A card the driver has set up.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Card {
@@ -105,6 +151,8 @@ pub struct Card {
     pub blocks: u64,
     /// What it says it is.
     pub cid: Cid,
+    /// The bus speed mode it runs in.
+    pub speed: Speed,
     /// The clock it runs at, in kHz.
     pub khz: u32,
     /// Its bus's width in bits: 1 or 4.

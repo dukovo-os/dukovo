@@ -63,7 +63,7 @@ fn make_card(path: &Path, kib: u32, label: &str) -> Result<(), String> {
 /// Waits for the card of `size` labelled `label` to be set up in the slot
 /// and mounted at its label.
 fn went_in(vm: &mut Vm, size: &str, label: &str) -> Result<(), String> {
-    vm.expect(&format!("Disk: {NAME}: an SD card of {size} went in: QEMU!, 13 MHz on a 4-bit bus"))?;
+    vm.expect(&format!("Disk: {NAME}: an SD card of {size} went in: QEMU!, High Speed at 26 MHz on a 4-bit bus"))?;
     vm.expect(&format!("Disk: {NAME} has no partition table; it is used whole"))?;
     vm.expect(&format!("volumed: a medium went in {NAME}"))?;
     vm.expect(&format!("volumed: mounted the FAT filesystem of {NAME} at /volumes/{label}"))

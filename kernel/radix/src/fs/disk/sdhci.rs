@@ -166,6 +166,13 @@ struct Flight {
     /// A read through the bounce buffer, whose bytes go to the request's
     /// buffers, kept in `buffers`, once it is done.
     bounced_read: bool,
+    /// The transfer, to start it again once if it comes back garbled in
+    /// a tuned mode, with `descriptors` as they were.
+    op: SdOp,
+    block: u64,
+    count: u32,
+    /// It was started again.
+    again: bool,
 }
 
 /// A card's slot as the queue drives it.
@@ -287,7 +294,7 @@ impl Controller for SdSlot {
                 _ => Error::Io,
             }
         })?;
-        self.flight = Some(Flight { slot, bounced_read });
+        self.flight = Some(Flight { slot, bounced_read, op, block, count, again: false });
         Ok(())
     }
 
@@ -304,6 +311,15 @@ impl Controller for SdSlot {
             return Some((flight.slot, Outcome::Failed));
         }
         let result = self.slot.poll()?;
+        // A sampling point that drifted: the slot is tuned again as the
+        // transfer starts again, once (ADR 0438), with the card held.
+        if result.is_err() && self.slot.retuning() && !flight.again {
+            let Flight { op, block, count, .. } = flight;
+            if self.slot.start(op, block, count, &self.descriptors, &mut queue::delay).is_ok() {
+                self.flight = Some(Flight { again: true, ..flight });
+                return None;
+            }
+        }
         drop(gone);
         self.flight = None;
         match result {
@@ -780,15 +796,16 @@ impl core::fmt::Display for Described<'_> {
     }
 }
 
-/// What the log says of a card after its kind: its name, its speed and
-/// bus, and its write-protect switch.
-fn details(card: &Card) -> TextBuf<64> {
+/// What the log says of a card after its kind: its name, its bus speed
+/// mode, clock and bus, and its write-protect switch.
+fn details(card: &Card) -> TextBuf<80> {
     let product = card.name();
-    let mut text = TextBuf::<64>::new();
+    let mut text = TextBuf::<80>::new();
     let _ = write!(
         text,
-        "{}, {} MHz on a {}-bit bus{}",
+        "{}, {} at {} MHz on a {}-bit bus{}",
         if product.is_empty() { "unnamed" } else { product },
+        card.speed.name(),
         card.khz / 1000,
         card.width,
         if card.read_only { ", write-protected" } else { "" },

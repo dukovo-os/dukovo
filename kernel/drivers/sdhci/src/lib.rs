@@ -20,7 +20,8 @@
 //! are addressed in blocks), CMD2 for its CID, CMD3 for its address, CMD9
 //! for its CSD and so its capacity ([`card`]), CMD7 to select it, then the
 //! default speed's 25 MHz and the four-bit bus every SD memory card has
-//! (ACMD6). [`Slot::start`] then starts a read or a write of whole
+//! (ACMD6), then the fastest bus speed mode both can (ADR 0438, below).
+//! [`Slot::start`] then starts a read or a write of whole
 //! 512-byte blocks to or from a list of buffers (CMD17, CMD18, CMD24 and
 //! CMD25, the controller sending CMD12 after the multiple ones), and
 //! [`Slot::poll`] says when it is done: the controller's interrupt is
@@ -35,10 +36,25 @@
 //! for a transfer's end, an error, and a card put in or taken out, on a
 //! controller whose interrupt reaches the kernel.
 //!
-//! UHS-I speeds and eMMC are left for later; so are cards of version 1
-//! that are MMC cards, which do not answer ACMD41. The crate is a
-//! compartment with no `unsafe` code; its tests run it against a
-//! simulated controller and card.
+//! Speeds (ADR 0438): a card whose SCR says it takes CMD6 is asked which
+//! functions of group 1, its bus speed modes, it has. At 3.3 V, a card
+//! with High Speed in a slot that has it is switched to it, and runs at
+//! up to 50 MHz. A controller of version 3.00 or later that gives 1.8 V
+//! and one of UHS-I's modes asks the card, in ACMD41, to signal at 1.8 V
+//! (S18R); a card that agrees (S18A) is switched with CMD11 as section
+//! 3.6.1 of the host specification says, and then to the fastest UHS-I
+//! mode both have, SDR104, DDR50, SDR50 or SDR25 in that order, with the
+//! most current the card takes and the slot gives (group 4). SDR104, and
+//! SDR50 where the controller asks, is tuned (CMD19, Execute Tuning); a
+//! mode that does not tune gives way to the next. A voltage switch that
+//! fails powers the card off, and it is set up again at 3.3 V. A data CRC
+//! error in a tuned mode has the slot tuned again before the next
+//! transfer, and one that no longer tunes falls back to SDR25.
+//!
+//! eMMC is left for later; so are cards of version 1 that are MMC cards,
+//! which do not answer ACMD41. The crate is a compartment with no
+//! `unsafe` code; its tests run it against a simulated controller and
+//! card.
 
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
@@ -49,7 +65,7 @@ mod tests;
 
 use radix_hw::{Dma, Mmio, device_barrier};
 
-pub use card::{Card, Cid, Csd};
+pub use card::{Card, Cid, Csd, Speed};
 
 /// The PCI class and subclass of an SD host controller.
 pub const PCI_CLASS: (u8, u8) = (0x08, 0x05);
@@ -79,6 +95,8 @@ pub mod reg {
     pub const COMMAND: usize = 0x0e;
     /// 4 × 32-bit: the card's response.
     pub const RESPONSE: usize = 0x10;
+    /// 32-bit: the data of a transfer without DMA, a word at a time.
+    pub const BUFFER: usize = 0x20;
     /// 32-bit: what is going on.
     pub const PRESENT_STATE: usize = 0x24;
     /// 8-bit: the bus's width and the DMA used.
@@ -103,8 +121,13 @@ pub mod reg {
     pub const NORMAL_SIGNAL_ENABLE: usize = 0x38;
     /// The errors that interrupt.
     pub const ERROR_SIGNAL_ENABLE: usize = 0x3a;
+    /// 16-bit, from version 3.00: the UHS-I mode, 1.8 V signaling and
+    /// tuning.
+    pub const HOST_CONTROL2: usize = 0x3e;
     /// 64-bit: what the controller can do.
     pub const CAPABILITIES: usize = 0x40;
+    /// 64-bit: the most current it gives at each voltage, in 4 mA.
+    pub const MAX_CURRENT: usize = 0x48;
     /// 64-bit: the ADMA descriptors' address.
     pub const ADMA_ADDRESS: usize = 0x58;
     /// 16-bit: the specification's version the controller follows.
@@ -119,12 +142,16 @@ mod present {
     /// The card detect is settled: the slot has debounced it.
     pub const CARD_STABLE: u32 = 1 << 17;
     pub const WRITABLE: u32 = 1 << 19;
+    /// The levels of DAT0 to DAT3: high while the card is idle.
+    pub const DAT_LINES: u32 = 0xf << 20;
 }
 
 /// Normal Interrupt Status's bits.
 mod status {
     pub const COMMAND_COMPLETE: u16 = 1 << 0;
     pub const TRANSFER_COMPLETE: u16 = 1 << 1;
+    /// A block can be read from the Buffer Data Port.
+    pub const BUFFER_READ_READY: u16 = 1 << 5;
     pub const CARD_INSERTION: u16 = 1 << 6;
     pub const CARD_REMOVAL: u16 = 1 << 7;
     pub const ERROR: u16 = 1 << 15;
@@ -136,6 +163,38 @@ mod status {
     pub const ALL_BUT_CARD: u16 = !CARD_EVENTS;
     /// Error Interrupt Status: the command timed out.
     pub const COMMAND_TIMEOUT: u16 = 1 << 0;
+    /// Error Interrupt Status: the data's CRC or end bit was wrong, as a
+    /// sampling point that drifted gives.
+    pub const DATA_GARBLED: u16 = 1 << 5 | 1 << 6;
+}
+
+/// Host Control 1's bits.
+mod host {
+    /// The four-bit bus.
+    pub const WIDTH_4: u8 = 1 << 1;
+    /// High Speed, and every UHS-I mode faster than SDR12.
+    pub const HIGH_SPEED: u8 = 1 << 2;
+}
+
+/// Host Control 2's bits (version 3.00 and later).
+mod host2 {
+    /// The UHS-I mode: 0 SDR12, 1 SDR25, 2 SDR50, 3 SDR104, 4 DDR50.
+    pub const UHS_MODE: u16 = 0x7;
+    pub const SIGNALING_1_8: u16 = 1 << 3;
+    /// Set to tune; the controller clears it when tuning ends.
+    pub const EXECUTE_TUNING: u16 = 1 << 6;
+    /// Set by the controller when tuning found a sampling point.
+    pub const SAMPLING_CLOCK: u16 = 1 << 7;
+}
+
+/// The OCR's bits that ACMD41 asks with and the card answers.
+mod ocr {
+    /// The card is ready.
+    pub const READY: u32 = 1 << 31;
+    /// Asked: the host takes high capacity cards; answered: it is one.
+    pub const HIGH_CAPACITY: u32 = 1 << 30;
+    /// Asked: switch to 1.8 V (S18R); answered: the card will (S18A).
+    pub const SWITCH_1_8: u32 = 1 << 24;
 }
 
 /// The Normal Interrupt Signal Enable's bits while the slot interrupts:
@@ -149,6 +208,7 @@ const ERRORS_SIGNALLED: u16 = 0x03ff;
 /// Capabilities' bits.
 mod caps {
     pub const ADMA2: u64 = 1 << 19;
+    pub const HIGH_SPEED: u64 = 1 << 21;
     pub const VOLTS_3_3: u64 = 1 << 24;
     pub const VOLTS_3_0: u64 = 1 << 25;
     pub const VOLTS_1_8: u64 = 1 << 26;
@@ -156,6 +216,12 @@ mod caps {
     /// Bits 30 and 31: the slot's type, 0 for a removable card's slot, 1
     /// for a device soldered to the board (eMMC), 2 for a shared bus.
     pub const SLOT_TYPE_SHIFT: u32 = 30;
+    /// UHS-I's modes the controller has.
+    pub const SDR50: u64 = 1 << 32;
+    pub const SDR104: u64 = 1 << 33;
+    pub const DDR50: u64 = 1 << 34;
+    /// SDR50 is tuned, as SDR104 always is.
+    pub const TUNE_SDR50: u64 = 1 << 45;
 }
 
 /// The specification's versions, as the Version register says them.
@@ -170,6 +236,10 @@ pub mod version {
 const CARD_ERRORS: u32 = 0xfdf8_0000;
 /// The voltages ACMD41 offers: 2.7 to 3.6 V.
 const VOLTAGES: u32 = 0x00ff_8000;
+/// CMD6's argument that changes no group's function.
+const NO_CHANGE: u32 = 0x00ff_ffff;
+/// The Clock Control register's bit that runs the card's clock.
+const CLOCK_ON: u16 = 1 << 2;
 
 /// How a slot or its card failed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -279,6 +349,11 @@ pub struct Slot {
     flight: Option<Flight>,
     /// A transfer failed: the card is stopped and the lines reset first.
     stuck: bool,
+    /// The card runs in a mode that was tuned.
+    tuned: bool,
+    /// A transfer in that mode came back garbled: the slot is tuned again
+    /// before the next.
+    retune: bool,
 }
 
 /// Whether a card is in a slot, as its card detect says.
@@ -431,7 +506,18 @@ impl Slot {
         regs.write16(reg::NORMAL_SIGNAL_ENABLE, 0);
         regs.write16(reg::ERROR_SIGNAL_ENABLE, 0);
         regs.write8(reg::TIMEOUT_CONTROL, 0x0e);
-        Ok(Slot { regs, version, caps, adma64, table, card: None, flight: None, stuck: false })
+        Ok(Slot {
+            regs,
+            version,
+            caps,
+            adma64,
+            table,
+            card: None,
+            flight: None,
+            stuck: false,
+            tuned: false,
+            retune: false,
+        })
     }
 
     /// The version of the specification it follows: (major, minor).
@@ -474,6 +560,13 @@ impl Slot {
         self.card.as_ref()
     }
 
+    /// The last transfer came back garbled in a tuned mode: the next
+    /// [`Slot::start`] tunes the slot first, and the transfer is worth
+    /// starting again.
+    pub fn retuning(&self) -> bool {
+        self.retune
+    }
+
     /// The base clock, in kHz.
     fn base_khz(&self) -> u32 {
         let mask = if self.version >= version::V3 { 0xff } else { 0x3f };
@@ -507,7 +600,7 @@ impl Slot {
         if !wait(delay, 150_000, || self.regs.read16(reg::CLOCK_CONTROL) & 2 != 0) {
             return Err(Error::Timeout);
         }
-        self.regs.write16(reg::CLOCK_CONTROL, value | 1 | 4);
+        self.regs.write16(reg::CLOCK_CONTROL, value | 1 | CLOCK_ON);
         Ok(actual)
     }
 
@@ -583,12 +676,41 @@ impl Slot {
     }
 
     /// Powers the card up and sets it up (Physical Layer, 4.2), ready for
-    /// [`Slot::start`].
+    /// [`Slot::start`], in the fastest bus speed mode both it and the slot
+    /// have.
     pub fn identify(&mut self, delay: &mut dyn FnMut(u32)) -> Result<Card, Error> {
         if !self.present() {
             return Err(Error::NoCard);
         }
+        let uhs = self.version >= version::V3
+            && self.caps & caps::VOLTS_1_8 != 0
+            && self.caps & (caps::SDR50 | caps::SDR104 | caps::DDR50) != 0;
+        if let Some(card) = self.set_up(uhs, delay)? {
+            return Ok(card);
+        }
+        // The card said it would signal at 1.8 V and did not: powered off,
+        // it is set up again at 3.3 V (Physical Layer, 4.2.4.2).
+        self.power_off(delay);
+        self.set_up(false, delay)?.ok_or(Error::Unsupported("the card would not set up"))
+    }
+
+    /// Turns the card's power and clock off, and its signaling back to
+    /// 3.3 V.
+    fn power_off(&mut self, delay: &mut dyn FnMut(u32)) {
+        self.regs.write16(reg::CLOCK_CONTROL, 0);
+        if self.version >= version::V3 {
+            self.regs.write16(reg::HOST_CONTROL2, 0);
+        }
+        self.regs.write8(reg::POWER_CONTROL, 0);
+        delay(10_000);
+    }
+
+    /// Sets the card up, asking it to signal at 1.8 V with `uhs`; `None`
+    /// if it agreed and then did not.
+    fn set_up(&mut self, uhs: bool, delay: &mut dyn FnMut(u32)) -> Result<Option<Card>, Error> {
         self.card = None;
+        self.tuned = false;
+        self.retune = false;
         // The highest voltage it gives: 3.3, 3.0 or 1.8 V.
         let volts = if self.caps & caps::VOLTS_3_3 != 0 {
             0b111
@@ -599,6 +721,9 @@ impl Slot {
         } else {
             return Err(Error::Unsupported("it says it gives no voltage"));
         };
+        if self.version >= version::V3 {
+            self.regs.write16(reg::HOST_CONTROL2, 0);
+        }
         self.regs.write8(reg::POWER_CONTROL, volts << 1);
         self.regs.write8(reg::POWER_CONTROL, volts << 1 | 1);
         delay(10_000);
@@ -615,25 +740,31 @@ impl Slot {
             Err(Error::Command(_) | Error::Timeout) => false,
             Err(err) => return Err(err),
         };
-        let asked = VOLTAGES | if version2 { 1 << 30 } else { 0 };
-        let mut ocr = 0;
+        let asked = VOLTAGES
+            | if version2 { ocr::HIGH_CAPACITY } else { 0 }
+            | if version2 && uhs { ocr::SWITCH_1_8 } else { 0 };
+        let mut answer = 0;
         for _ in 0..100 {
-            ocr = match self.app_command(0, 41, asked, Response::R3, delay) {
+            answer = match self.app_command(0, 41, asked, Response::R3, delay) {
                 Ok(long) => long[0],
                 Err(Error::Command(_) | Error::Timeout) => {
                     return Err(Error::Unsupported("it is an MMC card, which is not driven yet"));
                 }
                 Err(err) => return Err(err),
             };
-            if ocr & 1 << 31 != 0 {
+            if answer & ocr::READY != 0 {
                 break;
             }
             delay(10_000);
         }
-        if ocr & 1 << 31 == 0 {
+        if answer & ocr::READY == 0 {
             return Err(Error::Timeout);
         }
-        let high_capacity = version2 && ocr & 1 << 30 != 0;
+        let high_capacity = version2 && answer & ocr::HIGH_CAPACITY != 0;
+        let low_voltage = asked & answer & ocr::SWITCH_1_8 != 0;
+        if low_voltage && !self.switch_voltage(delay)? {
+            return Ok(None);
+        }
         let cid = Cid::parse(&self.command(2, 0, Response::R2, delay)?);
         let rca = (self.command(3, 0, Response::R1, delay)?[0] >> 16) as u16;
         let csd = self.command(9, u32::from(rca) << 16, Response::R2, delay)?;
@@ -643,17 +774,289 @@ impl Slot {
             Csd::Unknown => return Err(Error::Unsupported("its CSD is of an unknown version")),
         };
         self.command(7, u32::from(rca) << 16, Response::R1b, delay)?;
-        let khz = self.set_clock(25_000, delay)?;
+        let khz = self.set_clock(Speed::Default.khz(), delay)?;
         // Every SD memory card has a four-bit bus.
         self.app_command(rca, 6, 2, Response::R1, delay)?;
-        self.regs.write8(reg::HOST_CONTROL, 1 << 1);
+        self.regs.write8(reg::HOST_CONTROL, host::WIDTH_4);
         if !high_capacity {
             self.command(16, BLOCK, Response::R1, delay)?;
         }
+        let slowest = if low_voltage { Speed::Sdr12 } else { Speed::Default };
+        let (speed, khz) = self.speed_up(rca, low_voltage, delay)?.unwrap_or((slowest, khz));
         let read_only = self.regs.read32(reg::PRESENT_STATE) & present::WRITABLE == 0;
-        let card = Card { rca, high_capacity, blocks, cid, khz, width: 4, read_only };
+        let card = Card { rca, high_capacity, blocks, cid, speed, khz, width: 4, read_only };
         self.card = Some(card);
-        Ok(card)
+        Ok(Some(card))
+    }
+
+    /// Switches the card's signaling to 1.8 V after it agreed to
+    /// (Host Controller, 3.6.1): CMD11, the clock stopped while the card
+    /// holds DAT0 to DAT3 low, 1.8 V, the clock again, and the card lets
+    /// them go high. False if a step did not happen.
+    fn switch_voltage(&mut self, delay: &mut dyn FnMut(u32)) -> Result<bool, Error> {
+        match self.command(11, 0, Response::R1, delay) {
+            Ok(_) => {}
+            Err(Error::Command(_) | Error::Timeout | Error::Card(_)) => return Ok(false),
+            Err(err) => return Err(err),
+        }
+        let regs = &self.regs;
+        let clock = regs.read16(reg::CLOCK_CONTROL);
+        regs.write16(reg::CLOCK_CONTROL, clock & !CLOCK_ON);
+        if regs.read32(reg::PRESENT_STATE) & present::DAT_LINES != 0 {
+            return Ok(false);
+        }
+        regs.write16(reg::HOST_CONTROL2, regs.read16(reg::HOST_CONTROL2) | host2::SIGNALING_1_8);
+        delay(5_000);
+        // The controller clears it again if its regulator did not switch.
+        if regs.read16(reg::HOST_CONTROL2) & host2::SIGNALING_1_8 == 0 {
+            return Ok(false);
+        }
+        regs.write16(reg::CLOCK_CONTROL, clock | CLOCK_ON);
+        delay(1_000);
+        Ok(regs.read32(reg::PRESENT_STATE) & present::DAT_LINES == present::DAT_LINES)
+    }
+
+    /// Switches the card at `rca`, on the four-bit bus at the default
+    /// speed (or SDR12 with `low_voltage`), to the fastest mode it and the
+    /// slot both have: the mode and the clock it runs at, or `None` to
+    /// stay.
+    fn speed_up(
+        &mut self,
+        rca: u16,
+        low_voltage: bool,
+        delay: &mut dyn FnMut(u32),
+    ) -> Result<Option<(Speed, u32)>, Error> {
+        // The SCR's SD_SPEC: a card of version 1.0x has no CMD6.
+        let mut scr = [0u8; 8];
+        self.read_block(Some(rca), 51, 0, &mut scr, delay)?;
+        if scr[0] & 0xf == 0 {
+            return Ok(None);
+        }
+        // CMD6's check mode, changing nothing: the functions it has.
+        let mut functions = [0u8; 64];
+        self.read_block(None, 6, NO_CHANGE, &mut functions, delay)?;
+        let modes = u16::from_be_bytes([functions[12], functions[13]]);
+        if !low_voltage {
+            if self.caps & caps::HIGH_SPEED == 0 || modes & 1 << 1 == 0 {
+                return Ok(None);
+            }
+            if !self.switch(1, None, delay)? {
+                return Ok(None);
+            }
+            let control = self.regs.read8(reg::HOST_CONTROL);
+            self.regs.write8(reg::HOST_CONTROL, control | host::HIGH_SPEED);
+            let khz = self.set_clock(Speed::High.khz(), delay)?;
+            return Ok(Some((Speed::High, khz)));
+        }
+        let currents = u16::from_be_bytes([functions[6], functions[7]]);
+        let limit = self.current_limit(currents);
+        for (speed, function, needs) in [
+            (Speed::Sdr104, 3, caps::SDR104),
+            (Speed::Ddr50, 4, caps::DDR50),
+            (Speed::Sdr50, 2, caps::SDR50),
+            (Speed::Sdr25, 1, 0),
+        ] {
+            if modes & 1 << function == 0 || self.caps & needs != needs {
+                continue;
+            }
+            if let Some(khz) = self.switch_uhs(speed, function, limit, delay)? {
+                return Ok(Some((speed, khz)));
+            }
+        }
+        Ok(None)
+    }
+
+    /// The current limit (group 4) to ask for: the most of 400, 600 and
+    /// 800 mA that the card takes and the slot gives at 3.3 V, or `None`
+    /// to leave the card's 200 mA.
+    fn current_limit(&self, card: u16) -> Option<u8> {
+        let slot_ma = (self.regs.read32(reg::MAX_CURRENT) & 0xff) * 4;
+        [(3, 800), (2, 600), (1, 400)]
+            .into_iter()
+            .find(|&(function, ma)| card & 1 << function != 0 && slot_ma >= ma)
+            .map(|(function, _)| function)
+    }
+
+    /// CMD6 in switch mode: function `function` of group 1, and `limit`
+    /// of group 4 if given. True if the card switched to it.
+    fn switch(
+        &mut self,
+        function: u8,
+        limit: Option<u8>,
+        delay: &mut dyn FnMut(u32),
+    ) -> Result<bool, Error> {
+        let mut argument = 1 << 31 | NO_CHANGE & !0xf | u32::from(function);
+        if let Some(limit) = limit {
+            argument = argument & !0xf000 | u32::from(limit) << 12;
+        }
+        let mut result = [0u8; 64];
+        self.read_block(None, 6, argument, &mut result, delay)?;
+        // Group 1's function, as switched to: bits 379 to 376.
+        Ok(result[16] & 0xf == function)
+    }
+
+    /// Switches the card to UHS-I mode `speed`, its function `function`
+    /// with current limit `limit`, and the slot with it, tuning where it
+    /// must: the clock it runs at, or `None` if it did not take or tune,
+    /// the slot set back to SDR12.
+    fn switch_uhs(
+        &mut self,
+        speed: Speed,
+        function: u8,
+        limit: Option<u8>,
+        delay: &mut dyn FnMut(u32),
+    ) -> Result<Option<u32>, Error> {
+        let limit = if matches!(speed, Speed::Sdr25) { None } else { limit };
+        if !self.switch(function, limit, delay)? {
+            return Ok(None);
+        }
+        let khz = self.uhs_mode(speed, delay)?;
+        let tunes =
+            speed == Speed::Sdr104 || (speed == Speed::Sdr50 && self.caps & caps::TUNE_SDR50 != 0);
+        if tunes && !self.tune(delay) {
+            self.uhs_mode(Speed::Sdr12, delay)?;
+            return Ok(None);
+        }
+        self.tuned = tunes;
+        Ok(Some(khz))
+    }
+
+    /// Sets the slot to UHS-I mode `speed`, with its clock stopped while
+    /// the mode changes: the clock it runs at.
+    fn uhs_mode(&mut self, speed: Speed, delay: &mut dyn FnMut(u32)) -> Result<u32, Error> {
+        let mode = match speed {
+            Speed::Sdr25 => 1,
+            Speed::Sdr50 => 2,
+            Speed::Sdr104 => 3,
+            Speed::Ddr50 => 4,
+            Speed::Default | Speed::High | Speed::Sdr12 => 0,
+        };
+        let regs = &self.regs;
+        regs.write16(reg::CLOCK_CONTROL, regs.read16(reg::CLOCK_CONTROL) & !CLOCK_ON);
+        let control2 = regs.read16(reg::HOST_CONTROL2) & !host2::UHS_MODE;
+        regs.write16(reg::HOST_CONTROL2, control2 | mode);
+        let control = regs.read8(reg::HOST_CONTROL) & !host::HIGH_SPEED;
+        let fast = if mode == 0 { 0 } else { host::HIGH_SPEED };
+        regs.write8(reg::HOST_CONTROL, control | fast);
+        self.set_clock(speed.khz(), delay)
+    }
+
+    /// Tunes the slot's sampling point for the mode it runs in (Host
+    /// Controller, 2.2.26): CMD19's blocks, 40 at most, until the
+    /// controller says it is done. True if it found one.
+    fn tune(&mut self, delay: &mut dyn FnMut(u32)) -> bool {
+        let regs = &self.regs;
+        let control2 = regs.read16(reg::HOST_CONTROL2) & !host2::SAMPLING_CLOCK;
+        regs.write16(reg::HOST_CONTROL2, control2 | host2::EXECUTE_TUNING);
+        let busy = present::COMMAND_INHIBIT | present::DATA_INHIBIT;
+        for _ in 0..40 {
+            if !wait(delay, 10_000, || regs.read32(reg::PRESENT_STATE) & busy == 0) {
+                break;
+            }
+            regs.write16(reg::NORMAL_STATUS, status::ALL_BUT_CARD);
+            regs.write16(reg::ERROR_STATUS, 0xffff);
+            regs.write16(reg::BLOCK_SIZE, 64);
+            regs.write16(reg::BLOCK_COUNT, 1);
+            regs.write32(reg::ARGUMENT, 0);
+            regs.write16(reg::TRANSFER_MODE, mode::READ);
+            regs.write16(reg::COMMAND, 19 << 8 | Response::R1.flags() | DATA_PRESENT);
+            let done = status::BUFFER_READ_READY | status::ERROR;
+            let came = wait(delay, 10_000, || regs.read16(reg::NORMAL_STATUS) & done != 0);
+            regs.write16(reg::NORMAL_STATUS, status::ALL_BUT_CARD);
+            regs.write16(reg::ERROR_STATUS, 0xffff);
+            if !came {
+                self.reset_lines(true, delay);
+            }
+            if regs.read16(reg::HOST_CONTROL2) & host2::EXECUTE_TUNING == 0 {
+                break;
+            }
+        }
+        let control2 = regs.read16(reg::HOST_CONTROL2);
+        if control2 & host2::EXECUTE_TUNING == 0 && control2 & host2::SAMPLING_CLOCK != 0 {
+            return true;
+        }
+        let untuned = control2 & !(host2::EXECUTE_TUNING | host2::SAMPLING_CLOCK);
+        regs.write16(reg::HOST_CONTROL2, untuned);
+        self.reset_lines(true, delay);
+        false
+    }
+
+    /// Tunes the slot again after a transfer came back garbled; a card
+    /// whose mode no longer tunes falls back to SDR25, which is not tuned.
+    fn retune(&mut self, delay: &mut dyn FnMut(u32)) -> Result<(), Error> {
+        self.retune = false;
+        if self.tune(delay) {
+            return Ok(());
+        }
+        self.tuned = false;
+        let khz = self.uhs_mode(Speed::Sdr12, delay)?;
+        let speed = match self.switch_uhs(Speed::Sdr25, 1, None, delay)? {
+            Some(khz) => (Speed::Sdr25, khz),
+            None => (Speed::Sdr12, khz),
+        };
+        if let Some(card) = &mut self.card {
+            (card.speed, card.khz) = speed;
+        }
+        Ok(())
+    }
+
+    /// Reads `out`, one block of at most 512 bytes, a multiple of four,
+    /// from the card with command `index` (an ACMD if `app` gives the
+    /// card's address), through the Buffer Data Port: the SCR and CMD6's
+    /// status, which are too small to be worth a descriptor.
+    fn read_block(
+        &mut self,
+        app: Option<u16>,
+        index: u8,
+        argument: u32,
+        out: &mut [u8],
+        delay: &mut dyn FnMut(u32),
+    ) -> Result<(), Error> {
+        if let Some(rca) = app {
+            self.command(55, u32::from(rca) << 16, Response::R1, delay)?;
+        }
+        let regs = &self.regs;
+        let busy = present::COMMAND_INHIBIT | present::DATA_INHIBIT;
+        if !wait(delay, 10_000, || regs.read32(reg::PRESENT_STATE) & busy == 0) {
+            return Err(Error::Timeout);
+        }
+        regs.write16(reg::NORMAL_STATUS, status::ALL_BUT_CARD);
+        regs.write16(reg::ERROR_STATUS, 0xffff);
+        regs.write16(reg::BLOCK_SIZE, out.len() as u16);
+        regs.write16(reg::BLOCK_COUNT, 1);
+        regs.write32(reg::ARGUMENT, argument);
+        regs.write16(reg::TRANSFER_MODE, mode::READ);
+        regs.write16(reg::COMMAND, u16::from(index) << 8 | Response::R1.flags() | DATA_PRESENT);
+        let done = status::BUFFER_READ_READY | status::ERROR;
+        if !wait(delay, 1_000_000, || regs.read16(reg::NORMAL_STATUS) & done != 0) {
+            self.reset_lines(true, delay);
+            return Err(Error::Timeout);
+        }
+        if regs.read16(reg::NORMAL_STATUS) & status::ERROR != 0 {
+            let error = regs.read16(reg::ERROR_STATUS);
+            regs.write16(reg::ERROR_STATUS, 0xffff);
+            regs.write16(reg::NORMAL_STATUS, status::ALL_BUT_CARD);
+            self.reset_lines(true, delay);
+            return Err(Error::Command(error));
+        }
+        regs.write16(reg::NORMAL_STATUS, status::BUFFER_READ_READY);
+        let (words, _) = out.as_chunks_mut::<4>();
+        for word in words {
+            *word = regs.read32(reg::BUFFER).to_le_bytes();
+        }
+        let done = status::TRANSFER_COMPLETE | status::ERROR;
+        let ended = wait(delay, 1_000_000, || regs.read16(reg::NORMAL_STATUS) & done != 0);
+        regs.write16(reg::NORMAL_STATUS, status::ALL_BUT_CARD);
+        regs.write16(reg::ERROR_STATUS, 0xffff);
+        let card_status = regs.read32(reg::RESPONSE);
+        if !ended {
+            self.reset_lines(true, delay);
+            return Err(Error::Timeout);
+        }
+        if card_status & CARD_ERRORS != 0 {
+            return Err(Error::Card(card_status));
+        }
+        Ok(())
     }
 
     /// Starts `op` on `count` blocks from block `block`, to or from
@@ -695,6 +1098,9 @@ impl Slot {
             self.reset_lines(true, delay);
             let _ = self.command(12, 0, Response::R1b, delay);
             self.stuck = false;
+        }
+        if self.retune {
+            self.retune(delay)?;
         }
         // The descriptors: Valid and Act=Tran, End on the last.
         let size = if self.adma64 { 12 } else { 8 };
@@ -769,6 +1175,7 @@ impl Slot {
             regs.write16(reg::NORMAL_STATUS, status::ALL_BUT_CARD);
             self.flight = None;
             self.stuck = true;
+            self.retune = self.tuned && error & status::DATA_GARBLED != 0;
             return Some(Err(Error::Command(error)));
         }
         let mut status = status;
