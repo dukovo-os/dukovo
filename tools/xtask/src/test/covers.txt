@@ -384,6 +384,7 @@ posix userspace/programs/systools/src/tree.rs userspace/programs/systools/src/wa
 posix userspace/programs/systools/src/watchdog.rs userspace/programs/systools/src/xxd.rs
 power-button kernel/lib/acpi/ kernel/lib/uacpi/ userspace/programs/systools/src/power.rs
 principals userspace/posix/names.h userspace/posix/principals.c
+quiet-boot kernel/lib/fbcon/ kernel/radix/src/console.rs kernel/radix/src/fs/keyboard.rs
 rcu kernel/lib/sync/
 rdisk userspace/programs/disk/ userspace/programs/systools/src/mkfs.rs
 rdisk userspace/programs/systools/src/rdisk.rs userspace/programs/systools/src/swap.rs

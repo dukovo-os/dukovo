@@ -26,11 +26,11 @@ turned on, in five formats:
 
 | File | For |
 | --- | --- |
-| `out/dukovo-0.13.0-x86_64-cloud.img` | raw: AWS, and any cloud that takes a raw disk |
-| `out/dukovo-0.13.0-x86_64-cloud.qcow2` | KVM, Proxmox, OpenStack and DigitalOcean |
-| `out/dukovo-0.13.0-x86_64-cloud.vmdk` | VMware and VirtualBox |
-| `out/dukovo-0.13.0-x86_64-cloud.vhdx` | Hyper-V |
-| `out/dukovo-0.13.0-x86_64-cloud.vhd` | Azure: a fixed VHD, as large as the disk |
+| `out/dukovo-0.14.0-x86_64-cloud.img` | raw: AWS, and any cloud that takes a raw disk |
+| `out/dukovo-0.14.0-x86_64-cloud.qcow2` | KVM, Proxmox, OpenStack and DigitalOcean |
+| `out/dukovo-0.14.0-x86_64-cloud.vmdk` | VMware and VirtualBox |
+| `out/dukovo-0.14.0-x86_64-cloud.vhdx` | Hyper-V |
+| `out/dukovo-0.14.0-x86_64-cloud.vhd` | Azure: a fixed VHD, as large as the disk |
 
 The four last are written by the build machine's `qemu-img` (the
 `qemu-utils` package on Debian and Ubuntu, `qemu-img` on Fedora), which
@@ -138,7 +138,7 @@ EOF
 $ mkfs.fat -C -n CIDATA cidata.img 2048
 $ mcopy -i cidata.img meta-data user-data ::
 $ qemu-system-x86_64 -machine q35 -m 2G -enable-kvm \
-    -drive file=dukovo-0.13.0-x86_64-cloud.qcow2,if=virtio \
+    -drive file=dukovo-0.14.0-x86_64-cloud.qcow2,if=virtio \
     -drive file=cidata.img,format=raw,if=virtio \
     -nic user,model=virtio-net-pci,hostfwd=tcp::2222-:22
 ```
@@ -163,10 +163,10 @@ AWS imports the raw `.img` as a snapshot, from an S3 bucket, then
 registers it as an AMI that boots by UEFI:
 
 ```
-$ aws s3 cp out/dukovo-0.13.0-x86_64-cloud.img s3://my-bucket/
+$ aws s3 cp out/dukovo-0.14.0-x86_64-cloud.img s3://my-bucket/
 $ aws ec2 import-snapshot --disk-container \
-    'Format=RAW,UserBucket={S3Bucket=my-bucket,S3Key=dukovo-0.13.0-x86_64-cloud.img}'
-$ aws ec2 register-image --name dukovo-0.13.0 --architecture x86_64 \
+    'Format=RAW,UserBucket={S3Bucket=my-bucket,S3Key=dukovo-0.14.0-x86_64-cloud.img}'
+$ aws ec2 register-image --name dukovo-0.14.0 --architecture x86_64 \
     --boot-mode uefi --ena-support --virtualization-type hvm \
     --root-device-name /dev/xvda \
     --block-device-mappings 'DeviceName=/dev/xvda,Ebs={SnapshotId=snap-...}'
@@ -221,7 +221,7 @@ signed for Secure Boot before 1.0:
 
 ```
 PS> New-VM -Name dukovo -Generation 2 -MemoryStartupBytes 4GB `
-      -VHDPath .\dukovo-0.13.0-x86_64-cloud.vhdx -SwitchName "Default Switch"
+      -VHDPath .\dukovo-0.14.0-x86_64-cloud.vhdx -SwitchName "Default Switch"
 PS> Set-VMFirmware dukovo -EnableSecureBoot Off
 PS> Start-VM dukovo
 ```
@@ -246,11 +246,11 @@ shows:
 ```
 $ az storage blob upload --type page --account-name mystorage \
     --container-name images --name dukovo.vhd \
-    --file out/dukovo-0.13.0-x86_64-cloud.vhd
-$ az image create --resource-group mygroup --name dukovo-0.13.0 \
+    --file out/dukovo-0.14.0-x86_64-cloud.vhd
+$ az image create --resource-group mygroup --name dukovo-0.14.0 \
     --os-type Linux --hyper-v-generation V2 \
     --source https://mystorage.blob.core.windows.net/images/dukovo.vhd
-$ az vm create --resource-group mygroup --name web01 --image dukovo-0.13.0 \
+$ az vm create --resource-group mygroup --name web01 --image dukovo-0.14.0 \
     --security-type Standard --admin-username azureuser \
     --ssh-key-values ~/.ssh/id_ed25519.pub --user-data cloud.yaml
 ```

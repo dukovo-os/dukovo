@@ -41,6 +41,11 @@ pub const FLAGS: &[Flag] = &[
         value: Some("seconds"),
         summary: "restart this many seconds after a panic instead of waiting for a key",
     },
+    Flag {
+        name: "quiet",
+        value: None,
+        summary: "show the startup screen in place of the log until the console starts; Esc shows the log",
+    },
     Flag { name: "nosmp", value: None, summary: "start only the boot CPU" },
     Flag {
         name: "nokaslr",

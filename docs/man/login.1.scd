@@ -53,7 +53,7 @@ it signs the owner in. Only the first account is made this way; the
 owner makes the others with *user add*.
 
 ```
-Dukovo Server 0.13.0 (tty1)
+Dukovo Server 0.14.0 (tty1)
 
 Welcome to Dukovo. This computer has no account yet: make yours, the owner's,
 which administers it. Nothing but a name and a password is needed, and the
@@ -71,6 +71,7 @@ $
 # STARTUP TROUBLE
 
 For an administrator's lost password, the boot menu's second entry,
+which Shift held as the computer starts shows (ADR 0426),
 *Dukovo Server* _version_*: startup trouble*, starts the computer with
 the kernel flag *startup-trouble* (*dukovo-boot*(7)), as Ubuntu's
 recovery mode does. login then shows its menu before each sign-in

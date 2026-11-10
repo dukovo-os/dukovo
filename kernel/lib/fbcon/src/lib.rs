@@ -378,6 +378,121 @@ impl Console {
     }
 }
 
+// The startup screen's colours (ADR 0426), the installer's: slate behind,
+// cream for the name, sand for the bar on a darker track, and grey for
+// the hint.
+
+/// The startup screen's background, which the boot tests look for.
+pub const SPLASH_BACKGROUND: (u8, u8, u8) = (0x15, 0x18, 0x1c);
+const SPLASH_TITLE: Rgb = (0xd9, 0xd4, 0xca);
+/// The startup screen's bar, which the boot tests measure.
+pub const SPLASH_BAR: (u8, u8, u8) = (0xe9, 0xc4, 0x8b);
+const SPLASH_TRACK: Rgb = (0x2c, 0x31, 0x38);
+const SPLASH_HINT: Rgb = (0x7c, 0x88, 0x96);
+
+/// How much of the screen's width the name and the bar take, in
+/// eighths: about a third.
+const SPLASH_EIGHTHS: usize = 3;
+/// The largest the name's letters are drawn, in times the font's size.
+const SPLASH_MAX_SCALE: usize = 6;
+
+/// A rectangle of the screen: x, y, width and height in pixels.
+type Rect = (usize, usize, usize, usize);
+
+impl Console {
+    /// Draws the startup screen of a quiet boot (ADR 0426) over the whole
+    /// framebuffer: `title` in large letters a little above the middle,
+    /// the progress bar under it at `per_mille` of 1000, and `hint` small
+    /// near the bottom. The grid keeps its text, unseen until
+    /// [`Console::repaint`].
+    pub fn draw_splash(&mut self, title: &str, hint: &str, per_mille: u32) {
+        let background = self.encode(SPLASH_BACKGROUND);
+        let (width, height) = self.screen_size();
+        self.fill_rect((0, 0, width, height), background);
+        let (font_width, font_height) = (self.font.width, self.font.height);
+        let letters = title.chars().count().max(1);
+        let scale = (width * SPLASH_EIGHTHS / 8 / (letters * font_width))
+            .clamp(1, SPLASH_MAX_SCALE)
+            .min((height / 4 / font_height).max(1));
+        let title_width = letters * font_width * scale;
+        let title_y = (height * 2 / 5).saturating_sub(font_height * scale / 2);
+        let title_color = self.encode(SPLASH_TITLE);
+        self.draw_text((width.saturating_sub(title_width) / 2, title_y), title, scale, title_color);
+        let hint_width = hint.chars().count() * font_width;
+        let hint_y = height.saturating_sub(font_height * 3);
+        let hint_color = self.encode(SPLASH_HINT);
+        self.draw_text((width.saturating_sub(hint_width) / 2, hint_y), hint, 1, hint_color);
+        self.draw_progress(per_mille);
+    }
+
+    /// Draws the startup screen's bar at `per_mille` of 1000.
+    pub fn draw_progress(&mut self, per_mille: u32) {
+        let (x, y, width, height) = self.splash_bar();
+        let filled = width * per_mille.min(1000) as usize / 1000;
+        let (bar, track) = (self.encode(SPLASH_BAR), self.encode(SPLASH_TRACK));
+        self.fill_rect((x, y, filled, height), bar);
+        self.fill_rect((x + filled, y, width - filled, height), track);
+    }
+
+    /// Where the startup screen's bar is: centred a line below the name,
+    /// whose letters are at most a quarter of the screen high, a third of
+    /// the screen wide and a third of a line high.
+    fn splash_bar(&self) -> Rect {
+        let (width, height) = self.screen_size();
+        let bar_width = (width * SPLASH_EIGHTHS / 8).max(self.font.width * 10).min(width);
+        let bar_height = (self.font.height / 3).max(4);
+        let y = height * 2 / 5 + height / 8 + self.font.height;
+        ((width - bar_width) / 2, y.min(height.saturating_sub(bar_height)), bar_width, bar_height)
+    }
+
+    /// The screen's width and the height its memory holds, in pixels.
+    fn screen_size(&self) -> (usize, usize) {
+        (self.fb.width, self.fb.height.min(self.fb.memory.len() / self.fb.pitch.max(1)))
+    }
+
+    /// The pixel value of `rgb` in the framebuffer's format.
+    fn encode(&self, (r, g, b): Rgb) -> u32 {
+        self.fb.format.encode(r, g, b)
+    }
+
+    /// Paints `rect` in `color`, clipped to the screen.
+    fn fill_rect(&mut self, (x, y, width, height): Rect, color: u32) {
+        let bpp = usize::from(self.fb.format.bytes_per_pixel);
+        let color = color.to_le_bytes();
+        let (screen_width, screen_height) = self.screen_size();
+        let right = (x + width).min(screen_width);
+        for row in y..(y + height).min(screen_height) {
+            let start = row * self.fb.pitch;
+            let Some(line) = self.fb.memory.get_mut(start + x * bpp..start + right.max(x) * bpp)
+            else {
+                continue;
+            };
+            for pixel in line.chunks_exact_mut(bpp) {
+                pixel.copy_from_slice(&color[..bpp]);
+            }
+        }
+    }
+
+    /// Draws `text` with its top-left corner at `at`, each pixel of the
+    /// font as a square of `scale` pixels, in `color` on what is there.
+    fn draw_text(&mut self, at: (usize, usize), text: &str, scale: usize, color: u32) {
+        let (font_width, font_height) = (self.font.width, self.font.height);
+        for (index, c) in text.chars().enumerate() {
+            let glyph = self.font.glyph(c);
+            let left = at.0 + index * font_width * scale;
+            for gy in 0..font_height {
+                let bits = glyph.row_bits(gy);
+                for gx in 0..font_width {
+                    if bits & (1 << (font_width - 1 - gx)) != 0 {
+                        let square = (left + gx * scale, at.1 + gy * scale, scale, scale);
+                        self.fill_rect(square, color);
+                    }
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -581,6 +696,44 @@ mod tests {
         assert_eq!(console.cells_drawn(), drawn + 64, "every cell again");
         assert_ne!(pixel(&console, 0, 0) & 0xff, 0x77);
         assert_eq!(pixel(&console, 127, 63), 0);
+    }
+
+    #[test]
+    fn the_startup_screen_hides_the_text_and_fills_its_bar() {
+        let mut console = console(640, 480);
+        console.write("a line of the log", Style::Plain);
+        console.flush();
+        console.draw_splash("Dukovo", "Esc shows the messages", 250);
+        let slate = PixelFormat::XRGB8888.encode(0x15, 0x18, 0x1c);
+        let (sand, track) = (
+            PixelFormat::XRGB8888.encode(0xe9, 0xc4, 0x8b),
+            PixelFormat::XRGB8888.encode(0x2c, 0x31, 0x38),
+        );
+        assert_eq!(pixel(&console, 0, 0), slate, "the log is hidden");
+        assert_eq!(pixel(&console, 639, 479), slate);
+        let (x, y, width, height) = console.splash_bar();
+        assert_eq!((width, height), (240, 5));
+        assert_eq!(pixel(&console, x, y), sand);
+        assert_eq!(pixel(&console, x + width / 4 - 1, y + height - 1), sand);
+        assert_eq!(pixel(&console, x + width / 4, y), track);
+        assert_eq!(pixel(&console, x + width - 1, y), track);
+        // The name, in cream, somewhere above the bar.
+        let cream = PixelFormat::XRGB8888.encode(0xd9, 0xd4, 0xca);
+        assert!((0..y).any(|row| (0..640).any(|col| pixel(&console, col, row) == cream)));
+        console.draw_progress(1000);
+        assert_eq!(pixel(&console, x + width - 1, y), sand);
+        // The grid kept the log, which a repaint shows again.
+        assert_eq!(text(&console, 0), "a line of the log");
+        console.repaint();
+        assert_eq!(pixel(&console, 0, 0) & 0xff_ffff, 0);
+    }
+
+    #[test]
+    fn the_startup_screen_fits_a_small_screen() {
+        let mut console = console(16 * 8, 4 * 16);
+        console.draw_splash("Dukovo", "Esc shows the messages", 1000);
+        let (x, y, width, height) = console.splash_bar();
+        assert!(x + width <= 128 && y + height <= 64);
     }
 
     #[test]

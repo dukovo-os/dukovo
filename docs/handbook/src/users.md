@@ -26,7 +26,7 @@ means they may run a command as root with `elevate` (see below).
 Each console, Alt+F1 to Alt+F6, asks for a name and a password:
 
 ```
-Dukovo Server 0.13.0 (tty1)
+Dukovo Server 0.14.0 (tty1)
 
 Name: alice
 Password:
@@ -228,7 +228,7 @@ commands, with their options:
 $ last
 bob      pts/1                         Sat Oct 31 12:46   still logged in
 bob      pts/1                         Sat Oct 31 12:41 - 12:45  (00:04)
-reboot   system boot  0.13.0           Sat Oct 31 12:39   still running
+reboot   system boot  0.14.0           Sat Oct 31 12:39   still running
 
 sign-in records begin Sat Oct 31 12:39:01 2026
 ```
@@ -285,10 +285,10 @@ without your old password empties the keyring unless it is open
 
 ## A lost administrator's password
 
-If you lose the password of the only administrator, choose **Dukovo
-Server: startup trouble** in the boot menu, which shows for three
-seconds when the computer starts. The sign-in then first shows the
-startup-trouble menu:
+If you lose the password of the only administrator, hold Shift as the
+computer starts, to show the boot menu, and choose **Dukovo Server:
+startup trouble**. The sign-in then first shows the startup-trouble
+menu:
 
 ```
   1  Reset an administrator's password

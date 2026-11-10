@@ -96,6 +96,9 @@ pub const MODULES: &[&str] = &[
     // The install stick's tune before its menu, for Install with speech
     // (ADR 0324).
     "play",
+    // Shift held as an installed system starts shows its hidden menu
+    // (ADR 0426).
+    "keystatus",
 ];
 
 /// The modules a PC's BIOS needs more: its disks, VESA's video, and the

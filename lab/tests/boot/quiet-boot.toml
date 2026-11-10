@@ -1,0 +1,19 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "An installed system starts quietly (ADR 0426): GRUB's menu stays hidden, the screen shows Dukovo's name and a filling bar in place of the kernel's log, and the sign-in follows, with the whole log kept. At a machine with a screen, check by hand: no menu shows; holding Shift as the machine starts shows the menu, as do Esc and F4 in the second after the firmware's logo; Esc on the startup screen shows the log; the startup trouble entry starts with the log showing; with Windows on the machine the menu shows each time"
+time = "5m"
+fresh = true
+
+# The boot this test starts with: the menu's Dukovo entry gave the
+# kernel `quiet`, and the serial port had the whole log all the same.
+[[step]]
+serial = "panic=10 quiet"
+[[step]]
+serial = "Boot complete."
+# The log the screen did not show is kept whole, the console service's
+# lines included.
+[[step]]
+run = "dmesg"
+root = true
+expect = ["Framebuffer: console of", "Boot complete.", "tty1 is shown"]

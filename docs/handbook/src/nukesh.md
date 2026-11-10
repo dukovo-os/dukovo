@@ -24,7 +24,7 @@ started `ob` from shows the kernel's log on the serial port. The console
 shows `/etc/issue` and a prompt:
 
 ```text
-Dukovo Server 0.13.0 (tty1)
+Dukovo Server 0.14.0 (tty1)
 
 #
 ```

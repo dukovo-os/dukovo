@@ -62,7 +62,8 @@ impl Image {
         Ok(Image { width, height, pixels })
     }
 
-    fn pixel(&self, x: usize, y: usize) -> [u8; 3] {
+    /// The pixel at (`x`, `y`), as RGB.
+    pub fn pixel(&self, x: usize, y: usize) -> [u8; 3] {
         self.pixels[y * self.width + x]
     }
 }

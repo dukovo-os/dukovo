@@ -101,6 +101,18 @@ archive in memory for the machine's whole life, as it does any archive,
 so an installed system keeps under a MiB where a USB stick keeps the
 whole system.
 
+An installed system starts quietly (ADR 0426). GRUB's menu stays hidden
+for a second, in which Esc or F4 shows it, and shows at once, for
+*boot.timeout* seconds, when Shift is held as the computer starts; on a
+computer with Windows it always shows. A *boot.timeout* of 0 starts
+Dukovo at once. The menu's Dukovo entry gives the
+kernel *quiet*, so the screen shows Dukovo's name and a bar that fills
+as the kernel and then Spark's services start, until the console
+service takes it over with the sign-in. The log is kept all the same:
+Esc shows it, as does an error, or the boot going on for a minute
+without the console service starting; the serial port and *dmesg*(1)
+get all of it either way. The startup trouble entry is not quiet.
+
 ## Sequence
 
 . The firmware loads GRUB from the boot medium.
@@ -428,7 +440,9 @@ The kernel writes every message to all of these at once:
 	rows, so 12x24 on a 1920x1080 screen. The *font* flag chooses one.
 	When the screen is full the text scrolls. Messages are coloured by
 	level. On machines without a serial port this is the only console, so
-	it starts first and replays the messages logged before it.
+	it starts first and replays the messages logged before it. With
+	*quiet*, the startup screen shows in its place until the log is
+	shown.
 
 *VGA text screen*
 	Used instead of the framebuffer when GRUB could not set a graphics
@@ -574,6 +588,15 @@ them to *init*, and the kernel does not read them.
 *font*=_size_
 	Draw the framebuffer console with the Spleen font of this size:
 	*8x16*, *12x24* or *16x32*.
+
+*quiet*
+	Show the startup screen on the framebuffer in place of the log: the
+	system's name and a bar that fills as the boot goes on. The log is
+	kept, and shows when Esc is pressed, when an error is logged, when
+	a program such as *consoled*(8) takes the screen and gives it back,
+	or a minute after the boot began if no program has taken the screen.
+	The serial port gets the whole log either way. An installed system's
+	boot menu gives it (ADR 0426).
 
 *crashlog*=off
 	Do not reserve the crash log, and do not show a previous boot's log.

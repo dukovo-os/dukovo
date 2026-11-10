@@ -14,8 +14,21 @@
 # change together with the system. The kernel command line names the same
 # root to Spark, which mounts it and runs everything else from it.
 
-set timeout=@TIMEOUT@
+# Quiet boot (ADR 0426): the menu stays hidden for a second, in which
+# Esc or F4 shows it, and shows at once when Shift is held as the
+# computer starts, for TIMEOUT seconds. A TIMEOUT of 0 starts Dukovo at
+# once, with no hidden second. With Windows here the menu always shows,
+# below.
+set timeout_style=hidden
+set timeout=1
 set default=0
+if [ @TIMEOUT@ -eq 0 ]; then
+    set timeout=0
+fi
+if keystatus --shift; then
+    set timeout_style=menu
+    set timeout=@TIMEOUT@
+fi
 
 # The entry chosen last, Dukovo or Windows, is chosen again: GRUB keeps it
 # in its environment block beside this file, which the installer makes
@@ -46,13 +59,14 @@ fi
 search --no-floppy --fs-uuid --set=system @ROOT_UUID@
 
 # An installed system restarts 10 seconds after a panic, so that a machine
-# nobody is at comes back by itself.
+# nobody is at comes back by itself. `quiet` shows the startup screen in
+# place of the kernel's log, which Esc brings back (ADR 0426).
 menuentry "Dukovo Server @VERSION@ (Radix)" --id dukovo {
     if [ -f "${prefix}/grubenv" -a "${saved_entry}" != dukovo ]; then
         set saved_entry=dukovo
         save_env saved_entry
     fi
-    multiboot2 ($system)/@system.a/startup/radix root=UUID=@ROOT_UUID@ panic=10@CONSOLE@ @CMDLINE@
+    multiboot2 ($system)/@system.a/startup/radix root=UUID=@ROOT_UUID@ panic=10 quiet@CONSOLE@ @CMDLINE@
     module2 ($system)/@system.a/startup/archive bootfs
 @MODULES@    boot
 }
@@ -60,7 +74,7 @@ menuentry "Dukovo Server @VERSION@ (Radix)" --id dukovo {
 # Windows, when this computer has it: Windows Boot Manager on Windows'
 # own EFI system partition, which GRUB starts as the firmware would, and
 # Windows' boot files are left as they are. With Windows here the menu
-# always shows, long enough to choose (ADR 0314).
+# always shows, long enough to choose (ADR 0314), quiet boot or not.
 if [ "${grub_platform}" = "efi" ]; then
     if search --no-floppy --file --set=windows /EFI/Microsoft/Boot/bootmgfw.efi; then
         set timeout_style=menu

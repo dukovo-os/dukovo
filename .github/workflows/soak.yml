@@ -1,0 +1,101 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# Five hours of an installed system under load, each week on main
+# (`ob soak`, ADR 0427): files, programs and network traffic in rounds,
+# with the memory and disk space it uses held flat. GitHub stops a job at
+# six hours, so the seven days a release soaks for run on the lab's PC;
+# this catches the creep that shows within hours between releases. The
+# report goes into the job's summary and the rounds into an artifact.
+name: Soak
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 2 * * 6"
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  soak:
+    name: Five hours under load
+    runs-on: ubuntu-24.04
+    timeout-minutes: 355
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Allow QEMU to use KVM
+        run: |
+          if [ -e /dev/kvm ]; then
+            echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+              | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+            sudo udevadm control --reload-rules
+            sudo udevadm trigger --name-match=kvm
+          fi
+
+      - name: Install host packages
+        uses: ./.github/actions/apt-install
+        with:
+          packages: >-
+            qemu-system-x86 ovmf gcc flex gawk
+            xorriso mtools dosfstools exfatprogs gdisk fdisk sleuthkit btrfs-progs e2fsprogs ntfs-3g dislocker libbde-utils scdoc mandoc
+            udftools udfclient genisoimage
+            clang-20 lld-20 llvm-20 libclang-rt-20-dev meson ninja-build cmake bison pkgconf autoconf zlib1g-dev
+
+      # GRUB, which ./ob builds from its pinned source for the images
+      # (ADR 0306): built once for each change to its recipe.
+      - name: Cache GRUB
+        uses: actions/cache@v4
+        with:
+          path: .cache/grub
+          key: grub-${{ hashFiles('tools/xtask/src/grub.rs') }}
+
+      - name: Install the pinned Rust toolchain
+        run: rustup toolchain install
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+          save-if: false
+
+      # The ports main built last, as in the build job.
+      - name: Note the port toolchain's version
+        id: ports-key
+        run: echo "clang=$(clang-20 --version | head -n1 | tr -c 'A-Za-z0-9.\n' -)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore the built ports
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            out/sysroot
+            out/toolchain
+            out/ports
+            target/ports/sources
+          key: ports-host-${{ steps.ports-key.outputs.clang }}-${{ hashFiles('ports/**', 'abi/**', 'tools/**', 'rust-toolchain.toml') }}
+          restore-keys: ports-host-${{ steps.ports-key.outputs.clang }}-
+
+      # The ports on their own, so that building them again, after a
+      # change every port builds on, does not eat into the soak's time.
+      - name: ./ob ports
+        timeout-minutes: 45
+        run: ./ob ports
+
+      - name: ./ob soak --hours 5
+        timeout-minutes: 330
+        run: ./ob soak --hours 5 --summary "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the soak's rounds and log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: soak
+          path: |
+            out/test/soak/rounds.csv
+            out/test/boot-soak.log
+            out/test/soak.ppm
+          if-no-files-found: ignore
+          retention-days: 90

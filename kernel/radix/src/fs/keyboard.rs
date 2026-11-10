@@ -27,7 +27,7 @@ use core::any::Any;
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 use radix_abi::Status;
-use radix_abi::input::{EVENTS_KEPT, Event, PRESSED, RELEASED, REPEATED};
+use radix_abi::input::{EVENTS_KEPT, Event, KEY_ESC, PRESSED, RELEASED, REPEATED};
 use radix_hal::Devices;
 use radix_input::Set1;
 use radix_klog::{error, info};
@@ -97,6 +97,9 @@ static STARTED: AtomicBool = AtomicBool::new(false);
 /// The key a USB keyboard holds down, which the thread repeats, and when
 /// it next does.
 static REPEAT: SpinLock<Option<(u16, u64)>> = SpinLock::new(None);
+/// Esc was pressed: the thread shows the log behind the startup screen,
+/// if it shows (`console::reveal`, ADR 0426).
+static ESCAPE: AtomicBool = AtomicBool::new(false);
 
 /// The node of `/devices/kbd`, numbered as its id.
 pub struct Keyboard(pub u64);
@@ -165,6 +168,7 @@ fn byte(byte: u8) {
     } else {
         let Some(key) = DECODER.lock_irq().feed(byte) else { return };
         EVENTS.push(Key { time_ns: sched::now_ns(), code: key.code, value: key.value });
+        note_escape(key.code, key.value);
     }
     wake_thread();
 }
@@ -180,10 +184,19 @@ pub fn set1_byte(byte: u8) {
 /// thread.
 pub fn usb_key(code: u16, down: bool) {
     let now = sched::now_ns();
-    EVENTS.push(Key { time_ns: now, code, value: if down { PRESSED } else { RELEASED } });
+    let value = if down { PRESSED } else { RELEASED };
+    EVENTS.push(Key { time_ns: now, code, value });
+    note_escape(code, value);
     // A key going down repeats; any going up stops it, as on Linux.
     *REPEAT.lock_irq() = down.then_some((code, now + REPEAT_DELAY_NS));
     wake_thread();
+}
+
+/// Notes Esc going down, for the thread.
+fn note_escape(code: u16, value: u16) {
+    if code == KEY_ESC && value == PRESSED {
+        ESCAPE.store(true, Ordering::Release);
+    }
 }
 
 /// The lock lights consoled(8) last asked for: LED_* bits.
@@ -282,6 +295,13 @@ fn repeat() -> Option<u64> {
 /// lights when they are to change, and repeats a USB keyboard's key.
 fn run(_: usize) {
     loop {
+        // The log behind the startup screen, for Esc or once its time is up.
+        let quiet_until = crate::console::quiet_until();
+        if ESCAPE.swap(false, Ordering::AcqRel)
+            || quiet_until.is_some_and(|at| sched::now_ns() >= at)
+        {
+            crate::console::reveal();
+        }
         let repeat_at = repeat();
         let next = EVENTS.next();
         if SEEN.swap(next, Ordering::AcqRel) != next {
@@ -297,7 +317,7 @@ fn run(_: usize) {
                 info!("Keyboard: the keyboard did not take the lock lights");
             }
         }
-        match repeat_at {
+        match repeat_at.into_iter().chain(crate::console::quiet_until()).min() {
             Some(at) => sched::block_until(at, "kbd"),
             None => sched::block("kbd"),
         }

@@ -259,6 +259,7 @@ pub fn create(
     if !(MIN_SLOTS..=MAX_SLOTS).contains(&slots) {
         return Err(Kernel::InvalidArgument.status(1));
     }
+    crate::console::started_process();
     let space = SpaceObject::new(Some(account.domain().clone())).ok_or(error(Kernel::NoMemory))?;
     let mut threads = Vec::new_in(HEAP.with(Flags::ATOMIC));
     threads.try_reserve(1).map_err(|_| error(Kernel::NoMemory))?;
