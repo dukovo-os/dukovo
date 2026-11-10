@@ -394,6 +394,17 @@ spark: shutting down to power off: stopping 4 services
 
 Where the kernel cannot hear it, the firmware keeps the button.
 
+The host of a virtual machine shuts it down by pressing the button for
+it (Hyper-V's shutdown service, VMware's Shut Down Guest). VMware's
+Restart Guest, which the kernel tells of through another notification
+(*radix-power*(2)'s *notify_restart*, *vmware*(4)), starts a shutdown to
+restart at once, as *reboot* does, in the same way:
+
+```
+Power: the host asks the machine to restart; Spark is asked to restart it
+spark: the host asks for a restart; restarting the machine
+```
+
 # WATCHDOG
 
 Once it supervises, Spark starts the machine's hardware watchdog, where

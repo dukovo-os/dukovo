@@ -33,6 +33,7 @@ pub mod clock;
 pub mod cmdline;
 pub mod hyperv;
 pub mod user;
+pub mod vmware;
 
 use core::ops::Range;
 use core::sync::atomic::AtomicU32;
@@ -48,6 +49,7 @@ pub use user::{
     MapPageError, PageEdit, Scanned, SignalFrame, SyscallRegs, UserAccess, UserFault,
     UserFaultKind, UserMode,
 };
+pub use vmware::Vmware;
 
 /// Most CPUs the kernel manages. Per-CPU tables are sized by this.
 pub const MAX_CPUS: usize = 256;

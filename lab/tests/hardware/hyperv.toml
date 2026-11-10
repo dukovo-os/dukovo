@@ -27,7 +27,7 @@ expect = ["Disk: sd", "is a SCSI disk of", "target 0 LUN 0"]
 [[step]]
 run = "sh -c 'dmesg | grep \"Time: TSC at\"'"
 root = true
-expect = "(Hyper-V)"
+expect = "(from Hyper-V)"
 # The network card, up, with its address, and its gateway answering.
 [[step]]
 run = "ip -br address"

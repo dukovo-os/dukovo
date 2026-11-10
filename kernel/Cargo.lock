@@ -293,6 +293,7 @@ dependencies = [
  "radix-nvme",
  "radix-posix",
  "radix-pstate",
+ "radix-pvscsi",
  "radix-random",
  "radix-realtek-net",
  "radix-rge-net",
@@ -313,6 +314,7 @@ dependencies = [
  "radix-vfs",
  "radix-virtio",
  "radix-vmd",
+ "radix-vmware",
  "radix-vmxnet3",
  "radix-xhci",
  "zeroize",
@@ -555,6 +557,7 @@ dependencies = [
  "radix-hw",
  "radix-pstate",
  "radix-sensors",
+ "radix-vmware",
 ]
 
 [[package]]
@@ -728,6 +731,13 @@ name = "radix-pstate"
 version = "0.13.0"
 
 [[package]]
+name = "radix-pvscsi"
+version = "0.13.0"
+dependencies = [
+ "radix-hw",
+]
+
+[[package]]
 name = "radix-random"
 version = "0.13.0"
 dependencies = [
@@ -876,6 +886,10 @@ dependencies = [
 
 [[package]]
 name = "radix-vmd"
+version = "0.13.0"
+
+[[package]]
+name = "radix-vmware"
 version = "0.13.0"
 
 [[package]]

@@ -454,6 +454,8 @@ storage-ide kernel/drivers/ide/ kernel/fs/block/ userspace/storage/
 storage-ide kernel/radix/src/fs/disk/ide.rs
 storage-nvme kernel/drivers/nvme/ kernel/fs/block/ userspace/programs/systools/src/nvme.rs
 storage-nvme userspace/storage/
+storage-pvscsi kernel/drivers/pvscsi/ kernel/drivers/scsi/ kernel/fs/block/ userspace/storage/
+storage-pvscsi kernel/radix/src/fs/disk/pvscsi.rs kernel/radix/src/fs/disk/virtio_scsi.rs
 storage-sata kernel/drivers/ahci/ kernel/fs/block/ userspace/storage/
 storage-scsi kernel/drivers/scsi/ kernel/drivers/virtio/ kernel/fs/block/ userspace/storage/
 storage-scsi kernel/radix/src/fs/disk/virtio_scsi.rs
@@ -499,6 +501,8 @@ userspace-e1000 userspace/spark/tests/services/e1000d/
 views userspace/posix/names.h userspace/posix/views.c
 virtio-ports kernel/drivers/virtio/src/console.rs kernel/radix/src/vports.rs
 virtio-ports kernel/radix/src/fs/devfs.rs kernel/radix/src/fs/tty.rs
+vmware kernel/arch/x86_64/src/vmware.rs kernel/drivers/vmware/ kernel/hal/src/vmware.rs
+vmware kernel/radix/src/dmi.rs kernel/radix/src/vmware.rs
 volumes userspace/posix/volumetest.c userspace/programs/systools/src/nvme.rs
 volumes userspace/programs/systools/src/volumed.rs
 watchdog kernel/drivers/watchdog/ userspace/programs/systools/src/watchdog.rs

@@ -27,6 +27,7 @@ radix-sdhci = { path = "../drivers/sdhci" }
 radix-uart = { path = "../drivers/uart" }
 radix-ucsi = { path = "../drivers/ucsi" }
 radix-vmd = { path = "../drivers/vmd" }
+radix-vmware = { path = "../drivers/vmware" }
 radix-block = { path = "../fs/block" }
 # BitLocker volumes unlocked as block devices of their own (ADR 0240).
 radix-bitlocker = { path = "../fs/bitlocker", features = ["device"] }
@@ -66,6 +67,7 @@ radix-net = { path = "../net" }
 radix-nic = { path = "../drivers/nic" }
 radix-posix = { path = "../lib/posix" }
 radix-pstate = { path = "../lib/pstate" }
+radix-pvscsi = { path = "../drivers/pvscsi" }
 radix-realtek-net = { path = "../drivers/realtek" }
 radix-rge-net = { path = "../drivers/rge" }
 radix-random = { path = "../lib/random" }

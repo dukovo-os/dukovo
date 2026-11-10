@@ -10,14 +10,16 @@
 //! which stops the services in order, then calls one of the first three
 //! methods. Each first writes back every filesystem with changes (as
 //! sync(2) does), logs what it does, and does not return once it has
-//! worked. Pressing the power button asks Spark the same as poweroff(8).
+//! worked. Pressing the power button asks Spark the same as poweroff(8),
+//! and the host of a virtual machine asking it to restart (Phase 14,
+//! ADR 0424) the same as reboot(8).
 //! Spark starts the watchdog and pets it while it runs, so that a Spark
 //! that stops responding, or a kernel, restarts the machine.
 
 module power;
 
 /// The machine's power. Every method needs the control right.
-interface power = 0x000e version 3 {
+interface power = 0x000e version 4 {
     kind = power;
     /// Turns the machine off: ACPI's S5 state on a PC. Fails with
     /// not_supported, after syncing, if the firmware gives no way to.
@@ -58,4 +60,12 @@ interface power = 0x000e version 3 {
     /// none.
     method stop_watchdog = 7 () -> ()
         raises [no_such_slot, empty_slot, wrong_kind, missing_rights, not_supported];
+    /// Signals the notification in slot `notification` each time the host
+    /// of the virtual machine asks it to restart, as VMware's Restart
+    /// Guest does, with the bits of that capability's badge (bit 0 if it
+    /// has none): how Spark hears it, to restart the machine as reboot(8)
+    /// does. A later call replaces the notification. Needs the send right
+    /// on the notification.
+    method notify_restart = 8 (notification: slot) -> ()
+        raises [no_such_slot, empty_slot, wrong_kind, missing_rights];
 }
