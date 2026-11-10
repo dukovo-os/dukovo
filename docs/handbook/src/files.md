@@ -272,6 +272,11 @@ A laptop or board that boots from an eMMC, a MultiMediaCard soldered to
 the board, has it as `mmcblk0` too, set up at boot, on an eight-bit bus
 and at HS200's 200 MHz where both it and the controller can (ADR 0439).
 
+Some readers need more than the specification says, such as Ricoh's
+R5C822, R5U822 and R5U823 and JMicron's JMB38x, and the kernel drives
+them as they need (ADR 0445); a reader without ADMA2 moves data by
+SDMA. The kernel's log names such a reader, and what it does for it.
+
 A CD, DVD or Blu-ray drive, on SATA, IDE or USB, is such a drive too,
 named `cd0` and on, a `rom` under lsblk's `TYPE` (ADR 0431, ADR 0432).
 A disc of data, ISO 9660 or UDF, is mounted read-only: at `/volumes/cd0`

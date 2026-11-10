@@ -506,7 +506,8 @@ segment, as _1000:e1:00.0 behind the VMD at 0000:00:0e.0_, and *polled*.
   namespaces, USB disks, over the Bulk-Only Transport or USB Attached
   SCSI (UAS), SD, SDHC, SDXC and MMC cards in SD card readers on PCI,
   put in at boot or later (ADR 0437), and eMMCs (ADR 0439), have
-  drivers. Port multipliers, optical drives, disks with
+  drivers; a reader without ADMA2, or whose ADMA2 is broken, moves data
+  by SDMA (ADR 0445). Port multipliers, optical drives, disks with
   logical sectors larger than 4096 bytes and NVMe namespaces with
   metadata are not supported. NVMe controllers behind an Intel VMD are
   polled, as the VMD's interrupts are not routed yet, and the AHCI

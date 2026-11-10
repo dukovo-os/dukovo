@@ -11,9 +11,13 @@
 //!
 //! A controller has one to six slots, each with its own 256 bytes of
 //! registers in a BAR of its own ([`Slot`]). [`Slot::new`] resets one and
-//! reads what it can do; it needs ADMA2, the controller's scatter-gather
-//! DMA, which every controller since version 2.00 has, and uses its 64-bit
-//! descriptors where the controller has them (version 3.00 and later).
+//! reads what it can do; it moves data by ADMA2, the controller's
+//! scatter-gather DMA, which most controllers since version 2.00 have,
+//! with its 64-bit descriptors where the controller has them (version
+//! 3.00 and later). A controller without ADMA2, or whose ADMA2 is broken,
+//! moves data by SDMA, from one buffer below 4 GiB ([`Slot::contiguous`]).
+//! What some controllers need beyond the specification is in [`quirks`]
+//! (ADR 0445).
 //! [`Slot::identify`] powers the card up and sets it up as section 4.2 of
 //! the physical layer says: CMD0, CMD8 (which only version 2.00 cards
 //! answer), ACMD41 until the card is ready (SDHC and SDXC cards say they
@@ -66,12 +70,14 @@
 
 pub mod card;
 pub mod mmc;
+pub mod quirks;
 #[cfg(test)]
 mod tests;
 
 use radix_hw::{Dma, Mmio, device_barrier};
 
 pub use card::{Card, Cid, Csd, Family, Speed};
+pub use quirks::Quirks;
 
 /// The PCI class and subclass of an SD host controller.
 pub const PCI_CLASS: (u8, u8) = (0x08, 0x05);
@@ -89,6 +95,8 @@ pub const MAX_BUFFER: u32 = 65536 - 4096;
 
 /// The registers of a slot (2.1).
 pub mod reg {
+    /// 32-bit: where SDMA moves data to or from next.
+    pub const SDMA_ADDRESS: usize = 0x00;
     /// 32-bit: the argument of the command.
     pub const ARGUMENT: usize = 0x08;
     /// 16-bit: the bytes of a block.
@@ -156,6 +164,8 @@ mod present {
 mod status {
     pub const COMMAND_COMPLETE: u16 = 1 << 0;
     pub const TRANSFER_COMPLETE: u16 = 1 << 1;
+    /// SDMA stopped at a boundary of its buffer, for the next address.
+    pub const DMA_INTERRUPT: u16 = 1 << 3;
     /// A block can be read from the Buffer Data Port.
     pub const BUFFER_READ_READY: u16 = 1 << 5;
     pub const CARD_INSERTION: u16 = 1 << 6;
@@ -211,7 +221,7 @@ mod ocr {
 /// The Normal Interrupt Signal Enable's bits while the slot interrupts:
 /// a transfer's end, an error, and a card put in or taken out. A command
 /// without data is waited for by polling, while the slot is being set up.
-const SIGNALLED: u16 = status::TRANSFER_COMPLETE | status::CARD_EVENTS;
+const SIGNALLED: u16 = status::TRANSFER_COMPLETE | status::DMA_INTERRUPT | status::CARD_EVENTS;
 /// The Error Interrupt Signal Enable's bits while the slot interrupts:
 /// every error the slot reports.
 const ERRORS_SIGNALLED: u16 = 0x03ff;
@@ -222,6 +232,7 @@ mod caps {
     pub const BUS_8: u64 = 1 << 18;
     pub const ADMA2: u64 = 1 << 19;
     pub const HIGH_SPEED: u64 = 1 << 21;
+    pub const SDMA: u64 = 1 << 22;
     pub const VOLTS_3_3: u64 = 1 << 24;
     pub const VOLTS_3_0: u64 = 1 << 25;
     pub const VOLTS_1_8: u64 = 1 << 26;
@@ -346,7 +357,7 @@ mod mode {
 #[derive(Clone, Copy, Debug)]
 enum Flight {
     /// Its command is ready to go once neither line is inhibited.
-    Ready { command: u16, mode: u16, argument: u32, count: u16 },
+    Ready { command: u16, mode: u16, argument: u32, count: u16, sdma: Option<u32> },
     /// Sent: the card's status once it answered.
     Sent { status: Option<u32> },
 }
@@ -358,6 +369,11 @@ pub struct Slot {
     caps: u64,
     /// The ADMA2 descriptors are 64-bit ones (12 bytes).
     adma64: bool,
+    /// Transfers go by SDMA, to or from one buffer below 4 GiB: the
+    /// controller has no ADMA2, or its ADMA2 does not work.
+    sdma: bool,
+    /// What the controller needs beyond the specification.
+    quirks: Quirks,
     /// The descriptor table.
     table: Dma,
     card: Option<Card>,
@@ -494,11 +510,13 @@ fn wait(delay: &mut dyn FnMut(u32), us: u32, mut done: impl FnMut() -> bool) -> 
 
 impl Slot {
     /// Resets the slot whose registers are `regs` and reads what it can
-    /// do; its descriptor table comes from `alloc(pages, below_4g)`.
+    /// do, its controller needing `quirks`; its descriptor table comes
+    /// from `alloc(pages, below_4g)`.
     pub fn new(
         regs: Mmio,
         alloc: &mut dyn FnMut(usize, bool) -> Option<Dma>,
         delay: &mut dyn FnMut(u32),
+        quirks: Quirks,
     ) -> Result<Slot, Error> {
         if regs.len() < REGISTERS {
             return Err(Error::BadRequest);
@@ -510,10 +528,11 @@ impl Slot {
         }
         let caps = u64::from(regs.read32(reg::CAPABILITIES))
             | u64::from(regs.read32(reg::CAPABILITIES + 4)) << 32;
-        if caps & caps::ADMA2 == 0 {
-            return Err(Error::Unsupported("it has no ADMA2, the DMA the driver uses"));
+        let sdma = caps & caps::ADMA2 == 0 || quirks.broken_adma;
+        if sdma && caps & caps::SDMA == 0 {
+            return Err(Error::Unsupported("it has neither ADMA2 nor SDMA"));
         }
-        let adma64 = version >= version::V3 && caps & caps::SYSTEM_64 != 0;
+        let adma64 = !sdma && version >= version::V3 && caps & caps::SYSTEM_64 != 0;
         let table = alloc(1, !adma64).ok_or(Error::Unsupported("out of memory"))?;
         // Everything reported, nothing interrupting: the slot is polled.
         regs.write16(reg::NORMAL_STATUS_ENABLE, 0x00ff);
@@ -526,6 +545,8 @@ impl Slot {
             version,
             caps,
             adma64,
+            sdma,
+            quirks,
             table,
             card: None,
             flight: None,
@@ -551,6 +572,13 @@ impl Slot {
     /// Whether its DMA reaches all of memory, not only the first 4 GiB.
     pub fn reaches_64(&self) -> bool {
         self.adma64
+    }
+
+    /// Whether its transfers go by SDMA: to or from one buffer below
+    /// 4 GiB, which [`Slot::start`] takes as buffers that each follow the
+    /// one before in memory.
+    pub fn contiguous(&self) -> bool {
+        self.sdma
     }
 
     /// Whether a card is in the slot.
@@ -739,7 +767,9 @@ impl Slot {
         if self.version >= version::V3 {
             self.regs.write16(reg::HOST_CONTROL2, 0);
         }
-        self.regs.write8(reg::POWER_CONTROL, volts << 1);
+        if !self.quirks.single_power_write {
+            self.regs.write8(reg::POWER_CONTROL, volts << 1);
+        }
         self.regs.write8(reg::POWER_CONTROL, volts << 1 | 1);
         delay(10_000);
         self.regs.write8(reg::HOST_CONTROL, 0);
@@ -1112,6 +1142,8 @@ impl Slot {
                 && phys % 4 == 0
                 && (self.adma64 || phys + u64::from(len) <= 1 << 32)
         };
+        // SDMA moves one buffer: each follows the one before.
+        let together = buffers.windows(2).all(|pair| pair[0].0 + u64::from(pair[0].1) == pair[1].0);
         if self.flight.is_some()
             || count == 0
             || count > u32::from(u16::MAX)
@@ -1119,6 +1151,7 @@ impl Slot {
             || buffers.len() > MAX_BUFFERS
             || bytes != u64::from(count) * u64::from(BLOCK)
             || !buffers.iter().all(fits)
+            || (self.sdma && !together)
             || block + u64::from(count) > card.blocks
             || (op == Op::Write && card.read_only)
         {
@@ -1134,18 +1167,11 @@ impl Slot {
         if self.retune {
             self.retune(delay)?;
         }
-        // The descriptors: Valid and Act=Tran, End on the last.
-        let size = if self.adma64 { 12 } else { 8 };
-        for (i, &(phys, len)) in buffers.iter().enumerate() {
-            let last = i + 1 == buffers.len();
-            let attributes: u16 = 0x21 | if last { 0x02 } else { 0 };
-            let at = i * size;
-            self.table.write16(at, attributes);
-            self.table.write16(at + 2, len as u16);
-            self.table.write32(at + 4, phys as u32);
-            if self.adma64 {
-                self.table.write32(at + 8, (phys >> 32) as u32);
-            }
+        // SDMA starts at the first buffer's address; ADMA2 follows the
+        // descriptors.
+        let sdma = self.sdma.then(|| buffers[0].0 as u32);
+        if !self.sdma {
+            self.describe(buffers);
         }
         device_barrier();
         let address = if card.high_capacity { block } else { block * u64::from(BLOCK) };
@@ -1165,28 +1191,63 @@ impl Slot {
             transfer |= mode::READ;
         }
         let command = index << 8 | Response::R1.flags() | DATA_PRESENT;
-        self.flight =
-            Some(Flight::Ready { command, mode: transfer, argument, count: count as u16 });
+        let count = count as u16;
+        self.flight = Some(Flight::Ready { command, mode: transfer, argument, count, sdma });
         self.issue();
         Ok(())
     }
 
+    /// Writes the ADMA2 descriptors of `buffers`: Valid and Act=Tran, End
+    /// on the last.
+    fn describe(&mut self, buffers: &[(u64, u32)]) {
+        let size = if self.adma64 { 12 } else { 8 };
+        for (i, &(phys, len)) in buffers.iter().enumerate() {
+            let last = i + 1 == buffers.len();
+            let attributes: u16 = 0x21 | if last { 0x02 } else { 0 };
+            let at = i * size;
+            self.table.write16(at, attributes);
+            self.table.write16(at + 2, len as u16);
+            self.table.write32(at + 4, phys as u32);
+            if self.adma64 {
+                self.table.write32(at + 8, (phys >> 32) as u32);
+            }
+        }
+    }
+
     /// Sends the command of the request that waits, if the lines are free.
     fn issue(&mut self) {
-        let Some(Flight::Ready { command, mode, argument, count }) = self.flight else { return };
+        let Some(Flight::Ready { command, mode, argument, count, sdma }) = self.flight else {
+            return;
+        };
         let regs = &self.regs;
         let busy = present::COMMAND_INHIBIT | present::DATA_INHIBIT;
         if regs.read32(reg::PRESENT_STATE) & busy != 0 {
             return;
         }
-        let table = self.table.phys();
-        regs.write32(reg::ADMA_ADDRESS, table as u32);
-        regs.write32(reg::ADMA_ADDRESS + 4, (table >> 32) as u32);
-        let dma = if self.adma64 { 0b11 << 3 } else { 0b10 << 3 };
+        // The lines may still be resetting after the last request, on a
+        // controller that resets them after each.
+        if self.quirks.reset_after_request && regs.read8(reg::SOFTWARE_RESET) != 0 {
+            return;
+        }
+        // The DMA select: SDMA, 32-bit ADMA2 or 64-bit ADMA2. SDMA stops
+        // at each 512 KiB boundary of memory it crosses (Block Size's
+        // boundary 7), for the address to be written again.
+        let (dma, boundary) = match sdma {
+            Some(address) => {
+                regs.write32(reg::SDMA_ADDRESS, address);
+                (0b00 << 3, 7 << 12)
+            }
+            None => {
+                let table = self.table.phys();
+                regs.write32(reg::ADMA_ADDRESS, table as u32);
+                regs.write32(reg::ADMA_ADDRESS + 4, (table >> 32) as u32);
+                (if self.adma64 { 0b11 << 3 } else { 0b10 << 3 }, 0)
+            }
+        };
         regs.write8(reg::HOST_CONTROL, regs.read8(reg::HOST_CONTROL) & !(0b11 << 3) | dma);
         regs.write16(reg::NORMAL_STATUS, status::ALL_BUT_CARD);
         regs.write16(reg::ERROR_STATUS, 0xffff);
-        regs.write16(reg::BLOCK_SIZE, BLOCK as u16);
+        regs.write16(reg::BLOCK_SIZE, BLOCK as u16 | boundary);
         regs.write16(reg::BLOCK_COUNT, count);
         regs.write32(reg::ARGUMENT, argument);
         regs.write16(reg::TRANSFER_MODE, mode);
@@ -1210,6 +1271,12 @@ impl Slot {
             self.retune = self.tuned && error & status::DATA_GARBLED != 0;
             return Some(Err(Error::Command(error)));
         }
+        if normal & status::DMA_INTERRUPT != 0 {
+            // At a boundary: the address it stopped at, written back, has
+            // it go on (Host Controller, 1.13.1).
+            regs.write16(reg::NORMAL_STATUS, status::DMA_INTERRUPT);
+            regs.write32(reg::SDMA_ADDRESS, regs.read32(reg::SDMA_ADDRESS));
+        }
         let mut status = status;
         if normal & status::COMMAND_COMPLETE != 0 {
             regs.write16(reg::NORMAL_STATUS, status::COMMAND_COMPLETE);
@@ -1221,6 +1288,11 @@ impl Slot {
         }
         regs.write16(reg::NORMAL_STATUS, status::ALL_BUT_CARD);
         self.flight = None;
+        if self.quirks.reset_after_request {
+            // The lines' reset ends within a few of the controller's
+            // clocks; the next request waits for them anyway.
+            regs.write8(reg::SOFTWARE_RESET, 6);
+        }
         match status {
             Some(bits) if bits & CARD_ERRORS != 0 => {
                 self.stuck = true;

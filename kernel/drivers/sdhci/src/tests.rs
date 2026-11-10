@@ -61,8 +61,14 @@ struct State {
     /// The next data command fails with these error bits.
     fail: Option<u16>,
     /// Addresses below 4 GiB that stand for host memory, for 32-bit
-    /// descriptors: (low, host).
-    aliases: Vec<(u32, u64)>,
+    /// descriptors and SDMA: (low, host, bytes).
+    aliases: Vec<(u32, u64, u64)>,
+    /// An SDMA transfer stopped at a boundary: the card's byte it goes on
+    /// from, the bytes left, and whether it writes to the card.
+    sdma: Option<(usize, usize, bool)>,
+    /// What the driver wrote to Power Control and Software Reset, in
+    /// order: (register, value).
+    pokes: Vec<(usize, u64)>,
     /// The card detect has not settled.
     settling: bool,
     /// What the Buffer Data Port gives next, a word at a time.
@@ -104,6 +110,8 @@ impl State {
             commands: Vec::new(),
             fail: None,
             aliases: Vec::new(),
+            sdma: None,
+            pokes: Vec::new(),
             settling: false,
             buffer: VecDeque::new(),
             agreed: false,
@@ -252,10 +260,32 @@ impl State {
         if wide {
             return address;
         }
-        let within =
-            |&&(low, _): &&(u32, u64)| (u64::from(low)..u64::from(low) + 4096).contains(&address);
-        let (low, host) = self.aliases.iter().find(within).unwrap();
+        let within = |&&(low, _, len): &&(u32, u64, u64)| {
+            (u64::from(low)..u64::from(low) + len).contains(&address)
+        };
+        let (low, host, _) = self.aliases.iter().find(within).unwrap();
         host + (address - u64::from(*low))
+    }
+
+    /// Moves an SDMA transfer's bytes from SDMA System Address up to the
+    /// next boundary, or to its end; stopped at the boundary, the address
+    /// is where it goes on from.
+    fn sdma_move(&mut self) {
+        let Some((place, left, writes)) = self.sdma.take() else { return };
+        let address = self.get(reg::SDMA_ADDRESS, 4);
+        let boundary = 4096u64 << (self.get(reg::BLOCK_SIZE, 2) >> 12 & 7);
+        let len = ((address / boundary + 1) * boundary - address).min(left as u64) as usize;
+        let host = self.host(address, false);
+        let data = &mut self.card.as_mut().unwrap().data;
+        if writes {
+            radix_hw::fake_memory(host, &mut data[place..place + len]);
+        } else {
+            radix_hw::fake_memory_write(host, &data[place..place + len]);
+        }
+        if len < left {
+            self.sdma = Some((place + len, left - len, writes));
+            self.put(reg::SDMA_ADDRESS, 4, address + len as u64);
+        }
     }
 
     /// Moves a data command's blocks through the descriptors.
@@ -266,6 +296,18 @@ impl State {
         let card = self.card.clone().unwrap();
         if card.mmc && !self.widths_agree() {
             return Err(1 << 5);
+        }
+        if self.regs[reg::HOST_CONTROL] >> 3 & 3 == 0 {
+            // SDMA: from the address, stopping at each boundary.
+            let blocks = if matches!(index, 18 | 25) { self.get(reg::BLOCK_COUNT, 2) } else { 1 };
+            let start = if card.high { argument as usize * 512 } else { argument as usize };
+            let total = blocks as usize * 512;
+            if start + total > card.data.len() {
+                return Err(1 << 4);
+            }
+            self.sdma = Some((start, total, matches!(index, 24 | 25)));
+            self.sdma_move();
+            return Ok(());
         }
         let wide = self.regs[reg::HOST_CONTROL] >> 3 & 3 == 3;
         let size = if wide { 12 } else { 8 };
@@ -511,6 +553,12 @@ impl State {
             _ => return timeout(self),
         }
         let mut normal = status::COMMAND_COMPLETE;
+        if self.sdma.is_some() {
+            // Stopped at a boundary: the transfer goes on once the address
+            // is written again.
+            normal |= status::DMA_INTERRUPT;
+            busy = false;
+        }
         if busy {
             normal |= status::TRANSFER_COMPLETE;
         }
@@ -570,6 +618,9 @@ impl Registers for Sim {
 
     fn write(&self, offset: usize, size: usize, value: u64) {
         let mut state = self.0.lock().unwrap();
+        if matches!(offset, reg::POWER_CONTROL | reg::SOFTWARE_RESET) {
+            state.pokes.push((offset, value));
+        }
         match offset {
             reg::NORMAL_STATUS | reg::ERROR_STATUS => {
                 let now = state.get(offset, size);
@@ -591,6 +642,16 @@ impl Registers for Sim {
             reg::COMMAND => {
                 state.put(offset, size, value);
                 state.command(value as u16);
+            }
+            reg::SDMA_ADDRESS if state.sdma.is_some() => {
+                state.put(offset, size, value);
+                state.sdma_move();
+                let done = if state.sdma.is_some() {
+                    status::DMA_INTERRUPT
+                } else {
+                    status::TRANSFER_COMPLETE
+                };
+                state.set_status(done, 0);
             }
             _ => state.put(offset, size, value),
         }
@@ -626,6 +687,17 @@ const TUNE_SDR50: u64 = 1 << 45;
 /// A slot of a controller of `version` with capabilities `caps` and
 /// Maximum Current `current`, holding `card`.
 fn slot_with(version: u8, caps: u64, current: u64, card: Option<SimCard>) -> (Slot, Arc<Sim>) {
+    quirky_slot(version, caps, current, card, Quirks::default())
+}
+
+/// As [`slot_with`], of a controller that needs `quirks`.
+fn quirky_slot(
+    version: u8,
+    caps: u64,
+    current: u64,
+    card: Option<SimCard>,
+    quirks: Quirks,
+) -> (Slot, Arc<Sim>) {
     let mut state = State::new(card);
     state.put(reg::CAPABILITIES, 8, caps);
     state.put(reg::MAX_CURRENT, 8, current);
@@ -640,8 +712,8 @@ fn slot_with(version: u8, caps: u64, current: u64, card: Option<SimCard>) -> (Sl
         tables.push(dma.phys());
         Some(dma)
     };
-    let slot = Slot::new(regs, &mut alloc, &mut |_| {}).unwrap();
-    let aliases = tables.iter().map(|&phys| (phys as u32, phys));
+    let slot = Slot::new(regs, &mut alloc, &mut |_| {}, quirks).unwrap();
+    let aliases = tables.iter().map(|&phys| (phys as u32, phys, 4096));
     sim.0.lock().unwrap().aliases.extend(aliases);
     (slot, sim)
 }
@@ -731,7 +803,7 @@ fn standard_capacity_cards_are_addressed_in_bytes_through_narrow_descriptors() {
         if page.phys() + 512 > 1 << 32 { Err(Error::BadRequest) } else { Ok(()) }
     );
     let _ = slot.poll();
-    sim.0.lock().unwrap().aliases.push((0x1000_0000, page.phys()));
+    sim.0.lock().unwrap().aliases.push((0x1000_0000, page.phys(), 4096));
     page.write(0, &pattern(7, 1024));
     slot.start(Op::Write, 7, 2, &[(0x1000_0000, 1024)], &mut |_| {}).unwrap();
     assert_eq!(slot.poll(), Some(Ok(())));
@@ -759,12 +831,12 @@ fn empty_slots_and_cards_of_other_kinds() {
     assert_eq!(slot.identify(&mut |_| {}), Err(Error::NoCard));
     let page = Dma::fake(4096);
     assert_eq!(slot.start(Op::Read, 0, 1, &[(page.phys(), 512)], &mut |_| {}), Err(Error::NoCard));
-    // Without ADMA2, the slot is not driven.
+    // Without ADMA2 or SDMA, the slot is not driven.
     let mut state = State::new(None);
-    state.put(reg::CAPABILITIES, 8, 200 << 8 | 1 << 22);
+    state.put(reg::CAPABILITIES, 8, 200 << 8);
     let sim = Arc::new(Sim(Mutex::new(state)));
     let mut alloc = |_: usize, _: bool| Some(Dma::fake(4096));
-    let made = Slot::new(Mmio::fake(sim, REGISTERS), &mut alloc, &mut |_| {});
+    let made = Slot::new(Mmio::fake(sim, REGISTERS), &mut alloc, &mut |_| {}, Quirks::default());
     assert!(matches!(made, Err(Error::Unsupported(_))));
 }
 
@@ -922,7 +994,7 @@ fn soldered_slots_are_not_removable() {
     drop(state);
     let regs = Mmio::fake(sim.clone(), REGISTERS);
     let mut alloc = |_: usize, _: bool| Some(Dma::fake(4096));
-    let embedded = Slot::new(regs, &mut alloc, &mut |_| {}).unwrap();
+    let embedded = Slot::new(regs, &mut alloc, &mut |_| {}, Quirks::default()).unwrap();
     assert!(!embedded.removable());
 }
 
@@ -1216,4 +1288,134 @@ fn garbled_data_at_hs200_tunes_again_or_falls_back_to_high_speed() {
     let card = slot.card().unwrap();
     assert_eq!((card.speed, card.khz), (Speed::MmcHigh, 50_000));
     assert_eq!(sim.0.lock().unwrap().timing, 1);
+}
+
+/// A controller of version 2.00 and 52 MHz with SDMA, High Speed and
+/// 3.3 V, and ADMA2 only with `adma2`.
+fn sdma_caps(adma2: bool) -> u64 {
+    52 << 8 | 1 << 21 | 1 << 22 | 1 << 24 | if adma2 { 1 << 19 } else { 0 }
+}
+
+/// Polls `slot` until its request ends: how it ended, and how many polls
+/// found it still going.
+fn finish(slot: &mut Slot) -> (Result<(), Error>, usize) {
+    for going in 0..100 {
+        if let Some(result) = slot.poll() {
+            return (result, going);
+        }
+    }
+    panic!("the request never ended");
+}
+
+#[test]
+fn controllers_without_adma2_move_one_buffer_by_sdma() {
+    let (mut slot, sim) = slot_with(version::V2, sdma_caps(false), 0, Some(card(4096, true)));
+    assert!(slot.contiguous() && !slot.reaches_64());
+    slot.identify(&mut |_| {}).unwrap();
+    // 1 MiB from 64 KiB below a 512 KiB boundary: it stops there and at
+    // the next, and goes on each time the address is written back.
+    let page = Dma::fake(1 << 20);
+    sim.0.lock().unwrap().aliases.push((0x2007_0000, page.phys(), 1 << 20));
+    page.write(0, &pattern(0, 1 << 20));
+    // In buffers of 32 KiB, one after another, as the kernel hands it over.
+    let buffers: Vec<(u64, u32)> = (0..32).map(|i| (0x2007_0000 + i * 0x8000, 0x8000)).collect();
+    slot.start(Op::Write, 0, 2048, &buffers, &mut |_| {}).unwrap();
+    {
+        let state = sim.0.lock().unwrap();
+        assert_eq!(state.regs[reg::HOST_CONTROL] >> 3 & 3, 0);
+        assert_eq!(state.get(reg::BLOCK_SIZE, 2), 7 << 12 | 512);
+    }
+    assert_eq!(finish(&mut slot), (Ok(()), 2));
+    assert_eq!(sim.0.lock().unwrap().card.as_ref().unwrap().data[..1 << 20], pattern(0, 1 << 20));
+    page.write(0, &std::vec![0; 1 << 20]);
+    slot.start(Op::Read, 0, 2048, &buffers, &mut |_| {}).unwrap();
+    assert_eq!(finish(&mut slot), (Ok(()), 2));
+    let mut back = std::vec![0u8; 1 << 20];
+    page.read(0, &mut back);
+    assert_eq!(back, pattern(0, 1 << 20));
+    // Buffers one after another are one buffer; apart, they are refused.
+    let apart = [(0x2007_0000, 512), (0x2007_1000, 512)];
+    assert_eq!(slot.start(Op::Read, 0, 2, &apart, &mut |_| {}), Err(Error::BadRequest));
+    let together = [(0x2007_0000, 512), (0x2007_0200, 512)];
+    slot.start(Op::Read, 0, 2, &together, &mut |_| {}).unwrap();
+    assert_eq!(finish(&mut slot), (Ok(()), 0));
+}
+
+#[test]
+fn quirks_are_looked_up_by_vendor_and_device() {
+    let r5u823 = crate::quirks::quirks(0x1180, 0xe823);
+    assert_eq!(r5u823.name, Some("Ricoh R5U823"));
+    assert!(r5u823.broken_adma && r5u823.single_power_write && r5u823.ricoh_mode);
+    assert!(!r5u823.reset_after_request);
+    let r5c822 = crate::quirks::quirks(0x1180, 0x0822);
+    assert!(r5c822.broken_adma && !r5c822.ricoh_mode);
+    let jmb38x = crate::quirks::quirks(0x197b, 0x2381);
+    assert!(jmb38x.reset_after_request && !jmb38x.broken_adma);
+    // An O2 Micro, and anything else not in the table, needs nothing.
+    assert_eq!(crate::quirks::quirks(0x1217, 0x8621), Quirks::default());
+    assert_eq!(crate::quirks::quirks(0x1b36, 0x0007), Quirks::default());
+}
+
+#[test]
+fn a_controller_whose_adma2_is_broken_uses_sdma() {
+    let broken = Quirks { broken_adma: true, ..Quirks::default() };
+    let wide = sdma_caps(true) | 1 << 28;
+    let (mut slot, sim) = quirky_slot(version::V3, wide, 0, Some(card(4096, true)), broken);
+    assert!(slot.contiguous() && !slot.reaches_64());
+    slot.identify(&mut |_| {}).unwrap();
+    let page = Dma::fake(4096);
+    sim.0.lock().unwrap().aliases.push((0x1000_0000, page.phys(), 4096));
+    page.write(0, &pattern(3, 1024));
+    slot.start(Op::Write, 3, 2, &[(0x1000_0000, 1024)], &mut |_| {}).unwrap();
+    assert_eq!(finish(&mut slot), (Ok(()), 0));
+    assert_eq!(
+        sim.0.lock().unwrap().card.as_ref().unwrap().data[3 * 512..5 * 512],
+        pattern(3, 1024)
+    );
+    // Without SDMA either, nothing moves data.
+    let mut state = State::new(None);
+    state.put(reg::CAPABILITIES, 8, sdma_caps(true) & !(1 << 22));
+    let sim = Arc::new(Sim(Mutex::new(state)));
+    let mut alloc = |_: usize, _: bool| Some(Dma::fake(4096));
+    let made = Slot::new(Mmio::fake(sim, REGISTERS), &mut alloc, &mut |_| {}, broken);
+    assert!(matches!(made, Err(Error::Unsupported(_))));
+}
+
+#[test]
+fn power_comes_on_in_one_write_where_the_controller_needs_it() {
+    let power = |quirks: Quirks| {
+        let (mut slot, sim) =
+            quirky_slot(version::V2, sdma_caps(true), 0, Some(card(4096, true)), quirks);
+        slot.identify(&mut |_| {}).unwrap();
+        let pokes = sim.0.lock().unwrap().pokes.clone();
+        pokes
+            .into_iter()
+            .filter(|&(at, value)| at == reg::POWER_CONTROL && value != 0)
+            .collect::<Vec<_>>()
+    };
+    // 3.3 V (7 << 1), then the power bit with it.
+    let at = reg::POWER_CONTROL;
+    assert_eq!(power(Quirks::default()), [(at, 0x0e), (at, 0x0f)]);
+    let single = Quirks { single_power_write: true, ..Quirks::default() };
+    assert_eq!(power(single), [(at, 0x0f)]);
+}
+
+#[test]
+fn the_lines_are_reset_after_each_request_where_the_controller_needs_it() {
+    let resets = |quirks: Quirks| {
+        let (mut slot, sim) =
+            quirky_slot(version::V2, sdma_caps(true), 0, Some(card(4096, true)), quirks);
+        slot.identify(&mut |_| {}).unwrap();
+        let page = Dma::fake(4096);
+        sim.0.lock().unwrap().aliases.push((0x1000_0000, page.phys(), 4096));
+        sim.0.lock().unwrap().pokes.clear();
+        for block in [0, 1] {
+            slot.start(Op::Read, block, 1, &[(0x1000_0000, 512)], &mut |_| {}).unwrap();
+            assert_eq!(finish(&mut slot), (Ok(()), 0));
+        }
+        sim.0.lock().unwrap().pokes.clone()
+    };
+    assert_eq!(resets(Quirks::default()), []);
+    let jmicron = Quirks { reset_after_request: true, ..Quirks::default() };
+    assert_eq!(resets(jmicron), [(reg::SOFTWARE_RESET, 6), (reg::SOFTWARE_RESET, 6)]);
 }

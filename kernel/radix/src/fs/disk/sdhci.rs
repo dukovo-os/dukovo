@@ -35,7 +35,15 @@
 //! QEMU's `sdhci-pci` is by default) reaches only the first 4 GiB, which
 //! page caches are not kept to: a request whose buffers all lie below it
 //! goes to them, and any other through a bounce buffer of [`SEGMENTS`]
-//! pages below 4 GiB, copied before a write and after a read.
+//! pages below 4 GiB, copied before a write and after a read. One without
+//! ADMA2, or whose ADMA2 is broken, moves data by SDMA, from one buffer
+//! below 4 GiB: a request whose pages do not lie one after another there
+//! goes through the bounce buffer too.
+//!
+//! Some controllers need more than the specification says (ADR 0445):
+//! [`bind`] looks the controller up in [`radix_sdhci::quirks`], writes a
+//! Ricoh's configuration space as it needs, and hands what else it needs
+//! to each [`Slot`].
 //!
 //! An SD card keeps no write cache the host can see, and an eMMC's is left
 //! off: a flush is done at once, and every write is through. Discarding
@@ -55,7 +63,7 @@ use radix_hw::pci::{Address, Bar, Function, Msi};
 use radix_hw::{Dma, Mmio};
 use radix_klog::{TextBuf, info, warn};
 use radix_mm::{Flags, HEAP, Kmalloc};
-use radix_sdhci::{Card, Detect, Events, Family, Op as SdOp, Presence, Slot};
+use radix_sdhci::{Card, Detect, Events, Family, Op as SdOp, Presence, Quirks, Slot};
 use radix_sync::{Once, SpinLock};
 
 use super::queue::{self, Controller, Disk, Op, Outcome, Part, Request, Volume};
@@ -212,7 +220,8 @@ impl SdSlot {
     }
 
     /// The descriptors' buffers for `data`: themselves when the slot
-    /// reaches them, else the bounce buffer, filled for a write.
+    /// reaches them, and they lie one after another where it moves data by
+    /// SDMA; else the bounce buffer, filled for a write.
     fn place_buffers(&mut self, data: &[(u64, u32)], write: bool) -> Result<bool, Error> {
         self.descriptors.clear();
         self.buffers.clear();
@@ -220,8 +229,10 @@ impl SdSlot {
             return Err(Error::OutOfRange);
         }
         let reached = |&(phys, len): &(u64, u32)| phys + u64::from(len) <= 1 << 32;
+        let together = || data.windows(2).all(|pair| pair[0].0 + u64::from(pair[0].1) == pair[1].0);
+        let direct = data.iter().all(reached) && (!self.slot.contiguous() || together());
         let bounce = match &self.bounce {
-            Some(bounce) if !data.iter().all(reached) => bounce.phys(),
+            Some(bounce) if !direct => bounce.phys(),
             _ => {
                 for &buffer in data {
                     describe(&mut self.descriptors, buffer);
@@ -389,6 +400,8 @@ fn load(
     place: &TextBuf<40>,
     (source, interrupt): (Address, bool),
 ) -> Result<Loaded, &'static str> {
+    // A slot of 32-bit descriptors, or that moves data by SDMA, reaches
+    // only the first 4 GiB.
     let bounce = if slot.reaches_64() {
         None
     } else {
@@ -431,6 +444,15 @@ pub fn bind(function: &Function, next: &mut usize) -> Result<(), &'static str> {
     }
     function.enable_memory_and_dma();
     let source = function.address();
+    let quirks = radix_sdhci::quirks::quirks(function.vendor_id(), function.device_id());
+    if quirks.ricoh_mode {
+        for (offset, value) in radix_sdhci::quirks::RICOH_MODE {
+            function.write8(offset, value);
+        }
+    }
+    if let Some(name) = quirks.name {
+        info!("Disk: the SD card reader at {source} is a {name}: {}", quirk_list(&quirks));
+    }
     let heap = HEAP.with(Flags::MAY_SLEEP);
     let reader = Reader { slots: [const { Once::new() }; MAX_SLOTS as usize], thread: Once::new() };
     let reader = Arc::try_new_in(reader, heap).map_err(|_| "out of memory")?;
@@ -452,7 +474,7 @@ pub fn bind(function: &Function, next: &mut usize) -> Result<(), &'static str> {
         let mut place = TextBuf::<40>::new();
         let _ = write!(place, "{}, slot {}", source, number + 1);
         let at = (&*reader, number);
-        match add_slot(function, first + number, &place, at, interrupt.is_some()) {
+        match add_slot(function, first + number, &place, at, (interrupt.is_some(), quirks)) {
             Ok((watcher, card)) => {
                 *next += usize::from(card);
                 if let Some(watcher) = watcher {
@@ -479,17 +501,32 @@ pub fn bind(function: &Function, next: &mut usize) -> Result<(), &'static str> {
     Ok(())
 }
 
+/// What `quirks` change, for the log.
+fn quirk_list(quirks: &Quirks) -> TextBuf<100> {
+    let all = [
+        (quirks.broken_adma, "SDMA, as its ADMA2 is broken"),
+        (quirks.single_power_write, "power on in one write"),
+        (quirks.reset_after_request, "its lines reset after each request"),
+        (quirks.ricoh_mode, "SD 2.0 mode at 50 MHz"),
+    ];
+    let mut list = TextBuf::new();
+    for (i, (_, what)) in all.iter().filter(|&&(on, _)| on).enumerate() {
+        let _ = write!(list, "{}{what}", if i == 0 { "" } else { ", " });
+    }
+    list
+}
+
 /// Sets up the slot whose registers are in BAR `bar`, the `number`th of
 /// `reader`, and the card in it, its requests raising an `interrupt` or
-/// not. Returns the slot's watcher, for a slot whose cards come and go,
-/// and whether a card was in it.
+/// not, its controller needing `quirks`. Returns the slot's watcher, for
+/// a slot whose cards come and go, and whether a card was in it.
 #[inline(never)]
 fn add_slot(
     function: &Function,
     bar: usize,
     place: &TextBuf<40>,
     (reader, number): (&Reader, usize),
-    interrupt: bool,
+    (interrupt, quirks): (bool, Quirks),
 ) -> Result<(Option<Watcher>, bool), &'static str> {
     let Some(Bar::Memory { address, size, .. }) = function.bar(bar) else {
         return Err("its registers are not in memory");
@@ -501,8 +538,8 @@ fn add_slot(
         .ok_or("its registers could not be mapped")?;
     let source = function.address();
     let mut alloc = |pages: usize, below: bool| <Arch as Devices>::alloc_dma(source, pages, below);
-    let mut slot =
-        Slot::new(regs.clone(), &mut alloc, &mut queue::delay).map_err(|err| err.as_str())?;
+    let mut slot = Slot::new(regs.clone(), &mut alloc, &mut queue::delay, quirks)
+        .map_err(|err| err.as_str())?;
     let removable = slot.removable();
     if !removable && !slot.present() {
         info!("Disk: the SD card reader at {place} is empty");
@@ -514,6 +551,7 @@ fn add_slot(
     let watched = Arc::try_new_in(watched, heap).map_err(|_| "out of memory")?;
     let name = slot_name();
     let (major, minor) = slot.version();
+    let sdma = if slot.contiguous() { " moving data by SDMA" } else { "" };
     let card = if slot.present() {
         Some(slot.identify(&mut queue::delay).map_err(|err| err.as_str())?)
     } else {
@@ -533,7 +571,7 @@ fn add_slot(
         (Some(card), Some(loaded)) => {
             info!(
                 "Disk: {name} is an {} {} at {place}: {}, a version {major}.{minor:02} \
-                 reader",
+                 reader{sdma}",
                 Described(card),
                 if card.family == Family::Emmc {
                     "on the SD host controller"
@@ -549,7 +587,7 @@ fn add_slot(
         _ => {
             info!(
                 "Disk: {name} is an empty slot of the SD card reader at {place}, a version \
-                 {major}.{minor:02} reader"
+                 {major}.{minor:02} reader{sdma}"
             );
             let device = empty.clone();
             register(Entry { name: name.clone(), device, place: None, ident: None });
@@ -563,6 +601,7 @@ fn add_slot(
         regs,
         source,
         interrupt,
+        quirks,
         name,
         place: place.clone(),
         drive: None,
@@ -605,6 +644,8 @@ struct Watcher {
     source: Address,
     /// Its controller interrupts.
     interrupt: bool,
+    /// What its controller needs, for each card's [`Slot`].
+    quirks: Quirks,
     name: Name,
     place: TextBuf<40>,
     /// Set before the thread starts.
@@ -697,7 +738,7 @@ impl Watcher {
         let source = self.source;
         let mut alloc =
             |pages: usize, below: bool| <Arch as Devices>::alloc_dma(source, pages, below);
-        let slot = Slot::new(self.regs.clone(), &mut alloc, &mut queue::delay);
+        let slot = Slot::new(self.regs.clone(), &mut alloc, &mut queue::delay, self.quirks);
         let mut slot = match slot {
             Ok(slot) => slot,
             Err(err) => {
