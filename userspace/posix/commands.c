@@ -68,6 +68,7 @@ static const char *const ELSEWHERE[][2] = {
 		{"rdisk", "the rdisk boot test's: it partitions a blank disk, which no other test has"},
 		{"cloud-setup", "the cloud boot tests' service: it sets a cloud machine up from its config disk or metadata"},
 		{"guest-agent", "the guest-agent boot test's service: it answers QEMU's guest agent on a virtio port"},
+		{"floppy", "the floppy-format boot test's: it formats disks in floppy drives, which no other test has"},
 		{"mkfs", "the rdisk boot test's: it makes filesystems on the partitions rdisk made"},
 		{"mkfs-fat", "the rdisk boot test's: it makes a FAT filesystem on a partition rdisk made"},
 		{"mkfs.fat", "the rdisk boot test's: it runs mkfs-fat by dosfstools' name"},

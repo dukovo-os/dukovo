@@ -46,6 +46,15 @@
 //! REMOVAL locks it in, where the drive can; eject(1) has the thread let
 //! it go and eject it.
 //!
+//! A USB floppy drive (UFI, ADR 0436), over the Control/Bulk/Interrupt
+//! transport (`radix_usb::storage::Cbi`) or Bulk-Only, is a drive named
+//! `fd` as a PC's floppy drive is, the first number free once the PC's
+//! are named. It is looked at only when asked, as a PC floppy drive is
+//! (ADR 0435): radix-block(2)'s REREAD_PARTITIONS has the thread look,
+//! and a request that finds the disk changed has it look too. Its disk
+//! is read whole, with no partition table, and the thread formats it a
+//! track at a time, as FORMAT_TRACK asks (`radix_scsi::ufi`).
+//!
 //! A logical unit that is a CD, DVD or Blu-ray drive (ADR 0431) is a
 //! drive too, named `cd0` and on ([`super::optical`]): the thread asks
 //! the disc in it what it is with the commands of MMC, reads a disc of
@@ -67,15 +76,16 @@ use radix_klog::{TextBuf, info, warn};
 use radix_mm::{Flags, HEAP, Kmalloc};
 use radix_scsi::{
     Absent, Cdb, Data, Found, Inquiry, Meaning, Reply, Transport, TransportError, identify, key,
-    look, medium, prevent_removal, reported_luns,
+    look, medium, prevent_removal, reported_luns, ufi,
 };
 use radix_sync::SpinLock;
+use radix_usb::storage::cbi::Cbi;
 use radix_usb::storage::uas::{MAX_TAGS, OneAtATime, STATUS_LENGTH, Uas};
 use radix_usb::storage::{Bot, MAX_LUNS};
 
 use super::queue::{self, Controller, Disk, Op, Outcome, Part, Request, SLOTS, Volume};
-use super::removable::{self, Disc, DriveRef, Kind};
-use super::{Entry, Ident, Name, Size, optical, register};
+use super::removable::{self, Disc, DriveRef, FormatError, Kind, SIZE_720K, SIZE_1440K, Track};
+use super::{Entry, Ident, Name, Size, floppy, optical, register};
 use crate::sched::{self, ThreadRef};
 use crate::usb::storage::{Link, LinkRef, Protocol, StickPipes, UasPipes};
 
@@ -109,6 +119,10 @@ const LOOK_NS: u64 = 2_000_000_000;
 const BUSY_NS: u64 = 100_000_000;
 /// How much of a REPORT LUNS answer is read: its header and 63 units.
 const REPORT_LENGTH: usize = 512;
+/// The sizes of disk a USB floppy drive formats: a 3.5-inch drive's.
+const FLOPPY_SIZES: &[removable::Size] = &[SIZE_1440K, SIZE_720K];
+/// A 3.5-inch floppy disk's cylinders and heads, of either size.
+const FLOPPY_TRACKS: (u32, u32) = (80, 2);
 
 /// Where a request is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -252,6 +266,8 @@ enum Named {
     Sd(u32),
     /// An optical drive's `cd` number.
     Cd(u32),
+    /// A floppy drive's `fd` number.
+    Fd(u32),
 }
 
 impl Named {
@@ -259,6 +275,7 @@ impl Named {
         match self {
             Named::Sd(letter) => super::give_back_sd_letter(letter),
             Named::Cd(number) => optical::give_back_cd_number(number),
+            Named::Fd(number) => floppy::give_back_fd_number(number),
         }
     }
 }
@@ -381,41 +398,102 @@ impl Medium {
 const UNPLUGGED: &str = "its USB device was unplugged";
 const TAKEN_OUT: &str = "its medium was taken out";
 const EJECTED: &str = "its medium was ejected";
+const FORMATTING: &str = "its disk is being formatted";
 
 impl Lun {
-    /// Looks at the drive if it is one and is due, ejects its medium if
-    /// eject(1) asked, and locks the medium in while it is used, with
-    /// commands that `transport` carries one at a time. Returns when the
-    /// drive is due next: never, for a disk.
+    /// Looks at the drive if it is one and is due, or a floppy drive
+    /// asked to; ejects its medium if eject(1) asked, formats a floppy
+    /// disk's track if FORMAT_TRACK asked; and locks the medium in while
+    /// it is used, with commands that `transport` carries one at a time.
+    /// Returns when the drive is due next: never, for a disk or a floppy
+    /// drive.
     fn tend(&mut self, link: &LinkRef, transport: &mut dyn Transport, now: u64) -> u64 {
         if !self.finish_out() {
             return now.saturating_add(BUSY_NS);
         }
         let Some(watch) = &self.watch else { return u64::MAX };
-        let eject = watch.drive.eject_asked();
-        if !eject && !watch.changed && now < watch.next {
+        let drive = watch.drive.clone();
+        let (eject, asked) = (drive.eject_asked(), drive.look_asked());
+        let format = drive.format_asked();
+        // A track formatted is not looked at: the disk is found once
+        // floppy(1) asks, after the last.
+        let look = eject || asked || watch.changed || now >= watch.next;
+        if !look && format.is_none() {
             return watch.next;
         }
         if eject {
             self.eject(transport);
         }
-        self.look(link, transport);
+        if let Some(track) = format {
+            drive.formatted(self.format(transport, track));
+        }
+        if look {
+            let looked = self.look(link, transport);
+            if asked {
+                drive.looked(looked);
+            }
+        }
         self.lock(transport);
         let Some(watch) = self.watch.as_mut() else { return u64::MAX };
-        watch.next = sched::now_ns().saturating_add(LOOK_NS);
+        watch.next = match drive.kind() {
+            Kind::Floppy => u64::MAX,
+            _ => sched::now_ns().saturating_add(LOOK_NS),
+        };
         watch.next
+    }
+
+    /// Formats `track` of the disk in the floppy drive, as FORMAT_TRACK
+    /// asked (ADR 0436): the disk leaves the kernel first, as what it held
+    /// goes, and the drive is empty until a look finds it formatted.
+    fn format(&mut self, transport: &mut dyn Transport, track: Track) -> Result<(), FormatError> {
+        let (cylinders, heads) = FLOPPY_TRACKS;
+        if track.cylinder >= cylinders || track.head >= heads {
+            return Err(FormatError::OutOfRange);
+        }
+        self.take_out(FORMATTING);
+        // A disk left alone, unformatted, is wanted after all.
+        if let Some(watch) = self.watch.as_mut() {
+            watch.left = false;
+        }
+        let place = (track.cylinder as u8, track.head as u8);
+        if place == (0, 0) {
+            let size = FLOPPY_SIZES.iter().find(|size| size.sectors == track.sectors);
+            let size = size.map_or("", |size| size.name);
+            info!("Disk: {}: formatting its disk as a {size} one", self.name);
+        }
+        let why = match ufi::format_track(transport, self.number, place, track.sectors) {
+            Ok(()) => return Ok(()),
+            Err(why) => why,
+        };
+        let sense = match why {
+            Absent::NoMedium => return Err(FormatError::NoDisk),
+            Absent::Failed(_, sense) => sense,
+            _ => None,
+        };
+        match sense.map(|sense| (sense.meaning(), sense.asc)) {
+            Some((Meaning::NoMedium, _)) => Err(FormatError::NoDisk),
+            Some((Meaning::WriteProtected, _)) => Err(FormatError::WriteProtected),
+            // The disk does not take that size: a double-density disk
+            // formatted as a 1.44 MB one (incompatible medium).
+            Some((Meaning::Unsupported, _) | (_, 0x30)) => Err(FormatError::Unsupported),
+            _ => {
+                let (cylinder, head) = place;
+                warn!("Disk: {}: cylinder {cylinder}, head {head} not formatted: {why}", self.name);
+                Err(FormatError::Failed)
+            }
+        }
     }
 
     /// Looks whether a medium is in the drive, as Linux's `sd_check_events`
     /// does, after an optical drive's media events, as `sr`'s: one taken
     /// out, or changed, is taken out of the kernel, and one put in is put
-    /// in.
-    fn look(&mut self, link: &LinkRef, transport: &mut dyn Transport) {
-        let Some(watch) = self.watch.as_mut() else { return };
+    /// in. Says whether it could look.
+    fn look(&mut self, link: &LinkRef, transport: &mut dyn Transport) -> bool {
+        let Some(watch) = self.watch.as_mut() else { return false };
         let (name, number) = (&self.name, self.number);
         let said = optical::ask_events(transport, number, name, &watch.drive, &mut watch.events);
-        let Ok(found) = look(transport, self.number) else { return };
-        let Some(watch) = self.watch.as_mut() else { return };
+        let Ok(found) = look(transport, self.number) else { return false };
+        let Some(watch) = self.watch.as_mut() else { return false };
         // What a request found counts once.
         let changed = core::mem::take(&mut watch.changed) || found.changed || said;
         match found.medium {
@@ -436,6 +514,7 @@ impl Lun {
                 }
             }
         }
+        true
     }
 
     /// The medium in the drive, found by [`look`], is put in: it gets a
@@ -495,8 +574,9 @@ impl Lun {
                 if found.write_cache { ", write cache" } else { "" },
             );
         }
-        // A disc has no partition table, as Linux's `sr` reads none.
-        let parts = if inquiry.is_optical() {
+        // A disc has no partition table, as Linux's `sr` reads none, nor
+        // a floppy disk, as Linux reads none on one.
+        let parts = if inquiry.is_optical() || link.ufi {
             None
         } else {
             read_table(transport, self.number, &found, &self.name, &device)
@@ -743,6 +823,8 @@ impl<'a> Queued<'a> {
 enum Wire<'a> {
     Bot(Bot<StickPipes<'a>>),
     Uas(Box<Queued<'a>, Kmalloc>),
+    /// A floppy drive's Control/Bulk/Interrupt transport.
+    Cbi(Cbi<StickPipes<'a>>),
 }
 
 impl Wire<'_> {
@@ -751,6 +833,7 @@ impl Wire<'_> {
     fn one<R>(&mut self, f: impl FnOnce(&mut dyn Transport) -> R) -> R {
         match self {
             Wire::Bot(bot) => f(bot),
+            Wire::Cbi(cbi) => f(cbi),
             Wire::Uas(queued) => {
                 let Queued { uas, pipes, .. } = &mut **queued;
                 f(&mut OneAtATime { uas, pipes })
@@ -800,10 +883,13 @@ impl<'a> Stick<'a> {
         let reserved = frames.try_reserve_exact(SUPER_SEGMENTS).is_ok()
             && part.try_reserve_exact(SUPER_SEGMENTS).is_ok();
         let wire = match link.protocol {
-            Protocol::Bot { .. } => {
-                StickPipes::new(link).map(|p| Wire::Bot(Bot::new(p, link.interface)))
-            }
+            Protocol::Bot { .. } => StickPipes::new(link).map(|p| {
+                let bot = Bot::new(p, link.interface);
+                Wire::Bot(if link.ufi { bot.ufi() } else { bot })
+            }),
             Protocol::Uas { streams, .. } => Queued::new(link, streams).map(Wire::Uas),
+            Protocol::Cbi { interrupt, .. } => StickPipes::new(link)
+                .map(|p| Wire::Cbi(Cbi::new(p, link.interface, interrupt.is_some(), link.ufi))),
         };
         let (Some(mut wire), true) = (wire, reserved) else {
             warn!("Disk: USB {}: out of memory for its disks", link.place);
@@ -814,7 +900,7 @@ impl<'a> Stick<'a> {
         let count = logical_units(&mut wire, &mut numbers)?;
         // Over UAS the tags are shared among the units, each its part.
         let jobs = match &wire {
-            Wire::Bot(_) => 1,
+            Wire::Bot(_) | Wire::Cbi(_) => 1,
             Wire::Uas(queued) => (queued.uas.depth() / count).max(1),
         };
         let mut wait = |ms: u32| sched::sleep_ns(u64::from(ms) * 1_000_000);
@@ -878,13 +964,13 @@ impl<'a> Stick<'a> {
     /// Serves the disks' requests until the stick is unplugged.
     fn serve(&mut self) {
         match self.wire {
-            Wire::Bot(_) => self.serve_one_at_a_time(),
+            Wire::Bot(_) | Wire::Cbi(_) => self.serve_one_at_a_time(),
             Wire::Uas(_) => self.serve_queued(),
         }
     }
 
-    /// Serves the requests one at a time, over Bulk-Only, and looks at
-    /// the drives between them.
+    /// Serves the requests one at a time, over Bulk-Only or a floppy
+    /// drive's CBI, and looks at the drives between them.
     fn serve_one_at_a_time(&mut self) {
         while !self.link.is_gone() {
             let mut served = false;
@@ -1253,6 +1339,8 @@ fn slice(frames: &[(u64, u32)], from: u64, len: u64, out: &mut Vec<(u64, u32), K
 fn logical_units(wire: &mut Wire<'_>, numbers: &mut [u8; MAX_LUNS]) -> Option<usize> {
     let max_lun = match wire {
         Wire::Bot(bot) => bot.max_lun().ok()?,
+        // A UFI drive has one.
+        Wire::Cbi(_) => 0,
         Wire::Uas(_) => {
             let mut bytes = [0u8; REPORT_LENGTH];
             let cdb = Cdb::report_luns(REPORT_LENGTH as u32);
@@ -1306,6 +1394,11 @@ fn add(
     let (named, name) = if optical.is_some() {
         let (number, name) = optical::take_cd_name().ok_or("too many optical drives")?;
         (Named::Cd(number), name)
+    } else if link.ufi {
+        // After the PC's floppy drives, which take their numbers.
+        floppy::wait_for_names();
+        let (number, name) = floppy::take_fd_name(None).ok_or("too many floppy drives")?;
+        (Named::Fd(number), name)
     } else {
         let (letter, name) = super::take_sd_name().ok_or("too many SATA and USB disks")?;
         (Named::Sd(letter), name)
@@ -1331,17 +1424,25 @@ fn add_named(
         Err(_) => None,
     };
     // A drive whose medium comes and goes: one that says so, an optical
-    // drive, or one that has none in it now, as a card reader's empty
-    // slot.
-    let watch = if inquiry.removable || optical.is_some() || made.is_none() {
+    // or a floppy drive, or one that has none in it now, as a card
+    // reader's empty slot.
+    let watch = if inquiry.removable || optical.is_some() || link.ufi || made.is_none() {
         let empty: DeviceRef = Arc::try_new_in(Empty, heap).map_err(|_| "out of memory")?;
         let thread = sched::current().ok_or("it has no thread")?;
-        let kind = if optical.is_some() { Kind::Optical } else { Kind::Polled };
-        let drive = removable::add(&name, thread, kind).ok_or("out of memory")?;
+        let (kind, formats) = match optical {
+            Some(_) => (Kind::Optical, &[][..]),
+            None if link.ufi => (Kind::Floppy, FLOPPY_SIZES),
+            None => (Kind::Polled, &[][..]),
+        };
+        let drive = removable::add(&name, thread, kind, formats).ok_or("out of memory")?;
         if let Some(optical) = optical {
             let _ = drive.set_disc(optical.disc);
         }
-        let next = sched::now_ns().saturating_add(LOOK_NS);
+        // A floppy drive is looked at only when asked (ADR 0435).
+        let next = match kind {
+            Kind::Floppy => u64::MAX,
+            _ => sched::now_ns().saturating_add(LOOK_NS),
+        };
         let left = matches!(found, Err(Some(_)));
         let (changed, locked, lockable, out) = (false, false, true, None);
         // An optical drive is asked for its media events (ADR 0432).
@@ -1353,6 +1454,8 @@ fn add_named(
     let how = match link.protocol {
         Protocol::Uas { .. } => ", USB Attached SCSI",
         Protocol::Bot { .. } => "",
+        Protocol::Cbi { interrupt: Some(_), .. } => ", Control/Bulk/Interrupt",
+        Protocol::Cbi { interrupt: None, .. } => ", Control/Bulk",
     };
     let ident = Some(ident(link, &inquiry));
     let mut added = Lun { number, name, named, inquiry, jobs, medium: None, watch };
@@ -1381,8 +1484,9 @@ fn add_named(
     let Some((medium, device)) = made else {
         let (name, place) = (&added.name, &link.place);
         if optical.is_none() {
+            let drive = if link.ufi { "floppy drive" } else { "drive" };
             info!(
-                "Disk: {name} is a USB drive with no medium in it on {place}{lun}: {vendor} \
+                "Disk: {name} is a USB {drive} with no medium in it on {place}{lun}: {vendor} \
                  {product} {revision}{how}"
             );
             if let Err(Some(why)) = found {
@@ -1398,9 +1502,10 @@ fn add_named(
     let info = device.info();
     if optical.is_none() {
         info!(
-            "Disk: {} is a USB disk of {} on {}{lun}: {vendor} {product} {revision}, {} bytes a \
+            "Disk: {} is a USB {} of {} on {}{lun}: {vendor} {product} {revision}, {} bytes a \
              block{}{}{}{}{how}",
             added.name,
+            if link.ufi { "floppy drive with a disk" } else { "disk" },
             Size(info.sectors * SECTOR),
             link.place,
             info.block_size,
@@ -1412,8 +1517,9 @@ fn add_named(
     }
     register(Entry { name: added.name.clone(), device: device.clone(), place: None, ident });
     added.medium = Some(medium);
-    // A disc has no partition table, as Linux's `sr` reads none.
-    if optical.is_none() {
+    // A disc has no partition table, as Linux's `sr` reads none, nor a
+    // floppy disk.
+    if optical.is_none() && !link.ufi {
         let parts = wire.one(|t| read_table(t, number, &found, &added.name, &device));
         for part in parts.iter().flatten() {
             super::add_partition(&added.name, &device, part);
@@ -1458,7 +1564,7 @@ fn new_medium(
     let max_segments = match link.protocol {
         Protocol::Uas { .. } => UAS_SEGMENTS,
         Protocol::Bot { .. } if link.speed.is_super() => SUPER_SEGMENTS,
-        Protocol::Bot { .. } => USB2_SEGMENTS,
+        Protocol::Bot { .. } | Protocol::Cbi { .. } => USB2_SEGMENTS,
     };
     let info = Info {
         sectors: capacity.blocks.saturating_mul(unit),

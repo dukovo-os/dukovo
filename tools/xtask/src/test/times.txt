@@ -54,6 +54,7 @@ ext4-power-cut 36
 ext4-write 32
 feature 20
 floppy 60
+floppy-format 60
 fpu 15
 framework-ec 15
 fuse 19

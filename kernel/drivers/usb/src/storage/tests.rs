@@ -587,6 +587,18 @@ fn the_probe_finds_the_disk_through_the_transport() {
     assert_eq!(sent, [op::INQUIRY, op::TEST_UNIT_READY, op::READ_CAPACITY_10, op::MODE_SENSE_6]);
 }
 
+#[test]
+fn a_ufi_drive_over_bulk_only_gets_its_commands_padded_to_twelve_bytes() {
+    let mut bot = Bot::new(Stick::new(64), 2).ufi();
+    let reply = bot.command(0, &Cdb::test_unit_ready(), Data::None, 1000);
+    assert_eq!(reply, Ok(Reply::Good { residue: 0 }));
+    let cbw = bot.pipes().cbws[0];
+    assert_eq!(cbw[14], 12);
+    assert_eq!(cbw[15..27], [op::TEST_UNIT_READY, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+    // A longer block stays as it is.
+    assert_eq!(Cdb::read(0, 1, true).unwrap().padded(12).bytes().len(), 16);
+}
+
 proptest! {
     #[test]
     fn any_status_is_read_without_panicking(bytes in proptest::collection::vec(any::<u8>(), 0..20), tag in any::<u32>()) {

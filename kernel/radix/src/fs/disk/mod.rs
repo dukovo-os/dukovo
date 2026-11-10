@@ -954,8 +954,9 @@ fn reread(device: &DeviceRef) -> Result<(), Status> {
 /// radix-block(2)'s `control` requests on `device`: `argument` is the
 /// caller's address of the value a request writes or reads, and
 /// `may_write` whether the caller's capability has the write right, which
-/// DISCARD, FLUSH, SWAP_ON, SWAP_OFF and REREAD_PARTITIONS need, and
-/// UNLOCK but to unlock read-only; EJECT does not, as on Linux, nor
+/// DISCARD, FLUSH, SWAP_ON, SWAP_OFF, REREAD_PARTITIONS and FORMAT_TRACK
+/// need, and UNLOCK but to unlock read-only; EJECT does not, as on Linux,
+/// nor
 /// REREAD_PARTITIONS on a floppy drive, which looks for a disk. Any other
 /// request is not one of a block device.
 pub fn control(
@@ -992,6 +993,7 @@ pub fn control(
         | request::SWAP_ON
         | request::SWAP_OFF
         | request::REREAD_PARTITIONS
+        | request::FORMAT_TRACK
             if !may_write =>
         {
             Err(Kernel::MissingRights.status(0))
@@ -1028,6 +1030,7 @@ pub fn control(
         request::REREAD_PARTITIONS => reread(device),
         request::UNLOCK => unlock(device, argument, may_write),
         request::EJECT => eject(device),
+        request::FORMAT_TRACK => format_track(device, argument),
         _ => Err(Kernel::NotTerminal.status(0)),
     }
 }
@@ -1045,6 +1048,32 @@ fn floppy_drive(device: &DeviceRef) -> Option<removable::DriveRef> {
 fn look(device: &DeviceRef) -> Result<(), Status> {
     let drive = floppy_drive(device).ok_or(Kernel::InvalidArgument.status(0))?;
     drive.look().map_err(block_status)
+}
+
+/// FORMAT_TRACK: formats the track of the disk in the floppy drive
+/// `device` is that the caller's `argument` names, through the drive's
+/// driver's thread (ADR 0436). Refused with `in_use` while the drive is
+/// in use, and `not_supported` on a device that is not a floppy drive.
+fn format_track(device: &DeviceRef, argument: u64) -> Result<(), Status> {
+    use self::removable::{FormatError, Track};
+    let mut bytes = [0u8; request::FORMAT_SIZE as usize];
+    if !<Arch as UserMode>::copy_from_user(&mut bytes, argument) {
+        return Err(Kernel::BadAddress.status(0));
+    }
+    let (words, _) = bytes.as_chunks::<4>();
+    let [sectors, cylinder, head] = [0, 1, 2].map(|at| u32::from_le_bytes(words[at]));
+    let drive = floppy_drive(device).ok_or(Kernel::NotSupported.status(0))?;
+    let name = name_of(device).ok_or(Kernel::NotSupported.status(0))?;
+    if in_use(name.as_str()) {
+        return Err(FileError::InUse.status(0));
+    }
+    drive.format(Track { sectors, cylinder, head }).map_err(|err| match err {
+        FormatError::NoDisk => FileError::NoDevice.status(0),
+        FormatError::WriteProtected => FileError::ReadOnly.status(0),
+        FormatError::Unsupported => Kernel::NotSupported.status(0),
+        FormatError::OutOfRange => Kernel::InvalidArgument.status(1),
+        FormatError::Failed => FileError::Io.status(0),
+    })
 }
 
 /// EJECT: ejects the medium of the drive `device` is (ADR 0430), through

@@ -424,6 +424,11 @@ const INSTALL_BESIDE_WINDOWS: u8 = 27;
 /// of [`cases::cloud_config`], whose keys it makes (ADR 0328).
 const CLOUD_CONFIG: u8 = 28;
 
+/// [`Disk::fat`] for a blank disk, zeros only, that the case formats and
+/// makes a filesystem on itself: the floppy disks of
+/// [`cases::floppy_format`] (ADR 0436).
+const BLANK: u8 = 29;
+
 /// The program of a version of lighthouse that answers its health check,
 /// with `nc` listening on its socket.
 macro_rules! lighthouse_answers {
@@ -4084,6 +4089,13 @@ fn make_disks(
                 .map_err(|err| format!("writing {}: {err}", image.path.display()))?;
             let tool = btrfs::tool(ctx).map_err(|err| err.to_string())?;
             made.push(DiskImage { btrfs: Some(tool), ..image });
+            continue;
+        }
+        if disk.fat == BLANK {
+            std::fs::File::create(&image.path)
+                .and_then(|file| file.set_len(image.bytes))
+                .map_err(|err| format!("writing {}: {err}", image.path.display()))?;
+            made.push(image);
             continue;
         }
         if disk.fat == INSTALL_BESIDE_WINDOWS {

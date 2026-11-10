@@ -4,7 +4,7 @@
 //! The controller against a simulated one: an 82077AA's command, execution
 //! and result phases, channel 2 of the DMA controller with its page
 //! register, and two drives whose disks are images in memory, with their
-//! disk change lines.
+//! disk change lines, and tracks that FORMAT TRACK formats.
 
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
@@ -24,6 +24,9 @@ struct SimDisk {
     format: Format,
     bytes: Vec<u8>,
     read_only: bool,
+    /// Whether each track (a cylinder's head 0, then its head 1) has its
+    /// sector IDs written: a track without has none for READ ID to find.
+    formatted: Vec<bool>,
 }
 
 impl SimDisk {
@@ -34,7 +37,21 @@ impl SimDisk {
         for (number, sector) in bytes.chunks_mut(SECTOR).enumerate() {
             sector[..4].copy_from_slice(&(number as u32).to_le_bytes());
         }
-        SimDisk { format, bytes, read_only: false }
+        let tracks = usize::from(format.cylinders) * usize::from(format.heads);
+        SimDisk { format, bytes, read_only: false, formatted: vec![true; tracks] }
+    }
+
+    /// A disk for `format`'s drive that was never formatted.
+    fn blank(format: Format) -> SimDisk {
+        let mut disk = SimDisk::new(format);
+        disk.formatted.fill(false);
+        disk
+    }
+
+    /// Whether the track under `head` at `cylinder` is formatted.
+    fn has_track(&self, cylinder: u8, head: u8) -> bool {
+        let track = usize::from(cylinder) * usize::from(self.format.heads) + usize::from(head);
+        self.formatted.get(track).copied().unwrap_or(false)
     }
 
     /// A disk of `format` whose boot sector's parameter block says it has
@@ -199,6 +216,7 @@ impl Sim {
             0x03 | 0x0f => 3,
             0x04 | 0x07 | 0x0a => 2,
             0x05 | 0x06 => 9,
+            0x0d => 6,
             0x08 | 0x10 => 1,
             0x13 => 4,
             _ => 1,
@@ -246,11 +264,14 @@ impl Sim {
             }
             0x0a => {
                 let drive = &self.drives[usize::from(unit)];
-                let found = drive.disk.as_ref().is_some_and(|d| d.format.rate.bits() == self.rate);
+                let found = drive.disk.as_ref().is_some_and(|d| {
+                    d.format.rate.bits() == self.rate && d.has_track(drive.cylinder, head)
+                });
                 let (st0, st1) = if found { (0, 0) } else { (0x40, 0x01) };
                 self.executing = 3;
                 self.results.extend([st0 | head << 2 | unit, st1, 0, drive.cylinder, head, 1, 2]);
             }
+            0x0d => self.format(command),
             0x0f => {
                 self.drives[usize::from(unit)].step_to(command[2]);
                 self.interrupts.push_back((0x20 | unit, command[2]));
@@ -277,7 +298,8 @@ impl Sim {
             self.results.extend(id(0x40, 0x01, 0));
             return;
         };
-        if disk.format.rate.bits() != self.rate || head != at_head {
+        let unformatted = !disk.has_track(cylinder, head);
+        if disk.format.rate.bits() != self.rate || head != at_head || unformatted {
             self.results.extend(id(0x40, 0x01, 0));
             return;
         }
@@ -322,6 +344,43 @@ impl Sim {
             sector += 1;
         }
         self.results.extend(id(st.0, st.1, 0));
+    }
+}
+
+impl Sim {
+    /// FORMAT TRACK: writes the sector IDs the DMA controller hands over,
+    /// which must be the track's own in order, and fills each sector.
+    fn format(&mut self, command: &[u8]) {
+        let (unit, head) = (command[1] & 0x03, command[1] >> 2 & 1);
+        let (size, sectors, filler) = (command[2], command[3], command[5]);
+        self.executing = 3;
+        let drive = &mut self.drives[usize::from(unit)];
+        let cylinder = drive.cylinder;
+        let id = |st0: u8, st1: u8| [st0 | head << 2 | unit, st1, 0, cylinder, head, 1, size];
+        let Some(disk) = drive.disk.as_mut() else {
+            self.results.extend(id(0x48, 0));
+            return;
+        };
+        if disk.read_only {
+            self.results.extend(id(0x40, 0x02));
+            return;
+        }
+        assert_eq!(command[0], 0x4d, "FORMAT TRACK with MFM");
+        assert!(!self.dma.masked, "the DMA channel is unmasked for a format");
+        assert_eq!(self.dma.mode & 0x0c, 0x08, "the DMA channel moves out of memory");
+        assert_eq!(disk.format.rate.bits(), self.rate, "the track is formatted at its rate");
+        assert_eq!((size, sectors), (2, disk.format.sectors), "the disk's sectors");
+        assert_eq!(usize::from(self.dma.count) + 1, usize::from(sectors) * 4, "one ID a sector");
+        let start = (u64::from(self.dma.page) << 16 | u64::from(self.dma.address)) - MEMORY;
+        let ids = &self.memory[start as usize..][..usize::from(sectors) * 4];
+        for (number, id) in (1..=sectors).zip(ids.as_chunks::<4>().0) {
+            assert_eq!(*id, [cylinder, head, number, 2], "sector {number}'s ID");
+        }
+        let track = usize::from(cylinder) * usize::from(disk.format.heads) + usize::from(head);
+        disk.formatted[track] = true;
+        let len = usize::from(sectors) * SECTOR;
+        disk.bytes[track * len..][..len].fill(filler);
+        self.results.extend(id(0, 0));
     }
 }
 
@@ -662,4 +721,92 @@ fn qemu_s_resources_give_the_first_controller() {
     assert_eq!(found.dma, Some(2));
     assert_eq!(format::resources(&[0x79, 0x00]), None);
     assert_eq!(format::resources(&[0x47, 0x01]), None, "a cut descriptor");
+}
+
+/// Formats every track of the disk in drive 0 as `format`, as the kernel
+/// does: each track's IDs written into the DMA buffer, then FORMAT TRACK.
+fn format_all(sim: &Arc<Mutex<Sim>>, fdc: &mut Fdc<Window>, format: &Format) -> Result<(), Error> {
+    let mut ids = [0u8; 18 * format::ID_BYTES];
+    for cylinder in 0..format.cylinders {
+        for head in 0..format.heads {
+            let len = format.track_ids(cylinder, head, &mut ids);
+            sim.lock().unwrap().memory[..len].copy_from_slice(&ids[..len]);
+            fdc.format_track(0, format, (cylinder, head), MEMORY, &mut no_wait)?;
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn a_track_s_ids_number_its_sectors_in_order() {
+    let mut ids = [0u8; 18 * format::ID_BYTES];
+    assert_eq!(DD_720.track_ids(5, 1, &mut ids), 36);
+    assert_eq!(&ids[..8], &[5, 1, 1, 2, 5, 1, 2, 2]);
+    assert_eq!(&ids[32..36], &[5, 1, 9, 2]);
+    assert_eq!(HD_1440.track_ids(79, 1, &mut ids), 72);
+    assert_eq!(HD_1440.track_ids(80, 0, &mut ids), 0, "past the last cylinder");
+    assert_eq!(HD_1440.track_ids(0, 2, &mut ids), 0, "a third head");
+    assert_eq!(HD_1440.track_ids(0, 0, &mut ids[..71]), 0, "too little room");
+}
+
+#[test]
+fn a_blank_disk_formatted_is_found_and_reads_as_filler() {
+    for (format, kind) in [(HD_1440, DriveKind::Inch35Hd), (DD_720, DriveKind::Inch35Hd)] {
+        let sim = sim_with(Some(SimDisk::blank(format)));
+        let mut fdc = controller(&sim);
+        fdc.motor(0, true);
+        let found = fdc.detect(0, kind, MEMORY, &mut reader(&sim), &mut no_wait);
+        assert_eq!(found, Ok(Found::Unformatted), "a blank disk has no sector IDs");
+        assert_eq!(format_all(&sim, &mut fdc, &format), Ok(()));
+        let found = fdc.detect(0, kind, MEMORY, &mut reader(&sim), &mut no_wait);
+        let format = if format == HD_1440 { &HD_1440 } else { &DD_720 };
+        assert_eq!(found, Ok(Found::Disk(format)), "a formatted disk holds no boot sector");
+        let last = format.total() - format.cylinder_sectors();
+        let read = fdc.transfer(0, Direction::Read, format, last, 2, MEMORY, &mut no_wait);
+        assert_eq!(read, Ok(()));
+        let memory = &sim.lock().unwrap().memory;
+        assert!(memory[..2 * SECTOR].iter().all(|&b| b == format::FILLER));
+    }
+}
+
+#[test]
+fn a_formatted_track_loses_what_it_held() {
+    let sim = sim_with(Some(SimDisk::new(HD_1440)));
+    let mut fdc = controller(&sim);
+    fdc.motor(0, true);
+    let mut ids = [0u8; 18 * format::ID_BYTES];
+    let len = HD_1440.track_ids(2, 1, &mut ids);
+    sim.lock().unwrap().memory[..len].copy_from_slice(&ids[..len]);
+    assert_eq!(fdc.format_track(0, &HD_1440, (2, 1), MEMORY, &mut no_wait), Ok(()));
+    let sim = sim.lock().unwrap();
+    let disk = sim.drives[0].disk.as_ref().unwrap();
+    // Cylinder 2's head 1 is sectors 90 to 107.
+    assert!(disk.bytes[90 * SECTOR..108 * SECTOR].iter().all(|&b| b == format::FILLER));
+    assert_eq!(disk.bytes[89 * SECTOR], 89, "head 0's track is untouched");
+    assert_eq!(disk.bytes[108 * SECTOR], 108, "the next cylinder is untouched");
+    assert_eq!(sim.drives[0].cylinder, 2, "the heads went to the track's cylinder");
+}
+
+#[test]
+fn a_write_protected_disk_is_not_formatted() {
+    let mut disk = SimDisk::blank(HD_1440);
+    disk.read_only = true;
+    let sim = sim_with(Some(disk));
+    let mut fdc = controller(&sim);
+    fdc.motor(0, true);
+    assert_eq!(format_all(&sim, &mut fdc, &HD_1440), Err(Error::WriteProtected));
+    assert!(!sim.lock().unwrap().drives[0].disk.as_ref().unwrap().formatted[0]);
+}
+
+#[test]
+fn a_track_off_the_disk_is_not_formatted() {
+    let sim = sim_with(Some(SimDisk::blank(DD_720)));
+    let mut fdc = controller(&sim);
+    fdc.motor(0, true);
+    let format =
+        |fdc: &mut Fdc<Window>, track| fdc.format_track(0, &DD_720, track, MEMORY, &mut no_wait);
+    assert_eq!(format(&mut fdc, (80, 0)), Err(Error::BadRequest));
+    assert_eq!(format(&mut fdc, (0, 2)), Err(Error::BadRequest));
+    let commands = &sim.lock().unwrap().commands;
+    assert!(!commands.contains(&0x4d), "no FORMAT TRACK was sent");
 }

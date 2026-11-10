@@ -22,6 +22,8 @@
 //!   in while it is used, and [`eject`].
 //! - For a CD, DVD or Blu-ray drive (ADR 0431), [`mmc`]: what the disc in
 //!   it is, and where its last session starts.
+//! - For a USB floppy drive (ADR 0436), [`ufi`]: formatting its disk a
+//!   track at a time.
 //!
 //! The crate knows nothing of the kernel or of USB, so its tests run on
 //! the host. Nothing a device sends is trusted without checking its
@@ -36,6 +38,7 @@ pub mod mmc;
 mod probe;
 #[cfg(test)]
 mod tests;
+pub mod ufi;
 
 pub use probe::{Absent, Found, Look, eject, identify, look, medium, prevent_removal, probe};
 
@@ -46,10 +49,16 @@ pub mod op {
     pub const TEST_UNIT_READY: u8 = 0x00;
     /// REQUEST SENSE: why the last command failed.
     pub const REQUEST_SENSE: u8 = 0x03;
+    /// FORMAT UNIT: formats the medium, as a USB floppy drive takes it a
+    /// track at a time.
+    pub const FORMAT_UNIT: u8 = 0x04;
     /// INQUIRY: what the device is.
     pub const INQUIRY: u8 = 0x12;
     /// MODE SENSE(6): the device's parameters.
     pub const MODE_SENSE_6: u8 = 0x1a;
+    /// MODE SENSE(10): the same, with a longer header; a USB floppy
+    /// drive's only MODE SENSE.
+    pub const MODE_SENSE_10: u8 = 0x5a;
     /// START STOP UNIT: spins the medium up or down, or ejects it.
     pub const START_STOP_UNIT: u8 = 0x1b;
     /// PREVENT ALLOW MEDIUM REMOVAL: locks the medium in, or lets it go.
@@ -172,6 +181,13 @@ impl Cdb {
         self.bytes[0]
     }
 
+    /// The block padded with zeros to `length` bytes, as a UFI drive takes
+    /// every command (`ufi`): as it is, if it is that long already.
+    pub fn padded(&self, length: usize) -> Cdb {
+        let length = length.clamp(usize::from(self.len), CDB_MAX);
+        Cdb { bytes: self.bytes, len: length as u8 }
+    }
+
     /// TEST UNIT READY.
     pub fn test_unit_ready() -> Cdb {
         Cdb::new(&[op::TEST_UNIT_READY, 0, 0, 0, 0, 0])
@@ -197,6 +213,13 @@ impl Cdb {
     /// descriptors), `length` bytes.
     pub fn mode_sense_6(page: u8, length: u8) -> Cdb {
         Cdb::new(&[op::MODE_SENSE_6, 0, page & 0x3f, 0, length, 0])
+    }
+
+    /// MODE SENSE(10) of mode page `page` (its current values), `length`
+    /// bytes: the only MODE SENSE a USB floppy drive takes.
+    pub fn mode_sense_10(page: u8, length: u16) -> Cdb {
+        let [high, low] = length.to_be_bytes();
+        Cdb::new(&[op::MODE_SENSE_10, 0, page & 0x3f, 0, 0, 0, 0, high, low, 0])
     }
 
     /// START STOP UNIT: starts the medium, or stops it; with `eject`,
@@ -450,6 +473,13 @@ pub fn write_protected(header: &[u8]) -> Option<bool> {
     header.get(2).map(|parameter| parameter & 0x80 != 0)
 }
 
+/// Whether a medium is write-protected, from MODE SENSE(10)'s header,
+/// whose device-specific parameter is its fourth byte. `None` if the
+/// header is short.
+pub fn write_protected_10(header: &[u8]) -> Option<bool> {
+    header.get(3).filter(|_| header.len() >= 8).map(|parameter| parameter & 0x80 != 0)
+}
+
 /// The caching mode page's code.
 pub const CACHING_PAGE: u8 = 0x08;
 
@@ -512,7 +542,7 @@ pub enum Meaning {
 
 /// Words for the additional sense codes the log meets most, by code and
 /// qualifier.
-const CODES: [((u8, u8), &str); 24] = [
+const CODES: [((u8, u8), &str); 27] = [
     ((0x00, 0x00), "no additional sense information"),
     ((0x04, 0x00), "not ready, cause not reportable"),
     ((0x04, 0x01), "becoming ready"),
@@ -528,7 +558,10 @@ const CODES: [((u8, u8), &str); 24] = [
     ((0x28, 0x00), "the medium may have changed"),
     ((0x29, 0x00), "power on or reset"),
     ((0x30, 0x00), "incompatible medium installed"),
+    ((0x30, 0x01), "cannot read medium, unknown format"),
     ((0x30, 0x02), "cannot read medium, incompatible format"),
+    ((0x31, 0x00), "medium format corrupted"),
+    ((0x31, 0x01), "format command failed"),
     ((0x3a, 0x00), "medium not present"),
     ((0x3a, 0x01), "medium not present, tray closed"),
     ((0x3a, 0x02), "medium not present, tray open"),

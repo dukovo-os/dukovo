@@ -50,6 +50,13 @@ struct Sim {
     sent: Vec<u8>,
     /// The disc of an optical drive, which answers MMC's commands.
     disc: Option<mmc::Disc>,
+    /// A USB floppy drive (UFI): MODE SENSE(10) alone, and FORMAT UNIT.
+    ufi: bool,
+    /// The data of the last command that sent the device some.
+    out: Vec<u8>,
+    /// The tracks FORMAT UNIT formatted: cylinder, side, and the disk's
+    /// blocks.
+    formatted: Vec<(u8, u8, u32)>,
 }
 
 impl Sim {
@@ -77,7 +84,15 @@ impl Sim {
             gone: false,
             sent: Vec::new(),
             disc: None,
+            ufi: false,
+            out: Vec::new(),
+            formatted: Vec::new(),
         }
+    }
+
+    /// A USB floppy drive with a 1.44 MB disk in it.
+    fn floppy() -> Sim {
+        Sim { ufi: true, blocks: 2880, ..Sim::stick() }
     }
 
     fn sense(key: u8, asc: u8, ascq: u8) -> Reply {
@@ -162,6 +177,33 @@ impl Sim {
                 out.resize(32, 0);
                 Reply::Good { residue: 0 }
             }
+            op::MODE_SENSE_10 if self.ufi => {
+                // The header, and the flexible disk page.
+                out.extend([0, 38, 0x94, if self.protected { 0x80 } else { 0 }, 0, 0, 0, 0]);
+                out.extend([0x05, 30]);
+                out.extend([0; 30]);
+                Reply::Good { residue: 0 }
+            }
+            op::FORMAT_UNIT if self.ufi => {
+                if self.no_medium {
+                    return Sim::sense(key::NOT_READY, 0x3a, 0);
+                }
+                if self.protected {
+                    return Sim::sense(key::DATA_PROTECT, 0x27, 0);
+                }
+                let list = &self.out;
+                let blocks = u32::from_be_bytes(list[4..8].try_into().unwrap());
+                let length = u32::from_be_bytes([0, list[9], list[10], list[11]]);
+                assert_eq!((cdb.len(), cdb[1]), (12, 0x17), "a UFI format with its parameters");
+                assert_eq!(list[1] & 0xfe, 0x90, "format options valid, one track");
+                assert_eq!((list[3], length), (8, 512), "a descriptor of 512-byte blocks");
+                if ![1440, 2880].contains(&blocks) {
+                    return Sim::sense(key::ILLEGAL_REQUEST, 0x26, 0);
+                }
+                self.formatted.push((cdb[2], list[1] & 1, blocks));
+                Reply::Good { residue: 0 }
+            }
+            op::MODE_SENSE_6 if self.ufi => Sim::sense(key::ILLEGAL_REQUEST, 0x20, 0),
             op::MODE_SENSE_6 => {
                 if self.no_mode_sense || (self.no_all_pages && cdb[2] & 0x3f == ALL_PAGES) {
                     return Sim::sense(key::ILLEGAL_REQUEST, 0x24, 0);
@@ -210,6 +252,9 @@ impl Transport for Sim {
         if self.broken > 0 {
             self.broken -= 1;
             return Err(TransportError::Failed("the device stopped answering"));
+        }
+        if let Data::Out(bytes) = &data {
+            self.out = bytes.to_vec();
         }
         let mut out = Vec::new();
         let reply = self.answer(cdb.bytes(), &mut out);
@@ -347,6 +392,58 @@ fn write_protection_is_read_from_every_page_then_page_zero_else_writable() {
     assert_eq!(sim.sent.iter().filter(|&&op| op == op::MODE_SENSE_6).count(), 2);
     let mut sim = Sim { protected: true, no_mode_sense: true, ..Sim::stick() };
     assert!(!probe_sim(&mut sim).0.unwrap().read_only);
+}
+
+#[test]
+fn a_usb_floppy_drive_says_it_is_write_protected_in_mode_sense_10() {
+    for protected in [false, true] {
+        let mut sim = Sim { protected, ..Sim::floppy() };
+        let found = probe_sim(&mut sim).0.unwrap();
+        assert_eq!(found.read_only, protected);
+        assert_eq!(found.capacity.blocks, 2880);
+        assert!(!found.write_cache);
+        assert_eq!(sim.sent.last(), Some(&op::MODE_SENSE_10), "after MODE SENSE(6) failed");
+    }
+    assert_eq!(write_protected_10(&[0, 6, 0, 0x80, 0, 0, 0, 0]), Some(true));
+    assert_eq!(write_protected_10(&[0, 6, 0, 0x80]), None, "a short header");
+    assert_eq!(
+        Cdb::mode_sense_10(ALL_PAGES, 192).bytes(),
+        [op::MODE_SENSE_10, 0, 0x3f, 0, 0, 0, 0, 0, 192, 0]
+    );
+}
+
+#[test]
+fn a_usb_floppy_disk_is_formatted_a_track_at_a_time() {
+    let mut sim = Sim::floppy();
+    for (track, side) in [(0, 0), (0, 1), (79, 1)] {
+        assert_eq!(ufi::format_track(&mut sim, 0, (track, side), 2880), Ok(()));
+    }
+    assert_eq!(ufi::format_track(&mut sim, 0, (5, 0), 1440), Ok(()));
+    assert_eq!(sim.formatted, [(0, 0, 2880), (0, 1, 2880), (79, 1, 2880), (5, 0, 1440)]);
+    let refused = ufi::format_track(&mut sim, 0, (0, 0), 2400);
+    assert!(matches!(refused, Err(Absent::Failed("FORMAT UNIT", Some(s))) if s.asc == 0x26));
+    assert_eq!(
+        ufi::format_parameters(1, 2880, 512),
+        [0, 0x91, 0, 8, 0, 0, 0x0b, 0x40, 0, 0, 0x02, 0]
+    );
+    assert_eq!(ufi::format_unit(42).bytes(), [0x04, 0x17, 42, 0, 0, 0, 0, 0, 12, 0, 0, 0]);
+}
+
+#[test]
+fn a_usb_floppy_drive_refuses_to_format_a_protected_or_missing_disk() {
+    let mut sim = Sim { protected: true, ..Sim::floppy() };
+    let refused = ufi::format_track(&mut sim, 0, (0, 0), 2880);
+    let meaning = |r: Result<(), Absent>| match r {
+        Err(Absent::Failed(_, Some(sense))) => Some(sense.meaning()),
+        _ => None,
+    };
+    assert_eq!(meaning(refused), Some(Meaning::WriteProtected));
+    let mut sim = Sim { no_medium: true, ..Sim::floppy() };
+    assert_eq!(meaning(ufi::format_track(&mut sim, 0, (0, 0), 2880)), Some(Meaning::NoMedium));
+    // A disk put in says so first; the format goes again.
+    let mut sim = Sim { changes: std::vec![0x28], ..Sim::floppy() };
+    assert_eq!(ufi::format_track(&mut sim, 0, (3, 0), 2880), Ok(()));
+    assert_eq!(sim.formatted, [(3, 0, 2880)]);
 }
 
 #[test]

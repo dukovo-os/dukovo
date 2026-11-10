@@ -536,7 +536,8 @@ fn add(
         let options = Options::new().held().policy(Policy::Fair { nice: -5 });
         let thread = sched::spawn("optical", drive_main, index, options)
             .map_err(|_| "its thread could not be started")?;
-        let drive = removable::add(&name, thread.clone(), Kind::Optical).ok_or("out of memory")?;
+        let drive =
+            removable::add(&name, thread.clone(), Kind::Optical, &[]).ok_or("out of memory")?;
         let handoff = Handoff { link, name: name.clone(), number: cd, source, place, drive, empty };
         let handoff = Box::try_new_in(handoff, heap).map_err(|_| "out of memory")?;
         let ident = Ident {

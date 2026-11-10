@@ -101,6 +101,8 @@ error that starts with the tool's name.
 :  the mounts, as a tree, or the one sought
 |  *firewall*(8)
 :  the firewall's rules, and what listens
+|  *floppy*(1)
+:  list floppy drives, look for a disk in one, and format its disk
 |  *fstrim*(8)
 :  discard what a mounted filesystem does not use
 |  *free*(1)

@@ -82,6 +82,7 @@ mod facl;
 mod feature;
 mod findmnt;
 mod firewall;
+mod floppy;
 mod fstrim;
 mod git_credential;
 mod guest_agent;
@@ -213,6 +214,7 @@ const TOOLS: &[(&str, Tool)] = &[
     ("feature", feature::main),
     ("findmnt", findmnt::main),
     ("firewall", firewall::main),
+    ("floppy", floppy::main),
     ("fsck-btrfs", btrfs::fsck_btrfs),
     ("fsck-fat", mkfs::fsck_fat),
     ("fsck.fat", mkfs::fsck_fat),

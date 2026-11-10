@@ -1,0 +1,61 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "floppy lists the drive and the sizes it formats; floppy format formats a blank 1.44 MB disk and a 720 KB one, reads each back, makes a FAT filesystem labelled as asked and mounts it; a disk mounted or write-protected is not formatted"
+time = "10m"
+
+# The drive, empty, and the sizes of disk it formats (ADR 0436).
+[[step]]
+run = "floppy"
+expect = ["fd0: formats 1.44M and 720K", "no disk"]
+# A blank 1.44 MB disk, formatted a track at a time, read back, given a
+# FAT labelled LABFMT, and mounted at its label.
+[[step]]
+floppy = "insert"
+blank = "1.44M"
+[[step]]
+run = "floppy format -n LABFMT fd0"
+root = true
+expect = ["reading the disk back", "making a FAT filesystem on it", "mounted the FAT filesystem of fd0 at /volumes/LABFMT"]
+[[step]]
+run = "findmnt /volumes/LABFMT"
+expect = ["vfat", "rw"]
+[[step]]
+run = "sh -c 'seq 1 20000 > /volumes/LABFMT/seq.txt && seq 1 20000 | cmp - /volumes/LABFMT/seq.txt && echo same'"
+root = true
+expect = "same"
+# Not while it is mounted.
+[[step]]
+run = "sh -c 'floppy format fd0 2>&1; echo \"ended $?\"'"
+root = true
+expect = ["fd0 is mounted at /volumes/LABFMT", "eject it first", "ended 1"]
+[[step]]
+run = "eject LABFMT"
+root = true
+[[step]]
+floppy = "eject"
+# A blank 720 KB disk, formatted at its own size.
+[[step]]
+floppy = "insert"
+blank = "720K"
+[[step]]
+run = "floppy format -s 720K -n DD720 fd0"
+root = true
+expect = "mounted the FAT filesystem of fd0 at /volumes/DD720"
+[[step]]
+run = "sh -c 'echo \"size $(cat /kernel/block/fd0/size)\"'"
+expect = "size 1440"
+[[step]]
+run = "eject DD720"
+root = true
+[[step]]
+floppy = "eject"
+# A write-protected disk: the drive refuses to format it.
+[[step]]
+floppy = "insert"
+blank = "1.44M"
+protected = true
+[[step]]
+run = "sh -c 'floppy format fd0 2>&1; echo \"ended $?\"'"
+root = true
+expect = ["write-protected", "ended 1"]

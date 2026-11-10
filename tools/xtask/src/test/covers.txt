@@ -159,6 +159,9 @@ feature userspace/programs/systools/src/share.rs
 floppy kernel/drivers/fdc/ kernel/radix/src/fs/disk/floppy.rs kernel/radix/src/fs/disk/handed.rs
 floppy kernel/radix/src/fs/disk/removable.rs kernel/fs/fat/ userspace/programs/systools/src/eject.rs
 floppy userspace/programs/systools/src/rdisk.rs userspace/programs/systools/src/volumed.rs
+floppy-format kernel/drivers/fdc/ kernel/radix/src/fs/disk/floppy.rs kernel/radix/src/fs/disk/removable.rs
+floppy-format kernel/fs/fat/ userspace/programs/disk/src/fat.rs userspace/programs/systools/src/floppy.rs
+floppy-format userspace/programs/systools/src/mkfs.rs userspace/programs/systools/src/volumed.rs
 fpu kernel/arch/
 framework-ec kernel/drivers/crosec/ tools/xtask/src/acpi/ userspace/programs/systools/src/ectool.rs
 fuse kernel/fs/fuse/ userspace/programs/fuse-test/
