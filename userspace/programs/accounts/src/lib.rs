@@ -16,7 +16,8 @@
 //!
 //! authd alone changes them, when asked over its socket ([`request`]);
 //! `ob image --user` makes one in an image before its first boot. An
-//! administrator is an account in the [`ADMINS`] group.
+//! administrator is an account in the [`ADMINS`] group; one also in the
+//! [`WITHOUT_PASSWORD`] group elevates without typing a password.
 //!
 //! Lines of the files that are not entries, or that this does not read,
 //! are kept as they are when a file is written again, so that an edit by
@@ -79,6 +80,15 @@ pub const NO_SHELL: &str = "/system/commands/false";
 pub const ADMINS: &str = "admins";
 /// Its number, as Linux's `wheel` has.
 pub const ADMINS_GROUP: u32 = 10;
+
+/// The group of administrators who elevate without typing a password, as
+/// a `NOPASSWD` sudo rule lets Linux's (ADR 0328): a cloud machine's
+/// account, which signs in with an SSH key and has a password no one
+/// knows. Its members are named in it; a group of one's own gives none.
+pub const WITHOUT_PASSWORD: &str = "elevate-without-password";
+
+/// The [`WITHOUT_PASSWORD`] group's number, when authd makes it.
+pub const WITHOUT_PASSWORD_GROUP: u32 = 11;
 /// The folders a new home has, as the security design names them: each
 /// of the user's own, with `applications` for their bundles and
 /// `app-data` for apps' private data (Phase 13d).
@@ -483,24 +493,46 @@ pub fn add_service(
 /// Puts `name` in the [`ADMINS`] group, made if there is none, or takes
 /// it out: not as its own group, which only another `gid` changes.
 pub fn set_admin(groups: &mut Table<Group>, name: &str, admin: bool) -> Result<(), String> {
-    if let Some(admins) = groups.entries_mut().find(|g| g.name == ADMINS) {
-        let listed = admins.members.iter().any(|m| m == name);
-        if admin && !listed {
-            admins.members.push(name.into());
-        } else if !admin {
-            admins.members.retain(|m| m != name);
+    set_member(groups, ADMINS, ADMINS_GROUP, name, admin)
+}
+
+/// Puts `name` in the [`WITHOUT_PASSWORD`] group, made if there is none,
+/// or takes it out.
+pub fn set_without_password(
+    groups: &mut Table<Group>,
+    name: &str,
+    without: bool,
+) -> Result<(), String> {
+    set_member(groups, WITHOUT_PASSWORD, WITHOUT_PASSWORD_GROUP, name, without)
+}
+
+/// Lists `name` among the members of the group `group`, made with the
+/// number `gid` if there is none, or takes it out.
+fn set_member(
+    groups: &mut Table<Group>,
+    group: &str,
+    gid: u32,
+    name: &str,
+    member: bool,
+) -> Result<(), String> {
+    if let Some(found) = groups.entries_mut().find(|g| g.name == group) {
+        let listed = found.members.iter().any(|m| m == name);
+        if member && !listed {
+            found.members.push(name.into());
+        } else if !member {
+            found.members.retain(|m| m != name);
         }
         return Ok(());
     }
-    if !admin {
+    if !member {
         return Ok(());
     }
-    if groups.entries().any(|g| g.gid == ADMINS_GROUP) {
+    if groups.entries().any(|g| g.gid == gid) {
         return Err(format!(
-            "there is no {ADMINS} group, and its number, {ADMINS_GROUP}, is another group's"
+            "there is no {group} group, and its number, {gid}, is another group's"
         ));
     }
-    groups.push(Group { name: ADMINS.into(), gid: ADMINS_GROUP, members: vec![name.into()] });
+    groups.push(Group { name: group.into(), gid, members: vec![name.into()] });
     Ok(())
 }
 
@@ -574,6 +606,14 @@ pub fn is_admin(user: &User, groups: &Table<Group>) -> bool {
         || groups
             .entries()
             .any(|g| g.name == ADMINS && (g.gid == user.gid || g.members.contains(&user.name)))
+}
+
+/// Whether the administrator `user` elevates without typing a password:
+/// listed in the [`WITHOUT_PASSWORD`] group. Root elevates without one
+/// anyway; anyone else is no administrator, and does not elevate.
+pub fn elevates_without_password(user: &User, groups: &Table<Group>) -> bool {
+    is_admin(user, groups)
+        && groups.entries().any(|g| g.name == WITHOUT_PASSWORD && g.members.contains(&user.name))
 }
 
 /// The groups `user` is in besides its own, as initgroups(3) finds

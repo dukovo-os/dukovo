@@ -198,7 +198,15 @@ pub enum TestImage {
     /// labelled DUKOVO_LIVE, holding the release in its `release`
     /// directory (ADR 0433).
     Live,
+    /// A cloud machine's disk (ADR 0328): an installed system's, whose
+    /// root turns cloud-setup and sshd on, with [`CLOUD_ROOM`] of free
+    /// space after the root, as a cloud's disk is larger than its image.
+    Cloud,
 }
+
+/// The free space after a cloud image's root on its test disk, which
+/// cloud-setup grows the root over.
+pub const CLOUD_ROOM: u64 = 256 << 20;
 
 /// One boot test.
 pub struct Case {
@@ -389,6 +397,11 @@ const INSTALL_FIRST_DISK: u8 = 26;
 /// the case's second boot boots from it alone, as [`INSTALL_TARGET`]'s
 /// ([`cases::install_beside`], ADR 0314). It is the case's first disk.
 const INSTALL_BESIDE_WINDOWS: u8 = 27;
+
+/// [`Disk::fat`] for a cloud machine's config disk, NoCloud's: FAT16 on
+/// the whole disk, with the `meta-data`, `user-data` and `network-config`
+/// of [`cases::cloud_config`], whose keys it makes (ADR 0328).
+const CLOUD_CONFIG: u8 = 28;
 
 /// The program of a version of lighthouse that answers its health check,
 /// with `nc` listening on its socket.
@@ -887,6 +900,12 @@ const fn bundle_files_disk(kib: u64, label: &'static str) -> Disk {
 /// ([`CATALOG_SITE`]), which Spark mounts at `/volumes/<disk>`.
 const fn catalog_site_disk(kib: u64, label: &'static str) -> Disk {
     Disk { fat: CATALOG_SITE, ..fat_disk(kib, 32, label, Table::None, Bus::Virtio) }
+}
+
+/// A virtio config disk of `kib` KiB ([`CLOUD_CONFIG`]): FAT12, as
+/// cloud-localds makes one, labelled CIDATA.
+const fn cloud_config_disk(kib: u64) -> Disk {
+    Disk { fat: CLOUD_CONFIG, ..fat_disk(kib, 12, "CIDATA", Table::None, Bus::Virtio) }
 }
 
 /// A FAT32 virtio disk of `kib` KiB, labelled `label`, holding the files
@@ -3272,7 +3291,7 @@ pub fn build_test_image(
         TestImage::Plain => "dukovo-test",
         TestImage::Microcode => "dukovo-test-microcode",
         TestImage::Live => "dukovo-test-live",
-        TestImage::Installed => {
+        TestImage::Installed | TestImage::Cloud => {
             return Err(Error::new("an installed system's test image needs its root's UUID"));
         }
     };
@@ -3454,7 +3473,7 @@ fn test_images(
     built: &Built,
     dir: &Path,
     cases: &[&Case],
-    root: Option<&TestRoot>,
+    roots: &TestRoots,
 ) -> Result<TestImages> {
     let mut images: TestImages = Vec::new();
     for case in cases {
@@ -3462,11 +3481,11 @@ fn test_images(
         if images.iter().any(|(made, _)| *made == key) {
             continue;
         }
-        let bytes = match (key.0, root) {
-            (TestImage::Installed, Some(root)) => {
+        let bytes = match (key.0, roots.of(case)) {
+            (TestImage::Installed | TestImage::Cloud, Some(root)) => {
                 build_installed_test_image(ctx, built, dir, root.uuid)?
             }
-            (TestImage::Installed, None) => {
+            (TestImage::Installed | TestImage::Cloud, None) => {
                 crate::bail!("{}: an installed system's disk needs the Dukovo root", case.name)
             }
             _ => build_test_image(ctx, built, dir, key.0, key.1)?,
@@ -3483,26 +3502,50 @@ pub struct TestRoot {
     uuid: [u8; 16],
 }
 
-/// Makes the Dukovo root in `dir` if a case of `cases` boots an installed
-/// system or has a disk of it.
-fn test_root(ctx: &Ctx, built: &Built, dir: &Path, cases: &[&Case]) -> Result<Option<TestRoot>> {
-    let wanted = cases.iter().any(|case| {
+/// The Dukovo roots of the cases: an installed system's, and a cloud
+/// machine's, each if a case needs it.
+#[derive(Default)]
+pub struct TestRoots {
+    installed: Option<TestRoot>,
+    cloud: Option<TestRoot>,
+}
+
+impl TestRoots {
+    /// The root `case` boots, or has a disk of.
+    fn of(&self, case: &Case) -> Option<&TestRoot> {
+        match case.image {
+            TestImage::Cloud => self.cloud.as_ref(),
+            _ => self.installed.as_ref(),
+        }
+    }
+
+    /// Removes the roots' files.
+    fn remove(&self) {
+        for root in [&self.installed, &self.cloud].into_iter().flatten() {
+            let _ = std::fs::remove_file(&root.path);
+        }
+    }
+}
+
+/// Makes the Dukovo roots in `dir` that `cases` need: an installed
+/// system's if a case boots one or has a disk of it, and a cloud
+/// machine's, with cloud-setup and sshd turned on, if a case boots one.
+fn test_roots(ctx: &Ctx, built: &Built, dir: &Path, cases: &[&Case]) -> Result<TestRoots> {
+    let make = |name: &str, cloud: bool| -> Result<TestRoot> {
+        let path = dir.join(format!("{name}.btrfs"));
+        let staging = dir.join(format!("{name}-staging"));
+        let extras = image::Extras { cloud, ..image::Extras::default() };
+        let uuid = image::make_root(ctx, &built.kernel, &built.programs, &staging, &path, extras)?;
+        Ok(TestRoot { path, uuid })
+    };
+    let installed = cases.iter().any(|case| {
         case.image == TestImage::Installed || case.disks.iter().any(|disk| disk.fat == ROOT)
     });
-    if !wanted {
-        return Ok(None);
-    }
-    let path = dir.join("root.btrfs");
-    let staging = dir.join("root-staging");
-    let uuid = image::make_root(
-        ctx,
-        &built.kernel,
-        &built.programs,
-        &staging,
-        &path,
-        image::Extras::default(),
-    )?;
-    Ok(Some(TestRoot { path, uuid }))
+    let cloud = cases.iter().any(|case| case.image == TestImage::Cloud);
+    Ok(TestRoots {
+        installed: if installed { Some(make("root", false)?) } else { None },
+        cloud: if cloud { Some(make("cloud-root", true)?) } else { None },
+    })
 }
 
 /// Makes the install stick's DUKOVO_LIVE filesystem in `dir`, holding the
@@ -3531,6 +3574,19 @@ fn append_own(
             let root = root.ok_or("the Dukovo root's filesystem was not made")?;
             image::append_root(image, root).map_err(|err| err.to_string())?;
         }
+        TestImage::Cloud => {
+            let root = root.ok_or("the cloud machine's root filesystem was not made")?;
+            image::append_root(image, root).map_err(|err| err.to_string())?;
+            // The cloud's disk is larger than the image: room to grow.
+            std::fs::OpenOptions::new()
+                .write(true)
+                .open(image)
+                .and_then(|file| {
+                    let bytes = file.metadata()?.len();
+                    file.set_len(bytes + CLOUD_ROOM)
+                })
+                .map_err(|err| format!("growing {}: {err}", image.display()))?;
+        }
         TestImage::Live if !case.media.is_cd() => {
             let live = live.ok_or("the DUKOVO_LIVE filesystem was not made")?;
             image::append_live(image, live).map_err(|err| err.to_string())?;
@@ -3546,9 +3602,9 @@ fn append_own(
 fn case_images(ctx: &Ctx, built: &Built, cases: &[&Case]) -> Result<()> {
     let dir = ctx.out.join("test");
     process::create_dir(&dir)?;
-    let root = test_root(ctx, built, &dir, cases)?;
+    let roots = test_roots(ctx, built, &dir, cases)?;
     let live = test_live(ctx, built, &dir, cases)?;
-    let images = test_images(ctx, built, &dir, cases, root.as_ref())?;
+    let images = test_images(ctx, built, &dir, cases, &roots)?;
     for case in cases {
         let iso = case.media.is_cd();
         let base = &images.iter().find(|(made, _)| *made == (case.image, iso)).expect("built").1;
@@ -3556,13 +3612,11 @@ fn case_images(ctx: &Ctx, built: &Built, cases: &[&Case]) -> Result<()> {
         let image = with_cmdline(base, case.cmdline).map_err(Error::new)?;
         std::fs::write(&path, image)
             .map_err(|err| Error::new(format!("writing {}: {err}", path.display())))?;
-        let root = root.as_ref().map(|root| root.path.as_path());
+        let root = roots.of(case).map(|root| root.path.as_path());
         append_own(case, &path, root, live.as_deref()).map_err(Error::new)?;
         step(&format!("Wrote {}, which boots `{}`", ctx.display(&path), case.cmdline));
     }
-    if let Some(root) = &root {
-        let _ = std::fs::remove_file(&root.path);
-    }
+    roots.remove();
     if let Some(live) = &live {
         let _ = std::fs::remove_file(live);
     }
@@ -3573,10 +3627,10 @@ fn boot_tests(ctx: &Ctx, built: &Built, cases: &[&Case], timeout: Duration) -> R
     qemu::require_qemu()?;
     let dir = ctx.out.join("test");
     process::create_dir(&dir)?;
-    // The root comes first: an installed system's menu names its UUID.
-    let root = test_root(ctx, built, &dir, cases)?;
+    // The roots come first: an installed system's menu names its UUID.
+    let roots = test_roots(ctx, built, &dir, cases)?;
     let live = test_live(ctx, built, &dir, cases)?;
-    let images = test_images(ctx, built, &dir, cases, root.as_ref())?;
+    let images = test_images(ctx, built, &dir, cases, &roots)?;
 
     let kvm = qemu::kvm_available();
     step(&format!(
@@ -3589,7 +3643,7 @@ fn boot_tests(ctx: &Ctx, built: &Built, cases: &[&Case], timeout: Duration) -> R
         let key = (case.image, case.media.is_cd());
         let base = &images.iter().find(|(made, _)| *made == key).expect("built above").1;
         let started = Instant::now();
-        let root = root.as_ref().map(|root| root.path.as_path());
+        let root = roots.of(case).map(|root| root.path.as_path());
         let outcome = run_case(ctx, case, base, (root, live.as_deref()), &dir, kvm, timeout);
         let secs = started.elapsed().as_secs_f32();
         match outcome {
@@ -3614,9 +3668,7 @@ fn boot_tests(ctx: &Ctx, built: &Built, cases: &[&Case], timeout: Duration) -> R
             }
         }
     }
-    if let Some(root) = &root {
-        let _ = std::fs::remove_file(&root.path);
-    }
+    roots.remove();
     if let Some(live) = &live {
         let _ = std::fs::remove_file(live);
     }
@@ -4115,6 +4167,11 @@ fn make_disks(
         }
         if disk.fat == SERVICE_FILES {
             make_service_files(ctx, disk, &image.path)?;
+            made.push(image);
+            continue;
+        }
+        if disk.fat == CLOUD_CONFIG {
+            cases::cloud_config::make(disk, &image.path)?;
             made.push(image);
             continue;
         }
@@ -5848,7 +5905,7 @@ fn consoles(vm: &mut Vm, case: &Case) -> Result<(), String> {
     vm.expect("Boot complete.")?;
     vm.expect("spark: Spark v2 is process ")?;
     vm.expect("spark: listening at /system/live/spark/control")?;
-    vm.expect("spark: 22 services in /system/settings/spark/services, 19 enabled")?;
+    vm.expect("spark: 23 services in /system/settings/spark/services, 19 enabled")?;
     vm.expect("spark: started consoled (/system/commands/consoled) as process ")?;
     vm.expect("consoled: console of ")?;
     vm.expect("consoled: started /system/commands/nukesh on tty1 as process ")?;
@@ -9390,7 +9447,7 @@ fn principals(vm: &mut Vm, case: &Case) -> Result<(), String> {
 fn services(vm: &mut Vm, case: &Case) -> Result<(), String> {
     boot_report(vm, case)?;
     vm.expect("Boot complete.")?;
-    vm.expect_anywhere("spark: 22 services in /system/settings/spark/services, 19 enabled")?;
+    vm.expect_anywhere("spark: 23 services in /system/settings/spark/services, 19 enabled")?;
     vm.expect_ahead("spark: started /system/tests/posix/servicetest as process ")?;
     let code = program_line(vm, "(/system/tests/posix/servicetest) exited with code ")?;
     let log = vm.log();

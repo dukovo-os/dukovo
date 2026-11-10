@@ -107,6 +107,14 @@ catalog-install ports/bat/ ports/ripgrep/ tools/xtask/src/bundles.rs tools/xtask
 catalog-install userspace/programs/catalog-repo/ userspace/programs/dkv/
 catalog-install userspace/programs/manifest/ userspace/programs/systools/src/bundled.rs
 catalog-install userspace/programs/systools/src/bundles.rs userspace/programs/systools/src/bundles/
+cloud-config userspace/programs/systools/src/cloud.rs userspace/programs/systools/src/cloud/
+cloud-config userspace/defaults/spark/services/cloud-setup.toml tools/xtask/src/image.rs
+cloud-config userspace/programs/accounts/ userspace/programs/systools/src/account.rs
+cloud-config userspace/programs/systools/src/authd.rs userspace/programs/systools/src/elevate.rs
+cloud-config userspace/programs/systools/src/rdisk.rs userspace/programs/systools/src/device.rs
+cloud-config userspace/programs/systools/src/netd.rs
+cloud-metadata userspace/programs/systools/src/cloud.rs userspace/programs/systools/src/cloud/
+cloud-metadata userspace/defaults/spark/services/cloud-setup.toml
 console-access kernel/lib/fbcon/ tools/xtask/src/screen.rs userspace/defaults/console/
 console-access userspace/programs/consoled/ userspace/programs/systools/src/reader.rs
 consoles kernel/lib/fbcon/ kernel/lib/hid/ kernel/lib/input/ kernel/lib/tty/

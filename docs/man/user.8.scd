@@ -21,7 +21,7 @@ user - make, list, disable, remove, rename and change accounts
 
 *user rename* _name_ _new-name_
 
-*user set* [*--full-name* _name_] [*--admin* | *--no-admin*] [*--yes*] _name_
+*user set* [*--full-name* _name_] [*--admin* | *--no-admin*] [*--elevate-without-password* | *--elevate-with-password*] [*--yes*] _name_
 
 # DESCRIPTION
 
@@ -93,6 +93,20 @@ administrator's password and enables the account.
 
 *--no-admin*
 	With *user set*: the account is no longer an administrator's.
+
+*--elevate-without-password*
+	With *user set*: the administrator elevates without typing a
+	password, as a *NOPASSWD* rule of sudo's lets one on Linux: the
+	account goes in the *elevate-without-password* group (ADR 0328).
+	A cloud machine's account is made so by *cloud-setup*(8), as it
+	signs in with an SSH key and has a password no one knows. Anyone
+	who signs in as it, or runs a program as it, can then do anything
+	as root: give it to an account whose password, keys and sessions
+	are safe.
+
+*--elevate-with-password*
+	With *user set*: the administrator types their password to
+	elevate again, as by default.
 
 *--keep-home*
 	With *user remove*: keep the home where it is. Its files stay

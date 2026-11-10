@@ -657,8 +657,13 @@ impl Authd {
                     (add_service(files, name, whose, home, peer), now)
                 }
                 Request::Rename { name, new } => (self.rename(files, name, new, peer), now),
-                Request::Set { name, full_name, admin } => {
-                    (self.set(files, name, full_name.as_deref(), *admin, peer), now)
+                Request::Set { name, full_name, admin, without_password } => {
+                    let change = Change {
+                        full_name: full_name.as_deref(),
+                        admin: *admin,
+                        without_password: *without_password,
+                    };
+                    (self.set(files, name, &change, peer), now)
                 }
                 Request::Session { name, password, term } => {
                     let (answer, at) = self.session(i, &files, name, password, term, peer, now);
@@ -1143,8 +1148,9 @@ impl Authd {
     }
 
     /// Checks the password of an elevate or unlock request from `peer`,
-    /// `user`, in `pane`: none is needed in a pane unlocked, or from root;
-    /// otherwise one must come, and be `user`'s. Whether one was typed, or
+    /// `user`, in `pane`: none is needed in a pane unlocked, from root, or
+    /// from a member of the elevate-without-password group; otherwise one
+    /// must come, and be `user`'s. Whether one was typed, or
     /// the answer to give: `ok password` when one is needed and none came.
     /// When `ask` lets it and a program asks for passwords on the
     /// consoles, the pane's console is to ask for it instead
@@ -1161,7 +1167,9 @@ impl Authd {
         now: Instant,
     ) -> Result<bool, (Answer, Instant)> {
         let open = pane.and_then(|p| self.unlocked.get(p)).is_some_and(|&until| until > now);
-        if open || peer.is_root() {
+        // An administrator of the elevate-without-password group, as a
+        // cloud machine's account is, is asked for none (ADR 0328).
+        if open || peer.is_root() || accounts::elevates_without_password(user, &files.groups) {
             return Ok(false);
         }
         let Some(password) = password else {
@@ -1241,7 +1249,13 @@ impl Authd {
         if let Some(pane) = pane {
             self.unlocked.insert(pane, now + elevate::UNLOCKED_FOR);
         }
-        let how = if typed { "password typed" } else { "unlocked" };
+        let how = match typed {
+            true => "password typed",
+            false if accounts::elevates_without_password(&user, &files.groups) => {
+                "no password needed"
+            }
+            false => "unlocked",
+        };
         audit!(
             "{} elevated on {terminal} ({how}): process {process} runs {}, for process {}",
             user.name,
@@ -2246,19 +2260,13 @@ impl Authd {
     }
 
     /// Changes `name`'s full name, or whether it is an administrator.
-    fn set(
-        &mut self,
-        files: Files,
-        name: &str,
-        full_name: Option<&str>,
-        admin: Option<bool>,
-        peer: Peer,
-    ) -> Answer {
+    fn set(&mut self, files: Files, name: &str, change: &Change<'_>, peer: Peer) -> Answer {
+        let Change { full_name, admin, without_password } = *change;
         let Some(user) = files.user(name).cloned() else {
             return Answer::Refused(format!("there is no account {}", shown(name)));
         };
         // Anyone changes their own full name, as chfn(1) lets them.
-        let own = peer.user == user.uid && admin.is_none();
+        let own = peer.user == user.uid && admin.is_none() && without_password.is_none();
         if !peer.is_root() && !own {
             let why = "only an administrator, inside elevate, changes an account's settings; \
                        anyone changes their own full name";
@@ -2289,6 +2297,15 @@ impl Authd {
                 ));
             }
             changed.push(if admin { "an administrator" } else { "not an administrator" }.into());
+        }
+        if let Some(without) = without_password {
+            if let Err(why) = accounts::set_without_password(&mut groups, name, without) {
+                return Answer::Refused(why);
+            }
+            changed.push(
+                if without { "elevates without a password" } else { "elevates with its password" }
+                    .into(),
+            );
         }
         let written = replace(accounts::GROUP, &groups.text(), 0o644)
             .and_then(|()| replace(accounts::PASSWD, &users.text(), 0o644));
@@ -2649,6 +2666,14 @@ struct Elevation<'a> {
     directory: &'a [u8],
     language: &'a [String],
     command: &'a [Vec<u8>],
+}
+
+/// What `user set` changes of an account: each setting it names.
+#[derive(Clone, Copy)]
+struct Change<'a> {
+    full_name: Option<&'a str>,
+    admin: Option<bool>,
+    without_password: Option<bool>,
 }
 
 /// The account of `peer`, if it is an administrator's, or why not.

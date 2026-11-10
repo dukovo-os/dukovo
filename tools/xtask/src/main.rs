@@ -172,7 +172,7 @@ the Cargo.lock of each bundle's port in Rust with cargo-audit.
   --rebuild <name>   Build this port even if nothing changed; repeat for more"
         }
         "image" => {
-            "Usage: ./ob image [--iso | --installed | --lab [--lab-key <file>] [--lab-password <file>]]
+            "Usage: ./ob image [--iso | --installed | --cloud | --lab [--lab-key <file>] [--lab-password <file>]]
                   [--cmdline <flags>] [--microcode <path>] [--disk-check <serial>]
                   [--user <name> [--full-name <name>] [--password-file <path>]
                   [--test-cost]] [--debug | --release]
@@ -183,6 +183,7 @@ legacy BIOS from a USB stick, a hard disk or optical media:
   out/dukovo-<version>-x86_64.iso             (with --iso)
   out/dukovo-<version>-x86_64-installed.img   (with --installed)
   out/dukovo-<version>-x86_64-lab.img         (with --lab)
+  out/dukovo-<version>-x86_64-cloud.img       (with --cloud; and .qcow2, .vmdk, .vhdx)
 The .img is the install stick: its menu starts the live system, and its
 DUKOVO_LIVE partition holds the signed release the installer installs
 (ADR 0308).
@@ -192,6 +193,12 @@ DUKOVO_LIVE partition holds the signed release the installer installs
   --installed          The disk of an installed system instead: GRUB starts the
                        kernel and the startup archive from the root's system slot,
                        and the system runs from the disk, not from memory (ADR 0307)
+  --cloud              A cloud machine's disk: an installed system's, with
+                       cloud-setup(8) and sshd turned on, raw and, by the host's
+                       qemu-img, as qcow2 (KVM, Proxmox, OpenStack, DigitalOcean),
+                       VMDK (VMware, VirtualBox) and VHDX (Hyper-V); at its first
+                       boot it takes its name, accounts and SSH keys from a
+                       config disk labelled cidata or the cloud (ADR 0328)
   --lab                An installed system's disk for the Dukovo Lab, never a
                        release: beside the system's slot, an administrator's
                        account `lab` that signs in only over SSH with the lab's
@@ -890,12 +897,19 @@ fn dispatch(argv: Vec<String>) -> Result<()> {
             ports::build_and_pack(&ctx, &rebuild).map(|_| ())
         }
         "image" => {
-            let kind = match (args.flag("--iso"), args.flag("--installed"), args.flag("--lab")) {
-                (true, false, false) => image::Kind::Iso,
-                (false, true, false) => image::Kind::Installed,
-                (false, false, true) => image::Kind::Lab,
-                (false, false, false) => image::Kind::Stick,
-                _ => bail!("--iso, --installed and --lab cannot be combined"),
+            let kinds = [
+                (args.flag("--iso"), image::Kind::Iso),
+                (args.flag("--installed"), image::Kind::Installed),
+                (args.flag("--lab"), image::Kind::Lab),
+                (args.flag("--cloud"), image::Kind::Cloud),
+            ];
+            let mut asked = kinds.iter().filter(|(asked, _)| *asked).map(|&(_, kind)| kind);
+            let kind = match (asked.next(), asked.next()) {
+                (None, _) => image::Kind::Stick,
+                (Some(kind), None) => kind,
+                (Some(_), Some(_)) => {
+                    bail!("--iso, --installed, --lab and --cloud cannot be combined")
+                }
             };
             let lab_key = args.value("--lab-key")?;
             let lab_password = args.value("--lab-password")?;
@@ -927,6 +941,16 @@ fn dispatch(argv: Vec<String>) -> Result<()> {
             println!("\nImage ready: {}", ctx.display(&path));
             if kind == image::Kind::Lab {
                 println!("A test image, never a release: test it with ./ob lab run.");
+            } else if kind == image::Kind::Cloud {
+                for (extension, _, _, takes) in image::CLOUD_FORMATS {
+                    let file = path.with_extension(extension);
+                    println!("              {} ({takes})", ctx.display(&file));
+                }
+                println!(
+                    "The .img is raw, for AWS and any cloud that takes raw disks. Give the machine \
+                     a config disk labelled cidata, or run it on DigitalOcean or AWS, and \
+                     cloud-setup sets it up (the handbook's Cloud and virtual machines chapter)."
+                );
             } else if kind == image::Kind::Installed {
                 println!("Boot it with ./ob run --installed, or write it to a disk of its own.");
             } else if kind == image::Kind::Iso {

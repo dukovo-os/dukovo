@@ -183,7 +183,8 @@ pub fn user(args: &mut Args) -> Result<i32, Fail> {
                 user enable name\n       \
                 user remove [--keep-home | --archive-home | --delete-home] [--yes] name\n       \
                 user rename name new-name\n       \
-                user set [--full-name NAME] [--admin | --no-admin] [--yes] name";
+                user set [--full-name NAME] [--admin | --no-admin]\n                \
+                         [--elevate-without-password | --elevate-with-password] [--yes] name";
     let Some(subcommand) = args.subcommand() else {
         return match args.next()? {
             Some(Arg::Long(l)) if l == "help" => {
@@ -520,22 +521,29 @@ fn rename(args: &mut Args) -> Result<i32, Fail> {
     done(answer, |text| println!("{}.", capitalized(text)))
 }
 
-/// `user set`: changes an account's full name, or whether it is an
-/// administrator's.
+/// `user set`: changes an account's full name, whether it is an
+/// administrator's, or whether it elevates without a password (ADR
+/// 0328).
 fn set(args: &mut Args) -> Result<i32, Fail> {
-    let (mut full_name, mut admin) = (None, None);
+    let (mut full_name, mut admin, mut without_password) = (None, None, None);
     let (names, yes) = operands(args, "user set needs a name", 1, |args, arg| {
         match arg {
             Arg::Long(l) if l == "full-name" => full_name = Some(args.text()?),
             Arg::Long(l) if l == "admin" => admin = Some(true),
             Arg::Long(l) if l == "no-admin" => admin = Some(false),
+            Arg::Long(l) if l == "elevate-without-password" => without_password = Some(true),
+            Arg::Long(l) if l == "elevate-with-password" => without_password = Some(false),
             _ => return Ok(false),
         }
         Ok(true)
     })?;
     let name = &names[0];
-    if full_name.is_none() && admin.is_none() {
-        return Err(usage("say what to change: --full-name, --admin or --no-admin".into()));
+    if full_name.is_none() && admin.is_none() && without_password.is_none() {
+        return Err(usage(
+            "say what to change: --full-name, --admin, --no-admin, --elevate-without-password \
+             or --elevate-with-password"
+                .into(),
+        ));
     }
     if let Some(full_name) = &full_name {
         accounts::check_full_name(full_name).map_err(fail)?;
@@ -544,7 +552,7 @@ fn set(args: &mut Args) -> Result<i32, Fail> {
         let accounts = Accounts::read()?;
         last_admin(&accounts, name, yes, "Without it")?;
     }
-    let answer = ask(&Request::Set { name: name.clone(), full_name, admin })?;
+    let answer = ask(&Request::Set { name: name.clone(), full_name, admin, without_password })?;
     done(answer, |changed| println!("{name} is changed: {changed}."))
 }
 
