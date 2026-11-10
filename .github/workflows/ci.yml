@@ -367,10 +367,12 @@ jobs:
   # The cloud image in VirtualBox (ADR 0329): its UEFI, its SATA
   # controller and disc drive, its Intel card on NAT and its ACPI power
   # button, with a NoCloud config disc in ISO 9660, which the boot tests
-  # leave to the FAT one. VirtualBox 7 needs the CPU's virtualization,
-  # which KVM holds while its modules are loaded, so they are unloaded
-  # first; Ubuntu's virtualbox-dkms builds VirtualBox's driver for the
-  # runner's kernel, with that kernel's headers.
+  # leave to the FAT one. VirtualBox needs the CPU's virtualization, which
+  # KVM holds while its modules are loaded, so they are unloaded first.
+  # VirtualBox comes from Oracle's repository, as 7.2: Ubuntu 24.04's 7.0
+  # does not build its driver for the runners' Linux 7.0 kernels, which
+  # 7.2.8 and later do. Its package builds the driver for the runner's
+  # kernel, with that kernel's headers.
   virtualbox:
     name: VirtualBox
     needs: [build, scope]
@@ -392,17 +394,43 @@ jobs:
         id: kernel
         run: echo "release=$(uname -r)" >> "$GITHUB_OUTPUT"
 
+      - name: Take the CPU's virtualization from KVM
+        run: |
+          sudo modprobe -r kvm_amd kvm_intel kvm || true
+          if lsmod | grep -q '^kvm'; then
+            echo "::error::KVM's modules are still loaded"
+            lsmod | grep '^kvm'
+            exit 1
+          fi
+
+      # Oracle's signing key, checked by the fingerprint Oracle publishes
+      # on virtualbox.org's Linux downloads page.
+      - name: Add Oracle's VirtualBox repository
+        run: |
+          curl -fsSL --retry 5 -o "$RUNNER_TEMP/oracle_vbox_2016.asc" \
+            https://www.virtualbox.org/download/oracle_vbox_2016.asc
+          gpg --show-keys --with-colons "$RUNNER_TEMP/oracle_vbox_2016.asc" \
+            | grep -qx 'fpr:::::::::B9F8D658297AF3EFC18D5CDFA2F683C52980AECF:'
+          sudo gpg --dearmor -o /usr/share/keyrings/oracle-virtualbox-2016.gpg \
+            "$RUNNER_TEMP/oracle_vbox_2016.asc"
+          echo "deb [arch=amd64 signed-by=/usr/share/keyrings/oracle-virtualbox-2016.gpg] https://download.virtualbox.org/virtualbox/debian $(lsb_release -cs) contrib" \
+            | sudo tee /etc/apt/sources.list.d/virtualbox.list
+
       - name: Install VirtualBox
         uses: ./.github/actions/apt-install
         with:
           packages: >-
             linux-headers-${{ steps.kernel.outputs.release }}
-            virtualbox virtualbox-dkms genisoimage
+            virtualbox-7.2 genisoimage
 
-      - name: Hand the CPU's virtualization from KVM to VirtualBox
+      # The package's installer builds and loads the driver; its log says
+      # why when it could not.
+      - name: Load VirtualBox's driver
         run: |
-          sudo modprobe -r kvm_amd kvm_intel kvm || true
-          sudo modprobe vboxdrv
+          if ! sudo modprobe vboxdrv; then
+            sudo cat /var/log/vbox-setup.log || true
+            exit 1
+          fi
           VBoxManage --version
 
       - name: The cloud image in VirtualBox

@@ -62,15 +62,18 @@ ACPI power button.
   and refused, and a stray word between requests is refused as not JSON.
 - **The JSON is serde_json's**, which systools already uses.
 - **VirtualBox in CI.** The build job writes the cloud image with
-  `ob image --cloud`, and a new job boots its VMDK in VirtualBox from
-  Ubuntu's packages, under VirtualBox's UEFI, on its AHCI controller,
-  with a NoCloud config disc labelled `cidata` in ISO 9660 on the same
-  controller and an Intel PRO/1000 card on NAT. From the serial log it
+  `ob image --cloud`, and a new job boots its VMDK in VirtualBox 7.2
+  from Oracle's repository, whose key is checked by its fingerprint
+  (Ubuntu 24.04's VirtualBox 7.0 does not build its driver for the
+  runners' Linux 7.0 kernels, which 7.2.8 and later do). The machine
+  runs under VirtualBox's UEFI, on its AHCI controller, with a NoCloud
+  config disc labelled `cidata` in ISO 9660 on the same controller and
+  an Intel PRO/1000 card on NAT. From the serial log it
   waits for cloud-setup to set the machine up from the disc; the host's
   ssh signs in with the disc's key through a forwarded port and
   elevates without a password; and VirtualBox's ACPI power button
   powers the machine off cleanly. GitHub's runners have the CPU's
-  virtualization, which VirtualBox 7 needs; KVM's modules are unloaded
+  virtualization, which VirtualBox needs; KVM's modules are unloaded
   first, as the two cannot hold it at once. The job runs when the
   changes reach the cloud image, the drivers VirtualBox's machine uses,
   or the job itself, and on main.
