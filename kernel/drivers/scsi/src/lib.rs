@@ -21,7 +21,8 @@
 //!   asks whether a medium is in it, [`prevent_removal`], which locks it
 //!   in while it is used, and [`eject`].
 //! - For a CD, DVD or Blu-ray drive (ADR 0431), [`mmc`]: what the disc in
-//!   it is, and where its last session starts.
+//!   it is, and where its last session starts; [`recording`], the
+//!   commands a program sends one to burn a disc (ADR 0449).
 //! - For a USB floppy drive (ADR 0436), [`ufi`]: formatting its disk a
 //!   track at a time.
 //!
@@ -36,6 +37,7 @@ use core::fmt;
 
 pub mod mmc;
 mod probe;
+pub mod recording;
 #[cfg(test)]
 mod tests;
 pub mod ufi;

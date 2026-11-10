@@ -46,6 +46,9 @@
 //! kernel's NTFS crate (ADR 0312); `rgrub-setup` puts GRUB on a disk or
 //! an EFI system partition (ADR 0306); `efiboot`, and `efibootmgr` by
 //! its name, lists and changes the firmware's boot entries (ADR 0313).
+//! `audiocd` lists, plays and rips music CDs (ADR 0447); `burn` writes
+//! CDs, DVDs and Blu-ray discs, of data or of audio, and `mkiso` makes a
+//! disc image of a folder (ADR 0449).
 //! `bundle` makes, signs, installs and runs bundles, which `bundled`
 //! installs, seals and removes (ADRs 0221 to 0223 and 0225); called by a
 //! name that is no tool's, through a link in a commands folder of
@@ -62,6 +65,7 @@ mod braille;
 mod btrfs;
 mod bundled;
 mod bundles;
+mod burn;
 mod cloud;
 mod column;
 mod device;
@@ -194,6 +198,7 @@ const TOOLS: &[(&str, Tool)] = &[
     ("btrfsck", btrfs::fsck_btrfs),
     ("bundle", bundles::main),
     ("bundled", bundled::main),
+    ("burn", burn::main),
     ("chgrp", modes::chgrp),
     ("chmod", modes::chmod),
     ("chown", modes::chown),
@@ -264,6 +269,7 @@ const TOOLS: &[(&str, Tool)] = &[
     ("mkfs.exfat", mkfs::mkfs_exfat),
     ("mkfs.fat", mkfs::mkfs_fat),
     ("mkfs.vfat", mkfs::mkfs_fat),
+    ("mkiso", burn::mkiso),
     ("mkswap", swap::mkswap),
     ("mount", mount::mount),
     ("netd", netd::main),

@@ -69,7 +69,10 @@ const FLUSH: u32 = 0x1261;
 /// On a floppy drive, whose disk has no partition table and which is
 /// never polled, it has the drive looked at for a disk put in or taken
 /// out instead (ADR 0435): a disk found is in `/devices` when it returns.
-/// That needs no write right, as EJECT does not.
+/// That needs no write right, as EJECT does not. On an optical drive held
+/// while a program writes its disc (MMC_COMMAND, ADR 0449), it ends the
+/// hold, as burn(1) does once it has written one, and has the drive look
+/// at its disc afresh: a disc of data is in `/devices` when it returns.
 const REREAD_PARTITIONS: u32 = 0x125f;
 
 /// What uses the device, written as a u32 of the IN_USE flags, 0 for
@@ -100,8 +103,11 @@ const IN_USE_UNLOCKED: u32 = 8;
 /// request needs no write right, as on Linux. Fails with
 /// invalid_argument on a partition, not_supported on a disk whose medium
 /// does not come and go, in_use if the drive, one of its partitions or
-/// a volume unlocked on them is in use (GET_IN_USE), and io if the drive
-/// does not answer or was unplugged.
+/// a volume unlocked on them is in use (GET_IN_USE), or a program writes
+/// its disc (MMC_COMMAND) and the caller has no write right, and io if
+/// the drive does not answer or was unplugged. With the write right, as
+/// burn(1) has, a drive held for its disc's writing is let go and
+/// ejected.
 const EJECT: u32 = 0x5309;
 
 /// Formats a track of the disk in a floppy drive (floppy(1), ADR 0436):
@@ -180,6 +186,35 @@ const READ_AUDIO_SIZE: u32 = 16;
 /// The most sectors a READ_AUDIO reads: 27, 63,504 bytes, a third of a
 /// second.
 const READ_AUDIO_MAX: u32 = 27;
+
+/// Runs an MMC command a program makes on an optical drive (burn(1), ADR
+/// 0449), as Linux's SG_IO does on a CD drive: one of those that ask what
+/// disc the drive holds and how it is written, or that write it, blank it
+/// or format it, and no other. It reads MMC_COMMAND_SIZE bytes, and writes
+/// the last eight: 16 bytes, the command block, its length following its
+/// opcode; a u32, how many seconds the drive has for it, from 1 to
+/// MMC_TIMEOUT_MAX, 0 for 30; a u32, 0; two u64s, the address and the
+/// length of a buffer of at most MMC_COMMAND_MAX bytes, which the command's
+/// data comes into or goes from, the way MMC-6 says it goes; then the
+/// kernel's answer: a u32, the bytes that moved, and the drive's sense
+/// key, additional sense code and qualifier, a byte each, then a 0 byte,
+/// all 0 if the command worked. A command that failed with sense is
+/// answered, not failed: the program reads it, as burn(1) reads a long
+/// write's progress. The commands that ask need the read right; those that
+/// write, the write right, and hold the drive: its disc is not looked at
+/// and its tray is kept shut until REREAD_PARTITIONS or EJECT on the
+/// drive, or half a minute after the last MMC_COMMAND while it is held.
+/// Fails with not_supported on a device that is not an optical drive,
+/// invalid_argument for a command not passed, a MODE SELECT of a page but
+/// the write parameters, a time too long or a buffer too long, and io if
+/// the drive did not answer or was unplugged.
+const MMC_COMMAND: u32 = 0xc0305209;
+/// The bytes MMC_COMMAND reads.
+const MMC_COMMAND_SIZE: u32 = 48;
+/// The longest buffer an MMC_COMMAND moves: 32 blocks of a disc's data.
+const MMC_COMMAND_MAX: u32 = 65536;
+/// The most seconds an MMC_COMMAND waits for the drive.
+const MMC_TIMEOUT_MAX: u32 = 600;
 
 /// What the disk says of its health (diskhealth(8), ADR 0157): Dukovo's
 /// own request, as Linux leaves it to commands passed through raw. It

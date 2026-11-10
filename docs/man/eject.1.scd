@@ -44,7 +44,8 @@ $ eject sdc
 A CD, DVD or Blu-ray drive is such a drive (ADR 0431). While its disc
 is mounted, the drive keeps it in; eject unmounts the disc and opens the
 tray, as pressing the drive's eject button has *volumed*(8) do (ADR
-0432). Its name opens an empty drive's tray too.
+0432). Its name opens an empty drive's tray too. A drive *burn*(1) is
+writing keeps its disc until the disc is written (ADR 0449).
 
 ```
 $ eject HOLIDAY_2026
@@ -86,10 +87,11 @@ ejected; 1 when none is mounted at _/volumes_ and nothing named is a
 drive, when one could not be unmounted (a file on it is open, or what it
 holds could not be written), when a drive could not eject (its medium or
 a partition of it is in use outside _/volumes_, as swap or a volume
-unlocked, or the drive did not answer), or for a mistake in the command
+unlocked, its disc is being burned, or the drive did not answer), or for
+a mistake in the command
 line.
 
 # SEE ALSO
 
-*volumed*(8), *remount*(8), *findmnt*(8), *lsblk*(8), *floppy*(1),
+*volumed*(8), *remount*(8), *findmnt*(8), *lsblk*(8), *floppy*(1), *burn*(1),
 *radix-block*(2), *systools*(1)

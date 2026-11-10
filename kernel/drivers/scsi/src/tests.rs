@@ -12,6 +12,7 @@ use std::vec::Vec;
 use crate::*;
 
 mod mmc;
+mod recording;
 
 /// A simulated logical unit, answering as a USB stick's firmware does.
 struct Sim {

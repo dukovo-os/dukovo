@@ -76,7 +76,10 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("bench", "Measure system calls and IPC round trips on Radix and on this machine's Linux"),
     ("soak", "Run an installed system under load for hours or days, and check for creep"),
     ("fixture", "Make test data that only Linux makes, such as a Btrfs log of fsyncs"),
-    ("disc-drive", "Plug an emulated USB CD drive into a machine in QEMU, for the lab's tests"),
+    (
+        "disc-drive",
+        "Plug an emulated USB CD drive or burner into a machine in QEMU, for the lab's tests",
+    ),
     ("docs", "Build the man pages and the handbook into out/docs"),
     ("lint", "Check formatting and run Clippy with warnings denied"),
     ("fmt", "Format all Rust code"),
@@ -572,12 +575,18 @@ test read.
 
 Plugs an emulated USB CD drive (ADR 0447) into the machine whose QEMU
 listens on <socket> with a usb-redir device, as the lab's harness does for
-tests of audio CDs, which QEMU's own drives cannot play. <disc> is a cue
-sheet and the files it names (audio and data tracks, and CD-Text from its
-TITLE and PERFORMER lines) or an ISO image. Each line on standard input
-asks something of the drive:
+tests of audio CDs, which QEMU's own drives cannot play, and of discs
+burned (ADR 0449), which they cannot record. <disc> is a cue sheet and the
+files it names (audio and data tracks, and CD-Text from its TITLE and
+PERFORMER lines) or an ISO image. Each line on standard input asks
+something of the drive:
 
   insert <disc>   Put a disc in, the tray shut
+  blank <kind> [<sectors>]
+                  Put a blank disc in: cd-r, cd-rw, dvd-r, dvd+rw, dvd+r,
+                  bd-r or bd-re, of a whole disc's sectors or <sectors>
+  save <path>     Write the data burned on the disc to <path>, and print
+                  \"saved <sectors>\"
   take-out        Take the disc out, even one the machine locked in
   button          Press the eject button: a locked disc stays, and the
                   drive asks the machine to let it go

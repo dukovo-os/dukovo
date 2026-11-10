@@ -71,6 +71,8 @@ error that starts with the tool's name.
 :  make, check, sign and pack bundles; install, list, remove and run them
 |  *bundled*(8)
 :  install, seal and remove bundles
+|  *burn*(1)
+:  write a CD, DVD or Blu-ray disc, of files or of music
 |  *chgrp*(1), *chmod*(1), *chown*(1)
 :  change a file's group, mode or owner
 |  *column*(1)
@@ -157,6 +159,8 @@ error that starts with the tool's name.
 :  the PCI functions
 |  *lsusb*(8)
 :  the USB devices, or the tree of their buses and ports
+|  *mkiso*(1)
+:  make a disc image of a folder
 |  *mkswap*(8)
 :  make a swap area on a disk or partition
 |  *netd*(8)

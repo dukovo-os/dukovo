@@ -25,6 +25,8 @@
 //!   does, for rgrub-setup(8) and `./ob image` (ADR 0306), and `esp`
 //!   (feature `fat`) puts files in an EFI system partition's FAT with
 //!   the kernel's own FAT crate, for rgrub-setup's UEFI GRUB.
+//! - [`disc`] makes disc images of a folder, ISO 9660 with Rock Ridge and
+//!   Joliet and a UDF bridge, for mkiso(1) and burn(1) (ADR 0449).
 //! - [`types`] names the partition types, [`size`] reads and prints
 //!   sizes, and [`guid`], [`crc32`] and [`rng`] are what GPT needs.
 //!
@@ -38,6 +40,7 @@ pub mod blockfile;
 pub mod btrfs;
 pub mod crc32;
 pub mod device;
+pub mod disc;
 #[cfg(feature = "fat")]
 pub mod esp;
 pub mod exfat;

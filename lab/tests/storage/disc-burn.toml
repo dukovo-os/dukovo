@@ -1,0 +1,130 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "burn writes a CD of music from tracks ripped to FLAC and WAV, a folder onto a CD-R after a test write, and an image with UDF onto a DVD+RW it formats; each reads back as it was"
+time = "25m"
+
+# The burner (ADR 0449). In QEMU, which has no burner, the blank discs go
+# in the emulated USB drive of the audio-cd test, which records; on a PC,
+# a person puts in a new CD-R twice and a DVD+RW, which burn writes over.
+# The drive is looked at every two seconds, and a disc spins up first.
+
+# The music CD of the audio-cd test, ripped: track 1 to FLAC, track 2 to
+# WAV. Root keeps them in the lab's home, as each account has a /tmp of
+# its own.
+[[step]]
+disc = "insert"
+image = "audio-cd.cue"
+[[step]]
+wait = "8s"
+[[step]]
+run = "sh -c 'rm -rf /users/lab/lab-rip && mkdir /users/lab/lab-rip && audiocd rip --to /users/lab/lab-rip 1 && audiocd rip --wav --to /users/lab/lab-rip 2 && ls /users/lab/lab-rip'"
+root = true
+expect = ["01 First Light.flac", "02 Hum.wav"]
+[[step]]
+run = "sh -c 'eject $(audiocd | head -1 | cut -d: -f1)'"
+root = true
+[[step]]
+disc = "eject"
+
+# Burned onto a blank CD-R at once, the two read back as a music CD of two
+# tracks without CD-Text, of the lengths ripped.
+[[step]]
+disc = "insert"
+blank = "cd-r"
+[[step]]
+wait = "8s"
+[[step]]
+run = "burn info"
+root = true
+expect = "CD-R, blank"
+[[step]]
+run = "sh -c 'burn --audio -q \"/users/lab/lab-rip/01 First Light.flac\" \"/users/lab/lab-rip/02 Hum.wav\"'"
+root = true
+expect = "on the CD-R"
+[[step]]
+wait = "8s"
+[[step]]
+run = "audiocd"
+root = true
+expect = ["0:05  Track 1", "0:04  Track 2", "2 tracks, 0:09"]
+[[step]]
+run = "sh -c 'eject $(audiocd | head -1 | cut -d: -f1)'"
+root = true
+[[step]]
+disc = "eject"
+
+# A folder of a file with a long name in a folder with a Unicode name,
+# 2 MiB of noise and a symbolic link, with the sums of its files.
+[[step]]
+run = "sh -c 'rm -rf ~/lab-burn && mkdir -p \"$HOME/lab-burn/Música en vivo\" && i=0 && while [ $i -lt 400 ]; do echo \"line $i of the lab disc\"; i=$((i + 1)); done > \"$HOME/lab-burn/Música en vivo/a file with a long name of more than thirty-one characters.txt\" && dd if=/devices/urandom of=$HOME/lab-burn/noise.bin bs=64k count=32 2>/dev/null && ln -s \"Música en vivo\" ~/lab-burn/live && cd ~/lab-burn && sha256sum noise.bin Música*/* > ~/lab-burn.sum && echo made'"
+expect = "made"
+
+# Onto a blank CD-R: a test write first, which leaves it blank, then the
+# folder a track at a time, with Rock Ridge and Joliet. The disc burned is
+# mounted at its label, and reads back as the folder was.
+[[step]]
+disc = "insert"
+blank = "cd-r"
+[[step]]
+wait = "8s"
+[[step]]
+run = "burn --test -q --label 'Lab Disc' /users/lab/lab-burn"
+root = true
+expect = "a test write of"
+[[step]]
+run = "burn info"
+root = true
+expect = "CD-R, blank"
+[[step]]
+run = "burn -q --label 'Lab Disc' /users/lab/lab-burn"
+root = true
+expect = "burned"
+[[step]]
+wait = "8s"
+[[step]]
+run = "findmnt '/volumes/Lab Disc'"
+expect = ["iso9660", "ro"]
+[[step]]
+run = "sh -c 'cd \"/volumes/Lab Disc\" && sha256sum -c ~/lab-burn.sum && readlink live'"
+expect = ["noise.bin: OK", "characters.txt: OK", "Música en vivo"]
+[[step]]
+run = "burn info"
+root = true
+expect = "CD-R, written and closed"
+[[step]]
+run = "eject 'Lab Disc'"
+root = true
+[[step]]
+disc = "eject"
+
+# An image of the folder with UDF, onto a DVD+RW: formatted if it is not,
+# and written over if it holds something. It is mounted as UDF.
+[[step]]
+run = "mkiso --udf --label LABDVD -o /users/lab/lab-burn.iso /users/lab/lab-burn"
+expect = "sectors"
+[[step]]
+disc = "insert"
+blank = "dvd+rw"
+[[step]]
+wait = "8s"
+[[step]]
+run = "sh -c 'burn -q /users/lab/lab-burn.iso && burn info'"
+root = true
+expect = ["burned", "DVD+RW, formatted"]
+[[step]]
+wait = "8s"
+[[step]]
+run = "findmnt /volumes/LABDVD"
+expect = ["udf", "ro"]
+[[step]]
+run = "sh -c 'cd /volumes/LABDVD && sha256sum -c ~/lab-burn.sum && readlink live'"
+expect = ["noise.bin: OK", "characters.txt: OK", "Música en vivo"]
+[[step]]
+run = "eject LABDVD"
+root = true
+[[step]]
+disc = "eject"
+[[step]]
+run = "rm -rf /users/lab/lab-burn /users/lab/lab-burn.iso /users/lab/lab-burn.sum /users/lab/lab-rip"
+root = true
