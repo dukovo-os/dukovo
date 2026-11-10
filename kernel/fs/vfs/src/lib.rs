@@ -1209,6 +1209,13 @@ pub trait FileSystem: Send + Sync {
     fn remove_disk(&self, _devid: u64) -> Result<()> {
         Err(Error::NotSupported)
     }
+    /// Grows its disk of device ID `devid` to `size` bytes, or with 0 to
+    /// all of its device, as Linux's `btrfs filesystem resize` does, and
+    /// returns its size. A filesystem that cannot fails with
+    /// [`Error::NotSupported`].
+    fn resize_disk(&self, _devid: u64, _size: u64) -> Result<u64> {
+        Err(Error::NotSupported)
+    }
     /// Moves the chunks `plan` names to new ones, converting them to
     /// another profile if it says so, as Linux's `btrfs balance start`
     /// does. A filesystem that cannot fails with [`Error::NotSupported`].

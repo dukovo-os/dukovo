@@ -187,6 +187,12 @@ impl Cdb {
         Cdb::new(&[op::INQUIRY, 0, 0, 0, length, 0])
     }
 
+    /// INQUIRY of `length` bytes of vital product data page `page`
+    /// (SPC-6, 6.7.1: the EVPD bit set).
+    pub fn inquiry_page(page: u8, length: u8) -> Cdb {
+        Cdb::new(&[op::INQUIRY, 1, page, 0, length, 0])
+    }
+
     /// MODE SENSE(6) of mode page `page` (its current values, with block
     /// descriptors), `length` bytes.
     pub fn mode_sense_6(page: u8, length: u8) -> Cdb {
@@ -281,6 +287,20 @@ pub fn reported_luns(bytes: &[u8]) -> impl Iterator<Item = u8> + '_ {
         .0
         .iter()
         .filter_map(|lun| (lun[0] == 0 && lun[2..].iter().all(|&b| b == 0)).then_some(lun[1]))
+}
+
+/// The vital product data page that holds a unit's serial number
+/// (SPC-6, 7.7.18).
+pub const SERIAL_PAGE: u8 = 0x80;
+
+/// The serial number in `bytes`, a [`SERIAL_PAGE`] answer, without its
+/// padding; empty if the answer is some other page, or too short to hold
+/// the length its header gives, or not printable ASCII.
+pub fn unit_serial(bytes: &[u8]) -> &str {
+    match bytes {
+        [_, SERIAL_PAGE, 0, length, rest @ ..] => rest.get(..usize::from(*length)).map_or("", text),
+        _ => "",
+    }
 }
 
 /// Text a device gave: ASCII padded with spaces, without the padding;

@@ -11,6 +11,8 @@
 use std::format;
 use std::vec::Vec;
 
+use radix_block::{BlockDevice, DeviceRef, Slice};
+use radix_vfs::mem::KArc;
 use radix_vfs::{BALANCE_SINGLE, Balance, BalanceArgs, Error, FileSystem, Kind};
 
 use super::compressed::compressible_tree;
@@ -316,4 +318,52 @@ fn a_read_only_mount_neither_balances_nor_adds_nor_removes() {
     assert_eq!(fs.remove_disk(2).err(), Some(Error::ReadOnly));
     let blank = writable(&std::vec![0; 128 << 20]);
     assert_eq!(fs.add_disk(blank).err(), Some(Error::ReadOnly));
+}
+
+#[test]
+fn a_disk_grown_under_its_filesystem_is_resized_to_hold_more() {
+    // A filesystem made on a disk of 128 MiB, whose disk then grew to
+    // 256 MiB, as a cloud image's does on a larger disk (ADR 0327).
+    // It is mounted from a partition of the first 128 MiB, which grows
+    // to the disk's end while mounted, as the kernel grows one in place.
+    let mut image = mkfs_disks(1, &["-d", "single", "-m", "dup"]).remove(0);
+    let small = image.len() as u64;
+    image.resize(2 * image.len(), 0);
+    let disks = disks_of(&[image]);
+    let whole: DeviceRef = disks[0].clone();
+    let part = KArc::new(Slice::new(whole, 0, small / 512).unwrap());
+    let fs = BtrfsFs::mount_disks(&[part.clone() as DeviceRef], true, false).unwrap();
+    let before = fs.info();
+    assert_eq!(fs.resize_disk(1, 0), Ok(small));
+    assert!(part.grow(2 * small / 512));
+    assert_eq!(fs.resize_disk(9, 0).err(), Some(Error::NotFound));
+    assert_eq!(fs.resize_disk(1, 3 * small).err(), Some(Error::NoSpace));
+    assert_eq!(fs.resize_disk(1, small / 2).err(), Some(Error::NotSupported));
+    assert_eq!(fs.resize_disk(1, 0), Ok(2 * small));
+    // Already that size, it changes nothing.
+    assert_eq!(fs.resize_disk(1, 2 * small), Ok(2 * small));
+    fs.sync().unwrap();
+    let after = fs.info();
+    let bytes = |info: radix_vfs::FsInfo| info.blocks * u64::from(info.block_size);
+    assert!(bytes(after) > bytes(before) + small / 2, "{before:?} then {after:?}");
+    // More than the disk held before goes on it.
+    let mut model = Model::new();
+    write_file(&fs, &mut model, "big", 1, (small + small / 4) as usize);
+    fs.sync().unwrap();
+    // Resized again to the size it has, as a first boot does on every
+    // boot, it changes nothing, and the next commit is whole.
+    assert_eq!(fs.resize_disk(1, 0), Ok(2 * small));
+    write_file(&fs, &mut model, "after", 2, 5000);
+    fs.sync().unwrap();
+    drop(fs);
+    let images: Vec<Vec<u8>> = disks.iter().map(|d| image_of(d, 2 * small as usize)).collect();
+    assert_checks(&images, "a disk resized");
+    // The superblock says the new size.
+    assert_eq!(u64::from_le_bytes(images[0][0x10070..0x10078].try_into().unwrap()), 2 * small);
+    let fs = mount_all(&disks_of(&images), false, false).unwrap();
+    assert_eq!(fs.info().blocks, after.blocks);
+    let read = model_of(&fs.root());
+    for (path, thing) in &model {
+        assert!(read[path] == *thing, "read back after a resize: {path} differs");
+    }
 }

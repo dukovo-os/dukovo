@@ -595,3 +595,16 @@ fn report_luns_lists_the_units_an_iu_can_name() {
     assert_eq!(reported_luns(&bytes).collect::<std::vec::Vec<u8>>(), [0]);
     assert_eq!(reported_luns(&[0, 0]).count(), 0);
 }
+
+#[test]
+fn a_serial_number_comes_from_its_own_page() {
+    assert_eq!(Cdb::inquiry_page(SERIAL_PAGE, 255).bytes(), [0x12, 1, 0x80, 0, 255, 0]);
+    let mut page = std::vec![0, 0x80, 0, 12];
+    page.extend_from_slice(b"  DK-0042   ");
+    assert_eq!(unit_serial(&page), "DK-0042");
+    // Cut short of the length it gives, another page, or no header.
+    assert_eq!(unit_serial(&page[..10]), "");
+    page[1] = 0x83;
+    assert_eq!(unit_serial(&page), "");
+    assert_eq!(unit_serial(&[0, 0x80]), "");
+}

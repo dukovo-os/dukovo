@@ -80,6 +80,21 @@ impl Settings {
         }
     }
 
+    /// A line that carries bytes as they are, as `cfmakeraw(3)` leaves
+    /// one: no line editing, echo, signals or translation, a read
+    /// returning as soon as a byte comes, with the control flags `cflag`
+    /// and the speed they name.
+    pub const fn raw(cflag: u32) -> Settings {
+        let mut settings = Settings::new();
+        settings.iflag = 0;
+        settings.oflag = 0;
+        settings.lflag = 0;
+        settings.cflag = cflag;
+        settings.ispeed = cflag & crate::line::cflag::CBAUD;
+        settings.ospeed = cflag & crate::line::cflag::CBAUD;
+        settings
+    }
+
     /// The settings as the C library's `struct termios`.
     pub fn to_bytes(&self) -> [u8; TERMIOS_SIZE] {
         let mut out = [0u8; TERMIOS_SIZE];

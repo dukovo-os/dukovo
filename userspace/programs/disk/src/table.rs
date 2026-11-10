@@ -504,6 +504,49 @@ impl Table {
         Ok(())
     }
 
+    /// Grows partition `number`, or the primary partition that ends last,
+    /// to the end of the free space after it: to the sector before the
+    /// next partition, or to the last usable one. Its first sector, type,
+    /// GUID and name stay. Returns the number of the partition, its
+    /// sectors before and its sectors after; the same if it already ends
+    /// where it can.
+    ///
+    /// # Errors
+    ///
+    /// If there is no such partition, or it is a logical or an extended
+    /// one, which grow only with their extended partition.
+    pub fn grow(&mut self, number: Option<u32>) -> Result<(u32, u64, u64), Error> {
+        let chosen = match number {
+            Some(number) => self.get(number),
+            None => self.partitions.iter().filter(|p| !p.logical).max_by_key(|p| p.last),
+        };
+        let Some(part) = chosen else {
+            return error(match number {
+                Some(number) => format!("there is no partition {number}"),
+                None => "there are no partitions".into(),
+            });
+        };
+        let (number, first, sectors) = (part.number, part.first, part.sectors());
+        if part.logical || part.kind.is_extended() {
+            return error(format!(
+                "partition {number} is in an MBR's extended partition, which does not grow"
+            ));
+        }
+        let end = self
+            .partitions
+            .iter()
+            .filter(|p| !p.logical && p.first > first)
+            .map(|p| p.first - 1)
+            .min()
+            .unwrap_or(self.last_usable)
+            .min(self.last_usable);
+        let grown = (end.saturating_sub(first) + 1).max(sectors);
+        if grown > sectors {
+            self.resize(number, grown)?;
+        }
+        Ok((number, sectors, grown))
+    }
+
     /// Sets partition `number`'s type.
     ///
     /// # Errors

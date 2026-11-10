@@ -126,6 +126,9 @@ disk-check image/crosscheck/ tools/linux-bench/ tools/xtask/src/bench.rs userspa
 disk-check userspace/posix/disktest.c userspace/programs/systools/src/nvme.rs
 disk-errors kernel/drivers/ahci/ kernel/drivers/nvme/ kernel/fs/block/
 disk-errors userspace/programs/systools/src/nvme.rs userspace/storage/
+disk-grow kernel/fs/block/ kernel/fs/btrfs/src/balance.rs kernel/fs/btrfs/src/grow.rs
+disk-grow userspace/programs/disk/src/table.rs userspace/programs/systools/src/device.rs
+disk-grow userspace/programs/systools/src/rdisk.rs
 disk-health kernel/drivers/nvme/ userspace/programs/systools/src/diskhealth.rs
 disk-health userspace/programs/systools/src/nvme.rs
 disk-raw kernel/drivers/ahci/ kernel/drivers/nvme/ kernel/fs/block/ kernel/fs/fat/
@@ -439,6 +442,8 @@ storage-ide kernel/radix/src/fs/disk/ide.rs
 storage-nvme kernel/drivers/nvme/ kernel/fs/block/ userspace/programs/systools/src/nvme.rs
 storage-nvme userspace/storage/
 storage-sata kernel/drivers/ahci/ kernel/fs/block/ userspace/storage/
+storage-scsi kernel/drivers/scsi/ kernel/drivers/virtio/ kernel/fs/block/ userspace/storage/
+storage-scsi kernel/radix/src/fs/disk/virtio_scsi.rs
 storage-sd kernel/drivers/sdhci/ kernel/fs/block/ userspace/storage/
 storage-tools userspace/programs/disk/ userspace/programs/systools/src/blkid.rs
 storage-tools userspace/programs/systools/src/findmnt.rs userspace/programs/systools/src/fstrim.rs
@@ -479,6 +484,8 @@ userspace-e1000 kernel/drivers/intel/ kernel/drivers/nic/ kernel/net/ userspace/
 userspace-e1000 userspace/programs/systools/src/e1000d.rs userspace/programs/systools/src/netd.rs
 userspace-e1000 userspace/spark/tests/services/e1000d/
 views userspace/posix/names.h userspace/posix/views.c
+virtio-ports kernel/drivers/virtio/src/console.rs kernel/radix/src/vports.rs
+virtio-ports kernel/radix/src/fs/devfs.rs kernel/radix/src/fs/tty.rs
 volumes userspace/posix/volumetest.c userspace/programs/systools/src/nvme.rs
 volumes userspace/programs/systools/src/volumed.rs
 watchdog kernel/drivers/watchdog/ userspace/programs/systools/src/watchdog.rs

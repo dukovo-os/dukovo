@@ -448,6 +448,15 @@ impl<C: Controller> Disk<C> {
         }
     }
 
+    /// Wakes the threads waiting for room in every lane: for a driver
+    /// whose disks share their device's queue, when another disk's request
+    /// ended and left room there (a virtio SCSI adapter's).
+    pub fn wake_room(&self) {
+        for lane in 0..self.lanes.len() {
+            self.wake(lane);
+        }
+    }
+
     /// Wakes the thread waiting for the request in `slot` of `lane`, if
     /// one is named there.
     fn wake_slot(&self, lane: usize, slot: usize) {

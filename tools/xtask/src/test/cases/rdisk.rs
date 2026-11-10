@@ -73,7 +73,7 @@ fn rdisk(vm: &mut Vm, _case: &Case) -> Result<(), String> {
     vm.expect_screen(&["The partition table is written.", "The kernel has read it"])?;
     vm.expect("Disk: vda1: 16 MiB from sector 2048, GPT")?;
     vm.expect("Disk: vda2: 16 MiB from sector 34816, GPT")?;
-    vm.expect("Disk: vda's partition table read again: a GPT with 2 partitions, 2 new, 0 gone")?;
+    vm.expect("Disk: vda's partition table read again: a GPT with 2 partitions, 2 new, 0 grown, 0 gone")?;
     // The EFI system partition volumed leaves alone; the other it leaves
     // unmounted, as it was made, not plugged in.
     vm.expect("volumed: vda2 is new on vda, which was partitioned again; left unmounted")?;
@@ -87,7 +87,7 @@ fn rdisk(vm: &mut Vm, _case: &Case) -> Result<(), String> {
     vm.type_text("rdisk --script /tmp/adds.json vda | grep kernel\n")?;
     vm.expect_screen(&["The kernel has read it"])?;
     vm.expect("Disk: vda3: 62.9 MiB from sector 67584, GPT \"Data\"")?;
-    vm.expect("Disk: vda's partition table read again: a GPT with 3 partitions, 1 new, 0 gone")?;
+    vm.expect("Disk: vda's partition table read again: a GPT with 3 partitions, 1 new, 0 grown, 0 gone")?;
     vm.type_text("swapoff /devices/vda2 && echo \"off: $((40 + 3))\"\n")?;
     vm.expect_screen(&["off: 43"])?;
 

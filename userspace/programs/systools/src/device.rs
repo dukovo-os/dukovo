@@ -3,7 +3,9 @@
 
 //! device(8): adds disks to a Btrfs filesystem and removes them, as
 //! Linux's `btrfs device add` and `btrfs device remove` do (ADR 0159),
-//! through the directory interface (radix-directory(2)).
+//! and grows a disk of it to its partition's new size, as `btrfs
+//! filesystem resize` does (ADR 0327), through the directory interface
+//! (radix-directory(2)).
 
 use std::ffi::OsString;
 use std::fs::{File, OpenOptions};
@@ -37,6 +39,7 @@ fn message(status: Status, what: &str, path: &str) -> String {
         (Some(Kernel::NotSupported), _) => format!("{path}: not a btrfs filesystem"),
         (_, Some(FileError::NotFound)) => format!("{what}: not a valid devid for '{path}'"),
         (_, Some(FileError::InUse)) => format!("{what} is mounted"),
+        (_, Some(FileError::NoSpace)) => format!("{what}: larger than its partition"),
         (Some(Kernel::InvalidArgument), _) => format!(
             "error removing device '{what}': unable to go below the disks its chunks' profiles \
              need"
@@ -86,13 +89,66 @@ fn remove(dir: &File, disk: &OsString, path: &str) -> Result<(), Fail> {
     Ok(())
 }
 
+/// What `resize` was asked for: `[DEVID:]max` or `[DEVID:]SIZE`, as
+/// btrfs-progs takes it; device ID 1 if none is given. Size 0 is `max`.
+/// Shrinking, and growing by an amount (`+SIZE`), are not done.
+fn resize_amount(text: &str) -> Result<(u64, u64), Fail> {
+    let (devid, size) = match text.split_once(':') {
+        Some((devid, size)) => {
+            let devid = devid
+                .parse::<u64>()
+                .map_err(|_| util::usage(format!("'{devid}' is not a device ID")))?;
+            (devid, size)
+        }
+        None => (1, text),
+    };
+    if size.starts_with(['+', '-']) {
+        return Err(util::usage(format!(
+            "'{size}': say max or the size the disk is to have; a disk is grown only, to a size"
+        )));
+    }
+    let bytes = if size == "max" {
+        0
+    } else {
+        util::parse_size(size)
+            .filter(|&b| b > 0)
+            .ok_or_else(|| util::usage(format!("'{size}' is neither max nor a size")))?
+    };
+    Ok((devid, bytes))
+}
+
+/// `resize`: grows the disk `amount` names of the filesystem whose
+/// directory is in `dir`, and says to what size.
+fn resize(dir: &File, amount: &str, path: &str) -> Result<(), Fail> {
+    let (devid, size) = resize_amount(amount)?;
+    let now = directory::resize_disk(&SYS, sys::slot_of(dir.as_raw_fd()), devid, size)
+        .map_err(|status| util::fail(message(status, &format!("devid {devid}"), path)))?;
+    println!("Resized device id {devid} of '{path}' to {}", disk::size::human(now.size));
+    Ok(())
+}
+
 /// device(8).
 pub fn main(args: &mut Args) -> Result<i32, Fail> {
-    let usage = || util::usage("say add or remove, the disks and a path".into());
+    let usage = || util::usage("say add, remove or resize, the disks or size, and a path".into());
     let Some(action) = args.subcommand() else { return Err(usage()) };
     let adding = match action.to_str() {
         Some("add") => true,
         Some("remove" | "delete") => false,
+        Some("resize") => {
+            let mut operands = Vec::new();
+            while let Some(arg) = args.next()? {
+                match arg {
+                    Arg::Operand(operand) => operands.push(operand),
+                    other => return Err(args.unknown(&other)),
+                }
+            }
+            let [amount, path] = operands.as_slice() else { return Err(usage()) };
+            let path = PathBuf::from(path);
+            let shown = path.display().to_string();
+            let dir = sys::open_control(&path).map_err(|e| util::failed(&shown, e))?;
+            resize(&dir, &amount.to_string_lossy(), &shown)?;
+            return Ok(0);
+        }
         _ => return Err(usage()),
     };
     let (mut force, mut operands) = (false, Vec::new());
@@ -122,4 +178,20 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
         }
     }
     Ok(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_resize_names_a_disk_and_max_or_a_size() {
+        assert_eq!(resize_amount("max").unwrap(), (1, 0));
+        assert_eq!(resize_amount("2:max").unwrap(), (2, 0));
+        assert_eq!(resize_amount("3:20G").unwrap(), (3, 20 << 30));
+        assert_eq!(resize_amount("1048576").unwrap(), (1, 1 << 20));
+        for refused in ["+1G", "-1G", "2:-1G", "x:max", "0", "most", ""] {
+            assert!(resize_amount(refused).is_err(), "{refused}");
+        }
+    }
 }

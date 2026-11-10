@@ -15,14 +15,15 @@ use crate::snd::{Output, Snd, code};
 use crate::tests::{BAR_SIZE, alloc, function};
 use crate::{Error, Transport, device_type, feature as common_feature, status};
 
+/// A queue as the simulated device sees it (shared with the SCSI tests).
 #[derive(Clone, Copy, Default)]
-struct Ring {
-    size: u16,
-    desc: u64,
-    driver: u64,
-    device: u64,
-    last_avail: u16,
-    used_idx: u16,
+pub(crate) struct Ring {
+    pub(crate) size: u16,
+    pub(crate) desc: u64,
+    pub(crate) driver: u64,
+    pub(crate) device: u64,
+    pub(crate) last_avail: u16,
+    pub(crate) used_idx: u16,
 }
 
 /// A stream the card says it has.
@@ -82,7 +83,7 @@ struct Card {
     state: Mutex<State>,
 }
 
-fn read_mem(phys: u64, len: usize) -> Vec<u8> {
+pub(crate) fn read_mem(phys: u64, len: usize) -> Vec<u8> {
     let mut out = std::vec![0u8; len];
     fake_memory(phys, &mut out);
     out
@@ -108,11 +109,11 @@ fn descriptor(ring: &Ring, index: u16) -> (u64, u32, u16, u16) {
 
 /// A buffer of a chain: its address, its length, and whether the card
 /// writes it.
-type Buffer = (u64, u32, bool);
+pub(crate) type Buffer = (u64, u32, bool);
 
 /// The next chain the driver made available on `ring`: its head and its
 /// buffers.
-fn next_chain(ring: &mut Ring) -> Option<(u16, Vec<Buffer>)> {
+pub(crate) fn next_chain(ring: &mut Ring) -> Option<(u16, Vec<Buffer>)> {
     if u16_at(ring.driver + 2) == ring.last_avail {
         return None;
     }
@@ -136,7 +137,7 @@ fn next_chain(ring: &mut Ring) -> Option<(u16, Vec<Buffer>)> {
     Some((head, buffers))
 }
 
-fn put_used(ring: &mut Ring, head: u16, len: u32) {
+pub(crate) fn put_used(ring: &mut Ring, head: u16, len: u32) {
     let slot = ring.device + 4 + 8 * (u64::from(ring.used_idx) % u64::from(ring.size));
     fake_memory_write(slot, &u32::from(head).to_le_bytes());
     fake_memory_write(slot + 4, &len.to_le_bytes());

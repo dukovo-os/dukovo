@@ -1,0 +1,18 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "The ports of a virtio console are terminals that carry bytes as they are, and QEMU's guest agent channel is linked by its name, as on Linux. Needs a virtual machine with QEMU's guest agent channel (Proxmox's QEMU Guest Agent option, or virt-manager's channel)"
+time = "2m"
+
+[[step]]
+run = "readlink /devices/virtio-ports/org.qemu.guest_agent.0"
+expect = "../vport"
+[[step]]
+run = "sh -c 'dmesg | grep \"Ports: \"'"
+root = true
+expect = ["has room for", "is /devices/virtio-ports/org.qemu.guest_agent.0"]
+# A raw line: no echo, no line editing, no carriage returns added.
+[[step]]
+run = "stty -F /devices/virtio-ports/org.qemu.guest_agent.0 -a"
+root = true
+expect = ["-icanon", "-echo", "-opost"]

@@ -861,6 +861,15 @@ pub fn add_disk(fs: &FsRef, device: radix_block::DeviceRef) -> radix_vfs::Result
     Ok(devid)
 }
 
+/// Grows disk `devid` of the Btrfs `fs` to `size` bytes, or to all of its
+/// device (ADR 0327), as [`radix_vfs::FileSystem::resize_disk`] does, and
+/// returns its size.
+pub fn resize_disk(fs: &FsRef, devid: u64, size: u64) -> radix_vfs::Result<u64> {
+    let size = fs.resize_disk(devid, size)?;
+    info!("Btrfs: disk {devid} resized; it is {} now", disk::Size(size));
+    Ok(size)
+}
+
 /// The name of `device`, if it has one, when no mount, swap area or
 /// mounted Btrfs uses it; `InUse` otherwise.
 fn free_disk(

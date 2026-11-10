@@ -333,3 +333,22 @@ fn lines_are_read_from_cflag() {
     );
     assert_eq!(Line::from_cflag(0, 0).rate, 0);
 }
+
+#[test]
+fn a_raw_line_carries_bytes_as_they_are() {
+    // CS8, CREAD and CLOCAL, at 115200 baud.
+    let cflag = 0o10002 | 0o60 | 0o200 | 0o4000;
+    let settings = Settings::raw(cflag);
+    assert_eq!((settings.iflag, settings.oflag, settings.lflag), (0, 0, 0));
+    assert_eq!((settings.cflag, settings.ispeed, settings.ospeed), (cflag, 0o10002, 0o10002));
+    let mut ldisc = Ldisc::new([0u8; 64]);
+    ldisc.set(settings);
+    // Nothing echoed, no signal, a carriage return kept, readable at once.
+    let (echo, signals) = typed(&mut ldisc, b"{\"x\":1}\r\x03\n");
+    assert!(echo.is_empty() && signals.is_empty());
+    assert_eq!(read_all(&mut ldisc), b"{\"x\":1}\r\x03\n");
+    // A newline written goes out as it is.
+    let mut out = Vec::new();
+    assert_eq!(ldisc.output(b"ok\n", 64, &mut |run| out.extend_from_slice(run)), 3);
+    assert_eq!(out, b"ok\n");
+}

@@ -80,6 +80,25 @@ const ALLOWED: &[(&str, &str)] = &[
         "sets up a controller and its disks at boot, on the boot CPU's 64 KiB stack",
     ),
     (
+        "radix::fs::disk::virtio_scsi::bind",
+        "sets up a virtio SCSI adapter and its disks at boot, on the boot CPU's 64 KiB stack",
+    ),
+    (
+        "radix::fs::disk::virtio_scsi::new_adapter",
+        "moves a virtio SCSI adapter's queue onto the heap for radix::fs::disk::virtio_scsi::bind, \
+         at boot, on the boot CPU's 64 KiB stack",
+    ),
+    (
+        "radix::vports::new_carrier",
+        "sets up a virtio console's ports and moves them onto the heap, at boot, on the boot \
+         CPU's 64 KiB stack",
+    ),
+    (
+        "<radix_virtio::scsi::Scsi>::new",
+        "sets up a virtio SCSI adapter's queue for radix::fs::disk::virtio_scsi::bind, at boot, \
+         on the boot CPU's 64 KiB stack",
+    ),
+    (
         "radix::fs::disk::nvme::try_bind",
         "sets up a controller and its disks at boot, also behind a VMD, on the boot CPU's 64 KiB \
          stack",

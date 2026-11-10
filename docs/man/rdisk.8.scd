@@ -19,6 +19,8 @@ rdisk - partition a disk: GPT and MBR, at a prompt or from a layout file
 
 *rdisk* *--reread* _disk_
 
+*rdisk* *--grow* [*--dry-run*] _disk_ [_number_]
+
 *rdisk* *--list-types*
 
 # DESCRIPTION
@@ -74,10 +76,11 @@ the disk's table as a layout file, which *--script* makes again.
 Before it writes, rdisk refuses a disk in use: one a filesystem is
 mounted from, whose swap area is on, that is a disk of a mounted Btrfs,
 or whose BitLocker volume is unlocked (radix-block(2)'s *GET_IN_USE*).
-It refuses, too, a table that would change or take away a partition in
-use. A partition the new table keeps where it was, of the size it was,
-may be in use: a partition is added in the free space of the disk the
-system runs from.
+It refuses, too, a table that would move, shrink or take away a partition
+in use. A partition the new table keeps where it was, of the size it was
+or larger, may be in use: a partition is added in the free space of the
+disk the system runs from, and the partition the system runs from is
+grown. The kernel grows a partition in use in place (ADR 0327).
 
 A GPT's backup is written first, at the disk's end, then its primary
 copy and its protective MBR; an MBR over an old GPT clears the GPT's
@@ -94,6 +97,21 @@ _/devices/disk_ follow them (ADR 0303). If the kernel cannot take the new
 table, rdisk says why; *rdisk --reread* asks again once nothing uses the
 disk.
 
+# GROWING
+
+*--grow* grows partition _number_, or the partition that ends last, to
+the end of the free space after it: to the sector before the next
+partition, or to the disk's last usable sector. It is for a disk that
+has grown under its table, as a cloud machine's does when its image is
+copied to a larger disk; such a GPT's backup is not at the disk's end
+until the table is written again, which *--grow* does. The partition
+keeps its first sector, type, GUID and name, so it may be in use; the
+filesystem on it grows after, as *device resize max* grows a Btrfs
+(*device*(8)). A partition already as large as it can be is left as it
+is, and rdisk says so and exits with 0, so that a first boot may run it
+each time. A logical partition, in an MBR's extended partition, is not
+grown.
+
 # OPTIONS
 
 *-l*, *--list*
@@ -108,6 +126,10 @@ disk.
 
 *--reread*
 	Ask the kernel to read the disk's table again.
+
+*--grow*
+	Grow partition _number_, or the last, into the free space after it
+	(*GROWING*).
 
 *-n*, *--dry-run*
 	Write nothing; say what *w* or the script would write.
@@ -153,6 +175,10 @@ linux-lvm, windows-reserved and windows-recovery.
 - A disk with no table starts with a GPT, where fdisk starts an MBR.
 - The prompt's letters are fdisk's for what both do; fdisk's expert
   menu is not there.
+- *--grow* does what cloud-utils' *growpart* does: its partition is
+  named by number after the disk, as growpart's is; with none, the last
+  is grown. It exits with 0 when there was nothing to grow, where
+  growpart exits with 1.
 
 # EXIT STATUS
 
@@ -162,5 +188,5 @@ command line.
 
 # SEE ALSO
 
-*rdisk-layout*(5), *mkfs*(8), *lsblk*(8), *blkid*(8), *volumed*(8),
-*radix-block*(2)
+*rdisk-layout*(5), *device*(8), *mkfs*(8), *lsblk*(8), *blkid*(8),
+*volumed*(8), *radix-block*(2)

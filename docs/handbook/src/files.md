@@ -152,7 +152,8 @@ documents folder and nothing else.
 
 At boot the kernel finds each disk and reads its partition table, MBR or
 GPT. Disks and partitions get the names Linux gives them: `vda`, `vdb` for
-virtual disks, `sda`, `sdb` for SATA disks, `nvme0n1`, `nvme1n1` for NVMe
+virtual disks, `sda`, `sdb` for SATA disks and the disks of a virtio SCSI
+adapter, as cloud machines have, `nvme0n1`, `nvme1n1` for NVMe
 drives, `vda1` for the first partition of `vda` and `nvme0n1p1` for the
 first of `nvme0n1`. Spark then mounts
 the FAT filesystem (FAT12, FAT16 or FAT32) or exFAT filesystem of each
@@ -337,6 +338,27 @@ system partition, `-F 32`), `mkfs.exfat` an exFAT one for a stick, and
 mends it. Each disk and partition is also named by what it holds, as
 on Linux: `/devices/disk/by-label/EFI`, `/devices/disk/by-uuid/…`,
 `by-partlabel` and `by-partuuid` (and `/dev/disk/…`, the same).
+
+### Growing a partition onto a larger disk
+
+A disk can grow under its table: a virtual machine's disk made larger, or
+an image copied to a larger disk, as a cloud machine's is. `rdisk --grow`
+grows the last partition, or the one named by its number, into the free
+space after it, even while it is mounted, and moves a GPT's backup to the
+disk's new end; `device resize max` then grows the Btrfs on it, while it
+is in use (ADR 0327):
+
+```
+# rdisk --grow /devices/vda
+/devices/vda3 grows from 3.9 GiB to 49.9 GiB.
+The partition table is written.
+The kernel has read it; its partitions are in /devices.
+# device resize max /
+Resized device id 1 of '/' to 49.9 GiB
+```
+
+A partition that already reaches the free space's end is left as it is,
+which is not a failure.
 
 ## Trying it in QEMU
 

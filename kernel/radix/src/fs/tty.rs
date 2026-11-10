@@ -1048,14 +1048,37 @@ pub fn make_line(
     wake: fn(usize),
     argument: usize,
 ) -> radix_vfs::Result<TtyRef> {
-    let input = buffer(INPUT).ok_or(radix_vfs::Error::NoMemory)?;
-    let output = buffer(OUTPUT).ok_or(radix_vfs::Error::NoMemory)?;
-    let mut ldisc = Ldisc::new(input);
     let mut settings = Settings::new();
     settings.cflag = cflag;
     let speed = cflag & radix_tty::line::cflag::CBAUD;
     settings.ispeed = speed;
     settings.ospeed = speed;
+    make_line_with(name, settings, wake, argument)
+}
+
+/// [`make_line`] for a line that carries bytes as they are
+/// ([`Settings::raw`]), as a program that speaks a protocol on it wants:
+/// a virtio console's port (ADR 0327), which on Linux is no terminal at
+/// all. A program may still change its settings.
+pub fn make_raw_line(
+    name: &str,
+    cflag: u32,
+    wake: fn(usize),
+    argument: usize,
+) -> radix_vfs::Result<TtyRef> {
+    make_line_with(name, Settings::raw(cflag), wake, argument)
+}
+
+/// [`make_line`], with the terminal's first `settings`.
+fn make_line_with(
+    name: &str,
+    settings: Settings,
+    wake: fn(usize),
+    argument: usize,
+) -> radix_vfs::Result<TtyRef> {
+    let input = buffer(INPUT).ok_or(radix_vfs::Error::NoMemory)?;
+    let output = buffer(OUTPUT).ok_or(radix_vfs::Error::NoMemory)?;
+    let mut ldisc = Ldisc::new(input);
     ldisc.set(settings);
     let mut text = radix_klog::TextBuf::<16>::new();
     let _ = core::fmt::Write::write_str(&mut text, name);

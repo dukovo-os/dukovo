@@ -722,6 +722,20 @@ pub fn directory_method(
             })?;
             answer(label, 0, [0; 8])
         }
+        directory::RESIZE_DISK => {
+            let a = directory::ResizeDiskArgs::decode(args)?;
+            let dir = directory_of(found, Rights::CONTROL)?;
+            let mount = &dir.at.mount;
+            if mount.read_only() {
+                return Err(fs::status(radix_vfs::Error::ReadOnly));
+            }
+            let size = fs::resize_disk(&mount.fs, a.devid, a.size).map_err(|err| match err {
+                radix_vfs::Error::NotSupported => Kernel::NotSupported.status(0),
+                err => fs::status(err),
+            })?;
+            let results = directory::ResizeDiskResults { size };
+            answer(label, directory::ResizeDiskResults::WORDS, results.encode())
+        }
         directory::BALANCE => {
             let a = directory::BalanceArgs::decode(args)?;
             let dir = directory_of(found, Rights::CONTROL)?;
