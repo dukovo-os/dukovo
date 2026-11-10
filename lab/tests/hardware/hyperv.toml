@@ -1,0 +1,41 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "Hyper-V's synthetic devices, as a generation 2 machine and Azure have them: the kernel connects to the VMBus, the synthetic SCSI controller's disks are sd disks, the synthetic network card is net0 and reaches its gateway, the clock's rates are Hyper-V's, and the shutdown, time and heartbeat services answer the host (ADR 0423). Needs a Hyper-V generation 2 machine or an Azure machine; at the host, check by hand that the machine's heartbeat shows OK in Hyper-V Manager, that the keyboard types in its console, and that its Shut Down powers the machine off cleanly"
+time = "3m"
+
+# The bus, its channels and the services.
+[[step]]
+run = "sh -c 'dmesg | grep \"Hyper-V: \"'"
+root = true
+expect = [
+    "Hyper-V: version ",
+    " connected",
+    "channel(s) offered",
+    "the shutdown service speaks framework",
+    "the time service speaks framework",
+    "the heartbeat service speaks framework",
+    "speaks NVSP",
+]
+expect_not = ["the host did not", "refused", "out of memory"]
+# The disks, each with its target and logical unit.
+[[step]]
+run = "sh -c 'dmesg | grep \"on the Hyper-V SCSI controller\"'"
+root = true
+expect = ["Disk: sd", "is a SCSI disk of", "target 0 LUN 0"]
+# The clock's rates, from Hyper-V's registers.
+[[step]]
+run = "sh -c 'dmesg | grep \"Time: TSC at\"'"
+root = true
+expect = "(Hyper-V)"
+# The network card, up, with its address, and its gateway answering.
+[[step]]
+run = "ip -br address"
+expect = ["net0", "UP"]
+[[step]]
+run = "sh -c 'ping -c 3 $(ip -4 route | grep default | cut -d\" \" -f3)'"
+expect = "3 packets transmitted, 3 received"
+# The root is on a synthetic disk, and writes reach it.
+[[step]]
+run = "sh -c 'dd if=/devices/zero of=/tmp/lab-hyperv bs=1M count=64 2>/dev/null && sync && ls -l /tmp/lab-hyperv && rm /tmp/lab-hyperv'"
+expect = "67108864"

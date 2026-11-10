@@ -207,6 +207,20 @@ impl Slots {
         assert!(index < self.count && data.len() <= SLOT);
         self.memory.write(index * SLOT, data);
     }
+
+    /// Copies `data` into slot `index` from `offset`: for a card that
+    /// takes a header of its own before the frame.
+    ///
+    /// # Panics
+    ///
+    /// If `index` is not below [`Slots::count`] or the bytes run past the
+    /// end of the slot.
+    pub fn write_at(&self, index: usize, offset: usize, data: &[u8]) {
+        assert!(
+            index < self.count && offset.checked_add(data.len()).is_some_and(|end| end <= SLOT)
+        );
+        self.memory.write(index * SLOT + offset, data);
+    }
 }
 
 /// Waits for `done` to say true, looking every `step_us` microseconds

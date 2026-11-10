@@ -29,10 +29,16 @@ It looks for the machine's data in this order:
 . If they name Amazon EC2, or the firmware is Amazon's, AWS's instance
   metadata service: a token first, as its version 2 asks, then the
   instance's ID, name and the owner's keys, and the user data.
+. If they name Microsoft Corporation, with the chassis asset tag Azure
+  gives its machines, Azure's instance metadata service: the machine's
+  ID, name, admin account and its keys, then the user data, in base64.
+  Azure's custom data, which only its provisioning disk carries, is not
+  read: give the configuration as user data.
 
 Each service is at 169.254.169.254, which it waits up to 90 seconds to
 reach, as the card may still be asking DHCP. A machine with no config
-disk on neither cloud is not kept waiting: there is nothing to set up.
+disk on none of these clouds is not kept waiting: there is nothing to
+set up.
 
 At every boot, it grows the partition of the root, Dukovo's Btrfs, to its
 disk's end with *rdisk --grow*, and the Btrfs over it with *device resize
@@ -60,6 +66,14 @@ _/system/state/cloud-setup/instance_: at a later boot of the same
 machine, only the root grows. A machine made from a copy of its disk has
 an instance of its own, and is set up again.
 
+On Azure, at every boot and last, it tells Azure's wire server,
+168.63.129.16, that the machine is ready: it asks for the goal state,
+which names the machine's container and instance, and answers with a
+health report whose state is *Ready*, as Azure's agent does and as
+Azure's documentation for images without its agent describes. Until a
+new machine does so, Azure takes its deployment to be still under way,
+and ends it as failed after some minutes.
+
 # OPTIONS
 
 *--source* _folder_
@@ -73,7 +87,8 @@ an instance of its own, and is set up again.
 # THE DEFAULT ACCOUNT
 
 The account a cloud machine is made with is *dukovo*, or the name the
-user data's *user* gives (*cloud-config*(5)): an administrator
+user data's *user* gives (*cloud-config*(5)), or else on Azure the admin
+account's name the machine was made with: an administrator
 with the cloud's SSH keys and the user data's *ssh_authorized_keys*,
 who elevates without a password (*user*(8)'s
 *--elevate-without-password*), as Ubuntu's *ubuntu* uses sudo. Its
@@ -90,6 +105,12 @@ cloud-setup: left out packages: Dukovo installs apps with bundle(1)
 cloud-setup: naming the machine web01
 cloud-setup: making an administrator's account, dukovo, with 1 SSH key(s)
 cloud-setup: instance iid-local01 set up
+```
+
+and on Azure, at each boot,
+
+```
+cloud-setup: told Azure instance 896f58f5.vm is ready
 ```
 
 *log -s cloud-setup* shows them (*log*(1)).
@@ -114,8 +135,9 @@ _/system/settings/spark/services/cloud-setup.toml_
 # DIFFERENCES FROM CLOUD-INIT
 
 - It reads part of cloud-init's user data, listed in *cloud-config*(5),
-  and NoCloud, AWS and DigitalOcean; not cloud-init's other sources,
-  such as Google Cloud's, Azure's or OpenStack's config drive.
+  and NoCloud, AWS, DigitalOcean and Azure's metadata service; not
+  cloud-init's other sources, such as Google Cloud's, Azure's
+  provisioning disk or OpenStack's config drive.
 - Its modules have no stages or frequencies of their own: the root grows
   at every boot, and the rest is done once for each instance.
 - A crypt(3) hash of a password cannot be Dukovo's Argon2id: give

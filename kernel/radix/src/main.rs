@@ -65,6 +65,7 @@ mod fs;
 mod gpio;
 mod hid;
 mod hwmon;
+mod hyperv;
 mod i2c;
 mod iommutest;
 mod ioports;
@@ -267,6 +268,8 @@ pub extern "Rust" fn radix_kernel_main(mut params: BootParams) -> ! {
     usb::dbc::init(flags.has("dbc"));
     net::init(flags.value("ip"), flags.value("gateway"), flags.value("e1000"));
     fs::disk::init();
+    // After the PCI scan: VMBus's disks take the `sd` letters after its.
+    hyperv::start();
     fs::writeback::start();
     fs::kmsg::start();
     fs::keyboard::start();
@@ -287,6 +290,7 @@ pub extern "Rust" fn radix_kernel_main(mut params: BootParams) -> ! {
     check_timers(online);
     check_ipis(online);
     usb::wait_for_disks();
+    hyperv::wait_for_disks();
     fs::disk::wait_for_discs();
 
     if let Some(name) = settings.selftest {

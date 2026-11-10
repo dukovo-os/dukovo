@@ -88,7 +88,8 @@ wrongly. Indent with spaces: a tab is refused.
 	cloud-init's.
 
 *user*
-	The default account's name, instead of *dukovo*: a name, or a
+	The default account's name, instead of *dukovo* (or, on Azure,
+	the admin account's name the machine was made with): a name, or a
 	mapping of which only *name* is read. Proxmox's cloud-init drive
 	gives it.
 
@@ -145,8 +146,8 @@ wrongly. Indent with spaces: a tab is refused.
 
 NoCloud's _meta-data_ is YAML (or JSON): *instance-id*, which it needs,
 *local-hostname* and *public-keys*, a list of keys or a mapping of names
-to them. DigitalOcean's and AWS's come from their metadata services
-(*cloud-setup*(8)).
+to them. DigitalOcean's, AWS's and Azure's come from their metadata
+services (*cloud-setup*(8)).
 
 # NETWORK-CONFIG
 

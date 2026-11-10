@@ -353,8 +353,8 @@ struct Found1 {
 
 /// The logical units of `scan`'s target that REPORT LUNS lists, below
 /// 256, or unit 0 if it does not answer; none if nothing is at the
-/// target.
-fn units(scan: &mut Scan<'_>, units: &mut Vec<u8, Kmalloc>) {
+/// target. Hyper-V's SCSI controller's scan uses it too (`storvsc`).
+pub(super) fn units(scan: &mut impl Commands, units: &mut Vec<u8, Kmalloc>) {
     let mut answer = [0u8; REPORT_LENGTH];
     let cdb = Cdb::report_luns(REPORT_LENGTH as u32);
     match scan.command(0, &cdb, Data::In(&mut answer), 30_000) {
@@ -427,7 +427,7 @@ fn scan(
 
 /// The serial number unit `lun` of `scan`'s target gives on its vital
 /// product data page, padded with spaces; blank if it has none.
-fn serial_number(scan: &mut Scan<'_>, lun: u8) -> [u8; SERIAL] {
+pub(super) fn serial_number(scan: &mut impl Commands, lun: u8) -> [u8; SERIAL] {
     let mut answer = [0u8; 255];
     let cdb = Cdb::inquiry_page(SERIAL_PAGE, 255);
     match scan.command(lun, &cdb, Data::In(&mut answer), 30_000) {
@@ -439,7 +439,7 @@ fn serial_number(scan: &mut Scan<'_>, lun: u8) -> [u8; SERIAL] {
 /// What a disk says it is (`inquiry`), as `/kernel/block` shows it: its
 /// vendor and product as the model, its serial number (`serial`), and
 /// its revision as the firmware's.
-fn ident(inquiry: &Inquiry, serial: [u8; SERIAL]) -> Ident {
+pub(super) fn ident(inquiry: &Inquiry, serial: [u8; SERIAL]) -> Ident {
     let mut model = [b' '; 40];
     let mut at = 0;
     for word in [inquiry.vendor(), inquiry.product()] {

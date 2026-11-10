@@ -217,9 +217,9 @@ _target/userspace/_).
 		cloud's metadata service, as *cloud-config*(5) says (ADR 0328). The
 		raw image is AWS's; the host's *qemu-img*, which the image never
 		carries, writes it beside as _.qcow2_ (compressed: KVM, Proxmox,
-		OpenStack, DigitalOcean), _.vmdk_ (VMware, VirtualBox) and _.vhdx_
-		(Hyper-V, Azure). The root grows over the cloud's larger disk at
-		boot.
+		OpenStack, DigitalOcean), _.vmdk_ (VMware, VirtualBox), _.vhdx_
+		(Hyper-V) and a fixed _.vhd_ (Azure). The root grows over the
+		cloud's larger disk at boot.
 
 	*--lab*
 		Make the Dukovo Lab's test image,

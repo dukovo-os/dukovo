@@ -31,6 +31,7 @@
 pub mod boot;
 pub mod clock;
 pub mod cmdline;
+pub mod hyperv;
 pub mod user;
 
 use core::ops::Range;
@@ -40,6 +41,7 @@ pub use boot::{
     BootModule, BootParams, Channel, Firmware, Framebuffer, MemoryKind, MemoryRegion, PixelFormat,
     Reservation,
 };
+pub use hyperv::{Hyperv, Synic};
 pub use radix_hw::pci::Address as PciAddress;
 pub use radix_hw::{Dma, Mmio, MsiMessage, Page};
 pub use user::{

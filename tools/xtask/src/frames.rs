@@ -51,6 +51,11 @@ const ALLOWED: &[(&str, &str)] = &[
          (radix::usb::XHCI_STACK_PAGES)",
     ),
     (
+        "radix::net::attach_other::<radix_hyperv::network::Netvsc>",
+        "gives Hyper-V's synthetic network card its interface and stack on VMBus's thread, \
+         whose stack is 64 KiB (radix::hyperv::STACK_PAGES)",
+    ),
+    (
         "radix::net::add_link",
         "builds a bridge's, VLAN's or tunnel's stack on the thread radix::net::links makes it \
          on, whose stack is 64 KiB (radix::net::links::MAKER_STACK_PAGES)",

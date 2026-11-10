@@ -39,6 +39,7 @@ mod efi;
 mod entry;
 mod firmware;
 mod fpu;
+mod hyperv;
 mod i8042;
 mod interrupts;
 mod io;
@@ -587,6 +588,28 @@ impl Devices for Arch {
                 _ => io::outl(port, value),
             }
         }
+    }
+}
+
+impl radix_hal::Hyperv for Arch {
+    fn hyperv_start(sint: u8, handler: fn(usize), arg: usize) -> Option<radix_hal::Synic> {
+        hyperv::start(sint, handler, arg)
+    }
+
+    fn hyperv_post_message(input: u64) -> u16 {
+        hyperv::post_message(input)
+    }
+
+    fn hyperv_signal_event(connection: u32) -> u16 {
+        hyperv::signal_event(connection)
+    }
+
+    fn hyperv_end_of_message() {
+        hyperv::end_of_message();
+    }
+
+    fn hyperv_alloc(pages: usize) -> Option<radix_hw::Dma> {
+        hyperv::alloc(pages)
     }
 }
 
@@ -1147,6 +1170,10 @@ impl Platform for Arch {
                     match c.reference {
                         "HPET" => "measured against the HPET",
                         "ACPI PM timer" => "measured against the ACPI PM timer",
+                        "Hyper-V" => "from Hyper-V",
+                        "Hyper-V reference counter" => {
+                            "measured against Hyper-V's reference counter"
+                        }
                         _ => "measured against the 8254 PIT",
                     }
                 },
