@@ -189,9 +189,13 @@ from the metadata service.
 Use the `.vmdk` as the machine's disk, with a config disk or ISO
 labelled `cidata` for the account and keys. An ISO is made with
 `genisoimage -output cidata.iso -volid cidata -joliet -rock meta-data
-user-data`, and goes in the machine's disc drive. CI boots the image in
-VirtualBox so, under UEFI, on its SATA controller with an Intel
-PRO/1000 card on NAT. With none, cloud-setup
+user-data`, and goes in the machine's disc drive. In VirtualBox, set
+the machine's chipset to ICH9 (Settings, System, Motherboard): Dukovo
+finds PCI devices through PCI Express's configuration space, which
+VirtualBox's default chipset, the PIIX3, does not describe, and with it
+the machine finds no disks. CI boots the image in VirtualBox so, under
+UEFI, on its SATA controller with an Intel PRO/1000 card on NAT. With
+no config disk, cloud-setup
 finds nothing to set up and only grows the root, and the machine has no
 account to sign in with, unless the image was made with one:
 `./ob image --cloud --user alice` makes an administrator's account as

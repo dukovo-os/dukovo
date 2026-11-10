@@ -11,7 +11,8 @@
 #
 # It makes a NoCloud config disc labelled cidata, ISO 9660, with a key of
 # its own, a machine name and a command, and a VirtualBox machine of the
-# image under UEFI: the disk and the disc on its SATA controller, an
+# image under UEFI, with the ICH9 chipset: the disk and the disc on its
+# SATA controller, an
 # Intel PRO/1000 card on NAT with port 2222 of the loopback forwarded to
 # the machine's 22, and COM1 written to serial.log. Then:
 #
@@ -82,9 +83,11 @@ EOF
 genisoimage -quiet -output "$work/cidata.iso" -volid cidata -joliet -rock \
   "$work/cidata/meta-data" "$work/cidata/user-data"
 
-# The machine.
+# The machine. Its chipset is the ICH9: the kernel finds PCI devices
+# through PCI Express's configuration space, which VirtualBox describes
+# (ACPI's MCFG) with the ICH9 and not with its default, the PIIX3.
 vbox createvm --name "$name" --ostype Linux_64 --basefolder "$work" --register
-vbox modifyvm "$name" --memory 2048 --cpus 2 --firmware efi --ioapic on \
+vbox modifyvm "$name" --memory 2048 --cpus 2 --firmware efi --chipset ich9 --ioapic on \
   --nic1 nat --nictype1 82540EM --natpf1 "ssh,tcp,127.0.0.1,2222,,22" \
   --uart1 0x3F8 4 --uartmode1 file "$serial"
 vbox storagectl "$name" --name SATA --add sata --controller IntelAhci --portcount 2

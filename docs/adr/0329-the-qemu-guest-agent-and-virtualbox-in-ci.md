@@ -66,7 +66,10 @@ ACPI power button.
   from Oracle's repository, whose key is checked by its fingerprint
   (Ubuntu 24.04's VirtualBox 7.0 does not build its driver for the
   runners' Linux 7.0 kernels, which 7.2.8 and later do). The machine
-  runs under VirtualBox's UEFI, on its AHCI controller, with a NoCloud
+  runs under VirtualBox's UEFI, with the ICH9 chipset (the kernel finds
+  PCI devices through PCI Express's configuration space, which
+  VirtualBox's default chipset, the PIIX3, does not describe), on its
+  AHCI controller, with a NoCloud
   config disc labelled `cidata` in ISO 9660 on the same controller and
   an Intel PRO/1000 card on NAT. From the serial log it
   waits for cloud-setup to set the machine up from the disc; the host's
