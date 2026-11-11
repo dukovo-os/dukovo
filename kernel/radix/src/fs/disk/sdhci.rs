@@ -80,8 +80,10 @@ use crate::Arch;
 use crate::sched::{self, Options, Policy, ThreadRef};
 
 /// The most segments of a request, each at most a page: the bounce
-/// buffer's pages.
-const SEGMENTS: usize = 32;
+/// buffer's pages. 512 KiB, the most Linux's SD host controller driver
+/// moves in one request (its `max_req_size`), so that a large read or
+/// write takes as few commands to the card as there.
+const SEGMENTS: usize = 128;
 const PAGE: usize = 4096;
 /// The most slots a controller has.
 const MAX_SLOTS: u8 = 6;
