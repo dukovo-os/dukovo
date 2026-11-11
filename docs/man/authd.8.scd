@@ -198,7 +198,11 @@ closes the connection, but for a session (below):
 	*bundled*(8)'s about an app's permission (ADR 0224), whose words
 	are _text_, one line: *ok* and what they chose, *ok cancelled*, or
 	*ok elsewhere* when the terminal is not a console's or nothing asks
-	on the consoles. Only root may, as bundled runs.
+	on the consoles. Only root may, as bundled runs. When _name_ is
+	root's and _terminal_ is that of a command authd elevated from a
+	pane, the question goes to that pane instead, for the person who
+	elevated it, its words beginning *As root, through elevate:*, and
+	the audit log says so (ADR 0493).
 
 *share-password* _name_ _current_ *set*|*clear* _new_
 	Sets _name_'s sharing password to _new_, or clears it, which ends

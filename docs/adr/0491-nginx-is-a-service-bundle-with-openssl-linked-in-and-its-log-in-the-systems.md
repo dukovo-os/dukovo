@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 # 0491. nginx is a service bundle, with OpenSSL linked in and its log in the system's
 
-- Status: Accepted
+- Status: Accepted; `nginx -t` runs through elevate since [0493](0493-a-command-elevated-in-a-pane-is-asked-about-in-that-pane.md)
 - Date: 2026-11-11
 
 ## Context

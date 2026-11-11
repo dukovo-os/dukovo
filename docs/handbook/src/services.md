@@ -80,13 +80,19 @@ nginx's settings are in its data folder,
 `/shared/services/org.nginx.nginx/nginx/conf`. `nginx.conf` holds the
 server on port 80 and, turned off, the same server over HTTPS; the other
 files are nginx's own, which `nginx.conf` includes. Edit them through
-elevate, have nginx read them again, and see what it said:
+elevate, check them, have nginx read them again, and see what it said:
 
 ```
 $ elevate nano /shared/services/org.nginx.nginx/nginx/conf/nginx.conf
+$ elevate nginx -t
 $ elevate service nginx reload
 $ elevate log nginx | tail -n 3
 ```
+
+The first time you run `elevate nginx -t`, Dukovo asks in your terminal
+pane, with a warning, whether nginx may run with root's access, as for
+any command of the catalog's that runs with its user's; answer `A` to
+allow it always.
 
 A reload loses no request: nginx starts workers with the new settings
 and lets the old ones finish what they are serving. Settings that do not
@@ -97,10 +103,8 @@ is wrong:
 Nov 11 10:20:31 web nginx: 2026/11/11 10:20:31 [emerg] 41#41: unknown directive "sevrer" in /shared/services/org.nginx.nginx/nginx/conf/nginx.conf:30
 ```
 
-Fix the line and reload again. `nginx -t`, which checks settings
-without a reload on a Linux distribution, does not run through elevate
-yet: elevate gives the command a terminal of its own, where Dukovo
-cannot ask whether nginx may run with root's access.
+`elevate nginx -t` names the same line before a reload does. Fix the
+line and reload again.
 
 nginx's own documentation, at <https://nginx.org/en/docs/>, describes
 every setting. What differs on Dukovo:
@@ -111,7 +115,7 @@ every setting. What differs on Dukovo:
 | `/var/www/html` | `/shared/www` |
 | `/var/log/nginx/access.log` and `error.log` | The system's log: `elevate log nginx` |
 | `systemctl reload nginx` | `elevate service nginx reload` |
-| `nginx -t` | A reload, then `elevate log nginx` |
+| `sudo nginx -t` | `elevate nginx -t` |
 | Runs as `www-data` or `nginx` | Runs as the account `nginx` |
 | `sites-available` and `sites-enabled` | Servers in `nginx.conf`, or files of your own it includes |
 

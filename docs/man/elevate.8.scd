@@ -77,6 +77,14 @@ up with *SIGHUP*. A standard input, output or error that is not a
 terminal is the command's own, so *elevate cat* _file_ *> copy* and
 pipes work as with sudo.
 
+A question the command's terminal cannot show, as when a command of the
+catalog that runs with its user's access runs for the first time as
+root (*bundle*(1)), is asked on the console of the pane elevate was
+typed in, of the person who typed it, its words beginning *As root,
+through elevate:* (ADR 0493). Elevated in a terminal that is no
+console's, such as over SSH, it cannot be asked, and the command says
+so; *elevate bundle grant* at a console allows it beforehand.
+
 authd starts each elevated command, and audits it, its start and its
 end (*logd*(8)):
 
