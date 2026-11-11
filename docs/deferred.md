@@ -37,14 +37,14 @@ list is kept current instead.
 
 | Item | Why it waits | Waits on |
 | --- | --- | --- |
-| Push the release tags `v0.13.0` (on `fd2a9e8`) and `v0.14.0` (on `c685c0e`), annotated | Tags are pushed by a maintainer; the automation cannot push them | A maintainer |
 | Tag `v0.14.1` on the merge of the last removable-media pull request | The version bump rides that pull request | Its merge, then a maintainer |
 | Signing-key ceremony with the two hardware keys, and the catalog's first root in the image (ADR 0381, ADR 0383) | Real releases and the image's trusted catalog root need keys made offline; Phase 15c can use test keys until then | A maintainer, before the first signed release |
 | Canary machines for updates | Phase 15 uses QEMU canaries in CI; real canaries are wanted before the first public release | Before 1.0.0-alpha.1 |
 | Post-Phase-13 code audit (audit 10) | Planned and scoped; starts only on approval | Decision |
 | Phase 15 (atomic updates and snapshots) | Plan approved; coding starts on approval | Decision |
 | Send the 27 mlibc and frigg patches upstream | Prepared; planned after the audit's last part | Audit 10 |
-| Trademark clearance of the project's name | Legal review | Decision |
+| Trademark clearance of the project's name | Legal review | Before 1.0.0-alpha.1 |
+| SECURITY.md says plainly that the alpha is unaudited; the update server is live for testers | Part of the checklist before the first public release | Before 1.0.0-alpha.1 |
 
 ## Waiting on real hardware
 
@@ -78,6 +78,7 @@ machine with AMT, an AMD machine and a laptop; see
 | Installing next to a real Windows (`install/next-to-windows`, ADR 0314) | The lab has no Windows disk image, and Dukovo makes no NTFS from nothing | A Windows disk in the lab |
 | A burned install DVD starting a real PC (`install/from-dvd`, ADR 0433) | Needs a real drive and a burned disc | Lab drive |
 | The Dell's exit from an SSH session and a mount of a Windows share, checked by hand | Left from Phase 13's wrap-up | Dell |
+| DHCP on the Dell's built-in Ethernet, and iperf3 against Linux on real hardware | Left from Phase 12's wrap-up | Dell, lab |
 
 ### Removable media (roadmap 11h)
 
@@ -142,6 +143,7 @@ machine with AMT, an AMD machine and a laptop; see
 
 | Item | Why it waits | Waits on |
 | --- | --- | --- |
+| The six-part plan for the Go port, and its netpoller: `poll()` now and the kernel event queue with Phase 18, or a kqueue-style queue in Phase 17 | Drafted; waiting for approval | Decision |
 | fzf, lazygit and duf in the catalog | Written in Go | Phase 17 |
 
 ### Phase 18: Linux compatibility and containers
@@ -180,6 +182,8 @@ These come from finished work; the releases themselves are in the
 | Item | Why it waits | Waits on |
 | --- | --- | --- |
 | Python (CPython) in the catalog | Its own item on the catalog ports track | Approval to start |
+| The rest of the Rust batch: fd, hyperfine (Linux perf events gated off), dust, delta, eza, zoxide, tealdeer, starship (Radix sources for `sysinfo` and the battery crate) | Paused after ripgrep and bat | Approval to continue |
+| The C and C++ batches: make, bash, zsh, fish, Vim, Perl, GnuPG, htop, btop with a Radix collector, ncdu 1.x, mosh, an IRC or Matrix client | Follow the Rust batch | Approval to continue |
 | delta in the catalog | Needs libgit2; its xdiff is LGPL, to be checked | License review |
 | yazi in the catalog | Needs tokio support | Port work |
 | nmap in the catalog | NPSL license | Legal review |
@@ -301,6 +305,7 @@ machine asks for them.
 | Rebuilding a mirror onto a new disk without manual steps | ADR 0315 |
 | `ls --app` naming the app that downloaded a file (needs provenance tags) | ADR 0442 |
 | Bit-for-bit reproducible images | ADR 0010, ADR 0382 |
+| A git settings page in Settings (on hold) | Git work, ADR 0287 |
 
 ### Benchmarks
 
@@ -308,6 +313,8 @@ machine asks for them.
 | --- | --- |
 | `posix_git_status` reported, not gated, until parity | ADR 0294 |
 | Optical reads reported, not gated, until parity; USB storage rows | ADR 0434 |
+| `git status` takes about 2.5 times Linux's time (5.0 ms against 1.98 ms on 1,000 files, with 15 context switches); no work is planned to close it yet | ADR 0294 |
+| Rows still above the 0.90 margin target, though under Linux: Btrfs zstd write, unmapping a page on another CPU, NVMe 1 MiB read (0.92 to 0.94) | Benchmark margin work |
 
 ## Lab findings to confirm
 
@@ -326,6 +333,7 @@ finding or removed.
 | --- | --- |
 | The SD 1 MiB benchmark rows: printed but not gated | They sit at 1.00 because QEMU's SD emulation takes nearly all of both systems' time |
 | Printing: the design's open questions | Drafted for a release after 1.0 |
+| Known weak spots to plan for: Wi-Fi, Bluetooth and webcams; large desktop apps; Btrfs maturity | Raised, not yet discussed |
 
 ## Documentation to bring up to date
 
