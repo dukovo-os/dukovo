@@ -182,9 +182,15 @@ Nov 11 10:12:09 web nginx: 192.0.2.10 - - [11/Nov/2026:10:12:09 +0000] "GET / HT
 ```
 
 A busy site can keep its requests out of the system's log with
-`access_log off;`, or write them to a file of its data folder, such as
-`access_log logs/access.log;`. Nothing turns such a file over yet, so
-watch its size.
+`access_log off;`, or write them to a file of its data folder's `logs`
+folder, by its full path:
+
+```
+access_log /shared/services/org.nginx.nginx/nginx/logs/access.log;
+```
+
+A path that does not start with `/` is in nginx's bundle, which it
+cannot write to. Nothing turns such a file over yet, so watch its size.
 
 ### Limits
 

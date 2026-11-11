@@ -67,12 +67,13 @@ its logs in `/var/log/nginx` turned over by logrotate, and its sites in
 - **Its settings are in its data folder.** nginx is built to read
   `/shared/services/org.nginx.nginx/nginx/conf/nginx.conf`, write its
   process number in its live folder and keep its temporary files in its
-  data folder. The first start copies the bundle's settings there, as
-  files of the account's, which it may change.
-  After an update, a file the administrator has not changed takes the
-  bundle's new version, and one they changed stays, with the bundle's
-  version beside it as `NAME.default`, as bundled does for service files
-  (ADR 0386). An administrator applies them with `elevate service nginx
+  data folder, and the log files of its own that its settings may name
+  in its `logs` folder. The first start copies the bundle's settings
+  into its `conf` folder, as files of the account's, which it may
+  change. After an update, a file the administrator has not changed
+  takes the bundle's new version, and one they changed stays, with the
+  bundle's version beside it as `NAME.default`, as bundled does for
+  service files (ADR 0386). An administrator applies them with `elevate service nginx
   reload`, whose SIGHUP has nginx start new workers while the old ones
   finish their requests; settings that do not read leave it as it was,
   and its log names the wrong line. `nginx -t` does not run through
@@ -100,11 +101,13 @@ its logs in `/var/log/nginx` turned over by logrotate, and its sites in
 - The boot test `nginx` installs the bundle from its `.dkv` file,
   enables it, and checks its welcome page, a page in `/shared/www`, a
   reload with settings that do not read, which leaves it serving and
-  logs the wrong line, a restart, HTTPS with a certificate of its own, three
-  reloads during 300 requests that lose none, its log and the account
-  that owns its files. The lab test `services/nginx` serves the lab PC over the
-  machine's own card, with five reloads during 20 seconds of requests
-  16 at a time; `./ob lab` packs the catalog's bundles for it.
+  logs the wrong line, a restart, HTTPS with a certificate of its own,
+  three reloads during 300 requests that lose none, its log, the
+  account that owns its files, and requests logged to a file of its
+  data folder's `logs` folder instead. The lab test `services/nginx`
+  serves the lab PC over the machine's own card, with five reloads
+  during 20 seconds of requests 16 at a time; `./ob lab` packs the
+  catalog's bundles for it.
 - nginx's `auth_basic` takes its own password schemes (`{PLAIN}`,
   `{SHA}`, `{SSHA}` and `$apr1$`, which `openssl passwd -apr1` makes),
   but not `crypt(3)`'s, which the C library lacks.

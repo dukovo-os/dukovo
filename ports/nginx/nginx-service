@@ -7,15 +7,17 @@
 # are, its log on its standard error output, which the system's log
 # keeps.
 #
-# Its settings are in $HOME/conf. The first start copies there the ones
-# the bundle brings. After that, a file the administrator has not changed
-# takes the bundle's new version on an update; a changed one stays, and
-# the bundle's version is written beside it as NAME.default, as the
-# service files' are (ADR 0386).
+# Its settings are in $HOME/conf, its temporary files in $HOME/temp, and
+# the log files of its own its settings may name in $HOME/logs. The first
+# start copies into $HOME/conf the settings the bundle brings. After
+# that, a file the administrator has not changed takes the bundle's new
+# version on an update; a changed one stays, and the bundle's version is
+# written beside it as NAME.default, as the service files' are (ADR
+# 0386).
 set -eu
 
 bundle=$(cd "$(dirname "$0")/.." && pwd)
-mkdir -p "$HOME/conf" "$HOME/temp"
+mkdir -p "$HOME/conf" "$HOME/temp" "$HOME/logs"
 
 # Copies $1 to $2 as a file of the account's, which it may change: the
 # bundle's files are read-only, and so would a copy of one be.

@@ -15,7 +15,9 @@
 //! server of its settings turned on, `service nginx reload` has it serve
 //! HTTPS too; three more reloads while 300 requests come over HTTP and
 //! HTTPS lose none of them. `log nginx` holds a line for each request, and
-//! its process number's file is the account's. The power button ends it.
+//! its process number's file is the account's; set to log requests to a
+//! file of its data folder's logs folder, it does. The power button ends
+//! it.
 
 use super::super::*;
 
@@ -31,6 +33,9 @@ const FILE: &str = "org.nginx.nginx-1.30.6.dkv";
 /// Its settings' folder, in its account's data folder.
 const CONF: &str = "/shared/services/org.nginx.nginx/nginx/conf";
 
+/// The folder of the log files of its own its settings may name.
+const LOGS: &str = "/shared/services/org.nginx.nginx/nginx/logs";
+
 /// Dukovo's root on a copy of the test image, and the bundles.
 const DISKS: &[Disk] = &[
     Disk { label: image::ROOT_LABEL, ..btrfs_disk(Bus::Virtio, 512, ROOT, root_checked) },
@@ -40,7 +45,7 @@ const DISKS: &[Disk] = &[
 /// The test.
 pub const CASE: Case = Case {
     name: "nginx",
-    about: "nginx, the catalog's web server, serves (ADR 0491): installed for everyone from its .dkv file and enabled, it runs as its own account and serves its welcome page, then a page in /shared/www; settings that do not read leave it serving, with the wrong line in its log; it serves after a restart; with a certificate of its own it serves HTTPS too, and reloads while 300 requests come over HTTP and HTTPS lose none; log nginx holds the requests",
+    about: "nginx, the catalog's web server, serves (ADR 0491): installed for everyone from its .dkv file and enabled, it runs as its own account and serves its welcome page, then a page in /shared/www; settings that do not read leave it serving, with the wrong line in its log; it serves after a restart; with a certificate of its own it serves HTTPS too, and reloads while 300 requests come over HTTP and HTTPS lose none; log nginx holds the requests, and a file of its own does when its settings say",
     firmware: Firmware::Uefi,
     media: Media::Usb,
     // As a normal boot: Spark starts the services, bundled among them.
@@ -158,6 +163,20 @@ fn nginx(vm: &mut Vm, case: &Case) -> Result<(), String> {
          logged'; elevate stat -c 'pid file: %U %G' /system/live/services/nginx/nginx.pid",
     )?;
     vm.expect_screen(&["requests logged", "pid file: nginx nginx"])?;
+    // Requests logged to a file of its own instead, in its data folder's
+    // logs folder, as the handbook says.
+    answer_prompt(
+        vm,
+        "$",
+        &format!(
+            "clear; elevate sh -c 'sed -i \"s|^    access_log stderr;|    access_log \
+             {LOGS}/access.log;|\" {CONF}/nginx.conf && service nginx reload'; for i in 1 2 3 4 \
+             5; do sleep 1; curl -s -o /dev/null http://localhost/?to-file; elevate grep -q \
+             'GET /?to-file' {LOGS}/access.log 2>/dev/null && echo 'logged to its file' && break; \
+             done"
+        ),
+    )?;
+    vm.expect_screen(&["logged to its file"])?;
     vm.press_power_button()?;
     vm.expect("spark: every service has stopped")?;
     vm.expect("Power: `spark` asked to power off the machine; syncing the filesystems")?;
