@@ -885,6 +885,35 @@ jobs:
             sudo udevadm trigger --name-match=kvm
           fi
 
+      # The Containerfile's apt-get fetches from Ubuntu's archive, which
+      # the install step's fallback (.github/actions/apt-install) does
+      # not reach. When the archive does not answer, the base image is
+      # given kernel.org's mirror under its own name, which the build
+      # then uses, so the Containerfile, which keys the ports' cache,
+      # stays as it is. The base image has no CA certificates, so it gets
+      # the runner's for HTTPS; apt checks the files against Ubuntu's
+      # signing keys, as from any mirror.
+      - name: Give the build container a mirror that answers
+        run: |
+          if curl -sf -m 30 -o /dev/null http://archive.ubuntu.com/ubuntu/dists/noble/InRelease; then
+            exit 0
+          fi
+          echo "::warning::Ubuntu's archive did not answer; the build container fetches from mirrors.edge.kernel.org"
+          # The engine ob picks, and the image the Containerfile starts from.
+          engine=podman
+          command -v podman >/dev/null 2>&1 || engine=docker
+          base=$(sed -n 's/^FROM //p' tools/container/Containerfile | head -n 1)
+          context=$(mktemp -d)
+          cp /etc/ssl/certs/ca-certificates.crt "$context/"
+          cat > "$context/Containerfile" <<EOF
+          FROM $base
+          COPY ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+          RUN sed -i 's#http://[a-z.]*ubuntu\.com/ubuntu#https://mirrors.edge.kernel.org/ubuntu#g' \\
+                /etc/apt/sources.list.d/ubuntu.sources
+          EOF
+          "$engine" pull "$base"
+          "$engine" build -t "$base" "$context"
+
       # The ports main built last, as in the build job, keyed by the
       # container's definition, which holds its Clang.
       - name: Note the build container's version
