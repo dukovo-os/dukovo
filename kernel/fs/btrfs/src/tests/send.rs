@@ -1203,6 +1203,29 @@ fn a_stream_from_a_parent_the_receiver_lacks_is_refused() {
     assert_eq!(dest.root().lookup("b").err(), Some(Error::NotFound));
 }
 
+#[test]
+fn a_subvolume_made_after_a_received_one_is_removed_may_change() {
+    // The removed subvolume's number is the next one's, as Linux numbers
+    // them; nothing of the received one's being read-only passes to it.
+    let mut source = Changing::new(0xbeef);
+    for _ in 0..20 {
+        source.change();
+    }
+    let snapshot = source.snapshot("s");
+    let disk = writable(&mkfs_empty(&[]));
+    let dest = mount_rw(&disk);
+    receive_into(&dest.root(), &send(&snapshot, None, "s", 64)).unwrap();
+    let received = dest.root().lookup("s").unwrap();
+    let id = received.subvolume().unwrap().id;
+    assert_eq!(received.create("new", Kind::File, FILE).err(), Some(Error::ReadOnly));
+    drop(received);
+    dest.root().remove_subvolume("s").unwrap();
+    dest.root().make_subvolume("t").unwrap();
+    let made = dest.root().lookup("t").unwrap();
+    assert_eq!(made.subvolume().unwrap().id, id);
+    made.create("new", Kind::File, FILE).unwrap();
+}
+
 /// Sends `snapshot` from `parent` into `dest`, and checks the copy.
 fn sent_and_checked(
     dest: &NodeRef,

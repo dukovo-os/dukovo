@@ -1132,6 +1132,7 @@ impl BtrfsNode {
             self.reload(&files)?;
         }
         txn.forget(id);
+        self.fs.forget_received(id);
         Ok(())
     }
 

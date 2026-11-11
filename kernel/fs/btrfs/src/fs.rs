@@ -838,6 +838,13 @@ impl Inner {
         Ok(())
     }
 
+    /// Forgets that subvolume `subvol` was received, as it is removed: a
+    /// subvolume made after it may be given its number, as Linux numbers
+    /// them, and may change.
+    pub(crate) fn forget_received(&self, subvol: u64) {
+        self.received.lock().retain(|&s| s != subvol);
+    }
+
     /// Whether subvolume `subvol` was received while mounted, and so is
     /// read-only, whatever its nodes loaded before say.
     pub(crate) fn received(&self, subvol: u64) -> bool {
