@@ -1,0 +1,24 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+[package]
+name = "radix-rtsx"
+description = "Realtek's PCI Express card readers for the Radix kernel: the SD and SDHC/SDXC memory cards in an RTS5209, RTS5227, RTS5229, RTS522A, RTS5249, RTS525A, RTL8402, RTL8411 or RTL8411B"
+version.workspace = true
+edition.workspace = true
+license = "(Apache-2.0 OR MIT) AND ISC"
+repository.workspace = true
+publish.workspace = true
+
+[lib]
+bench = false
+
+[dependencies]
+radix-hw = { path = "../../lib/hw" }
+radix-sdhci = { path = "../sdhci" }
+
+[dev-dependencies]
+radix-hw = { path = "../../lib/hw", features = ["fake"] }
+
+[lints]
+workspace = true

@@ -24,6 +24,7 @@ radix-broadcom-net = { path = "../drivers/broadcom" }
 radix-fdc = { path = "../drivers/fdc" }
 radix-ide = { path = "../drivers/ide" }
 radix-nvme = { path = "../drivers/nvme" }
+radix-rtsx = { path = "../drivers/rtsx" }
 radix-sdhci = { path = "../drivers/sdhci" }
 radix-uart = { path = "../drivers/uart" }
 radix-ucsi = { path = "../drivers/ucsi" }

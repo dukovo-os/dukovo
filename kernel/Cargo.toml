@@ -39,6 +39,7 @@ members = [
     "drivers/pvscsi",
     "drivers/realtek",
     "drivers/rge",
+    "drivers/rtsx",
     "drivers/scsi",
     "drivers/sdhci",
     "drivers/smbus",

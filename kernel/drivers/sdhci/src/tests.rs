@@ -419,10 +419,10 @@ impl State {
         let powered = self.regs[reg::POWER_CONTROL] & 1 != 0;
         let clocked = self.get(reg::CLOCK_CONTROL, 2) & 4 != 0;
         let Some(card) = self.card.clone().filter(|_| powered && clocked) else {
-            self.set_status(status::ERROR, status::COMMAND_TIMEOUT);
+            self.set_status(status::ERROR, failed::NO_ANSWER);
             return;
         };
-        let timeout = |state: &mut State| state.set_status(status::ERROR, status::COMMAND_TIMEOUT);
+        let timeout = |state: &mut State| state.set_status(status::ERROR, failed::NO_ANSWER);
         let r1 = |state: &mut State, bits: u32| state.respond([bits | 0x900, 0, 0, 0]);
         let mut busy = false;
         match (app, index) {

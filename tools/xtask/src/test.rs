@@ -180,6 +180,7 @@ pub const KERNEL_LIBRARIES: &[&str] = &[
     "radix-realtek-net",
     "radix-relocs",
     "radix-rge-net",
+    "radix-rtsx",
     "radix-sched",
     "radix-scsi",
     "radix-sdhci",

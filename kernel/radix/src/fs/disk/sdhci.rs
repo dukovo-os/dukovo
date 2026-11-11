@@ -50,6 +50,12 @@
 //! (the cards' ERASE) is left for later. An eMMC soldered to the board
 //! (ADR 0439) is a disk named as a card is, set up at boot; its slot has
 //! no card detect to watch, and only its user area is a disk.
+//!
+//! Realtek's card readers on PCI (`radix-rtsx`, ADR 0448), in many
+//! laptops, are no SD host controllers: [`bind_realtek`] sets one up, and
+//! its one slot is driven as a controller's is, through [`Host`] and
+//! [`CardDetect`], which hold either. A Realtek reader reaches only the
+//! first 4 GiB, as a controller of 32-bit descriptors does.
 
 use alloc::boxed::Box;
 use alloc::sync::Arc;
@@ -63,6 +69,7 @@ use radix_hw::pci::{Address, Bar, Function, Msi};
 use radix_hw::{Dma, Mmio};
 use radix_klog::{TextBuf, info, warn};
 use radix_mm::{Flags, HEAP, Kmalloc};
+use radix_rtsx::Chip;
 use radix_sdhci::{Card, Detect, Events, Family, Op as SdOp, Presence, Quirks, Slot};
 use radix_sync::{Once, SpinLock};
 
@@ -73,8 +80,10 @@ use crate::Arch;
 use crate::sched::{self, Options, Policy, ThreadRef};
 
 /// The most segments of a request, each at most a page: the bounce
-/// buffer's pages.
-const SEGMENTS: usize = 32;
+/// buffer's pages. 512 KiB, the most Linux's SD host controller driver
+/// moves in one request (its `max_req_size`), so that a large read or
+/// write takes as few commands to the card as there.
+const SEGMENTS: usize = 128;
 const PAGE: usize = 4096;
 /// The most slots a controller has.
 const MAX_SLOTS: u8 = 6;
@@ -119,7 +128,7 @@ struct Reader {
 /// A slot for cards that come and go, as the interrupt handler and the
 /// thread share it.
 struct Watched {
-    detect: Detect,
+    detect: CardDetect,
     /// The queue of the card in the slot, while one is: the interrupt
     /// handler hands it what finished.
     disk: SpinLock<Option<Arc<Disk<SdSlot>, Kmalloc>>>,
@@ -130,6 +139,173 @@ struct Watched {
 
 const INSERTED: u8 = 1 << 0;
 const REMOVED: u8 = 1 << 1;
+
+/// What a slot's controller is, to set it up again for each card put in:
+/// an SD host controller needing its quirks, or a Realtek reader.
+#[derive(Clone, Copy)]
+enum Make {
+    Sdhci(Quirks),
+    Realtek(Chip),
+}
+
+impl Make {
+    /// The bytes of registers a slot has.
+    fn registers(self) -> usize {
+        match self {
+            Make::Sdhci(_) => radix_sdhci::REGISTERS,
+            Make::Realtek(_) => radix_rtsx::REGISTERS,
+        }
+    }
+
+    /// The slot whose registers are `regs`, of the controller at
+    /// `source`, set up.
+    fn host(self, regs: Mmio, source: Address) -> Result<Host, radix_sdhci::Error> {
+        let mut alloc =
+            |pages: usize, below: bool| <Arch as Devices>::alloc_dma(source, pages, below);
+        let delay = &mut queue::delay;
+        match self {
+            Make::Sdhci(quirks) => Slot::new(regs, &mut alloc, delay, quirks).map(Host::Sdhci),
+            Make::Realtek(chip) => {
+                radix_rtsx::Reader::new(regs, chip, &mut alloc, delay).map(Host::Realtek)
+            }
+        }
+    }
+}
+
+/// A slot as the queue and the thread drive it: an SD host controller's,
+/// or a Realtek reader's, which has no tuned modes, no SDMA and no
+/// fixed eMMC, and reaches only the first 4 GiB.
+enum Host {
+    Sdhci(Slot),
+    Realtek(radix_rtsx::Reader),
+}
+
+impl Host {
+    fn start(
+        &mut self,
+        (op, block, count): (SdOp, u64, u32),
+        buffers: &[(u64, u32)],
+    ) -> Result<(), radix_sdhci::Error> {
+        match self {
+            Host::Sdhci(slot) => slot.start(op, block, count, buffers, &mut queue::delay),
+            Host::Realtek(reader) => reader.start(op, block, count, buffers, &mut queue::delay),
+        }
+    }
+
+    fn poll(&mut self) -> Option<Result<(), radix_sdhci::Error>> {
+        match self {
+            Host::Sdhci(slot) => slot.poll(),
+            Host::Realtek(reader) => reader.poll(),
+        }
+    }
+
+    fn abandon(&mut self) {
+        match self {
+            Host::Sdhci(slot) => slot.abandon(&mut queue::delay),
+            Host::Realtek(reader) => reader.abandon(&mut queue::delay),
+        }
+    }
+
+    fn identify(&mut self) -> Result<Card, radix_sdhci::Error> {
+        match self {
+            Host::Sdhci(slot) => slot.identify(&mut queue::delay),
+            Host::Realtek(reader) => reader.identify(&mut queue::delay),
+        }
+    }
+
+    fn present(&self) -> bool {
+        match self {
+            Host::Sdhci(slot) => slot.present(),
+            Host::Realtek(reader) => reader.present(),
+        }
+    }
+
+    /// Its cards come and go: not an eMMC's slot.
+    fn removable(&self) -> bool {
+        match self {
+            Host::Sdhci(slot) => slot.removable(),
+            Host::Realtek(_) => true,
+        }
+    }
+
+    fn retuning(&self) -> bool {
+        matches!(self, Host::Sdhci(slot) if slot.retuning())
+    }
+
+    fn contiguous(&self) -> bool {
+        matches!(self, Host::Sdhci(slot) if slot.contiguous())
+    }
+
+    fn reaches_64(&self) -> bool {
+        matches!(self, Host::Sdhci(slot) if slot.reaches_64())
+    }
+
+    /// Its card detect, which reads the registers `regs` it shares.
+    fn detect(&self, regs: &Mmio) -> Option<CardDetect> {
+        match self {
+            Host::Sdhci(_) => Detect::new(regs.clone()).map(CardDetect::Sdhci),
+            Host::Realtek(reader) => Some(CardDetect::Realtek(reader.detect())),
+        }
+    }
+
+    /// The reader, for the log: "a version 3.00 reader", or "a Realtek
+    /// RTS5227 reader".
+    fn about(&self) -> TextBuf<48> {
+        let mut text = TextBuf::new();
+        let _ = match self {
+            Host::Sdhci(slot) => {
+                let (major, minor) = slot.version();
+                let sdma = if slot.contiguous() { " moving data by SDMA" } else { "" };
+                write!(text, "a version {major}.{minor:02} reader{sdma}")
+            }
+            Host::Realtek(reader) => write!(text, "a Realtek {} reader", reader.chip().name()),
+        };
+        text
+    }
+}
+
+/// A slot's card detect, of either kind of reader.
+enum CardDetect {
+    Sdhci(Detect),
+    Realtek(radix_rtsx::Detect),
+}
+
+impl CardDetect {
+    fn presence(&self) -> Presence {
+        match self {
+            CardDetect::Sdhci(detect) => detect.presence(),
+            CardDetect::Realtek(detect) => detect.presence(),
+        }
+    }
+
+    fn events(&self) -> Events {
+        match self {
+            CardDetect::Sdhci(detect) => detect.events(),
+            CardDetect::Realtek(detect) => detect.events(),
+        }
+    }
+
+    fn power_off(&self) {
+        match self {
+            CardDetect::Sdhci(detect) => detect.power_off(),
+            CardDetect::Realtek(detect) => detect.power_off(),
+        }
+    }
+
+    fn interrupts(&self, on: bool) {
+        match self {
+            CardDetect::Sdhci(detect) => detect.interrupts(on),
+            CardDetect::Realtek(detect) => detect.interrupts(on),
+        }
+    }
+
+    fn interrupting(&self) -> bool {
+        match self {
+            CardDetect::Sdhci(detect) => detect.interrupting(),
+            CardDetect::Realtek(detect) => detect.interrupting(),
+        }
+    }
+}
 
 /// The controller `index`'s interrupt: the card detects' events for the
 /// thread, and each card's queue's ends.
@@ -186,7 +362,7 @@ struct Flight {
 
 /// A card's slot as the queue drives it.
 pub struct SdSlot {
-    slot: Slot,
+    slot: Host,
     held: Arc<Held, Kmalloc>,
     flight: Option<Flight>,
     /// A request done without the card: a flush, or one for a card gone.
@@ -300,11 +476,9 @@ impl Controller for SdSlot {
             u32::try_from(bytes / u64::from(radix_sdhci::BLOCK)).map_err(|_| Error::OutOfRange)?;
         let bounced_read = self.place_buffers(request.data, op == SdOp::Write)? && op == SdOp::Read;
         let block = request.sector;
-        self.slot.start(op, block, count, &self.descriptors, &mut queue::delay).map_err(|err| {
-            match err {
-                radix_sdhci::Error::BadRequest => Error::OutOfRange,
-                _ => Error::Io,
-            }
+        self.slot.start((op, block, count), &self.descriptors).map_err(|err| match err {
+            radix_sdhci::Error::BadRequest => Error::OutOfRange,
+            _ => Error::Io,
         })?;
         self.flight = Some(Flight { slot, bounced_read, op, block, count, again: false });
         Ok(())
@@ -327,7 +501,7 @@ impl Controller for SdSlot {
         // transfer starts again, once (ADR 0438), with the card held.
         if result.is_err() && self.slot.retuning() && !flight.again {
             let Flight { op, block, count, .. } = flight;
-            if self.slot.start(op, block, count, &self.descriptors, &mut queue::delay).is_ok() {
+            if self.slot.start((op, block, count), &self.descriptors).is_ok() {
                 self.flight = Some(Flight { again: true, ..flight });
                 return None;
             }
@@ -361,7 +535,7 @@ impl Controller for SdSlot {
             fence(Ordering::SeqCst);
             let gone = *lane.held.gone.lock_irq();
             if gone.is_none() {
-                lane.slot.abandon(&mut queue::delay);
+                lane.slot.abandon();
                 warn!(
                     "Disk: a request to the SD card in the reader at {} went unanswered for 30 \
                      s; the slot was reset, and what was in flight goes again",
@@ -394,7 +568,7 @@ struct Loaded {
 /// Makes `card`, set up in `slot`, a disk named `name`, whose requests
 /// raise `interrupt`s.
 fn load(
-    slot: Slot,
+    slot: Host,
     card: &Card,
     name: &Name,
     place: &TextBuf<40>,
@@ -438,11 +612,6 @@ pub fn bind(function: &Function, next: &mut usize) -> Result<(), &'static str> {
     if first > 5 || slots > MAX_SLOTS {
         return Err("its Slot Information register names no BAR");
     }
-    let index = READER_COUNT.fetch_add(1, Ordering::Relaxed);
-    if index >= MAX_READERS {
-        return Err("too many SD card readers");
-    }
-    function.enable_memory_and_dma();
     let source = function.address();
     let quirks = radix_sdhci::quirks::quirks(function.vendor_id(), function.device_id());
     if quirks.ricoh_mode {
@@ -453,6 +622,37 @@ pub fn bind(function: &Function, next: &mut usize) -> Result<(), &'static str> {
     if let Some(name) = quirks.name {
         info!("Disk: the SD card reader at {source} is a {name}: {}", quirk_list(&quirks));
     }
+    bind_slots(function, (first, slots), Make::Sdhci(quirks), next)
+}
+
+/// Sets up the Realtek card reader `function`, a `chip`, and the card in
+/// its one slot, counting it in `next` (ADR 0448).
+#[inline(never)]
+pub fn bind_realtek(function: &Function, chip: Chip, next: &mut usize) -> Result<(), &'static str> {
+    // A board of Realtek's that stands for the chip while it is designed.
+    if function.read32(usize::from(radix_rtsx::CONFIG)) & radix_rtsx::FPGA != 0 {
+        return Err("it is an FPGA, not the chip");
+    }
+    bind_slots(function, (chip.bar(), 1), Make::Realtek(chip), next)
+}
+
+/// Sets up the reader `function`'s `slots` slots, whose registers are in
+/// the BARs from `first` on, each a `make`, and the cards in them,
+/// counting them in `next`: its interrupt, and a thread to watch those
+/// whose cards come and go.
+#[inline(never)]
+fn bind_slots(
+    function: &Function,
+    (first, slots): (usize, u8),
+    make: Make,
+    next: &mut usize,
+) -> Result<(), &'static str> {
+    let index = READER_COUNT.fetch_add(1, Ordering::Relaxed);
+    if index >= MAX_READERS {
+        return Err("too many SD card readers");
+    }
+    function.enable_memory_and_dma();
+    let source = function.address();
     let heap = HEAP.with(Flags::MAY_SLEEP);
     let reader = Reader { slots: [const { Once::new() }; MAX_SLOTS as usize], thread: Once::new() };
     let reader = Arc::try_new_in(reader, heap).map_err(|_| "out of memory")?;
@@ -474,7 +674,7 @@ pub fn bind(function: &Function, next: &mut usize) -> Result<(), &'static str> {
         let mut place = TextBuf::<40>::new();
         let _ = write!(place, "{}, slot {}", source, number + 1);
         let at = (&*reader, number);
-        match add_slot(function, first + number, &place, at, (interrupt.is_some(), quirks)) {
+        match add_slot(function, first + number, &place, at, (interrupt.is_some(), make)) {
             Ok((watcher, card)) => {
                 *next += usize::from(card);
                 if let Some(watcher) = watcher {
@@ -518,45 +718,39 @@ fn quirk_list(quirks: &Quirks) -> TextBuf<100> {
 
 /// Sets up the slot whose registers are in BAR `bar`, the `number`th of
 /// `reader`, and the card in it, its requests raising an `interrupt` or
-/// not, its controller needing `quirks`. Returns the slot's watcher, for
-/// a slot whose cards come and go, and whether a card was in it.
+/// not, its controller a `make`. Returns the slot's watcher, for a slot
+/// whose cards come and go, and whether a card was in it.
 #[inline(never)]
 fn add_slot(
     function: &Function,
     bar: usize,
     place: &TextBuf<40>,
     (reader, number): (&Reader, usize),
-    (interrupt, quirks): (bool, Quirks),
+    (interrupt, make): (bool, Make),
 ) -> Result<(Option<Watcher>, bool), &'static str> {
     let Some(Bar::Memory { address, size, .. }) = function.bar(bar) else {
         return Err("its registers are not in memory");
     };
-    if size < radix_sdhci::REGISTERS as u64 {
+    if size < make.registers() as u64 {
         return Err("its registers are too few");
     }
-    let regs = <Arch as Devices>::map_device(address, radix_sdhci::REGISTERS)
+    let regs = <Arch as Devices>::map_device(address, make.registers())
         .ok_or("its registers could not be mapped")?;
     let source = function.address();
-    let mut alloc = |pages: usize, below: bool| <Arch as Devices>::alloc_dma(source, pages, below);
-    let mut slot = Slot::new(regs.clone(), &mut alloc, &mut queue::delay, quirks)
-        .map_err(|err| err.as_str())?;
+    let mut slot = make.host(regs.clone(), source).map_err(|err| err.as_str())?;
     let removable = slot.removable();
     if !removable && !slot.present() {
         info!("Disk: the SD card reader at {place} is empty");
         return Ok((None, false));
     }
     let heap = HEAP.with(Flags::MAY_SLEEP);
-    let detect = Detect::new(regs.clone()).ok_or("its registers are too few")?;
+    let detect = slot.detect(&regs).ok_or("its registers are too few")?;
     let watched = Watched { detect, disk: SpinLock::new(None), events: AtomicU8::new(0) };
     let watched = Arc::try_new_in(watched, heap).map_err(|_| "out of memory")?;
     let name = slot_name();
-    let (major, minor) = slot.version();
-    let sdma = if slot.contiguous() { " moving data by SDMA" } else { "" };
-    let card = if slot.present() {
-        Some(slot.identify(&mut queue::delay).map_err(|err| err.as_str())?)
-    } else {
-        None
-    };
+    let about = slot.about();
+    let card =
+        if slot.present() { Some(slot.identify().map_err(|err| err.as_str())?) } else { None };
     let loaded = match &card {
         Some(card) => Some(load(slot, card, &name, place, (source, interrupt))?),
         None => None,
@@ -570,8 +764,7 @@ fn add_slot(
     match (&card, &loaded) {
         (Some(card), Some(loaded)) => {
             info!(
-                "Disk: {name} is an {} {} at {place}: {}, a version {major}.{minor:02} \
-                 reader{sdma}",
+                "Disk: {name} is an {} {} at {place}: {}, {about}",
                 Described(card),
                 if card.family == Family::Emmc {
                     "on the SD host controller"
@@ -585,10 +778,7 @@ fn add_slot(
             partitions(&name, &loaded.device);
         }
         _ => {
-            info!(
-                "Disk: {name} is an empty slot of the SD card reader at {place}, a version \
-                 {major}.{minor:02} reader{sdma}"
-            );
+            info!("Disk: {name} is an empty slot of the SD card reader at {place}, {about}");
             let device = empty.clone();
             register(Entry { name: name.clone(), device, place: None, ident: None });
         }
@@ -601,7 +791,7 @@ fn add_slot(
         regs,
         source,
         interrupt,
-        quirks,
+        make,
         name,
         place: place.clone(),
         drive: None,
@@ -639,13 +829,13 @@ fn reader_main(index: usize) {
 /// A slot for cards that come and go, as its thread watches it.
 struct Watcher {
     watched: Arc<Watched, Kmalloc>,
-    /// Its registers, for each card's [`Slot`].
+    /// Its registers, for each card's [`Host`].
     regs: Mmio,
     source: Address,
     /// Its controller interrupts.
     interrupt: bool,
-    /// What its controller needs, for each card's [`Slot`].
-    quirks: Quirks,
+    /// What its controller is, for each card's [`Host`].
+    make: Make,
     name: Name,
     place: TextBuf<40>,
     /// Set before the thread starts.
@@ -736,10 +926,7 @@ impl Watcher {
     fn put_in(&mut self) {
         let Some(drive) = self.drive.clone() else { return };
         let source = self.source;
-        let mut alloc =
-            |pages: usize, below: bool| <Arch as Devices>::alloc_dma(source, pages, below);
-        let slot = Slot::new(self.regs.clone(), &mut alloc, &mut queue::delay, self.quirks);
-        let mut slot = match slot {
+        let mut slot = match self.make.host(self.regs.clone(), source) {
             Ok(slot) => slot,
             Err(err) => {
                 warn!("Disk: {}: a card went in, but the slot {}", self.name, err.as_str());
@@ -747,7 +934,7 @@ impl Watcher {
                 return;
             }
         };
-        let card = match slot.identify(&mut queue::delay) {
+        let card = match slot.identify() {
             Ok(card) => card,
             // Taken out again: the next look says.
             Err(radix_sdhci::Error::NoCard) => return,
@@ -883,7 +1070,7 @@ fn ident(card: &Card) -> Option<Ident> {
 /// The slot's part of the queue, on the heap.
 #[inline(never)]
 fn new_slot(
-    slot: Slot,
+    slot: Host,
     held: Arc<Held, Kmalloc>,
     bounce: Option<Dma>,
     place: TextBuf<40>,

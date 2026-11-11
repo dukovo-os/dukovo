@@ -277,6 +277,14 @@ R5C822, R5U822 and R5U823 and JMicron's JMB38x, and the kernel drives
 them as they need (ADR 0445); a reader without ADMA2 moves data by
 SDMA. The kernel's log names such a reader, and what it does for it.
 
+Many laptops' readers are Realtek's own, on PCI: the RTS5209, RTS5227,
+RTS5229, RTS522A, RTS5249 and RTS525A, and those beside the RTL8402,
+RTL8411 and RTL8411B network chips. Their slot is `mmcblk0` too, and
+works as any other's, but a card runs at High Speed at most, 50 MHz,
+and only SD cards are read: not MultiMediaCards or Memory Sticks (ADR
+0448). The kernel's log names the chip, as in `a Realtek RTS5227
+reader`. The RTS5260 and Realtek's newer readers are not driven yet.
+
 A CompactFlash card in an IDE adapter is a disk named `sda` and on, as
 the disks beside it are, and is read and written by PIO, a few megabytes
 a second (ADR 0446). A CompactFlash card in a USB card reader is a USB
