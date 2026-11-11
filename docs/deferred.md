@@ -339,5 +339,8 @@ finding or removed.
 
 | Item | Why |
 | --- | --- |
+| Support center pages built from the settings schemas (each field with the release it arrived in and its stability) and stability labels on the pages ridlc writes from `abi/*.ridl` (ADR 0419) | `ob docs site` renders the docs in the tree first; these generators follow it |
+| Support center error pages (one per error ID, such as `UPD-103`), the docs checks in CI and docs in the definition of done (ADR 0419) | The next pull requests of the support center work |
+| Publishing `out/docs/site` to dukovo.org/support, one copy per release and one for `main`, with a version switcher (ADR 0419) | Needs the release workflow and the website's deploy to carry it |
 | The *Known limits* sections of `docs/design/posix.md` and `docs/design/storage.md`, and radix-posix(7) | They still describe Phases 7 to 9: no network sockets, no users, no hot plug, no exFAT, no Btrfs quotas, locales "until Phase 12" |
 | The roadmap's catalog ports paragraph says Go comes with release 1.1 | Go is Phase 17 |

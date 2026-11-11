@@ -1854,6 +1854,24 @@ _target/userspace/_).
 		kernel flag (*dukovo-boot*(7)), a *kdb* command or a self-test
 		(*radix-debug*(7)).
 
+*docs site* [*--version* _name_]
+	Build the support center, the site dukovo.org/support serves, into
+	_out/docs/site/_: a page for every man page (section 2 included),
+	every handbook chapter in the order of its _SUMMARY.md_, every design
+	note in _docs/design/_ and every decision record, the roadmap, and the
+	tutorials, guides, runbooks and error pages of _docs/tutorials/_,
+	_docs/guides/_, _docs/runbooks/_ and _docs/errors/_ when those folders
+	exist. Man pages are rendered by *mandoc -T html* and link the pages
+	they name; links between Markdown files lead to their pages, and links
+	to other files of the tree lead to GitHub. Every page has links to
+	report a problem with it and to edit its source. The search covers
+	every page by its title, summary and other names. The layout, styles
+	and home page are in _docs/site/_.
+
+	*--version* _name_
+		The release the pages describe, which their header shows (the
+		default is this tree's version).
+
 *lint*
 	Check formatting with rustfmt and run Clippy, treating every warning as
 	an error, on the build tool, on the kernel for x86-64, on the

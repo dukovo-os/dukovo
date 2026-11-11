@@ -122,6 +122,9 @@ jobs:
       - name: ./ob docs --check
         run: ./ob docs --check
 
+      - name: ./ob docs site
+        run: ./ob docs site
+
       - name: ./ob image
         run: ./ob image
 
@@ -212,6 +215,9 @@ jobs:
 
       - name: ./ob docs --check
         run: ./ob docs --check
+
+      - name: ./ob docs site
+        run: ./ob docs site
 
   # The host unit tests and the boot tests run beside the lint job, the
   # boot tests split between several machines, so that a pull request's CI
