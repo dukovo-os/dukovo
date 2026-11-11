@@ -10,16 +10,21 @@
 # from a mirror that fails, not from one that is slow, so the download
 # gets 90 seconds there, against the 30 or less it takes from a mirror
 # that is well. Past that, it starts again from Ubuntu's own
-# archive.ubuntu.com, keeping the files it already has. Only then does
-# dpkg install them, so a download that is cut off never leaves a package
-# half installed.
+# archive.ubuntu.com, keeping the files it already has, and if that does
+# not answer either, from kernel.org's mirror of it, over HTTPS: on
+# 2026-11-11 the runners reached neither of Ubuntu's own for hours, while
+# HTTPS to other hosts worked. Only then does dpkg install them, so a
+# download that is cut off never leaves a package half installed. apt
+# checks every mirror's files against Ubuntu's signing keys, so a mirror
+# can only fail to give them, not change them.
 #
 # Troubleshooting: "The runner's Ubuntu mirror was slow" in a job's
-# warnings means the second download ran; a job that still fails here has
-# both mirrors failing, and a rerun is the fix.
+# warnings means the second download ran, and "Ubuntu's archive did not
+# answer" the third; a job that still fails here has all three mirrors
+# failing, and a rerun is the fix.
 
 name: Install Ubuntu packages
-description: apt-get install, moving to archive.ubuntu.com when the runner's mirror is slow
+description: apt-get install, moving to archive.ubuntu.com when the runner's mirror is slow, then to kernel.org's mirror of it
 inputs:
   packages:
     description: The packages, separated by spaces or new lines
@@ -49,7 +54,15 @@ runs:
           sudo sed -i 's/azure\.archive\.ubuntu\.com/archive.ubuntu.com/g' \
             /etc/apt/apt-mirrors.txt /etc/apt/sources.list.d/*.sources /etc/apt/sources.list \
             2>/dev/null || true
-          download 1200
+          if ! download 1200; then
+            echo "::warning::Ubuntu's archive did not answer; downloading from mirrors.edge.kernel.org instead"
+            # Every Ubuntu host, the security archive's too, over HTTP or
+            # HTTPS, becomes kernel.org's mirror over HTTPS.
+            sudo sed -i 's#https\?://[a-z.]*ubuntu\.com/ubuntu#https://mirrors.edge.kernel.org/ubuntu#g' \
+              /etc/apt/apt-mirrors.txt /etc/apt/sources.list.d/*.sources /etc/apt/sources.list \
+              2>/dev/null || true
+            download 1200
+          fi
         fi
         # shellcheck disable=SC2086
         "${apt[@]}" install -y --no-install-recommends $PACKAGES
