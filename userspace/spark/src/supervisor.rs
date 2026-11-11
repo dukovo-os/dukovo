@@ -99,6 +99,13 @@ pub const POSIX_ENV: [&str; 5] =
 const MS: u64 = 1_000_000;
 const SECOND: u64 = 1_000 * MS;
 
+/// The services Rescue starts of those enabled (ADR 0460): the log, the
+/// firewall, notices, the screen reader and its sound and braille, and
+/// the consoles, where dukovo-rescue(8) runs. The rest, networking among
+/// them, stay off until someone starts them.
+pub const RESCUE_SERVICES: [&str; 8] =
+    ["logd", "firewall", "notifyd", "audiod", "readerd", "brailled", "consoled", "serial-console"];
+
 /// The hardware watchdog's timeout, unless `--watchdog` gives another.
 pub const WATCHDOG_SECONDS: u32 = 60;
 
@@ -533,6 +540,9 @@ pub struct Supervisor {
     watchdog_seconds: u32,
     hang: bool,
     hang_always: bool,
+    /// Whether this is Rescue (ADR 0460), which starts only
+    /// [`RESCUE_SERVICES`].
+    rescue: bool,
     /// While the watchdog runs: how often Spark pets it, and when next.
     pets: Option<(u64, u64)>,
 }
@@ -596,8 +606,16 @@ impl Supervisor {
             watchdog_seconds: WATCHDOG_SECONDS,
             hang: false,
             hang_always: false,
+            rescue: false,
             pets: None,
         }
+    }
+
+    /// Makes this Rescue (ADR 0460): of the enabled services, only
+    /// [`RESCUE_SERVICES`] start, so that nothing reaches the network or
+    /// the machine's disks until the owner asks.
+    pub fn set_rescue(&mut self) {
+        self.rescue = true;
     }
 
     /// Sets the watchdog's timeout, 0 to leave it off, and whether Spark
@@ -712,8 +730,18 @@ impl Supervisor {
         loaded.sort_by(|a, b| (a.spec.order, &a.spec.name).cmp(&(b.spec.order, &b.spec.name)));
         let enabled = loaded.iter().filter(|s| s.spec.enabled).count();
         println!("spark: {} services in /{dir}, {enabled} enabled", loaded.len());
-        for service in loaded {
-            let enabled = service.spec.enabled;
+        if self.rescue {
+            println!(
+                "spark: Rescue starts only the consoles, the log, the firewall and the reader; \
+                 networking stays off until it is turned on"
+            );
+        }
+        for mut service in loaded {
+            let enabled = service.spec.enabled
+                && (!self.rescue || RESCUE_SERVICES.contains(&service.spec.name.as_str()));
+            if service.spec.enabled && !enabled {
+                service.why = Some(String::from("Rescue leaves it off until it is started"));
+            }
             self.services.push(service);
             if enabled {
                 let index = self.services.len() - 1;
@@ -1354,6 +1382,17 @@ impl Supervisor {
         }
         audit!("the power button was pressed; powering off the machine");
         self.shutdown = Some(Shutdown::Pending { end: End::PowerOff, at: now() });
+    }
+
+    /// Restarts the machine in `seconds`, as an installed system whose
+    /// root no disk holds does, so that starts that do not finish bring
+    /// Rescue up (ADR 0460).
+    pub fn restart_in(&mut self, seconds: u64) {
+        println!(
+            "spark: restarting in {seconds} seconds; after three starts that do not finish, \
+             the boot menu starts Rescue"
+        );
+        self.shutdown = Some(Shutdown::Pending { end: End::Restart, at: now() + seconds * SECOND });
     }
 
     /// The host of the virtual machine asked it to restart: restarts it

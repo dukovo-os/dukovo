@@ -18,7 +18,8 @@ usage: system-release keys DIR
        system-release make --tree DIR --keys DIR --out DIR --version VERSION
                            --commit COMMIT --toolchain TOOLCHAIN --built SECONDS
                            [--updates-from VERSION]
-       system-release check [--root FILE] [--version VERSION] REPOSITORY";
+       system-release check [--root FILE] [--version VERSION] REPOSITORY
+       system-release rescue --out ESP [--root FILE] [--version VERSION] REPOSITORY";
 
 /// How many damaged files `check` names before it counts the rest.
 const SHOWN_PROBLEMS: usize = 20;
@@ -43,6 +44,7 @@ pub fn run(args: &[String]) -> i32 {
         "keys" => keys(&options),
         "make" => make(&options),
         "check" => check(&options),
+        "rescue" => rescue(&options),
         "--help" | "-h" | "help" => {
             println!("{USAGE}");
             return 0;
@@ -196,6 +198,32 @@ fn check(options: &Options) -> Result<(), String> {
     }
 }
 
+/// `rescue --out ESP REPOSITORY`: Rescue of the release there, read from
+/// the trusted root, written into the EFI system partition's folder
+/// `ESP`, from the repository's store (ADR 0460).
+fn rescue(options: &Options) -> Result<(), String> {
+    let [dir] = options.operands.as_slice() else {
+        return Err("rescue takes the folder of a release's repository".into());
+    };
+    let esp = needed(&options.out, "--out")?;
+    let root_path = options.root.clone().unwrap_or_else(|| PathBuf::from(TRUSTED_ROOT));
+    let root = std::fs::read(&root_path)
+        .map_err(|err| format!("the trusted root {}: {err}", root_path.display()))?;
+    let dir = Path::new(dir);
+    let opened = repo::open(dir, &root, options.version.as_deref())?;
+    let store = crate::store::Store::at(&dir.join("files"));
+    let file = |entry: &crate::list::Entry| store.path(entry.file().map_or("", |(sha, _)| sha));
+    let written = crate::rescue::write(esp, dir, &opened.release, &file)?;
+    println!(
+        "system-release: Rescue of release {}, {} files of {} MiB, in {}",
+        opened.release.version,
+        written.files,
+        written.bytes >> 20,
+        esp.join(crate::rescue::DIR).display()
+    );
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -237,6 +265,10 @@ mod tests {
             1
         );
         assert_eq!(run(&strings(&["check", "--root", &path("nowhere.json"), &path("release")])), 1);
+        let rescue = ["rescue", "--root", &root, "--out", &path("esp"), &path("release")];
+        assert_eq!(run(&strings(&rescue)), 0);
+        assert!(dir.join("esp/boot/rescue/system").is_file());
+        assert_eq!(run(&strings(&["rescue", "--root", &root, &path("release")])), 1);
         assert_eq!(run(&strings(&["make", "--tree"])), 2);
         assert_eq!(run(&strings(&["sign"])), 2);
         std::fs::remove_dir_all(&dir).unwrap();

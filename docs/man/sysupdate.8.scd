@@ -104,7 +104,10 @@ then watches the essential services that *health.toml*(5) names. An
 update being tried proves itself or fails, as above; any other start is
 seen through once those services run. Until a start is seen through,
 GRUB shows its menu at the next start, so that a machine that stopped on
-its way up can be started otherwise.
+its way up can be started otherwise; after three such starts in a row,
+or with no slot to start, the menu starts Rescue by itself
+(*dukovo-rescue*(8), ADR 0460). Each start seen through sets that count
+back to 0.
 
 # OPTIONS
 
@@ -121,7 +124,8 @@ or *(update, last try)*, or the version before with *(the update to
 VERSION failed)*. While an update is being tried, an entry starts the
 version it updates, *(without the update)*, and leaves the tries as they
 are. The previous version's entry starts it once, without making it the
-default.
+default. After the slots' entries, *Rescue (Dukovo* _version_*)* starts
+Rescue.
 
 # EXIT STATUS
 
@@ -159,6 +163,9 @@ _@snapshots/update_ on the root's top level
 _boot/grub/state1_, _boot/grub/state2_ on each EFI system partition
 	The two copies of the slot state.
 
+_boot/grub/rescue.env_ on each EFI system partition
+	The count of starts in a row that were not seen through.
+
 # DIAGNOSTICS
 
 When an update will not stage, the last line *stage* prints says why:
@@ -170,5 +177,5 @@ _@snapshots/update/settings-failed_.
 
 # SEE ALSO
 
-*health.toml*(5), *spark*(8), *dukovo-boot*(7), *system-release*(8),
-*service*(8)
+*health.toml*(5), *spark*(8), *dukovo-boot*(7), *dukovo-rescue*(8),
+*system-release*(8), *service*(8)

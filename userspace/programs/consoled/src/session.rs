@@ -60,6 +60,10 @@ pub struct Console {
     /// session only, as the installer's screens on tty1 under the kernel
     /// flag `install` (dukovo-boot(7)). The shell follows when it ends.
     pub once: Option<String>,
+    /// A program run as root in the shell's place for every session, as
+    /// Rescue's dukovo-rescue(8) under the kernel flag `rescue=`, which
+    /// starts again when it ends.
+    pub always: Option<String>,
     /// The program the session runs, or ran last.
     program: String,
 }
@@ -84,6 +88,7 @@ impl Console {
             retry_at: None,
             terminal: None,
             once: None,
+            always: None,
             program: String::new(),
         }
     }
@@ -127,7 +132,7 @@ impl Console {
     pub fn start(&mut self, shell: &Shell) -> io::Result<()> {
         self.retry_at = None;
         self.term.reset();
-        let once = self.once.take();
+        let once = self.once.take().or_else(|| self.always.clone());
         self.program = once.clone().unwrap_or_else(|| shell.path.clone());
         // login(1) signs people in; a program run once is root's, as the
         // shell is with no sign-in.

@@ -55,7 +55,8 @@
 //! bundled's, it runs the bundle command of that name.
 //! `sysupdate` stages a signed release in the spare slot, and as a
 //! service checks that a new version proves itself, or falls back
-//! (ADRs 0451 to 0454).
+//! (ADRs 0451 to 0454); `dukovo-rescue` is Rescue's screens, which
+//! repair a system that will not start (ADR 0460).
 
 mod account;
 mod args;
@@ -139,6 +140,7 @@ mod reader;
 mod releases;
 mod remount;
 mod replace;
+mod rescue;
 mod resolvectl;
 mod resolved;
 mod rgrub;
@@ -216,6 +218,7 @@ const TOOLS: &[(&str, Tool)] = &[
     ("diskhealth", diskhealth::main),
     ("dmesg", dmesg::main),
     ("dukofetch", dukofetch::main),
+    ("dukovo-rescue", rescue::main),
     ("e1000d", e1000d::main),
     ("ectool", ectool::main),
     ("efiboot", efiboot::main),

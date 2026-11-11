@@ -106,6 +106,17 @@ pub fn make_as(
     process::run(ctx, &mut cmd)
 }
 
+/// Writes Rescue of the release in the repository `repo`, which this
+/// machine's keys signed, into `esp`, a folder staged as an EFI system
+/// partition: `boot/rescue` (ADR 0460).
+pub fn rescue(ctx: &Ctx, repo: &Path, esp: &Path) -> Result<()> {
+    let root = keys(ctx)?.join("root.json");
+    step(&format!("Writing Rescue into {}", ctx.display(esp)));
+    let mut cmd = Command::new(tool(ctx)?);
+    cmd.arg("rescue").arg("--root").arg(&root).arg("--out").arg(esp).arg(repo);
+    process::run(ctx, &mut cmd)
+}
+
 /// The commit the tree is at, or `unknown` outside a git checkout.
 fn commit(ctx: &Ctx) -> String {
     Command::new("git")

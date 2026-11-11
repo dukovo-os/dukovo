@@ -118,6 +118,7 @@ power-button 17
 principals 12
 rcu 21
 rdisk 57
+rescue 330
 rgrub-setup 39
 root 49
 sched-balance 16

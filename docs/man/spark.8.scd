@@ -137,7 +137,13 @@ Init: /system/commands/spark is process 1
   of the install stick and DVD give it, Spark starts the live system: no
   disk is Dukovo's root, and the only volume it mounts is the stick's
   DUKOVO_LIVE or the DVD, read-only. The machine's own disks stay unmounted, as an installer and
-  a rescue shell need them; *mount*(8) mounts one by hand.
+  a rescue shell need them; *mount*(8) mounts one by hand. With
+  *rescue=*_uuid_ as well, this is Rescue, as an installed system's boot
+  menu starts it from the EFI system partition (ADR 0460): *spark: this
+  is Rescue*. *dukovo-rescue*(8) mounts the root it repairs, and Spark
+  starts only the log, the firewall, notices, the screen reader and the
+  consoles of the services enabled; the rest, networking among them,
+  stay off until *service*(8) starts them.
 . The first Btrfs mounted read-write whose top holds the subvolumes
   _@system.a_, _@state_, _@applications_, _@users_ and _@shared_ is
   Dukovo's root, as *./ob image* makes it on its Dukovo root
@@ -145,8 +151,10 @@ Init: /system/commands/spark is process 1
   *root=UUID=*_uuid_, as an installed system's boot menu does, only the
   Btrfs with that UUID is (ADR 0307): an installed system starts from an
   archive of Spark alone, and the rest of the system is on that root. If
-  no disk holds it, Spark says so on the console and starts nothing; look
-  there first when an installed system stops after Spark. The system is
+  no disk holds it, Spark says so on the console, starts nothing, and
+  restarts the machine 30 seconds later, so that the boot menu starts
+  Rescue after three such starts; look there first when an installed
+  system stops after Spark. The system is
   the slot the kernel's command line names, *slot=a* or *slot=b*, as an
   installed system's boot menu gives it, _@system.a_ or _@system.b_, and
   slot A without one (*sysupdate*(8), ADR 0451); Spark says which:

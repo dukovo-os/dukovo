@@ -676,8 +676,10 @@ them to *init*, and the kernel does not read them.
 	gives (ADR 0307). Spark mounts that root and no other disk's, so
 	that a second disk with Dukovo on it, or an install stick, never
 	becomes the system GRUB did not start; when no disk holds it, Spark
-	says so and starts nothing. Without it, Spark takes the first disk
-	that holds a Dukovo root. The last one given counts.
+	says so, starts nothing, and restarts the machine 30 seconds later,
+	so that the boot menu starts Rescue after three such starts (ADR
+	0460). Without it, Spark takes the first disk that holds a Dukovo
+	root. The last one given counts.
 
 *live*
 	Read by *spark*(8), not the kernel: the live system, as the install
@@ -685,6 +687,16 @@ them to *init*, and the kernel does not read them.
 	archive, in memory, whatever disks hold a Dukovo root, and the only
 	disk Spark mounts is the stick's DUKOVO_LIVE, read-only: the
 	machine's disks are the owner's, for the installer or *mount*(8).
+
+*rescue*=_uuid_
+	Read by *spark*(8), *consoled*(8), *serial-console*(8) and
+	*dukovo-rescue*(8), not the kernel: with *live*, this is Rescue, as
+	the Rescue entry of an installed system's boot menu starts it from
+	the EFI system partition, for the Dukovo root of Btrfs UUID _uuid_
+	(ADR 0460). Spark starts only the log, the firewall, notices, the
+	screen reader and the consoles, so that networking stays off until
+	the owner turns it on, and every console runs *dukovo-rescue*(8),
+	again whenever it ends, in place of a sign-in or a shell.
 
 *install*
 	Read by *consoled*(8), not the kernel: tty1 runs

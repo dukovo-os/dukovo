@@ -215,6 +215,13 @@ pub const FLAGS: &[Flag] = &[
                   stick's Install Dukovo entry starts them, and root's shell once they end",
     },
     Flag {
+        name: "rescue",
+        value: Some("uuid"),
+        summary: "for Spark, consoled and dukovo-rescue, not the kernel: with live, this is \
+                  Rescue, for the Dukovo root of this Btrfs UUID: only the consoles, the log and \
+                  the reader start, and the consoles run dukovo-rescue",
+    },
+    Flag {
         name: "speech",
         value: None,
         summary: "for readerd, not the kernel: the screen reader speaks from the first screen, \

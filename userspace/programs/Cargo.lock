@@ -3298,6 +3298,7 @@ dependencies = [
 name = "system-release"
 version = "0.14.1"
 dependencies = [
+ "radix-bootfs",
  "ring",
  "serde",
  "serde_json",

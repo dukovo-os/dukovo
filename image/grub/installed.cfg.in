@@ -178,12 +178,14 @@ elif [ -f "($system)/@system.${slot_other}/startup/menu.cfg" ]; then
     source "($system)/@system.${slot_default}/startup/menu.cfg"
 else
     set timeout_style=menu
+    set rescue_now=1
     echo "Dukovo cannot find its system on the root @ROOT_UUID@."
-    echo "Check that its disk is connected, or start Try Dukovo from an install stick."
+    echo "Check that its disk is connected, or start Rescue or Try Dukovo from an install stick."
 fi
 
 # Entries kept on this partition beside the menu, which work without the
-# root.
+# root: Rescue (rescue.cfg, ADR 0460), which starts by itself after three
+# starts that did not finish, or with no slot to start.
 if [ -f "${prefix}/rescue.cfg" ]; then
     source "${prefix}/rescue.cfg"
 fi

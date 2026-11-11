@@ -111,6 +111,15 @@ const PROGRAM_MEMORY_ORDER: u32 = 9;
 /// The most arguments it passes on.
 const ARGS_MAX: usize = 16;
 
+/// How long an installed system whose root no disk holds waits before it
+/// restarts, in seconds: long enough to read why, and each start that
+/// does not finish counts towards Rescue (ADR 0460).
+const ROOT_MISSING_RESTART: u64 = 30;
+
+/// Set when the kernel's command line names a root no disk holds, as an
+/// installed system's boot menu does.
+static ROOT_MISSING: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
 /// Where the kernel gave Spark its network capability, after the memory
 /// for programs, the services' domain and the power capability.
 const NETWORK: u32 = SLOT_FIRST_EXTRA + 3;
@@ -271,7 +280,13 @@ fn run() -> Option<Supervisor> {
     // `test-hang` among the kernel's words has Spark stop responding at
     // every start, as an update that hangs does (ADR 0452's boot test).
     supervisor.set_watchdog(watchdog, hang, kernel_flag(&root, "test-hang"));
+    if rescue(&root) {
+        supervisor.set_rescue();
+    }
     supervisor.listen();
+    if ROOT_MISSING.load(core::sync::atomic::Ordering::Relaxed) {
+        supervisor.restart_in(ROOT_MISSING_RESTART);
+    }
     let (mut with_services, mut services) = (false, SERVICES_DIR);
     loop {
         if words.next_if_eq(&"--services").is_some() {
@@ -495,6 +510,9 @@ fn build(root: &Dir, volumes: bool, compress: &[&str]) -> bool {
         println!(
             "spark: only the install medium is mounted; mount(8) mounts the machine's own disks"
         );
+        if rescue(root) {
+            println!("spark: this is Rescue (ADR 0460): dukovo-rescue(8) runs on the consoles");
+        }
         mount_disks(root, compress, true);
         None
     } else {
@@ -526,8 +544,9 @@ fn build(root: &Dir, volumes: bool, compress: &[&str]) -> bool {
                 );
                 println!(
                     "spark: /system is only the startup archive; check that the disk is \
-                     connected, or start Try Dukovo from an install stick to look at it"
+                     connected, or start Rescue from the boot menu to look at it"
                 );
+                ROOT_MISSING.store(true, core::sync::atomic::Ordering::Relaxed);
             }
             for (path, kind, flags) in IN_MEMORY {
                 let mounted = root.mount(path, kind, None, flags).and_then(|()| {
@@ -778,6 +797,19 @@ fn kernel_flag(root: &Dir, flag: &str) -> bool {
             line.split_ascii_whitespace().take_while(|&word| word != "--").any(|word| word == flag)
         })
     })
+}
+
+/// Whether this is Rescue, which its boot menu entry starts as the live
+/// system with `rescue=<uuid>`, the root to rescue (dukovo-boot(7)).
+fn rescue(root: &Dir) -> bool {
+    kernel_flag(root, "live")
+        && root.read_file("kernel/cmdline").is_ok_and(|line| {
+            core::str::from_utf8(&line).is_ok_and(|line| {
+                line.split_ascii_whitespace()
+                    .take_while(|&word| word != "--")
+                    .any(|word| word.starts_with("rescue="))
+            })
+        })
 }
 
 /// What the kernel's command line says of the slots: the one GRUB

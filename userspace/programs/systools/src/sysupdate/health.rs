@@ -242,6 +242,12 @@ pub fn run() -> Result<i32, Fail> {
     if let Some(next) = next {
         place::write(&copies, next)?;
     }
+    // A start seen through: Rescue counts its starts afresh (ADR 0460).
+    if !matches!(checked, Checked::Failed(_)) {
+        for why in place::reset_rescue(copies.iter().map(|c| c.partition.as_str())) {
+            println!("sysupdate: cannot set Rescue's count of starts back: {why}");
+        }
+    }
     match checked {
         Checked::Proved(slot) => {
             let before = place::named(&root, slot.other());

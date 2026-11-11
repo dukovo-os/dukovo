@@ -5,11 +5,13 @@ system-release(8) "Dukovo" "Dukovo Manual"
 
 # NAME
 
-system-release - check, sign and make keys for Dukovo's system releases
+system-release - check, sign, keep Rescue of and make keys for Dukovo's system releases
 
 # SYNOPSIS
 
 *system-release check* [*--root* _file_] [*--version* _version_] _repository_
+
+*system-release rescue* *--out* _esp_ [*--root* _file_] [*--version* _version_] _repository_
 
 *system-release make* *--tree* _dir_ *--keys* _dir_ *--out* _dir_
 *--version* _version_ *--commit* _commit_ *--toolchain* _toolchain_
@@ -46,6 +48,21 @@ system-release: release 0.14.1 (8f2c0e61d4a7b3c9), built 2026-11-06T04:18:31Z fr
 system-release: all 2312 files match the signed list (210 MiB)
 ```
 
+*rescue* checks the release in _repository_ as *check* does, and writes
+it as Rescue (*dukovo-rescue*(8), ADR 0460) into _boot/rescue_ of the
+EFI system partition mounted at _esp_: its startup folder, a boot archive
+of the rest of the release, and the repository's signed metadata and
+list. Every file is checked against the signed list as it is written,
+and the copy is read back; it is written beside the one there, as
+_boot/rescue.new_, and switched in by two renames, so that a power cut
+leaves one whole copy. The installer does the same for each disk that
+starts the system.
+
+```
+# system-release rescue --out /volumes/sda1 /volumes/sda3/release
+system-release: Rescue of release 0.15.0, 2312 files of 229 MiB, in /volumes/sda1/boot/rescue
+```
+
 *make* and *keys* are for the machine that builds Dukovo, where *ob*(1)
 runs them. *make* lists the slot staged in the folder *--tree*, signs the
 list with the keys in *--keys* and lays out its repository in *--out*,
@@ -72,7 +89,8 @@ _.cache/release-keys_, and its images trust only those.
 	The keys *keys* made.
 
 *--out* _dir_
-	Where *make* lays out the repository.
+	Where *make* lays out the repository; or, for *rescue*, the EFI
+	system partition's mount point.
 
 *--commit* _commit_, *--toolchain* _toolchain_
 	The git commit and the Rust toolchain the release was built from,
@@ -89,12 +107,13 @@ _.cache/release-keys_, and its images trust only those.
 # EXIT STATUS
 
 0
-	The release checked whole, or was made, or the keys were.
+	The release checked whole, or was made or written as Rescue, or the
+	keys were.
 
 1
 	It did not: a signature, version or hash failed, a file is missing
-	or damaged, or a file could not be read or written. Write a damaged
-	stick again.
+	or damaged, or a file could not be read or written, as on an EFI
+	system partition too small for Rescue. Write a damaged stick again.
 
 2
 	The command line was wrong.
@@ -106,4 +125,4 @@ _/system/resources/updates/root.json_
 
 # SEE ALSO
 
-*dukovo-boot*(7), *spark*(8), *rdisk*(8), *ob*(1)
+*dukovo-boot*(7), *dukovo-rescue*(8), *spark*(8), *rdisk*(8), *ob*(1)

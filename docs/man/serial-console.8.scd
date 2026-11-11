@@ -40,6 +40,9 @@ ends:
   runs the shell on tty1, if there is a screen at all. When the
   screens end, by Live console or at the end of the install, root's
   shell follows.
+- With *rescue=*_uuid_, as Rescue's boot menu entry gives it,
+  *dukovo-rescue*(8)'s screens, as root, and it logs *rescue: Rescue's
+  screens on /devices/ttyS0* (ADR 0460).
 - With *console-sign-in=off*, root's login shell from
   _/system/settings/passwd_, with no sign-in, as *consoled*(8) runs it
   on the screen's consoles.

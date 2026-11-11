@@ -49,13 +49,15 @@ pub enum Step {
     Settings,
     /// GRUB goes on the disk.
     Grub,
+    /// Rescue goes on the EFI system partitions, every file checked.
+    Rescue,
     /// The answers and the log are saved in the new system.
     Save,
 }
 
 impl Step {
     /// Every step, in the order they run.
-    pub const ALL: [Step; 11] = [
+    pub const ALL: [Step; 12] = [
         Step::Release,
         Step::Disk,
         Step::Shrink,
@@ -66,6 +68,7 @@ impl Step {
         Step::Copy,
         Step::Settings,
         Step::Grub,
+        Step::Rescue,
         Step::Save,
     ];
 
@@ -93,6 +96,7 @@ impl Step {
             Step::Copy => "step-copy",
             Step::Settings => "step-settings",
             Step::Grub => "step-grub",
+            Step::Rescue => "step-rescue",
             Step::Save => "step-save",
         }
     }
@@ -111,7 +115,8 @@ impl Step {
     #[must_use]
     pub fn share(self) -> u32 {
         match self {
-            Step::Copy => 70,
+            Step::Copy => 60,
+            Step::Rescue => 10,
             Step::Format | Step::Grub | Step::Shrink => 8,
             Step::Release => 6,
             Step::Partition | Step::Mirror | Step::Subvolumes | Step::Settings => 2,
