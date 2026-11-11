@@ -11,6 +11,8 @@ repository.workspace = true
 publish.workspace = true
 
 [dependencies]
+# Rescue's boot archive (ADR 0460), written a header at a time.
+radix-bootfs = { path = "../../../kernel/lib/bootfs", features = ["write"] }
 # The SHA-256 of every file, ring's, which ob patches in from the
 # rust-crates port (ADR 0192).
 ring = "0.17.14"

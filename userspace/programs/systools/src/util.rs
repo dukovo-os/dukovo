@@ -318,6 +318,19 @@ pub fn kernel_flag(flag: &str) -> bool {
     kernel_flag_in(&line, flag)
 }
 
+/// The value of the kernel flag that starts with `prefix`, such as
+/// `rescue=`, the last if there are several: what follows the prefix.
+pub fn kernel_word(prefix: &str) -> Option<String> {
+    let line = std::fs::read_to_string("/kernel/cmdline").unwrap_or_default();
+    kernel_word_in(&line, prefix).map(str::to_string)
+}
+
+/// The value of the kernel flag of command line `line` that starts with
+/// `prefix`.
+fn kernel_word_in<'a>(line: &'a str, prefix: &str) -> Option<&'a str> {
+    line.split_whitespace().take_while(|w| *w != "--").filter_map(|w| w.strip_prefix(prefix)).last()
+}
+
 /// Whether the kernel flags of command line `line` have `flag`.
 fn kernel_flag_in(line: &str, flag: &str) -> bool {
     line.split_whitespace().take_while(|w| *w != "--").any(|w| w == flag)
@@ -576,6 +589,9 @@ mod tests {
         assert!(!kernel_flag_in("lockdep -- startup-trouble", "startup-trouble"));
         assert!(!kernel_flag_in("startup-trouble=no", "startup-trouble"));
         assert!(!kernel_flag_in("", "startup-trouble"));
+        let line = "live rescue=0a1b quiet -- rescue=spark";
+        assert_eq!(kernel_word_in(line, "rescue="), Some("0a1b"));
+        assert_eq!(kernel_word_in("live -- rescue=0a1b", "rescue="), None);
     }
 
     #[test]

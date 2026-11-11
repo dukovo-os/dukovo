@@ -1,0 +1,85 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "Three starts in a row cut short before the health check sees them through start Rescue from the EFI system partition by itself; an administrator signs in to it, checks the disk read-only, and starts Dukovo normally again (ADR 0460)"
+time = "20m"
+fresh = true
+
+# A health check that never ends, so that no start is seen through, and
+# the cuts below never race it.
+[[step]]
+run = '''printf '[[check]]\nname = "wait"\ncommand = ["sleep", "600"]\nrequired = true\ntimeout = 600\n' > /users/lab/health.toml'''
+[[step]]
+run = "cp /users/lab/health.toml /system/settings/sysupdate/health.toml"
+root = true
+[[step]]
+run = "sync"
+[[step]]
+power = "reset"
+[[step]]
+serial = "spark: started slot a, @system.a"
+[[step]]
+power = "cut"
+[[step]]
+power = "on"
+[[step]]
+serial = "spark: started slot a, @system.a"
+[[step]]
+power = "cut"
+[[step]]
+power = "on"
+[[step]]
+serial = "spark: started slot a, @system.a"
+[[step]]
+power = "cut"
+[[step]]
+power = "on"
+# The fourth start is Rescue's, with networking off.
+[[step]]
+serial = "did not finish starting three times in a row"
+[[step]]
+serial = "spark: this is Rescue"
+[[step]]
+serial = "networking stays off until it is turned on"
+[[step]]
+screen = "Rescue needs one of this computer's administrators."
+[[step]]
+type = "lab\n"
+[[step]]
+screen = "Password:"
+[[step]]
+type = "{password}\n"
+[[step]]
+screen = ["Rescue: lab is an administrator of this computer.", "Choose 1 to 9:"]
+# The disk check, read-only, on the machine's own disk.
+[[step]]
+type = "3\n"
+[[step]]
+screen = "is sound."
+# The never-ending check goes, from Rescue's shell.
+[[step]]
+type = "6\n"
+[[step]]
+type = "rm /volumes/*/@settings/sysupdate/health.toml && echo \"gone\"\": $((40 + 2))\"\n"
+[[step]]
+screen = "gone: 42"
+[[step]]
+type = "exit\n"
+[[step]]
+screen = "Back in Rescue."
+# Start Dukovo normally: the count goes back to 0, and the slot starts.
+[[step]]
+type = "7\n"
+[[step]]
+serial = "spark: started slot a, @system.a"
+[[step]]
+serial = "is seen through"
+[[step]]
+wait = "ready"
+[[step]]
+run = "sysupdate status"
+root = true
+expect = "Next start: slot A"
+expect_not = "Not seen through"
+[[step]]
+run = "rm /users/lab/health.toml"

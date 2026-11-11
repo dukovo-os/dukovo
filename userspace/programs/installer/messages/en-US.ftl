@@ -392,6 +392,7 @@ step-subvolumes = Making the subvolumes
 step-copy = Copying Dukovo { $version } into its slot, checking every file
 step-settings = Writing the settings and accounts
 step-grub = Installing GRUB
+step-rescue = Putting Rescue on the EFI system partition, checking every file
 step-save = Saving the answers and the install log
 installed-line = { $medium ->
     [disc] Dukovo { $version } is installed on { $disk }. Remove the install disc, then restart.

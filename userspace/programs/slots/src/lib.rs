@@ -12,7 +12,9 @@
 //! check. GRUB tells the kernel which slot it started, and whether that
 //! is a fallback, on the command line ([`cmdline`]); each slot says what
 //! version it is in `startup/slot.env` ([`about`]); and a fallback puts
-//! the settings from before the update back ([`restore`]).
+//! the settings from before the update back ([`restore`]). When no slot
+//! starts, three starts in a row that were not seen through start Rescue
+//! from the EFI system partition, which counts them ([`rescue`]).
 //!
 //! The crate is without the standard library, so that Spark uses it as
 //! sysupdate(8) does. When an update will not stage or a start falls
@@ -25,6 +27,7 @@ extern crate alloc;
 pub mod about;
 pub mod cmdline;
 pub mod envblock;
+pub mod rescue;
 pub mod restore;
 pub mod state;
 pub mod version;

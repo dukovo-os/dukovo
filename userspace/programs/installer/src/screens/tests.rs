@@ -928,13 +928,13 @@ fn the_progress_follows_the_log_to_the_end() {
     }
     app.told(Event::Copied { done: 50, total: 100 });
     app.told(Event::Line("$ subvolume create /tmp/install/root/@users".into()));
-    assert_eq!(app.progress.percent(), 6 + 1 + 2 + 8 + 2 + 35);
+    assert_eq!(app.progress.percent(), 6 + 1 + 2 + 8 + 2 + 30);
     let shown = screen(&app);
     for needle in [
         "✓  Partitioning vda",
         "•  Copying Dukovo 0.14.0 into its slot",
         "○  Installing GRUB",
-        "54%",
+        "49%",
         "$ subvolume create",
     ] {
         assert!(shown.contains(needle), "{needle}:\n{shown}");

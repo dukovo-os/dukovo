@@ -122,7 +122,10 @@ machine with AMT, an AMD machine and a laptop; see
 
 | Item | Why it waits | Waits on |
 | --- | --- | --- |
-| Rescue on the EFI system partition, replacing the Recovery entry; USB repair and the reinstall that keeps data (ADR 0459) | The second part of 15a | 15a |
+| Rescue kept up to date: a newer copy written to the EFI system partition once per stable release, when an update is proved (ADR 0460) | Rescue is written by the installer and images until the unified updater | 15d |
+| Rescue's reinstall from the update server (ADR 0460) | Rescue reinstalls from its own copy or an update folder until delivery comes | 15c |
+| USB repair, which also rewrites GRUB and the EFI system partition, and the installer's reinstall that keeps data (ADRs 0459, 0460) | Rescue covers a machine whose EFI system partition still starts | The installer's next changes |
+| Rescue resetting the settings to their defaults (ADR 0460) | Putting back the settings from before the last update covers a bad update | A need |
 | Fetching a release's changed files from the update server, the offline update file, `sysupdate verify` and a weekly check with the scrub (ADR 0451) | `sysupdate stage` reads a repository folder until delivery comes | 15c |
 | Waves, the rollout role, canaries, pause and pull (ADR 0456) | Update delivery | 15c |
 | The owner told of a fallback at sign-in and on the web console, with the offer to send a report (ADRs 0453, 0456) | The unified updater's notifications | 15d |
@@ -131,7 +134,6 @@ machine with AMT, an AMD machine and a laptop; see
 | Settings migrations, run before the services start, each with tests in both directions (ADR 0454) | No release has changed a settings format yet | The first release that does |
 | On a mirror, a try GRUB counts on one disk's EFI system partition is not counted on the other's until the system next writes the state (ADR 0452) | A machine must start from each disk in turn to try an update more than three times | A need |
 | When GRUB cannot write the slot state, the menu still titles the try that it then does not start (ADR 0452) | The default starts, as it should; only the title is wrong | A need |
-| A slot whose root will not mount leaves Spark with nothing to start, so its try ends only at a restart by hand (ADR 0453) | Rescue covers the root; the try needs Spark to restart | A need |
 | The failed attempt's crash log kept beside its settings (ADR 0453) | The log of the fallback says what failed | A need |
 | Installs made before 0.15.0 keep a menu that starts `@system.a` directly, and are reinstalled to take updates (ADR 0451) | No public install exists before 1.0.0-alpha.1 | A need |
 | Btrfs `send` and `receive` (ADR 0138) | Incremental backups need them | 15b |

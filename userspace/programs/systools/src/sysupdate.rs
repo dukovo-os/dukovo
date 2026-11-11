@@ -19,8 +19,8 @@
 //! are kept in `@snapshots/update/settings-failed`.
 
 mod health;
-mod place;
-mod stage;
+pub(crate) mod place;
+pub(crate) mod stage;
 
 use std::path::PathBuf;
 

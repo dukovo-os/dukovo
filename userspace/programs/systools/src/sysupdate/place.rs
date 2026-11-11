@@ -111,7 +111,7 @@ pub fn root() -> Result<Root, Fail> {
 }
 
 /// The UUID of the Btrfs on `/devices/<name>`, if it holds one.
-fn btrfs_uuid(name: &str) -> Option<String> {
+pub(crate) fn btrfs_uuid(name: &str) -> Option<String> {
     let mut read = probe::reader(name)?;
     let found = probe::filesystem(&mut read)?;
     if found.kind == "btrfs" { found.uuid } else { None }
@@ -273,6 +273,41 @@ pub fn write_both(root: &Root, state: State) -> Result<(), Fail> {
 fn put(name: &str, path: &str, state: State) -> Result<(), Fail> {
     disk::esp::overwrite_file(device(name, true)?, path, &state.encode())
         .map_err(|why| fail(format!("/devices/{name}: {path}: {why}")))
+}
+
+/// Sets Rescue's count of the starts not seen through back to 0 on each
+/// EFI system partition named in `partitions` that has one above 0, so
+/// that the boot menu starts Rescue only after three more such starts in
+/// a row (ADR 0460). A partition with no count, as an install before
+/// Rescue leaves, is passed over. Returns the partitions it could not
+/// write, with why.
+pub fn reset_rescue<'a>(partitions: impl Iterator<Item = &'a str>) -> Vec<String> {
+    let mut problems = Vec::new();
+    for name in partitions {
+        let read = device(name, false).and_then(|device| {
+            disk::esp::read_file(device, slots::rescue::COUNT, slots::envblock::BLOCK)
+                .map_err(|why| fail(format!("/devices/{name}: {why}")))
+        });
+        let starts = match read {
+            Ok(Some(block)) => slots::rescue::decode(&block),
+            Ok(None) => continue,
+            Err(why) => {
+                problems.push(why.message);
+                continue;
+            }
+        };
+        if starts == Some(0) {
+            continue;
+        }
+        let written = device(name, true).and_then(|device| {
+            disk::esp::overwrite_file(device, slots::rescue::COUNT, &slots::rescue::encode(0))
+                .map_err(|why| fail(format!("/devices/{name}: {}: {why}", slots::rescue::COUNT)))
+        });
+        if let Err(why) = written {
+            problems.push(why.message);
+        }
+    }
+    problems
 }
 
 /// The lock on the slot state, held while it lives.

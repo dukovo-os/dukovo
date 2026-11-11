@@ -54,6 +54,10 @@ const FLAG: &str = "console=ttyS0";
 /// What runs once under the kernel flag `install`.
 const INSTALLER: &str = "/system/commands/dukovo-install";
 
+/// Rescue's screens (dukovo-rescue(8)), under the kernel flag `rescue=`
+/// (ADR 0460).
+const RESCUE: &str = "/system/commands/dukovo-rescue";
+
 /// What signs people in.
 const LOGIN: &str = "/system/commands/login";
 
@@ -249,7 +253,10 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
     let issue = std::fs::read_to_string(ISSUE).unwrap_or_else(|_| DEFAULT_ISSUE.into());
     let env = environment(&root.shell, &root.home);
     let mut once = util::kernel_flag("install").then(|| Session::once(INSTALLER));
+    // Rescue (ADR 0460): its screens, again whenever they end.
+    let rescue = util::kernel_word("rescue=").is_some();
     match (&once, sign_in) {
+        _ if rescue => eprintln!("serial-console: rescue: Rescue's screens on {LINE}"),
         (Some(_), _) => eprintln!("serial-console: install: the installer's screens on {LINE}"),
         (None, false) => eprintln!("serial-console: console-sign-in=off: root's shell on {LINE}"),
         (None, true) => eprintln!("serial-console: the sign-in on {LINE}"),
@@ -258,6 +265,7 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
     loop {
         let session = match once.take() {
             Some(installer) => installer,
+            None if rescue => Session::once(RESCUE),
             None if sign_in => Session::sign_in(),
             None => Session::shell(&root.shell),
         };

@@ -12,7 +12,7 @@ use super::{BLOCK, CHECKSUM, Error, LINK, MAX_PATH, MODE, MTIME, NAME, PREFIX, S
 #[derive(Default)]
 pub struct Writer {
     bytes: Vec<u8>,
-    last: Option<String>,
+    headers: Headers,
 }
 
 impl Writer {
@@ -23,38 +23,94 @@ impl Writer {
 
     /// Adds a directory.
     pub fn directory(&mut self, path: &str, mode: u32, mtime: u64) -> Result<(), Error> {
-        self.entry(path, b'5', mode, mtime, &[], "")
+        let header = self.headers.directory(path, mode, mtime)?;
+        self.bytes.extend_from_slice(&header);
+        Ok(())
     }
 
     /// Adds a regular file.
     pub fn file(&mut self, path: &str, mode: u32, mtime: u64, data: &[u8]) -> Result<(), Error> {
-        self.entry(path, b'0', mode, mtime, data, "")
+        let header = self.headers.file(path, mode, mtime, data.len() as u64)?;
+        self.bytes.extend_from_slice(&header);
+        self.bytes.extend_from_slice(data);
+        self.bytes.resize(self.bytes.len() + padding(data.len() as u64), 0);
+        Ok(())
     }
 
     /// Adds a symbolic link to `target`, at most [`crate::MAX_LINK`]
     /// bytes.
     pub fn symlink(&mut self, path: &str, target: &str, mtime: u64) -> Result<(), Error> {
-        if target.is_empty() || target.len() > LINK.1 || target.contains('\0') {
-            return Err(Error::BadLink);
-        }
-        self.entry(path, b'2', 0o777, mtime, &[], target)
+        let header = self.headers.symlink(path, target, mtime)?;
+        self.bytes.extend_from_slice(&header);
+        Ok(())
     }
 
     /// The archive's bytes, with the two blocks of zeros that end it.
     pub fn finish(mut self) -> Vec<u8> {
-        self.bytes.resize(self.bytes.len() + 2 * BLOCK, 0);
+        self.bytes.extend_from_slice(&END);
         self.bytes
     }
+}
 
-    fn entry(
+/// The two blocks of zeros that end an archive.
+pub const END: [u8; 2 * BLOCK] = [0; 2 * BLOCK];
+
+/// How many zeros follow a file of `size` bytes, to the end of its last
+/// block.
+pub const fn padding(size: u64) -> usize {
+    (size.next_multiple_of(BLOCK as u64) - size) as usize
+}
+
+/// The headers of an archive written a piece at a time, as a file too
+/// big to hold in memory is: each entry's header block, which the caller
+/// writes, then a file's bytes and its [`padding`], and last [`END`].
+/// Entries go in in order of their paths, a directory before what is in
+/// it, as with [`Writer`], which is made of these.
+#[derive(Default)]
+pub struct Headers {
+    last: Option<String>,
+}
+
+impl Headers {
+    /// No entries yet.
+    pub fn new() -> Headers {
+        Headers::default()
+    }
+
+    /// A directory's header.
+    pub fn directory(&mut self, path: &str, mode: u32, mtime: u64) -> Result<[u8; BLOCK], Error> {
+        self.header(path, b'5', mode, mtime, 0, "")
+    }
+
+    /// The header of a regular file of `size` bytes, which follow it.
+    pub fn file(
+        &mut self,
+        path: &str,
+        mode: u32,
+        mtime: u64,
+        size: u64,
+    ) -> Result<[u8; BLOCK], Error> {
+        self.header(path, b'0', mode, mtime, size, "")
+    }
+
+    /// The header of a symbolic link to `target`, at most
+    /// [`crate::MAX_LINK`] bytes.
+    pub fn symlink(&mut self, path: &str, target: &str, mtime: u64) -> Result<[u8; BLOCK], Error> {
+        if target.is_empty() || target.len() > LINK.1 || target.contains('\0') {
+            return Err(Error::BadLink);
+        }
+        self.header(path, b'2', 0o777, mtime, 0, target)
+    }
+
+    fn header(
         &mut self,
         path: &str,
         kind: u8,
         mode: u32,
         mtime: u64,
-        data: &[u8],
+        size: u64,
         link: &str,
-    ) -> Result<(), Error> {
+    ) -> Result<[u8; BLOCK], Error> {
         let path = path.trim_matches('/');
         let named = |c: &str| !c.is_empty() && c != "." && c != "..";
         if path.is_empty() || path.len() > MAX_PATH || !path.split('/').all(named) {
@@ -82,7 +138,7 @@ impl Writer {
         octal(&mut header, MODE, u64::from(mode & 0o7777))?;
         octal(&mut header, (108, 8), 0)?;
         octal(&mut header, (116, 8), 0)?;
-        octal(&mut header, SIZE, data.len() as u64)?;
+        octal(&mut header, SIZE, size)?;
         octal(&mut header, MTIME, mtime)?;
         header[TYPE] = kind;
         header[LINK.0..LINK.0 + link.len()].copy_from_slice(link.as_bytes());
@@ -94,11 +150,8 @@ impl Writer {
         // Six digits, a NUL and a space, as tar writes it.
         let digits = format!("{sum:06o}\0 ");
         header[CHECKSUM.0..CHECKSUM.0 + CHECKSUM.1].copy_from_slice(digits.as_bytes());
-        self.bytes.extend_from_slice(&header);
-        self.bytes.extend_from_slice(data);
-        self.bytes.resize(self.bytes.len().next_multiple_of(BLOCK), 0);
         self.last = Some(path.to_owned());
-        Ok(())
+        Ok(header)
     }
 }
 

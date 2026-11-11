@@ -231,6 +231,13 @@ An install then runs these steps, each printed as it starts:
   left as they are (ADR 0314). A mirror gets GRUB and the menu on both
   disks, so that either starts the system when the other has failed
   (ADR 0315).
+. *Putting Rescue on the EFI system partition*: the release being
+  installed, as *dukovo-rescue*(8) runs it, in _boot/rescue_ on each
+  disk that starts the system, every file checked against the signed
+  list as it is written, and read back (ADR 0460). It takes about 230
+  MiB, which the guided layout's 512 MiB partition holds; a smaller
+  partition, as the manual layout can make, leaves the system without
+  Rescue, and the install log says so.
 . *Saving the answers and the install log* in the new system.
 
 It ends with the line to act on:

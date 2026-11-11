@@ -388,6 +388,7 @@ fn fill_root(
     features::turn_on(answers, &target, log)?;
     let console = answers.serial_console(machine::on_serial_console());
     install_grub(parts, &root.join("@system.a"), console, log)?;
+    install_rescue(parts, source, log)?;
     save(answers, &target, log)
 }
 
@@ -479,8 +480,56 @@ fn grub_on(disk: &BootDisk, slot: &Path, menu: &str, log: &mut Log) -> Result<()
             .iter()
             .try_for_each(|copy| settings::write_file(&esp.join(copy), &block, 0o644))
     });
+    // Rescue's entry, which shows once Rescue's files are beside it, and
+    // its count of starts not seen through (ADR 0460).
+    let rescue = state.and_then(|()| {
+        let entry = slot.join("boot/grub/rescue.cfg");
+        let text =
+            fs::read_to_string(&entry).map_err(|err| format!("{}: {err}", entry.display()))?;
+        settings::write_file(&esp.join("boot/grub/rescue.cfg"), &text, 0o644)?;
+        let count = slots::rescue::encode(0);
+        let count = String::from_utf8(count.to_vec()).expect("the count is ASCII");
+        settings::write_file(&esp.join(slots::rescue::COUNT), &count, 0o644)
+    });
     let unmounted = run_when_free(log, "umount", &[&path(&esp)]);
-    state.and(unmounted)
+    rescue.and(unmounted)
+}
+
+/// Puts Rescue of the release on the EFI system partition of each disk
+/// that starts the system (ADR 0460): its startup folder, its boot
+/// archive and its signed list, each file checked against the list as
+/// it is written, so that the machine can be repaired, and its system
+/// put back, with no stick. A partition it does not fit leaves the
+/// system without it, which the log says.
+fn install_rescue(parts: &Parts, source: &Source, log: &mut Log) -> Result<(), String> {
+    log.step(Step::Rescue);
+    let store = system_release::store::Store::at(&source.repo.join("files"));
+    let file = |entry: &system_release::list::Entry| {
+        store.path(entry.file().map_or("", |(sha256, _)| sha256))
+    };
+    let esp = Path::new(WORK).join("esp");
+    for disk in &parts.boot {
+        mount(&disk.efi, &esp, &["-t", "fat"], log)?;
+        let written = system_release::rescue::write(&esp, &source.repo, &source.release, &file);
+        let unmounted = run_when_free(log, "umount", &[&path(&esp)]);
+        unmounted?;
+        // A partition too small for it, as a layout made by hand can
+        // have, leaves the system without Rescue, not uninstalled.
+        match written {
+            Ok(written) => log.note(&format!(
+                "Rescue of Dukovo {} on {}: {} files of {} MiB, each matching the signed list",
+                source.release.version,
+                disk.efi,
+                written.files,
+                written.bytes >> 20
+            )),
+            Err(why) => log.note(&format!(
+                "Rescue could not be put on {}: {why}; the system starts without it",
+                disk.efi
+            )),
+        }
+    }
+    Ok(())
 }
 
 /// A copy of the slot state an install leaves: slot A, the only one, as

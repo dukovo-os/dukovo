@@ -94,6 +94,13 @@ them on, the screens are *serial-console*(8)'s there instead: tty1 runs
 the shell from the start, and consoled logs *install: the installer's
 screens are on the serial port, ttyS0* (ADR 0318).
 
+With *rescue=*_uuid_ on the kernel's command line, as the Rescue entry of
+an installed system's boot menu starts the live system, every console
+runs *dukovo-rescue*(8)'s screens as root, in place of the sign-in or the
+shell, and again whenever they end, and consoled logs *rescue: Rescue's
+screens on every console* (ADR 0460). A shell is one of Rescue's
+choices, after an administrator's password.
+
 # NOTIFICATIONS
 
 consoled shows the notifications *notifyd*(8) passes on, such as

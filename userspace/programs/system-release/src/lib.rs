@@ -14,8 +14,13 @@
 //! is installed from it. When a stick will not check, start with
 //! `system-release check` (system-release(8)): it names each damaged file
 //! by its path, or the signature that failed.
+//!
+//! The same release is Rescue on the EFI system partition ([`rescue`]):
+//! its startup folder, and a boot archive of the rest, checked against
+//! the signed list as it is written.
 
 pub mod cli;
 pub mod list;
 pub mod repo;
+pub mod rescue;
 pub mod store;

@@ -82,6 +82,10 @@ const LOGIN: &str = "/system/commands/login";
 /// What tty1 runs first under the kernel flag `install`.
 const INSTALLER: &str = "/system/commands/dukovo-install";
 
+/// Rescue's screens (dukovo-rescue(8)), on every console under the
+/// kernel flag `rescue=` (ADR 0460).
+const RESCUE: &str = "/system/commands/dukovo-rescue";
+
 /// The columns and rows the installer's screens are drawn for: under the
 /// kernel flag `install`, the font is the largest that gives this many
 /// (ADR 0402), where the console's own wants 100 by 40.
@@ -171,6 +175,12 @@ fn options() -> Result<Options, String> {
 fn kernel_flag(flag: &str) -> bool {
     let line = std::fs::read_to_string("/kernel/cmdline").unwrap_or_default();
     has_flag(&line, flag)
+}
+
+/// Whether the kernel flags of command line `line` start Rescue:
+/// `rescue=` and the root it rescues (dukovo-boot(7)).
+fn rescue_flag(line: &str) -> bool {
+    line.split_whitespace().take_while(|w| *w != "--").any(|w| w.starts_with("rescue="))
 }
 
 /// Whether the kernel flags of command line `line`, those before a lone
@@ -872,6 +882,14 @@ fn main() -> ExitCode {
         eprintln!("consoled: install: the installer's screens on tty1");
         consoles[0].once = Some(INSTALLER.to_string());
     }
+    // Rescue (ADR 0460): its screens on every console, again whenever
+    // they end, never a shell no one signed in to.
+    if rescue_flag(&std::fs::read_to_string("/kernel/cmdline").unwrap_or_default()) {
+        eprintln!("consoled: rescue: Rescue's screens on every console");
+        for console in &mut consoles {
+            console.always = Some(RESCUE.to_string());
+        }
+    }
     let mut keyboard = Keyboard::new(chosen_keymap());
     keyboard.set_sticky(access.sticky);
     let mut slow = SlowKeys::default();
@@ -916,7 +934,7 @@ fn main() -> ExitCode {
 
 #[cfg(test)]
 mod tests {
-    use super::{has_flag, has_serial_console};
+    use super::{has_flag, has_serial_console, rescue_flag};
 
     #[test]
     fn sign_in_is_off_only_by_a_kernel_flag() {
@@ -933,6 +951,9 @@ mod tests {
         assert!(has_flag("live install console-sign-in=off quiet", "install"));
         assert!(!has_flag("live installer quiet", "install"));
         assert!(!has_flag("live -- install", "install"));
+        assert!(rescue_flag("live rescue=0a1b2c quiet"));
+        assert!(!has_flag("live rescue=0a1b2c", "rescue"));
+        assert!(!rescue_flag("live rescue quiet -- rescue=0a1b2c"));
     }
 
     #[test]

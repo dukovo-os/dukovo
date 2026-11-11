@@ -1,0 +1,89 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "Rescue, started by three starts cut short, reinstalls Dukovo into slot A from its own copy on the EFI system partition, every file checked, and the system that then starts keeps the lab account's files (ADR 0460)"
+time = "30m"
+fresh = true
+
+[[step]]
+run = "sh -c 'echo \"kept by Rescue\" > /users/lab/rescue-keep.txt'"
+[[step]]
+run = '''printf '[[check]]\nname = "wait"\ncommand = ["sleep", "600"]\nrequired = true\ntimeout = 600\n' > /users/lab/health.toml'''
+[[step]]
+run = "cp /users/lab/health.toml /system/settings/sysupdate/health.toml"
+root = true
+[[step]]
+run = "sync"
+[[step]]
+power = "reset"
+[[step]]
+serial = "spark: started slot a, @system.a"
+[[step]]
+power = "cut"
+[[step]]
+power = "on"
+[[step]]
+serial = "spark: started slot a, @system.a"
+[[step]]
+power = "cut"
+[[step]]
+power = "on"
+[[step]]
+serial = "spark: started slot a, @system.a"
+[[step]]
+power = "cut"
+[[step]]
+power = "on"
+[[step]]
+serial = "spark: this is Rescue"
+[[step]]
+screen = "Rescue needs one of this computer's administrators."
+[[step]]
+type = "lab\n"
+[[step]]
+screen = "Password:"
+[[step]]
+type = "{password}\n"
+[[step]]
+screen = "Choose 1 to 9:"
+[[step]]
+type = "6\n"
+[[step]]
+type = "rm /volumes/*/@settings/sysupdate/health.toml && echo \"gone\"\": $((40 + 2))\"\n"
+[[step]]
+screen = "gone: 42"
+[[step]]
+type = "exit\n"
+[[step]]
+screen = "Back in Rescue."
+# Reinstall from Rescue's own copy: the whole system written and read
+# back on the machine's own disk.
+[[step]]
+type = "1\n"
+[[step]]
+screen = "type the folder:"
+[[step]]
+type = "\n"
+[[step]]
+screen = "into slot A?"
+[[step]]
+type = "yes\n"
+[[step]]
+screen = "is back in slot A, every file checked"
+[[step]]
+type = "8\n"
+[[step]]
+serial = "spark: started slot a, @system.a"
+[[step]]
+serial = "is seen through"
+[[step]]
+wait = "ready"
+[[step]]
+run = "cat /users/lab/rescue-keep.txt"
+expect = "kept by Rescue"
+[[step]]
+run = "sysupdate status"
+root = true
+expect = ["Running:  slot A", "the default", "Next start: slot A"]
+[[step]]
+run = "rm /users/lab/rescue-keep.txt /users/lab/health.toml"

@@ -148,6 +148,7 @@ pub const STD_LINKS: &[(&str, &str)] = &[
     ("system/commands/diskhealth", "systools"),
     ("system/commands/dmesg", "systools"),
     ("system/commands/dukofetch", "systools"),
+    ("system/commands/dukovo-rescue", "systools"),
     ("system/commands/e1000d", "systools"),
     ("system/commands/ectool", "systools"),
     ("system/commands/efiboot", "systools"),
@@ -597,6 +598,11 @@ pub fn build(ctx: &Ctx, profile: Profile) -> Result<Programs> {
     // The menu dukovo-install(8) puts on the disks it installs (ADR 0309).
     let menu = crate::image::installer_menu(ctx, &ctx.out.join("release-menu"))?;
     files.push((format!("{}/{}", crate::grub::SYSTEM_DIR, crate::image::INSTALLER_MENU), menu));
+    // Rescue's menu entry, which it puts beside that menu (ADR 0460).
+    files.push((
+        format!("{}/rescue.cfg", crate::grub::SYSTEM_DIR),
+        ctx.root.join(crate::image::RESCUE_CFG),
+    ));
     let epoch = crate::image::source_date_epoch(ctx);
     let archive = write_archive(&files, epoch.clone())?;
     std::fs::write(&bootfs, &archive).context(|| format!("writing {}", bootfs.display()))?;

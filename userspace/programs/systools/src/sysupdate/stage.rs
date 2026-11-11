@@ -27,7 +27,7 @@ use crate::subvolume;
 use crate::util::{Fail, fail};
 
 /// The root this system trusts to sign its releases (ADR 0308).
-const TRUSTED_ROOT: &str = "/system/resources/updates/root.json";
+pub(crate) const TRUSTED_ROOT: &str = "/system/resources/updates/root.json";
 
 /// A step after which a boot test can have the stage stop, as a power cut
 /// there would (`--test-stop-after`).
@@ -88,7 +88,7 @@ pub fn stage(root: &Root, asked: &Asked<'_>) -> Result<(), Fail> {
         root.running.letter().to_ascii_uppercase()
     ));
     subvolume::snapshot_to(&root.slot(root.running), &building, false)?;
-    let store = Store::at(&asked.repo.join("files"));
+    let store = Files::Store(Store::at(&asked.repo.join("files")));
     let changed = build(&building, &release, &store)?;
     say(&format!("wrote {changed} changed files; reading the slot back against the signed list"));
     check(&building, &release)?;
@@ -170,11 +170,47 @@ fn newer(root: &Root, release: &Release) -> Result<(), Fail> {
     Ok(())
 }
 
-/// Makes the tree at `slot`, a writable snapshot of the running slot, the
+/// Where the files a slot is built from are.
+pub enum Files<'a> {
+    /// A repository's store, which holds the files an update changes.
+    Store(Store),
+    /// Rescue, which holds the whole release: its startup folder in
+    /// `rescue`, and the rest in `system`, the boot archive it runs from
+    /// (ADR 0460).
+    Rescue { rescue: &'a Path, system: &'a Path },
+}
+
+impl Files<'_> {
+    /// Where `entry`, a file of SHA-256 `sha256`, is.
+    fn path(&self, entry: &Entry, sha256: &str) -> PathBuf {
+        match self {
+            Files::Store(store) => store.path(sha256),
+            Files::Rescue { rescue, system } => {
+                system_release::rescue::source(rescue, system, entry)
+            }
+        }
+    }
+
+    /// Why `entry`, a file of SHA-256 `sha256`, cannot be had.
+    fn missing(&self, entry: &Entry, sha256: &str) -> String {
+        match self {
+            Files::Store(_) => format!(
+                "the repository does not hold /system/{} ({sha256}), which this system's differs \
+                 from: it was made for an update from another version",
+                entry.path
+            ),
+            Files::Rescue { .. } => {
+                format!("Rescue does not hold /system/{} ({sha256}): it is damaged", entry.path)
+            }
+        }
+    }
+}
+
+/// Makes the tree at `slot`, a writable snapshot of a slot or empty, the
 /// release's: what it does not list is removed, and each file it lists
-/// whose contents differ is written from `store`. Returns how many files
+/// whose contents differ is written from `files`. Returns how many files
 /// were written.
-fn build(slot: &Path, release: &Release, store: &Store) -> Result<usize, Fail> {
+pub fn build(slot: &Path, release: &Release, files: &Files<'_>) -> Result<usize, Fail> {
     let listed: HashSet<&str> = release.files.iter().map(|e| e.path.as_str()).collect();
     // Directories writable while the slot is built; the release's modes
     // come last.
@@ -225,13 +261,9 @@ fn build(slot: &Path, release: &Release, store: &Store) -> Result<usize, Fail> {
                     if there.is_some() {
                         remove(&full)?;
                     }
-                    let from = store.path(sha256);
+                    let from = files.path(entry, sha256);
                     if !from.is_file() {
-                        return Err(fail(format!(
-                            "the repository does not hold /system/{} ({sha256}), which this \
-                             system's differs from: it was made for an update from another version",
-                            entry.path
-                        )));
+                        return Err(fail(files.missing(entry, sha256)));
                     }
                     std::fs::copy(&from, &full)
                         .map_err(|err| crate::util::failed(&full.display(), err))?;
@@ -251,7 +283,7 @@ fn build(slot: &Path, release: &Release, store: &Store) -> Result<usize, Fail> {
 /// Checks the tree at `slot` against the release, file by file, read back
 /// from the disk: every entry there, of its kind, each file's SHA-256 and
 /// size, each link's target, each mode, and nothing more.
-fn check(slot: &Path, release: &Release) -> Result<(), Fail> {
+pub fn check(slot: &Path, release: &Release) -> Result<(), Fail> {
     let mut problems = Vec::new();
     for entry in &release.files {
         if let Err(why) = check_entry(&slot.join(&entry.path), entry) {

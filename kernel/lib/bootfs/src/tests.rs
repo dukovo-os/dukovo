@@ -3,7 +3,7 @@
 
 use proptest::prelude::*;
 
-use super::write::Writer;
+use super::write::{END, Headers, Writer, padding};
 use super::*;
 
 /// The archive `ob` writes, in small.
@@ -66,6 +66,29 @@ fn writes_in_order_only() {
     for bad in ["", "/", "c/../d", "c//d", "./c"] {
         assert_eq!(w.file(bad, 0o644, 0, b""), Err(Error::BadPath), "{bad:?}");
     }
+}
+
+#[test]
+fn headers_written_a_piece_at_a_time_make_the_same_archive() {
+    let mut headers = Headers::new();
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&headers.directory("system", 0o755, 1).unwrap());
+    bytes.extend_from_slice(&headers.directory("system/bin", 0o755, 1).unwrap());
+    let file = |headers: &mut Headers, bytes: &mut Vec<u8>, path, mode, mtime, data: &[u8]| {
+        bytes.extend_from_slice(&headers.file(path, mode, mtime, data.len() as u64).unwrap());
+        bytes.extend_from_slice(data);
+        bytes.resize(bytes.len() + padding(data.len() as u64), 0);
+    };
+    file(&mut headers, &mut bytes, "system/bin/spark", 0o755, 2, b"\x7fELF spark");
+    bytes.extend_from_slice(&headers.directory("system/tests", 0o755, 1).unwrap());
+    file(&mut headers, &mut bytes, "system/tests/empty", 0o644, 3, b"");
+    file(&mut headers, &mut bytes, "system/tests/hello", 0o755, 3, &[0x5a; 700]);
+    bytes.extend_from_slice(&END);
+    assert_eq!(bytes, sample());
+    assert_eq!(padding(0), 0);
+    assert_eq!(padding(512), 0);
+    assert_eq!(padding(513), 511);
+    assert_eq!(headers.file("system/a", 0o644, 0, 0), Err(Error::Order));
 }
 
 /// Changes the header at `at` with `change` and puts its checksum right.

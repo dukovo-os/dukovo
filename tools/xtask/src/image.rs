@@ -67,6 +67,10 @@ pub struct ImageSpec<'a> {
     /// put in the disc's `release` directory; the disc is then labelled
     /// DUKOVO_LIVE, which the live system looks for (ADR 0433).
     pub release: Option<&'a Path>,
+    /// For an installed system, a folder holding Rescue as it goes on the
+    /// EFI system partition, `boot/rescue` ([`make_root`] with
+    /// [`Extras::rescue`], ADR 0460), copied into the partition.
+    pub rescue: Option<&'a Path>,
     /// The boot menu, and so how the image starts the system.
     pub menu: Menu,
     /// Staging directory, recreated on every build.
@@ -273,6 +277,7 @@ pub fn build_release(
     let kernel = kernel::build(ctx, profile)?;
     let programs = userspace::build(ctx, profile)?;
     let (root, live) = (ctx.out.join("root.btrfs"), ctx.out.join("live.btrfs"));
+    let rescue = ctx.out.join("rescue-staging");
     let menu = match kind {
         Kind::Installed | Kind::Lab | Kind::Cloud => {
             let staging = ctx.out.join("root-staging");
@@ -280,6 +285,7 @@ pub fn build_release(
                 account: overrides.account.as_ref(),
                 lab: overrides.lab.as_ref(),
                 cloud: kind == Kind::Cloud,
+                rescue: Some(&rescue),
             };
             Menu::Installed(make_root(ctx, &kernel, &programs, &staging, &root, extras)?)
         }
@@ -309,6 +315,7 @@ pub fn build_release(
             root: kind.installed().then_some(root.as_path()),
             live: (kind == Kind::Stick).then_some(live.as_path()),
             release: release.as_deref(),
+            rescue: kind.installed().then(|| rescue.join("esp")).as_deref(),
             menu,
             staging: ctx.out.join("image-root"),
             output: ctx.out.join(file_name(kind)),
@@ -318,6 +325,7 @@ pub fn build_release(
     let _ = std::fs::remove_file(&root);
     let _ = std::fs::remove_file(&live);
     let _ = std::fs::remove_dir_all(ctx.out.join("live-staging"));
+    let _ = std::fs::remove_dir_all(&rescue);
     built?;
     let output = ctx.out.join(file_name(kind));
     let mut written = vec![output.clone()];
@@ -452,6 +460,11 @@ const THEME_DIR: &str = "boot/grub/theme";
 /// The boot menu in each slot, beside its kernel, which the installed
 /// menu hands over to ([`SLOT_MENU`], ADR 0451).
 pub const MENU_CFG: &str = "image/grub/menu.cfg";
+
+/// Rescue's boot menu entry (ADR 0460), which an installed system's EFI
+/// system partition holds as `boot/grub/rescue.cfg` beside its menu, and
+/// the boot archive beside [`INSTALLER_MENU`] for dukovo-install(8).
+pub const RESCUE_CFG: &str = "image/grub/rescue.cfg";
 
 /// The installed menu's placeholder for the serial console's flag, which
 /// the installer fills with ` console=ttyS0` on a system it installs over
@@ -690,6 +703,10 @@ pub fn build(ctx: &Ctx, spec: &ImageSpec<'_>) -> Result<()> {
     // slot A, the only one, as dukovo-install(8) leaves it (ADR 0452).
     if installed {
         write_slot_state(&spec.staging)?;
+        write_rescue_entry(ctx, &spec.staging)?;
+    }
+    if let Some(rescue) = spec.rescue {
+        copy_tree(rescue, &spec.staging)?;
     }
     if let Some(parent) = spec.output.parent() {
         process::create_dir(parent)?;
@@ -725,6 +742,35 @@ fn write_slot_state(esp: &Path) -> Result<()> {
         let path = esp.join(name);
         process::create_dir(path.parent().expect("a copy is in a folder"))?;
         std::fs::write(&path, block).context(|| format!("writing {}", path.display()))?;
+    }
+    Ok(())
+}
+
+/// Writes Rescue's menu entry, [`RESCUE_CFG`], and its count of starts
+/// not seen through, at 0, beside the menu in the EFI system partition
+/// staged in `esp`, as dukovo-install(8) leaves them (ADR 0460). The
+/// entry is on the menu only where Rescue's files are too.
+fn write_rescue_entry(ctx: &Ctx, esp: &Path) -> Result<()> {
+    let grub = esp.join("boot/grub");
+    process::create_dir(&grub)?;
+    process::copy(&ctx.root.join(RESCUE_CFG), &grub.join("rescue.cfg"))?;
+    let count = esp.join(slots::rescue::COUNT);
+    std::fs::write(&count, slots::rescue::encode(0))
+        .context(|| format!("writing {}", count.display()))
+}
+
+/// Copies the files of the tree at `from` into `to`, folders and all.
+fn copy_tree(from: &Path, to: &Path) -> Result<()> {
+    process::create_dir(to)?;
+    let entries = std::fs::read_dir(from).context(|| format!("reading {}", from.display()))?;
+    for entry in entries {
+        let entry = entry.context(|| format!("reading {}", from.display()))?;
+        let (source, target) = (entry.path(), to.join(entry.file_name()));
+        if source.is_dir() {
+            copy_tree(&source, &target)?;
+        } else {
+            process::copy(&source, &target)?;
+        }
     }
     Ok(())
 }
@@ -1013,6 +1059,11 @@ pub struct Extras<'a> {
     /// cloud-setup(8) and sshd turned on, as a cloud image has them (ADR
     /// 0328).
     pub cloud: bool,
+    /// A folder to put Rescue of the slot's release in, as it goes on the
+    /// EFI system partition (ADR 0460): the slot signed with this
+    /// machine's release keys, its repository in `repo`, and Rescue in
+    /// `esp/boot/rescue`, which [`ImageSpec::rescue`] then takes.
+    pub rescue: Option<&'a Path>,
 }
 
 /// Makes the Dukovo root's Btrfs in the file `output`, of [`ROOT_BYTES`],
@@ -1037,6 +1088,14 @@ pub fn make_root(
     }
     let system = staging.join(SUBVOLUMES[0]);
     stage_system(ctx, kernel, programs, &system)?;
+    if let Some(dir) = extras.rescue {
+        step("Making Rescue of the slot's release, for the EFI system partition");
+        fresh_dir(dir)?;
+        let repo = dir.join("repo");
+        release::make(ctx, &system, &repo)?;
+        release::rescue(ctx, &repo, &dir.join("esp"))?;
+        std::fs::remove_dir_all(&repo).context(|| format!("removing {}", repo.display()))?;
+    }
     let subvolume = |name: &str| staging.join(name);
     if let Some(account) = extras.account {
         account::add(&system, &subvolume(SUBVOLUMES[1]), &subvolume(SUBVOLUMES[2]), account)?;

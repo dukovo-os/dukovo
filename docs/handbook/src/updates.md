@@ -121,12 +121,60 @@ or the last start did not get as far as the health check seeing it
 through; then it shows for 10 seconds and starts Dukovo by itself.
 Besides the version that starts, it offers the previous version, which
 starts once without becoming the default, and, while an update is being
-tried, the version without the update.
+tried, the version without the update. Its last entry, Rescue, is the
+next section.
+
+## Rescue
+
+Rescue is a small, whole Dukovo kept on the EFI system partition, the
+release the system was installed from, for a computer whose system will
+not start at all: both slots broken, or a root that will not mount. It
+needs nothing from the root to start, and changes nothing until you
+choose.
+
+The boot menu starts Rescue by itself when three starts in a row did not
+finish, or when it finds no slot to start; you can also choose it from
+the menu (hold Shift as the computer starts). Networking stays off, and
+Rescue asks for one of the computer's administrators before anything
+else:
+
+```
+Dukovo Rescue 0.15.0
+The Dukovo root is 5f0c2d1e-..., on sda4.
+Rescue needs one of this computer's administrators.
+Name: alice
+Password:
+
+What would you like to do?
+  1  Reinstall Dukovo, keeping settings, apps and files
+  2  Put back the settings from before the last update
+  3  Check the root's disk
+  4  Copy the users' and shared files to another disk
+  5  Turn networking on
+  6  Open a shell (type exit to come back)
+  7  Start Dukovo normally
+  8  Restart
+  9  Power off
+```
+
+**Reinstall** builds the system again from Rescue's own copy, or from an
+update folder on a USB stick, every file checked against the signed
+list. Settings, apps and everyone's files are not touched. Once it says
+the system is back, choose Restart. **Put back the settings** undoes
+the settings of the last update, as a fallback would. **Check the disk**
+looks for damage to the root's filesystem; if it finds any, copy your
+files off first, with **Copy files off**, onto another disk or stick.
+**Start Dukovo normally** clears the count of unfinished starts, for when
+the cause, such as a loose cable, is fixed.
+
+The installer puts Rescue on each disk that starts the system; it takes
+about 230 MiB of the 512 MiB EFI system partition the guided layout
+makes. See dukovo-rescue(8) for the details.
 
 ## What is on the way
 
-Rescue, a repair system on the EFI system partition for a machine whose
-two slots are both broken; snapshots with `snap`; backups; and
-downloading updates from the update server in waves, through one
-`update` command for the system, firmware and apps. This chapter grows
-with each.
+Snapshots with `snap`; backups; downloading updates from the update
+server in waves, through one `update` command for the system, firmware
+and apps, which also keeps Rescue up to date; and repairing GRUB and the
+EFI system partition from an install stick. This chapter grows with
+each.
