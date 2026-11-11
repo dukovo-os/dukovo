@@ -113,6 +113,26 @@ pub struct BundleRecipe {
     /// with the access of whoever runs it, as command-line tools do
     /// (manifest.json(5)); the install sheet says so.
     pub commands: Vec<String>,
+    /// Its programs besides its commands, each `bin/<name>`: those its
+    /// services run, say.
+    #[serde(default)]
+    pub programs: Vec<String>,
+    /// The ports whose code its programs carry, linked in, as a C
+    /// program carries mlibc's: each goes in its SBOM, with its licenses
+    /// and notices, and so does the compiler-rt builtins' code.
+    #[serde(default)]
+    pub links: Vec<String>,
+    /// Its services, each a table of the fields manifest.json(5) gives a
+    /// service, written into its manifest as they are.
+    #[serde(default)]
+    pub services: Vec<toml::Table>,
+    /// The permissions it asks for, by name, each a table of
+    /// manifest.json(5)'s fields, written into its manifest as they are.
+    #[serde(default)]
+    pub permissions: toml::Table,
+    /// Which of its folders it keeps (manifest.json(5)'s `data`).
+    #[serde(default)]
+    pub data: Option<toml::Table>,
 }
 
 /// Where a source comes from: a git repository and a commit in it, a

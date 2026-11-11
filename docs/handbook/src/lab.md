@@ -181,6 +181,14 @@ onto the machine over SSH (`lab/tests/updates/copy-update.sh`), and the
 test stages it with `sysupdate stage`. Without them, as with an image
 given by `--image`, those tests are skipped and say why.
 
+The service bundles' tests install bundles of the catalog that `./ob
+lab` packs from the same tree, and names to the lab in
+`DUKOVO_LAB_BUNDLES`. A host step copies one onto the machine over SSH
+(`lab/tests/services/copy-bundle.sh`), and the test installs it for
+everyone: `services/nginx` has nginx serve the lab PC over HTTP and
+HTTPS, and reload its settings while the lab PC keeps requests coming.
+Without the bundles those tests are skipped too.
+
 Removable media go in and out with steps of their own: `usb` plugs and
 pulls a USB stick, `card` puts a memory card in a card reader, `disc` a
 disc in an optical drive, and `floppy` a floppy disk in a floppy drive,

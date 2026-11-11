@@ -53,7 +53,7 @@ about = "Signing in and running commands over SSH, and SSH's own tools"
 [[category]]
 name = "services"
 title = "Services and logs"
-about = "Spark's services: listed, stopped and started, and what they log"
+about = "Spark's services: listed, stopped and started, and what they log; and the catalog's services, such as nginx"
 
 [[category]]
 name = "time"

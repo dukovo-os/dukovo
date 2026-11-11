@@ -1,0 +1,135 @@
+SPDX-FileCopyrightText: Igor Sysoev and Nginx, Inc.
+SPDX-FileCopyrightText: 2026 The Dukovo contributors
+SPDX-License-Identifier: BSD-2-Clause
+
+Configure: a cross build, which cannot run what it compiles
+
+nginx's configure runs the programs it compiles to see whether a feature
+works, what a type's size is and which byte order the machine has. A build
+for Radix on Linux cannot run them. With NGX_CROSS=yes, a feature whose
+test links counts as working, one that looks for a bug or gives a value
+finds none (nginx then guesses the number of errors at run time), and the
+compiler says the sizes and the byte order, refusing an array of negative
+size for each wrong guess.
+
+diff --git a/auto/endianness b/auto/endianness
+index 1b552b6..4b2e17a 100644
+--- a/auto/endianness
++++ b/auto/endianness
+@@ -31,7 +31,33 @@ ngx_test="$CC $CC_TEST_FLAGS $CC_AUX_FLAGS \
+ 
+ eval "$ngx_test >> $NGX_AUTOCONF_ERR 2>&1"
+ 
+-if [ -x $NGX_AUTOTEST ]; then
++# A cross build (NGX_CROSS=yes, Dukovo's patch) cannot run the test: the
++# compiler says the order.
++
++if [ -x $NGX_AUTOTEST ] && [ "$NGX_CROSS" = yes ]; then
++    cat << END > $NGX_AUTOTEST.c
++
++#if __BYTE_ORDER__ != __ORDER_LITTLE_ENDIAN__
++#error not little endian
++#endif
++
++int main(void) {
++    return 0;
++}
++
++END
++    rm -f $NGX_AUTOTEST
++    eval "$ngx_test >> $NGX_AUTOCONF_ERR 2>&1"
++    if [ -x $NGX_AUTOTEST ]; then
++        echo " little endian"
++        have=NGX_HAVE_LITTLE_ENDIAN . auto/have
++    else
++        echo " big endian"
++    fi
++
++    rm -rf $NGX_AUTOTEST*
++
++elif [ -x $NGX_AUTOTEST ]; then
+     if $NGX_AUTOTEST >/dev/null 2>&1; then
+         echo " little endian"
+         have=NGX_HAVE_LITTLE_ENDIAN . auto/have
+diff --git a/auto/feature b/auto/feature
+index 3561f59..e8d6cde 100644
+--- a/auto/feature
++++ b/auto/feature
+@@ -47,9 +47,30 @@ ngx_feature_inc_path=
+ eval "/bin/sh -c \"$ngx_test\" >> $NGX_AUTOCONF_ERR 2>&1"
+ 
+ 
+-if [ -x $NGX_AUTOTEST ]; then
++# A cross build (NGX_CROSS=yes, Dukovo's patch) cannot run what it
++# compiles: a test that links counts as working, and one that looks for a
++# bug or gives a value finds none, as when the bug or the feature is not
++# there.
+ 
++ngx_feature_how=$ngx_feature_run
++
++if [ "$NGX_CROSS" = yes ]; then
+     case "$ngx_feature_run" in
++        yes)
++            ngx_feature_how=no
++        ;;
++        value | bug)
++            ngx_feature_how=cross
++        ;;
++    esac
++fi
++
++if [ -x $NGX_AUTOTEST ] && [ "$ngx_feature_how" = cross ]; then
++    echo " not found (cannot run in a cross build)"
++
++elif [ -x $NGX_AUTOTEST ]; then
++
++    case "$ngx_feature_how" in
+ 
+         yes)
+             # /bin/sh is used to intercept "Killed" or "Abort trap" messages
+diff --git a/auto/types/sizeof b/auto/types/sizeof
+index 480d8cf..a483376 100644
+--- a/auto/types/sizeof
++++ b/auto/types/sizeof
+@@ -39,7 +39,40 @@ ngx_test="$CC $CC_TEST_FLAGS $CC_AUX_FLAGS \
+ eval "$ngx_test >> $NGX_AUTOCONF_ERR 2>&1"
+ 
+ 
+-if [ -x $NGX_AUTOTEST ]; then
++if [ -x $NGX_AUTOTEST ] && [ "$NGX_CROSS" = yes ]; then
++
++    # A cross build (Dukovo's patch) cannot run the test: the compiler
++    # says the size, refusing an array of negative size for each wrong one.
++
++    for ngx_try in 1 2 4 8 16; do
++        cat << END > $NGX_AUTOTEST.c
++
++#include <sys/types.h>
++#include <sys/time.h>
++$NGX_INCLUDE_UNISTD_H
++#include <signal.h>
++#include <stdio.h>
++#include <sys/resource.h>
++$NGX_INCLUDE_INTTYPES_H
++$NGX_INCLUDE_AUTO_CONFIG_H
++
++static char  ngx_size_is[(sizeof($ngx_type) == $ngx_try) ? 1 : -1];
++
++int main(void) {
++    return ngx_size_is[0];
++}
++
++END
++        rm -f $NGX_AUTOTEST
++        eval "$ngx_test >> $NGX_AUTOCONF_ERR 2>&1"
++        if [ -x $NGX_AUTOTEST ]; then
++            ngx_size=$ngx_try
++            break
++        fi
++    done
++    echo " $ngx_size bytes"
++
++elif [ -x $NGX_AUTOTEST ]; then
+     ngx_size=`$NGX_AUTOTEST`
+     echo " $ngx_size bytes"
+ fi

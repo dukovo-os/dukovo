@@ -443,6 +443,29 @@ pub fn command(ctx: &Ctx, args: &mut Args) -> Result<()> {
                 Err(why) => eprintln!("    note: the update tests will skip: {why}"),
             }
         }
+        // The catalog's bundles of the same tree, which the service
+        // bundles' tests copy onto the machine from the lab PC (ADR 0491).
+        if built_here {
+            let bundles = if no_build {
+                let bundles = crate::bundles::dir(ctx);
+                if bundles.is_dir() {
+                    Ok(bundles)
+                } else {
+                    Err("no bundles were packed yet, and --no-build packs none".to_string())
+                }
+            } else {
+                step("Packing the catalog's bundles, for the lab's service bundle tests");
+                crate::ports::build_and_pack(ctx, &[])
+                    .map(|_| crate::bundles::dir(ctx))
+                    .map_err(|e| e.to_string())
+            };
+            match bundles {
+                Ok(bundles) => {
+                    lab.env(BUNDLES_ENV, bundles);
+                }
+                Err(why) => eprintln!("    note: the service bundle tests will skip: {why}"),
+            }
+        }
     }
     lab.args(&rest);
     // dukovo-lab's own exit status says how the run went (0 passed, 1 a
@@ -459,6 +482,11 @@ pub fn command(ctx: &Ctx, args: &mut Args) -> Result<()> {
 /// tests' host steps (`lab/tests/updates/copy-update.sh`): one repository
 /// a test update, as `sysupdate stage` reads it.
 const UPDATES_ENV: &str = "DUKOVO_LAB_UPDATES";
+
+/// The variable that names the folder of the catalog's bundles, packed
+/// from the same tree, for the service bundles' tests' host steps
+/// (`lab/tests/services/copy-bundle.sh`).
+const BUNDLES_ENV: &str = "DUKOVO_LAB_BUNDLES";
 
 /// The console's fonts, which dukovo-lab reads the screen's text with:
 /// the PSF files the kernel and consoled draw in.

@@ -1,0 +1,41 @@
+SPDX-FileCopyrightText: Igor Sysoev and Nginx, Inc.
+SPDX-FileCopyrightText: 2026 The Dukovo contributors
+SPDX-License-Identifier: BSD-2-Clause
+
+Workers without each other's channels
+
+As it starts a worker, the master passes the new worker's channel, a
+socket, to every other worker with SCM_RIGHTS, so that workers could
+write to each other. Radix sends no socket to another process, as a
+socket sent over its own connection could keep itself open, and answers
+EOPNOTSUPP. nginx's workers never write to each other: only the master
+writes to a worker's channel. So a channel that cannot be passed is left
+out, with a debug line rather than an alert at each worker's start.
+
+diff --git a/src/os/unix/ngx_channel.c b/src/os/unix/ngx_channel.c
+index b03bbbb..e450025 100644
+--- a/src/os/unix/ngx_channel.c
++++ b/src/os/unix/ngx_channel.c
+@@ -84,6 +84,22 @@ ngx_write_channel(ngx_socket_t s, ngx_channel_t *ch, size_t size,
+             return NGX_AGAIN;
+         }
+ 
++#if (NGX_HAVE_MSGHDR_MSG_CONTROL)
++
++        /*
++         * Radix sends no socket to another process (Dukovo's patch), so
++         * a worker goes without the channels of the others, which only
++         * the master writes to.
++         */
++
++        if (err == NGX_EOPNOTSUPP && ch->fd != -1) {
++            ngx_log_debug1(NGX_LOG_DEBUG_CORE, log, err,
++                           "channel %d not passed", ch->fd);
++            return NGX_DECLINED;
++        }
++
++#endif
++
+         ngx_log_error(NGX_LOG_ALERT, log, err, "sendmsg() failed");
+         return NGX_ERROR;
+     }
