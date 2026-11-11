@@ -64,8 +64,8 @@ struct File {
 
 /// What snap.toml says, with the defaults for what it leaves out.
 #[derive(Debug, PartialEq, Eq)]
-struct Settings {
-    places: Vec<String>,
+pub(crate) struct Settings {
+    pub(crate) places: Vec<String>,
     daily: usize,
     weekly: usize,
 }
@@ -93,7 +93,7 @@ impl Settings {
     }
 
     /// The settings in [`SETTINGS`], or the defaults if there is none.
-    fn read() -> Result<Settings, Fail> {
+    pub(crate) fn read() -> Result<Settings, Fail> {
         match fs::read_to_string(SETTINGS) {
             Ok(text) => {
                 Settings::parse(&text).map_err(|err| util::fail(format!("{SETTINGS}: {err}")))
@@ -105,19 +105,19 @@ impl Settings {
 }
 
 /// A subvolume snap keeps snapshots of.
-struct Place {
+pub(crate) struct Place {
     /// Its top folder.
-    top: PathBuf,
+    pub(crate) top: PathBuf,
     /// Where its snapshots are made and removed.
-    folder: PathBuf,
+    pub(crate) folder: PathBuf,
     /// Where they are read: in [`SHOWN`] on the root.
-    shown: PathBuf,
+    pub(crate) shown: PathBuf,
 }
 
 /// A snapshot of a place.
-struct Snapshot {
-    name: String,
-    info: Info,
+pub(crate) struct Snapshot {
+    pub(crate) name: String,
+    pub(crate) info: Info,
 }
 
 impl Snapshot {
@@ -137,7 +137,7 @@ fn folder_name(info: &Info) -> String {
 }
 
 /// The place whose top folder is `path`.
-fn place(path: &Path) -> Result<Place, Fail> {
+pub(crate) fn place(path: &Path) -> Result<Place, Fail> {
     let top = fs::canonicalize(path).map_err(|e| util::failed(&path.display(), e))?;
     let info = match subvolume::info(&top)? {
         Some(info) if is_top(&top) => info,
@@ -186,7 +186,7 @@ fn place(path: &Path) -> Result<Place, Fail> {
 }
 
 /// The snapshots of `place`, oldest first.
-fn snapshots(place: &Place) -> Result<Vec<Snapshot>, Fail> {
+pub(crate) fn snapshots(place: &Place) -> Result<Vec<Snapshot>, Fail> {
     let entries = match fs::read_dir(&place.shown) {
         Ok(entries) => entries,
         Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -210,7 +210,7 @@ fn snapshots(place: &Place) -> Result<Vec<Snapshot>, Fail> {
 
 /// The local date and time of `seconds` since 1970: year, month, day,
 /// hour and minute.
-fn local(seconds: i64) -> (i64, u32, u32, u32, u32) {
+pub(crate) fn local(seconds: i64) -> (i64, u32, u32, u32, u32) {
     let time = seconds as libc::time_t;
     // SAFETY: an all-zero tm is valid, and localtime_r fills it.
     let mut tm: libc::tm = unsafe { std::mem::zeroed() };
@@ -246,7 +246,7 @@ fn civil(day: i64) -> (i64, u32, u32) {
 }
 
 /// The local day, since 1970-01-01, of `ns` nanoseconds since 1970.
-fn local_day(ns: u64) -> i64 {
+pub(crate) fn local_day(ns: u64) -> i64 {
     let (year, month, day, _, _) = local((ns / 1_000_000_000) as i64);
     keep::day_number(year, month, day)
 }
@@ -268,7 +268,7 @@ fn retention(snaps: &[Snapshot], settings: &Settings) -> Vec<(usize, Kept)> {
 }
 
 /// Makes `@snapshots` and the place's folder in it if they are not there.
-fn make_folder(place: &Place) -> Result<(), Fail> {
+pub(crate) fn make_folder(place: &Place) -> Result<(), Fail> {
     let snapshots = place.folder.parent().unwrap_or(&place.folder);
     if !snapshots.exists() {
         subvolume::make(snapshots)?;

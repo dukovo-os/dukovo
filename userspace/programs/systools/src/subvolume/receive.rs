@@ -70,6 +70,8 @@ struct CapTarget {
     open: Option<Vec<u8>>,
     /// The slot that holds a clone's source while it is cloned.
     source: u32,
+    /// The name the subvolume is made by, in place of the stream's.
+    name: Option<Vec<u8>>,
     quiet: bool,
 }
 
@@ -83,6 +85,7 @@ impl CapTarget {
             file: spare_slot(folder)?,
             open: None,
             source: spare_slot(folder)?,
+            name: None,
             quiet,
         })
     }
@@ -190,16 +193,18 @@ impl CapTarget {
 impl Target for CapTarget {
     fn subvolume(&mut self, name: &[u8]) -> io::Result<()> {
         self.end();
-        directory::make_subvolume(&SYS, self.dest_slot, name).map_err(status)?;
-        self.begin(name, "subvol")
+        let name = self.name.clone().unwrap_or_else(|| name.to_vec());
+        directory::make_subvolume(&SYS, self.dest_slot, &name).map_err(status)?;
+        self.begin(&name, "subvol")
     }
 
     fn snapshot(&mut self, name: &[u8], uuid: &[u8; 16], ctransid: u64) -> io::Result<()> {
         self.end();
+        let name = self.name.clone().unwrap_or_else(|| name.to_vec());
         let parent = self.find(uuid, ctransid)?;
-        directory::snapshot(&SYS, self.dest_slot, &parent, self.dest_slot, name, false)
+        directory::snapshot(&SYS, self.dest_slot, &parent, self.dest_slot, &name, false)
             .map_err(status)?;
-        self.begin(name, "snapshot")
+        self.begin(&name, "snapshot")
     }
 
     fn make(&mut self, path: &[u8], what: Make<'_>) -> io::Result<()> {
@@ -369,14 +374,33 @@ pub(super) fn run(
     stop_at_end: bool,
     quiet: bool,
 ) -> Result<(), Fail> {
+    let input = BufReader::with_capacity(1 << 20, input(from)?);
+    receive_into(dest, input, None, Options { stop_at_end }, quiet)
+}
+
+/// Receives the one subvolume of the stream `input` into the folder
+/// `dest`, named `name` in place of the stream's own name, as backup(8)
+/// restores a backup (ADR 0463).
+pub(crate) fn receive_as(dest: &Path, input: impl Read, name: &str) -> Result<(), Fail> {
+    let input = BufReader::with_capacity(1 << 20, input);
+    receive_into(dest, input, Some(name), Options { stop_at_end: true }, true)
+}
+
+fn receive_into(
+    dest: &Path,
+    input: impl Read,
+    name: Option<&str>,
+    options: Options,
+    quiet: bool,
+) -> Result<(), Fail> {
     let folder = File::open(dest).map_err(|e| util::failed(&dest.display(), e))?;
     if !folder.metadata().is_ok_and(|m| m.is_dir()) {
         return Err(util::fail(format!("{}: not a folder", dest.display())));
     }
-    let input = BufReader::with_capacity(1 << 20, input(from)?);
     let mut target =
         CapTarget::new(dest, &folder, quiet).map_err(|e| util::failed(&dest.display(), e))?;
-    match receive::receive(input, &mut target, Options { stop_at_end }) {
+    target.name = name.map(|name| name.as_bytes().to_vec());
+    match receive::receive(input, &mut target, options) {
         Ok(_) => Ok(()),
         Err(error) => {
             let why = util::strip_os_error(&error);

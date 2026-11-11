@@ -16,6 +16,7 @@ acpi-power 31
 acpi-thermal 32
 aml-off 16
 audio-cd 60
+backup 200
 bios-cdrom 12
 bios-usb 11
 bitlocker 39

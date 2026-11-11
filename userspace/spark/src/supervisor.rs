@@ -497,6 +497,31 @@ struct Connection {
     until: u64,
 }
 
+/// The services' backup hooks a `hooks` request runs (ADR 0463), one
+/// after another, answered once the last ends.
+struct Hooks {
+    /// The connection that asked, which gets the answer.
+    connection: File,
+    /// `before` or `after`.
+    phase: &'static str,
+    /// The services whose hooks are still to run, by index, in order.
+    queue: Vec<usize>,
+    running: Option<HookRun>,
+    /// A line for each hook run: `ok: NAME` or `failed: NAME: why`.
+    answer: String,
+}
+
+/// A hook's process.
+struct HookRun {
+    index: usize,
+    pid: u64,
+    output: Option<File>,
+    line: Vec<u8>,
+    /// When it is stopped if it has not ended.
+    until: u64,
+    stopped: bool,
+}
+
 /// Logs a security event of Spark's: the line with authpriv's `<86>` in
 /// front, which logd(8) keeps in the audit log too (ADR 0211).
 macro_rules! audit {
@@ -533,6 +558,8 @@ pub struct Supervisor {
     /// The directory the service files are in, beneath the root.
     dir: String,
     program: Option<Program>,
+    /// The backup hooks running, if a request asked for them.
+    hooks: Option<Hooks>,
     shutdown: Option<Shutdown>,
     /// The watchdog's timeout to ask for, 0 for none, and whether to stop
     /// responding once it runs: at the first start (`--test-hang`), or at
@@ -602,6 +629,7 @@ impl Supervisor {
             services: Vec::new(),
             dir: String::from(SERVICES_DIR),
             program: None,
+            hooks: None,
             shutdown: None,
             watchdog_seconds: WATCHDOG_SECONDS,
             hang: false,
@@ -866,6 +894,20 @@ impl Supervisor {
     /// it, running its program. Returns the process's number and the
     /// read end of its output.
     fn spawn(&mut self, index: usize) -> Result<(u64, File), String> {
+        let spec = &self.services[index].spec;
+        let (program, arguments) = (spec.program.clone(), spec.arguments.clone());
+        self.spawn_as(index, &program, &arguments)
+    }
+
+    /// Makes a process of service `index`'s, in its domain, with its
+    /// account and view, running `program` with `arguments`. Returns the
+    /// process's number and the read end of its output.
+    fn spawn_as(
+        &mut self,
+        index: usize,
+        program_path: &str,
+        arguments: &[String],
+    ) -> Result<(u64, File), String> {
         let root = self.root.slot();
         let services_domain = self.services_domain;
         let service = &mut self.services[index];
@@ -911,8 +953,8 @@ impl Supervisor {
         let program = account
             .as_ref()
             .map_or(&self.root, |account| &account.root)
-            .open(spec.program.trim_start_matches('/'), OpenFlags::NONE, Rights::READ)
-            .map_err(|err| format!("{}: {err}", spec.program))?;
+            .open(program_path.trim_start_matches('/'), OpenFlags::NONE, Rights::READ)
+            .map_err(|err| format!("{program_path}: {err}"))?;
         // Its root: a view of what its file declares (ADR 0217).
         let view = views::build(&self.root, account.as_ref(), spec)?;
         let root = match &view.root {
@@ -973,7 +1015,7 @@ impl Supervisor {
         let mounts = view.mounts.iter().zip(3..).map(|(dir, fd)| (dir.slot(), SLOT_FD_BASE + fd));
         let names_fd = 3 + view.mounts.len() as u32;
         let names = names.map(|slot| (slot, SLOT_FD_BASE + names_fd));
-        let args: Vec<&str> = spec.arguments.iter().map(String::as_str).collect();
+        let args: Vec<&str> = arguments.iter().map(String::as_str).collect();
         let mut environment = spec.environment.clone();
         if names.is_some() {
             environment.push(format!("NAMES_DESCRIPTOR={names_fd}"));
@@ -1005,7 +1047,7 @@ impl Supervisor {
             .and_then(|()| grant_firewall(self.firewall, spec, child))
             .and_then(|()| grant_devices(self.devices, spec, child))
             .and_then(|()| {
-                let block = exec_block(&spec.program, &args, &environment);
+                let block = exec_block(program_path, &args, &environment);
                 process::exec(&SYS, child, program.slot(), &block)
                     .map_err(|status| format!("exec failed: {:#x}", status.0))
             });
@@ -1094,6 +1136,10 @@ impl Supervisor {
     }
 
     fn ended(&mut self, pid: u64, status: u32) {
+        if self.hooks.as_ref().and_then(|h| h.running.as_ref()).is_some_and(|r| r.pid == pid) {
+            self.hook_ended(status);
+            return;
+        }
         if self.program.as_ref().is_some_and(|p| p.number == pid) {
             let Some(mut program) = self.program.take() else { return };
             Self::copy_lines(&program.master, &mut program.line, None);
@@ -1222,6 +1268,10 @@ impl Supervisor {
         let connection = self.connections.remove(index);
         let request = String::from_utf8_lossy(&connection.request).into_owned();
         let request = request.lines().next().unwrap_or("").trim().to_string();
+        if let Some(phase) = request.strip_prefix("hooks ") {
+            self.begin_hooks(connection.file, phase.trim());
+            return;
+        }
         let answer = self.answer(&request, connection.peer);
         let _ = file_abi::write(&SYS, connection.file.slot(), file_abi::CURRENT, answer.as_bytes());
     }
@@ -1558,7 +1608,131 @@ impl Supervisor {
         };
         let connections = self.connections.iter().map(|c| c.until);
         let pet = self.pets.map(|(_, next)| next);
-        restarts.chain(shutdown).chain(connections).chain(pet).min()
+        let hook = self.hooks.as_ref().and_then(|h| h.running.as_ref()).map(|r| r.until);
+        restarts.chain(shutdown).chain(connections).chain(pet).chain(hook).min()
+    }
+
+    /// Starts the `phase` backup hooks of the running services that have
+    /// one, in their order (the reverse after), for `connection`, which
+    /// gets the answer once the last ends.
+    fn begin_hooks(&mut self, connection: File, phase: &str) {
+        let reply = |connection: &File, text: &str| {
+            let _ = file_abi::write(&SYS, connection.slot(), file_abi::CURRENT, text.as_bytes());
+        };
+        let phase = match phase {
+            "before" => "before",
+            "after" => "after",
+            _ => return reply(&connection, "error: hooks are run before or after\n"),
+        };
+        if self.hooks.is_some() {
+            return reply(&connection, "error: backup hooks are running already\n");
+        }
+        let mut queue: Vec<usize> = (0..self.services.len())
+            .filter(|&i| {
+                let service = &self.services[i];
+                let command = if phase == "before" {
+                    &service.spec.hook_before
+                } else {
+                    &service.spec.hook_after
+                };
+                matches!(service.state, State::Running(_)) && !command.is_empty()
+            })
+            .collect();
+        queue.sort_by_key(|&i| (self.services[i].spec.order, self.services[i].spec.name.clone()));
+        if phase == "before" {
+            // Taken from the end.
+            queue.reverse();
+        }
+        audit!("running the {phase} backup hooks of {} services", queue.len());
+        self.hooks = Some(Hooks { connection, phase, queue, running: None, answer: String::new() });
+        self.next_hook();
+    }
+
+    /// Starts the next hook, or answers once none is left.
+    fn next_hook(&mut self) {
+        loop {
+            let Some(hooks) = &mut self.hooks else { return };
+            let Some(index) = hooks.queue.pop() else {
+                let hooks = self.hooks.take();
+                if let Some(hooks) = hooks {
+                    let bytes = hooks.answer.as_bytes();
+                    let _ =
+                        file_abi::write(&SYS, hooks.connection.slot(), file_abi::CURRENT, bytes);
+                }
+                return;
+            };
+            let phase = hooks.phase;
+            let spec = &self.services[index].spec;
+            let command = if phase == "before" { &spec.hook_before } else { &spec.hook_after };
+            let (program, arguments) = (command[0].clone(), command[1..].to_vec());
+            let (name, seconds) = (spec.name.clone(), spec.hook_seconds);
+            match self.spawn_as(index, &program, &arguments) {
+                Ok((pid, output)) => {
+                    println!("spark: {name}'s {phase} backup hook ({program}) is process {pid}");
+                    let until = now() + seconds * SECOND;
+                    let run = HookRun {
+                        index,
+                        pid,
+                        output: Some(output),
+                        line: Vec::new(),
+                        until,
+                        stopped: false,
+                    };
+                    if let Some(hooks) = &mut self.hooks {
+                        hooks.running = Some(run);
+                    }
+                    return;
+                }
+                Err(why) => {
+                    println!("spark: {name}'s {phase} backup hook could not start: {why}");
+                    if let Some(hooks) = &mut self.hooks {
+                        hooks.answer.push_str(&format!("failed: {name}: could not start: {why}\n"));
+                    }
+                }
+            }
+        }
+    }
+
+    /// Logs what the running hook wrote, after its service's name.
+    fn hook_output(&mut self) {
+        let Some(run) = self.hooks.as_mut().and_then(|h| h.running.as_mut()) else { return };
+        let name = self.services[run.index].spec.name.clone();
+        if let Some(output) = &run.output
+            && !Self::copy_lines(output, &mut run.line, Some(&name))
+        {
+            run.output = None;
+        }
+    }
+
+    /// The running hook ended with `status`.
+    fn hook_ended(&mut self, status: u32) {
+        let Some(hooks) = &mut self.hooks else { return };
+        let Some(mut run) = hooks.running.take() else { return };
+        let name = self.services[run.index].spec.name.clone();
+        if let Some(output) = run.output.take() {
+            Self::copy_lines(&output, &mut run.line, Some(&name));
+            flush_line(&mut run.line, Some(&name));
+        }
+        let line = if run.stopped {
+            format!("failed: {name}: stopped after its time limit\n")
+        } else if failed(status) {
+            format!("failed: {name}: {}\n", ending(status))
+        } else {
+            format!("ok: {name}\n")
+        };
+        println!("spark: {name}'s {} backup hook {}", hooks.phase, ending(status));
+        hooks.answer.push_str(&line);
+        self.next_hook();
+    }
+
+    /// Stops the running hook if its time is up.
+    fn step_hook(&mut self, time: u64) {
+        let Some(run) = self.hooks.as_mut().and_then(|h| h.running.as_mut()) else { return };
+        if run.stopped || time < run.until {
+            return;
+        }
+        run.stopped = true;
+        let _ = process::kill(&SYS, SLOT_PROCESS, run.pid as i64, signal::SIGKILL);
     }
 
     /// Supervises for good.
@@ -1597,6 +1771,11 @@ impl Supervisor {
                 && !program.hung_up
             {
                 add(program.master.slot(), Source::Program);
+            }
+            if let Some(output) =
+                self.hooks.as_ref().and_then(|h| h.running.as_ref()).and_then(|r| r.output.as_ref())
+            {
+                add(output.slot(), Source::Hook);
             }
             let mut polled: Vec<PollEntry> = entries.iter().map(|(entry, _)| *entry).collect();
             let (timeout, flags) = match self.deadline() {
@@ -1649,6 +1828,7 @@ impl Supervisor {
                                 }
                             }
                         }
+                        Source::Hook => self.hook_output(),
                         Source::Program => {
                             if let Some(program) = &mut self.program {
                                 let open =
@@ -1666,6 +1846,7 @@ impl Supervisor {
             // its client reads the end.
             self.connections.retain(|c| c.until > time);
             self.step_stops(time);
+            self.step_hook(time);
             for index in 0..self.services.len() {
                 if let State::Waiting(at) = self.services[index].state
                     && at <= time
@@ -1688,6 +1869,7 @@ enum Source {
     Listener,
     Connection(usize),
     Output(usize),
+    Hook,
     Program,
 }
 

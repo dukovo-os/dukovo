@@ -1,0 +1,49 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# Backups read on another system (ADR 0463): the machine backs /users up
+# to a folder, whole, then as its changes, and checks them by a restore of
+# its own; the lab PC's own Linux decrypts both with age and the recovery
+# key, receives them with btrfs receive, as root, on a Btrfs of its own
+# (backup.sh beside this file), and finds the lab account's files as the
+# machine summed them. backup(8)'s RESTORING WITH LINUX is these steps.
+about = "Linux's age and btrfs receive restore the backups backup(8) writes, whole and as changes, with the recovery key alone, and find the same files (ADR 0463)"
+time = "6m"
+host_needs = ["age", "btrfs", "mkfs.btrfs", "mount", "scp", "sha256sum"]
+
+# A folder of the lab account's, and a destination for /users alone.
+[[step]]
+run = "sh -c 'rm -rf ~/lab-backup-files && mkdir ~/lab-backup-files && echo first > ~/lab-backup-files/note.txt && seq 1 100000 > ~/lab-backup-files/numbers.txt && ln -s note.txt ~/lab-backup-files/latest && echo made'"
+expect = "made"
+[[step]]
+run = "sh -c 'rm -rf /tmp/lab-backup && mkdir /tmp/lab-backup && backup add --every hand --verify never lab-pc /tmp/lab-backup > /dev/null && echo \"places = [\\\"/users\\\"]\" >> /system/settings/backup/lab-pc.toml && backup run lab-pc'"
+root = true
+expect = ["(whole)", "backup: lab-pc: done"]
+# Changed, and backed up as the changes, then checked by a restore.
+[[step]]
+run = "sh -c 'echo second >> ~/lab-backup-files/note.txt && mv ~/lab-backup-files/numbers.txt ~/lab-backup-files/counted.txt && echo changed'"
+expect = "changed"
+[[step]]
+run = "sh -c 'backup run lab-pc && backup verify --restore lab-pc'"
+root = true
+expect = ["(changes)", "read 2 backups through, every chain whole", "files and folders as they were"]
+[[step]]
+run = "sh -c 'cd ~/lab-backup-files && find . -type f | sort | xargs sha256sum > ~/lab-backup.sums && wc -l < ~/lab-backup.sums'"
+expect = "2"
+# The backups and the recovery key, where the lab account can copy them.
+[[step]]
+run = "sh -c 'rm -rf /users/lab/lab-backup && cp -r /tmp/lab-backup/dukovo-backup /users/lab/lab-backup && backup key lab-pc > /users/lab/lab-backup.key && chown -R lab /users/lab/lab-backup /users/lab/lab-backup.key && echo copied'"
+root = true
+expect = "copied"
+# Linux decrypts and receives both, and finds the same files.
+[[step]]
+host = "sh {here}/backup.sh fetch {machine} {machine-port:22}"
+expect = "fetched: 1 machine"
+[[step]]
+host = "sh {here}/backup.sh restore"
+root = true
+expect = ["subvol ./backup-", "snapshot ./backup-", "Flags:", "readonly", "sums match"]
+[[step]]
+run = "sh -c 'backup remove lab-pc && rm -rf /tmp/lab-backup /users/lab/lab-backup /users/lab/lab-backup.key /users/lab/lab-backup.sums /users/lab/lab-backup-files'"
+root = true
+expect = "Removed lab-pc"

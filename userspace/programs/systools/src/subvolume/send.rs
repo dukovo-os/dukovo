@@ -199,29 +199,49 @@ pub(super) fn run(
     let mut output = BufWriter::with_capacity(1 << 20, output);
     let parent = parent.map(read_only_top).transpose()?;
     for path in subvolumes {
-        let (snapshot, info) = read_only_top(path)?;
-        let name = path
-            .canonicalize()
-            .ok()
-            .and_then(|p| p.file_name().map(|n| n.as_bytes().to_vec()))
-            .unwrap_or_else(|| info.name.clone().into_bytes());
         if !quiet {
             let _ = writeln!(io::stderr(), "At subvol {}", path.display());
         }
-        let mut source = SysSource {
-            snapshot,
-            parent: parent.as_ref().map(|(file, _)| file.try_clone()).transpose()?,
-            path: path.clone(),
-            buffer: vec![0; BATCH],
-            open: None,
-        };
-        let failed = |e: io::Error| util::failed(&path.display(), e);
-        let mut writer = Writer::new(&mut output).map_err(failed)?;
-        let from = parent.as_ref().map(|(_, info)| sent(info));
-        sender::send(&mut source, &name, &sent(&info), from.as_ref(), &mut writer)
-            .map_err(failed)?;
+        send_one(path, parent.as_ref(), &mut output)?;
     }
     output.flush().map_err(|e| util::failed(&"the stream", e))?;
+    Ok(())
+}
+
+/// Sends the read-only snapshot `path` to `out` as one stream, whole or
+/// as its changes from the read-only snapshot `parent`, as backup(8)
+/// does (ADR 0463).
+pub(crate) fn stream(path: &Path, parent: Option<&Path>, out: &mut dyn Write) -> Result<(), Fail> {
+    let parent = parent.map(read_only_top).transpose()?;
+    send_one(path, parent.as_ref(), out)
+}
+
+/// Sends `path` to `output`, with `parent` opened and read.
+fn send_one(
+    path: &Path,
+    parent: Option<&(File, Info)>,
+    output: &mut (impl Write + ?Sized),
+) -> Result<(), Fail> {
+    let (snapshot, info) = read_only_top(path)?;
+    let name = path
+        .canonicalize()
+        .ok()
+        .and_then(|p| p.file_name().map(|n| n.as_bytes().to_vec()))
+        .unwrap_or_else(|| info.name.clone().into_bytes());
+    let mut source = SysSource {
+        snapshot,
+        parent: parent
+            .map(|(file, _)| file.try_clone())
+            .transpose()
+            .map_err(|e| util::failed(&path.display(), e))?,
+        path: path.to_path_buf(),
+        buffer: vec![0; BATCH],
+        open: None,
+    };
+    let failed = |e: io::Error| util::failed(&path.display(), e);
+    let mut writer = Writer::new(output).map_err(failed)?;
+    let from = parent.map(|(_, info)| sent(info));
+    sender::send(&mut source, &name, &sent(&info), from.as_ref(), &mut writer).map_err(failed)?;
     Ok(())
 }
 

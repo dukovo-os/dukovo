@@ -379,6 +379,15 @@ presses.
 	its settings to read them again (consoled reads its keyboard
 	layout's, *consoled*(8)), as systemd's ExecReload does.
 
+*hooks* *before* | *after*
+	Run the *before* or *after* backup hook of every running service
+	that has one (*service.toml*(5)), one at a time, by *order* (the
+	highest first for *after*), each as its service runs and stopped
+	at its time limit; then answer with a line for each, *ok:* _name_
+	or *failed:* _name_*:* _why_. *backup*(8) asks it around the
+	snapshots of a round of backups (ADR 0463). One set of hooks runs
+	at a time.
+
 # SHUTTING DOWN
 
 When a shutdown is due, Spark stops the services in groups by *order*,

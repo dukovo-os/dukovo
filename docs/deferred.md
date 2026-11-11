@@ -142,6 +142,11 @@ machine with AMT, an AMD machine and a laptop; see
 | Retention set place by place in `snap.toml` (ADR 0461) | One retention serves the default places | A need |
 | The `snap` service's own view in place of the whole tree (ADR 0461) | `snap.toml` may name any subvolume, reached through the top of each filesystem | 15d, with the updater's (ADR 0455) |
 | `BTRFS_IOC_GET_SUBVOL_INFO` on a descriptor of a file that is not a folder (ADR 0461) | The C library asks a folder's `subvolume` method; `ls` and `snap` ask of folders | A need |
+| Backups encrypted to post-quantum recipients as well as X25519 (ADR 0463) | The age crate's release with them needs another version of `ml-kem` than the one the build already locks | A port: an age release on the locked `ml-kem` |
+| Backups to servers that offer SFTP alone, without a shell (ADR 0463) | The server runs `find`, `cat`, `mv` and `rm` over SSH, as any POSIX server can | A need |
+| Backup keys in the system key store in place of files readable by root alone (ADR 0463) | The key store comes later | Release 1.2 |
+| The owner told of a backup that is overdue or failed, at sign-in and on the web console (ADR 0463) | `backup list` and the log show it | 15d, with the unified updater's notifications |
+| Restoring a whole machine from its backups, apps reinstalled from the app list and their grants put back (ADR 0463) | `backup restore` brings each place back as a snapshot, from which files are copied | 15b, part 4c |
 | System updates served by the update server (ADR 0382) | Catalogs are served; system images come with update delivery | 15c |
 | Telling a person of a new flaw, and which advisories an update fixes (ADR 0389) | Needs the unified updater's notifications | 15d |
 

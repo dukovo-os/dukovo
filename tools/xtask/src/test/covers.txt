@@ -39,6 +39,12 @@ audio-usb kernel/radix/src/usb/ userspace/programs/audio/ userspace/programs/sys
 audio-usb tools/xtask/src/test/cases/audio-virtio.rs
 audio-virtio kernel/drivers/virtio/ kernel/lib/audio/ kernel/radix/src/audio/
 audio-virtio userspace/programs/audio/ userspace/programs/systools/src/sound.rs
+backup kernel/fs/btrfs/ kernel/fs/exfat/ ports/openssh/ ports/uutils-coreutils/
+backup userspace/defaults/spark/services/backup.toml userspace/programs/manifest/src/service.rs
+backup userspace/programs/sshd/ userspace/programs/systools/src/backup.rs
+backup userspace/programs/systools/src/backup/ userspace/programs/systools/src/snap.rs
+backup userspace/programs/systools/src/subvolume.rs userspace/programs/systools/src/subvolume/
+backup userspace/spark/src/supervisor.rs
 bios-cdrom image/grub/grub.cfg.in kernel/arch/ kernel/fs/iso9660/ kernel/hal/ kernel/lib/acpi/
 bios-cdrom kernel/lib/bootinfo/ tools/xtask/src/grub.rs
 bios-usb image/grub/grub.cfg.in kernel/arch/ kernel/drivers/scsi/ kernel/drivers/usb/

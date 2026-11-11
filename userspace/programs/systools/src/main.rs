@@ -62,6 +62,7 @@ mod account;
 mod args;
 mod audiocd;
 mod authd;
+mod backup;
 mod balance;
 mod blkid;
 mod blockdev;
@@ -198,6 +199,7 @@ const TOOLS: &[(&str, Tool)] = &[
     ("audiocd", audiocd::main),
     ("audiod", sound::daemon),
     ("authd", authd::main),
+    ("backup", backup::main),
     ("balance", balance::main),
     ("blkid", blkid::main),
     ("braille", braille::main),
