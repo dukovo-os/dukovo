@@ -7804,11 +7804,11 @@ fn storage_write(vm: &mut Vm, case: &Case) -> Result<(), String> {
     vm.expect("storage: /processes lists ")?;
     vm.expect("1 spark (running)")?;
     vm.expect("storage (running)")?;
-    // Spark's ten, and the volumes.
+    // Spark's eleven, and the volumes.
     let fat = filesystems.iter().filter(|disk| disk.kind().0 == "fat").count();
     vm.expect(&format!(
         "storage: /processes/mounts lists {} mounts, {fat} of them FAT",
-        10 + volumes.len()
+        11 + volumes.len()
     ))?;
     vm.expect("storage: /processes/meminfo: ")?;
     storage_end(vm, "write")
