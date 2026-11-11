@@ -1,0 +1,26 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "Processes share memory through /dev/shm, named semaphores and System V segments and semaphores (ADR 0490)"
+time = "3m"
+
+# /dev/shm is the memory filesystem, everyone's to write in, sticky.
+[[step]]
+run = "ls -ld /dev/shm/; df /dev/shm"
+expect = ["drwxrwxrwt", "shm", "/devices/shm"]
+# The boot test's own program, on this machine's CPUs: objects shared by
+# name across processes, SIGBUS past a file's end, rights, process-shared
+# and named semaphores, and System V segments and semaphore sets with
+# waiters in other processes, undos and removal.
+[[step]]
+run = "cd /tmp && /system/tests/posix/shm; echo shm-rc=$?"
+expect = ["shm: every check passed", "shm-rc=0"]
+# libc-test's cases, as musl's maintainers wrote them: keys from ftok,
+# a child that finds what its parent made, named semaphores opened twice.
+[[step]]
+run = "cd /tmp && for t in functional-ipc_shm functional-ipc_sem functional-sem_open regression-sem_close-unmap functional-pthread_cancel-points; do /system/tests/libc-test/run $t >/dev/null 2>&1; echo $t=$?; done"
+expect = ["functional-ipc_shm=0", "functional-ipc_sem=0", "functional-sem_open=0", "regression-sem_close-unmap=0", "functional-pthread_cancel-points=0"]
+# Nothing is left behind in /dev/shm by the tests.
+[[step]]
+run = "echo left=$(ls -A /dev/shm | grep -c posix-shm)"
+expect = "left=0"

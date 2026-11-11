@@ -7,7 +7,9 @@
 //! from `/devices/virtio-ports/org.qemu.guest_agent.0`; what a program
 //! writes there reaches the host as it is, with no carriage return added,
 //! and what the host sends while the program has the port open is read
-//! as it is; the port taken away goes, with its link (ADR 0327).
+//! as it is; the port taken away goes, with its link (ADR 0327). The
+//! guest agent's service, which holds the port from boot (ADR 0329), is
+//! stopped first, so that what the host sends reaches the test's program.
 
 use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
@@ -77,6 +79,13 @@ fn virtio_ports(vm: &mut Vm, case: &Case) -> Result<(), String> {
     vm.expect_screen(&[&format!("{RELEASE} {VERSION} (tty1)"), "# "])?;
     vm.type_text(&format!("readlink /devices/virtio-ports/{NAME}; ls /devices | grep vport\n"))?;
     vm.expect_screen(&["../vport0p1", "vport0p1"])?;
+    // The guest agent reads the port from boot, and would take the host's
+    // bytes: it stops, and the port is the test's program's alone.
+    vm.expect_anywhere(&format!("guest-agent: answering the host on /devices/virtio-ports/{NAME}"))?;
+    vm.type_text("service guest-agent stop\n")?;
+    vm.expect("spark: asked to stop guest-agent")?;
+    vm.expect("spark: guest-agent (process ")?;
+    vm.expect(" was ended by signal 15")?;
     // A program, as the guest agent is, has the port open both ways: a
     // line to the host, then what the host answers once it has the line,
     // which tells it the port is open. A raw port adds no carriage return

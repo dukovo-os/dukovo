@@ -346,6 +346,7 @@ tmpfs /system/state tmpfs rw
 tmpfs /system/live tmpfs rw
 tmpfs /tmp tmpfs rw
 dev /devices dev rw
+shm /devices/shm shm rw
 proc /processes proc ro
 sys /kernel sys ro
 vda /volumes/vda fat rw label=RADIX16

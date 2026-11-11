@@ -429,7 +429,7 @@ fn address_space_method(user: &UserRef, slot: u32, label: u32, args: &[u64; 8]) 
             } else {
                 None
             };
-            let anon = Anon { access, shared, file: None };
+            let anon = Anon { access, shared, ..Anon::default() };
             let address = space.map_anonymous(pages_of(a.size)?, anon, placement)?;
             let results = address_space::MapAnonymousResults { address };
             answer(label, address_space::MapAnonymousResults::WORDS, results.encode())
@@ -453,16 +453,35 @@ fn address_space_method(user: &UserRef, slot: u32, label: u32, args: &[u64; 8]) 
         address_space::MAP_FILE => {
             let a = address_space::MapFileArgs::decode(args)?;
             let access = anonymous_access(a.rights)?;
-            if a.flags.contains(address_space::MapFlags::SHARED) {
-                return Err(Kernel::InvalidArgument.status(3));
-            }
+            let shared = a.flags.contains(address_space::MapFlags::SHARED);
             let placement = placement(a.address, a.flags);
             if !a.offset.is_multiple_of(address_space::PAGE_SIZE)
                 || (!matches!(placement, Placement::Hint(_)) && !aligned(a.address))
             {
                 return Err(Kernel::InvalidArgument.status(5));
             }
-            let (_, file) = objects::file(user.cspace, a.file, Rights::READ)?;
+            let (file_cap, file) = objects::file(user.cspace, a.file, Rights::READ)?;
+            let writes = access == Some(radix_hal::UserAccess::ReadWrite);
+            if shared && let Some(pages) = crate::fs::shm::pages_of(&file.at.node) {
+                // A memory file's pages are shared ones: the mapping is
+                // the file (ADR 0490), writable if the file is open for
+                // writing.
+                let writable = file_cap.rights().contains(Rights::WRITE);
+                if writes && !writable {
+                    return Err(error(Kernel::MissingRights));
+                }
+                let anon =
+                    Anon { access, shared: Some(pages), read_only: !writable, ..Anon::default() };
+                let offset = a.offset / address_space::PAGE_SIZE;
+                let address = space.map_anonymous_at(pages_of(a.size)?, anon, placement, offset)?;
+                let results = address_space::MapFileResults { address };
+                return answer(label, address_space::MapFileResults::WORDS, results.encode());
+            }
+            if shared && writes {
+                // The page cache's pages cannot be mapped yet: writing
+                // through a mapping would not reach the file.
+                return Err(radix_abi::errors::File::NoDevice.status(3));
+            }
             let stat = file.at.node.stat();
             match stat.kind {
                 radix_vfs::Kind::File => {}
@@ -476,10 +495,21 @@ fn address_space_method(user: &UserRef, slot: u32, label: u32, args: &[u64; 8]) 
                 base: a.offset,
                 size: stat.size.saturating_sub(a.offset),
             };
-            let anon = Anon { access, shared: None, file: Some(source) };
+            // A read-only shared mapping is a private one that stays
+            // read-only, as the file it maps cannot be written through it.
+            let anon = Anon { access, file: Some(source), read_only: shared, ..Anon::default() };
             let address = space.map_anonymous(pages_of(a.size)?, anon, placement)?;
             let results = address_space::MapFileResults { address };
             answer(label, address_space::MapFileResults::WORDS, results.encode())
+        }
+        address_space::DETACH => {
+            let a = address_space::DetachArgs::decode(args)?;
+            if !aligned(a.address) {
+                return Err(Kernel::InvalidArgument.status(0));
+            }
+            let segment = space.detach(a.address)?;
+            segment.detached(user.process.number());
+            answer(label, 0, [0; 8])
         }
         address_space::FUTEX_WAIT => {
             let a = address_space::FutexWaitArgs::decode(args)?;

@@ -214,7 +214,7 @@ Its lines in the kernel log start with *spark:*, after the kernel's
 
 ```
 spark: Spark v2 is process 1, moved by 0x10ae4974a000
-spark: built the hierarchy of 9 directories and mounted 9 filesystems
+spark: built the hierarchy of 9 directories and mounted 10 filesystems
 spark: added 6 default settings to /system/settings
 spark: listening at /system/live/spark/control
 spark: 4 services in /system/settings/spark/services, 4 enabled
@@ -229,7 +229,7 @@ hierarchy line comes after the root's:
 
 ```
 spark: /system is Dukovo's root on sda5, compressed (zstd)
-spark: built the hierarchy of 9 directories and mounted 12 filesystems
+spark: built the hierarchy of 9 directories and mounted 13 filesystems
 ```
 
 and in a boot test that names a program:

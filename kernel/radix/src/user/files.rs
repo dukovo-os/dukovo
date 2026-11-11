@@ -295,6 +295,7 @@ fn filesystem_kind(kind: FsKind) -> FilesystemKind {
         FsKind::Boot => FilesystemKind::Bootfs,
         FsKind::Pipe => FilesystemKind::Pipe,
         FsKind::Fuse => FilesystemKind::Fuse,
+        FsKind::Shm => FilesystemKind::Shm,
     }
 }
 
@@ -959,6 +960,262 @@ pub fn directory_method(
         | file::SET_ATTRIBUTE
         | file::LIST_ATTRIBUTES
         | file::REMOVE_ATTRIBUTE => attribute_method(found, label, args),
+        directory::IPC_GET
+        | directory::IPC_STATUS
+        | directory::IPC_SET
+        | directory::IPC_REMOVE
+        | directory::IPC_ATTACH
+        | directory::SEMAPHORE_OPERATE
+        | directory::SEMAPHORE_CONTROL
+        | directory::SEMAPHORE_VALUES
+        | directory::SET_SEMAPHORE_VALUES => ipc_method(user, found, label, args),
+        _ => Err(error(Kernel::NoSuchMethod)),
+    }
+}
+
+/// The System V objects of the memory filesystem whose root `path`,
+/// beneath the directory `found` designates with the rights `needs`, leads
+/// to (ADR 0490), and who the call acts for: not_supported if it leads to
+/// nothing, or to no memory filesystem's root.
+fn ipc_of<'a>(
+    found: &'a Found,
+    needs: Rights,
+    path: UserBuffer,
+) -> Result<(crate::fs::shm::ipc::IpcRef, Who<'a>)> {
+    let dir = directory_of(found, needs)?;
+    let mut copied = Path::Empty;
+    let path = copied.copy(path)?;
+    let who = who(found.cap.rights(), dir)?;
+    let at = match vfs()?.resolve(&who, &dir.at, path.as_str()?) {
+        Ok(at) => at,
+        Err(radix_vfs::Error::NotFound) => return Err(Kernel::NotSupported.status(0)),
+        Err(err) => return Err(fs::status(err)),
+    };
+    let ipc = crate::fs::shm::ipc_of(&at.node).ok_or(Kernel::NotSupported.status(0))?;
+    Ok((ipc, who))
+}
+
+/// Who a System V call acts for, as `radix_posix::ipc` checks it.
+fn ipc_caller<'a>(who: &Who<'a>) -> radix_posix::ipc::Caller<'a> {
+    radix_posix::ipc::Caller {
+        user: who.user,
+        group: who.group,
+        groups: who.groups,
+        bypass: who.bypass,
+    }
+}
+
+/// Copies the caller's `buffer` of at most `max` bytes in.
+fn copy_in(buffer: UserBuffer, max: u64) -> Result<alloc::vec::Vec<u8, radix_mm::Kmalloc>> {
+    if buffer.len > max {
+        return Err(error(Kernel::ArgumentsTooLong));
+    }
+    if !radix_ipc::range::user_bytes(buffer.address, buffer.len) {
+        return Err(error(Kernel::BadAddress));
+    }
+    let mut bytes = alloc::vec::Vec::new_in(HEAP.with(Flags::MAY_SLEEP));
+    bytes.try_reserve_exact(buffer.len as usize).map_err(|_| error(Kernel::NoMemory))?;
+    while bytes.len() < buffer.len as usize {
+        // Room was reserved above.
+        let _ = bytes.push_within_capacity(0);
+    }
+    if !Arch::copy_from_user(&mut bytes, buffer.address) {
+        return Err(error(Kernel::BadAddress));
+    }
+    Ok(bytes)
+}
+
+/// System V IPC's methods (ADR 0490), out of [`directory_method`]:
+/// `shmget`, `semget`, `shmctl`, `semctl`, `shmat` and `semop`, on the
+/// objects of the memory filesystem a path leads to.
+#[inline(never)]
+fn ipc_method(user: &UserRef, found: &Found, label: u32, args: &[u64; 8]) -> Result<Answer> {
+    use crate::fs::shm::ipc::{Command, Kind as Object};
+    use crate::user::memory::{Anon, Placement};
+    use radix_abi::address_space::PAGE_SIZE;
+    use radix_abi::directory::{AttachFlags, IpcFlags, IpcKind, SemaphoreCommand};
+    use radix_posix::ipc::{Operation, SEMOPM};
+
+    let object = |kind: IpcKind| match kind {
+        IpcKind::Segment => Object::Segment,
+        IpcKind::Semaphores => Object::Semaphores,
+    };
+    let read_write = Rights::READ.union(Rights::WRITE);
+    let pid = user.process.number();
+    match label {
+        directory::IPC_GET => {
+            let a = directory::IpcGetArgs::decode(args)?;
+            let create = a.flags.contains(IpcFlags::CREATE);
+            let exclusive = a.flags.contains(IpcFlags::EXCLUSIVE);
+            let (ipc, who) = ipc_of(found, if create { read_write } else { Rights::READ }, a.path)?;
+            let caller = ipc_caller(&who);
+            let id = match object(a.kind) {
+                Object::Segment => {
+                    ipc.get_segment(&caller, pid, a.key, a.size, create, exclusive, a.mode)?
+                }
+                Object::Semaphores => {
+                    ipc.get_set(&caller, a.key, a.size, create, exclusive, a.mode)?
+                }
+            };
+            let results = directory::IpcGetResults { id };
+            answer(label, directory::IpcGetResults::WORDS, results.encode())
+        }
+        directory::IPC_STATUS => {
+            use directory::IpcStatus as S;
+            let a = directory::IpcStatusArgs::decode(args)?;
+            let (ipc, who) = ipc_of(found, Rights::READ, a.path)?;
+            let (address, len) = user_range(a.buffer)?;
+            if len < S::SIZE {
+                return Err(error(Kernel::InvalidArgument));
+            }
+            let status = ipc.status(&ipc_caller(&who), object(a.kind), a.id)?;
+            let mode = u32::from(status.perm.mode) | if status.removed { 0o1000 } else { 0 };
+            let mut bytes = [0u8; S::SIZE];
+            bytes[S::OFFSET_KEY..S::OFFSET_KEY + 4].copy_from_slice(&status.perm.key.to_le_bytes());
+            for (at, value) in [
+                (S::OFFSET_ID, status.id),
+                (S::OFFSET_OWNER, status.perm.owner),
+                (S::OFFSET_GROUP, status.perm.group),
+                (S::OFFSET_CREATOR, status.perm.creator),
+                (S::OFFSET_CREATOR_GROUP, status.perm.creator_group),
+                (S::OFFSET_MODE, mode),
+            ] {
+                bytes[at..at + 4].copy_from_slice(&value.to_le_bytes());
+            }
+            for (at, value) in [
+                (S::OFFSET_SIZE, status.size),
+                (S::OFFSET_ATTACHED, status.attached),
+                (S::OFFSET_CREATOR_PID, status.creator_pid),
+                (S::OFFSET_LAST_PID, status.last_pid),
+                (S::OFFSET_USED, status.used),
+                (S::OFFSET_DETACHED, status.detached),
+                (S::OFFSET_CHANGED, status.changed),
+            ] {
+                bytes[at..at + 8].copy_from_slice(&value.to_le_bytes());
+            }
+            UserOut { address, len }.put(0, &bytes).map_err(fs::status)?;
+            answer(label, 0, [0; 8])
+        }
+        directory::IPC_SET => {
+            let a = directory::IpcSetArgs::decode(args)?;
+            let (ipc, who) = ipc_of(found, read_write, a.path)?;
+            let caller = ipc_caller(&who);
+            ipc.set_owner(&caller, object(a.kind), a.id, a.owner, a.group, a.mode)?;
+            answer(label, 0, [0; 8])
+        }
+        directory::IPC_REMOVE => {
+            let a = directory::IpcRemoveArgs::decode(args)?;
+            let (ipc, who) = ipc_of(found, read_write, a.path)?;
+            ipc.remove(&ipc_caller(&who), object(a.kind), a.id)?;
+            answer(label, 0, [0; 8])
+        }
+        directory::IPC_ATTACH => {
+            let a = directory::IpcAttachArgs::decode(args)?;
+            let read_only = a.flags.contains(AttachFlags::READ_ONLY);
+            let access = match (read_only, a.flags.contains(AttachFlags::EXECUTE)) {
+                (true, false) => radix_hal::UserAccess::Read,
+                (true, true) => radix_hal::UserAccess::ReadExecute,
+                (false, false) => radix_hal::UserAccess::ReadWrite,
+                // Write and execute never together.
+                (false, true) => return Err(Kernel::InvalidArgument.status(4)),
+            };
+            if !a.address.is_multiple_of(PAGE_SIZE) {
+                return Err(Kernel::InvalidArgument.status(3));
+            }
+            let (ipc, who) =
+                ipc_of(found, if read_only { Rights::READ } else { read_write }, a.path)?;
+            let (_, space) = objects::space(user.cspace, a.space, Rights::CONTROL)?;
+            let attachment = ipc.attach(&ipc_caller(&who), pid, a.id, !read_only)?;
+            let segment = attachment.segment().clone();
+            let placement = match a.address {
+                0 => Placement::Hint(0),
+                at if a.flags.contains(AttachFlags::REPLACE) => Placement::Fixed(at),
+                at => Placement::FixedNoReplace(at),
+            };
+            let anon = Anon {
+                access: Some(access),
+                shared: Some(segment.shared().clone()),
+                file: None,
+                read_only,
+                segment: Some(attachment),
+            };
+            let address = space.map_anonymous_at(segment.pages(), anon, placement, 0)?;
+            let results = directory::IpcAttachResults { address };
+            answer(label, directory::IpcAttachResults::WORDS, results.encode())
+        }
+        directory::SEMAPHORE_OPERATE => {
+            let a = directory::SemaphoreOperateArgs::decode(args)?;
+            let size = directory::SemaphoreOperation::SIZE as u64;
+            if a.operations.len == 0 || !a.operations.len.is_multiple_of(size) {
+                return Err(Kernel::InvalidArgument.status(1));
+            }
+            let bytes = copy_in(a.operations, SEMOPM as u64 * size)?;
+            let mut ops = alloc::vec::Vec::new_in(HEAP.with(Flags::MAY_SLEEP));
+            ops.try_reserve_exact(bytes.len() / size as usize)
+                .map_err(|_| error(Kernel::NoMemory))?;
+            for chunk in bytes.as_chunks::<{ Operation::SIZE }>().0 {
+                // Room was reserved above.
+                let _ = ops.push_within_capacity(Operation::from_bytes(*chunk));
+            }
+            let alters = ops.iter().any(|op| op.op != 0);
+            let (ipc, who) = ipc_of(found, if alters { read_write } else { Rights::READ }, a.path)?;
+            let deadline =
+                (a.timeout_ns != 0).then(|| crate::sched::now_ns().saturating_add(a.timeout_ns));
+            ipc.operate(&ipc_caller(&who), pid, a.id, &ops, deadline, || {
+                user.process.note_sem_undo();
+            })?;
+            answer(label, 0, [0; 8])
+        }
+        directory::SEMAPHORE_CONTROL => {
+            let a = directory::SemaphoreControlArgs::decode(args)?;
+            let (command, needs) = match a.command {
+                SemaphoreCommand::GetValue => (Command::Value, Rights::READ),
+                SemaphoreCommand::SetValue => (Command::SetValue(a.value), read_write),
+                SemaphoreCommand::GetPid => (Command::Pid, Rights::READ),
+                SemaphoreCommand::GetWaiting => (Command::Waiting, Rights::READ),
+                SemaphoreCommand::GetZeroWaiting => (Command::ZeroWaiting, Rights::READ),
+            };
+            let (ipc, who) = ipc_of(found, needs, a.path)?;
+            let value = ipc.control(&ipc_caller(&who), pid, a.id, a.number, command)?;
+            let results = directory::SemaphoreControlResults { value };
+            answer(label, directory::SemaphoreControlResults::WORDS, results.encode())
+        }
+        directory::SEMAPHORE_VALUES => {
+            let a = directory::SemaphoreValuesArgs::decode(args)?;
+            let (ipc, who) = ipc_of(found, Rights::READ, a.path)?;
+            let (address, len) = user_range(a.values)?;
+            let fits = (len / 2).min(ipc.count(a.id)?);
+            let mut values = alloc::vec::Vec::new_in(HEAP.with(Flags::MAY_SLEEP));
+            values.try_reserve_exact(fits).map_err(|_| error(Kernel::NoMemory))?;
+            while values.len() < fits {
+                // Room was reserved above.
+                let _ = values.push_within_capacity(0u16);
+            }
+            let count = ipc.values(&ipc_caller(&who), a.id, &mut values)?;
+            let mut out = UserOut { address, len };
+            for (i, value) in values.iter().enumerate() {
+                out.put(i * 2, &value.to_le_bytes()).map_err(fs::status)?;
+            }
+            let results = directory::SemaphoreValuesResults { count: count as u32 };
+            answer(label, directory::SemaphoreValuesResults::WORDS, results.encode())
+        }
+        directory::SET_SEMAPHORE_VALUES => {
+            let a = directory::SetSemaphoreValuesArgs::decode(args)?;
+            let (ipc, who) = ipc_of(found, read_write, a.path)?;
+            let count = ipc.count(a.id)?;
+            if a.values.len != count as u64 * 2 {
+                return Err(Kernel::InvalidArgument.status(2));
+            }
+            let bytes = copy_in(a.values, u64::from(radix_posix::ipc::SEMMSL) * 2)?;
+            let mut values = alloc::vec::Vec::new_in(HEAP.with(Flags::MAY_SLEEP));
+            values.try_reserve_exact(count).map_err(|_| error(Kernel::NoMemory))?;
+            for pair in bytes.as_chunks::<2>().0 {
+                // Room was reserved above.
+                let _ = values.push_within_capacity(u16::from_le_bytes(*pair));
+            }
+            ipc.set_values(&ipc_caller(&who), pid, a.id, &values)?;
+            answer(label, 0, [0; 8])
+        }
         _ => Err(error(Kernel::NoSuchMethod)),
     }
 }

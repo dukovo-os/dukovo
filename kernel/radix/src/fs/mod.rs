@@ -27,7 +27,9 @@
 //!   sockets (Phase 9), files outside the tree's filesystems; `trace`
 //!   writes the records of radix-trace(2) to a pipe for its tracer;
 //! - `locks` keeps files' advisory locks (Phase 8): `flock`'s, POSIX's
-//!   record locks and open file descriptions' range locks.
+//!   record locks and open file descriptions' range locks;
+//! - `shm` is the memory filesystem of `/devices/shm`, whose files map
+//!   shared, and which keeps System V IPC's objects (ADR 0490).
 //!
 //! A file object's last reference can be the last one to a FAT file
 //! removed while open, whose clusters are freed when it goes, which
@@ -50,6 +52,7 @@ pub mod locks;
 pub mod mouse;
 pub mod pipe;
 pub mod procfs;
+pub mod shm;
 pub mod socket;
 pub mod sysfs;
 pub mod trace;
@@ -699,6 +702,11 @@ pub fn make(kind: &str, source: Option<&NodeRef>, flags: Flags) -> radix_vfs::Re
                 "udf" => mount_udf(device, read_only)?,
                 _ => mount_btrfs(device, name.as_str(), read_only, compress)?,
             }
+        }
+        "shm" => {
+            // As a tmpfs: half of memory, and a file for every two pages.
+            let pages = FRAMES.managed_pages() / 2;
+            fs_ref(shm::ShmFs::new(pages, FRAMES.managed_pages() / 2)?)?
         }
         "proc" => procfs::make()?,
         "sys" => sysfs::make()?,

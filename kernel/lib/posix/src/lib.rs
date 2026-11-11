@@ -20,7 +20,9 @@
 //! - [`tree`]: the process tree, with process groups and sessions, which
 //!   `fork`, `wait`, `kill`, `setpgid` and `setsid` change and read;
 //! - [`exec`]: the block of arguments and environment `exec` takes, `#!`
-//!   lines, and the System V initial stack a program starts with.
+//!   lines, and the System V initial stack a program starts with;
+//! - [`ipc`]: System V IPC's permissions, keys and numbers, and what a
+//!   semaphore operation does (ADR 0490).
 //!
 //! The kernel (`radix::user::posix`) holds a [`tree::Tree`] behind a lock,
 //! keeps a [`signal::Actions`] in each process and a [`signal::Pending`]
@@ -35,6 +37,7 @@
 extern crate alloc;
 
 pub mod exec;
+pub mod ipc;
 pub mod signal;
 pub mod status;
 pub mod tree;

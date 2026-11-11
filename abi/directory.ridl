@@ -64,6 +64,16 @@
 //! own directories take no files, nothing is mounted beneath a view
 //! (not_supported), and a capability `open` makes beneath one never has
 //! the control right.
+//!
+//! System V IPC (Phase 16, ADR 0490). A memory filesystem (`shm`, which
+//! Spark mounts on `/devices/shm`) holds memory files that programs map
+//! shared, and System V's shared memory segments and semaphore sets: the
+//! `ipc_*` and `semaphore_*` methods name them through a path to its
+//! root, so a program reaches the objects of the `/devices/shm` its
+//! directories lead to, and none if they lead to none. Each object has an
+//! owner and permission bits as a file has, which are checked against the
+//! name the capability acts for, as Linux checks a process's; the bypass
+//! right passes them.
 
 module directory;
 
@@ -136,6 +146,9 @@ enum FilesystemKind: u8 {
     /// Served by a program through `/devices/fuse`, in Linux's FUSE
     /// protocol (ADR 0226): `fuse`, which only `mount_fuse` mounts.
     fuse = 13;
+    /// Memory files that programs map shared, and System V IPC's objects
+    /// (ADR 0490): `shm`, which Spark mounts on `/devices/shm`.
+    shm = 14;
 }
 
 /// How `open` opens.
@@ -230,6 +243,99 @@ flags BalanceKinds: u32 {
     /// Leave the chunk tree's chunks already of the profile
     /// `convert_system` names.
     soft_system = 5;
+}
+
+/// Which kind of System V IPC object the `ipc_*` methods name (ADR 0490).
+enum IpcKind: u8 {
+    /// A shared memory segment, shmget(2)'s.
+    segment = 0;
+    /// A set of semaphores, semget(2)'s.
+    semaphores = 1;
+}
+
+/// How `ipc_get` finds or makes an object.
+flags IpcFlags: u32 {
+    /// Make one if no object has the key: IPC_CREAT.
+    create = 0;
+    /// With `create`, fail with exists if one has: IPC_EXCL.
+    exclusive = 1;
+}
+
+/// How `ipc_attach` maps a segment.
+flags AttachFlags: u32 {
+    /// To read only: SHM_RDONLY.
+    read_only = 0;
+    /// To run too, with `read_only`: SHM_EXEC.
+    execute = 1;
+    /// At `address`, replacing whatever is mapped there: SHM_REMAP.
+    replace = 2;
+}
+
+/// What `semaphore_control` reads or sets of one semaphore, as semctl(2)'s
+/// commands.
+enum SemaphoreCommand: u8 {
+    /// Its value: GETVAL.
+    get_value = 0;
+    /// Gives it `value`: SETVAL.
+    set_value = 1;
+    /// The number of the process that last changed it: GETPID.
+    get_pid = 2;
+    /// How many operations wait for it to grow: GETNCNT.
+    get_waiting = 3;
+    /// How many wait for it to be zero: GETZCNT.
+    get_zero_waiting = 4;
+}
+
+/// A System V object's status, as `ipc_status` writes it: what Linux's
+/// `shmid_ds` and `semid_ds` hold (IPC_STAT).
+struct IpcStatus {
+    /// Its key; 0 (IPC_PRIVATE) for a segment removed while attached.
+    key: i32;
+    /// Its number, which `ipc_get` returned.
+    id: u32;
+    /// The user it belongs to, which `ipc_set` changes.
+    owner: u32;
+    /// Its group, likewise.
+    group: u32;
+    /// The user of the name that made it.
+    creator: u32;
+    /// The group of the name that made it.
+    creator_group: u32;
+    /// Its nine permission bits, with 01000 (SHM_DEST) for a segment
+    /// removed while attached.
+    mode: u32;
+    /// Zero.
+    reserved: u32;
+    /// A segment's size in bytes, or a set's count of semaphores.
+    size: u64;
+    /// How many mappings attach a segment (shm_nattch); 0 for a set.
+    attached: u64;
+    /// The process that made a segment (shm_cpid); 0 for a set.
+    creator_pid: u64;
+    /// The last process to attach or detach a segment (shm_lpid); 0 for
+    /// a set.
+    last_pid: u64;
+    /// When a segment was last attached (shm_atime), or a set's
+    /// semaphores last operated on (sem_otime), in nanoseconds since
+    /// 1970; 0 for never.
+    used: u64;
+    /// When a segment was last detached (shm_dtime), likewise.
+    detached: u64;
+    /// When it was made or its status last changed (shm_ctime,
+    /// sem_ctime), likewise.
+    changed: u64;
+}
+
+/// One semaphore operation, as Linux's `struct sembuf`, which
+/// `semaphore_operate` takes an array of.
+struct SemaphoreOperation {
+    /// The semaphore it works on.
+    number: u16;
+    /// What it adds, as a signed 16-bit number: taken away if negative,
+    /// and with 0 it waits for the value to be zero.
+    operation: u16;
+    /// IPC_NOWAIT (04000) and SEM_UNDO (0x1000).
+    flags: u16;
 }
 
 /// A quota group `qgroups` writes (ADR 0170): one for each subvolume of
@@ -836,4 +942,109 @@ interface directory = 0x000b version 9 {
     method resize_disk = 41 (devid: u64, size: u64) -> (size: u64)
         raises [no_such_slot, empty_slot, missing_rights, no_memory, not_found, not_supported,
                 read_only, no_space, io, corrupt];
+    /// The System V IPC object of `kind` that `key` names, in the memory
+    /// filesystem whose root `path` leads to (`/devices/shm`, ADR 0490), as
+    /// shmget(2) and semget(2): with `create` one is made if none has the
+    /// key, or always for key 0 (IPC_PRIVATE), with the permission bits
+    /// of `mode`, owned by the name the capability acts for; with
+    /// `exclusive` too, one that has it fails with exists. `size` is a
+    /// segment's bytes, made as zeros, or a set's semaphores, made zero;
+    /// one found must be at least that big (invalid_argument). Returns its
+    /// number. Fails with not_found if none has the key and the call does
+    /// not make one, denied if `mode` asks for what the object's
+    /// permission bits do not give the caller's name, no_space if the
+    /// filesystem holds as many as it may, and not_supported if `path`
+    /// leads to no memory filesystem's root. Needs the read right, and the
+    /// write right with `create`; the bypass right passes the permission
+    /// checks, as CAP_IPC_OWNER.
+    method ipc_get = 42 (path: in bytes, kind: IpcKind, key: i32, size: u64, flags: IpcFlags,
+                         mode: u32) -> (id: u32)
+        raises [no_such_slot, empty_slot, wrong_kind, missing_rights, invalid_argument, no_memory,
+                bad_address, not_found, not_directory, name_too_long, bad_name, outside,
+                too_many_links, denied, exists, no_space, not_supported];
+    /// Writes the status of the object of `kind` numbered `id` to
+    /// `buffer` as an IpcStatus (IPC_STAT): needs read permission on it.
+    /// Fails with invalid_argument if no object has that number. Needs
+    /// the read right.
+    method ipc_status = 43 (path: in bytes, kind: IpcKind, id: u32, buffer: out bytes) -> ()
+        raises [no_such_slot, empty_slot, wrong_kind, missing_rights, invalid_argument, no_memory,
+                bad_address, not_found, not_directory, name_too_long, bad_name, outside,
+                too_many_links, denied, not_supported];
+    /// Gives the object of `kind` numbered `id` to `owner` and `group`,
+    /// with the permission bits of `mode` (IPC_SET). Only its owner or
+    /// maker may (not_permitted), or a capability with the bypass right.
+    /// Needs the write right.
+    method ipc_set = 44 (path: in bytes, kind: IpcKind, id: u32, owner: u32, group: u32,
+                         mode: u32) -> ()
+        raises [no_such_slot, empty_slot, wrong_kind, missing_rights, invalid_argument, no_memory,
+                bad_address, not_found, not_directory, name_too_long, bad_name, outside,
+                too_many_links, denied, not_permitted, not_supported];
+    /// Removes the object of `kind` numbered `id` (IPC_RMID), as `ipc_set`
+    /// may: a set at once, its waiting operations failing with removed; a
+    /// segment once nothing attaches it, no `ipc_get` finding it
+    /// meanwhile. Needs the write right.
+    method ipc_remove = 45 (path: in bytes, kind: IpcKind, id: u32) -> ()
+        raises [no_such_slot, empty_slot, wrong_kind, missing_rights, invalid_argument, no_memory,
+                bad_address, not_found, not_directory, name_too_long, bad_name, outside,
+                too_many_links, denied, not_permitted, not_supported];
+    /// Attaches segment `id` to the address space in slot `space` (shmat(2)):
+    /// maps all of it shared, to read and write, or with `read_only` to
+    /// read (and with `execute` to run), at `address` (a page boundary)
+    /// or with 0 where the kernel places anonymous memory. Something
+    /// mapped at `address` fails with already_mapped, unless `replace`.
+    /// Needs read permission on the segment, and write permission unless
+    /// `read_only`; the read right, the write right unless `read_only`,
+    /// and the control right on the space. Returns where it went;
+    /// radix-address-space(2)'s `detach` detaches it.
+    method ipc_attach = 46 (path: in bytes, id: u32, space: slot, address: addr,
+                            flags: AttachFlags) -> (address: addr)
+        raises [no_such_slot, empty_slot, wrong_kind, missing_rights, invalid_argument, no_memory,
+                bad_address, not_found, not_directory, name_too_long, bad_name, outside,
+                too_many_links, denied, already_mapped, not_supported];
+    /// Does the SemaphoreOperations in `operations` to set `id`, all of
+    /// them or none, in order, as semop(2) and semtimedop(2): waits until
+    /// they can, for at most `timeout_ns` nanoseconds (0: no limit). One
+    /// with IPC_NOWAIT that would wait fails with would_block, as does a
+    /// wait whose time runs out; a value past 32767, or an undo adjustment
+    /// past it either way, out_of_range. SEM_UNDO keeps the opposite for
+    /// the caller's process, which its end does (`exit`). Fails with
+    /// invalid_argument for none, arguments_too_long for more than 500,
+    /// too_big for a semaphore past the set's, removed if the set is
+    /// removed meanwhile, and interrupted when a signal comes: it is not
+    /// run again if a handler runs. Needs write permission on the set if
+    /// one changes a value, read permission otherwise; the read right,
+    /// and the write right if one changes a value.
+    method semaphore_operate = 47 (path: in bytes, id: u32, operations: in bytes,
+                                   timeout_ns: u64) -> ()
+        raises [no_such_slot, empty_slot, wrong_kind, missing_rights, invalid_argument, no_memory,
+                bad_address, not_found, not_directory, name_too_long, bad_name, outside,
+                too_many_links, denied, would_block, out_of_range, arguments_too_long, too_big,
+                removed, interrupted, not_supported];
+    /// Reads, or with set_value sets to `value` (0 to 32767, else
+    /// out_of_range), semaphore `number` of set `id`, as semctl(2)'s
+    /// SemaphoreCommand; returns what it read. Setting needs write
+    /// permission and the write right, and clears every process's undo
+    /// adjustment of the semaphore; reading needs read permission and the
+    /// read right. Fails with invalid_argument for a semaphore past the
+    /// set's.
+    method semaphore_control = 48 (path: in bytes, id: u32, number: u32,
+                                   command: SemaphoreCommand, value: u32) -> (value: u64)
+        raises [no_such_slot, empty_slot, wrong_kind, missing_rights, invalid_argument, no_memory,
+                bad_address, not_found, not_directory, name_too_long, bad_name, outside,
+                too_many_links, denied, out_of_range, not_supported];
+    /// Writes the values of set `id` to `values`, two bytes each, as many
+    /// as fit (GETALL), and returns how many it has. Needs read permission
+    /// and the read right.
+    method semaphore_values = 49 (path: in bytes, id: u32, values: out bytes) -> (count: u32)
+        raises [no_such_slot, empty_slot, wrong_kind, missing_rights, invalid_argument, no_memory,
+                bad_address, not_found, not_directory, name_too_long, bad_name, outside,
+                too_many_links, denied, not_supported];
+    /// Gives set `id` the values in `values`, two bytes for each of its
+    /// semaphores (SETALL), each 0 to 32767 (out_of_range), and clears
+    /// every process's undo adjustments of it. Needs write permission and
+    /// the write right.
+    method set_semaphore_values = 50 (path: in bytes, id: u32, values: in bytes) -> ()
+        raises [no_such_slot, empty_slot, wrong_kind, missing_rights, invalid_argument, no_memory,
+                bad_address, not_found, not_directory, name_too_long, bad_name, outside,
+                too_many_links, denied, out_of_range, not_supported];
 }

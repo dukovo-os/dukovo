@@ -35,6 +35,7 @@ libc_sources += radix_sources + files(
 	'../../options/linux/generic/sys-xattr.cpp',
 	'generic/entry.cpp',
 	'generic/interfaces.cpp',
+	'generic/ipc.cpp',
 	'generic/poll.cpp',
 	'generic/process.cpp',
 	'generic/socket.cpp',

@@ -61,7 +61,7 @@ fn discs(vm: &mut Vm, case: &Case) -> Result<(), String> {
             "spark: mounted the {said} filesystem of {name} at /volumes/{name}, read-only"
         ))?;
     }
-    vm.expect("spark: built the hierarchy of 9 directories and mounted 9 filesystems")?;
+    vm.expect("spark: built the hierarchy of 9 directories and mounted 10 filesystems")?;
     vm.expect_ahead("spark: started /system/tests/storage as process ")?;
     // The program lists the volumes in name order.
     let mut sorted: Vec<(&Disk, &String)> = case.disks.iter().zip(&volumes).collect();

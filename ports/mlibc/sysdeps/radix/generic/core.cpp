@@ -164,10 +164,12 @@ int Sysdeps<VmMap>::operator()(void *hint, size_t size, int prot, int flags, int
 		*window = reinterpret_cast<void *>(r.address);
 		return 0;
 	}
-	// A file's pages are the process's own copy: a shared mapping can
-	// only be one that nobody writes through (docs/design/posix.md).
-	if((flags & MAP_SHARED) && (prot & PROT_WRITE))
-		return ENODEV;
+	// A memory file's pages are shared ones, which a shared mapping maps
+	// (ADR 0490); another file's pages are the process's own copy, so a
+	// shared mapping of one can only be one that nobody writes through:
+	// the kernel answers no_device for the others (docs/design/posix.md).
+	if(flags & MAP_SHARED)
+		map_flags |= RADIX_MAP_FLAGS_SHARED;
 	uint32_t slot = radix::slot_of(fd);
 	if(slot == radix::NO_SLOT)
 		return EBADF;
@@ -176,6 +178,10 @@ int Sysdeps<VmMap>::operator()(void *hint, size_t size, int prot, int flags, int
 	struct radix_address_space_map_file_results r;
 	uint64_t status = radix_address_space_map_file(radix::SLOT_SPACE, address, size, rights,
 			map_flags, slot, static_cast<uint64_t>(offset), &r);
+	// A file that cannot be mapped so: ENODEV, as Linux's mmap says it.
+	if(RADIX_STATUS_DOMAIN(status) == RADIX_FILE_ERROR_DOMAIN
+			&& RADIX_STATUS_CODE(status) == RADIX_FILE_NO_DEVICE)
+		return ENODEV;
 	if(status)
 		return radix::to_errno(status);
 	*window = reinterpret_cast<void *>(r.address);
