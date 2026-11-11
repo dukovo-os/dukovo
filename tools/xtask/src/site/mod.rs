@@ -10,6 +10,7 @@
 //! tutorials, runbooks and error pages once their folders exist. The
 //! result is a static site in out/docs/site that dukovo.org/support serves.
 
+pub mod check;
 mod layout;
 mod man;
 mod markdown;
@@ -85,8 +86,8 @@ impl Doc {
     }
 }
 
-/// `ob docs site [--version <name>]`.
-pub fn build(ctx: &Ctx, version: Option<&str>) -> Result<()> {
+/// `ob docs site [--check] [--version <name>]`.
+pub fn build(ctx: &Ctx, version: Option<&str>, check: bool) -> Result<()> {
     for tool in ["scdoc", "mandoc"] {
         if process::find_program(tool).is_none() {
             return Err(Error::new(format!("{tool} is not installed"))
@@ -211,6 +212,20 @@ pub fn build(ctx: &Ctx, version: Option<&str>) -> Result<()> {
     for asset in ["site.css", "site.js"] {
         let from = ctx.root.join("docs/site").join(asset);
         std::fs::copy(&from, out.join(asset)).context(|| format!("copying {}", from.display()))?;
+    }
+    if check {
+        step("Checking the support center's links and search (ADR 0420)");
+        let mut problems = check::link_problems(&out)?;
+        problems.extend(check::search_problems(&index_entries(&docs), &wanted_searches(&docs)));
+        if !problems.is_empty() {
+            for problem in problems.iter().take(50) {
+                eprintln!("    {problem}");
+            }
+            if problems.len() > 50 {
+                eprintln!("    and {} more", problems.len() - 50);
+            }
+            crate::bail!("{} support center problem(s)", problems.len());
+        }
     }
     step(&format!("Support center ready: {}/index.html", ctx.display(&out)));
     Ok(())
@@ -471,8 +486,8 @@ fn normalize(path: &Path) -> String {
     parts.join("/")
 }
 
-/// search-index.js: one entry per page and per alias.
-fn search_index(docs: &[Doc]) -> String {
+/// The search index's entries: one per page and per other name of a page.
+fn index_entries(docs: &[Doc]) -> Vec<check::Entry> {
     let mut entries = Vec::new();
     for doc in docs {
         let summary = if doc.summary.is_empty() { &doc.lead } else { &doc.summary };
@@ -486,10 +501,32 @@ fn search_index(docs: &[Doc]) -> String {
             ));
         }
     }
+    entries
+}
+
+/// What searching must find: each man page by its name and its other
+/// names, and each error page by its ID, as (query, page).
+fn wanted_searches(docs: &[Doc]) -> Vec<(String, String)> {
+    let mut wanted = Vec::new();
+    for doc in docs {
+        if doc.class == "man" {
+            let name = doc.title.split('(').next().unwrap_or(&doc.title);
+            wanted.push((name.to_string(), doc.path.clone()));
+            wanted.extend(doc.aliases.iter().map(|alias| (alias.clone(), doc.path.clone())));
+        } else if doc.kind == "Error" {
+            let id = doc.path.trim_start_matches("errors/").trim_end_matches(".html");
+            wanted.push((id.to_string(), doc.path.clone()));
+        }
+    }
+    wanted
+}
+
+/// search-index.js: [`index_entries`], for site.js.
+fn search_index(docs: &[Doc]) -> String {
     let mut js = String::from(
         "// Written by `ob docs site`: [title, kind, link from the site's root, summary].\nvar DOCS=[\n",
     );
-    for (title, kind, path, summary) in entries {
+    for (title, kind, path, summary) in index_entries(docs) {
         js.push_str(&format!(
             "[{},{},{},{}],\n",
             json_string(&title),

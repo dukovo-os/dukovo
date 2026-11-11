@@ -59,3 +59,7 @@ and the decision records, is also in the support center at
 [dukovo.org/support](https://dukovo.org/support), with search. `./ob docs
 site` builds it into `out/docs/site/` from the same files, so the pages on
 the web and the pages on your machine never differ.
+
+Examples marked as tests in the handbook are typed at a test system's
+console by the `docs-examples` boot test, so the output they show is the
+output you get.

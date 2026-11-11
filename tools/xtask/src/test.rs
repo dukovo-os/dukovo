@@ -3099,7 +3099,9 @@ pub fn command(ctx: &Ctx, args: &mut Args) -> Result<()> {
             );
         }
         let changed = affected::changed_files(ctx, commit)?;
-        let choice = affected::choose(&changed);
+        let choice = affected::choose(&changed, &|path| {
+            crate::site::check::has_examples(&ctx.root.join(path))
+        });
         eprintln!(
             "{} files changed since {commit}; what each adds to the boot tests (ADR 0421):",
             changed.len()
