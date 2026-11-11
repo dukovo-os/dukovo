@@ -43,6 +43,7 @@ mod scaling;
 mod screen;
 mod shellbench;
 mod signoff;
+mod site;
 mod test;
 mod tla;
 mod tuf;
@@ -80,7 +81,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
         "disc-drive",
         "Plug an emulated USB CD drive or burner into a machine in QEMU, for the lab's tests",
     ),
-    ("docs", "Build the man pages and the handbook into out/docs"),
+    ("docs", "Build the man pages, the handbook and the support center into out/docs"),
     ("lint", "Check formatting and run Clippy with warnings denied"),
     ("fmt", "Format all Rust code"),
     ("signoff", "Check new commits for a Developer Certificate of Origin sign-off"),
@@ -595,12 +596,19 @@ something of the drive:
         }
         "docs" => {
             "Usage: ./ob docs [--check]
+       ./ob docs site [--version <name>]
 
 Builds the man pages from docs/man/*.scd into out/docs/man (checked with
 mandoc -T lint) and the handbook from docs/handbook into out/docs/handbook.
 
   --check      Also fail when an ob command or dukovo.toml key is not
-               documented in its man page"
+               documented in its man page
+
+`ob docs site` builds the support center into out/docs/site: every man
+page, the handbook, the design notes, the decision records, the roadmap,
+and the tutorials, guides, runbooks and error pages, with search.
+
+  --version    The release the pages describe (default: this tree's version)"
         }
         "lint" => {
             "Usage: ./ob lint
@@ -1016,11 +1024,19 @@ fn dispatch(argv: Vec<String>) -> Result<()> {
         "lab" => lab::command(&ctx, &mut args),
         "fixture" => fixture::command(&ctx, &mut args),
         "disc-drive" => disc_drive::command(&ctx, &mut args),
-        "docs" => {
-            let check = args.flag("--check");
-            args.finish()?;
-            docs::build(&ctx, check)
-        }
+        "docs" => match args.positional().as_deref() {
+            Some("site") => {
+                let version = args.value("--version")?;
+                args.finish()?;
+                site::build(&ctx, version.as_deref())
+            }
+            Some(other) => bail!("unknown `./ob docs` command `{other}`; see `./ob help docs`"),
+            None => {
+                let check = args.flag("--check");
+                args.finish()?;
+                docs::build(&ctx, check)
+            }
+        },
         "lint" => {
             args.finish()?;
             lint::lint(&ctx)

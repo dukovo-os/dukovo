@@ -11,10 +11,10 @@ use crate::{COMMANDS, Context, Ctx, Error, Result, config, test, userspace};
 
 /// A man page source such as `docs/man/dukovo.toml.5.scd`.
 #[derive(Debug, PartialEq, Eq)]
-struct Page {
-    name: String,
-    section: String,
-    source: PathBuf,
+pub struct Page {
+    pub name: String,
+    pub section: String,
+    pub source: PathBuf,
 }
 
 impl Page {
@@ -26,7 +26,7 @@ impl Page {
         valid.then(|| Self { name: name.into(), section: section.into(), source: path.into() })
     }
 
-    fn output(&self, man_dir: &Path) -> PathBuf {
+    pub fn output(&self, man_dir: &Path) -> PathBuf {
         man_dir
             .join(format!("man{}", &self.section[..1]))
             .join(format!("{}.{}", self.name, self.section))
@@ -96,6 +96,20 @@ fn boot_tests_page(ctx: &Ctx) -> Result<Page> {
     Ok(Page::from_path(&path).expect("named <name>.<section>.scd"))
 }
 
+/// Every man page: those in docs/man and those made from the source.
+pub fn all_pages(ctx: &Ctx) -> Result<Vec<Page>> {
+    let mut pages = pages(ctx)?;
+    let mut generated = generated_pages(ctx)?;
+    generated.push(boot_tests_page(ctx)?);
+    step(&format!(
+        "Building {} man pages, {} of them generated from abi/*.ridl",
+        pages.len() + generated.len(),
+        generated.len()
+    ));
+    pages.extend(generated);
+    Ok(pages)
+}
+
 /// `ob docs [--check]`.
 pub fn build(ctx: &Ctx, check: bool) -> Result<()> {
     for tool in ["scdoc", "mandoc", "mdbook"] {
@@ -104,16 +118,8 @@ pub fn build(ctx: &Ctx, check: bool) -> Result<()> {
                 .hint("run `./ob doctor` to see what is missing"));
         }
     }
-    let mut pages = pages(ctx)?;
-    let mut generated = generated_pages(ctx)?;
-    generated.push(boot_tests_page(ctx)?);
+    let pages = all_pages(ctx)?;
     let man_dir = ctx.out.join("docs/man");
-    step(&format!(
-        "Building {} man pages, {} of them generated from abi/*.ridl",
-        pages.len() + generated.len(),
-        generated.len()
-    ));
-    pages.extend(generated);
     let mut problems = Vec::new();
     for page in &pages {
         let output = page.output(&man_dir);
@@ -168,7 +174,7 @@ pub fn build(ctx: &Ctx, check: bool) -> Result<()> {
 }
 
 /// Compiles `page` with scdoc into `output`.
-fn compile(ctx: &Ctx, page: &Page, output: &Path) -> Result<()> {
+pub fn compile(ctx: &Ctx, page: &Page, output: &Path) -> Result<()> {
     process::create_dir(output.parent().expect("man page has a section directory"))?;
     let input = std::fs::File::open(&page.source)
         .context(|| format!("opening {}", page.source.display()))?;

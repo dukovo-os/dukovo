@@ -1,0 +1,56 @@
+<!--
+SPDX-FileCopyrightText: 2026 The Dukovo contributors
+SPDX-License-Identifier: Apache-2.0 OR MIT
+
+The support center's home page, which `ob docs site` writes as index.html
+between the header and the footer. Links are from the site's root.
+-->
+<div class="gut"><div class="wrap">
+  <div class="sc-hero">
+    <p class="eyebrow">Dukovo Support</p>
+    <h2 style="font-size:clamp(2.2rem,6vw,3.8rem)">How can we help?</h2>
+    <p class="sub" style="margin-inline:auto">Guides, every command, how the system works inside, and how to build for it. All in one place, written next to the code it describes and checked on every build.</p>
+    <div class="search" data-search>
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+      <input type="search" placeholder="Search guides, commands, concepts…" aria-label="Search the docs" autocomplete="off">
+      <kbd>/</kbd>
+      <div class="results" role="listbox"></div>
+    </div>
+    <div class="chips"><a href="handbook/installing.html">Install Dukovo</a><a href="man/service.8.html">service</a><a href="handbook/bundles.html">Apps and permissions</a><a href="design/capabilities.html">Capabilities</a><a href="handbook/nukesh.html">The Nukesh shell</a></div>
+  </div>
+
+  <div class="paths">
+    <a href="handbook/installing.html"><div class="ic">1</div><h3>Get started</h3><p>Make a USB stick, install, and sign in for the first time.</p><ul><li>Installing</li><li>Creating USB install media</li><li>Supported hardware</li></ul></a>
+    <a href="handbook/introduction.html"><div class="ic">2</div><h3>Handbook</h3><p>How to use each part of the system, chapter by chapter.</p><ul><li>Files and folders</li><li>Users and administration</li><li>Sound, USB and removable media</li></ul></a>
+    <a href="man/index.html"><div class="ic">$</div><h3>Command reference</h3><p>Every command, service, file format and driver has a manual page.</p><ul><li>Sorted by section, A to Z</li><li>Every option explained</li><li>Same as <code>man</code> on your machine</li></ul></a>
+    <a href="handbook/networking.html"><div class="ic">⌂</div><h3>Run a server</h3><p>Networking, remote access, logs and keeping the system healthy.</p><ul><li>Networking and WireGuard</li><li>SSH and remote access</li><li>Logs and troubleshooting</li></ul></a>
+    <a href="design/capabilities.html"><div class="ic">◇</div><h3>How it works</h3><p>Design notes on the kernel, capabilities, boot, memory and storage.</p><ul><li>Capabilities</li><li>System calls and IPC</li><li>Design records (ADRs)</li></ul></a>
+    <a href="handbook/developers.html"><div class="ic">{ }</div><h3>Build for Dukovo</h3><p>Build the system, port programs, debug the kernel and contribute.</p><ul><li>Building Dukovo with <code>ob</code></li><li>Lab tests</li><li>Debugging the kernel</li></ul></a>
+  </div>
+
+  <div class="trust"><span>Every command has a manual page, checked on every build</span><span>Written next to the code, so one change updates both</span><span>Same docs offline: <code>man</code> and the handbook</span><span>Kept current like the lab tests</span></div>
+
+  <div class="two">
+    <div class="list"><h3>Good places to start</h3>
+      <a href="handbook/installing.html">Installing Dukovo <small>Handbook</small></a>
+      <a href="man/service.8.html">service(8) <small>Command</small></a>
+      <a href="handbook/networking.html">Networking <small>Handbook</small></a>
+      <a href="design/capabilities.html">Capabilities <small>How it works</small></a>
+      <a href="handbook/building.html">Building Dukovo with ob <small>Developer</small></a>
+    </div>
+    <div class="list" id="help"><h3>Still stuck?</h3>
+      <a href="https://github.com/dukovo-os/dukovo/discussions">Ask the community <small>Discussions</small></a>
+      <a href="https://github.com/dukovo-os/dukovo/issues">Report a bug <small>Issues</small></a>
+      <a href="mailto:security@dukovo.org">Report a security issue <small>security@dukovo.org</small></a>
+      <a href="mailto:hello@dukovo.org">Say hello <small>hello@dukovo.org</small></a>
+      <a href="roadmap.html">Roadmap <small>Where things stand</small></a>
+    </div>
+  </div>
+
+  <div class="faq" id="faq"><h3 style="font:600 1.3rem var(--display);margin:0 0 .6rem">Common questions</h3>
+    <details><summary>Is Dukovo Linux?</summary><p>No. Dukovo has its own kernel, Radix, written in Rust. It runs the same shell tools and many of the same programs, and familiar commands such as <code>journalctl</code>, <code>timedatectl</code> and <code>top</code> work.</p></details>
+    <details><summary>Will it run on my computer?</summary><p>Dukovo 1.0 runs on 64-bit x86 PCs and on common virtual machines and clouds. <a href="handbook/hardware.html">Supported hardware</a> lists what has been tested.</p></details>
+    <details><summary>Does Dukovo collect data about me?</summary><p>No. No telemetry, no accounts, and nothing leaves your computer unless you set it up. This site has no cookies or analytics either. <a href="handbook/privacy.html">The privacy promise</a>.</p></details>
+    <details><summary>How do I get help?</summary><p>Search here first, then ask in <a href="https://github.com/dukovo-os/dukovo/discussions">Discussions</a>. Every page has a link to report a problem with it.</p></details>
+  </div>
+</div></div>

@@ -51,3 +51,11 @@ searches them all with Dukovo's own.
 Sections follow the usual convention: 1 user commands, 2 system calls,
 3 library interfaces, 4 devices and drivers, 5 file formats, 7 overviews
 and concepts, 8 administration.
+
+## On the web
+
+Every page listed here, with the rest of this handbook, the design notes
+and the decision records, is also in the support center at
+[dukovo.org/support](https://dukovo.org/support), with search. `./ob docs
+site` builds it into `out/docs/site/` from the same files, so the pages on
+the web and the pages on your machine never differ.
