@@ -9,7 +9,8 @@
 //! enables it. Enabled, it starts as nginx, with its log in the system's,
 //! and serves its welcome page, then the page she puts in /shared/www, and
 //! a 404 for a page that is not there. Settings that do not read leave it
-//! as it was on a reload, serving, with the wrong line in its log. With a
+//! as it was on a reload, serving, with the wrong line in its log, and it
+//! serves again after a restart, over the settings it copied. With a
 //! certificate of its own made with openssl and the HTTPS
 //! server of its settings turned on, `service nginx reload` has it serve
 //! HTTPS too; three more reloads while 300 requests come over HTTP and
@@ -39,7 +40,7 @@ const DISKS: &[Disk] = &[
 /// The test.
 pub const CASE: Case = Case {
     name: "nginx",
-    about: "nginx, the catalog's web server, serves (ADR 0491): installed for everyone from its .dkv file and enabled, it runs as its own account and serves its welcome page, then a page in /shared/www; settings that do not read leave it serving, with the wrong line in its log; with a certificate of its own it serves HTTPS too, and reloads while 300 requests come over HTTP and HTTPS lose none; log nginx holds the requests",
+    about: "nginx, the catalog's web server, serves (ADR 0491): installed for everyone from its .dkv file and enabled, it runs as its own account and serves its welcome page, then a page in /shared/www; settings that do not read leave it serving, with the wrong line in its log; it serves after a restart; with a certificate of its own it serves HTTPS too, and reloads while 300 requests come over HTTP and HTTPS lose none; log nginx holds the requests",
     firmware: Firmware::Uefi,
     media: Media::Usb,
     // As a normal boot: Spark starts the services, bundled among them.
@@ -106,6 +107,15 @@ fn nginx(vm: &mut Vm, case: &Case) -> Result<(), String> {
         ),
     )?;
     vm.expect_screen(&["refused", "<p>Hello from Dukovo</p>"])?;
+    // A restart starts its launcher again, which takes up the settings
+    // it copied, and it serves.
+    answer_prompt(
+        vm,
+        "$",
+        "clear; elevate service nginx restart; echo \"restart $?\"; for i in 1 2 3 4 5; do curl \
+         -s http://localhost/ && break; sleep 1; done",
+    )?;
+    vm.expect_screen(&["restart 0", "<p>Hello from Dukovo</p>"])?;
     // HTTPS: a certificate of its own, the account's to read, and the
     // HTTPS server of its settings turned on, as their comments say.
     answer_prompt(

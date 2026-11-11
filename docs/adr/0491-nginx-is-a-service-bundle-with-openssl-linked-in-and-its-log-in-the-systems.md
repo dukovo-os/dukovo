@@ -67,7 +67,8 @@ its logs in `/var/log/nginx` turned over by logrotate, and its sites in
 - **Its settings are in its data folder.** nginx is built to read
   `/shared/services/org.nginx.nginx/nginx/conf/nginx.conf`, write its
   process number in its live folder and keep its temporary files in its
-  data folder. The first start copies the bundle's settings there.
+  data folder. The first start copies the bundle's settings there, as
+  files of the account's, which it may change.
   After an update, a file the administrator has not changed takes the
   bundle's new version, and one they changed stays, with the bundle's
   version beside it as `NAME.default`, as bundled does for service files
@@ -99,7 +100,7 @@ its logs in `/var/log/nginx` turned over by logrotate, and its sites in
 - The boot test `nginx` installs the bundle from its `.dkv` file,
   enables it, and checks its welcome page, a page in `/shared/www`, a
   reload with settings that do not read, which leaves it serving and
-  logs the wrong line, HTTPS with a certificate of its own, three
+  logs the wrong line, a restart, HTTPS with a certificate of its own, three
   reloads during 300 requests that lose none, its log and the account
   that owns its files. The lab test `services/nginx` serves the lab PC over the
   machine's own card, with five reloads during 20 seconds of requests
