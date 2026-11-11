@@ -653,6 +653,15 @@ names = false
 # The cards it drives, as a driver program does, by their PCI vendor and
 # device IDs, such as "8086:100e", or "8086:*" for any of the vendor's.
 devices.pci = []
+
+# What it runs around the snapshots of backup(8), each a program's
+# absolute path and its arguments, as the service runs: before, to bring
+# what it keeps to a state it can start again from, and after, once the
+# snapshots are made; and how long each may run, in seconds.
+[backup]
+before = []
+after = []
+time_limit = 300
 "#;
 
 /// The file `service new` writes for the service `name`.

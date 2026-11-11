@@ -124,10 +124,23 @@ fn the_template_reads_as_a_service_not_started_at_boot() {
     assert!(!service.enabled);
     assert_eq!(service.restart, Restart::OnFailure);
     assert_eq!(service.network_grants(), 0);
-    // It names each setting the man page documents.
+    // It names each setting the man page documents: as `key =`, as a
+    // table, or as `name =` under the table `[table]` of `table.name`.
+    let in_table = |key: &str| {
+        let Some((table, name)) = key.split_once('.') else { return false };
+        let Some((_, after)) = text.split_once(&format!("\n[{table}]\n")) else { return false };
+        let body = after.split("\n[").next().unwrap_or_default();
+        body.lines().any(|line| line.starts_with(&format!("{name} =")))
+    };
     for key in service::KEYS {
-        assert!(text.contains(&format!("{key} =")) || text.contains(&format!("[{key}]")), "{key}");
+        assert!(
+            text.contains(&format!("{key} ="))
+                || text.contains(&format!("[{key}]"))
+                || in_table(key),
+            "{key}"
+        );
     }
+    assert_eq!(service.backup, service::Backup::default());
 }
 
 #[test]
