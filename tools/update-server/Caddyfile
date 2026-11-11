@@ -8,6 +8,10 @@
 	root * /srv/dukovo
 	file_server
 
+	# The bare address is for people, who want the project's site; clients
+	# only ask for paths under /catalog/.
+	redir / https://dukovo.org/ 302
+
 	# What a client asks for first, which changes: never kept stale.
 	@current path /catalog/metadata/timestamp.json /catalog/metadata/root.json
 	header @current Cache-Control "no-cache"

@@ -26,6 +26,13 @@ path = ["kernel/targets/*.json", "userspace/targets/*.json"]
 SPDX-FileCopyrightText = "2026 The Dukovo contributors"
 SPDX-License-Identifier = "Apache-2.0 OR MIT"
 
+# The catalog's keys and signed TUF metadata (ADR 0381): JSON, signed as
+# written, so a header could not be added even if JSON had comments.
+[[annotations]]
+path = ["catalog/keys/*.json", "catalog/metadata/*.json"]
+SPDX-FileCopyrightText = "2026 The Dukovo contributors"
+SPDX-License-Identifier = "Apache-2.0 OR MIT"
+
 # Spleen 2.1.0 by Frederic Cambus, https://github.com/fcambus/spleen, unmodified
 # (ADR 0015). Its license file is fonts/LICENSE-spleen.
 [[annotations]]

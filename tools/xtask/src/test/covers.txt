@@ -73,6 +73,7 @@ bundle-feed userspace/programs/catalog-repo/ userspace/programs/dkv/ userspace/p
 bundle-feed userspace/programs/systools/src/bundled.rs userspace/programs/systools/src/bundles.rs
 bundle-feed userspace/programs/systools/src/bundles/ userspace/programs/systools/src/netd.rs
 bundle-feed userspace/programs/tuf/
+bundle-feed catalog/
 bundle-grants tools/xtask/src/bundles.rs userspace/programs/dkv/ userspace/programs/manifest/
 bundle-grants userspace/programs/systools/src/bundled.rs userspace/programs/systools/src/bundles.rs
 bundle-grants userspace/programs/systools/src/bundles/
@@ -83,6 +84,7 @@ bundle-keyring userspace/programs/systools/src/bundles/ userspace/programs/systo
 bundle-lines tools/xtask/src/bundles.rs userspace/programs/dkv/ userspace/programs/manifest/
 bundle-lines userspace/programs/systools/src/bundled.rs userspace/programs/systools/src/bundles.rs
 bundle-lines userspace/programs/systools/src/bundles/
+bundle-lines catalog/
 bundle-run tools/xtask/src/bundles.rs userspace/posix/netgrant.c userspace/programs/dkv/
 bundle-run userspace/programs/manifest/ userspace/programs/systools/src/bundled.rs
 bundle-run userspace/programs/systools/src/bundles.rs userspace/programs/systools/src/bundles/
@@ -91,6 +93,7 @@ bundle-run userspace/programs/systools/src/modes.rs
 bundle-update tools/xtask/src/bundles.rs userspace/programs/dkv/ userspace/programs/manifest/
 bundle-update userspace/programs/systools/src/bundled.rs userspace/programs/systools/src/bundles.rs
 bundle-update userspace/programs/systools/src/bundles/ userspace/programs/tuf/
+bundle-update catalog/
 bundles tools/xtask/src/bundles.rs userspace/posix/authd.h userspace/posix/signintest.c
 bundles userspace/programs/accounts/ userspace/programs/consoled/ userspace/programs/dkv/
 bundles userspace/programs/manifest/ userspace/programs/systools/src/authd.rs
@@ -107,10 +110,12 @@ catalog-bundles ports/bat/ ports/ripgrep/ tools/xtask/src/bundles.rs tools/xtask
 catalog-bundles userspace/programs/catalog-repo/ userspace/programs/dkv/
 catalog-bundles userspace/programs/manifest/ userspace/programs/systools/src/bundled.rs
 catalog-bundles userspace/programs/systools/src/bundles.rs userspace/programs/systools/src/bundles/
+catalog-bundles catalog/
 catalog-install ports/bat/ ports/ripgrep/ tools/xtask/src/bundles.rs tools/xtask/src/catalog.rs
 catalog-install userspace/programs/catalog-repo/ userspace/programs/dkv/
 catalog-install userspace/programs/manifest/ userspace/programs/systools/src/bundled.rs
 catalog-install userspace/programs/systools/src/bundles.rs userspace/programs/systools/src/bundles/
+catalog-install catalog/
 cloud-config userspace/programs/systools/src/cloud.rs userspace/programs/systools/src/cloud/
 cloud-config userspace/defaults/spark/services/cloud-setup.toml tools/xtask/src/image.rs
 cloud-config userspace/programs/accounts/ userspace/programs/systools/src/account.rs

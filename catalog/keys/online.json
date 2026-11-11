@@ -1,0 +1,14 @@
+{
+  "key": {
+    "keytype": "ed25519",
+    "keyval": {
+      "public": "4a1dc114b2b6689c82e846d13104d4b4049df3de2abf329b4289a300ab565770"
+    },
+    "scheme": "ed25519"
+  },
+  "name": "online",
+  "roles": [
+    "snapshot",
+    "timestamp"
+  ]
+}
