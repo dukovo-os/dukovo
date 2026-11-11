@@ -107,10 +107,12 @@ catalog-bundles ports/bat/ ports/ripgrep/ tools/xtask/src/bundles.rs tools/xtask
 catalog-bundles userspace/programs/catalog-repo/ userspace/programs/dkv/
 catalog-bundles userspace/programs/manifest/ userspace/programs/systools/src/bundled.rs
 catalog-bundles userspace/programs/systools/src/bundles.rs userspace/programs/systools/src/bundles/
+catalog-bundles catalog/
 catalog-install ports/bat/ ports/ripgrep/ tools/xtask/src/bundles.rs tools/xtask/src/catalog.rs
 catalog-install userspace/programs/catalog-repo/ userspace/programs/dkv/
 catalog-install userspace/programs/manifest/ userspace/programs/systools/src/bundled.rs
 catalog-install userspace/programs/systools/src/bundles.rs userspace/programs/systools/src/bundles/
+catalog-install catalog/
 cloud-config userspace/programs/systools/src/cloud.rs userspace/programs/systools/src/cloud/
 cloud-config userspace/defaults/spark/services/cloud-setup.toml tools/xtask/src/image.rs
 cloud-config userspace/programs/accounts/ userspace/programs/systools/src/account.rs

@@ -37,8 +37,7 @@ list is kept current instead.
 
 | Item | Why it waits | Waits on |
 | --- | --- | --- |
-| Tag `v0.14.1` on the merge of the last removable-media pull request | The version bump rides that pull request | Its merge, then a maintainer |
-| Signing-key ceremony with the two hardware keys, and the catalog's first root in the image (ADR 0381, ADR 0383) | Real releases and the image's trusted catalog root need keys made offline; Phase 15c can use test keys until then | A maintainer, before the first signed release |
+| The catalog's first signed batch and deploy (`./ob catalog sign`, then `./ob catalog deploy`; ADR 0381) | The first root is signed and every image trusts it, but the server serves no bundles until a batch is signed; signing packs every port, a long build | A maintainer, before the first public release |
 | Canary machines for updates | Phase 15 uses QEMU canaries in CI; real canaries are wanted before the first public release | Before 1.0.0-alpha.1 |
 | Post-Phase-13 code audit (audit 10) | Planned and scoped; starts only on approval | Decision |
 | Phase 15 (atomic updates and snapshots) | Plan approved; coding starts on approval | Decision |
