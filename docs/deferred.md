@@ -174,6 +174,7 @@ machine with AMT, an AMD machine and a laptop; see
 | Linux's ALSA programs playing sound (ADR 0320) | Need the compatibility layer | 18a |
 | The Linux layout (`/dev`, `/proc`, `/sys` as directories) inside Linux programs' view (ADR 0113) | Served by `linuxd` | 18a |
 | nginx on the kernel's event queue, with sendfile and thread pools: it waits with `poll` and copies files through its buffers (ADR 0491) | Built as for a POSIX system until Radix has them | 18a |
+| Valkey on the kernel's event queue: it waits with `poll`, on an event loop of the port's own (ADR 0492) | Built as for a POSIX system until Radix has one | 18a |
 
 ### Releases after 1.0
 
@@ -210,6 +211,8 @@ These come from finished work; the releases themselves are in the
 | Advisories for ecosystems other than crates.io; bundles over 4 GiB (ADRs 0222, 0389) | npm's export and large bundles need ZIP64 in `dkv` | A need |
 | mlibc functions with no code, which end the program (posix design note) | Each is written when a port needs it, upstream where general | A port |
 | `crypt(3)`, for nginx's `auth_basic` with `$5$` and `$6$` hashes (ADR 0491) | The C library has none; nginx's own schemes, `$apr1$` among them, work | A port that needs it, or upstream |
+| jemalloc for Valkey, with its active defragmentation: Valkey uses the C library's allocator (ADR 0492) | jemalloc has no port for Radix | A jemalloc port |
+| Valkey's own test suite (`runtest --host`) run against the machine from the lab PC; the lab test `services/valkey` stores and reads back keys with a client of its own meanwhile (ADR 0492) | Needs Tcl and Valkey's tests at the bundle's version on the lab PC; many of them need the `DEBUG` command, which Valkey keeps off unless its settings turn it on | A lab step that fetches them |
 | The RTS5260 card reader; UHS-I, MultiMediaCards and Memory Sticks on Realtek readers (ADR 0448) | Only GPL drivers describe them | Realtek's documentation or a BSD driver |
 | AML fixes reach Dukovo when uACPI is vendored again (ADR 0200) | `aml=off` works around a firmware table uACPI cannot run until then | Upstream |
 
@@ -318,6 +321,7 @@ machine asks for them.
 | Sign-in records kept for a time; notices of a failed sign-in streak | ADRs 0253, 0254 |
 | The administrator set split into named areas for delegation | ADR 0219 |
 | A user's own services and their lines in their log; a group that reads the whole log | ADR 0252 |
+| A Unix socket of one bundle's service that another bundle's services reach, as Valkey's and PHP-FPM's are on Linux: a service's data folder is its account's alone, so they talk over TCP on the machine itself | ADR 0492 |
 | Rich and NFSv4 access lists; Btrfs properties | ADR 0256 |
 | Bundles: grants before install (`--grant`), resource limits for the sandbox, programs for other architectures, read-only subvolumes and reflink sharing for sealed bundles, asking people about their data when a bundle is removed for everyone | ADRs 0223 to 0225 |
 | Views: detaching an entry; devices attached one by one | ADR 0215 |

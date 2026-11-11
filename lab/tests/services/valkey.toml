@@ -1,0 +1,49 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# Valkey from the catalog, on the machine's own network card (ADR 0492):
+# installed for everyone and enabled, then set, as its settings' comments
+# say, to listen on every address with a password. The lab PC stores
+# 40,000 keys over 16 connections at once with a client of its own; the
+# machine restarts Valkey, which saves them as it stops and reads them
+# back as it starts, and the lab PC finds every one of them.
+about = "Valkey from the catalog keeps 40,000 keys the lab PC stored over 16 connections across a restart (ADR 0492)"
+time = "5m"
+host_needs = ["python3", "scp"]
+
+[[step]]
+host = "sh {here}/copy-bundle.sh io.valkey.valkey {machine} {machine-port:22}"
+expect = "copied: io.valkey.valkey"
+# From nothing: a run before may have left it installed.
+[[step]]
+run = "sh -c 'bundle remove --for-everyone --purge io.valkey.valkey > /dev/null 2>&1; bundle install --for-everyone --yes /users/lab/io.valkey.valkey.dkv | tail -1'"
+root = true
+expect = "installed io.valkey.valkey"
+[[step]]
+run = "service valkey enable"
+root = true
+# Its first start copied its settings into its data folder: there, every
+# address and a password, then a restart.
+[[step]]
+run = '''sh -c 'c=/shared/services/io.valkey.valkey/valkey/conf/valkey.conf; for i in 1 2 3 4 5 6 7 8 9 10; do [ -e $c ] && break; sleep 1; done; sed -i "s/^bind .*/bind * -::*/" $c && echo "requirepass lab-valkey-pass" >> $c && service valkey restart && echo restarted' '''
+root = true
+expect = "restarted"
+[[step]]
+host = "python3 {here}/valkey-load.py write {machine} {machine-port:6379} lab-valkey-pass"
+expect = "wrote 40000"
+# Saved as it stops, read back as it starts.
+[[step]]
+run = "service valkey restart"
+root = true
+[[step]]
+host = "python3 {here}/valkey-load.py check {machine} {machine-port:6379} lab-valkey-pass"
+expect = "read 40000, missing 0"
+# Its log is the system's.
+[[step]]
+run = '''sh -c 'log valkey | grep -q "DB saved on disk" && log valkey | grep -q "DB loaded from disk" && echo saved-and-loaded' '''
+root = true
+expect = "saved-and-loaded"
+[[step]]
+run = "bundle remove --for-everyone --purge io.valkey.valkey"
+root = true
+expect = "removed io.valkey.valkey"

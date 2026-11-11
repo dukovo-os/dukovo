@@ -1,0 +1,25 @@
+SPDX-FileCopyrightText: 2024-present Valkey contributors
+SPDX-FileCopyrightText: 2026 The Dukovo contributors
+SPDX-License-Identifier: BSD-3-Clause
+
+The time zone from tzset
+
+Valkey writes its log's times itself and takes the time zone from the
+C library's timezone, which tzset sets, on Linux and Solaris, and
+elsewhere from the second argument of gettimeofday, which POSIX leaves
+unspecified and mlibc does not fill: its log read "-558737 Jan 1970".
+Radix's C library sets timezone as Linux's does, so Radix takes it too.
+
+diff --git a/src/util.c b/src/util.c
+index 5c7cd5a..f884667 100644
+--- a/src/util.c
++++ b/src/util.c
+@@ -1254,7 +1254,7 @@ sds getAbsolutePath(char *filename) {
+  * i.e timezone variables are linux specific.
+  */
+ long getTimeZone(void) {
+-#if defined(__linux__) || defined(__sun)
++#if defined(__linux__) || defined(__sun) || defined(__radix__)
+     return timezone;
+ #else
+     struct timezone tz;

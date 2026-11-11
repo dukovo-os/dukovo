@@ -82,6 +82,15 @@ fn pack(ctx: &Ctx, ports: &Ports, port: &Port, key: &SecretKey) -> Result<PathBu
             .hint(format!("build it again with `./ob ports --rebuild {}`", recipe.name)));
         }
     }
+    for (alias, program) in &spec.aliases {
+        if !spec.commands.iter().chain(&spec.programs).any(|p| p == program) {
+            return Err(Error::new(format!(
+                "port {}: its command {alias} runs {program:?}, which is none of its commands \
+                 or programs",
+                recipe.name
+            )));
+        }
+    }
     let folder = ctx.target.join("ports/packing").join(&recipe.name);
     if folder.exists() {
         std::fs::remove_dir_all(&folder).context(|| format!("removing {}", folder.display()))?;
@@ -273,7 +282,8 @@ pub fn sign_test_feed(ctx: &Ctx, folder: &Path, files: &[PathBuf]) -> Result<()>
 
 /// The manifest of `port`'s bundle (manifest.json(5)): its identity from
 /// the recipe, a program for each command, run with the access of
-/// whoever runs it, as command-line tools are.
+/// whoever runs it, as command-line tools are, and each alias a command
+/// that runs another program by its own name.
 pub fn manifest(port: &Port) -> String {
     let recipe = &port.recipe;
     let spec = recipe.bundle.as_ref().expect("a bundle's port");
@@ -306,11 +316,13 @@ pub fn manifest(port: &Port) -> String {
     let commands: Vec<String> = spec
         .commands
         .iter()
-        .map(|c| {
+        .map(|c| (c, c))
+        .chain(&spec.aliases)
+        .map(|(name, program)| {
             format!(
                 "    {{ \"name\": {}, \"program\": {}, \"runs_with\": \"your-access\" }}",
-                json(c),
-                json(c)
+                json(name),
+                json(program)
             )
         })
         .collect();
@@ -501,6 +513,28 @@ mod tests {
         assert!(manifest.permissions.get("network.listen").is_some());
         assert!(manifest.permissions.get("files.shared").is_some());
         assert!(manifest.data.settings && manifest.data.data && !manifest.data.cache);
+    }
+
+    /// Valkey's recipe: its aliases are commands that run valkey-server
+    /// by their own names, and only its programs are files.
+    #[test]
+    fn aliases_run_another_program() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../ports/valkey");
+        let text = std::fs::read_to_string(dir.join("recipe.toml")).unwrap();
+        let recipe: Recipe = toml::from_str(&text).unwrap();
+        let port = Port { recipe, dir, source: None, extras: Vec::new(), crates: Vec::new() };
+        let text = manifest(&port);
+        let manifest = dkv::signed::parse_manifest(text.as_bytes()).unwrap();
+        let program = |name: &str| {
+            let command = manifest.commands.iter().find(|c| c.name.0 == name).unwrap();
+            command.program.0.clone()
+        };
+        assert_eq!(program("valkey-cli"), "valkey-cli");
+        assert_eq!(program("valkey-check-aof"), "valkey-server");
+        assert_eq!(program("valkey-check-rdb"), "valkey-server");
+        assert_eq!(manifest.commands.len(), 4);
+        assert_eq!(manifest.programs.len(), 4, "the cli, benchmark, server and service");
+        assert!(manifest.programs.get("valkey-check-aof").is_none());
     }
 
     #[test]

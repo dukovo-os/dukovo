@@ -1,0 +1,73 @@
+SPDX-FileCopyrightText: 2024-present Valkey contributors
+SPDX-FileCopyrightText: 2026 The Dukovo contributors
+SPDX-License-Identifier: BSD-3-Clause
+
+Static modules without dlsym
+
+Valkey builds Lua in as a static module and finds its entry points,
+ValkeyModule_OnLoad_lua and ValkeyModule_OnUnload_lua, with
+dlopen(NULL) and dlsym, which search the program's dynamic symbols.
+Radix's programs are static and have none, so Valkey stopped as it
+started: "Lua engine initialization failed". On Radix (__radix__), the
+entry points of the modules built in are named in a table instead, and
+no handle is kept; the callers close one only when it is there.
+
+diff --git a/src/module.c b/src/module.c
+index a7eb5f5..7655362 100644
+--- a/src/module.c
++++ b/src/module.c
+@@ -13576,6 +13576,26 @@ int moduleLoad(const char *path, void **module_argv, int module_argc, int is_loa
+  * in the current process via dlopen(NULL)/dlsym(). On success, '*out' is set
+  * to the symbol address, '*handle' is set to the dlopen handle, and C_OK is
+  * returned. On failure C_ERR is returned and an appropriate warning is logged. */
++#ifdef __radix__
++/* Radix's programs are static, so dlopen(NULL) gives no table of the
++ * program's own symbols: the entry points of the modules built in are
++ * named here instead. */
++#if defined(LUA_ENABLED) && STATIC_LUA
++int ValkeyModule_OnLoad_lua(void *ctx, void **argv, int argc);
++int ValkeyModule_OnUnload_lua(void *ctx);
++#endif
++static const struct {
++    const char *name;
++    void *symbol;
++} staticModuleSymbols[] = {
++#if defined(LUA_ENABLED) && STATIC_LUA
++    {"ValkeyModule_OnLoad_lua", (void *)ValkeyModule_OnLoad_lua},
++    {"ValkeyModule_OnUnload_lua", (void *)ValkeyModule_OnUnload_lua},
++#endif
++    {NULL, NULL},
++};
++#endif
++
+ static int moduleLoadStaticSymbol(void **out, void **handle, const char *symbol_name, const char *module_name) {
+     char symbol_full_name[128];
+     int n = snprintf(symbol_full_name, sizeof(symbol_full_name), "%s_%s", symbol_name, module_name);
+@@ -13584,6 +13604,19 @@ static int moduleLoadStaticSymbol(void **out, void **handle, const char *symbol_
+         return C_ERR;
+     }
+ 
++#ifdef __radix__
++    /* No handle to keep: the callers close one only if it is there. */
++    *handle = NULL;
++    for (int j = 0; staticModuleSymbols[j].name != NULL; j++) {
++        if (!strcmp(staticModuleSymbols[j].name, symbol_full_name)) {
++            *out = staticModuleSymbols[j].symbol;
++            return C_OK;
++        }
++    }
++    serverLog(LL_WARNING, "Failed to load static module: %s. Could not load method: %s. It is not built in",
++              module_name, symbol_full_name);
++    return C_ERR;
++#else
+     /* Open a handle to self */
+     *handle = dlopen(NULL, RTLD_NOW);
+     if (*handle == NULL) {
+@@ -13606,6 +13639,7 @@ static int moduleLoadStaticSymbol(void **out, void **handle, const char *symbol_
+         return C_ERR;
+     }
+     return C_OK;
++#endif
+ }
+ 
+ /* Load a statically linked module and initialize it. This is the static

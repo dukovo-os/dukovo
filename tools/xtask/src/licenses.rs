@@ -283,7 +283,9 @@ pub fn install(ctx: &Ctx, staging: &Path, extras: &Extras<'_>) -> Result<String>
 /// means" of obtaining it that it asks for. PCRE2's exception, which
 /// nginx's bundle carries, lifts the BSD licence's condition on binaries
 /// from the programs that only include a library that includes PCRE2.
-const BUNDLE_EXTRA_ALLOW: &[&str] = &["MPL-2.0", "BSD-3-Clause WITH PCRE2-exception"];
+/// The Boost Software License 1.0, fpconv's in Valkey's bundle, asks for
+/// nothing in a binary.
+const BUNDLE_EXTRA_ALLOW: &[&str] = &["MPL-2.0", "BSD-3-Clause WITH PCRE2-exception", "BSL-1.0"];
 
 /// What a bundle says of its licenses (ADR 0370): every component of the
 /// port the bundle is built from, checked against the port allow-list

@@ -1,0 +1,52 @@
+#!/bin/sh
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# Valkey's service (ADR 0492): runs as the account valkey, in its data
+# folder ($HOME), and keeps valkey-server in the foreground, as Spark's
+# services are, its log on its standard output, which the system's log
+# keeps.
+#
+# Its settings are in $HOME/conf and its data, the snapshots and the
+# append-only file, in $HOME/data. The first start copies there the
+# settings the bundle brings. After that, a file the administrator has
+# not changed takes the bundle's new version on an update; a changed one
+# stays, and the bundle's version is written beside it as NAME.default,
+# as the service files' are (ADR 0386).
+set -eu
+
+bundle=$(cd "$(dirname "$0")/.." && pwd)
+mkdir -p "$HOME/conf" "$HOME/data"
+
+# Copies $1 to $2 as a file of the account's, which it may change: the
+# bundle's files are read-only, and so would a copy of one be.
+copy() {
+	rm -f "$2"
+	cp "$1" "$2"
+	chmod 0600 "$2"
+}
+
+# What the bundle brought last time, to tell an administrator's change
+# from an older version of the bundle's file.
+mkdir -p "$HOME/conf/.bundle"
+for shipped in "$bundle"/conf/*; do
+	name=${shipped##*/}
+	file="$HOME/conf/$name"
+	last="$HOME/conf/.bundle/$name"
+	if [ ! -e "$file" ]; then
+		copy "$shipped" "$file"
+		rm -f "$file.default"
+	elif cmp -s "$shipped" "$file"; then
+		rm -f "$file.default"
+	elif [ -e "$last" ] && cmp -s "$last" "$file"; then
+		# Unchanged since the bundle wrote it: the new version.
+		copy "$shipped" "$file"
+		rm -f "$file.default"
+	else
+		copy "$shipped" "$file.default"
+	fi
+	copy "$shipped" "$last"
+done
+
+cd "$HOME/data"
+exec "$bundle/bin/valkey-server" "$HOME/conf/valkey.conf"
