@@ -93,6 +93,8 @@ A change merges when:
 - Changing the pinned toolchain in `rust-toolchain.toml` is its own pull
   request, so any fallout is easy to find.
 - Update `docs/roadmap.md` when a phase's scope changes.
+- When a change leaves work for later, add it to `docs/deferred.md` in the
+  same pull request; when a change does a listed item, remove its row.
 
 ## Developer Certificate of Origin
 
