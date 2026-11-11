@@ -128,8 +128,8 @@ console-access kernel/lib/fbcon/ tools/xtask/src/screen.rs userspace/defaults/co
 console-access userspace/programs/consoled/ userspace/programs/systools/src/reader.rs
 consoles kernel/lib/fbcon/ kernel/lib/hid/ kernel/lib/input/ kernel/lib/tty/
 consoles tools/xtask/src/screen.rs tools/xtask/src/vt.rs userspace/defaults/console/
-consoles userspace/defaults/keyboard/ userspace/defaults/nukesh/ userspace/programs/consoled/
-consoles userspace/programs/keymap/ userspace/programs/nukesh/
+consoles userspace/defaults/keyboard/ userspace/defaults/nukesh/ userspace/defaults/spark/services/
+consoles userspace/programs/consoled/ userspace/programs/keymap/ userspace/programs/nukesh/
 consoles userspace/programs/systools/src/keymaps.rs userspace/programs/systools/src/notifyd.rs
 consoles userspace/programs/systools/src/xxd.rs
 crash-log-bios kernel/lib/klog/
@@ -234,8 +234,9 @@ install-screens userspace/programs/installer/ userspace/programs/manifest/
 install-screens userspace/programs/systools/src/dig.rs userspace/programs/systools/src/efiboot.rs
 install-screens userspace/programs/systools/src/feature.rs userspace/programs/systools/src/mkfs.rs
 install-screens userspace/programs/systools/src/rdisk.rs
-install-serial image/grub/installed.cfg.in kernel/drivers/uart/ tools/xtask/src/grub.rs
-install-serial tools/xtask/src/grub_theme.rs userspace/programs/consoled/ userspace/programs/disk/
+install-serial image/grub/installed.cfg.in image/grub/menu.cfg kernel/drivers/uart/
+install-serial tools/xtask/src/grub.rs tools/xtask/src/grub_theme.rs userspace/programs/consoled/
+install-serial userspace/programs/disk/
 install-serial userspace/programs/installer/ userspace/programs/systools/src/efiboot.rs
 install-serial userspace/programs/systools/src/last.rs userspace/programs/systools/src/mkfs.rs
 install-serial userspace/programs/systools/src/rdisk.rs

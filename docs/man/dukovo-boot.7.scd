@@ -707,12 +707,12 @@ them to *init*, and the kernel does not read them.
 	says, for the boot tests. The log may then hold what the screen
 	showed.
 
-*slot=*_slot_
+*slot*=_slot_
 	Read by *spark*(8), not the kernel: the system slot GRUB started,
 	*a* or *b*, which Spark mounts on _/system_ (ADR 0451). Slot A
 	without it.
 
-*fallback=*_slot_
+*fallback*=_slot_
 	Read by *spark*(8), not the kernel: the update in _slot_ ran out of
 	tries or failed its health check, so the version before started.
 	Spark puts the settings from before the update back before any

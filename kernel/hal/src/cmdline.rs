@@ -184,6 +184,24 @@ pub const FLAGS: &[Flag] = &[
                   disk's root",
     },
     Flag {
+        name: "slot",
+        value: Some("a|b"),
+        summary: "for Spark, not the kernel: the system slot GRUB started, which Spark mounts on \
+                  /system; slot A without it",
+    },
+    Flag {
+        name: "fallback",
+        value: Some("slot"),
+        summary: "for Spark, not the kernel: the update in this slot failed, so the version \
+                  before started; Spark puts the settings from before the update back",
+    },
+    Flag {
+        name: "test-hang",
+        value: None,
+        summary: "for Spark, not the kernel: Spark stops responding at every start, as an update \
+                  that hangs does, for the update-hang boot test",
+    },
+    Flag {
         name: "live",
         value: None,
         summary: "for Spark, not the kernel: the live system, as the install stick's boot menu \

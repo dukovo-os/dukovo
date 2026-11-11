@@ -1545,10 +1545,12 @@ mod tests {
         let menu = std::fs::read_to_string(path).unwrap();
         // The kernel and the startup archive from the slot, which Spark
         // mounts by its `slot=`; quiet, with the slot's own flags before
-        // the machine's (ADR 0426).
+        // the machine's (ADR 0426). The console's flag is a word of its
+        // own: GRUB drops the space its value starts with, and `$3` joined
+        // to it started the kernel with `quietconsole=ttyS0`.
         let kernel = format!(
             "    multiboot2 ($system)/@system.$1/{SLOT_STARTUP}/{SLOT_KERNEL} $2 \
-             root=UUID=${{dukovo_root}} slot=$1 panic=10 $3${{dukovo_console}} ${{slot_flags}} \
+             root=UUID=${{dukovo_root}} slot=$1 panic=10 $3 ${{dukovo_console}} ${{slot_flags}} \
              ${{dukovo_cmdline}}\n"
         );
         let archive = format!(
