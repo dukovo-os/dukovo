@@ -175,6 +175,7 @@ docs/
   adr/              architecture decision records
   design/           design notes on how the kernel works
   roadmap.md        the implementation plan, from Phase 0 to release 2.0
+  deferred.md       work left for later, and what each item waits on
 tools/xtask/        the Rust program behind ./ob
 tools/ridlc/        the interface compiler: abi/ to Rust, C and man(2)
 tools/linux-bench/  the Linux baseline for ./ob bench
@@ -192,6 +193,7 @@ tools/update-server/ setup for the update server
 | [Design notes](docs/design/) | How the kernel works: memory, scheduling, IPC, capabilities, storage and POSIX |
 | [Decision records](docs/adr/README.md) | Why each part of Dukovo is the way it is |
 | [Roadmap](docs/roadmap.md) | The plan, phase by phase, to 1.0 and on to 2.0 |
+| [Deferred work](docs/deferred.md) | Everything left for later, and what each item waits on |
 
 ## Contributing
 
