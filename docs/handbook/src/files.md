@@ -51,6 +51,15 @@ that holds what it stands for:
 | `/proc` | `/processes` |
 | `/sys` | `/kernel` |
 
+`realpath` shows where a name leads:
+
+```console test
+# realpath /bin /etc /var/run
+/system/commands
+/system/settings
+/system/live
+```
+
 Everything is still kept in one place, so `/etc/nanorc` and
 `/system/settings/nanorc` are the same file. The links are hidden: the
 root's `.hidden` file lists them (and `/system/.hidden` those in

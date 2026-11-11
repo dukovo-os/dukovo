@@ -122,8 +122,8 @@ jobs:
       - name: ./ob docs --check
         run: ./ob docs --check
 
-      - name: ./ob docs site
-        run: ./ob docs site
+      - name: ./ob docs site --check
+        run: ./ob docs site --check
 
       - name: ./ob image
         run: ./ob image
@@ -216,8 +216,8 @@ jobs:
       - name: ./ob docs --check
         run: ./ob docs --check
 
-      - name: ./ob docs site
-        run: ./ob docs site
+      - name: ./ob docs site --check
+        run: ./ob docs site --check
 
   # The host unit tests and the boot tests run beside the lint job, the
   # boot tests split between several machines, so that a pull request's CI
@@ -704,11 +704,16 @@ jobs:
             fi
           }
           # `needs_code` says false only for a pull request whose files
-          # are all documentation that no build or test reads.
+          # are all documentation that no build or test reads. Markdown
+          # with examples marked as tests counts as code: the
+          # docs-examples boot test runs them (ADR 0420).
           needs_code() {
             if [ "$GITHUB_EVENT_NAME" = pull_request ] \
               && ! git diff --name-only "$BASE" HEAD \
-                | grep -qvE '^[^/]+\.md$|^docs/(handbook|adr|design|images)/|^docs/roadmap\.md$|^LICENSES/|^REUSE\.toml$'; then
+                | grep -qvE '^[^/]+\.md$|^docs/(handbook|adr|design|images)/|^docs/roadmap\.md$|^LICENSES/|^REUSE\.toml$' \
+              && ! git diff --name-only --diff-filter=d "$BASE" HEAD -- \
+                  docs/handbook/src docs/guides docs/tutorials docs/runbooks \
+                | xargs -r -d '\n' grep -lE '^\s*```console test\s*$' | grep -q .; then
               echo false
             else
               echo true

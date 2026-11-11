@@ -1852,9 +1852,17 @@ _target/userspace/_).
 		when one of these is not documented in bold in its page: an *ob*
 		command (this page), an _dukovo.toml_ key (*dukovo.toml*(5)), a
 		kernel flag (*dukovo-boot*(7)), a *kdb* command or a self-test
-		(*radix-debug*(7)).
+		(*radix-debug*(7)). Fail too when an example marked as a test (a
+		code block that opens with *```console test*, in the handbook or
+		in _docs/guides/_, _docs/tutorials/_ or _docs/runbooks/_) is one
+		the *docs-examples* boot test cannot run; when a page of
+		_docs/guides/_, _docs/tutorials/_ or _docs/runbooks/_ has no boot
+		test named for it (*guide-*_name_, *tutorial-*_name_ or
+		*runbook-*_name_); or when the code gives an error ID of an area
+		listed in _docs/errors/README.md_ that has no page in
+		_docs/errors/_, or a page there is for an ID no code gives.
 
-*docs site* [*--version* _name_]
+*docs site* [*--check*] [*--version* _name_]
 	Build the support center, the site dukovo.org/support serves, into
 	_out/docs/site/_: a page for every man page (section 2 included),
 	every handbook chapter in the order of its _SUMMARY.md_, every design
@@ -1867,6 +1875,11 @@ _target/userspace/_).
 	report a problem with it and to edit its source. The search covers
 	every page by its title, summary and other names. The layout, styles
 	and home page are in _docs/site/_.
+
+	*--check*
+		Also fail when a link between the site's pages, or to a part of
+		a page, leads nowhere, or when searching for a man page's name,
+		one of its other names or an error ID does not show its page.
 
 	*--version* _name_
 		The release the pages describe, which their header shows (the
