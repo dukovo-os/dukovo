@@ -323,7 +323,9 @@ not run, and bundle says why.
 A command whose manifest says it runs with your access runs as a program
 of the system's, with all you hold, once you allowed
 *runs-with-your-access*, asked with a warning the first time it runs;
-the install sheet says so plainly too. Any other runs in the bundle's
+the install sheet says so plainly too. Run through *elevate*(8), it
+runs as root, and root's question is asked in the pane elevate was
+typed in (ADR 0493). Any other runs in the bundle's
 sandbox (ADR 0225), a process whose root is a view of:
 
 - _/system/commands_, _libraries_, _resources_ and _settings_,

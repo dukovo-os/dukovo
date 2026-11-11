@@ -8,8 +8,10 @@
 //! /shared/www, which its service reads, and the service waits until she
 //! enables it. Enabled, it starts as nginx, with its log in the system's,
 //! and serves its welcome page, then the page she puts in /shared/www, and
-//! a 404 for a page that is not there. Settings that do not read leave it
-//! as it was on a reload, serving, with the wrong line in its log, and it
+//! a 404 for a page that is not there. `elevate nginx -t` asks, in her
+//! pane, whether nginx may run with root's access, then checks the
+//! settings. Settings that do not read fail it, and leave nginx as it was
+//! on a reload, serving, with the wrong line in its log, and it
 //! serves again after a restart, over the settings it copied. With a
 //! certificate of its own made with openssl and the HTTPS
 //! server of its settings turned on, `service nginx reload` has it serve
@@ -45,7 +47,7 @@ const DISKS: &[Disk] = &[
 /// The test.
 pub const CASE: Case = Case {
     name: "nginx",
-    about: "nginx, the catalog's web server, serves (ADR 0491): installed for everyone from its .dkv file and enabled, it runs as its own account and serves its welcome page, then a page in /shared/www; settings that do not read leave it serving, with the wrong line in its log; it serves after a restart; with a certificate of its own it serves HTTPS too, and reloads while 300 requests come over HTTP and HTTPS lose none; log nginx holds the requests, and a file of its own does when its settings say",
+    about: "nginx, the catalog's web server, serves (ADR 0491): installed for everyone from its .dkv file and enabled, it runs as its own account and serves its welcome page, then a page in /shared/www; elevate nginx -t asks in her pane and checks its settings; settings that do not read fail it and leave it serving, with the wrong line in its log; it serves after a restart; with a certificate of its own it serves HTTPS too, and reloads while 300 requests come over HTTP and HTTPS lose none; log nginx holds the requests, and a file of its own does when its settings say",
     firmware: Firmware::Uefi,
     media: Media::Usb,
     // As a normal boot: Spark starts the services, bundled among them.
@@ -100,18 +102,27 @@ fn nginx(vm: &mut Vm, case: &Case) -> Result<(), String> {
          http://localhost/missing.html",
     )?;
     vm.expect_screen(&["<p>Hello from Dukovo</p>", "missing 404"])?;
-    // Settings that do not read: the reload leaves nginx as it was, still
-    // serving, and its log says which line is wrong. The line goes again.
+    // nginx -t checks the settings as root: run through elevate, it is
+    // asked about in her pane, with a warning, and she allows it always
+    // (ADR 0493).
+    answer_prompt(vm, "$", "clear; elevate nginx -t")?;
+    vm.expect_screen(&["As root, through elevate: nginx (org.nginx.nginx) asks to", "A: always"])?;
+    vm.type_text("a")?;
+    vm.expect_screen(&["syntax is ok", "test is successful"])?;
+    // Settings that do not read: nginx -t says so, and the reload leaves
+    // nginx as it was, still serving, its log saying which line is wrong.
+    // The line goes again.
     answer_prompt(
         vm,
         "$",
         &format!(
-            "clear; elevate sh -c 'echo oops >> {CONF}/nginx.conf; service nginx reload; for i in \
-             1 2 3 4 5; do sleep 1; log nginx | grep -q \"emerg.*nginx.conf:\" && echo refused && \
-             break; done; sed -i \"\\$d\" {CONF}/nginx.conf'; curl -s http://localhost/"
+            "clear; elevate sh -c 'echo oops >> {CONF}/nginx.conf; nginx -t 2>&1 | grep -o \
+             \"test failed\"; service nginx reload; for i in 1 2 3 4 5; do sleep 1; log nginx | \
+             grep -q \"emerg.*nginx.conf:\" && echo refused && break; done; sed -i \"\\$d\" \
+             {CONF}/nginx.conf'; curl -s http://localhost/"
         ),
     )?;
-    vm.expect_screen(&["refused", "<p>Hello from Dukovo</p>"])?;
+    vm.expect_screen(&["test failed", "refused", "<p>Hello from Dukovo</p>"])?;
     // A restart starts its launcher again, which takes up the settings
     // it copied, and it serves.
     answer_prompt(

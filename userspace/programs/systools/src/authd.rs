@@ -283,6 +283,36 @@ extern "C" fn on_child(_: libc::c_int) {
     unsafe { libc::write(CHILDREN.load(Ordering::Relaxed), (&raw const byte).cast(), 1) };
 }
 
+/// What an elevated command's session names as its terminal when it was
+/// elevated outside a terminal pane.
+const NO_TERMINAL: &str = "no terminal";
+
+/// The elevated command whose own terminal `terminal` is, and its
+/// session, when it was elevated in a pane: elevate gives the command a
+/// pseudo-terminal of its own (ADR 0219), which no console shows, so a
+/// question for it is asked in the pane it was elevated in (ADR 0493).
+/// `terminal_of` gives a process's controlling terminal while it acts
+/// for root.
+fn elevated_by<'a>(
+    sessions: &'a HashMap<i32, Session>,
+    terminal: &str,
+    terminal_of: impl Fn(u64) -> Option<String>,
+) -> Option<(i32, &'a Session)> {
+    if terminal.is_empty() || terminal == "none" {
+        return None;
+    }
+    sessions
+        .iter()
+        .filter(|(_, session)| session.elevated && session.terminal != NO_TERMINAL)
+        .find(|&(&process, _)| {
+            u64::try_from(process)
+                .ok()
+                .and_then(&terminal_of)
+                .is_some_and(|theirs| theirs == terminal)
+        })
+        .map(|(&process, session)| (process, session))
+}
+
 /// A session authd started, or an elevated command: whose it is, and on
 /// what terminal, for the audit log and the sign-in records.
 struct Session {
@@ -691,7 +721,7 @@ impl Authd {
                 }
                 Request::Prompts => self.prompts(i, peer, now),
                 Request::Choose { terminal, name, question, text } => {
-                    self.choose(peer, terminal, name, *question, text, now)
+                    self.choose(&files, peer, terminal, name, *question, text, now)
                 }
                 Request::SharePassword { name, current, new } => {
                     self.share_password(&files, name, current, new.as_deref(), peer, now)
@@ -777,9 +807,13 @@ impl Authd {
     /// A question of bundled's about an app's permission (ADR 0224), for
     /// `name` on `terminal`: root's to ask, as bundled runs as root. It
     /// waits for consoled's answer ([`Authd::prompting`]); with nothing to
-    /// ask on the consoles it is answered `elsewhere` at once.
+    /// ask on the consoles it is answered `elsewhere` at once. A question
+    /// for root on the terminal of a command elevated in a pane is asked
+    /// in that pane, of the person who elevated it (ADR 0493).
+    #[allow(clippy::too_many_arguments)]
     fn choose(
         &mut self,
+        files: &Files,
         peer: Peer,
         terminal: &str,
         name: &str,
@@ -794,12 +828,37 @@ impl Authd {
         if !self.has_prompter() {
             return (Answer::Done(request::ELSEWHERE.into()), now);
         }
-        self.prompting = Some(Prompting::Choose {
-            terminal: terminal.into(),
-            name: name.into(),
-            question,
-            text: text.into(),
-        });
+        let root = elevate::root_account(files.users.entries().cloned());
+        let elevated = (name == root.name)
+            .then(|| {
+                elevated_by(&self.sessions, terminal, |process| {
+                    proc::process(process).ok().filter(|p| p.user == 0).and_then(|p| p.terminal)
+                })
+            })
+            .flatten();
+        let prompting = match elevated {
+            Some((process, session)) => {
+                audit!(
+                    "{} is asked on {} for root's command on {terminal}, elevated process \
+                     {process}'s: {text}",
+                    session.name,
+                    session.terminal
+                );
+                Prompting::Choose {
+                    terminal: session.terminal.clone(),
+                    name: session.name.clone(),
+                    question,
+                    text: format!("As root, through elevate: {text}"),
+                }
+            }
+            None => Prompting::Choose {
+                terminal: terminal.into(),
+                name: name.into(),
+                question,
+                text: text.into(),
+            },
+        };
+        self.prompting = Some(prompting);
         (Answer::Done(String::new()), now)
     }
 
@@ -1206,7 +1265,7 @@ impl Authd {
     ) -> (Answer, Instant) {
         let mut descriptors = std::mem::take(&mut self.clients[i].descriptors);
         let pane = Pane::of(peer);
-        let terminal = pane.as_ref().map_or_else(|| "no terminal".into(), |p| p.terminal.clone());
+        let terminal = pane.as_ref().map_or_else(|| NO_TERMINAL.into(), |p| p.terminal.clone());
         let user = match administrator(files, peer) {
             Ok(user) => user.clone(),
             Err(why) => {
@@ -3088,6 +3147,42 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_elevated_commands_question_goes_to_the_pane_it_was_elevated_in() {
+        let session = |name: &str, terminal: &str, elevated| Session {
+            name: name.into(),
+            terminal: terminal.into(),
+            from: String::new(),
+            number: 1000,
+            group: 1000,
+            elevated,
+            remote: false,
+            recorded: false,
+        };
+        let mut sessions = HashMap::new();
+        // alice elevated process 41 in pane pts/0; its own terminal is
+        // pts/3. bob signed in on pts/1, as process 50.
+        sessions.insert(41, session("alice", "pts/0", true));
+        sessions.insert(50, session("bob", "pts/1", false));
+        // Elevated from a program with no terminal: nowhere to ask.
+        sessions.insert(60, session("carol", NO_TERMINAL, true));
+        let terminal_of = |process: u64| match process {
+            41 => Some("pts/3".to_string()),
+            50 => Some("pts/1".to_string()),
+            60 => Some("pts/4".to_string()),
+            _ => None,
+        };
+        let found = elevated_by(&sessions, "pts/3", terminal_of);
+        assert_eq!(found.map(|(p, s)| (p, s.terminal.as_str())), Some((41, "pts/0")));
+        // A session that is not an elevated command's is not one.
+        assert!(elevated_by(&sessions, "pts/1", terminal_of).is_none());
+        assert!(elevated_by(&sessions, "pts/4", terminal_of).is_none());
+        assert!(elevated_by(&sessions, "pts/9", terminal_of).is_none());
+        assert!(elevated_by(&sessions, "none", terminal_of).is_none());
+        // Once the command no longer acts for root, or has ended, neither.
+        assert!(elevated_by(&sessions, "pts/3", |_| None).is_none());
+    }
 
     #[test]
     fn the_last_sign_in_is_told_with_the_wrong_passwords_since() {

@@ -360,7 +360,6 @@ finding or removed.
 | The SD 1 MiB benchmark rows: printed but not gated | They sit at 1.00 because QEMU's SD emulation takes nearly all of both systems' time |
 | Printing: the design's open questions | Drafted for a release after 1.0 |
 | Known weak spots to plan for: Wi-Fi, Bluetooth and webcams; large desktop apps; Btrfs maturity | Raised, not yet discussed |
-| The catalog's commands through elevate, such as `nginx -t`: they run with the access of whoever runs them, which bundled asks about at a console's trusted prompt, and elevate gives the command a terminal of its own, which is no console's, so they do not run; nginx's settings are checked by a reload and its log meanwhile (ADR 0491) | A change to authd and consoled so that the console elevate was typed on answers for the command it runs; it touches the trusted prompt, so it is scheduled on its own |
 
 ## Documentation to bring up to date
 
