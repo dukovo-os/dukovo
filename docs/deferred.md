@@ -41,6 +41,7 @@ list is kept current instead.
 | Canary machines for updates | Phase 15 uses QEMU canaries in CI; real canaries are wanted before the first public release | Before 1.0.0-alpha.1 |
 | Post-Phase-13 code audit (audit 10) | Planned and scoped; starts only on approval | Decision |
 | Phase 15 (atomic updates and snapshots) | Plan approved; coding starts on approval | Decision |
+| Phase 16 (server platform and web console) | Plan approved; starts once Phase 15 is complete, on approval | Phase 15, then a decision |
 | Send the 27 mlibc and frigg patches upstream | Prepared; planned after the audit's last part | Audit 10 |
 | Trademark clearance of the project's name | Legal review | Before 1.0.0-alpha.1 |
 | SECURITY.md says plainly that the alpha is unaudited; the update server is live for testers | Part of the checklist before the first public release | Before 1.0.0-alpha.1 |
@@ -64,6 +65,7 @@ machine with AMT, an AMD machine and a laptop; see
 | `ob lab` checks that a machine is free before a run; a Stop for one test | Left out of the harness's first parts | Lab harness |
 | A lab test of a keyring entry set and read back | Needs a console sign-in with a password, which tests cannot type yet | Lab harness |
 | A lab test of `whois` | Needs a reachable whois server | Lab harness |
+| Receive-side scaling, checksum and segmentation offloads for the server cards and virtio-net; GSO and multi-queue tunnels (ADR 0339) | Measured against Linux on 10 GbE, and the lab's network is 1 GbE; moved out of Phase 16 so it does not hold 1.0.0-alpha.1 | 10 GbE in the lab: two Intel X520, X540 or X550 cards and a cable |
 
 ### Installer, boot and cloud (Phase 14)
 
@@ -136,7 +138,6 @@ machine with AMT, an AMD machine and a laptop; see
 | Serial ports as terminals programs open, and a choice of which ports carry the log (ADR 0360) | Full serial console | 16b |
 | A local time server, and netd's DHCP server (ADR 0194) | Server roles | 16b |
 | elevate in the web console, with comments kept by its settings editor (ADRs 0216, 0219) | Dukovo Admin | 16c |
-| Receive-side scaling, checksum and segmentation offloads; GSO and multi-queue tunnels (ADR 0339) | Measured against Linux on 10 GbE | 16e |
 
 ### Phase 17: Go
 
