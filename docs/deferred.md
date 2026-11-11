@@ -37,7 +37,6 @@ list is kept current instead.
 
 | Item | Why it waits | Waits on |
 | --- | --- | --- |
-| Tag `v0.14.1` on the merge of the last removable-media pull request | The version bump rides that pull request | Its merge, then a maintainer |
 | Signing-key ceremony with the two hardware keys, and the catalog's first root in the image (ADR 0381, ADR 0383) | Real releases and the image's trusted catalog root need keys made offline; Phase 15c can use test keys until then | A maintainer, before the first signed release |
 | Canary machines for updates | Phase 15 uses QEMU canaries in CI; real canaries are wanted before the first public release | Before 1.0.0-alpha.1 |
 | Post-Phase-13 code audit (audit 10) | Planned and scoped; starts only on approval | Decision |
@@ -341,7 +340,6 @@ finding or removed.
 | --- | --- |
 | Support center pages built from the settings schemas (each field with the release it arrived in and its stability) and stability labels on the pages ridlc writes from `abi/*.ridl` (ADR 0419) | `ob docs site` renders the docs in the tree first; these generators follow it |
 | Error pages in `docs/errors/`, one per error ID such as `UPD-103` (ADR 0420) | No program gives its errors IDs yet; the first area to do so adds its row to `docs/errors/README.md` and a page for each ID |
-| A scheduled check of the support center's links to other sites (ADR 0420) | Pull requests check only the links between the site's own pages; outside links need a job of their own, with the publishing work |
-| Publishing `out/docs/site` to dukovo.org/support, one copy per release and one for `main`, with a version switcher (ADR 0419) | Needs the release workflow and the website's deploy to carry it |
+| A scheduled check of the support center's links to other sites (ADR 0420) | Pull requests check only the links between the site's own pages; outside links need a job of their own |
 | The *Known limits* sections of `docs/design/posix.md` and `docs/design/storage.md`, and radix-posix(7) | They still describe Phases 7 to 9: no network sockets, no users, no hot plug, no exFAT, no Btrfs quotas, locales "until Phase 12" |
 | The roadmap's catalog ports paragraph says Go comes with release 1.1 | Go is Phase 17 |

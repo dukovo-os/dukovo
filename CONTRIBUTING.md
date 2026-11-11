@@ -195,6 +195,12 @@ Build the site and run its checks with:
 ./ob docs site --check    # then open out/docs/site/index.html
 ```
 
+dukovo-os/website publishes it at dukovo.org/support: every six hours it
+builds what has changed on `main` (as `/support/dev/`) and each new
+release tag (as `/support/<release>/`), and `/support/` shows the newest
+release ([ADR 0428](docs/adr/0428-the-support-center-is-published-as-a-copy-per-release.md)).
+Its "Publish the support center" workflow can also be run by hand.
+
 ## Design notes
 
 `docs/design/` explains how parts of the kernel work, for people changing

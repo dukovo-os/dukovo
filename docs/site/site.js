@@ -96,12 +96,33 @@
     });
   });
 
-  // The version picker goes to the same page in the chosen version.
-  document.querySelectorAll('select[data-versions]').forEach(function (select) {
-    select.addEventListener('change', function () {
-      if (select.value) location.href = select.value;
+  // The version picker: the support center's copies on dukovo.org, one per
+  // release and one for the main branch, which /support/versions.js lists
+  // as [path, name]. It opens the same page in the chosen copy, or that
+  // copy's home when the page is not in it. A copy opened anywhere else has
+  // no list, and shows its version without a picker.
+  var versions = window.DOCS_VERSIONS || [];
+  var base = new URL(root || './', location.href).pathname;
+  if (versions.length > 1) {
+    document.querySelectorAll('select[data-versions]').forEach(function (select) {
+      versions.forEach(function (v) {
+        var option = document.createElement('option');
+        option.value = v[0];
+        option.textContent = v[1];
+        option.selected = v[0] === base;
+        select.appendChild(option);
+      });
+      select.classList.add('ready');
+      select.addEventListener('change', function () {
+        var page = location.pathname.slice(base.length);
+        fetch(select.value + page, { method: 'HEAD' })
+          .then(function (r) { location.href = r.ok ? select.value + page + location.hash : select.value; })
+          .catch(function () { location.href = select.value; });
+      });
     });
-  });
+    var badge = document.querySelector('.dochead > .badge');
+    if (badge) badge.hidden = true;
+  }
 
   document.documentElement.classList.add('js');
 })();

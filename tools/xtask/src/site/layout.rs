@@ -97,6 +97,7 @@ fn header(root: &str, version: &str, docs: bool) -> String {
          <div class=\"search\" data-search>{SEARCH_ICON}<input type=\"search\" placeholder=\"Search the docs\" \
          aria-label=\"Search the docs\" autocomplete=\"off\"><kbd>/</kbd><div class=\"results\" role=\"listbox\"></div></div>\
          <span class=\"badge\" style=\"margin-left:auto\">{}</span>\
+         <select data-versions aria-label=\"Docs version\"></select>\
          <button class=\"menu-btn search-btn\" type=\"button\" aria-label=\"Search the docs\" aria-expanded=\"false\">{SEARCH_ICON}</button>\
          <button class=\"menu-btn\" type=\"button\" aria-expanded=\"false\" aria-controls=\"site-nav\"><i aria-hidden=\"true\"></i>Menu</button>\
          <nav id=\"site-nav\" aria-label=\"Site\"><a href=\"https://dukovo.org/\">Server</a>\
@@ -111,15 +112,24 @@ const FOOTER: &str = "<div class=\"gut\"><div class=\"wrap\"><footer>\
     Documentation is open source under Apache-2.0 or MIT.</span>\
     <span>No cookies. No trackers. No analytics.</span></footer></div></div>\n";
 
+/// The search index, the list of the copies on dukovo.org for the version
+/// picker (which the website's publishing writes, and which a copy opened
+/// anywhere else does without), and the site's script.
 fn scripts(root: &str) -> String {
     format!(
-        "<script src=\"{root}search-index.js\"></script>\n<script src=\"{root}site.js\"></script>\n"
+        "<script src=\"{root}search-index.js\"></script>\n<script src=\"{VERSIONS}\"></script>\n\
+         <script src=\"{root}site.js\"></script>\n"
     )
 }
+
+/// Where dukovo.org lists the support center's copies, one per release and
+/// one for the main branch.
+const VERSIONS: &str = "/support/versions.js";
 
 fn sidebar(root: &str, groups: &[Group], current: &str) -> String {
     let mut html = String::from(
         "<aside class=\"side\" aria-label=\"Docs contents\">\
+         <select class=\"side-ver\" data-versions aria-label=\"Docs version\"></select>\
          <input type=\"search\" placeholder=\"Filter contents\" aria-label=\"Filter contents\">",
     );
     for group in groups {
@@ -266,5 +276,7 @@ mod tests {
         assert!(html.contains("edit/main/docs/man/ls.1.scd"));
         assert!(html.contains("<div class=\"man\"><p>body</p></div>"));
         assert!(html.contains("Version%3A%200.14.1"));
+        assert!(html.contains("<script src=\"/support/versions.js\"></script>"));
+        assert_eq!(html.matches("<select").count(), 2);
     }
 }
