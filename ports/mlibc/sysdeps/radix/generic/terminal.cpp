@@ -48,6 +48,86 @@ int control(int fd, uint32_t request, uint64_t argument, const void *buffer, siz
 	return 0;
 }
 
+// Linux's BTRFS_IOC_GET_SUBVOL_INFO, _IOR(0x94, 60, struct
+// btrfs_ioctl_get_subvol_info_args): what Btrfs keeps of the subvolume a
+// directory is in, which the directory's `subvolume` method gives (ADR
+// 0461).
+constexpr unsigned long BTRFS_IOC_GET_SUBVOL_INFO = 0x81f8943c;
+
+// Linux's struct btrfs_ioctl_timespec.
+struct btrfs_time {
+	uint64_t sec;
+	uint32_t nsec;
+};
+
+// Linux's struct btrfs_ioctl_get_subvol_info_args.
+struct btrfs_subvol_info {
+	uint64_t treeid;
+	char name[256];
+	uint64_t parent_id;
+	uint64_t dirid;
+	uint64_t generation;
+	uint64_t flags;
+	uint8_t uuid[16];
+	uint8_t parent_uuid[16];
+	uint8_t received_uuid[16];
+	uint64_t ctransid;
+	uint64_t otransid;
+	uint64_t stransid;
+	uint64_t rtransid;
+	struct btrfs_time ctime;
+	struct btrfs_time otime;
+	struct btrfs_time stime;
+	struct btrfs_time rtime;
+	uint64_t reserved[8];
+};
+
+static_assert(sizeof(struct btrfs_subvol_info) == ((BTRFS_IOC_GET_SUBVOL_INFO >> 16) & 0x3fff),
+		"struct btrfs_subvol_info is Linux's");
+
+// Fills `out` with what the directory in `fd` says of its subvolume.
+// Returns 0 or an errno: ENOTTY for a file that is not a directory, or a
+// directory on another filesystem, as Linux's ioctl says on one.
+int subvolume_info(int fd, struct btrfs_subvol_info *out) {
+	uint32_t slot = radix::slot_of(fd);
+	if(slot == radix::NO_SLOT)
+		return EBADF;
+	unsigned char buffer[sizeof(struct radix_subvolume_info) + 255];
+	uint64_t status = radix_directory_subvolume(slot, ".", 1, buffer, sizeof(buffer));
+	if(status) {
+		if(RADIX_STATUS_DOMAIN(status) == RADIX_KERNEL_ERROR_DOMAIN
+				&& (RADIX_STATUS_CODE(status) == RADIX_KERNEL_WRONG_KIND
+						|| RADIX_STATUS_CODE(status) == RADIX_KERNEL_NO_SUCH_METHOD
+						|| RADIX_STATUS_CODE(status) == RADIX_KERNEL_NOT_SUPPORTED))
+			return ENOTTY;
+		return radix::to_errno(status);
+	}
+	struct radix_subvolume_info info;
+	memcpy(&info, buffer, sizeof(info));
+	memset(out, 0, sizeof(*out));
+	out->treeid = info.id;
+	size_t len = info.name_length < 255 ? info.name_length : 255;
+	memcpy(out->name, buffer + sizeof(info), len);
+	out->parent_id = info.parent;
+	out->dirid = info.directory;
+	out->generation = info.generation;
+	out->flags = info.flags;
+	memcpy(out->uuid, info.uuid, 16);
+	memcpy(out->parent_uuid, info.parent_uuid, 16);
+	memcpy(out->received_uuid, info.received_uuid, 16);
+	out->ctransid = info.changed_transaction;
+	out->otransid = info.made_transaction;
+	out->stransid = info.sent_transaction;
+	out->rtransid = info.received_transaction;
+	const uint64_t times[4] = {info.changed, info.made, info.sent, info.received};
+	struct btrfs_time *to[4] = {&out->ctime, &out->otime, &out->stime, &out->rtime};
+	for(int i = 0; i < 4; i++) {
+		to[i]->sec = times[i] / 1000000000;
+		to[i]->nsec = static_cast<uint32_t>(times[i] % 1000000000);
+	}
+	return 0;
+}
+
 // The size of what Linux's terminal request `request` reads or writes.
 size_t size_of(unsigned long request) {
 	switch(request) {
@@ -196,6 +276,12 @@ int Sysdeps<Ioctl>::operator()(int fd, unsigned long request, void *arg, int *re
 		if(source == radix::NO_SLOT)
 			return EBADF;
 		if(int e = control(fd, RADIX_FILE_CLONE, source, nullptr, 0); e)
+			return e;
+		*result = 0;
+		return 0;
+	}
+	case BTRFS_IOC_GET_SUBVOL_INFO: {
+		if(int e = subvolume_info(fd, static_cast<struct btrfs_subvol_info *>(arg)); e)
 			return e;
 		*result = 0;
 		return 0;

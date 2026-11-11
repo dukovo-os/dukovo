@@ -27,6 +27,7 @@ for section 2, which `ridlc` generates from the interface definitions in
 | `radix-posix(7)` | POSIX programs: the C library and toolchain, fork and exec, signals, descriptors and paths, pipes, terminals, timers, threads, limits, file locks, dynamic linking and Rust's standard library |
 | `spark(8)` | Spark, the first program, which starts and supervises every other |
 | `sysupdate(8)`, `health.toml(5)` | Updates of the system: the two slots, staging an update, trying and proving it, the health check and what it asks, falling back, rolling back, and the boot menu |
+| `snap(1)`, `snap.toml(5)` | Snapshots: the daily ones of `/users`, `/shared` and `/system/settings` in `/snapshots`, how many are kept, and restoring a file from one |
 | `service(8)`, `shutdown(8)`, `reboot(8)` | Starting, stopping and looking at services; stopping, restarting or powering off the machine |
 | `consoled(8)` | The virtual consoles on the screen and keyboard, and their keys |
 | `authd(8)`, `user(8)`, `passwd(1)`, `login(1)` | Accounts: the service that keeps them, checks passwords and starts sessions, making and listing accounts, changing a password, and signing in at a console |

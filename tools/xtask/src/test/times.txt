@@ -138,6 +138,7 @@ smbd 20
 smbios 34
 smbus 24
 smep 15
+snapshots 180
 sockets 16
 spark 15
 spark-network 21

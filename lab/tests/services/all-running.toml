@@ -24,6 +24,7 @@ expect = [
     "[ + ]  sshd",
     "[ + ]  volumed",
     "[ + ]  diskhealth",
+    "[ + ]  snap",
     "[ + ]  notifyd",
     "[ + ]  audiod",
     # Sharing folders is off until someone turns it on.

@@ -171,7 +171,10 @@ Init: /system/commands/spark is process 1
   _@settings_ on _/system/settings_, _@state_ on _/system/state_,
   _@applications_ on _/applications_, _@users_ on _/users_ and _@shared_
   on _/shared_, each as a directory of the mount at _/volumes/_*name*
-  (the *bind* kind of *radix-files*(7)), and tmpfs on _/system/live_.
+  (the *bind* kind of *radix-files*(7)), tmpfs on _/system/live_, and
+  _@snapshots_ read-only on _/snapshots_, the folder it makes for it,
+  where *snap*(1) keeps the snapshots (ADR 0461); a root without
+  _@snapshots_ starts all the same.
   Then it turns on each swap partition of the disk that holds the root,
   as the installer makes one, the way systemd's gpt-auto-generator
   does; there is no fstab (ADR 0311). One whose first page does not end
@@ -237,7 +240,7 @@ hierarchy line comes after the root's:
 
 ```
 spark: /system is Dukovo's root on sda5, compressed (zstd)
-spark: built the hierarchy of 9 directories and mounted 13 filesystems
+spark: built the hierarchy of 9 directories and mounted 14 filesystems
 ```
 
 and in a boot test that names a program:

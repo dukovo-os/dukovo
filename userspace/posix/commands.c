@@ -99,6 +99,7 @@ static const char *const ELSEWHERE[][2] = {
 		{"system-release", "the live-uefi and live-bios boot tests': it checks the signed release that only the install stick carries"},
 		{"dukovo-install", "the install-uefi and install-bios boot tests': it installs Dukovo onto a blank disk from the install stick"},
 		{"sysupdate", "the update boot tests': it stages, proves and rolls back updates of a system installed on a disk, which this test's is not"},
+		{"snap", "the snapshots boot test's: it keeps snapshots of a Btrfs root's subvolumes, which this test's system in memory has none of"},
 		{"dukovo-rescue", "the rescue boot test's: it runs only in Rescue, started by an installed system's boot menu, and repairs the root it names"},
 		{"nc", "the network-tools boot test's: it connects to and listens for the other machine on a cable"},
 		{"iperf3", "the network-tools boot test's: it measures the cable to the other machine, which runs iperf3 -s"},

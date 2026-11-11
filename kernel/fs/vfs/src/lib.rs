@@ -819,6 +819,12 @@ pub trait Node: Send + Sync + Any {
         Err(Error::NotSupported)
     }
 
+    /// What its filesystem keeps of the subvolume it is in; a filesystem
+    /// with none refuses.
+    fn subvolume(&self) -> Result<Subvolume> {
+        Err(Error::NotSupported)
+    }
+
     /// Moves entry `from` of this directory to `to` in `to_dir`, on the
     /// same filesystem, replacing a file (or empty directory, for a
     /// directory) of that name.
@@ -1146,6 +1152,51 @@ pub struct Qgroup {
     /// The most `exclusive` may grow to; `u64::MAX` for no limit.
     pub max_exclusive: u64,
 }
+
+/// What Btrfs keeps of a subvolume, as Linux's `BTRFS_IOC_GET_SUBVOL_INFO`
+/// gives it (ADR 0461). Times are nanoseconds since 1970, 0 for never.
+#[derive(Debug)]
+pub struct Subvolume {
+    /// Its ID, the number of its tree: 5 for the top of the filesystem.
+    pub id: u64,
+    /// The ID of the subvolume that holds it; 0 for the top.
+    pub parent: u64,
+    /// The inode number, in its parent, of the folder that holds it; 0
+    /// for the top.
+    pub directory: u64,
+    /// The transaction that last wrote its tree.
+    pub generation: u64,
+    /// Its root item's flags: [`SUBVOLUME_READ_ONLY`] when nothing in it
+    /// may change.
+    pub flags: u64,
+    /// The transaction that last changed a file in it.
+    pub changed_transaction: u64,
+    /// The transaction that made it.
+    pub made_transaction: u64,
+    /// The transaction it was sent in, for one received.
+    pub sent_transaction: u64,
+    /// The transaction that received it.
+    pub received_transaction: u64,
+    /// When a file in it last changed.
+    pub changed: u64,
+    /// When it was made.
+    pub made: u64,
+    /// When it was sent, for one received.
+    pub sent: u64,
+    /// When it was received.
+    pub received: u64,
+    /// Its UUID.
+    pub uuid: [u8; 16],
+    /// The UUID of the subvolume it is a snapshot of; zeros if none.
+    pub parent_uuid: [u8; 16],
+    /// The UUID of the subvolume it was received from; zeros if none.
+    pub received_uuid: [u8; 16],
+    /// Its name in the folder that holds it; empty for the top.
+    pub name: KVec<u8>,
+}
+
+/// [`Subvolume::flags`]'s flag of a subvolume nothing in may change.
+pub const SUBVOLUME_READ_ONLY: u64 = 1;
 
 /// A filesystem.
 pub trait FileSystem: Send + Sync {

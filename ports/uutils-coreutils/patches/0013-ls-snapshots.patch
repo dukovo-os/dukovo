@@ -1,0 +1,163 @@
+SPDX-FileCopyrightText: The uutils developers
+SPDX-FileCopyrightText: 2026 The Dukovo contributors
+SPDX-License-Identifier: MIT
+
+`ls -l` marks a Btrfs subvolume made as a snapshot `[snapshot]`, or
+`[snapshot, read-only]`, in place of the subvolume mark of patch 0011
+(ADR 0461): a subvolume whose parent UUID is set, which Linux's
+`BTRFS_IOC_GET_SUBVOL_INFO` tells anyone who can open the folder, and
+Radix's C library asks the directory's `subvolume` method for. It is
+asked only of folders that are the top of a subvolume.
+
+diff --git a/src/uu/ls/locales/en-US.ftl b/src/uu/ls/locales/en-US.ftl
+--- a/src/uu/ls/locales/en-US.ftl
++++ b/src/uu/ls/locales/en-US.ftl
+@@ -170,8 +170,8 @@
+   }
+ ls-help-app = with -l, show the app each file belongs to: inside an installed bundle, sealed
+   or not, or in an app's data or its /tmp
+-ls-help-subvolumes = with -l, mark each folder that is the top of a Btrfs subvolume WHEN;
+-  auto is when standard output is a terminal
++ls-help-subvolumes = with -l, mark each folder that is the top of a Btrfs subvolume or a
++  snapshot WHEN; auto is when standard output is a terminal
+ ls-help-grants = show who can reach each file instead of listing it: the accounts that may
+   read or change it, and which of your apps would; reach(1) answers
+ ls-app-sealed = sealed
+@@ -180,6 +180,8 @@
+ ls-app-temp = temp
+ ls-subvolume = subvolume
+ ls-subvolume-read-only = subvolume, read-only
++ls-snapshot = snapshot
++ls-snapshot-read-only = snapshot, read-only
+ ls-header-app = App
+ ls-header-git = Git
+ ls-header-inode = Inode
+diff --git a/src/uu/ls/src/display.rs b/src/uu/ls/src/display.rs
+--- a/src/uu/ls/src/display.rs
++++ b/src/uu/ls/src/display.rs
+@@ -1659,12 +1659,14 @@
+ }
+ 
+ /// Writes the mark after a subvolume's top folder: ` [subvolume]`, or
+-/// ` [subvolume, read-only]` (ADR 0442).
++/// ` [subvolume, read-only]` (ADR 0442); ` [snapshot]` or ` [snapshot,
++/// read-only]` for one made as a snapshot (ADR 0461).
+ fn write_subvolume(subvolume: Subvolume, config: &Config, out: &mut Vec<u8>) {
+-    let words = if subvolume.read_only {
+-        translate!("ls-subvolume-read-only")
+-    } else {
+-        translate!("ls-subvolume")
++    let words = match (subvolume.snapshot, subvolume.read_only) {
++        (false, false) => translate!("ls-subvolume"),
++        (false, true) => translate!("ls-subvolume-read-only"),
++        (true, false) => translate!("ls-snapshot"),
++        (true, true) => translate!("ls-snapshot-read-only"),
+     };
+     let mark = format!("[{words}]");
+     out.push(b' ');
+diff --git a/src/uu/ls/src/subvolumes.rs b/src/uu/ls/src/subvolumes.rs
+--- a/src/uu/ls/src/subvolumes.rs
++++ b/src/uu/ls/src/subvolumes.rs
+@@ -19,10 +19,14 @@
+ //! on a Btrfs mount, by the mount table. Read-only is what access(2)
+ //! says to writing: `EROFS`, whether the subvolume or its mount is.
+ //!
+-//! Which subvolumes are snapshots needs the subvolume's parent UUID,
+-//! which Radix does not tell programs yet; Phase 15's `snap` brings it.
++//! A subvolume made as a snapshot of another has that one's UUID as its
++//! parent UUID, which `BTRFS_IOC_GET_SUBVOL_INFO` tells anyone who can
++//! open the folder, on Linux and on Radix (ADR 0461): its mark says
++//! `snapshot` in place of `subvolume`.
+ 
+ use std::ffi::CString;
++use std::fs::File;
++use std::os::fd::AsRawFd;
+ use std::os::unix::ffi::OsStrExt;
+ use std::os::unix::fs::MetadataExt;
+ use std::path::{Path, PathBuf};
+@@ -42,6 +46,8 @@
+ #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+ pub(crate) struct Subvolume {
+     pub(crate) read_only: bool,
++    /// Whether it was made as a snapshot of another.
++    pub(crate) snapshot: bool,
+ }
+ 
+ /// The mount table, read the first time a folder might be a subvolume.
+@@ -71,6 +77,7 @@
+         }
+         Some(Subvolume {
+             read_only: refuses_writes(&real),
++            snapshot: is_snapshot(&real),
+         })
+     }
+ }
+@@ -90,6 +97,68 @@
+     found.is_some_and(|(_, btrfs)| btrfs)
+ }
+ 
++/// Linux's `BTRFS_IOC_GET_SUBVOL_INFO`, `_IOR(0x94, 60, SubvolumeInfo)`.
++const GET_SUBVOL_INFO: u64 = 0x81f8943c;
++
++/// Linux's `struct btrfs_ioctl_timespec`.
++#[repr(C)]
++#[derive(Clone, Copy, Default)]
++struct BtrfsTime {
++    sec: u64,
++    nsec: u32,
++}
++
++/// Linux's `struct btrfs_ioctl_get_subvol_info_args`.
++#[repr(C)]
++struct SubvolumeInfo {
++    treeid: u64,
++    name: [u8; 256],
++    parent_id: u64,
++    dirid: u64,
++    generation: u64,
++    flags: u64,
++    uuid: [u8; 16],
++    parent_uuid: [u8; 16],
++    received_uuid: [u8; 16],
++    ctransid: u64,
++    otransid: u64,
++    stransid: u64,
++    rtransid: u64,
++    times: [BtrfsTime; 4],
++    reserved: [u64; 8],
++}
++
++const _: () = assert!(size_of::<SubvolumeInfo>() as u64 == (GET_SUBVOL_INFO >> 16) & 0x3fff);
++
++/// Whether the subvolume whose top is `folder` was made as a snapshot
++/// of another: whether it has a parent UUID.
++fn is_snapshot(folder: &Path) -> bool {
++    let Ok(dir) = File::open(folder) else {
++        return false;
++    };
++    let mut info = SubvolumeInfo {
++        treeid: 0,
++        name: [0; 256],
++        parent_id: 0,
++        dirid: 0,
++        generation: 0,
++        flags: 0,
++        uuid: [0; 16],
++        parent_uuid: [0; 16],
++        received_uuid: [0; 16],
++        ctransid: 0,
++        otransid: 0,
++        stransid: 0,
++        rtransid: 0,
++        times: [BtrfsTime::default(); 4],
++        reserved: [0; 8],
++    };
++    // SAFETY: `info` is the structure the request writes, and the
++    // descriptor is open for the call.
++    let status = unsafe { libc::ioctl(dir.as_raw_fd(), GET_SUBVOL_INFO as _, &raw mut info) };
++    status == 0 && info.parent_uuid != [0; 16]
++}
++
+ /// Whether writing in `folder` is refused because nothing there may
+ /// change (`EROFS`), rather than for want of permission.
+ fn refuses_writes(folder: &Path) -> bool {

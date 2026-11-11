@@ -171,9 +171,55 @@ The installer puts Rescue on each disk that starts the system; it takes
 about 230 MiB of the 512 MiB EFI system partition the guided layout
 makes. See dukovo-rescue(8) for the details.
 
+## Snapshots
+
+A snapshot holds a folder as it was at a moment, read-only, and takes
+room only for what changes after it. Dukovo makes one of `/users`,
+`/shared` and `/system/settings` every day, keeps the newest of each of
+the last 7 days and of each of the last 4 weeks, and removes the rest.
+They are in `/snapshots`, a folder for each:
+
+```text
+$ ls /snapshots/users
+2026-10-25-0300  2026-11-05-0300  2026-11-07-0300  2026-11-09-0300  2026-11-11-0300
+2026-11-01-0300  2026-11-06-0300  2026-11-08-0300  2026-11-10-0300
+```
+
+A file you deleted or changed by mistake comes back with `snap
+restore`, from the newest snapshot that has it, without an
+administrator: your files in a snapshot are yours, and no one else can
+read them there either.
+
+```text
+$ snap restore ~/notes.txt
+Restored /users/alice/notes.txt from /snapshots/users/2026-11-11-0300/alice/notes.txt
+```
+
+It never writes over a file that is there: `--to` restores beside it,
+and `--from` picks an older snapshot. Folders are restored the same
+way. You can also open a snapshot like any folder and copy from it.
+
+An administrator makes a snapshot before a risky change, and gives it a
+name so that it is kept until deleted:
+
+```sh
+elevate snap create --name before-the-move /users
+snap list /users
+elevate snap delete /users before-the-move
+```
+
+`snap list /users` says why each is kept. The places and how many days
+and weeks are kept are in `/system/settings/snap.toml`, which can also
+name a Btrfs disk in `/volumes`; see snap.toml(5). Apps never see
+`/snapshots`, and nothing in a snapshot can be changed.
+
+A deleted file keeps its room on the disk until the last snapshot that
+has it is removed, up to four weeks later. To free it sooner, delete
+those snapshots with `snap delete`. See snap(1) for the details.
+
 ## What is on the way
 
-Snapshots with `snap`; backups; downloading updates from the update
+Backups; downloading updates from the update
 server in waves, through one `update` command for the system, firmware
 and apps, which also keeps Rescue up to date; and repairing GRUB and the
 EFI system partition from an install stick. This chapter grows with

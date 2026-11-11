@@ -300,6 +300,9 @@ on it at every boot. Each folder is named for what it holds:
 :< the users' homes
 |  _/shared_
 :< files that users and services share
+|  _/snapshots_
+:< on Dukovo's root, its _@snapshots_ subvolume, read-only: the
+   snapshots *snap*(1) keeps, a folder for each subvolume (ADR 0461)
 |  _/tmp_
 :< a tmpfs: temporary files; a person's sessions see their own,
    _/system/live/authd/tmp/_*number*, in its place (*authd*(8))

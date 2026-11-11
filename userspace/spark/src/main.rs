@@ -524,8 +524,9 @@ fn build(root: &Dir, volumes: bool, compress: &[&str]) -> bool {
     if let Some(disk) = &disk {
         restore_settings(root, disk, boot.fallback);
     }
-    let mounted = match disk {
-        Some(disk) if mount_root(root, &disk, boot.system()) => {
+    let snapshots = disk.as_deref().and_then(|disk| mount_root(root, disk, boot.system()));
+    let mounted = match (disk, snapshots) {
+        (Some(disk), Some(snapshots)) => {
             println!("spark: /system is Dukovo's root on {disk}, compressed (zstd)");
             println!(
                 "spark: started slot {}, {}",
@@ -533,7 +534,7 @@ fn build(root: &Dir, volumes: bool, compress: &[&str]) -> bool {
                 boot.system().subvolume()
             );
             swap::turn_on(root, &disk);
-            ON_DISK.len() + 1
+            ON_DISK.len() + 1 + snapshots
         }
         _ => {
             // Two lines: a write to the log is cut at 256 bytes.
@@ -1069,9 +1070,11 @@ fn btrfs_uuid(root: &Dir, name: &str) -> Option<String> {
 
 /// Mounts the subvolumes of Dukovo's root on `/volumes/<disk>` where
 /// [`ON_DISK`] says, with the system from `slot`, then memory on
-/// `/system/live`. Returns whether all of it worked; if not, what it
-/// mounted is unmounted again.
-fn mount_root(root: &Dir, disk: &str, slot: Slot) -> bool {
+/// `/system/live`, then the snapshots on `/snapshots`, read-only (ADR
+/// 0461). Returns how many snapshot mounts it made, 0 or 1, if the rest
+/// worked; if not, what it mounted is unmounted again. A root without
+/// `@snapshots` starts all the same: snap(1) makes it.
+fn mount_root(root: &Dir, disk: &str, slot: Slot) -> Option<usize> {
     let mut mounted = Vec::new();
     let mut failed = None;
     for (subvolume, at, flags) in on_disk(slot) {
@@ -1100,7 +1103,7 @@ fn mount_root(root: &Dir, disk: &str, slot: Slot) -> bool {
             .mount(live, FilesystemKind::Tmpfs, None, MountFlags::NONE)
             .and_then(|()| narrow(root, live))
         {
-            Ok(()) => return true,
+            Ok(()) => return Some(usize::from(mount_snapshots(root, disk))),
             Err(err) => failed = Some(format!("cannot mount tmpfs on /system/live: {err}")),
         }
     }
@@ -1110,7 +1113,29 @@ fn mount_root(root: &Dir, disk: &str, slot: Slot) -> bool {
             println!("spark: cannot unmount /{at}: {err}");
         }
     }
-    false
+    None
+}
+
+/// Where the root's snapshots are, and where they are mounted (ADR 0461).
+const SNAPSHOTS: (&str, &str) = ("@snapshots", "snapshots");
+
+/// Mounts the root's `@snapshots` on `/snapshots`, read-only. Returns
+/// whether it did.
+fn mount_snapshots(root: &Dir, disk: &str) -> bool {
+    let (subvolume, at) = SNAPSHOTS;
+    let path = format!("volumes/{disk}/{subvolume}");
+    let mounted = root.open_dir(&path, Rights::READ).and_then(|from| {
+        match root.make_dir(at) {
+            Err(err) if !err.is(FileError::Exists) => return Err(err),
+            _ => {}
+        }
+        root.bind(at, &from, MountFlags::READ_ONLY)
+    });
+    if let Err(err) = mounted {
+        println!("spark: cannot mount /{path} on /{at}: {err}; snap(1) makes it");
+        return false;
+    }
+    true
 }
 
 /// The mode of the root of each tmpfs Spark mounts in `/system`, and of

@@ -637,6 +637,7 @@ pub fn directory_method(
             vfs()?.remove_subvolume(&who, &dir.at, path.as_str()?).map_err(fs::status)?;
             answer(label, 0, [0; 8])
         }
+        directory::SUBVOLUME => subvolume_method(found, label, args),
         directory::SCRUB => {
             let a = directory::ScrubArgs::decode(args)?;
             // Mending writes to the disk.
@@ -1023,6 +1024,31 @@ fn copy_in(buffer: UserBuffer, max: u64) -> Result<alloc::vec::Vec<u8, radix_mm:
         return Err(error(Kernel::BadAddress));
     }
     Ok(bytes)
+}
+
+/// `subvolume` (ADR 0461), out of [`directory_method`]: what Btrfs keeps
+/// of the subvolume a path leads to, written as a SubvolumeInfo and its
+/// name.
+#[inline(never)]
+fn subvolume_method(found: &Found, label: u32, args: &[u64; 8]) -> Result<Answer> {
+    let a = directory::SubvolumeArgs::decode(args)?;
+    let dir = directory_of(found, Rights::READ)?;
+    let (address, len) = user_range(a.buffer)?;
+    if len < directory::SubvolumeInfo::SIZE {
+        return Err(error(Kernel::InvalidArgument));
+    }
+    let mut path = Path::Empty;
+    let path = path.copy(a.path)?;
+    let who = who(found.cap.rights(), dir)?;
+    let info = vfs()?
+        .look_at(&who, &dir.at, path.as_str()?, true, |_, node| node.subvolume())
+        .map_err(fs::status)?
+        .map_err(|err| match err {
+            radix_vfs::Error::NotSupported => Kernel::NotSupported.status(0),
+            err => fs::status(err),
+        })?;
+    put_subvolume(&info, UserOut { address, len })?;
+    answer(label, 0, [0; 8])
 }
 
 /// System V IPC's methods (ADR 0490), out of [`directory_method`]:
@@ -2735,6 +2761,45 @@ fn put_status(mount: &Mount, node: &NodeRef, buffer: UserBuffer) -> Result<()> {
     bytes[S::OFFSET_MODE..S::OFFSET_MODE + 2].copy_from_slice(&access.mode.to_le_bytes());
     bytes[S::OFFSET_KIND] = file_kind(stat.kind).raw();
     UserOut { address, len }.put(0, &bytes).map_err(fs::status)
+}
+
+/// Writes what Btrfs keeps of a subvolume to `out`, as a SubvolumeInfo
+/// and then as much of its name as fits.
+#[inline(never)]
+fn put_subvolume(info: &radix_vfs::Subvolume, mut out: UserOut) -> Result<()> {
+    use directory::SubvolumeInfo as S;
+    let mut bytes = [0u8; S::SIZE];
+    for (at, value) in [
+        (S::OFFSET_ID, info.id),
+        (S::OFFSET_PARENT, info.parent),
+        (S::OFFSET_DIRECTORY, info.directory),
+        (S::OFFSET_GENERATION, info.generation),
+        (S::OFFSET_FLAGS, info.flags),
+        (S::OFFSET_CHANGED_TRANSACTION, info.changed_transaction),
+        (S::OFFSET_MADE_TRANSACTION, info.made_transaction),
+        (S::OFFSET_SENT_TRANSACTION, info.sent_transaction),
+        (S::OFFSET_RECEIVED_TRANSACTION, info.received_transaction),
+        (S::OFFSET_CHANGED, info.changed),
+        (S::OFFSET_MADE, info.made),
+        (S::OFFSET_SENT, info.sent),
+        (S::OFFSET_RECEIVED, info.received),
+        (S::OFFSET_NAME_LENGTH, info.name.len() as u64),
+    ] {
+        bytes[at..at + 8].copy_from_slice(&value.to_le_bytes());
+    }
+    for (at, uuid) in [
+        (S::OFFSET_UUID, &info.uuid),
+        (S::OFFSET_PARENT_UUID, &info.parent_uuid),
+        (S::OFFSET_RECEIVED_UUID, &info.received_uuid),
+    ] {
+        bytes[at..at + 16].copy_from_slice(uuid);
+    }
+    out.put(0, &bytes).map_err(fs::status)?;
+    let room = out.len.saturating_sub(S::SIZE).min(info.name.len());
+    if room == 0 {
+        return Ok(());
+    }
+    out.put(S::SIZE, &info.name[..room]).map_err(fs::status)
 }
 
 /// Writes what a scrub read and found to `out`, as a ScrubProgress.

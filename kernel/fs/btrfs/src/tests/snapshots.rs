@@ -349,3 +349,55 @@ fn a_snapshot_holds_what_write_back_is_still_writing() {
         drop(go);
     });
 }
+
+#[test]
+fn a_subvolume_tells_its_parent_name_and_where_it_came_from() {
+    let disk = writable(&mkfs_empty(&[]));
+    let fs = mount_rw(&disk);
+    let root = fs.root();
+    let top = root.subvolume().unwrap();
+    assert_eq!((top.id, top.parent, top.directory), (tree::FS, 0, 0));
+    assert!(top.name.is_empty());
+    assert_eq!(top.parent_uuid, [0; 16]);
+    root.make_subvolume("@users").unwrap();
+    let users = root.lookup("@users").unwrap();
+    let file = users.create("notes", Kind::File, FILE).unwrap();
+    let made = users.subvolume().unwrap();
+    assert!(made.id >= tree::FIRST_FREE);
+    assert_eq!((made.parent, made.directory), (tree::FS, root.stat().id));
+    assert_eq!(&made.name[..], b"@users");
+    assert_eq!(made.flags & radix_vfs::SUBVOLUME_READ_ONLY, 0);
+    assert_ne!(made.uuid, [0; 16]);
+    assert_eq!(made.parent_uuid, [0; 16]);
+    assert_ne!(made.made_transaction, 0);
+    // A file in it tells the same subvolume.
+    assert_eq!(file.subvolume().unwrap().uuid, made.uuid);
+    drop(file);
+    let folder = root.create("@snapshots", Kind::Directory, DIR).unwrap();
+    let users_folder = folder.create("users", Kind::Directory, DIR).unwrap();
+    users_folder.snapshot("2026-11-11-0300", &users, true).unwrap();
+    let snap = users_folder.lookup("2026-11-11-0300").unwrap();
+    let info = snap.subvolume().unwrap();
+    assert_ne!(info.id, made.id);
+    assert_eq!((info.parent, info.directory), (tree::FS, users_folder.stat().id));
+    assert_eq!(&info.name[..], b"2026-11-11-0300");
+    assert_eq!(info.flags & radix_vfs::SUBVOLUME_READ_ONLY, radix_vfs::SUBVOLUME_READ_ONLY);
+    assert_eq!(info.parent_uuid, made.uuid);
+    assert_ne!(info.uuid, made.uuid);
+    assert!(info.made_transaction > made.made_transaction);
+    // A snapshot inside another subvolume names that one its parent.
+    users.snapshot("inner", &users, false).unwrap();
+    let inner = users.lookup("inner").unwrap().subvolume().unwrap();
+    assert_eq!((inner.parent, inner.directory), (made.id, 256));
+    assert_eq!(inner.flags & radix_vfs::SUBVOLUME_READ_ONLY, 0);
+    drop((snap, users_folder, folder, users));
+    // A read-only mount reads the same from the disk.
+    fs.sync().unwrap();
+    let image = image_of(&disk, (disk.info().sectors * SECTOR) as usize);
+    let ro = mount(&image).unwrap();
+    let again = ro.root().lookup("@snapshots").unwrap().lookup("users").unwrap();
+    let again = again.lookup("2026-11-11-0300").unwrap().subvolume().unwrap();
+    assert_eq!((again.id, again.parent_uuid, again.uuid), (info.id, info.parent_uuid, info.uuid));
+    assert_eq!(&again.name[..], b"2026-11-11-0300");
+    assert_eq!(ro.root().subvolume().unwrap().id, tree::FS);
+}

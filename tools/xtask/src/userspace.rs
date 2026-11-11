@@ -246,6 +246,7 @@ pub const STD_LINKS: &[(&str, &str)] = &[
     ("system/commands/setfacl", "systools"),
     ("system/commands/share", "systools"),
     ("system/commands/shutdown", "systools"),
+    ("system/commands/snap", "systools"),
     ("system/commands/ss", "systools"),
     ("system/commands/ssh-askpass-keyring", "systools"),
     ("system/commands/subvolume", "systools"),

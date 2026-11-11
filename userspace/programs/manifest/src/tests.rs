@@ -27,6 +27,7 @@ const SHIPPED: &[(&str, &str)] = &[
     ("authd", include_str!("../../../defaults/spark/services/authd.toml")),
     ("firewall", include_str!("../../../defaults/spark/services/firewall.toml")),
     ("sysupdate", include_str!("../../../defaults/spark/services/sysupdate.toml")),
+    ("snap", include_str!("../../../defaults/spark/services/snap.toml")),
     ("netd", include_str!("../../../defaults/spark/services/netd.toml")),
     ("netd", include_str!("../../../spark/tests/services/dhcp/netd.toml")),
 ];

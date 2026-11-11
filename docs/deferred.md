@@ -137,7 +137,11 @@ machine with AMT, an AMD machine and a laptop; see
 | The failed attempt's crash log kept beside its settings (ADR 0453) | The log of the fallback says what failed | A need |
 | Installs made before 0.15.0 keep a menu that starts `@system.a` directly, and are reinstalled to take updates (ADR 0451) | No public install exists before 1.0.0-alpha.1 | A need |
 | Btrfs `send` and `receive` (ADR 0138) | Incremental backups need them | 15b |
-| `ls` marks snapshots, with their retention (ADR 0442) | `snap` defines what a snapshot is | 15b |
+| Rolling a whole place back to a snapshot, such as all of `/users` (ADR 0461) | Restoring by file or folder covers mistakes; a whole place goes back only with every program that writes there stopped | Rescue's next changes |
+| Apps restoring their own data from a snapshot (ADR 0461) | An app's view has no snapshot; a person restores its folder with `snap restore` | A portal for apps |
+| Retention set place by place in `snap.toml` (ADR 0461) | One retention serves the default places | A need |
+| The `snap` service's own view in place of the whole tree (ADR 0461) | `snap.toml` may name any subvolume, reached through the top of each filesystem | 15d, with the updater's (ADR 0455) |
+| `BTRFS_IOC_GET_SUBVOL_INFO` on a descriptor of a file that is not a folder (ADR 0461) | The C library asks a folder's `subvolume` method; `ls` and `snap` ask of folders | A need |
 | System updates served by the update server (ADR 0382) | Catalogs are served; system images come with update delivery | 15c |
 | Telling a person of a new flaw, and which advisories an update fixes (ADR 0389) | Needs the unified updater's notifications | 15d |
 

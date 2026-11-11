@@ -1,0 +1,16 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+#
+# Snapshots (snap.toml(5), snap(1), ADR 0461): the snap service makes a
+# read-only snapshot of each of these places once a day, and keeps the
+# newest of each of the latest `daily` days and of the latest `weekly`
+# weeks. Snapshots of the root's places are in /snapshots.
+
+# The places, each the top of a Btrfs subvolume: on Dukovo's root, or a
+# disk's in /volumes, which is skipped while it is not plugged in.
+places = ["/users", "/shared", "/system/settings"]
+
+# How many days, and how many weeks (Monday to Sunday), keep their
+# newest snapshot.
+daily = 7
+weekly = 4
