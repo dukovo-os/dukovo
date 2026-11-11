@@ -49,6 +49,11 @@ tuf = { path = "../tuf" }
 # system-release(8) checks a signed system release, such as an install
 # stick's, with the crate ob signs releases with (ADR 0308).
 system-release = { path = "../system-release" }
+# The slot state, versions and update snapshots sysupdate(8) works with,
+# as GRUB's menu and Spark read them (ADRs 0451 to 0454).
+slots = { path = "../slots" }
+# health.toml(5).
+toml = { version = "0.9", default-features = false, features = ["parse", "serde"] }
 # bundle feed signs a bundle's own update feed, a small TUF repository, as
 # the catalog's is signed (ADRs 0381 and 0390).
 catalog-repo = { path = "../catalog-repo" }

@@ -83,7 +83,9 @@ pub fn install(vm: &mut Vm, _case: &Case) -> Result<(), String> {
 
 /// Waits for root's shell on tty1 of the live system the stick started.
 pub fn live_shell(vm: &mut Vm) -> Result<(), String> {
-    vm.expect("spark: the live system: /system is the boot archive, in memory, and no disk is the root")?;
+    vm.expect(
+        "spark: the live system: /system is the boot archive, in memory, and no disk is the root",
+    )?;
     vm.expect("spark: started consoled (/system/commands/consoled) as process ")?;
     vm.expect_screen(&[&format!("{RELEASE} {VERSION} (tty1)"), "# "])
 }
@@ -261,8 +263,9 @@ const EFI_MENU: &str = "::/boot/grub/grub.cfg";
 
 /// The host's side, after each boot: the disk holds the guided layout,
 /// GRUB's `boot.img` in its first sector, an EFI system partition that
-/// `fsck.fat` finds sound with UEFI's GRUB and a menu that names the root
-/// by its UUID, and a root Linux's `btrfs check` finds sound.
+/// `fsck.fat` finds sound with UEFI's GRUB, a menu that names the root by
+/// its UUID and both copies of the slot state, and a root Linux's `btrfs
+/// check` finds sound.
 pub fn installed_disk(disk: &DiskImage, log: &str) -> Result<(), String> {
     holds_install(disk, log, GUIDED)
 }
@@ -270,8 +273,8 @@ pub fn installed_disk(disk: &DiskImage, log: &str) -> Result<(), String> {
 /// The host's side of an install whose disk ends with the partitions of
 /// `layout`, in order, by their rdisk aliases: GRUB's `boot.img` in its
 /// first sector if it has a BIOS boot partition, its EFI system partition
-/// sound with UEFI's GRUB and a menu that names the root by its UUID,
-/// and the root sound.
+/// sound with UEFI's GRUB, a menu that names the root by its UUID and
+/// the slot state starting slot A, and the root sound.
 pub fn holds_install(disk: &DiskImage, log: &str, layout: &[&str]) -> Result<(), String> {
     let shown = disk.path.display().to_string();
     let file = std::fs::File::open(&disk.path).map_err(|e| format!("opening {shown}: {e}"))?;
@@ -321,14 +324,33 @@ pub fn holds_install(disk: &DiskImage, log: &str, layout: &[&str]) -> Result<(),
     let mut uuid = [0u8; 16];
     // A Btrfs superblock is 64 KiB in, with its filesystem's UUID 32
     // bytes into it.
-    device.read_at(root.offset + 0x10020, &mut uuid).map_err(|e| format!("reading {shown}: {e}"))?;
+    device
+        .read_at(root.offset + 0x10020, &mut uuid)
+        .map_err(|e| format!("reading {shown}: {e}"))?;
     let uuid = image::uuid_text(uuid);
     let menu = host_tool(Command::new("mtype").args(["-i", &mtools_image(&esp), EFI_MENU]))?;
     let menu = String::from_utf8_lossy(&menu);
-    let wanted =
-        [format!("--set=system {uuid}\n"), format!("@system.a/startup/radix root=UUID={uuid} ")];
+    let wanted = [format!("--set=system {uuid}\n"), format!("set dukovo_root={uuid}\n")];
     if menu.contains("@ROOT_UUID@") || !wanted.iter().all(|line| menu.contains(line.as_str())) {
         return Err(format!("the EFI system partition's GRUB menu does not name the root {uuid}"));
+    }
+    // Both copies of the slot state are whole, and the newer starts slot
+    // A (ADR 0452): GRUB and the health check write them at each start.
+    let copies = slots::state::COPIES.map(|copy| {
+        let path = format!("::/{copy}");
+        host_tool(Command::new("mtype").args(["-i", &mtools_image(&esp), &path]))
+            .map(|bytes| slots::State::decode(&bytes))
+    });
+    let [Ok(Some(first)), Ok(Some(second))] = copies else {
+        return Err(format!(
+            "the EFI system partition's slot state is not two whole copies: {copies:?}"
+        ));
+    };
+    match slots::state::newest(Some(first), Some(second)) {
+        Some((state, _)) if state.default == slots::Slot::A && state.trying.is_none() => {}
+        newest => {
+            return Err(format!("the newer copy of the slot state is {newest:?}, not slot A's"));
+        }
     }
     host_tool(Command::new("mdir").args(["-i", &mtools_image(&esp), EFI_GRUB]))
         .map_err(|err| format!("the EFI system partition holds no UEFI GRUB: {err}"))?;

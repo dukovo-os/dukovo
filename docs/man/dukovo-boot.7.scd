@@ -88,15 +88,30 @@ _/system/resources/licenses/_
 
 An installed system's disk, as *ob image --installed* builds it and the
 installer will leave it, has the same three partitions, but its EFI
-system partition holds only GRUB, the menu generated from
-_image/grub/installed.cfg.in_ and the microcode file, if any (ADR 0307).
-GRUB finds the Dukovo root by its Btrfs UUID and loads the kernel and the
-startup archive from the system's slot: _/@system.a/startup/radix_ and
-_/@system.a/startup/archive_, which the running system sees as
-_/system/startup_. The startup archive holds Spark alone. The kernel's
-command line carries *root=UUID=*_uuid_, for Spark, which mounts that
-root and runs everything else from it, and *panic=10*, so that a machine
-nobody is at restarts by itself. The boot loader keeps the startup
+system partition holds only GRUB, the configuration generated from
+_image/grub/installed.cfg.in_, the microcode file, if any (ADR 0307),
+and the two copies of the slot state, _boot/grub/state1_ and
+_boot/grub/state2_ (ADR 0452). The system runs from one of two slots,
+_@system.a_ and _@system.b_ (*sysupdate*(8), ADR 0451). GRUB finds the
+Dukovo root by its Btrfs UUID, reads the slot state, and hands over to
+the boot menu of the slot that starts, _startup/menu.cfg_, which loads
+the kernel and the startup archive from the same slot:
+_/@system.a/startup/radix_ and _/@system.a/startup/archive_, which the
+running system sees as _/system/startup_. The startup archive holds
+Spark alone. The kernel's command line carries *root=UUID=*_uuid_ and
+*slot=*_a_ or *slot=*_b_, for Spark, which mounts that root and that
+slot and runs everything else from it, and *panic=10*, so that a machine
+nobody is at restarts by itself, onto an update's next try.
+
+While an update is being tried, the menu's Dukovo entry starts it, and
+takes one of its three tries away before each start; with none left, it
+starts the version before with *fallback=*_slot_, which puts the
+settings from before the update back. Each start is marked as not yet
+seen through until the health check sees it through; until then, the
+menu shows at the next start, for 10 seconds or *boot.timeout* if
+longer, then starts the Dukovo entry by itself. The menu also offers the
+previous version, which starts once without becoming the default, and,
+during a try, the version the update updates. The boot loader keeps the startup
 archive in memory for the machine's whole life, as it does any archive,
 so an installed system keeps under a MiB where a USB stick keeps the
 whole system.
@@ -692,6 +707,22 @@ them to *init*, and the kernel does not read them.
 	says, for the boot tests. The log may then hold what the screen
 	showed.
 
+*slot=*_slot_
+	Read by *spark*(8), not the kernel: the system slot GRUB started,
+	*a* or *b*, which Spark mounts on _/system_ (ADR 0451). Slot A
+	without it.
+
+*fallback=*_slot_
+	Read by *spark*(8), not the kernel: the update in _slot_ ran out of
+	tries or failed its health check, so the version before started.
+	Spark puts the settings from before the update back before any
+	service starts (ADR 0454).
+
+*test-hang*
+	Read by *spark*(8), not the kernel: Spark stops responding at every
+	start, as an update that hangs does, so that the hardware watchdog
+	restarts the machine. For the *update-hang* boot test.
+
 *startup-trouble*
 	Read by *login*(1) and *authd*(8), not the kernel: the sign-in at
 	each console first shows the startup-trouble menu, which resets an
@@ -1256,7 +1287,7 @@ the steps of a smoke test and its results.
 
 # SEE ALSO
 
-*spark*(8), *radix-processes*(7), *radix-debug*(7), *radix-capabilities*(7), *radix-scheduling*(7), *ob*(1), *dukovo.toml*(5), *rgrub-setup*(8), *serial-console*(8)
+*spark*(8), *sysupdate*(8), *radix-processes*(7), *radix-debug*(7), *radix-capabilities*(7), *radix-scheduling*(7), *ob*(1), *dukovo.toml*(5), *rgrub-setup*(8), *serial-console*(8)
 
 The Multiboot2 specification:
 https://www.gnu.org/software/grub/manual/multiboot2/

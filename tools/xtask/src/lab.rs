@@ -423,6 +423,26 @@ pub fn command(ctx: &Ctx, args: &mut Args) -> Result<()> {
                 Err(why) => eprintln!("    note: the installer's DVD tests will skip: {why}"),
             }
         }
+        // The test updates of the same tree, which the update tests copy
+        // onto the machine from the lab PC (ADR 0451).
+        if built_here {
+            let updates = if no_build {
+                let updates = ctx.out.join("lab/updates");
+                if updates.is_dir() {
+                    Ok(updates)
+                } else {
+                    Err("no test updates were built yet, and --no-build builds none".to_string())
+                }
+            } else {
+                crate::test::lab_updates(ctx, profile).map_err(|e| e.to_string())
+            };
+            match updates {
+                Ok(updates) => {
+                    lab.env(UPDATES_ENV, updates);
+                }
+                Err(why) => eprintln!("    note: the update tests will skip: {why}"),
+            }
+        }
     }
     lab.args(&rest);
     // dukovo-lab's own exit status says how the run went (0 passed, 1 a
@@ -434,6 +454,11 @@ pub fn command(ctx: &Ctx, args: &mut Args) -> Result<()> {
         None => bail!("{} was stopped by a signal", tool.display()),
     }
 }
+
+/// The variable that names the folder of the test updates for the update
+/// tests' host steps (`lab/tests/updates/copy-update.sh`): one repository
+/// a test update, as `sysupdate stage` reads it.
+const UPDATES_ENV: &str = "DUKOVO_LAB_UPDATES";
 
 /// The console's fonts, which dukovo-lab reads the screen's text with:
 /// the PSF files the kernel and consoled draw in.

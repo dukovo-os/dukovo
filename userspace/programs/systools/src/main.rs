@@ -53,6 +53,9 @@
 //! installs, seals and removes (ADRs 0221 to 0223 and 0225); called by a
 //! name that is no tool's, through a link in a commands folder of
 //! bundled's, it runs the bundle command of that name.
+//! `sysupdate` stages a signed release in the spare slot, and as a
+//! service checks that a new version proves itself, or falls back
+//! (ADRs 0451 to 0454).
 
 mod account;
 mod args;
@@ -156,6 +159,7 @@ mod sshkeys;
 mod subvolume;
 mod swap;
 mod sys;
+mod sysupdate;
 mod timed;
 mod timedatectl;
 mod tls;
@@ -316,6 +320,7 @@ const TOOLS: &[(&str, Tool)] = &[
     ("swapoff", swap::swapoff),
     ("swapon", swap::swapon),
     ("system-release", releases::main),
+    ("sysupdate", sysupdate::main),
     ("taskset", priority::taskset),
     ("timed", timed::main),
     ("timedatectl", timedatectl::main),

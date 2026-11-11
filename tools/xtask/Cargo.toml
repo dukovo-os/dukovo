@@ -46,6 +46,10 @@ dkv = { path = "../../userspace/programs/dkv" }
 # WAV files and the tones' detection, for the audio boot tests' check of
 # what the guest played (ADR 0320).
 audio = { path = "../../userspace/programs/audio" }
+# The slot state on an installed system's EFI system partition and what
+# a slot says of itself, written as dukovo-install(8) and sysupdate(8)
+# write them (ADRs 0451 and 0452).
+slots = { path = "../../userspace/programs/slots" }
 # The interface compiler, for the man(2) pages and C headers of abi/*.ridl.
 ridlc = { path = "../ridlc" }
 # Markdown for the support center's pages, from the handbook, the design

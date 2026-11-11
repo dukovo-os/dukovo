@@ -18,10 +18,12 @@
 //! ([`make_live`], ADR 0308), the ISO in its `release` directory, on a
 //! disc labelled DUKOVO_LIVE ([`stage_release`], ADR 0433). An installed
 //! system's disk (`ob image --installed`) boots from its root instead:
-//! GRUB finds the root by its Btrfs UUID and loads the kernel and the
-//! startup archive from the system's slot, `@system.a/startup` (ADR
-//! 0307). When an image will not start, look first at its grub.cfg, made
-//! from `image/grub/`, and at what [`stage_system`] put in the slot.
+//! GRUB finds the root by its Btrfs UUID, reads the slot state beside its
+//! grub.cfg, and hands over to the menu in the system's slot, which loads
+//! the kernel and the startup archive from `@system.a/startup` or
+//! `@system.b/startup` (ADRs 0307, 0451 and 0452). When an image will not
+//! start, look first at its grub.cfg, made from `image/grub/`, and at
+//! what [`stage_system`] put in the slot.
 
 use std::fmt::Write;
 use std::io::{Read, Seek, SeekFrom, Write as _};
@@ -447,6 +449,10 @@ const TESTS_CFG: &str = "image/grub/grub.cfg.in";
 /// [`LIVE_CFG`] loads it from there.
 const THEME_DIR: &str = "boot/grub/theme";
 
+/// The boot menu in each slot, beside its kernel, which the installed
+/// menu hands over to ([`SLOT_MENU`], ADR 0451).
+pub const MENU_CFG: &str = "image/grub/menu.cfg";
+
 /// The installed menu's placeholder for the serial console's flag, which
 /// the installer fills with ` console=ttyS0` on a system it installs over
 /// the first serial port, and with nothing otherwise (ADR 0318).
@@ -680,6 +686,11 @@ pub fn build(ctx: &Ctx, spec: &ImageSpec<'_>) -> Result<()> {
         crate::grub_theme::write(&spec.staging.join(THEME_DIR), VERSION, entries)?;
     }
     std::fs::write(&cfg_path, grub_cfg).context(|| format!("writing {}", cfg_path.display()))?;
+    // An installed system's slot state, beside its menu, in both copies:
+    // slot A, the only one, as dukovo-install(8) leaves it (ADR 0452).
+    if installed {
+        write_slot_state(&spec.staging)?;
+    }
     if let Some(parent) = spec.output.parent() {
         process::create_dir(parent)?;
     }
@@ -703,6 +714,18 @@ pub fn build(ctx: &Ctx, spec: &ImageSpec<'_>) -> Result<()> {
     // A copy of the manifest next to the image, for release pages and CI.
     let sidecar = spec.output.with_extension("spdx");
     std::fs::write(&sidecar, manifest).context(|| format!("writing {}", sidecar.display()))?;
+    Ok(())
+}
+
+/// Writes both copies of the slot state an install leaves into the EFI
+/// system partition staged in `esp`.
+fn write_slot_state(esp: &Path) -> Result<()> {
+    let block = slots::State::installed().encode();
+    for name in slots::state::COPIES {
+        let path = esp.join(name);
+        process::create_dir(path.parent().expect("a copy is in a folder"))?;
+        std::fs::write(&path, block).context(|| format!("writing {}", path.display()))?;
+    }
     Ok(())
 }
 
@@ -969,6 +992,16 @@ pub const SLOT_KERNEL: &str = "radix";
 /// The startup archive's name in [`SLOT_STARTUP`].
 pub const SLOT_ARCHIVE: &str = "archive";
 
+/// The slot's boot menu's name in [`SLOT_STARTUP`], made from
+/// [`MENU_CFG`]: the installed menu on the EFI system partition reads the
+/// slot state and hands over to the default slot's (ADR 0451).
+pub const SLOT_MENU: &str = "menu.cfg";
+
+/// The name in [`SLOT_STARTUP`] of what the slot says of itself, its
+/// version and the kernel flags it always starts with
+/// ([`slots::about`]).
+pub const SLOT_ABOUT: &str = "slot.env";
+
 /// What [`make_root`] adds to an installed system's root beside its slot.
 #[derive(Clone, Copy, Default)]
 pub struct Extras<'a> {
@@ -1167,9 +1200,11 @@ fn set_mode(path: &Path, mode: u32) -> Result<()> {
 }
 
 /// Puts the kernel at `kernel`, without its debug information, and the
-/// startup archive at `archive` into the slot's folder `dir`, with mode
-/// 0644 and dated `time` (seconds since 1970), as the boot archive's files
-/// are, so the same build makes the same slot.
+/// startup archive at `archive` into the slot's folder `dir`, with the
+/// slot's boot menu, [`SLOT_MENU`], and what the slot says of itself,
+/// [`SLOT_ABOUT`]: this version, with no flags of its own. Each has mode
+/// 0644 and is dated `time` (seconds since 1970), as the boot archive's
+/// files are, so the same build makes the same slot.
 fn add_startup(ctx: &Ctx, kernel: &Path, archive: &Path, dir: &Path, time: u64) -> Result<()> {
     use std::os::unix::fs::PermissionsExt as _;
     process::create_dir(dir)?;
@@ -1178,8 +1213,14 @@ fn add_startup(ctx: &Ctx, kernel: &Path, archive: &Path, dir: &Path, time: u64) 
     let (to_kernel, to_archive) = (dir.join(SLOT_KERNEL), dir.join(SLOT_ARCHIVE));
     kernel::copy_for_image(ctx, kernel, &to_kernel)?;
     process::copy(archive, &to_archive)?;
+    let to_menu = dir.join(SLOT_MENU);
+    process::copy(&ctx.root.join(MENU_CFG), &to_menu)?;
+    let to_about = dir.join(SLOT_ABOUT);
+    let about = slots::about::About { version: VERSION.into(), flags: String::new() };
+    std::fs::write(&to_about, about.encode())
+        .context(|| format!("writing {}", to_about.display()))?;
     let date = std::time::UNIX_EPOCH + std::time::Duration::from_secs(time);
-    for path in [&to_kernel, &to_archive] {
+    for path in [&to_kernel, &to_archive, &to_menu, &to_about] {
         std::fs::File::options()
             .write(true)
             .open(path)
@@ -1435,53 +1476,124 @@ mod tests {
     }
 
     #[test]
-    fn the_installed_menu_starts_the_slot_named_by_its_root() {
+    fn the_installed_menu_finds_the_root_and_hands_over_to_its_slot() {
         let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../", "image/grub/installed.cfg.in");
         let template = std::fs::read_to_string(path).unwrap();
         let uuid = "90c9a303-3954-4174-8f8b-ee75a92a9eb0";
         let filled = template.replace("@ROOT_UUID@", uuid).replace(CONSOLE, "");
         let modules = [(MICROCODE_PATH, "microcode")];
         let cfg = render_grub_cfg(&filled, 0, "lockdep", &modules, "").unwrap();
-        assert!(cfg.contains(&format!("search --no-floppy --fs-uuid --set=system {uuid}\n")));
-        // Quiet (ADR 0426), with the build's flags after.
-        let kernel = format!(
-            "    multiboot2 ($system)/@system.a/{SLOT_STARTUP}/{SLOT_KERNEL} root=UUID={uuid} \
-             panic=10 quiet lockdep\n"
-        );
-        let archive = format!(
-            "    module2 ($system)/@system.a/{SLOT_STARTUP}/{SLOT_ARCHIVE} {}\n",
-            userspace::BOOTFS_WORD
-        );
-        let microcode = format!("    module2 {MICROCODE_PATH} microcode\n    boot\n");
-        assert!(cfg.contains(&format!("{kernel}{archive}{microcode}")), "{cfg}");
-        // The startup-trouble entry names the same root, with its flag
-        // first, and shows the kernel's log.
-        assert_eq!(cfg.matches(&format!("root=UUID={uuid} panic=10")).count(), 2);
-        assert!(
-            cfg.contains(&format!("radix startup-trouble root=UUID={uuid} panic=10 lockdep\n"))
-        );
+        // The root, the console and the machine's flags, once each, for
+        // the slot's menu to start the kernel with.
+        assert!(cfg.contains(&format!(
+            "search --no-floppy --fs-uuid --set=system {uuid}\nset dukovo_root={uuid}\n\
+             set dukovo_console=\"\"\nset dukovo_cmdline=\"lockdep\"\n"
+        )));
+        assert_eq!(cfg.matches("lockdep").count(), 1, "{cfg}");
+        assert!(cfg.contains(&format!(
+            "function dukovo_modules {{\n    set dukovo_modules=done\n    module2 \
+             {MICROCODE_PATH} microcode\n}}\n"
+        )));
         // The menu hidden for a second, or none with a zero timeout as
-        // here, and shown when Shift is held.
+        // here, and shown when Shift is held (ADR 0426).
         let hidden = cfg.find("set timeout_style=hidden\nset timeout=1\n").unwrap();
         let none = cfg.find("if [ 0 -eq 0 ]; then\n    set timeout=0\nfi\n").unwrap();
         let shift = cfg
             .find("if keystatus --shift; then\n    set timeout_style=menu\n    set timeout=0\n")
             .unwrap();
         assert!(hidden < none && none < shift, "{cfg}");
-        assert!(shift < cfg.find("--id dukovo {").unwrap(), "{cfg}");
-        // Windows, when GRUB finds its boot manager, between the two, and
-        // the firmware's settings last; Dukovo and Windows are remembered.
-        let windows = cfg.find("menuentry \"Windows Boot Manager\" --id windows {").unwrap();
-        assert!(cfg.find("--id dukovo {").unwrap() < windows);
-        assert!(windows < cfg.find("startup trouble\" {").unwrap());
-        assert!(
-            cfg.contains(
-                "search --no-floppy --file --set=windows /EFI/Microsoft/Boot/bootmgfw.efi"
-            )
-        );
-        assert!(cfg.contains("chainloader ($windows)/EFI/Microsoft/Boot/bootmgfw.efi"));
-        assert_eq!(cfg.matches("save_env saved_entry").count(), 2);
+        // Both copies of the slot state, by the names and variables the
+        // system writes them with (ADR 0452), the first read first.
+        let variables = slots::state::VARIABLES.join(" ");
+        assert!(cfg.contains(&format!("load_env --file \"$1\" {variables}; then\n")), "{cfg}");
+        let mut read = Vec::new();
+        for copy in slots::state::COPIES {
+            let name = copy.strip_prefix("boot/grub/").expect("a copy is beside grub.cfg");
+            read.push(cfg.find(&format!("slot_read \"${{prefix}}/{name}\"\n")).unwrap());
+        }
+        assert!(read[0] < read[1]);
+        // The check as the slots crate writes it.
+        let check = "\"${slot_gen}:${slot_default}:${slot_previous}:${slot_try}:${slot_tries}:${slot_boot}\"";
+        assert!(cfg.contains(&format!("if [ \"${{slot_check}}\" = {check} ]; then")));
+        // The menu writes while either copy is whole; with neither, it
+        // offers both slots.
+        let both = cfg
+            .find("if [ \"${first_ok}\" = 1 -o \"${second_ok}\" = 1 ]; then\n    set slot_ok=1\n")
+            .unwrap();
+        // Then the default slot's menu, or the other's, as the default.
+        let default = cfg
+            .find(&format!(
+                "    source \"($system)/@system.${{slot_default}}/{SLOT_STARTUP}/{SLOT_MENU}\"\n"
+            ))
+            .unwrap();
+        let other = cfg
+            .find(&format!(
+                "elif [ -f \"($system)/@system.${{slot_other}}/{SLOT_STARTUP}/{SLOT_MENU}\" ]; \
+                 then\n    set slot_default=\"${{slot_other}}\"\n"
+            ))
+            .unwrap();
+        assert!(shift < read[0] && read[1] < both && both < default && default < other, "{cfg}");
+        // The partition's own entries last, the firmware's settings at the
+        // end.
+        assert!(cfg.find("source \"${prefix}/rescue.cfg\"").unwrap() > other);
         assert!(cfg.trim_end().ends_with("fwsetup\n        }\n    fi\nfi"), "{cfg}");
+    }
+
+    #[test]
+    fn the_slot_menu_starts_the_slot_the_state_names() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../", "image/grub/menu.cfg");
+        let menu = std::fs::read_to_string(path).unwrap();
+        // The kernel and the startup archive from the slot, which Spark
+        // mounts by its `slot=`; quiet, with the slot's own flags before
+        // the machine's (ADR 0426).
+        let kernel = format!(
+            "    multiboot2 ($system)/@system.$1/{SLOT_STARTUP}/{SLOT_KERNEL} $2 \
+             root=UUID=${{dukovo_root}} slot=$1 panic=10 $3${{dukovo_console}} ${{slot_flags}} \
+             ${{dukovo_cmdline}}\n"
+        );
+        let archive = format!(
+            "    module2 ($system)/@system.$1/{SLOT_STARTUP}/{SLOT_ARCHIVE} {}\n",
+            userspace::BOOTFS_WORD
+        );
+        assert!(menu.contains(&format!("{kernel}{archive}    dukovo_modules\n    boot\n")));
+        // What each slot says of itself, where the build puts it.
+        assert_eq!(slots::about::PATH, format!("{SLOT_STARTUP}/{SLOT_ABOUT}"));
+        let about = slots::about::VARIABLES.join(" ");
+        let path = slots::about::PATH;
+        assert!(
+            menu.contains(&format!("load_env --file \"($system)/@system.$1/{path}\" {about}\n"))
+        );
+        // Every write is of every variable, with the check, over the
+        // older copy alone (SlotState.tla); a try that cannot be counted
+        // is not started.
+        let variables = slots::state::VARIABLES.join(" ");
+        assert_eq!(menu.matches(&format!(" {variables}")).count(), 1, "{menu}");
+        assert!(menu.contains(&format!("save_env --file \"${{slot_older}}\" {variables}")));
+        assert!(menu.contains(
+            "    if [ \"${slot_written}\" != 1 ]; then\n        set slot_start=\"${slot_default}\"\n"
+        ));
+        let check = "\"${slot_gen}:${slot_default}:${slot_previous}:${slot_try}:${slot_tries}:${slot_boot}\"";
+        assert!(menu.contains(&format!("set slot_check={check}\n")));
+        // The Dukovo entry counts the try and starts quietly, told of a
+        // fallback as Spark reads one; the others start without a try.
+        let dukovo = menu.find("menuentry \"${slot_title}\" --id dukovo {").unwrap();
+        assert!(menu[dukovo..].contains(
+            "    slot_started\n    dukovo_start \"${slot_start}\" \"${slot_fallback}\" quiet\n"
+        ));
+        assert!(menu.contains("set slot_fallback=\"fallback=${slot_try}\"\n"));
+        assert_eq!(menu.matches("        slot_chose ").count(), 2);
+        // Windows after the Dukovo entries, remembered as Dukovo is (ADR
+        // 0314), and startup trouble last, with its flag first and the
+        // kernel's log.
+        let windows = menu.find("menuentry \"Windows Boot Manager\" --id windows {").unwrap();
+        assert!(dukovo < windows);
+        assert!(menu.contains("chainloader ($windows)/EFI/Microsoft/Boot/bootmgfw.efi"));
+        assert_eq!(menu.matches("save_env saved_entry").count(), 2);
+        let trouble = menu.find("startup trouble\" --id startup-trouble {").unwrap();
+        assert!(windows < trouble);
+        assert!(
+            menu[trouble..].contains("dukovo_start \"${slot_default}\" startup-trouble \"\"\n")
+        );
     }
 
     #[test]
@@ -1489,13 +1601,30 @@ mod tests {
         let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../", "image/grub/installed.cfg.in");
         let template = std::fs::read_to_string(path).unwrap();
         let menu = installer_menu_text(&template, 5, "lockdep").unwrap();
-        assert!(menu.contains("search --no-floppy --fs-uuid --set=system @ROOT_UUID@\n"), "{menu}");
-        assert!(menu.contains("root=UUID=@ROOT_UUID@ panic=10 quiet@CONSOLE@ lockdep\n"), "{menu}");
-        assert!(menu.contains("root=UUID=@ROOT_UUID@ panic=10@CONSOLE@ lockdep\n"), "{menu}");
+        assert!(
+            menu.contains(
+                "search --no-floppy --fs-uuid --set=system @ROOT_UUID@\nset dukovo_root=@ROOT_UUID@\n"
+            ),
+            "{menu}"
+        );
+        // The serial console's flag, once, for every entry (ADR 0318).
+        assert!(
+            menu.contains("set dukovo_console=\"@CONSOLE@\"\nset dukovo_cmdline=\"lockdep\"\n")
+        );
+        assert_eq!(menu.matches(CONSOLE).count(), 1);
         assert!(!menu.contains("@VERSION@") && !menu.contains("@CMDLINE@"));
         assert!(!menu.contains('\u{1}'));
-        // Both Dukovo entries take the serial console's flag (ADR 0318).
-        assert_eq!(menu.matches("@CONSOLE@ lockdep").count(), 2);
+    }
+
+    #[test]
+    fn an_installed_disk_starts_with_both_copies_of_slot_a() {
+        let dir = std::env::temp_dir().join(format!("ob-slot-state-{}", std::process::id()));
+        write_slot_state(&dir).unwrap();
+        for name in slots::state::COPIES {
+            let block = std::fs::read(dir.join(name)).unwrap();
+            assert_eq!(slots::State::decode(&block), Some(slots::State::installed()));
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

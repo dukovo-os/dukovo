@@ -46,7 +46,9 @@ sets the hardware watchdog's timeout (60 seconds unless it is given; 0
 leaves the watchdog off), and *--test-hang* has Spark stop responding
 once it has started the watchdog, unless the watchdog restarted the
 machine at the end of the last boot: the *watchdog* boot test's (see
-*WATCHDOG*).
+*WATCHDOG*). The kernel's flag *test-hang* has it stop responding at
+every start instead, as an update that hangs does: the *update-hang*
+boot test's.
 
 # STARTING
 
@@ -137,16 +139,27 @@ Init: /system/commands/spark is process 1
   DUKOVO_LIVE or the DVD, read-only. The machine's own disks stay unmounted, as an installer and
   a rescue shell need them; *mount*(8) mounts one by hand.
 . The first Btrfs mounted read-write whose top holds the subvolumes
-  _@system.a_, _@settings_, _@state_, _@applications_, _@users_ and
-  _@shared_ is Dukovo's root, as *./ob image* makes it on its Dukovo root
+  _@system.a_, _@state_, _@applications_, _@users_ and _@shared_ is
+  Dukovo's root, as *./ob image* makes it on its Dukovo root
   partition. When the kernel's command line names a root,
   *root=UUID=*_uuid_, as an installed system's boot menu does, only the
   Btrfs with that UUID is (ADR 0307): an installed system starts from an
   archive of Spark alone, and the rest of the system is on that root. If
   no disk holds it, Spark says so on the console and starts nothing; look
-  there first when an installed system stops after Spark. Spark mounts
+  there first when an installed system stops after Spark. The system is
+  the slot the kernel's command line names, *slot=a* or *slot=b*, as an
+  installed system's boot menu gives it, _@system.a_ or _@system.b_, and
+  slot A without one (*sysupdate*(8), ADR 0451); Spark says which:
+  *spark: started slot a, @system.a*. With *fallback=*_slot_, the update
+  in _slot_ never proved itself, and before anything reads the settings
+  Spark puts back those from before it (ADR 0454): it keeps the failed
+  attempt's as _@snapshots/update/settings-failed_ and makes _@settings_
+  a snapshot of _@snapshots/update/settings_, a step at a time, so that a
+  start cut short carries on at the next, and marks the update's folder
+  _restored_. A root with no _@settings_, as such a cut can leave one,
+  gets an empty one, which the defaults then fill. Spark mounts
   the root again to compress if it was not, as the root always does,
-  then mounts _@system.a_ read-only on _/system_,
+  then mounts the slot read-only on _/system_,
   _@settings_ on _/system/settings_, _@state_ on _/system/state_,
   _@applications_ on _/applications_, _@users_ on _/users_ and _@shared_
   on _/shared_, each as a directory of the mount at _/volumes/_*name*
@@ -705,7 +718,7 @@ _name_ *(process* _n_*) was ended by signal 9 (stopped by the out-of-memory poli
 
 # SEE ALSO
 
-*service*(8), *shutdown*(8), *reboot*(8), *consoled*(8), *dukovo-boot*(7),
+*service*(8), *sysupdate*(8), *shutdown*(8), *reboot*(8), *consoled*(8), *dukovo-boot*(7),
 *radix-files*(7), *radix-processes*(7), *radix-posix*(7), *radix-proc*(5),
 *radix-sysfs*(5), *radix-directory*(2), *radix-process*(2),
 *radix-resource-domain*(2), *radix-power*(2), *radix-platform*(2),

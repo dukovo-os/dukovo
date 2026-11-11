@@ -34,11 +34,33 @@ fn slot(dir: &File) -> u32 {
     sys::slot_of(dir.as_raw_fd())
 }
 
-/// Makes a new, empty subvolume at `path`.
-fn create(path: &Path) -> Result<(), Fail> {
+/// Makes a new, empty subvolume at `path`, quietly, for the tools that
+/// make one as a step of their own.
+pub(crate) fn make(path: &Path) -> Result<(), Fail> {
     let (dir, name) = place(path)?;
     directory::make_subvolume(&SYS, slot(&dir), name.as_bytes())
-        .map_err(|s| util::failed(&path.display(), sys::io_error(s)))?;
+        .map_err(|s| util::failed(&path.display(), sys::io_error(s)))
+}
+
+/// Makes `dest`, a path not there yet, a snapshot of the subvolume that
+/// holds `source`, read-only if `read_only`, quietly.
+pub(crate) fn snapshot_to(source: &Path, dest: &Path, read_only: bool) -> Result<(), Fail> {
+    let from = File::open(source).map_err(|e| util::failed(&source.display(), e))?;
+    let (dir, name) = place(dest)?;
+    directory::snapshot(&SYS, slot(&from), b".", slot(&dir), name.as_bytes(), read_only)
+        .map_err(|s| util::failed(&dest.display(), sys::io_error(s)))
+}
+
+/// Removes the subvolume at `path`, with everything in it, quietly.
+pub(crate) fn remove(path: &Path) -> Result<(), Fail> {
+    let (dir, name) = place(path)?;
+    directory::remove_subvolume(&SYS, slot(&dir), name.as_bytes())
+        .map_err(|s| util::failed(&path.display(), sys::io_error(s)))
+}
+
+/// Makes a new, empty subvolume at `path`.
+fn create(path: &Path) -> Result<(), Fail> {
+    make(path)?;
     let _ = writeln!(io::stdout(), "Create subvolume '{}'", path.display());
     Ok(())
 }
@@ -67,9 +89,7 @@ fn snapshot(source: &Path, dest: &Path, read_only: bool) -> Result<(), Fail> {
 
 /// Removes the subvolume at `path`, with everything in it.
 fn delete(path: &Path) -> Result<(), Fail> {
-    let (dir, name) = place(path)?;
-    directory::remove_subvolume(&SYS, slot(&dir), name.as_bytes())
-        .map_err(|s| util::failed(&path.display(), sys::io_error(s)))?;
+    remove(path)?;
     let _ = writeln!(io::stdout(), "Delete subvolume '{}'", path.display());
     Ok(())
 }

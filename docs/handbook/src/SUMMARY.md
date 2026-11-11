@@ -26,7 +26,7 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 - [The screen reader](screen-reader.md)
 - [Text size and keys](text-size-and-keys.md)
 - [Braille displays](braille-displays.md)
-- [Updates, snapshots, backups and recovery]()
+- [Updates, snapshots, backups and recovery](updates.md)
 - [The Dukovo Admin web console]()
 - [Running services: web, databases and certificates]()
 - [Cloud and virtual machines](cloud.md)

@@ -1,0 +1,34 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+#
+# The health check of atomic updates (sysupdate(8), ADR 0453): at every
+# boot it removes a slot a stage left half built, then watches the
+# essential services that health.toml(5) names. An update being tried
+# proves itself when they run for two minutes without a restart and the
+# required checks pass, and becomes the default; one that fails restarts
+# the machine into the version before it. Any other start is seen
+# through once they run, and the boot menu stays hidden at the next.
+#
+# service.toml(5) explains each setting. `service check sysupdate`
+# checks this file, and `service edit sysupdate` checks it as you
+# save.
+
+service_version = 1
+description = "Update health check"
+program = "/system/commands/sysupdate"
+arguments = ["health"]
+# After every other service, which it watches.
+order = 90
+# It gives its result and ends.
+restart = "never"
+
+[limits]
+memory = "32M"
+
+# What it holds beyond what every service reads (service.toml(5)): the
+# whole tree, past the owners and modes of files, to remove a half-built
+# slot from the root, write the slot state on the EFI system partitions
+# and ask Spark to restart, and to run health.toml's checks. A narrower
+# view of its own comes with the updater's (ADR 0455).
+[permissions]
+runs-with-your-access = true

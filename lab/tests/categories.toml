@@ -16,6 +16,11 @@ title = "Installing"
 about = "The install stick: its menu, the installer's screens, and the installed system's first boot"
 
 [[category]]
+name = "updates"
+title = "Updates"
+about = "Updates staged in the spare slot, tried, proved and rolled back, and the boot menu and fallbacks that keep a machine starting"
+
+[[category]]
 name = "hardware"
 title = "Hardware and drivers"
 about = "The devices found and working: controllers, disks, USB, CPUs and memory"

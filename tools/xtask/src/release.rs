@@ -65,13 +65,31 @@ pub fn trusted_root(ctx: &Ctx) -> Result<(String, PathBuf)> {
     Ok((TRUSTED_ROOT.to_string(), copy))
 }
 
+/// The oldest version a release updates from directly (the updates
+/// design's section 8): the first with atomic updates, until a release
+/// needs a bridge.
+pub const UPDATES_FROM: &str = "0.14.1";
+
 /// Makes and signs the release of the slot staged at `tree` into `out`, a
 /// repository as the update server will serve one: the release list as a
 /// TUF target, and every file under its SHA-256, read back before it is
 /// done.
 pub fn make(ctx: &Ctx, tree: &Path, out: &Path) -> Result<()> {
+    make_as(ctx, tree, out, VERSION, UPDATES_FROM)
+}
+
+/// [`make`] with the release named `version`, updating from
+/// `updates_from` on: the boot tests' updates are this build with a
+/// version of their own.
+pub fn make_as(
+    ctx: &Ctx,
+    tree: &Path,
+    out: &Path,
+    version: &str,
+    updates_from: &str,
+) -> Result<()> {
     let keys = keys(ctx)?;
-    step(&format!("Signing release {VERSION} into {}", ctx.display(out)));
+    step(&format!("Signing release {version} into {}", ctx.display(out)));
     let mut cmd = Command::new(tool(ctx)?);
     cmd.arg("make")
         .arg("--tree")
@@ -80,7 +98,8 @@ pub fn make(ctx: &Ctx, tree: &Path, out: &Path) -> Result<()> {
         .arg(&keys)
         .arg("--out")
         .arg(out)
-        .args(["--version", VERSION])
+        .args(["--version", version])
+        .args(["--updates-from", updates_from])
         .args(["--commit", &commit(ctx)])
         .args(["--toolchain", &toolchain(ctx)?])
         .args(["--built", &crate::image::image_time(ctx).to_string()]);

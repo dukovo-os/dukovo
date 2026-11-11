@@ -162,6 +162,11 @@ tlb 15
 tls 22
 uefi-cdrom 11
 uefi-usb 21
+update-fallback 90
+update-hang 150
+update-panic 120
+update-power-cut 90
+update-stage 110
 usb-c 35
 usb-companions 22
 usb-devices 22

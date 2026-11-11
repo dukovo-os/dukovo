@@ -1,27 +1,31 @@
 # SPDX-FileCopyrightText: 2026 The Dukovo contributors
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 
-# GRUB configuration of an installed Dukovo Server @VERSION@, on its EFI
-# system partition. `ob image --installed` generates boot/grub/grub.cfg
-# from image/grub/installed.cfg.in by filling in the VERSION, TIMEOUT,
-# CMDLINE, MODULES, ROOT_UUID and CONSOLE placeholders. See dukovo-boot(7)
-# and ADR 0307. CONSOLE is ` console=ttyS0` on a system installed over
-# the first serial port, whose sign-in is then there too, and nothing
-# otherwise (ADR 0318).
+# GRUB configuration of an installed Dukovo Server, on its EFI system
+# partition. `ob image --installed` generates boot/grub/grub.cfg from
+# image/grub/installed.cfg.in by filling in the TIMEOUT, CMDLINE,
+# MODULES, ROOT_UUID and CONSOLE placeholders; the installer fills the
+# last two. See dukovo-boot(7) and ADRs 0307 and 0452. CONSOLE is
+# ` console=ttyS0` on a system installed over the first serial port, whose
+# sign-in is then there too, and nothing otherwise (ADR 0318).
 #
-# GRUB finds the Dukovo root by its Btrfs UUID and loads the kernel and
-# the startup archive from the system's slot, @system.a, so that they
-# change together with the system. The kernel command line names the same
-# root to Spark, which mounts it and runs everything else from it.
+# This file stays as the install wrote it. It finds the Dukovo root by
+# its Btrfs UUID, reads the slot state beside it, and hands over to the
+# menu of the default slot, startup/menu.cfg, which comes and goes with
+# the slot's kernel and startup archive, so that an update changes the
+# menu as it changes the rest of the system, all at once (ADR 0451). On a
+# mirror, each disk's EFI system partition holds this same file and its
+# own copies of the slot state, which the system writes on both.
 
 # Quiet boot (ADR 0426): the menu stays hidden for a second, in which
 # Esc or F4 shows it, and shows at once when Shift is held as the
 # computer starts, for TIMEOUT seconds. A TIMEOUT of 0 starts Dukovo at
-# once, with no hidden second. With Windows here the menu always shows,
-# below.
+# once, with no hidden second. The menu shows too after a start that did
+# not finish, and with Windows here, as the slot's menu decides.
 set timeout_style=hidden
 set timeout=1
 set default=0
+set dukovo_timeout=@TIMEOUT@
 if [ @TIMEOUT@ -eq 0 ]; then
     set timeout=0
 fi
@@ -56,53 +60,133 @@ else
     insmod vbe
 fi
 
+# What the slot's menu starts the kernel with: the root, the serial
+# console if the system keeps one, and the machine's own flags.
 search --no-floppy --fs-uuid --set=system @ROOT_UUID@
+set dukovo_root=@ROOT_UUID@
+set dukovo_console="@CONSOLE@"
+set dukovo_cmdline="@CMDLINE@"
 
-# An installed system restarts 10 seconds after a panic, so that a machine
-# nobody is at comes back by itself. `quiet` shows the startup screen in
-# place of the kernel's log, which Esc brings back (ADR 0426).
-menuentry "Dukovo Server @VERSION@ (Radix)" --id dukovo {
-    if [ -f "${prefix}/grubenv" -a "${saved_entry}" != dukovo ]; then
-        set saved_entry=dukovo
-        save_env saved_entry
+# More modules the kernel is started with, such as the CPU's microcode,
+# from this partition.
+function dukovo_modules {
+    set dukovo_modules=done
+@MODULES@}
+
+# The slot state (ADR 0452): two copies, state1 and state2, each a whole
+# GRUB environment block. A copy is whole when its check holds its fields
+# and each field is one it can hold; of two whole copies the newer counts,
+# by its generation, 0, 1, 2 and round. sysupdate(8) reads them the same
+# way. The slot's menu writes the next state over the older copy.
+function slot_read {
+    unset slot_gen
+    unset slot_default
+    unset slot_previous
+    unset slot_try
+    unset slot_tries
+    unset slot_boot
+    unset slot_check
+    set slot_ok=0
+    if [ -f "$1" ]; then
+        if load_env --file "$1" slot_gen slot_default slot_previous slot_try slot_tries slot_boot slot_check; then
+            if [ "${slot_check}" = "${slot_gen}:${slot_default}:${slot_previous}:${slot_try}:${slot_tries}:${slot_boot}" ]; then
+                set slot_ok=1
+            fi
+        fi
     fi
-    multiboot2 ($system)/@system.a/startup/radix root=UUID=@ROOT_UUID@ panic=10 quiet@CONSOLE@ @CMDLINE@
-    module2 ($system)/@system.a/startup/archive bootfs
-@MODULES@    boot
+    if [ "${slot_gen}" != 0 -a "${slot_gen}" != 1 -a "${slot_gen}" != 2 ]; then
+        set slot_ok=0
+    fi
+    if [ "${slot_default}" != a -a "${slot_default}" != b ]; then
+        set slot_ok=0
+    fi
+    if [ -n "${slot_previous}" -a "${slot_previous}" != a -a "${slot_previous}" != b ]; then
+        set slot_ok=0
+    fi
+    if [ -n "${slot_try}" -a "${slot_try}" != a -a "${slot_try}" != b ]; then
+        set slot_ok=0
+    fi
+    if [ "${slot_tries}" != 0 -a "${slot_tries}" != 1 -a "${slot_tries}" != 2 -a "${slot_tries}" != 3 ]; then
+        set slot_ok=0
+    fi
+    if [ -n "${slot_boot}" -a "${slot_boot}" != a -a "${slot_boot}" != b ]; then
+        set slot_ok=0
+    fi
 }
 
-# Windows, when this computer has it: Windows Boot Manager on Windows'
-# own EFI system partition, which GRUB starts as the firmware would, and
-# Windows' boot files are left as they are. With Windows here the menu
-# always shows, long enough to choose (ADR 0314), quiet boot or not.
-if [ "${grub_platform}" = "efi" ]; then
-    if search --no-floppy --file --set=windows /EFI/Microsoft/Boot/bootmgfw.efi; then
-        set timeout_style=menu
-        if [ "${timeout}" -lt 5 ]; then
-            set timeout=5
-        fi
-        menuentry "Windows Boot Manager" --id windows {
-            if [ -f "${prefix}/grubenv" -a "${saved_entry}" != windows ]; then
-                set saved_entry=windows
-                save_env saved_entry
-            fi
-            chainloader ($windows)/EFI/Microsoft/Boot/bootmgfw.efi
-            boot
-        }
+slot_read "${prefix}/state1"
+set first_ok="${slot_ok}"
+set first_gen="${slot_gen}"
+set first_default="${slot_default}"
+set first_previous="${slot_previous}"
+set first_try="${slot_try}"
+set first_tries="${slot_tries}"
+set first_boot="${slot_boot}"
+slot_read "${prefix}/state2"
+set second_ok="${slot_ok}"
+set slot_older="${prefix}/state1"
+set slot_newer="${prefix}/state2"
+set slot_take=2
+if [ "${first_ok}" = 1 ]; then
+    set slot_pair="${slot_gen}:${first_gen}"
+    if [ "${second_ok}" != 1 ]; then
+        set slot_take=1
+    elif [ "${slot_pair}" != "1:0" -a "${slot_pair}" != "2:1" -a "${slot_pair}" != "0:2" ]; then
+        set slot_take=1
     fi
 fi
+if [ "${slot_take}" = 1 ]; then
+    set slot_gen="${first_gen}"
+    set slot_default="${first_default}"
+    set slot_previous="${first_previous}"
+    set slot_try="${first_try}"
+    set slot_tries="${first_tries}"
+    set slot_boot="${first_boot}"
+    set slot_older="${prefix}/state2"
+    set slot_newer="${prefix}/state1"
+fi
+# The menu writes over the older copy, or over one that is not whole.
+# With neither whole, which no single cut write leaves, slot A starts,
+# with slot B offered beside it on the menu, which shows, and nothing is
+# written: the system writes the state afresh once it has started.
+if [ "${first_ok}" = 1 -o "${second_ok}" = 1 ]; then
+    set slot_ok=1
+else
+    set slot_ok=0
+    set slot_gen=0
+    set slot_default=a
+    set slot_previous=b
+    set slot_try=""
+    set slot_tries=0
+    set slot_boot=a
+fi
+if [ "${slot_default}" = b ]; then
+    set slot_other=a
+else
+    set slot_other=b
+fi
 
-# For a lost administrator's password (ADR 0253). The flags come first,
-# so they are the kernel's whatever the command line holds after a lone
-# `--`.
-menuentry "Dukovo Server @VERSION@: startup trouble" {
-    multiboot2 ($system)/@system.a/startup/radix startup-trouble root=UUID=@ROOT_UUID@ panic=10@CONSOLE@ @CMDLINE@
-    module2 ($system)/@system.a/startup/archive bootfs
-@MODULES@    boot
-}
+# The default slot's menu, or, if the default cannot be read, the other
+# slot's, which then starts as the default.
+if [ -f "($system)/@system.${slot_default}/startup/menu.cfg" ]; then
+    source "($system)/@system.${slot_default}/startup/menu.cfg"
+elif [ -f "($system)/@system.${slot_other}/startup/menu.cfg" ]; then
+    set slot_default="${slot_other}"
+    set slot_previous=""
+    set slot_try=""
+    set slot_tries=0
+    source "($system)/@system.${slot_default}/startup/menu.cfg"
+else
+    set timeout_style=menu
+    echo "Dukovo cannot find its system on the root @ROOT_UUID@."
+    echo "Check that its disk is connected, or start Try Dukovo from an install stick."
+fi
 
-# The firmware's own settings, where the firmware lets GRUB restart into
-# them.
+# Entries kept on this partition beside the menu, which work without the
+# root.
+if [ -f "${prefix}/rescue.cfg" ]; then
+    source "${prefix}/rescue.cfg"
+fi
 if [ "${grub_platform}" = "efi" ]; then
     if fwsetup --is-supported; then
         menuentry "UEFI firmware settings" --id uefi-settings {

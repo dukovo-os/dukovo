@@ -277,6 +277,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "slots"
+version = "0.14.1"
+
+[[package]]
 name = "sockets"
 version = "0.14.1"
 dependencies = [
@@ -292,6 +296,7 @@ dependencies = [
  "manifest",
  "radix-bitlocker",
  "radix-rt",
+ "slots",
 ]
 
 [[package]]

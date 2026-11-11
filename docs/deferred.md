@@ -40,8 +40,11 @@ list is kept current instead.
 | The catalog's first signed batch and deploy (`./ob catalog sign`, then `./ob catalog deploy`; ADR 0381) | The first root is signed and every image trusts it, but the server serves no bundles until a batch is signed; signing packs every port, a long build | A maintainer, before the first public release |
 | Canary machines for updates | Phase 15 uses QEMU canaries in CI; real canaries are wanted before the first public release | Before 1.0.0-alpha.1 |
 | Post-Phase-13 code audit (audit 10) | Planned and scoped; starts only on approval | Decision |
-| Phase 15 (atomic updates and snapshots) | Plan approved; coding starts on approval | Decision |
 | Phase 16 (server platform and web console) | Plan approved; starts once Phase 15 is complete, on approval | Phase 15, then a decision |
+| System releases signed on the two hardware keys: the system's TUF root, `ob release sign` with its gates and a third build that must match CI's two, the Rekor record, `ob keys ceremony` and the key runbooks (ADRs 0450, 0457) | Phase 15 signs with each build machine's own keys and tests against a local update server | Before 1.0.0-alpha.1 |
+| The security-fix process: the release branch and its bots, the advisories feed, and the daily SBOM scan against OSV and NVD (ADR 0458) | Needed once there are releases to fix | Before 1.0.0-alpha.1 |
+| The full update test matrix on a self-hosted runner: power-cut replay with QEMU's blklogwrites, upgrade paths from 12 months back, Kani on the slot-state reader, fuzzing of release lists and TUF metadata (ADR 0450) | Each needs many VM starts or tooling of its own; `update-power-cut` cuts one stage at one point meanwhile | Before 1.0.0-alpha.1 |
+| Bit-for-bit reproducible images: grub-mkrescue still writes random identifiers (ADRs 0010, 0457) | The three-build check before signing depends on it | Before 1.0.0-alpha.1 |
 | Send the 27 mlibc and frigg patches upstream | Prepared; planned after the audit's last part | Audit 10 |
 | Trademark clearance of the project's name | Legal review | Before 1.0.0-alpha.1 |
 | SECURITY.md says plainly that the alpha is unaudited; the update server is live for testers | Part of the checklist before the first public release | Before 1.0.0-alpha.1 |
@@ -104,7 +107,7 @@ machine with AMT, an AMD machine and a laptop; see
 | HWP and CPPC frequency control, thermal zones, embedded controller events, batteries and lids (ADRs 0201 to 0203) | QEMU emulates none of them | Dell, Framework |
 | The Framework Desktop's embedded controller, fans and ARGB header (ADRs 0207, 0208) | Tested against a simulated EC | Framework |
 | Corrected-error interrupts (CMCI on the Dell, Zen 5's counters) and Zen's scalable machine-check banks (ADRs 0169, 0204) | QEMU's CPUs have neither | Dell, Framework |
-| The chipset watchdogs: the Dell's TCO timer behind its SMBus controller, and the AMD FCH's (ADR 0167) | Phase 15's rollback relies on them; not proven on hardware | Dell, Framework, AMD lab machine |
+| The chipset watchdogs: the Dell's TCO timer behind its SMBus controller, and the AMD FCH's (ADR 0167), and an update that hangs falling back through them (ADR 0453; the boot test `update-hang` proves it on QEMU's i6300esb, and the lab's QEMU machines have no watchdog) | Phase 15's rollback relies on them; not proven on hardware | Dell, Framework, AMD lab machine |
 | The Dell's touchpad over Intel GPIO, I2C and HID over I2C (ADRs 0233 to 0235) | Tested against simulated controllers | Dell |
 | The Dell's DDR4 modules' SPD data (ADR 0232) | QEMU has no SPD EEPROMs | Dell |
 | The console over the xHCI Debug Capability (ADR 0160) | QEMU has no Debug Capability | A debug cable |
@@ -119,9 +122,18 @@ machine with AMT, an AMD machine and a laptop; see
 
 | Item | Why it waits | Waits on |
 | --- | --- | --- |
-| Show GRUB's menu after a boot that failed (ADR 0426) | Needs the system to mark a boot as good in GRUB's environment block | 15a |
-| The required and wanted checks of the system's health check (ADR 0386) | Service bundles have theirs; the system's comes with A/B updates | 15a |
-| Keep both disks' EFI system partitions and GRUB menus in step on the mirror layout (ADR 0315) | Only an update that changes the menu needs it | 15a |
+| Rescue on the EFI system partition, replacing the Recovery entry; USB repair and the reinstall that keeps data (ADR 0459) | The second part of 15a | 15a |
+| Fetching a release's changed files from the update server, the offline update file, `sysupdate verify` and a weekly check with the scrub (ADR 0451) | `sysupdate stage` reads a repository folder until delivery comes | 15c |
+| Waves, the rollout role, canaries, pause and pull (ADR 0456) | Update delivery | 15c |
+| The owner told of a fallback at sign-in and on the web console, with the offer to send a report (ADRs 0453, 0456) | The unified updater's notifications | 15d |
+| `rollback --settings-from-before`, shown before a rollback past the release before (ADR 0454) | The two-version rule covers one step | 15d |
+| sysupdate's own narrower capabilities in place of the administrator's access (ADR 0455) | Needs a view of the Btrfs root that leaves out `@users` | 15d |
+| Settings migrations, run before the services start, each with tests in both directions (ADR 0454) | No release has changed a settings format yet | The first release that does |
+| On a mirror, a try GRUB counts on one disk's EFI system partition is not counted on the other's until the system next writes the state (ADR 0452) | A machine must start from each disk in turn to try an update more than three times | A need |
+| When GRUB cannot write the slot state, the menu still titles the try that it then does not start (ADR 0452) | The default starts, as it should; only the title is wrong | A need |
+| A slot whose root will not mount leaves Spark with nothing to start, so its try ends only at a restart by hand (ADR 0453) | Rescue covers the root; the try needs Spark to restart | A need |
+| The failed attempt's crash log kept beside its settings (ADR 0453) | The log of the fallback says what failed | A need |
+| Installs made before 0.15.0 keep a menu that starts `@system.a` directly, and are reinstalled to take updates (ADR 0451) | No public install exists before 1.0.0-alpha.1 | A need |
 | Btrfs `send` and `receive` (ADR 0138) | Incremental backups need them | 15b |
 | `ls` marks snapshots, with their retention (ADR 0442) | `snap` defines what a snapshot is | 15b |
 | System updates served by the update server (ADR 0382) | Catalogs are served; system images come with update delivery | 15c |
