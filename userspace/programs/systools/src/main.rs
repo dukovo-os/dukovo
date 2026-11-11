@@ -154,6 +154,7 @@ mod sessions;
 mod share;
 mod signals;
 mod signin;
+mod snap;
 mod sound;
 mod ss;
 mod ssh_askpass;
@@ -316,6 +317,7 @@ const TOOLS: &[(&str, Tool)] = &[
     ("setfacl", facl::setfacl),
     ("share", share::main),
     ("shutdown", power::shutdown),
+    ("snap", snap::main),
     ("ss", ss::main),
     ("ssh-askpass-keyring", ssh_askpass::main),
     ("subvolume", subvolume::main),

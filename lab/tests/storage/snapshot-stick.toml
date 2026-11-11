@@ -1,0 +1,45 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "snap keeps snapshots of a subvolume of a Btrfs stick in /volumes, in the stick's own @snapshots, and restores a file from one (ADR 0461)"
+time = "5m"
+
+[[step]]
+usb = "plug"
+blank = "256M"
+[[step]]
+wait = "5s"
+# Find the stick by its size, which no system disk has, and keep its name
+# in the lab's home for the steps below, which root runs.
+[[step]]
+run = "lsblk -dn | awk '$2 == \"256M\" && $4 == \"disk\" { print $1 }' > ~/lab-stick && cat ~/lab-stick"
+expect = "sd"
+[[step]]
+run = "sh -c 'mkfs-btrfs -f -L LABSNAP /devices/$(cat /users/lab/lab-stick)'"
+root = true
+expect = "Label:              LABSNAP"
+[[step]]
+run = "sh -c 'mkdir -p /volumes/lab-stick && mount /devices/$(cat /users/lab/lab-stick) /volumes/lab-stick && subvolume create /volumes/lab-stick/work && echo stick note > /volumes/lab-stick/work/note.txt'"
+root = true
+expect = "Create subvolume"
+# The first snapshot makes the stick's @snapshots, and a folder for work.
+[[step]]
+run = "snap create /volumes/lab-stick/work"
+root = true
+expect = "/volumes/lab-stick/@snapshots/work/"
+[[step]]
+run = "sh -c 'rm /volumes/lab-stick/work/note.txt && snap restore /volumes/lab-stick/work/note.txt && cat /volumes/lab-stick/work/note.txt'"
+root = true
+expect = ["Restored /volumes/lab-stick/work/note.txt from /volumes/lab-stick/@snapshots/work/", "stick note"]
+[[step]]
+run = "snap list /volumes/lab-stick/work"
+expect = ["NAME", "newest, daily, weekly"]
+[[step]]
+run = "umount /volumes/lab-stick"
+root = true
+[[step]]
+run = "sh -c 'fsck-btrfs /devices/$(cat /users/lab/lab-stick)'"
+root = true
+expect = "no error found"
+[[step]]
+usb = "unplug"

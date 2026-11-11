@@ -1767,6 +1767,11 @@ impl Node for BtrfsNode {
         })
     }
 
+    fn subvolume(&self) -> Result<radix_vfs::Subvolume> {
+        let _reading = self.fs.reading();
+        crate::subvol::info(&self.fs.volume, self.subvol)
+    }
+
     fn remove_subvolume(&self, name: &str) -> Result<()> {
         self.is_dir()?;
         check_name(name)?;

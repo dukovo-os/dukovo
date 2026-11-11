@@ -475,6 +475,10 @@ smbd userspace/programs/systools/src/signals.rs
 smbios kernel/lib/smbios/ userspace/programs/systools/src/hwinfo.rs
 smbus kernel/drivers/smbus/ kernel/lib/spd/ userspace/programs/systools/src/hwinfo.rs
 smep kernel/arch/
+snapshots kernel/fs/btrfs/ kernel/radix/src/user/files.rs ports/mlibc/ ports/uutils-coreutils/
+snapshots userspace/defaults/snap.toml userspace/defaults/spark/services/snap.toml userspace/spark/
+snapshots userspace/programs/systools/src/snap.rs userspace/programs/systools/src/snap/
+snapshots userspace/programs/systools/src/subvolume.rs userspace/programs/systools/src/bundles.rs
 sockets kernel/net/ userspace/sockets/
 spark userspace/hello/
 spark-network userspace/posix/netgrant.c userspace/spark/tests/services/network/

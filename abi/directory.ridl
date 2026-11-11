@@ -357,6 +357,54 @@ struct Qgroup {
     max_exclusive: u64;
 }
 
+/// The flag of SubvolumeInfo's `flags` for a subvolume nothing in may
+/// change, as Btrfs keeps it (`BTRFS_ROOT_SUBVOL_RDONLY`).
+const SUBVOLUME_READ_ONLY: u64 = 1;
+
+/// What `subvolume` writes of a Btrfs subvolume (ADR 0461), as Linux's
+/// `BTRFS_IOC_GET_SUBVOL_INFO` gives it: this, then the subvolume's name.
+/// Times are nanoseconds since 1970, 0 for never.
+struct SubvolumeInfo {
+    /// Its ID, the number of its tree: 5 for the top of the filesystem.
+    id: u64;
+    /// The ID of the subvolume that holds it; 0 for the top.
+    parent: u64;
+    /// The inode number, in its parent, of the folder that holds it; 0
+    /// for the top.
+    directory: u64;
+    /// The transaction that last wrote its tree.
+    generation: u64;
+    /// Its flags: SUBVOLUME_READ_ONLY when nothing in it may change.
+    flags: u64;
+    /// The transaction that last changed a file in it.
+    changed_transaction: u64;
+    /// The transaction that made it.
+    made_transaction: u64;
+    /// The transaction it was sent in, for one received.
+    sent_transaction: u64;
+    /// The transaction that received it.
+    received_transaction: u64;
+    /// When a file in it last changed.
+    changed: u64;
+    /// When it was made.
+    made: u64;
+    /// When it was sent, for one received.
+    sent: u64;
+    /// When it was received.
+    received: u64;
+    /// Its UUID.
+    uuid: [u8; 16];
+    /// The UUID of the subvolume it is a snapshot of; zeros if it is no
+    /// snapshot.
+    parent_uuid: [u8; 16];
+    /// The UUID of the subvolume it was received from; zeros if it was
+    /// not received.
+    received_uuid: [u8; 16];
+    /// The length of its name, the entry's in the folder that holds it,
+    /// whose bytes follow; 0 for the top.
+    name_length: u64;
+}
+
 /// An entry `list` writes: this header, then the name's bytes, then
 /// zeros up to a multiple of 8 bytes.
 struct DirEntry {
@@ -1047,4 +1095,15 @@ interface directory = 0x000b version 9 {
         raises [no_such_slot, empty_slot, wrong_kind, missing_rights, invalid_argument, no_memory,
                 bad_address, not_found, not_directory, name_too_long, bad_name, outside,
                 too_many_links, denied, out_of_range, not_supported];
+    /// Writes what Btrfs keeps of the subvolume that holds the file or
+    /// directory at `path` (`.` for this one) into `buffer`, as a
+    /// SubvolumeInfo and then as much of its name as fits, as Linux's
+    /// `BTRFS_IOC_GET_SUBVOL_INFO` gives it to anyone who can open the
+    /// file (ADR 0461). A buffer smaller than a SubvolumeInfo fails with
+    /// invalid_argument. Other filesystems fail with not_supported. Needs
+    /// the read right.
+    method subvolume = 51 (path: in bytes, buffer: out bytes) -> ()
+        raises [no_such_slot, empty_slot, missing_rights, invalid_argument, no_memory,
+                bad_address, not_found, not_directory, name_too_long, bad_name, outside,
+                too_many_links, denied, not_supported, io, corrupt];
 }

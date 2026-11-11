@@ -1,0 +1,30 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+#
+# Snapshots: snap(1) makes a read-only snapshot of each place that
+# snap.toml(5) names when it starts and then once a day, and removes those
+# the retention there no longer keeps (ADR 0461). Snapshots of the root
+# are in /snapshots.
+#
+# service.toml(5) explains each setting. `service check snap` checks
+# this file, and `service edit snap` checks it as you save.
+
+service_version = 1
+description = "Snapshots"
+program = "/system/commands/snap"
+arguments = ["auto", "--watch"]
+# After the disks are mounted and the consoles are up.
+order = 55
+# Started again if it fails: always, on-failure or never.
+restart = "on-failure"
+
+[limits]
+memory = "32M"
+
+# What it holds beyond what every service reads (service.toml(5)): the
+# whole tree, past the owners and modes of files, since snap.toml may
+# name any subvolume, and @snapshots is reached through the top of each
+# filesystem in /volumes. A narrower view comes with the updater's (ADR
+# 0455).
+[permissions]
+runs-with-your-access = true

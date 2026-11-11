@@ -89,7 +89,7 @@ of the tree that changes is a subvolume of its own:
 | `@applications` | `/applications` |
 | `@users` | `/users` |
 | `@shared` | `/shared` |
-| `@snapshots` | not mounted |
+| `@snapshots` | `/snapshots`, read-only |
 
 When Dukovo boots from a disk it can see that holds one, a SATA, NVMe,
 virtio or USB disk, Spark mounts these from it, and settings, files and everything else
@@ -118,11 +118,15 @@ shares the disk's blocks with it until either changes them, so it takes
 room only for what changes since. A read-only snapshot of `/users`:
 
 ```sh
-subvolume snapshot -r /users /volumes/sda5/@snapshots/users-monday
+subvolume snapshot -r /users /volumes/sda5/@snapshots/users/monday
 ```
 
-Atomic updates (Phase 15) add `snap`, which makes, lists, restores and
-prunes snapshots on its own.
+`snap`(1) does this for you: every day it makes a read-only snapshot of
+`/users`, `/shared` and `/system/settings`, which `/snapshots` shows,
+keeps those of the last 7 days and 4 weeks, and brings back a file
+from them with `snap restore` (ADR 0461). `ls -l` marks a snapshot
+`[snapshot, read-only]`, and `subvolume show` tells what it is a
+snapshot of. The chapter on updates and snapshots says more.
 
 A copy within Btrfs is a clone too: `cp` makes the copy share the
 original's blocks, as `cp --reflink=auto` does on Linux, so a copy of a

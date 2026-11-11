@@ -15,15 +15,16 @@
 //! is below it by the tree, which is going: first it comes to refer by
 //! its address, and so does every block below it the tree owns.
 
-use radix_vfs::mem::KArc;
-use radix_vfs::{Error, Result};
+use radix_vfs::mem::{self, KArc};
+use radix_vfs::{Error, Result, Subvolume};
 
 use crate::cow::{Via, Writer, below};
 use crate::dir::Entries;
 use crate::files::{Files, at, put_time, put_u16, put_u32, put_u64};
-use crate::format::{Key, RootItem, item, tree, u64_at};
+use crate::format::{Key, RootItem, item, tree, u16_at, u32_at, u64_at};
 use crate::refs::{Backref, FULL_BACKREF, refs_flags};
-use crate::tree::{Block, Bounds, MAX_LEVEL, Root, read_block};
+use crate::tree::{Block, Bounds, Cursor, MAX_LEVEL, Root, read_block};
+use crate::volume::Volume;
 
 /// Where a root item keeps its fields, after the inode item it starts
 /// with.
@@ -75,6 +76,88 @@ const ROOT_REF_HEADER: usize = 18;
 /// The UUID tree's key for `uuid` as `kind`.
 fn uuid_key(uuid: &[u8], kind: u8) -> Key {
     Key::new(u64_at(uuid, 0), kind, u64_at(uuid, 8))
+}
+
+/// A time a root item keeps, at `at`: seconds and nanoseconds, as
+/// nanoseconds since 1970.
+fn time_at(bytes: &[u8], at: usize) -> u64 {
+    let nanos = u64::from(u32_at(bytes, at + 8)).min(999_999_999);
+    u64_at(bytes, at).saturating_mul(1_000_000_000).saturating_add(nanos)
+}
+
+/// What the root tree keeps of subvolume `id` (ADR 0461), as Linux's
+/// `btrfs_ioctl_get_subvol_info` reads it: its root item, and the back
+/// reference that names it in its parent. The caller holds the
+/// transaction on a writable mount. Fails with [`Error::NotFound`] if
+/// there is no such subvolume, or it was removed.
+pub(crate) fn info(volume: &Volume, id: u64) -> Result<Subvolume> {
+    let mut info = root_item(volume, id)?;
+    named(volume, id, &mut info)?;
+    Ok(info)
+}
+
+/// Subvolume `id` as its root item has it, with no name or parent yet.
+#[inline(never)]
+fn root_item(volume: &Volume, id: u64) -> Result<Subvolume> {
+    let cursor = Cursor::seek(volume, &volume.root_tree(), &Key::first(id, item::ROOT_ITEM))?;
+    let Some((key, d)) = cursor.get() else { return Err(Error::NotFound) };
+    if !key.is(id, item::ROOT_ITEM) {
+        return Err(Error::NotFound);
+    }
+    let found = RootItem::read(d).ok_or(Error::Corrupt)?;
+    if found.refs == 0 && id != tree::FS {
+        return Err(Error::NotFound);
+    }
+    // An item older than Linux 3.5's ends before its UUIDs and times, and
+    // one a kernel that old wrote since has them out of date: Linux reads
+    // both as zeros.
+    let current = u64_at(d, root_at::GENERATION_V2) == found.generation;
+    let field = |at: usize, len: usize| d.get(at..at + len).filter(|_| current);
+    let word = |at: usize| field(at, 8).map_or(0, |b| u64_at(b, 0));
+    let time = |at: usize| field(at, 12).map_or(0, |b| time_at(b, 0));
+    let uuid = |at: usize| {
+        let mut uuid = [0u8; 16];
+        if let Some(b) = field(at, 16) {
+            uuid.copy_from_slice(b);
+        }
+        uuid
+    };
+    Ok(Subvolume {
+        id,
+        parent: 0,
+        directory: 0,
+        generation: found.generation,
+        flags: found.flags,
+        changed_transaction: word(root_at::CTRANSID),
+        made_transaction: word(root_at::OTRANSID),
+        sent_transaction: word(root_at::STRANSID),
+        received_transaction: word(root_at::RTRANSID),
+        changed: time(root_at::CTIME),
+        made: time(root_at::OTIME),
+        sent: time(root_at::STIME),
+        received: time(root_at::RTIME),
+        uuid: uuid(root_at::UUID),
+        parent_uuid: uuid(root_at::PARENT_UUID),
+        received_uuid: uuid(root_at::RECEIVED_UUID),
+        name: mem::vec(),
+    })
+}
+
+/// Gives `info` subvolume `id`'s parent, folder and name, from its back
+/// reference; the top has none.
+#[inline(never)]
+fn named(volume: &Volume, id: u64, info: &mut Subvolume) -> Result<()> {
+    let cursor = Cursor::seek(volume, &volume.root_tree(), &Key::first(id, item::ROOT_BACKREF))?;
+    if let Some((key, data)) = cursor.get()
+        && key.is(id, item::ROOT_BACKREF)
+    {
+        let len = usize::from(u16_at(data, 16));
+        let name = data.get(ROOT_REF_HEADER..ROOT_REF_HEADER + len).ok_or(Error::Corrupt)?;
+        info.parent = key.offset;
+        info.directory = u64_at(data, 0);
+        mem::extend(&mut info.name, name)?;
+    }
+    Ok(())
 }
 
 /// A block on the way down a tree being dropped.

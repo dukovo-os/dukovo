@@ -1,0 +1,46 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "The snap service keeps the day's snapshots of /users, /shared and /system/settings in /snapshots, read-only; a deleted file comes back with snap restore without an administrator, and nothing in a snapshot can be written (ADR 0461)"
+time = "3m"
+
+# The service made today's snapshots as the system started.
+[[step]]
+run = "snap list"
+expect = ["PLACE", "/users", "/shared", "/system/settings", "/snapshots/users", "/snapshots/settings"]
+[[step]]
+run = "findmnt /snapshots"
+expect = ["btrfs", "ro"]
+# A note of the lab account's, kept in a snapshot with a name.
+[[step]]
+run = "echo lab note > ~/lab-snap-note.txt"
+[[step]]
+run = "snap create --name lab-test /users"
+root = true
+expect = "/snapshots/users/lab-test"
+[[step]]
+run = "ls -ld --subvolumes=always /snapshots/users/lab-test"
+expect = "[snapshot, read-only]"
+# Deleted, it comes back, restored by the account itself.
+[[step]]
+run = "rm ~/lab-snap-note.txt && snap restore ~/lab-snap-note.txt && cat ~/lab-snap-note.txt"
+expect = ["Restored /users/lab/lab-snap-note.txt from /snapshots/users/lab-test/lab/lab-snap-note.txt", "lab note"]
+# It is not written over.
+[[step]]
+run = "snap restore ~/lab-snap-note.txt"
+exit = 1
+expect = "is there; restore it beside it with --to"
+# Nothing in a snapshot can be written, by anyone.
+[[step]]
+run = "touch /snapshots/users/lab-test/lab/new.txt"
+exit = 1
+expect = "Read-only file system"
+[[step]]
+run = "snap list /users"
+expect = ["NAME", "lab-test", "named", "newest"]
+[[step]]
+run = "snap delete /users lab-test"
+root = true
+expect = "Removed /snapshots/users/lab-test"
+[[step]]
+run = "rm ~/lab-snap-note.txt"

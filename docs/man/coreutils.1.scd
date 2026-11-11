@@ -105,9 +105,10 @@ unless it is given or, for *--subvolumes*, on a terminal (ADRs 0440 to
 *--subvolumes*[=_when_]
 	With *-l*, *[subvolume]* after each folder that is the top of a
 	Btrfs subvolume, or *[subvolume, read-only]* when nothing in it can
-	be changed, as _/system_. _when_ is *always*, *never*, or *auto*,
-	the default: when standard output is a terminal. Which subvolumes
-	are snapshots is not shown yet.
+	be changed, as _/system_; *[snapshot]* or *[snapshot, read-only]*
+	for one made as a snapshot of another, as each in _/snapshots_
+	(*snap*(1), ADR 0461). _when_ is *always*, *never*, or *auto*, the
+	default: when standard output is a terminal.
 
 *--grants*
 	Instead of listing each _file_, or the current folder, say who can
