@@ -4,7 +4,7 @@
  *
  * The support center's script: search, the menus and the contents filter.
  * search-index.js, written by `ob docs site`, sets DOCS to one entry per
- * page and heading: [title, kind, link from the site's root, summary].
+ * page and per other name of a page: [title, kind, link from the site's root, summary].
  * The page's <body data-root> says how to reach the root from the page.
  */
 (function () {

@@ -181,7 +181,7 @@ mod tests {
 
     #[test]
     fn takes_the_title_summary_and_headings() {
-        let text = "<!--\nSPDX-License-Identifier: MIT\n-->\n\n# Networking\n\n\
+        let text = "<!--\nA note for editors\n-->\n\n# Networking\n\n\
                     This chapter describes networking. It has more.\n\n\
                     ## Wired links\n\nText.\n\n## Wired links\n\n### Deeper\n";
         let page = render(text, &|url| url.to_string());
@@ -196,7 +196,7 @@ mod tests {
         );
         assert!(page.body.contains("<h2 id=\"wired-links\">Wired links</h2>"));
         assert!(page.body.contains("<h3 id=\"deeper\">Deeper</h3>"));
-        assert!(!page.body.contains("SPDX"));
+        assert!(!page.body.contains("editors"));
         assert!(!page.body.contains("<h1"));
     }
 
