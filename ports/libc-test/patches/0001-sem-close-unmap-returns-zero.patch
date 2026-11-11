@@ -1,0 +1,17 @@
+SPDX-FileCopyrightText: 2026 The Dukovo contributors
+SPDX-License-Identifier: Apache-2.0 OR MIT
+
+regression/sem_close-unmap ends by falling off the end of main, which
+returns 0 only from a function named main. build.sh renames each test's
+main, so the test returned what was left in a register, and Clang, free
+to choose, returned 1: it now returns 0 itself, as the other tests
+return t_status. Radix's alone.
+
+--- a/src/regression/sem_close-unmap.c
++++ b/src/regression/sem_close-unmap.c
+@@ -16,4 +16,5 @@
+ 	sem_close(sem);
+ 	// semaphore should be still mapped
+ 	sem_post(sem);
++	return 0;
+ }

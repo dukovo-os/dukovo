@@ -178,6 +178,10 @@ int Sysdeps<VmMap>::operator()(void *hint, size_t size, int prot, int flags, int
 	struct radix_address_space_map_file_results r;
 	uint64_t status = radix_address_space_map_file(radix::SLOT_SPACE, address, size, rights,
 			map_flags, slot, static_cast<uint64_t>(offset), &r);
+	// A file that cannot be mapped so: ENODEV, as Linux's mmap says it.
+	if(RADIX_STATUS_DOMAIN(status) == RADIX_FILE_ERROR_DOMAIN
+			&& RADIX_STATUS_CODE(status) == RADIX_FILE_NO_DEVICE)
+		return ENODEV;
 	if(status)
 		return radix::to_errno(status);
 	*window = reinterpret_cast<void *>(r.address);
