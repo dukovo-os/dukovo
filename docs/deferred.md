@@ -275,6 +275,7 @@ machine asks for them.
 | Floppy drives 2 and 3, 5.25-inch drives, and 2.88 MB disks | ADRs 0435, 0436 |
 | CompactFlash in PCMCIA and CardBus adapters | ADR 0446 |
 | MS-JIS CD-Text | ADR 0447 |
+| Writing CD-Text when burning a CD | ADR 0449 |
 | FLAC with linear prediction, a few per cent smaller | ADR 0447 |
 
 ### Accounts, bundles and the console
