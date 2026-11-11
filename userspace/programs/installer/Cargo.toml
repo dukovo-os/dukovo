@@ -40,6 +40,9 @@ ring = "0.17.14"
 # The answers file, in JSON.
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.140"
+# The slot state the menu starts the system by, both copies written on
+# each EFI system partition (ADR 0452).
+slots = { path = "../slots" }
 # The signed release on the install stick, read from the root the system
 # trusts (ADR 0308).
 system-release = { path = "../system-release" }

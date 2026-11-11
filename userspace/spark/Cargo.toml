@@ -22,6 +22,10 @@ manifest = { path = "../programs/manifest" }
 # To name a locked BitLocker volume (ADR 0240): its format only.
 radix-bitlocker = { path = "../../kernel/fs/bitlocker" }
 radix-rt = { path = "../radix-rt" }
+# The slot GRUB started and the update it fell back from, from the
+# kernel's command line, and the steps that put the settings back after
+# a fallback (ADRs 0451 and 0454). Named apart from radix-rt's slots.
+system-slots = { package = "slots", path = "../programs/slots" }
 
 [lints]
 workspace = true

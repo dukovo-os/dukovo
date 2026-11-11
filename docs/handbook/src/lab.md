@@ -98,8 +98,8 @@ their order and their titles on the runner page are in
 `lab/tests/categories.toml`: boot and power, hardware and drivers, sound,
 processes and monitors, disks and filesystems, network, SSH, services and
 logs, time and date, accounts and elevate, commands, the console,
-installing, stress and soak, security, performance against Linux, and
-file sharing. Add one there when a new kind of test needs it. This test pulls the network cable:
+installing, updates, stress and soak, security, performance against
+Linux, and file sharing. Add one there when a new kind of test needs it. This test pulls the network cable:
 
 ```toml
 about = "The network cable comes out and goes back in, and the network comes back"
@@ -172,6 +172,14 @@ installed system with the account the screens made. A test with `boot =
 machine's optical drive in the same way; `install/from-dvd` installs
 from it, takes the disc out with `disc = "eject"` and restarts from the
 disk.
+
+The update tests stage signed test updates of the same tree, which `./ob
+lab` builds in `out/lab/updates` and names to the lab in
+`DUKOVO_LAB_UPDATES`: `good`, a newer version of the lab image's system,
+and `broken`, whose log service cannot start. A host step copies one
+onto the machine over SSH (`lab/tests/updates/copy-update.sh`), and the
+test stages it with `sysupdate stage`. Without them, as with an image
+given by `--image`, those tests are skipped and say why.
 
 Removable media go in and out with steps of their own: `usb` plugs and
 pulls a USB stick, `card` puts a memory card in a card reader, `disc` a

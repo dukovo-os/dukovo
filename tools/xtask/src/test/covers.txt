@@ -128,8 +128,8 @@ console-access kernel/lib/fbcon/ tools/xtask/src/screen.rs userspace/defaults/co
 console-access userspace/programs/consoled/ userspace/programs/systools/src/reader.rs
 consoles kernel/lib/fbcon/ kernel/lib/hid/ kernel/lib/input/ kernel/lib/tty/
 consoles tools/xtask/src/screen.rs tools/xtask/src/vt.rs userspace/defaults/console/
-consoles userspace/defaults/keyboard/ userspace/defaults/nukesh/ userspace/programs/consoled/
-consoles userspace/programs/keymap/ userspace/programs/nukesh/
+consoles userspace/defaults/keyboard/ userspace/defaults/nukesh/ userspace/defaults/spark/services/
+consoles userspace/programs/consoled/ userspace/programs/keymap/ userspace/programs/nukesh/
 consoles userspace/programs/systools/src/keymaps.rs userspace/programs/systools/src/notifyd.rs
 consoles userspace/programs/systools/src/xxd.rs
 crash-log-bios kernel/lib/klog/
@@ -204,6 +204,7 @@ install-bios image/grub/installed.cfg.in tools/xtask/src/grub.rs tools/xtask/src
 install-bios userspace/programs/consoled/ userspace/programs/disk/ userspace/programs/installer/
 install-bios userspace/programs/systools/src/efiboot.rs userspace/programs/systools/src/mkfs.rs
 install-bios userspace/programs/systools/src/rdisk.rs
+install-bios image/grub/menu.cfg userspace/programs/slots/
 install-dvd image/grub/installed.cfg.in image/grub/live.cfg.in kernel/drivers/ide/
 install-dvd kernel/fs/iso9660/ kernel/radix/src/fs/disk/ide.rs kernel/radix/src/fs/disk/optical.rs
 install-dvd kernel/radix/src/fs/disk/optical_port.rs
@@ -226,14 +227,16 @@ install-mirror userspace/programs/systools/src/blkid.rs userspace/programs/systo
 install-mirror userspace/programs/systools/src/efiboot.rs userspace/programs/systools/src/mkfs.rs
 install-mirror userspace/programs/systools/src/rdisk.rs userspace/programs/systools/src/replace.rs
 install-mirror userspace/programs/systools/src/scrub.rs
+install-mirror image/grub/menu.cfg userspace/programs/slots/
 install-screens image/grub/installed.cfg.in tools/xtask/src/grub.rs tools/xtask/src/grub_theme.rs
 install-screens userspace/features/ userspace/programs/consoled/ userspace/programs/disk/
 install-screens userspace/programs/installer/ userspace/programs/manifest/
 install-screens userspace/programs/systools/src/dig.rs userspace/programs/systools/src/efiboot.rs
 install-screens userspace/programs/systools/src/feature.rs userspace/programs/systools/src/mkfs.rs
 install-screens userspace/programs/systools/src/rdisk.rs
-install-serial image/grub/installed.cfg.in kernel/drivers/uart/ tools/xtask/src/grub.rs
-install-serial tools/xtask/src/grub_theme.rs userspace/programs/consoled/ userspace/programs/disk/
+install-serial image/grub/installed.cfg.in image/grub/menu.cfg kernel/drivers/uart/
+install-serial tools/xtask/src/grub.rs tools/xtask/src/grub_theme.rs userspace/programs/consoled/
+install-serial userspace/programs/disk/
 install-serial userspace/programs/installer/ userspace/programs/systools/src/efiboot.rs
 install-serial userspace/programs/systools/src/last.rs userspace/programs/systools/src/mkfs.rs
 install-serial userspace/programs/systools/src/rdisk.rs
@@ -246,6 +249,7 @@ install-uefi userspace/programs/installer/ userspace/programs/manifest/
 install-uefi userspace/programs/systools/src/dig.rs userspace/programs/systools/src/efiboot.rs
 install-uefi userspace/programs/systools/src/feature.rs userspace/programs/systools/src/mkfs.rs
 install-uefi userspace/programs/systools/src/rdisk.rs
+install-uefi image/grub/menu.cfg userspace/programs/slots/
 install-web image/grub/installed.cfg.in ports/openssl/ tools/xtask/src/grub.rs
 install-web tools/xtask/src/grub_theme.rs userspace/programs/consoled/ userspace/programs/disk/
 install-web userspace/programs/installer/ userspace/programs/systools/src/efiboot.rs
@@ -255,10 +259,12 @@ installed-bios image/grub/installed.cfg.in tools/xtask/src/grub.rs tools/xtask/s
 installed-bios tools/xtask/src/release.rs userspace/programs/accounts/ userspace/programs/installer/
 installed-bios userspace/programs/system-release/ userspace/programs/systools/src/dig.rs
 installed-bios userspace/programs/systools/src/releases.rs
+installed-bios image/grub/menu.cfg userspace/programs/slots/
 installed-uefi image/grub/installed.cfg.in tools/xtask/src/grub.rs tools/xtask/src/grub_theme.rs
 installed-uefi tools/xtask/src/release.rs userspace/programs/accounts/ userspace/programs/installer/
 installed-uefi userspace/programs/system-release/ userspace/programs/systools/src/dig.rs
 installed-uefi userspace/programs/systools/src/releases.rs
+installed-uefi image/grub/menu.cfg userspace/programs/slots/
 interfaces kernel/drivers/virtio/ kernel/net/ userspace/posix/interfaces.c
 interfaces userspace/programs/systools/src/ip.rs userspace/programs/systools/src/netd.rs
 interfaces userspace/programs/systools/src/ss.rs
@@ -501,6 +507,25 @@ uefi-cdrom kernel/lib/bootinfo/ kernel/lib/uacpi/ tools/xtask/src/grub.rs
 uefi-usb image/grub/grub.cfg.in kernel/arch/ kernel/drivers/scsi/ kernel/drivers/usb/
 uefi-usb kernel/drivers/xhci/ kernel/hal/ kernel/lib/acpi/ kernel/lib/bootinfo/
 uefi-usb tools/xtask/src/grub.rs
+update-fallback image/grub/installed.cfg.in image/grub/menu.cfg userspace/programs/slots/
+update-fallback userspace/defaults/sysupdate/ userspace/programs/systools/src/subvolume.rs
+update-fallback userspace/programs/systools/src/sysupdate.rs userspace/programs/systools/src/sysupdate/
+update-fallback userspace/spark/src/main.rs
+update-hang image/grub/installed.cfg.in image/grub/menu.cfg kernel/drivers/watchdog/
+update-hang userspace/programs/slots/ userspace/programs/systools/src/sysupdate.rs
+update-hang userspace/programs/systools/src/sysupdate/ userspace/spark/src/main.rs
+update-hang userspace/spark/src/supervisor.rs
+update-panic image/grub/installed.cfg.in image/grub/menu.cfg kernel/radix/src/panic.rs
+update-panic userspace/programs/slots/ userspace/programs/systools/src/sysupdate.rs
+update-panic userspace/programs/systools/src/sysupdate/ userspace/spark/src/main.rs
+update-power-cut kernel/fs/btrfs/ userspace/programs/slots/ userspace/programs/system-release/
+update-power-cut userspace/programs/systools/src/subvolume.rs userspace/programs/systools/src/sysupdate.rs
+update-power-cut userspace/programs/systools/src/sysupdate/
+update-stage image/grub/installed.cfg.in image/grub/menu.cfg kernel/fs/btrfs/ tools/xtask/src/release.rs
+update-stage userspace/defaults/sysupdate/ userspace/programs/disk/src/esp.rs userspace/programs/slots/
+update-stage userspace/programs/system-release/ userspace/programs/systools/src/subvolume.rs
+update-stage userspace/programs/systools/src/sysupdate.rs userspace/programs/systools/src/sysupdate/
+update-stage userspace/programs/tuf/
 usb-c kernel/drivers/ucsi/ kernel/drivers/usb/ kernel/drivers/usbhc/ kernel/drivers/xhci/
 usb-c tools/xtask/src/acpi/
 usb-companions kernel/drivers/usb/ kernel/drivers/usbhc/ kernel/drivers/xhci/ ports/usbids/

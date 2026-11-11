@@ -715,6 +715,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "slots"
+version = "0.14.1"
+
+[[package]]
 name = "subtle"
 version = "2.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -830,6 +834,7 @@ dependencies = [
  "ridlc",
  "rustc-demangle",
  "serde",
+ "slots",
  "toml",
 ]
 

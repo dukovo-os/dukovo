@@ -813,3 +813,36 @@ fn files_go_in_an_efi_system_partitions_fat() {
     let blank = Image::new(1 << 20);
     assert!(crate::esp::has_file(blank.device(512), "EFI/BOOT/BOOTX64.EFI").is_err());
 }
+
+#[cfg(feature = "fat")]
+#[test]
+fn a_file_of_the_same_length_is_written_where_it_is() {
+    let image = Image::new(48 << 20);
+    let options = fat::Options { bits: Some(32), ..fat::Options::default() };
+    fat::format(&image.device(512), &options, &mut Rng::seeded(5)).unwrap();
+    let block = |fill: u8| {
+        let mut block = b"# GRUB Environment Block\n".to_vec();
+        block.resize(1024, fill);
+        block
+    };
+    let at = |data: &[u8]| {
+        let bytes = std::fs::read(image.path()).unwrap();
+        bytes.windows(data.len()).position(|window| window == data)
+    };
+    let path = "boot/grub/state1";
+    assert_eq!(crate::esp::read_file(image.device(512), path, 4096), Ok(None));
+    crate::esp::overwrite_file(image.device(512), path, &block(b'#')).unwrap();
+    let first = at(&block(b'#')).expect("the file is on the disk");
+    // The same length again: the same sectors, and nothing else of it.
+    crate::esp::overwrite_file(image.device(512), path, &block(b'x')).unwrap();
+    assert_eq!(at(&block(b'x')), Some(first));
+    assert_eq!(at(&block(b'#')), None);
+    assert_eq!(crate::esp::read_file(image.device(512), path, 4096), Ok(Some(block(b'x'))));
+    assert_eq!(crate::esp::read_file(image.device(512), path, 30).unwrap().unwrap().len(), 30);
+    // Another length is written as a new file is.
+    crate::esp::overwrite_file(image.device(512), path, b"short").unwrap();
+    assert_eq!(crate::esp::read_file(image.device(512), path, 4096), Ok(Some(b"short".to_vec())));
+    let (ok, text) = run("fsck.fat", &["-n", image.path()]);
+    assert!(ok, "{text}");
+    assert_eq!(crate::esp::read_file(image.device(512), "boot/grub", 4096), Ok(None));
+}

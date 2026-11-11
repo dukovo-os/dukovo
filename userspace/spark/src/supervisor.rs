@@ -528,9 +528,11 @@ pub struct Supervisor {
     program: Option<Program>,
     shutdown: Option<Shutdown>,
     /// The watchdog's timeout to ask for, 0 for none, and whether to stop
-    /// responding once it runs (`--test-hang`).
+    /// responding once it runs: at the first start (`--test-hang`), or at
+    /// every start (the kernel's `test-hang`).
     watchdog_seconds: u32,
     hang: bool,
+    hang_always: bool,
     /// While the watchdog runs: how often Spark pets it, and when next.
     pets: Option<(u64, u64)>,
 }
@@ -593,20 +595,24 @@ impl Supervisor {
             shutdown: None,
             watchdog_seconds: WATCHDOG_SECONDS,
             hang: false,
+            hang_always: false,
             pets: None,
         }
     }
 
     /// Sets the watchdog's timeout, 0 to leave it off, and whether Spark
-    /// stops responding once it runs.
-    pub fn set_watchdog(&mut self, seconds: u32, hang: bool) {
+    /// stops responding once it runs: at the first start, `hang`, or at
+    /// every start, `always`.
+    pub fn set_watchdog(&mut self, seconds: u32, hang: bool, always: bool) {
         self.watchdog_seconds = seconds;
         self.hang = hang;
+        self.hang_always = always;
     }
 
     /// Starts the watchdog, if the kernel drives one. With `--test-hang`,
     /// Spark then stops responding, unless the watchdog restarted the
-    /// machine at the end of the last boot.
+    /// machine at the end of the last boot; with the kernel's `test-hang`,
+    /// whether it did or not.
     fn start_watchdog(&mut self) {
         let Some(power) = self.power else { return };
         if self.watchdog_seconds == 0 {
@@ -622,6 +628,12 @@ impl Supervisor {
         }
         let every = u64::from(started.seconds) * SECOND / 3;
         self.pets = Some((every, now() + every));
+        if self.hang_always {
+            println!("spark: not responding, as the kernel's test-hang asks, at every start");
+            loop {
+                core::hint::spin_loop();
+            }
+        }
         if self.hang && !started.restarted {
             println!("spark: not responding, as --test-hang asks, until the watchdog restarts");
             loop {

@@ -1,0 +1,26 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+#
+# What a new version of the system must do to prove itself after an
+# update (health.toml(5), sysupdate(8), ADR 0453). The health check reads
+# this file at every boot.
+
+# The services the machine needs, by name: each one that is turned on
+# must be running, and none may restart three times.
+essential = ["logd", "authd", "consoled", "netd", "sshd"]
+
+# Seconds they must run without a restart before an update counts as
+# proved.
+stable = 120
+
+# The most seconds an update has to start them.
+deadline = 600
+
+# Checks of your own: a command that passes by exiting with 0. A
+# required one that fails fails the update; a wanted one is only logged.
+#
+# [[check]]
+# name = "web site"
+# command = ["curl", "-fsS", "http://localhost/"]
+# required = true
+# timeout = 30

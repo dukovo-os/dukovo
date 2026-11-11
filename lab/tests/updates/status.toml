@@ -1,0 +1,23 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "An installed system starts from slot A, the health check sees the start through, and sysupdate status says so, with nothing staged (ADRs 0451 to 0453)"
+time = "3m"
+fresh = true
+
+[[step]]
+serial = "spark: started slot a, @system.a"
+[[step]]
+serial = "is seen through"
+[[step]]
+run = "sysupdate status"
+root = true
+expect = ["Running:  slot A", "Slot A:   Dukovo", "the default", "Next start: slot A", "Last health check: passed"]
+expect_not = ["Not seen through", "being tried"]
+# The slot runs read-only, and says what version it is.
+[[step]]
+run = "findmnt /system"
+expect = ["btrfs", "ro"]
+[[step]]
+run = "cat /system/startup/slot.env"
+expect = "slot_version="

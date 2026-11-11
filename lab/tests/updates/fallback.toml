@@ -1,0 +1,51 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "A test update whose system log service cannot start fails its health check on its first try, and the machine falls back to slot A by itself, with the settings from before the update put back (ADRs 0453 and 0454)"
+time = "15m"
+fresh = true
+
+[[step]]
+host = "sh {here}/copy-update.sh broken {machine} {machine-port:22}"
+expect = "copied: broken"
+[[step]]
+run = '''sh -c 'printf "stable = 10\n" > /system/settings/sysupdate/health.toml' '''
+root = true
+[[step]]
+run = "sysupdate stage /users/lab/update-broken"
+root = true
+expect = "-test.broken in slot B: it starts at the next restart"
+# A setting changed after the stage, which the fallback takes back.
+[[step]]
+run = "sh -c 'echo changed > /system/settings/update-test'"
+root = true
+[[step]]
+run = "sh -c '(sleep 2; reboot) > /dev/null 2>&1 &'"
+root = true
+[[step]]
+serial = "asked to restart the machine"
+[[step]]
+serial = "spark: started slot b, @system.b"
+[[step]]
+serial = "failed its health check: logd has restarted"
+[[step]]
+serial = "the update gives up its tries"
+# The menu shows, as the try was not seen through, and starts slot A.
+[[step]]
+serial = "(the update to "
+[[step]]
+serial = "the settings from before the update are back"
+[[step]]
+serial = "spark: started slot a, @system.a"
+[[step]]
+serial = "did not prove itself"
+[[step]]
+wait = "ready"
+[[step]]
+run = "sh -c '[ -e /system/settings/update-test ] || echo \"taken back\"'"
+root = true
+expect = "taken back"
+[[step]]
+run = "sysupdate status"
+root = true
+expect = ["Running:  slot A", "Next start: slot A", "a fallback put the settings from before it back"]

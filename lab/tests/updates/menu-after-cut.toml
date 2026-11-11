@@ -1,0 +1,31 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "A start cut short before the health check saw it through makes GRUB show its menu at the next start, then start Dukovo by itself; GRUB writes the slot state on the machine's own EFI system partition (ADR 0452)"
+time = "8m"
+fresh = true
+
+# A start of its own, whose first line comes long before the health
+# check sees it through: that waits until every essential service runs.
+[[step]]
+power = "reset"
+[[step]]
+serial = "spark: started slot a, @system.a"
+[[step]]
+power = "cut"
+[[step]]
+power = "on"
+# The menu shows, and its Dukovo entry starts once its time is up.
+[[step]]
+serial = "Booting `Dukovo Server"
+[[step]]
+serial = "spark: started slot a, @system.a"
+[[step]]
+serial = "is seen through"
+[[step]]
+wait = "ready"
+[[step]]
+run = "sysupdate status"
+root = true
+expect = "Next start: slot A"
+expect_not = "Not seen through"

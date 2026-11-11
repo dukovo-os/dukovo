@@ -1,0 +1,19 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+[package]
+name = "slots"
+description = "The two system slots of an installed Dukovo: the slot state on the EFI system partitions that GRUB counts tries in, the slots' versions, and the settings put back after an update that did not prove itself (ADRs 0451 to 0454)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+# Without the standard library, so that Spark reads the kernel's command
+# line and puts settings back with the same code sysupdate(8) is tested
+# with.
+[dependencies]
+
+[lints]
+workspace = true

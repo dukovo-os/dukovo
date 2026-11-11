@@ -940,6 +940,7 @@ dependencies = [
  "ring",
  "serde",
  "serde_json",
+ "slots",
  "system-release",
  "toml",
  "tuf",
@@ -3021,6 +3022,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
 
 [[package]]
+name = "slots"
+version = "0.14.1"
+
+[[package]]
 name = "smallvec"
 version = "1.16.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3329,10 +3334,12 @@ dependencies = [
  "rustls",
  "serde",
  "serde_json",
+ "slots",
  "smoltcp",
  "socket2",
  "ssh-key",
  "system-release",
+ "toml",
  "tuf",
 ]
 

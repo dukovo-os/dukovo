@@ -99,6 +99,9 @@ use radix_rt::fs::{Dir, File};
 use radix_rt::spawn::{self, Spawn};
 use radix_rt::{SYS, args, entry, println, slots};
 use supervisor::{POSIX_SLOTS, Program, SERVICES_DIR, Supervisor, exec_block};
+use system_slots::Slot;
+use system_slots::cmdline::Boot;
+use system_slots::restore::{self, Seen, Step};
 
 entry!(main);
 
@@ -181,7 +184,9 @@ const IN_MEMORY: [(&str, FilesystemKind, MountFlags); 4] = [
 /// The subvolumes of Dukovo's root on a disk and where each is mounted, in
 /// this order (ADR 0137): the system, read-only, then what changes. The
 /// system holds the directories the others are mounted on, as the boot
-/// archive does, and `/system/live` is memory here too.
+/// archive does, and `/system/live` is memory here too. The system is the
+/// slot GRUB started, `@system.a` or `@system.b` ([`on_disk`], ADR 0451),
+/// slot A's here.
 const ON_DISK: [(&str, &str, MountFlags); 6] = [
     ("@system.a", "system", MountFlags::READ_ONLY),
     ("@settings", "system/settings", MountFlags::NONE),
@@ -190,6 +195,13 @@ const ON_DISK: [(&str, &str, MountFlags); 6] = [
     ("@users", "users", MountFlags::NONE),
     ("@shared", "shared", MountFlags::NONE),
 ];
+
+/// [`ON_DISK`] with the system in `slot`.
+fn on_disk(slot: Slot) -> [(&'static str, &'static str, MountFlags); 6] {
+    let mut subvolumes = ON_DISK;
+    subvolumes[0].0 = slot.subvolume();
+    subvolumes
+}
 
 /// Directories of the mounted tmpfs that Unix programs expect there:
 /// `/var/tmp`, for temporary files that are to outlive a restart, such
@@ -254,7 +266,9 @@ fn run() -> Option<Supervisor> {
     seed_settings(&root);
     let Ok(supervised) = Dir::at(root.slot()) else { return None };
     let mut supervisor = Supervisor::new(supervised);
-    supervisor.set_watchdog(watchdog, hang);
+    // `test-hang` among the kernel's words has Spark stop responding at
+    // every start, as an update that hangs does (ADR 0452's boot test).
+    supervisor.set_watchdog(watchdog, hang, kernel_flag(&root, "test-hang"));
     supervisor.listen();
     let (mut with_services, mut services) = (false, SERVICES_DIR);
     loop {
@@ -466,7 +480,8 @@ fn build(root: &Dir, volumes: bool, compress: &[&str]) -> bool {
         }
     }
     let named = named_root(root);
-    let live = live_boot(root);
+    let live = kernel_flag(root, "live");
+    let boot = slot_boot(root);
     let disk = if !volumes {
         println!("spark: leaving every disk's filesystems unmounted");
         None
@@ -482,11 +497,21 @@ fn build(root: &Dir, volumes: bool, compress: &[&str]) -> bool {
         None
     } else {
         let btrfs = mount_disks(root, compress, false);
-        root_volume(root, &btrfs, named.as_deref())
+        root_volume(root, &btrfs, named.as_deref(), boot.system())
     };
+    // The settings come back before anything reads them, and a root
+    // without them, as a power cut can leave one, gets them again.
+    if let Some(disk) = &disk {
+        restore_settings(root, disk, boot.fallback);
+    }
     let mounted = match disk {
-        Some(disk) if mount_root(root, &disk) => {
+        Some(disk) if mount_root(root, &disk, boot.system()) => {
             println!("spark: /system is Dukovo's root on {disk}, compressed (zstd)");
+            println!(
+                "spark: started slot {}, {}",
+                boot.system().letter(),
+                boot.system().subvolume()
+            );
             swap::turn_on(root, &disk);
             ON_DISK.len() + 1
         }
@@ -741,17 +766,81 @@ fn disc_note(disc: &[u8]) -> Option<String> {
     })
 }
 
-/// Whether the kernel's command line has `live`, as the install stick's
-/// boot menu starts the live system with, among the words before a lone
-/// `--`, which are the kernel's (dukovo-boot(7)).
-fn live_boot(root: &Dir) -> bool {
+/// Whether the kernel's command line has `flag` among the words before a
+/// lone `--`, which are the kernel's (dukovo-boot(7)): `live`, as the
+/// install stick's boot menu starts the live system with, or
+/// `test-hang`, as a boot test's broken update starts with.
+fn kernel_flag(root: &Dir, flag: &str) -> bool {
     root.read_file("kernel/cmdline").is_ok_and(|line| {
         core::str::from_utf8(&line).is_ok_and(|line| {
-            line.split_ascii_whitespace()
-                .take_while(|&word| word != "--")
-                .any(|word| word == "live")
+            line.split_ascii_whitespace().take_while(|&word| word != "--").any(|word| word == flag)
         })
     })
+}
+
+/// What the kernel's command line says of the slots: the one GRUB
+/// started, `slot=`, slot A when it names none, and the update that fell
+/// back, `fallback=` (dukovo-boot(7)).
+fn slot_boot(root: &Dir) -> Boot {
+    root.read_file("kernel/cmdline")
+        .ok()
+        .and_then(|line| core::str::from_utf8(&line).ok().map(system_slots::cmdline::parse))
+        .unwrap_or_default()
+}
+
+/// Puts the settings from before an update back after it fell back, the
+/// update in the slot `fallback`, before any service starts (ADR 0454),
+/// on the root on `/volumes/<disk>`: the failed attempt's are kept beside
+/// the snapshot they replace, for a look at what went wrong. Each step is
+/// decided from what is there, so that a power cut between two leaves
+/// the next start to carry on ([`restore::next`]). A root without
+/// `@settings`, as such a cut can leave one, gets an empty one, which the
+/// defaults then fill.
+fn restore_settings(root: &Dir, disk: &str, fallback: Option<Slot>) {
+    let top = |name: &str| format!("volumes/{disk}/{name}");
+    let update = |name: &str| format!("volumes/{disk}/{}/{name}", restore::UPDATE);
+    let is_dir = |path: &str| root.stat(path).is_ok_and(|stat| stat.kind == FileKind::Directory);
+    let mut put_back = false;
+    for _ in 0..=restore::MOST_STEPS {
+        let seen = Seen {
+            settings: is_dir(&top(restore::SETTINGS)),
+            before: is_dir(&update(restore::BEFORE_SETTINGS)),
+            failed: is_dir(&update(restore::FAILED_SETTINGS)),
+            restored: root.stat(&update(restore::RESTORED)).is_ok(),
+        };
+        let step = if put_back { Step::Mark } else { restore::next(seen, fallback.is_some()) };
+        let (settings, before) = (top(restore::SETTINGS), update(restore::BEFORE_SETTINGS));
+        let done = match step {
+            Step::KeepFailed => {
+                root.snapshot(&settings, root, &update(restore::FAILED_SETTINGS), true)
+            }
+            Step::RemoveSettings => root.remove_subvolume(&settings),
+            Step::PutBack => root.snapshot(&before, root, &settings, false),
+            Step::Mark => root.write_file(&update(restore::RESTORED), b"settings put back\n"),
+            Step::MakeEmpty => root.make_subvolume(&settings),
+            Step::Done => return,
+        };
+        if let Err(err) = done {
+            println!("spark: cannot put the settings back ({step:?}): {err}");
+            return;
+        }
+        match step {
+            Step::KeepFailed => {
+                let slot = fallback.map_or("?", Slot::letter);
+                println!(
+                    "spark: the update in slot {slot} fell back: putting the settings from before it back"
+                );
+                println!(
+                    "spark: its own settings are kept in /{}",
+                    update(restore::FAILED_SETTINGS)
+                );
+            }
+            Step::Mark => println!("spark: the settings from before the update are back"),
+            Step::MakeEmpty => println!("spark: {disk}'s root had no @settings: made it afresh"),
+            _ => {}
+        }
+        put_back = step == Step::PutBack;
+    }
 }
 
 /// Mounts the filesystem on `/devices/<name>` at `/volumes/<name>`: FAT,
@@ -864,14 +953,23 @@ fn mount_disk(root: &Dir, name: &str, compress: bool, read_only: bool) -> Option
 /// as an installed system's boot menu gives, only the Btrfs with that UUID
 /// is (ADR 0307), so that a second disk with Dukovo on it, or an install
 /// stick, never becomes the system GRUB did not start; with none, the
-/// first is. Like Fedora's, the root compresses what is written to it
-/// (ADR 0134): mounted without, it is mounted again.
-fn root_volume(root: &Dir, btrfs: &[(String, MountFlags)], named: Option<&str>) -> Option<String> {
+/// first is. The root holds the slot GRUB started, `slot`; it need not
+/// hold `@settings`, which [`restore_settings`] makes again. Like
+/// Fedora's, the root compresses what is written to it (ADR 0134):
+/// mounted without, it is mounted again.
+fn root_volume(
+    root: &Dir,
+    btrfs: &[(String, MountFlags)],
+    named: Option<&str>,
+    slot: Slot,
+) -> Option<String> {
     let holds_root = |name: &str| {
-        ON_DISK.iter().all(|(subvolume, _, _)| {
-            root.stat(&format!("volumes/{name}/{subvolume}"))
-                .is_ok_and(|stat| stat.kind == FileKind::Directory)
-        })
+        on_disk(slot).iter().filter(|(subvolume, _, _)| *subvolume != restore::SETTINGS).all(
+            |(subvolume, _, _)| {
+                root.stat(&format!("volumes/{name}/{subvolume}"))
+                    .is_ok_and(|stat| stat.kind == FileKind::Directory)
+            },
+        )
     };
     let (name, flags) = btrfs.iter().find(|(name, _)| match named {
         Some(uuid) => btrfs_uuid(root, name).as_deref() == Some(uuid) && holds_root(name),
@@ -936,12 +1034,13 @@ fn btrfs_uuid(root: &Dir, name: &str) -> Option<String> {
 }
 
 /// Mounts the subvolumes of Dukovo's root on `/volumes/<disk>` where
-/// [`ON_DISK`] says, then memory on `/system/live`. Returns whether all of
-/// it worked; if not, what it mounted is unmounted again.
-fn mount_root(root: &Dir, disk: &str) -> bool {
+/// [`ON_DISK`] says, with the system from `slot`, then memory on
+/// `/system/live`. Returns whether all of it worked; if not, what it
+/// mounted is unmounted again.
+fn mount_root(root: &Dir, disk: &str, slot: Slot) -> bool {
     let mut mounted = Vec::new();
     let mut failed = None;
-    for (subvolume, at, flags) in ON_DISK {
+    for (subvolume, at, flags) in on_disk(slot) {
         let rights = if flags.contains(MountFlags::READ_ONLY) {
             Rights::READ
         } else {

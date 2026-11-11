@@ -25,8 +25,8 @@ use crate::image::{self, ImageSpec, LiveStart, Menu, crc32};
 use crate::process::{self, step};
 use crate::qemu::{self, Machine, Serial};
 use crate::{
-    Args, Ctx, Error, Result, VERSION, btrfs, corpus, doctor, fixture, kernel, screen, tla,
-    userspace,
+    Args, Context as _, Ctx, Error, Result, VERSION, btrfs, corpus, doctor, fixture, kernel,
+    screen, tla, userspace,
 };
 
 /// QEMU's exit status after the kernel writes 0x10 to isa-debug-exit.
@@ -437,6 +437,51 @@ const CLOUD_CONFIG: u8 = 28;
 /// makes a filesystem on itself: the floppy disks of
 /// [`cases::floppy_format`] (ADR 0436).
 const BLANK: u8 = 29;
+
+/// [`Disk::fat`] for a FAT32 disk on the whole disk holding the boot
+/// tests' signed updates of the installed system ([`update_releases_disk`],
+/// ADR 0451): a repository of each of [`TEST_UPDATES`] in a folder of its
+/// name, holding only the files that differ from the installed slot's,
+/// all a stage needs ([`test_updates`]).
+const UPDATE_RELEASES: u8 = 30;
+
+/// One of the boot tests' updates of an installed system (ADR 0451): this
+/// build's slot, under a version after this one's that updates from it,
+/// with kernel flags of its own, or a command broken.
+pub struct TestUpdate {
+    /// Its folder on the [`UPDATE_RELEASES`] disk, and its version's last
+    /// word: `good` is `0.14.2-test.good` for a build of 0.14.1.
+    pub name: &'static str,
+    /// The kernel flags its slot always starts with (`startup/slot.env`).
+    flags: &'static str,
+    /// A command of the slot, made a link to nothing, so that the service
+    /// that runs it cannot start.
+    broken: Option<&'static str>,
+}
+
+/// The updates on the [`UPDATE_RELEASES`] disk: one that proves itself,
+/// one whose system log service cannot start, so that the health check
+/// fails it, one whose kernel panics, and one whose Spark stops
+/// responding (spark(8)'s `test-hang`), which the watchdog ends.
+pub const TEST_UPDATES: [TestUpdate; 4] = [
+    TestUpdate { name: "good", flags: "", broken: None },
+    TestUpdate { name: "broken", flags: "", broken: Some("commands/logd") },
+    TestUpdate { name: "panic", flags: "selftest=page-fault", broken: None },
+    TestUpdate { name: "hang", flags: "test-hang", broken: None },
+];
+
+/// The version of the test update `name`: after this build's, in its
+/// last number, and before the release that number makes, as a
+/// pre-release of it.
+pub fn test_update_version(name: &str) -> String {
+    let core = VERSION.split(['-', '+']).next().unwrap_or(VERSION);
+    let mut numbers: Vec<u64> = core.split('.').filter_map(|n| n.parse().ok()).collect();
+    if let Some(last) = numbers.last_mut() {
+        *last += 1;
+    }
+    let numbers: Vec<String> = numbers.iter().map(ToString::to_string).collect();
+    format!("{}-test.{name}", numbers.join("."))
+}
 
 /// The program of a version of lighthouse that answers its health check,
 /// with `nc` listening on its socket.
@@ -948,6 +993,13 @@ const fn fat_disk(kib: u64, fat: u8, label: &'static str, table: Table, bus: Bus
 /// `/volumes/<disk>`.
 const fn bundle_files_disk(kib: u64, label: &'static str) -> Disk {
     Disk { fat: BUNDLE_FILES, ..fat_disk(kib, 32, label, Table::None, Bus::Virtio) }
+}
+
+/// A FAT32 virtio disk of `kib` KiB, labelled `label`, holding the test
+/// updates of the installed system ([`UPDATE_RELEASES`]), which Spark
+/// mounts at `/volumes/<disk>`.
+pub const fn update_releases_disk(kib: u64, label: &'static str) -> Disk {
+    Disk { fat: UPDATE_RELEASES, ..fat_disk(kib, 32, label, Table::None, Bus::Virtio) }
 }
 
 /// A FAT32 disk on the whole disk holding a test catalog
@@ -3424,10 +3476,11 @@ fn cmdline_slot() -> String {
     format!("{:-<CMDLINE_SLOT$}", "ob-test-cmdline")
 }
 
-/// How many of a test image's boot menu entries hold the command line:
-/// an installed system's and its startup-trouble entry, or the live
-/// menu's Install Dukovo, Install Dukovo with speech, Try Dukovo and
-/// Install Dukovo (serial console) (dukovo-boot(7)).
+/// How many places of a test image's boot menu hold the command line: an
+/// installed system's GRUB configuration once, for every entry of its
+/// slot's menu (`dukovo_cmdline`, ADR 0451), or the live menu's Install
+/// Dukovo, Install Dukovo with speech, Try Dukovo and Install Dukovo
+/// (serial console) (dukovo-boot(7)).
 const CMDLINE_ENTRIES: usize = 4;
 
 /// A copy of a test image with `cmdline` in its command-line slots, one
@@ -3617,6 +3670,93 @@ fn test_live(ctx: &Ctx, built: &Built, dir: &Path, cases: &[&Case]) -> Result<Op
     Ok(Some(path))
 }
 
+/// Where [`test_updates`] puts the test updates' repositories, in the
+/// boot tests' folder `dir`.
+fn updates_dir(dir: &Path) -> PathBuf {
+    dir.join("updates")
+}
+
+/// Makes the repositories of [`TEST_UPDATES`] in [`updates_dir`], if a
+/// case of `cases` has an [`UPDATE_RELEASES`] disk: the installed slot
+/// as [`image::stage_system`] stages it, changed as each says, signed with
+/// this machine's release keys under its version, updating from this
+/// build's, and with only the files the installed slot lacks kept in its
+/// store, as a stage writes only those.
+fn test_updates(ctx: &Ctx, built: &Built, dir: &Path, cases: &[&Case]) -> Result<()> {
+    if !cases.iter().any(|case| case.disks.iter().any(|disk| disk.fat == UPDATE_RELEASES)) {
+        return Ok(());
+    }
+    make_test_updates(ctx, built, dir)
+}
+
+/// The lab's test updates (`lab/tests/updates`): [`TEST_UPDATES`] made as
+/// for the boot tests, from the kernel and programs the lab image's
+/// system slot is staged from, in `out/lab/updates`, whose path it gives.
+/// `ob lab` hands the path to the lab's host steps.
+pub fn lab_updates(ctx: &Ctx, profile: crate::config::Profile) -> Result<PathBuf> {
+    step("Building the test updates, for the lab's update tests");
+    let built =
+        Built { kernel: kernel::build(ctx, profile)?, programs: userspace::build(ctx, profile)? };
+    let dir = ctx.out.join("lab");
+    process::create_dir(&dir)?;
+    make_test_updates(ctx, &built, &dir)?;
+    Ok(updates_dir(&dir))
+}
+
+/// Makes the repositories of [`TEST_UPDATES`] in [`updates_dir`] of
+/// `dir`, with the slot staged from `built` as the one installed.
+fn make_test_updates(ctx: &Ctx, built: &Built, dir: &Path) -> Result<()> {
+    let out = updates_dir(dir);
+    if out.exists() {
+        std::fs::remove_dir_all(&out).context(|| format!("removing {}", out.display()))?;
+    }
+    let staging = dir.join("updates-staging");
+    if staging.exists() {
+        std::fs::remove_dir_all(&staging).context(|| format!("removing {}", staging.display()))?;
+    }
+    let base = staging.join("installed");
+    image::stage_system(ctx, &built.kernel, &built.programs, &base)?;
+    let installed = file_hashes(ctx, &base)?;
+    for update in &TEST_UPDATES {
+        let tree = staging.join(update.name);
+        process::run(ctx, std::process::Command::new("cp").arg("-a").arg(&base).arg(&tree))?;
+        let version = test_update_version(update.name);
+        let about = slots::about::About { version: version.clone(), flags: update.flags.into() };
+        let path = tree.join(image::SLOT_STARTUP).join(image::SLOT_ABOUT);
+        std::fs::write(&path, about.encode()).context(|| format!("writing {}", path.display()))?;
+        if let Some(command) = update.broken {
+            let path = tree.join(command);
+            std::fs::remove_file(&path).context(|| format!("removing {}", path.display()))?;
+            std::os::unix::fs::symlink("/system/commands/missing", &path)
+                .context(|| format!("linking {}", path.display()))?;
+        }
+        let repository = out.join(update.name);
+        crate::release::make_as(ctx, &tree, &repository, &version, VERSION)?;
+        let store = repository.join("files");
+        for entry in std::fs::read_dir(&store).context(|| format!("reading {}", store.display()))? {
+            let entry = entry.context(|| format!("reading {}", store.display()))?;
+            if installed.contains(&entry.file_name().to_string_lossy().into_owned()) {
+                std::fs::remove_file(entry.path())
+                    .context(|| format!("removing {}", entry.path().display()))?;
+            }
+        }
+    }
+    std::fs::remove_dir_all(&staging).context(|| format!("removing {}", staging.display()))
+}
+
+/// The SHA-256 of every file under `tree`, in hex, as a release's store
+/// names them.
+fn file_hashes(ctx: &Ctx, tree: &Path) -> Result<std::collections::HashSet<String>> {
+    let mut find = std::process::Command::new("find");
+    find.arg(tree).args(["-type", "f", "-exec", "sha256sum", "{}", "+"]);
+    let out = process::output(ctx, &mut find)?;
+    Ok(String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|line| line.split_whitespace().next())
+        .map(str::to_string)
+        .collect())
+}
+
 /// Puts after the partitions of the case's boot image at `image` what its
 /// kind of image holds there: an installed system's Dukovo root, or the
 /// install stick's DUKOVO_LIVE.
@@ -3687,6 +3827,7 @@ fn boot_tests(ctx: &Ctx, built: &Built, cases: &[&Case], timeout: Duration) -> R
     // The roots come first: an installed system's menu names its UUID.
     let roots = test_roots(ctx, built, &dir, cases)?;
     let live = test_live(ctx, built, &dir, cases)?;
+    test_updates(ctx, built, &dir, cases)?;
     let images = test_images(ctx, built, &dir, cases, &roots)?;
 
     let kvm = qemu::kvm_available();
@@ -4274,6 +4415,11 @@ fn make_disks(
         }
         if disk.fat == FEED_FILES {
             make_feed_files(ctx, disk, &image.path)?;
+            made.push(image);
+            continue;
+        }
+        if disk.fat == UPDATE_RELEASES {
+            make_update_releases(disk, &image.path, &updates_dir(dir))?;
             made.push(image);
             continue;
         }
@@ -4884,6 +5030,26 @@ fn make_bundle_files(ctx: &Ctx, disk: &Disk, path: &Path) -> Result<(), String> 
     let image = path.display().to_string();
     for file in &files {
         host_tool(std::process::Command::new("mcopy").args(["-i", &image]).arg(file).arg("::/"))?;
+    }
+    Ok(())
+}
+
+/// Makes an [`UPDATE_RELEASES`] disk: FAT32 holding the repositories
+/// [`test_updates`] made in `updates`, each in a folder of its name.
+fn make_update_releases(disk: &Disk, path: &Path, updates: &Path) -> Result<(), String> {
+    let mut mkfs = std::process::Command::new(fat_tool("mkfs.fat"));
+    mkfs.args(["-F", "32", "-n", disk.label, "-i", "4f525448", "-C"])
+        .arg(path)
+        .arg(disk.kib.to_string());
+    host_tool(&mut mkfs)?;
+    let image = path.display().to_string();
+    for update in &TEST_UPDATES {
+        host_tool(
+            std::process::Command::new("mcopy")
+                .args(["-s", "-i", &image])
+                .arg(updates.join(update.name))
+                .arg(format!("::/{}", update.name)),
+        )?;
     }
     Ok(())
 }
@@ -6007,7 +6173,7 @@ fn consoles(vm: &mut Vm, case: &Case) -> Result<(), String> {
     vm.expect("Boot complete.")?;
     vm.expect("spark: Spark v2 is process ")?;
     vm.expect("spark: listening at /system/live/spark/control")?;
-    vm.expect("spark: 24 services in /system/settings/spark/services, 20 enabled")?;
+    vm.expect("spark: 25 services in /system/settings/spark/services, 21 enabled")?;
     vm.expect("spark: started consoled (/system/commands/consoled) as process ")?;
     vm.expect("consoled: console of ")?;
     vm.expect("consoled: started /system/commands/nukesh on tty1 as process ")?;
@@ -9591,7 +9757,7 @@ fn principals(vm: &mut Vm, case: &Case) -> Result<(), String> {
 fn services(vm: &mut Vm, case: &Case) -> Result<(), String> {
     boot_report(vm, case)?;
     vm.expect("Boot complete.")?;
-    vm.expect_anywhere("spark: 24 services in /system/settings/spark/services, 20 enabled")?;
+    vm.expect_anywhere("spark: 25 services in /system/settings/spark/services, 21 enabled")?;
     vm.expect_ahead("spark: started /system/tests/posix/servicetest as process ")?;
     let code = program_line(vm, "(/system/tests/posix/servicetest) exited with code ")?;
     let log = vm.log();
@@ -10137,7 +10303,12 @@ fn elevate(vm: &mut Vm, case: &Case) -> Result<(), String> {
 /// from being typed before the program reads it: a password typed before
 /// its prompt turns echo off would show.
 fn answer_prompt(vm: &mut Vm, prompt: &str, text: &str) -> Result<(), String> {
-    let deadline = Instant::now() + Duration::from_secs(60);
+    answer_prompt_within(vm, prompt, text, 60)
+}
+
+/// [`answer_prompt`], waiting up to `seconds` for the prompt.
+fn answer_prompt_within(vm: &mut Vm, prompt: &str, text: &str, seconds: u64) -> Result<(), String> {
+    let deadline = Instant::now() + Duration::from_secs(seconds);
     loop {
         let screen = vm.screen()?;
         // The cursor's block, after the prompt, reads as no character: `?`.

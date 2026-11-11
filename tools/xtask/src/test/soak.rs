@@ -29,7 +29,6 @@ use std::fmt::Write as _;
 use std::sync::OnceLock;
 
 use super::*;
-use crate::Context as _;
 
 /// The soak's machine: an installed system on a SATA disk under UEFI,
 /// with a virtio network card.

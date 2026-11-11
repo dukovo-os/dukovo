@@ -142,7 +142,7 @@ These run on the build machine or in CI and are never part of an image.
 | [freestnd-cxx-hdrs](https://github.com/osdev0/freestnd-cxx-hdrs) 14.3.0 (libstdc++'s freestanding headers from GCC 14), by the osdev0 contributors and the GCC project | The C++ headers mlibc is compiled with; nothing of them reaches an image | GPL-3.0-or-later WITH GCC-exception-3.1 |
 | The [GNU C Library](https://www.gnu.org/software/libc/)'s `localedef` on the build machine, and glibc 2.39's `printf` | Compiling the `C.UTF-8` locale, and the expected results of the C library's `printf` tests | LGPL-2.1-or-later |
 | [Kani](https://github.com/model-checking/kani) 0.68.0, with [CBMC](https://github.com/diffblue/cbmc) | Proofs of the memory manager, capability store, scheduling policy and IPC arithmetic | Apache-2.0 OR MIT (CBMC: BSD-4-Clause) |
-| [TLA+ tools](https://github.com/tlaplus/tlaplus) 1.7.4 (TLC), by Leslie Lamport and contributors | Checking the capability, scheduler, idle wake-up, endpoint, channel and FAT cluster models | MIT |
+| [TLA+ tools](https://github.com/tlaplus/tlaplus) 1.7.4 (TLC), by Leslie Lamport and contributors | Checking the capability, scheduler, idle wake-up, endpoint, channel, FAT cluster and slot state models | MIT |
 | [mdBook](https://github.com/rust-lang/mdBook) 0.4.52 | The handbook | MPL-2.0 |
 | [scdoc](https://git.sr.ht/~sircmpwn/scdoc) | Man pages | MIT |
 | [mandoc](https://mandoc.bsd.lv/) | Checking man pages | ISC |

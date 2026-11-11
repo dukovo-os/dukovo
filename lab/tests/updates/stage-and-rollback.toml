@@ -1,0 +1,56 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "A signed test update is staged into slot B while slot A runs, starts at the restart as a try, proves itself and becomes the default; sysupdate rollback then makes slot A the default again (ADRs 0451 to 0453)"
+time = "15m"
+fresh = true
+
+[[step]]
+host = "sh {here}/copy-update.sh good {machine} {machine-port:22}"
+expect = "copied: good"
+# A try proves itself after 10 seconds here, not two minutes.
+[[step]]
+run = '''sh -c 'printf "stable = 10\n" > /system/settings/sysupdate/health.toml' '''
+root = true
+[[step]]
+run = "sysupdate stage /users/lab/update-good"
+root = true
+expect = ["checking the release against the root this system trusts", "-test.good in slot B: it starts at the next restart"]
+[[step]]
+run = "sysupdate status"
+root = true
+expect = ["Running:  slot A", "an update being tried: 3 tries left", "Next start: slot B"]
+[[step]]
+run = "sh -c '(sleep 2; reboot) > /dev/null 2>&1 &'"
+root = true
+[[step]]
+serial = "asked to restart the machine"
+[[step]]
+serial = "spark: started slot b, @system.b"
+[[step]]
+serial = "proved itself: it is now the default"
+[[step]]
+wait = "ready"
+[[step]]
+run = "sysupdate status"
+root = true
+expect = ["Running:  slot B", "-test.good, the default", "the previous version", "Next start: slot B", "Last health check: passed"]
+[[step]]
+run = "sysupdate rollback"
+root = true
+expect = "starts from the next restart on"
+[[step]]
+run = "sh -c '(sleep 2; reboot) > /dev/null 2>&1 &'"
+root = true
+[[step]]
+serial = "asked to restart the machine"
+[[step]]
+serial = "spark: started slot a, @system.a"
+[[step]]
+serial = "Boot complete."
+[[step]]
+wait = "ready"
+[[step]]
+run = "sysupdate status"
+root = true
+expect = ["Running:  slot A", "Next start: slot A", "-test.good, the previous version"]

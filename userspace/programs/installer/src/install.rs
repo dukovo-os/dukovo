@@ -451,7 +451,9 @@ fn fill_menu(template: &str, uuid: &str, console: Option<&str>) -> String {
 }
 
 /// Puts GRUB from the slot on `disk`, and `menu` with GRUB's environment
-/// block on its EFI system partition.
+/// block and both copies of the slot state on its EFI system partition:
+/// slot A, the only one, started (ADR 0452). Each disk of a mirror has
+/// its own copies, which the system keeps in step.
 fn grub_on(disk: &BootDisk, slot: &Path, menu: &str, log: &mut Log) -> Result<(), String> {
     let images = path(&slot.join("boot/grub"));
     if disk.bios_boot {
@@ -471,8 +473,21 @@ fn grub_on(disk: &BootDisk, slot: &Path, menu: &str, log: &mut Log) -> Result<()
     // block, which must be there, whole, for GRUB to write it.
     let environment =
         written.and_then(|()| settings::write_file(&esp.join(GRUBENV), &grub_environment(), 0o644));
+    let state = environment.and_then(|()| {
+        let block = slot_state();
+        slots::state::COPIES
+            .iter()
+            .try_for_each(|copy| settings::write_file(&esp.join(copy), &block, 0o644))
+    });
     let unmounted = run_when_free(log, "umount", &[&path(&esp)]);
-    environment.and(unmounted)
+    state.and(unmounted)
+}
+
+/// A copy of the slot state an install leaves: slot A, the only one, as
+/// text, as GRUB's environment blocks are.
+fn slot_state() -> String {
+    let block = slots::State::installed().encode();
+    String::from_utf8(block.to_vec()).expect("the slot state is ASCII")
 }
 
 /// GRUB's empty environment block: its first line, then `#` to 1024
@@ -618,5 +633,12 @@ mod tests {
         let block = grub_environment();
         assert_eq!(block.len(), 1024, "GRUB writes it only when it is 1024 bytes");
         assert!(block.starts_with("# GRUB Environment Block\n#"));
+    }
+
+    #[test]
+    fn an_install_starts_slot_a() {
+        let block = slot_state();
+        assert_eq!(block.len(), 1024, "GRUB writes a copy only when it is whole");
+        assert_eq!(slots::State::decode(block.as_bytes()), Some(slots::State::installed()));
     }
 }
