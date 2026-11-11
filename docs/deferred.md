@@ -146,7 +146,9 @@ machine with AMT, an AMD machine and a laptop; see
 | Backups to servers that offer SFTP alone, without a shell (ADR 0463) | The server runs `find`, `cat`, `mv` and `rm` over SSH, as any POSIX server can | A need |
 | Backup keys in the system key store in place of files readable by root alone (ADR 0463) | The key store comes later | Release 1.2 |
 | The owner told of a backup that is overdue or failed, at sign-in and on the web console (ADR 0463) | `backup list` and the log show it | 15d, with the unified updater's notifications |
-| Restoring a whole machine from its backups, apps reinstalled from the app list and their grants put back (ADR 0463) | `backup restore` brings each place back as a snapshot, from which files are copied | 15b, part 4c |
+| Restoring a whole machine from the installer, for a computer with no Dukovo on it yet (ADR 0464) | `backup restore --machine` runs on an installed system, so a fresh install comes first | A decision: the installer's restore screen |
+| Tags checked when Linux's `age` and `btrfs receive` restore a backup (ADR 0464) | The tag is an HMAC-SHA256 beside each file; Linux's tools read the backup without it | A need |
+| Checking who wrote a backup with another of its keys, not the recovery key (ADR 0464) | The tag key comes from the destination's own key; other recipients restore with `--unchecked` | A need |
 | System updates served by the update server (ADR 0382) | Catalogs are served; system images come with update delivery | 15c |
 | Telling a person of a new flaw, and which advisories an update fixes (ADR 0389) | Needs the unified updater's notifications | 15d |
 

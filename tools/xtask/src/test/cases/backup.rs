@@ -1,34 +1,34 @@
 // SPDX-FileCopyrightText: 2026 The Dukovo contributors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! Backups (ADR 0463), on a Dukovo root of Btrfs with an exFAT disk at
-//! */volumes/vdb*. Alice, the owner, keeps a folder of notes and numbers,
-//! and as an administrator starts a service whose backup hooks write a
-//! file in */shared*, turns sshd on and lets the machine's backup key sign
-//! in as her, then adds three destinations: the exFAT disk, her own
-//! account over SSH on the loopback, and a folder that is then removed, as
-//! a disk unplugged. A round to the disk and the server sends each place
-//! whole, with the hooks run around the snapshots; she changes her folder,
-//! and a second round sends the changes. *backup show* lists two backups in
-//! each place's chain, and only the newest round's snapshot is kept. The
-//! disk's backups are read through and restored, each found as the
-//! snapshot it was made from, and the server's are read through. With her
-//! note deleted, the server's newest backup of */users* is restored and
-//! *snap restore* brings the note back from it as herself; */shared*'s,
-//! restored from the disk's folder with the recovery key alone, holds
-//! what the before hook wrote and not what the after hook wrote. A round
-//! of the service passes the unplugged one over; asked for it, it fails,
-//! which *backup list* shows her. Without an administrator a run, the key
-//! and the disk's contents are refused. A changed byte in a backup is
-//! refused by *backup verify*. Removing the destinations removes their
-//! snapshots. The power button ends it, and exfatprogs' `fsck.exfat`
-//! reads the disk clean.
+//! Backups (ADRs 0463 and 0464), on a Dukovo root of Btrfs with an exFAT
+//! disk at */volumes/vdb*. Alice, the owner, keeps a folder of notes and
+//! numbers, and as an administrator starts a service whose backup hooks
+//! write a file in */shared*, turns sshd on and lets the machine's backup
+//! key sign in as her, then adds three destinations: the exFAT disk, her
+//! own account over SSH on the loopback, and a folder that is then removed,
+//! as a disk unplugged. A round to the disk and the server sends each
+//! place, */applications* among them, whole, with the hooks run around the
+//! snapshots, and the machine's record; she changes her folder, and a
+//! second round sends the changes. *backup show* lists two backups in each
+//! place's chain, and only the newest round's snapshot is kept. The disk's
+//! backups are read through and restored, each found as the snapshot it was
+//! made from, and the server's are read through. With her note deleted, the
+//! server's newest backup of */users* is restored and *snap restore* brings
+//! the note back from it as herself; */shared*'s, restored from the disk's
+//! folder with the recovery key alone, holds what the before hook wrote and
+//! not what the after hook wrote. A round of the service passes the
+//! unplugged one over; asked for it, it fails, which *backup list* shows
+//! her. Without an administrator a run, the key and the disk's contents are
+//! refused. A changed byte in a backup is refused by *backup verify*.
+//! Removing the destinations removes their snapshots. The power button ends
+//! it, and exfatprogs' `fsck.exfat` reads the disk clean.
 
 use super::super::*;
 
-/// Dukovo's root on a copy of the test image, so that /users, /shared and
-/// /system/settings are its subvolumes, and an exFAT disk to back up to,
-/// which Spark mounts at /volumes/vdb.
+/// Dukovo's root on a copy of the test image, so that /users, /shared,
+/// /applications and /system/settings are its subvolumes, and an exFAT
+/// disk to back up to, which Spark mounts at /volumes/vdb.
 const DISKS: &[Disk] = &[
     Disk { label: image::ROOT_LABEL, ..btrfs_disk(Bus::Virtio, 512, ROOT, root_checked) },
     exfat_disk(128 * 1024, 4096, "BACKUP", Bus::Virtio),
@@ -37,7 +37,7 @@ const DISKS: &[Disk] = &[
 /// The test.
 pub const CASE: Case = Case {
     name: "backup",
-    about: "backups of /users, /shared and /system/settings to an exFAT disk and over SSH (ADR 0463): whole, then the changes, with the services' hooks run around the snapshots; read through and restored as they were; a note restored from the server's backup with snap restore, and /shared's from the disk with the recovery key alone, as the before hook left it; an unplugged disk passed over by the service; a run, the key and the contents refused without an administrator; a changed byte refused; fsck.exfat reads the disk clean",
+    about: "backups of /users, /shared, /system/settings and /applications, with the machine's record, to an exFAT disk and over SSH (ADRs 0463 and 0464): whole, then the changes, with the services' hooks run around the snapshots; read through and restored as they were; a note restored from the server's backup with snap restore, and /shared's from the disk with the recovery key alone, as the before hook left it; an unplugged disk passed over by the service; a run, the key and the contents refused without an administrator; a changed byte refused; fsck.exfat reads the disk clean",
     firmware: Firmware::Uefi,
     media: Media::Usb,
     // As a normal boot: Spark mounts the disk and starts the services,
@@ -193,6 +193,7 @@ fn backup(vm: &mut Vm, case: &Case) -> Result<(), String> {
         " (changes)",
         "backup: stick: done",
         "backup: server: done",
+        "  applications:",
         "  settings:",
         "  shared:",
         "  users:",
@@ -200,23 +201,24 @@ fn backup(vm: &mut Vm, case: &Case) -> Result<(), String> {
     ])?;
     let screen = vm.screen()?;
     let changes = screen.iter().filter(|line| line.ends_with("(changes)")).count();
-    if changes != 6 {
-        return Err(format!("{changes} backups of changes in the second round, not 6"));
+    if changes != 8 {
+        return Err(format!("{changes} backups of changes in the second round, not 8"));
     }
     // Each place's chain: the whole backup and the changes, in one line.
     let chains = screen.iter().filter(|line| line.starts_with("    ") && line.contains(", ")).count();
-    if chains != 3 {
-        return Err(format!("{chains} chains of two backups on the disk, not 3"));
+    if chains != 4 {
+        return Err(format!("{chains} chains of two backups on the disk, not 4"));
     }
 
     elevated(vm, "check.sh", CHECK, false)?;
     vm.expect_screen(&[
-        "backup: stick: read 6 backups through, every chain whole",
+        "backup: stick: read 8 backups and 2 records through, every chain whole",
+        "backup: stick: /applications: restored the backup of ",
         "backup: stick: /users: restored the backup of ",
         "backup: stick: /shared: restored the backup of ",
         "backup: stick: /system/settings: restored the backup of ",
         "files and folders as they were",
-        "backup: server: read 6 backups through, every chain whole",
+        "backup: server: read 8 backups and 2 records through, every chain whole",
     ])?;
 
     // Her note, deleted, comes back from the server's backup.
@@ -270,7 +272,7 @@ fn backup(vm: &mut Vm, case: &Case) -> Result<(), String> {
     // A changed byte is refused; removing the destinations removes their
     // snapshots.
     elevated(vm, "tamper.sh", TAMPER, false)?;
-    vm.expect_screen(&[": decryption error", "verify 1", "left 0"])?;
+    vm.expect_screen(&[": its tag does not match", "verify 1", "left 0"])?;
     vm.press_power_button()?;
     vm.expect("spark: every service has stopped")?;
     vm.expect("Power: `spark` asked to power off the machine; syncing the filesystems")?;

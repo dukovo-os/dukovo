@@ -237,9 +237,9 @@ which the backup disk already holds. A stream can also go to a file with
 
 ## Backups
 
-`backup` keeps encrypted copies of `/users`, `/shared` and
-`/system/settings` on a USB disk or on a server reached over SSH, every
-day by default. The first backup of each is whole; each one after holds
+`backup` keeps encrypted copies of `/users`, `/shared`,
+`/system/settings` and the apps installed for everyone, `/applications`,
+on a USB disk or on a server reached over SSH, every day by default. The first backup of each is whole; each one after holds
 only what changed. A disk of any filesystem works, FAT and exFAT
 included, and a server needs only SSH and a shell: what it keeps is a
 folder of files, each a send stream (as above) encrypted with age, so
@@ -291,10 +291,36 @@ Restoring on another computer takes the machine's folder of backups and
 the recovery key. See backup(8) for both, and for restoring with Linux's
 `age` and `btrfs receive`.
 
+Each backup is tagged with a key made from the recovery key, so a backup
+that someone else put on the disk or the server is refused rather than
+restored.
+
+### Restoring a whole machine
+
+When a computer is lost, or its disk dies, install Dukovo on the new one,
+plug in the backup disk (or reach the server), and restore the whole
+machine with the recovery key:
+
+```sh
+elevate backup restore --machine --key /volumes/BACKUP/recovery.key /volumes/BACKUP/dukovo-backup/atlas
+elevate reboot
+```
+
+`backup restore --machine` brings the newest backup of `/system/settings`,
+`/applications`, `/users` and `/shared` onto the disk beside what is
+there, and changes nothing in use. At the restart, before any service
+starts, they take the places of the new install's, which are kept in
+`/snapshots/machine-restore`. The computer then has the old one's name,
+accounts and passwords, settings, files and apps, and every app has the
+permissions it was given, without asking again: each backup carries a
+record of the apps installed and of what each person allowed them.
+`--at` restores an older backup. The same command, run on the computer
+that was backed up, takes it back to that backup; what it replaced stays
+in `/snapshots/machine-restore` until `subvolume delete` removes it.
+
 ## What is on the way
 
-Backups to cloud storage, and restoring a whole machine, apps included,
-from a backup; downloading updates from the update
+Backups to cloud storage; downloading updates from the update
 server in waves, through one `update` command for the system, firmware
 and apps, which also keeps Rescue up to date; and repairing GRUB and the
 EFI system partition from an install stick. This chapter grows with

@@ -22,19 +22,26 @@
 //!   each destination that is due, every hour with `--watch`.
 //! - `backup verify [--restore] NAME`.
 //! - `backup restore [--key FILE] [--place P] [--at TIME] [--into FOLDER]
-//!   NAME|SOURCE`.
+//!   [--unchecked] NAME|SOURCE`, and `backup restore --machine [--key
+//!   FILE] [--at TIME] [--unchecked] NAME|SOURCE`, which stages the whole
+//!   machine for Spark to put in place at the next start (ADR 0464), or
+//!   with `--cancel` withdraws what it staged.
 //! - `backup key NAME` and `backup ssh-key` show the keys.
 
 mod compare;
 mod layout;
+mod record;
 mod store;
+mod tag;
 
+use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File};
 use std::io::{self, BufReader, BufWriter, Read, Write};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::rc::Rc;
 use std::str::FromStr;
 use std::time::Duration;
 
@@ -43,6 +50,7 @@ use serde::{Deserialize, Serialize};
 
 use self::layout::{Listing, Next};
 use self::store::{Address, Folder, Joined, Parts, Ssh, Store};
+use self::tag::TagKey;
 use crate::args::{Arg, Args};
 use crate::snap::{self, Place};
 use crate::subvolume::{self, is_top};
@@ -68,6 +76,14 @@ const PREFIX: &str = "backup-";
 
 /// The names of restored backups.
 const RESTORED: &str = "restored-";
+
+/// The apps installed for everyone, which backups carry besides snap's
+/// places (ADR 0464).
+const APPLICATIONS: &str = "/applications";
+
+/// The machine's `/system/state`, whose app registry and grants each
+/// round's record carries (ADR 0464).
+const SYSTEM_STATE: &str = "/system/state";
 
 /// How often the service looks for a destination that is due.
 const ROUND: Duration = Duration::from_hours(1);
@@ -202,10 +218,15 @@ impl Destination {
         names.iter().map(|name| Destination::read(name)).collect()
     }
 
-    /// The places it backs up.
+    /// The places it backs up: those its file names, or snap's and the
+    /// apps installed for everyone (ADR 0464).
     fn places(&self) -> Result<Vec<String>, Fail> {
         if self.places.is_empty() {
-            return Ok(snap::Settings::read()?.places);
+            let mut places = snap::Settings::read()?.places;
+            if !places.iter().any(|p| p == APPLICATIONS) {
+                places.push(APPLICATIONS.into());
+            }
+            return Ok(places);
         }
         Ok(self.places.clone())
     }
@@ -440,7 +461,7 @@ impl Backed {
             .folder
             .file_name()
             .and_then(|n| n.to_str())
-            .filter(|n| layout::is_place(n))
+            .filter(|n| layout::is_place(n) && *n != layout::RECORDS)
             .ok_or_else(|| util::fail(format!("{path}: no name for its backups")))?
             .to_string();
         Ok(Backed { path: path.into(), place, folder })
@@ -461,15 +482,99 @@ fn write_backup(
     time: &str,
     snapshot: &Path,
     parent: Option<&Path>,
-    recipients: &[age::x25519::Recipient],
+    keys: &Keys,
 ) -> Result<u64, Fail> {
-    let parts = Parts::new(store, folder, time, store::PART);
-    let mut buffered = BufWriter::with_capacity(1 << 20, encrypting(parts, recipients)?);
+    let tagging = keys.tag.start(&format!("{folder}/{time}"));
+    let parts = Parts::new(store, folder, time, store::PART, tagging);
+    let mut buffered = BufWriter::with_capacity(1 << 20, encrypting(parts, &keys.recipients)?);
     subvolume::send::stream(snapshot, parent, &mut buffered)?;
     let encrypted =
         buffered.into_inner().map_err(|e| util::failed(&"encrypting", e.into_error()))?;
     let parts = encrypted.finish().map_err(|e| util::failed(&"encrypting", e))?;
     parts.finish()
+}
+
+/// Encrypts `data` to `keys` and writes it, tagged, as the file of time
+/// `time` in `folder` of `store`, as a backup is written.
+fn write_small(
+    store: &mut dyn Store,
+    folder: &str,
+    time: &str,
+    data: &[u8],
+    keys: &Keys,
+) -> Result<u64, Fail> {
+    let tagging = keys.tag.start(&format!("{folder}/{time}"));
+    let parts = Parts::new(store, folder, time, store::PART, tagging);
+    let mut encrypted = encrypting(parts, &keys.recipients)?;
+    encrypted.write_all(data).map_err(|e| util::failed(&"encrypting", e))?;
+    let parts = encrypted.finish().map_err(|e| util::failed(&"encrypting", e))?;
+    parts.finish()
+}
+
+/// A destination's keys, as a round writes with them: those every file
+/// is encrypted to, and the key that tags them (ADR 0464).
+struct Keys {
+    recipients: Vec<age::x25519::Recipient>,
+    tag: TagKey,
+}
+
+/// How what a destination holds is read: its tags checked with the key
+/// the destination's own age key gives, or, with another of its keys,
+/// unchecked, as `--unchecked` allows (ADR 0464).
+enum Check {
+    Tags(TagKey),
+    Unchecked,
+}
+
+impl Check {
+    /// The check for reading with `identity` the destination in `store`,
+    /// whose `backup.toml` names its own key: its tags if `identity` is
+    /// that key; otherwise unchecked, if `unchecked` allows it.
+    fn of(
+        store: &mut dyn Store,
+        identity: &age::x25519::Identity,
+        unchecked: bool,
+    ) -> Result<Check, Fail> {
+        let own = marked_key(store)?;
+        if own.as_deref() == Some(identity.to_public().to_string().as_str()) {
+            return Ok(Check::Tags(TagKey::of(identity)));
+        }
+        if unchecked {
+            return Ok(Check::Unchecked);
+        }
+        Err(util::fail(format!(
+            "{}: the key given is not the destination's own key, the recovery key, so it \
+             cannot check who wrote the backups; --unchecked reads them all the same",
+            store.place()
+        )))
+    }
+}
+
+/// A backup or record being read, decrypted; [`Reading::end`] reads what
+/// is left and says whether its tag matched.
+struct Reading<'a> {
+    stream: Box<dyn Read + 'a>,
+    checked: Rc<Cell<bool>>,
+    /// Its path, for messages.
+    at: String,
+}
+
+impl Read for Reading<'_> {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        self.stream.read(buffer)
+    }
+}
+
+impl Reading<'_> {
+    /// Reads the rest, which checks the tag at the end.
+    fn end(mut self) -> Result<(), Fail> {
+        io::copy(&mut self.stream, &mut io::sink())
+            .map_err(|e| util::fail(format!("{}: {}", self.at, util::strip_os_error(&e))))?;
+        if !self.checked.get() {
+            return Err(util::fail(format!("{}: its tag was not checked", self.at)));
+        }
+        Ok(())
+    }
 }
 
 /// A writer that encrypts what it is given to `recipients`, in the age
@@ -484,19 +589,44 @@ fn encrypting<W: Write>(
     encryptor.wrap_output(out).map_err(|e| util::failed(&"encrypting", e))
 }
 
-/// The decrypted stream of the backup whose files are `parts`.
+/// The decrypted stream of the backup or record whose files are `parts`
+/// and whose tag's file is `tag`, read as `check` says.
 fn read_backup<'a>(
     store: &'a mut dyn Store,
     parts: &[String],
+    tag: Option<&str>,
     identity: &age::x25519::Identity,
-) -> Result<impl Read + 'a, Fail> {
-    let joined = BufReader::with_capacity(1 << 20, Joined::new(store, parts));
-    let where_ = parts.first().cloned().unwrap_or_default();
-    let decryptor = age::Decryptor::new_buffered(joined)
-        .map_err(|err| util::fail(format!("{where_}: {err}")))?;
-    decryptor
+    check: &Check,
+) -> Result<Reading<'a>, Fail> {
+    let first = parts.first().cloned().unwrap_or_default();
+    let at = layout::tagged_path(&first);
+    let check = match (check, tag) {
+        (Check::Unchecked, _) => None,
+        (Check::Tags(_), None) => {
+            return Err(util::fail(format!(
+                "{at}: has no tag, so who wrote it cannot be checked; --unchecked reads it all \
+                 the same"
+            )));
+        }
+        (Check::Tags(key), Some(tag)) => {
+            let mut text = String::new();
+            store
+                .read(tag)?
+                .take(1024)
+                .read_to_string(&mut text)
+                .map_err(|e| util::failed(&format!("{}/{tag}", store.place()), e))?;
+            Some((key.start(&at), text))
+        }
+    };
+    let joined = Joined::new(store, parts, check);
+    let checked = joined.checked();
+    let joined = BufReader::with_capacity(1 << 20, joined);
+    let decryptor =
+        age::Decryptor::new_buffered(joined).map_err(|err| util::fail(format!("{at}: {err}")))?;
+    let stream = decryptor
         .decrypt(std::iter::once(identity as &dyn age::Identity))
-        .map_err(|err| util::fail(format!("{where_}: {err}")))
+        .map_err(|err| util::fail(format!("{at}: {err}")))?;
+    Ok(Reading { stream: Box::new(stream), checked, at })
 }
 
 /// Asks Spark to run every running service's `before` or `after` backup
@@ -535,13 +665,13 @@ struct Ready {
     store: Box<dyn Store>,
     listing: Listing,
     state: State,
-    recipients: Vec<age::x25519::Recipient>,
+    keys: Keys,
     places: Vec<String>,
 }
 
 /// What a round needs of a destination: its store and what it holds, its
 /// keys and places.
-type Prepared = (Box<dyn Store>, Listing, Vec<age::x25519::Recipient>, Vec<String>);
+type Prepared = (Box<dyn Store>, Listing, Keys, Vec<String>);
 
 /// Opens `dest` for a round: its keys, its places, and its store, listed
 /// and marked.
@@ -551,7 +681,7 @@ fn prepare(dest: &Destination) -> Result<Prepared, Fail> {
     let mut store = dest.store(false)?;
     let listing = Listing::read(store.list()?.iter().map(String::as_str));
     check_mark(store.as_mut(), &listing, &identity.to_public().to_string())?;
-    Ok((store, listing, recipients, places))
+    Ok((store, listing, Keys { recipients, tag: TagKey::of(&identity) }, places))
 }
 
 /// Backs up each of `dests` now; whether each did. Says what it does on
@@ -564,8 +694,8 @@ fn round(dests: Vec<Destination>, out: &mut dyn Write) -> Result<bool, Fail> {
     for dest in dests {
         let mut state = State::read(&dest.name);
         match prepare(&dest) {
-            Ok((store, listing, recipients, places)) => {
-                ready.push(Ready { dest, store, listing, state, recipients, places });
+            Ok((store, listing, keys, places)) => {
+                ready.push(Ready { dest, store, listing, state, keys, places });
             }
             Err(fail) => {
                 let _ = writeln!(out, "backup: {}: {}; not backed up", dest.name, fail.message);
@@ -636,14 +766,24 @@ fn round(dests: Vec<Destination>, out: &mut dyn Write) -> Result<bool, Fail> {
                 Err(fail) => failed.push(format!("{path}: {}", fail.message)),
             }
         }
-        // Old chains go only once the backups of this round are whole.
+        if let Err(fail) = write_record(&mut r, &made, &time) {
+            failed.push(format!("the machine's record: {}", fail.message));
+        }
+        // Old chains, and the records only they needed, go only once the
+        // backups of this round are whole.
         let listing = r.store.list().map(|l| Listing::read(l.iter().map(String::as_str)));
         if let Ok(listing) = listing {
             let mut going: Vec<String> = listing.stray.clone();
+            let mut old = Vec::new();
             for (place, chains) in &listing.places {
                 for chain in layout::old_chains(chains, r.dest.chains) {
                     going.push(format!("{place}/{}", chain.name));
+                    old.push(chain);
                 }
+            }
+            for record in layout::old_records(&listing, &old) {
+                going.push(record.path.clone());
+                going.extend(record.tag.clone());
             }
             if let Err(fail) = r.store.remove(&going) {
                 failed.push(fail.message);
@@ -682,10 +822,30 @@ fn back_up(r: &mut Ready, backed: &Backed, time: &str) -> Result<String, Fail> {
         time,
         &backed.snapshot(time),
         parent.as_deref(),
-        &r.recipients,
+        &r.keys,
     )?;
     let what = if parent.is_some() { "changes" } else { "whole" };
     Ok(format!("{} ({what})", util::human(bytes, false)))
+}
+
+/// Writes the machine's record of the round at `time` to `r` (ADR
+/// 0464): its places, by their folders there, and the app registry and
+/// grants.
+fn write_record(r: &mut Ready, made: &BTreeMap<String, Backed>, time: &str) -> Result<(), Fail> {
+    let mut places = BTreeMap::new();
+    for path in &r.places {
+        let folder = match made.get(path) {
+            Some(backed) => backed.folder.clone(),
+            None => match Backed::new(path) {
+                Ok(backed) => backed.folder,
+                Err(_) => continue,
+            },
+        };
+        places.insert(folder, path.clone());
+    }
+    let record = record::Record::gather(&machine(), time, places, Path::new(SYSTEM_STATE))?;
+    write_small(r.store.as_mut(), layout::RECORDS, time, record.text().as_bytes(), &r.keys)?;
+    Ok(())
 }
 
 /// Removes every `backup-` snapshot of the places in `made` that no
@@ -738,6 +898,7 @@ fn receive_chain(
     store: &mut dyn Store,
     backups: &[layout::Backup],
     identity: &age::x25519::Identity,
+    check: &Check,
     into: &Path,
     name: &str,
 ) -> Result<(), Fail> {
@@ -745,15 +906,52 @@ fn receive_chain(
     for (i, backup) in backups.iter().enumerate() {
         let last = i + 1 == backups.len();
         let made = if last { name.to_string() } else { format!(".{name}-{i}") };
-        let stream = read_backup(store, &backup.parts, identity)?;
-        let received = subvolume::receive::receive_as(into, stream, &made);
+        let mut stream = read_backup(store, &backup.parts, backup.tag.as_deref(), identity, check)?;
+        // Its tag is checked once it is read to its end: a backup someone
+        // else wrote is received, then removed.
+        let received =
+            subvolume::receive::receive_as(into, &mut stream, &made).and_then(|()| stream.end());
         if let Some(path) = before.take() {
             subvolume::remove(&path)?;
         }
-        received.map_err(|fail| util::fail(format!("{}: {}", backup.time, fail.message)))?;
+        if let Err(fail) = received {
+            let path = into.join(&made);
+            if is_top(&path) {
+                subvolume::remove(&path)?;
+            }
+            return Err(util::fail(format!("{}: {}", backup.time, fail.message)));
+        }
         before = (!last).then(|| into.join(&made));
     }
     Ok(())
+}
+
+/// Reads, checks and decrypts the record `found` of `store`.
+fn read_record(
+    store: &mut dyn Store,
+    found: &layout::Record,
+    identity: &age::x25519::Identity,
+    check: &Check,
+) -> Result<record::Record, Fail> {
+    let at = layout::tagged_path(&found.path);
+    let mut reading = read_backup(
+        store,
+        std::slice::from_ref(&found.path),
+        found.tag.as_deref(),
+        identity,
+        check,
+    )?;
+    let mut text = String::new();
+    (&mut reading)
+        .take(64 << 20)
+        .read_to_string(&mut text)
+        .map_err(|e| util::fail(format!("{at}: {}", util::strip_os_error(&e))))?;
+    reading.end()?;
+    let record = record::Record::parse(&text).map_err(|why| util::fail(format!("{at}: {why}")))?;
+    if record.time != found.time {
+        return Err(util::fail(format!("{at}: says it is of {}", record.time)));
+    }
+    Ok(record)
 }
 
 /// Reads every backup at the destination through, checking each chain's
@@ -762,6 +960,7 @@ fn verify_reads(
     store: &mut dyn Store,
     listing: &Listing,
     identity: &age::x25519::Identity,
+    check: &Check,
 ) -> Result<usize, Fail> {
     use radix_btrfs::send::stream::{Command as C, Reader};
     let mut count = 0;
@@ -772,7 +971,9 @@ fn verify_reads(
                 let at = format!("{place}/{}/{}", chain.name, backup.time);
                 let failed =
                     |e: io::Error| util::fail(format!("{at}: {}", util::strip_os_error(&e)));
-                let mut reader = Reader::new(read_backup(store, &backup.parts, identity)?);
+                let mut stream =
+                    read_backup(store, &backup.parts, backup.tag.as_deref(), identity, check)?;
+                let mut reader = Reader::new(&mut stream);
                 let first = reader.command().map_err(failed)?;
                 let this = match (first, before) {
                     (Some(C::Subvol { uuid, ctransid, .. }), None) => (uuid, ctransid),
@@ -783,6 +984,8 @@ fn verify_reads(
                     _ => return Err(util::fail(format!("{at}: not the next backup of its chain"))),
                 };
                 while reader.command().map_err(failed)?.is_some() {}
+                drop(reader);
+                stream.end()?;
                 before = Some(this);
                 count += 1;
             }
@@ -801,8 +1004,17 @@ fn verify(dest: &Destination, restore: bool, out: &mut dyn Write) -> Result<(), 
     if listing.places.is_empty() {
         return Err(util::fail(format!("{}: holds no backups yet", store.place())));
     }
-    let count = verify_reads(store.as_mut(), &listing, &identity)?;
-    let _ = writeln!(out, "backup: {}: read {count} backups through, every chain whole", dest.name);
+    let check = Check::Tags(TagKey::of(&identity));
+    let count = verify_reads(store.as_mut(), &listing, &identity, &check)?;
+    for found in &listing.records {
+        read_record(store.as_mut(), found, &identity, &check)?;
+    }
+    let _ = writeln!(
+        out,
+        "backup: {}: read {count} backups and {} records through, every chain whole",
+        dest.name,
+        listing.records.len()
+    );
     if !restore {
         return Ok(());
     }
@@ -819,7 +1031,7 @@ fn verify(dest: &Destination, restore: bool, out: &mut dyn Write) -> Result<(), 
         let name = format!(".check-{time}");
         let copy = backed.place.folder.join(&name);
         let received =
-            receive_chain(store.as_mut(), backups, &identity, &backed.place.folder, &name);
+            receive_chain(store.as_mut(), backups, &identity, &check, &backed.place.folder, &name);
         let compared = received.and_then(|()| compare::same(&copy, &original).map_err(util::fail));
         if is_top(&copy) {
             subvolume::remove(&copy)?;
@@ -983,64 +1195,79 @@ fn show(dest: &Destination, out: &mut dyn Write) -> Result<(), Fail> {
     Ok(())
 }
 
-/// Restores a backup of the place `place` (every place without it), at
-/// `at` (the newest without it), from `source`: a destination's name, or
-/// a machine's folder of backups, with the key in `key`. Into the folder
-/// `into`, or the place's `@snapshots` folder.
-fn restore(
-    source: &str,
-    key: Option<&Path>,
-    place: Option<&str>,
-    at: Option<&str>,
-    into: Option<&Path>,
-    out: &mut dyn Write,
-) -> Result<(), Fail> {
-    let (mut store, identity) = if may_name(source) && settings_file(source).exists() {
-        let dest = Destination::read(source)?;
-        let identity = match key {
+/// What `backup restore` is asked.
+struct Restore<'a> {
+    /// A destination's name, or a machine's folder of backups.
+    source: &'a str,
+    /// The key to read them with; the destination's own without it.
+    key: Option<&'a Path>,
+    /// The place, by its path here or its folder there; every place
+    /// without it.
+    place: Option<&'a str>,
+    /// The backup's time; the newest without it.
+    at: Option<&'a str>,
+    /// Where to receive them; the place's `@snapshots` folder without it.
+    into: Option<&'a Path>,
+    /// Read them although their tags cannot be checked.
+    unchecked: bool,
+}
+
+/// Opens the source of `ask`: its store, listed and marked, and the key
+/// and check it is read with.
+fn open_source(
+    ask: &Restore,
+) -> Result<(Box<dyn Store>, Listing, age::x25519::Identity, Check), Fail> {
+    let (mut store, identity) = if may_name(ask.source) && settings_file(ask.source).exists() {
+        let dest = Destination::read(ask.source)?;
+        let identity = match ask.key {
             Some(key) => read_identity(key)?,
             None => dest.keys()?.0,
         };
         (dest.store(false)?, identity)
     } else {
-        let key = key.ok_or_else(|| {
-            util::usage(format!("{source}: no destination is called that; name one, or give --key"))
+        let key = ask.key.ok_or_else(|| {
+            util::usage(format!(
+                "{}: no destination is called that; name one, or give --key",
+                ask.source
+            ))
         })?;
-        (open_store(source, None, false)?, read_identity(key)?)
+        (open_store(ask.source, None, false)?, read_identity(key)?)
     };
     let listing = Listing::read(store.list()?.iter().map(String::as_str));
     if !listing.marked {
         return Err(util::fail(format!("{}: no backups of a machine there", store.place())));
     }
+    let check = Check::of(store.as_mut(), &identity, ask.unchecked)?;
+    Ok((store, listing, identity, check))
+}
+
+/// Restores a backup of each place `ask` names, at its time, from its
+/// source, into the folder it names or each place's `@snapshots`
+/// folder.
+fn restore(ask: &Restore, out: &mut dyn Write) -> Result<(), Fail> {
+    let (mut store, listing, identity, check) = open_source(ask)?;
     // A place by its path here, or by its folder's name there.
-    let places: Vec<String> = match place {
+    let places: Vec<String> = match ask.place {
         Some(place) if place.starts_with('/') => vec![Backed::new(place)?.folder],
         Some(place) => vec![place.to_string()],
         None => listing.places.keys().cloned().collect(),
     };
     for folder in places {
-        let backups = chain_to(&listing, &folder, at)?;
+        let backups = chain_to(&listing, &folder, ask.at)?;
         let Some(last) = backups.last() else { continue };
         // Where it goes, and where it is shown.
-        let (target, shown) = match into {
+        let (target, shown) = match ask.into {
             Some(into) => (into.to_path_buf(), into.to_path_buf()),
             None => {
-                let path = snap::Settings::read()?
-                    .places
-                    .into_iter()
-                    .find(|p| Backed::new(p).is_ok_and(|b| b.folder == folder))
-                    .ok_or_else(|| {
-                        util::fail(format!(
-                            "no place here keeps snapshots in {folder}; give --into"
-                        ))
-                    })?;
-                let backed = Backed::new(&path)?;
+                let backed = local_place(&folder).ok_or_else(|| {
+                    util::fail(format!("no place here keeps snapshots in {folder}; give --into"))
+                })?;
                 snap::make_folder(&backed.place)?;
                 (backed.place.folder, backed.place.shown)
             }
         };
         let name = format!("{RESTORED}{}", last.time);
-        receive_chain(store.as_mut(), backups, &identity, &target, &name)?;
+        receive_chain(store.as_mut(), backups, &identity, &check, &target, &name)?;
         let _ = writeln!(
             out,
             "Restored the backup of {folder} at {} as {}",
@@ -1049,6 +1276,183 @@ fn restore(
         );
     }
     Ok(())
+}
+
+/// The place here whose backups go in the folder `folder`, among snap's
+/// and the apps'.
+fn local_place(folder: &str) -> Option<Backed> {
+    let mut paths = snap::Settings::read().ok()?.places;
+    paths.push(APPLICATIONS.into());
+    paths.into_iter().find_map(|p| Backed::new(&p).ok().filter(|b| b.folder == folder))
+}
+
+/// Restores the whole machine whose backups `ask` names, at its time
+/// (ADR 0464): its record read and checked, each of the root's places it
+/// names received into `@snapshots/machine-restore/staged` with the
+/// state's files it carries, for Spark to put in place at the next
+/// start; any other place received as `restored-<time>` in its own
+/// `@snapshots` folder.
+fn restore_machine(ask: &Restore, out: &mut dyn Write) -> Result<(), Fail> {
+    use slots::machine::{self as staged, About};
+    let (mut store, listing, identity, check) = open_source(ask)?;
+    let found = layout::record_at(&listing, ask.at).ok_or_else(|| {
+        util::fail(match ask.at {
+            Some(at) => format!(
+                "{}: no record of the machine from {} or before",
+                store.place(),
+                shown_time(at)
+            ),
+            None => format!("{}: no record of the machine there", store.place()),
+        })
+    })?;
+    let record = read_record(store.as_mut(), found, &identity, &check)?;
+    // The root's @snapshots, where the restore is staged.
+    let settings = Backed::new("/system/settings")?;
+    let snapshots = settings.place.folder.parent().unwrap_or(&settings.place.folder).to_path_buf();
+    snap::make_folder(&settings.place)?;
+    let top = snapshots.parent().unwrap_or(&snapshots).to_path_buf();
+    let base = top.join(staged::FOLDER);
+    fs::create_dir_all(&base).map_err(|e| util::failed(&base.display(), e))?;
+    let staging = base.join(staged::STAGED);
+    remove_staged(&staging)?;
+    subvolume::make(&staging)?;
+    let mut about = About {
+        time: found.time.clone(),
+        staged: time_name(util::now_ns()),
+        machine: record.machine.clone(),
+        ..About::default()
+    };
+    for (folder, path) in &record.places {
+        let Some(backups) = layout::chain_upto(&listing, folder, Some(&found.time)) else {
+            let _ = writeln!(out, "{path}: no backup of it from then; left as it is");
+            continue;
+        };
+        let Some(last) = backups.last() else { continue };
+        let here = Backed::new(path).ok();
+        let on_root = here.as_ref().is_some_and(|b| {
+            b.folder == *folder && b.place.folder.parent() == Some(snapshots.as_path())
+        });
+        if staged::SUBVOLUMES.contains(&folder.as_str()) && on_root {
+            receive_chain(store.as_mut(), backups, &identity, &check, &staging, folder)?;
+            about.subvolumes.push(folder.clone());
+            let _ = writeln!(out, "{path}: staged its backup of {}", shown_time(&last.time));
+            continue;
+        }
+        match here.filter(|b| b.folder == *folder) {
+            Some(backed) => {
+                snap::make_folder(&backed.place)?;
+                let name = format!("{RESTORED}{}", last.time);
+                receive_chain(
+                    store.as_mut(),
+                    backups,
+                    &identity,
+                    &check,
+                    &backed.place.folder,
+                    &name,
+                )?;
+                let _ = writeln!(
+                    out,
+                    "{path}: restored its backup of {} as {}; snap restore --from copies files out",
+                    shown_time(&last.time),
+                    backed.place.shown.join(&name).display()
+                );
+            }
+            None => {
+                let _ = writeln!(
+                    out,
+                    "{path}: not on this machine; backup restore --place {folder} --into FOLDER \
+                     restores it"
+                );
+            }
+        }
+    }
+    if about.subvolumes.is_empty() {
+        remove_staged(&staging)?;
+        return Err(util::fail(format!(
+            "{}: its record names none of the root's places with a backup",
+            store.place()
+        )));
+    }
+    // The state's files: the grants first cleared, as each person's are
+    // the record's alone.
+    about.clear.push("grants".into());
+    for (path, text) in &record.state {
+        let file = staging.join(staged::STATE).join(path);
+        if let Some(parent) = file.parent() {
+            fs::create_dir_all(parent).map_err(|e| util::failed(&parent.display(), e))?;
+        }
+        let mode = if path.starts_with("grants/") { 0o600 } else { 0o644 };
+        write_private(&file, text.as_bytes())?;
+        about.state.push((mode, path.clone()));
+    }
+    let partial = staging.join(format!("{}{}", staged::ABOUT, layout::PARTIAL));
+    write_private(&partial, about.text().as_bytes())?;
+    let about_path = staging.join(staged::ABOUT);
+    fs::rename(&partial, &about_path).map_err(|e| util::failed(&about_path.display(), e))?;
+    let _ = writeln!(
+        out,
+        "Staged {} as it was at {}. Restart to finish: before any service starts, the restored \
+         places take the place of these, which are kept in {}.",
+        record.machine,
+        shown_time(&found.time),
+        Path::new(SHOWN_SNAPSHOTS)
+            .join(staged::FOLDER.trim_start_matches("@snapshots/"))
+            .join(staged::kept_folder(&about.staged))
+            .display()
+    );
+    Ok(())
+}
+
+/// Withdraws a whole machine's restore staged and not yet put in place.
+fn cancel_machine(out: &mut dyn Write) -> Result<(), Fail> {
+    use slots::machine as staged;
+    let settings = Backed::new("/system/settings")?;
+    let snapshots = settings.place.folder.parent().unwrap_or(&settings.place.folder);
+    let top = snapshots.parent().unwrap_or(snapshots);
+    let staging = top.join(staged::FOLDER).join(staged::STAGED);
+    if !staging.join(staged::ABOUT).exists() {
+        return Err(util::fail("no machine restore is staged".into()));
+    }
+    remove_staged(&staging)?;
+    let _ =
+        writeln!(out, "Withdrew the machine restore staged; the next start leaves all as it is.");
+    Ok(())
+}
+
+/// Where Spark shows the root's `@snapshots`.
+const SHOWN_SNAPSHOTS: &str = "/snapshots";
+
+/// Removes what an earlier restore staged and did not finish.
+fn remove_staged(staging: &Path) -> Result<(), Fail> {
+    if !staging.exists() {
+        return Ok(());
+    }
+    if let Ok(entries) = fs::read_dir(staging) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if is_top(&path) {
+                subvolume::remove(&path)?;
+            }
+        }
+    }
+    if is_top(staging) {
+        subvolume::remove(staging)
+    } else {
+        fs::remove_dir_all(staging).map_err(|e| util::failed(&staging.display(), e))
+    }
+}
+
+/// Writes `data` to the file `path`, root's and readable by root alone.
+fn write_private(path: &Path, data: &[u8]) -> Result<(), Fail> {
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(path)
+        .map_err(|e| util::failed(&path.display(), e))?;
+    file.write_all(data).map_err(|e| util::failed(&path.display(), e))?;
+    file.sync_all().map_err(|e| util::failed(&path.display(), e))
 }
 
 pub fn main(args: &mut Args) -> Result<i32, Fail> {
@@ -1064,6 +1468,7 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
     let (mut extra, mut recipients) = (String::new(), Vec::new());
     let (mut key, mut place, mut at, mut into) = (None, None, None, None);
     let (mut watch, mut check_restore) = (false, false);
+    let (mut machine_wide, mut unchecked, mut cancel) = (false, false, false);
     while let Some(arg) = args.next()? {
         match arg {
             Arg::Long(long) if action == "add" && ["every", "verify"].contains(&long.as_str()) => {
@@ -1080,6 +1485,9 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
             Arg::Long(long) if long == "into" && action == "restore" => {
                 into = Some(PathBuf::from(args.value()?));
             }
+            Arg::Long(long) if long == "machine" && action == "restore" => machine_wide = true,
+            Arg::Long(long) if long == "unchecked" && action == "restore" => unchecked = true,
+            Arg::Long(long) if long == "cancel" && action == "restore" => cancel = true,
             Arg::Long(long) if long == "watch" && action == "auto" => watch = true,
             Arg::Long(long) if long == "restore" && action == "verify" => check_restore = true,
             Arg::Operand(operand) => operands.push(operand.to_string_lossy().into_owned()),
@@ -1161,15 +1569,29 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
             }
             checked.map(|()| 0)
         }
-        ("restore", [source]) => restore(
-            source,
-            key.as_deref(),
-            place.as_deref(),
-            at.as_deref(),
-            into.as_deref(),
-            &mut out,
-        )
-        .map(|()| 0),
+        ("restore", []) if machine_wide && cancel => cancel_machine(&mut out).map(|()| 0),
+        ("restore", [source]) => {
+            let ask = Restore {
+                source,
+                key: key.as_deref(),
+                place: place.as_deref(),
+                at: at.as_deref(),
+                into: into.as_deref(),
+                unchecked,
+            };
+            if machine_wide {
+                if ask.place.is_some() || ask.into.is_some() {
+                    return Err(util::usage(
+                        "--machine restores every place where it was; it takes no --place or \
+                         --into"
+                            .into(),
+                    ));
+                }
+                restore_machine(&ask, &mut out).map(|()| 0)
+            } else {
+                restore(&ask, &mut out).map(|()| 0)
+            }
+        }
         ("key", [name]) => {
             let identity = read_identity(&key_file(&Destination::read(name)?.name))?;
             let _ = writeln!(out, "{}", identity.to_string().expose_secret());
@@ -1330,13 +1752,18 @@ mod tests {
         let data: Vec<u8> = (0..300_000u32).map(|i| (i * 7 % 251) as u8).collect();
 
         let mut store = Folder::new(&dir, None).unwrap();
-        let mut parts = Parts::new(&mut store, "users/c", "2026-11-11-030000", 100_000);
+        let tag = TagKey::of(&identity);
+        let tagging = tag.start("users/c/2026-11-11-030000");
+        let mut parts = Parts::new(&mut store, "users/c", "2026-11-11-030000", 100_000, tagging);
         let mut writer = encrypting(&mut parts, &[identity.to_public()]).unwrap();
         writer.write_all(&data).unwrap();
         writer.finish().unwrap();
         parts.finish().unwrap();
-        let mut names: Vec<_> =
-            fs::read_dir(dir.join("users/c")).unwrap().map(|e| e.unwrap().path()).collect();
+        let mut names: Vec<_> = fs::read_dir(dir.join("users/c"))
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .filter(|p| p.to_string_lossy().contains(".age"))
+            .collect();
         names.sort();
         assert!(names.len() > 1, "{names:?}");
         let joined: Vec<u8> = names.iter().flat_map(|path| fs::read(path).unwrap()).collect();
@@ -1359,11 +1786,43 @@ mod tests {
             .unwrap();
         child.stdin.take().unwrap().write_all(&data).unwrap();
         assert!(child.wait().unwrap().success());
+        let forged = ["users/c/2026-11-12-030000.age".to_string()];
         let mut back = Vec::new();
-        read_backup(&mut store, &["users/c/2026-11-12-030000.age".into()], &identity)
-            .unwrap()
-            .read_to_end(&mut back)
-            .unwrap();
+        {
+            let mut reading =
+                read_backup(&mut store, &forged, None, &identity, &Check::Unchecked).unwrap();
+            reading.read_to_end(&mut back).unwrap();
+            reading.end().unwrap();
+        }
+        assert!(back == data, "backup read something else");
+        // Unchecked, it reads: anyone with the public key wrote it. With
+        // the tags checked, it has none, and a tag made with another key
+        // is refused at its end.
+        let checked = Check::Tags(TagKey::of(&identity));
+        let refused = read_backup(&mut store, &forged, None, &identity, &checked).err().unwrap();
+        assert!(refused.message.contains("has no tag"), "{}", refused.message);
+        let mut other =
+            TagKey::of(&age::x25519::Identity::generate()).start("users/c/2026-11-12-030000");
+        other.update(&fs::read(dir.join(&forged[0])).unwrap());
+        fs::write(dir.join("users/c/2026-11-12-030000.tag"), other.text()).unwrap();
+        let tag_path = "users/c/2026-11-12-030000.tag";
+        {
+            let mut reading =
+                read_backup(&mut store, &forged, Some(tag_path), &identity, &checked).unwrap();
+            let read = io::copy(&mut reading, &mut io::sink());
+            assert!(read.is_err() || reading.end().is_err());
+        }
+        // What backup wrote reads with its tag checked.
+        let parts: Vec<String> = names
+            .iter()
+            .map(|p| p.strip_prefix(&dir).unwrap().to_string_lossy().into_owned())
+            .collect();
+        let tag_path = "users/c/2026-11-11-030000.tag";
+        let mut reading =
+            read_backup(&mut store, &parts, Some(tag_path), &identity, &checked).unwrap();
+        back.clear();
+        reading.read_to_end(&mut back).unwrap();
+        reading.end().unwrap();
         assert!(back == data, "backup read something else");
         fs::remove_dir_all(dir).unwrap();
     }

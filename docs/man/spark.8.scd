@@ -165,7 +165,14 @@ Init: /system/commands/spark is process 1
   a snapshot of _@snapshots/update/settings_, a step at a time, so that a
   start cut short carries on at the next, and marks the update's folder
   _restored_. A root with no _@settings_, as such a cut can leave one,
-  gets an empty one, which the defaults then fill. Spark mounts
+  gets an empty one, which the defaults then fill. When *backup
+  restore --machine* staged a whole machine in
+  _@snapshots/machine-restore/staged_ (*backup*(8), ADR 0464), Spark
+  then puts each subvolume it staged in the place of the one there,
+  which it keeps, read-only, in _@snapshots/machine-restore/before-_*time*,
+  writes the app registry and grants it carried into _@state_, and
+  removes what was staged, each a step at a time as the settings are:
+  *spark: the machine is as it was at* _time_. Spark mounts
   the root again to compress if it was not, as the root always does,
   then mounts the slot read-only on _/system_,
   _@settings_ on _/system/settings_, _@state_ on _/system/state_,

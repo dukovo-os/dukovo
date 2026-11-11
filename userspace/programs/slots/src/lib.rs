@@ -14,7 +14,9 @@
 //! version it is in `startup/slot.env` ([`about`]); and a fallback puts
 //! the settings from before the update back ([`restore`]). When no slot
 //! starts, three starts in a row that were not seen through start Rescue
-//! from the EFI system partition, which counts them ([`rescue`]).
+//! from the EFI system partition, which counts them ([`rescue`]). A
+//! whole machine restored from its backups is put in place at a start
+//! the same way ([`machine`]).
 //!
 //! The crate is without the standard library, so that Spark uses it as
 //! sysupdate(8) does. When an update will not stage or a start falls
@@ -27,6 +29,7 @@ extern crate alloc;
 pub mod about;
 pub mod cmdline;
 pub mod envblock;
+pub mod machine;
 pub mod rescue;
 pub mod restore;
 pub mod state;

@@ -520,9 +520,11 @@ fn build(root: &Dir, volumes: bool, compress: &[&str]) -> bool {
         root_volume(root, &btrfs, named.as_deref(), boot.system())
     };
     // The settings come back before anything reads them, and a root
-    // without them, as a power cut can leave one, gets them again.
+    // without them, as a power cut can leave one, gets them again; then a
+    // whole machine restored from its backups takes its place.
     if let Some(disk) = &disk {
         restore_settings(root, disk, boot.fallback);
+        restore_machine(root, disk);
     }
     let snapshots = disk.as_deref().and_then(|disk| mount_root(root, disk, boot.system()));
     let mounted = match (disk, snapshots) {
@@ -876,6 +878,161 @@ fn restore_settings(root: &Dir, disk: &str, fallback: Option<Slot>) {
         }
         put_back = step == Step::PutBack;
     }
+}
+
+/// Puts a whole machine that backup(8) staged from its backups in place,
+/// before any service starts (ADR 0464), on the root on
+/// `/volumes/<disk>`: each staged subvolume in the place of the one
+/// there, which is kept, read-only, beside it, then the state's files the
+/// machine's record carried: the app registry and the grants. Each step
+/// is decided from what is there ([`machine::next`]), so a power cut
+/// between two leaves the next start to carry on; once the mark that the
+/// restore is done is written, what was staged is removed.
+fn restore_machine(root: &Dir, disk: &str) {
+    use system_slots::machine::{self, About, Seen as Found, Step as Next};
+    let top = |name: &str| format!("volumes/{disk}/{name}");
+    let base = top(machine::FOLDER);
+    let staged = format!("{base}/{}", machine::STAGED);
+    let exists = |path: &str| root.stat(path).is_ok();
+    let is_dir = |path: &str| root.stat(path).is_ok_and(|stat| stat.kind == FileKind::Directory);
+    let Ok(text) = root.read_file(&format!("{staged}/{}", machine::ABOUT)) else { return };
+    let about = match core::str::from_utf8(&text)
+        .map_err(|_| "not text".into())
+        .and_then(About::parse)
+    {
+        Ok(about) => about,
+        Err(why) => {
+            println!("spark: a machine restore is staged, but its `about` does not read: {why}");
+            return;
+        }
+    };
+    let done = format!("{staged}/{}", machine::DONE);
+    if !exists(&done) {
+        let begun = about
+            .subvolumes
+            .iter()
+            .any(|name| exists(&format!("{staged}/{}", machine::mark(name))));
+        if !begun {
+            let missing = about.subvolumes.iter().find(|n| !is_dir(&format!("{staged}/{n}")));
+            if let Some(missing) = missing {
+                println!("spark: the machine restore staged lacks {missing}: left as it is");
+                return;
+            }
+            println!(
+                "spark: restoring the machine {} from its backup of {} (ADR 0464)",
+                about.machine, about.time
+            );
+        }
+        let kept = format!("{base}/{}", machine::kept_folder(&about.staged));
+        if !is_dir(&kept)
+            && let Err(err) = root.make_dir(&kept)
+        {
+            println!("spark: cannot make /{kept}: {err}");
+            return;
+        }
+        for name in &about.subvolumes {
+            let live = top(&format!("@{name}"));
+            let (from, keep) = (format!("{staged}/{name}"), format!("{kept}/{name}"));
+            let mark = format!("{staged}/{}", machine::mark(name));
+            for _ in 0..=machine::MOST_STEPS {
+                let found = Found {
+                    live: is_dir(&live),
+                    staged: is_dir(&from),
+                    kept: is_dir(&keep),
+                    put: exists(&mark),
+                };
+                let step = machine::next(found);
+                let result = match step {
+                    Next::Keep => root.snapshot(&live, root, &keep, true),
+                    Next::Remove => root.remove_subvolume(&live),
+                    Next::Put => root
+                        .snapshot(&from, root, &live, false)
+                        .and_then(|()| root.write_file(&mark, b"in place\n")),
+                    Next::PutKept => {
+                        println!("spark: the restored @{name} is gone: keeping the one there was");
+                        root.snapshot(&keep, root, &live, false)
+                            .and_then(|()| root.write_file(&mark, b"kept as it was\n"))
+                    }
+                    Next::Done => break,
+                    Next::Lost => {
+                        println!("spark: @{name} is gone, and no copy of it is there");
+                        return;
+                    }
+                };
+                if let Err(err) = result {
+                    println!("spark: cannot put the restored @{name} in place ({step:?}): {err}");
+                    return;
+                }
+            }
+        }
+        if let Err(err) = restore_state(root, &top(machine::STATE_SUBVOLUME), &staged, &about) {
+            println!("spark: cannot put the restored apps' registry and grants in place: {err}");
+            return;
+        }
+        if let Err(err) = root.write_file(&done, b"restored\n") {
+            println!("spark: cannot mark the machine restore done: {err}");
+            return;
+        }
+        println!(
+            "spark: the machine is as it was at {}; what it replaced is in /snapshots/{}",
+            about.time,
+            format!("{}/{}", machine::FOLDER, machine::kept_folder(&about.staged))
+                .trim_start_matches("@snapshots/")
+        );
+    }
+    // Done: what was staged goes.
+    for name in machine::SUBVOLUMES {
+        let path = format!("{staged}/{name}");
+        if is_dir(&path)
+            && let Err(err) = root.remove_subvolume(&path)
+        {
+            println!("spark: cannot remove /{path}: {err}");
+        }
+    }
+    if let Err(err) = root.remove_subvolume(&staged) {
+        println!("spark: cannot remove /{staged}: {err}");
+    }
+}
+
+/// Writes the state's files a staged machine restore carries, `about`'s,
+/// from `staged` into the state subvolume at `state`: the folders it
+/// clears emptied of files first, then each file written beside its
+/// place and renamed into it, root's with its mode. Each run ends the
+/// same, so a power cut leaves the next start to write them again.
+fn restore_state(
+    root: &Dir,
+    state: &str,
+    staged: &str,
+    about: &system_slots::machine::About,
+) -> radix_rt::fs::Result<()> {
+    use system_slots::machine;
+    let rw = Rights::READ.union(Rights::WRITE);
+    for folder in &about.clear {
+        let Ok(dir) = root.open_dir(&format!("{state}/{folder}"), rw) else { continue };
+        for entry in dir.entries()? {
+            if entry.kind == FileKind::File {
+                dir.remove(&entry.name)?;
+            }
+        }
+    }
+    for (mode, path) in &about.state {
+        // Its folders, as a state without bundled's yet lacks them.
+        let mut at = String::from(state);
+        for name in path.split('/').rev().skip(1).collect::<Vec<_>>().into_iter().rev() {
+            at.push('/');
+            at.push_str(name);
+            if root.stat(&at).is_err() {
+                root.make_dir(&at)?;
+            }
+        }
+        let to = format!("{state}/{path}");
+        let new = machine::new_copy(&to);
+        let data = root.read_file(&format!("{staged}/{}/{path}", machine::STATE))?;
+        root.write_file(&new, &data)?;
+        root.set_access(&new, Some(0), Some(0), Some(*mode))?;
+        root.rename(&new, root, &to)?;
+    }
+    Ok(())
 }
 
 /// Mounts the filesystem on `/devices/<name>` at `/volumes/<name>`: FAT,

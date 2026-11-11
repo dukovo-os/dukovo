@@ -5,7 +5,9 @@
 //! paths: under the machine's folder, a folder for each place, in it a
 //! folder for each chain, named by the time of its whole send, and in it
 //! a file for each backup, named by its time, `<time>.age`, or cut into
-//! parts `<time>.age.000`, `<time>.age.001` and on. A file still being
+//! parts `<time>.age.000`, `<time>.age.001` and on, with its tag,
+//! `<time>.tag` (ADR 0464). The machine's records are in the folder
+//! `machine`, one a round, `<time>.age` with its tag. A file still being
 //! written ends `.partial`.
 //!
 //! Which backup comes next, and which chains go, is decided here too, from
@@ -21,6 +23,12 @@ pub const ENDING: &str = ".age";
 
 /// The ending of a file not yet whole.
 pub const PARTIAL: &str = ".partial";
+
+/// The ending of a tag's file (ADR 0464).
+pub const TAG: &str = super::tag::ENDING;
+
+/// The folder of the machine's records, beside the places' (ADR 0464).
+pub const RECORDS: &str = "machine";
 
 /// Whether `name` is a time as backups are named:
 /// `YYYY-MM-DD-HHMMSS`.
@@ -49,6 +57,16 @@ pub fn whole_name(time: &str) -> String {
     format!("{time}{ENDING}")
 }
 
+/// The name of the tag of the backup or record made at `time`.
+pub fn tag_name(time: &str) -> String {
+    format!("{time}{TAG}")
+}
+
+/// The time of the tag whose file is named `name`.
+fn tag_file(name: &str) -> Option<&str> {
+    name.strip_suffix(TAG).filter(|time| is_time(time))
+}
+
 /// One backup: a stream, whole or of the changes from the backup before
 /// it in its chain.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -57,6 +75,28 @@ pub struct Backup {
     pub time: String,
     /// Its files' paths, from the machine's folder, in order.
     pub parts: Vec<String>,
+    /// Its tag's path, if it has one.
+    pub tag: Option<String>,
+}
+
+/// The path a tag is made over, of the backup or record whose first file
+/// is `path`: its path from the machine's folder without its ending, as
+/// `users/CHAIN/TIME`.
+pub fn tagged_path(path: &str) -> String {
+    let (folder, file) = path.rsplit_once('/').unwrap_or(("", path));
+    let time = file.get(..17).unwrap_or(file);
+    if folder.is_empty() { time.to_string() } else { format!("{folder}/{time}") }
+}
+
+/// One of the machine's records (ADR 0464).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Record {
+    /// The time of the round that wrote it.
+    pub time: String,
+    /// Its file's path, from the machine's folder.
+    pub path: String,
+    /// Its tag's path, if it has one.
+    pub tag: Option<String>,
 }
 
 /// A chain: a whole send, then the changes, each from the one before.
@@ -88,8 +128,11 @@ pub struct Listing {
     pub marked: bool,
     /// Each place's chains, oldest first, by the place's folder name.
     pub places: BTreeMap<String, Vec<Chain>>,
+    /// The machine's records, oldest first.
+    pub records: Vec<Record>,
     /// Files a backup left unfinished, which can go: those still
-    /// `.partial`, and parts without their first.
+    /// `.partial`, parts without their first, and tags without their
+    /// file.
     pub stray: Vec<String>,
 }
 
@@ -106,6 +149,11 @@ impl Listing {
         // Place, chain and time, to the parts found by their numbers
         // (None for a backup in one file).
         let mut found: BTreeMap<(String, String, String), Vec<Part>> = BTreeMap::new();
+        // The tags, by the place, chain and time of what they tag.
+        let mut tags: BTreeMap<(String, String, String), String> = BTreeMap::new();
+        // The records and their tags, by time.
+        let mut records: BTreeMap<String, String> = BTreeMap::new();
+        let mut record_tags: BTreeMap<String, String> = BTreeMap::new();
         for path in paths {
             let path = path.strip_prefix("./").unwrap_or(path);
             if path == MARK {
@@ -113,14 +161,30 @@ impl Listing {
                 continue;
             }
             let names: Vec<&str> = path.split('/').collect();
+            if let [RECORDS, file] = names[..] {
+                if let Some(unfinished) = file.strip_suffix(PARTIAL) {
+                    if backup_file(unfinished).is_some() || tag_file(unfinished).is_some() {
+                        listing.stray.push(path.to_string());
+                    }
+                } else if let Some((time, None)) = backup_file(file) {
+                    records.insert(time.to_string(), path.to_string());
+                } else if let Some(time) = tag_file(file) {
+                    record_tags.insert(time.to_string(), path.to_string());
+                }
+                continue;
+            }
             let [place, chain, file] = names[..] else { continue };
-            if !is_place(place) || !is_time(chain) {
+            if !is_place(place) || place == RECORDS || !is_time(chain) {
                 continue;
             }
             if let Some(unfinished) = file.strip_suffix(PARTIAL) {
-                if backup_file(unfinished).is_some() {
+                if backup_file(unfinished).is_some() || tag_file(unfinished).is_some() {
                     listing.stray.push(path.to_string());
                 }
+                continue;
+            }
+            if let Some(time) = tag_file(file) {
+                tags.insert((place.into(), chain.into(), time.into()), path.to_string());
                 continue;
             }
             let Some((time, part)) = backup_file(file) else { continue };
@@ -137,19 +201,30 @@ impl Listing {
                 [(None, _)] => true,
                 _ => parts.iter().enumerate().all(|(i, (part, _))| *part == Some(i)),
             };
+            let key = (place, chain, time);
             if !complete {
                 listing.stray.extend(parts.into_iter().map(|(_, path)| path));
                 continue;
             }
+            let tag = tags.remove(&key);
+            let (place, chain, time) = key;
             let chains = listing.places.entry(place).or_default();
             if chains.last().is_none_or(|c| c.name != chain) {
                 chains.push(Chain { name: chain, backups: Vec::new() });
             }
             let parts = parts.into_iter().map(|(_, path)| path).collect();
             if let Some(last) = chains.last_mut() {
-                last.backups.push(Backup { time, parts });
+                last.backups.push(Backup { time, parts, tag });
             }
         }
+        // A tag is written before its backup is named, so one without its
+        // backup is what a backup cut short left.
+        listing.stray.extend(tags.into_values());
+        for (time, path) in records {
+            let tag = record_tags.remove(&time);
+            listing.records.push(Record { time, path, tag });
+        }
+        listing.stray.extend(record_tags.into_values());
         listing
     }
 
@@ -231,6 +306,48 @@ pub fn old_chains(chains: &[Chain], keep: usize) -> Vec<&Chain> {
     }
     going.reverse();
     going
+}
+
+/// The records of `listing` that go once the chains `going` have gone:
+/// those from before the oldest backup a kept chain restores, except
+/// the newest of them, which a restore of that backup may need.
+pub fn old_records<'l>(listing: &'l Listing, going: &[&Chain]) -> Vec<&'l Record> {
+    let oldest = listing
+        .places
+        .values()
+        .flatten()
+        .filter(|chain| chain.whole() && !going.iter().any(|g| std::ptr::eq(*g, *chain)))
+        .map(|chain| chain.name.as_str())
+        .min();
+    let Some(oldest) = oldest else { return Vec::new() };
+    let before: Vec<&Record> =
+        listing.records.iter().filter(|r| r.time.as_str() < oldest).collect();
+    before.split_last().map_or_else(Vec::new, |(_, older)| older.to_vec())
+}
+
+/// The newest record of `listing` from no later than `at`, or the newest.
+pub fn record_at<'l>(listing: &'l Listing, at: Option<&str>) -> Option<&'l Record> {
+    listing.records.iter().rev().find(|r| at.is_none_or(|at| r.time.as_str() <= at))
+}
+
+/// The backups of the place `place` up to its newest from no later than
+/// `at` (the newest of all without it): its chain's from the whole send.
+pub fn chain_upto<'l>(listing: &'l Listing, place: &str, at: Option<&str>) -> Option<&'l [Backup]> {
+    let mut best: Option<&[Backup]> = None;
+    for chain in listing.chains(place).iter().filter(|c| c.whole()) {
+        let end =
+            chain.backups.iter().filter(|b| at.is_none_or(|at| b.time.as_str() <= at)).count();
+        let candidate = &chain.backups[..end];
+        let newer = match (candidate.last(), best.and_then(<[Backup]>::last)) {
+            (Some(c), Some(b)) => c.time > b.time,
+            (Some(_), None) => true,
+            (None, _) => false,
+        };
+        if newer {
+            best = Some(candidate);
+        }
+    }
+    best
 }
 
 #[cfg(test)]
@@ -327,6 +444,113 @@ mod tests {
         assert_eq!(next(chains, None, true, 30), Next::Whole);
         assert_eq!(next(chains, Some(B), true, 2), Next::Whole);
         assert_eq!(next(&[], Some(B), true, 30), Next::Whole);
+    }
+
+    #[test]
+    fn tags_go_with_their_backups_and_records_are_read_beside_the_places() {
+        let paths = vec![
+            format!("users/{A}/{}", whole_name(A)),
+            format!("users/{A}/{}", tag_name(A)),
+            format!("users/{A}/{}", part_name(B, 0)),
+            format!("users/{A}/{}", part_name(B, 1)),
+            format!("users/{A}/{}", tag_name(B)),
+            format!("users/{A}/{}", whole_name(C)),
+            // A tag whose backup was cut short, and one being written.
+            format!("users/{A}/{}", tag_name(D)),
+            format!("users/{A}/{}{PARTIAL}", tag_name(D)),
+            format!("{RECORDS}/{}", whole_name(A)),
+            format!("{RECORDS}/{}", tag_name(A)),
+            format!("{RECORDS}/{}", whole_name(B)),
+            format!("{RECORDS}/{}", tag_name(C)),
+            format!("{RECORDS}/{}{PARTIAL}", whole_name(D)),
+            format!("{RECORDS}/notes.txt"),
+            // Not a place's chain: a record's folder holds no chains.
+            format!("{RECORDS}/{A}/{}", whole_name(A)),
+        ];
+        let found = listing(&paths);
+        let users = &found.chains("users")[0].backups;
+        assert_eq!(users[0].tag, Some(format!("users/{A}/{}", tag_name(A))));
+        assert_eq!(tagged_path(&users[0].parts[0]), format!("users/{A}/{A}"));
+        assert_eq!(users[1].tag, Some(format!("users/{A}/{}", tag_name(B))));
+        assert_eq!(tagged_path(&users[1].parts[0]), format!("users/{A}/{B}"));
+        assert_eq!(users[2].tag, None);
+        assert!(found.chains(RECORDS).is_empty());
+        assert_eq!(
+            found.records,
+            [
+                Record {
+                    time: A.into(),
+                    path: format!("{RECORDS}/{}", whole_name(A)),
+                    tag: Some(format!("{RECORDS}/{}", tag_name(A))),
+                },
+                Record { time: B.into(), path: format!("{RECORDS}/{}", whole_name(B)), tag: None },
+            ]
+        );
+        assert_eq!(tagged_path(&found.records[0].path), format!("{RECORDS}/{A}"));
+        let mut stray = found.stray.clone();
+        stray.sort();
+        let mut expected = vec![
+            format!("users/{A}/{}", tag_name(D)),
+            format!("users/{A}/{}{PARTIAL}", tag_name(D)),
+            format!("{RECORDS}/{}", tag_name(C)),
+            format!("{RECORDS}/{}{PARTIAL}", whole_name(D)),
+        ];
+        expected.sort();
+        assert_eq!(stray, expected);
+    }
+
+    #[test]
+    fn a_restore_finds_the_record_and_backups_of_its_time() {
+        let paths = vec![
+            format!("users/{A}/{}", whole_name(A)),
+            format!("users/{A}/{}", whole_name(B)),
+            format!("users/{C}/{}", whole_name(C)),
+            format!("users/{C}/{}", whole_name(D)),
+            // shared missed the rounds of B and D.
+            format!("shared/{A}/{}", whole_name(A)),
+            format!("shared/{A}/{}", whole_name(C)),
+            format!("{RECORDS}/{}", whole_name(A)),
+            format!("{RECORDS}/{}", whole_name(C)),
+        ];
+        let found = listing(&paths);
+        let times = |backups: Option<&[Backup]>| {
+            backups.unwrap().iter().map(|b| b.time.clone()).collect::<Vec<_>>()
+        };
+        assert_eq!(times(chain_upto(&found, "users", None)), [C, D]);
+        assert_eq!(times(chain_upto(&found, "users", Some(B))), [A, B]);
+        assert_eq!(times(chain_upto(&found, "users", Some(C))), [C]);
+        assert_eq!(times(chain_upto(&found, "shared", Some(B))), [A]);
+        assert_eq!(times(chain_upto(&found, "shared", Some(D))), [A, C]);
+        assert_eq!(chain_upto(&found, "users", Some("2026-01-01-000000")), None);
+        assert_eq!(chain_upto(&found, "settings", None), None);
+        assert_eq!(record_at(&found, None).map(|r| r.time.as_str()), Some(C));
+        assert_eq!(record_at(&found, Some(B)).map(|r| r.time.as_str()), Some(A));
+        assert_eq!(record_at(&found, Some(D)).map(|r| r.time.as_str()), Some(C));
+        assert_eq!(record_at(&found, Some("2026-01-01-000000")), None);
+    }
+
+    #[test]
+    fn records_go_with_the_chains_that_needed_them() {
+        let paths = vec![
+            format!("users/{A}/{}", whole_name(A)),
+            format!("users/{C}/{}", whole_name(C)),
+            format!("users/{C}/{}", whole_name(D)),
+            format!("{RECORDS}/{}", whole_name(A)),
+            format!("{RECORDS}/{}", whole_name(B)),
+            format!("{RECORDS}/{}", whole_name(C)),
+            format!("{RECORDS}/{}", whole_name(D)),
+        ];
+        let found = listing(&paths);
+        let chains = found.chains("users");
+        let times =
+            |records: Vec<&Record>| records.iter().map(|r| r.time.clone()).collect::<Vec<_>>();
+        // Both chains kept: every record stays.
+        assert!(old_records(&found, &[]).is_empty());
+        // A's chain goes: A's record goes; B's stays, the newest before C.
+        let going = old_chains(chains, 1);
+        assert_eq!(times(old_records(&found, &going)), [A]);
+        // Without a backup, nothing goes.
+        assert!(old_records(&listing(&[format!("{RECORDS}/{}", whole_name(A))]), &[]).is_empty());
     }
 
     #[test]

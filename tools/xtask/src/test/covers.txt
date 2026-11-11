@@ -313,6 +313,11 @@ ls-views ports/git/ ports/uutils-coreutils/ userspace/defaults/nukesh/colors.tom
 ls-views userspace/programs/nukesh/src/colors.rs
 machine-check kernel/lib/mca/
 machine-check-program kernel/lib/mca/ userspace/posix/memfail.c
+machine-restore kernel/fs/btrfs/ kernel/fs/exfat/ userspace/programs/slots/src/machine.rs
+machine-restore userspace/programs/systools/src/backup.rs userspace/programs/systools/src/backup/
+machine-restore userspace/programs/systools/src/bundled.rs userspace/programs/systools/src/bundles/
+machine-restore userspace/programs/systools/src/snap.rs userspace/programs/systools/src/subvolume/
+machine-restore userspace/spark/src/main.rs
 microcode kernel/lib/microcode/
 mm-stress kernel/mm/
 msr kernel/arch/
