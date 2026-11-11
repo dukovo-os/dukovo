@@ -366,9 +366,11 @@ interface file = 0x000c version 11 {
     /// already takes the new number. A socket with no name, or connected,
     /// fails with invalid_argument. A network stream socket must be bound
     /// (`bind_address`) through a network capability with the receive
-    /// right for its port, else missing_rights; the kernel keeps up to 4
-    /// of its connections being made at once, on each interface, and
-    /// `backlog` once they are made. Needs the write right.
+    /// right for its port, else missing_rights; the kernel holds up to
+    /// `backlog` of its connections on each interface, 128 at most, being
+    /// made or waiting, and leaves a SYN that comes when it holds that
+    /// many unanswered, for its client to send again (ADR 0494). Needs the
+    /// write right.
     method listen = 15 (backlog: u32) -> ()
         raises [no_such_slot, empty_slot, missing_rights, invalid_argument, no_memory,
                 not_socket, busy, no_buffers, not_supported];

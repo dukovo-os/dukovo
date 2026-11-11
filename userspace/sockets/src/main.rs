@@ -46,7 +46,7 @@ use alloc::vec::Vec;
 
 use libradix::abi::capability::{self, Rights};
 use libradix::abi::errors::Kernel;
-use libradix::abi::file::{self, SocketFlags, SocketOption};
+use libradix::abi::file::{self, DescriptionFlags, SocketFlags, SocketOption};
 use libradix::abi::network::{self, Address, AddressFamily, EPHEMERAL_FIRST, SocketType};
 use libradix::abi::process::PipeFlags;
 use libradix::abi::startup::{SLOT_NETWORK, SLOT_ROOT, Startup};
@@ -212,7 +212,11 @@ impl Socket {
     }
 
     fn listen(&self) -> Result<(), Status> {
-        file::listen(&SYS, self.0, 4)
+        self.listen_with(4)
+    }
+
+    fn listen_with(&self, backlog: u32) -> Result<(), Status> {
+        file::listen(&SYS, self.0, backlog)
     }
 
     fn accept(&self) -> Result<Socket, Status> {
@@ -370,6 +374,7 @@ fn main(_start: &Startup) -> u64 {
     println!("sockets: derived one capability to connect out and one to listen on ports 8000-8009");
 
     tcp(&mut checks, out);
+    pool(&mut checks, out);
     udp(&mut checks, out);
     rights(&mut checks, out, listen);
     ipv6(&mut checks, out);
@@ -529,6 +534,95 @@ fn tcp(checks: &mut Checks, out: u32) {
     println!("sockets: tcp: the type of service is taken and read back");
     drop(taken);
     println!("sockets: tcp: a socket that does not wait connected, and said when it had");
+}
+
+/// Connections that come faster than a listening socket takes them (ADR
+/// 0494): as many as its backlog are made while it takes none, and one
+/// past its backlog waits, not refused, until it takes one.
+fn pool(checks: &mut Checks, out: u32) {
+    // Ten times the four sockets a listening socket keeps listening.
+    const MANY: usize = 40;
+    let made = Socket::new(SLOT_NETWORK, SocketType::Stream, PipeFlags::NONE);
+    let Some(server) = checks.worked(made, "making a socket to listen with a backlog of 64") else {
+        return;
+    };
+    let bound = server.bind(SLOT_NETWORK, LOOPBACK, 7001).and_then(|()| server.listen_with(64));
+    if checks.worked(bound, "listening on port 7001 with a backlog of 64").is_none() {
+        return;
+    }
+    let mut clients = Vec::new();
+    for at in 1..=MANY {
+        let made = Socket::new(out, SocketType::Stream, PipeFlags::NONE);
+        let Some(client) = checks.worked(made, "making a socket to connect") else { return };
+        let connected = client.connect(out, LOOPBACK, 7001);
+        if checks.worked(connected, &format!("connection {at} of {MANY}, none taken")).is_none() {
+            return;
+        }
+        clients.push(client);
+    }
+    let mut made: Vec<u16> =
+        clients.iter().filter_map(|client| client.name(false).ok()).map(|(_, port)| port).collect();
+    let mut taken = Vec::new();
+    for _ in 0..MANY {
+        let Some(accepted) = checks.worked(server.accept(), "taking a connection") else { return };
+        if let Ok((_, port)) = accepted.name(true) {
+            taken.push(port);
+        }
+    }
+    made.sort_unstable();
+    taken.sort_unstable();
+    checks.check(made.len() == MANY && taken == made, "the connections taken are those made");
+    println!(
+        "sockets: pool: {MANY} connections were made to a socket that took none, then all taken"
+    );
+
+    // A backlog of two: a third connection waits for room.
+    let made = Socket::new(SLOT_NETWORK, SocketType::Stream, PipeFlags::NONE);
+    let Some(server) = checks.worked(made, "making a socket to listen with a backlog of 2") else {
+        return;
+    };
+    let bound = server.bind(SLOT_NETWORK, LOOPBACK, 7002).and_then(|()| server.listen_with(2));
+    if checks.worked(bound, "listening on port 7002 with a backlog of 2").is_none() {
+        return;
+    }
+    let mut first = None;
+    for at in 1..=2 {
+        let made = Socket::new(out, SocketType::Stream, PipeFlags::NONE);
+        let Some(client) = checks.worked(made, "making a socket to connect") else { return };
+        let connected = client.connect(out, LOOPBACK, 7002);
+        if checks.worked(connected, &format!("connection {at} of the backlog of 2")).is_none() {
+            return;
+        }
+        first.get_or_insert(client);
+    }
+    let made = Socket::new(out, SocketType::Stream, PipeFlags::NON_BLOCKING);
+    let Some(third) = checks.worked(made, "making a socket that does not wait") else { return };
+    checks.refused(
+        third.connect(out, LOOPBACK, 7002),
+        Kernel::InProgress,
+        "a connection past the backlog",
+    );
+    checks.refused(
+        third.connect(out, LOOPBACK, 7002),
+        Kernel::Already,
+        "the connection past the backlog, which waits rather than being refused",
+    );
+    let taken = checks.worked(server.accept(), "taking the first connection");
+    let first = first.and_then(|client| client.name(false).ok());
+    checks.check(
+        taken.as_ref().and_then(|taken| taken.name(true).ok()) == first,
+        "the first connection taken is the first made",
+    );
+    // Its SYN comes again, and finds room: the socket waits for it now.
+    let waits = file::status_flags(&SYS, third.0, true, DescriptionFlags::NONE);
+    checks.worked(waits, "having the third socket wait");
+    checks.worked(third.connect(out, LOOPBACK, 7002), "the third connection, once there is room");
+    for at in 2..=3 {
+        checks.worked(server.accept(), &format!("taking connection {at}"));
+    }
+    println!(
+        "sockets: pool: a connection past a backlog of 2 waited, and was made once one was taken"
+    );
 }
 
 /// UDP over the loopback interface.

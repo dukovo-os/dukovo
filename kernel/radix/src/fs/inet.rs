@@ -22,16 +22,19 @@
 //! A socket is smoltcp's sockets, its [`Part`]s, one on each interface it
 //! is on: a connected stream socket's one on the interface its connection
 //! goes through; a datagram socket's one on each interface its address is
-//! on, every one when it is bound to any address; a listening socket's a
-//! few on each such interface, a pool of smoltcp sockets that listen,
-//! each of which becomes a connection when one comes, for `accept` to
-//! take and the pool to make again. Each part's memory is lent to smoltcp
-//! and comes back when it is taken out (`net::memory`). A socket bound
-//! to an interface (SO_BINDTODEVICE, ADR 0190) is on that one alone, and
-//! sends through it; on one with no IPv4 address, a datagram goes from
-//! 0.0.0.0, as a DHCP client's does. A link-local IPv6 address is on
-//! every card's network: the scope a program gives with it, an
-//! interface's number, says which, as sockaddr_in6's sin6_scope_id does.
+//! on, every one when it is bound to any address. A listening socket has
+//! a pool of smoltcp sockets on each such interface ([`ListenPool`], ADR
+//! 0494), each of which becomes a connection when one comes, for `accept`
+//! to take: the interface makes more listen after each poll, up to the
+//! socket's backlog, and a SYN that comes faster waits for its peer to
+//! send it again rather than being refused. Each part's memory is lent
+//! to smoltcp and comes back when it is taken out (`net::memory`). A
+//! socket bound to an interface (SO_BINDTODEVICE, ADR 0190) is on that
+//! one alone, and sends through it; on one with no IPv4 address, a
+//! datagram goes from 0.0.0.0, as a DHCP client's does. A link-local
+//! IPv6 address is on every card's network: the scope a program gives
+//! with it, an interface's number, says which, as sockaddr_in6's
+//! sin6_scope_id does.
 //!
 //! A call that cannot go on waits for networking's count of changes to
 //! move (`net::generation`), then looks again; the interfaces' threads
@@ -75,6 +78,7 @@ use radix_abi::network::{Address, AddressFamily, SocketError, SocketType};
 use radix_abi::process::PipeFlags;
 use radix_cap::{ObjectKind, Rights, SlotRef};
 use radix_mm::{Flags, HEAP, Kmalloc};
+use radix_net::Stack;
 use radix_net::smoltcp::iface::SocketHandle;
 use radix_net::smoltcp::socket::{icmp, tcp, udp};
 use radix_net::smoltcp::time::Duration;
@@ -89,14 +93,23 @@ use crate::net::errors::{self, Heard, Sink, Watch};
 use crate::net::firewall::{self, Listener, Listening, Owner};
 use crate::net::memory::{self, PingLeases, TcpLeases, UdpLeases};
 use crate::net::ports::{self, Held, Protocol, Versions};
-use crate::net::{self, Interface, Orphan};
+use crate::net::{self, Card, Interface, Orphan};
 use crate::sched::{self, wait};
 use crate::user::posix::poll::{self, Polled};
 use crate::user::posix::signal::{Restart, interrupted};
 
-/// The most smoltcp sockets a listening socket keeps listening on each
-/// interface: connections that come faster are refused.
+/// The smoltcp sockets a listening socket keeps listening on each
+/// interface, room allowing, and as many again as SYNs it held while it
+/// had none (ADR 0494).
 const POOL: usize = 4;
+/// The most connections a listening socket holds on each interface, being
+/// made or waiting for `accept`, whatever its backlog: each has its
+/// buffers (ADR 0494).
+const WAITING_MAX: usize = 128;
+/// How long a listening socket keeps listening on the sockets it made for
+/// SYNs it held, for those SYNs to come again: past the third time a
+/// Linux peer sends one, 1, 3 and 7 seconds after the first.
+const HELD_NS: u64 = 15_000_000_000;
 /// How long a connection has to be made.
 const CONNECT_NS: u64 = 60_000_000_000;
 /// How long a connection waits for an answer to what it sent before it
@@ -329,7 +342,7 @@ enum Phase {
     Connecting,
     /// Connected: for a datagram socket, with where its datagrams go.
     Connected,
-    /// Listening: its parts are pools of smoltcp's listening sockets.
+    /// Listening: it has pools of smoltcp's listening sockets, not parts.
     Listening,
 }
 
@@ -463,6 +476,8 @@ struct State {
     /// Whether it is an IPv6 socket.
     v6: bool,
     parts: Vec<Part, Kmalloc>,
+    /// A listening socket's pools, one on each interface it listens on.
+    pools: Vec<Arc<ListenPool, Kmalloc>, Kmalloc>,
     /// When its connection began to be made.
     connect_started_ns: u64,
     /// Why its last connection failed, for SO_ERROR: 0 for none.
@@ -820,6 +835,7 @@ impl InetSocket {
                 scope: 0,
                 v6,
                 parts,
+                pools: Vec::new_in(kmalloc()),
                 connect_started_ns: 0,
                 error: 0,
                 shut_read: false,
@@ -1022,39 +1038,41 @@ impl InetSocket {
             return Err(status(Kernel::NotSupported));
         }
         let backlog = u64::from(backlog).clamp(1, radix_abi::file::BACKLOG_MAX) as usize;
+        let backlog = backlog.min(WAITING_MAX);
         let mut state = self.state.lock();
         match state.phase {
-            // As the pool's size is fixed, a new backlog changes nothing.
-            Phase::Listening => return Ok(()),
+            // Listening again changes its backlog, as on Linux.
+            Phase::Listening => {
+                for pool in &state.pools {
+                    pool.members.lock().backlog = backlog;
+                }
+                return Ok(());
+            }
             Phase::Connecting | Phase::Connected => return Err(status(Kernel::InvalidArgument)),
             Phase::Fresh => {}
         }
         let Some((address, port)) = state.local.filter(|_| state.may_listen) else {
             return Err(Kernel::MissingRights.status(u32::from(Rights::RECEIVE.bits())));
         };
-        let each = backlog.min(POOL);
-        let mut pool = Vec::new_in(kmalloc());
-        pool.try_reserve_exact(each * net::MAX_INTERFACES).map_err(|_| status(Kernel::NoMemory))?;
-        let version = state.version();
+        let mut pools = Vec::new_in(kmalloc());
+        pools.try_reserve_exact(net::MAX_INTERFACES).map_err(|_| status(Kernel::NoMemory))?;
+        let shape = Shape { address, port, version: state.version(), options: state.options };
         for interface in interfaces_for(address, state.options.device) {
-            for _ in 0..each {
-                match listening_part(interface, address, port, version, &state.options) {
-                    // Room was reserved for every interface's.
-                    Ok(part) => {
-                        let _ = pool.push_within_capacity(part);
-                    }
-                    Err(err) => {
-                        release_parts(&mut pool, false, None);
-                        return Err(err);
-                    }
+            match ListenPool::start(interface, shape, backlog) {
+                // Room was reserved for every interface's.
+                Ok(pool) => {
+                    let _ = pools.push_within_capacity(pool);
+                }
+                Err(err) => {
+                    release_pools(&mut pools);
+                    return Err(err);
                 }
             }
         }
-        if pool.is_empty() {
+        if pools.is_empty() {
             return Err(status(Kernel::NoBuffers));
         }
-        // The pool is the parts from here; a bound socket had none.
-        state.parts = pool;
+        state.pools = pools;
         state.phase = Phase::Listening;
         let versions = match address {
             None => state.versions(),
@@ -1073,21 +1091,9 @@ impl InetSocket {
             if state.phase != Phase::Listening {
                 return Err(status(Kernel::InvalidArgument));
             }
-            let made = state.parts.iter().position(|part| {
-                let mut stack = part.interface.stack.lock();
-                stack.socket_mut::<tcp::Socket<'static>>(part.handle).is_some_and(|socket| {
-                    !matches!(socket.state(), tcp::State::Listen | tcp::State::SynReceived)
-                })
-            });
-            let Some(index) = made else { return Ok(None) };
-            let part = state.parts.swap_remove(index);
-            // Another socket listens in its place, if there is memory for one.
-            let (address, port) = state.local.unwrap_or((None, 0));
-            let version = state.version();
-            let again = listening_part(part.interface, address, port, version, &state.options);
-            if let Ok(again) = again {
-                let _ = state.parts.push_within_capacity(again);
-            }
+            let Some(part) = state.pools.iter().find_map(|pool| pool.take()) else {
+                return Ok(None);
+            };
             let (local, peer) = {
                 let mut stack = part.interface.stack.lock();
                 let socket = stack.socket_mut::<tcp::Socket<'static>>(part.handle);
@@ -1138,18 +1144,20 @@ impl InetSocket {
     /// wait, so that the next `accept` takes it. One that can no longer
     /// wait, as there is no memory for it, is reset.
     fn give_back(&self, part: Part) {
-        let mut state = self.state.lock();
-        if state.phase == Phase::Listening && state.parts.try_reserve(1).is_ok() {
-            // Room was reserved just now.
-            let _ = state.parts.push_within_capacity(part);
-            state.parts.rotate_right(1);
-            drop(state);
-            // Another thread may wait in `accept` for it.
-            net::changed();
-            return;
+        let state = self.state.lock();
+        let pool = state.pools.iter().find(|pool| core::ptr::eq(pool.interface, part.interface));
+        match pool {
+            Some(pool) if state.phase == Phase::Listening => {
+                pool.give_back(part);
+                drop(state);
+                // Another thread may wait in `accept` for it.
+                net::changed();
+            }
+            _ => {
+                drop(state);
+                release_part(part, false, &mut None);
+            }
         }
-        drop(state);
-        release_part(part, false, &mut None);
     }
 
     /// Connects it to `given` (radix-file(2)'s `connect_address`), the
@@ -1910,12 +1918,7 @@ impl InetSocket {
         match state.phase {
             Phase::Fresh => poll::WRITABLE | poll::HANG_UP,
             Phase::Listening => {
-                let waiting = state.parts.iter().any(|part| {
-                    let mut stack = part.interface.stack.lock();
-                    stack.socket_mut::<tcp::Socket<'static>>(part.handle).is_some_and(|socket| {
-                        !matches!(socket.state(), tcp::State::Listen | tcp::State::SynReceived)
-                    })
-                });
+                let waiting = state.pools.iter().any(|pool| pool.has_waiting());
                 if waiting { poll::READABLE } else { 0 }
             }
             Phase::Connecting => match state.settle() {
@@ -2036,34 +2039,213 @@ fn udp_part<'a>(
     }
 }
 
-/// A TCP socket on `interface` that listens at `address` and `port`,
-/// kept to `version` of IP when it is any address.
-fn listening_part(
-    interface: &'static Interface,
+/// What a listening socket's smoltcp sockets are made as: where they
+/// listen, kept to `version` of IP when that is any address, and with the
+/// options the socket had when it began to listen.
+#[derive(Clone, Copy)]
+struct Shape {
     address: Option<IpAddress>,
     port: u16,
     version: Option<IpVersion>,
-    options: &Options,
-) -> Result<Part, Status> {
-    let (leases, tcp_memory) = memory::lend_tcp().ok_or(status(Kernel::NoMemory))?;
-    let mut socket = tcp_socket(tcp_memory);
-    options.apply(&mut socket, true);
-    socket.set_listen_version(version);
-    let endpoint = IpListenEndpoint { addr: address, port };
-    if socket.listen(endpoint).is_err() {
-        memory::give_back_tcp(leases, socket);
-        return Err(status(Kernel::InvalidArgument));
+    options: Options,
+}
+
+/// A listening socket's smoltcp sockets on one interface (ADR 0494): those
+/// that listen, and those whose connections are being made or wait for
+/// `accept`. Its interface has it make more listen after each poll in
+/// which connections came, up to the backlog; a SYN that comes while none
+/// listens is held, not refused, and as many more listen until its peer
+/// sends it again.
+struct ListenPool {
+    interface: &'static Interface,
+    shape: Shape,
+    members: Mutex<Members>,
+}
+
+/// A [`ListenPool`]'s sockets, under its lock, which is taken with its
+/// interface's stack's lock held.
+struct Members {
+    /// Its sockets, oldest first.
+    parts: Vec<Part, Kmalloc>,
+    /// The most connections it holds, being made or waiting for `accept`:
+    /// its socket's backlog, up to [`WAITING_MAX`].
+    backlog: usize,
+    /// Until when it keeps more than [`POOL`] sockets listening, for the
+    /// SYNs it held to come again.
+    held_until_ns: u64,
+}
+
+impl ListenPool {
+    /// Makes a pool on `interface` with as many sockets listening as it
+    /// keeps, and has the interface refill it.
+    fn start(
+        interface: &'static Interface,
+        shape: Shape,
+        backlog: usize,
+    ) -> Result<Arc<ListenPool, Kmalloc>, Status> {
+        let mut parts = Vec::new_in(kmalloc());
+        parts.try_reserve(POOL).map_err(|_| status(Kernel::NoMemory))?;
+        let members = Mutex::new(Members { parts, backlog, held_until_ns: 0 });
+        let pool = ListenPool { interface, shape, members };
+        let pool = Arc::try_new_in(pool, kmalloc()).map_err(|_| status(Kernel::NoMemory))?;
+        let made = {
+            let mut stack = interface.stack.lock();
+            let mut members = pool.members.lock();
+            (0..backlog.min(POOL)).try_for_each(|_| pool.add(&mut members, &mut stack))
+        };
+        let added = made
+            .and_then(|()| interface.add_pool(pool.clone()).map_err(|_| status(Kernel::NoMemory)));
+        match added {
+            Ok(()) => Ok(pool),
+            Err(err) => {
+                let mut parts =
+                    core::mem::replace(&mut pool.members.lock().parts, Vec::new_in(kmalloc()));
+                release_parts(&mut parts, false, None);
+                Err(err)
+            }
+        }
     }
-    let mut stack = interface.stack.lock();
-    match interface.add_socket(&mut stack, socket) {
-        Ok(handle) => {
-            Ok(Part { interface, handle, leases: Leases::Tcp(leases), other: OtherEnd::default() })
-        }
-        Err(socket) => {
-            drop(stack);
+
+    /// Makes one more of its sockets listen, on `stack`, its interface's.
+    /// Never inlined: the socket it makes is large, and the frames of the
+    /// calls it is made in, `accept`'s among them, have a budget (ADR
+    /// 0058).
+    #[inline(never)]
+    fn add(&self, members: &mut Members, stack: &mut Stack<Card>) -> Result<(), Status> {
+        members.parts.try_reserve(1).map_err(|_| status(Kernel::NoMemory))?;
+        let Shape { address, port, version, options } = self.shape;
+        let (leases, tcp_memory) = memory::lend_tcp().ok_or(status(Kernel::NoMemory))?;
+        let mut socket = tcp_socket(tcp_memory);
+        // Its handshake has a minute, as a connection being made has:
+        // `accept` gives it the connected socket's timeout.
+        options.apply(&mut socket, false);
+        socket.set_listen_version(version);
+        if socket.listen(IpListenEndpoint { addr: address, port }).is_err() {
             memory::give_back_tcp(leases, socket);
-            Err(status(Kernel::NoBuffers))
+            return Err(status(Kernel::InvalidArgument));
         }
+        socket.set_pooled(true);
+        match self.interface.add_socket(stack, socket) {
+            Ok(handle) => {
+                let leases = Leases::Tcp(leases);
+                let part =
+                    Part { interface: self.interface, handle, leases, other: OtherEnd::default() };
+                // Room was reserved above.
+                let _ = members.parts.push_within_capacity(part);
+                Ok(())
+            }
+            Err(socket) => {
+                memory::give_back_tcp(leases, socket);
+                Err(status(Kernel::NoBuffers))
+            }
+        }
+    }
+
+    /// Has [`POOL`] of its sockets listen on `stack`, its interface's, and
+    /// one more for each SYN they held since it last looked, as its
+    /// backlog allows; lets go of those past [`POOL`] that still listen
+    /// once the SYNs held had time to come again, at `now_ns`.
+    fn top_up(&self, members: &mut Members, stack: &mut Stack<Card>, now_ns: u64) {
+        let (mut listening, mut held) = (0, 0);
+        for part in &members.parts {
+            if let Some(socket) = stack.socket_mut::<tcp::Socket<'static>>(part.handle) {
+                listening += usize::from(socket.state() == tcp::State::Listen);
+                held += usize::from(socket.take_held_syns());
+            }
+        }
+        if held > 0 {
+            members.held_until_ns = now_ns.saturating_add(HELD_NS);
+        }
+        let waiting = members.parts.len() - listening;
+        let wanted = (POOL + held).min(members.backlog.saturating_sub(waiting));
+        while listening < wanted && self.add(members, stack).is_ok() {
+            listening += 1;
+        }
+        if listening <= POOL || now_ns < members.held_until_ns {
+            return;
+        }
+        // The newest go first.
+        let mut extra = listening - POOL;
+        let mut index = members.parts.len();
+        while extra > 0 && index > 0 {
+            index -= 1;
+            let handle = members.parts[index].handle;
+            let socket = stack.socket_mut::<tcp::Socket<'static>>(handle);
+            if socket.is_some_and(|socket| socket.state() == tcp::State::Listen) {
+                let part = members.parts.remove(index);
+                if let Leases::Tcp(leases) = part.leases {
+                    memory::end_tcp(stack, handle, leases, self.interface.name.as_str());
+                }
+                extra -= 1;
+            }
+        }
+    }
+
+    /// Takes its oldest connection that was made, for `accept`, and has
+    /// another socket listen if that makes room for one. Never inlined,
+    /// for `accept`'s frame's budget (ADR 0058).
+    #[inline(never)]
+    fn take(&self) -> Option<Part> {
+        let mut stack = self.interface.stack.lock();
+        let mut members = self.members.lock();
+        let index = members.parts.iter().position(|part| waits(&mut stack, part))?;
+        let part = members.parts.remove(index);
+        if let Some(socket) = stack.socket_mut::<tcp::Socket<'static>>(part.handle) {
+            socket.set_pooled(false);
+        }
+        self.top_up(&mut members, &mut stack, sched::now_ns());
+        Some(part)
+    }
+
+    /// Takes `part` back, a connection [`take`](Self::take) took that did
+    /// not go where it was going, to the front, so that the next `accept`
+    /// takes it; resets it if there is no memory for that.
+    fn give_back(&self, part: Part) {
+        {
+            let mut stack = self.interface.stack.lock();
+            let mut members = self.members.lock();
+            if members.parts.try_reserve(1).is_ok() {
+                if let Some(socket) = stack.socket_mut::<tcp::Socket<'static>>(part.handle) {
+                    socket.set_pooled(true);
+                }
+                // Room was reserved just now.
+                let _ = members.parts.push_within_capacity(part);
+                members.parts.rotate_right(1);
+                return;
+            }
+        }
+        release_part(part, false, &mut None);
+    }
+
+    /// Whether a connection was made that waits for `accept`.
+    fn has_waiting(&self) -> bool {
+        let mut stack = self.interface.stack.lock();
+        self.members.lock().parts.iter().any(|part| waits(&mut stack, part))
+    }
+}
+
+impl net::Pool for ListenPool {
+    fn refill(&self, stack: &mut Stack<Card>, now_ns: u64) {
+        self.top_up(&mut self.members.lock(), stack, now_ns);
+    }
+}
+
+/// Whether `part`, a listening socket's on `stack`, has a connection that
+/// was made and waits for `accept`.
+fn waits(stack: &mut Stack<Card>, part: &Part) -> bool {
+    stack.socket_mut::<tcp::Socket<'static>>(part.handle).is_some_and(|socket| {
+        !matches!(socket.state(), tcp::State::Listen | tcp::State::SynReceived)
+    })
+}
+
+/// Takes a listening socket's `pools` away: their interfaces refill them
+/// no more, and their sockets are taken out of their stacks, those with a
+/// connection that was not taken reset.
+fn release_pools(pools: &mut Vec<Arc<ListenPool, Kmalloc>, Kmalloc>) {
+    while let Some(pool) = pools.pop() {
+        pool.interface.forget_pool(&pool);
+        let mut parts = core::mem::replace(&mut pool.members.lock().parts, Vec::new_in(kmalloc()));
+        release_parts(&mut parts, false, None);
     }
 }
 
@@ -2328,6 +2510,7 @@ impl Drop for InetSocket {
         let connected = matches!(state.phase, Phase::Connecting | Phase::Connected);
         let port = state.held.take_if(|_| connected && self.kind == Kind::Stream);
         release_parts(&mut state.parts, connected, port);
+        release_pools(&mut state.pools);
         if state.watched {
             errors::unwatch(self.id);
         }

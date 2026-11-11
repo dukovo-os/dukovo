@@ -342,8 +342,11 @@ port, as on a named one (ADR 0415).
 with EINPROGRESS, after which *poll* says the socket is writable once
 it is made and *SO_ERROR* says how it went; connecting again says
 EALREADY until then, and EISCONN once connected. A connection to a port
-no one listens on fails with ECONNREFUSED. A listening socket takes up
-to four handshakes at once on each interface, whatever its backlog.
+no one listens on fails with ECONNREFUSED. A listening socket holds as
+many connections as its backlog on each interface, up to 128, being made
+or waiting for *accept*; a SYN that comes when it holds that many, or
+faster than it makes room, is not answered, so its client sends it again
+a second later, as when a Linux listener's queue is full (ADR 0494).
 Each TCP socket has 64 KiB each way, and each UDP socket 64 KiB and 16
 datagrams each way. Each interface holds up to 16,384 sockets, and
 ENOBUFS says it holds that many. A TCP connection closed by its program

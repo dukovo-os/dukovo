@@ -349,6 +349,50 @@ fn a_connection_to_a_port_no_one_listens_on_is_reset() {
 }
 
 #[test]
+fn a_syn_a_pool_of_listening_sockets_has_no_room_for_waits_for_its_next_try() {
+    let (mut a, mut b) = pair();
+    let to = (Ipv4Address::new(10, 0, 0, 2).into(), 7);
+    let listen = |b: &mut Stack<End>| {
+        let pooled = b.add_socket(tcp_memory().socket()).ok().unwrap();
+        let socket = b.socket_mut::<tcp::Socket<'static>>(pooled).unwrap();
+        socket.listen(7).unwrap();
+        socket.set_pooled(true);
+        pooled
+    };
+    let state =
+        |a: &mut Stack<End>, handle| a.socket_mut::<tcp::Socket<'static>>(handle).unwrap().state();
+    let pooled = listen(&mut b);
+    let first = a.add_socket(tcp_memory().socket()).ok().unwrap();
+    a.connect(first, to, None, 49152).unwrap();
+    let mut now = 0;
+    run(&mut a, &mut b, &mut now, 10);
+    assert_eq!(state(&mut a, first), tcp::State::Established);
+    // The pool's one socket has a connection, which its owner has not
+    // taken: the next SYN is held, not reset, and counted.
+    let second = a.add_socket(tcp_memory().socket()).ok().unwrap();
+    a.connect(second, to, None, 49153).unwrap();
+    run(&mut a, &mut b, &mut now, 10);
+    assert_eq!(state(&mut a, second), tcp::State::SynSent);
+    let held = b.socket_mut::<tcp::Socket<'static>>(pooled).unwrap().take_held_syns();
+    assert_eq!(held, 1);
+    // Another socket of the pool listens, and the SYN sent again a second
+    // later gets in.
+    let more = listen(&mut b);
+    now += 1_000_000_000;
+    run(&mut a, &mut b, &mut now, 10);
+    assert_eq!(state(&mut a, second), tcp::State::Established);
+    // Once their owner took both connections, they hold no SYN: one for
+    // the port is reset, as no socket listens there.
+    for taken in [pooled, more] {
+        b.socket_mut::<tcp::Socket<'static>>(taken).unwrap().set_pooled(false);
+    }
+    let third = a.add_socket(tcp_memory().socket()).ok().unwrap();
+    a.connect(third, to, None, 49154).unwrap();
+    run(&mut a, &mut b, &mut now, 10);
+    assert_eq!(state(&mut a, third), tcp::State::Closed);
+}
+
+#[test]
 fn a_quiet_connection_stays_open_past_its_timeout() {
     // The kernel gives every connection a timeout for answers (900 s,
     // ADR 0183); a connection with nothing to answer is not waiting for
