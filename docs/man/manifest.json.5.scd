@@ -153,7 +153,10 @@ windows (1.1), *runtime*, the Linux layer (1.3), and *plugins* (1.10).
 	bundle's permissions give, or *"your-access"*, with everything the
 	shell that starts it holds, as a program of the system's does. Each
 	name once, and none of _/system/commands_: *bundled*(8) links each
-	where the shell's *PATH* finds it, and *bundle run* runs it.
+	where the shell's *PATH* finds it, and *bundle run* runs it. The
+	program gets the command's name as its first argument (_argv[0]_),
+	so one program may be several commands, as _valkey-server_ is
+	_valkey-check-rdb_ too.
 
 *services* = [ {...} ]
 	The services it runs, each with the settings of a service file

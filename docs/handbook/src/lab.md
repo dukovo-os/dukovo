@@ -186,7 +186,9 @@ lab` packs from the same tree, and names to the lab in
 `DUKOVO_LAB_BUNDLES`. A host step copies one onto the machine over SSH
 (`lab/tests/services/copy-bundle.sh`), and the test installs it for
 everyone: `services/nginx` has nginx serve the lab PC over HTTP and
-HTTPS, and reload its settings while the lab PC keeps requests coming.
+HTTPS, and reload its settings while the lab PC keeps requests coming,
+and `services/valkey` has the lab PC store 40,000 keys in Valkey, with
+a client of its own in Python, and find them all after a restart.
 Without the bundles those tests are skipped too.
 
 Removable media go in and out with steps of their own: `usb` plugs and

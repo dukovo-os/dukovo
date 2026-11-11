@@ -1949,7 +1949,9 @@ _recipe.toml_
 	for a service bundle (ADR 0491) its other *programs*, the ports it
 	*links* (whose packages and licenses, with the compiler's runtime,
 	go into its SBOM), and its *services*, *permissions* and *data*, as
-	*manifest.json*(5) has them, written in TOML.
+	*manifest.json*(5) has them, written in TOML; and its *aliases*,
+	commands that run another of its programs by their own name, as
+	_valkey-check-rdb = "valkey-server"_ (ADR 0492).
 
 _patches/\*.patch_
 	Changes to the source, applied in name order with *patch -p1*. Each
@@ -1997,11 +1999,12 @@ gives the folder a _manifest.json_ (*manifest.json*(5)): the recipe's
 version, summary, license and home page, its git repository as the
 source, the publisher "Dukovo catalog", each command running with
 the access of whoever runs it, as command-line tools do, which the
-install sheet says, and the recipe's services, permissions and data
-folder. It writes _sbom.spdx_, listing every component the
-port builds in as the image's manifest does, and _licenses/_ with their
-texts and notices, after checking them against the ports' allow-list,
-MPL-2.0 and PCRE2's license with its exception. It then signs the folder and packs it into
+install sheet says, an alias running the program it names, and the
+recipe's services, permissions and data folder. It writes
+_sbom.spdx_, listing every component the port builds in as the image's
+manifest does, and _licenses/_ with their texts and notices, after
+checking them against the ports' allow-list, MPL-2.0, PCRE2's license
+with its exception and the Boost license. It then signs the folder and packs it into
 _out/bundles/ID-VERSION.dkv_ with the code *bundle*(1) packs with. The
 key is the file *OB_BUNDLE_KEY* names, or the build's own,
 _out/bundles/build.key_, made the first time; Dukovo trusts neither, and

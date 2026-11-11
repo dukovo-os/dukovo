@@ -1,0 +1,218 @@
+SPDX-FileCopyrightText: 2024-present Valkey contributors
+SPDX-FileCopyrightText: 2026 The Dukovo contributors
+SPDX-License-Identifier: BSD-3-Clause
+
+An event loop on poll(2)
+
+Valkey's event loop uses event ports, epoll or kqueue, and select(2)
+where a system has none of them. Radix has none of them, and select
+watches no descriptor of FD_SETSIZE (1024) or more, while the event loop
+holds maxclients connections and more: with open files raised to 4096,
+the loop is not even made. This adds a poll(2) module, ae_poll.c, which
+has no such limit, and has config.h choose it on Radix (__radix__).
+The descriptors watched are kept packed in the array poll(2) takes, with
+each one's place kept by descriptor, so that a change takes constant time.
+
+diff --git a/src/ae.c b/src/ae.c
+index 643ff17..791197b 100644
+--- a/src/ae.c
++++ b/src/ae.c
+@@ -58,10 +58,14 @@
+ #ifdef HAVE_KQUEUE
+ #include "ae_kqueue.c"
+ #else
++#ifdef HAVE_POLL
++#include "ae_poll.c"
++#else
+ #include "ae_select.c"
+ #endif
+ #endif
+ #endif
++#endif
+ 
+ #define AE_LOCK(eventLoop)                                         \
+     if ((eventLoop)->flags & AE_PROTECT_POLL) {                    \
+diff --git a/src/ae_poll.c b/src/ae_poll.c
+new file mode 100644
+index 0000000..29231ad
+--- /dev/null
++++ b/src/ae_poll.c
+@@ -0,0 +1,161 @@
++/* poll(2)-based ae.c module, for systems with neither event ports, epoll
++ * nor kqueue. Unlike select(2), it is not limited to FD_SETSIZE
++ * descriptors, so the event loop can hold maxclients connections.
++ *
++ * The descriptors watched are kept packed at the front of an array of
++ * struct pollfd, which poll(2) takes as it is; each descriptor's index in
++ * it is kept by descriptor, so that adding, changing and removing one
++ * takes constant time. A descriptor removed leaves its place to the last
++ * one.
++ *
++ * Copyright (c) 2026 The Dukovo contributors.
++ * All rights reserved.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions are met:
++ *
++ *   * Redistributions of source code must retain the above copyright notice,
++ *     this list of conditions and the following disclaimer.
++ *   * Redistributions in binary form must reproduce the above copyright
++ *     notice, this list of conditions and the following disclaimer in the
++ *     documentation and/or other materials provided with the distribution.
++ *   * Neither the name of the copyright holder nor the names of its
++ *     contributors may be used to endorse or promote products derived from
++ *     this software without specific prior written permission.
++ *
++ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
++ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
++ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
++ * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
++ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
++ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
++ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
++ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
++ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
++ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
++ * POSSIBILITY OF SUCH DAMAGE.
++ */
++
++#include <poll.h>
++#include <string.h>
++
++typedef struct aeApiState {
++    struct pollfd *fds; /* The descriptors watched, packed at the front. */
++    int *slots;         /* Each descriptor's index in fds, or -1. */
++    int count;          /* How many of fds are watched. */
++} aeApiState;
++
++static int aeApiCreate(aeEventLoop *eventLoop) {
++    aeApiState *state = zmalloc(sizeof(aeApiState));
++    int j;
++
++    if (!state) return -1;
++    state->fds = zmalloc(sizeof(struct pollfd) * eventLoop->setsize);
++    state->slots = zmalloc(sizeof(int) * eventLoop->setsize);
++    if (!state->fds || !state->slots) {
++        zfree(state->fds);
++        zfree(state->slots);
++        zfree(state);
++        return -1;
++    }
++    for (j = 0; j < eventLoop->setsize; j++) state->slots[j] = -1;
++    state->count = 0;
++    eventLoop->apidata = state;
++    return 0;
++}
++
++static int aeApiResize(aeEventLoop *eventLoop, int setsize) {
++    aeApiState *state = eventLoop->apidata;
++    int j;
++
++    /* ae.c checks that no descriptor watched is setsize or more, so the
++     * watched ones keep their places. */
++    state->fds = zrealloc(state->fds, sizeof(struct pollfd) * setsize);
++    state->slots = zrealloc(state->slots, sizeof(int) * setsize);
++    for (j = eventLoop->setsize; j < setsize; j++) state->slots[j] = -1;
++    return 0;
++}
++
++static void aeApiFree(aeEventLoop *eventLoop) {
++    aeApiState *state = eventLoop->apidata;
++
++    zfree(state->fds);
++    zfree(state->slots);
++    zfree(state);
++}
++
++/* The poll(2) events of an ae.c mask. */
++static short aeApiPollEvents(int mask) {
++    short events = 0;
++
++    if (mask & AE_READABLE) events |= POLLIN;
++    if (mask & AE_WRITABLE) events |= POLLOUT;
++    return events;
++}
++
++static int aeApiAddEvent(aeEventLoop *eventLoop, int fd, int mask) {
++    aeApiState *state = eventLoop->apidata;
++    int slot = state->slots[fd];
++
++    mask |= eventLoop->events[fd].mask; /* Merge old events */
++    if (slot == -1) {
++        slot = state->count++;
++        state->slots[fd] = slot;
++        state->fds[slot].fd = fd;
++        state->fds[slot].revents = 0;
++    }
++    state->fds[slot].events = aeApiPollEvents(mask);
++    return 0;
++}
++
++static void aeApiDelEvent(aeEventLoop *eventLoop, int fd, int mask) {
++    aeApiState *state = eventLoop->apidata;
++    int slot = state->slots[fd];
++
++    if (slot == -1) return;
++    /* As for epoll: the caller has already updated the mask in the event
++     * loop. */
++    mask = eventLoop->events[fd].mask;
++    if (mask != AE_NONE) {
++        state->fds[slot].events = aeApiPollEvents(mask);
++        return;
++    }
++    /* The last one takes its place. */
++    state->count--;
++    if (slot != state->count) {
++        state->fds[slot] = state->fds[state->count];
++        state->slots[state->fds[slot].fd] = slot;
++    }
++    state->slots[fd] = -1;
++}
++
++static int aeApiPoll(aeEventLoop *eventLoop, struct timeval *tvp) {
++    aeApiState *state = eventLoop->apidata;
++    int retval, j, numevents = 0;
++
++    retval = poll(state->fds, state->count, tvp ? (tvp->tv_sec * 1000 + (tvp->tv_usec + 999) / 1000) : -1);
++    if (retval > 0) {
++        for (j = 0; j < state->count && numevents < retval; j++) {
++            struct pollfd *p = state->fds + j;
++            int mask = 0;
++
++            if (p->revents == 0) continue;
++            if (p->revents & POLLIN) mask |= AE_READABLE;
++            if (p->revents & POLLOUT) mask |= AE_WRITABLE;
++            /* As for epoll: an error or a hang-up is reported to both
++             * handlers, which find it as they read or write. */
++            if (p->revents & (POLLERR | POLLHUP | POLLNVAL)) mask |= AE_WRITABLE | AE_READABLE;
++            eventLoop->fired[numevents].fd = p->fd;
++            eventLoop->fired[numevents].mask = mask;
++            numevents++;
++        }
++    } else if (retval == -1 && errno != EINTR) {
++        panic("aeApiPoll: poll, %s", strerror(errno));
++    }
++
++    return numevents;
++}
++
++static char *aeApiName(void) {
++    return "poll";
++}
+diff --git a/src/config.h b/src/config.h
+index d8fb9ac..b230ba6 100644
+--- a/src/config.h
++++ b/src/config.h
+@@ -97,6 +97,12 @@
+ #define HAVE_EPOLL 1
+ #endif
+ 
++/* Radix, Dukovo's kernel, has neither epoll nor kqueue: poll(2), which
++ * has no FD_SETSIZE limit, in place of select(2). */
++#ifdef __radix__
++#define HAVE_POLL 1
++#endif
++
+ /* Test for accept4() */
+ #if defined(__linux__) || defined(__FreeBSD__) || defined(OpenBSD5_7) || \
+     (defined(__DragonFly__) && __DragonFly_version >= 400305) ||         \

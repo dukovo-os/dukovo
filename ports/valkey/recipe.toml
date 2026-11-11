@@ -1,0 +1,59 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# Valkey, the in-memory key-value store: a service bundle of the Dukovo
+# catalog, not of the image (ADRs 0370, 0385 and 0492). The open-source
+# fork of Redis, built for Radix as a POSIX system with a poll(2) event
+# loop of its own, the C library's malloc and OpenSSL 3.5's libraries,
+# which the openssl port keeps for bundles, for TLS. Its service runs as
+# the account valkey once an administrator enables it, answering on the
+# machine itself; its settings and data are in its data folder, and its
+# log in the system's.
+name = "valkey"
+version = "9.1.3"
+summary = "in-memory key-value store, cache and message broker"
+# Valkey's and Redis's own code is BSD-3-Clause; it carries Lua (MIT),
+# linenoise (BSD-2-Clause), libvalkey (BSD-3-Clause), fpconv
+# (BSL-1.0), HdrHistogram (CC0-1.0 or BSD-2-Clause) and ffc.h, fast_float
+# in C (MIT, Apache-2.0 or BSL-1.0).
+license = "BSD-3-Clause AND MIT AND BSD-2-Clause AND BSL-1.0 AND (CC0-1.0 OR BSD-2-Clause) AND (MIT OR Apache-2.0 OR BSL-1.0)"
+homepage = "https://valkey.io"
+depends = ["mlibc", "openssl"]
+notices = ["COPYING", "deps/lua/COPYRIGHT", "deps/libvalkey/COPYING", "deps/fpconv/LICENSE.txt", "deps/hdr_histogram/LICENSE.txt"]
+
+[source]
+git = "https://github.com/valkey-io/valkey.git"
+commit = "29173b67508b2de4c0f0ed551f3b47cf19fc3ca8"
+tag = "9.1.3"
+
+[bundle]
+id = "io.valkey.valkey"
+name = "Valkey"
+commands = ["valkey-cli", "valkey-benchmark"]
+# valkey-server checks files as valkey-check-aof and valkey-check-rdb:
+# it does what the name it is run by says.
+aliases = { valkey-check-aof = "valkey-server", valkey-check-rdb = "valkey-server" }
+programs = ["valkey-server", "valkey-service"]
+links = ["mlibc", "openssl"]
+
+# valkey-service sets the data folder up and runs valkey-server in the
+# foreground, as Spark's service.
+[[bundle.services]]
+name = "valkey"
+program = "valkey-service"
+account = "valkey"
+restart = "on-failure"
+start = "when-enabled"
+
+[bundle.permissions."network.listen"]
+ports = [6379]
+need = "required"
+why = "Answers its clients on port 6379"
+
+[bundle.permissions."network.outbound"]
+need = "optional"
+why = "Copies its data from a primary server, as a replica"
+
+[bundle.data]
+settings = true
+data = true

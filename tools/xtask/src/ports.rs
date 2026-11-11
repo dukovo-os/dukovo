@@ -113,6 +113,11 @@ pub struct BundleRecipe {
     /// with the access of whoever runs it, as command-line tools do
     /// (manifest.json(5)); the install sheet says so.
     pub commands: Vec<String>,
+    /// Its commands that run another of its programs by their own name,
+    /// each the program's: `valkey-check-aof = "valkey-server"`, say,
+    /// whose program tells what to do by the name it is run by.
+    #[serde(default)]
+    pub aliases: BTreeMap<String, String>,
     /// Its programs besides its commands, each `bin/<name>`: those its
     /// services run, say.
     #[serde(default)]

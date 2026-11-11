@@ -569,6 +569,9 @@ user kernel/ipc/ userspace/usertests/
 userspace-e1000 kernel/drivers/intel/ kernel/drivers/nic/ kernel/net/ userspace/posix/nics.c
 userspace-e1000 userspace/programs/systools/src/e1000d.rs userspace/programs/systools/src/netd.rs
 userspace-e1000 userspace/spark/tests/services/e1000d/
+valkey ports/openssl/ ports/valkey/ tools/xtask/src/bundles.rs tools/xtask/src/licenses.rs
+valkey tools/xtask/src/ports.rs userspace/programs/dkv/ userspace/programs/manifest/
+valkey userspace/programs/systools/src/bundled.rs userspace/programs/systools/src/bundles/
 views userspace/posix/names.h userspace/posix/views.c
 virtio-ports kernel/drivers/virtio/src/console.rs kernel/radix/src/vports.rs
 virtio-ports kernel/radix/src/fs/devfs.rs kernel/radix/src/fs/tty.rs
