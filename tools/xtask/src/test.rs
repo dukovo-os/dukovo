@@ -3059,7 +3059,7 @@ pub const CASES: &[Case] = &[
     },
     Case {
         name: "sockets",
-        about: "a program connects and listens over TCP and UDP on the loopback interface and a virtio network card, as far as its network capabilities allow",
+        about: "a program connects and listens over TCP and UDP on the loopback interface and a virtio network card, as far as its network capabilities allow; 40 connections are made to a listening socket that takes none, and one past a backlog of 2 waits for room rather than being refused (ADR 0494)",
         firmware: Firmware::Uefi,
         media: Media::Usb,
         cmdline: "lockdep ip=10.0.2.15/24 gateway=10.0.2.2 -- --network /system/tests/sockets virtio",
@@ -7200,6 +7200,12 @@ fn sockets(vm: &mut Vm, case: &Case) -> Result<(), String> {
     vm.expect(&format!("sockets: tcp: {} bytes went one way and came in order", 1 << 20))?;
     vm.expect("sockets: tcp: each end shut down in turn, and each read the end")?;
     vm.expect("sockets: tcp: a socket that does not wait connected, and said when it had")?;
+    vm.expect(
+        "sockets: pool: 40 connections were made to a socket that took none, then all taken",
+    )?;
+    vm.expect(
+        "sockets: pool: a connection past a backlog of 2 waited, and was made once one was taken",
+    )?;
     vm.expect("sockets: udp: datagrams went each way over lo, kept their bounds, and said where they came from")?;
     vm.expect("sockets: rights: each method refused what its capability does not allow")?;
     vm.expect("sockets: ipv6: a socket on [::] took connections from ::1 and from 127.0.0.1")?;

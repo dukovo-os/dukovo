@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 # 0183. Programs reach the network through capabilities of its ports
 
-- Status: Accepted
+- Status: Accepted; a listening socket holds connections up to its backlog since [0494](0494-a-listening-socket-makes-room-for-connections-up-to-its-backlog.md)
 - Date: 2026-10-30
 
 ## Context

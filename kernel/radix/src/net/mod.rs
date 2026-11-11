@@ -59,6 +59,7 @@ pub mod program;
 pub mod tunnel;
 
 use alloc::boxed::Box;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::fmt::{self, Write};
 use core::ptr;
@@ -374,6 +375,10 @@ pub struct Interface {
     /// The lease of its stack's socket slots, which come back when the
     /// stack moves to more. Taken with the stack's lock held.
     slots: Mutex<Lease<SocketStorage<'static>, Kmalloc>>,
+    /// The listening sockets' pools on it, which it refills after each
+    /// poll that changed something (ADR 0494). Taken with the stack's lock
+    /// held, or alone.
+    pools: Mutex<Vec<Arc<dyn Pool, Kmalloc>, Kmalloc>>,
     thread: Once<ThreadRef>,
     /// When its thread is next to wake by itself, by the clock of
     /// `sched::now_ns` (`u64::MAX`: only when woken), set with the stack's
@@ -386,6 +391,16 @@ pub struct Interface {
     /// What its card is, set as the card is attached, for a card the
     /// kernel drives.
     pub hardware: Once<Hardware>,
+}
+
+/// A listening socket's smoltcp sockets on one interface (ADR 0494): the
+/// interface has it make more listen after each poll that changed
+/// something, as the connections that came took those that did.
+pub trait Pool: Send + Sync {
+    /// Makes more of its sockets listen on `stack`, its interface's,
+    /// locked, if connections took them, and lets go of those it no
+    /// longer needs, at `now_ns`.
+    fn refill(&self, stack: &mut Stack<Card>, now_ns: u64);
 }
 
 /// What the kernel knows of a card it drives, which `/kernel/class/net`'s
@@ -437,6 +452,28 @@ impl Interface {
         self.wake();
     }
 
+    /// Has it refill `pool` after each poll, until [`forget_pool`](Self::forget_pool):
+    /// `pool` back, if there is no memory for that.
+    pub fn add_pool(&self, pool: Arc<dyn Pool, Kmalloc>) -> Result<(), Arc<dyn Pool, Kmalloc>> {
+        let mut pools = self.pools.lock();
+        if pools.try_reserve(1).is_err() {
+            return Err(pool);
+        }
+        pools.push_within_capacity(pool).map(|_| ())
+    }
+
+    /// Stops refilling `pool`: no refill of it runs once this returns.
+    pub fn forget_pool<P: Pool>(&self, pool: &Arc<P, Kmalloc>) {
+        self.pools.lock().retain(|other| !ptr::addr_eq(Arc::as_ptr(other), Arc::as_ptr(pool)));
+    }
+
+    /// Refills its pools on `stack`, its own, locked, at `now_ns`.
+    fn refill(&self, stack: &mut Stack<Card>, now_ns: u64) {
+        for pool in self.pools.lock().iter() {
+            pool.refill(stack, now_ns);
+        }
+    }
+
     /// Wakes the interface's thread, to poll its stack.
     fn wake(&self) {
         if let Some(thread) = self.thread.get() {
@@ -452,6 +489,9 @@ impl Interface {
             let mut stack = self.stack.lock();
             let now = sched::now_ns();
             let changed = stack.poll(now);
+            if changed {
+                self.refill(&mut stack, now);
+            }
             let orphans = self.reap(&mut stack, now);
             let delay = stack.poll_delay(now).map(|delay| now.saturating_add(delay));
             let due = [delay, orphans].into_iter().flatten().min();
@@ -959,6 +999,7 @@ fn interface(
         stack: Mutex::new(stack),
         orphans: Mutex::new(orphans),
         slots: Mutex::new(slots),
+        pools: Mutex::new(Vec::new_in(kmalloc())),
         thread: Once::new(),
         wake_at: AtomicU64::new(u64::MAX),
         gone: AtomicBool::new(false),
@@ -1841,6 +1882,9 @@ fn run(number: usize) {
             let mut stack = interface.stack.lock();
             let now = sched::now_ns();
             let changed = stack.poll(now);
+            if changed {
+                interface.refill(&mut stack, now);
+            }
             let counted = stack.counters();
             let packets = counted.received_packets + counted.sent_packets;
             let quiet = packets == moved;

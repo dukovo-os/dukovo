@@ -179,6 +179,19 @@ For neighbours (ADR 0417):
   and on with the timeout backed off, as Linux's retransmission timer
   does when the window is shut.
 
+For listening sockets (ADR 0494):
+
+- A SYN that no socket took was answered with a reset, even when it was
+  for an endpoint sockets listened on and only had no room for it: every
+  one of them had a connection being made or waiting to be taken, and
+  the kernel makes another listening socket only once one is. Its peer
+  took the reset for a refusal, where on Linux it waits and sends the
+  SYN again. `set_pooled` makes a socket one of a pool of listening
+  sockets, until its owner takes its connection; a SYN to the pool's
+  endpoint that no socket takes is then held, not reset, and counted
+  for `take_held_syns`, so that the owner can make room for it before
+  its peer sends it again.
+
 To be offered upstream.
 
 --- a/src/iface/interface/tcp.rs
@@ -205,6 +218,27 @@ To be offered upstream.
          for tcp_socket in sockets
              .items_mut()
              .filter_map(|i| Socket::downcast_mut(&mut i.socket))
+@@ -40,6 +55,20 @@
+             }
+         }
+ 
++        // A SYN to the endpoint of a pool of listening sockets that all have
++        // connections, being made or waiting for their owner, is held: its
++        // peer sends it again, by when the owner has made room for it.
++        if tcp_repr.control == TcpControl::Syn && tcp_repr.ack_number.is_none() {
++            for tcp_socket in sockets
++                .items_mut()
++                .filter_map(|i| Socket::downcast_mut(&mut i.socket))
++            {
++                if tcp_socket.holds_syn(&ip_repr, &tcp_repr) {
++                    return None;
++                }
++            }
++        }
++
+         if tcp_repr.control == TcpControl::Rst
+             || ip_repr.dst_addr().is_unspecified()
+             || ip_repr.src_addr().is_unspecified()
 --- a/src/iface/socket_set.rs
 +++ b/src/iface/socket_set.rs
 @@ -43,6 +43,12 @@
@@ -661,7 +695,7 @@ To be offered upstream.
  
  impl Timer {
      fn new() -> Timer {
-@@ -479,11 +490,20 @@
+@@ -479,11 +490,26 @@
      timeout: Option<Duration>,
      /// Interval at which keep-alive packets will be sent.
      keep_alive: Option<Duration>,
@@ -679,10 +713,16 @@ To be offered upstream.
 +    /// The version of IP a socket listening on any address takes
 +    /// connections over: `None` for both. It stays as the socket is reset.
 +    listen_version: Option<IpVersion>,
++    /// Whether it is one of a pool of sockets that listen on its listen
++    /// endpoint, whose owner has not taken its connection yet: a SYN to
++    /// that endpoint that no socket takes is held, not reset.
++    pooled: bool,
++    /// The SYNs it held so, since they were last counted.
++    held_syns: u16,
      /// Current 4-tuple (local and remote endpoints).
      tuple: Option<Tuple>,
      /// The sequence number corresponding to the beginning of the transmit buffer.
-@@ -514,6 +534,9 @@
+@@ -514,6 +540,9 @@
      remote_mss: usize,
      /// The timestamp of the last packet received.
      remote_last_ts: Option<Instant>,
@@ -692,7 +732,7 @@ To be offered upstream.
      /// The sequence number of the last packet received, used for sACK
      local_rx_last_seq: Option<TcpSeqNumber>,
      /// The ACK number of the last packet received.
-@@ -523,6 +546,18 @@
+@@ -523,6 +552,18 @@
      local_rx_dup_acks: u8,
      /// If a fast retransmit needs to occur
      pending_fast_retransmit: bool,
@@ -711,7 +751,7 @@ To be offered upstream.
  
      /// Duration for Delayed ACK. If None no ACKs will be delayed.
      ack_delay: Option<Duration>,
-@@ -541,9 +576,15 @@
+@@ -541,9 +582,15 @@
  
      /// tsval generator - if some, tcp timestamp is enabled
      tsval_generator: Option<TcpTimestampGenerator>,
@@ -727,7 +767,7 @@ To be offered upstream.
  
      #[cfg(feature = "async")]
      rx_waker: WakerRegistration,
-@@ -557,6 +598,13 @@
+@@ -557,6 +604,13 @@
  
  const DEFAULT_MSS: usize = 536;
  
@@ -741,7 +781,7 @@ To be offered upstream.
  /// Minimum MSS we accept from the remote, same value as Linux's `TCP_MIN_SND_MSS`.
  /// Without it, a peer advertising a tiny MSS could force segments to carry little
  /// or no payload once the TCP options length is subtracted from the effective MSS,
-@@ -596,8 +644,11 @@
+@@ -596,8 +650,13 @@
              rx_fin_received: false,
              timeout: None,
              keep_alive: None,
@@ -750,10 +790,12 @@ To be offered upstream.
              hop_limit: None,
              listen_endpoint: IpListenEndpoint::default(),
 +            listen_version: None,
++            pooled: false,
++            held_syns: 0,
              tuple: None,
              local_seq_no: TcpSeqNumber::default(),
              remote_seq_no: TcpSeqNumber::default(),
-@@ -610,16 +661,23 @@
+@@ -610,16 +669,23 @@
              remote_has_sack: false,
              remote_mss: DEFAULT_MSS,
              remote_last_ts: None,
@@ -777,7 +819,7 @@ To be offered upstream.
              congestion_controller: congestion::AnyController::new(),
  
              #[cfg(feature = "async")]
-@@ -632,11 +690,205 @@
+@@ -632,11 +698,205 @@
          }
      }
  
@@ -983,7 +1025,7 @@ To be offered upstream.
      /// Return whether TCP Timestamp is enabled.
      pub fn timestamp_enabled(&self) -> bool {
          self.tsval_generator.is_some()
-@@ -842,14 +1094,36 @@
+@@ -842,14 +1102,36 @@
      /// The keep-alive functionality together with the timeout functionality allows to react
      /// to these error conditions.
      pub fn set_keep_alive(&mut self, interval: Option<Duration>) {
@@ -1021,7 +1063,7 @@ To be offered upstream.
      /// Return the time-to-live (IPv4) or hop limit (IPv6) value used in outgoing packets.
      ///
      /// See also the [set_hop_limit](#method.set_hop_limit) method
-@@ -883,6 +1157,21 @@
+@@ -883,6 +1165,43 @@
          self.listen_endpoint
      }
  
@@ -1040,10 +1082,32 @@ To be offered upstream.
 +        self.listen_version = version;
 +    }
 +
++    /// Make the socket one of a pool of sockets that listen on its listen
++    /// endpoint, or with `false` no longer one, once its owner has taken
++    /// its connection.
++    ///
++    /// While every socket of a pool has a connection, being made or waiting
++    /// for its owner, a SYN to their endpoint that no socket takes is held
++    /// rather than answered with a reset: its peer sends it again, as a
++    /// peer of a Linux listener whose queue is full does, and the owner
++    /// makes room for it meanwhile. [`take_held_syns`](Self::take_held_syns)
++    /// counts them.
++    #[inline]
++    pub fn set_pooled(&mut self, pooled: bool) {
++        self.pooled = pooled;
++    }
++
++    /// Return how many SYNs the socket held as one of a pool since this was
++    /// last called, and count from zero again.
++    #[inline]
++    pub fn take_held_syns(&mut self) -> u16 {
++        core::mem::take(&mut self.held_syns)
++    }
++
      /// Return the local endpoint, or None if not connected.
      #[inline]
      pub fn local_endpoint(&self) -> Option<IpEndpoint> {
-@@ -924,6 +1213,13 @@
+@@ -924,6 +1243,13 @@
          self.remote_win_shift = rx_cap_log2.saturating_sub(16) as u8;
          self.remote_mss = DEFAULT_MSS;
          self.remote_last_ts = None;
@@ -1057,7 +1121,7 @@ To be offered upstream.
          self.ack_delay_timer = AckDelayTimer::Idle;
          self.challenge_ack_timer = Instant::from_secs(0);
  
-@@ -1386,6 +1682,14 @@
+@@ -1386,6 +1712,14 @@
          Ok(self.rx_buffer.read_allocated(0, data))
      }
  
@@ -1072,7 +1136,7 @@ To be offered upstream.
      /// Return the amount of octets queued in the transmit buffer.
      ///
      /// Note that the Berkeley sockets interface does not have an equivalent of this API.
-@@ -1393,11 +1697,117 @@
+@@ -1393,11 +1727,117 @@
          self.tx_buffer.len()
      }
  
@@ -1190,7 +1254,7 @@ To be offered upstream.
      fn cwnd_remaining(&self) -> usize {
          self.congestion_controller
              .inner()
-@@ -1474,9 +1884,15 @@
+@@ -1474,9 +1914,15 @@
  
      fn ack_reply(&mut self, ip_repr: &IpRepr, repr: &TcpRepr) -> (IpRepr, TcpRepr<'static>) {
          let (mut ip_reply_repr, mut reply_repr) = Self::reply(ip_repr, repr);
@@ -1209,7 +1273,7 @@ To be offered upstream.
  
          // From RFC 793:
          // [...] an empty acknowledgment segment containing the current send-sequence number
-@@ -1529,6 +1945,33 @@
+@@ -1529,6 +1975,33 @@
                      .next()
                      .map(|(left, right)| (left.0 as u32, right.0 as u32));
              }
@@ -1243,7 +1307,7 @@ To be offered upstream.
          }
  
          // Since the sACK option may have changed the length of the payload, update that.
-@@ -1552,6 +1995,36 @@
+@@ -1552,6 +2025,36 @@
          Some(self.ack_reply(ip_repr, repr))
      }
  
@@ -1280,16 +1344,45 @@ To be offered upstream.
      pub(crate) fn accepts(&self, _cx: &mut Context, ip_repr: &IpRepr, repr: &TcpRepr) -> bool {
          if self.state == State::Closed {
              return false;
-@@ -1576,7 +2049,7 @@
+@@ -1574,12 +2077,32 @@
+                 && repr.src_port == tuple.remote.port
+         } else {
              // We're listening, reject packets not matching the listen endpoint.
-             let addr_ok = match self.listen_endpoint.addr {
-                 Some(addr) => ip_repr.dst_addr() == addr,
+-            let addr_ok = match self.listen_endpoint.addr {
+-                Some(addr) => ip_repr.dst_addr() == addr,
 -                None => true,
-+                None => self.listen_version.is_none_or(|version| version == ip_repr.version()),
-             };
-             addr_ok && repr.dst_port != 0 && repr.dst_port == self.listen_endpoint.port
+-            };
+-            addr_ok && repr.dst_port != 0 && repr.dst_port == self.listen_endpoint.port
++            self.listens_for(ip_repr, repr)
++        }
++    }
++
++    /// Whether `ip_repr` and `repr` go to the endpoint it listens on.
++    fn listens_for(&self, ip_repr: &IpRepr, repr: &TcpRepr) -> bool {
++        let addr_ok = match self.listen_endpoint.addr {
++            Some(addr) => ip_repr.dst_addr() == addr,
++            None => self.listen_version.is_none_or(|version| version == ip_repr.version()),
++        };
++        addr_ok && repr.dst_port != 0 && repr.dst_port == self.listen_endpoint.port
++    }
++
++    /// Whether it holds `repr`, a SYN that opens a connection, which no
++    /// socket took: one of a pool, it listened on the SYN's endpoint and
++    /// has a connection its owner has not taken. It counts the SYN.
++    pub(crate) fn holds_syn(&mut self, ip_repr: &IpRepr, repr: &TcpRepr) -> bool {
++        if !self.pooled
++            || self.state == State::Closed
++            || self.listen_endpoint.port == 0
++            || !self.listens_for(ip_repr, repr)
++        {
++            return false;
          }
-@@ -1715,6 +2188,13 @@
++        self.held_syns = self.held_syns.saturating_add(1);
++        true
+     }
+ 
+     pub(crate) fn process(
+@@ -1715,6 +2238,13 @@
          let (payload, payload_offset) = match self.state {
              // In LISTEN and SYN-SENT states, we have not yet synchronized with the remote end.
              State::Listen | State::SynSent => (&[][..], 0),
@@ -1303,7 +1396,7 @@ To be offered upstream.
              _ => {
                  // https://www.rfc-editor.org/rfc/rfc9293.html#name-segment-acceptability-tests
                  let segment_in_window = match (
-@@ -2008,6 +2488,10 @@
+@@ -2008,6 +2538,10 @@
              (State::FinWait1, TcpControl::Fin) => {
                  self.remote_seq_no += 1;
                  self.rx_fin_received = true;
@@ -1314,7 +1407,7 @@ To be offered upstream.
                  if ack_of_fin {
                      self.set_state(State::TimeWait);
                      self.timer.set_for_close(cx.now());
-@@ -2022,6 +2506,8 @@
+@@ -2022,6 +2556,8 @@
              (State::FinWait2, TcpControl::Fin) => {
                  self.remote_seq_no += 1;
                  self.rx_fin_received = true;
@@ -1323,7 +1416,7 @@ To be offered upstream.
                  self.set_state(State::TimeWait);
                  self.timer.set_for_close(cx.now());
              }
-@@ -2058,6 +2544,7 @@
+@@ -2058,6 +2594,7 @@
  
          // Update remote state.
          self.remote_last_ts = Some(cx.now());
@@ -1331,7 +1424,7 @@ To be offered upstream.
  
          // RFC 1323: The window field (SEG.WND) in the header of every incoming segment, with the
          // exception of SYN segments, is left-shifted by Snd.Wind.Scale bits before updating SND.WND.
-@@ -2116,7 +2603,8 @@
+@@ -2116,7 +2653,8 @@
                          }
                      );
  
@@ -1341,7 +1434,7 @@ To be offered upstream.
                          self.timer.set_for_fast_retransmit();
                          net_debug!("started fast retransmit");
                      }
-@@ -2139,8 +2627,12 @@
+@@ -2139,8 +2677,12 @@
                      }
                      self.local_rx_last_ack = Some(ack_number);
  
@@ -1356,7 +1449,7 @@ To be offered upstream.
                      let new_flight_size = self.flight_size().saturating_sub(ack_len);
                      self.congestion_controller.inner_mut().on_ack(
                          cx.now(),
-@@ -2163,11 +2655,21 @@
+@@ -2163,11 +2705,21 @@
              if self.remote_last_seq < self.local_seq_no {
                  self.remote_last_seq = self.local_seq_no
              }
@@ -1380,7 +1473,7 @@ To be offered upstream.
          }
  
          // update timers.
-@@ -2289,16 +2791,39 @@
+@@ -2289,16 +2841,39 @@
          }
      }
  
@@ -1423,7 +1516,7 @@ To be offered upstream.
              return true;
          }
  
-@@ -2461,13 +2986,20 @@
+@@ -2461,13 +3036,20 @@
              // but from the first transmitted one.
              self.remote_last_ts = Some(cx.now());
          }
@@ -1445,7 +1538,7 @@ To be offered upstream.
              // If a timeout expires, we should abort the connection.
              net_debug!("timeout exceeded");
              self.set_state(State::Closed);
-@@ -2484,8 +3016,12 @@
+@@ -2484,8 +3066,12 @@
  
                  // Rewind "last sequence number sent", as if we never
                  // had sent them. This will cause all data in the queue
@@ -1459,7 +1552,7 @@ To be offered upstream.
  
                  // Inform RTTE, so that it can can handle RTO backoff
                  self.rtte.on_rto();
-@@ -2508,6 +3044,18 @@
+@@ -2508,6 +3094,18 @@
              // can't actually do anything.
              self.timer.set_for_idle(cx.now(), self.keep_alive);
  
@@ -1478,7 +1571,7 @@ To be offered upstream.
              // Inform RTTE, so that it can avoid bogus measurements.
              self.rtte.on_retransmit();
          }
-@@ -2567,10 +3115,7 @@
+@@ -2567,10 +3165,7 @@
              max_seg_size: None,
              sack_permitted: false,
              sack_ranges: [None, None, None],
@@ -1490,7 +1583,7 @@ To be offered upstream.
              payload: &[],
          };
  
-@@ -2631,14 +3176,33 @@
+@@ -2631,14 +3226,33 @@
                  let local_mss = cx.ip_mtu() - ip_repr.header_len() - TCP_HEADER_LEN;
                  let effective_mss = local_mss.min(self.remote_mss).saturating_sub(options_len);
  
@@ -1524,7 +1617,7 @@ To be offered upstream.
                  } else {
                      // Right edge of window, ie the max sequence number we're allowed to send.
                      let win_right_edge = self.local_seq_no + self.remote_win_len;
-@@ -2791,8 +3355,13 @@
+@@ -2791,8 +3405,13 @@
          emit(cx, packet_meta, (ip_repr, repr))?;
  
          // We've sent something, whether useful data or a keep-alive packet, so rewind
@@ -1540,7 +1633,7 @@ To be offered upstream.
  
          // Reset delayed-ack timer
          match self.ack_delay_timer {
-@@ -2862,7 +3431,7 @@
+@@ -2862,7 +3481,7 @@
          if self.tuple.is_none() {
              // No one to talk to, nothing to transmit.
              PollAt::Ingress
@@ -1549,7 +1642,7 @@ To be offered upstream.
              // Socket stopped being quiet recently, we need to acquire a timestamp.
              PollAt::Now
          } else if self.state == State::Closed {
-@@ -2887,7 +3456,9 @@
+@@ -2887,7 +3506,9 @@
              let timeout_poll_at = match (self.remote_last_ts, self.timeout) {
                  // If we're transmitting or retransmitting data, we need to poll at the moment
                  // when the timeout would expire.
@@ -1560,7 +1653,7 @@ To be offered upstream.
                  // Otherwise we have no timeout.
                  (_, _) => PollAt::Ingress,
              };
-@@ -4682,6 +5253,57 @@
+@@ -4682,6 +5303,57 @@
      }
  
      #[test]
@@ -1618,7 +1711,7 @@ To be offered upstream.
      fn test_established_sack_no_overflow_on_near_max_seqnumber() {
          let mut s = socket_established();
          s.remote_has_sack = true;
-@@ -5808,6 +6430,114 @@
+@@ -5808,6 +6480,163 @@
          assert_eq!(s.state, State::Closed);
      }
  
@@ -1730,10 +1823,59 @@ To be offered upstream.
 +        assert_eq!(s.state, State::TimeWait);
 +    }
 +
++    #[test]
++    fn test_a_pool_holds_a_syn_it_has_no_room_for() {
++        let syn = |dst_port| TcpRepr {
++            control: TcpControl::Syn,
++            seq_number: REMOTE_SEQ,
++            ack_number: None,
++            src_port: REMOTE_PORT + 1,
++            dst_port,
++            ..SEND_TEMPL
++        };
++        let ip_repr = |repr: &TcpRepr| {
++            IpReprIpvX(IpvXRepr {
++                src_addr: REMOTE_ADDR,
++                dst_addr: LOCAL_ADDR,
++                next_header: IpProtocol::Tcp,
++                payload_len: repr.buffer_len(),
++                hop_limit: 64,
++            })
++        };
++        let holds = |s: &mut TestSocket, repr: &TcpRepr| s.socket.holds_syn(&ip_repr(repr), repr);
++
++        // A socket of a pool, its connection being made, holds a SYN to the
++        // endpoint it listened on, and counts it.
++        let mut s = socket_syn_received();
++        s.listen_endpoint = LISTEN_END;
++        s.set_pooled(true);
++        assert!(holds(&mut s, &syn(LOCAL_PORT)));
++        assert!(holds(&mut s, &syn(LOCAL_PORT)));
++        assert_eq!(s.take_held_syns(), 2);
++        assert_eq!(s.take_held_syns(), 0);
++        assert_eq!(s.state, State::SynReceived);
++        // Not one to another port.
++        assert!(!holds(&mut s, &syn(LOCAL_PORT + 1)));
++        // Nor once its owner took its connection.
++        s.set_pooled(false);
++        assert!(!holds(&mut s, &syn(LOCAL_PORT)));
++        assert_eq!(s.take_held_syns(), 0);
++
++        // A socket that is in no pool holds none, nor does a closed one.
++        let mut s = socket_established();
++        s.listen_endpoint = LISTEN_END;
++        assert!(!holds(&mut s, &syn(LOCAL_PORT)));
++        let mut s = socket_syn_received();
++        s.listen_endpoint = LISTEN_END;
++        s.set_pooled(true);
++        s.abort();
++        assert!(!holds(&mut s, &syn(LOCAL_PORT)));
++    }
++
      // =========================================================================================//
      // Tests for the CLOSE-WAIT state.
      // =========================================================================================//
-@@ -7327,6 +8057,206 @@
+@@ -7327,6 +8156,206 @@
          recv_nothing!(s);
      }
  
@@ -1940,7 +2082,7 @@ To be offered upstream.
      #[test]
      fn test_retransmit_exponential_backoff() {
          let mut s = socket_established();
-@@ -8226,6 +9156,64 @@
+@@ -8226,6 +9255,64 @@
      }
  
      #[test]
@@ -2005,7 +2147,7 @@ To be offered upstream.
      fn test_zero_window_probe_enter_on_send() {
          let mut s = socket_established();
  
-@@ -8606,10 +9594,8 @@
+@@ -8606,10 +9693,8 @@
          let mut s = socket_established();
          s.set_timeout(Some(Duration::from_millis(2000)));
          recv_nothing!(s, time 250);
@@ -2018,7 +2160,7 @@ To be offered upstream.
          s.send_slice(b"abcdef").unwrap();
          assert_eq!(s.socket.poll_at(&mut s.cx), PollAt::Now);
          recv!(s, time 255, Ok(TcpRepr {
-@@ -8642,6 +9628,32 @@
+@@ -8642,6 +9727,32 @@
      }
  
      #[test]
@@ -2051,7 +2193,7 @@ To be offered upstream.
      fn test_established_keep_alive_timeout() {
          let mut s = socket_established();
          s.set_keep_alive(Some(Duration::from_millis(50)));
-@@ -8689,6 +9701,58 @@
+@@ -8689,6 +9800,58 @@
      }
  
      #[test]
@@ -2110,7 +2252,7 @@ To be offered upstream.
      fn test_fin_wait_1_timeout() {
          let mut s = socket_fin_wait_1();
          s.set_timeout(Some(Duration::from_millis(1000)));
-@@ -9585,6 +10649,17 @@
+@@ -9585,6 +10748,17 @@
      }
  
      #[test]
@@ -2128,7 +2270,7 @@ To be offered upstream.
      fn test_set_get_congestion_control() {
          let mut s = socket_established();
  
-@@ -9662,6 +10737,168 @@
+@@ -9662,6 +10836,168 @@
      }
  
      #[test]
