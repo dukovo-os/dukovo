@@ -575,6 +575,7 @@ mod quota;
 mod raid;
 mod rw;
 mod scrub;
+mod send;
 mod snapshots;
 mod trim;
 mod write;

@@ -21,7 +21,6 @@ mod keep;
 
 use std::fs;
 use std::io::{self, Write};
-use std::os::unix::fs::MetadataExt;
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
@@ -30,7 +29,7 @@ use serde::Deserialize;
 
 use crate::args::{Arg, Args};
 use crate::proc;
-use crate::subvolume::{self, Info};
+use crate::subvolume::{self, Info, is_top};
 use crate::util::{self, Fail};
 
 use keep::Kept;
@@ -50,11 +49,6 @@ const UPDATE: &str = "update";
 
 /// How long `auto --watch` waits between rounds.
 const ROUND: Duration = Duration::from_hours(1);
-
-/// The bits of `st_ino` that are the inode's own number on Radix (the
-/// subvolume's number is above them), and a subvolume's top folder's.
-const INODE_BITS: u64 = (1 << 40) - 1;
-const TOP_INODE: u64 = 256;
 
 /// The ID of the top of a Btrfs filesystem.
 const TOP_ID: u64 = 5;
@@ -131,11 +125,6 @@ impl Snapshot {
     fn timed(&self) -> bool {
         keep::is_timed(&self.name)
     }
-}
-
-/// Whether the folder `path` is the top of a Btrfs subvolume.
-fn is_top(path: &Path) -> bool {
-    fs::metadata(path).is_ok_and(|m| m.is_dir() && m.ino() & INODE_BITS == TOP_INODE)
 }
 
 /// The name of a subvolume's folder in `@snapshots`: its own, without a

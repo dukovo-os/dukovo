@@ -237,6 +237,15 @@ takes an empty subvolume too, as Linux's *rmdir*(2) does. A subvolume
 that is the default, holds another, or has something in it open fails
 to go (*in_use*, *not_empty*).
 
+A Btrfs directory's *compare* walks the trees of two read-only
+subvolumes, the one that holds it and a parent's, and gives every item
+one has and the other has not, or has with other data, skipping every
+block the two share, as Linux's *btrfs send* compares a snapshot with its
+parent; it needs the bypass right on both. *mark_received* marks a
+subvolume received from another filesystem's, by that one's UUID and
+transaction, and makes it read-only. *subvolume*(8)'s *send* and
+*receive* are made of them (ADR 0462).
+
 A Btrfs file's *control* takes Linux's *FICLONE* and *FICLONERANGE*
 (*ioctl_ficlone*(2)): the file opened for writing shares the blocks of
 another, opened for reading on the same filesystem, whole or a range of

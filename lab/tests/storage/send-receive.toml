@@ -1,0 +1,55 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# Send and receive across systems (ADR 0462): the machine sends a snapshot
+# of /users whole, then a second as its changes from the first, to files;
+# the lab PC's own Linux receives both with btrfs receive, as root, on a
+# Btrfs of its own (send-receive.sh beside this file), and finds the lab
+# account's files as the machine summed them. Then the machine receives a
+# stream Linux's btrfs send made, the Btrfs driver's test fixture.
+about = "Linux's btrfs receive takes the streams subvolume send writes, whole and incremental, with the same files; and subvolume receive takes one Linux's btrfs send wrote (ADR 0462)"
+time = "6m"
+host_needs = ["btrfs", "mkfs.btrfs", "mount", "scp", "sha256sum"]
+
+# A folder of the lab account's, in a first snapshot sent whole.
+[[step]]
+run = "sh -c 'rm -rf ~/lab-send && mkdir ~/lab-send && echo first > ~/lab-send/note.txt && seq 1 100000 > ~/lab-send/numbers.txt && ln -s note.txt ~/lab-send/latest && echo made'"
+expect = "made"
+[[step]]
+run = "sh -c 'snap create --name lab-send-1 /users && subvolume send -f /users/lab/lab-1.stream /snapshots/users/lab-send-1 && chown lab /users/lab/lab-1.stream'"
+root = true
+expect = "At subvol /snapshots/users/lab-send-1"
+# Changed, in a second snapshot sent as its changes.
+[[step]]
+run = "sh -c 'echo second >> ~/lab-send/note.txt && mv ~/lab-send/numbers.txt ~/lab-send/counted.txt && echo changed'"
+expect = "changed"
+[[step]]
+run = "sh -c 'snap create --name lab-send-2 /users && subvolume send -p /snapshots/users/lab-send-1 -f /users/lab/lab-2.stream /snapshots/users/lab-send-2 && chown lab /users/lab/lab-2.stream'"
+root = true
+expect = "At subvol /snapshots/users/lab-send-2"
+[[step]]
+run = "sh -c 'cd ~/lab-send && find . -type f | sort | xargs sha256sum > ~/lab-send.sums && wc -l < ~/lab-send.sums'"
+expect = "2"
+# Linux receives both and finds the same files.
+[[step]]
+host = "sh {here}/send-receive.sh fetch {machine} {machine-port:22}"
+expect = "fetched: 3 files"
+[[step]]
+host = "sh {here}/send-receive.sh receive"
+root = true
+expect = ["subvol ./lab-send-1", "snapshot ./lab-send-2", "Flags:", "readonly", "sums match"]
+# The machine receives Linux's stream.
+[[step]]
+host = "sh {here}/send-receive.sh send {machine} {machine-port:22}"
+expect = "copied: linux.stream"
+[[step]]
+run = "sh -c 'rm -rf /users/lab/lab-received && mkdir /users/lab/lab-received && subvolume receive -f /users/lab/linux.stream /users/lab/lab-received'"
+root = true
+expect = "At subvol s1"
+[[step]]
+run = "sh -c 'readlink /users/lab/lab-received/s1/sym && cmp /users/lab/lab-received/s1/big \"/users/lab/lab-received/s1/a/clone of big\" && echo same && subvolume show /users/lab/lab-received/s1'"
+expect = ["a/b/medium", "same", "Received UUID", "readonly"]
+[[step]]
+run = "sh -c 'subvolume delete /users/lab/lab-received/s1 && rm -rf /users/lab/lab-received /users/lab/linux.stream /users/lab/lab-1.stream /users/lab/lab-2.stream /users/lab/lab-send /users/lab/lab-send.sums && snap delete /users lab-send-1 lab-send-2'"
+root = true
+expect = "Removed /snapshots/users/lab-send-2"

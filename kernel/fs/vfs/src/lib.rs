@@ -825,6 +825,36 @@ pub trait Node: Send + Sync + Any {
         Err(Error::NotSupported)
     }
 
+    /// Compares the tree of the read-only subvolume it is in with that of
+    /// the read-only subvolume `parent` is in, on the same filesystem, or
+    /// with nothing (ADR 0462): gives `each` every item one has that the
+    /// other has not, or has with other data, for the keys in `range`, in
+    /// key order, until `each` returns false, which leaves that item for
+    /// the next call. Returns true once the range is done. Fails with
+    /// [`Error::NotPermitted`] if either subvolume may change, and with
+    /// [`Error::CrossMount`] if `parent` is on another filesystem; a
+    /// filesystem with no subvolumes refuses.
+    fn compare(
+        &self,
+        _parent: Option<&NodeRef>,
+        _range: &TreeRange,
+        _each: &mut dyn FnMut(&TreeItem<'_>) -> bool,
+    ) -> Result<bool> {
+        Err(Error::NotSupported)
+    }
+
+    /// Marks the subvolume this directory is the top of received, a copy
+    /// of subvolume `uuid` of another filesystem as it was sent at its
+    /// transaction `sent_transaction`, at `sent` (nanoseconds since 1970),
+    /// and makes it read-only from now on, as `btrfs receive` does at the
+    /// end of each subvolume (ADR 0462). Fails with
+    /// [`Error::InvalidArgument`] if it is not a subvolume's top, and with
+    /// [`Error::ReadOnly`] if the subvolume is read-only already; a
+    /// filesystem with no subvolumes refuses.
+    fn mark_received(&self, _uuid: &[u8; 16], _sent_transaction: u64, _sent: u64) -> Result<()> {
+        Err(Error::NotSupported)
+    }
+
     /// Moves entry `from` of this directory to `to` in `to_dir`, on the
     /// same filesystem, replacing a file (or empty directory, for a
     /// directory) of that name.
@@ -1197,6 +1227,41 @@ pub struct Subvolume {
 
 /// [`Subvolume::flags`]'s flag of a subvolume nothing in may change.
 pub const SUBVOLUME_READ_ONLY: u64 = 1;
+
+/// A key of a filesystem's tree, for [`Node::compare`] (ADR 0462): a
+/// Btrfs item's object ID, type and offset, sorted in that order.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub struct TreeKey {
+    /// What the item is about: an inode, for a subvolume's tree.
+    pub objectid: u64,
+    /// The item's type.
+    pub kind: u8,
+    /// A number whose meaning the type gives.
+    pub offset: u64,
+}
+
+/// The keys [`Node::compare`] goes over: from `start` to `end`, both
+/// included.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TreeRange {
+    /// The first key.
+    pub start: TreeKey,
+    /// The last key.
+    pub end: TreeKey,
+}
+
+/// An item [`Node::compare`] found different: its key, and its data in
+/// the parent's tree and in this one, `None` where the tree has no item
+/// of that key.
+#[derive(Clone, Copy, Debug)]
+pub struct TreeItem<'a> {
+    /// Its key.
+    pub key: TreeKey,
+    /// Its data in the parent's tree.
+    pub old: Option<&'a [u8]>,
+    /// Its data in this tree.
+    pub new: Option<&'a [u8]>,
+}
 
 /// A filesystem.
 pub trait FileSystem: Send + Sync {

@@ -63,6 +63,10 @@ radix-abi = { path = "../../../kernel/abi" }
 # BitLocker volumes' metadata, and their keys unwrapped with a password
 # or recovery key, for unlock(8) (ADR 0240).
 radix-bitlocker = { path = "../../../kernel/fs/bitlocker", features = ["keys"] }
+# subvolume(8)'s send and receive: Linux's send streams, made from the
+# kernel's comparison of two snapshots and read back, by the kernel's own
+# Btrfs crate (ADR 0462).
+radix-btrfs = { path = "../../../kernel/fs/btrfs", features = ["send"] }
 # e1000d(8) runs the kernel's own e1000 and e1000e driver as a program
 # (ADR 0198), over registers and DMA memory the kernel maps for it.
 radix-hw = { path = "../../../kernel/lib/hw" }

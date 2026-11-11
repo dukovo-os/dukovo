@@ -443,6 +443,9 @@ screen-reader kernel/drivers/virtio/ kernel/radix/src/audio/ ports/espeak-ng/ us
 screen-reader userspace/programs/audio/ userspace/programs/consoled/ userspace/programs/systools/src/reader.rs
 sd-card-change kernel/drivers/sdhci/ kernel/radix/src/fs/disk/sdhci.rs kernel/radix/src/fs/disk/removable.rs
 sd-card-change kernel/fs/fat/ userspace/programs/systools/src/eject.rs userspace/programs/systools/src/volumed.rs
+send-receive kernel/fs/btrfs/ kernel/radix/src/user/files.rs ports/diffutils/ ports/uutils-coreutils/
+send-receive userspace/programs/systools/src/subvolume.rs userspace/programs/systools/src/subvolume/
+send-receive userspace/programs/systools/src/snap.rs userspace/programs/systools/src/facl.rs
 service-bundle image/grub/installed.cfg.in tools/xtask/src/bundles.rs tools/xtask/src/grub.rs
 service-bundle tools/xtask/src/grub_theme.rs tools/xtask/src/release.rs userspace/programs/dkv/
 service-bundle userspace/programs/installer/ userspace/programs/manifest/

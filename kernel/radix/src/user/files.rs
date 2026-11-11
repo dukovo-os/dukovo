@@ -638,6 +638,8 @@ pub fn directory_method(
             answer(label, 0, [0; 8])
         }
         directory::SUBVOLUME => subvolume_method(found, label, args),
+        directory::COMPARE => compare_method(user, found, label, args),
+        directory::MARK_RECEIVED => mark_received_method(found, label, args),
         directory::SCRUB => {
             let a = directory::ScrubArgs::decode(args)?;
             // Mending writes to the disk.
@@ -1048,6 +1050,134 @@ fn subvolume_method(found: &Found, label: u32, args: &[u64; 8]) -> Result<Answer
             err => fs::status(err),
         })?;
     put_subvolume(&info, UserOut { address, len })?;
+    answer(label, 0, [0; 8])
+}
+
+/// The most `compare` gathers in one call: the records are kept in the
+/// kernel while the walk holds the filesystem's transaction, and copied
+/// out after it.
+const COMPARE_MAX: usize = 256 << 10;
+
+/// The NotSupported of a filesystem with no subvolumes is the kernel's
+/// not_supported, not a file's.
+fn subvolume_status(err: radix_vfs::Error) -> radix_abi::Status {
+    match err {
+        radix_vfs::Error::NotSupported => Kernel::NotSupported.status(0),
+        err => fs::status(err),
+    }
+}
+
+/// `compare` (ADR 0462), out of [`directory_method`]: the items two
+/// read-only subvolumes' trees differ by, or one's items, written as
+/// TreeItem records.
+#[inline(never)]
+fn compare_method(user: &UserRef, found: &Found, label: u32, args: &[u64; 8]) -> Result<Answer> {
+    use directory::TreeItem as T;
+    let a = directory::CompareArgs::decode(args)?;
+    let dir = directory_of(found, Rights::READ)?;
+    let parent = match a.parent {
+        radix_abi::endpoint::NO_SLOT => None,
+        slot => Some(objects::directory(user.cspace, slot, Rights::READ)?),
+    };
+    // What every file holds, as Linux's send needs CAP_SYS_ADMIN for.
+    let bypass = found.cap.rights().contains(Rights::BYPASS)
+        && parent.as_ref().is_none_or(|(cap, _)| cap.rights().contains(Rights::BYPASS));
+    if !bypass {
+        return Err(fs::status(radix_vfs::Error::NotPermitted));
+    }
+    let range = tree_range(a.range)?;
+    let (address, len) = user_range(a.buffer)?;
+    let room = len.min(COMPARE_MAX);
+    let mut records = radix_mm::bytes::zeroed(room, HEAP.with(Flags::MAY_SLEEP))
+        .map_err(|_| error(Kernel::NoMemory))?;
+    let mut used = 0usize;
+    let mut path = Path::Empty;
+    let path = path.copy(a.path)?;
+    let who = who(found.cap.rights(), dir)?;
+    let mut count = 0u32;
+    let done = vfs()?
+        .compare(
+            &who,
+            &dir.at,
+            path.as_str()?,
+            parent.as_ref().map(|p| &p.1.at),
+            &range,
+            &mut |item| {
+                let (old, new) = (item.old.unwrap_or(&[]), item.new.unwrap_or(&[]));
+                let size = (T::SIZE + old.len() + new.len()).next_multiple_of(8);
+                if used + size > room {
+                    return false;
+                }
+                let change = match (item.old, item.new) {
+                    (None, _) => directory::TREE_ITEM_ADDED,
+                    (_, None) => directory::TREE_ITEM_REMOVED,
+                    _ => directory::TREE_ITEM_CHANGED,
+                };
+                let mut header = [0u8; T::SIZE];
+                header[T::OFFSET_OBJECTID..][..8].copy_from_slice(&item.key.objectid.to_le_bytes());
+                header[T::OFFSET_OFFSET..][..8].copy_from_slice(&item.key.offset.to_le_bytes());
+                header[T::OFFSET_KIND] = item.key.kind;
+                header[T::OFFSET_CHANGE] = change;
+                header[T::OFFSET_OLD_LENGTH..][..4]
+                    .copy_from_slice(&(old.len() as u32).to_le_bytes());
+                header[T::OFFSET_NEW_LENGTH..][..4]
+                    .copy_from_slice(&(new.len() as u32).to_le_bytes());
+                // Within the room checked above; the padding is already zero.
+                let record = &mut records[used..used + size];
+                record[..T::SIZE].copy_from_slice(&header);
+                record[T::SIZE..][..old.len()].copy_from_slice(old);
+                record[T::SIZE + old.len()..][..new.len()].copy_from_slice(new);
+                used += size;
+                count += 1;
+                true
+            },
+        )
+        .map_err(subvolume_status)?;
+    // Not even one record fits.
+    if count == 0 && !done {
+        return Err(error(Kernel::InvalidArgument));
+    }
+    UserOut { address, len }.put(0, &records[..used]).map_err(fs::status)?;
+    let results = directory::CompareResults { count, used: used as u64, done };
+    answer(label, directory::CompareResults::WORDS, results.encode())
+}
+
+/// The TreeRange in the caller's `buffer`, for `compare`.
+fn tree_range(buffer: UserBuffer) -> Result<radix_vfs::TreeRange> {
+    use directory::TreeRange as R;
+    if buffer.len != R::SIZE as u64 {
+        return Err(error(Kernel::InvalidArgument));
+    }
+    let bytes = copy_in(buffer, R::SIZE as u64)?;
+    let word = |at: usize| u64::from_le_bytes(bytes[at..at + 8].try_into().unwrap_or([0; 8]));
+    let key = |objectid: usize, kind: usize, offset: usize| radix_vfs::TreeKey {
+        objectid: word(objectid),
+        kind: bytes[kind],
+        offset: word(offset),
+    };
+    Ok(radix_vfs::TreeRange {
+        start: key(R::OFFSET_START_OBJECTID, R::OFFSET_START_KIND, R::OFFSET_START_OFFSET),
+        end: key(R::OFFSET_END_OBJECTID, R::OFFSET_END_KIND, R::OFFSET_END_OFFSET),
+    })
+}
+
+/// `mark_received` (ADR 0462), out of [`directory_method`].
+#[inline(never)]
+fn mark_received_method(found: &Found, label: u32, args: &[u64; 8]) -> Result<Answer> {
+    let a = directory::MarkReceivedArgs::decode(args)?;
+    let dir = directory_of(found, Rights::WRITE)?;
+    if a.uuid.len != 16 {
+        return Err(error(Kernel::InvalidArgument));
+    }
+    let bytes = copy_in(a.uuid, 16)?;
+    let mut uuid = [0u8; 16];
+    uuid.copy_from_slice(&bytes);
+    let mut path = Path::Empty;
+    let path = path.copy(a.path)?;
+    let who = who(found.cap.rights(), dir)?;
+    vfs()?
+        .mark_received(&who, &dir.at, path.as_str()?, &uuid, a.sent_transaction, a.sent)
+        .map_err(subvolume_status)?;
     answer(label, 0, [0; 8])
 }
 

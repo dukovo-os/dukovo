@@ -276,7 +276,59 @@ impl Files<'_> {
         self.w.note_snapshot(id, generation)?;
         self.name_subvolume(dir, name, &Key::new(id, item::ROOT_ITEM, u64::MAX), id, now)?;
         self.add_uuid(UUID_SUBVOL, &uuid, id)?;
+        // A read-only snapshot of a received subvolume is found by what it
+        // was received as too, as Linux's `create_pending_snapshot` has it.
+        let received = &new[root_at::RECEIVED_UUID..root_at::RECEIVED_UUID + 16];
+        if read_only && received.iter().any(|&b| b != 0) {
+            self.add_uuid(UUID_RECEIVED, received, id)?;
+        }
         Ok(id)
+    }
+
+    /// Marks subvolume `id` received: a copy of subvolume `uuid` of
+    /// another filesystem as it was sent at its transaction
+    /// `sent_transaction`, at `sent`, received now, in this transaction;
+    /// and makes it read-only (ADR 0462). Linux's `btrfs receive` does
+    /// this at the end of each subvolume with `BTRFS_IOC_SET_RECEIVED_SUBVOL`
+    /// and then `btrfs property set ro true`. The UUID tree finds it by
+    /// `uuid` from then on, so that an incremental stream sent from that
+    /// subvolume finds its parent here. Fails with [`Error::ReadOnly`] if
+    /// it is read-only already: a received subvolume is not received
+    /// again.
+    pub(crate) fn mark_received(
+        &mut self,
+        id: u64,
+        uuid: &[u8; 16],
+        sent_transaction: u64,
+        sent: u64,
+        now: u64,
+    ) -> Result<()> {
+        let key = Writer::root_item_key(self.volume, id)?;
+        let item = self.get(tree::ROOT, &key)?.ok_or(Error::Corrupt)?;
+        if item.len() < root_at::SIZE {
+            return Err(Error::NotSupported);
+        }
+        if u64_at(&item, root_at::FLAGS) & RootItem::READ_ONLY != 0 {
+            return Err(Error::ReadOnly);
+        }
+        let before = &item[root_at::RECEIVED_UUID..root_at::RECEIVED_UUID + 16];
+        if before.iter().any(|&b| b != 0) {
+            self.remove_uuid(UUID_RECEIVED, before, id)?;
+        }
+        let generation = self.w.generation;
+        self.w.update(self.volume, tree::ROOT, &key, |d| {
+            d[root_at::RECEIVED_UUID..root_at::RECEIVED_UUID + 16].copy_from_slice(uuid);
+            put_u64(d, root_at::STRANSID, sent_transaction);
+            put_time(d, root_at::STIME, sent);
+            put_u64(d, root_at::RTRANSID, generation);
+            put_time(d, root_at::RTIME, now);
+            let flags = u64_at(d, root_at::FLAGS) | RootItem::READ_ONLY;
+            put_u64(d, root_at::FLAGS, flags);
+        })?;
+        if uuid.iter().any(|&b| b != 0) {
+            self.add_uuid(UUID_RECEIVED, uuid, id)?;
+        }
+        Ok(())
     }
 
     /// Whether subvolume `id` holds other subvolumes.

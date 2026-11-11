@@ -1779,7 +1779,9 @@ _target/userspace/_).
 	_https://updates.dukovo.org/catalog/_, as a new computer would, from
 	the first root in _catalog/metadata/_, and fetches every bundle.
 
-*fixture* *btrfs-log*|*btrfs-radix-log*|*ntfs-3g* [*--linux-kernel* _file_]
+*fixture* *btrfs-log*|*btrfs-radix-log*|*btrfs-send*|*ntfs-3g* [*--linux-kernel* _file_]
+
+*fixture* *btrfs-send* *--check* _dir_
 	Make test data that only Linux makes, for the host tests of Radix's
 	filesystems. *btrfs-log* makes a 128 MiB Btrfs disk with
 	*mkfs.btrfs*, boots Linux in a virtual machine on it with
@@ -1802,6 +1804,23 @@ _target/userspace/_).
 	log, and *btrfs check* checks what the replay left. The disk and the
 	lists go to the fixtures, which the host tests check Radix's own
 	replay against.
+
+	*btrfs-send*, as root, has this machine's Linux make a Btrfs disk in
+	a file, mount it through a loop device, fill a subvolume with what a
+	send carries (folders deep and renamed, small, large, sparse and
+	cloned files, hard and symbolic links, a named pipe, a device,
+	extended attributes, owners, modes and times), snapshot it
+	read-only, change it and snapshot it again. *btrfs send* writes the
+	first snapshot whole and the second as its changes, and a list of
+	each snapshot's files goes beside the streams in the fixtures, which
+	the Btrfs host tests receive and check (ADR 0462). It needs
+	*setfattr* and *getfattr* (the *attr* package).
+
+	*btrfs-send --check* _dir_ checks the other way round: Linux's *btrfs
+	receive* takes the streams Radix sent that the Btrfs host tests kept
+	in _dir_, when run with *SEND_STREAMS_TO*=_dir_ (and *SEND_SEEDS* for
+	more rounds), each seed's rounds in order, on a new Btrfs it mounts,
+	as root; and each copy must list as the snapshot sent did.
 
 	*ntfs-3g* formats an 8 MiB NTFS volume of 512-byte clusters with
 	*mkntfs* and fills it through ntfs-3g's FUSE driver, which takes root
