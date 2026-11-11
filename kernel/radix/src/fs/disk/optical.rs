@@ -220,18 +220,20 @@ pub(super) fn described(profile: Profile, sessions: u16, sectors: u64) -> TextBu
 }
 
 /// Runs `asked`, a command a program's request asked of the optical drive
-/// at logical unit `lun` behind `transport` (ADR 0447): its answer is read
-/// into `memory`, whose pages the transport reaches by DMA, and copied to
-/// the buffer asked with, cut to the bytes that came. A command that meets
-/// a change of disc goes again once, as the drive says the change only
-/// once.
+/// at logical unit `lun` behind `transport` (ADR 0447, 0449): its data
+/// moves through `memory`, whose pages the transport reaches by DMA,
+/// copied there first from the buffer asked with if it goes to the drive,
+/// and from there to that buffer if it comes from it; the buffer is cut
+/// to the bytes that moved. A command the kernel made that meets a change
+/// of disc goes again once, as the drive says the change only once; a
+/// raw one ends with the drive's sense.
 pub(super) fn run_asked(
     transport: &mut dyn Transport,
     lun: u8,
     asked: Asked,
     memory: &Dma,
 ) -> Result<Vec<u8, Kmalloc>, CommandError> {
-    let Asked { cdb, mut data } = asked;
+    let Asked { cdb, mut data, to_drive, timeout_ms, raw } = asked;
     let length = data.len().min(memory.len());
     let mut frames = [(0u64, 0u32); COMMAND_PAGES];
     let mut count = 0;
@@ -239,15 +241,24 @@ pub(super) fn run_asked(
         *frame = (memory.phys() + at as u64, (length - at).min(PAGE_SIZE) as u32);
         count += 1;
     }
+    if to_drive {
+        memory.write(0, &data[..length]);
+    }
     for _ in 0..2 {
-        let moved = Data::Frames { into_host: true, frames: &frames[..count] };
-        match transport.command(lun, &cdb, moved, TIMEOUT_MS) {
+        let moved = match count {
+            0 => Data::None,
+            _ => Data::Frames { into_host: !to_drive, frames: &frames[..count] },
+        };
+        match transport.command(lun, &cdb, moved, timeout_ms) {
             Ok(Reply::Good { residue }) => {
                 let came = length.saturating_sub(residue as usize);
-                memory.read(0, &mut data[..came]);
+                if !to_drive {
+                    memory.read(0, &mut data[..came]);
+                }
                 data.truncate(came);
                 return Ok(data);
             }
+            Ok(Reply::Failed(Some(sense))) if raw => return Err(CommandError::Checked(sense)),
             Ok(Reply::Failed(Some(sense))) => match sense.meaning() {
                 // The disc changed since the drive last said: once more.
                 Meaning::Attention => {}
@@ -836,14 +847,29 @@ impl OpticalDrive {
         // A command a program asked of the drive (ADR 0447).
         let (drive, memory, source) = (&self.drive, &mut self.memory, self.source);
         self.link.with(|t| serve_asked(drive, t, 0, (memory, source)));
-        let eject = self.drive.eject_asked();
-        if !eject && !self.changed && now < self.next {
+        // A disc being burned is not looked at, and stays in; once burned,
+        // it is looked at afresh (ADR 0449).
+        let (held, ended) = self.drive.held(now);
+        if held {
+            self.lock();
+            return now.saturating_add(LOOK_NS);
+        }
+        if ended {
+            self.changed = true;
+        }
+        // A look asked once a disc is burned is answered once done, the
+        // disc found in `/devices`.
+        let (eject, asked) = (self.drive.eject_asked(), self.drive.look_asked());
+        if !eject && !asked && !self.changed && now < self.next {
             return self.next;
         }
         if eject {
             self.eject();
         }
         self.look();
+        if asked {
+            self.drive.looked(true);
+        }
         self.lock();
         if core::mem::take(&mut self.first) {
             LOOKING.fetch_sub(1, Ordering::AcqRel);
@@ -855,7 +881,10 @@ impl OpticalDrive {
     /// Looks whether a disc is in the drive, as Linux's `sr` does: its
     /// media events first, of which its eject button's, then whether a
     /// disc is in it. One taken out, or changed, is taken out of the
-    /// kernel, and one put in is put in.
+    /// kernel, and one put in is put in. Kept out of the thread's frame,
+    /// which the commands a burn sends would otherwise take past its
+    /// budget.
+    #[inline(never)]
     fn look(&mut self) {
         let (name, drive, mut events) = (&self.name, &self.drive, self.events);
         let said = self.link.with(|t| ask_events(t, 0, name, drive, &mut events));
@@ -1020,6 +1049,8 @@ impl OpticalDrive {
                 None => return,
             },
         };
+        // A disc being burned stays in too (ADR 0449).
+        let used = used || self.drive.is_held(sched::now_ns());
         if !self.lockable || used == self.locked {
             return;
         }

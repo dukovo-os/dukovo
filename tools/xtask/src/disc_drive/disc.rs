@@ -13,6 +13,8 @@ use std::fmt;
 use std::fs;
 use std::path::Path;
 
+use super::record::{Kind, Recordable};
+
 /// The bytes of a CD sector, raw: an audio sector's 588 stereo frames of
 /// 16-bit samples, or a data sector with its sync, header and error
 /// codes.
@@ -23,6 +25,8 @@ pub const DATA: usize = 2048;
 pub const SECTORS_A_SECOND: u32 = 75;
 /// The sectors before block 0: the first track's two-second pregap.
 pub const LEAD_IN: u32 = 150;
+/// The profile of a pressed CD (MMC-6, 5.3.1).
+pub const CD_ROM: u16 = 0x0008;
 
 /// What a track holds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -70,6 +74,9 @@ pub struct Disc {
     /// CD-Text of the disc as a whole: the album's title and performer.
     pub title: Option<String>,
     pub performer: Option<String>,
+    /// A recordable disc's kind and what is written on it (ADR 0449);
+    /// `None` for a pressed CD.
+    pub record: Option<Recordable>,
 }
 
 /// Why a disc could not be read.
@@ -114,7 +121,20 @@ impl Disc {
             }],
             title: None,
             performer: None,
+            record: None,
         })
+    }
+
+    /// A blank disc of `kind`, of `sectors` (ADR 0449).
+    pub fn blank(kind: Kind, sectors: u32) -> Disc {
+        let record = Some(Recordable::blank(kind, sectors));
+        Disc { tracks: Vec::new(), title: None, performer: None, record }
+    }
+
+    /// Its profile (MMC-6, 5.3.1): a pressed CD's, or a recordable
+    /// disc's.
+    pub fn profile(&self) -> u16 {
+        self.record.as_ref().map_or(CD_ROM, |record| record.kind.profile())
     }
 
     /// The disc a file holds: a cue sheet (`.cue`) and the files it
@@ -144,7 +164,7 @@ impl Disc {
         sheet: &str,
         file: &mut dyn FnMut(&str) -> Result<Vec<u8>, Error>,
     ) -> Result<Disc, Error> {
-        let mut disc = Disc { tracks: Vec::new(), title: None, performer: None };
+        let mut disc = Disc { tracks: Vec::new(), title: None, performer: None, record: None };
         // Each track as the sheet gives it: its file's bytes (shared by
         // index), where its INDEX 00 and 01 are in the file, in sectors,
         // and a PREGAP's silence.
@@ -390,9 +410,10 @@ fn wave_samples(bytes: &[u8]) -> Result<Vec<u8>, &'static str> {
 }
 
 /// Block `lba` as a time from the start of the program area, MSF:
-/// minutes, seconds and sectors.
+/// minutes, seconds and sectors; the first track's pregap, from block
+/// -150, is from 00:00:00.
 pub fn to_msf(lba: u32) -> (u8, u8, u8) {
-    let at = lba + LEAD_IN;
+    let at = lba.wrapping_add(LEAD_IN);
     let (m, s, f) =
         (at / (60 * SECTORS_A_SECOND), (at / SECTORS_A_SECOND) % 60, at % SECTORS_A_SECOND);
     (m as u8, s as u8, f as u8)

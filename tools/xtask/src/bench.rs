@@ -198,10 +198,29 @@ struct Row {
     radix: &'static str,
     what: &'static str,
     linux: Option<(&'static str, &'static str)>,
-    /// Whether the gate holds the row to [`GATE_RATIO`]. A row is
-    /// reported only, ungated, until Radix first reaches parity on it,
-    /// and then gated for good (ADR 0294).
-    gated: bool,
+    /// Whether the gate holds the row to [`GATE_RATIO`].
+    gate: Gate,
+}
+
+/// Whether the gate holds a row to [`GATE_RATIO`].
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Gate {
+    /// It does.
+    Held,
+    /// Not yet: the row is reported only until Radix first reaches
+    /// parity on it, and then held for good (ADR 0294).
+    Yet,
+    /// Never: nearly all of the row's time, on both systems, is QEMU
+    /// emulating the device a byte at a time, so its ratio is the
+    /// runner's noise around 1.00 and says nothing of either system.
+    Emulated,
+}
+
+impl Row {
+    /// Whether the gate holds the row to [`GATE_RATIO`].
+    const fn gated(&self) -> bool {
+        matches!(self.gate, Gate::Held)
+    }
 }
 
 const fn row(
@@ -210,12 +229,12 @@ const fn row(
     linux: &'static str,
     how: &'static str,
 ) -> Row {
-    Row { radix, what, linux: Some((linux, how)), gated: true }
+    Row { radix, what, linux: Some((linux, how)), gate: Gate::Held }
 }
 
 /// A row of the POSIX benchmarks, which have the same name on both.
 const fn posix(name: &'static str, what: &'static str) -> Row {
-    Row { radix: name, what, linux: Some((name, "the same C program, on glibc")), gated: true }
+    Row { radix: name, what, linux: Some((name, "the same C program, on glibc")), gate: Gate::Held }
 }
 
 /// A row of the POSIX benchmarks' disk transfers: on Linux, of the same
@@ -225,7 +244,7 @@ const fn disk(name: &'static str, what: &'static str) -> Row {
         radix: name,
         what,
         linux: Some((name, "the same C program, on glibc, `O_DIRECT`")),
-        gated: true,
+        gate: Gate::Held,
     }
 }
 
@@ -236,7 +255,7 @@ const fn btrfs(name: &'static str, what: &'static str) -> Row {
         radix: name,
         what,
         linux: Some((name, "the same C program, on glibc, on Linux's Btrfs")),
-        gated: true,
+        gate: Gate::Held,
     }
 }
 
@@ -431,8 +450,17 @@ const ROWS: &[Row] = &[
     disk("posix_sd_write_4k", "SD: 4 KiB written raw to an SD card in a PCI reader (`pwrite`)"),
     disk("posix_sd_read_64k", "SD: 64 KiB read raw from an SD card in a PCI reader"),
     disk("posix_sd_write_64k", "SD: 64 KiB written raw to an SD card in a PCI reader"),
-    disk("posix_sd_read_mib", "SD: 1 MiB read raw from an SD card in a PCI reader"),
-    disk("posix_sd_write_mib", "SD: 1 MiB written raw to an SD card in a PCI reader"),
+    // QEMU's sdhci-pci moves each byte of a transfer through the card's
+    // emulation one call at a time: 1 MiB takes it over 150 ms, the
+    // same for both systems, beside which neither's own work shows.
+    Row {
+        gate: Gate::Emulated,
+        ..disk("posix_sd_read_mib", "SD: 1 MiB read raw from an SD card in a PCI reader")
+    },
+    Row {
+        gate: Gate::Emulated,
+        ..disk("posix_sd_write_mib", "SD: 1 MiB written raw to an SD card in a PCI reader")
+    },
     disk("posix_disc_read_64k", "Disc: 64 KiB read raw from a DVD in an AHCI drive"),
     disk("posix_disc_read_mib", "Disc: 1 MiB read raw from a DVD in an AHCI drive"),
     btrfs(
@@ -454,7 +482,7 @@ const ROWS: &[Row] = &[
         what: "git: `git status` in a repository of 1,000 committed files, none changed",
         linux: Some(("posix_git_status", "the same git release, built static on glibc")),
         // Reported only until Radix reaches parity (ADR 0294).
-        gated: false,
+        gate: Gate::Yet,
     },
 ];
 
@@ -808,7 +836,7 @@ fn ratio(numbers: &Numbers, row: &Row) -> Option<f64> {
 /// The rows over the gate, each with its ratio (or that it is missing).
 fn over_gate(numbers: &Numbers) -> Vec<String> {
     let mut over = Vec::new();
-    for row in ROWS.iter().filter(|row| row.linux.is_some() && row.gated) {
+    for row in ROWS.iter().filter(|row| row.linux.is_some() && row.gated()) {
         match ratio(numbers, row) {
             Some(ratio) if ratio <= GATE_RATIO => {}
             Some(ratio) => over.push(format!("{} ({} times Linux)", row.what, shown(ratio))),
@@ -972,7 +1000,7 @@ fn machine_report(numbers: &Numbers, facts: &[String]) -> String {
             continue;
         }
         let ratio = match ratio(numbers, row) {
-            Some(ratio) if ratio > GATE_RATIO && row.gated => {
+            Some(ratio) if ratio > GATE_RATIO && row.gated() => {
                 over.push(format!("{} ({})", row.what, shown(ratio)));
                 format!("**{}**", shown(ratio))
             }
@@ -1747,8 +1775,11 @@ fn report(ctx: &Ctx, numbers: &Numbers, kvm: bool) -> String {
             None => (String::new(), String::new(), "none"),
         };
         let ratio = match ratio(numbers, row) {
-            Some(ratio) if ratio > GATE_RATIO && row.gated => format!("**{}**", shown(ratio)),
-            Some(ratio) if !row.gated => format!("{} (not gated yet)", shown(ratio)),
+            Some(ratio) if ratio > GATE_RATIO && row.gated() => format!("**{}**", shown(ratio)),
+            Some(ratio) if row.gate == Gate::Yet => format!("{} (not gated yet)", shown(ratio)),
+            Some(ratio) if row.gate == Gate::Emulated => {
+                format!("{} (not gated: QEMU's emulation)", shown(ratio))
+            }
             Some(ratio) => shown(ratio),
             None => String::new(),
         };
@@ -2035,10 +2066,10 @@ mod tests {
         assert!(check_gate(&numbers(104.0, 100.0)).is_err());
         assert_eq!(
             over_gate(&numbers(100.1, 100.0)).len(),
-            ROWS.iter().filter(|r| r.linux.is_some() && r.gated).count()
+            ROWS.iter().filter(|r| r.linux.is_some() && r.gated()).count()
         );
         let mut missing = numbers(90.0, 100.0);
-        let gated = ROWS.iter().rposition(|r| r.gated).expect("a gated row");
+        let gated = ROWS.iter().rposition(Row::gated).expect("a gated row");
         missing.radix.remove(gated);
         assert!(check_gate(&missing).is_err());
         let mut no_vm = numbers(90.0, 100.0);
@@ -2049,12 +2080,13 @@ mod tests {
     #[test]
     fn a_row_reported_only_never_fails_the_gate() {
         let mut numbers = numbers(90.0, 100.0);
-        for row in ROWS.iter().filter(|r| !r.gated) {
+        for row in ROWS.iter().filter(|r| !r.gated()) {
             let ours = numbers.radix.iter_mut().find(|m| m.name == row.radix).expect("measured");
             ours.ns = 200.0;
         }
         assert!(check_gate(&numbers).is_ok());
-        assert!(ROWS.iter().any(|r| r.radix == "posix_git_status" && !r.gated));
+        assert!(ROWS.iter().any(|r| r.radix == "posix_git_status" && r.gate == Gate::Yet));
+        assert!(ROWS.iter().any(|r| r.radix == "posix_sd_read_mib" && r.gate == Gate::Emulated));
     }
 
     #[test]

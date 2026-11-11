@@ -42,6 +42,7 @@ consoles 38
 crash-log-bios 23
 crash-log-uefi 26
 dhcp 25
+disc-burn 110
 discs 20
 disk-check 64
 disk-errors 23

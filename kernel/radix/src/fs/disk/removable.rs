@@ -38,6 +38,14 @@
 //! [`Drive::command`] hands the command the kernel made for the request,
 //! with the buffer for its answer, to the driver's thread, which runs it
 //! between its looks and the disc's reads.
+//!
+//! burn(1) writes a disc with the MMC commands radix-block(2)'s
+//! MMC_COMMAND passes it (ADR 0449), run the same way. While it writes,
+//! the drive is held ([`Drive::hold`]): its thread does not look at it,
+//! as a look in the middle of a burn reads a disc that is not whole, and
+//! keeps its tray shut. The hold ends when burn(1) asks for the disc to
+//! be looked at afresh ([`Drive::release`]), or [`HOLD_NS`] after the
+//! last command that wrote, if it never does.
 
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -45,8 +53,8 @@ use core::fmt;
 use core::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 
 use radix_mm::{Flags, HEAP, Kmalloc};
-use radix_scsi::Cdb;
 use radix_scsi::mmc::{Content, Profile};
+use radix_scsi::{Cdb, Sense};
 use radix_sync::{Mutex, SpinLock};
 
 use super::Name;
@@ -66,6 +74,11 @@ const FORMAT_NS: u64 = 40_000_000_000;
 /// How long a command asked of an optical drive may take: a disc spinning
 /// up, the 30 seconds a read is given, and its try again.
 const COMMAND_NS: u64 = 70_000_000_000;
+/// How long after a program's last command that wrote a disc its drive
+/// stays held (ADR 0449): longer than burn(1) waits between two writes
+/// while it reads the files it burns, or between two looks at the
+/// progress of a blank.
+pub const HOLD_NS: u64 = 30_000_000_000;
 
 /// The states of what is asked of a drive's thread, an eject or a look,
 /// in [`Drive::eject`]'s byte and [`Drive::look`]'s. Nothing is asked.
@@ -133,13 +146,31 @@ pub enum FormatError {
     Failed,
 }
 
-/// A command a program's request has an optical drive's thread run (ADR
-/// 0447): READ TOC or READ CD, which the kernel makes from the request,
-/// never one a program sends, and the buffer for the drive's answer, of
-/// the length asked for.
+/// A command a program's request has an optical drive's thread run: READ
+/// TOC or READ CD, which the kernel makes from the request (ADR 0447), or
+/// one of the recording commands MMC_COMMAND passes (ADR 0449); and the
+/// buffer for its data, of the length asked for, which comes from the
+/// drive into it or, for a command `to_drive`, goes to the drive from it.
 pub struct Asked {
     pub cdb: Cdb,
     pub data: Vec<u8, Kmalloc>,
+    /// Whether `data` goes to the drive.
+    pub to_drive: bool,
+    /// How long the drive has for it.
+    pub timeout_ms: u32,
+    /// Whether the drive's sense goes back as it is, in
+    /// [`CommandError::Checked`] (MMC_COMMAND's): a command that meets a
+    /// change of disc is not run again then, as a disc changed in the
+    /// middle of a burn is not the one being burned.
+    pub raw: bool,
+}
+
+impl Asked {
+    /// A command the kernel makes, whose answer comes into `data`, given
+    /// the 30 seconds a read is.
+    pub fn read(cdb: Cdb, data: Vec<u8, Kmalloc>) -> Asked {
+        Asked { cdb, data, to_drive: false, timeout_ms: 30_000, raw: false }
+    }
 }
 
 /// Why a command asked of an optical drive failed.
@@ -153,6 +184,8 @@ pub enum CommandError {
     Refused,
     /// The drive failed, was unplugged, or did not answer.
     Failed,
+    /// The drive ended a raw command with this sense ([`Asked::raw`]).
+    Checked(Sense),
 }
 
 /// What is in an optical drive.
@@ -217,7 +250,16 @@ pub struct Drive {
     kind: Kind,
     /// For an optical drive, the disc in it; `None` for another drive.
     disc: SpinLock<Option<Disc>>,
+    /// While a program writes the drive's disc (ADR 0449), when the hold
+    /// ends if nothing else ends it first; [`RELEASED`] once it is ended,
+    /// until the thread looks; [`NOT_HELD`] otherwise.
+    hold: AtomicU64,
 }
+
+/// [`Drive::hold`]'s value of a drive not held.
+const NOT_HELD: u64 = 0;
+/// Its value once a hold ended, until the thread takes it.
+const RELEASED: u64 = 1;
 
 impl Drive {
     /// A drive of `kind` whose driver's thread is `thread`, which formats
@@ -241,7 +283,47 @@ impl Drive {
             thread,
             kind,
             disc: SpinLock::new((kind == Kind::Optical).then_some(Disc::None)),
+            hold: AtomicU64::new(NOT_HELD),
         }
+    }
+
+    /// Holds an optical drive whose disc a program writes (ADR 0449),
+    /// from `now` for [`HOLD_NS`]: its thread does not look at it, and
+    /// keeps its tray shut.
+    pub fn hold(&self, now: u64) {
+        self.hold.store(now.saturating_add(HOLD_NS).max(RELEASED + 1), Ordering::Release);
+    }
+
+    /// Ends a hold, if the drive is held: its thread looks at the disc
+    /// afresh, as one written since it last looked.
+    pub fn release(&self) {
+        let _ = self.hold.try_update(Ordering::AcqRel, Ordering::Acquire, |until| {
+            (until != NOT_HELD).then_some(RELEASED)
+        });
+    }
+
+    /// Whether the drive is held at `now`.
+    pub fn is_held(&self, now: u64) -> bool {
+        now < self.hold.load(Ordering::Acquire)
+    }
+
+    /// For the driver's thread at `now`: whether the drive is held, and
+    /// whether a hold ended since it last asked, which it takes, to look
+    /// at the disc afresh.
+    pub fn held(&self, now: u64) -> (bool, bool) {
+        let until = self.hold.load(Ordering::Acquire);
+        if until == NOT_HELD {
+            return (false, false);
+        }
+        if now < until {
+            return (true, false);
+        }
+        // Ended, by release() or by time: once, unless held again since.
+        let ended = self
+            .hold
+            .compare_exchange(until, NOT_HELD, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok();
+        (false, ended)
     }
 
     /// How it finds out that its medium went in or came out.
@@ -367,17 +449,19 @@ impl Drive {
     }
 
     /// Has an optical drive's thread run `asked` (ADR 0447), and waits for
-    /// its answer, for up to [`COMMAND_NS`]: the buffer asked with, cut to
-    /// the bytes the drive gave.
+    /// its answer, for up to [`COMMAND_NS`], or the command's own time and
+    /// 40 seconds more for one given longer: the buffer asked with, cut to
+    /// the bytes that moved.
     pub fn command(&self, asked: Asked) -> Result<Vec<u8, Kmalloc>, CommandError> {
         if self.kind != Kind::Optical {
             return Err(CommandError::Refused);
         }
+        let limit = COMMAND_NS.max(u64::from(asked.timeout_ms) * 1_000_000 + 40_000_000_000);
         let _one = self.one.lock();
         let number = self.commands.fetch_add(1, Ordering::AcqRel) + 1;
         *self.answer.lock_irq() = None;
         *self.asked.lock_irq() = Some((number, asked));
-        let done = self.ask_held(&self.command, COMMAND_NS, "command");
+        let done = self.ask_held(&self.command, limit, "command");
         // One the thread never took is dropped here.
         drop(self.asked.lock_irq().take());
         let answer = self.answer.lock_irq().take();

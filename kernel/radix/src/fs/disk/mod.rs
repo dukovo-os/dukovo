@@ -985,7 +985,8 @@ fn reread(device: &DeviceRef) -> Result<(), Status> {
 /// need, and UNLOCK but to unlock read-only; EJECT does not, as on Linux,
 /// nor REREAD_PARTITIONS on a floppy drive, which looks for a disk.
 /// `may_read` is whether it has the read right, which READ_TOC and
-/// READ_AUDIO need. Any other request is not one of a block device.
+/// READ_AUDIO need; MMC_COMMAND needs one or the other, as its command
+/// asks or writes. Any other request is not one of a block device.
 pub fn control(
     device: &DeviceRef,
     request: u32,
@@ -1015,6 +1016,9 @@ pub fn control(
         // A look for a disk in a floppy drive writes nothing, as EJECT
         // does not: it needs no write right.
         request::REREAD_PARTITIONS if floppy_drive(device).is_some() => look(device),
+        // An optical drive's disc looked at afresh, once burned (ADR 0449).
+        request::REREAD_PARTITIONS if may_write && held(device).is_some() => released(device),
+        request::MMC_COMMAND => mmc_command(device, argument, (may_read, may_write)),
         request::DISCARD
         | request::FLUSH
         | request::SWAP_ON
@@ -1059,7 +1063,7 @@ pub fn control(
         request::GET_IN_USE => put(&super::uses(device).to_le_bytes()),
         request::REREAD_PARTITIONS => reread(device),
         request::UNLOCK => unlock(device, argument, may_write),
-        request::EJECT => eject(device),
+        request::EJECT => eject(device, may_write),
         request::FORMAT_TRACK => format_track(device, argument),
         request::READ_TOC => read_toc(device, argument),
         request::READ_AUDIO => read_audio(device, argument),
@@ -1090,10 +1094,10 @@ fn ask_drive(
         return Err(Kernel::NoMemory.status(0));
     }
     while data.len() < length && data.push_within_capacity(0u8).is_ok() {}
-    let data = drive.command(Asked { cdb, data }).map_err(|why| match why {
+    let data = drive.command(Asked::read(cdb, data)).map_err(|why| match why {
         CommandError::NoDisc => FileError::NoDevice.status(0),
         CommandError::Refused => Kernel::InvalidArgument.status(0),
-        CommandError::Failed => FileError::Io.status(0),
+        CommandError::Failed | CommandError::Checked(_) => FileError::Io.status(0),
     })?;
     if <Arch as UserMode>::copy_to_user(buffer, &data) {
         Ok(())
@@ -1150,6 +1154,101 @@ fn read_audio(device: &DeviceRef, argument: u64) -> Result<(), Status> {
     ask_drive(device, Cdb::read_cd_audio(first, count), length, buffer)
 }
 
+/// MMC_COMMAND: the recording command the caller's `argument` holds, run
+/// on the optical drive `device` is if radix_scsi::recording passes it,
+/// and the drive's answer written back (ADR 0449). One that writes holds
+/// the drive.
+fn mmc_command(
+    device: &DeviceRef,
+    argument: u64,
+    (may_read, may_write): (bool, bool),
+) -> Result<(), Status> {
+    use self::removable::{Asked, CommandError};
+    use radix_scsi::recording::{self, Direction};
+    let mut bytes = [0u8; request::MMC_COMMAND_SIZE as usize];
+    if !<Arch as UserMode>::copy_from_user(&mut bytes, argument) {
+        return Err(Kernel::BadAddress.status(0));
+    }
+    let (words, _) = bytes[16..40].as_chunks::<8>();
+    let [timing, buffer, length] = [0, 1, 2].map(|at| u64::from_le_bytes(words[at]));
+    let (seconds, reserved) = (timing as u32, (timing >> 32) as u32);
+    let drive = optical_drive(device).ok_or(Kernel::NotSupported.status(0))?;
+    let passed = recording::passed(&bytes[..16]).ok_or(Kernel::InvalidArgument.status(0))?;
+    let (Ok(length), true) = (usize::try_from(length), reserved == 0) else {
+        return Err(Kernel::InvalidArgument.status(0));
+    };
+    if length > request::MMC_COMMAND_MAX as usize || seconds > request::MMC_TIMEOUT_MAX {
+        return Err(Kernel::InvalidArgument.status(0));
+    }
+    if !(if passed.writes { may_write } else { may_read }) {
+        return Err(Kernel::MissingRights.status(0));
+    }
+    let length = if passed.direction == Direction::None { 0 } else { length };
+    let mut data = Vec::new_in(HEAP.with(Flags::MAY_SLEEP));
+    if data.try_reserve_exact(length).is_err() {
+        return Err(Kernel::NoMemory.status(0));
+    }
+    while data.len() < length && data.push_within_capacity(0u8).is_ok() {}
+    let to_drive = passed.direction == Direction::ToDrive;
+    if to_drive && !<Arch as UserMode>::copy_from_user(&mut data, buffer) {
+        return Err(Kernel::BadAddress.status(0));
+    }
+    let cdb = radix_scsi::Cdb::new(&bytes[..passed.length]);
+    if cdb.bytes()[0] == recording::opcode::MODE_SELECT_10 && !recording::mode_select_allowed(&data)
+    {
+        return Err(Kernel::InvalidArgument.status(0));
+    }
+    // A command that writes holds the drive; any command keeps a hold, as
+    // burn(1) asks how far a blank or a close has come.
+    let holds = passed.writes || drive.is_held(crate::sched::now_ns());
+    if holds {
+        drive.hold(crate::sched::now_ns());
+    }
+    let timeout_ms = if seconds == 0 { 30_000 } else { seconds * 1000 };
+    let asked = Asked { cdb, data, to_drive, timeout_ms, raw: true };
+    let (moved, sense) = match drive.command(asked) {
+        Ok(data) => (data, [0u8; 3]),
+        Err(CommandError::Checked(sense)) => {
+            (Vec::new_in(HEAP.with(Flags::MAY_SLEEP)), [sense.key, sense.asc, sense.ascq])
+        }
+        Err(CommandError::NoDisc | CommandError::Refused | CommandError::Failed) => {
+            return Err(FileError::Io.status(0));
+        }
+    };
+    if holds {
+        // Held from the end of the last command, not its start.
+        drive.hold(crate::sched::now_ns());
+    }
+    if passed.direction == Direction::FromDrive && !<Arch as UserMode>::copy_to_user(buffer, &moved)
+    {
+        return Err(Kernel::BadAddress.status(0));
+    }
+    let mut answer = [0u8; 8];
+    answer[..4].copy_from_slice(&(moved.len() as u32).to_le_bytes());
+    answer[4..7].copy_from_slice(&sense);
+    if <Arch as UserMode>::copy_to_user(argument + 40, &answer) {
+        Ok(())
+    } else {
+        Err(Kernel::BadAddress.status(0))
+    }
+}
+
+/// REREAD_PARTITIONS on an optical drive a program burned (ADR 0449): the
+/// hold ends, and the drive's thread looks at the disc afresh, so that a
+/// disc of data burned is in `/devices` when this returns, for the next
+/// program that opens the drive.
+fn released(device: &DeviceRef) -> Result<(), Status> {
+    let drive = optical_drive(device).ok_or(Kernel::InvalidArgument.status(0))?;
+    drive.release();
+    drive.look().map_err(block_status)
+}
+
+/// The optical drive `device` is, if it is one and a program writing its
+/// disc holds it (ADR 0449).
+fn held(device: &DeviceRef) -> Option<removable::DriveRef> {
+    optical_drive(device).filter(|drive| drive.is_held(crate::sched::now_ns()))
+}
+
 /// The floppy drive `device` is, if it is one, empty or not.
 fn floppy_drive(device: &DeviceRef) -> Option<removable::DriveRef> {
     let name = name_of(device)?;
@@ -1196,8 +1295,9 @@ fn format_track(device: &DeviceRef, argument: u64) -> Result<(), Status> {
 /// while the drive, a partition of it or a volume unlocked on them is in
 /// use, `invalid_argument` on a partition (or a medium's device that is
 /// no longer in the drive), and `not_supported` on a disk whose medium
-/// does not come and go.
-fn eject(device: &DeviceRef) -> Result<(), Status> {
+/// does not come and go. A drive held while its disc is burned is in use
+/// but to a caller with the write right (`may_write`).
+fn eject(device: &DeviceRef, may_write: bool) -> Result<(), Status> {
     let mut found = None;
     for_each(|entry| {
         if Arc::ptr_eq(&entry.device, device) {
@@ -1208,8 +1308,15 @@ fn eject(device: &DeviceRef) -> Result<(), Status> {
     let Some(drive) = removable::find(name.as_str()) else {
         return Err(Kernel::NotSupported.status(0));
     };
-    if in_use(name.as_str()) {
+    // A disc being burned is in use too (ADR 0449), but to a program with
+    // the write right, as the one burning it has: the hold ends, and the
+    // disc comes out.
+    let held = drive.is_held(crate::sched::now_ns());
+    if in_use(name.as_str()) || (held && !may_write) {
         return Err(FileError::InUse.status(0));
+    }
+    if held {
+        drive.release();
     }
     drive.eject().map_err(block_status)
 }

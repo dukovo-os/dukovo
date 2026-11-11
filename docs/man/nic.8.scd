@@ -30,7 +30,7 @@ Settings for net0:
 	Link detected: yes
 $ nic -i net0
 driver: radix-intel-net
-version: 0.14.0
+version: 0.14.1
 firmware-version: 
 expansion-rom-version: 
 bus-info: 0000:00:03.0

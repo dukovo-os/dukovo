@@ -419,6 +419,16 @@ impl Lun {
         let drive = watch.drive.clone();
         // A command a program asked of an optical drive (ADR 0447).
         optical::serve_asked(&drive, transport, self.number, (&mut watch.memory, link.source));
+        // A disc being burned is not looked at, and stays in; once burned,
+        // it is looked at afresh (ADR 0449).
+        let (held, ended) = drive.held(now);
+        if held {
+            self.lock(transport);
+            return now.saturating_add(LOOK_NS);
+        }
+        if ended {
+            watch.changed = true;
+        }
         let (eject, asked) = (drive.eject_asked(), drive.look_asked());
         let format = drive.format_asked();
         // A track formatted is not looked at: the disk is found once
@@ -674,6 +684,8 @@ impl Lun {
             },
         };
         let Some(watch) = self.watch.as_mut() else { return };
+        // A disc being burned stays in too (ADR 0449).
+        let used = used || watch.drive.is_held(sched::now_ns());
         if !watch.lockable || used == watch.locked {
             return;
         }

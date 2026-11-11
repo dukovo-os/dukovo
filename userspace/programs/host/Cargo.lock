@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "accounts"
-version = "0.14.0"
+version = "0.14.1"
 dependencies = [
  "argon2 0.5.3",
  "base64ct",
@@ -15,7 +15,7 @@ dependencies = [
 
 [[package]]
 name = "acl"
-version = "0.14.0"
+version = "0.14.1"
 dependencies = [
  "libc",
 ]
@@ -162,7 +162,7 @@ dependencies = [
 
 [[package]]
 name = "audio"
-version = "0.14.0"
+version = "0.14.1"
 dependencies = [
  "md-5",
 ]
@@ -333,7 +333,7 @@ dependencies = [
 
 [[package]]
 name = "catalog-repo"
-version = "0.14.0"
+version = "0.14.1"
 dependencies = [
  "dkv",
  "serde_json",
@@ -513,7 +513,7 @@ dependencies = [
 
 [[package]]
 name = "consoled"
-version = "0.14.0"
+version = "0.14.1"
 dependencies = [
  "accounts",
  "keymap",
@@ -882,12 +882,14 @@ dependencies = [
 
 [[package]]
 name = "disk"
-version = "0.14.0"
+version = "0.14.1"
 dependencies = [
  "radix-block",
  "radix-btrfs",
  "radix-fat",
+ "radix-iso9660",
  "radix-ntfs",
+ "radix-udf",
  "radix-vfs",
  "serde",
  "serde_json",
@@ -906,7 +908,7 @@ dependencies = [
 
 [[package]]
 name = "dkv"
-version = "0.14.0"
+version = "0.14.1"
 dependencies = [
  "blake2 0.10.6",
  "ed25519-compact",
@@ -928,7 +930,7 @@ dependencies = [
 
 [[package]]
 name = "dukovo-install"
-version = "0.14.0"
+version = "0.14.1"
 dependencies = [
  "accounts",
  "disk",
@@ -1152,7 +1154,7 @@ checksum = "77ce24cb58228fbb8aa041425bb1050850ac19177686ea6e0f41a70416f56fdb"
 
 [[package]]
 name = "fuse-test"
-version = "0.14.0"
+version = "0.14.1"
 dependencies = [
  "fuser",
  "libc",
@@ -1320,7 +1322,7 @@ dependencies = [
 
 [[package]]
 name = "git-https-test"
-version = "0.14.0"
+version = "0.14.1"
 dependencies = [
  "rustls",
 ]
@@ -1614,7 +1616,7 @@ dependencies = [
 
 [[package]]
 name = "kerberos"
-version = "0.14.0"
+version = "0.14.1"
 dependencies = [
  "aes 0.9.3",
  "hmac 0.13.0",
@@ -1626,7 +1628,7 @@ dependencies = [
 
 [[package]]
 name = "keymap"
-version = "0.14.0"
+version = "0.14.1"
 dependencies = [
  "radix-abi",
 ]
@@ -1705,7 +1707,7 @@ checksum = "0ca88d725a0a943b096803bd34e73a4437208b6077654cc4ecb2947a5f91618d"
 
 [[package]]
 name = "manifest"
-version = "0.14.0"
+version = "0.14.1"
 dependencies = [
  "radix-abi",
  "schemars",
@@ -1809,14 +1811,14 @@ dependencies = [
 
 [[package]]
 name = "netproto"
-version = "0.14.0"
+version = "0.14.1"
 dependencies = [
  "aes-siv",
 ]
 
 [[package]]
 name = "netservices-test"
-version = "0.14.0"
+version = "0.14.1"
 dependencies = [
  "netproto",
  "ring",
@@ -1825,7 +1827,7 @@ dependencies = [
 
 [[package]]
 name = "nfs"
-version = "0.14.0"
+version = "0.14.1"
 dependencies = [
  "accounts",
  "fuser",
@@ -1837,7 +1839,7 @@ dependencies = [
 
 [[package]]
 name = "nfsd"
-version = "0.14.0"
+version = "0.14.1"
 dependencies = [
  "accounts",
  "kerberos",
@@ -1880,7 +1882,7 @@ dependencies = [
 
 [[package]]
 name = "nukesh"
-version = "0.14.0"
+version = "0.14.1"
 dependencies = [
  "crossterm",
  "indexmap",
@@ -2288,14 +2290,14 @@ checksum = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
 
 [[package]]
 name = "radix-abi"
-version = "0.14.0"
+version = "0.14.1"
 dependencies = [
  "ridlc",
 ]
 
 [[package]]
 name = "radix-bitlocker"
-version = "0.14.0"
+version = "0.14.1"
 dependencies = [
  "aes 0.8.4",
  "ccm 0.5.0",
@@ -2305,7 +2307,7 @@ dependencies = [
 
 [[package]]
 name = "radix-block"
-version = "0.14.0"
+version = "0.14.1"
 dependencies = [
  "radix-hw",
  "radix-mm",
@@ -2314,11 +2316,11 @@ dependencies = [
 
 [[package]]
 name = "radix-bootfs"
-version = "0.14.0"
+version = "0.14.1"
 
 [[package]]
 name = "radix-btrfs"
-version = "0.14.0"
+version = "0.14.1"
 dependencies = [
  "radix-block",
  "radix-hw",
@@ -2328,7 +2330,7 @@ dependencies = [
 
 [[package]]
 name = "radix-fat"
-version = "0.14.0"
+version = "0.14.1"
 dependencies = [
  "radix-block",
  "radix-hw",
@@ -2338,7 +2340,7 @@ dependencies = [
 
 [[package]]
 name = "radix-fbcon"
-version = "0.14.0"
+version = "0.14.1"
 dependencies = [
  "radix-hal",
  "radix-klog",
@@ -2346,7 +2348,7 @@ dependencies = [
 
 [[package]]
 name = "radix-hal"
-version = "0.14.0"
+version = "0.14.1"
 dependencies = [
  "radix-hw",
  "radix-pstate",
@@ -2356,40 +2358,50 @@ dependencies = [
 
 [[package]]
 name = "radix-hw"
-version = "0.14.0"
+version = "0.14.1"
 
 [[package]]
 name = "radix-intel-net"
-version = "0.14.0"
+version = "0.14.1"
 dependencies = [
  "radix-hw",
  "radix-nic",
 ]
 
 [[package]]
+name = "radix-iso9660"
+version = "0.14.1"
+dependencies = [
+ "radix-block",
+ "radix-hw",
+ "radix-sync",
+ "radix-vfs",
+]
+
+[[package]]
 name = "radix-klog"
-version = "0.14.0"
+version = "0.14.1"
 dependencies = [
  "radix-sync",
 ]
 
 [[package]]
 name = "radix-mm"
-version = "0.14.0"
+version = "0.14.1"
 dependencies = [
  "radix-sync",
 ]
 
 [[package]]
 name = "radix-nic"
-version = "0.14.0"
+version = "0.14.1"
 dependencies = [
  "radix-hw",
 ]
 
 [[package]]
 name = "radix-ntfs"
-version = "0.14.0"
+version = "0.14.1"
 dependencies = [
  "radix-block",
  "radix-hw",
@@ -2399,30 +2411,40 @@ dependencies = [
 
 [[package]]
 name = "radix-pstate"
-version = "0.14.0"
+version = "0.14.1"
 
 [[package]]
 name = "radix-sensors"
-version = "0.14.0"
+version = "0.14.1"
 dependencies = [
  "radix-hw",
 ]
 
 [[package]]
 name = "radix-smbios"
-version = "0.14.0"
+version = "0.14.1"
 
 [[package]]
 name = "radix-spd"
-version = "0.14.0"
+version = "0.14.1"
 
 [[package]]
 name = "radix-sync"
-version = "0.14.0"
+version = "0.14.1"
+
+[[package]]
+name = "radix-udf"
+version = "0.14.1"
+dependencies = [
+ "radix-block",
+ "radix-hw",
+ "radix-sync",
+ "radix-vfs",
+]
 
 [[package]]
 name = "radix-vfs"
-version = "0.14.0"
+version = "0.14.1"
 dependencies = [
  "radix-block",
  "radix-bootfs",
@@ -2432,7 +2454,7 @@ dependencies = [
 
 [[package]]
 name = "radix-vmware"
-version = "0.14.0"
+version = "0.14.1"
 
 [[package]]
 name = "rand"
@@ -2584,7 +2606,7 @@ dependencies = [
 
 [[package]]
 name = "ridlc"
-version = "0.14.0"
+version = "0.14.1"
 
 [[package]]
 name = "ring"
@@ -3034,7 +3056,7 @@ checksum = "5b3dc8af474f516a851ff4bd12db780f948b9250ad37211e4eec0bccea54e01b"
 
 [[package]]
 name = "smb"
-version = "0.14.0"
+version = "0.14.1"
 dependencies = [
  "fuser",
  "libc",
@@ -3073,7 +3095,7 @@ dependencies = [
 
 [[package]]
 name = "smbd"
-version = "0.14.0"
+version = "0.14.1"
 dependencies = [
  "accounts",
  "acl",
@@ -3206,7 +3228,7 @@ dependencies = [
 
 [[package]]
 name = "sshd"
-version = "0.14.0"
+version = "0.14.1"
 dependencies = [
  "accounts",
  "libc",
@@ -3228,7 +3250,7 @@ checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 
 [[package]]
 name = "std-test"
-version = "0.14.0"
+version = "0.14.1"
 dependencies = [
  "libc",
 ]
@@ -3299,7 +3321,7 @@ dependencies = [
 
 [[package]]
 name = "system-release"
-version = "0.14.0"
+version = "0.14.1"
 dependencies = [
  "ring",
  "serde",
@@ -3309,7 +3331,7 @@ dependencies = [
 
 [[package]]
 name = "systools"
-version = "0.14.0"
+version = "0.14.1"
 dependencies = [
  "accounts",
  "acl",
@@ -3398,7 +3420,7 @@ dependencies = [
 
 [[package]]
 name = "tls-test"
-version = "0.14.0"
+version = "0.14.1"
 dependencies = [
  "ring",
  "rustls",
@@ -3516,7 +3538,7 @@ dependencies = [
 
 [[package]]
 name = "tuf"
-version = "0.14.0"
+version = "0.14.1"
 dependencies = [
  "base64",
  "ring",

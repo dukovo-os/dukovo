@@ -9,13 +9,15 @@
 //! in formats 0 (the tracks), 1 (the sessions), 2 (the full TOC) and 5
 //! (CD-Text); GET CONFIGURATION, READ DISC INFORMATION, MODE SENSE's
 //! capabilities page, and GET EVENT STATUS NOTIFICATION's media events;
-//! PREVENT ALLOW MEDIUM REMOVAL, START STOP UNIT, and SET CD SPEED. Any
-//! other command fails with ILLEGAL REQUEST, INVALID COMMAND OPERATION
-//! CODE, as a drive's does.
+//! PREVENT ALLOW MEDIUM REMOVAL, START STOP UNIT, and SET CD SPEED. It
+//! records the blank discs [`record`](super::record) has, with the
+//! commands burn(1) sends (ADR 0449). Any other command fails with ILLEGAL
+//! REQUEST, INVALID COMMAND OPERATION CODE, as a drive's does.
 
 use std::collections::VecDeque;
 
 use super::disc::{self, DATA, Disc, Mode, RAW, Sector};
+use super::record::Recordable;
 
 /// Sense keys, and the additional sense codes and qualifiers this drive
 /// gives (SPC-5, MMC-6 annex F).
@@ -107,10 +109,24 @@ mod op {
     pub const MODE_SENSE_10: u8 = 0x5a;
     pub const SET_CD_SPEED: u8 = 0xbb;
     pub const READ_CD: u8 = 0xbe;
+    // Recording (ADR 0449).
+    pub const FORMAT_UNIT: u8 = 0x04;
+    pub const READ_FORMAT_CAPACITIES: u8 = 0x23;
+    pub const WRITE_10: u8 = 0x2a;
+    pub const SYNCHRONIZE_CACHE: u8 = 0x35;
+    pub const READ_TRACK_INFORMATION: u8 = 0x52;
+    pub const RESERVE_TRACK: u8 = 0x53;
+    pub const MODE_SELECT_10: u8 = 0x55;
+    pub const CLOSE_TRACK_SESSION: u8 = 0x5b;
+    pub const SEND_CUE_SHEET: u8 = 0x5d;
+    pub const BLANK: u8 = 0xa1;
+    pub const SET_STREAMING: u8 = 0xb6;
 }
 
-/// The profile of a pressed CD, and of no disc (MMC-6, 5.3.1).
-const CD_ROM: u16 = 0x0008;
+/// The profiles the drive reads and writes, as GET CONFIGURATION lists
+/// them: CD-ROM, CD-R, CD-RW, DVD-ROM, DVD-R, DVD+RW, DVD+R, BD-ROM, BD-R
+/// and BD-RE (MMC-6, 5.3.1).
+const PROFILES: [u16; 10] = [0x08, 0x09, 0x0a, 0x10, 0x11, 0x1a, 0x1b, 0x40, 0x41, 0x43];
 
 impl Drive {
     /// A drive with `disc` in it, or empty.
@@ -123,6 +139,11 @@ impl Drive {
             drive.events.clear();
         }
         drive
+    }
+
+    /// The disc in it.
+    pub fn disc(&self) -> Option<&Disc> {
+        self.disc.as_ref()
     }
 
     /// Whether PREVENT ALLOW MEDIUM REMOVAL keeps its disc in.
@@ -165,7 +186,6 @@ impl Drive {
     /// Carries out `cdb`, with `out` the data the host sent: the data for
     /// the host, or why it failed.
     pub fn command(&mut self, cdb: &[u8], out: &[u8]) -> Result<Vec<u8>, Check> {
-        let _ = out;
         let Some(&code) = cdb.first() else { return Err(Check::illegal(sense::INVALID_OPCODE)) };
         // REQUEST SENSE and INQUIRY never fail; GET EVENT STATUS
         // NOTIFICATION and GET CONFIGURATION do not report a change; any
@@ -177,7 +197,7 @@ impl Drive {
         let result = if !quiet && std::mem::take(&mut self.attention) {
             Err(Check::new(sense::UNIT_ATTENTION, sense::MEDIUM_CHANGED))
         } else {
-            self.carry_out(code, cdb)
+            self.carry_out(code, cdb, out)
         };
         if code != op::REQUEST_SENSE {
             self.last = result.as_ref().err().copied();
@@ -185,7 +205,7 @@ impl Drive {
         result
     }
 
-    fn carry_out(&mut self, code: u8, cdb: &[u8]) -> Result<Vec<u8>, Check> {
+    fn carry_out(&mut self, code: u8, cdb: &[u8], out: &[u8]) -> Result<Vec<u8>, Check> {
         let byte = |at: usize| cdb.get(at).copied().unwrap_or(0);
         let word = |at: usize| u16::from_be_bytes([byte(at), byte(at + 1)]);
         let long =
@@ -225,8 +245,53 @@ impl Drive {
                 let count = u32::from_be_bytes([0, byte(6), byte(7), byte(8)]);
                 self.read_cd(long(2), count, (byte(1) >> 2) & 7, byte(9))
             }
+            op::READ_TRACK_INFORMATION => {
+                let length = usize::from(word(7));
+                // By track number alone, as burn(1) asks.
+                if byte(1) & 3 != 1 {
+                    return Err(Check::illegal(sense::INVALID_FIELD));
+                }
+                self.recordable()?.track_information(long(2), length)
+            }
+            op::READ_FORMAT_CAPACITIES => {
+                Ok(self.recordable()?.format_capacities(usize::from(word(7))))
+            }
+            op::MODE_SELECT_10 => self.record(|r| r.mode_select(out)),
+            op::SEND_CUE_SHEET => self.record(|r| r.cue_sheet(out)),
+            op::WRITE_10 => self.record(|r| r.write(long(2), u32::from(word(7)), out)),
+            op::SYNCHRONIZE_CACHE => self.record(|r| {
+                r.synchronize();
+                Ok(())
+            }),
+            op::CLOSE_TRACK_SESSION => self.record(|r| r.close(byte(2) & 7)),
+            op::BLANK => self.record(Recordable::blank_disc),
+            op::FORMAT_UNIT => self.record(Recordable::format),
+            op::RESERVE_TRACK | op::SET_STREAMING => self.recordable().map(|_| Vec::new()),
             _ => Err(Check::illegal(sense::INVALID_OPCODE)),
         }
+    }
+
+    /// The recordable disc in the drive.
+    fn recordable(&self) -> Result<&Recordable, Check> {
+        let disc = self.ready()?;
+        let incompatible = Check::illegal((0x30, 0x00));
+        disc.record.as_ref().ok_or(incompatible)
+    }
+
+    /// Runs `f` on the recordable disc in the drive; the tracks it reads
+    /// are those written and closed after.
+    fn record(
+        &mut self,
+        f: impl FnOnce(&mut Recordable) -> Result<(), Check>,
+    ) -> Result<Vec<u8>, Check> {
+        self.recordable()?;
+        let disc = self.disc.as_mut().expect("a disc, as recordable() said");
+        let record = disc.record.as_mut().expect("recordable, as recordable() said");
+        f(record)?;
+        if disc.tracks != record.tracks() {
+            disc.tracks = record.tracks().to_vec();
+        }
+        Ok(Vec::new())
     }
 
     /// The disc, if it is in and readable.
@@ -248,10 +313,15 @@ impl Drive {
         data
     }
 
-    /// MODE SENSE: the CD capabilities and mechanical status page (2Ah)
-    /// alone, for that page or all of them; no block descriptors.
+    /// MODE SENSE: the write parameters page (05h) of a recordable disc,
+    /// and the CD capabilities and mechanical status page (2Ah), for that
+    /// page or all of them; no block descriptors.
     fn mode_sense(&self, page: u8, length: usize, ten: bool) -> Vec<u8> {
         let mut pages = Vec::new();
+        let record = self.disc.as_ref().and_then(|disc| disc.record.as_ref());
+        if let Some(record) = record.filter(|_| page == 0x05 || page == 0x3f) {
+            pages.extend(record.page());
+        }
         if page == 0x2a || page == 0x3f {
             let mut capabilities = vec![0u8; 22];
             capabilities[0] = 0x2a;
@@ -260,11 +330,13 @@ impl Drive {
             // accurately, and CD-Text (bit 7 of byte 5 is the R-W
             // subchannel; MMC's CD-Text bit is in the CD Read feature).
             capabilities[2] = 0x03;
+            // Writes CD-R, CD-RW and DVD-R.
+            capabilities[3] = 0x13;
             capabilities[4] = 0x01;
             capabilities[5] = 0x03;
             // Locks, says whether it is locked, ejects; a tray.
             capabilities[6] = 0x09 | (u8::from(self.locked) << 1) | (1 << 5);
-            pages = capabilities;
+            pages.extend(capabilities);
         }
         let mut data = if ten {
             let mut header = vec![0u8; 8];
@@ -354,6 +426,10 @@ impl Drive {
     /// READ TOC/PMA/ATIP.
     fn read_toc(&self, format: u8, msf: bool, track: u8, length: usize) -> Result<Vec<u8>, Check> {
         let disc = self.ready()?;
+        // A blank disc has no TOC.
+        if disc.tracks.is_empty() {
+            return Err(Check::illegal(sense::INVALID_FIELD));
+        }
         let address = |lba: u32| -> [u8; 4] {
             if msf {
                 let (m, s, f) = disc::to_msf(lba);
@@ -424,15 +500,17 @@ impl Drive {
     }
 
     /// GET CONFIGURATION: the header with the current profile, the
-    /// profile list (CD-ROM), the core feature (USB), and the removable
-    /// medium feature (a tray that locks and ejects).
+    /// profile list ([`PROFILES`]), the core feature (USB), and the
+    /// removable medium feature (a tray that locks and ejects).
     fn configuration(&self, length: usize) -> Vec<u8> {
-        let current = if self.disc.is_some() { CD_ROM } else { 0 };
+        let current = self.disc.as_ref().map_or(0, Disc::profile);
         let mut features = Vec::new();
-        // Profile list: CD-ROM, current while a disc is in.
-        features.extend([0, 0, 0x03, 4]);
-        features.extend(CD_ROM.to_be_bytes());
-        features.extend([u8::from(self.disc.is_some()), 0]);
+        // Profile list: the disc's current.
+        features.extend([0, 0, 0x03, (PROFILES.len() * 4) as u8]);
+        for profile in PROFILES {
+            features.extend(profile.to_be_bytes());
+            features.extend([u8::from(profile == current), 0]);
+        }
         // Core: USB, and the drive's own GET EVENT STATUS NOTIFICATION.
         features.extend([0, 1, 0x0b, 8, 0, 0, 0, 8, 0x01, 0, 0, 0]);
         // Removable medium: a tray, which ejects and locks.
@@ -465,9 +543,13 @@ impl Drive {
         Ok(data)
     }
 
-    /// READ DISC INFORMATION: a finished disc of one session.
+    /// READ DISC INFORMATION: a pressed disc of one session, or a
+    /// recordable disc as it is written.
     fn disc_information(&self, length: usize) -> Result<Vec<u8>, Check> {
         let disc = self.ready()?;
+        if let Some(record) = &disc.record {
+            return Ok(record.disc_information(length));
+        }
         let last = disc.tracks.last().map_or(1, |t| t.number);
         let mut data = vec![0u8; 34];
         data[1] = 32;

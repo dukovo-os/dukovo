@@ -6,6 +6,7 @@ use std::os::unix::net::UnixStream;
 
 use super::disc::{self, DATA, Disc, Error, Mode, RAW, Sector};
 use super::mmc::{Check, Drive, sense};
+use super::record::Kind;
 use super::redir::{Packet, Wire, kind};
 use super::usb::{self, Device};
 
@@ -313,4 +314,197 @@ fn the_wire_says_hello_and_reads_qemus_packets() {
     assert_eq!(&reply[..8], &[101, 0, 0, 0, 13, 0, 0, 0]);
     assert_eq!(&reply[16..20], &[0x81, 0, 3, 0]);
     assert_eq!(&reply[26..], &[1, 2, 3]);
+}
+
+// Recording (ADR 0449).
+
+/// `cdb` run with `out` sent to the drive.
+fn send(drive: &mut Drive, cdb: &[u8], out: &[u8]) -> Result<Vec<u8>, Check> {
+    drive.command(cdb, out)
+}
+
+/// A drive with a blank disc of `kind` and `sectors` in it, its change
+/// said already.
+fn burner(kind: Kind, sectors: u32) -> Drive {
+    let mut drive = Drive::new(Some(Disc::blank(kind, sectors)));
+    assert!(run(&mut drive, &[0, 0, 0, 0, 0, 0]).is_ok());
+    drive
+}
+
+/// A MODE SELECT(10) parameter list of the write parameters page with
+/// `flags`, `track` and `block` in its bytes 2, 3 and 4.
+fn write_parameters(flags: u8, track: u8, block: u8) -> Vec<u8> {
+    let mut list = vec![0u8; 8];
+    let mut page = vec![0u8; 0x34];
+    page[..5].copy_from_slice(&[0x05, 0x32, flags, track, block]);
+    list.extend(page);
+    list
+}
+
+/// MODE SELECT(10) of `list`.
+fn mode_select(drive: &mut Drive, list: &[u8]) -> Result<Vec<u8>, Check> {
+    let length = (list.len() as u16).to_be_bytes();
+    send(drive, &[0x55, 0x10, 0, 0, 0, 0, 0, length[0], length[1], 0], list)
+}
+
+/// WRITE(10) of `data` at `lba`, in sectors of `sector` bytes.
+fn write(drive: &mut Drive, lba: u32, data: &[u8], sector: usize) -> Result<Vec<u8>, Check> {
+    let count = ((data.len() / sector) as u16).to_be_bytes();
+    let lba = lba.to_be_bytes();
+    send(drive, &[0x2a, 0, lba[0], lba[1], lba[2], lba[3], 0, count[0], count[1], 0], data)
+}
+
+/// READ DISC INFORMATION's byte 2: erasable, the last session's state,
+/// and the disc's status.
+fn disc_status(drive: &mut Drive) -> u8 {
+    run(drive, &[0x51, 0, 0, 0, 0, 0, 0, 0, 34, 0]).unwrap()[2]
+}
+
+/// READ TRACK INFORMATION of the invisible track: whether its next
+/// writable address is valid, the address, and the blocks free.
+fn invisible_track(drive: &mut Drive) -> (bool, u32, u32) {
+    let info = run(drive, &[0x52, 1, 0, 0, 0, 0xff, 0, 0, 36, 0]).unwrap();
+    let long = |at: usize| u32::from_be_bytes(info[at..at + 4].try_into().unwrap());
+    (info[7] & 1 != 0, long(12), long(16))
+}
+
+#[test]
+fn a_cd_r_is_written_a_track_at_a_time_closed_and_read_back() {
+    let mut drive = burner(Kind::CdR, 1000);
+    let configuration = run(&mut drive, &[0x46, 0, 0, 0, 0, 0, 0, 1, 0, 0]).unwrap();
+    assert_eq!(&configuration[6..8], &[0, 0x09]);
+    assert_eq!(disc_status(&mut drive), 0x00);
+    assert_eq!(invisible_track(&mut drive), (true, 0, 1000));
+    // A blank disc has no TOC.
+    assert!(run(&mut drive, &[0x43, 0, 0, 0, 0, 0, 1, 0, 12, 0]).is_err());
+    // The write parameters: BUFE, track at once, data, mode 1.
+    let page = run(&mut drive, &[0x5a, 0, 0x05, 0, 0, 0, 0, 0, 60, 0]).unwrap();
+    assert_eq!(page[8] & 0x3f, 0x05);
+    mode_select(&mut drive, &write_parameters(0x41, 0x04, 0x08)).unwrap();
+    let image: Vec<u8> = (0..20u32).flat_map(|n| [n as u8; DATA]).collect();
+    write(&mut drive, 0, &image[..10 * DATA], DATA).unwrap();
+    // Not where the next writable address is.
+    let wrong = write(&mut drive, 4, &image[..DATA], DATA).unwrap_err();
+    assert_eq!(wrong.code, (0x21, 0x02));
+    write(&mut drive, 10, &image[10 * DATA..], DATA).unwrap();
+    assert_eq!(invisible_track(&mut drive), (true, 20, 980));
+    assert_eq!(disc_status(&mut drive), 0x05);
+    run(&mut drive, &[0x35, 0, 0, 0, 0, 0, 0, 0, 0, 0]).unwrap();
+    run(&mut drive, &[0x5b, 1, 1, 0, 0, 1, 0, 0, 0, 0]).unwrap();
+    run(&mut drive, &[0x5b, 1, 2, 0, 0, 0, 0, 0, 0, 0]).unwrap();
+    assert_eq!(disc_status(&mut drive), 0x0e);
+    assert!(!invisible_track(&mut drive).0);
+    // Read back as a disc of data.
+    let toc = run(&mut drive, &[0x43, 0, 0, 0, 0, 0, 1, 0, 20, 0]).unwrap();
+    assert_eq!((toc[5], toc[6]), (0x14, 1));
+    assert_eq!(&toc[16..20], &20u32.to_be_bytes());
+    let read = run(&mut drive, &[0x28, 0, 0, 0, 0, 5, 0, 0, 2, 0]).unwrap();
+    assert_eq!(read, image[5 * DATA..7 * DATA]);
+    // Closed: nothing more is written.
+    assert!(write(&mut drive, 20, &image[..DATA], DATA).is_err());
+}
+
+#[test]
+fn a_test_write_leaves_the_disc_blank() {
+    let mut drive = burner(Kind::CdR, 100);
+    mode_select(&mut drive, &write_parameters(0x51, 0x04, 0x08)).unwrap();
+    write(&mut drive, 0, &[7; 4 * DATA], DATA).unwrap();
+    run(&mut drive, &[0x5b, 1, 2, 0, 0, 0, 0, 0, 0, 0]).unwrap();
+    assert_eq!(disc_status(&mut drive), 0x00);
+    assert_eq!(invisible_track(&mut drive), (true, 0, 100));
+}
+
+/// A cue sheet entry: control and address, track, index, data form,
+/// and the start as minutes, seconds and sectors.
+fn cue(track: u8, index: u8, form: u8, at: u32) -> [u8; 8] {
+    let (m, s, f) = disc::to_msf(at.wrapping_sub(150));
+    [0x01, track, index, form, 0, m, s, f]
+}
+
+#[test]
+fn a_cd_of_audio_is_written_at_once_from_its_cue_sheet() {
+    let mut drive = burner(Kind::CdR, 1000);
+    // Writing before the cue sheet fails.
+    mode_select(&mut drive, &write_parameters(0x42, 0x00, 0x00)).unwrap();
+    assert!(write(&mut drive, 150u32.wrapping_neg(), &[0; RAW], RAW).is_err());
+    // Two tracks: 300 sectors and 320, after the first's pregap.
+    let sheet: Vec<u8> = [
+        cue(0, 0, 0x01, 0),
+        cue(1, 0, 0x00, 0),
+        cue(1, 1, 0x00, 150),
+        cue(2, 1, 0x00, 450),
+        cue(0xaa, 1, 0x01, 770),
+    ]
+    .concat();
+    let size = (sheet.len() as u32).to_be_bytes();
+    send(&mut drive, &[0x5d, 0, 0, 0, 0, 0, size[1], size[2], size[3], 0], &sheet).unwrap();
+    let audio: Vec<u8> = (0..770u32).flat_map(|n| [(n % 251) as u8; RAW]).collect();
+    for (at, chunk) in audio.chunks(27 * RAW).enumerate() {
+        let lba = (at as u32 * 27).wrapping_sub(150);
+        write(&mut drive, lba, chunk, RAW).unwrap();
+    }
+    run(&mut drive, &[0x35, 0, 0, 0, 0, 0, 0, 0, 0, 0]).unwrap();
+    assert_eq!(disc_status(&mut drive), 0x0e);
+    let disc = drive.disc().unwrap();
+    let tracks: Vec<(u8, Mode, u32, u32)> =
+        disc.tracks.iter().map(|t| (t.number, t.mode, t.start, t.sectors)).collect();
+    assert_eq!(tracks, [(1, Mode::Audio, 0, 300), (2, Mode::Audio, 300, 320)]);
+    // Track 2's first sector, as READ CD gives it: block 450 written.
+    let read = run(&mut drive, &[0xbe, 4, 0, 0, 1, 0x2c, 0, 0, 1, 0x10, 0, 0]).unwrap();
+    assert_eq!(read, [(450 % 251) as u8; RAW]);
+}
+
+#[test]
+fn a_dvd_plus_rw_is_formatted_then_written_anywhere() {
+    let mut drive = burner(Kind::DvdPlusRw, 64);
+    let capacities = run(&mut drive, &[0x23, 0, 0, 0, 0, 0, 0, 0, 252, 0]).unwrap();
+    assert_eq!((capacities[3], capacities[8] & 3, capacities[16] >> 2), (16, 1, 0x26));
+    assert!(write(&mut drive, 0, &[1; DATA], DATA).is_err());
+    let list = [0, 0x82, 0, 8, 0, 0, 0, 64, 0x26 << 2, 0, 0, 0];
+    send(&mut drive, &[0x04, 0x11, 0, 0, 0, 0], &list).unwrap();
+    assert_eq!(disc_status(&mut drive) & 3, 2);
+    write(&mut drive, 16, &[2; 2 * DATA], DATA).unwrap();
+    write(&mut drive, 0, &[1; DATA], DATA).unwrap();
+    run(&mut drive, &[0x35, 0, 0, 0, 0, 0, 0, 0, 0, 0]).unwrap();
+    let read = run(&mut drive, &[0x28, 0, 0, 0, 0, 16, 0, 0, 1, 0]).unwrap();
+    assert_eq!(read, [2; DATA]);
+    let between = run(&mut drive, &[0x28, 0, 0, 0, 0, 8, 0, 0, 1, 0]).unwrap();
+    assert_eq!(between, [0; DATA]);
+    // Past its end.
+    assert!(write(&mut drive, 64, &[3; DATA], DATA).is_err());
+}
+
+#[test]
+fn a_cd_rw_is_blanked_and_written_again_and_a_cd_r_is_not() {
+    let mut drive = burner(Kind::CdRw, 100);
+    mode_select(&mut drive, &write_parameters(0x41, 0x04, 0x08)).unwrap();
+    write(&mut drive, 0, &[9; 2 * DATA], DATA).unwrap();
+    run(&mut drive, &[0x5b, 1, 2, 0, 0, 0, 0, 0, 0, 0]).unwrap();
+    assert_eq!(disc_status(&mut drive), 0x1e);
+    run(&mut drive, &[0xa1, 0x11, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]).unwrap();
+    assert_eq!(disc_status(&mut drive), 0x10);
+    assert_eq!(invisible_track(&mut drive), (true, 0, 100));
+    let mut drive = burner(Kind::CdR, 100);
+    let refused = run(&mut drive, &[0xa1, 0x11, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]).unwrap_err();
+    assert_eq!(refused.code, (0x30, 0x00));
+    // Nor does a CD take incremental writing, a DVD-R's.
+    assert!(mode_select(&mut drive, &write_parameters(0x40, 0x05, 0x08)).is_err());
+}
+
+#[test]
+fn a_dvd_plus_r_and_a_bd_r_are_written_in_sequence_and_finalized() {
+    for kind in [Kind::DvdPlusR, Kind::BdR, Kind::DvdR] {
+        let mut drive = burner(kind, 50);
+        if kind == Kind::DvdR {
+            mode_select(&mut drive, &write_parameters(0x40, 0x05, 0x08)).unwrap();
+        }
+        write(&mut drive, 0, &[4; 3 * DATA], DATA).unwrap();
+        run(&mut drive, &[0x35, 0, 0, 0, 0, 0, 0, 0, 0, 0]).unwrap();
+        run(&mut drive, &[0x5b, 1, 1, 0, 0, 1, 0, 0, 0, 0]).unwrap();
+        let finalize = if kind == Kind::DvdR { 2 } else { 6 };
+        run(&mut drive, &[0x5b, 1, finalize, 0, 0, 0, 0, 0, 0, 0]).unwrap();
+        assert_eq!(disc_status(&mut drive), 0x0e, "{kind:?}");
+        let capacity = run(&mut drive, &[0x25, 0, 0, 0, 0, 0, 0, 0, 0, 0]).unwrap();
+        assert_eq!(&capacity[..4], &2u32.to_be_bytes(), "{kind:?}");
+    }
 }

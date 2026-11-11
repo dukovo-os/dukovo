@@ -132,6 +132,12 @@ crash-log-uefi kernel/lib/klog/
 dhcp kernel/net/ userspace/posix/dhcp.c userspace/programs/systools/src/dhcp.rs
 dhcp userspace/programs/systools/src/dhcp6.rs userspace/programs/systools/src/ip.rs
 dhcp userspace/programs/systools/src/netd.rs userspace/spark/tests/services/dhcp/
+disc-burn kernel/drivers/scsi/ kernel/drivers/usb/ kernel/drivers/xhci/ kernel/fs/iso9660/ kernel/fs/udf/
+disc-burn kernel/radix/src/fs/disk/optical.rs kernel/radix/src/fs/disk/removable.rs
+disc-burn kernel/radix/src/fs/disk/usb.rs tools/xtask/src/disc_drive.rs tools/xtask/src/disc_drive/
+disc-burn userspace/programs/audio/ userspace/programs/disk/src/disc/ userspace/programs/systools/src/audiocd.rs
+disc-burn userspace/programs/systools/src/burn.rs userspace/programs/systools/src/burn/
+disc-burn userspace/programs/systools/src/eject.rs userspace/programs/systools/src/volumed.rs
 discs kernel/fs/block/ kernel/fs/iso9660/ kernel/fs/udf/ userspace/programs/systools/src/nvme.rs
 discs userspace/storage/
 disk-check image/crosscheck/ tools/linux-bench/ tools/xtask/src/bench.rs userspace/posix/bench.c

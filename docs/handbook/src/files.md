@@ -327,6 +327,28 @@ cd0: Lab Sessions, by Dukovo Lab
  2   0:02  Static
 ```
 
+A drive that writes discs burns them with `burn`: a folder, made into an
+ISO 9660 image with Rock Ridge and Joliet as it is written (and UDF with
+`--udf`), an image, or with `--audio` WAV and FLAC files as a CD of
+music, a track each (ADR 0449). It writes CD-Rs and CD-RWs, DVD±Rs and
+DVD±RWs, DVD-RAMs, and BD-Rs and BD-REs, each its own way, and the disc
+burned is mounted at its label as any disc put in is. `burn info` says
+what is in the drive, `burn blank` erases a rewritable disc, and `mkiso`
+makes an image of a folder without burning it:
+
+```
+# burn info
+cd0: CD-R, blank, 737MB free
+# burn --label 'Holiday 2026' /home/sam/Pictures/holiday
+burn: cd0: writing 412MB to the CD-R
+burn: cd0: 10% written
+...
+cd0: burned 201172 sectors on the CD-R
+# ls /volumes
+Holiday 2026
+# burn --audio '01 First Light.flac' '02 Static.wav'
+```
+
 With a disc mounted again, the drive's button does the same:
 
 ```

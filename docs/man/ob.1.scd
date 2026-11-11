@@ -1822,13 +1822,18 @@ _target/userspace/_).
 	Plug an emulated USB CD drive into the machine whose QEMU listens on
 	the Unix socket _socket_ with a *usb-redir* device, as the lab's
 	harness does for tests of audio CDs, which QEMU's own drives cannot
-	play (ADR 0447). The drive speaks usbredir to QEMU, is a Bulk-Only
-	mass storage device to the machine, and answers a CD drive's SCSI
-	and MMC commands itself, READ CD and CD-Text among them. _disc_ is a
-	cue sheet and the files it names (audio tracks, data tracks of
-	2,048 or 2,352 bytes a sector, and CD-Text from its *TITLE* and
-	*PERFORMER* lines) or an ISO image. Each line on standard input asks
-	something of the drive: *insert* _disc_ puts a disc in; *take-out*
+	play (ADR 0447), and of discs burned, which they cannot record (ADR
+	0449). The drive speaks usbredir to QEMU, is a Bulk-Only mass storage
+	device to the machine, and answers a CD drive's SCSI and MMC commands
+	itself, READ CD, CD-Text and the commands that write a disc among
+	them. _disc_ is a cue sheet and the files it names (audio tracks, data
+	tracks of 2,048 or 2,352 bytes a sector, and CD-Text from its *TITLE*
+	and *PERFORMER* lines) or an ISO image. Each line on standard input
+	asks something of the drive: *insert* _disc_ puts a disc in; *blank*
+	_kind_ [_sectors_] puts a blank disc in, a *cd-r*, *cd-rw*, *dvd-r*,
+	*dvd+rw*, *dvd+r*, *bd-r* or *bd-re*, of a whole disc's sectors or
+	_sectors_; *save* _path_ writes the data burned on the disc to _path_
+	and prints *saved* and its sectors; *take-out*
 	takes it out, even one the machine locked in; *button* presses the
 	eject button, so that a locked disc stays and the drive asks the
 	machine to let it go; *locked* prints *locked yes* or *locked no*;
@@ -2201,7 +2206,7 @@ Build the image and write it to a USB stick. Check the device name with
 ```
 ./ob image
 lsblk -d -o NAME,SIZE,MODEL,TRAN
-sudo dd if=out/dukovo-0.14.0-x86_64.img of=/dev/sdX bs=4M conv=fsync status=progress
+sudo dd if=out/dukovo-0.14.1-x86_64.img of=/dev/sdX bs=4M conv=fsync status=progress
 ```
 
 Graphical alternatives that write the same image are balenaEtcher, GNOME

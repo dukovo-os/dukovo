@@ -222,7 +222,7 @@ list as it writes it, writes the settings and accounts, and puts GRUB
 on the disk. It ends with:
 
 ```text
-dukovo-install: Dukovo 0.14.0 is installed on nvme0n1. Remove the install stick, then restart.
+dukovo-install: Dukovo 0.14.1 is installed on nvme0n1. Remove the install stick, then restart.
 ```
 
 Remove the stick and restart: the computer starts the installed system,

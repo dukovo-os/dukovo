@@ -34,5 +34,12 @@ radix-vfs = { path = "../../../kernel/fs/vfs", features = ["host"], optional = t
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.140"
 
+[dev-dependencies]
+# The disc images read back by the kernel's own readers (ADR 0449).
+radix-block = { path = "../../../kernel/fs/block", features = ["host"] }
+radix-iso9660 = { path = "../../../kernel/fs/iso9660", features = ["host"] }
+radix-udf = { path = "../../../kernel/fs/udf", features = ["host"] }
+radix-vfs = { path = "../../../kernel/fs/vfs", features = ["host"] }
+
 [lints]
 workspace = true

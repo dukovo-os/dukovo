@@ -50,7 +50,7 @@ write to the log.
 
 ```
 $ log
-Oct 30 21:25:01 dukovo kernel: Radix 0.14.0 on 4 CPUs
+Oct 30 21:25:01 dukovo kernel: Radix 0.14.1 on 4 CPUs
 Oct 30 21:25:02 dukovo spark: started volumed (/system/commands/volumed) as process 14
 Oct 30 21:25:02 dukovo volumed: watching for volumes; 5 disks and partitions now
 ```

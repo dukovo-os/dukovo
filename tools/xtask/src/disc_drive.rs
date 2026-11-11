@@ -17,12 +17,15 @@
 //! Boot tests plug one in with [`DiscDrive::plug_in`], and put discs in,
 //! take them out and press its eject button through it; `ob disc-drive`
 //! runs one for the lab's harness, which says what to do on its standard
-//! input ([`command`]).
+//! input ([`command`]). It records blank discs too, as burn(1) writes
+//! them ([`record`], ADR 0449): a test puts a blank one in, and reads back
+//! what was written with [`DiscDrive::disc`].
 //!
 //! Start with [`DiscDrive`]; [`mmc::Drive`] is the drive itself.
 
 pub mod disc;
 pub mod mmc;
+pub mod record;
 pub mod redir;
 pub mod usb;
 
@@ -49,6 +52,7 @@ enum Ask {
     Button,
     Unplug,
     Locked(Sender<bool>),
+    Disc(Sender<Option<Disc>>),
 }
 
 /// What the drive's thread hears: a packet from QEMU, or an ask.
@@ -123,6 +127,14 @@ impl DiscDrive {
         told.recv_timeout(Duration::from_secs(5)).unwrap_or(false)
     }
 
+    /// The disc in the drive, as it is now: what was written on a
+    /// recordable one, and the tracks it reads.
+    pub fn disc(&self) -> Option<Disc> {
+        let (tell, told) = mpsc::channel();
+        let _ = self.asks.send(Heard::Ask(Ask::Disc(tell)));
+        told.recv_timeout(Duration::from_secs(5)).ok().flatten()
+    }
+
     /// Unplugs the drive, and waits for its thread.
     pub fn unplug(mut self) {
         let _ = self.asks.send(Heard::Ask(Ask::Unplug));
@@ -159,6 +171,7 @@ fn serve(
                 Ask::TakeOut => drop(device.drive.take_out()),
                 Ask::Button => drop(device.drive.press_button()),
                 Ask::Locked(tell) => drop(tell.send(device.drive.locked())),
+                Ask::Disc(tell) => drop(tell.send(device.drive.disc().cloned())),
                 Ask::Unplug => return wire.disconnect(),
             },
             Heard::Packet(packet) => packet_for(&mut wire, &mut device, packet, &mut waiting)?,
@@ -248,9 +261,13 @@ fn packet_for(
 /// `ob disc-drive <socket> [<disc>]`: runs the drive for the lab's
 /// harness, plugged into the QEMU listening on `socket`, with the disc
 /// `disc` (a cue sheet or an ISO image) in it. Each line on standard
-/// input asks something of it: `insert <disc>`, `take-out`, `button`,
-/// `locked` (which prints `locked yes` or `locked no`), and `unplug`,
-/// which ends it, as the end of its input does.
+/// input asks something of it: `insert <disc>`; `blank <kind>
+/// [<sectors>]`, which puts a blank disc in (`cd-r`, `cd-rw`, `dvd-r`,
+/// `dvd+rw`, `dvd+r`, `bd-r` or `bd-re`, of a whole disc's sectors or
+/// those given); `save <path>`, which writes the data written on it to
+/// `path` and prints `saved <sectors>`; `take-out`; `button`; `locked`
+/// (which prints `locked yes` or `locked no`); and `unplug`, which ends
+/// it, as the end of its input does.
 pub fn command(_ctx: &Ctx, args: &mut Args) -> Result<()> {
     let Some(socket) = args.positional() else {
         bail!("usage: ob disc-drive <socket> [<disc>]");
@@ -268,6 +285,14 @@ pub fn command(_ctx: &Ctx, args: &mut Args) -> Result<()> {
         // all.
         match line.trim().split_once(' ').map(|(word, rest)| (word, rest.trim())) {
             Some(("insert", path)) => drive.insert(open(Path::new(path))?),
+            Some(("blank", what)) => drive.insert(blank(what)?),
+            Some(("save", path)) => {
+                let disc = drive.disc().ok_or_else(|| Error::new("no disc is in the drive"))?;
+                let data = disc.record.as_ref().map_or(&[][..], |record| record.data());
+                std::fs::write(path, data)
+                    .map_err(|err| Error::new(format!("cannot write {path}: {err}")))?;
+                println!("saved {}", data.len() / disc::DATA);
+            }
             _ => match line.trim() {
                 "take-out" => drive.take_out(),
                 "button" => drive.press_button(),
@@ -280,6 +305,19 @@ pub fn command(_ctx: &Ctx, args: &mut Args) -> Result<()> {
     }
     drive.unplug();
     Ok(())
+}
+
+/// The blank disc `what` names: its kind, and its sectors if not a whole
+/// disc's.
+fn blank(what: &str) -> Result<Disc> {
+    let mut words = what.split_whitespace();
+    let kind = words.next().and_then(record::Kind::named);
+    let sectors = words.next().map(str::parse::<u32>);
+    match (kind, sectors) {
+        (Some(kind), None) => Ok(Disc::blank(kind, kind.sectors())),
+        (Some(kind), Some(Ok(sectors))) => Ok(Disc::blank(kind, sectors)),
+        _ => bail!("not a blank disc: {what} (cd-r, cd-rw, dvd-r, dvd+rw, dvd+r, bd-r or bd-re)"),
+    }
 }
 
 /// The disc in the file `path`.

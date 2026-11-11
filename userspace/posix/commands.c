@@ -85,6 +85,8 @@ static const char *const ELSEWHERE[][2] = {
 		{"btrfsck", "the btrfs-tools boot test's: it runs fsck-btrfs by btrfs-progs' old name"},
 		{"resize-ntfs", "the ntfs-resize boot test's: it shrinks an NTFS disk the host made, which no other test has"},
 		{"ntfsresize", "the ntfs-resize boot test's: it runs resize-ntfs by ntfs-3g's name"},
+		{"burn", "the disc-burn boot test's: it writes discs in a burner, which only that test's emulated drive is"},
+		{"mkiso", "the disc-burn boot test's: it makes the image of a folder that test burns onto a DVD+RW"},
 		{"efiboot", "the efi-boot-entries boot test's: it writes the firmware's boot entries, which only a UEFI machine with an EFI memory map has"},
 		{"efibootmgr", "the efi-boot-entries boot test's: it runs efiboot by efibootmgr's name"},
 		{"smbd", "the smbd boot test's service: the host's smbclient reaches it only through QEMU's network"},

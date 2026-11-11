@@ -469,7 +469,11 @@ runs its own git port, and Linux the same git release built static on
 glibc, which `ob bench` builds once from the port's source into
 `target/bench/linux-git` and puts in the initramfs at `/git`. The row is
 reported but not gated until Radix first reaches parity on it; from
-then on it is gated like the rest.
+then on it is gated like the rest. The SD card's two 1 MiB rows are
+reported but never gated: QEMU's `sdhci-pci` moves each byte of a
+transfer through its emulation of the card one call at a time, over
+150 ms a MiB for both systems, so their ratio is the runner's noise
+around 1.00 and not either system's work.
 
 A yield switches only when the other program may run first (EEVDF on
 both systems), so `context_switch` divides the time by the switches that
