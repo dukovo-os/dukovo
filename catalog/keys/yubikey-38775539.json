@@ -1,0 +1,15 @@
+{
+  "key": {
+    "keytype": "ecdsa",
+    "keyval": {
+      "public": "-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEEI6uFWYItDjLBllqD6WPUmMyIavD\nzPKRqYya64y3tKphhAsEoHJ0NjV/LKHH/ci2dhN224VJz1JheMq1AW90jA==\n-----END PUBLIC KEY-----\n"
+    },
+    "scheme": "ecdsa-sha2-nistp256"
+  },
+  "name": "yubikey-38775539",
+  "roles": [
+    "root",
+    "targets"
+  ],
+  "yubikey": 38775539
+}
