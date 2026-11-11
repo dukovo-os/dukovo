@@ -135,6 +135,7 @@ pub fn build(ctx: &Ctx, check: bool) -> Result<()> {
 
     if check {
         problems.extend(check_coverage(ctx)?);
+        problems.extend(crate::site::check::tree_problems(ctx)?);
     }
 
     let credits = read(ctx, "CREDITS.md")?;

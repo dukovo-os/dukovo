@@ -42,6 +42,7 @@ Everything goes through `./ob`, and CI runs exactly the same commands:
 ./ob lint           # rustfmt and Clippy, warnings are errors (./ob fmt fixes formatting)
 ./ob test           # unit tests, then the QEMU boot tests (./ob help test)
 ./ob docs --check   # man pages and handbook, with completeness checks
+./ob docs site --check  # the support center, with its links and search
 ./ob test kani      # Kani proofs, when kernel/mm, kernel/cap, kernel/sched,
                     # kernel/ipc or kernel/fs changes
 ./ob test tla       # TLA+ models (needs Java), when kernel/cap, kernel/sched,
@@ -75,11 +76,27 @@ A change merges when:
   on QEMU, and on the lab's real machines once those are set up. A feature
   is not complete without them. The handbook's
   [lab chapter](docs/handbook/src/lab.md#writing-a-test) says how to write one.
-- Every new command, file format, kernel command-line flag, `kdb` command
-  or interface has a man page in `docs/man/` (see "Man pages" below), and
-  the handbook is updated where users would look. `./ob docs --check`
-  enforces this for `ob` commands and boot tests, `dukovo.toml` keys,
-  kernel flags, `kdb` commands and self-tests.
+- The docs say what the change does, in the same pull request, so that
+  they stay the one current account of the system:
+  - every new command, file format, kernel command-line flag, `kdb`
+    command or interface has a man page in `docs/man/` (see "Man pages"
+    below), and a changed one has its page brought up to date;
+  - the handbook, and any guide, tutorial or runbook the change touches,
+    is updated where people would look, and its examples still run;
+  - an error a person can act on has an ID and a page in `docs/errors/`;
+  - a design note the change makes wrong is corrected, and the roadmap and
+    `docs/deferred.md` are kept current (see "Pull requests").
+
+  `./ob docs --check` and `./ob docs site --check` enforce what can be
+  checked: pages for `ob` commands and boot tests, `dukovo.toml` keys,
+  kernel flags, `kdb` commands and self-tests; examples marked as tests;
+  a lab test for each guide, tutorial and runbook; error IDs and their
+  pages; and the support center's links and search (see "The support
+  center" below).
+- When the change makes something dukovo.org says wrong, such as a
+  feature, a number or the roadmap, the change comes with a pull request
+  to [dukovo-os/website](https://github.com/dukovo-os/website) that
+  corrects it.
 - Any decision the specification leaves open, or any change to an earlier
   decision, has an architecture decision record in `docs/adr/`.
 - It follows the [coding standard](docs/coding-standard.md).
@@ -144,6 +161,45 @@ and fails on any `mandoc -T lint` warning. Preview a page with:
 Sections follow the usual convention: 1 user commands, 2 system calls,
 3 library interfaces, 4 devices and drivers, 5 file formats, 7 overviews,
 8 administration.
+
+## The support center
+
+dukovo.org/support is built from the docs in this tree by `./ob docs
+site` ([ADR 0419](docs/adr/0419-the-support-center-is-built-from-the-docs-in-the-tree.md)):
+the man pages, the handbook, the design notes, the decision records, the
+roadmap, and the pages of `docs/guides/`, `docs/tutorials/`,
+`docs/runbooks/` and `docs/errors/`. The docs are tested like code
+([ADR 0420](docs/adr/0420-docs-are-tested-like-code.md)):
+
+- A code block that opens with ```` ```console test ```` is an example the
+  `docs-examples` boot test types at the console. Lines that start with
+  `# ` or `$ ` are commands, each of which must succeed; the other lines
+  are what the screen must show after it, and `...` stands for output left
+  out. Mark an example this way whenever it can run on a test image.
+
+  ````markdown
+  ```console test
+  # realpath /bin
+  /system/commands
+  ```
+  ````
+- A guide, tutorial or runbook needs a boot test named for it
+  (`guide-<name>`, `tutorial-<name>` or `runbook-<name>`) that follows it
+  from start to end.
+- An error ID, such as `UPD-103`, needs a page in `docs/errors/`, as its
+  [README](docs/errors/README.md) describes.
+
+Build the site and run its checks with:
+
+```sh
+./ob docs site --check    # then open out/docs/site/index.html
+```
+
+dukovo-os/website publishes it at dukovo.org/support: every six hours it
+builds what has changed on `main` (as `/support/dev/`) and each new
+release tag (as `/support/<release>/`), and `/support/` shows the newest
+release ([ADR 0428](docs/adr/0428-the-support-center-is-published-as-a-copy-per-release.md)).
+Its "Publish the support center" workflow can also be run by hand.
 
 ## Design notes
 

@@ -596,18 +596,23 @@ something of the drive:
         }
         "docs" => {
             "Usage: ./ob docs [--check]
-       ./ob docs site [--version <name>]
+       ./ob docs site [--check] [--version <name>]
 
 Builds the man pages from docs/man/*.scd into out/docs/man (checked with
 mandoc -T lint) and the handbook from docs/handbook into out/docs/handbook.
 
   --check      Also fail when an ob command or dukovo.toml key is not
-               documented in its man page
+               documented in its man page, an example marked as a test
+               cannot be run, a guide, tutorial or runbook has no lab test,
+               or an error ID and its page in docs/errors do not match
 
 `ob docs site` builds the support center into out/docs/site: every man
 page, the handbook, the design notes, the decision records, the roadmap,
 and the tutorials, guides, runbooks and error pages, with search.
 
+  --check      Also fail when a link between pages or to a part of a page
+               leads nowhere, or searching for a command, one of its other
+               names or an error ID does not show its page
   --version    The release the pages describe (default: this tree's version)"
         }
         "lint" => {
@@ -1026,9 +1031,10 @@ fn dispatch(argv: Vec<String>) -> Result<()> {
         "disc-drive" => disc_drive::command(&ctx, &mut args),
         "docs" => match args.positional().as_deref() {
             Some("site") => {
+                let check = args.flag("--check");
                 let version = args.value("--version")?;
                 args.finish()?;
-                site::build(&ctx, version.as_deref())
+                site::build(&ctx, version.as_deref(), check)
             }
             Some(other) => bail!("unknown `./ob docs` command `{other}`; see `./ob help docs`"),
             None => {

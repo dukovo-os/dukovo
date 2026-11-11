@@ -206,14 +206,34 @@ pub struct Choice {
     pub reasons: Vec<String>,
 }
 
+/// The boot test that runs the examples the docs mark as tests (ADR 0420).
+pub const EXAMPLES: &str = "docs-examples";
+
 /// The boot tests that changes to `changed`, paths from the repository's
-/// root, reach.
-pub fn choose(changed: &[String]) -> Choice {
+/// root, reach. `has_examples` says whether a changed file holds examples
+/// marked as tests, which run [`EXAMPLES`] although no build reads the
+/// file; a guide, tutorial or runbook runs its own lab test likewise.
+pub fn choose(changed: &[String], has_examples: &dyn Fn(&str) -> bool) -> Choice {
     let mut chosen: BTreeSet<&str> = BTreeSet::new();
     let mut sample = false;
     let mut any = false;
     let mut reasons = Vec::new();
     for path in changed {
+        let mut docs: Vec<&'static str> = Vec::new();
+        if crate::site::check::example_file(path) && has_examples(path) {
+            docs.push(EXAMPLES);
+        }
+        if let Some(test) = crate::site::check::page_test(path)
+            && let Some(case) = all_cases().find(|case| case.name == test)
+        {
+            docs.push(case.name);
+        }
+        if !docs.is_empty() {
+            any = true;
+            chosen.extend(&docs);
+            reasons.push(format!("{path}: {}", docs.join(", ")));
+            continue;
+        }
         if matches_any(NOTHING, path) {
             reasons.push(format!("{path}: no boot test"));
             continue;
@@ -325,7 +345,7 @@ mod tests {
     use std::path::Path;
 
     fn choose_for(paths: &[&str]) -> Choice {
-        choose(&paths.iter().map(ToString::to_string).collect::<Vec<_>>())
+        choose(&paths.iter().map(ToString::to_string).collect::<Vec<_>>(), &|_| false)
     }
 
     fn names(choice: &Choice) -> Vec<&'static str> {
@@ -390,6 +410,22 @@ mod tests {
         assert!(!choice.sample);
         assert_eq!(parts(&choice.cases), 0);
         assert_eq!(plan(&choice.cases), "parts=0\nshards=[0]\n");
+    }
+
+    #[test]
+    fn docs_with_examples_run_the_examples_test() {
+        let changed = ["docs/handbook/src/a.md".to_string(), "docs/adr/0421-x.md".to_string()];
+        let changed = [changed.to_vec(), vec!["CONTRIBUTING.md".to_string()]].concat();
+        let choice =
+            choose(&changed, &|path| path == "docs/handbook/src/a.md" || path == "CONTRIBUTING.md");
+        let chosen = names(&choice);
+        assert!(!choice.sample);
+        assert!(chosen.contains(&EXAMPLES), "{chosen:?}");
+        assert!(SMOKE.iter().all(|name| chosen.contains(name)), "{chosen:?}");
+        assert_eq!(choice.reasons[0], "docs/handbook/src/a.md: docs-examples");
+        assert_eq!(choice.reasons[1], "docs/adr/0421-x.md: no boot test");
+        // Examples run only from the folders the test reads.
+        assert_eq!(choice.reasons[2], "CONTRIBUTING.md: no boot test");
     }
 
     #[test]

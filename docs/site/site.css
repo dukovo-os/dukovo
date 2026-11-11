@@ -452,3 +452,5 @@ code{font:.9em ui-monospace,Menlo,Consolas,monospace;background:rgba(255,255,255
 @media (max-width:620px){.dochead>.badge{display:none}}
 .home .dochead .search,.home .dochead .search-btn{display:none!important}
 @media (min-width:60rem){.paths{grid-template-columns:repeat(3,1fr)}}
+/* The version picker shows once site.js has the list of copies to fill it with. */
+select[data-versions]:not(.ready){display:none!important}
