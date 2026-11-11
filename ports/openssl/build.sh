@@ -10,7 +10,10 @@
 # certificates as cert.pem and certs/ (dukovo-certificates(7)) and its
 # openssl.cnf. It installs into a folder of its own, and only the
 # command, its section 1 manual pages and openssl.cnf go into the
-# sysroot.
+# sysroot. Its static libraries and headers go into $PORT_INFO/for-bundles,
+# beside the port's stamp and out of the sysroot, for the catalog's
+# bundles that link them, such as nginx's (ADR 0491): no program of the
+# image builds on them.
 set -eu
 
 cd "$PORT_BUILD"
@@ -26,6 +29,14 @@ make -j"$JOBS" build_programs >make.log 2>&1 || {
 	tail -n 60 make.log >&2
 	exit 1
 }
+make install_dev DESTDIR="$PORT_BUILD/dev" >install-dev.log 2>&1 || {
+	tail -n 40 install-dev.log >&2
+	exit 1
+}
+mkdir -p "$PORT_INFO/for-bundles/libraries"
+cp -R "$PORT_BUILD/dev/system/include" "$PORT_INFO/for-bundles/include"
+cp "$PORT_BUILD/dev/system/libraries/libssl.a" "$PORT_BUILD/dev/system/libraries/libcrypto.a" \
+	"$PORT_INFO/for-bundles/libraries/"
 # Its pages keep their own names, openssl-x509.1, without the suffix
 # OpenSSL gives them by default.
 make install_programs install_man_docs MANSUFFIX= DESTDIR="$stage" >install.log 2>&1 || {

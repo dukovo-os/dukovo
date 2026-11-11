@@ -748,8 +748,9 @@ fn records() -> Vec<(String, Record)> {
 }
 
 /// Makes the accounts of `manifest`'s services through authd(8), and
-/// their data folders, each its account's alone (ADR 0385). An account
-/// and a folder kept from an earlier install are taken up again.
+/// their data folders, each its account's alone (ADR 0385), and the
+/// folders of `/shared` they only read that are not there (ADR 0491). An
+/// account and a folder kept from an earlier install are taken up again.
 fn make_accounts(manifest: &Manifest) -> Result<(), String> {
     if manifest.services.is_empty() {
         return Ok(());
@@ -790,6 +791,13 @@ fn make_accounts(manifest: &Manifest) -> Result<(), String> {
             .and_then(|()| std::os::unix::fs::chown(&home, Some(user.uid), Some(user.gid)))
             .and_then(|()| fs::set_permissions(&home, fs::Permissions::from_mode(0o700)))
             .map_err(|e| format!("{home}: {e}"))?;
+    }
+    // The folders of /shared its services only read, made empty when they
+    // are not there, so that each starts before what it reads is put there.
+    for folder in services::read_folders(manifest) {
+        if fs::symlink_metadata(&folder).is_err() {
+            make_folder(Path::new(&folder), 0o755)?;
+        }
     }
     Ok(())
 }

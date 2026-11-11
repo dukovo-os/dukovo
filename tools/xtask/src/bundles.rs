@@ -72,7 +72,7 @@ fn pack(ctx: &Ctx, ports: &Ports, port: &Port, key: &SecretKey) -> Result<PathBu
     let recipe = &port.recipe;
     let spec = recipe.bundle.as_ref().expect("a bundle's port");
     let built = staging(ctx, &recipe.name);
-    for command in &spec.commands {
+    for command in spec.commands.iter().chain(&spec.programs) {
         if !built.join("bin").join(command).is_file() {
             return Err(Error::new(format!(
                 "port {}: {} has no bin/{command} to pack",
@@ -293,6 +293,7 @@ pub fn manifest(port: &Port) -> String {
     let programs: Vec<String> = spec
         .commands
         .iter()
+        .chain(&spec.programs)
         .map(|c| {
             format!(
                 "    {}: {{ \"path\": {{ \"x86_64\": {} }} }}",
@@ -313,9 +314,50 @@ pub fn manifest(port: &Port) -> String {
             )
         })
         .collect();
-    let _ = writeln!(o, "  \"commands\": [\n{}\n  ]", commands.join(",\n"));
-    let _ = writeln!(o, "}}");
+    let _ = write!(o, "  \"commands\": [\n{}\n  ]", commands.join(",\n"));
+    if !spec.services.is_empty() {
+        let services: Vec<String> =
+            spec.services.iter().map(|service| format!("    {}", table_json(service))).collect();
+        let _ = write!(o, ",\n  \"services\": [\n{}\n  ]", services.join(",\n"));
+    }
+    if !spec.permissions.is_empty() {
+        let permissions: Vec<String> = spec
+            .permissions
+            .iter()
+            .map(|(name, request)| format!("    {}: {}", json(name), toml_json(request)))
+            .collect();
+        let _ = write!(o, ",\n  \"permissions\": {{\n{}\n  }}", permissions.join(",\n"));
+    }
+    if let Some(data) = &spec.data {
+        let _ = write!(o, ",\n  \"data\": {}", table_json(data));
+    }
+    let _ = writeln!(o, "\n}}");
     o
+}
+
+/// A TOML value of a recipe as JSON, on one line: a recipe gives a
+/// bundle's services and permissions in TOML, as manifest.json(5) has
+/// them in JSON.
+fn toml_json(value: &toml::Value) -> String {
+    match value {
+        toml::Value::String(text) => json(text),
+        toml::Value::Integer(number) => number.to_string(),
+        toml::Value::Float(number) => number.to_string(),
+        toml::Value::Boolean(yes) => yes.to_string(),
+        toml::Value::Datetime(time) => json(&time.to_string()),
+        toml::Value::Array(items) => {
+            let items: Vec<String> = items.iter().map(toml_json).collect();
+            format!("[{}]", items.join(", "))
+        }
+        toml::Value::Table(table) => table_json(table),
+    }
+}
+
+/// A TOML table as a JSON object, on one line.
+fn table_json(table: &toml::Table) -> String {
+    let fields: Vec<String> =
+        table.iter().map(|(key, value)| format!("{}: {}", json(key), toml_json(value))).collect();
+    format!("{{ {} }}", fields.join(", "))
 }
 
 /// Where the bundle's source is: its upstream repository, pinned in the
@@ -438,6 +480,27 @@ mod tests {
         assert!(text.contains("\"source\": \"https://github.com/BurntSushi/ripgrep\""));
         assert!(text.contains("\"runs_with\": \"your-access\""));
         let _: Option<&BundleRecipe> = port.recipe.bundle.as_ref();
+    }
+
+    /// nginx's recipe, a service bundle's: its services, permissions and
+    /// data folder reach the manifest, which reads.
+    #[test]
+    fn a_service_bundles_manifest_reads() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../ports/nginx");
+        let text = std::fs::read_to_string(dir.join("recipe.toml")).unwrap();
+        let recipe: Recipe = toml::from_str(&text).unwrap();
+        let port = Port { recipe, dir, source: None, extras: Vec::new(), crates: Vec::new() };
+        let text = manifest(&port);
+        let manifest = dkv::signed::parse_manifest(text.as_bytes()).unwrap();
+        assert_eq!(manifest.id.0, "org.nginx.nginx");
+        assert_eq!(manifest.programs.len(), 2, "nginx and nginx-service");
+        let service = &manifest.services[0];
+        assert_eq!(service.name.0, "nginx");
+        assert_eq!(service.program.0, "nginx-service");
+        assert_eq!(service.limits.memory, Some(512 << 20));
+        assert!(manifest.permissions.get("network.listen").is_some());
+        assert!(manifest.permissions.get("files.shared").is_some());
+        assert!(manifest.data.settings && manifest.data.data && !manifest.data.cache);
     }
 
     #[test]

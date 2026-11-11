@@ -156,6 +156,25 @@ pub fn holds(manifest: &Manifest, service: &Service) -> Holds {
     holds
 }
 
+/// The folders of `/shared` that `manifest`'s services read and none
+/// may change, each once. bundled makes those that are not there as it
+/// installs the bundle, the root's and everyone's to read, so that a
+/// service starts before anything is put in them: Spark refuses to start
+/// a service a place it only reads is missing from, and makes one it may
+/// change itself, the account's.
+pub fn read_folders(manifest: &Manifest) -> Vec<String> {
+    let shared: Vec<(String, bool)> =
+        manifest.services.iter().flat_map(|service| holds(manifest, service).shared).collect();
+    let mut folders: Vec<String> = Vec::new();
+    for (folder, write) in &shared {
+        let path = format!("/shared/{folder}");
+        if !write && !shared.iter().any(|(f, w)| f == folder && *w) && !folders.contains(&path) {
+            folders.push(path);
+        }
+    }
+    folders
+}
+
 /// `text` as a TOML string, quoted, with what it cannot hold as is
 /// escaped.
 fn quoted(text: &str) -> String {
@@ -370,6 +389,18 @@ mod tests {
             sheet_lines(&m),
             ["web, as the account web-data, starting once an administrator enables it"]
         );
+    }
+
+    #[test]
+    fn the_folders_only_read_are_made() {
+        let m = manifest(
+            r#"{"name": "web", "program": "web"}, {"name": "sync", "program": "web"}"#,
+            r#""files.shared": {"need": "required",
+                                "folders": {"www": "read", "photos": "read", "music": "read-write"}}"#,
+        );
+        assert_eq!(read_folders(&m), ["/shared/www", "/shared/photos"]);
+        let none = manifest(r#"{"name": "web", "program": "web"}"#, "");
+        assert!(read_folders(&none).is_empty());
     }
 
     #[test]

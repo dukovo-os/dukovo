@@ -341,37 +341,41 @@ less.
 
 # EXAMPLE
 
-nginx, as the catalog will ship it:
+nginx, as the catalog ships it (ADR 0491): its command, and the program
+its service runs, which starts nginx in the foreground:
 
 ```
 {
   "manifest_version": 1,
   "id": "org.nginx.nginx",
   "name": "nginx",
-  "version": "1.27.3",
+  "version": "1.30.6",
   "summary": "Web server and reverse proxy",
-  "publisher": { "name": "Dukovo catalog", "url": "https://dukovo.org" },
+  "publisher": { "name": "Dukovo catalog" },
   "license": "BSD-2-Clause",
-  "requires_os": "1.0",
+  "homepage": "https://nginx.org",
+  "source": "https://github.com/nginx/nginx",
+  "requires_os": "0.12",
   "architectures": ["x86_64"],
-  "programs": { "nginx": { "path": { "x86_64": "bin/nginx" } } },
+  "programs": {
+    "nginx": { "path": { "x86_64": "bin/nginx" } },
+    "nginx-service": { "path": { "x86_64": "bin/nginx-service" } }
+  },
   "commands": [ { "name": "nginx", "program": "nginx", "runs_with": "your-access" } ],
   "services": [ {
     "name": "nginx",
-    "program": "nginx",
-    "arguments": ["-g", "daemon off;"],
+    "program": "nginx-service",
     "account": "nginx",
     "restart": "on-failure",
-    "limits": { "memory": "512M", "open_files": 65536 },
+    "limits": { "memory": "512M" },
     "start": "when-enabled"
   } ],
   "permissions": {
-    "network.listen": { "ports": [80, 443], "need": "required", "why": "Serves websites" },
-    "network.outbound": { "need": "optional", "why": "Passes requests on to other servers" },
-    "files.shared": { "folders": { "www": "read" }, "need": "required", "why": "Reads the sites it serves" }
+    "network.listen": { "ports": [80, 443], "need": "required", "why": "Serves websites over HTTP and HTTPS" },
+    "network.outbound": { "need": "optional", "why": "Passes requests on to other servers, as a reverse proxy" },
+    "files.shared": { "folders": { "www": "read" }, "need": "required", "why": "Reads the sites it serves from /shared/www" }
   },
-  "uses": [ { "interface": "dukovo.certificates/1", "need": "optional" } ],
-  "data": { "settings": true, "cache": true }
+  "data": { "settings": true, "data": true }
 }
 ```
 

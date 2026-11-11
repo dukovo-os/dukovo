@@ -6,8 +6,10 @@
 # TLS servers and clients. OpenSSL 3.5 is a long-term release, under the
 # Apache License 2.0. Only the command goes in the image, with its
 # manual pages and openssl.cnf among the default settings: its
-# libraries stay out of the sysroot, so that no other port builds on
-# them, as Dukovo's TLS is rustls's (ADR 0192).
+# libraries stay out of the sysroot, so that no other port of the image
+# builds on them, as Dukovo's TLS is rustls's (ADR 0192). The catalog's
+# bundles that need them, such as nginx's, link them from the port's
+# folder (ADR 0491).
 name = "openssl"
 version = "3.5.4"
 summary = "openssl, OpenSSL's command for keys, certificates and TLS"

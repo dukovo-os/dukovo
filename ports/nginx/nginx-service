@@ -1,0 +1,42 @@
+#!/bin/sh
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# nginx's service (ADR 0491): runs as the account nginx, in its data
+# folder ($HOME), and keeps nginx in the foreground, as Spark's services
+# are, its log on its standard error output, which the system's log
+# keeps.
+#
+# Its settings are in $HOME/conf. The first start copies there the ones
+# the bundle brings. After that, a file the administrator has not changed
+# takes the bundle's new version on an update; a changed one stays, and
+# the bundle's version is written beside it as NAME.default, as the
+# service files' are (ADR 0386).
+set -eu
+
+bundle=$(cd "$(dirname "$0")/.." && pwd)
+mkdir -p "$HOME/conf" "$HOME/temp"
+
+# What the bundle brought last time, to tell an administrator's change
+# from an older version of the bundle's file.
+mkdir -p "$HOME/conf/.bundle"
+for shipped in "$bundle"/conf/*; do
+	name=${shipped##*/}
+	file="$HOME/conf/$name"
+	last="$HOME/conf/.bundle/$name"
+	if [ ! -e "$file" ]; then
+		cp "$shipped" "$file"
+		rm -f "$file.default"
+	elif cmp -s "$shipped" "$file"; then
+		rm -f "$file.default"
+	elif [ -e "$last" ] && cmp -s "$last" "$file"; then
+		# Unchanged since the bundle wrote it: the new version.
+		cp "$shipped" "$file"
+		rm -f "$file.default"
+	else
+		cp "$shipped" "$file.default"
+	fi
+	cp "$shipped" "$last"
+done
+
+exec "$bundle/bin/nginx" -g 'daemon off;'

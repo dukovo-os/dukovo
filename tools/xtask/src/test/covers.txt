@@ -351,6 +351,9 @@ nfsd kernel/net/ userspace/posix/nfsdtest.c userspace/programs/acl/ userspace/pr
 nfsd userspace/programs/systools/src/dig.rs userspace/programs/systools/src/mount.rs
 nfsd userspace/programs/systools/src/netd.rs userspace/programs/systools/src/share.rs
 nfsd userspace/programs/systools/src/signals.rs
+nginx ports/curl/ ports/nginx/ ports/openssl/ tools/xtask/src/bundles.rs tools/xtask/src/licenses.rs
+nginx tools/xtask/src/ports.rs userspace/programs/dkv/ userspace/programs/manifest/
+nginx userspace/programs/systools/src/bundled.rs userspace/programs/systools/src/bundles/
 ntfs kernel/fs/block/ kernel/fs/ntfs/ userspace/programs/systools/src/ntfs.rs
 ntfs userspace/programs/systools/src/nvme.rs userspace/storage/
 ntfs-power-cut kernel/fs/block/ kernel/fs/ntfs/ userspace/programs/systools/src/ntfs.rs

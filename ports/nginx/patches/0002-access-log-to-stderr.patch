@@ -1,0 +1,39 @@
+SPDX-FileCopyrightText: Igor Sysoev and Nginx, Inc.
+SPDX-FileCopyrightText: 2026 The Dukovo contributors
+SPDX-License-Identifier: BSD-2-Clause
+
+access_log stderr, as error_log has it
+
+A service on Dukovo writes its log to its standard error output, which
+Spark copies into the system's log (logd(8)), where logtrim(8) trims it and
+log(1) reads it by service. error_log takes "stderr" for that; this
+lets access_log take it too, rather than a file of that name.
+
+diff --git a/src/http/modules/ngx_http_log_module.c b/src/http/modules/ngx_http_log_module.c
+index 9158974..bbbaa14 100644
+--- a/src/http/modules/ngx_http_log_module.c
++++ b/src/http/modules/ngx_http_log_module.c
+@@ -1413,6 +1413,23 @@ ngx_http_log_set_log(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
+         goto process_formats;
+     }
+ 
++    if (ngx_strcmp(value[1].data, "stderr") == 0) {
++
++        /*
++         * The standard error output, as error_log has it (Dukovo's patch):
++         * a service's, which the system's log keeps.
++         */
++
++        ngx_str_null(&s);
++
++        log->file = ngx_conf_open_file(cf->cycle, &s);
++        if (log->file == NULL) {
++            return NGX_CONF_ERROR;
++        }
++
++        goto process_formats;
++    }
++
+     n = ngx_http_script_variables_count(&value[1]);
+ 
+     if (n == 0) {

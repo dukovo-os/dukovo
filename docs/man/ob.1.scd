@@ -1945,7 +1945,11 @@ _recipe.toml_
 	own directory (*bundled*: name, version, license, home page and
 	notice files), each a package of its own in the license manifest;
 	and for a port the catalog carries rather than the image, its
-	*[bundle]*: the bundle's *id*, *name* and *commands* (ADR 0370).
+	*[bundle]*: the bundle's *id*, *name* and *commands* (ADR 0370), and
+	for a service bundle (ADR 0491) its other *programs*, the ports it
+	*links* (whose packages and licenses, with the compiler's runtime,
+	go into its SBOM), and its *services*, *permissions* and *data*, as
+	*manifest.json*(5) has them, written in TOML.
 
 _patches/\*.patch_
 	Changes to the source, applied in name order with *patch -p1*. Each
@@ -1987,16 +1991,17 @@ remakes a release's generated files. Every port's license and notices go into th
 manifest.
 
 A bundle's port installs into *PORT_BUNDLE* instead of the sysroot: a
-program _bin/COMMAND_ for each of its *commands*, and anything else the
-bundle holds, such as _man/man1/_. Nothing of it reaches an image. *ob*
+program _bin/NAME_ for each of its *commands* and *programs*, and
+anything else the bundle holds, such as _man/man1/_. Nothing of it reaches an image. *ob*
 gives the folder a _manifest.json_ (*manifest.json*(5)): the recipe's
 version, summary, license and home page, its git repository as the
-source, the publisher "Dukovo catalog", and each command running with
+source, the publisher "Dukovo catalog", each command running with
 the access of whoever runs it, as command-line tools do, which the
-install sheet says. It writes _sbom.spdx_, listing every component the
+install sheet says, and the recipe's services, permissions and data
+folder. It writes _sbom.spdx_, listing every component the
 port builds in as the image's manifest does, and _licenses/_ with their
-texts and notices, after checking them against the ports' allow-list
-and MPL-2.0. It then signs the folder and packs it into
+texts and notices, after checking them against the ports' allow-list,
+MPL-2.0 and PCRE2's license with its exception. It then signs the folder and packs it into
 _out/bundles/ID-VERSION.dkv_ with the code *bundle*(1) packs with. The
 key is the file *OB_BUNDLE_KEY* names, or the build's own,
 _out/bundles/build.key_, made the first time; Dukovo trusts neither, and

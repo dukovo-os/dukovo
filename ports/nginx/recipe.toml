@@ -1,0 +1,65 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# nginx, the web server and reverse proxy: a service bundle of the Dukovo
+# catalog, not of the image (ADRs 0370, 0385 and 0491). nginx's stable
+# series, built for Radix as a POSIX system, with poll, PCRE2 for its
+# regular expressions, zlib for gzip, and OpenSSL 3.5's libraries, which
+# the openssl port keeps for bundles, for HTTPS. Its service runs as the
+# account nginx once an administrator enables it; its settings are in
+# its data folder, its sites in /shared/www, and its log in the
+# system's.
+name = "nginx"
+version = "1.30.6"
+summary = "web server and reverse proxy"
+license = "BSD-2-Clause"
+homepage = "https://nginx.org"
+depends = ["mlibc", "zlib", "openssl"]
+
+[source]
+git = "https://github.com/nginx/nginx.git"
+commit = "fb0e979c6dd63c018958b41eeb844947c5c21264"
+tag = "release-1.30.6"
+
+# PCRE2 10.49, which nginx's regular expressions (location ~, rewrite, map)
+# use, built into it from its sources without JIT.
+[[extra]]
+path = "pcre2"
+git = "https://github.com/PCRE2Project/pcre2.git"
+commit = "6f9d7c1373262c541324a16a358785b33ef116cf"
+license = "BSD-3-Clause WITH PCRE2-exception"
+
+[bundle]
+id = "org.nginx.nginx"
+name = "nginx"
+commands = ["nginx"]
+programs = ["nginx-service"]
+links = ["mlibc", "zlib", "openssl"]
+
+# nginx-service sets the data folder up and runs nginx in the
+# foreground, as Spark's service.
+[[bundle.services]]
+name = "nginx"
+program = "nginx-service"
+account = "nginx"
+restart = "on-failure"
+start = "when-enabled"
+limits = { memory = "512M" }
+
+[bundle.permissions."network.listen"]
+ports = [80, 443]
+need = "required"
+why = "Serves websites over HTTP and HTTPS"
+
+[bundle.permissions."network.outbound"]
+need = "optional"
+why = "Passes requests on to other servers, as a reverse proxy"
+
+[bundle.permissions."files.shared"]
+folders = { www = "read" }
+need = "required"
+why = "Reads the sites it serves from /shared/www"
+
+[bundle.data]
+settings = true
+data = true

@@ -280,8 +280,10 @@ pub fn install(ctx: &Ctx, staging: &Path, extras: &Extras<'_>) -> Result<String>
 /// beyond a port's (ADR 0370). The Mozilla Public License 2.0 is copyleft
 /// file by file: each such file's source is the crate on crates.io that
 /// the bundle's SBOM names, with its SHA-256, which is the "reasonable
-/// means" of obtaining it that it asks for.
-const BUNDLE_EXTRA_ALLOW: &[&str] = &["MPL-2.0"];
+/// means" of obtaining it that it asks for. PCRE2's exception, which
+/// nginx's bundle carries, lifts the BSD licence's condition on binaries
+/// from the programs that only include a library that includes PCRE2.
+const BUNDLE_EXTRA_ALLOW: &[&str] = &["MPL-2.0", "BSD-3-Clause WITH PCRE2-exception"];
 
 /// What a bundle says of its licenses (ADR 0370): every component of the
 /// port the bundle is built from, checked against the port allow-list
@@ -294,6 +296,18 @@ pub fn bundle(ctx: &Ctx, ports: &Ports, port: &Port, folder: &Path, created: i64
     let spec = recipe.bundle.as_ref().expect("a bundle's port");
     let mut packages = Vec::new();
     port_packages(ctx, ports, port, &mut packages)?;
+    // What its programs carry, linked in: a C program carries the C
+    // library's code and the compiler-rt builtins', and those of the
+    // libraries it links (ADR 0491).
+    for name in &spec.links {
+        let linked = ports.ports.iter().find(|p| p.recipe.name == *name).ok_or_else(|| {
+            Error::new(format!("bundle {}: it links port {name}, which there is none of", spec.id))
+        })?;
+        port_packages(ctx, ports, linked, &mut packages)?;
+    }
+    if !spec.links.is_empty() {
+        packages.push(compiler_rt(ports));
+    }
     let mut problems = Vec::new();
     let allowed: Vec<String> = kernel_allow_list(ctx)?
         .into_iter()
@@ -964,8 +978,15 @@ fn c_packages(ctx: &Ctx, ports: &Ports) -> Result<Vec<Package>> {
     for port in ports.ports.iter().filter(|p| !p.recipe.toolchain && p.recipe.bundle.is_none()) {
         port_packages(ctx, ports, port, &mut packages)?;
     }
+    packages.push(compiler_rt(ports));
+    Ok(packages)
+}
+
+/// The compiler-rt builtins of the toolchain's LLVM, which every C
+/// program links.
+fn compiler_rt(ports: &Ports) -> Package {
     let llvm = ports.toolchain.llvm_version();
-    packages.push(Package {
+    Package {
         name: "compiler-rt-builtins".into(),
         version: llvm.clone(),
         license: "Apache-2.0 WITH LLVM-exception".into(),
@@ -977,8 +998,7 @@ fn c_packages(ctx: &Ctx, ports: &Ports) -> Result<Vec<Package>> {
             "The compiler-rt builtins of LLVM {llvm}, from the build host, which every C \
              program links (https://compiler-rt.llvm.org)."
         ),
-    });
-    Ok(packages)
+    }
 }
 
 /// What `port` builds into what it installs: its source, extra sources,

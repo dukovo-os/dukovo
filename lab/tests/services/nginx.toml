@@ -1,0 +1,55 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# nginx from the catalog, on the machine's own network card (ADR 0491):
+# installed for everyone and enabled, it serves the lab PC over HTTP and,
+# with a certificate of its own, over HTTPS; the lab PC then keeps 16
+# requests at a time coming for 20 seconds while the machine has nginx
+# reload its settings five times, and no request may go without its page.
+# The certificate is one openssl makes until certd gives them.
+about = "nginx from the catalog serves the lab PC over HTTP and HTTPS, and reloads under load lose no request (ADR 0491)"
+time = "5m"
+host_needs = ["curl", "scp"]
+
+[[step]]
+host = "sh {here}/copy-bundle.sh org.nginx.nginx {machine} {machine-port:22}"
+expect = "copied: org.nginx.nginx"
+# From nothing: a run before may have left it installed.
+[[step]]
+run = "sh -c 'bundle remove --for-everyone --purge org.nginx.nginx > /dev/null 2>&1; bundle install --for-everyone --yes /users/lab/org.nginx.nginx.dkv | tail -1'"
+root = true
+expect = "installed org.nginx.nginx"
+[[step]]
+run = "service nginx enable"
+root = true
+[[step]]
+host = "curl -s http://{machine}:{machine-port:80}/"
+expect = "Welcome to nginx!"
+# A certificate of its own, the account's to read, and the HTTPS server
+# its settings hold turned on, as their comments say.
+[[step]]
+run = '''sh -c 'cd /shared/services/org.nginx.nginx/nginx/conf && openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 1 -subj /CN=lab -keyout key.pem -out cert.pem 2>/dev/null && chown nginx:nginx key.pem cert.pem && sed -i "/^    #server {/,/^    #}/s/^    #/    /" nginx.conf && service nginx reload && echo reloaded' '''
+root = true
+expect = "reloaded"
+[[step]]
+wait = "2s"
+[[step]]
+host = "curl -sk https://{machine}:{machine-port:443}/"
+expect = "Welcome to nginx!"
+# Five reloads, two seconds apart, by a shell of the machine's own so that
+# the step returns, while the lab PC asks.
+[[step]]
+run = "sh -c '(for i in 1 2 3 4 5; do sleep 2; service nginx reload; done) > /dev/null 2>&1 &'"
+root = true
+[[step]]
+host = "sh {here}/nginx-load.sh {machine} {machine-port:80} {machine-port:443}"
+expect = "lost 0"
+# Its log is the system's, with a line for each request.
+[[step]]
+run = '''sh -c 'log nginx | grep -q "\"GET /?n=" && echo requests-logged' '''
+root = true
+expect = "requests-logged"
+[[step]]
+run = "bundle remove --for-everyone --purge org.nginx.nginx"
+root = true
+expect = "removed org.nginx.nginx"

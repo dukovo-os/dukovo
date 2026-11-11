@@ -152,6 +152,10 @@ machine with AMT, an AMD machine and a laptop; see
 | Serial ports as terminals programs open, and a choice of which ports carry the log (ADR 0360) | Full serial console | 16b |
 | A local time server, and netd's DHCP server (ADR 0194) | Server roles | 16b |
 | elevate in the web console, with comments kept by its settings editor (ADRs 0216, 0219) | Dukovo Admin | 16c |
+| A certificate from certd for nginx's sites and for the lab test `services/nginx`, which makes one with openssl meanwhile (ADR 0491) | certd comes with Phase 16 | Phase 16's certd |
+| The services a bundle's service needs started first, and its readiness: nginx's manifest names none (ADR 0491) | Manifests get dependency lines with the service graph | 16a |
+| Spark setting a service's `open_files` (RLIMIT_NOFILE); nginx raises its own to the hard limit, 4096, meanwhile (ADRs 0385, 0491) | Service limits | 16a |
+| A service's own log files, turned over: nginx logs to the system's log, and an `access_log` to a file of its own is never turned over (ADR 0491) | Needs timers | 16a |
 
 ### Phase 17: Go
 
@@ -168,6 +172,7 @@ machine with AMT, an AMD machine and a laptop; see
 | Neovim and Midnight Commander, as their official Linux builds | Moved off the native port list | 18a |
 | Linux's ALSA programs playing sound (ADR 0320) | Need the compatibility layer | 18a |
 | The Linux layout (`/dev`, `/proc`, `/sys` as directories) inside Linux programs' view (ADR 0113) | Served by `linuxd` | 18a |
+| nginx on the kernel's event queue, with sendfile and thread pools: it waits with `poll` and copies files through its buffers (ADR 0491) | Built as for a POSIX system until Radix has them | 18a |
 
 ### Releases after 1.0
 
@@ -203,6 +208,7 @@ These come from finished work; the releases themselves are in the
 | nmap in the catalog | NPSL license | Legal review |
 | Advisories for ecosystems other than crates.io; bundles over 4 GiB (ADRs 0222, 0389) | npm's export and large bundles need ZIP64 in `dkv` | A need |
 | mlibc functions with no code, which end the program (posix design note) | Each is written when a port needs it, upstream where general | A port |
+| `crypt(3)`, for nginx's `auth_basic` with `$5$` and `$6$` hashes (ADR 0491) | The C library has none; nginx's own schemes, `$apr1$` among them, work | A port that needs it, or upstream |
 | The RTS5260 card reader; UHS-I, MultiMediaCards and Memory Sticks on Realtek readers (ADR 0448) | Only GPL drivers describe them | Realtek's documentation or a BSD driver |
 | AML fixes reach Dukovo when uACPI is vendored again (ADR 0200) | `aml=off` works around a firmware table uACPI cannot run until then | Upstream |
 
@@ -269,6 +275,7 @@ machine asks for them.
 | NFS: locks the server sees, delegations, a page cache, several calls at once, an account-mapping table, `SP4_MACH_CRED`, contexts kept across a restart | ADRs 0344, 0399 |
 | Kerberos: FAST, PKINIT, cross-realm tickets, renewing in place, finding KDCs by DNS; GSS-API for SSH and SMB | ADRs 0397, 0398 |
 | SSH: `PermitOpen`, `PermitListen`, X11 and agent forwarding, Unix sockets, listen addresses by name, keyboard-interactive | ADRs 0348, 0349 |
+| nginx's HTTP/3 (QUIC) | ADR 0491 |
 
 ### Devices and firmware
 
@@ -353,6 +360,7 @@ finding or removed.
 | The SD 1 MiB benchmark rows: printed but not gated | They sit at 1.00 because QEMU's SD emulation takes nearly all of both systems' time |
 | Printing: the design's open questions | Drafted for a release after 1.0 |
 | Known weak spots to plan for: Wi-Fi, Bluetooth and webcams; large desktop apps; Btrfs maturity | Raised, not yet discussed |
+| The catalog's commands through elevate, such as `nginx -t`: they run with the access of whoever runs them, which bundled asks about at a console's trusted prompt, and elevate gives the command a terminal of its own, which is no console's, so they do not run; nginx's settings are checked by a reload and its log meanwhile (ADR 0491) | A change to authd and consoled so that the console elevate was typed on answers for the command it runs; it touches the trusted prompt, so it is scheduled on its own |
 
 ## Documentation to bring up to date
 
