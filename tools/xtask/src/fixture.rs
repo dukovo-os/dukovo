@@ -12,12 +12,16 @@
 //! lists go to the Btrfs host tests' fixtures, which check that Radix
 //! replays the log as Linux does (ADR 0151).
 //!
+//! `btrfs-send` has Linux's `btrfs send` write streams of two snapshots
+//! ([`btrfs_send`]), which the Btrfs host tests receive (ADR 0462).
+//!
 //! `ntfs-3g` fills an NTFS volume through ntfs-3g ([`ntfs`]), which the
 //! NTFS host tests read (ADR 0236).
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+pub mod btrfs_send;
 pub mod ntfs;
 
 use crate::config::{Firmware, Media};
@@ -42,18 +46,25 @@ const TIMEOUT: Duration = Duration::from_mins(15);
 pub fn command(ctx: &Ctx, args: &mut Args) -> Result<()> {
     let name = args.positional();
     let kernel = args.value("--linux-kernel")?;
+    let check = args.value("--check")?;
     args.finish()?;
     match name.as_deref() {
         Some("btrfs-log") => btrfs_log(ctx, kernel),
         Some("btrfs-radix-log") => btrfs_radix_log(ctx, kernel),
+        Some("btrfs-send") => match check {
+            Some(dir) => btrfs_send::check(ctx, Path::new(&dir)),
+            None => btrfs_send::btrfs_send(ctx),
+        },
         Some("ntfs-3g") => ntfs::ntfs_3g(ctx),
         Some(other) => {
             crate::bail!(
                 "there is no fixture {other}: those there are are btrfs-log, btrfs-radix-log, \
-                 ntfs-3g"
+                 btrfs-send, ntfs-3g"
             )
         }
-        None => crate::bail!("name the fixture to make: btrfs-log, btrfs-radix-log or ntfs-3g"),
+        None => crate::bail!(
+            "name the fixture to make: btrfs-log, btrfs-radix-log, btrfs-send or ntfs-3g"
+        ),
     }
 }
 

@@ -4,11 +4,16 @@
 //! subvolume(8): makes, snapshots, removes and shows Btrfs subvolumes, as
 //! Linux's `btrfs subvolume` does with `create`, `snapshot`, `delete` and
 //! `show` (ADRs 0138 and 0461), through the directory interface
-//! (radix-directory(2)).
+//! (radix-directory(2)); and sends and receives them as Linux's `btrfs
+//! send` and `btrfs receive` do (ADR 0462).
 
-use std::fs::File;
+mod receive;
+mod send;
+
+use std::fs::{self, File};
 use std::io::{self, Write};
 use std::os::fd::AsRawFd;
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
 use radix_abi::directory::{self, SubvolumeInfo as S};
@@ -29,6 +34,16 @@ fn place(path: &Path) -> Result<(File, String), Fail> {
     };
     let dir = File::open(parent).map_err(|e| util::failed(&parent.display(), e))?;
     Ok((dir, name.to_string()))
+}
+
+/// The bits of `st_ino` that are the inode's own number on Radix (the
+/// subvolume's number is above them), and a subvolume's top folder's.
+pub(crate) const INODE_BITS: u64 = (1 << 40) - 1;
+pub(crate) const TOP_INODE: u64 = 256;
+
+/// Whether the folder `path` is the top of a Btrfs subvolume.
+pub(crate) fn is_top(path: &Path) -> bool {
+    fs::metadata(path).is_ok_and(|m| m.is_dir() && m.ino() & INODE_BITS == TOP_INODE)
 }
 
 /// The slot of the directory `dir`, opened.
@@ -71,8 +86,12 @@ pub(crate) struct Info {
     pub generation: u64,
     /// Whether nothing in it may change.
     pub read_only: bool,
+    /// The transaction that last changed a file in it.
+    pub changed_transaction: u64,
     /// The transaction that made it.
     pub made_transaction: u64,
+    /// The transaction it was sent in, for one received.
+    pub sent_transaction: u64,
     /// When it was made.
     pub made: u64,
     pub uuid: [u8; 16],
@@ -113,7 +132,9 @@ fn decode(buffer: &[u8]) -> Info {
         parent: word(S::OFFSET_PARENT),
         generation: word(S::OFFSET_GENERATION),
         read_only: word(S::OFFSET_FLAGS) & directory::SUBVOLUME_READ_ONLY != 0,
+        changed_transaction: word(S::OFFSET_CHANGED_TRANSACTION),
         made_transaction: word(S::OFFSET_MADE_TRANSACTION),
+        sent_transaction: word(S::OFFSET_SENT_TRANSACTION),
         made: word(S::OFFSET_MADE),
         uuid: uuid(S::OFFSET_UUID),
         parent_uuid: uuid(S::OFFSET_PARENT_UUID),
@@ -196,18 +217,35 @@ fn delete(path: &Path) -> Result<(), Fail> {
 
 /// subvolume(8).
 pub fn main(args: &mut Args) -> Result<i32, Fail> {
-    let usage = || util::usage("say create, snapshot, delete or show, and the paths".into());
+    let usage =
+        || util::usage("say create, snapshot, delete, show, send or receive, and the paths".into());
     let Some(action) = args.subcommand() else { return Err(usage()) };
     let mut read_only = false;
+    let (mut parent, mut file) = (None, None);
+    let (mut quiet, mut stop_at_end, mut dump) = (false, false, false);
     let mut paths = Vec::new();
+    let streams = action == "send" || action == "receive";
     while let Some(arg) = args.next()? {
         match arg {
             Arg::Short('r') if action == "snapshot" => read_only = true,
+            Arg::Short('p') if action == "send" => parent = Some(PathBuf::from(args.value()?)),
+            Arg::Short('f') if streams => file = Some(PathBuf::from(args.value()?)),
+            Arg::Short('q') if streams => quiet = true,
+            Arg::Long(long) if streams && long == "quiet" => quiet = true,
+            Arg::Short('e') if action == "receive" => stop_at_end = true,
+            Arg::Long(long) if action == "receive" && long == "dump" => dump = true,
             Arg::Operand(path) => paths.push(PathBuf::from(path)),
             other => return Err(args.unknown(&other)),
         }
     }
     match (action.to_str(), paths.as_slice()) {
+        (Some("send"), paths) if !paths.is_empty() => {
+            send::run(paths, parent.as_deref(), file.as_deref(), quiet)?;
+        }
+        (Some("receive"), []) if dump => receive::dump(file.as_deref())?,
+        (Some("receive"), [dest]) if !dump => {
+            receive::run(dest, file.as_deref(), stop_at_end, quiet)?;
+        }
         (Some("create"), paths) if !paths.is_empty() => {
             for path in paths {
                 create(path)?;

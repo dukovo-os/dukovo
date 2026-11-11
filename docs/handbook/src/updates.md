@@ -217,9 +217,28 @@ A deleted file keeps its room on the disk until the last snapshot that
 has it is removed, up to four weeks later. To free it sooner, delete
 those snapshots with `snap delete`. See snap(1) for the details.
 
+## Copying snapshots to another disk
+
+A snapshot can go to another Btrfs disk, whole the first time and then
+only what changed, with `subvolume send` and `subvolume receive`. The
+copy is a read-only snapshot on that disk, with every file's owner,
+permissions, times and access lists. The stream between the two is
+Linux's own format, so Linux's `btrfs receive` reads what Dukovo sends,
+and Dukovo receives what Linux sends.
+
+```sh
+elevate sh -c 'subvolume send /snapshots/users/2026-11-10-0300 | subvolume receive /volumes/backup'
+elevate sh -c 'subvolume send -p /snapshots/users/2026-11-10-0300 /snapshots/users/2026-11-11-0300 | subvolume receive /volumes/backup'
+```
+
+The second command sends only the changes from the snapshot before,
+which the backup disk already holds. A stream can also go to a file with
+`-f` and be received later, or on another machine. See subvolume(8).
+
 ## What is on the way
 
-Backups; downloading updates from the update
+A backup command that keeps these copies on other disks and in the cloud
+by itself; downloading updates from the update
 server in waves, through one `update` command for the system, firmware
 and apps, which also keeps Rescue up to date; and repairing GRUB and the
 EFI system partition from an install stick. This chapter grows with

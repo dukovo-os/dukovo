@@ -552,7 +552,8 @@ Examples:
   ./ob lab send --all"
         }
         "fixture" => {
-            "Usage: ./ob fixture btrfs-log|btrfs-radix-log|ntfs-3g [--linux-kernel <file>]
+            "Usage: ./ob fixture btrfs-log|btrfs-radix-log|btrfs-send|ntfs-3g [--linux-kernel <file>]
+       ./ob fixture btrfs-send --check <dir>
 
 Makes test data that only Linux makes. btrfs-log boots Linux in QEMU on a
 new Btrfs disk with tools/linux-bench as its only process, which commits
@@ -561,6 +562,12 @@ changes are in Btrfs's log tree alone; then boots it on a copy to list the
 disk before and after Linux replays the log. Writes the disk and the lists
 to kernel/fs/btrfs/src/tests/fixtures, which the Btrfs host tests check
 Radix's replay against. btrfs-radix-log has Linux replay a log Radix wrote.
+btrfs-send (as root) has this machine's Linux fill a Btrfs subvolume,
+snapshot it, change it and snapshot it again, and writes btrfs send's
+streams of both snapshots, with lists of their files, to the same folder;
+with --check, it has Linux's btrfs receive take the streams Radix sent
+that the Btrfs host tests kept in <dir> (run with SEND_STREAMS_TO=<dir>),
+and checks each copy against the list of the snapshot sent (ADR 0462).
 ntfs-3g fills an NTFS volume through ntfs-3g's FUSE driver (as root), with
 links, junctions, hard links and compressed and sparse files, and writes it
 to kernel/fs/ntfs/src/fixtures, which the NTFS host tests and the ntfs boot
@@ -569,7 +576,9 @@ test read.
   --linux-kernel <file>
                       The Linux kernel to boot (else OB_LINUX_KERNEL or this
                       machine's own); it needs Btrfs, built in or as a
-                      module in OB_LINUX_MODULES"
+                      module in OB_LINUX_MODULES
+  --check <dir>       btrfs-send: receive Radix's streams in <dir> with
+                      Linux and check the copies"
         }
         "disc-drive" => {
             "Usage: ./ob disc-drive <socket> [<disc>]

@@ -405,6 +405,62 @@ struct SubvolumeInfo {
     name_length: u64;
 }
 
+/// The keys `compare` goes over (ADR 0462): Btrfs items' keys, each an
+/// object ID, a type and an offset, sorted in that order, from the start
+/// key to the end key, both included.
+struct TreeRange {
+    /// The start key's object ID.
+    start_objectid: u64;
+    /// The start key's offset.
+    start_offset: u64;
+    /// The end key's object ID.
+    end_objectid: u64;
+    /// The end key's offset.
+    end_offset: u64;
+    /// The start key's type.
+    start_kind: u8;
+    /// The end key's type.
+    end_kind: u8;
+    /// Zero.
+    pad: u16;
+    /// Zero.
+    reserved: u32;
+}
+
+/// TreeItem's `change` for an item only the subvolume compared has.
+const TREE_ITEM_ADDED: u8 = 1;
+
+/// TreeItem's `change` for an item only the parent has.
+const TREE_ITEM_REMOVED: u8 = 2;
+
+/// TreeItem's `change` for an item both have, with other data.
+const TREE_ITEM_CHANGED: u8 = 3;
+
+/// A record `compare` writes for an item that differs (ADR 0462): this
+/// header, then the item's data in the parent's tree (`old_length`
+/// bytes), then its data in the subvolume's (`new_length` bytes), then
+/// zeros up to a multiple of 8 bytes. The data is Btrfs's on-disk item,
+/// as Linux's `BTRFS_IOC_TREE_SEARCH` gives it.
+struct TreeItem {
+    /// The key's object ID.
+    objectid: u64;
+    /// The key's offset.
+    offset: u64;
+    /// The key's type.
+    kind: u8;
+    /// How it differs: TREE_ITEM_ADDED, TREE_ITEM_REMOVED or
+    /// TREE_ITEM_CHANGED.
+    change: u8;
+    /// Zero.
+    pad: u16;
+    /// The length of its data in the parent's tree; 0 if it is not there.
+    old_length: u32;
+    /// The length of its data in the subvolume's; 0 if it is not there.
+    new_length: u32;
+    /// Zero.
+    reserved: u32;
+}
+
 /// An entry `list` writes: this header, then the name's bytes, then
 /// zeros up to a multiple of 8 bytes.
 struct DirEntry {
@@ -1106,4 +1162,51 @@ interface directory = 0x000b version 9 {
         raises [no_such_slot, empty_slot, missing_rights, invalid_argument, no_memory,
                 bad_address, not_found, not_directory, name_too_long, bad_name, outside,
                 too_many_links, denied, not_supported, io, corrupt];
+    /// Compares the Btrfs subvolume that holds `path` with the one that
+    /// holds the directory in slot `parent`, item by item, as Linux's
+    /// `btrfs send` compares a snapshot with its parent (ADR 0462); with
+    /// `parent` NO_SLOT, compares it with nothing. Writes into `buffer` a
+    /// TreeItem record for each item of the two subvolumes' trees, whose
+    /// key is in `range` (a TreeRange), that one has and the other has
+    /// not, or has with other data, in key order, as many as fit: with no
+    /// parent, every item of the subvolume in the range, as added. The
+    /// walk goes past every block the two trees share, so it reads only
+    /// what changed between two snapshots of one subvolume. `count`
+    /// records take the first `used` bytes; `done` says nothing in the
+    /// range is left, and otherwise the next call goes on from the key
+    /// after the last record's. A buffer that cannot hold the first
+    /// record, its header and up to two items of the filesystem's node
+    /// size, fails with invalid_argument, as does a `range` that is not a
+    /// TreeRange. Both subvolumes must be read-only, so that neither
+    /// changes between calls (not_permitted), and of one filesystem
+    /// (cross_mount); other filesystems fail with not_supported. The
+    /// items hold every file's names, owner and data, so it needs the
+    /// bypass right on both capabilities, as Linux's needs CAP_SYS_ADMIN
+    /// (not_permitted), and the read right.
+    method compare = 52 (path: in bytes, parent: slot, range: in bytes, buffer: out bytes)
+        -> (count: u32, used: u64, done: bool)
+        raises [no_such_slot, empty_slot, wrong_kind, missing_rights, invalid_argument,
+                no_memory, bad_address, not_found, not_directory, name_too_long, bad_name,
+                outside, cross_mount, too_many_links, denied, not_permitted, not_supported, io,
+                corrupt];
+    /// Marks the Btrfs subvolume whose top directory is at `path`
+    /// received: a copy of the subvolume whose UUID is `uuid` (16 bytes)
+    /// on another filesystem, as it was sent at its transaction
+    /// `sent_transaction`, at `sent` (nanoseconds since 1970), received
+    /// now; and makes it read-only, as Linux's `btrfs receive` does at the
+    /// end of each subvolume with `BTRFS_IOC_SET_RECEIVED_SUBVOL` and
+    /// then `btrfs property set ro true` (ADR 0462). What was written to
+    /// it is synced first. `subvolume` gives the marks back, and a later
+    /// stream sent from a snapshot of that subvolume finds this one as its
+    /// parent by `uuid`. Fails with invalid_argument if `path` is not the
+    /// top of a subvolume or `uuid` is not 16 bytes, and with read_only if
+    /// the subvolume is read-only already. Other filesystems fail with
+    /// not_supported. Needs the write right, and the subvolume's owner or
+    /// the bypass right (not_permitted).
+    method mark_received = 53 (path: in bytes, uuid: in bytes, sent_transaction: u64, sent: u64)
+        -> ()
+        raises [no_such_slot, empty_slot, missing_rights, invalid_argument, no_memory,
+                bad_address, not_found, not_directory, read_only, no_space, name_too_long,
+                bad_name, outside, too_many_links, denied, not_permitted, not_supported, io,
+                corrupt];
 }

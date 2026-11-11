@@ -20,6 +20,8 @@ host = ["radix-vfs/host", "radix-block/host"]
 make = ["host"]
 # Checking filesystems without changing them, for fsck-btrfs (ADR 0305).
 check = ["host"]
+# Send streams, made and read, for subvolume(8)'s send and receive (ADR 0462).
+send = ["host"]
 
 [dependencies]
 radix-block = { path = "../block" }

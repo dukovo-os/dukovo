@@ -137,7 +137,6 @@ machine with AMT, an AMD machine and a laptop; see
 | When GRUB cannot write the slot state, the menu still titles the try that it then does not start (ADR 0452) | The default starts, as it should; only the title is wrong | A need |
 | The failed attempt's crash log kept beside its settings (ADR 0453) | The log of the fallback says what failed | A need |
 | Installs made before 0.15.0 keep a menu that starts `@system.a` directly, and are reinstalled to take updates (ADR 0451) | No public install exists before 1.0.0-alpha.1 | A need |
-| Btrfs `send` and `receive` (ADR 0138) | Incremental backups need them | 15b |
 | Rolling a whole place back to a snapshot, such as all of `/users` (ADR 0461) | Restoring by file or folder covers mistakes; a whole place goes back only with every program that writes there stopped | Rescue's next changes |
 | Apps restoring their own data from a snapshot (ADR 0461) | An app's view has no snapshot; a person restores its folder with `snap restore` | A portal for apps |
 | Retention set place by place in `snap.toml` (ADR 0461) | One retention serves the default places | A need |
@@ -260,6 +259,12 @@ machine asks for them.
 | Btrfs: trim as blocks are freed (`discard`), small files inline, compression of small files, a per-CPU compression workspace, removing empty block groups, deleting a subvolume in the background, scrubbing in a thread of its own, a log of fsyncs a path at a time, tree blocks read whole | storage design note, ADRs 0130, 0158 |
 | Btrfs RAID5 and RAID6 | Never planned (storage design note) |
 | Removing a subvolume with a file of it open, or the default subvolume | ADR 0138 |
+| Btrfs send streams of version 2 (compressed data sent as it is, `fallocate`, file flags), sent and received | ADR 0462 |
+| `subvolume send -c` (clone sources), and the sender finding data a file shares with another to send as a clone | ADR 0462 |
+| `subvolume receive` finding a stream's parent anywhere on the filesystem, through its UUID tree, rather than in the folder received into | ADR 0462 |
+| `subvolume receive` refusing a stream's path that passes through a symbolic link, as Linux's `RESOLVE_NO_SYMLINKS` would; the subvolume's capability keeps such a path inside it meanwhile | ADR 0462 |
+| `user.` extended attributes on device nodes, pipes and sockets left out of a send, or refused as Linux refuses them, so that Linux receives every stream Dukovo sends | ADR 0462 |
+| `subvolume send --no-data` and `subvolume receive --max-errors` | ADR 0462 |
 | ext4: several syncs in one transaction, and bench rows | ADR 0141 |
 | FUSE and share mounts: a page cache with writeback | ADR 0226 |
 | A page or partition written raw through two different nodes at once | storage design note |

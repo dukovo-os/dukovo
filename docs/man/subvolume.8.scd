@@ -5,7 +5,8 @@ subvolume(8) "Dukovo" "Dukovo Manual"
 
 # NAME
 
-subvolume - make, snapshot, remove and show Btrfs subvolumes
+subvolume - make, snapshot, remove, show, send and receive Btrfs
+subvolumes
 
 # SYNOPSIS
 
@@ -17,10 +18,17 @@ subvolume - make, snapshot, remove and show Btrfs subvolumes
 
 *subvolume show* _path_
 
+*subvolume send* [*-q*] [*-p* _parent_] [*-f* _file_] _subvolume_ ...
+
+*subvolume receive* [*-q*] [*-e*] [*-f* _file_] _folder_
+
+*subvolume receive* *--dump* [*-f* _file_]
+
 # DESCRIPTION
 
 subvolume makes, removes and shows Btrfs subvolumes, as Linux's *btrfs
-subvolume* does with the same four commands and messages. A
+subvolume* does with the same four commands and messages, and sends and
+receives them as Linux's *btrfs send* and *btrfs receive* do. A
 subvolume is a directory whose files are a tree of their own on the
 disk; a snapshot of one is a new subvolume that holds what it held, at
 once, in blocks the two share until either changes them (ADR 0138).
@@ -59,12 +67,69 @@ $ subvolume show /snapshots/users/2026-11-11-0300
 	Flags:           readonly
 ```
 
+*send* writes each _subvolume_, a read-only snapshot, as a send stream:
+Linux's format, version 1, which Linux's *btrfs receive* reads as well as
+*receive* does (ADR 0462). With *-p*, the stream holds only the changes
+from _parent_, an older read-only snapshot of the same subvolume that the
+receiving side has already received; without it, everything. The kernel
+compares the two snapshots' trees and skips every block they share, so
+an incremental send reads only what changed. A subvolume that can change
+is refused: snapshot it with *-r* first. Sending reads every file
+whatever its owner and mode, so it needs an administrator (*elevate*(8)),
+as Linux's needs root. The stream goes to standard output, never to a
+terminal, or to _file_ with *-f*; each _subvolume_ is a stream of its
+own, one after the other, and each is named by its last name.
+
+*receive* reads streams from standard input, or from _file_ with *-f*,
+and makes each subvolume they hold in _folder_, on Btrfs: a new one for
+a whole stream, or a snapshot of its parent for an incremental one,
+then changed into the subvolume sent. The parent is the subvolume in
+_folder_ received as that parent, or that is it, at the same
+transaction. Each subvolume made ends read-only and marked received from
+the subvolume sent: *show* gives its *Received UUID*, and a later stream
+from a snapshot of it finds it as a parent. Every change goes through
+the subvolume being made, by paths it checks, and never follows a
+symbolic link that is a path's last name, so a stream changes nothing
+outside it. A stream that fails partway leaves nothing: the subvolume it
+was making is removed. It needs an administrator.
+
+*receive --dump* writes the commands of the streams as text, one a line,
+as *btrfs receive --dump* does, and changes nothing. Anyone may dump a
+stream.
+
+```
+$ elevate sh -c 'subvolume send /snapshots/users/2026-11-10-0300 | subvolume receive /volumes/backup'
+At subvol /snapshots/users/2026-11-10-0300
+At subvol 2026-11-10-0300
+$ elevate subvolume send -p /snapshots/users/2026-11-10-0300 -f users.stream /snapshots/users/2026-11-11-0300
+At subvol /snapshots/users/2026-11-11-0300
+$ elevate subvolume receive -f users.stream /volumes/backup
+At snapshot 2026-11-11-0300
+```
+
 # OPTIONS
 
 *-r*
 	Make the snapshot read-only: every change in it fails with
 	_Read-only file system_ (*EROFS*), though the filesystem is mounted
 	to write.
+
+*-p* _parent_
+	Send only the changes from _parent_, a read-only snapshot.
+
+*-f* _file_
+	Write the stream to _file_, made or emptied, readable only by its
+	owner (*send*); read it from _file_ (*receive*).
+
+*-e*
+	Stop after the first end of a stream, as when more follows on the
+	same input.
+
+*--dump*
+	Write the streams' commands as text instead of receiving them.
+
+*-q*, *--quiet*
+	Leave out the *At subvol* and *At snapshot* lines.
 
 # DIFFERENCES FROM LINUX
 
@@ -83,13 +148,22 @@ $ subvolume show /snapshots/users/2026-11-11-0300
   searching every subvolume as root.
 - Removing a subvolume frees its blocks in one transaction, at once,
   rather than in the background as Linux's cleaner does.
+- *send* writes version 1 streams only, without Linux's *-c* (clone
+  sources), *--proto*, *--compressed-data* and *--no-data*; it writes a
+  file's data rather than a clone of another file's. *receive* reads
+  version 1 streams, clones among them; a version 2 stream is refused.
+- *receive* finds a parent in _folder_ alone, where Linux searches every
+  subvolume of the filesystem; and it has no *-C* (chroot), *-m* or
+  *--max-errors*, since its changes stay inside the subvolume being made
+  without them.
 
 # EXIT STATUS
 
-0 when every subvolume was made, snapshotted, removed or shown; 1 when
-one was not, after the ones before it, and for a mistake in the command
-line, as Linux's *btrfs* exits.
+0 when every subvolume was made, snapshotted, removed, shown, sent or
+received; 1 when one was not, after the ones before it, and for a mistake
+in the command line, as Linux's *btrfs* exits.
 
 # SEE ALSO
 
-*snap*(1), *radix-directory*(2), *radix-files*(7), *systools*(1), *df*(1)
+*snap*(1), *elevate*(8), *radix-directory*(2), *radix-files*(7),
+*systools*(1), *df*(1)

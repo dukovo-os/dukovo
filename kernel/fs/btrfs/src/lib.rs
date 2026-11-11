@@ -14,7 +14,9 @@
 //! - [`format`]: keys, tree and item numbers, root items.
 //! - [`superblock`]: the superblock and the features Radix reads.
 //! - [`chunk`]: where logical addresses lie on the device.
-//! - [`tree`]: reading and checking tree blocks, and searching trees.
+//! - [`tree`]: reading and checking tree blocks, and searching trees;
+//!   [`compare`]: two snapshots' trees compared, past what they share
+//!   (ADR 0462).
 //! - [`volume::Volume`]: an opened device, its chunks and its trees.
 //! - [`inode`], [`dir`] and [`extent`]: the items a subvolume's tree
 //!   keeps for its files, directories and data, and `xattr` its files'
@@ -32,6 +34,8 @@
 //!   `make`, ADR 0304), and `check`: a filesystem checked without a
 //!   change, as `btrfs check --readonly` checks it (feature `check`, ADR
 //!   0305).
+//! - `send`: send streams, as Linux's `btrfs send` makes them and `btrfs
+//!   receive` reads them (feature `send`, ADR 0462).
 //!
 //! The crate is a compartment: it has no `unsafe` code, and builds for the
 //! host (feature `host`).
@@ -49,6 +53,7 @@ mod blake2b;
 pub mod check;
 pub mod chunk;
 mod commit;
+pub mod compare;
 pub mod cow;
 pub mod csum;
 pub mod dir;
@@ -71,6 +76,8 @@ mod refs;
 mod replace;
 mod replay;
 mod scrub;
+#[cfg(any(test, feature = "send"))]
+pub mod send;
 mod sha256;
 pub mod space;
 mod subvol;

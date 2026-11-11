@@ -132,6 +132,10 @@ pub mod tree {
     pub const BLOCK_GROUP: u64 = 11;
     /// The first object ID of a subvolume, or of an inode in one.
     pub const FIRST_FREE: u64 = 256;
+    /// The object ID every subvolume's is before: those from here on are
+    /// the trees of relocation and the log, Linux's
+    /// `BTRFS_LAST_FREE_OBJECTID` and after.
+    pub const LAST_FREE: u64 = (-256i64) as u64;
     /// The object ID of every chunk item in the chunk tree.
     pub const FIRST_CHUNK: u64 = 256;
     /// The object ID of every checksum item in the checksum tree.

@@ -118,6 +118,10 @@ pub(crate) struct Inner {
     csums: Option<Root>,
     /// The nodes in use, by subvolume and inode number, sorted.
     nodes: Mutex<KVec<Entry>>,
+    /// The subvolumes received while mounted, read-only since (ADR 0462),
+    /// and whether there are any, which each change asks first.
+    received: Mutex<KVec<u64>>,
+    any_received: AtomicBool,
     /// What reading compressed extents uses, once one is read: a
     /// workspace for the reader, and one for the half of a run another
     /// CPU uncompresses (ADR 0133).
@@ -375,6 +379,8 @@ impl Inner {
             volume,
             csums,
             nodes: Mutex::new(mem::vec()),
+            received: Mutex::new(mem::vec()),
+            any_received: AtomicBool::new(false),
             workspaces: Mutex::new([None, None]),
             compress: AtomicBool::new(false),
             packers: Mutex::new(mem::vec()),
@@ -818,6 +824,31 @@ impl Inner {
             }
         }
         Ok(node)
+    }
+
+    /// Notes that subvolume `subvol` was received, and nothing in it may
+    /// change from now on, as its root item says: nodes of it loaded
+    /// before were loaded writable (ADR 0462).
+    pub(crate) fn note_received(&self, subvol: u64) -> Result<()> {
+        let mut received = self.received.lock();
+        if !received.contains(&subvol) {
+            mem::push(&mut received, subvol)?;
+        }
+        self.any_received.store(true, Ordering::Release);
+        Ok(())
+    }
+
+    /// Forgets that subvolume `subvol` was received, as it is removed: a
+    /// subvolume made after it may be given its number, as Linux numbers
+    /// them, and may change.
+    pub(crate) fn forget_received(&self, subvol: u64) {
+        self.received.lock().retain(|&s| s != subvol);
+    }
+
+    /// Whether subvolume `subvol` was received while mounted, and so is
+    /// read-only, whatever its nodes loaded before say.
+    pub(crate) fn received(&self, subvol: u64) -> bool {
+        self.any_received.load(Ordering::Acquire) && self.received.lock().contains(&subvol)
     }
 
     /// The nodes in use, for shrinking their caches.

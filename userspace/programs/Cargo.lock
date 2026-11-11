@@ -3326,6 +3326,7 @@ dependencies = [
  "netproto",
  "radix-abi",
  "radix-bitlocker",
+ "radix-btrfs",
  "radix-hw",
  "radix-intel-net",
  "radix-nic",

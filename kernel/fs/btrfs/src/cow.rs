@@ -551,6 +551,13 @@ impl Writer {
                     if data.len() >= 247 {
                         data[239..247].copy_from_slice(&generation.to_le_bytes());
                     }
+                    // A subvolume's files changed in this transaction: its
+                    // ctransid, which `btrfs send` names it by (ADR 0462).
+                    use crate::format::tree::{FIRST_FREE, FS, LAST_FREE};
+                    let subvolume = tree == FS || (FIRST_FREE..LAST_FREE).contains(&tree);
+                    if subvolume && data.len() >= 303 {
+                        data[295..303].copy_from_slice(&generation.to_le_bytes());
+                    }
                 })?;
             }
         }

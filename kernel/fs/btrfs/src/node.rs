@@ -85,8 +85,9 @@ pub struct BtrfsNode {
     /// read-only mount.
     pub(crate) subvol: u64,
     pub(crate) tree: Root,
-    /// Whether its subvolume is read-only: nothing in it changes, as on
-    /// Linux.
+    /// Whether its subvolume was read-only when it was loaded: nothing in
+    /// it changes, as on Linux. One received since is read-only too
+    /// ([`Inner::received`], ADR 0462).
     read_only: bool,
     /// Its inode number in the subvolume.
     pub(crate) ino: u64,
@@ -174,7 +175,7 @@ impl BtrfsNode {
     /// Fails with [`Error::ReadOnly`] unless it may change: on a writable
     /// mount, outside a read-only subvolume.
     fn writes(&self) -> Result<()> {
-        if self.fs.writable() && !self.read_only { Ok(()) } else { Err(Error::ReadOnly) }
+        if self.fs.writable() && !self.read_only() { Ok(()) } else { Err(Error::ReadOnly) }
     }
 
     /// The inode item, as the running transaction has it.
@@ -294,7 +295,7 @@ impl BtrfsNode {
                 self.subvol,
                 self.tree,
                 location.objectid,
-                self.read_only,
+                self.read_only(),
             )?,
             item::ROOT_ITEM => {
                 let (root, dir, read_only) =
@@ -1022,7 +1023,7 @@ impl BtrfsNode {
                 f.add_entry(self.ino, name.as_bytes(), ino, file_type(kind), index, time)
             })?;
             self.reload(&files)?;
-            Inner::node_for(&self.fs, self.subvol, self.tree, ino, self.read_only)
+            Inner::node_for(&self.fs, self.subvol, self.tree, ino, self.read_only())
         })?;
         Ok(node)
     }
@@ -1131,6 +1132,7 @@ impl BtrfsNode {
             self.reload(&files)?;
         }
         txn.forget(id);
+        self.fs.forget_received(id);
         Ok(())
     }
 
@@ -1344,7 +1346,7 @@ impl Node for BtrfsNode {
     }
 
     fn read_only(&self) -> bool {
-        self.read_only
+        self.read_only || self.fs.received(self.subvol)
     }
 
     fn lookup(&self, name: &str) -> Result<NodeRef> {
@@ -1770,6 +1772,57 @@ impl Node for BtrfsNode {
     fn subvolume(&self) -> Result<radix_vfs::Subvolume> {
         let _reading = self.fs.reading();
         crate::subvol::info(&self.fs.volume, self.subvol)
+    }
+
+    fn compare(
+        &self,
+        parent: Option<&NodeRef>,
+        range: &radix_vfs::TreeRange,
+        each: &mut dyn FnMut(&radix_vfs::TreeItem<'_>) -> bool,
+    ) -> Result<bool> {
+        let parent = match parent {
+            Some(node) => {
+                let node = radix_vfs::downcast::<BtrfsNode>(&**node).ok_or(Error::CrossMount)?;
+                if !KArc::ptr_eq(&node.fs, &self.fs) {
+                    return Err(Error::CrossMount);
+                }
+                Some(node.subvol)
+            }
+            None => None,
+        };
+        let _reading = self.fs.reading();
+        let volume = &self.fs.volume;
+        // Linux sends only what cannot change while it is read.
+        let tree_of = |subvol: u64| -> Result<Root> {
+            let (root, _, read_only) = volume.subvolume(subvol)?.ok_or(Error::NotFound)?;
+            if read_only { Ok(root) } else { Err(Error::NotPermitted) }
+        };
+        let new = tree_of(self.subvol)?;
+        let old = parent.map(tree_of).transpose()?;
+        let key = |k: &radix_vfs::TreeKey| Key::new(k.objectid, k.kind, k.offset);
+        let (start, end) = (key(&range.start), key(&range.end));
+        crate::compare::compare(volume, old.as_ref(), &new, &start, &end, |k, old, new| {
+            let key = radix_vfs::TreeKey { objectid: k.objectid, kind: k.kind, offset: k.offset };
+            each(&radix_vfs::TreeItem { key, old, new })
+        })
+    }
+
+    fn mark_received(&self, uuid: &[u8; 16], sent_transaction: u64, sent: u64) -> Result<()> {
+        self.is_dir()?;
+        self.writes()?;
+        // What was written to it is in it before nothing more may be.
+        self.fs.sync()?;
+        let time = now();
+        let volume = &self.fs.volume;
+        self.fs.change(|txn| {
+            let (_, top, _) = volume.subvolume(self.subvol)?.ok_or(Error::NotFound)?;
+            if self.ino != top {
+                return Err(Error::InvalidArgument);
+            }
+            let mut files = txn.files(volume, self.subvol);
+            files.whole(|f| f.mark_received(self.subvol, uuid, sent_transaction, sent, time))
+        })?;
+        self.fs.note_received(self.subvol)
     }
 
     fn remove_subvolume(&self, name: &str) -> Result<()> {

@@ -41,8 +41,8 @@ use crate::attributes::{self, Inherited};
 use crate::mem::{self, KVec};
 use crate::path::{self, Component};
 use crate::{
-    Access, Error, FsRef, Kind, ListFn, MAX_LINKS, NodeRef, PATH_MAX, Result, Stat, Who, address,
-    mode, want,
+    Access, Error, FsRef, Kind, ListFn, MAX_LINKS, NodeRef, PATH_MAX, Result, Stat, TreeItem,
+    TreeRange, Who, address, mode, want,
 };
 
 /// A filesystem mounted on a directory.
@@ -992,6 +992,47 @@ impl Vfs {
         // On one filesystem, through whichever mounts of it, as Linux has
         // it: the filesystem checks.
         dir.node.snapshot(name, &from.node, read_only)
+    }
+
+    /// Compares the subvolume `path` beneath `base` is in with the one
+    /// `parent` is in, or with nothing, as [`Node::compare`] does (ADR
+    /// 0462). The items hold every file's names, owner and data, so `who`
+    /// must pass the second gate, as Linux's `btrfs send` needs
+    /// `CAP_SYS_ADMIN`.
+    pub fn compare(
+        &self,
+        who: &Who,
+        base: &Location,
+        path: &str,
+        parent: Option<&Location>,
+        range: &TreeRange,
+        each: &mut dyn FnMut(&TreeItem<'_>) -> bool,
+    ) -> Result<bool> {
+        if !who.bypass {
+            return Err(Error::NotPermitted);
+        }
+        let at = self.resolve(who, base, path)?;
+        at.node.compare(parent.map(|parent| &parent.node), range, each)
+    }
+
+    /// Marks the subvolume whose top directory is `path` beneath `base`
+    /// received, as [`Node::mark_received`] does (ADR 0462); `who` must
+    /// own it, as Linux's `BTRFS_IOC_SET_RECEIVED_SUBVOL` asks.
+    pub fn mark_received(
+        &self,
+        who: &Who,
+        base: &Location,
+        path: &str,
+        uuid: &[u8; 16],
+        sent_transaction: u64,
+        sent: u64,
+    ) -> Result<()> {
+        let at = self.resolve(who, base, path)?;
+        at.writable()?;
+        if !who.owns(at.node.access()) {
+            return Err(Error::NotPermitted);
+        }
+        at.node.mark_received(uuid, sent_transaction, sent)
     }
 
     /// Removes the subvolume `path` beneath `base`, with everything in it
