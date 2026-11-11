@@ -46,7 +46,7 @@
 //! swapped-out page stays counted and charged, a fork shares its slot as
 //! it shares a page, and unmapping it frees the slot.
 
-use core::sync::atomic::Ordering;
+use core::sync::atomic::{AtomicU64, Ordering};
 
 use radix_abi::address_space::{ANONYMOUS_TOP, PAGE_SIZE, USER_START};
 use radix_abi::errors::Kernel;
@@ -78,7 +78,7 @@ pub(super) fn random_top() -> u64 {
 }
 
 /// An anonymous region's mapping.
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct Anon {
     /// What the program may do with its pages; none (`PROT_NONE`) keeps
     /// them out of reach.
@@ -89,6 +89,13 @@ pub struct Anon {
     pub shared: Option<SharedRef>,
     /// The file its pages are filled from, if any.
     pub file: Option<FileSource>,
+    /// Whether its access may never be made writable: a shared mapping of
+    /// a memory file opened only to read, or of a segment attached to
+    /// read (ADR 0490), as Linux refuses `mprotect` to make one writable.
+    pub read_only: bool,
+    /// The System V segment it attaches, if it does (ADR 0490): its count
+    /// of attachments counts the regions that hold it.
+    pub segment: Option<crate::fs::shm::Attachment>,
 }
 
 /// How many pages a chunk of a [`SharedPages`] holds the frames of.
@@ -97,18 +104,83 @@ const CHUNK: u64 = 512;
 /// A chunk's number, and the frames of its pages (0 for one not made).
 type Chunk = (u64, Vec<u64, Kmalloc>);
 
+/// The pages a memory filesystem's files and segments may hold together,
+/// and how many they hold (ADR 0490): what `df` shows of `/devices/shm`.
+pub struct Room {
+    max: u64,
+    used: AtomicU64,
+}
+
+/// A memory filesystem's room, shared by its files and segments.
+pub type RoomRef = Arc<Room, Kmalloc>;
+
+impl Room {
+    /// Room for `max` pages, none used.
+    pub fn new(max: u64) -> Result<RoomRef> {
+        let room = Room { max, used: AtomicU64::new(0) };
+        Arc::try_new_in(room, super::kmalloc()).map_err(|_| error(Kernel::NoMemory))
+    }
+
+    /// The most pages it holds.
+    pub fn max(&self) -> u64 {
+        self.max
+    }
+
+    /// The pages it holds.
+    pub fn used(&self) -> u64 {
+        self.used.load(Ordering::Relaxed)
+    }
+
+    /// Counts one more page, if there is room for it.
+    fn take(&self) -> bool {
+        self.used
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |used| {
+                (used < self.max).then_some(used + 1)
+            })
+            .is_ok()
+    }
+
+    fn give_back(&self, pages: u64) {
+        self.used.fetch_sub(pages, Ordering::Relaxed);
+    }
+}
+
+/// Why [`SharedPages::make`] made no page.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Lack {
+    /// The page is past the end of its file.
+    Past,
+    /// Its filesystem's room is full.
+    NoRoom,
+    /// Its domain has no room for another page, or memory ran out.
+    NoMemory,
+}
+
 /// A shared mapping's pages: page `n` is the one at the region's offset
 /// plus `n`, wherever each space maps the region. It holds each page it
 /// made as one of the page's sharers, so a page stays while the mapping
 /// does, mapped in a space at the moment or not, and is charged meanwhile
 /// to the domain of the space that made the mapping, as well as to each
 /// space while it maps the page.
+///
+/// A memory file's or a System V segment's (ADR 0490) are charged to its
+/// filesystem's [`Room`] instead, and end where the file does: a fault on
+/// a page past the end is SIGBUS, and cutting the file short lets go of
+/// the pages past its new end ([`SharedPages::cut`]) and unmaps them from
+/// every space ([`super::unmap_past`]).
 pub struct SharedPages {
     /// Its pages' frames in chunks of [`CHUNK`], each made with the first
     /// of its pages and kept in order of its number.
     chunks: Mutex<Vec<Chunk, Kmalloc>>,
     /// The domain its pages are charged to.
     domain: Option<DomainRef>,
+    /// The memory filesystem's room its pages are charged to.
+    room: Option<RoomRef>,
+    /// How many pages it may have: [`u64::MAX`] for a mapping's, a file's
+    /// size in pages for a memory file's. Changed with the chunks locked.
+    end: AtomicU64,
+    /// How many pages it has made and holds.
+    made: AtomicU64,
 }
 
 pub type SharedRef = Arc<SharedPages, Kmalloc>;
@@ -117,24 +189,63 @@ impl SharedPages {
     /// A shared mapping's pages, none made yet, charged to `space`'s
     /// domain.
     pub fn new(space: &SpaceObject) -> Result<SharedRef> {
+        Self::make_ref(space.domain.clone(), None, u64::MAX)
+    }
+
+    /// A memory file's or segment's pages, none made yet, charged to
+    /// `room`, `end` of them for now.
+    pub fn in_room(room: RoomRef, end: u64) -> Result<SharedRef> {
+        Self::make_ref(None, Some(room), end)
+    }
+
+    fn make_ref(domain: Option<DomainRef>, room: Option<RoomRef>, end: u64) -> Result<SharedRef> {
         let pages = SharedPages {
             chunks: Mutex::new(Vec::new_in(super::kmalloc())),
-            domain: space.domain.clone(),
+            domain,
+            room,
+            end: AtomicU64::new(end),
+            made: AtomicU64::new(0),
         };
         Arc::try_new_in(pages, super::kmalloc()).map_err(|_| error(Kernel::NoMemory))
+    }
+
+    /// How many pages it may have.
+    pub fn end(&self) -> u64 {
+        self.end.load(Ordering::Acquire)
+    }
+
+    /// How many pages it holds.
+    pub fn made(&self) -> u64 {
+        self.made.load(Ordering::Relaxed)
     }
 
     /// The frame of page `index`, zeroed and charged if it is new, counted
     /// as shared once more for the space about to map it.
     fn get(&self, index: u64) -> core::result::Result<u64, Fault> {
+        self.make(index).map_err(|lack| match lack {
+            // Linux's tmpfs: a fault past the end, or with the filesystem
+            // full, is SIGBUS.
+            Lack::Past | Lack::NoRoom => Fault::Io,
+            Lack::NoMemory => Fault::NoMemory,
+        })
+    }
+
+    /// The frame of page `index`, made zeroed and charged if it is new,
+    /// counted as shared once more for the caller, which lets go of it
+    /// with [`unshare_page`]: a space about to map it, or the kernel
+    /// writing a memory file.
+    pub fn make(&self, index: u64) -> core::result::Result<u64, Lack> {
         let mut chunks = self.chunks.lock();
+        if index >= self.end.load(Ordering::Relaxed) {
+            return Err(Lack::Past);
+        }
         let number = index / CHUNK;
         let at = match chunks.binary_search_by_key(&number, |&(n, _)| n) {
             Ok(at) => at,
             Err(at) => {
-                chunks.try_reserve(1).map_err(|_| Fault::NoMemory)?;
+                chunks.try_reserve(1).map_err(|_| Lack::NoMemory)?;
                 let mut chunk = Vec::new_in(super::kmalloc());
-                chunk.try_reserve_exact(CHUNK as usize).map_err(|_| Fault::NoMemory)?;
+                chunk.try_reserve_exact(CHUNK as usize).map_err(|_| Lack::NoMemory)?;
                 // The room for both was reserved; the chunks stay in order.
                 for _ in 0..CHUNK {
                     let _ = chunk.push_within_capacity(0);
@@ -151,22 +262,97 @@ impl SharedPages {
             }
             return Ok(*slot);
         }
-        if let Some(domain) = &self.domain {
-            domain.charge(1).map_err(|_| Fault::NoMemory)?;
+        if let Some(room) = &self.room
+            && !room.take()
+        {
+            return Err(Lack::NoRoom);
+        }
+        let give_back = || {
+            if let Some(room) = &self.room {
+                room.give_back(1);
+            }
+        };
+        if let Some(domain) = &self.domain
+            && domain.charge(1).is_err()
+        {
+            give_back();
+            return Err(Lack::NoMemory);
         }
         let Ok(phys) = FRAMES.alloc(0, Flags { zero: true, ..Flags::MAY_SLEEP }, Owner::Anon)
         else {
             if let Some(domain) = &self.domain {
                 domain.uncharge(1);
             }
-            return Err(Fault::NoMemory);
+            give_back();
+            return Err(Lack::NoMemory);
         };
-        // The mapping's share, and the space's about to map it.
+        // Its own share, and the caller's.
         if let Some(info) = FRAMES.info(phys) {
             info.set_share_count(2);
         }
         *slot = phys;
+        self.made.fetch_add(1, Ordering::Relaxed);
         Ok(phys)
+    }
+
+    /// The frame of page `index` if it has been made, counted as shared
+    /// once more for the caller, which lets go of it with
+    /// [`unshare_page`]: a read of a memory file, which reads a page not
+    /// made as zeros without making it.
+    pub fn peek(&self, index: u64) -> Option<u64> {
+        let chunks = self.chunks.lock();
+        if index >= self.end.load(Ordering::Relaxed) {
+            return None;
+        }
+        let at = chunks.binary_search_by_key(&(index / CHUNK), |&(n, _)| n).ok()?;
+        let phys = chunks[at].1[(index % CHUNK) as usize];
+        if phys == 0 {
+            return None;
+        }
+        FRAMES.info(phys)?.share();
+        Some(phys)
+    }
+
+    /// Lets it have `end` pages, more than it may now: a memory file grew.
+    pub fn grow(&self, end: u64) {
+        let _chunks = self.chunks.lock();
+        if end > self.end.load(Ordering::Relaxed) {
+            self.end.store(end, Ordering::Release);
+        }
+    }
+
+    /// Cuts it to `end` pages: it lets go of those past them, and zeroes
+    /// the last one from byte `tail` on (a file's new size within it), so
+    /// that growing the file again shows zeros there, as Linux's tmpfs
+    /// does. A space that maps a page past the new end keeps it until
+    /// [`super::unmap_past`] unmaps it, which the caller does next; a
+    /// fault there meanwhile is SIGBUS, and a fork gives the child none
+    /// of them (`fork_into`).
+    pub fn cut(&self, end: u64, tail: u64) {
+        let mut chunks = self.chunks.lock();
+        self.end.store(end, Ordering::Release);
+        let mut freed = 0;
+        for (number, chunk) in chunks.iter_mut() {
+            for (i, slot) in chunk.iter_mut().enumerate() {
+                let index = *number * CHUNK + i as u64;
+                if *slot == 0 {
+                    continue;
+                }
+                if index >= end {
+                    unshare(*slot);
+                    *slot = 0;
+                    freed += 1;
+                } else if !tail.is_multiple_of(PAGE_SIZE) && index + 1 == end {
+                    zero_tail(*slot, tail % PAGE_SIZE);
+                }
+            }
+        }
+        chunks.retain(|(_, chunk)| chunk.iter().any(|&phys| phys != 0));
+        drop(chunks);
+        self.made.fetch_sub(freed, Ordering::Relaxed);
+        if let Some(room) = &self.room {
+            room.give_back(freed);
+        }
     }
 }
 
@@ -182,7 +368,16 @@ impl Drop for SharedPages {
         if let Some(domain) = &self.domain {
             domain.uncharge(made);
         }
+        if let Some(room) = &self.room {
+            room.give_back(made);
+        }
     }
+}
+
+/// Lets go of a page [`SharedPages::make`] or [`SharedPages::peek`] gave
+/// the caller.
+pub fn unshare_page(phys: u64) {
+    unshare(phys);
 }
 
 /// The file an anonymous region's pages are filled from when they are
@@ -383,6 +578,19 @@ impl SpaceObject {
     /// Maps `pages` pages of anonymous memory `anon` describes, placed as
     /// `placement` says, and returns where they went.
     pub fn map_anonymous(&self, pages: u64, anon: Anon, placement: Placement) -> Result<u64> {
+        self.map_anonymous_at(pages, anon, placement, 0)
+    }
+
+    /// Maps as [`map_anonymous`](Self::map_anonymous) does, from page
+    /// `offset` of what `anon` maps: of a memory file's shared pages, for
+    /// a mapping of it from that page on.
+    pub fn map_anonymous_at(
+        &self,
+        pages: u64,
+        anon: Anon,
+        placement: Placement,
+        offset: u64,
+    ) -> Result<u64> {
         if pages == 0 {
             return Err(Kernel::InvalidArgument.status(1));
         }
@@ -421,7 +629,7 @@ impl SpaceObject {
             start,
             pages: (end - start) / PAGE_SIZE,
             backing: Backing::Anon(anon),
-            offset: 0,
+            offset,
         };
         insert(&mut regions, region);
         if shared {
@@ -438,17 +646,22 @@ impl SpaceObject {
         let mut regions = self.regions.lock();
         // All of it anonymous, with no gap.
         let mut covered = start;
+        let mut read_only = false;
         for region in &regions[first_after(&regions, start)..] {
-            if covered >= end
-                || region.start > covered
-                || !matches!(region.backing, Backing::Anon(_))
-            {
+            let Backing::Anon(anon) = &region.backing else { break };
+            if covered >= end || region.start > covered {
                 break;
             }
+            read_only |= anon.read_only;
             covered = region.end();
         }
         if covered < end {
             return Err(error(Kernel::NotMapped));
+        }
+        // A shared mapping of a file or segment that may only be read stays
+        // so, as Linux's mprotect refuses with EACCES.
+        if read_only && access == Some(UserAccess::ReadWrite) {
+            return Err(error(Kernel::MissingRights));
         }
         Self::split_at(&mut regions, start)?;
         Self::split_at(&mut regions, end)?;
@@ -926,6 +1139,14 @@ impl SpaceObject {
                             return (PageEdit::Keep, None);
                         }
                     };
+                    // A memory file's page past its end, which a cut
+                    // under way has not unmapped yet, is not the child's.
+                    if let (Some(pages), Some(region)) = (&anon.shared, region) {
+                        let index = region.offset + (virt - region.start) / PAGE_SIZE;
+                        if index >= pages.end() {
+                            return (PageEdit::Keep, None);
+                        }
+                    }
                     if let Some(info) = FRAMES.info(phys) {
                         info.share();
                     }

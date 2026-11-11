@@ -105,6 +105,30 @@ no space maps at the moment still counts.
 copy, filled when touched (ADR 0060). A shared writable mapping of a file
 needs the page cache to map its own pages, and is refused until then.
 
+Shared memory by name is a filesystem of its own, `shm`, which Spark
+mounts on `/devices/shm` (`/dev/shm`) (ADR 0490). Its files keep their
+pages in a `SharedPages`, so a shared mapping of one is the same pages
+in every process, however each opened it, and `read` and `write` copy
+through them. `SharedPages` ends at the file's size: a fault past it is
+SIGBUS, `fork` copies no entry past it, and a shrink frees the pages
+past the new end and takes them from every space that maps them, under
+the spaces list's lock (`unmap_past`), after storing the end, so that a
+fork in between copies none of them. The filesystem's room bounds the
+pages its files and segments hold together.
+
+System V shared memory and semaphores belong to a memory filesystem:
+each keeps a table of segments and one of semaphore sets, which the C
+library reaches by the path `/devices/shm` beneath the process's root,
+so a program in a view without it has none. Their rules, Linux's
+`ipc_perm` checks, keys and numbers, and `semop`'s all-or-none
+operations and undo adjustments, are `radix_posix::ipc`'s, host-tested.
+A segment is a `SharedPages` without a name; `shmat` maps it with an
+attachment that each region holding it counts, so `fork`, a split,
+`shmdt`, `munmap` and exit keep `shm_nattch` right, and a removed
+segment goes with its last attachment. A `semop` that cannot go on
+waits on its set's change count; a process that used SEM_UNDO has its
+adjustments made when it ends.
+
 ## The process tree
 
 One tree (`TREE`, a spin lock around a `radix_posix::tree::Tree`) holds
@@ -498,6 +522,15 @@ and why:
 | 0047 | The root's folders by their plain names in `paths.h` and `ctermid` |
 | 0048 | `/system/commands` and `/system/resources/man` in `paths.h` |
 | 0049 | `readdir` and `readdir_r` give an error, not end the program, when a directory cannot be read |
+| 0050 | The extended attribute calls without the Linux option |
+| 0051 | The time zone read with musl 1.2.5's code |
+| 0052 | DNS lookups as glibc and musl make them |
+| 0053 | Lookups over IPv6, and AF_UNSPEC lookups for both families |
+| 0054 | `getifaddrs` without the Linux option |
+| 0055 | `getnameinfo` with IPv6 scopes, and without its warning |
+| 0056 | `res_query` asking the nameservers |
+| 0057 | `gethostbyaddr` from `/etc/hosts` and DNS |
+| 0070 | `semop` and `semtimedop` through a sysdep; named semaphores from musl 1.2.5 (ADR 0490) |
 
 Patches 0013 to 0022 fix what libc-test found (below); each says which
 of its tests it answers. One of mlibc's own tests changes with patch
@@ -507,9 +540,10 @@ in a dotted IPv4 one, where mlibc did the opposite. Another changes
 with patch 0035: `aligned_alloc` takes any size, as C17 has it. Patch
 0041 lets mlibc's own `pthread_cancel` test and four of libc-test's run
 (`pthread_cancel`, `pthread_cancel-points`, `pthread_cancel-sem_wait`
-and `pthread_cond_wait-cancel_ignored`); libc-test's
-`pthread_cancel-points` leaves out its `shm_open` case, since Radix has
-no shared memory objects yet (`ports/libc-test/patches`).
+and `pthread_cond_wait-cancel_ignored`). Patch 0070, with the memory
+filesystem on `/dev/shm` (ADR 0490), lets libc-test's `ipc_shm`,
+`ipc_sem`, `sem_open` and `sem_close-unmap` run, and the `shm_open`
+case of `pthread_cancel-points`.
 
 The musl code lives in `ports/mlibc/musl/` with musl's copyright lines,
 and `build.sh` copies it into the source (ADR 0072).
@@ -706,7 +740,10 @@ list go before it sets the timer, the race above; a waiter reading
 
 - A shared writable mapping of a file fails with ENODEV, and `msync` has
   nothing to write back: file mappings are private copies until the page
-  cache maps its own pages.
+  cache maps its own pages. A file in `/dev/shm` is the exception: its
+  pages are shared ones, which every mapping of it shares (ADR 0490). A
+  read-only shared mapping of another file is the process's copy, and
+  `mprotect` cannot make it writable (EACCES).
 - `clock_gettime` is a capability call; there is no read-only clock page
   (vDSO). The instruction budgets will show when it matters.
 - `poll` wakes every poller on a change to anything polled.
@@ -729,8 +766,8 @@ list go before it sets the timer, the race above; a waiter reading
   samples, 100 a second, as Linux splits it (`times`, `getrusage`,
   `wait`'s times; ADR 0092); CPU-time timers fire within a tick (10 ms).
 - Only `AF_UNIX` stream sockets, which pass no sockets: network
-  sockets come with Phase 12. No System V IPC, POSIX message queues, POSIX
-  asynchronous I/O, `epoll`, `eventfd`, `signalfd`, `timerfd` or
+  sockets come with Phase 12. No System V message queues, POSIX message
+  queues, POSIX asynchronous I/O, `epoll`, `eventfd`, `signalfd`, `timerfd` or
   `inotify`. Linux's `madvise` is not declared; `posix_madvise` is
   advice only.
 - mlibc's hard-coded paths outside `/system` stay as they are until the

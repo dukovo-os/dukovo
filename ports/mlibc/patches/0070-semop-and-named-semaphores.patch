@@ -1,0 +1,371 @@
+SPDX-FileCopyrightText: 2026 The Dukovo contributors
+SPDX-License-Identifier: Apache-2.0 OR MIT
+
+System V semaphore operations and named semaphores (ADR 0490). semop
+and semtimedop go to a new sysdep, Semtimedop, in place of patch 0037's
+ENOSYS; <sys/sem.h> declares semtimedop with _GNU_SOURCE, and Linux's
+GETNCNT, GETZCNT, SEM_STAT, SEM_INFO, SEM_STAT_ANY and struct seminfo
+join the Linux ABI's <abi-bits/sem.h>, where libc-test's ipc_sem needs
+them.
+
+sem_open, sem_close and sem_unlink are musl's (1.2.5): a semaphore named
+/NAME is the file /dev/shm/sem.NAME (glibc's name for it), made whole
+under a temporary name and linked to its own, holding one sem_t that
+each process maps shared. A process maps a semaphore once however often
+it opens it, and unmaps it when it has closed it as often. Meant for
+upstream.
+
+--- a/abis/linux/sem.h
++++ b/abis/linux/sem.h
+@@ -7,9 +7,15 @@
+ #define GETPID 11
+ #define GETVAL 12
+ #define GETALL 13
++#define GETNCNT 14
++#define GETZCNT 15
+ #define SETVAL 16
+ #define SETALL 17
+ 
++#define SEM_STAT 18
++#define SEM_INFO 19
++#define SEM_STAT_ANY 20
++
+ #define SEM_UNDO 0x1000
+ 
+ struct sembuf {
+@@ -27,4 +33,17 @@
+ 	unsigned long   __unused[2];
+ };
+ 
++struct seminfo {
++	int semmap;
++	int semmni;
++	int semmns;
++	int semmnu;
++	int semmsl;
++	int semopm;
++	int semume;
++	int semusz;
++	int semvmx;
++	int semaem;
++};
++
+ #endif /* _ABIBITS_SEM_H */
+--- a/options/internal/include/mlibc/sysdep-signatures.hpp
++++ b/options/internal/include/mlibc/sysdep-signatures.hpp
+@@ -97,6 +97,7 @@
+ #if __MLIBC_POSIX_OPTION
+ #include <abi-bits/msg.h>
+ #include <abi-bits/sched_param.h>
++#include <abi-bits/sem.h>
+ #include <abi-bits/shm.h>
+ 
+ SYSDEP_FUNC(Readv, int fd, const struct iovec *iovs, int iovc, ssize_t *bytes_read);
+@@ -253,6 +254,7 @@
+ SYSDEP_FUNC(Sysconf, int num, long *ret);
+ SYSDEP_FUNC(Semget, key_t key, int n, int fl, int *id);
+ SYSDEP_FUNC(Semctl, int semid, int semnum, int cmd, void *semun, int *ret);
++SYSDEP_FUNC(Semtimedop, int semid, struct sembuf *sops, size_t nsops, const struct timespec *timeout);
+ SYSDEP_FUNC(GetAffinity, pid_t pid, size_t cpusetsize, cpu_set_t *mask);
+ SYSDEP_FUNC(GetThreadaffinity, pid_t tid, size_t cpusetsize, cpu_set_t *mask);
+ SYSDEP_FUNC(SetAffinity, pid_t pid, size_t cpusetsize, const cpu_set_t *mask);
+--- a/options/internal/include/mlibc/sysdep-tags.hpp
++++ b/options/internal/include/mlibc/sysdep-tags.hpp
+@@ -534,6 +534,8 @@
+ struct Semget {};
+ // int sys_semctl(int semid, int semnum, int cmd, void *semun, int *ret);
+ struct Semctl {};
++// int sys_semtimedop(int semid, struct sembuf *sops, size_t nsops, const struct timespec *timeout);
++struct Semtimedop {};
+ // int sys_getaffinity(pid_t pid, size_t cpusetsize, cpu_set_t *mask);
+ struct GetAffinity {};
+ // int sys_getthreadaffinity(pid_t tid, size_t cpusetsize, cpu_set_t *mask);
+--- a/options/posix/generic/semaphore.cpp
++++ b/options/posix/generic/semaphore.cpp
+@@ -1,9 +1,21 @@
+ #include <semaphore.h>
+ #include <errno.h>
++#include <fcntl.h>
++#include <limits.h>
++#include <pthread.h>
++#include <stdarg.h>
++#include <stdio.h>
++#include <string.h>
++#include <sys/mman.h>
++#include <sys/stat.h>
++#include <time.h>
++#include <unistd.h>
+ 
+ #include <bits/ensure.h>
+ #include <mlibc/all-sysdeps.hpp>
++#include <mlibc/allocator.hpp>
+ #include <mlibc/debug.hpp>
++#include <mlibc/lock.hpp>
+ #include <mlibc/threads.hpp>
+ #include <mlibc/time-helpers.hpp>
+ 
+@@ -144,14 +156,196 @@
+ 	return 0;
+ }
+ 
+-sem_t *sem_open(const char *, int, ...) {
+-	errno = ENOSYS;
+-	return SEM_FAILED;
++// Named semaphores, after musl's: a semaphore named /NAME is a file
++// /dev/shm/sem.NAME, as glibc names it, holding one sem_t that every
++// process that opens it maps shared. A process maps each one once, however
++// often it opens it, and keeps the mapping until it closes it as often.
++namespace {
++
++constexpr int namedMax = 256; // SEM_NSEMS_MAX, as musl's
++
++struct Named {
++	ino_t ino;
++	sem_t *sem;
++	int opens;
++};
++
++Named *named;
++FutexLock namedLock;
++
++// The file of semaphore `name` in `buf`, or nullptr with errno set.
++char *named_path(const char *name, char *buf) {
++	while(*name == '/')
++		name++;
++	const char *end = strchrnul(name, '/');
++	if(*end || end == name || (end - name <= 2 && name[0] == '.' && end[-1] == '.')) {
++		errno = EINVAL;
++		return nullptr;
++	}
++	if(end - name > NAME_MAX - 4) {
++		errno = ENAMETOOLONG;
++		return nullptr;
++	}
++	memcpy(buf, "/dev/shm/sem.", 13);
++	memcpy(buf + 13, name, end - name + 1);
++	return buf;
++}
++
++constexpr int namedFlags = O_RDWR | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK;
++
++} // namespace
++
++sem_t *sem_open(const char *name, int flags, ...) {
++	char buf[NAME_MAX + 10];
++	if(!(name = named_path(name, buf)))
++		return SEM_FAILED;
++
++	// A slot is kept first, as nothing can fail once the file is made.
++	int slot = -1;
++	{
++		frg::unique_lock guard{namedLock};
++		if(!named) {
++			named = static_cast<Named *>(getAllocator().allocate(sizeof(Named) * namedMax));
++			if(!named) {
++				errno = ENOMEM;
++				return SEM_FAILED;
++			}
++			memset(named, 0, sizeof(Named) * namedMax);
++		}
++		long opens = 0;
++		for(int i = 0; i < namedMax; i++) {
++			opens += named[i].opens;
++			if(!named[i].sem && slot < 0)
++				slot = i;
++		}
++		if(opens >= INT_MAX || slot < 0) {
++			errno = EMFILE;
++			return SEM_FAILED;
++		}
++		named[slot].sem = reinterpret_cast<sem_t *>(-1);
++	}
++
++	flags &= O_CREAT | O_EXCL;
++	int cs;
++	pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, &cs);
++	auto fail = [&] {
++		pthread_setcancelstate(cs, nullptr);
++		frg::unique_lock guard{namedLock};
++		named[slot].sem = nullptr;
++		return SEM_FAILED;
++	};
++
++	if(flags == (O_CREAT | O_EXCL) && access(name, F_OK) == 0) {
++		errno = EEXIST;
++		return fail();
++	}
++
++	struct stat st;
++	void *map;
++	bool first = true;
++	sem_t made;
++	mode_t mode = 0;
++	for(;;) {
++		// Unless it must be new, the semaphore may be there already.
++		if(flags != (O_CREAT | O_EXCL)) {
++			int fd = open(name, namedFlags);
++			if(fd >= 0) {
++				if(fstat(fd, &st) < 0
++						|| (map = mmap(nullptr, sizeof(sem_t), PROT_READ | PROT_WRITE,
++							MAP_SHARED, fd, 0)) == MAP_FAILED) {
++					close(fd);
++					return fail();
++				}
++				close(fd);
++				break;
++			}
++			if(errno != ENOENT)
++				return fail();
++		}
++		if(!(flags & O_CREAT))
++			return fail();
++		if(first) {
++			first = false;
++			va_list ap;
++			va_start(ap, flags);
++			mode = va_arg(ap, mode_t) & 0666;
++			unsigned int value = va_arg(ap, unsigned int);
++			va_end(ap);
++			if(value > SEM_VALUE_MAX) {
++				errno = EINVAL;
++				return fail();
++			}
++			sem_init(&made, 1, value);
++		}
++		// Made whole under a name of its own, then linked to its name, so
++		// that no process opens it half made.
++		struct timespec ts;
++		clock_gettime(CLOCK_REALTIME, &ts);
++		char tmp[64];
++		snprintf(tmp, sizeof(tmp), "/dev/shm/tmp-%d", static_cast<int>(ts.tv_nsec));
++		int fd = open(tmp, O_CREAT | O_EXCL | namedFlags, mode);
++		if(fd < 0) {
++			if(errno == EEXIST)
++				continue;
++			return fail();
++		}
++		if(write(fd, &made, sizeof(made)) != sizeof(made) || fstat(fd, &st) < 0
++				|| (map = mmap(nullptr, sizeof(sem_t), PROT_READ | PROT_WRITE, MAP_SHARED,
++					fd, 0)) == MAP_FAILED) {
++			int e = errno;
++			close(fd);
++			unlink(tmp);
++			errno = e;
++			return fail();
++		}
++		close(fd);
++		int e = link(tmp, name) ? errno : 0;
++		unlink(tmp);
++		if(!e)
++			break;
++		munmap(map, sizeof(sem_t));
++		// Someone else made it first: open theirs, unless it had to be new.
++		if(e != EEXIST || flags == (O_CREAT | O_EXCL)) {
++			errno = e;
++			return fail();
++		}
++	}
++
++	// A semaphore this process has mapped already keeps its mapping.
++	frg::unique_lock guard{namedLock};
++	int i = 0;
++	while(i < namedMax && !(named[i].opens && named[i].ino == st.st_ino))
++		i++;
++	if(i < namedMax) {
++		munmap(map, sizeof(sem_t));
++		named[slot].sem = nullptr;
++		slot = i;
++		map = named[i].sem;
++	}
++	named[slot].opens++;
++	named[slot].sem = static_cast<sem_t *>(map);
++	named[slot].ino = st.st_ino;
++	guard.unlock();
++	pthread_setcancelstate(cs, nullptr);
++	return static_cast<sem_t *>(map);
+ }
+ 
+-int sem_close(sem_t *) {
+-	errno = ENOSYS;
+-	return -1;
++int sem_close(sem_t *sem) {
++	frg::unique_lock guard{namedLock};
++	int i = 0;
++	while(named && i < namedMax && !(named[i].opens && named[i].sem == sem))
++		i++;
++	if(!named || i == namedMax) {
++		errno = EINVAL;
++		return -1;
++	}
++	if(--named[i].opens)
++		return 0;
++	named[i].sem = nullptr;
++	named[i].ino = 0;
++	guard.unlock();
++	munmap(sem, sizeof(*sem));
++	return 0;
+ }
+ 
+ int sem_getvalue(sem_t *sem, int *sval) {
+@@ -160,9 +354,11 @@
+ 	return 0;
+ }
+ 
+-int sem_unlink(const char *) {
+-	errno = ENOSYS;
+-	return -1;
++int sem_unlink(const char *name) {
++	char buf[NAME_MAX + 10];
++	if(!(name = named_path(name, buf)))
++		return -1;
++	return unlink(name);
+ }
+ 
+ int sem_trywait(sem_t *sem) {
+--- a/options/posix/generic/sys-sem.cpp
++++ b/options/posix/generic/sys-sem.cpp
+@@ -1,3 +1,6 @@
++#ifndef _GNU_SOURCE
++#define _GNU_SOURCE 1 // semtimedop
++#endif
+ 
+ #include <bits/ensure.h>
+ #include <errno.h>
+@@ -20,9 +23,20 @@
+ 	return id;
+ }
+ 
+-int semop(int, struct sembuf *, size_t) {
+-	errno = ENOSYS;
+-	return -1;
++int semop(int id, struct sembuf *sops, size_t n) {
++	if(int e = mlibc::sysdep_or_enosys<Semtimedop>(id, sops, n, nullptr); e) {
++		errno = e;
++		return -1;
++	}
++	return 0;
++}
++
++int semtimedop(int id, struct sembuf *sops, size_t n, const struct timespec *timeout) {
++	if(int e = mlibc::sysdep_or_enosys<Semtimedop>(id, sops, n, timeout); e) {
++		errno = e;
++		return -1;
++	}
++	return 0;
+ }
+ 
+ union semun {
+--- a/options/posix/include/sys/sem.h
++++ b/options/posix/include/sys/sem.h
+@@ -16,6 +16,11 @@
+ int semop(int __semid, struct sembuf *__sops, size_t __nsops);
+ int semctl(int __semid, int __semnum, int __op, ...);
+ 
++#if defined(_GNU_SOURCE)
++int semtimedop(int __semid, struct sembuf *__sops, size_t __nsops,
++		const struct timespec *__timeout);
++#endif
++
+ #endif /* !__MLIBC_ABI_ONLY */
+ 
+ #ifdef __cplusplus

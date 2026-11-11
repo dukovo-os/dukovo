@@ -22,7 +22,9 @@
 //! `crate::audio`), which come with their devices; since Phase 14 PR 8,
 //! a virtio console's ports are terminals, `vport0p1` and on, and
 //! `virtio-ports` links each named one by its name (ADR 0327, from
-//! `crate::vports`), as udev links Linux's.
+//! `crate::vports`), as udev links Linux's. Since Phase 16, `shm` is
+//! where Spark mounts the memory filesystem of `shm_open` and System V
+//! IPC (ADR 0490), as Linux's `/dev/shm`.
 
 use radix_block::DeviceRef;
 use radix_klog::{error, warn};
@@ -64,6 +66,8 @@ pub fn init() {
         root.add("disk", Link::make(next_id(), DISK_LINKS)?)?;
         let audio: NodeRef = crate::audio::dir()?;
         root.add("audio", audio)?;
+        // Where Spark mounts the memory filesystem (ADR 0490).
+        root.add_dir("shm", next_id())?;
         let ports = FixedDir::new(next_id())?;
         let node: NodeRef = ports.clone();
         root.add("virtio-ports", node)?;

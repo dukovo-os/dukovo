@@ -59,7 +59,9 @@ use radix_ipc::range::user_pages;
 use radix_mm::{Flags, HEAP, Kmalloc};
 use radix_sync::Mutex;
 
-pub use anon::{Anon, Fault, FileSource, Placement, SharedPages};
+pub use anon::{
+    Anon, Fault, FileSource, Lack, Placement, Room, RoomRef, SharedPages, SharedRef, unshare_page,
+};
 
 use super::device::DevicePages;
 use super::ring::RingRef;
@@ -240,6 +242,32 @@ pub fn swap_in_all(area: u64) -> core::result::Result<(), Fault> {
         }
     }
     Ok(())
+}
+
+/// Unmaps from every space the pages of `pages`, a memory file's, from
+/// page `from` on: the file was cut short ([`SharedPages::cut`], which
+/// let go of them and ends the pages there first, so that no fault maps
+/// one again and no fork gives a child one). The spaces' list is held
+/// throughout, so a space made meanwhile, which maps none of them, waits;
+/// a space that maps nothing shared is passed over.
+pub fn unmap_past(pages: &SharedRef, from: u64) {
+    let spaces = SPACES.lock();
+    let Some(spaces) = spaces.as_ref() else { return };
+    for space in spaces.iter().filter_map(Weak::upgrade) {
+        if !space.may_share.load(Ordering::Acquire) {
+            continue;
+        }
+        let regions = space.regions.lock();
+        for region in regions.iter() {
+            let Backing::Anon(anon) = &region.backing else { continue };
+            let Some(shared) = &anon.shared else { continue };
+            if !Arc::ptr_eq(shared, pages) || region.offset + region.pages <= from {
+                continue;
+            }
+            let first = from.saturating_sub(region.offset);
+            space.release_range(region.start + first * PAGE_SIZE, region.end());
+        }
+    }
 }
 
 /// Pages a step of zeroing a new frame clears: 256 KiB, a few tens of
@@ -528,6 +556,40 @@ impl SpaceObject {
         };
         // What the regions held goes with the lock let go.
         drop(regions);
+    }
+
+    /// Detaches the System V segment attached at `address` (ADR 0490):
+    /// unmaps the regions of that attachment, those of the segment that
+    /// lie where it put them, as Linux's `shmdt` does, though `mprotect`
+    /// split them or `munmap` took some away. Returns the segment;
+    /// invalid_argument if none was attached there.
+    pub fn detach(&self, address: u64) -> Result<crate::fs::shm::SegmentRef> {
+        let mut regions = self.regions.lock();
+        let first = first_after(&regions, address);
+        let segment = match regions.get(first) {
+            Some(Region { start, offset: 0, backing: Backing::Anon(anon), .. })
+                if *start == address =>
+            {
+                anon.segment.as_ref().map(|attached| attached.segment().clone())
+            }
+            _ => None,
+        }
+        .ok_or(error(Kernel::InvalidArgument))?;
+        let end = address.saturating_add(segment.pages().saturating_mul(PAGE_SIZE));
+        let mut at = first;
+        while let Some(region) = regions.get(at).filter(|region| region.start < end) {
+            let attached = matches!(&region.backing, Backing::Anon(anon)
+                if anon.segment.as_ref().is_some_and(|a| a.is(&segment))
+                    && region.start - address == region.offset * PAGE_SIZE);
+            if attached {
+                self.clear_region(region);
+                // The attachment it held goes with it.
+                regions.remove(at);
+            } else {
+                at += 1;
+            }
+        }
+        Ok(segment)
     }
 
     /// Unmaps every region that maps `backing`.

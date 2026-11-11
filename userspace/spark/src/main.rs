@@ -157,11 +157,13 @@ const LINKS: [(&str, &str); 10] = [
 /// memory, as Linux's `/run/media` is: what is mounted there is for this
 /// boot, and volumed's service file hands it the root of that tmpfs, the
 /// one place beneath which a capability can name the mounts it makes
-/// (ADR 0217).
-const MOUNTS: [(&str, FilesystemKind, MountFlags); 5] = [
+/// (ADR 0217). `/devices/shm` is the memory filesystem of `shm_open`,
+/// `sem_open` and System V IPC (ADR 0490), as Linux's `/dev/shm`.
+const MOUNTS: [(&str, FilesystemKind, MountFlags); 6] = [
     ("tmp", FilesystemKind::Tmpfs, MountFlags::NONE),
     ("volumes", FilesystemKind::Tmpfs, MountFlags::NONE),
     ("devices", FilesystemKind::Dev, MountFlags::NONE),
+    ("devices/shm", FilesystemKind::Shm, MountFlags::NONE),
     ("processes", FilesystemKind::Proc, MountFlags::NONE),
     ("kernel", FilesystemKind::Sys, MountFlags::NONE),
 ];

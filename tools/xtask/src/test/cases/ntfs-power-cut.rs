@@ -239,7 +239,7 @@ fn ntfs_cut_kept(vm: &mut Vm, case: &Case) -> Result<(), String> {
             "spark: mounted the NTFS filesystem of {name} at /volumes/{name}, read-only"
         ))?;
     }
-    vm.expect("spark: built the hierarchy of 9 directories and mounted 9 filesystems")?;
+    vm.expect("spark: built the hierarchy of 9 directories and mounted 10 filesystems")?;
     vm.expect_ahead("spark: started /system/tests/storage as process ")?;
     for name in volume_names(case.disks) {
         vm.expect(&format!("storage: /volumes/{name}: after the power cut, "))?;

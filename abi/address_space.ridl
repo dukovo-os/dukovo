@@ -48,8 +48,8 @@ flags MapFlags: u32 {
     /// is mapped there.
     fixed_no_replace = 1;
     /// Keep the pages shared with processes forked from this one, rather
-    /// than giving each side a copy when it writes (anonymous memory
-    /// only).
+    /// than giving each side a copy when it writes: anonymous memory, and
+    /// since Phase 16 the memory files of `/devices/shm` (`map_file`).
     shared = 2;
 }
 
@@ -88,10 +88,20 @@ interface address_space = 0x0003 version 2 {
     /// there and zeros past its end. Once filled, a page is the process's
     /// own copy: neither side sees what the other writes later. Needs the
     /// control right, and the read right on the file.
+    ///
+    /// With shared, a memory file of `/devices/shm` (radix-directory(2)'s
+    /// `shm`, ADR 0490) is mapped itself: every process that maps it maps
+    /// the same pages, and sees every write to them, and `read` and
+    /// `write` of the file too; a page past the file's end faults
+    /// (SIGBUS). Writing needs the write right on the file too, and
+    /// `protect` never makes a mapping without it writable
+    /// (missing_rights). A shared mapping of another file that may be
+    /// written fails with no_device; one that may only be read is mapped
+    /// as without shared.
     method map_file = 5 (address: addr, size: u64, rights: Rights, flags: MapFlags, file: slot,
                          offset: u64) -> (address: addr)
         raises [no_such_slot, empty_slot, wrong_kind, missing_rights, invalid_argument,
-                no_memory, already_mapped, is_directory, io, corrupt];
+                no_memory, already_mapped, is_directory, no_device, io, corrupt];
     /// Waits while the 32-bit word at `address` (4-byte aligned) holds
     /// `expected`, until `futex_wake` wakes it, for at most `timeout_ns`
     /// nanoseconds (0: no limit). Fails with would_block at once if the
@@ -105,5 +115,12 @@ interface address_space = 0x0003 version 2 {
     /// another, first come first woken, and returns how many it woke.
     /// Needs the control right.
     method futex_wake = 7 (address: addr, count: u32) -> (woken: u32)
+        raises [no_such_slot, empty_slot, missing_rights, invalid_argument];
+    /// Detaches the System V segment that radix-directory(2)'s
+    /// `ipc_attach` attached at `address` (shmdt(2), ADR 0490): unmaps
+    /// what is left of that mapping, and notes the caller's process and
+    /// the time in the segment's status. Fails with invalid_argument if
+    /// no segment is attached there. Needs the control right.
+    method detach = 8 (address: addr) -> ()
         raises [no_such_slot, empty_slot, missing_rights, invalid_argument];
 }

@@ -1005,6 +1005,9 @@ pub enum FsKind {
     /// Served by a program through `/devices/fuse`, in Linux's FUSE
     /// protocol (ADR 0226): a network share, for one.
     Fuse,
+    /// Memory files that programs map shared, and System V IPC's objects
+    /// (`/devices/shm`, ADR 0490).
+    Shm,
 }
 
 impl FsKind {
@@ -1025,6 +1028,7 @@ impl FsKind {
             FsKind::Boot => "bootfs",
             FsKind::Pipe => "pipefs",
             FsKind::Fuse => "fuse",
+            FsKind::Shm => "shm",
         }
     }
 }

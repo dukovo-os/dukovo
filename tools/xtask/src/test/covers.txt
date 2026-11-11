@@ -377,7 +377,8 @@ posix userspace/posix/exec.c userspace/posix/expected/ userspace/posix/files.c
 posix userspace/posix/fork.c userspace/posix/format-cases.h userspace/posix/format.c
 posix userspace/posix/hello.c userspace/posix/inet.c userspace/posix/job.c userspace/posix/library.c
 posix userspace/posix/limits.c userspace/posix/locks.c userspace/posix/pipe.c userspace/posix/poll.c
-posix userspace/posix/programs.h userspace/posix/run.c userspace/posix/signal.c
+posix userspace/posix/programs.h userspace/posix/run.c userspace/posix/shm.c userspace/posix/signal.c
+posix kernel/radix/src/fs/shm/ kernel/radix/src/user/memory/
 posix userspace/posix/socket.c userspace/posix/spawn.c userspace/posix/thread.c
 posix userspace/posix/time.c userspace/posix/tty.c userspace/posix/utilities.c
 posix userspace/posix/zones.c userspace/programs/acl/ userspace/programs/nukesh/

@@ -528,11 +528,40 @@ resource domain. After a *fork* private pages are shared copy-on-write
 and *MAP_SHARED* ones stay shared, including those first touched after
 the *fork*. *mmap* of a file gives the process its
 own copy of the file's pages, filled as they are touched; a shared
-writable mapping of a file fails with ENODEV. *mprotect* and *munmap*
+writable mapping of a file fails with ENODEV, and a read-only one cannot
+be made writable (EACCES). *mprotect* and *munmap*
 work as on Linux, *msync* has nothing to write back, and
 *posix_madvise* takes advice. Linux's *madvise* and its *MADV_* names
 are not there, as they are not POSIX's. There is no program break:
 *malloc* maps memory, and *sbrk* fails.
+
+## SHARED MEMORY
+
+*/dev/shm* (*/devices/shm*) is a memory filesystem, as Linux's tmpfs
+there, with room for half the machine's memory. *shm_open* opens a file
+in it, and every *MAP_SHARED* mapping of that file, in any process, is
+the same memory, which *read* and *write* reach too. A mapping past the
+file's end gets SIGBUS, page by page as on Linux; *ftruncate* to a
+smaller size takes the pages past the new end from every mapping, and
+growing the file again gives zeros. A file opened for reading alone maps
+for reading alone. The filesystem holds files and hard links, not
+folders or symbolic links.
+
+Named semaphores (*sem_open*, *sem_close*, *sem_unlink*) are files
+*sem.*_NAME_ there, which each process maps once however often it opens
+them.
+
+System V shared memory (*shmget*, *shmat*, *shmdt*, *shmctl*) and
+semaphores (*semget*, *semop*, *semtimedop*, *semctl*) are Linux's: keys,
+numbers, permissions, *IPC_RMID* while attached, *SEM_UNDO*, and their
+errors. The memory filesystem on */devices/shm* keeps them, so a
+program whose root has none, in a view, gets ENOSYS. *shmctl* and
+*semctl* take *IPC_STAT*, *IPC_SET* and *IPC_RMID*, and *semctl* every
+per-semaphore command and *GETALL* and *SETALL*; *IPC_INFO*, *SHM_INFO*,
+*SEM_INFO*, and *SHM_STAT* and *SEM_STAT*, which take an index, fail
+with EINVAL. A *semop* waiting when a signal is handled fails with EINTR,
+whatever *SA_RESTART* says, as on Linux. *radix-directory*(2) has the
+calls under them.
 
 # LOCALE
 
@@ -652,7 +681,7 @@ a session of its own with the terminal as the controlling one and runs
 each test as a shell runs a job, in a process group of its own, in the
 foreground. The tests are:
 
-*hello*, *fork*, *exec*, *signal*, *pipe*, *socket*, *inet*, *poll*, *tty*, *job*, *time*, *files*, *locks*, *thread*, *cancel*, *spawn*, *limits*, *format*
+*hello*, *fork*, *exec*, *signal*, *pipe*, *socket*, *inet*, *poll*, *tty*, *job*, *time*, *files*, *locks*, *shm*, *thread*, *cancel*, *spawn*, *limits*, *format*
 	C programs in _userspace/posix_, one per area. *inet* runs TCP and
 	UDP over the loopback interface, makes 300 connections in a row, more
 	than the interface has sockets, and checks that a child with no
@@ -660,7 +689,10 @@ foreground. The tests are:
 	may only connect out cannot bind or listen, and one that may only
 	listen on a range of ports cannot connect out. *format* holds
 	*printf*, *strtod*, *scanf*, *strftime* and the time conversions to
-	1,461 answers generated with glibc 2.39.
+	1,461 answers generated with glibc 2.39. *shm* shares memory across
+	processes: files in _/dev/shm_ opened by name, their sizes and
+	SIGBUS, process-shared and named semaphores, and System V segments
+	and semaphore sets with their counts, waits, undos and removals.
 
 *library*
 	The C library's corners, as glibc 2.39 has them: allocations near
@@ -745,11 +777,13 @@ passed*; the boot test fails on any failure.
 - An ICMP error keeps at most 128 bytes of what it quotes. TCP sockets
   do not hear ICMP errors yet, and redirects and source quenches are
   the stack's, never a socket's.
-- A shared writable mapping of a file fails with ENODEV.
+- A shared writable mapping of a file fails with ENODEV, but for one in
+  */dev/shm*.
 - *clock_gettime* is a system call; there is no vDSO.
 - A *poll* waits for a change anywhere, so many pollers on a busy system
   wake for each other's changes.
-- No System V IPC, POSIX message queues or POSIX asynchronous I/O
+- No System V message queues, POSIX message queues or POSIX
+  asynchronous I/O
   (Radix's own is its rings, *radix-ring*(2)), and no *epoll*,
   *eventfd*, *signalfd*, *timerfd* or *inotify*.
 - CPU time is split between user mode and the kernel by the timer's

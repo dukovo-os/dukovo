@@ -7012,7 +7012,7 @@ fn dhcp(vm: &mut Vm, case: &Case) -> Result<(), String> {
 
 fn sockets(vm: &mut Vm, case: &Case) -> Result<(), String> {
     boot_report(vm, case)?;
-    vm.expect("spark: built the hierarchy of 9 directories and mounted 9 filesystems")?;
+    vm.expect("spark: built the hierarchy of 9 directories and mounted 10 filesystems")?;
     // Both come during the PCI scan, among lines boot_report reads past.
     let log = vm.log();
     for needle in [
@@ -7372,7 +7372,7 @@ fn spark(vm: &mut Vm, case: &Case) -> Result<(), String> {
     vm.expect("Init: /system/commands/spark is process ")?;
     let rest = program_line(vm, "spark: Spark v2 is process ")?;
     let spark = image_bias(&rest, "Spark")?;
-    vm.expect("spark: built the hierarchy of 9 directories and mounted 9 filesystems")?;
+    vm.expect("spark: built the hierarchy of 9 directories and mounted 10 filesystems")?;
     // Spark's line and hello's first come in either order: hello may run
     // on another CPU before Spark logs that it started it.
     let from = vm.cursor;
@@ -7681,7 +7681,7 @@ fn volumes_mounted(vm: &mut Vm, case: &Case) -> Result<(), String> {
         ))?;
         vm.expect(&format!("spark: mounted the {said} filesystem of {name} at /volumes/{name}"))?;
     }
-    vm.expect("spark: built the hierarchy of 9 directories and mounted 9 filesystems")
+    vm.expect("spark: built the hierarchy of 9 directories and mounted 10 filesystems")
 }
 
 /// The end of the storage program: no failed checks, and exit code 0.
@@ -8734,7 +8734,7 @@ fn root_boot(vm: &mut Vm, first: bool) -> Result<(), String> {
     vm.expect(&mounted)?;
     vm.expect(&format!("{mounted}, compressed (zstd)"))?;
     vm.expect(&format!("spark: /system is Dukovo's root on {disk}, compressed (zstd)"))?;
-    vm.expect("spark: built the hierarchy of 9 directories and mounted 12 filesystems")?;
+    vm.expect("spark: built the hierarchy of 9 directories and mounted 13 filesystems")?;
     let added = program_line(vm, "spark: added ")?;
     if (added == "0 default settings to /system/settings") == first {
         return Err(format!("Spark added {added}"));
@@ -9036,7 +9036,7 @@ fn btrfs_list(vm: &mut Vm, case: &Case) -> Result<(), String> {
             "spark: mounted the Btrfs filesystem of {name} at /volumes/{name}, read-only"
         ))?;
     }
-    vm.expect("spark: built the hierarchy of 9 directories and mounted 9 filesystems")?;
+    vm.expect("spark: built the hierarchy of 9 directories and mounted 10 filesystems")?;
     vm.expect_ahead("spark: started /system/tests/storage as process ")?;
     // The program lists the volumes in name order.
     let mut sorted = volumes.clone();
@@ -9325,7 +9325,7 @@ fn raid_boot(vm: &mut Vm, case: &Case, pulled: bool, behind: bool) -> Result<(),
             "spark: {other} holds no FAT, exFAT, NTFS, Btrfs, ext4, UDF or ISO 9660 filesystem; left alone"
         ))?;
     }
-    vm.expect("spark: built the hierarchy of 9 directories and mounted 9 filesystems")?;
+    vm.expect("spark: built the hierarchy of 9 directories and mounted 10 filesystems")?;
     vm.expect_ahead("spark: started /system/tests/storage as process ")?;
     Ok(())
 }

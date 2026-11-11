@@ -14,6 +14,10 @@ use radix_abi::signal::{
 };
 
 use crate::exec::{Block, BlockError, Shebang, Stack, aux, shebang};
+use crate::ipc::{
+    self, Caller, GetError, NOWAIT, OpError, Operation, Outcome, Perm, SEMVMX, Table, TableError,
+    UNDO,
+};
 use crate::signal::{self, Action, ActionError, Actions, Disposition, Info, Pending};
 use crate::status::{self, Ended};
 use crate::tree::{Found, Life, Tree, TreeError, WaitFor, Which};
@@ -489,6 +493,163 @@ proptest! {
                 }
             }
             prop_assert_eq!(tree.check(), Ok(()));
+        }
+    }
+}
+
+// System V IPC (ADR 0490).
+
+fn caller(user: u32, group: u32, groups: &[u32]) -> Caller<'_> {
+    Caller { user, group, groups, bypass: false }
+}
+
+#[test]
+fn ipc_permissions_are_linux_ones() {
+    let maker = caller(1000, 100, &[]);
+    let mut perm = Perm::new(42, &maker, 0o640 | 0o1000);
+    assert_eq!(perm.mode, 0o640);
+    assert!(perm.permits(&maker, ipc::want::READ | ipc::want::WRITE));
+    // The group reads, the others nothing.
+    assert!(perm.permits(&caller(1001, 100, &[]), ipc::want::READ));
+    assert!(!perm.permits(&caller(1001, 100, &[]), ipc::want::WRITE));
+    assert!(perm.permits(&caller(1001, 7, &[100]), ipc::want::READ));
+    assert!(!perm.permits(&caller(1001, 7, &[]), ipc::want::READ));
+    assert!(perm.permits(&Caller { bypass: true, ..caller(1001, 7, &[]) }, ipc::want::WRITE));
+    // A new owner keeps the maker's rights, as Linux's cuid does.
+    perm.set(2000, 200, 0o600);
+    assert!(perm.permits(&maker, ipc::want::WRITE));
+    assert!(perm.controls(&maker));
+    assert!(perm.controls(&caller(2000, 1, &[])));
+    assert!(!perm.controls(&caller(1001, 100, &[])));
+    // A get asking nothing is never refused; 0666 asks to read and write.
+    assert_eq!(ipc::asked(0), 0);
+    assert_eq!(ipc::asked(0o666), 0o6);
+    assert_eq!(ipc::asked(0o400), 0o4);
+}
+
+#[test]
+fn ipc_gets_make_or_find_as_linux() {
+    assert_eq!(ipc::decide(Some(5), ipc::PRIVATE, false, false), Ok(None));
+    assert_eq!(ipc::decide(None, 9, false, false), Err(GetError::NotFound));
+    assert_eq!(ipc::decide(None, 9, true, true), Ok(None));
+    assert_eq!(ipc::decide(Some(5), 9, true, true), Err(GetError::Exists));
+    assert_eq!(ipc::decide(Some(5), 9, true, false), Ok(Some(5)));
+    assert_eq!(ipc::decide(Some(5), 9, false, false), Ok(Some(5)));
+}
+
+#[test]
+fn ipc_numbers_name_one_object_until_they_come_round() {
+    let mut table: Table<&str, Global> = Table::new(2, Global);
+    let a = table.insert(7, "a").unwrap();
+    let b = table.insert(ipc::PRIVATE, "b").unwrap();
+    assert_eq!(table.insert(8, "c"), Err((TableError::Full, "c")));
+    assert_eq!(table.find(7), Some(a));
+    // A private key finds nothing, even an object made with it.
+    assert_eq!(table.find(ipc::PRIVATE), None);
+    assert_eq!(table.get(b), Some(&"b"));
+    assert_eq!(table.remove(a), Some("a"));
+    assert_eq!(table.get(a), None);
+    // The place is used again, under another number.
+    let c = table.insert(7, "c").unwrap();
+    assert_ne!(c, a);
+    assert_eq!(c % ipc::IPCMNI, a % ipc::IPCMNI);
+    assert_eq!(table.get(a), None);
+    table.forget_key(c);
+    assert_eq!(table.find(7), None);
+    assert_eq!(table.key(c), Some(ipc::PRIVATE));
+    assert_eq!(table.iter().map(|(id, _, v)| (id, *v)).collect::<Vec<_>>(), [(c, "c"), (b, "b")]);
+    assert_eq!(table.len(), 2);
+}
+
+fn sem(number: u16, op: i16, flags: u16) -> Operation {
+    Operation { number, op, flags }
+}
+
+#[test]
+fn semaphore_operations_are_all_or_none() {
+    let mut values = [1u16, 0];
+    let mut adjust = [0i32; 2];
+    // Take 1 from the first and wait for the second to grow: neither.
+    let ops = [sem(0, -1, 0), sem(1, -1, 0)];
+    assert_eq!(
+        ipc::operate(&mut values, &mut adjust, &ops),
+        Outcome::Wait { number: 1, zero: false }
+    );
+    assert_eq!(values, [1, 0]);
+    let ops = [sem(0, -1, UNDO), sem(1, -1, NOWAIT)];
+    assert_eq!(ipc::operate(&mut values, &mut adjust, &ops), Outcome::WouldBlock);
+    assert_eq!((values, adjust), ([1, 0], [0, 0]));
+    // Waiting for zero.
+    assert_eq!(
+        ipc::operate(&mut values, &mut adjust, &[sem(0, 0, 0)]),
+        Outcome::Wait { number: 0, zero: true }
+    );
+    assert_eq!(ipc::operate(&mut values, &mut adjust, &[sem(1, 0, 0)]), Outcome::Done);
+    // In order: one operation can let the next go on.
+    let ops = [sem(1, 2, UNDO), sem(1, -1, UNDO), sem(0, -1, 0)];
+    assert_eq!(ipc::operate(&mut values, &mut adjust, &ops), Outcome::Done);
+    assert_eq!((values, adjust), ([0, 1], [0, -1]));
+    // Past the highest value.
+    values[1] = SEMVMX as u16;
+    assert_eq!(ipc::operate(&mut values, &mut adjust, &[sem(1, 1, 0)]), Outcome::OutOfRange);
+    assert_eq!(values[1], SEMVMX as u16);
+    // The undo of an ending process, kept in range.
+    let mut values = [3u16, 1];
+    ipc::undo(&mut values, &[-5, 2]);
+    assert_eq!(values, [0, 3]);
+}
+
+#[test]
+fn semaphore_operation_lists_are_checked_first() {
+    assert_eq!(ipc::check(&[], 1), Err(OpError::Empty));
+    assert_eq!(ipc::check(&[sem(1, 1, 0)], 1), Err(OpError::BadNumber));
+    let many = vec![sem(0, 1, 0); ipc::SEMOPM + 1];
+    assert_eq!(ipc::check(&many, 1), Err(OpError::TooMany));
+    let checked = ipc::check(&[sem(0, 0, 0)], 1).unwrap();
+    assert!(!checked.alters && !checked.undoes);
+    let checked = ipc::check(&[sem(0, 0, 0), sem(0, -1, UNDO)], 1).unwrap();
+    assert!(checked.alters && checked.undoes);
+    // struct sembuf { unsigned short sem_num; short sem_op; short sem_flg; }
+    assert_eq!(Operation::from_bytes([1, 0, 0xff, 0xff, 0, 0x10]), sem(1, -1, UNDO));
+    assert!(ipc::valid_value(0) && ipc::valid_value(32767));
+    assert!(!ipc::valid_value(-1) && !ipc::valid_value(32768));
+}
+
+fn semaphore_op() -> impl Strategy<Value = Operation> {
+    (0u16..3, -3i16..4, prop_oneof![Just(0u16), Just(UNDO), Just(NOWAIT), Just(UNDO | NOWAIT)])
+        .prop_map(|(number, op, flags)| Operation { number, op, flags })
+}
+
+proptest! {
+    #[test]
+    fn semaphores_stay_in_range_and_undo_what_they_did(
+        calls in proptest::collection::vec(proptest::collection::vec(semaphore_op(), 1..5), 1..40),
+    ) {
+        let mut values = [0u16; 3];
+        let mut adjust = [0i32; 3];
+        for ops in &calls {
+            let (before, had) = (values, adjust);
+            match ipc::operate(&mut values, &mut adjust, ops) {
+                Outcome::Done => {
+                    // Each value moved by what its operations added, and
+                    // each adjustment the other way for those undone.
+                    for n in 0..3u16 {
+                        let added: i32 = ops.iter().filter(|o| o.number == n).map(|o| i32::from(o.op)).sum();
+                        let undone: i32 = ops.iter().filter(|o| o.number == n && o.flags & UNDO != 0).map(|o| i32::from(o.op)).sum();
+                        prop_assert_eq!(i32::from(values[n as usize]), i32::from(before[n as usize]) + added);
+                        prop_assert_eq!(adjust[n as usize], had[n as usize] - undone);
+                    }
+                }
+                _ => prop_assert_eq!((values, adjust), (before, had)),
+            }
+            prop_assert!(values.iter().all(|&v| i32::from(v) <= SEMVMX));
+        }
+        // Undoing every adjustment leaves what operations without UNDO
+        // did, which stayed in range.
+        let mut undone = values;
+        ipc::undo(&mut undone, &adjust);
+        for n in 0..3 {
+            prop_assert_eq!(i32::from(undone[n]), (i32::from(values[n]) + adjust[n]).clamp(0, SEMVMX));
         }
     }
 }

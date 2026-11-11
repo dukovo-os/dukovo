@@ -191,6 +191,9 @@ pub struct ProcessObject {
     /// Whether it has taken a POSIX record lock (`fs::locks`), which go
     /// when it ends or deletes a capability of their file.
     record_locks: AtomicBool,
+    /// Whether it keeps System V semaphore undo adjustments (ADR 0490),
+    /// which its end makes.
+    sem_undo: AtomicBool,
     /// The trace that follows it (`fs::trace`), if one does.
     trace: SpinLock<Option<TraceRef>>,
     /// Whether one does: what each of its system calls looks at first.
@@ -356,6 +359,7 @@ fn allocate(
         stopped: AtomicBool::new(false),
         posix_child: AtomicBool::new(false),
         record_locks: AtomicBool::new(false),
+        sem_undo: AtomicBool::new(false),
         trace: SpinLock::new(None),
         traced: AtomicBool::new(false),
     };
@@ -398,6 +402,12 @@ impl ProcessObject {
     /// Whether it may hold POSIX record locks.
     pub fn has_record_locks(&self) -> bool {
         self.record_locks.load(Ordering::Acquire)
+    }
+
+    /// Notes that it keeps System V semaphore undo adjustments, which
+    /// [`crate::fs::shm::ipc::process_gone`] makes when it ends.
+    pub fn note_sem_undo(&self) {
+        self.sem_undo.store(true, Ordering::Release);
     }
 
     /// The next thread it starts has its number, as its first did: the
@@ -917,6 +927,9 @@ impl ProcessObject {
     fn finish(&self, pending: bool, last: Option<&ThreadRef>) {
         if self.has_record_locks() {
             crate::fs::locks::process_gone(self.number, None);
+        }
+        if self.sem_undo.load(Ordering::Acquire) {
+            crate::fs::shm::ipc::process_gone(self.number);
         }
         // The processes made for it end too. Those with no thread left are
         // finished through the pending list, as released ones are, so that

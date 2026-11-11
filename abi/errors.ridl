@@ -228,4 +228,7 @@ errors file = 2 {
     /// unmounted: the program that served it reads this and ends
     /// (ADR 0226).
     unmounted = 26 => ENODEV;
+    /// The System V object was removed while the call waited for it
+    /// (radix-directory(2)'s `semaphore_operate`, ADR 0490).
+    removed = 27 => EIDRM;
 }

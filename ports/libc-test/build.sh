@@ -20,8 +20,9 @@
 #   functional/crypt: crypt(3) comes with the user database (Phase 13)
 #   functional/iconv_open, regression/iconv-roundtrips: iconv, which
 #     comes with the locale data (Phase 12)
-#   functional/ipc_msg, ipc_sem, ipc_shm: System V IPC, which Radix does
-#     not have (radix-posix(7))
+#   functional/ipc_msg: System V message queues, which Radix does not
+#     have yet (radix-posix(7)); its shared memory and semaphores are
+#     there (ADR 0490)
 #   functional/socket, regression/dn_expand-empty, dn_expand-ptr-0:
 #     networking and the resolver (Phase 12)
 #   regression/syscall-sign-extend: Linux's syscall(2), which the C
@@ -29,8 +30,6 @@
 #   functional/pthread_robust, regression/pthread-robust-detach: robust
 #     mutexes, and functional/pthread_mutex_pi: priority-inheritance
 #     mutexes, neither of which mlibc has
-#   functional/sem_open, regression/sem_close-unmap: named semaphores,
-#     which mlibc does not have
 #   regression/flockfile-list: it replaces malloc, which a static program
 #     cannot do with mlibc
 #   regression/malloc-brk-fail: it fills the address space but for a
@@ -78,12 +77,11 @@ for source in "$PORT_SRC"/src/functional/*.c "$PORT_SRC"/src/regression/*.c; do
 	functional/dlopen | functional/tls_init_dlopen | functional/tls_align_dlopen) continue ;;
 	regression/tls_get_new-dtv) continue ;;
 	functional/crypt | functional/iconv_open | regression/iconv-roundtrips) continue ;;
-	functional/ipc_msg | functional/ipc_sem | functional/ipc_shm) continue ;;
+	functional/ipc_msg) continue ;;
 	functional/socket | regression/dn_expand-empty | regression/dn_expand-ptr-0) continue ;;
 	regression/syscall-sign-extend) continue ;;
 	functional/pthread_robust | regression/pthread-robust-detach) continue ;;
 	functional/pthread_mutex_pi) continue ;;
-	functional/sem_open | regression/sem_close-unmap) continue ;;
 	regression/flockfile-list | regression/malloc-brk-fail) continue ;;
 	regression/pthread_atfork-errno-clobber) continue ;;
 	esac

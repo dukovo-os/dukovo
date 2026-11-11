@@ -27,7 +27,7 @@ is named for what it holds:
 | `/users` | Each user's home |
 | `/shared` | Files that users and services share |
 | `/tmp` | Temporary files, in memory, gone at the next boot; each person has their own |
-| `/devices` | Devices: `null`, `zero`, `random`, `urandom`, one per disk and partition, and the terminals (`ptmx`, `tty`, `pts/`) |
+| `/devices` | Devices: `null`, `zero`, `random`, `urandom`, one per disk and partition, the terminals (`ptmx`, `tty`, `pts/`), and `shm/`, the memory programs share |
 | `/processes` | The processes, the mounts, memory and uptime, as text |
 | `/kernel` | The kernel's view of the hardware and its settings, one value per file |
 | `/volumes` | Disks, USB sticks and SD cards, one directory each |
@@ -156,6 +156,18 @@ from the directory the program started from, as if that were the root.
 Spark holds the root and decides what each program gets. This is how a
 bundled application that asked for `documents: read-write` gets your
 documents folder and nothing else.
+
+## Shared memory
+
+`/dev/shm` (`/devices/shm`) is memory that programs share, as on Linux:
+a file there lives in memory until it is removed or the system stops,
+and every program that maps it shares the same memory. Databases and
+web servers keep their shared buffers and locks there, and so do
+Python's `multiprocessing` and named semaphores. It holds files only,
+up to half the machine's memory in all; `df /dev/shm` shows how much is
+used. The same filesystem keeps the System V shared memory segments and
+semaphores that programs such as PostgreSQL use, so a program whose
+view has no `/devices/shm` has none.
 
 ## /volumes
 

@@ -215,13 +215,18 @@ machine asks for them.
 | The tree lock under heavy capability passing on many CPUs | ipc design note |
 | Queued messages charged to a resource domain | ipc design note |
 | A process's handles freed before its parent is told it ended | ADR 0309 |
+| System V message queues (`msgget`, `msgsnd`, `msgrcv`); libc-test's `ipc_msg` | ADR 0490 |
+| Folders and symbolic links in `/dev/shm` | ADR 0490 |
+| A memory filesystem, and so System V keys, for each account or view, as Linux's IPC namespaces | ADR 0490 |
+| `ipcs` and `ipcrm`; `IPC_INFO`, `SHM_INFO`, `SEM_INFO` and the `*_STAT` commands that take an index | ADR 0490 |
+| `shmat`'s `SHM_EXEC` with write access, which Radix never maps together | ADR 0490 |
 
 ### Files and storage
 
 | Item | Source |
 | --- | --- |
 | A name cache for path lookups | storage design note |
-| Shared writable mappings of files, and `msync` | posix design note, ADR 0110 |
+| Shared writable mappings of files other than `/dev/shm`'s, and `msync` | posix design note, ADRs 0110, 0490 |
 | Read-ahead in the background; write clustering; `O_DIRECT` for files | storage design note, ADR 0133 |
 | FAT read-ahead | storage design note |
 | Btrfs: trim as blocks are freed (`discard`), small files inline, compression of small files, a per-CPU compression workspace, removing empty block groups, deleting a subvolume in the background, scrubbing in a thread of its own, a log of fsyncs a path at a time, tree blocks read whole | storage design note, ADRs 0130, 0158 |
