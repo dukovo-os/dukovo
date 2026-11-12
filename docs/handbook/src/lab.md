@@ -175,6 +175,25 @@ with its lab tests ([Contributing](https://github.com/dukovo-os/dukovo/blob/main
 lists every key, and `./ob lab show <test>` shows which machines can run
 a test. A new file needs no other change.
 
+A test of what only some machines have, such as Azure's, Hyper-V's or
+VMware's devices, starts with a `run` step that checks the machine is of
+that kind, and `or_skip` gives the reason the test is skipped on any
+other machine rather than failed. The firmware's names for the machine
+are in `/kernel/class/dmi/id`, and `lspci -n -d <vendor>:<device>` finds
+a device:
+
+```toml
+[[step]]
+run = "cat /kernel/class/dmi/id/sys_vendor"
+expect = "VMware"
+or_skip = "needs a VMware machine"
+```
+
+Each account has its own `/tmp` (ADR 0255), so a file a `run` step
+writes there as `lab` is not in the `/tmp` of a later step with
+`root = true`: a test that hands a file from one to the other writes it
+as the account that reads it, or under the lab account's home.
+
 ## The screen and the installer
 
 `screen = "text"` waits until the screen shows the text, and

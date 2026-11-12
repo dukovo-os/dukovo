@@ -4,6 +4,12 @@
 about = "Hyper-V's synthetic devices, as a generation 2 machine and Azure have them: the kernel connects to the VMBus, the synthetic SCSI controller's disks are sd disks, the synthetic network card is net0 and reaches its gateway, the clock's rates are Hyper-V's, and the shutdown, time and heartbeat services answer the host (ADR 0423). Needs a Hyper-V generation 2 machine or an Azure machine; at the host, check by hand that the machine's heartbeat shows OK in Hyper-V Manager, that the keyboard types in its console, and that its Shut Down powers the machine off cleanly"
 time = "3m"
 
+# Hyper-V's and Azure's machines alone, which the firmware names as
+# Microsoft's Virtual Machine.
+[[step]]
+run = "cat /kernel/class/dmi/id/sys_vendor /kernel/class/dmi/id/product_name"
+expect = ["Microsoft Corporation", "Virtual Machine"]
+or_skip = "needs a Hyper-V or Azure machine"
 # The bus, its channels and the services.
 [[step]]
 run = "sh -c 'dmesg | grep \"Hyper-V: \"'"

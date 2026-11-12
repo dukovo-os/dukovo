@@ -4,6 +4,11 @@
 about = "The disks of a virtio SCSI adapter, as Google Cloud and Proxmox attach them, are sd disks that say their model and serial number. Needs a virtual machine with a virtio SCSI disk"
 time = "2m"
 
+# Machines with a virtio SCSI adapter alone (legacy 1004 or modern 1048).
+[[step]]
+run = "sh -c 'lspci -n -d 1af4:1004; lspci -n -d 1af4:1048'"
+expect = "1af4:10"
+or_skip = "needs a virtual machine with a virtio SCSI disk"
 # The kernel found a disk on the adapter, at a target and logical unit.
 [[step]]
 run = "sh -c 'dmesg | grep \"on the virtio SCSI adapter\" | head -1'"

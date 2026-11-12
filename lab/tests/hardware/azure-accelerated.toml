@@ -4,6 +4,11 @@
 about = "Azure's accelerated networking: the kernel sets up the virtual PCI bus the host offers, starts Azure's network adapter (MANA) on it, and bonds its port to the synthetic network card with the same MAC address, which then sends through it (ADR 0425). Needs an Azure machine of a size with MANA, made with accelerated networking on (`az vm create --accelerated-networking true`); at the host, check by hand that the machine's network interface shows accelerated networking as enabled, and that a stop and start from the portal brings the machine back with its adapter set up again"
 time = "5m"
 
+# Azure's machines alone: their chassis carries Azure's asset tag.
+[[step]]
+run = "cat /kernel/class/dmi/id/chassis_asset_tag"
+expect = "7783-7084-3265-9085-8269-3286-77"
+or_skip = "needs an Azure machine with accelerated networking"
 # The bus, the adapter, and the synthetic card it joins.
 [[step]]
 run = "sh -c 'dmesg | grep \"Hyper-V: \"'"
