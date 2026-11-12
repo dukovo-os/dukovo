@@ -52,6 +52,7 @@ disk-health 25
 disk-raw 17
 disk-raw-4k 16
 elevate 86
+essentials 150
 exfat-write 42
 ext4-power-cut 36
 ext4-write 32

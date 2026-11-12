@@ -24,7 +24,7 @@
 
 mod devices;
 pub(crate) mod firmware;
-mod health;
+pub mod health;
 pub(crate) mod online;
 pub(crate) mod place;
 pub(crate) mod stage;

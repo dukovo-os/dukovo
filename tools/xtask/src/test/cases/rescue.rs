@@ -8,8 +8,9 @@
 //! administrator, keeps a file in her home and installs an app for
 //! herself, then adds a health check that never ends, so that no start is
 //! seen through. Three starts in a row are cut short by power cuts, and
-//! the menu starts Rescue by itself: networking stays off, and alice
-//! signs in with her password. From Rescue's shell the health check goes
+//! the menu starts Rescue by itself: networking stays off, alice signs
+//! in with her password, and Rescue says the last three starts were not
+//! seen through (ADR 0501). From Rescue's shell the health check goes
 //! and the only slot, *@system.a*, is removed; at the restart no slot is
 //! left, and Rescue starts by itself again. It reinstalls Dukovo from its
 //! own copy, every file checked, and the system that then starts has
@@ -81,7 +82,7 @@ fn in_rescue(vm: &mut Vm) -> Result<usize, String> {
 
 /// Chooses `choice` in Rescue's menu.
 fn choose(vm: &mut Vm, choice: &str) -> Result<(), String> {
-    answer_prompt(vm, "Choose 1 to 9:", choice)
+    answer_prompt(vm, "Choose 0 to 9:", choice)
 }
 
 /// The second boot, from the installed disk alone.
@@ -120,6 +121,8 @@ fn rescued(vm: &mut Vm, _case: &Case) -> Result<(), String> {
         vm.monitor("system_reset")?;
     }
     let at = in_rescue(vm)?;
+    // Why: the starts the menu counted (ADR 0501).
+    vm.expect_screen(&["The last 3 starts were not seen through."])?;
     if vm.log()[at..].contains("spark: started netd") {
         return Err("Rescue started networking before anyone turned it on".into());
     }

@@ -27,7 +27,7 @@ const FILE: &str = "org.example.beacon-1.0.0.dkv";
 const DATA: &str = "/shared/services/org.example.beacon/beacon";
 
 /// Dukovo's root on a copy of the test image, and the bundle's file.
-const DISKS: &[Disk] = &[
+pub(super) const DISKS: &[Disk] = &[
     Disk { label: image::ROOT_LABEL, ..btrfs_disk(Bus::Virtio, 512, ROOT, root_checked) },
     service_files_disk(8 * 1024, LABEL),
 ];
@@ -51,7 +51,8 @@ pub const CASE: Case = Case {
     second: Some(SecondBoot { cmdline: "lockdep", before: nothing_between, script: at_boot }),
 };
 
-fn install(vm: &mut Vm, case: &Case) -> Result<(), String> {
+/// The first boot, which [`super::essentials`] runs too.
+pub(super) fn install(vm: &mut Vm, case: &Case) -> Result<(), String> {
     owner_signs_in(vm, case)?;
     vm.expect_anywhere("bundled: 0 bundles installed; answering at /system/live/bundled/socket")?;
     vm.expect_anywhere(&format!("spark: mounted the FAT filesystem of vdb at {VOLUME}"))?;

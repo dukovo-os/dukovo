@@ -745,6 +745,20 @@ them to *init*, and the kernel does not read them.
 	sign-in, and the audit log keeps it. Like *console-sign-in=off*, it
 	gives no one more than the boot menu does already.
 
+*essentials*
+	Read by *spark*(8), not the kernel: only the system's own services
+	start, those with a file among the defaults the system brings; those
+	an app or an administrator added stay off until *service*(8) starts
+	them (ADR 0501), as Windows' safe mode starts only its own. The boot
+	menu's Troubleshooting entry *Start only the essentials* gives it.
+
+*firmware-from*=_slot_
+	Read by the health check, not the kernel: the boot menu's
+	Troubleshooting entry *Start with the previous firmware* started this
+	slot with the CPU microcode of the firmware set that slot _slot_
+	names (ADR 0501). The start's record keeps it among the boot options,
+	for *changes*(1).
+
 # MICROCODE
 
 Processors run microcode that the vendor fixes with updates. Firmware

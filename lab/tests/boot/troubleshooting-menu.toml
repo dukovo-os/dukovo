@@ -1,0 +1,51 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "The start menu's Troubleshooting starts Dukovo with only the essentials (ADR 0501): after a start cut short, the menu shows, Troubleshooting opens its own menu, and its essentials entry starts the system's own services and no added ones, once; the next start is as usual"
+time = "15m"
+fresh = true
+
+# A health check of 60 seconds, so that the start the cord cuts is not
+# seen through and the menu shows at the next start, for 10 seconds.
+[[step]]
+run = '''printf '[[check]]\nname = "wait"\ncommand = ["sleep", "60"]\nrequired = true\ntimeout = 120\n' > /users/lab/health.toml'''
+[[step]]
+run = "cp /users/lab/health.toml /system/settings/sysupdate/health.toml"
+root = true
+[[step]]
+power = "reset"
+[[step]]
+serial = "spark: started slot a, @system.a"
+[[step]]
+power = "cut"
+[[step]]
+power = "on"
+# The menu: Dukovo, its startup trouble entry, then Troubleshooting.
+[[step]]
+screen = "Troubleshooting"
+[[step]]
+keys = ["down", "down", "ret"]
+[[step]]
+screen = "Start only the essentials"
+[[step]]
+keys = ["down", "ret"]
+[[step]]
+serial = "spark: essentials: only the system's own services start"
+[[step]]
+serial = "is seen through"
+[[step]]
+wait = "ready"
+[[step]]
+run = "sh -c 'rm /system/settings/sysupdate/health.toml /users/lab/health.toml; cat /kernel/cmdline'"
+root = true
+expect = "essentials"
+# Once only: the next start is as usual.
+[[step]]
+power = "reset"
+[[step]]
+serial = "spark: started slot a, @system.a"
+[[step]]
+wait = "ready"
+[[step]]
+run = "cat /kernel/cmdline"
+expect_not = "essentials"

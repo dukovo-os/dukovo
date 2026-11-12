@@ -283,6 +283,10 @@ fn run() -> Option<Supervisor> {
     if rescue(&root) {
         supervisor.set_rescue();
     }
+    // The start menu's Troubleshooting: only the essentials (ADR 0501).
+    if kernel_flag(&root, "essentials") {
+        supervisor.set_essentials();
+    }
     supervisor.listen();
     if ROOT_MISSING.load(core::sync::atomic::Ordering::Relaxed) {
         supervisor.restart_in(ROOT_MISSING_RESTART);

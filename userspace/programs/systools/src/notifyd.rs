@@ -611,6 +611,29 @@ pub fn ask(
     Ok(())
 }
 
+/// Sends a notification from `app`, with `title` and `body`, as
+/// notify-send(1) does.
+///
+/// # Errors
+///
+/// If notifyd is not running, or does not take it.
+pub fn send(app: &str, title: &str, body: &str, urgency: Urgency) -> Result<(), Fail> {
+    let request = Request {
+        ask: "send".into(),
+        title: title.into(),
+        body: body.into(),
+        app: Some(app.into()),
+        urgency: Some(urgency),
+        ..Request::default()
+    };
+    let mut sent = false;
+    ask(&request, |line| {
+        sent = serde_json::from_str::<Sent>(line).is_ok();
+        Ok(false)
+    })?;
+    if sent { Ok(()) } else { Err(fail("notifyd did not take the notification".into())) }
+}
+
 /// notify-send(1).
 pub fn notify_send(args: &mut Args) -> Result<i32, Fail> {
     let mut request = Request { ask: "send".into(), ..Request::default() };

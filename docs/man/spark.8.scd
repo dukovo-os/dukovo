@@ -143,7 +143,12 @@ Init: /system/commands/spark is process 1
   is Rescue*. *dukovo-rescue*(8) mounts the root it repairs, and Spark
   starts only the log, the firewall, notices, the screen reader and the
   consoles of the services enabled; the rest, networking among them,
-  stay off until *service*(8) starts them.
+  stay off until *service*(8) starts them. With the flag *essentials*,
+  as the boot menu's Troubleshooting gives it (ADR 0501), Spark starts
+  only the system's own services, those with a file in
+  _/system/resources/default-settings/spark/services_, and says *spark:
+  essentials: only the system's own services start*; those an app or an
+  administrator added stay off until *service*(8) starts them.
 . The first Btrfs mounted read-write whose top holds the subvolumes
   _@system.a_, _@state_, _@applications_, _@users_ and _@shared_ is
   Dukovo's root, as *./ob image* makes it on its Dukovo root

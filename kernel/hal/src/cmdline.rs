@@ -177,6 +177,18 @@ pub const FLAGS: &[Flag] = &[
                   menu's startup-trouble entry sets it",
     },
     Flag {
+        name: "essentials",
+        value: None,
+        summary: "for Spark, not the kernel: only the system's own services start, none an app \
+                  or an administrator added; the boot menu's Troubleshooting sets it",
+    },
+    Flag {
+        name: "firmware-from",
+        value: Some("slot"),
+        summary: "for the health check, not the kernel: the boot menu's Troubleshooting started \
+                  this slot with the CPU microcode of the other slot's firmware set",
+    },
+    Flag {
         name: "root",
         value: Some("UUID=uuid"),
         summary: "for Spark, not the kernel: the Btrfs UUID of the Dukovo root to run the system \

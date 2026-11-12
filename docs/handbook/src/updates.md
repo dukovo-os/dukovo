@@ -174,6 +174,32 @@ From the last good start, 41 on 2026-11-11 08:02, Dukovo 0.15.0, to start 42:
 A change installed days before it was first used points at the restart
 that brought it in. `changes --list` lists the starts kept.
 
+You do not have to look for a failure: the next sign-in says it, at the
+screen and on the serial port, until the next start. It names the start
+that failed and why, what Dukovo did about it, what changed, and the
+support page of its error ID. The first line also shows at the bottom of
+the screen until you press a key.
+
+## Troubleshooting at start
+
+When the computer starts, the start menu stays hidden for a second;
+press Esc or F4 then, or hold Shift as the computer starts, to show it.
+It shows by itself after a start that did not finish. Its
+**Troubleshooting** menu starts Dukovo once in another way, changing no
+setting:
+
+- **Start with all of the kernel's messages**, in place of the startup
+  screen, to see where a start stops.
+- **Start only the essentials**: only Dukovo's own services start, none
+  an app or you added. `elevate service NAME start` starts one by hand.
+- **Start with the previous firmware**, when the version before this one
+  names another firmware set: its CPU microcode in place of the new.
+- **Start the previous version**.
+
+After three starts in a row that do not finish, **Rescue** starts by
+itself. Once you sign in, it says why it may have started and what
+changed, and offers its repairs.
+
 ## Going back later
 
 If you find a problem days later, `elevate sysupdate rollback` makes the

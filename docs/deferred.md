@@ -141,8 +141,15 @@ machine with AMT, an AMD machine and a laptop; see
 | Firmware that drivers load for their cards, in firmware sets, with a per-device check that the driver loaded it (ADR 0468) | Sets hold CPU microcode only; no driver Dukovo has loads firmware yet | A port: the first driver that needs firmware (Wi-Fi, Phase 17) |
 | AMD CPU microcode in firmware sets (ADRs 0014, 0468) | The kernel's loader is Intel's; AMD's patches have their own format and loader | A need |
 | Disks other than the root's in the health check's device record (ADR 0468) | Data disks, USB disks and discs come and go with their owner, so a missing one says nothing of the update | A need |
-| How far each start got, written from its earliest stages, and a summary of the last starts on the EFI system partition for Rescue (ADR 0500) | Each start is recorded once the root is mounted and the health check runs | 15, troubleshooting part 2 |
-| The failure screen, Rescue's Why it failed and What changed, SSH and serial kept on after a failed start, the Troubleshooting start menu, the memory test and Repair startup on the install stick (ADR 0500) | changes(1) and the error IDs name a failure from a shell | 15, troubleshooting part 2 |
+| A summary of the last starts on the EFI system partition, for a root Rescue cannot mount (ADRs 0500, 0501) | Rescue reads the root's records, and says how many starts the boot menu counted as not seen through | A need |
+| Repair startup on the install stick: GRUB and the EFI system partition rewritten, with Secure Boot, SATA mode and boot order checked (ADR 0501) | Rescue on the EFI system partition, while that partition still starts | 15, troubleshooting part 3 |
+| Each start's furthest stage written as it is reached, by GRUB, the kernel and Spark, before the health check (ADR 0501) | The record begins when the health check runs; Rescue tells the starts that stopped before it from the boot menu's count | 15, troubleshooting part 3 |
+| Rescue, Repair startup and the memory test unlocking an encrypted root with its recovery key or passphrase (ADR 0501) | No root is encrypted yet | Disk encryption, after 1.0 |
+| The failure notice by email, when the owner has set an address (ADR 0501) | The notice at every sign-in, on the screen and the serial port | 16b, with alerts |
+| The memory test on the start menu, memtest86+ built from source onto the EFI system partition (ADR 0501) | The firmware's own memory test, where the machine has one | 16b, with `hardware check` |
+| A QR code to the error's support page, and single-key choices, on the failure notice (ADR 0501) | The notice gives the support page's address and the commands to run | 16f, with `report --save` |
+| SSH into Rescue when the system had SSH on (ADR 0501) | Rescue on the screen and the serial port; after a failed start that falls back, the system runs, SSH and all | 16e, in the outside security review |
+| A start without graphics on the Troubleshooting menu, and the window manager's screen check (ADR 0501) | No graphical start yet: every start is text | 1.1, with the window manager |
 | `changes --since` a date (ADR 0500) | `--between` and `--list` compare any two starts kept | A need |
 | The owner told of a fallback at sign-in and on the web console, with the offer to send a report (ADRs 0453, 0456) | The unified updater's notifications | 15d |
 | `rollback --settings-from-before`, shown before a rollback past the release before (ADR 0454) | The two-version rule covers one step | 15d |

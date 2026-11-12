@@ -59,14 +59,14 @@ pub fn changes(args: &mut Args) -> Result<i32, Fail> {
             }
             return Ok(0);
         }
-        Asked::Now => (starts::last_good(&records, newest.number), newest),
+        Asked::Now => (None, newest),
         Asked::Failed => {
             let Some(failed) = records.iter().rev().find(|s| s.outcome == Outcome::Failed) else {
                 println!("changes: no start kept has failed");
                 return Ok(0);
             };
             println!("{}", start_line(failed));
-            (starts::last_good(&records, failed.number), failed)
+            (None, failed)
         }
         Asked::Between(from, to) => {
             let find = |number: u64| {
@@ -78,21 +78,32 @@ pub fn changes(args: &mut Args) -> Result<i32, Fail> {
             (Some(find(from)?), find(to)?)
         }
     };
-    let Some(from) = from else {
-        println!("changes: no good start before start {} is kept", to.number);
-        return Ok(0);
-    };
-    let found = starts::changes(&records, from, to);
-    let since = if from.outcome == Outcome::Good { "the last good start, " } else { "start " };
-    if found.is_empty() {
-        println!("Nothing changed from {since}{} to start {}", short(from), to.number);
-        return Ok(0);
-    }
-    println!("From {since}{}, to start {}:", short(from), to.number);
-    for change in &found {
-        println!("  {}", change_line(change));
+    for line in report(&records, from, to) {
+        println!("{line}");
     }
     Ok(0)
+}
+
+/// What changed from start `from`, the last good start before `to` when
+/// it is `None`, to start `to`, of `records`, in lines: a heading, then
+/// a change a line, indented by two spaces.
+#[must_use]
+pub fn report(records: &[Start], from: Option<&Start>, to: &Start) -> Vec<String> {
+    let Some(from) = from.or_else(|| starts::last_good(records, to.number)) else {
+        return vec![format!("No good start before start {} is kept.", to.number)];
+    };
+    let found = starts::changes(records, from, to);
+    let since = if from.outcome == Outcome::Good { "the last good start, " } else { "start " };
+    if found.is_empty() {
+        return vec![format!(
+            "Nothing changed from {since}{} to start {}.",
+            short(from),
+            to.number
+        )];
+    }
+    let mut lines = vec![format!("From {since}{}, to start {}:", short(from), to.number)];
+    lines.extend(found.iter().map(|change| format!("  {}", change_line(change))));
+    lines
 }
 
 /// A start, in a few words: its number, when and what it ran.
@@ -106,7 +117,8 @@ fn short(start: &Start) -> String {
 }
 
 /// A line of `--list`.
-fn start_line(start: &Start) -> String {
+#[must_use]
+pub fn start_line(start: &Start) -> String {
     let outcome = match start.outcome {
         Outcome::Good => "good".to_string(),
         Outcome::Unfinished => "unfinished".to_string(),

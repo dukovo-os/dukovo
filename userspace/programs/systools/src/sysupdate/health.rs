@@ -44,6 +44,10 @@ const MICROCODE: &str = "/kernel/firmware/microcode";
 /// Where the last result is kept, for `sysupdate status`.
 pub const LAST: &str = "/system/state/sysupdate/health";
 
+/// What the sign-in screens show of a failed start until the next start
+/// (ADR 0501), which consoled(8) reads.
+pub const NOTICE: &str = "/system/live/sysupdate/failure";
+
 /// How often Spark is asked.
 const EVERY: Duration = Duration::from_secs(2);
 
@@ -266,17 +270,20 @@ pub fn run() -> Result<i32, Fail> {
         println!("sysupdate: {named} failed its health check: {why}");
     }
     record(&named, &result);
-    if let Ok(start) = begun {
+    let this = begun.ok().and_then(|start| {
         let outcome = if passed { Outcome::Good } else { Outcome::Failed };
         let why = result.as_ref().err().map(String::as_str);
-        if let Err(err) = starts::finish_in(Path::new(starts::DIR), start, outcome, why) {
-            println!("sysupdate: cannot keep the record of this start: {err}");
-        }
-    }
+        starts::finish_in(Path::new(starts::DIR), start, outcome, why)
+            .inspect_err(|err| println!("sysupdate: cannot keep the record of this start: {err}"))
+            .ok()
+    });
     // A stage takes minutes at most.
     let _lock = place::lock_within(Duration::from_secs(STAGE_WAIT))?;
     let (copies, state) = place::state(&root)?;
     let (next, checked) = state.checked(root.running, passed);
+    if let Some(text) = failure_notice(&starts::all(), this.as_ref(), checked, &named) {
+        tell(&text);
+    }
     if let Some(next) = next {
         place::write(&copies, next)?;
     }
@@ -531,6 +538,82 @@ fn start_items(root: &Root) -> Vec<Item> {
     items
 }
 
+/// What the sign-in screen says of a failed start (ADR 0501), if this
+/// start is one or follows one: the update that fell back, of `records`,
+/// or `this` start, which failed its check and goes on; what Dukovo did;
+/// what changed since the last good start; and where to read more. A
+/// failed try says nothing: the start after it does.
+fn failure_notice(
+    records: &[starts::Start],
+    this: Option<&starts::Start>,
+    checked: Checked,
+    named: &str,
+) -> Option<String> {
+    let this_failed = this.filter(|start| start.outcome == Outcome::Failed);
+    let (failed, did) = match checked {
+        Checked::Failed(_) => return None,
+        Checked::FellBack(_) => {
+            let before = this.map_or(u64::MAX, |start| start.number);
+            let failed = records
+                .iter()
+                .rev()
+                .find(|start| start.number < before && start.outcome == Outcome::Failed)?;
+            (
+                failed,
+                format!("Dukovo went back to {named}, with the settings from before the update."),
+            )
+        }
+        _ => (this_failed?, "As this start is no update's try, it goes on.".to_string()),
+    };
+    let mut text = format!(
+        "Start {} failed its health check: {}\n{did}\n",
+        failed.number,
+        failed.why.as_deref().unwrap_or("a check failed")
+    );
+    if let Some(this) = this_failed.filter(|this| this.number != failed.number) {
+        let _ = writeln!(
+            text,
+            "This start failed its health check too: {}",
+            this.why.as_deref().unwrap_or("a check failed")
+        );
+    }
+    for line in crate::changes::report(records, None, failed) {
+        let _ = writeln!(text, "{line}");
+    }
+    text.push_str("More: changes --failed, and log -b -1 for the failed start's log.\n");
+    if let Some(id) = &failed.error {
+        let _ = writeln!(
+            text,
+            "Help: https://dukovo.org/support/{}/errors/{id}.html",
+            env!("CARGO_PKG_VERSION")
+        );
+    }
+    Some(text)
+}
+
+/// Shows `text` on the sign-in screens until the next start, in
+/// [`NOTICE`], and tells whoever is signed in, in a notification shown
+/// until a key is pressed.
+fn tell(text: &str) {
+    let path = Path::new(NOTICE);
+    let written = path
+        .parent()
+        .map_or(Ok(()), std::fs::create_dir_all)
+        .and_then(|()| std::fs::write(path, text));
+    if let Err(err) = written {
+        println!("sysupdate: cannot write {NOTICE}: {err}");
+    }
+    let first = text.lines().next().unwrap_or_default();
+    if let Err(why) = crate::notifyd::send(
+        "sysupdate",
+        first,
+        "changes --failed says what changed",
+        crate::notifyd::Urgency::Critical,
+    ) {
+        println!("sysupdate: cannot tell the consoles: {}", why.message);
+    }
+}
+
 /// Keeps the result for `sysupdate status`.
 fn record(named: &str, result: &Result<(), String>) {
     let when = crate::util::now_ns() / 1_000_000_000;
@@ -606,6 +689,34 @@ mod tests {
             microcode_problem(refused).unwrap(),
             "was refused by the processor: it asked for revision 0xf0 and runs 0xe2 (FW-102)"
         );
+    }
+
+    #[test]
+    fn a_failed_start_is_told_with_what_changed() {
+        let dir = std::env::temp_dir().join(format!("notice-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let set = |value: &str| vec![Item::new("firmware", "set", value, Some(200))];
+        let good = starts::begin_in(&dir, "b", set("2026.1.1"), 1000).unwrap();
+        starts::finish_in(&dir, good, Outcome::Good, None).unwrap();
+        let tried = starts::begin_in(&dir, "a", set("2026.2.1"), 2000).unwrap();
+        let why = "the network card vio0 (52:54:00:15:0c:01), there at the last good start, \
+                   is missing (BOOT-101)";
+        starts::finish_in(&dir, tried, Outcome::Failed, Some(why)).unwrap();
+        let this = starts::begin_in(&dir, "b", set("2026.1.1"), 3000).unwrap();
+        let this = starts::finish_in(&dir, this, Outcome::Good, None).unwrap();
+        let records = starts::all_in(&dir);
+        let named = "slot B (Dukovo 0.15.0, firmware 2026.1.1)";
+        // A failed try says nothing; the start after it does.
+        assert_eq!(failure_notice(&records, None, Checked::Failed(slots::Slot::A), named), None);
+        let text = failure_notice(&records, Some(&this), Checked::FellBack(slots::Slot::A), named)
+            .unwrap();
+        assert!(text.starts_with(&format!("Start 2 failed its health check: {why}\n")), "{text}");
+        assert!(text.contains(&format!("Dukovo went back to {named}")), "{text}");
+        assert!(text.contains("  firmware set: 2026.1.1 to 2026.2.1;"), "{text}");
+        assert!(text.contains("/errors/BOOT-101.html"), "{text}");
+        // A good start that follows no failure says nothing.
+        assert_eq!(failure_notice(&records, Some(&this), Checked::Start, named), None);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     fn services_with(answer: &str) -> BTreeMap<String, Service> {

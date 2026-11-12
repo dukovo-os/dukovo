@@ -12,7 +12,8 @@
 //! card. The newer set's try finds the card missing and falls back to
 //! slot B, with the set before it, GRUB saying the firmware update
 //! failed, and slot B, no try, only logs the card; changes(1) names what
-//! the failed start changed (ADR 0500). Then a set whose
+//! the failed start changed (ADR 0500), and the screen tells of it, with
+//! the menu offering Troubleshooting (ADR 0501). Then a set whose
 //! microcode is damaged is staged: the kernel uses none of it, and its
 //! try falls back too. The store keeps only the sets a slot names.
 
@@ -154,6 +155,21 @@ fn second_boot(vm: &mut Vm, _case: &Case) -> Result<(), String> {
          the update"
     ))?;
     vm.expect("; tty1 is shown")?;
+    // The menu offered Troubleshooting, and the screen tells of the
+    // failed try until a key is pressed; the sign-in screens show what
+    // changed (ADR 0501).
+    vm.expect_anywhere("Troubleshooting")?;
+    vm.expect_screen(&["sysupdate: Start ", " failed its health check: the network card "])?;
+    run(
+        vm,
+        "cat /system/live/sysupdate/failure",
+        &[
+            &format!("Dukovo went back to slot B (Dukovo {VERSION}, firmware {good})"),
+            &format!("firmware set: {good} to {newer}"),
+            "(BOOT-101)",
+            "Help: https://dukovo.org/support/",
+        ],
+    )?;
     // The failed start's record, and what it changed (ADR 0500).
     run(
         vm,

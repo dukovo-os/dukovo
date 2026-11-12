@@ -327,6 +327,23 @@ pub fn reset_rescue<'a>(partitions: impl Iterator<Item = &'a str>) -> Vec<String
     problems
 }
 
+/// Rescue's count of the starts not seen through, in a row, the most of
+/// the EFI system partitions `partitions` hold (ADR 0460); 0 where none
+/// can be read.
+#[must_use]
+pub fn rescue_starts(partitions: &[String]) -> u8 {
+    partitions
+        .iter()
+        .filter_map(|name| {
+            let device = device(name, false).ok()?;
+            let block = disk::esp::read_file(device, slots::rescue::COUNT, slots::envblock::BLOCK)
+                .ok()??;
+            slots::rescue::decode(&block)
+        })
+        .max()
+        .unwrap_or(0)
+}
+
 /// The lock on the slot state, held while it lives.
 pub struct Lock;
 
