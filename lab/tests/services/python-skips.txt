@@ -1,0 +1,231 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+#
+# The tests of CPython's suite that the lab's test services/python leaves
+# out, each group with the reason it fails on Radix. A line is a test's
+# id, or a test file's name for the whole file; lines that start with '#'
+# are comments, which the lab test strips before it gives the list to
+# `python3 -m test --ignorefile`. When a gap closes, its lines go: the
+# gaps waiting on work are in docs/deferred.md.
+
+# mlibc has no sysconf(_SC_SEM_NSEMS_MAX), which multiprocessing's tests
+# ask before they start, so each of these suites stops in its setup: they
+# return when the C library answers it (deferred work).
+test_concurrent_futures
+test_multiprocessing_fork
+test_multiprocessing_forkserver
+test_multiprocessing_spawn
+
+# The test FTP server, on asyncore's select() loop, never answers its
+# client: a listening socket that select() does not report (deferred
+# work).
+test_ftplib
+
+# mmap(2) of a file in /tmp, which is tmpfs: Radix maps files of disk
+# filesystems only, and says ENODEV (deferred work).
+test.test_mmap.MmapTests.test_access_parameter
+test.test_mmap.MmapTests.test_basic
+test.test_mmap.MmapTests.test_entire_file
+test.test_mmap.MmapTests.test_find_end
+test.test_mmap.MmapTests.test_flush_parameters
+test.test_mmap.MmapTests.test_io_methods
+test.test_mmap.MmapTests.test_mmap_closed_by_int_scenarios
+test.test_mmap.MmapTests.test_move
+test.test_mmap.MmapTests.test_offset
+test.test_mmap.MmapTests.test_repr
+test.test_mmap.MmapTests.test_rfind
+test.test_mmap.MmapTests.test_tougher_find
+test.test_mmap.MmapTests.test_trackfd_parameter
+
+# RFC 3542's IPv6 ancillary data (IPV6_RECVHOPLIMIT, IPV6_RECVTCLASS),
+# TCP_QUICKACK and SO_LINGER's reset on close, which the TLS tests use:
+# socket options Radix does not have (ENOPROTOOPT).
+test.test_socket.RecvmsgIntoRFC3542AncillaryUDP6Test.testCmsgTruncNoBufSize
+test.test_socket.RecvmsgIntoRFC3542AncillaryUDP6Test.testOddCmsgSize
+test.test_socket.RecvmsgIntoRFC3542AncillaryUDP6Test.testRecvHopLimit
+test.test_socket.RecvmsgIntoRFC3542AncillaryUDP6Test.testRecvHopLimitCMSG_SPACE
+test.test_socket.RecvmsgIntoRFC3542AncillaryUDP6Test.testRecvTrafficClassAndHopLimit
+test.test_socket.RecvmsgIntoRFC3542AncillaryUDP6Test.testRecvTrafficClassAndHopLimitCMSG_SPACE
+test.test_socket.RecvmsgIntoRFC3542AncillaryUDP6Test.testSecondCmsgTrunc0
+test.test_socket.RecvmsgIntoRFC3542AncillaryUDP6Test.testSecondCmsgTrunc1
+test.test_socket.RecvmsgIntoRFC3542AncillaryUDP6Test.testSecondCmsgTrunc2Int
+test.test_socket.RecvmsgIntoRFC3542AncillaryUDP6Test.testSecondCmsgTruncInData
+test.test_socket.RecvmsgIntoRFC3542AncillaryUDP6Test.testSecondCmsgTruncLen0Minus1
+test.test_socket.RecvmsgIntoRFC3542AncillaryUDP6Test.testSetHopLimit
+test.test_socket.RecvmsgIntoRFC3542AncillaryUDP6Test.testSetTrafficClassAndHopLimit
+test.test_socket.RecvmsgIntoRFC3542AncillaryUDP6Test.testSingleCmsgTrunc0
+test.test_socket.RecvmsgIntoRFC3542AncillaryUDP6Test.testSingleCmsgTrunc1
+test.test_socket.RecvmsgIntoRFC3542AncillaryUDP6Test.testSingleCmsgTrunc2Int
+test.test_socket.RecvmsgIntoRFC3542AncillaryUDP6Test.testSingleCmsgTruncInData
+test.test_socket.RecvmsgIntoRFC3542AncillaryUDP6Test.testSingleCmsgTruncLen0Minus1
+test.test_socket.RecvmsgRFC3542AncillaryUDP6Test.testCmsgTruncNoBufSize
+test.test_socket.RecvmsgRFC3542AncillaryUDP6Test.testOddCmsgSize
+test.test_socket.RecvmsgRFC3542AncillaryUDP6Test.testRecvHopLimit
+test.test_socket.RecvmsgRFC3542AncillaryUDP6Test.testRecvHopLimitCMSG_SPACE
+test.test_socket.RecvmsgRFC3542AncillaryUDP6Test.testRecvTrafficClassAndHopLimit
+test.test_socket.RecvmsgRFC3542AncillaryUDP6Test.testRecvTrafficClassAndHopLimitCMSG_SPACE
+test.test_socket.RecvmsgRFC3542AncillaryUDP6Test.testSecondCmsgTrunc0
+test.test_socket.RecvmsgRFC3542AncillaryUDP6Test.testSecondCmsgTrunc1
+test.test_socket.RecvmsgRFC3542AncillaryUDP6Test.testSecondCmsgTrunc2Int
+test.test_socket.RecvmsgRFC3542AncillaryUDP6Test.testSecondCmsgTruncInData
+test.test_socket.RecvmsgRFC3542AncillaryUDP6Test.testSecondCmsgTruncLen0Minus1
+test.test_socket.RecvmsgRFC3542AncillaryUDP6Test.testSetHopLimit
+test.test_socket.RecvmsgRFC3542AncillaryUDP6Test.testSetTrafficClassAndHopLimit
+test.test_socket.RecvmsgRFC3542AncillaryUDP6Test.testSingleCmsgTrunc0
+test.test_socket.RecvmsgRFC3542AncillaryUDP6Test.testSingleCmsgTrunc1
+test.test_socket.RecvmsgRFC3542AncillaryUDP6Test.testSingleCmsgTrunc2Int
+test.test_socket.RecvmsgRFC3542AncillaryUDP6Test.testSingleCmsgTruncInData
+test.test_socket.RecvmsgRFC3542AncillaryUDP6Test.testSingleCmsgTruncLen0Minus1
+test.test_socket.TestQuickackFlag.test_set_quickack
+test.test_ssl.TestPreHandshakeClose.test_https_client_non_tls_response_ignored
+test.test_ssl.TestPreHandshakeClose.test_preauth_data_to_tls_client
+test.test_ssl.TestPreHandshakeClose.test_preauth_data_to_tls_server
+
+# recvmsg(2) of a UDP datagram larger than the buffer does not set
+# MSG_TRUNC.
+test.test_socket.RecvmsgIntoUDP6Test.testRecvmsgTrunc
+test.test_socket.RecvmsgIntoUDPTest.testRecvmsgTrunc
+test.test_socket.RecvmsgUDP6Test.testRecvmsgTrunc
+test.test_socket.RecvmsgUDPTest.testRecvmsgTrunc
+
+# Unix-domain datagram sockets (SOCK_DGRAM), and descriptors passed
+# over a socket (SCM_RIGHTS), which Radix does not have.
+test.test_asyncio.test_base_events.BaseEventLoopWithSelectorTests.test_create_datagram_endpoint_existing_sock_unix
+test.test_asyncio.test_base_events.BaseEventLoopWithSelectorTests.test_create_datagram_endpoint_sock_unix
+test.test_asyncio.test_unix_events.SelectorEventLoopUnixSocketTests.test_create_unix_server_path_dgram
+test.test_logging.UnixSysLogHandlerTest.test_udp_reconnection
+test.test_socket.SendRecvFdsTests.testSendAndRecvFds
+
+# socketpair()'s Python fallback over TCP on the loopback, and sendmsg
+# and recvmsg on a pair, find the connection not connected (ENOTCONN).
+test.test_socket.PurePythonSocketPairTest.test_injected_authentication_failure
+test.test_socket.PurePythonSocketPairTest.test_ipv4
+test.test_socket.PurePythonSocketPairTest.test_ipv6
+test.test_socket.PurePythonSocketPairTest.test_recv
+test.test_socket.PurePythonSocketPairTest.test_send
+test.test_socket.ReentrantMutationTests.test_recvmsg_into_reentrant_buffer_mutation
+test.test_socket.ReentrantMutationTests.test_sendmsg_reentrant_data_mutation
+
+# File names must be valid UTF-8 on Dukovo (radix-files(7)): names
+# with undecodable bytes, which these tests make, are refused (EINVAL).
+test.test_cmd_line_script.CmdLineTest.test_non_ascii
+test.test_ntpath.NtCommonTest.test_nonascii_abspath
+test.test_os.test_os.Pep383Tests.test_listdir
+test.test_os.test_os.Pep383Tests.test_open
+test.test_os.test_os.Pep383Tests.test_stat
+test.test_os.test_os.Pep383Tests.test_statvfs
+test.test_posixpath.PosixCommonTest.test_nonascii_abspath
+test.test_posixpath.PosixPathTest.test_realpath_invalid_paths
+test.test_shutil.TestRmTree.test_rmtree_on_named_pipe
+test.test_socket.TestUnixDomain.testUnencodableAddr
+test.test_unicode_file.TestUnicodeFiles.test_directories
+test.test_unicode_file.TestUnicodeFiles.test_single_files
+test.test_utf8_mode.UTF8ModeTests.test_cmd_line
+test.test_zipimport.DeflateCompressedZipImportTestCase.testUnencodable
+test.test_zipimport.UncompressedZipImportTestCase.testUnencodable
+test.test_zipimport.ZStdCompressedZipImportTestCase.testUnencodable
+
+# Thread names must be valid UTF-8 too: a name cut to 15 bytes in the
+# middle of a character is refused.
+test.test_threading.MiscTestCase.test_set_name
+
+# os.fwalk(), which walks by directory descriptors, finds symbolic links
+# and named pipes as Radix's fstatat(2) reports them relative to a
+# descriptor (deferred work).
+test.test_os.test_os.BytesFwalkTests.test_compare_to_walk
+test.test_os.test_os.BytesFwalkTests.test_dir_fd
+test.test_os.test_os.BytesFwalkTests.test_file_like_path
+test.test_os.test_os.BytesFwalkTests.test_walk_above_recursion_limit
+test.test_os.test_os.BytesFwalkTests.test_walk_bottom_up
+test.test_os.test_os.BytesFwalkTests.test_walk_named_pipe2
+test.test_os.test_os.BytesFwalkTests.test_walk_prune
+test.test_os.test_os.BytesFwalkTests.test_walk_symlink
+test.test_os.test_os.BytesFwalkTests.test_walk_topdown
+test.test_os.test_os.FwalkTests.test_compare_to_walk
+test.test_os.test_os.FwalkTests.test_dir_fd
+test.test_os.test_os.FwalkTests.test_file_like_path
+test.test_os.test_os.FwalkTests.test_walk_above_recursion_limit
+test.test_os.test_os.FwalkTests.test_walk_bottom_up
+test.test_os.test_os.FwalkTests.test_walk_named_pipe2
+test.test_os.test_os.FwalkTests.test_walk_prune
+test.test_os.test_os.FwalkTests.test_walk_symlink
+test.test_os.test_os.FwalkTests.test_walk_topdown
+
+# F_GETPIPE_SZ and F_SETPIPE_SZ, Linux's, which Radix does not have.
+test.test_fcntl.TestFcntl.test_fcntl_f_pipesize
+test.test_fcntl.TestFcntl.test_fcntl_large_buffer
+test.test_fcntl.TestFcntl.test_fcntl_small_buffer
+test.test_subprocess.ProcessTestCase.test_pipesize_default
+test.test_subprocess.ProcessTestCase.test_pipesizes
+test.test_subprocess.ProcessTestCaseNoPoll.test_pipesize_default
+test.test_subprocess.ProcessTestCaseNoPoll.test_pipesizes
+
+# The C library: strsignal(3) gives the signal's name, not its
+# description; strptime(3) and strftime(3) have no %Z name for the time
+# zone; fma(3) loses a negative zero's sign; writev(3) with no buffers and
+# dladdr(3) in a static program end the program; pathconf(3) and
+# ttyname(3) answer a bad descriptor with other errors (deferred work).
+test.test_c_stack_unwind.ManualStackUnwindTests.test_manual_unwind_finds_expected_frames
+test.test_math.FMATests.test_fma_zero_result
+test.test_os.test_os.TestInvalidFD.test_fpathconf_bad_fd
+test.test_os.test_os.TestInvalidFD.test_pathconf_negative_fd_uses_fd_semantics
+test.test_os.test_os.TestInvalidFD.test_ttyname
+test.test_signal.PosixTests.test_strsignal
+test.test_strptime.CalculationTests.test_day_of_week_calculation
+test.test_strptime.CalculationTests.test_gregorian_calculation
+test.test_strptime.CalculationTests.test_julian_calculation
+test.test_time.TimeTestCase.test_strptime
+
+# Radix has no prlimit(2), does not enforce RLIMIT_FSIZE, and its
+# syslog(3) keeps no log mask.
+test.test_resource.ResourceTest.test_fsize_enforced
+test.test_resource.ResourceTest.test_prlimit
+test.test_syslog.Test.test_setlogmask
+
+# What the bundle leaves out: libpython, Python's headers and its
+# Makefile, which nothing on Radix could load or build against, and the
+# platform's multiarch name, which only Linux and Android have.
+test.test_build_details.CPythonBuildDetailsTests.test_implementation
+test.test_build_details.CPythonBuildDetailsTests.test_platform
+test.test_sysconfig.MakefileTests.test_get_makefile_filename
+test.test_sysconfig.TestSysConfig.test_get_config_h_filename
+test.test_sysconfig.TestSysConfig.test_srcdir
+
+# writev(3) with no buffers ends the program in the C library: this
+# test stops its whole worker, so it is left out by itself.
+test.test_os.test_posix.PosixTester.test_writev
+
+# getaddrinfo(3) knows no service names ("http") and no IPv6 scope
+# by an interface's name.
+test.test_asyncio.test_base_events.BaseEventLoopWithSelectorTests.test_create_connection_ipv6_scope
+test.test_asyncio.test_base_events.BaseEventLoopWithSelectorTests.test_create_connection_service_name
+test.test_socket.GeneralModuleTests.test_getaddrinfo_ipv6_scopeid_symbolic
+
+# Other gaps of Radix's that these tests find, each in deferred work:
+# a pseudo-terminal's functions, a new process's event loop, the time
+# a thread has used (pthread_getcpuclockid), file sizes past the test
+# disk, fopen of a path with the wrong type, lowering the descriptor
+# limit, chown's errors, scandir's attributes, copying into a folder that
+# does not exist, a race on a symbolic link while a folder is removed,
+# TLS shut down on a slow socket, and subinterpreters' checks of types.
+test.datetimetester.CapiTest_Fast.test_type_check_in_subinterp
+test.test_asyncio.test_events.TestCGetEventLoop.test_get_event_loop_new_process
+test.test_asyncio.test_events.TestPyGetEventLoop.test_get_event_loop_new_process
+test.test_asyncio.test_ssl.TestSSL.test_remote_shutdown_receives_trailing_data_on_slow_socket
+test.test_capi.test_file.CAPIFileTest.test_py_fopen
+test.test_io.test_general.CIOTest.test_large_file_ops
+test.test_io.test_general.PyIOTest.test_large_file_ops
+test.test_os.test_os.PseudoterminalTests.test_posix_pty_functions
+test.test_os.test_os.TestScandir.test_attributes
+test.test_shutil.TestCopy.test_copyfile_nonexistent_dir
+test.test_shutil.TestMisc.test_chown
+test.test_subprocess.POSIXProcessTestCase.test_close_fds_when_max_fd_is_lowered
+test.test_tempfile.TestTemporaryDirectory.test_cleanup_with_symlink_race
+test.test_time.TimeTestCase.test_pthread_getcpuclockid
+
+# The bundle's library is sealed and compiled when it is built, so an
+# import the audit tests watch finds the module without the file events
+# they expect.
+test.test_audit.AuditTest.test_builtin__import__
+test.test_audit.AuditTest.test_import_module
+test.test_audit.AuditTest.test_import_statement

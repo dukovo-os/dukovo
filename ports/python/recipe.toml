@@ -1,0 +1,31 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# CPython, the Python language's interpreter and standard library: a
+# bundle of the Dukovo catalog, not of the image (ADRs 0370 and 0495).
+name = "python"
+version = "3.15.2"
+summary = "the Python programming language"
+# CPython is under the PSF's license and those before it (Python-2.0); it
+# builds in Expat and HACL* (MIT), mpdecimal (BSD-2-Clause) and
+# code under BSD-style notices, which Doc/license.rst lists. pip (MIT)
+# carries requests, CacheControl, msgpack, distro and packaging
+# (Apache-2.0), idna (BSD-3-Clause), Pygments (BSD-2-Clause), resolvelib
+# (ISC), distlib (Python-2.0) and certifi (MPL-2.0), whose notices are in
+# its dist-info folder in the bundle.
+license = "Python-2.0 AND MIT AND BSD-2-Clause AND BSD-3-Clause AND Apache-2.0 AND ISC AND MPL-2.0"
+homepage = "https://www.python.org"
+depends = ["mlibc", "openssl", "zlib", "xz", "bzip2", "zstd", "ncurses"]
+notices = ["LICENSE", "Doc/license.rst", "Modules/expat/COPYING"]
+
+[source]
+git = "https://github.com/python/cpython.git"
+commit = "5e58eaad7c58df58dfa8ea549c87996e01dd1077"
+tag = "v3.15.2"
+
+[bundle]
+id = "org.python.python"
+name = "Python"
+commands = ["python3", "pip3"]
+aliases = { python = "python3", pip = "pip3" }
+links = ["mlibc", "openssl", "zlib", "xz", "bzip2", "zstd", "ncurses"]

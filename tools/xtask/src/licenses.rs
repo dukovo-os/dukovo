@@ -75,7 +75,9 @@ const FIRMWARE_ALLOW: &[&str] = &["LicenseRef-Intel-Microcode"];
 /// files have it (ADR 0346). eSpeak NG builds Unicode's character data
 /// into itself, under Unicode's license for its data files (ADR 0324).
 /// BRLTTY and its tables are under the LGPL, as a program of its own with
-/// the project's screen driver built in (ADR 0326).
+/// the project's screen driver built in (ADR 0326). CPython is under the
+/// PSF's license and those before it, `Python-2.0`, which are permissive
+/// (ADR 0495).
 const PORT_EXTRA_ALLOW: &[&str] = &[
     "CC0-1.0",
     "GPL-2.0-only",
@@ -108,6 +110,7 @@ const PORT_EXTRA_ALLOW: &[&str] = &[
     "LicenseRef-libpcap-notices",
     "LicenseRef-tcpdump-notices",
     "Unicode-DFS-2016",
+    "Python-2.0",
 ];
 
 /// Crates from crates.io that compile another project's C code into what
@@ -280,7 +283,9 @@ pub fn install(ctx: &Ctx, staging: &Path, extras: &Extras<'_>) -> Result<String>
 /// beyond a port's (ADR 0370). The Mozilla Public License 2.0 is copyleft
 /// file by file: each such file's source is the crate on crates.io that
 /// the bundle's SBOM names, with its SHA-256, which is the "reasonable
-/// means" of obtaining it that it asks for. PCRE2's exception, which
+/// means" of obtaining it that it asks for; for certifi, in pip in
+/// Python's bundle, it is pip's wheel in CPython's repository at the
+/// commit the SBOM names (ADR 0495). PCRE2's exception, which
 /// nginx's bundle carries, lifts the BSD licence's condition on binaries
 /// from the programs that only include a library that includes PCRE2.
 /// The Boost Software License 1.0, fpconv's in Valkey's bundle, asks for

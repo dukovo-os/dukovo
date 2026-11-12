@@ -1,0 +1,76 @@
+SPDX-FileCopyrightText: 2001-present Python Software Foundation
+SPDX-FileCopyrightText: 2026 The Dukovo contributors
+SPDX-License-Identifier: Python-2.0
+
+Radix as a system to build for
+
+configure builds for another system only for those it knows, and stops
+for any other. This names Radix (x86_64-pc-radix): sys.platform is
+"radix", and the platform's name in a build's files is radix-x86_64. A
+thread's name holds 15 bytes, as on Linux, which the kernel shares: Python
+cuts a longer one to fit, as it does there.
+
+diff --git a/configure b/configure
+index 6f7ff1b..999d521 100755
+--- a/configure
++++ b/configure
+@@ -4178,6 +4178,9 @@ then
+ 	*-*-wasi*)
+ 	    ac_sys_system=WASI
+ 	    ;;
++	*-*-radix*)
++	    ac_sys_system=Radix
++	    ;;
+ 	*)
+ 		# for now, limit cross builds to known configurations
+ 		MACHDEP="unknown"
+@@ -4685,6 +4688,9 @@ printf "%s\n" "$IPHONEOS_DEPLOYMENT_TARGET" >&6; }
+ 	wasm32-*-* | wasm64-*-*)
+ 		_host_ident=$host_cpu
+ 		;;
++	*-*-radix*)
++		_host_ident=$host_cpu
++		;;
+ 	*)
+ 		# for now, limit cross builds to known configurations
+ 		MACHDEP="unknown"
+@@ -32393,6 +32399,7 @@ case "$ac_sys_system" in
+   iOS) _PYTHREAD_NAME_MAXLEN=63;;
+   FreeBSD*) _PYTHREAD_NAME_MAXLEN=19;; # gh-131268
+   OpenBSD*) _PYTHREAD_NAME_MAXLEN=23;; # gh-131268
++  Radix) _PYTHREAD_NAME_MAXLEN=15;;
+   *) _PYTHREAD_NAME_MAXLEN=;;
+ esac
+ if test -n "$_PYTHREAD_NAME_MAXLEN"; then
+diff --git a/configure.ac b/configure.ac
+index 9923805..4b9bb50 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -360,6 +360,9 @@ then
+ 	*-*-wasi*)
+ 	    ac_sys_system=WASI
+ 	    ;;
++	*-*-radix*)
++	    ac_sys_system=Radix
++	    ;;
+ 	*)
+ 		# for now, limit cross builds to known configurations
+ 		MACHDEP="unknown"
+@@ -833,6 +836,9 @@ if test "$cross_compiling" = yes; then
+ 	wasm32-*-* | wasm64-*-*)
+ 		_host_ident=$host_cpu
+ 		;;
++	*-*-radix*)
++		_host_ident=$host_cpu
++		;;
+ 	*)
+ 		# for now, limit cross builds to known configurations
+ 		MACHDEP="unknown"
+@@ -8084,6 +8090,7 @@ case "$ac_sys_system" in
+   iOS) _PYTHREAD_NAME_MAXLEN=63;;
+   FreeBSD*) _PYTHREAD_NAME_MAXLEN=19;; # gh-131268
+   OpenBSD*) _PYTHREAD_NAME_MAXLEN=23;; # gh-131268
++  Radix) _PYTHREAD_NAME_MAXLEN=15;;
+   *) _PYTHREAD_NAME_MAXLEN=;;
+ esac
+ if test -n "$_PYTHREAD_NAME_MAXLEN"; then

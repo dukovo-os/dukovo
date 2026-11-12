@@ -1,0 +1,7 @@
+#!/bin/sh
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# pip3: Python's package installer (ADR 0495), as python3 -m pip.
+# The bundle's python3, beside this script wherever the bundle is.
+exec "${0%/*}/python3" -m pip "$@"
