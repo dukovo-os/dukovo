@@ -38,6 +38,7 @@ pub mod log;
 pub mod machine;
 pub mod messages;
 pub mod plan;
+pub mod repair;
 pub mod screens;
 pub mod settings;
 pub mod windows;

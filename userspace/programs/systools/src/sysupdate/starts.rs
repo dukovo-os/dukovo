@@ -23,6 +23,12 @@ pub const DIR: &str = "/system/state/starts";
 /// How many records are kept.
 pub const KEEP: u64 = 100;
 
+/// The mark Spark leaves among the records as a start reaches its
+/// services (ADR 0503), which [`begin_in`] removes: while it is there, a
+/// start after the newest record got that far but never to its health
+/// check.
+pub const REACHED: &str = "reached";
+
 /// How a start ended.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -134,6 +140,8 @@ pub fn write_in(dir: &Path, start: &Start) -> std::io::Result<()> {
 /// If it cannot be written.
 pub fn begin_in(dir: &Path, slot: &str, items: Vec<Item>, now: i64) -> std::io::Result<Start> {
     let number = all_in(dir).last().map_or(1, |last| last.number + 1);
+    // This start reached its health check: Spark's mark has done its job.
+    let _ = std::fs::remove_file(dir.join(REACHED));
     let start = Start {
         number,
         started: now,
@@ -268,7 +276,10 @@ mod tests {
             }
             items
         };
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(REACHED), "services\n").unwrap();
         let first = begin_in(&dir, "a", items("2026.1.1", true), 1000).unwrap();
+        assert!(!dir.join(REACHED).exists(), "the health check's record removes Spark's mark");
         assert_eq!((first.number, first.outcome), (1, Outcome::Unfinished));
         finish_in(&dir, first, Outcome::Good, None).unwrap();
         let second = begin_in(&dir, "b", items("2026.2.1", false), 2000).unwrap();

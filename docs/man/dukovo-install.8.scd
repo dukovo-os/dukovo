@@ -15,6 +15,8 @@ dukovo-install - install Dukovo onto a disk from the install stick or DVD
 
 *dukovo-install --hash-password* [*--test-cost*] < _file_
 
+*dukovo-install --repair-startup*
+
 # DESCRIPTION
 
 dukovo-install installs Dukovo onto a disk from the signed release on
@@ -243,7 +245,7 @@ An install then runs these steps, each printed as it starts:
 It ends with the line to act on:
 
 ```
-dukovo-install: Dukovo 0.14.1 is installed on vda. Remove the install stick, then restart.
+dukovo-install: Dukovo 0.15.0 is installed on vda. Remove the install stick, then restart.
 ```
 
 From the DVD, it says to remove the install disc.
@@ -278,6 +280,23 @@ From the DVD, it says to remove the install disc.
 *--test-cost*
 	With *--hash-password*, hash at the boot tests' low cost, which
 	is quick and easy to guess: for tests only.
+
+*--repair-startup*
+	Repair the startup of each installed Dukovo on the computer's
+	disks (ADR 0503), as the install stick's *Repair startup of an
+	installed Dukovo* entry does, on the hotkey R: GRUB put back on
+	the disk for UEFI, and for a BIOS where the disk has a BIOS boot
+	partition; the start menu written again from the slot that starts,
+	for the root's UUID, with Rescue's entry, GRUB's environment and the
+	serial console the menu had; the slot state kept when it is whole
+	and names a slot that is there, and otherwise the slot that is
+	there made the default; the count of starts not seen through set
+	back to none; and Dukovo's firmware boot entry made first again
+	where the firmware has one. Nothing in the root changes. When it
+	finds no Dukovo, it says that a disk controller in RAID mode hides
+	the disks, and that the firmware's SATA mode should be AHCI. It
+	ends by restarting, once Enter is pressed. What it ran is in
+	_/tmp/install/repair-startup.log_.
 
 # FILES
 

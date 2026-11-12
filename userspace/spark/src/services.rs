@@ -207,7 +207,7 @@ fn convert(dir: &Dir, name: &str) -> Result<(), String> {
 /// the new file's data is still in the cache behind it; a boot then
 /// reads the file as present but blank. (A power cut just after boot
 /// used to wipe the service files this way, so no service started.)
-fn write_new(dir: &Dir, path: &str, text: &str) -> Result<(), String> {
+pub(crate) fn write_new(dir: &Dir, path: &str, text: &str) -> Result<(), String> {
     let new = format!("{path}.new");
     dir.create(&new)
         .and_then(|file| {

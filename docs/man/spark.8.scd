@@ -148,7 +148,11 @@ Init: /system/commands/spark is process 1
   only the system's own services, those with a file in
   _/system/resources/default-settings/spark/services_, and says *spark:
   essentials: only the system's own services start*; those an app or an
-  administrator added stay off until *service*(8) starts them.
+  administrator added stay off until *service*(8) starts them. Outside
+  Rescue, before the first service starts, Spark writes
+  _/system/state/starts/reached_, which the health check removes as it
+  begins the start's record (ADR 0503): Rescue reads it as a start that
+  reached its services but not its health check.
 . The first Btrfs mounted read-write whose top holds the subvolumes
   _@system.a_, _@state_, _@applications_, _@users_ and _@shared_ is
   Dukovo's root, as *./ob image* makes it on its Dukovo root

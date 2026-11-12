@@ -237,7 +237,20 @@ setting:
 
 After three starts in a row that do not finish, **Rescue** starts by
 itself. Once you sign in, it says why it may have started and what
-changed, and offers its repairs.
+changed, and offers its repairs. When those starts reached their
+services, Rescue says so, and the start with only the essentials is the
+one to try; when none did, they stopped in the kernel or mounting the
+root, and the start with all of the kernel's messages shows where.
+
+### Repair startup
+
+If no Dukovo menu shows at all, because GRUB or its menu is gone from
+the EFI system partition or the firmware lost its boot entry, start the
+install stick and choose **Repair startup of an installed Dukovo**, or
+press R at its menu. It finds Dukovo on your disks, puts GRUB, the
+start menu and the boot entry back, and keeps which version starts.
+Nothing else on the disk changes. Pull the stick when it says so, and
+press Enter to restart.
 
 ## Going back later
 

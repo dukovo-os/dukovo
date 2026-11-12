@@ -72,6 +72,15 @@ menuentry "Install Dukovo @VERSION@ with speech" --id install-speech --hotkey=s 
 @MODULES@    boot
 }
 
+# Repair startup (ADR 0503), for an installed Dukovo that no longer
+# starts: GRUB, the start menu and the firmware's boot entry put back
+# on each disk that holds one, nothing in its root changed. The hotkey R
+# starts it at once.
+menuentry "Repair startup of an installed Dukovo" --id repair-startup --hotkey=r {
+    multiboot2 /boot/radix live install repair-startup console-sign-in=off @CMDLINE@
+@MODULES@    boot
+}
+
 # A shell on every console, with no sign-in: the live system has no
 # accounts, and nothing on it outlives the boot.
 menuentry "Try Dukovo @VERSION@ (live console)" --id try {

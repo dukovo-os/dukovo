@@ -157,13 +157,13 @@ fn why_it_failed(root: &Root) -> Vec<String> {
     let mut lines = Vec::new();
     let counted = place::partitions(root).map_or(0, |esps| place::rescue_starts(&esps));
     if counted > 0 && newest.outcome == Outcome::Good {
+        let reached = root.path("@state/starts").join(starts::REACHED).exists();
         lines.push(format!(
             "The last {counted} starts were not seen through. They stopped before the health \
-             check began, after start {}, the last recorded: in the kernel, mounting the root \
-             or starting the services. Troubleshooting on the start menu offers a start with \
-             all of the kernel's messages.",
+             check began, after start {}, the last recorded.",
             newest.number
         ));
+        lines.push(stopped_where(reached).into());
     } else if counted > 0 {
         lines.push(format!("The last {counted} starts were not seen through."));
     }
@@ -187,6 +187,19 @@ fn why_it_failed(root: &Root) -> Vec<String> {
         ));
     }
     lines
+}
+
+/// Where starts that never began their health check stopped, by whether
+/// one of them `reached` its services, as Spark marks it (ADR 0503).
+fn stopped_where(reached: bool) -> &'static str {
+    if reached {
+        "At least one of them reached its services, but not its health check: a service, or \
+         one an app or an administrator added, may be to blame. Troubleshooting on the start \
+         menu offers a start with only the essentials."
+    } else {
+        "None of them reached its services: they stopped in the kernel or mounting the root. \
+         Troubleshooting on the start menu offers a start with all of the kernel's messages."
+    }
 }
 
 /// Asks `question`, the answer shown as typed if `shown`; `None` when

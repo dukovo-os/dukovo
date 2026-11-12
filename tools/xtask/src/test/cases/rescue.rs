@@ -115,14 +115,20 @@ fn rescued(vm: &mut Vm, _case: &Case) -> Result<(), String> {
 
     // Three starts in a row cut short before the health check sees them
     // through: Rescue starts by itself at the fourth.
+    // Each reaches its services, as Spark marks it (ADR 0503), but not
+    // its health check, which starts last.
     vm.monitor("system_reset")?;
     for _ in 0..3 {
         vm.expect("spark: started slot a, @system.a")?;
+        vm.expect("spark: started logd (")?;
         vm.monitor("system_reset")?;
     }
     let at = in_rescue(vm)?;
-    // Why: the starts the menu counted (ADR 0501).
-    vm.expect_screen(&["The last 3 starts were not seen through."])?;
+    // Why: the starts the menu counted (ADR 0501), and how far they got.
+    vm.expect_screen(&[
+        "The last 3 starts were not seen through.",
+        "At least one of them reached its services",
+    ])?;
     if vm.log()[at..].contains("spark: started netd") {
         return Err("Rescue started networking before anyone turned it on".into());
     }

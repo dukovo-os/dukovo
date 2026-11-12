@@ -21,13 +21,17 @@ use dukovo_install::screens;
 const USAGE: &str = "\
 usage: dukovo-install [--release DIR]
        dukovo-install --answers FILE|https://ADDRESS [--sha256 HEX] [--release DIR]
-       dukovo-install --hash-password [--test-cost] < FILE";
+       dukovo-install --hash-password [--test-cost] < FILE
+       dukovo-install --repair-startup";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let words: Vec<&str> = args.iter().map(String::as_str).collect();
     let status = match words.as_slice() {
+        // The stick's Repair startup entry (ADR 0503).
+        [] if dukovo_install::machine::repairs_startup() => dukovo_install::repair::run(),
         [] => screens::run(None),
+        ["--repair-startup"] => dukovo_install::repair::run(),
         ["--release", dir] => screens::run(Some(Path::new(dir))),
         ["--answers", from, options @ ..] => match answers_options(options) {
             Some((sha256, release)) => from_answers(from, sha256, release),

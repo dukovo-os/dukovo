@@ -74,9 +74,13 @@ menu counts them, and the newest start that failed or never finished,
 from the root's records of each start, with what changed since the last
 good start, as *changes*(1) says it, and the support page of its error
 ID. When the newest record is of a good start, the starts counted after
-it stopped before the health check began: in the kernel, mounting the
-root or starting the services; Troubleshooting on the start menu offers
-a start with all of the kernel's messages.
+it stopped before the health check began. Spark marks a start that
+reaches its services (ADR 0503): when one of them did, Rescue says so,
+and that the start with only the essentials, on the start menu's
+Troubleshooting, is the one to try; when none did, they stopped in the
+kernel or mounting the root, and the start with all of the kernel's
+messages shows where. When no menu shows at all, *Repair startup* on the
+install stick puts GRUB and the menu back (*dukovo-install*(8)).
 
 # CHOICES
 

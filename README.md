@@ -16,7 +16,7 @@ An operating system built on **Radix**, a capability kernel written in Rust.
 
 [![CI](https://github.com/dukovo-os/dukovo/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/dukovo-os/dukovo/actions/workflows/ci.yml)
 [![Benchmarks](https://github.com/dukovo-os/dukovo/actions/workflows/bench.yml/badge.svg?branch=main)](https://github.com/dukovo-os/dukovo/actions/workflows/bench.yml)
-![Version](https://img.shields.io/badge/version-0.14.1-44596B)
+![Version](https://img.shields.io/badge/version-0.15.0-44596B)
 ![License](https://img.shields.io/badge/license-Apache--2.0%20OR%20MIT-44596B)
 
 [Website](https://dukovo.org) ·
@@ -58,7 +58,7 @@ The window manager (`windowd`) and the desktop follow from release 1.1
 
 ## Status
 
-Phases 0 to 13 of the [roadmap](docs/roadmap.md) are done; Phase 14 is
+Phases 0 to 15 of the [roadmap](docs/roadmap.md) are done; Phase 16 is
 under way. Each phase ends in something that boots and is tested in QEMU,
 and on real machines in the project's test lab.
 
@@ -69,9 +69,9 @@ and on real machines in the project's test lab.
 | 11 | USB, input, power, IOMMUs, NTFS and removable media | Done; memory cards and optical drives under way |
 | 12 | Networking, IPv6, the firewall and WireGuard | Done |
 | 13 | Users, SSH, bundles, the catalog, logging and file sharing | Done |
-| 14 | The installer, `rdisk`, USB media and cloud images | Under way |
-| 15 | Atomic updates and snapshots | Planned |
-| 16 | Server platform and the Dukovo Admin web console | Planned |
+| 14 | The installer, `rdisk`, USB media and cloud images | Done |
+| 15 | Atomic updates and snapshots | Done |
+| 16 | Server platform and the Dukovo Admin web console | Under way |
 | 17 | Go toolchain | Planned |
 | 18 | Linux containers through Podman: **Release 1.0** | Planned |
 
@@ -128,7 +128,7 @@ Settings live in [`dukovo.toml`](dukovo.toml). The full manual is
 ```sh
 ./ob image
 lsblk -d -o NAME,SIZE,MODEL,TRAN          # find your stick, for example sdb
-sudo dd if=out/dukovo-0.14.1-x86_64.img of=/dev/sdX bs=4M conv=fsync status=progress
+sudo dd if=out/dukovo-0.15.0-x86_64.img of=/dev/sdX bs=4M conv=fsync status=progress
 ```
 
 Everything on the target device is erased. balenaEtcher, GNOME Disks
