@@ -28,9 +28,11 @@ use system_release::list::Release;
 use system_release::store::Store;
 
 use crate::args::Args;
+use crate::changes;
 use crate::prompt::{self, Answer};
 use crate::sysupdate::place::{self, BUILDING, Root};
 use crate::sysupdate::stage::{self, Files, TRUSTED_ROOT};
+use crate::sysupdate::starts::{self, Outcome};
 use crate::util::{self, Fail, fail};
 use crate::{power, probe, subvolume};
 
@@ -94,6 +96,12 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
         std::thread::sleep(std::time::Duration::from_secs(10));
         return Ok(1);
     }
+    if let Ok(root) = &rescued.root {
+        println!();
+        for line in why_it_failed(root) {
+            println!("{line}");
+        }
+    }
     loop {
         println!();
         let update = rescued.root.as_ref().ok().and_then(settings_to_put_back);
@@ -101,6 +109,7 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
             |ok: bool, text: &str| if ok { text.to_string() } else { format!("{text} (not here)") };
         let mounted = rescued.root.is_ok();
         println!("What would you like to do?");
+        println!("  0  {}", can(mounted, "Why the last start failed, and what changed"));
         println!("  1  {}", can(mounted, "Reinstall Dukovo, keeping settings, apps and files"));
         println!(
             "  2  {}",
@@ -113,8 +122,9 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
         println!("  7  Start Dukovo normally");
         println!("  8  Restart");
         println!("  9  Power off");
-        let Some(choice) = ask("Choose 1 to 9: ", true) else { return Ok(0) };
+        let Some(choice) = ask("Choose 0 to 9: ", true) else { return Ok(0) };
         let done = match (choice.trim(), &rescued.root) {
+            ("0", Ok(root)) => Ok(why_it_failed(root).join("\n")),
             ("1", Ok(root)) => reinstall(root),
             ("2", Ok(root)) if update.is_some() => put_back_settings(root),
             ("3", Ok(root)) => check_disk(root),
@@ -130,6 +140,65 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
             Ok(said) => println!("{said}"),
             Err(why) => println!("Rescue: {why}"),
         }
+    }
+}
+
+/// Why the root's last start failed, from the record the health check
+/// keeps of each start, and what changed since the last good start (ADR
+/// 0501): how many starts in a row were not seen through, as the boot
+/// menu counts them; the newest start that failed or never finished; or,
+/// when the newest record is of a good start, that the starts the menu
+/// counted after it stopped before the health check began them a record.
+fn why_it_failed(root: &Root) -> Vec<String> {
+    let records = starts::all_in(&root.path("@state/starts"));
+    let Some(newest) = records.last() else {
+        return vec!["No start of this Dukovo has been recorded: it is older than 0.15.0, or has never started.".into()];
+    };
+    let mut lines = Vec::new();
+    let counted = place::partitions(root).map_or(0, |esps| place::rescue_starts(&esps));
+    if counted > 0 && newest.outcome == Outcome::Good {
+        let reached = root.path("@state/starts").join(starts::REACHED).exists();
+        lines.push(format!(
+            "The last {counted} starts were not seen through. They stopped before the health \
+             check began, after start {}, the last recorded.",
+            newest.number
+        ));
+        lines.push(stopped_where(reached).into());
+    } else if counted > 0 {
+        lines.push(format!("The last {counted} starts were not seen through."));
+    }
+    let Some(failed) = records.iter().rev().find(|start| start.outcome != Outcome::Good) else {
+        lines.push(format!("Every start recorded was good, the last start {}.", newest.number));
+        return lines;
+    };
+    lines.push(changes::start_line(failed));
+    if failed.outcome == Outcome::Unfinished {
+        lines.push(
+            "Its services started, but its health check never finished: it stopped, hung or \
+             lost power after that."
+                .into(),
+        );
+    }
+    lines.extend(changes::report(&records, None, failed));
+    if let Some(id) = &failed.error {
+        lines.push(format!(
+            "Help: https://dukovo.org/support/{}/errors/{id}.html",
+            env!("CARGO_PKG_VERSION")
+        ));
+    }
+    lines
+}
+
+/// Where starts that never began their health check stopped, by whether
+/// one of them `reached` its services, as Spark marks it (ADR 0503).
+fn stopped_where(reached: bool) -> &'static str {
+    if reached {
+        "At least one of them reached its services, but not its health check: a service, or \
+         one an app or an administrator added, may be to blame. Troubleshooting on the start \
+         menu offers a start with only the essentials."
+    } else {
+        "None of them reached its services: they stopped in the kernel or mounting the root. \
+         Troubleshooting on the start menu offers a start with all of the kernel's messages."
     }
 }
 

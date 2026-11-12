@@ -206,6 +206,14 @@ pub fn with_speech() -> bool {
     has_flag(&line, "speech")
 }
 
+/// Whether the kernel has the flag `repair-startup`, as the install
+/// stick's "Repair startup" entry gives it (ADR 0503).
+#[must_use]
+pub fn repairs_startup() -> bool {
+    let line = fs::read_to_string("/kernel/cmdline").unwrap_or_default();
+    has_flag(&line, "repair-startup")
+}
+
 /// Whether the kernel flags of command line `line`, those before a lone
 /// `--`, have `flag`.
 fn has_flag(line: &str, flag: &str) -> bool {

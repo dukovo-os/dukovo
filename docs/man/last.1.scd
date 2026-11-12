@@ -84,7 +84,7 @@ _-2h_, _2026-10-31_, _2026-10-31 12:40_ or _12:40_.
 $ last
 bob      pts/1                         Sat Oct 31 12:46   still logged in
 bob      pts/1                         Sat Oct 31 12:41 - 12:45  (00:04)
-reboot   system boot  0.14.1           Sat Oct 31 12:39   still running
+reboot   system boot  0.15.0           Sat Oct 31 12:39   still running
 
 sign-in records begin Sat Oct 31 12:39:01 2026
 ```

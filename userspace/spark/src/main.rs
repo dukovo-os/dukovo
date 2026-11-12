@@ -239,6 +239,22 @@ fn main(start: &Startup) -> u64 {
     idle()
 }
 
+/// Where the health check keeps the record of every start (ADR 0500).
+const STARTS_DIR: &str = "system/state/starts";
+
+/// Marks that this start reached its services (ADR 0503): `reached`
+/// among the start records, which the health check removes as it begins
+/// this start's record. Rescue finds it when a start after the last
+/// record got this far but never to its health check. Only where the
+/// records are kept on a disk; Rescue marks nothing.
+fn mark_reached(root: &Dir) {
+    let rw = Rights::READ.union(Rights::WRITE);
+    let Ok(dir) = root.open_dir(STARTS_DIR, rw) else { return };
+    if let Err(err) = services::write_new(&dir, "reached", "services\n") {
+        println!("spark: cannot mark how far this start got: {err}");
+    }
+}
+
 /// Builds the hierarchy and mounts the disks, then starts the services or
 /// the program its arguments name; returns the supervision of them.
 fn run() -> Option<Supervisor> {
@@ -282,6 +298,13 @@ fn run() -> Option<Supervisor> {
     supervisor.set_watchdog(watchdog, hang, kernel_flag(&root, "test-hang"));
     if rescue(&root) {
         supervisor.set_rescue();
+    }
+    // The start menu's Troubleshooting: only the essentials (ADR 0501).
+    if kernel_flag(&root, "essentials") {
+        supervisor.set_essentials();
+    }
+    if !rescue(&root) {
+        mark_reached(&root);
     }
     supervisor.listen();
     if ROOT_MISSING.load(core::sync::atomic::Ordering::Relaxed) {

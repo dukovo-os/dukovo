@@ -46,11 +46,18 @@ fn update_power_cut(vm: &mut Vm, _case: &Case) -> Result<(), String> {
     )?;
     vm.monitor("system_reset")?;
 
-    // Nothing was sealed and the slot state never named slot B.
+    // Nothing was sealed and the slot state never named slot B. The
+    // health check may remove the half-built slot before tty1 shows; on
+    // a failure, what sysupdate said tells why.
     started(vm, 'a')?;
-    vm.expect(
+    vm.expect_anywhere(
         "sysupdate: removed @system.new, a slot left half built by a stage that did not finish",
-    )?;
+    )
+    .map_err(|err| {
+        let log = vm.log();
+        let said: Vec<&str> = log.lines().filter(|line| line.contains("sysupdate")).collect();
+        format!("{err}; sysupdate said: {}", said[said.len().saturating_sub(12)..].join(" | "))
+    })?;
     run(
         vm,
         "sysupdate status",

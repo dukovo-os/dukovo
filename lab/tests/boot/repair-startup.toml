@@ -1,0 +1,45 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# Repair startup from the install stick (ADR 0503). The installed
+# system's start menu is taken off its EFI system partition, as a
+# firmware update or another system's installer can leave it, so that
+# GRUB stops at its own prompt. The stick's Repair startup, on the
+# hotkey R, finds the installed Dukovo, puts GRUB and the menu back and
+# keeps the slot state; with the stick pulled, the disk starts again.
+about = "With the start menu taken off the EFI system partition, the install stick's Repair startup finds the installed Dukovo, puts GRUB and its menu back and keeps the slot state, and the disk then starts by itself (ADR 0503)"
+time = "15m"
+fresh = true
+
+[[step]]
+run = '''sh -c 'for p in /kernel/block/*; do if [ "$(tr A-Z a-z < $p/parttype 2>/dev/null)" = "c12a7328-f81f-11d2-ba4b-00a0c93ec93b" ]; then esp=$(basename $p); break; fi; done; mkdir -p /tmp/esp && mount -t fat /devices/$esp /tmp/esp && rm /tmp/esp/boot/grub/grub.cfg && umount /tmp/esp && echo "menu gone: $((6 * 7))"' '''
+root = true
+expect = "menu gone: 42"
+# The stick, which the lab machines' firmware starts before the disk.
+[[step]]
+usb = "plug"
+[[step]]
+run = "sh -c '(sleep 2; reboot) > /dev/null 2>&1 &'"
+root = true
+[[step]]
+screen = "Repair startup of an installed Dukovo"
+[[step]]
+keys = ["r"]
+[[step]]
+screen = ["Repair startup", "GRUB is back on the disk for UEFI", "slot A by default"]
+[[step]]
+screen = ["Startup is repaired.", "Remove the stick, then press Enter to restart."]
+[[step]]
+screenshot = "repaired"
+[[step]]
+usb = "unplug"
+[[step]]
+keys = ["ret"]
+[[step]]
+serial = "spark: started slot a, @system.a"
+[[step]]
+wait = "ready"
+[[step]]
+run = "sysupdate status"
+root = true
+expect = ["Running:  slot A", "Next start: slot A"]

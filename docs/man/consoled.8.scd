@@ -48,7 +48,7 @@ release, *\\l* the console's name, *\\n* the host's name, *\\v* the
 kernel's version and *\\m* the machine:
 
 ```
-Dukovo Server 0.14.1 (tty1)
+Dukovo Server 0.15.0 (tty1)
 
 Name:
 ```
@@ -63,7 +63,9 @@ Above the sign-in prompt, in issue's place, each console shows the
 welcome banner: Duke and the name in plain ASCII, the tagline, and the
 system's name and version (ADR 0261). *welcome.toml*(5) says when it
 shows and what is in it; a screen too small for Duke gets less. Consoles
-that start root's shell with no sign-in show issue's text.
+that start root's shell with no sign-in show issue's text. Under it, until
+the next start, each shows what the health check said of a failed start,
+_/system/live/sysupdate/failure_ (*sysupdate*(8), ADR 0501).
 
 When the sign-in ends, because the session it started ended, as with
 *exit*, or because its input did, the console clears and the sign-in

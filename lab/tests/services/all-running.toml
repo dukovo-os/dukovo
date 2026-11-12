@@ -27,6 +27,7 @@ expect = [
     "[ + ]  snap",
     "[ + ]  notifyd",
     "[ + ]  audiod",
+    "[ + ]  updated",
     # Sharing folders is off until someone turns it on.
     "[ - ]  nfsd",
     "[ - ]  smbd",

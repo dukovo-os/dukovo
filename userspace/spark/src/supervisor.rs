@@ -106,6 +106,11 @@ const SECOND: u64 = 1_000 * MS;
 pub const RESCUE_SERVICES: [&str; 8] =
     ["logd", "firewall", "notifyd", "audiod", "readerd", "brailled", "consoled", "serial-console"];
 
+/// Where the system's own service files are: a service with none here
+/// was added, by an app or an administrator, and stays off at a start
+/// with `essentials` (ADR 0501).
+const ESSENTIALS: &str = "system/resources/default-settings/spark/services";
+
 /// The hardware watchdog's timeout, unless `--watchdog` gives another.
 pub const WATCHDOG_SECONDS: u32 = 60;
 
@@ -570,6 +575,10 @@ pub struct Supervisor {
     /// Whether this is Rescue (ADR 0460), which starts only
     /// [`RESCUE_SERVICES`].
     rescue: bool,
+    /// Whether only the system's own services start, which the start
+    /// menu's Troubleshooting asks for with the kernel's `essentials`
+    /// (ADR 0501): none an app or an administrator added.
+    essentials: bool,
     /// While the watchdog runs: how often Spark pets it, and when next.
     pets: Option<(u64, u64)>,
 }
@@ -635,6 +644,7 @@ impl Supervisor {
             hang: false,
             hang_always: false,
             rescue: false,
+            essentials: false,
             pets: None,
         }
     }
@@ -644,6 +654,18 @@ impl Supervisor {
     /// the machine's disks until the owner asks.
     pub fn set_rescue(&mut self) {
         self.rescue = true;
+    }
+
+    /// Has only the system's own services start (ADR 0501): those with a
+    /// file among the system's defaults, as they are set.
+    pub fn set_essentials(&mut self) {
+        self.essentials = true;
+    }
+
+    /// Whether `name` is one of the system's own services, with a file
+    /// among the defaults the system brings.
+    fn own(&self, name: &str) -> bool {
+        self.root.read_file(&format!("{ESSENTIALS}/{name}.toml")).is_ok()
     }
 
     /// Sets the watchdog's timeout, 0 to leave it off, and whether Spark
@@ -764,11 +786,23 @@ impl Supervisor {
                  networking stays off until it is turned on"
             );
         }
+        if self.essentials {
+            println!(
+                "spark: essentials: only the system's own services start; those an app or an \
+                 administrator added stay off until they are started"
+            );
+        }
         for mut service in loaded {
-            let enabled = service.spec.enabled
-                && (!self.rescue || RESCUE_SERVICES.contains(&service.spec.name.as_str()));
+            let name = service.spec.name.as_str();
+            let added = self.essentials && !self.own(name);
+            let enabled =
+                service.spec.enabled && (!self.rescue || RESCUE_SERVICES.contains(&name)) && !added;
             if service.spec.enabled && !enabled {
-                service.why = Some(String::from("Rescue leaves it off until it is started"));
+                service.why = Some(String::from(if added {
+                    "only the essentials start: it stays off until it is started"
+                } else {
+                    "Rescue leaves it off until it is started"
+                }));
             }
             self.services.push(service);
             if enabled {

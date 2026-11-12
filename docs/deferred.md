@@ -141,6 +141,21 @@ machine with AMT, an AMD machine and a laptop; see
 | Firmware that drivers load for their cards, in firmware sets, with a per-device check that the driver loaded it (ADR 0468) | Sets hold CPU microcode only; no driver Dukovo has loads firmware yet | A port: the first driver that needs firmware (Wi-Fi, Phase 17) |
 | AMD CPU microcode in firmware sets (ADRs 0014, 0468) | The kernel's loader is Intel's; AMD's patches have their own format and loader | A need |
 | Disks other than the root's in the health check's device record (ADR 0468) | Data disks, USB disks and discs come and go with their owner, so a missing one says nothing of the update | A need |
+| A summary of the last starts on the EFI system partition, for a root Rescue cannot mount (ADRs 0500, 0501) | Rescue reads the root's records, and says how many starts the boot menu counted as not seen through | A need |
+| Repair startup re-making an EFI system partition whose FAT cannot be read, with Rescue's files from the stick, and reading the firmware's Secure Boot and SATA mode settings (ADR 0503) | Repair startup rewrites GRUB and the menu on a partition that reads, and names AHCI when it finds no Dukovo | 16b, with `hardware check` |
+| A boot test of Repair startup in QEMU, which needs a third boot from the stick after the install (ADR 0503) | The unit tests of what it finds and keeps, and the lab test `boot/repair-startup` on real hardware | When the boot tests gain a third boot |
+| How far a start got before Spark, in the kernel or mounting the root, written as it is reached (ADR 0503) | Spark marks the starts that reached their services; Rescue tells the rest from the boot menu's count | A need, with the starts' summary on the EFI system partition |
+| Rescue, Repair startup and the memory test unlocking an encrypted root with its recovery key or passphrase (ADR 0501) | No root is encrypted yet | Disk encryption, after 1.0 |
+| Unattended updates limited to security fixes, and the security advisories each update fixes, shown by `update` (ADR 0502) | Unattended updates take every release, through the waves; the release notes name fixes | The channel listing advisories per release, 16b |
+| Respecting metered connections in updated (ADR 0502) | `check = "notify"`, the default, fetches nothing but the channel's small signed files | netd knowing which connections are metered, 16b |
+| Snoozing an update reminder, and pinning the system so that no newer version is taken (ADR 0502) | The reminder comes once a day; `check = "off"` stops it; `update hold` skips one version | 16c, with the web console's updater page |
+| The updater's page in the web console (ADR 0502) | `update` and `updated` on the command line | 16c, Dukovo Admin |
+| The failure notice by email, when the owner has set an address (ADR 0501) | The notice at every sign-in, on the screen and the serial port | 16b, with alerts |
+| The memory test on the start menu, memtest86+ built from source onto the EFI system partition (ADR 0501) | The firmware's own memory test, where the machine has one | 16b, with `hardware check` |
+| A QR code to the error's support page, and single-key choices, on the failure notice (ADR 0501) | The notice gives the support page's address and the commands to run | 16f, with `report --save` |
+| SSH into Rescue when the system had SSH on (ADR 0501) | Rescue on the screen and the serial port; after a failed start that falls back, the system runs, SSH and all | 16e, in the outside security review |
+| A start without graphics on the Troubleshooting menu, and the window manager's screen check (ADR 0501) | No graphical start yet: every start is text | 1.1, with the window manager |
+| `changes --since` a date (ADR 0500) | `--between` and `--list` compare any two starts kept | A need |
 | The owner told of a fallback at sign-in and on the web console, with the offer to send a report (ADRs 0453, 0456) | The unified updater's notifications | 15d |
 | `rollback --settings-from-before`, shown before a rollback past the release before (ADR 0454) | The two-version rule covers one step | 15d |
 | sysupdate's own narrower capabilities in place of the administrator's access (ADR 0455) | Needs a view of the Btrfs root that leaves out `@users` | 15d |

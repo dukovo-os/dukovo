@@ -196,6 +196,12 @@ fn fetch(root: &Root, version: Option<&str>) -> Result<Release, Fail> {
         Plan::Withdrawn { offered, reason } => {
             return Err(fail(format!("Dukovo {offered} was withdrawn: {reason}")));
         }
+        Plan::Held { offered, held } => {
+            return Err(fail(format!(
+                "Dukovo {offered} is held back, as Dukovo {held} is: `update unhold system` lifts \
+                 the hold, and `sysupdate stage --version {offered}` takes it now"
+            )));
+        }
         Plan::Update { offered, from, release } => {
             if release.version != offered {
                 say(&format!(

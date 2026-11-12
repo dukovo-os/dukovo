@@ -459,7 +459,7 @@ in seconds since the epoch, what happened, and its fields, *-* for
 none:
 
 ```
-1793440000 boot 0.14.1
+1793440000 boot 0.15.0
 1793440100 in alice pts/0 - 61
 1793440200 failed bob pts/1 -
 1793440300 out alice pts/0 - 61

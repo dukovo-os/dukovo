@@ -5,7 +5,7 @@ updates.toml(5) "Dukovo" "Dukovo Manual"
 
 # NAME
 
-updates.toml - which channel of updates the system follows, and from where
+updates.toml - which channel of updates the system follows, from where, and what the updater does
 
 # SYNOPSIS
 
@@ -15,13 +15,19 @@ _/system/settings/sysupdate/updates.toml_
 
 *sysupdate check*, *download* and *stage* read the update server's
 repository of releases through one of its channels (*sysupdate*(8), ADR
-0466). This file says which, and from which server. Without it, the
-defaults hold: the stable channel of Dukovo's update server.
-*sysupdate channel* _name_ writes it. It is TOML:
+0466). This file says which, and from which server, and what
+*updated*(8) does with what it finds (ADR 0502). Without it, the
+defaults hold: the stable channel of Dukovo's update server, checked
+once a day, with whoever is signed in told of each update. *sysupdate
+channel* _name_ and *update hold* write it. It is TOML:
 
 ```
 channel = "beta"
 server = "https://mirror.example.org/dukovo/system/"
+apps = "auto"
+
+[hold]
+system = "2026.3.1"
 ```
 
 # SETTINGS
@@ -49,6 +55,35 @@ server = "https://mirror.example.org/dukovo/system/"
 	day 7, by the number it keeps in
 	_/system/state/sysupdate/wave_.
 
+*check*
+	What *updated*(8) does once a day: *notify*, the default, tells
+	whoever is signed in that an update is ready, and changes nothing;
+	*download* fetches the system update as well, so that staging it
+	needs no network; *off* checks nothing.
+
+*apps*
+	*notify*, the default, tells of the apps' updates; *auto* updates
+	the apps installed for everyone by itself.
+
+*unattended*
+	*true* for a machine nobody watches: *updated*(8) stages each
+	system or firmware update by itself, and goes back to the version
+	before when the one it runs is withdrawn with that advice.
+	*false*, the default.
+
+*restart*
+	With *unattended*, the time of day, _HH:MM_ in local time, at
+	which *updated*(8) restarts the machine into an update it staged.
+	Without it, the update waits for a restart. Only an unattended
+	machine takes one.
+
+*[hold]*
+	The versions held back, as *update hold* writes them: *system*,
+	a Dukovo version, and *firmware*, a firmware set. A release or set
+	no newer than the one held is not taken, nor told of as ready; a
+	newer one is taken as usual. A held version gets no security
+	fixes. *update unhold* removes the line.
+
 # EXAMPLES
 
 Follow the beta channel:
@@ -58,6 +93,13 @@ Follow the beta channel:
 sysupdate: this system follows the beta channel from now on; it never goes back to an older version: it waits until the channel passes the one it runs
 ```
 
+A server that restarts itself into each update at 04:00:
+
+```
+unattended = true
+restart = "04:00"
+```
+
 # SEE ALSO
 
-*sysupdate*(8), *system-release*(8)
+*sysupdate*(8), *update*(8), *updated*(8), *system-release*(8)

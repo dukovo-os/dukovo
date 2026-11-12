@@ -48,7 +48,9 @@ ends:
   on the screen's consoles.
 - Otherwise _/system/settings/issue_'s text, in which *\\l* is *ttyS0*,
   and the sign-in, *login*(1), as on the screen's consoles. *authd*(8)
-  records sign-ins there as on *ttyS0*.
+  records sign-ins there as on *ttyS0*. Under the issue text, until the
+  next start, shows what the health check said of a failed start,
+  _/system/live/sysupdate/failure_ (*sysupdate*(8), ADR 0501).
 
 One that ends within 2 seconds five times in a row waits 10 seconds
 before the next. While a session's programs have the line open, the

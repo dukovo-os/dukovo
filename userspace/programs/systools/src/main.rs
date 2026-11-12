@@ -46,6 +46,8 @@
 //! kernel's NTFS crate (ADR 0312); `rgrub-setup` puts GRUB on a disk or
 //! an EFI system partition (ADR 0306); `efiboot`, and `efibootmgr` by
 //! its name, lists and changes the firmware's boot entries (ADR 0313).
+//! `changes` says what changed between two starts, from the record the
+//! health check keeps of each (ADR 0500).
 //! `audiocd` lists, plays and rips music CDs (ADR 0447); `burn` writes
 //! CDs, DVDs and Blu-ray discs, of data or of audio, and `mkiso` makes a
 //! disc image of a folder (ADR 0449).
@@ -71,6 +73,7 @@ mod btrfs;
 mod bundled;
 mod bundles;
 mod burn;
+mod changes;
 mod cloud;
 mod column;
 mod device;
@@ -171,6 +174,7 @@ mod top;
 mod traceroute;
 mod tree;
 mod unlock;
+mod update;
 mod util;
 mod volumed;
 mod watch;
@@ -208,6 +212,7 @@ const TOOLS: &[(&str, Tool)] = &[
     ("bundle", bundles::main),
     ("bundled", bundled::main),
     ("burn", burn::main),
+    ("changes", changes::changes),
     ("chgrp", modes::chgrp),
     ("chmod", modes::chmod),
     ("chown", modes::chown),
@@ -337,6 +342,8 @@ const TOOLS: &[(&str, Tool)] = &[
     ("tree", tree::main),
     ("umount", mount::umount),
     ("unlock", unlock::main),
+    ("update", update::update),
+    ("updated", update::updated),
     ("uptime", sessions::uptime),
     ("user", account::user),
     ("users", sessions::users),

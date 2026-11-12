@@ -37,6 +37,45 @@ Last health check: passed, 2026-11-11 09:14: slot A (Dukovo 0.15.0)
 Slot state: on nvme0n1p1 (generation 1)
 ```
 
+## One command for every update
+
+`update` says what waits for the system, its firmware set and your apps,
+in one place, and `elevate update apply` takes it all: the system update
+is staged into the spare slot to start at the next restart you choose,
+and the apps are updated. Without a system update, `update apply` stages
+a new firmware set in its place.
+
+```
+$ update
+System:
+sysupdate: the stable channel offers Dukovo 0.15.2; this system runs Dukovo 0.15.0
+
+Firmware:
+update: this system runs firmware 2026.3.1, the newest offered
+
+Apps:
+0 to update, 4 up to date
+```
+
+`update undo system` goes back to the version before, and `update undo`
+with an app's ID goes back on that app alone. `update hold system`
+skips the version offered now; a newer one comes as usual, and `update
+unhold system` lifts the hold. Keep a hold short: a held version gets
+no security fixes. `update history` lists each update by the start that
+first ran it, and whether that start was good.
+
+Once a day, and ten minutes after each start, the *updated* service
+checks for you. By default it only tells you, at the console, that an
+update is ready: nothing is installed and the computer never restarts
+on its own. In `/system/settings/sysupdate/updates.toml` you choose
+otherwise: `check = "download"` fetches the system update ahead of
+time, `apps = "auto"` keeps the apps current by itself, and `check =
+"off"` stops the checks. A server nobody watches can take
+`unattended = true`, which stages each update by itself, and
+`restart = "04:00"`, which restarts into it at that time. The two slots
+make that safe: an update that fails its health check is gone at the
+next start. updates.toml(5) and update(8) have the details.
+
 ## Checking for updates
 
 Updates come from Dukovo's update server, through a channel: **stable**,
@@ -152,9 +191,66 @@ for a look at what went wrong, and the log says why it failed:
 
 ```
 $ elevate log sysupdate
-sysupdate: slot B (Dukovo 0.15.1) failed its health check: logd has restarted 3 times
-sysupdate: the update gives up its tries; restarting into slot A (Dukovo 0.15.0)
+sysupdate: slot B (Dukovo 0.15.1) failed its health check: logd has restarted 3 times (BOOT-102)
+sysupdate: the update gives up its tries; restarting into slot A (Dukovo 0.15.0) (UPD-101)
 ```
+
+Each failure ends with an error ID, such as `BOOT-102`; the support
+center has a page for each, saying what it means and what to do.
+
+Every start of the computer is recorded: what it ran and how it ended.
+`changes` says what changed since the last good start, and `changes
+--failed` what the newest failed start changed, with when each new
+thing was installed and when a start first used it:
+
+```
+$ changes --failed
+Start 42 on 2026-11-11 21:04, Dukovo 0.15.1, slot B: failed: logd has restarted 3 times (BOOT-102)
+From the last good start, 41 on 2026-11-11 08:02, Dukovo 0.15.0, to start 42:
+  Dukovo: 0.15.0 to 0.15.1; installed 2026-11-11 20:58; first used 2026-11-11 21:04 (start 42)
+```
+
+A change installed days before it was first used points at the restart
+that brought it in. `changes --list` lists the starts kept.
+
+You do not have to look for a failure: the next sign-in says it, at the
+screen and on the serial port, until the next start. It names the start
+that failed and why, what Dukovo did about it, what changed, and the
+support page of its error ID. The first line also shows at the bottom of
+the screen until you press a key.
+
+## Troubleshooting at start
+
+When the computer starts, the start menu stays hidden for a second;
+press Esc or F4 then, or hold Shift as the computer starts, to show it.
+It shows by itself after a start that did not finish. Its
+**Troubleshooting** menu starts Dukovo once in another way, changing no
+setting:
+
+- **Start with all of the kernel's messages**, in place of the startup
+  screen, to see where a start stops.
+- **Start only the essentials**: only Dukovo's own services start, none
+  an app or you added. `elevate service NAME start` starts one by hand.
+- **Start with the previous firmware**, when the version before this one
+  names another firmware set: its CPU microcode in place of the new.
+- **Start the previous version**.
+
+After three starts in a row that do not finish, **Rescue** starts by
+itself. Once you sign in, it says why it may have started and what
+changed, and offers its repairs. When those starts reached their
+services, Rescue says so, and the start with only the essentials is the
+one to try; when none did, they stopped in the kernel or mounting the
+root, and the start with all of the kernel's messages shows where.
+
+### Repair startup
+
+If no Dukovo menu shows at all, because GRUB or its menu is gone from
+the EFI system partition or the firmware lost its boot entry, start the
+install stick and choose **Repair startup of an installed Dukovo**, or
+press R at its menu. It finds Dukovo on your disks, puts GRUB, the
+start menu and the boot entry back, and keeps which version starts.
+Nothing else on the disk changes. Pull the stick when it says so, and
+press Enter to restart.
 
 ## Going back later
 

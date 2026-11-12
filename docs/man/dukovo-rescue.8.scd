@@ -45,7 +45,14 @@ Name: alice
 Password:
 Rescue: alice is an administrator of this computer.
 
+The last 3 starts were not seen through.
+Start 42 on 2026-11-12 08:14, Dukovo 0.15.0, slot A: unfinished
+Its services started, but its health check never finished: it stopped, hung or lost power after that.
+From the last good start, 41 on 2026-11-11 21:03, Dukovo 0.15.0, to start 42:
+  app org.example.notes: new, 0.1.0; installed 2026-11-12 08:02; first used 2026-11-12 08:14 (start 42)
+
 What would you like to do?
+  0  Why the last start failed, and what changed
   1  Reinstall Dukovo, keeping settings, apps and files
   2  Put back the settings from before the last update
   3  Check the root's disk
@@ -55,13 +62,30 @@ What would you like to do?
   7  Start Dukovo normally
   8  Restart
   9  Power off
-Choose 1 to 9:
+Choose 0 to 9:
 ```
 
 A choice that needs the root, or a last update to undo, says *(not here)*
 when there is none.
 
+Once the administrator has signed in, Rescue says why it may have started
+(ADR 0501): how many starts in a row were not seen through, as the boot
+menu counts them, and the newest start that failed or never finished,
+from the root's records of each start, with what changed since the last
+good start, as *changes*(1) says it, and the support page of its error
+ID. When the newest record is of a good start, the starts counted after
+it stopped before the health check began. Spark marks a start that
+reaches its services (ADR 0503): when one of them did, Rescue says so,
+and that the start with only the essentials, on the start menu's
+Troubleshooting, is the one to try; when none did, they stopped in the
+kernel or mounting the root, and the start with all of the kernel's
+messages shows where. When no menu shows at all, *Repair startup* on the
+install stick puts GRUB and the menu back (*dukovo-install*(8)).
+
 # CHOICES
+
+*0 Why the last start failed*
+	Shows again what Rescue said of the last starts after the sign-in.
 
 *1 Reinstall Dukovo*
 	Builds the system into the default slot, or slot A when no slot is

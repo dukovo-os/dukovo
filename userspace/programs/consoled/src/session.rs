@@ -20,6 +20,10 @@ const QUICK_MAX: u32 = 5;
 /// How long it waits then.
 const PAUSE: Duration = Duration::from_secs(10);
 
+/// What the health check says of a failed start, shown under the issue
+/// text until the next start (sysupdate(8), ADR 0501).
+const FAILURE: &str = "/system/live/sysupdate/failure";
+
 /// What each console's session runs.
 pub struct Shell {
     /// The program's path.
@@ -150,6 +154,12 @@ impl Console {
             _ => expand_issue(&shell.issue, number),
         };
         self.term.feed(issue.replace('\n', "\r\n").as_bytes());
+        // A failed start's notice, until the next start (ADR 0501).
+        if once.is_none()
+            && let Ok(notice) = std::fs::read_to_string(FAILURE)
+        {
+            self.term.feed(format!("{}\n", notice.trim_end()).replace('\n', "\r\n").as_bytes());
+        }
         let size = libc::winsize {
             ws_row: self.term.rows() as u16,
             ws_col: self.term.cols() as u16,

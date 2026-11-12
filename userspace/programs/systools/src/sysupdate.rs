@@ -24,10 +24,11 @@
 
 mod devices;
 pub(crate) mod firmware;
-mod health;
+pub mod health;
 pub(crate) mod online;
 pub(crate) mod place;
 pub(crate) mod stage;
+pub(crate) mod starts;
 
 use std::path::PathBuf;
 
@@ -168,7 +169,7 @@ fn status() -> Result<i32, Fail> {
 /// `sysupdate check` and `download`: what the update server offers this
 /// system, and how much of it this system lacks; `download` then fetches
 /// that, for the next `sysupdate stage`.
-fn check(version: Option<&str>, download: bool) -> Result<i32, Fail> {
+pub(crate) fn check(version: Option<&str>, download: bool) -> Result<i32, Fail> {
     let root = place::root()?;
     let running = stage::running_version(&root)?;
     let settings = online::Settings::load()?;
@@ -196,6 +197,14 @@ fn check(version: Option<&str>, download: bool) -> Result<i32, Fail> {
         }
         online::Plan::Withdrawn { offered, reason } => {
             println!("sysupdate: Dukovo {offered} was withdrawn: {reason}; nothing to do");
+            return Ok(0);
+        }
+        online::Plan::Held { offered, held } => {
+            let offers = online::offers(&client.settings, version, &offered);
+            println!(
+                "sysupdate: {offers}; it is held back, as Dukovo {held} is: `update unhold system` \
+                 lifts the hold"
+            );
             return Ok(0);
         }
         online::Plan::Update { offered, from, release } => {
@@ -274,7 +283,7 @@ fn unstage() -> Result<i32, Fail> {
 
 /// `sysupdate rollback`: the previous version starts from the next
 /// restart on, with the settings as they are.
-fn rollback() -> Result<i32, Fail> {
+pub(crate) fn rollback() -> Result<i32, Fail> {
     let root = place::root()?;
     let _lock = place::lock()?;
     let (copies, state) = place::state(&root)?;

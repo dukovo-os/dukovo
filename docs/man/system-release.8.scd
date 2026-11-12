@@ -67,7 +67,7 @@ file that does not match is named by its path in the release:
 
 ```
 # system-release check /volumes/sda3/release
-system-release: release 0.14.1 (8f2c0e61d4a7b3c9), built 2026-11-06T04:18:31Z from commit 01d66b7..., is signed by the trusted root
+system-release: release 0.15.0 (8f2c0e61d4a7b3c9), built 2026-11-06T04:18:31Z from commit 01d66b7..., is signed by the trusted root
 system-release: all 2312 files match the signed list (210 MiB)
 ```
 

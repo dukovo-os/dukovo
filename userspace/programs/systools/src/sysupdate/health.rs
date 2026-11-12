@@ -10,12 +10,16 @@
 //! had is there (ADR 0468); any other start is seen through once its
 //! services run, and what is wrong with its firmware or devices is only
 //! logged. Each start seen through keeps its devices as the record the
-//! next try is held to ([`super::devices`]). The result goes into
+//! next try is held to ([`super::devices`]). Each start has a record,
+//! begun as the check begins and finished with its outcome
+//! ([`super::starts`], ADR 0500), and each failure names its error ID.
+//! The result goes into
 //! the slot state on every EFI system partition: a proved update becomes
 //! the default, and one that failed gives up its tries, and the machine
 //! restarts into the version before it.
 
 use std::collections::BTreeMap;
+use std::fmt::Write as _;
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -24,6 +28,7 @@ use serde::Deserialize;
 use slots::state::Checked;
 
 use super::place::{self, BUILDING, Root};
+use super::starts::{self, Item, Outcome};
 use super::{devices, firmware};
 use crate::power;
 use crate::subvolume;
@@ -38,6 +43,10 @@ const MICROCODE: &str = "/kernel/firmware/microcode";
 
 /// Where the last result is kept, for `sysupdate status`.
 pub const LAST: &str = "/system/state/sysupdate/health";
+
+/// What the sign-in screens show of a failed start until the next start
+/// (ADR 0501), which consoled(8) reads.
+pub const NOTICE: &str = "/system/live/sysupdate/failure";
 
 /// How often Spark is asked.
 const EVERY: Duration = Duration::from_secs(2);
@@ -227,6 +236,15 @@ pub fn run() -> Result<i32, Fail> {
         }
     };
     remove_half_built(&root);
+    let begun = starts::begin_in(
+        Path::new(starts::DIR),
+        root.running.letter(),
+        start_items(&root),
+        i64::try_from(crate::util::now_ns() / 1_000_000_000).unwrap_or(0),
+    );
+    if let Err(err) = &begun {
+        println!("sysupdate: cannot keep the record of this start: {err}");
+    }
     let (_, state) = place::state(&root)?;
     let trying = state.trying == Some(root.running);
     let config = Config::load();
@@ -252,10 +270,20 @@ pub fn run() -> Result<i32, Fail> {
         println!("sysupdate: {named} failed its health check: {why}");
     }
     record(&named, &result);
+    let this = begun.ok().and_then(|start| {
+        let outcome = if passed { Outcome::Good } else { Outcome::Failed };
+        let why = result.as_ref().err().map(String::as_str);
+        starts::finish_in(Path::new(starts::DIR), start, outcome, why)
+            .inspect_err(|err| println!("sysupdate: cannot keep the record of this start: {err}"))
+            .ok()
+    });
     // A stage takes minutes at most.
     let _lock = place::lock_within(Duration::from_secs(STAGE_WAIT))?;
     let (copies, state) = place::state(&root)?;
     let (next, checked) = state.checked(root.running, passed);
+    if let Some(text) = failure_notice(&starts::all(), this.as_ref(), checked, &named) {
+        tell(&text);
+    }
     if let Some(next) = next {
         place::write(&copies, next)?;
     }
@@ -275,7 +303,9 @@ pub fn run() -> Result<i32, Fail> {
         }
         Checked::Failed(slot) => {
             let before = place::named(&root, slot.other());
-            println!("sysupdate: the update gives up its tries; restarting into {before}");
+            println!(
+                "sysupdate: the update gives up its tries; restarting into {before} (UPD-101)"
+            );
             if let Err(why) = power::request("reboot") {
                 println!("sysupdate: cannot ask Spark to restart: {}", why.message);
             }
@@ -284,7 +314,7 @@ pub fn run() -> Result<i32, Fail> {
             let update = place::named(&root, slot);
             println!(
                 "sysupdate: the update in {update} did not prove itself; {named} runs, with the \
-                 settings from before the update"
+                 settings from before the update (UPD-101)"
             );
         }
         Checked::Start => println!("sysupdate: this start of {named} is seen through"),
@@ -316,7 +346,7 @@ fn watch(config: &Config, trying: bool) -> Result<(), String> {
     loop {
         let answer = power::request("status").map_err(|why| format!("Spark: {}", why.message))?;
         match look(&config.essential, &services(&answer)) {
-            Look::Failing(why) => return Err(why),
+            Look::Failing(why) => return Err(format!("{why} (BOOT-102)")),
             Look::Running(_) if !trying => return Ok(()),
             Look::Running(restarts) => match &steady {
                 Some((since, before)) if *before == restarts => {
@@ -330,7 +360,7 @@ fn watch(config: &Config, trying: bool) -> Result<(), String> {
                 steady = None;
                 if start.elapsed() >= Duration::from_secs(config.deadline) {
                     return Err(format!(
-                        "{} did not run within {} seconds",
+                        "{} did not run within {} seconds (BOOT-102)",
                         names.join(", "),
                         config.deadline
                     ));
@@ -338,7 +368,10 @@ fn watch(config: &Config, trying: bool) -> Result<(), String> {
             }
         }
         if start.elapsed() >= Duration::from_secs(config.deadline + config.stable) {
-            return Err(format!("its services did not settle within {} seconds", config.deadline));
+            return Err(format!(
+                "its services did not settle within {} seconds (BOOT-102)",
+                config.deadline
+            ));
         }
         std::thread::sleep(EVERY);
     }
@@ -353,7 +386,7 @@ fn checks(config: &Config) -> Result<(), String> {
         match (&passed, check.required) {
             (Ok(()), _) => println!("sysupdate: the {kind} check {} passed", check.name),
             (Err(why), true) => {
-                return Err(format!("the required check {} failed: {why}", check.name));
+                return Err(format!("the required check {} failed: {why} (BOOT-103)", check.name));
             }
             (Err(why), false) => {
                 println!("sysupdate: the wanted check {} failed: {why}", check.name);
@@ -372,7 +405,10 @@ fn hardware(root: &Root, trying: bool) -> Result<(), String> {
     match (devices::recorded(), devices::present(root)) {
         (Some(before), Ok(now)) => {
             problems.extend(devices::missing(&before, &now).into_iter().map(|device| {
-                format!("{}, there at the last good start, is missing", device.described())
+                format!(
+                    "{}, there at the last good start, is missing (BOOT-101)",
+                    device.described()
+                )
             }));
         }
         (None, _) => {}
@@ -397,7 +433,9 @@ fn firmware_problem(root: &Root) -> Option<String> {
     named.microcode.as_ref()?;
     let set = &named.set;
     let Ok(report) = std::fs::read_to_string(MICROCODE) else {
-        return Some(format!("the CPU microcode of firmware {set} did not reach the kernel"));
+        return Some(format!(
+            "the CPU microcode of firmware {set} did not reach the kernel (FW-103)"
+        ));
     };
     microcode_problem(&report).map(|why| format!("the CPU microcode of firmware {set} {why}"))
 }
@@ -409,9 +447,11 @@ fn microcode_problem(report: &str) -> Option<String> {
         report.lines().find_map(|line| line.strip_prefix(key)?.strip_prefix(' ')).map(str::trim)
     };
     match field("result")? {
-        "damaged" => Some("has data that failed its checks, so none of it was used".into()),
+        "damaged" => {
+            Some("has data that failed its checks, so none of it was used (FW-101)".into())
+        }
         "refused" => Some(format!(
-            "was refused by the processor: it asked for revision {} and runs {}",
+            "was refused by the processor: it asked for revision {} and runs {} (FW-102)",
             field("refused").unwrap_or("?"),
             field("revision").unwrap_or("?")
         )),
@@ -437,6 +477,140 @@ fn run_check(check: &Check) -> Result<(), String> {
             return Err(format!("it took more than {} seconds", check.timeout));
         }
         std::thread::sleep(Duration::from_millis(200));
+    }
+}
+
+/// What this start runs, for its record: the system and its kernel, the
+/// firmware set and its microcode, the boot options, the devices and the
+/// apps installed for everyone.
+fn start_items(root: &Root) -> Vec<Item> {
+    let slot = root.slot(root.running);
+    let installed = |path: &Path| {
+        std::fs::metadata(path)
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .and_then(|d| i64::try_from(d.as_secs()).ok())
+    };
+    let about = slot.join(slots::about::PATH);
+    let mut items = Vec::new();
+    if let Some(running) = root.about(root.running) {
+        items.push(Item::new("system", "Dukovo", &running.version, installed(&about)));
+    }
+    let kernel = slot.join("startup/radix");
+    if let Ok(bytes) = std::fs::read(&kernel) {
+        let digest = ring::digest::digest(&ring::digest::SHA256, &bytes);
+        let hex = digest.as_ref()[..8].iter().fold(String::new(), |mut hex, byte| {
+            let _ = write!(hex, "{byte:02x}");
+            hex
+        });
+        items.push(Item::new("kernel", "Radix", &hex, installed(&kernel)));
+    }
+    if let Some(named) = firmware::named(&slot) {
+        let list =
+            root.path(slots::firmware::STORE).join("sets").join(format!("{}.json", named.set));
+        items.push(Item::new("firmware", "firmware set", &named.set, installed(&list)));
+        if let Some(hash) = &named.microcode {
+            items.push(Item::new("microcode", "CPU microcode", &hash[..hash.len().min(16)], None));
+        }
+    }
+    // Less the slot GRUB named, which changes with every update.
+    let line = std::fs::read_to_string("/kernel/cmdline").unwrap_or_default();
+    let options: Vec<&str> = line
+        .split_whitespace()
+        .filter(|word| !word.starts_with("slot=") && !word.starts_with("fallback="))
+        .collect();
+    items.push(Item::new("options", "boot options", &options.join(" "), None));
+    if let Ok(present) = devices::present(root) {
+        for device in present {
+            items.push(Item::new(&device.kind, &device.key, &device.about, None));
+        }
+    }
+    let registry =
+        Path::new(crate::bundles::registry::STATE).join(crate::bundles::registry::INSTALLED);
+    let text = std::fs::read_to_string(registry).unwrap_or_default();
+    for app in crate::bundles::registry::installed(&text).unwrap_or_default() {
+        if app.place == crate::bundles::registry::Place::Everyone {
+            let when = i64::try_from(app.when).ok();
+            items.push(Item::new("app", &app.id, &app.version, when));
+        }
+    }
+    items
+}
+
+/// What the sign-in screen says of a failed start (ADR 0501), if this
+/// start is one or follows one: the update that fell back, of `records`,
+/// or `this` start, which failed its check and goes on; what Dukovo did;
+/// what changed since the last good start; and where to read more. A
+/// failed try says nothing: the start after it does.
+fn failure_notice(
+    records: &[starts::Start],
+    this: Option<&starts::Start>,
+    checked: Checked,
+    named: &str,
+) -> Option<String> {
+    let this_failed = this.filter(|start| start.outcome == Outcome::Failed);
+    let (failed, did) = match checked {
+        Checked::Failed(_) => return None,
+        Checked::FellBack(_) => {
+            let before = this.map_or(u64::MAX, |start| start.number);
+            let failed = records
+                .iter()
+                .rev()
+                .find(|start| start.number < before && start.outcome == Outcome::Failed)?;
+            (
+                failed,
+                format!("Dukovo went back to {named}, with the settings from before the update."),
+            )
+        }
+        _ => (this_failed?, "As this start is no update's try, it goes on.".to_string()),
+    };
+    let mut text = format!(
+        "Start {} failed its health check: {}\n{did}\n",
+        failed.number,
+        failed.why.as_deref().unwrap_or("a check failed")
+    );
+    if let Some(this) = this_failed.filter(|this| this.number != failed.number) {
+        let _ = writeln!(
+            text,
+            "This start failed its health check too: {}",
+            this.why.as_deref().unwrap_or("a check failed")
+        );
+    }
+    for line in crate::changes::report(records, None, failed) {
+        let _ = writeln!(text, "{line}");
+    }
+    text.push_str("More: changes --failed, and log -b -1 for the failed start's log.\n");
+    if let Some(id) = &failed.error {
+        let _ = writeln!(
+            text,
+            "Help: https://dukovo.org/support/{}/errors/{id}.html",
+            env!("CARGO_PKG_VERSION")
+        );
+    }
+    Some(text)
+}
+
+/// Shows `text` on the sign-in screens until the next start, in
+/// [`NOTICE`], and tells whoever is signed in, in a notification shown
+/// until a key is pressed.
+fn tell(text: &str) {
+    let path = Path::new(NOTICE);
+    let written = path
+        .parent()
+        .map_or(Ok(()), std::fs::create_dir_all)
+        .and_then(|()| std::fs::write(path, text));
+    if let Err(err) = written {
+        println!("sysupdate: cannot write {NOTICE}: {err}");
+    }
+    let first = text.lines().next().unwrap_or_default();
+    if let Err(why) = crate::notifyd::send(
+        "sysupdate",
+        first,
+        "changes --failed says what changed",
+        crate::notifyd::Urgency::Critical,
+    ) {
+        println!("sysupdate: cannot tell the consoles: {}", why.message);
     }
 }
 
@@ -508,13 +682,41 @@ mod tests {
         assert_eq!(microcode_problem("result unsupported\n"), None);
         assert_eq!(
             microcode_problem("size 9\nupdates 0\nresult damaged\n").unwrap(),
-            "has data that failed its checks, so none of it was used"
+            "has data that failed its checks, so none of it was used (FW-101)"
         );
         let refused = "result refused\nrevision 0xe2\nrefused 0xf0\n";
         assert_eq!(
             microcode_problem(refused).unwrap(),
-            "was refused by the processor: it asked for revision 0xf0 and runs 0xe2"
+            "was refused by the processor: it asked for revision 0xf0 and runs 0xe2 (FW-102)"
         );
+    }
+
+    #[test]
+    fn a_failed_start_is_told_with_what_changed() {
+        let dir = std::env::temp_dir().join(format!("notice-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let set = |value: &str| vec![Item::new("firmware", "set", value, Some(200))];
+        let good = starts::begin_in(&dir, "b", set("2026.1.1"), 1000).unwrap();
+        starts::finish_in(&dir, good, Outcome::Good, None).unwrap();
+        let tried = starts::begin_in(&dir, "a", set("2026.2.1"), 2000).unwrap();
+        let why = "the network card vio0 (52:54:00:15:0c:01), there at the last good start, \
+                   is missing (BOOT-101)";
+        starts::finish_in(&dir, tried, Outcome::Failed, Some(why)).unwrap();
+        let this = starts::begin_in(&dir, "b", set("2026.1.1"), 3000).unwrap();
+        let this = starts::finish_in(&dir, this, Outcome::Good, None).unwrap();
+        let records = starts::all_in(&dir);
+        let named = "slot B (Dukovo 0.15.0, firmware 2026.1.1)";
+        // A failed try says nothing; the start after it does.
+        assert_eq!(failure_notice(&records, None, Checked::Failed(slots::Slot::A), named), None);
+        let text = failure_notice(&records, Some(&this), Checked::FellBack(slots::Slot::A), named)
+            .unwrap();
+        assert!(text.starts_with(&format!("Start 2 failed its health check: {why}\n")), "{text}");
+        assert!(text.contains(&format!("Dukovo went back to {named}")), "{text}");
+        assert!(text.contains("  firmware set: 2026.1.1 to 2026.2.1;"), "{text}");
+        assert!(text.contains("/errors/BOOT-101.html"), "{text}");
+        // A good start that follows no failure says nothing.
+        assert_eq!(failure_notice(&records, Some(&this), Checked::Start, named), None);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     fn services_with(answer: &str) -> BTreeMap<String, Service> {

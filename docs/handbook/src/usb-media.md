@@ -44,7 +44,7 @@ Any USB stick works; writing the image **erases everything on it**.
 
    ```sh
    sudo umount /dev/sdX?* 2>/dev/null
-   sudo dd if=out/dukovo-0.14.1-x86_64.img of=/dev/sdX bs=4M conv=fsync status=progress
+   sudo dd if=out/dukovo-0.15.0-x86_64.img of=/dev/sdX bs=4M conv=fsync status=progress
    ```
 
 `conv=fsync` makes `dd` wait until the data is on the stick, so it is safe
@@ -100,8 +100,8 @@ choice, on Dukovo with `burn` ([ADR
 or on Linux with `xorriso`, replacing `sr0` with the drive's name:
 
 ```sh
-burn dukovo-0.14.1-x86_64.iso
-xorriso -as cdrecord -v dev=/dev/sr0 out/dukovo-0.14.1-x86_64.iso
+burn dukovo-0.15.0-x86_64.iso
+xorriso -as cdrecord -v dev=/dev/sr0 out/dukovo-0.15.0-x86_64.iso
 ```
 
 Start the computer from the DVD drive as from the stick above. The live

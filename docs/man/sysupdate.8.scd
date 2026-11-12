@@ -250,6 +250,18 @@ _/system/settings/sysupdate/health.toml_
 _/system/settings/sysupdate/updates.toml_
 	The channel this system follows, and the server: *updates.toml*(5).
 
+_/system/state/starts/_
+	The record of each start, which the health check begins and
+	finishes, for *changes*(1).
+
+_/system/live/sysupdate/failure_
+	What the sign-in screens show of a failed start until the next start
+	(ADR 0501): which start failed and why, what Dukovo did, what
+	changed since the last good start, and the error ID's support page.
+	The health check writes it when a start fails its check and goes on,
+	or follows an update that fell back, and shows its first line on the
+	screen until a key is pressed.
+
 _/system/state/sysupdate/metadata_
 	The update server's metadata this system has read and trusts.
 
@@ -305,5 +317,5 @@ _@snapshots/update/settings-failed_.
 
 # SEE ALSO
 
-*health.toml*(5), *updates.toml*(5), *spark*(8), *dukovo-boot*(7),
+*changes*(1), *update*(8), *updated*(8), *health.toml*(5), *updates.toml*(5), *spark*(8), *dukovo-boot*(7),
 *dukovo-rescue*(8), *system-release*(8), *service*(8)

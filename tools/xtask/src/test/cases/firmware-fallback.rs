@@ -11,7 +11,9 @@
 //! is staged and the machine powered off; it comes back without the
 //! card. The newer set's try finds the card missing and falls back to
 //! slot B, with the set before it, GRUB saying the firmware update
-//! failed, and slot B, no try, only logs the card. Then a set whose
+//! failed, and slot B, no try, only logs the card; changes(1) names what
+//! the failed start changed (ADR 0500), and the screen tells of it, with
+//! the menu offering Troubleshooting (ADR 0501). Then a set whose
 //! microcode is damaged is staged: the kernel uses none of it, and its
 //! try falls back too. The store keeps only the sets a slot names.
 
@@ -144,8 +146,8 @@ fn second_boot(vm: &mut Vm, _case: &Case) -> Result<(), String> {
     // The health check and tty1 come in either order.
     vm.expect("spark: started slot b, @system.b")?;
     vm.expect_ahead(&format!(
-        "({SPARE_MAC}), there at the last good start, is missing; as this start is no update's \
-         try, it goes on"
+        "({SPARE_MAC}), there at the last good start, is missing (BOOT-101); as this start is no \
+         update's try, it goes on"
     ))?;
     vm.expect_ahead(&format!(
         "sysupdate: the update in slot A (Dukovo {VERSION}, firmware {newer}) did not prove \
@@ -153,6 +155,34 @@ fn second_boot(vm: &mut Vm, _case: &Case) -> Result<(), String> {
          the update"
     ))?;
     vm.expect("; tty1 is shown")?;
+    // The menu offered Troubleshooting, and the screen's bottom line
+    // tells of the failed try until a key is pressed (ADR 0501): Enter,
+    // which leaves the shell a fresh prompt. The sign-in screens show
+    // what changed.
+    vm.expect_anywhere("Troubleshooting")?;
+    vm.expect_screen(&["sysupdate: Start ", " failed its health check: the network card "])?;
+    vm.press(&["ret"])?;
+    run(
+        vm,
+        "cat /system/live/sysupdate/failure",
+        &[
+            &format!("Dukovo went back to slot B (Dukovo {VERSION}, firmware {good})"),
+            &format!("firmware set: {good} to {newer}"),
+            "(BOOT-101)",
+            "Help: https://dukovo.org/support/",
+        ],
+    )?;
+    // The failed start's record, and what it changed (ADR 0500).
+    run(
+        vm,
+        "changes --failed",
+        &[
+            &format!("Dukovo {VERSION}, slot A: failed: "),
+            &format!("firmware set: {good} to {newer}"),
+            &format!("{SPARE_MAC}: gone (was "),
+        ],
+    )?;
+    run(vm, "changes --list", &[&format!("Dukovo {VERSION}, slot B: good")])?;
 
     // A set whose microcode is damaged: the kernel uses none of it.
     stage(vm, "broken", 'A', &format!("firmware {good}"))?;

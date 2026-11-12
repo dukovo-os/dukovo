@@ -1620,9 +1620,13 @@ mod tests {
         // root's store, or else the partition's modules (ADR 0468).
         let firmware = slots::firmware::PATH;
         let store = slots::firmware::STORE;
+        // A fourth argument names another slot whose set to load, as the
+        // Troubleshooting menu's previous firmware does (ADR 0501).
         let modules = format!(
-            "    unset firmware_microcode\n    if [ -f \"($system)/@system.$1/{firmware}\" ]; then\n        \
-             load_env --file \"($system)/@system.$1/{firmware}\" firmware_microcode\n    fi\n    \
+            "    unset firmware_microcode\n    set firmware_slot=\"$1\"\n    if [ -n \"$4\" ]; \
+             then\n        set firmware_slot=\"$4\"\n    fi\n    if [ -f \
+             \"($system)/@system.${{firmware_slot}}/{firmware}\" ]; then\n        load_env --file \
+             \"($system)/@system.${{firmware_slot}}/{firmware}\" firmware_microcode\n    fi\n    \
              if [ -n \"${{firmware_microcode}}\" ]; then\n        module2 \
              ($system)/{store}/files/${{firmware_microcode}} microcode\n    else\n        \
              dukovo_modules\n    fi\n    boot\n"
@@ -1655,7 +1659,10 @@ mod tests {
             "    slot_started\n    dukovo_start \"${slot_start}\" \"${slot_fallback}\" quiet\n"
         ));
         assert!(menu.contains("set slot_fallback=\"fallback=${slot_try}\"\n"));
-        assert_eq!(menu.matches("        slot_chose ").count(), 2);
+        // The two entries above, and the four of Troubleshooting (ADR
+        // 0501), each chosen once.
+        assert_eq!(menu.matches("        slot_chose ").count(), 6);
+        assert!(menu.contains("submenu \"Troubleshooting\" --id troubleshooting {"), "{menu}");
         // Windows after the Dukovo entries, remembered as Dukovo is (ADR
         // 0314), and startup trouble last, with its flag first and the
         // kernel's log.
@@ -1752,6 +1759,8 @@ mod tests {
         assert!(cfg.contains(&entry), "{cfg}");
         // Boot from first disk works under both firmwares.
         assert!(cfg.contains("Boot from first disk"));
+        // Repair startup (ADR 0503), on the hotkey R.
+        assert!(cfg.contains("--id repair-startup --hotkey=r {"), "{cfg}");
         // The partition is the root first, as the chainloader tells the
         // loader it starts it was loaded from the root.
         assert!(cfg.contains(

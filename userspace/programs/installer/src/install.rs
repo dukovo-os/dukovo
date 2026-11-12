@@ -34,7 +34,7 @@ use crate::settings::{self, Target};
 pub const TRUSTED_ROOT: &str = "/system/resources/updates/root.json";
 
 /// Where the installer keeps its layout files and mounts the new disk.
-const WORK: &str = "/tmp/install";
+pub(crate) const WORK: &str = "/tmp/install";
 
 /// The Dukovo root's subvolumes, as `./ob image` makes them, but for the
 /// slot, which is copied into `@system.new` and kept read-only as
@@ -91,10 +91,10 @@ struct Parts {
 
 /// A disk that starts the system: its EFI system partition, and whether
 /// it has a BIOS boot partition for GRUB.
-struct BootDisk {
-    disk: String,
-    efi: String,
-    bios_boot: bool,
+pub(crate) struct BootDisk {
+    pub(crate) disk: String,
+    pub(crate) efi: String,
+    pub(crate) bios_boot: bool,
 }
 
 /// The description of Dukovo's UEFI boot entry, as the firmware's boot
@@ -446,7 +446,7 @@ fn install_grub(
 /// The installed system's menu, from the slot's template `template`: its
 /// root `uuid`, and the serial console's kernel flag `console`, if it
 /// keeps one, in their placeholders.
-fn fill_menu(template: &str, uuid: &str, console: Option<&str>) -> String {
+pub(crate) fn fill_menu(template: &str, uuid: &str, console: Option<&str>) -> String {
     let console = console.map_or_default(|flag| format!(" {flag}"));
     template.replace("@ROOT_UUID@", uuid).replace("@CONSOLE@", &console)
 }
@@ -455,7 +455,12 @@ fn fill_menu(template: &str, uuid: &str, console: Option<&str>) -> String {
 /// block and both copies of the slot state on its EFI system partition:
 /// slot A, the only one, started (ADR 0452). Each disk of a mirror has
 /// its own copies, which the system keeps in step.
-fn grub_on(disk: &BootDisk, slot: &Path, menu: &str, log: &mut Log) -> Result<(), String> {
+pub(crate) fn grub_on(
+    disk: &BootDisk,
+    slot: &Path,
+    menu: &str,
+    log: &mut Log,
+) -> Result<(), String> {
     let images = path(&slot.join("boot/grub"));
     if disk.bios_boot {
         log.run("rgrub-setup", &["-d", &images, &path(&disks::device(&disk.disk))])?;
@@ -552,7 +557,7 @@ fn grub_environment() -> String {
 /// efiboot(8) makes one: Windows Boot Manager, which was first, then
 /// starts from Dukovo's menu. An entry an earlier install made for Dukovo
 /// is taken out first, as Linux's grub-install does.
-fn boot_entry(disk: &str, number: u32, log: &mut Log) -> Result<(), String> {
+pub(crate) fn boot_entry(disk: &str, number: u32, log: &mut Log) -> Result<(), String> {
     let listed = log.run("efiboot", &[])?;
     for old in earlier_entries(&listed) {
         log.run("efiboot", &["--bootnum", &old, "--delete-bootnum", "--quiet"])?;
@@ -567,7 +572,7 @@ fn boot_entry(disk: &str, number: u32, log: &mut Log) -> Result<(), String> {
 
 /// The numbers of the boot entries efiboot lists in `listed` as Dukovo's,
 /// by their description: `Boot0003* Dukovo`.
-fn earlier_entries(listed: &str) -> Vec<String> {
+pub(crate) fn earlier_entries(listed: &str) -> Vec<String> {
     listed
         .lines()
         .filter_map(|line| {
@@ -582,7 +587,7 @@ fn earlier_entries(listed: &str) -> Vec<String> {
 
 /// The UUID of the Btrfs on the partition `name`, from its superblock,
 /// as GRUB's `search --fs-uuid` and the kernel's command line write it.
-fn btrfs_uuid(name: &str) -> Result<String, String> {
+pub(crate) fn btrfs_uuid(name: &str) -> Result<String, String> {
     use std::io::{Read as _, Seek as _, SeekFrom};
     // The superblock is at 64 KiB; its filesystem UUID is 32 bytes in.
     const FSID: u64 = 0x1_0000 + 0x20;
@@ -622,7 +627,7 @@ const RELEASE_WAIT: Duration = Duration::from_secs(5);
 /// or a filesystem the last command used can still be in use: deleting
 /// `@system.new` right after `subvolume snapshot` read it is refused
 /// now and then (ADR 0309).
-fn run_when_free(log: &mut Log, program: &str, args: &[&str]) -> Result<(), String> {
+pub(crate) fn run_when_free(log: &mut Log, program: &str, args: &[&str]) -> Result<(), String> {
     let started = Instant::now();
     loop {
         match log.run(program, args) {
@@ -636,7 +641,7 @@ fn run_when_free(log: &mut Log, program: &str, args: &[&str]) -> Result<(), Stri
 }
 
 /// Mounts the partition `name` at `dir`, made if need be.
-fn mount(name: &str, dir: &Path, options: &[&str], log: &mut Log) -> Result<(), String> {
+pub(crate) fn mount(name: &str, dir: &Path, options: &[&str], log: &mut Log) -> Result<(), String> {
     fs::create_dir_all(dir).map_err(|err| format!("making {}: {err}", dir.display()))?;
     let mut args = options.to_vec();
     let device = path(&disks::device(name));
@@ -646,7 +651,7 @@ fn mount(name: &str, dir: &Path, options: &[&str], log: &mut Log) -> Result<(), 
 }
 
 /// A path as a command's argument.
-fn path(path: &Path) -> String {
+pub(crate) fn path(path: &Path) -> String {
     path.display().to_string()
 }
 
