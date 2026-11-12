@@ -65,7 +65,10 @@ system's name and version (ADR 0261). *welcome.toml*(5) says when it
 shows and what is in it; a screen too small for Duke gets less. Consoles
 that start root's shell with no sign-in show issue's text. Under it, until
 the next start, each shows what the health check said of a failed start,
-_/system/live/sysupdate/failure_ (*sysupdate*(8), ADR 0501).
+_/system/live/sysupdate/failure_ (*sysupdate*(8), ADR 0501), and then
+the notices kept for the next sign-in in _/system/live/sign-in_, one file
+each by name: a backup that failed or is overdue (*backup*(8)) and the
+installed apps with known flaws (*bundled*(8)) (ADR 0504).
 
 When the sign-in ends, because the session it started ended, as with
 *exit*, or because its input did, the console clears and the sign-in

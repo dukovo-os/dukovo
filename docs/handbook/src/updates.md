@@ -465,7 +465,10 @@ elevate backup add --every week nas ssh://backup@nas.local/srv/backups
 The backup service backs up to each destination when it is due, and
 passes over a disk that is not plugged in until it is. `backup list`
 shows each destination's last backup and whether it went well, and
-`elevate backup run` backs up now. Services that keep a database can
+`elevate backup run` backs up now. The sign-in screen tells of a backup
+or a check that failed, and of a destination that has gone 3 days
+without a backup when it backs up daily, or 14 days when weekly, until
+the next one goes well. Services that keep a database can
 name commands to bring it to a state it can start again from before the
 snapshots are made, in their files' `[backup]` table (service.toml(5)).
 

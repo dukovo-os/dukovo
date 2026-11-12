@@ -154,8 +154,7 @@ machine with AMT, an AMD machine and a laptop; see
 | SSH into Rescue when the system had SSH on (ADR 0501) | Rescue on the screen and the serial port; after a failed start that falls back, the system runs, SSH and all | 16e, in the outside security review |
 | A start without graphics on the Troubleshooting menu, and the window manager's screen check (ADR 0501) | No graphical start yet: every start is text | 1.1, with the window manager |
 | `changes --since` a date (ADR 0500) | `--between` and `--list` compare any two starts kept | A need |
-| The owner told of a fallback at sign-in and on the web console, with the offer to send a report (ADRs 0453, 0456) | The unified updater's notifications | 15d |
-| sysupdate's own narrower capabilities in place of the administrator's access (ADR 0455) | Needs a view of the Btrfs root that leaves out `@users` | 15d |
+| The owner told of a fallback on the web console, with the offer to send a report (ADRs 0453, 0456, 0501) | The sign-in screens and the serial port show the failure notice until the next start, and the consoles are told at once | 16c and 16f, with the web console and `report --save` |
 | Settings migrations, run before the services start, each with tests in both directions (ADR 0454) | No release has changed a settings format yet | The first release that does |
 | On a mirror, a try GRUB counts on one disk's EFI system partition is not counted on the other's until the system next writes the state (ADR 0452) | A machine must start from each disk in turn to try an update more than three times | A need |
 | When GRUB cannot write the slot state, the menu still titles the try that it then does not start (ADR 0452) | The default starts, as it should; only the title is wrong | A need |
@@ -164,12 +163,11 @@ machine with AMT, an AMD machine and a laptop; see
 | Rolling a whole place back to a snapshot, such as all of `/users` (ADR 0461) | Restoring by file or folder covers mistakes; a whole place goes back only with every program that writes there stopped | Rescue's next changes |
 | Apps restoring their own data from a snapshot (ADR 0461) | An app's view has no snapshot; a person restores its folder with `snap restore` | A portal for apps |
 | Retention set place by place in `snap.toml` (ADR 0461) | One retention serves the default places | A need |
-| The `snap` service's own view in place of the whole tree (ADR 0461) | `snap.toml` may name any subvolume, reached through the top of each filesystem | 15d, with the updater's (ADR 0455) |
 | `BTRFS_IOC_GET_SUBVOL_INFO` on a descriptor of a file that is not a folder (ADR 0461) | The C library asks a folder's `subvolume` method; `ls` and `snap` ask of folders | A need |
 | Backups encrypted to post-quantum recipients as well as X25519 (ADR 0463) | The age crate's release with them needs another version of `ml-kem` than the one the build already locks | A port: an age release on the locked `ml-kem` |
 | Backups to servers that offer SFTP alone, without a shell (ADRs 0463 and 0465) | The server runs `find`, `cat`, `dd`, `mv` and `rm` over SSH, as any POSIX server can, for streams and restic repositories alike | A need |
 | Backup keys in the system key store in place of files readable by root alone (ADR 0463) | The key store comes later | Release 1.2 |
-| The owner told of a backup that is overdue or failed, at sign-in and on the web console (ADR 0463) | `backup list` and the log show it | 15d, with the unified updater's notifications |
+| The owner told of a backup that is overdue or failed on the web console (ADR 0463) | The sign-in screens keep a notice of it, the consoles are told at once, and `backup list` shows it (ADR 0504) | 16c, Dukovo Admin |
 | Restoring a whole machine from the installer, for a computer with no Dukovo on it yet (ADR 0464) | `backup restore --machine` runs on an installed system, so a fresh install comes first | A decision: the installer's restore screen |
 | Tags checked when Linux's `age` and `btrfs receive` restore a backup (ADR 0464) | The tag is an HMAC-SHA256 beside each file; Linux's tools read the backup without it | A need |
 | Checking who wrote a backup with another of its keys, not the recovery key (ADR 0464) | The tag key comes from the destination's own key; other recipients restore with `--unchecked` | A need |
@@ -178,7 +176,7 @@ machine with AMT, an AMD machine and a laptop; see
 | S3 addresses in the virtual-hosted style, and temporary credentials with a session token (ADR 0465) | Path-style addresses and an access key's ID and secret are what every S3-compatible store takes | A need |
 | Restic destinations on restic's REST server (`rest:` addresses) (ADR 0465) | A share, SSH and S3 cover the servers people have | A need |
 | Owner, mode and times of a place's top folder kept when Linux's `restic` restores it (ADR 0465) | restic sets the top folder of a restore itself; Dukovo's own restore keeps them | An upstream change in restic |
-| Telling a person of a new flaw, and which advisories an update fixes (ADR 0389) | Needs the unified updater's notifications | 15d |
+| Which advisories a bundle's update fixes, shown before it is taken (ADR 0389) | The sign-in screens list installed versions with known flaws, and the sheet names the version that fixes each (ADR 0504) | The catalog listing fixes per version, 16b |
 
 ### Phase 16: server platform and web console
 
@@ -188,6 +186,8 @@ machine with AMT, an AMD machine and a laptop; see
 | A user's jobs that run while they are signed out (ADR 0220) | Needs jobs | 16a |
 | Sockets a bundle offers to others, and starting a service at its first connection (ADRs 0385, 0386) | Socket activation | 16a |
 | `service status` listing what a service holds; volumed and diskhealth given disks one by one; `/processes` showing a service or session only its own processes (ADRs 0215, 0217) | Finer views for services | 16a |
+| sysupdate's own narrower capabilities in place of the administrator's access (ADR 0455) | Needs a view of the Btrfs root that leaves out `@users` | 16a, with finer views for services |
+| The `snap` service's own view in place of the whole tree (ADR 0461) | `snap.toml` may name any subvolume, reached through the top of each filesystem | 16a, with finer views for services and sysupdate's (ADR 0455) |
 | Serial ports as terminals programs open, and a choice of which ports carry the log (ADR 0360) | Full serial console | 16b |
 | A local time server, and netd's DHCP server (ADR 0194) | Server roles | 16b |
 | elevate in the web console, with comments kept by its settings editor (ADRs 0216, 0219) | Dukovo Admin | 16c |

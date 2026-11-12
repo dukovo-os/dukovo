@@ -202,8 +202,10 @@ vulnerabilities, every day. `bundle search` and `bundle list` show what
 it found in the FLAWS column, such as `2, high`, and the sheet and
 `bundle info` name each advisory, the part it is in and the version that
 fixes it. Each day bundled reads it again for what is installed and
-writes what changed in the history. Nothing is removed or blocked:
-whether to update, go back or remove is yours.
+writes what changed in the history. The sign-in screen lists the
+installed versions with known flaws until they are updated, and a notice
+says so when the list changes. Nothing is removed or blocked: whether to
+update, go back or remove is yours.
 
 ## Several versions side by side
 

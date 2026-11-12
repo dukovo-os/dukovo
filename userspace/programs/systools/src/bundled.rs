@@ -2141,6 +2141,10 @@ fn check_flaws(shared: &Shared) {
     let (all, _) = read_catalogs();
     let kept = Path::new(catalogs::STATE);
     let history = history::read(&state(history::HISTORY));
+    // What the next sign-in says (ADR 0504); kept as it was when a
+    // catalog could not be read, since its bundles' flaws are not known.
+    let mut lines = Vec::new();
+    let mut read_all = true;
     for name in names {
         let Some(catalog) = all.iter().find(|c| c.name == name && !c.off) else { continue };
         let read = {
@@ -2149,6 +2153,7 @@ fn check_flaws(shared: &Shared) {
         };
         if let Err(why) = read {
             eprintln!("bundled: the daily check could not read catalog {name}: {why}");
+            read_all = false;
             continue;
         }
         let Some(list) = catalogs::read_flaws(kept, name) else { continue };
@@ -2166,6 +2171,12 @@ fn check_flaws(shared: &Shared) {
                 note.push(format!("and {} more", found.len() - FLAWS_NAMED));
             }
             let note = note.join(", ");
+            lines.push(format!(
+                "bundled: {} {} for {} has known flaws: {note}",
+                i.id,
+                i.version,
+                whom(i.place)
+            ));
             let said = history
                 .iter()
                 .rev()
@@ -2196,6 +2207,18 @@ fn check_flaws(shared: &Shared) {
                 note,
             });
         }
+    }
+    if read_all && crate::sign_in_notices::put("bundled", &lines) {
+        let body = format!(
+            "{}\nbundle update installs a fixed version once its catalog has one",
+            lines.join("\n")
+        );
+        let _ = crate::notifyd::send(
+            "bundled",
+            "Installed apps have known flaws",
+            &body,
+            crate::notifyd::Urgency::Normal,
+        );
     }
 }
 

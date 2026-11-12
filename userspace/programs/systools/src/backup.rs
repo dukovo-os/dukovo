@@ -789,6 +789,70 @@ fn due(dest: &Destination, state: &State, now: u64) -> bool {
     }
 }
 
+/// How many days a destination backed up each day, or each week, may go
+/// without a backup before the next sign-in says so (ADR 0504).
+const OVERDUE_DAILY: u64 = 3;
+const OVERDUE_WEEKLY: u64 = 14;
+
+/// What the next sign-in should say of `dest` at `now`: its last backup
+/// or check that failed, or how long it has gone without one, counted
+/// from `added` until its first. None if all is well.
+fn sign_in_line(dest: &Destination, state: &State, added: u64, now: u64) -> Option<String> {
+    let name = &dest.name;
+    if !state.failed.is_empty() {
+        return Some(format!("backup: the last backup to {name} failed: {}", state.failed));
+    }
+    if !state.verify_failed.is_empty() {
+        return Some(format!(
+            "backup: restoring {name}'s newest backups to check them failed: {}",
+            state.verify_failed
+        ));
+    }
+    let allowed = match dest.every {
+        Every::Hand => return None,
+        Every::Day => OVERDUE_DAILY,
+        Every::Week => OVERDUE_WEEKLY,
+    };
+    let since = if state.done == 0 { added } else { state.done };
+    let days = now.saturating_sub(since) / (86_400 * NANOS);
+    if days < allowed {
+        return None;
+    }
+    Some(if state.done == 0 {
+        format!(
+            "backup: nothing has been backed up to {name} in the {days} days since it was added"
+        )
+    } else {
+        format!("backup: the last backup to {name} was {days} days ago")
+    })
+}
+
+/// Keeps what the next sign-in should say of the destinations, and tells
+/// the consoles when that changes to something.
+fn tell_sign_in(now: u64) {
+    let Ok(dests) = Destination::all() else { return };
+    let lines: Vec<String> = dests
+        .iter()
+        .filter_map(|dest| {
+            let added = fs::metadata(settings_file(&dest.name))
+                .and_then(|meta| meta.modified())
+                .ok()
+                .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+                .map_or(now, |since| since.as_secs() * NANOS);
+            sign_in_line(dest, &State::read(&dest.name), added, now)
+        })
+        .collect();
+    if crate::sign_in_notices::put("backup", &lines) {
+        let body = format!("{}\nbackup list shows each destination", lines.join("\n"));
+        let _ = crate::notifyd::send(
+            "backup",
+            "Backups need a look",
+            &body,
+            crate::notifyd::Urgency::Normal,
+        );
+    }
+}
+
 /// Whether `dest` is due for a check by a restore at `now`.
 fn verify_due(dest: &Destination, state: &State, now: u64) -> bool {
     let days = match dest.verify {
@@ -2021,6 +2085,7 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
                 .filter_map(|path| Some((path.clone(), Backed::new(&path).ok()?)))
                 .collect();
             remove_unneeded(&places)?;
+            tell_sign_in(util::now_ns());
             let _ = writeln!(
                 out,
                 "Removed {name}. Its backups stay at {}; only its recovery key reads them now.",
@@ -2039,10 +2104,13 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
             if dests.is_empty() {
                 return Err(util::fail("no destinations; add one with backup add".into()));
             }
-            Ok(if round(dests, &mut out)? { 0 } else { 1 })
+            let good = round(dests, &mut out)?;
+            tell_sign_in(util::now_ns());
+            Ok(if good { 0 } else { 1 })
         }
         ("auto", []) => loop {
             let good = auto(&mut out);
+            tell_sign_in(util::now_ns());
             if !watch {
                 return Ok(if good { 0 } else { 1 });
             }
@@ -2059,6 +2127,7 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
                     Err(fail) => fail.message.clone(),
                 };
                 state.write(name)?;
+                tell_sign_in(util::now_ns());
             }
             checked.map(|()| 0)
         }
@@ -2207,6 +2276,37 @@ mod tests {
         assert!(verify_due(&dest(Every::Day), &checked, now));
         let never = Destination { verify: Verify::Never, ..dest(Every::Day) };
         assert!(!verify_due(&never, &checked, now));
+    }
+
+    #[test]
+    fn the_sign_in_tells_of_a_failed_or_overdue_backup() {
+        let dest =
+            |every| Destination { every, ..Destination::parse("stick", "to = \"/v\"\n").unwrap() };
+        let day = 86_400 * NANOS;
+        let now = 20_000 * day;
+        let done = |done| State { done, ..State::default() };
+        let line = |every, state: &State, added| sign_in_line(&dest(every), state, added, now);
+        assert_eq!(line(Every::Day, &done(now - 2 * day), 0), None);
+        assert_eq!(
+            line(Every::Day, &done(now - 3 * day), 0).unwrap(),
+            "backup: the last backup to stick was 3 days ago"
+        );
+        assert_eq!(line(Every::Week, &done(now - 13 * day), 0), None);
+        assert!(line(Every::Week, &done(now - 14 * day), 0).is_some());
+        assert_eq!(line(Every::Hand, &done(1), 0), None);
+        assert_eq!(line(Every::Day, &done(0), now - day), None);
+        assert_eq!(
+            line(Every::Day, &done(0), now - 5 * day).unwrap(),
+            "backup: nothing has been backed up to stick in the 5 days since it was added"
+        );
+        let failed = State { done: now, failed: "the disk is full".into(), ..State::default() };
+        assert_eq!(
+            line(Every::Hand, &failed, 0).unwrap(),
+            "backup: the last backup to stick failed: the disk is full"
+        );
+        let unchecked =
+            State { done: now, verify_failed: "a chain is short".into(), ..State::default() };
+        assert!(line(Every::Day, &unchecked, 0).unwrap().contains("to check them failed: a chain"));
     }
 
     #[test]

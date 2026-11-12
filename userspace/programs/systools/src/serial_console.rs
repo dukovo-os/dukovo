@@ -323,6 +323,10 @@ fn run(session: &Session, env: &[CString], format: Format, issue: &str) -> io::R
         if let Ok(notice) = std::fs::read_to_string(crate::sysupdate::health::NOTICE) {
             write_all(line.as_raw_fd(), format!("{}\n", notice.trim_end()).as_bytes());
         }
+        // What its writers kept for the next sign-in (ADR 0504).
+        for notice in crate::sign_in_notices::all() {
+            write_all(line.as_raw_fd(), format!("{}\n", notice.trim_end()).as_bytes());
+        }
     }
     let pid = start(line.as_raw_fd(), session, env)?;
     // The session's programs hold the line now; serial-console keeps none
