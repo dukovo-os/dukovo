@@ -51,7 +51,7 @@ restore)
 	# The newest chain of /users, its backups in the order of their names,
 	# each the parts of one file in order.
 	chain=$(ls -d backups/lab-backup/*/users/*/ | tail -1)
-	for backup in $(ls "$chain" | sed 's/\.age.*//' | sort -u); do
+	for backup in $(ls "$chain" | grep '\.age' | sed 's/\.age.*//' | sort -u); do
 		cat "$chain$backup".age* | age -d -i backups/lab-backup.key > backup.stream
 		btrfs receive --dump -f backup.stream | head -1 | tr -s ' ' | cut -d ' ' -f 1-2
 		btrfs receive -f backup.stream received

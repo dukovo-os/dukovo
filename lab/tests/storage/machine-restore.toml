@@ -1,0 +1,61 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# A whole machine restored from its backups on real hardware (ADR 0464):
+# the machine backs itself up to a folder in /system/state, which a
+# restore leaves as it is, with /applications and its record; a file of
+# the lab account's and a setting are then changed, the restore is
+# staged, and at the restart Spark puts the backed-up places in place
+# before any service starts. The file and the setting are as they were,
+# and what the restore replaced is kept in /snapshots/machine-restore.
+about = "A whole machine restored from its backups at a restart: a lab account's file and a setting come back as they were, and what the restore replaced is kept (ADR 0464)"
+time = "20m"
+fresh = true
+
+# A file of the lab account's, and a destination in /system/state.
+[[step]]
+run = "sh -c 'rm -rf ~/lab-restore && mkdir ~/lab-restore && echo first > ~/lab-restore/note.txt && echo made'"
+expect = "made"
+[[step]]
+run = "sh -c 'rm -rf /system/state/lab-machine-backup && mkdir /system/state/lab-machine-backup && backup add --every hand --verify never lab-local /system/state/lab-machine-backup > /dev/null && backup run lab-local'"
+root = true
+expect = ["backup: lab-local: /applications: ", "backup: lab-local: /users: ", "backup: lab-local: done"]
+[[step]]
+run = "backup verify lab-local"
+root = true
+expect = "records through, every chain whole"
+# Changed: the file gone, a setting added.
+[[step]]
+run = "sh -c 'rm -r ~/lab-restore && echo gone'"
+expect = "gone"
+[[step]]
+run = "sh -c 'echo changed > /system/settings/machine-restore-test && echo set'"
+root = true
+expect = "set"
+# Staged, then put in place at the restart.
+[[step]]
+run = "backup restore --machine lab-local"
+root = true
+expect = ["/users: staged its backup of ", "/system/settings: staged its backup of ", "Restart to finish"]
+[[step]]
+run = "sh -c '(sleep 2; reboot) > /dev/null 2>&1 &'"
+root = true
+[[step]]
+serial = "asked to restart the machine"
+[[step]]
+serial = "spark: restoring the machine "
+[[step]]
+serial = "spark: the machine is as it was at "
+[[step]]
+wait = "ready"
+[[step]]
+run = "sh -c 'cat ~/lab-restore/note.txt'"
+expect = "first"
+[[step]]
+run = "sh -c '[ -e /system/settings/machine-restore-test ] || echo \"taken back\"; ls /snapshots/machine-restore/before-*/settings/machine-restore-test'"
+root = true
+expect = ["taken back", "/settings/machine-restore-test"]
+[[step]]
+run = "sh -c 'backup remove lab-local > /dev/null && rm -rf /system/state/lab-machine-backup /users/lab/lab-restore && echo cleaned'"
+root = true
+expect = "cleaned"

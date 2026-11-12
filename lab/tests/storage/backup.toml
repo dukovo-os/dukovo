@@ -26,7 +26,7 @@ expect = "changed"
 [[step]]
 run = "sh -c 'backup run lab-pc && backup verify --restore lab-pc'"
 root = true
-expect = ["(changes)", "read 2 backups through, every chain whole", "files and folders as they were"]
+expect = ["(changes)", "read 2 backups and 2 records through, every chain whole", "files and folders as they were"]
 [[step]]
 run = "sh -c 'cd ~/lab-backup-files && find . -type f | sort | xargs sha256sum > ~/lab-backup.sums && wc -l < ~/lab-backup.sums'"
 expect = "2"

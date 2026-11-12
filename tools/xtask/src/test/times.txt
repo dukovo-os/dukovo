@@ -91,6 +91,7 @@ lockdep 12
 logging 15
 machine-check 31
 machine-check-program 20
+machine-restore 190
 microcode 10
 mm-stress 17
 msr 15

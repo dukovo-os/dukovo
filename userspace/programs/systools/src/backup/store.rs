@@ -7,9 +7,10 @@
 //! `cat`, `mv`, `rm` and `find` alone, so any POSIX server does.
 //!
 //! A backup's stream is written as parts of at most [`PART`] bytes, each
-//! `.partial` until the whole stream is written; then they are renamed
-//! from the last to the first, so that a backup is there once its first
-//! part, or its one file, has its name.
+//! `.partial` until the whole stream is written; then its tag (ADR 0464)
+//! and they are renamed, the tag first and the parts from the last to the
+//! first, so that a backup is there once its first part, or its one file,
+//! has its name, and has its tag by then.
 
 use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader, Read, Write};
@@ -17,7 +18,11 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 
+use std::cell::Cell;
+use std::rc::Rc;
+
 use super::layout::{self, PARTIAL};
+use super::tag::Tagging;
 use crate::util::{self, Fail};
 
 /// The size of a part: FAT holds no file of 4 GiB.
@@ -456,7 +461,7 @@ impl Store for Ssh {
 
 /// A backup's stream, written as parts of at most `part` bytes under
 /// `folder` (the place's and chain's), each `.partial` until
-/// [`Parts::finish`].
+/// [`Parts::finish`], and tagged as it is written.
 pub struct Parts<'a> {
     store: &'a mut dyn Store,
     folder: String,
@@ -469,10 +474,20 @@ pub struct Parts<'a> {
     filled: u64,
     /// What every part holds.
     pub written: u64,
+    /// The tag, made over every byte written.
+    tagging: Tagging,
 }
 
 impl<'a> Parts<'a> {
-    pub fn new(store: &'a mut dyn Store, folder: &str, time: &str, part: u64) -> Parts<'a> {
+    /// The parts of the backup made at `time` in `folder`, tagged with
+    /// `tagging`, which [`layout::tagged_path`] of its first file started.
+    pub fn new(
+        store: &'a mut dyn Store,
+        folder: &str,
+        time: &str,
+        part: u64,
+        tagging: Tagging,
+    ) -> Parts<'a> {
         Parts {
             store,
             folder: folder.into(),
@@ -482,6 +497,7 @@ impl<'a> Parts<'a> {
             count: 0,
             filled: 0,
             written: 0,
+            tagging,
         }
     }
 
@@ -512,21 +528,26 @@ impl<'a> Parts<'a> {
         if let Some(sink) = self.current.take() {
             sink.finish()?;
         }
-        let pairs: Vec<(String, String)> = if self.count == 1 {
-            vec![(self.partial(0), format!("{}/{}", self.folder, layout::whole_name(&self.time)))]
+        let tag = format!("{}/{}", self.folder, layout::tag_name(&self.time));
+        let tag_partial = format!("{tag}{PARTIAL}");
+        let mut pairs = vec![(tag_partial.clone(), tag)];
+        if self.count == 1 {
+            pairs.push((
+                self.partial(0),
+                format!("{}/{}", self.folder, layout::whole_name(&self.time)),
+            ));
         } else {
-            (0..self.count)
-                .rev()
-                .map(|i| {
-                    (
-                        self.partial(i),
-                        format!("{}/{}", self.folder, layout::part_name(&self.time, i)),
-                    )
-                })
-                .collect()
-        };
-        self.store.rename_all(&pairs)?;
-        Ok(self.written)
+            pairs.extend((0..self.count).rev().map(|i| {
+                (self.partial(i), format!("{}/{}", self.folder, layout::part_name(&self.time, i)))
+            }));
+        }
+        let (store, written) = (self.store, self.written);
+        let mut sink = store.create(&tag_partial)?;
+        sink.write_all(self.tagging.text().as_bytes())
+            .map_err(|e| util::failed(&store.place(), e))?;
+        sink.finish()?;
+        store.rename_all(&pairs)?;
+        Ok(written)
     }
 }
 
@@ -541,6 +562,7 @@ impl Write for Parts<'_> {
         let room = usize::try_from(self.part - self.filled).unwrap_or(usize::MAX);
         let sink = self.current.as_mut().ok_or(io::ErrorKind::BrokenPipe)?;
         let wrote = sink.write(&data[..data.len().min(room)])?;
+        self.tagging.update(&data[..wrote]);
         self.filled += wrote as u64;
         self.written += wrote as u64;
         Ok(wrote)
@@ -552,16 +574,34 @@ impl Write for Parts<'_> {
 }
 
 /// A backup's parts read as one stream, each opened when the one before
-/// it ends.
+/// it ends, and its tag checked at the end.
 pub struct Joined<'a> {
     store: &'a mut dyn Store,
     parts: std::vec::IntoIter<String>,
     current: Option<Box<dyn Read>>,
+    /// The tag being made over what is read, and the one the backup's tag
+    /// file holds; none to read it unchecked.
+    check: Option<(Tagging, String)>,
+    /// Set once the end was read and the tag matched, or without a check.
+    checked: Rc<Cell<bool>>,
 }
 
 impl<'a> Joined<'a> {
-    pub fn new(store: &'a mut dyn Store, parts: &[String]) -> Joined<'a> {
-        Joined { store, parts: Vec::from(parts).into_iter(), current: None }
+    /// The stream of `parts`, checked against `check`: the tagging their
+    /// path started and the text of their tag's file. Its [`Joined::checked`]
+    /// says when the end was read and found to match.
+    pub fn new(
+        store: &'a mut dyn Store,
+        parts: &[String],
+        check: Option<(Tagging, String)>,
+    ) -> Joined<'a> {
+        let checked = Rc::new(Cell::new(check.is_none()));
+        Joined { store, parts: Vec::from(parts).into_iter(), current: None, check, checked }
+    }
+
+    /// What says that the stream was read to its end, its tag matching.
+    pub fn checked(&self) -> Rc<Cell<bool>> {
+        Rc::clone(&self.checked)
     }
 }
 
@@ -569,13 +609,27 @@ impl Read for Joined<'_> {
     fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
         loop {
             if self.current.is_none() {
-                let Some(path) = self.parts.next() else { return Ok(0) };
+                let Some(path) = self.parts.next() else {
+                    if let Some((tagging, tag)) = self.check.take() {
+                        if !tagging.matches(&tag) {
+                            return Err(io::Error::new(
+                                io::ErrorKind::InvalidData,
+                                "its tag does not match: not written with this destination's key",
+                            ));
+                        }
+                        self.checked.set(true);
+                    }
+                    return Ok(0);
+                };
                 let reader =
                     self.store.read(&path).map_err(|fail| io::Error::other(fail.message))?;
                 self.current = Some(reader);
             }
             let reader = self.current.as_mut().ok_or(io::ErrorKind::UnexpectedEof)?;
             let read = reader.read(buffer)?;
+            if let Some((tagging, _)) = self.check.as_mut() {
+                tagging.update(&buffer[..read]);
+            }
             if read > 0 || buffer.is_empty() {
                 return Ok(read);
             }
@@ -586,6 +640,7 @@ impl Read for Joined<'_> {
 
 #[cfg(test)]
 mod tests {
+    use super::super::tag::TagKey;
     use super::*;
 
     fn folder() -> (tempdir::Dir, Folder) {
@@ -628,23 +683,54 @@ mod tests {
         assert!(fail.message.contains("plugged in"), "{}", fail.message);
     }
 
+    fn key() -> TagKey {
+        TagKey::of(&age::x25519::Identity::generate())
+    }
+
+    /// The text of the tag file at `path`.
+    fn tag_text(store: &mut Folder, path: &str) -> String {
+        let mut text = String::new();
+        store.read(path).unwrap().read_to_string(&mut text).unwrap();
+        text
+    }
+
     #[test]
     fn parts_are_named_once_whole_and_read_back_as_one() {
         let (_dir, mut store) = folder();
+        let key = key();
         let data: Vec<u8> = (0..2500u32).map(|i| (i * 7) as u8).collect();
+        let tagging = key.start("users/2026-11-11-030000/2026-11-11-030000");
         let mut parts =
-            Parts::new(&mut store, "users/2026-11-11-030000", "2026-11-11-030000", 1000);
+            Parts::new(&mut store, "users/2026-11-11-030000", "2026-11-11-030000", 1000, tagging);
         parts.write_all(&data).unwrap();
         // Nothing has its name until the end.
         assert!(store_list(&mut parts).iter().all(|p| p.ends_with(PARTIAL)));
         assert_eq!(parts.finish().unwrap(), 2500);
         let listed = store.list().unwrap();
-        assert_eq!(listed.len(), 3, "{listed:?}");
+        assert_eq!(listed.len(), 4, "{listed:?}");
         let found = layout::Listing::read(listed.iter().map(String::as_str));
+        assert!(found.stray.is_empty(), "{:?}", found.stray);
         let backup = &found.chains("users")[0].backups[0];
         assert_eq!(backup.parts.len(), 3);
+        let tag = tag_text(&mut store, backup.tag.as_deref().unwrap());
+        let check = Some((key.start(&layout::tagged_path(&backup.parts[0])), tag.clone()));
+        let mut joined = Joined::new(&mut store, &backup.parts, check);
+        let checked = joined.checked();
+        assert!(!checked.get());
         let mut back = Vec::new();
-        Joined::new(&mut store, &backup.parts).read_to_end(&mut back).unwrap();
+        joined.read_to_end(&mut back).unwrap();
+        assert_eq!(back, data);
+        assert!(checked.get());
+        // Another key's tag, or the tag of another time, is refused at the
+        // end.
+        let check = Some((self::key().start(&layout::tagged_path(&backup.parts[0])), tag.clone()));
+        let err = Joined::new(&mut store, &backup.parts, check).read_to_end(&mut back).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        let check = Some((key.start("users/2026-11-11-030000/2026-11-12-030000"), tag));
+        assert!(Joined::new(&mut store, &backup.parts, check).read_to_end(&mut back).is_err());
+        // Unchecked, it reads all the same.
+        back.clear();
+        Joined::new(&mut store, &backup.parts, None).read_to_end(&mut back).unwrap();
         assert_eq!(back, data);
     }
 
@@ -655,13 +741,19 @@ mod tests {
     #[test]
     fn a_small_stream_is_one_file() {
         let (_dir, mut store) = folder();
+        let tagging = key().start("users/2026-11-11-030000/2026-11-11-030000");
         let mut parts =
-            Parts::new(&mut store, "users/2026-11-11-030000", "2026-11-11-030000", PART);
+            Parts::new(&mut store, "users/2026-11-11-030000", "2026-11-11-030000", PART, tagging);
         parts.write_all(b"stream").unwrap();
         parts.finish().unwrap();
+        let mut listed = store.list().unwrap();
+        listed.sort();
         assert_eq!(
-            store.list().unwrap(),
-            ["users/2026-11-11-030000/2026-11-11-030000.age".to_string()]
+            listed,
+            [
+                "users/2026-11-11-030000/2026-11-11-030000.age".to_string(),
+                "users/2026-11-11-030000/2026-11-11-030000.tag".to_string()
+            ]
         );
         store.remove(&["users".into()]).unwrap();
         assert!(store.list().unwrap().is_empty());

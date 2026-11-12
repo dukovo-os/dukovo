@@ -23,7 +23,11 @@ backup - keep encrypted backups of snapshots on a disk or a server
 
 *backup verify* [*--restore*] _name_
 
-*backup restore* [*--key* _file_] [*--place* _place_] [*--at* _time_] [*--into* _folder_] _name_|_source_
+*backup restore* [*--key* _file_] [*--place* _place_] [*--at* _time_] [*--into* _folder_] [*--unchecked*] _name_|_source_
+
+*backup restore --machine* [*--key* _file_] [*--at* _time_] [*--unchecked*] _name_|_source_
+
+*backup restore --machine --cancel*
 
 *backup key* _name_
 
@@ -32,9 +36,10 @@ backup - keep encrypted backups of snapshots on a disk or a server
 # DESCRIPTION
 
 backup copies snapshots of the places *snap*(1) keeps, */users*,
-*/shared* and */system/settings* by default, to a destination: a
-folder, as a USB disk's in */volumes*, or a folder on a server reached
-over SSH (ADR 0463). The first backup of a place is its whole snapshot;
+*/shared* and */system/settings* by default, and of the apps installed
+for everyone, */applications*, to a destination: a folder, as a USB
+disk's in */volumes*, or a folder on a server reached over SSH (ADR
+0463, ADR 0464). The first backup of a place is its whole snapshot;
 each one after holds only what changed since the one before. Every
 backup is a Btrfs send stream (*subvolume*(8)), encrypted with age to
 the destination's own key and written as files, so a destination can be
@@ -51,8 +56,13 @@ start of its next backup is removed.
 
 At the destination, the folder *dukovo-backup/*_machine_ holds
 *backup.toml*, then a folder for each place (*users*, *shared*,
-*settings*), a folder for each chain, named by the time of its whole
-backup, and in it a file for each backup, named by its time. A chain
+*settings*, *applications*), a folder for each chain, named by the time
+of its whole backup, and in it a file for each backup, named by its
+time, with its tag beside it. Each round also writes the machine's
+record in the folder *machine*: the places and their paths, and which
+apps are installed and what each person allowed them (bundled's
+registry and the grants), encrypted and tagged as a backup is. A record
+is kept while a backup it describes is. A chain
 holds *chain* backups at most (30 by default); then a whole backup
 starts the next one. The newest *chains* whole chains are kept (2 by
 default), and an older one is removed only once a newer one is whole. A
@@ -70,6 +80,15 @@ read on any machine; without it and the machine, they cannot. *backup
 key* shows it again to an administrator. Each *--recipient* adds an age
 public key (*age1*...), as one kept on another machine, that every
 backup is encrypted to as well.
+
+Anyone who has a key's public half can encrypt a file to it, so each
+backup and record has a tag, _time_*.tag*: an HMAC-SHA256 of its path and
+bytes with a key made from the recovery key (ADR 0464). Only the
+machine and whoever holds the recovery key can make one. *verify* and
+*restore* refuse a file whose tag is missing or does not match, so a
+backup that whoever holds the disk or the server put there is never
+restored. Restoring with another of the destination's keys, which
+cannot check the tags, needs *--unchecked*.
 
 # COMMANDS
 
@@ -126,15 +145,16 @@ backup is encrypted to as well.
 *verify* [*--restore*] _name_
 	Reads every backup at the destination through, decrypting it and
 	reading its stream, and checks each chain's links: each backup's
-	parent is the one before it. A file that was changed or cut short
-	is refused. With *--restore*, the newest backup of each place is
+	parent is the one before it, and its tag, and reads each record.
+	A file that was changed, cut short or tagged with another key is
+	refused. With *--restore*, the newest backup of each place is
 	also restored into the place's *@snapshots* folder and compared,
 	file by file, with the snapshot it was made from: names, kinds,
 	owners, modes, the times contents changed, links, extended
 	attributes and data. The copy is removed after. Needs an
 	administrator.
 
-*restore* [*--key* _file_] [*--place* _place_] [*--at* _time_] [*--into* _folder_] _name_|_source_
+*restore* [*--key* _file_] [*--place* _place_] [*--at* _time_] [*--into* _folder_] [*--unchecked*] _name_|_source_
 	Restores the newest backup of each place, or of _place_ (its path
 	here, as */users*, or its folder's name there, as *users*), or
 	the one made at _time_ (as *show* lists it, written
@@ -152,6 +172,38 @@ backup is encrypted to as well.
 	$ snap restore --from restored-2026-11-11-030012 notes.txt
 	```
 
+*restore --machine* [*--key* _file_] [*--at* _time_] [*--unchecked*] _name_|_source_
+	Restores the whole machine as its newest record, or the newest
+	from no later than _time_, describes it. Each of the root's places
+	the record names (*/system/settings*, */applications*, */users*
+	and */shared*) is received as of that time into
+	*@snapshots/machine-restore/staged*, with the app registry and
+	grants the record carries; nothing in use changes. At the next
+	start, before any service starts, *spark*(8) puts each in the place
+	of the one there, which it keeps, read-only, in
+	*/snapshots/machine-restore/before-*_time_, and writes the
+	registry and grants into */system/state*. The machine then has its
+	name, accounts and passwords, settings, files and apps again, and
+	each app the permissions it was given. A place not on the root,
+	as a disk's in */volumes*, is restored as *restored-*_time_ in its
+	own *@snapshots* folder, if this machine has it. Restoring again
+	before the restart stages afresh, and *--cancel* withdraws what was
+	staged. Needs an administrator, and room on the root for everything
+	restored.
+
+	After a fresh install, from a disk's backups:
+
+	```
+	$ elevate backup restore --machine --key /volumes/BACKUP/recovery.key /volumes/BACKUP/dukovo-backup/atlas
+	/applications: staged its backup of 2026-11-11 03:00:12
+	...
+	Staged atlas as it was at 2026-11-11 03:00:12. Restart to finish: ...
+	$ elevate reboot
+	```
+
+	The subvolumes it replaced stay until *subvolume delete* removes
+	them.
+
 *key* _name_
 	Shows the destination's recovery key. Needs an administrator.
 
@@ -164,11 +216,12 @@ backup is encrypted to as well.
 
 The parts of a backup, in order, decrypted, are what *btrfs send*
 writes. With the recovery key in a file, Linux's *age* or *rage* and
-*btrfs receive* make each backup of a chain again, from its whole one:
+*btrfs receive* make each backup of a chain again, from its whole one.
+They do not check the tags:
 
 ```
 $ cd dukovo-backup/laptop/users/2026-11-01-030000
-$ for b in $(ls | sed 's/\.age.*//' | sort -u); do
+$ for b in $(ls *.age* | sed 's/\.age.*//' | sort -u); do
 >     cat $b.age* | age -d -i recovery.key | sudo btrfs receive /mnt/restore
 > done
 ```
@@ -192,6 +245,10 @@ _/system/settings/backup/ssh_ed25519_, _/system/settings/backup/known_hosts_
 
 _/system/state/backup/name.json_
 	What a destination last did.
+
+_@snapshots/machine-restore_, shown in _/snapshots/machine-restore_
+	A whole machine's restore: *staged* until the next start, then
+	*before-*_time_, what it replaced.
 
 _/system/settings/spark/services/backup.toml_
 	The service (*service.toml*(5)).
