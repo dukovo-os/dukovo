@@ -26,6 +26,8 @@
 //! keys withdraw is unstaged at the next check; just before an
 //! unattended restart into a staged release, updated asks the server
 //! once more, and waits while its waves are held (ADRs 0456, 0469).
+//! Once a week it reads the running slot back against its signed list,
+//! as `sysupdate verify` does.
 
 use std::ffi::OsString;
 use std::path::Path;
@@ -355,6 +357,11 @@ pub fn updated(args: &mut Args) -> Result<i32, Fail> {
     }
     loop {
         let settings = Settings::load()?;
+        // The weekly read of the slot is the service's, not a single
+        // check's.
+        if !once {
+            weekly_verify();
+        }
         let staged = if settings.check == Check::Off {
             println!("updated: checks are off (updates.toml)");
             false
@@ -460,6 +467,27 @@ fn unstage_withdrawn(version: &str, reason: &str) {
              `elevate sysupdate unstage` does it",
             why.message
         )),
+    }
+}
+
+/// Once a week, reads the running slot back against its signed list
+/// (`sysupdate verify`), and tells whoever is signed in when it is not
+/// the release.
+fn weekly_verify() {
+    let now = i64::try_from(util::now_ns() / 1_000_000_000).unwrap_or(0);
+    if !sysupdate::verify::due(now) {
+        return;
+    }
+    if let Err(why) = sysupdate::verify::main(None) {
+        let text = format!(
+            "the system's files are not the release's: {}; `elevate sysupdate verify` checks \
+             again, and Rescue reinstalls the release",
+            why.message
+        );
+        println!("updated: {text}");
+        if let Err(why) = notifyd::send("updated", &text, "", Urgency::Critical) {
+            println!("updated: cannot tell the consoles: {}", why.message);
+        }
     }
 }
 

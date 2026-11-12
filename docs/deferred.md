@@ -131,7 +131,6 @@ machine with AMT, an AMD machine and a laptop; see
 | Rescue's reinstall from the update server (ADR 0460) | Rescue reinstalls from its own copy, an update folder or an update file | 15d, with the unified updater |
 | USB repair, which also rewrites GRUB and the EFI system partition, and the installer's reinstall that keeps data (ADRs 0459, 0460) | Rescue covers a machine whose EFI system partition still starts | The installer's next changes |
 | Rescue resetting the settings to their defaults (ADR 0460) | Putting back the settings from before the last update covers a bad update | A need |
-| `sysupdate verify` and a weekly check with the scrub (ADR 0451) | A stage reads every file it writes back against the signed list, and Btrfs checks every block it reads | 15d, with the unified updater |
 | Each slot's release list kept beside it, so that `sysupdate check` reads none of the slot's files (ADR 0466) | A check reads the running slot's files whose size matches a wanted one, as a stage does | A need |
 | The firmware sets and the catalog's bundles going through the waves (ADRs 0456, 0469) | Only system releases have rollouts; a firmware set is staged only when its owner asks | 15d, with the unified updater |
 | Canaries that report to the update server by themselves (ADR 0456) | The maintainer marks a canary red or green with `ob release rollout canary` | The canary machines, before 1.0.0-alpha.1 |

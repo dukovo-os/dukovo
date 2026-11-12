@@ -11,8 +11,9 @@
 //! follows (`check`, `download`, `channel`, ADR 0466), or from a
 //! repository folder or an update file the owner names. `status` says
 //! which slot runs and what the other holds, `unstage` takes a staged
-//! update back, and `rollback` makes the previous version the one that
-//! starts. `firmware` stages the optional firmware package's sets the
+//! update back, `rollback` makes the previous version the one that
+//! starts, and `verify` reads the running slot back against its signed
+//! list. `firmware` stages the optional firmware package's sets the
 //! same way, each a slot of its own (ADR 0468). Which slot starts is the slot state on the EFI
 //! system partitions, which GRUB's menu reads and counts the tries in
 //! (`place`).
@@ -29,6 +30,7 @@ pub(crate) mod online;
 pub(crate) mod place;
 pub(crate) mod stage;
 pub(crate) mod starts;
+pub(crate) mod verify;
 
 use std::path::PathBuf;
 
@@ -42,7 +44,8 @@ use crate::util::{self, Fail, fail};
 pub fn main(args: &mut Args) -> Result<i32, Fail> {
     let usage = || {
         util::usage(
-            "say status, check, download, stage, unstage, rollback, channel, firmware or health"
+            "say status, check, download, stage, unstage, rollback, verify, channel, firmware or \
+             health"
                 .into(),
         )
     };
@@ -75,7 +78,7 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
                 keep = Keep::Today;
             }
             Arg::Operand(path)
-                if matches!(action.as_str(), "stage" | "channel") && repo.is_none() =>
+                if matches!(action.as_str(), "stage" | "channel" | "verify") && repo.is_none() =>
             {
                 repo = Some(PathBuf::from(path));
             }
@@ -93,6 +96,7 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
         "download" => check(version.as_deref(), true),
         "channel" => channel(repo.as_deref().and_then(|p| p.to_str())),
         "unstage" => unstage(),
+        "verify" => verify::main(repo.as_deref()),
         "rollback" => rollback(keep),
         "health" => health::run(),
         _ => Err(usage()),

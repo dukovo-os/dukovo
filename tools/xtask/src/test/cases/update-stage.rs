@@ -8,16 +8,17 @@
 //! slot A runs. At the restart GRUB takes one of the update's three
 //! tries and starts slot B; the health check finds the essential
 //! services running for 10 seconds and makes it the default, with slot
-//! A the previous version. A setting changed there, *sysupdate rollback
-//! --settings-from-before* then makes slot A the default again, and it
-//! starts at the next restart with the settings from before the update,
-//! the changed ones kept aside (ADR 0454).
+//! A the previous version, and *sysupdate verify* reads it back against
+//! the signed list. A setting changed there, the rollback *sysupdate
+//! rollback --settings-from-before* then makes slot A the default again,
+//! and it starts at the next restart with the settings from before the
+//! update, the changed ones kept aside (ADR 0454).
 
 use super::super::*;
 
 pub const CASE: Case = Case {
     name: "update-stage",
-    about: "an update is staged into slot B while slot A runs, starts at the restart as a try, proves itself to the health check and becomes the default; a rollback with the settings from before the update then starts slot A again, a setting changed since kept aside (ADRs 0451 to 0454)",
+    about: "an update is staged into slot B while slot A runs, starts at the restart as a try, proves itself to the health check and becomes the default, and reads back as its signed list says; a rollback with the settings from before the update then starts slot A again, a setting changed since kept aside (ADRs 0451 to 0454)",
     firmware: Firmware::Uefi,
     media: Media::Disk,
     cmdline: "console-sign-in=off",
@@ -132,6 +133,10 @@ fn update_stage(vm: &mut Vm, _case: &Case) -> Result<(), String> {
             "Last health check: passed",
         ],
     )?;
+    // The slot read back against the signed list (ADR 0451).
+    run(vm, &format!("sysupdate verify {UPDATES}/good"), &[&format!(
+        "sysupdate: slot B (Dukovo {version}) is the release its signed list names"
+    )])?;
 
     // Back to the version before, with the settings from before the
     // update: one changed since is kept aside.

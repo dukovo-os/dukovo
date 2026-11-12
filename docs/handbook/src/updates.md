@@ -254,6 +254,20 @@ start menu and the boot entry back, and keeps which version starts.
 Nothing else on the disk changes. Pull the stick when it says so, and
 press Enter to restart.
 
+## Checking the system's files
+
+Once a week the updater reads every file of the running system back
+against the release's signed list, and tells you if one differs. To
+check now:
+
+```
+elevate sysupdate verify
+```
+
+It says what differs, if anything. A disk that is failing is the usual
+cause: Rescue's reinstall puts the release's files back, and the
+`scrub` command checks the whole disk.
+
 ## Going back later
 
 If you find a problem days later, `elevate sysupdate rollback` makes the

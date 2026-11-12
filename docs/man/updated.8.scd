@@ -34,6 +34,10 @@ system, firmware set and apps, as *update*(8) does, and does what
   unstaged instead.
 - *check = "off"* turns the checks off.
 
+Once a week it reads the running slot back against its release's signed
+list, as *sysupdate verify* does, and tells the consoles, as critical,
+when the slot is not the release.
+
 Whatever the settings, a staged release that the release keys withdraw
 is unstaged at the next check, and the console says so: it is never
 tried (ADR 0469).
