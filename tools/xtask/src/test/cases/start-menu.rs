@@ -2,14 +2,16 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 //! An installed system's start menu in Dukovo's colours (ADR 0505). The
-//! first start, seen through, keeps the menu up for a minute when it
-//! shows, as the menu's timeout on the EFI system partition is made 60
-//! seconds, and gets a health check that never ends. The next start is
+//! first start, seen through, keeps the menu up for a minute and a half
+//! when it shows, as the menu's timeout on the EFI system partition is
+//! made 90 seconds, and gets a health check that never ends. The next start is
 //! cut short by a power cut, so the start after it shows the menu (ADR
 //! 0501). The screen draws it with the slot's theme, beside its GRUB: the
 //! slate background, the box's blue-grey line and the chosen entry on
 //! tan. The serial port gets GRUB's plain menu, with Troubleshooting on
-//! it, and Enter starts Dukovo.
+//! it, and Enter starts Dukovo, long before the menu's countdown would.
+//! GRUB says "Booting" only for an entry it starts by itself, so the
+//! test tells Enter's start from the countdown's by the time it takes.
 
 use super::super::*;
 use super::update_stage::{power_off, restart, run, started};
@@ -42,6 +44,14 @@ const ESP: &str = "sda2";
 /// How long the menu may take to be drawn once the serial port has it.
 const DRAWN_SECONDS: u64 = 15;
 
+/// The menu's timeout on the EFI system partition, in seconds.
+const MENU_SECONDS: u64 = 90;
+
+/// How soon Dukovo must have started after Enter: well inside what is
+/// left of the menu's countdown once the menu is drawn, so that a start
+/// this soon is Enter's.
+const STARTED_SECONDS: u64 = 40;
+
 /// Shows the menu, and looks at it.
 fn start_menu(vm: &mut Vm, _case: &Case) -> Result<(), String> {
     started(vm, 'a')?;
@@ -53,7 +63,8 @@ fn start_menu(vm: &mut Vm, _case: &Case) -> Result<(), String> {
         &format!(
             "printf '{NEVER_HEALTHY}' > /system/settings/sysupdate/health.toml && mkdir -p \
              /tmp/esp && mount -t fat {ESP} /tmp/esp && sed -i 's/^set dukovo_timeout=0$/set \
-             dukovo_timeout=60/' /tmp/esp/boot/grub/grub.cfg && grep -q '^set dukovo_timeout=60$' \
+             dukovo_timeout={MENU_SECONDS}/' /tmp/esp/boot/grub/grub.cfg && grep -q '^set \
+             dukovo_timeout={MENU_SECONDS}$' \
              /tmp/esp/boot/grub/grub.cfg && umount /tmp/esp && sync && echo \"menu: $((6 * 7))\""
         ),
         &["menu: 42"],
@@ -113,9 +124,17 @@ fn start_menu(vm: &mut Vm, _case: &Case) -> Result<(), String> {
         ));
     }
 
-    // Enter starts the default entry, Dukovo.
+    // Enter starts the default entry, Dukovo, at once: the countdown
+    // would take more than another half minute.
+    let pressed = Instant::now();
     vm.press(&["ret"])?;
-    vm.expect(&format!("Booting `Dukovo Server {VERSION}"))?;
     started(vm, 'a')?;
+    let took = pressed.elapsed().as_secs();
+    if took > STARTED_SECONDS {
+        return Err(format!(
+            "Dukovo started {took} s after Enter, as late as the menu's countdown of \
+             {MENU_SECONDS} s would start it: Enter did not choose the entry"
+        ));
+    }
     power_off(vm)
 }
