@@ -14,9 +14,11 @@
 //! and the host's client, checking the host key the guest showed, signs
 //! in as alice: a command's output, error and exit status come back
 //! apart, 4 MiB through *cat* come back whole, a terminal is a
-//! pseudo-terminal of the client's type, a shell on it runs what is
-//! typed and ends with its status, LANG is passed on and other
-//! variables are not; root, bob, the key behind an option and a key not
+//! pseudo-terminal of the client's type, a dumb one for a client with
+//! no TERM, a shell on it runs what is typed and ends with its status,
+//! one connection carries six sessions one after another as a
+//! ControlMaster runs them, LANG is passed on and other variables are
+//! not; root, bob, the key behind an option and a key not
 //! listed are refused, and so is alice's password. *sftp* puts a file,
 //! renames it, gets it back whole, and makes and removes a folder; *scp*
 //! and *scp -O* copy one there and back. *ssh -W* has alice's forwarder
@@ -50,7 +52,7 @@ const NETDEV: &str = "user,id=n0,guestfwd=tcp:10.0.2.100:80-cmd:out/test/sshd/ke
 
 pub const CASE: Case = Case {
     name: "sshd",
-    about: "sshd and service enable against the host's OpenSSH client through a port QEMU forwards: keys from authorized_keys, one behind an option passed over; the host key made and checked; commands with their output, error and exit status, 4 MiB through cat, a terminal and a shell on it, LANG passed on; root, another person, an unsafe file and a key not listed refused; the guest's own client signing in; last(1); sftp, scp and scp -O copying files there and back; ssh -W to an address and a name; ssh -R with a MiB each way, on the loopback alone, a low port refused; sshd_config with a mistake refused and kept out of a reload; passwords turned on by a reload, a wrong one and a denied user refused, lastb(1), forwarding cut to one way; service disable closing the port (ADRs 0347 to 0349)",
+    about: "sshd and service enable against the host's OpenSSH client through a port QEMU forwards: keys from authorized_keys, one behind an option passed over; the host key made and checked; commands with their output, error and exit status, 4 MiB through cat, a terminal and a shell on it, one for a client with no TERM, sessions one after another over a ControlMaster's connection, LANG passed on; root, another person, an unsafe file and a key not listed refused; the guest's own client signing in; last(1); sftp, scp and scp -O copying files there and back; ssh -W to an address and a name; ssh -R with a MiB each way, on the loopback alone, a low port refused; sshd_config with a mistake refused and kept out of a reload; passwords turned on by a reload, a wrong one and a denied user refused, lastb(1), forwarding cut to one way; service disable closing the port (ADRs 0347 to 0349)",
     firmware: Firmware::Uefi,
     media: Media::Usb,
     // Every service, as on a machine, netd setting the card up by DHCP.
@@ -358,6 +360,42 @@ fn host(client: &Client) -> Result<(), String> {
     if ran.status != Some(3) || !ran.out().contains("shell-42") {
         return Err(format!("the shell said {:?} and ended with {:?}", ran.out(), ran.status));
     }
+    // A client with no TERM of its own, as one cron runs, gets a terminal
+    // too, a dumb one.
+    let none = [("TERM", "")];
+    let ran = client.ssh("alice", "alice", &["-tt"], &["echo term-$TERM"], b"", &none)?;
+    if ran.status != Some(0) || !ran.out().contains("term-dumb") {
+        return Err(format!(
+            "a client with no TERM got {:?} ({:?}): {}",
+            ran.out(),
+            ran.status,
+            ran.err.trim()
+        ));
+    }
+    // One connection carries session after session, as a client's
+    // ControlMaster runs them: more in all than the four it holds at
+    // once. The master stays in the background until -O exit.
+    let control = format!("ControlPath={}", client.dir.join("control").display());
+    let master = ["-o", "ControlMaster=yes", "-o", &control, "-o", "ControlPersist=60"];
+    let ran = client.ssh("alice", "alice", &master, &["echo mux-0"], b"", &[])?;
+    if ran.status != Some(0) || !ran.out().contains("mux-0") {
+        return Err(format!("the master's session said {:?} ({:?})", ran.out(), ran.status));
+    }
+    let shared = ["-o", "ControlMaster=no", "-o", &control];
+    for n in 1..=6 {
+        let ran = client.ssh("alice", "alice", &shared, &[&format!("echo mux-{n}")], b"", &[])?;
+        if ran.status != Some(0) || !ran.out().contains(&format!("mux-{n}")) || !ran.err.is_empty()
+        {
+            return Err(format!(
+                "session {n} over the master said {:?} ({:?}): {}",
+                ran.out(),
+                ran.status,
+                ran.err.trim()
+            ));
+        }
+    }
+    let exit = ["-o", &control, "-O", "exit"];
+    client.ssh("alice", "alice", &exit, &[], b"", &[])?;
     // LANG is passed on; another variable is not.
     let options = ["-o", "SendEnv=LANG", "-o", "SetEnv=FOO=bar"];
     let ran = client.ssh(

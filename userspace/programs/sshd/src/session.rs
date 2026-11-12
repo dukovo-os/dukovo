@@ -66,7 +66,8 @@ pub struct Running {
     queued: Arc<AtomicUsize>,
     /// The terminal's master, to change its size.
     master: Option<OwnedFd>,
-    /// What passes the bytes and waits for the end.
+    /// What passes the bytes, and last what waits for the end and closes
+    /// the channel.
     tasks: Vec<AbortHandle>,
     /// The channel, to give its client room.
     handle: Handle,
@@ -106,6 +107,13 @@ impl Running {
         if self.master.is_none() {
             self.input = None;
         }
+    }
+
+    /// Whether the session ended and sshd closed its channel. The
+    /// client's close that answers it never reaches the connection's
+    /// handler: russh takes it for a channel already let go.
+    pub fn ended(&self) -> bool {
+        self.tasks.last().is_some_and(AbortHandle::is_finished)
     }
 
     /// The client's terminal changed its size.

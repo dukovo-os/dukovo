@@ -595,6 +595,9 @@ impl server::Handler for Connection {
         // the channel's own queue, which would hold the connection up.
         let id = channel.id();
         drop(channel);
+        // Sessions that ended free their places: sshd closed their
+        // channels, and the client's answer does not come back here.
+        self.channels.retain(|_, open| !open.running.as_ref().is_some_and(session::Running::ended));
         if self.channels.len() >= CHANNELS_MAX {
             eprintln!("sshd: refused a session for {}: {CHANNELS_MAX} are open", self.from);
             // Dropping the reply refuses the channel.
@@ -616,8 +619,13 @@ impl server::Handler for Connection {
         modes: &[(russh::Pty, u32)],
         session: &mut Session,
     ) -> Result<(), Error> {
+        // An empty type is a client's with no TERM of its own, as ssh -tt
+        // from cron or a script: OpenSSH's sshd gives it a terminal too,
+        // and authd makes it a dumb one.
         match self.unstarted(id) {
-            Some(channel) if channel.pty.is_none() && printable(term, TERM_MAX) => {
+            Some(channel)
+                if channel.pty.is_none() && (term.is_empty() || printable(term, TERM_MAX)) =>
+            {
                 channel.pty = Some(pty::Asked {
                     term: term.into(),
                     size: pty::Size { columns, rows, width, height },

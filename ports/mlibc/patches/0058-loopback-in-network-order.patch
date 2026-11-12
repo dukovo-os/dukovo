@@ -1,0 +1,23 @@
+SPDX-FileCopyrightText: 2026 The Dukovo contributors
+SPDX-License-Identifier: Apache-2.0 OR MIT
+
+getaddrinfo with no name and no AI_PASSIVE gave the IPv4 loopback
+address in the machine's byte order: 1.0.0.127 on x86-64, where binding
+or connecting fails with EADDRNOTAVAIL. ssh -L and -D without a bind
+address listened on ::1 alone, so a client of 127.0.0.1 was refused.
+The address is now in network order, as every in_addr_t is.
+Meant for upstream.
+
+--- a/options/posix/generic/lookup.cpp
++++ b/options/posix/generic/lookup.cpp
+@@ -959,7 +959,9 @@
+ 			struct dns_addr_buf addr_buf;
+ 			addr_buf.family = AF_INET;
+ 
+-			in_addr_t addr = INADDR_LOOPBACK;
++			// In network order, as every in_addr_t: on a little-endian
++			// machine INADDR_LOOPBACK itself is 1.0.0.127.
++			in_addr_t addr = htonl(INADDR_LOOPBACK);
+ 			memcpy(&addr_buf.addr, &addr, 4);
+ 
+ 			buf.buf.push_back(addr_buf);

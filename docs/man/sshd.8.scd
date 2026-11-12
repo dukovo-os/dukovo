@@ -104,7 +104,7 @@ status, or the signal that ended it.
 
 Besides what every session gets, a session has *SSH_CLIENT* and
 *SSH_CONNECTION*, and on a terminal *SSH_TTY* and *TERM*, the client's
-terminal's type. The client's *LANG*, *LANGUAGE* and *LC_\** settings
+terminal's type, or _dumb_ for a client with none, as one cron runs. The client's *LANG*, *LANGUAGE* and *LC_\** settings
 are taken, as Debian's sshd takes them (*SendEnv* in *ssh_config*(5));
 other variables a client sends are refused.
 
@@ -177,7 +177,7 @@ connection's forwarded channels close, and the log says why.
 
 A connection has two minutes to sign in and six keys to try; at most
 30 connections sign in at once, 10 of them from one address, and 100
-are open. A connection holds four sessions at most, and the computer
+are open. A connection holds four sessions at once, and the computer
 32 SSH sessions. A client that sends nothing for a minute is asked
 whether it is there; one that does not answer three times is let go.
 

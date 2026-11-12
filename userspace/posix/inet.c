@@ -21,7 +21,8 @@
 // ping sockets, IP_PKTINFO and IPV6_RECVPKTINFO, ports shared with
 // SO_REUSEPORT, multicast groups on lo, and getifaddrs (ADR 0336).
 // MSG_PEEK on streams, datagrams and ping sockets, and getnameinfo's
-// numeric names with their scopes (ADR 0341). ICMP errors (ADR 0345):
+// numeric names with their scopes (ADR 0341), and getaddrinfo's
+// addresses for no name, in network order. ICMP errors (ADR 0345):
 // a connected UDP socket's ECONNREFUSED, by recv, send, poll's POLLERR
 // and SO_ERROR, an unconnected one hearing nothing, and IP_RECVERR's and
 // IPV6_RECVERR's queue of errors, read with MSG_ERRQUEUE, and IP_TOS. And
@@ -532,6 +533,38 @@ static void peeking(void) {
 	CHECK(recv(ping, reply, sizeof(reply), 0) == 12 && !memcmp(reply + 8, "peek", 4));
 	CHECK_ERROR(recv(ping, reply, sizeof(reply), MSG_DONTWAIT), EAGAIN);
 	close(ping);
+}
+
+// getaddrinfo with no name: the loopback addresses, or with AI_PASSIVE
+// the wildcard ones, in network order, as glibc gives them. ssh -L and
+// -D bind what it gives when no address is named.
+static void no_name_addresses(void) {
+	struct addrinfo hints;
+	memset(&hints, 0, sizeof(hints));
+	hints.ai_family = AF_INET;
+	hints.ai_socktype = SOCK_STREAM;
+	struct addrinfo *found = NULL;
+	CHECK(getaddrinfo(NULL, "8080", &hints, &found) == 0);
+	struct sockaddr_in at = *(struct sockaddr_in *)found->ai_addr;
+	freeaddrinfo(found);
+	CHECK(at.sin_family == AF_INET && at.sin_port == htons(8080));
+	CHECK(at.sin_addr.s_addr == htonl(INADDR_LOOPBACK));
+	// It binds, where 1.0.0.127 would be EADDRNOTAVAIL.
+	int fd = socket(AF_INET, SOCK_STREAM, 0);
+	CHECK(fd >= 0);
+	at.sin_port = 0;
+	CHECK(bind(fd, (struct sockaddr *)&at, sizeof(at)) == 0);
+	close(fd);
+	hints.ai_flags = AI_PASSIVE;
+	CHECK(getaddrinfo(NULL, "8080", &hints, &found) == 0);
+	CHECK(((struct sockaddr_in *)found->ai_addr)->sin_addr.s_addr == htonl(INADDR_ANY));
+	freeaddrinfo(found);
+	hints.ai_family = AF_INET6;
+	hints.ai_flags = 0;
+	CHECK(getaddrinfo(NULL, "8080", &hints, &found) == 0);
+	struct sockaddr_in6 *six = (struct sockaddr_in6 *)found->ai_addr;
+	CHECK(six->sin6_family == AF_INET6 && IN6_IS_ADDR_LOOPBACK(&six->sin6_addr));
+	freeaddrinfo(found);
 }
 
 // getnameinfo's numeric names (ADR 0341): a scoped IPv6 address has
@@ -1387,6 +1420,7 @@ int main(void) {
 	RUN(udp);
 	RUN(peeking);
 	RUN(numeric_names);
+	RUN(no_name_addresses);
 	RUN(errors);
 	RUN(icmp_errors);
 	RUN(ipv6);
