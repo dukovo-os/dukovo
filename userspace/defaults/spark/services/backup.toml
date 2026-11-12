@@ -1,0 +1,30 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+#
+# Backups: backup(8) looks every hour for a destination in
+# /system/settings/backup that is due, and backs the places up to it,
+# encrypted, as Btrfs send streams kept as files on a disk or a server
+# (ADR 0463). With no destination, it does nothing.
+#
+# service.toml(5) explains each setting. `service check backup` checks
+# this file, and `service edit backup` checks it as you save.
+
+service_version = 1
+description = "Backups"
+program = "/system/commands/backup"
+arguments = ["auto", "--watch"]
+# After snap's.
+order = 56
+# Started again if it fails: always, on-failure or never.
+restart = "on-failure"
+
+[limits]
+memory = "128M"
+
+# What it holds beyond what every service reads (service.toml(5)): the
+# whole tree, past the owners and modes of files, since it sends every
+# file of the places and reaches @snapshots through the top of each
+# filesystem in /volumes; and the network, for servers over SSH.
+[permissions]
+runs-with-your-access = true
+network.outbound = true

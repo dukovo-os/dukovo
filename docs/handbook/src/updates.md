@@ -235,10 +235,66 @@ The second command sends only the changes from the snapshot before,
 which the backup disk already holds. A stream can also go to a file with
 `-f` and be received later, or on another machine. See subvolume(8).
 
+## Backups
+
+`backup` keeps encrypted copies of `/users`, `/shared` and
+`/system/settings` on a USB disk or on a server reached over SSH, every
+day by default. The first backup of each is whole; each one after holds
+only what changed. A disk of any filesystem works, FAT and exFAT
+included, and a server needs only SSH and a shell: what it keeps is a
+folder of files, each a send stream (as above) encrypted with age, so
+whoever holds the disk or the server reads nothing but names, sizes and
+times.
+
+```sh
+elevate backup add stick /volumes/BACKUP
+```
+
+This checks that it can write there, makes the destination's key and
+shows it once as the recovery key, a line that starts
+`AGE-SECRET-KEY-1`. Keep it somewhere other than the computer: with it,
+the backups can be read on any machine, Linux included; without it and
+the computer, no one can read them. `elevate backup key stick` shows it
+again.
+
+For a server, the computer signs in with a key of its own, which `backup
+ssh-key` shows: add it to the backup account's `~/.ssh/authorized_keys`
+there, then add the destination with an `ssh://` address. The first
+contact records the server's key, and every later one must match it.
+
+```sh
+elevate backup ssh-key
+elevate backup add --every week nas ssh://backup@nas.local/srv/backups
+```
+
+The backup service backs up to each destination when it is due, and
+passes over a disk that is not plugged in until it is. `backup list`
+shows each destination's last backup and whether it went well, and
+`elevate backup run` backs up now. Services that keep a database can
+name commands to bring it to a state it can start again from before the
+snapshots are made, in their files' `[backup]` table (service.toml(5)).
+
+Once a month by default, a backup is followed by a check: the newest
+backup of each place is restored and compared, file by file, with what
+it was made from. `elevate backup verify --restore stick` runs it by
+hand.
+
+To get files back, restore a backup as a snapshot, then copy from it with
+`snap restore`:
+
+```sh
+elevate backup restore --place /users stick
+snap restore --from restored-2026-11-11-030012 notes.txt
+```
+
+Restoring on another computer takes the machine's folder of backups and
+the recovery key. See backup(8) for both, and for restoring with Linux's
+`age` and `btrfs receive`.
+
 ## What is on the way
 
-A backup command that keeps these copies on other disks and in the cloud
-by itself; downloading updates from the update
+Backups to cloud storage, and restoring a whole machine, apps included,
+from a backup; downloading updates from the update
 server in waves, through one `update` command for the system, firmware
 and apps, which also keeps Rescue up to date; and repairing GRUB and the
 EFI system partition from an install stick. This chapter grows with

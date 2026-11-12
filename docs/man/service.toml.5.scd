@@ -219,6 +219,34 @@ wrong in plain words:
 	= [80]* under *[permissions]* is the same as *listen = [80]* under
 	*[permissions.network]*.
 
+*backup*
+	What it runs around the snapshots of *backup*(8) (ADR 0463), in a
+	table *[backup]* of its own, as the service runs: with its account,
+	its view and its limits. Spark runs every running service's
+	*before*, one at a time, by *order*, as a round of backups is about
+	to make its snapshots, and every *after*, highest *order* first,
+	once they are made, so a service waits for the snapshots, which take
+	a moment, and not for the copy. A hook that fails or runs out of time
+	is told of in the round's output and the log, and the backup goes on.
+	Its output goes to the log after the service's name.
+
+	*backup.before* = [_"program"_, _"argument"_, ...]
+		The program's absolute path and its arguments, to bring what
+		the service keeps to a state it can start again from; none
+		unless set.
+
+	*backup.after* = [_"program"_, _"argument"_, ...]
+		The same, once the snapshots are made; none unless set.
+
+	*backup.time_limit* = _seconds_
+		How long each may run before Spark stops it: 300 unless set,
+		at most 3600.
+
+	```
+	[backup]
+	before = ["/system/commands/psql", "-c", "CHECKPOINT"]
+	```
+
 # WHAT A SERVICE SEES
 
 Each service's root is a view of the tree (ADR 0215, 0217), which Spark

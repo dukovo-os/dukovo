@@ -7,8 +7,8 @@
 //! (radix-directory(2)); and sends and receives them as Linux's `btrfs
 //! send` and `btrfs receive` do (ADR 0462).
 
-mod receive;
-mod send;
+pub(crate) mod receive;
+pub(crate) mod send;
 
 use std::fs::{self, File};
 use std::io::{self, Write};

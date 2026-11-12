@@ -100,6 +100,11 @@ pub struct Spec {
     /// The account it runs as, a bundle's service's own (ADR 0385); when
     /// none, it acts for root.
     pub account: Option<String>,
+    /// The commands it runs before and after backups' snapshots, and how
+    /// long each may run, in seconds (ADR 0463).
+    pub hook_before: Vec<String>,
+    pub hook_after: Vec<String>,
+    pub hook_seconds: u64,
 }
 
 impl Spec {
@@ -148,6 +153,9 @@ pub fn parse(name: &str, text: &str, over: Option<&Override>) -> Result<Spec, St
         secrets: file.secrets,
         devices: file.permissions.devices.pci,
         account: file.account,
+        hook_before: file.backup.before,
+        hook_after: file.backup.after,
+        hook_seconds: u64::from(file.backup.time_limit),
     })
 }
 

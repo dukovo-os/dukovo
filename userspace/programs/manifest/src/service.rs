@@ -71,6 +71,10 @@ pub const KEYS: &[&str] = &[
     "admin.firewall",
     "names",
     "devices.pci",
+    "backup",
+    "backup.before",
+    "backup.after",
+    "backup.time_limit",
 ];
 
 /// The order of a service whose file gives none.
@@ -143,6 +147,64 @@ pub struct Service {
     /// The account it runs as, a bundle's service's own (ADR 0385); when
     /// none, it acts for root, without root's bypass.
     pub account: Option<String>,
+    /// What it runs around backups' snapshots (ADR 0463).
+    pub backup: Backup,
+}
+
+/// The commands a service runs around backups' snapshots (ADR 0463),
+/// each a program's absolute path and its arguments, as the service runs:
+/// `before` as backup(8) is about to make them, to bring what it keeps
+/// to a state it can start again from, and `after` once they are made.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Backup {
+    /// Run as the snapshots are about to be made; empty for none.
+    #[serde(default)]
+    pub before: Vec<String>,
+    /// Run once they are made; empty for none.
+    #[serde(default)]
+    pub after: Vec<String>,
+    /// How long each may run, in seconds, before it is stopped.
+    #[serde(default = "hook_time_default")]
+    pub time_limit: u32,
+}
+
+impl Default for Backup {
+    fn default() -> Backup {
+        Backup { before: Vec::new(), after: Vec::new(), time_limit: HOOK_TIME_DEFAULT }
+    }
+}
+
+/// How long a backup hook may run by default, in seconds.
+pub const HOOK_TIME_DEFAULT: u32 = 300;
+
+/// The longest a backup hook may run, in seconds.
+pub const HOOK_TIME_MAX: u32 = 3600;
+
+fn hook_time_default() -> u32 {
+    HOOK_TIME_DEFAULT
+}
+
+impl Backup {
+    /// What is wrong with it, if anything.
+    fn check(&self) -> Result<(), String> {
+        for (name, command) in [("before", &self.before), ("after", &self.after)] {
+            if let Some(program) = command.first()
+                && !program.starts_with('/')
+            {
+                return Err(format!(
+                    "backup.{name} starts with a program's absolute path, not `{program}`"
+                ));
+            }
+            if command.iter().any(|word| word.contains('\0')) {
+                return Err(format!("backup.{name} holds a NUL"));
+            }
+        }
+        if !(1..=HOOK_TIME_MAX).contains(&self.time_limit) {
+            return Err(format!("backup.time_limit is from 1 to {HOOK_TIME_MAX} seconds"));
+        }
+        Ok(())
+    }
 }
 
 impl Service {
@@ -591,6 +653,15 @@ names = false
 # The cards it drives, as a driver program does, by their PCI vendor and
 # device IDs, such as "8086:100e", or "8086:*" for any of the vendor's.
 devices.pci = []
+
+# What it runs around the snapshots of backup(8), each a program's
+# absolute path and its arguments, as the service runs: before, to bring
+# what it keeps to a state it can start again from, and after, once the
+# snapshots are made; and how long each may run, in seconds.
+[backup]
+before = []
+after = []
+time_limit = 300
 "#;
 
 /// The file `service new` writes for the service `name`.
@@ -752,6 +823,8 @@ struct File {
     #[serde(default)]
     permissions: Permissions,
     account: Option<String>,
+    #[serde(default)]
+    backup: Backup,
 }
 
 impl TryFrom<File> for Service {
@@ -780,6 +853,7 @@ impl TryFrom<File> for Service {
                 ));
             }
         }
+        file.backup.check()?;
         Ok(Service {
             description: file.description,
             program,
@@ -792,6 +866,7 @@ impl TryFrom<File> for Service {
             secrets: file.secrets,
             permissions: file.permissions,
             account: file.account,
+            backup: file.backup,
         })
     }
 }
