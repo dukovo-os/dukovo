@@ -445,6 +445,11 @@ const BLANK: u8 = 29;
 /// all a stage needs ([`test_updates`]).
 const UPDATE_RELEASES: u8 = 30;
 
+/// [`Disk::fat`] for a FAT32 disk on the whole disk holding the update
+/// file of the test update server's bridge release ([`update_file_disk`],
+/// ADR 0466).
+const UPDATE_FILE: u8 = 31;
+
 /// One of the boot tests' updates of an installed system (ADR 0451): this
 /// build's slot, under a version after this one's that updates from it,
 /// with kernel flags of its own, or a command broken.
@@ -1000,6 +1005,13 @@ const fn bundle_files_disk(kib: u64, label: &'static str) -> Disk {
 /// mounts at `/volumes/<disk>`.
 pub const fn update_releases_disk(kib: u64, label: &'static str) -> Disk {
     Disk { fat: UPDATE_RELEASES, ..fat_disk(kib, 32, label, Table::None, Bus::Virtio) }
+}
+
+/// A FAT32 virtio disk of `kib` KiB, labelled `label`, holding the update
+/// file of [`TEST_SERVER`]'s bridge release, which Spark mounts at
+/// `/volumes/<disk>` ([`UPDATE_FILE`]).
+pub const fn update_file_disk(kib: u64, label: &'static str) -> Disk {
+    Disk { fat: UPDATE_FILE, ..fat_disk(kib, 32, label, Table::None, Bus::Virtio) }
 }
 
 /// A FAT32 disk on the whole disk holding a test catalog
@@ -3694,7 +3706,8 @@ fn test_updates(ctx: &Ctx, built: &Built, dir: &Path, cases: &[&Case]) -> Result
 
 /// The lab's test updates (`lab/tests/updates`): [`TEST_UPDATES`] made as
 /// for the boot tests, from the kernel and programs the lab image's
-/// system slot is staged from, in `out/lab/updates`, whose path it gives.
+/// system slot is staged from, in `out/lab/updates`, whose path it gives,
+/// with the test update server, [`TEST_SERVER`], in its `update-server`.
 /// `ob lab` hands the path to the lab's host steps.
 pub fn lab_updates(ctx: &Ctx, profile: crate::config::Profile) -> Result<PathBuf> {
     step("Building the test updates, for the lab's update tests");
@@ -3703,6 +3716,7 @@ pub fn lab_updates(ctx: &Ctx, profile: crate::config::Profile) -> Result<PathBuf
     let dir = ctx.out.join("lab");
     process::create_dir(&dir)?;
     make_test_updates(ctx, &built, &dir)?;
+    make_update_server(ctx, &built, &updates_dir(&dir))?;
     Ok(updates_dir(&dir))
 }
 
@@ -3745,6 +3759,178 @@ fn make_test_updates(ctx: &Ctx, built: &Built, dir: &Path) -> Result<()> {
         }
     }
     std::fs::remove_dir_all(&staging).context(|| format!("removing {}", staging.display()))
+}
+
+/// The boot tests' update server (ADR 0466), as [`make_update_server`]
+/// lays it out in the boot tests' folder: `system/`, the repository it
+/// serves; `keys/`, which signed it; `stale-timestamp.json`, a timestamp
+/// it signed before its newest, to replay; `expected.toml`, how many
+/// files each update fetches; and the bridge release's update file.
+pub const TEST_SERVER: &str = "update-server";
+
+/// The boot test that reads [`TEST_SERVER`] over the network.
+const TEST_SERVER_CASE: &str = "update-online";
+
+/// The releases the test update server offers, by their version's last
+/// word: `bridge`, this build with three files added, which updates from
+/// it; `year`, which updates only from `bridge` on, with one of them
+/// changed, one moved and one added, as the stable channel's; and `old`,
+/// a release before this build, as the beta channel's.
+pub const TEST_SERVER_RELEASES: [&str; 3] = ["bridge", "year", "old"];
+
+/// The version of the test update server's release `name`: as
+/// [`test_update_version`], but `old` is before every build.
+pub fn test_server_version(name: &str) -> String {
+    if name == "old" { "0.0.1-test.old".into() } else { test_update_version(name) }
+}
+
+/// The name of the update file of the test update server's bridge
+/// release.
+pub fn test_update_file() -> String {
+    format!("dukovo-{}.update", test_server_version("bridge"))
+}
+
+/// Makes [`TEST_SERVER`] in `dir` if a case of `cases` reads it.
+fn test_update_server(ctx: &Ctx, built: &Built, dir: &Path, cases: &[&Case]) -> Result<()> {
+    let wanted = cases.iter().any(|case| {
+        case.name == TEST_SERVER_CASE || case.disks.iter().any(|disk| disk.fat == UPDATE_FILE)
+    });
+    if wanted { make_update_server(ctx, built, dir) } else { Ok(()) }
+}
+
+/// Lays out [`TEST_SERVER`] in `dir`: a year of an update server's life,
+/// as far as a machine running this build sees it. Its keys start as
+/// this machine's, which the build trusts, and the timestamp's and the
+/// snapshot's have been replaced since, so that a machine walks from the
+/// first root to the third. It offers [`TEST_SERVER_RELEASES`], with the
+/// stable channel on `year` and the beta channel on `old`, and has been
+/// signed again after a timestamp was kept to replay.
+fn make_update_server(ctx: &Ctx, built: &Built, dir: &Path) -> Result<()> {
+    let out = dir.join(TEST_SERVER);
+    for path in [&out, &dir.join("update-server-staging")] {
+        if path.exists() {
+            std::fs::remove_dir_all(path).context(|| format!("removing {}", path.display()))?;
+        }
+    }
+    let staging = dir.join("update-server-staging");
+    let base = staging.join("installed");
+    image::stage_system(ctx, &built.kernel, &built.programs, &base)?;
+    let keys = out.join("keys");
+    process::create_dir(&keys)?;
+    let own = crate::release::keys(ctx)?;
+    for entry in std::fs::read_dir(&own).context(|| format!("reading {}", own.display()))? {
+        let entry = entry.context(|| format!("reading {}", own.display()))?;
+        process::copy(&entry.path(), &keys.join(entry.file_name()))?;
+    }
+    for role in ["timestamp", "snapshot"] {
+        crate::release::system_release(
+            ctx,
+            &["keys".as_ref(), "--rotate".as_ref(), role.as_ref(), keys.as_os_str()],
+        )?;
+    }
+    // The releases' trees: this build's slot, then bridge's changes, then
+    // year's on top of bridge's.
+    let write = |path: PathBuf, bytes: &[u8]| -> Result<()> {
+        if let Some(parent) = path.parent() {
+            process::create_dir(parent)?;
+        }
+        std::fs::write(&path, bytes).context(|| format!("writing {}", path.display()))
+    };
+    let data: Vec<u8> =
+        (0..256 * 1024_u32).map(|n| (n.wrapping_mul(2_654_435_761) >> 24) as u8).collect();
+    let mut hashes = Vec::new();
+    for name in TEST_SERVER_RELEASES {
+        let tree = staging.join(name);
+        let from = if name == "year" { staging.join("bridge") } else { base.clone() };
+        process::run(ctx, std::process::Command::new("cp").arg("-a").arg(&from).arg(&tree))?;
+        let version = test_server_version(name);
+        let about = slots::about::About { version: version.clone(), flags: String::new() };
+        write(tree.join(image::SLOT_STARTUP).join(image::SLOT_ABOUT), &about.encode())?;
+        let notes = tree.join("resources/test-update");
+        match name {
+            "bridge" => {
+                write(notes.join("notes.txt"), b"bridge\n")?;
+                write(notes.join("data.bin"), &data)?;
+            }
+            "year" => {
+                write(notes.join("notes.txt"), b"year\n")?;
+                write(notes.join("year.txt"), b"a year on\n")?;
+                process::create_dir(&notes.join("moved"))?;
+                std::fs::rename(notes.join("data.bin"), notes.join("moved/data.bin"))
+                    .context(|| "moving data.bin".to_string())?;
+            }
+            _ => {}
+        }
+        let updates_from = match name {
+            "year" => test_server_version("bridge"),
+            "old" => version.clone(),
+            _ => VERSION.to_string(),
+        };
+        let release = staging.join(format!("{name}-release"));
+        crate::release::make_with(ctx, &keys, &tree, &release, &version, &updates_from)?;
+        hashes.push(file_hashes(ctx, &tree)?);
+    }
+    let installed = file_hashes(ctx, &base)?;
+    let expected = format!(
+        "bridge = {}\nyear = {}\n",
+        hashes[0].difference(&installed).count(),
+        hashes[1].difference(&hashes[0]).count()
+    );
+    write(out.join("expected.toml"), expected.as_bytes())?;
+
+    let repo = out.join("system");
+    let repo_args = |words: &[&str]| -> Vec<std::ffi::OsString> {
+        let mut args: Vec<std::ffi::OsString> = vec![words[0].into()];
+        args.extend(["--repo".into(), repo.clone().into_os_string()]);
+        args.extend(["--keys".into(), keys.clone().into_os_string()]);
+        args.extend(words[1..].iter().map(Into::into));
+        args
+    };
+    for name in TEST_SERVER_RELEASES {
+        let release = staging.join(format!("{name}-release"));
+        crate::release::system_release(ctx, &repo_args(&["add", &release.display().to_string()]))?;
+    }
+    for (channel, name) in [("stable", "year"), ("beta", "old")] {
+        let version = test_server_version(name);
+        crate::release::system_release(ctx, &repo_args(&["channel", channel, &version]))?;
+    }
+    process::copy(&repo.join("metadata/timestamp.json"), &out.join("stale-timestamp.json"))?;
+    crate::release::system_release(ctx, &repo_args(&["refresh"]))?;
+    let (_, root) = crate::release::trusted_root(ctx)?;
+    let file = out.join(test_update_file());
+    crate::release::system_release(
+        ctx,
+        &[
+            "pack".as_ref(),
+            "--repo".as_ref(),
+            repo.as_os_str(),
+            "--root".as_ref(),
+            root.as_os_str(),
+            "--version".as_ref(),
+            test_server_version("bridge").as_ref(),
+            "--out".as_ref(),
+            file.as_os_str(),
+        ],
+    )?;
+    std::fs::remove_dir_all(&staging).context(|| format!("removing {}", staging.display()))
+}
+
+/// Makes an [`UPDATE_FILE`] disk: FAT32 holding the update file
+/// [`make_update_server`] made in `server`.
+fn make_update_file_disk(disk: &Disk, path: &Path, server: &Path) -> Result<(), String> {
+    let mut mkfs = std::process::Command::new(fat_tool("mkfs.fat"));
+    mkfs.args(["-F", "32", "-n", disk.label, "-i", "4f525448", "-C"])
+        .arg(path)
+        .arg(disk.kib.to_string());
+    host_tool(&mut mkfs)?;
+    let image = path.display().to_string();
+    host_tool(
+        std::process::Command::new("mcopy")
+            .args(["-i", &image])
+            .arg(server.join(test_update_file()))
+            .arg("::/"),
+    )?;
+    Ok(())
 }
 
 /// The SHA-256 of every file under `tree`, in hex, as a release's store
@@ -3831,6 +4017,7 @@ fn boot_tests(ctx: &Ctx, built: &Built, cases: &[&Case], timeout: Duration) -> R
     let roots = test_roots(ctx, built, &dir, cases)?;
     let live = test_live(ctx, built, &dir, cases)?;
     test_updates(ctx, built, &dir, cases)?;
+    test_update_server(ctx, built, &dir, cases)?;
     let images = test_images(ctx, built, &dir, cases, &roots)?;
 
     let kvm = qemu::kvm_available();
@@ -4423,6 +4610,11 @@ fn make_disks(
         }
         if disk.fat == UPDATE_RELEASES {
             make_update_releases(disk, &image.path, &updates_dir(dir))?;
+            made.push(image);
+            continue;
+        }
+        if disk.fat == UPDATE_FILE {
+            make_update_file_disk(disk, &image.path, &dir.join(TEST_SERVER))?;
             made.push(image);
             continue;
         }

@@ -1,0 +1,38 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# An update from an update file (ADR 0466): the lab PC copies the test
+# update server's bridge release, as one file, onto the machine
+# (update-server.sh beside this file), where it is checked in place
+# against the root the system trusts, staged with no server, and proved
+# at the restart.
+about = "An update file copied onto the machine is checked in place against the root the system trusts, staged with no update server, and proves itself at the restart (ADR 0466)"
+time = "15m"
+fresh = true
+host_needs = ["scp"]
+
+[[step]]
+host = "sh {here}/update-server.sh copy-file {machine} {machine-port:22}"
+expect = "copied: dukovo-"
+[[step]]
+run = "system-release check /users/lab/bridge.update"
+root = true
+expect = ["-test.bridge (", "is signed by the trusted root", "files match the signed list"]
+[[step]]
+run = '''sh -c 'printf "stable = 10\n" > /system/settings/sysupdate/health.toml && sysupdate stage /users/lab/bridge.update' '''
+root = true
+expect = ["checking the release against the root this system trusts", "-test.bridge in slot B: it starts at the next restart"]
+[[step]]
+run = "sh -c '(sleep 2; reboot) > /dev/null 2>&1 &'"
+root = true
+[[step]]
+serial = "asked to restart the machine"
+[[step]]
+serial = "spark: started slot b, @system.b"
+[[step]]
+serial = "proved itself: it is now the default"
+[[step]]
+wait = "ready"
+[[step]]
+run = "cat /system/resources/test-update/notes.txt"
+expect = "bridge"

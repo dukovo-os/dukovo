@@ -142,7 +142,7 @@ fn rescued(vm: &mut Vm, _case: &Case) -> Result<(), String> {
     // No slot to start: Rescue starts by itself, and reinstalls.
     in_rescue(vm)?;
     choose(vm, "1")?;
-    answer_prompt(vm, "type the folder:", "")?;
+    answer_prompt(vm, "type the folder or file:", "")?;
     vm.expect_screen(&[&format!("Reinstall Dukovo {VERSION} into slot A?")])?;
     answer_prompt(vm, "Type yes to reinstall:", "yes")?;
     wait_for_screen(vm, "is back in slot A", REINSTALL_SECONDS)?;

@@ -7,8 +7,8 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 This chapter describes how Dukovo updates its system, and what happens
 when an update goes wrong. The full references are sysupdate(8),
-health.toml(5), spark(8) and dukovo-boot(7); ADRs 0450 to 0459 record
-the design.
+updates.toml(5), health.toml(5), spark(8) and dukovo-boot(7); ADRs 0450
+to 0459 and 0466 record the design.
 
 An update never leaves the machine unable to start, never touches your
 files, and never installs or restarts without your say. A new version is
@@ -37,6 +37,46 @@ Last health check: passed, 2026-11-11 09:14: slot A (Dukovo 0.15.0)
 Slot state: on nvme0n1p1 (generation 1)
 ```
 
+## Checking for updates
+
+Updates come from Dukovo's update server, through a channel: **stable**,
+the default, the releases most people run; **beta**, each release two
+weeks before it is stable; or **nightly**, a build of every change, for
+testing. `sysupdate check` says what the channel offers, and how much
+your system would fetch:
+
+```
+$ elevate sysupdate check
+sysupdate: the stable channel offers Dukovo 0.15.2; this system runs Dukovo 0.15.0
+sysupdate: Dukovo 0.15.2 needs 37 files this system lacks, 18.4 MiB; sysupdate stage fetches and stages it
+```
+
+Only the files your system lacks are fetched: a file it already holds,
+in the same place or another, is never downloaded again. `sysupdate
+download` fetches them ahead of time, and `sysupdate stage` fetches any
+that are left. A download cut short goes on from where it stopped.
+Every file is checked against the release's signed list as it lands,
+and everything the server says is checked against the keys your system
+trusts, so a server, a mirror or anyone between can delay an update but
+never change one, or offer an older version as new.
+
+To follow another channel, `elevate sysupdate channel beta`. A system
+never goes back to an older version through a channel: after moving
+from beta to stable, it waits until stable passes the version it runs.
+A machine that missed many updates may be told that a release comes
+first, a bridge; it takes the bridge, then the newer release at its next
+update. updates.toml(5) sets the channel and the server, for a mirror.
+
+For a machine with no network, an update file holds a whole release,
+`dukovo-0.15.2.update`. Copy it to a USB stick, then:
+
+```
+$ elevate sysupdate stage /volumes/UPDATES/dukovo-0.15.2.update
+```
+
+The file is checked where it lies, every signature and every file, and
+staged as below.
+
 ## Staging an update
 
 `sysupdate stage` builds a release into the spare slot while the system
@@ -59,9 +99,9 @@ Nothing else happens until you restart. To change your mind first,
 `elevate sysupdate unstage`.
 
 A release must be signed by the root your system trusts and newer than
-the version that runs. Releases come from a repository folder today, as
-`ob release` makes one; downloading them from the update server comes
-with the update command.
+the version that runs. `sysupdate stage` with no folder or file stages
+what the channel offers; it also takes a repository folder, as `ob
+release` makes one, or an update file.
 
 ## Trying and proving
 
@@ -158,8 +198,8 @@ What would you like to do?
 ```
 
 **Reinstall** builds the system again from Rescue's own copy, or from an
-update folder on a USB stick, every file checked against the signed
-list. Settings, apps and everyone's files are not touched. Once it says
+update folder or update file on a USB stick, every file checked against
+the signed list. Settings, apps and everyone's files are not touched. Once it says
 the system is back, choose Restart. **Put back the settings** undoes
 the settings of the last update, as a fallback would. **Check the disk**
 looks for damage to the root's filesystem; if it finds any, copy your
@@ -353,7 +393,7 @@ in `/snapshots/machine-restore` until `subvolume delete` removes it.
 
 ## What is on the way
 
-Downloading updates from the update server in waves, through one `update` command for the system, firmware
-and apps, which also keeps Rescue up to date; and repairing GRUB and the
-EFI system partition from an install stick. This chapter grows with
-each.
+Releases offered in waves, so that a few machines take each one before
+the rest; one `update` command for the system, firmware and apps, which
+also keeps Rescue up to date; and repairing GRUB and the EFI system
+partition from an install stick. This chapter grows with each.

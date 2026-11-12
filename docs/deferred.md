@@ -128,10 +128,11 @@ machine with AMT, an AMD machine and a laptop; see
 | Item | Why it waits | Waits on |
 | --- | --- | --- |
 | Rescue kept up to date: a newer copy written to the EFI system partition once per stable release, when an update is proved (ADR 0460) | Rescue is written by the installer and images until the unified updater | 15d |
-| Rescue's reinstall from the update server (ADR 0460) | Rescue reinstalls from its own copy or an update folder until delivery comes | 15c |
+| Rescue's reinstall from the update server (ADR 0460) | Rescue reinstalls from its own copy, an update folder or an update file | 15d, with the unified updater |
 | USB repair, which also rewrites GRUB and the EFI system partition, and the installer's reinstall that keeps data (ADRs 0459, 0460) | Rescue covers a machine whose EFI system partition still starts | The installer's next changes |
 | Rescue resetting the settings to their defaults (ADR 0460) | Putting back the settings from before the last update covers a bad update | A need |
-| Fetching a release's changed files from the update server, the offline update file, `sysupdate verify` and a weekly check with the scrub (ADR 0451) | `sysupdate stage` reads a repository folder until delivery comes | 15c |
+| `sysupdate verify` and a weekly check with the scrub (ADR 0451) | A stage reads every file it writes back against the signed list, and Btrfs checks every block it reads | 15d, with the unified updater |
+| Each slot's release list kept beside it, so that `sysupdate check` reads none of the slot's files (ADR 0466) | A check reads the running slot's files whose size matches a wanted one, as a stage does | A need |
 | Waves, the rollout role, canaries, pause and pull (ADR 0456) | Update delivery | 15c |
 | The owner told of a fallback at sign-in and on the web console, with the offer to send a report (ADRs 0453, 0456) | The unified updater's notifications | 15d |
 | `rollback --settings-from-before`, shown before a rollback past the release before (ADR 0454) | The two-version rule covers one step | 15d |
@@ -158,7 +159,7 @@ machine with AMT, an AMD machine and a laptop; see
 | S3 addresses in the virtual-hosted style, and temporary credentials with a session token (ADR 0465) | Path-style addresses and an access key's ID and secret are what every S3-compatible store takes | A need |
 | Restic destinations on restic's REST server (`rest:` addresses) (ADR 0465) | A share, SSH and S3 cover the servers people have | A need |
 | Owner, mode and times of a place's top folder kept when Linux's `restic` restores it (ADR 0465) | restic sets the top folder of a restore itself; Dukovo's own restore keeps them | An upstream change in restic |
-| System updates served by the update server (ADR 0382) | Catalogs are served; system images come with update delivery | 15c |
+| System updates served by the update server, with its online snapshot and timestamp keys, the nightly channel's delegated role and `ob release deploy` (ADRs 0382, 0466) | The client is tested against a local update server | 15c |
 | Telling a person of a new flaw, and which advisories an update fixes (ADR 0389) | Needs the unified updater's notifications | 15d |
 
 ### Phase 16: server platform and web console

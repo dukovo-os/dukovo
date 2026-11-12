@@ -5,11 +5,11 @@ system-release(8) "Dukovo" "Dukovo Manual"
 
 # NAME
 
-system-release - check, sign, keep Rescue of and make keys for Dukovo's system releases
+system-release - check, sign, offer, pack, keep Rescue of and make keys for Dukovo's system releases
 
 # SYNOPSIS
 
-*system-release check* [*--root* _file_] [*--version* _version_] _repository_
+*system-release check* [*--root* _file_] [*--version* _version_] _repository_ | _file_
 
 *system-release rescue* *--out* _esp_ [*--root* _file_] [*--version* _version_] _repository_
 
@@ -17,7 +17,15 @@ system-release - check, sign, keep Rescue of and make keys for Dukovo's system r
 *--version* _version_ *--commit* _commit_ *--toolchain* _toolchain_
 *--built* _seconds_ [*--updates-from* _version_]
 
-*system-release keys* _dir_
+*system-release keys* [*--rotate* _role_] _dir_
+
+*system-release add* *--repo* _dir_ *--keys* _dir_ _release_
+
+*system-release channel* *--repo* _dir_ *--keys* _dir_ _channel_ _version_
+
+*system-release refresh* *--repo* _dir_ *--keys* _dir_
+
+*system-release pack* *--repo* _dir_ [*--root* _file_] *--version* _version_ *--out* _file_
 
 # DESCRIPTION
 
@@ -25,15 +33,16 @@ A release of Dukovo's system is one signed list of every file of
 _/system_, *system.json*, with each file's path, kind, mode, size and
 SHA-256, and the files themselves, each kept once under its SHA-256
 (ADR 0308). The install stick carries one on its DUKOVO_LIVE partition,
-in the folder _release_; the installer installs from it, and the updates
-of Phase 15 will fetch the same kind of release from the update server.
+in the folder _release_; the installer installs from it, and
+*sysupdate*(8) fetches the same kind of release from the update server.
 
 A release's _repository_ is laid out as the update server will serve it:
 the list is a target of The Update Framework, signed through the four
 top-level roles, root, targets, snapshot and timestamp, in _metadata/_,
 the list itself in _targets/system/_, and the files in _files/_.
 
-*check* reads the release in _repository_ as a computer installing it
+*check* reads the release in _repository_, or in an update _file_, as a
+computer installing it
 does: from the root this system trusts, _/system/resources/updates/root.json_,
 it checks every signature and version of the metadata and the list's
 hash, then reads every file of the release and checks its size and
@@ -63,15 +72,36 @@ starts the system.
 system-release: Rescue of release 0.15.0, 2312 files of 229 MiB, in /volumes/sda1/boot/rescue
 ```
 
-*make* and *keys* are for the machine that builds Dukovo, where *ob*(1)
-runs them. *make* lists the slot staged in the folder *--tree*, signs the
+An update file, _dukovo-VERSION.update_, is a release's repository as
+one POSIX tar archive, for a machine with no network or for a mirror
+(ADR 0466). It holds the metadata with every root, the list and every
+file, once, and is read where it is; Linux's *tar* lists and unpacks it.
+
+*make*, *keys*, *add*, *channel*, *refresh* and *pack* are for the
+machines that build Dukovo and serve its updates, where *ob*(1) runs
+them. *make* lists the slot staged in the folder *--tree*, signs the
 list with the keys in *--keys* and lays out its repository in *--out*,
 which it makes afresh, then reads the repository back as *check* does.
 *keys* makes an Ed25519 key for each role in _dir_, as _<role>.key_,
 readable by its owner alone, and the first root, _root.json_, which names
-them. Until releases are signed with the project's YubiKeys, each build
-machine signs with keys of its own, which *ob* makes in
-_.cache/release-keys_, and its images trust only those.
+them. *keys --rotate* _role_ replaces that role's key and signs the next
+root, _N.root.json_, with the root key before it, and with the new one
+too when the root key is the one replaced; every root is kept, so that a
+computer that trusts the first walks to the newest. Until releases are
+signed with the project's YubiKeys, each build machine signs with keys
+of its own, which *ob* makes in _.cache/release-keys_, and its images
+trust only those.
+
+The update repository, *--repo*, holds every release a server offers,
+each file once, and the channels, stable, beta and nightly, each naming
+one release (ADR 0466). *add* adds a release that *make* made, after
+reading it from the first root and checking every file; a version the
+repository offers already with another list is refused, since a version
+is never used twice. *channel* points a channel at a release the
+repository offers. *refresh* signs a new snapshot and timestamp, as a
+server does every few hours. *pack* writes one release as an update
+file, and reads it back from *--root*, by default the repository's
+first root.
 
 # OPTIONS
 
@@ -88,9 +118,16 @@ _.cache/release-keys_, and its images trust only those.
 *--keys* _dir_
 	The keys *keys* made.
 
+*--repo* _dir_
+	The update repository.
+
+*--rotate* _role_
+	The role whose key *keys* replaces: root, targets, snapshot or
+	timestamp.
+
 *--out* _dir_
-	Where *make* lays out the repository; or, for *rescue*, the EFI
-	system partition's mount point.
+	Where *make* lays out the repository; for *rescue*, the EFI system
+	partition's mount point; for *pack*, the update file.
 
 *--commit* _commit_, *--toolchain* _toolchain_
 	The git commit and the Rust toolchain the release was built from,
@@ -125,4 +162,5 @@ _/system/resources/updates/root.json_
 
 # SEE ALSO
 
-*dukovo-boot*(7), *dukovo-rescue*(8), *spark*(8), *rdisk*(8), *ob*(1)
+*sysupdate*(8), *dukovo-boot*(7), *dukovo-rescue*(8), *spark*(8),
+*rdisk*(8), *ob*(1)

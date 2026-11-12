@@ -49,9 +49,13 @@ pub fn target_path(version: &str) -> String {
 
 /// The keys that sign a repository, kept in a directory: each role's
 /// Ed25519 secret as `<role>.key` (PKCS #8, readable by its owner alone),
-/// and `root.json`, the root they make, which a system trusts.
+/// and `root.json`, the newest root they make, which a system trusts.
+/// Once a key has been replaced ([`Keys::rotate`]) every root is kept
+/// too, by version, as `N.root.json`, for a client to walk from the root
+/// it has to the newest (TUF 5.3).
 pub struct Keys {
-    root: Vec<u8>,
+    /// Every root, oldest first; the last is `root.json`.
+    roots: Vec<Vec<u8>>,
     signers: Vec<(&'static str, Ed25519)>,
 }
 
@@ -83,7 +87,7 @@ impl Keys {
         let root = repo::sign(&signed, &[root_signer])?;
         std::fs::write(dir.join("root.json"), &root)
             .map_err(|err| format!("{}: {err}", dir.display()))?;
-        Ok(Keys { root, signers })
+        Ok(Keys { roots: vec![root], signers })
     }
 
     /// The keys in `dir`, checked against the root there.
@@ -100,6 +104,11 @@ impl Keys {
         let root = read("root.json")?;
         let parsed = Signed::<Root>::parse(&root)
             .map_err(|err| format!("{}/root.json: {err}", dir.display()))?;
+        let mut roots = Vec::new();
+        for version in 1..parsed.version {
+            roots.push(read(&format!("{version}.root.json"))?);
+        }
+        roots.push(root);
         let mut signers = Vec::new();
         for role in ROLES {
             let key = Ed25519::from_pkcs8(&read(&format!("{role}.key"))?)?;
@@ -113,22 +122,88 @@ impl Keys {
             }
             signers.push((role, key));
         }
-        Ok(Keys { root, signers })
+        Ok(Keys { roots, signers })
     }
 
-    /// The root, as a system that trusts these keys keeps it.
+    /// Replaces `role`'s key in `dir` with a new one, and signs the next
+    /// root, which names it, with the root key before it and, for root
+    /// itself, the new one too, as TUF asks of a client that walks to it
+    /// (TUF 5.3.4). Every root stays in `dir` by its version.
+    ///
+    /// # Errors
+    ///
+    /// If `role` is not one of [`ROLES`], the keys do not load, or a file
+    /// cannot be written.
+    pub fn rotate(dir: &Path, role: &str, now: i64) -> Result<Keys, String> {
+        let Keys { mut roots, mut signers } = Keys::load(dir)?;
+        let index = signers
+            .iter()
+            .position(|(r, _)| *r == role)
+            .ok_or_else(|| format!("no role called {role}; the roles are {}", ROLES.join(", ")))?;
+        let newest = roots.last().ok_or_else(|| format!("{}: no root.json", dir.display()))?;
+        let version = Signed::<Root>::parse(newest).map_err(|err| err.to_string())?.version + 1;
+        let (key, secret) = Ed25519::generate()?;
+        let old = std::mem::replace(&mut signers[index].1, key);
+        let roles: Vec<_> = signers.iter().map(|(r, key)| (*r, vec![key.key()], 1)).collect();
+        let signed = repo::root(version, &expires(now, "root"), &roles, true);
+        let new_root: &dyn Signer = &signers
+            .iter()
+            .find(|(r, _)| *r == "root")
+            .ok_or_else(|| format!("{}: no root key", dir.display()))?
+            .1;
+        let old_root: &dyn Signer = &old;
+        let root = if role == "root" {
+            repo::sign(&signed, &[old_root, new_root])?
+        } else {
+            repo::sign(&signed, &[new_root])?
+        };
+        let write = |name: &str, bytes: &[u8], mode: u32| {
+            let path = dir.join(name);
+            std::fs::write(&path, bytes)
+                .and_then(|()| {
+                    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode))
+                })
+                .map_err(|err| format!("{}: {err}", path.display()))
+        };
+        // The roots by version first, then the key, then root.json last:
+        // keys that stop half way still load, as the root before.
+        for (n, earlier) in roots.iter().enumerate() {
+            write(&format!("{}.root.json", n + 1), earlier, 0o644)?;
+        }
+        write(&format!("{version}.root.json"), &root, 0o644)?;
+        write(&format!("{role}.key.new"), &secret, 0o600)?;
+        let (new, path) = (dir.join(format!("{role}.key.new")), dir.join(format!("{role}.key")));
+        std::fs::rename(&new, &path).map_err(|err| format!("{}: {err}", path.display()))?;
+        write("root.json", &root, 0o644)?;
+        roots.push(root);
+        Ok(Keys { roots, signers })
+    }
+
+    /// The newest root, as a system built with these keys trusts it.
+    ///
+    /// # Panics
+    ///
+    /// Never: keys are made, and load, with their first root.
     #[must_use]
     pub fn root(&self) -> &[u8] {
-        &self.root
+        self.roots.last().expect("a root at least")
     }
 
-    fn signer(&self, role: &str) -> &dyn Signer {
+    /// Every root these keys have made, oldest first.
+    #[must_use]
+    pub fn roots(&self) -> &[Vec<u8>] {
+        &self.roots
+    }
+
+    /// `role`'s key, to sign with.
+    pub(crate) fn signer(&self, role: &str) -> &dyn Signer {
         &self.signers.iter().find(|(r, _)| *r == role).expect("every role has a key").1
     }
 }
 
-/// The expiry of `role`'s metadata for a release built at `built`.
-fn expires(built: i64, role: &str) -> String {
+/// The expiry of `role`'s metadata signed at `built`, or for a release
+/// built then.
+pub(crate) fn expires(built: i64, role: &str) -> String {
     let days = EXPIRES.iter().find(|(r, _)| *r == role).map_or(1, |(_, days)| *days);
     tuf::time::format(built + days * 86_400)
 }
@@ -188,15 +263,30 @@ pub fn publish(
         out.join("metadata/timestamp.json"),
         &repo::sign(&timestamp, &[keys.signer("timestamp")])?,
     )?;
-    write(out.join("metadata/1.root.json"), keys.root())?;
-    write(out.join("metadata/root.json"), keys.root())?;
+    write_roots(&out.join("metadata"), keys)?;
 
-    let published = open(out, keys.root(), Some(&release.version))?;
+    let published = open(out, &keys.roots()[0], Some(&release.version))?;
     if published.release != *release {
         return Err("the release list read back is not the one written".into());
     }
     check_files(out, &published.release).map_err(|problems| problems.join("\n"))?;
     Ok(published)
+}
+
+/// Writes every root of `keys` into the metadata folder `dir`, by version,
+/// and the newest as `root.json`.
+///
+/// # Errors
+///
+/// If one cannot be written.
+pub(crate) fn write_roots(dir: &Path, keys: &Keys) -> Result<(), String> {
+    std::fs::create_dir_all(dir).map_err(|err| format!("{}: {err}", dir.display()))?;
+    for (n, root) in keys.roots().iter().enumerate() {
+        let path = dir.join(format!("{}.root.json", n + 1));
+        std::fs::write(&path, root).map_err(|err| format!("{}: {err}", path.display()))?;
+    }
+    let path = dir.join("root.json");
+    std::fs::write(&path, keys.root()).map_err(|err| format!("{}: {err}", path.display()))
 }
 
 /// Reads the release in the repository at `dir` with the TUF client,
@@ -283,8 +373,17 @@ pub fn check_files(dir: &Path, release: &Release) -> Result<Checked, Vec<String>
     Store::at(&dir.join("files")).check(release)
 }
 
+/// Signs `signed` with `role`'s key of `keys`.
+pub(crate) fn sign_role(
+    signed: &serde_json::Value,
+    keys: &Keys,
+    role: &str,
+) -> Result<Vec<u8>, String> {
+    repo::sign(signed, &[keys.signer(role)])
+}
+
 /// A new folder for the client's metadata while it reads a repository.
-fn scratch_dir() -> PathBuf {
+pub(crate) fn scratch_dir() -> PathBuf {
     use std::sync::atomic::{AtomicU32, Ordering};
     static NEXT: AtomicU32 = AtomicU32::new(0);
     let n = NEXT.fetch_add(1, Ordering::Relaxed);
