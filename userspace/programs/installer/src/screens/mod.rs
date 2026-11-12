@@ -39,6 +39,7 @@ use std::sync::mpsc::{self, Receiver};
 use std::time::Duration;
 
 use ratatui::crossterm::event::{self, Event as Input, KeyCode, KeyEventKind};
+use ratatui::layout::{Position, Rect};
 use ratatui::{DefaultTerminal, Frame};
 
 use self::app::{Access, App, Outcome};
@@ -76,14 +77,14 @@ pub fn run(release: Option<&Path>) -> u8 {
     // the screens clear what was there before them, and what they drew
     // once they end, and give the colours back, before the shell's
     // prompt comes.
-    let ended = terminal.clear().map_err(|err| format!("the terminal: {err}")).and_then(|()| {
+    let ended = clear(&mut terminal).map_err(|err| format!("the terminal: {err}")).and_then(|()| {
         let (mut app, log, source) = get_ready(&mut terminal, release, plain)
             .inspect_err(|why| cannot_start(&mut terminal, why, plain))?;
         show(&mut terminal, &mut app, log, source).map_err(|err| format!("the terminal: {err}"))
     });
     // What is printed next, a problem or the shell's prompt, starts at
     // the top left.
-    let _ = terminal.clear().and_then(|()| terminal.set_cursor_position((0, 0)));
+    let _ = clear(&mut terminal).and_then(|()| terminal.set_cursor_position((0, 0)));
     send(look::RESET_PALETTE);
     ratatui::restore();
     match ended {
@@ -93,6 +94,17 @@ pub fn run(release: Option<&Path>) -> u8 {
             1
         }
     }
+}
+
+/// Clears the whole screen. Not with the terminal's own clear, which first
+/// asks the terminal where its cursor is and gives up if no answer comes
+/// within 2 seconds: on a serial line the answer comes from the terminal
+/// program at the far end, which can be late or, on a plain logger, never
+/// come. A resize to the size it has clears the screen without asking,
+/// and the screens then draw every cell anew, as at their start.
+fn clear(terminal: &mut DefaultTerminal) -> io::Result<()> {
+    let size = terminal.size()?;
+    terminal.resize(Rect::from((Position::ORIGIN, size)))
 }
 
 /// Draws a screen with `draw`, in plain ASCII if `plain`, as on a serial
