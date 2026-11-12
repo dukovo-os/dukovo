@@ -87,6 +87,24 @@ sysupdate: the stable channel offers Dukovo 0.15.2; this system runs Dukovo 0.15
 sysupdate: Dukovo 0.15.2 needs 37 files this system lacks, 18.4 MiB; sysupdate stage fetches and stages it
 ```
 
+A release reaches machines in waves (ADR 0469): the canaries take it on
+the day its channel offers it, and the rest from day 1 to day 7, by the
+number from 0 to 999 each machine draws the first time it checks and
+keeps to itself. The update server holds the waves when a release is
+paused or a canary is not green. Until this machine's wave opens, *check*
+says when it does, and *stage* stages nothing; *stage --version* takes
+the release at once, as its owner asked for it:
+
+```
+# sysupdate check
+sysupdate: the stable channel offers Dukovo 0.15.2; this system runs Dukovo 0.15.0
+sysupdate: it reaches machines in waves; this machine's opens on day 3
+sysupdate: the waves are held: paused: disk errors on NVMe
+sysupdate: `sysupdate stage --version 0.15.2` takes it now
+```
+
+A release the project withdrew is never staged, and *check* says why.
+
 *download* fetches those files, and *stage* with no _repository_ fetches
 any that are left and stages the release. Only the files the running
 slot lacks are fetched: a file it holds at the same place with the same
@@ -238,6 +256,9 @@ _/system/state/sysupdate/metadata_
 _/system/state/sysupdate/files_
 	The files fetched for the next stage, by SHA-256; a stage removes
 	them once the slot holds them.
+
+_/system/state/sysupdate/wave_
+	This machine's number from 0 to 999, which places it in a wave.
 
 _/system/state/sysupdate/health_
 	The health check's last result.

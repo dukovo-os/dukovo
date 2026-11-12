@@ -23,6 +23,12 @@
 //! needs: one file moved within the slot is copied, not fetched. An
 //! older release, asked for or offered by the beta channel, is never
 //! staged.
+//!
+//! The stable channel's release is paused on its first day (ADR 0469):
+//! the machine, which is no canary and whose wave opens on day 7, is told
+//! so and waits; as a canary it takes it. Once the release keys have
+//! withdrawn it and the server has published that, the machine says so
+//! and stages nothing.
 
 use std::io::{BufRead as _, BufReader, Read as _, Write as _};
 use std::net::{TcpListener, TcpStream};
@@ -35,7 +41,7 @@ use super::update_stage::{power_off, restart, run, started};
 
 pub const CASE: Case = Case {
     name: "update-online",
-    about: "an update from the update server's stable channel (ADRs 0466, 0467): the machine walks from its root to the server's third, is told a bridge release comes first, refuses a changed file, a changed list and a replayed timestamp, goes on with a fetch cut short, fetches only the files it lacks, stages the bridge, starts it and proves it, and never takes an older release",
+    about: "an update from the update server's stable channel (ADRs 0466, 0467): the machine walks from its root to the server's third, is told a bridge release comes first, refuses a changed file, a changed list and a replayed timestamp, goes on with a fetch cut short, fetches only the files it lacks, stages the bridge, starts it and proves it, and never takes an older release; it waits for its wave while the release is paused and takes it as a canary, and stages nothing once the release is withdrawn (ADR 0469)",
     firmware: Firmware::Uefi,
     media: Media::Disk,
     cmdline: "console-sign-in=off",
@@ -64,7 +70,7 @@ struct Faults {
 /// What the server's connections share.
 struct Shared {
     /// The folder served as `/system/`.
-    repo: PathBuf,
+    repo: Mutex<PathBuf>,
     faults: Mutex<Faults>,
     /// Each request: its path, and its Range header.
     log: Mutex<Vec<(String, Option<String>)>>,
@@ -86,7 +92,7 @@ impl Server {
         let port = listener.local_addr().map_err(|err| err.to_string())?.port();
         let stop = Arc::new(AtomicBool::new(false));
         let shared = Arc::new(Shared {
-            repo: repo.to_path_buf(),
+            repo: Mutex::new(repo.to_path_buf()),
             faults: Mutex::new(Faults::default()),
             log: Mutex::new(Vec::new()),
         });
@@ -105,6 +111,12 @@ impl Server {
             }
         });
         Ok(Server { port, stop, shared })
+    }
+
+    /// Serves `repo` from now on.
+    fn serve(&self, repo: &Path) {
+        *self.shared.repo.lock().unwrap_or_else(std::sync::PoisonError::into_inner) =
+            repo.to_path_buf();
     }
 
     fn faults(&self) -> std::sync::MutexGuard<'_, Faults> {
@@ -160,7 +172,9 @@ impl Shared {
         let mut faults = self.faults.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut data = match (&faults.stale, path.as_str()) {
             (Some(stale), "metadata/timestamp.json") => stale.clone(),
-            _ => match std::fs::read(self.repo.join(&path)) {
+            _ => match std::fs::read(
+                self.repo.lock().unwrap_or_else(std::sync::PoisonError::into_inner).join(&path),
+            ) {
                 Ok(data) => data,
                 Err(_) => return reply(&mut stream, 404, &[], b"not here\n", None),
             },
@@ -235,7 +249,8 @@ fn update_online(vm: &mut Vm, _case: &Case) -> Result<(), String> {
     let (bridge, year, old) =
         (test_server_version("bridge"), test_server_version("year"), test_server_version("old"));
     let (bridge_files, year_files) = (expected(&dir, "bridge")?, expected(&dir, "year")?);
-    let server = Server::start(&dir.join("system"))?;
+    // The repository as it was before the stable release was withdrawn.
+    let server = Server::start(&dir.join(TEST_SERVER_BEFORE_PULL))?;
     let stale = std::fs::read(dir.join("stale-timestamp.json")).map_err(|err| err.to_string())?;
 
     started(vm, 'a')?;
@@ -250,9 +265,17 @@ fn update_online(vm: &mut Vm, _case: &Case) -> Result<(), String> {
         ),
         &["set: 42"],
     )?;
+    // Wave 4, which opens on day 7, and the release is paused anyway.
+    run(vm, "echo 500 > /system/state/sysupdate/wave && sysupdate check", &[
+        &format!("sysupdate: the stable channel offers Dukovo {year}; this system runs Dukovo {VERSION}"),
+        "sysupdate: it reaches machines in waves; this machine's opens on day 7",
+        &format!("sysupdate: the waves are held: paused: {TEST_PAUSE}"),
+        &format!("sysupdate: `sysupdate stage --version {year}` takes it now"),
+    ])?;
+    // A canary takes it on its first day.
     run(
         vm,
-        "sysupdate check",
+        &format!("echo 'canary = true' >> {settings}/updates.toml && sysupdate check"),
         &[
             &format!("sysupdate: the stable channel offers Dukovo {year}; this system runs Dukovo {VERSION}"),
             &format!("Dukovo {year} updates only from {bridge} on: Dukovo {bridge} comes first"),
@@ -319,6 +342,11 @@ fn update_online(vm: &mut Vm, _case: &Case) -> Result<(), String> {
         &format!("sysupdate: the stable channel offers Dukovo {year}; this system runs Dukovo {bridge}"),
         &format!("Dukovo {year} needs {year_files} files this system lacks"),
     ])?;
+    // The release keys withdraw it, and the server publishes that.
+    server.serve(&dir.join("system"));
+    run(vm, "sysupdate check", &[&format!(
+        "sysupdate: Dukovo {year} was withdrawn: {TEST_PULL}; nothing to do"
+    )])?;
     run(vm, "sysupdate channel beta && sysupdate check", &[
         "this system follows the beta channel from now on",
         &format!("the beta channel offers Dukovo {old}, older than this system's {bridge}: nothing to do"),

@@ -186,6 +186,18 @@ fn check(version: Option<&str>, download: bool) -> Result<i32, Fail> {
             println!("sysupdate: {}{then}", online::offers(&client.settings, version, &offered));
             return Ok(0);
         }
+        online::Plan::Waiting { offered, day, held } => {
+            let offers = online::offers(&client.settings, version, &offered);
+            println!("sysupdate: {offers}; this system runs Dukovo {running}");
+            for line in online::waiting(&offered, day, held.as_deref()) {
+                println!("sysupdate: {line}");
+            }
+            return Ok(0);
+        }
+        online::Plan::Withdrawn { offered, reason } => {
+            println!("sysupdate: Dukovo {offered} was withdrawn: {reason}; nothing to do");
+            return Ok(0);
+        }
         online::Plan::Update { offered, from, release } => {
             println!(
                 "sysupdate: {}; this system runs Dukovo {running}",

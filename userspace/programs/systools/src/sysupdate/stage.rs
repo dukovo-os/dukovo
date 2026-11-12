@@ -189,6 +189,13 @@ fn fetch(root: &Root, version: Option<&str>) -> Result<Release, Fail> {
                 online::offers(&client.settings, version, &offered)
             )));
         }
+        Plan::Waiting { offered, day, held } => {
+            let why = online::waiting(&offered, day, held.as_deref()).join("; ");
+            return Err(fail(format!("Dukovo {offered}: {why}")));
+        }
+        Plan::Withdrawn { offered, reason } => {
+            return Err(fail(format!("Dukovo {offered} was withdrawn: {reason}")));
+        }
         Plan::Update { offered, from, release } => {
             if release.version != offered {
                 say(&format!(

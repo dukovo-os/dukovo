@@ -3840,6 +3840,15 @@ fn make_test_firmware(ctx: &Ctx, staging: &Path, out: &Path) -> Result<()> {
 /// file.
 pub const TEST_SERVER: &str = "update-server";
 
+/// Why [`TEST_SERVER`]'s stable release is paused.
+pub const TEST_PAUSE: &str = "a test pause";
+
+/// Why the release keys withdrew it.
+pub const TEST_PULL: &str = "a test withdrawal";
+
+/// [`TEST_SERVER`]'s repository as it was served before the withdrawal.
+pub const TEST_SERVER_BEFORE_PULL: &str = "system-before-pull";
+
 /// The boot test that reads [`TEST_SERVER`] over the network.
 const TEST_SERVER_CASE: &str = "update-online";
 
@@ -3879,8 +3888,11 @@ fn test_update_server(ctx: &Ctx, built: &Built, dir: &Path, cases: &[&Case]) -> 
 /// [`TEST_SERVER_RELEASES`], with the stable channel on `year` and the
 /// beta channel on `old`. It is deployed to the server as `ob release
 /// deploy` deploys, and published, signed again after a timestamp was
-/// kept to replay, and refused a damaged deploy by tools/update-server's
-/// own scripts, run in a folder standing in for the server's `/`.
+/// kept to replay, its stable release paused, refused a damaged deploy
+/// and then given the release keys' withdrawal of the stable release by
+/// tools/update-server's own scripts, run in a folder standing in for the
+/// server's `/`; what it served before the withdrawal is kept as
+/// [`TEST_SERVER_BEFORE_PULL`].
 fn make_update_server(ctx: &Ctx, built: &Built, dir: &Path) -> Result<()> {
     let out = dir.join(TEST_SERVER);
     for path in [&out, &dir.join("update-server-staging")] {
@@ -3907,7 +3919,8 @@ fn make_update_server(ctx: &Ctx, built: &Built, dir: &Path) -> Result<()> {
     for folder in [&home, &incoming, &lib, &server.join("srv/dukovo-system")] {
         process::create_dir(folder)?;
     }
-    for script in ["system-site.sh", "system-publish.sh", "system-refresh.sh"] {
+    for script in ["system-site.sh", "system-publish.sh", "system-refresh.sh", "system-rollout.sh"]
+    {
         process::copy(&ctx.root.join("tools/update-server").join(script), &lib.join(script))?;
     }
     process::copy(&crate::release::tool_for(ctx, false)?, &lib.join("system-release"))?;
@@ -3997,12 +4010,16 @@ fn make_update_server(ctx: &Ctx, built: &Built, dir: &Path) -> Result<()> {
         crate::release::system_release(ctx, &repo_args(&["channel", channel, &version]))?;
     }
     deploy_to_test_server(ctx, &repo, &incoming)?;
-    server_script(ctx, &server, "system-publish.sh", true)?;
+    server_script(ctx, &server, "system-publish.sh", &[], true)?;
     let served = out.join("system");
     std::os::unix::fs::symlink("server/srv/dukovo-system/system", &served)
         .context(|| format!("linking {}", served.display()))?;
     process::copy(&served.join("metadata/timestamp.json"), &out.join("stale-timestamp.json"))?;
-    server_script(ctx, &server, "system-refresh.sh", true)?;
+    server_script(ctx, &server, "system-refresh.sh", &[], true)?;
+    // The stable channel's release is paused on its first day: only the
+    // canaries take it (ADR 0469).
+    let year = test_server_version("year");
+    server_script(ctx, &server, "system-rollout.sh", &["pause", &year, TEST_PAUSE], true)?;
 
     // A deploy with a file that is not what its name says: refused, and
     // the server serves what it did before.
@@ -4010,13 +4027,34 @@ fn make_update_server(ctx: &Ctx, built: &Built, dir: &Path) -> Result<()> {
         .context(|| "reading the served timestamp".to_string())?;
     let forged = incoming.join("files").join("0".repeat(64));
     write(forged.clone(), b"not this file\n")?;
-    server_script(ctx, &server, "system-publish.sh", false)?;
+    server_script(ctx, &server, "system-publish.sh", &[], false)?;
     let after = std::fs::read(served.join("metadata/timestamp.json"))
         .context(|| "reading the served timestamp".to_string())?;
     if after != before {
         crate::bail!("the test update server served a deploy it refused");
     }
     std::fs::remove_file(&forged).context(|| format!("removing {}", forged.display()))?;
+
+    // The served repository is kept as it is, and then the release keys
+    // withdraw the stable release, which is deployed and published.
+    let before = out.join(TEST_SERVER_BEFORE_PULL);
+    process::create_dir(&before)?;
+    process::run(
+        ctx,
+        std::process::Command::new("cp").arg("-al").arg(served.join(".")).arg(&before),
+    )?;
+    crate::release::system_release(
+        ctx,
+        &repo_args(&["pull", "--version", &year, "--reason", TEST_PULL, "--advice", "rollback"]),
+    )?;
+    for folder in ["metadata", "targets", "files"] {
+        let old = incoming.join(folder);
+        if old.exists() {
+            std::fs::remove_dir_all(&old).context(|| format!("removing {}", old.display()))?;
+        }
+    }
+    deploy_to_test_server(ctx, &repo, &incoming)?;
+    server_script(ctx, &server, "system-publish.sh", &[], true)?;
 
     let repo = served;
     let (_, root) = crate::release::trusted_root(ctx)?;
@@ -4052,14 +4090,20 @@ fn deploy_to_test_server(ctx: &Ctx, repo: &Path, incoming: &Path) -> Result<()> 
     std::fs::write(&ready, b"").context(|| format!("writing {}", ready.display()))
 }
 
-/// Runs the update server's `script` in the test update server whose `/`
-/// is `server`, as its systemd unit would, and checks that it did what it
-/// should: published (or refreshed) when `succeeds`, and said why it
-/// published nothing when not.
-fn server_script(ctx: &Ctx, server: &Path, script: &str, succeeds: bool) -> Result<()> {
+/// Runs the update server's `script` with `args` in the test update
+/// server whose `/` is `server`, as its systemd unit (or its owner) would,
+/// and checks that it did what it should: published (or refreshed) when
+/// `succeeds`, and said why it published nothing when not.
+fn server_script(
+    ctx: &Ctx,
+    server: &Path,
+    script: &str,
+    args: &[&str],
+    succeeds: bool,
+) -> Result<()> {
     let path = server.join("usr/local/lib/dukovo-system").join(script);
     let mut cmd = std::process::Command::new("sh");
-    cmd.arg(&path).env("DUKOVO_SERVER_ROOT", server);
+    cmd.arg(&path).args(args).env("DUKOVO_SERVER_ROOT", server);
     let output = cmd.output().context(|| format!("running {}", path.display()))?;
     if ctx.verbose || output.status.success() != succeeds {
         print!("{}", String::from_utf8_lossy(&output.stdout));

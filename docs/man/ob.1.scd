@@ -1811,7 +1811,7 @@ _target/userspace/_).
 	_https://updates.dukovo.org/catalog/_, as a new computer would, from
 	the first root in _catalog/metadata/_, and fetches every bundle.
 
-*release* *server* *setup* | *deploy* _repository_ | *check* [_url_]
+*release* *server* *setup* | *deploy* _repository_ | *check* [_url_] | *rollout* (*pause* _version_ _reason_ | *resume* _version_ | *canary* _name_ *red*|*green*)
 	Deploy the system's releases to the update server and check what it
 	serves (ADR 0467), over the same SSH login as *catalog*.
 	*server setup* is *catalog server setup*, which sets up both; it
@@ -1834,6 +1834,15 @@ _target/userspace/_).
 	releases served at _url_, by default
 	_https://updates.dukovo.org/system/_, as a computer online would, from
 	that first root: every release list and channel.
+
+	*rollout* holds or frees the waves on the server (ADR 0469), with no
+	release key: it runs the server's _system-rollout.sh_ as its user,
+	through *sudo*, which asks for the password. *pause* keeps a
+	release's waves where they are, with a reason machines show;
+	*resume* lets them open on schedule again; *canary* marks a canary
+	*red*, which holds every release's waves, or *green*. The rollouts
+	are signed again at once. A withdrawal is *system-release pull*,
+	then *deploy*.
 
 *fixture* *btrfs-log*|*btrfs-radix-log*|*btrfs-send*|*ntfs-3g* [*--linux-kernel* _file_]
 

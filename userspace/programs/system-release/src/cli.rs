@@ -24,10 +24,14 @@ usage: system-release keys [--rotate ROLE | --online KEY] DIR
        system-release add --repo DIR --keys DIR RELEASE
        system-release firmware --repo DIR --keys DIR --version VERSION
                                --microcode FILE --license LICENSE
+       system-release pull --repo DIR --keys DIR --version VERSION --reason TEXT
+                           --advice rollback|stay
        system-release channel --repo DIR --keys DIR CHANNEL VERSION
        system-release channel --repo DIR --keys DIR --firmware VERSION|none CHANNEL
-       system-release refresh --repo DIR (--keys DIR | --online-key SECRET)
-       system-release publish --repo DIR --online-key SECRET INCOMING
+       system-release refresh --repo DIR (--keys DIR | --online-key SECRET [--plan FILE])
+       system-release publish --repo DIR --online-key SECRET [--plan FILE] INCOMING
+       system-release rollout --repo DIR --online-key SECRET --plan FILE
+                              (pause VERSION REASON | resume VERSION | canary NAME red|green)
        system-release pack --repo DIR [--root FILE] --version VERSION --out FILE
        system-release check [--root FILE] [--version VERSION] REPOSITORY|FILE
        system-release served [--root FILE] URL
@@ -58,9 +62,11 @@ pub fn run(args: &[String]) -> i32 {
         "make" => make(&options),
         "add" => add(&options),
         "firmware" => firmware(&options),
+        "pull" => pull(&options),
         "channel" => channel(&options),
         "refresh" => refresh(&options),
         "publish" => publish(&options),
+        "rollout" => rollout(&options),
         "pack" => pack(&options),
         "check" => check(&options),
         "served" => served(&options),
@@ -102,6 +108,9 @@ struct Options {
     microcode: Option<PathBuf>,
     license: Option<String>,
     firmware: Option<String>,
+    reason: Option<String>,
+    advice: Option<String>,
+    plan: Option<PathBuf>,
     operands: Vec<String>,
 }
 
@@ -127,6 +136,9 @@ impl Options {
                 "--microcode" => options.microcode = Some(value()?.into()),
                 "--license" => options.license = Some(value()?),
                 "--firmware" => options.firmware = Some(value()?),
+                "--reason" => options.reason = Some(value()?),
+                "--advice" => options.advice = Some(value()?),
+                "--plan" => options.plan = Some(value()?.into()),
                 "--built" => {
                     let text = value()?;
                     let seconds = text
@@ -321,6 +333,27 @@ fn firmware(options: &Options) -> Result<(), String> {
     Ok(())
 }
 
+/// `pull --repo DIR --version VERSION --reason TEXT --advice
+/// rollback|stay`: the release is withdrawn (ADR 0469).
+fn pull(options: &Options) -> Result<(), String> {
+    let dir = needed(&options.repo, "--repo")?;
+    let keys = Keys::load(needed(&options.keys, "--keys")?)?;
+    let version = needed(&options.version, "--version")?;
+    let reason = needed(&options.reason, "--reason")?;
+    let advice = match needed(&options.advice, "--advice")?.as_str() {
+        "rollback" => crate::rollout::Advice::Rollback,
+        "stay" => crate::rollout::Advice::Stay,
+        other => return Err(format!("--advice {other}: say rollback or stay")),
+    };
+    updates::withdraw(dir, &keys, version, reason, advice, tuf::time::now())?;
+    println!(
+        "system-release: {} withdraws Dukovo {version}: {reason}{}",
+        dir.display(),
+        signed_here(&keys)
+    );
+    Ok(())
+}
+
 /// `channel --repo DIR CHANNEL VERSION`: the channel offers the release;
 /// with `--firmware VERSION|none CHANNEL`, the firmware set, or none.
 fn channel(options: &Options) -> Result<(), String> {
@@ -366,8 +399,65 @@ fn channel_line(channel: &updates::Channel) -> String {
 fn refresh(options: &Options) -> Result<(), String> {
     let dir = needed(&options.repo, "--repo")?;
     let keys = signing_keys(options, dir)?;
-    let refreshed = updates::refresh(dir, &keys, tuf::time::now())?;
+    let mut plans = options.plan.as_deref().map(crate::rollout::Plans::load).transpose()?;
+    let refreshed = updates::refresh(dir, &keys, plans.as_mut(), tuf::time::now())?;
     println!("system-release: {} {}", dir.display(), say_signed(&refreshed));
+    save_plans(options, plans.as_ref())
+}
+
+/// Keeps `plans` where `--plan` says, once what they hold is signed.
+fn save_plans(options: &Options, plans: Option<&crate::rollout::Plans>) -> Result<(), String> {
+    match (&options.plan, plans) {
+        (Some(path), Some(plans)) => plans.save(path),
+        _ => Ok(()),
+    }
+}
+
+/// `rollout --repo DIR --online-key SECRET --plan FILE ...`: on the
+/// update server, a release's waves paused or resumed, or a canary red
+/// or green, and the rollouts signed again (ADR 0469).
+fn rollout(options: &Options) -> Result<(), String> {
+    let dir = needed(&options.repo, "--repo")?;
+    let path = needed(&options.plan, "--plan")?;
+    let keys = signing_keys(options, dir)?;
+    let mut plans = crate::rollout::Plans::load(path)?;
+    let operands: Vec<&str> = options.operands.iter().map(String::as_str).collect();
+    let said = match operands.as_slice() {
+        ["pause", version, reason] => {
+            let plan = plans.releases.get_mut(*version).ok_or_else(|| {
+                format!("no channel has offered Dukovo {version} since the rollouts began")
+            })?;
+            plan.paused = Some((*reason).to_string());
+            format!("Dukovo {version} is paused: {reason}")
+        }
+        ["resume", version] => {
+            let plan = plans.releases.get_mut(*version).ok_or_else(|| {
+                format!("no channel has offered Dukovo {version} since the rollouts began")
+            })?;
+            plan.paused = None;
+            format!("Dukovo {version} goes on")
+        }
+        ["canary", name, colour @ ("red" | "green")] => {
+            plans.red.retain(|red| red != name);
+            if *colour == "red" {
+                plans.red.push((*name).to_string());
+            }
+            format!("the canary {name} is {colour}")
+        }
+        _ => {
+            return Err(
+                "rollout takes pause VERSION REASON, resume VERSION or canary NAME red|green"
+                    .into(),
+            );
+        }
+    };
+    let refreshed = updates::refresh(dir, &keys, Some(&mut plans), tuf::time::now())?;
+    plans.save(path)?;
+    println!("system-release: {said}; {} {}", dir.display(), say_signed(&refreshed));
+    for (version, plan) in &plans.releases {
+        let held = plan.paused.as_ref().map_or_else(String::new, |why| format!(", paused: {why}"));
+        println!("system-release: Dukovo {version}: wave {} open{held}", plan.open);
+    }
     Ok(())
 }
 
@@ -390,7 +480,10 @@ fn publish(options: &Options) -> Result<(), String> {
     let secret_path = needed(&options.online_key, "--online-key")?;
     let secret =
         std::fs::read(secret_path).map_err(|err| format!("{}: {err}", secret_path.display()))?;
-    let deployed = updates::publish(dir, Path::new(incoming), &secret, tuf::time::now())?;
+    let mut plans = options.plan.as_deref().map(crate::rollout::Plans::load).transpose()?;
+    let deployed =
+        updates::publish(dir, Path::new(incoming), &secret, plans.as_mut(), tuf::time::now())?;
+    save_plans(options, plans.as_ref())?;
     println!(
         "system-release: {} offers {}, newest Dukovo {}, with {}; {}",
         dir.display(),

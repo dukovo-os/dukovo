@@ -40,6 +40,7 @@ use crate::archive::{Archive, Writer};
 use crate::firmware::{self, Load, Set};
 use crate::list::{Release, hex, sha256_file};
 use crate::repo::{self, Keys, Published, expires};
+use crate::rollout;
 use crate::store::Checked;
 
 /// The channels a machine follows one of (ADR 0456): stable, the default;
@@ -111,6 +112,9 @@ struct Current {
     /// The targets version the newest snapshot lists, and when that
     /// snapshot expires.
     snapshot: Option<(u64, i64)>,
+    /// The rollout role's version the newest snapshot lists, if it lists
+    /// one (ADR 0469).
+    rollout_listed: Option<u64>,
 }
 
 fn read(path: &Path) -> Result<Vec<u8>, String> {
@@ -169,6 +173,7 @@ fn current(dir: &Path) -> Result<Option<Current>, String> {
     };
     let malformed = |name: &str| format!("{}: {name} is malformed", metadata.display());
     let snapshot_version = newest(&metadata, "snapshot")?;
+    let mut rollout_listed = None;
     let snapshot = if snapshot_version == 0 {
         None
     } else {
@@ -179,6 +184,7 @@ fn current(dir: &Path) -> Result<Option<Current>, String> {
             .as_str()
             .and_then(tuf::time::parse)
             .ok_or_else(|| malformed("the snapshot"))?;
+        rollout_listed = listed_version(&snapshot, &format!("{}.json", rollout::ROLE));
         Some((lists, expires))
     };
     let timestamp_version = if metadata.join("timestamp.json").exists() {
@@ -195,7 +201,14 @@ fn current(dir: &Path) -> Result<Option<Current>, String> {
         .iter()
         .map(|(path, info)| (path.clone(), info.clone()))
         .collect();
-    Ok(Some(Current { targets, targets_version, snapshot_version, timestamp_version, snapshot }))
+    Ok(Some(Current {
+        targets,
+        targets_version,
+        snapshot_version,
+        timestamp_version,
+        snapshot,
+        rollout_listed,
+    }))
 }
 
 /// Writes every root of `keys` into the metadata folder `metadata`, by
@@ -230,13 +243,16 @@ enum Signed {
 }
 
 /// Signs the repository at `dir` anew at `now`: the targets `targets` as
-/// the next version, if given, and every root of `keys`; then, if `keys`
-/// sign for them, the next snapshot and timestamp.
+/// the next version, if given, delegating the rollouts to the key the
+/// newest root gives timestamp, and every root of `keys`; then, if `keys`
+/// sign for them, the rollouts of `plans`, and the next snapshot and
+/// timestamp.
 fn sign(
     dir: &Path,
     keys: &Keys,
     current: Option<&Current>,
     targets: Option<&BTreeMap<String, Value>>,
+    plans: Option<&mut rollout::Plans>,
     now: i64,
 ) -> Result<Signed, String> {
     let metadata = dir.join("metadata");
@@ -245,11 +261,9 @@ fn sign(
     let (targets_version, targets_bytes) = match targets {
         Some(targets) => {
             let version = targets_version + 1;
-            let bytes = repo::sign_role(
-                &signing::targets(version, &expires(now, "targets"), targets),
-                keys,
-                "targets",
-            )?;
+            let mut signed = signing::targets(version, &expires(now, "targets"), targets);
+            signed["delegations"] = rollout::delegation(keys.root())?;
+            let bytes = repo::sign_role(&signed, keys, "targets")?;
             write(&metadata.join(format!("{version}.targets.json")), &bytes)?;
             (version, bytes)
         }
@@ -259,10 +273,13 @@ fn sign(
     if !repo::ONLINE.iter().all(|role| keys.has(role)) {
         return Ok(Signed::Targets);
     }
-    let meta = BTreeMap::from([(
+    let mut meta = BTreeMap::from([(
         "targets.json".to_string(),
         signing::meta(targets_version, &targets_bytes),
     )]);
+    if let Some(role) = sign_rollout(dir, keys, plans, now)? {
+        meta.insert(format!("{}.json", rollout::ROLE), signing::meta(role.version, &role.bytes));
+    }
     let snapshot_version = snapshot_version + 1;
     let snapshot = repo::sign_role(
         &signing::snapshot(snapshot_version, &expires(now, "snapshot"), &meta),
@@ -273,6 +290,98 @@ fn sign(
     let timestamp =
         sign_timestamp(&metadata, keys, timestamp_version + 1, snapshot_version, &snapshot, now)?;
     Ok(Signed::All { snapshot: snapshot_version, timestamp })
+}
+
+/// The rollout role as [`sign_rollout`] left it.
+struct RolloutRole {
+    /// Its version.
+    version: u64,
+    /// Its bytes, as signed.
+    bytes: Vec<u8>,
+}
+
+/// How long the rollout role must still be good for a refresh to leave
+/// it as it is: two refreshes.
+const ROLLOUT_MARGIN: i64 = 12 * 3600;
+
+/// Signs the rollout of each release a channel of the repository at `dir`
+/// offers, as `plans` hold it at `now`, with the online key of `keys`
+/// (ADR 0469), and the rollout role that lists them, if the targets
+/// delegate one: anew when what it lists changed or it expires within
+/// twelve hours. Without `plans`, it lists none, which holds back no
+/// release. A release a channel offers for the first time is added to
+/// `plans`, released now.
+fn sign_rollout(
+    dir: &Path,
+    keys: &Keys,
+    plans: Option<&mut rollout::Plans>,
+    now: i64,
+) -> Result<Option<RolloutRole>, String> {
+    let Some(current) = current(dir)? else { return Ok(None) };
+    let metadata = dir.join("metadata");
+    let targets_bytes = read(&metadata.join(format!("{}.targets.json", current.targets_version)))?;
+    let delegator = tuf::metadata::Signed::<tuf::metadata::Targets>::parse(&targets_bytes)
+        .map_err(|err| format!("the targets: {err}"))?;
+    if delegator
+        .signed
+        .delegations
+        .as_ref()
+        .and_then(|d| d.roles.as_ref())
+        .is_none_or(|roles| !roles.iter().any(|role| role.name == rollout::ROLE))
+    {
+        return Ok(None);
+    }
+    let mut listed = BTreeMap::new();
+    if let Some(plans) = plans {
+        let mut offered = Vec::new();
+        for name in CHANNELS {
+            if let Some(channel) = held_channel(dir, &current, name)?
+                && !offered.contains(&channel.version)
+            {
+                offered.push(channel.version);
+            }
+        }
+        for version in offered {
+            let plan = plans.releases.entry(version.clone()).or_insert(rollout::Plan {
+                released: now,
+                open: 0,
+                paused: None,
+            });
+            let signed = rollout::next(&version, plan, &plans.red, now);
+            plan.open = signed.wave;
+            let mut bytes = serde_json::to_vec_pretty(&signed).expect("a rollout serialises");
+            bytes.push(b'\n');
+            let sha256 = hex(ring::digest::digest(&ring::digest::SHA256, &bytes).as_ref());
+            write(&dir.join(format!("targets/rollout/{sha256}.{version}.json")), &bytes)?;
+            listed.insert(rollout::target_path(&version), signing::file_info(&bytes));
+        }
+    }
+    let name = |version: u64| metadata.join(format!("{version}.{}.json", rollout::ROLE));
+    let version = newest(&metadata, rollout::ROLE)?;
+    if version > 0 {
+        let bytes = read(&name(version))?;
+        let old: Value = serde_json::from_slice(&bytes)
+            .map_err(|err| format!("{}: {err}", name(version).display()))?;
+        let same = old["signed"]["targets"] == serde_json::json!(listed);
+        let fresh = old["signed"]["expires"]
+            .as_str()
+            .and_then(tuf::time::parse)
+            .is_some_and(|expires| expires > now + ROLLOUT_MARGIN);
+        if same && fresh {
+            return Ok(Some(RolloutRole { version, bytes }));
+        }
+    }
+    let version = version + 1;
+    let bytes = repo::sign_role(
+        &signing::targets(version, &expires(now, rollout::ROLE), &listed),
+        keys,
+        "timestamp",
+    )?;
+    tuf::metadata::Signed::<tuf::metadata::Targets>::parse(&bytes)
+        .and_then(|signed| signed.verified_by(&delegator.signed, rollout::ROLE))
+        .map_err(|err| format!("the rollouts do not check against the targets: {err}"))?;
+    write(&name(version), &bytes)?;
+    Ok(Some(RolloutRole { version, bytes }))
 }
 
 /// Signs and writes the timestamp `version`, naming the snapshot
@@ -357,7 +466,7 @@ pub fn add(dir: &Path, keys: &Keys, release_dir: &Path, now: i64) -> Result<Adde
     }
     write(&dir.join("targets").join(&list_name), &list)?;
     targets.insert(path, info);
-    let signed = sign(dir, keys, current.as_ref(), Some(&targets), now)?;
+    let signed = sign(dir, keys, current.as_ref(), Some(&targets), None, now)?;
     // Signed through, it reads back here; else the update server reads it
     // back once it signs the snapshot and timestamp.
     let published = match signed {
@@ -436,7 +545,7 @@ fn write_channel(
     write(&dir.join(format!("targets/channels/{name}.{}.json", channel.channel)), &bytes)?;
     let mut targets = current.targets.clone();
     targets.insert(channel_path(&channel.channel), signing::file_info(&bytes));
-    sign(dir, keys, Some(current), Some(&targets), now)?;
+    sign(dir, keys, Some(current), Some(&targets), None, now)?;
     Ok(())
 }
 
@@ -544,8 +653,47 @@ pub fn add_firmware(
     let sha256 = hex(ring::digest::digest(&ring::digest::SHA256, &list).as_ref());
     write(&dir.join(format!("targets/firmware/{sha256}.{version}.json")), &list)?;
     targets.insert(path, info);
-    sign(dir, keys, current.as_ref(), Some(&targets), now)?;
+    sign(dir, keys, current.as_ref(), Some(&targets), None, now)?;
     Ok(AddedFirmware { set, new_files, already: false })
+}
+
+/// Withdraws the release `version` of the repository at `dir` (ADR
+/// 0469): a withdrawal signed with `keys` among the targets, which every
+/// machine reads before it stages the release, and the version is never
+/// used again.
+///
+/// # Errors
+///
+/// If the repository does not offer the release, withdrew it already
+/// for another reason, or a write fails.
+pub fn withdraw(
+    dir: &Path,
+    keys: &Keys,
+    version: &str,
+    reason: &str,
+    advice: rollout::Advice,
+    now: i64,
+) -> Result<(), String> {
+    let withdrawal = rollout::Withdrawal { release: version.into(), reason: reason.into(), advice };
+    let bytes = withdrawal.to_bytes();
+    rollout::Withdrawal::parse(&bytes)?;
+    let current = current(dir)?;
+    let mut targets = current.as_ref().map_or_else(BTreeMap::new, |c| c.targets.clone());
+    if !targets.contains_key(&repo::target_path(version)) {
+        return Err(format!("{} does not offer Dukovo {version}", dir.display()));
+    }
+    let path = rollout::withdrawal_path(version);
+    let info = signing::file_info(&bytes);
+    match targets.get(&path) {
+        Some(signed) if *signed == info => return Ok(()),
+        Some(_) => return Err(format!("{} withdrew Dukovo {version} already", dir.display())),
+        None => {}
+    }
+    let sha256 = hex(ring::digest::digest(&ring::digest::SHA256, &bytes).as_ref());
+    write(&dir.join(format!("targets/withdrawn/{sha256}.{version}.json")), &bytes)?;
+    targets.insert(path, info);
+    sign(dir, keys, current.as_ref(), Some(&targets), None, now)?;
+    Ok(())
 }
 
 /// What [`refresh`] signed.
@@ -577,17 +725,26 @@ const SNAPSHOT_MARGIN: i64 = 2 * 86_400;
 ///
 /// If the repository offers nothing, `keys` do not sign for snapshot and
 /// timestamp, or a write fails.
-pub fn refresh(dir: &Path, keys: &Keys, now: i64) -> Result<Refreshed, String> {
+pub fn refresh(
+    dir: &Path,
+    keys: &Keys,
+    mut plans: Option<&mut rollout::Plans>,
+    now: i64,
+) -> Result<Refreshed, String> {
     let current = current(dir)?.ok_or_else(|| format!("{} offers no release", dir.display()))?;
     for role in repo::ONLINE {
         keys.signer(role)?;
     }
     let metadata = dir.join("metadata");
     let new_root = write_roots(&metadata, keys)?;
+    let rollout = sign_rollout(dir, keys, plans.as_deref_mut(), now)?;
+    let rollout_listed =
+        rollout.as_ref().is_none_or(|role| current.rollout_listed == Some(role.version));
     if let Some((lists, expires)) = current.snapshot
         && lists == current.targets_version
         && expires > now + SNAPSHOT_MARGIN
         && !new_root
+        && rollout_listed
     {
         let snapshot = read(&metadata.join(format!("{}.snapshot.json", current.snapshot_version)))?;
         let version = sign_timestamp(
@@ -600,7 +757,7 @@ pub fn refresh(dir: &Path, keys: &Keys, now: i64) -> Result<Refreshed, String> {
         )?;
         return Ok(Refreshed::Timestamp(version));
     }
-    match sign(dir, keys, Some(&current), None, now)? {
+    match sign(dir, keys, Some(&current), None, plans, now)? {
         Signed::All { snapshot, timestamp } => Ok(Refreshed::All { snapshot, timestamp }),
         Signed::Targets => Err("these keys do not sign for snapshot and timestamp".into()),
     }
@@ -637,15 +794,21 @@ pub struct Deployed {
 /// not what its name says, the newest root does not name `secret`'s key,
 /// or what was signed does not read back. What was written stays in
 /// `dir`, which the server then does not serve.
-pub fn publish(dir: &Path, incoming: &Path, secret: &[u8], now: i64) -> Result<Deployed, String> {
+pub fn publish(
+    dir: &Path,
+    incoming: &Path,
+    secret: &[u8],
+    plans: Option<&mut rollout::Plans>,
+    now: i64,
+) -> Result<Deployed, String> {
     take_metadata(&incoming.join("metadata"), &dir.join("metadata"))?;
-    for folder in ["targets/system", "targets/firmware", "targets/channels"] {
+    for folder in ["targets/system", "targets/firmware", "targets/channels", "targets/withdrawn"] {
         take_named(&incoming.join(folder), &dir.join(folder), false)?;
     }
     let new_files = take_named(&incoming.join("files"), &dir.join("files"), true)?;
     let keys = server_keys(dir, secret)?;
     let first = keys.roots()[0].clone();
-    let signed = refresh(dir, &keys, now)?;
+    let signed = refresh(dir, &keys, plans, now)?;
     let store = dir.join("files");
     let Offered { releases, firmware, channels } =
         offered(repo::read_targets(dir, &first)?, Some(&store))?;
@@ -1038,6 +1201,30 @@ pub fn check_archive(archive: &Archive, release: &Release) -> Result<Checked, Ve
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The target `path` of the repository at `dir`, found through the
+    /// delegations as a computer finds it, from `root`.
+    fn delegated(dir: &Path, root: &[u8], path: &str) -> Option<Vec<u8>> {
+        let work = repo::scratch_dir();
+        tuf::init(&work, root).unwrap();
+        let base =
+            tuf::Url::parse(&format!("file://{}/", std::path::absolute(dir).unwrap().display()))
+                .unwrap();
+        let mut updater = tuf::Updater::new(
+            &work,
+            &base.resolve("metadata/").unwrap(),
+            Some(&base.resolve("targets/").unwrap()),
+        )
+        .unwrap();
+        updater.refresh().unwrap();
+        let found = updater.target(path).unwrap().map(|target| {
+            let file = work.join("target");
+            updater.download_target(path, &target, &file).unwrap();
+            std::fs::read(&file).unwrap()
+        });
+        std::fs::remove_dir_all(&work).unwrap();
+        found
+    }
     use crate::list::About;
     use crate::list::tests::{scratch, tree};
 
@@ -1099,7 +1286,7 @@ mod tests {
                 .contains("does not offer")
         );
         let before = current(&repo_dir).unwrap().unwrap().timestamp_version;
-        assert_eq!(refresh(&repo_dir, &keys, now).unwrap(), Refreshed::Timestamp(before + 1));
+        assert_eq!(refresh(&repo_dir, &keys, None, now).unwrap(), Refreshed::Timestamp(before + 1));
         let current = current(&repo_dir).unwrap().unwrap();
         assert!(current.targets.contains_key("channels/stable.json"));
         assert_eq!(current.targets.len(), 3);
@@ -1148,6 +1335,18 @@ mod tests {
         let (set, _) = firmware::open(&repo_dir, keys.root(), None).unwrap();
         assert_eq!(set.microcode().unwrap().size, 16);
         set_channel_firmware(&repo_dir, &keys, "stable", None, now).unwrap();
+        // A withdrawal, once, of a release the repository offers.
+        let advice = rollout::Advice::Rollback;
+        let err = withdraw(&repo_dir, &keys, "0.16.0", "never made", advice, now).unwrap_err();
+        assert!(err.contains("does not offer"), "{err}");
+        withdraw(&repo_dir, &keys, "0.15.0", "corrupts settings", advice, now).unwrap();
+        withdraw(&repo_dir, &keys, "0.15.0", "corrupts settings", advice, now).unwrap();
+        let err = withdraw(&repo_dir, &keys, "0.15.0", "other", advice, now).unwrap_err();
+        assert!(err.contains("already"), "{err}");
+        let targets = repo::read_targets(&repo_dir, keys.root()).unwrap();
+        let path = rollout::withdrawal_path("0.15.0");
+        let (_, bytes) = targets.iter().find(|(p, _)| *p == path).unwrap();
+        assert_eq!(rollout::Withdrawal::parse(bytes).unwrap().advice, advice);
         assert_eq!(read(&repo_dir).1, None);
         // A set whose file the store lacks is not offered.
         let file = repo_dir.join("files").join(&set.files[0].sha256);
@@ -1175,7 +1374,7 @@ mod tests {
         };
         assert_eq!(keys.roots().len(), 3);
         assert_eq!(Keys::load(&dir.join("keys")).unwrap().roots().len(), 3);
-        refresh(&repo_dir, &keys, now).unwrap();
+        refresh(&repo_dir, &keys, None, now).unwrap();
         // A computer that trusts the first root walks to the third.
         assert_eq!(
             repo::open(&repo_dir, &first, Some("0.15.0")).unwrap().release.version,
@@ -1206,7 +1405,7 @@ mod tests {
         // its own snapshot and timestamp, which a computer reads from the
         // first root.
         let server = dir.join("server");
-        let deployed = publish(&server, &maintainer, &secret, now).unwrap();
+        let deployed = publish(&server, &maintainer, &secret, None, now).unwrap();
         assert_eq!(deployed.releases, ["0.15.0"]);
         assert_eq!(deployed.firmware, ["2026.11.12"]);
         let stable = Channel {
@@ -1226,14 +1425,35 @@ mod tests {
 
         // The same deploy again copies nothing and signs a timestamp; so
         // does a refresh, until the snapshot has two days left.
-        let again = publish(&server, &maintainer, &secret, now).unwrap();
+        let again = publish(&server, &maintainer, &secret, None, now).unwrap();
         assert_eq!((again.new_files, again.signed), (0, Refreshed::Timestamp(2)));
         let online_keys = server_keys(&server, &secret).unwrap();
-        assert_eq!(refresh(&server, &online_keys, now).unwrap(), Refreshed::Timestamp(3));
+        assert_eq!(refresh(&server, &online_keys, None, now).unwrap(), Refreshed::Timestamp(3));
         assert_eq!(
-            refresh(&server, &online_keys, now + 6 * 86_400).unwrap(),
+            refresh(&server, &online_keys, None, now + 6 * 86_400).unwrap(),
             Refreshed::All { snapshot: 2, timestamp: 4 }
         );
+
+        // The rollouts (ADR 0469): the stable channel's release opens to
+        // the canaries on its first day and to wave 1 on its second; a
+        // pause holds it there; a refresh with nothing new signs a
+        // timestamp alone.
+        let mut plans = rollout::Plans::default();
+        let rollout_at = |when: i64, plans: &mut rollout::Plans| {
+            refresh(&server, &online_keys, Some(plans), when).unwrap();
+            let bytes = delegated(&server, &first, &rollout::target_path("0.15.0")).unwrap();
+            serde_json::from_slice::<rollout::Rollout>(&bytes).unwrap()
+        };
+        assert_eq!((rollout_at(now, &mut plans).wave, plans.releases["0.15.0"].released), (0, now));
+        assert_eq!(
+            refresh(&server, &online_keys, Some(&mut plans), now).unwrap(),
+            Refreshed::Timestamp(6)
+        );
+        assert_eq!(rollout_at(now + 86_400, &mut plans).wave, 1);
+        plans.releases.get_mut("0.15.0").unwrap().paused = Some("disk errors".into());
+        let held = rollout_at(now + 3 * 86_400, &mut plans);
+        assert_eq!((held.wave, held.held.as_deref()), (1, Some("paused: disk errors")));
+        assert_eq!(delegated(&server, &first, "rollout/0.14.0.json"), None);
 
         // Refused: another first root, a file that is not what its name
         // says, and a key the root does not name.
@@ -1251,14 +1471,14 @@ mod tests {
         let other = Keys::create(&dir.join("other"), BUILT).unwrap();
         let forged = copy("forged");
         std::fs::write(forged.join("metadata/1.root.json"), other.root()).unwrap();
-        let err = publish(&server, &forged, &secret, now).unwrap_err();
+        let err = publish(&server, &forged, &secret, None, now).unwrap_err();
         assert!(err.contains("is not the first root this server published"), "{err}");
         let damaged = copy("damaged");
         std::fs::write(damaged.join("files").join("ab".repeat(32)), b"not that file").unwrap();
-        let err = publish(&server, &damaged, &secret, now).unwrap_err();
+        let err = publish(&server, &damaged, &secret, None, now).unwrap_err();
         assert!(err.contains("is not the file its name says"), "{err}");
         let (_, wrong) = signing::Ed25519::generate().unwrap();
-        let err = publish(&server, &maintainer, &wrong, now).unwrap_err();
+        let err = publish(&server, &maintainer, &wrong, None, now).unwrap_err();
         assert!(err.contains("does not name this server's online key"), "{err}");
         std::fs::remove_dir_all(&dir).unwrap();
     }

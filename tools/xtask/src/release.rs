@@ -84,8 +84,26 @@ pub fn command(ctx: &Ctx, args: &[String]) -> Result<()> {
         ["deploy", dir] => deploy(ctx, Path::new(dir)),
         ["check"] => check(ctx, URL),
         ["check", url] => check(ctx, url),
-        _ => bail!("usage: ./ob release server setup | deploy <repository> | check [<url>]"),
+        ["rollout", rest @ ..] if !rest.is_empty() => rollout(ctx, rest),
+        _ => bail!(
+            "usage: ./ob release server setup | deploy <repository> | check [<url>] | rollout \
+             (pause <version> <reason> | resume <version> | canary <name> red|green)"
+        ),
     }
+}
+
+/// `ob release rollout ...`: on the update server, through sudo as its
+/// user, pauses or resumes a release's waves, or marks a canary red or
+/// green, and signs the rollouts again (ADR 0469); needs no release key.
+fn rollout(ctx: &Ctx, args: &[&str]) -> Result<()> {
+    let dest = crate::catalog::ssh_destination();
+    let words: Vec<String> = args.iter().map(|word| crate::catalog::quote(word)).collect();
+    let script = format!(
+        "sudo -u dukovo-system /usr/local/lib/dukovo-system/system-rollout.sh {}",
+        words.join(" ")
+    );
+    // A terminal, for sudo to ask for the password.
+    process::run(ctx, Command::new("ssh").args(["-t", "--", &dest, &script]))
 }
 
 /// The production first root, which every repository deployed must start

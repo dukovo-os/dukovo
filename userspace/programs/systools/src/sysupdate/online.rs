@@ -31,6 +31,7 @@ use slots::version::Version;
 use system_release::firmware::{self, Set};
 use system_release::list::{Release, hex, sha256_file};
 use system_release::repo::target_path;
+use system_release::rollout::{self, Rollout, Withdrawal};
 use system_release::updates::{CHANNELS, Channel, channel_path};
 
 use super::stage::TRUSTED_ROOT;
@@ -84,6 +85,7 @@ pub fn clear_downloads() {
 struct SettingsFile {
     channel: Option<String>,
     server: Option<String>,
+    canary: Option<bool>,
 }
 
 /// Which channel this system follows, and from which server.
@@ -93,11 +95,14 @@ pub struct Settings {
     pub channel: String,
     /// The repository's address, ending in a slash.
     pub server: String,
+    /// Whether this machine is one of the project's canaries, which take
+    /// each release on its first day (ADR 0456).
+    pub canary: bool,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { channel: DEFAULT_CHANNEL.into(), server: SERVER.into() }
+        Settings { channel: DEFAULT_CHANNEL.into(), server: SERVER.into(), canary: false }
     }
 }
 
@@ -123,7 +128,7 @@ impl Settings {
             server.push('/');
         }
         tuf::Url::parse(&server).map_err(|err| format!("server = \"{server}\": {err}"))?;
-        Ok(Settings { channel, server })
+        Ok(Settings { channel, server, canary: file.canary.unwrap_or(false) })
     }
 
     /// This system's settings, or the defaults where there are none.
@@ -149,6 +154,9 @@ impl Settings {
         );
         if self.server != SERVER {
             text.push_str(&format!("server = \"{}\"\n", self.server));
+        }
+        if self.canary {
+            text.push_str("canary = true\n");
         }
         text
     }
@@ -267,6 +275,40 @@ impl Client {
         Ok(Some(release))
     }
 
+    /// Which waves of release `version` are open, or `None` if the
+    /// server signs no rollout for it, which opens it to every machine
+    /// (ADR 0469).
+    ///
+    /// # Errors
+    ///
+    /// If the rollout does not check, or is another release's.
+    pub fn rollout(&mut self, version: &str) -> Result<Option<Rollout>, Fail> {
+        let path = rollout::target_path(version);
+        let Some(bytes) = self.target(&path)? else { return Ok(None) };
+        let rollout: Rollout =
+            serde_json::from_slice(&bytes).map_err(|err| fail(format!("{path}: {err}")))?;
+        if rollout.release != version || rollout.wave > rollout::LAST {
+            return Err(fail(format!("{path} is not a rollout of Dukovo {version}")));
+        }
+        Ok(Some(rollout))
+    }
+
+    /// The withdrawal of release `version`, if the release keys signed
+    /// one (ADR 0469).
+    ///
+    /// # Errors
+    ///
+    /// If the withdrawal does not check, or is another release's.
+    pub fn withdrawal(&mut self, version: &str) -> Result<Option<Withdrawal>, Fail> {
+        let path = rollout::withdrawal_path(version);
+        let Some(bytes) = self.target(&path)? else { return Ok(None) };
+        let withdrawal = Withdrawal::parse(&bytes).map_err(fail)?;
+        if withdrawal.release != version {
+            return Err(fail(format!("{path} withdraws Dukovo {}", withdrawal.release)));
+        }
+        Ok(Some(withdrawal))
+    }
+
     /// The firmware set `version`, as signed, or `None` if the server
     /// does not offer it (ADR 0468).
     ///
@@ -311,6 +353,23 @@ pub enum Plan {
         /// The channel's release.
         offered: String,
     },
+    /// The channel's release `offered` is newer, and reaches this machine
+    /// in a wave not open yet (ADR 0469).
+    Waiting {
+        /// The channel's release.
+        offered: String,
+        /// The day after its release this machine's wave opens.
+        day: i64,
+        /// Why no further wave opens now, if one is held.
+        held: Option<String>,
+    },
+    /// The channel's release `offered` was withdrawn.
+    Withdrawn {
+        /// The release.
+        offered: String,
+        /// Why.
+        reason: String,
+    },
     /// An update: `release`, the channel's release `offered` or a bridge
     /// to it.
     Update {
@@ -340,6 +399,19 @@ pub fn plan(client: &mut Client, running: &str, version: Option<&str>) -> Result
     if version_of(&offered)? <= from {
         return Ok(Plan::Current { offered });
     }
+    if let Some(withdrawal) = client.withdrawal(&offered)? {
+        return Ok(Plan::Withdrawn { offered, reason: withdrawal.reason });
+    }
+    // The owner who names a version skips the waves: they asked for it.
+    if version.is_none()
+        && let Some(rollout) = client.rollout(&offered)?
+    {
+        let number = wave_number();
+        if !rollout::reaches(&rollout, number, client.settings.canary) {
+            let day = rollout::day_for(number);
+            return Ok(Plan::Waiting { offered, day, held: rollout.held });
+        }
+    }
     let server = client.settings.server.clone();
     let mut release = client
         .release(&offered)?
@@ -368,6 +440,42 @@ pub fn plan(client: &mut Client, running: &str, version: Option<&str>) -> Result
         release = next;
     }
     Err(fail(format!("Dukovo {offered} is more than {MOST_BRIDGES} bridges away")))
+}
+
+/// The lines that say the release `offered` reaches this machine in a
+/// wave not open yet, on `day` after its release, and why the waves are
+/// `held`, if they are.
+#[must_use]
+pub fn waiting(offered: &str, day: i64, held: Option<&str>) -> Vec<String> {
+    let mut lines =
+        vec![format!("it reaches machines in waves; this machine's opens on day {day}")];
+    lines.extend(held.map(|why| format!("the waves are held: {why}")));
+    lines.push(format!("`sysupdate stage --version {offered}` takes it now"));
+    lines
+}
+
+/// Where this machine keeps its wave number.
+pub const WAVE: &str = "/system/state/sysupdate/wave";
+
+/// This machine's number from 0 to 999, which places it in a wave (ADR
+/// 0456): drawn the first time it is needed, so that machines cloned from
+/// one image draw their own, and kept to itself.
+pub fn wave_number() -> u16 {
+    if let Some(number) = std::fs::read_to_string(WAVE)
+        .ok()
+        .and_then(|text| text.trim().parse::<u16>().ok())
+        .filter(|n| *n < 1000)
+    {
+        return number;
+    }
+    let mut bytes = [0u8; 2];
+    let drawn = std::fs::File::open("/dev/urandom").and_then(|mut f| f.read_exact(&mut bytes));
+    let number = if drawn.is_ok() { u16::from_le_bytes(bytes) % 1000 } else { 999 };
+    if let Some(dir) = Path::new(WAVE).parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let _ = std::fs::write(WAVE, format!("{number}\n"));
+    number
 }
 
 /// `text` as a version, to compare.

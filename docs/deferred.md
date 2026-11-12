@@ -133,7 +133,10 @@ machine with AMT, an AMD machine and a laptop; see
 | Rescue resetting the settings to their defaults (ADR 0460) | Putting back the settings from before the last update covers a bad update | A need |
 | `sysupdate verify` and a weekly check with the scrub (ADR 0451) | A stage reads every file it writes back against the signed list, and Btrfs checks every block it reads | 15d, with the unified updater |
 | Each slot's release list kept beside it, so that `sysupdate check` reads none of the slot's files (ADR 0466) | A check reads the running slot's files whose size matches a wanted one, as a stage does | A need |
-| Waves, the rollout role, canaries, pause and pull (ADR 0456) | Update delivery | 15c |
+| A machine unstaging a release it staged that is then withdrawn, and checking for a pause just before the restart into a staged update (ADRs 0456, 0469) | A withdrawn or held release is never staged; one staged before stays until the owner unstages it | 15d, with the unified updater |
+| The firmware sets and the catalog's bundles going through the waves (ADRs 0456, 0469) | Only system releases have rollouts; a firmware set is staged only when its owner asks | 15d, with the unified updater |
+| Canaries that report to the update server by themselves (ADR 0456) | The maintainer marks a canary red or green with `ob release rollout canary` | The canary machines, before 1.0.0-alpha.1 |
+| `system-release pull` signing with the hardware keys (ADRs 0457, 0469) | It signs with the release keys' files, as `add` and `channel` do | The key ceremony |
 | The installer installing the install stick's firmware set, and update files carrying one (ADR 0468) | A machine takes the firmware package by staging a set from the update server or a repository folder after it is installed | 15d, with the unified updater |
 | Firmware that drivers load for their cards, in firmware sets, with a per-device check that the driver loaded it (ADR 0468) | Sets hold CPU microcode only; no driver Dukovo has loads firmware yet | A port: the first driver that needs firmware (Wi-Fi, Phase 17) |
 | AMD CPU microcode in firmware sets (ADRs 0014, 0468) | The kernel's loader is Intel's; AMD's patches have their own format and loader | A need |
