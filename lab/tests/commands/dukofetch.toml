@@ -1,0 +1,28 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "dukofetch shows the system, kernel, shell, CPU, memory and addresses, as text and as JSON, and refuses an option it does not know"
+time = "2m"
+
+[[step]]
+run = "dukofetch"
+expect = ["lab@", "OS: Dukovo Server ", "Kernel: Radix ", "Shell: Nukesh ", "CPU: ", "Memory: ", " GiB", "Address: "]
+[[step]]
+run = "dukofetch --json"
+expect = [
+    "\"user\": \"lab\"",
+    "\"os\": {\"name\": \"Dukovo Server\"",
+    "\"kernel\": {\"name\": \"Radix\"",
+    "\"shell\": {\"name\": \"Nukesh\"",
+    "\"path\": \"/system/commands/nukesh\"",
+    "\"memory\": {\"used\": ",
+    "\"addresses\": [{\"interface\": ",
+]
+[[step]]
+run = "dukofetch --bogus"
+exit = 1
+expect = "dukofetch: unrecognized option '--bogus'"
+# uname tells the same system.
+[[step]]
+run = "uname -a"
+expect = ["Dukovo", "Radix", "x86_64"]

@@ -1,0 +1,38 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "An administrator sets the clock with timedatectl set-time, which the kernel log notes, the real-time clock follows and timedatectl shows; a time before 1980 and one that is not a time are refused; an ordinary account cannot set it"
+time = "3m"
+
+[[step]]
+run = "timedatectl set-time '2026-11-12 12:00:00'"
+exit = 1
+expect = "setting the clock: Operation not permitted"
+# timed would put the clock right again: it stops for the test.
+[[step]]
+run = "sh -c 'service timed stop && timedatectl set-time \"2031-06-15 08:30:00\" && date -u \"+%Y-%m-%d %H:%M\" && timedatectl'"
+root = true
+expect = ["2031-06-15 08:3", "Universal time: Sun 2031-06-15 08:3", "RTC time: Sun 2031-06-15 08:3"]
+[[step]]
+run = "sh -c 'dmesg | grep \"Time: timedatectl set the clock to 2031-06-15 08:30:00 UTC\"'"
+root = true
+expect = "and the real-time clock"
+[[step]]
+run = "timedatectl set-time 1970-01-01"
+root = true
+exit = 1
+expect = "the clock takes no time before 1980 or from 2500: '1970-01-01'"
+[[step]]
+run = "timedatectl set-time garbage"
+root = true
+exit = 1
+expect = "'garbage' is not a time"
+# The clock back to the lab PC's, which the step gives as it runs, and
+# timed back on.
+[[step]]
+host = "sh {here}/clock-back.sh {machine} {machine-port:22}"
+input = "{password}\n"
+expect = "set the machine's clock to the lab PC's"
+[[step]]
+run = "service timed start"
+root = true

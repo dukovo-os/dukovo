@@ -1,0 +1,52 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "ssh forwards ports through Dukovo's sshd as the person: -L from the client to a server here, with and without a bind address, -D as a SOCKS proxy, -W to a server, and -R from a port here back to the client, listening on the loopback alone; a port below 1024 is refused to anyone but root, and sshd logs why (ADR 0349)"
+time = "4m"
+
+[[step]]
+run = "sh -c 'rm -f ~/.ssh/lab-forward ~/.ssh/lab-forward.pub && ssh-keygen -t ed25519 -N \"\" -C lab-forward -f ~/.ssh/lab-forward -q && cat ~/.ssh/lab-forward.pub >> ~/.ssh/authorized_keys && cat > ~/.ssh/lab-forward.conf && echo ready'"
+input = """Host loop
+  HostName 127.0.0.1
+  User lab
+  IdentityFile ~/.ssh/lab-forward
+  StrictHostKeyChecking no
+  UserKnownHostsFile /dev/null
+  BatchMode yes
+  LogLevel ERROR
+  ExitOnForwardFailure yes
+"""
+expect = "ready"
+# -L with no bind address listens on 127.0.0.1 and ::1.
+[[step]]
+run = '''sh -c '(echo served-to-L | nc -l 127.0.0.1 47101 > /dev/null 2>&1 &); ssh -F ~/.ssh/lab-forward.conf -N -L 47102:127.0.0.1:47101 loop < /dev/null > /dev/null 2>&1 & F=$!; sleep 4; nc -w 5 127.0.0.1 47102 < /dev/null; kill $F' '''
+expect = "served-to-L"
+[[step]]
+run = '''sh -c '(echo served-to-L6 | nc -l 127.0.0.1 47103 > /dev/null 2>&1 &); ssh -F ~/.ssh/lab-forward.conf -N -L 47104:127.0.0.1:47103 loop < /dev/null > /dev/null 2>&1 & F=$!; sleep 4; nc -w 5 ::1 47104 < /dev/null; kill $F' '''
+expect = "served-to-L6"
+[[step]]
+run = '''sh -c '(echo served-to-bound | nc -l 127.0.0.1 47105 > /dev/null 2>&1 &); ssh -F ~/.ssh/lab-forward.conf -N -L 127.0.0.1:47106:127.0.0.1:47105 loop < /dev/null > /dev/null 2>&1 & F=$!; sleep 4; nc -w 5 127.0.0.1 47106 < /dev/null; kill $F' '''
+expect = "served-to-bound"
+# -D: a SOCKS proxy that curl goes through.
+[[step]]
+run = '''sh -c '(echo served-through-socks | nc -l 127.0.0.1 47108 > /dev/null 2>&1 &); ssh -F ~/.ssh/lab-forward.conf -N -D 47107 loop < /dev/null > /dev/null 2>&1 & F=$!; sleep 4; curl -s --max-time 10 --socks5 127.0.0.1:47107 telnet://127.0.0.1:47108 < /dev/null; kill $F' '''
+expect = "served-through-socks"
+# -W: the client's input and output are the connection.
+[[step]]
+run = '''sh -c '(echo served-to-W | nc -l 127.0.0.1 47109 > /dev/null 2>&1 &); sleep 1; timeout 20 ssh -F ~/.ssh/lab-forward.conf -W 127.0.0.1:47109 loop < /dev/null' '''
+expect = "served-to-W"
+# -R: a port here, on the loopback alone, back to the client's server.
+[[step]]
+run = '''sh -c '(echo served-to-R | nc -l 127.0.0.1 47111 > /dev/null 2>&1 &); ssh -F ~/.ssh/lab-forward.conf -N -R 47112:127.0.0.1:47111 loop < /dev/null > /dev/null 2>&1 & F=$!; sleep 4; ss -ltn | grep 47112; nc -w 5 127.0.0.1 47112 < /dev/null; kill $F' '''
+expect = ["127.0.0.1:47112", "[::1]:47112", "served-to-R"]
+expect_not = "0.0.0.0:47112"
+[[step]]
+run = "sh -c 'timeout 20 ssh -F ~/.ssh/lab-forward.conf -N -R 80:127.0.0.1:22 loop < /dev/null; echo status=$?'"
+expect = ["remote port forwarding failed for listen port 80", "status=255"]
+[[step]]
+run = "sh -c 'log -s sshd | grep \"refused to forward port 80 for lab\" | tail -1'"
+root = true
+expect = "the ports below 1024 are root's"
+[[step]]
+run = "sh -c 'sed -i /lab-forward/d ~/.ssh/authorized_keys; rm -f ~/.ssh/lab-forward ~/.ssh/lab-forward.pub ~/.ssh/lab-forward.conf; echo cleaned'"
+expect = "cleaned"

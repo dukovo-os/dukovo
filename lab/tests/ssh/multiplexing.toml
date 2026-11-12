@@ -1,0 +1,32 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "One SSH connection carries session after session, as a ControlMaster runs them for Ansible and others, and four sessions at once, with none refused (ADR 0347)"
+time = "4m"
+
+[[step]]
+run = "sh -c 'rm -f ~/.ssh/lab-mux ~/.ssh/lab-mux.pub ~/.ssh/lab-mux.sock && ssh-keygen -t ed25519 -N \"\" -C lab-mux -f ~/.ssh/lab-mux -q && cat ~/.ssh/lab-mux.pub >> ~/.ssh/authorized_keys && cat > ~/.ssh/lab-mux.conf && echo ready'"
+input = """Host loop
+  HostName 127.0.0.1
+  User lab
+  IdentityFile ~/.ssh/lab-mux
+  StrictHostKeyChecking no
+  UserKnownHostsFile /dev/null
+  BatchMode yes
+  LogLevel ERROR
+  ControlPath ~/.ssh/lab-mux.sock
+"""
+expect = "ready"
+# A master in the background, then ten sessions one after another.
+[[step]]
+run = '''sh -c 'ssh -F ~/.ssh/lab-mux.conf -M -N loop < /dev/null > /dev/null 2>&1 & sleep 4; ssh -F ~/.ssh/lab-mux.conf -O check loop; for i in 1 2 3 4 5 6 7 8 9 10; do ssh -F ~/.ssh/lab-mux.conf loop echo session-$i; done' '''
+expect = ["Master running", "session-1\n", "session-5\n", "session-10\n"]
+expect_not = "refused"
+# Four at once over it.
+[[step]]
+run = '''sh -c 'P=""; for i in 1 2 3 4; do (ssh -F ~/.ssh/lab-mux.conf loop "sleep 3; echo together-$i") & P="$P $!"; done; wait $P' '''
+expect = ["together-1", "together-2", "together-3", "together-4"]
+expect_not = "refused"
+[[step]]
+run = "sh -c 'ssh -F ~/.ssh/lab-mux.conf -O exit loop; sed -i /lab-mux/d ~/.ssh/authorized_keys; rm -f ~/.ssh/lab-mux ~/.ssh/lab-mux.pub ~/.ssh/lab-mux.conf; echo cleaned'"
+expect = ["Exit request sent", "cleaned"]

@@ -1,0 +1,16 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "lsof lists what a process holds: its folder, pipes and the files it opened, with --files only those; a name nothing runs under finds nothing and fails"
+time = "2m"
+
+[[step]]
+run = "sh -c 'lsof -p $$'"
+expect = ["COMMAND PID USER", " cwd ", "/users/lab", " 0r ", "FIFO", " 1w "]
+[[step]]
+run = "sh -c 'exec 3< /system/commands/ls; lsof --files -p $$'"
+expect = [" 3r ", "REG"]
+expect_not = ["NETWORK", "THRD"]
+[[step]]
+run = "lsof -c lab-no-such-name"
+exit = 1

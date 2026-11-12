@@ -1,0 +1,21 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "The lab PC's OpenSSH signs in with Ed25519, ECDSA P-256 and P-384 keys; P-521 and RSA keys are refused, and sshd logs that it does not take them (ADR 0347)"
+time = "3m"
+host_needs = ["ssh-keygen"]
+
+[[step]]
+host = "sh {here}/key-types.sh {machine} {machine-port:22}"
+expect = [
+    "ed25519: signed in",
+    "ecdsa-256: signed in",
+    "ecdsa-384: signed in",
+    "ecdsa-521: refused",
+    "rsa-3072: refused",
+    "keys taken back",
+]
+[[step]]
+run = "sh -c 'log -s sshd | grep \"keys are not taken\" | tail -4'"
+root = true
+expect = ["ecdsa-sha2-nistp521 keys are not taken", "rsa-sha2-"]

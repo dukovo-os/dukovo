@@ -2,11 +2,17 @@
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 
 about = "A start cut short before the health check saw it through makes GRUB show its menu at the next start, then start Dukovo by itself; GRUB writes the slot state on the machine's own EFI system partition (ADR 0452)"
-time = "8m"
+time = "10m"
 fresh = true
 
-# A start of its own, whose first line comes long before the health
-# check sees it through: that waits until every essential service runs.
+# A health check of 60 seconds, so that the start is seen through a
+# minute after its services run: on a fast machine they run within a
+# second of Spark's first line, and the cord comes out later than that.
+[[step]]
+run = '''printf '[[check]]\nname = "wait"\ncommand = ["sleep", "60"]\nrequired = true\ntimeout = 120\n' > /users/lab/health.toml'''
+[[step]]
+run = "cp /users/lab/health.toml /system/settings/sysupdate/health.toml"
+root = true
 [[step]]
 power = "reset"
 [[step]]
@@ -25,7 +31,7 @@ serial = "is seen through"
 [[step]]
 wait = "ready"
 [[step]]
-run = "sysupdate status"
+run = "sh -c 'rm /system/settings/sysupdate/health.toml /users/lab/health.toml && sysupdate status'"
 root = true
 expect = "Next start: slot A"
 expect_not = "Not seen through"

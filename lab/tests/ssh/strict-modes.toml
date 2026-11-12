@@ -1,0 +1,47 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "A key signs in only from an authorized_keys file and folders that others cannot change, as OpenSSH's StrictModes has it, and sshd logs why it refused; a line with options is passed over, not taken as a plain key (ADR 0347)"
+time = "3m"
+
+[[step]]
+run = "sh -c 'rm -f ~/.ssh/lab-strict ~/.ssh/lab-strict.pub && ssh-keygen -t ed25519 -N \"\" -C lab-strict -f ~/.ssh/lab-strict -q && cat ~/.ssh/lab-strict.pub >> ~/.ssh/authorized_keys && cat > ~/.ssh/lab-strict.conf && echo ready'"
+input = """Host loop
+  HostName 127.0.0.1
+  User lab
+  IdentityFile ~/.ssh/lab-strict
+  IdentitiesOnly yes
+  StrictHostKeyChecking no
+  UserKnownHostsFile /dev/null
+  BatchMode yes
+  LogLevel ERROR
+"""
+expect = "ready"
+# Each change is put back in the same step: the lab signs in with a key
+# of the same file.
+[[step]]
+run = "sh -c 'chmod g+w ~/.ssh/authorized_keys; ssh -F ~/.ssh/lab-strict.conf loop echo let-in; echo status=$?; chmod g-w ~/.ssh/authorized_keys'"
+expect = ["Permission denied", "status=255"]
+expect_not = "let-in"
+[[step]]
+run = "sh -c 'chmod 770 ~/.ssh; ssh -F ~/.ssh/lab-strict.conf loop echo let-in; echo status=$?; chmod 700 ~/.ssh'"
+expect = ["Permission denied", "status=255"]
+expect_not = "let-in"
+[[step]]
+run = "sh -c 'ssh -F ~/.ssh/lab-strict.conf loop echo let-in-again'"
+expect = "let-in-again"
+[[step]]
+run = "sh -c 'log -s sshd | grep \"may be changed by others\" | tail -2'"
+root = true
+expect = ["authorized_keys may be changed by others (mode 620)", "may be changed by others (mode 770)"]
+# A line with options: its key does not sign in.
+[[step]]
+run = "sh -c 'sed -i \"/lab-strict/s/^/from=\\\"10.0.0.1\\\" /\" ~/.ssh/authorized_keys && grep -c \"^from=\" ~/.ssh/authorized_keys && ssh -F ~/.ssh/lab-strict.conf loop echo let-in; echo status=$?'"
+expect = ["Permission denied", "status=255"]
+expect_not = "let-in"
+# authd says why on the console (its errors do not reach log(1) yet).
+[[step]]
+serial = "has options, which authd does not carry out yet: its key does not sign in"
+[[step]]
+run = "sh -c 'sed -i /lab-strict/d ~/.ssh/authorized_keys; rm -f ~/.ssh/lab-strict ~/.ssh/lab-strict.pub ~/.ssh/lab-strict.conf; echo cleaned'"
+expect = "cleaned"

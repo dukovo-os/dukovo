@@ -1,0 +1,30 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "sshd signs in ten connections from one address at once, as many as sshd(8) lets one address sign in together, and twenty more one after another, each running its command (ADR 0347)"
+time = "5m"
+
+[[step]]
+run = "sh -c 'rm -f ~/.ssh/lab-many ~/.ssh/lab-many.pub && ssh-keygen -t ed25519 -N \"\" -C lab-many -f ~/.ssh/lab-many -q && cat ~/.ssh/lab-many.pub >> ~/.ssh/authorized_keys && cat > ~/.ssh/lab-many.conf && echo ready'"
+input = """Host loop
+  HostName 127.0.0.1
+  User lab
+  IdentityFile ~/.ssh/lab-many
+  StrictHostKeyChecking no
+  UserKnownHostsFile /dev/null
+  BatchMode yes
+  LogLevel ERROR
+  ConnectTimeout 60
+"""
+expect = "ready"
+[[step]]
+run = '''sh -c 'rm -rf ~/lab-many && mkdir ~/lab-many && P=""; for i in 1 2 3 4 5 6 7 8 9 10; do (ssh -F ~/.ssh/lab-many.conf loop "echo at-once-$i" > ~/lab-many/$i 2>&1; echo "status $?" >> ~/lab-many/$i) & P="$P $!"; done; wait $P; cat ~/lab-many/* | sort | uniq -c' '''
+expect = ["10 status 0", "1 at-once-10\n"]
+expect_not = ["status 255", "refused", "closed"]
+[[step]]
+run = '''sh -c 'rm -rf ~/lab-many && mkdir ~/lab-many && for i in $(seq 1 20); do ssh -F ~/.ssh/lab-many.conf loop "echo after-$i" >> ~/lab-many/all 2>&1; echo "status $?" >> ~/lab-many/all; done; sort ~/lab-many/all | uniq -c' '''
+expect = ["20 status 0", "1 after-20\n"]
+expect_not = "status 255"
+[[step]]
+run = "sh -c 'rm -rf ~/lab-many; sed -i /lab-many/d ~/.ssh/authorized_keys; rm -f ~/.ssh/lab-many ~/.ssh/lab-many.pub ~/.ssh/lab-many.conf; echo cleaned'"
+expect = "cleaned"

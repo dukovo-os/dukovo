@@ -1,0 +1,52 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "An SSH session runs as its person, in their home with their shell and groups: a command's output and errors come back apart with its exit status, a signal that ends it ends the client with 255, standard input reaches it, SSH_CLIENT and SSH_CONNECTION say where the client is, and the client's LANG and LC_* come through while other variables it sends are refused (ADR 0347)"
+time = "3m"
+
+# A key and a client setting of the test's own, for SSH to this machine.
+[[step]]
+run = "sh -c 'rm -f ~/.ssh/lab-sessions ~/.ssh/lab-sessions.pub && ssh-keygen -t ed25519 -N \"\" -C lab-sessions -f ~/.ssh/lab-sessions -q && cat ~/.ssh/lab-sessions.pub >> ~/.ssh/authorized_keys && cat > ~/.ssh/lab-sessions.conf && echo ready'"
+input = """Host loop
+  HostName 127.0.0.1
+  User lab
+  IdentityFile ~/.ssh/lab-sessions
+  StrictHostKeyChecking no
+  UserKnownHostsFile /dev/null
+  BatchMode yes
+  LogLevel ERROR
+"""
+expect = "ready"
+# Output and errors apart, and the exit status.
+[[step]]
+run = "sh -c 'ssh -F ~/.ssh/lab-sessions.conf loop \"echo to-out; echo to-err >&2; exit 42\" 2> ~/lab-sessions.err; echo \"status $? errors $(cat ~/lab-sessions.err)\"; rm ~/lab-sessions.err'"
+expect = ["to-out", "status 42 errors to-err"]
+# A command a signal ends.
+[[step]]
+run = "sh -c 'ssh -F ~/.ssh/lab-sessions.conf loop \"kill -TERM \\$\\$\"; echo \"status $?\"'"
+expect = "status 255"
+# Standard input reaches the command, and its end ends it.
+[[step]]
+run = "sh -c 'printf \"line one\\nline two\\n\" | ssh -F ~/.ssh/lab-sessions.conf loop \"wc -l; echo stdin-ended\"'"
+expect = ["2", "stdin-ended"]
+# The person, their home, shell and groups, and where the client is.
+[[step]]
+run = "sh -c 'ssh -F ~/.ssh/lab-sessions.conf loop \"id; pwd; echo shell=\\$SHELL; env\"'"
+expect = [
+    "uid=1000(lab)",
+    "(admins)",
+    "/users/lab",
+    "shell=/system/commands/nukesh",
+    "SSH_CLIENT=127.0.0.1 ",
+    "SSH_CONNECTION=127.0.0.1 ",
+    " 127.0.0.1 22",
+]
+expect_not = ["SSH_TTY=", "TERM="]
+# The client's language settings come through; anything else is refused.
+[[step]]
+run = "sh -c 'LANG=de_DE.UTF-8 LC_TIME=C LAB_OTHER=sent ssh -F ~/.ssh/lab-sessions.conf -o SendEnv=LANG -o SendEnv=LC_TIME -o SendEnv=LAB_OTHER loop \"echo lang=\\$LANG lc_time=\\$LC_TIME other=\\$LAB_OTHER.\"'"
+expect = "lang=de_DE.UTF-8 lc_time=C other=."
+[[step]]
+run = "sh -c 'sed -i /lab-sessions/d ~/.ssh/authorized_keys; rm -f ~/.ssh/lab-sessions ~/.ssh/lab-sessions.pub ~/.ssh/lab-sessions.conf; grep -c lab-sessions ~/.ssh/authorized_keys'"
+exit = 1
+expect = "0"

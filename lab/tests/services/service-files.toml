@@ -1,0 +1,45 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "service check finds every service file of the system's well formed; service new writes a file to start from that passes the check and is not written over; a file with a mistake fails the check and names its line"
+time = "3m"
+
+[[step]]
+run = "service check"
+expect = [
+    "/system/settings/spark/services/sshd.toml: ok",
+    "/system/settings/spark/services/timed.toml: ok",
+    "/system/settings/spark/services/authd.toml: ok",
+]
+expect_not = ["error", "line "]
+[[step]]
+run = "sh -c 'rm -f /system/settings/spark/services/labtest.toml; service new labtest'"
+root = true
+expect = "wrote /system/settings/spark/services/labtest.toml: edit it with `service edit labtest`, then start it with `service labtest start`"
+[[step]]
+run = "cat /system/settings/spark/services/labtest.toml"
+expect = [
+    "service_version = 1",
+    "program = \"/system/commands/true\"",
+    "enabled = false",
+    "restart = \"on-failure\"",
+    "[limits]",
+    "[permissions]",
+    "network.outbound = false",
+    "[backup]",
+]
+[[step]]
+run = "service check labtest"
+expect = "/system/settings/spark/services/labtest.toml: ok"
+# A second new leaves the file as it is.
+[[step]]
+run = "service new labtest"
+root = true
+exit = 1
+expect = "/system/settings/spark/services/labtest.toml is there already; edit it with `service edit labtest`"
+[[step]]
+run = "rm /system/settings/spark/services/labtest.toml"
+root = true
+[[step]]
+run = "sh -c 'printf \"[service\\nx=\" > ~/lab-bad-service.toml; service check ~/lab-bad-service.toml; echo status=$?; rm ~/lab-bad-service.toml'"
+expect = ["/users/lab/lab-bad-service.toml: line 1: unclosed table, expected `]`", "status=1"]

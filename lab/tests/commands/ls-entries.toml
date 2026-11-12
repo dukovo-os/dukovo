@@ -1,0 +1,45 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "ls shows hidden entries with -a and -A, a folder itself with -d, folders inside folders with -R, and follows a link with -L; a name that is not there is said, the rest still listed, and ls fails with 2, as it does for an option it does not know"
+time = "2m"
+
+[[step]]
+run = "sh -c 'rm -rf /tmp/lab-ls-ent && mkdir -p /tmp/lab-ls-ent/sub/deeper && cd /tmp/lab-ls-ent && touch .hidden shown sub/inner sub/deeper/deepest && mkdir real && ln -s real link && echo made'"
+expect = "made"
+[[step]]
+run = "ls /tmp/lab-ls-ent"
+expect = "link\nreal\nshown\nsub"
+expect_not = ".hidden"
+[[step]]
+run = "ls -a /tmp/lab-ls-ent"
+expect = ".\n..\n.hidden\nlink"
+[[step]]
+run = "ls -A /tmp/lab-ls-ent"
+expect = ".hidden\nlink"
+expect_not = "..\n"
+[[step]]
+run = "ls -d /tmp/lab-ls-ent/sub"
+expect = "/tmp/lab-ls-ent/sub"
+expect_not = "inner"
+[[step]]
+run = "ls -R /tmp/lab-ls-ent/sub"
+expect = ["/tmp/lab-ls-ent/sub:\ndeeper\ninner", "/tmp/lab-ls-ent/sub/deeper:\ndeepest"]
+[[step]]
+run = "ls -l /tmp/lab-ls-ent/link"
+expect = "link -> real"
+[[step]]
+run = "ls -ldL /tmp/lab-ls-ent/link"
+expect = "drwx"
+expect_not = "->"
+# A missing name among good ones.
+[[step]]
+run = "ls /tmp/lab-ls-ent/shown /tmp/lab-ls-ent/missing"
+exit = 2
+expect = ["ls: cannot access '/tmp/lab-ls-ent/missing': No such file or directory", "/tmp/lab-ls-ent/shown"]
+[[step]]
+run = "ls --no-such-option"
+exit = 2
+expect = "unexpected argument '--no-such-option'"
+[[step]]
+run = "rm -r /tmp/lab-ls-ent"

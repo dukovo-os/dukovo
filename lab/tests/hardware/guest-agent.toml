@@ -1,23 +1,39 @@
 # SPDX-FileCopyrightText: 2026 The Dukovo contributors
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 
-about = "The QEMU guest agent answers the host on its virtio port: Proxmox's summary shows the machine's addresses, and its Shutdown button powers the machine off cleanly (ADR 0329). Needs a virtual machine with QEMU's guest agent channel (Proxmox's QEMU Guest Agent option, or virt-manager's channel); the last check is made at the host"
-time = "3m"
+about = "The QEMU guest agent answers the host on its virtio port, as Proxmox's summary and Shutdown button use it: it syncs, says what it is and the commands it takes, gives the machine's name, its clock and its network cards with their addresses, refuses a command it does not have, and powers the machine off cleanly when the host asks (ADR 0329). Needs a virtual machine with QEMU's guest agent channel (Proxmox's QEMU Guest Agent option, or virt-manager's channel)"
+time = "4m"
+hardware = ["guest-agent"]
+host_needs = ["python3"]
 
-# Machines with a virtio console alone, the PCI function the guest agent
-# channel is a port of (legacy 1003 or modern 1043).
-[[step]]
-run = "sh -c 'lspci -n -d 1af4:1003; lspci -n -d 1af4:1043'"
-expect = "1af4:10"
-or_skip = "needs a virtual machine with QEMU's guest agent channel"
 [[step]]
 run = "service guest-agent status"
+root = true
 expect = ["guest-agent - QEMU guest agent", "Active: active (running)"]
 [[step]]
 run = "log -s guest-agent"
 root = true
 expect = "guest-agent: answering the host on /devices/virtio-ports/org.qemu.guest_agent.0"
-# The address the host's summary should show, to compare by eye.
+# The host's side, as Proxmox asks: each answer as the agent sent it.
 [[step]]
-run = "ip -br address"
-expect = "net0"
+host = "python3 {here}/qga.py {guest-agent} guest-ping guest-info guest-get-osinfo guest-get-host-name guest-get-time guest-network-get-interfaces guest-no-such-command"
+expect = [
+    "synced with the agent",
+    "guest-ping: {\"return\":{}}",
+    "\"name\":\"guest-network-get-interfaces\"",
+    "\"name\":\"guest-shutdown\"",
+    "\"id\":\"dukovo\"",
+    "\"kernel-release\":",
+    "\"host-name\":",
+    "the agent's clock is within 5 s of the lab PC's",
+    "\"name\":\"net0\"",
+    "\"ip-address\":",
+    "\"name\":\"lo\"",
+    "guest-no-such-command: {\"error\":{\"class\":\"CommandNotFound\"",
+]
+# Proxmox's Shutdown button: the agent shuts the machine down in order.
+[[step]]
+host = "python3 {here}/qga.py {guest-agent} guest-shutdown"
+expect = "guest-shutdown: sent"
+[[step]]
+wait = "off"

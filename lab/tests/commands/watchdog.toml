@@ -1,0 +1,13 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "watchdog names the machine's watchdog timer, says Spark keeps it from firing, and gives its timeout and the range it takes, and whether the last boot ended with it"
+time = "2m"
+
+[[step]]
+run = "watchdog"
+expect = ["Device:", "State:     running, petted by Spark", "Timeout:   60 seconds", "Timeouts:", "Last boot:"]
+[[step]]
+run = "watchdog extra"
+exit = 1
+expect = "watchdog: unexpected argument 'extra'"

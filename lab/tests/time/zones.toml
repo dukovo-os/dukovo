@@ -1,0 +1,33 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "An administrator sets the time zone with timedatectl, which date and timedatectl then show; a zone that does not exist is refused; TZ gives one command a zone, by name or as a POSIX rule; an ordinary account cannot set the zone"
+time = "3m"
+
+[[step]]
+run = "timedatectl set-timezone Europe/Berlin"
+exit = 1
+expect = "/system/settings/localtime: Permission denied"
+[[step]]
+run = "sh -c 'timedatectl set-timezone Europe/Berlin && readlink /system/settings/localtime && timedatectl'"
+root = true
+expect = ["/system/resources/zoneinfo/Europe/Berlin", "Time zone: Europe/Berlin (CE"]
+# Berlin is one or two hours ahead of UTC, by the season.
+[[step]]
+run = "date +%Z%z"
+expect = "CE"
+[[step]]
+run = "sh -c 'date +%z | grep -E \"^\\+0(1|2)00$\" && echo ahead'"
+expect = "ahead"
+[[step]]
+run = "timedatectl set-timezone Mars/Olympus"
+root = true
+exit = 1
+expect = "no time zone 'Mars/Olympus': timedatectl list-timezones lists them"
+[[step]]
+run = "sh -c 'timedatectl set-timezone UTC && readlink /system/settings/localtime && date +%Z'"
+root = true
+expect = ["/system/resources/zoneinfo/UTC", "UTC"]
+[[step]]
+run = "sh -c 'TZ=Asia/Tokyo date +\"%Z %z\"; TZ=America/Denver date +%Z; TZ=CET-1CEST,M3.5.0,M10.5.0/3 date +%Z'"
+expect = ["JST +0900", "M", "CE"]

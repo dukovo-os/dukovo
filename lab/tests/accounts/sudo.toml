@@ -1,0 +1,42 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "sudo runs a command as root through elevate for an administrator who types the password, says what it does not do, and forgets the password with -k"
+time = "3m"
+
+# Without a password, -n says so instead of asking.
+[[step]]
+run = "sudo -n true"
+exit = 1
+expect = "a password is needed, and -n says not to ask for one"
+# A wrong password is refused and asked for again; with nothing more
+# typed, nothing runs.
+[[step]]
+run = "sudo -S true"
+input = "not-the-password\n"
+exit = 1
+expect = ["Sorry, try again.", "no password was typed"]
+# The right one, read from standard input with a prompt of the caller's.
+[[step]]
+run = "sudo -S -p 'lab-prompt:' id"
+input = "{password}\n"
+expect = ["lab-prompt:", "uid=0(root) gid=0(root)"]
+[[step]]
+run = "sudo -V"
+expect = "sudo (Dukovo)"
+[[step]]
+run = "sudo -l"
+expect = "User lab may run any command as an administrator with elevate"
+# What elevate does not do is refused, with the reason.
+[[step]]
+run = "sudo -E true"
+exit = 1
+expect = "an elevated command keeps none of your environment"
+[[step]]
+run = "sudo -u nobody true"
+exit = 1
+expect = "elevate runs commands only as an administrator, root, not as nobody"
+# -k forgets the password: -n then asks again.
+[[step]]
+run = "sh -c 'sudo -k; echo forgot=$?; sudo -n true; echo asked=$?'"
+expect = ["forgot=0", "a password is needed", "asked=1"]
