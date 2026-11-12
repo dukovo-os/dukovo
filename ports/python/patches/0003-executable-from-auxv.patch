@@ -1,0 +1,76 @@
+SPDX-FileCopyrightText: 2001-present Python Software Foundation
+SPDX-FileCopyrightText: 2026 The Dukovo contributors
+SPDX-License-Identifier: Python-2.0
+
+The interpreter's path from the auxiliary vector
+
+Python finds its library from where its program is. A command of a
+Dukovo bundle is run by the program's path in the bundle's folder, which
+may be in /applications or in a person's own applications folder, with
+only the command's name as argv[0], so a search of PATH finds the link
+bundled(8) made, which does not lead there. The kernel gives the path a
+program was run as in the auxiliary vector (AT_EXECFN), as Linux does:
+this takes it as the real executable when it is absolute, as macOS's
+_NSGetExecutablePath is taken. For a script whose #! line names Python,
+AT_EXECFN is the script's path, as on Linux, so a file that starts with
+"#!" is not taken: argv[0], the interpreter's path from the #! line,
+is, as on Linux.
+
+diff --git a/Modules/getpath.c b/Modules/getpath.c
+--- a/Modules/getpath.c
++++ b/Modules/getpath.c
+@@ -20,6 +20,12 @@
+ #  include <mach-o/dyld.h>
+ #endif
+ 
++#ifdef __radix__
++#  include <fcntl.h>              // open()
++#  include <sys/auxv.h>           // getauxval()
++#  include <unistd.h>             // read(), close()
++#endif
++
+ #ifdef HAVE_DLFCN_H
+ #  include <dlfcn.h>
+ #endif
+@@ -775,6 +781,23 @@
+ #endif
+ 
+ 
++#ifdef __radix__
++/* Whether the file at path starts with "#!", or cannot be read to tell */
++static int
++radix_is_script(const char *path)
++{
++    char head[2];
++    int fd = open(path, O_RDONLY | O_CLOEXEC);
++    if (fd < 0) {
++        return 1;
++    }
++    ssize_t n = read(fd, head, sizeof(head));
++    close(fd);
++    return n != (ssize_t)sizeof(head) || (head[0] == '#' && head[1] == '!');
++}
++#endif
++
++
+ /* Add the current executable's path to the dict */
+ static int
+ progname_to_dict(PyObject *dict, const char *key)
+@@ -803,6 +826,17 @@
+         PyMem_RawFree(path);
+         break;
+     }
++#elif defined(__radix__)
++    // The path the program was run as, which the kernel gives in the
++    // auxiliary vector: a command of a bundle is run by its path in the
++    // bundle's folder, with only its name as argv[0]. For a script whose
++    // #! line names Python, it is the script's path, as on Linux, and
++    // argv[0] is the interpreter's, which the search takes instead.
++    const char *path = (const char *)getauxval(AT_EXECFN);
++    // Only keep if the path is absolute and is the program's own
++    if (path && path[0] == SEP && !radix_is_script(path)) {
++        return decode_to_dict(dict, key, path);
++    }
+ #endif
+     return PyDict_SetItemString(dict, key, Py_None) == 0;
+ }

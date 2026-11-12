@@ -1,0 +1,23 @@
+SPDX-FileCopyrightText: 2001-present Python Software Foundation
+SPDX-FileCopyrightText: 2026 The Dukovo contributors
+SPDX-License-Identifier: Python-2.0
+
+strerror_r as the C library declares it
+
+mlibc, as glibc, declares the GNU strerror_r, which returns the message,
+when _GNU_SOURCE is defined, as CPython defines it, and the XSI one,
+which returns a number, otherwise. Radix's is the GNU one, as glibc's.
+
+diff --git a/Python/fileutils.c b/Python/fileutils.c
+index 324d672..c7cd187 100644
+--- a/Python/fileutils.c
++++ b/Python/fileutils.c
+@@ -3191,6 +3191,8 @@ _Py_strerror(int code)
+ #    define Py_STRERROR_R_GNU
+ #  elif defined(__ANDROID__) && defined(_GNU_SOURCE)
+ #    define Py_STRERROR_R_GNU
++#  elif defined(__radix__) && defined(_GNU_SOURCE)
++#    define Py_STRERROR_R_GNU
+ #  endif
+ #endif
+ 

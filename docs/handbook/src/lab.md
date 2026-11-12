@@ -249,9 +249,12 @@ lab` packs from the same tree, and names to the lab in
 (`lab/tests/services/copy-bundle.sh`), and the test installs it for
 everyone: `services/nginx` has nginx serve the lab PC over HTTP and
 HTTPS, and reload its settings while the lab PC keeps requests coming,
-and `services/valkey` has the lab PC store 40,000 keys in Valkey, with
-a client of its own in Python, and find them all after a restart.
-Without the bundles those tests are skipped too.
+`services/valkey` has the lab PC store 40,000 keys in Valkey, with
+a client of its own in Python, and find them all after a restart, and
+`services/python` runs CPython's whole test suite, leaving out only the
+tests `lab/tests/services/python-skips.txt` lists, each with the reason
+it fails on Dukovo, which `lab/tests/services/copy-file.sh` copies over
+too. Without the bundles those tests are skipped too.
 
 Removable media go in and out with steps of their own: `usb` plugs and
 pulls a USB stick, `card` puts a memory card in a card reader, `disc` a

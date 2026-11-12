@@ -1,0 +1,37 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# Python from the catalog runs CPython's whole test suite on real hardware
+# (ADR 0495): installed for everyone, its interpreter runs the suite with
+# a worker for each processor, leaving out only the tests that
+# python-skips.txt lists, each with the reason it fails on Dukovo. The
+# suite runs the program by its path, as a script or Ansible does, so no
+# question is asked; its network tests stay off, as on Python's own
+# buildbots without the network resource.
+about = "Python from the catalog passes CPython's test suite, but for the tests python-skips.txt lists with their reasons (ADR 0495)"
+time = "90m"
+host_needs = ["scp"]
+
+[[step]]
+host = "sh {here}/copy-bundle.sh org.python.python {machine} {machine-port:22}"
+expect = "copied: org.python.python"
+[[step]]
+host = "sh {here}/copy-file.sh {here}/python-skips.txt {machine} {machine-port:22}"
+expect = "copied: python-skips.txt"
+# From nothing: a run before may have left it installed.
+[[step]]
+run = "sh -c 'bundle remove --for-everyone --purge org.python.python > /dev/null 2>&1; bundle install --for-everyone --yes /users/lab/org.python.python.dkv | tail -1'"
+root = true
+expect = "installed org.python.python"
+[[step]]
+run = "/applications/org.python.python/bin/python3 -c 'import sys; print(sys.platform, sys.version_info[:2])'"
+expect = "radix (3, 15)"
+# The list without its comments, as --ignorefile reads every line as a
+# pattern.
+[[step]]
+run = '''sh -c 'grep -v -e "^#" -e "^$" /users/lab/python-skips.txt > /tmp/python-skips; cd /tmp && /applications/org.python.python/bin/python3 -m test -j0 --timeout 1200 --ignorefile /tmp/python-skips > /tmp/python-suite.log 2>&1; tail -n 1 /tmp/python-suite.log' '''
+expect = "Result: SUCCESS"
+[[step]]
+run = "bundle remove --for-everyone --purge org.python.python"
+root = true
+expect = "removed org.python.python"

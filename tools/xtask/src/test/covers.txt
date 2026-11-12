@@ -433,6 +433,10 @@ posix userspace/programs/systools/src/ss.rs userspace/programs/systools/src/subv
 posix userspace/programs/systools/src/swap.rs userspace/programs/systools/src/top.rs
 posix userspace/programs/systools/src/tree.rs userspace/programs/systools/src/watch.rs
 posix userspace/programs/systools/src/watchdog.rs userspace/programs/systools/src/xxd.rs
+python ports/bzip2/ ports/ncurses/ ports/openssl/ ports/python/ ports/xz/ ports/zlib/ ports/zstd/
+python tools/xtask/src/bundles.rs tools/xtask/src/licenses.rs tools/xtask/src/ports.rs
+python userspace/programs/dkv/ userspace/programs/manifest/
+python userspace/programs/systools/src/bundled.rs userspace/programs/systools/src/bundles/
 power-button kernel/lib/acpi/ kernel/lib/uacpi/ userspace/programs/systools/src/power.rs
 principals userspace/posix/names.h userspace/posix/principals.c
 quiet-boot kernel/lib/fbcon/ kernel/radix/src/console.rs kernel/radix/src/fs/keyboard.rs
