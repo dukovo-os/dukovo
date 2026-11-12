@@ -7,9 +7,12 @@
 //! the system runs (`stage`), and starts at the next restart, with three
 //! tries to prove itself to the health check (`health`, a service). One
 //! that does not falls back to the version before it, with its settings.
-//! `status` says which slot runs and what the other holds, `unstage`
-//! takes a staged update back, and `rollback` makes the previous version
-//! the one that starts. Which slot starts is the slot state on the EFI
+//! Updates come from the update server through the channel this system
+//! follows (`check`, `download`, `channel`, ADR 0466), or from a
+//! repository folder or an update file the owner names. `status` says
+//! which slot runs and what the other holds, `unstage` takes a staged
+//! update back, and `rollback` makes the previous version the one that
+//! starts. Which slot starts is the slot state on the EFI
 //! system partitions, which GRUB's menu reads and counts the tries in
 //! (`place`).
 //!
@@ -19,6 +22,7 @@
 //! are kept in `@snapshots/update/settings-failed`.
 
 mod health;
+pub(crate) mod online;
 pub(crate) mod place;
 pub(crate) mod stage;
 
@@ -31,13 +35,20 @@ use crate::util::{self, Fail, fail};
 
 /// sysupdate(8).
 pub fn main(args: &mut Args) -> Result<i32, Fail> {
-    let usage = || util::usage("say status, stage, unstage, rollback or health".into());
+    let usage = || {
+        util::usage(
+            "say status, check, download, stage, unstage, rollback, channel or health".into(),
+        )
+    };
     let Some(action) = args.subcommand() else { return Err(usage()) };
     let action = action.to_str().unwrap_or_default().to_string();
     let (mut version, mut stop, mut repo) = (None, None, None);
     while let Some(arg) = args.next()? {
         match arg {
-            Arg::Long(name) if name == "version" && action == "stage" => {
+            Arg::Long(name)
+                if name == "version"
+                    && matches!(action.as_str(), "stage" | "check" | "download") =>
+            {
                 version = Some(args.text()?);
             }
             // For the boot tests: stop where a power cut is to fall.
@@ -47,7 +58,9 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
                     other => return Err(util::usage(format!("no step called {other}"))),
                 };
             }
-            Arg::Operand(path) if action == "stage" && repo.is_none() => {
+            Arg::Operand(path)
+                if matches!(action.as_str(), "stage" | "channel") && repo.is_none() =>
+            {
                 repo = Some(PathBuf::from(path));
             }
             other => return Err(args.unknown(&other)),
@@ -56,11 +69,13 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
     match action.as_str() {
         "status" => status(),
         "stage" => {
-            let repo = repo.ok_or_else(|| util::usage("name the update's repository".into()))?;
             let root = place::root()?;
-            let asked = stage::Asked { repo: &repo, version: version.as_deref(), stop };
+            let asked = stage::Asked { repo: repo.as_deref(), version: version.as_deref(), stop };
             stage::stage(&root, &asked).map(|()| 0)
         }
+        "check" => check(version.as_deref(), false),
+        "download" => check(version.as_deref(), true),
+        "channel" => channel(repo.as_deref().and_then(|p| p.to_str())),
         "unstage" => unstage(),
         "rollback" => rollback(),
         "health" => health::run(),
@@ -138,6 +153,82 @@ fn status() -> Result<i32, Fail> {
         })
         .collect();
     println!("Slot state: on {}", partitions.join(", "));
+    Ok(0)
+}
+
+/// `sysupdate check` and `download`: what the update server offers this
+/// system, and how much of it this system lacks; `download` then fetches
+/// that, for the next `sysupdate stage`.
+fn check(version: Option<&str>, download: bool) -> Result<i32, Fail> {
+    let root = place::root()?;
+    let running = stage::running_version(&root)?;
+    let settings = online::Settings::load()?;
+    let mut client = online::Client::connect(settings)?;
+    let release = match online::plan(&mut client, &running, version)? {
+        online::Plan::Current { offered } => {
+            let compared = slots::version::Version::parse(&offered)
+                .zip(slots::version::Version::parse(&running))
+                .map_or(std::cmp::Ordering::Equal, |(offered, running)| offered.cmp(&running));
+            let then = if compared == std::cmp::Ordering::Less {
+                format!(", older than this system's {running}: nothing to do until it passes it")
+            } else {
+                ", which this system runs: it is up to date".into()
+            };
+            println!("sysupdate: {}{then}", online::offers(&client.settings, version, &offered));
+            return Ok(0);
+        }
+        online::Plan::Update { offered, from, release } => {
+            println!(
+                "sysupdate: {}; this system runs Dukovo {running}",
+                online::offers(&client.settings, version, &offered)
+            );
+            if release.version != offered {
+                println!(
+                    "sysupdate: Dukovo {offered} updates only from {from} on: Dukovo {} comes first",
+                    release.version
+                );
+            }
+            release
+        }
+    };
+    let needed = online::needed(&root.slot(root.running), &release)?;
+    if !download {
+        println!(
+            "sysupdate: Dukovo {} needs {} files this system lacks, {}; sysupdate stage fetches \
+             and stages it",
+            release.version,
+            needed.fetch.len(),
+            online::mib(needed.bytes)
+        );
+        return Ok(0);
+    }
+    let fetched = online::fetch(&client, &needed)?;
+    println!(
+        "sysupdate: fetched {} files of Dukovo {}, {}, and copied {}; sysupdate stage stages it",
+        fetched.fetched,
+        release.version,
+        online::mib(fetched.bytes),
+        fetched.copied
+    );
+    Ok(0)
+}
+
+/// `sysupdate channel [NAME]`: the channel this system follows, or, with
+/// a name, follows from now on.
+fn channel(name: Option<&str>) -> Result<i32, Fail> {
+    let mut settings = online::Settings::load()?;
+    let Some(name) = name else {
+        println!("Channel: {}", settings.channel);
+        println!("Server:  {}", settings.server);
+        return Ok(0);
+    };
+    online::check_channel(name).map_err(util::usage)?;
+    settings.channel = name.to_string();
+    settings.save()?;
+    println!(
+        "sysupdate: this system follows the {name} channel from now on; it never goes back to an \
+         older version: it waits until the channel passes the one it runs"
+    );
     Ok(0)
 }
 

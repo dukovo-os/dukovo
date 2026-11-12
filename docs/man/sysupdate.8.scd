@@ -5,13 +5,19 @@ sysupdate(8) "Dukovo" "Dukovo Manual"
 
 # NAME
 
-sysupdate - stage, try, prove and roll back updates of Dukovo's system
+sysupdate - fetch, stage, try, prove and roll back updates of Dukovo's system
 
 # SYNOPSIS
 
 *sysupdate status*
 
-*sysupdate stage* [*--version* _version_] _repository_
+*sysupdate check* [*--version* _version_]
+
+*sysupdate download* [*--version* _version_]
+
+*sysupdate stage* [*--version* _version_] [_repository_ | _file_]
+
+*sysupdate channel* [*stable* | *beta* | *nightly*]
 
 *sysupdate unstage*
 
@@ -58,8 +64,43 @@ Last update: 0.15.0 to 0.15.1 in slot B
 Slot state: on vda1 (generation 2)
 ```
 
-*stage* builds the release in _repository_ into the spare slot, and names
-it the update to try at the next restart:
+Updates come from the update server through a channel: *stable*, the
+default; *beta*, two weeks before each stable; or *nightly*, every
+change. Each channel offers one release, and the server keeps every
+release it offers, signed (ADR 0466). Everything the server says is
+checked by Dukovo's TUF client against the root this system trusts and
+the metadata it read before, so that no one can offer it an older
+release, or older metadata, as new. A system never goes back to an older
+version through a channel: it waits until the channel passes the version
+it runs. A release names the oldest version that updates to it directly;
+a system older than that takes the release it names first, a bridge, and
+the newer one at its next update.
+
+*check* reads the channel and says what it offers, whether a bridge comes
+first, and how many files this system lacks, and how large they are:
+
+```
+# sysupdate check
+sysupdate: the stable channel offers Dukovo 0.15.2; this system runs Dukovo 0.15.0
+sysupdate: Dukovo 0.15.2 needs 37 files this system lacks, 18.4 MiB; sysupdate stage fetches and stages it
+```
+
+*download* fetches those files, and *stage* with no _repository_ fetches
+any that are left and stages the release. Only the files the running
+slot lacks are fetched: a file it holds at the same place with the same
+contents is kept, and one it holds elsewhere is copied. Each file is
+checked against the release's signed list as it lands, and refused if it
+is not that file; a fetch cut short goes on from where it stopped at the
+next try, up to four tries. Requests carry nothing about the machine or
+its owner.
+
+*stage* also takes a repository folder, as *system-release*(8) makes
+one, or an update file, a release's repository as one file
+(_dukovo-VERSION.update_), for a machine with no network. An update file
+is read where it is, and checked as an install stick is: every
+signature and file, but not expiry, since a file kept for a while is
+still the release it was. *stage* builds the release into the spare
+slot, and names it the update to try at the next restart:
 
 . It refuses unless the running slot is the default. An update staged
   earlier is replaced.
@@ -68,8 +109,8 @@ it the update to try at the next restart:
   not newer than the running version, or that the running version cannot
   update to directly.
 . It snapshots the running slot as _@system.new_, writes only the files
-  the release changes, from the repository's _files/_, and removes those
-  it no longer has.
+  the release changes, from the files fetched, the repository's _files/_
+  or the update file, and removes those it no longer has.
 . It reads every file back against the signed list.
 . It seals the new slot read-only in the spare's place.
 . It snapshots the settings and the state into _@snapshots/update_, for a
@@ -88,6 +129,9 @@ sysupdate: wrote 41 changed files; reading the slot back against the signed list
 sysupdate: snapshotting the settings and the state, for a fallback
 sysupdate: staged Dukovo 0.15.1 in slot B: it starts at the next restart, with 3 tries to prove itself, and Dukovo 0.15.0 starts again if it does not
 ```
+
+*channel* says which channel this system follows and from which server,
+or, with a name, follows that channel from now on.
 
 *unstage* takes a staged update back before it is tried: the running
 slot goes on starting, and the update stays in the spare slot until the
@@ -112,7 +156,9 @@ back to 0.
 # OPTIONS
 
 *--version* _version_
-	The release to stage, when the repository holds several.
+	The release to check, fetch or stage, in place of the channel's, or
+	when a repository holds several. It must be newer than the running
+	version.
 
 # BOOT MENU
 
@@ -134,10 +180,11 @@ Rescue.
 	result in the log and the slot state.
 
 1
-	It did not. The message says why: nothing staged to take back, no
-	previous version, a release that is not signed by the trusted root,
-	not newer, or made for an update from another version, or a write
-	that failed. A stage that fails leaves the running slot and the slot
+	It did not. The message says why: the server could not be read, or
+	what it sent was refused; nothing to stage, nothing staged to take
+	back, or no previous version; a release that is not signed by the
+	trusted root, not newer, or made for an update from another version;
+	or a write that failed. A stage that fails leaves the running slot and the slot
 	state as they were.
 
 2
@@ -147,6 +194,16 @@ Rescue.
 
 _/system/settings/sysupdate/health.toml_
 	What the health check asks of a new version: *health.toml*(5).
+
+_/system/settings/sysupdate/updates.toml_
+	The channel this system follows, and the server: *updates.toml*(5).
+
+_/system/state/sysupdate/metadata_
+	The update server's metadata this system has read and trusts.
+
+_/system/state/sysupdate/files_
+	The files fetched for the next stage, by SHA-256; a stage removes
+	them once the slot holds them.
 
 _/system/state/sysupdate/health_
 	The health check's last result.
@@ -169,7 +226,11 @@ _boot/grub/rescue.env_ on each EFI system partition
 # DIAGNOSTICS
 
 When an update will not stage, the last line *stage* prints says why:
-start there.
+start there. A line naming the server and ending in "nothing was changed"
+means that the server could not be read, or that what it sent was not
+signed by keys this system trusts, had expired, was older than what it
+read before, or was not the file the signed list names: the system did
+not use it.
 
 When an update fell back, the health check's line in the log says what
 failed (*log sysupdate*), and the settings the update had are in
@@ -177,5 +238,5 @@ _@snapshots/update/settings-failed_.
 
 # SEE ALSO
 
-*health.toml*(5), *spark*(8), *dukovo-boot*(7), *dukovo-rescue*(8),
-*system-release*(8), *service*(8)
+*health.toml*(5), *updates.toml*(5), *spark*(8), *dukovo-boot*(7),
+*dukovo-rescue*(8), *system-release*(8), *service*(8)

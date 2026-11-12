@@ -375,13 +375,14 @@ pub fn host_header(url: &Url) -> String {
     }
 }
 
-/// The request for `url`.
-fn request(url: &Url) -> String {
+/// The request for `url`, from byte `offset` on when it is not 0.
+fn request(url: &Url, offset: u64) -> String {
     let target = url.path_and_query();
     let host = host_header(url);
+    let range = if offset > 0 { format!("Range: bytes={offset}-\r\n") } else { String::new() };
     format!(
         "GET {target} HTTP/1.1\r\nHost: {host}\r\nUser-Agent: Dukovo-tuf/1\r\n\
-         Accept: */*\r\nAccept-Encoding: identity\r\nConnection: close\r\n\r\n"
+         Accept: */*\r\nAccept-Encoding: identity\r\n{range}Connection: close\r\n\r\n"
     )
 }
 
@@ -393,7 +394,20 @@ fn request(url: &Url) -> String {
 /// [`Error::NotFound`] when the server says the file is not there; any
 /// other failure to connect or to get a 200 answer.
 pub fn get(url: &Url) -> Result<Body, Error> {
-    fetch(url, false)
+    fetch(url, false, 0).map(|(body, _)| body)
+}
+
+/// Fetches `url` from byte `offset` on, to go on with a download cut
+/// short, following redirects as [`get`] does: the body, and whether it
+/// starts at `offset` (206) or is the whole file (200), as from a server
+/// that does not send parts.
+///
+/// # Errors
+///
+/// As [`get`]; [`Error::Status`] with 416 when the file is no longer than
+/// `offset`.
+pub fn get_from(url: &Url, offset: u64) -> Result<(Body, bool), Error> {
+    fetch(url, false, offset)
 }
 
 /// Fetches `url` as [`get`] does, over TLS only: an `http://` address,
@@ -406,7 +420,7 @@ pub fn get(url: &Url) -> Result<Body, Error> {
 /// [`Error::Url`] for an address or a redirect that is not `https://`;
 /// otherwise as [`get`].
 pub fn get_https(url: &Url) -> Result<Body, Error> {
-    fetch(url, true)
+    fetch(url, true, 0).map(|(body, _)| body)
 }
 
 /// An answer to [`exchange`]: its status, and its body to read as it
@@ -472,19 +486,21 @@ fn allowed(url: &Url, https_only: bool) -> Result<(), Error> {
 }
 
 /// [`get`], over TLS only when `https_only`, the first address and every
-/// redirect alike.
-fn fetch(url: &Url, https_only: bool) -> Result<Body, Error> {
+/// redirect alike, from byte `offset` on: the body, and whether it is a
+/// part (206).
+fn fetch(url: &Url, https_only: bool, offset: u64) -> Result<(Body, bool), Error> {
     let mut url = url.clone();
     for _ in 0..=REDIRECTS {
         allowed(&url, https_only)?;
         let mut connection = connect(&url)?;
-        connection.write_all(request(&url).as_bytes())?;
+        connection.write_all(request(&url, offset).as_bytes())?;
         connection.flush()?;
         let mut reader: BufReader<Box<dyn Read + Send>> =
             BufReader::with_capacity(64 * 1024, Box::new(connection));
         let head = read_head(&mut reader)?;
         match head.status {
-            200 => return Ok(Body::new(reader, head.framing)),
+            200 => return Ok((Body::new(reader, head.framing), false)),
+            206 if offset > 0 => return Ok((Body::new(reader, head.framing), true)),
             301 | 302 | 303 | 307 | 308 => {
                 let location = head.location.ok_or(Error::Status(head.status))?;
                 url = url
@@ -584,6 +600,29 @@ mod tests {
             requests
         });
         (url, server)
+    }
+
+    #[test]
+    fn a_download_goes_on_from_where_it_was_cut() {
+        let (url, server) = serve(vec![
+            "HTTP/1.1 206 Partial Content\r\nContent-Length: 3\r\n\r\ndef",
+            "HTTP/1.1 200 OK\r\nContent-Length: 6\r\n\r\nabcdef",
+            "HTTP/1.1 416 Range Not Satisfiable\r\nContent-Length: 0\r\n\r\n",
+        ]);
+        let url = url.resolve("files/abc").unwrap();
+        let mut text = String::new();
+        let (mut body, part) = get_from(&url, 3).unwrap();
+        body.read_to_string(&mut text).unwrap();
+        assert_eq!((text.as_str(), part), ("def", true));
+        // A server that sends the whole file again.
+        let (mut body, part) = get_from(&url, 3).unwrap();
+        text.clear();
+        body.read_to_string(&mut text).unwrap();
+        assert_eq!((text.as_str(), part), ("abcdef", false));
+        assert!(matches!(get_from(&url, 6), Err(Error::Status(416))));
+        let requests = server.join().unwrap();
+        assert!(requests.iter().all(|r| r.contains("\r\nRange: bytes=")), "{requests:?}");
+        assert!(requests[0].starts_with("GET /files/abc HTTP/1.1\r\n"));
     }
 
     #[test]

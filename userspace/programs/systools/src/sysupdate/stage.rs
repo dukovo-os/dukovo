@@ -2,10 +2,12 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 //! `sysupdate stage`: a signed release built into the spare slot (ADR
-//! 0451). The spare starts as a snapshot of the running slot,
-//! `@system.new`, and only the files the release changes are written
-//! into it, from the repository's store, so a repository needs to hold
-//! only those; what the release no longer has is removed. Then every
+//! 0451). The release comes from the update server, the files this
+//! system lacks fetched first (ADR 0466), or from a repository folder or
+//! an update file the owner names. The spare starts as a snapshot of the
+//! running slot, `@system.new`, and only the files the release changes
+//! are written into it, so a repository needs to hold only those; what
+//! the release no longer has is removed. Then every
 //! file is read back against the signed list, and the slot is sealed
 //! read-only in the spare's place. The settings and the state are
 //! snapshotted for a fallback (ADR 0454), and last the slot state names
@@ -19,9 +21,11 @@ use std::path::{Path, PathBuf};
 
 use slots::restore;
 use slots::version::Version;
+use system_release::archive::Archive;
 use system_release::list::{Entry, Kind, Release, sha256_file};
 use system_release::store::Store;
 
+use super::online::{self, Plan};
 use super::place::{self, BUILDING, Root};
 use crate::subvolume;
 use crate::util::{Fail, fail};
@@ -39,9 +43,10 @@ pub enum Stop {
 
 /// What `sysupdate stage` was asked.
 pub struct Asked<'a> {
-    /// The repository: a folder with the release's TUF metadata and its
-    /// store, as `ob release` makes one and the update server serves it.
-    pub repo: &'a Path,
+    /// Where the release is: a folder with its TUF metadata and its store,
+    /// as `ob release` makes one, or an update file; with neither, the
+    /// update server, and the release the channel offers.
+    pub repo: Option<&'a Path>,
     /// The release's version, when the repository has more than one.
     pub version: Option<&'a str>,
     /// Where to stop, for a boot test.
@@ -69,12 +74,24 @@ pub fn stage(root: &Root, asked: &Asked<'_>) -> Result<(), Fail> {
     let next = state.stage(root.running).map_err(|why| fail(why.to_string()))?;
     let spare = root.running.other();
 
-    say("checking the release against the root this system trusts");
-    let trusted =
-        std::fs::read(TRUSTED_ROOT).map_err(|err| crate::util::failed(&TRUSTED_ROOT, err))?;
-    let published =
-        system_release::repo::open(asked.repo, &trusted, asked.version).map_err(fail)?;
-    let release = published.release;
+    let (release, store) = match asked.repo {
+        Some(repo) => {
+            say("checking the release against the root this system trusts");
+            let trusted = std::fs::read(TRUSTED_ROOT)
+                .map_err(|err| crate::util::failed(&TRUSTED_ROOT, err))?;
+            if repo.is_file() {
+                let (published, archive) =
+                    system_release::updates::open_file(repo, &trusted, asked.version)
+                        .map_err(fail)?;
+                (published.release, Files::Archive(archive))
+            } else {
+                let published =
+                    system_release::repo::open(repo, &trusted, asked.version).map_err(fail)?;
+                (published.release, Files::Store(Store::at(&repo.join("files"))))
+            }
+        }
+        None => (fetch(root, asked.version)?, Files::Store(Store::at(&online::downloads()))),
+    };
     newer(root, &release)?;
 
     let building = root.path(BUILDING);
@@ -88,7 +105,6 @@ pub fn stage(root: &Root, asked: &Asked<'_>) -> Result<(), Fail> {
         root.running.letter().to_ascii_uppercase()
     ));
     subvolume::snapshot_to(&root.slot(root.running), &building, false)?;
-    let store = Files::Store(Store::at(&asked.repo.join("files")));
     let changed = build(&building, &release, &store)?;
     say(&format!("wrote {changed} changed files; reading the slot back against the signed list"));
     check(&building, &release)?;
@@ -121,6 +137,10 @@ pub fn stage(root: &Root, asked: &Asked<'_>) -> Result<(), Fail> {
     }
     subvolume::snapshot_to(&building, &slot, true)?;
     subvolume::remove(&building)?;
+    // The slot holds them now; the state's snapshot below need not.
+    if asked.repo.is_none() {
+        online::clear_downloads();
+    }
 
     say("snapshotting the settings and the state, for a fallback");
     snapshot_for_fallback(root, &release)?;
@@ -138,25 +158,65 @@ pub fn stage(root: &Root, asked: &Asked<'_>) -> Result<(), Fail> {
     Ok(())
 }
 
+/// Reads the update server for the release to stage, the channel's or
+/// `version`, or the bridge to it, and fetches the files this system
+/// lacks (ADR 0466).
+fn fetch(root: &Root, version: Option<&str>) -> Result<Release, Fail> {
+    let running = running_version(root)?;
+    let settings = online::Settings::load()?;
+    say(&format!("reading {} against the root this system trusts", settings.server));
+    let mut client = online::Client::connect(settings)?;
+    let release = match online::plan(&mut client, &running, version)? {
+        Plan::Current { offered } => {
+            return Err(fail(format!(
+                "nothing to stage: {}, and this system runs Dukovo {running}",
+                online::offers(&client.settings, version, &offered)
+            )));
+        }
+        Plan::Update { offered, from, release } => {
+            if release.version != offered {
+                say(&format!(
+                    "Dukovo {offered} updates only from {from} on: Dukovo {} comes first",
+                    release.version
+                ));
+            }
+            release
+        }
+    };
+    let needed = online::needed(&root.slot(root.running), &release)?;
+    say(&format!(
+        "fetching {} files of Dukovo {}, {}; this system holds the rest",
+        needed.fetch.len(),
+        release.version,
+        online::mib(needed.bytes)
+    ));
+    online::fetch(&client, &needed)?;
+    Ok(release)
+}
+
+/// The running slot's version.
+pub(crate) fn running_version(root: &Root) -> Result<String, Fail> {
+    root.about(root.running)
+        .map(|about| about.version)
+        .ok_or_else(|| fail("the running slot does not say its version (startup/slot.env)".into()))
+}
+
 /// Refuses a release that is not newer than the running slot's, or one
 /// the running version cannot update to directly.
 fn newer(root: &Root, release: &Release) -> Result<(), Fail> {
-    let running = root.about(root.running).ok_or_else(|| {
-        fail("the running slot does not say its version (startup/slot.env)".into())
-    })?;
-    let (Some(from), Some(to)) =
-        (Version::parse(&running.version), Version::parse(&release.version))
+    let running = running_version(root)?;
+    let (Some(from), Some(to)) = (Version::parse(&running), Version::parse(&release.version))
     else {
         return Err(fail(format!(
             "cannot compare the versions {} and {}",
-            running.version, release.version
+            running, release.version
         )));
     };
     // By precedence: a build of the same version is not newer.
     if to <= from {
         return Err(fail(format!(
             "the release is Dukovo {}, not newer than the running {}",
-            release.version, running.version
+            release.version, running
         )));
     }
     if let Some(oldest) = Version::parse(&release.updates_from)
@@ -172,8 +232,11 @@ fn newer(root: &Root, release: &Release) -> Result<(), Fail> {
 
 /// Where the files a slot is built from are.
 pub enum Files<'a> {
-    /// A repository's store, which holds the files an update changes.
+    /// A repository's store, which holds the files an update changes, or
+    /// the files fetched from the update server.
     Store(Store),
+    /// An update file, which holds the whole release (ADR 0466).
+    Archive(Archive),
     /// Rescue, which holds the whole release: its startup folder in
     /// `rescue`, and the rest in `system`, the boot archive it runs from
     /// (ADR 0460).
@@ -181,14 +244,26 @@ pub enum Files<'a> {
 }
 
 impl Files<'_> {
-    /// Where `entry`, a file of SHA-256 `sha256`, is.
-    fn path(&self, entry: &Entry, sha256: &str) -> PathBuf {
-        match self {
+    /// Copies `entry`, a file of SHA-256 `sha256`, to `to`.
+    fn copy(&self, entry: &Entry, sha256: &str, to: &Path) -> Result<(), Fail> {
+        let from = match self {
             Files::Store(store) => store.path(sha256),
             Files::Rescue { rescue, system } => {
                 system_release::rescue::source(rescue, system, entry)
             }
+            Files::Archive(archive) => {
+                let name = format!("files/{sha256}");
+                if archive.size(&name).is_none() {
+                    return Err(fail(self.missing(entry, sha256)));
+                }
+                return archive.copy_to(&name, to).map_err(fail);
+            }
+        };
+        if !from.is_file() {
+            return Err(fail(self.missing(entry, sha256)));
         }
+        std::fs::copy(&from, to).map_err(|err| crate::util::failed(&to.display(), err))?;
+        Ok(())
     }
 
     /// Why `entry`, a file of SHA-256 `sha256`, cannot be had.
@@ -202,6 +277,10 @@ impl Files<'_> {
             Files::Rescue { .. } => {
                 format!("Rescue does not hold /system/{} ({sha256}): it is damaged", entry.path)
             }
+            Files::Archive(_) => format!(
+                "the update file does not hold /system/{} ({sha256}): it is damaged",
+                entry.path
+            ),
         }
     }
 }
@@ -261,12 +340,7 @@ pub fn build(slot: &Path, release: &Release, files: &Files<'_>) -> Result<usize,
                     if there.is_some() {
                         remove(&full)?;
                     }
-                    let from = files.path(entry, sha256);
-                    if !from.is_file() {
-                        return Err(fail(files.missing(entry, sha256)));
-                    }
-                    std::fs::copy(&from, &full)
-                        .map_err(|err| crate::util::failed(&full.display(), err))?;
+                    files.copy(entry, sha256, &full)?;
                     written += 1;
                 }
                 set_mode(&full, entry.mode_bits())?;

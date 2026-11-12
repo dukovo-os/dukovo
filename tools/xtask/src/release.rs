@@ -88,14 +88,26 @@ pub fn make_as(
     version: &str,
     updates_from: &str,
 ) -> Result<()> {
-    let keys = keys(ctx)?;
+    make_with(ctx, &keys(ctx)?, tree, out, version, updates_from)
+}
+
+/// [`make_as`], signed with the keys in `keys`: the boot tests' update
+/// server's, which start as this machine's and have had keys replaced.
+pub fn make_with(
+    ctx: &Ctx,
+    keys: &Path,
+    tree: &Path,
+    out: &Path,
+    version: &str,
+    updates_from: &str,
+) -> Result<()> {
     step(&format!("Signing release {version} into {}", ctx.display(out)));
     let mut cmd = Command::new(tool(ctx)?);
     cmd.arg("make")
         .arg("--tree")
         .arg(tree)
         .arg("--keys")
-        .arg(&keys)
+        .arg(keys)
         .arg("--out")
         .arg(out)
         .args(["--version", version])
@@ -103,6 +115,14 @@ pub fn make_as(
         .args(["--commit", &commit(ctx)])
         .args(["--toolchain", &toolchain(ctx)?])
         .args(["--built", &crate::image::image_time(ctx).to_string()]);
+    process::run(ctx, &mut cmd)
+}
+
+/// Runs system-release, built for this machine, with `args`: for an
+/// update repository's commands (ADR 0466).
+pub fn system_release<S: AsRef<std::ffi::OsStr>>(ctx: &Ctx, args: &[S]) -> Result<()> {
+    let mut cmd = Command::new(tool(ctx)?);
+    cmd.args(args);
     process::run(ctx, &mut cmd)
 }
 

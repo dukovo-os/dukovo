@@ -19,8 +19,10 @@
 //! its startup folder, and a boot archive of the rest, checked against
 //! the signed list as it is written.
 
+pub mod archive;
 pub mod cli;
 pub mod list;
 pub mod repo;
 pub mod rescue;
 pub mod store;
+pub mod updates;

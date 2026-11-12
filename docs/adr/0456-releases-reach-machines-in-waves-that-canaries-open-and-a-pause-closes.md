@@ -96,7 +96,7 @@ whether to trust them (ADR 0380).
   step of which was tested.
 - **Not yet:** all of it is built in Phase 15's later pull requests: the
   release list fetched through the TUF client, the channels and the
-  offline update file in the sixth, with the server side in the infra
-  repository; the waves, the rollout role, the canaries, pause and pull
+  offline update file in the sixth (ADR 0466), with the server side in
+  `tools/update-server/` beside the catalog's; the waves, the rollout role, the canaries, pause and pull
   in the seventh; and the reports with the unified updater in the
   eighth. The canary cloud machines come before 1.0.0-alpha.1.

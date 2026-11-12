@@ -26,7 +26,7 @@ for section 2, which `ridlc` generates from the interface definitions in
 | `radix-files(7)` | Files, directory capabilities, paths, filesystems, the page cache, the directory hierarchy and `/volumes` |
 | `radix-posix(7)` | POSIX programs: the C library and toolchain, fork and exec, signals, descriptors and paths, pipes, terminals, timers, threads, limits, file locks, dynamic linking and Rust's standard library |
 | `spark(8)` | Spark, the first program, which starts and supervises every other |
-| `sysupdate(8)`, `health.toml(5)` | Updates of the system: the two slots, staging an update, trying and proving it, the health check and what it asks, falling back, rolling back, and the boot menu |
+| `sysupdate(8)`, `updates.toml(5)`, `health.toml(5)` | Updates of the system: channels, checking and downloading from the update server, update files, the two slots, staging an update, trying and proving it, the health check and what it asks, falling back, rolling back, and the boot menu |
 | `snap(1)`, `snap.toml(5)` | Snapshots: the daily ones of `/users`, `/shared` and `/system/settings` in `/snapshots`, how many are kept, and restoring a file from one |
 | `service(8)`, `shutdown(8)`, `reboot(8)` | Starting, stopping and looking at services; stopping, restarting or powering off the machine |
 | `consoled(8)` | The virtual consoles on the screen and keyboard, and their keys |

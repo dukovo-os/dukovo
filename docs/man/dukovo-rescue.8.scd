@@ -66,15 +66,15 @@ when there is none.
 *1 Reinstall Dukovo*
 	Builds the system into the default slot, or slot A when no slot is
 	left, from Rescue's own copy of the release, or from an update folder
-	on a disk (*sysupdate stage* reads the same), signed by the root that
-	Rescue trusts. It starts from a snapshot of the slot, so that only
-	what differs is written, and afresh when that fails, reads every
-	file back against the signed list, and seals the slot read-only. The
-	slot state then names the slot the default, with no previous version
-	and no update, and the count of starts not seen through goes back to
-	0. The settings, the state, every user's files and apps, and shared
-	files are not written. Rescue reinstalls its own version; the system
-	then updates as usual.
+	or update file on a disk (*sysupdate stage* reads the same), signed
+	by the root that Rescue trusts. It starts from a snapshot of the
+	slot, so that only what differs is written, and afresh when that
+	fails, reads every file back against the signed list, and seals the
+	slot read-only. The slot state then names the slot the default, with
+	no previous version and no update, and the count of starts not seen
+	through goes back to 0. The settings, the state, every user's files
+	and apps, and shared files are not written. Rescue reinstalls its own
+	version; the system then updates as usual.
 
 *2 Put back the settings*
 	Runs the fallback's steps (ADR 0454) on the last update's snapshot,
@@ -93,8 +93,8 @@ when there is none.
 
 *5 Turn networking on*
 	Starts the network services the system has, behind the firewall
-	already running: for a reinstall from an update folder on a network
-	share, or to copy files off over the network from the shell.
+	already running: for a reinstall from an update folder or file on a
+	network share, or to copy files off over the network from the shell.
 
 *6 Open a shell*
 	Runs root's shell, with the root mounted at _/volumes/_*disk*. Exit

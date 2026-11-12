@@ -238,15 +238,24 @@ fn settings_to_put_back(root: &Root) -> Option<String> {
 /// the release, or from an update folder the owner names, keeping the
 /// settings, the state and every user's files and apps.
 fn reinstall(root: &Root) -> Result<String, String> {
-    println!("Reinstall from Rescue's own copy, or from an update folder on a disk?");
-    let from = ask("Press Enter for Rescue's copy, or type the folder: ", true)
+    println!("Reinstall from Rescue's own copy, or from an update folder or file on a disk?");
+    let from = ask("Press Enter for Rescue's copy, or type the folder or file: ", true)
         .ok_or("nothing was reinstalled")?;
     let from = from.trim();
     let esps = place::partitions(root).map_err(|why| why.message)?;
     let trusted = std::fs::read(TRUSTED_ROOT).map_err(|err| format!("{TRUSTED_ROOT}: {err}"))?;
     let mounted = if from.is_empty() { Some(mount_rescue(&esps)?) } else { None };
+    let mut archive = None;
     let opened = match &mounted {
         Some(esp) => system_release::rescue::open(&esp.join(system_release::rescue::DIR), &trusted),
+        None if Path::new(from).is_file() => {
+            system_release::updates::open_file(Path::new(from), &trusted, None).map(
+                |(published, opened)| {
+                    archive = Some(opened);
+                    published
+                },
+            )
+        }
         None => system_release::repo::open(Path::new(from), &trusted, None),
     };
     let result = opened.and_then(|published| {
@@ -259,9 +268,10 @@ fn reinstall(root: &Root) -> Result<String, String> {
             _ => return Err("nothing was reinstalled".into()),
         }
         let rescue_dir = mounted.as_ref().map(|esp| esp.join(system_release::rescue::DIR));
-        let files = match &rescue_dir {
-            Some(dir) => Files::Rescue { rescue: dir, system: Path::new("/system") },
-            None => Files::Store(Store::at(&Path::new(from).join("files"))),
+        let files = match (&rescue_dir, archive.take()) {
+            (Some(dir), _) => Files::Rescue { rescue: dir, system: Path::new("/system") },
+            (None, Some(archive)) => Files::Archive(archive),
+            (None, None) => Files::Store(Store::at(&Path::new(from).join("files"))),
         };
         build_slot(root, &release, &files).map(|()| release)
     });

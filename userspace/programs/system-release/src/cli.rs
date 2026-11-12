@@ -2,23 +2,29 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 //! The system-release command (system-release(8)): `ob` runs it on the
-//! build machine to make keys and sign releases, and Dukovo has it as one
-//! of the native tools, to check an install stick's release.
+//! build machine to make keys and sign releases and the update
+//! repository that offers them, and Dukovo has it as one of the native
+//! tools, to check an install stick's release or an update file.
 
 use std::path::{Path, PathBuf};
 
 use crate::list::{About, Release};
 use crate::repo::{self, Keys};
+use crate::updates;
 
 /// Where a Dukovo system keeps the root of the releases it trusts.
 pub const TRUSTED_ROOT: &str = "/system/resources/updates/root.json";
 
 const USAGE: &str = "\
-usage: system-release keys DIR
+usage: system-release keys [--rotate ROLE] DIR
        system-release make --tree DIR --keys DIR --out DIR --version VERSION
                            --commit COMMIT --toolchain TOOLCHAIN --built SECONDS
                            [--updates-from VERSION]
-       system-release check [--root FILE] [--version VERSION] REPOSITORY
+       system-release add --repo DIR --keys DIR RELEASE
+       system-release channel --repo DIR --keys DIR CHANNEL VERSION
+       system-release refresh --repo DIR --keys DIR
+       system-release pack --repo DIR [--root FILE] --version VERSION --out FILE
+       system-release check [--root FILE] [--version VERSION] REPOSITORY|FILE
        system-release rescue --out ESP [--root FILE] [--version VERSION] REPOSITORY";
 
 /// How many damaged files `check` names before it counts the rest.
@@ -43,6 +49,10 @@ pub fn run(args: &[String]) -> i32 {
     let done = match command.as_str() {
         "keys" => keys(&options),
         "make" => make(&options),
+        "add" => add(&options),
+        "channel" => channel(&options),
+        "refresh" => refresh(&options),
+        "pack" => pack(&options),
         "check" => check(&options),
         "rescue" => rescue(&options),
         "--help" | "-h" | "help" => {
@@ -68,6 +78,8 @@ pub fn run(args: &[String]) -> i32 {
 struct Options {
     tree: Option<PathBuf>,
     keys: Option<PathBuf>,
+    repo: Option<PathBuf>,
+    rotate: Option<String>,
     out: Option<PathBuf>,
     root: Option<PathBuf>,
     version: Option<String>,
@@ -87,6 +99,8 @@ impl Options {
             match arg.as_str() {
                 "--tree" => options.tree = Some(value()?.into()),
                 "--keys" => options.keys = Some(value()?.into()),
+                "--repo" => options.repo = Some(value()?.into()),
+                "--rotate" => options.rotate = Some(value()?),
                 "--out" => options.out = Some(value()?.into()),
                 "--root" => options.root = Some(value()?.into()),
                 "--version" => options.version = Some(value()?),
@@ -113,12 +127,22 @@ fn needed<'a, T>(option: &'a Option<T>, name: &str) -> Result<&'a T, String> {
     option.as_ref().ok_or(format!("{name} is needed"))
 }
 
-/// `keys DIR`: new keys for the four roles, and the root they make.
+/// `keys DIR`: new keys for the four roles, and the root they make; with
+/// `--rotate ROLE`, a new key for that role, and the next root.
 fn keys(options: &Options) -> Result<(), String> {
     let [dir] = options.operands.as_slice() else {
         return Err("keys takes the folder to make them in".into());
     };
     let now = tuf::time::now();
+    if let Some(role) = &options.rotate {
+        let keys = Keys::rotate(Path::new(dir), role, now)?;
+        println!(
+            "system-release: a new {role} key in {dir}, named by root {}, which root {} signed",
+            keys.roots().len(),
+            keys.roots().len() - 1
+        );
+        return Ok(());
+    }
     Keys::create(Path::new(dir), now)?;
     println!(
         "system-release: made keys for root, targets, snapshot and timestamp in {dir}, and root.json"
@@ -152,12 +176,75 @@ fn make(options: &Options) -> Result<(), String> {
     Ok(())
 }
 
-/// `check REPOSITORY`: the release there, read from the trusted root
+/// `add --repo DIR RELEASE`: the release that `make` signed, in the update
+/// repository.
+fn add(options: &Options) -> Result<(), String> {
+    let [release] = options.operands.as_slice() else {
+        return Err("add takes the folder of a release that make signed".into());
+    };
+    let dir = needed(&options.repo, "--repo")?;
+    let keys = Keys::load(needed(&options.keys, "--keys")?)?;
+    let added = updates::add(dir, &keys, Path::new(release), tuf::time::now())?;
+    let version = &added.published.release.version;
+    if added.already {
+        println!("system-release: {} offers Dukovo {version} already", dir.display());
+    } else {
+        println!(
+            "system-release: {} offers Dukovo {version}, with {} files its store did not hold",
+            dir.display(),
+            added.new_files
+        );
+    }
+    Ok(())
+}
+
+/// `channel --repo DIR CHANNEL VERSION`: the channel offers the release.
+fn channel(options: &Options) -> Result<(), String> {
+    let [channel, version] = options.operands.as_slice() else {
+        return Err("channel takes the channel and the version it is to offer".into());
+    };
+    let dir = needed(&options.repo, "--repo")?;
+    let keys = Keys::load(needed(&options.keys, "--keys")?)?;
+    updates::set_channel(dir, &keys, channel, version, tuf::time::now())?;
+    println!("system-release: the {channel} channel of {} offers Dukovo {version}", dir.display());
+    Ok(())
+}
+
+/// `refresh --repo DIR`: a new snapshot and timestamp.
+fn refresh(options: &Options) -> Result<(), String> {
+    let dir = needed(&options.repo, "--repo")?;
+    let keys = Keys::load(needed(&options.keys, "--keys")?)?;
+    let version = updates::refresh(dir, &keys, tuf::time::now())?;
+    println!("system-release: {} signed again, timestamp {version}", dir.display());
+    Ok(())
+}
+
+/// `pack --repo DIR --version VERSION --out FILE`: the update file of one
+/// release, read back from the root.
+fn pack(options: &Options) -> Result<(), String> {
+    let dir = needed(&options.repo, "--repo")?;
+    let version = needed(&options.version, "--version")?;
+    let out = needed(&options.out, "--out")?;
+    let root_path = options.root.clone().unwrap_or_else(|| dir.join("metadata/1.root.json"));
+    let root = std::fs::read(&root_path)
+        .map_err(|err| format!("the trusted root {}: {err}", root_path.display()))?;
+    let packed = updates::pack(dir, &root, version, out)?;
+    println!(
+        "system-release: Dukovo {version}'s update file, {} files in {} MiB, in {}",
+        packed.files,
+        packed.bytes >> 20,
+        out.display()
+    );
+    Ok(())
+}
+
+/// `check REPOSITORY|FILE`: the release there, read from the trusted root
 /// offline, and every one of its files.
 fn check(options: &Options) -> Result<(), String> {
     let [dir] = options.operands.as_slice() else {
         return Err(
-            "check takes the folder of a release's repository, such as an install stick's release"
+            "check takes the folder of a release's repository, such as an install stick's \
+             release, or an update file"
                 .into(),
         );
     };
@@ -165,7 +252,12 @@ fn check(options: &Options) -> Result<(), String> {
     let root = std::fs::read(&root_path)
         .map_err(|err| format!("the trusted root {}: {err}", root_path.display()))?;
     let dir = Path::new(dir);
-    let opened = repo::open(dir, &root, options.version.as_deref())?;
+    let (opened, archive) = if dir.is_file() {
+        let (opened, archive) = updates::open_file(dir, &root, options.version.as_deref())?;
+        (opened, Some(archive))
+    } else {
+        (repo::open(dir, &root, options.version.as_deref())?, None)
+    };
     let release = &opened.release;
     println!(
         "system-release: release {} ({}), built {} from commit {}, is signed by the trusted root",
@@ -174,7 +266,11 @@ fn check(options: &Options) -> Result<(), String> {
         release.built,
         release.commit
     );
-    match repo::check_files(dir, release) {
+    let checked = match &archive {
+        Some(archive) => updates::check_archive(archive, release),
+        None => repo::check_files(dir, release),
+    };
+    match checked {
         Ok(checked) => {
             println!(
                 "system-release: all {} files match the signed list ({} MiB)",
@@ -271,6 +367,31 @@ mod tests {
         assert_eq!(run(&strings(&["rescue", "--root", &root, &path("release")])), 1);
         assert_eq!(run(&strings(&["make", "--tree"])), 2);
         assert_eq!(run(&strings(&["sign"])), 2);
+
+        // The update repository: add, a channel, refresh, a rotated key,
+        // and the update file, checked as a stick is.
+        let repo = ["--repo", &path("updates"), "--keys", &path("keys")];
+        let with = |words: &[&str]| -> Vec<String> {
+            let mut all = strings(&words[..1]);
+            all.extend(strings(&repo));
+            all.extend(strings(&words[1..]));
+            all
+        };
+        assert_eq!(run(&with(&["add", &path("release")])), 0);
+        assert_eq!(run(&with(&["add", &path("release")])), 0);
+        assert_eq!(run(&with(&["channel", "stable", "0.14.0"])), 0);
+        assert_eq!(run(&with(&["channel", "stable", "0.13.0"])), 1);
+        assert_eq!(run(&strings(&["keys", "--rotate", "snapshot", &path("keys")])), 0);
+        assert_eq!(run(&with(&["refresh"])), 0);
+        let file = path("dukovo-0.14.0.update");
+        let pack = ["pack", "--repo", &path("updates"), "--version", "0.14.0", "--out", &file];
+        assert_eq!(run(&strings(&pack)), 0);
+        assert_eq!(run(&strings(&["check", "--root", &root, &file])), 0);
+        assert_eq!(run(&strings(&["check", "--root", &root, &path("updates")])), 0);
+        assert_eq!(
+            run(&strings(&["check", "--root", &root, "--version", "0.13.0", &path("updates")])),
+            1
+        );
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }
