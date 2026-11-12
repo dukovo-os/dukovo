@@ -127,15 +127,11 @@ machine with AMT, an AMD machine and a laptop; see
 
 | Item | Why it waits | Waits on |
 | --- | --- | --- |
-| Rescue kept up to date: a newer copy written to the EFI system partition once per stable release, when an update is proved (ADR 0460) | Rescue is written by the installer and images until the unified updater | 15d |
-| Rescue's reinstall from the update server (ADR 0460) | Rescue reinstalls from its own copy, an update folder or an update file | 15d, with the unified updater |
 | USB repair, which also rewrites GRUB and the EFI system partition, and the installer's reinstall that keeps data (ADRs 0459, 0460) | Rescue covers a machine whose EFI system partition still starts | The installer's next changes |
 | Rescue resetting the settings to their defaults (ADR 0460) | Putting back the settings from before the last update covers a bad update | A need |
 | Each slot's release list kept beside it, so that `sysupdate check` reads none of the slot's files (ADR 0466) | A check reads the running slot's files whose size matches a wanted one, as a stage does | A need |
-| The firmware sets and the catalog's bundles going through the waves (ADRs 0456, 0469) | Only system releases have rollouts; a firmware set is staged only when its owner asks | 15d, with the unified updater |
 | Canaries that report to the update server by themselves (ADR 0456) | The maintainer marks a canary red or green with `ob release rollout canary` | The canary machines, before 1.0.0-alpha.1 |
 | `system-release pull` signing with the hardware keys (ADRs 0457, 0469) | It signs with the release keys' files, as `add` and `channel` do | The key ceremony |
-| The installer installing the install stick's firmware set, and update files carrying one (ADR 0468) | A machine takes the firmware package by staging a set from the update server or a repository folder after it is installed | 15d, with the unified updater |
 | Firmware that drivers load for their cards, in firmware sets, with a per-device check that the driver loaded it (ADR 0468) | Sets hold CPU microcode only; no driver Dukovo has loads firmware yet | A port: the first driver that needs firmware (Wi-Fi, Phase 17) |
 | AMD CPU microcode in firmware sets (ADRs 0014, 0468) | The kernel's loader is Intel's; AMD's patches have their own format and loader | A need |
 | Disks other than the root's in the health check's device record (ADR 0468) | Data disks, USB disks and discs come and go with their owner, so a missing one says nothing of the update | A need |
@@ -188,6 +184,10 @@ machine with AMT, an AMD machine and a laptop; see
 | `service status` listing what a service holds; volumed and diskhealth given disks one by one; `/processes` showing a service or session only its own processes (ADRs 0215, 0217) | Finer views for services | 16a |
 | sysupdate's own narrower capabilities in place of the administrator's access (ADR 0455) | Needs a view of the Btrfs root that leaves out `@users` | 16a, with finer views for services |
 | The `snap` service's own view in place of the whole tree (ADR 0461) | `snap.toml` may name any subvolume, reached through the top of each filesystem | 16a, with finer views for services and sysupdate's (ADR 0455) |
+| Rescue kept up to date: a newer copy written to the EFI system partition when an update proves itself (ADR 0460) | Rescue is the release the installer wrote; its reinstall puts that version back, and the system then updates as usual | Phase 16, with the update server on Dukovo (16e) |
+| Rescue's reinstall from the update server (ADR 0460) | Rescue reinstalls from its own copy, an update folder or an update file, with networking off | Phase 16, with the update server on Dukovo (16e) |
+| The firmware sets and the catalog's bundles going through the waves (ADRs 0456, 0469) | Only system releases have rollouts; a firmware set is staged only when its owner asks | Phase 16, with the update server on Dukovo (16e) |
+| The installer installing the install stick's firmware set, and update files carrying one (ADR 0468) | A machine takes the firmware package by staging a set from the update server or a repository folder after it is installed | Phase 16, with the installer's question (16c) |
 | Serial ports as terminals programs open, and a choice of which ports carry the log (ADR 0360) | Full serial console | 16b |
 | A local time server, and netd's DHCP server (ADR 0194) | Server roles | 16b |
 | elevate in the web console, with comments kept by its settings editor (ADRs 0216, 0219) | Dukovo Admin | 16c |

@@ -99,9 +99,9 @@ system whose root no disk holds stopped in Spark, with only Spark.
   in to Rescue, removes the only slot from Rescue's shell so that no slot
   is left, has Rescue start by itself again, reinstalls, and finds the
   file and the app in the system that then starts.
-- **Not yet:** writing a newer Rescue when an update is proved, once per
-  stable release, comes with the unified updater; reinstalling from the
-  network comes with update delivery; USB repair, which also rewrites
-  GRUB and the EFI system partition, and the installer's reinstall that
-  keeps data come with the installer's next changes; resetting the
-  settings to their defaults waits for a need.
+- **Not yet:** writing a newer Rescue when an update proves itself, and
+  reinstalling from the update server, come in Phase 16 with the update
+  server on Dukovo; USB repair, which also rewrites GRUB and the EFI
+  system partition, and the installer's reinstall that keeps data come
+  with the installer's next changes; resetting the settings to their
+  defaults waits for a need.
