@@ -67,6 +67,11 @@ fn update_fallback(vm: &mut Vm, _case: &Case) -> Result<(), String> {
         "sysupdate: the update in slot B (Dukovo {version}) did not prove itself; slot A (Dukovo \
          {VERSION}) runs, with the settings from before the update"
     ))?;
+    // The start after the failed one says so on the screen's bottom line
+    // until a key is pressed (ADR 0501); Shift takes it off.
+    vm.expect_screen(&["sysupdate: Start 2 failed its health check: logd has restarted "])?;
+    vm.press(&["shift"])?;
+    vm.expect_screen_without("changes --failed says what changed")?;
     run(
         vm,
         &format!(
