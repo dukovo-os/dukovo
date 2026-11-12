@@ -132,8 +132,9 @@ fn second_boot(vm: &mut Vm, _case: &Case) -> Result<(), String> {
     );
     vm.expect("spark: started slot a, @system.a")?;
     let named = format!("slot A (Dukovo {VERSION}, firmware {newer})");
-    verdict(vm, &named, "failed its health check: the network card ")?;
-    vm.expect(&format!("({SPARE_MAC}), there at the last good start, is missing"))?;
+    verdict(vm, &named, "failed its health check: the network card ", &[&format!(
+        "({SPARE_MAC}), there at the last good start, is missing"
+    )])?;
     vm.expect(&format!(
         "sysupdate: the update gives up its tries; restarting into slot B (Dukovo {VERSION}, \
          firmware {good})"
@@ -167,6 +168,7 @@ fn second_boot(vm: &mut Vm, _case: &Case) -> Result<(), String> {
             "failed its health check: the CPU microcode of firmware {broken} has data that \
              failed its checks, so none of it was used"
         ),
+        &[],
     )?;
     vm.expect(&format!("Booting `Dukovo Server {VERSION} (the firmware update to {broken} failed)'"))?;
     started(vm, 'b')?;
@@ -191,8 +193,9 @@ fn second_boot(vm: &mut Vm, _case: &Case) -> Result<(), String> {
 }
 
 /// Follows the health check's try of the slot `named` to its verdict,
-/// which must start with `expected`: on another, says what it was.
-fn verdict(vm: &mut Vm, named: &str, expected: &str) -> Result<(), String> {
+/// which must start with `expected` and hold each of `also`: on another,
+/// says what it was.
+fn verdict(vm: &mut Vm, named: &str, expected: &str, also: &[&str]) -> Result<(), String> {
     vm.expect(&format!("sysupdate: {named} is an update being tried"))?;
     vm.expect(&format!("sysupdate: {named} "))?;
     // The rest of the line, once it has all come.
@@ -200,7 +203,7 @@ fn verdict(vm: &mut Vm, named: &str, expected: &str) -> Result<(), String> {
     vm.expect("\n")?;
     let log = vm.log();
     let line = log.get(start..vm.cursor).unwrap_or_default();
-    if line.starts_with(expected) {
+    if line.starts_with(expected) && also.iter().all(|part| line.contains(part)) {
         Ok(())
     } else {
         Err(format!("the health check said of {named}: {}", line.trim_end()))
