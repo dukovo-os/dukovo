@@ -110,7 +110,8 @@ fn first_boot(vm: &mut Vm, _case: &Case) -> Result<(), String> {
             &format!("Slot B:   firmware {good}, running"),
             "Firmware package: taken",
             SPARE_MAC,
-            "root\t",
+            // A tab splits the fields: the screen shows it as spaces.
+            "root    ",
         ],
     )?;
     stage(vm, "newer", 'A', &format!("firmware {good}"))?;
