@@ -115,6 +115,10 @@ fn first_boot(vm: &mut Vm, _case: &Case) -> Result<(), String> {
         ],
     )?;
     stage(vm, "newer", 'A', &format!("firmware {good}"))?;
+    // QEMU writes the boot image to a snapshot it drops when it ends: what
+    // is synced now is written to the image, for the second boot.
+    run(vm, "sync && echo \"synced: $((4 * 4))\"", &["synced: 16"])?;
+    vm.monitor("commit boot")?;
     power_off(vm)
 }
 

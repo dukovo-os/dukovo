@@ -99,9 +99,11 @@ const CABLE_DUMP: &str = "<cable dump>";
 /// first boot's alone: a case's second boot runs without it, as a
 /// machine that lost a device while it was off (`firmware-fallback`).
 pub const FIRST_BOOT_ONLY: &str = "<first boot only>";
-/// A [`SecondBoot`]'s command line that boots the image again as the
-/// first boot left it, with the command line it had: an installed
-/// system's second boot keeps its root and its slot state.
+/// A [`SecondBoot`]'s command line that boots the image again with the
+/// command line it had, as far as the first boot's script wrote it to the
+/// image with the monitor's `commit boot` (QEMU otherwise drops what the
+/// guest writes to it): an installed system's second boot keeps its root
+/// and its slot state.
 pub const AS_IT_WAS: &str = "<as it was>";
 /// In a case's `qemu`, the machine runs as under Hyper-V (ADR 0423):
 /// with KVM, its CPU has [`HYPERV_CPU`]'s enlightenments and the machine
