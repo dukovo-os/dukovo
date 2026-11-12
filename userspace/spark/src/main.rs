@@ -546,7 +546,8 @@ fn build(root: &Dir, volumes: bool, compress: &[&str]) -> bool {
     // without them, as a power cut can leave one, gets them again; then a
     // whole machine restored from its backups takes its place.
     if let Some(disk) = &disk {
-        restore_settings(root, disk, boot.fallback);
+        let asked = boot.fallback.is_none().then(|| asked(root, disk, boot.system())).flatten();
+        restore_settings(root, disk, boot.fallback.or(asked), asked.is_some());
         restore_machine(root, disk);
     }
     let snapshots = disk.as_deref().and_then(|disk| mount_root(root, disk, boot.system()));
@@ -848,15 +849,27 @@ fn slot_boot(root: &Dir) -> Boot {
         .unwrap_or_default()
 }
 
+/// The slot of the update whose settings from before it the owner asked
+/// to put back at this start, by `sysupdate rollback
+/// --settings-from-before` (ADR 0454): the other slot's, when the ask
+/// names `running`, the slot that starts, and they are not back yet.
+fn asked(root: &Dir, disk: &str, running: Slot) -> Option<Slot> {
+    let update = |name: &str| format!("volumes/{disk}/{}/{name}", restore::UPDATE);
+    let named = root.read_file(&update(restore::ASKED)).ok()?;
+    let slot = Slot::named(core::str::from_utf8(&named).ok()?.trim())?;
+    (slot == running && root.stat(&update(restore::RESTORED)).is_err()).then(|| running.other())
+}
+
 /// Puts the settings from before an update back after it fell back, the
-/// update in the slot `fallback`, before any service starts (ADR 0454),
+/// update in the slot `fallback`, or the owner `asked` for them with a
+/// rollback, before any service starts (ADR 0454),
 /// on the root on `/volumes/<disk>`: the failed attempt's are kept beside
 /// the snapshot they replace, for a look at what went wrong. Each step is
 /// decided from what is there, so that a power cut between two leaves
 /// the next start to carry on ([`restore::next`]). A root without
 /// `@settings`, as such a cut can leave one, gets an empty one, which the
 /// defaults then fill.
-fn restore_settings(root: &Dir, disk: &str, fallback: Option<Slot>) {
+fn restore_settings(root: &Dir, disk: &str, fallback: Option<Slot>, asked: bool) {
     let top = |name: &str| format!("volumes/{disk}/{name}");
     let update = |name: &str| format!("volumes/{disk}/{}/{name}", restore::UPDATE);
     let is_dir = |path: &str| root.stat(path).is_ok_and(|stat| stat.kind == FileKind::Directory);
@@ -885,6 +898,17 @@ fn restore_settings(root: &Dir, disk: &str, fallback: Option<Slot>) {
             return;
         }
         match step {
+            Step::KeepFailed if asked => {
+                let slot = fallback.map_or("?", Slot::letter);
+                println!(
+                    "spark: the rollback asked for the settings from before the update in slot \
+                     {slot}: putting them back"
+                );
+                println!(
+                    "spark: the settings they replace are kept in /{}",
+                    update(restore::FAILED_SETTINGS)
+                );
+            }
             Step::KeepFailed => {
                 let slot = fallback.map_or("?", Slot::letter);
                 println!(

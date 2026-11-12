@@ -21,7 +21,7 @@ sysupdate - fetch, stage, try, prove and roll back updates of Dukovo's system
 
 *sysupdate unstage*
 
-*sysupdate rollback*
+*sysupdate rollback* [*--settings-from-before* | *--keep-settings*]
 
 *sysupdate firmware* [*stage* [*--version* _version_] [_repository_] | *remove*]
 
@@ -160,7 +160,19 @@ next stage.
 *rollback* makes the previous version the default from the next restart
 on. The settings stay as they are: each release writes only what the
 release before it can read. It refuses while an update is staged or
-being tried.
+being tried. That rule covers one step, so when the update server
+offered a release between the two versions, *rollback* asks first which
+settings to take, and says what each choice keeps:
+
+*--settings-from-before*
+	Puts the settings from before the update back at the next start,
+	as a fallback does: Spark keeps today's in
+	_@snapshots/update/settings-failed_ and makes _@settings_ a copy of
+	the snapshot the stage took. Only the version the update came from
+	has such a snapshot.
+
+*--keep-settings*
+	Keeps the settings as they are, whatever the previous version is.
 
 *health* is the health check, which Spark starts at every start as the
 service _sysupdate_, after every other. It removes a half-built slot,

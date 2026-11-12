@@ -37,8 +37,9 @@ use crate::sysupdate::{self, firmware, place, stage};
 use crate::util::{self, Fail, fail};
 use crate::{bundles, power};
 
-const USAGE: &str = "usage: update [check | apply [--yes] | undo ITEM | hold ITEM | unhold ITEM | \
-                     history], where ITEM is system, firmware or an app's ID";
+const USAGE: &str = "usage: update [check | apply [--yes] | undo ITEM [--settings-from-before | \
+                     --keep-settings] | hold ITEM | unhold ITEM | history], where ITEM is system, \
+                     firmware or an app's ID";
 
 /// How long updated waits after the machine starts before its first
 /// check: the network is up by then.
@@ -52,9 +53,18 @@ pub fn update(args: &mut Args) -> Result<i32, Fail> {
     let action = args.subcommand().map(|a| a.to_string_lossy().into_owned());
     let mut yes = false;
     let mut item = None;
+    let mut keep = sysupdate::Keep::Unsaid;
     while let Some(arg) = args.next()? {
         match arg {
             Arg::Long(name) if name == "yes" && action.as_deref() == Some("apply") => yes = true,
+            Arg::Long(name)
+                if name == "settings-from-before" && action.as_deref() == Some("undo") =>
+            {
+                keep = sysupdate::Keep::FromBefore;
+            }
+            Arg::Long(name) if name == "keep-settings" && action.as_deref() == Some("undo") => {
+                keep = sysupdate::Keep::Today;
+            }
             Arg::Operand(operand)
                 if matches!(action.as_deref(), Some("undo" | "hold" | "unhold"))
                     && item.is_none() =>
@@ -68,7 +78,7 @@ pub fn update(args: &mut Args) -> Result<i32, Fail> {
     match action.as_deref() {
         None | Some("check") => check(),
         Some("apply") => apply(yes),
-        Some("undo") => undo(&needs_item()?),
+        Some("undo") => undo(&needs_item()?, keep),
         Some("hold") => hold(&needs_item()?, true),
         Some("unhold") => hold(&needs_item()?, false),
         Some("history") => history(),
@@ -219,7 +229,7 @@ fn stage_offered() -> Result<Option<String>, Fail> {
 }
 
 /// `update undo ITEM`.
-fn undo(item: &str) -> Result<i32, Fail> {
+fn undo(item: &str, keep: sysupdate::Keep) -> Result<i32, Fail> {
     if item != "system" && item != "firmware" {
         return bundle(&["rollback", item]);
     }
@@ -249,7 +259,7 @@ fn undo(item: &str) -> Result<i32, Fail> {
         ),
         _ => {}
     }
-    sysupdate::rollback()
+    sysupdate::rollback(keep)
 }
 
 /// `update hold ITEM` (`on`) or `update unhold ITEM`.
@@ -378,7 +388,7 @@ fn round(settings: &Settings) -> bool {
     let mut staged = false;
     if let Ok(Some((said, back))) = withdrawn_running() {
         if back && settings.unattended {
-            match sysupdate::rollback() {
+            match sysupdate::rollback(sysupdate::Keep::Today) {
                 Ok(_) => tell(&format!("{said}; going back to it, as this machine is unattended")),
                 Err(why) => tell(&format!("{said}; cannot go back: {}", why.message)),
             }

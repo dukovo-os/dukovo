@@ -259,6 +259,20 @@ previous version the default from the next restart on. Your settings
 stay as they are: each release writes only what the release before it
 can read, so nothing you changed since the update is lost.
 
+That rule covers one step. When the update skipped a release, the
+version you go back to may not read the settings as the newer one wrote
+them, so the rollback stops and asks you to choose:
+
+- `elevate sysupdate rollback --settings-from-before` puts back the
+  settings as they were before the update. What you changed since is
+  kept in `/volumes/<disk>/@snapshots/update/settings-failed`, so you
+  can copy back what you need.
+- `elevate sysupdate rollback --keep-settings` keeps them as they are.
+
+You can also ask for the settings from before the update when the
+rollback does not stop, for example when the update changed a setting
+in a way you do not want.
+
 ## Firmware
 
 Closed firmware, such as your processor's microcode, is not part of the

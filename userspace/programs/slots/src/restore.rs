@@ -35,6 +35,11 @@ pub const FAILED_SETTINGS: &str = "settings-failed";
 pub const ABOUT: &str = "about";
 /// The mark that a fallback put the settings back.
 pub const RESTORED: &str = "restored";
+/// The owner's ask, by `sysupdate rollback --settings-from-before`, that
+/// the next start of the slot it names, the version before the update,
+/// put the settings from before the update back, as a fallback does:
+/// the slot's letter.
+pub const ASKED: &str = "settings-asked";
 
 /// What is there, as each step looks.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

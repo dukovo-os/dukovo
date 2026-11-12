@@ -157,7 +157,6 @@ machine with AMT, an AMD machine and a laptop; see
 | A start without graphics on the Troubleshooting menu, and the window manager's screen check (ADR 0501) | No graphical start yet: every start is text | 1.1, with the window manager |
 | `changes --since` a date (ADR 0500) | `--between` and `--list` compare any two starts kept | A need |
 | The owner told of a fallback at sign-in and on the web console, with the offer to send a report (ADRs 0453, 0456) | The unified updater's notifications | 15d |
-| `rollback --settings-from-before`, shown before a rollback past the release before (ADR 0454) | The two-version rule covers one step | 15d |
 | sysupdate's own narrower capabilities in place of the administrator's access (ADR 0455) | Needs a view of the Btrfs root that leaves out `@users` | 15d |
 | Settings migrations, run before the services start, each with tests in both directions (ADR 0454) | No release has changed a settings format yet | The first release that does |
 | On a mirror, a try GRUB counts on one disk's EFI system partition is not counted on the other's until the system next writes the state (ADR 0452) | A machine must start from each disk in turn to try an update more than three times | A need |

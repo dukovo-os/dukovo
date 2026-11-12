@@ -11,7 +11,7 @@ update - see, take, hold back and undo every update: the system, its firmware se
 
 *update* [*check*]++
 *update apply* [*--yes*]++
-*update undo* _item_++
+*update undo* _item_ [*--settings-from-before* | *--keep-settings*]++
 *update hold* _item_++
 *update unhold* _item_++
 *update history*
@@ -46,8 +46,10 @@ the apps are *bundle*(1)'s; update asks each and says it in one place.
 	default again, as *sysupdate rollback* does, with the firmware set
 	it named. *firmware* does the same when the previous version is
 	the same system with another firmware set, and says to undo the
-	system when it is another system too. An app's ID goes back to
-	the app's version before, as *bundle rollback* does.
+	system when it is another system too. *--settings-from-before*
+	and *--keep-settings* choose the system's settings, as for
+	*sysupdate rollback*. An app's ID goes back to the app's version
+	before, as *bundle rollback* does.
 
 *hold* _item_
 	Holds one thing back at the version the channel offers now, or the
