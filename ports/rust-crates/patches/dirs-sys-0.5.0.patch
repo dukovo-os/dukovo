@@ -1,0 +1,50 @@
+SPDX-FileCopyrightText: Simon Ochsenreither and the dirs-sys authors
+SPDX-FileCopyrightText: 2026 The Dukovo contributors
+SPDX-License-Identifier: MIT OR Apache-2.0
+
+dirs-sys without option-ext, which rustic_core (backup(8)'s restic
+repositories, ADR 0465) brings through dirs: option-ext is under the
+MPL-2.0, which no program of the system may link (kernel/deny.toml), and
+dirs-sys uses only its Option::contains, which is a comparison with
+Some.
+
+--- a/dirs-sys-0.5.0/Cargo.toml
++++ b/dirs-sys-0.5.0/Cargo.toml
+@@ -28,9 +28,6 @@
+ name = "dirs_sys"
+ path = "src/lib.rs"
+ 
+-[dependencies.option-ext]
+-version = "0.2.0"
+-
+ [target.'cfg(target_os = "redox")'.dependencies.redox_users]
+ version = "0.5"
+ default-features = false
+--- a/dirs-sys-0.5.0/src/lib.rs
++++ b/dirs-sys-0.5.0/src/lib.rs
+@@ -1,5 +1,3 @@
+-extern crate option_ext;
+-
+ use std::ffi::OsString;
+ use std::path::PathBuf;
+ 
+--- a/dirs-sys-0.5.0/src/xdg_user_dirs.rs
++++ b/dirs-sys-0.5.0/src/xdg_user_dirs.rs
+@@ -6,8 +6,6 @@
+ use std::path::{Path, PathBuf};
+ use std::str;
+ 
+-use option_ext::OptionExt;
+-
+ /// Returns all XDG user directories obtained from $(XDG_CONFIG_HOME)/user-dirs.dirs.
+ pub fn all(home_dir_path: &Path, user_dir_file_path: &Path) -> HashMap<String, PathBuf> {
+     let bytes = read_all(user_dir_file_path).unwrap_or(Vec::new());
+@@ -34,7 +32,7 @@
+         let key = if key.starts_with(b"XDG_") && key.ends_with(b"_DIR") {
+             match str::from_utf8(&key[4..key.len()-4]) {
+                 Ok(key) =>
+-                    if user_dir.contains(&key) {
++                    if user_dir == Some(key) {
+                         single_dir_found = true;
+                         key
+                     } else if user_dir.is_none() {

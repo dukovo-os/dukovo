@@ -56,6 +56,9 @@ ridlc = { path = "../ridlc" }
 # notes and the decision records (ADR 0419).
 pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
 rustc-demangle = "0.1"
+# SHA-256, for the restic-backup boot test's S3 server, which checks AWS's
+# signatures (ADR 0465).
+sha2 = "0.10"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.9"

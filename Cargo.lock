@@ -844,6 +844,7 @@ dependencies = [
  "rustc-demangle",
  "serde",
  "serde_json",
+ "sha2",
  "slots",
  "toml",
 ]

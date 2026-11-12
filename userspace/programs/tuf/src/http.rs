@@ -8,6 +8,10 @@
 //!
 //! One connection per request, closed after it, and no compression. A
 //! redirect is followed to http or https alike, five at most.
+//!
+//! [`exchange`] sends any other request, with its own headers and body,
+//! for a client of an interface such as S3's (backup(8), ADR 0465),
+//! which signs each request and reads every status itself.
 
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
@@ -361,14 +365,20 @@ fn connect(url: &Url) -> Result<Connection, Error> {
     Ok(Connection::Tls(Box::new(stream)))
 }
 
+/// The Host header of a request for `url`: its host, and its port when
+/// the address names one.
+#[must_use]
+pub fn host_header(url: &Url) -> String {
+    match url.port() {
+        Some(port) => format!("{}:{port}", url.host()),
+        None => url.host().to_string(),
+    }
+}
+
 /// The request for `url`.
 fn request(url: &Url) -> String {
     let target = url.path_and_query();
-    let host = url.host();
-    let host = match url.port() {
-        Some(port) => format!("{host}:{port}"),
-        None => host.to_string(),
-    };
+    let host = host_header(url);
     format!(
         "GET {target} HTTP/1.1\r\nHost: {host}\r\nUser-Agent: Dukovo-tuf/1\r\n\
          Accept: */*\r\nAccept-Encoding: identity\r\nConnection: close\r\n\r\n"
@@ -397,6 +407,59 @@ pub fn get(url: &Url) -> Result<Body, Error> {
 /// otherwise as [`get`].
 pub fn get_https(url: &Url) -> Result<Body, Error> {
     fetch(url, true)
+}
+
+/// An answer to [`exchange`]: its status, and its body to read as it
+/// arrives.
+#[derive(Debug)]
+pub struct Answer {
+    /// The status, such as 200 or 404.
+    pub status: u16,
+    /// The body; none for a HEAD request.
+    pub body: Body,
+}
+
+/// Sends `method` for `url` with `headers` besides Host, Content-Length
+/// and Connection, and `body`, and gives the answer whatever its status,
+/// following no redirect.
+///
+/// # Errors
+///
+/// [`Error::Url`] for an address that is not http or https, or a header
+/// with a line break in it; a failure to connect, send or read the
+/// answer's head.
+pub fn exchange(
+    method: &str,
+    url: &Url,
+    headers: &[(&str, &str)],
+    body: &[u8],
+) -> Result<Answer, Error> {
+    let line_break = |text: &str| text.contains(['\r', '\n']);
+    if line_break(method)
+        || headers.iter().any(|(name, value)| line_break(name) || line_break(value))
+    {
+        return Err(Error::Url("a request's header has a line break in it".into()));
+    }
+    let mut head = format!(
+        "{method} {} HTTP/1.1\r\nHost: {}\r\nUser-Agent: Dukovo/1\r\n\
+         Accept-Encoding: identity\r\nConnection: close\r\nContent-Length: {}\r\n",
+        url.path_and_query(),
+        host_header(url),
+        body.len()
+    );
+    for (name, value) in headers {
+        head.push_str(&format!("{name}: {value}\r\n"));
+    }
+    head.push_str("\r\n");
+    let mut connection = connect(url)?;
+    connection.write_all(head.as_bytes())?;
+    connection.write_all(body)?;
+    connection.flush()?;
+    let mut reader: BufReader<Box<dyn Read + Send>> =
+        BufReader::with_capacity(64 * 1024, Box::new(connection));
+    let answer = read_head(&mut reader)?;
+    let framing = if method == "HEAD" { Framing::Length(0) } else { answer.framing };
+    Ok(Answer { status: answer.status, body: Body::new(reader, framing) })
 }
 
 /// Whether `url` may be fetched: any http or https address, or only an
@@ -521,6 +584,52 @@ mod tests {
             requests
         });
         (url, server)
+    }
+
+    #[test]
+    fn an_exchange_sends_its_method_headers_and_body() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let url = Url::parse(&format!("http://{address}/bucket/a%20b?x-id=1")).unwrap();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut head = String::new();
+            loop {
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                if line == "\r\n" || line.is_empty() {
+                    break;
+                }
+                head.push_str(&line);
+            }
+            let length: usize = head
+                .lines()
+                .find_map(|l| l.strip_prefix("Content-Length: "))
+                .unwrap()
+                .parse()
+                .unwrap();
+            let mut body = vec![0; length];
+            reader.read_exact(&mut body).unwrap();
+            stream
+                .write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 7\r\n\r\ndenied!")
+                .unwrap();
+            (head, body)
+        });
+        let mut answer =
+            exchange("PUT", &url, &[("x-amz-date", "20130524T000000Z")], b"hello").unwrap();
+        let mut text = String::new();
+        answer.body.read_to_string(&mut text).unwrap();
+        assert_eq!((answer.status, text.as_str()), (403, "denied!"));
+        let (head, body) = server.join().unwrap();
+        assert!(head.starts_with("PUT /bucket/a%20b?x-id=1 HTTP/1.1\r\n"), "{head}");
+        assert!(head.contains(&format!("\r\nHost: {address}\r\n")), "{head}");
+        assert!(head.contains("\r\nContent-Length: 5\r\n"), "{head}");
+        assert!(head.contains("\r\nx-amz-date: 20130524T000000Z\r\n"), "{head}");
+        assert_eq!(body, b"hello");
+        // A header that would start another is refused before any
+        // connection is made.
+        assert!(matches!(exchange("GET", &url, &[("a", "b\r\nEvil: 1")], b""), Err(Error::Url(_))));
     }
 
     #[test]

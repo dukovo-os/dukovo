@@ -704,6 +704,10 @@ pub fn doctor(ctx: &Ctx) -> Result<()> {
         "the nfs-kerberos boot test, which checks only the guest's part without them",
         "krb5-user and nfs-common",
     );
+    // Only the restic-backup boot test reads its repositories with
+    // Linux's restic, and leaves that part out without it; CI's boot jobs
+    // install it.
+    note_programs("restic", &["restic"], "the restic-backup boot test's last steps", "restic");
     match crate::lab::tool_found() {
         Some(path) => println!("  ok       {:<15} {}", "dukovo-lab", path.display()),
         None => println!(

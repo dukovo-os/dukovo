@@ -239,7 +239,8 @@ which the backup disk already holds. A stream can also go to a file with
 
 `backup` keeps encrypted copies of `/users`, `/shared`,
 `/system/settings` and the apps installed for everyone, `/applications`,
-on a USB disk or on a server reached over SSH, every day by default. The first backup of each is whole; each one after holds
+on a USB disk, a NAS's share, a server reached over SSH or S3 storage
+in the cloud, every day by default. The first backup of each is whole; each one after holds
 only what changed. A disk of any filesystem works, FAT and exFAT
 included, and a server needs only SSH and a shell: what it keeps is a
 folder of files, each a send stream (as above) encrypted with age, so
@@ -295,6 +296,38 @@ Each backup is tagged with a key made from the recovery key, so a backup
 that someone else put on the disk or the server is refused rather than
 restored.
 
+### Shares and cloud storage
+
+A destination can also keep its backups as a restic repository: each
+file is cut into pieces by its content, and a piece any backup already
+holds is stored once, so many backups, of many places, cost little more
+than one. The recovery key is the repository's password, and Linux's
+`restic` reads it too. Choose it with `--format restic`. A NAS's share
+is mounted first and named as a folder:
+
+```sh
+elevate smb mount -o user=ann //nas/backups /volumes/nas
+elevate backup add --format restic nas /volumes/nas
+```
+
+S3 storage, from Amazon or any of the services and servers that answer
+the same calls (Backblaze B2, Wasabi, Cloudflare R2, MinIO, Garage),
+always keeps this format. Its access key comes from the environment, as
+Amazon's tools take it:
+
+```sh
+export AWS_ACCESS_KEY_ID=AKIA... AWS_SECRET_ACCESS_KEY=...
+elevate backup add --append-only cloud s3://s3.eu-central-1.amazonaws.com/family-backups
+```
+
+After each round, a restic destination keeps the newest backup of each
+place, one a day for a week, one a week for a month and one a month for
+a year (`daily`, `weekly` and `monthly` in backup.toml(5)), and removes
+the rest. With `--append-only` it never removes anything: give it an
+access key that cannot delete, and even someone who takes over the
+computer cannot destroy its backups. Removing old backups is then done
+with a key that can, from elsewhere.
+
 ### Restoring a whole machine
 
 When a computer is lost, or its disk dies, install Dukovo on the new one,
@@ -320,8 +353,7 @@ in `/snapshots/machine-restore` until `subvolume delete` removes it.
 
 ## What is on the way
 
-Backups to cloud storage; downloading updates from the update
-server in waves, through one `update` command for the system, firmware
+Downloading updates from the update server in waves, through one `update` command for the system, firmware
 and apps, which also keeps Rescue up to date; and repairing GRUB and the
 EFI system partition from an install stick. This chapter grows with
 each.

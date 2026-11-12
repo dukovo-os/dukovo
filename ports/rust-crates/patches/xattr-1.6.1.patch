@@ -1,0 +1,178 @@
+SPDX-FileCopyrightText: Steven Allen and the xattr crate authors
+SPDX-FileCopyrightText: 2026 The Dukovo contributors
+SPDX-License-Identifier: MIT OR Apache-2.0
+
+xattr builds on Radix as an unsupported platform, where every call
+fails, so rustic_core (backup(8)'s restic repositories, ADR 0465) kept
+and restored no extended attributes. Radix's C library has Linux's
+calls of sys/xattr.h (getxattr, lsetxattr, flistxattr and the rest), so
+on Radix the crate now calls them, in a module of its own, as the
+libc crate does not declare them for Radix.
+
+--- a/xattr-1.6.1/src/sys/mod.rs
++++ b/xattr-1.6.1/src/sys/mod.rs
+@@ -30,5 +30,6 @@
+ 
+ platforms! {
+     "android"; "linux"; "macos"; "hurd" => linux_macos,
+-    "freebsd"; "netbsd" => bsd
++    "freebsd"; "netbsd" => bsd,
++    "radix" => radix
+ }
+--- /dev/null
++++ b/xattr-1.6.1/src/sys/radix.rs
+@@ -0,0 +1,154 @@
++//! Radix: the C library's calls of sys/xattr.h, which take and give
++//! what Linux's do, and which the libc crate does not declare for Radix.
++
++use std::ffi::{CString, OsStr, OsString, c_char, c_int, c_void};
++use std::io;
++use std::os::unix::ffi::OsStrExt;
++use std::os::unix::io::{AsRawFd, BorrowedFd};
++use std::path::Path;
++use std::ptr;
++
++/// ENODATA, which Radix's getxattr gives for a name a file does not have.
++pub const ENOATTR: i32 = 61;
++pub const ERANGE: i32 = 34;
++
++unsafe extern "C" {
++    fn getxattr(path: *const c_char, name: *const c_char, value: *mut c_void, size: usize) -> isize;
++    fn lgetxattr(path: *const c_char, name: *const c_char, value: *mut c_void, size: usize) -> isize;
++    fn fgetxattr(fd: c_int, name: *const c_char, value: *mut c_void, size: usize) -> isize;
++    fn setxattr(
++        path: *const c_char,
++        name: *const c_char,
++        value: *const c_void,
++        size: usize,
++        flags: c_int,
++    ) -> c_int;
++    fn lsetxattr(
++        path: *const c_char,
++        name: *const c_char,
++        value: *const c_void,
++        size: usize,
++        flags: c_int,
++    ) -> c_int;
++    fn fsetxattr(fd: c_int, name: *const c_char, value: *const c_void, size: usize, flags: c_int)
++        -> c_int;
++    fn removexattr(path: *const c_char, name: *const c_char) -> c_int;
++    fn lremovexattr(path: *const c_char, name: *const c_char) -> c_int;
++    fn fremovexattr(fd: c_int, name: *const c_char) -> c_int;
++    fn listxattr(path: *const c_char, list: *mut c_char, size: usize) -> isize;
++    fn llistxattr(path: *const c_char, list: *mut c_char, size: usize) -> isize;
++    fn flistxattr(fd: c_int, list: *mut c_char, size: usize) -> isize;
++}
++
++/// An iterator over a set of extended attributes names.
++#[derive(Default, Clone)]
++pub struct XAttrs {
++    data: Box<[u8]>,
++    offset: usize,
++}
++
++impl Iterator for XAttrs {
++    type Item = OsString;
++    fn next(&mut self) -> Option<OsString> {
++        let data = &self.data[self.offset..];
++        if data.is_empty() {
++            return None;
++        }
++        // Each name ends with a NUL.
++        let end = data.iter().position(|&b| b == 0).unwrap_or(data.len());
++        self.offset += (end + 1).min(data.len());
++        Some(OsStr::from_bytes(&data[..end]).to_owned())
++    }
++
++    fn size_hint(&self) -> (usize, Option<usize>) {
++        if self.data.len() == self.offset {
++            (0, Some(0))
++        } else {
++            (1, None)
++        }
++    }
++}
++
++fn c_string(bytes: &[u8]) -> io::Result<CString> {
++    CString::new(bytes).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))
++}
++
++/// What `call` gives into a buffer of the size it says it needs, asked
++/// again while the value grows between the two calls.
++fn sized(mut call: impl FnMut(*mut c_void, usize) -> isize) -> io::Result<Vec<u8>> {
++    loop {
++        let size = call(ptr::null_mut(), 0);
++        let Ok(size) = usize::try_from(size) else {
++            return Err(io::Error::last_os_error());
++        };
++        let mut buffer = vec![0u8; size];
++        let got = call(buffer.as_mut_ptr().cast(), buffer.len());
++        if let Ok(got) = usize::try_from(got) {
++            buffer.truncate(got);
++            return Ok(buffer);
++        }
++        let error = io::Error::last_os_error();
++        if error.raw_os_error() != Some(ERANGE) {
++            return Err(error);
++        }
++    }
++}
++
++fn done(result: c_int) -> io::Result<()> {
++    if result == 0 { Ok(()) } else { Err(io::Error::last_os_error()) }
++}
++
++fn names(data: Vec<u8>) -> XAttrs {
++    XAttrs { data: data.into_boxed_slice(), offset: 0 }
++}
++
++pub fn get_fd(fd: BorrowedFd<'_>, name: &OsStr) -> io::Result<Vec<u8>> {
++    let name = c_string(name.as_bytes())?;
++    // SAFETY: the name is a C string and the buffer holds `size` bytes.
++    sized(|value, size| unsafe { fgetxattr(fd.as_raw_fd(), name.as_ptr(), value, size) })
++}
++
++pub fn set_fd(fd: BorrowedFd<'_>, name: &OsStr, value: &[u8]) -> io::Result<()> {
++    let name = c_string(name.as_bytes())?;
++    // SAFETY: the name is a C string and the value holds `len` bytes.
++    done(unsafe { fsetxattr(fd.as_raw_fd(), name.as_ptr(), value.as_ptr().cast(), value.len(), 0) })
++}
++
++pub fn remove_fd(fd: BorrowedFd<'_>, name: &OsStr) -> io::Result<()> {
++    let name = c_string(name.as_bytes())?;
++    // SAFETY: the name is a C string.
++    done(unsafe { fremovexattr(fd.as_raw_fd(), name.as_ptr()) })
++}
++
++pub fn list_fd(fd: BorrowedFd<'_>) -> io::Result<XAttrs> {
++    // SAFETY: the buffer holds `size` bytes.
++    sized(|list, size| unsafe { flistxattr(fd.as_raw_fd(), list.cast(), size) }).map(names)
++}
++
++pub fn get_path(path: &Path, name: &OsStr, deref: bool) -> io::Result<Vec<u8>> {
++    let (path, name) = (c_string(path.as_os_str().as_bytes())?, c_string(name.as_bytes())?);
++    let call = if deref { getxattr } else { lgetxattr };
++    // SAFETY: both are C strings and the buffer holds `size` bytes.
++    sized(|value, size| unsafe { call(path.as_ptr(), name.as_ptr(), value, size) })
++}
++
++pub fn set_path(path: &Path, name: &OsStr, value: &[u8], deref: bool) -> io::Result<()> {
++    let (path, name) = (c_string(path.as_os_str().as_bytes())?, c_string(name.as_bytes())?);
++    let call = if deref { setxattr } else { lsetxattr };
++    // SAFETY: both are C strings and the value holds `len` bytes.
++    done(unsafe { call(path.as_ptr(), name.as_ptr(), value.as_ptr().cast(), value.len(), 0) })
++}
++
++pub fn remove_path(path: &Path, name: &OsStr, deref: bool) -> io::Result<()> {
++    let (path, name) = (c_string(path.as_os_str().as_bytes())?, c_string(name.as_bytes())?);
++    let call = if deref { removexattr } else { lremovexattr };
++    // SAFETY: both are C strings.
++    done(unsafe { call(path.as_ptr(), name.as_ptr()) })
++}
++
++pub fn list_path(path: &Path, deref: bool) -> io::Result<XAttrs> {
++    let path = c_string(path.as_os_str().as_bytes())?;
++    let call = if deref { listxattr } else { llistxattr };
++    // SAFETY: the path is a C string and the buffer holds `size` bytes.
++    sized(|list, size| unsafe { call(path.as_ptr(), list.cast(), size) }).map(names)
++}
