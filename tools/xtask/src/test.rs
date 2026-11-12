@@ -3761,11 +3761,14 @@ fn make_test_updates(ctx: &Ctx, built: &Built, dir: &Path) -> Result<()> {
     std::fs::remove_dir_all(&staging).context(|| format!("removing {}", staging.display()))
 }
 
-/// The boot tests' update server (ADR 0466), as [`make_update_server`]
-/// lays it out in the boot tests' folder: `system/`, the repository it
-/// serves; `keys/`, which signed it; `stale-timestamp.json`, a timestamp
-/// it signed before its newest, to replay; `expected.toml`, how many
-/// files each update fetches; and the bridge release's update file.
+/// The boot tests' update server (ADRs 0466 and 0467), as
+/// [`make_update_server`] lays it out in the boot tests' folder:
+/// `server/`, a stand-in for the update server's `/`, where its own
+/// scripts published and signed what it serves; `system/`, a link to the
+/// repository it serves; `keys/`, the release keys; `stale-timestamp.json`,
+/// a timestamp it signed before its newest, to replay; `expected.toml`,
+/// how many files each update fetches; and the bridge release's update
+/// file.
 pub const TEST_SERVER: &str = "update-server";
 
 /// The boot test that reads [`TEST_SERVER`] over the network.
@@ -3799,12 +3802,16 @@ fn test_update_server(ctx: &Ctx, built: &Built, dir: &Path, cases: &[&Case]) -> 
 }
 
 /// Lays out [`TEST_SERVER`] in `dir`: a year of an update server's life,
-/// as far as a machine running this build sees it. Its keys start as
-/// this machine's, which the build trusts, and the timestamp's and the
-/// snapshot's have been replaced since, so that a machine walks from the
-/// first root to the third. It offers [`TEST_SERVER_RELEASES`], with the
-/// stable channel on `year` and the beta channel on `old`, and has been
-/// signed again after a timestamp was kept to replay.
+/// as far as a machine running this build sees it. The release keys start
+/// as this machine's, which the build trusts; the second root names the
+/// server's online key for snapshot and timestamp, and the third replaces
+/// the release keys' own timestamp key, so that a machine walks from the
+/// first root to the third. The repository offers
+/// [`TEST_SERVER_RELEASES`], with the stable channel on `year` and the
+/// beta channel on `old`. It is deployed to the server as `ob release
+/// deploy` deploys, and published, signed again after a timestamp was
+/// kept to replay, and refused a damaged deploy by tools/update-server's
+/// own scripts, run in a folder standing in for the server's `/`.
 fn make_update_server(ctx: &Ctx, built: &Built, dir: &Path) -> Result<()> {
     let out = dir.join(TEST_SERVER);
     for path in [&out, &dir.join("update-server-staging")] {
@@ -3822,12 +3829,37 @@ fn make_update_server(ctx: &Ctx, built: &Built, dir: &Path) -> Result<()> {
         let entry = entry.context(|| format!("reading {}", own.display()))?;
         process::copy(&entry.path(), &keys.join(entry.file_name()))?;
     }
-    for role in ["timestamp", "snapshot"] {
-        crate::release::system_release(
-            ctx,
-            &["keys".as_ref(), "--rotate".as_ref(), role.as_ref(), keys.as_os_str()],
-        )?;
+    // The server, as setup.sh sets it up: its scripts, system-release and
+    // its online key, which the release keys' next root names.
+    let server = out.join("server");
+    let home = server.join("var/lib/dukovo-system");
+    let incoming = server.join("var/lib/dukovo-system-incoming");
+    let lib = server.join("usr/local/lib/dukovo-system");
+    for folder in [&home, &incoming, &lib, &server.join("srv/dukovo-system")] {
+        process::create_dir(folder)?;
     }
+    for script in ["system-site.sh", "system-publish.sh", "system-refresh.sh"] {
+        process::copy(&ctx.root.join("tools/update-server").join(script), &lib.join(script))?;
+    }
+    process::copy(&crate::release::tool_for(ctx, false)?, &lib.join("system-release"))?;
+    let online = home.join("online.json");
+    crate::release::system_release(
+        ctx,
+        &[
+            "online-key".as_ref(),
+            "--out".as_ref(),
+            online.as_os_str(),
+            home.join("online.key").as_os_str(),
+        ],
+    )?;
+    crate::release::system_release(
+        ctx,
+        &["keys".as_ref(), "--online".as_ref(), online.as_os_str(), keys.as_os_str()],
+    )?;
+    crate::release::system_release(
+        ctx,
+        &["keys".as_ref(), "--rotate".as_ref(), "timestamp".as_ref(), keys.as_os_str()],
+    )?;
     // The releases' trees: this build's slot, then bridge's changes, then
     // year's on top of bridge's.
     let write = |path: PathBuf, bytes: &[u8]| -> Result<()> {
@@ -3878,7 +3910,8 @@ fn make_update_server(ctx: &Ctx, built: &Built, dir: &Path) -> Result<()> {
     );
     write(out.join("expected.toml"), expected.as_bytes())?;
 
-    let repo = out.join("system");
+    // The release keys' repository, then deployed to the server.
+    let repo = staging.join("repository");
     let repo_args = |words: &[&str]| -> Vec<std::ffi::OsString> {
         let mut args: Vec<std::ffi::OsString> = vec![words[0].into()];
         args.extend(["--repo".into(), repo.clone().into_os_string()]);
@@ -3894,8 +3927,29 @@ fn make_update_server(ctx: &Ctx, built: &Built, dir: &Path) -> Result<()> {
         let version = test_server_version(name);
         crate::release::system_release(ctx, &repo_args(&["channel", channel, &version]))?;
     }
-    process::copy(&repo.join("metadata/timestamp.json"), &out.join("stale-timestamp.json"))?;
-    crate::release::system_release(ctx, &repo_args(&["refresh"]))?;
+    deploy_to_test_server(ctx, &repo, &incoming)?;
+    server_script(ctx, &server, "system-publish.sh", true)?;
+    let served = out.join("system");
+    std::os::unix::fs::symlink("server/srv/dukovo-system/system", &served)
+        .context(|| format!("linking {}", served.display()))?;
+    process::copy(&served.join("metadata/timestamp.json"), &out.join("stale-timestamp.json"))?;
+    server_script(ctx, &server, "system-refresh.sh", true)?;
+
+    // A deploy with a file that is not what its name says: refused, and
+    // the server serves what it did before.
+    let before = std::fs::read(served.join("metadata/timestamp.json"))
+        .context(|| "reading the served timestamp".to_string())?;
+    let forged = incoming.join("files").join("0".repeat(64));
+    write(forged.clone(), b"not this file\n")?;
+    server_script(ctx, &server, "system-publish.sh", false)?;
+    let after = std::fs::read(served.join("metadata/timestamp.json"))
+        .context(|| "reading the served timestamp".to_string())?;
+    if after != before {
+        crate::bail!("the test update server served a deploy it refused");
+    }
+    std::fs::remove_file(&forged).context(|| format!("removing {}", forged.display()))?;
+
+    let repo = served;
     let (_, root) = crate::release::trusted_root(ctx)?;
     let file = out.join(test_update_file());
     crate::release::system_release(
@@ -3913,6 +3967,51 @@ fn make_update_server(ctx: &Ctx, built: &Built, dir: &Path) -> Result<()> {
         ],
     )?;
     std::fs::remove_dir_all(&staging).context(|| format!("removing {}", staging.display()))
+}
+
+/// Copies the update repository `repo` into the test update server's
+/// folder `incoming`, as `ob release deploy` does: its metadata, targets
+/// and files, as hard links.
+fn deploy_to_test_server(ctx: &Ctx, repo: &Path, incoming: &Path) -> Result<()> {
+    let mut cmd = std::process::Command::new("cp");
+    cmd.arg("-al");
+    for folder in ["metadata", "targets", "files"] {
+        cmd.arg(repo.join(folder));
+    }
+    process::run(ctx, cmd.arg(incoming))?;
+    let ready = incoming.join("ready");
+    std::fs::write(&ready, b"").context(|| format!("writing {}", ready.display()))
+}
+
+/// Runs the update server's `script` in the test update server whose `/`
+/// is `server`, as its systemd unit would, and checks that it did what it
+/// should: published (or refreshed) when `succeeds`, and said why it
+/// published nothing when not.
+fn server_script(ctx: &Ctx, server: &Path, script: &str, succeeds: bool) -> Result<()> {
+    let path = server.join("usr/local/lib/dukovo-system").join(script);
+    let mut cmd = std::process::Command::new("sh");
+    cmd.arg(&path).env("DUKOVO_SERVER_ROOT", server);
+    let output = cmd.output().context(|| format!("running {}", path.display()))?;
+    if ctx.verbose || output.status.success() != succeeds {
+        print!("{}", String::from_utf8_lossy(&output.stdout));
+        eprint!("{}", String::from_utf8_lossy(&output.stderr));
+    }
+    if output.status.success() != succeeds {
+        crate::bail!(
+            "the test update server's {script} {}",
+            if succeeds { "failed" } else { "succeeded" }
+        );
+    }
+    if script == "system-publish.sh" {
+        let result = server.join("var/lib/dukovo-system-incoming/result");
+        let text =
+            std::fs::read_to_string(&result).context(|| format!("reading {}", result.display()))?;
+        let wanted = if succeeds { "published" } else { "failed" };
+        if text.lines().next() != Some(wanted) {
+            crate::bail!("the test update server's result says {text:?}, not {wanted}");
+        }
+    }
+    Ok(())
 }
 
 /// Makes an [`UPDATE_FILE`] disk: FAT32 holding the update file

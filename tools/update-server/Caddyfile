@@ -1,22 +1,24 @@
 # SPDX-FileCopyrightText: 2026 The Dukovo contributors
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 #
-# Dukovo's update server (ADR 0382). setup.sh writes the host's name as
-# the site's address; Caddy gets its certificate from Let's Encrypt.
+# Dukovo's update server (ADRs 0382 and 0467): the catalog under
+# /catalog/ and the system's releases under /system/. setup.sh writes
+# the host's name as the site's address; Caddy gets its certificate from
+# Let's Encrypt.
 
 @HOST@ {
 	root * /srv/dukovo
 	file_server
 
 	# The bare address is for people, who want the project's site; clients
-	# only ask for paths under /catalog/.
+	# only ask for paths under /catalog/ and /system/.
 	redir / https://dukovo.org/ 302
 
 	# What a client asks for first, which changes: never kept stale.
-	@current path /catalog/metadata/timestamp.json /catalog/metadata/root.json
+	@current path /catalog/metadata/timestamp.json /catalog/metadata/root.json /system/metadata/timestamp.json /system/metadata/root.json
 	header @current Cache-Control "no-cache"
 	# Everything else is named by its version or hash, so never changes.
-	@named path /catalog/metadata/*.*.json /catalog/targets/*
+	@named path /catalog/metadata/*.*.json /catalog/targets/* /system/metadata/*.*.json /system/targets/* /system/files/*
 	header @named Cache-Control "public, max-age=31536000, immutable"
 
 	header Strict-Transport-Security "max-age=31536000"

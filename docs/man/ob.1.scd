@@ -1790,13 +1790,15 @@ _target/userspace/_).
 	The update server (ADR 0382) is reached with *ssh*(1) and *rsync*(1)
 	as *$OB_UPDATE_SSH*, by default _updates.dukovo.org_, with the login
 	of whoever signs: the signed bundles exist only on that computer.
-	*server setup* copies _tools/update-server/_ and catalog-repo, built
-	for release, to _~/dukovo-update-server/_ there and runs its
-	_setup.sh_ through *sudo*(8), which installs Caddy to serve the
-	catalog over https, makes the server's online key the first time, and
-	lets that login deploy; then it writes the online key's public half
-	to _catalog/keys/online.json_, for the next root to list, and fails
-	if a different one is there. It can run again, to update the server.
+	*server setup* copies _tools/update-server/_, catalog-repo and
+	system-release, built for release, to _~/dukovo-update-server/_ there
+	and runs its _setup.sh_ through *sudo*(8), which installs Caddy to
+	serve the catalog and the system's releases over https, makes the
+	server's online keys the first time, and lets that login deploy; then
+	it writes the catalog's online key's public half to
+	_catalog/keys/online.json_, for the next root to list, and the system
+	releases' to _releases/keys/online.json_ (see *release*), and fails if
+	a different one is there. It can run again, to update the server.
 	*deploy* copies _catalog/keys/_, _catalog/metadata/_ and the signed
 	bundles in _out/catalog/store/_ to the server, which publishes them
 	with its online key, or keeps what it served and says why; then it
@@ -1808,6 +1810,30 @@ _target/userspace/_).
 	reads a catalog served at _url_, by default
 	_https://updates.dukovo.org/catalog/_, as a new computer would, from
 	the first root in _catalog/metadata/_, and fetches every bundle.
+
+*release* *server* *setup* | *deploy* _repository_ | *check* [_url_]
+	Deploy the system's releases to the update server and check what it
+	serves (ADR 0467), over the same SSH login as *catalog*.
+	*server setup* is *catalog server setup*, which sets up both; it
+	writes the server's online key for the system's releases to
+	_releases/keys/online.json_, for the release keys' next root to name
+	for snapshot and timestamp beside their own keys (*system-release*(8)
+	*keys --online*), and fails if a different one is there.
+
+	*deploy* copies the update _repository_ that *system-release add* and
+	*channel* signed to the server's incoming folder, skipping the files
+	the server's store holds already, and waits up to ten minutes for the
+	server: it takes the roots, targets, release lists, channels and
+	files, each file checked against its SHA-256, signs a snapshot and
+	timestamp with its online key, reads it all back from the first root,
+	and only then serves it, or keeps what it served and says why. The
+	repository's first root must be _releases/metadata/1.root.json_,
+	which the key ceremony signs on the hardware keys (ADR 0457); until
+	then *deploy* refuses. The server signs the timestamp again every six
+	hours, and the snapshot when it has two days left. *check* reads the
+	releases served at _url_, by default
+	_https://updates.dukovo.org/system/_, as a computer online would, from
+	that first root: every release list and channel.
 
 *fixture* *btrfs-log*|*btrfs-radix-log*|*btrfs-send*|*ntfs-3g* [*--linux-kernel* _file_]
 

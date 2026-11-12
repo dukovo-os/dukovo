@@ -16,15 +16,18 @@ use crate::updates;
 pub const TRUSTED_ROOT: &str = "/system/resources/updates/root.json";
 
 const USAGE: &str = "\
-usage: system-release keys [--rotate ROLE] DIR
+usage: system-release keys [--rotate ROLE | --online KEY] DIR
+       system-release online-key --out KEY SECRET
        system-release make --tree DIR --keys DIR --out DIR --version VERSION
                            --commit COMMIT --toolchain TOOLCHAIN --built SECONDS
                            [--updates-from VERSION]
        system-release add --repo DIR --keys DIR RELEASE
        system-release channel --repo DIR --keys DIR CHANNEL VERSION
-       system-release refresh --repo DIR --keys DIR
+       system-release refresh --repo DIR (--keys DIR | --online-key SECRET)
+       system-release publish --repo DIR --online-key SECRET INCOMING
        system-release pack --repo DIR [--root FILE] --version VERSION --out FILE
        system-release check [--root FILE] [--version VERSION] REPOSITORY|FILE
+       system-release served [--root FILE] URL
        system-release rescue --out ESP [--root FILE] [--version VERSION] REPOSITORY";
 
 /// How many damaged files `check` names before it counts the rest.
@@ -48,12 +51,15 @@ pub fn run(args: &[String]) -> i32 {
     };
     let done = match command.as_str() {
         "keys" => keys(&options),
+        "online-key" => online_key(&options),
         "make" => make(&options),
         "add" => add(&options),
         "channel" => channel(&options),
         "refresh" => refresh(&options),
+        "publish" => publish(&options),
         "pack" => pack(&options),
         "check" => check(&options),
+        "served" => served(&options),
         "rescue" => rescue(&options),
         "--help" | "-h" | "help" => {
             println!("{USAGE}");
@@ -80,6 +86,8 @@ struct Options {
     keys: Option<PathBuf>,
     repo: Option<PathBuf>,
     rotate: Option<String>,
+    online: Option<PathBuf>,
+    online_key: Option<PathBuf>,
     out: Option<PathBuf>,
     root: Option<PathBuf>,
     version: Option<String>,
@@ -101,6 +109,8 @@ impl Options {
                 "--keys" => options.keys = Some(value()?.into()),
                 "--repo" => options.repo = Some(value()?.into()),
                 "--rotate" => options.rotate = Some(value()?),
+                "--online" => options.online = Some(value()?.into()),
+                "--online-key" => options.online_key = Some(value()?.into()),
                 "--out" => options.out = Some(value()?.into()),
                 "--root" => options.root = Some(value()?.into()),
                 "--version" => options.version = Some(value()?),
@@ -122,18 +132,38 @@ impl Options {
     }
 }
 
+/// `n` of `thing`, as `1 file` or `2 files`.
+fn count(n: usize, thing: &str) -> String {
+    if n == 1 { format!("1 {thing}") } else { format!("{n} {thing}s") }
+}
+
 /// Gives `option`'s value, or says it is needed.
 fn needed<'a, T>(option: &'a Option<T>, name: &str) -> Result<&'a T, String> {
     option.as_ref().ok_or(format!("{name} is needed"))
 }
 
 /// `keys DIR`: new keys for the four roles, and the root they make; with
-/// `--rotate ROLE`, a new key for that role, and the next root.
+/// `--rotate ROLE`, a new key for that role, and the next root; with
+/// `--online KEY`, the next root names the update server's key for
+/// snapshot and timestamp.
 fn keys(options: &Options) -> Result<(), String> {
     let [dir] = options.operands.as_slice() else {
         return Err("keys takes the folder to make them in".into());
     };
     let now = tuf::time::now();
+    if let Some(public) = &options.online {
+        let text = std::fs::read(public).map_err(|err| format!("{}: {err}", public.display()))?;
+        let key: tuf::keys::Key = serde_json::from_slice(&text)
+            .map_err(|err| format!("{}: not a public key: {err}", public.display()))?;
+        let keys = Keys::set_online(Path::new(dir), &key, now)?;
+        println!(
+            "system-release: root {} names the update server's key {} for snapshot and \
+             timestamp, beside the keys in {dir}",
+            keys.roots().len(),
+            &key.id()[..16]
+        );
+        return Ok(());
+    }
     if let Some(role) = &options.rotate {
         let keys = Keys::rotate(Path::new(dir), role, now)?;
         println!(
@@ -148,6 +178,59 @@ fn keys(options: &Options) -> Result<(), String> {
         "system-release: made keys for root, targets, snapshot and timestamp in {dir}, and root.json"
     );
     Ok(())
+}
+
+/// `online-key --out KEY SECRET`: the update server's online key, its
+/// secret half in a new file `SECRET`, readable by its owner alone, and
+/// its public half in `KEY`, for the next root to name (ADR 0467).
+fn online_key(options: &Options) -> Result<(), String> {
+    use std::io::Write as _;
+    use std::os::unix::fs::OpenOptionsExt as _;
+    use tuf::repo::Signer as _;
+    let [secret_path] = options.operands.as_slice() else {
+        return Err("online-key takes the file to keep its secret half in".into());
+    };
+    let out = needed(&options.out, "--out")?;
+    let (key, secret) = tuf::repo::Ed25519::generate()?;
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(secret_path)
+        .map_err(|err| format!("{secret_path}: {err}"))?;
+    file.write_all(&secret).map_err(|err| format!("{secret_path}: {err}"))?;
+    let mut public = serde_json::to_vec_pretty(key.key()).map_err(|err| err.to_string())?;
+    public.push(b'\n');
+    std::fs::write(out, public).map_err(|err| format!("{}: {err}", out.display()))?;
+    println!(
+        "system-release: the online key {}: its secret half in {secret_path}, its public half in {}",
+        &key.key().id()[..16],
+        out.display()
+    );
+    Ok(())
+}
+
+/// The keys `--keys` or `--online-key` name for the repository `dir`.
+fn signing_keys(options: &Options, dir: &Path) -> Result<Keys, String> {
+    match (&options.keys, &options.online_key) {
+        (Some(keys), None) => Keys::load(keys),
+        (None, Some(secret)) => {
+            let secret =
+                std::fs::read(secret).map_err(|err| format!("{}: {err}", secret.display()))?;
+            updates::server_keys(dir, &secret)
+        }
+        _ => Err("name the keys: --keys or --online-key".into()),
+    }
+}
+
+/// The words after a change to the repository whose keys do not sign
+/// for snapshot and timestamp.
+fn signed_here(keys: &Keys) -> &'static str {
+    if repo::ONLINE.iter().all(|role| keys.has(role)) {
+        ""
+    } else {
+        "; the update server signs the snapshot and timestamp once it is deployed"
+    }
 }
 
 /// `make`: the release of a staged tree, signed, laid out in a new folder.
@@ -190,9 +273,10 @@ fn add(options: &Options) -> Result<(), String> {
         println!("system-release: {} offers Dukovo {version} already", dir.display());
     } else {
         println!(
-            "system-release: {} offers Dukovo {version}, with {} files its store did not hold",
+            "system-release: {} offers Dukovo {version}, with {} its store did not hold{}",
             dir.display(),
-            added.new_files
+            count(added.new_files, "file"),
+            signed_here(&keys)
         );
     }
     Ok(())
@@ -206,16 +290,57 @@ fn channel(options: &Options) -> Result<(), String> {
     let dir = needed(&options.repo, "--repo")?;
     let keys = Keys::load(needed(&options.keys, "--keys")?)?;
     updates::set_channel(dir, &keys, channel, version, tuf::time::now())?;
-    println!("system-release: the {channel} channel of {} offers Dukovo {version}", dir.display());
+    println!(
+        "system-release: the {channel} channel of {} offers Dukovo {version}{}",
+        dir.display(),
+        signed_here(&keys)
+    );
     Ok(())
 }
 
-/// `refresh --repo DIR`: a new snapshot and timestamp.
+/// `refresh --repo DIR`: a timestamp, and a snapshot when it is due.
 fn refresh(options: &Options) -> Result<(), String> {
     let dir = needed(&options.repo, "--repo")?;
-    let keys = Keys::load(needed(&options.keys, "--keys")?)?;
-    let version = updates::refresh(dir, &keys, tuf::time::now())?;
-    println!("system-release: {} signed again, timestamp {version}", dir.display());
+    let keys = signing_keys(options, dir)?;
+    let refreshed = updates::refresh(dir, &keys, tuf::time::now())?;
+    println!("system-release: {} {}", dir.display(), say_signed(&refreshed));
+    Ok(())
+}
+
+fn say_signed(signed: &updates::Refreshed) -> String {
+    match signed {
+        updates::Refreshed::Timestamp(version) => format!("signed again, timestamp {version}"),
+        updates::Refreshed::All { snapshot, timestamp } => {
+            format!("signed again, snapshot {snapshot} and timestamp {timestamp}")
+        }
+    }
+}
+
+/// `publish --repo DIR --online-key SECRET INCOMING`: on the update
+/// server, what a deploy left in `INCOMING`, signed and read back.
+fn publish(options: &Options) -> Result<(), String> {
+    let [incoming] = options.operands.as_slice() else {
+        return Err("publish takes the folder a deploy copied into".into());
+    };
+    let dir = needed(&options.repo, "--repo")?;
+    let secret_path = needed(&options.online_key, "--online-key")?;
+    let secret =
+        std::fs::read(secret_path).map_err(|err| format!("{}: {err}", secret_path.display()))?;
+    let deployed = updates::publish(dir, Path::new(incoming), &secret, tuf::time::now())?;
+    println!(
+        "system-release: {} offers {}, newest Dukovo {}, with {}; {}",
+        dir.display(),
+        count(deployed.releases.len(), "release"),
+        deployed.releases.last().map_or("none", String::as_str),
+        count(deployed.new_files, "new file"),
+        say_signed(&deployed.signed)
+    );
+    for channel in &deployed.channels {
+        println!(
+            "system-release: the {} channel offers Dukovo {}",
+            channel.channel, channel.version
+        );
+    }
     Ok(())
 }
 
@@ -292,6 +417,33 @@ fn check(options: &Options) -> Result<(), String> {
             ))
         }
     }
+}
+
+/// `served URL`: the repository an update server serves there, read as a
+/// computer online reads it, from the trusted root: every release list
+/// and channel, but none of the files (ADR 0467).
+fn served(options: &Options) -> Result<(), String> {
+    let [url] = options.operands.as_slice() else {
+        return Err("served takes the address of an update server's repository".into());
+    };
+    let root_path = options.root.clone().unwrap_or_else(|| PathBuf::from(TRUSTED_ROOT));
+    let root = std::fs::read(&root_path)
+        .map_err(|err| format!("the trusted root {}: {err}", root_path.display()))?;
+    let url = if url.ends_with('/') { url.clone() } else { format!("{url}/") };
+    let base = tuf::Url::parse(&url).map_err(|err| format!("{url}: {err}"))?;
+    let offered = updates::served(&base, &root)?;
+    println!(
+        "system-release: {url} offers {}, newest Dukovo {}, signed from the trusted root",
+        count(offered.releases.len(), "release"),
+        offered.releases.last().map_or("none", String::as_str)
+    );
+    for channel in &offered.channels {
+        println!(
+            "system-release: the {} channel offers Dukovo {}",
+            channel.channel, channel.version
+        );
+    }
+    Ok(())
 }
 
 /// `rescue --out ESP REPOSITORY`: Rescue of the release there, read from
@@ -383,6 +535,10 @@ mod tests {
         assert_eq!(run(&with(&["channel", "stable", "0.13.0"])), 1);
         assert_eq!(run(&strings(&["keys", "--rotate", "snapshot", &path("keys")])), 0);
         assert_eq!(run(&with(&["refresh"])), 0);
+        let served =
+            format!("file://{}", std::path::absolute(dir.join("updates")).unwrap().display());
+        assert_eq!(run(&strings(&["served", "--root", &root, &served])), 0);
+        assert_eq!(run(&strings(&["served", "--root", &root, "file:///nowhere"])), 1);
         let file = path("dukovo-0.14.0.update");
         let pack = ["pack", "--repo", &path("updates"), "--version", "0.14.0", "--out", &file];
         assert_eq!(run(&strings(&pack)), 0);

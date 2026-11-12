@@ -41,7 +41,7 @@ list is kept current instead.
 | Canary machines for updates | Phase 15 uses QEMU canaries in CI; real canaries are wanted before the first public release | Before 1.0.0-alpha.1 |
 | Post-Phase-13 code audit (audit 10) | Planned and scoped; starts only on approval | Decision |
 | Phase 16 (server platform and web console) | Plan approved; starts once Phase 15 is complete, on approval | Phase 15, then a decision |
-| System releases signed on the two hardware keys: the system's TUF root, `ob release sign` with its gates and a third build that must match CI's two, the Rekor record, `ob keys ceremony` and the key runbooks (ADRs 0450, 0457) | Phase 15 signs with each build machine's own keys and tests against a local update server | Before 1.0.0-alpha.1 |
+| System releases signed on the two hardware keys: the system's TUF root (`releases/metadata/1.root.json`, naming the update server's online key that `./ob release server setup` writes to `releases/keys/online.json`), `ob release sign` with its gates and a third build that must match CI's two, the Rekor record, `ob keys ceremony` and the key runbooks (ADRs 0450, 0457, 0467) | Phase 15 signs with each build machine's own keys and tests against a local update server; `ob release deploy` deploys nothing until that root exists | Before 1.0.0-alpha.1 |
 | The security-fix process: the release branch and its bots, the advisories feed, and the daily SBOM scan against OSV and NVD (ADR 0458) | Needed once there are releases to fix | Before 1.0.0-alpha.1 |
 | The full update test matrix on a self-hosted runner: power-cut replay with QEMU's blklogwrites, upgrade paths from 12 months back, Kani on the slot-state reader, fuzzing of release lists and TUF metadata (ADR 0450) | Each needs many VM starts or tooling of its own; `update-power-cut` cuts one stage at one point meanwhile | Before 1.0.0-alpha.1 |
 | Bit-for-bit reproducible images: grub-mkrescue still writes random identifiers (ADRs 0010, 0457) | The three-build check before signing depends on it | Before 1.0.0-alpha.1 |
@@ -159,7 +159,6 @@ machine with AMT, an AMD machine and a laptop; see
 | S3 addresses in the virtual-hosted style, and temporary credentials with a session token (ADR 0465) | Path-style addresses and an access key's ID and secret are what every S3-compatible store takes | A need |
 | Restic destinations on restic's REST server (`rest:` addresses) (ADR 0465) | A share, SSH and S3 cover the servers people have | A need |
 | Owner, mode and times of a place's top folder kept when Linux's `restic` restores it (ADR 0465) | restic sets the top folder of a restore itself; Dukovo's own restore keeps them | An upstream change in restic |
-| System updates served by the update server, with its online snapshot and timestamp keys, the nightly channel's delegated role and `ob release deploy` (ADRs 0382, 0466) | The client is tested against a local update server | 15c |
 | Telling a person of a new flaw, and which advisories an update fixes (ADR 0389) | Needs the unified updater's notifications | 15d |
 
 ### Phase 16: server platform and web console
@@ -392,6 +391,8 @@ finding or removed.
 | The SD 1 MiB benchmark rows: printed but not gated | They sit at 1.00 because QEMU's SD emulation takes nearly all of both systems' time |
 | Printing: the design's open questions | Drafted for a release after 1.0 |
 | Known weak spots to plan for: Wi-Fi, Bluetooth and webcams; large desktop apps; Btrfs maturity | Raised, not yet discussed |
+| Nightly system releases on the update server, and the key that signs them (ADRs 0456, 0467); to decide before 1.0.0-alpha.1 | The server offers stable and beta; a nightly release would be signed at every merge with no person there, and ADR 0457 keeps release keys off servers and out of CI |
+| The update server's online keys kept encrypted at rest, as ADR 0457's table has them (ADRs 0382, 0467); to decide before 1.0.0-alpha.1 | They are files only their system users read; a timer signs with them with nobody there, so a key the server decrypts itself guards only a copy of its disk |
 
 ## Documentation to bring up to date
 

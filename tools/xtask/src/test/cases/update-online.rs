@@ -2,13 +2,15 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 //! An update from the update server, under UEFI on an installed system's
-//! disk (ADR 0466). The host serves the test update server's repository
-//! (`out/test/update-server`, [`TEST_SERVER`]) over HTTP, as a static
-//! file server does, with parts of files on request, and the machine
-//! follows its stable channel from it. The machine's root is the first
-//! of three, and the server's timestamp and snapshot keys have been
-//! replaced since, as a year of a server's life would leave it: the
-//! machine walks to the third root. The channel offers `year`, which
+//! disk (ADRs 0466 and 0467). The host serves the test update server's
+//! repository (`out/test/update-server`, [`TEST_SERVER`]), which the
+//! update server's own scripts published and signed, over HTTP, as a
+//! static file server does, with parts of files on request, and the
+//! machine follows its stable channel from it. The machine's root is the
+//! first of three: the second names the server's online key for snapshot
+//! and timestamp, and the third replaces the release keys' own timestamp
+//! key, as a year of a server's life would leave it, so the machine
+//! walks to the third root. The channel offers `year`, which
 //! updates only from `bridge`, so `sysupdate check` names `bridge`
 //! first, and the number of files the machine lacks.
 //!
@@ -33,7 +35,7 @@ use super::update_stage::{power_off, restart, run, started};
 
 pub const CASE: Case = Case {
     name: "update-online",
-    about: "an update from the update server's stable channel (ADR 0466): the machine walks from its root to the server's third, is told a bridge release comes first, refuses a changed file, a changed list and a replayed timestamp, goes on with a fetch cut short, fetches only the files it lacks, stages the bridge, starts it and proves it, and never takes an older release",
+    about: "an update from the update server's stable channel (ADRs 0466, 0467): the machine walks from its root to the server's third, is told a bridge release comes first, refuses a changed file, a changed list and a replayed timestamp, goes on with a fetch cut short, fetches only the files it lacks, stages the bridge, starts it and proves it, and never takes an older release",
     firmware: Firmware::Uefi,
     media: Media::Disk,
     cmdline: "console-sign-in=off",

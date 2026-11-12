@@ -166,6 +166,7 @@ userspace/          the user programs: libradix, radix-rt, Spark and the tests;
                     installer, the account, bundle and catalog tools
 ports/              software from elsewhere at pinned commits, with patches
 catalog/            the signed metadata of the bundle catalog (TUF)
+releases/           the public keys and first root of the system's releases
 lab/                the tests the real-hardware lab runs
 credits/            one file per credited project, merged into CREDITS.md
 image/              GRUB menu template and license files for every image

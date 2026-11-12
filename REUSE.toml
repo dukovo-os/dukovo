@@ -26,10 +26,16 @@ path = ["kernel/targets/*.json", "userspace/targets/*.json"]
 SPDX-FileCopyrightText = "2026 The Dukovo contributors"
 SPDX-License-Identifier = "Apache-2.0 OR MIT"
 
-# The catalog's keys and signed TUF metadata (ADR 0381): JSON, signed as
-# written, so a header could not be added even if JSON had comments.
+# The catalog's keys and signed TUF metadata (ADR 0381), and the system
+# releases' (ADR 0467): JSON, signed as written, so a header could not be
+# added even if JSON had comments.
 [[annotations]]
-path = ["catalog/keys/*.json", "catalog/metadata/*.json"]
+path = [
+  "catalog/keys/*.json",
+  "catalog/metadata/*.json",
+  "releases/keys/*.json",
+  "releases/metadata/*.json",
+]
 SPDX-FileCopyrightText = "2026 The Dukovo contributors"
 SPDX-License-Identifier = "Apache-2.0 OR MIT"
 

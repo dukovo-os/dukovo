@@ -1,14 +1,16 @@
 # SPDX-FileCopyrightText: 2026 The Dukovo contributors
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 
-# An update from an update server over a real network (ADR 0466): the lab
-# PC serves the test update server `ob lab` builds (update-server.sh
-# beside this file), a year of a server's life whose timestamp and
-# snapshot keys were replaced since the root the machine trusts. Its
-# stable channel offers a release that updates only from a bridge, so
-# the machine checks, is told the bridge comes first, fetches only the
-# files its slot lacks, stages the bridge, and proves it at the restart.
-about = "The machine checks a real update server's stable channel over the lab network, is told a bridge release comes first, fetches only the files it lacks, stages the bridge and proves it at the restart (ADR 0466)"
+# An update from an update server over a real network (ADRs 0466 and
+# 0467): the lab PC serves the test update server `ob lab` builds
+# (update-server.sh beside this file), a year of a server's life: the
+# update server's own scripts published it and signed its snapshot and
+# timestamp with their online key, which a root since the one the
+# machine trusts names. Its stable channel offers a release that updates
+# only from a bridge, so the machine checks, is told the bridge comes
+# first, fetches only the files its slot lacks, stages the bridge, and
+# proves it at the restart.
+about = "The machine checks a real update server's stable channel over the lab network, signed by the server's own key, is told a bridge release comes first, fetches only the files it lacks, stages the bridge and proves it at the restart (ADRs 0466, 0467)"
 time = "15m"
 fresh = true
 host_needs = ["python3"]
