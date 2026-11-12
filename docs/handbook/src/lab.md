@@ -91,6 +91,49 @@ and the password's hash. Without a password file the account's password
 is one no one knows, and tests that run as root refuse to start. Never
 give a lab image to anyone as a release.
 
+## Real machines
+
+Tests run on real machines through the harness's `amt` driver: a PC
+with Intel AMT on a lab network of its own, a second network card in
+the lab PC and a switch with no route anywhere else. AMT turns the
+machine on and off, a serial cable brings its console to the lab PC,
+and before each fresh boot the machine boots from the lab network into
+a small writer that writes the image under test to its disk
+([ADR 0429](https://github.com/dukovo-os/dukovo/blob/main/docs/adr/0429-real-lab-machines-are-written-fresh-by-a-writer-booted-from-the-lab-network.md)).
+The writer finds the disk by its serial number, writes it, reads it
+back and restarts into it only when the lab finds the image's hash.
+
+The lab's [Real machines](https://github.com/dukovo-os/lab/blob/main/docs/real-machines.md)
+page sets a machine up: its firmware, AMT in MEBx, and its machine
+file in `~/.config/dukovo-lab/machines`, with the MAC address of its
+network card and the serial number of the disk the lab may overwrite.
+On the lab PC, give the lab card the lab address with no gateway, and
+make sure dnsmasq is there (`dnsmasq-base`, which NetworkManager brings
+on Mint; the `dnsmasq` package's own service is not needed):
+
+```sh
+nmcli connection add type ethernet ifname <card> con-name dukovo-lab \
+    ipv4.method manual ipv4.addresses 10.77.0.1/24 ipv4.never-default yes \
+    ipv6.method disabled
+sudo apt install dnsmasq-base
+```
+
+Then plain `./ob lab` sets the rest up once a machine file names a real
+machine. It builds the writer and the network GRUB the machine boots,
+installs them in `/srv/dukovo-lab`, and runs dnsmasq for the lab
+network as the service `dukovo-lab-dnsmasq`. dnsmasq answers on the lab
+card alone, and only for the machines in the machine files; `./ob lab`
+refuses a card that carries the PC's default route. Installing asks for
+sudo, and only when something changed; when the lab network cannot be
+set up, `./ob lab` says why and goes on, for QEMU's tests.
+`./ob lab machines check` then checks AMT, the serial port, the lab
+network and the rest without changing anything.
+
+`./ob test lab-writer` checks the net boot without a machine: QEMU boots
+the network GRUB from its own DHCP and TFTP, on a network laid out as
+the lab's, and the writer writes a test image from a pretend lab to the
+one of two disks with the right serial number.
+
 ## Writing a test
 
 A test is a file at `lab/tests/<category>/<name>.toml`. The categories,

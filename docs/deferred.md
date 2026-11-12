@@ -61,7 +61,11 @@ machine with AMT, an AMD machine and a laptop; see
 
 | Item | Why it waits | Waits on |
 | --- | --- | --- |
-| Lab harness parts 9 and 10: tests on real machines, power and screen through AMT, network boot from the lab PC | Need the machine | Intel lab machine |
+| Lab harness parts 9c and 10: the screen, keyboard and mouse through AMT's remote screen, and the suite's first run on the Intel lab machine | Parts 9a and 9b brought power, the serial console and a fresh disk for each test (ADR 0429); these come next | Intel lab machine |
+| The installer's tests on a real lab machine: booting it from the install stick or DVD | The `amt` driver boots only the lab image, written to the disk by the net-booted writer (ADR 0429); a stick a person plugs in still needs the machine told to boot from it | Lab harness |
+| The security range's attacker on a real lab machine | The attacker runs on a private QEMU network; a real machine needs a second network of its own for it | Lab harness |
+| The power button and a graceful off on a real lab machine (`power = "button"` and `"off"`) | AMT asks the system to shut down only when an agent in the system answers AMT, which Dukovo has none of | A decision by the maintainers |
+| Lab machines with Secure Boot on, for Secure Boot's tests on real hardware | The network GRUB and the pinned Linux kernel the writer runs on are not signed (ADR 0429) | A need: Secure Boot's lab tests |
 | AMD lab machine set up as a lab target (no AMT: a smart plug, network boot and network logs) | Need the machine | AMD lab machine |
 | The lab PC's half of `sharing/nfs-server` | Needs a kernel NFS client, which the build container lacks | A run on the lab PC |
 | Tests that need two disks besides the stick, such as installing the mirror layout (`install/mirror-needs-two`, ADR 0315) | The lab gives a test one disk | Lab harness |

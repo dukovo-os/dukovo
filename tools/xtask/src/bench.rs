@@ -1127,7 +1127,7 @@ pub(crate) fn linux_init(
         None => Vec::new(),
     };
     let mut modules = Vec::new();
-    for (i, path) in linux_modules(kernel, modules_dir)?.iter().enumerate() {
+    for (i, path) in linux_modules(kernel, modules_dir, &LINUX_MODULES)?.iter().enumerate() {
         let file = path.file_name().map_or_default(|name| name.to_string_lossy());
         let bytes = std::fs::read(path).context(|| format!("reading {}", path.display()))?;
         modules.push((format!("{i:02}-{file}"), bytes));
@@ -1144,12 +1144,16 @@ pub(crate) fn linux_init(
 /// card, and AHCI's and the SCSI CD driver's, to read the DVD drive.
 const LINUX_MODULES: [&str; 5] = ["btrfs", "sdhci-pci", "mmc_block", "ahci", "sr_mod"];
 
-/// The modules the Linux kernel `kernel` loads for the benchmarks' disks
-/// and disc ([`LINUX_MODULES`]), in the order they load: each it does not
-/// have built in, after those it needs, from the directory of its modules
-/// (`modules`, else `OB_LINUX_MODULES`, else `/lib/modules/<release>`),
-/// as its `modules.dep` lists them.
-fn linux_modules(kernel: &Path, modules: Option<&Path>) -> Result<Vec<PathBuf>> {
+/// The modules the Linux kernel `kernel` loads for `names` (for the
+/// benchmarks, [`LINUX_MODULES`]), in the order they load: each it does
+/// not have built in, after those it needs, from the directory of its
+/// modules (`modules`, else `OB_LINUX_MODULES`, else
+/// `/lib/modules/<release>`), as its `modules.dep` lists them.
+pub(crate) fn linux_modules(
+    kernel: &Path,
+    modules: Option<&Path>,
+    names: &[&str],
+) -> Result<Vec<PathBuf>> {
     let image = std::fs::read(kernel).context(|| format!("reading {}", kernel.display()))?;
     let Some(release) = kernel_release(&image) else {
         crate::bail!("{} holds no Linux kernel version", kernel.display());
@@ -1160,8 +1164,9 @@ fn linux_modules(kernel: &Path, modules: Option<&Path>) -> Result<Vec<PathBuf>> 
             .map_or_else(|| Path::new("/lib/modules").join(&release), PathBuf::from),
     };
     let builtin = std::fs::read_to_string(dir.join("modules.builtin")).unwrap_or_default();
-    let wanted: Vec<&str> = LINUX_MODULES
-        .into_iter()
+    let wanted: Vec<&str> = names
+        .iter()
+        .copied()
         .filter(|name| !builtin.lines().any(|line| line.ends_with(&format!("/{name}.ko"))))
         .collect();
     if wanted.is_empty() {
@@ -1170,9 +1175,10 @@ fn linux_modules(kernel: &Path, modules: Option<&Path>) -> Result<Vec<PathBuf>> 
     let deps = dir.join("modules.dep");
     let listed = std::fs::read_to_string(&deps).context(|| {
         format!(
-            "reading {}, for the modules Linux {release} reads the benchmarks' disks with \
-             (OB_LINUX_MODULES names another directory of its modules)",
-            deps.display()
+            "reading {}, for the modules Linux {release} needs ({}; OB_LINUX_MODULES names \
+             another directory of its modules)",
+            deps.display(),
+            wanted.join(", ")
         )
     })?;
     let mut order: Vec<String> = Vec::new();
@@ -1337,7 +1343,14 @@ pub fn initramfs(init: &[u8], posix: &[u8], git: &[u8], modules: &[(String, Vec<
 
 /// One cpio "newc" entry: a header of hexadecimal fields, the name and the
 /// data, each padded to 4 bytes.
-fn newc_entry(out: &mut Vec<u8>, ino: u32, name: &str, mode: u32, rdev: (u32, u32), data: &[u8]) {
+pub(crate) fn newc_entry(
+    out: &mut Vec<u8>,
+    ino: u32,
+    name: &str,
+    mode: u32,
+    rdev: (u32, u32),
+    data: &[u8],
+) {
     let pad = |out: &mut Vec<u8>| out.resize(out.len().next_multiple_of(4), 0);
     let nlink = if mode & 0o040_000 != 0 { 2 } else { 1 };
     // Magic, inode, mode, owner, group, links, time, size, device, the
@@ -2190,7 +2203,7 @@ mod tests {
              kernel/drivers/ata/ahci_platform.ko.zst: kernel/drivers/ata/libahci.ko.zst\n",
         )
         .unwrap();
-        let loaded = linux_modules(&kernel, Some(&dir));
+        let loaded = linux_modules(&kernel, Some(&dir), &LINUX_MODULES);
         let all_built_in = {
             std::fs::write(
                 dir.join("modules.builtin"),
@@ -2199,7 +2212,7 @@ mod tests {
                  kernel/drivers/scsi/sr_mod.ko\n",
             )
             .unwrap();
-            linux_modules(&kernel, Some(&dir))
+            linux_modules(&kernel, Some(&dir), &LINUX_MODULES)
         };
         let _ = std::fs::remove_dir_all(&dir);
         let names: Vec<String> = loaded

@@ -86,8 +86,9 @@ In user space, `unsafe` is for calls into the kernel and the C library:
 `libradix`'s system call stubs, the runtime `radix-rt` (its start-up and
 heap), the user-mode tests `usertests`, which make raw calls on purpose,
 and the programs on Rust's standard library (`nukesh`, `systools`,
-`consoled` and `std-test`) for their libc calls; so does the bench program
-`tools/linux-bench`, which measures Linux through libc. The services
+`consoled` and `std-test`) for their libc calls; so do the bench program
+`tools/linux-bench`, which measures Linux through libc, and the lab's
+disk writer `tools/lab-writer`, Linux's init on a lab machine. The services
 `spark` and `storage`, and `hello`, forbid it.
 
 Wherever `unsafe` is used:

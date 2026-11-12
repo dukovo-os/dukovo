@@ -326,7 +326,7 @@ _target/userspace/_).
 		Pass everything after *--* to *qemu-system-x86_64*(1) unchanged,
 		for example *-- -d int* to log interrupts.
 
-*test* [*unit* | *boot* | *kani* | *tla* | *tuf* | *corpus* | *riscv*] [*--case* _name_]... [*--affected* _commit_ [*--plan*]] [*--shard* _part_/_parts_] [*--timeout* _seconds_] [*--image-only*] [*--debug* | *--release*] | *--list*
+*test* [*unit* | *boot* | *kani* | *tla* | *tuf* | *corpus* | *riscv* | *lab-writer*] [*--case* _name_]... [*--affected* _commit_ [*--plan*]] [*--shard* _part_/_parts_] [*--timeout* _seconds_] [*--image-only*] [*--debug* | *--release*] | *--list*
 	Run the unit tests of the build tool and the kernel libraries on this
 	machine, then the boot tests: build a test image and boot it in QEMU
 	once per case below. Each case follows the serial console, types
@@ -422,6 +422,18 @@ _target/userspace/_).
 	*qemu-system-riscv64* (the *qemu-system-misc* package on Debian,
 	Ubuntu and Linux Mint). Plain *ob test* leaves it out, and CI runs it
 	after *lint* on every push.
+
+	*lab-writer* checks the lab's net boot of real machines end to end
+	(ADR 0429), in QEMU with OVMF: QEMU's own DHCP and TFTP, on a network
+	laid out as the lab's, serve the network GRUB, which reads a boot
+	script as *dukovo-lab* writes one and loads the disk writer over HTTP
+	from a pretend lab on this PC. The writer must find its disk by serial
+	number among two, write the test image to it alone, zero the disk's
+	last mebibyte, and then restart when the lab takes its hash and power
+	off when the lab refuses it. It builds the writer's kit and the
+	network GRUB as *lab* does, and its logs go to
+	_out/lab-writer-check_. Plain *ob test* leaves it out, and CI runs it
+	in the job that holds the Linux of *bench*.
 
 	*uefi-usb*, *bios-usb*, *uefi-cdrom*, *bios-cdrom*
 		Boot with 4 CPUs under each firmware and medium, and check the
@@ -1511,8 +1523,26 @@ _target/userspace/_).
 	*dukovo-lab*, make the lab's key and password if they are missing,
 	clone lab-results for sending findings, check QEMU, put in place the
 	systemd user timer that starts schedules (*dukovo-lab schedule
-	install*), then build the image and open the runner page. Each step
-	is skipped once it is done.
+	install*), set up the lab network when a machine file names a real
+	machine (below), then build the image and open the runner page. Each
+	step is skipped once it is done.
+
+	The lab network (ADR 0429) is what a real lab machine, one with
+	*driver = "amt"*, boots from this PC before each fresh boot: *ob*
+	builds the disk writer's kit (_tools/lab-writer_ as the init of the
+	pinned Linux of *bench*, with the disk and network drivers of most
+	PCs) in _out/lab-writer_ and the network GRUB in _out/lab-net_,
+	installs them in _/srv/dukovo-lab_ (the machine files' *amt.writer*
+	and *amt.tftp*), and runs dnsmasq (from *dnsmasq-base*) as the system
+	service *dukovo-lab-dnsmasq*, configured in
+	_/etc/dukovo-lab/dnsmasq.conf_. dnsmasq answers on the lab card alone:
+	the one card holding the lab PC's lab address (*amt.lab_address*,
+	_10.77.0.1/24_), which must not carry this PC's default route. It
+	serves no DNS, offers no gateway, and gives addresses only to the real
+	machines, each its *amt.machine_address* by its *amt.mac*. Installing
+	takes *sudo*, asked for only when something changed. When the lab
+	network cannot be set up, *ob* says why and goes on, for QEMU's
+	tests.
 
 	*attack* [_test_...] is a name for running the security range. It
 	becomes *run* of the *security* category, or of the tests named in it

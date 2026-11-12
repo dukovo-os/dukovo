@@ -179,6 +179,7 @@ docs/
 tools/xtask/        the Rust program behind ./ob
 tools/ridlc/        the interface compiler: abi/ to Rust, C and man(2)
 tools/linux-bench/  the Linux baseline for ./ob bench
+tools/lab-writer/   the disk writer real lab machines boot from the lab network
 tools/container/    the pinned build container
 tools/update-server/ setup for the update server
 ```
