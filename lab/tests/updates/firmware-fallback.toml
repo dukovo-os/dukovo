@@ -1,0 +1,50 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "A test firmware set whose CPU microcode is damaged is staged as a slot; the kernel uses none of it, its try fails the health check, and the machine falls back to the slot before it by itself, GRUB saying the firmware update failed (ADR 0468)"
+time = "15m"
+fresh = true
+
+[[step]]
+host = "sh {here}/copy-update.sh firmware {machine} {machine-port:22}"
+expect = "copied: firmware"
+[[step]]
+run = '''sh -c 'printf "stable = 10\n" > /system/settings/sysupdate/health.toml' '''
+root = true
+[[step]]
+run = "sysupdate firmware stage /users/lab/update-firmware --version 2026.3.1"
+root = true
+expect = "staged firmware 2026.3.1 in slot B: it starts at the next restart"
+[[step]]
+run = "sysupdate firmware"
+root = true
+expect = ["Slot B:   firmware 2026.3.1", "intel-ucode.bin (CPU microcode, "]
+[[step]]
+run = "sh -c '(sleep 2; reboot) > /dev/null 2>&1 &'"
+root = true
+[[step]]
+serial = "asked to restart the machine"
+[[step]]
+serial = "data that failed its checks; none of it is used"
+[[step]]
+serial = "spark: started slot b, @system.b"
+[[step]]
+serial = "has data that failed its checks, so none of it was used"
+[[step]]
+serial = "the update gives up its tries"
+[[step]]
+serial = "(the firmware update to 2026.3.1 failed)"
+[[step]]
+serial = "spark: started slot a, @system.a"
+[[step]]
+serial = "did not prove itself"
+[[step]]
+wait = "ready"
+[[step]]
+run = "sysupdate status"
+root = true
+expect = ["Running:  slot A", "Next start: slot A", "Last update: no firmware set to firmware 2026.3.1 in slot B"]
+[[step]]
+run = "cat /system/state/sysupdate/devices"
+root = true
+expect = "root"

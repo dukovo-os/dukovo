@@ -10,12 +10,16 @@
 //! metadata/N.targets.json                every release offered, and the channels
 //! metadata/N.snapshot.json, timestamp.json
 //! targets/system/<sha256>.<version>.json each release's list
-//! targets/channels/<sha256>.<name>.json  a channel: the release it offers
-//! files/<sha256>                         every file of every release, once
+//! targets/firmware/<sha256>.<version>.json each firmware set's list (ADR 0468)
+//! targets/channels/<sha256>.<name>.json  a channel: the release it offers,
+//!                                        and the firmware set
+//! files/<sha256>                         every file of every release and set, once
 //! ```
 //!
-//! [`add`] adds a release that `make` signed, [`set_channel`] points a
-//! channel at one, and [`refresh`] signs a new snapshot and timestamp, as
+//! [`add`] adds a release that `make` signed, [`add_firmware`] a firmware
+//! set, [`set_channel`] points a channel at a release and
+//! [`set_channel_firmware`] at a set, and [`refresh`] signs a new
+//! snapshot and timestamp, as
 //! a server does every few hours. Each signs the next version of what it
 //! changes and writes the timestamp last, so that a client reading the
 //! repository while it changes sees the old one or the new one.
@@ -33,7 +37,8 @@ use slots::version::Version;
 use tuf::repo as signing;
 
 use crate::archive::{Archive, Writer};
-use crate::list::{Release, hex};
+use crate::firmware::{self, Load, Set};
+use crate::list::{Release, hex, sha256_file};
 use crate::repo::{self, Keys, Published, expires};
 use crate::store::Checked;
 
@@ -50,7 +55,8 @@ pub fn channel_path(name: &str) -> String {
     format!("channels/{name}.json")
 }
 
-/// A channel's file: the release it offers now.
+/// A channel's file: the release it offers now, and the firmware set,
+/// for machines that take the optional firmware package (ADR 0468).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Channel {
@@ -59,6 +65,9 @@ pub struct Channel {
     pub channel: String,
     /// The version of the release it offers.
     pub version: String,
+    /// The version of the firmware set it offers, if it offers one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub firmware: Option<String>,
 }
 
 impl Channel {
@@ -359,7 +368,8 @@ pub fn add(dir: &Path, keys: &Keys, release_dir: &Path, now: i64) -> Result<Adde
 }
 
 /// Points the channel `channel` of the repository at `dir` at its release
-/// `version`, and signs the targets, snapshot and timestamp anew.
+/// `version`, keeping the firmware set it offers, and signs the targets,
+/// snapshot and timestamp anew.
 ///
 /// # Errors
 ///
@@ -379,13 +389,163 @@ pub fn set_channel(
     if !current.targets.contains_key(&repo::target_path(version)) {
         return Err(format!("{} does not offer Dukovo {version}", dir.display()));
     }
-    let bytes = Channel { channel: channel.into(), version: version.into() }.to_bytes();
+    let firmware = held_channel(dir, &current, channel)?.and_then(|held| held.firmware);
+    let channel = Channel { channel: channel.into(), version: version.into(), firmware };
+    write_channel(dir, keys, &current, &channel, now)
+}
+
+/// Points the channel `channel` of the repository at `dir`, which offers
+/// a release already, at its firmware set `firmware`, or at none, and
+/// signs the targets, snapshot and timestamp anew (ADR 0468).
+///
+/// # Errors
+///
+/// If the channel offers no release yet, the repository does not offer
+/// the set, or a write fails.
+pub fn set_channel_firmware(
+    dir: &Path,
+    keys: &Keys,
+    channel: &str,
+    firmware: Option<&str>,
+    now: i64,
+) -> Result<(), String> {
+    let current = current(dir)?.ok_or_else(|| format!("{} offers no release", dir.display()))?;
+    let held = held_channel(dir, &current, channel)?.ok_or_else(|| {
+        format!("the {channel} channel of {} offers no release yet", dir.display())
+    })?;
+    if let Some(version) = firmware
+        && !current.targets.contains_key(&firmware::target_path(version))
+    {
+        return Err(format!("{} does not offer firmware {version}", dir.display()));
+    }
+    let channel = Channel { firmware: firmware.map(String::from), ..held };
+    write_channel(dir, keys, &current, &channel, now)
+}
+
+/// Writes `channel`'s file among the targets of the repository at `dir`,
+/// and signs them anew.
+fn write_channel(
+    dir: &Path,
+    keys: &Keys,
+    current: &Current,
+    channel: &Channel,
+    now: i64,
+) -> Result<(), String> {
+    let bytes = channel.to_bytes();
     let name = hex(ring::digest::digest(&ring::digest::SHA256, &bytes).as_ref());
-    write(&dir.join(format!("targets/channels/{name}.{channel}.json")), &bytes)?;
+    write(&dir.join(format!("targets/channels/{name}.{}.json", channel.channel)), &bytes)?;
     let mut targets = current.targets.clone();
-    targets.insert(channel_path(channel), signing::file_info(&bytes));
-    sign(dir, keys, Some(&current), Some(&targets), now)?;
+    targets.insert(channel_path(&channel.channel), signing::file_info(&bytes));
+    sign(dir, keys, Some(current), Some(&targets), now)?;
     Ok(())
+}
+
+/// The file of the channel `name` that the newest targets of the
+/// repository at `dir` list, if they list one.
+fn held_channel(dir: &Path, current: &Current, name: &str) -> Result<Option<Channel>, String> {
+    let Some(info) = current.targets.get(&channel_path(name)) else { return Ok(None) };
+    let sha256 = info["hashes"]["sha256"]
+        .as_str()
+        .ok_or_else(|| format!("{}: the {name} channel is listed without a hash", dir.display()))?;
+    let bytes = read(&dir.join(format!("targets/channels/{sha256}.{name}.json")))?;
+    Channel::parse(&bytes, name).map(Some)
+}
+
+/// What [`add_firmware`] did.
+#[derive(Debug)]
+pub struct AddedFirmware {
+    /// The set, as signed.
+    pub set: Set,
+    /// How many of its files the store did not hold already.
+    pub new_files: usize,
+    /// Whether the repository offered it already, with the same list.
+    pub already: bool,
+}
+
+/// One file to add to a firmware set: where it is, how it is loaded and
+/// its license.
+pub struct FirmwareFile<'a> {
+    /// The file.
+    pub path: &'a Path,
+    /// How it is loaded.
+    pub load: Load,
+    /// Its license, as an SPDX expression.
+    pub license: &'a str,
+}
+
+/// Adds the firmware set `version` of `files` to the update repository
+/// at `dir`, made if it is not there: its list among the targets, signed
+/// with `keys` as a release's is, and its files in the store, each once,
+/// each named in the list by its file name (ADR 0468).
+///
+/// # Errors
+///
+/// If a file cannot be read, the set does not check, the repository
+/// offers the version already with another list (a version is never
+/// used twice), or a write fails.
+pub fn add_firmware(
+    dir: &Path,
+    keys: &Keys,
+    version: &str,
+    files: &[FirmwareFile<'_>],
+    now: i64,
+) -> Result<AddedFirmware, String> {
+    let mut listed = Vec::new();
+    for file in files {
+        let name = file
+            .path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .ok_or_else(|| format!("{}: not a file", file.path.display()))?;
+        let size = std::fs::metadata(file.path)
+            .map_err(|err| format!("{}: {err}", file.path.display()))?
+            .len();
+        listed.push(firmware::File {
+            name,
+            load: file.load,
+            sha256: sha256_file(file.path)?,
+            size,
+            license: file.license.to_string(),
+        });
+    }
+    let set = Set { firmware: version.to_string(), files: listed };
+    set.check()?;
+    let list = set.to_bytes();
+    let info = signing::file_info(&list);
+    let current = current(dir)?;
+    let mut targets = current.as_ref().map_or_else(BTreeMap::new, |c| c.targets.clone());
+    let path = firmware::target_path(version);
+    if let Some(offered) = targets.get(&path) {
+        if *offered != info {
+            return Err(format!(
+                "{} offers firmware {version} already, with another list: a version is never \
+                 used twice",
+                dir.display()
+            ));
+        }
+        return Ok(AddedFirmware { set, new_files: 0, already: true });
+    }
+    let store = dir.join("files");
+    std::fs::create_dir_all(&store).map_err(|err| format!("{}: {err}", store.display()))?;
+    let mut new_files = 0;
+    for (file, listed) in files.iter().zip(&set.files) {
+        let to = store.join(&listed.sha256);
+        if to.exists() {
+            continue;
+        }
+        let partial = store.join(format!(".{}.partial", listed.sha256));
+        if copy_hashing(file.path, &partial)? != listed.sha256 {
+            let _ = std::fs::remove_file(&partial);
+            return Err(format!("{}: it changed while it was read", file.path.display()));
+        }
+        std::fs::rename(&partial, &to).map_err(|err| format!("{}: {err}", to.display()))?;
+        new_files += 1;
+    }
+    let sha256 = hex(ring::digest::digest(&ring::digest::SHA256, &list).as_ref());
+    write(&dir.join(format!("targets/firmware/{sha256}.{version}.json")), &list)?;
+    targets.insert(path, info);
+    sign(dir, keys, current.as_ref(), Some(&targets), now)?;
+    Ok(AddedFirmware { set, new_files, already: false })
 }
 
 /// What [`refresh`] signed.
@@ -451,7 +611,9 @@ pub fn refresh(dir: &Path, keys: &Keys, now: i64) -> Result<Refreshed, String> {
 pub struct Deployed {
     /// The versions of every release offered, oldest first.
     pub releases: Vec<String>,
-    /// Each channel, and the version it offers.
+    /// The versions of every firmware set offered, oldest first.
+    pub firmware: Vec<String>,
+    /// Each channel, and the release and firmware set it offers.
     pub channels: Vec<Channel>,
     /// How many files of the deploy the store did not hold already.
     pub new_files: usize,
@@ -477,7 +639,7 @@ pub struct Deployed {
 /// `dir`, which the server then does not serve.
 pub fn publish(dir: &Path, incoming: &Path, secret: &[u8], now: i64) -> Result<Deployed, String> {
     take_metadata(&incoming.join("metadata"), &dir.join("metadata"))?;
-    for folder in ["targets/system", "targets/channels"] {
+    for folder in ["targets/system", "targets/firmware", "targets/channels"] {
         take_named(&incoming.join(folder), &dir.join(folder), false)?;
     }
     let new_files = take_named(&incoming.join("files"), &dir.join("files"), true)?;
@@ -485,8 +647,9 @@ pub fn publish(dir: &Path, incoming: &Path, secret: &[u8], now: i64) -> Result<D
     let first = keys.roots()[0].clone();
     let signed = refresh(dir, &keys, now)?;
     let store = dir.join("files");
-    let Offered { releases, channels } = offered(repo::read_targets(dir, &first)?, Some(&store))?;
-    Ok(Deployed { releases, channels, new_files, signed })
+    let Offered { releases, firmware, channels } =
+        offered(repo::read_targets(dir, &first)?, Some(&store))?;
+    Ok(Deployed { releases, firmware, channels, new_files, signed })
 }
 
 /// What a repository offers, as a computer reads it.
@@ -494,7 +657,9 @@ pub fn publish(dir: &Path, incoming: &Path, secret: &[u8], now: i64) -> Result<D
 pub struct Offered {
     /// The versions of every release, oldest first.
     pub releases: Vec<String>,
-    /// Each channel, and the version it offers.
+    /// The versions of every firmware set, oldest first.
+    pub firmware: Vec<String>,
+    /// Each channel, and the release and firmware set it offers.
     pub channels: Vec<Channel>,
 }
 
@@ -510,11 +675,26 @@ pub fn served(base: &tuf::Url, root: &[u8]) -> Result<Offered, String> {
     offered(repo::read_served(base, root)?, None)
 }
 
-/// The releases and channels among `targets`, as the client read them:
-/// each list where its version says, each channel offering a release
-/// listed, and, with `store`, every file of every release there, of its
-/// size.
+/// The releases, firmware sets and channels among `targets`, as the
+/// client read them: each list where its version says, each channel
+/// offering a release and a set listed, and, with `store`, every file of
+/// every release and set there, of its size.
 fn offered(targets: Vec<(String, Vec<u8>)>, store: Option<&Path>) -> Result<Offered, String> {
+    let held = |sha256: &str, size: u64| {
+        store.is_none_or(|store| {
+            std::fs::metadata(store.join(sha256)).is_ok_and(|m| m.len() == size)
+        })
+    };
+    let mut firmware = Vec::new();
+    for (set, _) in firmware::sets(&targets)? {
+        if let Some(file) = set.files.iter().find(|f| !held(&f.sha256, f.size)) {
+            return Err(format!(
+                "firmware {}: the store holds no file {} of {} bytes",
+                set.firmware, file.sha256, file.size
+            ));
+        }
+        firmware.push(set.firmware);
+    }
     let mut releases = Vec::new();
     let mut channels = Vec::new();
     for (path, bytes) in targets {
@@ -551,12 +731,18 @@ fn offered(targets: Vec<(String, Vec<u8>)>, store: Option<&Path>) -> Result<Offe
                 channel.channel, channel.version
             ));
         }
+        if let Some(set) = channel.firmware.as_ref().filter(|set| !firmware.contains(set)) {
+            return Err(format!(
+                "the {} channel offers firmware {set}, which the repository does not",
+                channel.channel
+            ));
+        }
     }
     releases.sort_by(|a, b| match (Version::parse(a), Version::parse(b)) {
         (Some(a), Some(b)) => a.cmp(&b),
         _ => a.cmp(b),
     });
-    Ok(Offered { releases, channels })
+    Ok(Offered { releases, firmware, channels })
 }
 
 /// The update server's keys for the repository at `dir`: its online key,
@@ -920,6 +1106,58 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
+    /// Adds the firmware set `version` of one microcode file holding
+    /// `bytes` to the repository at `dir`.
+    fn firmware_set(dir: &Path, keys: &Keys, version: &str, bytes: &[u8]) -> AddedFirmware {
+        let file = dir.with_extension(format!("{version}.bin"));
+        std::fs::write(&file, bytes).unwrap();
+        let listed =
+            FirmwareFile { path: &file, load: Load::Microcode, license: "LicenseRef-Test" };
+        add_firmware(dir, keys, version, &[listed], tuf::time::now()).unwrap()
+    }
+
+    #[test]
+    fn firmware_sets_are_offered_beside_releases() {
+        let dir = scratch("updates-firmware");
+        let keys = Keys::create(&dir.join("keys"), BUILT).unwrap();
+        tree(&dir.join("slot"));
+        made(&keys, &dir.join("slot"), "0.15.0", &dir.join("r1"));
+        let repo_dir = dir.join("repo");
+        let now = tuf::time::now();
+        add(&repo_dir, &keys, &dir.join("r1"), now).unwrap();
+        let added = firmware_set(&repo_dir, &keys, "2026.11.12", b"microcode, first");
+        assert_eq!((added.new_files, added.already), (1, false));
+        assert!(firmware_set(&repo_dir, &keys, "2026.11.12", b"microcode, first").already);
+        let err = add_firmware(&repo_dir, &keys, "2026.11.12", &[], now).unwrap_err();
+        assert!(err.contains("never used twice"), "{err}");
+        // A channel offers a set only beside a release, and keeps it when
+        // it moves to another release.
+        let err = set_channel_firmware(&repo_dir, &keys, "stable", Some("2026.11.12"), now);
+        assert!(err.unwrap_err().contains("offers no release yet"));
+        set_channel(&repo_dir, &keys, "stable", "0.15.0", now).unwrap();
+        let err = set_channel_firmware(&repo_dir, &keys, "stable", Some("2026.11.13"), now);
+        assert!(err.unwrap_err().contains("does not offer firmware 2026.11.13"));
+        set_channel_firmware(&repo_dir, &keys, "stable", Some("2026.11.12"), now).unwrap();
+        set_channel(&repo_dir, &keys, "stable", "0.15.0", now).unwrap();
+        let read = |repo_dir: &Path| {
+            let offered =
+                offered(repo::read_targets(repo_dir, keys.root()).unwrap(), None).unwrap();
+            (offered.firmware, offered.channels[0].firmware.clone())
+        };
+        assert_eq!(read(&repo_dir), (vec!["2026.11.12".into()], Some("2026.11.12".into())));
+        let (set, _) = firmware::open(&repo_dir, keys.root(), None).unwrap();
+        assert_eq!(set.microcode().unwrap().size, 16);
+        set_channel_firmware(&repo_dir, &keys, "stable", None, now).unwrap();
+        assert_eq!(read(&repo_dir).1, None);
+        // A set whose file the store lacks is not offered.
+        let file = repo_dir.join("files").join(&set.files[0].sha256);
+        std::fs::remove_file(&file).unwrap();
+        let targets = repo::read_targets(&repo_dir, keys.root()).unwrap();
+        let err = offered(targets, Some(&repo_dir.join("files"))).unwrap_err();
+        assert!(err.contains("firmware 2026.11.12: the store holds no file"), "{err}");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     #[test]
     fn a_rotated_key_is_walked_to_from_the_first_root() {
         let dir = scratch("updates-rotate");
@@ -961,6 +1199,8 @@ mod tests {
         let maintainer = dir.join("maintainer");
         add(&maintainer, &keys, &dir.join("r1"), now).unwrap();
         set_channel(&maintainer, &keys, "stable", "0.15.0", now).unwrap();
+        firmware_set(&maintainer, &keys, "2026.11.12", b"microcode");
+        set_channel_firmware(&maintainer, &keys, "stable", Some("2026.11.12"), now).unwrap();
 
         // The server takes the roots, targets, lists and files, and signs
         // its own snapshot and timestamp, which a computer reads from the
@@ -968,9 +1208,14 @@ mod tests {
         let server = dir.join("server");
         let deployed = publish(&server, &maintainer, &secret, now).unwrap();
         assert_eq!(deployed.releases, ["0.15.0"]);
-        let stable = Channel { channel: "stable".into(), version: "0.15.0".into() };
+        assert_eq!(deployed.firmware, ["2026.11.12"]);
+        let stable = Channel {
+            channel: "stable".into(),
+            version: "0.15.0".into(),
+            firmware: Some("2026.11.12".into()),
+        };
         assert_eq!(deployed.channels, [stable]);
-        assert_eq!(deployed.new_files, 2);
+        assert_eq!(deployed.new_files, 3);
         assert_eq!(deployed.signed, Refreshed::All { snapshot: 1, timestamp: 1 });
         let timestamp: Value =
             serde_json::from_slice(&read(&server.join("metadata/timestamp.json")).unwrap())

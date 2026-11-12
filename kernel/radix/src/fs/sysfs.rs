@@ -47,6 +47,8 @@
 //!   hexadecimal) and `type` (Linux's names: `System RAM`, `Reserved`,
 //!   `ACPI Tables`...), for each range of the firmware's memory map
 //!   (ADR 0144);
+//! - `/kernel/firmware/microcode`: what became of the CPU microcode the
+//!   boot loader handed over, if it handed any (ADR 0468);
 //! - `/kernel/class/dmi/id`, where the firmware has SMBIOS tables
 //!   (ADR 0231): Linux's files of the names the firmware gives the
 //!   machine, its board, chassis and firmware (`sys_vendor`,
@@ -171,6 +173,11 @@ pub fn make() -> Result<FsRef> {
     let firmware = root.add_dir("firmware", next_id())?;
     let memmap: radix_vfs::mem::KBox<dyn Listing> = mem::boxed(MemoryMap)?;
     firmware.add("memmap", ListedDir::make(next_id(), memmap)?)?;
+    // What became of the CPU microcode the boot loader handed over, if it
+    // handed any (ADR 0468).
+    if Arch::microcode_report(&mut TextBuf::<256>::new()).is_ok() {
+        firmware.add("microcode", value(|text| Arch::microcode_report(text))?)?;
+    }
     let usb_c = ucsi::ports().next().is_some();
     let power =
         devices::batteries().next().is_some() || devices::adapters().next().is_some() || usb_c;

@@ -17,10 +17,13 @@
 //!
 //! The same release is Rescue on the EFI system partition ([`rescue`]):
 //! its startup folder, and a boot archive of the rest, checked against
-//! the signed list as it is written.
+//! the signed list as it is written. The optional firmware package is
+//! signed the same way, as firmware sets beside the releases
+//! ([`firmware`]).
 
 pub mod archive;
 pub mod cli;
+pub mod firmware;
 pub mod list;
 pub mod repo;
 pub mod rescue;

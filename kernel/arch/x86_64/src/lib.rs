@@ -561,6 +561,10 @@ impl Devices for Arch {
         smbus::name(out)
     }
 
+    fn microcode_report(out: &mut dyn core::fmt::Write) -> core::fmt::Result {
+        microcode::report(out)
+    }
+
     fn ec_read(port: u16) -> u8 {
         ec::read(port)
     }

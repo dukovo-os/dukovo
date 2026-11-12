@@ -54,7 +54,7 @@ pub struct Asked<'a> {
 }
 
 /// Says what the stage is doing.
-fn say(what: &str) {
+pub(crate) fn say(what: &str) {
     println!("sysupdate: {what}");
 }
 
@@ -108,17 +108,52 @@ pub fn stage(root: &Root, asked: &Asked<'_>) -> Result<(), Fail> {
     let changed = build(&building, &release, &store)?;
     say(&format!("wrote {changed} changed files; reading the slot back against the signed list"));
     check(&building, &release)?;
+    // The new version starts with the firmware the running one does: a
+    // firmware set changes in a stage of its own (ADR 0468).
+    let firmware = super::firmware::named(&root.slot(root.running));
+    super::firmware::name(&building, firmware.as_ref())?;
     if asked.stop == Some(Stop::Built) {
         say("stopped after building, as --test-stop-after asks");
         loop {
             std::thread::sleep(std::time::Duration::from_secs(3600));
         }
     }
+    seal(root, &copies, state)?;
+    // The slot holds them now; the state's snapshot below need not.
+    if asked.repo.is_none() {
+        online::clear_downloads();
+    }
 
-    // Sealed in the spare's place: what it held, the version before the
-    // running one or an update not tried, goes, once no copy of the slot
-    // state names it, the older included, so that no start goes to it
-    // while it is rebuilt (SlotState.tla).
+    say("snapshotting the settings and the state, for a fallback");
+    let from = root.about(root.running).map_or_default(|about| about.version);
+    snapshot_for_fallback(root, &from, &release.version)?;
+
+    let (copies, _) = place::state(root)?;
+    place::write(&copies, next)?;
+    super::firmware::collect(root);
+    say(&format!(
+        "staged Dukovo {} in slot {}: it starts at the next restart, with {} tries to prove \
+         itself, and Dukovo {} starts again if it does not",
+        release.version,
+        spare.letter().to_ascii_uppercase(),
+        slots::state::TRIES,
+        root.about(root.running).map_or_else(|| "of the running slot".into(), |a| a.version)
+    ));
+    Ok(())
+}
+
+/// Seals the slot built in [`BUILDING`] in the spare's place, read-only.
+/// What the spare held, the version before the running one or an update
+/// not tried, goes, once no copy of the slot state names it, the older
+/// included, so that no start goes to it while it is rebuilt
+/// (SlotState.tla).
+///
+/// # Errors
+///
+/// If the slot state or a subvolume cannot be written.
+pub(crate) fn seal(root: &Root, copies: &[place::Copies], state: slots::State) -> Result<(), Fail> {
+    let spare = root.running.other();
+    let building = root.path(BUILDING);
     let named = copies
         .iter()
         .flat_map(|esp| [esp.first, esp.second])
@@ -136,26 +171,7 @@ pub fn stage(root: &Root, asked: &Asked<'_>) -> Result<(), Fail> {
         subvolume::remove(&slot)?;
     }
     subvolume::snapshot_to(&building, &slot, true)?;
-    subvolume::remove(&building)?;
-    // The slot holds them now; the state's snapshot below need not.
-    if asked.repo.is_none() {
-        online::clear_downloads();
-    }
-
-    say("snapshotting the settings and the state, for a fallback");
-    snapshot_for_fallback(root, &release)?;
-
-    let (copies, _) = place::state(root)?;
-    place::write(&copies, next)?;
-    say(&format!(
-        "staged Dukovo {} in slot {}: it starts at the next restart, with {} tries to prove \
-         itself, and Dukovo {} starts again if it does not",
-        release.version,
-        spare.letter().to_ascii_uppercase(),
-        slots::state::TRIES,
-        root.about(root.running).map_or_else(|| "of the running slot".into(), |a| a.version)
-    ));
-    Ok(())
+    subvolume::remove(&building)
 }
 
 /// Reads the update server for the release to stage, the channel's or
@@ -446,8 +462,9 @@ fn set_mode(path: &Path, mode: u32) -> Result<(), Fail> {
 
 /// Snapshots `@settings` and `@state`, read-only, into the update's
 /// folder in `@snapshots`, in place of an earlier update's, with what
-/// the update is (ADR 0454).
-fn snapshot_for_fallback(root: &Root, release: &Release) -> Result<(), Fail> {
+/// the update is: from `from` to `to`, as `sysupdate status` names them
+/// (ADR 0454).
+pub(crate) fn snapshot_for_fallback(root: &Root, from: &str, to: &str) -> Result<(), Fail> {
     let update = root.path(restore::UPDATE);
     clear_update(&update)?;
     std::fs::create_dir_all(&update).map_err(|err| crate::util::failed(&update.display(), err))?;
@@ -457,10 +474,8 @@ fn snapshot_for_fallback(root: &Root, release: &Release) -> Result<(), Fail> {
         true,
     )?;
     subvolume::snapshot_to(&root.path("@state"), &update.join(restore::BEFORE_STATE), true)?;
-    let from = root.about(root.running).map_or_default(|about| about.version);
     let about = format!(
-        "from = {from}\nto = {}\nslot = {}\nstaged = {}\n",
-        release.version,
+        "from = {from}\nto = {to}\nslot = {}\nstaged = {}\n",
         root.running.other().letter(),
         crate::util::now_ns() / 1_000_000_000
     );

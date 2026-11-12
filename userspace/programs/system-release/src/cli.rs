@@ -22,7 +22,10 @@ usage: system-release keys [--rotate ROLE | --online KEY] DIR
                            --commit COMMIT --toolchain TOOLCHAIN --built SECONDS
                            [--updates-from VERSION]
        system-release add --repo DIR --keys DIR RELEASE
+       system-release firmware --repo DIR --keys DIR --version VERSION
+                               --microcode FILE --license LICENSE
        system-release channel --repo DIR --keys DIR CHANNEL VERSION
+       system-release channel --repo DIR --keys DIR --firmware VERSION|none CHANNEL
        system-release refresh --repo DIR (--keys DIR | --online-key SECRET)
        system-release publish --repo DIR --online-key SECRET INCOMING
        system-release pack --repo DIR [--root FILE] --version VERSION --out FILE
@@ -54,6 +57,7 @@ pub fn run(args: &[String]) -> i32 {
         "online-key" => online_key(&options),
         "make" => make(&options),
         "add" => add(&options),
+        "firmware" => firmware(&options),
         "channel" => channel(&options),
         "refresh" => refresh(&options),
         "publish" => publish(&options),
@@ -95,6 +99,9 @@ struct Options {
     toolchain: Option<String>,
     built: Option<i64>,
     updates_from: Option<String>,
+    microcode: Option<PathBuf>,
+    license: Option<String>,
+    firmware: Option<String>,
     operands: Vec<String>,
 }
 
@@ -117,6 +124,9 @@ impl Options {
                 "--commit" => options.commit = Some(value()?),
                 "--toolchain" => options.toolchain = Some(value()?),
                 "--updates-from" => options.updates_from = Some(value()?),
+                "--microcode" => options.microcode = Some(value()?.into()),
+                "--license" => options.license = Some(value()?),
+                "--firmware" => options.firmware = Some(value()?),
                 "--built" => {
                     let text = value()?;
                     let seconds = text
@@ -282,13 +292,57 @@ fn add(options: &Options) -> Result<(), String> {
     Ok(())
 }
 
-/// `channel --repo DIR CHANNEL VERSION`: the channel offers the release.
+/// `firmware --repo DIR --version VERSION --microcode FILE --license
+/// LICENSE`: a firmware set of the CPU microcode `FILE`, in the update
+/// repository (ADR 0468).
+fn firmware(options: &Options) -> Result<(), String> {
+    let dir = needed(&options.repo, "--repo")?;
+    let keys = Keys::load(needed(&options.keys, "--keys")?)?;
+    let version = needed(&options.version, "--version")?;
+    let file = updates::FirmwareFile {
+        path: needed(&options.microcode, "--microcode")?,
+        load: crate::firmware::Load::Microcode,
+        license: needed(&options.license, "--license")?,
+    };
+    let added = updates::add_firmware(dir, &keys, version, &[file], tuf::time::now())?;
+    if added.already {
+        println!("system-release: {} offers firmware {version} already", dir.display());
+    } else {
+        println!(
+            "system-release: {} offers firmware {version}, {} of {} KiB, with {} its store did \
+             not hold{}",
+            dir.display(),
+            count(added.set.files.len(), "file"),
+            added.set.bytes().div_ceil(1024),
+            count(added.new_files, "file"),
+            signed_here(&keys)
+        );
+    }
+    Ok(())
+}
+
+/// `channel --repo DIR CHANNEL VERSION`: the channel offers the release;
+/// with `--firmware VERSION|none CHANNEL`, the firmware set, or none.
 fn channel(options: &Options) -> Result<(), String> {
+    let dir = needed(&options.repo, "--repo")?;
+    let keys = Keys::load(needed(&options.keys, "--keys")?)?;
+    if let Some(firmware) = &options.firmware {
+        let [channel] = options.operands.as_slice() else {
+            return Err("channel --firmware takes the channel".into());
+        };
+        let set = (firmware != "none").then_some(firmware.as_str());
+        updates::set_channel_firmware(dir, &keys, channel, set, tuf::time::now())?;
+        let offers = set.map_or_else(|| "no firmware set".into(), |set| format!("firmware {set}"));
+        println!(
+            "system-release: the {channel} channel of {} offers {offers}{}",
+            dir.display(),
+            signed_here(&keys)
+        );
+        return Ok(());
+    }
     let [channel, version] = options.operands.as_slice() else {
         return Err("channel takes the channel and the version it is to offer".into());
     };
-    let dir = needed(&options.repo, "--repo")?;
-    let keys = Keys::load(needed(&options.keys, "--keys")?)?;
     updates::set_channel(dir, &keys, channel, version, tuf::time::now())?;
     println!(
         "system-release: the {channel} channel of {} offers Dukovo {version}{}",
@@ -296,6 +350,16 @@ fn channel(options: &Options) -> Result<(), String> {
         signed_here(&keys)
     );
     Ok(())
+}
+
+/// The line that says what `channel` offers.
+fn channel_line(channel: &updates::Channel) -> String {
+    let firmware =
+        channel.firmware.as_ref().map_or_else(String::new, |set| format!(", with firmware {set}"));
+    format!(
+        "system-release: the {} channel offers Dukovo {}{firmware}",
+        channel.channel, channel.version
+    )
 }
 
 /// `refresh --repo DIR`: a timestamp, and a snapshot when it is due.
@@ -335,11 +399,11 @@ fn publish(options: &Options) -> Result<(), String> {
         count(deployed.new_files, "new file"),
         say_signed(&deployed.signed)
     );
+    if !deployed.firmware.is_empty() {
+        println!("system-release: firmware sets: {}", deployed.firmware.join(", "));
+    }
     for channel in &deployed.channels {
-        println!(
-            "system-release: the {} channel offers Dukovo {}",
-            channel.channel, channel.version
-        );
+        println!("{}", channel_line(channel));
     }
     Ok(())
 }
@@ -437,11 +501,11 @@ fn served(options: &Options) -> Result<(), String> {
         count(offered.releases.len(), "release"),
         offered.releases.last().map_or("none", String::as_str)
     );
+    if !offered.firmware.is_empty() {
+        println!("system-release: firmware sets: {}", offered.firmware.join(", "));
+    }
     for channel in &offered.channels {
-        println!(
-            "system-release: the {} channel offers Dukovo {}",
-            channel.channel, channel.version
-        );
+        println!("{}", channel_line(channel));
     }
     Ok(())
 }
@@ -533,6 +597,18 @@ mod tests {
         assert_eq!(run(&with(&["add", &path("release")])), 0);
         assert_eq!(run(&with(&["channel", "stable", "0.14.0"])), 0);
         assert_eq!(run(&with(&["channel", "stable", "0.13.0"])), 1);
+        // A firmware set, which the channel then offers beside its release.
+        std::fs::write(dir.join("intel-ucode.bin"), b"microcode").unwrap();
+        let ucode = path("intel-ucode.bin");
+        let firmware = ["firmware", "--version", "2026.11.12", "--microcode", &ucode];
+        assert_eq!(run(&with(&[&firmware[..], &["--license", "LicenseRef-Test"]].concat())), 0);
+        assert_eq!(run(&with(&firmware)), 1);
+        assert_eq!(run(&with(&["channel", "--firmware", "2026.11.11", "stable"])), 1);
+        assert_eq!(run(&with(&["channel", "--firmware", "2026.11.12", "beta"])), 1);
+        assert_eq!(run(&with(&["channel", "--firmware", "2026.11.12", "stable"])), 0);
+        let firmware =
+            crate::firmware::open(&dir.join("updates"), &std::fs::read(&root).unwrap(), None);
+        assert_eq!(firmware.unwrap().0.files[0].size, 9);
         assert_eq!(run(&strings(&["keys", "--rotate", "snapshot", &path("keys")])), 0);
         assert_eq!(run(&with(&["refresh"])), 0);
         let served =

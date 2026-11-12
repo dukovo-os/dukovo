@@ -154,6 +154,25 @@ previous version the default from the next restart on. Your settings
 stay as they are: each release writes only what the release before it
 can read, so nothing you changed since the update is lost.
 
+## Firmware
+
+Closed firmware, such as your processor's microcode, is not part of the
+system: it comes in an optional firmware package, as signed firmware
+sets. You take the package by staging a set:
+
+```
+elevate sysupdate firmware stage
+```
+
+That stages the set your channel offers; `sysupdate firmware` shows the
+set each slot uses, its files and their licenses. A new set is tried
+the way an update is: it starts at the next restart, with three tries,
+and if the health check finds its microcode damaged or refused, or a
+network card or disk partition missing that the last good start had,
+the computer goes back to the set before it by itself, and the boot menu
+says the firmware update failed. A system update never changes your
+firmware; `elevate sysupdate firmware remove` stages a slot without any.
+
 ## The boot menu
 
 The boot menu stays hidden unless you hold Shift as the computer starts,
@@ -394,6 +413,7 @@ in `/snapshots/machine-restore` until `subvolume delete` removes it.
 ## What is on the way
 
 Releases offered in waves, so that a few machines take each one before
-the rest; one `update` command for the system, firmware and apps, which
+the rest; firmware for the cards that need their own; one `update`
+command for the system, firmware and apps, which
 also keeps Rescue up to date; and repairing GRUB and the EFI system
 partition from an install stick. This chapter grows with each.

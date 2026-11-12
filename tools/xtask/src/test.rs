@@ -95,6 +95,14 @@ const CABLE: [&str; 2] = ["<cable server>", "<cable client>"];
 /// A `-object` argument that dumps what goes over the first machine's
 /// end of the cable to `<case>.pcap` in the test's directory.
 const CABLE_DUMP: &str = "<cable dump>";
+/// In a case's `qemu`, what comes after this, up to a [`PEER`], is the
+/// first boot's alone: a case's second boot runs without it, as a
+/// machine that lost a device while it was off (`firmware-fallback`).
+pub const FIRST_BOOT_ONLY: &str = "<first boot only>";
+/// A [`SecondBoot`]'s command line that boots the image again as the
+/// first boot left it, with the command line it had: an installed
+/// system's second boot keeps its root and its slot state.
+pub const AS_IT_WAS: &str = "<as it was>";
 /// In a case's `qemu`, the machine runs as under Hyper-V (ADR 0423):
 /// with KVM, its CPU has [`HYPERV_CPU`]'s enlightenments and the machine
 /// QEMU's VMBus with [`HYPERV_DEVICES`] on it. Without KVM, whose SynIC
@@ -475,6 +483,32 @@ pub const TEST_UPDATES: [TestUpdate; 4] = [
     TestUpdate { name: "hang", flags: "test-hang", broken: None },
 ];
 
+/// The boot tests' firmware sets (ADR 0468), by name and version, in the
+/// repository [`TEST_FIRMWARE_REPO`] beside [`TEST_UPDATES`]: `good` and
+/// `newer` hold the test microcode of [`test_microcode`], which matches
+/// none of the processors the tests run on, and `broken` the same with a
+/// byte of an update's data changed ([`broken_microcode`]), which the
+/// kernel finds damaged and uses none of.
+pub const TEST_FIRMWARE: [(&str, &str); 3] =
+    [("good", "2026.1.1"), ("newer", "2026.2.1"), ("broken", "2026.3.1")];
+
+/// The folder of the firmware sets' repository on the [`UPDATE_RELEASES`]
+/// disk.
+pub const TEST_FIRMWARE_REPO: &str = "firmware";
+
+/// The version of the test firmware set `name` of [`TEST_FIRMWARE`].
+pub fn test_firmware_version(name: &str) -> &'static str {
+    TEST_FIRMWARE.iter().find(|(n, _)| *n == name).map_or("", |(_, version)| version)
+}
+
+/// [`test_microcode`] with a byte of its first update's data changed, so
+/// that its checksum fails.
+pub fn broken_microcode() -> Vec<u8> {
+    let mut file = test_microcode();
+    file[radix_microcode::HEADER] ^= 0xff;
+    file
+}
+
 /// The version of the test update `name`: after this build's, in its
 /// last number, and before the release that number makes, as a
 /// pre-release of it.
@@ -851,8 +885,8 @@ fn nvme_controllers(disks: &[Disk]) -> Vec<u8> {
     controllers
 }
 
-/// A case's second boot: its command line, what the host does to the
-/// disks first, and its script.
+/// A case's second boot: its command line, or [`AS_IT_WAS`], what the
+/// host does to the disks first, and its script.
 pub struct SecondBoot {
     cmdline: &'static str,
     before: fn(&Case, &[DiskImage]) -> Result<(), String>,
@@ -3758,7 +3792,40 @@ fn make_test_updates(ctx: &Ctx, built: &Built, dir: &Path) -> Result<()> {
             }
         }
     }
+    make_test_firmware(ctx, &staging.join("firmware"), &out.join(TEST_FIRMWARE_REPO))?;
     std::fs::remove_dir_all(&staging).context(|| format!("removing {}", staging.display()))
+}
+
+/// Makes the repository of [`TEST_FIRMWARE`] at `out`, signed with this
+/// machine's release keys, from microcode files written in `staging`.
+fn make_test_firmware(ctx: &Ctx, staging: &Path, out: &Path) -> Result<()> {
+    let keys = crate::release::keys(ctx)?;
+    for (name, version) in TEST_FIRMWARE {
+        let dir = staging.join(name);
+        process::create_dir(&dir)?;
+        let microcode = dir.join("intel-ucode.bin");
+        let bytes = if name == "broken" { broken_microcode() } else { test_microcode() };
+        std::fs::write(&microcode, bytes).context(|| format!("writing {}", microcode.display()))?;
+        step(&format!("Signing firmware set {version} into {}", ctx.display(out)));
+        let (out, keys, microcode) = (out.as_os_str(), keys.as_os_str(), microcode.as_os_str());
+        crate::release::system_release(
+            ctx,
+            &[
+                "firmware".as_ref(),
+                "--repo".as_ref(),
+                out,
+                "--keys".as_ref(),
+                keys,
+                "--version".as_ref(),
+                version.as_ref(),
+                "--microcode".as_ref(),
+                microcode,
+                "--license".as_ref(),
+                "LicenseRef-Test".as_ref(),
+            ],
+        )?;
+    }
+    Ok(())
 }
 
 /// The boot tests' update server (ADRs 0466 and 0467), as
@@ -4234,6 +4301,11 @@ fn run_case(
     }
     let cpu_model = if hyperv { Some(HYPERV_CPU) } else { case.cpu_model };
     let mut peer = extra.iter().position(|arg| arg == PEER).map(|at| extra.split_off(at));
+    let first_only = extra.iter().position(|arg| arg == FIRST_BOOT_ONLY).map(|at| {
+        let mut args = extra.split_off(at);
+        args.remove(0);
+        args
+    });
     for arg in &mut extra {
         let (name, bytes) = match arg.as_str() {
             POWER_TABLE => ("power.aml", POWER_AML.to_vec()),
@@ -4388,10 +4460,10 @@ fn run_case(
         extra: without_disk(&extra, 0),
         direct: None,
     });
-    let machine = Machine {
+    let machine_with = |extra: Vec<String>| Machine {
         firmware: case.firmware,
         media: case.media,
-        ovmf,
+        ovmf: ovmf.clone(),
         image: image.clone(),
         memory: case.memory.into(),
         cpus: case.cpus,
@@ -4405,6 +4477,9 @@ fn run_case(
         extra,
         direct: None,
     };
+    // The second boot's machine lacks what was the first boot's alone.
+    let machine_again = first_only.is_some().then(|| machine_with(extra.clone()));
+    let machine = machine_with([extra, first_only.unwrap_or_default()].concat());
     // The peer: a machine of its own, on its own copy of the image.
     let peer_image = dir.join(format!("{}-peer.img", case.name));
     if let Some(args) = peer.as_mut() {
@@ -4479,6 +4554,9 @@ fn run_case(
         result = (second.before)(case, &disks)
             .and_then(|()| match &disk_machine {
                 Some(machine) => run(machine, &name, second.script),
+                None if second.cmdline == AS_IT_WAS => {
+                    run(machine_again.as_ref().unwrap_or(&machine), &name, second.script)
+                }
                 None => boot(&name, second.cmdline, second.script, true),
             })
             .map_err(|err| {
@@ -5337,12 +5415,12 @@ fn make_update_releases(disk: &Disk, path: &Path, updates: &Path) -> Result<(), 
         .arg(disk.kib.to_string());
     host_tool(&mut mkfs)?;
     let image = path.display().to_string();
-    for update in &TEST_UPDATES {
+    for name in TEST_UPDATES.iter().map(|update| update.name).chain([TEST_FIRMWARE_REPO]) {
         host_tool(
             std::process::Command::new("mcopy")
                 .args(["-s", "-i", &image])
-                .arg(updates.join(update.name))
-                .arg(format!("::/{}", update.name)),
+                .arg(updates.join(name))
+                .arg(format!("::/{name}")),
         )?;
     }
     Ok(())
@@ -11098,6 +11176,9 @@ mod tests {
     fn test_microcode_parses() {
         let file = test_microcode();
         assert_eq!(radix_microcode::updates(&file).flatten().count(), 2);
+        // The broken firmware set's: its first update fails its checks.
+        let broken = broken_microcode();
+        assert!(radix_microcode::updates(&broken).next().is_some_and(|update| update.is_err()));
         let cpu = radix_microcode::CpuId { signature: MICROCODE_SIGNATURE, platform: 1 };
         assert_eq!(radix_microcode::find(&file, cpu).unwrap().revision(), MICROCODE_REVISION);
     }

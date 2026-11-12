@@ -12,7 +12,8 @@
 //! repository folder or an update file the owner names. `status` says
 //! which slot runs and what the other holds, `unstage` takes a staged
 //! update back, and `rollback` makes the previous version the one that
-//! starts. Which slot starts is the slot state on the EFI
+//! starts. `firmware` stages the optional firmware package's sets the
+//! same way, each a slot of its own (ADR 0468). Which slot starts is the slot state on the EFI
 //! system partitions, which GRUB's menu reads and counts the tries in
 //! (`place`).
 //!
@@ -21,6 +22,8 @@
 //! (`log sysupdate`) says what failed, and the settings it had
 //! are kept in `@snapshots/update/settings-failed`.
 
+mod devices;
+pub(crate) mod firmware;
 mod health;
 pub(crate) mod online;
 pub(crate) mod place;
@@ -37,11 +40,15 @@ use crate::util::{self, Fail, fail};
 pub fn main(args: &mut Args) -> Result<i32, Fail> {
     let usage = || {
         util::usage(
-            "say status, check, download, stage, unstage, rollback, channel or health".into(),
+            "say status, check, download, stage, unstage, rollback, channel, firmware or health"
+                .into(),
         )
     };
     let Some(action) = args.subcommand() else { return Err(usage()) };
     let action = action.to_str().unwrap_or_default().to_string();
+    if action == "firmware" {
+        return firmware::main(args);
+    }
     let (mut version, mut stop, mut repo) = (None, None, None);
     while let Some(arg) = args.next()? {
         match arg {
@@ -89,8 +96,10 @@ fn status() -> Result<i32, Fail> {
     let root = place::root()?;
     let (copies, state) = place::state(&root)?;
     let letter = |slot: Slot| slot.letter().to_ascii_uppercase();
-    let version = |slot: Slot| {
-        root.about(slot).map_or_else(|| "nothing".into(), |a| format!("Dukovo {}", a.version))
+    let version = |slot: Slot| match (root.about(slot), firmware::named(&root.slot(slot))) {
+        (None, _) => "nothing".to_string(),
+        (Some(about), None) => format!("Dukovo {}", about.version),
+        (Some(about), Some(named)) => format!("Dukovo {}, firmware {}", about.version, named.set),
     };
     println!("Running:  slot {}, {}", letter(root.running), version(root.running));
     for slot in [Slot::A, Slot::B] {

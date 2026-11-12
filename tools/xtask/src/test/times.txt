@@ -56,6 +56,7 @@ exfat-write 42
 ext4-power-cut 36
 ext4-write 32
 feature 20
+firmware-fallback 240
 floppy 60
 floppy-format 60
 fpu 15

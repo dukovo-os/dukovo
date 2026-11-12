@@ -5,8 +5,12 @@
 //! boot (ADR 0453). It removes a slot a stage left half built, then
 //! watches the essential services through Spark's control socket. An
 //! update being tried proves itself when they have run for two minutes
-//! without a restart and the required checks of health.toml(5) pass;
-//! any other start is seen through once they run. The result goes into
+//! without a restart, the required checks of health.toml(5) pass, the
+//! firmware set it names loaded, and every device the last good start
+//! had is there (ADR 0468); any other start is seen through once its
+//! services run, and what is wrong with its firmware or devices is only
+//! logged. Each start seen through keeps its devices as the record the
+//! next try is held to ([`super::devices`]). The result goes into
 //! the slot state on every EFI system partition: a proved update becomes
 //! the default, and one that failed gives up its tries, and the machine
 //! restarts into the version before it.
@@ -20,12 +24,17 @@ use serde::Deserialize;
 use slots::state::Checked;
 
 use super::place::{self, BUILDING, Root};
+use super::{devices, firmware};
 use crate::power;
 use crate::subvolume;
 use crate::util::Fail;
 
 /// health.toml(5), in the settings.
 const CONFIG: &str = "/system/settings/sysupdate/health.toml";
+
+/// What became of the CPU microcode GRUB handed the kernel
+/// (radix-sysfs(5)).
+const MICROCODE: &str = "/kernel/firmware/microcode";
 
 /// Where the last result is kept, for `sysupdate status`.
 pub const LAST: &str = "/system/state/sysupdate/health";
@@ -229,8 +238,16 @@ pub fn run() -> Result<i32, Fail> {
             config.stable
         );
     }
-    let result = watch(&config, trying).and_then(|()| checks(&config));
+    let result = watch(&config, trying)
+        .and_then(|()| checks(&config))
+        .and_then(|()| hardware(&root, trying));
     let passed = result.is_ok();
+    if passed {
+        match devices::present(&root) {
+            Ok(present) => devices::record(&present),
+            Err(why) => println!("sysupdate: cannot list the devices: {}", why.message),
+        }
+    }
     if let Err(why) = &result {
         println!("sysupdate: {named} failed its health check: {why}");
     }
@@ -346,6 +363,62 @@ fn checks(config: &Config) -> Result<(), String> {
     Ok(())
 }
 
+/// The per-device checks (ADR 0468): the firmware set the running slot
+/// names loaded, and every device the last good start had is here. While
+/// `trying`, the first problem fails the health check; otherwise each is
+/// only logged, as a machine that lost a card has to start all the same.
+fn hardware(root: &Root, trying: bool) -> Result<(), String> {
+    let mut problems: Vec<String> = firmware_problem(root).into_iter().collect();
+    match (devices::recorded(), devices::present(root)) {
+        (Some(before), Ok(now)) => {
+            problems.extend(devices::missing(&before, &now).into_iter().map(|device| {
+                format!("{}, there at the last good start, is missing", device.described())
+            }));
+        }
+        (None, _) => {}
+        (Some(_), Err(why)) => {
+            problems.push(format!("the devices cannot be listed: {}", why.message));
+        }
+    }
+    if trying {
+        return problems.into_iter().next().map_or(Ok(()), Err);
+    }
+    for problem in problems {
+        println!("sysupdate: {problem}; as this start is no update's try, it goes on");
+    }
+    Ok(())
+}
+
+/// What `/kernel/firmware/microcode` says went wrong with the CPU
+/// microcode of the firmware set the running slot names, if it names one
+/// with microcode.
+fn firmware_problem(root: &Root) -> Option<String> {
+    let named = firmware::named(&root.slot(root.running))?;
+    named.microcode.as_ref()?;
+    let set = &named.set;
+    let Ok(report) = std::fs::read_to_string(MICROCODE) else {
+        return Some(format!("the CPU microcode of firmware {set} did not reach the kernel"));
+    };
+    microcode_problem(&report).map(|why| format!("the CPU microcode of firmware {set} {why}"))
+}
+
+/// What went wrong, as the kernel's report of the microcode says: data
+/// that failed its checks, or an update the processor refused.
+fn microcode_problem(report: &str) -> Option<String> {
+    let field = |key: &str| {
+        report.lines().find_map(|line| line.strip_prefix(key)?.strip_prefix(' ')).map(str::trim)
+    };
+    match field("result")? {
+        "damaged" => Some("has data that failed its checks, so none of it was used".into()),
+        "refused" => Some(format!(
+            "was refused by the processor: it asked for revision {} and runs {}",
+            field("refused").unwrap_or("?"),
+            field("revision").unwrap_or("?")
+        )),
+        _ => None,
+    }
+}
+
 /// Runs one check, within its time.
 fn run_check(check: &Check) -> Result<(), String> {
     let mut child = Command::new(&check.command[0])
@@ -424,6 +497,23 @@ mod tests {
         assert_eq!(
             look(&essential[2..3], &ended),
             Look::Failing("netd ended, with status 0x2".into())
+        );
+    }
+
+    #[test]
+    fn reads_what_became_of_the_microcode() {
+        let applied = "size 9216\nupdates 2\nresult applied\nrevision 0xf0\n";
+        assert_eq!(microcode_problem(applied), None);
+        assert_eq!(microcode_problem("size 1\nupdates 1\nresult hypervisor\nrevision 0x0\n"), None);
+        assert_eq!(microcode_problem("result unsupported\n"), None);
+        assert_eq!(
+            microcode_problem("size 9\nupdates 0\nresult damaged\n").unwrap(),
+            "has data that failed its checks, so none of it was used"
+        );
+        let refused = "result refused\nrevision 0xe2\nrefused 0xf0\n";
+        assert_eq!(
+            microcode_problem(refused).unwrap(),
+            "was refused by the processor: it asked for revision 0xf0 and runs 0xe2"
         );
     }
 
