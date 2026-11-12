@@ -11,6 +11,9 @@
 //! and they are renamed, the tag first and the parts from the last to the
 //! first, so that a backup is there once its first part, or its one file,
 //! has its name, and has its tag by then.
+//!
+//! A restic repository (ADR 0465) is kept in the same folder, through
+//! the same stores, and S3-compatible storage's ([`super::s3`]).
 
 use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader, Read, Write};
@@ -35,21 +38,51 @@ pub const FOLDER: &str = "dukovo-backup";
 const SSH: &str = "/system/commands/ssh";
 
 /// A destination's files.
-pub trait Store {
+pub trait Store: Send {
     /// Where they are, for messages.
     fn place(&self) -> String;
     /// Every file's path under the machine's folder; none if it is not
     /// there yet.
     fn list(&mut self) -> Result<Vec<String>, Fail>;
+    /// Every file's path and size under the folder `folder` of the
+    /// machine's, at any depth; none if it is not there.
+    fn list_sizes(&mut self, folder: &str) -> Result<Vec<(String, u64)>, Fail>;
+    /// The size of the file `path`, if it is there.
+    fn size(&mut self, path: &str) -> Result<Option<u64>, Fail>;
     /// Reads the file `path`.
     fn read(&mut self, path: &str) -> Result<Box<dyn Read>, Fail>;
+    /// Reads `length` bytes of the file `path` from byte `start`; fails
+    /// if it has fewer.
+    fn read_range(&mut self, path: &str, start: u64, length: u64) -> Result<Vec<u8>, Fail>;
     /// Makes the file `path`, and the folders it is in.
     fn create(&mut self, path: &str) -> Result<Box<dyn Sink>, Fail>;
+    /// Writes the file `path` whole: no one sees it until it is, and a
+    /// file there before is replaced.
+    fn put_whole(&mut self, path: &str, data: &[u8]) -> Result<(), Fail> {
+        let partial = format!("{path}{PARTIAL}");
+        let mut sink = self.create(&partial)?;
+        sink.write_all(data)
+            .map_err(|e| util::failed(&format!("{}/{partial}", self.place()), e))?;
+        sink.finish()?;
+        self.rename_all(&[(partial, path.to_string())])
+    }
+    /// Makes the folders `folders`, where a store has folders.
+    fn make_folders(&mut self, folders: &[String]) -> Result<(), Fail>;
     /// Renames each file of `pairs` from its first path to its second, in
     /// order.
     fn rename_all(&mut self, pairs: &[(String, String)]) -> Result<(), Fail>;
     /// Removes the files and folders `paths`, with what the folders hold.
     fn remove(&mut self, paths: &[String]) -> Result<(), Fail>;
+}
+
+/// Reads exactly `length` bytes of `reader`, or says what `at` lacked.
+fn read_exactly(reader: impl Read, length: u64, at: &str) -> Result<Vec<u8>, Fail> {
+    let mut data = Vec::with_capacity(usize::try_from(length).unwrap_or(0).min(64 << 20));
+    reader.take(length).read_to_end(&mut data).map_err(|e| util::failed(&at, e))?;
+    if (data.len() as u64) < length {
+        return Err(util::fail(format!("{at}: shorter than it should be")));
+    }
+    Ok(data)
 }
 
 /// A file being written.
@@ -140,9 +173,61 @@ impl Store for Folder {
         Ok(found)
     }
 
+    fn list_sizes(&mut self, folder: &str) -> Result<Vec<(String, u64)>, Fail> {
+        let mut found = Vec::new();
+        let start = if folder.is_empty() { String::new() } else { format!("{folder}/") };
+        let mut folders = vec![(self.root.join(folder), start, true)];
+        while let Some((at, prefix, top)) = folders.pop() {
+            let entries = match fs::read_dir(&at) {
+                Ok(entries) => entries,
+                Err(err) if err.kind() == io::ErrorKind::NotFound && top => break,
+                Err(err) => return Err(util::failed(&at.display(), err)),
+            };
+            for entry in entries {
+                let entry = entry.map_err(|e| util::failed(&at.display(), e))?;
+                let Some(name) = entry.file_name().to_str().map(String::from) else { continue };
+                let meta = entry.metadata().map_err(|e| util::failed(&at.display(), e))?;
+                let path = format!("{prefix}{name}");
+                if meta.is_dir() {
+                    folders.push((entry.path(), format!("{path}/"), false));
+                } else if meta.is_file() {
+                    found.push((path, meta.len()));
+                }
+            }
+        }
+        found.sort();
+        Ok(found)
+    }
+
+    fn size(&mut self, path: &str) -> Result<Option<u64>, Fail> {
+        let at = self.root.join(path);
+        match fs::metadata(&at) {
+            Ok(meta) if meta.is_file() => Ok(Some(meta.len())),
+            Ok(_) => Ok(None),
+            Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(err) => Err(util::failed(&at.display(), err)),
+        }
+    }
+
     fn read(&mut self, path: &str) -> Result<Box<dyn Read>, Fail> {
         let path = self.root.join(path);
         Ok(Box::new(File::open(&path).map_err(|e| util::failed(&path.display(), e))?))
+    }
+
+    fn read_range(&mut self, path: &str, start: u64, length: u64) -> Result<Vec<u8>, Fail> {
+        use std::io::{Seek, SeekFrom};
+        let at = self.root.join(path);
+        let mut file = File::open(&at).map_err(|e| util::failed(&at.display(), e))?;
+        file.seek(SeekFrom::Start(start)).map_err(|e| util::failed(&at.display(), e))?;
+        read_exactly(file, length, &at.display().to_string())
+    }
+
+    fn make_folders(&mut self, folders: &[String]) -> Result<(), Fail> {
+        for folder in folders {
+            let at = self.root.join(folder);
+            fs::create_dir_all(&at).map_err(|e| util::failed(&at.display(), e))?;
+        }
+        Ok(())
     }
 
     fn create(&mut self, path: &str) -> Result<Box<dyn Sink>, Fail> {
@@ -413,6 +498,59 @@ impl Store for Ssh {
             .collect();
         found.sort();
         Ok(found)
+    }
+
+    fn list_sizes(&mut self, folder: &str) -> Result<Vec<(String, u64)>, Fail> {
+        // `ls -ln` gives each file's size in its fifth column; the names
+        // listed are restic's, without spaces.
+        let script = format!(
+            "cd {} 2>/dev/null || exit 0; find . -type f -exec ls -ln {{}} +",
+            if folder.is_empty() { self.root.clone() } else { self.at(folder) }
+        );
+        let output = self.run(&script)?;
+        let prefix = if folder.is_empty() { String::new() } else { format!("{folder}/") };
+        let mut found: Vec<(String, u64)> = BufReader::new(output.as_slice())
+            .lines()
+            .map_while(Result::ok)
+            .filter_map(|line| {
+                let fields: Vec<&str> = line.split_whitespace().collect();
+                let size = fields.get(4)?.parse().ok()?;
+                let name = fields.last()?.strip_prefix("./")?;
+                (fields.len() >= 9).then(|| (format!("{prefix}{name}"), size))
+            })
+            .collect();
+        found.sort();
+        Ok(found)
+    }
+
+    fn size(&mut self, path: &str) -> Result<Option<u64>, Fail> {
+        let file = self.at(path);
+        let output = self.run(&format!("if [ -f {file} ]; then wc -c < {file}; fi"))?;
+        Ok(String::from_utf8_lossy(&output).trim().parse().ok())
+    }
+
+    fn read_range(&mut self, path: &str, start: u64, length: u64) -> Result<Vec<u8>, Fail> {
+        if length == 0 {
+            return Ok(Vec::new());
+        }
+        // POSIX dd: the first skips `start` bytes, by a seek on a file,
+        // and the second reads the range in one read.
+        let skip = if start == 0 {
+            String::new()
+        } else {
+            format!("dd bs={start} skip=1 count=0 2>/dev/null; ")
+        };
+        let script = format!("{{ {skip}dd bs={length} count=1 2>/dev/null; }} < {}", self.at(path));
+        let output = self.run(&script)?;
+        read_exactly(output.as_slice(), length, &format!("{}: {path}", self.place()))
+    }
+
+    fn make_folders(&mut self, folders: &[String]) -> Result<(), Fail> {
+        if folders.is_empty() {
+            return Ok(());
+        }
+        let quoted: Vec<String> = folders.iter().map(|f| self.at(f)).collect();
+        self.run(&format!("umask 077 && mkdir -p {}", quoted.join(" "))).map(drop)
     }
 
     fn read(&mut self, path: &str) -> Result<Box<dyn Read>, Fail> {

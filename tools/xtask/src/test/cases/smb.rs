@@ -16,8 +16,8 @@
 //! to read. The host finds the file the guest wrote in the share.
 
 use std::net::TcpListener;
-use std::path::{Path, PathBuf};
 use std::os::unix::process::CommandExt;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 
 use super::super::*;
@@ -27,7 +27,7 @@ use super::super::*;
 const DIR: &str = "out/test/smb";
 
 /// The password of the user's account in smbd, which smbtest gives too.
-const PASSWORD: &str = "dukovo-smb-test";
+pub(super) const PASSWORD: &str = "dukovo-smb-test";
 
 /// The test's network: QEMU's user network, with the host's smbd at
 /// 10.0.2.2 and what smbtest needs to know at 10.0.2.100 port 79.
@@ -51,8 +51,7 @@ pub const CASE: Case = Case {
 };
 
 /// The parts smbtest prints, in order.
-const PARTS: &[&str] =
-    &["listing", "mounted", "files", "folders", "modes", "unmounting", "disk"];
+const PARTS: &[&str] = &["listing", "mounted", "files", "folders", "modes", "unmounting", "disk"];
 
 fn write(path: &Path, text: &str, executable: bool) -> Result<(), String> {
     std::fs::write(path, text).map_err(|err| format!("writing {}: {err}", path.display()))?;
@@ -65,7 +64,7 @@ fn write(path: &Path, text: &str, executable: bool) -> Result<(), String> {
 }
 
 /// The host's smbd, ended when the test is.
-struct Server(Child);
+pub(super) struct Server(Child);
 
 impl Drop for Server {
     fn drop(&mut self) {
@@ -98,13 +97,15 @@ fn samba(name: &str) -> Result<PathBuf, String> {
 
 /// A port of the host's loopback that nothing listens on.
 fn free_port() -> Result<u16, String> {
-    let listener = TcpListener::bind("127.0.0.1:0").map_err(|err| format!("no free port: {err}"))?;
+    let listener =
+        TcpListener::bind("127.0.0.1:0").map_err(|err| format!("no free port: {err}"))?;
     listener.local_addr().map(|addr| addr.port()).map_err(|err| err.to_string())
 }
 
 /// The server's files: its settings, a share with a file and a folder,
-/// the user's account, and what port 79 tells; then smbd, started.
-fn serve(dir: &Path) -> Result<(Server, String), String> {
+/// the user's account, and what port 79 tells; then smbd, started, with
+/// the port it listens on and the user's name.
+pub(super) fn serve(dir: &Path) -> Result<(Server, u16, String), String> {
     let (smbd, pdbedit) = (samba("smbd")?, samba("pdbedit")?);
     if dir.exists() {
         std::fs::remove_dir_all(dir).map_err(|err| format!("removing {}: {err}", dir.display()))?;
@@ -178,7 +179,7 @@ fn serve(dir: &Path) -> Result<(Server, String), String> {
     // Ready once it listens.
     for _ in 0..100 {
         if std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() {
-            return Ok((server, user));
+            return Ok((server, port, user));
         }
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
@@ -188,7 +189,7 @@ fn serve(dir: &Path) -> Result<(Server, String), String> {
 fn smb(vm: &mut Vm, case: &Case) -> Result<(), String> {
     let root: PathBuf = std::env::current_dir().map_err(|err| err.to_string())?;
     let dir = root.join(DIR);
-    let (_server, _user) = serve(&dir)?;
+    let (_server, _port, _user) = serve(&dir)?;
     boot_report(vm, case)?;
     vm.expect("Boot complete.")?;
     vm.expect_ahead("spark: started /system/tests/posix/smbtest as process ")?;

@@ -8,8 +8,9 @@ Linux's C library has: errno's names and descriptions, signals, termios
 with Linux's speeds and flags, the passwd fields, directory entries'
 inode numbers, ioctl's Linux encoding, pipe2 and the other unistd calls,
 and CLOCK_BOOTTIME, which boringtun's timers read. Its memory calls
-leave out MAP_NORESERVE and shm_unlink, which Radix's libc crate does
-not name, so that russh's buffers can lock their pages (mlock).
+leave out MAP_NORESERVE, shm_open and shm_unlink, which Radix's libc
+crate does not name, so that russh's buffers can lock their pages
+(mlock) and rustic_core's file calls build.
 
 diff --git a/nix-0.31.3/build.rs b/nix-0.31.3/build.rs
 index eb27943..c348db0 100644
@@ -603,6 +604,15 @@ diff --git a/nix-0.31.3/src/sys/mman.rs b/nix-0.31.3/src/sys/mman.rs
          MAP_NORESERVE;
          /// Populate page tables for a mapping.
          #[cfg(linux_android)]
+@@ -631,7 +631,7 @@
+     }
+ }
+ 
+-#[cfg(not(target_os = "android"))]
++#[cfg(not(any(target_os = "android", radix)))]
+ feature! {
+ #![feature = "fs"]
+ /// Creates and opens a new, or opens an existing, POSIX shared memory object.
 @@ -671,7 +671,7 @@
  /// For more information, see [`shm_unlink(3)`].
  ///

@@ -110,6 +110,7 @@ const PEER_WANTS: &[(&str, &str)] = &[
     ("arecord", "alsa-utils"),
     ("python3", "python3"),
     ("age", "age"),
+    ("restic", "restic"),
 ];
 
 /// How a lab image lets the lab in: the lab's public key, for SSH, and

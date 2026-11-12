@@ -105,10 +105,7 @@ const RESTORE: &[&str] = &[
 
 /// A round of the service, which passes the unplugged disk over, then a
 /// run that asks for it.
-const UNPLUGGED: &[&str] = &[
-    "backup auto; echo \"auto $?\"",
-    "backup run gone; echo \"run $?\"",
-];
+const UNPLUGGED: &[&str] = &["backup auto; echo \"auto $?\"", "backup run gone; echo \"run $?\""];
 
 /// A changed byte in the newest backup of /users on the disk, then the
 /// destinations removed.
@@ -121,7 +118,7 @@ const TAMPER: &[&str] = &[
 ];
 
 /// A shell command that writes `lines` to `file`, one a line.
-fn script(file: &str, lines: &[&str]) -> String {
+pub(super) fn script(file: &str, lines: &[&str]) -> String {
     let quoted: Vec<String> = lines.iter().map(|line| format!("'{line}'")).collect();
     format!("printf '%s\\n' {} > {file}", quoted.join(" "))
 }
@@ -129,7 +126,7 @@ fn script(file: &str, lines: &[&str]) -> String {
 /// Writes `lines` to alice's `name` and runs it as an administrator; her
 /// pane typed the password at the first, so elevate asks for none after
 /// it (elevate(8)).
-fn elevated(vm: &mut Vm, name: &str, lines: &[&str], first: bool) -> Result<(), String> {
+pub(super) fn elevated(vm: &mut Vm, name: &str, lines: &[&str], first: bool) -> Result<(), String> {
     answer_prompt(
         vm,
         "$",
@@ -205,7 +202,8 @@ fn backup(vm: &mut Vm, case: &Case) -> Result<(), String> {
         return Err(format!("{changes} backups of changes in the second round, not 8"));
     }
     // Each place's chain: the whole backup and the changes, in one line.
-    let chains = screen.iter().filter(|line| line.starts_with("    ") && line.contains(", ")).count();
+    let chains =
+        screen.iter().filter(|line| line.starts_with("    ") && line.contains(", ")).count();
     if chains != 4 {
         return Err(format!("{chains} chains of two backups on the disk, not 4"));
     }
@@ -250,7 +248,10 @@ fn backup(vm: &mut Vm, case: &Case) -> Result<(), String> {
         "run 1",
     ])?;
     let screen = vm.screen()?;
-    if screen.iter().any(|line| line.starts_with("backup: stick") || line.starts_with("backup: server")) {
+    if screen
+        .iter()
+        .any(|line| line.starts_with("backup: stick") || line.starts_with("backup: server"))
+    {
         return Err("the service's round backed up a destination that was not due".into());
     }
     answer_prompt(

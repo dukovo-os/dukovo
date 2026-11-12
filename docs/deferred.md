@@ -143,12 +143,17 @@ machine with AMT, an AMD machine and a laptop; see
 | The `snap` service's own view in place of the whole tree (ADR 0461) | `snap.toml` may name any subvolume, reached through the top of each filesystem | 15d, with the updater's (ADR 0455) |
 | `BTRFS_IOC_GET_SUBVOL_INFO` on a descriptor of a file that is not a folder (ADR 0461) | The C library asks a folder's `subvolume` method; `ls` and `snap` ask of folders | A need |
 | Backups encrypted to post-quantum recipients as well as X25519 (ADR 0463) | The age crate's release with them needs another version of `ml-kem` than the one the build already locks | A port: an age release on the locked `ml-kem` |
-| Backups to servers that offer SFTP alone, without a shell (ADR 0463) | The server runs `find`, `cat`, `mv` and `rm` over SSH, as any POSIX server can | A need |
+| Backups to servers that offer SFTP alone, without a shell (ADRs 0463 and 0465) | The server runs `find`, `cat`, `dd`, `mv` and `rm` over SSH, as any POSIX server can, for streams and restic repositories alike | A need |
 | Backup keys in the system key store in place of files readable by root alone (ADR 0463) | The key store comes later | Release 1.2 |
 | The owner told of a backup that is overdue or failed, at sign-in and on the web console (ADR 0463) | `backup list` and the log show it | 15d, with the unified updater's notifications |
 | Restoring a whole machine from the installer, for a computer with no Dukovo on it yet (ADR 0464) | `backup restore --machine` runs on an installed system, so a fresh install comes first | A decision: the installer's restore screen |
 | Tags checked when Linux's `age` and `btrfs receive` restore a backup (ADR 0464) | The tag is an HMAC-SHA256 beside each file; Linux's tools read the backup without it | A need |
 | Checking who wrote a backup with another of its keys, not the recovery key (ADR 0464) | The tag key comes from the destination's own key; other recipients restore with `--unchecked` | A need |
+| A local cache of a restic repository's indexes and snapshots, so that a round to remote storage reads less (ADR 0465) | Each round reads the repository's indexes from the destination | A need: a benchmark of rounds to S3 storage |
+| Restic's lock files, so that Linux's `restic prune` never runs on a repository during a round (ADR 0465) | rustic's library writes no locks; backup(8) says not to prune from elsewhere while the machine backs up | A port: a rustic_core release that keeps restic's locks |
+| S3 addresses in the virtual-hosted style, and temporary credentials with a session token (ADR 0465) | Path-style addresses and an access key's ID and secret are what every S3-compatible store takes | A need |
+| Restic destinations on restic's REST server (`rest:` addresses) (ADR 0465) | A share, SSH and S3 cover the servers people have | A need |
+| Owner, mode and times of a place's top folder kept when Linux's `restic` restores it (ADR 0465) | restic sets the top folder of a restore itself; Dukovo's own restore keeps them | An upstream change in restic |
 | System updates served by the update server (ADR 0382) | Catalogs are served; system images come with update delivery | 15c |
 | Telling a person of a new flaw, and which advisories an update fixes (ADR 0389) | Needs the unified updater's notifications | 15d |
 

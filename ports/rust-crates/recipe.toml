@@ -2,11 +2,12 @@
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 
 # Crates from crates.io that programs in Rust need and that do not build
-# for Radix as they are (ADR 0080): each patched in patches/<crate>.patch
-# and installed into the toolchain, where Cargo for Radix gives programs
-# the patched crate in place of crates.io's. One version of each semver
-# line: a program's Cargo.lock names that version. The libc crate is the
-# rust-std port's.
+# for Radix as they are (ADR 0080), or that bring a crate whose license
+# the system's programs may not link (kernel/deny.toml): each patched in
+# patches/<crate>.patch and installed into the toolchain, where Cargo for
+# Radix gives programs the patched crate in place of crates.io's. One
+# version of each semver line: a program's Cargo.lock names that version.
+# The libc crate is the rust-std port's.
 name = "rust-crates"
 version = "1"
 summary = "crates.io crates patched for Radix, for programs in Rust"
@@ -20,6 +21,12 @@ name = "crossterm"
 version = "0.29.0"
 sha256 = "d8b9f2e4c67f833b660cdb0a3523065869fb35570177239812ed4c905aeff87b"
 license = "MIT"
+
+[[crate]]
+name = "dirs-sys"
+version = "0.5.0"
+sha256 = "e01a3366d27ee9890022452ee61b2b63a67e6f13f58900b651ff5665f0bb1fab"
+license = "MIT OR Apache-2.0"
 
 [[crate]]
 name = "errno"
@@ -122,3 +129,9 @@ name = "uucore"
 version = "0.9.0"
 sha256 = "069b34217c27f611e1589f540f58118dbf226a9e407d38ab472052ff075a1dc2"
 license = "MIT"
+
+[[crate]]
+name = "xattr"
+version = "1.6.1"
+sha256 = "32e45ad4206f6d2479085147f02bc2ef834ac85886624a23575ae137c8aa8156"
+license = "MIT OR Apache-2.0"

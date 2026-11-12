@@ -5,11 +5,11 @@ backup(8) "Dukovo" "Dukovo Manual"
 
 # NAME
 
-backup - keep encrypted backups of snapshots on a disk or a server
+backup - keep encrypted backups of snapshots on a disk, a share, a server or S3 storage
 
 # SYNOPSIS
 
-*backup add* [*--every* _when_] [*--verify* _when_] [*--recipient* _key_]... _name_ _to_
+*backup add* [*--format* _format_] [*--every* _when_] [*--verify* _when_] [*--recipient* _key_]... [*--append-only*] _name_ _to_
 
 *backup remove* _name_
 
@@ -38,8 +38,12 @@ backup - keep encrypted backups of snapshots on a disk or a server
 backup copies snapshots of the places *snap*(1) keeps, */users*,
 */shared* and */system/settings* by default, and of the apps installed
 for everyone, */applications*, to a destination: a folder, as a USB
-disk's in */volumes*, or a folder on a server reached over SSH (ADR
-0463, ADR 0464). The first backup of a place is its whole snapshot;
+disk's in */volumes* or a mounted share's, a folder on a server reached
+over SSH, or a bucket of S3 storage (ADRs 0463, 0464 and 0465). A
+destination keeps its backups in one of two formats: as Btrfs's send
+streams (*btrfs*, the default), described here, or as a restic
+repository (*restic*, which S3 storage always keeps), described under
+RESTIC REPOSITORIES. The first backup of a place is its whole snapshot;
 each one after holds only what changed since the one before. Every
 backup is a Btrfs send stream (*subvolume*(8)), encrypted with age to
 the destination's own key and written as files, so a destination can be
@@ -68,7 +72,46 @@ starts the next one. The newest *chains* whole chains are kept (2 by
 default), and an older one is removed only once a newer one is whole. A
 file over 1 GiB is cut into parts, *.age.000*, *.age.001* and on. A
 file is written as *.partial* and named once whole, so a backup cut
-short is never taken for one; the next round removes what it left.
+short is never taken for one; the next round removes what it left. A
+round refuses a destination whose folder has no *backup.toml*, which
+*backup add* wrote there, as a share's folder before the share is
+mounted, rather than keep the backups on the machine itself.
+
+# RESTIC REPOSITORIES
+
+With *format = "restic"* (*backup.toml*(5)), the folder
+*dukovo-backup/*_machine_ is a restic repository, written by rustic's
+library: files are split into chunks by their content, each chunk kept
+once however many backups and places hold it, compressed, and encrypted
+and authenticated with the repository's key. Its password is the
+destination's recovery key. Each round adds one restic snapshot of each
+place, read from the round's snapshot of it, whose path is the place's,
+whose host is the machine's name, and whose tags are the round's time
+and the place's folder; a file whose size, times and inode have not
+changed is taken from the place's previous backup without being read
+again. The machine's record is a snapshot of */dukovo-machine*, tagged
+*machine*. *backup.toml* beside the repository's files says it is this
+machine's.
+
+After each round, the newest backup of each place is kept, with one a
+day for *daily* days, one a week for *weekly* weeks and one a month for
+*monthly* months (7, 4 and 12 by default); the rest are forgotten, and
+the data only they used is removed. A destination with *append_only*
+removes nothing, ever, so the key it writes with can be one that is not
+allowed to delete: a machine broken into cannot then destroy its
+backups. backup writes none of restic's lock files, so run Linux's
+*restic forget* or *restic prune* on a repository only while the
+machine is not backing up to it.
+
+For S3 storage, *backup add* takes the access key from
+*AWS_ACCESS_KEY_ID* and *AWS_SECRET_ACCESS_KEY*, and the region from
+*AWS_REGION* or *AWS_DEFAULT_REGION* (*us-east-1* without either), as
+Amazon's own tools do, and keeps them in
+_/system/settings/backup/name.s3_. Addresses are path-style, which
+Amazon's S3, Backblaze B2, Wasabi, Cloudflare R2, MinIO, Garage and
+Ceph answer; requests are signed with AWS's Signature Version 4. A
+share, SMB or NFS, is mounted with *mount*(8) and named as a folder; a
+server over SSH needs a shell, as for streams.
 
 # KEYS
 
@@ -92,13 +135,19 @@ cannot check the tags, needs *--unchecked*.
 
 # COMMANDS
 
-*add* [*--every* _when_] [*--verify* _when_] [*--recipient* _key_]... _name_ _to_
+*add* [*--format* _format_] [*--every* _when_] [*--verify* _when_] [*--recipient* _key_]... [*--append-only*] _name_ _to_
 	Adds the destination _name_, of up to 32 letters, digits, *-* and
-	*\_*, at _to_: a folder, written from */*, or
+	*\_*, at _to_: a folder, written from */*;
 	*ssh://*_user_*@*_host_[*:*_port_]*/*_path_, where a _path_ that
-	starts with *~/* is in the account's home. It checks that it can
-	write there, marks the folder as this machine's, makes the key and
-	shows it. _when_ is *day* (the default), *week* or *hand* (only by
+	starts with *~/* is in the account's home; or
+	*s3://*_host_[*:*_port_]*/*_bucket_[*/*_prefix_], over HTTPS, or
+	*s3+http://* over plain HTTP, for storage on the local network. It
+	checks that it can write there, marks the folder as this machine's,
+	makes the key and shows it. _format_ is *btrfs* (the default) or
+	*restic*, which S3 storage always is; a folder that already holds a
+	restic repository that backup did not make there is refused.
+	*--append-only* makes a restic destination that never removes
+	anything. _when_ is *day* (the default), *week* or *hand* (only by
 	*backup run*) for *--every*, and *week*, *month* (the default) or
 	*never* for *--verify*. For a server, the first contact records its
 	host key, which every later one must match; the server must accept
@@ -117,6 +166,15 @@ cannot check the tags, needs *--unchecked*.
 	machine, the backups cannot be read.
 	```
 
+	A NAS's share, and a bucket that is only ever added to:
+
+	```
+	$ elevate smb mount -o user=ann //nas/backups /volumes/nas
+	$ elevate backup add --format restic nas /volumes/nas
+	$ export AWS_ACCESS_KEY_ID=AKIA... AWS_SECRET_ACCESS_KEY=...
+	$ elevate backup add --append-only cloud s3://s3.eu-central-1.amazonaws.com/family-backups
+	```
+
 *remove* _name_
 	Forgets the destination, and its key, and removes the snapshots it
 	would have started its next backups from, unless another destination
@@ -129,7 +187,8 @@ cannot check the tags, needs *--unchecked*.
 
 *show* _name_
 	What the destination holds: each place's chains, and the times of
-	their backups, oldest first. Needs an administrator.
+	their backups, oldest first; for a restic repository, each place's
+	backups. Needs an administrator.
 
 *run* [_name_ ...]
 	Backs up to each _name_, or to every destination, now. Needs an
@@ -151,8 +210,10 @@ cannot check the tags, needs *--unchecked*.
 	also restored into the place's *@snapshots* folder and compared,
 	file by file, with the snapshot it was made from: names, kinds,
 	owners, modes, the times contents changed, links, extended
-	attributes and data. The copy is removed after. Needs an
-	administrator.
+	attributes and data. The copy is removed after. A restic repository
+	is checked as *restic check --read-data* checks one: its indexes,
+	snapshots and trees, and every pack read through, each chunk against
+	its MAC and hash. Needs an administrator.
 
 *restore* [*--key* _file_] [*--place* _place_] [*--at* _time_] [*--into* _folder_] [*--unchecked*] _name_|_source_
 	Restores the newest backup of each place, or of _place_ (its path
@@ -226,6 +287,18 @@ $ for b in $(ls *.age* | sed 's/\.age.*//' | sort -u); do
 > done
 ```
 
+A restic repository is read by Linux's *restic*, version 0.14 or later,
+or *rustic*, with the recovery key as the password. Restored this way,
+a place's top folder takes restic's owner and mode, not the place's:
+
+```
+$ export RESTIC_PASSWORD="$(cat recovery.key)"
+$ restic -r /mnt/nas/dukovo-backup/laptop snapshots
+$ restic -r /mnt/nas/dukovo-backup/laptop restore latest --path /users --target /mnt/restore
+$ export AWS_ACCESS_KEY_ID=... AWS_SECRET_ACCESS_KEY=...
+$ restic -r s3:https://s3.eu-central-1.amazonaws.com/family-backups/dukovo-backup/laptop check
+```
+
 # EXIT STATUS
 
 0 when it did what was asked; 1 when it did not, after what came before
@@ -239,6 +312,9 @@ _/system/settings/backup/name.toml_
 
 _/system/settings/backup/name.key_
 	A destination's key.
+
+_/system/settings/backup/name.s3_
+	An S3 destination's access key.
 
 _/system/settings/backup/ssh_ed25519_, _/system/settings/backup/known_hosts_
 	The machine's key for servers, and the servers' host keys.
@@ -256,4 +332,4 @@ _/system/settings/spark/services/backup.toml_
 # SEE ALSO
 
 *backup.toml*(5), *snap*(1), *subvolume*(8), *service.toml*(5),
-*spark*(8), *ssh*(1), *age*(1)
+*spark*(8), *ssh*(1), *age*(1), *mount*(8), *smb*(1)

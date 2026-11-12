@@ -834,6 +834,7 @@ dependencies = [
  "ridlc",
  "rustc-demangle",
  "serde",
+ "sha2",
  "slots",
  "toml",
 ]

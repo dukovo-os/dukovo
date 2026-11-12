@@ -1,0 +1,52 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# Restic repositories read on another system (ADR 0465): the machine backs
+# /users up to a folder in restic's format, twice, with a change between,
+# keeps the newest backup, and checks it by a restore of its own; the lab
+# PC's own Linux reads the repository with restic and the recovery key
+# alone (restic-backup.sh beside this file), checks every pack, restores
+# /users and finds the lab account's files as the machine summed them.
+# backup(8)'s RESTORING WITH LINUX gives these steps.
+about = "Linux's restic reads, checks and restores the restic repository backup(8) writes, with the recovery key as its password, and finds the same files (ADR 0465)"
+time = "6m"
+host_needs = ["restic", "scp", "sha256sum"]
+
+# A folder of the lab account's, and a destination for /users alone that
+# keeps only the newest backup (no daily, weekly or monthly ones, which
+# would keep the oldest as restic's forget does).
+[[step]]
+run = "sh -c 'rm -rf ~/lab-restic-files && mkdir ~/lab-restic-files && echo first > ~/lab-restic-files/note.txt && seq 1 100000 > ~/lab-restic-files/numbers.txt && ln -s note.txt ~/lab-restic-files/latest && echo made'"
+expect = "made"
+[[step]]
+run = "sh -c 'rm -rf /tmp/lab-restic && mkdir /tmp/lab-restic && backup add --format restic --every hand --verify never lab-restic /tmp/lab-restic > /dev/null && echo \"places = [\\\"/users\\\"]\" >> /system/settings/backup/lab-restic.toml && for keep in daily weekly monthly; do echo \"$keep = 0\" >> /system/settings/backup/lab-restic.toml; done && backup run lab-restic'"
+root = true
+expect = ["backup: lab-restic: /users: ", " new, of ", "backup: lab-restic: done"]
+# Changed, backed up again, the first round's forgotten, then checked by a
+# restore.
+[[step]]
+run = "sh -c 'echo second >> ~/lab-restic-files/note.txt && mv ~/lab-restic-files/numbers.txt ~/lab-restic-files/counted.txt && echo changed'"
+expect = "changed"
+[[step]]
+run = "sh -c 'backup run lab-restic && backup verify --restore lab-restic'"
+root = true
+expect = ["read 1 backups and 1 records through, all whole", "files and folders as they were"]
+[[step]]
+run = "sh -c 'cd ~/lab-restic-files && find . -type f | sort | xargs sha256sum > ~/lab-restic.sums && wc -l < ~/lab-restic.sums'"
+expect = "2"
+# The repository and the recovery key, where the lab account can copy them.
+[[step]]
+run = "sh -c 'rm -rf /users/lab/lab-restic && cp -r /tmp/lab-restic/dukovo-backup /users/lab/lab-restic && backup key lab-restic > /users/lab/lab-restic.key && chown -R lab /users/lab/lab-restic /users/lab/lab-restic.key && echo copied'"
+root = true
+expect = "copied"
+# Linux's restic checks it, lists its snapshots and restores /users.
+[[step]]
+host = "sh {here}/restic-backup.sh fetch {machine} {machine-port:22}"
+expect = "fetched: 1 machine"
+[[step]]
+host = "sh {here}/restic-backup.sh restore"
+expect = ["no errors were found", "snapshots: 2", "sums match"]
+[[step]]
+run = "sh -c 'backup remove lab-restic && rm -rf /tmp/lab-restic /users/lab/lab-restic /users/lab/lab-restic.key /users/lab/lab-restic.sums /users/lab/lab-restic-files'"
+root = true
+expect = "Removed lab-restic"

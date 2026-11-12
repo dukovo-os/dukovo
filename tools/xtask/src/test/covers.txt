@@ -440,6 +440,10 @@ rescue userspace/programs/systools/src/elevate.rs userspace/programs/systools/sr
 rescue userspace/programs/systools/src/serial_console.rs userspace/programs/systools/src/subvolume.rs
 rescue userspace/programs/systools/src/sysupdate.rs userspace/programs/systools/src/sysupdate/
 rescue userspace/programs/systools/src/bundles/
+restic-backup kernel/fs/btrfs/ kernel/net/ ports/rust-crates/patches/ userspace/programs/smb/
+restic-backup userspace/programs/systools/src/backup.rs userspace/programs/systools/src/backup/
+restic-backup userspace/programs/systools/src/snap.rs userspace/programs/systools/src/subvolume.rs
+restic-backup userspace/programs/tuf/src/http.rs
 rgrub-setup image/grub/ tools/xtask/src/grub.rs userspace/programs/disk/
 rgrub-setup userspace/programs/systools/src/mkfs.rs userspace/programs/systools/src/rgrub.rs
 root kernel/fs/block/ kernel/fs/btrfs/ userspace/programs/systools/src/btrfs.rs

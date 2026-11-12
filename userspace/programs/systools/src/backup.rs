@@ -1,12 +1,16 @@
 // SPDX-FileCopyrightText: 2026 The Dukovo contributors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! backup(8): snapshots kept on a USB disk or a server, encrypted with
-//! age (ADR 0463).
+//! backup(8): snapshots kept on a USB disk, a share, a server or
+//! S3-compatible storage, encrypted (ADRs 0463 and 0465).
 //!
-//! A destination is a folder, as a disk's in `/volumes`, or a server's,
-//! `ssh://user@host[:port]/path`; each has a file of settings and a key
-//! of its own in `/system/settings/backup` (backup.toml(5)). A round
+//! A destination is a folder, as a disk's in `/volumes` or a share's, a
+//! server's, `ssh://user@host[:port]/path`, or a bucket's,
+//! `s3://host[:port]/bucket[/prefix]`; each has a file of settings and a
+//! key of its own in `/system/settings/backup` (backup.toml(5)). It keeps
+//! either Btrfs's streams encrypted with age (`format = "btrfs"`), or a
+//! restic repository (`format = "restic"`, ADR 0465), deduplicated, which
+//! Linux's restic reads too, and which S3 storage always keeps. A round
 //! makes a read-only snapshot `backup-<time>` of each place, with the
 //! services' hooks run around it, and gives each destination the stream
 //! of its changes from the snapshot it took before, or a whole one,
@@ -15,8 +19,10 @@
 //! the snapshot it came from; `backup restore` receives a backup into the
 //! place's `@snapshots`, where `snap restore --from` copies files out.
 //!
-//! - `backup add NAME TO [--every day|week|hand] [--verify week|month|never]
-//!   [--recipient KEY]...` adds a destination and shows its recovery key.
+//! - `backup add NAME TO [--format btrfs|restic] [--every day|week|hand]
+//!   [--verify week|month|never] [--recipient KEY]... [--append-only]`
+//!   adds a destination and shows its recovery key; S3 storage takes its
+//!   access key from AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY.
 //! - `backup remove NAME`, `backup list`, `backup show NAME`.
 //! - `backup run [NAME...]` backs up now; `backup auto [--watch]` backs up
 //!   each destination that is due, every hour with `--watch`.
@@ -31,6 +37,8 @@
 mod compare;
 mod layout;
 mod record;
+mod restic;
+mod s3;
 mod store;
 mod tag;
 
@@ -49,6 +57,7 @@ use age::secrecy::ExposeSecret;
 use serde::{Deserialize, Serialize};
 
 use self::layout::{Listing, Next};
+use self::restic::{Keep, Repo};
 use self::store::{Address, Folder, Joined, Parts, Ssh, Store};
 use self::tag::TagKey;
 use crate::args::{Arg, Args};
@@ -85,6 +94,10 @@ const APPLICATIONS: &str = "/applications";
 /// round's record carries (ADR 0464).
 const SYSTEM_STATE: &str = "/system/state";
 
+/// Where a round writes the machine's record for a restic repository to
+/// back up, and removes it.
+const RECORD_SCRATCH: &str = "/system/live/backup-record";
+
 /// How often the service looks for a destination that is due.
 const ROUND: Duration = Duration::from_hours(1);
 
@@ -107,15 +120,29 @@ enum Verify {
     Never,
 }
 
+/// How a destination keeps backups.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Format {
+    /// Btrfs's send streams, encrypted with age, in chains (ADR 0463).
+    Btrfs,
+    /// A restic repository (ADR 0465).
+    Restic,
+}
+
 /// A destination's file, as written.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct DestinationFile {
     to: String,
+    format: Option<String>,
     every: Option<String>,
     verify: Option<String>,
     chain: Option<usize>,
     chains: Option<usize>,
+    daily: Option<u32>,
+    weekly: Option<u32>,
+    monthly: Option<u32>,
+    append_only: Option<bool>,
     places: Option<Vec<String>>,
     recipients: Option<Vec<String>>,
 }
@@ -124,14 +151,19 @@ struct DestinationFile {
 #[derive(Debug)]
 struct Destination {
     name: String,
-    /// A folder, or an SSH address.
+    /// A folder, an SSH address or an S3 one.
     to: String,
+    format: Format,
     every: Every,
     verify: Verify,
     /// The most backups in a chain.
     chain: usize,
     /// The whole chains kept.
     chains: usize,
+    /// The restic snapshots kept besides the newest.
+    keep: Keep,
+    /// Whether nothing is ever removed from a restic repository.
+    append_only: bool,
     /// The places backed up; snap's when empty.
     places: Vec<String>,
     /// Those every file is encrypted to besides its own key.
@@ -165,9 +197,38 @@ impl Destination {
         if chain == 0 || chains == 0 {
             return Err("chain and chains are 1 or more".into());
         }
-        if Address::parse(&file.to)?.is_none() && !file.to.starts_with('/') {
-            return Err(format!("to is a folder from /, or ssh://, not '{}'", file.to));
+        let s3 = s3::Address::parse(&file.to)?.is_some();
+        if !s3 && Address::parse(&file.to)?.is_none() && !file.to.starts_with('/') {
+            return Err(format!("to is a folder from /, ssh:// or s3://, not '{}'", file.to));
         }
+        let format = match file.format.as_deref() {
+            Some("btrfs") if s3 => {
+                return Err("S3 storage keeps only format = \"restic\"".into());
+            }
+            Some("btrfs") => Format::Btrfs,
+            None if !s3 => Format::Btrfs,
+            Some("restic") | None => Format::Restic,
+            Some(other) => return Err(format!("format is btrfs or restic, not '{other}'")),
+        };
+        let by_days = [file.daily, file.weekly, file.monthly];
+        if format == Format::Btrfs
+            && (by_days.iter().any(Option::is_some) || file.append_only.is_some())
+        {
+            return Err("daily, weekly, monthly and append_only are for format = \"restic\"".into());
+        }
+        let chained = file.chain.is_some() || file.chains.is_some() || file.recipients.is_some();
+        if format == Format::Restic && chained {
+            return Err("chain, chains and recipients are for format = \"btrfs\"".into());
+        }
+        if by_days.iter().flatten().any(|&n| n > 1000) {
+            return Err("daily, weekly and monthly are at most 1000".into());
+        }
+        let defaults = Keep::default();
+        let keep = Keep {
+            daily: file.daily.unwrap_or(defaults.daily),
+            weekly: file.weekly.unwrap_or(defaults.weekly),
+            monthly: file.monthly.unwrap_or(defaults.monthly),
+        };
         let recipients = file.recipients.unwrap_or_default();
         for recipient in &recipients {
             age::x25519::Recipient::from_str(recipient)
@@ -180,10 +241,13 @@ impl Destination {
         Ok(Destination {
             name: name.into(),
             to: file.to,
+            format,
             every,
             verify,
             chain,
             chains,
+            keep,
+            append_only: file.append_only.unwrap_or(false),
             places,
             recipients,
         })
@@ -245,7 +309,31 @@ impl Destination {
 
     /// Its store.
     fn store(&self, first_contact: bool) -> Result<Box<dyn Store>, Fail> {
-        open_store(&self.to, Some(&machine()), first_contact)
+        open_store(&self.to, Some(&machine()), first_contact, Some(&s3_file(&self.name)))
+    }
+
+    /// Opens its restic repository. When `adding`, makes it if the folder
+    /// has none and marks the folder as its; a round refuses a folder
+    /// without the mark ([`unmarked`]).
+    fn repo(&self, identity: &age::x25519::Identity, adding: bool) -> Result<Repo, Fail> {
+        let mut store = self.store(false)?;
+        let public = identity.to_public().to_string();
+        let marked = store.size(layout::MARK)?.is_some();
+        if !marked && !adding {
+            return Err(unmarked(store.as_ref()));
+        }
+        if marked {
+            check_mark(store.as_mut(), true, &public, Format::Restic)?;
+        }
+        let repo = if Repo::exists(store.as_mut())? {
+            Repo::open(self.store(false)?, &password(identity))?
+        } else {
+            Repo::init(self.store(false)?, &password(identity), self.append_only)?
+        };
+        if !marked {
+            check_mark(store.as_mut(), false, &public, Format::Restic)?;
+        }
+        Ok(repo)
     }
 }
 
@@ -257,14 +345,49 @@ fn key_file(name: &str) -> PathBuf {
     Path::new(SETTINGS).join(format!("{name}.key"))
 }
 
+/// The file of a destination's S3 access key.
+fn s3_file(name: &str) -> PathBuf {
+    Path::new(SETTINGS).join(format!("{name}.s3"))
+}
+
+/// A restic repository's password: the destination's recovery key, so
+/// that the key that reads its age files reads it too.
+fn password(identity: &age::x25519::Identity) -> String {
+    identity.to_string().expose_secret().to_string()
+}
+
+/// The S3 access key in the environment, as Amazon's own tools take it.
+fn s3_from_env() -> Result<s3::Credentials, Fail> {
+    let var = |name: &str| std::env::var(name).ok().filter(|v| !v.is_empty());
+    let (Some(id), Some(secret)) = (var("AWS_ACCESS_KEY_ID"), var("AWS_SECRET_ACCESS_KEY")) else {
+        return Err(util::usage(
+            "S3 storage needs an access key: set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY, \
+             and AWS_REGION if its region is not us-east-1"
+                .into(),
+        ));
+    };
+    let region = var("AWS_REGION").or_else(|| var("AWS_DEFAULT_REGION"));
+    s3::Credentials::new(id, secret, region).map_err(util::usage)
+}
+
 /// The store of `to` for machine `machine`'s folder in it, or, with no
-/// machine, the store whose folder `to` is.
+/// machine, the store whose folder `to` is. S3 storage is reached with
+/// the access key in the file `s3_keys`, or without one, the
+/// environment's.
 fn open_store(
     to: &str,
     machine: Option<&str>,
     first_contact: bool,
+    s3_keys: Option<&Path>,
 ) -> Result<Box<dyn Store>, Fail> {
     let settings = Path::new(SETTINGS);
+    if let Some(address) = s3::Address::parse(to).map_err(util::fail)? {
+        let keys = match s3_keys {
+            Some(path) => s3::Credentials::read(path)?,
+            None => s3_from_env()?,
+        };
+        return Ok(Box::new(s3::S3::new(address, keys, machine)));
+    }
     match Address::parse(to).map_err(util::fail)? {
         Some(address) => {
             let mut ssh =
@@ -389,21 +512,32 @@ fn shown_time(name: &str) -> String {
 }
 
 /// The mark at a destination: its format, machine and key.
-fn mark_text(key: &str) -> String {
+fn mark_text(key: &str, format: Format) -> String {
+    let about = match format {
+        Format::Btrfs => {
+            "# Dukovo's backups of {machine} (backup(8), ADR 0463). Each file is a\n\
+             # btrfs send stream, encrypted with age; the parts of one, in order,\n\
+             # restore with Linux's tools:\n\
+             #   cat PLACE/CHAIN/TIME.age* | age -d -i KEY | btrfs receive FOLDER\n\
+             format = 1\n"
+        }
+        Format::Restic => {
+            "# Dukovo's backups of {machine} (backup(8), ADR 0465): a restic\n\
+             # repository, whose password is the recovery key. Linux's restic\n\
+             # reads it:\n\
+             #   restic -r FOLDER snapshots\n\
+             format = 2\n"
+        }
+    };
     format!(
-        "# Dukovo's backups of {machine} (backup(8), ADR 0463). Each file is a\n\
-         # btrfs send stream, encrypted with age; the parts of one, in order,\n\
-         # restore with Linux's tools:\n\
-         #   cat PLACE/CHAIN/TIME.age* | age -d -i KEY | btrfs receive FOLDER\n\
-         format = 1\n\
-         machine = \"{machine}\"\n\
-         key = \"{key}\"\n",
+        "{}machine = \"{machine}\"\nkey = \"{key}\"\n",
+        about.replace("{machine}", &machine()),
         machine = machine()
     )
 }
 
-/// The key named in a destination's mark, read from `store`.
-fn marked_key(store: &mut dyn Store) -> Result<Option<String>, Fail> {
+/// The format and key named in a destination's mark, read from `store`.
+fn read_mark(store: &mut dyn Store) -> Result<(Format, String), Fail> {
     #[derive(Deserialize)]
     struct Mark {
         format: u32,
@@ -416,34 +550,40 @@ fn marked_key(store: &mut dyn Store) -> Result<Option<String>, Fail> {
         .map_err(|e| util::failed(&store.place(), e))?;
     let mark: Mark = toml::from_str(&text)
         .map_err(|err| util::fail(format!("{}/{}: {err}", store.place(), layout::MARK)))?;
-    if mark.format != 1 {
-        return Err(util::fail(format!(
-            "{}: backups of format {}, which this Dukovo does not read",
-            store.place(),
-            mark.format
-        )));
-    }
-    Ok(Some(mark.key))
+    let format = match mark.format {
+        1 => Format::Btrfs,
+        2 => Format::Restic,
+        other => {
+            return Err(util::fail(format!(
+                "{}: backups of format {other}, which this Dukovo does not read",
+                store.place()
+            )));
+        }
+    };
+    Ok((format, mark.key))
 }
 
-/// Writes the mark, or checks the one there is for `key`.
-fn check_mark(store: &mut dyn Store, listing: &Listing, key: &str) -> Result<(), Fail> {
-    if listing.marked {
-        let marked = marked_key(store)?;
-        if marked.as_deref() != Some(key) {
+/// Writes the mark, or checks that the one there is, `marked`, is for
+/// `key` and `format`.
+fn check_mark(store: &mut dyn Store, marked: bool, key: &str, format: Format) -> Result<(), Fail> {
+    if marked {
+        let (found, marked) = read_mark(store)?;
+        if marked != key {
             return Err(util::fail(format!(
                 "{}: holds backups made with another key; remove that folder, or back up \
                  elsewhere",
                 store.place()
             )));
         }
+        if found != format {
+            return Err(util::fail(format!(
+                "{}: holds backups of the other format; remove that folder, or back up elsewhere",
+                store.place()
+            )));
+        }
         return Ok(());
     }
-    let partial = format!("{}{}", layout::MARK, layout::PARTIAL);
-    let mut sink = store.create(&partial)?;
-    sink.write_all(mark_text(key).as_bytes()).map_err(|e| util::failed(&store.place(), e))?;
-    sink.finish()?;
-    store.rename_all(&[(partial, layout::MARK.into())])
+    store.put_whole(layout::MARK, mark_text(key, format).as_bytes())
 }
 
 /// A place backed up: where its snapshots are, and its folder's name at
@@ -535,8 +675,8 @@ impl Check {
         identity: &age::x25519::Identity,
         unchecked: bool,
     ) -> Result<Check, Fail> {
-        let own = marked_key(store)?;
-        if own.as_deref() == Some(identity.to_public().to_string().as_str()) {
+        let (_, own) = read_mark(store)?;
+        if own == identity.to_public().to_string() {
             return Ok(Check::Tags(TagKey::of(identity)));
         }
         if unchecked {
@@ -667,21 +807,44 @@ struct Ready {
     state: State,
     keys: Keys,
     places: Vec<String>,
+    /// Its restic repository, open, if it keeps one.
+    repo: Option<Repo>,
 }
 
 /// What a round needs of a destination: its store and what it holds, its
-/// keys and places.
-type Prepared = (Box<dyn Store>, Listing, Keys, Vec<String>);
+/// keys and places, and its restic repository if it keeps one.
+type Prepared = (Box<dyn Store>, Listing, Keys, Vec<String>, Option<Repo>);
 
 /// Opens `dest` for a round: its keys, its places, and its store, listed
-/// and marked.
+/// and marked, or its restic repository, opened.
 fn prepare(dest: &Destination) -> Result<Prepared, Fail> {
     let (identity, recipients) = dest.keys()?;
     let places = dest.places()?;
+    let keys = Keys { recipients, tag: TagKey::of(&identity) };
+    if dest.format == Format::Restic {
+        let repo = dest.repo(&identity, false)?;
+        let listing = Listing::read(std::iter::empty());
+        return Ok((dest.store(false)?, listing, keys, places, Some(repo)));
+    }
     let mut store = dest.store(false)?;
     let listing = Listing::read(store.list()?.iter().map(String::as_str));
-    check_mark(store.as_mut(), &listing, &identity.to_public().to_string())?;
-    Ok((store, listing, Keys { recipients, tag: TagKey::of(&identity) }, places))
+    if !listing.marked {
+        return Err(unmarked(store.as_ref()));
+    }
+    check_mark(store.as_mut(), true, &identity.to_public().to_string(), Format::Btrfs)?;
+    Ok((store, listing, keys, places, None))
+}
+
+/// Why a round refuses a destination without the mark `backup add` wrote:
+/// a share's folder before the share is mounted, or a disk's mount point
+/// without the disk, would otherwise take the backups on this machine.
+fn unmarked(store: &dyn Store) -> Fail {
+    util::fail(format!(
+        "{}: has no {}, which backup add wrote there; is the share mounted, or the disk \
+         plugged in?",
+        store.place(),
+        layout::MARK
+    ))
 }
 
 /// Backs up each of `dests` now; whether each did. Says what it does on
@@ -694,8 +857,8 @@ fn round(dests: Vec<Destination>, out: &mut dyn Write) -> Result<bool, Fail> {
     for dest in dests {
         let mut state = State::read(&dest.name);
         match prepare(&dest) {
-            Ok((store, listing, keys, places)) => {
-                ready.push(Ready { dest, store, listing, state, keys, places });
+            Ok((store, listing, keys, places, repo)) => {
+                ready.push(Ready { dest, store, listing, state, keys, places, repo });
             }
             Err(fail) => {
                 let _ = writeln!(out, "backup: {}: {}; not backed up", dest.name, fail.message);
@@ -750,45 +913,10 @@ fn round(dests: Vec<Destination>, out: &mut dyn Write) -> Result<bool, Fail> {
     for mut r in ready {
         let name = r.dest.name.clone();
         r.state.tried = now;
-        let mut failed = Vec::new();
-        for path in r.places.clone() {
-            let path = &path;
-            let Some(backed) = made.get(path) else {
-                let why = not_made.get(path).cloned().unwrap_or_default();
-                failed.push(format!("{path}: {why}"));
-                continue;
-            };
-            match back_up(&mut r, backed, &time) {
-                Ok(text) => {
-                    let _ = writeln!(out, "backup: {name}: {path}: {text}");
-                    r.state.sent.insert(path.clone(), time.clone());
-                }
-                Err(fail) => failed.push(format!("{path}: {}", fail.message)),
-            }
-        }
-        if let Err(fail) = write_record(&mut r, &made, &time) {
-            failed.push(format!("the machine's record: {}", fail.message));
-        }
-        // Old chains, and the records only they needed, go only once the
-        // backups of this round are whole.
-        let listing = r.store.list().map(|l| Listing::read(l.iter().map(String::as_str)));
-        if let Ok(listing) = listing {
-            let mut going: Vec<String> = listing.stray.clone();
-            let mut old = Vec::new();
-            for (place, chains) in &listing.places {
-                for chain in layout::old_chains(chains, r.dest.chains) {
-                    going.push(format!("{place}/{}", chain.name));
-                    old.push(chain);
-                }
-            }
-            for record in layout::old_records(&listing, &old) {
-                going.push(record.path.clone());
-                going.extend(record.tag.clone());
-            }
-            if let Err(fail) = r.store.remove(&going) {
-                failed.push(fail.message);
-            }
-        }
+        let failed = match r.repo.take() {
+            Some(mut repo) => restic_round(&mut r, &mut repo, &made, &not_made, &time, now, out),
+            None => streams_round(&mut r, &made, &not_made, &time, out),
+        };
         if failed.is_empty() {
             r.state.done = now;
             r.state.failed.clear();
@@ -802,6 +930,109 @@ fn round(dests: Vec<Destination>, out: &mut dyn Write) -> Result<bool, Fail> {
     }
     remove_unneeded(&made)?;
     Ok(good)
+}
+
+/// Gives `r` the round's backups as streams, and removes the chains it
+/// no longer keeps; what failed.
+fn streams_round(
+    r: &mut Ready,
+    made: &BTreeMap<String, Backed>,
+    not_made: &BTreeMap<String, String>,
+    time: &str,
+    out: &mut dyn Write,
+) -> Vec<String> {
+    let name = r.dest.name.clone();
+    let mut failed = Vec::new();
+    for path in r.places.clone() {
+        let path = &path;
+        let Some(backed) = made.get(path) else {
+            let why = not_made.get(path).cloned().unwrap_or_default();
+            failed.push(format!("{path}: {why}"));
+            continue;
+        };
+        match back_up(r, backed, time) {
+            Ok(text) => {
+                let _ = writeln!(out, "backup: {name}: {path}: {text}");
+                r.state.sent.insert(path.clone(), time.to_string());
+            }
+            Err(fail) => failed.push(format!("{path}: {}", fail.message)),
+        }
+    }
+    if let Err(fail) = write_record(r, made, time) {
+        failed.push(format!("the machine's record: {}", fail.message));
+    }
+    // Old chains, and the records only they needed, go only once the
+    // backups of this round are whole.
+    let listing = r.store.list().map(|l| Listing::read(l.iter().map(String::as_str)));
+    if let Ok(listing) = listing {
+        let mut going: Vec<String> = listing.stray.clone();
+        let mut old = Vec::new();
+        for (place, chains) in &listing.places {
+            for chain in layout::old_chains(chains, r.dest.chains) {
+                going.push(format!("{place}/{}", chain.name));
+                old.push(chain);
+            }
+        }
+        for record in layout::old_records(&listing, &old) {
+            going.push(record.path.clone());
+            going.extend(record.tag.clone());
+        }
+        if let Err(fail) = r.store.remove(&going) {
+            failed.push(fail.message);
+        }
+    }
+    failed
+}
+
+/// Gives `r`'s restic repository the round's snapshots and the machine's
+/// record, then forgets and prunes what it does not keep; what failed.
+fn restic_round(
+    r: &mut Ready,
+    repo: &mut Repo,
+    made: &BTreeMap<String, Backed>,
+    not_made: &BTreeMap<String, String>,
+    time: &str,
+    now: u64,
+    out: &mut dyn Write,
+) -> Vec<String> {
+    let name = r.dest.name.clone();
+    let machine = machine();
+    let mut failed = Vec::new();
+    for path in r.places.clone() {
+        let Some(backed) = made.get(&path) else {
+            let why = not_made.get(&path).cloned().unwrap_or_default();
+            failed.push(format!("{path}: {why}"));
+            continue;
+        };
+        match repo.back_up(&backed.snapshot(time), &path, &backed.folder, &machine, time, now) {
+            Ok(made) => {
+                let _ = writeln!(
+                    out,
+                    "backup: {name}: {path}: {} new, of {} in {} files",
+                    util::human(made.added, false),
+                    util::human(made.read, false),
+                    made.files
+                );
+                r.state.sent.insert(path.clone(), time.to_string());
+            }
+            Err(fail) => failed.push(format!("{path}: {}", fail.message)),
+        }
+    }
+    let record = gather_record(&r.places, made, time).and_then(|record| {
+        repo.back_up_record(&record.text(), Path::new(RECORD_SCRATCH), &machine, time, now)
+    });
+    if let Err(fail) = record {
+        failed.push(format!("the machine's record: {}", fail.message));
+    }
+    // The newest snapshot of each place is always kept, so a place whose
+    // backup failed keeps its last.
+    if !r.dest.append_only
+        && !repo.append_only()
+        && let Err(fail) = repo.forget(r.dest.keep, &machine, now)
+    {
+        failed.push(fail.message);
+    }
+    failed
 }
 
 /// Backs up the place `backed` of the round at `time` to `r`; what it
@@ -828,12 +1059,16 @@ fn back_up(r: &mut Ready, backed: &Backed, time: &str) -> Result<String, Fail> {
     Ok(format!("{} ({what})", util::human(bytes, false)))
 }
 
-/// Writes the machine's record of the round at `time` to `r` (ADR
-/// 0464): its places, by their folders there, and the app registry and
+/// The machine's record of the round at `time` (ADR 0464): the places
+/// `places`, by their folders at destinations, and the app registry and
 /// grants.
-fn write_record(r: &mut Ready, made: &BTreeMap<String, Backed>, time: &str) -> Result<(), Fail> {
-    let mut places = BTreeMap::new();
-    for path in &r.places {
+fn gather_record(
+    places: &[String],
+    made: &BTreeMap<String, Backed>,
+    time: &str,
+) -> Result<record::Record, Fail> {
+    let mut folders = BTreeMap::new();
+    for path in places {
         let folder = match made.get(path) {
             Some(backed) => backed.folder.clone(),
             None => match Backed::new(path) {
@@ -841,9 +1076,14 @@ fn write_record(r: &mut Ready, made: &BTreeMap<String, Backed>, time: &str) -> R
                 Err(_) => continue,
             },
         };
-        places.insert(folder, path.clone());
+        folders.insert(folder, path.clone());
     }
-    let record = record::Record::gather(&machine(), time, places, Path::new(SYSTEM_STATE))?;
+    record::Record::gather(&machine(), time, folders, Path::new(SYSTEM_STATE))
+}
+
+/// Writes the machine's record of the round at `time` to `r`.
+fn write_record(r: &mut Ready, made: &BTreeMap<String, Backed>, time: &str) -> Result<(), Fail> {
+    let record = gather_record(&r.places, made, time)?;
     write_small(r.store.as_mut(), layout::RECORDS, time, record.text().as_bytes(), &r.keys)?;
     Ok(())
 }
@@ -998,6 +1238,9 @@ fn verify_reads(
 /// `restore`, the newest of each place restored and compared with the
 /// snapshot it was made from.
 fn verify(dest: &Destination, restore: bool, out: &mut dyn Write) -> Result<(), Fail> {
+    if dest.format == Format::Restic {
+        return verify_repo(dest, restore, out);
+    }
     let (identity, _) = dest.keys()?;
     let mut store = dest.store(false)?;
     let listing = Listing::read(store.list()?.iter().map(String::as_str));
@@ -1050,6 +1293,67 @@ fn verify(dest: &Destination, restore: bool, out: &mut dyn Write) -> Result<(), 
     Ok(())
 }
 
+/// Verifies destination `dest`'s restic repository (ADR 0465): checked,
+/// with every pack read and its data's hashes compared, and with
+/// `restore`, the newest backup of each place restored and compared with
+/// the snapshot it was made from.
+fn verify_repo(dest: &Destination, restore: bool, out: &mut dyn Write) -> Result<(), Fail> {
+    let (identity, _) = dest.keys()?;
+    let mut repo = Repo::open(dest.store(false)?, &password(&identity))?;
+    let snapshots = repo.snapshots(Some(&machine()))?;
+    if snapshots.is_empty() {
+        return Err(util::fail(format!("{}: holds no backups yet", repo.place())));
+    }
+    repo.check(true)?;
+    let records = snapshots.iter().filter(|s| s.is_record()).count();
+    let _ = writeln!(
+        out,
+        "backup: {}: checked the repository and read {} backups and {records} records through, \
+         all whole",
+        dest.name,
+        snapshots.len() - records
+    );
+    if !restore {
+        return Ok(());
+    }
+    let state = State::read(&dest.name);
+    for path in dest.places()? {
+        let backed = Backed::new(&path)?;
+        let Some(time) = state.sent.get(&path) else { continue };
+        let original = backed.snapshot(time);
+        if !is_top(&original) {
+            continue;
+        }
+        let Some(snapshot) = snapshots.iter().find(|s| s.path == path && s.time == *time) else {
+            return Err(util::fail(format!(
+                "{path}: no backup of {} in the repository",
+                shown_time(time)
+            )));
+        };
+        snap::make_folder(&backed.place)?;
+        let copy = backed.place.folder.join(format!(".check-{time}"));
+        if is_top(&copy) {
+            subvolume::remove(&copy)?;
+        }
+        subvolume::make(&copy)?;
+        let compared = repo
+            .restore(snapshot, &copy)
+            .and_then(|()| compare::same(&copy, &original).map_err(util::fail));
+        subvolume::remove(&copy)?;
+        let entries = compared.map_err(|fail| {
+            util::fail(format!("{path}: the backup of {}: {}", shown_time(time), fail.message))
+        })?;
+        let _ = writeln!(
+            out,
+            "backup: {}: {path}: restored the backup of {} and found its {entries} files and \
+             folders as they were",
+            dest.name,
+            shown_time(time)
+        );
+    }
+    Ok(())
+}
+
 /// Adds the destination `name` at `to`, with the rest of its settings as
 /// `text` says; shows its recovery key.
 fn add(name: &str, to: &str, extra: &str, out: &mut dyn Write) -> Result<(), Fail> {
@@ -1069,15 +1373,20 @@ fn add(name: &str, to: &str, extra: &str, out: &mut dyn Write) -> Result<(), Fai
     if Address::parse(to).map_err(util::fail)?.is_some() {
         ssh_key()?;
     }
-    let mut store = dest.store(true)?;
-    let listing = Listing::read(store.list()?.iter().map(String::as_str));
+    fs::create_dir_all(SETTINGS).map_err(|e| util::failed(&SETTINGS, e))?;
+    let s3 = s3::Address::parse(to).map_err(util::fail)?.is_some();
+    if s3 {
+        write_private(&s3_file(name), s3_from_env()?.text().as_bytes())?;
+    }
     let identity = age::x25519::Identity::generate();
     let public = identity.to_public().to_string();
-    check_mark(store.as_mut(), &listing, &public)?;
-    fs::create_dir_all(SETTINGS).map_err(|e| util::failed(&SETTINGS, e))?;
+    let made = add_store(&dest, &identity);
+    if made.is_err() && s3 {
+        let _ = fs::remove_file(s3_file(name));
+    }
+    let place = made?;
     let key = format!(
-        "# The key of backup(8)'s destination {name}, at {}.\n# public key: {public}\n{}\n",
-        store.place(),
+        "# The key of backup(8)'s destination {name}, at {place}.\n# public key: {public}\n{}\n",
         identity.to_string().expose_secret()
     );
     let key_path = key_file(name);
@@ -1092,18 +1401,48 @@ fn add(name: &str, to: &str, extra: &str, out: &mut dyn Write) -> Result<(), Fai
         .map_err(|e| util::failed(&settings_file(name).display(), e))?;
     let _ = writeln!(
         out,
-        "Added {name}: {}, backed up {}.\n\nIts recovery key, which reads its backups on any \
-         machine:\n\n    {}\n\nKeep it somewhere other than this machine. Without it and this \
+        "Added {name}: {place}, backed up {}.\n\nIts recovery key, which reads its backups on any \
+         machine{}:\n\n    {}\n\nKeep it somewhere other than this machine. Without it and this \
          machine, the backups cannot be read.",
-        store.place(),
         match dest.every {
             Every::Day => "every day",
             Every::Week => "every week",
             Every::Hand => "by hand",
         },
+        match dest.format {
+            Format::Btrfs => "",
+            Format::Restic => ", and is the password of its restic repository",
+        },
         identity.to_string().expose_secret()
     );
     Ok(())
+}
+
+/// Readies the store of `dest`, which `backup add` adds with the key
+/// `identity`: marks its folder, the server's host key taken on first
+/// contact, and makes its restic repository if it keeps one. Where it
+/// is.
+fn add_store(dest: &Destination, identity: &age::x25519::Identity) -> Result<String, Fail> {
+    let mut store = dest.store(true)?;
+    let public = identity.to_public().to_string();
+    match dest.format {
+        Format::Btrfs => {
+            let listing = Listing::read(store.list()?.iter().map(String::as_str));
+            check_mark(store.as_mut(), listing.marked, &public, Format::Btrfs)?;
+            Ok(store.place())
+        }
+        Format::Restic => {
+            let marked = store.size(layout::MARK)?.is_some();
+            if !marked && Repo::exists(store.as_mut())? {
+                return Err(util::fail(format!(
+                    "{}: holds a restic repository already; remove that folder, or back up \
+                     elsewhere",
+                    store.place()
+                )));
+            }
+            dest.repo(identity, true).map(|repo| repo.place().to_string())
+        }
+    }
 }
 
 /// The machine's SSH key for servers, made the first time; its public
@@ -1178,6 +1517,22 @@ fn list(out: &mut dyn Write) -> Result<(), Fail> {
 
 /// Shows what destination `dest` holds.
 fn show(dest: &Destination, out: &mut dyn Write) -> Result<(), Fail> {
+    if dest.format == Format::Restic {
+        let (identity, _) = dest.keys()?;
+        let repo = Repo::open(dest.store(false)?, &password(&identity))?;
+        let _ = writeln!(out, "{}: {} (restic)", dest.name, repo.place());
+        let mut places: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        for snapshot in repo.snapshots(Some(&machine()))?.into_iter().filter(|s| !s.is_record()) {
+            places.entry(snapshot.path).or_default().push(shown_time(&snapshot.time));
+        }
+        if places.is_empty() {
+            let _ = writeln!(out, "  no backups yet");
+        }
+        for (path, times) in places {
+            let _ = writeln!(out, "  {path}:\n    {}", times.join(", "));
+        }
+        return Ok(());
+    }
     let mut store = dest.store(false)?;
     let listing = Listing::read(store.list()?.iter().map(String::as_str));
     let _ = writeln!(out, "{}: {}", dest.name, store.place());
@@ -1212,11 +1567,158 @@ struct Restore<'a> {
     unchecked: bool,
 }
 
-/// Opens the source of `ask`: its store, listed and marked, and the key
-/// and check it is read with.
-fn open_source(
-    ask: &Restore,
-) -> Result<(Box<dyn Store>, Listing, age::x25519::Identity, Check), Fail> {
+/// What a restore reads backups from: a destination's streams, or its
+/// restic repository.
+trait Source {
+    /// Where it is, for messages.
+    fn place(&self) -> String;
+    /// The folders of the places it holds backups of.
+    fn folders(&self) -> Vec<String>;
+    /// The time of the backup of the place `folder` made at `at`, or of
+    /// its newest without it.
+    fn backup_at(&self, folder: &str, at: Option<&str>) -> Result<String, Fail>;
+    /// The time of the newest backup of `folder` from `time` or before.
+    fn backup_upto(&self, folder: &str, time: &str) -> Option<String>;
+    /// The newest record of the machine from `at` or before (the newest
+    /// of all without it), read and checked.
+    fn record(&mut self, at: Option<&str>) -> Result<record::Record, Fail>;
+    /// Restores the backup of `folder` made at `time` into the folder
+    /// `into`, as the read-only subvolume `name`.
+    fn receive(&mut self, folder: &str, time: &str, into: &Path, name: &str) -> Result<(), Fail>;
+}
+
+fn no_backup(folder: &str, at: Option<&str>) -> Fail {
+    util::fail(match at {
+        Some(at) => format!("no backup of {folder} was made at {}", shown_time(at)),
+        None => format!("no backup of {folder} there"),
+    })
+}
+
+fn no_record(place: &str, at: Option<&str>) -> Fail {
+    util::fail(match at {
+        Some(at) => format!("{place}: no record of the machine from {} or before", shown_time(at)),
+        None => format!("{place}: no record of the machine there"),
+    })
+}
+
+/// A destination's streams, read with a key as `check` says.
+struct Streams {
+    store: Box<dyn Store>,
+    listing: Listing,
+    identity: age::x25519::Identity,
+    check: Check,
+}
+
+impl Source for Streams {
+    fn place(&self) -> String {
+        self.store.place()
+    }
+
+    fn folders(&self) -> Vec<String> {
+        self.listing.places.keys().cloned().collect()
+    }
+
+    fn backup_at(&self, folder: &str, at: Option<&str>) -> Result<String, Fail> {
+        let backups = chain_to(&self.listing, folder, at)?;
+        backups.last().map(|b| b.time.clone()).ok_or_else(|| no_backup(folder, at))
+    }
+
+    fn backup_upto(&self, folder: &str, time: &str) -> Option<String> {
+        layout::chain_upto(&self.listing, folder, Some(time))?.last().map(|b| b.time.clone())
+    }
+
+    fn record(&mut self, at: Option<&str>) -> Result<record::Record, Fail> {
+        let place = self.store.place();
+        let found = layout::record_at(&self.listing, at).ok_or_else(|| no_record(&place, at))?;
+        read_record(self.store.as_mut(), found, &self.identity, &self.check)
+    }
+
+    fn receive(&mut self, folder: &str, time: &str, into: &Path, name: &str) -> Result<(), Fail> {
+        let backups = chain_to(&self.listing, folder, Some(time))?;
+        receive_chain(self.store.as_mut(), backups, &self.identity, &self.check, into, name)
+    }
+}
+
+/// A restic repository's snapshots, which backup(8) made (ADR 0465).
+struct Snapshots {
+    repo: Repo,
+    snapshots: Vec<restic::Snapshot>,
+}
+
+impl Snapshots {
+    fn of_folder<'a>(&'a self, folder: &'a str) -> impl Iterator<Item = &'a restic::Snapshot> {
+        self.snapshots.iter().filter(move |s| !s.is_record() && s.folder == folder)
+    }
+}
+
+impl Source for Snapshots {
+    fn place(&self) -> String {
+        self.repo.place().to_string()
+    }
+
+    fn folders(&self) -> Vec<String> {
+        let folders: BTreeSet<&String> =
+            self.snapshots.iter().filter(|s| !s.is_record()).map(|s| &s.folder).collect();
+        folders.into_iter().cloned().collect()
+    }
+
+    fn backup_at(&self, folder: &str, at: Option<&str>) -> Result<String, Fail> {
+        self.of_folder(folder)
+            .filter(|s| at.is_none_or(|at| s.time == at))
+            .map(|s| s.time.clone())
+            .max()
+            .ok_or_else(|| no_backup(folder, at))
+    }
+
+    fn backup_upto(&self, folder: &str, time: &str) -> Option<String> {
+        self.of_folder(folder).filter(|s| s.time.as_str() <= time).map(|s| s.time.clone()).max()
+    }
+
+    fn record(&mut self, at: Option<&str>) -> Result<record::Record, Fail> {
+        let found = self
+            .snapshots
+            .iter()
+            .filter(|s| s.is_record() && at.is_none_or(|at| s.time.as_str() <= at))
+            .max_by(|a, b| a.time.cmp(&b.time))
+            .ok_or_else(|| no_record(self.repo.place(), at))?;
+        let text = self.repo.read_record(found)?;
+        let at = format!("{}: the record of {}", self.repo.place(), shown_time(&found.time));
+        let record =
+            record::Record::parse(&text).map_err(|why| util::fail(format!("{at}: {why}")))?;
+        if record.time != found.time {
+            return Err(util::fail(format!("{at}: says it is of {}", record.time)));
+        }
+        Ok(record)
+    }
+
+    fn receive(&mut self, folder: &str, time: &str, into: &Path, name: &str) -> Result<(), Fail> {
+        let snapshot = self
+            .of_folder(folder)
+            .find(|s| s.time == time)
+            .cloned()
+            .ok_or_else(|| no_backup(folder, Some(time)))?;
+        // Restored into a subvolume of its own, then kept read-only, as a
+        // received backup is.
+        let making = into.join(format!(".{name}-restoring"));
+        if is_top(&making) {
+            subvolume::remove(&making)?;
+        }
+        subvolume::make(&making)?;
+        let restored = self
+            .repo
+            .restore(&snapshot, &making)
+            .and_then(|()| subvolume::snapshot_to(&making, &into.join(name), true));
+        subvolume::remove(&making)?;
+        restored.map_err(|fail| {
+            util::fail(format!("{folder} at {}: {}", shown_time(time), fail.message))
+        })
+    }
+}
+
+/// Opens the source of `ask`, as its mark says it keeps backups: its
+/// streams, listed, with the key and check they are read with, or its
+/// restic repository, opened with the key.
+fn open_source(ask: &Restore) -> Result<Box<dyn Source>, Fail> {
     let (mut store, identity) = if may_name(ask.source) && settings_file(ask.source).exists() {
         let dest = Destination::read(ask.source)?;
         let identity = match ask.key {
@@ -1231,30 +1733,34 @@ fn open_source(
                 ask.source
             ))
         })?;
-        (open_store(ask.source, None, false)?, read_identity(key)?)
+        (open_store(ask.source, None, false, None)?, read_identity(key)?)
     };
-    let listing = Listing::read(store.list()?.iter().map(String::as_str));
-    if !listing.marked {
+    if store.size(layout::MARK)?.is_none() {
         return Err(util::fail(format!("{}: no backups of a machine there", store.place())));
     }
+    if read_mark(store.as_mut())?.0 == Format::Restic {
+        let repo = Repo::open(store, &password(&identity))?;
+        let snapshots = repo.snapshots(None)?;
+        return Ok(Box::new(Snapshots { repo, snapshots }));
+    }
+    let listing = Listing::read(store.list()?.iter().map(String::as_str));
     let check = Check::of(store.as_mut(), &identity, ask.unchecked)?;
-    Ok((store, listing, identity, check))
+    Ok(Box::new(Streams { store, listing, identity, check }))
 }
 
 /// Restores a backup of each place `ask` names, at its time, from its
 /// source, into the folder it names or each place's `@snapshots`
 /// folder.
 fn restore(ask: &Restore, out: &mut dyn Write) -> Result<(), Fail> {
-    let (mut store, listing, identity, check) = open_source(ask)?;
+    let mut source = open_source(ask)?;
     // A place by its path here, or by its folder's name there.
-    let places: Vec<String> = match ask.place {
+    let folders: Vec<String> = match ask.place {
         Some(place) if place.starts_with('/') => vec![Backed::new(place)?.folder],
         Some(place) => vec![place.to_string()],
-        None => listing.places.keys().cloned().collect(),
+        None => source.folders(),
     };
-    for folder in places {
-        let backups = chain_to(&listing, &folder, ask.at)?;
-        let Some(last) = backups.last() else { continue };
+    for folder in folders {
+        let time = source.backup_at(&folder, ask.at)?;
         // Where it goes, and where it is shown.
         let (target, shown) = match ask.into {
             Some(into) => (into.to_path_buf(), into.to_path_buf()),
@@ -1266,12 +1772,12 @@ fn restore(ask: &Restore, out: &mut dyn Write) -> Result<(), Fail> {
                 (backed.place.folder, backed.place.shown)
             }
         };
-        let name = format!("{RESTORED}{}", last.time);
-        receive_chain(store.as_mut(), backups, &identity, &check, &target, &name)?;
+        let name = format!("{RESTORED}{time}");
+        source.receive(&folder, &time, &target, &name)?;
         let _ = writeln!(
             out,
             "Restored the backup of {folder} at {} as {}",
-            shown_time(&last.time),
+            shown_time(&time),
             shown.join(&name).display()
         );
     }
@@ -1294,18 +1800,8 @@ fn local_place(folder: &str) -> Option<Backed> {
 /// `@snapshots` folder.
 fn restore_machine(ask: &Restore, out: &mut dyn Write) -> Result<(), Fail> {
     use slots::machine::{self as staged, About};
-    let (mut store, listing, identity, check) = open_source(ask)?;
-    let found = layout::record_at(&listing, ask.at).ok_or_else(|| {
-        util::fail(match ask.at {
-            Some(at) => format!(
-                "{}: no record of the machine from {} or before",
-                store.place(),
-                shown_time(at)
-            ),
-            None => format!("{}: no record of the machine there", store.place()),
-        })
-    })?;
-    let record = read_record(store.as_mut(), found, &identity, &check)?;
+    let mut source = open_source(ask)?;
+    let record = source.record(ask.at)?;
     // The root's @snapshots, where the restore is staged.
     let settings = Backed::new("/system/settings")?;
     let snapshots = settings.place.folder.parent().unwrap_or(&settings.place.folder).to_path_buf();
@@ -1317,43 +1813,35 @@ fn restore_machine(ask: &Restore, out: &mut dyn Write) -> Result<(), Fail> {
     remove_staged(&staging)?;
     subvolume::make(&staging)?;
     let mut about = About {
-        time: found.time.clone(),
+        time: record.time.clone(),
         staged: time_name(util::now_ns()),
         machine: record.machine.clone(),
         ..About::default()
     };
     for (folder, path) in &record.places {
-        let Some(backups) = layout::chain_upto(&listing, folder, Some(&found.time)) else {
+        let Some(time) = source.backup_upto(folder, &record.time) else {
             let _ = writeln!(out, "{path}: no backup of it from then; left as it is");
             continue;
         };
-        let Some(last) = backups.last() else { continue };
         let here = Backed::new(path).ok();
         let on_root = here.as_ref().is_some_and(|b| {
             b.folder == *folder && b.place.folder.parent() == Some(snapshots.as_path())
         });
         if staged::SUBVOLUMES.contains(&folder.as_str()) && on_root {
-            receive_chain(store.as_mut(), backups, &identity, &check, &staging, folder)?;
+            source.receive(folder, &time, &staging, folder)?;
             about.subvolumes.push(folder.clone());
-            let _ = writeln!(out, "{path}: staged its backup of {}", shown_time(&last.time));
+            let _ = writeln!(out, "{path}: staged its backup of {}", shown_time(&time));
             continue;
         }
         match here.filter(|b| b.folder == *folder) {
             Some(backed) => {
                 snap::make_folder(&backed.place)?;
-                let name = format!("{RESTORED}{}", last.time);
-                receive_chain(
-                    store.as_mut(),
-                    backups,
-                    &identity,
-                    &check,
-                    &backed.place.folder,
-                    &name,
-                )?;
+                let name = format!("{RESTORED}{time}");
+                source.receive(folder, &time, &backed.place.folder, &name)?;
                 let _ = writeln!(
                     out,
                     "{path}: restored its backup of {} as {}; snap restore --from copies files out",
-                    shown_time(&last.time),
+                    shown_time(&time),
                     backed.place.shown.join(&name).display()
                 );
             }
@@ -1370,7 +1858,7 @@ fn restore_machine(ask: &Restore, out: &mut dyn Write) -> Result<(), Fail> {
         remove_staged(&staging)?;
         return Err(util::fail(format!(
             "{}: its record names none of the root's places with a backup",
-            store.place()
+            source.place()
         )));
     }
     // The state's files: the grants first cleared, as each person's are
@@ -1394,7 +1882,7 @@ fn restore_machine(ask: &Restore, out: &mut dyn Write) -> Result<(), Fail> {
         "Staged {} as it was at {}. Restart to finish: before any service starts, the restored \
          places take the place of these, which are kept in {}.",
         record.machine,
-        shown_time(&found.time),
+        shown_time(&record.time),
         Path::new(SHOWN_SNAPSHOTS)
             .join(staged::FOLDER.trim_start_matches("@snapshots/"))
             .join(staged::kept_folder(&about.staged))
@@ -1471,11 +1959,16 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
     let (mut machine_wide, mut unchecked, mut cancel) = (false, false, false);
     while let Some(arg) = args.next()? {
         match arg {
-            Arg::Long(long) if action == "add" && ["every", "verify"].contains(&long.as_str()) => {
+            Arg::Long(long)
+                if action == "add" && ["format", "every", "verify"].contains(&long.as_str()) =>
+            {
                 extra.push_str(&format!("{long} = \"{}\"\n", args.text()?.replace('"', "")));
             }
             Arg::Long(long) if long == "recipient" && action == "add" => {
                 recipients.push(args.text()?);
+            }
+            Arg::Long(long) if long == "append-only" && action == "add" => {
+                extra.push_str("append_only = true\n");
             }
             Arg::Long(long) if long == "key" && action == "restore" => {
                 key = Some(PathBuf::from(args.value()?));
@@ -1513,7 +2006,7 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
         ("add", [name, to]) => add(name, to, &extra, &mut out).map(|()| 0),
         ("remove", [name]) => {
             let dest = Destination::read(name)?;
-            for path in [settings_file(name), key_file(name), State::path(name)] {
+            for path in [settings_file(name), key_file(name), s3_file(name), State::path(name)] {
                 match fs::remove_file(&path) {
                     Err(err) if err.kind() != io::ErrorKind::NotFound => {
                         return Err(util::failed(&path.display(), err));
@@ -1621,7 +2114,11 @@ fn auto(out: &mut dyn Write) -> bool {
     // A disk not plugged in waits for the next round, unsaid.
     let due: Vec<Destination> = due
         .into_iter()
-        .filter(|d| Address::parse(&d.to).is_ok_and(|a| a.is_some()) || Path::new(&d.to).is_dir())
+        .filter(|d| {
+            Address::parse(&d.to).is_ok_and(|a| a.is_some())
+                || s3::Address::parse(&d.to).is_ok_and(|a| a.is_some())
+                || Path::new(&d.to).is_dir()
+        })
         .collect();
     if due.is_empty() {
         return true;
