@@ -94,9 +94,10 @@ mod tests {
 
     use super::MANIFESTS;
 
-    /// The manifest of the bench program, which lints as the workspaces do
-    /// but with lints of its own.
-    const BENCH: &str = "tools/linux-bench/Cargo.toml";
+    /// The manifests of the programs that run as Linux's init, the bench
+    /// program and the lab's disk writer, which lint as the workspaces do
+    /// but with lints of their own.
+    const LINUX_INITS: [&str; 2] = ["tools/linux-bench/Cargo.toml", "tools/lab-writer/Cargo.toml"];
 
     /// The comment that opens each manifest's set of Clippy's pedantic lints.
     const OPENS: &str = "# Clippy's pedantic lints that find bugs";
@@ -120,7 +121,7 @@ mod tests {
         let set = pedantic(&first);
         assert!(set.len() > 30, "{} has no set of pedantic lints", MANIFESTS[0]);
         assert!(set.iter().all(|line| line.ends_with(" = \"warn\"")), "{set:?}");
-        for manifest in MANIFESTS[1..].iter().chain([&BENCH]) {
+        for manifest in MANIFESTS[1..].iter().chain(&LINUX_INITS) {
             let text = read(manifest);
             assert_eq!(pedantic(&text), set, "{manifest}'s set differs from {}'s", MANIFESTS[0]);
         }

@@ -3223,12 +3223,13 @@ pub fn command(ctx: &Ctx, args: &mut Args) -> Result<()> {
         Some("tuf") if selected.is_empty() => return crate::tuf::check(ctx),
         Some("corpus") => return corpus::test(ctx, &selected),
         Some("riscv") if selected.is_empty() => return crate::riscv::test(ctx),
-        Some(suite @ ("unit" | "kani" | "tla" | "tuf" | "riscv")) => {
+        Some("lab-writer") if selected.is_empty() => return crate::lab_net::check(ctx),
+        Some(suite @ ("unit" | "kani" | "tla" | "tuf" | "riscv" | "lab-writer")) => {
             crate::bail!("--case and --shard select boot tests; they cannot be used with `{suite}`")
         }
         Some(other) => crate::bail!(
-            "unknown test suite `{other}`; use `unit`, `boot`, `kani`, `tla`, `tuf`, `corpus` or \
-             `riscv`"
+            "unknown test suite `{other}`; use `unit`, `boot`, `kani`, `tla`, `tuf`, `corpus`, \
+             `riscv` or `lab-writer`"
         ),
     };
     if shard.is_some() && which.as_deref() != Some("boot") {

@@ -57,6 +57,7 @@ ridlc = { path = "../ridlc" }
 pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
 rustc-demangle = "0.1"
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 toml = "0.9"
 
 [lints]
