@@ -127,10 +127,8 @@ fn second_boot(vm: &mut Vm, _case: &Case) -> Result<(), String> {
         test_firmware_version("broken"),
     );
     vm.expect("spark: started slot a, @system.a")?;
-    vm.expect(&format!(
-        "sysupdate: slot A (Dukovo {VERSION}, firmware {newer}) failed its health check: the \
-         network card "
-    ))?;
+    let named = format!("slot A (Dukovo {VERSION}, firmware {newer})");
+    verdict(vm, &named, "failed its health check: the network card ")?;
     vm.expect(&format!("({SPARE_MAC}), there at the last good start, is missing"))?;
     vm.expect(&format!(
         "sysupdate: the update gives up its tries; restarting into slot B (Dukovo {VERSION}, \
@@ -157,11 +155,15 @@ fn second_boot(vm: &mut Vm, _case: &Case) -> Result<(), String> {
     vm.expect("microcode: module of 2048 bytes with ")?;
     vm.expect("data that failed its checks; none of it is used")?;
     vm.expect("spark: started slot a, @system.a")?;
-    vm.expect(&format!(
-        "sysupdate: slot A (Dukovo {VERSION}, firmware {broken}) failed its health check: the \
-         CPU microcode of firmware {broken} has data that failed its checks, so none of it was \
-         used"
-    ))?;
+    let named = format!("slot A (Dukovo {VERSION}, firmware {broken})");
+    verdict(
+        vm,
+        &named,
+        &format!(
+            "failed its health check: the CPU microcode of firmware {broken} has data that \
+             failed its checks, so none of it was used"
+        ),
+    )?;
     vm.expect(&format!("Booting `Dukovo Server {VERSION} (the firmware update to {broken} failed)'"))?;
     started(vm, 'b')?;
     run(
@@ -182,4 +184,18 @@ fn second_boot(vm: &mut Vm, _case: &Case) -> Result<(), String> {
         &["collected: 45"],
     )?;
     power_off(vm)
+}
+
+/// Follows the health check's try of the slot `named` to its verdict,
+/// which must start with `expected`: on another, says what it was.
+fn verdict(vm: &mut Vm, named: &str, expected: &str) -> Result<(), String> {
+    vm.expect(&format!("sysupdate: {named} is an update being tried"))?;
+    vm.expect(&format!("sysupdate: {named} "))?;
+    let log = vm.log();
+    let line = log.get(vm.cursor..).and_then(|rest| rest.lines().next()).unwrap_or_default();
+    if line.starts_with(expected) {
+        Ok(())
+    } else {
+        Err(format!("the health check said of {named}: {}", line.trim_end()))
+    }
 }
