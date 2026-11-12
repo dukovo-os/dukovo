@@ -56,9 +56,10 @@ fn stage(vm: &mut Vm, name: &str, slot: char, from: &str) -> Result<(), String> 
     run(
         vm,
         &format!("sysupdate firmware stage {UPDATES}/{TEST_FIRMWARE_REPO} --version {version}"),
+        // The line is wider than the screen: its first part.
         &[&format!(
             "sysupdate: staged firmware {version} in slot {slot}: it starts at the next restart, \
-             with 3 tries to prove itself, and slot {}, with {from}, starts again if it does not",
+             with 3 tries to prove itself, and slot {}, with {from}, starts again",
             if slot == 'A' { 'B' } else { 'A' }
         )],
     )
