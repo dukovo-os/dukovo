@@ -466,6 +466,13 @@ pub const MENU_CFG: &str = "image/grub/menu.cfg";
 /// the boot archive beside [`INSTALLER_MENU`] for dukovo-install(8).
 pub const RESCUE_CFG: &str = "image/grub/rescue.cfg";
 
+/// Where a slot keeps its start menu's theme (ADR 0505), beside GRUB's
+/// images and the installed menu dukovo-install(8) puts on disks: the
+/// boot archive's `system/boot/grub/theme`, which the installed menu
+/// loads from the default slot when the menu can show. Not in
+/// [`SLOT_STARTUP`], which holds only files, as Rescue copies it.
+pub const SLOT_THEME: &str = "boot/grub/theme";
+
 /// The installed menu's placeholder for the serial console's flag, which
 /// the installer fills with ` console=ttyS0` on a system it installs over
 /// the first serial port, and with nothing otherwise (ADR 0318).
@@ -696,7 +703,12 @@ pub fn build(ctx: &Ctx, spec: &ImageSpec<'_>) -> Result<()> {
     // entries (ADR 0402).
     if let Menu::Live(_) = spec.menu {
         let entries = grub_cfg.lines().filter(|l| l.trim_start().starts_with("menuentry ")).count();
-        crate::grub_theme::write(&spec.staging.join(THEME_DIR), VERSION, entries)?;
+        crate::grub_theme::write(
+            &spec.staging.join(THEME_DIR),
+            VERSION,
+            entries,
+            crate::grub_theme::Place::Stick,
+        )?;
     }
     std::fs::write(&cfg_path, grub_cfg).context(|| format!("writing {}", cfg_path.display()))?;
     // An installed system's slot state, beside its menu, in both copies:
@@ -1595,7 +1607,29 @@ mod tests {
         // The partition's own entries last, the firmware's settings at the
         // end.
         assert!(cfg.find("source \"${prefix}/rescue.cfg\"").unwrap() > other);
-        assert!(cfg.trim_end().ends_with("fwsetup\n        }\n    fi\nfi"), "{cfg}");
+        let firmware = cfg.find("fwsetup\n        }\n    fi\nfi\n").unwrap();
+        // The theme of the slot whose menu is read (ADR 0505), from where
+        // the slot keeps it, loaded after every entry is made, and only
+        // when the menu can show, with the serial port's menu kept.
+        assert_eq!(format!("system/{SLOT_THEME}"), format!("{}/theme", crate::grub::SYSTEM_DIR));
+        let theme = format!(
+            "    set dukovo_theme=\"($system)/@system.${{slot_default}}/{SLOT_THEME}\"\n\
+             \x20   source \"($system)/@system.${{slot_default}}/{SLOT_STARTUP}/{SLOT_MENU}\"\n"
+        );
+        assert_eq!(cfg.matches(&theme).count(), 2, "{cfg}");
+        let shows =
+            cfg.find("if [ \"${timeout}\" != 0 -o \"${timeout_style}\" = menu ]; then\n").unwrap();
+        assert!(firmware < shows, "{cfg}");
+        let loads = &cfg[shows..];
+        assert!(loads.contains("    if loadfont \"${dukovo_theme}/spleen-24.pf2\"; then\n"));
+        assert!(loads.contains(
+            "        if terminal_output gfxterm; then\n            if [ \"${dukovo_serial}\" = 1 \
+             ]; then\n                terminal_output --append serial\n            fi\n            \
+             set theme=\"${dukovo_theme}/theme.txt\"\n"
+        ));
+        let serial = cfg.find("    terminal_output --append serial\n    set dukovo_serial=1\n");
+        assert!(serial.is_some_and(|serial| shift < serial && serial < read[0]), "{cfg}");
+        assert!(cfg.contains("    set gfxpayload=keep\n    set gfxmode=auto\n"), "{cfg}");
     }
 
     #[test]

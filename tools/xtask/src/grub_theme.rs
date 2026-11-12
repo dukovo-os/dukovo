@@ -1,12 +1,16 @@
 // SPDX-FileCopyrightText: 2026 The Dukovo contributors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! The install stick's boot menu in Dukovo's colours (ADR 0402): a GRUB
-//! theme drawn as the approved design draws the menu, in the installer's
+//! Dukovo's boot menus in its colours (ADRs 0402 and 0505): a GRUB theme
+//! drawn as the approved design draws the menu, in the installer's
 //! colours and the console's font, so that the stick looks the same from
-//! the menu to the installer's last page.
+//! the menu to the installer's last page, and an installed system's start
+//! menu looks like the stick's.
 //!
-//! `ob image` writes it into `boot/grub/theme` of the stick and the ISO:
+//! `ob image` writes it into `boot/grub/theme` of the stick and the ISO,
+//! and the boot archive carries it in each slot's `boot/grub/theme`, beside
+//! GRUB's images and the installed menu, for an installed system's start
+//! menu ([`Place`]):
 //!
 //! - `theme.txt`, the layout: the name spaced out, the release under it,
 //!   the entries in a box with the chosen one on tan, the keys' hints,
@@ -35,11 +39,30 @@ const MENU_CELLS: u32 = 54;
 
 /// The installer's colours (its `look.rs`), as GRUB reads them.
 const SLATE: &str = "#15181c";
+/// The menu's background, behind everything else.
+pub const BACKGROUND: [u8; 3] = [0x15, 0x18, 0x1c];
 const CREAM: &str = "#d9d4ca";
 const GREY: &str = "#7c8896";
 const SAND: &str = "#e9c48b";
-const TAN: [u8; 3] = [0xc8, 0x87, 0x3a];
-const BLUE_GREY: [u8; 3] = [0x8f, 0xa6, 0xba];
+/// The chosen entry's background.
+pub const TAN: [u8; 3] = [0xc8, 0x87, 0x3a];
+/// The menu box's line.
+pub const BLUE_GREY: [u8; 3] = [0x8f, 0xa6, 0xba];
+
+/// Which menu a theme is for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Place {
+    /// The install stick's and the ISO's menu.
+    Stick,
+    /// An installed system's start menu, from its slot (ADR 0505).
+    Installed,
+}
+
+/// How many entries an installed system's menu box is tall: its most,
+/// Dukovo, the version without its update during a try, the previous
+/// version, Windows, startup trouble, Troubleshooting, Rescue and the
+/// firmware's settings. A menu of fewer leaves the box's foot empty.
+pub const INSTALLED_ENTRIES: usize = 8;
 
 /// The fonts written, from the console's: (file, built-in font, the name
 /// GRUB knows it by).
@@ -48,19 +71,21 @@ const FONTS: [(&str, &str, &str); 2] = [
     ("spleen-32.pf2", "16x32", "Spleen Regular 32"),
 ];
 
-/// Writes the theme into `dir`, for a menu of `entries` entries on the
-/// stick of `version`.
+/// Writes the theme into `dir`, for a menu of `entries` entries at
+/// `place`, of `version`. Gives the files' names.
 ///
 /// # Errors
 ///
 /// If `dir` cannot be written.
-pub fn write(dir: &Path, version: &str, entries: usize) -> Result<()> {
+pub fn write(dir: &Path, version: &str, entries: usize, place: Place) -> Result<Vec<String>> {
     crate::process::create_dir(dir)?;
-    let put = |name: &str, bytes: &[u8]| {
+    let mut names = Vec::new();
+    let mut put = |name: &str, bytes: &[u8]| {
         let path = dir.join(name);
+        names.push(name.to_string());
         std::fs::write(&path, bytes).context(|| format!("writing {}", path.display()))
     };
-    put("theme.txt", theme(version, entries).as_bytes())?;
+    put("theme.txt", theme(version, entries, place).as_bytes())?;
     for (file, builtin, name) in FONTS {
         let font = builtin_font(builtin).expect("the console's fonts are built in");
         put(file, &pf2(&font, name))?;
@@ -68,12 +93,12 @@ pub fn write(dir: &Path, version: &str, entries: usize) -> Result<()> {
     for (name, picture) in pictures() {
         put(&name, &picture.png())?;
     }
-    Ok(())
+    Ok(names)
 }
 
 /// `theme.txt`: where each part of the menu goes, in pixels from the
 /// screen's top and its middle.
-fn theme(version: &str, entries: usize) -> String {
+fn theme(version: &str, entries: usize, place: Place) -> String {
     let (cw, ch) = CELL;
     let entries = u32::try_from(entries).unwrap_or(u32::MAX).max(1);
     // The design's rows, counted from a tenth of the way down: the name,
@@ -83,13 +108,19 @@ fn theme(version: &str, entries: usize) -> String {
     let row = |n: u32| format!("10%+{}", n * ch);
     let menu_rows = entries + 4;
     let hints = 5 + menu_rows + 1;
+    let (menu, release) = match place {
+        Place::Stick => ("on the install stick", format!("Dukovo {version} · installer on USB")),
+        Place::Installed => {
+            ("of an installed system, from its slot", format!("Dukovo {version} · start menu"))
+        }
+    };
     let mut text = String::new();
     let _ = write!(
         text,
         "\
-# Dukovo's boot menu on the install stick, in the installer's colours
-# (ADR 0402). `ob image` writes this file, and the fonts and pictures
-# beside it (tools/xtask/src/grub_theme.rs).
+# Dukovo's boot menu {menu}, in the installer's colours
+# (ADRs 0402 and 0505). `ob image` writes this file, and the fonts and
+# pictures beside it (tools/xtask/src/grub_theme.rs).
 
 title-text: \"\"
 desktop-color: \"{SLATE}\"
@@ -118,7 +149,7 @@ terminal-height: \"100%\"
     align = \"center\"
     font = \"{font}\"
     color = \"{GREY}\"
-    text = \"Dukovo {version} · installer on USB\"
+    text = \"{release}\"
 }}
 
 + boot_menu {{
@@ -434,13 +465,41 @@ mod tests {
 
     #[test]
     fn the_theme_places_the_menu_for_its_entries() {
-        let text = theme("0.14.0", 3);
+        let text = theme("0.14.0", 3, Place::Stick);
         assert!(text.contains("text = \"Dukovo 0.14.0 · installer on USB\""), "{text}");
+        assert!(text.contains("menu on the install stick,"), "{text}");
         assert!(text.contains("left = 50%-324\n    top = 10%+120\n    width = 648\n"), "{text}");
         assert!(text.contains("height = 168\n"), "{text}");
         // The hints a row under the box, the countdown under them.
         assert!(text.contains("top = 10%+312\n"), "{text}");
         assert!(text.contains("id = \"__timeout__\"\n    left = 0\n    top = 10%+336\n"));
+    }
+
+    #[test]
+    fn an_installed_systems_menu_names_itself_and_fits_its_most_entries() {
+        let text = theme("0.15.0", INSTALLED_ENTRIES, Place::Installed);
+        assert!(text.contains("text = \"Dukovo 0.15.0 · start menu\""), "{text}");
+        assert!(text.contains("menu of an installed system, from its slot,"), "{text}");
+        assert!(!text.contains("USB"), "{text}");
+        // Twelve rows: the entries, and the border and gap each side.
+        assert!(text.contains("height = 288\n"), "{text}");
+        // The hints a row under the box, then the countdown, whose foot,
+        // at 60 + 456 + 24 = 540 pixels, clears GRUB's credit two rows
+        // from the bottom of the smallest screen, 800 by 600, at 552.
+        assert!(text.contains("top = 10%+432\n"), "{text}");
+        assert!(text.contains("id = \"__timeout__\"\n    left = 0\n    top = 10%+456\n"));
+        assert!(text.contains("top = 100%-48\n"), "{text}");
+    }
+
+    #[test]
+    fn the_theme_is_written_whole() {
+        let dir = std::env::temp_dir().join(format!("grub-theme-{}", std::process::id()));
+        let names = write(&dir, "0.15.0", INSTALLED_ENTRIES, Place::Installed).unwrap();
+        for name in ["theme.txt", "spleen-24.pf2", "spleen-32.pf2", "menu_nw.png", "select_c.png"] {
+            assert!(names.iter().any(|n| n == name), "{name}: {names:?}");
+            assert!(dir.join(name).is_file(), "{name}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
