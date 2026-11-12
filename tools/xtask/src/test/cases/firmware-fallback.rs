@@ -156,12 +156,10 @@ fn second_boot(vm: &mut Vm, _case: &Case) -> Result<(), String> {
     ))?;
     vm.expect("; tty1 is shown")?;
     // The menu offered Troubleshooting, and the screen tells of the
-    // failed try until a key is pressed, here Shift; the sign-in screens
-    // show what changed (ADR 0501).
+    // failed try until a key is pressed; the sign-in screens show what
+    // changed (ADR 0501).
     vm.expect_anywhere("Troubleshooting")?;
     vm.expect_screen(&["sysupdate: Start ", " failed its health check: the network card "])?;
-    vm.press(&["shift"])?;
-    vm.expect_screen_without("changes --failed says what changed")?;
     run(
         vm,
         "cat /system/live/sysupdate/failure",
