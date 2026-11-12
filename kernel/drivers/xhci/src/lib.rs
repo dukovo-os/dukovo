@@ -1104,6 +1104,15 @@ impl Xhci {
     /// the driver is done with them for now, so that it interrupts again
     /// for the next (it does at once if more came meanwhile).
     pub fn events_read(&mut self) {
+        // The interrupt is acknowledged first, as Linux does: USBSTS's
+        // EINT, then the interrupter's IP. The xHCI specification has a
+        // controller clear IP itself once its MSI is sent, and QEMU's
+        // does, but Intel's do not: while IP stays set they raise no
+        // interrupt again, and the thread would see each event only at
+        // its once-a-second look (a key held a second, repeating).
+        // Events that came meanwhile interrupt again once EHB is cleared.
+        self.op.write32(op::USBSTS, op::EINT);
+        self.interrupter.write32(rt::IMAN, rt::IP | rt::IE);
         // The segment is one page, so the high half, written at the start,
         // never changes.
         self.read = false;

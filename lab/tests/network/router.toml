@@ -1,0 +1,19 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "What a network's router gives is taken up: the IPv4 default route from DHCP, the IPv6 networks and default route from router adverts (proto ra), and the DNS server from DHCP. The lab's network for real machines (10.77.0.0/24) has no router, IPv6 router or DNS server, by design, so there the test is skipped"
+time = "2m"
+
+[[step]]
+run = "ip -4 -br addr show net0"
+expect_not = "10.77.0."
+or_skip = "the lab's network for real machines has no router or DNS server"
+[[step]]
+run = "ip route"
+expect = "default via"
+[[step]]
+run = "ip -6 route"
+expect = ["dev net0", "proto ra", "default via"]
+[[step]]
+run = "resolvectl status"
+expect = "from DHCP"

@@ -1,12 +1,12 @@
 # SPDX-FileCopyrightText: 2026 The Dukovo contributors
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 
-about = "resolvectl shows where the resolver listens and its server from DHCP, and resolves localhost to its addresses"
+about = "resolvectl shows where the resolver listens, and resolves localhost to its addresses (network/router checks the server from DHCP)"
 time = "2m"
 
 [[step]]
 run = "resolvectl status"
-expect = ["Listening on: 127.0.0.53:53", "DNS over TLS:", "from DHCP"]
+expect = ["Listening on: 127.0.0.53:53", "DNS over TLS:"]
 # localhost is answered by the resolver itself, with both its addresses.
 [[step]]
 run = "resolvectl query localhost"

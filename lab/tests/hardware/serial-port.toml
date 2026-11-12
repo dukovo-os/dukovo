@@ -1,14 +1,20 @@
 # SPDX-FileCopyrightText: 2026 The Dukovo contributors
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 
-about = "The first serial port, COM1, is the terminal /devices/ttyS0 at 115200 baud, the speed GRUB and the kernel log run: stty reads its speed and sets another, and serial-console, the console a computer with no screen uses, stays stopped when the kernel was not started with console=ttyS0. Needs a machine with COM1"
+about = "The first serial port, COM1, is the terminal /devices/ttyS0 at 115200 baud, the speed GRUB and the kernel log run: stty reads its speed and sets another, and serial-console, the console a computer with no screen uses, stays stopped when the kernel was not started with console=ttyS0. Needs a machine with COM1 that is not its console"
 time = "2m"
 
+# A machine whose console is COM1 (the lab's real machines, started
+# with console=ttyS0) runs serial-console on it instead: not this test.
+[[step]]
+run = "cat /kernel/cmdline"
+expect_not = "console=ttyS0"
+or_skip = "the kernel was started with console=ttyS0, so COM1 is the serial console"
 # The kernel made the terminal when it found COM1, at the log's speed.
 [[step]]
-run = "sh -c 'echo \"ma\"\"de: $(dmesg | grep -c \"is the terminal /devices/ttyS0, at 115200 baud\")\"'"
+run = "sh -c 'dmesg | grep -q \"is the terminal /devices/ttyS0, at 115200 baud\" && echo \"ma\"\"de: yes\"'"
 root = true
-expect = "made: 1"
+expect = "made: yes"
 [[step]]
 run = "stty -F /devices/ttyS0 -a"
 root = true

@@ -493,6 +493,7 @@ impl State {
             self.er_cycle = !self.er_cycle;
         }
         self.iman |= rt::IP;
+        self.usbsts |= op::EINT;
     }
 
     fn port_event(&mut self, port: u8) {
@@ -1874,6 +1875,21 @@ fn events_for_others_are_handed_on_while_waiting() {
     assert_eq!(xhci.next_event(), Some(Event::Port { port: 7 }));
     assert_eq!(xhci.next_event(), None);
     xhci.events_read();
+}
+
+#[test]
+fn reading_events_acknowledges_the_interrupt() {
+    // An Intel controller interrupts again only once IP is cleared.
+    let sim = Sim::new(State::new());
+    let (mut xhci, _host) = start(&sim);
+    sim.state().plug(6, Some(keyboard(3, 64)));
+    assert_ne!(sim.state().iman & rt::IP, 0);
+    assert_eq!(xhci.next_event(), Some(Event::Port { port: 6 }));
+    xhci.events_read();
+    let s = sim.state();
+    assert_eq!(s.iman & rt::IP, 0);
+    assert_eq!(s.usbsts & op::EINT, 0);
+    assert_ne!(s.iman & rt::IE, 0, "the interrupter stays enabled");
 }
 
 #[test]

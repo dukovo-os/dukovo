@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 The Dukovo contributors
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 
-about = "The network card has an IPv4 and an IPv6 address and a default route, from DHCP and SLAAC"
+about = "The network card has an IPv4 address from DHCP and an IPv6 link-local address, and nic lists it as up (network/router checks what a router gives)"
 time = "2m"
 
 [[step]]
@@ -15,7 +15,7 @@ run = "ip -6 addr show net0"
 expect = ["inet6 ", "scope link"]
 [[step]]
 run = "ip route"
-expect = "default via"
+expect = "dev net0"
 [[step]]
 run = "nic"
 expect = ["net0", "yes"]
