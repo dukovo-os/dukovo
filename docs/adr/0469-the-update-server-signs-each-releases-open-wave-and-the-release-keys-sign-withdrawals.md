@@ -66,13 +66,15 @@ offline, cannot do, without giving the online key any more than that.
   first two days, and a pause stops it at its next refresh, with no key.
 - Machines send nothing: the server cannot tell who took a release, and
   the waves rest on each machine keeping its own number.
-- Not yet, each with a row in `docs/deferred.md`: a machine that staged
-  a release unstaging it when it is withdrawn, and checking for a pause
-  just before the restart into it, come with the unified updater; the
+- A machine that staged a release unstages it at updated's next check
+  once it is withdrawn, and an unattended machine asks the server again
+  just before its restart into a staged release, waiting while the
+  waves are held (ADR 0502's updated).
+- Not yet, each with a row in `docs/deferred.md`: the
   firmware sets and the catalog do not go through the waves yet; the
   canaries report by hand until the canary machines exist; and `pull`
   signs with key files until the release keys move to the hardware keys
   (ADR 0457).
 - The `update-online` boot test waits out a paused release as a machine
   in wave 4, takes it as a canary, and sees it withdrawn once the server
-  has published the release keys' withdrawal.
+  has published the release keys' withdrawal, which unstages it.

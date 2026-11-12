@@ -19,9 +19,10 @@
 //! folder with the recovery key alone, holds what the before hook wrote and
 //! not what the after hook wrote. A round of the service passes the
 //! unplugged one over; asked for it, it fails, which *backup list* shows
-//! her. Without an administrator a run, the key and the disk's contents are
+//! her, and the sign-in screen of tty2 tells of it. Without an administrator a run, the key and the disk's contents are
 //! refused. A changed byte in a backup is refused by *backup verify*.
-//! Removing the destinations removes their snapshots. The power button ends
+//! Removing the destinations removes their snapshots and the sign-in's
+//! notice. The power button ends
 //! it, and exfatprogs' `fsck.exfat` reads the disk clean.
 
 use super::super::*;
@@ -37,7 +38,7 @@ const DISKS: &[Disk] = &[
 /// The test.
 pub const CASE: Case = Case {
     name: "backup",
-    about: "backups of /users, /shared, /system/settings and /applications, with the machine's record, to an exFAT disk and over SSH (ADRs 0463 and 0464): whole, then the changes, with the services' hooks run around the snapshots; read through and restored as they were; a note restored from the server's backup with snap restore, and /shared's from the disk with the recovery key alone, as the before hook left it; an unplugged disk passed over by the service; a run, the key and the contents refused without an administrator; a changed byte refused; fsck.exfat reads the disk clean",
+    about: "backups of /users, /shared, /system/settings and /applications, with the machine's record, to an exFAT disk and over SSH (ADRs 0463 and 0464): whole, then the changes, with the services' hooks run around the snapshots; read through and restored as they were; a note restored from the server's backup with snap restore, and /shared's from the disk with the recovery key alone, as the before hook left it; an unplugged disk passed over by the service, and told of at the next sign-in; a run, the key and the contents refused without an administrator; a changed byte refused; fsck.exfat reads the disk clean",
     firmware: Firmware::Uefi,
     media: Media::Usb,
     // As a normal boot: Spark mounts the disk and starts the services,
@@ -115,6 +116,7 @@ const TAMPER: &[&str] = &[
     "backup verify stick; echo \"verify $?\"",
     "for d in gone server stick; do backup remove $d > /dev/null; done",
     "echo \"left $(ls /snapshots/users | grep -c backup-)\"",
+    "[ -e /system/live/sign-in/backup ] || echo \"notice gone\"",
 ];
 
 /// A shell command that writes `lines` to `file`, one a line.
@@ -254,6 +256,11 @@ fn backup(vm: &mut Vm, case: &Case) -> Result<(), String> {
     {
         return Err("the service's round backed up a destination that was not due".into());
     }
+    // The next sign-in tells of it (ADR 0504): tty2's, before anyone
+    // signs in there.
+    vm.press(&["alt-f2"])?;
+    vm.expect_screen(&["backup: the last backup to gone failed: /tmp/gone: not there"])?;
+    vm.press(&["alt-f1"])?;
     answer_prompt(
         vm,
         "$",
@@ -273,7 +280,7 @@ fn backup(vm: &mut Vm, case: &Case) -> Result<(), String> {
     // A changed byte is refused; removing the destinations removes their
     // snapshots.
     elevated(vm, "tamper.sh", TAMPER, false)?;
-    vm.expect_screen(&[": its tag does not match", "verify 1", "left 0"])?;
+    vm.expect_screen(&[": its tag does not match", "verify 1", "left 0", "notice gone"])?;
     vm.press_power_button()?;
     vm.expect("spark: every service has stopped")?;
     vm.expect("Power: `spark` asked to power off the machine; syncing the filesystems")?;

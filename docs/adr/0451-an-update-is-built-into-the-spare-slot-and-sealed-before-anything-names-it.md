@@ -98,11 +98,16 @@ merge step.
   `@system.a` directly and cannot count tries. They are reinstalled to
   take updates; a migration is not worth its risk before the first
   public release.
+- `sysupdate verify` reads the running slot back against its signed
+  list, as a stage reads the slot it builds: from a repository folder or
+  update file the owner names, or from Rescue's copy on the EFI system
+  partition when it holds the same release, or from the update server.
+  updated(8) runs it once a week and tells the consoles when the slot is
+  not the release. Btrfs's scrub, which checks every block against its
+  checksum, stays the owner's to run (`scrub`, scrub(8)).
 - **Not yet:**
   - Fetching the changed files from an update server, and the offline
     update file (15c). `sysupdate stage` reads a repository folder, as
     `ob release` makes one, until then.
-  - `sysupdate verify`, which re-checks a slot against its list, and a
-    weekly check with the scrub.
   - Checking each file against a signed root hash as it is read, with
     Secure Boot and measured boot (release 1.2).

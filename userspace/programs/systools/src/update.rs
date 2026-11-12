@@ -22,7 +22,12 @@
 //! updated(8), a service, checks once a day, ten minutes after the
 //! machine starts, and does what updates.toml(5) says: by default it
 //! tells whoever is signed in. It never restarts the machine, unless it
-//! is unattended and has a restart time.
+//! is unattended and has a restart time. A staged release the release
+//! keys withdraw is unstaged at the next check; just before an
+//! unattended restart into a staged release, updated asks the server
+//! once more, and waits while its waves are held (ADRs 0456, 0469).
+//! Once a week it reads the running slot back against its signed list,
+//! as `sysupdate verify` does.
 
 use std::ffi::OsString;
 use std::path::Path;
@@ -37,8 +42,9 @@ use crate::sysupdate::{self, firmware, place, stage};
 use crate::util::{self, Fail, fail};
 use crate::{bundles, power};
 
-const USAGE: &str = "usage: update [check | apply [--yes] | undo ITEM | hold ITEM | unhold ITEM | \
-                     history], where ITEM is system, firmware or an app's ID";
+const USAGE: &str = "usage: update [check | apply [--yes] | undo ITEM [--settings-from-before | \
+                     --keep-settings] | hold ITEM | unhold ITEM | history], where ITEM is system, \
+                     firmware or an app's ID";
 
 /// How long updated waits after the machine starts before its first
 /// check: the network is up by then.
@@ -52,9 +58,18 @@ pub fn update(args: &mut Args) -> Result<i32, Fail> {
     let action = args.subcommand().map(|a| a.to_string_lossy().into_owned());
     let mut yes = false;
     let mut item = None;
+    let mut keep = sysupdate::Keep::Unsaid;
     while let Some(arg) = args.next()? {
         match arg {
             Arg::Long(name) if name == "yes" && action.as_deref() == Some("apply") => yes = true,
+            Arg::Long(name)
+                if name == "settings-from-before" && action.as_deref() == Some("undo") =>
+            {
+                keep = sysupdate::Keep::FromBefore;
+            }
+            Arg::Long(name) if name == "keep-settings" && action.as_deref() == Some("undo") => {
+                keep = sysupdate::Keep::Today;
+            }
             Arg::Operand(operand)
                 if matches!(action.as_deref(), Some("undo" | "hold" | "unhold"))
                     && item.is_none() =>
@@ -68,7 +83,7 @@ pub fn update(args: &mut Args) -> Result<i32, Fail> {
     match action.as_deref() {
         None | Some("check") => check(),
         Some("apply") => apply(yes),
-        Some("undo") => undo(&needs_item()?),
+        Some("undo") => undo(&needs_item()?, keep),
         Some("hold") => hold(&needs_item()?, true),
         Some("unhold") => hold(&needs_item()?, false),
         Some("history") => history(),
@@ -219,7 +234,7 @@ fn stage_offered() -> Result<Option<String>, Fail> {
 }
 
 /// `update undo ITEM`.
-fn undo(item: &str) -> Result<i32, Fail> {
+fn undo(item: &str, keep: sysupdate::Keep) -> Result<i32, Fail> {
     if item != "system" && item != "firmware" {
         return bundle(&["rollback", item]);
     }
@@ -249,7 +264,7 @@ fn undo(item: &str) -> Result<i32, Fail> {
         ),
         _ => {}
     }
-    sysupdate::rollback()
+    sysupdate::rollback(keep)
 }
 
 /// `update hold ITEM` (`on`) or `update unhold ITEM`.
@@ -342,11 +357,18 @@ pub fn updated(args: &mut Args) -> Result<i32, Fail> {
     }
     loop {
         let settings = Settings::load()?;
+        // The weekly read of the slot is the service's, not a single
+        // check's.
+        if !once {
+            weekly_verify();
+        }
         let staged = if settings.check == Check::Off {
             println!("updated: checks are off (updates.toml)");
             false
         } else {
-            round(&settings)
+            // An update staged before, whose restart waited for its
+            // waves, still waits for one.
+            round(&settings) || staged_before()
         };
         if once {
             return Ok(0);
@@ -356,8 +378,20 @@ pub fn updated(args: &mut Args) -> Result<i32, Fail> {
                 let wait = until(restart);
                 println!("updated: restarting into the update at {restart}");
                 std::thread::sleep(wait);
-                if let Err(why) = power::request("reboot") {
-                    println!("updated: cannot ask Spark to restart: {}", why.message);
+                // A pause or a withdrawal since the stage stops the
+                // restart.
+                match staged_since(&settings) {
+                    Some(Since::Withdrawn { version, reason }) => {
+                        unstage_withdrawn(&version, &reason);
+                    }
+                    Some(Since::Held { version, why }) => tell(&format!(
+                        "the waves of Dukovo {version} are held: {why}; the restart into it waits"
+                    )),
+                    None => {
+                        if let Err(why) = power::request("reboot") {
+                            println!("updated: cannot ask Spark to restart: {}", why.message);
+                        }
+                    }
                 }
             }
             _ => std::thread::sleep(EVERY),
@@ -373,12 +407,99 @@ fn until(time: &str) -> Duration {
     Duration::from_secs(u64::from((wanted + 24 * 60 - local) % (24 * 60)) * 60)
 }
 
+/// What became, since its stage, of a system release staged in the
+/// spare slot (ADRs 0456, 0469).
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Since {
+    /// The release keys withdrew it.
+    Withdrawn { version: String, reason: String },
+    /// Its waves are held: a pause, or a canary that is not green.
+    Held { version: String, why: String },
+}
+
+/// What the server says now of the system release staged in the spare
+/// slot: `None` when none is, when the spare slot holds the running
+/// system with another firmware set, or when the server cannot be
+/// asked, which leaves the staged release as it is.
+fn staged_since(settings: &Settings) -> Option<Since> {
+    let root = place::root().ok()?;
+    let (_, state) = place::state(&root).ok()?;
+    let slot = state.trying?;
+    let version = root.about(slot)?.version;
+    if root.about(root.running).is_some_and(|about| about.version == version) {
+        return None;
+    }
+    let mut client = online::Client::connect(settings.clone()).ok()?;
+    let withdrawal = client.withdrawal(&version).ok()?;
+    let rollout = client.rollout(&version).ok()?;
+    since(version, withdrawal, rollout)
+}
+
+/// [`Since`], from the release's withdrawal and its rollout, if the
+/// server signs them.
+fn since(
+    version: String,
+    withdrawal: Option<system_release::rollout::Withdrawal>,
+    rollout: Option<system_release::rollout::Rollout>,
+) -> Option<Since> {
+    if let Some(withdrawal) = withdrawal {
+        return Some(Since::Withdrawn { version, reason: withdrawal.reason });
+    }
+    rollout?.held.map(|why| Since::Held { version, why })
+}
+
+/// Whether an update staged before waits to be tried.
+fn staged_before() -> bool {
+    place::root()
+        .and_then(|root| place::state(&root))
+        .is_ok_and(|(_, state)| state.trying.is_some())
+}
+
+/// Unstages the withdrawn release `version`, and says so.
+fn unstage_withdrawn(version: &str, reason: &str) {
+    match sysupdate::unstage() {
+        Ok(_) => tell(&format!(
+            "Dukovo {version}, which was staged, was withdrawn: {reason}; it is unstaged and will \
+             not be tried"
+        )),
+        Err(why) => tell(&format!(
+            "Dukovo {version}, which is staged, was withdrawn: {reason}; it cannot be unstaged: {}; \
+             `elevate sysupdate unstage` does it",
+            why.message
+        )),
+    }
+}
+
+/// Once a week, reads the running slot back against its signed list
+/// (`sysupdate verify`), and tells whoever is signed in when it is not
+/// the release.
+fn weekly_verify() {
+    let now = i64::try_from(util::now_ns() / 1_000_000_000).unwrap_or(0);
+    if !sysupdate::verify::due(now) {
+        return;
+    }
+    if let Err(why) = sysupdate::verify::main(None) {
+        let text = format!(
+            "the system's files are not the release's: {}; `elevate sysupdate verify` checks \
+             again, and Rescue reinstalls the release",
+            why.message
+        );
+        println!("updated: {text}");
+        if let Err(why) = notifyd::send("updated", &text, "", Urgency::Critical) {
+            println!("updated: cannot tell the consoles: {}", why.message);
+        }
+    }
+}
+
 /// One check, as `settings` say; whether an update was staged.
 fn round(settings: &Settings) -> bool {
+    if let Some(Since::Withdrawn { version, reason }) = staged_since(settings) {
+        unstage_withdrawn(&version, &reason);
+    }
     let mut staged = false;
     if let Ok(Some((said, back))) = withdrawn_running() {
         if back && settings.unattended {
-            match sysupdate::rollback() {
+            match sysupdate::rollback(sysupdate::Keep::Today) {
                 Ok(_) => tell(&format!("{said}; going back to it, as this machine is unattended")),
                 Err(why) => tell(&format!("{said}; cannot go back: {}", why.message)),
             }
@@ -444,5 +565,37 @@ fn tell(text: &str) {
     println!("updated: {text}");
     if let Err(why) = notifyd::send("updated", text, "", Urgency::Normal) {
         println!("updated: cannot tell the consoles: {}", why.message);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use system_release::rollout::{Advice, Rollout, Withdrawal};
+
+    use super::*;
+
+    #[test]
+    fn a_staged_release_withdrawn_or_held_is_not_restarted_into() {
+        let version = || "0.16.0".to_string();
+        let rollout = |held: Option<&str>| Rollout {
+            release: version(),
+            wave: 2,
+            held: held.map(str::to_string),
+        };
+        let withdrawal = Withdrawal {
+            release: version(),
+            reason: "it loses files".into(),
+            advice: Advice::Stay,
+        };
+        assert_eq!(
+            since(version(), Some(withdrawal), Some(rollout(Some("paused")))),
+            Some(Since::Withdrawn { version: version(), reason: "it loses files".into() })
+        );
+        assert_eq!(
+            since(version(), None, Some(rollout(Some("paused: a disk check")))),
+            Some(Since::Held { version: version(), why: "paused: a disk check".into() })
+        );
+        assert_eq!(since(version(), None, Some(rollout(None))), None);
+        assert_eq!(since(version(), None, None), None);
     }
 }

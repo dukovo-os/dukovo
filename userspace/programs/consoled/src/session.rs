@@ -24,6 +24,11 @@ const PAUSE: Duration = Duration::from_secs(10);
 /// text until the next start (sysupdate(8), ADR 0501).
 const FAILURE: &str = "/system/live/sysupdate/failure";
 
+/// The notices kept for the next sign-in, one file each: a backup that
+/// failed or is overdue, an app with known flaws (ADR 0504). Shown after
+/// a failed start's.
+const NOTICES: &str = "/system/live/sign-in";
+
 /// What each console's session runs.
 pub struct Shell {
     /// The program's path.
@@ -159,6 +164,11 @@ impl Console {
             && let Ok(notice) = std::fs::read_to_string(FAILURE)
         {
             self.term.feed(format!("{}\n", notice.trim_end()).replace('\n', "\r\n").as_bytes());
+        }
+        if once.is_none() {
+            for notice in notices() {
+                self.term.feed(format!("{}\n", notice.trim_end()).replace('\n', "\r\n").as_bytes());
+            }
         }
         let size = libc::winsize {
             ws_row: self.term.rows() as u16,
@@ -343,6 +353,14 @@ impl Console {
 }
 
 /// The `pts/N` in a terminal's path, as openpty wrote it.
+/// The notices in [`NOTICES`], by their names.
+fn notices() -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(NOTICES) else { return Vec::new() };
+    let mut paths: Vec<_> = entries.flatten().map(|entry| entry.path()).collect();
+    paths.sort();
+    paths.iter().filter_map(|path| std::fs::read_to_string(path).ok()).collect()
+}
+
 fn pts_name(name: &[libc::c_char]) -> Option<String> {
     let bytes: Vec<u8> = name.iter().take_while(|&&c| c != 0).map(|&c| c as u8).collect();
     let path = String::from_utf8(bytes).ok()?;

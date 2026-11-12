@@ -87,6 +87,7 @@ update already proves itself to a health check of its own (ADR 0386).
     release that changes a settings format.
   - A slot whose root will not mount leaves Spark with nothing to start,
     so its try ends only at a restart by hand.
-  - The owner told at sign-in and on the web console of a fallback, and
-    the offer to send a report (15d).
+  - The owner told of a fallback on the web console, and the offer to
+    send a report (Phase 16); the sign-in screens tell of it already
+    (ADR 0501).
   - Keeping the failed attempt's crash log beside its settings.

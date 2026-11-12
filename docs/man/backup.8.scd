@@ -299,6 +299,18 @@ $ export AWS_ACCESS_KEY_ID=... AWS_SECRET_ACCESS_KEY=...
 $ restic -r s3:https://s3.eu-central-1.amazonaws.com/family-backups/dukovo-backup/laptop check
 ```
 
+# NOTICES
+
+After each round, *run*, *verify --restore* and *remove*, backup
+keeps for the next sign-in what the owner should see in
+_/system/live/sign-in/backup_, which the sign-in screens show under the
+issue text (*consoled*(8), ADR 0504): each destination whose last backup,
+or last check by a restore, failed, and each that has gone without a
+backup for 3 days when it backs up every day, or 14 days when every
+week, counted from when it was added until its first. A destination
+backed up by hand is never overdue. When the notice changes to something,
+the consoles are told at once (*notifyd*(8)).
+
 # EXIT STATUS
 
 0 when it did what was asked; 1 when it did not, after what came before
@@ -309,6 +321,9 @@ done), and for a mistake in the command line.
 
 _/system/settings/backup/name.toml_
 	A destination's settings (*backup.toml*(5)).
+
+_/system/live/sign-in/backup_
+	The notice for the next sign-in, while one is needed.
 
 _/system/settings/backup/name.key_
 	A destination's key.

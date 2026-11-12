@@ -14,7 +14,8 @@
 //! flags. Installed by its ID, ripgrep's sheet says it comes from the
 //! catalog, with no warning about its key, and names both flaws; rg runs,
 //! and bundle list flags it too. The daily check, which turning updates
-//! by themselves on starts at once, writes the flaws in the history. bat's
+//! by themselves on starts at once, writes the flaws in the history and
+//! keeps them for the next sign-in. bat's
 //! file, which no catalog lists, shows the warning, and she says no.
 //! ripgrep's own file from the disk installs as the catalog's. Once the
 //! catalog is removed, nothing installs ripgrep, which is bound to it. The
@@ -140,6 +141,13 @@ fn catalog_install(vm: &mut Vm, case: &Case) -> Result<(), String> {
         "15.2.0 has known flaws: TEST-0001 (high) in regex-automata ",
         " TEST-0002 (low) in memchr ",
         " by itself",
+    ])?;
+    // And for the next sign-in (ADR 0504).
+    answer_prompt(vm, "$", "clear; tr ':' '\\n' < /system/live/sign-in/bundled")?;
+    vm.expect_screen(&[
+        "bundled",
+        " io.github.burntsushi.ripgrep 15.2.0 for alice has known flaws",
+        " TEST-0001 (high) in regex-automata",
     ])?;
     // bat's file: no catalog lists it.
     answer_prompt(

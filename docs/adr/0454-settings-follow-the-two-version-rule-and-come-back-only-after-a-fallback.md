@@ -57,7 +57,14 @@ file stays and a new default lands beside it as `.default` (ADR 0386).
   two-version rule keeps it readable.
 - **A rollback by hand keeps today's settings.** The version before can
   read them under the rule, so nothing the owner changed since the
-  update is lost.
+  update is lost. The rule covers one step: when the update server
+  offered a release between the two versions, `sysupdate rollback` stops
+  and asks for `--keep-settings` or `--settings-from-before`. The
+  latter writes the slot it rolls back to into
+  `@snapshots/update/settings-asked`, and Spark, at that slot's next
+  start, puts the settings back as after a fallback, keeping today's as
+  `settings-failed`. Only the version the update came from has the
+  snapshot, so only it can take them.
 - **The snapshots go with the slot.** They are kept until the next
   stage replaces them, as the version before is.
 
@@ -74,9 +81,6 @@ file stays and a new default lands beside it as `.default` (ADR 0386).
 - The update snapshots share blocks with the live subvolumes, so they
   cost only what changes after the stage.
 - **Not yet:**
-  - The rule covers one step. When the previous slot is older than the
-    release before, a rollback should first show what would be lost and
-    offer `--settings-from-before`, which restores the snapshot (15d).
   - No release has changed a settings format yet, so no migration
     exists to test; the first one brings the runner and its tests.
   - Core apps' data in `~/app-data` follows the same rule with the first

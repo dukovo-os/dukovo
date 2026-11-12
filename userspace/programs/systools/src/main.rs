@@ -156,6 +156,7 @@ mod serial_console;
 mod servicefiles;
 mod sessions;
 mod share;
+mod sign_in_notices;
 mod signals;
 mod signin;
 mod snap;

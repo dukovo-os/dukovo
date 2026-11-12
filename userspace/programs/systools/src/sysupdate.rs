@@ -11,8 +11,9 @@
 //! follows (`check`, `download`, `channel`, ADR 0466), or from a
 //! repository folder or an update file the owner names. `status` says
 //! which slot runs and what the other holds, `unstage` takes a staged
-//! update back, and `rollback` makes the previous version the one that
-//! starts. `firmware` stages the optional firmware package's sets the
+//! update back, `rollback` makes the previous version the one that
+//! starts, and `verify` reads the running slot back against its signed
+//! list. `firmware` stages the optional firmware package's sets the
 //! same way, each a slot of its own (ADR 0468). Which slot starts is the slot state on the EFI
 //! system partitions, which GRUB's menu reads and counts the tries in
 //! (`place`).
@@ -29,10 +30,12 @@ pub(crate) mod online;
 pub(crate) mod place;
 pub(crate) mod stage;
 pub(crate) mod starts;
+pub(crate) mod verify;
 
 use std::path::PathBuf;
 
 use slots::Slot;
+use slots::restore;
 
 use crate::args::{Arg, Args};
 use crate::util::{self, Fail, fail};
@@ -41,7 +44,8 @@ use crate::util::{self, Fail, fail};
 pub fn main(args: &mut Args) -> Result<i32, Fail> {
     let usage = || {
         util::usage(
-            "say status, check, download, stage, unstage, rollback, channel, firmware or health"
+            "say status, check, download, stage, unstage, rollback, verify, channel, firmware or \
+             health"
                 .into(),
         )
     };
@@ -51,6 +55,7 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
         return firmware::main(args);
     }
     let (mut version, mut stop, mut repo) = (None, None, None);
+    let mut keep = Keep::Unsaid;
     while let Some(arg) = args.next()? {
         match arg {
             Arg::Long(name)
@@ -66,8 +71,14 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
                     other => return Err(util::usage(format!("no step called {other}"))),
                 };
             }
+            Arg::Long(name) if name == "settings-from-before" && action == "rollback" => {
+                keep = Keep::FromBefore;
+            }
+            Arg::Long(name) if name == "keep-settings" && action == "rollback" => {
+                keep = Keep::Today;
+            }
             Arg::Operand(path)
-                if matches!(action.as_str(), "stage" | "channel") && repo.is_none() =>
+                if matches!(action.as_str(), "stage" | "channel" | "verify") && repo.is_none() =>
             {
                 repo = Some(PathBuf::from(path));
             }
@@ -85,7 +96,8 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
         "download" => check(version.as_deref(), true),
         "channel" => channel(repo.as_deref().and_then(|p| p.to_str())),
         "unstage" => unstage(),
-        "rollback" => rollback(),
+        "verify" => verify::main(repo.as_deref()),
+        "rollback" => rollback(keep),
         "health" => health::run(),
         _ => Err(usage()),
     }
@@ -264,7 +276,7 @@ fn channel(name: Option<&str>) -> Result<i32, Fail> {
 
 /// `sysupdate unstage`: the staged update is not tried; it stays in its
 /// slot until the next stage.
-fn unstage() -> Result<i32, Fail> {
+pub(crate) fn unstage() -> Result<i32, Fail> {
     let root = place::root()?;
     let _lock = place::lock()?;
     let (copies, state) = place::state(&root)?;
@@ -281,9 +293,26 @@ fn unstage() -> Result<i32, Fail> {
     Ok(0)
 }
 
+/// Which settings a rollback starts the previous version with (ADR
+/// 0454).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Keep {
+    /// Today's, unless the previous version is older than the release
+    /// before the running one: then the owner is asked to choose.
+    Unsaid,
+    /// Today's, whatever the previous version is (`--keep-settings`).
+    Today,
+    /// Those from before the update, put back at the next start as a
+    /// fallback puts them back (`--settings-from-before`).
+    FromBefore,
+}
+
 /// `sysupdate rollback`: the previous version starts from the next
-/// restart on, with the settings as they are.
-pub(crate) fn rollback() -> Result<i32, Fail> {
+/// restart on, with the settings as they are, or, `keep` says, with
+/// those from before the update. The rule that a version reads what the
+/// release after it writes covers one step (ADR 0454), so a rollback
+/// past a release between the two asks which first.
+pub(crate) fn rollback(keep: Keep) -> Result<i32, Fail> {
     let root = place::root()?;
     let _lock = place::lock()?;
     let (copies, state) = place::state(&root)?;
@@ -294,10 +323,74 @@ pub(crate) fn rollback() -> Result<i32, Fail> {
             next.default.letter().to_ascii_uppercase()
         )));
     }
+    let version = |slot| root.about(slot).map(|about| about.version);
+    let (previous, running) = (version(next.default), version(root.running));
+    // The update's snapshot of the settings belongs to the previous
+    // version when the update went from it into the slot that runs.
+    let about = stage::about_update(&root).unwrap_or_default();
+    let said = |key: &str| about.iter().find(|(k, _)| k == key).map(|(_, v)| v.clone());
+    let before = previous.is_some()
+        && said("from") == previous
+        && said("slot").as_deref() == Some(root.running.letter())
+        && root.path(restore::UPDATE).join(restore::BEFORE_SETTINGS).is_dir()
+        && !stage::restored(&root);
+    let asked = root.path(restore::UPDATE).join(restore::ASKED);
+    match keep {
+        Keep::FromBefore if !before => {
+            return Err(fail(format!(
+                "there are no settings from before the update to {} to put back",
+                place::named(&root, next.default)
+            )));
+        }
+        Keep::FromBefore => {
+            std::fs::write(&asked, format!("{}\n", next.default.letter()))
+                .map_err(|err| util::failed(&asked.display(), err))?;
+        }
+        Keep::Unsaid | Keep::Today => {
+            let _ = std::fs::remove_file(&asked);
+        }
+    }
+    if keep == Keep::Unsaid
+        && let (Some(previous), Some(running)) = (&previous, &running)
+    {
+        let between = online::releases_between(previous, running);
+        if !between.is_empty() {
+            let since = said("staged").map_or_else(String::new, |at| {
+                format!(" since {}", util::local_time(at.parse().unwrap_or(0), "%Y-%m-%d"))
+            });
+            let fix = if before {
+                format!(
+                    "`sysupdate rollback --settings-from-before` puts back the settings from \
+                     before the update, and keeps those changed{since} aside; "
+                )
+            } else {
+                String::new()
+            };
+            return Err(fail(format!(
+                "Dukovo {previous} is older than the release before Dukovo {running} ({}), so it \
+                 may not read the settings as Dukovo {running} wrote them: {fix}`sysupdate \
+                 rollback --keep-settings` keeps them as they are",
+                between.join(", ")
+            )));
+        }
+    }
     place::write(&copies, next)?;
     println!(
         "sysupdate: {} starts from the next restart on; restart to go back to it",
         place::named(&root, next.default)
     );
+    if keep == Keep::FromBefore {
+        println!(
+            "sysupdate: the settings from before the update come back at that start; today's are \
+             kept in /{}/{}",
+            restore::UPDATE,
+            restore::FAILED_SETTINGS
+        );
+    } else if before {
+        println!(
+            "sysupdate: the settings stay as they are; `sysupdate rollback \
+             --settings-from-before` puts back those from before the update instead"
+        );
+    }
     Ok(0)
 }

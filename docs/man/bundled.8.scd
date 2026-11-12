@@ -209,7 +209,11 @@ The daily check runs with the updater, whether or not any place
 updates by itself: it reads anew each catalog that installed bundles
 are bound to, and writes the known flaws of each installed version to
 its log and, once for each change, to _history_ as *flawed*. It changes
-no bundle.
+no bundle. The installed versions with known flaws are kept for the next
+sign-in in _/system/live/sign-in/bundled_, which the sign-in screens show
+under the issue text (*consoled*(8), ADR 0504), and when that list
+changes, the consoles are told at once (*notifyd*(8)). A catalog that
+could not be read leaves the list as it was.
 
 bundled writes each install, update, going back, removal, hold and
 release, waiting update and failed one to _history_. A person is shown

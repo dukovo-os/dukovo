@@ -50,7 +50,9 @@ ends:
   and the sign-in, *login*(1), as on the screen's consoles. *authd*(8)
   records sign-ins there as on *ttyS0*. Under the issue text, until the
   next start, shows what the health check said of a failed start,
-  _/system/live/sysupdate/failure_ (*sysupdate*(8), ADR 0501).
+  _/system/live/sysupdate/failure_ (*sysupdate*(8), ADR 0501), and the
+  notices kept for the next sign-in in _/system/live/sign-in_
+  (*consoled*(8), ADR 0504).
 
 One that ends within 2 seconds five times in a row waits 10 seconds
 before the next. While a session's programs have the line open, the

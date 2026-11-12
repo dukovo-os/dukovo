@@ -603,6 +603,38 @@ pub fn wave_number() -> u16 {
     number
 }
 
+/// The releases between `older` and `newer`, oldest first, that the
+/// update server offered when this system last read its signed targets:
+/// a rollback from `newer` to `older` goes past them, beyond the one
+/// step the settings' two-version rule covers (ADR 0454). Without
+/// targets read, as on a system updated only from files, none.
+#[must_use]
+pub fn releases_between(older: &str, newer: &str) -> Vec<String> {
+    let Ok(bytes) = std::fs::read(metadata_dir().join("targets.json")) else { return Vec::new() };
+    let Ok(targets) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+        return Vec::new();
+    };
+    between(&targets, older, newer)
+}
+
+/// The system releases signed `targets` lists between `older` and
+/// `newer`, oldest first.
+fn between(targets: &serde_json::Value, older: &str, newer: &str) -> Vec<String> {
+    let (Some(low), Some(high)) = (Version::parse(older), Version::parse(newer)) else {
+        return Vec::new();
+    };
+    let mut between: Vec<String> = targets["signed"]["targets"]
+        .as_object()
+        .into_iter()
+        .flatten()
+        .filter_map(|(path, _)| path.strip_prefix("system/")?.strip_suffix(".json"))
+        .filter(|version| Version::parse(version).is_some_and(|v| v > low && v < high))
+        .map(str::to_string)
+        .collect();
+    between.sort_by(|a, b| Version::parse(a).cmp(&Version::parse(b)));
+    between
+}
+
 /// `text` as a version, to compare.
 fn version_of(text: &str) -> Result<Version<'_>, Fail> {
     Version::parse(text).ok_or_else(|| fail(format!("{text} is not a version this system reads")))
@@ -828,6 +860,19 @@ pub fn mib(bytes: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_releases_between_two_come_from_the_signed_targets_in_order() {
+        let targets = serde_json::json!({ "signed": { "targets": {
+            "system/0.16.0.json": {}, "system/0.14.1.json": {}, "system/0.15.0.json": {},
+            "system/0.14.0.json": {}, "system/0.16.0.rollout.json": {},
+            "channels/stable.json": {}, "firmware/2026.2.1.json": {}
+        } } });
+        assert_eq!(between(&targets, "0.14.0", "0.16.0"), ["0.14.1", "0.15.0"]);
+        assert!(between(&targets, "0.15.0", "0.16.0").is_empty());
+        assert!(between(&targets, "0.14.1", "0.15.0").is_empty());
+        assert!(between(&targets, "not", "0.16.0").is_empty());
+    }
 
     #[test]
     fn settings_read_with_defaults_and_refuse_strange_values() {

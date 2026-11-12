@@ -113,7 +113,9 @@ draws and keeps to itself. If something goes wrong, the project pauses
 the waves, and the machines not reached yet wait. Until your machine's
 wave opens, `sysupdate check` says on which day it does; `elevate
 sysupdate stage --version 0.15.2` takes the release at once. A release
-the project withdraws is never staged, and `sysupdate check` says why.
+the project withdraws is never staged, and `sysupdate check` says why;
+one staged before the withdrawal is unstaged at the next daily check,
+and the console tells you so.
 
 For a machine with no network, an update file holds a whole release,
 `dukovo-0.15.2.update`. Copy it to a USB stick, then:
@@ -252,12 +254,40 @@ start menu and the boot entry back, and keeps which version starts.
 Nothing else on the disk changes. Pull the stick when it says so, and
 press Enter to restart.
 
+## Checking the system's files
+
+Once a week the updater reads every file of the running system back
+against the release's signed list, and tells you if one differs. To
+check now:
+
+```
+elevate sysupdate verify
+```
+
+It says what differs, if anything. A disk that is failing is the usual
+cause: Rescue's reinstall puts the release's files back, and the
+`scrub` command checks the whole disk.
+
 ## Going back later
 
 If you find a problem days later, `elevate sysupdate rollback` makes the
 previous version the default from the next restart on. Your settings
 stay as they are: each release writes only what the release before it
 can read, so nothing you changed since the update is lost.
+
+That rule covers one step. When the update skipped a release, the
+version you go back to may not read the settings as the newer one wrote
+them, so the rollback stops and asks you to choose:
+
+- `elevate sysupdate rollback --settings-from-before` puts back the
+  settings as they were before the update. What you changed since is
+  kept in `/volumes/<disk>/@snapshots/update/settings-failed`, so you
+  can copy back what you need.
+- `elevate sysupdate rollback --keep-settings` keeps them as they are.
+
+You can also ask for the settings from before the update when the
+rollback does not stop, for example when the update changed a setting
+in a way you do not want.
 
 ## Firmware
 
@@ -435,7 +465,10 @@ elevate backup add --every week nas ssh://backup@nas.local/srv/backups
 The backup service backs up to each destination when it is due, and
 passes over a disk that is not plugged in until it is. `backup list`
 shows each destination's last backup and whether it went well, and
-`elevate backup run` backs up now. Services that keep a database can
+`elevate backup run` backs up now. The sign-in screen tells of a backup
+or a check that failed, and of a destination that has gone 3 days
+without a backup when it backs up daily, or 14 days when weekly, until
+the next one goes well. Services that keep a database can
 name commands to bring it to a state it can start again from before the
 snapshots are made, in their files' `[backup]` table (service.toml(5)).
 

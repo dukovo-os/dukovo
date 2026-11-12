@@ -49,5 +49,5 @@ harm.
   administrator's access (`runs-with-your-access`). Reaching the root's
   top level at `/volumes/<disk>` needs a capability to the Btrfs root
   that does not also reach `@users`, which the view of a subvolume set
-  brings with the unified updater (15d). Until then, the boundary is
+  brings with finer views for services (Phase 16). Until then, the boundary is
   kept by code review and the boot tests.
