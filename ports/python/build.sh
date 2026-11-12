@@ -95,8 +95,12 @@ printf '%s\n' "The extension modules are part of python3 on Dukovo, which loads 
 install -m 0755 "$PORT_DIR/pip3" "$PORT_BUNDLE/bin/pip3"
 # pip, from the wheel CPython carries for ensurepip: python3 -m pip
 # installs for the person, in ~/.local, as the bundle's folder is sealed.
+# CMake unpacks the wheel, a ZIP archive: the build machine's Python has
+# no zlib where the build machine has no zlib headers, as in ob's
+# container.
+wheel=$(echo "$lib"/ensurepip/_bundled/pip-*.whl)
+(cd "$lib/site-packages" && cmake -E tar xf "$wheel")
 python="$PORT_BUILD/host/python"
-"$python" -I -m zipfile -e "$lib"/ensurepip/_bundled/pip-*.whl "$lib/site-packages"
 
 # Compiled once here, as nobody may write beside the bundle's modules: a
 # hash that is not checked, as the files of a sealed bundle do not change
