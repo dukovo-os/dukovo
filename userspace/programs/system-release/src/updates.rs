@@ -29,6 +29,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use slots::version::Version;
 use tuf::repo as signing;
 
 use crate::archive::{Archive, Writer};
@@ -90,11 +91,17 @@ impl Channel {
 
 /// What the repository's metadata says now.
 struct Current {
-    /// Every target, by path, as the targets list it.
+    /// Every target, by path, as the newest targets list it.
     targets: BTreeMap<String, Value>,
+    /// The newest targets', snapshot's and timestamp's versions, 0 for
+    /// none: a repository whose snapshot and timestamp the update server
+    /// signs has none here.
     targets_version: u64,
     snapshot_version: u64,
     timestamp_version: u64,
+    /// The targets version the newest snapshot lists, and when that
+    /// snapshot expires.
+    snapshot: Option<(u64, i64)>,
 }
 
 fn read(path: &Path) -> Result<Vec<u8>, String> {
@@ -105,7 +112,9 @@ fn write(path: &Path, bytes: &[u8]) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|err| format!("{}: {err}", parent.display()))?;
     }
-    // Whole or not at all, for a server that serves it as it changes.
+    // Whole or not at all, for a server that serves it as it changes; and
+    // a new file, never the old one written over, which a copy of the
+    // folder made of hard links may share.
     let partial = path.with_extension("partial");
     std::fs::write(&partial, bytes)
         .and_then(|()| std::fs::rename(&partial, path))
@@ -118,10 +127,31 @@ fn listed_version(signed: &Value, name: &str) -> Option<u64> {
     signed["signed"]["meta"][name]["version"].as_u64()
 }
 
-/// Reads what the repository at `dir` says now, if it has been signed.
+/// The newest version of `role`'s metadata in the folder `metadata`, by
+/// the names `N.role.json`, or 0.
+fn newest(metadata: &Path, role: &str) -> Result<u64, String> {
+    let entries = match std::fs::read_dir(metadata) {
+        Ok(entries) => entries,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(err) => return Err(format!("{}: {err}", metadata.display())),
+    };
+    let suffix = format!(".{role}.json");
+    let mut found = 0;
+    for entry in entries {
+        let entry = entry.map_err(|err| format!("{}: {err}", metadata.display()))?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if let Some(version) = name.strip_suffix(&suffix).and_then(|n| n.parse::<u64>().ok()) {
+            found = found.max(version);
+        }
+    }
+    Ok(found)
+}
+
+/// Reads what the repository at `dir` says now, if it offers anything.
 fn current(dir: &Path) -> Result<Option<Current>, String> {
     let metadata = dir.join("metadata");
-    if !metadata.join("timestamp.json").exists() {
+    let targets_version = newest(&metadata, "targets")?;
+    if targets_version == 0 {
         return Ok(None);
     }
     let json = |name: String| -> Result<Value, String> {
@@ -129,14 +159,26 @@ fn current(dir: &Path) -> Result<Option<Current>, String> {
         serde_json::from_slice(&read(&path)?).map_err(|err| format!("{}: {err}", path.display()))
     };
     let malformed = |name: &str| format!("{}: {name} is malformed", metadata.display());
-    let timestamp = json("timestamp.json".into())?;
-    let timestamp_version =
-        timestamp["signed"]["version"].as_u64().ok_or_else(|| malformed("timestamp.json"))?;
-    let snapshot_version =
-        listed_version(&timestamp, "snapshot.json").ok_or_else(|| malformed("timestamp.json"))?;
-    let snapshot = json(format!("{snapshot_version}.snapshot.json"))?;
-    let targets_version =
-        listed_version(&snapshot, "targets.json").ok_or_else(|| malformed("the snapshot"))?;
+    let snapshot_version = newest(&metadata, "snapshot")?;
+    let snapshot = if snapshot_version == 0 {
+        None
+    } else {
+        let snapshot = json(format!("{snapshot_version}.snapshot.json"))?;
+        let lists =
+            listed_version(&snapshot, "targets.json").ok_or_else(|| malformed("the snapshot"))?;
+        let expires = snapshot["signed"]["expires"]
+            .as_str()
+            .and_then(tuf::time::parse)
+            .ok_or_else(|| malformed("the snapshot"))?;
+        Some((lists, expires))
+    };
+    let timestamp_version = if metadata.join("timestamp.json").exists() {
+        json("timestamp.json".into())?["signed"]["version"]
+            .as_u64()
+            .ok_or_else(|| malformed("timestamp.json"))?
+    } else {
+        0
+    };
     let targets = json(format!("{targets_version}.targets.json"))?;
     let targets = targets["signed"]["targets"]
         .as_object()
@@ -144,19 +186,50 @@ fn current(dir: &Path) -> Result<Option<Current>, String> {
         .iter()
         .map(|(path, info)| (path.clone(), info.clone()))
         .collect();
-    Ok(Some(Current { targets, targets_version, snapshot_version, timestamp_version }))
+    Ok(Some(Current { targets, targets_version, snapshot_version, timestamp_version, snapshot }))
+}
+
+/// Writes every root of `keys` into the metadata folder `metadata`, by
+/// version, and the newest as `root.json`, leaving those already there
+/// as they are. Gives whether there was a root to write.
+fn write_roots(metadata: &Path, keys: &Keys) -> Result<bool, String> {
+    let mut files: Vec<(String, &[u8])> = keys
+        .roots()
+        .iter()
+        .enumerate()
+        .map(|(n, root)| (format!("{}.root.json", n + 1), root.as_slice()))
+        .collect();
+    files.push(("root.json".into(), keys.root()));
+    let mut wrote = false;
+    for (name, bytes) in files {
+        let path = metadata.join(name);
+        if std::fs::read(&path).ok().as_deref() != Some(bytes) {
+            write(&path, bytes)?;
+            wrote = true;
+        }
+    }
+    Ok(wrote)
+}
+
+/// What [`sign`] signed.
+enum Signed {
+    /// The targets, and every root: the update server signs the snapshot
+    /// and timestamp, as these keys do not.
+    Targets,
+    /// The snapshot and timestamp too, of these versions.
+    All { snapshot: u64, timestamp: u64 },
 }
 
 /// Signs the repository at `dir` anew at `now`: the targets `targets` as
-/// the next version, if given, then the next snapshot and timestamp, and
-/// every root of `keys`. Returns the timestamp's version.
+/// the next version, if given, and every root of `keys`; then, if `keys`
+/// sign for them, the next snapshot and timestamp.
 fn sign(
     dir: &Path,
     keys: &Keys,
     current: Option<&Current>,
     targets: Option<&BTreeMap<String, Value>>,
     now: i64,
-) -> Result<u64, String> {
+) -> Result<Signed, String> {
     let metadata = dir.join("metadata");
     let (targets_version, snapshot_version, timestamp_version) =
         current.map_or((0, 0, 0), |c| (c.targets_version, c.snapshot_version, c.timestamp_version));
@@ -173,6 +246,10 @@ fn sign(
         }
         None => (targets_version, read(&metadata.join(format!("{targets_version}.targets.json")))?),
     };
+    write_roots(&metadata, keys)?;
+    if !repo::ONLINE.iter().all(|role| keys.has(role)) {
+        return Ok(Signed::Targets);
+    }
     let meta = BTreeMap::from([(
         "targets.json".to_string(),
         signing::meta(targets_version, &targets_bytes),
@@ -184,20 +261,28 @@ fn sign(
         "snapshot",
     )?;
     write(&metadata.join(format!("{snapshot_version}.snapshot.json")), &snapshot)?;
-    repo::write_roots(&metadata, keys)?;
-    let timestamp_version = timestamp_version + 1;
+    let timestamp =
+        sign_timestamp(&metadata, keys, timestamp_version + 1, snapshot_version, &snapshot, now)?;
+    Ok(Signed::All { snapshot: snapshot_version, timestamp })
+}
+
+/// Signs and writes the timestamp `version`, naming the snapshot
+/// `snapshot_version`, whose bytes are `snapshot`.
+fn sign_timestamp(
+    metadata: &Path,
+    keys: &Keys,
+    version: u64,
+    snapshot_version: u64,
+    snapshot: &[u8],
+    now: i64,
+) -> Result<u64, String> {
     let timestamp = repo::sign_role(
-        &signing::timestamp(
-            timestamp_version,
-            &expires(now, "timestamp"),
-            snapshot_version,
-            &snapshot,
-        ),
+        &signing::timestamp(version, &expires(now, "timestamp"), snapshot_version, snapshot),
         keys,
         "timestamp",
     )?;
     write(&metadata.join("timestamp.json"), &timestamp)?;
-    Ok(timestamp_version)
+    Ok(version)
 }
 
 /// What [`add`] did.
@@ -242,7 +327,6 @@ pub fn add(dir: &Path, keys: &Keys, release_dir: &Path, now: i64) -> Result<Adde
                 release.version
             ));
         }
-        let published = repo::open(dir, first, Some(&release.version))?;
         return Ok(Added { published, new_files: 0, already: true });
     }
     let mut new_files = 0;
@@ -264,8 +348,13 @@ pub fn add(dir: &Path, keys: &Keys, release_dir: &Path, now: i64) -> Result<Adde
     }
     write(&dir.join("targets").join(&list_name), &list)?;
     targets.insert(path, info);
-    sign(dir, keys, current.as_ref(), Some(&targets), now)?;
-    let published = repo::open(dir, first, Some(&release.version))?;
+    let signed = sign(dir, keys, current.as_ref(), Some(&targets), now)?;
+    // Signed through, it reads back here; else the update server reads it
+    // back once it signs the snapshot and timestamp.
+    let published = match signed {
+        Signed::All { .. } => repo::open(dir, first, Some(&release.version))?,
+        Signed::Targets => published,
+    };
     Ok(Added { published, new_files, already: false })
 }
 
@@ -299,15 +388,306 @@ pub fn set_channel(
     Ok(())
 }
 
-/// Signs a new snapshot and timestamp for the repository at `dir`, as of
-/// `now`, the targets as they are. Returns the timestamp's version.
+/// What [`refresh`] signed.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Refreshed {
+    /// A timestamp alone, of this version: the snapshot lists the newest
+    /// targets and is good for two more days.
+    Timestamp(u64),
+    /// A snapshot and a timestamp, of these versions.
+    All {
+        /// The snapshot's version.
+        snapshot: u64,
+        /// The timestamp's version.
+        timestamp: u64,
+    },
+}
+
+/// How long a snapshot must still be good for a refresh to sign a
+/// timestamp alone, as the catalog's (ADR 0382).
+const SNAPSHOT_MARGIN: i64 = 2 * 86_400;
+
+/// Signs the repository at `dir` again as of `now`, the targets as they
+/// are: a timestamp alone while the snapshot lists the newest targets,
+/// is good for two more days and no new root has replaced a key, or else
+/// a snapshot and a timestamp, as the update server does every six hours
+/// with `keys`, its online key.
 ///
 /// # Errors
 ///
-/// If the repository has not been signed, or a write fails.
-pub fn refresh(dir: &Path, keys: &Keys, now: i64) -> Result<u64, String> {
+/// If the repository offers nothing, `keys` do not sign for snapshot and
+/// timestamp, or a write fails.
+pub fn refresh(dir: &Path, keys: &Keys, now: i64) -> Result<Refreshed, String> {
     let current = current(dir)?.ok_or_else(|| format!("{} offers no release", dir.display()))?;
-    sign(dir, keys, Some(&current), None, now)
+    for role in repo::ONLINE {
+        keys.signer(role)?;
+    }
+    let metadata = dir.join("metadata");
+    let new_root = write_roots(&metadata, keys)?;
+    if let Some((lists, expires)) = current.snapshot
+        && lists == current.targets_version
+        && expires > now + SNAPSHOT_MARGIN
+        && !new_root
+    {
+        let snapshot = read(&metadata.join(format!("{}.snapshot.json", current.snapshot_version)))?;
+        let version = sign_timestamp(
+            &metadata,
+            keys,
+            current.timestamp_version + 1,
+            current.snapshot_version,
+            &snapshot,
+            now,
+        )?;
+        return Ok(Refreshed::Timestamp(version));
+    }
+    match sign(dir, keys, Some(&current), None, now)? {
+        Signed::All { snapshot, timestamp } => Ok(Refreshed::All { snapshot, timestamp }),
+        Signed::Targets => Err("these keys do not sign for snapshot and timestamp".into()),
+    }
+}
+
+/// What [`publish`] published.
+#[derive(Debug)]
+pub struct Deployed {
+    /// The versions of every release offered, oldest first.
+    pub releases: Vec<String>,
+    /// Each channel, and the version it offers.
+    pub channels: Vec<Channel>,
+    /// How many files of the deploy the store did not hold already.
+    pub new_files: usize,
+    /// How the repository was signed.
+    pub signed: Refreshed,
+}
+
+/// Publishes what a deploy left in `incoming` into the update server's
+/// repository at `dir`, with its online key `secret` (ADR 0467): the
+/// roots and targets the release keys signed, the release lists and
+/// channels, and the files, each checked against its SHA-256 as it is
+/// copied, into a store that never replaces one. Then signs a snapshot
+/// and timestamp, and reads every release and channel back as a computer
+/// online does, from the first root, and checks that the store holds
+/// every file each release lists, of its size.
+///
+/// # Errors
+///
+/// If a file of the deploy would replace one with other bytes (the first
+/// root above all: every later root and targets must follow from it), is
+/// not what its name says, the newest root does not name `secret`'s key,
+/// or what was signed does not read back. What was written stays in
+/// `dir`, which the server then does not serve.
+pub fn publish(dir: &Path, incoming: &Path, secret: &[u8], now: i64) -> Result<Deployed, String> {
+    take_metadata(&incoming.join("metadata"), &dir.join("metadata"))?;
+    for folder in ["targets/system", "targets/channels"] {
+        take_named(&incoming.join(folder), &dir.join(folder), false)?;
+    }
+    let new_files = take_named(&incoming.join("files"), &dir.join("files"), true)?;
+    let keys = server_keys(dir, secret)?;
+    let first = keys.roots()[0].clone();
+    let signed = refresh(dir, &keys, now)?;
+    let store = dir.join("files");
+    let Offered { releases, channels } = offered(repo::read_targets(dir, &first)?, Some(&store))?;
+    Ok(Deployed { releases, channels, new_files, signed })
+}
+
+/// What a repository offers, as a computer reads it.
+#[derive(Debug)]
+pub struct Offered {
+    /// The versions of every release, oldest first.
+    pub releases: Vec<String>,
+    /// Each channel, and the version it offers.
+    pub channels: Vec<Channel>,
+}
+
+/// Reads the repository an update server serves at `base` as a computer
+/// online does, from `root`: every release list and channel, each
+/// checked (ADR 0467).
+///
+/// # Errors
+///
+/// If the client refuses what is served, a list or channel is malformed,
+/// or a channel offers a release the repository does not.
+pub fn served(base: &tuf::Url, root: &[u8]) -> Result<Offered, String> {
+    offered(repo::read_served(base, root)?, None)
+}
+
+/// The releases and channels among `targets`, as the client read them:
+/// each list where its version says, each channel offering a release
+/// listed, and, with `store`, every file of every release there, of its
+/// size.
+fn offered(targets: Vec<(String, Vec<u8>)>, store: Option<&Path>) -> Result<Offered, String> {
+    let mut releases = Vec::new();
+    let mut channels = Vec::new();
+    for (path, bytes) in targets {
+        if let Some(name) = path.strip_prefix("channels/").and_then(|p| p.strip_suffix(".json")) {
+            channels.push(Channel::parse(&bytes, name)?);
+        } else if path.starts_with("system/") {
+            let release = Release::parse(&bytes)?;
+            if repo::target_path(&release.version) != path {
+                return Err(format!("{path} holds the list of release {}", release.version));
+            }
+            for (sha256, size) in release
+                .files
+                .iter()
+                .filter_map(crate::list::Entry::file)
+                .filter(|_| store.is_some())
+            {
+                let held = store
+                    .and_then(|store| std::fs::metadata(store.join(sha256)).ok())
+                    .map(|m| m.len());
+                if held != Some(size) {
+                    return Err(format!(
+                        "Dukovo {}: the store holds no file {sha256} of {size} bytes",
+                        release.version
+                    ));
+                }
+            }
+            releases.push(release.version);
+        }
+    }
+    for channel in &channels {
+        if !releases.contains(&channel.version) {
+            return Err(format!(
+                "the {} channel offers Dukovo {}, which the repository does not",
+                channel.channel, channel.version
+            ));
+        }
+    }
+    releases.sort_by(|a, b| match (Version::parse(a), Version::parse(b)) {
+        (Some(a), Some(b)) => a.cmp(&b),
+        _ => a.cmp(b),
+    });
+    Ok(Offered { releases, channels })
+}
+
+/// The update server's keys for the repository at `dir`: its online key,
+/// whose secret half is `secret`, with the repository's roots.
+///
+/// # Errors
+///
+/// If the repository has no root, or the newest does not name the key
+/// for snapshot and timestamp.
+pub fn server_keys(dir: &Path, secret: &[u8]) -> Result<Keys, String> {
+    let metadata = dir.join("metadata");
+    let mut roots = Vec::new();
+    for version in 1..=newest(&metadata, "root")? {
+        roots.push(read(&metadata.join(format!("{version}.root.json")))?);
+    }
+    if roots.is_empty() {
+        return Err(format!("{} has no root", dir.display()));
+    }
+    Keys::online(roots, secret)
+}
+
+/// Copies the roots, `N.root.json`, and targets, `N.targets.json`, from
+/// the deploy's `from` into `to`; one already there must be the same
+/// bytes. Nothing else of the deploy's metadata is read: the snapshot and
+/// timestamp are the server's own.
+fn take_metadata(from: &Path, to: &Path) -> Result<(), String> {
+    let entries = std::fs::read_dir(from).map_err(|err| format!("{}: {err}", from.display()))?;
+    let mut names = Vec::new();
+    for entry in entries {
+        let name = entry
+            .map_err(|err| format!("{}: {err}", from.display()))?
+            .file_name()
+            .to_string_lossy()
+            .into_owned();
+        let numbered = |role: &str| {
+            name.strip_suffix(&format!(".{role}.json"))
+                .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+        };
+        if numbered("root") || numbered("targets") {
+            names.push(name);
+        }
+    }
+    names.sort();
+    for name in names {
+        let bytes = read(&from.join(&name))?;
+        let path = to.join(&name);
+        match std::fs::read(&path) {
+            Ok(held) if held == bytes => {}
+            Ok(_) if name == "1.root.json" => {
+                return Err(
+                    "1.root.json is not the first root this server published; nothing was \
+                     published"
+                        .into(),
+                );
+            }
+            Ok(_) => {
+                return Err(format!(
+                    "{name} is not the {name} this server published; nothing was published"
+                ));
+            }
+            Err(_) => write(&path, &bytes)?,
+        }
+    }
+    let newest = newest(to, "root")?;
+    if newest > 0 {
+        let root = read(&to.join(format!("{newest}.root.json")))?;
+        write_if_changed(&to.join("root.json"), &root)?;
+    }
+    Ok(())
+}
+
+fn write_if_changed(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    if std::fs::read(path).ok().as_deref() == Some(bytes) { Ok(()) } else { write(path, bytes) }
+}
+
+/// Copies each file in the deploy's folder `from` that `to` does not hold
+/// yet, named by its SHA-256 (`sha256` for the store, `sha256.rest` for a
+/// list or a channel), checked against it as it is copied. Gives how
+/// many were copied; none is ever replaced.
+fn take_named(from: &Path, to: &Path, store: bool) -> Result<usize, String> {
+    let entries = match std::fs::read_dir(from) {
+        Ok(entries) => entries,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(err) => return Err(format!("{}: {err}", from.display())),
+    };
+    std::fs::create_dir_all(to).map_err(|err| format!("{}: {err}", to.display()))?;
+    let mut copied = 0;
+    for entry in entries {
+        let entry = entry.map_err(|err| format!("{}: {err}", from.display()))?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let sha256 = if store { name.as_str() } else { name.split('.').next().unwrap_or("") };
+        let named = sha256.len() == 64 && sha256.bytes().all(|b| b.is_ascii_hexdigit());
+        // Lists and channels are written `.json`, and only so.
+        let json = Path::new(&name).extension().is_some_and(|ext| ext == "json");
+        if !named || (!store && !json) {
+            return Err(format!("{}: {name} is not part of a deploy", from.display()));
+        }
+        let path = to.join(&name);
+        if path.exists() {
+            continue;
+        }
+        let partial = to.join(format!(".{name}.partial"));
+        let found = copy_hashing(&entry.path(), &partial)?;
+        if found != sha256 {
+            let _ = std::fs::remove_file(&partial);
+            return Err(format!("{}: {name} is not the file its name says", from.display()));
+        }
+        std::fs::rename(&partial, &path).map_err(|err| format!("{}: {err}", path.display()))?;
+        copied += 1;
+    }
+    Ok(copied)
+}
+
+/// Copies `from` to `to`, giving its SHA-256 in hex.
+fn copy_hashing(from: &Path, to: &Path) -> Result<String, String> {
+    use std::io::{Read as _, Write as _};
+    let mut source =
+        std::fs::File::open(from).map_err(|err| format!("{}: {err}", from.display()))?;
+    let mut out = std::fs::File::create(to).map_err(|err| format!("{}: {err}", to.display()))?;
+    let mut digest = ring::digest::Context::new(&ring::digest::SHA256);
+    let mut buffer = vec![0; 1 << 16];
+    loop {
+        let n = source.read(&mut buffer).map_err(|err| format!("{}: {err}", from.display()))?;
+        if n == 0 {
+            break;
+        }
+        digest.update(&buffer[..n]);
+        out.write_all(&buffer[..n]).map_err(|err| format!("{}: {err}", to.display()))?;
+    }
+    out.sync_all().map_err(|err| format!("{}: {err}", to.display()))?;
+    Ok(hex(digest.finish().as_ref()))
 }
 
 /// What [`pack`] wrote.
@@ -533,7 +913,7 @@ mod tests {
                 .contains("does not offer")
         );
         let before = current(&repo_dir).unwrap().unwrap().timestamp_version;
-        assert_eq!(refresh(&repo_dir, &keys, now).unwrap(), before + 1);
+        assert_eq!(refresh(&repo_dir, &keys, now).unwrap(), Refreshed::Timestamp(before + 1));
         let current = current(&repo_dir).unwrap().unwrap();
         assert!(current.targets.contains_key("channels/stable.json"));
         assert_eq!(current.targets.len(), 3);
@@ -564,6 +944,77 @@ mod tests {
             "0.15.0"
         );
         assert!(Keys::rotate(&dir.join("keys"), "mirror", now).err().unwrap().contains("no role"));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_server_publishes_a_deploy_with_its_own_key() {
+        let dir = scratch("updates-server");
+        let keys_dir = dir.join("keys");
+        Keys::create(&keys_dir, BUILT).unwrap();
+        let (online, secret) = signing::Ed25519::generate().unwrap();
+        let now = tuf::time::now();
+        let keys = Keys::set_online(&keys_dir, signing::Signer::key(&online), now).unwrap();
+        assert!(keys.has("snapshot") && keys.has("timestamp"));
+        tree(&dir.join("slot"));
+        made(&keys, &dir.join("slot"), "0.15.0", &dir.join("r1"));
+        let maintainer = dir.join("maintainer");
+        add(&maintainer, &keys, &dir.join("r1"), now).unwrap();
+        set_channel(&maintainer, &keys, "stable", "0.15.0", now).unwrap();
+
+        // The server takes the roots, targets, lists and files, and signs
+        // its own snapshot and timestamp, which a computer reads from the
+        // first root.
+        let server = dir.join("server");
+        let deployed = publish(&server, &maintainer, &secret, now).unwrap();
+        assert_eq!(deployed.releases, ["0.15.0"]);
+        let stable = Channel { channel: "stable".into(), version: "0.15.0".into() };
+        assert_eq!(deployed.channels, [stable]);
+        assert_eq!(deployed.new_files, 2);
+        assert_eq!(deployed.signed, Refreshed::All { snapshot: 1, timestamp: 1 });
+        let timestamp: Value =
+            serde_json::from_slice(&read(&server.join("metadata/timestamp.json")).unwrap())
+                .unwrap();
+        assert_eq!(timestamp["signatures"][0]["keyid"], signing::Signer::key(&online).id());
+        let first = keys.roots()[0].clone();
+        assert_eq!(repo::open(&server, &first, Some("0.15.0")).unwrap().release.version, "0.15.0");
+
+        // The same deploy again copies nothing and signs a timestamp; so
+        // does a refresh, until the snapshot has two days left.
+        let again = publish(&server, &maintainer, &secret, now).unwrap();
+        assert_eq!((again.new_files, again.signed), (0, Refreshed::Timestamp(2)));
+        let online_keys = server_keys(&server, &secret).unwrap();
+        assert_eq!(refresh(&server, &online_keys, now).unwrap(), Refreshed::Timestamp(3));
+        assert_eq!(
+            refresh(&server, &online_keys, now + 6 * 86_400).unwrap(),
+            Refreshed::All { snapshot: 2, timestamp: 4 }
+        );
+
+        // Refused: another first root, a file that is not what its name
+        // says, and a key the root does not name.
+        let copy = |name: &str| {
+            let to = dir.join(name);
+            let status = std::process::Command::new("cp")
+                .arg("-a")
+                .arg(&maintainer)
+                .arg(&to)
+                .status()
+                .unwrap();
+            assert!(status.success());
+            to
+        };
+        let other = Keys::create(&dir.join("other"), BUILT).unwrap();
+        let forged = copy("forged");
+        std::fs::write(forged.join("metadata/1.root.json"), other.root()).unwrap();
+        let err = publish(&server, &forged, &secret, now).unwrap_err();
+        assert!(err.contains("is not the first root this server published"), "{err}");
+        let damaged = copy("damaged");
+        std::fs::write(damaged.join("files").join("ab".repeat(32)), b"not that file").unwrap();
+        let err = publish(&server, &damaged, &secret, now).unwrap_err();
+        assert!(err.contains("is not the file its name says"), "{err}");
+        let (_, wrong) = signing::Ed25519::generate().unwrap();
+        let err = publish(&server, &maintainer, &wrong, now).unwrap_err();
+        assert!(err.contains("does not name this server's online key"), "{err}");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

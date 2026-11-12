@@ -4481,6 +4481,7 @@ dependencies = [
  "ring",
  "serde",
  "serde_json",
+ "slots",
  "tuf",
 ]
 

@@ -5,7 +5,7 @@ system-release(8) "Dukovo" "Dukovo Manual"
 
 # NAME
 
-system-release - check, sign, offer, pack, keep Rescue of and make keys for Dukovo's system releases
+system-release - check, sign, offer, publish, pack, keep Rescue of and make keys for Dukovo's system releases
 
 # SYNOPSIS
 
@@ -17,15 +17,21 @@ system-release - check, sign, offer, pack, keep Rescue of and make keys for Duko
 *--version* _version_ *--commit* _commit_ *--toolchain* _toolchain_
 *--built* _seconds_ [*--updates-from* _version_]
 
-*system-release keys* [*--rotate* _role_] _dir_
+*system-release keys* [*--rotate* _role_ | *--online* _key_] _dir_
+
+*system-release online-key* *--out* _key_ _secret_
 
 *system-release add* *--repo* _dir_ *--keys* _dir_ _release_
 
 *system-release channel* *--repo* _dir_ *--keys* _dir_ _channel_ _version_
 
-*system-release refresh* *--repo* _dir_ *--keys* _dir_
+*system-release refresh* *--repo* _dir_ (*--keys* _dir_ | *--online-key* _secret_)
+
+*system-release publish* *--repo* _dir_ *--online-key* _secret_ _incoming_
 
 *system-release pack* *--repo* _dir_ [*--root* _file_] *--version* _version_ *--out* _file_
+
+*system-release served* [*--root* _file_] _url_
 
 # DESCRIPTION
 
@@ -77,9 +83,9 @@ one POSIX tar archive, for a machine with no network or for a mirror
 (ADR 0466). It holds the metadata with every root, the list and every
 file, once, and is read where it is; Linux's *tar* lists and unpacks it.
 
-*make*, *keys*, *add*, *channel*, *refresh* and *pack* are for the
-machines that build Dukovo and serve its updates, where *ob*(1) runs
-them. *make* lists the slot staged in the folder *--tree*, signs the
+*make*, *keys*, *online-key*, *add*, *channel*, *refresh*, *publish*,
+*pack* and *served* are for the machines that build Dukovo and serve
+its updates, where *ob*(1) and the update server's scripts run them. *make* lists the slot staged in the folder *--tree*, signs the
 list with the keys in *--keys* and lays out its repository in *--out*,
 which it makes afresh, then reads the repository back as *check* does.
 *keys* makes an Ed25519 key for each role in _dir_, as _<role>.key_,
@@ -87,10 +93,17 @@ readable by its owner alone, and the first root, _root.json_, which names
 them. *keys --rotate* _role_ replaces that role's key and signs the next
 root, _N.root.json_, with the root key before it, and with the new one
 too when the root key is the one replaced; every root is kept, so that a
-computer that trusts the first walks to the newest. Until releases are
+computer that trusts the first walks to the newest. *keys --online*
+_key_ signs the next root naming the update server's online key, the
+public key in the file _key_, for snapshot and timestamp beside the keys
+in _dir_, either of which signs alone (ADR 0467). Until releases are
 signed with the project's YubiKeys, each build machine signs with keys
 of its own, which *ob* makes in _.cache/release-keys_, and its images
 trust only those.
+
+*online-key* makes the update server's online key: an Ed25519 key whose
+secret half goes into the new file _secret_, readable by its owner
+alone, and whose public half goes into *--out*, for a root to name.
 
 The update repository, *--repo*, holds every release a server offers,
 each file once, and the channels, stable, beta and nightly, each naming
@@ -98,10 +111,38 @@ one release (ADR 0466). *add* adds a release that *make* made, after
 reading it from the first root and checking every file; a version the
 repository offers already with another list is refused, since a version
 is never used twice. *channel* points a channel at a release the
-repository offers. *refresh* signs a new snapshot and timestamp, as a
-server does every few hours. *pack* writes one release as an update
-file, and reads it back from *--root*, by default the repository's
-first root.
+repository offers. With keys for snapshot and timestamp in *--keys*,
+*add* and *channel* sign a new snapshot and timestamp too; without them,
+the update server signs those once the repository is deployed.
+*refresh* signs a new timestamp, and a new snapshot when the one there
+does not list the newest targets, has two days left or less, or a new
+root has been added, as the update server does every six hours, with
+the keys in *--keys* or the online key in *--online-key*. *pack* writes
+one release as an update file, and reads it back from *--root*, by
+default the repository's first root.
+
+*publish* is what the update server runs when a deploy is ready (ADR
+0467). From the folder _incoming_ it takes the numbered roots and
+targets, and nothing else of the metadata; the release lists and
+channels, in _targets/_; and the files, in _files/_, each checked
+against the SHA-256 it is named by as it is copied, and never replacing
+one. A first root other than the repository's own is refused. Then it
+signs a snapshot and timestamp with the online key, reads every
+release list and channel back from the first root as a computer
+online does, and checks that every file each release lists is in the
+store at its size and that every channel offers a release the
+repository offers:
+
+```
+$ system-release publish --repo /srv/dukovo-system/system.5Kq2 --online-key online.key incoming
+system-release: /srv/dukovo-system/system.5Kq2 offers 3 releases, newest Dukovo 0.15.1, with 212 new files; signed again, snapshot 4 and timestamp 9
+system-release: the stable channel offers Dukovo 0.15.1
+system-release: the beta channel offers Dukovo 0.15.1
+```
+
+*served* reads the repository an update server serves at _url_ as a
+computer online does, from *--root*: every signature, version, hash and
+expiry, every release list and every channel, but none of the files.
 
 # OPTIONS
 
@@ -125,9 +166,18 @@ first root.
 	The role whose key *keys* replaces: root, targets, snapshot or
 	timestamp.
 
+*--online* _key_
+	The update server's online key, a public key in JSON, for the next
+	root to name for snapshot and timestamp.
+
+*--online-key* _secret_
+	The secret half of the update server's online key, which signs the
+	snapshot and timestamp.
+
 *--out* _dir_
 	Where *make* lays out the repository; for *rescue*, the EFI system
-	partition's mount point; for *pack*, the update file.
+	partition's mount point; for *pack*, the update file; for
+	*online-key*, the public half of the key.
 
 *--commit* _commit_, *--toolchain* _toolchain_
 	The git commit and the Rust toolchain the release was built from,
@@ -144,8 +194,8 @@ first root.
 # EXIT STATUS
 
 0
-	The release checked whole, or was made or written as Rescue, or the
-	keys were.
+	The release checked whole, or was made, written as Rescue, offered,
+	published or read back, or the keys were.
 
 1
 	It did not: a signature, version or hash failed, a file is missing

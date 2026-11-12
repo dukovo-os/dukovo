@@ -1,0 +1,12 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+[Unit]
+Description=Publish Dukovo's system releases when a deploy says it is ready (ADR 0467)
+
+[Path]
+PathExists=/var/lib/dukovo-system-incoming/ready
+Unit=dukovo-system-publish.service
+
+[Install]
+WantedBy=multi-user.target

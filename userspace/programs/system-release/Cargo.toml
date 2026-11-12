@@ -19,6 +19,8 @@ ring = "0.17.14"
 # The release list, in JSON.
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.140"
+# Releases in the order of their versions, as an update compares them.
+slots = { path = "../slots" }
 # The release list as a TUF target, signed and read back by Dukovo's own
 # TUF client (ADR 0380).
 tuf = { path = "../tuf" }

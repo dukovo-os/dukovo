@@ -100,7 +100,7 @@ fn build(ctx: &Ctx, release: bool) -> Result<PathBuf> {
 
 /// The server as `ssh` names it: `$OB_UPDATE_SSH`, such as
 /// `user@updates.dukovo.org` or a name in ~/.ssh/config, or [`HOST`].
-fn ssh_destination() -> String {
+pub fn ssh_destination() -> String {
     std::env::var("OB_UPDATE_SSH")
         .ok()
         .filter(|dest| !dest.is_empty())
@@ -108,7 +108,7 @@ fn ssh_destination() -> String {
 }
 
 /// `ssh` to the server, running `script` with sh.
-fn ssh(dest: &str, script: &str) -> Command {
+pub fn ssh(dest: &str, script: &str) -> Command {
     let mut cmd = Command::new("ssh");
     cmd.args(["--", dest, script]);
     cmd
@@ -119,13 +119,16 @@ fn quote(word: &str) -> String {
     format!("'{}'", word.replace('\'', r"'\''"))
 }
 
-/// `ob catalog server setup`: copies tools/update-server/ and catalog-repo
-/// to the server and runs its setup.sh there through sudo, which asks for
-/// the password; then keeps the online key's public half it made in
-/// catalog/keys/online.json, for the next root.
-fn server_setup(ctx: &Ctx) -> Result<()> {
+/// `ob catalog server setup` and `ob release server setup`: copies
+/// tools/update-server/, catalog-repo and system-release to the server and
+/// runs its setup.sh there through sudo, which asks for the password;
+/// then keeps the public halves of the online keys it made, the
+/// catalog's in catalog/keys/online.json and the system releases' in
+/// releases/keys/online.json, for the next roots.
+pub fn server_setup(ctx: &Ctx) -> Result<()> {
     let dest = ssh_destination();
     let program = build(ctx, true)?;
+    let system_release = crate::release::tool_for(ctx, true)?;
     let staging = ctx.out.join("update-server");
     if staging.exists() {
         std::fs::remove_dir_all(&staging).context(|| format!("removing {}", staging.display()))?;
@@ -139,6 +142,8 @@ fn server_setup(ctx: &Ctx) -> Result<()> {
     }
     std::fs::copy(&program, staging.join("catalog-repo"))
         .context(|| format!("copying {}", program.display()))?;
+    std::fs::copy(&system_release, staging.join("system-release"))
+        .context(|| format!("copying {}", system_release.display()))?;
 
     // With scp, which every server with SSH has: setup.sh installs the
     // rsync that deploys use.
@@ -158,25 +163,44 @@ fn server_setup(ctx: &Ctx) -> Result<()> {
     ]);
     process::run(ctx, &mut cmd)?;
 
-    let output = process::output(ctx, &mut ssh(&dest, &format!("cat {SERVER_ONLINE_KEY}")))?;
-    let path = ctx.root.join(REPO).join("keys/online.json");
+    keep_online_key(
+        ctx,
+        &dest,
+        SERVER_ONLINE_KEY,
+        REPO,
+        "sign a root that lists it with `./ob catalog root`",
+    )?;
+    keep_online_key(
+        ctx,
+        &dest,
+        crate::release::SERVER_ONLINE_KEY,
+        crate::release::REPO,
+        "the release keys' next root names it, as releases/README.md says",
+    )
+}
+
+/// Keeps the public half of an online key the server made, `server_path`
+/// there, in `repo`/keys/online.json, or fails if another is there;
+/// `then` says what the next root does with it.
+fn keep_online_key(ctx: &Ctx, dest: &str, server_path: &str, repo: &str, then: &str) -> Result<()> {
+    let output = process::output(ctx, &mut ssh(dest, &format!("cat {server_path}")))?;
+    let path = ctx.root.join(repo).join("keys/online.json");
     match std::fs::read(&path) {
         Ok(kept) if kept == output.stdout => {
-            println!("catalog/keys/online.json is the server's online key.");
+            println!("{repo}/keys/online.json is the server's online key.");
         }
         Ok(_) => bail!(
-            "the server's online key is not catalog/keys/online.json: the server was set up anew, \
-             or the file was changed. A new root must list the server's key (catalog/README.md \
-             says how); it is {SERVER_ONLINE_KEY} on the server"
+            "the server's online key is not {repo}/keys/online.json: the server was set up anew, \
+             or the file was changed. A new root must list the server's key ({repo}/README.md \
+             says how); it is {server_path} on the server"
         ),
         Err(_) => {
-            let keys = ctx.root.join(REPO).join("keys");
+            let keys = ctx.root.join(repo).join("keys");
             std::fs::create_dir_all(&keys).context(|| format!("making {}", keys.display()))?;
             std::fs::write(&path, &output.stdout)
                 .context(|| format!("writing {}", path.display()))?;
             println!(
-                "Wrote the server's online key to catalog/keys/online.json: commit it, and sign \
-                 a root that lists it with `./ob catalog root`."
+                "Wrote the server's online key to {repo}/keys/online.json: commit it; {then}."
             );
         }
     }

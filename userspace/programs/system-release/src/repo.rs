@@ -90,7 +90,8 @@ impl Keys {
         Ok(Keys { roots: vec![root], signers })
     }
 
-    /// The keys in `dir`, checked against the root there.
+    /// The keys in `dir`, checked against the root there. A role whose
+    /// key is not there is signed for elsewhere.
     ///
     /// # Errors
     ///
@@ -111,10 +112,12 @@ impl Keys {
         roots.push(root);
         let mut signers = Vec::new();
         for role in ROLES {
-            let key = Ed25519::from_pkcs8(&read(&format!("{role}.key"))?)?;
-            let named =
-                parsed.signed.roles.get(role).is_some_and(|r| r.keyids.contains(&key.key().id()));
-            if !named {
+            let name = format!("{role}.key");
+            if !dir.join(&name).exists() {
+                continue;
+            }
+            let key = Ed25519::from_pkcs8(&read(&name)?)?;
+            if !names(&parsed.signed, role, key.key()) {
                 return Err(format!(
                     "{}/{role}.key is not the key root.json names for {role}",
                     dir.display()
@@ -125,58 +128,87 @@ impl Keys {
         Ok(Keys { roots, signers })
     }
 
-    /// Replaces `role`'s key in `dir` with a new one, and signs the next
-    /// root, which names it, with the root key before it and, for root
-    /// itself, the new one too, as TUF asks of a client that walks to it
-    /// (TUF 5.3.4). Every root stays in `dir` by its version.
+    /// The update server's keys: its online key, whose secret half is
+    /// `secret` (PKCS #8), for snapshot and timestamp, which the newest of
+    /// `roots`, the repository's, must name it for.
     ///
     /// # Errors
     ///
-    /// If `role` is not one of [`ROLES`], the keys do not load, or a file
-    /// cannot be written.
-    pub fn rotate(dir: &Path, role: &str, now: i64) -> Result<Keys, String> {
-        let Keys { mut roots, mut signers } = Keys::load(dir)?;
-        let index = signers
-            .iter()
-            .position(|(r, _)| *r == role)
-            .ok_or_else(|| format!("no role called {role}; the roles are {}", ROLES.join(", ")))?;
-        let newest = roots.last().ok_or_else(|| format!("{}: no root.json", dir.display()))?;
-        let version = Signed::<Root>::parse(newest).map_err(|err| err.to_string())?.version + 1;
-        let (key, secret) = Ed25519::generate()?;
-        let old = std::mem::replace(&mut signers[index].1, key);
-        let roles: Vec<_> = signers.iter().map(|(r, key)| (*r, vec![key.key()], 1)).collect();
-        let signed = repo::root(version, &expires(now, "root"), &roles, true);
-        let new_root: &dyn Signer = &signers
-            .iter()
-            .find(|(r, _)| *r == "root")
-            .ok_or_else(|| format!("{}: no root key", dir.display()))?
-            .1;
-        let old_root: &dyn Signer = &old;
-        let root = if role == "root" {
-            repo::sign(&signed, &[old_root, new_root])?
-        } else {
-            repo::sign(&signed, &[new_root])?
-        };
-        let write = |name: &str, bytes: &[u8], mode: u32| {
-            let path = dir.join(name);
-            std::fs::write(&path, bytes)
-                .and_then(|()| {
-                    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode))
-                })
-                .map_err(|err| format!("{}: {err}", path.display()))
-        };
-        // The roots by version first, then the key, then root.json last:
-        // keys that stop half way still load, as the root before.
-        for (n, earlier) in roots.iter().enumerate() {
-            write(&format!("{}.root.json", n + 1), earlier, 0o644)?;
+    /// If `secret` is not an Ed25519 key, there is no root, or the newest
+    /// does not name the key for both roles.
+    pub fn online(roots: Vec<Vec<u8>>, secret: &[u8]) -> Result<Keys, String> {
+        let newest = roots.last().ok_or("the repository has no root")?;
+        let parsed = Signed::<Root>::parse(newest).map_err(|err| format!("the root: {err}"))?;
+        let mut signers = Vec::new();
+        for role in ONLINE {
+            let key = Ed25519::from_pkcs8(secret)?;
+            if !names(&parsed.signed, role, key.key()) {
+                return Err(format!(
+                    "root version {} does not name this server's online key {} for {role}",
+                    parsed.version,
+                    key.key().id()
+                ));
+            }
+            signers.push((role, key));
         }
-        write(&format!("{version}.root.json"), &root, 0o644)?;
-        write(&format!("{role}.key.new"), &secret, 0o600)?;
-        let (new, path) = (dir.join(format!("{role}.key.new")), dir.join(format!("{role}.key")));
-        std::fs::rename(&new, &path).map_err(|err| format!("{}: {err}", path.display()))?;
-        write("root.json", &root, 0o644)?;
-        roots.push(root);
         Ok(Keys { roots, signers })
+    }
+
+    /// Replaces `role`'s key in `dir` with a new one, and signs the next
+    /// root, which names it, with the root key before it and, for root
+    /// itself, the new one too, as TUF asks of a client that walks to it
+    /// (TUF 5.3.4). A key the root names for the role that is not here,
+    /// the update server's, stays named. Every root stays in `dir` by its
+    /// version.
+    ///
+    /// # Errors
+    ///
+    /// If `role` is not one of [`ROLES`], the keys do not load, the root
+    /// key is not among them, or a file cannot be written.
+    pub fn rotate(dir: &Path, role: &str, now: i64) -> Result<Keys, String> {
+        let role = ROLES
+            .into_iter()
+            .find(|r| *r == role)
+            .ok_or_else(|| format!("no role called {role}; the roles are {}", ROLES.join(", ")))?;
+        let (key, secret) = Ed25519::generate()?;
+        let keys = Keys::load(dir)?;
+        let old = keys.signers.iter().find(|(r, _)| *r == role).map(|(_, k)| k.key().id());
+        let mut named = keys.named(role)?;
+        named.retain(|k| Some(k.id()) != old);
+        named.push(key.key().clone());
+        next_root(dir, keys, &[(role, named)], Some((role, key, secret)), now)
+    }
+
+    /// Names the update server's online key `key` for snapshot and
+    /// timestamp in the next root, beside this computer's own keys for
+    /// them, which still sign install sticks and update files; a server
+    /// key named before is named no longer (ADR 0467).
+    ///
+    /// # Errors
+    ///
+    /// If the keys do not load, the root key is not among them, or a file
+    /// cannot be written.
+    pub fn set_online(dir: &Path, key: &tuf::keys::Key, now: i64) -> Result<Keys, String> {
+        let keys = Keys::load(dir)?;
+        let mut changes = Vec::new();
+        for role in ONLINE {
+            let mut named: Vec<tuf::keys::Key> = keys
+                .signers
+                .iter()
+                .filter(|(r, _)| *r == role)
+                .map(|(_, k)| k.key().clone())
+                .collect();
+            named.push(key.clone());
+            changes.push((role, named));
+        }
+        next_root(dir, keys, &changes, None, now)
+    }
+
+    /// The keys the newest root names for `role`.
+    fn named(&self, role: &str) -> Result<Vec<tuf::keys::Key>, String> {
+        let parsed = Signed::<Root>::parse(self.root()).map_err(|err| err.to_string())?;
+        let ids = parsed.signed.roles.get(role).map_or_default(|r| r.keyids.clone());
+        Ok(ids.iter().filter_map(|id| parsed.signed.keys.get(id).cloned()).collect())
     }
 
     /// The newest root, as a system built with these keys trusts it.
@@ -195,10 +227,85 @@ impl Keys {
         &self.roots
     }
 
-    /// `role`'s key, to sign with.
-    pub(crate) fn signer(&self, role: &str) -> &dyn Signer {
-        &self.signers.iter().find(|(r, _)| *r == role).expect("every role has a key").1
+    /// Whether these keys sign for `role`, or another computer does.
+    #[must_use]
+    pub fn has(&self, role: &str) -> bool {
+        self.signers.iter().any(|(r, _)| *r == role)
     }
+
+    /// `role`'s key, to sign with.
+    pub(crate) fn signer(&self, role: &str) -> Result<&dyn Signer, String> {
+        let found = self.signers.iter().find(|(r, _)| *r == role).map(|(_, key)| key);
+        found.map(|key| key as &dyn Signer).ok_or_else(|| {
+            format!("these keys do not sign for {role}: the update server's online key does")
+        })
+    }
+}
+
+/// The roles the update server's online key signs for.
+pub const ONLINE: [&str; 2] = ["snapshot", "timestamp"];
+
+/// Whether `root` names `key` for `role`.
+fn names(root: &Root, role: &str, key: &tuf::keys::Key) -> bool {
+    root.roles.get(role).is_some_and(|r| r.keyids.contains(&key.id()))
+}
+
+/// Signs the next root of `keys`, those in `dir`, with each role of
+/// `changes` naming the keys given, and the others as the newest root
+/// names them, with the root key before it and, for a new root key, that
+/// one too. Writes every root by version, then a new key `new` (the role,
+/// its key and its secret half), then `root.json` last, so that keys that
+/// stop half way still load as the root before.
+fn next_root(
+    dir: &Path,
+    keys: Keys,
+    changes: &[(&'static str, Vec<tuf::keys::Key>)],
+    new: Option<(&'static str, Ed25519, Vec<u8>)>,
+    now: i64,
+) -> Result<Keys, String> {
+    let mut role_keys = Vec::new();
+    for role in ROLES {
+        match changes.iter().find(|(r, _)| *r == role) {
+            Some((_, named)) => role_keys.push((role, named.clone())),
+            None => role_keys.push((role, keys.named(role)?)),
+        }
+    }
+    let Keys { mut roots, mut signers } = keys;
+    let newest = roots.last().ok_or_else(|| format!("{}: no root.json", dir.display()))?;
+    let version = Signed::<Root>::parse(newest).map_err(|err| err.to_string())?.version + 1;
+    let old_root = signers
+        .iter()
+        .position(|(r, _)| *r == "root")
+        .ok_or_else(|| format!("{} holds no root key, which signs a new root", dir.display()))?;
+    let roles: Vec<(&str, Vec<&tuf::keys::Key>, u64)> =
+        role_keys.iter().map(|(role, keys)| (*role, keys.iter().collect(), 1)).collect();
+    let signed = repo::root(version, &expires(now, "root"), &roles, true);
+    let old: &dyn Signer = &signers[old_root].1;
+    let root = match &new {
+        Some(("root", key, _)) => repo::sign(&signed, &[old, key])?,
+        _ => repo::sign(&signed, &[old])?,
+    };
+    let write = |name: &str, bytes: &[u8], mode: u32| {
+        let path = dir.join(name);
+        std::fs::write(&path, bytes)
+            .and_then(|()| std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)))
+            .map_err(|err| format!("{}: {err}", path.display()))
+    };
+    for (n, earlier) in roots.iter().enumerate() {
+        write(&format!("{}.root.json", n + 1), earlier, 0o644)?;
+    }
+    write(&format!("{version}.root.json"), &root, 0o644)?;
+    if let Some((role, key, secret)) = new {
+        let (partial, path) =
+            (dir.join(format!("{role}.key.new")), dir.join(format!("{role}.key")));
+        write(&format!("{role}.key.new"), &secret, 0o600)?;
+        std::fs::rename(&partial, &path).map_err(|err| format!("{}: {err}", path.display()))?;
+        signers.retain(|(r, _)| *r != role);
+        signers.push((role, key));
+    }
+    write("root.json", &root, 0o644)?;
+    roots.push(root);
+    Ok(Keys { roots, signers })
 }
 
 /// The expiry of `role`'s metadata signed at `built`, or for a release
@@ -249,19 +356,19 @@ pub fn publish(
     let listed = BTreeMap::from([(target_path(&release.version), repo::file_info(&list))]);
     let targets = repo::sign(
         &repo::targets(1, &expires(built, "targets"), &listed),
-        &[keys.signer("targets")],
+        &[keys.signer("targets")?],
     )?;
     write(out.join("metadata/1.targets.json"), &targets)?;
     let meta = BTreeMap::from([("targets.json".to_string(), repo::meta(1, &targets))]);
     let snapshot = repo::sign(
         &repo::snapshot(1, &expires(built, "snapshot"), &meta),
-        &[keys.signer("snapshot")],
+        &[keys.signer("snapshot")?],
     )?;
     write(out.join("metadata/1.snapshot.json"), &snapshot)?;
     let timestamp = repo::timestamp(1, &expires(built, "timestamp"), 1, &snapshot);
     write(
         out.join("metadata/timestamp.json"),
-        &repo::sign(&timestamp, &[keys.signer("timestamp")])?,
+        &repo::sign(&timestamp, &[keys.signer("timestamp")?])?,
     )?;
     write_roots(&out.join("metadata"), keys)?;
 
@@ -341,6 +448,63 @@ fn open_in(
     Ok(Published { release, name })
 }
 
+/// Reads every target the repository at `dir` offers with the TUF
+/// client, from `root`, as a computer online does: expiry checked, every
+/// signature, version and hash. Gives each target's path and bytes.
+///
+/// # Errors
+///
+/// What fails, as the client says it.
+pub fn read_targets(dir: &Path, root: &[u8]) -> Result<Vec<(String, Vec<u8>)>, String> {
+    let absolute = std::path::absolute(dir).map_err(|err| format!("{}: {err}", dir.display()))?;
+    let base = tuf::Url::parse(&format!("file://{}/", absolute.display()))
+        .map_err(|err| format!("{}: {err}", dir.display()))?;
+    read_served(&base, root)
+}
+
+/// Reads every target the repository at `base`, a `file`, `http` or
+/// `https` address, offers with the TUF client, from `root`, as
+/// [`read_targets`] does.
+///
+/// # Errors
+///
+/// What fails, as the client says it.
+pub fn read_served(base: &tuf::Url, root: &[u8]) -> Result<Vec<(String, Vec<u8>)>, String> {
+    let work = scratch_dir();
+    let result = (|| {
+        let url = |sub: &str| base.resolve(sub).map_err(|err| format!("{base}{sub}: {err}"));
+        tuf::init(&work, root).map_err(|err| err.to_string())?;
+        let mut updater = tuf::Updater::new(&work, &url("metadata/")?, Some(&url("targets/")?))
+            .map_err(|err| format!("the first root: {err}"))?;
+        updater.refresh().map_err(|err| format!("{base}: {err}"))?;
+        let paths: Vec<String> = updater
+            .trusted()
+            .targets("targets")
+            .ok_or("the targets did not load")?
+            .signed
+            .targets
+            .keys()
+            .cloned()
+            .collect();
+        let mut read = Vec::new();
+        for path in paths {
+            let target = updater
+                .target(&path)
+                .map_err(|err| format!("{base}: {err}"))?
+                .ok_or_else(|| format!("{base}: {path} is not a target"))?;
+            let file = work.join("target");
+            updater
+                .download_target(&path, &target, &file)
+                .map_err(|err| format!("{base}: {err}"))?;
+            let bytes = std::fs::read(&file).map_err(|err| format!("{}: {err}", file.display()))?;
+            read.push((path, bytes));
+        }
+        Ok(read)
+    })();
+    let _ = std::fs::remove_dir_all(&work);
+    result
+}
+
 /// The path of the one release the targets list.
 fn only_release(updater: &tuf::Updater, dir: &Path) -> Result<String, String> {
     let targets = updater.trusted().targets("targets").ok_or("the targets did not load")?;
@@ -379,7 +543,7 @@ pub(crate) fn sign_role(
     keys: &Keys,
     role: &str,
 ) -> Result<Vec<u8>, String> {
-    repo::sign(signed, &[keys.signer(role)])
+    repo::sign(signed, &[keys.signer(role)?])
 }
 
 /// A new folder for the client's metadata while it reads a repository.

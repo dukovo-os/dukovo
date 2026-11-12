@@ -42,8 +42,8 @@ Slot state: on nvme0n1p1 (generation 1)
 Updates come from Dukovo's update server, through a channel: **stable**,
 the default, the releases most people run; **beta**, each release two
 weeks before it is stable; or **nightly**, a build of every change, for
-testing. `sysupdate check` says what the channel offers, and how much
-your system would fetch:
+testing, which the update server does not offer yet. `sysupdate check`
+says what the channel offers, and how much your system would fetch:
 
 ```
 $ elevate sysupdate check

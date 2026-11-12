@@ -4,7 +4,9 @@
 //! Signed system releases, `ob`'s side (ADR 0308): the keys that sign
 //! them, the root the boot archive carries so that a system trusts them,
 //! and the release of a staged slot, made and signed by system-release,
-//! which ob builds for this machine as it builds catalog-repo.
+//! which ob builds for this machine as it builds catalog-repo. `ob
+//! release` deploys an update repository to the update server and checks
+//! what it serves (ADR 0467).
 //!
 //! Until releases are signed with the project's YubiKeys (the updates
 //! design's section 11), every machine that builds Dukovo signs with keys
@@ -19,7 +21,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::process::{self, step};
-use crate::{Context, Ctx, Result, VERSION};
+use crate::{Context, Ctx, Result, VERSION, bail};
 
 /// Where this machine's release keys are kept.
 pub const KEYS_DIR: &str = ".cache/release-keys";
@@ -32,13 +34,147 @@ pub const TRUSTED_ROOT: &str = "system/resources/updates/root.json";
 /// partition: its `release` subvolume, read-only.
 pub const SUBVOLUME: &str = "release";
 
+/// The production repository's public half in the source tree (ADR
+/// 0467): `keys/online.json`, the update server's online key, which `ob
+/// release server setup` writes, and `metadata/1.root.json`, the first
+/// root, which the key ceremony signs on the hardware keys (ADR 0457).
+pub const REPO: &str = "releases";
+
+/// Where the update server serves the system's releases.
+pub const URL: &str = "https://updates.dukovo.org/system/";
+
+/// The server's folder a deploy copies into (tools/update-server/).
+const INCOMING: &str = "/var/lib/dukovo-system-incoming";
+
+/// The repository the server serves, whose store a deploy skips the
+/// files of.
+const SERVED: &str = "/srv/dukovo-system/system/";
+
+/// The online key's public half, as the server's setup leaves it.
+pub const SERVER_ONLINE_KEY: &str = "/usr/local/share/dukovo-system/online.json";
+
+/// How long a deploy waits for the server to publish: it hashes every
+/// new file as it takes it.
+const PUBLISH_WAIT_SECONDS: u32 = 600;
+
 /// Builds system-release for this machine and gives its path.
 fn tool(ctx: &Ctx) -> Result<PathBuf> {
+    tool_for(ctx, false)
+}
+
+/// Builds system-release for this machine, optimised for the update
+/// server's when `release`, and gives its path.
+pub fn tool_for(ctx: &Ctx, release: bool) -> Result<PathBuf> {
     step("Building system-release for this machine");
     let mut cmd = crate::userspace::host_cargo_of(ctx, "build", &["system-release"]);
     cmd.args(["--bin", "system-release"]);
+    if release {
+        cmd.arg("--release");
+    }
     process::run(ctx, &mut cmd)?;
-    Ok(ctx.target.join("programs-host/debug/system-release"))
+    let profile = if release { "release" } else { "debug" };
+    Ok(ctx.target.join("programs-host").join(profile).join("system-release"))
+}
+
+/// `ob release`: sets up the update server, deploys an update repository
+/// to it, or checks what it serves.
+pub fn command(ctx: &Ctx, args: &[String]) -> Result<()> {
+    match args.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
+        ["server", "setup"] => crate::catalog::server_setup(ctx),
+        ["deploy", dir] => deploy(ctx, Path::new(dir)),
+        ["check"] => check(ctx, URL),
+        ["check", url] => check(ctx, url),
+        _ => bail!("usage: ./ob release server setup | deploy <repository> | check [<url>]"),
+    }
+}
+
+/// The production first root, which every repository deployed must start
+/// from.
+fn production_root(ctx: &Ctx) -> Result<Vec<u8>> {
+    let path = ctx.root.join(REPO).join("metadata/1.root.json");
+    std::fs::read(&path).map_err(|_| {
+        crate::Error::new(format!(
+            "{REPO}/metadata/1.root.json is not there yet: the key ceremony signs the first root \
+             of the system's releases on the hardware keys (ADR 0457), and until then nothing \
+             is deployed"
+        ))
+    })
+}
+
+/// `ob release deploy DIR`: copies the update repository at `dir`, signed
+/// by the release keys from the production root, to the server, which
+/// publishes it with its online key and says whether that worked; then
+/// reads it back over https.
+fn deploy(ctx: &Ctx, dir: &Path) -> Result<()> {
+    let root = production_root(ctx)?;
+    let first = dir.join("metadata/1.root.json");
+    match std::fs::read(&first) {
+        Ok(bytes) if bytes == root => {}
+        Ok(_) => bail!(
+            "{}'s first root is not {REPO}/metadata/1.root.json: it was not signed by the release \
+             keys, and is not deployed",
+            dir.display()
+        ),
+        Err(_) => bail!("{} is not an update repository: it has no first root", dir.display()),
+    }
+    let dest = crate::catalog::ssh_destination();
+    step(&format!("Copying the repository to {dest}"));
+    // Made first, so that the server's user may read them, whatever the
+    // login's umask.
+    let folders =
+        format!("mkdir -p -m 2770 {INCOMING}/metadata {INCOMING}/targets {INCOMING}/files");
+    process::run(ctx, &mut crate::catalog::ssh(&dest, &folders))?;
+    let mut cmd = Command::new("rsync");
+    cmd.args(["-rtp", "--delete", "--chmod=D2770,F0660"])
+        .arg(dir.join("metadata"))
+        .arg(dir.join("targets"))
+        .arg(format!("{dest}:{INCOMING}/"));
+    process::run(ctx, &mut cmd)?;
+    // Files are named by their SHA-256, so one the store holds is not
+    // copied again, and none is ever taken away from it.
+    let mut cmd = Command::new("rsync");
+    cmd.args(["-rtp", "--size-only", "--chmod=D2770,F0660"])
+        .arg(format!("--compare-dest={SERVED}"))
+        .arg(dir.join("files"))
+        .arg(format!("{dest}:{INCOMING}/"));
+    process::run(ctx, &mut cmd)?;
+
+    step("Publishing it on the server");
+    let script = format!(
+        "rm -f {INCOMING}/result && touch {INCOMING}/ready && \
+         i=0; while [ ! -e {INCOMING}/result ] && [ $i -lt {PUBLISH_WAIT_SECONDS} ]; do \
+         sleep 1; i=$((i + 1)); done; \
+         if [ -e {INCOMING}/result ]; then cat {INCOMING}/result; else echo waiting; fi"
+    );
+    let output = process::output(ctx, &mut crate::catalog::ssh(&dest, &script))?;
+    let text = String::from_utf8_lossy(&output.stdout);
+    let (status, rest) = text.split_once('\n').unwrap_or((text.trim_end(), ""));
+    if !rest.trim().is_empty() {
+        println!("{}", rest.trim_end());
+    }
+    match status {
+        "published" => {}
+        "waiting" => bail!(
+            "the server did not publish in {PUBLISH_WAIT_SECONDS} seconds: \
+             `systemctl status dukovo-system-publish` on the server says why"
+        ),
+        _ => bail!(
+            "the server could not publish the releases, as the output above says; it serves what \
+             it did before"
+        ),
+    }
+    check(ctx, URL)
+}
+
+/// `ob release check`: reads the repository `url` serves as a computer
+/// online would, from the production first root: every release list and
+/// channel.
+fn check(ctx: &Ctx, url: &str) -> Result<()> {
+    production_root(ctx)?;
+    let root = ctx.root.join(REPO).join("metadata/1.root.json");
+    let mut cmd = Command::new(tool(ctx)?);
+    cmd.arg("served").arg("--root").arg(root).arg(url);
+    process::run(ctx, &mut cmd)
 }
 
 /// This machine's release keys, made the first time they are needed.

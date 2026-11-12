@@ -59,7 +59,6 @@ const NOTHING: &[&str] = &[
     "rustfmt.toml",
     "tools/container/",
     "tools/windows/",
-    "tools/update-server/",
     "tools/rge-openbsd-check/",
     "tools/yubikey-piv.py",
     "tools/xtask/src/baseline.rs",
