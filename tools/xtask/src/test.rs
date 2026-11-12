@@ -3530,9 +3530,9 @@ fn cmdline_slot() -> String {
 /// How many places of a test image's boot menu hold the command line: an
 /// installed system's GRUB configuration once, for every entry of its
 /// slot's menu (`dukovo_cmdline`, ADR 0451), or the live menu's Install
-/// Dukovo, Install Dukovo with speech, Try Dukovo and Install Dukovo
-/// (serial console) (dukovo-boot(7)).
-const CMDLINE_ENTRIES: usize = 4;
+/// Dukovo, Install Dukovo with speech, Repair startup (ADR 0503), Try
+/// Dukovo and Install Dukovo (serial console) (dukovo-boot(7)).
+const CMDLINE_ENTRIES: usize = 5;
 
 /// A copy of a test image with `cmdline` in its command-line slots, one
 /// in each menu entry that holds it.
@@ -3546,7 +3546,7 @@ pub fn with_cmdline(image: &[u8], cmdline: &str) -> Result<Vec<u8>, String> {
         .collect();
     if found.is_empty() || found.len() > CMDLINE_ENTRIES {
         return Err(format!(
-            "the test image holds the command-line slot {} times, not one to four",
+            "the test image holds the command-line slot {} times, not one to five",
             found.len()
         ));
     }
@@ -11108,17 +11108,17 @@ mod tests {
         let filled = String::from_utf8(with_cmdline(&twice, "kdb").unwrap()).unwrap();
         assert_eq!(filled.matches("kdb ").count(), 2);
         assert!(filled.contains("radix startup-trouble kdb "));
-        // The live menu's four entries that start Dukovo are filled too.
-        let four_times = format!("{slot}{slot}{slot}{slot}").into_bytes();
+        // The live menu's five entries that start Dukovo are filled too.
+        let five_times = format!("{slot}{slot}{slot}{slot}{slot}").into_bytes();
         assert_eq!(
-            String::from_utf8(with_cmdline(&four_times, "x").unwrap())
+            String::from_utf8(with_cmdline(&five_times, "x").unwrap())
                 .unwrap()
                 .matches("x ")
                 .count(),
-            4
+            5
         );
-        let five_times = format!("{slot}{slot}{slot}{slot}{slot}").into_bytes();
-        assert!(with_cmdline(&five_times, "x").is_err());
+        let six_times = format!("{slot}{slot}{slot}{slot}{slot}{slot}").into_bytes();
+        assert!(with_cmdline(&six_times, "x").is_err());
         // Padded by bytes, so a line with wider characters fills it too.
         let wide = String::from_utf8(with_cmdline(&image, "hostname=Dukovó").unwrap()).unwrap();
         assert_eq!(wide.len(), image.len());
