@@ -25,12 +25,14 @@ so that an update changes the menu with the rest of the system.
 
 ## Decision
 
-1. **The theme comes with the slot.** `ob image` writes the stick's
-   theme, made for an installed system, into each slot's `startup/theme`,
-   beside the slot's menu: the same layout, colours, Spleen fonts and
-   box pictures, with "start menu" under the name in place of
+1. **The theme comes with the slot.** The boot archive carries the
+   stick's theme, made for an installed system, in each slot's
+   `boot/grub/theme`, beside GRUB's images and the installed menu that
+   dukovo-install(8) puts on disks: the same layout, colours, Spleen
+   fonts and box pictures, with "start menu" under the name in place of
    "installer on USB". It is part of the release, signed and updated
-   with it.
+   with it. The slot's `startup` folder holds only the files Rescue
+   copies to the EFI system partition, so the theme is not there.
 2. **The box fits the most entries the menu has.** Dukovo, the version
    without its update during a try, the previous version, Windows,
    startup trouble, Troubleshooting, Rescue and the firmware's settings:

@@ -6,7 +6,7 @@
 //! shows, as the menu's timeout on the EFI system partition is made 60
 //! seconds, and gets a health check that never ends. The next start is
 //! cut short by a power cut, so the start after it shows the menu (ADR
-//! 0501). The screen draws it with the theme beside the slot's menu: the
+//! 0501). The screen draws it with the slot's theme, beside its GRUB: the
 //! slate background, the box's blue-grey line and the chosen entry on
 //! tan. The serial port gets GRUB's plain menu, with Troubleshooting on
 //! it, and Enter starts Dukovo.

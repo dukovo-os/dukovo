@@ -608,6 +608,16 @@ pub fn build(ctx: &Ctx, profile: Profile) -> Result<Programs> {
         format!("{}/rescue.cfg", crate::grub::SYSTEM_DIR),
         ctx.root.join(crate::image::RESCUE_CFG),
     ));
+    // The theme that menu draws itself with, from the slot (ADR 0505).
+    let theme = ctx.out.join("release-theme");
+    for name in crate::grub_theme::write(
+        &theme,
+        crate::VERSION,
+        crate::grub_theme::INSTALLED_ENTRIES,
+        crate::grub_theme::Place::Installed,
+    )? {
+        files.push((format!("system/{}/{name}", crate::image::SLOT_THEME), theme.join(name)));
+    }
     let epoch = crate::image::source_date_epoch(ctx);
     let archive = write_archive(&files, epoch.clone())?;
     std::fs::write(&bootfs, &archive).context(|| format!("writing {}", bootfs.display()))?;

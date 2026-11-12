@@ -8,8 +8,9 @@
 //! menu looks like the stick's.
 //!
 //! `ob image` writes it into `boot/grub/theme` of the stick and the ISO,
-//! and into each slot's `startup/theme`, beside the slot's menu, for an
-//! installed system's start menu ([`Place`]):
+//! and the boot archive carries it in each slot's `boot/grub/theme`, beside
+//! GRUB's images and the installed menu, for an installed system's start
+//! menu ([`Place`]):
 //!
 //! - `theme.txt`, the layout: the name spaced out, the release under it,
 //!   the entries in a box with the chosen one on tan, the keys' hints,

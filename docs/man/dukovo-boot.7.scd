@@ -130,8 +130,8 @@ get all of it either way. The startup trouble entry is not quiet.
 
 When the menu shows, or may in its hidden second, it is drawn in
 Dukovo's colours and the console's font, as the stick's is, with the
-theme beside the default slot's menu, _startup/theme_, which comes with
-each release (ADR 0505). The serial port gets GRUB's plain menu, as does
+default slot's theme, _boot/grub/theme_, which comes with each release
+(ADR 0505). The serial port gets GRUB's plain menu, as does
 a screen GRUB cannot draw on.
 
 ## Sequence

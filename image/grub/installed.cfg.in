@@ -174,14 +174,14 @@ fi
 # The default slot's menu, or, if the default cannot be read, the other
 # slot's, which then starts as the default.
 if [ -f "($system)/@system.${slot_default}/startup/menu.cfg" ]; then
-    set dukovo_theme="($system)/@system.${slot_default}/startup/theme"
+    set dukovo_theme="($system)/@system.${slot_default}/boot/grub/theme"
     source "($system)/@system.${slot_default}/startup/menu.cfg"
 elif [ -f "($system)/@system.${slot_other}/startup/menu.cfg" ]; then
     set slot_default="${slot_other}"
     set slot_previous=""
     set slot_try=""
     set slot_tries=0
-    set dukovo_theme="($system)/@system.${slot_default}/startup/theme"
+    set dukovo_theme="($system)/@system.${slot_default}/boot/grub/theme"
     source "($system)/@system.${slot_default}/startup/menu.cfg"
 else
     set timeout_style=menu
@@ -205,8 +205,8 @@ if [ "${grub_platform}" = "efi" ]; then
 fi
 
 # The menu drawn in Dukovo's colours and the console's font, as the
-# install stick's is (ADRs 0402 and 0505), with the theme beside the
-# default slot's menu, so that an update brings its own. It is read only
+# install stick's is (ADRs 0402 and 0505), with the default slot's theme,
+# beside its GRUB, so that an update brings its own. It is read only
 # when the menu can show: a start with no hidden second, as the boot
 # tests' are, reads nothing more. The serial port keeps GRUB's plain
 # menu, and a screen GRUB cannot draw on, or a slot from before the

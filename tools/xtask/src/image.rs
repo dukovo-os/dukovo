@@ -466,6 +466,13 @@ pub const MENU_CFG: &str = "image/grub/menu.cfg";
 /// the boot archive beside [`INSTALLER_MENU`] for dukovo-install(8).
 pub const RESCUE_CFG: &str = "image/grub/rescue.cfg";
 
+/// Where a slot keeps its start menu's theme (ADR 0505), beside GRUB's
+/// images and the installed menu dukovo-install(8) puts on disks: the
+/// boot archive's `system/boot/grub/theme`, which the installed menu
+/// loads from the default slot when the menu can show. Not in
+/// [`SLOT_STARTUP`], which holds only files, as Rescue copies it.
+pub const SLOT_THEME: &str = "boot/grub/theme";
+
 /// The installed menu's placeholder for the serial console's flag, which
 /// the installer fills with ` console=ttyS0` on a system it installs over
 /// the first serial port, and with nothing otherwise (ADR 0318).
@@ -1048,10 +1055,6 @@ pub const SLOT_ARCHIVE: &str = "archive";
 /// slot state and hands over to the default slot's (ADR 0451).
 pub const SLOT_MENU: &str = "menu.cfg";
 
-/// The folder in [`SLOT_STARTUP`] of the slot's menu's theme (ADR 0505),
-/// which the installed menu draws the menu with when it can show.
-pub const SLOT_THEME: &str = "theme";
-
 /// The name in [`SLOT_STARTUP`] of what the slot says of itself, its
 /// version and the kernel flags it always starts with
 /// ([`slots::about`]).
@@ -1269,11 +1272,10 @@ fn set_mode(path: &Path, mode: u32) -> Result<()> {
 
 /// Puts the kernel at `kernel`, without its debug information, and the
 /// startup archive at `archive` into the slot's folder `dir`, with the
-/// slot's boot menu, [`SLOT_MENU`], its theme, [`SLOT_THEME`], and what
-/// the slot says of itself, [`SLOT_ABOUT`]: this version, with no flags of
-/// its own. Each has mode 0644 and is dated `time` (seconds since 1970),
-/// as the boot archive's files are, so the same build makes the same
-/// slot.
+/// slot's boot menu, [`SLOT_MENU`], and what the slot says of itself,
+/// [`SLOT_ABOUT`]: this version, with no flags of its own. Each has mode
+/// 0644 and is dated `time` (seconds since 1970), as the boot archive's
+/// files are, so the same build makes the same slot.
 fn add_startup(ctx: &Ctx, kernel: &Path, archive: &Path, dir: &Path, time: u64) -> Result<()> {
     use std::os::unix::fs::PermissionsExt as _;
     process::create_dir(dir)?;
@@ -1288,21 +1290,11 @@ fn add_startup(ctx: &Ctx, kernel: &Path, archive: &Path, dir: &Path, time: u64) 
     let about = slots::about::About { version: VERSION.into(), flags: String::new() };
     std::fs::write(&to_about, about.encode())
         .context(|| format!("writing {}", to_about.display()))?;
-    let to_theme = dir.join(SLOT_THEME);
-    let theme = crate::grub_theme::write(
-        &to_theme,
-        VERSION,
-        crate::grub_theme::INSTALLED_ENTRIES,
-        crate::grub_theme::Place::Installed,
-    )?;
-    std::fs::set_permissions(&to_theme, std::fs::Permissions::from_mode(0o755))
-        .context(|| format!("setting the mode of {}", to_theme.display()))?;
-    let theme = theme.iter().map(|name| to_theme.join(name));
     let date = std::time::UNIX_EPOCH + std::time::Duration::from_secs(time);
-    for path in [to_kernel, to_archive, to_menu, to_about].into_iter().chain(theme) {
+    for path in [&to_kernel, &to_archive, &to_menu, &to_about] {
         std::fs::File::options()
             .write(true)
-            .open(&path)
+            .open(path)
             .and_then(|file| {
                 file.set_permissions(std::fs::Permissions::from_mode(0o644))?;
                 file.set_modified(date)
@@ -1619,8 +1611,9 @@ mod tests {
         // The theme of the slot whose menu is read (ADR 0505), from where
         // the slot keeps it, loaded after every entry is made, and only
         // when the menu can show, with the serial port's menu kept.
+        assert_eq!(format!("system/{SLOT_THEME}"), format!("{}/theme", crate::grub::SYSTEM_DIR));
         let theme = format!(
-            "    set dukovo_theme=\"($system)/@system.${{slot_default}}/{SLOT_STARTUP}/{SLOT_THEME}\"\n\
+            "    set dukovo_theme=\"($system)/@system.${{slot_default}}/{SLOT_THEME}\"\n\
              \x20   source \"($system)/@system.${{slot_default}}/{SLOT_STARTUP}/{SLOT_MENU}\"\n"
         );
         assert_eq!(cfg.matches(&theme).count(), 2, "{cfg}");
