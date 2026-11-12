@@ -696,7 +696,12 @@ pub fn build(ctx: &Ctx, spec: &ImageSpec<'_>) -> Result<()> {
     // entries (ADR 0402).
     if let Menu::Live(_) = spec.menu {
         let entries = grub_cfg.lines().filter(|l| l.trim_start().starts_with("menuentry ")).count();
-        crate::grub_theme::write(&spec.staging.join(THEME_DIR), VERSION, entries)?;
+        crate::grub_theme::write(
+            &spec.staging.join(THEME_DIR),
+            VERSION,
+            entries,
+            crate::grub_theme::Place::Stick,
+        )?;
     }
     std::fs::write(&cfg_path, grub_cfg).context(|| format!("writing {}", cfg_path.display()))?;
     // An installed system's slot state, beside its menu, in both copies:
@@ -1043,6 +1048,10 @@ pub const SLOT_ARCHIVE: &str = "archive";
 /// slot state and hands over to the default slot's (ADR 0451).
 pub const SLOT_MENU: &str = "menu.cfg";
 
+/// The folder in [`SLOT_STARTUP`] of the slot's menu's theme (ADR 0505),
+/// which the installed menu draws the menu with when it can show.
+pub const SLOT_THEME: &str = "theme";
+
 /// The name in [`SLOT_STARTUP`] of what the slot says of itself, its
 /// version and the kernel flags it always starts with
 /// ([`slots::about`]).
@@ -1260,10 +1269,11 @@ fn set_mode(path: &Path, mode: u32) -> Result<()> {
 
 /// Puts the kernel at `kernel`, without its debug information, and the
 /// startup archive at `archive` into the slot's folder `dir`, with the
-/// slot's boot menu, [`SLOT_MENU`], and what the slot says of itself,
-/// [`SLOT_ABOUT`]: this version, with no flags of its own. Each has mode
-/// 0644 and is dated `time` (seconds since 1970), as the boot archive's
-/// files are, so the same build makes the same slot.
+/// slot's boot menu, [`SLOT_MENU`], its theme, [`SLOT_THEME`], and what
+/// the slot says of itself, [`SLOT_ABOUT`]: this version, with no flags of
+/// its own. Each has mode 0644 and is dated `time` (seconds since 1970),
+/// as the boot archive's files are, so the same build makes the same
+/// slot.
 fn add_startup(ctx: &Ctx, kernel: &Path, archive: &Path, dir: &Path, time: u64) -> Result<()> {
     use std::os::unix::fs::PermissionsExt as _;
     process::create_dir(dir)?;
@@ -1278,11 +1288,21 @@ fn add_startup(ctx: &Ctx, kernel: &Path, archive: &Path, dir: &Path, time: u64) 
     let about = slots::about::About { version: VERSION.into(), flags: String::new() };
     std::fs::write(&to_about, about.encode())
         .context(|| format!("writing {}", to_about.display()))?;
+    let to_theme = dir.join(SLOT_THEME);
+    let theme = crate::grub_theme::write(
+        &to_theme,
+        VERSION,
+        crate::grub_theme::INSTALLED_ENTRIES,
+        crate::grub_theme::Place::Installed,
+    )?;
+    std::fs::set_permissions(&to_theme, std::fs::Permissions::from_mode(0o755))
+        .context(|| format!("setting the mode of {}", to_theme.display()))?;
+    let theme = theme.iter().map(|name| to_theme.join(name));
     let date = std::time::UNIX_EPOCH + std::time::Duration::from_secs(time);
-    for path in [&to_kernel, &to_archive, &to_menu, &to_about] {
+    for path in [to_kernel, to_archive, to_menu, to_about].into_iter().chain(theme) {
         std::fs::File::options()
             .write(true)
-            .open(path)
+            .open(&path)
             .and_then(|file| {
                 file.set_permissions(std::fs::Permissions::from_mode(0o644))?;
                 file.set_modified(date)
@@ -1595,7 +1615,28 @@ mod tests {
         // The partition's own entries last, the firmware's settings at the
         // end.
         assert!(cfg.find("source \"${prefix}/rescue.cfg\"").unwrap() > other);
-        assert!(cfg.trim_end().ends_with("fwsetup\n        }\n    fi\nfi"), "{cfg}");
+        let firmware = cfg.find("fwsetup\n        }\n    fi\nfi\n").unwrap();
+        // The theme of the slot whose menu is read (ADR 0505), from where
+        // the slot keeps it, loaded after every entry is made, and only
+        // when the menu can show, with the serial port's menu kept.
+        let theme = format!(
+            "    set dukovo_theme=\"($system)/@system.${{slot_default}}/{SLOT_STARTUP}/{SLOT_THEME}\"\n\
+             \x20   source \"($system)/@system.${{slot_default}}/{SLOT_STARTUP}/{SLOT_MENU}\"\n"
+        );
+        assert_eq!(cfg.matches(&theme).count(), 2, "{cfg}");
+        let shows =
+            cfg.find("if [ \"${timeout}\" != 0 -o \"${timeout_style}\" = menu ]; then\n").unwrap();
+        assert!(firmware < shows, "{cfg}");
+        let loads = &cfg[shows..];
+        assert!(loads.contains("    if loadfont \"${dukovo_theme}/spleen-24.pf2\"; then\n"));
+        assert!(loads.contains(
+            "        if terminal_output gfxterm; then\n            if [ \"${dukovo_serial}\" = 1 \
+             ]; then\n                terminal_output --append serial\n            fi\n            \
+             set theme=\"${dukovo_theme}/theme.txt\"\n"
+        ));
+        let serial = cfg.find("    terminal_output --append serial\n    set dukovo_serial=1\n");
+        assert!(serial.is_some_and(|serial| shift < serial && serial < read[0]), "{cfg}");
+        assert!(cfg.contains("    set gfxpayload=keep\n    set gfxmode=auto\n"), "{cfg}");
     }
 
     #[test]

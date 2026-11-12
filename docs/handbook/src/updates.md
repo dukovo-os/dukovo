@@ -225,7 +225,9 @@ the screen until you press a key.
 
 When the computer starts, the start menu stays hidden for a second;
 press Esc or F4 then, or hold Shift as the computer starts, to show it.
-It shows by itself after a start that did not finish. Its
+It shows by itself after a start that did not finish. It is drawn in
+Dukovo's colours, as the install stick's menu is; on a serial terminal
+it is GRUB's plain menu. Its
 **Troubleshooting** menu starts Dukovo once in another way, changing no
 setting:
 

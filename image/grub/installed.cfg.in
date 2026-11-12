@@ -48,16 +48,21 @@ fi
 if serial --unit=0 --speed=115200; then
     terminal_input --append serial
     terminal_output --append serial
+    set dukovo_serial=1
 fi
 
 # As on the USB stick: only the firmware's video drivers, GOP under UEFI
 # and VESA under BIOS, with the mode UEFI set kept for Radix's console.
+# The themed menu keeps that mode too; a BIOS's takes the first of these
+# its card has, each wide enough for the menu's box.
 if [ "${grub_platform}" = "efi" ]; then
     insmod efi_gop
     insmod efi_uga
     set gfxpayload=keep
+    set gfxmode=auto
 else
     insmod vbe
+    set gfxmode=1280x800,1024x768,800x600,auto
 fi
 
 # What the slot's menu starts the kernel with: the root, the serial
@@ -169,12 +174,14 @@ fi
 # The default slot's menu, or, if the default cannot be read, the other
 # slot's, which then starts as the default.
 if [ -f "($system)/@system.${slot_default}/startup/menu.cfg" ]; then
+    set dukovo_theme="($system)/@system.${slot_default}/startup/theme"
     source "($system)/@system.${slot_default}/startup/menu.cfg"
 elif [ -f "($system)/@system.${slot_other}/startup/menu.cfg" ]; then
     set slot_default="${slot_other}"
     set slot_previous=""
     set slot_try=""
     set slot_tries=0
+    set dukovo_theme="($system)/@system.${slot_default}/startup/theme"
     source "($system)/@system.${slot_default}/startup/menu.cfg"
 else
     set timeout_style=menu
@@ -194,5 +201,24 @@ if [ "${grub_platform}" = "efi" ]; then
         menuentry "UEFI firmware settings" --id uefi-settings {
             fwsetup
         }
+    fi
+fi
+
+# The menu drawn in Dukovo's colours and the console's font, as the
+# install stick's is (ADRs 0402 and 0505), with the theme beside the
+# default slot's menu, so that an update brings its own. It is read only
+# when the menu can show: a start with no hidden second, as the boot
+# tests' are, reads nothing more. The serial port keeps GRUB's plain
+# menu, and a screen GRUB cannot draw on, or a slot from before the
+# theme, shows the plain one.
+if [ "${timeout}" != 0 -o "${timeout_style}" = menu ]; then
+    if loadfont "${dukovo_theme}/spleen-24.pf2"; then
+        loadfont "${dukovo_theme}/spleen-32.pf2"
+        if terminal_output gfxterm; then
+            if [ "${dukovo_serial}" = 1 ]; then
+                terminal_output --append serial
+            fi
+            set theme="${dukovo_theme}/theme.txt"
+        fi
     fi
 fi

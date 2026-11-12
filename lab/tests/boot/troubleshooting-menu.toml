@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 The Dukovo contributors
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 
-about = "The start menu's Troubleshooting starts Dukovo with only the essentials (ADR 0501): after a start cut short, the menu shows, Troubleshooting opens its own menu, and its essentials entry starts the system's own services and no added ones, once; the next start is as usual"
+about = "The start menu's Troubleshooting starts Dukovo with only the essentials (ADR 0501): after a start cut short, the menu shows, drawn in Dukovo's colours on the screen (ADR 0505) and plain on the serial port, Troubleshooting opens its own menu, and its essentials entry starts the system's own services and no added ones, once; the next start is as usual. Check the screenshot start-menu by hand: the slate background, the name over the release, the entries in a blue-grey box with the chosen one on tan"
 time = "15m"
 fresh = true
 
@@ -20,13 +20,20 @@ serial = "spark: started slot a, @system.a"
 power = "cut"
 [[step]]
 power = "on"
-# The menu: Dukovo, its startup trouble entry, then Troubleshooting.
+# The menu: Dukovo, its startup trouble entry, then Troubleshooting. The
+# screen draws it with the slot's theme, in a font the console's cells do
+# not hold, so its text is read from the serial port, which gets GRUB's
+# plain menu; the screen is kept for a person to look at.
 [[step]]
-screen = "Troubleshooting"
+serial = "Troubleshooting"
+[[step]]
+screenshot = "start-menu"
 [[step]]
 keys = ["down", "down", "ret"]
 [[step]]
-screen = "Start only the essentials"
+serial = "Start only the essentials"
+[[step]]
+screenshot = "troubleshooting"
 [[step]]
 keys = ["down", "ret"]
 [[step]]

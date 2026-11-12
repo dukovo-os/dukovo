@@ -519,6 +519,7 @@ sshd userspace/posix/sshtest.c userspace/programs/accounts/ userspace/programs/s
 sshd userspace/programs/systools/src/dig.rs userspace/programs/systools/src/last.rs
 sshd userspace/programs/systools/src/netd.rs userspace/programs/systools/src/signals.rs
 stack-overflow kernel/arch/
+start-menu image/grub/installed.cfg.in image/grub/menu.cfg tools/xtask/src/grub_theme.rs
 startup-trouble userspace/programs/consoled/
 storage kernel/drivers/virtio/ kernel/fs/block/ kernel/fs/fat/ userspace/storage/
 storage-4k kernel/drivers/nvme/ kernel/drivers/virtio/ kernel/fs/block/ kernel/fs/fat/
