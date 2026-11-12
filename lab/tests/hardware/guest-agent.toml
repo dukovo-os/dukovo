@@ -4,6 +4,12 @@
 about = "The QEMU guest agent answers the host on its virtio port: Proxmox's summary shows the machine's addresses, and its Shutdown button powers the machine off cleanly (ADR 0329). Needs a virtual machine with QEMU's guest agent channel (Proxmox's QEMU Guest Agent option, or virt-manager's channel); the last check is made at the host"
 time = "3m"
 
+# Machines with a virtio console alone, the PCI function the guest agent
+# channel is a port of (legacy 1003 or modern 1043).
+[[step]]
+run = "sh -c 'lspci -n -d 1af4:1003; lspci -n -d 1af4:1043'"
+expect = "1af4:10"
+or_skip = "needs a virtual machine with QEMU's guest agent channel"
 [[step]]
 run = "service guest-agent status"
 expect = ["guest-agent - QEMU guest agent", "Active: active (running)"]

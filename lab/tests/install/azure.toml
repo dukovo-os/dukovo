@@ -4,6 +4,11 @@
 about = "On Azure, cloud-setup set the machine up from Azure's instance metadata service, its name and the admin account with its SSH key, and told Azure's wire server the machine is ready, at each boot; Azure's portal shows the machine running and its deployment succeeded (ADR 0423). Needs an Azure machine made from the cloud image's .vhd, of the Standard security type, without accelerated networking, with an admin account and an SSH key; the portal is checked by hand"
 time = "3m"
 
+# Azure's machines alone: their chassis carries Azure's asset tag.
+[[step]]
+run = "cat /kernel/class/dmi/id/chassis_asset_tag"
+expect = "7783-7084-3265-9085-8269-3286-77"
+or_skip = "needs an Azure machine"
 # Where the machine's data came from, and the report.
 [[step]]
 run = "log -s cloud-setup"

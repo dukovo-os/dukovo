@@ -4,9 +4,11 @@
 about = "cloud-setup reads a NoCloud folder of meta-data, user data and a network configuration, and with --dry-run says all a cloud machine's first boot would do, the root's growing included, changing nothing; the service is off on a computer that is not a cloud image (ADR 0328)"
 time = "3m"
 
-# A folder as a config disk holds it, written as the lab account.
+# A folder as a config disk holds it, written as root, who runs
+# cloud-setup: each account has its own /tmp (ADR 0255).
 [[step]]
 run = '''sh -c 'rm -rf /tmp/lab-cloud && mkdir /tmp/lab-cloud && cd /tmp/lab-cloud && printf "instance-id: lab-dry-run\nlocal-hostname: lab-cloud.example.org\npublic-keys:\n  - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAILabCloudDryRunKeyOnly lab-cloud\n" > meta-data && printf "#cloud-config\nusers:\n  - default\n  - name: labcloud\n    groups: users, sudo\n    sudo: ALL=(ALL) NOPASSWD:ALL\nwrite_files:\n  - path: /tmp/lab-cloud/written\n    content: never\nruncmd:\n  - touch /tmp/lab-cloud/ran\npackages: [nginx]\n" > user-data && printf "version: 2\nethernets:\n  eth0:\n    addresses: [192.0.2.10/24]\n    gateway4: 192.0.2.1\n" > network-config && ls' '''
+root = true
 expect = ["meta-data", "network-config", "user-data"]
 [[step]]
 run = "cloud-setup --dry-run --source /tmp/lab-cloud"
@@ -36,6 +38,7 @@ exit = 1
 expect_not = "uid="
 [[step]]
 run = "sh -c 'ls /tmp/lab-cloud; test -e /system/state/cloud-setup/instance || echo \"no instance\"-kept'"
+root = true
 expect = "no instance-kept"
 expect_not = ["written", "ran"]
 # A computer that is not a cloud image has the service, off.
@@ -45,3 +48,4 @@ exit = 3
 expect = ["cloud-setup - Cloud machine setup", "Active: inactive (disabled)"]
 [[step]]
 run = "rm -rf /tmp/lab-cloud"
+root = true

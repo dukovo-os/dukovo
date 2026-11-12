@@ -4,6 +4,11 @@
 about = "VMware's paravirtual disks and the guest's tools: the disks on the PVSCSI controller are sd disks, the toolbox runs and the host registers it, and the host is told the machine's address (ADR 0424). Needs a machine under ESXi, Workstation or Fusion with its disk on a VMware Paravirtual SCSI controller and a VMXNET3 card; at the host, check by hand that the machine's tools show as running (guest managed), that its IP address and uptime show, that Restart Guest restarts it cleanly, and that Shut Down Guest powers it off cleanly"
 time = "3m"
 
+# VMware's machines alone, which the firmware names as VMware's.
+[[step]]
+run = "cat /kernel/class/dmi/id/sys_vendor"
+expect = "VMware"
+or_skip = "needs a VMware machine"
 # The tools: the backdoor answers, the host hears and registers them.
 [[step]]
 run = "sh -c 'dmesg | grep \"VMware: \"'"
