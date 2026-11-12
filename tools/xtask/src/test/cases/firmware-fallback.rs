@@ -195,8 +195,11 @@ fn second_boot(vm: &mut Vm, _case: &Case) -> Result<(), String> {
 fn verdict(vm: &mut Vm, named: &str, expected: &str) -> Result<(), String> {
     vm.expect(&format!("sysupdate: {named} is an update being tried"))?;
     vm.expect(&format!("sysupdate: {named} "))?;
+    // The rest of the line, once it has all come.
+    let start = vm.cursor;
+    vm.expect("\n")?;
     let log = vm.log();
-    let line = log.get(vm.cursor..).and_then(|rest| rest.lines().next()).unwrap_or_default();
+    let line = log.get(start..vm.cursor).unwrap_or_default();
     if line.starts_with(expected) {
         Ok(())
     } else {
