@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 The Dukovo contributors
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 
-about = "A test firmware set whose CPU microcode is damaged is staged as a slot; the kernel uses none of it, its try fails the health check, and the machine falls back to the slot before it by itself, GRUB saying the firmware update failed (ADR 0468)"
+about = "A test firmware set whose CPU microcode is damaged is staged as a slot; the kernel uses none of it, its try fails the health check, and the machine falls back to the slot before it by itself, GRUB saying the firmware update failed (ADR 0468); changes names the set the failed start was the first to use (ADR 0500)"
 time = "15m"
 fresh = true
 
@@ -48,3 +48,9 @@ expect = ["Running:  slot A", "Next start: slot A", "Last update: no firmware se
 run = "cat /system/state/sysupdate/devices"
 root = true
 expect = "root"
+[[step]]
+run = "changes --failed"
+expect = ["slot B: failed: ", "(FW-101)", "firmware set: new, 2026.3.1", "first used"]
+[[step]]
+run = "changes --list"
+expect = ["slot A: good"]

@@ -181,6 +181,7 @@ firmware-fallback image/grub/installed.cfg.in image/grub/menu.cfg kernel/arch/x8
 firmware-fallback kernel/lib/microcode/ kernel/radix/src/fs/sysfs.rs userspace/programs/slots/
 firmware-fallback userspace/programs/system-release/ userspace/programs/systools/src/sysupdate.rs
 firmware-fallback userspace/programs/systools/src/sysupdate/
+firmware-fallback userspace/programs/systools/src/changes.rs
 floppy kernel/drivers/fdc/ kernel/radix/src/fs/disk/floppy.rs kernel/radix/src/fs/disk/handed.rs
 floppy kernel/radix/src/fs/disk/removable.rs kernel/fs/fat/ userspace/programs/systools/src/eject.rs
 floppy userspace/programs/systools/src/rdisk.rs userspace/programs/systools/src/volumed.rs

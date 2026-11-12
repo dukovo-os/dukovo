@@ -39,3 +39,6 @@ table and say what the area is, in two to five capitals.
 
 | Letters | Area | Since |
 | --- | --- | --- |
+| `BOOT` | Starting the computer: the health check of each start | 0.15.0 |
+| `FW` | Firmware sets and the firmware the kernel loads | 0.15.0 |
+| `UPD` | Updates of the system | 0.15.0 |

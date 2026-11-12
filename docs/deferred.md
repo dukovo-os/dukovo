@@ -141,6 +141,9 @@ machine with AMT, an AMD machine and a laptop; see
 | Firmware that drivers load for their cards, in firmware sets, with a per-device check that the driver loaded it (ADR 0468) | Sets hold CPU microcode only; no driver Dukovo has loads firmware yet | A port: the first driver that needs firmware (Wi-Fi, Phase 17) |
 | AMD CPU microcode in firmware sets (ADRs 0014, 0468) | The kernel's loader is Intel's; AMD's patches have their own format and loader | A need |
 | Disks other than the root's in the health check's device record (ADR 0468) | Data disks, USB disks and discs come and go with their owner, so a missing one says nothing of the update | A need |
+| How far each start got, written from its earliest stages, and a summary of the last starts on the EFI system partition for Rescue (ADR 0500) | Each start is recorded once the root is mounted and the health check runs | 15, troubleshooting part 2 |
+| The failure screen, Rescue's Why it failed and What changed, SSH and serial kept on after a failed start, the Troubleshooting start menu, the memory test and Repair startup on the install stick (ADR 0500) | changes(1) and the error IDs name a failure from a shell | 15, troubleshooting part 2 |
+| `changes --since` a date (ADR 0500) | `--between` and `--list` compare any two starts kept | A need |
 | The owner told of a fallback at sign-in and on the web console, with the offer to send a report (ADRs 0453, 0456) | The unified updater's notifications | 15d |
 | `rollback --settings-from-before`, shown before a rollback past the release before (ADR 0454) | The two-version rule covers one step | 15d |
 | sysupdate's own narrower capabilities in place of the administrator's access (ADR 0455) | Needs a view of the Btrfs root that leaves out `@users` | 15d |

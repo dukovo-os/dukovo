@@ -214,6 +214,15 @@ fn read_installed(line: &str) -> Result<Installed, String> {
     })
 }
 
+/// The bundles the text of [`INSTALLED`] lists.
+///
+/// # Errors
+///
+/// If a line cannot be read.
+pub fn installed(text: &str) -> Result<Vec<Installed>, String> {
+    lines(INSTALLED, text, read_installed)
+}
+
 /// The lines of [`INSTALLED`] or [`PREVIOUS`], sorted.
 fn installed_text(all: &[Installed]) -> String {
     let mut lines: Vec<String> = all

@@ -254,7 +254,7 @@ fn error_id_problems(ctx: &Ctx) -> Result<Vec<String>> {
             pages.insert(stem.to_string());
         } else {
             problems.push(format!(
-                "{}: an error page is named for its ID, such as UPD-103.md, of an area listed in \
+                "{}: an error page is named for its ID, such as UPD-101.md, of an area listed in \
                  {ERRORS}/README.md",
                 ctx.display(&path)
             ));

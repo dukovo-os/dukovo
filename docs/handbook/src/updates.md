@@ -152,9 +152,27 @@ for a look at what went wrong, and the log says why it failed:
 
 ```
 $ elevate log sysupdate
-sysupdate: slot B (Dukovo 0.15.1) failed its health check: logd has restarted 3 times
-sysupdate: the update gives up its tries; restarting into slot A (Dukovo 0.15.0)
+sysupdate: slot B (Dukovo 0.15.1) failed its health check: logd has restarted 3 times (BOOT-102)
+sysupdate: the update gives up its tries; restarting into slot A (Dukovo 0.15.0) (UPD-101)
 ```
+
+Each failure ends with an error ID, such as `BOOT-102`; the support
+center has a page for each, saying what it means and what to do.
+
+Every start of the computer is recorded: what it ran and how it ended.
+`changes` says what changed since the last good start, and `changes
+--failed` what the newest failed start changed, with when each new
+thing was installed and when a start first used it:
+
+```
+$ changes --failed
+Start 42 on 2026-11-11 21:04, Dukovo 0.15.1, slot B: failed: logd has restarted 3 times (BOOT-102)
+From the last good start, 41 on 2026-11-11 08:02, Dukovo 0.15.0, to start 42:
+  Dukovo: 0.15.0 to 0.15.1; installed 2026-11-11 20:58; first used 2026-11-11 21:04 (start 42)
+```
+
+A change installed days before it was first used points at the restart
+that brought it in. `changes --list` lists the starts kept.
 
 ## Going back later
 
