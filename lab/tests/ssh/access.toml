@@ -1,0 +1,48 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "sshd_config's AllowUsers, DenyUsers, AllowGroups and DenyGroups decide who signs in, read on a reload, and sshd logs which one kept a person out (ADR 0348)"
+time = "4m"
+
+[[step]]
+run = "sh -c 'rm -f ~/.ssh/lab-access ~/.ssh/lab-access.pub && ssh-keygen -t ed25519 -N \"\" -C lab-access -f ~/.ssh/lab-access -q && cat ~/.ssh/lab-access.pub >> ~/.ssh/authorized_keys && cat > ~/.ssh/lab-access.conf && cp /system/settings/ssh/sshd_config ~/lab-sshd_config && echo ready'"
+input = """Host loop
+  HostName 127.0.0.1
+  User lab
+  IdentityFile /users/lab/.ssh/lab-access
+  IdentitiesOnly yes
+  StrictHostKeyChecking no
+  UserKnownHostsFile /dev/null
+  BatchMode yes
+  LogLevel ERROR
+"""
+expect = "ready"
+# Each setting is tried and taken back in one step, as the lab signs in
+# as lab itself.
+[[step]]
+run = "sh -c 'printf \"AllowUsers someone-else\\n\" >> /system/settings/ssh/sshd_config && service sshd reload && sleep 2; ssh -F /users/lab/.ssh/lab-access.conf loop echo let-in; echo status=$?; cp /users/lab/lab-sshd_config /system/settings/ssh/sshd_config && service sshd reload && sleep 2'"
+root = true
+expect = ["Permission denied", "status=255"]
+expect_not = "let-in"
+[[step]]
+run = "sh -c 'printf \"DenyUsers l?b\\n\" >> /system/settings/ssh/sshd_config && service sshd reload && sleep 2; ssh -F /users/lab/.ssh/lab-access.conf loop echo let-in; echo status=$?; cp /users/lab/lab-sshd_config /system/settings/ssh/sshd_config && service sshd reload && sleep 2'"
+root = true
+expect = ["Permission denied", "status=255"]
+expect_not = "let-in"
+[[step]]
+run = "sh -c 'printf \"DenyGroups admins\\n\" >> /system/settings/ssh/sshd_config && service sshd reload && sleep 2; ssh -F /users/lab/.ssh/lab-access.conf loop echo let-in; echo status=$?; cp /users/lab/lab-sshd_config /system/settings/ssh/sshd_config && service sshd reload && sleep 2'"
+root = true
+expect = ["Permission denied", "status=255"]
+expect_not = "let-in"
+# The ones that name lab, or a group of lab's, let lab in.
+[[step]]
+run = "sh -c 'printf \"AllowUsers someone-else la*\\nAllowGroups admins\\n\" >> /system/settings/ssh/sshd_config && service sshd reload && sleep 2; ssh -F /users/lab/.ssh/lab-access.conf loop echo let-in; echo status=$?; cp /users/lab/lab-sshd_config /system/settings/ssh/sshd_config && service sshd reload && sleep 2'"
+root = true
+expect = ["let-in", "status=0"]
+[[step]]
+run = "sh -c 'log -s sshd | grep \"no one signed in from 127.0.0.1\" | tail -3'"
+root = true
+expect = ["AllowUsers does not name lab", "DenyUsers names lab", "DenyGroups names lab's group admins"]
+[[step]]
+run = "sh -c 'sed -i /lab-access/d ~/.ssh/authorized_keys; rm -f ~/.ssh/lab-access ~/.ssh/lab-access.pub ~/.ssh/lab-access.conf ~/lab-sshd_config; echo cleaned'"
+expect = "cleaned"

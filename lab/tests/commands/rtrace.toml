@@ -1,0 +1,38 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "rtrace shows the system calls a program makes, with their arguments and results: the file it opens and the bytes it reads, a count of each with -c, only the ones named with -e, a child's with -f, and the exit status; a process of someone else's is refused"
+time = "2m"
+
+[[step]]
+run = "sh -c 'echo lab-rtrace > ~/lab-rtrace.txt && echo made'"
+expect = "made"
+[[step]]
+run = "rtrace cat /users/lab/lab-rtrace.txt"
+expect = [
+    "exec(\"/system/commands/cat\")",
+    "directory.open(root, \"users/lab/lab-rtrace.txt\"",
+    "file.read(fd 3, ",
+    "\"lab-rtrace\\n\", 65536) = 11",
+    "+++ exited with 0 +++",
+]
+[[step]]
+run = "rtrace -c true"
+expect = ["% time", "calls", "errors", "total"]
+[[step]]
+run = "rtrace -e read cat /users/lab/lab-rtrace.txt"
+expect = ["file.read(fd 3", "+++ exited with 0 +++"]
+expect_not = ["directory.open", "file.write"]
+[[step]]
+run = "rtrace cat /no/such/file"
+exit = 1
+expect = ["No such file or directory", "+++ exited with 1 +++"]
+[[step]]
+run = "rtrace -f sh -c 'true; true'"
+expect = ["[pid ", "+++ exited with 0 +++"]
+[[step]]
+run = "rtrace -p 1"
+exit = 1
+expect = "rtrace: attach: 1: Operation not permitted"
+[[step]]
+run = "rm /users/lab/lab-rtrace.txt"

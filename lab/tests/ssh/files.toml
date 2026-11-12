@@ -1,0 +1,52 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "sftp and scp copy files over SSH as the person: sftp makes and removes folders, puts, lists, renames, gets and removes a file, and says the folder it is in; scp copies both ways, and with -O by OpenSSH's old protocol; each copy is the same as the file, and a file that is not there is said and fails (ADR 0347)"
+time = "3m"
+
+[[step]]
+run = "sh -c 'rm -f ~/.ssh/lab-files ~/.ssh/lab-files.pub && ssh-keygen -t ed25519 -N \"\" -C lab-files -f ~/.ssh/lab-files -q && cat ~/.ssh/lab-files.pub >> ~/.ssh/authorized_keys && cat > ~/.ssh/lab-files.conf && mkdir -p ~/lab-files && head -c 3000000 /devices/urandom > ~/lab-files/big && echo ready'"
+input = """Host loop
+  HostName 127.0.0.1
+  User lab
+  IdentityFile ~/.ssh/lab-files
+  StrictHostKeyChecking no
+  UserKnownHostsFile /dev/null
+  BatchMode yes
+  LogLevel ERROR
+"""
+expect = "ready"
+[[step]]
+run = "sh -c 'cd ~/lab-files && sftp -F ~/.ssh/lab-files.conf -b - loop && cmp big back && echo \"sftp\"\" copy the same\"'"
+input = """mkdir lab-sftp
+put big lab-sftp/big2
+ls -l lab-sftp
+rename lab-sftp/big2 lab-sftp/big3
+get lab-sftp/big3 back
+rm lab-sftp/big3
+rmdir lab-sftp
+pwd
+"""
+expect = [
+    "sftp> put big lab-sftp/big2",
+    "3000000",
+    "lab-sftp/big2",
+    "Remote working directory: /users/lab",
+    "sftp copy the same",
+]
+[[step]]
+run = "sh -c 'ls ~/lab-sftp; echo listed'"
+expect = ["No such file", "listed"]
+[[step]]
+run = "sh -c 'cd ~/lab-files && scp -F ~/.ssh/lab-files.conf big loop:lab-files/scp-there && scp -F ~/.ssh/lab-files.conf loop:lab-files/scp-there scp-back && cmp big scp-back && cmp big scp-there && echo \"scp\"\" copies the same\"'"
+expect = "scp copies the same"
+[[step]]
+run = "sh -c 'cd ~/lab-files && scp -O -F ~/.ssh/lab-files.conf big loop:lab-files/old-there && cmp big old-there && echo \"scp -O\"\" copy the same\"'"
+expect = "scp -O copy the same"
+[[step]]
+run = "scp -F /users/lab/.ssh/lab-files.conf loop:/no/such/file /users/lab/lab-files/"
+exit = 1
+expect = "/no/such/file: No such file or directory"
+[[step]]
+run = "sh -c 'rm -rf ~/lab-files; sed -i /lab-files/d ~/.ssh/authorized_keys; rm -f ~/.ssh/lab-files ~/.ssh/lab-files.pub ~/.ssh/lab-files.conf; echo cleaned'"
+expect = "cleaned"

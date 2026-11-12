@@ -1,0 +1,39 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "ls's formats as GNU's: one per line, commas with -m, kinds marked with -F, names quoted with -Q, the long list with sizes in bytes or with -h in K, M and G, numbers for the owner with -n, inode numbers with -i and blocks with -s"
+time = "2m"
+
+[[step]]
+run = "sh -c 'rm -rf /tmp/lab-ls-fmt && mkdir -p /tmp/lab-ls-fmt/sub && cd /tmp/lab-ls-fmt && printf abc > a && truncate -s 3M big && printf \"#!/bin/sh\\n\" > run.sh && chmod 755 run.sh && ln -s a link && echo made'"
+expect = "made"
+[[step]]
+run = "ls -1 /tmp/lab-ls-fmt"
+expect = "a\nbig\nlink\nrun.sh\nsub"
+[[step]]
+run = "ls -m /tmp/lab-ls-fmt"
+expect = "a, big, link, run.sh, sub"
+[[step]]
+run = "ls -F /tmp/lab-ls-fmt"
+expect = "a\nbig\nlink@\nrun.sh*\nsub/"
+[[step]]
+run = "ls -Q /tmp/lab-ls-fmt/a"
+expect = "\"/tmp/lab-ls-fmt/a\""
+[[step]]
+run = "ls -l /tmp/lab-ls-fmt"
+expect = ["total ", "-rw-r--r-- 1 lab lab       3 ", " a\n", "3145728", "lrwxrwxrwx 1 lab lab", "link -> a", "-rwxr-xr-x", "drwxr-xr-x"]
+[[step]]
+run = "ls -lh /tmp/lab-ls-fmt/big"
+expect = " 3.0M "
+[[step]]
+run = "ls -n /tmp/lab-ls-fmt/a"
+expect = "-rw-r--r-- 1 1000 1000 3 "
+[[step]]
+run = "sh -c 'ls -i /tmp/lab-ls-fmt/a; ls -di /tmp/lab-ls-fmt/a'"
+expect = " /tmp/lab-ls-fmt/a"
+# A file of holes takes no blocks.
+[[step]]
+run = "ls -s /tmp/lab-ls-fmt/big"
+expect = "0 /tmp/lab-ls-fmt/big"
+[[step]]
+run = "rm -r /tmp/lab-ls-fmt"

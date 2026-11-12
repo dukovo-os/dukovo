@@ -1,0 +1,38 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "ssh -t gives a session a terminal: tty names it, SSH_TTY and the client's TERM come through, a client with no TERM, as one cron runs, gets a dumb one, the exit status comes back, and last(1) records the sign-in from the client's address (ADR 0347)"
+time = "3m"
+
+[[step]]
+run = "sh -c 'rm -f ~/.ssh/lab-terminal ~/.ssh/lab-terminal.pub && ssh-keygen -t ed25519 -N \"\" -C lab-terminal -f ~/.ssh/lab-terminal -q && cat ~/.ssh/lab-terminal.pub >> ~/.ssh/authorized_keys && cat > ~/.ssh/lab-terminal.conf && echo ready'"
+input = """Host loop
+  HostName 127.0.0.1
+  User lab
+  IdentityFile ~/.ssh/lab-terminal
+  StrictHostKeyChecking no
+  UserKnownHostsFile /dev/null
+  BatchMode yes
+  LogLevel ERROR
+"""
+expect = "ready"
+[[step]]
+run = "sh -c 'TERM=xterm-256color ssh -F ~/.ssh/lab-terminal.conf -tt loop \"tty; echo term=\\$TERM tty=\\$SSH_TTY\" < /dev/null'"
+expect = ["/pts/", "term=xterm-256color tty=/dev/pts/"]
+[[step]]
+run = "sh -c 'env -u TERM ssh -F ~/.ssh/lab-terminal.conf -tt loop \"echo term=\\$TERM\" < /dev/null; echo status=$?'"
+expect = ["term=dumb", "status=0"]
+expect_not = "PTY allocation request failed"
+[[step]]
+run = "sh -c 'TERM=vt100 ssh -F ~/.ssh/lab-terminal.conf -tt loop \"exit 7\" < /dev/null; echo status=$?'"
+expect = "status=7"
+# Without -t, no terminal.
+[[step]]
+run = "sh -c 'ssh -F ~/.ssh/lab-terminal.conf loop \"tty; echo tty=\\${SSH_TTY-none}\"'"
+expect = ["not a tty", "tty=none"]
+[[step]]
+run = "last -n 3"
+expect = ["lab      pts/", "127.0.0.1"]
+[[step]]
+run = "sh -c 'sed -i /lab-terminal/d ~/.ssh/authorized_keys; rm -f ~/.ssh/lab-terminal ~/.ssh/lab-terminal.pub ~/.ssh/lab-terminal.conf; echo cleaned'"
+expect = "cleaned"

@@ -1,0 +1,36 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "ls sorts by name, by size with -S, by time with -t, by version with -v and by extension with -X, backwards with -r, and not at all with -U, as GNU's does"
+time = "2m"
+
+[[step]]
+run = "sh -c 'rm -rf /tmp/lab-ls-sort && mkdir /tmp/lab-ls-sort && cd /tmp/lab-ls-sort && printf abc > a && head -c 2048 /devices/zero > bb && head -c 100 /devices/zero > c.txt && touch file2 file10 y.md && touch -d 2020-01-01 bb && touch -d 2021-01-01 a && echo made'"
+expect = "made"
+[[step]]
+run = "ls /tmp/lab-ls-sort"
+expect = "a\nbb\nc.txt\nfile10\nfile2\ny.md"
+[[step]]
+run = "ls -S /tmp/lab-ls-sort"
+expect = "bb\nc.txt\na\nfile10\nfile2\ny.md"
+[[step]]
+run = "ls -r /tmp/lab-ls-sort"
+expect = "y.md\nfile2\nfile10\nc.txt\nbb\na"
+[[step]]
+run = "ls -v /tmp/lab-ls-sort"
+expect = "file2\nfile10"
+[[step]]
+run = "ls -X /tmp/lab-ls-sort"
+expect = "a\nbb\nfile10\nfile2\ny.md\nc.txt"
+# Newest first: the files made now, then a (2021), then bb (2020).
+[[step]]
+run = "sh -c 'ls -t /tmp/lab-ls-sort | tail -2'"
+expect = "a\nbb"
+[[step]]
+run = "sh -c 'ls -tr /tmp/lab-ls-sort | head -2'"
+expect = "bb\na"
+[[step]]
+run = "sh -c 'ls -U /tmp/lab-ls-sort | sort'"
+expect = "a\nbb\nc.txt\nfile10\nfile2\ny.md"
+[[step]]
+run = "rm -r /tmp/lab-ls-sort"

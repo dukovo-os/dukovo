@@ -1,0 +1,37 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "sshd -t checks sshd_config and sshd -T shows the settings in force; a keyword sshd does not take is refused with its line, and a reload with such a file keeps the settings sshd had; the settings sshd takes pass and show; a good file read again is logged (ADRs 0348, 0349)"
+time = "3m"
+
+[[step]]
+run = "sh -c 'sshd -t && echo checked && sshd -T'"
+root = true
+expect = ["checked", "PasswordAuthentication no", "PubkeyAuthentication yes", "AllowTcpForwarding yes", "GatewayPorts no"]
+[[step]]
+run = "ls -l /system/state/sshd"
+root = true
+expect = ["-rw------- 1 root root", "ssh_host_ed25519_key\n", "ssh_host_ed25519_key.pub"]
+# A keyword sshd does not take: refused, and a reload keeps what sshd had.
+[[step]]
+run = "sh -c 'cp /system/settings/ssh/sshd_config /users/lab/lab-sshd_config && printf \"LabNoSuchKeyword yes\\n\" >> /system/settings/ssh/sshd_config && sshd -t; echo status=$?'"
+root = true
+expect = ["sshd does not take LabNoSuchKeyword: sshd_config(5) lists the keywords it takes", "status=1"]
+[[step]]
+run = "sh -c 'service sshd reload; sleep 2; log -s sshd | tail -5'"
+root = true
+expect = "kept the settings it had, as /system/settings/ssh/sshd_config has a mistake"
+# sshd still answers, with the settings it had.
+[[step]]
+run = "sh -c 'ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o BatchMode=yes -o PubkeyAuthentication=no -o LogLevel=ERROR lab@127.0.0.1 true; echo status=$?'"
+expect = ["Permission denied", "status=255"]
+# The settings sshd takes.
+[[step]]
+run = "sh -c 'cp /users/lab/lab-sshd_config /system/settings/ssh/sshd_config && printf \"AllowUsers lab\\nPasswordAuthentication yes\\nAllowTcpForwarding local\\nGatewayPorts clientspecified\\n\" >> /system/settings/ssh/sshd_config && sshd -t && echo checked && sshd -T'"
+root = true
+expect = ["checked", "PasswordAuthentication yes", "AllowTcpForwarding local", "GatewayPorts clientspecified", "AllowUsers lab"]
+# Back as it was, read again.
+[[step]]
+run = "sh -c 'cp /users/lab/lab-sshd_config /system/settings/ssh/sshd_config && rm /users/lab/lab-sshd_config && sshd -t && service sshd reload && sleep 2 && log -s sshd | tail -3'"
+root = true
+expect = "read /system/settings/ssh/sshd_config again: keys sign in"

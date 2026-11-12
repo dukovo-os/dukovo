@@ -1,0 +1,34 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "keymap shows the consoles' keyboard layout and lists the others; an administrator sets one, which the settings keep; a layout it does not have is refused"
+time = "2m"
+
+[[step]]
+run = "keymap"
+expect = "us              English (US)"
+[[step]]
+run = "keymap --list"
+expect = [
+    "us-dvorak       English (Dvorak)",
+    "gb              English (UK)",
+    "de              German",
+    "fr              French",
+    "jp              Japanese",
+]
+[[step]]
+run = "keymap xx"
+exit = 1
+expect = "keymap: there is no layout called xx"
+[[step]]
+run = "keymap -z"
+exit = 1
+expect = "invalid option -- 'z'"
+[[step]]
+run = "sh -c 'keymap de && keymap && grep \"^layout\" /system/settings/keyboard'"
+root = true
+expect = ["de              German", "layout = de"]
+[[step]]
+run = "sh -c 'keymap us && keymap && grep \"^layout\" /system/settings/keyboard'"
+root = true
+expect = ["us              English (US)", "layout = us"]

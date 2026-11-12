@@ -1,0 +1,34 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "Intel AMT, which shares the machine's network card with Dukovo, keeps answering on the lab network while Dukovo runs, and while a transfer keeps the card busy: the network driver leaves the management engine its share of the card. Needs a machine with AMT"
+time = "5m"
+host_needs = ["curl", "nc"]
+
+# AMT's web server answers while Dukovo has the card.
+[[step]]
+host = "curl -s -o /dev/null -w 'amt answered %{http_code}\\n' --max-time 10 http://{amt}:16992/"
+expect = "amt answered "
+expect_not = "amt answered 000"
+# The lab PC sends the machine zeros for as long as it reads them, and the
+# machine reads them for 40 seconds, counting them.
+[[step]]
+host = "nc -l {port:bulk} < /dev/zero"
+background = true
+[[step]]
+run = "sh -c 'rm -f ~/amt-bulk; (timeout 40 nc {peer} {port:bulk} | wc -c > ~/amt-bulk &) ; echo started'"
+expect = "started"
+# AMT answers each of ten tries while the card is busy.
+[[step]]
+host = "sh -c 'sleep 5; for i in 1 2 3 4 5 6 7 8 9 10; do curl -s -o /dev/null -w \"%{http_code} \" --max-time 5 http://{amt}:16992/ || printf \"failed \"; sleep 2; done; echo tries-done'"
+expect = "tries-done"
+expect_not = ["000", "failed"]
+# The transfer was real: more than 100 MB came in while AMT answered.
+[[step]]
+run = "sh -c 'for i in $(seq 60); do [ -s ~/amt-bulk ] && break; sleep 1; done; n=$(cat ~/amt-bulk); rm -f ~/amt-bulk; echo \"read $n bytes\"; [ \"$n\" -gt 100000000 ] && echo \"busy\"\"-enough\"'"
+expect = "busy-enough"
+# And AMT still answers once the card is quiet again.
+[[step]]
+host = "curl -s -o /dev/null -w 'amt answered %{http_code}\\n' --max-time 10 http://{amt}:16992/"
+expect = "amt answered "
+expect_not = "amt answered 000"

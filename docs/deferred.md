@@ -384,6 +384,14 @@ finding or removed.
 | --- | --- |
 | virtio-net's link going up or down is not logged on the serial console | Lab harness, part 4 |
 | A redirected subshell sent to the background in Nukesh keeps an SSH session open | Lab harness, part 7 |
+| Keys typed through AMT's remote screen repeat about 24 times each on the Intel lab machine (key-up arriving about a second late, or the AMT keyboard's interrupt interval), so `updates/rescue-reinstall` cannot sign in | Lab, first real-machine runs |
+| No AMT OS agent: a graceful power-off asked through AMT is not seen, so `boot/power-button` fails on the Intel lab machine | Lab, first real-machine runs |
+| authd's errors (stderr) reach the console but not log(1); log lines longer than one write are split and the pieces lose their priority and tag | Lab, first real-machine runs |
+| `lsof -i` lists no sockets and `ss -p` is not supported | Lab, first real-machine runs |
+| timedatectl prints its name twice in errors; sudo's refusal names "Phase 13d"; timed says "Unknown error (6)" for a failed lookup and "()" when no NTS server answered | Lab, first real-machine runs |
+| No /etc/os-release for scripts that read it | Lab, first real-machine runs |
+| SSH: RSA and P-521 keys and authorized_keys options are not taken; sshd_config takes eight keywords (no `Port`, `ListenAddress`, `MaxAuthTries`); ssh is built without OpenSSL, so ssh-keygen makes ed25519 keys alone | Lab, first real-machine runs |
+| "[elevate] password for lab:" is printed into the output of commands run with sudo -S | Lab, first real-machine runs |
 
 ## Waiting on a decision
 

@@ -1,0 +1,34 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "timed sets a clock ten minutes wrong from a plain NTP server timed(5) names, the lab PC's, when no NTS server is named: it steps the clock, says the time is not authenticated, and timedatectl shows it synchronized; the settings go back as they were"
+time = "6m"
+host_needs = ["python3"]
+
+[[step]]
+host = "exec python3 {here}/sntp.py {port:ntp}"
+background = true
+ready = "sntp ready"
+[[step]]
+run = "sh -c 'cp /system/settings/timed /users/lab/lab-timed && printf \"servers =\\nfallback = {peer}:{port:ntp}\\n\" > /system/settings/timed && service timed stop && timedatectl set-time \"$(date -u -d \"-10 min\" \"+%Y-%m-%d %H:%M:%S\")\" && service timed start && echo restarted'"
+root = true
+expect = "restarted"
+[[step]]
+run = "sh -c 'for i in $(seq 1 60); do timedatectl timesync-status | grep -q \"Synchronized: yes\" && break; sleep 2; done; timedatectl timesync-status; timedatectl'"
+expect = [
+    "Synchronized: yes",
+    "from {peer}:{port:ntp} ({peer}:{port:ntp}) over plain NTP",
+    "stepped the clock +",
+    "System clock synchronized: yes",
+]
+[[step]]
+run = "sh -c 'log -s timed | grep \"over plain NTP, which is not authenticated\" | tail -1'"
+root = true
+expect = "taking the time from {peer}:{port:ntp}"
+[[step]]
+host = "sh {here}/clock-near.sh {machine} {machine-port:22}"
+expect = "the machine's clock is within 2 seconds of the lab PC's"
+[[step]]
+run = "sh -c 'cp /users/lab/lab-timed /system/settings/timed && rm /users/lab/lab-timed && service timed restart && echo put-back'"
+root = true
+expect = "put-back"
