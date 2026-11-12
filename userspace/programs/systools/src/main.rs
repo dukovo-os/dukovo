@@ -174,6 +174,7 @@ mod top;
 mod traceroute;
 mod tree;
 mod unlock;
+mod update;
 mod util;
 mod volumed;
 mod watch;
@@ -341,6 +342,8 @@ const TOOLS: &[(&str, Tool)] = &[
     ("tree", tree::main),
     ("umount", mount::umount),
     ("unlock", unlock::main),
+    ("update", update::update),
+    ("updated", update::updated),
     ("uptime", sessions::uptime),
     ("user", account::user),
     ("users", sessions::users),

@@ -26,8 +26,11 @@
 //!
 //! The stable channel's release is paused on its first day (ADR 0469):
 //! the machine, which is no canary and whose wave opens on day 7, is told
-//! so and waits; as a canary it takes it. Once the release keys have
-//! withdrawn it and the server has published that, the machine says so
+//! so and waits; as a canary it takes it. Once the bridge runs, update(8)
+//! holds the release back and lets it go, lists the bridge by the start
+//! that first ran it, and updated(8) says the release is ready (ADR
+//! 0502). Once the release keys have withdrawn it and the server has
+//! published that, the machine says so
 //! and stages nothing.
 
 use std::io::{BufRead as _, BufReader, Read as _, Write as _};
@@ -41,7 +44,7 @@ use super::update_stage::{power_off, restart, run, started};
 
 pub const CASE: Case = Case {
     name: "update-online",
-    about: "an update from the update server's stable channel (ADRs 0466, 0467): the machine walks from its root to the server's third, is told a bridge release comes first, refuses a changed file, a changed list and a replayed timestamp, goes on with a fetch cut short, fetches only the files it lacks, stages the bridge, starts it and proves it, and never takes an older release; it waits for its wave while the release is paused and takes it as a canary, and stages nothing once the release is withdrawn (ADR 0469)",
+    about: "an update from the update server's stable channel (ADRs 0466, 0467): the machine walks from its root to the server's third, is told a bridge release comes first, refuses a changed file, a changed list and a replayed timestamp, goes on with a fetch cut short, fetches only the files it lacks, stages the bridge, starts it and proves it, and never takes an older release; it waits for its wave while the release is paused and takes it as a canary, and stages nothing once the release is withdrawn (ADR 0469); update holds it back and lets it go, and updated says it is ready (ADR 0502)",
     firmware: Firmware::Uefi,
     media: Media::Disk,
     cmdline: "console-sign-in=off",
@@ -342,6 +345,21 @@ fn update_online(vm: &mut Vm, _case: &Case) -> Result<(), String> {
         &format!("sysupdate: the stable channel offers Dukovo {year}; this system runs Dukovo {bridge}"),
         &format!("Dukovo {year} needs {year_files} files this system lacks"),
     ])?;
+    // One command for every update (ADR 0502): a hold, which the check
+    // names, lifted; the history, by start; and updated's check.
+    run(vm, "update hold system && update", &[
+        &format!("update: system is held back at {year}"),
+        &format!("it is held back, as Dukovo {year} is"),
+        "Firmware:",
+        "Apps:",
+    ])?;
+    run(vm, "update unhold system && update history", &[
+        "update: system is no longer held back",
+        &format!("Dukovo {VERSION} to {bridge}; good"),
+    ])?;
+    run(vm, "updated --once", &[&format!(
+        "updated: Dukovo {year} is ready: `elevate update apply` stages it"
+    )])?;
     // The release keys withdraw it, and the server publishes that.
     server.serve(&dir.join("system"));
     run(vm, "sysupdate check", &[&format!(

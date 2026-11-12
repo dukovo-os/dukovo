@@ -86,6 +86,46 @@ struct SettingsFile {
     channel: Option<String>,
     server: Option<String>,
     canary: Option<bool>,
+    check: Option<Check>,
+    apps: Option<Apps>,
+    unattended: Option<bool>,
+    restart: Option<String>,
+    hold: Option<Hold>,
+}
+
+/// What updated(8) does when it finds an update (ADR 0502).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Check {
+    /// Tells whoever is signed in; the default.
+    #[default]
+    Notify,
+    /// Fetches the system update's files too, then tells.
+    Download,
+    /// Checks nothing.
+    Off,
+}
+
+/// What updated(8) does with app updates (ADR 0502).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Apps {
+    /// Tells whoever is signed in; the default.
+    #[default]
+    Notify,
+    /// Updates the apps installed for everyone, as `bundle update` does.
+    Auto,
+}
+
+/// Versions held back (ADR 0502): an offer of this version or an older
+/// one is not taken until the hold is lifted; a newer one is.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Hold {
+    /// The system version held back.
+    pub system: Option<String>,
+    /// The firmware set held back.
+    pub firmware: Option<String>,
 }
 
 /// Which channel this system follows, and from which server.
@@ -98,11 +138,32 @@ pub struct Settings {
     /// Whether this machine is one of the project's canaries, which take
     /// each release on its first day (ADR 0456).
     pub canary: bool,
+    /// What updated(8) does when it finds an update.
+    pub check: Check,
+    /// What updated(8) does with app updates.
+    pub apps: Apps,
+    /// Whether updated(8) stages each update itself, as a server left to
+    /// run on its own does, and goes back from a withdrawn release.
+    pub unattended: bool,
+    /// The time of day, `HH:MM`, an unattended machine restarts into an
+    /// update it staged; without one, it waits for a restart.
+    pub restart: Option<String>,
+    /// The versions held back.
+    pub hold: Hold,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { channel: DEFAULT_CHANNEL.into(), server: SERVER.into(), canary: false }
+        Settings {
+            channel: DEFAULT_CHANNEL.into(),
+            server: SERVER.into(),
+            canary: false,
+            check: Check::Notify,
+            apps: Apps::Notify,
+            unattended: false,
+            restart: None,
+            hold: Hold::default(),
+        }
     }
 }
 
@@ -128,7 +189,24 @@ impl Settings {
             server.push('/');
         }
         tuf::Url::parse(&server).map_err(|err| format!("server = \"{server}\": {err}"))?;
-        Ok(Settings { channel, server, canary: file.canary.unwrap_or(false) })
+        if let Some(restart) = &file.restart
+            && minutes_of_day(restart).is_none()
+        {
+            return Err(format!("restart = \"{restart}\" is not a time of day, HH:MM"));
+        }
+        if file.restart.is_some() && file.unattended != Some(true) {
+            return Err("restart is for an unattended machine: set unattended = true too".into());
+        }
+        Ok(Settings {
+            channel,
+            server,
+            canary: file.canary.unwrap_or(false),
+            check: file.check.unwrap_or_default(),
+            apps: file.apps.unwrap_or_default(),
+            unattended: file.unattended.unwrap_or(false),
+            restart: file.restart,
+            hold: file.hold.unwrap_or_default(),
+        })
     }
 
     /// This system's settings, or the defaults where there are none.
@@ -158,6 +236,30 @@ impl Settings {
         if self.canary {
             text.push_str("canary = true\n");
         }
+        match self.check {
+            Check::Notify => {}
+            Check::Download => text.push_str("check = \"download\"\n"),
+            Check::Off => text.push_str("check = \"off\"\n"),
+        }
+        if self.apps == Apps::Auto {
+            text.push_str("apps = \"auto\"\n");
+        }
+        if self.unattended {
+            text.push_str("unattended = true\n");
+        }
+        if let Some(restart) = &self.restart {
+            text.push_str(&format!("restart = \"{restart}\"\n"));
+        }
+        if self.hold != Hold::default() {
+            text.push_str("\n# Versions held back until `update unhold` (update(8)).\n[hold]\n");
+            for (item, version) in
+                [("system", &self.hold.system), ("firmware", &self.hold.firmware)]
+            {
+                if let Some(version) = version {
+                    text.push_str(&format!("{item} = \"{version}\"\n"));
+                }
+            }
+        }
         text
     }
 
@@ -176,6 +278,14 @@ impl Settings {
             .and_then(|()| std::fs::rename(&partial, path))
             .map_err(|err| util::failed(&SETTINGS, err))
     }
+}
+
+/// The minutes since midnight of a time of day, `HH:MM`.
+#[must_use]
+pub fn minutes_of_day(time: &str) -> Option<u32> {
+    let (hours, minutes) = time.split_once(':')?;
+    let (hours, minutes): (u32, u32) = (hours.parse().ok()?, minutes.parse().ok()?);
+    (hours < 24 && minutes < 60 && time.len() == 5).then_some(hours * 60 + minutes)
 }
 
 /// Refuses a channel there is not.
@@ -363,6 +473,14 @@ pub enum Plan {
         /// Why no further wave opens now, if one is held.
         held: Option<String>,
     },
+    /// The channel's release `offered` is newer, and held back at
+    /// `held` (ADR 0502).
+    Held {
+        /// The channel's release.
+        offered: String,
+        /// The version held back.
+        held: String,
+    },
     /// The channel's release `offered` was withdrawn.
     Withdrawn {
         /// The release.
@@ -401,6 +519,13 @@ pub fn plan(client: &mut Client, running: &str, version: Option<&str>) -> Result
     }
     if let Some(withdrawal) = client.withdrawal(&offered)? {
         return Ok(Plan::Withdrawn { offered, reason: withdrawal.reason });
+    }
+    // A version held back is not taken; a newer one is (ADR 0502).
+    if version.is_none()
+        && let Some(held) = client.settings.hold.system.clone()
+        && version_of(&offered)? <= version_of(&held)?
+    {
+        return Ok(Plan::Held { offered, held });
     }
     // The owner who names a version skips the waves: they asked for it.
     if version.is_none()
@@ -717,6 +842,22 @@ mod tests {
         assert!(Settings::parse("channel = \"lts\"").unwrap_err().contains("no lts channel"));
         assert!(Settings::parse("server = \"ftp://x/\"").unwrap_err().contains("not an https"));
         assert!(Settings::parse("server = \"http://a b/\"").is_err());
+        // What updated does, and what is held back (ADR 0502).
+        let unattended = Settings::parse(
+            "check = \"download\"\napps = \"auto\"\nunattended = true\nrestart = \"03:30\"\n\
+             [hold]\nsystem = \"0.15.2\"\n",
+        )
+        .unwrap();
+        assert_eq!(
+            (unattended.check, unattended.apps, unattended.unattended),
+            (Check::Download, Apps::Auto, true)
+        );
+        assert_eq!(unattended.hold.system.as_deref(), Some("0.15.2"));
+        assert_eq!(Settings::parse(&unattended.text()).unwrap(), unattended);
+        assert!(Settings::parse("unattended = true\nrestart = \"25:00\"").is_err());
+        assert!(Settings::parse("restart = \"03:00\"").unwrap_err().contains("unattended"));
+        assert!(Settings::parse("check = \"sometimes\"").is_err());
+        assert_eq!(minutes_of_day("03:30"), Some(210));
         assert!(Settings::parse("chanel = \"beta\"").is_err());
     }
 

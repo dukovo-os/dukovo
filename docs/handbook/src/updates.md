@@ -37,6 +37,45 @@ Last health check: passed, 2026-11-11 09:14: slot A (Dukovo 0.15.0)
 Slot state: on nvme0n1p1 (generation 1)
 ```
 
+## One command for every update
+
+`update` says what waits for the system, its firmware set and your apps,
+in one place, and `elevate update apply` takes it all: the system update
+is staged into the spare slot to start at the next restart you choose,
+and the apps are updated. Without a system update, `update apply` stages
+a new firmware set in its place.
+
+```
+$ update
+System:
+sysupdate: the stable channel offers Dukovo 0.15.2; this system runs Dukovo 0.15.0
+
+Firmware:
+update: this system runs firmware 2026.3.1, the newest offered
+
+Apps:
+0 to update, 4 up to date
+```
+
+`update undo system` goes back to the version before, and `update undo`
+with an app's ID goes back on that app alone. `update hold system`
+skips the version offered now; a newer one comes as usual, and `update
+unhold system` lifts the hold. Keep a hold short: a held version gets
+no security fixes. `update history` lists each update by the start that
+first ran it, and whether that start was good.
+
+Once a day, and ten minutes after each start, the *updated* service
+checks for you. By default it only tells you, at the console, that an
+update is ready: nothing is installed and the computer never restarts
+on its own. In `/system/settings/sysupdate/updates.toml` you choose
+otherwise: `check = "download"` fetches the system update ahead of
+time, `apps = "auto"` keeps the apps current by itself, and `check =
+"off"` stops the checks. A server nobody watches can take
+`unattended = true`, which stages each update by itself, and
+`restart = "04:00"`, which restarts into it at that time. The two slots
+make that safe: an update that fails its health check is gone at the
+next start. updates.toml(5) and update(8) have the details.
+
 ## Checking for updates
 
 Updates come from Dukovo's update server, through a channel: **stable**,

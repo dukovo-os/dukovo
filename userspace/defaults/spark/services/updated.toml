@@ -1,0 +1,29 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+#
+# The updater (updated(8), ADR 0502): ten minutes after each start, then
+# once a day, it checks the update server for a newer system, firmware
+# set and apps, and does what updates.toml(5) says: by default it tells
+# whoever is signed in. It never restarts the machine, unless the owner
+# made it unattended and gave it a restart time.
+#
+# service.toml(5) explains each setting. `service check updated` checks
+# this file, and `service edit updated` checks it as you save.
+
+service_version = 1
+description = "Updates: check and tell"
+program = "/system/commands/updated"
+# After networking and the health check.
+order = 91
+restart = "always"
+
+[limits]
+memory = "64M"
+
+# What it holds beyond what every service reads (service.toml(5)): the
+# whole tree, to stage an update into the spare slot and update the apps
+# for everyone when the owner asks for that, as sysupdate(8) and
+# bundled(8) do, and the network, to reach the update server.
+[permissions]
+runs-with-your-access = true
+network.outbound = true

@@ -317,5 +317,5 @@ _@snapshots/update/settings-failed_.
 
 # SEE ALSO
 
-*changes*(1), *health.toml*(5), *updates.toml*(5), *spark*(8), *dukovo-boot*(7),
+*changes*(1), *update*(8), *updated*(8), *health.toml*(5), *updates.toml*(5), *spark*(8), *dukovo-boot*(7),
 *dukovo-rescue*(8), *system-release*(8), *service*(8)

@@ -145,7 +145,7 @@ enum Source {
 /// `repo`, or the newest there, or, with no folder, the set the update
 /// server's channel offers or `version`, staged in the spare slot as a
 /// snapshot of the running one that names it.
-fn stage(root: &Root, repo: Option<&Path>, version: Option<&str>) -> Result<(), Fail> {
+pub(crate) fn stage(root: &Root, repo: Option<&Path>, version: Option<&str>) -> Result<(), Fail> {
     let _lock = place::lock()?;
     let (copies, state) = place::state(root)?;
     let next = state.stage(root.running).map_err(|why| fail(why.to_string()))?;

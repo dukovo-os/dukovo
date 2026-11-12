@@ -173,7 +173,7 @@ uefi-usb 21
 update-fallback 90
 update-hang 150
 update-offline 160
-update-online 220
+update-online 240
 update-panic 120
 update-power-cut 90
 update-stage 110

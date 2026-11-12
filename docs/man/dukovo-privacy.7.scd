@@ -72,14 +72,18 @@ that is not listed is a bug.
 	the *netlog=* flag (*dukovo-boot*(7)) names one, to debug a
 	machine; by default it sends nothing (*netlog*(8)).
 
+*updated*
+	Ten minutes after each start, then once a day, a read of the
+	update channel the machine follows, at _updates.dukovo.org_ or the
+	server *updates.toml*(5) names, for a newer system and firmware set,
+	and of the app catalogs for app updates; the requests carry nothing
+	about the machine. *check = "off"* in *updates.toml*(5) turns it
+	off, as does *enabled = false* in its service file (*updated*(8)).
+
 Planned, each to be described here in full before it ships:
 
 *Discovery* (Phase 12)
 	The machine's name, announced on the local network only.
-
-*updated* (Phase 13)
-	A check for updates at _updates.dukovo.org_, which can be turned
-	off.
 
 # REPORTING A SECURITY PROBLEM
 

@@ -567,6 +567,7 @@ update-online kernel/net/ tools/xtask/src/release.rs userspace/programs/slots/
 update-online userspace/programs/system-release/ userspace/programs/systools/src/sysupdate.rs
 update-online userspace/programs/systools/src/sysupdate/ userspace/programs/tuf/
 update-online tools/update-server/
+update-online userspace/programs/systools/src/update.rs
 update-panic image/grub/installed.cfg.in image/grub/menu.cfg kernel/radix/src/panic.rs
 update-panic image/grub/rescue.cfg
 update-panic userspace/programs/slots/ userspace/programs/systools/src/sysupdate.rs

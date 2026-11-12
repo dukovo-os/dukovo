@@ -145,6 +145,10 @@ machine with AMT, an AMD machine and a laptop; see
 | Repair startup on the install stick: GRUB and the EFI system partition rewritten, with Secure Boot, SATA mode and boot order checked (ADR 0501) | Rescue on the EFI system partition, while that partition still starts | 15, troubleshooting part 3 |
 | Each start's furthest stage written as it is reached, by GRUB, the kernel and Spark, before the health check (ADR 0501) | The record begins when the health check runs; Rescue tells the starts that stopped before it from the boot menu's count | 15, troubleshooting part 3 |
 | Rescue, Repair startup and the memory test unlocking an encrypted root with its recovery key or passphrase (ADR 0501) | No root is encrypted yet | Disk encryption, after 1.0 |
+| Unattended updates limited to security fixes, and the security advisories each update fixes, shown by `update` (ADR 0502) | Unattended updates take every release, through the waves; the release notes name fixes | The channel listing advisories per release, 16b |
+| Respecting metered connections in updated (ADR 0502) | `check = "notify"`, the default, fetches nothing but the channel's small signed files | netd knowing which connections are metered, 16b |
+| Snoozing an update reminder, and pinning the system so that no newer version is taken (ADR 0502) | The reminder comes once a day; `check = "off"` stops it; `update hold` skips one version | 16c, with the web console's updater page |
+| The updater's page in the web console (ADR 0502) | `update` and `updated` on the command line | 16c, Dukovo Admin |
 | The failure notice by email, when the owner has set an address (ADR 0501) | The notice at every sign-in, on the screen and the serial port | 16b, with alerts |
 | The memory test on the start menu, memtest86+ built from source onto the EFI system partition (ADR 0501) | The firmware's own memory test, where the machine has one | 16b, with `hardware check` |
 | A QR code to the error's support page, and single-key choices, on the failure notice (ADR 0501) | The notice gives the support page's address and the commands to run | 16f, with `report --save` |

@@ -1,0 +1,76 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# The updater on real hardware (ADR 0502): against the test update
+# server `ob lab` builds (update-server.sh beside this file), `update`
+# says what waits for the system, firmware and apps, holds the system
+# back and lets it go, and updated(8) tells of the release; `update
+# apply` stages the bridge release, which proves itself at the restart;
+# `update history` then lists it by the start that first ran it, and
+# `update undo system` makes the version before the default again.
+about = "update says what waits for the system, firmware and apps, holds and unholds the system, updated tells of the release, update apply stages the bridge, history lists it after the restart, and update undo system goes back (ADR 0502)"
+time = "20m"
+fresh = true
+host_needs = ["python3"]
+
+[[step]]
+host = "sh {here}/update-server.sh serve {port:updates}"
+background = true
+ready = "serving updates"
+[[step]]
+run = '''sh -c 'printf "stable = 10\n" > /system/settings/sysupdate/health.toml && printf "server = \"http://{peer}:{port:updates}/system/\"\n" > /system/settings/sysupdate/updates.toml && echo "set: $((6 * 7))"' '''
+root = true
+expect = "set: 42"
+[[step]]
+run = "update"
+expect = ["System:", "the stable channel offers Dukovo ", "-test.year", "Firmware:", "Apps:", " up to date"]
+[[step]]
+run = "update hold system"
+root = true
+expect = ["update: system is held back at ", "-test.year", "no security fixes"]
+[[step]]
+run = "update check"
+expect = "it is held back, as Dukovo "
+[[step]]
+run = "update unhold system"
+root = true
+expect = "update: system is no longer held back"
+[[step]]
+run = "updated --once"
+root = true
+expect = ["updated: Dukovo ", "-test.year is ready: `elevate update apply` stages it", "updated: apps: "]
+[[step]]
+run = "update apply --yes"
+root = true
+expect = ["-test.bridge in slot B: it starts at the next restart", "update: Dukovo ", "-test.bridge is staged"]
+[[step]]
+run = "sh -c '(sleep 2; reboot) > /dev/null 2>&1 &'"
+root = true
+[[step]]
+serial = "asked to restart the machine"
+[[step]]
+serial = "spark: started slot b, @system.b"
+[[step]]
+serial = "proved itself: it is now the default"
+[[step]]
+wait = "ready"
+[[step]]
+run = "update history"
+expect = ["System and firmware, by the start that first ran each:", "-test.bridge; good", "Apps:"]
+[[step]]
+run = "update undo system"
+root = true
+expect = "starts from the next restart on"
+[[step]]
+run = "sh -c '(sleep 2; reboot) > /dev/null 2>&1 &'"
+root = true
+[[step]]
+serial = "asked to restart the machine"
+[[step]]
+serial = "spark: started slot a, @system.a"
+[[step]]
+wait = "ready"
+[[step]]
+run = "sysupdate status"
+root = true
+expect = ["Running:  slot A", "Next start: slot A"]

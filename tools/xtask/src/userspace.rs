@@ -265,6 +265,8 @@ pub const STD_LINKS: &[(&str, &str)] = &[
     ("system/commands/tree", "systools"),
     ("system/commands/umount", "systools"),
     ("system/commands/unlock", "systools"),
+    ("system/commands/update", "systools"),
+    ("system/commands/updated", "systools"),
     ("system/commands/uptime", "systools"),
     ("system/commands/user", "systools"),
     ("system/commands/users", "systools"),
