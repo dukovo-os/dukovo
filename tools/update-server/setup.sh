@@ -91,7 +91,7 @@ install -o root -g root -m 0755 "$here/publish.sh" "$here/refresh.sh" \
 	"$here/flaws-fetch.sh" "$here/flaws.sh" /usr/local/lib/dukovo-catalog/
 install -o root -g root -m 0644 "$here/site.sh" /usr/local/lib/dukovo-catalog/
 install -o root -g root -m 0755 "$here/system-release" "$here/system-publish.sh" \
-	"$here/system-refresh.sh" /usr/local/lib/dukovo-system/
+	"$here/system-refresh.sh" "$here/system-rollout.sh" /usr/local/lib/dukovo-system/
 install -o root -g root -m 0644 "$here/system-site.sh" /usr/local/lib/dukovo-system/
 
 # The online key: its secret half never leaves this folder, and its public

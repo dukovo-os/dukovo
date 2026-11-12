@@ -67,6 +67,15 @@ A machine that missed many updates may be told that a release comes
 first, a bridge; it takes the bridge, then the newer release at its next
 update. updates.toml(5) sets the channel and the server, for a mirror.
 
+A new release reaches machines in waves: the project's own canary
+machines take it on its first day, and the rest over the following
+week, a few at first and then everyone, each machine by a number it
+draws and keeps to itself. If something goes wrong, the project pauses
+the waves, and the machines not reached yet wait. Until your machine's
+wave opens, `sysupdate check` says on which day it does; `elevate
+sysupdate stage --version 0.15.2` takes the release at once. A release
+the project withdraws is never staged, and `sysupdate check` says why.
+
 For a machine with no network, an update file holds a whole release,
 `dukovo-0.15.2.update`. Copy it to a USB stick, then:
 
@@ -412,8 +421,8 @@ in `/snapshots/machine-restore` until `subvolume delete` removes it.
 
 ## What is on the way
 
-Releases offered in waves, so that a few machines take each one before
-the rest; firmware for the cards that need their own; one `update`
+A staged update that is withdrawn before its restart being unstaged by
+itself; firmware for the cards that need their own; one `update`
 command for the system, firmware and apps, which
 also keeps Rescue up to date; and repairing GRUB and the EFI system
 partition from an install stick. This chapter grows with each.

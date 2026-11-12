@@ -29,9 +29,13 @@ system-release - check, sign, offer, publish, pack, keep Rescue of and make keys
 
 *system-release firmware* *--repo* _dir_ *--keys* _dir_ *--version* _version_ *--microcode* _file_ *--license* _license_
 
-*system-release refresh* *--repo* _dir_ (*--keys* _dir_ | *--online-key* _secret_)
+*system-release pull* *--repo* _dir_ *--keys* _dir_ *--version* _version_ *--reason* _text_ *--advice* *rollback*|*stay*
 
-*system-release publish* *--repo* _dir_ *--online-key* _secret_ _incoming_
+*system-release refresh* *--repo* _dir_ (*--keys* _dir_ | *--online-key* _secret_ [*--plan* _file_])
+
+*system-release publish* *--repo* _dir_ *--online-key* _secret_ [*--plan* _file_] _incoming_
+
+*system-release rollout* *--repo* _dir_ *--online-key* _secret_ *--plan* _file_ *pause* _version_ _reason_ | *resume* _version_ | *canary* _name_ *red*|*green*
 
 *system-release pack* *--repo* _dir_ [*--root* _file_] *--version* _version_ *--out* _file_
 
@@ -131,6 +135,31 @@ the keys in *--keys* or the online key in *--online-key*. *pack* writes
 one release as an update file, and reads it back from *--root*, by
 default the repository's first root.
 
+*pull* withdraws a release the repository offers (ADR 0469): it signs
+_withdrawn/version.json_ among the targets, with the reason and the
+advice to machines running it, to go back or to stay. A machine never
+stages a withdrawn release. A withdrawal is never undone, and the
+version is never used again.
+
+With *--plan*, *refresh* and *publish* also sign the rollout of each
+release a channel offers (ADR 0469): the highest of its waves open, from
+the update server's plan in _file_, which they keep up to date. The
+waves open on days 0, 1, 3, 5 and 7 after a channel first offered the
+release: to the canaries, then to the machines numbered below 10, 100,
+500 and 1000. The targets delegate _rollout/\*_ alone to the key the
+newest root gives timestamp, which signs the rollouts; the role is good
+for a day, and is signed anew when what it lists changes or it has
+twelve hours left. *rollout* changes the plan and signs the rollouts at
+once: *pause* holds a release's waves where they are, with a reason
+machines show; *resume* lets them open on schedule again; and *canary*
+marks a canary *red*, which holds every release's waves, or *green*.
+
+```
+$ system-release rollout --repo /srv/dukovo-system/system.8Fw1 --online-key online.key --plan rollout.json pause 0.15.1 "disk errors on NVMe"
+system-release: Dukovo 0.15.1 is paused: disk errors on NVMe; /srv/dukovo-system/system.8Fw1 signed again, snapshot 5 and timestamp 12
+system-release: Dukovo 0.15.1: wave 1 open, paused: disk errors on NVMe
+```
+
 *publish* is what the update server runs when a deploy is ready (ADR
 0467). From the folder _incoming_ it takes the numbered roots and
 targets, and nothing else of the metadata; the release lists and
@@ -172,6 +201,14 @@ expiry, every release list and every channel, but none of the files.
 
 *--firmware* _version_|*none*
 	The firmware set *channel* names for the channel, or none.
+
+*--reason* _text_, *--advice* *rollback*|*stay*
+	Why *pull* withdraws the release, and whether machines running
+	it should go back to the version before it or stay on it until
+	the next release.
+
+*--plan* _file_
+	The update server's plan of the waves, which is never served.
 
 *--tree* _dir_
 	The slot to make a release of: what _/system_ will hold.

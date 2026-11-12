@@ -41,6 +41,14 @@ server = "https://mirror.example.org/dukovo/system/"
 	system trusts, so a mirror can withhold an update for a while but
 	cannot change one, or offer an older one as new.
 
+*canary*
+	*true* for a machine that takes each release on the day its
+	channel offers it, before the waves reach the rest (ADR 0469);
+	*false*, the default. The project's own canaries say *true*. Every
+	other machine takes a release when its wave opens, from day 1 to
+	day 7, by the number it keeps in
+	_/system/state/sysupdate/wave_.
+
 # EXAMPLES
 
 Follow the beta channel:

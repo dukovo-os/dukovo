@@ -18,7 +18,7 @@ set -eu
 
 rm -f "$incoming/ready" "$incoming/result"
 
-if output=$(sign_site publish "$incoming" 2>&1); then
+if output=$(sign_site publish --plan "$home/rollout.json" "$incoming" 2>&1); then
 	status=published
 	# The store holds them now, and the next deploy skips what it holds.
 	rm -rf "${incoming:?}/files"

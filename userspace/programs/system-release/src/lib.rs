@@ -27,5 +27,6 @@ pub mod firmware;
 pub mod list;
 pub mod repo;
 pub mod rescue;
+pub mod rollout;
 pub mod store;
 pub mod updates;

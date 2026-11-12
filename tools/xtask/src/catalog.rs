@@ -115,7 +115,7 @@ pub fn ssh(dest: &str, script: &str) -> Command {
 }
 
 /// Quotes `word` for the server's shell.
-fn quote(word: &str) -> String {
+pub fn quote(word: &str) -> String {
     format!("'{}'", word.replace('\'', r"'\''"))
 }
 
