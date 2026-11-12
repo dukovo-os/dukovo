@@ -65,6 +65,9 @@ use crate::sched;
 /// interrupt, and at most with one.
 const POLL_NS: u64 = 10_000_000;
 const IDLE_NS: u64 = 1_000_000_000;
+/// How many times in a row events may be found with no interrupt before
+/// the controller is looked at every [`POLL_NS`] instead.
+const MISSED_MAX: u32 = 3;
 /// How long a port reset may take: USB 2.0 asks 10 to 20 ms of a hub's
 /// port (7.1.7.5); Linux allows 500.
 pub(super) const RESET_US: u64 = 500_000;
@@ -281,9 +284,31 @@ pub fn run(index: usize) {
         }
     }
     super::looked();
-    let sleep = if start.interrupt.is_some() && !controller.dbc { IDLE_NS } else { POLL_NS };
+    let mut sleep = if start.interrupt.is_some() && !controller.dbc { IDLE_NS } else { POLL_NS };
+    // Events found after a sleep the interrupt did not end: its interrupt
+    // does not come (its MSI lost on the way, as behind an IOMMU's
+    // remapping it misses), and every key would wait for the next look.
+    let mut missed = 0;
+    let mut slept = false;
+    let _ = super::interrupted(index);
     loop {
-        let busy = controller.events()
+        let found = controller.events();
+        if slept && sleep == IDLE_NS {
+            if found && !super::interrupted(index) {
+                missed += 1;
+                if missed == MISSED_MAX {
+                    warn!(
+                        "USB: bus {}: its interrupt does not come; looking at it every 10 ms",
+                        controller.bus
+                    );
+                    sleep = POLL_NS;
+                }
+            } else if found {
+                missed = 0;
+            }
+        }
+        slept = false;
+        let busy = found
             | controller.work()
             | controller.lights()
             | controller.storage()
@@ -316,6 +341,7 @@ pub fn run(index: usize) {
         }
         if !busy {
             sched::block_until(sched::now_ns().saturating_add(sleep), "usb");
+            slept = true;
         }
     }
 }
