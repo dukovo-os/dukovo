@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 The Dukovo contributors
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 
-about = "ip shows a single link in full, the links in brief, and the IPv6 routes with their router"
+about = "ip shows a single link in full, the links in brief, and the IPv6 routes (network/router checks the router's)"
 time = "2m"
 
 [[step]]
@@ -11,8 +11,6 @@ expect = ["net0", "mtu 1500", "state UP", "link/ether"]
 [[step]]
 run = "ip -br link"
 expect = ["lo", "net0", "UP", "LOWER_UP"]
-# The IPv6 routes include the networks from router adverts and the
-# default route through the advertised router (proto ra).
 [[step]]
 run = "ip -6 route"
-expect = ["dev net0", "proto ra", "default via"]
+expect = "dev net0"

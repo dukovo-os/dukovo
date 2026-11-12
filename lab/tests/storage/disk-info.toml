@@ -19,7 +19,7 @@ expect = ["DISK", "HEALTH", "sda", "PASSED"]
 [[step]]
 run = "diskhealth -a sda"
 root = true
-expect = ["QEMU HARDDISK", "Health: PASSED", "Reallocated sectors"]
+expect = ["sda: ", ", serial ", "Health: PASSED", "Reallocated sectors"]
 # The QEMU lab machine has no NVMe drive, so the list is empty; its heading
 # shows nvme is there and lists the namespaces when a drive is.
 [[step]]
