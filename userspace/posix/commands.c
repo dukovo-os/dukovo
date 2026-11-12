@@ -99,6 +99,7 @@ static const char *const ELSEWHERE[][2] = {
 		{"system-release", "the live-uefi and live-bios boot tests': it checks the signed release that only the install stick carries"},
 		{"dukovo-install", "the install-uefi and install-bios boot tests': it installs Dukovo onto a blank disk from the install stick"},
 		{"sysupdate", "the update boot tests': it stages, proves and rolls back updates of a system installed on a disk, which this test's is not"},
+		{"changes", "the firmware-fallback boot test's: it shows what changed between the starts of a system installed on a disk, which this test's is not"},
 		{"update", "the update-online boot test's: it checks and applies the system's, the firmware's and the apps' updates of a system installed on a disk, which this test's is not"},
 		{"updated", "the update-online boot test's service, run there with --once: it checks the update server, which this test has none of"},
 		{"snap", "the snapshots boot test's: it keeps snapshots of a Btrfs root's subvolumes, which this test's system in memory has none of"},
