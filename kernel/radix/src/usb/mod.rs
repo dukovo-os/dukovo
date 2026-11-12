@@ -169,7 +169,26 @@ pub fn init(off: bool) {
     OFF.store(off, Ordering::Relaxed);
 }
 
-/// A controller's interrupt: wakes its thread.
+/// Whether each controller's interrupt has come since its thread last
+/// looked ([`interrupted`]).
+static INTERRUPTED: [AtomicBool; MAX_CONTROLLERS] =
+    [const { AtomicBool::new(false) }; MAX_CONTROLLERS];
+
+/// A controller's interrupt itself: noted, then its thread woken.
+fn on_irq(index: usize) {
+    if let Some(flag) = INTERRUPTED.get(index) {
+        flag.store(true, Ordering::Release);
+    }
+    on_interrupt(index);
+}
+
+/// Whether the interrupt of the controller with index `index` came since
+/// the last call; clears the note.
+pub(super) fn interrupted(index: usize) -> bool {
+    INTERRUPTED.get(index).is_some_and(|flag| flag.swap(false, Ordering::AcqRel))
+}
+
+/// Wakes a controller's thread.
 fn on_interrupt(index: usize) {
     if let Some(thread) = THREADS.get(index).and_then(Once::get) {
         sched::wake(thread);
@@ -326,7 +345,7 @@ fn interrupt(function: &Function, index: usize) -> Option<(u32, &'static str)> {
             let Some(Bar::Memory { address, .. }) = function.bar(bar) else { return None };
             let table = <Arch as Devices>::map_device(address + offset, msix.table_len())?;
             let (vector, message) =
-                <Arch as Devices>::allocate_interrupt(function.address(), on_interrupt, index)?;
+                <Arch as Devices>::allocate_interrupt(function.address(), on_irq, index)?;
             msix.enable_masked(function);
             msix.set_entry(&table, 0, message);
             msix.unmask_all(function);
@@ -335,7 +354,7 @@ fn interrupt(function: &Function, index: usize) -> Option<(u32, &'static str)> {
         .or_else(|| {
             let msi = Msi::find(function)?;
             let (vector, message) =
-                <Arch as Devices>::allocate_interrupt(function.address(), on_interrupt, index)?;
+                <Arch as Devices>::allocate_interrupt(function.address(), on_irq, index)?;
             msi.enable(function, message);
             Some((vector, "MSI"))
         })
