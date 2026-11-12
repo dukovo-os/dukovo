@@ -11,7 +11,9 @@
 //! before comes back by itself unless the new one passes its health
 //! check. GRUB tells the kernel which slot it started, and whether that
 //! is a fallback, on the command line ([`cmdline`]); each slot says what
-//! version it is in `startup/slot.env` ([`about`]); and a fallback puts
+//! version it is in `startup/slot.env` ([`about`]), and which firmware
+//! set it starts with in `startup/firmware.env` ([`firmware`]); and a
+//! fallback puts
 //! the settings from before the update back ([`restore`]). When no slot
 //! starts, three starts in a row that were not seen through start Rescue
 //! from the EFI system partition, which counts them ([`rescue`]). A
@@ -29,6 +31,7 @@ extern crate alloc;
 pub mod about;
 pub mod cmdline;
 pub mod envblock;
+pub mod firmware;
 pub mod machine;
 pub mod rescue;
 pub mod restore;

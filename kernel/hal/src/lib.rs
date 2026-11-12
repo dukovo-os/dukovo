@@ -695,6 +695,11 @@ pub trait Devices {
     /// Linux names its adapter; fails if there is none.
     fn smbus_name(out: &mut dyn core::fmt::Write) -> core::fmt::Result;
 
+    /// Writes what became of the CPU microcode the boot loader handed the
+    /// kernel, as `/kernel/firmware/microcode` shows it (ADR 0468); fails
+    /// if it handed none.
+    fn microcode_report(out: &mut dyn core::fmt::Write) -> core::fmt::Result;
+
     /// Reads I/O port `port` of the Chromium EC's host interface (Phase
     /// 11e, ADR 0207): its data and command ports (0x200 and 0x204), its
     /// packet (0x800 to 0x8ff) and its memory map (255 bytes from 0x900 or

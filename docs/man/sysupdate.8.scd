@@ -23,6 +23,8 @@ sysupdate - fetch, stage, try, prove and roll back updates of Dukovo's system
 
 *sysupdate rollback*
 
+*sysupdate firmware* [*stage* [*--version* _version_] [_repository_] | *remove*]
+
 *sysupdate health*
 
 # DESCRIPTION
@@ -160,6 +162,37 @@ back to 0.
 	when a repository holds several. It must be newer than the running
 	version.
 
+# FIRMWARE
+
+Closed firmware, such as CPU microcode, stays out of _/system_: it comes
+in the optional firmware package, as signed firmware sets that each
+slot names. A set's files are kept once each, by SHA-256, in the root's
+_@firmware_ subvolume, and GRUB loads the microcode of the set the
+starting slot names. A system update keeps the set the running slot
+names; only *sysupdate firmware stage* changes it.
+
+*sysupdate firmware*
+	Shows the set each slot names, with its files and their licenses,
+	and whether this machine has taken the firmware package.
+
+*sysupdate firmware stage* [*--version* _version_] [_repository_]
+	Stages the set _version_, or the newest, of the repository folder
+	_repository_; with no folder, the set the update server's channel
+	offers, or _version_ from the server. The set must be newer than the
+	running slot's. The spare slot becomes a snapshot of the running one
+	that names the set, staged as an update: its first start is a try,
+	and if it does not prove itself, the slot before it starts again,
+	with the set before it.
+
+*sysupdate firmware remove*
+	Stages a slot that names no set, the same way.
+
+During a firmware set's try, the health check also requires that the
+set's microcode reached the kernel and was neither damaged nor refused
+(_/kernel/firmware/microcode_, *radix-sysfs*(5)), and that every network
+card and root partition the last good start had is still there. At
+other starts, what is missing is only logged.
+
 # BOOT MENU
 
 The menu stays hidden unless the last start was not seen through, Shift
@@ -167,7 +200,8 @@ is held as the computer starts, or Windows is on the machine. Its first
 entry starts what the slot state says, and its title says which: the
 version, the version with *(update, first try)*, *(update, second try)*
 or *(update, last try)*, or the version before with *(the update to
-VERSION failed)*. While an update is being tried, an entry starts the
+VERSION failed)*; for a firmware set, *(firmware update, first try)* and
+*(the firmware update to VERSION failed)*. While an update is being tried, an entry starts the
 version it updates, *(without the update)*, and leaves the tries as they
 are. The previous version's entry starts it once, without making it the
 default. After the slots' entries, *Rescue (Dukovo* _version_*)* starts
@@ -207,6 +241,18 @@ _/system/state/sysupdate/files_
 
 _/system/state/sysupdate/health_
 	The health check's last result.
+
+_/system/state/sysupdate/devices_
+	The network cards and root partitions of the last start that
+	passed the health check, which a firmware set's or a version's try
+	must still have.
+
+_@firmware_ on the root's top level
+	The firmware sets' files, by SHA-256, in _files_, and each set's
+	signed list in _sets_. Sets no slot names are removed after a stage.
+
+_startup/firmware.env_ in each slot
+	The firmware set the slot names, and its microcode's SHA-256.
 
 _/system/live/sysupdate.lock_
 	Keeps a stage and the health check from writing the slot state at

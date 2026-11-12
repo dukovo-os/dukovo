@@ -1616,7 +1616,20 @@ mod tests {
             "    module2 ($system)/@system.$1/{SLOT_STARTUP}/{SLOT_ARCHIVE} {}\n",
             userspace::BOOTFS_WORD
         );
-        assert!(menu.contains(&format!("{kernel}{archive}    dukovo_modules\n    boot\n")));
+        // The microcode of the firmware set the slot names, from the
+        // root's store, or else the partition's modules (ADR 0468).
+        let firmware = slots::firmware::PATH;
+        let store = slots::firmware::STORE;
+        let modules = format!(
+            "    unset firmware_microcode\n    if [ -f \"($system)/@system.$1/{firmware}\" ]; then\n        \
+             load_env --file \"($system)/@system.$1/{firmware}\" firmware_microcode\n    fi\n    \
+             if [ -n \"${{firmware_microcode}}\" ]; then\n        module2 \
+             ($system)/{store}/files/${{firmware_microcode}} microcode\n    else\n        \
+             dukovo_modules\n    fi\n    boot\n"
+        );
+        assert!(menu.contains(&format!("{kernel}{archive}{modules}")));
+        assert!(slots::firmware::VARIABLES.contains(&"firmware_microcode"));
+        assert!(slots::firmware::VARIABLES.contains(&"firmware_set"));
         // What each slot says of itself, where the build puts it.
         assert_eq!(slots::about::PATH, format!("{SLOT_STARTUP}/{SLOT_ABOUT}"));
         let about = slots::about::VARIABLES.join(" ");

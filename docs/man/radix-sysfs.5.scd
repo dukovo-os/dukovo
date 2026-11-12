@@ -241,6 +241,19 @@ _/kernel/bus/i2c/devices/i2c-_*HID*:*nn*_/name_
 	name, as Linux names it: its _\_HID_ and its place among the devices
 	of that _\_HID_ on the buses, in hexadecimal, as *PNP0C50:00*.
 
+_/kernel/firmware/microcode_
+	What became of the CPU microcode the boot loader gave the kernel,
+	there only when it gave some (ADR 0468), a line each: *size*, the
+	module's bytes; *updates*, how many updates it holds; *result*:
+	*applied*, *current* (the processor runs that revision or a newer
+	one), *unmatched* (no update is for this processor), *unsupported*
+	(not an Intel processor), *hypervisor* (the update did not take
+	effect under a hypervisor, which keeps its own), *damaged* (data that
+	failed its checks; none of it is used) or *refused* (the processor
+	did not take it); *revision*, the revision the processor runs; and
+	with *refused*, *refused*, the revision it was asked to take. The
+	health check of *sysupdate*(8) reads it.
+
 _/kernel/firmware/memmap/_*n*_/start_, _end_, _type_
 	The firmware's memory map, as the boot loader gave it to the kernel,
 	a directory a range numbered from *0* in its order, as Linux's

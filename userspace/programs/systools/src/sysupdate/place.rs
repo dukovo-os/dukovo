@@ -117,6 +117,23 @@ pub(crate) fn btrfs_uuid(name: &str) -> Option<String> {
     if found.kind == "btrfs" { found.uuid } else { None }
 }
 
+/// The partitions the root's Btrfs is on, by their names in `/devices`:
+/// one, or one a disk on a mirror.
+///
+/// # Errors
+///
+/// If the disks cannot be listed.
+pub fn root_partitions(root: &Root) -> Result<Vec<String>, Fail> {
+    let devices = probe::devices().map_err(|err| util::failed(&probe::BLOCKS, err))?;
+    Ok(devices
+        .into_iter()
+        .filter(|(name, partition)| {
+            *partition && btrfs_uuid(name).as_deref() == Some(root.uuid.as_str())
+        })
+        .map(|(name, _)| name)
+        .collect())
+}
+
 /// The EFI system partitions of the disks the root is on, by their names
 /// in `/devices`, in order: one, or one a disk on a mirror.
 ///
@@ -367,8 +384,11 @@ pub fn lock_within(most: std::time::Duration) -> Result<Lock, Fail> {
 /// What `slot` is called in messages: `slot B (Dukovo 0.15.0)`.
 pub fn named(root: &Root, slot: Slot) -> String {
     let letter = slot.letter().to_ascii_uppercase();
-    match root.about(slot) {
-        Some(about) => format!("slot {letter} (Dukovo {})", about.version),
-        None => format!("slot {letter}"),
+    match (root.about(slot), super::firmware::named(&root.slot(slot))) {
+        (Some(about), None) => format!("slot {letter} (Dukovo {})", about.version),
+        (Some(about), Some(set)) => {
+            format!("slot {letter} (Dukovo {}, firmware {})", about.version, set.set)
+        }
+        (None, _) => format!("slot {letter}"),
     }
 }

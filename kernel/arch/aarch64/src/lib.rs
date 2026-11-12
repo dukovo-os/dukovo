@@ -367,6 +367,10 @@ impl Devices for Arch {
         Err(core::fmt::Error)
     }
 
+    fn microcode_report(_out: &mut dyn core::fmt::Write) -> core::fmt::Result {
+        Err(core::fmt::Error)
+    }
+
     fn ec_read(_port: u16) -> u8 {
         0xff
     }

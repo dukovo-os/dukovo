@@ -28,6 +28,7 @@ use std::time::Duration;
 
 use serde::Deserialize;
 use slots::version::Version;
+use system_release::firmware::{self, Set};
 use system_release::list::{Release, hex, sha256_file};
 use system_release::repo::target_path;
 use system_release::updates::{CHANNELS, Channel, channel_path};
@@ -266,9 +267,35 @@ impl Client {
         Ok(Some(release))
     }
 
+    /// The firmware set `version`, as signed, or `None` if the server
+    /// does not offer it (ADR 0468).
+    ///
+    /// # Errors
+    ///
+    /// If the list does not check, or is another set's.
+    pub fn firmware(&mut self, version: &str) -> Result<Option<(Set, Vec<u8>)>, Fail> {
+        let path = firmware::target_path(version);
+        let Some(bytes) = self.target(&path)? else { return Ok(None) };
+        let set = Set::parse(&bytes).map_err(fail)?;
+        if set.firmware != version {
+            return Err(fail(format!("{path} is the list of firmware {}", set.firmware)));
+        }
+        Ok(Some((set, bytes)))
+    }
+
     /// Where the file of SHA-256 `sha256` is on the server.
     fn file_url(&self, sha256: &str) -> Result<tuf::Url, Fail> {
         self.base.resolve(&format!("files/{sha256}")).map_err(|err| fail(err.to_string()))
+    }
+
+    /// Fetches the file of SHA-256 `sha256`, `size` bytes, into `dir` as
+    /// [`fetch`] does: whole, checked, and going on from a cut fetch.
+    ///
+    /// # Errors
+    ///
+    /// As [`fetch`].
+    pub fn fetch_file(&self, sha256: &str, size: u64, dir: &Path) -> Result<(), Fail> {
+        fetch_file(&self.file_url(sha256)?, sha256, size, dir)
     }
 }
 

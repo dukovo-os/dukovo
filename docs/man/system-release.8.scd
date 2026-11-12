@@ -25,6 +25,10 @@ system-release - check, sign, offer, publish, pack, keep Rescue of and make keys
 
 *system-release channel* *--repo* _dir_ *--keys* _dir_ _channel_ _version_
 
+*system-release channel* *--repo* _dir_ *--keys* _dir_ *--firmware* _version_|*none* _channel_
+
+*system-release firmware* *--repo* _dir_ *--keys* _dir_ *--version* _version_ *--microcode* _file_ *--license* _license_
+
 *system-release refresh* *--repo* _dir_ (*--keys* _dir_ | *--online-key* _secret_)
 
 *system-release publish* *--repo* _dir_ *--online-key* _secret_ _incoming_
@@ -114,6 +118,12 @@ is never used twice. *channel* points a channel at a release the
 repository offers. With keys for snapshot and timestamp in *--keys*,
 *add* and *channel* sign a new snapshot and timestamp too; without them,
 the update server signs those once the repository is deployed.
+*firmware* adds a firmware set of the optional firmware package (ADR
+0468): the CPU microcode _file_, with its license as an SPDX expression,
+under a version such as *2026.11.12*, signed as a release is, with the
+file kept in the store by its SHA-256. *channel --firmware* names the
+set a channel offers, or *none*; pointing a channel at a release keeps
+the set it names.
 *refresh* signs a new timestamp, and a new snapshot when the one there
 does not list the newest targets, has two days left or less, or a new
 root has been added, as the update server does every six hours, with
@@ -150,8 +160,18 @@ expiry, every release list and every channel, but none of the files.
 	Check against the root in _file_ instead of the system's.
 
 *--version* _version_
-	The release to check, when the repository holds several; or the
-	version of the release *make* makes.
+	The release to check, when the repository holds several; the
+	version of the release *make* makes; or that of the firmware set
+	*firmware* adds.
+
+*--microcode* _file_
+	The CPU microcode of the firmware set *firmware* adds.
+
+*--license* _license_
+	The license of *--microcode*, as an SPDX expression.
+
+*--firmware* _version_|*none*
+	The firmware set *channel* names for the channel, or none.
 
 *--tree* _dir_
 	The slot to make a release of: what _/system_ will hold.
