@@ -683,6 +683,16 @@ fn set_up(ctx: &Ctx, args: &[String]) -> Result<()> {
         );
     }
     turn_on_schedules(ctx, &tool, args);
+    // The lab network, for the real machines in the machine files: none
+    // there, nothing done. One that cannot be set up stops only the real
+    // machines' tests, which `dukovo-lab machines check` explains, not
+    // QEMU's.
+    if let Err(err) = crate::lab_net::set_up(ctx, &tool, &config) {
+        eprintln!("    note: the lab network for real machines is not set up: {err}");
+        if let Some(hint) = &err.hint {
+            eprintln!("    {hint}");
+        }
+    }
     step("Building the lab image and opening the runner page");
     Ok(())
 }

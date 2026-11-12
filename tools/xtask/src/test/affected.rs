@@ -49,7 +49,10 @@ const NOTHING: &[&str] = &[
     // The Dukovo Lab's tests and its part of ob, run on the lab's
     // machines.
     "lab/",
+    "tools/lab-writer/",
     "tools/xtask/src/lab.rs",
+    "tools/xtask/src/lab_net.rs",
+    "tools/xtask/src/lab_net/",
     // Other jobs' tools and checks.
     "deny.toml",
     "kernel/deny.toml",

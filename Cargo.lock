@@ -314,6 +314,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
 
 [[package]]
+name = "lab-writer"
+version = "0.14.1"
+dependencies = [
+ "libc",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
 name = "libc"
 version = "0.2.191"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -834,6 +843,7 @@ dependencies = [
  "ridlc",
  "rustc-demangle",
  "serde",
+ "serde_json",
  "sha2",
  "slots",
  "toml",

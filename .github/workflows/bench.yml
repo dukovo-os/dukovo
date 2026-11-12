@@ -107,6 +107,13 @@ jobs:
         if: ${{ !cancelled() }}
         run: ./ob bench --scaling --gate --summary "$GITHUB_STEP_SUMMARY"
 
+      # The lab's net boot of real machines, end to end in QEMU (ADR
+      # 0429): the disk writer runs on the pinned Linux restored above,
+      # and this job has KVM.
+      - name: ./ob test lab-writer
+        if: ${{ !cancelled() }}
+        run: ./ob test lab-writer
+
       - name: Upload the benchmark numbers
         if: always()
         uses: actions/upload-artifact@v4
@@ -121,5 +128,6 @@ jobs:
             out/bench-scaling/report.md
             out/bench-scaling/boot-scaling-radix.log
             out/bench-scaling/boot-scaling-linux.log
+            out/lab-writer-check/serial-*.log
           if-no-files-found: ignore
           retention-days: 90
