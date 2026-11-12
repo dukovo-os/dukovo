@@ -272,7 +272,7 @@ fn channel(name: Option<&str>) -> Result<i32, Fail> {
 
 /// `sysupdate unstage`: the staged update is not tried; it stays in its
 /// slot until the next stage.
-fn unstage() -> Result<i32, Fail> {
+pub(crate) fn unstage() -> Result<i32, Fail> {
     let root = place::root()?;
     let _lock = place::lock()?;
     let (copies, state) = place::state(&root)?;

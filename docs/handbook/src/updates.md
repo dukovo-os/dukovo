@@ -113,7 +113,9 @@ draws and keeps to itself. If something goes wrong, the project pauses
 the waves, and the machines not reached yet wait. Until your machine's
 wave opens, `sysupdate check` says on which day it does; `elevate
 sysupdate stage --version 0.15.2` takes the release at once. A release
-the project withdraws is never staged, and `sysupdate check` says why.
+the project withdraws is never staged, and `sysupdate check` says why;
+one staged before the withdrawal is unstaged at the next daily check,
+and the console tells you so.
 
 For a machine with no network, an update file holds a whole release,
 `dukovo-0.15.2.update`. Copy it to a USB stick, then:

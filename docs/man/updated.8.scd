@@ -29,7 +29,14 @@ system, firmware set and apps, as *update*(8) does, and does what
   when the release it runs is withdrawn with that advice (ADR 0469).
   With a *restart* time as well, it restarts the machine into the
   update at that time of day; without one it waits for a restart.
+  Just before that restart it asks the update server once more: while
+  the release's waves are held it waits, and a withdrawn one is
+  unstaged instead.
 - *check = "off"* turns the checks off.
+
+Whatever the settings, a staged release that the release keys withdraw
+is unstaged at the next check, and the console says so: it is never
+tried (ADR 0469).
 
 It never restarts the machine otherwise. What it does goes to the log
 under *updated*, and what it tells goes to *notifyd*(8).
