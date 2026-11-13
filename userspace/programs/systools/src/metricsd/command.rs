@@ -230,8 +230,14 @@ fn list(dir: &Path, select: &[Selector], json: bool) -> Result<i32, Fail> {
     let names = store::series(dir).map_err(|error| cannot_read(dir, &error))?;
     let names: Vec<String> = names.into_iter().filter(|name| selected(select, name)).collect();
     if names.is_empty() {
-        let why = if select.is_empty() { "no history yet" } else { "no such series" };
-        return Err(fail(format!("{why}: is metricsd running? `service status metricsd` says")));
+        return Err(fail(if select.is_empty() {
+            "no history yet: metricsd writes it every 10 minutes and when it stops, and `metrics \
+             now` shows the latest values; if it is not running, `service status metricsd` says \
+             why"
+                .into()
+        } else {
+            "no such series: `metrics list` shows those the history holds".into()
+        }));
     }
     print!("{}", render_list(&names, json));
     Ok(0)

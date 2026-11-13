@@ -25,7 +25,10 @@ range, from the last two weeks at one minute to the last year at one hour.
 
 metrics reads the files metricsd writes, as the web console does, and
 does not ask metricsd anything, so it works when metricsd has stopped,
-for what it kept. What a person may read of those files is what their
+for what it kept. metricsd writes the history every 10 minutes and when
+it stops (*metricsd*(8)), so the last few minutes' points, and in the
+first 10 minutes after it starts any history at all, are in its memory
+and not yet shown; *metrics now* shows the latest values at once. What a person may read of those files is what their
 folders' modes say; a person who is refused is told, and an
 administrator reads them with *elevate metrics* (*elevate*(8)).
 

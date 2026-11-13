@@ -43,8 +43,9 @@ was never set up.
     folder read-only, as it holds notifyd's (ADR 0217), so every
     service can reach it.
   - Only root's processes may ask. An alert belongs to its sender's
-    resource domain, its source: a service's name, or the session's for
-    a shell. Its identity is the source and the sender's own key
+    resource domain, its source: a service's name, or *authd* for a
+    command run with elevate, which authd starts. Its identity is the
+    source and the sender's own key
     (`smart:WD-1234`), so a sender clears and sets only its own.
   - `alerts::client` gives services `raise`, `event`, `clear` and `set`,
     each giving up after 2 seconds. A service never fails, or waits on
