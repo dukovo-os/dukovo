@@ -70,21 +70,27 @@ impl WallClock {
 
     fn fields(&self) -> Fields {
         loop {
-            let before = self.sequence.load(Ordering::Acquire);
-            if before & 1 == 0 {
-                let fields = Fields {
-                    known: self.known.load(Ordering::Relaxed),
-                    offset: self.offset.load(Ordering::Relaxed),
-                    slew_start: self.slew_start.load(Ordering::Relaxed),
-                    slew: self.slew.load(Ordering::Relaxed),
-                };
-                fence(Ordering::Acquire);
-                if self.sequence.load(Ordering::Relaxed) == before {
-                    return fields;
-                }
+            if let Some(fields) = self.fields_once() {
+                return fields;
             }
             hint::spin_loop();
         }
+    }
+
+    /// The fields, if no change was under way while they were read.
+    fn fields_once(&self) -> Option<Fields> {
+        let before = self.sequence.load(Ordering::Acquire);
+        if before & 1 != 0 {
+            return None;
+        }
+        let fields = Fields {
+            known: self.known.load(Ordering::Relaxed),
+            offset: self.offset.load(Ordering::Relaxed),
+            slew_start: self.slew_start.load(Ordering::Relaxed),
+            slew: self.slew.load(Ordering::Relaxed),
+        };
+        fence(Ordering::Acquire);
+        (self.sequence.load(Ordering::Relaxed) == before).then_some(fields)
     }
 
     /// Changes the fields with `change`, which gets them as they are.
@@ -111,6 +117,23 @@ impl WallClock {
     /// since 1970, if it is known.
     pub fn read(&self, now: u64) -> Option<u64> {
         let fields = self.fields();
+        if !fields.known {
+            return None;
+        }
+        let at = i128::from(fields.offset) + i128::from(now) + i128::from(fields.applied(now));
+        Some(u64::try_from(at.max(0)).unwrap_or(u64::MAX))
+    }
+
+    /// [`WallClock::read`], but `None` if a change stays half made for a
+    /// thousand tries, as one that a CPU stopped in the middle of does.
+    pub fn read_without_waiting(&self, now: u64) -> Option<u64> {
+        let fields = (0..1000).find_map(|_| {
+            let fields = self.fields_once();
+            if fields.is_none() {
+                hint::spin_loop();
+            }
+            fields
+        })?;
         if !fields.known {
             return None;
         }
@@ -261,6 +284,17 @@ mod tests {
         // Before 1970 reads as 1970.
         clock.set(10_000_000_000, 5);
         assert_eq!(clock.read(0), Some(0));
+    }
+
+    #[test]
+    fn the_panic_paths_read_does_not_wait_for_a_change_left_half_made() {
+        let clock = WallClock::new();
+        assert_eq!(clock.read_without_waiting(5), None);
+        clock.set(1_000, 1_700_000_000_000_000_000);
+        assert_eq!(clock.read_without_waiting(3_000), Some(1_700_000_000_000_002_000));
+        // A CPU stopped in the middle of a change: the count stays odd.
+        clock.sequence.fetch_add(1, Ordering::AcqRel);
+        assert_eq!(clock.read_without_waiting(3_000), None);
     }
 
     #[test]

@@ -52,8 +52,9 @@ pub const WINDOW_SIZE: u64 = 512 << 30;
 const MAX_REGIONS: usize = 128;
 /// Most reservations kept.
 const MAX_RESERVATIONS: usize = 24;
-/// Size of the crash log region.
-pub const CRASH_LOG_SIZE: u64 = 1024 * 1024;
+/// Size of the crash log region: 1 MiB of log, then 1 MiB for two crash
+/// dumps (radix_klog::crashlog, ADR 0483).
+pub const CRASH_LOG_SIZE: u64 = 2 * 1024 * 1024;
 
 static DIRECT_MAP: AtomicU64 = AtomicU64::new(DIRECT_MAP_AREA.start);
 static WINDOW: AtomicU64 = AtomicU64::new(WINDOW_AREA.start);

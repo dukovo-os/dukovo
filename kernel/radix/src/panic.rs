@@ -9,21 +9,24 @@
 //! On the framebuffer the report fills the screen, with the most recent
 //! log messages below it, because on a laptop without a serial port the
 //! screen is all there is (or a Debug Capability console, which is given
-//! up to 2 s to send the report). The crash log keeps
-//! the report for the next boot. Then the kernel debugger runs if it was
-//! asked for, and finally the machine restarts after a key press, or after
-//! the delay given with `panic=seconds`.
+//! up to 2 s to send the report). The crash log keeps the report for the
+//! next boot, and a crash dump beside it holds the kernel's state: its
+//! CPUs, threads, run queues, locks, memory and stacks (ADR 0483). Then the
+//! kernel debugger runs if it was asked for, and finally the machine
+//! restarts after a key press, or after the delay given with
+//! `panic=seconds`.
 
 use core::fmt::{self, Write};
 use core::panic::PanicInfo;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-use radix_hal::{Cpu, CpuLocal, Fault, Platform, Smp, Timer};
+use radix_hal::clock::civil_from_days;
+use radix_hal::{Cpu, CpuLocal, Fault, Platform, Smp, StackWord, Timer};
 use radix_klog::crashlog::Ending;
 use radix_klog::{Style, TextBuf};
 
-use crate::symbols::Backtrace;
-use crate::{Arch, console, crashlog, debug_console, kdb, settings, usb};
+use crate::symbols::{self, Backtrace};
+use crate::{Arch, console, crashlog, debug_console, kdb, report, sched, settings, usb};
 
 /// The CPU that is panicking, plus one; 0 while none is.
 static PANICKING: AtomicUsize = AtomicUsize::new(0);
@@ -180,6 +183,87 @@ fn draw_screen(report: &Report<'_>) {
     });
 }
 
+/// Bytes of the panicking CPU's stack the dump holds, and of each other
+/// CPU's; and how many other CPUs' stacks it holds.
+const OWN_STACK: usize = 8 * 1024;
+const OTHER_STACK: usize = 2 * 1024;
+const OTHER_STACKS: usize = 8;
+
+/// Writes the crash dump's sections (ADR 0483): the report, then the
+/// state kdb shows, then the stacks. `stack_pointer` is where the
+/// panicking CPU's stack is copied from.
+fn write_dump(
+    dump: &mut crashlog::DumpWriter<'_>,
+    report: &Report<'_>,
+    wall_ns: Option<u64>,
+    stack_pointer: usize,
+) {
+    dump.line(format_args!("Radix crash dump"));
+    dump.line(format_args!(
+        "Radix {} on {}, boot {}",
+        env!("CARGO_PKG_VERSION"),
+        <Arch as Cpu>::NAME,
+        report.boot
+    ));
+    let (secs, micros) = (report.time_ns / 1_000_000_000, report.time_ns % 1_000_000_000 / 1_000);
+    match wall_ns {
+        Some(ns) => {
+            dump.line(format_args!("Panic at {}, {secs}.{micros:06} s after boot", Rfc3339(ns)));
+        }
+        None => {
+            dump.line(format_args!(
+                "Panic at an unknown time of day, {secs}.{micros:06} s after boot"
+            ));
+        }
+    }
+    dump.section(format_args!("Panic"), &mut |line| report.lines(&mut |_, args| line(args)));
+    dump.section(format_args!("CPUs"), &mut |line| report::write_cpu_activity(line));
+    dump.section(format_args!("Threads"), &mut |line| sched::write_threads(line));
+    dump.section(format_args!("Run queues"), &mut |line| sched::write_queues(line));
+    dump.section(format_args!("Locks"), &mut |line| sched::write_lockdep(line));
+    dump.section(format_args!("Memory"), &mut |line| {
+        report::write_memory(line);
+        line(format_args!("Kernel heap:"));
+        report::write_heap(line);
+    });
+    let others = (0..Arch::cpu_count()).filter(|&index| index != report.cpu);
+    let stopped = others.filter_map(|index| Some((index, Arch::stopped_stack_pointer(index)?)));
+    let stacks = [(report.cpu, stack_pointer, OWN_STACK)]
+        .into_iter()
+        .chain(stopped.take(OTHER_STACKS).map(|(index, sp)| (index, sp, OTHER_STACK)));
+    for (index, sp, max) in stacks {
+        dump.section(format_args!("Stack of CPU {index}"), &mut |line| {
+            if !Arch::read_stack(index, sp, max, &mut |word| stack_line(word, line)) {
+                line(format_args!("{sp:016x} is on no kernel stack this CPU has"));
+            }
+        });
+    }
+}
+
+/// A line of a stack in the crash dump: the word's address, its value,
+/// and the function it is in when it is an address in the kernel's code,
+/// as a return address is.
+fn stack_line(word: StackWord, line: &mut dyn FnMut(fmt::Arguments<'_>)) {
+    let StackWord { address, value, code } = word;
+    match code.then(|| symbols::lookup_return(value)).flatten() {
+        Some(location) => line(format_args!("{address:016x}  {value:016x}  {location}")),
+        None => line(format_args!("{address:016x}  {value:016x}")),
+    }
+}
+
+/// Nanoseconds since 1970 as RFC 3339 writes a time in UTC, to the second.
+struct Rfc3339(u64);
+
+impl fmt::Display for Rfc3339 {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let seconds = self.0 / 1_000_000_000;
+        let (days, time) = (seconds / 86_400, seconds % 86_400);
+        let (year, month, day) = civil_from_days(days as i64);
+        let (hour, minute, second) = (time / 3600, time / 60 % 60, time % 60);
+        write!(f, "{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}Z")
+    }
+}
+
 /// Waits for a key on the keyboard or the debug console, or for the restart
 /// delay, counting down on the screen.
 fn wait_then_restart() -> ! {
@@ -235,6 +319,11 @@ fn panic(info: &PanicInfo<'_>) -> ! {
             if settings().qemu_exit {
                 Arch::emulator_exit(false);
             }
+            // The report is out and the crash log ended; the dump ends after
+            // its last whole section. A server restarts rather than stopping.
+            if crashlog::writing_dump() {
+                wait_then_restart();
+            }
         }
         // Another CPU is reporting; it stops this one.
         Arch::halt();
@@ -248,6 +337,7 @@ fn panic(info: &PanicInfo<'_>) -> ! {
         Some(fault) => Backtrace::from_fault(fault.pc, fault.frame_pointer),
         None => Backtrace::here(),
     };
+    let wall_ns = Arch::wall_clock_ns_without_waiting();
     let report = Report {
         info,
         cpu,
@@ -278,6 +368,12 @@ fn panic(info: &PanicInfo<'_>) -> ! {
     let planned_crash = settings.selftest == Some("crash-reboot");
     if settings.qemu_exit && !planned_crash {
         Arch::emulator_exit(false);
+    }
+    if settings.crash_dump {
+        let stack_pointer = fault.as_ref().map_or_else(Arch::frame_pointer, |f| f.stack_pointer);
+        crashlog::write_dump(wall_ns, &mut |dump| {
+            write_dump(dump, &report, wall_ns, stack_pointer);
+        });
     }
     if settings.kdb {
         kdb::run_after_panic(fault.as_ref(), &backtrace);

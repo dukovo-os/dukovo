@@ -200,6 +200,7 @@ machine with AMT, an AMD machine and a laptop; see
 | Spark setting a service's `open_files` (RLIMIT_NOFILE); nginx raises its own to the hard limit, 4096, meanwhile (ADRs 0385, 0491) | Service limits | 16a |
 | A service's own log files, turned over: nginx logs to the system's log, and an `access_log` to a file of its own is never turned over (ADR 0491) | Needs timers | 16a |
 | The web console's lab tests run on QEMU in CI for every PR (ADR 0510) | CI runs no lab tests yet; they run on QEMU before each PR, and the console's pages arrive from C3 | admind (Phase 16, PR C2a) |
+| A crash dump sent with a problem report, with the person's consent (ADR 0483) | A dump is kept on the machine and sent nowhere; the reports come with the reporting service | 16b, with the problem reports |
 
 ### Phase 17: Go
 
@@ -240,6 +241,7 @@ These come from finished work; the releases themselves are in the
 | Bundle signing keys with passwords (ADR 0222) | Key store | Release 1.6 |
 | zellij | Needs Wasmtime | Release 1.5 |
 | Ogg Opus and Vorbis for music CDs (ADR 0447) | Needs the media service's libopus port | The media service |
+| Crash dumps of all the kernel's memory, which a post-mortem tool reads with the kernel's symbols (ADR 0483) | The text dump holds the state a person reads without a tool; a dump of memory is as large as the RAM and needs somewhere to be written from the panic path | Release 1.13 |
 
 ## Waiting on a port, an upstream or a description
 
@@ -290,6 +292,7 @@ machine asks for them.
 | A memory filesystem, and so System V keys, for each account or view, as Linux's IPC namespaces | ADR 0490 |
 | `ipcs` and `ipcrm`; `IPC_INFO`, `SHM_INFO`, `SEM_INFO` and the `*_STAT` commands that take an index | ADR 0490 |
 | `shmat`'s `SHM_EXEC` with write access, which Radix never maps together | ADR 0490 |
+| The crash dump written to a disk from the panic path through polled drivers, so that a power cycle or a firmware that clears the RAM keeps it | ADR 0483 |
 
 ### Files and storage
 

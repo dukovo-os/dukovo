@@ -1,0 +1,30 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+#
+# Crash dumps: when the kernel panics it writes a text dump of its state
+# into RAM that the restart keeps, and dumps(8) copies the previous boot's
+# dump, with that boot's log, to /system/state/crash, naming the panic in
+# the log. It keeps the ten newest dumps, within 64 MiB, and sends none
+# anywhere (radix-debug(7), ADR 0483).
+#
+# service.toml(5) explains each setting. `service check dumps` checks
+# this file, and `service edit dumps` checks it as you save.
+
+service_version = 1
+description = "Kernel crash dumps"
+program = "/system/commands/dumps"
+arguments = ["save"]
+# Right after logd, so that the line it logs is kept.
+order = 6
+# It runs once at each boot, and ends.
+restart = "never"
+
+[limits]
+memory = "32M"
+
+# What it holds beyond what every service reads (service.toml(5)): the
+# device that gives the previous boot's dump, and the folder the dumps are
+# saved in.
+[permissions]
+files.read = ["/devices/crashdump"]
+files.read-write = ["/system/state/crash"]

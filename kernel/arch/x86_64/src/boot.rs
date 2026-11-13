@@ -255,12 +255,13 @@ __ksyms_end:
      * Written by `ob build` like the symbol table; the trampoline leaves
      * the kernel where it was linked while this is zeros. With uACPI's C
      * (Phase 11c) and the network stack (Phase 12), the release kernel
-     * needs some 130 KiB. */
+     * needed some 130 KiB; by Phase 16 it needs 256 KiB, so this leaves
+     * half as much again for what comes. */
     .section .krelocs, "a", @progbits
     .balign 16
     .global __krelocs_start
 __krelocs_start:
-    .skip 256 * 1024
+    .skip 384 * 1024
     .global __krelocs_end
 __krelocs_end:
 

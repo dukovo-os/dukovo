@@ -40,6 +40,7 @@ card-reader 70
 catalog-bundles 64
 catalog-install 70
 consoles 38
+crash-dump 140
 crash-log-bios 23
 crash-log-uefi 26
 dhcp 25

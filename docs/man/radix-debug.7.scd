@@ -5,15 +5,15 @@ radix-debug(7) "Dukovo" "Dukovo Manual"
 
 # NAME
 
-radix-debug - panic reports, the crash log, the kernel debugger, the lock
-checker, GDB and trace points in the Radix kernel
+radix-debug - panic reports, the crash log and crash dump, the kernel
+debugger, the lock checker, GDB and trace points in the Radix kernel
 
 # DESCRIPTION
 
 Radix has to be debuggable on its reference laptop, which has no serial
 port. So a panic fills the screen with its report, and the console output
-is also kept in memory that survives a warm restart, where the next boot
-finds it. With a serial port, or under QEMU, there is also *kdb*, a small
+and a dump of the kernel's state are also kept in memory that survives a
+warm restart, where the next boot finds them. With a serial port, or under QEMU, there is also *kdb*, a small
 kernel debugger, and GDB through QEMU's GDB stub. Without one, a second
 computer can read the console and talk to *kdb* over the USB controller's
 Debug Capability (see *DEBUG CAPABILITY CONSOLE*). Trace points record
@@ -41,6 +41,8 @@ CPU then:
 . fills the framebuffer with the report under a red *RADIX KERNEL PANIC*
   banner, followed by as many recent log messages as fit;
 . records in the crash log that this boot ended with a panic;
+. writes the crash dump beside the log (see *CRASH DUMP*), unless
+  *crashdump*=off;
 . under QEMU with the *qemu-exit* flag, exits QEMU with status 35;
 . with the *kdb* flag, runs the kernel debugger on the debug console;
 . waits for a key on the built-in keyboard or the debug console, or for the
@@ -120,10 +122,11 @@ objects found so far.
 # CRASH LOG
 
 Everything the consoles print, debug messages included, is also written to
-1 MiB of RAM reserved at the same physical address on every boot: the
-first 2 MiB boundary above 4 GiB where there is RAM, or else the first one
-from 64 MiB, in either case clear of the kernel image and the boot
-modules. A warm
+the first MiB of 2 MiB of RAM reserved at the same physical address on
+every boot: the first 2 MiB boundary above 4 GiB where there is RAM, or
+else the first one from 64 MiB, in either case clear of the kernel image
+and the boot modules. The second MiB holds the crash dump (see *CRASH
+DUMP*). A warm
 restart (a panic, *reboot* in *kdb*, the reset button on many machines)
 leaves RAM as it was, so the next boot finds the log there and prints how
 the previous boot ended and its last lines: 40 after a panic, 12
@@ -138,14 +141,14 @@ Crash log: boot 2; the previous boot (1) ended with a kernel panic. Its last 40 
 A boot that hung, or was reset by the user, reads as "stopped while
 running". Powering the machine off loses the log, and firmware that tests
 or clears memory at start-up can overwrite it. *crashlog*=off turns the
-log off.
+log, and with it the dump, off.
 
 ## Format
 
-The region is two equal slots. Each boot writes the slot the previous boot
-did not use, so the previous log survives until the boot after next. A
-slot is a 64-byte header followed by a ring of text. All integers are
-little-endian:
+The log is two equal slots, which fill the first MiB of the region. Each
+boot writes the slot the previous boot did not use, so the previous log
+survives until the boot after next. A slot is a 64-byte header followed by
+a ring of text. All integers are little-endian:
 
 [[ *Offset*
 :- *Size*
@@ -176,6 +179,158 @@ little-endian:
 :  Zero
 
 A slot whose magic, version, ring size or hash does not match is ignored.
+The log's two slots are as large and as placed as in a region of 1 MiB,
+which an older kernel reserved, so a log that an older kernel wrote
+still reads.
+
+# CRASH DUMP
+
+When the kernel panics it also writes a dump of its state, as text, into
+the second MiB of the crash log's region (ADR 0483). The panic's report
+goes to the consoles and the log first, then the log's ending is set,
+then the dump is written: a panic that stops the dump leaves the
+sections before it. *crashdump*=off writes no dump, and *crashlog*=off
+turns off the log and the dump.
+
+The next boot keeps the dump for itself as the previous boot's, and says
+so after the crash log's lines:
+
+```
+Crash log: the previous boot's dump is kept for dumps(8) (38 KiB)
+```
+
+with *, cut short* after the size when the dump is not whole. The *dumps*
+service saves it (*dumps*(8)); a dump that is not saved is overwritten at
+the boot after, when its slot is used again. Only a boot that ended with
+a panic has one.
+
+## What the dump says
+
+The dump is UTF-8 text, a line ending each line, and no line is longer than
+512 bytes. It starts with three lines, then has sections, each a blank
+line and a line *== Name*:
+
+```
+Radix crash dump
+Radix 0.16.0 on x86_64, boot 42
+Panic at 2026-11-13T10:02:11Z, 3612.481930 s after boot
+
+== Panic
+Radix panic on CPU 0 at 3612.481930 s: selftest crash-reboot: deliberate panic
+...
+== Stack of CPU 0
+ffff800000a3fe40  ffff8000001234ab  radix::fs::writeback::run+0x4b
+ffff800000a3fe48  0000000000000000
+```
+
+The third line says *Panic at an unknown time of day* in place of the time
+when the kernel did not know it, as in a panic early in the boot. The
+sections, in order:
+
+*== Panic*
+	The report as the consoles showed it: the message, where it
+	happened, the registers when an exception caused it, and the
+	backtrace. Its first line is the one *dumps list* shows.
+
+*== CPUs*
+	The CPUs with their APIC IDs, timer interrupts and
+	inter-processor interrupts, as *kdb*'s *cpus* shows them.
+
+*== Threads*
+	Every thread, as *kdb*'s *threads* lists them: its state, what it
+	waits for, its CPU and its run time.
+
+*== Run queues*
+	The scheduler's totals and each CPU's run queue, as *kdb*'s *sched*
+	shows them.
+
+*== Locks*
+	The lock checker's state, its classes, order edges and problems, as
+	*kdb*'s *locks* shows them.
+
+*== Memory*
+	The firmware's memory map, the kernel's reservations, the frame
+	allocator's zones and the page cache's line, as *kdb*'s *mem*, and
+	then the kernel heap as *kdb*'s *heap*.
+
+*== Stack of CPU* _n_
+	The raw kernel stack, a word a line: its address, its value, and the
+	function when the value is an address in the kernel's code, as a
+	return address is. The panicking CPU's comes first, from its stack
+	pointer (the fault's when an exception caused the panic) up to 8 KiB
+	or the stack's top; then each other stopped CPU's, from where it
+	stopped, up to 2 KiB, for at most 8 CPUs. A stack that is not on a
+	kernel stack the CPU has says so in one line.
+
+A dump that fills its 512 KiB ends with the line *(the dump is cut short
+here: it filled its 512 KiB)*.
+
+## /devices/crashdump
+
+The previous boot's dump is the file _/devices/crashdump_, a character
+device of root's, mode 0600, whose *fstat* size is its length (*radix-files*(7)).
+Reading it gives:
+
+. the dump's text;
+. when the dump is not whole and does not end with the line above, the line
+  *(the dump ends here: the kernel stopped before it was whole)*;
+. a blank line and *== Log*;
+. the whole log of the boot that crashed, oldest line first, as the ring
+  of its slot holds it.
+
+It is empty, end of file at once, when the previous boot left no dump.
+Reads follow the file offset and *lseek* works as for a file of that
+length. The content does not change during a boot. Writing exactly *panic*
+and a line end to it, which only root can open it for, logs at warning level
+*Crash dump: a test panic was asked for by process* _number_ (_name_) and
+panics the kernel with the message *dumps test: a panic asked for on
+purpose*; any other write fails with *EINVAL*. *dumps test* does that
+(*dumps*(8)).
+
+## Format of a dump slot
+
+The second MiB of the region is two dump slots of 512 KiB, slot _i_ for the
+boot whose log is in log slot _i_. A slot is a 64-byte header followed by
+the dump's text. All integers are little-endian:
+
+[[ *Offset*
+:- *Size*
+:< *Contents*
+|  0
+:  8
+:  Magic, the ASCII characters RADIXDMP
+|  8
+:  4
+:  Format version, 1
+|  12
+:  4
+:  Boot number, that of the log slot's boot
+|  16
+:  8
+:  Time of the panic, in nanoseconds since 1970 in UTC; 0 when unknown
+|  24
+:  4
+:  Bytes of text after the header
+|  28
+:  4
+:  CRC-32 of the text (the IEEE 802.3 polynomial, as zlib's *crc32*)
+|  32
+:  4
+:  State: 1 whole, 2 cut short (the slot filled, or the kernel failed
+   again, or the machine stopped, while the dump was written)
+|  36
+:  28
+:  Zero
+
+The header is written again after each section, so that a dump the kernel
+did not finish holds the sections before the one it failed in. A boot
+clears the header of its own dump slot when it starts. A dump is the
+previous boot's when its magic, version and CRC hold, its boot number is
+that of the previous log slot, and that boot ended with a panic.
+
+A panic in the code that writes the dump does not halt the machine: the
+dump is left cut short after its last whole section, and the machine
+restarts as after any panic.
 
 # KERNEL DEBUGGER
 
@@ -385,7 +540,8 @@ boots.
 
 *crash-reboot*
 	Panics on purpose. The next boot finds the panic in the crash log,
-	reports *selftest crash-reboot: passed* and boots normally. Under QEMU
+	reports *selftest crash-reboot: passed* and boots normally; the dump
+	of the panic is kept for *dumps*(8) as for any other. Under QEMU
 	this needs a restart that keeps RAM, so *ob test* runs it without
 	QEMU's *-no-reboot* and with *panic=0*.
 
@@ -784,5 +940,5 @@ _out/test/_
 
 # SEE ALSO
 
-*dukovo-boot*(7), *uart*(4), *radix-capabilities*(7), *radix-scheduling*(7), *radix-ipc*(7),
+*dukovo-boot*(7), *dumps*(8), *uart*(4), *radix-capabilities*(7), *radix-scheduling*(7), *radix-ipc*(7),
 *watchdog*(8), *ob*(1), *gdb*(1), *qemu-system-x86_64*(1)

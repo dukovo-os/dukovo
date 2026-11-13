@@ -138,6 +138,14 @@ consoles userspace/defaults/keyboard/ userspace/defaults/nukesh/ userspace/defau
 consoles userspace/programs/consoled/ userspace/programs/keymap/ userspace/programs/nukesh/
 consoles userspace/programs/systools/src/keymaps.rs userspace/programs/systools/src/notifyd.rs
 consoles userspace/programs/systools/src/xxd.rs
+crash-dump kernel/lib/klog/ kernel/radix/src/crashlog.rs kernel/radix/src/panic.rs
+crash-dump kernel/radix/src/fs/crashdump.rs kernel/radix/src/fs/devfs.rs
+crash-dump userspace/defaults/spark/services/dumps.toml userspace/programs/accounts/
+crash-dump userspace/programs/consoled/ userspace/programs/systools/src/authd.rs
+crash-dump userspace/programs/systools/src/authd/ userspace/programs/systools/src/dumps.rs
+crash-dump userspace/programs/systools/src/elevate.rs userspace/programs/systools/src/log.rs
+crash-dump userspace/programs/systools/src/login.rs userspace/programs/systools/src/prompt.rs
+crash-dump userspace/programs/systools/src/sessions.rs userspace/programs/systools/src/signin.rs
 crash-log-bios kernel/lib/klog/
 crash-log-uefi kernel/lib/klog/
 dhcp kernel/net/ userspace/posix/dhcp.c userspace/programs/systools/src/dhcp.rs

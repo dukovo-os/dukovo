@@ -74,6 +74,74 @@ hang on a laptop without a reset button the hard case, since holding the
 power button cuts power; when the screen freezes, photograph it, and try
 again with `loglevel=debug` to see more of what happened before.
 
+## After a crash: the crash dump
+
+The crash log says what the kernel last said, not what it was doing. When
+the kernel panics it also writes a dump of its state, as text, into the
+reserved memory beside the log: the panic's report, the CPUs, every thread
+and its state, the run queues, the locks held, memory, and the raw kernel
+stack of each CPU. The next boot finds it, and says so after the crash
+log's lines:
+
+```text
+Crash log: the previous boot's dump is kept for dumps(8) (38 KiB)
+```
+
+At that boot the `dumps` service, which Spark starts right after the log's
+service, copies the dump to `/system/state/crash/`, with the whole log of
+the boot that crashed after a line `== Log`, and puts a warning in the log
+that names the panic and the file:
+
+```sh
+elevate log -s dumps
+```
+
+```text
+Nov 13 10:04:02 dukovo dumps: the previous boot ended with a kernel panic: selftest crash-reboot: deliberate panic; the dump is /system/state/crash/2026-11-13T10-02-11Z-boot42.txt (dumps show)
+```
+
+Only root reads dumps, since a dump holds what the kernel held, including
+what was on its stacks; the files are mode 0600 in a folder of mode 0700.
+`dumps` tells anyone else to run it with `elevate`:
+
+```sh
+elevate dumps list
+elevate dumps show
+elevate dumps show > crash.txt
+```
+
+`dumps list` shows the saved dumps, newest first, with the time of the
+panic, the number of the boot that crashed, the size and the panic's
+message. `dumps show` writes the newest, or the one named, through
+`$PAGER` on a terminal; `dumps path` says where its file is, and
+`dumps delete` removes one or `--all`. A dump is plain text: `less` reads
+it and `grep` searches it. Its sections are `== Panic` (the report as the
+screen showed it, with the backtrace), `== CPUs`, `== Threads`,
+`== Run queues`, `== Locks`, `== Memory`, one `== Stack of CPU N` for the
+panicking CPU and each of up to eight others, and `== Log`. The ten newest
+dumps are kept, within 64 MiB, and none is sent anywhere: read it before
+you copy it into a report, as you would a log.
+
+A dump lives in the same memory as the crash log, so a switched-off
+machine, or firmware that clears the memory when it restarts, loses it as
+it loses the log; the report on a serial port or Serial-over-LAN is then
+what the panic left (`panic=10` restarts after ten seconds, as the
+installed system's boot menu has it). `crashdump=off` on the kernel
+command line writes no dump, and `crashlog=off` neither a log nor a dump
+(`dukovo-boot(7)`).
+
+To check on a machine that a panic leaves a dump, panic it on purpose:
+
+```sh
+elevate dumps test
+```
+
+`dumps test` asks you to type `panic`, has the filesystems write their
+changes out, as `sync` does, then panics the kernel, which restarts the
+machine. After the restart the dump is listed: `elevate dumps list` shows
+`dumps test: a panic asked for on purpose`. `dumps(8)` describes the
+command, and `radix-debug(7)` the dump's format.
+
 ## The kernel debugger
 
 On QEMU, `kdb` gives a command line on the serial port, which `./ob run`
@@ -158,7 +226,8 @@ from the very start, then type `trace` in `kdb` to see them:
 When you report a kernel crash in an issue, include:
 
 - the whole panic report (a photo of the screen is fine) and, if the
-  machine restarted, the crash log lines from the next boot;
+  machine restarted, the crash log lines from the next boot and, once
+  you have read it, the dump (`elevate dumps show > crash.txt`);
 - the output of `git rev-parse HEAD` for the source you built;
 - the machine, and whether it booted through UEFI or legacy BIOS (the
   `Firmware:` line at the top of the boot log);

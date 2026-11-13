@@ -52,6 +52,8 @@
 //! its name, lists and changes the firmware's boot entries (ADR 0313).
 //! `changes` says what changed between two starts, from the record the
 //! health check keeps of each (ADR 0500).
+//! `dumps` saves the kernel's crash dump at the boot after a panic, and
+//! lists, shows and deletes the saved ones (ADR 0483).
 //! `audiocd` lists, plays and rips music CDs (ADR 0447); `burn` writes
 //! CDs, DVDs and Blu-ray discs, of data or of audio, and `mkiso` makes a
 //! disc image of a folder (ADR 0449).
@@ -90,6 +92,7 @@ mod discoverd;
 mod diskhealth;
 mod dmesg;
 mod dukofetch;
+mod dumps;
 mod e1000d;
 mod ectool;
 mod efiboot;
@@ -234,6 +237,7 @@ const TOOLS: &[(&str, Tool)] = &[
     ("dmesg", dmesg::main),
     ("dukofetch", dukofetch::main),
     ("dukovo-rescue", rescue::main),
+    ("dumps", dumps::main),
     ("e1000d", e1000d::main),
     ("ectool", ectool::main),
     ("efiboot", efiboot::main),

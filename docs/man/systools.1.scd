@@ -33,7 +33,9 @@ process's system calls (*radix-trace*(2)); *dmesg*(1) reads the kernel's
 log through _/devices/kmsg_ (*radix-files*(7)), and *logd*(8) keeps it
 as the system's log and its audit log, which *log*(1) and
 *journalctl*(1) read, *logtrim*(8) trims and *logger*(1) writes a line
-to, and *logforward*(8) sends to syslog servers; *notifyd*(8) passes the
+to, and *logforward*(8) sends to syslog servers; *dumps*(8) saves and
+reads the dump the kernel writes when it panics (*radix-debug*(7));
+*notifyd*(8) passes the
 notifications *notify-send*(1) sends to the console, and
 *notifications*(1) lists them; *ip*(8) and *ss*(8) read the network's
 interfaces and sockets from *radix-sysfs*(5) and *radix-proc*(5), and
@@ -93,6 +95,8 @@ error that starts with the tool's name.
 :  the kernel's log
 |  *dukofetch*(1)
 :  the system at a glance, beside Duke
+|  *dumps*(8)
+:  save, list, show and delete the kernel's crash dumps
 |  *ectool*(8)
 :  set the embedded controller's fans, fan curves, LEDs and ARGB header
 |  *efiboot*(8), *efibootmgr*(8)

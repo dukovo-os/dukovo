@@ -161,6 +161,9 @@ pub struct PerCpu {
     /// Where the panic path's NMI stopped this CPU: the interrupted
     /// instruction and its callers, 0 past the last.
     pub stopped_at: [AtomicUsize; STOPPED_FRAMES],
+    /// The stack pointer where the panic path's NMI stopped this CPU, for
+    /// the crash dump's copy of its stack.
+    pub stopped_sp: AtomicUsize,
     /// Timer interrupts taken.
     pub ticks: AtomicU64,
     /// Whether the interrupt being handled came from user mode.
@@ -231,6 +234,7 @@ impl PerCpu {
             online: AtomicBool::new(false),
             stopped: AtomicBool::new(false),
             stopped_at: [const { AtomicUsize::new(0) }; STOPPED_FRAMES],
+            stopped_sp: AtomicUsize::new(0),
             ticks: AtomicU64::new(0),
             interrupted_user: AtomicBool::new(false),
             pings: AtomicU64::new(0),

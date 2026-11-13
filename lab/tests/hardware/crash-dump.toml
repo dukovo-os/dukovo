@@ -1,0 +1,98 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "dumps test panics the kernel on purpose: the serial cable carries the panic's report, the machine restarts by itself, and its next start keeps the kernel's crash dump (ADR 0483), which the dumps service saves in /system/state/crash, root's alone, and names in the log as a warning; dumps list and dumps show read it, with its sections and the crashed start's log. Needs a machine whose firmware keeps its RAM through a restart: a cold start or a firmware that clears the RAM loses the dump, and the test is skipped"
+time = "10m"
+
+# Only root reads the dumps, and dumps says to elevate.
+[[step]]
+run = "dumps list"
+exit = 1
+expect = "only root reads the crash dumps; try elevate dumps"
+[[step]]
+run = "cat /devices/crashdump"
+exit = 1
+expect = "Permission denied"
+
+# The dumps of earlier panics would be taken for this test's own, so it
+# starts with none.
+[[step]]
+run = "sh -c 'dumps delete --all; dumps list'"
+root = true
+expect = "no crash dumps saved"
+
+# The panic comes a moment after the command returns, so that SSH hands
+# back its exit status before the connection goes; dumps test has the
+# filesystems write their changes out first. The kernel warns that a test
+# panic was asked for, the report goes out on the serial cable, and the
+# restart follows by itself, as the boot menu's panic=10 has it.
+[[step]]
+run = "sh -c '(sleep 2; dumps test --yes) > /dev/null 2>&1 &'"
+root = true
+[[step]]
+serial = "Crash dump: a test panic was asked for by process "
+[[step]]
+serial = "RADIX KERNEL PANIC"
+[[step]]
+serial = "dumps test: a panic asked for on purpose"
+[[step]]
+serial = "Boot complete."
+[[step]]
+wait = "ready"
+
+# The machine's firmware kept the RAM, or there is no dump to find.
+[[step]]
+run = "dumps list"
+root = true
+expect = "dumps test: a panic asked for on purpose"
+or_skip = "needs a machine whose firmware keeps its RAM through a restart"
+
+# The kernel said at the start that it kept the dump, whole.
+[[step]]
+run = "dmesg"
+root = true
+expect = "Crash log: the previous boot's dump is kept for dumps(8) ("
+expect_not = ", cut short)"
+
+# The dumps service saved it, in a file and a folder that are root's alone,
+# and said so in the log, as a warning, naming the panic.
+[[step]]
+run = "sh -c 'ls -ld /system/state/crash && ls -l /system/state/crash'"
+root = true
+expect = ["drwx------", "-rw-------", "boot", ".txt"]
+[[step]]
+run = "log -s dumps -p warning"
+root = true
+expect = "the previous boot ended with a kernel panic: dumps test: a panic asked for on purpose"
+
+# What the dump holds: the report, the kernel's state, the stack of a CPU
+# and the crashed start's log, which has the kernel's warning that the
+# test panic was asked for. The dump is not cut short.
+[[step]]
+run = "dumps show"
+root = true
+expect = [
+    "Radix crash dump",
+    "== Panic",
+    "== CPUs",
+    "== Threads",
+    "== Run queues",
+    "== Locks",
+    "== Memory",
+    "== Stack of CPU ",
+    "== Log",
+    "Crash dump: a test panic was asked for by process ",
+]
+expect_not = ["the dump is cut short here", "the dump ends here"]
+
+# A second save finds it saved, and the path is the file's.
+[[step]]
+run = "sh -c 'dumps save; dumps path'"
+root = true
+expect = ["is already saved as ", "/system/state/crash/"]
+
+# The test leaves no dump behind.
+[[step]]
+run = "sh -c 'dumps delete --all; dumps list'"
+root = true
+expect = "no crash dumps saved"

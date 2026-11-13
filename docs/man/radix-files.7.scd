@@ -200,7 +200,11 @@ changed, kept by tmpfs and Btrfs; FAT and exFAT give *modified*.
 	of console *N*, whose line carries bytes as they are, and a named
 	port is linked from _virtio-ports/_*name*, as on Linux:
 	_virtio-ports/org.qemu.guest_agent.0_ is the port QEMU's guest agent
-	is reached on (ADR 0327).
+	is reached on (ADR 0327). _crashdump_ is the crash dump the previous
+	boot left when it panicked, then that boot's log, root's alone
+	(mode 0600) and empty when it left none; writing *panic* and a line
+	end to it panics the kernel on purpose (*radix-debug*(7),
+	*dumps*(8), ADR 0483).
 
 *bootfs*
 	The boot archive (*radix-processes*(7)), read-only, with the

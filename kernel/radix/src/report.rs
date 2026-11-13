@@ -6,7 +6,10 @@
 
 use core::fmt;
 
-use radix_hal::{BootParams, CpuInfo, MemoryKind, MemoryRegion, Reservation, Smp};
+use radix_hal::{
+    BootParams, CpuInfo, InterruptController, MemoryKind, MemoryRegion, PageTable, Reservation,
+    Smp, Timer,
+};
 use radix_klog::info;
 use radix_mm::{FRAMES, HEAP, PAGE_SIZE};
 
@@ -147,6 +150,50 @@ pub fn write_cpus(line: &mut dyn FnMut(fmt::Arguments<'_>)) {
             if online { "online" } else { "offline" }
         ));
     }
+}
+
+/// Writes the CPUs, with the timer interrupts and pings each has taken:
+/// for kdb's `cpus` and the crash dump.
+pub fn write_cpu_activity(line: &mut dyn FnMut(fmt::Arguments<'_>)) {
+    line(format_args!(
+        "{} CPUs, interrupts by {}, timer at {} Hz:",
+        Arch::cpu_count(),
+        Arch::name(),
+        Arch::tick_hz()
+    ));
+    for index in 0..Arch::cpu_count() {
+        let Some(cpu) = Arch::cpu_info(index) else { continue };
+        line(format_args!(
+            "  cpu{index}: APIC ID {}{}, {}, {} timer interrupts, {} pings",
+            cpu.hardware_id,
+            if cpu.boot_cpu { ", boot CPU" } else { "" },
+            if cpu.online { "online" } else { "offline" },
+            Arch::ticks(index),
+            Arch::pings_received(index)
+        ));
+    }
+}
+
+/// Writes the memory map, the kernel's reservations, the frame allocator's
+/// zones and the page cache: for kdb's `mem` and the crash dump.
+pub fn write_memory(line: &mut dyn FnMut(fmt::Arguments<'_>)) {
+    let Some(boot) = crate::boot_summary() else {
+        line(format_args!("the memory map was not recorded"));
+        return;
+    };
+    line(format_args!("Memory map:"));
+    write_memory_map(boot.memory_map, line);
+    line(format_args!("Reserved by the kernel:"));
+    write_reservations(boot.reservations, line);
+    line(format_args!("Frame allocator zones:"));
+    write_zones(line);
+    let (dropped, failed) = crate::fs::writeback::stats();
+    line(format_args!(
+        "Page cache: {} pages held, {dropped} dropped to reclaim memory, {failed} failed \
+         write-backs",
+        radix_block::mem::pages()
+    ));
+    Arch::describe(line);
 }
 
 /// Logs the CPU list.

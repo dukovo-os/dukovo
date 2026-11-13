@@ -12,8 +12,15 @@
 //! The region is split into two slots, each a 64-byte header followed by a
 //! ring of text. Each boot writes the slot the previous boot did not use,
 //! so the previous log survives until the boot after next. A slot's header
-//! records the boot number and how that boot ended. The format is
-//! described in radix-debug(7).
+//! records the boot number and how that boot ended.
+//!
+//! A region with room for them ends in two dump slots of [`DUMP_AREA`]
+//! between them (ADR 0483): when the kernel panics, it writes a crash dump,
+//! a text report of its state, into the dump slot that goes with its log's
+//! slot, and the next boot hands it to dumps(8). The log's slots keep the
+//! layout they have in a region without dumps, so a log that a kernel
+//! without dumps wrote still reads. The format is described in
+//! radix-debug(7).
 
 use core::fmt;
 
@@ -90,6 +97,14 @@ fn read_u64(bytes: &[u8], offset: usize) -> u64 {
     u64::from_le_bytes(bytes[offset..offset + 8].try_into().expect("8 bytes"))
 }
 
+fn put_u32(bytes: &mut [u8], offset: usize, value: u32) {
+    bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+}
+
+fn put_u64(bytes: &mut [u8], offset: usize, value: u64) {
+    bytes[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
+}
+
 /// FNV-1a over the header bytes before the checksum field.
 fn checksum(header: &[u8]) -> u32 {
     header[..OFF_CHECKSUM]
@@ -137,6 +152,8 @@ pub struct Previous<'a> {
     /// Its text in order: `older` then `newer`.
     older: &'a [u8],
     newer: &'a [u8],
+    /// Whether the ring wrapped, so that `older` starts in a line.
+    wrapped: bool,
 }
 
 impl<'a> Previous<'a> {
@@ -149,6 +166,7 @@ impl<'a> Previous<'a> {
                 ending: header.ending,
                 older: &ring[..header.written as usize],
                 newer: &[],
+                wrapped: false,
             }
         } else {
             // The ring wrapped: the oldest byte is at the write position.
@@ -158,6 +176,23 @@ impl<'a> Previous<'a> {
                 ending: header.ending,
                 older: &ring[start..],
                 newer: &ring[..start],
+                wrapped: true,
+            }
+        }
+    }
+
+    /// The text kept, oldest first, as two parts of the ring. When the
+    /// ring has wrapped, the line it cut is left out, so the text starts
+    /// with a whole line.
+    pub fn text(&self) -> (&'a [u8], &'a [u8]) {
+        if !self.wrapped {
+            return (self.older, self.newer);
+        }
+        match self.older.iter().position(|&byte| byte == b'\n') {
+            Some(end) => (&self.older[end + 1..], self.newer),
+            None => {
+                let end = self.newer.iter().position(|&byte| byte == b'\n');
+                (&[], end.map_or(&[][..], |end| &self.newer[end + 1..]))
             }
         }
     }
@@ -247,9 +282,186 @@ impl Iterator for Lines<'_> {
     }
 }
 
+/// First eight bytes of a dump slot that holds a dump.
+pub const DUMP_MAGIC: [u8; 8] = *b"RADIXDMP";
+/// The dump format's version.
+pub const DUMP_VERSION: u32 = 1;
+/// Bytes at the end of a region that its two dump slots take.
+pub const DUMP_AREA: usize = 1 << 20;
+/// Bytes of a dump slot, its header included.
+const DUMP_SLOT: usize = DUMP_AREA / 2;
+/// The last line of a dump that filled its slot.
+pub const DUMP_FULL: &str = "(the dump is cut short here: it filled its 512 KiB)\n";
+const _: () = assert!(DUMP_SLOT == 512 * 1024);
+/// Room a dump keeps for [`DUMP_FULL`] and the line end before it.
+const DUMP_RESERVE: usize = DUMP_FULL.len() + 1;
+
+const OFF_DUMP_BOOT: usize = 12;
+const OFF_DUMP_TIME: usize = 16;
+const OFF_DUMP_LEN: usize = 24;
+const OFF_DUMP_CRC: usize = 28;
+const OFF_DUMP_STATE: usize = 32;
+
+/// How much of a dump there is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DumpState {
+    /// Every section was written.
+    Whole,
+    /// It ends after its last whole section: the slot filled, or the
+    /// kernel failed again, or the machine stopped, while writing it.
+    CutShort,
+}
+
+impl DumpState {
+    fn code(self) -> u32 {
+        match self {
+            DumpState::Whole => 1,
+            DumpState::CutShort => 2,
+        }
+    }
+
+    fn from_code(code: u32) -> Option<DumpState> {
+        match code {
+            1 => Some(DumpState::Whole),
+            2 => Some(DumpState::CutShort),
+            _ => None,
+        }
+    }
+}
+
+/// CRC-32 as IEEE 802.3 and zlib's `crc32` have it, one byte at a time.
+const CRC_TABLE: [u32; 256] = {
+    let mut table = [0u32; 256];
+    let mut index = 0;
+    while index < 256 {
+        let mut crc = index as u32;
+        let mut bit = 0;
+        while bit < 8 {
+            crc = if crc & 1 != 0 { 0xedb8_8320 ^ (crc >> 1) } else { crc >> 1 };
+            bit += 1;
+        }
+        table[index] = crc;
+        index += 1;
+    }
+    table
+};
+
+/// The CRC-32 of the bytes whose CRC-32 is `crc` (0 for none) followed by
+/// `bytes`.
+fn crc32(crc: u32, bytes: &[u8]) -> u32 {
+    !bytes
+        .iter()
+        .fold(!crc, |crc, &byte| CRC_TABLE[((crc ^ u32::from(byte)) & 0xff) as usize] ^ (crc >> 8))
+}
+
+/// This boot's crash dump, which the panic path writes into its slot.
+///
+/// The text goes into the slot as it comes, and [`Dump::seal`] writes the
+/// header that makes it a dump: how long it is and its CRC-32. The panic
+/// path seals after each section, as cut short, and once at the end as
+/// whole, so that a dump the kernel could not finish still holds every
+/// section before the one it failed in, and says it is cut short.
+pub struct Dump<'a> {
+    slot: &'a mut [u8],
+    boot: u32,
+    wall_ns: u64,
+    /// Bytes of text written, and their CRC-32.
+    len: usize,
+    crc: u32,
+    /// Whether the slot filled, which ends the dump.
+    full: bool,
+}
+
+impl Dump<'_> {
+    /// Appends `text`. Text that does not fit is cut at the end of a
+    /// character, the line [`DUMP_FULL`] follows it, and the dump takes
+    /// nothing more: false from then on.
+    pub fn write(&mut self, text: &str, flush: &mut dyn FnMut(&[u8])) -> bool {
+        if self.full {
+            return false;
+        }
+        let room = self.slot.len() - HEADER - DUMP_RESERVE - self.len;
+        if text.len() <= room {
+            self.append(text.as_bytes(), flush);
+            return true;
+        }
+        let mut fits = room;
+        while !text.is_char_boundary(fits) {
+            fits -= 1;
+        }
+        self.append(&text.as_bytes()[..fits], flush);
+        if self.len > 0 && self.slot[HEADER + self.len - 1] != b'\n' {
+            self.append(b"\n", flush);
+        }
+        self.append(DUMP_FULL.as_bytes(), flush);
+        self.full = true;
+        false
+    }
+
+    fn append(&mut self, bytes: &[u8], flush: &mut dyn FnMut(&[u8])) {
+        let at = HEADER + self.len..HEADER + self.len + bytes.len();
+        self.slot[at.clone()].copy_from_slice(bytes);
+        flush(&self.slot[at]);
+        self.crc = crc32(self.crc, bytes);
+        self.len += bytes.len();
+    }
+
+    /// Writes the header for the text so far, as `state`, or as cut short
+    /// once the slot has filled. The text is in memory before its header
+    /// says so: `flush` has had each part of it.
+    pub fn seal(&mut self, state: DumpState, flush: &mut dyn FnMut(&[u8])) {
+        let state = if self.full { DumpState::CutShort } else { state };
+        let header = &mut self.slot[..HEADER];
+        header[..8].copy_from_slice(&DUMP_MAGIC);
+        put_u32(header, OFF_VERSION, DUMP_VERSION);
+        put_u32(header, OFF_DUMP_BOOT, self.boot);
+        put_u64(header, OFF_DUMP_TIME, self.wall_ns);
+        put_u32(header, OFF_DUMP_LEN, self.len as u32);
+        put_u32(header, OFF_DUMP_CRC, self.crc);
+        put_u32(header, OFF_DUMP_STATE, state.code());
+        flush(header);
+    }
+}
+
+/// The crash dump of the boot before this one.
+#[derive(Clone, Copy, Debug)]
+pub struct PreviousDump<'a> {
+    /// That boot's number.
+    pub boot: u32,
+    /// When it panicked, in nanoseconds since 1970 (UTC); 0 when the
+    /// kernel did not know the time.
+    pub wall_ns: u64,
+    /// Whether every section is there.
+    pub state: DumpState,
+    /// The dump: UTF-8 text, a line ending each line.
+    pub text: &'a [u8],
+}
+
+/// The dump in `slot`, if it holds one whose text matches its CRC-32.
+fn parse_dump(slot: &[u8]) -> Option<PreviousDump<'_>> {
+    let header = &slot[..HEADER];
+    if header[..8] != DUMP_MAGIC || read_u32(header, OFF_VERSION) != DUMP_VERSION {
+        return None;
+    }
+    let len = read_u32(header, OFF_DUMP_LEN) as usize;
+    let text = slot.get(HEADER..HEADER.checked_add(len)?)?;
+    if crc32(0, text) != read_u32(header, OFF_DUMP_CRC) {
+        return None;
+    }
+    Some(PreviousDump {
+        boot: read_u32(header, OFF_DUMP_BOOT),
+        wall_ns: read_u64(header, OFF_DUMP_TIME),
+        state: DumpState::from_code(read_u32(header, OFF_DUMP_STATE))?,
+        text,
+    })
+}
+
 /// The crash log of the running boot.
 pub struct CrashLog {
     region: &'static mut [u8],
+    /// Bytes at the start of the region that the log's two slots take;
+    /// the dump slots, if there is room for them, follow.
+    log_len: usize,
     current: usize,
     header: Header,
     previous: Option<(usize, Header)>,
@@ -257,14 +469,20 @@ pub struct CrashLog {
 
 impl CrashLog {
     /// Takes over `region`: finds the previous boot's slot, if any, and
-    /// starts this boot's log in the other one.
+    /// starts this boot's log in the other one. A region of at least
+    /// [`DUMP_AREA`] more than [`MIN_REGION`] keeps its last [`DUMP_AREA`]
+    /// for dumps, and this boot's dump slot is emptied.
     ///
     /// Returns `None` if the region is smaller than [`MIN_REGION`].
     pub fn open(region: &'static mut [u8]) -> Option<CrashLog> {
         if region.len() < MIN_REGION {
             return None;
         }
-        let half = region.len() / 2;
+        let log_len = match region.len().checked_sub(DUMP_AREA) {
+            Some(log_len) if log_len >= MIN_REGION => log_len,
+            _ => region.len(),
+        };
+        let half = log_len / 2;
         let slots = [parse_header(&region[..half]), parse_header(&region[half..2 * half])];
         let previous = match slots {
             [Some(a), Some(b)] if b.boot > a.boot => Some((1, b)),
@@ -278,14 +496,30 @@ impl CrashLog {
         };
         let boot = previous.map_or(1, |(_, header)| header.boot.wrapping_add(1).max(1));
         let header = Header { boot, ending: Ending::Running, written: 0 };
-        let mut log = CrashLog { region, current, header, previous };
+        let mut log = CrashLog { region, log_len, current, header, previous };
         let slot = log.slot_mut(current);
         write_header(slot, header);
+        // A dump left from the boot before last is not this boot's.
+        if let Some(slot) = log.dump_slot_mut(current) {
+            slot[..HEADER].fill(0);
+        }
         Some(log)
     }
 
     fn half(&self) -> usize {
-        self.region.len() / 2
+        self.log_len / 2
+    }
+
+    /// Dump slot `index`, which goes with log slot `index`, if the region
+    /// has room for dumps.
+    fn dump_slot(&self, index: usize) -> Option<&[u8]> {
+        let start = self.log_len + index * DUMP_SLOT;
+        (self.region.len() > self.log_len).then(|| &self.region[start..start + DUMP_SLOT])
+    }
+
+    fn dump_slot_mut(&mut self, index: usize) -> Option<&mut [u8]> {
+        let start = self.log_len + index * DUMP_SLOT;
+        (self.region.len() > self.log_len).then(|| &mut self.region[start..start + DUMP_SLOT])
     }
 
     fn slot(&self, index: usize) -> &[u8] {
@@ -307,6 +541,34 @@ impl CrashLog {
     pub fn previous(&self) -> Option<Previous<'_>> {
         let (index, header) = self.previous?;
         Some(Previous::new(self.slot(index), header))
+    }
+
+    /// The previous boot's log as it was written, oldest first, as two
+    /// parts of its ring ([`Previous::text`]).
+    pub fn previous_text(&self) -> Option<(&[u8], &[u8])> {
+        Some(self.previous()?.text())
+    }
+
+    /// The previous boot's crash dump: there is one when that boot ended
+    /// with a panic and its dump slot holds a dump of that boot.
+    pub fn previous_dump(&self) -> Option<PreviousDump<'_>> {
+        let (index, header) = self.previous?;
+        if header.ending != Ending::Panicked {
+            return None;
+        }
+        parse_dump(self.dump_slot(index)?).filter(|dump| dump.boot == header.boot)
+    }
+
+    /// Starts this boot's crash dump, from the panic path: `None` if the
+    /// region has no room for dumps. `wall_ns` is the time of the panic,
+    /// in nanoseconds since 1970 (UTC), or 0 if the kernel does not know
+    /// it. Until the first [`Dump::seal`], the slot holds no dump.
+    pub fn begin_dump(&mut self, wall_ns: u64, flush: &mut dyn FnMut(&[u8])) -> Option<Dump<'_>> {
+        let boot = self.header.boot;
+        let slot = self.dump_slot_mut(self.current)?;
+        slot[..HEADER].fill(0);
+        flush(&slot[..HEADER]);
+        Some(Dump { slot, boot, wall_ns, len: 0, crc: 0, full: false })
     }
 
     /// Appends `text` to this boot's log. `flush` is called with every
@@ -434,5 +696,180 @@ mod tests {
         let log = CrashLog::open(memory).unwrap();
         assert!(log.previous().is_none());
         assert_eq!(log.boot(), 1);
+    }
+
+    /// A region with a log of 4 KiB and room for dumps.
+    fn with_dumps() -> &'static mut [u8] {
+        region(4096 + DUMP_AREA)
+    }
+
+    /// The boot after `log`'s, which ended as `ending`.
+    fn next_boot(mut log: CrashLog, ending: Ending) -> CrashLog {
+        log.set_ending(ending, &mut no_flush());
+        CrashLog::open(log.into_region()).unwrap()
+    }
+
+    /// Writes a dump of `sections`, sealing it after each, cut short, and
+    /// at the end as `last`.
+    fn dump(log: &mut CrashLog, sections: &[&str], last: DumpState) {
+        let mut dump = log.begin_dump(1_763_028_131_000_000_000, &mut no_flush()).unwrap();
+        for section in sections {
+            dump.write(section, &mut no_flush());
+            dump.seal(DumpState::CutShort, &mut no_flush());
+        }
+        dump.seal(last, &mut no_flush());
+    }
+
+    fn text(dump: PreviousDump<'_>) -> &str {
+        core::str::from_utf8(dump.text).unwrap()
+    }
+
+    #[test]
+    fn crc32_is_ieee_and_continues_across_parts() {
+        assert_eq!(crc32(0, b"123456789"), 0xcbf4_3926);
+        assert_eq!(crc32(crc32(0, b"1234"), b"56789"), 0xcbf4_3926);
+        assert_eq!(crc32(0, b""), 0);
+    }
+
+    #[test]
+    fn a_dump_reads_back_at_the_boot_after_the_panic() {
+        let mut log = CrashLog::open(with_dumps()).unwrap();
+        log.write("[    0.1] hello\n", &mut no_flush());
+        let mut flushed = 0;
+        let mut dump = log.begin_dump(1_763_028_131_000_000_000, &mut |_| ()).unwrap();
+        dump.write("Radix crash dump\n", &mut |bytes| flushed += bytes.len());
+        dump.write("== Panic\noops\n", &mut |bytes| flushed += bytes.len());
+        dump.seal(DumpState::Whole, &mut |bytes| flushed += bytes.len());
+        assert_eq!(flushed, 31 + HEADER);
+        assert!(log.previous_dump().is_none());
+
+        let log = next_boot(log, Ending::Panicked);
+        let previous = log.previous_dump().unwrap();
+        assert_eq!((previous.boot, previous.state), (1, DumpState::Whole));
+        assert_eq!(previous.wall_ns, 1_763_028_131_000_000_000);
+        assert_eq!(text(previous), "Radix crash dump\n== Panic\noops\n");
+        // The log is there as before.
+        assert!(log.previous().unwrap().contains("hello"));
+    }
+
+    #[test]
+    fn a_dump_ends_at_its_last_seal_and_says_it_is_cut_short() {
+        let mut log = CrashLog::open(with_dumps()).unwrap();
+        let mut dump = log.begin_dump(0, &mut no_flush()).unwrap();
+        dump.write("== Panic\noops\n", &mut no_flush());
+        dump.seal(DumpState::CutShort, &mut no_flush());
+        // The kernel failed again in the next section.
+        dump.write("== Threads\nhalf a li", &mut no_flush());
+        let log = next_boot(log, Ending::Panicked);
+        let previous = log.previous_dump().unwrap();
+        assert_eq!((previous.state, previous.wall_ns), (DumpState::CutShort, 0));
+        assert_eq!(text(previous), "== Panic\noops\n");
+    }
+
+    #[test]
+    fn a_dump_that_fills_its_slot_ends_with_a_line_saying_so() {
+        let mut log = CrashLog::open(with_dumps()).unwrap();
+        let mut dump = log.begin_dump(0, &mut no_flush()).unwrap();
+        // Two bytes a character, so the slot fills in the middle of one.
+        let line = format!("{}\n", "é".repeat(100));
+        let mut lines = 0;
+        while dump.write(&line, &mut no_flush()) {
+            lines += 1;
+        }
+        assert!(!dump.write("more\n", &mut no_flush()));
+        dump.seal(DumpState::Whole, &mut no_flush());
+        let log = next_boot(log, Ending::Panicked);
+        let previous = log.previous_dump().unwrap();
+        assert_eq!(previous.state, DumpState::CutShort);
+        let text = text(previous);
+        assert!(text.ends_with("é\n(the dump is cut short here: it filled its 512 KiB)\n"));
+        assert!(text.starts_with(&line.repeat(lines)));
+        assert!(previous.text.len() <= DUMP_SLOT - HEADER);
+        assert!(previous.text.len() > DUMP_SLOT - HEADER - DUMP_RESERVE - line.len());
+    }
+
+    #[test]
+    fn there_is_no_dump_unless_the_previous_boot_panicked_and_wrote_one() {
+        // A boot that panicked without writing one: crashdump=off.
+        let log = next_boot(CrashLog::open(with_dumps()).unwrap(), Ending::Panicked);
+        assert!(log.previous_dump().is_none());
+
+        // A boot that wrote one and then restarted after all.
+        let mut log = CrashLog::open(with_dumps()).unwrap();
+        dump(&mut log, &["== Panic\n"], DumpState::Whole);
+        assert!(next_boot(log, Ending::Restarted).previous_dump().is_none());
+
+        // A dump whose text changed.
+        let mut log = CrashLog::open(with_dumps()).unwrap();
+        dump(&mut log, &["== Panic\n"], DumpState::Whole);
+        log.set_ending(Ending::Panicked, &mut no_flush());
+        let memory = log.into_region();
+        memory[4096 + HEADER + 3] ^= 1;
+        assert!(CrashLog::open(memory).unwrap().previous_dump().is_none());
+
+        // A dump of another boot in the previous boot's slot.
+        let mut log = CrashLog::open(with_dumps()).unwrap();
+        dump(&mut log, &["boot one\n"], DumpState::Whole);
+        let log = next_boot(next_boot(log, Ending::Panicked), Ending::Panicked);
+        assert_eq!(log.previous().unwrap().boot, 2);
+        let memory = log.into_region();
+        memory.copy_within(4096..4096 + DUMP_SLOT, 4096 + DUMP_SLOT);
+        let log = CrashLog::open(memory).unwrap();
+        assert_eq!(log.previous().unwrap().boot, 3);
+        assert!(log.previous_dump().is_none());
+    }
+
+    #[test]
+    fn dump_slots_alternate_with_the_logs_slots() {
+        let mut log = CrashLog::open(with_dumps()).unwrap();
+        dump(&mut log, &["boot one\n"], DumpState::Whole);
+        let mut log = next_boot(log, Ending::Panicked);
+        assert_eq!(text(log.previous_dump().unwrap()), "boot one\n");
+        dump(&mut log, &["boot two\n"], DumpState::Whole);
+        let log = next_boot(log, Ending::Panicked);
+        let previous = log.previous_dump().unwrap();
+        assert_eq!((previous.boot, text(previous)), (2, "boot two\n"));
+        // Boot two's log was in the second slot, and so was its dump; boot
+        // three emptied the first, its own.
+        let memory = log.into_region();
+        assert_eq!(memory[4096 + DUMP_SLOT..][..8], DUMP_MAGIC);
+        assert_eq!(memory[4096..][..HEADER], [0; HEADER]);
+    }
+
+    #[test]
+    fn a_region_without_room_for_dumps_keeps_its_log_as_before() {
+        let mut log = CrashLog::open(region(1 << 20)).unwrap();
+        assert!(log.begin_dump(0, &mut no_flush()).is_none());
+        log.write("an older kernel's log\n", &mut no_flush());
+        log.set_ending(Ending::Panicked, &mut no_flush());
+        let old = log.into_region();
+        // The region a kernel with dumps reserves starts with the old one.
+        let memory = region((1 << 20) + DUMP_AREA);
+        memory[..1 << 20].copy_from_slice(old);
+        let log = CrashLog::open(memory).unwrap();
+        let previous = log.previous().unwrap();
+        assert_eq!((previous.boot, previous.ending), (1, Ending::Panicked));
+        assert!(previous.contains("an older kernel's log"));
+        assert!(log.previous_dump().is_none());
+    }
+
+    #[test]
+    fn the_previous_text_starts_with_a_whole_line() {
+        let mut log = CrashLog::open(region(MIN_REGION)).unwrap();
+        log.write("one\ntwo\n", &mut no_flush());
+        let mut log = next_boot(log, Ending::Running);
+        assert_eq!(log.previous_text(), Some((&b"one\ntwo\n"[..], &b""[..])));
+        for i in 0..200 {
+            log.write(&format!("line {i}\n"), &mut no_flush());
+        }
+        let log = next_boot(log, Ending::Running);
+        let (older, newer) = log.previous_text().unwrap();
+        let text = [older, newer].concat();
+        let text = core::str::from_utf8(&text).unwrap();
+        assert!(text.starts_with("line "), "{text}");
+        assert!(text.ends_with("line 199\n"));
+        let numbers: Vec<u32> =
+            text.lines().map(|line| line["line ".len()..].parse().unwrap()).collect();
+        assert!(numbers.windows(2).all(|pair| pair[1] == pair[0] + 1));
     }
 }

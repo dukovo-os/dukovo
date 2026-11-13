@@ -33,6 +33,7 @@ as below.
 | --- | --- | --- |
 | The system's log and its audit log | `/system/state/log`, kept by logd | 90 days, and a year for the audit log, in at most 4 GiB or a tenth of their file system ("Logs, monitoring and troubleshooting") |
 | The crash log | Reserved memory, shown at the next boot and kept in the log | Until the log trims it |
+| Crash dumps | Reserved memory until the next boot, then `/system/state/crash`, readable by root alone | The ten newest, in at most 64 MiB ("Debugging the kernel") |
 | Notifications | notifyd's memory only | The last 64, until notifyd stops |
 
 A crash report goes nowhere by itself: to report a crash, copy what

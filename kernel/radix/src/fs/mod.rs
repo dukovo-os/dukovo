@@ -40,6 +40,7 @@
 //! with any of the store's locks held.
 
 pub mod capture;
+pub mod crashdump;
 pub mod devfs;
 pub mod disk;
 mod events;
