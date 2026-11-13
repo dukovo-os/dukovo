@@ -1618,7 +1618,8 @@ _target/userspace/_).
 		Test the lab image already in _out_.
 
 	*--image* _file_
-		Test this image instead of building one.
+		Test this image instead of building one. The service bundles'
+		tests use the catalog bundles this tree packed already, if any.
 
 	*--lab-key* _file_
 		The lab's public key, as *image --lab* takes it.
