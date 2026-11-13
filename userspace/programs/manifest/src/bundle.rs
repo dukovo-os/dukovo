@@ -257,7 +257,7 @@ fn json_error(err: &serde_json::Error) -> Error {
         .replace("invalid type: ", "");
     match err.line() {
         0 => Error::new(message),
-        line => Error { line: Some(line), message },
+        line => Error::at(line, message),
     }
 }
 
@@ -1943,7 +1943,7 @@ impl Service {
         let (requires, wants, after) =
             (names(&self.requires), names(&self.wants), names(&self.after));
         if let Err(why) = service::check_named_once(&requires, &wants, &after) {
-            mistakes.push(("after", why));
+            mistakes.push(("after", why.to_string()));
         }
         if self.give_up_after > service::GIVE_UP_AFTER_MAX {
             mistakes.push((

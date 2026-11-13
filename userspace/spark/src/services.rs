@@ -236,10 +236,16 @@ fn convert(dir: &Dir, name: &str) -> Result<(), String> {
 /// reads the file as present but blank. (A power cut just after boot
 /// used to wipe the service files this way, so no service started.)
 pub(crate) fn write_new(dir: &Dir, path: &str, text: &str) -> Result<(), String> {
+    write_bytes(dir, path, text.as_bytes())
+}
+
+/// Writes `bytes` to `path` in `dir` whole or not at all, as
+/// [`write_new`] writes text.
+pub(crate) fn write_bytes(dir: &Dir, path: &str, bytes: &[u8]) -> Result<(), String> {
     let new = format!("{path}.new");
     dir.create(&new)
         .and_then(|file| {
-            file.write_all_at(0, text.as_bytes())?;
+            file.write_all_at(0, bytes)?;
             // The new file's data must be on the disk before the rename,
             // and the rename on the disk after it.
             file.sync()?;

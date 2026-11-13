@@ -6,7 +6,8 @@ use alloc::vec::Vec;
 use alloc::{format, vec};
 
 use crate::legacy;
-use crate::service::{self, Oom, PciId, Place, Ports, Restart};
+use crate::service::{self, Oom, Override, PciId, Place, Ports, Restart};
+use crate::{Error, Source};
 
 /// The service files Dukovo ships, and those of the boot tests.
 const SHIPPED: &[(&str, &str)] = &[
@@ -788,4 +789,287 @@ fn version_2_s_mistakes_are_named_in_plain_words() {
         error("service_version = 2\nprogram = \"/x\"\n[ready]\nwhen = \"listening\""),
         "ready.when = \"listening\" needs the ports it listens on in network.listen"
     );
+}
+
+/// The error reading `text` gives, whole.
+fn failure(text: &str) -> Error {
+    service::from_toml(text).unwrap_err()
+}
+
+/// Where `error` is: its line, column, width and key.
+fn place(error: &Error) -> (Option<usize>, Option<usize>, usize, Option<&str>) {
+    (error.line, error.column, error.width, error.key.as_deref())
+}
+
+#[test]
+fn an_unknown_key_is_placed_and_the_nearest_is_offered() {
+    let wrong = failure(&file("discription = \"x\""));
+    assert_eq!(place(&wrong), (Some(3), Some(1), 11, Some("discription")));
+    assert_eq!(wrong.message, "`discription` is not a setting here; service.toml(5) lists them");
+    assert_eq!(wrong.fix.as_deref(), Some("did you mean `description`?"));
+    // What Spark logs says what it always did.
+    assert_eq!(
+        wrong.to_string(),
+        "line 3: `discription` is not a setting here; service.toml(5) lists them"
+    );
+    // In a table, after what comes before it on its line.
+    let dotted = failure(&file("[permissions]\nnetwork.outbond = true"));
+    assert_eq!(place(&dotted), (Some(4), Some(9), 7, Some("permissions.network.outbond")));
+    assert_eq!(dotted.fix.as_deref(), Some("did you mean `outbound`?"));
+    let table = failure(&file("[limits]\nmemmory = \"64M\""));
+    assert_eq!(place(&table), (Some(4), Some(1), 7, Some("limits.memmory")));
+    assert_eq!(table.fix.as_deref(), Some("did you mean `memory`?"));
+    // Nothing is near enough to guess at.
+    let far = failure(&file("colour = 1"));
+    assert_eq!(place(&far), (Some(3), Some(1), 6, Some("colour")));
+    assert_eq!(far.fix, None);
+}
+
+#[test]
+fn a_value_of_the_wrong_kind_is_placed_and_the_line_service_new_writes_is_offered() {
+    let wrong = failure(&file_2("[health]\ncommand = [\"/x\"]\nevery = \"30\""));
+    assert_eq!(place(&wrong), (Some(5), Some(9), 4, Some("health.every")));
+    assert_eq!(wrong.fix.as_deref(), Some("as `service new` writes it: `health.every = 30`"));
+    assert_eq!(
+        wrong.to_string(),
+        "line 5: invalid type: string \"30\", expected a whole number for health.every"
+    );
+    let order = failure(&file("order = \"first\""));
+    assert_eq!(order.fix.as_deref(), Some("as `service new` writes it: `order = 60`"));
+    // A table's key is written under its table in the template.
+    let weight = failure(&file("[limits]\ncpu_weight = \"heavy\""));
+    assert_eq!(weight.key.as_deref(), Some("limits.cpu_weight"));
+    // No line of the template, no fix; an item of a list is no line to copy.
+    let variable = failure(&file("[environment]\nTZ = 1"));
+    assert_eq!(place(&variable), (Some(4), Some(6), 1, Some("environment.TZ")));
+    assert_eq!(variable.fix, None);
+    let item = failure(&file("arguments = [1]"));
+    assert_eq!(place(&item), (Some(3), Some(14), 1, Some("arguments")));
+    assert_eq!(item.fix, None);
+}
+
+#[test]
+fn a_check_of_several_settings_is_placed_on_the_one_to_change() {
+    let port = failure(&file_2("[ready]\nport = 8080"));
+    assert_eq!(place(&port), (Some(4), Some(1), 4, Some("ready.port")));
+    assert_eq!(port.message, "ready.port is for ready.when = \"listening\" alone");
+    assert_eq!(port.fix, None);
+    assert_eq!(port.to_string(), "ready.port is for ready.when = \"listening\" alone");
+    // The fix after the colon is its own, and Display puts it back.
+    let twice = failure(&file_2("requires = [\"db\"]\nafter = [\"db\"]"));
+    assert_eq!(place(&twice), (Some(4), Some(1), 5, Some("after")));
+    assert_eq!(twice.message, "db is in requires and after");
+    assert_eq!(twice.fix.as_deref(), Some("requires says it already, so leave it out of after"));
+    assert_eq!(
+        twice.to_string(),
+        "db is in requires and after: requires says it already, so leave it out of after"
+    );
+    let version = failure("service_version = 1\nprogram = \"/x\"\nrequires = []\n");
+    assert_eq!(place(&version), (Some(1), Some(1), 15, Some("service_version")));
+    assert_eq!(version.fix.as_deref(), Some("change the file's service_version to 2"));
+    // A setting the file leaves at its default has its table named.
+    let timeout = failure(&file_2("[health]\ncommand = [\"/x\"]\nevery = 5"));
+    assert_eq!(place(&timeout), (Some(3), Some(2), 6, Some("health.timeout")));
+}
+
+#[test]
+fn a_file_that_leaves_something_out_is_placed_nowhere() {
+    let program = failure("service_version = 1\n");
+    assert_eq!(place(&program), (None, None, 0, None));
+    assert_eq!(program.message, "it names no program");
+    assert_eq!(
+        program.fix.as_deref(),
+        Some("add a line such as `program = \"/system/commands/logd\"`")
+    );
+    assert_eq!(
+        program.to_string(),
+        "it names no program: add a line such as `program = \"/system/commands/logd\"`"
+    );
+    let version = failure("program = \"/x\"\n");
+    assert_eq!(place(&version), (None, None, 0, None));
+    assert_eq!(version.fix.as_deref(), Some("add `service_version = 1`"));
+}
+
+#[test]
+fn an_override_s_mistakes_are_placed_in_the_override() {
+    let base = file_2("[ready]\nwhen = \"started\"\n");
+    let over = |text: &str| Override::from_toml(text).unwrap();
+    let typo =
+        service::from_toml_over(&base, Some(&over("# a typo\ndiscription = \"x\"\n"))).unwrap_err();
+    assert!(typo.in_override);
+    assert_eq!(place(&typo), (Some(2), Some(1), 11, Some("discription")));
+    assert_eq!(typo.fix.as_deref(), Some("did you mean `description`?"));
+    assert_eq!(
+        typo.to_string(),
+        "line 2 of its override: `discription` is not a setting here; service.toml(5) lists them"
+    );
+    let kind =
+        service::from_toml_over(&base, Some(&over("[health]\nevery = \"30\"\n"))).unwrap_err();
+    assert!(kind.in_override);
+    assert_eq!(place(&kind), (Some(2), Some(9), 4, Some("health.every")));
+    // A check that an override's key fails is on that key, there.
+    let port = service::from_toml_over(&base, Some(&over("\n[ready]\nport = 8080\n"))).unwrap_err();
+    assert!(port.in_override);
+    assert_eq!(place(&port), (Some(3), Some(1), 4, Some("ready.port")));
+    // One that the file's own key fails stays in the file.
+    let broken = file_2("[ready]\nport = 8080\n");
+    let own = service::from_toml_over(&broken, Some(&over("description = \"web\"\n"))).unwrap_err();
+    assert!(!own.in_override);
+    assert_eq!(place(&own), (Some(4), Some(1), 4, Some("ready.port")));
+    // And a file that an override mends reads.
+    assert!(service::from_toml_over(&broken, Some(&over("ready.when = \"listening\"\n"))).is_ok());
+}
+
+#[test]
+fn a_report_is_a_compilers() {
+    let text = file("discription = \"x\"");
+    let at = Source { path: "web.toml", text: &text };
+    let wrong = failure(&text);
+    assert_eq!(
+        wrong.report(at, None),
+        "web.toml:3:1: `discription` is not a setting here; service.toml(5) lists them\n  \
+         |\n3 | discription = \"x\"\n  | ^^^^^^^^^^^\n  = fix: did you mean `description`?"
+    );
+    assert_eq!(
+        wrong.brief(at, None),
+        "web.toml:3:1: `discription` is not a setting here; service.toml(5) lists them: did you \
+         mean `description`?"
+    );
+    // A line, and no column in it.
+    let line = Error::at(2, "it is wrong").with_fix("do this");
+    assert_eq!(
+        line.report(at, None),
+        "web.toml:2: it is wrong\n  |\n2 | program = \"/system/commands/true\"\n  = fix: do this"
+    );
+    assert_eq!(line.brief(at, None), "web.toml:2: it is wrong: do this");
+    // No place: the fix follows the message.
+    let nowhere = failure("service_version = 1\n");
+    let at_nowhere = Source { path: "web.toml", text: "service_version = 1\n" };
+    assert_eq!(
+        nowhere.report(at_nowhere, None),
+        "web.toml: it names no program\n  = fix: add a line such as `program = \
+         \"/system/commands/logd\"`"
+    );
+    assert_eq!(Error::new("it is wrong").report(at, None), "web.toml: it is wrong");
+    // Tabs stay tabs, so the carets line up under them.
+    let indented = file("\tdiscription = \"x\"");
+    let tabbed = failure(&indented).report(Source { path: "web.toml", text: &indented }, None);
+    assert!(tabbed.contains("\n3 | \tdiscription = \"x\"\n  | \t^^^^^^^^^^^\n"), "{tabbed}");
+    assert!(tabbed.starts_with("web.toml:3:2: "), "{tabbed}");
+    // The gutter is as wide as the line's number.
+    let far = file(&format!("{}discription = \"x\"", "\n".repeat(9)));
+    let deep = failure(&far).report(Source { path: "web.toml", text: &far }, None);
+    assert!(
+        deep.contains("\n   |\n12 | discription = \"x\"\n   | ^^^^^^^^^^^\n   = fix: "),
+        "{deep}"
+    );
+}
+
+#[test]
+fn a_report_of_an_override_s_mistake_says_what_it_is_set_over() {
+    let base = file_2("[ready]\nwhen = \"started\"\n");
+    let text = "\n[ready]\nport = 8080\n";
+    let over = Override::from_toml(text).unwrap();
+    let error = service::from_toml_over(&base, Some(&over)).unwrap_err();
+    let file = Source { path: "/s/web.toml", text: &base };
+    let in_over = Source { path: "/s/settings.d/web.toml", text };
+    assert_eq!(
+        error.report(file, Some(in_over)),
+        "/s/settings.d/web.toml:3:1: ready.port is for ready.when = \"listening\" alone\n  \
+         |\n3 | port = 8080\n  | ^^^^\n  = note: set over /s/web.toml"
+    );
+    assert_eq!(
+        error.brief(file, Some(in_over)),
+        "/s/settings.d/web.toml:3:1: ready.port is for ready.when = \"listening\" alone"
+    );
+}
+
+#[test]
+fn a_key_is_found_in_a_file() {
+    let text = "a = 1\n[t]\nb = 2\nc.d = 3\ne = { f = 4 }\n";
+    let found = |key: &str| service::key_span(text, key).map(|span| &text[span]);
+    assert_eq!(found("a"), Some("a"));
+    assert_eq!(found("t.b"), Some("b"));
+    assert_eq!(found("t.c.d"), Some("d"));
+    assert_eq!(found("t.e.f"), Some("f"));
+    assert_eq!(found("t.c"), Some("c"));
+    assert_eq!(found("t"), Some("t"));
+    assert_eq!(found("t.z"), None);
+    assert_eq!(found("a.b"), None);
+    assert_eq!(found("nothing"), None);
+    assert_eq!(service::key_span("a = ", "a"), None);
+    // The span is where the key is in the text, not in its table.
+    let span = service::key_span(text, "t.b").unwrap();
+    assert_eq!(text[..span.start].matches('\n').count(), 2);
+}
+
+#[test]
+fn the_template_with_its_settings_set_reads() {
+    let text = service::template_with_settings();
+    assert!(toml::de::DeTable::parse(&text).is_ok());
+    for (key, line) in [
+        ("order", Some("order = 60")),
+        ("restart", Some("restart = \"on-failure\"")),
+        ("limits.cpu_weight", Some("cpu_weight = 100")),
+        ("ready.when", Some("ready.when = \"started\"")),
+        ("health.every", Some("health.every = 30")),
+        ("health.command", Some("health.command = [\"/system/commands/true\"]")),
+        ("environment.TZ", None),
+        ("nothing", None),
+    ] {
+        assert_eq!(service::template_line(key).as_deref(), line, "{key}");
+    }
+}
+
+#[test]
+fn the_nearest_key_is_the_closest_within_two_edits() {
+    let near = |name: &str, keys: &[&'static str]| crate::nearest(name, keys.iter().copied());
+    // Equal, and one, two and three edits away.
+    assert_eq!(near("order", &["order"]), Some("order"));
+    assert_eq!(near("ordr", &["order"]), Some("order"));
+    assert_eq!(near("ordre", &["order"]), Some("order"));
+    assert_eq!(near("oder", &["order"]), Some("order"));
+    assert_eq!(near("rder", &["order"]), Some("order"));
+    assert_eq!(near("mem", &["memory"]), None);
+    assert_eq!(near("", &["memory"]), None);
+    assert_eq!(near("x", &[]), None);
+    // The closest wins, even after one that is near; ties go to the first.
+    assert_eq!(near("memry", &["mem", "memory"]), Some("memory"));
+    assert_eq!(near("ab", &["aa", "bb"]), Some("aa"));
+    assert_eq!(near("ab", &["abcd", "abc"]), Some("abc"));
+    // Characters, not bytes.
+    assert_eq!(near("caf\u{e9}", &["cafe"]), Some("cafe"));
+}
+
+#[test]
+fn the_settings_that_differ_are_those_of_the_files_with_their_overrides() {
+    let base = file("restart = \"never\"\n[limits]\ncpu_weight = 100\n");
+    let heavier = base.replace("100", "200");
+    let over = |text: &str| Override::from_toml(text).unwrap();
+    let always = over("restart = \"always\"\n");
+    let differ = |old: (&str, Option<&Override>), new: (&str, Option<&Override>)| {
+        service::changed_settings(old, new).unwrap()
+    };
+    assert!(differ((&base, None), (&base, None)).is_empty());
+    assert_eq!(differ((&base, None), (&heavier, None)), ["limits.cpu_weight"]);
+    // An override sets keys over the file's.
+    assert_eq!(differ((&base, None), (&base, Some(&always))), ["restart"]);
+    assert_eq!(differ((&base, Some(&always)), (&base, None)), ["restart"]);
+    // What the override sets, the file no longer decides.
+    let other = base.replace("never", "on-failure");
+    assert!(differ((&base, Some(&always)), (&other, Some(&always))).is_empty());
+    assert_eq!(
+        differ((&base, Some(&always)), (&heavier.replace("never", "on-failure"), Some(&always))),
+        ["limits.cpu_weight"]
+    );
+    // A table's keys one by one.
+    assert_eq!(
+        differ((&base, None), (&base, Some(&over("[limits]\nmemory = \"64M\"\n")))),
+        ["limits.memory"]
+    );
+    // A text that is not TOML, with its line.
+    let error = service::changed_settings(("a = \n", None), (&base, None)).unwrap_err();
+    assert_eq!(error.line, Some(1));
+    // changed_keys compares two texts alone.
+    assert_eq!(service::changed_keys(&base, &heavier).unwrap(), ["limits.cpu_weight"]);
 }

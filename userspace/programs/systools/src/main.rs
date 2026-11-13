@@ -164,6 +164,7 @@ mod serial;
 mod serial_console;
 mod service;
 mod servicefiles;
+mod servicetry;
 mod sessions;
 mod share;
 mod sign_in_notices;

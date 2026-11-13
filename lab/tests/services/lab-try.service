@@ -1,0 +1,11 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+#
+# The try lab test's service, whose description the test changes and
+# keeps (ADR 0472).
+
+service_version = 2
+description = "Tried"
+program = "/system/commands/nukesh"
+arguments = ["-c", "while :; do sleep 1; done"]
+enabled = false

@@ -1,0 +1,90 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# A change tried with an undo (ADR 0472), as an administrator over SSH
+# meets it. A change to lab-try kept from another session stays. A
+# change to sshd that signs no one in cuts off the session that made it;
+# Spark puts sshd's file back when its time is up and SSH works again.
+# The same change with the power cut while it is tried is undone as the
+# machine starts again.
+about = "service try: a change kept from another session stays; a change to sshd that cuts the session off is undone when its time is up; a power cut while a change is tried undoes it at the next start (ADR 0472)"
+time = "10m"
+host_needs = ["scp"]
+
+[[step]]
+host = "sh {here}/copy-file.sh {here}/lab-try.service {machine} {machine-port:22}"
+expect = "copied: lab-try.service"
+[[step]]
+host = "sh {here}/copy-file.sh {here}/try-sshd.sh {machine} {machine-port:22}"
+expect = "copied: try-sshd.sh"
+[[step]]
+run = "sh -c 'cp /users/lab/lab-try.service /system/settings/spark/services/lab-try.toml && service lab-try start'"
+root = true
+expect = "started lab-try ("
+
+# Kept from another session: without a terminal, try returns once
+# lab-try has restarted, and the next step is another SSH session.
+[[step]]
+run = "sh -c 'EDITOR=\"sed -i s/Tried/Kept/\" service try lab-try --for 120 < /dev/null'"
+root = true
+expect = ["trying the change for 120 s", "Spark undoes it in "]
+[[step]]
+run = "service lab-try status"
+root = true
+expect = ["lab-try - Kept", "Trying: a change, undone in "]
+[[step]]
+run = "service keep lab-try"
+root = true
+expect = "kept: lab-try runs the change"
+[[step]]
+run = "service lab-try status"
+root = true
+expect = "lab-try - Kept"
+expect_not = "Trying:"
+[[step]]
+run = "grep -c Kept /system/settings/spark/services/lab-try.toml"
+expect = "1"
+
+# Cut off: sshd restarts without authd's socket, which ends this
+# session and signs no one in, until Spark undoes the change.
+[[step]]
+run = "sh -c '(sleep 2; sh /users/lab/try-sshd.sh 30) > /tmp/lab-try-sshd.out 2>&1 &'"
+root = true
+[[step]]
+serial = "spark: began the trial service.sshd of /system/settings/spark/services/sshd.toml for 30 s"
+[[step]]
+serial = "spark: undid service.sshd (it was not kept in time): put back /system/settings/spark/services/sshd.toml; restarted sshd"
+[[step]]
+wait = "ready"
+[[step]]
+run = "grep -c /system/live/authd /system/settings/spark/services/sshd.toml"
+expect = "1"
+[[step]]
+run = "service sshd status"
+root = true
+expect = "Active: active (running)"
+expect_not = "Trying:"
+
+# The power cut while the change is tried: the next start undoes it
+# before sshd starts.
+[[step]]
+run = "sh -c '(sleep 2; sh /users/lab/try-sshd.sh 600) > /tmp/lab-try-sshd.out 2>&1 &'"
+root = true
+[[step]]
+serial = "spark: began the trial service.sshd of /system/settings/spark/services/sshd.toml for 600 s"
+[[step]]
+serial = "spark: started sshd ("
+[[step]]
+power = "cut"
+[[step]]
+power = "on"
+[[step]]
+serial = "spark: undid service.sshd (the machine started again before it was kept): put back /system/settings/spark/services/sshd.toml"
+[[step]]
+wait = "ready"
+[[step]]
+run = "grep -c /system/live/authd /system/settings/spark/services/sshd.toml"
+expect = "1"
+[[step]]
+run = "sh -c 'service lab-try stop; rm -f /system/settings/spark/services/lab-try.toml /users/lab/lab-try.service /users/lab/try-sshd.sh'"
+root = true

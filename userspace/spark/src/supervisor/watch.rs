@@ -44,6 +44,13 @@ pub(super) struct Told {
     line: String,
 }
 
+/// Keeps `line`, a line of Spark's about service `index` that it has
+/// logged already, as the audit log's are, for the watches that follow
+/// that service.
+pub(super) fn tell(told: &mut Vec<Told>, index: usize, line: String) {
+    told.push(Told { index, line });
+}
+
 /// Logs `line`, a line of Spark's about service `index`, and keeps it for
 /// the watches that follow that service.
 pub(super) fn say(told: &mut Vec<Told>, index: usize, line: String) {
@@ -88,6 +95,9 @@ pub(super) struct Watch {
     skip: usize,
     /// When it ends, settled or not.
     until: u64,
+    /// Its last line, when something ended it before the service settled:
+    /// a trial undone because a start with the change failed.
+    ended: Option<String>,
 }
 
 impl Watch {
@@ -124,6 +134,7 @@ impl Supervisor {
             follows: Vec::new(),
             skip: self.told.len(),
             until: now() + WATCH_MAX,
+            ended: None,
         })
     }
 
@@ -189,10 +200,27 @@ impl Supervisor {
         }
     }
 
+    /// Ends each watch that follows service `index` with `line`, an
+    /// `error:` line, at its next look: what it waited for failed, though
+    /// the service may be running again by then, as after a trial's undo.
+    pub(super) fn end_watches(&mut self, index: usize, line: &str) {
+        for connection in &mut self.connections {
+            if let Some(watch) = &mut connection.watch
+                && watch.follows.contains(&index)
+                && watch.ended.is_none()
+            {
+                watch.ended = Some(format!("{line}\n"));
+            }
+        }
+    }
+
     /// The last line of connection `at`'s watch, once what it waits for
     /// has settled or its time is up.
     fn settled(&self, at: usize, time: u64) -> Option<String> {
         let watch = self.connections[at].watch.as_ref()?;
+        if let Some(line) = &watch.ended {
+            return Some(line.clone());
+        }
         let service = &self.services[watch.index];
         let name = &service.spec.name;
         if matches!(self.shutdown, Some(Shutdown::Stopping { .. })) {
