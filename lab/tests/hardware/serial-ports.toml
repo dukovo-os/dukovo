@@ -1,13 +1,27 @@
 # SPDX-FileCopyrightText: 2026 The Dukovo contributors
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 
-about = "Every serial port the machine has, COM1 to COM4, a PCI card's and Intel AMT's Serial-over-LAN port, is a terminal named as Linux names it, from ttyS0, ttyS4 on PCI (ADR 0480): /kernel/class/tty lists each with its I/O port, kind and interrupt, stty reads each line, AMT's port has MSI for its typing, and a program's text written on the log ports reaches the lab's serial cable. Needs a machine with a serial port"
+about = "Every serial port the machine has, COM1 to COM4, a PCI card's and Intel AMT's Serial-over-LAN port, is a terminal named as Linux names it, from ttyS0, ttyS4 on PCI (ADR 0480): /kernel/class/tty lists each with its I/O port, kind and interrupt, stty reads each line, AMT's port has MSI for its typing, serial lists them, and a program's text written on the log ports reaches the lab's serial cable; where the firmware sends its console to a port (ACPI SPCR), its line is there too (ADR 0481). Needs a machine with a serial port"
 time = "3m"
 
 [[step]]
 run = "ls /kernel/class/tty"
 expect = "ttyS"
 or_skip = "needs a machine with a serial port"
+
+# serial lists each port with what it is, whether it carries the log, and
+# the console it has at this start.
+[[step]]
+run = "serial"
+expect = ["PORT", "WHAT"]
+expect_not = "serial:"
+
+# The port the firmware sends its console to, where the firmware names
+# one in its SPCR table, holds its line as console options.
+[[step]]
+run = '''sh -c 'found=none; for p in /kernel/class/tty/ttyS*; do [ -e $p/firmware_console ] && found="$(basename $p) $(cat $p/firmware_console)"; done; echo "firm""ware: $found"' '''
+expect = "firmware: ttyS"
+or_skip = "the firmware names no console port (SPCR)"
 
 # Each port has its terminal and its entries. (The boot test
 # serial-ports checks the log's line for each; the kernel log's ring may

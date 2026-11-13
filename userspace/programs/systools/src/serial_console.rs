@@ -2,24 +2,39 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 //! serial-console(8): consoles on serial ports, for a computer with no
-//! screen or one managed from afar (Phase 14, ADRs 0318 and 0480), as
+//! screen or one managed from afar (Phase 14, ADRs 0318, 0480 and 0481), as
 //! agetty(8) and systemd's serial-getty keep them on Linux.
 //!
-//! Spark starts it at every boot. It does something only when the kernel
-//! was started with `console=ttyS<n>`, as the install stick's "Install
-//! Dukovo (serial console)" entry and a system installed from it are
-//! (dukovo-boot(7)); otherwise it ends at once and stays stopped. It keeps
-//! a console on each port a `console=` flag names, as Linux keeps one on
-//! each of its consoles, in a process of its own that it starts again
-//! should it end: COM2 for a BMC's Serial-over-LAN is `ttyS1`, Intel AMT's
-//! `ttyS4`. The last `console=` is the primary console, as on Linux. On
-//! each port it runs, and again each time it ends:
+//! Spark starts it at every boot. It chooses the ports to keep a console
+//! on (`choose`), in this order:
+//!
+//! - under the kernel flag `serial-console=any`, as the install stick's
+//!   "Install Dukovo (serial console)" entry starts the live system, every
+//!   serial port;
+//! - each port a `console=ttyS<n>` flag names, as Linux keeps one on each
+//!   of its consoles: COM2 for a BMC's Serial-over-LAN is `ttyS1`, Intel
+//!   AMT's `ttyS4`. The last `console=` is the primary console, as on
+//!   Linux;
+//! - with no `console=` flag and no `spcr=off`, the port the firmware sends
+//!   its own console to (ACPI's SPCR), at the firmware's speed, as Linux
+//!   takes it on Arm servers; it is never the primary console, so it
+//!   never runs the installer or Rescue, which stay on tty1.
+//!
+//! With none of these it ends at once and stays stopped. A console runs in
+//! a process of its own, which serial-console starts again should it end.
+//! On each port it runs, and again each time it ends:
 //!
 //! - under the kernel flag `install`, on the primary console, the
 //!   installer's screens, once, as consoled(8) runs them on tty1, which
 //!   then leaves them to the line;
+//! - under `install` and `serial-console=any`, on every port, `Press Enter
+//!   to install Dukovo on this port (ttyS1).`: the first port Enter is
+//!   pressed on runs the installer's screens, once, and the others say
+//!   where it runs and go on as below. The port's claim is the file
+//!   /system/live/serial-install, which is in memory, so that a restart
+//!   frees it;
 //! - under `rescue=`, on the primary console, Rescue's screens, and
-//!   nothing on the others;
+//!   nothing on the others (`serial-console=any` is passed over);
 //! - under `console-sign-in=off`, root's shell, with no sign-in;
 //! - otherwise the issue text, /system/settings/issue, and the sign-in,
 //!   login(1).
@@ -35,25 +50,43 @@
 //! that once the session's programs are done with it, the kernel's log
 //! goes out on it again, if `serial-log=` gives it the log, until the next
 //! session starts.
+//!
+//! Where to look when a port has no console: the log lines it writes
+//! (`log serial-console`) say which ports it chose and why, and `serial`
+//! shows each port with what it does at this start. The boot tests
+//! serial-firmware and install-serial cover it.
 
 use std::ffi::CString;
-use std::fs::OpenOptions;
-use std::io;
+use std::fs::{File, OpenOptions};
+use std::io::{self, Read as _, Write as _};
 use std::os::fd::{AsRawFd, OwnedFd, RawFd};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
 use crate::args::Args;
-use crate::elevate;
 use crate::util::{self, Fail};
+use crate::{elevate, serial};
 
 /// The kernel flag that asks for a console, with a port's name and
 /// Linux's options after a comma: `console=ttyS1,57600n8`.
 const FLAG: &str = "console=";
 
+/// The kernel flag that gives every port a console, which offers the
+/// installer under `install` (ADR 0481).
+const ANY: &str = "serial-console=any";
+
+/// The kernel flag that keeps the firmware's console port from being a
+/// console when no `console=` is given.
+const SPCR_OFF: &str = "spcr=off";
+
 /// What runs once under the kernel flag `install`.
 const INSTALLER: &str = "/system/commands/dukovo-install";
+
+/// What the port the installer runs on is claimed with: a file holding
+/// that port's name, made by the first port to claim it, in memory so that
+/// a restart frees it.
+const CLAIM: &str = "/system/live/serial-install";
 
 /// Rescue's screens (dukovo-rescue(8)), under the kernel flag `rescue=`
 /// (ADR 0460).
@@ -103,8 +136,8 @@ const PAUSE: Duration = Duration::from_secs(10);
 
 /// How `console=ttyS0,…` asks the line to run.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct Format {
-    /// The speed, as its termios code: `B115200`.
+pub(crate) struct Format {
+    /// The speed, as its termios code: `B115200`, one of [`SPEEDS`].
     speed: libc::speed_t,
     /// The parity's control flags: none, `PARENB`, or `PARENB | PARODD`.
     parity: libc::tcflag_t,
@@ -115,6 +148,18 @@ struct Format {
 impl Format {
     /// 115200n8: what GRUB and the kernel's log run the line at.
     const DEFAULT: Format = Format { speed: libc::B115200, parity: 0, size: libc::CS8 };
+
+    /// Linux's console options for the line, whole: `57600n8`.
+    pub(crate) fn options(self) -> String {
+        let baud = SPEEDS.iter().find(|(_, code)| *code == self.speed).map_or(0, |(baud, _)| *baud);
+        let parity = match self.parity {
+            0 => 'n',
+            parity if parity & libc::PARODD != 0 => 'o',
+            _ => 'e',
+        };
+        let bits = if self.size == libc::CS7 { '7' } else { '8' };
+        format!("{baud}{parity}{bits}")
+    }
 }
 
 /// The speeds the PC's serial port runs at, in baud, with their codes:
@@ -135,11 +180,19 @@ const SPEEDS: &[(u32, libc::speed_t)] = &[
 /// A serial port a `console=` flag names, and how it asks the port to
 /// run.
 #[derive(Debug, PartialEq, Eq)]
-struct Asked {
+pub(crate) struct Asked {
     /// The port's name: `ttyS1`.
-    name: String,
+    pub(crate) name: String,
     /// Its format, or why its options are not one.
-    format: Result<Format, String>,
+    pub(crate) format: Result<Format, String>,
+}
+
+impl Asked {
+    /// The options the port runs at: its format's, or 115200n8 when its
+    /// own were not readable.
+    pub(crate) fn options(&self) -> String {
+        self.format.as_ref().copied().unwrap_or(Format::DEFAULT).options()
+    }
 }
 
 /// The serial ports the kernel flags of command line `line`, those before
@@ -174,9 +227,59 @@ fn is_serial_port(name: &str) -> bool {
     })
 }
 
+/// Which serial ports serial-console keeps a console on, and why.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Choice {
+    /// `serial-console=any`: every port, none of them the primary console.
+    Any(Vec<Asked>),
+    /// The ports the `console=` flags name.
+    Flags(Vec<Asked>),
+    /// The port the firmware sends its console to, which is no primary
+    /// console.
+    Firmware(Asked),
+    /// No port: the serial console has nothing to do.
+    Nothing,
+}
+
+/// The ports to keep a console on, by the kernel flags of command line
+/// `line`, among the serial `ports` the kernel lists, by number, each with
+/// the options of its line if the firmware sends its console there.
+///
+/// A `console=` flag of any kind, a screen's too, and `spcr=off` keep the
+/// firmware's port from being a console, as they do in the kernel
+/// (`CommandLine::firmware_console`), so that the line the kernel runs the
+/// port at and the one its console runs at agree.
+pub(crate) fn choose(line: &str, ports: &[(String, Option<String>)]) -> Choice {
+    let console_flag =
+        line.split_whitespace().take_while(|word| *word != "--").any(|word| word.starts_with(FLAG));
+    let firmware = !console_flag && !util::kernel_flag_in(line, SPCR_OFF);
+    let at_firmware_line = |name: &str, options: &str| Asked {
+        name: name.to_string(),
+        format: format_of(name, options),
+    };
+    // Rescue runs on the primary console alone.
+    if util::kernel_flag_in(line, ANY) && util::kernel_word_in(line, "rescue=").is_none() {
+        let every = ports.iter().map(|(name, options)| match options {
+            Some(options) if firmware => at_firmware_line(name, options),
+            _ => Asked { name: name.clone(), format: Ok(Format::DEFAULT) },
+        });
+        return Choice::Any(every.collect());
+    }
+    let asked = consoles(line);
+    if !asked.is_empty() {
+        return Choice::Flags(asked);
+    }
+    if firmware
+        && let Some((name, Some(options))) = ports.iter().find(|(_, options)| options.is_some())
+    {
+        return Choice::Firmware(at_firmware_line(name, options));
+    }
+    Choice::Nothing
+}
+
 /// Whether the kernel flags of command line `line` make serial port
 /// `name` the primary console: the last `console=` is its.
-fn is_primary(line: &str, name: &str) -> bool {
+pub(crate) fn is_primary(line: &str, name: &str) -> bool {
     let flags = line.split_whitespace().take_while(|word| *word != "--");
     flags
         .filter_map(|word| word.strip_prefix(FLAG))
@@ -188,7 +291,7 @@ fn is_primary(line: &str, name: &str) -> bool {
 /// the speed in baud, then optionally the parity, `n`, `o` or `e`, and
 /// the data bits, `7` or `8`, as in `115200n8`. A final `r`, RTS/CTS flow
 /// control, is passed over: the PC's serial ports do none (ADR 0318).
-fn format_of(name: &str, options: &str) -> Result<Format, String> {
+pub(crate) fn format_of(name: &str, options: &str) -> Result<Format, String> {
     let flag = format!("{FLAG}{name}");
     let flag = flag.as_str();
     let digits = options.find(|c: char| !c.is_ascii_digit()).unwrap_or(options.len());
@@ -275,9 +378,21 @@ struct Port {
     /// Its terminal: `/devices/ttyS1`.
     line: String,
     format: Format,
-    /// Whether it is the primary console, which runs the installer and
-    /// Rescue.
-    primary: bool,
+    /// What its console runs before its ordinary sessions.
+    first: First,
+}
+
+/// What a console runs first, once.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum First {
+    /// Nothing: the ordinary sessions at once.
+    Nothing,
+    /// The installer's screens: the primary console under `install`.
+    Installer,
+    /// The offer of the installer, which runs here if this port claims it
+    /// first (ADR 0481): every port under `install` and
+    /// `serial-console=any`.
+    Offer,
 }
 
 /// What the sessions on every port share.
@@ -299,16 +414,33 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
         return Err(args.unknown(&arg));
     }
     let command_line = std::fs::read_to_string("/kernel/cmdline").unwrap_or_default();
-    let asked = consoles(&command_line);
-    if asked.is_empty() {
-        // Spark starts it at every boot; with no serial console asked for,
-        // it has nothing to do, and stays stopped (restart = on-failure).
-        eprintln!(
-            "serial-console: the kernel was not started with {FLAG}ttyS<n>: no serial console"
-        );
-        return Ok(0);
-    }
+    let listed: Vec<(String, Option<String>)> = serial::ports(Path::new(serial::TTY_CLASS))
+        .into_iter()
+        .map(|port| (port.name, port.firmware))
+        .collect();
+    let (asked, any) = match choose(&command_line, &listed) {
+        Choice::Any(asked) => (asked, true),
+        Choice::Flags(asked) => (asked, false),
+        Choice::Firmware(port) => {
+            eprintln!(
+                "serial-console: the firmware's console (ACPI SPCR) is {}, at {}",
+                port.name,
+                port.options()
+            );
+            (vec![port], false)
+        }
+        Choice::Nothing => {
+            // Spark starts it at every boot; with no serial console asked
+            // for, it has nothing to do, and stays stopped (restart =
+            // on-failure).
+            eprintln!(
+                "serial-console: no {FLAG} flag and no firmware console port: no serial console"
+            );
+            return Ok(0);
+        }
+    };
     let rescue = util::kernel_word("rescue=").is_some();
+    let install = util::kernel_flag("install");
     let mut ports = Vec::new();
     for Asked { name, format } in asked {
         let format = format.unwrap_or_else(|why| {
@@ -320,10 +452,15 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
             eprintln!("serial-console: no {line}: this computer has no serial port {name}");
             continue;
         }
-        let primary = is_primary(&command_line, &name);
+        let primary = !any && is_primary(&command_line, &name);
+        let first = match (install, any, primary) {
+            (true, true, _) => First::Offer,
+            (true, false, true) => First::Installer,
+            _ => First::Nothing,
+        };
         // Rescue runs on the primary console alone.
         if primary || !rescue {
-            ports.push(Port { name, line, format, primary });
+            ports.push(Port { name, line, format, first });
         }
     }
     if ports.is_empty() {
@@ -338,15 +475,15 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
         rescue,
         issue: std::fs::read_to_string(ISSUE).unwrap_or_else(|_| DEFAULT_ISSUE.into()),
     };
-    keep(&ports, &shared, util::kernel_flag("install"))
+    keep(&ports, &shared)
 }
 
 /// Keeps a console on each of `ports`, each in a process of its own, and
-/// starts one again should it end; under `install`, the primary
-/// console's first session is the installer.
-fn keep(ports: &[Port], shared: &Shared, install: bool) -> ! {
+/// starts one again should it end, with its ordinary sessions: what a
+/// port runs first it runs once.
+fn keep(ports: &[Port], shared: &Shared) -> ! {
     let mut consoles: Vec<(libc::pid_t, Instant)> =
-        ports.iter().map(|port| start_console(port, shared, install && port.primary)).collect();
+        ports.iter().map(|port| start_console(port, shared, port.first)).collect();
     loop {
         let mut status = 0;
         // SAFETY: waitpid writes the status.
@@ -366,19 +503,19 @@ fn keep(ports: &[Port], shared: &Shared, install: bool) -> ! {
         if consoles[index].1.elapsed() < QUICK {
             std::thread::sleep(PAUSE);
         }
-        consoles[index] = start_console(port, shared, false);
+        consoles[index] = start_console(port, shared, First::Nothing);
     }
 }
 
 /// Starts the console on `port` in a process of its own, trying again
 /// every 10 seconds while the system has no room for one.
-fn start_console(port: &Port, shared: &Shared, install: bool) -> (libc::pid_t, Instant) {
+fn start_console(port: &Port, shared: &Shared, first: First) -> (libc::pid_t, Instant) {
     loop {
         // SAFETY: serial-console has one thread, so the child may go on
         // running its code.
         let pid = unsafe { libc::fork() };
         if pid == 0 {
-            serve(port, shared, install);
+            serve(port, shared, first);
         }
         if pid > 0 {
             return (pid, Instant::now());
@@ -393,13 +530,20 @@ fn start_console(port: &Port, shared: &Shared, install: bool) -> (libc::pid_t, I
     }
 }
 
-/// The console on `port`: runs its sessions, one after another, for good;
-/// under `install`, the installer first.
-fn serve(port: &Port, shared: &Shared, install: bool) -> ! {
+/// The console on `port`: runs its sessions, one after another, for good,
+/// after what `first` says.
+fn serve(port: &Port, shared: &Shared, first: First) -> ! {
     let line = &port.line;
-    let mut once = install.then(|| Session::once(INSTALLER));
+    let mut once = match first {
+        First::Nothing => None,
+        First::Installer => Some(Session::once(INSTALLER)),
+        First::Offer => offer_installer(port).then(|| Session::once(INSTALLER)),
+    };
     match (&once, shared.sign_in) {
         _ if shared.rescue => eprintln!("serial-console: rescue: Rescue's screens on {line}"),
+        (Some(_), _) if first == First::Offer => {
+            eprintln!("serial-console: install: the installer runs on {}", port.name);
+        }
         (Some(_), _) => eprintln!("serial-console: install: the installer's screens on {line}"),
         (None, false) => eprintln!("serial-console: console-sign-in=off: root's shell on {line}"),
         (None, true) => eprintln!("serial-console: the sign-in on {line}"),
@@ -433,6 +577,73 @@ fn serve(port: &Port, shared: &Shared, install: bool) -> ! {
     }
 }
 
+/// Offers the installer on `port`, and whether `port` has it: asks for
+/// Enter, then claims the installer, which only the first port to do so
+/// gets. A port that did not get it says where the installer runs.
+fn offer_installer(port: &Port) -> bool {
+    eprintln!("serial-console: install: Enter on {} starts the installer there", port.name);
+    while let Err(err) = wait_for_enter(port) {
+        eprintln!(
+            "serial-console: install: cannot read {}: {err}; trying again in {} seconds",
+            port.line,
+            PAUSE.as_secs()
+        );
+        std::thread::sleep(PAUSE);
+    }
+    let claimed = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(CLAIM)
+        .and_then(|mut file| file.write_all(port.name.as_bytes()));
+    match claimed {
+        Ok(()) => true,
+        Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {
+            // The claim is made before the name is written, so the name
+            // may not be there yet.
+            let holder = std::fs::read_to_string(CLAIM).unwrap_or_default();
+            let holder = if holder.is_empty() { "another port" } else { holder.trim() };
+            tell(port, &format!("The installer is running on {holder}.\n"));
+            false
+        }
+        Err(err) => {
+            eprintln!(
+                "serial-console: install: cannot claim the installer for {}: {err}",
+                port.name
+            );
+            false
+        }
+    }
+}
+
+/// Writes the offer on `port`'s line and returns once a line has been
+/// typed there, letting the line go again.
+fn wait_for_enter(port: &Port) -> io::Result<()> {
+    let mut line = open_line(port)?;
+    // SAFETY: tcflush acts on our descriptor of the line. What the line
+    // took before the offer, such as the line feed after the carriage
+    // return that chose the menu's entry, is no one pressing Enter here.
+    unsafe { libc::tcflush(line.as_raw_fd(), libc::TCIFLUSH) };
+    let offer = format!("\nPress Enter to install Dukovo on this port ({}).\n", port.name);
+    write_all(line.as_raw_fd(), offer.as_bytes());
+    let mut typed = [0u8; 64];
+    loop {
+        match line.read(&mut typed) {
+            Ok(n) if typed[..n].contains(&b'\n') || typed[..n].contains(&b'\r') => return Ok(()),
+            Ok(_) => {}
+            Err(err) if err.kind() == io::ErrorKind::Interrupted => {}
+            Err(err) => return Err(err),
+        }
+    }
+}
+
+/// Writes `text` on `port`'s line, if it can be opened, and lets it go.
+fn tell(port: &Port, text: &str) {
+    match open_line(port) {
+        Ok(line) => write_all(line.as_raw_fd(), text.as_bytes()),
+        Err(err) => eprintln!("serial-console: cannot tell {}: {err}", port.line),
+    }
+}
+
 /// The sessions' environment: serial-console's own, from Spark, with what
 /// a login sets, for root, whose sessions they are until someone signs in.
 fn environment(shell: &str, home: &str) -> Vec<CString> {
@@ -449,13 +660,7 @@ fn environment(shell: &str, home: &str) -> Vec<CString> {
 /// Runs one session on `port`'s line and waits for it to end. Its wait
 /// status.
 fn run(port: &Port, session: &Session, shared: &Shared) -> io::Result<i32> {
-    let line: OwnedFd = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .custom_flags(libc::O_NOCTTY | libc::O_CLOEXEC)
-        .open(&port.line)?
-        .into();
-    set_line(line.as_raw_fd(), port.format)?;
+    let line: OwnedFd = open_line(port)?.into();
     let (rows, cols) = ask_size(line.as_raw_fd()).unwrap_or(FALLBACK_SIZE);
     let size = libc::winsize { ws_row: rows, ws_col: cols, ws_xpixel: 0, ws_ypixel: 0 };
     // SAFETY: TIOCSWINSZ reads the winsize, which lives for the call.
@@ -488,6 +693,18 @@ fn run(port: &Port, session: &Session, shared: &Shared) -> io::Result<i32> {
             return Err(error);
         }
     }
+}
+
+/// Opens `port`'s line, not as its process's controlling terminal, set as
+/// a new terminal is.
+fn open_line(port: &Port) -> io::Result<File> {
+    let line = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .custom_flags(libc::O_NOCTTY | libc::O_CLOEXEC)
+        .open(&port.line)?;
+    set_line(line.as_raw_fd(), port.format)?;
+    Ok(line)
 }
 
 /// Sets the line as a new terminal is, at `format`'s speed and character
@@ -740,6 +957,99 @@ mod tests {
         assert!(!is_primary("console=ttyS0 console=tty0", "ttyS0"));
         assert!(is_primary("console=ttyS1,57600 quiet -- console=ttyS0", "ttyS1"));
         assert!(!is_primary("quiet", "ttyS0"));
+    }
+
+    fn ports(listed: &[(&str, Option<&str>)]) -> Vec<(String, Option<String>)> {
+        listed
+            .iter()
+            .map(|(name, options)| (name.to_string(), options.map(str::to_string)))
+            .collect()
+    }
+
+    fn named(choice: &Choice) -> Vec<(&str, String)> {
+        let asked = match choice {
+            Choice::Any(asked) | Choice::Flags(asked) => asked.iter().collect(),
+            Choice::Firmware(asked) => vec![asked],
+            Choice::Nothing => Vec::new(),
+        };
+        asked.into_iter().map(|asked| (asked.name.as_str(), asked.options())).collect()
+    }
+
+    #[test]
+    fn serial_console_any_gives_every_port_a_console_by_number() {
+        let listed = ports(&[("ttyS0", None), ("ttyS1", Some("57600n8")), ("ttyS4", None)]);
+        let choice = choose("live install serial-console=any console-sign-in=off", &listed);
+        assert!(matches!(choice, Choice::Any(_)));
+        // The firmware's port runs at the firmware's line, the others at 115200n8.
+        let expected = [("ttyS0", "115200n8"), ("ttyS1", "57600n8"), ("ttyS4", "115200n8")];
+        assert_eq!(named(&choice), expected.map(|(port, options)| (port, options.to_string())));
+        // A console= flag turns the firmware's line off, as the kernel does, and no
+        // port is the primary console.
+        let choice = choose("serial-console=any console=ttyS0,9600", &listed);
+        assert!(matches!(choice, Choice::Any(_)));
+        assert_eq!(named(&choice)[1], ("ttyS1", "115200n8".to_string()));
+        let choice = choose("serial-console=any spcr=off", &listed);
+        assert_eq!(named(&choice)[1], ("ttyS1", "115200n8".to_string()));
+        // Rescue runs on the primary console alone: the word is passed over.
+        assert_eq!(
+            choose("rescue=0a1b serial-console=any", &listed),
+            Choice::Firmware(Asked {
+                name: "ttyS1".to_string(),
+                format: Ok(Format { speed: libc::B57600, ..Format::DEFAULT }),
+            })
+        );
+        assert_eq!(
+            choose("rescue=0a1b serial-console=any console=ttyS0", &listed),
+            choose("console=ttyS0", &listed)
+        );
+        // After `--` the words are Spark's.
+        assert!(!matches!(choose("quiet -- serial-console=any", &listed), Choice::Any(_)));
+        assert!(!matches!(choose("quiet serial-console=all", &listed), Choice::Any(_)));
+    }
+
+    #[test]
+    fn console_flags_beat_the_firmwares_port() {
+        let listed = ports(&[("ttyS0", None), ("ttyS1", Some("57600n8"))]);
+        let choice = choose("console=ttyS0,9600", &listed);
+        assert!(matches!(choice, Choice::Flags(_)));
+        assert_eq!(named(&choice), [("ttyS0", "9600n8".to_string())]);
+        assert_eq!(
+            choose("console=ttyS0,9600", &listed),
+            Choice::Flags(consoles("console=ttyS0,9600"))
+        );
+    }
+
+    #[test]
+    fn the_firmwares_port_is_a_console_when_no_console_flag_says_otherwise() {
+        let listed = ports(&[("ttyS0", None), ("ttyS1", Some("57600n8"))]);
+        let choice = choose("lockdep console-sign-in=off", &listed);
+        assert!(matches!(choice, Choice::Firmware(_)));
+        assert_eq!(named(&choice), [("ttyS1", "57600n8".to_string())]);
+        // After `--` the words are Spark's.
+        assert!(matches!(choose("quiet -- console=ttyS0", &listed), Choice::Firmware(_)));
+    }
+
+    #[test]
+    fn nothing_is_chosen_without_a_flag_a_firmware_port_or_with_either_turned_off() {
+        let none = ports(&[("ttyS0", None), ("ttyS1", None)]);
+        let firmware = ports(&[("ttyS0", None), ("ttyS1", Some("57600n8"))]);
+        assert_eq!(choose("quiet", &none), Choice::Nothing);
+        assert_eq!(choose("quiet", &[]), Choice::Nothing);
+        assert_eq!(choose("spcr=off", &firmware), Choice::Nothing);
+        // A console= of any kind, a screen's too, turns the firmware's port off.
+        assert_eq!(choose("console=tty0", &firmware), Choice::Nothing);
+        assert_eq!(choose("console=ttyS00", &firmware), Choice::Nothing);
+        assert_eq!(choose("serial-console=any", &[]), Choice::Any(Vec::new()));
+    }
+
+    #[test]
+    fn the_options_of_a_format_are_linuxs_whole_options() {
+        for options in ["115200n8", "57600n8", "9600e7", "9600o8", "300n7"] {
+            assert_eq!(format_of("ttyS0", options).unwrap().options(), options);
+        }
+        assert_eq!(format_of("ttyS0", "57600").unwrap().options(), "57600n8");
+        assert_eq!(format_of("ttyS0", "57600n8r").unwrap().options(), "57600n8");
+        assert_eq!(Format::DEFAULT.options(), "115200n8");
     }
 
     #[test]

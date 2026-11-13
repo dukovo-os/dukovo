@@ -11,7 +11,8 @@
 //! that powering off needs, from the DSDT's AML; Phase 11 the DMAR,
 //! which describes Intel's DMA remapping units, and the IVRS, which
 //! describes AMD's IOMMUs, and the resource templates devices' `_CRS`
-//! methods return ([`resources`]). Everything here works on byte slices
+//! methods return ([`resources`]); Phase 16 the SPCR, the serial port the
+//! firmware sends its console to ([`Spcr`]). Everything here works on byte slices
 //! and is unit-tested on the build host; the kernel supplies a [`Memory`]
 //! that maps physical addresses for it. The
 //! AML interpreter, which later phases need, is a separate decision (ADR
@@ -30,6 +31,7 @@ mod madt;
 mod numa;
 pub mod resources;
 mod sleep;
+mod spcr;
 
 pub use dmar::{DeviceScope, Dmar, Reserved, ScopeKind, Unit as DmarUnit};
 pub use fadt::{Fadt, GenericAddress, RegisterBlock};
@@ -37,6 +39,7 @@ pub use ivrs::{Devices as IvrsDevices, Iommu as IvrsIommu, Ivrs, Reserved as Ivr
 pub use madt::{Madt, MadtEntry};
 pub use numa::{Slit, Srat, SratEntry};
 pub use sleep::sleep_types;
+pub use spcr::Spcr;
 
 use core::fmt;
 

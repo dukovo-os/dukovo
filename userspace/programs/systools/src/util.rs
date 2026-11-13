@@ -327,12 +327,12 @@ pub fn kernel_word(prefix: &str) -> Option<String> {
 
 /// The value of the kernel flag of command line `line` that starts with
 /// `prefix`.
-fn kernel_word_in<'a>(line: &'a str, prefix: &str) -> Option<&'a str> {
+pub(crate) fn kernel_word_in<'a>(line: &'a str, prefix: &str) -> Option<&'a str> {
     line.split_whitespace().take_while(|w| *w != "--").filter_map(|w| w.strip_prefix(prefix)).last()
 }
 
 /// Whether the kernel flags of command line `line` have `flag`.
-fn kernel_flag_in(line: &str, flag: &str) -> bool {
+pub(crate) fn kernel_flag_in(line: &str, flag: &str) -> bool {
     line.split_whitespace().take_while(|w| *w != "--").any(|w| w == flag)
 }
 

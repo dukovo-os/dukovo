@@ -42,7 +42,7 @@ const ROUNDS: usize = 16;
 pub(super) fn find(flags: &CommandLine<'_>) {
     for (number, base, _) in PORTS {
         let name = super::name(number);
-        let (line, registers) = super::console_line(flags, name.as_str());
+        let (line, registers) = super::console_line(flags, name.as_str(), base);
         let Some(uart) = Uart::probe(IoWindow::new(base, PORT_SIZE), 0, registers) else {
             continue;
         };
@@ -54,6 +54,7 @@ pub(super) fn find(flags: &CommandLine<'_>) {
             interrupt: Interrupt::Polled,
             log: flags.carries_log(name.as_str()),
             line,
+            firmware: super::firmware_line(base),
         };
         if super::add(uart, about).is_none() {
             warn!("Serial: COM{} has no room among the serial ports; it is not used", number + 1);

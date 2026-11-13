@@ -177,6 +177,19 @@ pub const FLAGS: &[Flag] = &[
                   default), none, or names such as ttyS0,ttyS4",
     },
     Flag {
+        name: "spcr",
+        value: Some("off"),
+        summary: "do not make the serial port the firmware's console redirection names (ACPI \
+                  SPCR) a console, as the kernel does when no console= is given",
+    },
+    Flag {
+        name: "serial-console",
+        value: Some("any"),
+        summary: "for serial-console, not the kernel: every serial port offers the installer, \
+                  which runs on the first where Enter is pressed, as the install stick's serial \
+                  console entry starts it",
+    },
+    Flag {
         name: "netlog",
         value: Some("host:port"),
         summary: "for netlog, not the kernel: send the log over UDP to this host as it is \
@@ -367,6 +380,14 @@ impl<'a> CommandLine<'a> {
         }
     }
 
+    /// Whether the serial port the firmware sends its console to (ACPI's
+    /// SPCR on a PC) is a console, run at the firmware's speed from boot
+    /// and given a sign-in (ADR 0481): when no `console=` flag is given,
+    /// as Linux takes it on Arm servers, and no `spcr=off`.
+    pub fn firmware_console(&self) -> bool {
+        self.value("spcr") != Some("off") && !self.flags().any(|(flag, _)| flag == "console")
+    }
+
     /// Flags the kernel does not know, for a warning at boot.
     pub fn unknown(&self) -> impl Iterator<Item = &'a str> + 'a {
         self.flags()
@@ -436,6 +457,16 @@ mod tests {
         // The last counts.
         assert!(!CommandLine::new("serial-log=all serial-log=ttyS1").carries_log("ttyS0"));
         assert!(CommandLine::new("serial-log=all -- serial-log=none").carries_log("ttyS0"));
+    }
+
+    #[test]
+    fn the_firmwares_console_counts_when_no_console_is_given() {
+        assert!(CommandLine::new("quiet live install serial-console=any").firmware_console());
+        assert!(!CommandLine::new("console=ttyS1,57600").firmware_console());
+        // Any console, as on Linux: the screen's too.
+        assert!(!CommandLine::new("console=tty0").firmware_console());
+        assert!(!CommandLine::new("spcr=off").firmware_console());
+        assert!(CommandLine::new("spcr=on -- console=ttyS0 spcr=off").firmware_console());
     }
 
     #[test]

@@ -36,8 +36,10 @@
 //! run a command as an administrator (ADRs 0218, 0250 and 0219); `last`,
 //! `lastb` and `lastlog` show the sign-ins it records (ADR 0254);
 //! `serial-console` runs the installer, a shell or the sign-in on the
-//! PC's serial port when the kernel is started with `console=ttyS0` (ADR
-//! 0318).
+//! PC's serial ports, those a `console=ttyS<n>` flag names or the one the
+//! firmware sends its console to (ADRs 0318, 0480 and 0481); `serial` lists
+//! the ports and sets which have a console and carry the kernel log at the
+//! next start, and which the boot menu shows on.
 //! `rdisk` partitions disks, `mkfs-fat` and `mkfs-exfat` make FAT and
 //! exFAT filesystems, and `fsck-fat` checks and mends FAT ones, with the
 //! disk engine (ADRs 0300 to 0302); `mkfs-btrfs` makes a Btrfs, and
@@ -152,6 +154,7 @@ mod rtrace;
 mod script;
 mod scrub;
 mod sensors;
+mod serial;
 mod serial_console;
 mod servicefiles;
 mod sessions;
@@ -320,6 +323,7 @@ const TOOLS: &[(&str, Tool)] = &[
     ("script", script::main),
     ("scrub", scrub::main),
     ("sensors", sensors::main),
+    ("serial", serial::main),
     ("serial-console", serial_console::main),
     ("service", power::service),
     ("setfacl", facl::setfacl),

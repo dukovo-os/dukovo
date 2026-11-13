@@ -2,12 +2,15 @@
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 #
 # Consoles on serial ports, for a computer with no screen or one managed
-# from afar: serial-console(8). It runs only when the kernel was started
-# with `console=ttyS<n>`, as the install stick's "Install Dukovo (serial
-# console)" entry and a system installed from it are, and keeps a console
-# on each port a `console=` names: the installer's screens on the last,
-# the primary console, under `install`, then root's shell or the sign-in,
-# as on the screen's consoles.
+# from afar: serial-console(8). It runs only when a serial console is
+# asked for: `serial-console=any`, as the install stick's "Install Dukovo
+# (serial console)" entry starts the live system, `console=ttyS<n>`, as a
+# system installed over a serial port or set with serial(8) is started,
+# or, with neither and no `spcr=off`, the port the firmware sends its
+# console to (ACPI SPCR). It keeps a console on each of those ports: the
+# installer's screens on the primary console, the last `console=`, or on
+# the port Enter is pressed on, under `install`, then root's shell or the
+# sign-in, as on the screen's consoles.
 #
 # service.toml(5) explains each setting. `service check serial-console`
 # checks this file, and `service edit serial-console` checks it as you
@@ -18,8 +21,8 @@ description = "Serial console"
 program = "/system/commands/serial-console"
 # With the screen's consoles, before the services they show starting.
 order = 10
-# Without `console=ttyS<n>`, or without the ports it names, serial-console
-# exits with 0 and stays stopped.
+# With no port to keep a console on, serial-console exits with 0 and stays
+# stopped.
 restart = "on-failure"
 
 [limits]

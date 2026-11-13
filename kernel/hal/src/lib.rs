@@ -413,6 +413,17 @@ pub struct Watchdog {
     pub restarted: bool,
 }
 
+/// The serial port the firmware sends its console to
+/// ([`Devices::firmware_console`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FirmwareConsole {
+    /// Its first I/O port: 0x2F8 for COM2.
+    pub base: u16,
+    /// Its speed in baud: 9600, 19200, 57600 or 115200, or `None` when
+    /// the firmware leaves it as it was.
+    pub rate: Option<u32>,
+}
+
 /// The firmware's SMBIOS tables (Phase 11e, ADR 0231), as
 /// [`Platform::smbios`] finds them, where the firmware keeps them.
 #[derive(Clone, Copy, Debug)]
@@ -642,9 +653,10 @@ pub trait Devices {
 
     /// Makes the machine's own serial port the line of a terminal, if it
     /// has one: on a PC, COM1, which the kernel log and `kdb` already use
-    /// unless `serial-log=` leaves it out (ADRs 0318 and 0480). `byte` is called, in an interrupt handler with
-    /// interrupts masked, with each byte the port receives once
-    /// [`Devices::serial_line_open`] has turned its interrupt on. Returns
+    /// unless `serial-log=` leaves it out (ADRs 0318 and 0480). `byte` is
+    /// called, in an interrupt handler with interrupts masked, with each
+    /// byte the port receives once [`Devices::serial_line_open`] has
+    /// turned its interrupt on. Returns
     /// what the port is, for the log, or `None` if the machine has none
     /// or its interrupt could not be routed.
     fn start_serial_line(byte: fn(u8)) -> Option<&'static str>;
@@ -663,6 +675,14 @@ pub trait Devices {
     /// divisor of a 16550's 115200-baud clock and its line control
     /// register (`radix_uart::line_registers`).
     fn serial_line_set(divisor: u16, control: u8);
+
+    /// The serial port the firmware sends its own console to, when it is
+    /// a 16550 at an I/O port, as the kernel drives: on a PC, the one
+    /// ACPI's SPCR names (ADR 0481). It may be asked before
+    /// [`Platform::init`], which reads the firmware's tables then.
+    fn firmware_console() -> Option<FirmwareConsole> {
+        None
+    }
 
     /// Hears the machine's power button, if the kernel can: on a PC the
     /// ACPI button that is a fixed feature, through the System Control

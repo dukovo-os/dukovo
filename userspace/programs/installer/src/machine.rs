@@ -145,9 +145,9 @@ pub struct Machine {
     /// started by UEFI and the kernel reaches its variables, as efiboot(8)
     /// lists them. Installing next to Windows needs one.
     pub boot_entries: bool,
-    /// Whether the installer runs on the first serial port, as the
-    /// install stick's "Install Dukovo (serial console)" entry starts it: the
-    /// installed system then keeps a console there (ADR 0318).
+    /// Whether the installer runs on a serial port, as the install stick's
+    /// "Install Dukovo (serial console)" entry starts it: the installed
+    /// system then keeps a console there (ADRs 0318 and 0481).
     pub serial_console: bool,
     /// Whether the installer runs with the screen reader, as the install
     /// stick's "Install Dukovo with speech" entry starts it: the kernel
@@ -184,7 +184,8 @@ impl Machine {
 
 /// The serial port the installer's terminal is, as `ttyS4`, if it is
 /// one: serial-console(8) runs the installer on the primary console when
-/// that is a serial port's, as `console=ttyS0` makes it (ADR 0480).
+/// that is a serial port's, as `console=ttyS0` makes it (ADR 0480), and on
+/// the port Enter is pressed on under `serial-console=any` (ADR 0481).
 #[must_use]
 pub fn serial_port() -> Option<String> {
     // SAFETY: ttyname returns a C string the C library keeps, or null;
@@ -210,6 +211,59 @@ fn serial_port_of(path: &str) -> Option<&str> {
 #[must_use]
 pub fn on_serial_console() -> bool {
     serial_port().is_some()
+}
+
+/// The speeds a PC's serial port runs at, in baud, with their termios
+/// codes: those of Linux's console options and of serial-console(8).
+const SPEEDS: &[(u32, libc::speed_t)] = &[
+    (300, libc::B300),
+    (600, libc::B600),
+    (1200, libc::B1200),
+    (2400, libc::B2400),
+    (4800, libc::B4800),
+    (9600, libc::B9600),
+    (19200, libc::B19200),
+    (38400, libc::B38400),
+    (57600, libc::B57600),
+    (115_200, libc::B115200),
+];
+
+/// The line the installer's terminal runs at, in Linux's console options,
+/// whole, as `serial(8)` takes them: `57600n8`. serial-console(8) set the
+/// line from the port's `console=` flag, or as the firmware leaves it, so
+/// the installed system keeps the console at the line the install ran at.
+/// None if the terminal says no line, or one a PC's port does not run.
+#[must_use]
+pub fn serial_options() -> Option<String> {
+    // SAFETY: all zeros is a valid termios: numbers and an array of them.
+    let mut settings: libc::termios = unsafe { std::mem::zeroed() };
+    // SAFETY: tcgetattr writes the termios it is given.
+    if unsafe { libc::tcgetattr(0, &raw mut settings) } != 0 {
+        return None;
+    }
+    // SAFETY: cfgetospeed reads the termios, which lives for the call.
+    let speed = unsafe { libc::cfgetospeed(&raw const settings) };
+    options_of(speed, settings.c_cflag)
+}
+
+/// The console options for a line of termios speed code `speed` and
+/// control flags `cflag`: the speed in baud, `n`, `o` or `e` for the
+/// parity, and `7` or `8` data bits.
+fn options_of(speed: libc::speed_t, cflag: libc::tcflag_t) -> Option<String> {
+    let baud = SPEEDS.iter().find(|(_, code)| *code == speed)?.0;
+    let parity = if cflag & libc::PARENB == 0 {
+        'n'
+    } else if cflag & libc::PARODD != 0 {
+        'o'
+    } else {
+        'e'
+    };
+    let bits = match cflag & libc::CSIZE {
+        libc::CS7 => '7',
+        libc::CS8 => '8',
+        _ => return None,
+    };
+    Some(format!("{baud}{parity}{bits}"))
 }
 
 /// Whether the kernel has the flag `speech`, as the install stick's
@@ -442,6 +496,22 @@ mod tests {
         assert_eq!(console_word("console=ttyS10", "ttyS1"), None);
         assert_eq!(console_word("console=tty0 console=ttyS1", "ttyS0"), None);
         assert_eq!(console_word("live -- console=ttyS0", "ttyS0"), None);
+    }
+
+    #[test]
+    fn the_terminals_line_is_linuxs_console_options() {
+        let line = |speed, cflag| options_of(speed, cflag);
+        assert_eq!(line(libc::B115200, libc::CS8).as_deref(), Some("115200n8"));
+        assert_eq!(line(libc::B57600, libc::CS8 | libc::CREAD).as_deref(), Some("57600n8"));
+        assert_eq!(line(libc::B9600, libc::CS7 | libc::PARENB).as_deref(), Some("9600e7"));
+        assert_eq!(
+            line(libc::B19200, libc::CS8 | libc::PARENB | libc::PARODD).as_deref(),
+            Some("19200o8")
+        );
+        // A speed no PC port runs, and a character size no console option has.
+        assert_eq!(line(libc::B230400, libc::CS8), None);
+        assert_eq!(line(libc::B0, libc::CS8), None);
+        assert_eq!(line(libc::B9600, libc::CS6), None);
     }
 
     #[test]

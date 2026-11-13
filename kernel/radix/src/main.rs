@@ -216,6 +216,10 @@ pub extern "Rust" fn radix_kernel_main(mut params: BootParams) -> ! {
         }
     }
     crashlog::init();
+    // The serial ports before the kernel's first line, so that the
+    // firmware's console runs at its speed from it (ADRs 0480 and 0481);
+    // COM2 to COM4 replay what the screen showed before.
+    serial::find_legacy(flags);
 
     info!("{BANNER}");
     info!("Boot loader: {}", params.boot_loader);
@@ -225,8 +229,6 @@ pub extern "Rust" fn radix_kernel_main(mut params: BootParams) -> ! {
         warn!("Unknown kernel flag `{flag}` ignored; see dukovo-boot(7)");
     }
     serial::check_flags(&flags);
-    // COM2 to COM4, so that the log goes to them from here on (ADR 0480).
-    serial::find_legacy(flags);
     let _ =
         BOOT.set(BootSummary { memory_map: params.memory_map, reservations: params.reservations });
     report::memory(&params);

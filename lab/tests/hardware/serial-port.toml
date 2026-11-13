@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 The Dukovo contributors
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 
-about = "The first serial port, COM1, is the terminal /devices/ttyS0 at 115200 baud, the speed GRUB and the kernel log run: stty reads its speed and sets another, and serial-console, the console a computer with no screen uses, stays stopped when the kernel was not started with console=ttyS0. Needs a machine with COM1 that is not its console"
+about = "The first serial port, COM1, is the terminal /devices/ttyS0 at 115200 baud, the speed GRUB and the kernel log run: stty reads its speed and sets another, and serial-console, the console a computer with no screen uses, stays stopped when the kernel has no console= flag and the firmware names no console port. Needs a machine with COM1 that is not its console"
 time = "2m"
 
 # A machine whose console is COM1 (the lab's real machines, started
@@ -30,11 +30,12 @@ run = "stty -F /devices/ttyS0 -a"
 root = true
 expect = "speed 115200 baud"
 
-# Without console=ttyS0 the serial console has nothing to do: Spark
+# With no console= flag and no port the firmware sends its console to
+# (ACPI SPCR, ADR 0481), the serial console has nothing to do: Spark
 # started it, it ended with 0, and it stays stopped.
 [[step]]
 run = "serial-console"
-expect = "the kernel was not started with console=ttyS<n>: no serial console"
+expect = "no console= flag and no firmware console port: no serial console"
 [[step]]
 run = "service serial-console status"
 root = true

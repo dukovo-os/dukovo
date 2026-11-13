@@ -21,8 +21,9 @@
 //! `install`, tty1 runs the installer's screens before its shell
 //! (dukovo-install(8)), in the largest font they fit, unless the primary
 //! console, the last `console=`, is a serial port's, such as `console=ttyS0`,
-//! which puts them there, where serial-console(8) runs them (ADRs 0318 and
-//! 0480). Notifications from
+//! or the kernel flag `serial-console=any` offers the installer on every
+//! serial port, which puts them there, where serial-console(8) runs them
+//! (ADRs 0318, 0480 and 0481). Notifications from
 //! notifyd(8) show on the bottom line (`notices`, ADR 0212). A braille
 //! display reads the shown console, and types on it, through BRLTTY
 //! (`braille`, ADR 0326). When
@@ -203,14 +204,36 @@ fn serial_console(line: &str) -> Option<&str> {
     (number && (digits == "0" || !digits.starts_with('0'))).then_some(port)
 }
 
-/// The serial port the installer's screens run on rather than on tty1:
-/// the primary console's, as the install stick's "Install Dukovo (serial
-/// console)" entry makes `console=ttyS0`, if the computer has the port
-/// (ADRs 0318 and 0480).
+/// Where the installer's screens run rather than on tty1, if on a serial
+/// port: under `serial-console=any`, as the install stick's "Install Dukovo
+/// (serial console)" entry starts the live system, the port Enter is
+/// pressed on, if the computer has a serial port; otherwise the primary
+/// console's port, as `console=ttyS0` makes it, if the computer has it
+/// (ADRs 0318, 0480 and 0481).
 fn installs_on_serial() -> Option<String> {
     let line = std::fs::read_to_string("/kernel/cmdline").unwrap_or_default();
-    let port = serial_console(&line)?;
-    std::path::Path::new("/devices").join(port).exists().then(|| port.to_string())
+    let devices: Vec<String> = std::fs::read_dir("/devices")
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .collect();
+    serial_place(&line, &devices)
+}
+
+/// What [`installs_on_serial`] finds for command line `line`, given the
+/// names in `/devices`.
+fn serial_place(line: &str, devices: &[String]) -> Option<String> {
+    if has_flag(line, "serial-console=any") {
+        let has_port = devices.iter().any(|name| {
+            name.strip_prefix("ttyS").is_some_and(|digits| {
+                !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit())
+            })
+        });
+        return has_port.then(|| "the serial port Enter is pressed on".to_string());
+    }
+    let port = serial_console(line)?;
+    devices.iter().any(|name| name == port).then(|| format!("the serial port, {port}"))
 }
 
 /// Root's shell and home from the user database, as login(1) reads them.
@@ -827,8 +850,8 @@ fn main() -> ExitCode {
     };
     let serial = installs_on_serial();
     let install = kernel_flag("install") && serial.is_none();
-    if let Some(port) = serial.filter(|_| kernel_flag("install")) {
-        eprintln!("consoled: install: the installer's screens are on the serial port, {port}");
+    if let Some(place) = serial.filter(|_| kernel_flag("install")) {
+        eprintln!("consoled: install: the installer's screens are on {place}");
     }
     let grid = if install { INSTALLER_GRID } else { radix_fbcon::MIN_GRID };
     let mut screen = match Screen::open("/devices/fb0", grid) {
@@ -941,7 +964,7 @@ fn main() -> ExitCode {
 
 #[cfg(test)]
 mod tests {
-    use super::{has_flag, rescue_flag, serial_console};
+    use super::{has_flag, rescue_flag, serial_console, serial_place};
 
     #[test]
     fn sign_in_is_off_only_by_a_kernel_flag() {
@@ -974,5 +997,33 @@ mod tests {
         assert_eq!(serial_console("console=ttyS"), None);
         assert_eq!(serial_console("live -- console=ttyS0"), None);
         assert_eq!(serial_console("live install"), None);
+    }
+
+    #[test]
+    fn the_installer_is_on_the_serial_port_the_flags_name_or_the_one_enter_is_pressed_on() {
+        let devices = |names: &[&str]| -> Vec<String> {
+            names.iter().map(|name| (*name).to_string()).collect()
+        };
+        assert_eq!(
+            serial_place("live install console=ttyS0", &devices(&["ttyS0", "fb0"])),
+            Some("the serial port, ttyS0".to_string())
+        );
+        // A port the computer lacks leaves the installer on tty1.
+        assert_eq!(serial_place("live install console=ttyS1", &devices(&["ttyS0"])), None);
+        let any = "live install serial-console=any console-sign-in=off";
+        assert_eq!(
+            serial_place(any, &devices(&["fb0", "ttyS4", "kbd"])),
+            Some("the serial port Enter is pressed on".to_string())
+        );
+        // Without a serial port there is nothing to press Enter on.
+        assert_eq!(serial_place(any, &devices(&["fb0", "kbd", "ttyX", "ttyS"])), None);
+        // The word beats console= as it does in serial-console.
+        assert_eq!(
+            serial_place("serial-console=any console=ttyS0", &devices(&["ttyS1"])),
+            Some("the serial port Enter is pressed on".to_string())
+        );
+        // Only a kernel word counts: not one after `--`, not another value.
+        assert_eq!(serial_place("live -- serial-console=any", &devices(&["ttyS0"])), None);
+        assert_eq!(serial_place("serial-console=all", &devices(&["ttyS0"])), None);
     }
 }

@@ -16,7 +16,7 @@ serial-console - the installer, a shell or the sign-in on serial ports
 serial-console keeps a console on serial ports, which Radix makes the
 terminals _/devices/ttyS0_ and on (*radix-files*(7)), for a computer
 with no screen or one managed from afar, as *agetty*(8) keeps one on
-each of a Linux system's serial consoles (ADRs 0318 and 0480). A
+each of a Linux system's serial consoles (ADRs 0318, 0480 and 0481). A
 terminal program at the other end of the cable, such as *screen*(1),
 *picocom*(1), *minicom*(1) or PuTTY, or a server's Serial-over-LAN, is
 then all a person needs to install Dukovo and to work on it.
@@ -31,16 +31,28 @@ puts its Serial-over-LAN on COM2, *ttyS1*; Intel AMT's is usually
 
 Spark starts serial-console at every boot as the *serial-console*
 service (_/system/settings/spark/services/serial-console.toml_,
-*spark*(8)). It does something only when the kernel was started with
-*console=ttyS*_n_ (*dukovo-boot*(7)), as the install stick's *Install
-Dukovo (serial console)* entry and a system installed from it are;
-otherwise it logs *the kernel was not started with console=ttyS<n>: no
-serial console*, exits with 0 and stays stopped. It keeps a console on
-each port a *console=* flag names, as *console=ttyS1,57600
-console=ttyS4*, each in a process of its own that it starts again
-should it end. A port the computer does not have is passed over with
-*no /devices/ttyS1: this computer has no serial port ttyS1*. The last
-*console=* is the primary console, as on Linux.
+*spark*(8)). It chooses the ports to keep a console on, in this order
+(*dukovo-boot*(7)):
+
+- With *serial-console=any* on the kernel's command line, as the install
+  stick's *Install Dukovo (serial console)* entry gives it, every serial
+  port. Rescue's entry passes it over.
+- Otherwise each port a *console=ttyS*_n_ flag names, as *console=ttyS1,57600
+  console=ttyS4*, as a system installed over a serial port, or one set
+  with *serial*(8), has. The last *console=* is the primary console, as
+  on Linux.
+- With no *console=* flag at all and no *spcr=off*, the port the firmware
+  sends its own console to, which its ACPI table SPCR names, at the
+  firmware's speed, as Linux takes it on Arm servers. It is never the
+  primary console, so the installer and Rescue stay on tty1. *serial*
+  shows it, and the kernel's log names it, and _/kernel/class/tty_
+  holds its line in *firmware_console* (*radix-sysfs*(5)).
+
+With none of these it logs *no console= flag and no firmware console
+port: no serial console*, exits with 0 and stays stopped. Each console
+is in a process of its own that serial-console starts again should it
+end. A port the computer does not have is passed over with *no
+/devices/ttyS1: this computer has no serial port ttyS1*.
 
 On each port it runs one of these, and again each time it ends:
 
@@ -51,6 +63,17 @@ On each port it runs one of these, and again each time it ends:
   a screen at all. When the screens end, by Live console or at the end
   of the install, root's shell follows. The other ports get their
   sign-in or shell meanwhile.
+- With *install* and *serial-console=any*, on every port, first *Press
+  Enter to install Dukovo on this port (ttyS1).* The first port a
+  person presses Enter on runs the installer's screens, as above, once,
+  and logs *install: the installer runs on ttyS1*; the others say *The
+  installer is running on ttyS1.* and go on to root's shell or the
+  sign-in. The port that runs it is claimed by creating
+  _/system/live/serial-install_ with its name, which only one port
+  can, and which lives in memory, so that a restart frees it.
+  *consoled*(8) leaves the screens to the line, as it does for the
+  primary console. The installed system keeps that port as its console,
+  at the line it ran at (*dukovo-install*(8)).
 - With *rescue=*_uuid_, as Rescue's boot menu entry gives it, on the
   primary console alone, *dukovo-rescue*(8)'s screens, as root, and it
   logs *rescue: Rescue's screens on /devices/ttyS0* (ADR 0460).
@@ -85,7 +108,9 @@ speed in baud, 300 to 115200, then optionally the parity, *n*, *o* or
 final *r*, for RTS/CTS flow control, is passed over, as the port does
 none. The kernel runs the port at that line from boot, so the log and
 the console agree. With no options the line runs at 115200n8, as GRUB's
-menu and the kernel's log do. Options it cannot read are logged, and
+menu and the kernel's log do. The firmware's console port runs at the
+speed the firmware's table gives, 8N1, and under *serial-console=any*
+every other port at 115200n8. Options it cannot read are logged, and
 the line runs at 115200n8. CLOCAL is set, so the line works with no modem signals, and
 DTR stays raised.
 
@@ -110,7 +135,14 @@ _/devices/ttyS0_, _/devices/ttyS1_, ...
 
 _/kernel/class/tty_
 	The serial ports the kernel found, with their I/O ports and
-	interrupts (*radix-sysfs*(5)).
+	interrupts, and the port the firmware's console is on
+	(*radix-sysfs*(5)).
+
+_/kernel/cmdline_
+	The kernel flags that choose the ports.
+
+_/system/live/serial-install_
+	The port that runs the installer, under *serial-console=any*.
 
 _/system/settings/issue_
 	What shows before the sign-in and root's shell. Its default is in
@@ -122,5 +154,5 @@ _/system/settings/spark/services/serial-console.toml_
 # SEE ALSO
 
 *consoled*(8), *dukovo-boot*(7), *dukovo-install*(8), *login*(1),
-*radix-debug*(7), *radix-files*(7), *radix-sysfs*(5), *spark*(8),
-*stty*(1)
+*radix-debug*(7), *radix-files*(7), *radix-sysfs*(5), *serial*(8),
+*spark*(8), *stty*(1)

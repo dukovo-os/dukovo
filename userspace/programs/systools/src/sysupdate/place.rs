@@ -181,7 +181,7 @@ impl Copies {
 }
 
 /// The partition `/devices/<name>`, opened as the disk engine's device.
-fn device(name: &str, write: bool) -> Result<disk::Device, Fail> {
+pub(crate) fn device(name: &str, write: bool) -> Result<disk::Device, Fail> {
     let path = format!("/devices/{name}");
     let opened = blockdev::open(OsStr::new(&path), write, None)?;
     if write && !opened.writable {

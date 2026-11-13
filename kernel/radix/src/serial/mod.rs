@@ -1,8 +1,8 @@
 // SPDX-FileCopyrightText: 2026 The Dukovo contributors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! Serial ports as terminals, with Linux's names (ADRs 0318, 0360 and
-//! 0480): COM1 to COM4 are `/devices/ttyS0` to `ttyS3`, each if it is
+//! Serial ports as terminals, with Linux's names (ADRs 0318, 0360, 0480
+//! and 0481): COM1 to COM4 are `/devices/ttyS0` to `ttyS3`, each if it is
 //! there, and the 16550s on PCI follow from `ttyS4` in the order the PCI
 //! scan finds them, from serial cards such as those built on the ASIX
 //! AX99100 to Intel AMT's Serial-over-LAN port. So a BMC's
@@ -15,7 +15,10 @@
 //!   [`find_legacy`] probes COM2 to COM4 as soon as the command line is
 //!   read, and the PCI scan hands each port it finds to [`pci::bind`].
 //! - `console=ttyS1,57600n8` runs a port at that line from its first use,
-//!   and serial-console gives each `console=` port a sign-in.
+//!   and serial-console gives each `console=` port a sign-in. With no
+//!   `console=` at all, the port the firmware sends its console to, as
+//!   ACPI's SPCR names it, runs at the firmware's speed and gets the
+//!   sign-in (ADR 0481), unless `spcr=off`.
 //!   `serial-log=` chooses the ports that carry the kernel log, `kdb` and
 //!   a panic report, all of them unless it says otherwise; one left out
 //!   gets nothing from the kernel and is not read by `kdb`, so that a UPS
@@ -55,7 +58,7 @@ use core::fmt::{self, Write as _};
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use radix_hal::cmdline::CommandLine;
-use radix_hal::{Devices, Timer};
+use radix_hal::{Devices, FirmwareConsole, Timer};
 use radix_hw::pci::Address as PciAddress;
 use radix_klog::{Sink, Style, TextBuf, info, warn};
 use radix_sync::{Once, SpinLock};
@@ -149,6 +152,10 @@ pub struct About {
     pub log: bool,
     /// The line it runs at from boot.
     pub line: Line,
+    /// The line the firmware gives it, when it is the port the firmware
+    /// sends its console to ([`firmware_console`]), whether or not the
+    /// command line lets it be a console.
+    pub firmware: Option<Line>,
 }
 
 impl About {
@@ -202,6 +209,9 @@ static FLAGS: Once<CommandLine<'static>> = Once::new();
 static LOGGING: AtomicBool = AtomicBool::new(false);
 /// Whether `kdb` holds the ports' typing, at a breakpoint.
 static HELD: AtomicBool = AtomicBool::new(false);
+/// The port the firmware sends its console to, asked of the architecture
+/// once.
+static FIRMWARE: Once<Option<FirmwareConsole>> = Once::new();
 
 /// The log's sink: copies the text, as the log holds interrupts off
 /// around its sinks and a port at 115200 baud takes 87 µs a byte.
@@ -256,6 +266,9 @@ pub fn check_flags(flags: &CommandLine<'_>) {
             Some(_) => {}
         }
     }
+    if let Some(value) = flags.value("spcr").filter(|&value| value != "off") {
+        warn!("Serial: spcr={value} is not a setting: spcr=off is the only one");
+    }
     if let Some(ports) = flags.value("serial-log").filter(|&ports| !matches!(ports, "all" | "none"))
     {
         for port in ports.split(',').filter(|&port| port_number(port).is_none()) {
@@ -274,25 +287,53 @@ fn port_number(name: &str) -> Option<u8> {
     digits.parse().ok()
 }
 
-/// The line port `name` runs at from boot: its `console=` options, or
-/// 115200n8 when it has none or no 16550 runs them ([`check_flags`] says
-/// so).
-fn console_line(flags: &CommandLine<'_>, name: &str) -> (Line, LineRegisters) {
+/// The port the firmware sends its console to, as ACPI's SPCR names it
+/// on a PC, when the kernel drives it (ADR 0481).
+fn firmware_console() -> Option<FirmwareConsole> {
+    *FIRMWARE.call_once(Arch::firmware_console)
+}
+
+/// The line the firmware gives the port at I/O port `base`, if it is the
+/// one it sends its console to: its speed, 115200 baud when it leaves the
+/// speed as it was, as GRUB takes it; 8N1, as GRUB runs it too.
+fn firmware_line(base: u16) -> Option<Line> {
+    let console = firmware_console().filter(|console| console.base == base)?;
+    Some(Line { rate: console.rate.unwrap_or(Line::DEFAULT.rate), ..Line::DEFAULT })
+}
+
+/// The line port `name` at I/O port `base` runs at from boot: its
+/// `console=` options; the firmware's line, when no `console=` is given
+/// and it is the firmware's console ([`firmware_line`]); otherwise, or
+/// when no 16550 runs the line asked for ([`check_flags`] says so),
+/// 115200n8.
+fn console_line(flags: &CommandLine<'_>, name: &str, base: u16) -> (Line, LineRegisters) {
+    let registers = |line: Line| Some((line, radix_uart::line_registers(&line)?));
     flags
         .console_options(name)
         .flatten()
         .and_then(Line::from_console_options)
-        .and_then(|line| Some((line, radix_uart::line_registers(&line)?)))
+        .and_then(registers)
+        .or_else(|| firmware_line(base).filter(|_| flags.firmware_console()).and_then(registers))
         .unwrap_or((Line::DEFAULT, LineRegisters::DEFAULT))
 }
 
-/// Finds COM2 to COM4, each at its line from boot, and puts the log's
-/// sink in, with what was logged so far, if one carries the log. Called
-/// once, as soon as the command line `flags` is read.
+/// Runs COM1 at the firmware's line when it is the firmware's console
+/// and no `console=` is given, finds COM2 to COM4, each at its line from
+/// boot, and puts the log's sink in, with what was logged so far, if one
+/// carries the log. Called once, as soon as the command line `flags` is
+/// read, before the kernel's first line: the architecture ran COM1 as its
+/// `console=` says from the start.
 pub fn find_legacy(flags: CommandLine<'static>) {
     let flags = FLAGS.call_once(|| flags);
+    if flags.firmware_console() && firmware_line(COM1.1).is_some() {
+        let (_, registers) = console_line(flags, COM1.0, COM1.1);
+        Arch::serial_line_set(registers.divisor, registers.control);
+    }
     legacy::find(flags);
 }
+
+/// COM1's name and first I/O port, which the architecture drives.
+const COM1: (&str, u16) = ("ttyS0", 0x3f8);
 
 /// Adds `uart`, a port that is `about`, to [`CONSOLE`]. Returns its line,
 /// or `None` if there is no room for it.
@@ -313,15 +354,17 @@ fn add(uart: Uart<IoWindow>, about: About) -> Option<usize> {
 /// before the PCI scan, whose ports get theirs as they are found.
 pub fn start() {
     let flags = FLAGS.get().copied().unwrap_or(CommandLine::new(""));
-    let (line, _) = console_line(&flags, "ttyS0");
+    let (name, base) = COM1;
+    let (line, _) = console_line(&flags, name, base);
     if let Some(port) = Arch::start_serial_line(com1_received) {
         let about = About {
             number: 0,
             kind: Kind::Com(1),
-            base: 0x3f8,
+            base,
             interrupt: Interrupt::Isa(4),
-            log: flags.carries_log("ttyS0"),
+            log: flags.carries_log(name),
             line,
+            firmware: firmware_line(base),
         };
         ABOUT.lock_irq()[0] = Some(about);
         // Its interrupt is trusted from the start: the architecture's.
@@ -408,6 +451,9 @@ fn describe(text: &mut TextBuf<256>, about: &About, com1: Option<&str>) -> fmt::
         Stop::Two => "2",
     };
     write!(text, ", {}{parity}{stop}", line.data_bits)?;
+    if about.firmware.is_some() && FLAGS.get().is_some_and(CommandLine::firmware_console) {
+        text.write_str(", the firmware's console (ACPI SPCR)")?;
+    }
     text.write_str(if about.log {
         "; the kernel log and kdb are on it"
     } else {

@@ -7,7 +7,9 @@
 # MODULES, ROOT_UUID and CONSOLE placeholders; the installer fills the
 # last two. See dukovo-boot(7) and ADRs 0307 and 0452. CONSOLE is
 # ` console=ttyS0` on a system installed over the first serial port, whose
-# sign-in is then there too, and nothing otherwise (ADR 0318).
+# sign-in is then there too, and nothing otherwise (ADR 0318); the serial
+# console's settings in serial.env, which the installer and serial(8)
+# write beside this file, take its place when they are there (ADR 0481).
 #
 # This file stays as the install wrote it. It finds the Dukovo root by
 # its Btrfs UUID, reads the slot state beside it, and hands over to the
@@ -44,13 +46,6 @@ if [ -n "${saved_entry}" ]; then
     set default="${saved_entry}"
 fi
 
-# Mirror the menu on the first serial port, where Radix also writes.
-if serial --unit=0 --speed=115200; then
-    terminal_input --append serial
-    terminal_output --append serial
-    set dukovo_serial=1
-fi
-
 # As on the USB stick: only the firmware's video drivers, GOP under UEFI
 # and VESA under BIOS, with the mode UEFI set kept for Radix's console.
 # The themed menu keeps that mode too; a BIOS's takes the first of these
@@ -71,6 +66,32 @@ search --no-floppy --fs-uuid --set=system @ROOT_UUID@
 set dukovo_root=@ROOT_UUID@
 set dukovo_console="@CONSOLE@"
 set dukovo_cmdline="@CMDLINE@"
+
+# The serial console (ADR 0481): serial(8) and the installer keep the
+# kernel's console flags and the ports the menu shows on, each at its
+# speed, in serial.env beside this file; the flags take the place of
+# CONSOLE. Without it, as on a system installed before it, the menu shows
+# on COM1 at 115200 baud. dukovo_serial lists the menu's terminals, which
+# the themed menu below appends again.
+set dukovo_serial=""
+function serial_menu {
+    if [ -n "$1" ]; then
+        if serial --speed="$2" "$1"; then
+            terminal_input --append "serial_$1"
+            terminal_output --append "serial_$1"
+            set dukovo_serial="${dukovo_serial} serial_$1"
+        fi
+    fi
+}
+if [ -f "${prefix}/serial.env" ]; then
+    load_env --file "${prefix}/serial.env" dukovo_console serial_0 serial_0_speed serial_1 serial_1_speed serial_2 serial_2_speed serial_3 serial_3_speed
+    serial_menu "${serial_0}" "${serial_0_speed}"
+    serial_menu "${serial_1}" "${serial_1_speed}"
+    serial_menu "${serial_2}" "${serial_2_speed}"
+    serial_menu "${serial_3}" "${serial_3_speed}"
+else
+    serial_menu com0 115200
+fi
 
 # More modules the kernel is started with, such as the CPU's microcode,
 # from this partition.
@@ -208,15 +229,17 @@ fi
 # install stick's is (ADRs 0402 and 0505), with the default slot's theme,
 # beside its GRUB, so that an update brings its own. It is read only
 # when the menu can show: a start with no hidden second, as the boot
-# tests' are, reads nothing more. The serial port keeps GRUB's plain
+# tests' are, reads nothing more. The serial ports keep GRUB's plain
 # menu, and a screen GRUB cannot draw on, or a slot from before the
 # theme, shows the plain one.
 if [ "${timeout}" != 0 -o "${timeout_style}" = menu ]; then
     if loadfont "${dukovo_theme}/spleen-24.pf2"; then
         loadfont "${dukovo_theme}/spleen-32.pf2"
         if terminal_output gfxterm; then
-            if [ "${dukovo_serial}" = 1 ]; then
-                terminal_output --append serial
+            # gfxterm replaced the outputs: the serial terminals are appended
+            # again, one word each, so the list is not quoted.
+            if [ -n "${dukovo_serial}" ]; then
+                terminal_output --append ${dukovo_serial}
             fi
             set theme="${dukovo_theme}/theme.txt"
         fi

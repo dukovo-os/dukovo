@@ -319,6 +319,13 @@ _/kernel/class/tty/ttyS_*n*_/kind_, _pci_, _interrupt_
 	the terminal is open, for COM3, whose interrupt is COM1's, and a PCI
 	port without MSI.
 
+_/kernel/class/tty/ttyS_*n*_/firmware_console_
+	Only on the port the firmware sends its console to, as the ACPI
+	table SPCR names it (ADR 0481; *uart*(4)): the line the firmware
+	gives it, as Linux's console options and a newline, *57600n8*. It is
+	there whatever the kernel's command line says, and whether or not
+	the port is a console; *serial*(8) and *serial-console*(8) read it.
+
 _/kernel/class/power_supply/_*name*_/type_, _online_
 	For each AC adapter of the firmware's (_ACPI0003_, through uACPI;
 	*dukovo-boot*(7)'s *ACPI*), by its name in the ACPI namespace, as

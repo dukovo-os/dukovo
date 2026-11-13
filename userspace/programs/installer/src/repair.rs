@@ -7,7 +7,8 @@
 //! entry. For each Dukovo root on the computer's disks it puts GRUB back
 //! on the disk, for UEFI and, where the disk has a BIOS boot partition,
 //! for a BIOS; writes the start menu again from the slot that starts,
-//! with Rescue's entry and GRUB's environment; keeps the slot state when
+//! with Rescue's entry and GRUB's environment, and the serial console's
+//! settings unless the partition has them (ADR 0481); keeps the slot state when
 //! it is whole and names a slot that is there, and otherwise has the
 //! slot that is there start; sets the count of starts not seen through
 //! back to none; and makes Dukovo's firmware boot entry first again
@@ -218,7 +219,8 @@ fn repair_mounted(
     let menu = install::fill_menu(&menu, uuid, console.as_deref());
     let disk =
         BootDisk { disk: found.disk.clone(), efi: found.efi.clone(), bios_boot: found.bios_boot };
-    install::grub_on(&disk, &slot, &menu, log)?;
+    // A system that has serial console settings keeps them.
+    install::grub_on(&disk, &slot, &menu, &install::serial_arguments(serial), true, log)?;
     // grub_on leaves an install's state, slot A's; the one kept goes back.
     if kept != State::installed() {
         let esp = Path::new(install::WORK).join("esp");

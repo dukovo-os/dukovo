@@ -107,8 +107,10 @@
 //!   whether it is a `console` (`Y` or `N`), here whether it carries the
 //!   kernel log (`serial-log=`); and Radix's own `kind` (`com1` to
 //!   `com4`, `amt-sol`, `ax99100`, `qemu` or `pci`), `pci`, its
-//!   function's address, for a port on PCI, and `interrupt`, how typing
-//!   reaches the kernel (`isa 3`, `msi` or `polled`)
+//!   function's address, for a port on PCI, `interrupt`, how typing
+//!   reaches the kernel (`isa 3`, `msi` or `polled`), and
+//!   `firmware_console`, on the port the firmware sends its console to
+//!   (ACPI's SPCR), its line as `console=` options (`57600n8`, ADR 0481)
 //!   ([`crate::serial::ports`]);
 //! - `/kernel/class/net/<name>`, for each network interface (ADR 0190,
 //!   [`net`]): its `ifindex`, `address`, `mtu`, `flags`, `operstate`,
@@ -427,6 +429,9 @@ fn tty_class(class: &FixedDir, ports: &[Option<serial::About>]) -> Result<()> {
             port.add("pci", value(move |text| writeln!(text, "{address}"))?)?;
         }
         port.add("interrupt", value(move |text| writeln!(text, "{}", about.interrupt))?)?;
+        if let Some(line) = about.firmware {
+            port.add("firmware_console", value(move |text| writeln!(text, "{}n8", line.rate))?)?;
+        }
     }
     Ok(())
 }

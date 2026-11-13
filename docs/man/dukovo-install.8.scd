@@ -124,16 +124,28 @@ FILES, ADR 0319); the review then says where it came from and whether
 it was checked. Load checks that each feature a setup file adds is one
 this release offers at install, then goes to the review.
 
-The stick's *Install Dukovo (serial console)* entry starts the screens
-on the first serial port instead, for a computer with no screen, where
-*serial-console*(8) runs them, and root's shell after them; any
-terminal program at the cable's other end shows them, at the size it
-says it is, or 80 columns by 24 rows, which they fit. There they are
-drawn in plain ASCII, boxes of + - and |, since the terminal is not sure
-to show UTF-8, and the title ends with *(serial console)*. The review's
-settings then end with *serial console ttyS0*: the installed system
-keeps *console=ttyS0* in its boot menu, so that its sign-in is on the
-serial port too (*install-answers*(5)'s *serial_console*, ADR 0318).
+The stick's *Install Dukovo (serial console)* entry offers the screens
+on every serial port, for a computer with no screen: each port shows
+*Press Enter to install Dukovo on this port (ttyS1).*, and the first
+port a person presses Enter on runs them, where *serial-console*(8)
+starts them, with root's shell after them; the other ports say *The
+installer is running on ttyS0.* and have root's shell, for a look
+around. A BMC's Serial-over-LAN on COM2 is therefore used with no flag
+typed and no knowledge of which port it is. Any terminal program at the
+cable's other end shows the screens, at the size it says it is, or 80
+columns by 24 rows, which they fit. There they are drawn in plain ASCII,
+boxes of + - and |, since the terminal is not sure to show UTF-8, and
+the title ends with *(serial console)*. The review's settings then end
+with *serial console*, and the installed system keeps a console on the
+port the screens are on, at the line they ran at, such as 57600n8, so
+that its sign-in is on the serial port too (*install-answers*(5)'s
+*serial_console*, ADRs 0318 and 0481): after GRUB and the start menu
+are on the EFI system partition, the installer has *serial*(8) write
+the serial console's settings there, which the boot menu reads, so that
+the menu shows on the port too, at that speed (*dukovo-boot*(7)). An
+install on a screen writes the firmware's console: the menu on the port
+the firmware names, or on COM1 when it names none. *serial*(8) changes
+the settings afterwards.
 
 Every message the screens show is in a Fluent file built into the
 program, one a language, so that a translation is a copy of one file.
@@ -288,7 +300,8 @@ From the DVD, it says to remove the install disc.
 	the disk for UEFI, and for a BIOS where the disk has a BIOS boot
 	partition; the start menu written again from the slot that starts,
 	for the root's UUID, with Rescue's entry, GRUB's environment and the
-	serial console the menu had; the slot state kept when it is whole
+	serial console the menu had, its settings kept where the partition
+	has them (ADR 0481); the slot state kept when it is whole
 	and names a slot that is there, and otherwise the slot that is
 	there made the default; the count of starts not seen through set
 	back to none; and Dukovo's firmware boot entry made first again
@@ -329,6 +342,7 @@ failed, and 2 for a usage error.
 
 *install-answers*(5), *system-release*(8), *rdisk*(8), *rgrub-setup*(8),
 *resize-ntfs*(8), *efiboot*(8), *device*(8), *balance*(8),
-*spark*(8), *consoled*(8), *serial-console*(8), *dukovo-boot*(7), *keymap*(1),
+*spark*(8), *consoled*(8), *serial*(8), *serial-console*(8), *dukovo-boot*(7),
+*keymap*(1),
 *reader*(1), *accessibility.toml*(5),
 *dukovo-certificates*(7), *sha256sum*(1)

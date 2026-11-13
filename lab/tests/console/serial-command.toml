@@ -1,0 +1,38 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "serial lists the serial ports and sets, for the next start, which have a console and at what line, which carry the kernel log, and so which the boot menu shows on (ADR 0481): it narrows the log to ttyS0, names ttyS0 at 57600 baud and ttyS4 as the consoles, shows the menu on COM1 at 57600 baud, and puts the settings back with console auto and log all. A restart to see the menu on those ports belongs to the campaign's boot-menu run, as the kernel reads them at a start. Needs a machine with COM1 and a second port, Intel AMT's ttyS4, with a Dukovo root on its disk"
+time = "3m"
+
+# The ports, as a person lists them.
+[[step]]
+run = "serial"
+expect = ["PORT", "WHAT", "ttyS0"]
+expect_not = "serial:"
+or_skip = "needs a machine with a serial port"
+
+# The settings are changed at the next start only, so the second port is
+# there to be named.
+[[step]]
+run = "ls /kernel/class/tty"
+expect = "ttyS4"
+or_skip = "needs a second serial port, Intel AMT's ttyS4"
+
+# The whole change, in one command so that the last two always run, even
+# when one before them failed: the format has no cleanup step that runs
+# after a failed one. Each setting is read back with serial and counted,
+# and the labels are put together on the machine, so that no command line
+# holds an answer whole.
+[[step]]
+run = '''sh -c 'serial log ttyS0 > /dev/null; echo "lo""g: $(serial | grep -Fc "Kernel log: ttyS0")"; serial console ttyS0,57600 ttyS4 > /dev/null; echo "men""u: $(serial | grep -Fc "Boot menu:  com0 at 57600 baud")"; echo "console""s: $(serial | grep -Fc "ttyS0 at 57600n8, ttyS4 at 115200n8 (primary)")"; serial console auto > /dev/null; serial log all > /dev/null; echo "ba""ck: $(serial | grep -Fc "Consoles:   the firmware") $(serial | grep -Fc "Kernel log: all ports")"' '''
+root = true
+expect = ["log: 1", "menu: 1", "consoles: 1", "back: 1 1"]
+expect_not = ["serial:", "No such file"]
+
+# The settings are as they were: the next start is as this one. Only
+# root reads them, from the EFI system partition.
+[[step]]
+run = "serial"
+root = true
+expect = ["PORT", "WHAT", "Consoles:   the firmware", "Kernel log: all ports"]
+expect_not = ["serial:", "ttyS0 at 57600n8"]

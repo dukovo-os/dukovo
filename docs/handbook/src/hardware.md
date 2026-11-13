@@ -243,3 +243,28 @@ kernel's log, `kdb` and a panic report go to every port unless
 modem on COM2 free of the kernel's text. `console=ttyS1,57600n8` runs a
 port at another speed from boot and gives it a sign-in; it may be given
 for more than one port. uart(4) and serial-console(8) have the details.
+
+`serial` lists the ports with what each does at this start: its name, what
+it is, whether it carries the kernel log, and its console. It also sets what
+the next start does, so that no file on the boot partition is edited:
+
+```sh
+serial                           # the ports, and what the next start does
+elevate serial console ttyS1,57600   # a BMC on COM2 at 57600 baud, also the boot menu's port
+elevate serial console ttyS0 ttyS4   # COM1 and AMT's port, the last is the primary console
+elevate serial log ttyS0,ttyS4       # keep the kernel's text off COM2
+elevate serial console auto          # the firmware's console port again
+```
+
+A server whose firmware redirects its console to a serial port, as most
+BMCs' settings do, says so in an ACPI table, SPCR. With no `console=` the
+kernel takes that port as a console at the firmware's speed, so the
+sign-in is there with no setting, and `serial` names the port. A
+`console=` of any kind, or `spcr=off`, keeps the firmware's port from
+being a console. GRUB's boot menu shows on a computer's serial ports as
+the settings say: on the install stick on COM1 to COM4, AMT's port and
+the firmware's port; on an installed system on the ports `serial console`
+names, at their speeds, which GRUB runs only on a PCI card's first port
+and only at 8 data bits and no parity. A change takes effect at the next
+start ([ADR 0481](https://github.com/dukovo-os/dukovo/blob/main/docs/adr/0481-the-boot-menu-follows-the-serial-console-and-the-stick-installs-on-any-port.md)).
+serial(8) has the details.

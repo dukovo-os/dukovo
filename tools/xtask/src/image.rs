@@ -1499,6 +1499,18 @@ mod tests {
 
     const TEMPLATE: &str = include_str!("../../../image/grub/grub.cfg.in");
 
+    /// Whether a line of `cfg` appends GRUB's plain `serial` terminal,
+    /// which follows the last port configured, so that a port with a
+    /// terminal of its own prints everything twice (ADR 0481).
+    fn appends_the_plain_serial_terminal(cfg: &str) -> bool {
+        cfg.lines().any(|line| {
+            matches!(
+                line.trim(),
+                "terminal_input --append serial" | "terminal_output --append serial"
+            )
+        })
+    }
+
     #[test]
     fn renders_the_repository_template() {
         let cfg = render_grub_cfg(TEMPLATE, 0, "qemu-exit", &[], "").unwrap();
@@ -1622,13 +1634,38 @@ mod tests {
         assert!(firmware < shows, "{cfg}");
         let loads = &cfg[shows..];
         assert!(loads.contains("    if loadfont \"${dukovo_theme}/spleen-24.pf2\"; then\n"));
+        // The serial terminals are appended again after gfxterm replaced
+        // the outputs, as the words of the list (ADR 0481).
         assert!(loads.contains(
-            "        if terminal_output gfxterm; then\n            if [ \"${dukovo_serial}\" = 1 \
-             ]; then\n                terminal_output --append serial\n            fi\n            \
+            "            if [ -n \"${dukovo_serial}\" ]; then\n                terminal_output \
+             --append ${dukovo_serial}\n            fi\n            \
              set theme=\"${dukovo_theme}/theme.txt\"\n"
         ));
-        let serial = cfg.find("    terminal_output --append serial\n    set dukovo_serial=1\n");
-        assert!(serial.is_some_and(|serial| shift < serial && serial < read[0]), "{cfg}");
+        assert_eq!(cfg.matches("terminal_output --append ${dukovo_serial}").count(), 1);
+        // The serial console's settings, read from the file beside the menu
+        // with the variables the slots crate writes, after the flags they
+        // replace and before the slot state is read; a system without the
+        // file shows the menu on COM1 at 115200 baud, as before.
+        let variables = slots::serial::VARIABLES.join(" ");
+        let file = slots::serial::PATH.replace("boot/grub/", "");
+        let load = format!(
+            "if [ -f \"${{prefix}}/{file}\" ]; then\n    load_env --file \"${{prefix}}/{file}\" \
+             {variables}\n"
+        );
+        let loaded = cfg.find(&load).expect(&cfg);
+        let console =
+            cfg.find("set dukovo_console=\"\"\nset dukovo_cmdline=\"lockdep\"\n").unwrap();
+        assert!(shift < console && console < loaded && loaded < read[0], "{cfg}");
+        for slot in 0..slots::serial::MENU_PORTS {
+            let menu =
+                format!("    serial_menu \"${{serial_{slot}}}\" \"${{serial_{slot}_speed}}\"\n");
+            assert_eq!(cfg.matches(&menu).count(), 1, "{cfg}");
+        }
+        assert!(cfg.contains("else\n    serial_menu com0 115200\nfi\n"), "{cfg}");
+        // The function's definition, the four slots and the fallback.
+        assert_eq!(cfg.matches("serial_menu ").count(), 1 + 4 + 1, "{cfg}");
+        assert_eq!(cfg.matches("terminal_output --append \"serial_$1\"").count(), 1);
+        assert!(!appends_the_plain_serial_terminal(&cfg), "{cfg}");
         assert!(cfg.contains("    set gfxpayload=keep\n    set gfxmode=auto\n"), "{cfg}");
     }
 
@@ -1763,7 +1800,7 @@ mod tests {
             "menuentry \"Install Dukovo {VERSION} (serial console)\" --id install-serial {{"
         )));
         let serial = format!(
-            "    multiboot2 /boot/radix live install console=ttyS0 console-sign-in=off quiet\n    module2 /boot/bootfs {}\n    boot\n",
+            "    multiboot2 /boot/radix live install serial-console=any console-sign-in=off quiet\n    module2 /boot/bootfs {}\n    boot\n",
             userspace::BOOTFS_WORD
         );
         assert!(cfg.contains(&serial), "{cfg}");
@@ -1819,7 +1856,27 @@ mod tests {
         assert!(cfg.contains("loadfont ${prefix}/theme/spleen-24.pf2"), "{cfg}");
         assert!(crate::grub::MODULES.contains(&"gfxmenu") && crate::grub::MODULES.contains(&"png"));
         let gfxterm = cfg.find("terminal_output gfxterm").unwrap();
-        assert!(gfxterm < cfg.find("terminal_output --append serial").unwrap());
+        assert!(gfxterm < cfg.find("terminal_output --append \"serial_$1\"").unwrap());
+        // The serial ports the stick's menu shows on (ADR 0481): COM1 to
+        // COM4 and Intel AMT's Serial-over-LAN port at 115200 baud, then
+        // the firmware's console port at the firmware's speed, whose
+        // terminal is among them, and no line for the plain `serial`
+        // terminal, which would send everything twice.
+        let ports = ["com0", "com1", "com2", "com3", "pci,00:16.3"];
+        let mut at = gfxterm;
+        for port in ports {
+            let line = format!("serial_menu {port} 115200\n");
+            assert_eq!(cfg.matches(&line).count(), 1, "{cfg}");
+            let found = cfg.find(&line).unwrap();
+            assert!(found > at, "{cfg}");
+            at = found;
+        }
+        let auto =
+            cfg.find("if serial auto; then\n    set dukovo_serial_auto=1\nfi\n").expect(&cfg);
+        assert!(at < auto, "{cfg}");
+        // The function's definition and the five ports.
+        assert_eq!(cfg.matches("serial_menu ").count(), 1 + 5, "{cfg}");
+        assert!(!appends_the_plain_serial_terminal(&cfg), "{cfg}");
         // The boot tests' live image tries the system instead.
         let tests = live_template(&template, LiveStart::Try);
         let cfg = render_grub_cfg(&tests, 0, "quiet", &modules, "").unwrap();

@@ -530,6 +530,10 @@ impl Devices for Arch {
         serial::line_set(divisor, control);
     }
 
+    fn firmware_console() -> Option<radix_hal::FirmwareConsole> {
+        acpi::firmware_console()
+    }
+
     fn start_power_button(pressed: fn()) -> Option<&'static str> {
         sci::start(pressed)
     }

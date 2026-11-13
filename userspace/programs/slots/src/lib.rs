@@ -18,7 +18,8 @@
 //! starts, three starts in a row that were not seen through start Rescue
 //! from the EFI system partition, which counts them ([`rescue`]). A
 //! whole machine restored from its backups is put in place at a start
-//! the same way ([`machine`]).
+//! the same way ([`machine`]). The serial console's settings, which the
+//! menu reads beside the slot state, are in [`serial`] (ADR 0481).
 //!
 //! The crate is without the standard library, so that Spark uses it as
 //! sysupdate(8) does. When an update will not stage or a start falls
@@ -35,6 +36,7 @@ pub mod firmware;
 pub mod machine;
 pub mod rescue;
 pub mod restore;
+pub mod serial;
 pub mod state;
 pub mod version;
 

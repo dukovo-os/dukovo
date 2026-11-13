@@ -248,6 +248,7 @@ pub const STD_LINKS: &[(&str, &str)] = &[
     ("system/commands/script", "systools"),
     ("system/commands/scrub", "systools"),
     ("system/commands/sensors", "systools"),
+    ("system/commands/serial", "systools"),
     ("system/commands/serial-console", "systools"),
     ("system/commands/service", "systools"),
     ("system/commands/setfacl", "systools"),

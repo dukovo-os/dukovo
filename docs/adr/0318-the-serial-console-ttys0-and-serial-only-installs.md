@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 # 0318. The serial console: ttyS0 and serial-only installs
 
-- Status: Accepted; every serial port is a terminal, carried with COM1's by one `serial` thread, and serial-console keeps one on each `console=` port, since [0480](0480-every-16550-is-a-terminal-with-linux-s-name-and-serial-log-chooses-the-log-s-ports.md)
+- Status: Accepted; every serial port is a terminal, carried with COM1's by one `serial` thread, and serial-console keeps one on each `console=` port, since [0480](0480-every-16550-is-a-terminal-with-linux-s-name-and-serial-log-chooses-the-log-s-ports.md); the stick's serial entry offers the installer on every serial port, and the installed system keeps its port in serial.env, since [0481](0481-the-boot-menu-follows-the-serial-console-and-the-stick-installs-on-any-port.md)
 - Date: 2026-11-08
 
 ## Context

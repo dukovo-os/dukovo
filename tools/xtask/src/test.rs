@@ -57,6 +57,9 @@ const I2C_TABLE: &str = "file=i2c.aml";
 /// The SSDT `usb-c` gives QEMU (`src/acpi/ucsi.asl`), likewise.
 const UCSI_AML: &[u8] = include_bytes!("acpi/ucsi.aml");
 const UCSI_TABLE: &str = "file=ucsi.aml";
+/// The firmware's console redirection table the `serial-firmware` case
+/// gives QEMU ([`spcr_table`]), likewise.
+const SPCR_TABLE: &str = "file=spcr.acpi";
 /// The two ends of a serial line between QEMU's character devices
 /// `line0` and `line1`, given as `-chardev`'s argument: a Unix socket in
 /// the test's directory that the first listens on and the second connects
@@ -4472,6 +4475,7 @@ fn run_case(
             GPIO_TABLE => ("gpio.aml", GPIO_AML.to_vec()),
             I2C_TABLE => ("i2c.aml", I2C_AML.to_vec()),
             UCSI_TABLE => ("ucsi.aml", UCSI_AML.to_vec()),
+            SPCR_TABLE => ("spcr.acpi", spcr_table()),
             DDR4_DEVICE => ("ddr4.smbios", ddr4_device()),
             _ => continue,
         };
@@ -7494,6 +7498,44 @@ fn ddr4_device() -> Vec<u8> {
     }
     bytes.push(0);
     bytes
+}
+
+/// The Serial Port Console Redirection table a BMC's firmware gives
+/// (revision 2, 80 bytes): the console is the 16550 at I/O port 0x2F8,
+/// COM2's, on ISA interrupt 3, at 57600 baud, 8N1, with no flow control,
+/// and not on PCI. QEMU's `-acpitable` takes it whole, header included,
+/// so the checksum is made here.
+fn spcr_table() -> Vec<u8> {
+    let mut table = Vec::with_capacity(80);
+    table.extend_from_slice(b"SPCR");
+    table.extend_from_slice(&80u32.to_le_bytes());
+    // The revision, the checksum, which is filled in below, and the OEM
+    // fields as the test tables' SSDTs have them.
+    table.extend_from_slice(&[2, 0]);
+    table.extend_from_slice(b"DUKOVO");
+    table.extend_from_slice(b"SPCR\0\0\0\0");
+    table.extend_from_slice(&1u32.to_le_bytes());
+    table.extend_from_slice(b"DKVO");
+    table.extend_from_slice(&1u32.to_le_bytes());
+    // The interface, a full 16550, with its three reserved bytes, and the
+    // base address, a Generic Address Structure: I/O space, 8 bits wide,
+    // at offset 0, byte accesses.
+    table.extend_from_slice(&[0, 0, 0, 0]);
+    table.extend_from_slice(&[1, 8, 0, 1]);
+    table.extend_from_slice(&0x2F8u64.to_le_bytes());
+    // The interrupt type (8259's), its IRQ and its global system interrupt.
+    table.extend_from_slice(&[1, 3]);
+    table.extend_from_slice(&3u32.to_le_bytes());
+    // The speed (code 6 is 57600 baud), the parity, the stop bits, the flow
+    // control, the terminal (VT-UTF8) and a reserved byte.
+    table.extend_from_slice(&[6, 0, 1, 0, 2, 0]);
+    // The PCI device and vendor, which 0xFFFF says there is none of, the
+    // bus, device and function, the PCI flags, the segment and the rest.
+    table.extend_from_slice(&[0xFF, 0xFF, 0xFF, 0xFF, 0, 0, 0]);
+    table.resize(80, 0);
+    let sum = table.iter().fold(0u8, |sum, &byte| sum.wrapping_add(byte));
+    table[9] = 0u8.wrapping_sub(sum);
+    table
 }
 
 fn gpio(vm: &mut Vm, case: &Case) -> Result<(), String> {
@@ -11065,6 +11107,21 @@ mod tests {
         assert_eq!(keys, expected);
         // A sequence cut short at the end goes as it is.
         assert_eq!(keys_of(b"\x1b[1;"), [b"\x1b[1;"]);
+    }
+
+    #[test]
+    fn the_firmwares_console_table_is_whole() {
+        let table = spcr_table();
+        assert_eq!(&table[..4], b"SPCR");
+        assert_eq!(table.len(), 80);
+        assert_eq!(u32::from_le_bytes(table[4..8].try_into().unwrap()), 80);
+        assert_eq!(table.iter().fold(0u8, |sum, &byte| sum.wrapping_add(byte)), 0);
+        // Interface 0, I/O space at 0x2F8, speed code 6 (57600 baud), and no PCI device.
+        assert_eq!(table[36], 0);
+        assert_eq!(table[40], 1);
+        assert_eq!(u64::from_le_bytes(table[44..52].try_into().unwrap()), 0x2F8);
+        assert_eq!(table[58], 6);
+        assert_eq!(&table[64..66], [0xFF, 0xFF]);
     }
 
     /// Polls `child` until it exits or `within` passes; whether it exited.
