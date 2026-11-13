@@ -273,6 +273,21 @@ _/kernel/fs/btrfs/_*uuid*_/label_, _disks_, _missing_, _behind_
 	*metricsd*(8) watches them, and raises an alert when a disk is
 	missing.
 
+_/kernel/fs/space_
+	How full each filesystem mounted is (ADR 0484), a line each in the
+	order of _/processes/mounts_: where it is mounted, escaped as there;
+	the size of its blocks in bytes; how many blocks it has and how many
+	are free; and how many files it can hold and how many more, *0* for a
+	filesystem that keeps no count, such as FAT. The kernel's own
+	filesystems and FUSE ones are left out. A service's view holds
+	_/kernel_ but not every mount, so *metricsd*(8) reads the space of
+	each here rather than by *statvfs*(3).
+
+	```
+	/ 4096 7864320 5242880 0 0
+	/volumes/backup 4096 488378646 401235117 0 0
+	```
+
 _/kernel/class/dmi/id/sys_vendor_, _product_name_, _product_version_, _product_family_, _product_sku_
 	Where the firmware has SMBIOS tables (ADR 0231), what it calls the
 	machine: who made it, its product name, version, family and SKU, as

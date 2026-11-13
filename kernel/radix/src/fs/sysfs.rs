@@ -55,6 +55,9 @@
 //!   the mount or failed since, ADR 0153) and how many are `behind` (they
 //!   missed changes, until a scrub catches them up), which metricsd(8)
 //!   watches;
+//! - `/kernel/fs/space`: how full each mounted filesystem is (ADR 0484),
+//!   which metricsd(8) reads, as its view holds `/kernel` but not every
+//!   mount that statvfs(3) would need;
 //! - `/kernel/class/dmi/id`, where the firmware has SMBIOS tables
 //!   (ADR 0231): Linux's files of the names the firmware gives the
 //!   machine, its board, chassis and firmware (`sys_vendor`,
@@ -189,6 +192,7 @@ pub fn make() -> Result<FsRef> {
     let filesystems = root.add_dir("fs", next_id())?;
     let btrfs: radix_vfs::mem::KBox<dyn Listing> = mem::boxed(BtrfsVolumes)?;
     filesystems.add("btrfs", ListedDir::make(next_id(), btrfs)?)?;
+    filesystems.add("space", value(space)?)?;
     let firmware = root.add_dir("firmware", next_id())?;
     let memmap: radix_vfs::mem::KBox<dyn Listing> = mem::boxed(MemoryMap)?;
     firmware.add("memmap", ListedDir::make(next_id(), memmap)?)?;
@@ -535,6 +539,49 @@ fn cpu(system: &FixedDir) -> Result<()> {
 fn value(generate: impl Fn(&mut Text) -> fmt::Result + Send + Sync + 'static) -> Result<NodeRef> {
     let generate: Generator = mem::boxed(generate)?;
     Generated::make(next_id(), generate)
+}
+
+/// `/kernel/fs/space`: a line for each filesystem mounted, in the order of
+/// `/processes/mounts`: where it is mounted, escaped as there, the size of
+/// its blocks in bytes, how many blocks it has and how many are free, and
+/// how many files it can hold and how many more, zero for a filesystem
+/// that keeps no count. The kernel's own filesystems (`/processes`,
+/// `/kernel`, `/devices`, pipes) hold nothing, and a FUSE filesystem's
+/// answer comes from a program that may never give it, so they are left
+/// out.
+fn space(text: &mut Text) -> fmt::Result {
+    let Some(vfs) = super::vfs() else { return Ok(()) };
+    // The filesystems are asked once the mount table is let go, as one may
+    // wait for its disk to answer.
+    let mut mounts = mem::vec();
+    let mut short = false;
+    vfs.mounts(|mount| {
+        let kind = mount.fs.kind();
+        let held_nothing =
+            matches!(kind, FsKind::Proc | FsKind::Sys | FsKind::Dev | FsKind::Pipe | FsKind::Fuse);
+        if short || held_nothing {
+            return;
+        }
+        let held = mem::copy(mount.path().as_bytes())
+            .and_then(|path| mem::push(&mut mounts, (path, mount.fs.clone())));
+        short = held.is_err();
+    });
+    // A list with mounts left out would read as one without them.
+    if short {
+        return Err(fmt::Error);
+    }
+    for (path, fs) in &mounts {
+        let info = fs.info();
+        text.write_char('/')?;
+        let path = core::str::from_utf8(path).unwrap_or("?");
+        super::procfs::write_escaped_str(text, path, b" \t\n\\")?;
+        writeln!(
+            text,
+            " {} {} {} {} {}",
+            info.block_size, info.blocks, info.free, info.files, info.free_files
+        )?;
+    }
+    Ok(())
 }
 
 /// `/kernel/fs/btrfs`: a directory per Btrfs filesystem mounted, named by
