@@ -75,7 +75,7 @@ those: *memory*, *disks*, *cpu*, *sensors*, *battery*, *network*.
 	then read back twice, so that a word that changes between two reads
 	is found as well: each word's own address, moving inversions of
 	0x55 and 0xAA bytes, and random values from a seed. The first word
-	that reads back wrong fails the check, with its address. A running
+	that reads back wrong fails the check, with what it read. A running
 	system cannot test the memory it uses itself, nor the memory of
 	other programs, so the line says that *Test the memory* in the start
 	menu tests all of it.

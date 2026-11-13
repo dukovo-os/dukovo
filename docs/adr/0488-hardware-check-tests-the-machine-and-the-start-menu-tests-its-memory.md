@@ -122,12 +122,11 @@ program that is not signed.
   NVME_IOCTL_ADMIN_CMD do.** Any administrator's program could then send
   any command, firmware downloads and secure erases included. Only
   burn(1)'s MMC commands pass through, one list of them (ADR 0449).
-- **MemTest86 (PassMark) or a memory test of our own.** MemTest86 is not
+- **MemTest86 (PassMark), or a new memory test.** MemTest86 is not
   open source. memtest86+ is the test the major distributions ship, it
   boots under UEFI and a BIOS from one file, and writing another would
   cost much and test less.
-- **memtest86+ on the EFI system partition only, as the deferred row had
-  it.** The startup folder is updated with each release and copied into
-  Rescue already, so the test comes up to date with the system and is
-  there when the root cannot be read, with no new code to keep the
-  partition's copy current.
+- **memtest86+ on the EFI system partition only.** The startup folder
+  is updated with each release and copied into Rescue already, so the
+  test comes up to date with the system and is there when the root
+  cannot be read, with no new code to keep the partition's copy current.
