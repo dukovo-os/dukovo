@@ -65,6 +65,17 @@ system = "2026.3.1"
 	*notify*, the default, tells of the apps' updates; *auto* updates
 	the apps installed for everyone by itself.
 
+*metered*
+	What *updated*(8) does while the connection is metered, which
+	*netd*(8) says (a card's *metered* setting in *network*(5), or the
+	DHCP server's): *wait*, the default, still fetches the channel's
+	few small signed files to find out what is on offer and tells
+	whoever is signed in, but downloads and stages nothing, of the
+	system, its firmware or the apps, until a check finds the
+	connection not metered; *download* takes a metered connection as
+	any other. *elevate update apply* and *update apply* go ahead
+	whatever the connection.
+
 *unattended*
 	*true* for a machine nobody watches: *updated*(8) stages each
 	system or firmware update by itself, and goes back to the version
@@ -93,6 +104,14 @@ Follow the beta channel:
 sysupdate: this system follows the beta channel from now on; it never goes back to an older version: it waits until the channel passes the one it runs
 ```
 
+A laptop that takes its updates only when it is not on a phone's
+hotspot is as the defaults have it. A machine whose metered uplink
+is the only one it has and that must stay current:
+
+```
+metered = "download"
+```
+
 A server that restarts itself into each update at 04:00:
 
 ```
@@ -102,4 +121,5 @@ restart = "04:00"
 
 # SEE ALSO
 
-*sysupdate*(8), *update*(8), *updated*(8), *system-release*(8)
+*sysupdate*(8), *update*(8), *updated*(8), *system-release*(8),
+*network*(5), *netd*(8)

@@ -98,6 +98,13 @@ const CABLE: [&str; 2] = ["<cable server>", "<cable client>"];
 /// A `-object` argument that dumps what goes over the first machine's
 /// end of the cable to `<case>.pcap` in the test's directory.
 const CABLE_DUMP: &str = "<cable dump>";
+/// An `-rtc` argument's value that starts a machine's real-time clock an
+/// hour ahead of the host's, which every machine without it starts at the
+/// host's time: a machine whose clock timed must set (`network-serve`).
+/// It is the date at the time the machine starts, so that a peer that
+/// boots a minute after the first is as far ahead as it would be if the
+/// two started together.
+const RTC_AN_HOUR_AHEAD: &str = "<rtc an hour ahead>";
 /// In a case's `qemu`, what comes after this, up to a [`PEER`], is the
 /// first boot's alone: a case's second boot runs without it, as a
 /// machine that lost a device while it was off (`firmware-fallback`).
@@ -3174,6 +3181,36 @@ pub const CASES: &[Case] = &[
     },
 ];
 
+/// Gives each [`RTC_AN_HOUR_AHEAD`] of `args` the date an hour from now.
+fn start_clocks_ahead(args: &mut [String]) {
+    for arg in args.iter_mut().filter(|arg| arg.as_str() == RTC_AN_HOUR_AHEAD) {
+        *arg = rtc_ahead(3600);
+    }
+}
+
+/// The value of QEMU's `-rtc` that starts a guest's real-time clock `ahead`
+/// seconds past the host's clock now. The guest's clock then runs on with
+/// the host's.
+fn rtc_ahead(ahead: u64) -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| since.as_secs());
+    rtc_base(now + ahead)
+}
+
+/// `-rtc`'s `base=` and the date `time` seconds since 1970 is, in UTC,
+/// which is how QEMU reads it.
+fn rtc_base(time: u64) -> String {
+    let (year, month, day) = crate::image::civil(time / 86_400);
+    let seconds = time % 86_400;
+    format!(
+        "base={year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}",
+        seconds / 3600,
+        seconds / 60 % 60,
+        seconds % 60
+    )
+}
+
 /// `ob test`.
 pub fn command(ctx: &Ctx, args: &mut Args) -> Result<()> {
     // The options first, so that the suite is not taken from a value of one.
@@ -4462,6 +4499,7 @@ fn run_case(
     }
     let cpu_model = if hyperv { Some(HYPERV_CPU) } else { case.cpu_model };
     let mut peer = extra.iter().position(|arg| arg == PEER).map(|at| extra.split_off(at));
+    start_clocks_ahead(&mut extra);
     let first_only = extra.iter().position(|arg| arg == FIRST_BOOT_ONLY).map(|at| {
         let mut args = extra.split_off(at);
         args.remove(0);
@@ -5949,11 +5987,12 @@ impl Vm {
     /// Boots the machine beside this one, the case's [`PEER`], on the
     /// cable this one's QEMU listens on.
     pub fn boot_peer(&mut self) -> Result<(), String> {
-        let pending = self.pending.take().ok_or("the case has no peer to boot")?;
+        let mut pending = self.pending.take().ok_or("the case has no peer to boot")?;
         let deadline = Instant::now() + Duration::from_secs(20);
         while !pending.cable.exists() && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(100));
         }
+        start_clocks_ahead(&mut pending.machine.extra);
         let peer =
             Vm::spawn(pending.verbose, &pending.machine, self.dir(), &pending.name, self.timeout)?;
         self.peer = Some(Box::new(peer));
@@ -11201,6 +11240,15 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn a_clock_started_ahead_is_given_to_qemu_as_a_date() {
+        // QEMU's -rtc base= takes `YYYY-MM-DDThh:mm:ss`, in UTC.
+        assert_eq!(rtc_base(1_794_560_400 + 3600), "base=2026-11-13T10:00:00");
+        assert_eq!(rtc_base(0), "base=1970-01-01T00:00:00");
+        assert_eq!(rtc_base(951_782_399), "base=2000-02-28T23:59:59");
+        assert!(rtc_ahead(3600).starts_with("base=20"));
     }
 
     #[test]

@@ -84,6 +84,9 @@ radix-spd = { path = "../../../kernel/lib/spd" }
 # timed's NTS key establishment; ring's random numbers for both.
 ring = "0.17.14"
 rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
+# The reference ID timed serves for a server it synced from over IPv6:
+# the start of the address's MD5 (RFC 5905 §7.3, ADR 0487).
+md-5 = "0.11.0"
 # discoverd(8)'s multicast DNS and DNS-SD (ADR 0338), without the async
 # half of its channels, and the machine's addresses for its own name;
 # ob patches if-addrs in from the rust-crates port.

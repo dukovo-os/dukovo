@@ -78,8 +78,39 @@ Offset: +0.412 ms, delay 11.208 ms, stratum 3: the clock is +0.412 ms off; left 
 Next round: in 128 s
 ```
 
+While it serves time, the status ends with a line such as:
+
+```
+Serving: time over NTS to this machine's networks: 1204 answers and 9 key establishments to 6 clients since timed started
+```
+
 What it does goes to its standard output and error, which Spark copies
 into the system's log after *timed:*.
+
+## Serving time
+
+With *timed*(5)'s *serve*, timed also serves the time it keeps (ADR
+0487). NTS key establishment listens on TCP port 4460: TLS 1.3 alone,
+the protocol *ntske/1*, and the certificate the settings name. It gives
+each client eight cookies, each holding the keys its TLS session
+exported, sealed with a master key only timed holds, so that it keeps
+nothing for each client. NTP requests come on UDP port 123: an NTS one
+is answered only if its cookie opens and its authenticator checks, and
+the answer is sealed, carries a new cookie for each it used and asked
+for, and is never longer than the request. A cookie that does not open,
+such as one from before a restart, is answered with the kiss code
+*NTSN*, after which the client runs key establishment again. A new
+master key is made each day and the three newest are kept.
+
+It serves as one stratum further from the reference clock than the
+server it last set the clock by, with that server's root delay and
+dispersion plus its own round trip, and its address as the reference ID
+(the start of its MD5 for IPv6). Three hours after its last sync it
+says it is not synchronized (leap indicator 3), unless
+*serve-unsynced* has it serve its own clock at stratum 10. Only the
+networks *serve-allow* names are answered, by default the machine's
+own; each client address has a bucket of eight answers, one coming
+back every two seconds.
 
 # SIGNALS
 
@@ -115,7 +146,9 @@ Not yet: timers set by the real time (*CLOCK_REALTIME*) before a step
 fire by the time they were set for, not the new one; the clock's
 frequency is not trained, so it is slewed again each round instead;
 the first server that answers is taken, not chosen among several by
-their agreement (NTP's selection); and timed serves no time to others.
+their agreement (NTP's selection); and the master keys of the time it
+serves are not shared between servers (RFC 8915's shared key
+format).
 
 # SEE ALSO
 

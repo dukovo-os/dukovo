@@ -5,7 +5,9 @@
 # once a day, it checks the update server for a newer system, firmware
 # set and apps, and does what updates.toml(5) says: by default it tells
 # whoever is signed in. It never restarts the machine, unless the owner
-# made it unattended and gave it a restart time.
+# made it unattended and gave it a restart time. While netd(8) says the
+# connection is metered, it tells of updates but downloads none, unless
+# updates.toml(5) says `metered = "download"`.
 #
 # service.toml(5) explains each setting. `service check updated` checks
 # this file, and `service edit updated` checks it as you save.

@@ -358,11 +358,18 @@ network-discovery userspace/spark/tests/services/discovery/
 network-pair kernel/net/ ports/curl/ userspace/defaults/firewall/ userspace/posix/pairtest.c
 network-pair userspace/programs/sshd/ userspace/programs/systools/src/firewall.rs
 network-pair userspace/programs/systools/src/netd.rs userspace/spark/tests/services/pair/
+network-serve kernel/net/ ports/openssl/ userspace/defaults/spark/services/netd.toml
+network-serve userspace/defaults/spark/services/timed.toml userspace/posix/networkservetest.c
+network-serve userspace/programs/netproto/ userspace/programs/systools/src/dhcp.rs
+network-serve userspace/programs/systools/src/dhcp_server.rs userspace/programs/systools/src/netd.rs
+network-serve userspace/programs/systools/src/timed.rs userspace/programs/systools/src/timed/
+network-serve userspace/programs/systools/src/timedatectl.rs
+network-serve userspace/spark/tests/services/serve/
 network-services kernel/net/ ports/curl/ userspace/defaults/hosts userspace/defaults/netlog/
 network-services userspace/defaults/resolved/ userspace/defaults/timed/ userspace/programs/netproto/
 network-services userspace/programs/netservices-test/ userspace/programs/systools/src/netlog.rs
 network-services userspace/programs/systools/src/resolved.rs
-network-services userspace/programs/systools/src/timed.rs
+network-services userspace/programs/systools/src/timed.rs userspace/programs/systools/src/timed/
 network-services userspace/programs/systools/src/timedatectl.rs
 network-tools kernel/net/ ports/iperf3/ ports/openssl/ userspace/posix/nettooltest.c
 network-tools userspace/programs/netproto/ userspace/programs/systools/src/dig.rs

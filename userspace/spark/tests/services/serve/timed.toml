@@ -1,0 +1,21 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+#
+# A service of the network-serve boot test: timed(8) as the system's own
+# file has it, which serves the time on machine a, over NTS on port 4460
+# and plain NTP on port 123, and sets machine b's clock from a's.
+
+service_version = 1
+description = "Network time"
+program = "/system/commands/timed"
+order = 22
+restart = "always"
+
+[limits]
+memory = "16M"
+
+[permissions]
+admin.time = true
+network.outbound = true
+network.listen = [123, 4460]
+files.read-write = ["/system/state/timed", "/system/live/timed"]

@@ -23,8 +23,11 @@ memory = "16M"
 
 # What it holds beyond what every service reads (service.toml(5)): the
 # clock, to set, slew and write the real-time clock; the servers it asks;
-# the time it last synced, kept from boot to boot, and its status.
+# the ports it serves time on when timed(5)'s `serve` says to, NTS key
+# establishment and NTP, which nothing listens on otherwise; the time it
+# last synced, kept from boot to boot, and its status.
 [permissions]
 admin.time = true
 network.outbound = true
+network.listen = [123, 4460]
 files.read-write = ["/system/state/timed", "/system/live/timed"]

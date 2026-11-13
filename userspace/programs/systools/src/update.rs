@@ -28,6 +28,11 @@
 //! once more, and waits while its waves are held (ADRs 0456, 0469).
 //! Once a week it reads the running slot back against its signed list,
 //! as `sysupdate verify` does.
+//!
+//! On a metered connection, which netd(8) says, a check still fetches
+//! the channel's small signed files and tells of what it finds, but
+//! downloads and stages nothing until a check finds the connection not
+//! metered, unless updates.toml(5) says `metered = "download"`.
 
 use std::ffi::OsString;
 use std::path::Path;
@@ -36,7 +41,7 @@ use std::time::Duration;
 
 use crate::args::{Arg, Args};
 use crate::notifyd::{self, Urgency};
-use crate::sysupdate::online::{self, Apps, Check, Plan, Settings};
+use crate::sysupdate::online::{self, Apps, Check, Metered, Plan, Settings};
 use crate::sysupdate::starts::{self, Outcome};
 use crate::sysupdate::{self, firmware, place, stage};
 use crate::util::{self, Fail, fail};
@@ -52,6 +57,10 @@ const FIRST: Duration = Duration::from_mins(10);
 
 /// How long it waits between checks.
 const EVERY: Duration = Duration::from_hours(24);
+
+/// What netd(8) says of the connection: `yes` on the first line while the
+/// one that carries the default route is metered.
+const METERED: &str = "/system/live/netd/metered";
 
 /// update(8).
 pub fn update(args: &mut Args) -> Result<i32, Fail> {
@@ -493,6 +502,10 @@ fn weekly_verify() {
 
 /// One check, as `settings` say; whether an update was staged.
 fn round(settings: &Settings) -> bool {
+    let metered = connection_is_metered();
+    if waits(settings, metered) {
+        println!("updated: the connection is metered: nothing is downloaded until it is not");
+    }
     if let Some(Since::Withdrawn { version, reason }) = staged_since(settings) {
         unstage_withdrawn(&version, &reason);
     }
@@ -509,15 +522,103 @@ fn round(settings: &Settings) -> bool {
         }
     }
     if !staged {
-        staged = system_round(settings);
+        staged = system_round(settings, metered);
     }
-    apps_round(settings);
+    apps_round(settings, metered);
     staged
 }
 
+/// Whether the connection is metered now, as netd says; not when it says
+/// nothing.
+fn connection_is_metered() -> bool {
+    std::fs::read_to_string(METERED).is_ok_and(|text| says_metered(&text))
+}
+
+/// Whether netd's metered file `text` says the connection is.
+fn says_metered(text: &str) -> bool {
+    text.lines().next().is_some_and(|line| line.trim() == "yes")
+}
+
+/// Whether a check holds its downloads back: the connection is metered
+/// and the settings do not take it as any other.
+fn waits(settings: &Settings, metered: bool) -> bool {
+    metered && settings.metered == Metered::Wait
+}
+
+/// Whether a check updates the apps itself, instead of telling of their
+/// updates.
+fn takes_apps(settings: &Settings, metered: bool) -> bool {
+    settings.apps == Apps::Auto && !waits(settings, metered)
+}
+
+/// What a check does with the system or firmware update it finds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Choice {
+    /// Stages it, as an unattended machine does.
+    Stage,
+    /// Fetches its files, then tells.
+    Download,
+    /// Tells of it.
+    Tell,
+    /// Tells of it and says it waits for another connection.
+    Wait,
+}
+
+/// What a check does with an update, for `settings` and a connection that
+/// is `metered` or not. A check is not made at all with `check = "off"`.
+fn choice(settings: &Settings, metered: bool) -> Choice {
+    if waits(settings, metered) {
+        Choice::Wait
+    } else if settings.unattended {
+        Choice::Stage
+    } else if settings.check == Check::Download {
+        Choice::Download
+    } else {
+        Choice::Tell
+    }
+}
+
+/// What a check tells of the system update `offered`.
+fn system_notice(offered: &str, choice: Choice) -> String {
+    if choice == Choice::Wait {
+        format!(
+            "An update to Dukovo {offered} is ready to download. This connection is metered, so \
+             it waits for another one, or for `elevate update apply`."
+        )
+    } else {
+        format!("Dukovo {offered} is ready: `elevate update apply` stages it")
+    }
+}
+
+/// What a check tells of the firmware set `set` on offer.
+fn firmware_notice(set: &str, choice: Choice) -> String {
+    if choice == Choice::Wait {
+        format!(
+            "Firmware {set} is ready to download. This connection is metered, so it waits for \
+             another one, or for `elevate update apply`."
+        )
+    } else {
+        format!("firmware {set} is ready: `elevate update apply` stages it")
+    }
+}
+
+/// What a check tells of the apps' updates, `summary` being what
+/// `bundle update` says.
+fn apps_notice(summary: &str, waiting: bool) -> String {
+    if waiting {
+        format!(
+            "App updates are ready to download: {summary}. This connection is metered, so they \
+             wait for another one, or for `update apply`."
+        )
+    } else {
+        format!("app updates are ready: {summary}; `update apply` takes them")
+    }
+}
+
 /// The system and firmware part of a check.
-fn system_round(settings: &Settings) -> bool {
-    if settings.unattended {
+fn system_round(settings: &Settings, metered: bool) -> bool {
+    let choice = choice(settings, metered);
+    if choice == Choice::Stage {
         return match stage_offered() {
             Ok(Some(what)) => {
                 tell(&format!("{what} is staged: it starts at the next restart"));
@@ -536,27 +637,29 @@ fn system_round(settings: &Settings) -> bool {
         online::plan(&mut client, &running, None)
     });
     if let Ok(Plan::Update { offered, .. }) = waiting {
-        if settings.check == Check::Download {
+        if choice == Choice::Download {
             let _ = sysupdate::check(None, true);
         }
-        tell(&format!("Dukovo {offered} is ready: `elevate update apply` stages it"));
+        tell(&system_notice(&offered, choice));
     } else if let Ok(FirmwareOffer { take: Some(set), .. }) = firmware_offer() {
-        tell(&format!("firmware {set} is ready: `elevate update apply` stages it"));
+        tell(&firmware_notice(&set, choice));
     }
     false
 }
 
 /// The apps part of a check: updated for everyone, or told of.
-fn apps_round(settings: &Settings) {
+fn apps_round(settings: &Settings, metered: bool) {
+    let waiting = waits(settings, metered);
+    let takes = takes_apps(settings, metered);
     let mut words = vec!["update", "--for-everyone"];
-    words.push(if settings.apps == Apps::Auto { "--yes" } else { "--check" });
+    words.push(if takes { "--yes" } else { "--check" });
     let ran = Command::new(Path::new("/system/commands/bundle")).args(&words).output();
     let Ok(output) = ran else { return };
     let text = String::from_utf8_lossy(&output.stdout);
     let summary = text.lines().last().unwrap_or_default().to_string();
     println!("updated: apps: {summary}");
-    if settings.apps == Apps::Notify && text.lines().any(|line| line.starts_with("ID ")) {
-        tell(&format!("app updates are ready: {summary}; `update apply` takes them"));
+    if !takes && text.lines().any(|line| line.starts_with("ID ")) {
+        tell(&apps_notice(&summary, waiting));
     }
 }
 
@@ -573,6 +676,72 @@ mod tests {
     use system_release::rollout::{Advice, Rollout, Withdrawal};
 
     use super::*;
+
+    fn settings(check: Check, unattended: bool, metered: Metered, apps: Apps) -> Settings {
+        Settings { check, unattended, metered, apps, ..Settings::default() }
+    }
+
+    #[test]
+    fn netd_s_metered_file_is_read_by_its_first_line() {
+        assert!(says_metered("yes\nnet0 yes\n"));
+        assert!(!says_metered("no\nnet0 no\nnet1 yes\n"));
+        assert!(!says_metered(""));
+        assert!(!says_metered("maybe\n"));
+        assert!(!says_metered("\nyes\n"));
+    }
+
+    #[test]
+    fn a_metered_connection_holds_back_what_is_downloaded() {
+        let (wait, download) = (Metered::Wait, Metered::Download);
+        for check in [Check::Notify, Check::Download] {
+            for unattended in [false, true] {
+                let on = |metered, setting| {
+                    choice(&settings(check, unattended, setting, Apps::Notify), metered)
+                };
+                // Off a metered connection updated does as it always did.
+                let usual = match (unattended, check) {
+                    (true, _) => Choice::Stage,
+                    (false, Check::Download) => Choice::Download,
+                    (false, _) => Choice::Tell,
+                };
+                assert_eq!(on(false, wait), usual);
+                assert_eq!(on(false, download), usual);
+                // On one it waits, unless the settings say to download.
+                assert_eq!(on(true, wait), Choice::Wait);
+                assert_eq!(on(true, download), usual);
+            }
+        }
+    }
+
+    #[test]
+    fn apps_are_not_updated_on_a_metered_connection_that_waits() {
+        let takes = |apps, metered, setting| {
+            takes_apps(&settings(Check::Notify, false, setting, apps), metered)
+        };
+        assert!(takes(Apps::Auto, false, Metered::Wait));
+        assert!(!takes(Apps::Auto, true, Metered::Wait));
+        assert!(takes(Apps::Auto, true, Metered::Download));
+        assert!(!takes(Apps::Notify, false, Metered::Wait));
+        assert!(!takes(Apps::Notify, true, Metered::Download));
+    }
+
+    #[test]
+    fn what_waits_is_said_with_why() {
+        let wait = system_notice("0.17.0", Choice::Wait);
+        assert!(wait.starts_with("An update to Dukovo 0.17.0 is ready to download."));
+        assert!(wait.contains("metered") && wait.contains("`elevate update apply`"));
+        assert_eq!(
+            system_notice("0.17.0", Choice::Tell),
+            "Dukovo 0.17.0 is ready: `elevate update apply` stages it"
+        );
+        assert!(firmware_notice("2026.3", Choice::Wait).contains("metered"));
+        assert!(!firmware_notice("2026.3", Choice::Download).contains("metered"));
+        assert!(apps_notice("2 apps", true).contains("metered"));
+        assert_eq!(
+            apps_notice("2 apps", false),
+            "app updates are ready: 2 apps; `update apply` takes them"
+        );
+    }
 
     #[test]
     fn a_staged_release_withdrawn_or_held_is_not_restarted_into() {

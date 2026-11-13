@@ -31,6 +31,8 @@ const SHIPPED: &[(&str, &str)] = &[
     ("updated", include_str!("../../../defaults/spark/services/updated.toml")),
     ("logforward", include_str!("../../../defaults/spark/services/logforward.toml")),
     ("dumps", include_str!("../../../defaults/spark/services/dumps.toml")),
+    ("netd", include_str!("../../../spark/tests/services/serve/netd.toml")),
+    ("timed", include_str!("../../../spark/tests/services/serve/timed.toml")),
     ("netd", include_str!("../../../defaults/spark/services/netd.toml")),
     ("netd", include_str!("../../../spark/tests/services/dhcp/netd.toml")),
 ];
@@ -65,10 +67,10 @@ fn every_shipped_file_reads() {
     let listen = &granted.permissions.network.listen;
     assert_eq!(listen, &[Ports { first: 8000, last: 8009 }, Ports { first: 9000, last: 9000 }]);
     assert_eq!(granted.network_grants(), 3);
-    // Ports 68 and 546 on each card, servers anywhere, and setting the
-    // cards up.
+    // Ports 67, 68 and 546 on each card, servers anywhere, and setting
+    // the cards up.
     let netd = service::from_toml(SHIPPED[SHIPPED.len() - 2].1).unwrap();
-    assert_eq!(netd.network_grants(), 4);
+    assert_eq!(netd.network_grants(), 5);
     assert!(netd.permissions.admin.network && !netd.permissions.runs_with_your_access);
     assert_eq!(
         service::from_toml(SHIPPED[SHIPPED.len() - 1].1).unwrap().permissions,
