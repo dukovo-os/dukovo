@@ -22,6 +22,7 @@
 //! log (`log metricsd`) and again when it is over. SIGTERM writes the rows
 //! waiting and ends, SIGHUP reads metrics.toml again.
 
+mod prometheus;
 mod sample;
 mod settings;
 mod store;
@@ -30,14 +31,17 @@ mod warnings;
 use std::fmt::Write as _;
 use std::fs;
 use std::io::{self, Write};
+use std::net::SocketAddr;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use prometheus::{Endpoint, Machine, Scrape};
 use sample::{Reader, Snapshot, Sources};
-use settings::{Settings, Thresholds};
+use settings::{Network, Settings, Thresholds};
 use store::Store;
 use warnings::{Sent, Warnings};
 
@@ -161,6 +165,8 @@ struct Places {
     settings: PathBuf,
     /// The system's certificates, which the warnings check.
     ssl: PathBuf,
+    /// alertd's socket, which a scrape asks how many alerts are active.
+    alertd: PathBuf,
 }
 
 impl Places {
@@ -170,6 +176,7 @@ impl Places {
             live: PathBuf::from(LIVE),
             settings: PathBuf::from(settings::FILE),
             ssl: PathBuf::from(warnings::SSL),
+            alertd: PathBuf::from(crate::alerts::protocol::SOCKET),
         }
     }
 }
@@ -199,8 +206,11 @@ impl Said {
 /// metricsd while it runs.
 struct Daemon {
     places: Places,
-    reader: Reader,
+    /// Shared with the Prometheus endpoint, which reads the machine for
+    /// each scrape and so keeps the services' CPU time in step.
+    reader: Arc<Mutex<Reader>>,
     settings: Settings,
+    endpoint: Option<Running>,
     /// The history, which is not there while its folder cannot be made.
     store: Option<Store>,
     /// The reading before this one, which rates are over.
@@ -213,6 +223,14 @@ struct Daemon {
     said: Said,
 }
 
+/// The Prometheus endpoint, and what it was started with, so that a
+/// reload that changes neither leaves it alone.
+struct Running {
+    listen: Vec<SocketAddr>,
+    allow: Vec<Network>,
+    endpoint: Endpoint,
+}
+
 /// A way to give alertd the service's alerts.
 type SetAlerts = Box<dyn FnMut(&[Alert]) -> Result<(), String>>;
 
@@ -223,8 +241,9 @@ impl Daemon {
         warnings.backfill(&places.state, unix_seconds());
         let mut daemon = Daemon {
             places,
-            reader: Reader::new(sources),
+            reader: Arc::new(Mutex::new(Reader::new(sources))),
             settings: Settings::default(),
+            endpoint: None,
             store: None,
             previous: None,
             unwritten: 0,
@@ -256,12 +275,45 @@ impl Daemon {
         }
         self.warnings.set_thresholds(settings.warnings);
         self.settings = settings;
+        self.serve_endpoint();
+    }
+
+    /// Starts the Prometheus endpoint as the settings say, or stops it
+    /// if they say it is off. An endpoint that the settings did not change
+    /// goes on, with its connections.
+    fn serve_endpoint(&mut self) {
+        let (listen, allow) = (&self.settings.listen, &self.settings.allow);
+        let same = self.endpoint.as_ref().is_some_and(|r| r.listen == *listen && r.allow == *allow);
+        if same {
+            return;
+        }
+        if let Some(running) = self.endpoint.take() {
+            running.endpoint.stop();
+        }
+        if listen.is_empty() {
+            return;
+        }
+        let config = prometheus::Config::new(listen.clone(), allow.clone());
+        let endpoint = Endpoint::start(config, self.scrape());
+        self.endpoint = Some(Running { listen: listen.clone(), allow: allow.clone(), endpoint });
+    }
+
+    /// How a scrape is made: the machine is read afresh, and alertd is
+    /// asked what is active.
+    fn scrape(&self) -> Scrape {
+        let (reader, alertd) = (self.reader.clone(), self.places.alertd.clone());
+        Arc::new(move || {
+            let snapshot = reader.lock().unwrap_or_else(PoisonError::into_inner).read();
+            let active = prometheus::active_counts(&alertd, client::PATIENCE);
+            let now = util::now_ns() as f64 / 1e9;
+            prometheus::exposition(&snapshot, &Machine::read(), active, now)
+        })
     }
 
     /// One step: reads the machine, keeps its row in the history and
     /// writes it as text.
     fn step(&mut self) {
-        let snapshot = self.reader.read();
+        let snapshot = self.reader.lock().unwrap_or_else(PoisonError::into_inner).read();
         let row = sample::series(self.previous.as_ref(), &snapshot);
         self.write_now(&row);
         self.keep(snapshot.at, &row);
@@ -483,6 +535,7 @@ mod tests {
             live: dir.join("live"),
             settings: dir.join("metrics.toml"),
             ssl: dir.join("ssl"),
+            alertd: dir.join("alertd-socket"),
         };
         (Daemon::new(places, sources, alertd.client()), dir)
     }
@@ -647,6 +700,61 @@ mod tests {
         assert!(dir.join("live/now").exists());
         daemon.finish();
         assert_eq!(history(&daemon, "load"), 3);
+    }
+
+    /// What `GET /metrics` at `address` answers.
+    fn scrape_at(address: SocketAddr) -> String {
+        use std::io::Read as _;
+        // The endpoint's thread binds as it starts.
+        let mut stream = (0..100)
+            .find_map(|_| {
+                std::net::TcpStream::connect(address).ok().or_else(|| {
+                    thread::sleep(Duration::from_millis(20));
+                    None
+                })
+            })
+            .expect("the endpoint listens");
+        stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        stream.write_all(b"GET /metrics HTTP/1.1\r\nHost: localhost\r\n\r\n").unwrap();
+        let mut answer = String::new();
+        stream.read_to_string(&mut answer).unwrap();
+        answer
+    }
+
+    #[test]
+    fn the_endpoint_follows_metrics_toml() {
+        let (mut daemon, dir) = daemon("endpoint");
+        assert!(daemon.endpoint.is_none());
+        let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        let address: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
+        let on = format!("[prometheus]\nlisten = [\"{address}\"]\nallow = [\"127.0.0.1\"]\n");
+        fs::write(dir.join("metrics.toml"), &on).unwrap();
+        daemon.reload();
+        assert!(daemon.endpoint.is_some());
+        // The machine is read for the scrape, not taken from the history,
+        // and alertd's not answering leaves its metric out.
+        let answer = scrape_at(address);
+        assert!(answer.starts_with("HTTP/1.1 200 OK"), "{answer}");
+        assert!(answer.contains("\nnode_load1 0.5\n"), "{answer}");
+        assert!(answer.contains("\nnode_memory_MemTotal_bytes 1024000\n"), "{answer}");
+        assert!(!answer.contains("dukovo_alerts_active"));
+        // The same settings go on with the same endpoint; others replace
+        // it, and none stops it.
+        daemon.reload();
+        assert!(daemon.endpoint.is_some());
+        fs::write(dir.join("metrics.toml"), "# off\n").unwrap();
+        daemon.reload();
+        assert!(daemon.endpoint.is_none());
+        assert!(std::net::TcpStream::connect(address).is_err());
+    }
+
+    #[test]
+    fn a_listen_without_allow_does_not_open_the_endpoint() {
+        let (mut daemon, dir) = daemon("no-allow");
+        fs::write(dir.join("metrics.toml"), "[prometheus]\nlisten = [\"127.0.0.1:9100\"]\n")
+            .unwrap();
+        daemon.reload();
+        assert!(daemon.endpoint.is_none());
     }
 
     #[test]
