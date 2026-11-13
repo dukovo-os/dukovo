@@ -18,6 +18,8 @@ expect = "outputs-found"
 # What audiod plays at: 48 kHz, in two channels.
 [[step]]
 run = '''sh -c 'for o in $(ls /devices/audio | grep "^hda"); do audio info "$o" | grep -E "^(Output|Model|Channels|Rates):"; audio info "$o" | grep -q "^Channels:   2 to 2" && audio info "$o" | grep -qE "^Rates: .* 48(,| kHz)" || echo "$o does not play 48 kHz stereo"; done; echo "outputs"-checked' '''
+# The outputs are root's (audio(1)).
+root = true
 expect = "outputs-checked"
 expect_not = "does not play"
 [[step]]
