@@ -1,0 +1,302 @@
+// SPDX-FileCopyrightText: 2026 The Dukovo contributors
+// SPDX-License-Identifier: Apache-2.0 OR MIT
+
+// Where the expected values come from. The symbols of versions 1, 5 and 10
+// are qrcodegen 1.8.0's, Nayuki's reference encoder, called as
+// `QrCode.encode_segments([QrSegment.make_bytes(text)], QrCode.Ecc.MEDIUM,
+// version, version, -1, False)`; each was read back to its text by two
+// decoders that share no code with it, zxing-cpp 3.1.1 and jsQR 1.4.0.
+// The penalties of the eight masks are what its `_get_penalty_score()`
+// gives for the same text with each mask forced, and the scores of the
+// crafted grids are what it gives for a grid whose modules were set
+// directly. The format and version bits are the tables of ISO/IEC 18004
+// (Annex C and Annex D), and the error correction codewords are its
+// Annex I example.
+
+import assert from 'node:assert/strict';
+import test from 'node:test';
+
+import { errorCorrection, formatBits, penalty, qrMatrix, qrPath, versionBits } from '../qr.js';
+
+const SYMBOLS = [
+  {
+    version: 1,
+    text: 'Dukovo Admin',
+    mask: 1,
+    penalties: [1080, 1070, 1106, 1174, 1108, 1205, 1105, 1185],
+    rows: [
+      '#######.#..##.#######',
+      '#.....#...##..#.....#',
+      '#.###.#.###...#.###.#',
+      '#.###.#.....#.#.###.#',
+      '#.###.#...#.#.#.###.#',
+      '#.....#.##....#.....#',
+      '#######.#.#.#.#######',
+      '.........#.#.........',
+      '#.#...##.####..#..#.#',
+      '##.#.#..#........#.##',
+      '..###.###.#...#.#.#.#',
+      '#.##........##...#...',
+      '##...##...#..#.###..#',
+      '........###..#..#.#..',
+      '#######.#########...#',
+      '#.....#..#..##.###...',
+      '#.###.#..#...#...#...',
+      '#.###.#..##.###.###..',
+      '#.###.#.#...#.#.#..##',
+      '#.....#...##.#..##...',
+      '#######.#..#.#..#...#',
+    ],
+  },
+  {
+    version: 5,
+    text: 'otpauth://totp/Dukovo:chase?secret=JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP&issuer=Dukovo',
+    mask: 6,
+    penalties: [1781, 1796, 1667, 1673, 1679, 1910, 1627, 1798],
+    rows: [
+      '#######.#..#.#...#...##.##.#..#######',
+      '#.....#.###..##....##...##....#.....#',
+      '#.###.#.###.....#.####..##.#..#.###.#',
+      '#.###.#...##.#.####..#..##..#.#.###.#',
+      '#.###.#.#...#.#..#.#.##....##.#.###.#',
+      '#.....#...###...##..##.##.....#.....#',
+      '#######.#.#.#.#.#.#.#.#.#.#.#.#######',
+      '.........#.....##..#....#####........',
+      '#..######..#######.#...#.##.##..#.###',
+      '#.#....##.##.#...##...#...#...###..#.',
+      '#...#####..#..#..#.....##..##...##..#',
+      '..#.##..#.####.#.#..#..##.###....####',
+      '......###.#...#.##..#...#..#####..#.#',
+      '.###.......##...###..#.#.###...##...#',
+      '.#.#.######..#.#.###.##..####..######',
+      '##.#...##.#.#####..##..##...#....####',
+      '..#####..#####.##.....##...##.#####.#',
+      '.....#..#..#.#..#.##...#.#.#####..#..',
+      '....#.#.#####..#..####.##.##...####.#',
+      '#.#..#.#######....#.#.#.##...#.#.#.#.',
+      '..##.##.#.#..#.#...##.#.#.#..##.####.',
+      '#..#....#..#..######...#.###.#..#.#.#',
+      '..#..####.....###......##.##.##.#...#',
+      '..##...#....###.##.#....#....#..#####',
+      '.#.#######.#..#.#..#.....#.#..#.#..##',
+      '###.#..#.#...#..#....##.....###.#.#..',
+      '##..###.#..####.#####.....##.###...##',
+      '#......#.......#..#....##..#..#.#.###',
+      '#.#.####.######.##..#.##.#.######.###',
+      '........#...###..#.##...#.###...###.#',
+      '#######.##.#.###...#..##.##.#.#.#.#.#',
+      '#.....#.#.#....##.##..##.####...##..#',
+      '#.###.#.##.#..####.#...#.########..##',
+      '#.###.#.###.#.#.#.##...##.##.##...###',
+      '#.###.#..#.##..##.#....#.#..##.##.#.#',
+      '#.....#..#.##..#.#..#...#..####..####',
+      '#######.#.....#..#.##...#...#...#.#.#',
+    ],
+  },
+  {
+    version: 10,
+    text: 'otpauth://totp/Dukovo%20(file-server-with-a-long-name):administrator?secret=JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP&issuer=Dukovo%20(file-server-with-a-long-name)&algorithm=SHA1&digits=6&period=30',
+    mask: 5,
+    penalties: [3253, 2921, 2895, 2933, 2919, 2878, 3094, 3038],
+    rows: [
+      '#######..##....#..##.#..#.##..#...#..##.#.###.##..#######',
+      '#.....#.##...#...#......##.......##.##.....#...#..#.....#',
+      '#.###.#.#.#..##.##.##....#..###....#.#.##.#.####..#.###.#',
+      '#.###.#.#..##...#..##.###..#####.##.#..##.#.##.#..#.###.#',
+      '#.###.#.....###.##.#..###.#####.##...#.####....#..#.###.#',
+      '#.....#..#.#....#.##.##.###...###.#.#.###.#..##...#.....#',
+      '#######.#.#.#.#.#.#.#.#.#.#.#.#.#.#.#.#.#.#.#.#.#.#######',
+      '........###.####....#.#####...#.#....#.#.#..#####........',
+      '#.....#.###....#...##.#...######...##....###..#..##..###.',
+      '.#.#...######.........###..#####..#.####.###..#.#####....',
+      '.##.########.#####...#..#....#.#.....###...####..##...#..',
+      '#..###.####.....#..###.###...##..#..#..####.###.##.#.###.',
+      '......#.##..###..###.##.##...##.##...##.#####.#.###.#.###',
+      '##..##.##.##......#..#..#...####.#...#.##.#..#.###...#..#',
+      '###.#.##.#.##.#####..#.###..##.#####.#.#.#..###..###..##.',
+      '..##.#...###....###.#.#.#.#..#...#...###.#.##.#.###..####',
+      '..#.###.##..##.#......#.##...#.#..#####..#.#..#..#.....##',
+      '....#...###...###.###.###....##.##.##..####..#.###..###.#',
+      '...#..##...#####.#..######..#..##....#...##.#.#.#....##.#',
+      '#...#....#.#.#.###.###.....##.###..#.##..#..###.##.####.#',
+      '#..#..####.#.#...#.##.....#..###..###.#.####.....##....#.',
+      '##..##..#######.###.###.#.##..########...######.#.####...',
+      '.##.#.####..#..###.####.###.#####.#.....#.....#...##.#.#.',
+      '####....#.....#.#..#.#..##...###..##.##.#####.....######.',
+      '#####.#...##.###..#######.#.#.###.#.#...#.#.####.##.#..#.',
+      '....#..#.#..#.#####...#####.####...#...####..#..##.#.#...',
+      '.#########.##....#..#.##.######..###..#.#.##.##.########.',
+      '..###...#....##...#####.###...#..#....##..#..#.##...#####',
+      '#.#.#.#.##.###.#...#.#.#..#.#.##.##.#.##.###..###.#.#..#.',
+      '.#.##...##..###.##....###.#...#..##.##.##.##.#..#...#.#.#',
+      '..#.#######..###...##...#.#####..#####.#.#.#....#######.#',
+      '.#.##...#.##.##.##.####..#..##.##.###.####..##.#.#..####.',
+      '##..#.#..#..#.#..####.#.#.#####.....#....###.......##.###',
+      '.#..##...#.###..#..###.#...##.#..########.#.#.#....#####.',
+      '########..##.#..#...#.#..#.##.#..##.##.###.#.##.##..###.#',
+      '###..#.###..##..#...####.###.#.##....##.###..#...##...#..',
+      '.####.#####...#.##.######...#.#.#...#.#.###.#..####.##.##',
+      '.###...#.#..##..#....#####...#####.###.#######.#####....#',
+      '..##.#####.#...#..####.#..#..##..##.#.####.....##...###..',
+      '#..###.....##.###.....#.###.#....##...#.#....###.#..#####',
+      '..##.####.#.###..##.##.#..#.#.#....###.#.###..#.##.##....',
+      '.##.#..##..#..#..#...#..#.##...#.#.......##.##.#...#.##.#',
+      '.#...##..####..####..###....#.#.##..#.####.#.#....#..##.#',
+      '..#.#...#...#.#.###.#...#.#.#....#...#..#..###.##.#####.#',
+      '#.#...#..#.##...##.#..##.#####.#######....##....######.#.',
+      '.#.#....#.#######.##..#.#..##....##.#.#.####.##.######..#',
+      '#.#..###..#.#.#.#.###..##.#.##.########.#####.##.#.#..##.',
+      '#####...#......###.##.....#.#.#.#..#.....#..##.##.#..##..',
+      '......##.#.#.##..#######..#####.#.###.#.#.#.##########.##',
+      '........##..##.#...#...##.#...##.....#...##.##.##...#...#',
+      '#######..##.###..#.....#.##.#.#.....####.....##.#.#.##...',
+      '#.....#..####...#..#.####.#...##.#..#.#...##...##...#.#.#',
+      '#.###.#..##..###.#.#.####.######.#.#.....#.#...#######..#',
+      '#.###.#..#.##.#.##.##...###...##.#......#.##........##...',
+      '#.###.#...##.....##.###.#...##..##...#.....#....###.#.###',
+      '#.....#..#####.#.....#..##.#.##.##...##.#####.#..#.####..',
+      '#######.##..#####..#..####..##.#...##.#..##....##....#.#.',
+    ],
+  },
+];
+
+const bitsOf = (rows) => rows.map((row) => Array.from(row, (module) => (module === '#' ? 1 : 0)));
+
+test('each symbol is the one the reference encoder makes, mask and all', () => {
+  for (const symbol of SYMBOLS) {
+    const made = qrMatrix(symbol.text);
+    assert.equal(made.version, symbol.version, `version of ${symbol.text}`);
+    assert.equal(made.mask, symbol.mask, `mask of version ${symbol.version}`);
+    assert.deepEqual(made.modules, bitsOf(symbol.rows), `modules of version ${symbol.version}`);
+  }
+});
+
+test('each of the eight masks gives the symbol the reference encoder makes with it', () => {
+  for (const symbol of SYMBOLS) {
+    for (let mask = 0; mask < 8; mask++) {
+      const made = qrMatrix(symbol.text, mask);
+      assert.equal(made.mask, mask);
+      assert.equal(made.score, symbol.penalties[mask], `penalty of mask ${mask}, version ${symbol.version}`);
+      assert.equal(penalty(made.modules), symbol.penalties[mask]);
+    }
+  }
+});
+
+test('the mask with the lowest penalty is the one chosen', () => {
+  for (const symbol of SYMBOLS) {
+    const lowest = Math.min(...symbol.penalties);
+    assert.equal(symbol.penalties.indexOf(lowest), symbol.mask);
+    assert.equal(qrMatrix(symbol.text).score, lowest);
+  }
+});
+
+test('the penalty of a grid with no dark module is runs, blocks and balance alone', () => {
+  // Each of the 42 lines is one run of 21: 21 - 2 = 19 each, 798. The
+  // 20 x 20 blocks of 2 x 2 modules score 3 each, 1200. No pattern. None of
+  // the modules is dark, which is 50% away from half: nine steps of 5% below
+  // the tenth, 90.
+  const light = Array.from({ length: 21 }, () => new Array(21).fill(0));
+  assert.equal(penalty(light), 798 + 1200 + 90);
+});
+
+test('the penalty of a chequerboard is 0: no run, no block, no pattern, half dark', () => {
+  const chequerboard = Array.from({ length: 21 }, (_, row) =>
+    Array.from({ length: 21 }, (_, col) => (row + col + 1) % 2));
+  assert.equal(penalty(chequerboard), 0);
+});
+
+// The expected scores are qrcodegen's for the same grids.
+const FINDER_LIKE = [1, 0, 1, 1, 1, 0, 1];
+
+function lightGrid() {
+  return Array.from({ length: 21 }, () => new Array(21).fill(0));
+}
+
+test('the pattern of the finder patterns scores 40 for each side with four light modules', () => {
+  const inRow = lightGrid();
+  [0, 0, 0, 0, ...FINDER_LIKE].forEach((module, i) => (inRow[8][6 + i] = module));
+  assert.equal(penalty(inRow), 2094);
+  const inColumn = lightGrid();
+  [...FINDER_LIKE, 0, 0, 0, 0].forEach((module, i) => (inColumn[2 + i][12] = module));
+  assert.equal(penalty(inColumn), 2096);
+  // At the left edge the quiet zone is the light before the pattern.
+  const atEdge = lightGrid();
+  [...FINDER_LIKE, 0, 0, 0, 0].forEach((module, i) => (atEdge[5][i] = module));
+  assert.equal(penalty(atEdge), 2104);
+});
+
+test('a mixed grid scores as the reference encoder scores it', () => {
+  const mixed = Array.from({ length: 21 }, (_, row) =>
+    Array.from({ length: 21 }, (_, col) => ((row * row + 3 * col) % 7 < 3 ? 1 : 0)));
+  assert.equal(penalty(mixed), 73);
+});
+
+test('the format information is the standard\'s table for level M', () => {
+  const table = [
+    '101010000010010', '101000100100101', '101111001111100', '101101101001011',
+    '100010111111001', '100000011001110', '100111110010111', '100101010100000',
+  ];
+  table.forEach((bits, mask) => assert.equal(formatBits(mask).toString(2).padStart(15, '0'), bits));
+});
+
+test('the version information is the standard\'s table for versions 7 to 10', () => {
+  const table = {
+    7: '000111110010010100',
+    8: '001000010110111100',
+    9: '001001101010011001',
+    10: '001010010011010011',
+  };
+  for (const [version, bits] of Object.entries(table)) {
+    assert.equal(versionBits(Number(version)).toString(2).padStart(18, '0'), bits);
+  }
+});
+
+test('the error correction codewords are those of the standard\'s worked example', () => {
+  // ISO/IEC 18004 Annex I: "01234567" in version 1, level M.
+  const data = [0x10, 0x20, 0x0c, 0x56, 0x61, 0x80, 0xec, 0x11, 0xec, 0x11, 0xec, 0x11, 0xec, 0x11, 0xec, 0x11];
+  const expected = [0xa5, 0x24, 0xd4, 0xc1, 0xed, 0x36, 0xc7, 0x87, 0x2c, 0x55];
+  assert.deepEqual(errorCorrection(data, 10), expected);
+});
+
+test('a symbol has its function patterns where the standard puts them', () => {
+  for (const symbol of SYMBOLS) {
+    const { modules } = qrMatrix(symbol.text);
+    const size = 17 + 4 * symbol.version;
+    assert.equal(modules.length, size);
+    for (const [row, col] of [[0, 0], [0, size - 7], [size - 7, 0]]) {
+      for (let r = 0; r < 7; r++) {
+        for (let c = 0; c < 7; c++) {
+          const ring = Math.max(Math.abs(r - 3), Math.abs(c - 3));
+          assert.equal(modules[row + r][col + c], ring === 2 ? 0 : 1, `finder at ${row},${col}`);
+        }
+      }
+    }
+    for (let i = 8; i < size - 8; i++) {
+      assert.equal(modules[6][i], i % 2 === 0 ? 1 : 0, 'horizontal timing');
+      assert.equal(modules[i][6], i % 2 === 0 ? 1 : 0, 'vertical timing');
+    }
+    assert.equal(modules[size - 8][8], 1, 'the dark module');
+  }
+});
+
+test('a text takes the smallest version that holds it, up to 213 bytes', () => {
+  // The byte capacities of level M for versions 1 to 10.
+  const capacities = [14, 26, 42, 62, 84, 106, 122, 152, 180, 213];
+  capacities.forEach((capacity, i) => {
+    assert.equal(qrMatrix('a'.repeat(capacity)).version, i + 1, `${capacity} bytes`);
+    if (i + 1 < capacities.length) assert.equal(qrMatrix('a'.repeat(capacity + 1)).version, i + 2);
+  });
+  assert.throws(() => qrMatrix('a'.repeat(214)), { name: 'RangeError', message: /214 bytes/ });
+});
+
+test('a text with characters beyond ASCII is encoded as UTF-8', () => {
+  // "é" is 2 bytes, so 7 of them need 14 bytes: still version 1.
+  assert.equal(qrMatrix('é'.repeat(7)).version, 1);
+  assert.equal(qrMatrix('é'.repeat(8)).version, 2);
+});
+
+test('the path is the dark modules, a run at a time, inside the quiet zone', () => {
+  const modules = bitsOf(['##.#', '....', '.###']);
+  assert.equal(qrPath(modules), 'M4 4h2v1h-2zM7 4h1v1h-1zM5 6h3v1h-3z');
+  assert.equal(qrPath(modules, 0), 'M0 0h2v1h-2zM3 0h1v1h-1zM1 2h3v1h-3z');
+});
