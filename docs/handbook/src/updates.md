@@ -74,7 +74,10 @@ time, `apps = "auto"` keeps the apps current by itself, and `check =
 `unattended = true`, which stages each update by itself, and
 `restart = "04:00"`, which restarts into it at that time. The two slots
 make that safe: an update that fails its health check is gone at the
-next start. updates.toml(5) and update(8) have the details.
+next start. On a metered connection, such as a phone's hotspot, the
+checks find updates and wait to download them (see [Metered
+connections](#metered-connections)). updates.toml(5) and update(8) have
+the details.
 
 ## Checking for updates
 
@@ -126,6 +129,37 @@ $ elevate sysupdate stage /volumes/UPDATES/dukovo-0.15.2.update
 
 The file is checked where it lies, every signature and every file, and
 staged as below.
+
+## Metered connections
+
+A connection that costs by the byte, a phone's hotspot or a mobile
+plan, should not take a release of tens of megabytes unasked. netd(8)
+knows which connection is metered: a card's `metered = yes` in
+`/system/settings/network` (network(5)) says so, and so does the DHCP
+server that gave the card its address, when it says so as an Android
+phone's hotspot does. `metered = no` says it is not, whatever the server
+says. netd writes the answer for the card that carries the default
+route to `/system/live/netd/metered`, and logs it when it changes:
+
+```
+netd: net0 is metered: updates wait for another connection
+```
+
+While the connection is metered, updated(8) still fetches the channel's
+few small signed files, so that it knows what is on offer, but downloads
+and stages nothing, whatever `check` and `apps` say, whether of the
+system, its firmware or the apps. Whoever is signed in is told that an
+update is ready to download, that the connection is metered and that it
+waits. The next daily check on a connection that is not metered goes on
+as usual, and `elevate update apply` goes ahead on any connection.
+
+A machine whose only connection is metered, and that must stay current,
+takes it as any other in `/system/settings/sysupdate/updates.toml`
+(updates.toml(5)):
+
+```
+metered = "download"
+```
 
 ## Staging an update
 

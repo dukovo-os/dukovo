@@ -11,6 +11,8 @@ netd - set the network cards up, by DHCP or as their settings say
 
 *netd*
 
+*netd leases*
+
 # DESCRIPTION
 
 netd gives each network card its addresses, its router and its DNS
@@ -61,10 +63,96 @@ Bridges and VLANs that *ip*(8) makes (ADR 0333) are set up as cards
 are, by their names; a bridge's port is not, while it is one, as its
 bridge has the addresses.
 
-The kernel lets each card's socket hold ports 68 and 546 beside the
+The kernel lets each card's socket hold ports 67, 68 and 546 beside the
 others', as each is bound to its own card (*radix-posix*(7)). While another socket
 holds the port on a card, the card waits for it, and netd tries again
 each time it looks at the cards.
+
+# THE DHCP SERVER
+
+A card with an address of its own and a *dhcp-server* range in
+_/system/settings/network_ (*network*(5)) gives the computers on its
+network their addresses (RFC 2131, ADR 0486). Its server has a thread
+and a socket on port 67 of that card, so that a card's server hears
+only its own network, and a machine with several networks can serve
+each with its own pool. IPv4 only: IPv6 clients keep the addresses
+their network's router has them make, and DHCPv6 and router
+advertisements are not served.
+
+A client gets, in this order: the address reserved for its MAC address;
+the address it had last, kept by its client identifier, or by its MAC
+address when it sends none; the address it asks for, if it is free;
+the lowest free address of the range. A lease ends after the time the
+settings give, and the client renews it at half that time (T1) and
+rebinds at seven eighths (T2). An address whose lease ended is given
+to another client only once no address that was never given is free,
+so that a client that comes back usually finds its own. An address a
+client declines, saying another machine uses it, is left alone for ten
+minutes. A client that releases its address gives it back at once. A
+reserved address is never given to another client, and an address with
+a lease is never given to another.
+
+The server tells a client its address, the network's mask and
+broadcast address, the lease time and T1 and T2, and, as the settings
+and their defaults give them, a router, DNS servers, a domain name and a
+time server. When the settings say the connection is metered it tells
+the client so by the vendor option that names ANDROID_METERED. A client
+that asks only for settings (DHCPINFORM) gets them without a lease.
+
+It answers only what is well formed and comes from an Ethernet client on
+the card's network: other packets are ignored, never answered, and a
+request made through a relay agent (*giaddr* set) is ignored too, which
+netd says once in the log. A client's answer to another server's offer
+is not answered. A request for an address that is not the client's, or
+not on this network, gets a DHCPNAK, which has the client ask for a new
+one; a client the server has no record of, asking for the address it
+had before it restarted, is left unanswered, as RFC 2131 has a server
+do that may not be the only one. An answer goes to the client's address
+if it has one on the network, and otherwise to the broadcast address;
+a DHCPNAK always goes to the broadcast address.
+
+Each lease is kept in _/system/state/netd/dhcp-server-_*card* before
+the client is told it has it, so that the leases survive a restart of
+netd and of the machine. The settings read again give the server its
+new pool at once and keep each lease that still fits it.
+
+The server's lines in the log, after *netd:*, are one for each new
+lease, decline and release, and for the first time a pool is full:
+
+```
+netd: net1: giving addresses 192.168.10.100-192.168.10.199 by DHCP, for 1 day each; 0 leases kept
+netd: net1: gave 192.168.10.20 to 52:54:00:12:34:58 (printer) for 1 day
+netd: net1: 52:54:00:12:34:56 released 192.168.10.100
+netd: net1: the pool is full: 52:54:00:12:34:60 gets no address until a lease ends
+```
+
+# THE LEASES
+
+*netd leases* shows the leases the servers have given, a line for each,
+and an address that is reserved but has none, with when it ends:
+
+```
+$ netd leases
+CARD  ADDRESS         MAC                NAME     LEFT
+net1  192.168.10.20   52:54:00:12:34:58  printer  reserved
+net1  192.168.10.100  52:54:00:12:34:56  laptop   23h 41m
+```
+
+It reads _/system/live/netd/leases_, which anyone may read, so it needs
+no privilege.
+
+# METERED CONNECTIONS
+
+netd knows which connection costs by the byte: a card's *metered*
+setting (*network*(5)) says, and without it the vendor option of its
+DHCP lease, which names ANDROID_METERED when a server such as an
+Android phone's hotspot says so. netd writes _/system/live/netd/metered_
+each time that changes: its first line is *yes* or *no* for the card
+that carries the IPv4 default route (else the IPv6 one, else *no*), and
+a line follows for each card, as *net0 no*. *updated*(8) reads it and
+holds its downloads back (*updates.toml*(5)). netd logs it when the
+first line changes, as *netd: net0 is metered: updates wait for another
+connection*.
 
 netd keeps each lease in _/system/state/netd_, a file for each card
 named by its MAC address. netd started again goes on with the lease the
@@ -78,7 +166,8 @@ _/system/live/netd/resolv.conf_, for *resolved*(8), which every program
 asks, to forward queries to unless its own settings name servers.
 
 Its service holds only its leases and that folder beyond what every
-service reads (*service.toml*(5)): it cannot change the settings.
+service reads, and ports 67, 68 and 546 on every card
+(*service.toml*(5)): it cannot change the settings.
 
 netd looks at the cards every five seconds: it sets up a card that
 came, forgets one that went, and has a card whose link came back ask
@@ -111,7 +200,21 @@ _/system/settings/network_
 _/system/state/netd/_*52-54-00-12-34-56.lease*
 	A card's lease: its address, router, DNS servers, domain, server,
 	when it was given (seconds since 1970) and for how long, and when
-	to renew and rebind it, a *key = value* a line.
+	to renew and rebind it, and *metered = yes* when its server says
+	the connection is metered, a *key = value* a line.
+
+_/system/state/netd/dhcp-server-_*net1*
+	The leases the server of that card has given, a line each: the
+	client's MAC address, the address, when it ends (seconds since
+	1970), the client's identifier and its name.
+
+_/system/live/netd/leases_
+	The leases of all the servers, as *netd leases* shows them, a line
+	each: the card, the address, the MAC address, the name or *-*, and
+	when it ends or *reserved*.
+
+_/system/live/netd/metered_
+	Whether the connection is metered, for *updated*(8).
 
 _/system/state/netd/ipv6-secret_
 	The machine's IPv6 secret, which its stable addresses are made from:
@@ -125,12 +228,16 @@ _/system/settings/spark/services/netd.toml_
 
 # EXIT STATUS
 
-0 when it was ended; 1 for an argument, as it takes none.
+0 when it was ended; 1 for an argument it does not know. *netd leases*
+exits 0 after showing the leases and 1 when no card gives addresses by
+DHCP.
 
-Not yet: a DHCP server, DHCPv6 prefix delegation, an ARP probe of the
-address offered, DHCPDECLINE and DHCPRELEASE.
+Not yet: a DHCPv6 server and router advertisements, DHCP relay, DHCPv6
+prefix delegation, an ARP probe of an address before it is offered,
+and DHCPDECLINE and DHCPRELEASE from its client.
 
 # SEE ALSO
 
-*network*(5), *ip*(8), *service*(8), *service.toml*(5), *spark*(8),
-*radix-network*(2), *systools*(1)
+*network*(5), *timed*(5), *updates.toml*(5), *updated*(8), *ip*(8),
+*service*(8), *service.toml*(5), *spark*(8), *radix-network*(2),
+*systools*(1)
