@@ -49,6 +49,7 @@ use radix_abi::network::{Ipv6Flags, Ipv6Settings};
 
 use crate::args::Args;
 use crate::dhcp::{self, Action, Client, Lease};
+use crate::dhcp_server::{self, Reservation, mac_of};
 use crate::dhcp6;
 use crate::ip::{self, Cidr, Cidr6, Interface, Network};
 use crate::util::{self, Fail};
@@ -67,6 +68,13 @@ const SCAN: Duration = Duration::from_secs(5);
 /// DNS servers resolv.conf takes.
 const ADDRESSES_MAX: usize = 4;
 const DNS_MAX: usize = 3;
+
+/// The most reservations a card's server takes.
+const RESERVATIONS_MAX: usize = 1024;
+
+/// The shortest and longest leases a server gives.
+const SERVER_LEASE_MIN: Duration = Duration::from_mins(1);
+const SERVER_LEASE_MAX: Duration = Duration::from_hours(30 * 24);
 
 /// The ports of DHCP.
 const CLIENT_PORT: u16 = 68;
@@ -90,6 +98,32 @@ pub struct Setup {
     pub router6: Option<Ipv6Addr>,
     /// When it asks DHCPv6: as its routers say, unless this says.
     pub dhcpv6: Option<Dhcpv6>,
+    /// Whether its connection is metered: as `metered` says, or, with
+    /// `auto` or nothing, as the server of its DHCP lease says.
+    pub metered: Option<bool>,
+    /// Its DHCP server, if `dhcp-server` names a range.
+    pub server: ServerSetup,
+}
+
+/// A card's DHCP server, as the `dhcp-server` lines of the settings give
+/// it, which is valid once [`parse_settings`] has left it on. What a line
+/// leaves out is the default, which netd works out when it starts the
+/// server.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ServerSetup {
+    /// The addresses given to clients, `first-last`: setting it turns
+    /// the server on.
+    pub range: Option<(Ipv4Addr, Ipv4Addr)>,
+    pub lease: Option<Duration>,
+    /// `Some(None)` is `none`: no router, and no default one.
+    pub router: Option<Option<Ipv4Addr>>,
+    /// The DNS servers; empty for `none`.
+    pub dns: Option<Vec<Ipv4Addr>>,
+    pub domain: Option<String>,
+    pub time: Option<Option<Ipv4Addr>>,
+    pub metered: Option<bool>,
+    /// The reservations, with the lines that gave them.
+    pub reserved: Vec<(usize, Reservation)>,
 }
 
 /// When a card asks DHCPv6, the `dhcpv6` setting.
@@ -269,16 +303,28 @@ pub fn parse_settings(text: &str) -> (Vec<(String, Setup)>, Vec<String>) {
                     _ => false,
                 }
             }
-            _ => {
-                wrong.push(format!("{SETTINGS}:{at}: no setting is called {key}"));
-                continue;
-            }
+            "metered" => match value {
+                "yes" | "no" if setup.metered.is_none() => {
+                    setup.metered = Some(value == "yes");
+                    true
+                }
+                "auto" => true,
+                _ => false,
+            },
+            _ => match server_line(&mut setup.server, key, value, at) {
+                Some(ok) => ok,
+                None => {
+                    wrong.push(format!("{SETTINGS}:{at}: no setting is called {key}"));
+                    continue;
+                }
+            },
         };
         if !ok {
             wrong.push(format!("{SETTINGS}:{at}: '{value}' is not a {key} here"));
         }
     }
-    for (name, setup) in &cards {
+    for (name, setup) in &mut cards {
+        check_server(name, setup, &mut wrong);
         if let Some(router) = setup.router
             && !setup.addresses.is_empty()
             && !setup.addresses.iter().any(|cidr| cidr.contains(router))
@@ -301,14 +347,179 @@ pub fn parse_settings(text: &str) -> (Vec<(String, Setup)>, Vec<String>) {
     (cards, wrong)
 }
 
-/// A MAC address, `52:54:00:12:34:56`.
-fn mac_of(text: &str) -> Option<[u8; 6]> {
-    let mut mac = [0; 6];
-    let mut parts = text.split(':');
-    for byte in &mut mac {
-        *byte = u8::from_str_radix(parts.next()?, 16).ok()?;
+/// A lease time, a number with `s`, `m`, `h` or `d`, from a minute to 30
+/// days.
+fn lease_time(text: &str) -> Option<Duration> {
+    let (number, unit) = text.split_at(text.len().checked_sub(1)?);
+    let unit = match unit {
+        "s" => 1,
+        "m" => 60,
+        "h" => 3600,
+        "d" => 86_400,
+        _ => return None,
+    };
+    if number.is_empty() || !number.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
     }
-    parts.next().is_none().then_some(mac)
+    let time = Duration::from_secs(number.parse::<u64>().ok()?.checked_mul(unit)?);
+    (SERVER_LEASE_MIN..=SERVER_LEASE_MAX).contains(&time).then_some(time)
+}
+
+/// A reservation, `mac address [name]`.
+fn reservation(text: &str) -> Option<Reservation> {
+    let mut words = text.split_whitespace();
+    let mac = mac_of(words.next()?)?;
+    let address = words.next()?.parse::<Ipv4Addr>().ok().filter(|&ip| dhcp::unicast(ip))?;
+    let name = words.next();
+    if words.next().is_some() || name.is_some_and(|name| !dhcp_server::valid_name(name)) {
+        return None;
+    }
+    Some(Reservation { mac, address, name: name.map(str::to_string) })
+}
+
+/// Reads one of a card's DHCP server lines into `server`: whether its
+/// value is right and not given before, or `None` if `key` is none of
+/// theirs.
+fn server_line(server: &mut ServerSetup, key: &str, value: &str, at: usize) -> Option<bool> {
+    let address = |text: &str| text.parse::<Ipv4Addr>().ok().filter(|&ip| dhcp::unicast(ip));
+    let or_none = |text: &str| if text == "none" { Some(None) } else { address(text).map(Some) };
+    let ok = match key {
+        "dhcp-server" => match value
+            .split_once('-')
+            .and_then(|(first, last)| Some((address(first.trim())?, address(last.trim())?)))
+        {
+            Some(range) if server.range.is_none() => {
+                server.range = Some(range);
+                true
+            }
+            _ => false,
+        },
+        "dhcp-server-lease" => match lease_time(value) {
+            Some(lease) if server.lease.is_none() => {
+                server.lease = Some(lease);
+                true
+            }
+            _ => false,
+        },
+        "dhcp-server-router" => match or_none(value) {
+            Some(router) if server.router.is_none() => {
+                server.router = Some(router);
+                true
+            }
+            _ => false,
+        },
+        "dhcp-server-time" => match or_none(value) {
+            Some(time) if server.time.is_none() => {
+                server.time = Some(time);
+                true
+            }
+            _ => false,
+        },
+        "dhcp-server-dns" => {
+            let list: Option<Vec<Ipv4Addr>> = if value == "none" {
+                Some(Vec::new())
+            } else {
+                value.split_whitespace().map(address).collect()
+            };
+            // One line, or lines that add up to at most DNS_MAX; `none`
+            // stands alone.
+            match (server.dns.as_mut(), list) {
+                (None, Some(list)) if list.len() <= DNS_MAX && !value.is_empty() => {
+                    server.dns = Some(list);
+                    true
+                }
+                (Some(have), Some(list))
+                    if !have.is_empty()
+                        && !list.is_empty()
+                        && have.len() + list.len() <= DNS_MAX =>
+                {
+                    have.extend(list);
+                    true
+                }
+                _ => false,
+            }
+        }
+        "dhcp-server-domain" => match dhcp::domain(value.as_bytes()) {
+            Some(domain) if server.domain.is_none() => {
+                server.domain = Some(domain);
+                true
+            }
+            _ => false,
+        },
+        "dhcp-server-metered" => match value {
+            "yes" | "no" if server.metered.is_none() => {
+                server.metered = Some(value == "yes");
+                true
+            }
+            _ => false,
+        },
+        "reserve" => match reservation(value) {
+            Some(new)
+                if server.reserved.len() < RESERVATIONS_MAX
+                    && !server
+                        .reserved
+                        .iter()
+                        .any(|(_, old)| old.mac == new.mac || old.address == new.address) =>
+            {
+                server.reserved.push((at, new));
+                true
+            }
+            _ => false,
+        },
+        _ => return None,
+    };
+    Some(ok)
+}
+
+/// Checks the server `setup` of the card `name` as a whole, where the
+/// addresses and the lines are all in: a server that cannot run is left
+/// off, and why is said; a reservation that is wrong is left out.
+fn check_server(name: &str, setup: &mut Setup, wrong: &mut Vec<String>) {
+    let server = std::mem::take(&mut setup.server);
+    let Some((first, last)) = server.range else {
+        if server != ServerSetup::default() {
+            wrong.push(format!("{name}: its dhcp-server settings do nothing without dhcp-server"));
+        }
+        return;
+    };
+    let range = format!("{name}: dhcp-server {first}-{last}");
+    if setup.dhcp == Some(true) {
+        wrong.push(format!("{name}: dhcp-server cannot go with dhcp = yes"));
+        return;
+    }
+    let Some(&card) =
+        setup.addresses.iter().find(|cidr| cidr.contains(first)).or(setup.addresses.first())
+    else {
+        wrong.push(format!("{name}: dhcp-server needs an address of the card's own"));
+        return;
+    };
+    if let Err(why) = dhcp_server::check_range(card, first, last) {
+        wrong.push(format!("{range} {why}"));
+        return;
+    }
+    let network = format!("{}/{}", card.network(), card.prefix);
+    let on_network =
+        |ip: Ipv4Addr| card.contains(ip) && ip != card.network() && Some(ip) != card.broadcast();
+    if let Some(Some(router)) = server.router
+        && !on_network(router)
+    {
+        wrong.push(format!(
+            "{name}: dhcp-server-router {router} is not on the card's network, {network}"
+        ));
+        return;
+    }
+    let mut reserved = Vec::new();
+    for (at, reservation) in server.reserved {
+        let address = reservation.address;
+        if on_network(address) && address != card.ip {
+            reserved.push((at, reservation));
+        } else {
+            wrong.push(format!(
+                "{SETTINGS}:{at}: reserve {address} is not a client's address on {name}'s network, {network}"
+            ));
+        }
+    }
+    setup.server = ServerSetup { range: Some((first, last)), reserved, ..server };
 }
 
 /// A lease as netd keeps it, given at `obtained`, in seconds since 1970.
@@ -1531,6 +1742,283 @@ mod tests {
         assert_eq!(cards[0].1.addresses, [cidr("192.168.1.10/24")]);
     }
 
+    const EXAMPLE: &str = "[net1]\n\
+         address = 192.168.10.1/24\n\
+         router = 192.168.10.254\n\
+         dhcp-server = 192.168.10.100-192.168.10.199\n\
+         dhcp-server-lease = 12h\n\
+         dhcp-server-router = 192.168.10.254\n\
+         dhcp-server-dns = 192.168.10.1\n\
+         dhcp-server-domain = lab.example\n\
+         dhcp-server-time = 192.168.10.1\n\
+         dhcp-server-metered = no\n\
+         reserve = 52:54:00:12:34:56 192.168.10.20 printer\n\
+         metered = auto\n";
+
+    fn ip(text: &str) -> Ipv4Addr {
+        text.parse().unwrap()
+    }
+
+    #[test]
+    fn a_card_serves_dhcp_as_its_settings_say() {
+        let (cards, wrong) = parse_settings(EXAMPLE);
+        assert_eq!(wrong, Vec::<String>::new());
+        let (name, net1) = &cards[0];
+        assert_eq!(name, "net1");
+        let mac = [0x52, 0x54, 0, 0x12, 0x34, 0x56];
+        assert_eq!(
+            net1.server,
+            ServerSetup {
+                range: Some((ip("192.168.10.100"), ip("192.168.10.199"))),
+                lease: Some(Duration::from_secs(12 * 3600)),
+                router: Some(Some(ip("192.168.10.254"))),
+                dns: Some(vec![ip("192.168.10.1")]),
+                domain: Some("lab.example".into()),
+                time: Some(Some(ip("192.168.10.1"))),
+                metered: Some(false),
+                reserved: vec![(
+                    11,
+                    Reservation { mac, address: ip("192.168.10.20"), name: Some("printer".into()) }
+                )],
+            }
+        );
+        assert_eq!(net1.metered, None);
+        // The card keeps its own address, and asks no one for another.
+        assert!(!net1.dhcp() && !net1.alone());
+        // What is left out is the default, to be worked out; each of the
+        // values `none` is its own.
+        let (cards, wrong) = parse_settings(
+            "[net1]\naddress = 10.1.0.1/16\ndhcp-server = 10.1.1.1-10.1.1.9\n\
+             dhcp-server-router = none\ndhcp-server-dns = none\ndhcp-server-time = none\n\
+             dhcp-server-dns = 10.1.0.1\nmetered = yes\n",
+        );
+        assert_eq!(wrong, [format!("{SETTINGS}:7: '10.1.0.1' is not a dhcp-server-dns here")]);
+        let server = &cards[0].1.server;
+        assert_eq!(
+            (server.router, &server.dns, server.time),
+            (Some(None), &Some(vec![]), Some(None))
+        );
+        assert_eq!((server.lease, &server.domain, server.metered), (None, &None, None));
+        assert_eq!(cards[0].1.metered, Some(true));
+        // Up to three DNS servers, on a line or on lines.
+        let (cards, wrong) = parse_settings(
+            "[net1]\naddress = 10.1.0.1/16\ndhcp-server = 10.1.1.1-10.1.1.9\n\
+             dhcp-server-dns = 1.1.1.1 9.9.9.9\ndhcp-server-dns = 8.8.8.8\n\
+             dhcp-server-dns = 8.8.4.4\n",
+        );
+        assert_eq!(wrong, [format!("{SETTINGS}:6: '8.8.4.4' is not a dhcp-server-dns here")]);
+        assert_eq!(cards[0].1.server.dns.as_ref().map(Vec::len), Some(3));
+    }
+
+    #[test]
+    fn a_server_that_cannot_run_is_left_off_and_why_is_said() {
+        // The server's range, and what is said of it, on a card of
+        // `lines`.
+        let card = |lines: &str| {
+            let (cards, wrong) = parse_settings(&format!("[net1]\n{lines}"));
+            (cards[0].1.server.range.is_some(), wrong)
+        };
+        let on = (true, Vec::<String>::new());
+        let off = |why: &str| (false, vec![format!("net1: {why}")]);
+        let range = "dhcp-server = 192.168.10.100-192.168.10.199\n";
+        let with = |more: &str| card(&format!("address = 192.168.10.1/24\n{range}{more}"));
+        assert_eq!(with(""), on);
+        assert_eq!(card(range), off("dhcp-server needs an address of the card's own"));
+        assert_eq!(with("dhcp = yes\n"), off("dhcp-server cannot go with dhcp = yes"));
+        assert_eq!(
+            card("dhcp = no\naddress = fd00::1/64\ndhcp-server = 10.0.0.5-10.0.0.9\n"),
+            off("dhcp-server needs an address of the card's own")
+        );
+        // The range lies inside the network, and holds neither its own
+        // address, the broadcast address, nor the card's.
+        let range_of = |address: &str, range: &str| {
+            card(&format!("address = {address}\ndhcp-server = {range}\n"))
+        };
+        let net = "192.168.10.1/24";
+        assert_eq!(
+            range_of(net, "192.168.10.150-192.168.10.100"),
+            off("dhcp-server 192.168.10.150-192.168.10.100 ends before it begins")
+        );
+        assert_eq!(
+            range_of(net, "192.168.10.100-192.168.11.20"),
+            off("dhcp-server 192.168.10.100-192.168.11.20 is not inside the card's network, \
+                 192.168.10.0/24")
+        );
+        for range in [
+            "192.168.10.0-192.168.10.9",
+            "192.168.10.200-192.168.10.255",
+            "192.168.10.70-192.168.10.80",
+        ] {
+            let said = format!(
+                "dhcp-server {range} holds the network's own address, its broadcast address or \
+                 the card's own"
+            );
+            assert_eq!(range_of("192.168.10.77/24", range), off(&said), "{range}");
+        }
+        assert_eq!(range_of("192.168.10.77/24", "192.168.10.78-192.168.10.254"), on);
+        // At most 65536 addresses.
+        assert_eq!(
+            range_of("10.0.0.1/8", "10.0.1.0-10.1.1.0"),
+            off("dhcp-server 10.0.1.0-10.1.1.0 holds more than 65536 addresses")
+        );
+        assert_eq!(range_of("10.0.0.1/8", "10.0.1.0-10.1.0.255"), on);
+        // The address whose network holds the range is the one the server
+        // is on.
+        let two =
+            "address = 192.168.1.1/24\naddress = 10.1.0.1/16\ndhcp-server = 10.1.5.1-10.1.5.9\n";
+        assert_eq!(card(two), on);
+        // A router on the network, or `none`, and one that is not.
+        let router = |router: &str| with(&format!("dhcp-server-router = {router}\n"));
+        assert_eq!(router("192.168.10.1"), on);
+        assert_eq!(router("none"), on);
+        assert_eq!(
+            router("192.168.11.1"),
+            off("dhcp-server-router 192.168.11.1 is not on the card's network, 192.168.10.0/24")
+        );
+        assert!(!router("192.168.10.255").0);
+        // Settings of the server without its range do nothing, and are
+        // said to.
+        assert_eq!(
+            card("address = 10.0.0.1/24\ndhcp-server-lease = 1h\n"),
+            off("its dhcp-server settings do nothing without dhcp-server")
+        );
+    }
+
+    #[test]
+    fn what_is_wrong_in_the_servers_lines_is_said_by_line() {
+        let (cards, wrong) = parse_settings(
+            "[net1]\n\
+             address = 192.168.10.1/24\n\
+             dhcp-server = 192.168.10.100\n\
+             dhcp-server = 192.168.10.100-192.168.10.199\n\
+             dhcp-server = 192.168.10.50-192.168.10.60\n\
+             dhcp-server-lease = 30s\n\
+             dhcp-server-lease = 31d\n\
+             dhcp-server-lease = twelve\n\
+             dhcp-server-lease = h\n\
+             dhcp-server-lease = 90m\n\
+             dhcp-server-router = 192.168.10.254 192.168.10.253\n\
+             dhcp-server-dns = 1.1.1.1 9.9.9.9 8.8.8.8 8.8.4.4\n\
+             dhcp-server-dns = none 1.1.1.1\n\
+             dhcp-server-dns =\n\
+             dhcp-server-domain = bad domain\n\
+             dhcp-server-time = soon\n\
+             dhcp-server-metered = maybe\n\
+             metered = sometimes\n",
+        );
+        let server = &cards[0].1.server;
+        assert_eq!(server.range, Some((ip("192.168.10.100"), ip("192.168.10.199"))));
+        assert_eq!(server.lease, Some(Duration::from_secs(90 * 60)));
+        assert_eq!(wrong.len(), 14, "{wrong:#?}");
+        let said = |at: usize, key: &str, value: &str| {
+            format!("{SETTINGS}:{at}: '{value}' is not a {key} here")
+        };
+        assert_eq!(wrong[0], said(3, "dhcp-server", "192.168.10.100"));
+        assert_eq!(wrong[1], said(5, "dhcp-server", "192.168.10.50-192.168.10.60"));
+        assert_eq!(wrong[2], said(6, "dhcp-server-lease", "30s"));
+        assert_eq!(wrong[3], said(7, "dhcp-server-lease", "31d"));
+        assert_eq!(wrong[4], said(8, "dhcp-server-lease", "twelve"));
+        assert_eq!(wrong[5], said(9, "dhcp-server-lease", "h"));
+        assert_eq!(wrong[6], said(11, "dhcp-server-router", "192.168.10.254 192.168.10.253"));
+        assert_eq!(wrong[7], said(12, "dhcp-server-dns", "1.1.1.1 9.9.9.9 8.8.8.8 8.8.4.4"));
+        assert_eq!(wrong[8], said(13, "dhcp-server-dns", "none 1.1.1.1"));
+        assert_eq!(wrong[9], said(14, "dhcp-server-dns", ""));
+        assert_eq!(wrong[10], said(15, "dhcp-server-domain", "bad domain"));
+        assert_eq!(wrong[11], said(16, "dhcp-server-time", "soon"));
+        assert_eq!(wrong[12], said(17, "dhcp-server-metered", "maybe"));
+        assert_eq!(wrong[13], said(18, "metered", "sometimes"));
+        // The line left out leaves the default; the others stand.
+        assert_eq!((server.router, &server.dns, server.time), (None, &None, None));
+        assert_eq!(cards[0].1.metered, None);
+    }
+
+    #[test]
+    fn a_reservation_is_a_mac_address_an_address_and_a_name() {
+        let (cards, wrong) = parse_settings(
+            "[net1]\n\
+             address = 192.168.10.1/24\n\
+             dhcp-server = 192.168.10.100-192.168.10.199\n\
+             reserve = 52:54:00:12:34:56 192.168.10.20 printer\n\
+             reserve = 52:54:00:12:34:57 192.168.10.150\n\
+             reserve = 52:54:00:12:34:58 192.168.11.20 elsewhere\n\
+             reserve = 52:54:00:12:34:59 192.168.10.1 itself\n\
+             reserve = 52:54:00:12:34:5a 192.168.10.255\n\
+             reserve = 52:54:00:12:34:56 192.168.10.21 same-mac\n\
+             reserve = 52:54:00:12:34:5b 192.168.10.20 same-address\n\
+             reserve = 52:54:00:12:34 192.168.10.30\n\
+             reserve = 52:54:00:12:34:5c 192.168.10 short\n\
+             reserve = 52:54:00:12:34:5d 192.168.10.31 bad/name\n\
+             reserve = 52:54:00:12:34:5e 192.168.10.32 two names\n\
+             reserve = 52:54:00:12:34:5f\n",
+        );
+        let reserved: Vec<(usize, String)> = cards[0]
+            .1
+            .server
+            .reserved
+            .iter()
+            .map(|(at, reservation)| (*at, reservation.address.to_string()))
+            .collect();
+        assert_eq!(reserved, [(4, "192.168.10.20".to_string()), (5, "192.168.10.150".to_string())]);
+        assert_eq!(cards[0].1.server.reserved[1].1.name, None);
+        let lines: Vec<&str> = wrong.iter().map(String::as_str).collect();
+        assert_eq!(
+            lines,
+            [
+                format!("{SETTINGS}:9: '52:54:00:12:34:56 192.168.10.21 same-mac' is not a reserve here").as_str(),
+                format!("{SETTINGS}:10: '52:54:00:12:34:5b 192.168.10.20 same-address' is not a reserve here").as_str(),
+                format!("{SETTINGS}:11: '52:54:00:12:34 192.168.10.30' is not a reserve here").as_str(),
+                format!("{SETTINGS}:12: '52:54:00:12:34:5c 192.168.10 short' is not a reserve here").as_str(),
+                format!("{SETTINGS}:13: '52:54:00:12:34:5d 192.168.10.31 bad/name' is not a reserve here").as_str(),
+                format!("{SETTINGS}:14: '52:54:00:12:34:5e 192.168.10.32 two names' is not a reserve here").as_str(),
+                format!("{SETTINGS}:15: '52:54:00:12:34:5f' is not a reserve here").as_str(),
+                format!("{SETTINGS}:6: reserve 192.168.11.20 is not a client's address on net1's network, 192.168.10.0/24").as_str(),
+                format!("{SETTINGS}:7: reserve 192.168.10.1 is not a client's address on net1's network, 192.168.10.0/24").as_str(),
+                format!("{SETTINGS}:8: reserve 192.168.10.255 is not a client's address on net1's network, 192.168.10.0/24").as_str(),
+            ]
+        );
+        // At most 1024 of them.
+        let mut text =
+            String::from("[net1]\naddress = 10.0.0.1/8\ndhcp-server = 10.1.0.1-10.1.0.9\n");
+        for n in 0..1026_u32 {
+            text += &format!(
+                "reserve = 52:54:00:00:{:02x}:{:02x} 10.2.{}.{}\n",
+                n / 256,
+                n % 256,
+                n / 256,
+                n % 256
+            );
+        }
+        let (cards, wrong) = parse_settings(&text);
+        assert_eq!(cards[0].1.server.reserved.len(), RESERVATIONS_MAX);
+        assert_eq!(wrong.len(), 2);
+    }
+
+    #[test]
+    fn lease_times_are_a_number_and_a_unit() {
+        let secs = |text| lease_time(text).map(|time| time.as_secs());
+        assert_eq!(secs("60s"), Some(60));
+        assert_eq!(secs("1m"), Some(60));
+        assert_eq!(secs("12h"), Some(43_200));
+        assert_eq!(secs("30d"), Some(2_592_000));
+        for bad in [
+            "59s",
+            "31d",
+            "721h",
+            "0m",
+            "",
+            "m",
+            "1",
+            "1w",
+            "+5m",
+            "-5m",
+            "5 m",
+            "1.5h",
+            "99999999999999999999d",
+        ] {
+            assert_eq!(secs(bad), None, "{bad}");
+        }
+    }
+
     #[test]
     fn a_lease_file_reads_back_as_it_was_written() {
         let lease = Lease {
@@ -1566,9 +2054,9 @@ mod tests {
         // metered, and the line is only written when it is.
         assert!(!text.contains("metered"));
         let metered = Lease { metered: true, ..bare };
-        let text = lease_text(&metered, "net0", 5);
-        assert!(text.ends_with("rebind = 75600\nmetered = yes\n"));
-        assert_eq!(parse_lease(&text), Some((metered, 5)));
+        let metered_text = lease_text(&metered, "net0", 5);
+        assert!(metered_text.ends_with("rebind = 75600\nmetered = yes\n"));
+        assert_eq!(parse_lease(&metered_text), Some((metered, 5)));
         // A file cut short is no lease.
         assert_eq!(parse_lease(&text[..text.len() - 14]), None);
         assert_eq!(parse_lease("address = 10.0.2.15/24\n"), None);
