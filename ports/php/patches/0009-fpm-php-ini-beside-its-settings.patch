@@ -1,0 +1,68 @@
+SPDX-FileCopyrightText: The PHP Group
+SPDX-FileCopyrightText: 2026 The Dukovo contributors
+SPDX-License-Identifier: PHP-3.01
+
+PHP-FPM's php.ini is the one beside its settings
+
+PHP-FPM finds php-fpm.conf in the folder it was configured with as its
+sysconfdir, and its php.ini wherever PHP's search puts it: PHPRC, the
+folder of the program, and the folder of configure's
+--with-config-file-path. The bundle's program is in a folder nobody may
+change, with the php.ini the command-line program reads, so a service that
+a person changes the settings of needs its own, which the service keeps
+beside php-fpm.conf. This makes that folder, PHP_SYSCONFDIR, the place
+php.ini is read from when -c does not name another, so that the service
+and php-fpm -t, which an administrator runs with no options, read the same
+files. Like -c, which gives php_ini_path_override in the same way, it is the
+only place looked in: php_init_config searches PHPRC, the program's folder
+and the configured folder only when there is no override. -n still reads no
+php.ini, unless -c is given as well.
+
+diff --git a/sapi/fpm/fpm/fpm_main.c b/sapi/fpm/fpm/fpm_main.c
+index cc89b8c0..d7794409 100644
+--- a/sapi/fpm/fpm/fpm_main.c
++++ b/sapi/fpm/fpm/fpm_main.c
+@@ -1562,6 +1562,9 @@ int main(int argc, char *argv[])
+ 
+ 	/* temporary locals */
+ 	int orig_optind = php_optind;
++#ifdef __radix__
++	bool php_ini_given = false;
++#endif
+ 	char *orig_optarg = php_optarg;
+ 	struct php_ini_builder ini_builder;
+ 	/* end of temporary locals */
+@@ -1604,6 +1607,12 @@ int main(int argc, char *argv[])
+ 
+ 	sapi_startup(&cgi_sapi_module);
+ 	cgi_sapi_module.php_ini_path_override = NULL;
++#ifdef __radix__
++	/* Where the bundle's service keeps php.ini, beside php-fpm.conf: the
++	 * same file for the service and for php-fpm -t, with no option. Like
++	 * -c, it is the only place looked in. */
++	cgi_sapi_module.php_ini_path_override = strdup(PHP_SYSCONFDIR);
++#endif
+ 	cgi_sapi_module.php_ini_ignore_cwd = 1;
+ 	cgi_sapi_module.pre_request_init = sapi_cgi_pre_request_init;
+ 
+@@ -1622,10 +1631,20 @@ int main(int argc, char *argv[])
+ 					free(cgi_sapi_module.php_ini_path_override);
+ 				}
+ 				cgi_sapi_module.php_ini_path_override = strdup(php_optarg);
++#ifdef __radix__
++				php_ini_given = true;
++#endif
+ 				break;
+ 
+ 			case 'n':
+ 				cgi_sapi_module.php_ini_ignore = 1;
++#ifdef __radix__
++				/* No php.ini: the one beside php-fpm.conf is not read either. */
++				if (!php_ini_given) {
++					free(cgi_sapi_module.php_ini_path_override);
++					cgi_sapi_module.php_ini_path_override = NULL;
++				}
++#endif
+ 				break;
+ 
+ 			case 'd':

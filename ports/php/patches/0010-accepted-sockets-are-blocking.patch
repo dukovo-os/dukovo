@@ -1,0 +1,47 @@
+SPDX-FileCopyrightText: The PHP Group
+SPDX-FileCopyrightText: 2026 The Dukovo contributors
+SPDX-License-Identifier: PHP-3.01
+
+An accepted socket is blocking on Radix
+
+A socket that accept(2) returns does not take O_NONBLOCK from the
+listening socket on Radix, as on Linux, and unlike the BSDs. PHP copies
+the listening stream's record of it to the new stream on every system but
+Linux, in both of its TCP transports: the plain one, and OpenSSL's, which
+takes tcp:// as well when the openssl extension is built in, as it is
+here. A server that made its listening socket non-blocking got accepted
+streams it took for non-blocking that were not: their reads waited for
+data with no timeout, and stream_set_blocking(false) did nothing, as the
+stream said it was so already. PHP's test of this,
+ext/standard/tests/streams/gh8472.phpt, hung there.
+
+diff --git a/ext/openssl/xp_ssl.c b/ext/openssl/xp_ssl.c
+index d5425f98..dcabe260 100644
+--- a/ext/openssl/xp_ssl.c
++++ b/ext/openssl/xp_ssl.c
+@@ -2287,8 +2287,8 @@ static inline int php_openssl_tcp_sockop_accept(php_stream *stream, php_openssl_
+ 		memcpy(clisockdata, sock, sizeof(clisockdata->s));
+ 
+ 		clisockdata->s.socket = clisock;
+-#ifdef __linux__
+-		/* O_NONBLOCK is not inherited on Linux */
++#if defined(__linux__) || defined(__radix__)
++		/* O_NONBLOCK is not inherited on Linux or Radix */
+ 		clisockdata->s.is_blocked = true;
+ #endif
+ 
+diff --git a/main/streams/xp_socket.c b/main/streams/xp_socket.c
+index ac419493..ab6c50df 100644
+--- a/main/streams/xp_socket.c
++++ b/main/streams/xp_socket.c
+@@ -883,8 +883,8 @@ static inline int php_tcp_sockop_accept(php_stream *stream, php_netstream_data_t
+ 
+ 		memcpy(clisockdata, sock, sizeof(*clisockdata));
+ 		clisockdata->socket = clisock;
+-#ifdef __linux__
+-		/* O_NONBLOCK is not inherited on Linux */
++#if defined(__linux__) || defined(__radix__)
++		/* O_NONBLOCK is not inherited on Linux or Radix */
+ 		clisockdata->is_blocked = true;
+ #endif
+ 

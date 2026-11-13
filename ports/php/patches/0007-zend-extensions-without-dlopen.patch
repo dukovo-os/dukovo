@@ -1,0 +1,35 @@
+SPDX-FileCopyrightText: The PHP Group
+SPDX-FileCopyrightText: 2026 The Dukovo contributors
+SPDX-License-Identifier: PHP-3.01
+
+Zend extensions in a program without dlopen
+
+PHP compiles the mechanism that Zend extensions register with only where
+it can load one from a file, which needs dlopen. OPcache is a Zend
+extension, and built into the program it registers itself with that
+mechanism when the program starts; without it, the registration does
+nothing, OPcache never starts, and the program's shutdown frees what its
+start never made. Radix has no dlopen, as the program is static, so this
+keeps the mechanism and makes the loading of a file fail; dl() and the
+extension lines of php.ini are not built, as before.
+
+diff --git a/Zend/zend_portability.h b/Zend/zend_portability.h
+index 6546ebfb..aae98ba7 100644
+--- a/Zend/zend_portability.h
++++ b/Zend/zend_portability.h
+@@ -196,8 +196,14 @@
+ # define DL_HANDLE					HMODULE
+ # define ZEND_EXTENSIONS_SUPPORT	1
+ #else
++/* No dlopen(), no loading of a Zend extension from a file: one that is built
++ * into the program, as OPcache is, still has the mechanism it registers with. */
+ # define DL_HANDLE					void *
+-# define ZEND_EXTENSIONS_SUPPORT	0
++# define DL_LOAD(libname)			NULL
++# define DL_UNLOAD(handle)			((void) (handle))
++# define DL_FETCH_SYMBOL(handle, symbol)	NULL
++# define DL_ERROR()					"Loading a shared library is not supported"
++# define ZEND_EXTENSIONS_SUPPORT	1
+ #endif
+ 
+ #if defined(HAVE_ALLOCA_H) && !defined(_ALLOCA_H)

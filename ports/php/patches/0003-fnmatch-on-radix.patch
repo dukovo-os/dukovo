@@ -1,0 +1,24 @@
+SPDX-FileCopyrightText: The PHP Group
+SPDX-FileCopyrightText: 2026 The Dukovo contributors
+SPDX-License-Identifier: PHP-3.01
+
+fnmatch on Radix
+
+A cross build cannot run the program that tests fnmatch, so configure
+takes it to be there for Linux hosts and for no others. The C library has
+fnmatch, as POSIX asks, so PHP's fnmatch() function and the glob stream
+wrapper's matching are built for Radix as well.
+
+diff --git a/ext/standard/config.m4 b/ext/standard/config.m4
+index 1d64c7ff..686c41b7 100644
+--- a/ext/standard/config.m4
++++ b/ext/standard/config.m4
+@@ -268,7 +268,7 @@ int main(void) {
+ ])
+ 
+ AS_VAR_IF([cross_compiling], [yes],
+-  [AS_CASE([$host_alias], [*linux*],
++  [AS_CASE([$host_alias], [*linux*|*radix*],
+     [AC_DEFINE([HAVE_FNMATCH], [1])])],
+   [AC_FUNC_FNMATCH])
+ 

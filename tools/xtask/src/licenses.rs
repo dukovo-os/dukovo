@@ -262,8 +262,7 @@ pub fn install(ctx: &Ctx, staging: &Path, extras: &Extras<'_>) -> Result<String>
         process::copy(&text_source(&ctx.root, id), &dir.join(format!("texts/{id}.txt")))?;
     }
     for package in &packages {
-        for notice in &package.notices {
-            let name = notice.file_name().expect("a notice is a file");
+        for (notice, name) in package.notices.iter().zip(notice_names(&package.notices)) {
             process::copy(notice, &dir.join(package.notice_dir()).join(name))?;
         }
     }
@@ -289,8 +288,27 @@ pub fn install(ctx: &Ctx, staging: &Path, extras: &Extras<'_>) -> Result<String>
 /// nginx's bundle carries, lifts the BSD licence's condition on binaries
 /// from the programs that only include a library that includes PCRE2.
 /// The Boost Software License 1.0, fpconv's in Valkey's bundle, asks for
-/// nothing in a binary.
-const BUNDLE_EXTRA_ALLOW: &[&str] = &["MPL-2.0", "BSD-3-Clause WITH PCRE2-exception", "BSL-1.0"];
+/// nothing in a binary. PHP's bundle (ADR 0499) is under the PHP License
+/// 3.01 and the Zend Engine License 2.00, which are BSD-style licenses
+/// that ask for their notices and for the names "PHP" and "Zend" not to be
+/// used for products derived from it. It builds in Tcl's license for
+/// scanf (`TCL`), the Apache Group's first, for its snprintf
+/// (`Apache-1.0`), the OpenLDAP Public License 2.8 for tables derived from
+/// ucgendat.c, and Solar Designer's crypt_blowfish, in the public domain
+/// with a permissive fallback. re2c, which writes its scanners, is in the
+/// public domain.
+const BUNDLE_EXTRA_ALLOW: &[&str] = &[
+    "MPL-2.0",
+    "BSD-3-Clause WITH PCRE2-exception",
+    "BSL-1.0",
+    "PHP-3.01",
+    "Zend-2.0",
+    "TCL",
+    "Apache-1.0",
+    "OLDAP-2.8",
+    "LicenseRef-crypt-blowfish-public-domain",
+    "LicenseRef-re2c-public-domain",
+];
 
 /// What a bundle says of its licenses (ADR 0370): every component of the
 /// port the bundle is built from, checked against the port allow-list
@@ -350,8 +368,7 @@ pub fn bundle(ctx: &Ctx, ports: &Ports, port: &Port, folder: &Path, created: i64
         process::copy(&text_source(&ctx.root, id), &dir.join(format!("texts/{id}.txt")))?;
     }
     for package in &packages {
-        for notice in &package.notices {
-            let name = notice.file_name().expect("a notice is a file");
+        for (notice, name) in package.notices.iter().zip(notice_names(&package.notices)) {
             process::copy(notice, &dir.join(package.notice_dir()).join(name))?;
         }
     }
@@ -827,6 +844,30 @@ fn notice_files(dir: &Path) -> Vec<PathBuf> {
         .collect();
     files.sort();
     files
+}
+
+/// The name each of a component's notice files has among its notices: the
+/// file's own, and for a file whose name an earlier one has (PHP keeps a
+/// LICENSE in nearly every folder of a bundled library), the name of the
+/// folder it is in before it, as `Zend-LICENSE`, so that none is lost.
+fn notice_names(notices: &[PathBuf]) -> Vec<String> {
+    let mut names: Vec<String> = Vec::new();
+    for notice in notices {
+        let base = notice.file_name().and_then(|n| n.to_str()).expect("a notice is a file");
+        let folder = notice.parent().and_then(|p| p.file_name()).and_then(|n| n.to_str());
+        let mut name = base.to_string();
+        if names.contains(&name) {
+            name = format!("{}-{base}", folder.unwrap_or("notice"));
+        }
+        // Two folders of one name: a number tells them apart.
+        let mut n = 2;
+        while names.contains(&name) {
+            name = format!("{}-{base}-{n}", folder.unwrap_or("notice"));
+            n += 1;
+        }
+        names.push(name);
+    }
+    names
 }
 
 fn is_notice(path: &Path) -> bool {
@@ -1578,7 +1619,8 @@ mod tests {
     }
 
     /// Every license the kernel area allows, and every license a fixed
-    /// area allows, has its text ready to copy into the image.
+    /// area or a bundle allows, has its text ready to copy into the image
+    /// or the bundle.
     #[test]
     fn allowed_licenses_have_texts() {
         let text = std::fs::read_to_string(root().join(KERNEL_POLICY)).unwrap();
@@ -1586,7 +1628,8 @@ mod tests {
         for id in parse_allow_list(&text).unwrap() {
             Expr::parse(&id).unwrap().collect_ids(&mut ids);
         }
-        for id in BOOTLOADER_ALLOW.iter().chain(FIRMWARE_ALLOW).chain(PORT_EXTRA_ALLOW) {
+        let fixed = BOOTLOADER_ALLOW.iter().chain(FIRMWARE_ALLOW).chain(PORT_EXTRA_ALLOW);
+        for id in fixed.chain(BUNDLE_EXTRA_ALLOW) {
             Expr::parse(id).unwrap().collect_ids(&mut ids);
         }
         for id in ids {
@@ -1610,6 +1653,21 @@ mod tests {
             let top = std::fs::read(root.join(top)).unwrap();
             assert!(top == std::fs::read(text_source(&root, id)).unwrap(), "{id} differs");
         }
+    }
+
+    /// A component with a LICENSE in several folders keeps all of them.
+    #[test]
+    fn names_notices_apart() {
+        let paths: Vec<PathBuf> =
+            ["LICENSE", "Zend/LICENSE", "Zend/asm/LICENSE", "README", "a/Zend/LICENSE"]
+                .iter()
+                .map(|p| Path::new("/src").join(p))
+                .collect();
+        assert_eq!(
+            notice_names(&paths),
+            ["LICENSE", "Zend-LICENSE", "asm-LICENSE", "README", "Zend-LICENSE-2"]
+        );
+        assert!(notice_names(&[]).is_empty());
     }
 
     #[test]

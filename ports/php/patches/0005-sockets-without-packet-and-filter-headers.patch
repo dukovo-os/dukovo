@@ -1,0 +1,31 @@
+SPDX-FileCopyrightText: The PHP Group
+SPDX-FileCopyrightText: 2026 The Dukovo contributors
+SPDX-License-Identifier: PHP-3.01
+
+sockets: no packet sockets or BPF filters without Linux's headers
+
+The sockets extension includes linux/if_packet.h and linux/filter.h
+where it finds them, and keeps the code for AF_PACKET sockets and for
+SO_ATTACH_REUSEPORT_CBPF in any case, for every system whose headers
+name them. Radix's C library names both, as Linux's does, and has
+neither header: the kernel has no packet sockets and no BPF filters.
+Without the headers, the names are taken out, as SO_BPF_EXTENSIONS and
+SO_MEMINFO already are, and the extension builds without them.
+
+diff --git a/ext/sockets/sockets.c b/ext/sockets/sockets.c
+index e104126d..6c6452fc 100644
+--- a/ext/sockets/sockets.c
++++ b/ext/sockets/sockets.c
+@@ -63,9 +63,12 @@
+ #  include <linux/filter.h>
+ # else
+ #  undef SO_BPF_EXTENSIONS
++#  undef SO_ATTACH_REUSEPORT_CBPF
+ # endif
+ # if defined(HAVE_LINUX_IF_PACKET_H)
+ #  include <linux/if_packet.h>
++# else
++#  undef AF_PACKET
+ # endif
+ # if defined(HAVE_LINUX_IF_ETHER_H)
+ #  include <linux/if_ether.h>

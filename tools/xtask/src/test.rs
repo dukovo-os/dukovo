@@ -15,7 +15,7 @@ use std::io::{BufRead, BufReader, Read, Seek, Write};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -10951,6 +10951,60 @@ fn answer_prompt_within(vm: &mut Vm, prompt: &str, text: &str, seconds: u64) -> 
             ));
         }
         std::thread::sleep(Duration::from_millis(300));
+    }
+}
+
+/// Types `command` after the prompt, and waits for up to `seconds` until it
+/// has run: the shell then prints a line of its own, `ran-` and a number
+/// that the typed text spells with a command, so that the echo of the typed
+/// text cannot be taken for it. Waiting for the prompt alone is not enough
+/// after a long command: the echo of what was typed is slow under
+/// emulation, and the line it has reached can end in a `$`, as the prompt
+/// does, before the whole of it is there.
+fn run_within(vm: &mut Vm, command: &str, seconds: u64) -> Result<(), String> {
+    static RUNS: AtomicU32 = AtomicU32::new(0);
+    let n = RUNS.fetch_add(1, Ordering::Relaxed);
+    answer_prompt(vm, "$", &format!("{command}; echo ran-$(echo {n})"))?;
+    let marker = format!("ran-{n}");
+    let deadline = Instant::now() + Duration::from_secs(seconds);
+    loop {
+        let screen = vm.screen()?;
+        if screen.iter().any(|line| line.trim() == marker) {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            return screen_shows(&screen, &[&marker]);
+        }
+        std::thread::sleep(Duration::from_millis(500));
+    }
+}
+
+/// Types `command`, which runs a command of a catalog bundle, and answers
+/// the question that the first run of such a command asks, if it asks it,
+/// with `a` for always, until the screen shows `needle`, for up to
+/// `seconds`.
+fn run_answering_until(
+    vm: &mut Vm,
+    command: &str,
+    needle: &str,
+    seconds: u64,
+) -> Result<(), String> {
+    answer_prompt(vm, "$", command)?;
+    let deadline = Instant::now() + Duration::from_secs(seconds);
+    let mut answered = false;
+    loop {
+        let screen = vm.screen()?;
+        if screen.iter().any(|line| line.contains(needle)) {
+            return Ok(());
+        }
+        if !answered && screen.iter().any(|line| line.contains("A: always")) {
+            vm.type_text("a")?;
+            answered = true;
+        }
+        if Instant::now() >= deadline {
+            return screen_shows(&screen, &[needle]);
+        }
+        std::thread::sleep(Duration::from_millis(500));
     }
 }
 

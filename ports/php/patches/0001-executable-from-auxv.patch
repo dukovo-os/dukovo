@@ -1,0 +1,85 @@
+SPDX-FileCopyrightText: The PHP Group
+SPDX-FileCopyrightText: 2026 The Dukovo contributors
+SPDX-License-Identifier: PHP-3.01
+
+The program's path from the auxiliary vector
+
+PHP's CLI finds the folder of its php.ini from where its program is
+(PHP_BINARY). A command of a Dukovo bundle is run by the program's path in
+the bundle's folder, which may be in /applications or in a person's own
+applications folder, with only the command's name as argv[0], so a search
+of PATH finds the link bundled(8) made, which does not lead there. The
+kernel gives the path a program was run as in the auxiliary vector
+(AT_EXECFN), as Linux does: this takes it as the program when it is
+absolute, and its real path as PHP_BINARY, as Linux's is. For a script
+whose #! line names PHP, AT_EXECFN is the script's path, as on Linux, so a
+file that starts with "#!" is not taken: argv[0], the interpreter's path
+from the #! line, is.
+
+diff --git a/main/main.c b/main/main.c
+index 0db01692..0f4a2d88 100644
+--- a/main/main.c
++++ b/main/main.c
+@@ -36,6 +36,9 @@
+ #ifdef HAVE_UNISTD_H
+ #include <unistd.h>
+ #endif
++#ifdef __radix__
++#include <sys/auxv.h>
++#endif
+ 
+ #include <signal.h>
+ #include <locale.h>
+@@ -438,6 +441,40 @@ static PHP_INI_MH(OnSetLogFilter)
+ }
+ /* }}} */
+ 
++#ifdef __radix__
++/* Whether the file at path starts with "#!", or cannot be read to tell */
++static bool radix_is_script(const char *path)
++{
++	char head[2];
++	int fd = open(path, O_RDONLY | O_CLOEXEC);
++	if (fd < 0) {
++		return true;
++	}
++	ssize_t n = read(fd, head, sizeof(head));
++	close(fd);
++	return n != (ssize_t) sizeof(head) || (head[0] == '#' && head[1] == '!');
++}
++
++/* The path the program was run as, which the kernel gives in the auxiliary
++ * vector: a command of a bundle is run by its path in the bundle's folder,
++ * with only its name as argv[0]. For a script whose #! line names PHP, it is
++ * the script's path, as on Linux, and argv[0] is the interpreter's, which
++ * the search by argv[0] takes instead. */
++static char *radix_binary_location(void)
++{
++	const char *path = (const char *) getauxval(AT_EXECFN);
++	if (!path || path[0] != '/' || radix_is_script(path)) {
++		return NULL;
++	}
++	char *binary_location = (char *) pemalloc(MAXPATHLEN, 1);
++	if (!VCWD_REALPATH(path, binary_location)) {
++		pefree(binary_location, 1);
++		return NULL;
++	}
++	return binary_location;
++}
++#endif
++
+ /* {{{ php_binary_init */
+ static void php_binary_init(void)
+ {
+@@ -449,7 +486,10 @@ static void php_binary_init(void)
+ 		binary_location = NULL;
+ 	}
+ #else
+-	if (sapi_module.executable_location) {
++#ifdef __radix__
++	binary_location = radix_binary_location();
++#endif
++	if (!binary_location && sapi_module.executable_location) {
+ 		binary_location = (char *)pemalloc(MAXPATHLEN, 1);
+ 		if (!strchr(sapi_module.executable_location, '/')) {
+ 			char *envpath, *path;
