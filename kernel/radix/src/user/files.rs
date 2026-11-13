@@ -2178,8 +2178,8 @@ pub fn file_method(user: &UserRef, found: &Found, label: u32, args: &[u64; 8]) -
             let received = socket.receive(&mut out, non_blocking, peek)?;
             let from = received.from.map_or((None, 0), |(ip, port)| (Some(ip), port));
             put_address(inet::address_of(from, socket.is_ipv6(), received.scope), a.address)?;
-            let count = received.count as u64;
-            user.process.note_read(count);
+            user.process.note_read(received.count as u64);
+            let count = received_count(&received, a.flags);
             answer(
                 label,
                 file::ReceiveFromResults::WORDS,
@@ -2202,8 +2202,8 @@ pub fn file_method(user: &UserRef, found: &Found, label: u32, args: &[u64; 8]) -
             put_address(inet::address_of(from, v6, received.scope), a.address)?;
             let port = socket.local_port();
             put_address(inet::address_of((received.to, port), v6, received.scope), a.destination)?;
-            let count = received.count as u64;
-            user.process.note_read(count);
+            user.process.note_read(received.count as u64);
+            let count = received_count(&received, a.flags);
             let interface = if socket.kind() == inet::Kind::Stream { 0 } else { received.scope };
             let results =
                 file::ReceiveMessageResults { count, interface, info: socket.packet_info() };
@@ -2356,6 +2356,15 @@ fn network_to(user: &UserRef, slot: u32, to: &inet::Given) -> Result<inet::Autho
         return Err(Kernel::MissingRights.status(u32::from(needs.bits())));
     }
     Ok(authority)
+}
+
+/// The count `receive_from` and `receive_message` return for `received`:
+/// with `flags`' whole_size, a datagram's whole size, as Linux's MSG_TRUNC
+/// gives it (ADR 0496).
+fn received_count(received: &inet::Received, flags: SocketFlags) -> u64 {
+    let count =
+        if flags.contains(SocketFlags::WHOLE_SIZE) { received.size } else { received.count };
+    count as u64
 }
 
 /// Copies `bytes`, an Address, into the caller's `buffer`, as much as it

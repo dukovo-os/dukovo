@@ -662,11 +662,14 @@ void give_packet_info(struct msghdr *hdr, const struct radix_address &to, uint32
 int receive_datagram(uint32_t slot, const struct iovec *iov, int count, int flags,
 		struct sockaddr *from, socklen_t from_max, socklen_t *from_len, ssize_t *length,
 		struct msghdr *hdr = nullptr) {
-	if(flags & ~(MSG_DONTWAIT | MSG_CMSG_CLOEXEC | MSG_PEEK))
+	if(flags & ~(MSG_DONTWAIT | MSG_CMSG_CLOEXEC | MSG_PEEK | MSG_TRUNC))
 		return EOPNOTSUPP;
 	size_t size;
 	if(int e = radix::iov_total(iov, count, &size); e)
 		return e;
+	// The kernel gives the datagram's whole size, which says whether it
+	// was cut short (MSG_TRUNC, ADR 0496).
+	uint32_t kernel_flags = receive_flags(flags) | RADIX_SOCKET_FLAGS_WHOLE_SIZE;
 	// One buffer is received into in place, more through one of the sum's
 	// size, as the datagram comes whole.
 	char *buffer = count == 1 ? static_cast<char *>(iov[0].iov_base) : nullptr;
@@ -684,17 +687,18 @@ int receive_datagram(uint32_t slot, const struct iovec *iov, int count, int flag
 	// call of its own.
 	if(hdr && hdr->msg_control && hdr->msg_controllen) {
 		status = radix_file_receive_message_with(radix::cancellable, slot, buffer, size,
-				&address, sizeof(address), &to, sizeof(to), receive_flags(flags), &r);
+				&address, sizeof(address), &to, sizeof(to), kernel_flags, &r);
 	} else {
 		struct radix_file_receive_from_results from_r;
 		status = radix_file_receive_from_with(radix::cancellable, slot, buffer, size,
-				&address, sizeof(address), receive_flags(flags), &from_r);
+				&address, sizeof(address), kernel_flags, &from_r);
 		r.count = from_r.count;
 	}
+	size_t copied = r.count < size ? r.count : size;
 	if(!status && count != 1) {
 		size_t at = 0;
-		for(int i = 0; i < count && at < r.count; i++) {
-			size_t n = r.count - at < iov[i].iov_len ? r.count - at : iov[i].iov_len;
+		for(int i = 0; i < count && at < copied; i++) {
+			size_t n = copied - at < iov[i].iov_len ? copied - at : iov[i].iov_len;
 			memcpy(iov[i].iov_base, buffer + at, n);
 			at += n;
 		}
@@ -710,13 +714,14 @@ int receive_datagram(uint32_t slot, const struct iovec *iov, int count, int flag
 			*from_len = 0;
 	}
 	if(hdr) {
-		hdr->msg_flags = 0;
+		hdr->msg_flags = r.count > size ? MSG_TRUNC : 0;
 		if(r.info)
 			give_packet_info(hdr, to, r.interface);
 		else
 			hdr->msg_controllen = 0;
 	}
-	*length = static_cast<ssize_t>(r.count);
+	// MSG_TRUNC asks for the whole size, as on Linux.
+	*length = static_cast<ssize_t>(flags & MSG_TRUNC ? r.count : copied);
 	return 0;
 }
 
@@ -892,6 +897,9 @@ bool inet_option(int layer, int number, enum radix_socket_option *option, bool *
 		case SO_RCVBUF: *option = RADIX_SOCKET_OPTION_RECEIVE_BUFFER; return true;
 		case SO_SNDBUF: *option = RADIX_SOCKET_OPTION_SEND_BUFFER; return true;
 		case SO_ERROR: *option = RADIX_SOCKET_OPTION_ERROR; return true;
+		// Urgent data always comes inline: the option is kept, and read
+		// back (ADR 0496).
+		case SO_OOBINLINE: *option = RADIX_SOCKET_OPTION_OUT_OF_BAND_INLINE; return true;
 		case SO_RCVTIMEO:
 			*option = RADIX_SOCKET_OPTION_RECEIVE_TIMEOUT;
 			*time = true;
@@ -909,6 +917,7 @@ bool inet_option(int layer, int number, enum radix_socket_option *option, bool *
 		case TCP_KEEPIDLE: *option = RADIX_SOCKET_OPTION_KEEP_IDLE; return true;
 		case TCP_KEEPINTVL: *option = RADIX_SOCKET_OPTION_KEEP_INTERVAL; return true;
 		case TCP_KEEPCNT: *option = RADIX_SOCKET_OPTION_KEEP_COUNT; return true;
+		case TCP_QUICKACK: *option = RADIX_SOCKET_OPTION_QUICK_ACK; return true;
 		default: return false;
 		}
 	}
@@ -1049,6 +1058,19 @@ int inet_getsockopt(uint32_t slot, int type, int layer, int number, void *buffer
 	bool time = false;
 	if(layer == SOL_SOCKET && number == SO_BINDTODEVICE)
 		return get_device(slot, buffer, size);
+	// SO_LINGER's struct linger, which the kernel keeps as 0 for off and
+	// 1 plus the seconds for on (ADR 0496).
+	if(layer == SOL_SOCKET && number == SO_LINGER) {
+		if(int e = get_option(slot, RADIX_SOCKET_OPTION_LINGER, &value); e)
+			return e;
+		struct linger linger;
+		linger.l_onoff = value != 0;
+		linger.l_linger = value ? static_cast<int>(value - 1) : 0;
+		socklen_t len = *size < sizeof(linger) ? *size : sizeof(linger);
+		memcpy(buffer, &linger, len);
+		*size = len;
+		return 0;
+	}
 	// The interface's address, as Linux gives the one it was set to.
 	if(layer == IPPROTO_IP && number == IP_MULTICAST_IF) {
 		if(int e = get_option(slot, RADIX_SOCKET_OPTION_MULTICAST_INTERFACE, &value); e)
@@ -1126,6 +1148,17 @@ int inet_getsockopt(uint32_t slot, int type, int layer, int number, void *buffer
 int inet_setsockopt(uint32_t slot, int layer, int number, const void *buffer, socklen_t size) {
 	if(layer == SOL_SOCKET && number == SO_BINDTODEVICE)
 		return set_device(slot, buffer, size);
+	// A linger of 0 seconds resets the connection on close; a longer one
+	// is kept, and the close still returns at once (ADR 0496). A negative
+	// one is as long as can be, as Linux takes it.
+	if(layer == SOL_SOCKET && number == SO_LINGER) {
+		struct linger linger;
+		if(size < sizeof(linger))
+			return EINVAL;
+		memcpy(&linger, buffer, sizeof(linger));
+		uint64_t seconds = linger.l_linger < 0 ? INT_MAX : static_cast<uint64_t>(linger.l_linger);
+		return set_option(slot, RADIX_SOCKET_OPTION_LINGER, linger.l_onoff ? 1 + seconds : 0);
+	}
 	if(layer == IPPROTO_IP && number == IP_MULTICAST_IF) {
 		unsigned int index;
 		if(int e = interface_of(buffer, size, true, nullptr, &index); e)
@@ -1556,7 +1589,9 @@ int Sysdeps<Recvfrom>::operator()(int fd, void *buffer, size_t size, int flags,
 	if((flags & MSG_ERRQUEUE) && is_inet(slot, &type))
 		return receive_error(slot, &iov, 1, sock_addr, addr_length ? *addr_length : 0,
 				addr_length, length, nullptr);
-	if(addr_length && is_inet(slot, &type)) {
+	// MSG_TRUNC, which only a datagram's receive takes, asks for the
+	// family too.
+	if((addr_length || (flags & MSG_TRUNC)) && is_inet(slot, &type)) {
 		if(type == SOCK_DGRAM)
 			return receive_datagram(slot, &iov, 1, flags, sock_addr,
 					addr_length ? *addr_length : 0, addr_length, length);
@@ -1604,7 +1639,8 @@ int Sysdeps<MsgRecv>::operator()(int fd, struct msghdr *hdr, int flags, ssize_t 
 		hdr->msg_namelen = from ? from_len : 0;
 		return 0;
 	}
-	if(asks && is_inet(slot, &type)) {
+	// A network socket's receive: one datagram, or a stream's bytes.
+	auto inet = [&]() -> int {
 		auto from = static_cast<struct sockaddr *>(hdr->msg_name);
 		socklen_t from_len = hdr->msg_namelen;
 		int e;
@@ -1625,7 +1661,10 @@ int Sysdeps<MsgRecv>::operator()(int fd, struct msghdr *hdr, int flags, ssize_t 
 		}
 		hdr->msg_namelen = from ? from_len : 0;
 		return 0;
-	}
+	};
+	// MSG_TRUNC, which only a datagram's receive takes, asks too.
+	if((asks || (flags & MSG_TRUNC)) && is_inet(slot, &type))
+		return inet();
 	if(int e = radix::iov_total(hdr->msg_iov, hdr->msg_iovlen, &sum); e)
 		return e;
 	// Room for as many descriptors as the control buffer holds: those
@@ -1637,8 +1676,13 @@ int Sysdeps<MsgRecv>::operator()(int fd, struct msghdr *hdr, int flags, ssize_t 
 		if(files.room > RADIX_FILE_SEND_FILES_MAX)
 			files.room = RADIX_FILE_SEND_FILES_MAX;
 	}
-	if(int e = receive_vector(fd, hdr->msg_iov, hdr->msg_iovlen, flags, &files, length); e)
+	if(int e = receive_vector(fd, hdr->msg_iov, hdr->msg_iovlen, flags, &files, length); e) {
+		// No files ride on a network socket's bytes: one that was not
+		// asked about, as nothing in `hdr` asked, is received as one.
+		if(e == EOPNOTSUPP && is_inet(slot, &type))
+			return inet();
 		return e;
+	}
 	hdr->msg_flags = 0;
 	if(hdr->msg_name && hdr->msg_namelen) {
 		socklen_t actual;

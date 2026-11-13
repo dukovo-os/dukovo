@@ -126,6 +126,13 @@ const KEEP_COUNT: u8 = 9;
 /// TCP_KEEPCNT takes, as on Linux.
 const KEEP_SECS_MAX: u64 = 32_767;
 const KEEP_COUNT_MAX: u64 = 127;
+/// How long a connection may wait to acknowledge what came, for an
+/// answer to carry the acknowledgement, unless TCP_QUICKACK is set:
+/// smoltcp's default.
+const ACK_DELAY_MS: u64 = 10;
+/// The linger option's value for SO_LINGER's 0 seconds: its close resets
+/// the connection (ADR 0496).
+const LINGER_RESET: u32 = 1;
 /// The bytes of an IPv4 header and a UDP header, which a datagram's
 /// interface's MTU holds with it; and of an IPv6 header and a UDP header.
 const UDP_HEADERS: usize = 28;
@@ -206,11 +213,14 @@ pub struct Received {
     /// Where a datagram went: the address of this machine's, or the
     /// group, it was sent to.
     pub to: Option<IpAddress>,
+    /// A datagram's whole size, of which `count` bytes had room: those
+    /// bytes' count for a stream.
+    pub size: usize,
 }
 
 impl Received {
     fn of(count: usize, from: Option<Peer>, scope: u32) -> Received {
-        Received { count, from, scope, to: None }
+        Received { count, from, scope, to: None, size: count }
     }
 }
 
@@ -380,6 +390,15 @@ struct Options {
     /// carry. Taken and read back, though every packet still goes with 0
     /// (ADR 0345, ADR 0410).
     type_of_service: u8,
+    /// SO_LINGER, as radix-file(2)'s `linger` option: 0 for off, 1 to
+    /// reset the connection on close, 1 plus the seconds otherwise, which
+    /// are kept and change nothing (ADR 0496).
+    linger: u32,
+    /// TCP_QUICKACK: its connection acknowledges at once (ADR 0496).
+    quick_ack: bool,
+    /// SO_OOBINLINE: taken and read back; urgent data always comes
+    /// inline (ADR 0496).
+    out_of_band_inline: bool,
 }
 
 impl Options {
@@ -403,6 +422,9 @@ impl Options {
         packet_info: false,
         receive_errors: false,
         type_of_service: 0,
+        linger: 0,
+        quick_ack: false,
+        out_of_band_inline: false,
     };
 
     /// Whether a datagram socket shares its port (ADR 0336).
@@ -421,6 +443,8 @@ impl Options {
     fn apply(&self, socket: &mut tcp::Socket<'static>, connected: bool) {
         socket.set_nagle_enabled(!self.no_delay);
         socket.set_hop_limit(Some(self.time_to_live));
+        let delay = (!self.quick_ack).then(|| Duration::from_millis(ACK_DELAY_MS));
+        socket.set_ack_delay(delay);
         // Probes that go unanswered reset the connection after their count,
         // as on Linux; the wait for an answer to data is the timeout's.
         if self.keep_alive {
@@ -1567,7 +1591,26 @@ impl InetSocket {
     /// Where it is bound, or with `peer` where it is connected, as an
     /// Address's bytes.
     pub fn name(&self, peer: bool) -> Result<[u8; Address::SIZE], Status> {
-        let state = self.state.lock();
+        let mut state = self.state.lock();
+        // A connection being made may have been made since: the other end
+        // may have accepted it, and asks for this end's name.
+        if peer && state.phase == Phase::Connecting {
+            let _ = state.connection();
+        }
+        // One that has ended, reset or closed both ways, has no peer any
+        // more, as on Linux, though what came before is still received:
+        // a TLS client finds a server that wrote and reset this way.
+        if peer && self.kind == Kind::Stream && state.phase == Phase::Connected {
+            let open = state.parts.first().is_some_and(|part| {
+                let mut stack = part.interface.stack.lock();
+                stack.socket_mut::<tcp::Socket<'static>>(part.handle).is_some_and(|socket| {
+                    !matches!(socket.state(), tcp::State::Closed | tcp::State::TimeWait)
+                })
+            });
+            if !open {
+                return Err(status(Kernel::NotConnected));
+            }
+        }
         let endpoint = if peer {
             let peer = state.peer.filter(|_| state.phase == Phase::Connected);
             peer.map(|(ip, port)| (Some(ip), port)).ok_or(status(Kernel::NotConnected))?
@@ -1612,6 +1655,9 @@ impl InetSocket {
             SocketOption::MulticastLoop => flag(options.multicast_loop),
             SocketOption::ReusePort => flag(options.reuse_port),
             SocketOption::PacketInfo => flag(options.packet_info),
+            SocketOption::Linger => u64::from(options.linger),
+            SocketOption::QuickAck => flag(options.quick_ack),
+            SocketOption::OutOfBandInline => flag(options.out_of_band_inline),
             SocketOption::V6Only => {
                 if !state.v6 {
                     return Err(status(Kernel::NotSupported));
@@ -1717,6 +1763,12 @@ impl InetSocket {
             SocketOption::MulticastLoop => options.multicast_loop = value != 0,
             SocketOption::ReusePort => options.reuse_port = value != 0,
             SocketOption::PacketInfo => options.packet_info = value != 0,
+            SocketOption::Linger => {
+                options.linger =
+                    u32::try_from(value).map_err(|_| status(Kernel::InvalidArgument))?;
+            }
+            SocketOption::QuickAck => options.quick_ack = value != 0,
+            SocketOption::OutOfBandInline => options.out_of_band_inline = value != 0,
             // Its low byte, as Linux keeps; every packet still goes with 0.
             SocketOption::TypeOfService => options.type_of_service = value as u8,
             // Taken, and changing nothing.
@@ -2424,14 +2476,15 @@ fn receive_datagram(
             let _ = socket.recv();
             continue;
         }
-        let n = data.len().min(out.len());
+        let size = data.len();
+        let n = size.min(out.len());
         let to = meta.local_address;
         match out.put_now(0, &data[..n]) {
             Ok(true) => {
                 if !peek {
                     let _ = socket.recv();
                 }
-                return Ok(Some(Received { count: n, from: Some(from), scope, to }));
+                return Ok(Some(Received { count: n, from: Some(from), scope, to, size }));
             }
             // As in `receive_stream`, and this part is looked at again.
             Ok(false) => {
@@ -2472,13 +2525,14 @@ fn receive_ping(
             let _ = socket.recv();
             continue;
         }
-        let n = data.len().min(out.len());
+        let size = data.len();
+        let n = size.min(out.len());
         match out.put_now(0, &data[..n]) {
             Ok(true) => {
                 if !peek {
                     let _ = socket.recv();
                 }
-                return Ok(Some(Received::of(n, Some((from, 0)), scope)));
+                return Ok(Some(Received { size, ..Received::of(n, Some((from, 0)), scope) }));
             }
             Ok(false) => {
                 drop(stack);
@@ -2506,8 +2560,10 @@ fn listener(state: &State, protocol: Protocol, versions: Versions, port: u16) ->
 impl Drop for InetSocket {
     fn drop(&mut self) {
         let state = self.state.get_mut();
-        // A connection that is still closing keeps its port until it has.
-        let connected = matches!(state.phase, Phase::Connecting | Phase::Connected);
+        // A connection that is still closing keeps its port until it has;
+        // one with a linger of 0 seconds is reset instead, as on Linux.
+        let connected = matches!(state.phase, Phase::Connecting | Phase::Connected)
+            && state.options.linger != LINGER_RESET;
         let port = state.held.take_if(|_| connected && self.kind == Kind::Stream);
         release_parts(&mut state.parts, connected, port);
         release_pools(&mut state.pools);

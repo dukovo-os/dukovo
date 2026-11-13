@@ -355,16 +355,30 @@ its bytes straight into the other end's buffer, so while it does, it
 holds 64 KiB each way, the receiver's, and a writer waits for the
 reader once that is full. A datagram is sent and received whole: *sendmsg*
 gathers its buffers into one, *recvmsg* spreads one over its buffers,
-and what has no room is lost. *recvfrom* and *recvmsg* give a datagram's
+and what has no room is lost: *recvmsg* says so with *MSG_TRUNC* in
+_msg_flags_, and *MSG_TRUNC* as a flag of *recv*, *recvfrom* or
+*recvmsg* returns the datagram's whole size, as on Linux (ADR 0496).
+*recvfrom* and *recvmsg* give a datagram's
 sender, and no address for a stream. *MSG_PEEK* leaves a stream's bytes
 or a datagram where they were, for the next receive (ADR 0341); with
-*MSG_WAITALL* it waits for some bytes, not for all.
+*MSG_WAITALL* it waits for some bytes, not for all. *getpeername* on a
+socket whose non-blocking *connect* is still waiting finds the
+connection once the other end has accepted it, and one whose connection
+was reset or closed both ways fails with ENOTCONN, as on Linux.
+*MSG_OOB* fails with EOPNOTSUPP: urgent data is not sent.
 
 *getsockopt* and *setsockopt* take *SO_REUSEADDR* (kept, changing
 nothing), *SO_KEEPALIVE*, *SO_BROADCAST*, *SO_BINDTODEVICE*, *SO_RCVBUF*
 and *SO_SNDBUF* (fixed sizes), *SO_RCVTIMEO*, *SO_SNDTIMEO*,
 *TCP_NODELAY*, *TCP_KEEPIDLE*, *TCP_KEEPINTVL*, *TCP_KEEPCNT* and
-*IP_TTL*. A datagram to a broadcast address, 255.255.255.255 or its
+*IP_TTL*, and since ADR 0496 *SO_LINGER*, *TCP_QUICKACK* and
+*SO_OOBINLINE*. A *close* with *SO_LINGER* on and 0 seconds resets the
+connection, sending RST and throwing away what was not sent, as on
+Linux; with more seconds the linger is kept and read back, but *close*
+returns at once and the connection ends in the background, as with it
+off. *TCP_QUICKACK* acknowledges at once instead of up to 10 ms later,
+and stays set until it is turned off. *SO_OOBINLINE* is kept and read
+back: urgent data always comes inline, as with it set on Linux. A datagram to a broadcast address, 255.255.255.255 or its
 network's, fails with EACCES unless *SO_BROADCAST* is set, as on Linux.
 *SO_BINDTODEVICE* takes an interface's name, or an empty one for none,
 and keeps the socket's packets on that interface (ADR 0190); set it

@@ -32,7 +32,11 @@
 // this machine and joins groups (ADR 0337), and one that may only listen
 // on ports 9000 to 9009 cannot connect out or bind another port. The
 // runner gets Spark's network capability, and this test gets it through
-// fork and exec.
+// fork and exec. And what CPython's suite found (ADR 0496): SO_LINGER
+// with 0 seconds resets a connection on close, TCP_QUICKACK and
+// SO_OOBINLINE are kept, getpeername finds a connection made while its
+// non-blocking connect waited, a plain recvmsg receives from a network
+// socket, and a datagram cut short says MSG_TRUNC.
 
 #include <arpa/inet.h>
 #include <fcntl.h>
@@ -1407,6 +1411,110 @@ static void capabilities(void) {
 	close(server);
 }
 
+// An int option's value.
+static int int_option(int fd, int layer, int number) {
+	int value = -1;
+	socklen_t size = sizeof(value);
+	CHECK(getsockopt(fd, layer, number, &value, &size) == 0 && size == sizeof(value));
+	return value;
+}
+
+// What CPython's suite found (ADR 0496).
+static void found_by_python(void) {
+	int server = listener();
+	unsigned short port = port_of(server);
+	// Options that are kept and read back.
+	int fd = socket(AF_INET, SOCK_STREAM, 0);
+	CHECK(fd >= 0);
+	int on = 1, off = 0;
+	CHECK(int_option(fd, SOL_SOCKET, SO_OOBINLINE) == 0);
+	CHECK(setsockopt(fd, SOL_SOCKET, SO_OOBINLINE, &on, sizeof(on)) == 0);
+	CHECK(int_option(fd, SOL_SOCKET, SO_OOBINLINE) == 1);
+	CHECK(int_option(fd, IPPROTO_TCP, TCP_QUICKACK) == 0);
+	CHECK(setsockopt(fd, IPPROTO_TCP, TCP_QUICKACK, &on, sizeof(on)) == 0);
+	CHECK(int_option(fd, IPPROTO_TCP, TCP_QUICKACK) == 1);
+	CHECK(setsockopt(fd, IPPROTO_TCP, TCP_QUICKACK, &off, sizeof(off)) == 0);
+	CHECK(int_option(fd, IPPROTO_TCP, TCP_QUICKACK) == 0);
+	struct linger linger = {1, 5};
+	socklen_t size = sizeof(linger);
+	CHECK(getsockopt(fd, SOL_SOCKET, SO_LINGER, &linger, &size) == 0);
+	CHECK(size == sizeof(linger) && linger.l_onoff == 0 && linger.l_linger == 0);
+	linger = (struct linger){1, 5};
+	CHECK(setsockopt(fd, SOL_SOCKET, SO_LINGER, &linger, sizeof(linger)) == 0);
+	memset(&linger, 0, sizeof(linger));
+	CHECK(getsockopt(fd, SOL_SOCKET, SO_LINGER, &linger, &size) == 0);
+	CHECK(linger.l_onoff == 1 && linger.l_linger == 5);
+	CHECK_ERROR(setsockopt(fd, SOL_SOCKET, SO_LINGER, &on, 1), EINVAL);
+	// A non-blocking connect the server accepts: getpeername finds the
+	// connection made, as Python's socketpair over TCP asks at once.
+	CHECK(fcntl(fd, F_SETFL, O_NONBLOCK) == 0);
+	struct sockaddr_in to = loopback(port);
+	CHECK(connect(fd, (struct sockaddr *)&to, sizeof(to)) == 0 || errno == EINPROGRESS);
+	int accepted = accept(server, NULL, NULL);
+	CHECK(accepted >= 0);
+	struct sockaddr_in peer;
+	socklen_t len = sizeof(peer);
+	CHECK(getpeername(fd, (struct sockaddr *)&peer, &len) == 0 && ntohs(peer.sin_port) == port);
+	CHECK(fcntl(fd, F_SETFL, 0) == 0);
+	// A plain recvmsg, with no address, one buffer and no control.
+	CHECK(send(accepted, "plain", 5, 0) == 5);
+	char buffer[16];
+	struct iovec iov = {buffer, sizeof(buffer)};
+	struct msghdr hdr;
+	memset(&hdr, 0, sizeof(hdr));
+	hdr.msg_iov = &iov;
+	hdr.msg_iovlen = 1;
+	CHECK(recvmsg(fd, &hdr, 0) == 5 && !memcmp(buffer, "plain", 5));
+	// A linger of 0 seconds: the close resets the connection. The other
+	// end has no peer then, but receives what came before the reset, and
+	// then the reset.
+	linger = (struct linger){1, 0};
+	CHECK(setsockopt(fd, SOL_SOCKET, SO_LINGER, &linger, sizeof(linger)) == 0);
+	CHECK(send(fd, "bye", 3, 0) == 3);
+	waiting_for(accepted, 3);
+	close(fd);
+	for(int i = 0; i < 5000; i++) {
+		len = sizeof(peer);
+		if(getpeername(accepted, (struct sockaddr *)&peer, &len) != 0)
+			break;
+		check_sleep_ms(1);
+	}
+	CHECK_ERROR(getpeername(accepted, (struct sockaddr *)&peer, &len), ENOTCONN);
+	CHECK(recv(accepted, buffer, sizeof(buffer), 0) == 3 && !memcmp(buffer, "bye", 3));
+	CHECK_ERROR(recv(accepted, buffer, sizeof(buffer), 0), ECONNRESET);
+	close(accepted);
+	close(server);
+	// A datagram larger than the buffer: MSG_TRUNC says it was cut short,
+	// and as recv's flag asks for its whole size.
+	int a = socket(AF_INET, SOCK_DGRAM, 0);
+	int b = socket(AF_INET, SOCK_DGRAM, 0);
+	CHECK(a >= 0 && b >= 0);
+	struct sockaddr_in at = loopback(0);
+	CHECK(bind(b, (struct sockaddr *)&at, sizeof(at)) == 0);
+	struct sockaddr_in to_b = loopback(port_of(b));
+	CHECK(connect(a, (struct sockaddr *)&to_b, sizeof(to_b)) == 0);
+	CHECK(send(a, "a long datagram", 15, 0) == 15);
+	CHECK(send(a, "another long one", 16, 0) == 16);
+	CHECK(send(a, "short", 5, 0) == 5);
+	iov = (struct iovec){buffer, 6};
+	memset(&hdr, 0, sizeof(hdr));
+	hdr.msg_iov = &iov;
+	hdr.msg_iovlen = 1;
+	waiting_for(b, 1);
+	CHECK(recvmsg(b, &hdr, 0) == 6 && (hdr.msg_flags & MSG_TRUNC));
+	CHECK(!memcmp(buffer, "a long", 6));
+	waiting_for(b, 1);
+	CHECK(recv(b, buffer, 4, MSG_TRUNC) == 16 && !memcmp(buffer, "anot", 4));
+	waiting_for(b, 1);
+	memset(&hdr, 0, sizeof(hdr));
+	iov = (struct iovec){buffer, sizeof(buffer)};
+	hdr.msg_iov = &iov;
+	hdr.msg_iovlen = 1;
+	CHECK(recvmsg(b, &hdr, 0) == 5 && hdr.msg_flags == 0);
+	close(a);
+	close(b);
+}
+
 int main(void) {
 	check_start("inet");
 	RUN(bench_order);
@@ -1430,6 +1538,7 @@ int main(void) {
 	RUN(reuse_port);
 	RUN(multicast);
 	RUN(addresses);
+	RUN(found_by_python);
 	RUN(capabilities);
 	return check_end();
 }
