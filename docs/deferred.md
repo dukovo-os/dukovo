@@ -411,6 +411,7 @@ finding or removed.
 | `lsof -i` lists no sockets and `ss -p` is not supported | Lab, first real-machine runs |
 | timedatectl prints its name twice in errors; sudo's refusal names "Phase 13d"; timed says "Unknown error (6)" for a failed lookup and "()" when no NTS server answered | Lab, first real-machine runs |
 | No /etc/os-release for scripts that read it | Lab, first real-machine runs |
+| The xHCI controller's interrupt never arrives on the Intel lab machine (OptiPlex 7040, VT-d with interrupt remapping), so its USB is polled every 10 ms; find where the MSI is lost | Lab, first real-machine runs |
 | A lab test for COM1 as the serial console (console=ttyS0): serial-console running on it and a sign-in over it; hardware/serial-port covers COM1 only when it is not the console | Lab, first real-machine runs |
 | SSH: RSA and P-521 keys and authorized_keys options are not taken; sshd_config takes eight keywords (no `Port`, `ListenAddress`, `MaxAuthTries`); ssh is built without OpenSSL, so ssh-keygen makes ed25519 keys alone | Lab, first real-machine runs |
 | "[elevate] password for lab:" is printed into the output of commands run with sudo -S | Lab, first real-machine runs |

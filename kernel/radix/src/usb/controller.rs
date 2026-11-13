@@ -9,8 +9,9 @@
 //! plugged into it or lets go of the one pulled out (and of every device
 //! behind it, if it is a hub). Root ports with a device on them when the
 //! controller starts raise no event, so each is looked at once first. The
-//! thread sleeps until the interrupt wakes it, or for 10 ms when there is
-//! none (and at most a second either way). The controller whose Debug
+//! thread sleeps until the interrupt wakes it, once it has seen the
+//! interrupt come with events (and at most a second); till then, or when
+//! there is none or it stops coming, for 10 ms. The controller whose Debug
 //! Capability carries the console ([`super::dbc`]) is looked at every
 //! 10 ms, since the capability raises no interrupt.
 //!
@@ -284,27 +285,35 @@ pub fn run(index: usize) {
         }
     }
     super::looked();
-    let mut sleep = if start.interrupt.is_some() && !controller.dbc { IDLE_NS } else { POLL_NS };
-    // Events found after a sleep the interrupt did not end: its interrupt
-    // does not come (its MSI lost on the way, as behind an IOMMU's
-    // remapping it misses), and every key would wait for the next look.
+    // The thread trusts the interrupt only once it has seen it come with
+    // events: till then it looks every 10 ms. An interrupt can be lost on
+    // the way (behind an IOMMU's remapping, on the lab's OptiPlex), and a
+    // key would otherwise wait a second for the next look, repeating.
+    let interrupt = start.interrupt.is_some() && !controller.dbc;
+    let mut sleep = POLL_NS;
+    // Events found after a sleep no interrupt ended, in a row.
     let mut missed = 0;
+    let mut told = false;
     let mut slept = false;
     let _ = super::interrupted(index);
     loop {
         let found = controller.events();
-        if slept && sleep == IDLE_NS {
-            if found && !super::interrupted(index) {
-                missed += 1;
-                if missed == MISSED_MAX {
-                    warn!(
-                        "USB: bus {}: its interrupt does not come; looking at it every 10 ms",
-                        controller.bus
-                    );
-                    sleep = POLL_NS;
-                }
-            } else if found {
+        if interrupt && found {
+            if super::interrupted(index) {
                 missed = 0;
+                sleep = IDLE_NS;
+            } else if slept {
+                missed += 1;
+                if missed >= MISSED_MAX {
+                    sleep = POLL_NS;
+                    if !told {
+                        told = true;
+                        warn!(
+                            "USB: bus {}: its interrupt does not come; looking at it every 10 ms",
+                            controller.bus
+                        );
+                    }
+                }
             }
         }
         slept = false;
