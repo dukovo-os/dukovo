@@ -255,7 +255,9 @@ a client of its own in Python, and find them all after a restart, and
 `services/python` runs CPython's whole test suite, leaving out only the
 tests `lab/tests/services/python-skips.txt` lists, each with the reason
 it fails on Dukovo, which `lab/tests/services/copy-file.sh` copies over
-too. Without the bundles those tests are skipped too.
+too. With an image given by `--image`, `./ob lab` packs no bundles but
+names the ones this tree packed already, if any. Without the bundles
+those tests are skipped too.
 
 Removable media go in and out with steps of their own: `usb` plugs and
 pulls a USB stick, `card` puts a memory card in a card reader, `disc` a

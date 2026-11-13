@@ -482,8 +482,11 @@ pub fn command(ctx: &Ctx, args: &mut Args) -> Result<()> {
         }
         // The catalog's bundles of the same tree, which the service
         // bundles' tests copy onto the machine from the lab PC (ADR 0491).
-        if built_here {
-            let bundles = if no_build {
+        // With an image given by hand, the bundles this tree packed
+        // already are used, if there are any: packing takes long, and the
+        // image is most often this tree's too.
+        if built_here || crate::bundles::dir(ctx).is_dir() {
+            let bundles = if no_build || !built_here {
                 let bundles = crate::bundles::dir(ctx);
                 if bundles.is_dir() {
                     Ok(bundles)
