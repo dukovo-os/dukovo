@@ -24,7 +24,7 @@ serial = "authd: lab signed in on pts/"
 [[step]]
 screen = "lab@dukovo ~ $"
 [[step]]
-type = "echo \"cols\"-before $(tput cols)\n"
+type = "a=$(tput cols); echo \"cols\"-before $a\n"
 [[step]]
 screen = "cols-before"
 [[step]]
@@ -35,7 +35,7 @@ serial = "consoled: text size larger"
 screenshot = "text-larger"
 # Fewer columns than before, as the shell now sees them.
 [[step]]
-type = "b=$(tput cols); echo \"cols\"-now $b; [ $b -lt 100 ] && echo \"fewer\"-columns\n"
+type = "b=$(tput cols); echo \"cols\"-now $b; [ $b -lt $a ] && echo \"fewer\"-columns\n"
 [[step]]
 screen = "fewer-columns"
 [[step]]

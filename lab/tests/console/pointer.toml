@@ -18,8 +18,8 @@ serial = "authd: lab signed in on pts/"
 [[step]]
 screen = "lab@dukovo ~ $"
 # Three Motion records of 40 bytes (radix-input(2)): pointing at the bottom
-# right corner of the screen (1280 by 800 pixels on the lab's QEMU), the
-# left button down, then up.
+# right corner of the screen, whatever its size, the left button down, then
+# up.
 [[step]]
 type = "elevate head -c 120 /devices/mouse | hexdump -Cv\n"
 [[step]]
@@ -31,7 +31,7 @@ serial = "authd: lab elevated on pts/"
 [[step]]
 wait = "3s"
 [[step]]
-point = [1279, 799]
+point = [-1, -1]
 [[step]]
 click = "left"
 # Each record's x and y are 65535, the screen's far edge, at bytes 24 to
