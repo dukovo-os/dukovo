@@ -286,9 +286,10 @@ pub fn run(index: usize) {
     }
     super::looked();
     // The thread trusts the interrupt only once it has seen it come with
-    // events: till then it looks every 10 ms. An interrupt can be lost on
-    // the way (behind an IOMMU's remapping, on the lab's OptiPlex), and a
-    // key would otherwise wait a second for the next look, repeating.
+    // events: till then it looks every 10 ms. A controller whose
+    // interrupt never comes (a register write it does not take, or an
+    // interrupt lost behind an IOMMU's remapping) would otherwise leave a
+    // key waiting a second for the next look, repeating.
     let interrupt = start.interrupt.is_some() && !controller.dbc;
     let mut sleep = POLL_NS;
     // Events found after a sleep no interrupt ended, in a row.
