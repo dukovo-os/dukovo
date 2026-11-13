@@ -60,10 +60,6 @@ The standard library is all there, with its modules in C built in:
 `multiprocessing`, `pyexpat` and the rest. TLS checks certificates
 against the system's root certificates (dukovo-certificates(7)).
 
-One part waits on the C library: `concurrent.futures`'
-`ProcessPoolExecutor` asks how many semaphores the system allows, which
-Dukovo's C library does not answer yet, and stops with an `OSError`.
-
 These modules are missing, as Dukovo does not have the library each
 needs yet: `ctypes` (libffi), `sqlite3` (SQLite), `dbm.gnu` and
 `dbm.ndbm`, `readline` (the interactive interpreter edits lines without

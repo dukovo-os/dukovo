@@ -651,6 +651,12 @@ int Sysdeps<Readv>::operator()(int fd, const struct iovec *iovs, int iovc, ssize
 		return EINVAL;
 	if(int e = radix::iov_total(iovs, iovc, &sum); e)
 		return e;
+	// No bytes, or no buffers: a read of none, which checks the
+	// descriptor as Linux's does.
+	if(!sum) {
+		char none;
+		return read_with(radix::cancellable, fd, RADIX_FILE_CURRENT, &none, 0, bytes_read);
+	}
 	ssize_t total = 0;
 	radix_syscall_fn *syscall = radix::cancellable;
 	for(int i = 0; i < iovc; i++) {
@@ -669,9 +675,6 @@ int Sysdeps<Readv>::operator()(int fd, const struct iovec *iovs, int iovc, ssize
 		if(static_cast<size_t>(got) < iovs[i].iov_len)
 			break;
 	}
-	// With no bytes to move it is a cancellation point all the same.
-	if(syscall == radix::cancellable)
-		thread_testcancel();
 	*bytes_read = total;
 	return 0;
 }
@@ -683,6 +686,12 @@ int Sysdeps<Writev>::operator()(int fd, const struct iovec *iovs, int iovc,
 		return EINVAL;
 	if(int e = radix::iov_total(iovs, iovc, &sum); e)
 		return e;
+	// No bytes, or no buffers: a write of none, which checks the
+	// descriptor as Linux's does.
+	if(!sum) {
+		const char none = 0;
+		return write_with(radix::cancellable, fd, RADIX_FILE_CURRENT, &none, 0, bytes_written);
+	}
 	// Up to PIPE_BUF bytes go in one write, which a pipe never mixes with
 	// another's.
 	if(iovc > 1 && sum <= PIPE_BUF) {
@@ -713,9 +722,6 @@ int Sysdeps<Writev>::operator()(int fd, const struct iovec *iovs, int iovc,
 		if(static_cast<size_t>(put) < iovs[i].iov_len)
 			break;
 	}
-	// With no bytes to move it is a cancellation point all the same.
-	if(syscall == radix::cancellable)
-		thread_testcancel();
 	*bytes_written = total;
 	return 0;
 }

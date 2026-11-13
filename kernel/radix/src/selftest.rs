@@ -25,7 +25,9 @@
 //!   when the CPU has them) on every CPU.
 //! - `caps` runs the capability store's test suite (`captest`): no
 //!   capability can be forged or its rights widened, revocation reaches
-//!   everything derived, also while other CPUs derive, and nothing leaks.
+//!   everything derived, also while other CPUs derive, a file released
+//!   twice in one change is dropped once the store's locks have gone, and
+//!   nothing leaks.
 //! - `fpu`, `sched-fair`, `sched-rt`, `sched-pi`, `sched-mutex`,
 //!   `sched-balance`, `lockdep`, `rcu` and `oom` test the scheduler,
 //!   mutexes, the lock checker, RCU and the out-of-memory policy

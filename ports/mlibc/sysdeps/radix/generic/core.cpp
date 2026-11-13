@@ -12,6 +12,7 @@
 #include <mlibc/debug.hpp>
 #include <mlibc/tcb.hpp>
 #include <mlibc/threads.hpp>
+#include <semaphore.h>
 #include <signal.h>
 #include <stdlib.h>
 #include <string.h>
@@ -554,6 +555,21 @@ int Sysdeps<Sysconf>::operator()(int num, long *ret) {
 		*ret = kib / 4;
 		return 0;
 	}
+	// Named semaphores: as many as sem_open's table holds, musl's 256
+	// (patch 0070); unnamed ones have no limit. Python's multiprocessing
+	// and concurrent.futures ask before they start.
+	case _SC_SEM_NSEMS_MAX:
+		*ret = 256;
+		return 0;
+	case _SC_SEM_VALUE_MAX:
+		*ret = SEM_VALUE_MAX;
+		return 0;
+	// The longest name ttyname gives, with its NUL: glibc's 32, more than
+	// /devices/pts/N or a serial line's /devices/<name> takes. Python's
+	// os.ttyname sizes its buffer with it.
+	case _SC_TTY_NAME_MAX:
+		*ret = 32;
+		return 0;
 	default:
 		// mlibc's own answer.
 		return EINVAL;

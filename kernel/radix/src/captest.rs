@@ -30,7 +30,10 @@
 //!    operations of every kind on spaces they share and spaces of their
 //!    own, which they destroy and make again, so that the store's fast
 //!    and slow paths meet in one space and across spaces (ADR 0369); the
-//!    store's audit runs between rounds.
+//!    store's audit runs between rounds;
+//! 9. files released twice: the objects of two capabilities that hold one
+//!    file, released in one change with other files between them, are
+//!    dropped once the change's locks have gone, and none of them before.
 //!
 //! Then it checks that the store, the heap and the frame allocator are as
 //! they were. It reports `selftest caps: passed` with the counts.
@@ -44,6 +47,7 @@ use radix_cap::{
 use radix_hal::{CpuLocal, MAX_CPUS, Smp, Timer};
 use radix_klog::{error, info};
 use radix_mm::{FRAMES, HEAP, Owner};
+use radix_sync::SpinLock;
 
 use crate::caps::{self, Store};
 use crate::{Arch, work};
@@ -159,11 +163,14 @@ impl Random {
 pub fn run() {
     info!(
         "selftest caps: forging, widening, badges, sealing, ranges, memory, revocation, random, \
-         concurrent and stress operations"
+         concurrent and stress operations, and files released twice"
     );
     let census = || caps::store().map(Store::census);
     let blocks = || caps::store().map_or(0, |store| store.space_blocks() + store.object_blocks());
     let frames = || FRAMES.owner_pages(Owner::Memory);
+    // Made once, when the first pipe is, and kept: before the heap is
+    // counted, for the pipes of the last step.
+    let _ = crate::fs::pipe::mount();
     HEAP.drain();
     let before = (census().ok(), frames(), HEAP.stats(), blocks());
     let started = Arch::now_ns();
@@ -175,7 +182,8 @@ pub fn run() {
         .and_then(|()| revocation(&mut tally))
         .and_then(|()| random(&mut tally))
         .and_then(|()| concurrent(&mut tally))
-        .and_then(|()| stress(&mut tally));
+        .and_then(|()| stress(&mut tally))
+        .and_then(|()| released_twice());
     if let Err(failure) = result {
         match failure.got {
             Some(err) => error!("selftest caps: failed; {} (the store said: {err})", failure.what),
@@ -1033,4 +1041,42 @@ fn stress_worker() {
     }
     STRESS_COUNTS[0].fetch_add(done, Ordering::Relaxed);
     STRESS_COUNTS[1].fetch_add(refused, Ordering::Relaxed);
+}
+
+// ---- 9. Files released twice ----
+
+/// Stands for the store's locks, which it holds while it releases objects.
+static STORE_LOCK: SpinLock<()> = SpinLock::new(());
+
+/// Releases the reading ends of three pipes, `x`, `a` and `y`, as a
+/// change of the store does, with a lock held: `x`, `a`, `y`, then `a`
+/// again, the object of another capability that holds the same file.
+/// Each is queued to be dropped once the lock has gone (`fs::release`):
+/// `a` once, as it was queued already, and none dropped meanwhile; then
+/// each, `x` too, goes when the queue is drained (`fs::drop_deferred`).
+fn released_twice() -> Check {
+    let pipe = || {
+        crate::fs::pipe::for_kernel()
+            .map_err(|_| Failure { what: "a pipe could not be made", got: None })
+    };
+    let (x_pipe, x) = pipe()?;
+    let (a_pipe, a) = pipe()?;
+    let (y_pipe, y) = pipe()?;
+    let pipes = [&x_pipe, &a_pipe, &y_pipe];
+    let held = STORE_LOCK.lock();
+    crate::fs::release(x);
+    crate::fs::release(a.clone());
+    crate::fs::release(y);
+    crate::fs::release(a);
+    let read_while_held = pipes.map(|pipe| pipe.readers());
+    drop(held);
+    ensure(
+        read_while_held == [1, 1, 1],
+        "a file released twice dropped another with the store's locks held",
+    )?;
+    crate::fs::drop_deferred();
+    ensure(
+        pipes.iter().all(|pipe| pipe.readers() == 0),
+        "a file released twice was not dropped once the locks had gone",
+    )
 }

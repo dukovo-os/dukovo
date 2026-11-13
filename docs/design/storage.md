@@ -157,7 +157,11 @@ which reads and writes the disk. The capability store releases objects
 with its locks held, so file objects are queued (`fs::defer_drop`, linked
 through the objects themselves, so queueing needs no memory) and dropped
 once the store's locks have gone (`fs::drop_deferred`, from
-`caps::finish`).
+`caps::finish`). An object is in the queue at most once: a reference
+released while it waits there goes at once, as a count, since the
+queue's own reference outlives it, and an object taken off is marked so
+before its reference is dropped, so that a reference released then
+queues it again.
 An object whose filesystem says that its nodes only free memory when they
 go (`FileSystem::light_drops`: tmpfs, the boot archive and the generated
 trees) is dropped at once instead (`fs::release`). Only its node can go

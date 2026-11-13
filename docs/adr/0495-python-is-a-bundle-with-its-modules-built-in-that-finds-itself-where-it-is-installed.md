@@ -100,13 +100,15 @@ form.
   itself, without `readline`. Each waits on a port, in
   [deferred work](../deferred.md).
 - CPython's suite, about 45,600 tests in 558 files, passes on Radix
-  but for about 260 tests, which find gaps in the C library and the
-  kernel: multiprocessing's tests stop at a `sysconf` the C library
-  does not answer, and the rest are socket options, `mmap` of tmpfs
-  files, pipe sizes, file names that are not UTF-8, which Dukovo
-  refuses, and smaller differences. The skip list names them; the
-  gaps are in [deferred work](../deferred.md), and each fix removes its
-  lines.
+  but for about 240 tests, which find gaps in the kernel: socket
+  options, `mmap` of tmpfs files, pipe sizes, Unix-domain sockets
+  passed over one another, which multiprocessing's suites need, file
+  names that are not UTF-8, which Dukovo refuses, and smaller
+  differences.
+  The skip list names them; the gaps are in
+  [deferred work](../deferred.md), and each fix removes its lines. The
+  C library's gaps it found at first are closed (mlibc's patches 0071
+  to 0074 and Python's patch 0004).
 - A package with code in C waits until Radix can load libraries, or
   until it is built into a bundle of its own.
 - The bundle takes 29 MB to download and about 100 MB installed, most

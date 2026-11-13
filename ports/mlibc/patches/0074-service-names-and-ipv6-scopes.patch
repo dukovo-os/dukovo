@@ -1,0 +1,189 @@
+SPDX-FileCopyrightText: 2026 The Dukovo contributors
+SPDX-License-Identifier: Apache-2.0 OR MIT
+
+getaddrinfo, as glibc's:
+  - a service name that /etc/services does not have is EAI_SERVICE,
+    where it gave a result with no addresses in it, which callers took
+    for one: Python's asyncio connected to an address of None;
+  - an IPv6 address may name its scope after a '%' (RFC 4007): an
+    interface's number, or for a link-local or link-local multicast
+    address its name ("fe80::1%eth0"), as glibc and musl read it, into
+    sin6_scope_id; a name no interface has, or a node with a '%' that
+    is no such address, is EAI_NONAME, without asking DNS.
+Meant for upstream.
+
+diff --git a/options/posix/generic/lookup.cpp b/options/posix/generic/lookup.cpp
+index 81593af..27d5f0c 100644
+--- a/options/posix/generic/lookup.cpp
++++ b/options/posix/generic/lookup.cpp
+@@ -979,60 +979,64 @@ int lookup_name_null(struct lookup_result &buf, int flags, int family) {
+ 	return buf.buf.size();
+ }
+ 
+-int lookup_name_ip(struct lookup_result &buf, const char *name, int family) {
+-	if (family == AF_INET) {
+-		in_addr_t addr = 0;
+-		int res = inet_pton(AF_INET, name, &addr);
+-
+-		if (res <= 0)
+-			return -EAI_NONAME;
+-
+-		struct dns_addr_buf addr_buf;
+-		addr_buf.family = AF_INET;
+-		memcpy(&addr_buf.addr, &addr, 4);
++namespace {
+ 
+-		buf.buf.push_back(addr_buf);
+-		return 1;
++// An IPv6 address, which may name its scope (RFC 4007) after a '%': an
++// interface's number, or for a link-local address its name, as glibc and
++// musl read it ("fe80::1%eth0"). False if it is not one.
++bool parse_ipv6(const char *name, uint8_t *addr, uint32_t *scope_id) {
++	const char *percent = strchr(name, '%');
++	*scope_id = 0;
++	if (!percent)
++		return inet_pton(AF_INET6, name, addr) > 0;
++	char text[INET6_ADDRSTRLEN];
++	size_t len = percent - name;
++	if (len >= sizeof(text))
++		return false;
++	memcpy(text, name, len);
++	text[len] = 0;
++	if (inet_pton(AF_INET6, text, addr) <= 0)
++		return false;
++	const char *zone = percent + 1;
++	if (!*zone)
++		return false;
++	char *end;
++	unsigned long number = strtoul(zone, &end, 10);
++	if (isdigit(static_cast<unsigned char>(*zone)) && !*end) {
++		if (number > UINT32_MAX)
++			return false;
++		*scope_id = static_cast<uint32_t>(number);
++		return true;
+ 	}
++	bool link_local = addr[0] == 0xfe && (addr[1] & 0xc0) == 0x80;
++	bool multicast_link_local = addr[0] == 0xff && (addr[1] & 0xf) == 2;
++	if (!link_local && !multicast_link_local)
++		return false;
++	*scope_id = if_nametoindex(zone);
++	return *scope_id != 0;
++}
+ 
+-	if (family == AF_INET6) {
+-		struct in6_addr addr{};
+-		int res = inet_pton(AF_INET6, name, &addr);
++} // namespace
+ 
+-		if (res <= 0)
++int lookup_name_ip(struct lookup_result &buf, const char *name, int family) {
++	if (family != AF_INET6) {
++		in_addr_t addr = 0;
++		if (inet_pton(AF_INET, name, &addr) > 0) {
++			struct dns_addr_buf addr_buf;
++			addr_buf.family = AF_INET;
++			memcpy(&addr_buf.addr, &addr, 4);
++			buf.buf.push_back(addr_buf);
++			return 1;
++		}
++		if (family == AF_INET)
+ 			return -EAI_NONAME;
+-
+-		struct dns_addr_buf addr_buf;
+-		addr_buf.family = AF_INET6;
+-		memcpy(&addr_buf.addr, &addr, 16);
+-
+-		buf.buf.push_back(addr_buf);
+-		return 1;
+-	}
+-
+-	// If no family was specified we try ipv4 and then ipv6.
+-	in_addr_t addr4 = 0;
+-	int res = inet_pton(AF_INET, name, &addr4);
+-
+-	if (res > 0) {
+-		struct dns_addr_buf addr_buf;
+-		addr_buf.family = AF_INET;
+-		memcpy(&addr_buf.addr, &addr4, 4);
+-
+-		buf.buf.push_back(addr_buf);
+-		return 1;
+ 	}
+ 
+-	struct in6_addr addr6{};
+-	res = inet_pton(AF_INET6, name, &addr6);
+-
+-	if (res <= 0)
+-		return -EAI_NONAME;
+-
++	// If no family was specified, an IPv4 address and then an IPv6 one.
+ 	struct dns_addr_buf addr_buf;
++	if (!parse_ipv6(name, addr_buf.addr, &addr_buf.scope_id))
++		return -EAI_NONAME;
+ 	addr_buf.family = AF_INET6;
+-	memcpy(&addr_buf.addr, &addr6, 16);
+-
+ 	buf.buf.push_back(addr_buf);
+ 	return 1;
+ }
+diff --git a/options/posix/generic/netdb.cpp b/options/posix/generic/netdb.cpp
+index bbb13d9..a9931b9 100644
+--- a/options/posix/generic/netdb.cpp
++++ b/options/posix/generic/netdb.cpp
+@@ -277,14 +277,17 @@ int getaddrinfo(const char *__restrict node, const char *__restrict service,
+ 	frg::string<MemoryAllocator> canon{getAllocator()};
+ 	if (node) {
+ 		if ((addr_count = mlibc::lookup_name_ip(addr_buf, node, family)) <= 0) {
+-			if (flags & AI_NUMERICHOST)
++			// No host's name has a '%' in it: such a node is an address
++			// with its scope, or nothing.
++			bool scoped = strchr(node, '%');
++			if ((flags & AI_NUMERICHOST) || scoped)
+ 			       addr_count = -EAI_NONAME;
+ 			else if ((addr_count = mlibc::lookup_name_hosts(addr_buf, node, canon, family)) <= 0)
+ 				addr_count = mlibc::lookup_name_dns(addr_buf, node, canon, family);
+ 			// With AI_V4MAPPED, a name without IPv6 addresses has its
+ 			// IPv4 ones, mapped (::ffff:192.0.2.1), as glibc gives them.
+ 			if (family == AF_INET6 && (flags & AI_V4MAPPED) && addr_count <= 0
+-					&& addr_count != -EAI_AGAIN && !(flags & AI_NUMERICHOST)) {
++					&& addr_count != -EAI_AGAIN && !(flags & AI_NUMERICHOST) && !scoped) {
+ 				struct mlibc::lookup_result v4;
+ 				int found;
+ 				if ((found = mlibc::lookup_name_hosts(v4, node, canon, AF_INET)) <= 0)
+@@ -357,6 +360,7 @@ int getaddrinfo(const char *__restrict node, const char *__restrict service,
+ 					out[k].sa.sin6.sin6_port = htons(serv_buf[j].port);
+ 					out[k].sa.sin6.sin6_family = AF_INET6;
+ 					memcpy(&out[k].sa.sin6.sin6_addr, addr_buf.buf[i].addr, 16);
++					out[k].sa.sin6.sin6_scope_id = addr_buf.buf[i].scope_id;
+ 					break;
+ 			}
+ 		}
+diff --git a/options/posix/generic/services.cpp b/options/posix/generic/services.cpp
+index 2db9ba2..7eb886e 100644
+--- a/options/posix/generic/services.cpp
++++ b/options/posix/generic/services.cpp
+@@ -212,7 +212,10 @@ int lookup_serv_by_name(service_result &buf, const char *name, int proto,
+ 	if (flags & AI_NUMERICSERV)
+ 		return -EAI_NONAME;
+ 
+-	return lookup_serv_file_name(buf, name, proto);
++	// A name no line has is EAI_SERVICE, as on glibc: none was a
++	// result of no addresses, which a caller took for one.
++	int found = lookup_serv_file_name(buf, name, proto);
++	return found ? found : -EAI_SERVICE;
+ }
+ 
+ int lookup_serv_by_port(service_result &buf, int proto, int port) {
+diff --git a/options/posix/include/mlibc/lookup.hpp b/options/posix/include/mlibc/lookup.hpp
+index 36ff4d8..c56dd00 100644
+--- a/options/posix/include/mlibc/lookup.hpp
++++ b/options/posix/include/mlibc/lookup.hpp
+@@ -18,6 +18,8 @@ struct dns_addr_buf {
+ 	frg::string<MemoryAllocator> name;
+ 	int family;
+ 	uint8_t addr[16];
++	// An IPv6 address's scope, named after its '%' (sin6_scope_id).
++	uint32_t scope_id = 0;
+ };
+ 
+ struct lookup_result {
