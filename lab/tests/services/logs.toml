@@ -9,8 +9,11 @@ run = "logger lab-says-hello && sleep 1 && log | tail -n 20"
 expect = ["lab", "lab-says-hello", "you see only the records of your own programs"]
 # An administrator sees every program's records, sign-ins and elevations
 # among them, which is the audit trail.
+# The step's own elevation is the one it looks for: logd reads it from
+# the kernel's log a moment after authd writes it, so the step waits
+# that moment first.
 [[step]]
-run = "log"
+run = "sh -c 'sleep 2; log'"
 root = true
 expect = ["sshd:", "authd: lab signed in over SSH", "lab elevated on no terminal (password typed)", "lab-says-hello"]
 [[step]]

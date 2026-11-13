@@ -29,7 +29,7 @@ expect = "radix (3, 15)"
 # The list without its comments, as --ignorefile reads every line as a
 # pattern.
 [[step]]
-run = '''sh -c 'grep -v -e "^#" -e "^$" /users/lab/python-skips.txt > /tmp/python-skips; cd /tmp && /applications/org.python.python/bin/python3 -m test -j0 --timeout 1200 --ignorefile /tmp/python-skips > /tmp/python-suite.log 2>&1; tail -n 1 /tmp/python-suite.log' '''
+run = '''sh -c 'grep -v -e "^#" -e "^$" /users/lab/python-skips.txt > /tmp/python-skips; cd /tmp && /applications/org.python.python/bin/python3 -m test -j0 --timeout 1200 --ignorefile /tmp/python-skips > /tmp/python-suite.log 2>&1; grep -A12 -E "tests? failed( again)?:" /tmp/python-suite.log; tail -n 1 /tmp/python-suite.log' '''
 expect = "Result: SUCCESS"
 [[step]]
 run = "bundle remove --for-everyone --purge org.python.python"

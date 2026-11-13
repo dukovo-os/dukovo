@@ -23,7 +23,7 @@ root = true
 expect = "outputs-checked"
 expect_not = "does not play"
 [[step]]
-run = '''sh -c 'dmesg | grep "Audio: "; [ ! -e /devices/audio/hda0 ] || dmesg | grep -q "Audio: hda0 plays through" && echo "route"-logged' '''
+run = '''sh -c 'log -k | grep "Audio: "; [ ! -e /devices/audio/hda0 ] || log -k | grep -q "Audio: hda0 plays through" && echo "route"-logged' '''
 root = true
 expect = "route-logged"
 expect_not = "could not set up the HD Audio controller"

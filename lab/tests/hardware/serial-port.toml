@@ -40,4 +40,4 @@ expect = "no console= flag and no firmware console port: no serial console"
 run = "service serial-console status"
 root = true
 exit = 3
-expect = ["serial-console - Serial console", "Active: inactive (dead)", "Last: ended with wait status 0x0"]
+expect = ["serial-console - Serial console", "Active: inactive (dead)", "Last: exited with code 0x0"]

@@ -282,7 +282,8 @@ folder and as a _.dkv_ file, which is a zip of the folder.
 	going back, too; *--keep-data* and *--purge* answer for scripts. The
 	version kept to go back to goes with it. Its services stop and go;
 	their accounts and data, in _/shared/services/id_, stay unless
-	*--purge*. Kept data is picked up by a later version from
+	*--purge*, which takes each account's folder in
+	_/system/live/services_ away with it. Kept data is picked up by a later version from
 	the same publisher; what you said of its permissions goes with its
 	data and stays with kept data.
 

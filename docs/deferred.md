@@ -74,6 +74,7 @@ machine with AMT, an AMD machine and a laptop; see
 | A lab test of a keyring entry set and read back | Needs a console sign-in with a password, which tests cannot type yet | Lab harness |
 | A lab test of `whois` | Needs a reachable whois server | Lab harness |
 | Receive-side scaling, checksum and segmentation offloads for the server cards and virtio-net; GSO and multi-queue tunnels (ADR 0339) | Measured against Linux on 10 GbE, and the lab's network is 1 GbE; moved out of Phase 16 so it does not hold 1.0.0-alpha.1 | 10 GbE in the lab: two Intel X520, X540 or X550 cards and a cable |
+| `services/log-forward` on the Mint lab PC, where it skips: AppArmor's profile for rsyslogd lets it read no configuration outside /etc; a local rule in `/etc/apparmor.d/local/usr.sbin.rsyslogd` allowing `/run/user/*/dukovo-lab/** rw,` lets it run | AppArmor's rules are the lab PC owner's to change, never a test's | A local AppArmor rule on the lab PC |
 
 ### Installer, boot and cloud (Phase 14)
 
@@ -177,6 +178,7 @@ machine with AMT, an AMD machine and a laptop; see
 | Item | Why it waits | Waits on |
 | --- | --- | --- |
 | `service status` for an ordinary user: Spark's control socket is root's, so status and `--status-all` need root, where Linux's `systemctl status` needs none; a read-only way to ask what Spark knows | The lab test install/cloud-setup asks as root meanwhile | 16a |
+| `update` (and `update check`, `update history`) for an ordinary user, which update(8) says anyone may run: it finds the system's root by reading the disk's Btrfs UUID from `/devices`, which only root may read, so it says "this system did not start from a Dukovo root on a disk"; it could ask updated(8) instead, or take the UUID from the kernel's command line | Found on the OptiPlex 7040 by `updates/updater`, which fails at step 3 until then | 16a |
 | Timers: a service started at set times or intervals (ADR 0216) | Production service management; dependencies, readiness and health checks came first (ADR 0470) | 16a |
 | The system's own service files using service_version 2's keys: `requires`, `wants`, `after`, `[ready]` and `[health]` for the system's services, and `service new`'s template writing version 2 (ADR 0470) | A release writes only what the one before it reads (ADR 0454), and 0.15 reads service_version 1 alone; the system's services start by `order` meanwhile, as before | The release after 1.0.0-alpha.1 |
 | bundled refusing a bundle whose `requires_os` is newer than the system, with a message to update (ADR 0470) | `requires_os` is informational; a bundle whose service uses version 2's keys says 1.0, and alpha.1 is the first release any machine runs | Before the first release after 1.0.0-alpha.1 |
