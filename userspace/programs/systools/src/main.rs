@@ -130,6 +130,7 @@ mod lsof;
 mod lspci;
 mod lsusb;
 mod memory;
+mod metricsd;
 mod mkfs;
 mod modes;
 mod mount;
