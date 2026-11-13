@@ -1,0 +1,32 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+#
+# Alerts: alertd(8) keeps the alerts that services and root's scripts
+# raise, tells the owner of each change once on the screen and at sign-in,
+# and by email and to webhooks as /system/settings/alerts.toml names them
+# (alerts.toml(5)). It also raises an alert for a service that has not
+# run as asked for a minute (ADR 0485).
+#
+# service.toml(5) explains each setting. `service check alertd` checks
+# this file, and `service edit alertd` checks it as you save.
+
+service_version = 1
+description = "Alerts"
+program = "/system/commands/alertd"
+# Before logforward, which has the network up by then.
+order = 23
+# Started again whenever it ends: always, on-failure or never.
+restart = "always"
+
+[limits]
+memory = "32M"
+
+# What it holds beyond what every service reads (service.toml(5)): the
+# network, to reach mail and webhook servers; the alerts it keeps, its
+# folder where it answers on a socket (every other service may only
+# connect there), and the notice the next sign-in shows; and Spark's
+# control socket, which it asks what the services do.
+[permissions]
+network.outbound = true
+files.read = ["/system/live/spark"]
+files.read-write = ["/system/state/alerts", "/system/live/alerts", "/system/live/sign-in"]

@@ -283,7 +283,11 @@ _/system/live/sysupdate/failure_
 	changed since the last good start, and the error ID's support page.
 	The health check writes it when a start fails its check and goes on,
 	or follows an update that fell back, and shows its first line on the
-	screen until a key is pressed.
+	screen until a key is pressed. It tells *alertd*(8) of the same, as
+	the critical event *update-fell-back* or the warning
+	*start-failed*, so that the notice reaches the owner by email or a
+	webhook too; and of *update-failed* when an update gives up its tries
+	and the machine cannot be restarted into the version before it.
 
 _/system/state/sysupdate/metadata_
 	The update server's metadata this system has read and trusts.
@@ -341,4 +345,4 @@ _@snapshots/update/settings-failed_.
 # SEE ALSO
 
 *changes*(1), *update*(8), *updated*(8), *health.toml*(5), *updates.toml*(5), *spark*(8), *dukovo-boot*(7),
-*dukovo-rescue*(8), *system-release*(8), *service*(8)
+*dukovo-rescue*(8), *system-release*(8), *service*(8), *alerts*(8)

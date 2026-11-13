@@ -311,6 +311,14 @@ week, counted from when it was added until its first. A destination
 backed up by hand is never overdue. When the notice changes to something,
 the consoles are told at once (*notifyd*(8)).
 
+After each of its rounds the *backup* service also keeps the alerts of
+the destinations (*alerts*(8)): *backup-failed:*_name_ while the last
+backup or check failed, and *backup-overdue:*_name_ while the sign-in
+says it is overdue, a warning that becomes critical once it is overdue
+twice over (6 days for a daily destination, 28 for a weekly one). A
+*run* from a shell changes the notice at once and the alerts at the
+service's next round.
+
 # EXIT STATUS
 
 0 when it did what was asked; 1 when it did not, after what came before
@@ -346,5 +354,5 @@ _/system/settings/spark/services/backup.toml_
 
 # SEE ALSO
 
-*backup.toml*(5), *snap*(1), *subvolume*(8), *service.toml*(5),
+*backup.toml*(5), *alerts*(8), *snap*(1), *subvolume*(8), *service.toml*(5),
 *spark*(8), *ssh*(1), *age*(1), *mount*(8), *smb*(1)

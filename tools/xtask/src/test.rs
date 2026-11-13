@@ -6746,7 +6746,7 @@ fn consoles(vm: &mut Vm, case: &Case) -> Result<(), String> {
     vm.expect("Boot complete.")?;
     vm.expect("spark: Spark v2 is process ")?;
     vm.expect("spark: listening at /system/live/spark/control")?;
-    vm.expect("spark: 30 services in /system/settings/spark/services, 26 enabled")?;
+    vm.expect("spark: 32 services in /system/settings/spark/services, 28 enabled")?;
     vm.expect("spark: started consoled (/system/commands/consoled) as process ")?;
     vm.expect("consoled: console of ")?;
     vm.expect("consoled: started /system/commands/nukesh on tty1 as process ")?;
@@ -6991,7 +6991,7 @@ fn acpi_thermal(vm: &mut Vm, case: &Case) -> Result<(), String> {
         "trip_point_2_hyst is 0",
     ])?;
     // The zone as hwmon's `acpitz` shows it, through sensors(1): its
-    // fourth read. The console's font has no degree sign.
+    // sixth read. The console's font has no degree sign.
     vm.type_text("clear; sensors\n")?;
     vm.expect_screen(&[
         "acpitz-acpi-0",
@@ -6999,7 +6999,7 @@ fn acpi_thermal(vm: &mut Vm, case: &Case) -> Result<(), String> {
         "temp1:        +45.0",
         "(crit = +80.0",
     ])?;
-    // The zone's fifth read: it says it changed, and warms from there, so
+    // The zone's seventh read: it says it changed, and warms from there, so
     // fast that the machine may be off before a screenshot.
     vm.type_text("clear; cat /sys/class/thermal/thermal_zone0/temp\n")?;
     let slow = "the firmware picks the CPUs' speed, so the kernel cannot slow them";
@@ -10377,7 +10377,7 @@ fn principals(vm: &mut Vm, case: &Case) -> Result<(), String> {
 fn services(vm: &mut Vm, case: &Case) -> Result<(), String> {
     boot_report(vm, case)?;
     vm.expect("Boot complete.")?;
-    vm.expect_anywhere("spark: 30 services in /system/settings/spark/services, 26 enabled")?;
+    vm.expect_anywhere("spark: 32 services in /system/settings/spark/services, 28 enabled")?;
     vm.expect_ahead("spark: started /system/tests/posix/servicetest as process ")?;
     let code = program_line(vm, "(/system/tests/posix/servicetest) exited with code ")?;
     let log = vm.log();

@@ -1,0 +1,109 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# The early warning of a full disk reaches the owner (ADR 0484, ADR 0485):
+# a USB stick formatted Btrfs is mounted under /volumes and filled until
+# the writes stop, metricsd(8) sees it more than 90% used at its next
+# step and raises the alert `fs-full`, alertd(8) mails it to the lab PC's
+# mail catcher (alerts-mail.sh beside this file; alerts-email has its
+# settings), `alerts` lists it, and when the file goes, the alert clears
+# and the clear is mailed. A step of metricsd is a minute and alertd
+# gathers the changes that come together for 30 seconds, so each mail
+# takes a few minutes. The authority and the keys are the test's own, of
+# no use elsewhere, and both machines' clocks have to be right, as the
+# certificate holds dates.
+about = "A stick filled to the brim raises the full-disk alert from metricsd, which alertd mails to the lab PC, and the alert clears and is mailed again when the space is freed (ADRs 0484, 0485)"
+time = "15m"
+host_needs = ["mailpit", "openssl", "curl", "nc"]
+
+[[step]]
+host = "sh {here}/alerts-mail.sh serve {port:mailapi} {peer}"
+background = true
+ready = "mailpit ready"
+
+# The mail account the alerts go to, as alerts-email sets it.
+[[step]]
+host = "sh {here}/copy-file.sh ca.pem {machine} {machine-port:22}"
+expect = "copied: ca.pem"
+[[step]]
+run = "sh -c 'cp /users/lab/ca.pem /system/settings/ssl/lab-alerts-ca.pem && echo placed'"
+root = true
+expect = "placed"
+[[step]]
+run = "sh -c 'cat > /system/settings/alerts.toml && chmod 600 /system/settings/alerts.toml && service alertd reload && sleep 2 && echo configured'"
+root = true
+input = """
+[email]
+to = ["ops@lab.test"]
+from = "alerts@lab.test"
+server = "{peer}"
+port = 587
+user = "lab"
+password = "lab-secret"
+ca = "/system/settings/ssl/lab-alerts-ca.pem"
+"""
+expect = "configured"
+[[step]]
+run = "alerts test"
+root = true
+expect = "email to ops@lab.test: sent"
+
+# A Btrfs needs 109 MiB at least. The stick is found by its size, which no
+# system disk has, and its name kept in the lab's home for the steps
+# below, which root runs.
+[[step]]
+usb = "plug"
+blank = "256M"
+[[step]]
+wait = "5s"
+[[step]]
+run = "lsblk -dn | awk '$2 == \"256M\" && $4 == \"disk\" { print $1 }' > ~/lab-alerts-stick && cat ~/lab-alerts-stick"
+expect = "sd"
+[[step]]
+run = "sh -c 'mkfs-btrfs -f -L LABALERT /devices/$(cat /users/lab/lab-alerts-stick) && mkdir -p /volumes/lab-alerts && mount /devices/$(cat /users/lab/lab-alerts-stick) /volumes/lab-alerts'"
+root = true
+expect = "LABALERT"
+[[step]]
+run = "findmnt /volumes/lab-alerts"
+expect = ["btrfs", "rw"]
+
+# Filled until the writes stop, the stick is full.
+[[step]]
+run = "dd if=/dev/zero of=/volumes/lab-alerts/fill bs=1M"
+root = true
+exit = 1
+expect = "No space left on device"
+[[step]]
+run = "sync"
+root = true
+
+# metricsd sees it at its next step and raises the alert, which alertd
+# mails.
+[[step]]
+host = "sh {here}/alerts-mail.sh wait {port:mailapi} '/volumes/lab-alerts is' 300"
+expect = "mails with /volumes/lab-alerts is: 1"
+[[step]]
+run = "alerts"
+root = true
+expect = ["metricsd", "/volumes/lab-alerts is"]
+
+# Freed, the alert clears below the line, and the clear is mailed.
+[[step]]
+run = "sh -c 'rm /volumes/lab-alerts/fill && sync && echo freed'"
+root = true
+expect = "freed"
+[[step]]
+host = "sh {here}/alerts-mail.sh wait {port:mailapi} 'Cleared: /volumes/lab-alerts is' 300"
+expect = "mails with Cleared: /volumes/lab-alerts is: 1"
+[[step]]
+run = "alerts history -n 5"
+root = true
+expect = ["raised", "cleared", "metricsd", "/volumes/lab-alerts is"]
+
+# The machine as it was.
+[[step]]
+run = "sh -c 'umount /volumes/lab-alerts && rmdir /volumes/lab-alerts; rm -f /system/settings/alerts.toml /system/settings/ssl/lab-alerts-ca.pem /users/lab/ca.pem /users/lab/lab-alerts-stick && service alertd reload && echo cleaned'"
+root = true
+expect = "cleaned"
+[[step]]
+usb = "unplug"

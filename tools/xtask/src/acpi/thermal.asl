@@ -4,12 +4,13 @@
  *
  * The SSDT the `acpi-thermal` boot test gives QEMU (-acpitable), which has
  * no thermal zone of its own: a zone without a polling period, looked at
- * when it says it changed. It stays at 45 °C for its first five reads,
+ * when it says it changed. It stays at 45 °C for its first seven reads:
  * the kernel's two as it boots (finding the zone, then its thread's first
- * look) and the console's three (the zone's file, hwmon's, and the zone's
- * again). The fifth says it changed, and from then on it warms 5 °C a
- * read, saying so each time, past its passive (60 °C) and hot (70 °C)
- * trip points to its critical one (80 °C), where it stays.
+ * look), metricsd's two as it starts (the zone's file and hwmon's) and
+ * the console's three (the zone's file, hwmon's, and the zone's again).
+ * The seventh says it changed, and from then on it warms 5 °C a read,
+ * saying so each time, past its passive (60 °C) and hot (70 °C) trip
+ * points to its critical one (80 °C), where it stays.
  * thermal.aml is made from it by ACPICA's compiler:
  *
  *     iasl -p thermal thermal.asl
@@ -26,11 +27,11 @@ DefinitionBlock ("thermal.aml", "SSDT", 2, "DUKOVO", "THERMAL", 1)
             Method (_TMP, 0, Serialized)
             {
                 READ++
-                If ((READ > 5) && (TEMP < 3532))
+                If ((READ > 7) && (TEMP < 3532))
                 {
                     TEMP += 50
                 }
-                If ((READ >= 5) && (TEMP < 3532))
+                If ((READ >= 7) && (TEMP < 3532))
                 {
                     Notify (TZ00, 0x80)
                 }

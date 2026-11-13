@@ -60,6 +60,8 @@ static const char *const ELSEWHERE[][2] = {
 		{"netlog", "the network-services boot test's service: it sends the log to that test's listener"},
 		{"serial", "the serial-firmware and install-serial boot tests': it lists the serial ports and changes the console's settings on an installed system's boot menu"},
 		{"logforward", "the log-forward boot test's service: it sends the log to that test's syslog servers"},
+		{"metricsd", "the monitoring boot test's service: it keeps the history that test's metrics commands read"},
+		{"metrics", "the monitoring boot test's: it lists the series metricsd keeps and shows their points"},
 		{"curl", "the network-services boot test's: it fetches a page from that test's HTTPS server"},
 		{"e1000d", "the userspace-e1000 boot test's service: it drives the cards only e1000=program leaves it"},
 		{"discoverd", "the network-discovery boot test's service: it answers for the machine's name to the other machine on a cable"},
@@ -135,6 +137,8 @@ static const char *const ELSEWHERE[][2] = {
 		{"braille", "the braille boot test's: it shows whether brailled found that display"},
 		{"brltty", "the braille boot test's: brailled runs it for that display"},
 		{"dumps", "the crash-dump boot test's service and command: it saves, lists and shows the dump a panic left, which needs a restart that keeps RAM"},
+		{"alertd", "the monitoring boot test's service: it keeps the alerts and sends them to that test's mail and webhook receivers"},
+		{"alerts", "the monitoring boot test's: it lists, raises, clears and tests alerts through alertd"},
 };
 
 enum { ELSEWHERE_COUNT = sizeof(ELSEWHERE) / sizeof(ELSEWHERE[0]) };

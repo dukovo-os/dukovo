@@ -634,8 +634,9 @@ fn list(options: &[String]) -> Result<i32, Fail> {
 
 /// Whether `service` is not running as asked: given up on, waiting to
 /// start again after an end, stopped for a reason that is not one it is
-/// meant to be off for, or failing its health check.
-fn not_as_asked(service: &show::Service) -> bool {
+/// meant to be off for, or failing its health check. alertd(8) raises
+/// its alerts by the same rule.
+pub(crate) fn not_as_asked(service: &show::Service) -> bool {
     match service.state {
         State::Failed | State::Waiting => true,
         State::Stopped => service.why.is_some() && !service.off_as_meant,

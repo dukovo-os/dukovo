@@ -124,6 +124,7 @@ const PEER_WANTS: &[(&str, &str)] = &[
     ("dhcpcd", "dhcpcd-base"),
     ("chronyd", "chrony"),
     ("chronyc", "chrony"),
+    ("promtool", "prometheus"),
 ];
 
 /// How a lab image lets the lab in: the lab's public key, for SSH, and

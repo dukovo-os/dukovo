@@ -28,7 +28,7 @@ const LABEL_WIDTH: usize = 11;
 
 /// One hardware monitor, as libsensors names it.
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct Chip {
+pub(crate) struct Chip {
     /// Its `name`: `k10temp`.
     prefix: String,
     /// `acpi`, `pci` or `isa`.
@@ -42,7 +42,7 @@ struct Chip {
 impl Chip {
     /// Its name, as libsensors prints it: `k10temp-pci-00c3`,
     /// `acpitz-acpi-0`.
-    fn name(&self) -> String {
+    pub(crate) fn name(&self) -> String {
         match self.bus {
             "acpi" => format!("{}-acpi-{}", self.prefix, self.address),
             bus => format!("{}-{bus}-{:04x}", self.prefix, self.address),
@@ -60,7 +60,7 @@ impl Chip {
 }
 
 /// The chips in `hwmon`, in the kernel's order.
-fn chips(hwmon: &Path) -> Vec<Chip> {
+pub(crate) fn chips(hwmon: &Path) -> Vec<Chip> {
     let Ok(entries) = std::fs::read_dir(hwmon) else { return Vec::new() };
     let mut dirs: Vec<(u32, PathBuf)> = entries
         .flatten()
@@ -95,7 +95,7 @@ fn read(dir: &Path, name: &str) -> Option<String> {
 /// What a fan or temperature is: `fan`, then `temp`, as libsensors
 /// orders them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-enum Kind {
+pub(crate) enum Kind {
     Fan,
     Temp,
 }
@@ -112,8 +112,8 @@ impl Kind {
 /// One of a chip's fans or temperatures, with the files the kernel
 /// shows for it.
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct Feature {
-    kind: Kind,
+pub(crate) struct Feature {
+    pub(crate) kind: Kind,
     number: u32,
     /// The suffixes of its files (`input`, `crit`...), in the order
     /// libsensors prints them raw.
@@ -122,12 +122,12 @@ struct Feature {
 
 impl Feature {
     /// `temp1`.
-    fn name(&self) -> String {
+    pub(crate) fn name(&self) -> String {
         format!("{}{}", self.kind.prefix(), self.number)
     }
 
     /// Its label: its `_label` file, or its name.
-    fn label(&self, chip: &Chip) -> String {
+    pub(crate) fn label(&self, chip: &Chip) -> String {
         if self.has("label")
             && let Some(label) = read(&chip.dir, &format!("{}_label", self.name()))
         {
@@ -143,7 +143,7 @@ impl Feature {
     /// The value of its file `file`, in the units libsensors gives:
     /// degrees, RPM, or 0 and 1; None if it is not there or cannot be
     /// read.
-    fn value(&self, chip: &Chip, file: &str) -> Option<f64> {
+    pub(crate) fn value(&self, chip: &Chip, file: &str) -> Option<f64> {
         if !self.has(file) {
             return None;
         }
@@ -158,7 +158,7 @@ const ORDER: [&str; 9] =
     ["input", "max", "min", "crit", "crit_alarm", "emergency", "alarm", "fault", "label"];
 
 /// `chip`'s fans, then its temperatures, each by number.
-fn features(chip: &Chip) -> Vec<Feature> {
+pub(crate) fn features(chip: &Chip) -> Vec<Feature> {
     let Ok(entries) = std::fs::read_dir(&chip.dir) else { return Vec::new() };
     let mut features: Vec<Feature> = Vec::new();
     for entry in entries.flatten() {

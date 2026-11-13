@@ -45,6 +45,7 @@ use std::sync::{Arc, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
+pub(crate) use connection::validity;
 use connection::{Connection, Transport};
 use forward::Places;
 use settings::Destination;

@@ -30,7 +30,9 @@
 //! `timedatectl` shows it and sets the time zone (ADR 0194); `netlog`
 //! sends the log to another computer as it is written (ADR 0196), and
 //! `logforward` sends it to syslog servers over TLS, TCP or UDP, keeping
-//! it until each has it (ADR 0482);
+//! it until each has it (ADR 0482); `metricsd` keeps the history of the
+//! machine's processors, memory, disks, network cards and temperatures,
+//! which `metrics` shows (ADR 0484);
 //! `firewall` gives the packet filter its rules and says what listens
 //! (ADR 0334).
 //! `authd` keeps the accounts, which `user` and `passwd` change, `login`
@@ -67,6 +69,8 @@
 //! repair a system that will not start (ADR 0460).
 
 mod account;
+mod alertd;
+mod alerts;
 mod args;
 mod audiocd;
 mod authd;
@@ -82,6 +86,7 @@ mod burn;
 mod changes;
 mod cloud;
 mod column;
+mod deadline;
 mod device;
 mod df;
 mod dhcp;
@@ -129,6 +134,7 @@ mod lsof;
 mod lspci;
 mod lsusb;
 mod memory;
+mod metricsd;
 mod mkfs;
 mod modes;
 mod mount;
@@ -212,6 +218,8 @@ type Tool = fn(&mut Args) -> Result<i32, Fail>;
 
 /// The tools, by name, in order.
 const TOOLS: &[(&str, Tool)] = &[
+    ("alertd", alertd::main),
+    ("alerts", alerts::command::main),
     ("audio", sound::main),
     ("audiocd", audiocd::main),
     ("audiod", sound::daemon),
@@ -291,6 +299,8 @@ const TOOLS: &[(&str, Tool)] = &[
     ("lsof", lsof::main),
     ("lspci", lspci::main),
     ("lsusb", lsusb::main),
+    ("metrics", metricsd::metrics),
+    ("metricsd", metricsd::main),
     ("mkfs", mkfs::mkfs),
     ("mkfs-btrfs", btrfs::mkfs_btrfs),
     ("mkfs-exfat", mkfs::mkfs_exfat),

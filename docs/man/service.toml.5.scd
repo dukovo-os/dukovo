@@ -459,6 +459,8 @@ at its own path, and what every service has without asking:
   _/devices/urandom_ read-only;
 - _/system/live/notify_, read-only, as notifications are always allowed
   (*notifyd*(8));
+- _/system/live/alerts_, read-only, so that the system's services raise
+  alerts (*alertd*(8)), which alertd takes from root's processes alone;
 - _/system/live/resolved_, read-only, whose _resolv.conf_
   _/etc/resolv.conf_ leads to, so that the C library finds the DNS
   resolver (*resolved*(8)), and _/system/live/netd_, which an

@@ -46,6 +46,10 @@ Once a week it reads the running slot back against its release's signed
 list, as *sysupdate verify* does, and tells the consoles, as critical,
 when the slot is not the release.
 
+It tells *alertd*(8) of the critical event *update-not-verified* when
+the slot is not the release, and of the warning *update-not-staged*
+when an unattended machine's update could not be staged.
+
 Whatever the settings, a staged release that the release keys withdraw
 is unstaged at the next check, and the console says so: it is never
 tried (ADR 0469).
@@ -77,4 +81,4 @@ _/system/settings/spark/services/updated.toml_
 # SEE ALSO
 
 *update*(8), *sysupdate*(8), *bundled*(8), *updates.toml*(5), *notifyd*(8),
-*netd*(8)
+*netd*(8), *alerts*(8)

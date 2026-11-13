@@ -8,7 +8,9 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 This chapter describes the system's log and its notifications. The full
 references are logd(8), log(1), journalctl(1), logger(1), logtrim(8),
 log(5), dmesg(1), logforward(8), logforward.toml(5), netlog(8),
-notifyd(8), notify-send(1) and notifications(1).
+notifyd(8), notify-send(1) and notifications(1). What the machine keeps of
+its own state, and its early warnings, are in
+[Metrics and early warnings](metrics.md).
 
 ## What the log holds
 

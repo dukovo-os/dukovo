@@ -1,0 +1,19 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+[package]
+name = "monitoring-test"
+description = "The mail and webhook receivers of the monitoring boot test, and what asks alertd as a user"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+# The same rustls on ring as the tls test (ADR 0192): the receivers use
+# its certificates.
+rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
+
+[lints]
+workspace = true
