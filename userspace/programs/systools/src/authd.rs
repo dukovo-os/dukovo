@@ -348,7 +348,7 @@ macro_rules! audit {
 
 mod console;
 mod keyring;
-mod proofs;
+pub(crate) mod proofs;
 
 /// The longest name a line of authd's shows.
 const SHOWN_MAX: usize = 64;
