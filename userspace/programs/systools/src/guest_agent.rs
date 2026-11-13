@@ -146,14 +146,9 @@ fn appears(path: &Path, wait: Duration) -> bool {
 /// The ports the host has named, linked in `dir`, for the line that says
 /// the agent's is not among them: "it named none", or "it named a and b".
 fn named_ports(dir: &Path) -> String {
-    let mut names: Vec<String> = std::fs::read_dir(dir)
-        .map(|entries| {
-            entries
-                .flatten()
-                .map(|entry| entry.file_name().to_string_lossy().into_owned())
-                .collect()
-        })
-        .unwrap_or_default();
+    let mut names: Vec<String> = std::fs::read_dir(dir).map_or_default(|entries| {
+        entries.flatten().map(|entry| entry.file_name().to_string_lossy().into_owned()).collect()
+    });
     names.sort();
     match names.split_last() {
         None => String::from("it named none"),
