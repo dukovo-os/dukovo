@@ -122,6 +122,10 @@ running, in words.
 - Starting a requirement again does not start the services that were
   stopped with it; starting one of them starts it. This is systemd's
   behaviour for Requires= without PartOf=.
+- Spark grows by about a quarter, to 1.2 MB as the release profile
+  builds it, past the startup archive's MiB (ADR 0427). A release now
+  builds Spark alone with the `spark` profile, for size and as one
+  unit, and the archive is 804 KiB.
 - The system's own services still start by `order` until their files
   move to version 2, in the release after alpha.1; the deferred list
   holds the move, and the check of `requires_os` at install.

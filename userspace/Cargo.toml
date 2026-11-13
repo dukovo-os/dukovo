@@ -80,3 +80,12 @@ panic = "abort"
 panic = "abort"
 # The boot loader loads the image whole: symbols yes, debug info no.
 strip = "debuginfo"
+
+# Spark, for a release. It alone is the startup archive an installed
+# system starts from, which ADR 0427 holds under a MiB; built for size as
+# one unit, it stays well inside that, and its symbols with it.
+[profile.spark]
+inherits = "release"
+opt-level = "s"
+lto = "fat"
+codegen-units = 1
