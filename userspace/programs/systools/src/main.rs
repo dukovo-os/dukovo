@@ -28,7 +28,9 @@
 //! router at a time (ADR 0345);
 //! `timed` keeps the clock right from the network over NTS, and
 //! `timedatectl` shows it and sets the time zone (ADR 0194); `netlog`
-//! sends the log to another computer as it is written (ADR 0196);
+//! sends the log to another computer as it is written (ADR 0196), and
+//! `logforward` sends it to syslog servers over TLS, TCP or UDP, keeping
+//! it until each has it (ADR 0482);
 //! `firewall` gives the packet filter its rules and says what listens
 //! (ADR 0334).
 //! `authd` keeps the accounts, which `user` and `passwd` change, `login`
@@ -112,6 +114,7 @@ mod last;
 mod links;
 mod log;
 mod logd;
+mod logforward;
 mod logger;
 mod login;
 mod logtrim;
@@ -271,6 +274,7 @@ const TOOLS: &[(&str, Tool)] = &[
     ("lastlog", last::lastlog),
     ("log", log::main),
     ("logd", logd::main),
+    ("logforward", logforward::main),
     ("logger", logger::main),
     ("login", login::main),
     ("logtrim", logtrim::main),

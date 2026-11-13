@@ -90,6 +90,7 @@ keyring 71
 live-bios 41
 live-uefi 49
 lockdep 12
+log-forward 150
 logging 15
 machine-check 31
 machine-check-program 20

@@ -17,6 +17,8 @@
 #   expired     a server from ca whose certificate ended in 2021
 #   untrusted   a server from other-ca
 #   client      a client certificate from ca
+#   self-signed a server for tls.test and 127.0.0.1 whose certificate signs
+#               itself, an authority's, as `openssl req -x509` makes one
 #   *.sig       OpenSSL's signatures of message.txt with each server's
 #               key: ECDSA and RSA (PKCS #1 and PSS) of its SHA-256 or
 #               SHA-384, and Ed25519's of the message itself
@@ -88,6 +90,10 @@ key untrusted ecdsa-p256
 issue untrusted other-ca serverAuth
 key client ecdsa-p256
 issue client ca clientAuth
+openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -keyout self-signed.key \
+	-out self-signed.pem -days "$days" -subj "/O=Dukovo tests/CN=self-signed" -sha256 \
+	-addext "basicConstraints=critical,CA:TRUE" \
+	-addext "subjectAltName=DNS:tls.test,IP:127.0.0.1" 2>/dev/null
 printf 'Signed by OpenSSL for tls-test, to be checked by ring on Radix.\n' >message.txt
 openssl dgst -sha256 -sign ecdsa-p256.key -out ecdsa-p256.sig message.txt
 openssl dgst -sha384 -sign ecdsa-p384.key -out ecdsa-p384.sig message.txt

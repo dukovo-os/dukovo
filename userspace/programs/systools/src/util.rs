@@ -59,6 +59,26 @@ pub fn strip_os_error(error: &io::Error) -> String {
     }
 }
 
+/// Splits `host[:port]`, or `[v6]:port`, taking `default` for a port
+/// left out.
+pub fn split_port(text: &str, default: u16) -> Result<(&str, u16), String> {
+    let number = |port: &str| port.parse::<u16>().map_err(|_| format!("'{port}' is not a port"));
+    if let Some(rest) = text.strip_prefix('[') {
+        let (host, after) = rest.split_once(']').ok_or_else(|| format!("'{text}' has no ']'"))?;
+        return match after.strip_prefix(':') {
+            Some(port) => Ok((host, number(port)?)),
+            None if after.is_empty() => Ok((host, default)),
+            None => Err(format!("'{text}' is not an address")),
+        };
+    }
+    match text.rsplit_once(':') {
+        // An IPv6 address without brackets has no port.
+        Some((host, _)) if host.contains(':') => Ok((text, default)),
+        Some((host, port)) => Ok((host, number(port)?)),
+        None => Ok((text, default)),
+    }
+}
+
 /// A size as util-linux's fstrim and journalctl read it: bytes, or with
 /// a suffix of K, M, G, T, P (KiB...) or KB, MB, GB, TB, PB (powers of
 /// 1000).

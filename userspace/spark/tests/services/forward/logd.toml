@@ -1,0 +1,19 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+#
+# A service of the log-forward boot test: logd(8) as the system's own
+# file has it, which keeps the log's day files in /system/state/log, the
+# queue that logforward(8) sends from.
+
+service_version = 1
+description = "System log"
+program = "/system/commands/logd"
+order = 5
+restart = "always"
+
+[limits]
+memory = "64M"
+
+[permissions]
+files.read = ["/devices/kmsg"]
+files.read-write = ["/system/state/log", "/system/live/log"]
