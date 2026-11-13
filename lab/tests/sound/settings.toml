@@ -35,7 +35,7 @@ run = "sh -c 'sleep 3 && log | grep audiod: | tail -n 5'"
 root = true
 expect = "audiod: volume 45%, muted"
 [[step]]
-run = "audio mute off && audio volume 70"
+run = "sh -c 'audio mute off && audio volume 70'"
 root = true
 expect = ["unmuted", "70%"]
 [[step]]
