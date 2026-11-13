@@ -472,7 +472,7 @@ Every phase has the same definition of done: code merged with CI green, tests ad
 - **16e Hardening and first production use (M):** `dukovo-check` reports open ports, enabled services, password logins over SSH, weak settings and pending updates, and the handbook gets a server hardening guide. The web console gets fuzzing of its API and an outside security review before 1.0. The project's own update server (updates.dukovo.org) moves onto Dukovo itself once this phase works, so the project is its own first production user. The network tuning moved from Phase 12: receive-side scaling and the checksum and segmentation offloads of the server cards and of virtio-net, measured against Linux on 10 GbE hardware.
 - **Exit:** every 1.0 service passes its acceptance test, the web console runs the machine end to end, and `dukovo-check` reports no open findings on a default install.
 
-**Status:** not started.
+**Status:** under way, in three parts that run side by side: services and hardening, remote management, and the web console. So far, services start along what they require, once ready and healthy (ADR 0470), and `service` shows what a service does (ADR 0471); the boot menu follows the serial console, and Dukovo installs on any serial port; the system's log goes to syslog servers over TLS, TCP or UDP; a crash dump of the kernel's state is kept across the restart after a panic; Phase 16's commands and services are held to their lab tests; the web console's lab tests drive real browsers (ADR 0510); and CPython is a catalog bundle (ADR 0495).
 
 ### Phase 17: Go toolchain port (M)
 
