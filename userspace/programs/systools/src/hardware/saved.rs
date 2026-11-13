@@ -5,8 +5,8 @@
 //! read: `/system/state/hardware/last.json`, written whole by a new file
 //! renamed over the old one so that a reader never finds half of it.
 
-use std::fs;
-use std::io;
+use std::fs::{self, File};
+use std::io::{self, Write};
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
@@ -38,13 +38,20 @@ impl Saved {
         serde_json::to_string_pretty(self).map_err(|e| fail(format!("cannot write JSON: {e}")))
     }
 
-    /// Writes the result to `dir/last.json`.
+    /// Writes the result to `dir/last.json`: to a new file beside it,
+    /// which is synced and renamed over it, and then the folder is synced,
+    /// so that a power cut leaves the old result or the new, never part of
+    /// one.
     pub(crate) fn save(&self, dir: &Path) -> io::Result<()> {
         fs::create_dir_all(dir)?;
         let new = dir.join("last.json.new");
         let text = self.json().map_err(|f| io::Error::other(f.message))?;
-        fs::write(&new, text + "\n")?;
-        fs::rename(&new, dir.join("last.json"))
+        let mut file = File::create(&new)?;
+        file.write_all(text.as_bytes())?;
+        file.write_all(b"\n")?;
+        file.sync_all()?;
+        fs::rename(&new, dir.join("last.json"))?;
+        File::open(dir)?.sync_all()
     }
 
     /// The result in `file`.

@@ -15,12 +15,13 @@
 //! FAT32, labelled as an install labels it, puts GRUB, the menu, the slot
 //! state and Rescue's files from the stick back, and says so. The stick
 //! restarts the live system each time; the partition then mounts and
-//! holds the menu, Rescue's entry and its files. On the host, the disk must be as
-//! an install leaves it: the partition sound for dosfstools' *fsck.fat*
-//! with UEFI's GRUB, a menu naming the root by its UUID, and a root
-//! Linux's *btrfs check* finds sound. The second boot is from that disk
-//! alone, without the stick, as install-uefi's: the system starts, alice
-//! signs in and finds her settings, which nothing in the root's changed.
+//! holds the menu, Rescue's entry and its files. On the host, the disk
+//! must be as an install leaves it: the partition sound for dosfstools'
+//! *fsck.fat* with UEFI's GRUB, a menu naming the root by its UUID, and a
+//! root Linux's *btrfs check* finds sound. The second boot is from that
+//! disk alone, without the stick, as install-uefi's: the system starts,
+//! alice signs in and finds her settings, which nothing in the root
+//! changed.
 
 use super::super::*;
 use super::install_uefi::{

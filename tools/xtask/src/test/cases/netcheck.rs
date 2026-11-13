@@ -12,14 +12,16 @@
 //! names the one card, and one that is not there fails the link layer
 //! with NET-101.
 //!
-//! Then each layer is made to fail, and netcheck must stop there, with the
+//! Then layers are made to fail, and netcheck must stop there, with the
 //! layers after it not checked and the exit status 1: a DNS server in
-//! resolved's settings that nothing answers (NET-132); a default route
-//! through an address nothing has, as a wrong static *router* gives it
-//! (NET-122); the card's link cut with QEMU's *set_link* (NET-102), which
-//! *--json* must give as the same failure with its ID, and restored. With
-//! timed stopped and its status removed, the time layer warns (NET-141)
-//! and the layers after it are still checked.
+//! resolved's settings that nothing answers (NET-132); the card's link
+//! cut with QEMU's *set_link* (NET-102), which *--json* must give as the
+//! same failure with its ID, and restored. A default IPv4 route through
+//! an address nothing has, as a wrong static *router* gives it, warns
+//! with NET-122, as QEMU's IPv6 router still answers and the layers after
+//! it are checked through that one. With timed stopped and its status
+//! removed, the time layer warns (NET-141) and the layers after it are
+//! still checked.
 //!
 //! The update server is then the live system's own HTTPS server, openssl's
 //! *s_server* as the install tests start it, whose certificate is from an
@@ -35,7 +37,7 @@ use super::install_web::serve;
 
 pub const CASE: Case = Case {
     name: "netcheck",
-    about: "netcheck finds the layer where the network stops working (ADR 0489): every layer passes under QEMU's user network and the internet layer is checked only with --internet; a card that is not there, a DNS server nothing answers, a gateway that is not there and a cut link each fail their layer with its ID and stop the layers after it, which --json reports; a time server not heard from warns; the live system's HTTPS server as update server passes, one whose authority is not trusted fails, and a clock set years back fails on the certificate's dates",
+    about: "netcheck finds the layer where the network stops working (ADR 0489): every layer passes under QEMU's user network and the internet layer is checked only with --internet; a card that is not there, a DNS server nothing answers and a cut link each fail their layer with its ID and stop the layers after it, which --json reports; an IPv4 gateway that is not there beside an IPv6 one that answers warns, and so does a time server not heard from; the live system's HTTPS server as update server passes, one whose authority is not trusted fails, and a clock set years back fails on the certificate's dates",
     firmware: Firmware::Uefi,
     media: Media::Usb,
     // The live menu entry has its own flags, `live` and
@@ -253,15 +255,18 @@ fn netcheck(vm: &mut Vm, _case: &Case) -> Result<(), String> {
     sh(vm, "dnsreset", "echo > /system/settings/resolved")?;
     up(vm, "dnsback")?;
 
-    // A gateway that is not there: the route a wrong static `router`
-    // makes, set at once with ip(8) as netd's reload would.
+    // An IPv4 gateway that is not there: the route a wrong static
+    // `router` makes, set at once with ip(8) as netd's reload would. QEMU's
+    // IPv6 router still answers, so it is a warning, and the layers after
+    // it are checked through that router.
     sh(vm, "route", "ip route replace default via 10.0.2.99 dev net0")?;
     let gateway = run(vm, "gateway", "")?;
     gateway.expect("address", "passed", &[])?;
-    gateway.expect("gateway", "FAILED", &["NET-122", "10.0.2.99"])?;
-    gateway.stops_at("gateway", &LAYERS)?;
-    if gateway.status != 1 {
-        return Err(format!("a wrong gateway gave the exit status {}, not 1", gateway.status));
+    gateway.expect("gateway", "warning", &["NET-122", "10.0.2.99", "fe80::2 answers in"])?;
+    gateway.expect("dns", "passed", &[])?;
+    gateway.expect("mtu", "passed", &["fe80::2"])?;
+    if gateway.status != 2 {
+        return Err(format!("a wrong IPv4 gateway gave the exit status {}, not 2", gateway.status));
     }
     sh(vm, "routeback", "ip route replace default via 10.0.2.2 dev net0")?;
     up(vm, "routed")?;

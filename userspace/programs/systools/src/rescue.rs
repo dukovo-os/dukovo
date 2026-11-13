@@ -37,7 +37,7 @@ use crate::sysupdate::place::{self, BUILDING, Root};
 use crate::sysupdate::stage::{self, Files, TRUSTED_ROOT};
 use crate::sysupdate::starts::{self, Outcome};
 use crate::util::{self, Fail, fail};
-use crate::{power, probe, subvolume};
+use crate::{power, probe, service, subvolume};
 
 /// Where Rescue mounts the EFI system partition it reads its own copy
 /// from.
@@ -548,14 +548,33 @@ fn other_disks(root: &Root) -> Vec<String> {
 }
 
 /// Starts the services networking needs, the firewall already running.
+/// A driver the kernel left none of the cards it drives, as e1000d on a
+/// machine with no Intel card, does not start, and is off as it is meant
+/// to be: that is no failure, and what the service command said of it is
+/// not shown.
 fn networking_on() -> Result<String, String> {
     for name in NETWORKING {
         let path = format!("/system/settings/spark/services/{name}.toml");
-        if Path::new(&path).exists() {
-            run("service", &[name, "start"])?;
+        if !Path::new(&path).exists() {
+            continue;
+        }
+        let started = Command::new("/system/commands/service")
+            .args([name, "start"])
+            .output()
+            .map_err(|err| format!("service: {err}"))?;
+        if !started.status.success() && !off_as_meant(name) {
+            eprint!("{}", String::from_utf8_lossy(&started.stderr));
+            return Err(format!("service {name} start failed ({})", started.status));
         }
     }
     Ok("Networking is on, behind the firewall.".into())
+}
+
+/// Whether Spark says service `name` is off as it is meant to be. After a
+/// request to start it, that is a driver the kernel left no cards.
+fn off_as_meant(name: &str) -> bool {
+    service::shown(Some(name))
+        .is_ok_and(|show| show.services.iter().any(|s| s.name == name && s.off_as_meant))
 }
 
 /// Turns networking on as [`networking_on`] does, waits a little for

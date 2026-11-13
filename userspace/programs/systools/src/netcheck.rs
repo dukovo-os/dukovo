@@ -470,23 +470,28 @@ fn gateway_outcome(cards: &[&Interface], asked: &[(Route, Echo)]) -> Outcome {
             _ => None,
         })
         .collect();
-    if !answered.is_empty() {
-        return Outcome::Passed(answered.join(", "));
-    }
     let silent: Vec<String> = asked
         .iter()
-        .map(|(route, echo)| match echo {
-            Echo::Refused(why) => format!("{} ({why})", route.gateway),
-            _ => route.gateway.to_string(),
+        .filter_map(|(route, echo)| match echo {
+            Echo::Answered(_) => None,
+            Echo::Refused(why) => Some(format!("{} ({why})", route.gateway)),
+            Echo::Silent => Some(route.gateway.to_string()),
         })
         .collect();
+    if silent.is_empty() {
+        return Outcome::Passed(answered.join(", "));
+    }
     let verb = if silent.len() == 1 { "does" } else { "do" };
-    failed(
-        "NET-122",
-        format!("the gateway {} {verb} not answer", silent.join(", ")),
-        "Check that the router at that address is on and in this network, and that the card's \
-         router setting or the DHCP server names the right one.",
-    )
+    let what = format!("the gateway {} {verb} not answer", silent.join(", "));
+    let advice = "Check that the router at that address is on and in this network, and that the \
+                  card's router setting or the DHCP server names the right one.";
+    // A gateway that answers still carries the other version of IP, so
+    // the layers after this one can still be checked through it.
+    if answered.is_empty() {
+        failed("NET-122", what, advice)
+    } else {
+        warning("NET-122", format!("{what}; {}", answered.join(", ")), advice)
+    }
 }
 
 /// Whether `server` is on a network one of `cards` has an address in,
@@ -1144,10 +1149,32 @@ mod tests {
             &[&a],
             &[
                 (route("10.0.2.2", 1500), Echo::Answered(Duration::from_micros(1200))),
-                (route("fe80::1", 1500), Echo::Silent),
+                (route("fe80::1", 1500), Echo::Answered(Duration::from_micros(800))),
             ],
         );
-        assert_eq!(outcome, Outcome::Passed("10.0.2.2 answers in 1.2 ms".into()));
+        assert_eq!(
+            outcome,
+            Outcome::Passed("10.0.2.2 answers in 1.2 ms, fe80::1 answers in 0.8 ms".into())
+        );
+    }
+
+    #[test]
+    fn a_gateway_that_does_not_answer_beside_one_that_does_is_a_warning() {
+        let a = addressed(card("net0", true));
+        let outcome = gateway_outcome(
+            &[&a],
+            &[
+                (route("10.0.2.99", 1500), Echo::Silent),
+                (route("fe80::2", 1500), Echo::Answered(Duration::from_micros(1400))),
+            ],
+        );
+        assert!(matches!(outcome, Outcome::Warning(_)), "{outcome:?}");
+        assert_eq!(finding(&outcome).id, "NET-122");
+        assert_eq!(
+            finding(&outcome).what,
+            "the gateway 10.0.2.99 does not answer; fe80::2 answers in 1.4 ms"
+        );
+        one_sentence(finding(&outcome));
     }
 
     #[test]

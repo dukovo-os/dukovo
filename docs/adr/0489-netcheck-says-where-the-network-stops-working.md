@@ -44,7 +44,9 @@ what to do.
     that fits a card that asks DHCP and one whose settings give none.
   - gateway: a default route (NET-121), and a gateway that answers an
     echo request (NET-122); a link-local IPv6 gateway is asked through
-    its card.
+    its card. The gateway of each version of IP is asked, and one that
+    does not answer beside one that does is a warning, as the later
+    layers can still be checked through the one that answers.
   - DNS: servers (NET-131), and one that answers a question for the root's
     name servers (NET-132). Any answer counts, a refusal too, so no
     internet is needed. A server resolved asks over TLS or HTTPS only is

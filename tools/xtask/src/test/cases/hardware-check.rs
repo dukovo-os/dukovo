@@ -216,7 +216,9 @@ fn hardware_check(vm: &mut Vm, _case: &Case) -> Result<(), String> {
         vm,
         "$",
         &format!(
-            "clear; {} > /tmp/run.json; echo $? > /tmp/run.status; {} > /tmp/last.json",
+            // hardware last gives the saved status, 2, and the shell's
+            // hint after a status that is not 0 would follow the prompt.
+            "clear; {} > /tmp/run.json; echo $? > /tmp/run.status; {} > /tmp/last.json; true",
             as_root("hardware check memory cpu --time 3 --json"),
             as_root("hardware last --json"),
         ),

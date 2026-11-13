@@ -219,6 +219,7 @@ hardware-check userspace/programs/systools/src/logger.rs userspace/programs/syst
 hardware-check userspace/programs/systools/src/priority.rs userspace/programs/systools/src/selftest.rs
 hardware-check userspace/programs/systools/src/sensors.rs userspace/programs/systools/src/elevate.rs
 hardware-check userspace/programs/systools/src/authd.rs userspace/programs/systools/src/authd/
+hardware-check abi/block.ridl kernel/fs/block/ kernel/radix/src/fs/disk/ahci.rs kernel/radix/src/fs/disk/mod.rs
 hyperv kernel/drivers/hyperv/ kernel/radix/src/hyperv.rs kernel/arch/x86_64/src/hyperv.rs
 hyperv kernel/arch/x86_64/src/time.rs kernel/radix/src/fs/disk/storvsc.rs
 hyperv kernel/drivers/mana/ kernel/radix/src/vpci.rs

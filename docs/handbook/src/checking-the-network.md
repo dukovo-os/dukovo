@@ -63,7 +63,7 @@ fixed:
 | --- | --- | --- | --- |
 | link | The machine has a network card, and a cable in it | NET-101 no card, NET-102 no link | |
 | address | A card with a link has an address | NET-111 | |
-| gateway | The default route's router answers | NET-121 no route, NET-122 no answer | |
+| gateway | The default route's router answers | NET-121 no route, NET-122 no answer | NET-122 one of IPv4's and IPv6's routers does not answer |
 | dns | A DNS server answers | NET-131 none set, NET-132 none answers | |
 | time | The clock was set from a time server lately | | NET-141 |
 | mtu | A packet of the card's full size gets through | | NET-161 |

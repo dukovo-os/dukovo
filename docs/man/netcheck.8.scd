@@ -66,7 +66,10 @@ named.
 *gateway*
 	A card with an address has a default route, and the router it names
 	answers an echo request, as *ping*(8) sends. It is asked twice, each
-	time for two seconds. See *NET-121* and *NET-122*.
+	time for two seconds. Each version of IP with a default route has its
+	router asked: when none answers the layer fails, and when one does not
+	while another does, as with an IPv4 router that is gone beside an
+	IPv6 one that answers, it is a warning. See *NET-121* and *NET-122*.
 
 *dns*
 	*resolved*(8) has a server to ask, and one of those on the local network
