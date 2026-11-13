@@ -1,0 +1,59 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# A diagnostic, not for main: which of nginx's stop and its bundle's
+# removal, with no load, leaves the machine off the network.
+about = "Diagnostic: the network after the load with no reloads, then after removal"
+time = "5m"
+host_needs = ["curl", "scp", "ping"]
+
+[[step]]
+host = "sh {here}/copy-bundle.sh org.nginx.nginx {machine} {machine-port:22}"
+expect = "copied: org.nginx.nginx"
+[[step]]
+run = "sh -c 'bundle remove --for-everyone --purge org.nginx.nginx > /dev/null 2>&1; bundle install --for-everyone --yes /users/lab/org.nginx.nginx.dkv | tail -1'"
+root = true
+expect = "installed org.nginx.nginx"
+[[step]]
+run = "service nginx enable"
+root = true
+[[step]]
+run = "sh -c 'i=0; while [ $i -lt 60 ] && ! service nginx status > /dev/null; do sleep 1; i=$((i + 1)); done; service nginx status'"
+root = true
+expect = "Active: active (running)"
+[[step]]
+host = "curl -s http://{machine}:{machine-port:80}/"
+expect = "Welcome to nginx!"
+[[step]]
+run = '''sh -c 'cd /shared/services/org.nginx.nginx/nginx/conf && openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 1 -subj /CN=lab -keyout key.pem -out cert.pem 2>/dev/null && chown nginx:nginx key.pem cert.pem && sed -i "/^    #server {/,/^    #}/s/^    #/    /" nginx.conf && service nginx reload && echo reloaded' '''
+root = true
+expect = "reloaded"
+[[step]]
+wait = "2s"
+[[step]]
+host = "sh {here}/nginx-load.sh {machine} {machine-port:80} {machine-port:443}"
+expect = "lost 0"
+[[step]]
+host = "ping -c 5 -W 1 {machine}"
+expect = " 0% packet loss"
+[[step]]
+run = "echo after-load"
+expect = "after-load"
+[[step]]
+wait = "10s"
+[[step]]
+host = "ping -c 5 -W 1 {machine}"
+expect = " 0% packet loss"
+[[step]]
+run = "echo after-wait"
+expect = "after-wait"
+[[step]]
+run = "bundle remove --for-everyone --purge org.nginx.nginx"
+root = true
+expect = "removed org.nginx.nginx"
+[[step]]
+host = "ping -c 5 -W 1 {machine}"
+expect = " 0% packet loss"
+[[step]]
+run = "echo after-remove"
+expect = "after-remove"
