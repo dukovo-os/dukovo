@@ -44,6 +44,12 @@ const WEBHOOK_KEYS: [&str; 6] = ["kind", "url", "token", "room", "severity", "cl
 pub struct Secret(String);
 
 impl Secret {
+    /// A secret of `text`, for the tests of what uses one.
+    #[cfg(test)]
+    pub fn new(text: &str) -> Secret {
+        Secret(text.to_string())
+    }
+
     /// The secret itself, for the request that needs it.
     pub fn expose(&self) -> &str {
         &self.0

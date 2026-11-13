@@ -3,5 +3,6 @@
 
 //! alertd(8): keeps the alerts (ADR 0485).
 
+mod email;
 mod settings;
 mod state;

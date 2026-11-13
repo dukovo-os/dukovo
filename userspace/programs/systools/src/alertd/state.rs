@@ -30,9 +30,14 @@ use crate::alerts::protocol::{Active, Alert, Change, State as Kind};
 /// Where alertd keeps what it must not lose.
 pub const DIR: &str = "/system/state/alerts";
 
-/// The most alerts active at once; a source that raises more is refused,
-/// so that a program in a loop cannot fill the memory.
+/// The most alerts active at once, from all sources together; a raise
+/// past it is refused, so that programs in loops cannot fill the memory.
 pub const ACTIVE_MAX: usize = 1000;
+
+/// The most alerts one source may have active: a source in a loop fills
+/// its own share and is refused there, and the other sources can still
+/// raise.
+pub const SOURCE_MAX: usize = 100;
 
 /// The history is cut to its newest [`HISTORY_KEEP`] lines when it passes
 /// [`HISTORY_MAX`], so it is not rewritten line by line.
@@ -62,7 +67,8 @@ impl State {
     ///
     /// # Errors
     ///
-    /// If [`ACTIVE_MAX`] alerts are active and this one is not.
+    /// If `source` has [`SOURCE_MAX`] alerts active, or all sources have
+    /// [`ACTIVE_MAX`], and this one is not among them.
     pub fn raise(
         &mut self,
         source: &str,
@@ -70,7 +76,7 @@ impl State {
         now: u64,
     ) -> Result<Option<Change>, String> {
         let Some(at) = self.position(source, &alert.key) else {
-            self.make_room(1)?;
+            self.make_room(source, 1)?;
             self.active.push(Active {
                 source: source.to_string(),
                 alert: alert.clone(),
@@ -115,8 +121,9 @@ impl State {
     ///
     /// # Errors
     ///
-    /// If it would leave more than [`ACTIVE_MAX`] alerts active; nothing
-    /// is changed then.
+    /// If it would leave `source` with more than [`SOURCE_MAX`] alerts
+    /// active, or all sources with more than [`ACTIVE_MAX`]; nothing is
+    /// changed then.
     pub fn set(
         &mut self,
         source: &str,
@@ -126,8 +133,12 @@ impl State {
         let listed = |key: &str| alerts.iter().any(|alert| alert.key == key);
         let leaving = self.keys_of(source).iter().filter(|key| !listed(key)).count();
         let arriving = alerts.iter().filter(|alert| self.position(source, &alert.key).is_none());
-        let after = self.active.len() - leaving + arriving.count();
-        if after > ACTIVE_MAX {
+        let arriving = arriving.count();
+        let own = self.keys_of(source).len() - leaving + arriving;
+        if own > SOURCE_MAX {
+            return Err(too_many_from(source));
+        }
+        if self.active.len() - leaving + arriving > ACTIVE_MAX {
             return Err(too_many());
         }
         // The clears come first, so that what leaves makes room for what
@@ -226,8 +237,16 @@ impl State {
         own.map(|held| held.alert.key.clone()).collect()
     }
 
-    fn make_room(&self, more: usize) -> Result<(), String> {
-        if self.active.len() + more > ACTIVE_MAX { Err(too_many()) } else { Ok(()) }
+    /// Whether `source` may have `more` alerts active besides those it has.
+    fn make_room(&self, source: &str, more: usize) -> Result<(), String> {
+        let own = self.active.iter().filter(|held| held.source == source).count();
+        if own + more > SOURCE_MAX {
+            Err(too_many_from(source))
+        } else if self.active.len() + more > ACTIVE_MAX {
+            Err(too_many())
+        } else {
+            Ok(())
+        }
     }
 
     /// Appends a change to the history, cutting it when it is long.
@@ -240,6 +259,13 @@ impl State {
         self.history_dirty = true;
         change
     }
+}
+
+fn too_many_from(source: &str) -> String {
+    format!(
+        "{source} has {SOURCE_MAX} active alerts already, the most one source may have; clear \
+         some, or find what raises so many"
+    )
 }
 
 fn too_many() -> String {
@@ -518,23 +544,59 @@ mod tests {
         assert_eq!(keys, ["old-critical", "new-critical", "old-warning"]);
     }
 
-    #[test]
-    fn no_more_than_the_most_are_held() {
-        let mut state = State::default();
-        for n in 0..ACTIVE_MAX {
-            state.raise("s", warning(&format!("k{n}")), 1).unwrap();
+    /// Raises `count` alerts for `source`, named `<source>-<n>`.
+    fn fill(state: &mut State, source: &str, count: usize) {
+        for n in 0..count {
+            state.raise(source, warning(&format!("{source}-{n}")), 1).unwrap();
         }
-        let refused = state.raise("s", warning("one-too-many"), 2).unwrap_err();
+    }
+
+    #[test]
+    fn one_source_may_hold_no_more_than_its_share() {
+        let mut state = State::default();
+        fill(&mut state, "loop", SOURCE_MAX);
+        let refused = state.raise("loop", warning("one-too-many"), 2).unwrap_err();
+        assert!(refused.starts_with("loop has 100 active alerts already"), "{refused}");
+        // One that is held can still be raised again.
+        assert!(state.raise("loop", warning("loop-5"), 2).is_ok());
+        // A set that would pass it changes nothing.
+        let more: Vec<Alert> = (0..=SOURCE_MAX).map(|n| warning(&format!("j{n}"))).collect();
+        assert!(state.set("loop", more, 3).unwrap_err().starts_with("loop has 100"));
+        assert_eq!(state.active().len(), SOURCE_MAX);
+        // One that makes room for what it brings is taken.
+        assert!(state.set("loop", vec![warning("fresh")], 4).is_ok());
+        assert_eq!(state.active().len(), 1);
+    }
+
+    #[test]
+    fn a_second_source_can_still_raise_when_the_first_has_its_share() {
+        let mut state = State::default();
+        fill(&mut state, "loop", SOURCE_MAX);
+        assert!(state.raise("loop", warning("more"), 2).is_err());
+        assert!(state.raise("backup", warning("backup-overdue:/mnt"), 2).is_ok());
+        assert!(state.set("diskhealth", vec![warning("smart:x")], 3).is_ok());
+        assert_eq!(state.active().len(), SOURCE_MAX + 2);
+    }
+
+    #[test]
+    fn no_more_than_the_most_are_held_by_all_sources() {
+        let mut state = State::default();
+        for source in 0..ACTIVE_MAX / SOURCE_MAX {
+            fill(&mut state, &format!("source{source}"), SOURCE_MAX);
+        }
+        assert_eq!(state.active().len(), ACTIVE_MAX);
+        let refused = state.raise("latecomer", warning("one-too-many"), 2).unwrap_err();
         assert!(refused.starts_with("alertd holds 1000 active alerts already"), "{refused}");
         // One that is held can still be raised.
-        assert!(state.raise("s", warning("k5"), 2).is_ok());
+        assert!(state.raise("source0", warning("source0-5"), 2).is_ok());
         // A set that would pass the most changes nothing.
-        let more: Vec<Alert> = (0..=ACTIVE_MAX).map(|n| warning(&format!("j{n}"))).collect();
-        assert!(state.set("other", more, 3).is_err());
+        let more: Vec<Alert> = (0..3).map(|n| warning(&format!("j{n}"))).collect();
+        assert!(state.set("latecomer", more, 3).is_err());
         assert_eq!(state.active().len(), ACTIVE_MAX);
         // One that makes room for what it brings is taken.
-        assert!(state.set("s", vec![warning("fresh")], 4).is_ok());
-        assert_eq!(state.active().len(), 1);
+        assert!(state.set("source0", vec![warning("fresh")], 4).is_ok());
+        assert_eq!(state.active().len(), ACTIVE_MAX - SOURCE_MAX + 1);
+        assert!(state.raise("latecomer", warning("fits-now"), 5).is_ok());
     }
 
     #[test]
