@@ -92,10 +92,12 @@ expect = ["smb", "{peer}"]
 run = "share off"
 root = true
 expect = "Sharing is off"
+# A closed port is refused under QEMU's port forwarding ("Protocol
+# negotiation failed") and dropped by the firewall on a real network
+# (a timeout); either way no session is had.
 [[step]]
-host = "smbclient --configfile=/dev/null -L //{machine} -p {machine-port:445} -U lab%lab-share-pass -m SMB3"
-exit = 1
-expect = "Protocol negotiation"
+host = "smbclient --configfile=/dev/null -L //{machine} -p {machine-port:445} -U lab%lab-share-pass -m SMB3 -t 10 2>&1 | grep -qE 'Protocol negotiation|NT_STATUS_IO_TIMEOUT|NT_STATUS_CONNECTION_REFUSED' && echo \"port\"-closed"
+expect = "port-closed"
 expect_not = "Lab             Disk"
 [[step]]
 run = "sh -c 'share remove Kept && share remove Lab && share password --clear lab'"
