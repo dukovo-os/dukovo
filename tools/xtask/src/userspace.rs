@@ -196,6 +196,7 @@ pub const STD_LINKS: &[(&str, &str)] = &[
     ("system/commands/lastlog", "systools"),
     ("system/commands/log", "systools"),
     ("system/commands/logd", "systools"),
+    ("system/commands/logforward", "systools"),
     ("system/commands/logger", "systools"),
     ("system/commands/login", "systools"),
     ("system/commands/logtrim", "systools"),

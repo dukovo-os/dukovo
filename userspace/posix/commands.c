@@ -59,6 +59,7 @@ static const char *const ELSEWHERE[][2] = {
 		{"timedatectl", "the network-services boot test's: it shows the clock and sets the time zone"},
 		{"netlog", "the network-services boot test's service: it sends the log to that test's listener"},
 		{"serial", "the serial-firmware and install-serial boot tests': it lists the serial ports and changes the console's settings on an installed system's boot menu"},
+		{"logforward", "the log-forward boot test's service: it sends the log to that test's syslog servers"},
 		{"curl", "the network-services boot test's: it fetches a page from that test's HTTPS server"},
 		{"e1000d", "the userspace-e1000 boot test's service: it drives the cards only e1000=program leaves it"},
 		{"discoverd", "the network-discovery boot test's service: it answers for the machine's name to the other machine on a cable"},

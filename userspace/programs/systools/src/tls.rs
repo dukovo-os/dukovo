@@ -33,9 +33,10 @@ const ROOTS: [&str; 2] = [
 pub type Stream = StreamOwned<ClientConnection, TcpStream>;
 
 /// Why the builders cannot fail: ring's provider has TLS 1.2 and 1.3.
-const VERSIONS: &str = "ring's provider has the default versions";
+pub const VERSIONS: &str = "ring's provider has the default versions";
 
-fn provider() -> Arc<CryptoProvider> {
+/// The cryptography every TLS client here uses: ring's.
+pub fn provider() -> Arc<CryptoProvider> {
     Arc::new(ring::default_provider())
 }
 
@@ -97,6 +98,17 @@ pub fn connect(
     tcp.set_read_timeout(Some(timeout))?;
     tcp.set_write_timeout(Some(timeout))?;
     let _ = tcp.set_nodelay(true);
+    handshake(tcp, name, config)
+}
+
+/// Makes a TLS connection for `name` with `config` over `tcp`, within
+/// the socket's own timeouts. A certificate the client's settings refuse
+/// is an error whose inner error is rustls's.
+pub fn handshake(
+    tcp: TcpStream,
+    name: ServerName<'static>,
+    config: &Arc<ClientConfig>,
+) -> io::Result<Stream> {
     let connection = ClientConnection::new(config.clone(), name).map_err(io::Error::other)?;
     let mut stream = StreamOwned::new(connection, tcp);
     while stream.conn.is_handshaking() {

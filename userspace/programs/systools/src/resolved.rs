@@ -180,7 +180,7 @@ pub fn parse_server(text: &str) -> Result<Server, String> {
             Some(at) => (&url[..at], &url[at..]),
             None => (url, "/dns-query"),
         };
-        let (host, port) = split_port(authority, 443)?;
+        let (host, port) = util::split_port(authority, 443)?;
         let ip = match address {
             Some(address) => address
                 .parse::<IpAddr>()
@@ -205,7 +205,7 @@ pub fn parse_server(text: &str) -> Result<Server, String> {
         None => (text, None),
     };
     let default_port = if name.is_some() { 853 } else { 53 };
-    let (host, port) = split_port(address, default_port)?;
+    let (host, port) = util::split_port(address, default_port)?;
     let ip = host.parse::<IpAddr>().map_err(|_| format!("'{host}' is not an address"))?;
     let kind = match name {
         Some(name) => {
@@ -221,26 +221,6 @@ pub fn parse_server(text: &str) -> Result<Server, String> {
         kind,
         from_dhcp: false,
     })
-}
-
-/// Splits `host[:port]`, or `[v6]:port`, taking `default` for a port
-/// left out.
-fn split_port(text: &str, default: u16) -> Result<(&str, u16), String> {
-    let number = |port: &str| port.parse::<u16>().map_err(|_| format!("'{port}' is not a port"));
-    if let Some(rest) = text.strip_prefix('[') {
-        let (host, after) = rest.split_once(']').ok_or_else(|| format!("'{text}' has no ']'"))?;
-        return match after.strip_prefix(':') {
-            Some(port) => Ok((host, number(port)?)),
-            None if after.is_empty() => Ok((host, default)),
-            None => Err(format!("'{text}' is not an address")),
-        };
-    }
-    match text.rsplit_once(':') {
-        // An IPv6 address without brackets has no port.
-        Some((host, _)) if host.contains(':') => Ok((text, default)),
-        Some((host, port)) => Ok((host, number(port)?)),
-        None => Ok((text, default)),
-    }
 }
 
 /// Reads resolved(5)'s `text`: the settings, and what is wrong with any

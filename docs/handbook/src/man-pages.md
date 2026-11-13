@@ -40,6 +40,7 @@ for section 2, which `ridlc` generates from the interface definitions in
 | `cloud-setup(8)`, `cloud-config(5)` | Setting a cloud machine up at its first boot from its config disk or its cloud's metadata service, and the user data it reads |
 | `guest-agent(8)` | Answering a virtual machine's host in QEMU's guest agent protocol: its addresses and system, and a clean shutdown |
 | `logd(8)`, `log(1)`, `journalctl(1)`, `logger(1)`, `logtrim(8)`, `log(5)` | The system's log and its audit log: what logd keeps, who reads what, how to read it by service, level, time and boot, how a script writes to it, and how much it keeps |
+| `logforward(8)`, `logforward.toml(5)` | Sending the log to syslog servers over TLS, TCP or UDP: the destinations and what each is sent, the certificate check, how a server that was away is sent what it missed, and the commands that show where each stands and test it |
 | `notifyd(8)`, `notify-send(1)`, `notifications(1)` | Notifications: sending them, how the console shows them, and listing them |
 | `dukovo-privacy(7)` | The privacy promise: what Dukovo keeps on the machine and what it sends on its own |
 | `rtrace(1)` | Tracing a process's system calls and capability messages |

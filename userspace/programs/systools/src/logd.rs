@@ -336,7 +336,7 @@ fn boot_number() -> io::Result<String> {
 }
 
 /// Whether `name` is a day file's: `YYYY-MM-DD.jsonl`.
-fn is_day_file(name: &str) -> bool {
+pub fn is_day_file(name: &str) -> bool {
     name.len() == 16
         && name.as_bytes()[10..] == *b".jsonl"
         && name[..10].bytes().enumerate().all(|(i, b)| match i {

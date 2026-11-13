@@ -72,6 +72,14 @@ that is not listed is a bug.
 	the *netlog=* flag (*dukovo-boot*(7)) names one, to debug a
 	machine; by default it sends nothing (*netlog*(8)).
 
+*logforward*
+	The log, as logd keeps it, to the syslog servers the user names in
+	*logforward.toml*(5), over TLS, TCP or UDP, from the moment each is
+	named, and again to a server that missed some of it; by default it
+	sends nothing (*logforward*(8)). Taking the destination out of the
+	file, or *enabled = false* in its service file, *service edit
+	logforward* (*service*(8)), stops it.
+
 *updated*
 	Ten minutes after each start, then once a day, a read of the
 	update channel the machine follows, at _updates.dukovo.org_ or the
@@ -93,5 +101,5 @@ public issue.
 
 # SEE ALSO
 
-*logd*(8), *log*(5), *netd*(8), *netlog*(8), *notifyd*(8),
+*logd*(8), *log*(5), *logforward*(8), *netd*(8), *netlog*(8), *notifyd*(8),
 *radix-debug*(7), *resolved*(8), *timed*(8)

@@ -1,0 +1,79 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# logforward(8) against the lab PC's rsyslog (log-forward.sh beside this
+# file), which takes TLS with a certificate for lab-pc.test that an
+# authority of the test's own signed (ADR 0482): the machine trusts that
+# authority through `ca`, `logforward test` passes, a line `logger`
+# writes arrives at rsyslog, and a destination whose `server_name` is not
+# the certificate's is refused, with the reason. The authority and the
+# keys are the test's own, of no use elsewhere, and the machine's clock
+# has to be right, as the certificate holds dates.
+about = "logforward sends the log over TLS to the lab PC's rsyslog: logforward test passes, a logged line arrives, and a destination with a wrong server name is refused (ADR 0482)"
+time = "5m"
+host_needs = ["rsyslogd", "openssl", "nc"]
+
+[[step]]
+host = "sh {here}/log-forward.sh {port:syslog}"
+background = true
+ready = "rsyslog ready"
+
+# The authority's certificate goes into the folder of certificates the
+# service may read.
+[[step]]
+host = "sh {here}/copy-file.sh ca.pem {machine} {machine-port:22}"
+expect = "copied: ca.pem"
+[[step]]
+run = "sh -c 'cp /users/lab/ca.pem /system/settings/ssl/lab-ca.pem && echo placed'"
+root = true
+expect = "placed"
+
+# Two destinations, the second with a name the certificate is not for, and
+# logforward reads its settings again.
+[[step]]
+run = "sh -c 'cat > /system/settings/logforward.toml && service logforward reload'"
+root = true
+input = """
+[[destination]]
+name = "lab"
+address = "{peer}:{port:syslog}"
+ca = "/system/settings/ssl/lab-ca.pem"
+server_name = "lab-pc.test"
+
+[[destination]]
+name = "wrong-name"
+address = "{peer}:{port:syslog}"
+ca = "/system/settings/ssl/lab-ca.pem"
+server_name = "wrong.test"
+"""
+[[step]]
+run = "sh -c 'for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do logforward status lab | grep -q connected && break; sleep 1; done; logforward status lab'"
+expect = ["connected", "lab: TLS 1.", "certificate for lab-pc.test, issued by lab-forward-ca"]
+
+# A test record, which rsyslog receives too, and a line written to the
+# log.
+[[step]]
+run = "logforward test lab"
+root = true
+expect = ["lab: sent a test record to {peer}:{port:syslog} over TLS 1.", "(certificate for lab-pc.test, issued by lab-forward-ca)"]
+[[step]]
+run = "logger -t labforward lab-line-1"
+[[step]]
+host = '''sh -c 'for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do grep -q "labforward.*lab-line-1" received.log && break; sleep 1; done; grep -h "labforward.*lab-line-1\|a test record from" received.log' '''
+expect = ["labforward", "lab-line-1", "logforward: a test record from"]
+
+# The destination with the wrong name is refused, and says why.
+[[step]]
+run = '''sh -c 'for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do logforward status wrong-name | grep -q "not for wrong.test" && break; sleep 1; done; logforward status wrong-name' '''
+expect = ["waiting", "wrong-name: TLS with {peer}:{port:syslog}: its certificate is not for wrong.test"]
+[[step]]
+run = "logforward test wrong-name"
+root = true
+exit = 1
+expect = "wrong-name: TLS with {peer}:{port:syslog}: its certificate is not for wrong.test"
+
+# The machine as it was.
+[[step]]
+run = "sh -c 'rm -f /system/settings/logforward.toml /system/settings/ssl/lab-ca.pem /users/lab/ca.pem && service logforward reload && rm -f /system/state/logforward/lab.position /system/state/logforward/wrong-name.position && echo cleaned'"
+root = true
+expect = "cleaned"

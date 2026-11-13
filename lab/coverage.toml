@@ -14,6 +14,7 @@
 # a script runs it, or by its own name where the program does what its
 # name says.
 [commands]
+logforward = ["services/log-forward"]
 nginx = ["services/nginx"]
 pip = ["services/python-commands"]
 pip3 = ["services/python-commands"]
@@ -27,6 +28,7 @@ valkey-check-rdb = ["services/valkey"]
 valkey-cli = ["services/valkey"]
 
 [services]
+logforward = ["services/log-forward"]
 nginx = ["services/command", "services/graph", "services/nginx"]
 valkey = ["services/valkey"]
 
