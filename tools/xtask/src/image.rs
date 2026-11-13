@@ -1849,7 +1849,8 @@ mod tests {
         let entries: Vec<&str> =
             cfg.lines().filter(|line| line.starts_with("menuentry ")).collect();
         assert!(
-            entries[crate::test::FIRST_DISK_ENTRY].contains("\"Boot from first disk\" --id first-disk"),
+            entries[crate::test::FIRST_DISK_ENTRY]
+                .contains("\"Boot from first disk\" --id first-disk"),
             "{cfg}"
         );
         // Repair startup (ADR 0503), on the hotkey R.
