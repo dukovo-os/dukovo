@@ -117,8 +117,10 @@ pub fn open(
     let end = End { id: next_id(), capture };
     let node: NodeRef = mem::arc(end).map_err(|_| Kernel::NoMemory.status(0))?;
     let mount = pipe::mount().map_err(super::status)?;
-    let description =
-        Description { non_blocking: flags.contains(PipeFlags::NON_BLOCKING), append: false };
+    let description = Description {
+        non_blocking: flags.contains(PipeFlags::NON_BLOCKING),
+        ..Description::default()
+    };
     let file = FileObject::with(Location::new(mount, node), description, user.process.identity())
         .ok_or(Kernel::NoMemory.status(0))?;
     super::inet::install(user, to, file, flags)

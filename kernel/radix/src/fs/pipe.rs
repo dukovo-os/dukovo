@@ -45,7 +45,8 @@ use radix_tty::Ring;
 use radix_vfs::mount::{Location, MountRef};
 use radix_vfs::synthetic::FixedDir;
 use radix_vfs::{
-    FileSystem, FsInfo, FsKind, FsRef, In, KArc, Kind, Node, NodeRef, Out, Stat, mem, next_id,
+    Access, FileSystem, FsInfo, FsKind, FsRef, In, KArc, Kind, Node, NodeRef, Out, Stat, mem,
+    next_id,
 };
 
 use super::{Description, FileObject, FileRef};
@@ -157,7 +158,7 @@ pub struct Pipe {
     opened: [AtomicU32; 2],
     /// For a named pipe, its node, kept while the pipe is open so that
     /// [`NAMED`] finds the pipe by the node's address.
-    _named: Option<NodeRef>,
+    named: Option<NodeRef>,
 }
 
 /// Pipes by the address of their node.
@@ -190,7 +191,7 @@ impl Pipe {
             id: next_id(),
             polled: Polled::new(),
             opened: [AtomicU32::new(0), AtomicU32::new(0)],
-            _named: named,
+            named,
         })
         .map_err(|_| Kernel::NoMemory.status(0))
     }
@@ -591,7 +592,13 @@ impl Drop for End {
 }
 
 impl Node for End {
+    // A named pipe's end says what its path's node says, as `lstat` of the
+    // path does: programs compare the two to tell that a path still leads
+    // to what they opened (Python's `os.fwalk` and `shutil.rmtree`).
     fn stat(&self) -> Stat {
+        if let Some(named) = &self.pipe.named {
+            return Stat { size: 0, ..named.stat() };
+        }
         Stat {
             kind: Kind::Pipe,
             size: self.pipe.len() as u64,
@@ -603,6 +610,13 @@ impl Node for End {
             changed: 0,
             links: 1,
             device: 0,
+        }
+    }
+
+    fn access(&self) -> Access {
+        match &self.pipe.named {
+            Some(named) => named.access(),
+            None => Access::default_for(Kind::Pipe),
         }
     }
 
@@ -695,8 +709,10 @@ pub fn make(
     }
     let mount = mount().map_err(super::status)?;
     let pipe = Pipe::new()?;
-    let description =
-        Description { non_blocking: flags.contains(PipeFlags::NON_BLOCKING), append: false };
+    let description = Description {
+        non_blocking: flags.contains(PipeFlags::NON_BLOCKING),
+        ..Description::default()
+    };
     let name = user.process.identity();
     let end = |write: bool| -> Result<FileRef, Status> {
         let node: NodeRef = mem::arc(End { pipe: pipe.clone(), write, reads_too: false })

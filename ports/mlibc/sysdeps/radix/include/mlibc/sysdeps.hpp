@@ -28,6 +28,7 @@ struct RadixSysdepTags :
 	ClockSet,
 	Clone,
 	Close,
+	CloseRange,
 	Connect,
 	Dup,
 	Dup2,

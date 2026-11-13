@@ -78,6 +78,11 @@ use crate::user::names::Identity;
 /// A file or directory object, shared.
 pub type FileRef = alloc::sync::Arc<FileObject, Kmalloc>;
 
+/// The bit of a description's flags word that says it leaves by an
+/// absolute symbolic link. No bit of radix-file(2)'s DescriptionFlags is
+/// this one, so `status_flags` never shows or sets it.
+const ABSOLUTE_LINKS_LEAVE: u32 = 1 << 31;
+
 /// An open file description's status flags (radix-file(2)'s
 /// DescriptionFlags).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -87,6 +92,10 @@ pub struct Description {
     /// Reads and writes of a pipe or terminal fail with would_block
     /// rather than wait.
     pub non_blocking: bool,
+    /// For a directory opened with radix-directory(2)'s open flag of this
+    /// name (ADR 0498): a walk beneath it fails with outside at a
+    /// symbolic link with an absolute target. Not one of DescriptionFlags.
+    pub absolute_links_leave: bool,
 }
 
 impl Description {
@@ -98,6 +107,9 @@ impl Description {
         if self.non_blocking {
             bits |= DescriptionFlags::NON_BLOCKING.0;
         }
+        if self.absolute_links_leave {
+            bits |= ABSOLUTE_LINKS_LEAVE;
+        }
         bits
     }
 
@@ -105,6 +117,7 @@ impl Description {
         Description {
             append: bits & DescriptionFlags::APPEND.0 != 0,
             non_blocking: bits & DescriptionFlags::NON_BLOCKING.0 != 0,
+            absolute_links_leave: bits & ABSOLUTE_LINKS_LEAVE != 0,
         }
     }
 }

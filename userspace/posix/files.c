@@ -10,7 +10,9 @@
 // Unix's, descriptors by their names in /devices/fd, and owners, groups
 // and modes, extended attributes and access lists, on the tmpfs at /tmp
 // and the read-only /system; what each refuses, with Linux's errors; the
-// owners of descriptions and the modes of stdio streams.
+// owners of descriptions and the modes of stdio streams; absolute links
+// beneath directory descriptors, the identity of a named pipe opened by
+// its path, a slash after the name an open makes, and close_range.
 
 #include <dirent.h>
 #include <fcntl.h>
@@ -19,6 +21,7 @@
 #include <stdint.h>
 #include <ftw.h>
 #include <sys/mman.h>
+#include <sys/resource.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/statvfs.h>
@@ -542,6 +545,115 @@ static void links(void) {
 	CHECK(realpath("/sbin/.", real) && !strcmp(real, "/system/commands"));
 }
 
+// What the link `abs` of /tmp/files-beneath/d, which leads to the
+// directory /tmp/files-beneath/t by its absolute path, gives through the
+// descriptor `base` of that directory: the directory it leads to, the
+// link itself when not followed, and the file in it.
+static void leads_to_target(int base) {
+	struct stat want, st;
+	CHECK(stat("/tmp/files-beneath/t", &want) == 0);
+	CHECK(fstatat(base, "abs", &st, 0) == 0 && S_ISDIR(st.st_mode));
+	CHECK(st.st_ino == want.st_ino && st.st_dev == want.st_dev);
+	CHECK(fstatat(base, "abs", &st, AT_SYMLINK_NOFOLLOW) == 0 && S_ISLNK(st.st_mode));
+	int fd = openat(base, "abs/f", O_RDONLY);
+	char text[8] = {0};
+	CHECK(fd >= 0 && read(fd, text, sizeof(text)) == 6 && !strcmp(text, "beyond"));
+	if(fd >= 0)
+		close(fd);
+}
+
+// A link with an absolute target, met beneath a directory descriptor, goes
+// on from the root as on Linux (ADR 0498): the kernel fails the walk with
+// EXDEV, since a descriptor's directory is as far as a walk beneath it
+// goes, and the C library makes the call again by the directory's path.
+static void links_beneath_descriptors(void) {
+	CHECK(mkdir("/tmp/files-beneath", 0755) == 0);
+	CHECK(mkdir("/tmp/files-beneath/t", 0755) == 0);
+	CHECK(mkdir("/tmp/files-beneath/d", 0755) == 0);
+	int made = open("/tmp/files-beneath/t/f", O_WRONLY | O_CREAT, 0644);
+	CHECK(made >= 0 && write(made, "beyond", 6) == 6);
+	close(made);
+	CHECK(symlink("/tmp/files-beneath/t", "/tmp/files-beneath/d/abs") == 0);
+	CHECK(symlink("/tmp/files-beneath/t", "/tmp/files-beneath/d/abs2") == 0);
+	CHECK(symlink("../t", "/tmp/files-beneath/d/up") == 0);
+	CHECK(symlink("/tmp/files-beneath/t/made", "/tmp/files-beneath/d/dangling") == 0);
+
+	int base = open("/tmp/files-beneath/d", O_RDONLY | O_DIRECTORY);
+	CHECK(base >= 0);
+	struct stat st, want;
+	CHECK(stat("/tmp/files-beneath/t", &want) == 0);
+	leads_to_target(base);
+	const char *t = "/tmp/files-beneath/t";
+	char target[64];
+	CHECK(readlinkat(base, "abs", target, sizeof(target)) == (ssize_t)strlen(t));
+	CHECK(!memcmp(target, t, strlen(t)));
+	// A link to a path above the directory leaves it the same way.
+	CHECK(fstatat(base, "up", &st, 0) == 0 && S_ISDIR(st.st_mode) && st.st_ino == want.st_ino);
+
+	// Each form of descriptor a program has for a directory.
+	int copy = dup(base);
+	CHECK(copy >= 0);
+	if(copy >= 0) {
+		leads_to_target(copy);
+		close(copy);
+	}
+	DIR *listing = opendir("/tmp/files-beneath/d");
+	CHECK(listing != NULL);
+	if(listing) {
+		leads_to_target(dirfd(listing));
+		closedir(listing);
+	}
+	pid_t pid = check_fork();
+	if(pid == 0) {
+		leads_to_target(base);
+		check_exit_child();
+	}
+	CHECK_CHILD(pid);
+
+	// A change made through the link is made to what it leads to.
+	CHECK(fchownat(base, "abs", 1000, 100, 0) == 0);
+	CHECK(stat("/tmp/files-beneath/t", &st) == 0 && st.st_uid == 1000 && st.st_gid == 100);
+	CHECK(lstat("/tmp/files-beneath/d/abs", &st) == 0 && st.st_uid != 1000);
+	struct timespec set[2] = {{.tv_sec = 5}, {.tv_sec = 6}};
+	CHECK(utimensat(base, "abs/f", set, 0) == 0);
+	CHECK(stat("/tmp/files-beneath/t/f", &st) == 0 && st.st_atim.tv_sec == 5);
+	CHECK(st.st_mtim.tv_sec == 6);
+	CHECK(mkdirat(base, "abs/new", 0755) == 0);
+	CHECK(stat("/tmp/files-beneath/t/new", &st) == 0 && S_ISDIR(st.st_mode));
+	CHECK(faccessat(base, "abs/f", R_OK, 0) == 0);
+	CHECK_ERROR(faccessat(base, "abs/none", F_OK, 0), ENOENT);
+	// A link that leads nowhere: O_CREAT through it makes its target.
+	CHECK_ERROR(openat(base, "dangling", O_RDONLY), ENOENT);
+	int created = openat(base, "dangling", O_WRONLY | O_CREAT, 0644);
+	CHECK(created >= 0);
+	close(created);
+	CHECK(stat("/tmp/files-beneath/t/made", &st) == 0 && S_ISREG(st.st_mode));
+	CHECK(lstat("/tmp/files-beneath/d/dangling", &st) == 0 && S_ISLNK(st.st_mode));
+	// A link is renamed and removed itself, and its target stays.
+	CHECK(renameat(base, "abs2", base, "abs3") == 0);
+	CHECK_ERROR(lstat("/tmp/files-beneath/d/abs2", &st), ENOENT);
+	CHECK(lstat("/tmp/files-beneath/d/abs3", &st) == 0 && S_ISLNK(st.st_mode));
+	CHECK(unlinkat(base, "abs3", 0) == 0);
+	CHECK_ERROR(lstat("/tmp/files-beneath/d/abs3", &st), ENOENT);
+	CHECK(stat("/tmp/files-beneath/t/f", &st) == 0);
+
+	// The root's own links go on from the root as before, and a path from
+	// the working directory goes by the working directory's path.
+	CHECK(stat("/bin", &st) == 0 && S_ISDIR(st.st_mode));
+	char saved[PATH_MAX];
+	CHECK(getcwd(saved, sizeof(saved)) != NULL);
+	CHECK(chdir("/tmp/files-beneath/d") == 0);
+	CHECK(stat("abs/f", &st) == 0 && S_ISREG(st.st_mode) && st.st_size == 6);
+	CHECK(chdir(saved) == 0);
+
+	CHECK(unlinkat(base, "abs", 0) == 0);
+	CHECK_ERROR(lstat("/tmp/files-beneath/d/abs", &st), ENOENT);
+	CHECK(stat("/tmp/files-beneath/t/f", &st) == 0);
+	close(base);
+	CHECK(nftw("/tmp/files-beneath", remove_entry, 8, FTW_DEPTH | FTW_PHYS) == 0);
+	CHECK_ERROR(lstat("/tmp/files-beneath", &st), ENOENT);
+}
+
 // A file's second name, through which it reads and changes, and which
 // it outlives; the change time, which a name and times change and
 // reading does not.
@@ -656,6 +768,75 @@ static void special_files(void) {
 	CHECK_ERROR(mknod("/tmp/special/bad", 0170000 | 0644, 0), EINVAL);
 	CHECK_ERROR(mkfifo("/system/fifo", 0644), EROFS);
 	CHECK(nftw("/tmp/special", remove_entry, 8, FTW_DEPTH | FTW_PHYS) == 0);
+}
+
+// Whether `opened` is the file that `named` stands for, as far as stat
+// can tell: Python's fwalk and rmtree compare an opened descriptor with
+// the entry's lstat to guard against a link swapped in between.
+static int same_file(const struct stat *opened, const struct stat *named) {
+	return opened->st_dev == named->st_dev && opened->st_ino == named->st_ino
+			&& opened->st_mode == named->st_mode && opened->st_nlink == named->st_nlink
+			&& opened->st_uid == named->st_uid && opened->st_gid == named->st_gid
+			&& opened->st_size == named->st_size && opened->st_atim.tv_sec == named->st_atim.tv_sec
+			&& opened->st_atim.tv_nsec == named->st_atim.tv_nsec
+			&& opened->st_mtim.tv_sec == named->st_mtim.tv_sec
+			&& opened->st_mtim.tv_nsec == named->st_mtim.tv_nsec
+			&& opened->st_ctim.tv_sec == named->st_ctim.tv_sec
+			&& opened->st_ctim.tv_nsec == named->st_ctim.tv_nsec;
+}
+
+// A named pipe's end, opened by the path, tells by fstat what lstat of
+// the path tells (ADR 0498), whichever end it is, and is no directory.
+static void named_pipe_identity(void) {
+	CHECK(mkdir("/tmp/files-identity", 0755) == 0);
+	CHECK(mkfifo("/tmp/files-identity/fifo", 0640) == 0);
+	CHECK(chown("/tmp/files-identity/fifo", 1000, 100) == 0);
+	CHECK(link("/tmp/files-identity/fifo", "/tmp/files-identity/second") == 0);
+	struct stat named, opened;
+	CHECK(lstat("/tmp/files-identity/fifo", &named) == 0 && S_ISFIFO(named.st_mode));
+	CHECK(named.st_uid == 1000 && named.st_gid == 100 && named.st_nlink == 2);
+	int reader = open("/tmp/files-identity/fifo", O_RDONLY | O_NONBLOCK);
+	CHECK(reader >= 0 && fstat(reader, &opened) == 0);
+	CHECK(same_file(&opened, &named) && opened.st_size == 0);
+	// The other name of the file, and the other end of the pipe.
+	int writer = open("/tmp/files-identity/second", O_WRONLY | O_NONBLOCK);
+	CHECK(writer >= 0 && fstat(writer, &opened) == 0 && same_file(&opened, &named));
+	// What the pipe holds is not the file's size. (Linux counts a write as
+	// a change of the file's times, so the path is looked at again.)
+	CHECK(write(writer, "abc", 3) == 3);
+	CHECK(lstat("/tmp/files-identity/fifo", &named) == 0 && named.st_size == 0);
+	CHECK(fstat(reader, &opened) == 0 && same_file(&opened, &named));
+	CHECK(fstat(writer, &opened) == 0 && same_file(&opened, &named));
+	// A copy of the descriptor has it too, and is not a directory to list.
+	int copy = dup(reader);
+	CHECK(copy >= 0 && fstat(copy, &opened) == 0 && same_file(&opened, &named));
+	errno = 0;
+	DIR *listing = fdopendir(copy);
+	if(listing) {
+		errno = 0;
+		CHECK(readdir(listing) == NULL && errno == ENOTDIR);
+		closedir(listing);
+	} else {
+		CHECK(errno == ENOTDIR);
+		close(copy);
+	}
+	close(writer);
+	close(reader);
+	// An anonymous pipe has no name to be the same as: its ends are one
+	// file, and not another pipe's.
+	int ends[2], more[2];
+	CHECK(pipe(ends) == 0 && pipe(more) == 0);
+	struct stat first, second, other;
+	CHECK(fstat(ends[0], &first) == 0 && fstat(ends[1], &second) == 0);
+	CHECK(fstat(more[0], &other) == 0 && S_ISFIFO(first.st_mode) && first.st_ino == second.st_ino);
+	CHECK(first.st_ino != other.st_ino);
+	close(ends[0]);
+	close(ends[1]);
+	close(more[0]);
+	close(more[1]);
+	CHECK(unlink("/tmp/files-identity/second") == 0);
+	CHECK(unlink("/tmp/files-identity/fifo") == 0);
+	CHECK(rmdir("/tmp/files-identity") == 0);
 }
 
 // Whether descriptor `fd` is the directory `path`.
@@ -1252,6 +1433,39 @@ static void refusals(void) {
 	CHECK(rmdir("/tmp/files-r") == 0);
 }
 
+// A path that ends in a slash names a directory, and an open that makes
+// the name it ends in has none to make: EISDIR before anything is looked
+// up, whether or not the name is there (ADR 0498), as on Linux.
+static void trailing_slashes(void) {
+	CHECK(mkdir("/tmp/files-slash", 0755) == 0);
+	CHECK(mkdir("/tmp/files-slash/dir", 0755) == 0);
+	int fd = open("/tmp/files-slash/file", O_WRONLY | O_CREAT, 0644);
+	CHECK(fd >= 0);
+	close(fd);
+	CHECK_ERROR(open("/tmp/files-slash/none/", O_CREAT | O_WRONLY, 0644), EISDIR);
+	CHECK_ERROR(access("/tmp/files-slash/none", F_OK), ENOENT);
+	CHECK_ERROR(open("/tmp/files-slash/file/", O_CREAT | O_WRONLY, 0644), EISDIR);
+	CHECK_ERROR(open("/tmp/files-slash/dir/", O_CREAT | O_RDONLY, 0644), EISDIR);
+	CHECK_ERROR(open("/tmp/files-slash/none//", O_CREAT | O_WRONLY | O_EXCL, 0644), EISDIR);
+	CHECK_ERROR(access("/tmp/files-slash/none", F_OK), ENOENT);
+	// Beneath a directory descriptor, and with creat.
+	int base = open("/tmp/files-slash", O_RDONLY | O_DIRECTORY);
+	CHECK(base >= 0);
+	CHECK_ERROR(openat(base, "none/", O_CREAT | O_WRONLY, 0644), EISDIR);
+	CHECK_ERROR(openat(base, "file/", O_CREAT | O_WRONLY, 0644), EISDIR);
+	CHECK_ERROR(creat("/tmp/files-slash/none/", 0644), EISDIR);
+	CHECK_ERROR(faccessat(base, "none", F_OK, 0), ENOENT);
+	close(base);
+	// Without O_CREAT the slash changes nothing: a directory opens through
+	// it, and a name that is not there is not found.
+	fd = open("/tmp/files-slash/dir/", O_RDONLY);
+	CHECK(fd >= 0);
+	close(fd);
+	CHECK_ERROR(open("/tmp/files-slash/none/", O_RDONLY), ENOENT);
+	CHECK(unlink("/tmp/files-slash/file") == 0);
+	CHECK(rmdir("/tmp/files-slash/dir") == 0 && rmdir("/tmp/files-slash") == 0);
+}
+
 // The owner of a description, which F_SETOWN and F_SETOWN_EX name and
 // F_GETOWN and F_GETOWN_EX tell. It is kept for programs to read back; no
 // signal is sent to it.
@@ -1366,6 +1580,104 @@ static void stream_modes(void) {
 	CHECK(unlink("/tmp/files-modes") == 0);
 }
 
+// close_range: closes the descriptors from one number to another, or
+// sets close-on-exec on them, whatever RLIMIT_NOFILE says, as a child
+// between fork and exec needs to when its parent lowered the limit
+// (ADR 0498).
+static void closing_ranges(void) {
+	int below = open("/devices/null", O_RDONLY);
+	CHECK(below >= 0);
+	int fds[10];
+	for(int i = 0; i < 10; i++) {
+		fds[i] = open("/devices/null", O_RDONLY);
+		CHECK(fds[i] > below);
+	}
+	// From a number to the end: the ten go, the one below stays.
+	CHECK(close_range(fds[0], ~0U, 0) == 0);
+	for(int i = 0; i < 10; i++)
+		CHECK_ERROR(fcntl(fds[i], F_GETFD), EBADF);
+	CHECK(fcntl(below, F_GETFD) == 0);
+	// Inside the ends: the descriptors from `first` to `last`, and no
+	// more. Closing what is not open is no error.
+	for(int i = 0; i < 10; i++)
+		fds[i] = open("/devices/null", O_RDONLY);
+	CHECK(close_range(fds[3], fds[6], 0) == 0);
+	for(int i = 0; i < 10; i++) {
+		if(i >= 3 && i <= 6)
+			CHECK_ERROR(fcntl(fds[i], F_GETFD), EBADF);
+		else
+			CHECK(fcntl(fds[i], F_GETFD) == 0);
+	}
+	CHECK(close_range(fds[3], fds[6], 0) == 0);
+	CHECK(close_range(fds[0], fds[9], 0) == 0);
+	for(int i = 0; i < 10; i++)
+		CHECK_ERROR(fcntl(fds[i], F_GETFD), EBADF);
+	// Across the words of the table the C library keeps.
+	CHECK(dup2(below, 70) == 70 && dup2(below, 130) == 130 && dup2(below, 200) == 200);
+	CHECK(close_range(100, 199, 0) == 0);
+	CHECK(fcntl(70, F_GETFD) == 0 && fcntl(200, F_GETFD) == 0);
+	CHECK_ERROR(fcntl(130, F_GETFD), EBADF);
+	CHECK(close_range(70, 200, 0) == 0);
+	CHECK_ERROR(fcntl(70, F_GETFD), EBADF);
+	CHECK_ERROR(fcntl(200, F_GETFD), EBADF);
+	// Beyond the numbers a process has, there is nothing to close.
+	CHECK(close_range(100000, ~0U, 0) == 0);
+
+	// CLOSE_RANGE_CLOEXEC leaves them open, and close-on-exec.
+	for(int i = 0; i < 10; i++)
+		fds[i] = open("/devices/null", O_RDONLY);
+	CHECK(close_range(fds[0], ~0U, CLOSE_RANGE_CLOEXEC) == 0);
+	for(int i = 0; i < 10; i++)
+		CHECK(fcntl(fds[i], F_GETFD) == FD_CLOEXEC);
+	CHECK(fcntl(below, F_GETFD) == 0);
+	// Unsharing the table is taken, and a process shares its table with
+	// no other.
+	CHECK(close_range(fds[0], fds[4], CLOSE_RANGE_UNSHARE) == 0);
+	CHECK_ERROR(fcntl(fds[0], F_GETFD), EBADF);
+	CHECK(fcntl(fds[5], F_GETFD) == FD_CLOEXEC);
+	CHECK(close_range(fds[5], ~0U, CLOSE_RANGE_UNSHARE | CLOSE_RANGE_CLOEXEC) == 0);
+	CHECK(fcntl(fds[5], F_GETFD) == FD_CLOEXEC);
+	CHECK(close_range(fds[5], ~0U, 0) == 0);
+	CHECK_ERROR(fcntl(fds[5], F_GETFD), EBADF);
+	// What is refused.
+	CHECK_ERROR(close_range(5, 3, 0), EINVAL);
+	CHECK_ERROR(close_range(~0U, 0, 0), EINVAL);
+	CHECK_ERROR(close_range(0, 10, 1U << 7), EINVAL);
+	CHECK_ERROR(close_range(0, 10, 1U << 0), EINVAL);
+	CHECK_ERROR(close_range(0, 10, -1), EINVAL);
+	CHECK(fcntl(below, F_GETFD) == 0);
+
+	// In a child, with the limit lowered under a descriptor above it,
+	// which is what a program that starts another does: the descriptor
+	// is closed all the same.
+	int high = open("/devices/null", O_RDONLY);
+	CHECK(high >= 0);
+	pid_t pid = check_fork();
+	if(pid == 0) {
+		CHECK(dup2(high, 60) == 60);
+		CHECK(fcntl(60, F_GETFD) == 0);
+		struct rlimit files;
+		CHECK(getrlimit(RLIMIT_NOFILE, &files) == 0);
+		struct rlimit lowered = {40, files.rlim_max};
+		CHECK(setrlimit(RLIMIT_NOFILE, &lowered) == 0);
+		CHECK(close_range(3, ~0U, 0) == 0);
+		CHECK_ERROR(fcntl(60, F_GETFD), EBADF);
+		// With the limit as it was, so that the answer does not come
+		// from the number being above it.
+		CHECK(setrlimit(RLIMIT_NOFILE, &files) == 0);
+		CHECK_ERROR(fcntl(60, F_GETFD), EBADF);
+		CHECK_ERROR(fcntl(high, F_GETFD), EBADF);
+		CHECK_ERROR(fcntl(below, F_GETFD), EBADF);
+		// The standard descriptors are below the range.
+		CHECK(fcntl(0, F_GETFD) >= 0 && fcntl(1, F_GETFD) >= 0 && fcntl(2, F_GETFD) >= 0);
+		check_exit_child();
+	}
+	CHECK_CHILD(pid);
+	CHECK(fcntl(high, F_GETFD) == 0 && fcntl(below, F_GETFD) == 0);
+	close(high);
+	close(below);
+}
+
 int main(void) {
 	check_start("files");
 	RUN(basics);
@@ -1378,8 +1690,10 @@ int main(void) {
 	RUN(temporary_files);
 	RUN(times);
 	RUN(links);
+	RUN(links_beneath_descriptors);
 	RUN(hard_links);
 	RUN(special_files);
+	RUN(named_pipe_identity);
 	RUN(climbing);
 	RUN(path_forms);
 	RUN(mapped);
@@ -1388,7 +1702,9 @@ int main(void) {
 	RUN(modes);
 	RUN(attributes);
 	RUN(refusals);
+	RUN(trailing_slashes);
 	RUN(owners);
 	RUN(stream_modes);
+	RUN(closing_ranges);
 	return check_end();
 }

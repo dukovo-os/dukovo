@@ -218,6 +218,34 @@ was opened by, and a path with *..* in it goes from the root by that
 path instead (ADR 0089). *chdir* and *fchdir* check the directory and
 keep its canonical path.
 
+A symbolic link with an absolute target, met beneath a directory
+descriptor, goes on from the root as on Linux. The C library opens every
+directory with *absolute_links_leave*, so the kernel fails such a walk
+with EXDEV; the call is then made again from the root, by the path the
+directory was opened by (ADR 0498). A descriptor whose path the C library
+does not know keeps EXDEV, and so does an *at* call that fails with it
+for another reason, a *rename* or *link* across mounts, which costs one
+more system call on that error path. *O_NOFOLLOW*, *AT_SYMLINK_NOFOLLOW*
+and the link that is the last name of *unlinkat*, *renameat* and
+*readlinkat* are not followed, so they are as they were.
+
+*fstat* of a named pipe opened by its path says what *lstat* of the path
+says: *st_dev*, *st_ino*, the mode, owner, group, times and number of
+names, and 0 for *st_size*. An anonymous pipe's two ends share one
+*st_ino*, and its own size. *fdopendir* of a named pipe's descriptor and
+the first *readdir* fail with ENOTDIR. *open* with *O_CREAT* of a path
+that ends in */* fails with EISDIR before it looks anything up, whether or
+not the name is there; without *O_CREAT* the slash is as before.
+
+*close_range*(first, last, flags) closes each open descriptor from _first_
+to _last_, whatever *RLIMIT_NOFILE* says, or with *CLOSE_RANGE_CLOEXEC*
+sets *FD_CLOEXEC* on them. *CLOSE_RANGE_UNSHARE* is taken and does
+nothing, as no other process shares a program's descriptors. A _first_
+above _last_ or any other flag is EINVAL. It goes by the C library's
+record of taken descriptors, takes no lock and allocates nothing, so a
+child can call it between *fork* and *exec*. A slot filled other than
+through the C library, which it has not yet found taken, is left open.
+
 *stat* fills in Linux's *struct stat*: the kind of file, its size, the
 blocks it has, its number (*st_ino*), the number of the mount it is on
 (*st_dev*), when its contents last changed (*st_mtim*) and when it was
@@ -842,8 +870,9 @@ passed*; the boot test fails on any failure.
   Linux numbers (*radix-files*(7)). Symbolic links work on tmpfs, Btrfs
   and in the boot archive, not on FAT or exFAT.
 - A directory descriptor from before exec has no path: *..* above it
-  fails with EXDEV, and *fchdir* to it with ENOSYS. One whose directory
-  was moved while it was open still goes by the old path for both.
+  and an absolute symbolic link beneath it fail with EXDEV, and *fchdir*
+  to it with ENOSYS. One whose directory was moved while it was open
+  still goes by the old path for all three.
 - An ICMP error keeps at most 128 bytes of what it quotes. TCP sockets
   do not hear ICMP errors yet, and redirects and source quenches are
   the stack's, never a socket's.

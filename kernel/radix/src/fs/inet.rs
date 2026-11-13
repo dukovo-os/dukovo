@@ -2625,8 +2625,10 @@ pub fn file(
 ) -> Result<FileRef, Status> {
     let mount = pipe::mount().map_err(super::status)?;
     let node: NodeRef = mem::arc(socket).map_err(|_| status(Kernel::NoMemory))?;
-    let description =
-        Description { non_blocking: flags.contains(PipeFlags::NON_BLOCKING), append: false };
+    let description = Description {
+        non_blocking: flags.contains(PipeFlags::NON_BLOCKING),
+        ..Description::default()
+    };
     FileObject::with(Location::new(mount, node), description, user.process.identity())
         .ok_or(status(Kernel::NoMemory))
 }
