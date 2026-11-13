@@ -1968,7 +1968,7 @@ pub const CASES: &[Case] = &[
     },
     Case {
         name: "service-graph",
-        about: "services wait for what they name (ADR 0470): one that requires another starts once that one listens, one whose requirement ends or is stopped by a request is stopped too, one that keeps failing its health check is restarted until Spark gives up on it and starts again once fixed, two that wait for each other never start, a setup step is done before what requires it starts, and shutting down stops a service before the one it requires; service start waits, showing Spark's lines as they come, or fails saying why, four waits run at once, and Ctrl-C leaves a start going (ADR 0471)",
+        about: "services wait for what they name (ADR 0470): one that requires another starts once that one listens, one whose requirement ends or is stopped by a request is stopped too, one that keeps failing its health check is restarted until Spark gives up on it and starts again once fixed, two that wait for each other never start, a setup step is done before what requires it starts, and shutting down stops a service before the one it requires; service start waits, showing Spark's lines as they come, or fails saying why, four waits run at once, and Ctrl-C leaves a start going, and service explain says why a service is in its state, following what it waits for or what stopped it to the root, and what to do (ADR 0471); a change tried with service try is undone at once when the service fails with it, or when its time is up unless it is kept, and a linked file is not tried (ADR 0472); service check says where a service file is wrong as a compiler does, with the line, the place in it and a fix, and what a file that reads would do once it is put to use: what restarts, what starts with it, and when a change applies (ADR 0471)",
         firmware: Firmware::Bios,
         media: Media::Usb,
         cmdline: "lockdep -- --services --posix /system/tests/posix/graphtest",
@@ -7367,7 +7367,7 @@ fn watchdog_esb(vm: &mut Vm, case: &Case) -> Result<(), String> {
 }
 
 fn watchdog_tco(vm: &mut Vm, case: &Case) -> Result<(), String> {
-    watchdog_restarts(vm, case, "the Intel ICH9 TCO timer, with timeouts from 4 to 1227 s")
+    watchdog_restarts(vm, case, "the Intel ICH9 TCO timer, with timeouts from 2 to 613 s")
 }
 
 /// Spark, asked to stop responding, leaves the watchdog `found` unpetted,
@@ -11062,11 +11062,11 @@ fn spark_stop(vm: &mut Vm, case: &Case) -> Result<(), String> {
     Ok(())
 }
 
-/// The `service-graph` test (ADR 0470, ADR 0471): graphtest
+/// The `service-graph` test (ADR 0470, ADR 0471, ADR 0472): graphtest
 /// (userspace/posix/graphtest.c) writes services that name each other
-/// and checks what `service` says of them and how it waits; the log holds
-/// Spark's side of each step, and shutting down stops g-web before g-db,
-/// which it requires.
+/// and checks what `service` says of them, how it waits and how a change
+/// is tried with an undo; the log holds Spark's side of each step, and
+/// shutting down stops g-web before g-db, which it requires.
 fn service_graph(vm: &mut Vm, case: &Case) -> Result<(), String> {
     boot_report(vm, case)?;
     vm.expect_ahead("spark: started /system/tests/posix/graphtest as process ")?;
@@ -11097,6 +11097,14 @@ fn service_graph(vm: &mut Vm, case: &Case) -> Result<(), String> {
         "spark: g-a and g-b wait for each other",
         "spark: not starting g-a: it waits for itself, through g-a and g-b",
         "spark: g-setup is done",
+        // Changes tried with an undo (ADR 0472).
+        "spark: began the trial service.g-try of /system/settings/spark/services/g-try.toml \
+         for 10 s, by process ",
+        "spark: undid service.g-try (g-try failed with the change): put back \
+         /system/settings/spark/services/g-try.toml; restarted g-try",
+        "spark: undid service.g-try (it was not kept in time): put back \
+         /system/settings/spark/services/g-try.toml; restarted g-try",
+        "spark: kept the trial service.g-try, by process ",
     ] {
         if !log.contains(said) {
             return Err(format!("the log does not show \"{said}\""));

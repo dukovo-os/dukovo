@@ -54,9 +54,16 @@
 //! and is free for the service's next start. A service whose file names
 //! cards of which the kernel left none is not started.
 
+/// Logs a security event of Spark's: the line with authpriv's `<86>` in
+/// front, which logd(8) keeps in the audit log too (ADR 0211).
+macro_rules! audit {
+    ($($arg:tt)*) => { println!("<86>spark: {}", format_args!($($arg)*)) };
+}
+
 mod health;
 mod show;
 mod starting;
+pub mod trial;
 mod watch;
 
 use alloc::format;
@@ -440,6 +447,9 @@ struct Service {
     /// was not ready in time, a failing end soon after it was, and a
     /// restart for failed health checks.
     failures: u32,
+    /// Its failed starts since boot, counted as `failures` is but never
+    /// set back: a trial undoes a change once one more has failed.
+    failed_starts: u64,
     restarts: u32,
     last: Option<u32>,
     /// Stopped by a request: not started again until asked.
@@ -513,6 +523,7 @@ impl Service {
             started_ns: 0,
             quick: 0,
             failures: 0,
+            failed_starts: 0,
             restarts: 0,
             last: None,
             held: false,
@@ -676,12 +687,6 @@ struct HookRun {
     stopped: bool,
 }
 
-/// Logs a security event of Spark's: the line with authpriv's `<86>` in
-/// front, which logd(8) keeps in the audit log too (ADR 0211).
-macro_rules! audit {
-    ($($arg:tt)*) => { println!("<86>spark: {}", format_args!($($arg)*)) };
-}
-
 /// Spark's supervision.
 pub struct Supervisor {
     root: Dir,
@@ -733,6 +738,11 @@ pub struct Supervisor {
     essentials: bool,
     /// While the watchdog runs: how often Spark pets it, and when next.
     pets: Option<(u64, u64)>,
+    /// The settings being tried, each undone unless it is kept in time
+    /// (ADR 0472).
+    trials: Vec<trial::Trial>,
+    /// The trials undone since boot, the newest last, for `show`.
+    undone: Vec<spark_api::show::Undone>,
 }
 
 impl Supervisor {
@@ -799,6 +809,8 @@ impl Supervisor {
             rescue: false,
             essentials: false,
             pets: None,
+            trials: Vec::new(),
+            undone: Vec::new(),
         }
     }
 
@@ -915,6 +927,13 @@ impl Supervisor {
     /// good copy, if Spark kept one.
     pub fn start_services(&mut self, dir: &str) {
         self.dir = String::from(dir);
+        // A trial the last start left unkept is undone before any file is
+        // read; Rescue changes nothing, and the next start undoes it.
+        if !self.rescue {
+            for id in trial::undo_left(&self.root) {
+                self.note_undone(id, &spark_api::trial::Why::Restarted);
+            }
+        }
         services::convert_old(&self.root, dir);
         let entries = match self.root.open_dir(dir, Rights::READ).and_then(|d| d.entries()) {
             Ok(entries) => entries,
@@ -1305,6 +1324,7 @@ impl Supervisor {
                 || status.is_some_and(failed) && !steady);
         if failed_start {
             service.failures += 1;
+            service.failed_starts += 1;
         } else if steady || finished {
             service.failures = 0;
         }
@@ -1690,6 +1710,9 @@ impl Supervisor {
             "start" => return self.answer_service(Verb::Start, &rest, asker),
             "stop" => return self.answer_service(Verb::Stop, &rest, asker),
             "restart" => return self.answer_service(Verb::Restart, &rest, asker),
+            "try" => self.answer_try(&rest, asker),
+            "keep" => self.answer_keep(rest.first().copied(), peer),
+            "undo" => self.answer_undo(rest.first().copied(), peer),
             "" => "error: an empty request\n".into(),
             other => format!("error: unknown request `{other}`\n"),
         };
@@ -2089,8 +2112,8 @@ impl Supervisor {
     }
 
     /// When the loop must look again without a wake-up: the next restart,
-    /// readiness look, health check or shutdown step, or the watchdog's
-    /// next pet.
+    /// readiness look, health check or shutdown step, the watchdog's next
+    /// pet, or the end of a trial.
     fn deadline(&self) -> Option<u64> {
         let time = now();
         let restarts = self.services.iter().filter_map(|s| s.next_look(time));
@@ -2102,7 +2125,8 @@ impl Supervisor {
         let connections = self.connections.iter().map(|c| c.until);
         let pet = self.pets.map(|(_, next)| next);
         let hook = self.hooks.as_ref().and_then(|h| h.running.as_ref()).map(|r| r.until);
-        restarts.chain(shutdown).chain(connections).chain(pet).chain(hook).min()
+        let trial = self.trials_deadline();
+        restarts.chain(shutdown).chain(connections).chain(pet).chain(hook).chain(trial).min()
     }
 
     /// Starts the `phase` backup hooks of the running services that have
@@ -2373,6 +2397,7 @@ impl Supervisor {
                     self.services[index].set(State::Pending);
                 }
             }
+            self.step_trials(time);
             self.step_pending();
             self.step_shutdown();
             self.step_watches(now());

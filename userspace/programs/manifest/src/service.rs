@@ -27,14 +27,17 @@
 
 use alloc::borrow::ToOwned;
 use alloc::format;
-use alloc::string::String;
+use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use core::fmt;
+use core::ops::Range;
 
 use radix_abi::resource_domain::{NAME_MAX, WEIGHT_DEFAULT, WEIGHT_MAX};
 use radix_abi::startup::NETWORK_SLOTS;
 use serde::Deserialize;
-use serde::de::{self, Deserializer, MapAccess, Visitor};
+use serde::de::{self, DeserializeOwned, Deserializer, MapAccess, Visitor};
+use toml::Spanned;
+use toml::de::{DeTable, DeValue};
 
 use crate::Error;
 
@@ -303,21 +306,25 @@ fn hook_time_default() -> u32 {
 
 impl Backup {
     /// What is wrong with it, if anything.
-    fn check(&self) -> Result<(), String> {
-        for (name, command) in [("before", &self.before), ("after", &self.after)] {
+    fn check(&self) -> Result<(), Problem> {
+        for (key, command) in [("backup.before", &self.before), ("backup.after", &self.after)] {
             if let Some(program) = command.first()
                 && !program.starts_with('/')
             {
-                return Err(format!(
-                    "backup.{name} starts with a program's absolute path, not `{program}`"
+                return Err(Problem::about(
+                    key,
+                    format!("{key} starts with a program's absolute path, not `{program}`"),
                 ));
             }
             if command.iter().any(|word| word.contains('\0')) {
-                return Err(format!("backup.{name} holds a NUL"));
+                return Err(Problem::about(key, format!("{key} holds a NUL")));
             }
         }
         if !(1..=HOOK_TIME_MAX).contains(&self.time_limit) {
-            return Err(format!("backup.time_limit is from 1 to {HOOK_TIME_MAX} seconds"));
+            return Err(Problem::about(
+                "backup.time_limit",
+                format!("backup.time_limit is from 1 to {HOOK_TIME_MAX} seconds"),
+            ));
         }
         Ok(())
     }
@@ -814,9 +821,100 @@ pub fn template(name: &str) -> String {
     TEMPLATE.replace("NAME", name)
 }
 
+/// The error serde found in the service file `text` at `span`, or in no
+/// place when it has none: where, the setting it is about, and the nearest
+/// of what to put instead.
+fn read_error(text: &str, message: &str, span: Option<Range<usize>>) -> Error {
+    let error = Error::from_message(text, message, span.clone());
+    // An error with no place has no span to look for a setting by.
+    let (Some(span), Some(_)) = (span, error.line) else { return error };
+    let Some(key) = path_at(text, &span) else { return error };
+    // A setting's value of the wrong kind gets the line `service new`
+    // writes for it; an item of a list does not, which is no line to copy.
+    let whole = find(text, &key).is_some_and(|(_, value)| value == span);
+    let fix = match error.fix {
+        None if whole && message.starts_with("invalid type: ") => {
+            template_line(&key).map(|line| format!("as `service new` writes it: `{line}`"))
+        }
+        fix => fix,
+    };
+    Error { fix, ..error }.with_key(key)
+}
+
+/// The spans of the key `key`, a dotted path, in the service file `text`,
+/// and of its value: through tables written as `[table]`, as `table.key`
+/// and as `{ key = value }`.
+fn find(text: &str, key: &str) -> Option<(Range<usize>, Range<usize>)> {
+    let root = DeTable::parse(text).ok()?;
+    let mut table = root.get_ref();
+    let mut names = key.split('.').peekable();
+    loop {
+        let (name, value) = table.get_key_value(names.next()?)?;
+        if names.peek().is_none() {
+            return Some((name.span(), value.span()));
+        }
+        table = value.get_ref().as_table()?;
+    }
+}
+
+/// The span of the key `key`, a dotted path, in the service file `text`.
+pub(crate) fn key_span(text: &str, key: &str) -> Option<Range<usize>> {
+    find(text, key).map(|(key, _)| key)
+}
+
+/// The dotted path of the setting that `span` of `text` is the key of or
+/// the value of, or an item of the value of.
+fn path_at(text: &str, span: &Range<usize>) -> Option<String> {
+    fn walk(table: &DeTable<'_>, prefix: &str, span: &Range<usize>) -> Option<String> {
+        table.iter().find_map(|(key, value)| {
+            let path = if prefix.is_empty() {
+                key.get_ref().to_string()
+            } else {
+                format!("{prefix}.{}", key.get_ref())
+            };
+            let inside = match value.get_ref() {
+                DeValue::Table(inner) => walk(inner, &path, span),
+                DeValue::Array(items) => {
+                    items.iter().any(|item| item.span() == *span).then(|| path.clone())
+                }
+                _ => None,
+            };
+            inside.or_else(|| (key.span() == *span || value.span() == *span).then_some(path))
+        })
+    }
+    walk(DeTable::parse(text).ok()?.get_ref(), "", span)
+}
+
+/// The template's lines for the settings it leaves out until they are
+/// wanted, as `service new` writes them in a file that sets them: each
+/// line of the form `# KEY = VALUE`, with its `# ` taken off.
+pub(crate) fn template_with_settings() -> String {
+    let is_setting = |line: &str| {
+        line.split_once(" = ").is_some_and(|(key, _)| {
+            !key.is_empty() && key.chars().all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c))
+        })
+    };
+    let lines: Vec<&str> = TEMPLATE
+        .lines()
+        .map(|line| line.strip_prefix("# ").filter(|line| is_setting(line)).unwrap_or(line))
+        .collect();
+    lines.join("\n")
+}
+
+/// The line `service new` writes for the setting `key`, a dotted path,
+/// without its comment, if it writes one.
+pub(crate) fn template_line(key: &str) -> Option<String> {
+    let text = template_with_settings();
+    let (name, value) = find(&text, key)?;
+    let start = text[..name.start].rfind('\n').map_or(0, |newline| newline + 1);
+    Some(text[start..value.end].to_owned())
+}
+
 /// Reads a service file.
 pub fn from_toml(text: &str) -> Result<Service, Error> {
-    toml::from_str(text).map_err(|err| Error::from_toml(text, &err))
+    let file: File =
+        toml::from_str(text).map_err(|err| read_error(text, err.message(), err.span()))?;
+    check(file).map_err(|problem| problem.placed(text, None))
 }
 
 /// The folder, beside the service files, of the files that change them
@@ -826,27 +924,57 @@ pub fn from_toml(text: &str) -> Result<Service, Error> {
 pub const OVERRIDES: &str = "settings.d";
 
 /// An override file, read: the keys it sets.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Override(toml::Table);
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Override(String);
 
 impl Override {
     /// Reads an override file: any keys and tables, checked only once
     /// they are set over a service file.
     pub fn from_toml(text: &str) -> Result<Override, Error> {
-        toml::from_str(text).map(Override).map_err(|err| Error::from_toml(text, &err))
+        toml::from_str::<toml::Table>(text)
+            .map(|_| Override(text.to_owned()))
+            .map_err(|err| Error::from_toml(text, &err))
     }
+}
+
+/// Reads a `T` from the service file `text` with the keys of `over` set
+/// over it. The spans of an error are the file's, or, from the byte after
+/// the file's end, the override's: [`over_error`] tells which.
+fn read_over<T: DeserializeOwned>(text: &str, over: &Override) -> Result<T, toml::de::Error> {
+    // Spaces before the override's text put its spans after the file's,
+    // where they cannot be taken for them.
+    let shifted = format!("{}{}", " ".repeat(text.len() + 1), over.0);
+    let mut table = DeTable::parse(text)?;
+    set_over(table.get_mut(), DeTable::parse(&shifted)?.into_inner());
+    T::deserialize(toml::de::Deserializer::from(table))
 }
 
 /// Sets each key of `over` in `table`: a table's keys one by one, any
 /// other value in place of the one there.
-fn set_over(table: &mut toml::Table, over: toml::Table) {
+fn set_over<'a>(table: &mut DeTable<'a>, over: DeTable<'a>) {
     for (key, value) in over {
-        match (table.get_mut(&key), value) {
-            (Some(toml::Value::Table(inner)), toml::Value::Table(more)) => set_over(inner, more),
+        let name: &str = key.get_ref();
+        let span = value.span();
+        match (table.get_mut(name).map(Spanned::get_mut), value.into_inner()) {
+            (Some(DeValue::Table(inner)), DeValue::Table(more)) => set_over(inner, more),
             (_, value) => {
-                table.insert(key, value);
+                table.remove(name);
+                table.insert(key, Spanned::new(span, value));
             }
         }
+    }
+}
+
+/// The error `err` of reading the service file `text` with `over` set
+/// over it, at its place in the override or in the file.
+fn over_error(text: &str, over: &Override, err: &toml::de::Error) -> Error {
+    let shift = text.len() + 1;
+    match err.span() {
+        Some(span) if span.start >= shift => {
+            let span = span.start - shift..span.end - shift;
+            Error { in_override: true, ..read_error(&over.0, err.message(), Some(span)) }
+        }
+        span => read_error(text, err.message(), span),
     }
 }
 
@@ -854,21 +982,6 @@ fn set_over(table: &mut toml::Table, over: toml::Table) {
 /// as dotted paths, such as `limits.memory`, in order: what an update's
 /// new default beside an administrator's file changes (ADR 0386).
 pub fn changed_keys(a: &str, b: &str) -> Result<Vec<String>, Error> {
-    fn walk(prefix: &str, a: &toml::Table, b: &toml::Table, out: &mut Vec<String>) {
-        let mut keys: Vec<&String> = a.keys().chain(b.keys()).collect();
-        keys.sort();
-        keys.dedup();
-        for key in keys {
-            let path = if prefix.is_empty() { key.clone() } else { format!("{prefix}.{key}") };
-            match (a.get(key), b.get(key)) {
-                (Some(toml::Value::Table(x)), Some(toml::Value::Table(y))) => {
-                    walk(&path, x, y, out);
-                }
-                (x, y) if x != y => out.push(path),
-                _ => {}
-            }
-        }
-    }
     let a: toml::Table = toml::from_str(a).map_err(|err| Error::from_toml(a, &err))?;
     let b: toml::Table = toml::from_str(b).map_err(|err| Error::from_toml(b, &err))?;
     let mut out = Vec::new();
@@ -876,13 +989,46 @@ pub fn changed_keys(a: &str, b: &str) -> Result<Vec<String>, Error> {
     Ok(out)
 }
 
+/// The keys whose values differ between the service file `old` and `new`,
+/// each with the override that sets keys over it, if it has one: the
+/// settings that putting `new` to use changes in a service that runs
+/// `old`, as dotted paths, in order.
+pub fn changed_settings(
+    old: (&str, Option<&Override>),
+    new: (&str, Option<&Override>),
+) -> Result<Vec<String>, Error> {
+    let table = |(text, over): (&str, Option<&Override>)| match over {
+        Some(over) => read_over(text, over).map_err(|err| over_error(text, over, &err)),
+        None => toml::from_str(text).map_err(|err| Error::from_toml(text, &err)),
+    };
+    let (old, new): (toml::Table, toml::Table) = (table(old)?, table(new)?);
+    let mut out = Vec::new();
+    walk("", &old, &new, &mut out);
+    Ok(out)
+}
+
+/// Adds to `out` the dotted path of each key under `prefix` whose value
+/// differs between the tables `a` and `b`, in order.
+fn walk(prefix: &str, a: &toml::Table, b: &toml::Table, out: &mut Vec<String>) {
+    let mut keys: Vec<&String> = a.keys().chain(b.keys()).collect();
+    keys.sort();
+    keys.dedup();
+    for key in keys {
+        let path = if prefix.is_empty() { key.clone() } else { format!("{prefix}.{key}") };
+        match (a.get(key), b.get(key)) {
+            (Some(toml::Value::Table(x)), Some(toml::Value::Table(y))) => walk(&path, x, y, out),
+            (x, y) if x != y => out.push(path),
+            _ => {}
+        }
+    }
+}
+
 /// Reads a service file with its override, if it has one, set over it.
+/// An error that is in the override has its place there, and says so.
 pub fn from_toml_over(text: &str, over: Option<&Override>) -> Result<Service, Error> {
-    let Some(Override(over)) = over else { return from_toml(text) };
-    let mut table: toml::Table =
-        toml::from_str(text).map_err(|err| Error::from_toml(text, &err))?;
-    set_over(&mut table, over.clone());
-    table.try_into().map_err(|err: toml::de::Error| Error::new(crate::plain(err.message())))
+    let Some(over) = over else { return from_toml(text) };
+    let file = read_over(text, over).map_err(|err| over_error(text, over, &err))?;
+    check(file).map_err(|problem| problem.placed(text, Some(&over.0)))
 }
 
 /// Checks an account's name, as Debian's: 1 to 32 lowercase letters,
@@ -1039,72 +1185,146 @@ impl File {
     }
 }
 
+/// What is wrong with a file that deserialized, and the setting it is
+/// about.
+pub(crate) struct Problem {
+    /// The dotted key it is about, or none for the file as a whole.
+    key: Option<&'static str>,
+    /// What is wrong, in plain words.
+    message: String,
+    /// What to do about it, when there is one thing to do.
+    fix: Option<String>,
+}
+
+impl Problem {
+    /// A problem with the file as a whole.
+    fn new(message: impl Into<String>) -> Problem {
+        Problem { key: None, message: message.into(), fix: None }
+    }
+
+    /// A problem with the setting `key`.
+    fn about(key: &'static str, message: impl Into<String>) -> Problem {
+        Problem { key: Some(key), ..Problem::new(message) }
+    }
+
+    /// The same problem with `fix` as the one thing to do about it.
+    fn with_fix(self, fix: impl Into<String>) -> Problem {
+        Problem { fix: Some(fix.into()), ..self }
+    }
+
+    /// The error it is in `file`, the text of a service file, and in its
+    /// override `over`, which sets keys over the file's. It is placed on
+    /// its key, in the override when that sets the key and else in the
+    /// file; a key neither sets has it placed on the table that holds it.
+    fn placed(self, file: &str, over: Option<&str>) -> Error {
+        let mut error = Error { checked: true, ..Error::new(self.message) };
+        if let Some(fix) = self.fix {
+            error = error.with_fix(fix);
+        }
+        let Some(key) = self.key else { return error };
+        error = error.with_key(key);
+        let mut sought = Some(key);
+        while let Some(key) = sought {
+            if let Some(text) = over
+                && let Some(span) = key_span(text, key)
+            {
+                return Error { in_override: true, ..error.on(text, span) };
+            }
+            if let Some(span) = key_span(file, key) {
+                return error.on(file, span);
+            }
+            sought = key.rsplit_once('.').map(|(table, _)| table);
+        }
+        error
+    }
+}
+
+impl fmt::Display for Problem {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.message)?;
+        match &self.fix {
+            Some(fix) => write!(f, ": {fix}"),
+            None => Ok(()),
+        }
+    }
+}
+
 impl TryFrom<File> for Service {
     type Error = String;
 
     fn try_from(file: File) -> Result<Service, String> {
-        let Some(Version(version)) = file.service_version else {
-            // The lowest version the file can be, which more releases read.
-            let lowest = if file.version_2_key().is_some() { 2 } else { 1 };
-            return Err(format!("it has no service_version: add `service_version = {lowest}`"));
-        };
-        if version < 2
-            && let Some(key) = file.version_2_key()
-        {
-            return Err(format!(
-                "{key} needs service_version = 2: change the file's service_version to 2"
+        check(file).map_err(|problem| problem.to_string())
+    }
+}
+
+/// The service a file says, when its settings fit together.
+fn check(file: File) -> Result<Service, Problem> {
+    let Some(Version(version)) = file.service_version else {
+        // The lowest version the file can be, which more releases read.
+        let lowest = if file.version_2_key().is_some() { 2 } else { 1 };
+        return Err(Problem::new("it has no service_version")
+            .with_fix(format!("add `service_version = {lowest}`")));
+    };
+    if version < 2
+        && let Some(key) = file.version_2_key()
+    {
+        return Err(Problem::about("service_version", format!("{key} needs service_version = 2"))
+            .with_fix("change the file's service_version to 2"));
+    }
+    let Some(Program(program)) = file.program else {
+        return Err(Problem::new("it names no program")
+            .with_fix("add a line such as `program = \"/system/commands/logd\"`"));
+    };
+    if let Some(bad) = file.arguments.iter().find(|a| a.contains('\0')) {
+        return Err(Problem::about(
+            "arguments",
+            format!("the argument `{}` holds a NUL", bad.escape_debug()),
+        ));
+    }
+    if let Some(account) = &file.account {
+        check_account(account)
+            .map_err(|why| Problem::about("account", format!("account: {why}")))?;
+        if account == "root" {
+            return Err(Problem::about("account", "account is root's")
+                .with_fix("leave it out to act for root"));
+        }
+        if file.permissions.runs_with_your_access {
+            return Err(Problem::about(
+                "account",
+                format!("it runs as {account}, so it cannot run with your access, which is root's"),
             ));
         }
-        let Some(Program(program)) = file.program else {
-            return Err("it names no program: add a line such as \
-                        `program = \"/system/commands/logd\"`"
-                .into());
-        };
-        if let Some(bad) = file.arguments.iter().find(|a| a.contains('\0')) {
-            return Err(format!("the argument `{}` holds a NUL", bad.escape_debug()));
-        }
-        if let Some(account) = &file.account {
-            check_account(account).map_err(|why| format!("account: {why}"))?;
-            if account == "root" {
-                return Err("account is root's: leave it out to act for root".into());
-            }
-            if file.permissions.runs_with_your_access {
-                return Err(format!(
-                    "it runs as {account}, so it cannot run with your access, which is root's"
-                ));
-            }
-        }
-        file.backup.check()?;
-        let requires = file.requires.unwrap_or_default();
-        let wants = file.wants.unwrap_or_default();
-        let after = file.after.unwrap_or_default();
-        check_named_once(&requires, &wants, &after)?;
-        let health = file.health.map(Health::try_from).transpose()?;
-        let ready = match file.ready {
-            Some(ready) => ready.check(&file.permissions, file.restart, health.is_some())?,
-            None => Ready::default(),
-        };
-        Ok(Service {
-            description: file.description,
-            program,
-            arguments: file.arguments,
-            environment: file.environment.0,
-            order: file.order,
-            enabled: file.enabled,
-            restart: file.restart,
-            limits: file.limits,
-            secrets: file.secrets,
-            permissions: file.permissions,
-            account: file.account,
-            backup: file.backup,
-            requires,
-            wants,
-            after,
-            give_up_after: file.give_up_after.unwrap_or(0),
-            ready,
-            health,
-        })
     }
+    file.backup.check()?;
+    let requires = file.requires.unwrap_or_default();
+    let wants = file.wants.unwrap_or_default();
+    let after = file.after.unwrap_or_default();
+    check_named_once(&requires, &wants, &after)?;
+    let health = file.health.map(Health::from_raw).transpose()?;
+    let ready = match file.ready {
+        Some(ready) => ready.check(&file.permissions, file.restart, health.is_some())?,
+        None => Ready::default(),
+    };
+    Ok(Service {
+        description: file.description,
+        program,
+        arguments: file.arguments,
+        environment: file.environment.0,
+        order: file.order,
+        enabled: file.enabled,
+        restart: file.restart,
+        limits: file.limits,
+        secrets: file.secrets,
+        permissions: file.permissions,
+        account: file.account,
+        backup: file.backup,
+        requires,
+        wants,
+        after,
+        give_up_after: file.give_up_after.unwrap_or(0),
+        ready,
+        health,
+    })
 }
 
 fn order_default() -> u32 {
@@ -1156,15 +1376,16 @@ pub(crate) fn check_named_once(
     requires: &[String],
     wants: &[String],
     after: &[String],
-) -> Result<(), String> {
+) -> Result<(), Problem> {
     let lists = [("requires", requires), ("wants", wants), ("after", after)];
     for (at, (key, names)) in lists.iter().enumerate() {
         for (other_key, others) in &lists[at + 1..] {
             if let Some(name) = names.iter().find(|name| others.contains(name)) {
-                return Err(format!(
-                    "{name} is in {key} and {other_key}: {key} says it already, so leave it out \
-                     of {other_key}"
-                ));
+                return Err(Problem::about(
+                    other_key,
+                    format!("{name} is in {key} and {other_key}"),
+                )
+                .with_fix(format!("{key} says it already, so leave it out of {other_key}")));
             }
         }
     }
@@ -1178,16 +1399,22 @@ impl ReadyFile {
         permissions: &Permissions,
         restart: Restart,
         health: bool,
-    ) -> Result<Ready, String> {
+    ) -> Result<Ready, Problem> {
         if self.port.is_some() && !matches!(self.when, ReadyWord::Listening) {
-            return Err("ready.port is for ready.when = \"listening\" alone".into());
+            return Err(Problem::about(
+                "ready.port",
+                "ready.port is for ready.when = \"listening\" alone",
+            ));
         }
         if !matches!(self.when, ReadyWord::Socket)
             && let Some(path) = &self.path
         {
-            return Err(format!(
-                "ready.path is for ready.when = \"socket\" alone, not `{}`",
-                path.escape_debug()
+            return Err(Problem::about(
+                "ready.path",
+                format!(
+                    "ready.path is for ready.when = \"socket\" alone, not `{}`",
+                    path.escape_debug()
+                ),
             ));
         }
         let when = match self.when {
@@ -1195,40 +1422,54 @@ impl ReadyFile {
             ReadyWord::Listening => {
                 let listen = &permissions.network.listen;
                 if listen.is_empty() {
-                    return Err("ready.when = \"listening\" needs the ports it listens on in \
-                                network.listen"
-                        .into());
+                    return Err(Problem::about(
+                        "ready.when",
+                        "ready.when = \"listening\" needs the ports it listens on in \
+                         network.listen",
+                    ));
                 }
                 if let Some(port) = self.port
                     && !listen.iter().any(|ports| ports.first <= port && port <= ports.last)
                 {
-                    return Err(format!("ready.port {port} is none of network.listen's ports"));
+                    return Err(Problem::about(
+                        "ready.port",
+                        format!("ready.port {port} is none of network.listen's ports"),
+                    ));
                 }
                 ReadyWhen::Listening(self.port)
             }
             ReadyWord::Socket => {
                 let Some(path) = self.path else {
-                    return Err(
-                        "ready.when = \"socket\" needs the socket's path in ready.path".into()
-                    );
+                    return Err(Problem::about(
+                        "ready.when",
+                        "ready.when = \"socket\" needs the socket's path in ready.path",
+                    ));
                 };
                 if !path.starts_with('/') || path.contains('\0') {
-                    return Err(format!(
-                        "ready.path is an absolute path, such as \
-                         /system/live/services/web/web.sock, not `{}`",
-                        path.escape_debug()
+                    return Err(Problem::about(
+                        "ready.path",
+                        format!(
+                            "ready.path is an absolute path, such as \
+                             /system/live/services/web/web.sock, not `{}`",
+                            path.escape_debug()
+                        ),
                     ));
                 }
                 ReadyWhen::Socket(path)
             }
             ReadyWord::Healthy if !health => {
-                return Err("ready.when = \"healthy\" needs a [health] check".into());
+                return Err(Problem::about(
+                    "ready.when",
+                    "ready.when = \"healthy\" needs a [health] check",
+                ));
             }
             ReadyWord::Healthy => ReadyWhen::Healthy,
             ReadyWord::Ended if restart == Restart::Always => {
-                return Err("ready.when = \"ended\" is for a service that ends, so its restart \
-                            is on-failure or never, not always"
-                    .into());
+                return Err(Problem::about(
+                    "ready.when",
+                    "ready.when = \"ended\" is for a service that ends, so its restart is \
+                     on-failure or never, not always",
+                ));
             }
             ReadyWord::Ended => ReadyWhen::Ended,
         };
@@ -1236,14 +1477,16 @@ impl ReadyFile {
     }
 }
 
-impl TryFrom<HealthFile> for Health {
-    type Error = String;
-
-    fn try_from(file: HealthFile) -> Result<Health, String> {
+impl Health {
+    /// The health check `file` says, checked as a whole.
+    fn from_raw(file: HealthFile) -> Result<Health, Problem> {
         if file.timeout > file.every {
-            return Err(format!(
-                "health.timeout is at most health.every, {} seconds, not {}",
-                file.every, file.timeout
+            return Err(Problem::about(
+                "health.timeout",
+                format!(
+                    "health.timeout is at most health.every, {} seconds, not {}",
+                    file.every, file.timeout
+                ),
             ));
         }
         Ok(Health {

@@ -150,7 +150,7 @@ nginx     running                  on       10:42:03  nginx web server
 postgres  failed                   on       10:43:10  PostgreSQL
 shop      stopped                  on       10:43:10  Shop
 
-Not running as asked: postgres and shop. `service postgres status` says why.
+Not running as asked: postgres and shop. `service postgres explain` says why.
 ```
 
 `service list --failed` lists those alone, and exits 1 when there are
@@ -185,6 +185,90 @@ Nov 13 10:42:13 spark: nginx is ready (listening) 10.4 s after its start
 service reads: a port marked `(open)` is one something listens on now.
 A service stopped by hand says who stopped it and when (`Asked`), and
 one that ended says the last line it wrote (`Last`).
+
+### Why a service is not running
+
+`service NAME explain` says why a service is in its state, in one
+sentence, and what to do about it. It follows what the service waits for,
+or what stopped it, to the service at the root, and says what each is
+doing:
+
+```
+$ service shop explain
+shop is stopped because it requires postgres, which was given up on: it failed to start 5 times in a row (the last: it exited with code 0x1) ("postgres: /shared/db: no such folder"). Fix what stops postgres (`service postgres logs` shows what it wrote), then `service shop start` starts both.
+```
+
+The service at the root, here postgres, is the one to look at; the
+last words say what to do. `service NAME explain --json` gives the
+sentence, the services it followed, the root and the fix as one line of
+JSON, for a script. The command exits 0 for a service that is done or
+runs well, and 3 for any other.
+
+## Checking a change
+
+`service edit NAME` opens a service's file in the editor, checks it when
+the editor ends and puts it in place only once it reads. `service check`
+checks the files you changed by other means, one service's or every
+service's. A file that does not read is shown as a compiler shows a
+mistake: the file, the line and the column, the line itself with carets
+under the setting, and a fix where there is one:
+
+```
+$ service check postgres
+/system/settings/spark/services/postgres.toml:7:1: `discription` is not a setting here; service.toml(5) lists them
+  |
+7 | discription = "PostgreSQL"
+  | ^^^^^^^^^^^
+  = fix: did you mean `description`?
+```
+
+A mistake in an override file, in `settings.d` beside it, names that
+file and its line, and which file it is set over. `--brief` prints the
+first line alone, for a script.
+
+A file that reads says what putting it to use would do. For a service
+that runs, that is the restart that applies the change and what the
+restart touches; for one that does not, when the change applies and
+whether the service would start with it:
+
+```
+$ elevate service check postgres
+/system/settings/spark/services/postgres.toml: ok; postgres runs an older copy: health.every differs; `service postgres restart` applies the change: it restarts postgres (its last start took 3.1 s); shop, which requires postgres, keeps running
+$ elevate service postgres restart
+$ elevate service check postgres
+/system/settings/spark/services/postgres.toml: ok
+```
+
+Only an administrator sees this second part, since Spark's copy of the
+file, which it compares, is theirs to read; anyone else is told so. A
+change to a service on a machine you reach over the network is better
+tried than checked alone: the next section undoes it if it goes wrong.
+
+## Trying a change with an undo
+
+`service try NAME` changes a service's settings the safe way on a
+machine you reach over the network. It opens the service's file in the
+editor as `service edit` does, restarts the service with the change,
+and asks whether to keep it:
+
+```
+$ service try sshd
+/system/settings/spark/services/sshd.toml: trying the change for 60 s
+stopping sshd
+started sshd (/system/commands/sshd) as process 912
+sshd is ready (listening on 22) 0.2 s after its start
+Keep the change to sshd? (y)es keeps it, (n)o undoes it now; Spark undoes it by itself in 58 s, unless `service keep sshd` keeps it from another session: y
+kept: sshd runs the change
+```
+
+Before you answer, open a second session. If it signs in, keep the
+change from there with `service keep sshd`. If the change cut you
+off, do nothing: Spark puts the old file back and restarts sshd as it
+was once the time is up. A start that fails with the change is undone
+at once, and so is a change still being tried when the machine starts
+again, so even a power cut brings the old settings back. `--for 300`
+gives you five minutes; `service sshd status` shows `Trying:` and the
+time left, and `service undo sshd` undoes the change at once.
 
 ## The web server: nginx
 

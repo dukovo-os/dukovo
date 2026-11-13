@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 //! service(8): the services Spark supervises, through its control socket
-//! (spark(8)): `service list`, and a service's `status`, `start`, `stop`,
-//! `restart`, `reload` and `logs`. `check`, `new`, `edit`, `secret`,
+//! (spark(8)): `service list`, and a service's `status`, `explain`, `start`,
+//! `stop`, `restart`, `reload` and `logs`. `check`, `new`, `edit`, `secret`,
 //! `enable` and `disable`, which work on the services' files, are in
 //! `servicefiles`. The command line is Debian's, with more.
 //!
@@ -17,9 +17,11 @@
 //!
 //! `status` reads Spark's `show` document for a service and adds what
 //! the system says of it elsewhere: its processes, from `/processes`,
-//! the ports it listens on now, and its last log lines from logd. The
-//! `service-graph` boot test and the lab's `services/command` test cover
-//! this file.
+//! the ports it listens on now, and its last log lines from logd.
+//! `explain` reads the document of every service and gives its sentence
+//! from `spark_api::explain`, the words the web console says too (ADR
+//! 0471). The `service-graph` boot test and the lab's `services/command`
+//! and `services/explain` tests cover this file.
 
 use std::io::{self, Read, Write};
 use std::net::Shutdown;
@@ -27,21 +29,24 @@ use std::os::unix::net::UnixStream;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use spark_api::show::{self, HealthState, Holds, State};
+use spark_api::words::{and_list, ready_once, span, tenths};
 
 use crate::args::{Arg, Args};
 use crate::log;
 use crate::power::{self, CONTROL};
 use crate::proc::{self, Process};
-use crate::servicefiles;
 use crate::util::{self, Fail, fail, fail_with, usage};
+use crate::{servicefiles, servicetry};
 
 const USAGE: &str = "Usage: service list [--failed] [--json]
        service NAME status [-n LINES]
+       service NAME explain [--json]
        service NAME start | stop | restart [--no-wait] [-q]
        service NAME reload | --full-restart
        service NAME logs [log(1) options]
        service NAME enable | disable
-       service check [NAME | FILE]... | new NAME | edit NAME
+       service check [--brief] [NAME | FILE]... | new NAME | edit NAME
+       service try NAME [--for SECONDS] | keep NAME | undo NAME
        service secret set NAME SECRET | list NAME | remove NAME SECRET
        service --status-all";
 
@@ -64,8 +69,13 @@ extern "C" fn on_interrupt(_: libc::c_int) {
     INTERRUPTED.store(true, Ordering::Relaxed);
 }
 
+/// Whether SIGINT came since a start, stop or restart began to wait.
+pub(crate) fn sigint_came() -> bool {
+    INTERRUPTED.load(Ordering::Relaxed)
+}
+
 /// Sends `request`, and fails with what Spark said if it refused.
-fn ask(request: &str) -> Result<String, Fail> {
+pub(crate) fn ask(request: &str) -> Result<String, Fail> {
     let answer = power::request(request)?;
     match answer.strip_prefix("error: ") {
         Some(why) => Err(fail(why.trim_end().to_string())),
@@ -75,7 +85,7 @@ fn ask(request: &str) -> Result<String, Fail> {
 
 /// Spark's `show` document, of every service or of `name` alone; a name
 /// Spark does not know is LSB's unknown service, 4.
-fn shown(name: Option<&str>) -> Result<show::Show, Fail> {
+pub(crate) fn shown(name: Option<&str>) -> Result<show::Show, Fail> {
     let request = name.map_or_else(|| String::from("show"), |name| format!("show {name}"));
     match ask(&request) {
         Ok(answer) => show::parse(&answer).map_err(fail),
@@ -108,6 +118,8 @@ pub fn service(args: &mut Args) -> Result<i32, Fail> {
         Some("check") => return servicefiles::check(&operands[1..]),
         Some("new") => return servicefiles::new(&operands[1..]),
         Some("edit") => return servicefiles::edit(&operands[1..]),
+        Some("try") => return servicetry::try_change(&operands[1..]),
+        Some(verb @ ("keep" | "undo")) => return servicetry::end(verb, &operands[1..]),
         Some("secret") => return servicefiles::secret(&operands[1..]),
         Some("list") if operands.get(1).is_none_or(|o| o.starts_with('-')) => {
             return list(&operands[1..]);
@@ -129,20 +141,21 @@ pub fn service(args: &mut Args) -> Result<i32, Fail> {
             Ok(0)
         }
         "status" => status(name, options),
+        "explain" => explain(name, options),
         "logs" => {
             let mut items = vec!["-s".into(), name.into()];
             items.extend(options.iter().map(Into::into));
             log::main(&mut Args::new("log", items))
         }
         other => Err(usage(format!(
-            "{name}: unknown command `{other}' (start, stop, restart, reload, status, logs, enable, \
-             disable)"
+            "{name}: unknown command `{other}' (start, stop, restart, reload, status, explain, logs, \
+             enable, disable)"
         ))),
     }
 }
 
 /// Spark's answer without its `ok: ` and line end.
-fn said(answer: &str) -> &str {
+pub(crate) fn said(answer: &str) -> &str {
     let answer = answer.trim_end();
     answer.strip_prefix("ok: ").unwrap_or(answer)
 }
@@ -163,7 +176,7 @@ fn status_all() -> Result<i32, Fail> {
 
 /// `service NAME start|stop|restart [--no-wait] [-q]`: asks Spark, and
 /// unless `--no-wait`, prints its lines until the service has settled.
-fn change(verb: &str, name: &str, options: &[String]) -> Result<i32, Fail> {
+pub(crate) fn change(verb: &str, name: &str, options: &[String]) -> Result<i32, Fail> {
     let (mut wait, mut quiet) = (true, false);
     for option in options {
         match option.as_str() {
@@ -297,27 +310,6 @@ impl Clock {
     }
 }
 
-/// A length of time in words, rounded down: "4 s", "2 min", "3 h 5 min",
-/// "2 days".
-fn span(ms: u64) -> String {
-    let seconds = ms / 1000;
-    match seconds {
-        0..60 => format!("{seconds} s"),
-        60..3600 => format!("{} min", seconds / 60),
-        3600..86_400 if seconds % 3600 >= 60 => {
-            format!("{} h {} min", seconds / 3600, seconds % 3600 / 60)
-        }
-        3600..86_400 => format!("{} h", seconds / 3600),
-        _ if seconds < 2 * 86_400 => String::from("1 day"),
-        _ => format!("{} days", seconds / 86_400),
-    }
-}
-
-/// A duration in milliseconds as Spark's lines write one: "10.4 s".
-fn tenths(ms: u64) -> String {
-    format!("{}.{} s", ms / 1000, ms % 1000 / 100)
-}
-
 /// What the system says of a service besides Spark: its processes, the
 /// ports listening now, and the names of users.
 struct Seen<'a> {
@@ -356,6 +348,10 @@ fn status(name: &str, options: &[String]) -> Result<i32, Fail> {
     };
     let seen = Seen { processes: &processes, listening: &listening, user_name: &util::user_name };
     print!("{}", status_text(service, &clock, &seen));
+    let id = servicetry::trial_id(name);
+    if let Some(trial) = document.trials.iter().find(|t| t.id == id) {
+        print!("{}", trying_line(trial, name));
+    }
     if lines > 0 {
         let records = log::recent(name, lines);
         if !records.is_empty() {
@@ -429,6 +425,16 @@ fn status_text(service: &show::Service, clock: &Clock, seen: &Seen) -> String {
     text
 }
 
+/// The `Trying:` line of `service NAME status` while a change to it is
+/// tried (ADR 0472).
+fn trying_line(trial: &show::Trial, name: &str) -> String {
+    let mut text = String::new();
+    let left = span(trial.left_ms);
+    let words = format!("a change, undone in {left} unless it is kept: `service keep {name}`");
+    field(&mut text, "Trying", &words);
+    text
+}
+
 /// Adds a line of `status`: its label right-aligned before a colon, as
 /// systemctl's, or none for a line that goes on the one before.
 fn field(text: &mut String, label: &str, value: &str) {
@@ -456,7 +462,7 @@ fn active(service: &show::Service, clock: &Clock) -> String {
         State::Done => format!("active (exited) since {since}"),
         State::Starting => format!(
             "activating (starting{pid}, ready once {}) since {since}",
-            ready_words(&service.ready_when)
+            ready_once(&service.ready_when)
         ),
         State::Pending => format!("activating (waiting for {})", service.waiting_for.join(", ")),
         State::Waiting => String::from("activating (waiting to start again)"),
@@ -465,17 +471,6 @@ fn active(service: &show::Service, clock: &Clock) -> String {
         State::Failed => format!("failed (Spark gave up on it) since {since}"),
         State::Disabled => String::from("inactive (disabled)"),
         State::Stopped => format!("inactive (dead) since {since}"),
-    }
-}
-
-/// What a service waits for to be ready, after "ready once".
-fn ready_words(when: &str) -> &str {
-    match when {
-        "listening" => "it listens",
-        "socket" => "its socket is made",
-        "healthy" => "its health check passes",
-        "ended" => "it has ended",
-        other => other,
     }
 }
 
@@ -544,15 +539,6 @@ fn port_range(ports: &str) -> Option<(u32, u32)> {
     }
 }
 
-/// `names` in words: "a", "a and b", "a, b and c".
-fn and_list(names: &[String]) -> String {
-    match names {
-        [] => String::new(),
-        [one] => one.clone(),
-        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
-    }
-}
-
 /// The `Processes:` line: how many, their numbers and names, their memory
 /// and CPU time; None when it has none.
 fn processes_line(processes: &[Process]) -> Option<String> {
@@ -576,6 +562,42 @@ fn processes_line(processes: &[Process]) -> Option<String> {
         util::human(memory, false),
         tenths(cpu_ms)
     ))
+}
+
+/// `service NAME explain [--json]`: why the service is in its state and
+/// what to do, followed through the services it waits for or that
+/// stopped it, from the document of every service; 0 when it runs with
+/// its health check not failing, or is done, 3 otherwise.
+fn explain(name: &str, options: &[String]) -> Result<i32, Fail> {
+    let mut json = false;
+    for option in options {
+        match option.as_str() {
+            "--json" => json = true,
+            other => return Err(usage(format!("service explain: unknown option `{other}'"))),
+        }
+    }
+    let document = shown(None)?;
+    let clock = Clock { now_ms: document.now_ms, wall: (util::now_ns() / 1_000_000_000) as i64 };
+    let when = |ms| clock.since(ms);
+    let context = spark_api::explain::Context { when: &when, user_name: &util::user_name };
+    let Some(explanation) = spark_api::explain::explain(&document, name, &context) else {
+        return Err(fail_with(4, format!("{name}: unrecognized service")));
+    };
+    if json {
+        println!("{}", serde_json::to_string(&explanation).map_err(|e| fail(e.to_string()))?);
+    } else {
+        println!("{}", explanation.text());
+    }
+    Ok(if document.services.iter().any(|s| s.name == name && runs_well(s)) { 0 } else { 3 })
+}
+
+/// Whether `service` is done, or runs with its health check not failing.
+fn runs_well(service: &show::Service) -> bool {
+    match service.state {
+        State::Done => true,
+        State::Running => !service.health.as_ref().is_some_and(|h| h.state == HealthState::Failing),
+        _ => false,
+    }
 }
 
 /// `service list [--failed] [--json]`: each service, its state, whether
@@ -668,7 +690,7 @@ fn not_as_asked_line(names: &[String]) -> String {
     if names.len() > NAMES_SHOWN {
         shown.push(format!("{} more", names.len() - NAMES_SHOWN));
     }
-    format!("Not running as asked: {}. `service {} status` says why.", and_list(&shown), names[0])
+    format!("Not running as asked: {}. `service {} explain` says why.", and_list(&shown), names[0])
 }
 
 #[cfg(test)]
@@ -788,14 +810,18 @@ mod tests {
     }
 
     #[test]
-    fn spans_read_as_words() {
-        assert_eq!(span(4_999), "4 s");
-        assert_eq!(span(120_000), "2 min");
-        assert_eq!(span(3_600_000), "1 h");
-        assert_eq!(span(11_100_000), "3 h 5 min");
-        assert_eq!(span(90_000_000), "1 day");
-        assert_eq!(span(200_000_000), "2 days");
-        assert_eq!(tenths(10_449), "10.4 s");
+    fn a_change_being_tried_says_when_it_is_undone() {
+        let trial = show::Trial {
+            id: "service.nginx".into(),
+            files: vec!["/system/settings/spark/services/nginx.toml".into()],
+            services: vec!["nginx".into()],
+            user: 0,
+            left_ms: 42_400,
+        };
+        assert_eq!(
+            trying_line(&trial, "nginx"),
+            "   Trying: a change, undone in 42 s unless it is kept: `service keep nginx`\n"
+        );
     }
 
     #[test]
@@ -804,6 +830,22 @@ mod tests {
         assert_eq!(port_range("8000-8010"), Some((8000, 11)));
         assert_eq!(port_range("9-8"), None);
         assert_eq!(port_range("http"), None);
+    }
+
+    #[test]
+    fn a_service_runs_well_when_it_is_done_or_runs_with_its_check_not_failing() {
+        let mut web = nginx();
+        assert!(runs_well(&web));
+        web.health = Some(Health { state: HealthState::Passing, ..Health::default() });
+        assert!(runs_well(&web));
+        web.health = Some(Health { state: HealthState::Failing, ..Health::default() });
+        assert!(!runs_well(&web));
+        web.state = State::Done;
+        assert!(runs_well(&web));
+        for state in [State::Stopped, State::Failed, State::Pending, State::Starting] {
+            web.state = state;
+            assert!(!runs_well(&web), "{state:?}");
+        }
     }
 
     #[test]
@@ -841,7 +883,7 @@ mod tests {
         assert!([&fine, &idle].iter().all(|s| !not_as_asked(s)));
         assert_eq!(
             not_as_asked_line(&["a".into(), "b".into(), "c".into(), "d".into(), "e".into()]),
-            "Not running as asked: a, b, c and 2 more. `service a status` says why."
+            "Not running as asked: a, b, c and 2 more. `service a explain` says why."
         );
     }
 }

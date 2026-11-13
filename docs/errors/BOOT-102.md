@@ -9,7 +9,7 @@ The health check waits for the essential services that health.toml names to run,
 
 ## What to do
 
-1. Run `service <service> status` for the service the message names: its `Why`, `Health` and `Last` lines say what went wrong. Then `service <service> logs` shows what it wrote, with Spark's lines about it.
+1. Run `service <service> explain` for the service the message names: it says why the service is in its state, through the services it waits for, and what to do. Then `service <service> status` shows its `Why`, `Health` and `Last` lines, and `service <service> logs` shows what it wrote, with Spark's lines about it.
 2. Run `changes` to see what changed since the last good start.
 3. If an update caused it, the computer is back on the version before it; wait for the next release, or report it with the log.
 

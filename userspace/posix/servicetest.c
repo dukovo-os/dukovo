@@ -171,7 +171,9 @@ static void converted(void) {
 static void written(void) {
 	OUTPUT("", "wrote " DIR "/demo.toml: edit it with `service edit demo`, then start it with "
 			"`service demo start`\n", SERVICE, "new", "demo");
-	OUTPUT("", DIR "/demo.toml: ok\n", SERVICE, "check", "demo");
+	// Spark has no copy of a file added since boot (ADR 0471).
+	OUTPUT("", DIR "/demo.toml: ok; Spark reads it when demo first starts\n", SERVICE, "check",
+			"demo");
 	STATUS(1, SERVICE, "new", "demo");
 	STATUS(1, SERVICE, "new", "../demo");
 	STATUS(1, SERVICE, "new", ".demo");
@@ -189,8 +191,8 @@ static void written(void) {
 	CHECK(!strcmp(read_file(DIR "/demo.toml", text, sizeof(text)), template));
 	// A broken edit, edited again and fixed.
 	setenv("EDITOR", SELF " --editor bad-then-good", 1);
-	OUTPUT("e\n", DIR "/demo.toml: ok; Spark reads it when the service next starts: `service "
-			"demo restart`\n", SERVICE, "edit", "demo");
+	OUTPUT("e\n", DIR "/demo.toml: ok; Spark reads it when demo first starts and at each boot\n",
+			SERVICE, "edit", "demo");
 	CHECK(!strcmp(read_file(DIR "/demo.toml", text, sizeof(text)), DEMO));
 	CHECK(!exists(DIR "/.demo.toml.edit"));
 	struct stat st;

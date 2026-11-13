@@ -40,6 +40,8 @@ impl Supervisor {
             now_ms: time / MS,
             services: services.into_iter().map(|s| described(s, self.devices)).collect(),
             shutdown,
+            trials: self.shown_trials(time),
+            undone: self.undone.clone(),
         };
         match show::to_json(&document) {
             Ok(mut json) => {
@@ -69,7 +71,7 @@ fn described(service: &Service, devices: Option<u32>) -> show::Service {
         State::Draining(..) => show::State::Stopping,
         State::Failed => show::State::Failed,
     };
-    let health = spec.health.as_ref().map(|_| {
+    let health = spec.health.as_ref().map(|check| {
         let checks = &service.checks;
         Health {
             state: match checks.passing {
@@ -78,6 +80,7 @@ fn described(service: &Service, devices: Option<u32>) -> show::Service {
                 Some(false) => HealthState::Failing,
             },
             failures: checks.failures,
+            restart_after: check.failures,
             last_failure: checks.last_failure.clone(),
             checked_ms: checks.checked_ns.map(|ns| ns / MS),
         }
@@ -98,6 +101,11 @@ fn described(service: &Service, devices: Option<u32>) -> show::Service {
         since_ms: service.since_ns / MS,
         started_ms: (service.started_ns > 0).then_some(service.started_ns / MS),
         ready_ms: service.ready_ns.map(|ns| ns / MS),
+        ready_by_ms: (state == show::State::Starting).then_some(service.ready_by / MS),
+        retry_ms: match service.state {
+            State::Waiting(at) => Some(at / MS),
+            _ => None,
+        },
         restarts: service.restarts,
         failures: service.failures,
         last_end: service.last.map(ending),

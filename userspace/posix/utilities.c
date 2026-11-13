@@ -595,6 +595,16 @@ static void documents(void) {
 	STATUS(0, "/bin/rm", "-r", "/tmp/documents");
 }
 
+// Adds the `got` bytes of `buffer` to `output`, as much as it holds after
+// its first `*len`.
+static void keep_output(size_t *len, const char *buffer, size_t got) {
+	size_t take = sizeof(output) - 1 - *len;
+	take = got < take ? got : take;
+	memcpy(output + *len, buffer, take);
+	*len += take;
+	output[*len] = 0;
+}
+
 // Runs `argv` on a new pseudo-terminal of 24 lines of 80 columns, with
 // TERM=xterm, as someone at a terminal would: waits until it has written
 // `ready`, which it does once it has drawn its screen and so takes keys
@@ -648,11 +658,7 @@ static int on_terminal(const char *const argv[], const char *ready, const char *
 		char buffer[512];
 		ssize_t got = poll(&entry, 1, 100) == 1 ? read(master, buffer, sizeof(buffer)) : 0;
 		if(got > 0) {
-			size_t take = sizeof(output) - 1 - len;
-			take = (size_t)got < take ? (size_t)got : take;
-			memcpy(output + len, buffer, take);
-			len += take;
-			output[len] = 0;
+			keep_output(&len, buffer, (size_t)got);
 		} else if(got < 0) {
 			// The terminal has closed: the program is ending.
 			poll(NULL, 0, 10);
@@ -692,6 +698,16 @@ static int on_terminal(const char *const argv[], const char *ready, const char *
 		}
 		clock_gettime(CLOCK_MONOTONIC, &now);
 	} while(now.tv_sec < end.tv_sec || (now.tv_sec == end.tv_sec && now.tv_nsec < end.tv_nsec));
+	// What it wrote as it ended can still be in the terminal when it has
+	// been seen to end, as tmux's "[detached]" was: read the rest, until
+	// the terminal has closed or holds nothing more, or `output` is full.
+	for(int reads = 0; !pid && reads < 64 && len < sizeof(output) - 1; reads++) {
+		char buffer[512];
+		ssize_t got = poll(&entry, 1, 100) == 1 ? read(master, buffer, sizeof(buffer)) : 0;
+		if(got <= 0)
+			break;
+		keep_output(&len, buffer, (size_t)got);
+	}
 	if(pid) {
 		kill(pid, SIGKILL);
 		waitpid(pid, NULL, 0);

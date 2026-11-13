@@ -34,11 +34,18 @@ as you save it and puts it in place only once it reads. It opens
 highlights TOML.
 
 A setting the format does not know is an error, so a misspelt one is
-never silently ignored, and an error names its line and says what is
-wrong in plain words:
+never silently ignored. *service check* and *service edit* show where
+an error is and how to fix it, as a compiler does, with the file's
+path, the line and the column, the line itself and a fix where there is
+one (*service*(8)), whether the mistake is in the file or in its
+override:
 
 ```
-/system/settings/spark/services/web.toml: line 6: restart must be always, on-failure or never, not `sometimes`
+/system/settings/spark/services/web.toml:6:1: `discription` is not a setting here; service.toml(5) lists them
+  |
+6 | discription = "Web"
+  | ^^^^^^^^^^^
+  = fix: did you mean `description`?
 ```
 
 # SETTINGS

@@ -1,0 +1,13 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+#
+# The explain lab test's service that requires lab-broken, so it is
+# stopped once Spark gives up on lab-broken, and explain follows the
+# requirement to it (ADR 0471).
+
+service_version = 2
+description = "Requires lab-broken"
+program = "/system/commands/nukesh"
+arguments = ["-c", "while :; do sleep 1; done"]
+enabled = false
+requires = ["lab-broken"]
