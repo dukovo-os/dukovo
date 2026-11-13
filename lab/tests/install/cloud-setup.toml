@@ -44,6 +44,9 @@ expect_not = ["written", "ran"]
 # A computer that is not a cloud image has the service, off.
 [[step]]
 run = "service cloud-setup status"
+# Spark's control socket is root's, so status needs root for now
+# (docs/deferred.md).
+root = true
 exit = 3
 expect = ["cloud-setup - Cloud machine setup", "Active: inactive (disabled)"]
 [[step]]

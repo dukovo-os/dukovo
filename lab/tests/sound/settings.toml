@@ -31,7 +31,7 @@ expect = ["muted", "45% (muted)"]
 # audiod looks at the file every two seconds and gives the outputs (if
 # the machine has any yet) what it says.
 [[step]]
-run = "sleep 3 && log | grep audiod: | tail -n 5"
+run = "sh -c 'sleep 3 && log | grep audiod: | tail -n 5'"
 root = true
 expect = "audiod: volume 45%, muted"
 [[step]]

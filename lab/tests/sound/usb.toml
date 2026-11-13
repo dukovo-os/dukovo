@@ -27,7 +27,7 @@ expect = "device-logged"
 expect_not = "its sound output cannot be used"
 # The packets keep up: a device that fell behind would count underruns.
 [[step]]
-run = '''sh -c 'if [ ! -e /devices/audio/usb0 ]; then echo "no USB audio: played"-cleanly; exit 0; fi; audio volume 30 && audio test usb0; audio volume 70; u=$(audio info usb0 | awk "/^Underruns:/ { print \$2 }"); echo "underruns $u"; [ "$u" = 0 ] && echo "played"-cleanly' '''
+run = '''sh -c 'if [ ! -e /devices/audio/usb0 ]; then echo "no USB output: played"-cleanly; exit 0; fi; audio volume 30 && audio test usb0; audio volume 70; u=$(audio info usb0 | awk "/^Underruns:/ { print \$2 }"); echo "underruns $u"; [ "$u" = 0 ] && echo "played"-cleanly' '''
 root = true
 expect = "played-cleanly"
 expect_not = "audio:"

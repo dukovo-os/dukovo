@@ -45,9 +45,11 @@ expect = "^[[90m-^[[0m^[[34mM^[[0m e.txt"
 [[step]]
 run = "ls --tree --field-colors=always /tmp/lab-tree | cat -v"
 expect = "^[[90mM-bM-^TM-^TM-bM-^TM-^@M-bM-^TM-^@^[[0m x.o"
-# Outside a repository there is no column.
+# Outside a repository there is no column. /tmp holds the repository
+# /tmp/lab-tree, whose folder shows what it holds (ADR 0441), so the
+# listing is of a folder with no repository in it.
 [[step]]
-run = "ls -l --git --header /tmp | head -2 | tail -1"
+run = "sh -c 'mkdir -p /tmp/lab-plain && touch /tmp/lab-plain/f && ls -l --git --header /tmp/lab-plain | head -2 | tail -1'"
 expect = "Name"
 expect_not = "Git"
 # Without the flags, GNU's output.
@@ -56,5 +58,5 @@ run = "ls -l /tmp/lab-tree"
 expect = "e.txt"
 expect_not = ["-M e.txt", "├", "folders"]
 [[step]]
-run = "rm -rf /tmp/lab-tree && echo gone"
+run = "rm -rf /tmp/lab-tree /tmp/lab-plain && echo gone"
 expect = "gone"

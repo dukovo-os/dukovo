@@ -44,10 +44,11 @@ run = "sh -c '(sleep 2; reboot) > /dev/null 2>&1 &'"
 root = true
 [[step]]
 serial = "asked to restart the machine"
-[[step]]
-serial = "spark: started slot a, @system.a"
+# The kernel's "Boot complete." comes before Spark starts the slot.
 [[step]]
 serial = "Boot complete."
+[[step]]
+serial = "spark: started slot a, @system.a"
 [[step]]
 wait = "ready"
 [[step]]
