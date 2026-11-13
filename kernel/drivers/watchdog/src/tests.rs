@@ -72,12 +72,15 @@ struct State {
     config: HashMap<(u8, u8), Vec<u8>>,
     p2sb_hidden: bool,
     /// The TCO timer: TCO_TMR, the ticks left in this stage, TMR_HLT,
-    /// TIMEOUT and SECOND_TO_STS.
+    /// TIMEOUT and SECOND_TO_STS, and whether the firmware's SMI handler
+    /// restarts the machine when the first stage runs out, as the Dell
+    /// OptiPlex 7040's does.
     tmr: u16,
     left: u32,
     halted: bool,
     timeout: bool,
     second: bool,
+    first_restarts: bool,
     /// The NO_REBOOT bits: GCS's, the SMBus General Control register's and
     /// TCO1_CNT's.
     gcs: u32,
@@ -153,6 +156,7 @@ impl State {
             halted: false,
             timeout: false,
             second: false,
+            first_restarts: false,
             gcs: 0,
             smb_gc: SMB_GC_OTHER,
             cnt_no_reboot: false,
@@ -262,6 +266,10 @@ impl State {
         }
         if !self.timeout {
             self.timeout = true;
+            if self.first_restarts && self.may_restart() {
+                self.restart();
+                return;
+            }
         } else if self.may_restart() {
             self.second = true;
             self.restart();
@@ -509,10 +517,10 @@ impl Platform for Sim {
 #[test]
 fn each_chipset_has_its_watchdog() {
     let names = [
-        (Chip::Ich9, "the Intel ICH9 TCO timer", 4, 1227),
-        (Chip::LynxPoint, "the Intel PCH TCO timer", 4, 1227),
-        (Chip::SunrisePoint, "the Intel PCH TCO timer", 4, 1227),
-        (Chip::CannonPoint, "the Intel PCH TCO timer", 4, 1227),
+        (Chip::Ich9, "the Intel ICH9 TCO timer", 2, 613),
+        (Chip::LynxPoint, "the Intel PCH TCO timer", 2, 613),
+        (Chip::SunrisePoint, "the Intel PCH TCO timer", 2, 613),
+        (Chip::CannonPoint, "the Intel PCH TCO timer", 2, 613),
         (Chip::Zen, "the AMD FCH watchdog", 1, 65535),
         (Chip::Carrizo, "the AMD FCH watchdog", 1, 65535),
     ];
@@ -523,13 +531,21 @@ fn each_chipset_has_its_watchdog() {
     }
 }
 
+/// How long an unpetted watchdog started with a timeout of `seconds`
+/// takes to restart the machine itself, in ms: the TCO timer runs out
+/// once, then again.
+fn restart_ms(chip: Chip, seconds: u64) -> u64 {
+    let stages = if INTEL_CHIPS.contains(&chip) { 2 } else { 1 };
+    stages * seconds * 1000
+}
+
 #[test]
 fn unpetted_it_restarts_the_machine_at_its_timeout_and_the_next_boot_knows() {
     for chip in ALL_CHIPS {
         let sim = Sim::new(chip);
         let (watchdog, _) = sim.found();
         assert_eq!(watchdog.start(60), 60, "{chip:?}");
-        sim.advance(59_400);
+        sim.advance(restart_ms(chip, 60) - 600);
         assert_eq!(sim.restarts(), 0, "{chip:?} restarted early");
         sim.advance(600);
         assert_eq!(sim.restarts(), 1, "{chip:?} did not restart");
@@ -541,7 +557,7 @@ fn unpetted_it_restarts_the_machine_at_its_timeout_and_the_next_boot_knows() {
         assert!(!found.restarted, "{chip:?} still says so a boot later");
         // And it works again after the restart.
         watchdog.start(10);
-        sim.advance(10_000);
+        sim.advance(restart_ms(chip, 10));
         assert_eq!(sim.restarts(), 2, "{chip:?}");
     }
 }
@@ -553,7 +569,7 @@ fn petted_it_never_restarts_the_machine_and_stopped_it_stays_quiet() {
         let (watchdog, _) = sim.found();
         watchdog.start(60);
         for _ in 0..20 {
-            // Into the TCO timer's second stage, each time.
+            // Most of the timeout, each time.
             sim.advance(45_000);
             watchdog.pet();
         }
@@ -562,8 +578,28 @@ fn petted_it_never_restarts_the_machine_and_stopped_it_stays_quiet() {
         sim.advance(3_600_000);
         assert_eq!(sim.restarts(), 0, "{chip:?} restarted while stopped");
         watchdog.start(30);
-        sim.advance(30_000);
+        sim.advance(restart_ms(chip, 30));
         assert_eq!(sim.restarts(), 1, "{chip:?} did not start again");
+    }
+}
+
+#[test]
+fn a_tco_timer_whose_firmware_restarts_at_the_first_stage_keeps_the_whole_timeout() {
+    // Petted every 20 s of a 60 s timeout, with one pet 15 s late: the
+    // first stage holds the whole timeout, so the firmware's SMI handler
+    // never sees it run out.
+    for chip in [Chip::Ich9, Chip::LynxPoint, Chip::SunrisePoint, Chip::CannonPoint] {
+        let sim = Sim::new(chip);
+        sim.state().first_restarts = true;
+        let (watchdog, _) = sim.found();
+        watchdog.start(60);
+        for late in [0, 15_000, 0] {
+            sim.advance(20_000 + late);
+            watchdog.pet();
+        }
+        assert_eq!(sim.restarts(), 0, "{chip:?}");
+        sim.advance(61_000);
+        assert_eq!(sim.restarts(), 1, "{chip:?} unpetted");
     }
 }
 
@@ -576,11 +612,11 @@ fn timeouts_are_clamped_to_what_each_takes() {
         assert_eq!(watchdog.start(u32::MAX / 16), found.max_seconds, "{chip:?}");
         watchdog.stop();
     }
-    // The TCO timer's ticks are 0.6 s, two stages to a timeout.
+    // The TCO timer's ticks are 0.6 s, the whole timeout in its first stage.
     let sim = Sim::new(Chip::SunrisePoint);
     let (watchdog, _) = sim.found();
-    assert_eq!(watchdog.start(61), 60);
-    assert_eq!(sim.state().tmr & 0x3ff, 50);
+    assert_eq!(watchdog.start(60), 60);
+    assert_eq!(sim.state().tmr & 0x3ff, 100);
 }
 
 #[test]

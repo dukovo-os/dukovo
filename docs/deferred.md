@@ -272,6 +272,7 @@ machine asks for them.
 
 | Item | Source |
 | --- | --- |
+| Spark's pet of the hardware watchdog came more than 10 s late while nginx served the lab PC's load on the OptiPlex 7040: what holds Spark's loop up (nginx's access log copied into the system's log is the first suspect) | Lab, services/nginx on the OptiPlex, 2026-11-13 |
 | Transparent huge pages for anonymous memory | ADR 0121 |
 | Batched and lazy TLB shootdowns | ADR 0020 |
 | A lazy IOMMU mode | ADR 0164 |

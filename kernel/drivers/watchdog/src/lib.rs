@@ -17,9 +17,12 @@
 //!   set across the restart until written back.
 //! - Intel's TCO timer counts 0.6 s ticks from TCO_TMR (10 bits, at least
 //!   4) and restarts the machine if it runs out with TIMEOUT still set from
-//!   the first time, so each of its two stages is half the timeout; a pet
-//!   reloads it and clears TIMEOUT. SECOND_TO_STS says it restarted the
-//!   machine. Its NO_REBOOT bit must be clear for it to do so. Where the
+//!   the first time; a pet reloads it and clears TIMEOUT. The first time
+//!   it runs out it also raises an SMI, and some firmware restarts the
+//!   machine there (the Dell OptiPlex 7040's does, about 30 s into a 60 s
+//!   timeout split in two), so TCO_TMR holds the whole timeout, as Linux's
+//!   iTCO_wdt sets it, and the second stage is only a margin. SECOND_TO_STS
+//!   says the timer itself restarted the machine. Its NO_REBOOT bit must be clear for it to do so. Where the
 //!   registers and that bit are changed with the chipsets (Intel numbers
 //!   the layouts as TCO versions):
 //!   - The ICH9 and ICH10 and the 5 to 9 Series and C600 and C610 PCHs
@@ -518,9 +521,10 @@ fn tco_found(name: &'static str, restarted: bool) -> Found {
     }
 }
 
-/// The timeout of `ticks` ticks a stage: two stages of 0.6 s ticks.
+/// The timeout of `ticks` ticks of 0.6 s: the first stage's, which is
+/// where some firmware restarts the machine.
 fn tco_seconds(ticks: u32) -> u32 {
-    ticks * 12 / 10
+    ticks * 6 / 10
 }
 
 fn tco_read<P: Platform>(platform: &P, base: u16, offset: u16) -> u16 {
@@ -625,7 +629,7 @@ impl<P: Platform> Watchdog<P> {
                 preload * 2 / ESB_HZ
             }
             &Kind::Tco(base) => {
-                let ticks = (seconds * 10 / 12).clamp(TCO_MIN_TICKS, u32::from(TCO_TICKS));
+                let ticks = (seconds * 10 / 6).clamp(TCO_MIN_TICKS, u32::from(TCO_TICKS));
                 let value = tco_read(&self.platform, base, TCO_TMR) & !TCO_TICKS;
                 tco_write(&self.platform, base, TCO_TMR, value | ticks as u16);
                 self.pet();
