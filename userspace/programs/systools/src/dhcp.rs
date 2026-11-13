@@ -34,9 +34,14 @@ use crate::ip::Cidr;
 const REQUESTED: [u8; 8] = [1, 3, 6, 15, 51, 54, 58, 59];
 const OPTION_ROUTER: u8 = 3;
 const OPTION_DOMAIN: u8 = 15;
+/// The vendor-specific information (option 43) of a network whose
+/// connection is metered, as an Android phone's hotspot gives it and
+/// NetworkManager reads it.
+pub const ANDROID_METERED: &[u8] = b"ANDROID_METERED";
+const OPTION_VENDOR: u8 = 43;
 
 /// The shortest message sent, as BOOTP relays take them (RFC 1542).
-const MESSAGE_MIN: usize = 300;
+pub const MESSAGE_MIN: usize = 300;
 /// The longest message a client takes, as it tells servers.
 pub const MESSAGE_MAX: u16 = 1500;
 
@@ -72,6 +77,9 @@ pub struct Lease {
     pub seconds: u32,
     pub renew: u32,
     pub rebind: u32,
+    /// Whether the server says the connection is metered: its option 43
+    /// holds [`ANDROID_METERED`].
+    pub metered: bool,
 }
 
 impl Lease {
@@ -463,7 +471,7 @@ fn prefix(mask: Option<Ipv4Addr>, ip: Ipv4Addr) -> u8 {
 
 /// A domain name a server gave, if it is one: letters, digits, `-`, `_`
 /// and dots between labels, at most 253 of them.
-fn domain(data: &[u8]) -> Option<String> {
+pub fn domain(data: &[u8]) -> Option<String> {
     // Some servers end it with a NUL, which is no part of it.
     let end = data.iter().rposition(|&byte| byte != 0)? + 1;
     let name = std::str::from_utf8(&data[..end]).ok()?;
@@ -475,6 +483,12 @@ fn domain(data: &[u8]) -> Option<String> {
                 .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
     };
     (name.len() <= 253 && name.split('.').all(label_ok)).then(|| name.to_string())
+}
+
+/// Whether the vendor-specific information a server gave holds
+/// [`ANDROID_METERED`], alone or among other bytes.
+fn says_metered(data: &[u8]) -> bool {
+    data.windows(ANDROID_METERED.len()).any(|window| window == ANDROID_METERED)
 }
 
 /// The lease an offer or acknowledgement gives, if it is one a card may
@@ -493,6 +507,7 @@ fn lease_of(
     let broadcast = address.broadcast();
     let mut router = None;
     let mut name = None;
+    let mut metered = false;
     for option in packet.options() {
         match option.kind {
             // The first of the routers, which smoltcp takes only alone.
@@ -501,6 +516,7 @@ fn lease_of(
                 router = Some(Ipv4Addr::from(octets));
             }
             OPTION_DOMAIN => name = domain(option.data),
+            OPTION_VENDOR => metered = says_metered(option.data),
             _ => {}
         }
     }
@@ -523,7 +539,7 @@ fn lease_of(
         let rebind = repr.rebind_duration.filter(|&rebind| rebind > renew && rebind < seconds);
         (renew, rebind.unwrap_or_else(|| (u64::from(seconds) * 7 / 8) as u32).max(renew))
     };
-    Some(Lease { address, router, dns, domain: name, server, seconds, renew, rebind })
+    Some(Lease { address, router, dns, domain: name, server, seconds, renew, rebind, metered })
 }
 
 #[cfg(test)]
@@ -651,6 +667,7 @@ mod tests {
             seconds: 3600,
             renew: 1800,
             rebind: 3150,
+            metered: false,
         };
         let given = now + secs(2);
         assert_eq!(client.receive(&ack, given), [Action::Bind(lease.clone())]);
@@ -835,6 +852,7 @@ mod tests {
             seconds: 3600,
             renew: 1800,
             rebind: 3150,
+            metered: false,
         }
     }
 
@@ -951,6 +969,25 @@ mod tests {
         assert_eq!((short.seconds, short.renew, short.rebind), (60, 30, 52));
         let ever = lease(&[], |r| r.lease_duration = Some(u32::MAX));
         assert_eq!((ever.renew, ever.rebind), (FOREVER, FOREVER));
+    }
+
+    #[test]
+    fn a_server_that_says_the_connection_is_metered_is_believed() {
+        let now = Instant::now();
+        let lease = |options: &[DhcpOption]| {
+            let mut client = Client::new(MAC, 7, now);
+            let (_, discover) = sent(&client.tick(now));
+            let offer = reply_with(DhcpMessageType::Offer, &read(&discover), options, |_| {});
+            sent(&client.receive(&offer, now));
+            client.offer.clone().unwrap()
+        };
+        let vendor = |data: &[u8]| lease(&[DhcpOption { kind: OPTION_VENDOR, data }]).metered;
+        assert!(vendor(ANDROID_METERED));
+        // Servers that wrap the string in other bytes are read as well.
+        assert!(vendor(b"\x01\x0fANDROID_METERED"));
+        assert!(!vendor(b"ANDROID_METER"));
+        assert!(!vendor(b""));
+        assert!(!lease(&[]).metered);
     }
 
     #[test]

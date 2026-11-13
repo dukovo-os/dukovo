@@ -403,6 +403,62 @@ pub fn nts_answer(
     Ok(bodies_of(&plaintext, 0, COOKIE))
 }
 
+/// The length of the cookies [`seal_cookie`] makes: the master key's
+/// number, the nonce, then the AEAD algorithm, two zero bytes and both
+/// keys, sealed, with AES-SIV's 16-byte tag. It is a multiple of four,
+/// so that an extension field carries a cookie with no padding, and the
+/// field's body is the cookie.
+pub const COOKIE_LEN: usize = 4 + 16 + 4 + 2 * KEY_LEN + 16;
+
+/// A server's cookie for the keys `c2s` and `s2c` (RFC 8915 §6): sealed
+/// under `nonce` with the master key `key`, whose number `key_id` it
+/// starts with, so that the server keeps nothing for it and knows which
+/// key opens it.
+pub fn seal_cookie(
+    key: &[u8; KEY_LEN],
+    key_id: u32,
+    nonce: &[u8; 16],
+    c2s: &[u8; KEY_LEN],
+    s2c: &[u8; KEY_LEN],
+) -> Option<Vec<u8>> {
+    let mut plaintext = Vec::with_capacity(4 + 2 * KEY_LEN);
+    plaintext.extend_from_slice(&AES_SIV_CMAC_256.to_be_bytes());
+    plaintext.extend_from_slice(&[0; 2]);
+    plaintext.extend_from_slice(c2s);
+    plaintext.extend_from_slice(s2c);
+    let id = key_id.to_be_bytes();
+    let cipher = Aes128SivAead::new(key.into());
+    let sealed = cipher.encrypt(nonce.into(), Payload { msg: &plaintext, aad: &id }).ok()?;
+    let mut cookie = Vec::with_capacity(COOKIE_LEN);
+    cookie.extend_from_slice(&id);
+    cookie.extend_from_slice(nonce);
+    cookie.extend_from_slice(&sealed);
+    Some(cookie)
+}
+
+/// The keys, C2S and S2C, that a cookie [`seal_cookie`] made stands for,
+/// if `key` gives the master key it names and the cookie opens with it.
+pub fn open_cookie(
+    cookie: &[u8],
+    key: impl FnOnce(u32) -> Option<[u8; KEY_LEN]>,
+) -> Option<([u8; KEY_LEN], [u8; KEY_LEN])> {
+    if cookie.len() != COOKIE_LEN {
+        return None;
+    }
+    let id: [u8; 4] = cookie[..4].try_into().ok()?;
+    let master = key(u32::from_be_bytes(id))?;
+    let nonce: &[u8; 16] = cookie[4..20].try_into().ok()?;
+    let cipher = Aes128SivAead::new((&master).into());
+    let plaintext = cipher.decrypt(nonce.into(), Payload { msg: &cookie[20..], aad: &id }).ok()?;
+    let (algorithm, keys) = plaintext.split_at_checked(4)?;
+    if algorithm[..2] != AES_SIV_CMAC_256.to_be_bytes() || algorithm[2..] != [0, 0] {
+        return None;
+    }
+    let c2s = keys.get(..KEY_LEN)?.try_into().ok()?;
+    let s2c = keys.get(KEY_LEN..2 * KEY_LEN)?.try_into().ok()?;
+    Some((c2s, s2c))
+}
+
 /// The offset of the local clock from the server's, and the round trip's
 /// delay, in nanoseconds, from the four timestamps: sent `t1`, received
 /// by the server `t2`, sent back `t3`, received `t4` (RFC 5905).
@@ -413,6 +469,26 @@ pub fn offset_delay(t1: i128, t2: i128, t3: i128, t4: i128) -> (i128, i128) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_cookie_opens_with_its_own_key_alone() {
+        let (master, other) = ([7; KEY_LEN], [8; KEY_LEN]);
+        let (c2s, s2c) = ([1; KEY_LEN], [2; KEY_LEN]);
+        let cookie = seal_cookie(&master, 42, &[9; 16], &c2s, &s2c).unwrap();
+        assert_eq!(cookie.len(), COOKIE_LEN);
+        assert_eq!(&cookie[..4], &42u32.to_be_bytes());
+        let keys = |id: u32| (id == 42).then_some(master);
+        assert_eq!(open_cookie(&cookie, keys), Some((c2s, s2c)));
+        assert_eq!(open_cookie(&cookie, |_| Some(other)), None, "another key");
+        assert_eq!(open_cookie(&cookie, |_| None), None, "a key dropped");
+        let mut changed = cookie.clone();
+        changed[30] ^= 1;
+        assert_eq!(open_cookie(&changed, keys), None, "a changed byte");
+        let mut renumbered = cookie.clone();
+        renumbered[..4].copy_from_slice(&43u32.to_be_bytes());
+        assert_eq!(open_cookie(&renumbered, |_| Some(master)), None, "the number is sealed too");
+        assert_eq!(open_cookie(&cookie[..COOKIE_LEN - 1], keys), None, "cut short");
+    }
 
     #[test]
     fn timestamps_go_both_ways() {

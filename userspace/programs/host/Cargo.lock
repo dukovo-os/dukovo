@@ -4553,6 +4553,7 @@ dependencies = [
  "keymap",
  "libc",
  "manifest",
+ "md-5",
  "mdns-sd",
  "netproto",
  "radix-abi",

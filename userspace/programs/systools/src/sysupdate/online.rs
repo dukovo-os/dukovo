@@ -88,6 +88,7 @@ struct SettingsFile {
     canary: Option<bool>,
     check: Option<Check>,
     apps: Option<Apps>,
+    metered: Option<Metered>,
     unattended: Option<bool>,
     restart: Option<String>,
     hold: Option<Hold>,
@@ -117,6 +118,19 @@ pub enum Apps {
     Auto,
 }
 
+/// What updated(8) does with downloads while the connection is metered.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Metered {
+    /// Finds updates, which costs a few small files, and tells of them,
+    /// but downloads and stages none until the connection is not
+    /// metered; the default.
+    #[default]
+    Wait,
+    /// Downloads as on any connection.
+    Download,
+}
+
 /// Versions held back (ADR 0502): an offer of this version or an older
 /// one is not taken until the hold is lifted; a newer one is.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
@@ -142,6 +156,8 @@ pub struct Settings {
     pub check: Check,
     /// What updated(8) does with app updates.
     pub apps: Apps,
+    /// What updated(8) does with downloads on a metered connection.
+    pub metered: Metered,
     /// Whether updated(8) stages each update itself, as a server left to
     /// run on its own does, and goes back from a withdrawn release.
     pub unattended: bool,
@@ -160,6 +176,7 @@ impl Default for Settings {
             canary: false,
             check: Check::Notify,
             apps: Apps::Notify,
+            metered: Metered::Wait,
             unattended: false,
             restart: None,
             hold: Hold::default(),
@@ -203,6 +220,7 @@ impl Settings {
             canary: file.canary.unwrap_or(false),
             check: file.check.unwrap_or_default(),
             apps: file.apps.unwrap_or_default(),
+            metered: file.metered.unwrap_or_default(),
             unattended: file.unattended.unwrap_or(false),
             restart: file.restart,
             hold: file.hold.unwrap_or_default(),
@@ -243,6 +261,9 @@ impl Settings {
         }
         if self.apps == Apps::Auto {
             text.push_str("apps = \"auto\"\n");
+        }
+        if self.metered == Metered::Download {
+            text.push_str("metered = \"download\"\n");
         }
         if self.unattended {
             text.push_str("unattended = true\n");
@@ -902,6 +923,14 @@ mod tests {
         assert!(Settings::parse("unattended = true\nrestart = \"25:00\"").is_err());
         assert!(Settings::parse("restart = \"03:00\"").unwrap_err().contains("unattended"));
         assert!(Settings::parse("check = \"sometimes\"").is_err());
+        // A metered connection waits, unless the settings say not to.
+        assert_eq!(Settings::default().metered, Metered::Wait);
+        let download = Settings::parse("metered = \"download\"\n").unwrap();
+        assert_eq!(download.metered, Metered::Download);
+        assert_eq!(Settings::parse(&download.text()).unwrap(), download);
+        assert!(!Settings::default().text().contains("metered"));
+        assert_eq!(Settings::parse("metered = \"wait\"\n").unwrap(), Settings::default());
+        assert!(Settings::parse("metered = \"never\"").is_err());
         assert_eq!(minutes_of_day("03:30"), Some(210));
         assert!(Settings::parse("chanel = \"beta\"").is_err());
     }

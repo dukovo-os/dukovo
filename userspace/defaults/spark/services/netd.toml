@@ -19,12 +19,13 @@ restart = "always"
 memory = "16M"
 
 # What it holds beyond what every service reads (service.toml(5)): its
-# DHCP client's port 68 on each card and its DHCPv6 client's port 546,
-# the servers' ports 67 and 547 it sends to, setting the cards up, its
-# leases, and the folder of the resolv.conf it writes, with the DNS
-# servers DHCP gave, which resolved(8) asks.
+# DHCP server's port 67 and client's port 68 on each card, and its DHCPv6
+# client's port 546, the DHCPv6 servers' port 547 it sends to, setting the
+# cards up, its leases, and the folder of the resolv.conf it writes, with
+# the DNS servers DHCP gave, which resolved(8) asks, and the list of the
+# leases it has given, which `netd leases` shows.
 [permissions]
 network.outbound = true
-network.listen = [68, 546]
+network.listen = [67, 68, 546]
 admin.network = true
 files.read-write = ["/system/state/netd", "/system/live/netd"]

@@ -18,6 +18,10 @@ by DHCP, unless this file names the card (ADR 0191). The default file
 says nothing but comments, so every card asks DHCP. *service netd
 reload* has netd read the file again and set each card up anew.
 
+A card with an address of its own can in turn give the other computers
+on its network their addresses by DHCP, with the *dhcp-server* settings
+below (ADR 0486).
+
 A section starts with the card's name in brackets, *[net0]*, or its MAC
 address, *[52:54:00:12:34:56]*, which stays the card's when cards come
 in another order; a bridge or VLAN that *ip*(8) makes is named by its
@@ -70,12 +74,75 @@ comment.
 	servers and domains; *address*, always for an address too; *no*,
 	never.
 
+*metered =* *yes* | *no* | *auto*
+	Whether the connection through this card costs by the byte, which
+	*updated*(8) takes into account (*updates.toml*(5)). *auto*, the
+	default, is *yes* when the server of the card's DHCP lease says so
+	(its vendor option names ANDROID_METERED, as an Android phone's
+	hotspot does) and *no* otherwise. A card with addresses of its own
+	and no lease is *no* unless this says *yes*.
+
+*dhcp-server =* _first_*-*_last_
+	Turns the card's DHCP server on: it gives the clients on the card's
+	network the addresses from _first_ to _last_, both IPv4 ones. The
+	card needs an address of its own, which the range lies inside the
+	network of and does not hold, nor the network's own address or its
+	broadcast address, and *dhcp = yes* cannot go with it. At most
+	65536 addresses. A server that cannot run is left off, and the log
+	says why. Every setting below belongs to it.
+
+*dhcp-server-lease =* _time_
+	How long a lease lasts: a number and *s*, *m*, *h* or *d*, from
+	*1m* to *30d*; *12h* by default. A client asks for more at half of
+	it.
+
+*dhcp-server-router =* _address_ | *none*
+	The router the clients are told of, on the card's network. By
+	default the card's own *router*, if it is on that network, and
+	otherwise none. *none* tells them of no router.
+
+*dhcp-server-dns =* _address_[ _address_...] | *none*
+	The DNS servers the clients are told of, IPv4 ones, three at most
+	in all, on one line or on several. By default the IPv4 DNS servers
+	that are not loopback addresses in the _resolv.conf_ netd writes
+	(*netd*(8)), which the cards' settings and leases gave. *none*
+	tells them of none.
+
+*dhcp-server-domain =* _name_
+	The domain name the clients are told of: labels of letters,
+	digits, *-* and *\_*, with dots between them, up to 253
+	characters. Without it they are told of none.
+
+*dhcp-server-time =* _address_ | *none*
+	The time server the clients are told of (DHCP option 42), which
+	they ask in plain NTP. By default the card's own address while
+	*timed*(8) answers plain NTP from the clients' network (*serve =
+	nts+ntp* in *timed*(5), with *serve-allow* letting them in), and
+	otherwise none. *none* tells them of none.
+
+*dhcp-server-metered =* *yes* | *no*
+	With *yes* the clients are told that the connection is metered, by
+	the vendor option that names ANDROID_METERED, so that a client that
+	takes it into account, such as *updated*(8) on another Dukovo
+	machine, waits to download. For a machine whose own uplink is
+	metered. *no* is the default.
+
+*reserve =* _mac_ _address_[ _name_]
+	Always gives the client with the MAC address _mac_ the address
+	_address_ and never gives it to another; the address lies on the
+	card's network, and may lie outside the range. _name_ is how
+	*netd leases* lists it: up to 63 letters, digits, *-*, *\_* and
+	*.*. A MAC address and an address are in at most one *reserve*,
+	and a card has up to 1024. The line may come any number of times.
+
 netd says what is wrong in the file in the system's log, with the line's
 number, and leaves out that line: a setting it does not know, an
 address that is not a unicast one, a fifth address or a fourth DNS
 server, a second router of a version, or a second *dhcp*, *ipv6*,
-*temporary-addresses* or *dhcpv6*, a router on none of the card's
-networks, or a card named twice.
+*temporary-addresses*, *dhcpv6*, *metered* or *dhcp-server* setting, a
+router on none of the card's networks, a value that is not what the
+setting takes, a reservation that is not a client's address on the
+card's network, or a card named twice.
 
 # EXAMPLES
 
@@ -98,6 +165,22 @@ address = fd07::1/64
 temporary-addresses = no
 ```
 
+A card that gives the computers on its network their addresses, for a
+day each, with a router, two DNS servers and a domain, and keeps the
+address of the printer:
+
+```
+[net1]
+dhcp = no
+address = 192.168.10.1/24
+dhcp-server = 192.168.10.100-192.168.10.199
+dhcp-server-lease = 1d
+dhcp-server-router = 192.168.10.254
+dhcp-server-dns = 192.168.10.254 9.9.9.9
+dhcp-server-domain = office.example
+reserve = 52:54:00:12:34:58 192.168.10.20 printer
+```
+
 # FILES
 
 _/system/settings/network_
@@ -106,4 +189,4 @@ _/system/settings/network_
 
 # SEE ALSO
 
-*netd*(8), *ip*(8), *spark*(8)
+*netd*(8), *timed*(5), *updates.toml*(5), *ip*(8), *spark*(8)

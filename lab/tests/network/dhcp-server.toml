@@ -1,0 +1,95 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# netd(8) gives a client on the machine's network an address by DHCP, as
+# network(5)'s dhcp-server says, checked with dhcpcd, the common client of
+# Linux, from a network namespace of the lab PC on a macvlan of its lab
+# card (dhcp-server.sh beside this file). Client 1's MAC address has an
+# address reserved; client 2's is not known and gets the lowest of the
+# pool, 10.77.0.200 to 10.77.0.209. The machine's own address on the lab
+# network stays, set in its network file for the test and put back at
+# the end.
+#
+# The lab network is shared with a DHCP server of the lab PC's, dnsmasq,
+# which answers the machines of the machine files alone. A network where
+# another server answers a client it does not know could be misled by a
+# second server, so the test first has dhcpcd ask as an unknown client,
+# and is skipped, saying why, if anything answers.
+about = "netd gives clients on the machine's network addresses by DHCP: a client with a reserved address gets it, a second client gets the pool's lowest, each with the DNS server, domain, time server and lease time that are set, and netd leases lists both; the machine's own settings go back as they were"
+time = "10m"
+host_needs = ["dhcpcd", "ip"]
+
+# Only a real machine on the lab network has a network a second DHCP
+# server may share: a QEMU guest's is the emulator's own.
+[[step]]
+run = "ip -4 -br addr show net0"
+expect = "10.77.0."
+or_skip = "needs a real machine on the lab network"
+
+# The two clients of the lab PC, and the check that nothing else answers.
+[[step]]
+host = "sh {here}/dhcp-server.sh lab {machine}"
+root = true
+background = true
+ready = "dhcp lab ready"
+
+# The machine gives addresses from the address it has: its own network
+# file for the test, with the old one kept.
+[[step]]
+run = '''sh -c 'set -- $(ip -4 -br addr show net0); mine=$3; cp /system/settings/network /users/lab/lab-network && printf "[net0]\ndhcp = no\naddress = %s\ndhcp-server = 10.77.0.200-10.77.0.209\ndhcp-server-lease = 1m\ndhcp-server-router = none\ndhcp-server-dns = {peer}\ndhcp-server-domain = lab.test\ndhcp-server-time = {peer}\nreserve = 02:d1:ab:00:00:01 10.77.0.240 labclient\n" "$mine" > /system/settings/network && service netd reload && echo serving' '''
+root = true
+expect = "serving"
+[[step]]
+run = "sh -c 'for i in $(seq 1 30); do log -s netd | grep -q \"giving addresses 10.77.0.200-10.77.0.209\" && break; sleep 1; done; log -s netd | grep \"giving addresses\" | tail -1'"
+root = true
+expect = "netd: net0: giving addresses 10.77.0.200-10.77.0.209 by DHCP, for 1 minute each"
+
+# Client 1 has the address reserved for it, with what is set.
+[[step]]
+host = "sh {here}/dhcp-server.sh client 1"
+root = true
+expect = [
+    "10.77.0.240/24",
+    "dhcp_message_type=5",
+    "ip_address=10.77.0.240",
+    "dhcp_lease_time=60",
+    "domain_name=lab.test",
+    "domain_name_servers={peer}",
+    "ntp_servers={peer}",
+    "dhcp_server_identifier={machine}",
+]
+
+# Client 2, a stranger, gets the first of the pool.
+[[step]]
+host = "sh {here}/dhcp-server.sh client 2"
+root = true
+expect = ["10.77.0.200/24", "ip_address=10.77.0.200", "dhcp_lease_time=60"]
+
+# The machine lists both, the reserved one by its name.
+[[step]]
+run = "netd leases"
+expect = [
+    "10.77.0.240",
+    "02:d1:ab:00:00:01",
+    "labclient",
+    "10.77.0.200",
+    "02:d1:ab:00:00:02",
+]
+[[step]]
+run = "log -s netd"
+root = true
+expect = [
+    "netd: net0: gave 10.77.0.240 to 02:d1:ab:00:00:01 (labclient)",
+    "netd: net0: gave 10.77.0.200 to 02:d1:ab:00:00:02",
+]
+
+# The machine's own file back, and its address with it.
+[[step]]
+run = "sh -c 'cp /users/lab/lab-network /system/settings/network && rm /users/lab/lab-network && service netd reload && echo put-back'"
+root = true
+expect = "put-back"
+[[step]]
+wait = "20s"
+[[step]]
+run = "ip -4 -br addr show net0"
+expect = "10.77.0."

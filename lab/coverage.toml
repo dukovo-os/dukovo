@@ -17,6 +17,7 @@
 dumps = ["hardware/crash-dump"]
 "dumps test" = ["hardware/crash-dump"]
 logforward = ["services/log-forward"]
+"netd leases" = ["network/dhcp-server"]
 nginx = ["services/nginx"]
 pip = ["services/python-commands"]
 pip3 = ["services/python-commands"]

@@ -33,6 +33,14 @@ system, firmware set and apps, as *update*(8) does, and does what
   the release's waves are held it waits, and a withdrawn one is
   unstaged instead.
 - *check = "off"* turns the checks off.
+- While the connection is metered (*netd*(8) says so in
+  _/system/live/netd/metered_), it still fetches the channel's small
+  signed files, as *check = "notify"* does, but downloads and stages
+  nothing, whatever the other settings say: it tells that an update is
+  ready to download, that the connection is metered and that it waits
+  for another one, or for *elevate update apply*. The next check on a
+  connection that is not metered goes on as usual. *metered =
+  "download"* in *updates.toml*(5) turns this off.
 
 Once a week it reads the running slot back against its release's signed
 list, as *sysupdate verify* does, and tells the consoles, as critical,
@@ -58,10 +66,15 @@ catalogs it trusts; the requests carry nothing about the machine
 _/system/settings/sysupdate/updates.toml_
 	What it does (*updates.toml*(5)).
 
+_/system/live/netd/metered_
+	Whether the connection is metered, which *netd*(8) writes; updated
+	takes the connection as not metered where there is no such file.
+
 _/system/settings/spark/services/updated.toml_
 	Its service file; *enabled = false* there turns it off
 	(*service*(8)).
 
 # SEE ALSO
 
-*update*(8), *sysupdate*(8), *bundled*(8), *updates.toml*(5), *notifyd*(8)
+*update*(8), *sysupdate*(8), *bundled*(8), *updates.toml*(5), *notifyd*(8),
+*netd*(8)

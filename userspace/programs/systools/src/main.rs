@@ -86,6 +86,7 @@ mod device;
 mod df;
 mod dhcp;
 mod dhcp6;
+mod dhcp_server;
 mod dig;
 mod discover;
 mod discoverd;

@@ -141,7 +141,6 @@ machine with AMT, an AMD machine and a laptop; see
 | How far a start got before Spark, in the kernel or mounting the root, written as it is reached (ADR 0503) | Spark marks the starts that reached their services; Rescue tells the rest from the boot menu's count | A need, with the starts' summary on the EFI system partition |
 | Rescue, Repair startup and the memory test unlocking an encrypted root with its recovery key or passphrase (ADR 0501) | No root is encrypted yet | Disk encryption, after 1.0 |
 | Unattended updates limited to security fixes, and the security advisories each update fixes, shown by `update` (ADR 0502) | Unattended updates take every release, through the waves; the release notes name fixes | The channel listing advisories per release, 16b |
-| Respecting metered connections in updated (ADR 0502) | `check = "notify"`, the default, fetches nothing but the channel's small signed files | netd knowing which connections are metered, 16b |
 | Snoozing an update reminder, and pinning the system so that no newer version is taken (ADR 0502) | The reminder comes once a day; `check = "off"` stops it; `update hold` skips one version | 16c, with the web console's updater page |
 | The updater's page in the web console (ADR 0502) | `update` and `updated` on the command line | 16c, Dukovo Admin |
 | The failure notice by email, when the owner has set an address (ADR 0501) | The notice at every sign-in, on the screen and the serial port | 16b, with alerts |
@@ -194,7 +193,6 @@ machine with AMT, an AMD machine and a laptop; see
 | A change of the serial console's settings acting at once (ADR 0481) | `serial` writes the settings for the next start: the kernel and serial-console read the command line, which a start makes | A way to change the kernel's serial settings in a running system, which no plan item asks for yet |
 | GRUB's menu on the second port of a PCI function, on a port at a parity or 7 data bits, on a fifth port, and on a PCI domain other than 0000 (ADR 0481) | GRUB's `pciserial` runs BAR 0's first port only, GRUB's `serial` 8 data bits and no parity, and the menu has four slots; `serial` says which console is left off the menu and why | A GRUB that runs them, or a boot loader of Dukovo's own |
 | The speed of the SPCR's "as the firmware left it" read from the UART's divisor (ADR 0481) | Taken as 115200 baud, as GRUB takes it | A machine in the lab whose firmware leaves another speed and gives none |
-| A local time server, and netd's DHCP server (ADR 0194) | Server roles | 16b |
 | elevate in the web console, with comments kept by its settings editor (ADRs 0216, 0219) | Dukovo Admin | 16c |
 | A page for logforward in the web console: its destinations, their status and a test record (ADR 0482) | Dukovo Admin | 16c |
 | A certificate from certd for nginx's sites and for the lab test `services/nginx`, which makes one with openssl meanwhile (ADR 0491) | certd comes with Phase 16 | Phase 16's certd |
@@ -329,7 +327,7 @@ machine asks for them.
 | Promiscuous mode for packet capture | ADR 0346 |
 | Firewall rules for outbound traffic and rate limits | ADR 0334 |
 | Routing beyond a tunnel's subnet before the routing table | ADR 0339 |
-| timed: choosing among servers, training the clock's frequency, `CLOCK_REALTIME` timers after a step, authenticated fallback, leap seconds | ADR 0194 |
+| timed: choosing among servers, training the clock's frequency, `CLOCK_REALTIME` timers after a step, authenticated fallback, leap seconds | ADRs 0194, 0487 |
 | `AF_UNIX` datagram and sequenced-packet sockets, `MSG_PEEK`, credentials as control messages | ADR 0091 |
 | A per-person setting for low ports | ADR 0257 |
 | SMB: pipelined reads and writes, a page cache, leases and oplocks, change notices, locks other sessions see, `LsarQueryInformationPolicy` | ADRs 0227 to 0229 |
@@ -342,6 +340,11 @@ machine asks for them.
 | logforward: RELP, which has the receiver acknowledge each message, in place of the 10-second wait before a position counts as delivered | ADR 0482 |
 | logforward: structured data beyond MSGID, such as the boot and the user a record has | ADR 0482 |
 | Receiving logs from other machines: a syslog server on Dukovo | ADR 0482 |
+| A DHCPv6 server and router advertisements: IPv6 computers keep the addresses their network's router has them make | ADR 0486 |
+| DHCP relay agents: a request with `giaddr` set is ignored, and netd's log says so once | ADR 0486 |
+| An ICMP probe of an address before netd's DHCP server offers it: a client's DECLINE covers a conflict (RFC 2131, section 3.1.5) | ADR 0486 |
+| Detecting another DHCP server on a card's network | ADR 0486 |
+| NTS keys shared between several time servers (RFC 8915, section 6): the cookies of timed's server work at that server alone | ADR 0487 |
 
 ### Devices and firmware
 

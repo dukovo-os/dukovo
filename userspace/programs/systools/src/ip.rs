@@ -236,7 +236,6 @@ impl Ipv6 {
 
     /// Its default route: the first router that advertised itself, else
     /// the one it was given.
-    #[cfg(test)]
     pub fn router(&self) -> Option<Ipv6Addr> {
         self.routers.first().map(|(router, _)| *router).or(self.given_router)
     }

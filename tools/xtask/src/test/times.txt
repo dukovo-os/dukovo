@@ -104,6 +104,7 @@ network-capture 28
 network-cards 17
 network-discovery 57
 network-pair 76
+network-serve 90
 network-services 39
 network-tools 82
 network-trace 41

@@ -121,6 +121,9 @@ const PEER_WANTS: &[(&str, &str)] = &[
     ("restic", "restic"),
     ("rsyslogd", "rsyslog rsyslog-gnutls"),
     ("openssl", "openssl"),
+    ("dhcpcd", "dhcpcd-base"),
+    ("chronyd", "chrony"),
+    ("chronyc", "chrony"),
 ];
 
 /// How a lab image lets the lab in: the lab's public key, for SSH, and

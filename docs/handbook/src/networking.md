@@ -6,9 +6,10 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 # Networking
 
 This chapter describes networking in Dukovo: sockets for programs, TCP
-that matches Linux, `netd` with DHCP, DNS and `curl`, the time service,
-the Realtek, Intel and USB Ethernet cards, IPv6, bridges, VLANs, the
-firewall and WireGuard.
+that matches Linux, `netd` with DHCP, which asks for addresses and gives
+them, DNS and `curl`, the time service, which asks for the time and
+serves it, the Realtek, Intel and USB Ethernet cards, IPv6, bridges,
+VLANs, the firewall and WireGuard.
 
 ## What works
 
@@ -434,6 +435,113 @@ back:
 ./ob test --case dhcp
 ```
 
+## Give your network addresses
+
+A machine with a card on a network of its own, a second card that goes
+to a few computers or a switch, can give those computers their
+addresses, as a router does. netd(8) does it for each card whose section
+in `/system/settings/network` has an address of its own and a range to
+give from:
+
+```
+# cat >> /system/settings/network
+[net1]
+dhcp = no
+address = 192.168.10.1/24
+dhcp-server = 192.168.10.100-192.168.10.199
+dhcp-server-lease = 1d
+dhcp-server-router = 192.168.10.254
+dhcp-server-dns = 192.168.10.254 9.9.9.9
+dhcp-server-domain = office.example
+reserve = 52:54:00:12:34:58 192.168.10.20 printer
+# service netd reload
+```
+
+The log says that the card gives addresses, and which:
+
+```
+netd: net1: giving addresses 192.168.10.100-192.168.10.199 by DHCP, for 1 day each; 0 leases kept
+netd: net1: gave 192.168.10.100 to 52:54:00:12:34:56 (laptop) for 1 day
+```
+
+A computer on that cable that asks for an address gets the network's
+mask, the router, the DNS servers and the domain the settings name, and
+a time server (see [Serve the time](#serve-the-time)). Without
+`dhcp-server-router` it is told the card's own `router`, if that lies
+on the card's network; without `dhcp-server-dns`, the IPv4 DNS servers
+in the `resolv.conf` netd writes that are not loopback addresses;
+`none` in either tells it of none. The range lies inside the card's
+network and leaves out the card's own address. A lease lasts 12 hours
+unless `dhcp-server-lease` says otherwise, from one minute to 30 days,
+and the computer renews it at half of that time. network(5) lists every
+setting.
+
+A computer gets, in this order, the address reserved for its MAC address,
+the one it had last, the one it asks for when that is free, or the
+lowest free address of the range. The server keeps its leases on disk
+before it tells a computer of one, so a restart of netd or of the
+machine loses none. `netd leases` lists them, and the addresses that are
+reserved:
+
+```
+$ netd leases
+CARD  ADDRESS         MAC                NAME     LEFT
+net1  192.168.10.20   52:54:00:12:34:58  printer  reserved
+net1  192.168.10.100  52:54:00:12:34:56  laptop   23h 41m
+```
+
+`reserve` gives one computer, by its MAC address, the same address every
+time, and never gives that address to another; the address may lie
+outside the range, and the name after it is how `netd leases` lists the
+computer. A card has up to 1024 `reserve` lines. A computer that
+releases its address gives it back at once; one that says another
+computer holds it is not offered that address for ten minutes. When the
+range is full, the log says which computer got none.
+
+A machine whose own connection is metered, a phone's hotspot, say, can
+tell the computers it serves so with `dhcp-server-metered = yes`; one
+that takes it into account, as updated(8) does on another Dukovo
+machine, then waits to download (see
+[Metered connections](updates.md#metered-connections)).
+
+The server is for IPv4 only. IPv6 computers keep the addresses the
+network's router has them make; netd serves neither DHCPv6 nor router
+advertisements. It answers computers on the card's own cable, not those
+behind a relay agent, and does not look for another DHCP server there:
+where two answer, a computer takes the one that answers first, so give
+a network one.
+
+### My devices do not get an address
+
+Look at what netd says about the card:
+
+```
+$ log netd
+```
+
+- **No "giving addresses" line for the card.** The server is off, and
+  the log says why, with the line's number in the settings: the card
+  has no address of its own, or the range lies outside its network or
+  holds the card's own address, or `dhcp = yes` is set with it. Correct
+  the line and `elevate service netd reload`.
+- **The line is there, and no "gave" line follows.** The computers do
+  not reach the card. Check that they are on the cable of that card, and
+  not behind a router, as netd ignores a request that came through a
+  relay agent, and says so once. `firewall status` lists netd's socket
+  on udp 67 and who reaches it, and a rule that denies it, in
+  `firewall list`, stops the computers asking.
+- **"The pool is full".** Every address of the range has a lease or is
+  reserved. Widen `dhcp-server`, or give `dhcp-server-lease` a shorter
+  time so that the leases of computers that are gone end sooner;
+  `netd leases` shows who holds what.
+- **A computer gets an address that is not yours, or none at times.**
+  Another DHCP server answers on the same network, a router's, say. Turn
+  that one off, or give each only its own range.
+- **A computer keeps the address it had after you changed the range.**
+  It keeps using it until it renews its lease, at half the lease's time.
+  netd drops a lease that no longer fits the range when it reads the
+  settings again, refuses the renewal, and the computer asks anew.
+
 ## Giving a card an address at boot
 
 The first card can also take its address from two kernel flags
@@ -602,10 +710,64 @@ Sun Nov  1 13:00:00 CET 2026
 
 `timedatectl list-timezones` lists the zones, and the `TZ` variable
 sets one for a single program, as `TZ=America/New_York date`. Other time
-servers, or none, go in `/system/settings/timed` (timed(5)). The
+servers, or none, go in `/system/settings/timed` (timed(5)), which also
+turns on [serving the time](#serve-the-time) to other computers. The
 locales are English's in each of its countries, `en_US.UTF-8`,
 `en_GB.UTF-8`, `en_IN.UTF-8` and the others, with their dates,
 numbers and sorting order; `LANG=en_GB.UTF-8` picks one.
+
+## Serve the time
+
+Once its own clock is set, timed(8) can give the time to the other
+computers on your networks, over Network Time Security, as chrony,
+NTPsec and other Dukovo machines ask for it, and over plain NTP for
+printers, cameras, switches and other devices that cannot do NTS. It
+serves nothing until `/system/settings/timed` says so:
+
+```
+# cat >> /system/settings/timed
+serve = nts+ntp
+serve-certificate = /system/settings/ssl/time.example.crt
+serve-key = /system/settings/ssl/time.example.key
+# service timed reload
+```
+
+`serve` is `off`, `nts` or `nts+ntp`; `off` is the default. NTS
+needs a certificate for the machine's name, `serve-certificate`, the
+file of its chain, and its key, `serve-key`, both in
+`/system/settings/ssl`. A computer that asks for NTS must trust the
+certificate's authority: a Dukovo machine does when it is one of the
+system's (dukovo-certificates(7)) or `certificates` in its own timed(5)
+settings names it, and its `servers` setting names this machine.
+
+The server answers the computers on the networks of the machine's own
+addresses and no others. `serve-allow` names others, such as
+`serve-allow = 10.0.0.0/8, 192.168.0.0/16`, or `any` for everyone. Its
+answers say the time is synchronized while the machine's clock is set
+from the network and for three hours after the last time it was; after
+that they say it is not, and clients do not take it.
+`serve-unsynced = yes` has it serve, at stratum 10, a clock nothing has
+set, for a network that has no other source of time.
+
+`timedatectl timesync-status` says what it is doing, among the rest of
+timed's status:
+
+```
+Serving: time over NTS and plain NTP to this machine's networks: 41 answers and 3 key establishments to 5 clients since timed started
+```
+
+The server uses ports 4460 for NTS and 123 for plain NTP, which
+timed's service file asks for; they are opened only while `serve` is
+not `off`. Keys for the cookies NTS gives clients are made fresh every
+day and kept in memory, so a restart of timed has the clients ask for
+new ones, as RFC 8915 expects. Servers do not share keys, so a cookie
+works only at the server that made it.
+
+netd's DHCP server (see [Give your network
+addresses](#give-your-network-addresses)) names the card's own address
+to the computers it serves as their time server while `serve = nts+ntp`
+answers them. That DHCP option names a plain NTP server, so with `serve
+= nts` it names none, and the devices that read it keep their own.
 
 ## Fetching with curl
 
@@ -705,6 +867,22 @@ the second's s_client reaching the first's s_server over TLS 1.3:
 
 ```
 ./ob test --case network-tools
+```
+
+The `network-serve` boot test boots two machines on a cable, the first
+with an e1000e and the second with a virtio card whose clock starts an
+hour ahead. The first gives addresses by DHCP and serves the time over
+NTS and plain NTP, and the test checks that the second gets the address
+reserved for its MAC address with the router, DNS servers, domain, time
+server and metered flag that are set, that `netd leases` lists it, that
+it renews its lease at half of it, that updated is told the connection
+is metered, that the second takes the time from the first over NTS and
+steps its clock back an hour, that plain NTP is answered until the
+first serves NTS alone, and that a client with another MAC address
+gets the lowest address of the range and gives it back:
+
+```
+./ob test --case network-serve
 ```
 
 ## Trying the sockets

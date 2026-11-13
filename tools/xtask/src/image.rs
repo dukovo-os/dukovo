@@ -991,7 +991,7 @@ fn iso_date(time: u64) -> (String, String) {
 
 /// The year, month and day of `days` since 1970-01-01, by Howard
 /// Hinnant's `civil_from_days`.
-fn civil(days: u64) -> (u64, u64, u64) {
+pub(crate) fn civil(days: u64) -> (u64, u64, u64) {
     let z = days + 719_468;
     let era = z / 146_097;
     let doe = z - era * 146_097;

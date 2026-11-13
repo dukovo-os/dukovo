@@ -30,13 +30,18 @@
 //!
 //! What it did last goes to `/system/live/timed/status`, which
 //! timedatectl(1) shows. SIGHUP reads the settings again; SIGTERM ends it.
+//!
+//! With timed(5)'s `serve`, it also serves the time it keeps to its
+//! networks, over NTS and, if asked, plain NTP: [`serve`] (ADR 0487).
+
+mod serve;
 
 use std::fs;
 use std::io::{self, Read, Write};
-use std::net::{SocketAddr, ToSocketAddrs, UdpSocket};
+use std::net::{IpAddr, SocketAddr, ToSocketAddrs, UdpSocket};
 use std::path::Path;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -111,6 +116,8 @@ pub struct Settings {
     pub fallback: Vec<String>,
     /// More authorities' certificates to trust, PEM files.
     pub certificates: Vec<String>,
+    /// What it serves to others.
+    pub serve: serve::ServeSettings,
 }
 
 impl Default for Settings {
@@ -119,13 +126,15 @@ impl Default for Settings {
             servers: DEFAULT_SERVERS.map(String::from).to_vec(),
             fallback: DEFAULT_FALLBACK.map(String::from).to_vec(),
             certificates: Vec::new(),
+            serve: serve::ServeSettings::default(),
         }
     }
 }
 
 /// Reads timed(5)'s `text`: the settings, and what is wrong with any
 /// line, which is left out. `servers =` and `fallback =` with nothing
-/// after them ask none.
+/// after them ask none. Serving NTS without a certificate and key serves
+/// nothing, and says so.
 pub fn parse_settings(text: &str) -> (Settings, Vec<String>) {
     let mut settings = Settings::default();
     let mut wrong = Vec::new();
@@ -143,10 +152,25 @@ pub fn parse_settings(text: &str) -> (Settings, Vec<String>) {
             "servers" => settings.servers = words,
             "fallback" => settings.fallback = words,
             "certificates" => settings.certificates = words,
-            other => wrong.push(format!("{SETTINGS}:{}: no setting '{other}'", number + 1)),
+            other => match serve::setting(&mut settings.serve, other, value) {
+                Some(Ok(())) => {}
+                Some(Err(why)) => wrong.push(format!("{SETTINGS}:{}: {why}", number + 1)),
+                None => wrong.push(format!("{SETTINGS}:{}: no setting '{other}'", number + 1)),
+            },
         }
     }
+    if let Some(why) = serve::check(&mut settings.serve) {
+        wrong.push(format!("{SETTINGS}: {why}"));
+    }
     (settings, wrong)
+}
+
+/// Whether timed(5)'s settings `text` answer plain NTP from `client`, an
+/// address on one of the machine's own networks, as DHCP clients told of
+/// this machine as their time server speak it: only `serve = nts+ntp`, with
+/// a certificate and key, and `serve-allow` letting `client` in.
+pub fn answers_plain_ntp_from(text: &str, client: IpAddr) -> bool {
+    parse_settings(text).0.serve.answer_plain_ntp_from(client)
 }
 
 /// Splits `name[:port]`, or `[v6]:port`.
@@ -173,6 +197,11 @@ struct Sample {
     offset: i128,
     delay: i128,
     stratum: u8,
+    /// The server's own round trip to its reference clock, and how far
+    /// off it may be from it, in nanoseconds; and its address.
+    root_delay: i128,
+    root_dispersion: i128,
+    from: IpAddr,
 }
 
 /// An NTS session with a server: its keys, the cookies it gave, and where
@@ -211,6 +240,10 @@ struct Timed {
     rtc_written: Option<Instant>,
     /// What the status file says.
     status: String,
+    /// What the clock was last set by, which the time service serves, and
+    /// the service while it runs.
+    upstream: Arc<Mutex<Option<serve::Upstream>>>,
+    server: Option<serve::Server>,
 }
 
 fn now_ns() -> i128 {
@@ -371,14 +404,14 @@ impl Timed {
         let cookies = ntp::nts_answer(&packet, &unique, &session.s2c)?;
         session.cookies.extend(cookies);
         session.cookies.truncate(COOKIES);
-        sample_of(&packet, t1, t4)
+        sample_of(&packet, t1, t4, session.ntp.ip())
     }
 
     /// One plain NTP sample of `address`.
     fn sntp_sample(&self, address: SocketAddr) -> Result<Sample, String> {
         let transmit = u64::from_ne_bytes(self.random::<8>());
         let (packet, t1, t4) = exchange(address, &ntp::request(transmit), transmit)?;
-        sample_of(&packet, t1, t4)
+        sample_of(&packet, t1, t4, address.ip())
     }
 
     /// The best of SAMPLES samples from `take`: the one with the shortest
@@ -470,6 +503,16 @@ impl Timed {
             format!("the clock is {ms:+.3} ms off; left as it is")
         };
         self.synced = true;
+        // What the time service now serves: one stratum further from the
+        // reference clock, with this round trip added (RFC 5905 §7.3).
+        *self.upstream.lock().unwrap_or_else(PoisonError::into_inner) = Some(serve::Upstream {
+            at: Instant::now(),
+            timestamp: ntp::timestamp(u64::try_from(now_ns()).unwrap_or(0)),
+            stratum: sample.stratum,
+            reference: serve::reference_id(sample.from),
+            root_delay_ns: sample.root_delay + sample.delay,
+            root_dispersion_ns: sample.root_dispersion + sample.delay / 2,
+        });
         if self.rtc_written.is_none_or(|at| at.elapsed() >= RTC_EVERY) {
             match clock::write_rtc(&SYS, SLOT_CLOCK) {
                 Ok(()) => self.rtc_written = Some(Instant::now()),
@@ -517,6 +560,18 @@ impl Timed {
             self.roots = Arc::new(tls::roots(&settings.certificates, "timed"));
             self.sessions.clear();
         }
+        // Started anew at each reading, so that a renewed certificate is
+        // served from then on.
+        self.server = None;
+        if settings.serve.mode != serve::Mode::Off {
+            match serve::Server::start(settings.serve.clone(), self.upstream.clone()) {
+                Ok(server) => {
+                    print!("timed: {}", server.status());
+                    self.server = Some(server);
+                }
+                Err(why) => eprintln!("timed: serving no time: {why}"),
+            }
+        }
         println!(
             "timed: NTS servers {}; plain NTP only while none answers: {}",
             if settings.servers.is_empty() { "none".into() } else { settings.servers.join(" ") },
@@ -525,7 +580,10 @@ impl Timed {
         self.settings = settings;
     }
 
-    fn write_status(&mut self, text: String) {
+    fn write_status(&mut self, mut text: String) {
+        if let Some(server) = &self.server {
+            text.push_str(&server.status());
+        }
         if text != self.status && write_file(STATUS, &text) {
             self.status = text;
         }
@@ -571,9 +629,9 @@ fn exchange(
     }
 }
 
-/// The sample an answer gives, sent at `t1` and come back at `t4`, or why
-/// it gives none.
-fn sample_of(packet: &[u8], t1: i128, t4: i128) -> Result<Sample, String> {
+/// The sample an answer from `from` gives, sent at `t1` and come back at
+/// `t4`, or why it gives none.
+fn sample_of(packet: &[u8], t1: i128, t4: i128, from: IpAddr) -> Result<Sample, String> {
     let header = ntp::answer(packet).ok_or("not an NTP answer")?;
     if header.stratum == 0 {
         let code = String::from_utf8_lossy(&header.reference).into_owned();
@@ -591,10 +649,12 @@ fn sample_of(packet: &[u8], t1: i128, t4: i128) -> Result<Sample, String> {
     let (offset, delay) = ntp::offset_delay(t1, t2, t3, t4);
     // Short NTP format: 16.16 seconds.
     let short = |value: u32| (i128::from(value) * 1_000_000_000) >> 16;
-    if short(header.root_delay) / 2 + short(header.root_dispersion) > MAX_DISTANCE_NS {
+    let (root_delay, root_dispersion) = (short(header.root_delay), short(header.root_dispersion));
+    if root_delay / 2 + root_dispersion > MAX_DISTANCE_NS {
         return Err("the server is too far from its own reference".into());
     }
-    Ok(Sample { offset, delay: delay.max(0), stratum: header.stratum })
+    let stratum = header.stratum;
+    Ok(Sample { offset, delay: delay.max(0), stratum, root_delay, root_dispersion, from })
 }
 
 /// Writes `text` into `path` whole, through a new file renamed over it.
@@ -648,6 +708,8 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
         synced: false,
         rtc_written: None,
         status: String::new(),
+        upstream: Arc::new(Mutex::new(None)),
+        server: None,
     };
     let _ = fs::write(PID, format!("{}\n", std::process::id()));
     timed.read_settings();
@@ -724,6 +786,16 @@ mod tests {
         assert!(settings.fallback.is_empty());
         assert_eq!(settings.certificates, ["/ca.pem"]);
         assert_eq!(wrong.len(), 1);
+        let (settings, wrong) = parse_settings(
+            "serve = nts\nserve-certificate = /system/settings/ssl/time.pem\n\
+             serve-key = /system/settings/ssl/time.key\nserve-allow = 10.9.0.0/24\n",
+        );
+        assert!(wrong.is_empty(), "{wrong:?}");
+        assert_eq!(settings.serve.mode, serve::Mode::Nts);
+        let (settings, wrong) = parse_settings("serve = nts+ntp\nserve-key = /root/key\n");
+        assert_eq!(settings.serve.mode, serve::Mode::Off, "no certificate");
+        assert_eq!(wrong.len(), 2, "{wrong:?}");
+        assert!(wrong[0].starts_with(&format!("{SETTINGS}:2: serve-key must be a file in")));
         assert_eq!(parse_settings("").0, Settings::default());
         assert_eq!(host_port("time.example:4461", 4460), ("time.example".into(), 4461));
         assert_eq!(host_port("[2001:db8::1]:4460", 1), ("2001:db8::1".into(), 4460));
@@ -739,14 +811,15 @@ mod tests {
         let transmit = ntp::timestamp(u64::try_from(t1 + 1_006_000_000).unwrap());
         let answer = ntp::server_answer(&request, 2, receive, transmit, [0; 4]);
         // 5 ms each way, and 1 ms at the server.
-        let sample = sample_of(&answer, t1, t1 + 11_000_000).unwrap();
+        let from: IpAddr = "192.0.2.1".parse().unwrap();
+        let sample = sample_of(&answer, t1, t1 + 11_000_000, from).unwrap();
         // A second ahead, give or take the timestamps' rounding.
         assert!((sample.offset - 1_000_000_000).abs() < 10, "{}", sample.offset);
         assert!((sample.delay - 10_000_000).abs() < 10, "{}", sample.delay);
         let kiss = ntp::server_answer(&request, 0, receive, transmit, *b"RATE");
-        assert!(sample_of(&kiss, t1, t1).unwrap_err().contains("RATE"));
+        assert!(sample_of(&kiss, t1, t1, from).unwrap_err().contains("RATE"));
         let mut unsynced = answer.clone();
         unsynced[0] |= 0xc0;
-        assert!(sample_of(&unsynced, t1, t1).is_err());
+        assert!(sample_of(&unsynced, t1, t1, from).is_err());
     }
 }
