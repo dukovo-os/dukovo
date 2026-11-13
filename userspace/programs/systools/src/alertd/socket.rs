@@ -27,7 +27,7 @@ use std::os::unix::net::UnixStream;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use serde::Serialize;
 
@@ -229,6 +229,7 @@ fn lines(out: &mut impl Write, items: &[impl Serialize]) -> Result<(), String> {
 mod tests {
     use super::*;
     use std::thread::JoinHandle;
+    use std::time::Instant;
 
     use super::super::tests::{fixture, warning};
     use crate::alerts::protocol::{Active, Change, Channel, Severity, State};

@@ -206,8 +206,11 @@ fn alerts_raised_and_cleared_across_a_restart(vm: &mut Vm) -> Result<(), String>
          mark2; $a clear t1; $a raise t2 --critical --title \"Boot B\" --detail mark3; elevate \
          service alertd restart; echo \"raised $?\"",
         30,
-        &["raised 0"],
+        &["raised 0", "alertd (alerts): Boot B"],
     )?;
+    // The critical alert's notice stays on the screen's bottom line until a
+    // key is pressed (ADR 0212): Enter takes it off and gives a new prompt.
+    vm.type_text("\n")?;
     run(
         vm,
         "$m wait mark3 && $m seen mark1 mark2 mark3",
