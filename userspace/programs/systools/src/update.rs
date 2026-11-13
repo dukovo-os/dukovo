@@ -39,6 +39,7 @@ use std::path::Path;
 use std::process::Command;
 use std::time::Duration;
 
+use crate::alerts::client::Screen;
 use crate::alerts::protocol::{Alert, Severity};
 use crate::args::{Arg, Args};
 use crate::notifyd::{self, Urgency};
@@ -511,10 +512,11 @@ fn weekly_verify() {
     }
 }
 
-/// Tells alertd of `alert`, an event; what keeps it from alertd goes in
-/// the log.
+/// Tells alertd of `alert`, an event that updated has told the consoles
+/// of in its own words already; what keeps it from alertd goes in the
+/// log.
 fn tell_alertd(alert: &Alert) {
-    if let Err(why) = crate::alerts::client::event(alert) {
+    if let Err(why) = crate::alerts::client::event(alert, Screen::Shown) {
         println!("updated: cannot tell alertd: {why}");
     }
 }

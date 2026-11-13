@@ -85,7 +85,9 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
         Command::Test => test(),
         Command::Status { json } => status(json),
         Command::Raise(alert) => client::raise(&alert).map(|()| 0).map_err(fail),
-        Command::Event(alert) => client::event(&alert).map(|()| 0).map_err(fail),
+        Command::Event(alert) => {
+            client::event(&alert, client::Screen::Tell).map(|()| 0).map_err(fail)
+        }
         Command::Clear(key) => client::clear(&key).map(|()| 0).map_err(fail),
     }
 }

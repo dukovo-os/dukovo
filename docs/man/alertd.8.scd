@@ -92,6 +92,10 @@ and the source and the detail below it. A critical one stays until a key
 is pressed. Three changes at once are three notifications; more are one,
 *N alerts changed*, and notifyd's own limit of ten in ten seconds is
 kept to. A notification is not kept anywhere but notifyd's memory.
+An event whose sender has shown it on the consoles in its own words, as
+*sysupdate*(8) does a fallback and *updated*(8) a failed staging, is
+not shown again: a newer notification would take the sender's place on
+the bottom line.
 
 alertd also keeps the notice that the next sign-in shows,
 _/system/live/sign-in/alerts_, with a line for each active alert,
@@ -208,7 +212,9 @@ item, after which alertd closes the connection. Every request has an
 	*{"ok":true}*.
 
 *{"ask":"event","alert":{...}}*
-	Tells of the alert once. It answers *{"ok":true}*.
+	Tells of the alert once. It answers *{"ok":true}*. With
+	*"shown":true*, the sender has shown it on the consoles itself: it
+	goes to the channels and the history, with no notification.
 
 *{"ask":"clear","key":"..."}*
 	Clears the sender's alert of that key, which need not be active.

@@ -25,6 +25,7 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::{Duration, SystemTime};
 
+use crate::alerts::client::Screen;
 use crate::alerts::protocol::{Alert, Severity};
 use crate::args::{Arg, Args};
 use crate::logd;
@@ -454,7 +455,7 @@ fn save(folder: &Path) -> Result<i32, Fail> {
         &detail,
     );
     // This runs early in the start, before alertd: it waits for it.
-    if let Err(why) = crate::alerts::client::event_at_start(&alert, ALERTD_WAIT) {
+    if let Err(why) = crate::alerts::client::event_at_start(&alert, Screen::Tell, ALERTD_WAIT) {
         eprintln!("dumps: cannot tell alertd: {why}");
     }
     Ok(0)

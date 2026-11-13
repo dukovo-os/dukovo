@@ -37,14 +37,25 @@ pub fn raise(alert: &Alert) -> Result<(), String> {
     send(&Request { ask: "raise".into(), alert: Some(alert.clone()), ..Request::default() })
 }
 
+/// Whether the sender of an event shows it on the consoles itself.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Screen {
+    /// alertd tells the consoles of it, as of every change.
+    Tell,
+    /// The sender has shown it there in its own words, which alertd's
+    /// notification would replace on the screen's bottom line: alertd
+    /// sends it to the channels and keeps it in the history only.
+    Shown,
+}
+
 /// Tells the owner of `alert` once, as an event that is never active: a
 /// fallback to the previous version, a restart after a kernel panic.
 ///
 /// # Errors
 ///
 /// As [`raise`].
-pub fn event(alert: &Alert) -> Result<(), String> {
-    send(&Request { ask: "event".into(), alert: Some(alert.clone()), ..Request::default() })
+pub fn event(alert: &Alert, screen: Screen) -> Result<(), String> {
+    send(&event_request(alert, screen))
 }
 
 /// Tells of `alert` as [`event`] does, from a program that runs as the
@@ -54,9 +65,17 @@ pub fn event(alert: &Alert) -> Result<(), String> {
 /// # Errors
 ///
 /// As [`raise`], once `within` has passed.
-pub fn event_at_start(alert: &Alert, within: Duration) -> Result<(), String> {
-    let request = Request { ask: "event".into(), alert: Some(alert.clone()), ..Request::default() };
-    patiently(Path::new(SOCKET), &request, within)
+pub fn event_at_start(alert: &Alert, screen: Screen, within: Duration) -> Result<(), String> {
+    patiently(Path::new(SOCKET), &event_request(alert, screen), within)
+}
+
+fn event_request(alert: &Alert, screen: Screen) -> Request {
+    Request {
+        ask: "event".into(),
+        alert: Some(alert.clone()),
+        shown: screen == Screen::Shown,
+        ..Request::default()
+    }
 }
 
 /// Sends `request` as [`send_to`] does, again each second for up to
@@ -227,7 +246,7 @@ mod tests {
     #[test]
     fn an_event_at_start_waits_for_alertd_to_come() {
         let path = socket("later");
-        let request = Request { ask: "event".into(), alert: Some(full()), ..Request::default() };
+        let request = event_request(&full(), Screen::Shown);
         // Nothing comes: it gives up once the time has passed.
         let started = std::time::Instant::now();
         assert_eq!(
@@ -242,7 +261,16 @@ mod tests {
             alertd(&later, Some("{\"ok\":true}\n")).join().unwrap()
         });
         assert_eq!(patiently(&path, &request, Duration::from_secs(5)), Ok(()));
-        let sent: Request = serde_json::from_str(&server.join().unwrap()).unwrap();
-        assert_eq!(sent, request);
+        let sent = server.join().unwrap();
+        assert!(sent.contains("\"shown\":true"), "{sent}");
+        assert_eq!(serde_json::from_str::<Request>(&sent).unwrap(), request);
+    }
+
+    #[test]
+    fn an_event_alertd_tells_the_consoles_of_says_nothing_of_the_screen() {
+        let told = serde_json::to_string(&event_request(&full(), Screen::Tell)).unwrap();
+        assert!(!told.contains("shown"), "{told}");
+        let request: Request = serde_json::from_str(&told).unwrap();
+        assert!(!request.shown);
     }
 }

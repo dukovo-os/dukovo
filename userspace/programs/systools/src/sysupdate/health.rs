@@ -30,7 +30,7 @@ use spark_api::show::{self, HealthState::Failing, State};
 use super::place::{self, BUILDING, Root};
 use super::starts::{self, Item, Outcome};
 use super::{devices, firmware};
-use crate::alerts::client as alerts;
+use crate::alerts::client::{self as alerts, Screen};
 use crate::alerts::protocol::{Alert, Severity};
 use crate::power;
 use crate::subvolume;
@@ -292,7 +292,7 @@ pub fn run() -> Result<i32, Fail> {
     let (next, checked) = state.checked(root.running, passed);
     if let Some(text) = failure_notice(&starts::all(), this.as_ref(), checked, &named) {
         tell(&text);
-        tell_alertd(&failure_alert(checked, &named, &text));
+        tell_alertd(&failure_alert(checked, &named, &text), Screen::Shown);
     }
     if let Some(next) = next {
         place::write(&copies, next)?;
@@ -324,12 +324,8 @@ pub fn run() -> Result<i32, Fail> {
                     "Spark did not restart the machine: {}\n`elevate reboot` starts {before}.",
                     why.message
                 );
-                tell_alertd(&Alert::new(
-                    "update-failed".into(),
-                    Severity::Critical,
-                    &title,
-                    &detail,
-                ));
+                let alert = Alert::new("update-failed".into(), Severity::Critical, &title, &detail);
+                tell_alertd(&alert, Screen::Tell);
             }
         }
         Checked::FellBack(slot) => {
@@ -633,9 +629,10 @@ fn failure_alert(checked: Checked, named: &str, text: &str) -> Alert {
     Alert::new(key.into(), severity, &title, text)
 }
 
-/// Tells alertd of `alert` as an event, waiting for it to start.
-fn tell_alertd(alert: &Alert) {
-    if let Err(why) = alerts::event_at_start(alert, ALERTD_WAIT) {
+/// Tells alertd of `alert` as an event, waiting for it to start;
+/// `screen` says whether [`tell`] showed it on the consoles already.
+fn tell_alertd(alert: &Alert, screen: Screen) {
+    if let Err(why) = alerts::event_at_start(alert, screen, ALERTD_WAIT) {
         println!("sysupdate: cannot tell alertd of it: {why}");
     }
 }

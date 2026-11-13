@@ -104,6 +104,20 @@ struct Alertd {
     refusing: AtomicUsize,
 }
 
+/// Who hears of a change besides the history: the channels, from the
+/// queue, and the consoles, in a notification.
+#[derive(Clone, Copy, Debug)]
+struct Reach {
+    channels: bool,
+    screen: bool,
+}
+
+impl Reach {
+    const ALL: Reach = Reach { channels: true, screen: true };
+    /// A test, which is sent to the channels at once and not queued.
+    const SCREEN: Reach = Reach { channels: false, screen: true };
+}
+
 /// The time now, in seconds since 1970.
 fn now() -> u64 {
     util::now_ns() / 1_000_000_000
@@ -133,19 +147,19 @@ impl Alertd {
     }
 
     /// Applies what `op` does to the state at the time now, queues the
-    /// changes for the channels when `queue`, saves what changed, and
-    /// tells the screen. The changes, or why `op` refused.
+    /// changes for the channels and tells the screen of them as `reach`
+    /// says, and saves what changed. The changes, or why `op` refused.
     fn apply(
         &self,
         op: impl FnOnce(&mut State, u64) -> Result<Vec<Change>, String>,
-        queue: bool,
+        reach: Reach,
     ) -> Result<Vec<Change>, String> {
         let now = now();
         let mut guard = self.lock();
         let core = &mut *guard;
         let changes = op(&mut core.state, now)?;
         let mut dropped = Vec::new();
-        if queue {
+        if reach.channels {
             for change in &changes {
                 dropped.extend(core.outbox.add(&core.settings.channels, change, now));
             }
@@ -162,7 +176,8 @@ impl Alertd {
         if let Some(active) = alerts {
             // A full queue loses nothing that matters: the sign-in notice
             // is written from the next telling.
-            let _ = self.tells.try_send(Tell { changes: changes.clone(), active });
+            let told = if reach.screen { changes.clone() } else { Vec::new() };
+            let _ = self.tells.try_send(Tell { changes: told, active });
         }
         Ok(changes)
     }
@@ -172,24 +187,26 @@ impl Alertd {
         let apply = |state: &mut State, now| {
             state.raise(source, alert, now).map(|c| c.into_iter().collect())
         };
-        self.apply(apply, true).map(drop)
+        self.apply(apply, Reach::ALL).map(drop)
     }
 
-    /// Records `alert` as an event of `source`.
-    fn event(&self, source: &str, alert: Alert) -> Result<(), String> {
-        self.apply(|state, now| Ok(vec![state.event(source, alert, now)]), true).map(drop)
+    /// Records `alert` as an event of `source`, which has shown it on the
+    /// consoles itself when `shown`.
+    fn event(&self, source: &str, alert: Alert, shown: bool) -> Result<(), String> {
+        let reach = Reach { channels: true, screen: !shown };
+        self.apply(|state, now| Ok(vec![state.event(source, alert, now)]), reach).map(drop)
     }
 
     /// Clears `source`'s alert `key`.
     fn clear(&self, source: &str, key: &str) -> Result<(), String> {
         let apply =
             |state: &mut State, now| Ok(state.clear(source, key, now).into_iter().collect());
-        self.apply(apply, true).map(drop)
+        self.apply(apply, Reach::ALL).map(drop)
     }
 
     /// Makes `alerts` the whole of `source`'s alerts.
     fn set(&self, source: &str, alerts: Vec<Alert>) -> Result<(), String> {
-        self.apply(|state, now| state.set(source, alerts, now), true).map(drop)
+        self.apply(|state, now| state.set(source, alerts, now), Reach::ALL).map(drop)
     }
 
     fn active(&self) -> Vec<Active> {
@@ -215,7 +232,8 @@ impl Alertd {
             title: "Test alert from alertd".into(),
             detail: "If you can read this, alerts reach this channel.".into(),
         };
-        let Ok(changes) = self.apply(|state, now| Ok(vec![state.test(source, alert, now)]), false)
+        let Ok(changes) =
+            self.apply(|state, now| Ok(vec![state.test(source, alert, now)]), Reach::SCREEN)
         else {
             return Vec::new();
         };
@@ -543,6 +561,19 @@ mod tests {
         assert!(screen.try_recv().is_err());
         assert_eq!(alertd.status()[0].waiting, 1);
         assert_eq!(alertd.history(10).len(), 1);
+    }
+
+    #[test]
+    fn an_event_its_sender_showed_goes_to_the_channels_without_a_notification() {
+        let (alertd, screen, _dir) = fixture("shown", vec![json_channel(1)]);
+        alertd.event("sysupdate", warning("update-fell-back"), true).unwrap();
+        assert!(screen.try_recv().unwrap().changes.is_empty());
+        assert_eq!(alertd.status()[0].waiting, 1);
+        assert_eq!(alertd.history(10).len(), 1);
+        // One its sender did not show is told as any change is.
+        alertd.event("dumps", warning("kernel-panic"), false).unwrap();
+        assert_eq!(screen.try_recv().unwrap().changes.len(), 1);
+        assert_eq!(alertd.history(10).len(), 2);
     }
 
     #[test]

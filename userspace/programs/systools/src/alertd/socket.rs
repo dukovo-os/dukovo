@@ -181,7 +181,7 @@ fn answer(
             ok(out)
         }
         "event" => {
-            alertd.event(source, checked(request.alert.as_ref(), "event")?)?;
+            alertd.event(source, checked(request.alert.as_ref(), "event")?, request.shown)?;
             ok(out)
         }
         "clear" => {
@@ -312,7 +312,7 @@ mod tests {
     fn the_history_is_the_newest_changes_oldest_first_and_twenty_without_a_count() {
         let (alertd, _screen, _dir) = fixture("socket-history", Vec::new());
         for n in 0..25 {
-            alertd.event("s", warning(&format!("k{n}"))).unwrap();
+            alertd.event("s", warning(&format!("k{n}")), false).unwrap();
         }
         let all = ask_json(&alertd, &request("history"));
         assert_eq!(all.len(), 21);

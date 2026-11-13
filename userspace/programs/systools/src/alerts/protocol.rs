@@ -158,6 +158,12 @@ pub struct Request {
     /// history: the newest this many changes; 20 if not given.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub count: Option<usize>,
+    /// event: the sender shows it on the consoles itself, so alertd
+    /// sends it to the channels and keeps it in the history without a
+    /// notification of its own, which would take the sender's place on
+    /// the screen's bottom line.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub shown: bool,
 }
 
 /// The answer to a raise, event, clear or set that alertd took.

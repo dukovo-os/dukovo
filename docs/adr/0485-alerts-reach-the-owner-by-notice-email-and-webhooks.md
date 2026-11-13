@@ -65,7 +65,10 @@ was never set up.
     1000, so one service in a loop cannot crowd out the others.
 - **Where it goes.**
   - Always to the screen through notifyd, and to the sign-in notice
-    while active (ADR 0504).
+    while active (ADR 0504). An event whose sender has shown it on the
+    consoles itself (`shown`), as sysupdate shows a fallback (ADR 0501),
+    is not shown again, as a newer notification would replace the
+    sender's on the bottom line.
   - To each channel `/system/settings/alerts.toml` names: email, and
     webhooks for ntfy, Matrix, Slack, Discord, or JSON for a program of
     the owner's. A channel's `severity` and `cleared` choose what it

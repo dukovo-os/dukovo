@@ -4,6 +4,7 @@
 //! The owner's screen (ADR 0485): each change is told at once as a
 //! notification, which notifyd(8) shows on the consoles, and the next
 //! sign-in shows what is active as a notice with a line for each alert.
+//! An event its sender showed itself is not told here (`shown`).
 //!
 //! One thread does both, so that a socket thread never waits for notifyd,
 //! and tells of nothing twice: it takes what the socket threads queue.
