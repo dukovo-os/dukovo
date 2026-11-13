@@ -107,6 +107,21 @@ pub trait Cpu {
     /// faulting.
     fn backtrace(frame_pointer: usize, out: &mut [usize]) -> usize;
 
+    /// Calls `word` with each 8-byte word of the kernel stack of CPU
+    /// `index` that holds `stack_pointer`, from there towards the stack's
+    /// top, for at most `max` bytes. Only memory inside that CPU's kernel
+    /// stacks, or its running thread's, is read. Returns false, calling
+    /// nothing, when `stack_pointer` is on none of them. For crash dumps,
+    /// from the panic path, once the other CPUs have stopped.
+    fn read_stack(
+        _index: usize,
+        _stack_pointer: usize,
+        _max: usize,
+        _word: &mut dyn FnMut(StackWord),
+    ) -> bool {
+        false
+    }
+
     /// Stops in the kernel debugger's breakpoint handler, as a breakpoint
     /// instruction placed in the code would (`int3` on x86-64).
     fn breakpoint();
@@ -292,6 +307,12 @@ pub trait Smp {
     /// that did not stop.
     fn stopped_trace(index: usize, out: &mut [usize]) -> usize;
 
+    /// The stack pointer CPU `index` had when [`Smp::stop_other_cpus`]
+    /// stopped it, if it stopped and the architecture keeps it.
+    fn stopped_stack_pointer(_index: usize) -> Option<usize> {
+        None
+    }
+
     /// The package, core, hardware thread and NUMA node of CPU `index`.
     fn cpu_place(index: usize) -> Option<CpuPlace>;
 }
@@ -361,6 +382,12 @@ pub trait Timer {
     /// ([`clock::WallClock`]); `None` while the kernel knows none: the
     /// machine has no clock it can read, and nothing has set it.
     fn wall_clock_ns() -> Option<u64>;
+
+    /// [`Timer::wall_clock_ns`] for the panic path: `None` rather than
+    /// waiting for a change that a stopped CPU left half made.
+    fn wall_clock_ns_without_waiting() -> Option<u64> {
+        None
+    }
 
     /// Sets the time of day to `ns` since 1970 (UTC) at once, ending any
     /// slew.
@@ -936,6 +963,18 @@ impl Fault {
     pub fn registers(&self) -> &[(&'static str, u64)] {
         &self.registers[..self.register_count.min(self.registers.len())]
     }
+}
+
+/// One 8-byte word of a kernel stack, as [`Cpu::read_stack`] reads it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StackWord {
+    /// Where it is.
+    pub address: usize,
+    /// What it holds.
+    pub value: usize,
+    /// Whether `value` is an address in the kernel's code, such as a
+    /// return address.
+    pub code: bool,
 }
 
 /// Machine-wide services.

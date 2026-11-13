@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 # 0012. Keep the console output in reserved memory across warm restarts
 
-- Status: Accepted
+- Status: Accepted; the region is 2 MiB, the second holding the crash dump of a panic, since [0483](0483-kernel-crash-dumps-are-small-text-dumps-kept-in-ram-across-the-restart-and-saved-at-the-next-boot.md)
 - Date: 2026-10-20
 
 ## Context

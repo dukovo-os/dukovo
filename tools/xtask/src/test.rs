@@ -6707,7 +6707,7 @@ fn consoles(vm: &mut Vm, case: &Case) -> Result<(), String> {
     vm.expect("Boot complete.")?;
     vm.expect("spark: Spark v2 is process ")?;
     vm.expect("spark: listening at /system/live/spark/control")?;
-    vm.expect("spark: 29 services in /system/settings/spark/services, 25 enabled")?;
+    vm.expect("spark: 30 services in /system/settings/spark/services, 26 enabled")?;
     vm.expect("spark: started consoled (/system/commands/consoled) as process ")?;
     vm.expect("consoled: console of ")?;
     vm.expect("consoled: started /system/commands/nukesh on tty1 as process ")?;
@@ -7879,6 +7879,7 @@ fn crash_reboot(vm: &mut Vm, case: &Case) -> Result<(), String> {
     vm.expect("Crash log: boot 2; the previous boot (1) ended with a kernel panic")?;
     vm.expect("| [")?;
     vm.expect("selftest crash-reboot: deliberate panic")?;
+    vm.expect("Crash log: the previous boot's dump is kept for dumps(8) (")?;
     vm.expect("selftest crash-reboot: passed")?;
     vm.expect("Boot complete.")?;
     vm.expect_exit(QEMU_EXIT_SUCCESS)
@@ -7890,12 +7891,14 @@ fn crash_reboot(vm: &mut Vm, case: &Case) -> Result<(), String> {
 /// 4 GiB when there is RAM there, otherwise 64 MiB: under BIOS, GRUB loads
 /// the boot archive below 64 MiB, and the archive reaches past it.
 fn crash_log_place(reserved: &[(u64, u64)], floor: u64) -> Result<(u64, u64), String> {
+    // The log's 1 MiB and the crash dumps' (ADR 0483).
+    const SIZE: u64 = 2 << 20;
     let (place, before) = reserved.split_last().ok_or("the kernel reserved no crash log")?;
     let mut start = floor;
-    while let Some(&(_, end)) = before.iter().find(|&&(s, e)| s < start + (1 << 20) && start <= e) {
+    while let Some(&(_, end)) = before.iter().find(|&&(s, e)| s < start + SIZE && start <= e) {
         start = (end + 1).next_multiple_of(2 << 20);
     }
-    if *place != (start, start + 0xf_ffff) {
+    if *place != (start, start + SIZE - 1) {
         return Err(format!("the crash log is at {:#x}, not at {start:#x}", place.0));
     }
     Ok(*place)
@@ -10335,7 +10338,7 @@ fn principals(vm: &mut Vm, case: &Case) -> Result<(), String> {
 fn services(vm: &mut Vm, case: &Case) -> Result<(), String> {
     boot_report(vm, case)?;
     vm.expect("Boot complete.")?;
-    vm.expect_anywhere("spark: 29 services in /system/settings/spark/services, 25 enabled")?;
+    vm.expect_anywhere("spark: 30 services in /system/settings/spark/services, 26 enabled")?;
     vm.expect_ahead("spark: started /system/tests/posix/servicetest as process ")?;
     let code = program_line(vm, "(/system/tests/posix/servicetest) exited with code ")?;
     let log = vm.log();

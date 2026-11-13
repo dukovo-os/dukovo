@@ -30,6 +30,7 @@ const SHIPPED: &[(&str, &str)] = &[
     ("snap", include_str!("../../../defaults/spark/services/snap.toml")),
     ("updated", include_str!("../../../defaults/spark/services/updated.toml")),
     ("logforward", include_str!("../../../defaults/spark/services/logforward.toml")),
+    ("dumps", include_str!("../../../defaults/spark/services/dumps.toml")),
     ("netd", include_str!("../../../defaults/spark/services/netd.toml")),
     ("netd", include_str!("../../../spark/tests/services/dhcp/netd.toml")),
 ];
@@ -73,6 +74,22 @@ fn every_shipped_file_reads() {
         service::from_toml(SHIPPED[SHIPPED.len() - 1].1).unwrap().permissions,
         netd.permissions
     );
+}
+
+#[test]
+fn dumps_reads_the_device_of_the_dump_and_changes_its_folder() {
+    let (_, text) = SHIPPED.iter().find(|(name, _)| *name == "dumps").unwrap();
+    let dumps = service::from_toml(text).unwrap();
+    assert_eq!(dumps.program, "/system/commands/dumps");
+    assert_eq!(dumps.arguments, ["save"]);
+    // After logd, which is 5, so that the line it logs is kept.
+    assert_eq!((dumps.order, dumps.restart), (6, Restart::Never));
+    let place = |path: &str, write| Place { path: path.into(), write };
+    assert_eq!(
+        dumps.permissions.places(),
+        [place("/devices/crashdump", false), place("/system/state/crash", true)]
+    );
+    assert!(!dumps.permissions.runs_with_your_access);
 }
 
 #[test]

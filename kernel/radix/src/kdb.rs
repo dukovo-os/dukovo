@@ -17,7 +17,7 @@
 use core::fmt::{self, Write};
 use core::sync::atomic::{AtomicBool, Ordering};
 
-use radix_hal::{Fault, InterruptController, PageTable, Platform, Smp, Timer};
+use radix_hal::{Fault, PageTable, Platform, Timer};
 use radix_kdb::{Command, LineEditor, SymbolQuery, TraceAction};
 use radix_klog::crashlog::Ending;
 use radix_klog::{info, trace, warn};
@@ -163,8 +163,8 @@ fn run(session: &Session<'_>, command: Command<'_>) {
         }
         Command::Log { count } => show_log(count),
         Command::Trace(action) => show_trace(action),
-        Command::Cpus => show_cpus(),
-        Command::Memory => show_memory(),
+        Command::Cpus => report::write_cpu_activity(&mut |args| say(args)),
+        Command::Memory => report::write_memory(&mut |args| say(args)),
         Command::Heap => report::write_heap(&mut |args| say(args)),
         Command::Capabilities => caps::write_census(&mut |args| say(args)),
         Command::Threads => sched::write_threads(&mut |args| say(args)),
@@ -258,46 +258,6 @@ fn show_trace(action: TraceAction) {
             ));
         }
     }
-}
-
-fn show_cpus() {
-    say(format_args!(
-        "{} CPUs, interrupts by {}, timer at {} Hz:",
-        Arch::cpu_count(),
-        Arch::name(),
-        Arch::tick_hz()
-    ));
-    for index in 0..Arch::cpu_count() {
-        let Some(cpu) = Arch::cpu_info(index) else { continue };
-        say(format_args!(
-            "  cpu{index}: APIC ID {}{}, {}, {} timer interrupts, {} pings",
-            cpu.hardware_id,
-            if cpu.boot_cpu { ", boot CPU" } else { "" },
-            if cpu.online { "online" } else { "offline" },
-            Arch::ticks(index),
-            Arch::pings_received(index)
-        ));
-    }
-}
-
-fn show_memory() {
-    let Some(boot) = crate::boot_summary() else {
-        say(format_args!("the memory map was not recorded"));
-        return;
-    };
-    say(format_args!("Memory map:"));
-    report::write_memory_map(boot.memory_map, &mut |args| say(args));
-    say(format_args!("Reserved by the kernel:"));
-    report::write_reservations(boot.reservations, &mut |args| say(args));
-    say(format_args!("Frame allocator zones:"));
-    report::write_zones(&mut |args| say(args));
-    let (dropped, failed) = crate::fs::writeback::stats();
-    say(format_args!(
-        "Page cache: {} pages held, {dropped} dropped to reclaim memory, {failed} failed \
-         write-backs",
-        radix_block::mem::pages()
-    ));
-    Arch::describe(&mut |args| say(args));
 }
 
 fn examine(address: u64, len: usize) {

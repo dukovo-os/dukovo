@@ -163,7 +163,7 @@ time, CPU, text) and passes it to each registered sink:
 | Serial | arch | `loglevel` and above | 16550 at 0x3F8, 115200 8N1 |
 | VGA text | arch | `loglevel` and above | only when GRUB left text mode |
 | Framebuffer | `radix-fbcon` via `radix` | `loglevel` and above | Spleen PSF fonts (ADR 0015), colours by level, scrolls |
-| Crash log | `radix-klog::crashlog` via `radix` | all | reserved RAM, survives warm restarts (ADR 0012) |
+| Crash log | `radix-klog::crashlog` via `radix` | all | reserved RAM, survives warm restarts (ADR 0012); holds the panic's crash dump too (ADR 0483) |
 
 A sink registered late can ask for the records logged before it, which is
 how the framebuffer shows the start of boot. Sinks take their own locks,

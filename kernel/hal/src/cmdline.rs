@@ -128,12 +128,22 @@ pub const FLAGS: &[Flag] = &[
         summary: "do not keep the log in memory for the next boot",
     },
     Flag {
+        name: "crashdump",
+        value: Some("off"),
+        summary: "write no crash dump when the kernel panics (ADR 0483)",
+    },
+    Flag {
         name: "selftest",
         value: Some("name"),
         summary: "run a self-test at the end of boot: page-fault, crash-reboot, breakpoint, \
                   mm-stress, stack-overflow, smep, smap, tlb, msr, caps, fpu, sched-fair, \
                   sched-rt, sched-pi, sched-balance, lockdep, rcu, oom, user, ipc, fuzz, bench, \
                   iommu, net, gpio or i2c",
+    },
+    Flag {
+        name: "init-after-selftest",
+        value: None,
+        summary: "start the first program after the self-test of selftest=, as after a boot without one",
     },
     Flag {
         name: "fuzz-seed",
@@ -477,6 +487,12 @@ mod tests {
             );
             assert!(FLAGS[i + 1..].iter().all(|other| other.name != flag.name));
         }
+    }
+
+    #[test]
+    fn the_flags_ob_test_gives_are_known() {
+        let line = CommandLine::new("selftest=crash-reboot init-after-selftest panic=0 qemu-exit");
+        assert_eq!(line.unknown().count(), 0, "{:?}", line.unknown().collect::<Vec<_>>());
     }
 
     #[test]

@@ -364,7 +364,8 @@ Paging: SMEP on, SMAP on, PCID on; direct map in 1 GiB pages
 
 Before it allocates anything the kernel sets aside, and lists at boot: the
 first MiB (firmware data and the page that starts the other CPUs), the
-kernel image, the boot information, boot modules, and the 1 MiB crash log.
+kernel image, the boot information, boot modules, and the 2 MiB crash log,
+whose first MiB is the log and whose second holds the crash dump.
 The crash log goes at the first 2 MiB boundary above 4 GiB where there is
 RAM, or else at the first one from 64 MiB, clear of the kernel image and
 the modules, so it is in the same place on every boot of the same machine;
@@ -668,6 +669,13 @@ them to *init*, and the kernel does not read them.
 
 *crashlog*=off
 	Do not reserve the crash log, and do not show a previous boot's log.
+	With no crash log there is no crash dump either.
+
+*crashdump*=off
+	Write no crash dump when the kernel panics. The report and the crash
+	log are kept as before. A dump costs 1 MiB of the crash log's
+	region, which is reserved either way. See *radix-debug*(7) and
+	*dumps*(8).
 
 *selftest*=_name_
 	Run a self-test at the end of boot: *page-fault*, *crash-reboot*,
@@ -1407,7 +1415,7 @@ the steps of a smoke test and its results.
 
 # SEE ALSO
 
-*spark*(8), *sysupdate*(8), *radix-processes*(7), *radix-debug*(7), *radix-capabilities*(7), *radix-scheduling*(7), *ob*(1), *dukovo.toml*(5), *rgrub-setup*(8), *serial*(8), *serial-console*(8)
+*spark*(8), *sysupdate*(8), *radix-processes*(7), *radix-debug*(7), *dumps*(8), *radix-capabilities*(7), *radix-scheduling*(7), *ob*(1), *dukovo.toml*(5), *rgrub-setup*(8), *serial*(8), *serial-console*(8)
 
 The Multiboot2 specification:
 https://www.gnu.org/software/grub/manual/multiboot2/

@@ -37,6 +37,14 @@ that is not listed is a bug.
 	(*radix-debug*(7)). It goes into a report only if the user copies
 	it there.
 
+*Crash dumps*
+	When the kernel panics, a text dump of its state, in reserved memory
+	until the next boot and then in _/system/state/crash_: the ten
+	newest, in at most 64 MiB, readable by root alone (*dumps*(8),
+	*radix-debug*(7)). It holds what the kernel held, including the
+	contents of its stacks. It goes into a report only if the user
+	copies it there.
+
 *Notifications*
 	In *notifyd*(8)'s memory only, the last 64, until it stops.
 

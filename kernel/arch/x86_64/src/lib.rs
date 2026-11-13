@@ -77,7 +77,8 @@ use radix_hal::cmdline::CommandLine;
 use radix_hal::{
     Aml, BootParams, Cpu, CpuInfo, CpuLocal, CpuPlace, Devices, Fault, FaultTest,
     InterruptController, Ipi, MapPageError, PageEdit, PageTable, PciSegment, Platform, Scanned,
-    Shootdowns, SignalFrame, Smp, SyscallRegs, Threads, Timer, UserAccess, UserFault, UserMode,
+    Shootdowns, SignalFrame, Smp, StackWord, SyscallRegs, Threads, Timer, UserAccess, UserFault,
+    UserMode,
 };
 
 /// Whether idle CPUs wait with MONITOR and MWAIT.
@@ -171,6 +172,30 @@ impl Cpu for Arch {
             fp = next;
         }
         count
+    }
+
+    fn read_stack(
+        index: usize,
+        stack_pointer: usize,
+        max: usize,
+        word: &mut dyn FnMut(StackWord),
+    ) -> bool {
+        let Some(stack) = percpu::get(index).and_then(|cpu| cpu.stack_containing(stack_pointer))
+        else {
+            return false;
+        };
+        let start = (stack_pointer & !7).max(stack.start);
+        let end = stack.end.min(start.saturating_add(max));
+        for address in (start..end.saturating_sub(7)).step_by(8) {
+            // SAFETY: `address` and the 7 bytes after it lie inside one of
+            // that CPU's kernel stacks, which are mapped for the kernel's
+            // whole life, or its running thread's, which stays mapped while
+            // that thread runs, and a stopped CPU's runs for good; a
+            // volatile read of it has no side effects.
+            let value = unsafe { core::ptr::read_volatile(address as *const usize) };
+            word(StackWord { address, value, code: paging::is_kernel_text(value) });
+        }
+        true
     }
 
     fn breakpoint() {
@@ -317,6 +342,11 @@ impl Smp for Arch {
         smp::stop_others()
     }
 
+    fn stopped_stack_pointer(index: usize) -> Option<usize> {
+        let cpu = percpu::get(index).filter(|cpu| cpu.stopped.load(Ordering::Acquire))?;
+        Some(cpu.stopped_sp.load(Ordering::Relaxed))
+    }
+
     fn stopped_trace(index: usize, out: &mut [usize]) -> usize {
         let Some(cpu) = percpu::get(index).filter(|cpu| cpu.stopped.load(Ordering::Acquire)) else {
             return 0;
@@ -393,6 +423,10 @@ impl Timer for Arch {
 
     fn wall_clock_ns() -> Option<u64> {
         rtc::WALL_CLOCK.read(time::now_ns())
+    }
+
+    fn wall_clock_ns_without_waiting() -> Option<u64> {
+        rtc::WALL_CLOCK.read_without_waiting(time::now_ns())
     }
 
     fn set_wall_clock_ns(ns: u64) {

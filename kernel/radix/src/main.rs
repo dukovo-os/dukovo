@@ -129,6 +129,8 @@ pub struct Settings {
     /// Programs' memory goes to random places, unless `norandmaps` keeps
     /// it in the same places every boot (`user::random::place`).
     pub random_maps: bool,
+    /// A panic writes a crash dump, unless `crashdump=off` (ADR 0483).
+    pub crash_dump: bool,
 }
 
 static SETTINGS: Once<Settings> = Once::new();
@@ -155,6 +157,7 @@ pub fn settings() -> Settings {
         lockdep: None,
         fuzz_seed: None,
         random_maps: true,
+        crash_dump: true,
     })
 }
 
@@ -195,6 +198,7 @@ pub extern "Rust" fn radix_kernel_main(mut params: BootParams) -> ! {
         },
         fuzz_seed: flags.value("fuzz-seed").and_then(|v| v.parse().ok()),
         random_maps: !flags.has("norandmaps"),
+        crash_dump: flags.value("crashdump") != Some("off"),
     };
     let _ = SETTINGS.set(settings);
     if let Some(level) = flags.value("loglevel") {

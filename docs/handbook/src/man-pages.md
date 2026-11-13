@@ -18,7 +18,7 @@ for section 2, which `ridlc` generates from the interface definitions in
 | `radix-proc(5)` | `/processes`: the processes, the mounts, memory and uptime as text |
 | `radix-sysfs(5)` | `/kernel`: the kernel's view of the hardware and its settings, one value per file, in Linux's layout |
 | `dukovo-boot(7)` | How Dukovo boots, its consoles, the kernel command line and microcode |
-| `radix-debug(7)` | Panic reports, the crash log, the kernel debugger, the lock checker, GDB and trace points |
+| `radix-debug(7)` | Panic reports, the crash log and crash dump, the kernel debugger, the lock checker, GDB and trace points |
 | `radix-capabilities(7)` | Capabilities: object kinds, rights, badges, sealing, delegation and revocation |
 | `radix-scheduling(7)` | Threads, scheduling classes, priority inheritance, RCU, resource domains and the out-of-memory policy |
 | `radix-ipc(7)` | User mode, the system calls, endpoints, notifications, channels, rings and the random capability |
@@ -40,6 +40,7 @@ for section 2, which `ridlc` generates from the interface definitions in
 | `cloud-setup(8)`, `cloud-config(5)` | Setting a cloud machine up at its first boot from its config disk or its cloud's metadata service, and the user data it reads |
 | `guest-agent(8)` | Answering a virtual machine's host in QEMU's guest agent protocol: its addresses and system, and a clean shutdown |
 | `logd(8)`, `log(1)`, `journalctl(1)`, `logger(1)`, `logtrim(8)`, `log(5)` | The system's log and its audit log: what logd keeps, who reads what, how to read it by service, level, time and boot, how a script writes to it, and how much it keeps |
+| `dumps(8)` | The kernel's crash dumps: what a panic leaves, saving, listing, showing and deleting the dumps, and testing that a panic is saved |
 | `logforward(8)`, `logforward.toml(5)` | Sending the log to syslog servers over TLS, TCP or UDP: the destinations and what each is sent, the certificate check, how a server that was away is sent what it missed, and the commands that show where each stands and test it |
 | `notifyd(8)`, `notify-send(1)`, `notifications(1)` | Notifications: sending them, how the console shows them, and listing them |
 | `dukovo-privacy(7)` | The privacy promise: what Dukovo keeps on the machine and what it sends on its own |

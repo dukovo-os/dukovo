@@ -566,6 +566,7 @@ fn nmi(frame: &TrapFrame) {
         for (slot, &address) in cpu.stopped_at.iter().zip(&trace[..len]) {
             slot.store(address, Ordering::Relaxed);
         }
+        cpu.stopped_sp.store(frame.rsp as usize, Ordering::Relaxed);
         cpu.online.store(false, Ordering::Relaxed);
         cpu.stopped.store(true, Ordering::Release);
         STOPPED.fetch_add(1, Ordering::AcqRel);
