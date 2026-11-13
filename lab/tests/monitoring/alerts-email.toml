@@ -1,0 +1,129 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# alertd(8) against a mail catcher on the lab PC, Mailpit (alerts-mail.sh
+# beside this file), which takes mail with STARTTLS on port 587 with a
+# certificate that an authority of the test's own signed (ADR 0485): the
+# machine trusts that authority through `ca`, `alerts test` is mailed, an
+# alert that `alerts raise` makes is mailed once and a second raise sends
+# nothing, `alerts clear` is mailed, a server whose certificate is not
+# trusted is refused in words that say why, and a settings file that
+# others can read is refused too. The authority and the keys are the
+# test's own, of no use elsewhere, and both machines' clocks have to be
+# right, as the certificate holds dates. A mail takes up to 30 seconds to
+# go, as alertd gathers the changes that come together into one.
+about = "alertd mails an alert to the lab PC's mail catcher over STARTTLS: alerts test, one mail for a raise and none for the same raise again, one for the clear, and a refusal that names the certificate or the file's mode (ADR 0485)"
+time = "10m"
+host_needs = ["mailpit", "openssl", "curl", "nc"]
+
+[[step]]
+host = "sh {here}/alerts-mail.sh serve {port:mailapi} {peer}"
+background = true
+ready = "mailpit ready"
+
+# The authority's certificate goes into the folder of certificates the
+# service may read.
+[[step]]
+host = "sh {here}/copy-file.sh ca.pem {machine} {machine-port:22}"
+expect = "copied: ca.pem"
+[[step]]
+run = "sh -c 'cp /users/lab/ca.pem /system/settings/ssl/lab-alerts-ca.pem && echo placed'"
+root = true
+expect = "placed"
+
+# The account, to two addresses, in a file only root reads; alertd reads
+# it again.
+[[step]]
+run = "sh -c 'cat > /system/settings/alerts.toml && chmod 600 /system/settings/alerts.toml && service alertd reload && sleep 2 && echo configured'"
+root = true
+input = """
+[email]
+to = ["ops@lab.test", "me@lab.test"]
+from = "alerts@lab.test"
+server = "{peer}"
+port = 587
+user = "lab"
+password = "lab-secret"
+ca = "/system/settings/ssl/lab-alerts-ca.pem"
+"""
+expect = "configured"
+
+# The test alert reaches the catcher, and the channel says so.
+[[step]]
+run = "alerts test"
+root = true
+expect = "email to ops@lab.test and 1 more: sent"
+[[step]]
+host = "sh {here}/alerts-mail.sh wait {port:mailapi} 'Test alert' 30"
+expect = "mails with Test alert: 1"
+
+# A raise is mailed once, as a warning with the title in the subject.
+[[step]]
+run = "alerts raise lab-mail --title 'Lab alert to mail' --detail 'From the alerts-email test.'"
+root = true
+[[step]]
+host = "sh {here}/alerts-mail.sh wait {port:mailapi} 'Warning: Lab alert to mail' 90"
+expect = "mails with Warning: Lab alert to mail: 1"
+
+# The same raise again is not told again.
+[[step]]
+run = "alerts raise lab-mail --title 'Lab alert to mail' --detail 'Raised again.'"
+root = true
+[[step]]
+wait = "45s"
+[[step]]
+host = "sh {here}/alerts-mail.sh count {port:mailapi} 'Lab alert to mail'"
+expect = "mails with Lab alert to mail: 1"
+[[step]]
+run = "alerts"
+root = true
+expect = ["warning", "authd", "Lab alert to mail"]
+
+# The clear is mailed.
+[[step]]
+run = "alerts clear lab-mail"
+root = true
+[[step]]
+host = "sh {here}/alerts-mail.sh wait {port:mailapi} 'Cleared: Lab alert to mail' 90"
+expect = "mails with Cleared: Lab alert to mail: 1"
+[[step]]
+run = "alerts history -n 5"
+root = true
+expect = ["test", "raised", "cleared", "Lab alert to mail"]
+[[step]]
+run = "alerts status"
+root = true
+expect = ["email to ops@lab.test and 1 more", "last sent", "waiting     0 messages"]
+
+# Without the authority the server's certificate is not trusted, and the
+# test says so.
+[[step]]
+run = "sh -c 'grep -v \"^ca = \" /system/settings/alerts.toml > /users/lab/alerts-no-ca.toml; cp /users/lab/alerts-no-ca.toml /system/settings/alerts.toml && chmod 600 /system/settings/alerts.toml && service alertd reload && sleep 2 && echo reloaded'"
+root = true
+expect = "reloaded"
+[[step]]
+run = "alerts test"
+root = true
+exit = 1
+expect = "its certificate is not from an authority the system trusts or the file `ca` names"
+
+# A file that others can read holds a password that is not safe there, so
+# no channel is set up, and the log says what to do.
+[[step]]
+run = "sh -c 'chmod 644 /system/settings/alerts.toml && service alertd reload && sleep 2 && echo opened'"
+root = true
+expect = "opened"
+[[step]]
+run = "alerts status"
+root = true
+expect = "No channels are set up"
+[[step]]
+run = "log alertd"
+root = true
+expect = "/system/settings/alerts.toml can be read by others; chmod 600 /system/settings/alerts.toml"
+
+# The machine as it was.
+[[step]]
+run = "sh -c 'rm -f /system/settings/alerts.toml /system/settings/ssl/lab-alerts-ca.pem /users/lab/ca.pem /users/lab/alerts-no-ca.toml && service alertd reload && echo cleaned'"
+root = true
+expect = "cleaned"

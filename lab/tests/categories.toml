@@ -56,6 +56,11 @@ title = "Services and logs"
 about = "Spark's services: listed, stopped and started, and what they log; and the catalog's services, such as nginx"
 
 [[category]]
+name = "monitoring"
+title = "Monitoring and alerts"
+about = "What reaches the owner: alerts by email and to webhooks, and the early warning of a disk filling"
+
+[[category]]
 name = "time"
 title = "Time and date"
 about = "The clock, the time zone, and keeping time by NTP"

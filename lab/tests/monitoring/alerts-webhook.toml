@@ -1,0 +1,130 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# alertd(8) against a receiver on the lab PC (alerts-hooks.sh and
+# alerts-receiver.py beside this file) that stands in for ntfy, Slack,
+# Discord, Matrix and a program of the owner's, over HTTPS with a
+# certificate that an authority of the test's own signed (ADR 0485): the
+# machine trusts that authority as a root certificate, `alerts test`
+# reaches each kind in the form its service takes, with the token the kind
+# sends in a header and none for those that have it in the address, a
+# raise and a clear are told to each, and a service that refuses says so
+# in its own words. The authority and the keys are the test's own, of no
+# use elsewhere, and both machines' clocks have to be right, as the
+# certificate holds dates. A message takes up to 30 seconds to go, as
+# alertd gathers the changes that come together into one.
+about = "alertd posts an alert to the lab PC's receiver in the form of ntfy, Slack, Discord, Matrix and json: alerts test reaches each, a raise and a clear are told to each, and a refusal is quoted (ADR 0485)"
+time = "8m"
+host_needs = ["python3", "openssl"]
+
+[[step]]
+host = "sh {here}/alerts-hooks.sh serve {port:hooks} {peer}"
+background = true
+ready = "receiver ready"
+
+# The webhooks are sent over TLS to the system's root certificates, so the
+# authority goes into the file of them: a copy of the system's with it
+# added, in place of the link (dukovo-certificates(7)).
+[[step]]
+host = "sh {here}/copy-file.sh ca.pem {machine} {machine-port:22}"
+expect = "copied: ca.pem"
+[[step]]
+run = "sh -c 'cd /system/settings/ssl/certs && cat /system/resources/certificates/ca-certificates.crt /users/lab/ca.pem > ca-certificates.crt.new && mv ca-certificates.crt.new ca-certificates.crt && echo trusted'"
+root = true
+expect = "trusted"
+
+# One webhook of each kind, in a file only root reads.
+[[step]]
+run = "sh -c 'cat > /system/settings/alerts.toml && chmod 600 /system/settings/alerts.toml && service alertd reload && sleep 2 && echo configured'"
+root = true
+input = """
+[[webhook]]
+kind = "ntfy"
+url = "https://{peer}:{port:hooks}/ntfy/lab-topic"
+
+[[webhook]]
+kind = "slack"
+url = "https://{peer}:{port:hooks}/slack/T0/B0/XXXX"
+
+[[webhook]]
+kind = "discord"
+url = "https://{peer}:{port:hooks}/discord/0/XXXX"
+
+[[webhook]]
+kind = "matrix"
+url = "https://{peer}:{port:hooks}"
+room = "!lab:example.org"
+token = "lab-matrix-token"
+
+[[webhook]]
+kind = "json"
+url = "https://{peer}:{port:hooks}/json"
+token = "lab-json-token"
+"""
+expect = "configured"
+
+# The test alert reaches every kind.
+[[step]]
+run = "alerts test"
+root = true
+expect = [
+    "ntfy ({peer}): sent",
+    "slack ({peer}): sent",
+    "discord ({peer}): sent",
+    "matrix ({peer}): sent",
+    "json ({peer}): sent",
+]
+[[step]]
+host = "sh {here}/alerts-hooks.sh wait 'Test alert from alertd' 30"
+expect = [
+    "hook ntfy POST /ntfy/lab-topic auth=none title=",
+    "hook slack POST /slack/T0/B0/XXXX auth=none",
+    "hook discord POST /discord/0/XXXX auth=none",
+    "hook matrix PUT /_matrix/client/v3/rooms/%21lab%3Aexample.org/send/m.room.message/",
+    "hook json POST /json auth=bearer",
+    "hooks with Test alert from alertd: 5",
+]
+
+# A raise is told to each, once, and so is the clear. The subject is in
+# the text of Slack, Discord and Matrix, and is the title of ntfy's, which
+# is four of the five: the json one has the state as data.
+[[step]]
+run = "alerts raise lab-hook --title 'Lab alert to hooks' --detail 'From the alerts-webhook test.'"
+root = true
+[[step]]
+host = "sh {here}/alerts-hooks.sh wait 'Warning: Lab alert to hooks' 90"
+expect = "hooks with Warning: Lab alert to hooks: 4"
+[[step]]
+host = "sh {here}/alerts-hooks.sh wait 'Lab alert to hooks' 5"
+expect = ["From the alerts-webhook test", "hook ntfy"]
+[[step]]
+run = "alerts clear lab-hook"
+root = true
+[[step]]
+host = "sh {here}/alerts-hooks.sh wait 'Cleared: Lab alert to hooks' 90"
+expect = "hooks with Cleared: Lab alert to hooks: 4"
+
+# A service that refuses is quoted: Discord's address now leads to a path
+# the receiver answers with 403.
+[[step]]
+run = "sh -c 'sed -i \"s#/discord/0/XXXX#/denied/discord#\" /system/settings/alerts.toml && service alertd reload && sleep 2 && echo changed'"
+root = true
+expect = "changed"
+[[step]]
+run = "alerts test"
+root = true
+exit = 1
+expect = [
+    "discord ({peer}): failed: discord answered 403 Forbidden",
+    "ntfy ({peer}): sent",
+]
+[[step]]
+run = "alerts status"
+root = true
+expect = ["discord ({peer})", "last failed", "discord answered 403 Forbidden"]
+
+# The machine as it was.
+[[step]]
+run = "sh -c 'rm -f /system/settings/alerts.toml /users/lab/ca.pem && ln -sf /system/resources/certificates/ca-certificates.crt /system/settings/ssl/certs/ca-certificates.crt && service alertd reload && echo cleaned'"
+root = true
+expect = "cleaned"

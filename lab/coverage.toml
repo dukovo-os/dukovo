@@ -14,6 +14,11 @@
 # a script runs it, or by its own name where the program does what its
 # name says.
 [commands]
+alertd = ["monitoring/alerts-email", "monitoring/alerts-webhook", "monitoring/early-warning-disk"]
+alerts = ["monitoring/alerts-email", "monitoring/alerts-webhook", "monitoring/early-warning-disk"]
+"alerts test" = ["monitoring/alerts-email", "monitoring/alerts-webhook"]
+"alerts raise" = ["monitoring/alerts-email", "monitoring/alerts-webhook"]
+"alerts clear" = ["monitoring/alerts-email", "monitoring/alerts-webhook"]
 dumps = ["hardware/crash-dump"]
 "dumps test" = ["hardware/crash-dump"]
 logforward = ["services/log-forward"]
@@ -33,6 +38,7 @@ valkey-check-rdb = ["services/valkey"]
 valkey-cli = ["services/valkey"]
 
 [services]
+alertd = ["monitoring/alerts-email", "monitoring/alerts-webhook", "monitoring/early-warning-disk"]
 dumps = ["hardware/crash-dump"]
 logforward = ["services/log-forward"]
 metricsd = ["monitoring/metrics-scrape"]

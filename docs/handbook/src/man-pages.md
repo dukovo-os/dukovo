@@ -44,6 +44,7 @@ for section 2, which `ridlc` generates from the interface definitions in
 | `logforward(8)`, `logforward.toml(5)` | Sending the log to syslog servers over TLS, TCP or UDP: the destinations and what each is sent, the certificate check, how a server that was away is sent what it missed, and the commands that show where each stands and test it |
 | `metricsd(8)`, `metrics(1)`, `metrics.toml(5)` | The machine's history and its early warnings: what is kept and for how long, showing it now and over any time range, the warnings and when each is raised and cleared, and the Prometheus endpoint |
 | `notifyd(8)`, `notify-send(1)`, `notifications(1)` | Notifications: sending them, how the console shows them, and listing them |
+| `alertd(8)`, `alerts(8)`, `alerts.toml(5)` | Alerts: what raises one and what is told, the notice at sign-in, email and webhooks with their retries, the command that lists, tests, raises and clears them, and the file that names where alerts go |
 | `dukovo-privacy(7)` | The privacy promise: what Dukovo keeps on the machine and what it sends on its own |
 | `rtrace(1)` | Tracing a process's system calls and capability messages |
 | `radix_cap_call(2)`, `radix_send(2)`, `radix_recv(2)`, `radix_reply_recv(2)`, `radix_notify(2)`, `radix_wait(2)`, `radix_yield(2)`, `radix_map(2)`, `radix_unmap(2)`, `radix_ring_setup(2)`, `radix_ring_enter(2)`, `radix_debug_log(2)` | The twelve system calls, one page each, with their registers and errors |

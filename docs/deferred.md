@@ -143,7 +143,6 @@ machine with AMT, an AMD machine and a laptop; see
 | Unattended updates limited to security fixes, and the security advisories each update fixes, shown by `update` (ADR 0502) | Unattended updates take every release, through the waves; the release notes name fixes | The channel listing advisories per release, 16b |
 | Snoozing an update reminder, and pinning the system so that no newer version is taken (ADR 0502) | The reminder comes once a day; `check = "off"` stops it; `update hold` skips one version | 16c, with the web console's updater page |
 | The updater's page in the web console (ADR 0502) | `update` and `updated` on the command line | 16c, Dukovo Admin |
-| The failure notice by email, when the owner has set an address (ADR 0501) | The notice at every sign-in, on the screen and the serial port | 16b, with alerts |
 | The memory test on the start menu, memtest86+ built from source onto the EFI system partition (ADR 0501) | The firmware's own memory test, where the machine has one | 16b, with `hardware check` |
 | A QR code to the error's support page, and single-key choices, on the failure notice (ADR 0501) | The notice gives the support page's address and the commands to run | 16f, with `report --save` |
 | SSH into Rescue when the system had SSH on (ADR 0501) | Rescue on the screen and the serial port; after a failed start that falls back, the system runs, SSH and all | 16e, in the outside security review |
@@ -196,6 +195,9 @@ machine with AMT, an AMD machine and a laptop; see
 | elevate in the web console, with comments kept by its settings editor (ADRs 0216, 0219) | Dukovo Admin | 16c |
 | A page for logforward in the web console: its destinations, their status and a test record (ADR 0482) | Dukovo Admin | 16c |
 | TLS and a password for the Prometheus endpoint (ADR 0484) | The endpoint is plain HTTP, answering only the networks `allow` names, as most node_exporter setups run it | A need |
+| The alerts page and push notices in the web console (ADR 0485) | Alerts reach the screen, the next sign-in, email and webhooks; `alerts` lists them | 16c, Dukovo Admin |
+| A bundle's service raising alerts (ADR 0485) | alertd serves root's processes and the system's services alone, which covers every shipped service; a bundle's service runs as an account of its own | A need |
+| Silencing an alert for a while (ADR 0485) | An alert is told only when it changes, so one that stays does not repeat; `severity` and `cleared` in alerts.toml(5) quiet a channel | A need |
 | A certificate from certd for nginx's sites and for the lab test `services/nginx`, which makes one with openssl meanwhile (ADR 0491) | certd comes with Phase 16 | Phase 16's certd |
 | Spark setting a service's `open_files` (RLIMIT_NOFILE); nginx raises its own to the hard limit, 4096, meanwhile (ADRs 0385, 0491) | Service limits | 16a |
 | A service's own log files, turned over: nginx logs to the system's log, and an `access_log` to a file of its own is never turned over (ADR 0491) | Needs timers | 16a |

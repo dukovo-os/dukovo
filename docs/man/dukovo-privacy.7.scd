@@ -57,6 +57,11 @@ that is not listed is a bug.
 	in a file or what anyone does with it. The newest row is also in
 	_/system/live/metrics_, which a boot starts without.
 
+*Alerts*
+	The active alerts and the newest 1000 to 2000 changes, and the
+	messages not yet delivered for 24 hours at most, in files of
+	_/system/state/alerts_ that root alone reads (*alertd*(8)).
+
 # SENT ON ITS OWN
 
 *netd*
@@ -105,6 +110,15 @@ that is not listed is a bug.
 	its service file, *service edit metricsd* (*service*(8)), turns the
 	service off.
 
+*alertd*
+	The title and detail of each alert, with the machine's name and the
+	time, to the email account and the webhook addresses the user names
+	in *alerts.toml*(5), over TLS only. An alert can name a disk's
+	model and serial number, a mount point or a service. By default it
+	sends nothing; taking the channel out of the file, then *service
+	alertd reload* (*service*(8)), or *enabled = false* in its service
+	file stops it (*alertd*(8)).
+
 *updated*
 	Ten minutes after each start, then once a day, a read of the
 	update channel the machine follows, at _updates.dukovo.org_ or the
@@ -126,6 +140,6 @@ public issue.
 
 # SEE ALSO
 
-*logd*(8), *log*(5), *logforward*(8), *metrics*(1), *metricsd*(8),
-*metrics.toml*(5), *netd*(8), *netlog*(8), *notifyd*(8), *radix-debug*(7),
-*resolved*(8), *timed*(8)
+*alertd*(8), *alerts.toml*(5), *logd*(8), *log*(5), *logforward*(8),
+*metrics*(1), *metricsd*(8), *metrics.toml*(5), *netd*(8), *netlog*(8),
+*notifyd*(8), *radix-debug*(7), *resolved*(8), *timed*(8)

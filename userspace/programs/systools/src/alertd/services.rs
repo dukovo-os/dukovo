@@ -14,7 +14,8 @@
 //! once Spark has given up on the service, and a warning before. It
 //! clears as soon as the service is as asked.
 //!
-//! What "as asked" means is the rule `service list --failed` uses.
+//! What "as asked" means is decided by [`not_as_asked`], one rule for
+//! every alert this raises.
 
 use std::collections::HashMap;
 
