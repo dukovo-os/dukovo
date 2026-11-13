@@ -1,0 +1,53 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# timed(8) serves the time over NTS to chrony, the common NTS client of
+# Linux, which runs on the lab PC in a network namespace on a macvlan of
+# its lab card (nts-server.sh beside this file). The machine makes a
+# certificate of its own for its address, which timed serves with `serve =
+# nts`; chrony trusts that certificate alone, makes key establishment,
+# gets cookies, and `chronyc -N authdata` shows NTS with them. The lab
+# machine's clock is not what the test is of, so timed serves it as an
+# isolated server's (serve-unsynced). The machine's timed settings go back
+# as they were.
+about = "timed serves the time over NTS: chrony on the lab PC makes key establishment with the machine's certificate, gets cookies and shows NTS in chronyc authdata; timedatectl says what timed served; the settings go back as they were"
+time = "8m"
+host_needs = ["chronyc", "chronyd", "ip"]
+
+# Only a real machine on the lab network can be reached from a namespace
+# on the lab card: a QEMU guest's network is the emulator's own.
+[[step]]
+run = "ip -4 -br addr show net0"
+expect = "10.77.0."
+or_skip = "needs a real machine on the lab network"
+
+# The machine's certificate for its address, and timed serving with it.
+[[step]]
+run = '''sh -c 'set -- $(ip -4 -br addr show net0); address=${3%/*}; mkdir -p /system/settings/ssl && cp /system/settings/timed /users/lab/lab-timed-nts && openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -noenc -keyout /system/settings/ssl/nts-lab.key -out /system/settings/ssl/nts-lab.pem -days 2 -subj /CN=nts-lab -addext "subjectAltName=IP:$address" -addext "basicConstraints=critical,CA:TRUE" -addext "keyUsage=critical,keyCertSign,digitalSignature" -addext "extendedKeyUsage=serverAuth" && cp /system/settings/ssl/nts-lab.pem /users/lab/nts-lab.pem && chmod 644 /users/lab/nts-lab.pem && printf "serve = nts\nserve-certificate = /system/settings/ssl/nts-lab.pem\nserve-key = /system/settings/ssl/nts-lab.key\nserve-unsynced = yes\n" >> /system/settings/timed && service timed restart && echo serving' '''
+root = true
+expect = "serving"
+[[step]]
+run = "sh -c 'for i in $(seq 1 30); do nc -z 127.0.0.1 4460 && break; sleep 1; done; nc -z 127.0.0.1 4460 && echo listening'"
+expect = "listening"
+
+# chrony asks for the time over NTS.
+[[step]]
+host = "sh {here}/nts-server.sh lab {machine} {machine-port:22}"
+root = true
+background = true
+ready = "chrony ready"
+[[step]]
+host = "sh {here}/nts-server.sh authdata"
+root = true
+expect = ["NTS", "{machine}", "NTS with ", " cookies"]
+
+# What timed says it served.
+[[step]]
+run = "timedatectl timesync-status"
+expect = "Serving time over NTS"
+
+# The machine as it was.
+[[step]]
+run = "sh -c 'cp /users/lab/lab-timed-nts /system/settings/timed && rm /users/lab/lab-timed-nts /users/lab/nts-lab.pem /system/settings/ssl/nts-lab.pem /system/settings/ssl/nts-lab.key && service timed restart && echo put-back'"
+root = true
+expect = "put-back"
