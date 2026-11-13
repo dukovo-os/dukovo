@@ -16,10 +16,9 @@ test_multiprocessing_fork
 test_multiprocessing_forkserver
 test_multiprocessing_spawn
 
-# The test FTP server, on asyncore's select() loop, never answers its
-# client: a listening socket that select() does not report (deferred
-# work).
-test_ftplib
+# send(2) with MSG_OOB, TCP's urgent data, which smoltcp does not send
+# (EOPNOTSUPP); ftplib's abort() sends ABOR that way.
+test.test_ftplib.TestFTPClass.test_abort
 
 # mmap(2) of a file in /tmp, which is tmpfs: Radix maps files of disk
 # filesystems only, and says ENODEV (deferred work).
@@ -37,9 +36,9 @@ test.test_mmap.MmapTests.test_rfind
 test.test_mmap.MmapTests.test_tougher_find
 test.test_mmap.MmapTests.test_trackfd_parameter
 
-# RFC 3542's IPv6 ancillary data (IPV6_RECVHOPLIMIT, IPV6_RECVTCLASS),
-# TCP_QUICKACK and SO_LINGER's reset on close, which the TLS tests use:
-# socket options Radix does not have (ENOPROTOOPT).
+# RFC 3542's IPv6 ancillary data (IPV6_RECVHOPLIMIT, IPV6_RECVTCLASS):
+# smoltcp does not give a datagram's hop limit or traffic class to its
+# socket, so Radix does not have the options (ENOPROTOOPT).
 test.test_socket.RecvmsgIntoRFC3542AncillaryUDP6Test.testCmsgTruncNoBufSize
 test.test_socket.RecvmsgIntoRFC3542AncillaryUDP6Test.testOddCmsgSize
 test.test_socket.RecvmsgIntoRFC3542AncillaryUDP6Test.testRecvHopLimit
@@ -76,17 +75,6 @@ test.test_socket.RecvmsgRFC3542AncillaryUDP6Test.testSingleCmsgTrunc1
 test.test_socket.RecvmsgRFC3542AncillaryUDP6Test.testSingleCmsgTrunc2Int
 test.test_socket.RecvmsgRFC3542AncillaryUDP6Test.testSingleCmsgTruncInData
 test.test_socket.RecvmsgRFC3542AncillaryUDP6Test.testSingleCmsgTruncLen0Minus1
-test.test_socket.TestQuickackFlag.test_set_quickack
-test.test_ssl.TestPreHandshakeClose.test_https_client_non_tls_response_ignored
-test.test_ssl.TestPreHandshakeClose.test_preauth_data_to_tls_client
-test.test_ssl.TestPreHandshakeClose.test_preauth_data_to_tls_server
-
-# recvmsg(2) of a UDP datagram larger than the buffer does not set
-# MSG_TRUNC.
-test.test_socket.RecvmsgIntoUDP6Test.testRecvmsgTrunc
-test.test_socket.RecvmsgIntoUDPTest.testRecvmsgTrunc
-test.test_socket.RecvmsgUDP6Test.testRecvmsgTrunc
-test.test_socket.RecvmsgUDPTest.testRecvmsgTrunc
 
 # Unix-domain datagram sockets (SOCK_DGRAM), and descriptors passed
 # over a socket (SCM_RIGHTS), which Radix does not have.
@@ -95,16 +83,6 @@ test.test_asyncio.test_base_events.BaseEventLoopWithSelectorTests.test_create_da
 test.test_asyncio.test_unix_events.SelectorEventLoopUnixSocketTests.test_create_unix_server_path_dgram
 test.test_logging.UnixSysLogHandlerTest.test_udp_reconnection
 test.test_socket.SendRecvFdsTests.testSendAndRecvFds
-
-# socketpair()'s Python fallback over TCP on the loopback, and sendmsg
-# and recvmsg on a pair, find the connection not connected (ENOTCONN).
-test.test_socket.PurePythonSocketPairTest.test_injected_authentication_failure
-test.test_socket.PurePythonSocketPairTest.test_ipv4
-test.test_socket.PurePythonSocketPairTest.test_ipv6
-test.test_socket.PurePythonSocketPairTest.test_recv
-test.test_socket.PurePythonSocketPairTest.test_send
-test.test_socket.ReentrantMutationTests.test_recvmsg_into_reentrant_buffer_mutation
-test.test_socket.ReentrantMutationTests.test_sendmsg_reentrant_data_mutation
 
 # File names must be valid UTF-8 on Dukovo (radix-files(7)): names
 # with undecodable bytes, which these tests make, are refused (EINVAL).
@@ -174,21 +152,22 @@ test.test_sysconfig.TestSysConfig.test_get_config_h_filename
 test.test_sysconfig.TestSysConfig.test_srcdir
 
 # Other gaps of Radix's that these tests find, each in deferred work:
-# a pseudo-terminal's functions, a new process's event loop, the time
-# a thread has used (pthread_getcpuclockid), file sizes past the test
-# disk, fopen of a path with the wrong type, lowering the descriptor
-# limit, chown's errors, scandir's attributes, copying into a folder that
-# does not exist, a race on a symbolic link while a folder is removed,
-# TLS shut down on a slow socket, and subinterpreters' checks of types.
+# the time a thread has used (pthread_getcpuclockid), file sizes past
+# the test disk, fopen of a path with the wrong type, lowering the
+# descriptor limit, chown's errors, scandir's attributes, copying into a
+# folder that does not exist, a race on a symbolic link while a folder
+# is removed, TLS shut down on a slow socket, subinterpreters' checks of
+# types, fstatvfs(3), sched_getaffinity(2) of a process that is not
+# there, and futimens(2) of a file opened for reading.
 test.datetimetester.CapiTest_Fast.test_type_check_in_subinterp
-test.test_asyncio.test_events.TestCGetEventLoop.test_get_event_loop_new_process
-test.test_asyncio.test_events.TestPyGetEventLoop.test_get_event_loop_new_process
 test.test_asyncio.test_ssl.TestSSL.test_remote_shutdown_receives_trailing_data_on_slow_socket
 test.test_capi.test_file.CAPIFileTest.test_py_fopen
 test.test_io.test_general.CIOTest.test_large_file_ops
 test.test_io.test_general.PyIOTest.test_large_file_ops
-test.test_os.test_os.PseudoterminalTests.test_posix_pty_functions
 test.test_os.test_os.TestScandir.test_attributes
+test.test_os.test_posix.PosixTester.test_fstatvfs
+test.test_os.test_posix.PosixTester.test_sched_getaffinity
+test.test_os.test_posix.PosixTester.test_utime_with_fd
 test.test_shutil.TestCopy.test_copyfile_nonexistent_dir
 test.test_shutil.TestMisc.test_chown
 test.test_subprocess.POSIXProcessTestCase.test_close_fds_when_max_fd_is_lowered

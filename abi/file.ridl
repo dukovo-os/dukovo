@@ -133,6 +133,12 @@ flags SocketFlags: u32 {
     /// bytes (`receive_files`) come as copies, and stay too, as on Linux.
     /// (Since Phase 12, ADR 0341.)
     peek = 3;
+    /// A datagram or ping socket's `receive_from` and `receive_message`
+    /// return the datagram's whole size, though only what `buffer` has
+    /// room for is written and the rest is lost: Linux's MSG_TRUNC, which
+    /// recvmsg(2) uses to say that a datagram was cut short. A stream
+    /// socket's receive changes nothing. (Since Phase 16, ADR 0496.)
+    whole_size = 4;
 }
 
 /// A network socket's option, which `socket_option` reads and sets, as
@@ -240,6 +246,27 @@ enum SocketOption: u32 {
     /// every packet still goes with 0 (ADR 0345, ADR 0410): what is on the
     /// wire is the kernel's to choose.
     type_of_service = 24;
+    /// SO_LINGER, of a stream socket's: 0, as it begins, for a close
+    /// that returns at once and lets the connection end in the
+    /// background, sending what waits and then FIN; 1 for a close that
+    /// resets the connection instead, throwing away what waits and
+    /// sending RST, as Linux's linger of 0 seconds does; 1 plus a number
+    /// of seconds for a linger that long, kept and read back, though the
+    /// close still returns at once and the connection ends as with 0.
+    /// (Since Phase 16, ADR 0496.)
+    linger = 25;
+    /// TCP_QUICKACK, a boolean, of a stream socket's: its connection
+    /// acknowledges what comes at once, rather than after up to 10
+    /// milliseconds in case an answer can carry the acknowledgement. It
+    /// stays set until it is turned off, unlike Linux's, which the
+    /// connection may turn off again by itself. (Since Phase 16, ADR
+    /// 0496.)
+    quick_ack = 26;
+    /// SO_OOBINLINE, a boolean: taken and read back. A stream socket's
+    /// urgent data always comes inline, among its other bytes, as with
+    /// it set on Linux: Radix has no out-of-band receive. (Since Phase
+    /// 16, ADR 0496.)
+    out_of_band_inline = 27;
 }
 
 /// The most files one `send_files` sends, as Linux's SCM_MAX_FD.
