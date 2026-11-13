@@ -255,6 +255,8 @@ install-serial userspace/programs/installer/ userspace/programs/systools/src/efi
 install-serial userspace/programs/systools/src/last.rs userspace/programs/systools/src/mkfs.rs
 install-serial userspace/programs/systools/src/rdisk.rs
 install-serial kernel/radix/src/serial/ userspace/programs/systools/src/serial_console.rs
+install-serial image/grub/live.cfg.in userspace/programs/slots/src/serial.rs
+install-serial userspace/programs/systools/src/serial.rs
 install-speech userspace/programs/installer/ userspace/programs/consoled/
 install-speech userspace/programs/systools/src/reader.rs ports/espeak-ng/
 install-uefi image/grub/installed.cfg.in tools/xtask/src/grub.rs tools/xtask/src/grub_theme.rs
@@ -472,6 +474,9 @@ sd-card-change kernel/fs/fat/ userspace/programs/systools/src/eject.rs userspace
 send-receive kernel/fs/btrfs/ kernel/radix/src/user/files.rs ports/diffutils/ ports/uutils-coreutils/
 send-receive userspace/programs/systools/src/subvolume.rs userspace/programs/systools/src/subvolume/
 send-receive userspace/programs/systools/src/snap.rs userspace/programs/systools/src/facl.rs
+serial-firmware kernel/arch/x86_64/src/acpi.rs kernel/lib/acpi/src/spcr.rs kernel/radix/src/serial/
+serial-firmware userspace/programs/slots/src/serial.rs userspace/programs/systools/src/serial.rs
+serial-firmware userspace/programs/systools/src/serial_console.rs
 serial-ports kernel/arch/x86_64/src/serial.rs kernel/drivers/uart/ kernel/radix/src/serial/
 serial-ports kernel/radix/src/fs/sysfs.rs userspace/programs/systools/src/serial_console.rs
 service-bundle image/grub/installed.cfg.in tools/xtask/src/bundles.rs tools/xtask/src/grub.rs

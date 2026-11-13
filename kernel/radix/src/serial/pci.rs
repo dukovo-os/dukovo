@@ -82,7 +82,7 @@ pub fn bind(function: &Function, kind: radix_uart::Kind) {
         };
         let number = NEXT.load(Ordering::Relaxed);
         let port_name = super::name(number);
-        let (line, registers) = super::console_line(&flags, port_name.as_str());
+        let (line, registers) = super::console_line(&flags, port_name.as_str(), base + offset);
         let Some(uart) = Uart::probe(window, offset, registers) else { continue };
         let about = About {
             number,
@@ -91,6 +91,7 @@ pub fn bind(function: &Function, kind: radix_uart::Kind) {
             interrupt: Interrupt::Polled,
             log: flags.carries_log(port_name.as_str()),
             line,
+            firmware: super::firmware_line(base + offset),
         };
         let Some(index) = super::add(uart, about) else {
             warn!("Serial: no room for more serial ports; the rest of {address} is not used");

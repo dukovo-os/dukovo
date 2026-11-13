@@ -93,11 +93,15 @@ gives the screens' 100 columns by 30 rows, where the consoles' own
 wants 40 rows: 12x24 on a 1280x800 screen, 16x32 on 1920x1080. When the
 screens end, by Live console on their first page or at the end of the
 install, tty1 clears and runs the shell as the other consoles do (ADRs
-0310 and 0402). With *console=ttyS0* as well, as the stick's *Install
-Dukovo (serial console)* entry gives it, and a first serial port to put
-them on, the screens are *serial-console*(8)'s there instead: tty1 runs
+0310 and 0402). With *serial-console=any* as well, as the stick's
+*Install Dukovo (serial console)* entry gives it, and a serial port to
+put them on, or with the primary *console=*, as *console=ttyS0*, naming
+a port the computer has, the screens are *serial-console*(8)'s there
+instead, on the port Enter is pressed on in the first case: tty1 runs
 the shell from the start, and consoled logs *install: the installer's
-screens are on the serial port, ttyS0* (ADR 0318).
+screens are on the serial port Enter is pressed on* or *install: the
+installer's screens are on the serial port, ttyS0* (ADRs 0318 and
+0481).
 
 With *rescue=*_uuid_ on the kernel's command line, as the Rescue entry of
 an installed system's boot menu starts the live system, every console

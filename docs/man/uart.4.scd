@@ -11,7 +11,7 @@ Serial-over-LAN port
 # DESCRIPTION
 
 The 16550-compatible serial ports Radix drives, each a terminal named
-as Linux names it (ADRs 0318, 0360 and 0480):
+as Linux names it (ADRs 0318, 0360, 0480 and 0481):
 
 - COM1 to COM4, the board's ports, at I/O ports 0x3F8, 0x2F8, 0x3E8
   and 0x2E8, are _/devices/ttyS0_ to _ttyS3_, each if it answers. A
@@ -42,6 +42,40 @@ Serial: the ASIX AX99100 serial port at 0000:03:00.0, I/O port 0xe010, is the te
 ```
 
 _/kernel/class/tty_ shows them too (*radix-sysfs*(5)).
+
+# THE FIRMWARE'S CONSOLE
+
+A server's firmware that redirects its own console to a serial port,
+which a BMC's Serial-over-LAN usually is, describes that port in the ACPI
+table SPCR: where its registers are and the speed it was set to. The
+kernel reads the table and logs what it says:
+
+```
+ACPI: SPCR: the firmware's console is the 16550 at I/O port 0x2f8, at 57600 baud
+```
+
+A table that leaves the speed as the firmware set it is taken as 115200
+baud, as GRUB takes it, and says so. A port in memory, as on some
+boards' AMD UARTs, and an interface that is not a 16550 are logged as
+ones Radix does not drive, and are not used.
+
+When no *console=* flag is given, the port runs at the table's speed,
+8 data bits, no parity and one stop bit from boot, COM1 too, so that the
+firmware's console and the kernel's agree, and the log line of the port
+says so:
+
+```
+Serial: COM2 at I/O port 0x2f8 is the terminal /devices/ttyS1, at 57600 baud, 8N1, the firmware's console (ACPI SPCR); the kernel log and kdb are on it; typing by ISA interrupt 3
+```
+
+*serial-console*(8) then keeps a sign-in on it. A *console=* flag of any
+kind, or *spcr=off*, keeps the port from being a console: it runs as its
+flag gives, or at 115200 baud, and the log line says nothing of the
+firmware. _/kernel/class/tty/ttyS_n_/firmware_console_ holds the port's
+line as console options, *57600n8*, whatever the command line says
+(*radix-sysfs*(5)), and *serial*(8) shows the port. GRUB shows its menu
+on the same port at the same speed, on the install stick and on an
+installed system that has *serial console auto* (ADR 0481).
 
 # THE KERNEL LOG
 
@@ -86,4 +120,4 @@ gives a port a sign-in.
 # SEE ALSO
 
 *dukovo-boot*(7), *radix-debug*(7), *radix-sysfs*(5), *lspci*(8),
-*serial-console*(8), *stty*(1)
+*serial*(8), *serial-console*(8), *stty*(1)

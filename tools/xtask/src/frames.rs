@@ -28,6 +28,10 @@ const ALLOWED: &[(&str, &str)] = &[
         "<radix_arch_x86_64::Arch as radix_hal::Platform>::init",
         "runs once, on the boot CPU's 64 KiB stack",
     ),
+    (
+        "radix_arch_x86_64::acpi::init",
+        "reads the ACPI tables, once, at boot, on the boot CPU's 64 KiB stack",
+    ),
     ("radix::user::loader::start", "starts Spark, once, on the boot CPU's 64 KiB stack"),
     ("radix::fs::disk::virtio::bind", "sets up a disk at boot, on the boot CPU's 64 KiB stack"),
     (

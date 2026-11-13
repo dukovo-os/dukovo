@@ -152,14 +152,18 @@ installer refuses it, as it refuses an ID the release lacks.
 	0.16, which turns it on if the saved answers say so.
 
 *serial_console*
-	*true* keeps a console on the first serial port on the installed
-	system: its boot menu starts the kernel with *console=ttyS0*, so that
-	*serial-console*(8) runs the sign-in there as well as on the screen's
-	consoles, and the startup-trouble menu shows there too; *false* keeps
-	none. Left out, it is as the installer runs: true when it runs on
-	the serial port, as the stick's *Install Dukovo (serial console)*
-	entry starts it, with that entry's speed (ADR 0318). The screens
-	save it as they ran.
+	*true* keeps a console on a serial port on the installed system:
+	the port the installer runs on, or the first one when it runs on a
+	screen. Its boot menu starts the kernel with *console=* for the port
+	at the line the installer ran at, and shows on it, so that
+	*serial-console*(8) runs the sign-in there as well as on the
+	screen's consoles, and the startup-trouble menu shows there too
+	(*serial*(8)); *false* keeps none of its own: the firmware's
+	console port is the console, if the firmware names one. Left out,
+	it is as the installer runs: true when it runs on a serial port, as
+	the stick's *Install Dukovo (serial console)* entry starts it, on
+	the port Enter was pressed on, at that port's speed (ADRs 0318 and
+	0481). The screens save it as they ran.
 
 *accessibility*
 	The installed system's screen reader and its consoles' text size

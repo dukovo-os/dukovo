@@ -39,14 +39,19 @@ menu, from _image/grub/live.cfg.in_, starts the live system with *live*
 on the command line: *Install Dukovo*, the default, adds *install*, so
 that tty1 shows the installer's screens (*dukovo-install*(8), ADR 0310);
 *Try Dukovo (live console)* gives a shell on every console; *Install
-Dukovo (serial console)* adds *install* and *console=ttyS0*, so that
-the screens are on the first serial port instead, for a computer with no
-screen (*serial-console*(8), ADR 0318); *Install Dukovo with speech*,
+Dukovo (serial console)* adds *install* and *serial-console=any*, so that
+every serial port offers the screens, which run on the port Enter is
+pressed on instead of tty1, for a computer with no screen
+(*serial-console*(8), ADRs 0318 and 0481); *Install Dukovo with speech*,
 which the key *S* starts at once, adds *install* and *speech*, so that the
 screen reader says the installer's screens from the first (*readerd*(8),
 ADR 0324). Before the menu shows, GRUB plays a short rising tune on the
 PC speaker, so that a person who cannot see the screen knows to press
-*S*. *Boot from first disk* starts the machine's own system as if the stick were not
+*S*. The menu shows on the serial ports too, at 115200 baud
+on COM1 to COM4 and Intel AMT's Serial-over-LAN port, which Intel boards that
+have it put at PCI address 00:16.3, and at the firmware's speed on the port
+the firmware sends its console to, if its ACPI table SPCR names one, with
+GRUB's plain menu on each (ADR 0481). *Boot from first disk* starts the machine's own system as if the stick were not
 there: under UEFI, the _EFI/BOOT/BOOTX64.EFI_ of the first EFI system
 partition, on any disk, that holds no _boot/radix_ as a Dukovo stick's
 does, and under a BIOS, the first sector of the disk after the stick.
@@ -90,8 +95,9 @@ An installed system's disk, as *ob image --installed* builds it and the
 installer will leave it, has the same three partitions, but its EFI
 system partition holds only GRUB, the configuration generated from
 _image/grub/installed.cfg.in_, the microcode file, if any (ADR 0307),
-and the two copies of the slot state, _boot/grub/state1_ and
-_boot/grub/state2_ (ADR 0452). The system runs from one of two slots,
+the two copies of the slot state, _boot/grub/state1_ and
+_boot/grub/state2_ (ADR 0452), and the serial console's settings,
+_boot/grub/serial.env_ (ADR 0481). The system runs from one of two slots,
 _@system.a_ and _@system.b_ (*sysupdate*(8), ADR 0451). GRUB finds the
 Dukovo root by its Btrfs UUID, reads the slot state, and hands over to
 the boot menu of the slot that starts, _startup/menu.cfg_, which loads
@@ -131,14 +137,35 @@ get all of it either way. The startup trouble entry is not quiet.
 When the menu shows, or may in its hidden second, it is drawn in
 Dukovo's colours and the console's font, as the stick's is, with the
 default slot's theme, _boot/grub/theme_, which comes with each release
-(ADR 0505). The serial port gets GRUB's plain menu, as does
+(ADR 0505). The serial ports get GRUB's plain menu, as does
 a screen GRUB cannot draw on.
+
+The menu shows on the serial ports the serial console's settings name.
+They are _boot/grub/serial.env_, a GRUB environment block on each EFI
+system partition, which *serial*(8) and the installer write and the
+menu reads with *load_env*. It holds *dukovo_console*, the kernel flags
+the menu puts on every kernel line, which take the place of the
+*console=* the installer filled in (*console=ttyS1,57600n8*, *spcr=off*
+and *serial-log=*, as below); and *serial_0* to *serial_3* with
+*serial_0_speed* to *serial_3_speed*, up to four ports the menu is
+shown on, as GRUB names them, *com0* to *com3* for COM1 to COM4 and
+*pci,*_bus_*:*_device_*.*_function_ for the first port of a PCI function,
+each at its speed in baud, as terminal input and output. The themed menu
+appends them again after it replaces GRUB's outputs. GRUB runs only a
+PCI function's first port, and only with 8 data bits and no parity, so
+a console on another port, or at another format, has no menu there.
+Without the file, as on a system installed before it, the menu shows on
+COM1 at 115200 baud and the flags are those the installer filled in.
+Each slot's _startup/menu.cfg_ puts *dukovo_console* on its kernel
+lines, so that a slot from an older release follows the settings too.
+A change of the settings takes effect at the next start.
 
 ## Sequence
 
 . The firmware loads GRUB from the boot medium.
 . GRUB shows its menu for *boot.timeout* seconds, on the screen and on the
-  first serial port: Dukovo Server, then the same with *startup-trouble*,
+  serial ports (COM1 unless the serial console's settings say otherwise):
+  Dukovo Server, then the same with *startup-trouble*,
   for a lost administrator's password.
 . GRUB loads _/boot/radix_ through the Multiboot2 protocol, the
   microcode file as a module if the image has one, the boot archive
@@ -450,11 +477,12 @@ The kernel writes every message to all of these at once:
 
 *Serial ports*
 	COM1, I/O port 0x3F8, at 115200 baud, 8 data bits, no parity, 1 stop
-	bit, or the line *console=ttyS0* gives, when the port exists; then
+	bit, or the line *console=ttyS0* gives, or the firmware's, when the
+	port exists; then
 	COM2 to COM4 and the 16550s on PCI cards and of Intel AMT, as they
 	are found. Each is a terminal named as on Linux: COM1 to COM4 are
 	_/devices/ttyS0_ to _ttyS3_ and the PCI ports follow from _ttyS4_
-	(ADR 0480). *serial-log=* chooses which carry the log; all do
+	(ADRs 0480 and 0481). *serial-log=* chooses which carry the log; all do
 	unless it says otherwise. The kernel debugger also runs on them.
 	Each is sent the log at its own pace, so a slow port never holds up
 	another, and one that stops taking bytes, as AMT's port can with no
@@ -467,6 +495,11 @@ The kernel writes every message to all of these at once:
 Serial: COM2 at I/O port 0x2f8 is the terminal /devices/ttyS1, at 57600 baud, 8N1; the kernel log is not on it; typing by ISA interrupt 3
 Serial: the Intel AMT Serial-over-LAN port at 0000:00:16.3, I/O port 0xf0e0, is the terminal /devices/ttyS4, at 115200 baud, 8N1; the kernel log and kdb are on it; typing by MSI
 ```
+
+	The port the firmware sends its console to, as the ACPI table SPCR
+	names it, runs at the firmware's speed, 8N1, from boot when no
+	*console=* is given, COM1 included, and its line says so with *, the
+	firmware's console (ACPI SPCR)* after *8N1* (*uart*(4), ADR 0481).
 
 *Framebuffer*
 	The linear framebuffer GRUB set up, under UEFI and BIOS. Text is drawn
@@ -679,10 +712,11 @@ them to *init*, and the kernel does not read them.
 	as well as on the screen's consoles. It may be given for several
 	ports, as *console=ttyS1,57600 console=ttyS4*; the last *console=*
 	is the primary console, which runs the installer's screens with
-	*install*, in place of tty1, and Rescue's with *rescue=*. The install
-	stick's *Install Dukovo (serial console)* entry gives
-	*console=ttyS0*, and a system installed over a serial port keeps
-	that port's in its boot menu. _options_ are Linux's: the speed, 300
+	*install*, in place of tty1, and Rescue's with *rescue=*. A system
+	installed over a serial port, or set with *serial*(8), has the
+	flags in its boot menu, from _boot/grub/serial.env_ (ADR 0481). With
+	no *console=* at all, the port the firmware sends its console to is
+	the console, as *spcr=* below says. _options_ are Linux's: the speed, 300
 	to 115200, then optionally the parity, *n*, *o* or *e*, and the data
 	bits, *7* or *8*, as in *115200n8*, the line's setting when none are
 	given; a final *r*, for flow control, is passed over, as a 16550 has
@@ -700,6 +734,26 @@ them to *init*, and the kernel does not read them.
 	modem on it; it is still a terminal, and *console=* can still give
 	it a sign-in. It counts from the kernel's first line, COM1's
 	included. A name that is no serial port's is warned about at boot.
+
+*spcr*=*off*
+	With no *console=* flag, the port the firmware sends its own console
+	to, as the ACPI table SPCR names it, is a console: the kernel runs it
+	at the firmware's speed from boot, and *serial-console*(8) keeps a
+	sign-in on it, as Linux takes the firmware's console on Arm servers
+	(ADR 0481). *spcr=off* keeps it from being one, so that the port runs
+	as any other and no console is chosen by the firmware. Any
+	*console=* flag, a screen's *console=tty0* too, has the same effect,
+	so that what a person gives is the whole answer. The primary
+	console, which runs the installer and Rescue, is never the
+	firmware's. Any other value is warned about at boot.
+
+*serial-console*=*any*
+	Read by *serial-console*(8), not the kernel: every serial port has a
+	console, and with *install* each offers the installer, which runs on
+	the port Enter is pressed on, as the install stick's *Install Dukovo
+	(serial console)* entry starts the live system (ADR 0481). It
+	takes the place of *console=* for choosing the ports, and *rescue=*
+	passes it over.
 
 *netlog*=_host_[:_port_]
 	Read by *netlog*(8), not the kernel: send the log over UDP to this
@@ -745,8 +799,9 @@ them to *init*, and the kernel does not read them.
 	*console-sign-in=off* with it, so that the other consoles have
 	root's shell for a look around during the install. When the primary
 	console, the last *console=*, is a serial port, as *console=ttyS0*,
-	*serial-console*(8) runs the screens on that port instead, and tty1
-	has the shell (ADRs 0318 and 0480).
+	or with *serial-console=any*, *serial-console*(8) runs the screens on
+	that port, or on the port Enter is pressed on, instead, and tty1 has
+	the shell (ADRs 0318, 0480 and 0481).
 
 *speech*
 	Read by *readerd*(8), not the kernel: the screen reader speaks from
@@ -1352,7 +1407,7 @@ the steps of a smoke test and its results.
 
 # SEE ALSO
 
-*spark*(8), *sysupdate*(8), *radix-processes*(7), *radix-debug*(7), *radix-capabilities*(7), *radix-scheduling*(7), *ob*(1), *dukovo.toml*(5), *rgrub-setup*(8), *serial-console*(8)
+*spark*(8), *sysupdate*(8), *radix-processes*(7), *radix-debug*(7), *radix-capabilities*(7), *radix-scheduling*(7), *ob*(1), *dukovo.toml*(5), *rgrub-setup*(8), *serial*(8), *serial-console*(8)
 
 The Multiboot2 specification:
 https://www.gnu.org/software/grub/manual/multiboot2/

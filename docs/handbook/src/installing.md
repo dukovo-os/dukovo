@@ -20,6 +20,8 @@ dukovo-install(8) and install-answers(5) ([ADR
 [ADR
 0318](https://github.com/dukovo-os/dukovo/blob/main/docs/adr/0318-the-serial-console-ttys0-and-serial-only-installs.md),
 [ADR
+0481](https://github.com/dukovo-os/dukovo/blob/main/docs/adr/0481-the-boot-menu-follows-the-serial-console-and-the-stick-installs-on-any-port.md),
+[ADR
 0319](https://github.com/dukovo-os/dukovo/blob/main/docs/adr/0319-setup-files-from-the-web-over-https-checked-by-sha-256.md)).
 
 The guided layout **erases the disk it installs onto**. The layout next
@@ -167,32 +169,39 @@ screen saves them: install-answers(5) describes them.
 
 ## Installing over a serial port
 
-A server with no screen installs over its first serial port, COM1, or
-over a BMC's serial-over-LAN, which the board shows as COM1:
+A server with no screen installs over any of its serial ports, or over a
+BMC's serial-over-LAN, which most boards show as COM2:
 
 1. Connect a terminal program on another computer to the port at
    115200 baud, 8 data bits, no parity and one stop bit, as
-   `screen /dev/ttyUSB0 115200` or PuTTY does. Make its window at least
-   80 columns by 24 rows. The stick's menu shows there as it does on a
-   screen.
-2. Choose *Install Dukovo (serial console)*, the fourth entry. The
-   installer's screens show on the port, the size of the terminal's
-   window, and take the same keys.
-3. Install as with the screens. The review's settings line ends with
-   *serial console ttyS0*: the installed system keeps `console=ttyS0`
-   on its command line, so that its sign-in is on the port too.
+   `screen /dev/ttyUSB0 115200` or PuTTY does, or open the BMC's
+   serial-over-LAN. Make its window at least 80 columns by 24 rows. The
+   stick's menu shows on COM1 to COM4 and on Intel AMT's port at that
+   speed as it does on a screen, and on the port the firmware sends its
+   own console to, at the firmware's speed, so a BMC at 57600 baud needs
+   no setting.
+2. Choose *Install Dukovo (serial console)*, the fourth entry. Every
+   serial port shows *Press Enter to install Dukovo on this port
+   (ttyS1).* Press Enter on the port you are using. The installer's
+   screens show there, the size of the terminal's window, and take the
+   same keys. The other ports say where the installer is running, and
+   give root's shell.
+3. Install as with the screens. The review's settings line mentions the
+   serial console: the installed system keeps the port you pressed Enter
+   on, at the speed it ran at, for its sign-in and for its boot menu,
+   which shows there too.
 
 *Live console* on the first page gives root's shell on the port, where
 `dukovo-install` starts the installer again. An answers file's
 `serial_console` key makes the same choice for an install from a file
-(install-answers(5)). serial-console(8) describes the port's console,
-and `console=ttyS0,9600n8` on the command line runs it at another speed.
+(install-answers(5)). serial-console(8) describes the port's console.
 
-An install started with another port's `console=`, such as
-`console=ttyS1` for a BMC's Serial-over-LAN on COM2 or `console=ttyS4`
-for Intel AMT's, keeps that port: the installed system's sign-in is on
-the port the installer ran on. [Supported hardware](hardware.md#serial-ports)
-lists the ports' names.
+An install started with a `console=` of its own, such as `console=ttyS1`
+for a BMC's Serial-over-LAN on COM2 or `console=ttyS4` for Intel AMT's,
+runs the screens on that port, and the installed system keeps it.
+[Supported hardware](hardware.md#serial-ports) lists the ports' names,
+and `serial` changes the port, its speed and the boot menu's ports after
+the install.
 
 ## Installing from an answers file
 

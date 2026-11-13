@@ -417,7 +417,9 @@ fn copy_system(source: &Source, root: &Path, log: &mut Log) -> Result<(), String
 /// the root on whichever disk is there. With `serial_console`, the menu's
 /// Dukovo entries start the kernel with `console=` for the serial port the
 /// installer runs on, `console=ttyS0` on any other, so that the system's
-/// sign-in is on that port too (ADRs 0318 and 0480).
+/// sign-in is on that port too (ADRs 0318 and 0480), and serial(8) writes
+/// the serial console's settings beside it, which the menu reads, so that
+/// the port keeps the line the install ran at (ADR 0481).
 fn install_grub(
     parts: &Parts,
     slot: &Path,
@@ -434,8 +436,9 @@ fn install_grub(
     if let Some(flag) = &console {
         log.note(&format!("the system keeps a console on the serial port: {flag}"));
     }
+    let serial = serial_arguments(serial_console);
     for disk in &parts.boot {
-        grub_on(disk, slot, &menu, log)?;
+        grub_on(disk, slot, &menu, &serial, false, log)?;
     }
     log.note(&format!("the menu starts the root {uuid}"));
     if let (Some(number), Some(first)) = (parts.boot_entry, parts.boot.first()) {
@@ -452,14 +455,37 @@ pub(crate) fn fill_menu(template: &str, uuid: &str, console: Option<&str>) -> St
     template.replace("@ROOT_UUID@", uuid).replace("@CONSOLE@", &console)
 }
 
+/// The serial(8) arguments that write the serial console's settings of a
+/// system with a console on a serial port, if `serial_console`: the port
+/// the installer runs on at the line it runs at, or the first port at the
+/// kernel log's line when the installer is on a screen and the answers ask
+/// for a serial console. Without one, the firmware's console port is the
+/// console, if it names one (ADR 0481).
+pub(crate) fn serial_arguments(serial_console: bool) -> Vec<String> {
+    if !serial_console {
+        return vec!["console".to_string(), "auto".to_string()];
+    }
+    let (port, options) = match machine::serial_port() {
+        Some(port) => (port, machine::serial_options()),
+        None => ("ttyS0".to_string(), None),
+    };
+    let options = options.unwrap_or_else(|| "115200n8".to_string());
+    vec!["console".to_string(), format!("{port},{options}")]
+}
+
 /// Puts GRUB from the slot on `disk`, and `menu` with GRUB's environment
 /// block and both copies of the slot state on its EFI system partition:
-/// slot A, the only one, started (ADR 0452). Each disk of a mirror has
+/// slot A, the only one, started (ADR 0452), and the serial console's
+/// settings as serial(8) with arguments `serial` writes them, unless
+/// `keep_serial` and the partition has them already, as a repair of a
+/// system's startup keeps what the system had. Each disk of a mirror has
 /// its own copies, which the system keeps in step.
 pub(crate) fn grub_on(
     disk: &BootDisk,
     slot: &Path,
     menu: &str,
+    serial: &[String],
+    keep_serial: bool,
     log: &mut Log,
 ) -> Result<(), String> {
     let images = path(&slot.join("boot/grub"));
@@ -497,8 +523,22 @@ pub(crate) fn grub_on(
         let count = String::from_utf8(count.to_vec()).expect("the count is ASCII");
         settings::write_file(&esp.join(slots::rescue::COUNT), &count, 0o644)
     });
+    let settings = rescue.and_then(|()| serial_settings(&esp, serial, keep_serial, log));
     let unmounted = run_when_free(log, "umount", &[&path(&esp)]);
-    rescue.and(unmounted)
+    settings.and(unmounted)
+}
+
+/// Writes the serial console's settings on the EFI system partition
+/// mounted at `esp`, as serial(8) with arguments `serial` does, unless
+/// `keep` and it has them.
+fn serial_settings(esp: &Path, serial: &[String], keep: bool, log: &mut Log) -> Result<(), String> {
+    if keep && esp.join(slots::serial::PATH).is_file() {
+        return Ok(());
+    }
+    let esp = path(esp);
+    let mut arguments: Vec<&str> = serial.iter().map(String::as_str).collect();
+    arguments.extend(["--esp", &esp]);
+    log.run("serial", &arguments).map(|_| ())
 }
 
 /// Puts Rescue of the release on the EFI system partition of each disk
@@ -681,6 +721,13 @@ mod tests {
             fill_menu(template, uuid, Some("console=ttyS0,9600")),
             format!("radix root=UUID={uuid} panic=10 console=ttyS0,9600 quiet\n")
         );
+    }
+
+    #[test]
+    fn the_serial_console_settings_follow_the_install() {
+        // The tests run on no serial port, so a console asked for is COM1's.
+        assert_eq!(serial_arguments(false), ["console", "auto"]);
+        assert_eq!(serial_arguments(true), ["console", "ttyS0,115200n8"]);
     }
 
     #[test]

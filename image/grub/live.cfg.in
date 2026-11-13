@@ -12,10 +12,11 @@
 # that Spark takes no disk's root and mounts no disk but the stick's own
 # DUKOVO_LIVE partition, read-only. With `install` too, consoled starts
 # the installer's screens on tty1 (ADR 0310), or serial-console on the
-# first serial port with `console=ttyS0` (ADR 0318). DEFAULT is the entry
-# started when nobody chooses one: `install` on a release's stick and
-# ISO, `try` in the boot tests' image, whose cases add `install` to
-# their own command line when they test the screens.
+# serial port Enter is pressed on, with `serial-console=any` (ADRs 0318
+# and 0481). DEFAULT is the entry started when nobody chooses one:
+# `install` on a release's stick and ISO, `try` in the boot tests' image,
+# whose cases add `install` to their own command line when they test the
+# screens.
 
 set timeout=@TIMEOUT@
 set default=@DEFAULT@
@@ -45,11 +46,35 @@ if loadfont ${prefix}/theme/spleen-24.pf2; then
     fi
 fi
 
-# Mirror the menu on the first serial port, where Radix also writes. It
-# keeps GRUB's plain menu.
-if serial --unit=0 --speed=115200; then
-    terminal_input --append serial
-    terminal_output --append serial
+# Mirror the menu on the serial ports a computer may be managed from,
+# where Radix also writes (ADR 0481). The ports keep GRUB's plain menu; a
+# port the computer lacks is passed over, and says nothing inside an `if`.
+# COM1 to COM4 are com0 to com3. 00:16.3 is where Intel AMT's
+# Serial-over-LAN port is, on Intel boards that have AMT: GRUB runs a
+# PCI card's port by its address, which the stick cannot know for another
+# card, so another card's port has the kernel's console but not the
+# stick's menu.
+function serial_menu {
+    if [ -n "$1" ]; then
+        if serial --speed="$2" "$1"; then
+            terminal_input --append "serial_$1"
+            terminal_output --append "serial_$1"
+        fi
+    fi
+}
+serial_menu com0 115200
+serial_menu com1 115200
+serial_menu com2 115200
+serial_menu com3 115200
+serial_menu pci,00:16.3 115200
+# The firmware's console port at the firmware's speed (ACPI SPCR), last,
+# so that its speed wins over the 115200 above; with no SPCR this runs
+# COM1 again at 115200. Its terminal is among those above. In an `if`, so
+# that a machine with no serial port at all shows no error, and GRUB's
+# `if` needs a command: dukovo_serial_auto says at GRUB's prompt that
+# `serial auto` found a port.
+if serial auto; then
+    set dukovo_serial_auto=1
 fi
 
 # A short rising tune on the PC speaker as the menu shows, for a person
@@ -88,12 +113,14 @@ menuentry "Try Dukovo @VERSION@ (live console)" --id try {
 @MODULES@    boot
 }
 
-# The installer's screens on the first serial port, ttyS0, for a
-# computer with no screen, and a shell there after them (ADR 0318); this
-# menu already shows on that port. The installed system keeps
-# `console=ttyS0`, so that its sign-in is on the port too.
+# The installer's screens on a serial port, for a computer with no
+# screen, and a shell there after them (ADRs 0318 and 0481). Every
+# serial port offers the installer, and the first port Enter is pressed
+# on runs it; this menu already shows on COM1 to COM4 and AMT's port. The
+# installed system keeps that port's console, at the line it ran at, so
+# that its sign-in is on the port too.
 menuentry "Install Dukovo @VERSION@ (serial console)" --id install-serial {
-    multiboot2 /boot/radix live install console=ttyS0 console-sign-in=off @CMDLINE@
+    multiboot2 /boot/radix live install serial-console=any console-sign-in=off @CMDLINE@
 @MODULES@    boot
 }
 

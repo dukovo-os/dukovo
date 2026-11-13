@@ -11,7 +11,8 @@
 use core::fmt;
 
 use radix_acpi::{
-    Fadt, Hpet, Madt, MadtEntry, Memory, Rsdp, Sdt, Slit, Srat, SratEntry, Tables, mcfg_entries,
+    Fadt, GenericAddress, Hpet, Madt, MadtEntry, Memory, Rsdp, Sdt, Slit, Spcr, Srat, SratEntry,
+    Tables, mcfg_entries,
 };
 use radix_sync::Once;
 
@@ -59,6 +60,8 @@ pub struct Acpi {
     pub srat: Option<Srat<'static>>,
     /// The SLIT: distances between NUMA domains.
     pub slit: Option<Slit<'static>>,
+    /// The SPCR: the serial port the firmware sends its console to.
+    pub spcr: Option<Spcr>,
 }
 
 static ACPI: Once<Acpi> = Once::new();
@@ -90,8 +93,13 @@ fn scan_bios() -> Option<(u64, Rsdp)> {
 }
 
 /// Finds the RSDP and reads the tables. `copy` is the RSDP from the boot
-/// information, if there was one.
+/// information, if there was one. Reads them once: the serial ports ask
+/// for the firmware's console before the rest of the kernel's start does
+/// (ADR 0481), and later calls give what that found.
 pub fn init(copy: Option<&[u8]>) -> Result<&'static Acpi, &'static str> {
+    if let Some(acpi) = ACPI.get() {
+        return Ok(acpi);
+    }
     let (rsdp_address, rsdp) = match copy.map(Rsdp::parse) {
         Some(Ok(rsdp)) => (None, rsdp),
         _ => match scan_bios() {
@@ -107,7 +115,8 @@ pub fn init(copy: Option<&[u8]>) -> Result<&'static Acpi, &'static str> {
     let mcfg = tables.find(&memory, b"MCFG");
     let srat = tables.find(&memory, b"SRAT").and_then(|sdt| Srat::parse(&sdt).ok());
     let slit = tables.find(&memory, b"SLIT").and_then(|sdt| Slit::parse(&sdt).ok());
-    let acpi = Acpi { rsdp_address, rsdp, tables, madt, fadt, hpet, mcfg, srat, slit };
+    let spcr = tables.find(&memory, b"SPCR").and_then(|sdt| Spcr::parse(&sdt).ok());
+    let acpi = Acpi { rsdp_address, rsdp, tables, madt, fadt, hpet, mcfg, srat, slit, spcr };
     Ok(ACPI.call_once(|| acpi))
 }
 
@@ -204,6 +213,9 @@ pub fn describe(line: &mut dyn FnMut(fmt::Arguments<'_>)) {
     if let Some(hpet) = &acpi.hpet {
         line(format_args!("ACPI: HPET {} at {:#x}", hpet.number, hpet.address));
     }
+    if let Some(spcr) = &acpi.spcr {
+        describe_spcr(spcr, line);
+    }
     if let Some(srat) = &acpi.srat {
         let (mut cpus, mut ranges, mut domains) = (0, 0, 0u64);
         for entry in srat.entries() {
@@ -235,4 +247,39 @@ pub fn describe(line: &mut dyn FnMut(fmt::Arguments<'_>)) {
             ));
         }
     }
+}
+
+/// The log's line for the SPCR: which port the firmware's console is on,
+/// and whether the kernel can use it.
+fn describe_spcr(spcr: &Spcr, line: &mut dyn FnMut(fmt::Arguments<'_>)) {
+    match (spcr.io_port(), spcr.rate) {
+        (Some(base), Some(rate)) => line(format_args!(
+            "ACPI: SPCR: the firmware's console is the 16550 at I/O port {base:#x}, at {rate} baud"
+        )),
+        (Some(base), None) => line(format_args!(
+            "ACPI: SPCR: the firmware's console is the 16550 at I/O port {base:#x}, at the speed \
+             the firmware left, taken as 115200 baud"
+        )),
+        (None, _) if spcr.is_16550() && spcr.address.space == GenericAddress::MEMORY => {
+            line(format_args!(
+                "ACPI: SPCR: the firmware's console is the 16550 at memory address {:#x}, which \
+                 Radix does not drive",
+                spcr.address.address
+            ));
+        }
+        (None, _) => line(format_args!(
+            "ACPI: SPCR: the firmware's console is a port of interface type {:#x}, which Radix \
+             does not drive",
+            spcr.interface
+        )),
+    }
+}
+
+/// The serial port the firmware sends its console to, from the SPCR, when
+/// it is a 16550 at an I/O port (ADR 0481). Reads the tables if the
+/// kernel has not yet.
+pub fn firmware_console() -> Option<radix_hal::FirmwareConsole> {
+    let acpi = get().or_else(|| init(crate::entry::RSDP_COPY.get().copied()).ok())?;
+    let spcr = acpi.spcr.as_ref()?;
+    Some(radix_hal::FirmwareConsole { base: spcr.io_port()?, rate: spcr.rate })
 }
