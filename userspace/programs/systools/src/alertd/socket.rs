@@ -33,6 +33,7 @@ use serde::Serialize;
 
 use super::{Alertd, CONNECTIONS_MAX};
 use crate::alerts::protocol::{Alert, Done, End, REQUEST_MAX, Refusal, Request};
+use crate::deadline::Deadline;
 use crate::{notifyd, proc, sys};
 
 /// How long a request has to arrive in all, and an answer to be read.
@@ -59,8 +60,6 @@ pub struct Who {
 /// Takes `stream`: serves it on a thread of its own, or says alertd is
 /// busy.
 pub fn accept(alertd: &Arc<Alertd>, stream: UnixStream) {
-    // The listener is not blocking, and a stream may take after it.
-    let _ = stream.set_nonblocking(false);
     // Asked at once: the peer waits for its answer, so it is still there.
     let who = who_is(&stream);
     admit(alertd, stream, who);
@@ -99,8 +98,9 @@ fn count(alertd: &Alertd, root: bool) -> &AtomicUsize {
 
 /// Says `why` to a connection that is turned away.
 fn refuse(stream: &UnixStream, why: &str) {
-    let _ = stream.set_write_timeout(Some(Duration::from_secs(1)));
-    let _ = line(&mut &*stream, &Refusal { error: why.into() });
+    if let Ok(mut out) = Deadline::new(stream, Duration::from_secs(1)) {
+        let _ = line(&mut out, &Refusal { error: why.into() });
+    }
 }
 
 /// Who is at the other end of `stream`, or why they may not ask.
@@ -118,11 +118,16 @@ fn who_is(stream: &UnixStream) -> Result<Who, String> {
 
 /// Reads the request on `stream` and answers it.
 pub fn serve(alertd: &Alertd, stream: &UnixStream, who: Result<Who, String>) {
-    let _ = stream.set_write_timeout(Some(REQUEST_TIME));
-    let mut out = io::BufWriter::new(stream);
+    let (Ok(request_in), Ok(answer_out)) =
+        (Deadline::new(stream, REQUEST_TIME), Deadline::each(stream, REQUEST_TIME))
+    else {
+        return;
+    };
+    let mut out = io::BufWriter::new(answer_out);
     // The request is read first, even from one who may not ask, so that
     // the refusal is not lost to a connection closed on unread bytes.
-    let answered = match read_request(stream).and_then(|request| who.map(|who| (who, request))) {
+    let request = read_request(request_in);
+    let answered = match request.and_then(|request| who.map(|who| (who, request))) {
         Ok((who, request)) => answer(alertd, &who, &request, &mut out),
         Err(why) => Err(why),
     };
@@ -132,10 +137,9 @@ pub fn serve(alertd: &Alertd, stream: &UnixStream, who: Result<Who, String>) {
     let _ = out.flush();
 }
 
-/// The request that `stream` sends within [`REQUEST_TIME`].
-fn read_request(stream: &UnixStream) -> Result<Request, String> {
-    let deadline = Instant::now() + REQUEST_TIME;
-    let mut buffered = BufReader::new(Deadline { stream, deadline });
+/// The request that `stream` sends before its deadline.
+fn read_request(stream: Deadline<'_>) -> Result<Request, String> {
+    let mut buffered = BufReader::new(stream);
     let mut text = Vec::new();
     let limit = (REQUEST_MAX + 1) as u64;
     match (&mut buffered).take(limit).read_until(b'\n', &mut text) {
@@ -151,24 +155,6 @@ fn read_request(stream: &UnixStream) -> Result<Request, String> {
         Err(err) => return Err(format!("cannot read the request: {err}")),
     }
     serde_json::from_slice(&text).map_err(|err| format!("not a request: {err}"))
-}
-
-/// A stream whose reads end at a time, whatever the other end sends: each
-/// read waits only for what is left.
-struct Deadline<'a> {
-    stream: &'a UnixStream,
-    deadline: Instant,
-}
-
-impl Read for Deadline<'_> {
-    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
-        let left = self.deadline.saturating_duration_since(Instant::now());
-        if left.is_zero() {
-            return Err(io::ErrorKind::TimedOut.into());
-        }
-        self.stream.set_read_timeout(Some(left))?;
-        (&*self.stream).read(buffer)
-    }
 }
 
 /// Writes `item` as a line of JSON.

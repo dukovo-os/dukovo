@@ -186,7 +186,8 @@ fn https(tcp: TcpStream, tls: &Arc<ServerConfig>, records: &Records) -> io::Resu
 fn ask(request: &str) -> Result<(), String> {
     let mut stream =
         UnixStream::connect(SOCKET).map_err(|err| format!("cannot connect to {SOCKET}: {err}"))?;
-    stream.set_read_timeout(Some(PATIENCE)).map_err(|err| err.to_string())?;
+    // Radix's Unix sockets take no SO_RCVTIMEO: the boot test's own time
+    // limit bounds the wait for alertd's answer.
     writeln!(stream, "{request}").map_err(|err| format!("cannot write to alertd: {err}"))?;
     for line in BufReader::new(stream).lines() {
         println!("{}", line.map_err(|err| format!("cannot read alertd's answer: {err}"))?);

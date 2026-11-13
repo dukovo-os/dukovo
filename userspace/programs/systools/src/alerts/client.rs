@@ -18,6 +18,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use super::protocol::{Alert, Done, Refusal, Request, SOCKET};
+use crate::deadline::Deadline;
 
 /// The longest a call waits for alertd to take a request.
 pub const PATIENCE: Duration = Duration::from_secs(2);
@@ -116,14 +117,13 @@ fn send_to(socket: &Path, request: &Request) -> Result<(), String> {
 
 /// Sends `request` and reads the one line that answers it.
 fn exchange(socket: &Path, request: &Request) -> io::Result<String> {
-    let mut stream = UnixStream::connect(socket)?;
-    stream.set_read_timeout(Some(PATIENCE))?;
-    stream.set_write_timeout(Some(PATIENCE))?;
+    let stream = UnixStream::connect(socket)?;
+    let mut timed = Deadline::new(&stream, PATIENCE)?;
     let mut line = serde_json::to_string(request).map_err(io::Error::other)?;
     line.push('\n');
-    stream.write_all(line.as_bytes())?;
+    timed.write_all(line.as_bytes())?;
     let mut answer = String::new();
-    BufReader::new(stream).read_line(&mut answer)?;
+    BufReader::new(timed).read_line(&mut answer)?;
     if answer.is_empty() {
         return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "alertd closed the connection"));
     }

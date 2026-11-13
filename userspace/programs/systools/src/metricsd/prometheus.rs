@@ -32,6 +32,7 @@ use std::time::{Duration, Instant};
 use super::sample::{Disk, Filesystem, Network as Card, Service, Snapshot, Volume};
 use super::settings::Network;
 use crate::alerts::protocol::{Active, End, Refusal, Request, Severity};
+use crate::deadline::Deadline;
 use crate::util;
 
 /// The longest a request's head may be, and how long it has to arrive.
@@ -343,19 +344,14 @@ fn text_response(status: u16, reason: &str, headers: &[(&str, &str)], body: &str
 /// critical ones. None when alertd is not there, does not answer in
 /// `patience`, refuses or answers with something else.
 pub fn active_counts(socket: &Path, patience: Duration) -> Option<(u64, u64)> {
-    let mut stream = UnixStream::connect(socket).ok()?;
-    stream.set_read_timeout(Some(patience)).ok()?;
-    stream.set_write_timeout(Some(patience)).ok()?;
+    let stream = UnixStream::connect(socket).ok()?;
+    let mut timed = Deadline::new(&stream, patience).ok()?;
     let mut request =
         serde_json::to_string(&Request { ask: "list".into(), ..Request::default() }).ok()?;
     request.push('\n');
-    stream.write_all(request.as_bytes()).ok()?;
-    let deadline = Instant::now() + patience;
+    timed.write_all(request.as_bytes()).ok()?;
     let (mut warnings, mut critical) = (0, 0);
-    for line in BufReader::new(stream.take(1 << 22)).lines().take(ALERTD_LINES_MAX) {
-        if Instant::now() > deadline {
-            return None;
-        }
+    for line in BufReader::new(timed.take(1 << 22)).lines().take(ALERTD_LINES_MAX) {
         let line = line.ok()?;
         if serde_json::from_str::<End>(&line).is_ok_and(|end| end.end) {
             return Some((warnings, critical));

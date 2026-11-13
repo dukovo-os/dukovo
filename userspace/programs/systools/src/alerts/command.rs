@@ -23,6 +23,7 @@ use super::client;
 use super::protocol::{Active, Alert, Change, Channel, Delivery, Request, SOCKET, Severity, State};
 use crate::alertd::text;
 use crate::args::{Arg, Args};
+use crate::deadline::Deadline;
 use crate::ps::print_table;
 use crate::util::{self, Fail, fail, usage};
 
@@ -213,19 +214,18 @@ fn ask(
     wait: Duration,
     mut each: impl FnMut(&str) -> Result<(), Fail>,
 ) -> Result<(), Fail> {
-    let mut stream = UnixStream::connect(SOCKET).map_err(|err| match err.kind() {
+    let stream = UnixStream::connect(SOCKET).map_err(|err| match err.kind() {
         io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused => {
             fail("alertd is not running; try service alertd start".into())
         }
         _ => util::failed(&SOCKET, err),
     })?;
     let to_fail = |err: io::Error| util::failed(&SOCKET, err);
-    stream.set_read_timeout(Some(wait)).map_err(to_fail)?;
-    stream.set_write_timeout(Some(wait)).map_err(to_fail)?;
+    let mut timed = Deadline::each(&stream, wait).map_err(to_fail)?;
     let mut line = serde_json::to_string(request).map_err(|err| fail(err.to_string()))?;
     line.push('\n');
-    stream.write_all(line.as_bytes()).map_err(to_fail)?;
-    for line in BufReader::new(stream).lines() {
+    timed.write_all(line.as_bytes()).map_err(to_fail)?;
+    for line in BufReader::new(timed).lines() {
         let line = line.map_err(|err| match err.kind() {
             io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut => {
                 fail(format!("alertd did not answer within {} seconds", wait.as_secs()))

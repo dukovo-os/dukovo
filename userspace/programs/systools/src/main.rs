@@ -86,6 +86,7 @@ mod burn;
 mod changes;
 mod cloud;
 mod column;
+mod deadline;
 mod device;
 mod df;
 mod dhcp;
