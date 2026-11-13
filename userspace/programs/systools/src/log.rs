@@ -299,6 +299,29 @@ fn run(args: &mut Args, journalctl: bool) -> Result<i32, Fail> {
     Ok(0)
 }
 
+/// The last `lines` records of this boot of service `name`, with Spark's
+/// lines that name it, as `log -s NAME -n LINES` shows them without the
+/// host: what `service NAME status` ends with. None when logd does not
+/// answer, so that status works with the log down.
+pub fn recent(name: &str, lines: usize) -> Vec<String> {
+    let request =
+        Request { services: vec![name.to_string()], lines: Some(lines), ..Request::default() };
+    let show = Show { output: Output::Short, utc: false, host: None, color: false };
+    let mut shown = Vec::new();
+    let asked = logd::ask(&request, |line| {
+        if let Ok(record) = serde_json::from_str::<Record>(line) {
+            let mut text = Vec::new();
+            write_record(&mut text, &show, &record, line)?;
+            shown.push(String::from_utf8_lossy(&text).trim_end().to_string());
+        }
+        Ok(true)
+    });
+    if asked.is_err() {
+        return Vec::new();
+    }
+    shown
+}
+
 /// The value of `-n`: how many of the last records to show, or None for
 /// `all`. journalctl's `-n` alone is the last ten.
 fn lines_value(args: &mut Args, journalctl: bool) -> Result<Option<usize>, Fail> {

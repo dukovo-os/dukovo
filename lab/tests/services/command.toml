@@ -1,0 +1,119 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# The service command (ADR 0471) with nginx from the catalog: a start
+# waits until the service is ready and shows Spark's lines along the
+# service graph; a stop names what it stops with the service; status says
+# what nginx holds, its processes and its last lines in the log; list and
+# logs. Then the faults: a wait that Ctrl-C ends leaves the start going,
+# a start whose service never gets ready fails with the reason, a start
+# whose requirement cannot start fails naming it, and status works with
+# the log down.
+about = "service list, status (holdings, processes, log lines), starts that wait and show Spark's lines, stops that name what they stop, logs; a wait cut short, a start that never gets ready, a requirement given up on, the log down (ADR 0471)"
+time = "6m"
+host_needs = ["scp"]
+
+[[step]]
+host = "sh {here}/copy-bundle.sh org.nginx.nginx {machine} {machine-port:22}"
+expect = "copied: org.nginx.nginx"
+[[step]]
+host = "sh {here}/copy-file.sh {here}/lab-web.service {machine} {machine-port:22}"
+expect = "copied: lab-web.service"
+[[step]]
+host = "sh {here}/copy-file.sh {here}/lab-slow.service {machine} {machine-port:22}"
+expect = "copied: lab-slow.service"
+[[step]]
+host = "sh {here}/copy-file.sh {here}/lab-top.service {machine} {machine-port:22}"
+expect = "copied: lab-top.service"
+# From nothing: a run before may have left them.
+[[step]]
+run = "sh -c 'cd /system/settings/spark/services && rm -f lab-web.toml lab-slow.toml lab-top.toml /system/settings/lab-slow-ok; bundle remove --for-everyone --purge org.nginx.nginx > /dev/null 2>&1; bundle install --for-everyone --yes /users/lab/org.nginx.nginx.dkv | tail -1'"
+root = true
+expect = "installed org.nginx.nginx"
+[[step]]
+run = "service nginx enable"
+root = true
+# The start returns once nginx listens, however long that takes.
+[[step]]
+run = "service nginx start"
+root = true
+expect = "ready"
+[[step]]
+run = "service nginx status -n 20"
+root = true
+expect = ["Active: active (running)", "Holds: its own view, acting for ", "listens on 80 (open)", "Processes: ", "spark: nginx is ready (listening)"]
+[[step]]
+run = "service list"
+root = true
+expect = ["nginx", "running"]
+[[step]]
+run = "service list --json"
+root = true
+expect = "\"show_version\":1"
+# A stop names what it stops with nginx, and status says who asked.
+[[step]]
+run = "sh -c 'cp /users/lab/lab-web.service /system/settings/spark/services/lab-web.toml && service lab-web start'"
+root = true
+expect = "started lab-web ("
+[[step]]
+run = "service nginx stop"
+root = true
+expect = ["stopping lab-web: it requires nginx, which was stopped", "nginx (process "]
+[[step]]
+run = "service nginx status"
+root = true
+exit = 3
+expect = ["Active: inactive (dead)", "Asked: to stop by root (process "]
+# Starting lab-web brings nginx back, and shows each step.
+[[step]]
+run = "service lab-web start"
+root = true
+expect = ["started nginx (", "nginx is ready (listening)", "started lab-web ("]
+[[step]]
+run = "service lab-web logs"
+root = true
+expect = ["spark: stopping lab-web: it requires nginx, which was stopped", "spark: started lab-web ("]
+# Ctrl-C ends the wait, not the start.
+[[step]]
+run = "sh -c 'cp /users/lab/lab-slow.service /system/settings/spark/services/lab-slow.toml; service lab-slow start 2>&1 & sleep 2; kill -INT $!; wait $!; echo \"exit $?\"'"
+root = true
+expect = ["lab-slow goes on starting; `service lab-slow status` says how it goes", "exit 130"]
+[[step]]
+run = "sh -c 'service lab-slow status; touch /system/settings/lab-slow-ok'"
+root = true
+exit = 3
+expect = "Active: activating (starting as process "
+[[step]]
+run = "sh -c 'i=0; while [ $i -lt 20 ] && ! service lab-slow status > /dev/null; do sleep 1; i=$((i + 1)); done; service lab-slow status'"
+root = true
+expect = "Active: active (running)"
+# A restart whose service never gets ready fails with the reason.
+[[step]]
+run = "sh -c 'rm /system/settings/lab-slow-ok; service lab-slow restart 2>&1; echo \"exit $?\"'"
+root = true
+expect = ["could not start lab-slow: it did not get ready in 10 s: its health check did not pass; Spark tries again in ", "exit 1"]
+# Spark gives up on it after its next start, and says so.
+[[step]]
+run = "sh -c 'i=0; while [ $i -lt 30 ] && ! service lab-slow status | grep -q \"Active: failed\"; do sleep 1; i=$((i + 1)); done; service lab-slow status'"
+root = true
+exit = 3
+expect = ["Active: failed (Spark gave up on it)", "Why: it failed to start 2 times in a row"]
+# A start of what requires it starts it afresh, and fails naming it.
+[[step]]
+run = "sh -c 'cp /users/lab/lab-top.service /system/settings/spark/services/lab-top.toml; service lab-top start 2>&1; echo \"exit $?\"'"
+root = true
+expect = ["lab-top waits for lab-slow, which could not start: it did not get ready in 10 s", "exit 1"]
+[[step]]
+run = "service list --failed"
+root = true
+exit = 1
+expect = "lab-slow"
+# Status works with the log down, without the log's lines.
+[[step]]
+run = "sh -c 'service logd stop > /dev/null; service lab-web status; echo \"status $?\"; service logd start > /dev/null'"
+root = true
+expect = ["Active: active (running)", "status 0"]
+[[step]]
+run = "sh -c 'service lab-top stop; service lab-slow stop; service lab-web stop; cd /system/settings/spark/services && rm lab-web.toml lab-slow.toml lab-top.toml /users/lab/lab-web.service /users/lab/lab-slow.service /users/lab/lab-top.service; bundle remove --for-everyone --purge org.nginx.nginx'"
+root = true
+expect = "removed org.nginx.nginx"

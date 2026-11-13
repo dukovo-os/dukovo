@@ -14,8 +14,10 @@
 
 #include "check.h"
 
-// What a program wrote to its standard output, NUL-terminated.
+// What a program wrote to its standard output, NUL-terminated, and to
+// its standard error too while `output_errors` is set.
 static char output[16384];
+static int output_errors;
 
 // Notes the program that `len` bytes of `word` name, as `name`,
 // `/bin/name` or `/system/commands/name`, if /system/commands has it; returns
@@ -118,7 +120,8 @@ static void note_commands(const char *const argv[]) {
 }
 
 // Runs `argv` with `input` on its standard input, collects what it
-// writes to its standard output in `output`, and returns its exit
+// writes to its standard output (and standard error, while
+// `output_errors` is set) in `output`, and returns its exit
 // status, or 128 and the signal that ended it.
 static int run_program(const char *const argv[], const char *input, size_t input_len) {
 	note_commands(argv);
@@ -131,6 +134,8 @@ static int run_program(const char *const argv[], const char *input, size_t input
 	if(!pid) {
 		dup2(in[0], STDIN_FILENO);
 		dup2(out[1], STDOUT_FILENO);
+		if(output_errors)
+			dup2(out[1], STDERR_FILENO);
 		close(in[0]);
 		close(in[1]);
 		close(out[0]);

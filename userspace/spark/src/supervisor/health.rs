@@ -28,9 +28,10 @@ use libradix::abi::process;
 use libradix::abi::signal;
 use libradix::abi::startup::SLOT_PROCESS;
 use manifest::service::ReadyWhen;
+use radix_rt::SYS;
 use radix_rt::fs::File;
-use radix_rt::{SYS, println};
 
+use super::watch::say;
 use super::{LINE_MAX, SECOND, STOP_WAIT, State, Supervisor, ending, now};
 
 /// How often a service that is ready once healthy is checked while it
@@ -217,7 +218,8 @@ impl Supervisor {
             return self.became_ready(index);
         }
         if failed_before {
-            println!("spark: {} passes its health check again", service.spec.name);
+            let line = format!("{} passes its health check again", service.spec.name);
+            say(&mut self.told, index, line);
         }
         let every = service.spec.health.as_ref().map_or(0, |h| u64::from(h.every));
         service.checks.next = now() + every * SECOND;
@@ -241,23 +243,23 @@ impl Supervisor {
         let name = &service.spec.name;
         let words = checks.last_failure.as_deref().unwrap_or("");
         if checks.failures == 1 {
-            println!("spark: {name} failed its health check ({words})");
+            say(&mut self.told, index, format!("{name} failed its health check ({words})"));
         }
         if checks.failures < health.failures {
             checks.next = time + u64::from(health.every) * SECOND;
             return;
         }
-        println!(
-            "spark: {name} failed its health check {} times in a row; restarting it",
+        let line = format!(
+            "{name} failed its health check {} times in a row; restarting it",
             checks.failures
         );
+        say(&mut self.told, index, line);
         checks.next = 0;
         let Some(pid) = service.state.pid() else { return };
         service.unhealthy = true;
-        service.why = Some(format!(
-            "it failed its health check {} times in a row ({words})",
-            checks.failures
-        ));
+        let why =
+            format!("it failed its health check {} times in a row ({words})", checks.failures);
+        service.set_why(Some(why), None);
         service.stop_by.get_or_insert(time + STOP_WAIT);
         // Its end comes through `ended`, and `schedule` starts it again as
         // its file says.

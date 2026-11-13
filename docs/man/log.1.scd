@@ -50,8 +50,13 @@ trimming are root's.
 # OPTIONS
 
 *-s*, *--service* _name_
-	Only the records of this service: the lines Spark wrote for it. It
-	may be given more than once, and with _name_ operands.
+	Only the records of this service: the lines its programs wrote,
+	and Spark's lines that name it as a word, such as *started nginx
+	(...)*, *nginx is ready* and *stopping web: it requires nginx*, as
+	journalctl's *-u* takes systemd's lines about a unit (ADR 0471).
+	*nginx* does not match *nginx2*. It may be given more than once,
+	and with _name_ operands. *service* _name_ *logs* is *log -s*
+	_name_ (*service*(8)).
 
 *-k*, *--kernel*
 	Only the kernel's own records.

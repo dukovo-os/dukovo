@@ -90,6 +90,65 @@ pub struct Service {
     pub health: Option<Health>,
     /// What is wrong with its file, while it runs its last good copy.
     pub complaint: Option<String>,
+    /// The service its `why` names, when it names one: the requirement
+    /// that stopped, failed or is missing, which an explanation follows.
+    pub cause: Option<String>,
+    /// The last line its output wrote, kept from its end until its next
+    /// start: most often what a program says as it fails.
+    pub last_line: Option<String>,
+    /// The last request that started, stopped or restarted it.
+    pub last_request: Option<Request>,
+    /// What its file gives it to reach and do.
+    pub holds: Holds,
+}
+
+/// A request a client made of Spark.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Request {
+    /// `start`, `stop` or `restart`.
+    pub verb: String,
+    /// The user the asking process acts for.
+    pub user: u32,
+    /// The asking process, by number.
+    pub process: u64,
+    /// When it asked.
+    pub ms: u64,
+}
+
+/// What a service's file gives it (service.toml(5), ADR 0217), beyond
+/// what every service's view holds.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Holds {
+    /// It runs with Spark's root, the whole tree, in place of a view:
+    /// `runs-with-your-access`.
+    pub whole_tree: bool,
+    /// The account it acts for, a bundle's service's; root's when none.
+    pub account: Option<String>,
+    /// The places it may read, by absolute path.
+    pub reads: Vec<String>,
+    /// The places it may change.
+    pub changes: Vec<String>,
+    /// The places it mounts filesystems beneath.
+    pub mounts: Vec<String>,
+    /// The names of its secrets.
+    pub secrets: Vec<String>,
+    /// The ports it may listen on: "80", or a range as "8000-8010".
+    pub listen: Vec<String>,
+    /// Whether it may connect out.
+    pub outbound: bool,
+    /// The machine's settings it may change: "network", "hardware",
+    /// "time" and "firewall".
+    pub admin: Vec<String>,
+    /// Whether it may give processes and files another user's name.
+    pub names: bool,
+    /// The PCI cards it was given, by address, as "0000:00:03.0".
+    pub cards: Vec<String>,
+    /// Its domain's memory limit, if it has one.
+    pub memory_bytes: Option<u64>,
+    /// Its domain's CPU weight.
+    pub cpu_weight: u32,
 }
 
 /// What a service is doing.
@@ -222,6 +281,17 @@ mod tests {
             waiting_for: ["db".into()].into(),
             started_by: Some("boot".into()),
             health: Some(Health { state: HealthState::Failing, failures: 2, ..Health::default() }),
+            cause: Some("db".into()),
+            last_line: Some("web: cannot reach db".into()),
+            last_request: Some(Request { verb: "start".into(), user: 0, process: 81, ms: 50_000 }),
+            holds: Holds {
+                account: Some("org.example.web".into()),
+                changes: ["/system/state/org.example.web".into()].into(),
+                secrets: ["tls-key".into()].into(),
+                listen: ["80".into(), "8000-8010".into()].into(),
+                cpu_weight: 100,
+                ..Holds::default()
+            },
             ..Service::default()
         }
     }
@@ -237,6 +307,7 @@ mod tests {
         let json = to_json(&show).unwrap();
         assert!(json.contains(r#""state":"pending""#), "{json}");
         assert!(json.contains(r#""health":{"state":"failing""#), "{json}");
+        assert!(json.contains(r#""listen":["80","8000-8010"]"#), "{json}");
         assert_eq!(parse(&format!("{json}\n")), Ok(show));
     }
 

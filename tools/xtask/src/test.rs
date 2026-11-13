@@ -1961,7 +1961,7 @@ pub const CASES: &[Case] = &[
     },
     Case {
         name: "service-graph",
-        about: "services wait for what they name (ADR 0470): one that requires another starts once that one listens, one whose requirement ends or is stopped by a request is stopped too, one that keeps failing its health check is restarted until Spark gives up on it and starts again once fixed, two that wait for each other never start, a setup step is done before what requires it starts, and shutting down stops a service before the one it requires",
+        about: "services wait for what they name (ADR 0470): one that requires another starts once that one listens, one whose requirement ends or is stopped by a request is stopped too, one that keeps failing its health check is restarted until Spark gives up on it and starts again once fixed, two that wait for each other never start, a setup step is done before what requires it starts, and shutting down stops a service before the one it requires; service start waits, showing Spark's lines as they come, or fails saying why, four waits run at once, and Ctrl-C leaves a start going (ADR 0471)",
         firmware: Firmware::Bios,
         media: Media::Usb,
         cmdline: "lockdep -- --services --posix /system/tests/posix/graphtest",
@@ -11020,11 +11020,11 @@ fn spark_stop(vm: &mut Vm, case: &Case) -> Result<(), String> {
     Ok(())
 }
 
-/// The `service-graph` test (ADR 0470): graphtest
+/// The `service-graph` test (ADR 0470, ADR 0471): graphtest
 /// (userspace/posix/graphtest.c) writes services that name each other
-/// and checks what `service` says of them; the log holds Spark's side of
-/// each step, and shutting down stops g-web before g-db, which it
-/// requires.
+/// and checks what `service` says of them and how it waits; the log holds
+/// Spark's side of each step, and shutting down stops g-web before g-db,
+/// which it requires.
 fn service_graph(vm: &mut Vm, case: &Case) -> Result<(), String> {
     boot_report(vm, case)?;
     vm.expect_ahead("spark: started /system/tests/posix/graphtest as process ")?;

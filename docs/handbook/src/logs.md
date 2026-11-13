@@ -60,6 +60,7 @@ Narrow it down with options, which all must hold together:
 | To see | Type |
 | --- | --- |
 | One service's or program's records | `log volumed`, or `log -s volumed -s consoled` |
+| A service's records with Spark's lines about it: its starts, readiness, failures and stops | `log -s nginx`, or `service nginx logs` |
 | Errors only, or warnings and errors | `log -p error`, `log -p warning` |
 | The last few records | `log -n 20` |
 | New records as they come | `log -f` (Ctrl+C stops) |

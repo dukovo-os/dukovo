@@ -200,6 +200,27 @@ fn is_name(name: &str) -> bool {
         && name.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'@'))
 }
 
+/// Whether `text`, a line of Spark's, names service `name` as a word,
+/// not as part of a longer name: "started nginx (...)", "nginx's health
+/// check", "it requires nginx, which ...", but not "nginx2". `log -s`
+/// takes these lines too, as journalctl's `-u` takes systemd's about a
+/// unit (ADR 0471).
+fn names_service(text: &str, name: &str) -> bool {
+    let bytes = text.as_bytes();
+    let part = |b: u8| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'@');
+    text.match_indices(name).any(|(at, _)| {
+        let end = at + name.len();
+        let before = at == 0 || !part(bytes[at - 1]);
+        // A full stop ends a sentence; one between letters is the name's.
+        let after = match bytes.get(end) {
+            None => true,
+            Some(b'.') => bytes.get(end + 1).is_none_or(|&b| !part(b)),
+            Some(&b) => !part(b),
+        };
+        before && after
+    })
+}
+
 /// The text of a program's line after the kernel's `name[thread]: `.
 fn after_stamp(text: &str) -> &str {
     stamp(text).1
@@ -1015,6 +1036,9 @@ impl Choice<'_> {
             && self.boot.as_ref().is_none_or(|b| record.boot == *b)
             && (request.services.is_empty() && request.names.is_empty()
                 || record.from == "service" && request.services.contains(&record.name)
+                || record.from == "service"
+                    && record.name == "spark"
+                    && request.services.iter().any(|name| names_service(&record.text, name))
                 || request.names.contains(&record.name))
             && (!request.kernel || record.from == "kernel")
             && request.level.is_none_or(|level| record.level_number() <= level)
@@ -1314,6 +1338,36 @@ mod tests {
         request.kernel = true;
         assert!(!choose(&request, None, None).wants(&record));
         assert!(serde_json::from_str::<Request>(r#"{"bogus":1}"#).is_err());
+    }
+
+    #[test]
+    fn a_service_s_records_take_spark_s_lines_that_name_it() {
+        let spark = |text: &str| Record {
+            from: "service".into(),
+            name: "spark".into(),
+            text: text.into(),
+            ..Record::default()
+        };
+        let request = Request { services: vec!["nginx".into()], ..Request::default() };
+        let choice = Choice { request: &request, reader: 0, boot: None, grep: None };
+        for text in [
+            "started nginx (/applications/org.nginx.nginx/bin/nginx) as process 57",
+            "nginx is ready (listening) 10.4 s after its start",
+            "nginx's health check passes again",
+            "stopping lab-web: it requires nginx, which was stopped",
+            "asked to stop nginx, by process 812",
+            "gave up on nginx after 3 failed starts in a row; `service nginx start` tries again",
+            "not starting web: it requires nginx.",
+        ] {
+            assert!(choice.wants(&spark(text)), "{text}");
+        }
+        for text in ["started nginx2 (x) as process 5", "started lab-nginx (x)", "nginx.conf read"]
+        {
+            assert!(!choice.wants(&spark(text)), "{text}");
+        }
+        // Another program's line that names it is that program's.
+        let other = Record { name: "logd".into(), ..spark("nginx is ready") };
+        assert!(!choice.wants(&other));
     }
 
     #[test]

@@ -20,13 +20,14 @@ pip3 = ["services/python-commands"]
 python = ["services/python-commands"]
 python3 = ["services/python", "services/python-commands"]
 serial = ["console/serial-command", "hardware/serial-ports"]
+service = ["services/command", "services/graph", "services/health-giveup"]
 valkey-benchmark = ["services/valkey"]
 valkey-check-aof = ["services/valkey"]
 valkey-check-rdb = ["services/valkey"]
 valkey-cli = ["services/valkey"]
 
 [services]
-nginx = ["services/graph", "services/nginx"]
+nginx = ["services/command", "services/graph", "services/nginx"]
 valkey = ["services/valkey"]
 
 # The admin console's pages, by their path (thread C), and admind's

@@ -381,7 +381,8 @@ spark: gave up on web after 5 failed starts in a row (the last: it failed its he
 # CONTROL SOCKET
 
 Spark listens at the Unix socket _/system/live/spark/control_. A request is one
-line; Spark answers it with text and closes the connection. An answer
+line; Spark answers it with text and closes the connection, unless it
+asked to wait (*--wait*, below). An answer
 that starts with *ok:* or a status table is a success, one that starts
 with *error:* a refusal. *shutdown*(8), *reboot*(8), *poweroff*(8),
 *halt*(8) and *service*(8) are its clients. Spark logs each request
@@ -427,9 +428,20 @@ presses.
 	is not running as asked, a clause after its name; *started_by*
 	(*boot*, *a request*, or the service that requires or wants it);
 	*health* (*state*: *unknown*, *passing* or *failing*, *failures*,
-	*last_failure* and *checked_ms*) when its file has a check; and
+	*last_failure* and *checked_ms*) when its file has a check;
 	*complaint*, what is wrong with its file while it runs its last
-	good copy. A field may be *null* or left out where it does not
+	good copy; *cause*, the service its *why* names, when it names one
+	(a requirement that stopped, failed, was given up on, is off or
+	has no file); *last_line*, the last line its output wrote, up to
+	200 bytes, kept from its end to its next start; *last_request*
+	(*verb*, *user* and *process* numbers, *ms*), the last start, stop
+	or restart a request asked of it; and *holds*, what its view gives
+	it beyond what every service reads: *whole_tree* (it runs with
+	Spark's access), *account*, *reads*, *changes*, *mounts*,
+	*secrets*, *listen* (ports and ranges as *"80"* or
+	*"8000-8010"*), *outbound*, *admin* (the rights it has, as
+	*network*), *names*, *cards* (the PCI addresses it drives),
+	*memory_bytes* and *cpu_weight*. A field may be *null* or left out where it does not
 	apply, and later versions of Spark may add fields, which clients
 	pass over. A name Spark does not know answers *error: no service
 	is called* _name_.
@@ -448,6 +460,29 @@ presses.
 	requires db, which has no service file*); on a service Spark gave
 	up on, it starts afresh. *stop* stops those that require it too,
 	and names them.
+
+*start* | *stop* | *restart* _name_ *--wait*
+	The same, and a watch (ADR 0471): once Spark has answered, the
+	connection stays open, and Spark writes to it each of its log
+	lines about the service and those the request reaches, as it says
+	them (*spark:* and the line, as the log has it), then a last line
+	once the service has settled. For *start* and *restart*, the
+	reach is the service and every one it requires, wants or starts
+	after, at any depth; it has settled when it is ready (*ok:* _name_
+	*is ready, as process* _n_), is a setup step that is done, or ran
+	and ended well; or when a start of it or of one it waits for failed,
+	was refused or was given up on (*error:* and why, with the last
+	line the failed program wrote, and when Spark tries again). For
+	*stop*, the reach is the service and every one that requires it;
+	it has settled when they have all ended (*ok:* _name_ *is
+	stopped*). Each of these comes within the ready timeouts and the
+	5 s stop wait, so a watch ends; 15 minutes is its limit all the
+	same (*ok: still waiting*). Four watches run at once at most, so
+	that other requests find room; a fifth request that asks to wait
+	is answered as one that does not, with *not watched: 4 watches
+	already* at the end of its answer. A watch whose reader has gone,
+	or has left 64 KiB unread, is closed; the request goes on.
+	*service*(8) asks this way unless told *--no-wait*.
 
 *reload* _name_
 	Send a running service SIGHUP, which asks a service that reads
