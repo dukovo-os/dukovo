@@ -166,6 +166,7 @@ mod rgrub;
 mod rtrace;
 mod script;
 mod scrub;
+mod selftest;
 mod sensors;
 mod serial;
 mod serial_console;

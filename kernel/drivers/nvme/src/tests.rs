@@ -274,8 +274,11 @@ impl State {
                         data[77] = self.mdts;
                         data[80..84].copy_from_slice(&self.version.to_le_bytes());
                         data[88..92].copy_from_slice(&2_000_000u32.to_le_bytes());
-                        let oacs = if self.offers_shadow { 1u16 << 8 } else { 0 };
+                        // Device self-tests, and shadow doorbells if offered;
+                        // an extended test of 25 minutes.
+                        let oacs = (1u16 << 4) | if self.offers_shadow { 1u16 << 8 } else { 0 };
                         data[256..258].copy_from_slice(&oacs.to_le_bytes());
+                        data[316..318].copy_from_slice(&25u16.to_le_bytes());
                         data[516..520].copy_from_slice(&8u32.to_le_bytes());
                         data[520..522].copy_from_slice(&(1u16 << 2).to_le_bytes());
                         data[525] = u8::from(self.write_cache);
@@ -328,6 +331,18 @@ impl State {
                 fake_memory_write(prp1, &data);
                 0
             }
+            admin::GET_LOG_PAGE if cdw10 & 0xff == u32::from(command::LOG_SELF_TEST) => {
+                // A short test 40% done, after an extended one that
+                // failed at block 0x1234 of namespace 1.
+                let mut data = std::vec![0u8; 4 * ((cdw10 >> 16) as usize + 1)];
+                (data[0], data[1]) = (0x1, 40);
+                (data[4], data[6]) = (0x27, 0x3);
+                data[16..20].copy_from_slice(&1u32.to_le_bytes());
+                data[20..28].copy_from_slice(&0x1234u64.to_le_bytes());
+                fake_memory_write(prp1, &data);
+                0
+            }
+            admin::DEVICE_SELF_TEST => 0,
             admin::SET_FEATURES if cdw10 == 7 => {
                 let wanted = (cdw11 & 0xffff) as u16 + 1;
                 let granted = wanted.min(self.grants);
@@ -643,6 +658,25 @@ fn reads_the_health_log_for_every_namespace() {
     let &(queue, opcode, namespace, [cdw10, ..]) = state.commands.last().unwrap();
     assert_eq!((queue, opcode, namespace), (0, admin::GET_LOG_PAGE, u32::MAX));
     assert_eq!(cdw10, 0x02 | (127 << 16));
+}
+
+#[test]
+fn starts_self_tests_and_reads_their_log() {
+    let (sim, mut nvme) = setup();
+    assert!(nvme.identity().self_test);
+    assert_eq!(nvme.identity().extended_test_minutes, 25);
+    for code in [command::SHORT_SELF_TEST, command::ABORT_SELF_TEST] {
+        nvme.self_test(&mut |_| {}, code).unwrap();
+        let &(queue, opcode, namespace, [cdw10, ..]) = sim.state().commands.last().unwrap();
+        assert_eq!((queue, opcode, namespace, cdw10), (0, admin::DEVICE_SELF_TEST, u32::MAX, code));
+    }
+    let mut log = [0xffu8; command::LOG_SELF_TEST_SIZE];
+    nvme.self_test_log(&mut |_| {}, &mut log).unwrap();
+    assert_eq!(&log[..2], &[0x1, 40]);
+    assert_eq!(&log[4..7], &[0x27, 0, 0x3]);
+    assert_eq!(&log[20..28], &0x1234u64.to_le_bytes());
+    let &(_, opcode, _, [cdw10, ..]) = sim.state().commands.last().unwrap();
+    assert_eq!((opcode, cdw10), (admin::GET_LOG_PAGE, 0x06 | (127 << 16)));
 }
 
 #[test]

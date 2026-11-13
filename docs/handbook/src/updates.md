@@ -272,6 +272,13 @@ setting:
 - **Start with the previous firmware**, when the version before this one
   names another firmware set: its CPU microcode in place of the new.
 - **Start the previous version**.
+- **Test the memory (memtest86+)**: tests every byte of the memory
+  before Dukovo starts, as the memory test on the install stick does. It
+  runs pass after pass until you press Esc, which restarts the computer,
+  or turn it off. When the menu shows on a serial port COM1 to COM4, the
+  test shows there too. `hardware check` tests memory while the system
+  runs, and says where to look for more; see
+  [Checking the hardware](hardware-check.md).
 
 After three starts in a row that do not finish, **Rescue** starts by
 itself. Once you sign in, it says why it may have started and what

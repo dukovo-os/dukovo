@@ -28,9 +28,11 @@ pub const MANIFEST: &str = "dukovo.spdx";
 /// kernel workspace, so CI and `ob image` enforce the same list.
 pub const KERNEL_POLICY: &str = "kernel/deny.toml";
 
-/// Licenses a boot loader may use: it is a separate program that only loads
-/// the kernel, so the GPL does not reach Dukovo code (ADR 0021).
-const BOOTLOADER_ALLOW: &[&str] = &["GPL-3.0-or-later"];
+/// Licenses a boot loader, and the memory test its menu starts in the
+/// kernel's place, may use: each is a separate program that shares no
+/// code with Dukovo's, so the GPL does not reach Dukovo code (ADRs 0021
+/// and 0488). GRUB is under the GPL version 3, memtest86+ version 2.
+const BOOTLOADER_ALLOW: &[&str] = &["GPL-2.0-only", "GPL-3.0-or-later"];
 
 /// Licenses of closed firmware, which only a local build adds (ADR 0007).
 const FIRMWARE_ALLOW: &[&str] = &["LicenseRef-Intel-Microcode"];
@@ -209,6 +211,8 @@ const CRATES_DOWNLOAD: &str = "https://crates.io/api/v1/crates/";
 pub struct Extras<'a> {
     /// The GRUB the image boots with, built from its pinned source.
     pub grub: &'a crate::grub::Grub,
+    /// The memory test on its start menu, built from its pinned source.
+    pub memtest: &'a crate::memtest::Memtest,
     /// Whether the image carries Intel microcode.
     pub microcode: bool,
     /// The ports, when the image carries the user programs: the test
@@ -249,6 +253,7 @@ pub fn install(ctx: &Ctx, staging: &Path, extras: &Extras<'_>) -> Result<String>
         }
     }
     packages.push(grub(extras.grub));
+    packages.push(memtest(extras.memtest));
     if extras.microcode {
         packages.push(microcode());
     }
@@ -1124,6 +1129,28 @@ fn grub(grub: &crate::grub::Grub) -> Package {
              grub-core/extra_deps.lst the release leaves out, as tools/xtask/src/grub.rs \
              in Dukovo's source says (its corresponding source). GRUB is a separate \
              program that loads the kernel; see https://www.gnu.org/software/grub/."
+        ),
+    }
+}
+
+/// memtest86+, which `./ob` builds from its pinned tarball for every
+/// image's start menu (ADR 0488).
+fn memtest(memtest: &crate::memtest::Memtest) -> Package {
+    let version = crate::memtest::VERSION;
+    Package {
+        name: "memtest86+".into(),
+        version: version.into(),
+        license: "GPL-2.0-only".into(),
+        area: Area::Bootloader,
+        download: crate::memtest::URL.into(),
+        sha256: Some(crate::memtest::SHA256.into()),
+        notices: vec![memtest.license.clone()],
+        comment: format!(
+            "The memtest86+ {version} memory test, which the start menu's Troubleshooting \
+             starts, built unchanged by Dukovo's `./ob` from the tarball of the download \
+             location and SHA-256 given, as tools/xtask/src/memtest.rs in Dukovo's source says \
+             (its corresponding source). memtest86+ is a separate program that runs instead of \
+             the system; see https://www.memtest.org/."
         ),
     }
 }

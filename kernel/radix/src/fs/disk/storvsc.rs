@@ -305,7 +305,7 @@ impl Lane for StorLun {
                 (cdb.ok_or(Error::OutOfRange)?, direction)
             }
             Op::Flush => (Cdb::synchronize_cache(), Direction::None),
-            Op::Discard(_) | Op::Smart(_) => return Err(Error::Unsupported),
+            Op::Discard(_) | Op::Smart(..) => return Err(Error::Unsupported),
         };
         let asked = data.iter().map(|&(_, len)| len).sum::<u32>();
         let packet = storage::execute(self.target, self.lun, cdb.bytes(), direction, asked);

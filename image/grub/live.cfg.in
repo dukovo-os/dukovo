@@ -124,6 +124,19 @@ menuentry "Install Dukovo @VERSION@ (serial console)" --id install-serial {
 @MODULES@    boot
 }
 
+# The memory test (ADR 0488): memtest86+, from the stick, before a
+# machine is trusted with a system. UEFI starts it as an EFI program and a
+# BIOS through the Linux boot protocol; it shows on the screen and on
+# COM1, and runs until the machine is turned off or Esc restarts it.
+menuentry "Test the memory (memtest86+)" --id memory-test --hotkey=m {
+    if [ "${grub_platform}" = efi ]; then
+        chainloader /boot/memtest console=ttyS0,115200
+    else
+        linux /boot/memtest console=ttyS0,115200
+    fi
+    boot
+}
+
 # The machine's own system, as if the stick were not there. Under UEFI
 # it starts the boot loader the firmware would, EFI/BOOT/BOOTX64.EFI on
 # an EFI system partition, from the first disk that has one: UEFI's GRUB

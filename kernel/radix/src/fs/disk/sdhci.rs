@@ -469,7 +469,7 @@ impl Controller for SdSlot {
                 self.done = Some((slot, Outcome::Done));
                 return Ok(());
             }
-            Op::Discard(_) | Op::Smart(_) => return Err(Error::Unsupported),
+            Op::Discard(_) | Op::Smart(..) => return Err(Error::Unsupported),
         };
         let bytes: u64 = request.data.iter().map(|&(_, len)| u64::from(len)).sum();
         let count =

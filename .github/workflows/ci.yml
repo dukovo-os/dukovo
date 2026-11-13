@@ -72,6 +72,15 @@ jobs:
           path: .cache/grub
           key: grub-${{ hashFiles('tools/xtask/src/grub.rs') }}
 
+      # memtest86+, the start menu's memory test, which ./ob builds
+      # from its pinned source (ADR 0488): once for each change to its
+      # recipe.
+      - name: Cache memtest86+
+        uses: actions/cache@v4
+        with:
+          path: .cache/memtest
+          key: memtest-${{ hashFiles('tools/xtask/src/memtest.rs') }}
+
       - name: Install mdBook
         run: |
           # GitHub's release downloads sometimes answer 504 for a while;
@@ -263,6 +272,15 @@ jobs:
         with:
           path: .cache/grub
           key: grub-${{ hashFiles('tools/xtask/src/grub.rs') }}
+
+      # memtest86+, the start menu's memory test, which ./ob builds
+      # from its pinned source (ADR 0488): once for each change to its
+      # recipe.
+      - name: Cache memtest86+
+        uses: actions/cache@v4
+        with:
+          path: .cache/memtest
+          key: memtest-${{ hashFiles('tools/xtask/src/memtest.rs') }}
 
       # ./ob setup runs ./ob doctor, which asks for mdBook too.
       - name: Install mdBook
@@ -509,6 +527,15 @@ jobs:
           path: .cache/grub
           key: grub-${{ hashFiles('tools/xtask/src/grub.rs') }}
 
+      # memtest86+, the start menu's memory test, which ./ob builds
+      # from its pinned source (ADR 0488): once for each change to its
+      # recipe.
+      - name: Cache memtest86+
+        uses: actions/cache@v4
+        with:
+          path: .cache/memtest
+          key: memtest-${{ hashFiles('tools/xtask/src/memtest.rs') }}
+
       # ./ob setup runs ./ob doctor, which asks for mdBook too.
       - name: Install mdBook
         run: |
@@ -623,6 +650,15 @@ jobs:
         with:
           path: .cache/grub
           key: grub-${{ hashFiles('tools/xtask/src/grub.rs') }}
+
+      # memtest86+, the start menu's memory test, which ./ob builds
+      # from its pinned source (ADR 0488): once for each change to its
+      # recipe.
+      - name: Cache memtest86+
+        uses: actions/cache@v4
+        with:
+          path: .cache/memtest
+          key: memtest-${{ hashFiles('tools/xtask/src/memtest.rs') }}
 
       - name: Install the pinned Rust toolchain
         run: rustup toolchain install

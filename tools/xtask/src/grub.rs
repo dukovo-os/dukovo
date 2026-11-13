@@ -101,10 +101,11 @@ pub const MODULES: &[&str] = &[
     "keystatus",
 ];
 
-/// The modules a PC's BIOS needs more: its disks, VESA's video, and the
+/// The modules a PC's BIOS needs more: its disks, VESA's video, the
 /// BIOS's disk numbers swapped, for the install stick's "Boot from first
-/// disk".
-pub const PC_MODULES: &[&str] = &["biosdisk", "vbe", "drivemap"];
+/// disk", and the Linux boot protocol, which starts the memory test,
+/// memtest86+ (ADR 0488), as UEFI's `chainloader` does.
+pub const PC_MODULES: &[&str] = &["biosdisk", "vbe", "drivemap", "linux"];
 
 /// The modules UEFI needs more: the firmware's video, and `fwsetup`,
 /// which restarts into the firmware's settings from an installed system's

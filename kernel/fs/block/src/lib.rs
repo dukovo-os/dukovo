@@ -256,6 +256,17 @@ pub trait BlockDevice: Send + Sync {
         Err(Error::Unsupported)
     }
 
+    /// Asks the disk of its own self-test, after starting or aborting one
+    /// as `test` says (radix-block(2)'s SELF_TEST), and reads its log of
+    /// them into the first 512 bytes of `page`: a SATA disk's SMART
+    /// self-test log, or the head of an NVMe controller's Device
+    /// Self-test log. A partition answers for its disk. Fails with
+    /// [`Error::Unsupported`] on a device that runs no self-test, which
+    /// the default does.
+    fn self_test(&self, _test: SelfTest, _page: &mut Page) -> Result<SelfTestState, Error> {
+        Err(Error::Unsupported)
+    }
+
     /// What it has done since it was found, as Linux counts it in
     /// `/sys/block/<disk>/stat`; `None` for a device that does not count,
     /// which the default is.
@@ -327,6 +338,36 @@ pub enum Health {
     AtaOff,
     /// An NVMe controller's SMART / Health Information log.
     Nvme,
+}
+
+/// What [`BlockDevice::self_test`] asks of a disk before it says how its
+/// self-test goes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SelfTest {
+    /// Nothing more.
+    Status,
+    /// Start the short self-test, a minute or two.
+    Short,
+    /// Start the extended self-test, which reads every sector: hours on
+    /// a large disk.
+    Extended,
+    /// Abort the self-test that runs.
+    Abort,
+}
+
+/// How a disk's self-test goes ([`BlockDevice::self_test`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SelfTestState {
+    /// Which log the page holds: [`Health::Ata`]'s or [`Health::Nvme`]'s.
+    pub kind: Health,
+    /// Whether a self-test runs now.
+    pub running: bool,
+    /// How much of the one that runs is left, in percent; 0 when none
+    /// runs.
+    pub percent_left: u8,
+    /// How long the disk says each test takes, in minutes: the short and
+    /// the extended; 0 where it does not say.
+    pub minutes: (u16, u16),
 }
 
 /// A block device, shared.
@@ -562,6 +603,11 @@ impl BlockDevice for Slice {
     fn health(&self, page: &mut Page) -> Result<Health, Error> {
         self.live()?;
         self.device.health(page)
+    }
+
+    fn self_test(&self, test: SelfTest, page: &mut Page) -> Result<SelfTestState, Error> {
+        self.live()?;
+        self.device.self_test(test, page)
     }
 
     fn retire(&self) {

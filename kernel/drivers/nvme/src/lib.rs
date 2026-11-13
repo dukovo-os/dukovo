@@ -384,6 +384,29 @@ impl Nvme {
         Ok(())
     }
 
+    /// Starts or aborts a device self-test: Device Self-test with `code`
+    /// ([`command::SHORT_SELF_TEST`] and the others). An admin command,
+    /// polled; it fails while a test runs already, but for an abort.
+    pub fn self_test(&mut self, delay: &mut dyn FnMut(u32), code: u32) -> Result<(), Error> {
+        self.command(Command::self_test(code), delay)?;
+        Ok(())
+    }
+
+    /// Reads the head of the Device Self-test log
+    /// ([`command::LOG_SELF_TEST`]) into `out`. An admin command, polled.
+    pub fn self_test_log(
+        &mut self,
+        delay: &mut dyn FnMut(u32),
+        out: &mut [u8; command::LOG_SELF_TEST_SIZE],
+    ) -> Result<(), Error> {
+        let buffer = self.admin.phys() + BUFFER as u64;
+        let size = command::LOG_SELF_TEST_SIZE as u32;
+        self.command(Command::log_page(command::LOG_SELF_TEST, size, buffer), delay)?;
+        device_barrier();
+        self.admin.read(BUFFER, out);
+        Ok(())
+    }
+
     /// Whether it says it failed, or is gone: its registers read all ones
     /// once a device has left the bus.
     pub fn failed(&self) -> bool {

@@ -225,7 +225,7 @@ impl Controller for IdeChannel {
                 return Ok(());
             }
             Op::Flush => IdeOp::Flush,
-            Op::Discard(_) | Op::Smart(_) => return Err(Error::Unsupported),
+            Op::Discard(_) | Op::Smart(..) => return Err(Error::Unsupported),
         };
         // The disk counts in its own sectors, the request in 512 bytes.
         let unit = request.unit.max(1);

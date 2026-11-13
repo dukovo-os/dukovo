@@ -340,6 +340,10 @@ machine-restore userspace/programs/systools/src/backup.rs userspace/programs/sys
 machine-restore userspace/programs/systools/src/bundled.rs userspace/programs/systools/src/bundles/
 machine-restore userspace/programs/systools/src/snap.rs userspace/programs/systools/src/subvolume/
 machine-restore userspace/spark/src/main.rs
+memory-test image/grub/installed.cfg.in image/grub/menu.cfg image/grub/rescue.cfg
+memory-test tools/xtask/src/grub.rs tools/xtask/src/image.rs tools/xtask/src/memtest.rs
+memory-test-bios image/grub/installed.cfg.in image/grub/menu.cfg image/grub/rescue.cfg
+memory-test-bios tools/xtask/src/grub.rs tools/xtask/src/image.rs tools/xtask/src/memtest.rs
 microcode kernel/lib/microcode/
 mm-stress kernel/mm/
 monitoring kernel/net/ userspace/defaults/alerts.toml userspace/defaults/spark/services/alertd.toml

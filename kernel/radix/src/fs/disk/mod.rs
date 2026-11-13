@@ -37,7 +37,7 @@ use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use radix_abi::Status;
 use radix_abi::block as request;
 use radix_abi::errors::{File as FileError, Kernel};
-use radix_block::{DeviceRef, Health, Info, partition};
+use radix_block::{DeviceRef, Health, Info, SelfTest, partition};
 use radix_hal::{Devices, PciSegment, UserMode};
 use radix_hw::pci::{self, Function};
 use radix_klog::{TextBuf, info, warn};
@@ -1060,6 +1060,7 @@ pub fn control(
         }
         request::SWAP_OFF => crate::swap::off(device),
         request::GET_HEALTH => health(device, argument),
+        request::SELF_TEST => self_test(device, argument, may_write),
         request::GET_IN_USE => put(&super::uses(device).to_le_bytes()),
         request::REREAD_PARTITIONS => reread(device),
         request::UNLOCK => unlock(device, argument, may_write),
@@ -1419,6 +1420,46 @@ fn health(device: &DeviceRef, argument: u64) -> Result<(), Status> {
     let copied = record.is_some_and(|record| {
         <Arch as UserMode>::copy_to_user(argument, &head)
             && <Arch as UserMode>::copy_to_user(record, &page.bytes()[..1024])
+    });
+    if copied { Ok(()) } else { Err(Kernel::BadAddress.status(0)) }
+}
+
+const _: () = assert!(request::SELF_TEST_SIZE == 16 + 512);
+
+/// SELF_TEST: starts or aborts `device`'s self-test as the caller's
+/// `argument` asks, if it may write (`may_write`), and writes back over
+/// it how the test goes and the disk's log of its tests.
+fn self_test(device: &DeviceRef, argument: u64, may_write: bool) -> Result<(), Status> {
+    let mut action = [0u8; 4];
+    if !<Arch as UserMode>::copy_from_user(&mut action, argument) {
+        return Err(Kernel::BadAddress.status(0));
+    }
+    let test = match u32::from_le_bytes(action) {
+        request::SELF_TEST_STATUS => SelfTest::Status,
+        request::SELF_TEST_SHORT => SelfTest::Short,
+        request::SELF_TEST_EXTENDED => SelfTest::Extended,
+        request::SELF_TEST_ABORT => SelfTest::Abort,
+        _ => return Err(Kernel::InvalidArgument.status(0)),
+    };
+    if test != SelfTest::Status && !may_write {
+        return Err(Kernel::MissingRights.status(0));
+    }
+    let mut page = radix_block::mem::CachePage::new().map_err(|_| Kernel::NoMemory.status(0))?;
+    let state = device.self_test(test, &mut page).map_err(block_status)?;
+    let kind = match state.kind {
+        Health::Nvme => request::HEALTH_NVME,
+        Health::Ata | Health::AtaOff => request::HEALTH_ATA,
+    };
+    let mut head = [0u8; 16];
+    head[..4].copy_from_slice(&kind.to_le_bytes());
+    head[4] = u8::from(state.running);
+    head[5] = state.percent_left;
+    head[6..8].copy_from_slice(&state.minutes.0.to_le_bytes());
+    head[8..10].copy_from_slice(&state.minutes.1.to_le_bytes());
+    let log = argument.checked_add(head.len() as u64);
+    let copied = log.is_some_and(|log| {
+        <Arch as UserMode>::copy_to_user(argument, &head)
+            && <Arch as UserMode>::copy_to_user(log, &page.bytes()[..512])
     });
     if copied { Ok(()) } else { Err(Kernel::BadAddress.status(0)) }
 }

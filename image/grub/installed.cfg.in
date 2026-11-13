@@ -72,14 +72,28 @@ set dukovo_cmdline="@CMDLINE@"
 # speed, in serial.env beside this file; the flags take the place of
 # CONSOLE. Without it, as on a system installed before it, the menu shows
 # on COM1 at 115200 baud. dukovo_serial lists the menu's terminals, which
-# the themed menu below appends again.
+# the themed menu below appends again. memtest_console is the memory
+# test's console flag (ADR 0488) for the first of them, when it is COM1
+# to COM4, the ports memtest86+ drives; the menu in the slot passes it.
 set dukovo_serial=""
+set memtest_console=""
 function serial_menu {
     if [ -n "$1" ]; then
         if serial --speed="$2" "$1"; then
             terminal_input --append "serial_$1"
             terminal_output --append "serial_$1"
             set dukovo_serial="${dukovo_serial} serial_$1"
+            if [ -z "${memtest_console}" ]; then
+                if [ "$1" = com0 ]; then
+                    set memtest_console="console=ttyS0,$2"
+                elif [ "$1" = com1 ]; then
+                    set memtest_console="console=ttyS1,$2"
+                elif [ "$1" = com2 ]; then
+                    set memtest_console="console=ttyS2,$2"
+                elif [ "$1" = com3 ]; then
+                    set memtest_console="console=ttyS3,$2"
+                fi
+            fi
         fi
     fi
 }

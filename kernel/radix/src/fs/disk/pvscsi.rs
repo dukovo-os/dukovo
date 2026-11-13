@@ -165,7 +165,7 @@ impl Controller for PvscsiLun {
                 (cdb.ok_or(Error::OutOfRange)?, direction)
             }
             Op::Flush => (Cdb::synchronize_cache(), Direction::None),
-            Op::Discard(_) | Op::Smart(_) => return Err(Error::Unsupported),
+            Op::Discard(_) | Op::Smart(..) => return Err(Error::Unsupported),
         };
         let bytes = cdb.bytes();
         let mut shared = self.adapter.shared.lock_irq();

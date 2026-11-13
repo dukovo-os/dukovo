@@ -73,7 +73,9 @@ use core::fmt::Write as _;
 use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering};
 
 use radix_abi::process::{IO_LEVELS, IoClass};
-use radix_block::{BlockDevice, Error, Health, Info, Page, Segment, SegmentMut, Stats, Write};
+use radix_block::{
+    BlockDevice, Error, Health, Info, Page, Segment, SegmentMut, SelfTest, SelfTestState, Stats, Write,
+};
 use radix_hal::{Cpu, CpuLocal, Devices, PciAddress, Timer};
 use radix_klog::{TextBuf, warn};
 use radix_mm::{Flags, HEAP, Kmalloc};
@@ -135,10 +137,12 @@ pub enum Op {
     Flush,
     /// Discards this many sectors, at most [`Info::discard_sectors`].
     Discard(u64),
-    /// Reads a 512-byte page of a SATA disk's SMART record into the one
-    /// buffer: SMART with this feature code. Only the AHCI driver's
-    /// [`Controller::health`] asks for it.
-    Smart(u8),
+    /// SMART on a SATA disk, with this feature code and this LBA low
+    /// register: reads a 512-byte page of its SMART record into the one
+    /// buffer, or, with no buffer, starts or aborts a self-test. Only the
+    /// AHCI driver's [`Controller::health`] and [`Controller::self_test`]
+    /// ask for it.
+    Smart(u8, u8),
 }
 
 /// A request: what it does, to which of the disk's volumes, and the
@@ -243,6 +247,18 @@ pub trait Controller: Send + Sized {
     /// its volume `target`, as [`BlockDevice::health`] does. It may
     /// sleep: it runs without the lanes' locks.
     fn health(_disk: &Disk<Self>, _target: u32, _page: &mut Page) -> Result<Health, Error> {
+        Err(Error::Unsupported)
+    }
+
+    /// Starts or aborts `disk`'s self-test as `test` says, and reads how
+    /// it goes and its log into `page`, as [`BlockDevice::self_test`]
+    /// does. It may sleep: it runs without the lanes' locks.
+    fn self_test(
+        _disk: &Disk<Self>,
+        _target: u32,
+        _test: SelfTest,
+        _page: &mut Page,
+    ) -> Result<SelfTestState, Error> {
         Err(Error::Unsupported)
     }
 }
@@ -1042,7 +1058,7 @@ impl<C: Controller> Disk<C> {
                 write!(what, "a {op} of {count} sectors from sector {}", request.sector)
             }
             Op::Flush => what.write_str("a flush"),
-            Op::Smart(_) => what.write_str("a read of its SMART record"),
+            Op::Smart(..) => what.write_str("a SMART command"),
         };
         let mut after = TextBuf::<16>::new();
         if tries > 1 {
@@ -1400,6 +1416,10 @@ impl<C: Controller> BlockDevice for Volume<C> {
 
     fn health(&self, page: &mut Page) -> Result<Health, Error> {
         C::health(&self.disk, self.target, page)
+    }
+
+    fn self_test(&self, test: SelfTest, page: &mut Page) -> Result<SelfTestState, Error> {
+        C::self_test(&self.disk, self.target, test, page)
     }
 
     fn discard(&self, sector: u64, count: u64) -> Result<(), Error> {

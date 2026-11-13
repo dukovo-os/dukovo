@@ -22,7 +22,7 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::fmt::Write;
 
-use radix_block::{DeviceRef, Error, Health, Info, Page};
+use radix_block::{DeviceRef, Error, Health, Info, Page, SelfTest, SelfTestState};
 use radix_hal::{Devices, Smp};
 use radix_hw::pci::{Address, Bar, Function, MsiX};
 use radix_klog::{TextBuf, info, warn};
@@ -85,7 +85,7 @@ impl Controller for NvmeLane {
             Op::WriteThrough => radix_nvme::Op::WriteThrough,
             Op::Flush => radix_nvme::Op::Flush,
             Op::Discard(count) => radix_nvme::Op::Deallocate(count / request.unit),
-            Op::Smart(_) => return Err(Error::Unsupported),
+            Op::Smart(..) => return Err(Error::Unsupported),
         };
         // The namespace counts in its own blocks, the request in sectors.
         let Request { target, sector, data, unit, .. } = *request;
@@ -158,6 +158,48 @@ impl Controller for NvmeLane {
         }
         page.bytes_mut()[..log.len()].copy_from_slice(&log);
         Ok(Health::Nvme)
+    }
+
+    fn self_test(
+        disk: &Disk<NvmeLane>,
+        _target: u32,
+        test: SelfTest,
+        page: &mut Page,
+    ) -> Result<SelfTestState, Error> {
+        let host = disk.controller(|lane| lane.host.clone()).ok_or(Error::Io)?;
+        let mut nvme = host.nvme.lock();
+        let identity = *nvme.identity();
+        if !identity.self_test {
+            return Err(Error::Unsupported);
+        }
+        let code = match test {
+            SelfTest::Status => None,
+            SelfTest::Short => Some(command::SHORT_SELF_TEST),
+            SelfTest::Extended => Some(command::EXTENDED_SELF_TEST),
+            SelfTest::Abort => Some(command::ABORT_SELF_TEST),
+        };
+        if let Some(code) = code
+            && let Err(err) = nvme.self_test(&mut queue::delay, code)
+        {
+            warn!("Disk: {}: its self-test could not be started or aborted: {err}", host.name);
+            return Err(Error::Io);
+        }
+        let mut log = [0u8; command::LOG_SELF_TEST_SIZE];
+        if let Err(err) = nvme.self_test_log(&mut queue::delay, &mut log) {
+            warn!("Disk: {}: its self-test log could not be read: {err}", host.name);
+            return Err(Error::Io);
+        }
+        page.bytes_mut()[..log.len()].copy_from_slice(&log);
+        // The operation that runs, 0 for none, and how far it got.
+        let running = log[0] & 0xf != 0;
+        let done = (log[1] & 0x7f).min(100);
+        Ok(SelfTestState {
+            kind: Health::Nvme,
+            running,
+            percent_left: if running { 100 - done } else { 0 },
+            // NVMe holds a short test to two minutes at most.
+            minutes: (2, identity.extended_test_minutes),
+        })
     }
 }
 

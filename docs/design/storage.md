@@ -429,6 +429,16 @@ as it is, and diskhealth(8) judges it; Spark's diskhealth service looks
 at every disk at boot and every half hour and logs a disk's verdict
 when it changes.
 
+`SELF_TEST` (ADR 0488) starts, aborts or follows a disk's own self-test
+(`BlockDevice::self_test`). On a SATA disk it is SMART EXECUTE OFF-LINE
+IMMEDIATE, which moves no data, then SMART READ LOG of the self-test log
+and SMART READ DATA for the progress, each alone through the queue as
+`Op::Smart` with its feature and LBA low register; on an NVMe controller
+that says it has them, Device Self-test and Get Log Page of the Device
+Self-test log, on the admin queue as `health` reads its log. The disk
+runs the test by itself while it is used; hardware(8) polls the request
+and reads the log.
+
 ### Disk statistics
 
 Each `Volume` counts what it has done (`BlockDevice::stats`): reads,

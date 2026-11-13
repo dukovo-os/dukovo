@@ -60,9 +60,34 @@ pub mod smart {
     /// which each attribute says the disk is failing. Obsolete since
     /// ACS-1, yet disks still answer it, and smartctl reads it.
     pub const READ_THRESHOLDS: u8 = 0xd1;
+    /// SMART READ LOG: 512 bytes, one page of a log, whose address goes
+    /// in the LBA low register.
+    pub const READ_LOG: u8 = 0xd5;
+    /// SMART EXECUTE OFF-LINE IMMEDIATE: starts or aborts a routine,
+    /// named in the LBA low register; no data. The off-line self-tests
+    /// run in the background, and the command ends at once.
+    pub const EXECUTE_OFFLINE: u8 = 0xd4;
     /// What every SMART command carries in the LBA mid and high
     /// registers, 4Fh and C2h, as the block address's bytes 1 and 2.
     pub const SIGNATURE: u64 = 0xc2_4f00;
+    /// The SMART self-test log's address, for [`READ_LOG`]: 21 results of
+    /// 24 bytes, and the index of the newest at byte 508.
+    pub const LOG_SELF_TEST: u8 = 0x06;
+    /// [`EXECUTE_OFFLINE`]'s routines: the short and the extended
+    /// self-test in off-line mode, and an abort of the one that runs.
+    pub const SHORT_SELF_TEST: u8 = 0x01;
+    /// See [`SHORT_SELF_TEST`].
+    pub const EXTENDED_SELF_TEST: u8 = 0x02;
+    /// See [`SHORT_SELF_TEST`].
+    pub const ABORT_SELF_TEST: u8 = 0x7f;
+    /// The byte of [`READ_DATA`]'s answer that says which off-line
+    /// routines the disk has, and its bits for EXECUTE OFF-LINE IMMEDIATE
+    /// and for the self-tests; smartctl reads them there.
+    pub const OFFLINE_CAPABILITY: usize = 367;
+    /// See [`OFFLINE_CAPABILITY`].
+    pub const CAN_EXECUTE_OFFLINE: u8 = 1 << 0;
+    /// See [`OFFLINE_CAPABILITY`].
+    pub const CAN_SELF_TEST: u8 = 1 << 4;
 }
 
 /// The log page that names the command an NCQ error was for (NCQ Command
@@ -226,13 +251,14 @@ impl Taskfile {
         Taskfile { command: command::PACKET, features, lba: limit << 8, count: 0, device: 0 }
     }
 
-    /// SMART with feature `feature`, which reads one 512-byte page.
-    pub fn smart(feature: u8) -> Taskfile {
+    /// SMART with feature `feature` and `low` in the LBA low register:
+    /// one 512-byte page read, or none for [`smart::EXECUTE_OFFLINE`].
+    pub fn smart(feature: u8, low: u8) -> Taskfile {
         Taskfile {
             command: command::SMART,
             features: u16::from(feature),
-            lba: smart::SIGNATURE,
-            count: 1,
+            lba: smart::SIGNATURE | u64::from(low),
+            count: u16::from(feature != smart::EXECUTE_OFFLINE),
             device: 0,
         }
     }
@@ -308,6 +334,10 @@ pub struct Identity {
     /// Whether it keeps SMART: `Some(true)` if it does and SMART is on,
     /// `Some(false)` if it is off, `None` if the disk has none.
     pub smart: Option<bool>,
+    /// Whether it says, in word 84, bit 1, that it runs SMART self-tests
+    /// and logs them. Not every disk that does says so there; its SMART
+    /// data's [`smart::OFFLINE_CAPABILITY`] does.
+    pub self_test: bool,
     /// Its model, serial number and firmware revision, in ASCII, padded
     /// with spaces.
     pub model: [u8; 40],
@@ -431,6 +461,7 @@ pub fn identify(id: &[u16; 256]) -> Result<Identity, Unsupported> {
         trim_blocks: if bit(id, 169, 0) { id[105].max(1) } else { 0 },
         rotational,
         smart: (supported && bit(id, 82, 0)).then(|| enabled && bit(id, 85, 0)),
+        self_test: extended && bit(id, 84, 1),
         model: string(id, 27),
         serial: string(id, 10),
         firmware: string(id, 23),

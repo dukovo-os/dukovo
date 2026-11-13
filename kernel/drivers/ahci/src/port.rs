@@ -217,10 +217,12 @@ pub enum Op {
     Flush,
     /// Trims this many sectors: the disk may forget what they hold.
     Trim(u64),
-    /// Reads a 512-byte page of the disk's SMART record into the one
-    /// buffer: SMART with this feature code ([`ata::smart`]). Only for a
-    /// disk whose SMART is on ([`Identity::smart`]).
-    Smart(u8),
+    /// SMART with this feature code ([`ata::smart`]) and this LBA low
+    /// register: reads a 512-byte page of the disk's SMART record into
+    /// the one buffer, or with [`ata::smart::EXECUTE_OFFLINE`] and no
+    /// buffer starts or aborts a self-test. Only for a disk whose SMART is
+    /// on ([`Identity::smart`]).
+    Smart(u8, u8),
 }
 
 /// How a request ended.
@@ -586,7 +588,7 @@ impl Port {
     /// Whether `op` goes out as a command alone: only while nothing else
     /// is in flight.
     pub fn alone(&self, op: Op) -> bool {
-        !self.info.queued || matches!(op, Op::Flush | Op::Trim(_) | Op::Smart(_))
+        !self.info.queued || matches!(op, Op::Flush | Op::Trim(_) | Op::Smart(..))
     }
 
     /// Starts a request: `op` on the disk's logical sectors from `sector`,
@@ -625,7 +627,9 @@ impl Port {
                 self.fill(slot, taskfile, data, write);
             }
             Op::Flush => self.fill(slot, Taskfile::flush(), &[], false),
-            Op::Smart(feature) => self.fill(slot, Taskfile::smart(feature), data, false),
+            Op::Smart(feature, low) => {
+                self.fill(slot, Taskfile::smart(feature, low), data, false);
+            }
             Op::Trim(length) => {
                 let memory = self.mem();
                 let mut entries = [0u8; BUFFER_SIZE];
@@ -685,10 +689,16 @@ impl Port {
                     Err(Error::BadRequest)
                 }
             }
-            Op::Smart(_) => {
+            Op::Smart(feature, _) => {
                 let on = self.identity.as_ref().and_then(|id| id.smart) == Some(true);
                 match data {
-                    &[(phys, len)] if on && len == BUFFER_SIZE as u32 && phys.is_multiple_of(2) => {
+                    [] if on && feature == ata::smart::EXECUTE_OFFLINE => Ok(0),
+                    &[(phys, len)]
+                        if on
+                            && feature != ata::smart::EXECUTE_OFFLINE
+                            && len == BUFFER_SIZE as u32
+                            && phys.is_multiple_of(2) =>
+                    {
                         Ok(0)
                     }
                     _ => Err(Error::BadRequest),

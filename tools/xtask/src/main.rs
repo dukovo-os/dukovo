@@ -33,6 +33,7 @@ mod libc_check;
 mod licenses;
 mod lint;
 mod manuals;
+mod memtest;
 mod patched;
 mod ports;
 mod process;

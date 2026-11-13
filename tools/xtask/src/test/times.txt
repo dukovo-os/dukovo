@@ -96,6 +96,8 @@ logging 15
 machine-check 31
 machine-check-program 20
 machine-restore 190
+memory-test 70
+memory-test-bios 70
 microcode 10
 mm-stress 17
 monitoring 230
