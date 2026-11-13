@@ -1,0 +1,33 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# libedit (ADR 0521): the line editing and history library of NetBSD, as
+# the portable release of Jess Thrysoee, a static library for the ports
+# that read lines from a person: psql's editing, history and completion
+# are the first. What the build compiles is under the University of
+# California's license (COPYING; BSD-3-Clause) and the NetBSD
+# Foundation's and Joerg Sonnenberger's (BSD-2-Clause), whose notices the
+# files readline.c, vis.c, chartype.c, literal.c and reallocarr.c carry.
+# libedit's own strlcpy and strlcat (Todd C. Miller's, ISC) and wcsdup
+# (Aleksey Cheusov's) are not compiled, as the C library has them.
+name = "libedit"
+version = "20260512-3.1"
+summary = "line editing and history for command-line programs"
+license = "BSD-3-Clause AND BSD-2-Clause"
+homepage = "https://thrysoee.dk/editline/"
+depends = ["mlibc", "ncurses"]
+notices = [
+	"COPYING",
+	"src/readline.c",
+	"src/vis.c",
+	"src/chartype.c",
+	"src/literal.c",
+	"src/reallocarr.c",
+]
+
+# thrysoee.dk is not reachable from the build machines: the same archive,
+# unchanged, is in Ubuntu's source pool.
+[source]
+url = "https://thrysoee.dk/editline/libedit-20260512-3.1.tar.gz"
+sha256 = "432d5e7ea8b0116dd39f2eca7bc11d0eed77faa6b77ea526ace89907c23ea4a0"
+mirrors = ["https://archive.ubuntu.com/ubuntu/pool/main/libe/libedit/libedit_3.1-20260512.orig.tar.gz"]

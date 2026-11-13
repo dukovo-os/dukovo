@@ -1,0 +1,321 @@
+#!/bin/sh
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# Builds PostgreSQL for Radix (ob(1), PORTS) into the bundle's folder
+# ($PORT_BUNDLE, ADRs 0370 and 0521): the server and the client and
+# administration programs in bin, libpq in lib, the modules the server
+# loads with dlopen in lib/postgresql (PL/pgSQL, the encoding conversions,
+# the Snowball dictionaries, pgoutput, libpqwalreceiver and the contrib
+# modules), the files the server reads in share, and the test suites in
+# tests, with the programs that run them.
+#
+# Radix's ABI is Linux's (radix-posix(7)), so the build takes PostgreSQL's
+# linux template: unnamed POSIX semaphores, -fPIC for shared code, the
+# shared library rules of src/Makefile.shlib and src/include/port/linux.h,
+# which has the server sync its WAL with fdatasync (Radix has it) and
+# take EIDRM from a shared memory call for EINVAL (sysv_shmem.c), as a
+# Linux kernel needs it to. The macro __linux__, which PostgreSQL's code
+# tests in a few places, is not defined: the compiler wrapper undefines it,
+# so that no program takes Radix for Linux. That leaves out what is
+# guarded by it, none of which PostgreSQL needs: the processes' titles
+# (ps_status.c), which Radix has no way to set; the default huge page
+# size from /proc/meminfo, which stays 2 MiB; posix_fallocate for the
+# memory of a parallel query (ftruncate, which radix-posix(7) says it is
+# in Radix, takes its place); the processor's clock rate from
+# /proc/cpuinfo; and FICLONE for pg_upgrade --clone and pg_combinebackup
+# --clone.
+#
+# The server is linked dynamically (the compiler wrapper's -dynamic,
+# ADR 0071) and exports its symbols (-Wl,--export-dynamic), as the modules
+# it loads call back into it, and the modules and libpq are shared
+# libraries. So are the client programs: libpq.a does not link on its own,
+# as the encoding functions that libpq exports are in libpgcommon_shlib
+# only (src/include/mb/pg_wchar.h), and the programs link the libpq.so of
+# the bundle as they do on Linux. Bundles may be installed for one person,
+# so the run paths are relative to the file's own folder ($ORIGIN) and not
+# the prefix's.
+#
+# PostgreSQL finds its library and share folders from where its program
+# is, by the program's path, which the kernel gives (patch 0001).
+#
+# PostgreSQL's source comes from git, which has no release's generated
+# files: the parsers and the catalogs are written by bison, flex and Perl
+# on the build machine during make.
+set -eu
+
+id=org.postgresql.postgresql
+prefix="/applications/$id"
+
+openssl="$PORT_INFO/../openssl/for-bundles"
+if [ ! -f "$openssl/libraries/libssl.a" ]; then
+	echo "postgresql: no OpenSSL libraries in $openssl: build the openssl port again" >&2
+	exit 1
+fi
+
+# The files of config/ that configure runs are not executable in a git
+# checkout. x86_64-radix-configure puts a script of its own in place of
+# config.sub, which hands it every name but Radix's: it has to be able to run
+# the one it moved.
+chmod +x "$PORT_SRC/config/config.sub"
+
+mkdir -p "$PORT_BUILD/radix"
+cd "$PORT_BUILD/radix"
+# What configure cannot find out without running a program for Radix, or
+# would find out differently than Radix has it:
+# - the server's link: configure adds -Wl,--export-dynamic to
+#   LDFLAGS_EX_BE, the server's flags alone, only if a program linked with
+#   it runs ("for reasons you'd really rather not know about"). A program
+#   for Radix does not run on the build machine, so configure takes the
+#   option to be missing. LLD has it, and the modules call the server's
+#   functions through it;
+# - the C library's headers have no <sys/epoll.h> and no <sys/signalfd.h>,
+#   and Radix has neither call (radix-posix(7)); configure takes them if
+#   they come. The wait on events (waiteventset.c) then uses poll(2) and
+#   the self-pipe, as it does on a system without them;
+# - nothing here for sync_file_range: the C library does not have it, so
+#   configure leaves it out and the settings *_flush_after are 0 as on
+#   any system without it. posix_fadvise(2) is there and checks its
+#   arguments only (radix-posix(7)), which PostgreSQL's prefetching of
+#   pages (effective_io_concurrency) tolerates.
+# Left at configure's answer for a cross build, which is right for Radix:
+# no __int128 alignment bug, and no -Wl,--as-needed in LDFLAGS (the compiler
+# wrapper puts it in the link of a dynamic program and a library).
+#
+# The link flags configure takes from the environment ($$ is make's for a
+# dollar sign, and the single quotes keep the shell from reading it):
+# - LDFLAGS_EX is every program's: -dynamic, and its run path, the lib folder
+#   beside the program's bin, where libpq is;
+# - LDFLAGS_SL is every shared library's: the run path of a module in
+#   lib/postgresql, which is lib, where libpq is, and what keeps the
+#   static libraries of OpenSSL, zlib and libxml2 from exporting their
+#   symbols out of the library they are linked into. libpq, pgcrypto and
+#   sslinfo have a copy of OpenSSL each, as the server does, and without
+#   this the dynamic linker would take a module's call of a function that
+#   the server also has from the server, and one that only the module has
+#   from the module, which then calls the server's others with what its
+#   own copy knows nothing of.
+LDFLAGS_EX="-dynamic -Wl,-rpath,'\$\$ORIGIN/../lib'" \
+	LDFLAGS_SL="-Wl,-rpath,'\$\$ORIGIN/..' -Wl,--exclude-libs=libssl.a -Wl,--exclude-libs=libcrypto.a -Wl,--exclude-libs=libz.a -Wl,--exclude-libs=libxml2.a" \
+	pgac_cv_prog_cc_LDFLAGS_EX_BE__Wl___export_dynamic=yes \
+	ac_cv_header_sys_epoll_h=no ac_cv_header_sys_signalfd_h=no \
+	PREFIX="$prefix" \
+	x86_64-radix-configure "$PORT_SRC" --with-template=linux \
+	--bindir="$prefix/bin" --libdir="$prefix/lib" --datarootdir="$prefix/share" \
+	--sysconfdir="$prefix/etc" --localstatedir="$prefix/var" --disable-rpath \
+	--with-includes="$openssl/include" --with-libraries="$openssl/libraries" \
+	--with-ssl=openssl --with-zlib --with-lz4 --with-zstd --with-libxml \
+	--with-libedit-preferred --without-icu --without-llvm --without-perl \
+	--without-python --without-tcl --without-liburing --disable-nls \
+	--with-system-tzdata=/system/resources/zoneinfo \
+	>configure.log 2>&1 || {
+	tail -n 40 configure.log >&2
+	exit 1
+}
+
+# What must be in the build, and what must not: configure leaves out a
+# feature whose library it does not find, and says so only in its log. The
+# line editing is libedit's (psql takes it for readline's, which the
+# header names) and the waiting for events and the semaphores are the ones
+# of the notes above.
+for feature in USE_OPENSSL HAVE_LIBZ USE_LZ4 USE_ZSTD USE_LIBXML HAVE_LIBREADLINE \
+	HAVE_EDITLINE_READLINE_H USE_UNNAMED_POSIX_SEMAPHORES; do
+	grep -q "^#define $feature 1" src/include/pg_config.h || {
+		echo "postgresql's configure did not set $feature" >&2
+		exit 1
+	}
+done
+# No epoll or signalfd, no ICU (collations are libc's and the builtin
+# provider's), no JIT or io_uring, and no sync_file_range.
+for feature in HAVE_SYS_EPOLL_H HAVE_SYS_SIGNALFD_H USE_ICU USE_LLVM USE_LIBURING \
+	HAVE_SYNC_FILE_RANGE; do
+	if grep -q "^#define $feature" src/include/pg_config.h; then
+		echo "postgresql's configure set $feature" >&2
+		exit 1
+	fi
+done
+# The server's link: -dynamic for every program, and -Wl,--export-dynamic for
+# the server alone, which are the flags of src/Makefile.global that the
+# link of each program is made of.
+grep -q '^LDFLAGS_EX = -dynamic ' src/Makefile.global &&
+	grep -q '^LDFLAGS_EX_BE = .*-Wl,--export-dynamic' src/Makefile.global || {
+	echo "postgresql's Makefile.global has not the server's link flags" >&2
+	grep '^LDFLAGS_EX' src/Makefile.global >&2
+	exit 1
+}
+
+# libpq must not call exit(3), and make checks that of its undefined
+# symbols (libpq_check.pl), those with "exit" in them. The OpenSSL that
+# libpq has in itself calls atexit(3) to free what it has allocated, which
+# is not a call of exit and not libpq's own: the check is given an nm that
+# leaves that one out.
+cat >"$PORT_BUILD/nm-libpq" <<EOF
+#!/bin/sh
+$NM "\$@" | grep -v ' atexit\$' || true
+EOF
+chmod +x "$PORT_BUILD/nm-libpq"
+
+# Every make has the same two settings: pkglibdir, the folder the server
+# loads its modules from, which pg_config tells of as well, is
+# lib/postgresql, and libpq's check has the nm above. PostgreSQL appends
+# "postgresql" to libdir for its modules only when the prefix has no
+# "postgres" in it; this one has, and the modules would be in lib among
+# libpq.
+pg_make() {
+	make -j"$JOBS" pkglibdir="$prefix/lib/postgresql" NM="$PORT_BUILD/nm-libpq" "$@"
+}
+
+# The server, the programs and every module of contrib/, without the
+# documentation (world-bin), and then the programs that run the test
+# suites, with regress.so, the test module of the main suite, which it does
+# not have.
+pg_make world-bin >make.log 2>&1 || {
+	tail -n 60 make.log >&2
+	exit 1
+}
+pg_make -C src/test/regress >>make.log 2>&1 || {
+	tail -n 60 make.log >&2
+	exit 1
+}
+pg_make -C src/test/isolation >>make.log 2>&1 || {
+	tail -n 60 make.log >&2
+	exit 1
+}
+
+# Into a folder of its own, and from there what the bundle keeps.
+stage="$PORT_BUILD/stage"
+pg_make install-world-bin DESTDIR="$stage" >install.log 2>&1 || {
+	tail -n 60 install.log >&2
+	exit 1
+}
+installed="$stage$prefix"
+
+# Every program, without its symbols (ecpg, the embedded SQL compiler, needs
+# its headers and libraries, which no bundle keeps), and every module.
+# Modules and libpq keep their execute bits, as PostgreSQL installs them.
+# libpq.so.5 is the file itself, as a bundle has no links, and the soname
+# is what the programs and modules ask for. xml2 is not in the bundle: it
+# needs libxslt for the half of what it is for (xslt_process), which Dukovo
+# has no port of, and is built with libxml alone by the rule of the
+# contrib folder.
+mkdir -p "$PORT_BUNDLE/bin" "$PORT_BUNDLE/lib/postgresql" "$PORT_BUNDLE/share"
+for program in "$installed"/bin/*; do
+	name=${program##*/}
+	if [ "$name" != ecpg ]; then
+		$STRIP -o "$PORT_BUNDLE/bin/$name" "$program"
+	fi
+done
+$STRIP -o "$PORT_BUNDLE/lib/libpq.so.5" "$installed/lib/libpq.so.5"
+for module in "$installed"/lib/postgresql/*.so; do
+	name=${module##*/}
+	if [ "$name" != pgxml.so ]; then
+		$STRIP -o "$PORT_BUNDLE/lib/postgresql/$name" "$module"
+	fi
+done
+cp -R "$installed/share/." "$PORT_BUNDLE/share/"
+rm -f "$PORT_BUNDLE"/share/extension/xml2*
+
+# What the bundle must have: the server's modules that PostgreSQL's own
+# programs and its most used extensions need.
+for module in plpgsql dict_snowball pgoutput libpqwalreceiver pgcrypto pg_trgm hstore \
+	pg_stat_statements postgres_fdw; do
+	if [ ! -f "$PORT_BUNDLE/lib/postgresql/$module.so" ]; then
+		echo "postgresql: lib/postgresql has no $module.so" >&2
+		exit 1
+	fi
+done
+
+# The test suites, in a folder of their own so that the programs that run
+# them, which look for libpq as the others do, are one folder below the
+# bundle's: tests/pg_regress, tests/pg_isolation_regress and
+# tests/isolationtester, then each suite's folder with the files it reads:
+# the main suite's, with its test module regress.so, the isolation suite's,
+# PL/pgSQL's, and each contrib module's. Which modules there are is what
+# the folder contrib/ has in SUBDIRS (the one for this configuration), as
+# the build has made them.
+tests="$PORT_BUNDLE/tests"
+mkdir -p "$tests/regress" "$tests/isolation" "$tests/plpgsql" "$tests/contrib"
+build="$PORT_BUILD/radix"
+$STRIP -o "$tests/pg_regress" "$build/src/test/regress/pg_regress"
+$STRIP -o "$tests/pg_isolation_regress" "$build/src/test/isolation/pg_isolation_regress"
+$STRIP -o "$tests/isolationtester" "$build/src/test/isolation/isolationtester"
+$STRIP -o "$tests/regress/regress.so" "$build/src/test/regress/regress.so"
+regress="$PORT_SRC/src/test/regress"
+for item in sql expected data parallel_schedule resultmap; do
+	cp -R "$regress/$item" "$tests/regress/$item"
+done
+isolation="$PORT_SRC/src/test/isolation"
+for item in specs expected isolation_schedule; do
+	cp -R "$isolation/$item" "$tests/isolation/$item"
+done
+for item in sql expected; do
+	cp -R "$PORT_SRC/src/pl/plpgsql/src/$item" "$tests/plpgsql/$item"
+done
+contrib=$(make -s -C "$build/contrib" --eval='print-%: ; @echo $($*)' print-SUBDIRS)
+for name in $contrib; do
+	if [ "$name" = xml2 ]; then
+		continue
+	fi
+	for item in sql expected specs data input output; do
+		if [ -d "$PORT_SRC/contrib/$name/$item" ]; then
+			mkdir -p "$tests/contrib/$name"
+			cp -R "$PORT_SRC/contrib/$name/$item" "$tests/contrib/$name/$item"
+		fi
+	done
+done
+
+# Where each file finds the libraries it needs, as the build made it: a
+# program, and the test programs, in the lib folder beside their own; a
+# module, and libpq, which is linked as one, in the folder above theirs
+# (for libpq itself and regress.so that is a folder with no library to
+# find, and they need none). An absolute run path would be wrong in a
+# person's own installation, and nothing but libc.so and libpq.so.5 may be
+# asked for. A program's interpreter is the system's dynamic linker, and
+# no file has text relocations, which position-independent code has no
+# need of and the dynamic linker would have to patch the code for.
+readelf=x86_64-radix-readelf
+check_elf() {
+	file=$1
+	runpath=$2
+	found=$($readelf -d "$file" | sed -n 's/.*(RUNPATH)[^[]*\[\(.*\)\]/\1/p')
+	if [ "$found" != "$runpath" ]; then
+		echo "postgresql: ${file#$PORT_BUNDLE/} has the run path '$found', not '$runpath'" >&2
+		exit 1
+	fi
+	if $readelf -d "$file" | grep -q '(RPATH)\|TEXTREL'; then
+		echo "postgresql: ${file#$PORT_BUNDLE/} has an RPATH or text relocations" >&2
+		exit 1
+	fi
+	needed=$($readelf -d "$file" | sed -n 's/.*(NEEDED)[^[]*\[\(.*\)\]/\1/p' | grep -v '^libc\.so$\|^libpq\.so\.5$' || true)
+	if [ -n "$needed" ]; then
+		echo "postgresql: ${file#$PORT_BUNDLE/} needs $needed" >&2
+		exit 1
+	fi
+}
+check_program() {
+	check_elf "$1" '$ORIGIN/../lib'
+	if ! $readelf -l "$1" | grep -q 'Requesting program interpreter: /system/libraries/ld.so\]'; then
+		echo "postgresql: ${1#$PORT_BUNDLE/} is not linked dynamically for Radix" >&2
+		exit 1
+	fi
+}
+for program in "$PORT_BUNDLE"/bin/* "$tests/pg_regress" "$tests/pg_isolation_regress" \
+	"$tests/isolationtester"; do
+	check_program "$program"
+done
+for module in "$PORT_BUNDLE"/lib/postgresql/*.so "$PORT_BUNDLE/lib/libpq.so.5" \
+	"$tests/regress/regress.so"; do
+	check_elf "$module" '$ORIGIN/..'
+done
+# The server exports what its modules call (palloc, which every one does),
+# and a module's copy of OpenSSL is its own: no function of it is in the
+# module's symbols that other files link to.
+if ! $readelf --dyn-syms --wide "$PORT_BUNDLE/bin/postgres" | grep -q ' palloc$'; then
+	echo "postgresql: bin/postgres does not export palloc" >&2
+	exit 1
+fi
+if $readelf --dyn-syms --wide "$PORT_BUNDLE/lib/postgresql/pgcrypto.so" |
+	awk '$7 != "UND" && $8 ~ /^(EVP_|SSL_|OPENSSL_|CRYPTO_)/ { found = 1 } END { exit !found }'; then
+	echo "postgresql: pgcrypto.so exports OpenSSL's functions" >&2
+	exit 1
+fi

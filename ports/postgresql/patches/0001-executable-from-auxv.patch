@@ -1,0 +1,98 @@
+SPDX-FileCopyrightText: 1996-2026 PostgreSQL Global Development Group
+SPDX-FileCopyrightText: 1994 The Regents of the University of California
+SPDX-FileCopyrightText: 2026 The Dukovo contributors
+SPDX-License-Identifier: PostgreSQL
+
+The program's path from the auxiliary vector
+
+PostgreSQL finds its library and share folders from where its program is:
+find_my_exec takes the path from argv[0], searching PATH when it has no
+slash, and pg_ctl and initdb find postgres beside themselves with it. A
+command of a Dukovo bundle is run by the program's path in the bundle's
+folder, which may be in /applications or in a person's own applications
+folder, with only the command's name as argv[0], so a search of PATH finds
+the link bundled(8) made, which does not lead there. The kernel gives the
+path a program was run as in the auxiliary vector (AT_EXECFN), as Linux
+does: this takes it as the program's when it is absolute, before the
+search. For a program started by a script's #! line, AT_EXECFN is the
+script's path, as on Linux, so a file that starts with "#!" is not taken:
+argv[0], the program's own path, is.
+
+diff --git a/src/common/exec.c b/src/common/exec.c
+--- a/src/common/exec.c
++++ b/src/common/exec.c
+@@ -34,6 +34,11 @@
+ #include <sys/wait.h>
+ #include <unistd.h>
+ 
++#ifdef __radix__
++#include <fcntl.h>
++#include <sys/auxv.h>
++#endif
++
+ #ifdef EXEC_BACKEND
+ #if defined(HAVE_SYS_PERSONALITY_H)
+ #include <sys/personality.h>
+@@ -143,6 +148,50 @@
+ }
+ 
+ 
++#ifdef __radix__
++/*
++ * radix_is_script -- does the file start with "#!", or can it not be read to
++ * tell?
++ */
++static bool
++radix_is_script(const char *path)
++{
++	char		head[2];
++	int			fd = open(path, O_RDONLY | O_CLOEXEC);
++	ssize_t		nread;
++
++	if (fd < 0)
++		return true;
++	nread = read(fd, head, sizeof(head));
++	close(fd);
++	return nread != (ssize_t) sizeof(head) || (head[0] == '#' && head[1] == '!');
++}
++
++/*
++ * radix_exec_path -- find the path the program was run as, in the kernel's
++ * auxiliary vector
++ *
++ * A command of a Dukovo bundle is run by its path in the bundle's folder,
++ * with only the command's name as argv[0], so a search of PATH finds the link
++ * bundled(8) made, which does not lead there.  The kernel gives the path in
++ * AT_EXECFN, as Linux does.  For a program started by a script's #! line,
++ * AT_EXECFN is the script's path, as on Linux, and argv[0] is the program's:
++ * so a file that starts with "#!" is not taken.
++ *
++ * Returns true, with the path in retpath (of size MAXPGPATH), if there is one.
++ */
++static bool
++radix_exec_path(char *retpath)
++{
++	const char *path = (const char *) getauxval(AT_EXECFN);
++
++	if (path == NULL || path[0] != '/' || radix_is_script(path))
++		return false;
++	strlcpy(retpath, path, MAXPGPATH);
++	return true;
++}
++#endif
++
+ /*
+  * find_my_exec -- find an absolute path to this program's executable
+  *
+@@ -162,6 +211,11 @@
+ {
+ 	char	   *path;
+ 
++#ifdef __radix__
++	if (radix_exec_path(retpath))
++		return normalize_exec_path(retpath);
++#endif
++
+ 	/*
+ 	 * If argv0 contains a separator, then PATH wasn't used.
+ 	 */
