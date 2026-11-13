@@ -111,12 +111,12 @@ fn state_word(state: State) -> &'static str {
 
 /// `seconds` since the epoch as `2026-11-13 10:02:11 UTC`.
 pub fn utc(seconds: u64) -> String {
-    format!("{} UTC", minute_and_second(seconds, true))
+    format!("{} UTC", date_time(seconds, true))
 }
 
 /// `seconds` since the epoch as `2026-11-13 10:02`, with the seconds when
 /// `seconds_too`.
-fn minute_and_second(seconds: u64, seconds_too: bool) -> String {
+pub fn date_time(seconds: u64, seconds_too: bool) -> String {
     let (year, month, day) = logd::civil(i64::try_from(seconds / 86_400).unwrap_or(0));
     let rest = seconds % 86_400;
     let (hour, minute) = (rest / 3600, rest % 3600 / 60);
@@ -198,7 +198,7 @@ pub fn sign_in_lines(active: &[Active]) -> Vec<String> {
             format!(
                 "Alert: {} (since {}, alerts list)",
                 held.alert.title,
-                minute_and_second(held.since, false)
+                date_time(held.since, false)
             )
         })
         .collect();

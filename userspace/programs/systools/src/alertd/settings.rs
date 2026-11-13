@@ -821,4 +821,34 @@ mod tests {
             assert!(!is_address(bad), "{bad:?}");
         }
     }
+
+    /// The file that ships.
+    const SHIPPED: &str = include_str!("../../../../defaults/alerts.toml");
+
+    #[test]
+    fn the_file_that_ships_names_no_channel_and_so_its_mode_does_not_matter() {
+        assert!(!names_a_channel(SHIPPED));
+        let (settings, wrong) = read_settings(SHIPPED, "server");
+        assert_eq!((settings, wrong), (Settings::default(), Vec::new()));
+    }
+
+    #[test]
+    fn the_examples_in_the_file_that_ships_are_channels_when_they_are_uncommented() {
+        // The indented comment lines are the examples; `# room` stays a
+        // comment, as the file shows it.
+        let uncommented: String = SHIPPED
+            .lines()
+            .filter_map(|line| line.strip_prefix("#   "))
+            .filter(|line| {
+                !line.starts_with("chmod")
+                    && !line.starts_with("service ")
+                    && !line.starts_with("alerts ")
+            })
+            .map(|line| format!("{line}\n"))
+            .collect();
+        let (settings, wrong) = read_settings(&uncommented, "server");
+        assert_eq!(wrong, Vec::<String>::new(), "{uncommented}");
+        let names: Vec<&str> = settings.channels.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(names, ["email to ops@example.com", "ntfy (ntfy.sh)"]);
+    }
 }

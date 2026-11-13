@@ -49,7 +49,7 @@ const ACTIVE_FILE: &str = "active.json";
 /// The history, a change a line.
 const HISTORY_FILE: &str = "history";
 /// The deliveries still to make, one file of JSON.
-const OUTBOX_FILE: &str = "outbox.json";
+pub const OUTBOX_FILE: &str = "outbox.json";
 
 /// The active alerts and the history, in memory.
 #[derive(Debug, Default)]

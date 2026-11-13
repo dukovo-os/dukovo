@@ -527,9 +527,11 @@ fn quoted_printable(text: &str) -> String {
         for (at, &byte) in bytes.iter().enumerate() {
             let at_end = at + 1 == bytes.len();
             let mut token = String::new();
-            if (byte == b' ' || byte == b'\t') && !at_end {
-                token.push(char::from(byte));
-            } else if byte.is_ascii_graphic() && byte != b'=' {
+            // A space or tab is itself unless it ends the line, where a
+            // mail server may strip it.
+            let plain = (byte.is_ascii_graphic() && byte != b'=')
+                || ((byte == b' ' || byte == b'\t') && !at_end);
+            if plain {
                 token.push(char::from(byte));
             } else {
                 let _ = write!(token, "={byte:02X}");

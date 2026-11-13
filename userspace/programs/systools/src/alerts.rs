@@ -9,7 +9,10 @@
 //!
 //! - [`protocol`] is what goes over alertd's socket, a line of JSON each
 //!   way;
-//! - [`client`] is how a service raises, clears and sets its alerts.
+//! - [`client`] is how a service raises, clears and sets its alerts;
+//! - [`command`] is `alerts(8)`, which shows them and raises one from a
+//!   script.
 
 pub mod client;
+pub mod command;
 pub mod protocol;

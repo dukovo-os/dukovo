@@ -473,7 +473,7 @@ mod tests {
     fn a_message_holds_at_most_fifty_changes() {
         let mut outbox = Outbox::default();
         let channels = [open("a")];
-        for n in 0..BATCH_MAX + 1 {
+        for n in 0..=BATCH_MAX {
             outbox.add(&channels, &raised(&format!("k{n}"), 100), 100);
         }
         assert_eq!(outbox.waiting(), 2);
@@ -695,7 +695,7 @@ mod tests {
         let mut outbox = Outbox::default();
         let channels = [open("a")];
         let mut lines = Vec::new();
-        for n in 0..WAITING_MAX + 1 {
+        for n in 0..=WAITING_MAX {
             // Each a minute apart, so that each is a message of its own.
             lines.extend(outbox.add(&channels, &raised(&format!("k{n}"), 0), n as u64 * 60));
         }
