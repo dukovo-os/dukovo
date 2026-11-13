@@ -99,13 +99,6 @@ pub struct Settings {
     pub warnings: Thresholds,
 }
 
-impl Settings {
-    /// Whether the endpoint answers a request from `ip`.
-    pub fn allows(&self, ip: IpAddr) -> bool {
-        self.allow.iter().any(|network| network.contains(ip))
-    }
-}
-
 /// The settings the file text `text` holds, and what is wrong in it, a
 /// line each.
 pub fn read_settings(text: &str) -> (Settings, Vec<String>) {
@@ -256,6 +249,11 @@ mod tests {
         text.parse().unwrap()
     }
 
+    /// Whether the endpoint answers a request from `ip`, as it asks.
+    fn allows(settings: &Settings, ip: IpAddr) -> bool {
+        settings.allow.iter().any(|network| network.contains(ip))
+    }
+
     #[test]
     fn an_empty_file_is_the_defaults() {
         let (settings, wrong) = read_settings("");
@@ -271,8 +269,27 @@ mod tests {
                 certificate_days: 14
             }
         );
-        // The shipped file holds only comments.
-        assert_eq!(read_settings("# Nothing is set.\n").0, Settings::default());
+        // The file the system ships holds only comments, so says what the
+        // defaults are.
+        let shipped = include_str!("../../../../defaults/metrics.toml");
+        assert_eq!(read_settings(shipped), (Settings::default(), Vec::new()));
+    }
+
+    #[test]
+    fn the_shipped_warnings_are_the_defaults_when_uncommented() {
+        let shipped = include_str!("../../../../defaults/metrics.toml");
+        let uncommented: String = shipped
+            .lines()
+            .map(|line| match line.strip_prefix("# ") {
+                Some(rest) if rest == "[warnings]" || rest.contains(" = ") => rest,
+                _ => line,
+            })
+            .filter(|line| !line.starts_with("listen") && !line.starts_with("allow"))
+            .fold(String::new(), |text, line| text + line + "\n");
+        let (settings, wrong) = read_settings(&uncommented);
+        assert!(wrong.is_empty(), "{wrong:?}");
+        assert!(uncommented.contains("[warnings]\n"), "{uncommented}");
+        assert_eq!(settings.warnings, Thresholds::default());
     }
 
     #[test]
@@ -307,10 +324,10 @@ mod tests {
         .0;
         assert_eq!(settings.listen, ["[::]:9100".parse::<SocketAddr>().unwrap()]);
         for yes in ["192.168.1.200", "fd12:3456::1", "10.0.0.7", "::ffff:192.168.1.5"] {
-            assert!(settings.allows(ip(yes)), "{yes}");
+            assert!(allows(&settings, ip(yes)), "{yes}");
         }
         for no in ["192.168.2.1", "10.0.0.8", "2001:db8::1", "fe80::1", "::ffff:192.168.2.5"] {
-            assert!(!settings.allows(ip(no)), "{no}");
+            assert!(!allows(&settings, ip(no)), "{no}");
         }
     }
 

@@ -1,0 +1,133 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# metricsd(8) and its Prometheus endpoint (ADR 0484), against the lab PC's
+# promtool (metrics-scrape.sh beside this file) and the machine's own free,
+# df and ps (metrics-compare.sh): the metrics command shows the latest
+# values and the history, the endpoint answers the lab PC and nobody else,
+# promtool reads its scrape, and what it says of memory, the root
+# filesystem, metricsd's own memory and the clock is what free, df, ps and
+# date say. The machine's settings are put back at the end.
+about = "metricsd keeps the machine's history that metrics shows, and its Prometheus endpoint answers only the allowed addresses with a scrape promtool reads and free, df and ps agree with (ADR 0484)"
+time = "6m"
+host_needs = ["promtool", "curl", "scp"]
+
+[[step]]
+host = "sh {here}/../services/copy-file.sh {here}/metrics-compare.sh {machine} {machine-port:22}"
+expect = "copied: metrics-compare.sh"
+
+# The latest values, once a rate can be told: the second minute of the
+# service. A reading of the filesystems and of the memory is there, as a
+# value with its unit.
+[[step]]
+run = "sh -c 'i=0; while [ $i -lt 90 ] && ! metrics cpu > /dev/null 2>&1; do sleep 2; i=$((i + 1)); done; metrics cpu memory.used memory.available'"
+root = true
+expect = ["cpu", "memory.used", "memory.available", "%", "B"]
+[[step]]
+run = "metrics list fs.used"
+root = true
+expect = "fs.used"
+
+# The history is written every ten minutes and when the service stops, so
+# a restart puts what it has read so far into the files, and `metrics show`
+# reads them. The points come as seconds and a number for a script.
+[[step]]
+run = "service metricsd restart"
+root = true
+[[step]]
+run = "metrics show memory.used --since 1h --json"
+root = true
+expect = ['"series":"memory.used"', '"points":[[']
+[[step]]
+run = "metrics show memory.used --since 1h --every 5m"
+root = true
+expect = ["memory.used", "B"]
+# A series that is not there, and a range that is backwards, are said.
+[[step]]
+run = "metrics now no.such.series"
+root = true
+exit = 1
+expect = "no such series"
+[[step]]
+run = "metrics show memory.used --since 1h --until 2h"
+root = true
+exit = 1
+expect = "--since has to be before --until"
+
+# The endpoint is off until metrics.toml names where it listens and who
+# may ask. The lab PC's address and the machine's own are allowed.
+[[step]]
+run = "sh -c 'if [ -f /system/settings/metrics.toml ]; then cp /system/settings/metrics.toml /system/settings/metrics.toml.lab; else touch /system/settings/metrics.toml.lab-none; fi; echo saved'"
+root = true
+expect = "saved"
+[[step]]
+run = "sh -c 'cat > /system/settings/metrics.toml && service metricsd reload'"
+root = true
+input = """
+[prometheus]
+listen = ["0.0.0.0:9100"]
+allow = ["{peer}", "127.0.0.1"]
+"""
+
+# What a Prometheus server does, and promtool says of it.
+[[step]]
+host = "sh {here}/metrics-scrape.sh {machine} {machine-port:9100} check"
+expect = [
+    "promtool: the scrape is well formed",
+    "names: node_exporter's and Dukovo's are there",
+    "path: 404",
+    "method: 405",
+]
+
+# The same numbers by other tools.
+[[step]]
+run = "sh /users/lab/metrics-compare.sh"
+root = true
+expect = [
+    "ok: memory total is free's",
+    "ok: memory available is free's",
+    "ok: the root's size is df's",
+    "ok: the root's free space is df's",
+    "ok: metricsd's memory is ps's",
+    "ok: the time is date's",
+    "ok: it booted before now",
+]
+
+# An address the allow list does not name is closed at once, while the
+# machine's own is still answered.
+[[step]]
+run = "sh -c 'cat > /system/settings/metrics.toml && service metricsd reload'"
+root = true
+input = """
+[prometheus]
+listen = ["0.0.0.0:9100"]
+allow = ["127.0.0.1"]
+"""
+[[step]]
+wait = "2s"
+[[step]]
+host = "sh {here}/metrics-scrape.sh {machine} {machine-port:9100} refused"
+expect = "refused: the connection was closed without an answer"
+[[step]]
+run = "sh -c 'curl -s http://127.0.0.1:9100/metrics | head -1'"
+root = true
+expect = "# HELP"
+
+# A listen with no allow stays off, and the log says why.
+[[step]]
+run = "sh -c 'cat > /system/settings/metrics.toml && service metricsd reload'"
+root = true
+input = """
+[prometheus]
+listen = ["0.0.0.0:9100"]
+"""
+[[step]]
+run = "sh -c 'sleep 2; log metricsd | grep \"listen needs allow\" | tail -1'"
+root = true
+expect = "listen needs allow"
+
+# The machine as it was.
+[[step]]
+run = "sh -c 'if [ -f /system/settings/metrics.toml.lab ]; then mv /system/settings/metrics.toml.lab /system/settings/metrics.toml; else rm -f /system/settings/metrics.toml /system/settings/metrics.toml.lab-none; fi; rm -f /users/lab/metrics-compare.sh; service metricsd reload && echo cleaned'"
+root = true
+expect = "cleaned"

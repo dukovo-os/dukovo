@@ -195,6 +195,7 @@ machine with AMT, an AMD machine and a laptop; see
 | The speed of the SPCR's "as the firmware left it" read from the UART's divisor (ADR 0481) | Taken as 115200 baud, as GRUB takes it | A machine in the lab whose firmware leaves another speed and gives none |
 | elevate in the web console, with comments kept by its settings editor (ADRs 0216, 0219) | Dukovo Admin | 16c |
 | A page for logforward in the web console: its destinations, their status and a test record (ADR 0482) | Dukovo Admin | 16c |
+| TLS and a password for the Prometheus endpoint (ADR 0484) | The endpoint is plain HTTP, answering only the networks `allow` names, as most node_exporter setups run it | A need |
 | A certificate from certd for nginx's sites and for the lab test `services/nginx`, which makes one with openssl meanwhile (ADR 0491) | certd comes with Phase 16 | Phase 16's certd |
 | Spark setting a service's `open_files` (RLIMIT_NOFILE); nginx raises its own to the hard limit, 4096, meanwhile (ADRs 0385, 0491) | Service limits | 16a |
 | A service's own log files, turned over: nginx logs to the system's log, and an `access_log` to a file of its own is never turned over (ADR 0491) | Needs timers | 16a |

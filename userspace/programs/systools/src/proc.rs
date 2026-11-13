@@ -405,13 +405,8 @@ pub fn stat() -> io::Result<Stat> {
     Ok(parse_stat(&fs::read(format!("{PROC}/stat"))?))
 }
 
-/// `/processes/meminfo`: memory in KiB, by key (`total`, `free`,
-/// `page_cache` and the other owners).
-pub fn meminfo() -> io::Result<Vec<(String, u64)>> {
-    Ok(parse_meminfo(&fs::read(format!("{PROC}/meminfo"))?))
-}
-
-/// The lines of a `meminfo`.
+/// The lines of a `/processes/meminfo`: memory in KiB, by key (`total`,
+/// `free`, `page_cache` and the other owners).
 pub fn parse_meminfo(text: &[u8]) -> Vec<(String, u64)> {
     pairs(text)
         .map(|(key, value)| (String::from_utf8_lossy(key).into_owned(), number(value)))

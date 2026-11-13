@@ -48,6 +48,15 @@ that is not listed is a bug.
 *Notifications*
 	In *notifyd*(8)'s memory only, the last 64, until it stops.
 
+*Metrics*
+	In _/system/state/metrics_, by *metricsd*(8): a row of the
+	processors, load, memory, disks, filesystems, network cards,
+	temperatures and services for each minute of the last two weeks, and
+	each hour's average, least and greatest for 13 months
+	(*metrics*(1)). It says how much the machine does, never what is
+	in a file or what anyone does with it. The newest row is also in
+	_/system/live/metrics_, which a boot starts without.
+
 # SENT ON ITS OWN
 
 *netd*
@@ -88,6 +97,14 @@ that is not listed is a bug.
 	file, or *enabled = false* in its service file, *service edit
 	logforward* (*service*(8)), stops it.
 
+*metricsd*
+	Nothing on its own. Where *metrics.toml*(5) names an address and
+	the networks that may ask, a Prometheus server of those networks
+	gets the machine's figures when it asks, in plain HTTP; by
+	default it listens nowhere (*metricsd*(8)). *enabled = false* in
+	its service file, *service edit metricsd* (*service*(8)), turns the
+	service off.
+
 *updated*
 	Ten minutes after each start, then once a day, a read of the
 	update channel the machine follows, at _updates.dukovo.org_ or the
@@ -109,5 +126,6 @@ public issue.
 
 # SEE ALSO
 
-*logd*(8), *log*(5), *logforward*(8), *netd*(8), *netlog*(8), *notifyd*(8),
-*radix-debug*(7), *resolved*(8), *timed*(8)
+*logd*(8), *log*(5), *logforward*(8), *metrics*(1), *metricsd*(8),
+*metrics.toml*(5), *netd*(8), *netlog*(8), *notifyd*(8), *radix-debug*(7),
+*resolved*(8), *timed*(8)

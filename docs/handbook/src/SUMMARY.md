@@ -33,6 +33,7 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 - [Cloud and virtual machines](cloud.md)
 - [Server hardening]()
 - [Logs, monitoring and troubleshooting](logs.md)
+- [Metrics and early warnings](metrics.md)
 - [SSH and remote access](ssh.md)
 - [Kerberos](kerberos.md)
 - [Power, laptops and desktops]()

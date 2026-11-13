@@ -61,6 +61,11 @@ title = "Time and date"
 about = "The clock, the time zone, and keeping time by NTP"
 
 [[category]]
+name = "monitoring"
+title = "Monitoring"
+about = "The machine's history and its Prometheus endpoint, read by the lab PC's promtool and checked against free, df and ps"
+
+[[category]]
 name = "accounts"
 title = "Accounts and elevate"
 about = "Accounts made and removed, groups, running as root, the keyring, and Kerberos tickets from the lab PC's KDC"

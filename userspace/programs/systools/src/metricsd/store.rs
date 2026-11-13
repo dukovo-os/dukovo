@@ -464,11 +464,6 @@ impl Store {
         Ok(store)
     }
 
-    /// The series the store has columns for, in order.
-    pub fn names(&self) -> &[String] {
-        &self.names
-    }
-
     /// Takes in the row of time `at`, seconds since 1970: a value for each
     /// series it has. A series that is new gets a column; one past
     /// [`MAX_SERIES`], or with a name over [`NAME_MAX`] bytes, is left out.
@@ -961,7 +956,7 @@ mod tests {
 
         let mut store = Store::open(&dir, TEN + 130).unwrap();
         assert_eq!(fs::metadata(&path).unwrap().len(), whole);
-        assert_eq!(store.names(), ["cpu"]);
+        assert_eq!(store.names, ["cpu"]);
         store.push(TEN + 180, &row(&[("cpu", 4.0)]));
         store.flush().unwrap();
         let found = all(&dir, TEN + 200, TEN, TEN + 200);
@@ -999,7 +994,7 @@ mod tests {
         let many: Vec<(String, f32)> = (0..=MAX_SERIES).map(|n| (format!("s{n}"), 1.0)).collect();
         store.push(TEN, &many);
         store.push(TEN + 60, &row(&[("another", 1.0)]));
-        assert_eq!(store.names().len(), MAX_SERIES);
+        assert_eq!(store.names.len(), MAX_SERIES);
         assert_eq!(store.take_left_out().as_deref(), Some("s1024"));
         assert_eq!(store.take_left_out(), None);
         store.push(TEN + 120, &row(&[(&"n".repeat(NAME_MAX + 1), 1.0)]));

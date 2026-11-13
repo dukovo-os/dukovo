@@ -35,6 +35,7 @@ as below.
 | The crash log | Reserved memory, shown at the next boot and kept in the log | Until the log trims it |
 | Crash dumps | Reserved memory until the next boot, then `/system/state/crash`, readable by root alone | The ten newest, in at most 64 MiB ("Debugging the kernel") |
 | Notifications | notifyd's memory only | The last 64, until notifyd stops |
+| The machine's history: processors, memory, disks, networks, temperatures and services | `/system/state/metrics`, kept by metricsd | A reading a minute for two weeks, and each hour's average, least and greatest for 13 months ("Metrics and early warnings") |
 
 A crash report goes nowhere by itself: to report a crash, copy what
 "Debugging the kernel" asks for into the report yourself.
@@ -51,6 +52,7 @@ off; anything else sent on its own is a bug:
 | timed | A request for the time to `time.cloudflare.com`, `nts.netnod.se` or `ptbtime1.ptb.de`, over Network Time Security, every 1 to 17 minutes, and to `pool.ntp.org` over plain NTP only while none of them answers; the requests carry random numbers and the server's own cookies, nothing about the machine | Other servers, or none, in timed(5); `enabled = false` in its service file |
 | netlog | The log, to a computer you name, only when you name one to debug a machine | It sends nothing by default |
 | logforward | The log, to the syslog servers you name in logforward.toml(5), over TLS, TCP or UDP, from when you name each, and again to a server that missed some | It sends nothing until you name a server; take the destination out, or `enabled = false` in its service file (logforward(8)) |
+| metricsd | Nothing on its own. A Prometheus server that metrics.toml(5) names gets the machine's figures when it asks | It listens nowhere by default; take `listen` out of metrics.toml(5), or `enabled = false` in its service file (metricsd(8)) |
 | discoverd | The machine's name and addresses, by multicast DNS on the local network only, so that `ssh name.local` works, and WS-Discovery probes that find Windows machines, printers and scanners there; nothing leaves the local network | `enabled = false` in its service file (discoverd(8)) |
 | updated | Ten minutes after each start, then once a day, a read of the update channel at `updates.dukovo.org`, or the server you name, for a newer system and firmware set, and of the app catalogs; nothing about the machine | `check = "off"` in updates.toml(5), or `enabled = false` in its service file (updated(8)) |
 | bundled | For bundles installed from a catalog, a daily read of that catalog for updates and known flaws, at `updates.dukovo.org` for Dukovo's own | Nothing is read while no catalog bundle is installed; updates by themselves stay off unless you turn them on with `bundle update --automatic on` (bundle(1)) |

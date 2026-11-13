@@ -37,7 +37,9 @@ to, and *logforward*(8) sends to syslog servers; *dumps*(8) saves and
 reads the dump the kernel writes when it panics (*radix-debug*(7));
 *notifyd*(8) passes the
 notifications *notify-send*(1) sends to the console, and
-*notifications*(1) lists them; *ip*(8) and *ss*(8) read the network's
+*notifications*(1) lists them; *metricsd*(8) keeps the machine's history
+and warns early, *metrics*(1) shows it, and it answers a Prometheus
+server; *ip*(8) and *ss*(8) read the network's
 interfaces and sockets from *radix-sysfs*(5) and *radix-proc*(5), and
 *ip*(8) sets the interfaces up through the network capability
 (*radix-network*(2)), as *netd*(8) does by DHCP or as *network*(5) says;
@@ -165,6 +167,10 @@ error that starts with the tool's name.
 :  the PCI functions
 |  *lsusb*(8)
 :  the USB devices, or the tree of their buses and ports
+|  *metrics*(1)
+:  show the machine now and its history
+|  *metricsd*(8)
+:  keep the machine's history, warn early and answer Prometheus
 |  *mkiso*(1)
 :  make a disc image of a folder
 |  *mkswap*(8)
