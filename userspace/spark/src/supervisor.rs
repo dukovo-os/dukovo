@@ -29,8 +29,9 @@
 //! for it, the services' output, the program it was asked to run, and the
 //! control socket, `/system/live/spark/control`: shutdown(8), reboot(8),
 //! poweroff(8), halt(8) and service(8) send a request there, one line, and
-//! read the answer. Shutting down stops the services the highest `order`
-//! first, each group with SIGTERM and then, after STOP_WAIT, by stopping
+//! read the answer. Shutting down stops the services the highest stop
+//! rank first, so that each stops before the services it names (ADR
+//! 0470), each group with SIGTERM and then, after STOP_WAIT, by stopping
 //! its domain, then calls the power capability (radix-power(2)). Pressing
 //! the power button, which the kernel tells of through another
 //! notification (`notify_button`), powers the machine off the same way,
@@ -53,6 +54,10 @@
 //! and is free for the service's next start. A service whose file names
 //! cards of which the kernel left none is not started.
 
+mod health;
+mod show;
+mod starting;
+
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
@@ -60,6 +65,7 @@ use alloc::vec::Vec;
 use libradix::abi::capability::{self, ObjectKind, Rights};
 use libradix::abi::device::{self, DeviceInfo};
 use libradix::abi::directory::{FileKind, OpenFlags};
+use libradix::abi::errors::Kernel;
 use libradix::abi::file::{self as file_abi, DescriptionFlags};
 use libradix::abi::notification::WaitFlags;
 use libradix::abi::process::{
@@ -76,6 +82,8 @@ use radix_rt::{SYS, println, slots};
 
 use crate::services::{self, Restart, Spec};
 use crate::views;
+use manifest::service::ReadyWhen;
+use starting::Wanted;
 
 /// Where the service files are.
 pub const SERVICES_DIR: &str = "system/settings/spark/services";
@@ -379,10 +387,16 @@ fn grant_devices(devices: Option<u32>, spec: &Spec, child: u32) -> Result<(), St
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum State {
     /// Not running, and not to be started: turned off, stopped by a
-    /// request, ended for good, or never started.
+    /// request, ended for good, refused, or never started.
     Stopped,
-    /// Running as this process.
+    /// To start once the services it names are ready or off (ADR 0470).
+    Pending,
+    /// Running as this process, and not yet ready.
+    Starting(u64),
+    /// Running as this process, and ready.
     Running(u64),
+    /// Ended with 0, as a setup step that is ready once it has ended.
+    Done,
     /// To start at this time.
     Waiting(u64),
     /// Its process ended with this status, and Spark stopped its domain,
@@ -390,6 +404,18 @@ enum State {
     /// started again or not, as the status says. Spark looks again at the
     /// time given.
     Draining(u32, u64),
+    /// Given up on after `give_up_after` failed starts in a row.
+    Failed,
+}
+
+impl State {
+    /// Its process, while it is starting or running.
+    fn pid(self) -> Option<u64> {
+        match self {
+            State::Starting(pid) | State::Running(pid) => Some(pid),
+            _ => None,
+        }
+    }
 }
 
 /// A service and its process.
@@ -404,6 +430,11 @@ struct Service {
     started_ns: u64,
     /// Quick ends in a row, which the backoff doubles with.
     quick: u32,
+    /// Failed starts in a row, which `give_up_after` counts: a start
+    /// that could not be made, an end before it was ready, a start that
+    /// was not ready in time, a failing end soon after it was, and a
+    /// restart for failed health checks.
+    failures: u32,
     restarts: u32,
     last: Option<u32>,
     /// Stopped by a request: not started again until asked.
@@ -425,11 +456,37 @@ struct Service {
     /// Why it could not start, when it last could not, for the request
     /// that asked.
     why: Option<String>,
+    /// When it came to its state.
+    since_ns: u64,
+    /// What made it start: "boot", "a request", or the service whose
+    /// file pulled it in.
+    wanted_by: Option<String>,
+    /// While it is pending: the services it waits for.
+    waiting_for: Vec<String>,
+    /// While it is starting: when its start has failed if it is not ready.
+    ready_by: u64,
+    /// While it starts with `ready.when = "socket"`: what was at the
+    /// socket's path as it started, which does not count (its number and
+    /// change time).
+    socket_before: Option<(u64, u64)>,
+    /// When it was ready, since it last started.
+    ready_ns: Option<u64>,
+    /// Restarted for failed health checks: its end is a failed start.
+    unhealthy: bool,
+    /// Its health checks.
+    checks: health::Checks,
+    /// Its stop rank: shutdown stops the highest first, a service before
+    /// what it depends on.
+    rank: u32,
+    /// Why it never starts, when it is one of services that wait for each
+    /// other.
+    circle: Option<String>,
 }
 
 impl Service {
     /// A stopped service that runs `spec`, read from `good`.
     fn new(spec: Spec, good: services::Texts) -> Service {
+        let rank = spec.order;
         Service {
             spec,
             state: State::Stopped,
@@ -438,6 +495,7 @@ impl Service {
             line: Vec::new(),
             started_ns: 0,
             quick: 0,
+            failures: 0,
             restarts: 0,
             last: None,
             held: false,
@@ -448,7 +506,47 @@ impl Service {
             good,
             complaint: None,
             why: None,
+            since_ns: now(),
+            wanted_by: None,
+            waiting_for: Vec::new(),
+            ready_by: 0,
+            socket_before: None,
+            ready_ns: None,
+            unhealthy: false,
+            checks: health::Checks::default(),
+            rank,
+            circle: None,
         }
+    }
+
+    /// Puts it in `state`, as of now.
+    fn set(&mut self, state: State) {
+        self.state = state;
+        self.since_ns = now();
+    }
+
+    /// When Spark must look at it again, given that it is `time`: its
+    /// restart, the end of its stop's wait, its next readiness look, or
+    /// its next health check.
+    fn next_look(&self, time: u64) -> Option<u64> {
+        let state = match self.state {
+            State::Waiting(at) | State::Draining(_, at) => Some(at),
+            State::Starting(_) if self.stop_by.is_none() => match self.spec.ready.when {
+                ReadyWhen::Listening(_) | ReadyWhen::Socket(_) => {
+                    Some(self.ready_by.min(time + starting::READY_POLL))
+                }
+                _ => Some(self.ready_by),
+            },
+            State::Starting(_) | State::Running(_) => self.stop_by,
+            State::Stopped | State::Pending | State::Done | State::Failed => None,
+        };
+        let check = match self.state {
+            State::Starting(_) | State::Running(_) if self.stop_by.is_none() => {
+                self.checks.next_look()
+            }
+            _ => None,
+        };
+        state.into_iter().chain(check).min()
     }
 }
 
@@ -487,19 +585,24 @@ impl End {
 enum Shutdown {
     /// To start at this time.
     Pending { end: End, at: u64 },
-    /// Stopping the services of `order` and above; `deadline` is when it
-    /// stops their domains (`killed` once it has).
-    Stopping { end: End, order: u32, deadline: u64, killed: bool },
+    /// Stopping the services of stop rank `rank` and above; `deadline` is
+    /// when it stops their domains (`killed` once it has).
+    Stopping { end: End, rank: u32, deadline: u64, killed: bool },
 }
 
 /// A connection to the control socket, what it has sent so far, and
-/// when it is closed if its request is not whole by then.
+/// when it is closed if its request is not whole by then, or its answer
+/// not read.
 struct Connection {
     file: File,
     /// The process that connected, as the kernel says (0 if it cannot).
     peer: u64,
     request: Vec<u8>,
     until: u64,
+    /// The answer, once the request is whole, and how much of it is
+    /// written: a long one, as `show`'s, may not fit the socket at once.
+    answer: Option<Vec<u8>>,
+    written: usize,
 }
 
 /// The services' backup hooks a `hooks` request runs (ADR 0463), one
@@ -756,9 +859,10 @@ impl Supervisor {
         }
     }
 
-    /// Reads the service files in `dir` and starts the enabled ones, in
-    /// their order. An old file is converted first; a file that does not
-    /// read runs its last good copy, if Spark kept one.
+    /// Reads the service files in `dir` and starts the enabled ones, each
+    /// once what it names is ready (ADR 0470), lowest order first. An old
+    /// file is converted first; a file that does not read runs its last
+    /// good copy, if Spark kept one.
     pub fn start_services(&mut self, dir: &str) {
         self.dir = String::from(dir);
         services::convert_old(&self.root, dir);
@@ -792,24 +896,18 @@ impl Supervisor {
                  administrator added stay off until they are started"
             );
         }
-        for mut service in loaded {
-            let name = service.spec.name.as_str();
-            let added = self.essentials && !self.own(name);
-            let enabled =
-                service.spec.enabled && (!self.rescue || RESCUE_SERVICES.contains(&name)) && !added;
-            if service.spec.enabled && !enabled {
-                service.why = Some(String::from(if added {
-                    "only the essentials start: it stays off until it is started"
-                } else {
-                    "Rescue leaves it off until it is started"
-                }));
+        self.services.extend(loaded);
+        self.settle_graph();
+        for index in 0..self.services.len() {
+            if !self.services[index].spec.enabled {
+                continue;
             }
-            self.services.push(service);
-            if enabled {
-                let index = self.services.len() - 1;
-                self.start(index);
+            match self.left_off(&self.services[index].spec.name) {
+                Some(why) => self.services[index].why = Some(String::from(why)),
+                None => self.want(index, Wanted::Boot),
             }
         }
+        self.step_pending();
     }
 
     /// Service `name` as its file in the services directory says, or as
@@ -849,9 +947,10 @@ impl Supervisor {
         Ok(self.services.len() - 1)
     }
 
-    /// Reads service `index`'s file again, as it starts: a file that reads
-    /// is its new last good copy; one that does not leaves it as it was,
-    /// and Spark says what is wrong with it once.
+    /// Reads service `index`'s file again, as it is about to start: a file
+    /// that reads is its new last good copy; one that does not leaves it
+    /// as it was, and Spark says what is wrong with it once. New links or
+    /// a new order settle the graph again.
     fn reread(&mut self, index: usize) {
         let name = self.services[index].spec.name.clone();
         match services::read(&self.root, &self.dir, &name) {
@@ -861,8 +960,13 @@ impl Supervisor {
                     services::keep_good(&self.root, &name, &text);
                     service.good = text;
                 }
+                let moved =
+                    spec.links() != service.spec.links() || spec.order != service.spec.order;
                 service.spec = spec;
                 service.complaint = None;
+                if moved {
+                    self.settle_graph();
+                }
             }
             Err(err) => {
                 let service = &mut self.services[index];
@@ -889,9 +993,9 @@ impl Supervisor {
         }
     }
 
-    /// Starts service `index`, as its file says now.
+    /// Starts service `index`, whose links let it: it is running, or
+    /// starting until it is ready as its `ready.when` says.
     fn start(&mut self, index: usize) {
-        self.reread(index);
         let spec = &self.services[index].spec;
         if !spec.devices.is_empty() && cards_for(self.devices, spec).is_empty() {
             // Not an end: there is nothing for it to drive, as on a
@@ -899,28 +1003,52 @@ impl Supervisor {
             let why = String::from("the kernel left it none of the cards it drives");
             println!("spark: not starting {}: {why}", spec.name);
             let service = &mut self.services[index];
-            service.state = State::Stopped;
             service.why = Some(why);
+            service.set(State::Stopped);
+            self.stop_dependents(index);
             return;
         }
+        // What a run before left at its socket's path does not count.
+        let socket_before = match &spec.ready.when {
+            ReadyWhen::Socket(path) => self.socket_there(path),
+            _ => None,
+        };
         let started = self.spawn(index);
+        let time = now();
         let service = &mut self.services[index];
-        match started {
-            Ok((number, output)) => {
-                println!(
-                    "spark: started {} ({}) as process {number}",
-                    service.spec.name, service.spec.program
-                );
-                service.state = State::Running(number);
-                service.output = Some(output);
-                service.started_ns = now();
-            }
+        let (number, output) = match started {
+            Ok(started) => started,
             Err(what) => {
                 println!("spark: could not start {}: {what}", service.spec.name);
                 service.why = Some(what);
                 // As if it had ended at once.
-                self.schedule(index, None);
+                return self.schedule(index, None);
             }
+        };
+        println!(
+            "spark: started {} ({}) as process {number}",
+            service.spec.name, service.spec.program
+        );
+        service.output = Some(output);
+        service.started_ns = time;
+        service.why = None;
+        service.unhealthy = false;
+        service.checks = health::Checks::default();
+        service.socket_before = socket_before;
+        let ready = &service.spec.ready;
+        if ready.when == ReadyWhen::Started {
+            service.ready_ns = Some(time);
+            if let Some(health) = &service.spec.health {
+                service.checks.next = time + u64::from(health.every) * SECOND;
+            }
+            service.set(State::Running(number));
+        } else {
+            service.ready_ns = None;
+            service.ready_by = time + u64::from(ready.timeout) * SECOND;
+            if ready.when == ReadyWhen::Healthy {
+                service.checks.next = time;
+            }
+            service.set(State::Starting(number));
         }
     }
 
@@ -1095,39 +1223,105 @@ impl Supervisor {
         })
     }
 
-    /// Service `index` ended with `status` (None: it could not start);
-    /// starts it again later if its file says to, or a request did.
+    /// Service `index` ended with `status` (None: it could not start), and
+    /// what it left in its domain has ended: it is done, started again
+    /// later, given up on, or stopped, as its file and the requests say.
+    /// A failed start counts toward its `give_up_after`: one that could
+    /// not be made, an end before it was ready, a restart for failed
+    /// health checks, or a failing end within STEADY of being ready.
     fn schedule(&mut self, index: usize, status: Option<u32>) {
-        let shutting_down = self.shutdown.is_some_and(|s| matches!(s, Shutdown::Stopping { .. }));
+        let shutting_down = matches!(self.shutdown, Some(Shutdown::Stopping { .. }));
+        let time = now();
         let service = &mut self.services[index];
-        let ran = now().saturating_sub(service.started_ns);
         service.last = status;
         let asked = core::mem::take(&mut service.restarting);
-        let again = !shutting_down
-            && !service.held
-            && (asked
-                || match service.spec.restart {
-                    Restart::Always => true,
-                    Restart::OnFailure => status.is_none_or(failed),
-                    Restart::Never => false,
-                });
-        if !again {
-            service.state = State::Stopped;
+        let unhealthy = core::mem::take(&mut service.unhealthy);
+        let counted = !asked && !service.held && !shutting_down;
+        let finished = counted
+            && status == Some(0)
+            && service.spec.ready.when == ReadyWhen::Ended
+            && service.ready_ns.is_none();
+        let steady = service.ready_ns.is_some_and(|ready| time.saturating_sub(ready) >= STEADY);
+        let failed_start = counted
+            && !finished
+            && (status.is_none()
+                || service.ready_ns.is_none()
+                || unhealthy
+                || status.is_some_and(failed) && !steady);
+        if failed_start {
+            service.failures += 1;
+        } else if steady || finished {
+            service.failures = 0;
+        }
+        if finished {
+            // A setup step: ready, and done, which those that require it
+            // count as ready.
+            service.ready_ns = Some(time);
+            service.set(State::Done);
+            println!("spark: {} is done", service.spec.name);
             return;
         }
-        if status.is_some() && ran >= STEADY {
+        // A restart request is a start, whatever the file says.
+        let restart = asked && !service.held && !shutting_down;
+        let again = restart
+            || counted
+                && match service.spec.restart {
+                    Restart::Always => true,
+                    Restart::OnFailure => failed_start || status.is_none_or(failed),
+                    Restart::Never => false,
+                };
+        if !again {
+            return self.settle_end(index, status);
+        }
+        let give_up = service.spec.give_up_after;
+        if !restart && give_up > 0 && service.failures >= give_up {
+            let last = match (&service.why, status) {
+                (Some(why), _) => why.clone(),
+                (None, Some(status)) => format!("it {}", ending(status)),
+                (None, None) => String::from("it could not start"),
+            };
+            let name = &service.spec.name;
+            println!(
+                "spark: gave up on {name} after {give_up} failed starts in a row (the last: \
+                 {last}); `service {name} start` tries again"
+            );
+            service.why =
+                Some(format!("it failed to start {give_up} times in a row (the last: {last})"));
+            service.set(State::Failed);
+            self.stop_dependents(index);
+            return;
+        }
+        if status.is_some() && !unhealthy && time.saturating_sub(service.started_ns) >= STEADY {
             service.quick = 0;
         }
         let wait = (BACKOFF_FIRST << service.quick.min(20)).min(BACKOFF_MAX);
         service.quick += 1;
         service.restarts += 1;
-        service.state = State::Waiting(now() + wait);
+        service.set(State::Waiting(time + wait));
         println!(
             "spark: starting {} again in {}.{} s",
             service.spec.name,
             wait / SECOND,
             wait % SECOND / (100 * MS)
         );
+    }
+
+    /// Service `index` ended with `status` and is not started again: it
+    /// is stopped, which stops the services that require it. Only a
+    /// service whose `ready.when` is `ended` is done when it ends well.
+    fn settle_end(&mut self, index: usize, status: Option<u32>) {
+        let shutting_down = matches!(self.shutdown, Some(Shutdown::Stopping { .. }));
+        let service = &mut self.services[index];
+        if let Some(status) = status.filter(|&status| failed(status))
+            && service.why.is_none()
+            && !service.held
+        {
+            service.why = Some(format!("it {}", ending(status)));
+        }
+        service.set(State::Stopped);
+        if !shutting_down {
+            self.stop_dependents(index);
+        }
     }
 
     /// Copies what is in `output` to the log, a line at a time, each
@@ -1169,6 +1363,8 @@ impl Supervisor {
         }
     }
 
+    /// Process `pid` ended with `status`: a backup hook, the program
+    /// Spark was asked to run, a health check, or a service.
     fn ended(&mut self, pid: u64, status: u32) {
         if self.hooks.as_ref().and_then(|h| h.running.as_ref()).is_some_and(|r| r.pid == pid) {
             self.hook_ended(status);
@@ -1182,7 +1378,10 @@ impl Supervisor {
             self.note_idle();
             return;
         }
-        let Some(index) = self.services.iter().position(|s| s.state == State::Running(pid)) else {
+        if self.check_ended(pid, status) {
+            return;
+        }
+        let Some(index) = self.services.iter().position(|s| s.state.pid() == Some(pid)) else {
             return;
         };
         let service = &mut self.services[index];
@@ -1198,15 +1397,19 @@ impl Supervisor {
         let cause = if stopped { " (stopped by the out-of-memory policy)" } else { "" };
         println!("spark: {} (process {pid}) {}{cause}", service.spec.name, ending(status));
         service.stop_by = None;
-        if !self.drain(index, status) {
+        // A check of a service that has ended says nothing of it.
+        let checking = service.checks.stop();
+        if !self.drain(index, status, checking) {
             self.schedule(index, Some(status));
         }
     }
 
     /// Service `index`'s process ended with `status`: stops what it left
     /// in its domain, if anything. Returns whether it waits for that to
-    /// end before the service is started again.
-    fn drain(&mut self, index: usize, status: u32) -> bool {
+    /// end before the service is started again. With `checking`, its
+    /// health check was running, and was stopped: what is left may be
+    /// that check alone, so it is not logged as left behind.
+    fn drain(&mut self, index: usize, status: u32, checking: bool) -> bool {
         let service = &mut self.services[index];
         let killed = core::mem::take(&mut service.killed);
         let Some(domain) = service.domain else { return false };
@@ -1214,7 +1417,9 @@ impl Supervisor {
         if threads == 0 {
             return false;
         }
-        if !killed {
+        if checking {
+            let _ = resource_domain::stop(&SYS, domain);
+        } else if !killed {
             let plural = if threads == 1 { "" } else { "s" };
             println!(
                 "spark: {} left {threads} thread{plural} behind; stopping its domain",
@@ -1222,7 +1427,7 @@ impl Supervisor {
             );
             let _ = resource_domain::stop(&SYS, domain);
         }
-        service.state = State::Draining(status, now() + DRAIN_POLL);
+        service.set(State::Draining(status, now() + DRAIN_POLL));
         true
     }
 
@@ -1233,7 +1438,9 @@ impl Supervisor {
         for index in 0..self.services.len() {
             let service = &mut self.services[index];
             match service.state {
-                State::Running(pid) if service.stop_by.is_some_and(|by| by <= time) => {
+                State::Starting(pid) | State::Running(pid)
+                    if service.stop_by.is_some_and(|by| by <= time) =>
+                {
                     service.stop_by = None;
                     println!(
                         "spark: {} did not end in {} s; stopping its domain",
@@ -1277,14 +1484,24 @@ impl Supervisor {
             if let Ok(file) = File::own(slot) {
                 let until = now() + CONNECTION_WAIT;
                 let peer = file_abi::socket_state(&SYS, slot).map_or(0, |state| state.peer);
-                self.connections.push(Connection { file, peer, request: Vec::new(), until });
+                self.connections.push(Connection {
+                    file,
+                    peer,
+                    request: Vec::new(),
+                    until,
+                    answer: None,
+                    written: 0,
+                });
             }
         }
     }
 
     /// Reads what connection `index` sent; once it is a whole line,
-    /// answers it and closes the connection.
+    /// answers it, and closes the connection once the answer is written.
     fn serve(&mut self, index: usize) {
+        if self.connections[index].answer.is_some() {
+            return self.write_answer(index);
+        }
         let mut buffer = [0u8; 256];
         let connection = &mut self.connections[index];
         let done =
@@ -1299,15 +1516,37 @@ impl Supervisor {
         if !done {
             return;
         }
-        let connection = self.connections.remove(index);
         let request = String::from_utf8_lossy(&connection.request).into_owned();
         let request = request.lines().next().unwrap_or("").trim().to_string();
+        let peer = connection.peer;
         if let Some(phase) = request.strip_prefix("hooks ") {
+            let connection = self.connections.remove(index);
             self.begin_hooks(connection.file, phase.trim());
             return;
         }
-        let answer = self.answer(&request, connection.peer);
-        let _ = file_abi::write(&SYS, connection.file.slot(), file_abi::CURRENT, answer.as_bytes());
+        let answer = self.answer(&request, peer);
+        let connection = &mut self.connections[index];
+        connection.answer = Some(answer.into_bytes());
+        connection.until = now() + CONNECTION_WAIT;
+        self.write_answer(index);
+    }
+
+    /// Writes what the socket takes of connection `index`'s answer, and
+    /// closes the connection once all of it is written, or its reader has
+    /// gone.
+    fn write_answer(&mut self, index: usize) {
+        let connection = &mut self.connections[index];
+        let Some(answer) = &connection.answer else { return };
+        while connection.written < answer.len() {
+            let rest = &answer[connection.written..];
+            match file_abi::write(&SYS, connection.file.slot(), file_abi::CURRENT, rest) {
+                Ok(wrote) if wrote.count > 0 => connection.written += wrote.count as usize,
+                // The rest goes once the reader has read some.
+                Err(status) if Kernel::from_status(status) == Some(Kernel::WouldBlock) => return,
+                _ => break,
+            }
+        }
+        self.connections.remove(index);
     }
 
     /// The answer to the control request `request` from process `peer`;
@@ -1349,31 +1588,8 @@ impl Supervisor {
                 Some(Shutdown::Stopping { .. }) => "error: shutting down already\n".into(),
                 None => "error: no shutdown is pending\n".into(),
             },
-            "status" => {
-                let mut text = String::new();
-                for service in &self.services {
-                    let (state, pid) = match service.state {
-                        State::Running(pid) => ("running", pid.to_string()),
-                        State::Waiting(_) => ("waiting", "-".into()),
-                        State::Draining(..) => ("stopping", "-".into()),
-                        State::Stopped if !service.spec.enabled => ("disabled", "-".into()),
-                        State::Stopped => ("stopped", "-".into()),
-                    };
-                    let last = service.last.map_or("-".into(), |s| format!("{s:#x}"));
-                    text.push_str(&format!(
-                        "{}\t{state}\t{pid}\t{}\t{last}\t{}\t{}\n",
-                        service.spec.name,
-                        service.restarts,
-                        service.spec.restart.name(),
-                        service.spec.description
-                    ));
-                }
-                if let Some(Shutdown::Pending { end, at }) = self.shutdown {
-                    let left = at.saturating_sub(now()) / SECOND;
-                    text.push_str(&format!("#\tshutdown\t{}\t{left}\n", end.words()));
-                }
-                text
-            }
+            "status" => self.answer_status(),
+            "show" => self.answer_show(rest.first().copied()),
             "reload" => {
                 let Some(&name) = rest.first() else {
                     return "error: reload needs a service's name\n".into();
@@ -1381,7 +1597,7 @@ impl Supervisor {
                 let Some(service) = self.services.iter().find(|s| s.spec.name == name) else {
                     return format!("error: no service is called {name}\n");
                 };
-                let State::Running(pid) = service.state else {
+                let Some(pid) = service.state.pid() else {
                     return format!("error: {name} is not running\n");
                 };
                 let _ = process::kill(&SYS, SLOT_PROCESS, pid as i64, signal::SIGHUP);
@@ -1392,67 +1608,187 @@ impl Supervisor {
                 let Some(&name) = rest.first() else {
                     return format!("error: {verb} needs a service's name\n");
                 };
+                if matches!(self.shutdown, Some(Shutdown::Stopping { .. })) {
+                    return "error: shutting down\n".into();
+                }
                 // A file added since boot, as `service new` adds one, is
                 // read when its service is first started.
                 let found = match self.services.iter().position(|s| s.spec.name == name) {
                     Some(index) => Ok(index),
-                    None if verb == "start" => self.add(name),
+                    None if verb != "stop" => self.add_linked(name),
                     None => Err(format!("no service is called {name}")),
                 };
                 let index = match found {
                     Ok(index) => index,
                     Err(err) => return format!("error: {err}\n"),
                 };
-                if self.shutdown.is_some_and(|s| matches!(s, Shutdown::Stopping { .. })) {
-                    return "error: shutting down\n".into();
-                }
-                let state = self.services[index].state;
-                if verb != "start"
-                    && let State::Running(pid) = state
-                {
-                    // It ends, and `ended` starts it again unless stopped;
-                    // `step_stops` stops its domain if it does not.
-                    let service = &mut self.services[index];
-                    service.held = verb == "stop";
-                    service.restarting = verb == "restart";
-                    service.quick = 0;
-                    service.stop_by.get_or_insert(now() + STOP_WAIT);
-                    let _ = process::kill(&SYS, SLOT_PROCESS, pid as i64, signal::SIGTERM);
-                    audit!("asked to {verb} {name}, by process {peer}");
-                    return format!("ok: {verb}ping {name}\n");
-                }
-                if let State::Draining(..) = state {
-                    // What it left is ending; then it starts again or not.
-                    let service = &mut self.services[index];
-                    service.held = verb == "stop";
-                    service.restarting = verb != "stop";
-                    audit!("asked to {verb} {name}, by process {peer}");
-                    return match verb {
-                        "stop" => format!("ok: stopping {name}\n"),
-                        _ => format!("ok: {name} starts once what it left has ended\n"),
-                    };
-                }
-                if verb == "stop" {
-                    audit!("asked to stop {name}, by process {peer}");
-                    self.services[index].state = State::Stopped;
-                    self.services[index].held = true;
-                    return format!("ok: {name} is not running\n");
-                }
-                self.services[index].held = false;
-                if matches!(state, State::Running(_)) {
-                    return format!("ok: {name} is running\n");
-                }
-                audit!("asked to start {name}, by process {peer}");
-                self.start(index);
-                let service = &mut self.services[index];
-                match (service.state, service.why.take()) {
-                    (State::Running(pid), _) => format!("ok: started {name} as process {pid}\n"),
-                    (_, Some(why)) => format!("error: could not start {name}: {why}\n"),
-                    _ => format!("error: could not start {name}\n"),
+                audit!("asked to {verb} {name}, by process {peer}");
+                match verb {
+                    "start" => self.answer_start(index),
+                    "stop" => self.answer_stop(index),
+                    _ => self.answer_restart(index),
                 }
             }
             "" => "error: an empty request\n".into(),
             other => format!("error: unknown request `{other}`\n"),
+        }
+    }
+
+    /// The answer to `status`: a line a service, its fields after tabs,
+    /// for scripts (spark(8)); `show` says more.
+    fn answer_status(&self) -> String {
+        let mut text = String::new();
+        for service in &self.services {
+            let (state, pid) = match service.state {
+                State::Running(pid) => ("running", pid.to_string()),
+                State::Starting(pid) => ("waiting", pid.to_string()),
+                State::Pending | State::Waiting(_) => ("waiting", "-".into()),
+                State::Draining(..) => ("stopping", "-".into()),
+                State::Stopped if !service.spec.enabled => ("disabled", "-".into()),
+                State::Stopped | State::Done | State::Failed => ("stopped", "-".into()),
+            };
+            let last = service.last.map_or("-".into(), |s| format!("{s:#x}"));
+            text.push_str(&format!(
+                "{}\t{state}\t{pid}\t{}\t{last}\t{}\t{}\n",
+                service.spec.name,
+                service.restarts,
+                service.spec.restart.name(),
+                service.spec.description
+            ));
+        }
+        if let Some(Shutdown::Pending { end, at }) = self.shutdown {
+            let left = at.saturating_sub(now()) / SECOND;
+            text.push_str(&format!("#\tshutdown\t{}\t{left}\n", end.words()));
+        }
+        text
+    }
+
+    /// Starts service `index` for a request, with what it requires and
+    /// wants; the answer says whether it started, or what it waits for.
+    fn answer_start(&mut self, index: usize) -> String {
+        let service = &mut self.services[index];
+        let name = service.spec.name.clone();
+        let stopping = match service.state {
+            State::Starting(_) | State::Running(_) => service.stop_by.is_some(),
+            State::Draining(..) => true,
+            _ => false,
+        };
+        if stopping {
+            // It starts again once it has ended.
+            service.held = false;
+            service.restarting = true;
+            return format!("ok: {name} starts again once it has stopped\n");
+        }
+        match service.state {
+            State::Running(pid) => return format!("ok: {name} is running as process {pid}\n"),
+            State::Starting(pid) => {
+                return format!("ok: {name} is starting as process {pid}\n");
+            }
+            // A setup step that is done runs again, as it did before
+            // service files could say when a service is ready.
+            State::Stopped
+            | State::Pending
+            | State::Done
+            | State::Waiting(_)
+            | State::Failed
+            | State::Draining(..) => {}
+        }
+        self.want(index, Wanted::Request);
+        self.step_pending();
+        self.started(index)
+    }
+
+    /// What became of a request to start service `index`.
+    fn started(&self, index: usize) -> String {
+        let service = &self.services[index];
+        let name = &service.spec.name;
+        let why = service.why.as_deref().unwrap_or("it ended at once");
+        match service.state {
+            State::Running(pid) => format!("ok: started {name} as process {pid}\n"),
+            State::Starting(pid) => format!(
+                "ok: started {name} as process {pid}; it is ready once {}\n",
+                ready_words(&service.spec.ready.when)
+            ),
+            State::Pending => {
+                let waits = starting::and_list(&service.waiting_for);
+                let verb = if service.waiting_for.len() == 1 { "is" } else { "are" };
+                format!("ok: {name} starts once {waits} {verb} ready\n")
+            }
+            State::Done => format!("ok: {name} ran and is done\n"),
+            State::Waiting(at) => {
+                let wait = at.saturating_sub(now());
+                format!(
+                    "error: could not start {name}: {why}; Spark tries again in {}.{} s\n",
+                    wait / SECOND,
+                    wait % SECOND / (100 * MS)
+                )
+            }
+            State::Stopped | State::Failed | State::Draining(..) => {
+                format!("error: could not start {name}: {why}\n")
+            }
+        }
+    }
+
+    /// Stops service `index` for a request, and those that require it;
+    /// none starts again until asked.
+    fn answer_stop(&mut self, index: usize) -> String {
+        let service = &mut self.services[index];
+        let name = service.spec.name.clone();
+        service.held = true;
+        service.restarting = false;
+        service.why = None;
+        let running = match service.state {
+            State::Starting(pid) | State::Running(pid) => {
+                // It ends, and `ended` leaves it stopped; `step_stops`
+                // stops its domain if it does not.
+                service.quick = 0;
+                service.stop_by.get_or_insert(now() + STOP_WAIT);
+                let _ = process::kill(&SYS, SLOT_PROCESS, pid as i64, signal::SIGTERM);
+                true
+            }
+            // What it left is ending; then it stays stopped.
+            State::Draining(..) => true,
+            State::Stopped => false,
+            State::Pending | State::Waiting(_) | State::Done | State::Failed => {
+                service.set(State::Stopped);
+                false
+            }
+        };
+        let others = self.stop_dependents(index);
+        match (running, others.is_empty()) {
+            (true, _) => format!("ok: stopping {name}{}\n", dependents_words(&others, ", and")),
+            (false, true) => format!("ok: {name} is not running\n"),
+            (false, false) => {
+                format!("ok: {name} is not running{}\n", dependents_words(&others, "; stopping"))
+            }
+        }
+    }
+
+    /// Restarts service `index` for a request: a running one is stopped
+    /// and started again; any other starts as a start request starts it.
+    fn answer_restart(&mut self, index: usize) -> String {
+        let service = &mut self.services[index];
+        let name = service.spec.name.clone();
+        match service.state {
+            State::Starting(pid) | State::Running(pid) => {
+                service.held = false;
+                service.restarting = true;
+                service.quick = 0;
+                service.failures = 0;
+                service.stop_by.get_or_insert(now() + STOP_WAIT);
+                let _ = process::kill(&SYS, SLOT_PROCESS, pid as i64, signal::SIGTERM);
+                format!("ok: restarting {name}\n")
+            }
+            State::Draining(..) => {
+                service.held = false;
+                service.restarting = true;
+                format!("ok: {name} starts again once what it left has ended\n")
+            }
+            State::Stopped | State::Pending | State::Waiting(_) | State::Done | State::Failed => {
+                self.want(index, Wanted::Request);
+                self.step_pending();
+                self.started(index)
+            }
         }
     }
 
@@ -1513,20 +1849,22 @@ impl Supervisor {
         crate::idle()
     }
 
-    /// The highest order among the services that run.
-    fn running_order(&self) -> Option<u32> {
-        self.services
-            .iter()
-            .filter(|s| matches!(s.state, State::Running(_)))
-            .map(|s| s.spec.order)
-            .max()
+    /// The highest stop rank among the services that run: a service's
+    /// rank is above those of the services it names (ADR 0470).
+    fn running_rank(&self) -> Option<u32> {
+        self.services.iter().filter(|s| s.state.pid().is_some()).map(|s| s.rank).max()
     }
 
-    /// Asks the services of `order` to end.
-    fn terminate(&mut self, order: u32) {
+    /// Whether service `service` runs, with a stop rank of `rank` or above.
+    fn runs_from(service: &Service, rank: u32) -> bool {
+        service.state.pid().is_some() && service.rank >= rank
+    }
+
+    /// Asks the services of stop rank `rank` to end.
+    fn terminate(&mut self, rank: u32) {
         for service in &self.services {
-            if let State::Running(pid) = service.state
-                && service.spec.order == order
+            if let Some(pid) = service.state.pid()
+                && service.rank == rank
             {
                 let _ = process::kill(&SYS, SLOT_PROCESS, pid as i64, signal::SIGTERM);
             }
@@ -1539,15 +1877,15 @@ impl Supervisor {
         let time = now();
         match self.shutdown {
             Some(Shutdown::Pending { end, at }) if at <= time => {
-                let running = self.services.iter().filter(|s| matches!(s.state, State::Running(_)));
+                let running = self.services.iter().filter(|s| s.state.pid().is_some());
                 println!(
                     "spark: shutting down to {}: stopping {} services",
                     end.words(),
                     running.count()
                 );
                 for service in &mut self.services {
-                    if let State::Waiting(_) = service.state {
-                        service.state = State::Stopped;
+                    if matches!(service.state, State::Waiting(_) | State::Pending) {
+                        service.set(State::Stopped);
                     }
                 }
                 if let Some(program) = &self.program {
@@ -1556,12 +1894,8 @@ impl Supervisor {
                 }
                 self.next_group(end, time);
             }
-            Some(Shutdown::Stopping { end, order, deadline, killed }) => {
-                let left = self
-                    .services
-                    .iter()
-                    .any(|s| matches!(s.state, State::Running(_)) && s.spec.order >= order);
-                if !left {
+            Some(Shutdown::Stopping { end, rank, deadline, killed }) => {
+                if !self.services.iter().any(|s| Self::runs_from(s, rank)) {
                     return self.next_group(end, time);
                 }
                 if deadline > time {
@@ -1570,30 +1904,24 @@ impl Supervisor {
                 if killed {
                     // They are as good as gone.
                     for service in &mut self.services {
-                        if matches!(service.state, State::Running(_)) && service.spec.order >= order
-                        {
-                            service.state = State::Stopped;
+                        if Self::runs_from(service, rank) {
+                            service.set(State::Stopped);
                         }
                     }
                     return self.next_group(end, time);
                 }
-                for service in &self.services {
-                    if matches!(service.state, State::Running(_))
-                        && service.spec.order >= order
+                for service in &mut self.services {
+                    if Self::runs_from(service, rank)
                         && let Some(domain) = service.domain
                     {
                         println!("spark: {} did not end; stopping its domain", service.spec.name);
                         let _ = resource_domain::stop(&SYS, domain);
-                    }
-                }
-                for service in &mut self.services {
-                    if matches!(service.state, State::Running(_)) && service.spec.order >= order {
                         service.killed = true;
                     }
                 }
                 self.shutdown = Some(Shutdown::Stopping {
                     end,
-                    order,
+                    rank,
                     deadline: time + KILL_WAIT,
                     killed: true,
                 });
@@ -1605,12 +1933,12 @@ impl Supervisor {
     /// Stops the next group of services, or once none runs, what their
     /// processes left behind, and ends the machine.
     fn next_group(&mut self, end: End, time: u64) {
-        match self.running_order() {
-            Some(order) => {
-                self.terminate(order);
+        match self.running_rank() {
+            Some(rank) => {
+                self.terminate(rank);
                 self.shutdown = Some(Shutdown::Stopping {
                     end,
-                    order,
+                    rank,
                     deadline: time + STOP_WAIT,
                     killed: false,
                 });
@@ -1627,14 +1955,12 @@ impl Supervisor {
         }
     }
 
-    /// When the loop must look again without a wake-up: the next restart
-    /// or shutdown step, or the watchdog's next pet.
+    /// When the loop must look again without a wake-up: the next restart,
+    /// readiness look, health check or shutdown step, or the watchdog's
+    /// next pet.
     fn deadline(&self) -> Option<u64> {
-        let restarts = self.services.iter().filter_map(|s| match s.state {
-            State::Waiting(at) | State::Draining(_, at) => Some(at),
-            State::Running(_) => s.stop_by,
-            State::Stopped => None,
-        });
+        let time = now();
+        let restarts = self.services.iter().filter_map(|s| s.next_look(time));
         let shutdown = match self.shutdown {
             Some(Shutdown::Pending { at, .. }) => Some(at),
             Some(Shutdown::Stopping { deadline, .. }) => Some(deadline),
@@ -1774,42 +2100,49 @@ impl Supervisor {
         self.start_watchdog();
         loop {
             // The children's notification, the power button's, the host's
-            // restarts', the control socket, the connections, the services' outputs and
-            // the program's terminal, in that order.
+            // restarts', the control socket, the connections, the services'
+            // outputs, their health checks' and the program's terminal, in
+            // that order.
             let mut entries: Vec<(PollEntry, Source)> = Vec::new();
             let readable = PollEvents::READABLE.0 as u16;
-            let mut add = |slot: u32, source: Source| {
-                entries.push((PollEntry { fd: slot as i32, events: readable, found: 0 }, source));
+            let writable = PollEvents::WRITABLE.0 as u16;
+            let mut add = |slot: u32, events: u16, source: Source| {
+                entries.push((PollEntry { fd: slot as i32, events, found: 0 }, source));
             };
             if let Some(slot) = self.children {
-                add(slot, Source::Children);
+                add(slot, readable, Source::Children);
             }
             if let Some(slot) = self.button {
-                add(slot, Source::Button);
+                add(slot, readable, Source::Button);
             }
             if let Some(slot) = self.restart {
-                add(slot, Source::Restart);
+                add(slot, readable, Source::Restart);
             }
             if let Some(listener) = &self.listener {
-                add(listener.slot(), Source::Listener);
+                add(listener.slot(), readable, Source::Listener);
             }
             for (i, connection) in self.connections.iter().enumerate() {
-                add(connection.file.slot(), Source::Connection(i));
+                // Its request, or room for the rest of its answer.
+                let events = if connection.answer.is_some() { writable } else { readable };
+                add(connection.file.slot(), events, Source::Connection(i));
             }
             for (i, service) in self.services.iter().enumerate() {
                 if let Some(output) = &service.output {
-                    add(output.slot(), Source::Output(i));
+                    add(output.slot(), readable, Source::Output(i));
+                }
+                if let Some(output) = service.checks.output() {
+                    add(output.slot(), readable, Source::Check(i));
                 }
             }
             if let Some(program) = &self.program
                 && !program.hung_up
             {
-                add(program.master.slot(), Source::Program);
+                add(program.master.slot(), readable, Source::Program);
             }
             if let Some(output) =
                 self.hooks.as_ref().and_then(|h| h.running.as_ref()).and_then(|r| r.output.as_ref())
             {
-                add(output.slot(), Source::Hook);
+                add(output.slot(), readable, Source::Hook);
             }
             let mut polled: Vec<PollEntry> = entries.iter().map(|(entry, _)| *entry).collect();
             let (timeout, flags) = match self.deadline() {
@@ -1862,6 +2195,7 @@ impl Supervisor {
                                 }
                             }
                         }
+                        Source::Check(i) => self.services[i].checks.read_output(),
                         Source::Hook => self.hook_output(),
                         Source::Program => {
                             if let Some(program) = &mut self.program {
@@ -1881,13 +2215,19 @@ impl Supervisor {
             self.connections.retain(|c| c.until > time);
             self.step_stops(time);
             self.step_hook(time);
+            self.step_ready(time);
+            self.step_health(time);
             for index in 0..self.services.len() {
                 if let State::Waiting(at) = self.services[index].state
                     && at <= time
                 {
-                    self.start(index);
+                    // It starts again once what it names is ready, as its
+                    // file says now.
+                    self.reread(index);
+                    self.services[index].set(State::Pending);
                 }
             }
+            self.step_pending();
             self.step_shutdown();
             self.pet_watchdog(time);
         }
@@ -1903,8 +2243,31 @@ enum Source {
     Listener,
     Connection(usize),
     Output(usize),
+    Check(usize),
     Hook,
     Program,
+}
+
+/// When a service whose `ready.when` is `when` is ready, as a clause.
+fn ready_words(when: &ReadyWhen) -> String {
+    match when {
+        ReadyWhen::Started => String::from("started"),
+        ReadyWhen::Listening(Some(port)) => format!("it listens on port {port}"),
+        ReadyWhen::Listening(None) => String::from("it listens on its ports"),
+        ReadyWhen::Socket(path) => format!("{path} is there"),
+        ReadyWhen::Healthy => String::from("its health check passes"),
+        ReadyWhen::Ended => String::from("it has ended"),
+    }
+}
+
+/// The services a stop stopped with the one asked for, `names`, after
+/// `lead`: ", and web, which requires it"; nothing if there are none.
+fn dependents_words(names: &[String], lead: &str) -> String {
+    match names {
+        [] => String::new(),
+        [one] => format!("{lead} {one}, which requires it"),
+        more => format!("{lead} {}, which depend on it", starting::and_list(more)),
+    }
 }
 
 /// Logs `line` after `name: `, unless it starts with that, and empties it.

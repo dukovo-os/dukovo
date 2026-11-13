@@ -1,0 +1,50 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# A fault test of health checks (ADR 0470): a service whose health check
+# fails is restarted after two failed checks, and Spark gives up on it
+# after two failed starts in a row; `service status` says so and why.
+# Once fixed, `service start` brings it back, healthy.
+about = "a service that keeps failing its health check is restarted until Spark gives up on it, and status says why; fixed, a start brings it back healthy (ADR 0470)"
+time = "3m"
+host_needs = ["scp"]
+
+[[step]]
+host = "sh {here}/copy-file.sh {here}/lab-sick.service {machine} {machine-port:22}"
+expect = "copied: lab-sick.service"
+[[step]]
+run = "sh -c 'rm -f /system/settings/lab-sick-ok; cp /users/lab/lab-sick.service /system/settings/spark/services/lab-sick.toml && service lab-sick start && echo started'"
+root = true
+expect = "started"
+# Two failed checks, two seconds apart, a restart, and the same again.
+[[step]]
+wait = "20s"
+[[step]]
+run = "service lab-sick status"
+root = true
+exit = 3
+expect = [
+    "Active: failed (Spark gave up on it)",
+    "Why: it failed to start 2 times in a row",
+    "Health: failing, 2 checks in a row (exited with code 0x1: not fixed)",
+    "gives up after 2 failed starts in a row",
+]
+[[step]]
+# The pattern's brackets keep the log's line of this command out.
+run = "sh -c 'log | grep -c \"[s]park: lab-sick failed its health check 2 times in a row; restarting it\"'"
+root = true
+expect = "2"
+[[step]]
+run = "sh -c 'touch /system/settings/lab-sick-ok && service lab-sick start && echo started'"
+root = true
+expect = "started"
+[[step]]
+wait = "5s"
+[[step]]
+run = "service lab-sick status"
+root = true
+expect = ["Active: active (running)", "Health: passing"]
+[[step]]
+run = "sh -c 'service lab-sick stop; rm /system/settings/spark/services/lab-sick.toml /system/settings/lab-sick-ok /users/lab/lab-sick.service; echo cleaned'"
+root = true
+expect = "cleaned"

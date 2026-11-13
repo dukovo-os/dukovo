@@ -52,6 +52,11 @@ pub const STARTUP_PATH: &str = "/boot/startup";
 /// installed system's root and runs everything else from it.
 pub const STARTUP_PROGRAM: &str = "system/commands/spark";
 
+/// The Cargo profile a release builds Spark with (userspace/Cargo.toml):
+/// for size, so that the startup archive, Spark alone, keeps inside its
+/// budget (ADR 0427).
+const SPARK_PROFILE: &str = "spark";
+
 /// What the boot archive holds: each program's path in it, and its
 /// package.
 pub const ARCHIVE: &[(&str, &str)] = &[
@@ -417,6 +422,7 @@ pub const HOST_TESTED: &[&str] = &[
     "slots",
     "smb",
     "smbd",
+    "spark-api",
     "system-release",
     "systools",
     "tuf",
@@ -567,7 +573,9 @@ pub fn build(ctx: &Ctx, profile: Profile) -> Result<Programs> {
     let mut cmd = cargo(ctx, "build");
     cmd.args(["-p", "usertests"]);
     for (_, package) in ARCHIVE {
-        cmd.args(["-p", package]);
+        if profile == Profile::Debug || *package != "spark" {
+            cmd.args(["-p", package]);
+        }
     }
     cmd.args(target_args(ctx));
     if profile == Profile::Release {
@@ -575,6 +583,16 @@ pub fn build(ctx: &Ctx, profile: Profile) -> Result<Programs> {
     }
     process::run(ctx, &mut cmd)?;
     let built = ctx.target.join("userspace").join(TARGET_NAME).join(profile.dir());
+    let spark = match profile {
+        Profile::Debug => built.join("spark"),
+        Profile::Release => {
+            let mut cmd = cargo(ctx, "build");
+            cmd.args(["-p", "spark", "--profile", SPARK_PROFILE]);
+            cmd.args(target_args(ctx));
+            process::run(ctx, &mut cmd)?;
+            ctx.target.join("userspace").join(TARGET_NAME).join(SPARK_PROFILE).join("spark")
+        }
+    };
     let installed = installed(ctx);
     if let Some(parent) = installed.parent() {
         process::create_dir(parent)?;
@@ -590,7 +608,8 @@ pub fn build(ctx: &Ctx, profile: Profile) -> Result<Programs> {
     ));
     let bootfs = ctx.out.join("sysroot").join(BOOTFS_PATH.trim_start_matches('/'));
     for (path, package) in ARCHIVE {
-        files.push((path.to_string(), built.join(package)));
+        let file = if *package == "spark" { spark.clone() } else { built.join(package) };
+        files.push((path.to_string(), file));
     }
     crate::manuals::install(ctx, &mut files)?;
     // GRUB's images, which rgrub-setup(8) puts on disks (ADR 0306).
@@ -628,7 +647,7 @@ pub fn build(ctx: &Ctx, profile: Profile) -> Result<Programs> {
         archive.len() / 1024
     ));
     let startup = ctx.out.join("sysroot").join(STARTUP_PATH.trim_start_matches('/'));
-    let archive = write_startup_archive(&built.join("spark"), epoch)?;
+    let archive = write_startup_archive(&spark, epoch)?;
     std::fs::write(&startup, &archive).context(|| format!("writing {}", startup.display()))?;
     step(&format!(
         "Startup archive written to {} ({} KiB)",

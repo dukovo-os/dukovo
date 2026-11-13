@@ -593,6 +593,19 @@ _target/userspace/_).
 		process in its domain, which Spark stops; _driver_ makes the
 		requests and powers the machine off (*spark*(8)).
 
+	*service-graph*
+		Boot 2 CPUs with the default services and
+		_/system/tests/posix/graphtest_, which writes services that
+		name each other in *requires* and *after* and checks what
+		*service status* says of them (ADR 0470): one that requires
+		another waits until that one listens; one whose requirement
+		ends, or is stopped by a request, is stopped, saying why; one that keeps failing its health
+		check is restarted until Spark gives up on it, and starts again
+		once fixed; two that wait for each other never start; and a
+		setup step is done before what requires it starts. Powering off
+		must then stop a service before the one it requires
+		(*service.toml*(5)).
+
 	*logging*
 		Boot 2 CPUs with the default services (Spark's *--services*) and
 		_/system/tests/posix/logtest_, which writes lines to the kernel

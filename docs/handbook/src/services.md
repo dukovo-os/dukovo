@@ -52,6 +52,69 @@ written beside it as `NAME.default`, to compare and take over by hand.
 `elevate bundle remove --for-everyone ID` stops and removes the services
 and keeps their accounts and data; `--purge` removes those too.
 
+## Services that wait for each other
+
+A service can name the services it needs, say when it is ready to be
+used, and have Spark check its health. A bundle's manifest says so for
+its own services, and an administrator writes it into a service file of
+their own with `service_version = 2` (service.toml(5) has every key):
+
+```toml
+service_version = 2
+description = "Shop"
+program = "/applications/commands/shop"
+requires = ["postgres"]
+after = ["netd"]
+give_up_after = 5
+
+[ready]
+when = "listening"
+port = 8080
+
+[health]
+command = ["/system/commands/curl", "-fsS", "-o", "/dev/null", "http://localhost:8080/health"]
+every = 30
+```
+
+| Key | What it does |
+| --- | --- |
+| `requires` | Starts those services first, and this one only once they are ready; if one stops for good, this one stops too |
+| `wants` | Starts those services first, and this one once they are ready or have stopped |
+| `after` | Waits for those services when they are starting too, without starting them |
+| `ready.when` | `started`, `listening` (on `ready.port`), `socket` (once `ready.path` is made), `healthy` (once the check passes) or `ended` (a setup step) |
+| `ready.timeout` | Seconds it has to get ready, 90 unless set; past them its start has failed |
+| `health.command` | A check run as the service runs, every `health.every` seconds; `health.failures` failures in a row restart it |
+| `give_up_after` | Failed starts in a row after which Spark stops trying, until `service NAME start` |
+
+`service NAME start` starts what the service requires and wants first,
+and fails with the reason when one it requires cannot start.
+`service NAME status` says what it waits for, why it is not running,
+what it needs and what started it:
+
+```
+$ service shop status
+shop - Shop
+   Active: activating (waiting for postgres)
+    Needs: requires postgres; after netd
+  Started: by a request
+  Restart: on-failure, 0 restarts so far; gives up after 5 failed starts in a row
+```
+
+Stopping a service stops those that require it. When Spark gives up on
+a service, or a service it requires stops, the reason is in `status`'s
+`Why` line and in the log:
+
+```
+$ elevate log | grep 'spark: .*shop'
+spark: stopping shop: it requires postgres, which Spark gave up on
+```
+
+Restarting a service leaves those that require it running: they
+reconnect. Shutting down stops a service before those it needs.
+
+The system's own services keep their start order by `order` in this
+release; their files move to version 2 in the release after it.
+
 ## The web server: nginx
 
 nginx serves websites and passes requests on to other servers. Install
@@ -73,6 +136,16 @@ $ elevate cp -R mysite/. /shared/www/
 
 `/shared/www/index.html` is then the home page. Files are served as they
 are; a new file needs no reload.
+
+nginx starts after the network and the resolver, since it looks up the
+names in its `proxy_pass` lines as it starts, and Spark counts it ready
+once it listens, so a service of yours that requires it starts only
+then:
+
+```
+$ elevate log | grep 'nginx is ready'
+spark: nginx is ready (listening) 0.3 s after its start
+```
 
 ### Its settings
 

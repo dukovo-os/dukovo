@@ -297,6 +297,15 @@ dependencies = [
  "radix-bitlocker",
  "radix-rt",
  "slots",
+ "spark-api",
+]
+
+[[package]]
+name = "spark-api"
+version = "0.15.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

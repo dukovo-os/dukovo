@@ -40,7 +40,6 @@ list is kept current instead.
 | The catalog's first signed batch and deploy (`./ob catalog sign`, then `./ob catalog deploy`; ADR 0381) | The first root is signed and every image trusts it, but the server serves no bundles until a batch is signed; signing packs every port, a long build | A maintainer, before the first public release |
 | Canary machines for updates | Phase 15 uses QEMU canaries in CI; real canaries are wanted before the first public release | Before 1.0.0-alpha.1 |
 | Post-Phase-13 code audit (audit 10) | Planned and scoped; starts only on approval | Decision |
-| Phase 16 (server platform and web console) | Plan approved; starts once Phase 15 is complete, on approval | Phase 15, then a decision |
 | System releases signed on the two hardware keys: the system's TUF root (`releases/metadata/1.root.json`, naming the update server's online key that `./ob release server setup` writes to `releases/keys/online.json`), `ob release sign` with its gates and a third build that must match CI's two, the Rekor record, `ob keys ceremony` and the key runbooks (ADRs 0450, 0457, 0467) | Phase 15 signs with each build machine's own keys and tests against a local update server; `ob release deploy` deploys nothing until that root exists | Before 1.0.0-alpha.1 |
 | The security-fix process: the release branch and its bots, the advisories feed, and the daily SBOM scan against OSV and NVD (ADR 0458) | Needed once there are releases to fix | Before 1.0.0-alpha.1 |
 | The full update test matrix on a self-hosted runner: power-cut replay with QEMU's blklogwrites, upgrade paths from 12 months back, Kani on the slot-state reader, fuzzing of release lists and TUF metadata (ADR 0450) | Each needs many VM starts or tooling of its own; `update-power-cut` cuts one stage at one point meanwhile | Before 1.0.0-alpha.1 |
@@ -179,7 +178,9 @@ machine with AMT, an AMD machine and a laptop; see
 
 | Item | Why it waits | Waits on |
 | --- | --- | --- |
-| Service dependencies, readiness, health checks and timers; Spark orders services by `order` alone today (ADR 0101, ADR 0216) | Production service management | 16a |
+| Timers: a service started at set times or intervals (ADR 0216) | Production service management; dependencies, readiness and health checks came first (ADR 0470) | 16a |
+| The system's own service files using service_version 2's keys: `requires`, `wants`, `after`, `[ready]` and `[health]` for the system's services, and `service new`'s template writing version 2 (ADR 0470) | A release writes only what the one before it reads (ADR 0454), and 0.15 reads service_version 1 alone; the system's services start by `order` meanwhile, as before | The release after 1.0.0-alpha.1 |
+| bundled refusing a bundle whose `requires_os` is newer than the system, with a message to update (ADR 0470) | `requires_os` is informational; a bundle whose service uses version 2's keys says 1.0, and alpha.1 is the first release any machine runs | Before the first release after 1.0.0-alpha.1 |
 | A user's jobs that run while they are signed out (ADR 0220) | Needs jobs | 16a |
 | Sockets a bundle offers to others, and starting a service at its first connection (ADRs 0385, 0386) | Socket activation | 16a |
 | `service status` listing what a service holds; volumed and diskhealth given disks one by one; `/processes` showing a service or session only its own processes (ADRs 0215, 0217) | Finer views for services | 16a |
@@ -193,7 +194,6 @@ machine with AMT, an AMD machine and a laptop; see
 | A local time server, and netd's DHCP server (ADR 0194) | Server roles | 16b |
 | elevate in the web console, with comments kept by its settings editor (ADRs 0216, 0219) | Dukovo Admin | 16c |
 | A certificate from certd for nginx's sites and for the lab test `services/nginx`, which makes one with openssl meanwhile (ADR 0491) | certd comes with Phase 16 | Phase 16's certd |
-| The services a bundle's service needs started first, and its readiness: nginx's manifest names none (ADR 0491) | Manifests get dependency lines with the service graph | 16a |
 | Spark setting a service's `open_files` (RLIMIT_NOFILE); nginx raises its own to the hard limit, 4096, meanwhile (ADRs 0385, 0491) | Service limits | 16a |
 | A service's own log files, turned over: nginx logs to the system's log, and an `access_log` to a file of its own is never turned over (ADR 0491) | Needs timers | 16a |
 

@@ -41,9 +41,10 @@ use alloc::vec::Vec;
 use libradix::abi::capability::Rights;
 use libradix::abi::errors::File as FileError;
 use libradix::abi::resource_domain::OomClass;
-use manifest::service::{self, OVERRIDES, Oom, Override, PciId, Place};
+use manifest::service::{self, Health, OVERRIDES, Oom, Override, PciId, Place, Ready};
 use radix_rt::fs::Dir;
 use radix_rt::println;
+use spark_api::graph::Link;
 
 pub use manifest::service::{Restart, check_name};
 
@@ -105,6 +106,17 @@ pub struct Spec {
     pub hook_before: Vec<String>,
     pub hook_after: Vec<String>,
     pub hook_seconds: u64,
+    /// The services it requires, wants and starts after (ADR 0470).
+    pub requires: Vec<String>,
+    pub wants: Vec<String>,
+    pub after: Vec<String>,
+    /// The failed starts in a row after which Spark stops trying; 0 for
+    /// never.
+    pub give_up_after: u32,
+    /// When it is ready, and how long it has to get there.
+    pub ready: Ready,
+    /// Its health check, if it has one.
+    pub health: Option<Health>,
 }
 
 impl Spec {
@@ -114,12 +126,22 @@ impl Spec {
     pub fn network_grants(&self) -> usize {
         usize::from(self.outbound) + self.listen.len() + usize::from(self.configure)
     }
+
+    /// The services its file names, each with how: what the service
+    /// graph goes by.
+    pub fn links(&self) -> Vec<(String, Link)> {
+        let requires = self.requires.iter().map(|name| (name.clone(), Link::Requires));
+        let wants = self.wants.iter().map(|name| (name.clone(), Link::Wants));
+        let after = self.after.iter().map(|name| (name.clone(), Link::After));
+        requires.chain(wants).chain(after).collect()
+    }
 }
 
 /// Reads the service file `name`.toml with `text`.
 pub fn parse(name: &str, text: &str, over: Option<&Override>) -> Result<Spec, String> {
     check_name(name)?;
     let file = service::from_toml_over(text, over).map_err(|err| err.to_string())?;
+    file.check_links(name)?;
     let network = &file.permissions.network;
     Ok(Spec {
         name: name.to_string(),
@@ -156,6 +178,12 @@ pub fn parse(name: &str, text: &str, over: Option<&Override>) -> Result<Spec, St
         hook_before: file.backup.before,
         hook_after: file.backup.after,
         hook_seconds: u64::from(file.backup.time_limit),
+        requires: file.requires,
+        wants: file.wants,
+        after: file.after,
+        give_up_after: file.give_up_after,
+        ready: file.ready,
+        health: file.health,
     })
 }
 

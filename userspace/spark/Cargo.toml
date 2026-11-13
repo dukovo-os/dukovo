@@ -19,6 +19,9 @@ bench = false
 libradix = { path = "../libradix" }
 # Service files, read as the service command reads them (ADR 0216).
 manifest = { path = "../programs/manifest" }
+# The service graph's rules and the show answer's format, shared with
+# the programs that ask Spark about services (ADR 0470).
+spark-api = { path = "../programs/spark-api" }
 # To name a locked BitLocker volume (ADR 0240): its format only.
 radix-bitlocker = { path = "../../kernel/fs/bitlocker" }
 radix-rt = { path = "../radix-rt" }

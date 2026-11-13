@@ -56,6 +56,7 @@ use std::time::{Duration, Instant, SystemTime};
 use accounts::request::{Choice, Question};
 use manifest::bundle::permissions::{self, Tier};
 use manifest::bundle::{Manifest, Need, Request as Asked, RunsWith};
+use spark_api::show;
 
 use crate::args::Args;
 use crate::bundles::catalogs::{self, Catalog};
@@ -825,17 +826,16 @@ const STOP_TIME: Duration = Duration::from_secs(15);
 /// checks (ADR 0386).
 const HEALTH_TIME: Duration = Duration::from_secs(60);
 
-/// What Spark says each of `names` is doing: running, waiting, stopping,
-/// stopped or disabled; nothing for one it does not know.
-fn service_states(names: &[String]) -> Vec<(String, String)> {
-    let Ok(answer) = crate::power::request("status") else { return Vec::new() };
-    answer
-        .lines()
-        .filter_map(|line| {
-            let mut fields = line.split('\t');
-            let (name, state) = (fields.next()?, fields.next()?);
-            names.iter().any(|n| n == name).then(|| (name.to_string(), state.to_string()))
-        })
+/// What Spark says each of `names` is doing; nothing for one it does not
+/// know.
+fn service_states(names: &[String]) -> Vec<(String, show::State)> {
+    let Ok(answer) = crate::power::request("show") else { return Vec::new() };
+    let Ok(document) = show::parse(&answer) else { return Vec::new() };
+    document
+        .services
+        .into_iter()
+        .filter(|service| names.contains(&service.name))
+        .map(|service| (service.name, service.state))
         .collect()
 }
 
@@ -854,7 +854,15 @@ fn stop_services(names: &[String]) -> Option<String> {
         let states = service_states(names);
         let running: Vec<&str> = states
             .iter()
-            .filter(|(_, state)| !matches!(state.as_str(), "stopped" | "disabled"))
+            .filter(|(_, state)| {
+                !matches!(
+                    state,
+                    show::State::Stopped
+                        | show::State::Disabled
+                        | show::State::Done
+                        | show::State::Failed
+                )
+            })
             .map(|(name, _)| name.as_str())
             .collect();
         if running.is_empty() {
@@ -979,11 +987,11 @@ fn run_services(manifest: &Manifest, old: Option<&Manifest>) -> Ran {
 fn health(manifest: &Manifest, started: &[String]) -> Result<(), String> {
     let deadline = Instant::now() + HEALTH_TIME;
     for service in &manifest.services {
-        let (Some(check), true) = (&service.health, started.contains(&service.name.0)) else {
+        let check = service.health.as_ref().and_then(|health| health.socket.as_ref());
+        let (Some(check), true) = (check, started.contains(&service.name.0)) else {
             continue;
         };
-        let socket =
-            format!("{}/{}", services::live_folder(&services::account(service)), check.socket);
+        let socket = format!("{}/{}", services::live_folder(&services::account(service)), check);
         loop {
             if UnixStream::connect(&socket).is_ok() {
                 break;

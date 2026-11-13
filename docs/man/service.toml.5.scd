@@ -43,11 +43,14 @@ wrong in plain words:
 
 # SETTINGS
 
-*service_version* = _1_
+*service_version* = _1_ | _2_
 	The version of this format the file was written for; every file has
 	it. A later Dukovo reads every earlier version. A file for a version
 	newer than this Dukovo knows is refused, with a message to update
-	Dukovo.
+	Dukovo. Version 2, which Dukovo 1.0 and later read, adds *requires*,
+	*wants*, *after*, *give_up_after*, *[ready]* and *[health]*; a
+	version 1 file with one of them is refused with that fix. A file
+	that uses none of them may stay version 1, which every Dukovo reads.
 
 *description* = _"text"_
 	What it is, in a few words, for *service status*.
@@ -64,9 +67,14 @@ wrong in plain words:
 	name holds no *=*. Spark passes them in the order of their names.
 
 *order* = _number_
-	When it starts: lower first, 50 unless set. Shutting down stops the
-	highest first, so the services that others need want a low one. The
-	system's own take 5 to 50.
+	When it starts among those ready to start at once: lower first, 50
+	unless set. Shutting down stops the highest first, and a service
+	before those it requires, wants or starts after whatever their
+	*order*, so the services that others need want a low one. The
+	system's own take 5 to 50. A service that must wait for another
+	says so with *requires*, *wants* or *after*, which *order* alone
+	does not: one with a lower *order* is started first but not waited
+	for.
 
 *enabled* = *true* | *false*
 	Whether Spark starts it at boot; *true* unless set. *service* _name_
@@ -75,7 +83,84 @@ wrong in plain words:
 *restart* = *"always"* | *"on-failure"* | *"never"*
 	When it is started again after it ends: whatever its end (the
 	default), only after an exit code other than 0 or a signal, or not
-	at all.
+	at all. A start that failed (see STARTING AND READINESS) counts as a
+	failure, whatever its status. Spark waits 0.1 s before the first
+	start again, doubling each time up to 30 s while it keeps ending
+	within 10 s.
+
+*requires* = [_"service"_, ...]
+	The services it requires, by name: each is started first, and this
+	one starts only once each is ready. One that is stopped, that Spark
+	gave up on, that has no file, or that Rescue or a start with only
+	the essentials leaves off keeps it from starting; and when one
+	stops for good, Spark stops this one too (see STARTING AND
+	READINESS). None unless set; version 2.
+
+*wants* = [_"service"_, ...]
+	The services it wants: each is started first, and this one waits
+	until each is ready or has stopped, then starts whether or not they
+	run. None unless set; version 2.
+
+*after* = [_"service"_, ...]
+	The services it starts after: when one of them is starting too,
+	this one waits until it is ready or has stopped. They are not
+	started for it. None unless set; version 2.
+
+	The three lists name at most 32 services each, none twice across
+	them and never the service itself; *requires* and *wants* include
+	*after*.
+
+*give_up_after* = _number_
+	The failed starts in a row after which Spark stops starting it
+	again and marks it failed, 1 to 1000; 0, the default, for never
+	(see GIVING UP). Version 2.
+
+*ready*
+	A table of when it is ready, for the services that wait for it, and
+	how long it has to get there; version 2. Its keys:
+
+	*ready.when* = *"started"* | *"listening"* | *"socket"* | *"healthy"* | *"ended"*
+		What makes it ready: its process running (the default); a
+		socket listening on *ready.port*, or on any port of
+		*network.listen*; a socket at *ready.path* made since it
+		started; its health check passing for the first time; or its
+		process ending with status 0, for a setup step that others
+		need done first.
+
+	*ready.port* = _port_
+		For *"listening"*: the port, one of *network.listen*'s.
+
+	*ready.path* = _"path"_
+		For *"socket"*, which needs it: the socket's absolute path,
+		such as _/system/live/services/web/web.sock_.
+
+	*ready.timeout* = _seconds_
+		How long it has from its start to get ready, 1 to 3600: 90
+		unless set. Past it, the start has failed, and Spark stops it.
+
+*health*
+	A table of its health check: a command Spark runs every so often
+	while it runs, which passes by exiting with 0 in time (see HEALTH
+	CHECKS); version 2. Its keys:
+
+	*health.command* = [_"program"_, _"argument"_, ...]
+		The program's absolute path and its arguments. Every *[health]*
+		has it.
+
+	*health.every* = _seconds_
+		Seconds from the end of one check to the start of the next, 1
+		to 86400: 30 unless set.
+
+	*health.timeout* = _seconds_
+		How long a check may take before Spark stops it and it fails,
+		1 to *health.every*: 10 unless set.
+
+	*health.failures* = _number_
+		Failed checks in a row after which Spark restarts the service,
+		1 to 100: 3 unless set.
+
+	A dotted name is a key of a table, so *ready.when = "listening"* at
+	the top of the file is *when = "listening"* under *[ready]*.
 
 *account* = _"name"_
 	The account it runs as, from _/system/settings/passwd_; root's
@@ -247,6 +332,113 @@ wrong in plain words:
 	before = ["/system/commands/psql", "-c", "CHECKPOINT"]
 	```
 
+# STARTING AND READINESS
+
+At boot, Spark wants every service that is turned on (*enabled*), and
+*service* _name_ *start* wants one; a wanted service wants those it
+requires and wants, whether turned on or not, and so on along them.
+Rescue and a start with only the essentials leave theirs off still. Each
+wanted service waits until those it names are settled, and starts once
+it may:
+
+[[ *The other service is*
+:- *requires*
+:- *wants* or *after*
+|  ready, or a setup step that is done
+:  starts
+:  starts
+|  starting, or waiting to start
+:  waits
+:  waits
+|  stopped, failed, off, or without a file
+:  does not start
+:  starts
+
+Among the services that may start at once, the lower *order*, then the
+name, goes first. A service is starting from its start until it is
+ready, as *ready.when* says, and *service status* says what it is
+waiting for:
+
+```
+   Active: activating (waiting for postgres)
+```
+
+A service that does not start says why in the log and in *service
+status*, as does one stopped because a service it requires stopped for
+good:
+
+```
+spark: not starting web: it requires postgres, which Spark gave up on
+spark: stopping web: it requires postgres, which was stopped
+```
+
+Stopping a service by hand stops those that require it; starting it
+again does not start them, but starting one of them starts it.
+Restarting a service, or Spark starting it again after it ended, leaves
+those that require it running: they reconnect, as a client of any
+service must.
+
+A start has failed when the program cannot be started, when it ends
+before it is ready, when it is not ready in *ready.timeout*, when its
+health check restarts it, or when it fails within 10 s of getting ready.
+Spark stops a service that is not ready in time as *service stop* would,
+and logs what it was waiting for:
+
+```
+spark: web did not get ready in 90 s: nothing listened on port 8080; stopping it
+```
+
+*"listening"* reads the sockets of _/processes/net/tcp_ and
+_/processes/net/tcp6_, which do not name their process, so it counts a
+socket on the port whoever listens; a port of the service's own file is
+one only the service may listen on, unless another file names it too.
+*"socket"* counts the socket only once it is made or changed after the
+start, so one left by the last run does not count.
+
+Services that wait for each other, through any of the three lists,
+never start; Spark logs the circle once, and each says so:
+
+```
+spark: a and b wait for each other, through requires, wants or after: none of them starts until one of their files is changed
+```
+
+# HEALTH CHECKS
+
+Spark runs a running service's *health.command* *health.every* seconds
+after it gets ready, then *health.every* seconds after the end of each
+check, as the service runs: with its account, its view, its
+environment, its secrets and its limits, in its resource domain. A
+check that exits with 0 within *health.timeout* passes; one that exits
+otherwise, or that is still running then and is stopped, fails. Its
+output is not logged; the last line a failed check wrote is kept for
+*service status*:
+
+```
+   Health: failing, 2 checks in a row (exited with code 0x1: no database)
+```
+
+Spark logs the first failure in a row, and a pass after failures. At
+*health.failures* failures in a row it restarts the service as *service
+restart* would, and the end counts as a failed start whatever its
+status; with *restart = "never"* it stays stopped. With *ready.when =
+"healthy"* the check runs once a second from the start until it first
+passes, and the service is ready then.
+
+# GIVING UP
+
+With *give_up_after* set, Spark counts a service's failed starts in a
+row, and once it has counted that many, does not start it again: the
+service is failed, those that require it are stopped, and the log and
+*service status* say why:
+
+```
+spark: gave up on web after 5 failed starts in a row (the last: it exited with code 0x1); `service web start` tries again
+```
+
+A service that has been ready for 10 s, or a setup step that is done,
+starts the count again. *service* _name_ *start* starts a failed service
+afresh.
+
 # WHAT A SERVICE SEES
 
 Each service's root is a view of the tree (ADR 0215, 0217), which Spark
@@ -362,18 +554,31 @@ logs why.
 
 # EXAMPLE
 
-A web server on ports 80 and 443, started after the system's services,
-which serves the folder _/shared/web_, keeps its logs in
-_/system/state/web_ and reads its TLS key from its secrets:
+A web server on ports 80 and 443, which requires its database and starts
+after the network, is ready once it listens on 443 and is checked every
+minute, serves the folder _/shared/web_, keeps its logs in
+_/system/state/web_ and reads its TLS key from its secrets; Spark gives
+up on it after 5 failed starts in a row:
 
 ```
-service_version = 1
+service_version = 2
 description = "Web server"
 program = "/applications/commands/nginx"
 arguments = ["-g", "daemon off;"]
 order = 60
 restart = "on-failure"
 secrets = ["tls-key"]
+requires = ["postgres"]
+after = ["netd"]
+give_up_after = 5
+
+[ready]
+when = "listening"
+port = 443
+
+[health]
+command = ["/system/commands/curl", "-fsS", "-o", "/dev/null", "https://localhost/"]
+every = 60
 
 [environment]
 TZ = "UTC"
@@ -410,4 +615,4 @@ _/system/live/spark/tmp/name_
 
 # SEE ALSO
 
-*spark*(8), *service*(8), *logd*(8), *e1000d*(8)
+*spark*(8), *service*(8), *logd*(8), *e1000d*(8), *health.toml*(5)

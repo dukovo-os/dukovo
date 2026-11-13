@@ -454,17 +454,31 @@ impl Manifest {
                     );
                 }
             }
-            if let Some(health) = &svc.health
-                && !sockets.contains(&&health.socket)
-            {
-                fail(
-                    &[Key("services"), Index(i), Key("health")],
-                    format!(
-                        "service {} is checked through the socket {}, which provides does not \
-                         name",
-                        svc.name, health.socket
-                    ),
-                );
+            if let Some(health) = &svc.health {
+                let at = [Key("services"), Index(i), Key("health")];
+                if let Some(socket) = &health.socket
+                    && !sockets.contains(&socket)
+                {
+                    fail(
+                        &at,
+                        format!(
+                            "service {} is checked through the socket {socket}, which provides \
+                             does not name",
+                            svc.name
+                        ),
+                    );
+                }
+                if health.socket.is_none() && health.command.is_none() {
+                    fail(&at, format!("service {}'s health names a socket or a command", svc.name));
+                }
+                if let Some(command) = &health.command
+                    && let Err(why) = command.check(&self.programs)
+                {
+                    fail(&at, format!("service {}'s health.command {why}", svc.name));
+                }
+            }
+            for (at, why) in svc.graph_mistakes() {
+                fail(&[Key("services"), Index(i), Key(at)], format!("service {}: {why}", svc.name));
             }
         }
         for (i, provide) in self.provides.iter().enumerate() {
@@ -1666,9 +1680,92 @@ pub struct Service {
     /// The interfaces that must be up before it starts.
     #[serde(default)]
     pub needs: Vec<Interface>,
+    /// The services it requires: started first and ready, or it does not
+    /// start; it stops when one stops for good (ADR 0470). Each is one of
+    /// the bundle's own, or one the system brings.
+    #[serde(default)]
+    pub requires: Vec<ServiceName>,
+    /// The services it wants: started first, but it starts whether or not
+    /// they do.
+    #[serde(default)]
+    pub wants: Vec<ServiceName>,
+    /// The services it starts after, when they start too.
+    #[serde(default)]
+    pub after: Vec<ServiceName>,
+    /// The failed starts in a row after which Spark stops trying; 0, the
+    /// default, for never.
+    #[serde(default)]
+    pub give_up_after: u32,
+    /// When it is ready, if not once it has started.
+    #[serde(default)]
+    pub ready: Option<Ready>,
     /// How to tell that it works.
     #[serde(default)]
     pub health: Option<Health>,
+}
+
+impl Service {
+    /// Whether it uses a key of service_version 2 (ADR 0470), which a
+    /// release before 1.0 does not read.
+    pub fn uses_version_2(&self) -> bool {
+        !self.requires.is_empty()
+            || !self.wants.is_empty()
+            || !self.after.is_empty()
+            || self.give_up_after > 0
+            || self.ready.is_some()
+            || self.health.as_ref().is_some_and(|health| health.command.is_some())
+    }
+}
+
+/// When a bundle's service is ready (ADR 0470): service.toml(5)'s
+/// `[ready]`, with the socket a name in its `RUNTIME_DIRECTORY`.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct Ready {
+    /// Once it has started, listens on a port, has made its socket,
+    /// passes its health check, or has ended as it should.
+    pub when: ReadyWord,
+    /// For `listening`: the port; left out, any port it listens on.
+    #[serde(default)]
+    pub port: Option<u16>,
+    /// For `socket`: the socket's name, in its `RUNTIME_DIRECTORY`.
+    #[serde(default)]
+    pub path: Option<Name>,
+    /// The seconds it has to get ready, from 1 to 3600; 90 when left out.
+    #[serde(default)]
+    pub timeout: Option<u32>,
+}
+
+/// `ready.when`'s words.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
+#[serde(rename_all = "kebab-case")]
+pub enum ReadyWord {
+    /// Once it has started.
+    #[default]
+    Started,
+    /// Once it listens on its port.
+    Listening,
+    /// Once it has made its socket.
+    Socket,
+    /// Once its health check passes.
+    Healthy,
+    /// Once it has ended as it should, as a setup step does.
+    Ended,
+}
+
+impl ReadyWord {
+    /// The word, as service.toml(5) writes it.
+    pub fn name(self) -> &'static str {
+        match self {
+            ReadyWord::Started => "started",
+            ReadyWord::Listening => "listening",
+            ReadyWord::Socket => "socket",
+            ReadyWord::Healthy => "healthy",
+            ReadyWord::Ended => "ended",
+        }
+    }
 }
 
 fn when_enabled() -> Start {
@@ -1765,8 +1862,139 @@ impl JsonSchema for Limits {
 #[cfg_attr(feature = "schema", derive(JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct Health {
-    /// A socket it provides, which answers once it works.
-    pub socket: Name,
+    /// A socket it provides, which answers once it works: bundled tries
+    /// it as it installs the bundle (ADR 0386).
+    #[serde(default)]
+    pub socket: Option<Name>,
+    /// A command Spark runs while the service runs, which passes when it
+    /// exits 0 (ADR 0470).
+    #[serde(default)]
+    pub command: Option<HealthCommand>,
+}
+
+/// A service's health check command: service.toml(5)'s `[health]`, with
+/// its program by name.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct HealthCommand {
+    /// The program it runs, one of the bundle's.
+    pub program: Name,
+    /// The arguments after the program's name.
+    #[serde(default)]
+    pub arguments: Vec<String>,
+    /// The seconds between checks, from 1 to 86400; 30 when left out.
+    #[serde(default)]
+    pub every: Option<u32>,
+    /// The seconds a check may take, from 1 to `every`; 10 when left out.
+    #[serde(default)]
+    pub timeout: Option<u32>,
+    /// The failed checks in a row before Spark restarts it, from 1 to
+    /// 100; 3 when left out.
+    #[serde(default)]
+    pub failures: Option<u32>,
+}
+
+impl HealthCommand {
+    /// What is wrong with it, among the bundle's `programs`, if anything.
+    fn check(&self, programs: &Map<Name, Program>) -> Result<(), String> {
+        if programs.get(self.program.0.as_str()).is_none() {
+            return Err(format!("runs {}, which programs does not name", self.program));
+        }
+        let every = self.every.unwrap_or(30);
+        let ranges = [
+            ("every", Some(every), service::HEALTH_EVERY_MAX, " seconds"),
+            ("timeout", self.timeout, every.min(service::READY_TIMEOUT_MAX), " seconds"),
+            ("failures", self.failures, service::HEALTH_FAILURES_MAX, " failed checks"),
+        ];
+        for (key, value, most, unit) in ranges {
+            if let Some(value) = value
+                && !(1..=most).contains(&value)
+            {
+                return Err(format!("has {key} from 1 to {most}{unit}, not {value}"));
+            }
+        }
+        Ok(())
+    }
+}
+
+impl Service {
+    /// What is wrong with its `requires`, `wants`, `after`,
+    /// `give_up_after` and `ready`, each with the key it is under. Whether
+    /// a name it links to is a service of the bundle's or of the system's
+    /// is for bundled to say as it installs it.
+    fn graph_mistakes(&self) -> Vec<(&'static str, String)> {
+        let mut mistakes = Vec::new();
+        let lists = [("requires", &self.requires), ("wants", &self.wants), ("after", &self.after)];
+        for (key, names) in lists {
+            if names.len() > service::LINKS_MAX {
+                mistakes
+                    .push((key, format!("{key} names at most {} services", service::LINKS_MAX)));
+            }
+            for (at, name) in names.iter().enumerate() {
+                if *name == self.name {
+                    mistakes.push((key, format!("{key} names {name}, the service itself")));
+                } else if names[..at].contains(name) {
+                    mistakes.push((key, format!("{key} names {name} twice")));
+                }
+            }
+        }
+        let names = |list: &[ServiceName]| list.iter().map(|n| n.0.clone()).collect::<Vec<_>>();
+        let (requires, wants, after) =
+            (names(&self.requires), names(&self.wants), names(&self.after));
+        if let Err(why) = service::check_named_once(&requires, &wants, &after) {
+            mistakes.push(("after", why));
+        }
+        if self.give_up_after > service::GIVE_UP_AFTER_MAX {
+            mistakes.push((
+                "give_up_after",
+                format!(
+                    "give_up_after is from 0 to {} failed starts, not {}",
+                    service::GIVE_UP_AFTER_MAX,
+                    self.give_up_after
+                ),
+            ));
+        }
+        if let Some(ready) = &self.ready
+            && let Err(why) = ready.check(self)
+        {
+            mistakes.push(("ready", why));
+        }
+        mistakes
+    }
+}
+
+impl Ready {
+    /// What is wrong with it, for `service`, if anything; whether its port
+    /// is one the service listens on is for its service file to say.
+    fn check(&self, service: &Service) -> Result<(), String> {
+        if self.port.is_some() && self.when != ReadyWord::Listening {
+            return Err("ready.port is for ready.when = \"listening\" alone".into());
+        }
+        if self.path.is_some() != (self.when == ReadyWord::Socket) {
+            return Err(
+                "ready.when = \"socket\", and it alone, names its socket in ready.path".into()
+            );
+        }
+        if let Some(timeout) = self.timeout
+            && !(1..=service::READY_TIMEOUT_MAX).contains(&timeout)
+        {
+            return Err(format!(
+                "ready.timeout is from 1 to {} seconds, not {timeout}",
+                service::READY_TIMEOUT_MAX
+            ));
+        }
+        let command = service.health.as_ref().and_then(|health| health.command.as_ref());
+        if self.when == ReadyWord::Healthy && command.is_none() {
+            return Err("ready.when = \"healthy\" needs a health.command".into());
+        }
+        if self.when == ReadyWord::Ended && service.restart == Restart::Always {
+            return Err("ready.when = \"ended\" is for a service that ends, so its restart is \
+                        on-failure or never, not always"
+                .into());
+        }
+        Ok(())
+    }
 }
 
 /// The permissions a bundle asks for, by name, each with what it takes.

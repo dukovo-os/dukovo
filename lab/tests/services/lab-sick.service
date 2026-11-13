@@ -1,0 +1,20 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+#
+# The health-giveup lab test's service: its health check fails until
+# /system/settings/lab-sick-ok is there, and Spark gives up on it after
+# two failed starts in a row (ADR 0470).
+
+service_version = 2
+description = "Fails its health check until fixed"
+program = "/system/commands/nukesh"
+arguments = ["-c", "while :; do sleep 1; done"]
+enabled = false
+restart = "on-failure"
+give_up_after = 2
+
+[health]
+command = ["/system/commands/nukesh", "-c", "test -e /system/settings/lab-sick-ok || { echo not fixed; exit 1; }"]
+every = 2
+timeout = 2
+failures = 2

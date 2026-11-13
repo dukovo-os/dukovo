@@ -18,7 +18,6 @@
 //! the default, and one that failed gives up its tries, and the machine
 //! restarts into the version before it.
 
-use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -26,6 +25,7 @@ use std::time::{Duration, Instant};
 
 use serde::Deserialize;
 use slots::state::Checked;
+use spark_api::show::{self, HealthState::Failing, State};
 
 use super::place::{self, BUILDING, Root};
 use super::starts::{self, Item, Outcome};
@@ -160,63 +160,64 @@ impl Config {
     }
 }
 
-/// A service as Spark's `status` gives it.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Service {
-    pub state: String,
-    pub restarts: u64,
-    /// How its process last ended, `0x1`, or `-` if it has not.
-    pub last: String,
-}
-
-/// Spark's `status` answer: `name\tstate\tpid\trestarts\t...` lines, and
-/// `#` lines of its own.
-pub fn services(answer: &str) -> BTreeMap<String, Service> {
-    answer
-        .lines()
-        .filter(|line| !line.starts_with('#'))
-        .filter_map(|line| {
-            let mut fields = line.split('\t');
-            let name = fields.next()?;
-            let state = fields.next()?;
-            let restarts = fields.nth(1)?.parse().ok()?;
-            let last = fields.next().unwrap_or("-").to_string();
-            Some((name.to_string(), Service { state: state.to_string(), restarts, last }))
-        })
-        .collect()
-}
-
 /// How the essential services are, at one look.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Look {
     /// All that are turned on run, with these restarts.
     Running(Vec<u64>),
-    /// These do not run yet.
+    /// These do not run yet, or fail their health checks and may recover.
     Waiting(Vec<String>),
     /// One keeps failing, or ended for good in failure: why.
     Failing(String),
 }
 
-/// The essential services of `essential` in Spark's `status`: those it
-/// has no file for, are turned off, or ended well for good (a service
-/// whose `restart` lets it end) do not count.
-pub fn look(essential: &[String], services: &BTreeMap<String, Service>) -> Look {
-    let ended_well = |s: &Service| s.state == "stopped" && matches!(s.last.as_str(), "-" | "0x0");
-    let counted: Vec<(&String, &Service)> = essential
+/// The essential services of `essential` among `services`, as Spark's
+/// `show` describes them: those it has no file for, are turned off, or
+/// ended well for good (a setup step, or a service whose `restart` lets
+/// it end) do not count. One that runs but fails its health check
+/// (ADR 0470) does not run yet, and fails the check once it has
+/// restarted RESTARTS times; one Spark gave up on fails it at once.
+pub fn look(essential: &[String], services: &[show::Service]) -> Look {
+    let ended_well = |s: &show::Service| match s.state {
+        State::Disabled | State::Done => true,
+        State::Stopped => s.why.is_none() && s.last_status.is_none_or(|status| status == 0),
+        _ => false,
+    };
+    let counted: Vec<&show::Service> = essential
         .iter()
-        .filter_map(|name| Some((name, services.get(name)?)))
-        .filter(|(_, service)| service.state != "disabled" && !ended_well(service))
+        .filter_map(|name| services.iter().find(|s| &s.name == name))
+        .filter(|service| !ended_well(service))
         .collect();
-    if let Some((name, service)) = counted.iter().find(|(_, s)| s.restarts >= RESTARTS) {
-        return Look::Failing(format!("{name} has restarted {} times", service.restarts));
+    let unhealthy = |s: &show::Service| s.health.as_ref().is_some_and(|h| h.state == Failing);
+    if let Some(service) = counted.iter().find(|s| s.state == State::Failed) {
+        let why = service.why.as_deref().unwrap_or("it failed to start");
+        return Look::Failing(format!("Spark gave up on {}: {why}", service.name));
     }
-    if let Some((name, service)) = counted.iter().find(|(_, s)| s.state == "stopped") {
-        return Look::Failing(format!("{name} ended, with status {}", service.last));
+    if let Some(service) = counted.iter().find(|s| u64::from(s.restarts) >= RESTARTS) {
+        let name = &service.name;
+        return Look::Failing(match service.health.as_ref().filter(|_| unhealthy(service)) {
+            Some(health) => {
+                let last = health.last_failure.as_deref().unwrap_or("no reason given");
+                format!("{name} fails its health check: {last}")
+            }
+            None => format!("{name} has restarted {} times", service.restarts),
+        });
     }
-    let waiting: Vec<String> =
-        counted.iter().filter(|(_, s)| s.state != "running").map(|(n, _)| (*n).clone()).collect();
+    if let Some(service) = counted.iter().find(|s| s.state == State::Stopped) {
+        let name = &service.name;
+        return Look::Failing(match (&service.why, service.last_status) {
+            (Some(why), _) => format!("{name} does not run: {why}"),
+            (None, Some(status)) => format!("{name} ended, with status {status:#x}"),
+            (None, None) => format!("{name} ended"),
+        });
+    }
+    let waiting: Vec<String> = counted
+        .iter()
+        .filter(|s| s.state != State::Running || unhealthy(s))
+        .map(|s| s.name.clone())
+        .collect();
     if waiting.is_empty() {
-        Look::Running(counted.iter().map(|(_, s)| s.restarts).collect())
+        Look::Running(counted.iter().map(|s| u64::from(s.restarts)).collect())
     } else {
         Look::Waiting(waiting)
     }
@@ -344,8 +345,9 @@ fn watch(config: &Config, trying: bool) -> Result<(), String> {
     let start = Instant::now();
     let mut steady: Option<(Instant, Vec<u64>)> = None;
     loop {
-        let answer = power::request("status").map_err(|why| format!("Spark: {}", why.message))?;
-        match look(&config.essential, &services(&answer)) {
+        let answer = power::request("show").map_err(|why| format!("Spark: {}", why.message))?;
+        let document = show::parse(&answer).map_err(|why| format!("Spark: {why}"))?;
+        match look(&config.essential, &document.services) {
             Look::Failing(why) => return Err(format!("{why} (BOOT-102)")),
             Look::Running(_) if !trying => return Ok(()),
             Look::Running(restarts) => match &steady {
@@ -650,28 +652,87 @@ mod tests {
         assert!(Config::parse("[[check]]\nname = \"x\"\ncommand = []\n").is_err());
     }
 
+    /// Service `name` doing `state`, with `restarts`.
+    fn service(name: &str, state: State, restarts: u32) -> show::Service {
+        show::Service { name: name.into(), state, restarts, ..show::Service::default() }
+    }
+
     #[test]
     fn counts_the_essential_services_that_are_turned_on() {
-        let answer = "logd\trunning\t12\t0\t-\talways\tSystem log\n\
-                      sshd\tdisabled\t-\t0\t-\talways\tSSH\n\
-                      netd\twaiting\t-\t1\t0x1\talways\tNetwork\n\
-                      #\tshutdown\trestart\t5\n";
-        let services = services(answer);
-        assert_eq!(services.len(), 3);
+        let services = [
+            service("logd", State::Running, 0),
+            service("sshd", State::Disabled, 0),
+            service("netd", State::Waiting, 1),
+        ];
         let essential = ["logd", "sshd", "netd", "authd"].map(String::from);
         assert_eq!(look(&essential, &services), Look::Waiting(vec!["netd".into()]));
         assert_eq!(look(&essential[..2], &services), Look::Running(vec![0]));
-        let failing = services_with("logd\twaiting\t-\t3\t0x1\talways\tSystem log\n");
+        // Pending and starting do not run yet either.
+        for state in [State::Pending, State::Starting, State::Stopping] {
+            let services = [service("netd", state, 0)];
+            assert_eq!(look(&essential[2..3], &services), Look::Waiting(vec!["netd".into()]));
+        }
+        let failing = [service("logd", State::Waiting, 3)];
         assert_eq!(look(&essential, &failing), Look::Failing("logd has restarted 3 times".into()));
-        // Ended well for good, it is not watched; ended in failure, it
-        // fails the check.
-        let ended = services_with("netd\tstopped\t-\t0\t0x0\ton-failure\tNetwork\n");
-        assert_eq!(look(&essential[2..3], &ended), Look::Running(vec![]));
-        let ended = services_with("netd\tstopped\t-\t0\t0x2\tnever\tNetwork\n");
+    }
+
+    #[test]
+    fn a_service_that_ended_counts_as_its_end_says() {
+        let essential = ["netd".to_string()];
+        // Ended well for good, or done, it is not watched.
+        let ended = show::Service { last_status: Some(0), ..service("netd", State::Stopped, 0) };
+        assert_eq!(look(&essential, &[ended]), Look::Running(vec![]));
+        assert_eq!(look(&essential, &[service("netd", State::Done, 0)]), Look::Running(vec![]));
+        // Ended in failure, or refused, it fails the check.
+        let ended =
+            show::Service { last_status: Some(0x200), ..service("netd", State::Stopped, 0) };
         assert_eq!(
-            look(&essential[2..3], &ended),
-            Look::Failing("netd ended, with status 0x2".into())
+            look(&essential, &[ended]),
+            Look::Failing("netd ended, with status 0x200".into())
         );
+        let refused = show::Service {
+            why: Some("it requires resolved, which is stopped".into()),
+            ..service("netd", State::Stopped, 0)
+        };
+        assert_eq!(
+            look(&essential, &[refused]),
+            Look::Failing("netd does not run: it requires resolved, which is stopped".into())
+        );
+        let given_up = show::Service {
+            why: Some("it failed to start 5 times in a row".into()),
+            ..service("netd", State::Failed, 4)
+        };
+        assert_eq!(
+            look(&essential, &[given_up]),
+            Look::Failing("Spark gave up on netd: it failed to start 5 times in a row".into())
+        );
+    }
+
+    #[test]
+    fn a_running_service_that_fails_its_health_check_does_not_count_as_running() {
+        let essential = ["web".to_string()];
+        let health = |state| show::Health {
+            state,
+            failures: 2,
+            last_failure: Some("exited with code 0x1: no answer on 8080".into()),
+            checked_ms: Some(1_000),
+        };
+        let unhealthy = |restarts| show::Service {
+            health: Some(health(Failing)),
+            ..service("web", State::Running, restarts)
+        };
+        assert_eq!(look(&essential, &[unhealthy(1)]), Look::Waiting(vec!["web".into()]));
+        assert_eq!(
+            look(&essential, &[unhealthy(3)]),
+            Look::Failing(
+                "web fails its health check: exited with code 0x1: no answer on 8080".into()
+            )
+        );
+        let healthy = show::Service {
+            health: Some(health(show::HealthState::Passing)),
+            ..service("web", State::Running, 1)
+        };
+        assert_eq!(look(&essential, &[healthy]), Look::Running(vec![1]));
     }
 
     #[test]
@@ -717,9 +778,5 @@ mod tests {
         // A good start that follows no failure says nothing.
         assert_eq!(failure_notice(&records, Some(&this), Checked::Start, named), None);
         std::fs::remove_dir_all(&dir).unwrap();
-    }
-
-    fn services_with(answer: &str) -> BTreeMap<String, Service> {
-        services(answer)
     }
 }

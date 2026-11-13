@@ -42,9 +42,35 @@ consoled - Virtual consoles
   Restart: always, 0 restarts so far
 ```
 
-*--status-all* lists every service, *[ + ]* for one that runs, *[ - ]*
-for one that does not, and *[ ? ]* for one waiting to be started again
-after it ended:
+and, for a service whose file names others, gives it a health check or
+says when it gives up (*service.toml*(5), ADR 0470), why it is not
+running, what it needs, what started it and how its checks go:
+
+```
+web - Web server
+   Active: failed (Spark gave up on it)
+      Why: it failed to start 5 times in a row (the last: it failed its health check 3 times in a row (exited with code 0x7))
+    Needs: requires db; after netd
+  Started: by a request
+   Health: failing, 3 checks in a row (exited with code 0x7)
+  Restart: on-failure, 4 restarts so far; gives up after 5 failed starts in a row
+     Last: was ended by signal 15
+```
+
+*Active* is one of *active (running) as process* _n_; *active (exited)*,
+a setup step that is done; *activating (starting as process* _n_*,
+ready once* _when_*)*; *activating (waiting for* _names_*)*;
+*activating (waiting to start again)*; *deactivating (stopping as
+process* _n_*)*; *failed (Spark gave up on it)*; *inactive (disabled)*
+or *inactive (dead)*. *Why* says why it is not running as asked,
+*Needs* names the services its file names, *Started* says whether boot,
+a request or another service wanted it, *Health* how its last checks
+went, *Last* how its process last ended, and *File* what is wrong with
+its file while Spark runs its last good copy.
+
+*--status-all* lists every service, *[ + ]* for one that runs or is
+done, *[ - ]* for one that does not, and *[ ? ]* for one starting,
+waiting for others or waiting to be started again after it ended:
 
 ```
  [ + ]  consoled
@@ -115,8 +141,9 @@ ADR 0217). No command shows a value back.
 
 # EXIT STATUS
 
-0 for a request Spark took, and for *status* of a running service; 3
-for *status* of a service that does not run; 4 for a service Spark does
+0 for a request Spark took, and for *status* of a service that runs or
+is done; 3 for *status* of a service that does not run, or is not ready
+yet; 4 for a service Spark does
 not know; 1 when Spark refused the request or could not be reached; 2
 for a command it does not know. *check* gives 1 when a file does not
 read, *new* when the file is there already, *edit* when the edit

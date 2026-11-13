@@ -17,7 +17,7 @@ use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
 use crate::Error;
-use crate::service::{self, VERSION};
+use crate::service;
 
 /// What a converted file's `[permissions]` ends with: the whole tree, as
 /// the service held before.
@@ -92,7 +92,9 @@ pub fn convert(text: &str) -> Result<String, Error> {
         out.push_str(line);
         out.push('\n');
     }
-    out.push_str(&format!("service_version = {VERSION}\n"));
+    // Version 1, which every release that reads TOML files reads: an old
+    // file asks nothing of version 2 (ADR 0454's two-version rule).
+    out.push_str("service_version = 1\n");
     for table in Table::ALL {
         let lines = &tables[table as usize];
         // Blank lines at a table's ends are the tables' own to write.

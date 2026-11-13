@@ -414,11 +414,15 @@ fn a_file_needs_its_version_and_program() {
         "it names no program: add a line such as `program = \"/system/commands/logd\"`"
     );
     assert_eq!(
-        error("service_version = 2\nprogram = \"/x\""),
-        "line 1: this file is for service_version 2, and this Dukovo reads version 1 and \
+        error("program = \"/x\"\nrequires = [\"db\"]"),
+        "it has no service_version: add `service_version = 2`"
+    );
+    assert_eq!(
+        error("service_version = 3\nprogram = \"/x\""),
+        "line 1: this file is for service_version 3, and this Dukovo reads version 2 and \
          earlier: update Dukovo to use it"
     );
-    assert_eq!(error("service_version = 0\nprogram = \"/x\""), "line 1: service_version is 1");
+    assert_eq!(error("service_version = 0\nprogram = \"/x\""), "line 1: service_version is 1 or 2");
     assert_eq!(
         error("service_version = 1\nprogram = \"bin/logd\""),
         "line 2: program is an absolute path, such as /system/commands/logd, not `bin/logd`"
@@ -612,5 +616,158 @@ fn enabled_is_set_in_place_or_after_program() {
     assert_eq!(
         service::with_enabled(without, true),
         "service_version = 1\nprogram = \"/x\"\nenabled = true\norder = 40\n"
+    );
+}
+
+/// `text` after the lines of a version 2 file that listens on port 8080.
+fn file_2(text: &str) -> String {
+    format!(
+        "service_version = 2\nprogram = \"/system/commands/true\"\n{text}\n\
+         [permissions]\nnetwork.listen = [8080, \"9000-9001\"]\n"
+    )
+}
+
+#[test]
+fn a_version_2_file_names_what_it_waits_for() {
+    let service = service::from_toml(&file_2(
+        "requires = [\"db\"]\nwants = [\"cache\", \"mail\"]\nafter = [\"netd\"]\n\
+         give_up_after = 5",
+    ))
+    .unwrap();
+    assert_eq!(service.requires, ["db"]);
+    assert_eq!(service.wants, ["cache", "mail"]);
+    assert_eq!(service.after, ["netd"]);
+    assert_eq!(service.give_up_after, 5);
+    assert_eq!(service.ready, service::Ready::default());
+    assert_eq!(service.ready.timeout, 90);
+    assert_eq!(service.health, None);
+    assert!(service.check_links("web").is_ok());
+    assert_eq!(service.check_links("db"), Err("requires names db, the service itself".into()));
+    // What a file leaves out waits for nothing, and Spark never gives up.
+    let plain = service::from_toml(&file("")).unwrap();
+    assert!(plain.requires.is_empty() && plain.wants.is_empty() && plain.after.is_empty());
+    assert_eq!(plain.give_up_after, 0);
+}
+
+#[test]
+fn a_version_1_file_may_not_use_version_2_s_keys() {
+    for (text, key) in [
+        ("requires = []", "requires"),
+        ("after = [\"netd\"]", "after"),
+        ("give_up_after = 3", "give_up_after"),
+        ("[ready]\nwhen = \"started\"", "ready"),
+        ("[health]\ncommand = [\"/x\"]", "health"),
+    ] {
+        assert_eq!(
+            error(&file(text)),
+            format!("{key} needs service_version = 2: change the file's service_version to 2")
+        );
+    }
+}
+
+#[test]
+fn each_way_of_being_ready() {
+    use service::ReadyWhen;
+    let ready = |text: &str| service::from_toml(&file_2(text)).map(|s| s.ready.when);
+    assert_eq!(ready("[ready]\nwhen = \"listening\""), Ok(ReadyWhen::Listening(None)));
+    assert_eq!(
+        ready("[ready]\nwhen = \"listening\"\nport = 9001\ntimeout = 30"),
+        Ok(ReadyWhen::Listening(Some(9001)))
+    );
+    assert_eq!(
+        ready("[ready]\nwhen = \"socket\"\npath = \"/system/live/services/web/web.sock\""),
+        Ok(ReadyWhen::Socket("/system/live/services/web/web.sock".into()))
+    );
+    assert_eq!(ready("restart = \"never\"\n[ready]\nwhen = \"ended\""), Ok(ReadyWhen::Ended));
+    assert_eq!(
+        ready("[ready]\nwhen = \"healthy\"\n[health]\ncommand = [\"/x\", \"ping\"]"),
+        Ok(ReadyWhen::Healthy)
+    );
+    let service =
+        service::from_toml(&file_2("ready.when = \"started\"\nready.timeout = 5")).unwrap();
+    assert_eq!(service.ready, service::Ready { when: ReadyWhen::Started, timeout: 5 });
+}
+
+#[test]
+fn a_health_check_and_its_defaults() {
+    let service = service::from_toml(&file_2("[health]\ncommand = [\"/x\", \"ping\"]")).unwrap();
+    let health = service.health.unwrap();
+    assert_eq!(health.command, ["/x", "ping"]);
+    assert_eq!((health.every, health.timeout, health.failures), (30, 10, 3));
+    let service = service::from_toml(&file_2(
+        "[health]\ncommand = [\"/x\"]\nevery = 5\ntimeout = 5\nfailures = 1",
+    ))
+    .unwrap();
+    let health = service.health.unwrap();
+    assert_eq!((health.every, health.timeout, health.failures), (5, 5, 1));
+}
+
+#[test]
+fn version_2_s_mistakes_are_named_in_plain_words() {
+    let cases: &[(&str, &str)] = &[
+        ("requires = [\"db\", \"db\"]", "line 3: requires names db twice"),
+        ("wants = [\"-x\"]", "line 3: wants: `-x` is not a service's name"),
+        (
+            "requires = [\"db\"]\nafter = [\"db\"]",
+            "db is in requires and after: requires says it already, so leave it out of after",
+        ),
+        ("give_up_after = 1001", "line 3: give_up_after is from 0 to 1000 failed starts, not 1001"),
+        (
+            "[ready]\nwhen = \"soon\"",
+            "line 4: ready.when must be started, listening, socket, healthy or ended, not `soon`",
+        ),
+        (
+            "[ready]\nwhen = \"listening\"\nport = 80",
+            "ready.port 80 is none of network.listen's ports",
+        ),
+        ("[ready]\nport = 8080", "ready.port is for ready.when = \"listening\" alone"),
+        ("[ready]\nport = 70000", "line 4: ready.port is from 1 to 65535, not 70000"),
+        (
+            "[ready]\nwhen = \"socket\"",
+            "ready.when = \"socket\" needs the socket's path in ready.path",
+        ),
+        (
+            "[ready]\nwhen = \"socket\"\npath = \"web.sock\"",
+            "ready.path is an absolute path, such as /system/live/services/web/web.sock, not \
+             `web.sock`",
+        ),
+        ("[ready]\npath = \"/a\"", "ready.path is for ready.when = \"socket\" alone, not `/a`"),
+        ("[ready]\nwhen = \"healthy\"", "ready.when = \"healthy\" needs a [health] check"),
+        (
+            "[ready]\nwhen = \"ended\"",
+            "ready.when = \"ended\" is for a service that ends, so its restart is on-failure or \
+             never, not always",
+        ),
+        ("[ready]\ntimeout = 0", "line 4: ready.timeout is from 1 to 3600 seconds, not 0"),
+        (
+            "[ready]\nwhen = \"started\"\nsoon = true",
+            "line 5: `soon` is not a setting here; service.toml(5) lists them",
+        ),
+        (
+            "[health]\ncommand = []",
+            "line 4: health.command names a program, such as [\"/system/commands/true\"]",
+        ),
+        (
+            "[health]\ncommand = [\"ping\"]",
+            "line 4: health.command starts with a program's absolute path, not `ping`",
+        ),
+        (
+            "[health]\ncommand = [\"/x\"]\nevery = 5\ntimeout = 6",
+            "health.timeout is at most health.every, 5 seconds, not 6",
+        ),
+        (
+            "[health]\ncommand = [\"/x\"]\nfailures = 0",
+            "line 5: health.failures is from 1 to 100 failed checks, not 0",
+        ),
+        ("[health]\nevery = 5", "missing field `command`"),
+    ];
+    for (text, said) in cases {
+        let got = error(&file_2(text));
+        assert!(got.contains(said), "{text}: {got}");
+    }
+    // Listening needs ports to listen on.
+    assert_eq!(
+        error("service_version = 2\nprogram = \"/x\"\n[ready]\nwhen = \"listening\""),
+        "ready.when = \"listening\" needs the ports it listens on in network.listen"
     );
 }

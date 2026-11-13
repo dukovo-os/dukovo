@@ -25,7 +25,7 @@ valkey-check-rdb = ["services/valkey"]
 valkey-cli = ["services/valkey"]
 
 [services]
-nginx = ["services/nginx"]
+nginx = ["services/graph", "services/nginx"]
 valkey = ["services/valkey"]
 
 # The admin console's pages, by their path (thread C), and admind's

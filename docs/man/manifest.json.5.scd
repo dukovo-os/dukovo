@@ -204,12 +204,43 @@ windows (1.1), *runtime*, the Linux layer (1.3), and *plugins* (1.10).
 	*needs* = [_"interface/1"_, ...]
 		The interfaces that must be up before it starts.
 
-	*health* = { *socket* = _"name"_ }
-		How to tell it works: a socket it provides, which answers once
-		it does. The service makes it in *RUNTIME_DIRECTORY*; after an
-		update, a new version that does not answer on it within 60
-		seconds goes back to the version before, with its data
-		(*bundled*(8), ADR 0386).
+	*requires*, *wants*, *after* = [_"service"_, ...]
+		The services it requires, wants and starts after, as a service
+		file's (*service.toml*(5), ADR 0470): each one of the bundle's
+		own services or one of the system's, such as *netd*; any other
+		is refused at install.
+
+	*give_up_after* = _number_
+		The failed starts in a row after which Spark gives up on it, 0
+		to 1000; never unless given.
+
+	*ready* = { *when*, *port*, *path*, *timeout* }
+		When it is ready, as a service file's *[ready]*: *when* is
+		*"started"* (the default), *"listening"*, *"socket"*,
+		*"healthy"* or *"ended"*; *port*, for *"listening"*, one of
+		the ports it asks for; *path*, for *"socket"*, which needs it,
+		the socket's name in its *RUNTIME_DIRECTORY*; and *timeout* the
+		seconds it has, 90 unless given.
+
+	*health* = { *socket* = _"name"_, *command* = {...} }
+		How to tell it works, with one or both:
+
+		*socket*, a socket it provides, which answers once it does. The
+		service makes it in *RUNTIME_DIRECTORY*; after an update, a new
+		version that does not answer on it within 60 seconds goes back
+		to the version before, with its data (*bundled*(8), ADR 0386).
+
+		*command* = { *program*, *arguments*, *every*, *timeout*,
+		*failures* }, a check Spark runs while it runs, as a service
+		file's *[health]*: *program* is one of *programs*, and the
+		others are *health.every*, *health.timeout* and
+		*health.failures*, with their defaults.
+
+	A service that uses any of *requires*, *wants*, *after*,
+	*give_up_after*, *ready* or *health.command* needs Dukovo 1.0 or
+	later, so its *requires_os* is *"1.0"* or later, as *ob ports*
+	writes it for the catalog's; *bundled*(8) writes its service file
+	as *service_version = 2*.
 
 *permissions* = { _"name"_: { *need*, *why*, ... } }
 	The permissions it asks for, by the names of the list below, each

@@ -352,6 +352,32 @@ spark: starting consoled again in 0.1 s
 spark: started consoled (/system/commands/consoled) as process 31
 ```
 
+A service's file may name the services it requires, wants or starts
+after, say when it is ready, give it a health check, and say after how
+many failed starts in a row Spark gives up on it (*service.toml*(5),
+ADR 0470). Spark wants every service that is turned on at boot, every
+one a *start* request names, and those a wanted service requires or
+wants, and starts each once those it names are ready or, for those it
+only wants or starts after, have stopped; among those that may start at
+once, by *order*. One that requires a service that is stopped, failed
+or has no file does not start, and one whose requirement stops for good
+is stopped; services that wait for each other never start. While a
+service gets ready Spark looks every 0.1 s at what its file waits for:
+a listening socket in _/processes/net/tcp_ and _tcp6_, a socket file,
+its health check, or its end. It runs a running service's health check
+as the service runs, and restarts it after so many failures in a row.
+Each step is logged, and *service status* says why a service waits or
+is not running:
+
+```
+spark: started db (/applications/commands/postgres) as process 52
+spark: db is ready (listening on 5432) 1.4 s after its start
+spark: started web (/applications/commands/nginx) as process 60
+spark: web failed its health check (exited with code 0x7: connection refused)
+spark: web failed its health check 3 times in a row; restarting it
+spark: gave up on web after 5 failed starts in a row (the last: it failed its health check 3 times in a row (exited with code 0x7: connection refused)); `service web start` tries again
+```
+
 # CONTROL SOCKET
 
 Spark listens at the Unix socket _/system/live/spark/control_. A request is one
@@ -374,21 +400,54 @@ presses.
 
 *status*
 	A line per service, its fields by tabs: its name; *running*,
-	*waiting* (to be started again), *stopping* (what it left behind
-	is ending), *stopped* or *disabled*; its
-	process number or *-*; how often it was started again; the wait
-	status of its last end, or *-*; its *restart*; its description. A
-	pending shutdown adds a line *#*, *shutdown*, its end and the
-	seconds left.
+	*waiting* (to be started again, for the services it names, or to
+	get ready, with its process number), *stopping* (it, or what it
+	left behind, is ending), *stopped* (stopped, ended, done or given
+	up on) or *disabled*; its process number or *-*; how often it was
+	started again; the wait status of its last end, or *-*; its
+	*restart*; its description. A pending shutdown adds a line *#*,
+	*shutdown*, its end and the seconds left. Scripts read it; *show*
+	says more.
+
+*show* [_name_]
+	A JSON document of every service, or of the one named, and of a
+	pending shutdown, which *service*(8), *sysupdate*(8) and
+	*bundled*(8) read: *show_version* (1; a client refuses a later
+	one), *now_ms* (milliseconds since boot), *services* and
+	*shutdown* (*end* and *in_seconds*, or *null*). Each service has
+	its *name*, *description*, *enabled*, *order*, *restart*,
+	*give_up_after*, *requires*, *wants*, *after* and *ready_when* from
+	its file; its *state*: *stopped*, *disabled*, *pending* (waiting
+	for those it names, in *waiting_for*), *starting* (running, not
+	yet ready), *running*, *done* (a setup step that ended as it
+	should), *waiting* (to be started again), *stopping* or *failed*
+	(given up on); its *pid* while starting or running; *since_ms*,
+	*started_ms* and *ready_ms*; *restarts*, and *failures* (failed
+	starts in a row); *last_end* in words and *last_status*; *why* it
+	is not running as asked, a clause after its name; *started_by*
+	(*boot*, *a request*, or the service that requires or wants it);
+	*health* (*state*: *unknown*, *passing* or *failing*, *failures*,
+	*last_failure* and *checked_ms*) when its file has a check; and
+	*complaint*, what is wrong with its file while it runs its last
+	good copy. A field may be *null* or left out where it does not
+	apply, and later versions of Spark may add fields, which clients
+	pass over. A name Spark does not know answers *error: no service
+	is called* _name_.
 
 *start* | *stop* | *restart* _name_
 	Start a service, stop one and keep it stopped until it is started
 	again, or stop one and start it again, whatever its *restart*
 	says. Stopping sends it SIGTERM; one that has not ended 5 seconds
 	later has its domain stopped, as systemd sends SIGKILL after
-	TimeoutStopSec. Starting reads its file again; *start* of a
-	service whose file was added since boot reads it then, and answers
-	with what is wrong with it if it does not read.
+	TimeoutStopSec. Starting reads its file again, and those of the
+	services it requires or wants; *start* of a service whose file was
+	added since boot reads it then, and answers with what is wrong with
+	it if it does not read. *start* starts those it requires and wants
+	first, and answers with what it waits for (*ok: web starts once db
+	is ready*) or why it cannot start (*error: could not start web: it
+	requires db, which has no service file*); on a service Spark gave
+	up on, it starts afresh. *stop* stops those that require it too,
+	and names them.
 
 *reload* _name_
 	Send a running service SIGHUP, which asks a service that reads
@@ -406,8 +465,10 @@ presses.
 
 # SHUTTING DOWN
 
-When a shutdown is due, Spark stops the services in groups by *order*,
-the highest first: it sends each in the group SIGTERM, waits up to 5
+When a shutdown is due, Spark stops the services in groups by their
+stop rank, the highest first: a service's *order*, raised above the
+rank of each service it requires, wants or starts after, so that it
+stops before them. It sends each in the group SIGTERM, waits up to 5
 seconds for them to end, then stops the domains of those that did not
 (*radix-resource-domain*(2)'s *stop*, which ends every process in one)
 and waits a second more. Once no service runs, it stops every service's
@@ -728,6 +789,29 @@ _name_ *holds no FAT, exFAT, NTFS, Btrfs, ext4, UDF or ISO 9660 filesystem; left
 	A service could not be started: its domain, its process or *exec*
 	failed. Spark tries again as after a quick end.
 
+*spark: not starting* _name_*: it requires* _other_*, which* _reason_
+	A service's requirement is stopped, failed, left off or has no
+	file, so it does not start (*service.toml*(5)).
+
+*spark: stopping* _name_*: it requires* _other_*, which* _reason_
+	A service's requirement stopped for good, so Spark stops it too.
+
+_names_ *wait for each other, through requires, wants or after: none of them starts until one of their files is changed*
+	A circle in the services' files; Spark logs each once.
+
+*spark:* _name_ *did not get ready in* _n_ *s:* _what_*; stopping it*
+	A service was not ready within its *ready.timeout*: its start has
+	failed.
+
+*spark:* _name_ *failed its health check (*_how_*)*, *spark:* _name_ *failed its health check* _n_ *times in a row; restarting it*
+	A service's health check exited with a status other than 0, or did
+	not end in time; at *health.failures* in a row Spark restarts the
+	service.
+
+*spark: gave up on* _name_ *after* _n_ *failed starts in a row (the last:* _why_*); `service* _name_ *start` tries again*
+	A service failed to start *give_up_after* times in a row; it stays
+	failed, and what requires it is stopped.
+
 *spark:* _name_ *did not end in 5 s; stopping its domain*
 	A service asked to stop or restart ignored SIGTERM: Spark stops
 	every process in its domain.
@@ -754,7 +838,7 @@ _name_ *(process* _n_*) was ended by signal 9 (stopped by the out-of-memory poli
 
 # SEE ALSO
 
-*service*(8), *sysupdate*(8), *shutdown*(8), *reboot*(8), *consoled*(8), *dukovo-boot*(7),
+*service*(8), *service.toml*(5), *sysupdate*(8), *shutdown*(8), *reboot*(8), *consoled*(8), *dukovo-boot*(7),
 *radix-files*(7), *radix-processes*(7), *radix-posix*(7), *radix-proc*(5),
 *radix-sysfs*(5), *radix-directory*(2), *radix-process*(2),
 *radix-resource-domain*(2), *radix-power*(2), *radix-platform*(2),
