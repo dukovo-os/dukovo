@@ -423,7 +423,8 @@ static void plain_ntp(void) {
 // set, gets it, and gives it back; b's own MAC address is offered the
 // address reserved for it. The offer names a as the time server only
 // while a's timed answers plain NTP: not while it serves NTS alone, as
-// plain_ntp left it.
+// plain_ntp left it. a's netd reloads its settings, which leave a's
+// address as it was, with the connection to b open: it must stay.
 static void other_client(void) {
 	CHECK(ask("run service netd stop", "ok 0"));
 	CHECK(run("service netd reload") == 0);

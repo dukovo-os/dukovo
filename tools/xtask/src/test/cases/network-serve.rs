@@ -22,7 +22,9 @@
 //! offered the lowest address of the pool with the options that are set,
 //! with no time server while a serves NTS alone and a's own once it answers
 //! plain NTP again, get it, and give it back, which a's netd logs; b's own
-//! MAC address must be offered its reservation.
+//! MAC address must be offered its reservation. a's netd reads its settings
+//! again twice meanwhile, and the connection to b, on the address they
+//! leave as it was, must stay open.
 
 use super::super::*;
 

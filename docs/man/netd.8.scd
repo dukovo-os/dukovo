@@ -187,7 +187,9 @@ netd: net0 has DNS fec0::3 by DHCPv6
 
 *SIGHUP*
 	Read _/system/settings/network_ again and set each card up anew:
-	*service netd reload* (*service*(8)) sends it.
+	*service netd reload* (*service*(8)) sends it. A card whose fixed
+	addresses the settings leave as they were keeps them throughout, and
+	the connections on them stay open.
 
 *SIGTERM*
 	End, leaving the cards as they are.

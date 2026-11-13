@@ -1864,7 +1864,9 @@ impl Netd {
             cards.iter().filter_map(|card| Some((card.index, card.ipv6.clone()?))).collect();
         for mut card in cards {
             // Its addresses from the old settings go; a lease's stay with
-            // the lease, which the new client goes on with.
+            // the lease, which the new client goes on with, and those the
+            // new settings give it too stay, so that a reload that leaves
+            // them as they were leaves their connections alone.
             if let Some(interface) = Netd::interface(card.index) {
                 let leased: Vec<Cidr> = match &card.how {
                     How::Dhcp { client, .. } => {
@@ -1876,9 +1878,16 @@ impl Netd {
                 if !setup.dhcp() && !leased.is_empty() {
                     forget_lease(card.mac);
                 }
-                let keep = if setup.dhcp() { leased } else { Vec::new() };
-                let router = card.router.filter(|_| !keep.is_empty());
-                if card.given != keep && !matches!(card.how, How::Alone) {
+                let unchanged = !setup.dhcp() && setup.addresses == card.given;
+                let (keep, router) = if unchanged {
+                    (card.given.clone(), setup.router)
+                } else {
+                    let keep = if setup.dhcp() { leased } else { Vec::new() };
+                    let router = card.router.filter(|_| !keep.is_empty());
+                    (keep, router)
+                };
+                if (card.given != keep || card.router != router) && !matches!(card.how, How::Alone)
+                {
                     self.give(&mut card, &interface, &keep, router);
                 }
             }
