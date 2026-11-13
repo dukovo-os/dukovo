@@ -20,11 +20,12 @@
 //!
 //! The check fails when something new since Phase 15 has no entry, when
 //! an entry names no test or one that is not in `lab/tests`, when a test
-//! never names its item (each of its words, in the test's file or in a
-//! file beside it that the test uses as `{here}/NAME`), and when an entry
-//! is of a command or service the tree no longer has. Pages and routes
-//! have no list in the tree to compare with; their entries are checked
-//! against their tests alone. When the gate fails in CI, `./ob lab
+//! never names its item (each of its words, in the test's file, in a file
+//! beside it that the test uses as `{here}/NAME`, or in the script of a
+//! `browser = "NAME"` step, which is where a page's path is named), and
+//! when an entry is of a command or service the tree no longer has. Pages
+//! and routes have no list in the tree to compare with; their entries are
+//! checked against their tests alone. When the gate fails in CI, `./ob lab
 //! coverage` shows the whole table with the same messages.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -253,7 +254,8 @@ fn names(text: &str, name: &str) -> bool {
 }
 
 /// The text of test `id`, `category/name`, with the files beside it that
-/// it uses as `{here}/FILE`; None if there is no such test.
+/// it uses as `{here}/FILE` and the scripts of its browser steps; None if
+/// there is no such test.
 fn test_text(tests: &Path, id: &str) -> Option<String> {
     let (category, name) = id.split_once('/')?;
     let plain = |part: &str| {
@@ -266,19 +268,30 @@ fn test_text(tests: &Path, id: &str) -> Option<String> {
     let mut text = std::fs::read_to_string(dir.join(format!("{name}.toml"))).ok()?;
     let used: BTreeSet<&str> = text
         .match_indices("{here}/")
-        .map(|(at, found)| {
-            let rest = &text[at + found.len()..];
-            let end = rest
-                .find(|c: char| !(c.is_ascii_alphanumeric() || "-_.".contains(c)))
-                .unwrap_or(rest.len());
-            &rest[..end]
-        })
+        .map(|(at, found)| file_name(&text[at + found.len()..]))
+        .chain(browser_scripts(&text))
         .filter(|file| !file.is_empty() && !file.starts_with('.'))
         .collect();
     let beside: String =
         used.iter().filter_map(|file| std::fs::read_to_string(dir.join(file)).ok()).collect();
     text.push_str(&beside);
     Some(text)
+}
+
+/// The file name that `rest` starts with.
+fn file_name(rest: &str) -> &str {
+    let end = rest
+        .find(|c: char| !(c.is_ascii_alphanumeric() || "-_.".contains(c)))
+        .unwrap_or(rest.len());
+    &rest[..end]
+}
+
+/// The scripts the `browser = "NAME"` steps of a test file's `text` name.
+fn browser_scripts(text: &str) -> impl Iterator<Item = &str> {
+    text.lines().filter_map(|line| {
+        let value = line.trim_start().strip_prefix("browser")?.trim_start().strip_prefix('=')?;
+        Some(file_name(value.trim_start().strip_prefix('"')?))
+    })
 }
 
 /// The commands and services the tree has.
@@ -465,6 +478,32 @@ mod tests {
         assert!(nginx.contains("{here}/nginx-load.sh"));
         let script = std::fs::read_to_string(tests.join("services/nginx-load.sh")).unwrap();
         assert!(nginx.ends_with(&script));
+    }
+
+    #[test]
+    fn a_page_named_only_in_the_browser_script_is_covered() {
+        let tests = std::env::temp_dir().join(format!("ob-lab-coverage-{}", std::process::id()));
+        let folder = tests.join("web-console");
+        std::fs::create_dir_all(&folder).unwrap();
+        let toml = "[[step]]\nbrowser = \"overview.mjs\"\nengines = [\"chromium\"]\n";
+        std::fs::write(folder.join("overview.toml"), toml).unwrap();
+        std::fs::write(folder.join("overview.mjs"), "await t.open(\"/overview\");\n").unwrap();
+        assert!(!names(toml, "/overview"), "the test file alone must not name the page");
+
+        let listed = entries("[pages]\n\"/overview\" = [\"web-console/overview\"]\n");
+        let covered =
+            audit(&BTreeSet::new(), &BTreeSet::new(), &listed, &|id| test_text(&tests, id));
+        assert_eq!(covered.problems, Vec::<String>::new());
+        assert_eq!(covered.covered, 1);
+
+        // A script the test does not name as its own covers nothing.
+        std::fs::write(folder.join("overview.toml"), "[[step]]\nrun = \"true\"\n").unwrap();
+        let bare = audit(&BTreeSet::new(), &BTreeSet::new(), &listed, &|id| test_text(&tests, id));
+        assert_eq!(
+            bare.problems,
+            ["the page `/overview`: lab/tests/web-console/overview.toml never names it"]
+        );
+        std::fs::remove_dir_all(&tests).unwrap();
     }
 
     #[test]

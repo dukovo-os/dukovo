@@ -140,9 +140,10 @@ A test is a file at `lab/tests/<category>/<name>.toml`. The categories,
 their order and their titles on the runner page are in
 `lab/tests/categories.toml`: boot and power, hardware and drivers, sound,
 processes and monitors, disks and filesystems, network, SSH, services and
-logs, time and date, accounts and elevate, commands, the console,
-installing, updates, stress and soak, security, performance against
-Linux, and file sharing. Add one there when a new kind of test needs it. This test pulls the network cable:
+logs, time and date, accounts and elevate, commands, the console, the web
+console, installing, updates, stress and soak, security, performance
+against Linux, and file sharing. Add one there when a new kind of test
+needs it. This test pulls the network cable:
 
 ```toml
 about = "The network cable comes out and goes back in, and the network comes back"
@@ -380,6 +381,49 @@ records it.
 
 A machine with no line there, and every QEMU guest, skips the test.
 
+## Web console tests
+
+The web console is used in browsers, so its tests are too. A `browser`
+step starts a script of the test's own, a `.mjs` file beside the test,
+on the lab PC in Chromium, Firefox and WebKit in turn, and the script
+opens the machine's page over HTTPS and uses it as a person does: it
+finds a heading or a button by its role and its text, clicks, waits for
+what the page should then show, and runs axe-core, which fails the test
+on anything that breaks WCAG 2.2 levels A and AA. The tests are in
+`lab/tests/web-console`
+([ADR 0510](https://github.com/dukovo-os/dukovo/blob/main/docs/adr/0510-the-web-console-s-lab-tests-drive-real-browsers.md)):
+
+```toml
+[[step]]
+browser = "overview.mjs"
+engines = ["chromium", "firefox"]
+```
+
+The engines and the checker are a kit that `./ob lab` makes in
+`out/lab-browsers` from `lab/browsers`, which pins Playwright and
+axe-core, and passes to `dukovo-lab` as `--browsers`. The first time it
+needs the network, for the packages and the three engines, and Node.js
+22 or later on the lab PC. On Linux Mint the engines also need system
+libraries, which one command installs, once:
+
+```sh
+sudo npx --prefix out/lab-browsers playwright install-deps
+```
+
+A test that cannot run in an engine does not fail: the engine is
+skipped, and the step's note and the test's log say which and why, as
+`skipped firefox (firefox is not in the browser kit)`. A PC with no
+Node.js, and a run without a kit, skip the whole step. The cloud build
+machines carry Chromium alone, so their runs skip the other two.
+
+A page that fails keeps what shows it in the run's bundle: a screenshot
+of each page the test had open, `<category>-<test>-<engine>-failed-1.png`,
+among the screenshots the runner page shows, and a Playwright trace for
+each, `<category>-<test>-<engine>-trace-1.zip`, in the logs. Open one
+with `npx --prefix out/lab-browsers playwright show-trace`. The lab's
+[test file reference](https://github.com/dukovo-os/lab/blob/main/docs/test-files.md)
+has a chapter, "Browser tests", on how to write a script.
+
 ## Coverage
 
 Each command, service, page of the web console and route of its API
@@ -412,8 +456,8 @@ anything that falls short:
   shows up by itself;
 - an entry with no tests, or naming a test that is not in `lab/tests`;
 - a test that never names what it covers: each word of the name, as a
-  whole word, in the test's file or in a script beside it that the test
-  runs as `{here}/NAME`;
+  whole word, in the test's file, in a script beside it that the test
+  runs as `{here}/NAME`, or in the script of a `browser` step;
 - an entry of a command or service the tree no longer has.
 
 The console's pages and the API's routes have no list in the tree to

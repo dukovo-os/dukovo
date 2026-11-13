@@ -1,0 +1,10 @@
+{
+  "private": true,
+  "name": "dukovo-lab-browsers",
+  "description": "The browsers and the accessibility checker the lab's browser steps drive web pages with",
+  "license": "Apache-2.0 OR MIT",
+  "dependencies": {
+    "playwright": "1.63.0",
+    "axe-core": "4.10.2"
+  }
+}
