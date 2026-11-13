@@ -234,7 +234,7 @@ fn list(dir: &Path, select: &[Selector], json: bool) -> Result<i32, Fail> {
             "no history yet: metricsd writes it every 10 minutes and when it stops, and `metrics \
              now` shows the latest values; if it is not running, `service status metricsd` says \
              why"
-                .into()
+            .into()
         } else {
             "no such series: `metrics list` shows those the history holds".into()
         }));
