@@ -1844,8 +1844,14 @@ mod tests {
             userspace::BOOTFS_WORD
         );
         assert!(cfg.contains(&entry), "{cfg}");
-        // Boot from first disk works under both firmwares.
-        assert!(cfg.contains("Boot from first disk"));
+        // Boot from first disk works under both firmwares, and is where
+        // the boot tests that start it from the stick look for it.
+        let entries: Vec<&str> =
+            cfg.lines().filter(|line| line.starts_with("menuentry ")).collect();
+        assert!(
+            entries[crate::test::FIRST_DISK_ENTRY].contains("\"Boot from first disk\" --id first-disk"),
+            "{cfg}"
+        );
         // Repair startup (ADR 0503), on the hotkey R.
         assert!(cfg.contains("--id repair-startup --hotkey=r {"), "{cfg}");
         // The partition is the root first, as the chainloader tells the
