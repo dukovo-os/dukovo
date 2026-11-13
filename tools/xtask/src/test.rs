@@ -472,8 +472,9 @@ const UPDATE_FILE: u8 = 31;
 
 /// [`Disk::fat`] for a [`BUNDLE_FILES`] disk that also holds the `php`
 /// test's script and list of PHP's own tests ([`cases::php::make_disk`]):
-/// files a case would otherwise type, a key at a time.
-const PHP_FILES: u8 = 32;
+/// files a case would otherwise type, a key at a time. Not 32, which is
+/// FAT32.
+const PHP_FILES: u8 = 33;
 
 /// One of the boot tests' updates of an installed system (ADR 0451): this
 /// build's slot, under a version after this one's that updates from it,

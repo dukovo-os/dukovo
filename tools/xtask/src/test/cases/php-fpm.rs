@@ -282,13 +282,14 @@ fn php_fpm(vm: &mut Vm, case: &Case) -> Result<(), String> {
          done",
     )?;
     vm.expect_screen(&["restart 0", "serving"])?;
-    // A PHP error is in its log.
+    // A PHP error is in its log, once logd has read it from the kernel's,
+    // a moment after PHP-FPM wrote it.
     unlock(vm)?;
     answer_prompt(
         vm,
         "$",
-        "clear; curl -s http://localhost/err.php; elevate sh -c 'log php-fpm | grep -q boom-fpm && \
-         echo error logged'",
+        "clear; curl -s http://localhost/err.php; elevate sh -c 'for i in 1 2 3 4 5; do log \
+         php-fpm | grep -q boom-fpm && echo error logged && break; sleep 1; done'",
     )?;
     vm.expect_screen(&["error logged"])?;
     // Stopped, nginx has nothing to pass pages to.
