@@ -1,0 +1,55 @@
+SPDX-FileCopyrightText: 2026 The Dukovo contributors
+SPDX-License-Identifier: Apache-2.0 OR MIT
+
+prlimit of any process, through a Prlimit sysdep: a system whose kernel
+reads and sets the resource limits of other processes implements it, and
+prlimit asks it in one call, with the pid it was given. Without it prlimit
+works on the calling process alone, as getrlimit and setrlimit do, and
+fails with ENOSYS for any other, which is all mlibc's own could do. Meant
+for upstream.
+
+diff --git a/options/internal/include/mlibc/sysdep-signatures.hpp b/options/internal/include/mlibc/sysdep-signatures.hpp
+index 20bb950..844038f 100644
+--- a/options/internal/include/mlibc/sysdep-signatures.hpp
++++ b/options/internal/include/mlibc/sysdep-signatures.hpp
+@@ -140,6 +140,7 @@ SYSDEP_FUNC(Pselect, int num_fds, fd_set *read_set, fd_set *write_set, fd_set *e
+ SYSDEP_FUNC(GetRusage, int scope, struct rusage *usage);
+ SYSDEP_FUNC(GetRlimit, int resource, struct rlimit *limit);
+ SYSDEP_FUNC(SetRlimit, int resource, const struct rlimit *limit);
++SYSDEP_FUNC(Prlimit, pid_t pid, int resource, const struct rlimit *new_limit, struct rlimit *old_limit);
+ SYSDEP_FUNC(GetPriority, int which, id_t who, int *value);
+ SYSDEP_FUNC(SetPriority, int which, id_t who, int prio);
+ SYSDEP_FUNC(GetSchedparam, void *tcb, int *policy, struct sched_param *param);
+diff --git a/options/internal/include/mlibc/sysdep-tags.hpp b/options/internal/include/mlibc/sysdep-tags.hpp
+index 9a47bd7..2a025dc 100644
+--- a/options/internal/include/mlibc/sysdep-tags.hpp
++++ b/options/internal/include/mlibc/sysdep-tags.hpp
+@@ -294,6 +294,8 @@ struct GetRusage {};
+ struct GetRlimit {};
+ // int sys_setrlimit(int resource, const struct rlimit *limit);
+ struct SetRlimit {};
++// int sys_prlimit(pid_t pid, int resource, const struct rlimit *new_limit, struct rlimit *old_limit);
++struct Prlimit {};
+ // int sys_getpriority(int which, id_t who, int *value);
+ struct GetPriority {};
+ // int sys_setpriority(int which, id_t who, int prio);
+diff --git a/options/posix/generic/sys-resource.cpp b/options/posix/generic/sys-resource.cpp
+index 0a11897..10cc797 100644
+--- a/options/posix/generic/sys-resource.cpp
++++ b/options/posix/generic/sys-resource.cpp
+@@ -57,6 +57,15 @@ int setrlimit(int resource, const struct rlimit *limit) {
+ #endif /* !__MLIBC_LINUX_OPTION */
+ 
+ int prlimit(pid_t pid, int resource, const struct rlimit *new_limit, struct rlimit *old_limit) {
++	// A system whose kernel reads and sets the limits of other processes
++	// does it in one call.
++	if constexpr (mlibc::IsImplemented<Prlimit>) {
++		if(int e = mlibc::sysdep<Prlimit>(pid, resource, new_limit, old_limit); e) {
++			errno = e;
++			return -1;
++		}
++		return 0;
++	}
+ 	if(pid && pid != getpid()) {
+ 		errno = ENOSYS;
+ 		return -1;

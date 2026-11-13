@@ -4,19 +4,24 @@
 //! Resource limits and the file mode mask (Phase 8, radix-process(2)'s
 //! `limits` and `file_mask`): what `setrlimit` and `umask` set, kept in
 //! each process's POSIX state, copied by `fork` and kept by `exec`.
+//! `limits_of` is `prlimit`: the same limits of any process the caller
+//! may signal.
 //!
 //! The kernel enforces RLIMIT_STACK (the size of a new program's stack),
-//! RLIMIT_NICE and RLIMIT_RTPRIO (`priority`); the C library enforces
-//! RLIMIT_NOFILE, which counts file descriptors, its own. The others are
-//! kept for programs to read (radix-posix(7)). A hard limit is only ever
-//! lowered: raising one needs privileges, which come with users in
-//! Phase 13.
+//! RLIMIT_NICE and RLIMIT_RTPRIO (`priority`), and RLIMIT_FSIZE, for
+//! writes and for growing a file (`crate::user::files`); the C library
+//! enforces RLIMIT_NOFILE, which counts file descriptors, its own. The
+//! others are kept for programs to read (radix-posix(7)). A hard limit is
+//! only ever lowered: raising one needs privileges, which come with users
+//! in Phase 13.
 
 use radix_abi::errors::Kernel;
 use radix_abi::process::{self, LimitKind, UNLIMITED};
 use radix_posix::signal::QUEUE_MAX;
 
+use super::{find, join, same_user, with_tree};
 use crate::user::methods::{Answer, answer};
+use crate::user::process::{ProcessObject, ProcessRef};
 use crate::user::{Result, UserRef, error};
 
 /// One resource limit.
@@ -91,6 +96,49 @@ pub fn stack_bytes(limits: &Limits, page: u64) -> u64 {
 /// The bits of a file mode mask.
 const MODE_BITS: u32 = 0o777;
 
+/// Reads `process`'s limit `resource`, and with `new` sets it, as
+/// `setrlimit` does; returns it as it was. `argument` is the position of
+/// the soft limit among the call's arguments, which an invalid pair names.
+///
+/// The soft limit of RLIMIT_FSIZE is copied for writes, which read it
+/// without the POSIX lock, before that lock is let go.
+fn change(
+    process: &ProcessObject,
+    resource: LimitKind,
+    new: Option<Limit>,
+    argument: u32,
+) -> Result<Limit> {
+    let mut posix = process.posix.lock();
+    let limit = &mut posix.limits.0[resource as usize];
+    let old = *limit;
+    if let Some(new) = new {
+        if new.current > new.max {
+            return Err(Kernel::InvalidArgument.status(argument));
+        }
+        if new.max > old.max {
+            return Err(error(Kernel::NotPermitted));
+        }
+        *limit = new;
+        if resource == LimitKind::FileSize {
+            process.set_file_size_limit(new.current);
+        }
+    }
+    Ok(old)
+}
+
+/// The live process `pid`, if `me` may signal it, which is what Linux's
+/// `prlimit` asks to read or set another process's limits.
+fn other_process(me: &ProcessRef, pid: u64) -> Result<ProcessRef> {
+    with_tree(|tree| {
+        join(tree, me)?;
+        let target = find(tree, pid).ok_or(error(Kernel::NoSuchProcess))?;
+        if !tree.may_signal(me.number(), pid, same_user) {
+            return Err(error(Kernel::NotPermitted));
+        }
+        Ok(target)
+    })
+}
+
 /// The limit and file mask methods of radix-process(2), called by
 /// `user`'s thread.
 #[inline(never)]
@@ -99,21 +147,27 @@ pub fn method(user: &UserRef, label: u32, args: &[u64; 8]) -> Result<Answer> {
     match label {
         process::LIMITS => {
             let a = process::LimitsArgs::decode(args)?;
-            let mut posix = process.posix.lock();
-            let limit = &mut posix.limits.0[a.resource as usize];
-            let old = *limit;
-            if a.set {
-                if a.current > a.max {
-                    return Err(Kernel::InvalidArgument.status(2));
-                }
-                if a.max > old.max {
-                    return Err(error(Kernel::NotPermitted));
-                }
-                *limit = Limit::of(a.current, a.max);
-            }
-            drop(posix);
+            let new = a.set.then_some(Limit::of(a.current, a.max));
+            let old = change(process, a.resource, new, 2)?;
             let results = process::LimitsResults { current: old.current, max: old.max };
             answer(label, process::LimitsResults::WORDS, results.encode())
+        }
+        process::LIMITS_OF => {
+            let a = process::LimitsOfArgs::decode(args)?;
+            let new = a.set.then_some(Limit::of(a.current, a.max));
+            let old = if a.pid == 0 || a.pid == process.number() {
+                change(process, a.resource, new, 3)?
+            } else {
+                let target = other_process(process, a.pid)?;
+                // The C library keeps that limit in its own process, which
+                // a change from outside would not reach.
+                if new.is_some() && a.resource == LimitKind::Files {
+                    return Err(error(Kernel::NotPermitted));
+                }
+                change(&target, a.resource, new, 3)?
+            };
+            let results = process::LimitsOfResults { current: old.current, max: old.max };
+            answer(label, process::LimitsOfResults::WORDS, results.encode())
         }
         process::FILE_MASK => {
             let a = process::FileMaskArgs::decode(args)?;

@@ -2,9 +2,11 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 // Clocks and timers: the clocks clock_gettime reads, sleeping, CPU time
-// as times and getrusage count it, the interval timers, and POSIX's
-// timers (timer_create), with their overruns.
+// as times and getrusage count it and as the CPU-time clocks of threads
+// and processes read it, the interval timers, and POSIX's timers
+// (timer_create), with their overruns.
 
+#include <poll.h>
 #include <pthread.h>
 #include <stdint.h>
 #include <sys/resource.h>
@@ -188,6 +190,125 @@ static void cpu_time(void) {
 	struct tms mine;
 	times(&mine);
 	CHECK(mine.tms_cutime + mine.tms_cstime >= 5);
+}
+
+// Spins until the CPU-time clock `clock` has moved `ms` milliseconds,
+// or five seconds have gone by on the monotonic clock, so that a thread
+// that is not run does not wait for ever.
+static void spin_clock(clockid_t clock, long ms) {
+	struct timespec start, now;
+	CHECK(clock_gettime(clock, &start) == 0);
+	long long give_up = check_now_ns() + 5000000000LL;
+	volatile unsigned long n = 0;
+	do {
+		for(int i = 0; i < 1 << 12; i++)
+			n++;
+		CHECK(clock_gettime(clock, &now) == 0);
+	} while(ns(&now) - ns(&start) < ms * 1000000LL && check_now_ns() < give_up);
+}
+
+// Whether `fd` has something to read within `ms` milliseconds.
+static int readable_within(int fd, int ms) {
+	struct pollfd waiting = {fd, POLLIN, 0};
+	return poll(&waiting, 1, ms) == 1;
+}
+
+// A thread or a child that spins and then waits: it says it has spun on
+// `spun`, and ends when `release` has a byte or is closed.
+struct spinner {
+	int spun[2];
+	int release[2];
+};
+
+static void *spin_then_wait(void *argument) {
+	struct spinner *spinner = argument;
+	spin_clock(CLOCK_THREAD_CPUTIME_ID, 30);
+	char byte = 's';
+	write(spinner->spun[1], &byte, 1);
+	read(spinner->release[0], &byte, 1);
+	return NULL;
+}
+
+// The CPU-time clocks of threads and processes: the ids pthread_getcpuclockid
+// and clock_getcpuclockid give, which clock_gettime and clock_getres take
+// like any other clock's.
+static void cpu_clocks(void) {
+	clockid_t own;
+	CHECK(pthread_getcpuclockid(pthread_self(), &own) == 0);
+	CHECK(own == (clockid_t)((~(unsigned)gettid() << 3) | 6));
+	struct timespec before, after, resolution;
+	CHECK(clock_gettime(own, &before) == 0);
+	spin_clock(CLOCK_THREAD_CPUTIME_ID, 20);
+	CHECK(clock_gettime(own, &after) == 0);
+	CHECK(ns(&after) - ns(&before) >= 10000000);
+	CHECK(clock_getres(own, &resolution) == 0);
+	CHECK(resolution.tv_sec == 0 && resolution.tv_nsec == 1);
+
+	// Another thread's clock, read while it waits, counts what it spun and
+	// no more than the process has used. Once it has been joined, it is
+	// gone.
+	struct spinner worker;
+	CHECK(pipe(worker.spun) == 0 && pipe(worker.release) == 0);
+	pthread_t thread;
+	CHECK(pthread_create(&thread, NULL, spin_then_wait, &worker) == 0);
+	CHECK(readable_within(worker.spun[0], 10000));
+	clockid_t theirs;
+	CHECK(pthread_getcpuclockid(thread, &theirs) == 0 && theirs < 0 && theirs != own);
+	struct timespec worked, process;
+	CHECK(clock_gettime(theirs, &worked) == 0);
+	CHECK(clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &process) == 0);
+	CHECK(ns(&worked) >= 20000000 && ns(&worked) <= ns(&process));
+	CHECK(write(worker.release[1], "r", 1) == 1);
+	CHECK(pthread_join(thread, NULL) == 0);
+	CHECK_ERROR(clock_gettime(theirs, &worked), EINVAL);
+	close(worker.spun[0]);
+	close(worker.spun[1]);
+	close(worker.release[0]);
+	close(worker.release[1]);
+
+	// A process's: 0 is the caller's, with the number glibc gives it.
+	clockid_t zero, mine;
+	CHECK(clock_getcpuclockid(0, &zero) == 0 && zero == -6);
+	CHECK(clock_getcpuclockid(getpid(), &mine) == 0 && mine < 0);
+	struct timespec all;
+	CHECK(clock_gettime(mine, &all) == 0 && ns(&all) >= ns(&after) - ns(&before));
+	CHECK(clock_gettime(zero, &all) == 0);
+
+	// A child's, read while it waits, and gone once it has been waited for.
+	struct spinner child_side;
+	CHECK(pipe(child_side.spun) == 0 && pipe(child_side.release) == 0);
+	pid_t child = check_fork();
+	if(child == 0) {
+		close(child_side.release[1]);
+		spin_clock(CLOCK_PROCESS_CPUTIME_ID, 20);
+		write(child_side.spun[1], "s", 1);
+		char byte;
+		read(child_side.release[0], &byte, 1);
+		_exit(0);
+	}
+	CHECK(readable_within(child_side.spun[0], 10000));
+	clockid_t childs;
+	CHECK(clock_getcpuclockid(child, &childs) == 0 && childs < 0 && childs != mine);
+	struct timespec spent;
+	CHECK(clock_gettime(childs, &spent) == 0 && ns(&spent) >= 10000000);
+	// Its first thread has its number, and the clocks of another
+	// process's threads are not to be read.
+	clockid_t foreign = (clockid_t)((~(unsigned)child << 3) | 6);
+	CHECK_ERROR(clock_gettime(foreign, &spent), EINVAL);
+	CHECK(write(child_side.release[1], "r", 1) == 1);
+	CHECK_CHILD(child);
+	CHECK_ERROR(clock_gettime(childs, &spent), EINVAL);
+	CHECK(clock_getcpuclockid(child, &childs) == ESRCH);
+	close(child_side.spun[0]);
+	close(child_side.spun[1]);
+	close(child_side.release[0]);
+	close(child_side.release[1]);
+
+	// Linux's profiling and virtual CPU-time clocks, and its dynamic
+	// clocks, are not kept.
+	CHECK_ERROR(clock_gettime((clockid_t)((~0u << 3) | 0), &spent), EINVAL);
+	CHECK_ERROR(clock_gettime((clockid_t)((~0u << 3) | 1), &spent), EINVAL);
+	CHECK_ERROR(clock_gettime((clockid_t)((~0u << 3) | 3), &spent), EINVAL);
 }
 
 static volatile sig_atomic_t alarms;
@@ -401,6 +522,7 @@ int main(void) {
 	RUN(sleeps);
 	RUN(interrupted_sleeps);
 	RUN(cpu_time);
+	RUN(cpu_clocks);
 	RUN(timers);
 	RUN(posix_timers);
 	return check_end();

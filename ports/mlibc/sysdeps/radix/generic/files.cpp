@@ -60,6 +60,41 @@ int io_errno(uint64_t status, bool writing) {
 	return radix::to_errno(status);
 }
 
+// The errno of a pipe-size or owner request that failed with `status`:
+// `other` if the capability is of another kind than the request is for,
+// as a directory is, which the two requests name differently on Linux
+// (EBADF for a pipe size, EINVAL for an owner).
+int description_errno(uint64_t status, int other) {
+	return other_kind(status) ? other : radix::to_errno(status);
+}
+
+// The owner F_SETOWN's `pid` names: a process, or minus a process group,
+// and 0 for none. INT_MIN has no group's number to negate to: EINVAL, as
+// on Linux.
+int owner_of_pid(int pid, enum radix_owner_kind *kind, uint64_t *id) {
+	if(pid == INT_MIN)
+		return EINVAL;
+	*kind = pid < 0 ? RADIX_OWNER_KIND_GROUP : RADIX_OWNER_KIND_PROCESS;
+	*id = static_cast<uint64_t>(pid < 0 ? -pid : pid);
+	return 0;
+}
+
+// The owner F_SETOWN_EX's `owner` names. A negative number names no
+// thread, process or group: ESRCH, as on Linux. The kernel's kinds have
+// F_OWNER_TID's, F_OWNER_PID's and F_OWNER_PGRP's numbers, which also
+// fill F_GETOWN_EX's `type`.
+int owner_of_ex(const struct f_owner_ex *owner, enum radix_owner_kind *kind, uint64_t *id) {
+	if(!owner)
+		return EFAULT;
+	if(owner->type < F_OWNER_TID || owner->type > F_OWNER_PGRP)
+		return EINVAL;
+	if(owner->pid < 0)
+		return ESRCH;
+	*kind = static_cast<enum radix_owner_kind>(owner->type);
+	*id = static_cast<uint64_t>(owner->pid);
+	return 0;
+}
+
 // The kernel's OpenFlags for `flags`.
 uint32_t open_flags(int flags) {
 	// Most opens ask for no more than an access mode and close-on-exec:
@@ -870,6 +905,56 @@ int Sysdeps<Fcntl>::operator()(int fd, int request, va_list args, int *result) {
 	case F_OFD_SETLKW:
 		*result = 0;
 		return record_lock(fd, request, va_arg(args, struct flock *));
+	case F_GETPIPE_SZ:
+	case F_SETPIPE_SZ: {
+		// Linux reads the size as unsigned, so that a negative one is a size
+		// past 2^31, which the kernel refuses.
+		bool set = request == F_SETPIPE_SZ;
+		uint64_t size = set ? va_arg(args, unsigned int) : 0;
+		struct radix_file_pipe_size_results r;
+		if(uint64_t status = radix_file_pipe_size(slot, set, size, &r); status)
+			return description_errno(status, EBADF);
+		*result = static_cast<int>(r.size);
+		return 0;
+	}
+	case F_GETOWN: {
+		struct radix_file_owner_results r;
+		if(uint64_t status = radix_file_owner(slot, false, RADIX_OWNER_KIND_THREAD, 0, &r); status)
+			return description_errno(status, EINVAL);
+		// A group's number is given negated.
+		int number = static_cast<int>(r.id);
+		*result = r.kind == RADIX_OWNER_KIND_GROUP ? -number : number;
+		return 0;
+	}
+	case F_GETOWN_EX: {
+		auto *owner = va_arg(args, struct f_owner_ex *);
+		if(!owner)
+			return EFAULT;
+		struct radix_file_owner_results r;
+		if(uint64_t status = radix_file_owner(slot, false, RADIX_OWNER_KIND_THREAD, 0, &r); status)
+			return description_errno(status, EINVAL);
+		owner->type = static_cast<int>(r.kind);
+		owner->pid = static_cast<pid_t>(r.id);
+		*result = 0;
+		return 0;
+	}
+	case F_SETOWN:
+	case F_SETOWN_EX: {
+		enum radix_owner_kind kind;
+		uint64_t id;
+		int e;
+		if(request == F_SETOWN)
+			e = owner_of_pid(va_arg(args, int), &kind, &id);
+		else
+			e = owner_of_ex(va_arg(args, const struct f_owner_ex *), &kind, &id);
+		if(e)
+			return e;
+		struct radix_file_owner_results r;
+		if(uint64_t status = radix_file_owner(slot, true, kind, id, &r); status)
+			return description_errno(status, EINVAL);
+		*result = 0;
+		return 0;
+	}
 	default:
 		return EINVAL;
 	}
@@ -898,8 +983,6 @@ int Sysdeps<Stat>::operator()(mlibc::fsfd_target fsfdt, int fd, const char *path
 	return stat_path(resolved, statbuf, flags);
 }
 
-// Not in the dynamic linker, which has no strnlen (core.cpp).
-#ifndef MLIBC_BUILDING_RTLD
 int Sysdeps<Statvfs>::operator()(const char *path, struct statvfs *out) {
 	// Opened only to be asked about: a terminal does not become the
 	// controlling one, and a named pipe does not wait for a writer.
@@ -908,45 +991,15 @@ int Sysdeps<Statvfs>::operator()(const char *path, struct statvfs *out) {
 		return e;
 	int e = sysdep<Fstatvfs>(fd, out);
 	sysdep<Close>(fd);
-	if(e != ENOSYS)
-		return e;
-	// A file: its directory is on the same filesystem.
-	char dir[PATH_MAX];
-	size_t len = strnlen(path, sizeof(dir));
-	if(len == sizeof(dir))
-		return ENAMETOOLONG;
-	while(len > 1 && path[len - 1] == '/')
-		len--;
-	while(len && path[len - 1] != '/')
-		len--;
-	if(!len) {
-		dir[0] = '.';
-		len = 1;
-	} else {
-		memcpy(dir, path, len);
-	}
-	dir[len] = 0;
-	// Only to name it: statvfs needs no read bit on the directory.
-	if((e = sysdep<Open>(dir, O_PATH | O_DIRECTORY | O_CLOEXEC, 0, &fd)))
-		return e;
-	e = sysdep<Fstatvfs>(fd, out);
-	sysdep<Close>(fd);
 	return e;
 }
-#endif
 
-int Sysdeps<Fstatvfs>::operator()(int fd, struct statvfs *out) {
-	uint32_t slot = radix::slot_of(fd);
-	if(slot == radix::NO_SLOT)
-		return EBADF;
-	struct radix_directory_info_results r;
-	uint64_t status = radix_directory_info(slot, &r);
-	if(other_kind(status))
-		// A file: the kernel tells about its filesystem only through
-		// directories, yet.
-		return ENOSYS;
-	if(status)
-		return radix::to_errno(status);
+namespace {
+
+// Fills `out` from the figures of a filesystem, as radix-directory(2)'s
+// `info` and radix-file(2)'s `filesystem_info` give them.
+template<typename Results>
+void fill_statvfs(const Results &r, struct statvfs *out) {
 	memset(out, 0, sizeof(*out));
 	out->f_bsize = r.block_size;
 	out->f_frsize = r.block_size;
@@ -959,6 +1012,26 @@ int Sysdeps<Fstatvfs>::operator()(int fd, struct statvfs *out) {
 	out->f_namemax = NAME_MAX;
 	if(r.flags & RADIX_MOUNT_FLAGS_READ_ONLY)
 		out->f_flag |= ST_RDONLY;
+}
+
+} // namespace
+
+int Sysdeps<Fstatvfs>::operator()(int fd, struct statvfs *out) {
+	uint32_t slot = radix::slot_of(fd);
+	if(slot == radix::NO_SLOT)
+		return EBADF;
+	struct radix_directory_info_results directory;
+	uint64_t status = radix_directory_info(slot, &directory);
+	if(!status) {
+		fill_statvfs(directory, out);
+		return 0;
+	}
+	if(!other_kind(status))
+		return radix::to_errno(status);
+	struct radix_file_filesystem_info_results file;
+	if(status = radix_file_filesystem_info(slot, &file); status)
+		return radix::to_errno(status);
+	fill_statvfs(file, out);
 	return 0;
 }
 

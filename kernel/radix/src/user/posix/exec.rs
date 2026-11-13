@@ -40,7 +40,7 @@ use alloc::vec::Vec;
 use radix_abi::address_space::{ANONYMOUS_TOP, PAGE_SIZE, USER_START};
 use radix_abi::capability::SlotFlags;
 use radix_abi::errors::Kernel;
-use radix_abi::process::{self, EXEC_MAX, EXIT_STOPPED, ProcessState};
+use radix_abi::process::{self, EXEC_MAX, EXIT_STOPPED, LimitKind, ProcessState};
 use radix_abi::startup::{self, Startup};
 use radix_abi::{Status, UserBuffer};
 use radix_cap::{Derivation, ObjectKind, Rights, SlotRef};
@@ -711,6 +711,7 @@ fn start_created(
         posix.in_tree = true;
         posix.terminal.clone_from(&parent.terminal);
         posix.inherit(&parent);
+        process.set_file_size_limit(posix.limits.get(LimitKind::FileSize).current);
     }
     let (class, level) = me.io_priority();
     process.set_io_priority(class, level);

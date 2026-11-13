@@ -64,7 +64,7 @@ use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use radix_abi::Status;
 use radix_abi::errors::{File as FileError, Kernel};
-use radix_abi::file::DescriptionFlags;
+use radix_abi::file::{DescriptionFlags, OwnerKind};
 use radix_hal::{Devices, Timer};
 use radix_klog::{error, info, warn};
 use radix_mm::{FRAMES, Kmalloc, PAGE_SIZE};
@@ -107,6 +107,22 @@ impl Description {
             non_blocking: bits & DescriptionFlags::NON_BLOCKING.0 != 0,
         }
     }
+}
+
+/// An open file description's owner (fcntl's F_SETOWN), kept for
+/// F_GETOWN: nothing is sent to it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Owner {
+    /// Whether `id` is a thread's, a process's or a process group's.
+    pub kind: OwnerKind,
+    /// The number of the thread, process or process group; 0 for none.
+    pub id: u64,
+}
+
+impl Owner {
+    /// No owner: what a new description has, which Linux reports as
+    /// thread 0.
+    pub const NONE: Owner = Owner { kind: OwnerKind::Thread, id: 0 };
 }
 
 /// What kind of node a [`FileObject`] is of, as its reads and writes see
@@ -301,6 +317,8 @@ pub struct FileObject {
     pub offset: Mutex<u64>,
     /// Its [`Description`], as bits.
     flags: AtomicU32,
+    /// Its owner, which `owner` and `set_owner` read and change.
+    owner: SpinLock<Owner>,
     /// Whether it has taken a lock (`locks`), which it lets go of when it
     /// goes.
     locked: AtomicBool,
@@ -398,6 +416,7 @@ impl FileObject {
             (&raw mut (*place).at).write(at);
             (&raw mut (*place).offset).write(Mutex::new(offset));
             (&raw mut (*place).flags).write(AtomicU32::new(description.bits()));
+            (&raw mut (*place).owner).write(SpinLock::new(Owner::NONE));
             (&raw mut (*place).locked).write(AtomicBool::new(false));
             (&raw mut (*place).special).write(special);
             (&raw mut (*place).next).write(SpinLock::new(Link { queued: false, next: None }));
@@ -416,6 +435,16 @@ impl FileObject {
     /// Changes its status flags.
     pub fn set_description(&self, description: Description) {
         self.flags.store(description.bits(), Ordering::Release);
+    }
+
+    /// Its owner.
+    pub fn owner(&self) -> Owner {
+        *self.owner.lock()
+    }
+
+    /// Makes `owner` its owner, and returns the one it had.
+    pub fn set_owner(&self, owner: Owner) -> Owner {
+        core::mem::replace(&mut *self.owner.lock(), owner)
     }
 
     /// Its address, which owns its locks.

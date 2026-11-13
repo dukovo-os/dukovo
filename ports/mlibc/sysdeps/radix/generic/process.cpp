@@ -560,6 +560,15 @@ int Sysdeps<SetSchedparam>::operator()(void *tcb, int policy, const struct sched
 
 namespace {
 
+// The thread a process number names for the affinity calls: as
+// thread_of, but a negative number is ESRCH, since Linux's affinity calls
+// look the pid up where the scheduling calls refuse a negative one first.
+int affinity_thread_of(pid_t pid, uint64_t *thread) {
+	if(pid < 0)
+		return ESRCH;
+	return thread_of(pid, thread);
+}
+
 // The CPUs thread `thread` (0: the calling one) may run on, into the CPU
 // set `mask` of `size` bytes: radix-process(2)'s `affinity`, whose bits
 // are a CPU set's (bit n % 8 of byte n / 8 for CPU n). The bytes past
@@ -583,14 +592,14 @@ int set_affinity(uint64_t thread, size_t size, const cpu_set_t *mask) {
 
 int Sysdeps<GetAffinity>::operator()(pid_t pid, size_t cpusetsize, cpu_set_t *mask) {
 	uint64_t thread;
-	if(int e = thread_of(pid, &thread); e)
+	if(int e = affinity_thread_of(pid, &thread); e)
 		return e;
 	return get_affinity(thread, cpusetsize, mask);
 }
 
 int Sysdeps<SetAffinity>::operator()(pid_t pid, size_t cpusetsize, const cpu_set_t *mask) {
 	uint64_t thread;
-	if(int e = thread_of(pid, &thread); e)
+	if(int e = affinity_thread_of(pid, &thread); e)
 		return e;
 	return set_affinity(thread, cpusetsize, mask);
 }
@@ -601,6 +610,57 @@ int Sysdeps<GetThreadaffinity>::operator()(pid_t tid, size_t cpusetsize, cpu_set
 
 int Sysdeps<SetThreadaffinity>::operator()(pid_t tid, size_t cpusetsize, const cpu_set_t *mask) {
 	return set_affinity(static_cast<uint64_t>(tid), cpusetsize, mask);
+}
+
+// The id of thread `tid`'s CPU-time clock.
+int Sysdeps<GetThreadCpuclockid>::operator()(pid_t tid, clockid_t *clock) {
+	return radix::thread_cpu_clock(tid, clock);
+}
+
+// The id of process `pid`'s CPU-time clock. Another process is looked
+// up, since a number that no process has is ESRCH.
+int Sysdeps<GetCpuclockid>::operator()(pid_t pid, clockid_t *clock) {
+	if(int e = radix::process_cpu_clock(pid, clock); e)
+		return e;
+	if(!pid || pid == sysdep<GetPid>())
+		return 0;
+	struct radix_process_cpu_time_results r;
+	return radix::to_errno(radix_process_cpu_time(radix::SLOT_PROCESS,
+			static_cast<uint64_t>(pid), true, &r));
+}
+
+// Resource limits of any process, as radix-process(2)'s `limits_of`.
+// The caller's own go through getrlimit and setrlimit, so that
+// RLIMIT_NOFILE's bookkeeping stays where they have it. Another process's
+// RLIMIT_NOFILE cannot be set: the kernel says so.
+int Sysdeps<Prlimit>::operator()(pid_t pid, int resource, const struct rlimit *new_limit,
+		struct rlimit *old_limit) {
+	if(pid < 0)
+		return ESRCH;
+	if(!pid || pid == sysdep<GetPid>()) {
+		struct rlimit old;
+		if(int e = sysdep<GetRlimit>(resource, &old); e)
+			return e;
+		if(new_limit) {
+			if(int e = sysdep<SetRlimit>(resource, new_limit); e)
+				return e;
+		}
+		if(old_limit)
+			*old_limit = old;
+		return 0;
+	}
+	if(resource < 0)
+		return EINVAL;
+	struct radix_process_limits_of_results r;
+	if(uint64_t status = radix_process_limits_of(radix::SLOT_PROCESS, static_cast<uint64_t>(pid),
+			static_cast<enum radix_limit_kind>(resource), new_limit != nullptr,
+			new_limit ? new_limit->rlim_cur : 0, new_limit ? new_limit->rlim_max : 0, &r); status)
+		return radix::to_errno(status);
+	if(old_limit) {
+		old_limit->rlim_cur = r.current;
+		old_limit->rlim_max = r.max;
+	}
+	return 0;
 }
 
 // The load averages, from /processes/loadavg's `load_N: whole.hundredths`

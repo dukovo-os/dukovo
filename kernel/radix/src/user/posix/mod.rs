@@ -49,6 +49,7 @@ use alloc::vec::Vec;
 use core::sync::atomic::Ordering;
 
 use radix_abi::errors::Kernel;
+use radix_abi::file::OwnerKind;
 use radix_abi::process::{self, ChildWaitFlags, ClockKind};
 use radix_abi::signal::{SIGCHLD, SIGNALS};
 use radix_abi::startup;
@@ -66,6 +67,7 @@ use super::methods::{Answer, answer};
 use super::objects;
 use super::process::{ProcessObject, ProcessRef};
 use super::{Result, UserRef, cap_error, error};
+use crate::fs::Owner;
 use crate::sched::{self, Name, ThreadRef, wait};
 use crate::{Arch, caps};
 
@@ -579,7 +581,9 @@ pub fn method(
             crate::fs::trace::start(user, &target, a.flags, a.to)?;
             answer(label, 0, [0; 8])
         }
-        process::LIMITS | process::FILE_MASK => limits::method(user, label, args),
+        process::LIMITS | process::LIMITS_OF | process::FILE_MASK => {
+            limits::method(user, label, args)
+        }
         process::TIMES => {
             process::TimesArgs::decode(args)?;
             let (user_ns, system_ns) = me.cpu_times();
@@ -622,6 +626,11 @@ pub fn method(
             let a = process::ClockArgs::decode(args)?;
             let ns = clock(user, a.clock)?;
             answer(label, process::ClockResults::WORDS, process::ClockResults { ns }.encode())
+        }
+        process::CPU_TIME => {
+            let a = process::CpuTimeArgs::decode(args)?;
+            let ns = cpu_time(user, a.id, a.process)?;
+            answer(label, process::CpuTimeResults::WORDS, process::CpuTimeResults { ns }.encode())
         }
         process::SLOTS_USED => {
             let a = process::SlotsUsedArgs::decode(args)?;
@@ -830,6 +839,51 @@ fn clock(user: &UserRef, clock: ClockKind) -> Result<u64> {
         ClockKind::Process => cpu_ns(&user.process),
         ClockKind::Thread => sched::current().map_or(0, |me| me.runtime_ns()),
     })
+}
+
+/// `cpu_time`: the CPU time of thread `id` of `user`'s process, or with
+/// `process`, of process `id` (0: the caller's own thread or process).
+fn cpu_time(user: &UserRef, id: u64, process: bool) -> Result<u64> {
+    let me = &user.process;
+    if !process {
+        return Ok(own_thread(me, id)?.runtime_ns());
+    }
+    if id == 0 || id == me.number() {
+        return Ok(cpu_ns(me));
+    }
+    let target = with_tree(|tree| -> Result<ProcessRef> {
+        join(tree, me)?;
+        find(tree, id).ok_or(error(Kernel::NoSuchProcess))
+    })?;
+    Ok(cpu_ns(&target))
+}
+
+/// Whether `owner`, a description's owner, is still there: a thread,
+/// process or process group that has ended no longer is, and one with
+/// number 0 is none, which needs nothing. A process counts until it is
+/// waited for, as the tree holds it, and a group while it has a member.
+pub fn owner_lives(user: &UserRef, owner: Owner) -> Result<bool> {
+    if owner.id == 0 {
+        return Ok(true);
+    }
+    let me = &user.process;
+    match owner.kind {
+        OwnerKind::Process => with_tree(|tree| {
+            join(tree, me)?;
+            Ok(tree.get(owner.id).is_some())
+        }),
+        // Not by `kill`'s lookup of a negative number: -1 names every
+        // process there, not group 1.
+        OwnerKind::Group => with_tree(|tree| {
+            join(tree, me)?;
+            Ok(tree.members().any(|member| member.group == owner.id))
+        }),
+        OwnerKind::Thread => match priority::thread_named(user, owner.id) {
+            Ok(_) => Ok(true),
+            Err(status) if status == error(Kernel::NoSuchProcess) => Ok(false),
+            Err(status) => Err(status),
+        },
+    }
 }
 
 /// The slots a program started by `exec` or forked finds itself in.

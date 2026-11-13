@@ -107,6 +107,17 @@ enum LockKind: u32 {
     exclusive = 2;
 }
 
+/// Who a description's owner is, as fcntl's F_SETOWN_EX names it.
+/// (Since Phase 16, ADR 0497.)
+enum OwnerKind: u32 {
+    /// A thread (F_OWNER_TID).
+    thread = 0;
+    /// A process (F_OWNER_PID).
+    process = 1;
+    /// A process group (F_OWNER_PGRP).
+    group = 2;
+}
+
 /// An open file description's status flags.
 flags DescriptionFlags: u32 {
     /// Writes at CURRENT go at the end of the file.
@@ -279,9 +290,12 @@ const BACKLOG_MAX: u64 = 4096;
 /// The longest name a socket takes, in bytes: sockaddr_un's sun_path,
 /// without its NUL.
 const SOCKET_NAME_MAX: u64 = 107;
+/// The largest size `pipe_size` grows a pipe to: Linux's default
+/// /proc/sys/fs/pipe-max-size. (Since Phase 16, ADR 0497.)
+const PIPE_SIZE_MAX: u64 = 1048576;
 
 /// A file.
-interface file = 0x000c version 11 {
+interface file = 0x000c version 12 {
     kind = file;
     /// Reads from byte `offset` into `buffer`; returns how many bytes it
     /// read, fewer than asked at the end of the file. Needs the read right.
@@ -602,4 +616,34 @@ interface file = 0x000c version 11 {
     method receive_error = 33 (buffer: out bytes, report: out bytes) -> (count: u64, kept: u64)
         raises [no_such_slot, empty_slot, missing_rights, bad_address, not_socket,
                 not_supported, would_block];
+    /// Reads, and with `set` changes, the size in bytes of the pipe the
+    /// description is an end of, as Linux's F_GETPIPE_SZ and
+    /// F_SETPIPE_SZ, and returns the size it has now. `size` is rounded
+    /// up to a power of two of at least a page. A pipe begins with 64 KiB.
+    /// A size past 2^31 fails with invalid_argument; growing a pipe past
+    /// PIPE_SIZE_MAX with not_permitted; a size smaller than what the
+    /// pipe holds with busy. Anything but an end of a pipe fails with
+    /// wrong_kind. (Since Phase 16, ADR 0497.)
+    method pipe_size = 34 (set: bool, size: u64) -> (size: u64)
+        raises [no_such_slot, empty_slot, wrong_kind, invalid_argument, not_permitted, busy,
+                no_memory];
+    /// Reads, and with `set` changes, the description's owner, as fcntl's
+    /// F_GETOWN_EX and F_SETOWN_EX, and returns the owner as it was:
+    /// thread, process or process group `id`, or none with `id` 0. A new
+    /// description has none, as thread 0. An owner that has ended reads
+    /// with `id` 0, as on Linux; an `id` that names no thread, process or
+    /// group of that kind fails with no_such_process. Radix has no
+    /// signal-driven I/O and sends the owner nothing: it is only kept.
+    /// (Since Phase 16, ADR 0497.)
+    method owner = 35 (set: bool, kind: OwnerKind, id: u64) -> (kind: OwnerKind, id: u64)
+        raises [no_such_slot, empty_slot, no_such_process];
+    /// The filesystem the file is on, as radix-directory(2)'s `info` says
+    /// of a directory's: its kind, how it is mounted, its block size,
+    /// blocks and free blocks, and how many files it can hold and how many
+    /// more it can take. Needs no right, as `stat`. (Since Phase 16, ADR
+    /// 0497.)
+    method filesystem_info = 36 ()
+        -> (filesystem: FilesystemKind, flags: MountFlags, block_size: u32, blocks: u64, free: u64,
+            files: u64, free_files: u64)
+        raises [no_such_slot, empty_slot];
 }

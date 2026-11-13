@@ -256,7 +256,22 @@ BSDs, so the copy shares its offset, never has more access than it
 and how many files and directories it can hold: a tmpfs one for every
 two pages of memory, as on Linux, and the boot filesystem the ones it
 has. FAT keeps no count of files, so *f_files* is 0 for it, as for
-Linux's vfat.
+Linux's vfat. *fstatvfs* takes the descriptor of any file or directory,
+and of a pipe, as Linux's does.
+
+*fcntl*'s *F_SETOWN* and *F_SETOWN_EX* name an owner of an open file
+description, and *F_GETOWN* and *F_GETOWN_EX* tell it: a thread, a
+process, or with a negative number given to *F_SETOWN* a process group,
+none at first. Every descriptor that shares the description shares the
+owner. It has to be there when it is set (ESRCH), and reads as none
+once it has gone. The owner is kept and never signalled. On a directory
+descriptor all four fail with EINVAL, and so does *F_SETOWN* of
+INT_MIN, which names no process group.
+
+*fopen*, *fdopen*, *freopen*, *fmemopen* and *fopencookie* fail with
+EINVAL, before they open or make anything, for a mode that does not
+start with *r*, *w* or *a*. Characters after the first that the C
+library does not know are left out, as glibc leaves them.
 
 # PIPES AND POLL
 
@@ -266,6 +281,15 @@ longer ones go in as room comes. With no writer left, an empty pipe
 reads as its end; a write with no reader left raises SIGPIPE and fails
 with EPIPE. *O_NONBLOCK* makes either end fail with EAGAIN instead of
 waiting.
+
+A pipe holds 64 KiB until *fcntl*'s *F_SETPIPE_SZ* changes it. The size
+is rounded up to a power of two, to a page at least and to 1 MiB at
+most (EPERM past that), and a pipe does not shrink below the bytes it
+holds (EBUSY). What it holds stays in order, and a writer that waited
+for room, and *poll*, see the room a larger pipe gives. *F_GETPIPE_SZ*
+says the size, of either end and of a named pipe; any other descriptor
+is EBADF. A pipe's buffer is kernel memory that no resource domain is
+charged for (ADR 0497).
 
 *poll* and *ppoll* take *struct pollfd* as it is. Pipes, sockets and
 terminals say when they can be read or written, or have hung up; other
@@ -470,6 +494,17 @@ process or one thread, or start a thread (*SIGEV_THREAD*), and count
 overruns while their signal waits. One kernel thread runs every timer. A
 CPU-time timer fires within 10 ms of when it is due.
 
+*pthread_getcpuclockid* and *clock_getcpuclockid* give the ids of a
+thread's and a process's CPU-time clocks, which *clock_gettime* and
+*clock_getres* take like those above. The ids are glibc's:
+*(~number << 3) | 2* for a process and *(~number << 3) | 6* for a thread,
+negative numbers, for a number below 2^28 (ENOENT otherwise); number 0
+is the calling process or thread. *clock_gettime* reads the clock of a thread of the
+calling process and of any process that is there, and fails with EINVAL
+for a thread of another process, one that has ended, and a process that
+has been waited for. *clock_getcpuclockid* of a process that is not
+there is ESRCH. The resolution is 1 ns (ADR 0497).
+
 # THREADS
 
 *pthread_create* starts a thread in the same process
@@ -516,10 +551,24 @@ by default, so a process can only lower itself.
 
 *setrlimit* and *getrlimit* keep Linux's sixteen limits with Linux's
 defaults; *fork* copies them and *exec* keeps them. A hard limit can
-only be lowered. The kernel enforces *RLIMIT_STACK*, *RLIMIT_NICE* and
-*RLIMIT_RTPRIO*, and the C library *RLIMIT_NOFILE*. The others are kept for programs to read, and enforce
-nothing yet. *umask* is kept and inherited, and applied by the kernel
-(see USERS).
+only be lowered. The kernel enforces *RLIMIT_STACK*, *RLIMIT_NICE*,
+*RLIMIT_RTPRIO* and *RLIMIT_FSIZE*, and the C library *RLIMIT_NOFILE*.
+The others are kept for programs to read, and enforce nothing yet.
+*umask* is kept and inherited, and applied by the kernel (see USERS).
+
+A write that would make a file longer than the soft *RLIMIT_FSIZE* goes
+in as far as the limit, and one that starts at the limit sends the
+caller SIGXFSZ, which ends it unless it ignores or catches the signal,
+and fails with EFBIG. So does *ftruncate* to a size past it. Pipes,
+sockets and terminals have no size and are not limited. A write that
+appends reads the end of the file just before it writes (ADR 0497).
+
+*prlimit* reads and sets the limits of any process the caller may
+signal, which is what *kill* needs (EPERM otherwise, and ESRCH for a
+process that is not there). Another process's *RLIMIT_NOFILE* can be
+read and not set (EPERM): the C library keeps that limit in the process
+itself. *sched_getaffinity* and *sched_setaffinity* of a negative
+number are ESRCH.
 
 # FILE LOCKS
 

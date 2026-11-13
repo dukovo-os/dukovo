@@ -615,6 +615,51 @@ int clock_kind(int clock, enum radix_clock_kind *kind) {
 	return 0;
 }
 
+namespace {
+
+// The ids of CPU-time clocks are glibc's, which Linux's kernel decodes:
+// the number of a process or thread, complemented, above three low bits
+// that hold the clock's kind and whether it is a thread's. They are made
+// as glibc's MAKE_PROCESS_CPUCLOCK and MAKE_THREAD_CPUCLOCK make them
+// from the number and the kind CPUCLOCK_SCHED, the CPU time used.
+constexpr int CPU_CLOCK_KIND_MASK = 3;
+constexpr int CPU_CLOCK_SCHEDULED = 2;
+constexpr int CPU_CLOCK_THREAD = 4;
+// A number from here on does not fit: its id would not be negative, which
+// is how a CPU-time clock is told from the others.
+constexpr pid_t CPU_CLOCK_NUMBER_LIMIT = 1 << 28;
+
+int make_cpu_clock(pid_t number, int bits, clockid_t *clock) {
+	if(number < 0)
+		return ESRCH;
+	if(number >= CPU_CLOCK_NUMBER_LIMIT)
+		return ENOENT;
+	*clock = static_cast<clockid_t>((~static_cast<uint32_t>(number) << 3) | bits);
+	return 0;
+}
+
+} // namespace
+
+int thread_cpu_clock(pid_t tid, clockid_t *clock) {
+	// No thread is numbered 0, which in a clock id is the calling thread:
+	// a thread without a number has ended, as glibc's INVALID_TD_P says.
+	if(tid <= 0)
+		return ESRCH;
+	return make_cpu_clock(tid, CPU_CLOCK_SCHEDULED | CPU_CLOCK_THREAD, clock);
+}
+
+int process_cpu_clock(pid_t pid, clockid_t *clock) {
+	return make_cpu_clock(pid, CPU_CLOCK_SCHEDULED, clock);
+}
+
+int cpu_clock(clockid_t clock, uint64_t *id, bool *process) {
+	if((clock & CPU_CLOCK_KIND_MASK) != CPU_CLOCK_SCHEDULED)
+		return EINVAL;
+	*process = !(clock & CPU_CLOCK_THREAD);
+	*id = static_cast<uint64_t>(~(clock >> 3));
+	return 0;
+}
+
 int iov_total(const struct iovec *iov, size_t count, size_t *sum) {
 	size_t total = 0;
 	for(size_t i = 0; i < count; i++) {

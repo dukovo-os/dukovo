@@ -251,7 +251,7 @@ fn processes_named(
 /// whether `user`'s process may change it: a thread of its own process,
 /// the first thread of another process with that number, or another
 /// thread of another process by its own number, as Linux's thread IDs.
-fn thread_named(user: &UserRef, number: u64) -> Result<Named> {
+pub(super) fn thread_named(user: &UserRef, number: u64) -> Result<Named> {
     let me = &user.process;
     if number == 0 {
         let thread = sched::current().ok_or(error(Kernel::Gone))?;

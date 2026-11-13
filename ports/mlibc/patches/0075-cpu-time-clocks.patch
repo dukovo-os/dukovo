@@ -1,0 +1,82 @@
+SPDX-FileCopyrightText: 2026 The Dukovo contributors
+SPDX-License-Identifier: Apache-2.0 OR MIT
+
+CPU-time clocks of threads and processes: pthread_getcpuclockid and
+clock_getcpuclockid give the id of a thread's or a process's CPU-time
+clock through the GetThreadCpuclockid and GetCpuclockid sysdeps, and
+clock_gettime and clock_getres then take the id. They always failed, with
+ENOENT and ENOSYS, so a program could not ask how much CPU time another
+thread or process had used. The ids are a system's to make, from its own
+numbers for threads and processes; a system without the sysdeps keeps the
+old answers, without the log line. Meant for upstream.
+
+diff --git a/options/internal/include/mlibc/sysdep-signatures.hpp b/options/internal/include/mlibc/sysdep-signatures.hpp
+index cafa5ab..20bb950 100644
+--- a/options/internal/include/mlibc/sysdep-signatures.hpp
++++ b/options/internal/include/mlibc/sysdep-signatures.hpp
+@@ -259,6 +259,8 @@ SYSDEP_FUNC(GetAffinity, pid_t pid, size_t cpusetsize, cpu_set_t *mask);
+ SYSDEP_FUNC(GetThreadaffinity, pid_t tid, size_t cpusetsize, cpu_set_t *mask);
+ SYSDEP_FUNC(SetAffinity, pid_t pid, size_t cpusetsize, const cpu_set_t *mask);
+ SYSDEP_FUNC(SetThreadaffinity, pid_t tid, size_t cpusetsize, const cpu_set_t *mask);
++SYSDEP_FUNC(GetThreadCpuclockid, pid_t tid, clockid_t *clock);
++SYSDEP_FUNC(GetCpuclockid, pid_t pid, clockid_t *clock);
+ SYSDEP_FUNC(GetCurrentStackInfo, void **stack_base, size_t *stack_size);
+ SYSDEP_FUNC(Waitid, idtype_t idtype, id_t id, siginfo_t *info, int options);
+ SYSDEP_FUNC(NameToHandleAt, int dirfd, const char *pathname, struct file_handle *handle, int *mount_id, int flags);
+diff --git a/options/internal/include/mlibc/sysdep-tags.hpp b/options/internal/include/mlibc/sysdep-tags.hpp
+index 1eb6b25..9a47bd7 100644
+--- a/options/internal/include/mlibc/sysdep-tags.hpp
++++ b/options/internal/include/mlibc/sysdep-tags.hpp
+@@ -544,6 +544,10 @@ struct GetThreadaffinity {};
+ struct SetAffinity {};
+ // int sys_setthreadaffinity(pid_t tid, size_t cpusetsize, const cpu_set_t *mask);
+ struct SetThreadaffinity {};
++// int sys_get_thread_cpuclockid(pid_t tid, clockid_t *clock);
++struct GetThreadCpuclockid {};
++// int sys_get_cpuclockid(pid_t pid, clockid_t *clock);
++struct GetCpuclockid {};
+ // int sys_get_current_stack_info(void **stack_base, size_t *stack_size);
+ struct GetCurrentStackInfo {};
+ // int sys_waitid(idtype_t idtype, id_t id, siginfo_t *info, int options);
+diff --git a/options/posix/generic/pthread.cpp b/options/posix/generic/pthread.cpp
+index 78f1a53..aef94f6 100644
+--- a/options/posix/generic/pthread.cpp
++++ b/options/posix/generic/pthread.cpp
+@@ -1548,10 +1548,11 @@ int pthread_rwlock_unlock(pthread_rwlock_t *rw) {
+ 	}
+ }
+ 
+-int pthread_getcpuclockid(pthread_t, clockid_t *) {
+-	mlibc::infoLogger() << "mlibc: pthread_getcpuclockid() always returns ENOENT"
+-			<< frg::endlog;
+-	return ENOENT;
++int pthread_getcpuclockid(pthread_t thread, clockid_t *clockid) {
++	int e = mlibc::sysdep_or_enosys<GetThreadCpuclockid>(reinterpret_cast<Tcb*>(thread)->tid,
++			clockid);
++	// A system without CPU-time clocks has none of the thread's to name.
++	return e == ENOSYS ? ENOENT : e;
+ }
+ 
+ int pthread_spin_init(pthread_spinlock_t *lock, int) {
+diff --git a/options/posix/generic/time.cpp b/options/posix/generic/time.cpp
+index c7651f0..99cea39 100644
+--- a/options/posix/generic/time.cpp
++++ b/options/posix/generic/time.cpp
+@@ -7,6 +7,7 @@
+ #include <time.h>
+ 
+ #include <bits/ensure.h>
++#include <mlibc/all-sysdeps.hpp>
+ #include <mlibc/debug.hpp>
+ #include <mlibc/time.hpp>
+ #include <mlibc/strings.hpp>
+@@ -511,7 +512,6 @@ size_t strftime_l(char *__restrict s, size_t maxsize, const char *__restrict for
+ 	return mlibc::strftime(s, maxsize, format, timeptr, static_cast<mlibc::localeinfo *>(l));
+ }
+ 
+-int clock_getcpuclockid(pid_t, clockid_t *) {
+-	mlibc::infoLogger() << "mlibc: clock_getcpuclockid unconditionally returns ENOSYS" << frg::endlog;
+-	return ENOSYS;
++int clock_getcpuclockid(pid_t pid, clockid_t *clock) {
++	return mlibc::sysdep_or_enosys<GetCpuclockid>(pid, clock);
+ }

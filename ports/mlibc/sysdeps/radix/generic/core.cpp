@@ -297,7 +297,36 @@ int Sysdeps<FutexWake>::operator()(int *pointer, bool all) {
 			reinterpret_cast<uint64_t>(pointer), all ? INT32_MAX : 1, &r));
 }
 
+namespace {
+
+// The CPU time in nanoseconds of the thread or process that the negative
+// clock id `clock` is the clock of. A thread of another process, and a
+// thread or process that is not there, are EINVAL, as on Linux.
+int cpu_clock_ns(int clock, uint64_t *ns) {
+	uint64_t id;
+	bool process;
+	if(int e = radix::cpu_clock(clock, &id, &process); e)
+		return e;
+	struct radix_process_cpu_time_results r;
+	if(uint64_t status = radix_process_cpu_time(radix::SLOT_PROCESS, id, process, &r); status) {
+		int e = radix::to_errno(status);
+		return e == ESRCH ? EINVAL : e;
+	}
+	*ns = r.ns;
+	return 0;
+}
+
+} // namespace
+
 int Sysdeps<ClockGet>::operator()(int clock, time_t *secs, long *nanos) {
+	if(clock < 0) {
+		uint64_t ns;
+		if(int e = cpu_clock_ns(clock, &ns); e)
+			return e;
+		*secs = static_cast<time_t>(ns / 1000000000);
+		*nanos = static_cast<long>(ns % 1000000000);
+		return 0;
+	}
 	enum radix_clock_kind kind;
 	if(int e = radix::clock_kind(clock, &kind); e)
 		return e;
@@ -312,8 +341,14 @@ int Sysdeps<ClockGet>::operator()(int clock, time_t *secs, long *nanos) {
 
 int Sysdeps<ClockGetres>::operator()(int clock, time_t *secs, long *nanos) {
 	enum radix_clock_kind kind;
-	if(int e = radix::clock_kind(clock, &kind); e)
+	if(clock < 0) {
+		// Reading the clock proves that it is there.
+		uint64_t ns;
+		if(int e = cpu_clock_ns(clock, &ns); e)
+			return e;
+	} else if(int e = radix::clock_kind(clock, &kind); e) {
 		return e;
+	}
 	*secs = 0;
 	*nanos = 1;
 	return 0;
