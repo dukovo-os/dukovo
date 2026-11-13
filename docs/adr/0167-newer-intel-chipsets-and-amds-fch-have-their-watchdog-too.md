@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 # 0167. Newer Intel chipsets and AMD's FCH have their watchdog too
 
-- Status: Accepted
+- Status: Accepted; the TCO timer holds the whole timeout in its first stage since a lab finding on the Dell OptiPlex 7040 (see Consequences)
 - Date: 2026-10-30
 
 ## Context
@@ -85,7 +85,9 @@ from any of them.
 - The names it gets are *the Intel ICH9 TCO timer*, *the Intel ICH10 TCO
   timer*, *the Intel PCH TCO timer* and *the AMD FCH watchdog*.
 - The crate's host tests run each kind against a simulated chipset:
-  - The TCO timer counts its two stages of 0.6 s ticks.
+  - The TCO timer counts its two stages of 0.6 s ticks, and can be
+    made to restart the machine at the first, as firmware that does so
+    in its SMI handler does.
   - The FCH watchdog counts seconds.
   - The sideband bridge reads all ones while hidden.
   - Each restart sets the bits that keep it from restarting the machine
@@ -110,3 +112,10 @@ from any of them.
 - Not yet: the TCO timers of Intel's Atom SoCs (Bay Trail, Apollo Lake),
   which are behind their power management controllers (versions 3 and
   5), and AMD's SB700 and SB800.
+- TCO_TMR holds the whole timeout, as Linux's iTCO_wdt sets it, so the
+  timer runs out first at the timeout and restarts the machine itself
+  at twice it. The first run-out raises an SMI, and some firmware
+  restarts the machine there: the Dell OptiPlex 7040's did, 30 s into a
+  60 s timeout split into two stages, when a pet came late under load.
+  A restart by the firmware leaves SECOND_TO_STS clear, so the next boot
+  reports it as a reset, not as the watchdog's.
