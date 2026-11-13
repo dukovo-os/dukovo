@@ -6991,7 +6991,7 @@ fn acpi_thermal(vm: &mut Vm, case: &Case) -> Result<(), String> {
         "trip_point_2_hyst is 0",
     ])?;
     // The zone as hwmon's `acpitz` shows it, through sensors(1): its
-    // fourth read. The console's font has no degree sign.
+    // sixth read. The console's font has no degree sign.
     vm.type_text("clear; sensors\n")?;
     vm.expect_screen(&[
         "acpitz-acpi-0",
@@ -6999,7 +6999,7 @@ fn acpi_thermal(vm: &mut Vm, case: &Case) -> Result<(), String> {
         "temp1:        +45.0",
         "(crit = +80.0",
     ])?;
-    // The zone's fifth read: it says it changed, and warms from there, so
+    // The zone's seventh read: it says it changed, and warms from there, so
     // fast that the machine may be off before a screenshot.
     vm.type_text("clear; cat /sys/class/thermal/thermal_zone0/temp\n")?;
     let slow = "the firmware picks the CPUs' speed, so the kernel cannot slow them";
