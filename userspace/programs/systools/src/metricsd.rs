@@ -22,6 +22,7 @@
 //! log (`log metricsd`) and again when it is over. SIGTERM writes the rows
 //! waiting and ends, SIGHUP reads metrics.toml again.
 
+mod command;
 mod prometheus;
 mod sample;
 mod settings;
@@ -79,6 +80,9 @@ extern "C" fn on_term(_: libc::c_int) {
 extern "C" fn on_hangup(_: libc::c_int) {
     RELOAD.store(true, Ordering::Relaxed);
 }
+
+/// metrics(1).
+pub use command::main as metrics;
 
 /// metricsd(8).
 pub fn main(args: &mut Args) -> Result<i32, Fail> {
@@ -437,6 +441,16 @@ impl Daemon {
     }
 }
 
+/// `bytes` as `1.2 TB`, in powers of 1000, as the warnings and `metrics`
+/// say sizes.
+fn size_text(bytes: u64) -> String {
+    let text = util::human(bytes, true);
+    match text.strip_suffix(|c: char| c.is_ascii_alphabetic()) {
+        Some(number) => format!("{number} {}B", &text[number.len()..]),
+        None => format!("{text} B"),
+    }
+}
+
 /// The seconds since 1970, now.
 fn unix_seconds() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64)
@@ -755,6 +769,14 @@ mod tests {
             .unwrap();
         daemon.reload();
         assert!(daemon.endpoint.is_none());
+    }
+
+    #[test]
+    fn sizes_are_said_in_powers_of_1000() {
+        assert_eq!(size_text(1_300_000_000_000), "1.3 TB");
+        assert_eq!(size_text(93_000_000_000), "93 GB");
+        assert_eq!(size_text(512), "512 B");
+        assert_eq!(size_text(0), "0 B");
     }
 
     #[test]

@@ -34,9 +34,10 @@ use rustls::pki_types::pem::PemObject;
 
 use super::sample::{Filesystem, Snapshot, Temperature, Volume};
 use super::settings::Thresholds;
+use super::size_text;
 use super::store::{self, Selector};
 use crate::alerts::protocol::{Alert, DETAIL_MAX, KEY_MAX, Severity, TITLE_MAX};
-use crate::{logd, util};
+use crate::logd;
 
 /// The folder of the system's certificates, where `*.pem` and `*.crt`
 /// files are checked.
@@ -154,15 +155,6 @@ fn alert(key: String, level: Level, title: &str, advice: &str, id: &str) -> Opti
     let mut detail = format!("{advice} ({id})");
     detail.truncate(DETAIL_MAX);
     Some(Alert { key, severity: level.severity()?, title: one_line(title), detail })
-}
-
-/// `bytes` as `1.2 TB`, in powers of 1000.
-fn size_text(bytes: u64) -> String {
-    let text = util::human(bytes, true);
-    match text.strip_suffix(|c: char| c.is_ascii_alphabetic()) {
-        Some(number) => format!("{number} {}B", &text[number.len()..]),
-        None => format!("{text} B"),
-    }
 }
 
 /// The percent of `whole` that `part` is.
@@ -696,8 +688,6 @@ mod tests {
         assert_eq!(alerts[0].title, "/data is 93% full (93 GB of 100 GB)");
         assert!(alerts[0].detail.contains("`df -h /data`"));
         assert!(alerts[0].detail.ends_with("(MET-101)"), "{}", alerts[0].detail);
-        assert_eq!(size_text(1_300_000_000_000), "1.3 TB");
-        assert_eq!(size_text(512), "512 B");
     }
 
     #[test]
