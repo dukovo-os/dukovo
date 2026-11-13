@@ -677,7 +677,7 @@ fn issuer_name(der: &[u8]) -> Option<String> {
 }
 
 /// When certificate `der` starts and ends, in seconds since the epoch.
-fn validity(der: &[u8]) -> Option<(u64, u64)> {
+pub(crate) fn validity(der: &[u8]) -> Option<(u64, u64)> {
     let (_, validity, _) = issuer_validity_subject(der)?;
     let (start_tag, start, rest) = element(validity)?;
     let (end_tag, end, _) = element(rest)?;

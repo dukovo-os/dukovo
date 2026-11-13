@@ -25,6 +25,7 @@
 mod sample;
 mod settings;
 mod store;
+mod warnings;
 
 use std::fmt::Write as _;
 use std::fs;
@@ -33,11 +34,15 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use sample::{Reader, Snapshot, Sources};
-use settings::Settings;
+use settings::{Settings, Thresholds};
 use store::Store;
+use warnings::{Sent, Warnings};
+
+use crate::alerts::client;
+use crate::alerts::protocol::Alert;
 
 use crate::args::{Arg, Args};
 use crate::util::{self, Fail, usage};
@@ -120,7 +125,7 @@ fn run(args: &mut Args) -> Result<i32, Fail> {
         // SAFETY: the handlers only store to an atomic.
         unsafe { libc::sigaction(signal, &raw const action, std::ptr::null_mut()) };
     }
-    let mut daemon = Daemon::new(Places::system(), Sources::system());
+    let mut daemon = Daemon::new(Places::system(), Sources::system(), Box::new(client::set));
     println!("metricsd: reading the machine every {} s into {STATE}", step.as_secs());
     let mut due = Instant::now();
     while !STOP.load(Ordering::Relaxed) {
@@ -154,6 +159,8 @@ struct Places {
     state: PathBuf,
     live: PathBuf,
     settings: PathBuf,
+    /// The system's certificates, which the warnings check.
+    ssl: PathBuf,
 }
 
 impl Places {
@@ -162,6 +169,7 @@ impl Places {
             state: PathBuf::from(STATE),
             live: PathBuf::from(LIVE),
             settings: PathBuf::from(settings::FILE),
+            ssl: PathBuf::from(warnings::SSL),
         }
     }
 }
@@ -173,6 +181,7 @@ struct Said {
     history: bool,
     write: bool,
     now: bool,
+    alertd: bool,
 }
 
 impl Said {
@@ -198,11 +207,20 @@ struct Daemon {
     previous: Option<Snapshot>,
     /// The steps since the rows were last written.
     unwritten: u32,
+    warnings: Warnings,
+    /// How the alerts reach alertd.
+    set_alerts: SetAlerts,
     said: Said,
 }
 
+/// A way to give alertd the service's alerts.
+type SetAlerts = Box<dyn FnMut(&[Alert]) -> Result<(), String>>;
+
 impl Daemon {
-    fn new(places: Places, sources: Sources) -> Daemon {
+    fn new(places: Places, sources: Sources, set_alerts: SetAlerts) -> Daemon {
+        let mut warnings = Warnings::new(Thresholds::default(), &places.ssl);
+        // The line of a filesystem's filling goes on from the history.
+        warnings.backfill(&places.state, unix_seconds());
         let mut daemon = Daemon {
             places,
             reader: Reader::new(sources),
@@ -210,6 +228,8 @@ impl Daemon {
             store: None,
             previous: None,
             unwritten: 0,
+            warnings,
+            set_alerts,
             said: Said::default(),
         };
         daemon.reload();
@@ -234,6 +254,7 @@ impl Daemon {
         for wrong in wrong {
             eprintln!("<3>metricsd: {wrong}");
         }
+        self.warnings.set_thresholds(settings.warnings);
         self.settings = settings;
     }
 
@@ -244,7 +265,27 @@ impl Daemon {
         let row = sample::series(self.previous.as_ref(), &snapshot);
         self.write_now(&row);
         self.keep(snapshot.at, &row);
+        self.warn(&snapshot);
         self.previous = Some(snapshot);
+    }
+
+    /// Gives alertd the early warnings the reading shows, if they are due.
+    fn warn(&mut self, snapshot: &Snapshot) {
+        let now = Instant::now();
+        let alerts = self.warnings.check(snapshot, now);
+        match self.warnings.report(&alerts, now, &mut self.set_alerts) {
+            Sent::Not => {}
+            Sent::Yes => {
+                if Said::ends(&mut self.said.alertd) {
+                    println!("metricsd: alertd takes the alerts again");
+                }
+            }
+            Sent::Failed(why) => {
+                if Said::begins(&mut self.said.alertd) {
+                    eprintln!("<4>metricsd: cannot give alertd the alerts: {why}; trying again");
+                }
+            }
+        }
     }
 
     /// Puts the row in the history, and writes the rows waiting when
@@ -344,6 +385,11 @@ impl Daemon {
     }
 }
 
+/// The seconds since 1970, now.
+fn unix_seconds() -> i64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64)
+}
+
 /// The text of the newest row: a line `name value` for each series that
 /// has a value. A name may hold spaces, a sensor's label, so the value is
 /// what follows the last one.
@@ -375,8 +421,30 @@ fn write_now(live: &Path, text: &str) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::RefCell;
     use std::ffi::OsString;
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::rc::Rc;
+
+    /// The sets of alerts a daemon gave alertd, and whether alertd takes
+    /// them.
+    #[derive(Default)]
+    struct Alertd {
+        sets: Rc<RefCell<Vec<Vec<Alert>>>>,
+        refuses: Rc<RefCell<bool>>,
+    }
+
+    impl Alertd {
+        fn client(&self) -> SetAlerts {
+            let (sets, refuses) = (self.sets.clone(), self.refuses.clone());
+            Box::new(move |alerts| {
+                if *refuses.borrow() {
+                    return Err("alertd is not running".into());
+                }
+                sets.borrow_mut().push(alerts.to_vec());
+                Ok(())
+            })
+        }
+    }
 
     /// A folder of the test's own.
     fn folder(name: &str) -> PathBuf {
@@ -388,6 +456,10 @@ mod tests {
 
     /// A machine of a few files, and where a daemon keeps its own.
     fn daemon(name: &str) -> (Daemon, PathBuf) {
+        daemon_for(name, &Alertd::default())
+    }
+
+    fn daemon_for(name: &str, alertd: &Alertd) -> (Daemon, PathBuf) {
         let dir = folder(name);
         let put = |path: &str, text: &str| {
             let file = dir.join("machine").join(path);
@@ -410,8 +482,9 @@ mod tests {
             state: dir.join("state"),
             live: dir.join("live"),
             settings: dir.join("metrics.toml"),
+            ssl: dir.join("ssl"),
         };
-        (Daemon::new(places, sources), dir)
+        (Daemon::new(places, sources, alertd.client()), dir)
     }
 
     fn lines(path: &Path) -> Vec<String> {
@@ -521,6 +594,59 @@ mod tests {
         fs::remove_file(dir.join("metrics.toml")).unwrap();
         daemon.reload();
         assert_eq!(daemon.settings, Settings::default());
+    }
+
+    /// Makes the sensor of the test machine read `millidegrees`, with a
+    /// critical temperature of 100 degrees.
+    fn heat(dir: &Path, millidegrees: u32) {
+        let hwmon = dir.join("machine/kernel/class/hwmon/hwmon0");
+        fs::write(hwmon.join("temp1_input"), format!("{millidegrees}\n")).unwrap();
+        fs::write(hwmon.join("temp1_crit"), "100000\n").unwrap();
+    }
+
+    #[test]
+    fn the_early_warnings_are_given_to_alertd_after_each_step() {
+        let alertd = Alertd::default();
+        let (mut daemon, dir) = daemon_for("warnings", &alertd);
+        daemon.step();
+        // The first step gives the empty set, which clears what alertd
+        // had from before a restart.
+        assert_eq!(alertd.sets.borrow().len(), 1);
+        assert!(alertd.sets.borrow()[0].is_empty());
+        heat(&dir, 99_000);
+        for _ in 0..4 {
+            daemon.step();
+        }
+        assert_eq!(alertd.sets.borrow().len(), 1, "four steps are not enough");
+        daemon.step();
+        let sets = alertd.sets.borrow();
+        assert_eq!(sets.len(), 2);
+        assert_eq!(sets[1].len(), 1);
+        assert_eq!(sets[1][0].key, "temp:cros_ec-isa-0000/battery-sensor");
+        drop(sets);
+        // The set is not given again while it is the same, and the
+        // thresholds of metrics.toml are the daemon's.
+        daemon.step();
+        assert_eq!(alertd.sets.borrow().len(), 2);
+        fs::write(dir.join("metrics.toml"), "[warnings]\ntemperature-margin = 30\n").unwrap();
+        daemon.reload();
+        assert_eq!(daemon.settings.warnings.temperature_margin, 30);
+    }
+
+    #[test]
+    fn an_alertd_that_does_not_answer_is_said_once_and_does_not_stop_the_rest() {
+        let alertd = Alertd::default();
+        *alertd.refuses.borrow_mut() = true;
+        let (mut daemon, dir) = daemon_for("alertd-down", &alertd);
+        daemon.step();
+        assert!(daemon.said.alertd);
+        daemon.step();
+        daemon.step();
+        // It is tried again after ten seconds, not at each step.
+        assert!(alertd.sets.borrow().is_empty());
+        assert!(dir.join("live/now").exists());
+        daemon.finish();
+        assert_eq!(history(&daemon, "load"), 3);
     }
 
     #[test]

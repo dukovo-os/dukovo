@@ -78,6 +78,9 @@ pub struct Filesystem {
     pub fstype: String,
     /// Where it is mounted.
     pub mount: String,
+    /// Whether it is mounted read-only, so that freeing space is not
+    /// something its owner can do.
+    pub read_only: bool,
     pub size: u64,
     pub free: u64,
     /// What a program that is not root may still use.
@@ -459,6 +462,7 @@ fn read_filesystems(mounts: &[u8]) -> Vec<Filesystem> {
                 device: mount.source,
                 fstype: if mount.kind == "fat" { "vfat".into() } else { mount.kind },
                 mount: mount.path.to_string_lossy().into_owned(),
+                read_only: mount.read_only,
                 size: space.size,
                 free: space.free,
                 available: space.available,
@@ -787,6 +791,10 @@ mod tests {
         assert!(said.contains(&("vda1", "btrfs", "/")), "{said:?}");
         assert!(said.contains(&("sdb1", "ext4", here.to_str().unwrap())), "{said:?}");
         assert!(!said.iter().any(|(_, kind, _)| *kind == "tmpfs" || *kind == "proc"));
+        // A read-only mount is said to be.
+        let read_only = |mount: &str| found.iter().find(|f| f.mount == mount).map(|f| f.read_only);
+        assert_eq!(read_only(here.to_str().unwrap()), Some(true));
+        assert_eq!(read_only("/"), Some(false));
         let root = found.iter().find(|f| f.mount == "/").unwrap();
         assert!(root.size > 0 && root.used() <= root.size && root.available <= root.size);
     }
