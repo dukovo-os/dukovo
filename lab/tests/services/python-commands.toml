@@ -1,0 +1,39 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# Python's four commands from the catalog (ADR 0495): python3 and pip3
+# are programs of the bundle, and python and pip the same two run by
+# those names, as bundle(1) runs a command that is another's alias. Each
+# runs by its path, as a script or Ansible runs it, so no question is
+# asked; python and pip run as bundle(1) runs them, the program started
+# with the alias's name.
+about = "Python's commands from the catalog run: python3 and python, and pip3 and pip for that same Python (ADR 0495)"
+time = "5m"
+host_needs = ["scp"]
+
+[[step]]
+host = "sh {here}/copy-bundle.sh org.python.python {machine} {machine-port:22}"
+expect = "copied: org.python.python"
+# From nothing: a run before may have left it installed.
+[[step]]
+run = "sh -c 'bundle remove --for-everyone --purge org.python.python > /dev/null 2>&1; bundle install --for-everyone --yes /users/lab/org.python.python.dkv | tail -1'"
+root = true
+expect = "installed org.python.python"
+# A sum the interpreter works out, so that the typed line never matches.
+[[step]]
+run = "/applications/org.python.python/bin/python3 -c 'print(6 * 7)'"
+expect = "42"
+[[step]]
+run = '''/applications/org.python.python/bin/python3 -c "import os; os.execv('/applications/org.python.python/bin/python3', ['python', '--version'])"'''
+expect = "Python 3.15."
+[[step]]
+run = "/applications/org.python.python/bin/pip3 --version"
+expect = "(python 3.15)"
+# Without the network: pip asks the index for nothing.
+[[step]]
+run = '''/applications/org.python.python/bin/python3 -c "import os; os.execv('/applications/org.python.python/bin/pip3', ['pip', 'list', '--disable-pip-version-check'])"'''
+expect = "Package"
+[[step]]
+run = "bundle remove --for-everyone --purge org.python.python"
+root = true
+expect = "removed org.python.python"

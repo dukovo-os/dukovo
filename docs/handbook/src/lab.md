@@ -379,3 +379,46 @@ records it.
 ```
 
 A machine with no line there, and every QEMU guest, skips the test.
+
+## Coverage
+
+Each command, service, page of the web console and route of its API
+that is new since Dukovo 0.15 has lab tests that cover it before it
+counts as done. `lab/coverage.toml` lists them, each with the tests that
+cover it, by category and name:
+
+```toml
+[commands]
+valkey-cli = ["services/valkey"]
+
+[services]
+valkey = ["services/valkey"]
+
+[pages]
+"/services" = ["console/services"]
+
+[routes]
+"GET /services" = ["admind/services"]
+```
+
+`./ob lab coverage` prints the table and how much of it has tests, and
+`./ob lab coverage --check`, which CI runs on every change, fails on
+anything that falls short:
+
+- a command or service the tree has, that `lab/before-phase-16.txt`
+  does not list, with no entry. The tree's commands are the manual pages
+  of sections 1 and 8 and the catalog bundles' commands, and its services
+  the system's service files and the bundles' services, so a new one
+  shows up by itself;
+- an entry with no tests, or naming a test that is not in `lab/tests`;
+- a test that never names what it covers: each word of the name, as a
+  whole word, in the test's file or in a script beside it that the test
+  runs as `{here}/NAME`;
+- an entry of a command or service the tree no longer has.
+
+The console's pages and the API's routes have no list in the tree to
+compare with, so their entries are held to their tests alone, and each
+change that adds one adds its entry. A subcommand that does something of
+its own, as `service explain` does, gets an entry of its own as well.
+`lab/before-phase-16.txt` holds what there was before; nothing is added
+to it.
