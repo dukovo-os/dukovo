@@ -33,6 +33,12 @@
 //! performance tests hold Dukovo to ([`linux_kit`]), and pass it on with
 //! `--linux`. A kit that will not build (offline the first time, say) only
 //! makes those tests skip.
+//!
+//! `ob lab coverage` is ob's own, not dukovo-lab's: it holds Phase 16's
+//! commands, services, pages and routes to the tests that cover them
+//! ([`coverage`]).
+
+mod coverage;
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -328,6 +334,17 @@ pub fn command(ctx: &Ctx, args: &mut Args) -> Result<()> {
     // it) on a freshly built image.
     if lab_command(&rest) == Some("attack") {
         rest = attack_to_run(&rest);
+    }
+    if lab_command(&rest) == Some("coverage") {
+        let check = match rest.iter().filter(|word| *word != "coverage").collect::<Vec<_>>()[..] {
+            [] => false,
+            [word] if word == "--check" => true,
+            ref other => bail!(
+                "`ob lab coverage` takes only --check, not {}",
+                other.iter().map(|word| format!("`{word}`")).collect::<Vec<_>>().join(" ")
+            ),
+        };
+        return coverage::command(ctx, check);
     }
     let tool = find_tool()?;
 

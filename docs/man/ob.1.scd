@@ -1572,8 +1572,22 @@ _target/userspace/_).
 	*disc-drive* holds the music CD of an audio CD test in the machine,
 	as QEMU's own drives hold none.
 
+	*coverage* [*--check*] is *ob*'s own, and runs no test: it prints
+	each command, service, console page and API route new since 0.15
+	beside the lab tests that cover it, from _lab/coverage.toml_, and
+	how many of them have tests. With *--check*, as CI runs it, it
+	prints only that count and what falls short, and exits 1 when
+	anything does: a command or service the tree has (the manual pages
+	of sections 1 and 8, the system's service files, and the catalog
+	bundles' commands and services) that _lab/before-phase-16.txt_ does
+	not list and that has no entry; an entry with no tests or with a
+	test that is not in _lab/tests_; a test that never names what it
+	covers, in its file or in a script beside it that it runs as
+	_{here}/NAME_; or an entry of something the tree no longer has.
+
 	*dukovo-lab* is found on *PATH*, or at *OB_LAB*. The handbook's Lab
-	tests chapter shows how to write a test.
+	tests chapter shows how to write a test, and its Coverage section
+	how an entry is written.
 
 	*--no-build*
 		Test the lab image already in _out_.

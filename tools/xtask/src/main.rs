@@ -519,6 +519,7 @@ seven days on the lab's PC; CI soaks for five hours each week.
             "Usage: ./ob lab [--no-build | --image <file>] [--lab-key <file>] [--lab-password <file>]
               [--debug | --release]
               [<dukovo-lab command>] [options]
+       ./ob lab coverage [--check]
 
 Runs dukovo-lab, the Dukovo Lab's harness (github.com/dukovo-os/lab), on
 this tree's tests in lab/tests (ADR 0401).
@@ -541,6 +542,12 @@ passed, 1 a test failed, 2 a bad request or test file, 3 the lab broke,
 dukovo-lab is found on PATH, in ~/.cargo/bin, or at OB_LAB (which plain
 ./ob lab then leaves as it is).
 
+./ob lab coverage is ob's own and runs no test: it prints each command,
+service, console page and API route new since 0.15 beside the lab tests
+that cover it (lab/coverage.toml). With --check, as CI runs it, it exits
+1 while one has no entry, an entry's tests are missing or never name it,
+or an entry is of something the tree no longer has.
+
   --no-build         Test the lab image already in out/
   --image <file>     Test this image instead of building one
   --lab-key <file>   The lab's public key, as ./ob image --lab takes it
@@ -555,7 +562,8 @@ Examples:
   ./ob lab run --preset quick --detach
   ./ob lab status --wait
   ./ob lab findings
-  ./ob lab send --all"
+  ./ob lab send --all
+  ./ob lab coverage --check"
         }
         "fixture" => {
             "Usage: ./ob fixture btrfs-log|btrfs-radix-log|btrfs-send|ntfs-3g [--linux-kernel <file>]

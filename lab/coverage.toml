@@ -1,0 +1,35 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# Phase 16's commands, services, console pages and API routes, each with
+# the lab tests that cover it, by category and name (lab/tests/CATEGORY/
+# NAME.toml). `./ob lab coverage` prints the table; with --check, as CI
+# runs it, it fails while something the tree has that is not in
+# lab/before-phase-16.txt has no entry here, an entry names no test or a
+# test that is not there, a test never names what it covers, or an entry
+# is of something the tree no longer has. The handbook's Lab tests
+# chapter, Coverage, says more.
+
+# A command is covered by a test that runs it: a bundle's by its path, as
+# a script runs it, or by its own name where the program does what its
+# name says.
+[commands]
+nginx = ["services/nginx"]
+pip = ["services/python-commands"]
+pip3 = ["services/python-commands"]
+python = ["services/python-commands"]
+python3 = ["services/python", "services/python-commands"]
+valkey-benchmark = ["services/valkey"]
+valkey-check-aof = ["services/valkey"]
+valkey-check-rdb = ["services/valkey"]
+valkey-cli = ["services/valkey"]
+
+[services]
+nginx = ["services/nginx"]
+valkey = ["services/valkey"]
+
+# The admin console's pages, by their path (thread C), and admind's
+# routes, as METHOD /path.
+[pages]
+
+[routes]

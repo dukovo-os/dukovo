@@ -961,7 +961,7 @@ jobs:
   # one runner instead of four. Each runs even when one before it failed,
   # so a failure here names every check that failed.
   checks:
-    name: Licenses, sign-off and TUF
+    name: Licenses, sign-off, TUF and lab coverage
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -1021,6 +1021,13 @@ jobs:
       - name: ./ob signoff
         if: ${{ !cancelled() && github.event_name == 'pull_request' }}
         run: ./ob signoff "${{ github.event.pull_request.base.sha }}"
+
+      # Every command, service, console page and API route Phase 16 adds
+      # has lab tests that cover it (lab/coverage.toml; the handbook's Lab
+      # tests chapter, Coverage).
+      - name: ./ob lab coverage --check
+        if: ${{ !cancelled() }}
+        run: ./ob lab coverage --check
 
       # The TUF client against tuf-conformance (ADR 0380).
       - name: ./ob test tuf

@@ -6,9 +6,13 @@
 # say, to listen on every address with a password. The lab PC stores
 # 40,000 keys over 16 connections at once with a client of its own; the
 # machine restarts Valkey, which saves them as it stops and reads them
-# back as it starts, and the lab PC finds every one of them.
-about = "Valkey from the catalog keeps 40,000 keys the lab PC stored over 16 connections across a restart (ADR 0492)"
-time = "5m"
+# back as it starts, and the lab PC finds every one of them. Then the
+# bundle's commands, each run by its path as a script runs it: the client
+# counts the keys, the benchmark runs a short round, and valkey-server,
+# run by the names of its two checkers, finds the snapshot and the
+# append-only file sound.
+about = "Valkey from the catalog keeps 40,000 keys the lab PC stored over 16 connections across a restart, and its client, benchmark and checkers work on them (ADR 0492)"
+time = "6m"
 host_needs = ["python3", "scp"]
 
 [[step]]
@@ -38,6 +42,26 @@ root = true
 [[step]]
 host = "python3 {here}/valkey-load.py check {machine} {machine-port:6379} lab-valkey-pass"
 expect = "read 40000, missing 0"
+[[step]]
+run = "/applications/io.valkey.valkey/bin/valkey-cli -a lab-valkey-pass --no-auth-warning dbsize"
+expect = "40000"
+[[step]]
+run = "/applications/io.valkey.valkey/bin/valkey-benchmark -a lab-valkey-pass -q -n 2000 -t set,get"
+expect = "requests per second"
+# The snapshot the restart saved. valkey-server checks files when it is
+# run by a checker's name, as bundle(1) runs it by an alias's name.
+[[step]]
+run = '''sh -c 'ln -sf /applications/io.valkey.valkey/bin/valkey-server /tmp/valkey-check-rdb && /tmp/valkey-check-rdb /shared/services/io.valkey.valkey/valkey/data/dump.rdb; rm -f /tmp/valkey-check-rdb' '''
+root = true
+expect = "RDB looks OK"
+# The append-only file, which turning it on writes from the keys there.
+[[step]]
+run = '''sh -c 'c="/applications/io.valkey.valkey/bin/valkey-cli -a lab-valkey-pass --no-auth-warning"; $c config set appendonly yes > /dev/null; for i in $(seq 1 30); do p=$($c info persistence); case $p in *aof_enabled:1*aof_rewrite_in_progress:0*aof_rewrite_scheduled:0*aof_last_bgrewrite_status:ok*) echo aof-written; break;; esac; sleep 1; done' '''
+expect = "aof-written"
+[[step]]
+run = '''sh -c 'ln -sf /applications/io.valkey.valkey/bin/valkey-server /tmp/valkey-check-aof && /tmp/valkey-check-aof /shared/services/io.valkey.valkey/valkey/data/appendonly/appendonly.aof.manifest; rm -f /tmp/valkey-check-aof' '''
+root = true
+expect = "valid"
 # Its log is the system's.
 [[step]]
 run = '''sh -c 'log valkey | grep -q "DB saved on disk" && log valkey | grep -q "DB loaded from disk" && echo saved-and-loaded' '''

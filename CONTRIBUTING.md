@@ -76,6 +76,10 @@ A change merges when:
   on QEMU, and on the lab's real machines once those are set up. A feature
   is not complete without them. The handbook's
   [lab chapter](docs/handbook/src/lab.md#writing-a-test) says how to write one.
+  A new command, service, console page or API route also gets an entry in
+  `lab/coverage.toml` naming the tests that cover it, which
+  `./ob lab coverage --check` enforces in CI (the lab chapter's
+  [Coverage](docs/handbook/src/lab.md#coverage)).
 - The docs say what the change does, in the same pull request, so that
   they stay the one current account of the system:
   - every new command, file format, kernel command-line flag, `kdb`
