@@ -83,7 +83,7 @@ expect = "missing 404"
 # runs, is the same after them. The shell ignores the hangup that ends the
 # step's elevate, and counts the reloads in a file for a step to check.
 [[step]]
-run = "sh -c 'service php-fpm status | grep -o \"as process [0-9]*\" > /users/lab/php-fpm-before'"
+run = "sh -c 'service php-fpm status -n 0 | grep -o \"as process [0-9]*\" > /users/lab/php-fpm-before'"
 root = true
 [[step]]
 run = "sh -c 'trap \"\" HUP; rm -f /users/lab/php-fpm-reloads; (for i in 1 2 3 4 5; do sleep 2; service php-fpm reload && echo reloaded >> /users/lab/php-fpm-reloads; done) > /dev/null 2>&1 &'"
@@ -96,7 +96,7 @@ run = "sh -c 'echo reloads $(grep -c reloaded /users/lab/php-fpm-reloads)'"
 root = true
 expect = "reloads 5"
 [[step]]
-run = "sh -c 'service php-fpm status | grep -o \"as process [0-9]*\" > /users/lab/php-fpm-after; cmp -s /users/lab/php-fpm-before /users/lab/php-fpm-after && echo same-process'"
+run = "sh -c 'service php-fpm status -n 0 | grep -o \"as process [0-9]*\" > /users/lab/php-fpm-after; cmp -s /users/lab/php-fpm-before /users/lab/php-fpm-after && echo same-process'"
 root = true
 expect = "same-process"
 # Its log is the system's.

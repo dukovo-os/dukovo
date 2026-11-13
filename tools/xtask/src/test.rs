@@ -470,6 +470,11 @@ const UPDATE_RELEASES: u8 = 30;
 /// ADR 0466).
 const UPDATE_FILE: u8 = 31;
 
+/// [`Disk::fat`] for a [`BUNDLE_FILES`] disk that also holds the `php`
+/// test's script and list of PHP's own tests ([`cases::php::make_disk`]):
+/// files a case would otherwise type, a key at a time.
+const PHP_FILES: u8 = 32;
+
 /// One of the boot tests' updates of an installed system (ADR 0451): this
 /// build's slot, under a version after this one's that updates from it,
 /// with kernel flags of its own, or a command broken.
@@ -1580,7 +1585,7 @@ fn case_seconds(case: &Case) -> u32 {
 /// Whether `case` installs the catalog's bundles, which ob packs before
 /// the first such test of a run.
 fn needs_packing(case: &Case) -> bool {
-    case.disks.iter().any(|disk| matches!(disk.fat, BUNDLE_FILES | CATALOG_SITE))
+    case.disks.iter().any(|disk| matches!(disk.fat, BUNDLE_FILES | CATALOG_SITE | PHP_FILES))
 }
 
 /// About how long packing the catalog's bundles takes on CI, in seconds,
@@ -4952,6 +4957,11 @@ fn make_disks(
         }
         if disk.fat == BUNDLE_FILES {
             make_bundle_files(ctx, disk, &image.path)?;
+            made.push(image);
+            continue;
+        }
+        if disk.fat == PHP_FILES {
+            cases::php::make_disk(ctx, disk, &image.path)?;
             made.push(image);
             continue;
         }

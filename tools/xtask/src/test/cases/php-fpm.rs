@@ -245,11 +245,12 @@ fn php_fpm(vm: &mut Vm, case: &Case) -> Result<(), String> {
     unlock(vm)?;
     run_within(
         vm,
-        "clear; elevate service php-fpm status | grep -o 'as process [0-9]*' > /tmp/before; curl -s \
-         --rate 50/s --out-null -w '%{http_code}\\n' 'http://localhost/info.php?n=[1-150]' > \
-         /tmp/codes & sleep 1; elevate sh -c 'for i in 1 2 3; do service php-fpm reload; sleep 1; \
-         done'; wait; echo \"served $(grep -c '^200$' /tmp/codes) of $(grep -c . /tmp/codes)\" > \
-         /tmp/served; elevate service php-fpm status | grep -o 'as process [0-9]*' > /tmp/after",
+        "clear; elevate service php-fpm status -n 0 | grep -o 'as process [0-9]*' > /tmp/before; \
+         curl -s --rate 50/s --out-null -w '%{http_code}\\n' 'http://localhost/info.php?n=[1-150]' \
+         > /tmp/codes & sleep 1; elevate sh -c 'for i in 1 2 3; do service php-fpm reload; sleep \
+         1; done'; wait; echo \"served $(grep -c '^200$' /tmp/codes) of $(grep -c . /tmp/codes)\" \
+         > /tmp/served; elevate service php-fpm status -n 0 | grep -o 'as process [0-9]*' > \
+         /tmp/after",
         300,
     )?;
     answer_prompt(
