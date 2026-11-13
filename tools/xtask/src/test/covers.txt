@@ -564,6 +564,7 @@ spark userspace/hello/
 spark-network userspace/posix/netgrant.c userspace/spark/tests/services/network/
 spark-oom kernel/mm/ userspace/posix/hog.c userspace/spark/tests/services/hog.toml
 spark-stop userspace/spark/tests/services/stop/
+sqlite kernel/fs/block/ kernel/fs/btrfs/ ports/sqlite/ userspace/programs/sqlite-test/
 ssh kernel/net/ ports/openssh/ userspace/posix/sshtest.c
 ssh-keyring ports/openssh/ userspace/programs/systools/src/authd.rs
 ssh-keyring userspace/programs/systools/src/authd/ userspace/programs/systools/src/keyring.rs

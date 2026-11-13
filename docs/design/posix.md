@@ -743,7 +743,9 @@ list go before it sets the timer, the race above; a waiter reading
   cache maps its own pages. A file in `/dev/shm` is the exception: its
   pages are shared ones, which every mapping of it shares (ADR 0490). A
   read-only shared mapping of another file is the process's copy, and
-  `mprotect` cannot make it writable (EACCES).
+  `mprotect` cannot make it writable (EACCES). SQLite's WAL index
+  between connections and its memory-mapped I/O need such mappings (ADR
+  0511).
 - `clock_gettime` is a capability call; there is no read-only clock page
   (vDSO). The instruction budgets will show when it matters.
 - `poll` wakes every poller on a change to anything polled.

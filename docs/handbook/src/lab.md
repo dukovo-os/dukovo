@@ -258,9 +258,17 @@ it fails on Dukovo, which `lab/tests/services/copy-file.sh` copies over
 too, and `services/php` does the same with PHP's, and its
 `php-skips.txt`. `services/php-fpm` has nginx pass the pages of a PHP site
 to PHP-FPM, and reload PHP-FPM's settings while the lab PC keeps requests
-coming. With an image given by `--image`, `./ob lab` packs no bundles but
-names the ones this tree packed already, if any. Without the bundles
-those tests are skipped too.
+coming. `services/sqlite` runs the SQLite shell and the Rust program that
+links the library, and `services/sqlite-suite` runs SQLite's own test
+suite on the machine, leaving out the test files
+`lab/tests/services/sqlite-skips.txt` lists; the suite's program and
+scripts are not a bundle but a file the sqlite port builds for the lab,
+which `./ob lab` names, with the other ports' such files, in
+`DUKOVO_LAB_PORTS` (the folder of the ports' builds, `out/ports`) and
+`lab/tests/services/copy-port-file.sh` copies over. With an image given
+by `--image`, `./ob lab` packs no bundles but names the ones this tree
+packed already, if any. Without the bundles or the ports' builds those
+tests are skipped too.
 
 Removable media go in and out with steps of their own: `usb` plugs and
 pulls a USB stick, `card` puts a memory card in a card reader, `disc` a

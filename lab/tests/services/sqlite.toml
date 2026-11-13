@@ -1,0 +1,89 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# SQLite from the catalog (ADR 0511): the sqlite3 shell and the library
+# it and Dukovo's own programs link. The shell runs by its path, as a
+# script or Ansible runs it, so no question is asked. A database in
+# exclusive locking mode takes the WAL journal, with its index in memory;
+# the rollback journal works between two processes through fcntl's
+# byte-range locks, and a reader is not held up by a writer. WAL between
+# connections needs shared writable mappings of files, which Radix does not
+# give yet, so it is not here (docs/deferred.md). The expected texts are
+# worked out by the database, so that the typed lines never match.
+about = "SQLite from the catalog works: its sqlite3 shell, WAL in exclusive locking mode, a backup, the rollback journal between two processes, and the Rust test program that links the library (ADR 0511)"
+time = "5m"
+host_needs = ["scp"]
+
+[[step]]
+host = "sh {here}/copy-bundle.sh org.sqlite.sqlite {machine} {machine-port:22}"
+expect = "copied: org.sqlite.sqlite"
+# From nothing: a run before may have left it installed.
+[[step]]
+run = "sh -c 'bundle remove --for-everyone --purge org.sqlite.sqlite > /dev/null 2>&1; bundle install --for-everyone --yes /users/lab/org.sqlite.sqlite.dkv | tail -1'"
+root = true
+expect = "installed org.sqlite.sqlite"
+# A folder of the lab account's home, on the disk, made afresh; rust/ is
+# for the test program.
+[[step]]
+run = "sh -c 'rm -rf /users/lab/sqlite-check && mkdir -p /users/lab/sqlite-check/rust'"
+[[step]]
+run = "/applications/org.sqlite.sqlite/bin/sqlite3 --version"
+expect = "3.54.1 20"
+[[step]]
+run = '''/applications/org.sqlite.sqlite/bin/sqlite3 :memory: "SELECT group_concat(compile_options, ' ') FROM pragma_compile_options"'''
+expect = ["ENABLE_FTS5", "OMIT_LOAD_EXTENSION", "THREADSAFE=1"]
+# WAL in exclusive locking mode, 10000 rows from a recursive query, and
+# what the database says of them: the sum is 3 * (10000 * 10001 / 2). Then
+# a backup to a second file.
+[[step]]
+run = "sh -c 'cd /users/lab/sqlite-check && /applications/org.sqlite.sqlite/bin/sqlite3 main.db'"
+input = '''
+PRAGMA locking_mode=EXCLUSIVE;
+PRAGMA journal_mode=WAL;
+CREATE TABLE t(id INTEGER PRIMARY KEY, v INTEGER);
+WITH RECURSIVE c(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM c WHERE n < 10000)
+  INSERT INTO t(v) SELECT n * 3 FROM c;
+SELECT 'rows=' || count(*) || ' sum=' || sum(v) FROM t;
+SELECT 'integrity=' || (SELECT integrity_check FROM pragma_integrity_check);
+SELECT 'json=' || json_extract('{"a":[1,{"b":7}]}', '$.a[1].b');
+CREATE VIRTUAL TABLE docs USING fts5(body);
+INSERT INTO docs(body) VALUES ('the quick brown fox'), ('a slow green turtle'), ('an idle grey heron');
+SELECT 'fts=' || count(*) FROM docs WHERE docs MATCH 'turtle';
+.backup backup.db
+'''
+expect = ["wal", "rows=10000 sum=150015000", "integrity=ok", "json=7", "fts=1"]
+# The backup is a copy of the pages, with the WAL flag in the header, so it
+# opens in exclusive locking mode too.
+[[step]]
+run = '''/applications/org.sqlite.sqlite/bin/sqlite3 -cmd 'PRAGMA locking_mode=EXCLUSIVE' /users/lab/sqlite-check/backup.db "SELECT 'backup=' || count(*) FROM t"'''
+expect = "backup=10000"
+# Two sqlite3 processes on a database with the rollback journal. The first
+# writes a row and holds the transaction open for eight seconds; its journal
+# file says it has the write lock. The second reads, and is not held up
+# (it counts the three rows committed, not the fourth), and a third that
+# writes waits its two-tenths of a second and is refused. The fourth row
+# is there once the first has committed.
+[[step]]
+run = "sh"
+input = '''
+cd /users/lab/sqlite-check || exit 1
+sq=/applications/org.sqlite.sqlite/bin/sqlite3
+$sq lock.db "CREATE TABLE t(v); INSERT INTO t VALUES (1), (2), (3)"
+( printf 'BEGIN IMMEDIATE;\nINSERT INTO t VALUES (4);\n'; sleep 8; printf 'COMMIT;\n' ) | $sq lock.db &
+n=0
+until [ -f lock.db-journal ] || [ "$n" -ge 60 ]; do sleep 1; n=$((n + 1)); done
+$sq -cmd '.timeout 100' lock.db "SELECT 'reader=' || count(*) FROM t"
+$sq -cmd '.timeout 200' lock.db "INSERT INTO t VALUES (5)"
+wait
+$sq lock.db "SELECT 'rows after=' || count(*) FROM t"
+'''
+expect = ["reader=3", "database is locked", "rows after=4"]
+# The Rust program that links the library through rusqlite, on the same
+# disk.
+[[step]]
+run = "/system/tests/posix/sqlite-test /users/lab/sqlite-check/rust"
+expect = "every check passed"
+[[step]]
+run = "bundle remove --for-everyone --purge org.sqlite.sqlite"
+root = true
+expect = "removed org.sqlite.sqlite"

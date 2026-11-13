@@ -1,0 +1,30 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# The SQLite shell, sqlite3: a bundle of the Dukovo catalog, not of the
+# image (ADRs 0370 and 0511). It is built from the shell.c that the sqlite
+# port generates, linked to that port's library, so that the shell runs the
+# SQLite that SQLite's test suite ran on Radix; it has no source of its own
+# but linenoise, which gives it line editing and a history. SQLite is in the
+# public domain, with a blessing in place of a license; linenoise is under
+# the two-clause BSD license. The library's and the C library's code are in
+# the bundle's SBOM through its links.
+name = "sqlite-cli"
+version = "3.54.1"
+summary = "the SQLite database engine's command-line shell"
+license = "blessing AND BSD-2-Clause"
+homepage = "https://sqlite.org"
+depends = ["mlibc", "zlib", "sqlite"]
+
+[[extra]]
+path = "linenoise"
+git = "https://github.com/antirez/linenoise.git"
+commit = "a473823d74b93eab2ba83480df16ed37617493f2"
+license = "BSD-2-Clause"
+
+[bundle]
+id = "org.sqlite.sqlite"
+name = "SQLite"
+description = "sqlite3 is SQLite's shell: it opens a database file, runs SQL typed at it or read from a file, and shows the results as tables, CSV, JSON or Markdown, with dot-commands to look at the schema, import and export data, and back a database up. It runs the same SQLite as Dukovo's own programs, the one SQLite's own test suite passes on Dukovo.\n\nWAL mode works here only in exclusive locking mode, by one connection: run PRAGMA locking_mode=EXCLUSIVE before PRAGMA journal_mode=WAL. SQLite shares a WAL database's index between connections through a shared writable mapping of a file, which Dukovo does not give yet. The default rollback journal works between any number of programs."
+commands = ["sqlite3"]
+links = ["mlibc", "zlib", "sqlite"]

@@ -503,6 +503,12 @@ pub fn command(ctx: &Ctx, args: &mut Args) -> Result<()> {
             match bundles {
                 Ok(bundles) => {
                     lab.env(BUNDLES_ENV, bundles);
+                    // The same build made the ports, whose folders hold
+                    // what they built for the lab's tests.
+                    let ports = ctx.out.join("ports");
+                    if ports.is_dir() {
+                        lab.env(PORTS_ENV, ports);
+                    }
                 }
                 Err(why) => eprintln!("    note: the service bundle tests will skip: {why}"),
             }
@@ -528,6 +534,13 @@ const UPDATES_ENV: &str = "DUKOVO_LAB_UPDATES";
 /// from the same tree, for the service bundles' tests' host steps
 /// (`lab/tests/services/copy-bundle.sh`).
 const BUNDLES_ENV: &str = "DUKOVO_LAB_BUNDLES";
+
+/// The variable that names the folder of the ports' builds, `out/ports`,
+/// whose `<port>/for-lab` folders hold what a port builds for the lab's
+/// tests, as SQLite's test program and its test scripts, for the host
+/// steps that copy them onto the machine
+/// (`lab/tests/services/copy-port-file.sh`).
+const PORTS_ENV: &str = "DUKOVO_LAB_PORTS";
 
 /// The console's fonts, which dukovo-lab reads the screen's text with:
 /// the PSF files the kernel and consoled draw in.

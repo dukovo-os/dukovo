@@ -262,7 +262,7 @@ These come from finished work; the releases themselves are in the
 | `crypt(3)`, for nginx's `auth_basic` with `$5$` and `$6$` hashes (ADR 0491) | The C library has none; nginx's own schemes, `$apr1$` among them, work | A port that needs it, or upstream |
 | jemalloc for Valkey, with its active defragmentation: Valkey uses the C library's allocator (ADR 0492) | jemalloc has no port for Radix | A jemalloc port |
 | Valkey's own test suite (`runtest --host`) run against the machine from the lab PC; the lab test `services/valkey` stores and reads back keys with a client of its own meanwhile (ADR 0492) | Needs Tcl and Valkey's tests at the bundle's version on the lab PC; many of them need the `DEBUG` command, which Valkey keeps off unless its settings turn it on | A lab step that fetches them |
-| Python's modules that need a library Dukovo has no port of: `ctypes` (libffi), `sqlite3` (SQLite), `dbm.gnu` and `dbm.ndbm` (GDBM, Berkeley DB), `readline` (GNU Readline or libedit), `uuid`'s C part (libuuid), `tkinter` and IDLE (Tk) (ADR 0495) | Each module is built into `python3` when its library is | A port of each library |
+| Python's modules that need a library Dukovo has no port of: `ctypes` (libffi), `dbm.gnu` and `dbm.ndbm` (GDBM, Berkeley DB), `readline` (GNU Readline or libedit), `uuid`'s C part (libuuid), `tkinter` and IDLE (Tk) (ADR 0495) | Each module is built into `python3` when its library is | A port of each library |
 | Python packages with code in C, from PyPI (ADR 0495) | Radix loads no library at run time; Python's own modules in C are built in | Loading libraries, or a bundle that builds a package in |
 | The kernel's gaps CPython's suite finds (ADR 0495, `lab/tests/services/python-skips.txt`): `mmap(2)` of tmpfs files; Unix-domain datagram sockets, and Unix-domain sockets passed with `SCM_RIGHTS`, which multiprocessing's suites need; RFC 3542 IPv6 ancillary data, and urgent data sent with `MSG_OOB` (ftplib's `abort()`), which smoltcp does not carry (ADR 0496); `scandir` results | Found by the suite, not by a program that needs them yet | Kernel work, each removing its lines from the skip list |
 | PHP's extensions that need a library Dukovo has no port of: `gd` (libgd, with libpng, libjpeg-turbo, libwebp and FreeType), `intl` (ICU), `zip` (libzip), `sodium` (libsodium), `gmp` (GMP), `iconv` (the C library has no `iconv(3)`) and mbstring's regular expressions, `mb_ereg` (Oniguruma) (ADR 0499) | Each is built into `php` when its library is | A port of each library, and `iconv(3)` in the C library |
@@ -315,7 +315,7 @@ machine asks for them.
 | Item | Source |
 | --- | --- |
 | A name cache for path lookups | storage design note |
-| Shared writable mappings of files other than `/dev/shm`'s, and `msync` | posix design note, ADRs 0110, 0490 |
+| Shared writable mappings of files other than `/dev/shm`'s, and `msync`, which SQLite's WAL between connections and its memory-mapped I/O need (ADR 0511) | posix design note, ADRs 0110, 0490, 0511, `lab/tests/services/sqlite-skips.txt` |
 | Read-ahead in the background; write clustering; `O_DIRECT` for files | storage design note, ADR 0133 |
 | FAT read-ahead | storage design note |
 | Btrfs: trim as blocks are freed (`discard`), small files inline, compression of small files, a per-CPU compression workspace, removing empty block groups, deleting a subvolume in the background, scrubbing in a thread of its own, a log of fsyncs a path at a time, tree blocks read whole | storage design note, ADRs 0130, 0158 |

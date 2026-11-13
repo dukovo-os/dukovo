@@ -301,6 +301,9 @@ pub fn manifest(port: &Port) -> String {
     let _ = writeln!(o, "  \"name\": {},", json(&spec.name));
     let _ = writeln!(o, "  \"version\": {},", json(&recipe.version));
     let _ = writeln!(o, "  \"summary\": {},", json(&sentence(&recipe.summary)));
+    if let Some(description) = &spec.description {
+        let _ = writeln!(o, "  \"description\": {},", json(description));
+    }
     let _ = writeln!(o, "  \"publisher\": {{ \"name\": \"Dukovo catalog\" }},");
     let _ = writeln!(o, "  \"license\": {},", json(&recipe.license));
     let _ = writeln!(o, "  \"homepage\": {},", json(&recipe.homepage));
@@ -505,6 +508,21 @@ mod tests {
         assert!(text.contains("\"source\": \"https://github.com/BurntSushi/ripgrep\""));
         assert!(text.contains("\"runs_with\": \"your-access\""));
         let _: Option<&BundleRecipe> = port.recipe.bundle.as_ref();
+    }
+
+    /// A bundle's own paragraph reaches the manifest as its description,
+    /// and a bundle without one has none.
+    #[test]
+    fn the_description_reaches_the_manifest() {
+        let mut port = port();
+        assert!(
+            dkv::signed::parse_manifest(manifest(&port).as_bytes()).unwrap().description.is_none()
+        );
+        port.recipe.bundle.as_mut().unwrap().description = Some("It says \"hello\".".into());
+        let text = manifest(&port);
+        assert!(text.contains("\"description\": \"It says \\\"hello\\\".\""));
+        let manifest = dkv::signed::parse_manifest(text.as_bytes()).unwrap();
+        assert_eq!(manifest.description.unwrap().0, "It says \"hello\".");
     }
 
     /// nginx's recipe, a service bundle's: its services, permissions and
