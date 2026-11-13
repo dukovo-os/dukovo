@@ -412,6 +412,7 @@ machine asks for them.
 | Optical reads reported, not gated, until parity; USB storage rows | ADR 0434 |
 | `git status` takes about 2.5 times Linux's time (5.0 ms against 1.98 ms on 1,000 files, with 15 context switches); no work is planned to close it yet | ADR 0294 |
 | Rows still above the 0.90 margin target, though under Linux: Btrfs zstd write, unmapping a page on another CPU, NVMe 1 MiB read (0.92 to 0.94) | Benchmark margin work |
+| On real hardware (OptiPlex 7040, i5-6500) rows over Linux that pass under QEMU: loopback UDP round trips 3.7 to 3.9 times, TCP round trips 2.2 to 2.6, TCP 1 MiB 2.65, TCP connect 1.23; `poll` 2.23; shared futex across CPUs 1.38; fork, exec and wait 1.38; pipe 1 MiB 1.12 | Lab, performance/ipc, loopback and processes on the OptiPlex, 2026-11-13 |
 
 ## Lab findings to confirm
 
