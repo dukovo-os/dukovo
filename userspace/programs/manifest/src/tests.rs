@@ -29,6 +29,7 @@ const SHIPPED: &[(&str, &str)] = &[
     ("sysupdate", include_str!("../../../defaults/spark/services/sysupdate.toml")),
     ("snap", include_str!("../../../defaults/spark/services/snap.toml")),
     ("updated", include_str!("../../../defaults/spark/services/updated.toml")),
+    ("logforward", include_str!("../../../defaults/spark/services/logforward.toml")),
     ("netd", include_str!("../../../defaults/spark/services/netd.toml")),
     ("netd", include_str!("../../../spark/tests/services/dhcp/netd.toml")),
 ];
