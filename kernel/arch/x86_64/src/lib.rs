@@ -49,6 +49,7 @@ mod kvm;
 mod mce;
 mod memory;
 mod microcode;
+mod mtrr;
 mod paging;
 mod percpu;
 mod power;
@@ -1191,6 +1192,7 @@ impl Platform for Arch {
                 );
             }
         }
+        mtrr::report();
         apic::init_cpu(madt, smp::acpi_uid(0));
         mce::init_cpu_interrupt();
         kvm::init_cpu();

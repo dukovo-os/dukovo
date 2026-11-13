@@ -649,6 +649,12 @@ fn stat(text: &mut Text) -> fmt::Result {
     writeln!(text, "ipis: {}", events.ipis)?;
     writeln!(text, "halts: {}", events.halts)?;
     writeln!(text, "polls: {}", events.polls)?;
+    for vector in 32..256 {
+        let count = <crate::Arch as radix_hal::Devices>::interrupt_count(vector);
+        if count > 0 {
+            writeln!(text, "interrupts_{vector}: {count}")?;
+        }
+    }
     // Lock contention, for `ob bench --scaling`: threads that found a
     // mutex taken, threads that slept for one, mutexes handed to a
     // sleeper or let go with one woken to try again, and how often the
