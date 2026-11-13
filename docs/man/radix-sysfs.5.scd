@@ -484,9 +484,10 @@ _/kernel/class/net/_*name*_/mtu_, _type_, _flags_
 	IFF_POINTOPOINT and IFF_NOARP for a tunnel (ADR 0339).
 
 _/kernel/class/net/_*name*_/operstate_, _carrier_
-	*up*, *down* for a card the kernel stopped after an error or a
-	tunnel no program has open, or *unknown* for *lo* and an open
-	tunnel, which have no link; and *1* while it is not down, else
+	*up*, *down* for a card whose driver says its link is down, as with
+	no cable or the other end off, a card the kernel stopped after an
+	error, or a tunnel no program has open, or *unknown* for *lo* and an
+	open tunnel, which have no link; and *1* while it is not down, else
 	*0*.
 
 _/kernel/class/net/_*name*_/ipv4_

@@ -38,7 +38,9 @@ pub(crate) enum Outcome {
     Interrupted,
     /// The disk found a fault; the first sector it could not read, in its
     /// own logical sectors, where it says.
-    Failed { first_bad_sector: Option<u64> },
+    Failed {
+        first_bad_sector: Option<u64>,
+    },
     /// A status this does not know, as the disk gave it.
     Other(u8),
 }
@@ -118,10 +120,8 @@ fn ask(name: &str, action: u32) -> Result<Option<State>, Fail> {
 /// SELF_TEST's answer: its head of 16 bytes and the disk's log.
 fn parse(value: &[u8; block::SELF_TEST_SIZE as usize]) -> State {
     let kind = u32::from_le_bytes([value[0], value[1], value[2], value[3]]);
-    let minutes = (
-        u16::from_le_bytes([value[6], value[7]]),
-        u16::from_le_bytes([value[8], value[9]]),
-    );
+    let minutes =
+        (u16::from_le_bytes([value[6], value[7]]), u16::from_le_bytes([value[8], value[9]]));
     let log: &[u8; 512] = value[16..].try_into().expect("SELF_TEST_SIZE is 16 + 512");
     State {
         running: value[4] != 0,

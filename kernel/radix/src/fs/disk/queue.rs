@@ -74,7 +74,8 @@ use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering};
 
 use radix_abi::process::{IO_LEVELS, IoClass};
 use radix_block::{
-    BlockDevice, Error, Health, Info, Page, Segment, SegmentMut, SelfTest, SelfTestState, Stats, Write,
+    BlockDevice, Error, Health, Info, Page, Segment, SegmentMut, SelfTest, SelfTestState, Stats,
+    Write,
 };
 use radix_hal::{Cpu, CpuLocal, Devices, PciAddress, Timer};
 use radix_klog::{TextBuf, warn};

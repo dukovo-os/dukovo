@@ -182,8 +182,7 @@ impl Controller for SataPort {
         test: SelfTest,
         page: &mut Page,
     ) -> Result<SelfTestState, Error> {
-        let said =
-            disk.controller(|lane| lane.port.identity().map(|id| (id.smart, id.self_test)));
+        let said = disk.controller(|lane| lane.port.identity().map(|id| (id.smart, id.self_test)));
         // A disk whose SMART is off runs no self-test until it is on.
         let Some((Some(true), identify_says)) = said.ok_or(Error::Io)? else {
             return Err(Error::Unsupported);

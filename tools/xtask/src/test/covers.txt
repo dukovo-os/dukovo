@@ -374,7 +374,7 @@ netcheck userspace/programs/systools/src/ip.rs userspace/programs/systools/src/n
 netcheck userspace/programs/systools/src/netd.rs userspace/programs/systools/src/ping.rs
 netcheck userspace/programs/systools/src/resolved.rs userspace/programs/systools/src/sysupdate/online.rs
 netcheck userspace/programs/systools/src/timed.rs userspace/programs/systools/src/timedatectl.rs
-netcheck userspace/programs/systools/src/tls.rs
+netcheck kernel/radix/src/fs/sysfs/net.rs kernel/radix/src/net/mod.rs userspace/programs/systools/src/tls.rs
 network-capture kernel/net/ ports/libpcap/ ports/tcpdump/ userspace/posix/capturetest.c
 network-cards kernel/drivers/intel/ kernel/drivers/nic/ kernel/drivers/realtek/
 network-cards kernel/drivers/virtio/ kernel/drivers/vmxnet3/ kernel/net/ userspace/posix/nics.c

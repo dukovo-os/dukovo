@@ -246,7 +246,7 @@ mod tests {
         let states = vec![
             Ok(Some(state(true, None))),
             Ok(Some(state(true, None))),
-            Ok(Some(state(false, Some(done.clone())))),
+            Ok(Some(state(false, Some(done)))),
         ];
         let (ended, pauses) = waited(None, Duration::from_secs(600), states, usize::MAX);
         assert!(matches!(ended, Ended::Newest(Some(ref newest)) if *newest == done));
@@ -256,7 +256,7 @@ mod tests {
     #[test]
     fn a_test_a_disk_finishes_at_once_is_taken_from_its_new_log_entry() {
         let done = entry(Outcome::Passed, 4660);
-        let states = vec![Ok(Some(state(false, Some(done.clone()))))];
+        let states = vec![Ok(Some(state(false, Some(done))))];
         let (ended, pauses) = waited(None, Duration::from_secs(600), states, usize::MAX);
         assert!(matches!(ended, Ended::Newest(Some(newest)) if newest == done));
         assert_eq!(pauses, 0);
@@ -265,7 +265,7 @@ mod tests {
     #[test]
     fn a_disk_whose_log_did_not_change_is_given_fifteen_seconds() {
         let old = entry(Outcome::Passed, 4660);
-        let states = (0..10).map(|_| Ok(Some(state(false, Some(old.clone()))))).collect();
+        let states = (0..10).map(|_| Ok(Some(state(false, Some(old))))).collect();
         let (ended, pauses) = waited(Some(&old), Duration::from_secs(600), states, usize::MAX);
         assert!(matches!(ended, Ended::Newest(Some(newest)) if newest == old));
         assert_eq!(pauses, 3);

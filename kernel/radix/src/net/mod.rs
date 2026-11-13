@@ -170,7 +170,7 @@ impl Card {
         match self {
             Card::Program(card) => !card.up(),
             Card::Tunnel(link) => !link.open(),
-            card => card.failed(),
+            card => card.failed() || card.wire().is_some_and(|wire| !wire.up),
         }
     }
 
