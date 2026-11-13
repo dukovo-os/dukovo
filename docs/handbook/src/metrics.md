@@ -44,11 +44,11 @@ units:
 
 ```
 $ metrics cpu load memory.available fs.used
-cpu               4.2%
-load              0.31
-memory.available  5.8 GB
-fs.used{/}        23 GB
-fs.used{/data}    1.2 TB
+cpu                     4.2%
+load                    0.31
+memory.available        5.8 GB
+fs.used{/volumes/sda3}  23 GB
+fs.used{/data}          1.2 TB
 ```
 
 A name without an instance means every instance, so `fs.used` is the use

@@ -99,7 +99,11 @@ kernel gives back when programs need it; *memory.available* is the free
 memory and the page cache. *fs.used* is the blocks that are not free,
 times the block size, and *fs.size* all of them. The filesystems are
 those of _/processes/mounts_ that are Btrfs, ext4, XFS, FAT, NTFS or
-exFAT, wherever they are mounted, and those mounted read-only too. The
+exFAT, wherever they are mounted, and those mounted read-only too. One
+mounted in several places, as the system's volume is at
+_/volumes/sda3_ and its folders at _/system_, _/users_ and the rest, is
+one series, named by the first of its mounts there, so that its history
+and its warnings are not repeated for each. The
 loopback card is left out of the history's *net.rx*, *net.tx* and
 *net.errors*, but not of the endpoint's, as node_exporter has it. A
 thermal zone of the firmware whose type another zone has is told by its
@@ -271,9 +275,10 @@ _/system/live/alerts/socket_
 	alertd's socket, where the alerts are given.
 
 _/system/settings/spark/services/metricsd.toml_
-	Its service. It holds the whole tree, as *backup*(8) does, because
-	it asks each mounted filesystem for its space and mounts come and
-	go, and the port 9100 to listen on (*service.toml*(5)).
+	Its service. It holds the history, the newest row and the port 9100
+	to listen on (*service.toml*(5)). It reads each filesystem's space
+	from the kernel's _/kernel/fs/space_ (*radix-sysfs*(5)), so it needs
+	no view of the mounts themselves.
 
 # EXIT STATUS
 

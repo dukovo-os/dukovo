@@ -458,9 +458,13 @@ fn read_volumes(btrfs: &Path) -> Vec<Volume> {
 /// hold files, with their space from `space`, the kernel's `fs/space`
 /// (radix-sysfs(5)): metricsd's view holds `/kernel` but not every mount,
 /// so statvfs(3) could not reach each. A mount the kernel gives no space
-/// for, or none, is left out.
+/// for, or none, is left out. A filesystem mounted in several places, as
+/// the system's volume is at `/volumes/sda3` and its folders at `/system`,
+/// `/users` and the rest, is the first of them alone, so that its history
+/// and its warnings are not repeated for each.
 fn read_filesystems(mounts: &[u8], space: &[u8]) -> Vec<Filesystem> {
     let spaces = parse_space(space);
+    let mut sources = HashSet::new();
     proc::parse_mounts(mounts)
         .into_iter()
         .filter(|mount| FILESYSTEMS.contains(&mount.kind.as_str()))
@@ -478,6 +482,7 @@ fn read_filesystems(mounts: &[u8], space: &[u8]) -> Vec<Filesystem> {
                 available: free,
             })
         })
+        .filter(|filesystem| sources.insert(filesystem.device.clone()))
         .collect()
 }
 
@@ -830,6 +835,18 @@ mod tests {
         assert!(read_filesystems(mounts.as_bytes(), b"").is_empty());
         // A size past what a u64 holds is not read.
         assert!(parse_space(b"/ 4096 18446744073709551615 0 0 0\n").is_empty());
+    }
+
+    #[test]
+    fn a_filesystem_mounted_in_several_places_is_counted_once_at_the_first() {
+        // As an installed system mounts its volume: whole, then folders.
+        let mounts = "tmpfs / tmpfs rw\nsda3 /volumes/sda3 btrfs rw label=dukovo-root\n\
+                      sda3 /system btrfs ro\nsda3 /users btrfs rw\nsdb1 /data ext4 rw\n";
+        let space = "/volumes/sda3 4096 1000 250 0 0\n/system 4096 1000 250 0 0\n\
+                     /users 4096 1000 250 0 0\n/data 4096 100 50 0 0\n";
+        let found = read_filesystems(mounts.as_bytes(), space.as_bytes());
+        let mounted: Vec<&str> = found.iter().map(|f| f.mount.as_str()).collect();
+        assert_eq!(mounted, ["/volumes/sda3", "/data"]);
     }
 
     #[test]

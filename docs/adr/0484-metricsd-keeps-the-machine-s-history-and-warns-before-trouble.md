@@ -40,7 +40,8 @@ writes.
   run`, step 60 s):
   - CPU, load, memory and swap;
   - each disk's reads, writes and busy time;
-  - each filesystem's use;
+  - each filesystem's use, from `/kernel/fs/space`, once for one mounted
+    in several places, as the system's volume and its folders are;
   - each network card's traffic and errors;
   - the temperatures;
   - each service's CPU and memory, summed over its resource domain;

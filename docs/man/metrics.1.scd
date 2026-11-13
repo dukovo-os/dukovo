@@ -119,11 +119,11 @@ The latest values of the processors and of each filesystem:
 
 ```
 $ metrics cpu fs.used fs.size
-cpu             4.2%
-fs.used{/}      23 GB
-fs.used{/data}  1.2 TB
-fs.size{/}      250 GB
-fs.size{/data}  3.9 TB
+cpu                     4.2%
+fs.used{/volumes/sda3}  23 GB
+fs.used{/data}          1.2 TB
+fs.size{/volumes/sda3}  250 GB
+fs.size{/data}          3.9 TB
 ```
 
 How full */data* was over the last day, an hour at a time, and the

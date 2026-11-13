@@ -261,7 +261,8 @@ fn an_open_settings_file_is_refused(vm: &mut Vm) -> Result<(), String> {
 
 /// metricsd keeps the machine's history (ADR 0484): once a restart has
 /// written the rows it held, the history holds the processors, memory and
-/// the root filesystem, and the root's use over the last minutes. With
+/// the system's volume, once although its folders are mounted apart too,
+/// and the volume's use over the last minutes. With
 /// `listen` and `allow` in metrics.toml it answers a Prometheus server on
 /// 127.0.0.1 with node_exporter's names and the alerts alertd holds, the
 /// second alert of the steps before still active, and nothing but
@@ -269,11 +270,12 @@ fn an_open_settings_file_is_refused(vm: &mut Vm) -> Result<(), String> {
 fn metrics(vm: &mut Vm) -> Result<(), String> {
     run(
         vm,
-        "elevate service metricsd restart > /dev/null; for s in cpu memory.used 'fs.used{/}'; do \
-         elevate metrics list \"$s\" > /dev/null && echo \"kept $s\"; done; elevate metrics show \
-         'fs.used{/}' --since 10m > /dev/null; echo \"points $?\"",
+        "elevate service metricsd restart > /dev/null; for s in cpu memory.used fs.used; do elevate \
+         metrics list $s > /dev/null && echo \"kept $s\"; done; elevate metrics list fs.used > \
+         f.txt; echo \"volume $(grep -c '{/volumes/sda3}' f.txt) users $(grep -c '{/users}' \
+         f.txt)\"; elevate metrics show fs.used --since 10m > /dev/null; echo \"points $?\"",
         30,
-        &["kept cpu", "kept memory.used", "kept fs.used{/}", "points 0"],
+        &["kept cpu", "kept memory.used", "kept fs.used", "volume 1 users 0", "points 0"],
     )?;
     run(
         vm,

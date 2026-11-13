@@ -57,14 +57,17 @@ agree "memory total is free's" "$(plain node_memory_MemTotal_bytes)" "$free_tota
 agree "memory available is free's" "$(plain node_memory_MemAvailable_bytes)" \
 	"$free_available" "$((64 * mib))"
 
-# The root filesystem: df counts in KiB, rounded up, so its size is the
-# same to a KiB, and what is used and what is free to 64 MiB.
-root_size="$(labelled node_filesystem_size_bytes 'mountpoint="/"}')"
-root_free="$(labelled node_filesystem_avail_bytes 'mountpoint="/"}')"
-df_size="$(df -kP / | awk 'NR == 2 { print $2 * 1024 }')"
-df_available="$(df -kP / | awk 'NR == 2 { print $4 * 1024 }')"
-agree "the root's size is df's" "$root_size" "$df_size" 1024
-agree "the root's free space is df's" "$root_free" "$df_available" "$((64 * mib))"
+# The system's volume, which holds /users: mounted whole under /volumes
+# and its folders in their places, it is one filesystem to metricsd, by
+# its device. df counts in KiB, rounded up, so its size is the same to a
+# KiB, and what is used and what is free to 64 MiB.
+device="$(df -P /users | awk 'NR == 2 { print $1 }')"
+volume_size="$(labelled node_filesystem_size_bytes "device=\"$device\"")"
+volume_free="$(labelled node_filesystem_avail_bytes "device=\"$device\"")"
+df_size="$(df -kP /users | awk 'NR == 2 { print $2 * 1024 }')"
+df_available="$(df -kP /users | awk 'NR == 2 { print $4 * 1024 }')"
+agree "the system volume's size is df's" "$volume_size" "$df_size" 1024
+agree "the system volume's free space is df's" "$volume_free" "$df_available" "$((64 * mib))"
 
 # The service's memory: the resident memory of the process ps shows, to a
 # quarter and 2 MiB, since the scrape is taken while metricsd answers it.
