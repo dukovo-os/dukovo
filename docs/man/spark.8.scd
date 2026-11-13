@@ -414,8 +414,12 @@ presses.
 	A JSON document of every service, or of the one named, and of a
 	pending shutdown, which *service*(8), *sysupdate*(8) and
 	*bundled*(8) read: *show_version* (1; a client refuses a later
-	one), *now_ms* (milliseconds since boot), *services* and
-	*shutdown* (*end* and *in_seconds*, or *null*). Each service has
+	one), *now_ms* (milliseconds since boot), *services*, *shutdown*
+	(*end* and *in_seconds*, or *null*) and *trials*, the settings being
+	tried (see *try*): each one's *id*, *files*, *services*, *user* and
+	*left_ms*, the time until it is undone; and *undone*, the last eight
+	trials undone since boot, each with its *id*, *why* and *at_ms*.
+	Each service has
 	its *name*, *description*, *enabled*, *order*, *restart*,
 	*give_up_after*, *requires*, *wants*, *after* and *ready_when* from
 	its file; its *state*: *stopped*, *disabled*, *pending* (waiting
@@ -423,17 +427,21 @@ presses.
 	yet ready), *running*, *done* (a setup step that ended as it
 	should), *waiting* (to be started again), *stopping* or *failed*
 	(given up on); its *pid* while starting or running; *since_ms*,
-	*started_ms* and *ready_ms*; *restarts*, and *failures* (failed
-	starts in a row); *last_end* in words and *last_status*; *why* it
-	is not running as asked, a clause after its name; *off_as_meant*,
-	true when it is stopped as it is meant to be, which is no failure
-	(the kernel left it none of the cards it drives, or Rescue or
-	essentials leave it off), and *why* then says why; *started_by*
+	*started_ms* and *ready_ms*; *ready_by_ms* while it is starting,
+	the time by which it must be ready or its start has failed, and
+	*retry_ms* while it is waiting to be started again, the time Spark
+	starts it; *restarts*, and *failures* (failed starts in a row);
+	*last_end* in words and *last_status*; *why* it is not running as
+	asked, a clause after its name; *off_as_meant*, true when it is
+	stopped as it is meant to be, which is no failure (the kernel left
+	it none of the cards it drives, or Rescue or essentials leave it
+	off), and *why* then says why; *started_by*
 	(*boot*, *a request*, or the service that requires or wants it);
 	*health* (*state*: *unknown*, *passing* or *failing*, *failures*,
-	*last_failure* and *checked_ms*) when its file has a check;
-	*complaint*, what is wrong with its file while it runs its last
-	good copy; *cause*, the service its *why* names, when it names one
+	*restart_after*, the failed checks in a row after which Spark
+	restarts it, *last_failure* and *checked_ms*) when its file has a
+	check; *complaint*, what is wrong with its file while it runs its
+	last good copy; *cause*, the service its *why* names, when it names one
 	(a requirement that stopped, failed, was given up on, is off or
 	has no file); *last_line*, the last line its output wrote, up to
 	200 bytes, kept from its end to its next start; *last_request*
@@ -491,6 +499,35 @@ presses.
 	Send a running service SIGHUP, which asks a service that reads
 	its settings to read them again (consoled reads its keyboard
 	layout's, *consoled*(8)), as systemd's ExecReload does.
+
+*try* _id_ _seconds_ *file=*_path_... [*restart=*_name_...] [*reload=*_name_...]
+	Try a change to settings with an undo (ADR 0472). Spark keeps a
+	copy of each file named, with its mode, owner and group, before the
+	change is written; then, unless *keep* _id_ comes within _seconds_
+	(10 to 3600), it puts each copy back over its file, removes each
+	file that was not there, restarts each *restart* service that ran
+	when the trial began and stops the others, and asks each *reload*
+	service to reload. A *restart* or *reload* service that fails to
+	start, or fails its health check, with the change undoes it at once.
+	So does a start of the machine before it was kept: Spark undoes it
+	before it reads any service's file, so a change that hangs the
+	machine or cuts it off is undone by a power cut. The files are
+	beneath _/system/settings_, at most 16 of them and 1 MiB each, by
+	plain paths of letters, digits, *-*, *\_*, *.* and *@*, none
+	starting with *.*; a file that is a link, or beneath one, is
+	refused. Four trials run at once at most, and a file is in one at
+	a time. The copies are in _/system/state/spark/trials/_*id*, which
+	only root reads. *service try* begins one as *service.*_name_;
+	the web console's network and firewall pages begin their own. Spark
+	logs each trial's beginning, keeping and undoing in the audit log.
+	Rescue begins none.
+
+*keep* _id_
+	Keep the change trial _id_ is trying: Spark drops its copies.
+
+*undo* _id_
+	Undo trial _id_ now, as when its time is up; the answer says what
+	was put back and restarted.
 
 *hooks* *before* | *after*
 	Run the *before* or *after* backup hook of every running service
@@ -756,6 +793,10 @@ _/system/settings/spark/services/_*name*_.service_
 _/system/live/spark/control_
 	The control socket (see *CONTROL SOCKET*).
 
+_/system/state/spark/trials/_*id*
+	A trial's copies of the files it keeps, by number, and its record,
+	_trial_ (see *try*).
+
 _/system/tests/hello_
 	A test program for the boot tests. It prints its process number,
 	its arguments and how far it was moved, fills its heap, and exits
@@ -873,6 +914,17 @@ _name_ *(process* _n_*) was ended by signal 9 (stopped by the out-of-memory poli
 
 *spark: could not* _end_ *the machine:* _error_*; halting it*
 	The kernel could not power the machine off (no ACPI) or restart it.
+
+*spark: undid* _id_ *(*_why_*): put back* _paths_*;* _what it restarted_
+	A trial was undone (see *try*): _why_ is *it was not kept in time*,
+	_name_ *failed with the change*, *asked*, or *the machine started
+	again before it was kept*. *cannot put back* _path_ after it means
+	that file could not be written; its copy stays, and the next start
+	tries again.
+
+*spark: cannot read the record of the trial* _id_ *in* _folder_*; it is left*
+	A trial's record is damaged, so nothing of it is undone; its copies
+	stay in _folder_ for a person to put back by hand.
 
 # SEE ALSO
 

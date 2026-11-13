@@ -1,0 +1,15 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+#
+# The explain lab test's service that cannot start: it says what is
+# wrong and ends, so Spark gives up on it after two starts in a row, and
+# explain quotes the line it wrote (ADR 0471). The test then changes the
+# program to one that keeps running.
+
+service_version = 2
+description = "Fails at once"
+program = "/system/commands/nukesh"
+arguments = ["-c", "echo 'lab-broken: cannot open /shared/lab: no such folder'; exit 1"]
+enabled = false
+restart = "on-failure"
+give_up_after = 2

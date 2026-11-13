@@ -1246,8 +1246,11 @@ impl Shell {
         let special = builtins::is_special(name);
         // Assignments before a special builtin stay in POSIX mode; before
         // anything else they last for the command, exported, as before a
-        // function: `X=1 command env` gives env X.
-        let stay = special && self.posix();
+        // function: `X=1 command env` gives env X. The program `exec`
+        // runs has them too, as dash's and bash's does: `X=1 exec env`
+        // gives env X.
+        let program = name == "exec" && matches!(&args, BuiltinArgs::Plain(f) if f.len() > 1);
+        let stay = special && self.posix() && !program;
         let temp = !assigns.is_empty() && !stay;
         let expanded;
         let redirects = if temp && !redirects.is_empty() {

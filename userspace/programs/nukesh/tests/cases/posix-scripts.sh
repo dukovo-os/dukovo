@@ -30,6 +30,7 @@ ready=/tmp/posix-scripts-trap-$$
 (trap 'false; exit' USR1; : >"$ready"; while :; do sleep 0.01; done) &
 until [ -e "$ready" ]; do sleep 0.01; done; kill -USR1 $!; wait $!
 echo "exit in a signal's trap: $?"; rm -f "$ready"
+(passed=yes exec sh -c 'echo "exec passes its assignments: $passed"')
 f() { set -Q; echo "not reached"; }
 f
 echo "not reached"

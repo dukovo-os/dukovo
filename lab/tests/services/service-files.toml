@@ -42,4 +42,4 @@ run = "rm /system/settings/spark/services/labtest.toml"
 root = true
 [[step]]
 run = "sh -c 'printf \"[service\\nx=\" > ~/lab-bad-service.toml; service check ~/lab-bad-service.toml; echo status=$?; rm ~/lab-bad-service.toml'"
-expect = ["/users/lab/lab-bad-service.toml: line 1: unclosed table, expected `]`", "status=1"]
+expect = ["/users/lab/lab-bad-service.toml:1:", "unclosed table, expected `]`", "status=1"]

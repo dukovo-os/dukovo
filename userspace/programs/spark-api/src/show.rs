@@ -33,7 +33,17 @@ pub struct Show {
     pub services: Vec<Service>,
     /// The shutdown that is set for later, if one is.
     pub shutdown: Option<Shutdown>,
+    /// The settings being tried, each undone unless it is kept in time
+    /// (ADR 0472).
+    pub trials: Vec<Trial>,
+    /// The trials undone since the machine started, the newest last, at
+    /// most [`UNDONE_KEPT`], so that a change undone while no one watched
+    /// is still told.
+    pub undone: Vec<Undone>,
 }
+
+/// The undone trials a document holds at most.
+pub const UNDONE_KEPT: usize = 8;
 
 /// A service.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -71,6 +81,11 @@ pub struct Service {
     pub started_ms: Option<u64>,
     /// When it was last ready.
     pub ready_ms: Option<u64>,
+    /// While it is starting: the time by which it must be ready, or its
+    /// start has failed (its `ready.timeout` after it started).
+    pub ready_by_ms: Option<u64>,
+    /// While it is waiting to start again: when Spark starts it.
+    pub retry_ms: Option<u64>,
     /// How many times it has been started again since boot.
     pub restarts: u32,
     /// Its failed starts in a row.
@@ -207,6 +222,9 @@ pub struct Health {
     pub state: HealthState,
     /// Its failed checks in a row.
     pub failures: u32,
+    /// The failed checks in a row after which Spark restarts it, its
+    /// file's `health.failures`.
+    pub restart_after: u32,
     /// The last line a failed check wrote, or how it ended.
     pub last_failure: Option<String>,
     /// When it was last checked.
@@ -234,6 +252,35 @@ pub struct Shutdown {
     pub end: String,
     /// How long until it begins.
     pub in_seconds: u64,
+}
+
+/// Settings being tried (ADR 0472).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Trial {
+    /// Its name, which `keep` and `undo` give: `service.NAME` for one
+    /// that `service try NAME` began.
+    pub id: String,
+    /// The files whose copies Spark keeps, to put back.
+    pub files: Vec<String>,
+    /// The services an undo restarts, stops or reloads.
+    pub services: Vec<String>,
+    /// The user it was begun for.
+    pub user: u32,
+    /// How long until it is undone unless it is kept.
+    pub left_ms: u64,
+}
+
+/// A trial that was undone (ADR 0472).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Undone {
+    /// Its name.
+    pub id: String,
+    /// Why, as Spark's line says it: "it was not kept in time".
+    pub why: String,
+    /// When.
+    pub at_ms: u64,
 }
 
 /// The document for `show`, as Spark writes it.
@@ -285,7 +332,12 @@ mod tests {
             state: State::Pending,
             waiting_for: ["db".into()].into(),
             started_by: Some("boot".into()),
-            health: Some(Health { state: HealthState::Failing, failures: 2, ..Health::default() }),
+            health: Some(Health {
+                state: HealthState::Failing,
+                failures: 2,
+                restart_after: 3,
+                ..Health::default()
+            }),
             cause: Some("db".into()),
             last_line: Some("web: cannot reach db".into()),
             last_request: Some(Request { verb: "start".into(), user: 0, process: 81, ms: 50_000 }),
@@ -313,14 +365,52 @@ mod tests {
         let show = Show {
             show_version: VERSION,
             now_ms: 51_234,
-            services: [web(), e1000d].into(),
+            services: [
+                web(),
+                e1000d,
+                Service {
+                    name: "db".into(),
+                    state: State::Waiting,
+                    retry_ms: Some(52_000),
+                    ..Service::default()
+                },
+                Service {
+                    name: "cache".into(),
+                    state: State::Starting,
+                    pid: Some(90),
+                    ready_by_ms: Some(61_234),
+                    ..Service::default()
+                },
+            ]
+            .into(),
             shutdown: Some(Shutdown { end: "power off".into(), in_seconds: 60 }),
+            trials: [Trial {
+                id: "service.web".into(),
+                files: ["/system/settings/spark/services/web.toml".into()].into(),
+                services: ["web".into()].into(),
+                user: 0,
+                left_ms: 42_000,
+            }]
+            .into(),
+            undone: [Undone {
+                id: "network".into(),
+                why: "it was not kept in time".into(),
+                at_ms: 40_000,
+            }]
+            .into(),
         };
         let json = to_json(&show).unwrap();
         assert!(json.contains(r#""state":"pending""#), "{json}");
         assert!(json.contains(r#""off_as_meant":true"#), "{json}");
-        assert!(json.contains(r#""health":{"state":"failing""#), "{json}");
+        assert!(
+            json.contains(r#""health":{"state":"failing","failures":2,"restart_after":3"#),
+            "{json}"
+        );
+        assert!(json.contains(r#""retry_ms":52000"#), "{json}");
+        assert!(json.contains(r#""ready_by_ms":61234"#), "{json}");
         assert!(json.contains(r#""listen":["80","8000-8010"]"#), "{json}");
+        assert!(json.contains(r#""trials":[{"id":"service.web","#), "{json}");
+        assert!(json.contains(r#""undone":[{"id":"network","why":"it was not kept"#), "{json}");
         assert_eq!(parse(&format!("{json}\n")), Ok(show));
     }
 

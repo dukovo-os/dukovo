@@ -8,6 +8,14 @@
 //! `service edit` works as visudo(8) does: it copies the file, opens the
 //! copy in the editor, checks it, and puts it in place only if it reads;
 //! otherwise it shows what is wrong and offers to edit it again.
+//!
+//! What is wrong is said as a compiler says it, with the line, the place
+//! in it and what to do (`manifest::Error::report`), and what a file that
+//! reads would do once it is put to use comes from `spark_api::dry_run`,
+//! the words the web console says too (ADR 0471). Only root sees the dry
+//! run: the control socket and the copy of each file Spark read last are
+//! root's. The `service-graph` boot test and the lab's `services/check`
+//! test cover this file.
 
 use std::fs::{self, OpenOptions};
 use std::io::{self, BufRead, Read, Write};
@@ -15,16 +23,26 @@ use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use manifest::Source;
 use manifest::service;
+use spark_api::dry_run::{self, Change};
+use spark_api::graph::Link;
+use spark_api::show;
 
+use crate::service::shown;
 use crate::util::{self, Fail, fail, usage};
-use crate::{power, prompt};
+use crate::{power, prompt, servicetry};
 
 /// Where Spark reads the service files.
 pub const DIR: &str = "/system/settings/spark/services";
 
 /// Where the system's own service files are kept, as Spark copies them.
 const DEFAULTS: &str = "/system/resources/default-settings/spark/services";
+
+/// Where Spark keeps the last copy of each service's file, and of its
+/// override beneath `settings.d`, that it read: the copy a service that
+/// runs runs.
+const GOOD: &str = "/system/state/spark/good";
 
 /// The editor `service edit` runs when neither VISUAL nor EDITOR names
 /// one.
@@ -47,35 +65,234 @@ fn override_path(path: &Path) -> PathBuf {
     path.with_file_name(service::OVERRIDES).join(name)
 }
 
-/// What is wrong with the service file at `path`, with its override set
-/// over it, or None if they read. Its name must be a service's name too.
-fn check_file(path: &Path) -> Result<Option<String>, Fail> {
-    let text = fs::read(path).map_err(|e| util::failed(&path.display(), e))?;
-    let Ok(text) = String::from_utf8(text) else {
-        return Ok(Some("it is not UTF-8 text".into()));
+/// A service file's override, as read from beside it.
+struct Over {
+    /// Where it is.
+    path: PathBuf,
+    /// What it says.
+    text: String,
+    /// What it says, read.
+    read: service::Override,
+}
+
+/// A service file that reads, with what it was read from.
+struct Checked {
+    /// The service's name, its file's without `.toml`.
+    name: String,
+    /// What the file says.
+    text: String,
+    /// The file that sets keys over it, if there is one.
+    over: Option<Over>,
+    /// What the two say together.
+    service: service::Service,
+}
+
+/// Why a file was not read.
+enum Stop {
+    /// It does not read: what to print of that.
+    Broken(String),
+    /// Something went wrong that is not the file's fault.
+    Failed(Fail),
+}
+
+impl From<Fail> for Stop {
+    fn from(failed: Fail) -> Stop {
+        Stop::Failed(failed)
+    }
+}
+
+/// The override of the service file at `path`, whose text is `text`, if
+/// it has one that reads.
+fn read_over(path: &Path, text: &str, brief: bool) -> Result<Option<Over>, Stop> {
+    let over_path = override_path(path);
+    let bytes = match fs::read(&over_path) {
+        Ok(bytes) => bytes,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(util::failed(&over_path.display(), e).into()),
+    };
+    let Ok(over_text) = String::from_utf8(bytes) else {
+        return Err(Stop::Broken(format!("{}: it is not UTF-8 text", over_path.display())));
+    };
+    match service::Override::from_toml(&over_text) {
+        Ok(read) => Ok(Some(Over { path: over_path, text: over_text, read })),
+        Err(err) => {
+            // A mistake in the override's own text is in the override.
+            let err = manifest::Error { in_override: true, ..err };
+            let (file, shown) = (path.display().to_string(), over_path.display().to_string());
+            let over = Source { path: &shown, text: &over_text };
+            Err(Stop::Broken(said(&err, Source { path: &file, text }, Some(over), brief)))
+        }
+    }
+}
+
+/// `error` as `service check` prints it: where it is in `file` or in its
+/// override `over`, what is wrong and the fix, all of it or, with `brief`,
+/// on one line.
+fn said(
+    error: &manifest::Error,
+    file: Source<'_>,
+    over: Option<Source<'_>>,
+    brief: bool,
+) -> String {
+    if brief { error.brief(file, over) } else { error.report(file, over) }
+}
+
+/// The service file at `path`, whose text is `bytes`, with its override
+/// set over it. Its name must be a service's name too.
+fn read_bytes(path: &Path, bytes: Vec<u8>, brief: bool) -> Result<Checked, Stop> {
+    let shown = path.display();
+    let Ok(text) = String::from_utf8(bytes) else {
+        return Err(Stop::Broken(format!("{shown}: it is not UTF-8 text")));
     };
     let name = path.file_stem().and_then(|n| n.to_str()).unwrap_or("");
     if let Err(err) = service::check_name(name) {
-        return Ok(Some(format!("its name: {err}")));
+        return Err(Stop::Broken(format!("{shown}: its name: {err}")));
     }
-    let over_path = override_path(path);
-    let over = match fs::read(&over_path) {
-        Ok(bytes) => {
-            let Ok(over) = String::from_utf8(bytes) else {
-                return Ok(Some(format!("{}: it is not UTF-8 text", over_path.display())));
-            };
-            match service::Override::from_toml(&over) {
-                Ok(over) => Some(over),
-                Err(err) => return Ok(Some(format!("{}: {err}", over_path.display()))),
-            }
+    let over = read_over(path, &text, brief)?;
+    match service::from_toml_over(&text, over.as_ref().map(|over| &over.read)) {
+        Ok(service) => Ok(Checked { name: name.into(), text, over, service }),
+        Err(err) => {
+            let file = shown.to_string();
+            let over_path = over.as_ref().map(|over| over.path.display().to_string());
+            let over = over.as_ref().zip(over_path.as_deref());
+            let over = over.map(|(over, path)| Source { path, text: &over.text });
+            Err(Stop::Broken(said(&err, Source { path: &file, text: &text }, over, brief)))
         }
-        Err(e) if e.kind() == io::ErrorKind::NotFound => None,
-        Err(e) => return Err(util::failed(&over_path.display(), e)),
+    }
+}
+
+/// The service file at `path`, read, or why not.
+fn read_file(path: &Path, brief: bool) -> Result<Checked, Stop> {
+    let bytes = fs::read(path).map_err(|e| util::failed(&path.display(), e))?;
+    read_bytes(path, bytes, brief)
+}
+
+/// What Spark can say, to this session, of what putting a file to use
+/// would do.
+enum Spark {
+    /// Not root's session: Spark's answers and its copies are root's.
+    Hidden,
+    /// Spark did not answer.
+    Silent,
+    /// Its answer, of every service.
+    Shows(show::Show),
+}
+
+impl Spark {
+    /// Asks Spark for its `show` document, if this session may.
+    fn ask() -> Spark {
+        if util::own_user() != 0 {
+            return Spark::Hidden;
+        }
+        shown(None).map_or(Spark::Silent, Spark::Shows)
+    }
+}
+
+/// What putting a file that reads to use would do, as far as Spark tells.
+#[derive(Debug, PartialEq, Eq)]
+enum Effect {
+    /// This session is not root's.
+    Hidden,
+    /// Spark did not say, or its copy cannot be read.
+    Unknown,
+    /// What `spark_api::dry_run` says, or none when nothing changes.
+    Known(Option<String>),
+}
+
+/// How the settings of a file compare with the copy Spark read last.
+#[derive(Debug, PartialEq, Eq)]
+enum Held {
+    /// These settings differ.
+    Differ(Vec<String>),
+    /// Spark has no copy: the file was added since it started.
+    Absent,
+    /// The copy cannot be read.
+    Unreadable,
+}
+
+/// Compares the file `read` with the copy of its service's file, and of
+/// its override, that Spark read last, in the folder `good`.
+fn compare(good: &Path, read: &Checked) -> Held {
+    let file = good.join(format!("{}.toml", read.name));
+    let over = good.join(service::OVERRIDES).join(format!("{}.toml", read.name));
+    let held = match fs::read_to_string(&file) {
+        Ok(text) => text,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Held::Absent,
+        Err(_) => return Held::Unreadable,
     };
-    Ok(service::from_toml_over(&text, over.as_ref()).err().map(|err| match over {
-        Some(_) => format!("with {} over it: {err}", over_path.display()),
-        None => err.to_string(),
-    }))
+    let held_over = match fs::read_to_string(&over) {
+        Ok(text) => match service::Override::from_toml(&text) {
+            Ok(over) => Some(over),
+            Err(_) => return Held::Unreadable,
+        },
+        Err(e) if e.kind() == io::ErrorKind::NotFound => None,
+        Err(_) => return Held::Unreadable,
+    };
+    let new = (read.text.as_str(), read.over.as_ref().map(|over| &over.read));
+    match service::changed_settings((&held, held_over.as_ref()), new) {
+        Ok(keys) => Held::Differ(keys),
+        Err(_) => Held::Unreadable,
+    }
+}
+
+/// What putting the file `read` to use would do, given the copies Spark
+/// keeps in `good`.
+fn effect(spark: &Spark, good: &Path, read: &Checked) -> Effect {
+    let document = match spark {
+        Spark::Hidden => return Effect::Hidden,
+        Spark::Silent => return Effect::Unknown,
+        Spark::Shows(document) => document,
+    };
+    let differ = match compare(good, read) {
+        Held::Differ(keys) => Some(keys),
+        Held::Absent => None,
+        Held::Unreadable => return Effect::Unknown,
+    };
+    let service = &read.service;
+    let links: Vec<(String, Link)> = [
+        (&service.requires, Link::Requires),
+        (&service.wants, Link::Wants),
+        (&service.after, Link::After),
+    ]
+    .into_iter()
+    .flat_map(|(names, link)| names.iter().map(move |name| (name.clone(), link)))
+    .collect();
+    let change = Change {
+        name: &read.name,
+        differ: differ.as_deref(),
+        enabled: service.enabled,
+        links: &links,
+    };
+    Effect::Known(dry_run::dry_run(document, &change))
+}
+
+/// What `service check` prints of a file that reads: that it does, `notes`
+/// on its override and a newer default, and what putting it to use would
+/// do. A check of every file, `whole`, leaves out that only root sees it,
+/// which would repeat on each line.
+fn ok_line(path: &str, notes: &str, effect: &Effect, whole: bool) -> String {
+    let mut said = format!("{path}: ok{notes}");
+    match effect {
+        Effect::Known(Some(clause)) => said.push_str(&format!("; {clause}")),
+        Effect::Hidden if !whole => said.push_str("; root sees what applying it does"),
+        _ => {}
+    }
+    said
+}
+
+/// What `service edit` prints of a copy that reads, in place or about to
+/// be tried: that it does, and what putting it to use does, or how to
+/// apply it when that is not known.
+fn edited_line(path: &str, name: &str, effect: &Effect) -> String {
+    let clause = match effect {
+        Effect::Known(Some(clause)) => clause.clone(),
+        Effect::Known(None) => "nothing to apply".into(),
+        Effect::Hidden => "root sees what applying it does".into(),
+        Effect::Unknown => {
+            format!("Spark reads it when the service next starts: `service {name} restart`")
+        }
+    };
+    format!("{path}: ok; {clause}")
 }
 
 /// What `service check` says of a file that reads: its override, and a
@@ -105,11 +322,25 @@ fn notes(path: &Path) -> String {
     said
 }
 
-/// `service check [NAME | FILE]...`: checks each file, or every one in
-/// [`DIR`]; fails if one does not read.
+/// `service check [--brief] [NAME | FILE]...`: checks each file, or every
+/// one in [`DIR`]; says where each that does not read is wrong and how
+/// to mend it, or with `--brief` in one line, and for each that reads,
+/// what putting it to use would do; fails if one does not read.
 pub fn check(operands: &[String]) -> Result<i32, Fail> {
+    let mut brief = false;
+    let mut files = Vec::new();
+    for operand in operands {
+        match operand.as_str() {
+            "--brief" => brief = true,
+            other if other.starts_with('-') => {
+                return Err(usage(format!("service check: unknown option `{other}'")));
+            }
+            _ => files.push(operand),
+        }
+    }
+    let whole = files.is_empty();
     let mut paths = Vec::new();
-    if operands.is_empty() {
+    if whole {
         let entries = fs::read_dir(DIR).map_err(|e| util::failed(&DIR, e))?;
         let mut names: Vec<String> =
             entries.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
@@ -126,18 +357,22 @@ pub fn check(operands: &[String]) -> Result<i32, Fail> {
             }
         }
     }
-    for operand in operands {
-        paths.push(path_of(operand)?);
+    for file in files {
+        paths.push(path_of(file)?);
     }
+    let spark = Spark::ask();
     let mut bad = 0;
     for path in &paths {
-        match check_file(path) {
-            Ok(None) => println!("{}: ok{}", path.display(), notes(path)),
-            Ok(Some(why)) => {
-                eprintln!("{}: {why}", path.display());
+        match read_file(path, brief) {
+            Ok(read) => {
+                let effect = effect(&spark, Path::new(GOOD), &read);
+                println!("{}", ok_line(&path.display().to_string(), &notes(path), &effect, whole));
+            }
+            Err(Stop::Broken(report)) => {
+                eprintln!("{report}");
                 bad += 1;
             }
-            Err(failed) => {
+            Err(Stop::Failed(failed)) => {
                 eprintln!("service: {}", failed.message);
                 bad += 1;
             }
@@ -175,12 +410,30 @@ pub fn new(operands: &[String]) -> Result<i32, Fail> {
     Ok(0)
 }
 
+/// What becomes of an edited copy that reads.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Place {
+    /// It is put in place, for Spark to read when the service next
+    /// starts.
+    Now,
+    /// It is tried for this many seconds (ADR 0472): Spark keeps the file
+    /// it replaces, the service restarts, and the file comes back unless
+    /// the change is kept.
+    Trial(u32),
+}
+
 /// `service edit NAME`: edits NAME's file through a copy, put in place
 /// only once it reads.
 pub fn edit(operands: &[String]) -> Result<i32, Fail> {
     let [name] = operands else {
         return Err(usage("Usage: service edit NAME".into()));
     };
+    edit_file(name, Place::Now)
+}
+
+/// Edits the file `name` names through a copy, which becomes what
+/// `place` says once it reads.
+pub fn edit_file(name: &str, place: Place) -> Result<i32, Fail> {
     let path = path_of(name)?;
     let original = fs::read(&path).map_err(|e| match e.kind() {
         io::ErrorKind::NotFound => fail(format!(
@@ -209,14 +462,20 @@ pub fn edit(operands: &[String]) -> Result<i32, Fail> {
     drop(out);
     let result = written
         .map_err(|e| util::failed(&copy.display(), e))
-        .and_then(|()| edit_copy(&path, &copy, &original, name));
+        .and_then(|()| edit_copy(&path, &copy, &original, name, place));
     let _ = fs::remove_file(&copy);
     result
 }
 
 /// Runs the editor on `copy` until it reads or the user gives up, then
-/// puts it in place of `path`.
-fn edit_copy(path: &Path, copy: &Path, original: &[u8], name: &str) -> Result<i32, Fail> {
+/// puts it in place of `path`, or tries it there, as `place` says.
+fn edit_copy(
+    path: &Path,
+    copy: &Path,
+    original: &[u8],
+    name: &str,
+    place: Place,
+) -> Result<i32, Fail> {
     let editor = ["VISUAL", "EDITOR"]
         .iter()
         .find_map(|v| std::env::var(v).ok().filter(|e| !e.trim().is_empty()))
@@ -240,19 +499,26 @@ fn edit_copy(path: &Path, copy: &Path, original: &[u8], name: &str) -> Result<i3
             println!("{}: no change", path.display());
             return Ok(0);
         }
-        let why = match String::from_utf8(edited) {
-            Ok(text) => service::from_toml(&text).err().map(|err| err.to_string()),
-            Err(_) => Some("it is not UTF-8 text".into()),
-        };
-        let Some(why) = why else {
-            fs::rename(copy, path).map_err(|e| util::failed(&path.display(), e))?;
-            println!(
-                "{}: ok; Spark reads it when the service next starts: `service {name} restart`",
-                path.display()
-            );
-            return Ok(0);
-        };
-        eprintln!("{}: {why}", path.display());
+        // The copy is read as the file will be, with the override beside
+        // it, and what is wrong is said of the file's own path.
+        match read_bytes(path, edited, false) {
+            Ok(read) => {
+                // What it would do is worked out before it is in place: a
+                // trial restarts the service at once, and Spark keeps the
+                // copy it reads then.
+                let effect = effect(&Spark::ask(), Path::new(GOOD), &read);
+                let line = edited_line(&path.display().to_string(), &read.name, &effect);
+                if let Place::Trial(seconds) = place {
+                    println!("{line}");
+                    return servicetry::put_in_place(path, copy, name, seconds);
+                }
+                fs::rename(copy, path).map_err(|e| util::failed(&path.display(), e))?;
+                println!("{line}");
+                return Ok(0);
+            }
+            Err(Stop::Broken(report)) => eprintln!("{report}"),
+            Err(Stop::Failed(failed)) => return Err(failed),
+        }
         eprint!("What now? (e)dit again, or e(x)it without saving: ");
         let _ = io::stderr().flush();
         let mut answer = String::new();
@@ -455,5 +721,204 @@ mod tests {
         for bad in ["", "../etc/passwd", "a/b", ".hidden", "a b"] {
             assert!(!name_ok(bad), "{bad}");
         }
+    }
+
+    /// A folder of its own for a test, empty.
+    fn folder(what: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("servicefiles-{}-{what}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    const WEB: &str = "service_version = 1\nprogram = \"/system/commands/true\"\n";
+
+    /// The service file `web.toml` in `dir`, whose text is `text`, read.
+    fn read_in(dir: &Path, text: &str) -> Result<Checked, Stop> {
+        read_bytes(&dir.join("web.toml"), text.as_bytes().to_vec(), false)
+    }
+
+    /// What a file that does not read says, or panics.
+    fn broken(read: Result<Checked, Stop>) -> String {
+        match read {
+            Err(Stop::Broken(report)) => report,
+            Err(Stop::Failed(failed)) => panic!("failed: {}", failed.message),
+            Ok(_) => panic!("it read"),
+        }
+    }
+
+    #[test]
+    fn a_file_that_reads_says_what_putting_it_to_use_does() {
+        let runs = Effect::Known(Some("web runs an older copy: order differs".into()));
+        assert_eq!(
+            ok_line("/s/web.toml", "", &runs, false),
+            "/s/web.toml: ok; web runs an older copy: order differs"
+        );
+        // The override and the newer default come before it.
+        assert_eq!(
+            ok_line("/s/web.toml", ", with /s/settings.d/web.toml over it", &runs, false),
+            "/s/web.toml: ok, with /s/settings.d/web.toml over it; web runs an older copy: \
+             order differs"
+        );
+        for whole in [false, true] {
+            assert_eq!(ok_line("/s/web.toml", "", &Effect::Known(None), whole), "/s/web.toml: ok");
+            assert_eq!(ok_line("/s/web.toml", "", &Effect::Unknown, whole), "/s/web.toml: ok");
+            assert!(ok_line("/s/web.toml", "", &runs, whole).contains("; web runs"));
+        }
+    }
+
+    #[test]
+    fn only_root_sees_the_dry_run_and_a_check_of_every_file_says_it_once_not_per_file() {
+        assert_eq!(
+            ok_line("/s/web.toml", "", &Effect::Hidden, false),
+            "/s/web.toml: ok; root sees what applying it does"
+        );
+        assert_eq!(ok_line("/s/web.toml", "", &Effect::Hidden, true), "/s/web.toml: ok");
+    }
+
+    #[test]
+    fn an_edited_copy_that_reads_says_what_it_would_do_or_how_to_apply_it() {
+        let runs = Effect::Known(Some("web runs an older copy: order differs".into()));
+        assert_eq!(
+            edited_line("/s/web.toml", "web", &runs),
+            "/s/web.toml: ok; web runs an older copy: order differs"
+        );
+        assert_eq!(
+            edited_line("/s/web.toml", "web", &Effect::Known(None)),
+            "/s/web.toml: ok; nothing to apply"
+        );
+        assert_eq!(
+            edited_line("/s/web.toml", "web", &Effect::Hidden),
+            "/s/web.toml: ok; root sees what applying it does"
+        );
+        assert_eq!(
+            edited_line("/s/web.toml", "web", &Effect::Unknown),
+            "/s/web.toml: ok; Spark reads it when the service next starts: `service web restart`"
+        );
+    }
+
+    #[test]
+    fn a_file_that_does_not_read_is_said_as_a_compiler_says_it_with_its_own_path() {
+        let dir = folder("broken");
+        let text = format!("{WEB}discription = \"Web\"\n");
+        let report = broken(read_in(&dir, &text));
+        let path = dir.join("web.toml").display().to_string();
+        assert_eq!(
+            report,
+            format!(
+                "{path}:3:1: `discription` is not a setting here; service.toml(5) lists \
+                 them\n  |\n3 | discription = \"Web\"\n  | ^^^^^^^^^^^\n  = fix: did you mean \
+                 `description`?"
+            )
+        );
+        let one = broken(read_bytes(&dir.join("web.toml"), text.into_bytes(), true));
+        assert_eq!(
+            one,
+            format!(
+                "{path}:3:1: `discription` is not a setting here; service.toml(5) lists them: \
+                 did you mean `description`?"
+            )
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_file_that_is_not_text_or_has_a_bad_name_is_said_in_a_line() {
+        let dir = folder("lines");
+        let not_text = read_bytes(&dir.join("web.toml"), vec![0xff, 0xfe], false);
+        assert_eq!(broken(not_text), format!("{}/web.toml: it is not UTF-8 text", dir.display()));
+        let name = read_bytes(&dir.join("a b.toml"), WEB.as_bytes().to_vec(), false);
+        assert!(broken(name).starts_with(&format!("{}/a b.toml: its name: ", dir.display())));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_mistake_in_an_override_is_said_in_the_override_and_of_which_file_it_is_set_over() {
+        let dir = folder("override");
+        fs::create_dir_all(dir.join(service::OVERRIDES)).unwrap();
+        let over = dir.join(service::OVERRIDES).join("web.toml");
+        fs::write(&over, "# a typo\ndiscription = \"x\"\n").unwrap();
+        let (file, over_shown) =
+            (dir.join("web.toml").display().to_string(), over.display().to_string());
+        let report = broken(read_in(&dir, WEB));
+        assert_eq!(
+            report,
+            format!(
+                "{over_shown}:2:1: `discription` is not a setting here; service.toml(5) lists \
+                 them\n  |\n2 | discription = \"x\"\n  | ^^^^^^^^^^^\n  = fix: did you mean \
+                 `description`?\n  = note: set over {file}"
+            )
+        );
+        // An override that is not TOML is in the override, as it is.
+        fs::write(&over, "restart = \n").unwrap();
+        let report = broken(read_in(&dir, WEB));
+        assert!(report.starts_with(&format!("{over_shown}:1:")), "{report}");
+        assert!(report.ends_with(&format!("= note: set over {file}")), "{report}");
+        // One that reads is set over the file, which then reads.
+        fs::write(&over, "restart = \"never\"\n").unwrap();
+        let read = read_in(&dir, WEB).ok().unwrap();
+        assert_eq!(read.name, "web");
+        assert_eq!(read.service.restart, service::Restart::Never);
+        assert_eq!(read.over.unwrap().path, over);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_file_is_compared_with_the_copy_spark_read_last() {
+        let dir = folder("held");
+        let good = dir.join("good");
+        fs::create_dir_all(good.join(service::OVERRIDES)).unwrap();
+        let read = read_in(&dir, &format!("{WEB}order = 7\n")).ok().unwrap();
+        assert_eq!(compare(&good, &read), Held::Absent);
+        fs::write(good.join("web.toml"), WEB).unwrap();
+        assert_eq!(compare(&good, &read), Held::Differ(vec!["order".into()]));
+        // The copy's override counts as the file's does.
+        fs::write(good.join(service::OVERRIDES).join("web.toml"), "order = 7\n").unwrap();
+        assert_eq!(compare(&good, &read), Held::Differ(vec![]));
+        fs::write(good.join(service::OVERRIDES).join("web.toml"), "order = \n").unwrap();
+        assert_eq!(compare(&good, &read), Held::Unreadable);
+        // A copy that is in the way of being read is not one that is not there.
+        let _ = fs::remove_file(good.join("web.toml"));
+        fs::create_dir(good.join("web.toml")).unwrap();
+        assert_eq!(compare(&good, &read), Held::Unreadable);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn what_a_file_would_do_comes_from_sparks_answer_and_its_copy() {
+        let dir = folder("effect");
+        let good = dir.join("good");
+        fs::create_dir_all(&good).unwrap();
+        let text = "service_version = 2\nprogram = \"/system/commands/true\"\n";
+        fs::write(good.join("web.toml"), text).unwrap();
+        let read = read_in(&dir, &format!("{text}requires = [\"db\"]\n")).ok().unwrap();
+        let web = show::Service {
+            name: "web".into(),
+            state: show::State::Running,
+            ..show::Service::default()
+        };
+        let db = show::Service {
+            name: "db".into(),
+            state: show::State::Stopped,
+            ..show::Service::default()
+        };
+        let document = show::Show { services: vec![web, db], ..show::Show::default() };
+        assert_eq!(
+            effect(&Spark::Shows(document.clone()), &good, &read),
+            Effect::Known(Some(
+                "web runs an older copy: requires differs; `service web restart` applies the \
+                 change: it restarts web and starts db, which it now requires"
+                    .into()
+            ))
+        );
+        assert_eq!(effect(&Spark::Hidden, &good, &read), Effect::Hidden);
+        assert_eq!(effect(&Spark::Silent, &good, &read), Effect::Unknown);
+        // No copy: Spark reads the file when the service first starts.
+        let _ = fs::remove_file(good.join("web.toml"));
+        assert_eq!(
+            effect(&Spark::Shows(document), &good, &read),
+            Effect::Known(Some("Spark reads it when web first starts and at each boot".into()))
+        );
+        let _ = fs::remove_dir_all(&dir);
     }
 }

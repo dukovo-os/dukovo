@@ -75,12 +75,41 @@ reach.
   weight); its processes, their memory and CPU time; and its last
   lines in the log, five unless `-n` says otherwise, left out when the
   log does not answer.
+- **`service NAME explain`** says why a service is in its state, in
+  one sentence, and what to do. It follows what the service waits for,
+  or what stopped it, and then what that waits for or was stopped by,
+  up to 16 services, to the one at the root, and says what each is
+  doing in Spark's own words (`why`, `cause`, `state`). It ends with
+  the fix: what to repair at the root, and the start that brings the
+  service back with it. The sentence is made from the `show` document
+  alone, in spark-api, so the web console says what the command says;
+  `--json` prints it with the chain and the root. It exits 0 for a
+  service that is done or runs with its health check not failing, and
+  3 for any other. `show` gains the fields it needs: `retry_ms`,
+  `ready_by_ms` and the health check's `restart_after`.
 - **`show`** gains the fields that need: `cause` (the service a `why`
   names), `last_line`, `last_request` and `holds`. They are added
   without a new `show_version`, as spark(8) lets a client expect.
 - **`service NAME logs`** is `log -s NAME`, with log(1)'s options; and
   `log -s NAME`, as journalctl's `-u`, takes Spark's lines that name the
   service as a word as well as the service's own.
+- **`service check` says where a file is wrong, and what putting it to
+  use would do.** A file that does not read is shown as a compiler shows
+  a mistake: `PATH:LINE:COLUMN: message`, the line with carets under
+  the setting, and `= fix:` with what to do: the nearest setting's name
+  for a misspelt one, the template's line for a value of the wrong kind,
+  the setting to change for one that another needs. A mistake in an
+  override file names the override's line and the file it is set over.
+  `--brief` prints the first line alone, with the fix after it. For a
+  file that reads, the settings that differ from the copy Spark read
+  last (`/system/state/spark/good`, which only root reads) and the
+  `show` document go through `spark_api::dry_run`, which says whether
+  the service restarts, what starts with it and what keeps running; or,
+  for a service that does not run, when the change applies and whether
+  the service would start. It is made in spark-api, so the web console
+  says what the command says. `service edit` and `service try` check
+  the copy the same way and say it before the copy takes the file's
+  place.
 
 ## Consequences
 
@@ -92,16 +121,31 @@ reach.
   callers that only mean to start or stop a service in passing, reader
   and braille, pass `--quiet`; tests that look at a service on its way
   pass `--no-wait`.
+- A person who asks why a service is not running gets the answer in one
+  command, through every service between it and the cause, where
+  systemd leaves the chain to `systemctl list-dependencies` and the
+  journal. The console and the command cannot disagree: the words are
+  made once.
 - A watch costs Spark a buffer and a check each turn of its loop; four
   at most keep that small, and a fifth caller still has its service
   started.
 - Spark's log lines are now an interface: the watch and `log -s` carry
   them to people, and tests read them. Their words change only with
-  their docs and tests.
+  their docs and tests. The `why` texts are an interface too: `explain`
+  reads them to tell a service stopped by a request from one that ended.
 - `/processes` scoped to a service stays with ADR 0473; status counts a
   service's processes by their domain, as the kernel names it.
+- A person who changes a file learns where it is wrong and what to write,
+  and what the change does before it does it: `systemd-analyze verify`
+  gives a line and no fix, and systemd never says what `daemon-reload`
+  and a restart would change. Only root sees the second, as only root
+  reads Spark's copy; others get the check alone, and are told so.
 - The `service-graph` boot test starts services through waits, a
   failing one among them, runs four waits at once with a fifth start
-  beside them, and ends one wait with Ctrl-C; the lab test
-  `services/command` does the same with nginx from the catalog on the
-  lab's machines.
+  beside them, and ends one wait with Ctrl-C, and checks what `explain`
+  says of each state it makes, and what `check` says of a file with a
+  mistake, of a change to a service that runs and of one that does not;
+  the lab test `services/command` does the same with nginx from the
+  catalog on the lab's machines, `services/explain` follows a
+  requirement to a service Spark gave up on, and `services/check` says
+  where a file and its override are wrong.

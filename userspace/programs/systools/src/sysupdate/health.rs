@@ -723,6 +723,7 @@ mod tests {
         let health = |state| show::Health {
             state,
             failures: 2,
+            restart_after: 3,
             last_failure: Some("exited with code 0x1: no answer on 8080".into()),
             checked_ms: Some(1_000),
         };

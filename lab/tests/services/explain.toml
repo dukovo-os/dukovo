@@ -1,0 +1,62 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# service NAME explain (ADR 0471): a service that cannot start, which
+# Spark gives up on, and one that requires it, which is stopped. explain
+# says why the second is stopped, follows it to the first with the line
+# the first wrote as it failed, and says what to do; as JSON it names the
+# root of the chain. Once the first is fixed, a start of the second
+# starts both and explain says it runs.
+about = "service explain says why a service is stopped by following the requirement to the one Spark gave up on, with the line it wrote and what to do, in words and as JSON; once fixed, a start brings both back and explain says it runs (ADR 0471)"
+time = "3m"
+host_needs = ["scp"]
+
+[[step]]
+host = "sh {here}/copy-file.sh {here}/lab-broken.service {machine} {machine-port:22}"
+expect = "copied: lab-broken.service"
+[[step]]
+host = "sh {here}/copy-file.sh {here}/lab-needs.service {machine} {machine-port:22}"
+expect = "copied: lab-needs.service"
+# From nothing: a run before may have left them.
+[[step]]
+run = "sh -c 'cd /system/settings/spark/services && rm -f lab-broken.toml lab-needs.toml && cp /users/lab/lab-broken.service lab-broken.toml && cp /users/lab/lab-needs.service lab-needs.toml && echo installed'"
+root = true
+expect = "installed"
+# Both start: lab-broken ends at once, and Spark starts it again.
+[[step]]
+run = "sh -c 'service lab-needs start 2>&1'"
+root = true
+expect = ["started lab-broken (", "started lab-needs ("]
+# Spark gives up on lab-broken after its second start, and stops lab-needs.
+[[step]]
+run = "sh -c 'i=0; while [ $i -lt 30 ] && ! service lab-broken status | grep -q \"Active: failed\"; do sleep 1; i=$((i + 1)); done; service lab-broken status'"
+root = true
+exit = 3
+expect = "Active: failed (Spark gave up on it)"
+[[step]]
+run = "service lab-needs explain"
+root = true
+exit = 3
+expect = [
+    "lab-needs is stopped because it requires lab-broken, which was given up on: it failed to start 2 times in a row",
+    '("lab-broken: cannot open /shared/lab: no such folder")',
+    "Fix what stops lab-broken (`service lab-broken logs` shows what it wrote), then `service lab-needs start` starts both.",
+]
+[[step]]
+run = "service lab-needs explain --json"
+root = true
+exit = 3
+expect = '"root":"lab-broken"'
+# Fixed, lab-broken keeps running, and one start brings both back.
+[[step]]
+run = "sh -c 'cd /system/settings/spark/services && sed -i \"s/exit 1/while :; do sleep 1; done/\" lab-broken.toml && service lab-needs start'"
+root = true
+expect = ["started lab-broken (", "started lab-needs ("]
+[[step]]
+run = "service lab-needs explain"
+root = true
+expect = "lab-needs is running as process "
+[[step]]
+run = "sh -c 'service lab-needs stop; service lab-broken stop; cd /system/settings/spark/services && rm lab-needs.toml lab-broken.toml /users/lab/lab-needs.service /users/lab/lab-broken.service; echo cleaned'"
+root = true
+expect = "cleaned"
