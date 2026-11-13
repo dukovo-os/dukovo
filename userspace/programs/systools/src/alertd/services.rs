@@ -8,9 +8,9 @@
 //!
 //! Spark is PID 1 and never waits on a socket, so nothing is added to
 //! it: alertd looks. A service that fails and is started again shows
-//! as not running part of the time; the 60 seconds count from when it
-//! was first seen wrong, and start over only when it is seen as asked,
-//! so a crash loop is not missed between its runs. The alert is critical
+//! as starting part of the time; the 60 seconds count from when it was
+//! first seen wrong, and start over only when it is seen running or done
+//! as asked, so a crash loop is not missed between its runs. The alert is critical
 //! once Spark has given up on the service, and a warning before. It
 //! clears as soon as the service is as asked.
 //!
@@ -35,7 +35,7 @@ pub const SOURCE: &str = "spark";
 
 /// Whether `service` is not doing what Spark was asked of it: the rule
 /// `service list` marks services by, so that the two never disagree.
-pub use crate::service::not_as_asked;
+pub(crate) use crate::service::not_as_asked;
 
 /// When each service was first seen wrong, in Spark's milliseconds.
 #[derive(Debug, Default)]
@@ -48,8 +48,18 @@ impl Watch {
     /// been wrong for [`GRACE_MS`].
     pub fn observe(&mut self, show: &Show) -> Vec<Alert> {
         let now = show.now_ms;
-        let wrong: Vec<&Service> =
-            show.services.iter().filter(|service| not_as_asked(service)).collect();
+        // A service on its way, starting or stopping, neither begins a
+        // count nor ends one, and keeps its alert: one that crashes again
+        // and again is seen starting part of the time.
+        let on_its_way = |service: &Service| {
+            matches!(service.state, State::Pending | State::Starting | State::Stopping)
+                && self.wrong_since.contains_key(&service.name)
+        };
+        let wrong: Vec<&Service> = show
+            .services
+            .iter()
+            .filter(|service| not_as_asked(service) || on_its_way(service))
+            .collect();
         self.wrong_since.retain(|name, _| wrong.iter().any(|service| service.name == *name));
         let mut alerts = Vec::new();
         for service in wrong {
@@ -212,6 +222,16 @@ mod tests {
         watch.observe(&show(0, vec![service("web", State::Waiting)]));
         watch.observe(&show(30_000, vec![service("web", State::Starting)]));
         assert_eq!(watch.observe(&show(60_000, vec![service("web", State::Waiting)])).len(), 1);
+    }
+
+    #[test]
+    fn an_alert_stays_while_the_service_starts_again() {
+        let mut watch = Watch::default();
+        watch.observe(&show(0, vec![service("web", State::Waiting)]));
+        assert_eq!(watch.observe(&show(60_000, vec![service("web", State::Waiting)])).len(), 1);
+        assert_eq!(watch.observe(&show(70_000, vec![service("web", State::Starting)])).len(), 1);
+        // One that starts and was never seen wrong is no alert.
+        assert_eq!(watch.observe(&show(80_000, vec![service("db", State::Starting)])), []);
     }
 
     #[test]
