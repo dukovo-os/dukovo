@@ -60,6 +60,7 @@ pub const KEYS: &[&str] = &[
     "memory",
     "oom",
     "secrets",
+    "certificates",
     "permissions",
     "network.outbound",
     "network.listen",
@@ -163,6 +164,9 @@ pub struct Service {
     pub limits: Limits,
     /// The names of the secrets Spark hands it as read-only files.
     pub secrets: Vec<String>,
+    /// The names of the certificates certd keeps that Spark copies for
+    /// it, read-only, and has it read again when one changes (ADR 0512).
+    pub certificates: Vec<String>,
     /// What it may do beyond running.
     pub permissions: Permissions,
     /// The account it runs as, a bundle's service's own (ADR 0385); when
@@ -265,6 +269,17 @@ impl Service {
             if names.iter().any(|other| other == name) {
                 return Err(format!("{key} names {name}, the service itself"));
             }
+        }
+        Ok(())
+    }
+
+    /// Checks its certificates against its own name, `name`: certd, which
+    /// makes and keeps them, names none.
+    pub fn check_certificates(&self, name: &str) -> Result<(), String> {
+        if name == CERTD && !self.certificates.is_empty() {
+            return Err(format!(
+                "{CERTD} keeps the certificates and names none: leave out certificates"
+            ));
         }
         Ok(())
     }
@@ -560,6 +575,47 @@ pub fn secrets_dir(name: &str) -> String {
     format!("{SPARK_STATE}/secrets/{name}")
 }
 
+/// The service that keeps the machine's certificates (ADR 0512).
+pub const CERTD: &str = "certd";
+
+/// Where certd keeps the certificates: each `NAME` a link to the folder
+/// of its current generation, [`certificate_generation`], which holds
+/// `fullchain.pem` and `key.pem`.
+pub const CERTD_STATE: &str = "/system/state/certd/certificates";
+
+/// The files of a certificate's generation: its chain, the certificate
+/// first, and its private key, each PEM.
+pub const CERTIFICATE_FILES: [&str; 2] = ["fullchain.pem", "key.pem"];
+
+/// The name of the folder of generation `generation` (from 1) of
+/// certificate `name`, where certd and Spark keep it and its link leads: `.NAME.G`,
+/// hidden, so that a folder of certificates lists their names alone. No
+/// certificate's name starts with a dot, so it is no certificate's name.
+pub fn certificate_generation(name: &str, generation: u64) -> String {
+    format!(".{name}.{generation}")
+}
+
+/// The certificate and generation the folder `entry` is, as
+/// [`certificate_generation`] names it, or None if it is no generation's
+/// name.
+pub fn generation_of(entry: &str) -> Option<(&str, u64)> {
+    let (name, digits) = entry.strip_prefix('.')?.rsplit_once('.')?;
+    let generation = digits.parse().ok()?;
+    let exact = digits.bytes().all(|b| b.is_ascii_digit()) && !digits.starts_with('0');
+    (exact && check_certificate(name).is_ok()).then_some((name, generation))
+}
+
+/// Where Spark keeps each service's copies of its certificates: no
+/// service holds it, or what is in it.
+pub const CERTIFICATE_COPIES: &str = "/system/live/spark/certificates";
+
+/// Where Spark keeps the copies of the certificates of service `name`,
+/// and where the service finds them, as `CERTIFICATES_DIRECTORY` says:
+/// a folder for each, of its name, with `fullchain.pem` and `key.pem`.
+pub fn certificates_dir(name: &str) -> String {
+    format!("{CERTIFICATE_COPIES}/{name}")
+}
+
 /// The file of the accounts, whose lines are
 /// `name:x:user:group:full name:home:shell`.
 pub const PASSWD: &str = "/system/settings/passwd";
@@ -652,6 +708,12 @@ impl TryFrom<RawPermissions> for Permissions {
                 return Err(format!(
                     "no service holds {SPARK_STATE}, where Spark keeps its files and the \
                      services' secrets, so it cannot hold {path}"
+                ));
+            }
+            if within(path, CERTIFICATE_COPIES) || within(CERTIFICATE_COPIES, path) {
+                return Err(format!(
+                    "no service holds {CERTIFICATE_COPIES}, where Spark keeps each service's \
+                     copies of its certificates' keys, so it cannot hold {path}"
                 ));
             }
             if let Some((always, _)) = ALWAYS.iter().find(|(a, _)| path != *a && within(path, a)) {
@@ -759,6 +821,11 @@ restart = "on-failure"
 # SECRETS_DIRECTORY names, never in its environment; set each with
 # `service secret set NAME SECRET`.
 secrets = []
+# The certificates certd keeps, as `cert list` names them, that Spark
+# copies for it, read-only, into the folder CERTIFICATES_DIRECTORY names,
+# each in a folder of its name with fullchain.pem and key.pem; it must
+# read them again on SIGHUP, which Spark sends when one changes.
+certificates = []
 
 # More of its environment, as NAME = "value".
 [environment]
@@ -1111,6 +1178,8 @@ struct File {
     limits: Limits,
     #[serde(default, deserialize_with = "secret_names")]
     secrets: Vec<String>,
+    #[serde(default, deserialize_with = "certificate_names")]
+    certificates: Vec<String>,
     #[serde(default)]
     permissions: Permissions,
     account: Option<String>,
@@ -1315,6 +1384,7 @@ fn check(file: File) -> Result<Service, Problem> {
         restart: file.restart,
         limits: file.limits,
         secrets: file.secrets,
+        certificates: file.certificates,
         permissions: file.permissions,
         account: file.account,
         backup: file.backup,
@@ -1831,6 +1901,41 @@ pub(crate) fn secret_names<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<String
         }
     }
     Ok(names)
+}
+
+/// `certificates`: names of certificates, each once.
+pub(crate) fn certificate_names<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<String>, D::Error> {
+    let names = Vec::<String>::deserialize(d)?;
+    for (i, name) in names.iter().enumerate() {
+        check_certificate(name).map_err(de::Error::custom)?;
+        if names[..i].contains(name) {
+            return Err(de::Error::custom(format!("certificates names {name} twice")));
+        }
+    }
+    Ok(names)
+}
+
+/// The longest name of a certificate.
+pub const CERTIFICATE_NAME_MAX: usize = 64;
+
+/// Checks a certificate's name, as certd keeps it, `cert` takes it and a
+/// service file names it: 1 to [`CERTIFICATE_NAME_MAX`] lowercase
+/// letters, digits, `-` and `.`, starting with a letter or a digit, with
+/// no `..`. It is one harmless part of a path, and a domain's name fits.
+pub fn check_certificate(name: &str) -> Result<(), String> {
+    let fits = (1..=CERTIFICATE_NAME_MAX).contains(&name.len())
+        && name.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b"-.".contains(&b))
+        && name.as_bytes()[0].is_ascii_alphanumeric()
+        && !name.contains("..");
+    if fits {
+        Ok(())
+    } else {
+        Err(format!(
+            "`{}` is not a certificate's name: it has 1 to {CERTIFICATE_NAME_MAX} lowercase \
+             letters, digits, `-` and `.`, starts with a letter or a digit, and has no `..`",
+            name.escape_debug()
+        ))
+    }
 }
 
 /// Checks a secret's name, the name of its file in [`secrets_dir`].

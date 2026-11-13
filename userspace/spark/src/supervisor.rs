@@ -60,6 +60,7 @@ macro_rules! audit {
     ($($arg:tt)*) => { println!("<86>spark: {}", format_args!($($arg)*)) };
 }
 
+mod certd;
 mod health;
 mod show;
 mod starting;
@@ -89,7 +90,7 @@ use radix_rt::fs::{Dir, File};
 use radix_rt::{SYS, println, slots};
 
 use crate::services::{self, Restart, Spec};
-use crate::views;
+use crate::{certificates, views};
 use manifest::service::ReadyWhen;
 use spark_api::show::Request;
 use starting::Wanted;
@@ -508,6 +509,11 @@ struct Service {
     /// Why it never starts, when it is one of services that wait for each
     /// other.
     circle: Option<String>,
+    /// When Spark last had it read its certificates again, or it started,
+    /// and whether a change since waits for RELOAD_SPACING to pass (ADR
+    /// 0512).
+    reloaded_ns: u64,
+    reload_due: bool,
 }
 
 impl Service {
@@ -549,6 +555,8 @@ impl Service {
             checks: health::Checks::default(),
             rank,
             circle: None,
+            reloaded_ns: 0,
+            reload_due: false,
         }
     }
 
@@ -596,7 +604,11 @@ impl Service {
             }
             _ => None,
         };
-        state.into_iter().chain(check).min()
+        let reload = match self.state {
+            State::Running(_) if self.reload_due => Some(self.reloaded_ns + certd::RELOAD_SPACING),
+            _ => None,
+        };
+        state.into_iter().chain(check).chain(reload).min()
     }
 }
 
@@ -660,6 +672,9 @@ struct Connection {
     written: usize,
     /// While its request waits for the service to settle.
     watch: Option<Watch>,
+    /// Whether it came to certd's socket, which answers certd alone, and
+    /// one request.
+    certd: bool,
 }
 
 /// The services' backup hooks a `hooks` request runs (ADR 0463), one
@@ -712,6 +727,9 @@ pub struct Supervisor {
     /// machine asks it to restart.
     restart: Option<u32>,
     listener: Option<File>,
+    /// certd's socket (ADR 0512), whose one connection at a time is in
+    /// `connections` too, beside the control socket's.
+    certd_listener: Option<File>,
     connections: Vec<Connection>,
     services: Vec<Service>,
     /// What Spark said about the services in this turn of its loop, for
@@ -796,6 +814,7 @@ impl Supervisor {
             button,
             restart,
             listener: None,
+            certd_listener: None,
             connections: Vec::new(),
             services: Vec::new(),
             told: Vec::new(),
@@ -884,39 +903,54 @@ impl Supervisor {
         }
     }
 
-    /// Opens the control socket.
+    /// Opens the control socket, and certd's.
     pub fn listen(&mut self) {
         if let Err(err) = self.root.make_dir(CONTROL_DIR) {
             println!("spark: cannot make /{CONTROL_DIR}: {err}");
             return;
         }
-        let Some(slot) = slots::take() else { return };
+        self.listener = self.listen_at(CONTROL, CONNECTIONS_MAX);
+        if let Err(err) = self.root.make_dir(certd::SOCKET_DIR) {
+            println!("spark: cannot make /{}: {err}", certd::SOCKET_DIR);
+            return;
+        }
+        self.certd_listener = self.listen_at(certd::SOCKET, 1);
+    }
+
+    /// A socket listening at `path` beneath the root, with room for
+    /// `backlog` connections waiting to be taken.
+    fn listen_at(&self, path: &str, backlog: usize) -> Option<File> {
+        let slot = slots::take()?;
         let flags = PipeFlags::NON_BLOCKING.union(PipeFlags::CLOSE_ON_EXEC);
         let made =
             process::socket(&SYS, SLOT_PROCESS, slot, flags).map_err(|s| s.0).and_then(|()| {
-                let path = alloc::format!("/{CONTROL}");
+                let name = alloc::format!("/{path}");
                 libradix::abi::directory::bind_socket(
                     &SYS,
                     self.root.slot(),
-                    CONTROL.as_bytes(),
-                    slot,
                     path.as_bytes(),
+                    slot,
+                    name.as_bytes(),
                 )
                 .map_err(|s| s.0)?;
-                file_abi::listen(&SYS, slot, CONNECTIONS_MAX as u32).map_err(|s| s.0)
+                file_abi::listen(&SYS, slot, backlog as u32).map_err(|s| s.0)
             });
         match made {
             Ok(()) => match File::own(slot) {
                 Ok(listener) => {
-                    println!("spark: listening at /{CONTROL}");
-                    self.listener = Some(listener);
+                    println!("spark: listening at /{path}");
+                    Some(listener)
                 }
-                Err(err) => println!("spark: cannot listen at /{CONTROL}: {err}"),
+                Err(err) => {
+                    println!("spark: cannot listen at /{path}: {err}");
+                    None
+                }
             },
             Err(status) => {
                 let _ = capability::delete(&SYS, slot);
                 slots::give_back(slot);
-                println!("spark: cannot listen at /{CONTROL}: {status:#x}");
+                println!("spark: cannot listen at /{path}: {status:#x}");
+                None
             }
         }
     }
@@ -1105,6 +1139,10 @@ impl Supervisor {
         say(&mut self.told, index, line);
         service.output = Some(output);
         service.started_ns = time;
+        // It reads the certificates it starts with; a change comes at
+        // RELOAD_SPACING after its start at the soonest.
+        service.reloaded_ns = time;
+        service.reload_due = false;
         service.set_why(None, None);
         service.unhealthy = false;
         service.checks = health::Checks::default();
@@ -1126,11 +1164,21 @@ impl Supervisor {
         }
     }
 
-    /// Makes service `index`'s domain if it has none, and its process in
-    /// it, running its program. Returns the process's number and the
-    /// read end of its output.
+    /// Copies service `index`'s certificates anew, makes its domain if it
+    /// has none, and its process in it, running its program. Returns the
+    /// process's number and the read end of its output.
     fn spawn(&mut self, index: usize) -> Result<(u64, File), String> {
         let spec = &self.services[index].spec;
+        // Its certificates are copied anew as it starts (ADR 0512), not
+        // for the processes of its health checks and hooks, which read the
+        // copies it has.
+        let account = match &spec.account {
+            Some(name) if !spec.certificates.is_empty() => {
+                Some(account(&self.root, self.names, name)?)
+            }
+            _ => None,
+        };
+        certificates::copy_all(&self.root, spec, account.as_ref())?;
         let (program, arguments) = (spec.program.clone(), spec.arguments.clone());
         self.spawn_as(index, &program, &arguments)
     }
@@ -1259,6 +1307,10 @@ impl Supervisor {
         if !spec.secrets.is_empty() {
             environment
                 .push(format!("SECRETS_DIRECTORY={}", manifest::service::secrets_dir(&spec.name)));
+        }
+        if !spec.certificates.is_empty() {
+            let dir = manifest::service::certificates_dir(&spec.name);
+            environment.push(format!("CERTIFICATES_DIRECTORY={dir}"));
         }
         if !spec.mounts.is_empty() {
             environment.push(format!("MOUNT_PLACES={}", spec.mounts.join(":")));
@@ -1567,10 +1619,14 @@ impl Supervisor {
         }
     }
 
-    /// Takes the connections that wait at the control socket.
-    fn accept(&mut self) {
-        let Some(listener) = &self.listener else { return };
-        while self.connections.len() < CONNECTIONS_MAX {
+    /// Takes the connections waiting at the control socket, or at certd's
+    /// if `certd`: as many as there is room for, CONNECTIONS_MAX of the
+    /// control socket's and one of certd's, so that neither keeps the
+    /// other out.
+    fn accept(&mut self, certd: bool) {
+        let listener = if certd { &self.certd_listener } else { &self.listener };
+        let Some(listener) = listener else { return };
+        while self.has_room(certd) {
             let Some(slot) = slots::take() else { return };
             if file_abi::accept(&SYS, listener.slot(), slot, PipeFlags::NON_BLOCKING).is_err() {
                 slots::give_back(slot);
@@ -1590,9 +1646,17 @@ impl Supervisor {
                     out: Vec::new(),
                     written: 0,
                     watch: None,
+                    certd,
                 });
             }
         }
+    }
+
+    /// Whether there is room for another connection to the control
+    /// socket, or to certd's if `certd`.
+    fn has_room(&self, certd: bool) -> bool {
+        let open = self.connections.iter().filter(|c| c.certd == certd).count();
+        open < if certd { 1 } else { CONNECTIONS_MAX }
     }
 
     /// Reads what connection `index` sent; once it is a whole line,
@@ -1624,6 +1688,14 @@ impl Supervisor {
         let request = String::from_utf8_lossy(&connection.request).into_owned();
         let request = request.lines().next().unwrap_or("").trim().to_string();
         let asker = (connection.peer, connection.user);
+        if connection.certd {
+            let answer = self.answer_certd(&request, asker.0);
+            let connection = &mut self.connections[index];
+            connection.answered = true;
+            connection.out = answer.into_bytes();
+            connection.until = now() + CONNECTION_WAIT;
+            return self.write_answer(index);
+        }
         if let Some(phase) = request.strip_prefix("hooks ") {
             let connection = self.connections.remove(index);
             self.begin_hooks(connection.file, phase.trim());
@@ -1707,6 +1779,7 @@ impl Supervisor {
             "status" => self.answer_status(),
             "show" => self.answer_show(rest.first().copied()),
             "reload" => self.answer_reload(rest.first().copied(), peer),
+            "certificate" => self.answer_certificate(&rest, peer),
             "start" => return self.answer_service(Verb::Start, &rest, asker),
             "stop" => return self.answer_service(Verb::Stop, &rest, asker),
             "restart" => return self.answer_service(Verb::Restart, &rest, asker),
@@ -2257,9 +2330,9 @@ impl Supervisor {
         self.start_watchdog();
         loop {
             // The children's notification, the power button's, the host's
-            // restarts', the control socket, the connections, the services'
-            // outputs, their health checks' and the program's terminal, in
-            // that order.
+            // restarts', the control socket, certd's, the connections, the
+            // services' outputs, their health checks' and the program's
+            // terminal, in that order.
             let mut entries: Vec<(PollEntry, Source)> = Vec::new();
             let readable = PollEvents::READABLE.0 as u16;
             let writable = PollEvents::WRITABLE.0 as u16;
@@ -2275,8 +2348,14 @@ impl Supervisor {
             if let Some(slot) = self.restart {
                 add(slot, readable, Source::Restart);
             }
-            if let Some(listener) = &self.listener {
+            // A socket whose connections are all taken waits, so that one
+            // more waiting to be taken does not wake Spark again at once.
+            let rooms = [self.has_room(false), self.has_room(true)];
+            if let Some(listener) = self.listener.as_ref().filter(|_| rooms[0]) {
                 add(listener.slot(), readable, Source::Listener);
+            }
+            if let Some(listener) = self.certd_listener.as_ref().filter(|_| rooms[1]) {
+                add(listener.slot(), readable, Source::CertdListener);
             }
             for (i, connection) in self.connections.iter().enumerate() {
                 // Its request, or room for the rest of its answer; a watch
@@ -2349,7 +2428,8 @@ impl Supervisor {
                             }
                             self.host_restart();
                         }
-                        Source::Listener => self.accept(),
+                        Source::Listener => self.accept(false),
+                        Source::CertdListener => self.accept(true),
                         Source::Connection(i) => self.serve(i),
                         Source::Output(i) => {
                             let service = &mut self.services[i];
@@ -2387,6 +2467,7 @@ impl Supervisor {
             self.step_hook(time);
             self.step_ready(time);
             self.step_health(time);
+            self.step_reloads(time);
             for index in 0..self.services.len() {
                 if let State::Waiting(at) = self.services[index].state
                     && at <= time
@@ -2413,6 +2494,7 @@ enum Source {
     Button,
     Restart,
     Listener,
+    CertdListener,
     Connection(usize),
     Output(usize),
     Check(usize),

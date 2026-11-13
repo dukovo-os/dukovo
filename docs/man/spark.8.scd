@@ -318,8 +318,8 @@ keeps for the restarts, with _/devices/null_ as its standard input, a pipe as
 its standard output and error, _/_ as its working directory, and the
 environment *PATH=/system/commands*, *HOME=/*, *TERM=dumb*, *LANG=C.UTF-8*
 and *EDITOR=nano* with the file's *environment* over it, and
-*SECRETS_DIRECTORY* and *MOUNT_PLACES* when its file names secrets or
-*files.mount*. Its root is a view of
+*SECRETS_DIRECTORY*, *CERTIFICATES_DIRECTORY* and *MOUNT_PLACES* when
+its file names secrets, certificates or *files.mount*. Its root is a view of
 the tree that holds what its file declares and what every service
 reads (*service.toml*(5), ADR 0217), built at each start; one whose
 file sets *runs-with-your-access* gets Spark's own root instead. It
@@ -528,6 +528,14 @@ presses.
 *undo* _id_
 	Undo trial _id_ now, as when its time is up; the answer says what
 	was put back and restarted.
+*certificate* _name_
+	Certificate _name_ has changed in *certd*(8)'s keeping: copy it
+	again for each running service whose file names it, and send each
+	SIGHUP, at most one in 10 seconds (*service.toml*(5),
+	CERTIFICATES). Answers *ok:* _name_ *copied for* _N_ *services*, or
+	*error:* with the services it could not copy it for, each of which
+	keeps the copy it had. *cert*(8) asks it after it adds, replaces or
+	remakes one.
 
 *hooks* *before* | *after*
 	Run the *before* or *after* backup hook of every running service
@@ -537,6 +545,24 @@ presses.
 	or *failed:* _name_*:* _why_. *backup*(8) asks it around the
 	snapshots of a round of backups (ADR 0463). One set of hooks runs
 	at a time.
+
+# CERTD'S SOCKET
+
+certd does not hold the control socket, which could stop any service or
+the machine. Spark listens for it at _/system/live/spark/certd/socket_
+too, whose folder certd's view holds read-only (ADR 0512). It answers
+*certificate* _name_ alone, as the control socket does, and only from
+certd's running process, by the number the kernel gives
+(*socket_state*); any other process is answered *error: only certd asks
+through this socket*, and the attempt is logged as a security event.
+One of its connections is served at a time, beside the control
+socket's.
+
+Spark reads what certd keeps trusting nothing in it: a certificate's
+name must be a symbolic link to one of its own generations in certd's
+folder, and its two files regular files of 64 KiB or less, none a link.
+Anything else keeps the services that name it from starting, with the
+reason.
 
 # SHUTTING DOWN
 
@@ -796,6 +822,11 @@ _/system/live/spark/control_
 _/system/state/spark/trials/_*id*
 	A trial's copies of the files it keeps, by number, and its record,
 	_trial_ (see *try*).
+_/system/live/spark/certd/socket_
+	certd's socket (see *CERTD'S SOCKET*).
+
+_/system/live/spark/certificates/_*name*
+	Service _name_'s copies of the certificates its file names.
 
 _/system/tests/hello_
 	A test program for the boot tests. It prints its process number,

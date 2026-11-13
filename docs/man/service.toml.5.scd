@@ -178,8 +178,9 @@ override:
 	as it: each place in the view is opened as the account, so the
 	owners and modes of the files narrow what it reaches as they would a
 	person's, and what it makes is the account's. Its _/tmp_, the places
-	it may change that Spark makes, and its secrets are given to the
-	account. Not *"root"*, and not with *runs-with-your-access*.
+	it may change that Spark makes, its secrets and its copies of its
+	certificates are given to the account. Not *"root"*, and not with
+	*runs-with-your-access*.
 
 *secrets* = [_"name"_, ...]
 	The names of its secrets, such as a database's password or an API
@@ -187,6 +188,17 @@ override:
 	each with *service secret set* _service_ _name_ (*service*(8)).
 	Spark hands them over as read-only files, never in its environment
 	(see SECRETS).
+
+*certificates* = [_"name"_, ...]
+	The names of the certificates it uses, such as *"this-machine"*,
+	from those *certd*(8) keeps (*cert list*); none unless set. Spark
+	copies each, its chain and its private key, into a folder of the
+	service's own, read-only, and has the service read them again with
+	SIGHUP when one changes (see CERTIFICATES). A name has 1 to 64
+	lowercase letters, digits, *-* and *.*, starts with a letter or a
+	digit, and has no *..*. A service that names any starts after certd,
+	as if its *after* named certd, when both start. certd's own file
+	names none.
 
 *limits*
 	A table of what its resource domain may use:
@@ -305,7 +317,9 @@ override:
 	Paths are absolute, without *.*, *..* or *//*; none is _/_ itself
 	or within another, none is within a place every service reads
 	(name that whole place instead), and none is or holds
-	_/system/state/spark_, where Spark keeps its files and the secrets.
+	_/system/state/spark_, where Spark keeps its files and the secrets,
+	or _/system/live/spark/certificates_, where it keeps the services'
+	copies of their certificates' keys.
 
 	A dotted name is TOML's for a table in a table: *network.listen
 	= [80]* under *[permissions]* is the same as *listen = [80]* under
@@ -466,6 +480,8 @@ at its own path, and what every service has without asking:
   resolver (*resolved*(8)), and _/system/live/netd_, which an
   _/etc/resolv.conf_ from before resolved leads to (*netd*(8));
 - its program;
+- the folders of its secrets and of its copies of its certificates,
+  read-only, if it has any;
 - a _/tmp_ of its own, which is _/system/live/spark/tmp/name_ in the
   tree and is emptied at each boot;
 - the symbolic links of _/_ and _/system_, so _/bin/sh_ and
@@ -478,8 +494,8 @@ so a file whose mode closes it to root is closed to it too. A place its file nam
 the list takes that one's place, so notifyd's
 *files.read-write = ["/system/live/notify"]* lets it change its folder.
 
-A place it names that is not there, or a secret that is not set, keeps it
-from starting, and Spark says why in the log and in the answer to
+A place it names that is not there, a secret that is not set, or a
+certificate that certd does not keep, keeps it from starting, and Spark says why in the log and in the answer to
 *service* _name_ *start*.
 
 # SECRETS
@@ -503,6 +519,42 @@ service whose secret is not set is not started:
 
 ```
 spark: could not start web: its secret db-password is not set: set it with `service secret set web db-password`
+```
+
+# CERTIFICATES
+
+*certd*(8) keeps the machine's certificates by name, and makes the
+machine's own, *this-machine*, which names the machine, its name with
+*.local* and *localhost*; *cert add* adds one from elsewhere (*cert*(8)).
+A service names those it uses in *certificates*, and at each start Spark
+copies each into _/system/live/spark/certificates/service/name_: the
+folder holds *fullchain.pem*, the certificate and then the chain that
+leads to its authority, and *key.pem*, its private key, both PEM. The
+folder of the service's copies is given to its *account* if it has one
+(mode 0500, and 0400 for each file), attached read-only at that same
+path in its view, and named in *CERTIFICATES_DIRECTORY*, so nginx reads:
+
+```
+ssl_certificate     /system/live/spark/certificates/nginx/this-machine/fullchain.pem;
+ssl_certificate_key /system/live/spark/certificates/nginx/this-machine/key.pem;
+```
+
+Each copy is the service's own: another service's key is never in its
+view, and _/system/live_ is emptied at each boot. When certd makes a
+certificate anew, or *cert add --replace* replaces one, Spark copies it
+again for each running service that names it, and sends it SIGHUP,
+which every server Dukovo ships takes as "read your certificates again".
+A service gets at most one such SIGHUP in 10 seconds, and none in its
+first 10 seconds or before it is ready: changes in that time are
+copied at once, and one SIGHUP for them all follows. The two files
+change together, so a service never reads a new certificate with the
+old key. A service that cannot reload restarts with *service restart*
+_name_ instead.
+
+A certificate certd does not keep keeps the service from starting:
+
+```
+spark: could not start web: its certificate shop.example.com does not exist: certd makes this-machine; add others with `cert add`
 ```
 
 # WHEN SPARK READS A FILE
@@ -619,9 +671,13 @@ _/system/state/spark/good/name.toml_
 _/system/state/spark/secrets/name_
 	A service's secrets.
 
+_/system/live/spark/certificates/name_
+	A service's copies of its certificates.
+
 _/system/live/spark/tmp/name_
 	A service's _/tmp_.
 
 # SEE ALSO
 
-*spark*(8), *service*(8), *logd*(8), *e1000d*(8), *health.toml*(5)
+*spark*(8), *service*(8), *cert*(8), *certd*(8), *logd*(8), *e1000d*(8),
+*health.toml*(5)

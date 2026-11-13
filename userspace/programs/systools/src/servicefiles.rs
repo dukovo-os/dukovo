@@ -150,7 +150,14 @@ fn read_bytes(path: &Path, bytes: Vec<u8>, brief: bool) -> Result<Checked, Stop>
     }
     let over = read_over(path, &text, brief)?;
     match service::from_toml_over(&text, over.as_ref().map(|over| &over.read)) {
-        Ok(service) => Ok(Checked { name: name.into(), text, over, service }),
+        // What Spark checks against the service's own name too: that it
+        // does not name itself, and that certd names no certificates.
+        Ok(service) => {
+            match service.check_links(name).and_then(|()| service.check_certificates(name)) {
+                Ok(()) => Ok(Checked { name: name.into(), text, over, service }),
+                Err(err) => Err(Stop::Broken(format!("{shown}: {err}"))),
+            }
+        }
         Err(err) => {
             let file = shown.to_string();
             let over_path = over.as_ref().map(|over| over.path.display().to_string());
