@@ -1,0 +1,27 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "netcheck passes every layer of the lab machine's network, and with --internet the update server's name, port and certificate too"
+time = "5m"
+
+# The machine has only just started, so its clock may not have been set
+# by a time server yet, which is a warning (exit status 2) and not a
+# failure: the loop asks again for a minute until no layer has failed.
+# The output is shown whatever the status, which ends the step.
+[[step]]
+run = '''sh -c 'i=0; while [ $i -lt 30 ]; do netcheck > /tmp/netcheck.out; s=$?; [ $s -le 2 ] && break; sleep 2; i=$((i + 1)); done; cat /tmp/netcheck.out; [ $s -le 2 ]' '''
+expect = [
+    "link      passed",
+    "address   passed",
+    "gateway   passed",
+    "dns       passed",
+    "mtu       passed",
+    "internet  not checked",
+]
+expect_not = "FAILED"
+# Beyond the local network: the update server this system follows
+# resolves, answers on its port and has a certificate the system trusts.
+[[step]]
+run = '''sh -c 'netcheck --internet > /tmp/netcheck.out; s=$?; cat /tmp/netcheck.out; [ $s -le 2 ]' '''
+expect = ["dns       passed", "internet  passed", "its certificate is trusted"]
+expect_not = ["FAILED", "not checked"]

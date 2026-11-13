@@ -297,6 +297,26 @@ start menu and the boot entry back, and keeps which version starts.
 Nothing else on the disk changes. Pull the stick when it says so, and
 press Enter to restart.
 
+If the EFI system partition, the small partition GRUB and the menu are
+on, cannot be read at all, as when something overwrote its start, Repair
+startup says so and asks before it does more. Making the partition again
+erases it, including the startup files of Windows or another system that
+share it, so it waits for you to type the name of the disk, such as
+`sda`, and press Enter. Pressing Enter alone, or typing anything else,
+leaves the partition as it is. Once you have typed the name, it makes
+the partition again as FAT32, puts GRUB, the start menu and Rescue's
+files from the stick on it, and your system, files and settings, which
+are on another partition, are as they were.
+
+If it finds no Dukovo, a setting of the computer's firmware may hide the
+disks: when the disk controller is set to RAID, or to IDE, only Windows
+sees them. Repair startup says so when it finds that, and the setting to
+change, usually called SATA Mode, SATA Operation or Storage
+Configuration, to AHCI. It also says when Secure Boot is on, which the
+firmware's settings turn off (Dukovo is not signed for Secure Boot
+before 1.0); the chapter on supported hardware lists the firmware
+settings of the computers Dukovo has been tried on.
+
 ## Checking the system's files
 
 Once a week the updater reads every file of the running system back
@@ -383,15 +403,18 @@ Name: alice
 Password:
 
 What would you like to do?
-  1  Reinstall Dukovo, keeping settings, apps and files
-  2  Put back the settings from before the last update
-  3  Check the root's disk
-  4  Copy the users' and shared files to another disk
-  5  Turn networking on
-  6  Open a shell (type exit to come back)
-  7  Start Dukovo normally
-  8  Restart
-  9  Power off
+   0  Why the last start failed, and what changed
+   1  Reinstall Dukovo, keeping settings, apps and files
+   2  Put back the settings from before the last update
+   3  Check the root's disk
+   4  Copy the users' and shared files to another disk
+   5  Check the hardware
+   6  Turn networking on
+   7  Check the network
+   8  Open a shell (type exit to come back)
+   9  Start Dukovo normally
+  10  Restart
+  11  Power off
 ```
 
 **Reinstall** builds the system again from Rescue's own copy, or from an
@@ -401,6 +424,11 @@ the system is back, choose Restart. **Put back the settings** undoes
 the settings of the last update, as a fallback would. **Check the disk**
 looks for damage to the root's filesystem; if it finds any, copy your
 files off first, with **Copy files off**, onto another disk or stick.
+**Check the hardware** runs `hardware check`, which tests the memory,
+the processors and the disks, and **Check the network** turns networking
+on and runs `netcheck`, which says at which layer the network stops
+working ([Checking the network](checking-the-network.md)); each waits
+for Enter before the choices come back.
 **Start Dukovo normally** clears the count of unfinished starts, for when
 the cause, such as a loose cable, is fixed.
 

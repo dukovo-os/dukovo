@@ -22,6 +22,7 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 - [Users and administration](users.md)
 - [Your keyring](keyring.md)
 - [Networking](networking.md)
+  - [Checking the network](checking-the-network.md)
 - [Sound](sound.md)
 - [The screen reader](screen-reader.md)
 - [Text size and keys](text-size-and-keys.md)

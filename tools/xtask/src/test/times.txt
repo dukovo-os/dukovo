@@ -104,6 +104,7 @@ mm-stress 17
 monitoring 230
 msr 15
 net 21
+netcheck 420
 network-capture 28
 network-cards 17
 network-discovery 57
@@ -129,6 +130,7 @@ power-button 17
 principals 12
 rcu 21
 rdisk 57
+repair-startup 420
 rescue 330
 restic-backup 200
 rgrub-setup 39

@@ -45,9 +45,9 @@ screen = "Password:"
 [[step]]
 type = "{password}\n"
 [[step]]
-screen = "Choose 0 to 9:"
+screen = "Choose 0 to 11:"
 [[step]]
-type = "6\n"
+type = "8\n"
 [[step]]
 type = "rm /volumes/*/@settings/sysupdate/health.toml && echo \"gone\"\": $((40 + 2))\"\n"
 [[step]]
@@ -71,7 +71,7 @@ type = "yes\n"
 [[step]]
 screen = "is back in slot A, every file checked"
 [[step]]
-type = "8\n"
+type = "10\n"
 [[step]]
 serial = "spark: started slot a, @system.a"
 [[step]]

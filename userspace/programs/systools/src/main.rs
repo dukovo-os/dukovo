@@ -25,7 +25,8 @@
 //! `dig` and `host` ask name servers, and `whois` the registries, what
 //! they hold, and `nic` shows what a network card says of itself, as
 //! ethtool does (ADR 0341); `traceroute` finds the way to a machine, a
-//! router at a time (ADR 0345);
+//! router at a time (ADR 0345); `netcheck` finds the layer where the
+//! network stops working (ADR 0489);
 //! `timed` keeps the clock right from the network over NTS, and
 //! `timedatectl` shows it and sets the time zone (ADR 0194); `netlog`
 //! sends the log to another computer as it is written (ADR 0196), and
@@ -142,6 +143,7 @@ mod metricsd;
 mod mkfs;
 mod modes;
 mod mount;
+mod netcheck;
 mod netd;
 mod netlog;
 mod nic;
@@ -318,6 +320,7 @@ const TOOLS: &[(&str, Tool)] = &[
     ("mkiso", burn::mkiso),
     ("mkswap", swap::mkswap),
     ("mount", mount::mount),
+    ("netcheck", netcheck::main),
     ("netd", netd::main),
     ("netlog", netlog::main),
     ("nic", nic::main),

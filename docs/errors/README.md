@@ -43,4 +43,5 @@ table and say what the area is, in two to five capitals.
 | `FW` | Firmware sets and the firmware the kernel loads | 0.15.0 |
 | `HW` | Hardware: the checks of `hardware check` | 0.16.0 |
 | `MET` | The machine's history and its early warnings: a full disk, a missing one, memory, heat and certificates | 0.16.0 |
+| `NET` | Networking: the layers `netcheck` checks | 0.16.0 |
 | `UPD` | Updates of the system | 0.15.0 |

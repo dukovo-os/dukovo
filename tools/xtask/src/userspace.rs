@@ -224,6 +224,7 @@ pub const STD_LINKS: &[(&str, &str)] = &[
     ("system/commands/mkiso", "systools"),
     ("system/commands/mkswap", "systools"),
     ("system/commands/mount", "systools"),
+    ("system/commands/netcheck", "systools"),
     ("system/commands/netd", "systools"),
     ("system/commands/netlog", "systools"),
     ("system/commands/nic", "systools"),

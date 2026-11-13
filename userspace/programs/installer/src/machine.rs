@@ -326,6 +326,83 @@ pub fn boot_entries() -> bool {
         .is_ok_and(|status| status.success())
 }
 
+/// Whether the firmware has Secure Boot on, as `efiboot --secure-boot`
+/// says: not when the computer started by a BIOS, or the firmware has no
+/// Secure Boot.
+#[must_use]
+pub fn secure_boot() -> bool {
+    std::process::Command::new("/system/commands/efiboot")
+        .arg("--secure-boot")
+        .stderr(std::process::Stdio::null())
+        .output()
+        .is_ok_and(|output| {
+            output.status.success() && secure_boot_is_on(&String::from_utf8_lossy(&output.stdout))
+        })
+}
+
+/// Whether `said`, what `efiboot --secure-boot` prints, says Secure Boot
+/// is on.
+fn secure_boot_is_on(said: &str) -> bool {
+    said.trim() == "SecureBoot: enabled"
+}
+
+/// Where the kernel lists the PCI functions, each a folder with its
+/// `class` (radix-sysfs(5)).
+const PCI: &str = "/kernel/bus/pci/devices";
+
+/// The SATA mode of a computer whose disk controller is not in AHCI mode,
+/// the setting that hides its disks from systems that do not drive the
+/// controller as the vendor made it.
+#[derive(Debug, PartialEq, Eq)]
+pub enum SataMode {
+    /// A RAID controller, PCI class 01:04: Intel's RST mode, for one.
+    Raid,
+    /// An IDE controller, PCI class 01:01.
+    Ide,
+}
+
+impl SataMode {
+    /// What the firmware's settings call it.
+    #[must_use]
+    pub fn name(&self) -> &'static str {
+        match self {
+            SataMode::Raid => "RAID",
+            SataMode::Ide => "IDE",
+        }
+    }
+}
+
+/// How the computer's SATA controller is set, if it is not to AHCI.
+#[must_use]
+pub fn sata_mode() -> Option<SataMode> {
+    let classes: Vec<u32> = fs::read_dir(PCI)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|function| fs::read_to_string(function.path().join("class")).ok())
+        .filter_map(|class| u32::from_str_radix(class.trim().trim_start_matches("0x"), 16).ok())
+        .collect();
+    sata_mode_of(&classes)
+}
+
+/// The SATA mode `classes` show, each a PCI function's class, subclass
+/// and programming interface in three bytes: a RAID or IDE controller and
+/// no AHCI one (class 01:06). A RAID controller beside an AHCI one is a
+/// RAID card, whose disks are not the SATA ones.
+fn sata_mode_of(classes: &[u32]) -> Option<SataMode> {
+    let has =
+        |class_and_subclass: u32| classes.iter().any(|class| class >> 8 == class_and_subclass);
+    if has(0x0106) {
+        None
+    } else if has(0x0104) {
+        Some(SataMode::Raid)
+    } else if has(0x0101) {
+        Some(SataMode::Ide)
+    } else {
+        None
+    }
+}
+
 /// What the kernel says of `name` in its file `attribute` under `block`,
 /// without the newline.
 fn attribute(block: &Path, name: &str, attribute: &str) -> Option<String> {
@@ -512,6 +589,29 @@ mod tests {
         assert_eq!(line(libc::B230400, libc::CS8), None);
         assert_eq!(line(libc::B0, libc::CS8), None);
         assert_eq!(line(libc::B9600, libc::CS6), None);
+    }
+
+    #[test]
+    fn a_raid_or_ide_controller_without_an_ahci_one_is_the_sata_mode_to_change() {
+        // A RAID-mode Intel controller, and the NVMe one beside it.
+        assert_eq!(sata_mode_of(&[0x060000, 0x010400, 0x010802]), Some(SataMode::Raid));
+        assert_eq!(sata_mode_of(&[0x010185]), Some(SataMode::Ide));
+        // AHCI is the mode that works, and a RAID card beside it is not
+        // the SATA disks' controller.
+        assert_eq!(sata_mode_of(&[0x010601]), None);
+        assert_eq!(sata_mode_of(&[0x010400, 0x010601]), None);
+        // No storage controller of either kind: nothing to say.
+        assert_eq!(sata_mode_of(&[0x060000, 0x010802, 0x020000]), None);
+        assert_eq!(sata_mode_of(&[]), None);
+        assert_eq!((SataMode::Raid.name(), SataMode::Ide.name()), ("RAID", "IDE"));
+    }
+
+    #[test]
+    fn only_enabled_is_secure_boot_on() {
+        assert!(secure_boot_is_on("SecureBoot: enabled\n"));
+        assert!(!secure_boot_is_on("SecureBoot: disabled\n"));
+        assert!(!secure_boot_is_on("SecureBoot: absent\n"));
+        assert!(!secure_boot_is_on(""));
     }
 
     #[test]

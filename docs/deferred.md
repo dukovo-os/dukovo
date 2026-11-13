@@ -136,8 +136,7 @@ machine with AMT, an AMD machine and a laptop; see
 | AMD CPU microcode in firmware sets (ADRs 0014, 0468) | The kernel's loader is Intel's; AMD's patches have their own format and loader | A need |
 | Disks other than the root's in the health check's device record (ADR 0468) | Data disks, USB disks and discs come and go with their owner, so a missing one says nothing of the update | A need |
 | A summary of the last starts on the EFI system partition, for a root Rescue cannot mount (ADRs 0500, 0501) | Rescue reads the root's records, and says how many starts the boot menu counted as not seen through | A need |
-| Repair startup re-making an EFI system partition whose FAT cannot be read, with Rescue's files from the stick, and reading the firmware's Secure Boot and SATA mode settings (ADR 0503) | Repair startup rewrites GRUB and the menu on a partition that reads, and names AHCI when it finds no Dukovo | 16b, with `hardware check` |
-| A boot test of Repair startup in QEMU, which needs a third boot from the stick after the install (ADR 0503) | The unit tests of what it finds and keeps; the lab test waits too (Lab machines and harness) | When the boot tests gain a third boot |
+| A boot test that starts Repair startup from the install stick's menu entry, on the hotkey R, and one of a repair that finds the partition readable, with only GRUB or its menu gone (ADR 0503) | The `repair-startup` boot test runs the repair from the live system's shell, on a partition whose FAT is overwritten with zeros, and restarts from the stick in place; the entry and the readable case have unit tests, and the lab test waits too (Lab machines and harness) | When the boot tests gain a third boot |
 | How far a start got before Spark, in the kernel or mounting the root, written as it is reached (ADR 0503) | Spark marks the starts that reached their services; Rescue tells the rest from the boot menu's count | A need, with the starts' summary on the EFI system partition |
 | Rescue, Repair startup and the memory test unlocking an encrypted root with its recovery key or passphrase (ADR 0501) | No root is encrypted yet | Disk encryption, after 1.0 |
 | Unattended updates limited to security fixes, and the security advisories each update fixes, shown by `update` (ADR 0502) | Unattended updates take every release, through the waves; the release notes name fixes | The channel listing advisories per release, 16b |
@@ -333,6 +332,7 @@ machine asks for them.
 | Intel PCH Ethernet: Energy Efficient Ethernet, wake on LAN, jumbo frames, I217, I218, newer I219s, 82577 and 82578 | ADR 0361 |
 | Promiscuous mode for packet capture | ADR 0346 |
 | Firewall rules for outbound traffic and rate limits | ADR 0334 |
+| `netcheck` saying that a firewall rule stops this machine's own DNS, HTTPS or time (NET-151): the firewall filters only what other machines start, so no rule can until it has outbound rules | ADR 0334, ADR 0489 |
 | Routing beyond a tunnel's subnet before the routing table | ADR 0339 |
 | timed: choosing among servers, training the clock's frequency, `CLOCK_REALTIME` timers after a step, authenticated fallback, leap seconds | ADRs 0194, 0487 |
 | `AF_UNIX` datagram and sequenced-packet sockets, `MSG_PEEK`, credentials as control messages | ADR 0091 |
@@ -350,6 +350,7 @@ machine asks for them.
 | A DHCPv6 server and router advertisements: IPv6 computers keep the addresses their network's router has them make | ADR 0486 |
 | DHCP relay agents: a request with `giaddr` set is ignored, and netd's log says so once | ADR 0486 |
 | An ICMP probe of an address before netd's DHCP server offers it: a client's DECLINE covers a conflict (RFC 2131, section 3.1.5) | ADR 0486 |
+| `netcheck` saying that another machine on the network has a card's address (NET-112): netd neither probes an address before it uses it nor reports a conflict (RFC 5227), so the address layer has nothing to read | ADR 0489 |
 | Detecting another DHCP server on a card's network | ADR 0486 |
 | NTS keys shared between several time servers (RFC 8915, section 6): the cookies of timed's server work at that server alone | ADR 0487 |
 

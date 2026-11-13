@@ -184,6 +184,8 @@ error that starts with the tool's name.
 :  make a disc image of a folder
 |  *mkswap*(8)
 :  make a swap area on a disk or partition
+|  *netcheck*(8)
+:  find the layer where the network stops working
 |  *netd*(8)
 :  set the network cards up, by DHCP or as their settings say
 |  *netlog*(8)

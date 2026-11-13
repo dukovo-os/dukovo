@@ -193,6 +193,9 @@ struct Asked {
     verbose: bool,
     /// Print nothing after a change.
     quiet: bool,
+    /// Say whether the firmware has Secure Boot on, and nothing else
+    /// (`--secure-boot`).
+    secure_boot: bool,
 }
 
 /// efiboot(8), and efibootmgr.
@@ -246,6 +249,7 @@ fn options(args: &mut Args) -> Result<Option<Asked>, Fail> {
             Arg::Long(l) if l == "verbose" => asked.verbose = true,
             Arg::Short('q') => asked.quiet = true,
             Arg::Long(l) if l == "quiet" => asked.quiet = true,
+            Arg::Long(l) if l == "secure-boot" => asked.secure_boot = true,
             Arg::Short('V') => return Ok(print(&version())),
             Arg::Long(l) if l == "version" => return Ok(print(&version())),
             Arg::Short('h') => return Ok(print(USAGE)),
@@ -273,7 +277,8 @@ fn print(text: &str) -> Option<Asked> {
 
 const USAGE: &str = "usage: efiboot [-v] [-q] [-c | -C] [-d DISK] [-p PART] [-l LOADER] \
                      [-L LABEL] [-b XXXX] [-B] [-a | -A]\n               \
-                     [-o XXXX,YYYY,... | -O] [-n XXXX | -N] [-t SECONDS | -T]";
+                     [-o XXXX,YYYY,... | -O] [-n XXXX | -N] [-t SECONDS | -T]\n       \
+                     efiboot --secure-boot";
 
 fn version() -> String {
     format!("efiboot, Dukovo systools {}", env!("CARGO_PKG_VERSION"))
@@ -308,6 +313,13 @@ fn run(
     asked: &Asked,
     out: &mut dyn std::io::Write,
 ) -> Result<i32, Fail> {
+    if asked.secure_boot {
+        let said = secure_boot(variables).map_err(refused)?;
+        return out
+            .write_all(said.as_bytes())
+            .map(|()| 0)
+            .map_err(|e| util::failed(&"standard output", e));
+    }
     let entries = boot_entries(variables).map_err(refused)?;
     let exists = |number: u16| entries.contains(&number);
     let mut changed = false;
@@ -404,6 +416,19 @@ fn run(
         out.write_all(listing.as_bytes()).map_err(|e| util::failed(&"standard output", e))?;
     }
     Ok(0)
+}
+
+/// What the firmware's `SecureBoot` variable says, on a line: UEFI 2.10,
+/// section 3.3 has it 1 with Secure Boot on and 0 with it off, and the
+/// firmware without Secure Boot has no such variable. The install stick's
+/// Repair startup reads it to say that the firmware may refuse Dukovo's
+/// startup files, which are not signed for Secure Boot (ADR 0503).
+fn secure_boot(variables: &dyn Variables) -> Result<&'static str, Status> {
+    Ok(match variables.get("SecureBoot")? {
+        Some(value) if value.first() == Some(&1) => "SecureBoot: enabled\n",
+        Some(_) => "SecureBoot: disabled\n",
+        None => "SecureBoot: absent\n",
+    })
 }
 
 /// The numbers of the `Boot####` variables there are, in order.
@@ -827,6 +852,17 @@ mod tests {
         let mut out = Vec::new();
         run(fake, asked, &mut out).unwrap_or_else(|fail| panic!("{}", fail.message));
         String::from_utf8(out).unwrap()
+    }
+
+    #[test]
+    fn secure_boot_is_read_from_its_variable() {
+        let asked = Asked { secure_boot: true, ..Asked::default() };
+        let mut fake = ovmf();
+        assert_eq!(listing(&mut fake, &asked), "SecureBoot: absent\n");
+        fake.0.insert("SecureBoot".into(), vec![1]);
+        assert_eq!(listing(&mut fake, &asked), "SecureBoot: enabled\n");
+        fake.0.insert("SecureBoot".into(), vec![0]);
+        assert_eq!(listing(&mut fake, &asked), "SecureBoot: disabled\n");
     }
 
     #[test]

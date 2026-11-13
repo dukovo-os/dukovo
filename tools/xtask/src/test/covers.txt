@@ -367,6 +367,13 @@ monitoring userspace/programs/systools/src/metricsd.rs userspace/programs/systoo
 monitoring ports/curl/
 msr kernel/arch/
 net kernel/net/
+netcheck kernel/drivers/virtio/ kernel/net/ ports/openssl/ userspace/defaults/resolved
+netcheck userspace/programs/installer/tests/install/ userspace/programs/systools/src/dig.rs
+netcheck userspace/programs/systools/src/ip.rs userspace/programs/systools/src/netcheck.rs
+netcheck userspace/programs/systools/src/netd.rs userspace/programs/systools/src/ping.rs
+netcheck userspace/programs/systools/src/resolved.rs userspace/programs/systools/src/sysupdate/online.rs
+netcheck userspace/programs/systools/src/timed.rs userspace/programs/systools/src/timedatectl.rs
+netcheck userspace/programs/systools/src/tls.rs
 network-capture kernel/net/ ports/libpcap/ ports/tcpdump/ userspace/posix/capturetest.c
 network-cards kernel/drivers/intel/ kernel/drivers/nic/ kernel/drivers/realtek/
 network-cards kernel/drivers/virtio/ kernel/drivers/vmxnet3/ kernel/net/ userspace/posix/nics.c
@@ -489,6 +496,10 @@ rcu kernel/lib/sync/
 rdisk userspace/programs/disk/ userspace/programs/systools/src/mkfs.rs
 rdisk userspace/programs/systools/src/rdisk.rs userspace/programs/systools/src/swap.rs
 rdisk userspace/programs/systools/src/volumed.rs
+repair-startup image/grub/installed.cfg.in image/grub/menu.cfg image/grub/rescue.cfg kernel/fs/btrfs/
+repair-startup kernel/fs/fat/ userspace/programs/disk/ userspace/programs/installer/
+repair-startup userspace/programs/slots/ userspace/programs/system-release/
+repair-startup userspace/programs/systools/src/efiboot.rs userspace/programs/systools/src/mkfs.rs
 rescue image/grub/installed.cfg.in image/grub/menu.cfg image/grub/rescue.cfg kernel/lib/bootfs/
 rescue kernel/fs/btrfs/ kernel/fs/fat/ userspace/programs/accounts/ userspace/programs/consoled/
 rescue userspace/programs/installer/ userspace/programs/slots/ userspace/programs/system-release/
@@ -496,6 +507,7 @@ rescue userspace/programs/systools/src/elevate.rs userspace/programs/systools/sr
 rescue userspace/programs/systools/src/serial_console.rs userspace/programs/systools/src/subvolume.rs
 rescue userspace/programs/systools/src/sysupdate.rs userspace/programs/systools/src/sysupdate/
 rescue userspace/programs/systools/src/bundles/
+rescue userspace/programs/systools/src/netcheck.rs
 restic-backup kernel/fs/btrfs/ kernel/net/ ports/rust-crates/patches/ userspace/programs/smb/
 restic-backup userspace/programs/systools/src/backup.rs userspace/programs/systools/src/backup/
 restic-backup userspace/programs/systools/src/snap.rs userspace/programs/systools/src/subvolume.rs

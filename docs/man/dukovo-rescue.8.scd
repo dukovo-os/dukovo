@@ -52,17 +52,19 @@ From the last good start, 41 on 2026-11-11 21:03, Dukovo 0.15.0, to start 42:
   app org.example.notes: new, 0.1.0; installed 2026-11-12 08:02; first used 2026-11-12 08:14 (start 42)
 
 What would you like to do?
-  0  Why the last start failed, and what changed
-  1  Reinstall Dukovo, keeping settings, apps and files
-  2  Put back the settings from before the last update
-  3  Check the root's disk
-  4  Copy the users' and shared files to another disk
-  5  Turn networking on
-  6  Open a shell (type exit to come back)
-  7  Start Dukovo normally
-  8  Restart
-  9  Power off
-Choose 0 to 9:
+   0  Why the last start failed, and what changed
+   1  Reinstall Dukovo, keeping settings, apps and files
+   2  Put back the settings from before the last update
+   3  Check the root's disk
+   4  Copy the users' and shared files to another disk
+   5  Check the hardware
+   6  Turn networking on
+   7  Check the network
+   8  Open a shell (type exit to come back)
+   9  Start Dukovo normally
+  10  Restart
+  11  Power off
+Choose 0 to 11:
 ```
 
 A choice that needs the root, or a last update to undo, says *(not here)*
@@ -115,20 +117,34 @@ install stick puts GRUB and the menu back (*dukovo-install*(8)).
 	_dukovo-rescue-_*time*, on another disk or partition, which Rescue
 	mounts and unmounts.
 
-*5 Turn networking on*
+*5 Check the hardware*
+	Runs *hardware check* (*hardware*(8), ADR 0488): the memory, the
+	processors, the disks' self-tests and the other parts it checks,
+	for a start that fails in ways that point at a part. Rescue shows
+	its results and waits for Enter before it shows the choices again.
+	It needs no root and no network.
+
+*6 Turn networking on*
 	Starts the network services the system has, behind the firewall
 	already running: for a reinstall from an update folder or file on a
 	network share, or to copy files off over the network from the shell.
 
-*6 Open a shell*
+*7 Check the network*
+	Turns networking on as choice 6 does, waits up to 20 seconds for a
+	card to have an address, then runs *netcheck* (*netcheck*(8), ADR
+	0489), which says at which layer the network stops working. Rescue
+	waits for Enter before it shows the choices again. Nothing leaves
+	the local network: *netcheck* is run without *--internet*.
+
+*8 Open a shell*
 	Runs root's shell, with the root mounted at _/volumes/_*disk*. Exit
 	the shell to come back.
 
-*7 Start Dukovo normally*
+*9 Start Dukovo normally*
 	Sets the count of starts not seen through back to 0 and restarts, so
 	that the menu starts the default slot again.
 
-*8 Restart*, *9 Power off*
+*10 Restart*, *11 Power off*
 	End Rescue.
 
 # EXIT STATUS
@@ -156,4 +172,5 @@ _boot/grub/rescue.cfg_, _boot/grub/rescue.env_ on each EFI system partition
 # SEE ALSO
 
 *sysupdate*(8), *system-release*(8), *spark*(8), *consoled*(8),
-*dukovo-install*(8), *dukovo-boot*(7), *fsck-btrfs*(8)
+*dukovo-install*(8), *dukovo-boot*(7), *fsck-btrfs*(8), *hardware*(8),
+*netcheck*(8)

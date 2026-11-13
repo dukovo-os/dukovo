@@ -17,6 +17,8 @@ efiboot, efibootmgr - list and change the firmware's boot entries
 
 *efiboot* [*-o* _XXXX_,_YYYY_,... | *-O*] [*-n* _XXXX_ | *-N*] [*-t* _seconds_ | *-T*] [*-q*]
 
+*efiboot* *--secure-boot*
+
 # DESCRIPTION
 
 efiboot lists the entries of a UEFI firmware's boot manager, the systems
@@ -121,6 +123,13 @@ Linux does: some firmware has failed to start with its store full.
 *-q*, *--quiet*
 	List nothing after a change.
 
+*--secure-boot*
+	Say whether the firmware has Secure Boot on, in one line and nothing
+	else: *SecureBoot: enabled*, *SecureBoot: disabled*, or *SecureBoot:
+	absent* where the firmware has no such variable. The install stick's
+	Repair startup (*dukovo-install*(8)) reads it, as Dukovo's startup files
+	are not signed for Secure Boot before 1.0.
+
 *-V*, *--version*; *-h*, *--help*
 	Say the version, or how to use it.
 
@@ -128,6 +137,7 @@ Linux does: some firmware has failed to start with its store full.
 
 - It lists an entry's path only with *-v*, as efibootmgr before
   version 18 did.
+- *--secure-boot* is Dukovo's own.
 - *-e*, *-g*, *-u*, *-w*, *-@* and the *Driver*_XXXX_ and *SysPrep*_XXXX_
   options are not taken.
 - *-o* refuses entries that do not exist, rather than warning.

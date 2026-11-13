@@ -283,6 +283,22 @@ fn comment_free(line: &str) -> &str {
     line
 }
 
+/// The servers resolved asks: those of its settings, else those DHCP gave.
+fn chosen(settings: &Settings, dhcp: Vec<Server>) -> Vec<Server> {
+    if settings.servers.is_empty() { dhcp } else { settings.servers.clone() }
+}
+
+/// The servers resolved asks now, from the files it reads, and how it
+/// asks those named by address alone.
+pub(crate) fn servers_asked() -> (Vec<Server>, OverTls) {
+    let (settings, _) = fs::read_to_string(SETTINGS).map_or_else(
+        |_| (Settings { cache_size: CACHE_DEFAULT, ..Settings::default() }, Vec::new()),
+        |text| parse_settings(&text),
+    );
+    let (dhcp, _) = fs::read_to_string(NETD_RESOLV).map_or_default(|text| parse_resolv(&text));
+    (chosen(&settings, dhcp), settings.over_tls)
+}
+
 /// The servers and search domains of a resolv.conf.
 pub fn parse_resolv(text: &str) -> (Vec<Server>, Vec<String>) {
     let mut servers = Vec::new();
@@ -1139,7 +1155,7 @@ impl Watcher {
         }
         let (dhcp, search) =
             fs::read_to_string(NETD_RESOLV).map_or_default(|text| parse_resolv(&text));
-        let servers = if settings.servers.is_empty() { dhcp } else { settings.servers.clone() };
+        let servers = chosen(&settings, dhcp);
         let old = read(&shared.servers);
         let old_settings = read(&shared.settings);
         if *old != servers || old_settings.certificates != settings.certificates || say {

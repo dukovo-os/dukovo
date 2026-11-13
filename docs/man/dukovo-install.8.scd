@@ -305,11 +305,30 @@ From the DVD, it says to remove the install disc.
 	and names a slot that is there, and otherwise the slot that is
 	there made the default; the count of starts not seen through set
 	back to none; and Dukovo's firmware boot entry made first again
-	where the firmware has one. Nothing in the root changes. When it
-	finds no Dukovo, it says that a disk controller in RAID mode hides
-	the disks, and that the firmware's SATA mode should be AHCI. It
-	ends by restarting, once Enter is pressed. What it ran is in
-	_/tmp/install/repair-startup.log_.
+	where the firmware has one. Nothing in the root changes.
+
+	An EFI system partition whose FAT cannot be read is made again.
+	That erases the partition, with the startup files of any other
+	system on it, so it is done only for the partition of the EFI
+	system partition's type on the disk that holds the Dukovo root, and
+	only once the disk's name, as *sda* or *nvme0n1*, has been typed
+	after the question; Enter alone, or any other answer, leaves the
+	partition as it is and that disk unrepaired. It is made as FAT32
+	labelled _DUKOVO_ and filled as an install fills it, with GRUB, the
+	menu, the slot state and the serial console's settings, and with
+	Rescue's files of the release on the stick, each checked against its
+	signed list. The settings the unreadable partition had for a serial
+	console are lost with it: the menu and the console settings are
+	those of a system with none, and *serial*(8) sets them again.
+
+	When it finds no Dukovo, it says so, and names the firmware setting
+	to change when the computer's SATA controller is in RAID mode (PCI
+	class 01:04) or IDE mode (01:01) and no controller is in AHCI mode
+	(01:06): the SATA mode, to AHCI. When the firmware has Secure Boot
+	on, which it reads with *efiboot --secure-boot*, it says that
+	Dukovo's startup files are not signed for it before 1.0 and that
+	Secure Boot is to be turned off. It ends by restarting, once Enter
+	is pressed. What it ran is in _/tmp/install/repair-startup.log_.
 
 # FILES
 

@@ -518,6 +518,87 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
     Ok(if tally.received == 0 || short { 1 } else { 0 })
 }
 
+/// What one echo request met, for netcheck(8).
+pub(crate) enum Echo {
+    /// The reply came after this long.
+    Answered(Duration),
+    /// A router or the machine itself said the request cannot go on, in
+    /// ping's words: "Destination Host Unreachable".
+    Refused(String),
+    /// Nothing came within the time given.
+    Silent,
+}
+
+/// Sends one echo request of `size` data bytes to `to` and waits `wait`
+/// for its reply or the ICMP error about it. The scope of a link-local
+/// IPv6 address goes in `to`.
+///
+/// # Errors
+///
+/// If the ping socket cannot be made or written to.
+pub(crate) fn echo(to: SocketAddr, size: usize, wait: Duration) -> io::Result<Echo> {
+    let v6 = to.is_ipv6();
+    let (domain, protocol) =
+        if v6 { (Domain::IPV6, Protocol::ICMPV6) } else { (Domain::IPV4, Protocol::ICMPV4) };
+    let socket = Socket::new(domain, Type::DGRAM, Some(protocol))?;
+    let (level, option) =
+        if v6 { (libc::SOL_IPV6, libc::IPV6_RECVERR) } else { (libc::SOL_IP, libc::IP_RECVERR) };
+    traceroute::set_int(&socket, level, option, 1)?;
+    let started = Instant::now();
+    let to = SockAddr::from(to);
+    let sent = socket.send_to(&request(v6, 1, size, Duration::ZERO), &to);
+    if let Err(error) = sent {
+        // An ICMP error about an earlier request fails the send; with a
+        // fresh socket it is this request's own, which was refused.
+        return if traceroute::left_by_icmp(&error) {
+            Ok(Echo::Refused(refusal(&socket, v6).unwrap_or_else(|| util::strip_os_error(&error))))
+        } else {
+            Err(error)
+        };
+    }
+    let mut buffer = vec![MaybeUninit::<u8>::uninit(); HEADER + SIZE_MAX];
+    loop {
+        let left = wait.saturating_sub(started.elapsed()).max(Duration::from_millis(1));
+        socket.set_read_timeout(Some(left))?;
+        match socket.recv_from(&mut buffer) {
+            Ok((len, _)) => {
+                // SAFETY: recv_from wrote the first `len` bytes.
+                let message: Vec<u8> =
+                    buffer[..len].iter().map(|b| unsafe { b.assume_init() }).collect();
+                if reply(v6, &message).is_some() {
+                    return Ok(Echo::Answered(started.elapsed()));
+                }
+            }
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+            Err(error)
+                if matches!(error.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut) =>
+            {
+                return Ok(Echo::Silent);
+            }
+            Err(error) => {
+                return Ok(Echo::Refused(
+                    refusal(&socket, v6).unwrap_or_else(|| util::strip_os_error(&error)),
+                ));
+            }
+        }
+        if started.elapsed() >= wait {
+            return Ok(Echo::Silent);
+        }
+    }
+}
+
+/// The ICMP error waiting for `socket`, in ping's words.
+fn refusal(socket: &Socket, v6: bool) -> Option<String> {
+    let request = if v6 { REQUEST_V6 } else { REQUEST };
+    while let Ok(received) = traceroute::receive(socket.as_raw_fd(), true) {
+        let Some(heard) = received.heard else { continue };
+        if received.data.first() == Some(&request) {
+            return Some(error_text(&heard));
+        }
+    }
+    None
+}
+
 /// A round trip's time, as iputils shows it: three figures, at most
 /// three decimals.
 fn round_trip(ms: f64) -> String {

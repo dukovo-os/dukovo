@@ -396,6 +396,12 @@ root. A card is not yet put in promiscuous mode, so tcpdump sees what
 its driver lets in, the machine's own frames, broadcasts and the
 multicast groups it joined, and says so; `-p` asks for no more.
 
+When the network does not work and you do not know where, run `netcheck`
+first: it checks the link, the address, the gateway, the DNS servers, the
+clock and the size of the packets in the order a packet needs them, and
+says which fails and what to do (netcheck(8); see
+[Checking the network](checking-the-network.md)).
+
 ## Setting the cards up
 
 netd(8) runs on every machine and asks DHCP for each card's address,

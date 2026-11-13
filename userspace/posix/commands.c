@@ -115,6 +115,7 @@ static const char *const ELSEWHERE[][2] = {
 		{"host", "the network-tools boot test's: it looks names up on that test's name server"},
 		{"whois", "the network-tools boot test's: it asks that test's WHOIS servers, on the other machine"},
 		{"openssl", "the network-tools boot test's: it makes keys and a certificate, and its s_client reaches s_server across the cable"},
+		{"netcheck", "the netcheck boot test's: it checks the layers of the network that test's machine has, with a fault planted in each"},
 		{"nic", "the network-tools boot test's: it shows an e1000e card's negotiated link and a virtio card's"},
 		{"traceroute", "the network-trace boot test's: it finds the routers that test plays on a tunnel"},
 		{"traceroute6", "the network-trace boot test's: it finds those routers by IPv6"},
