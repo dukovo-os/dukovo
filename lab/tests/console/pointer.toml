@@ -21,7 +21,7 @@ screen = "lab@dukovo ~ $"
 # right corner of the screen, whatever its size, the left button down, then
 # up.
 [[step]]
-type = "elevate head -c 120 /devices/mouse | hexdump -Cv\n"
+type = "elevate head -c 120 /devices/mouse | hexdump -Cv | sed 's/[0-9a-f][0-9a-f] ff 00 00/xx ff 00 00/g'\n"
 [[step]]
 screen = "[elevate] Password for lab"
 [[step]]
@@ -34,10 +34,13 @@ wait = "3s"
 point = [-1, -1]
 [[step]]
 click = "left"
-# Each record's x and y are 65535, the screen's far edge, at bytes 24 to
-# 31; the second record's buttons, at 72, hold the left one.
+# Each record's x and y, at bytes 24 to 31, are at the screen's far edge:
+# 65535 under QEMU, and 65535 less a fraction of a pixel through AMT, which
+# scales the last pixel, not the edge past it (65502 and 65474 at 1920 by
+# 1080). sed writes the low byte of each as xx, so the check holds for
+# both. The second record's buttons, at 72, hold the left one.
 [[step]]
-screen = ["00000010  00 00 00 00 00 00 00 00  ff ff 00 00 ff ff 00 00", "00000040  ff ff 00 00 ff ff 00 00  01 00 00 00 01 00 00 00", "00000078"]
+screen = ["00000010  00 00 00 00 00 00 00 00  xx ff 00 00 xx ff 00 00", "00000040  xx ff 00 00 xx ff 00 00  01 00 00 00 01 00 00 00", "00000078"]
 
 # Sign out, which brings the sign-in back for the next test.
 [[step]]
