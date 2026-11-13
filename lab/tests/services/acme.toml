@@ -125,7 +125,7 @@ certificates = ["standalone.acme-lab.example"]
 """
 expect = "started"
 [[step]]
-run = "sh -c 'ls /system/live/spark/certificates/lab-acme/standalone.acme-lab.example; cert show standalone.acme-lab.example | grep \"Used by\"'"
+run = "sh -c 'ls /system/live/certificates/lab-acme/standalone.acme-lab.example; cert show standalone.acme-lab.example | grep \"Used by\"'"
 root = true
 expect = ["fullchain.pem", "key.pem", "Used by:    lab-acme"]
 [[step]]

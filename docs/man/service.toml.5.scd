@@ -318,7 +318,7 @@ override:
 	or within another, none is within a place every service reads
 	(name that whole place instead), and none is or holds
 	_/system/state/spark_, where Spark keeps its files and the secrets,
-	or _/system/live/spark/certificates_, where it keeps the services'
+	or _/system/live/certificates_, where it keeps the services'
 	copies of their certificates' keys.
 
 	A dotted name is TOML's for a table in a table: *network.listen
@@ -527,7 +527,7 @@ spark: could not start web: its secret db-password is not set: set it with `serv
 machine's own, *this-machine*, which names the machine, its name with
 *.local* and *localhost*; *cert add* adds one from elsewhere (*cert*(8)).
 A service names those it uses in *certificates*, and at each start Spark
-copies each into _/system/live/spark/certificates/service/name_: the
+copies each into _/system/live/certificates/service/name_: the
 folder holds *fullchain.pem*, the certificate and then the chain that
 leads to its authority, and *key.pem*, its private key, both PEM. The
 folder of the service's copies is given to its *account* if it has one
@@ -535,8 +535,8 @@ folder of the service's copies is given to its *account* if it has one
 path in its view, and named in *CERTIFICATES_DIRECTORY*, so nginx reads:
 
 ```
-ssl_certificate     /system/live/spark/certificates/nginx/this-machine/fullchain.pem;
-ssl_certificate_key /system/live/spark/certificates/nginx/this-machine/key.pem;
+ssl_certificate     /system/live/certificates/nginx/this-machine/fullchain.pem;
+ssl_certificate_key /system/live/certificates/nginx/this-machine/key.pem;
 ```
 
 Each copy is the service's own: another service's key is never in its
@@ -671,7 +671,7 @@ _/system/state/spark/good/name.toml_
 _/system/state/spark/secrets/name_
 	A service's secrets.
 
-_/system/live/spark/certificates/name_
+_/system/live/certificates/name_
 	A service's copies of its certificates.
 
 _/system/live/spark/tmp/name_

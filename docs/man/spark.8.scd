@@ -825,7 +825,7 @@ _/system/state/spark/trials/_*id*
 _/system/live/spark/certd/socket_
 	certd's socket (see *CERTD'S SOCKET*).
 
-_/system/live/spark/certificates/_*name*
+_/system/live/certificates/_*name*
 	Service _name_'s copies of the certificates its file names.
 
 _/system/tests/hello_

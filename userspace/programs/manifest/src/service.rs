@@ -607,7 +607,7 @@ pub fn generation_of(entry: &str) -> Option<(&str, u64)> {
 
 /// Where Spark keeps each service's copies of its certificates: no
 /// service holds it, or what is in it.
-pub const CERTIFICATE_COPIES: &str = "/system/live/spark/certificates";
+pub const CERTIFICATE_COPIES: &str = "/system/live/certificates";
 
 /// Where Spark keeps the copies of the certificates of service `name`,
 /// and where the service finds them, as `CERTIFICATES_DIRECTORY` says:

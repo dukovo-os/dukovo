@@ -335,7 +335,7 @@ elevate service nginx restart
 ```
 
 Put _certificates = ["example.com"]_ in nginx's file and name
-_/system/live/spark/certificates/nginx/example.com/fullchain.pem_ and
+_/system/live/certificates/nginx/example.com/fullchain.pem_ and
 _.../key.pem_ in its settings (*nginx.conf*, in the bundle's data
 folder).
 

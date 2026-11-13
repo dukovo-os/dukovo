@@ -316,7 +316,7 @@ fn the_certificates_a_service_names() {
         service::from_toml(&file("certificates = [\"this-machine\", \"example.com\"]")).unwrap();
     assert_eq!(service.certificates, ["this-machine", "example.com"]);
     assert!(service::from_toml(&file("")).unwrap().certificates.is_empty());
-    assert_eq!(service::certificates_dir("nginx"), "/system/live/spark/certificates/nginx");
+    assert_eq!(service::certificates_dir("nginx"), "/system/live/certificates/nginx");
     let long = "a".repeat(64);
     for name in ["this-machine", "example.com", "a", "9", "mail.example.org", long.as_str()] {
         assert!(service::check_certificate(name).is_ok(), "{name}");
@@ -459,15 +459,15 @@ fn errors_name_their_line_in_plain_words() {
              digits, `-` and `.`, starts with a letter or a digit, and has no `..`",
         ),
         (
-            "[permissions]\nfiles.read = [\"/system/live/spark\"]",
-            "line 3: no service holds /system/live/spark/certificates, where Spark keeps each \
-             service's copies of its certificates' keys, so it cannot hold /system/live/spark",
+            "[permissions]\nfiles.read = [\"/system/live\"]",
+            "line 3: no service holds /system/live/certificates, where Spark keeps each \
+             service's copies of its certificates' keys, so it cannot hold /system/live",
         ),
         (
-            "[permissions]\nfiles.read-write = [\"/system/live/spark/certificates/web\"]",
-            "line 3: no service holds /system/live/spark/certificates, where Spark keeps each \
+            "[permissions]\nfiles.read-write = [\"/system/live/certificates/web\"]",
+            "line 3: no service holds /system/live/certificates, where Spark keeps each \
              service's copies of its certificates' keys, so it cannot hold \
-             /system/live/spark/certificates/web",
+             /system/live/certificates/web",
         ),
         (
             "secrets = [\"../key\"]",

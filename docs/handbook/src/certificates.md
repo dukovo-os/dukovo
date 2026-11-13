@@ -266,7 +266,7 @@ $ elevate nginx -t
 $ elevate service nginx restart
 ```
 
-The block reads `/system/live/spark/certificates/nginx/this-machine/fullchain.pem`
+The block reads `/system/live/certificates/nginx/this-machine/fullchain.pem`
 and `key.pem` beside it. For a certificate you added, give its name
 instead of `this-machine` in the service file and in the two lines (a
 certificate from `cert get` is one). Later

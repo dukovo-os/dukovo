@@ -51,10 +51,13 @@ socket, since the socket stops any service and powers the machine off.
   path. One checker, `manifest::service::check_certificate`, serves the
   service file, Spark, `cert` and certd. certd's own file names none.
 - **Spark copies each certificate for each service that names it**, at
-  each start of the service, into `/system/live/spark/certificates/SERVICE`,
+  each start of the service, into `/system/live/certificates/SERVICE`,
   laid out as certd keeps it, given to the service's account, with mode
   0400 for the files and 0500 for the folders. The service finds it as
-  `CERTIFICATES_DIRECTORY` says. No service may name that folder. Spark
+  `CERTIFICATES_DIRECTORY` says. No service may name that folder or one
+  that holds it. It is a folder of its own, not in Spark's
+  `/system/live/spark`, which services that ask Spark about the others
+  hold for its control socket, as alertd does. Spark
   trusts nothing in certd's folder: it follows no link but a
   certificate's own, and only to one of that certificate's generations by
   the name certd gives it; it reads regular files alone, each up to 64 KiB,

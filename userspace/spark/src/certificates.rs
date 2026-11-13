@@ -8,7 +8,7 @@
 //! `NAME` is a symbolic link to the folder of its current generation,
 //! `.NAME.G`, which holds `fullchain.pem` and `key.pem`. A service's file
 //! names the certificates it uses, and Spark copies each into the
-//! service's own folder, `/system/live/spark/certificates/SERVICE`, laid
+//! service's own folder, `/system/live/certificates/SERVICE`, laid
 //! out the same way and given to the service's account, read-only: one
 //! file cannot be two accounts', and a key is no other service's to read.
 //! The service finds the folder as `CERTIFICATES_DIRECTORY` says. When
