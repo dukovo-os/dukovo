@@ -1,0 +1,105 @@
+SPDX-FileCopyrightText: 2026 The Dukovo contributors
+SPDX-License-Identifier: Apache-2.0 OR MIT
+
+A stream mode that does not start with 'r', 'w' or 'a' fails with EINVAL,
+as in glibc, for fopen, fdopen, freopen, fmemopen and fopencookie.
+parse_modestring logged "Illegal fopen() mode" and went on with flags of
+0, so fopen(path, "\xc2\x80") opened the file for reading, and an empty
+mode too. parse_modestring now returns -1 for a mode that is none, and
+its callers fail before they open anything. Characters after the first
+that are not known are ignored without a log line, as glibc ignores them.
+Meant for upstream.
+
+diff --git a/options/ansi/generic/file-io.cpp b/options/ansi/generic/file-io.cpp
+index 8f0fb9c..94fdaa5 100644
+--- a/options/ansi/generic/file-io.cpp
++++ b/options/ansi/generic/file-io.cpp
+@@ -521,6 +521,8 @@ int fd_file::reopen(const char *path, const char *mode) {
+ 	flush();
+ 
+ 	int mode_flags = parse_modestring(mode);
++	if (mode_flags < 0)
++		return EINVAL;
+ 	const char *reopen_path = path;
+ 
+ 	if (!path) {
+@@ -621,6 +623,10 @@ int fd_file::io_seek(off_t offset, int whence, off_t *new_offset) {
+ 	return 0;
+ }
+ 
++// The open flags a stream mode names, or -1 if it is no mode: its first
++// character must be 'r', 'w' or 'a', which glibc's fopen fails with EINVAL
++// for. Characters after it that are not known are ignored, as glibc
++// ignores them.
+ int fd_file::parse_modestring(const char *mode) {
+ 	// Consume the first char; this must be 'r', 'w' or 'a'.
+ 	int flags = 0;
+@@ -646,7 +652,7 @@ int fd_file::parse_modestring(const char *mode) {
+ 		}
+ 		flags |= O_CREAT;
+ 	} else {
+-		mlibc::infoLogger() << "Illegal fopen() mode '" << *mode << "'" << frg::endlog;
++		return -1;
+ 	}
+ 	mode += 1;
+ 
+@@ -663,7 +669,6 @@ int fd_file::parse_modestring(const char *mode) {
+ 			flags |= O_EXCL;
+ 			mode++;
+ 		} else {
+-			mlibc::infoLogger() << "Illegal fopen() flag '" << mode << "'" << frg::endlog;
+ 			mode++;
+ 		}
+ 	}
+@@ -730,6 +735,10 @@ int fileno(FILE *file_base) {
+ 
+ FILE *fopen(const char *path, const char *mode) {
+ 	int flags = mlibc::fd_file::parse_modestring(mode);
++	if(flags < 0) {
++		errno = EINVAL;
++		return nullptr;
++	}
+ 
+ 	int fd;
+ 	if(int e = mlibc::sysdep<Open>(path, flags, 0666, &fd); e) {
+diff --git a/options/posix/generic/posix-file-io.cpp b/options/posix/generic/posix-file-io.cpp
+index 209d772..e669192 100644
+--- a/options/posix/generic/posix-file-io.cpp
++++ b/options/posix/generic/posix-file-io.cpp
+@@ -252,6 +252,10 @@ int cookie_file::io_seek(off_t offset, int whence, off_t *new_offset) {
+ 
+ FILE *fdopen(int fd, const char *mode) {
+ 	int flags = mlibc::fd_file::parse_modestring(mode);
++	if(flags < 0) {
++		errno = EINVAL;
++		return nullptr;
++	}
+ 
+ 	flags &= ~O_TRUNC; // 'w' should not truncate the file
+ 
+diff --git a/options/posix/generic/posix_stdio.cpp b/options/posix/generic/posix_stdio.cpp
+index 797e70a..7436018 100644
+--- a/options/posix/generic/posix_stdio.cpp
++++ b/options/posix/generic/posix_stdio.cpp
+@@ -49,6 +49,10 @@ popen_file *popen_streams;
+ 
+ FILE *fmemopen(void *buf, size_t size, const char *__restrict mode) {
+ 	int flags = mlibc::fd_file::parse_modestring(mode);
++	if(flags < 0) {
++		errno = EINVAL;
++		return nullptr;
++	}
+ 
+ 	auto file = frg::construct<mlibc::fmemopen_mem_file>(getAllocator(), buf, size, flags,
+ 		mlibc::file_dispose_cb<mlibc::fmemopen_mem_file>);
+@@ -296,6 +300,10 @@ char *tempnam(const char *dir, const char *pfx) {
+ 
+ FILE *fopencookie(void *cookie, const char *__restrict mode, cookie_io_functions_t funcs) {
+ 	int flags = mlibc::fd_file::parse_modestring(mode);
++	if(flags < 0) {
++		errno = EINVAL;
++		return nullptr;
++	}
+ 
+ 	auto file = frg::construct<mlibc::cookie_file>(getAllocator(), cookie, flags, funcs,
+ 		mlibc::file_dispose_cb<mlibc::cookie_file>);

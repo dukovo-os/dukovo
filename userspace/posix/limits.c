@@ -3,8 +3,9 @@
 
 // Scheduling and limits: nice levels as nice and setpriority set them,
 // the sched_ calls, the CPUs a thread may run on, resource limits as
-// setrlimit sets them and fork and exec keep them, the file descriptor
-// and stack limits, and the file mode mask.
+// setrlimit sets them and fork and exec keep them, the file descriptor,
+// stack and file size limits, the limits of other processes as prlimit
+// reads and sets them, and the file mode mask.
 
 #include <fcntl.h>
 #include <pthread.h>
@@ -36,6 +37,14 @@ static int after_exec(void) {
 	CHECK(umask(0) == 027);
 	// 12 MiB of stack: more than the 8 MiB a program gets by default.
 	CHECK(deep(12) == 12);
+	// The kernel still holds writes to the file size limit.
+	CHECK(getrlimit(RLIMIT_FSIZE, &limit) == 0 && limit.rlim_cur == 1 << 20);
+	signal(SIGXFSZ, SIG_IGN);
+	int fd = open("/tmp/limits-exec", O_WRONLY | O_CREAT | O_TRUNC, 0600);
+	CHECK(fd >= 0);
+	CHECK(pwrite(fd, "0123456789", 10, (1 << 20) - 4) == 4);
+	close(fd);
+	CHECK(unlink("/tmp/limits-exec") == 0);
 	return check_end();
 }
 
@@ -179,6 +188,11 @@ static void affinity(void) {
 	CHECK_ERROR(sched_setaffinity(0, sizeof(none), &none), EINVAL);
 	CHECK_ERROR(sched_getaffinity(0, 1, &got), EINVAL);
 	CHECK_ERROR(sched_getaffinity(99999, sizeof(got), &got), ESRCH);
+	// A negative number names no process; sched_getscheduler calls it
+	// invalid, as Linux does.
+	CHECK_ERROR(sched_getaffinity(-1, sizeof(got), &got), ESRCH);
+	CHECK_ERROR(sched_setaffinity(-1, sizeof(all), &all), ESRCH);
+	CHECK_ERROR(sched_getscheduler(-1), EINVAL);
 	CHECK(sched_setaffinity(0, sizeof(all), &all) == 0);
 }
 
@@ -226,6 +240,8 @@ static void limits(void) {
 		if(grandchild == 0) {
 			CHECK(getrlimit(RLIMIT_CORE, &core) == 0 && core.rlim_max == 0);
 			CHECK(umask(027) == 027);
+			struct rlimit size = {1 << 20, RLIM_INFINITY};
+			CHECK(setrlimit(RLIMIT_FSIZE, &size) == 0);
 			execl(self, self, "after-exec", (char *)NULL);
 			CHECK(!"exec");
 			check_exit_child();
@@ -235,6 +251,140 @@ static void limits(void) {
 	}
 	CHECK_CHILD(child);
 	CHECK(getrlimit(RLIMIT_CORE, &limit) == 0 && limit.rlim_max == RLIM_INFINITY);
+}
+
+// RLIMIT_FSIZE: a file grows no further than the soft limit. A write
+// that crosses it is cut short, and one that starts at it is SIGXFSZ to
+// the writer, or EFBIG where that signal is ignored or caught.
+static void file_size(void) {
+	pid_t child = check_fork();
+	if(child == 0) {
+		signal(SIGXFSZ, SIG_IGN);
+		struct rlimit limit = {1024, RLIM_INFINITY};
+		CHECK(setrlimit(RLIMIT_FSIZE, &limit) == 0);
+		int fd = open("/tmp/limits-size", O_RDWR | O_CREAT | O_TRUNC, 0600);
+		CHECK(fd >= 0);
+		char block[2048];
+		memset(block, 'f', sizeof(block));
+		CHECK(write(fd, block, 1000) == 1000);
+		CHECK(write(fd, block, 100) == 24);
+		CHECK_ERROR(write(fd, block, 1), EFBIG);
+		CHECK_ERROR(pwrite(fd, block, 1, 5000), EFBIG);
+		CHECK(pwrite(fd, block, 10, 1020) == 4);
+		// Nothing to write is no growth.
+		CHECK(write(fd, block, 0) == 0);
+		// A descriptor that appends starts at the end, which is the limit.
+		int appending = open("/tmp/limits-size", O_WRONLY | O_APPEND);
+		CHECK(appending >= 0);
+		CHECK_ERROR(write(appending, block, 1), EFBIG);
+		close(appending);
+		// A file may be cut to any size up to the limit.
+		CHECK_ERROR(ftruncate(fd, 5000), EFBIG);
+		CHECK(ftruncate(fd, 10) == 0);
+		CHECK(ftruncate(fd, 1024) == 0);
+		// The limit is for files: a pipe takes more than it.
+		int ends[2];
+		CHECK(pipe(ends) == 0);
+		CHECK(write(ends[1], block, sizeof(block)) == sizeof(block));
+		close(ends[0]);
+		close(ends[1]);
+		// A writer that does not ignore SIGXFSZ is ended by it.
+		pid_t grandchild = check_fork();
+		if(grandchild == 0) {
+			signal(SIGXFSZ, SIG_DFL);
+			write(fd, block, 1);
+			check_exit_child();
+		}
+		int status = check_wait(grandchild);
+		CHECK(WIFSIGNALED(status) && WTERMSIG(status) == SIGXFSZ);
+		close(fd);
+		check_exit_child();
+	}
+	CHECK_CHILD(child);
+	CHECK(unlink("/tmp/limits-size") == 0);
+	struct rlimit limit;
+	CHECK(getrlimit(RLIMIT_FSIZE, &limit) == 0 && limit.rlim_cur == RLIM_INFINITY);
+}
+
+// Whether `limit` is what getrlimit says of `resource` here.
+static int is_ours(int resource, const struct rlimit *limit) {
+	struct rlimit ours;
+	return getrlimit(resource, &ours) == 0 && ours.rlim_cur == limit->rlim_cur
+			&& ours.rlim_max == limit->rlim_max;
+}
+
+// prlimit: the limits of this process and of others, which it may read
+// and set as far as it may signal them.
+static void other_processes(void) {
+	struct rlimit limit;
+	CHECK(prlimit(0, RLIMIT_NOFILE, NULL, &limit) == 0 && is_ours(RLIMIT_NOFILE, &limit));
+	CHECK(prlimit(getpid(), RLIMIT_NOFILE, NULL, &limit) == 0);
+	CHECK(is_ours(RLIMIT_NOFILE, &limit));
+	pid_t child = check_fork();
+	if(child == 0) {
+		struct rlimit more = {4096, RLIM_INFINITY};
+		CHECK(prlimit(0, RLIMIT_CORE, &more, &limit) == 0);
+		CHECK(limit.rlim_cur == 0 && limit.rlim_max == RLIM_INFINITY);
+		CHECK(getrlimit(RLIMIT_CORE, &limit) == 0 && limit.rlim_cur == 4096);
+		check_exit_child();
+	}
+	CHECK_CHILD(child);
+	CHECK(getrlimit(RLIMIT_CORE, &limit) == 0 && limit.rlim_cur == 0);
+
+	// No such process: none with a negative number, and none that has
+	// been waited for.
+	CHECK_ERROR(prlimit(-1, RLIMIT_NOFILE, NULL, &limit), ESRCH);
+	pid_t gone = check_fork();
+	if(gone == 0)
+		_exit(0);
+	CHECK_CHILD(gone);
+	CHECK_ERROR(prlimit(gone, RLIMIT_NOFILE, NULL, &limit), ESRCH);
+
+	// A child, held until its limit is set, which then applies to it.
+	int go[2];
+	CHECK(pipe(go) == 0);
+	child = check_fork();
+	if(child == 0) {
+		close(go[1]);
+		signal(SIGXFSZ, SIG_IGN);
+		char byte;
+		if(read(go[0], &byte, 1) != 1)
+			_exit(2);
+		char block[200];
+		memset(block, 'g', sizeof(block));
+		int fd = open("/tmp/limits-other", O_WRONLY | O_CREAT | O_TRUNC, 0600);
+		ssize_t wrote = fd >= 0 ? write(fd, block, sizeof(block)) : -1;
+		_exit(wrote < 0 ? 255 : (int)wrote);
+	}
+	close(go[0]);
+	CHECK(prlimit(child, RLIMIT_STACK, NULL, &limit) == 0 && is_ours(RLIMIT_STACK, &limit));
+	struct rlimit small = {100, RLIM_INFINITY};
+	CHECK(prlimit(child, RLIMIT_FSIZE, &small, &limit) == 0);
+	CHECK(limit.rlim_cur == RLIM_INFINITY && limit.rlim_max == RLIM_INFINITY);
+	CHECK(prlimit(child, RLIMIT_FSIZE, NULL, &limit) == 0 && limit.rlim_cur == 100);
+	CHECK(getrlimit(RLIMIT_FSIZE, &limit) == 0 && limit.rlim_cur == RLIM_INFINITY);
+	// The descriptor limit is kept by the child's own C library, out of
+	// reach of anything but the child: it can be read, not set.
+	CHECK(prlimit(child, RLIMIT_NOFILE, NULL, &limit) == 0 && is_ours(RLIMIT_NOFILE, &limit));
+	struct rlimit fewer = {512, 4096};
+	CHECK_ERROR(prlimit(child, RLIMIT_NOFILE, &fewer, NULL), EPERM);
+	CHECK(write(go[1], "g", 1) == 1);
+	close(go[1]);
+	int status = check_wait(child);
+	CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 100);
+	unlink("/tmp/limits-other");
+
+	// Another session's processes are out of reach, as they are of kill:
+	// Spark, process 1, is in one.
+	pid_t stranger = check_fork();
+	if(stranger == 0) {
+		CHECK(setsid() == getpid());
+		CHECK_ERROR(prlimit(1, RLIMIT_CORE, NULL, &limit), EPERM);
+		struct rlimit none = {0, 0};
+		CHECK_ERROR(prlimit(1, RLIMIT_CORE, &none, NULL), EPERM);
+		check_exit_child();
+	}
+	CHECK_CHILD(stranger);
 }
 
 static void file_mask(void) {
@@ -254,6 +404,8 @@ int main(int argc, char **argv) {
 	RUN(policies);
 	RUN(affinity);
 	RUN(limits);
+	RUN(file_size);
+	RUN(other_processes);
 	RUN(file_mask);
 	return check_end();
 }

@@ -29,9 +29,10 @@ use radix_abi::capability::SlotFlags;
 use radix_abi::directory::{
     self, AttributeFlags, FileKind, FilesystemKind, LinkFlags, MountFlags, OpenFlags, PathFlags,
 };
-use radix_abi::errors::Kernel;
+use radix_abi::errors::{File as FileError, Kernel};
 use radix_abi::file::{DescriptionFlags, LockKind, LockOwner, SocketFlags, Whence};
-use radix_abi::process::{LimitKind, MAX_SLOTS};
+use radix_abi::process::{LimitKind, MAX_SLOTS, UNLIMITED};
+use radix_abi::signal::SIGXFSZ;
 use radix_abi::startup::SLOT_FD_BASE;
 use radix_abi::{UserBuffer, file, terminal};
 use radix_cap::{CapError, ObjectKind, Rights, SlotRef};
@@ -296,6 +297,22 @@ fn filesystem_kind(kind: FsKind) -> FilesystemKind {
         FsKind::Pipe => FilesystemKind::Pipe,
         FsKind::Fuse => FilesystemKind::Fuse,
         FsKind::Shm => FilesystemKind::Shm,
+    }
+}
+
+/// What `at`'s filesystem says of itself, as `directory::INFO` and
+/// `file::FILESYSTEM_INFO` give it.
+fn filesystem_info(at: &Location) -> directory::InfoResults {
+    let info = at.mount.fs.info();
+    directory::InfoResults {
+        filesystem: filesystem_kind(at.mount.fs.kind()),
+        // Read-only too beneath a view's read-only entry.
+        flags: if at.read_only() { MountFlags::READ_ONLY } else { MountFlags::NONE },
+        block_size: info.block_size,
+        blocks: info.blocks,
+        free: info.free,
+        files: info.files,
+        free_files: info.free_files,
     }
 }
 
@@ -874,19 +891,7 @@ pub fn directory_method(
         directory::INFO => {
             directory::InfoArgs::decode(args)?;
             let dir = directory_of(found, Rights::READ)?;
-            let mount = &dir.at.mount;
-            let info = mount.fs.info();
-            let results = directory::InfoResults {
-                filesystem: filesystem_kind(mount.fs.kind()),
-                // Read-only too beneath a view's read-only entry.
-                flags: if dir.at.read_only() { MountFlags::READ_ONLY } else { MountFlags::NONE },
-                block_size: info.block_size,
-                blocks: info.blocks,
-                free: info.free,
-                files: info.files,
-                free_files: info.free_files,
-            };
-            answer(label, directory::InfoResults::WORDS, results.encode())
+            answer(label, directory::InfoResults::WORDS, filesystem_info(&dir.at).encode())
         }
         directory::BIND_SOCKET => {
             let a = directory::BindSocketArgs::decode(args)?;
@@ -1870,6 +1875,7 @@ pub fn file_method(user: &UserRef, found: &Found, label: u32, args: &[u64; 8]) -
             let a = file::SetSizeArgs::decode(args)?;
             let file = file_of(found, Rights::WRITE)?;
             file.at.writable().map_err(fs::status)?;
+            grows_within_file_size(user, &file.at.node, a.size)?;
             file.at.node.set_size(a.size).map_err(fs::status)?;
             answer(label, 0, [0; 8])
         }
@@ -2288,6 +2294,39 @@ pub fn file_method(user: &UserRef, found: &Found, label: u32, args: &[u64; 8]) -
             let results = file::ReceiveFilesResults { count: count as u64, files, lost };
             answer(label, file::ReceiveFilesResults::WORDS, results.encode())
         }
+        file::PIPE_SIZE => {
+            let a = file::PipeSizeArgs::decode(args)?;
+            let file = file_of(found, Rights::NONE)?;
+            let Target::Pipe(end) = target(file) else {
+                return Err(error(Kernel::WrongKind));
+            };
+            let size = if a.set { end.pipe().resize(a.size)? } else { end.pipe().size() };
+            let results = file::PipeSizeResults { size: size as u64 };
+            answer(label, file::PipeSizeResults::WORDS, results.encode())
+        }
+        file::OWNER => {
+            let a = file::OwnerArgs::decode(args)?;
+            let file = file_of(found, Rights::NONE)?;
+            let new = a.set.then_some(fs::Owner { kind: a.kind, id: a.id });
+            let owner = description_owner(user, file, new)?;
+            let results = file::OwnerResults { kind: owner.kind, id: owner.id };
+            answer(label, file::OwnerResults::WORDS, results.encode())
+        }
+        file::FILESYSTEM_INFO => {
+            file::FilesystemInfoArgs::decode(args)?;
+            let file = file_of(found, Rights::NONE)?;
+            let info = filesystem_info(&file.at);
+            let results = file::FilesystemInfoResults {
+                filesystem: info.filesystem,
+                flags: info.flags,
+                block_size: info.block_size,
+                blocks: info.blocks,
+                free: info.free,
+                files: info.files,
+                free_files: info.free_files,
+            };
+            answer(label, file::FilesystemInfoResults::WORDS, results.encode())
+        }
         file::GET_ATTRIBUTE
         | file::SET_ATTRIBUTE
         | file::LIST_ATTRIBUTES
@@ -2335,6 +2374,28 @@ fn inet_of(found: &Found, needs: Rights) -> Result<(&FileRef, &inet::InetSocket)
     match any_socket_of(found, needs)? {
         (file, AnySocket::Inet(socket)) => Ok((file, socket)),
         (_, AnySocket::Unix(_)) => Err(error(Kernel::NotSupported)),
+    }
+}
+
+/// `owner`: the owner of `file`'s description as it was, after making
+/// `new` its owner if that is given. A new owner must be there; an old
+/// one that has ended reads as none, with the kind it had.
+fn description_owner(
+    user: &UserRef,
+    file: &FileObject,
+    new: Option<fs::Owner>,
+) -> Result<fs::Owner> {
+    if let Some(new) = new {
+        if !super::posix::owner_lives(user, new)? {
+            return Err(error(Kernel::NoSuchProcess));
+        }
+        return Ok(file.set_owner(new));
+    }
+    let owner = file.owner();
+    if super::posix::owner_lives(user, owner)? {
+        Ok(owner)
+    } else {
+        Ok(fs::Owner { id: 0, ..owner })
     }
 }
 
@@ -2747,14 +2808,21 @@ pub fn write(
     file.at.writable().map_err(fs::status)?;
     let node = &file.at.node;
     let written = if offset != file::CURRENT {
+        let starts_at = || if offset == file::APPEND { node.stat().size } else { offset };
+        let data = UserIn { address, len: within_file_size(user, len, starts_at)? };
         node.write(offset, &data).map_err(fs::status)?
     } else {
         let mut at = file.offset.lock();
         if file.description().append {
+            // Another appender may move the end between this size and the
+            // write, which matters only at the limit: the write may then
+            // end a little past it.
+            let data = UserIn { address, len: within_file_size(user, len, || node.stat().size)? };
             let written = node.write(file::APPEND, &data).map_err(fs::status)?;
             *at = node.stat().size;
             written
         } else {
+            let data = UserIn { address, len: within_file_size(user, len, || *at)? };
             let written = node.write(*at, &data).map_err(fs::status)?;
             *at += written as u64;
             written
@@ -2762,6 +2830,43 @@ pub fn write(
     } as u64;
     user.process.note_written(written);
     Ok(written)
+}
+
+/// How many of `len` bytes may be written at the position `pos` gives
+/// under the caller's RLIMIT_FSIZE, as Linux's `generic_write_check_limits`
+/// decides: all of them without a limit, otherwise as many as end at the
+/// limit. A write that starts at or past the limit raises SIGXFSZ and fails
+/// with too_big; a write of no bytes is never refused. `pos` is called
+/// only under a limit, since the end of a file costs a `stat` to find.
+fn within_file_size(user: &UserThread, len: usize, pos: impl FnOnce() -> u64) -> Result<usize> {
+    let limit = user.process.file_size_limit();
+    if limit == UNLIMITED || len == 0 {
+        return Ok(len);
+    }
+    let pos = pos();
+    if pos >= limit {
+        return Err(over_file_size());
+    }
+    Ok(usize::try_from(limit - pos).map_or(len, |room| room.min(len)))
+}
+
+/// Whether making the file `node` `size` bytes long stays within the
+/// caller's RLIMIT_FSIZE, as Linux's `inode_newsize_ok` asks: a file may
+/// always be cut, or grown up to the limit. Growing it past raises SIGXFSZ
+/// and fails with too_big.
+fn grows_within_file_size(user: &UserThread, node: &NodeRef, size: u64) -> Result<()> {
+    if size <= user.process.file_size_limit() || size <= node.stat().size {
+        return Ok(());
+    }
+    Err(over_file_size())
+}
+
+/// The failure of a write or a growth past RLIMIT_FSIZE: SIGXFSZ for the
+/// calling thread, and too_big. The signal's default action ends the
+/// process; one that ignores it sees the failure.
+fn over_file_size() -> radix_abi::Status {
+    super::posix::signal::raise_current(SIGXFSZ);
+    FileError::TooBig.status(0)
 }
 
 /// [`write`] to a pipe or a terminal, kept out of line as [`read_special`]

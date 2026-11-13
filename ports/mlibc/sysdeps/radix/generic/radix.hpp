@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include <abi-bits/clockid_t.h>
+#include <abi-bits/pid_t.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -297,6 +299,19 @@ void set_dir_cursor(int fd, uint64_t cursor);
 // The kernel's ClockKind for Linux's clock number `clock`, or EINVAL for
 // one Linux does not have.
 int clock_kind(int clock, enum radix_clock_kind *kind);
+
+// The ids of the CPU-time clocks of thread `tid` and of process `pid`,
+// which pthread_getcpuclockid and clock_getcpuclockid give: ENOENT for a
+// number of 2^28 or more, which a 32-bit id cannot carry, and ESRCH for
+// a negative one or a thread numbered 0. Process 0 is the caller.
+int thread_cpu_clock(pid_t tid, clockid_t *clock);
+int process_cpu_clock(pid_t pid, clockid_t *clock);
+
+// What the negative clock id `clock` is the CPU-time clock of: the number
+// `id` of a process, or with `process` false of a thread (0: the caller's
+// own). EINVAL for a clock of another kind, which Linux's other
+// CPU-time clocks (profiling, virtual and dynamic) are.
+int cpu_clock(clockid_t clock, uint64_t *id, bool *process);
 
 // The bytes of the `count` buffers at `iov` in all, in `sum`; EINVAL if
 // they pass SSIZE_MAX, as readv, writev, sendmsg and recvmsg fail then

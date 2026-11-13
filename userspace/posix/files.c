@@ -9,7 +9,8 @@
 // from memory not made yet, the root's folders by their names and by
 // Unix's, descriptors by their names in /devices/fd, and owners, groups
 // and modes, extended attributes and access lists, on the tmpfs at /tmp
-// and the read-only /system; and what each refuses, with Linux's errors.
+// and the read-only /system; what each refuses, with Linux's errors; the
+// owners of descriptions and the modes of stdio streams.
 
 #include <dirent.h>
 #include <fcntl.h>
@@ -18,6 +19,7 @@
 #include <stdint.h>
 #include <ftw.h>
 #include <sys/mman.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/statvfs.h>
 #include <sys/sysmacros.h>
@@ -328,6 +330,22 @@ static void directory_descriptors(void) {
 	// statvfs of a file tells of its filesystem.
 	struct statvfs vfs;
 	CHECK(statvfs("/tmp/files-dd/sub/f", &vfs) == 0 && vfs.f_bsize > 0);
+	// So does fstatvfs of any descriptor: a file's is its directory's, and a
+	// pipe's is a filesystem's too.
+	int file = open("/tmp/files-dd/sub/f", O_RDONLY);
+	int folder = open("/tmp/files-dd/sub", O_RDONLY | O_DIRECTORY);
+	struct statvfs of_file, of_folder;
+	CHECK(file >= 0 && folder >= 0);
+	CHECK(fstatvfs(file, &of_file) == 0 && fstatvfs(folder, &of_folder) == 0);
+	CHECK(of_file.f_bsize == of_folder.f_bsize && of_file.f_blocks == of_folder.f_blocks);
+	CHECK(of_file.f_flag == of_folder.f_flag);
+	close(file);
+	close(folder);
+	int ends[2];
+	CHECK(pipe(ends) == 0);
+	CHECK(fstatvfs(ends[0], &vfs) == 0 && fstatvfs(ends[1], &vfs) == 0);
+	close(ends[0]);
+	close(ends[1]);
 	CHECK(unlink("/tmp/files-dd/sub/f") == 0);
 	CHECK(rmdir("/tmp/files-dd/sub") == 0 && rmdir("/tmp/files-dd") == 0);
 }
@@ -1234,6 +1252,120 @@ static void refusals(void) {
 	CHECK(rmdir("/tmp/files-r") == 0);
 }
 
+// The owner of a description, which F_SETOWN and F_SETOWN_EX name and
+// F_GETOWN and F_GETOWN_EX tell. It is kept for programs to read back; no
+// signal is sent to it.
+static void owners(void) {
+	int fd = open("/tmp/files-owner", O_RDWR | O_CREAT | O_TRUNC, 0600);
+	CHECK(fd >= 0);
+	struct f_owner_ex owner = {-1, -1};
+	CHECK(fcntl(fd, F_GETOWN) == 0);
+	CHECK(fcntl(fd, F_GETOWN_EX, &owner) == 0 && owner.type == F_OWNER_TID && owner.pid == 0);
+	// A process: the one description, whichever descriptor says so.
+	CHECK(fcntl(fd, F_SETOWN, getpid()) == 0);
+	CHECK(fcntl(fd, F_GETOWN) == getpid());
+	CHECK(fcntl(fd, F_GETOWN_EX, &owner) == 0);
+	CHECK(owner.type == F_OWNER_PID && owner.pid == getpid());
+	int copy = dup(fd);
+	CHECK(copy >= 0 && fcntl(copy, F_GETOWN) == getpid());
+	int other = open("/tmp/files-owner", O_RDONLY);
+	CHECK(other >= 0 && fcntl(other, F_GETOWN) == 0);
+	close(other);
+	close(copy);
+	// A process group is given by its number made negative.
+	CHECK(fcntl(fd, F_SETOWN, -getpgrp()) == 0);
+	CHECK(fcntl(fd, F_GETOWN) == -getpgrp());
+	CHECK(fcntl(fd, F_GETOWN_EX, &owner) == 0);
+	CHECK(owner.type == F_OWNER_PGRP && owner.pid == getpgrp());
+	// A thread: F_GETOWN says its number.
+	owner = (struct f_owner_ex){F_OWNER_TID, gettid()};
+	CHECK(fcntl(fd, F_SETOWN_EX, &owner) == 0);
+	owner = (struct f_owner_ex){-1, -1};
+	CHECK(fcntl(fd, F_GETOWN_EX, &owner) == 0 && owner.type == F_OWNER_TID);
+	CHECK(owner.pid == gettid() && fcntl(fd, F_GETOWN) == gettid());
+	owner = (struct f_owner_ex){F_OWNER_PGRP, getpgrp()};
+	CHECK(fcntl(fd, F_SETOWN_EX, &owner) == 0 && fcntl(fd, F_GETOWN) == -getpgrp());
+	// 0 is no owner.
+	CHECK(fcntl(fd, F_SETOWN, 0) == 0 && fcntl(fd, F_GETOWN) == 0);
+	CHECK(fcntl(fd, F_GETOWN_EX, &owner) == 0);
+	CHECK(owner.type == F_OWNER_PID && owner.pid == 0);
+
+	// An owner has to be there: a process that has been waited for is not.
+	pid_t gone = check_fork();
+	if(gone == 0)
+		_exit(0);
+	CHECK_CHILD(gone);
+	CHECK_ERROR(fcntl(fd, F_SETOWN, gone), ESRCH);
+	owner = (struct f_owner_ex){F_OWNER_PID, gone};
+	CHECK_ERROR(fcntl(fd, F_SETOWN_EX, &owner), ESRCH);
+	owner = (struct f_owner_ex){F_OWNER_PID, -5};
+	CHECK_ERROR(fcntl(fd, F_SETOWN_EX, &owner), ESRCH);
+	CHECK_ERROR(fcntl(fd, F_SETOWN, -gone), ESRCH);
+	CHECK_ERROR(fcntl(fd, F_SETOWN, INT_MIN), EINVAL);
+	owner = (struct f_owner_ex){3, getpid()};
+	CHECK_ERROR(fcntl(fd, F_SETOWN_EX, &owner), EINVAL);
+	CHECK(fcntl(fd, F_GETOWN) == 0);
+
+	// An owner that ends is none, whatever it was.
+	int wait_for[2];
+	CHECK(pipe(wait_for) == 0);
+	pid_t child = check_fork();
+	if(child == 0) {
+		close(wait_for[1]);
+		char byte;
+		read(wait_for[0], &byte, 1);
+		_exit(0);
+	}
+	close(wait_for[0]);
+	CHECK(fcntl(fd, F_SETOWN, child) == 0 && fcntl(fd, F_GETOWN) == child);
+	close(wait_for[1]);
+	CHECK_CHILD(child);
+	CHECK(fcntl(fd, F_GETOWN) == 0);
+	close(fd);
+	CHECK(unlink("/tmp/files-owner") == 0);
+
+	// A pipe's end and a socket take an owner too; a directory has none.
+	int ends[2], pair[2];
+	CHECK(pipe(ends) == 0 && socketpair(AF_UNIX, SOCK_STREAM, 0, pair) == 0);
+	CHECK(fcntl(ends[0], F_SETOWN, getpid()) == 0 && fcntl(ends[0], F_GETOWN) == getpid());
+	CHECK(fcntl(ends[1], F_GETOWN) == 0);
+	CHECK(fcntl(pair[0], F_SETOWN, getpid()) == 0 && fcntl(pair[0], F_GETOWN) == getpid());
+	CHECK(fcntl(pair[1], F_GETOWN) == 0);
+	close(ends[0]);
+	close(ends[1]);
+	close(pair[0]);
+	close(pair[1]);
+	int folder = open("/tmp", O_RDONLY | O_DIRECTORY);
+	CHECK(folder >= 0);
+	CHECK_ERROR(fcntl(folder, F_GETOWN), EINVAL);
+	CHECK_ERROR(fcntl(folder, F_SETOWN, getpid()), EINVAL);
+	close(folder);
+}
+
+// The modes fopen and fdopen take: a mode that starts with something else
+// than r, w or a is EINVAL, and makes no file; characters after the
+// first are the library's to read, and unknown ones are left out.
+static void stream_modes(void) {
+	unlink("/tmp/files-modes");
+	CHECK(fopen("/tmp/files-modes", "z") == NULL && errno == EINVAL);
+	CHECK(fopen("/tmp/files-modes", "") == NULL && errno == EINVAL);
+	CHECK_ERROR(access("/tmp/files-modes", F_OK), ENOENT);
+	int fd = open("/tmp/files-modes", O_RDWR | O_CREAT | O_TRUNC, 0600);
+	CHECK(fd >= 0);
+	errno = 0;
+	CHECK(fdopen(fd, "q") == NULL && errno == EINVAL);
+	// Still open: no stream took it.
+	CHECK(write(fd, "x", 1) == 1);
+	close(fd);
+	FILE *stream = fopen("/tmp/files-modes", "rq");
+	CHECK(stream != NULL);
+	if(stream) {
+		CHECK(fgetc(stream) == 'x');
+		fclose(stream);
+	}
+	CHECK(unlink("/tmp/files-modes") == 0);
+}
+
 int main(void) {
 	check_start("files");
 	RUN(basics);
@@ -1256,5 +1388,7 @@ int main(void) {
 	RUN(modes);
 	RUN(attributes);
 	RUN(refusals);
+	RUN(owners);
+	RUN(stream_modes);
 	return check_end();
 }

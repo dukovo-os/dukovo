@@ -29,7 +29,7 @@
 //! unreported.
 
 use radix_abi::errors::Kernel;
-use radix_abi::process::{EXIT_STOPPED, ForkResults, KEEP_SLOTS};
+use radix_abi::process::{EXIT_STOPPED, ForkResults, KEEP_SLOTS, LimitKind};
 use radix_abi::startup;
 use radix_abi::syscalls::CapCallResults;
 use radix_cap::{CapError, Derivation, ObjectKind, Rights, SlotRef};
@@ -81,6 +81,7 @@ pub fn fork(user: &UserRef, label: u32) -> Result<u64> {
             posix.actions.copy_from(&parent.actions);
             posix.terminal.clone_from(&parent.terminal);
             posix.inherit(&parent);
+            child.set_file_size_limit(posix.limits.get(LimitKind::FileSize).current);
         }
         let (class, level) = parent.io_priority();
         child.set_io_priority(class, level);

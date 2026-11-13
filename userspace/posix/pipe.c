@@ -2,12 +2,15 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 // Pipes: data in order, the end of the stream, SIGPIPE and EPIPE, a pipe
-// that fills, non-blocking ends, atomic writes, and descriptors made with
-// dup, dup2, dup3 and fcntl.
+// that fills, non-blocking ends, atomic writes, descriptors made with
+// dup, dup2, dup3 and fcntl, and the size of a pipe.
 
 #include <fcntl.h>
 #include <limits.h>
+#include <poll.h>
 #include <sys/ioctl.h>
+#include <sys/socket.h>
+#include <sys/stat.h>
 
 #include "check.h"
 
@@ -236,6 +239,88 @@ static void pipeline(void) {
 	CHECK_CHILD(filter);
 }
 
+// The size of a pipe, as F_GETPIPE_SZ and F_SETPIPE_SZ have it.
+static void sizes(void) {
+	int fds[2];
+	CHECK(pipe(fds) == 0);
+	CHECK(fcntl(fds[0], F_GETPIPE_SZ) == 65536 && fcntl(fds[1], F_GETPIPE_SZ) == 65536);
+	// A size goes up to a power of two, and no lower than a page.
+	CHECK(fcntl(fds[1], F_SETPIPE_SZ, 5000) == 8192);
+	CHECK(fcntl(fds[0], F_GETPIPE_SZ) == 8192 && fcntl(fds[1], F_GETPIPE_SZ) == 8192);
+	CHECK(fcntl(fds[1], F_SETPIPE_SZ, 1) == 4096);
+	CHECK(fcntl(fds[1], F_SETPIPE_SZ, 0) == 4096);
+	CHECK_ERROR(fcntl(fds[1], F_SETPIPE_SZ, -1), EINVAL);
+	CHECK(fcntl(fds[0], F_GETPIPE_SZ) == 4096);
+	// A pipe grows to a megabyte at most; 1 << 31 is the largest size
+	// asked for that is not invalid.
+	CHECK_ERROR(fcntl(fds[1], F_SETPIPE_SZ, 1u << 31), EPERM);
+	CHECK(fcntl(fds[1], F_SETPIPE_SZ, 1048576) == 1048576);
+	CHECK_ERROR(fcntl(fds[1], F_SETPIPE_SZ, 2097152), EPERM);
+	CHECK(fcntl(fds[0], F_GETPIPE_SZ) == 1048576);
+	CHECK(fcntl(fds[1], F_SETPIPE_SZ, 65536) == 65536);
+	close(fds[0]);
+	close(fds[1]);
+
+	// What a pipe holds comes out in order after it is resized, even when
+	// it wrapped around the end of its buffer.
+	CHECK(pipe(fds) == 0);
+	CHECK(fcntl(fds[1], F_SETPIPE_SZ, 8192) == 8192);
+	unsigned char pattern[10000], buffer[10000];
+	for(size_t i = 0; i < sizeof(pattern); i++)
+		pattern[i] = (unsigned char)(i % 251);
+	CHECK(write(fds[1], pattern, 6000) == 6000);
+	CHECK(read(fds[0], buffer, 4000) == 4000 && !memcmp(buffer, pattern, 4000));
+	CHECK(write(fds[1], pattern + 6000, 4000) == 4000);
+	CHECK(fcntl(fds[1], F_SETPIPE_SZ, 65536) == 65536);
+	CHECK(read(fds[0], buffer, sizeof(buffer)) == 6000);
+	CHECK(!memcmp(buffer, pattern + 4000, 6000));
+	// A pipe does not shrink below what it holds.
+	CHECK(fcntl(fds[1], F_SETPIPE_SZ, 8192) == 8192);
+	CHECK(write(fds[1], pattern, 6000) == 6000);
+	CHECK_ERROR(fcntl(fds[1], F_SETPIPE_SZ, 4096), EBUSY);
+	CHECK(fcntl(fds[1], F_GETPIPE_SZ) == 8192);
+	CHECK(read(fds[0], buffer, sizeof(buffer)) == 6000 && !memcmp(buffer, pattern, 6000));
+	close(fds[0]);
+	close(fds[1]);
+
+	// A larger pipe has room for more, and polling says so.
+	CHECK(pipe2(fds, O_NONBLOCK) == 0);
+	CHECK(fcntl(fds[1], F_SETPIPE_SZ, 4096) == 4096);
+	CHECK(write(fds[1], pattern, 4096) == 4096);
+	CHECK_ERROR(write(fds[1], pattern, 1), EAGAIN);
+	struct pollfd room = {fds[1], POLLOUT, 0};
+	CHECK(poll(&room, 1, 0) == 0);
+	CHECK(fcntl(fds[1], F_SETPIPE_SZ, 8192) == 8192);
+	room.revents = 0;
+	CHECK(poll(&room, 1, 0) == 1 && (room.revents & POLLOUT));
+	CHECK(write(fds[1], pattern, 4096) == 4096);
+	close(fds[0]);
+	close(fds[1]);
+
+	// Only pipes have a size.
+	int file = open("/tmp/pipe-sizes", O_RDWR | O_CREAT | O_TRUNC, 0600);
+	CHECK(file >= 0);
+	CHECK_ERROR(fcntl(file, F_GETPIPE_SZ), EBADF);
+	CHECK_ERROR(fcntl(file, F_SETPIPE_SZ, 4096), EBADF);
+	close(file);
+	unlink("/tmp/pipe-sizes");
+	int pair[2];
+	CHECK(socketpair(AF_UNIX, SOCK_STREAM, 0, pair) == 0);
+	CHECK_ERROR(fcntl(pair[0], F_GETPIPE_SZ), EBADF);
+	close(pair[0]);
+	close(pair[1]);
+
+	// A named pipe has one too.
+	unlink("/tmp/pipe-sizes-fifo");
+	CHECK(mkfifo("/tmp/pipe-sizes-fifo", 0600) == 0);
+	int fifo = open("/tmp/pipe-sizes-fifo", O_RDWR | O_NONBLOCK);
+	CHECK(fifo >= 0);
+	CHECK(fcntl(fifo, F_GETPIPE_SZ) == 65536);
+	CHECK(fcntl(fifo, F_SETPIPE_SZ, 16384) == 16384);
+	close(fifo);
+	unlink("/tmp/pipe-sizes-fifo");
+}
+
 int main(void) {
 	check_start("pipe");
 	RUN(basics);
@@ -245,5 +330,6 @@ int main(void) {
 	RUN(atomic);
 	RUN(duplicates);
 	RUN(pipeline);
+	RUN(sizes);
 	return check_end();
 }

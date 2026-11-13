@@ -59,6 +59,7 @@ use radix_abi::capability::ObjectKind as AbiKind;
 use radix_abi::errors::Kernel;
 use radix_abi::process::{
     self, EXIT_FAULT, EXIT_STOPPED, KEEP_SLOTS, MAX_SLOTS, MIN_SLOTS, NAME_MAX, ProcessState,
+    UNLIMITED,
 };
 use radix_cap::{Derivation, ObjectKind, Rights, SLOT_BYTES, SlotRef, SpaceId};
 use radix_hal::UserMode;
@@ -163,6 +164,10 @@ pub struct ProcessObject {
     /// methods, from files, pipes, sockets and terminals alike.
     read_bytes: AtomicU64,
     written_bytes: AtomicU64,
+    /// RLIMIT_FSIZE's soft limit, as its POSIX state keeps it, for writes,
+    /// which read it without that lock: whatever sets that limit sets this
+    /// too.
+    file_size_limit: AtomicU64,
     /// Its I/O class and level (radix-process(2)'s `io_priority`): the
     /// class in bits 8 to 15, the level in bits 0 to 7.
     io_priority: AtomicU32,
@@ -349,6 +354,7 @@ fn allocate(
         started_ns: sched::now_ns(),
         read_bytes: AtomicU64::new(0),
         written_bytes: AtomicU64::new(0),
+        file_size_limit: AtomicU64::new(UNLIMITED),
         io_priority: AtomicU32::new(0),
         args: SpinLock::new(None),
         posix: SpinLock::new(posix),
@@ -557,6 +563,18 @@ impl ProcessObject {
     #[inline]
     pub fn note_written(&self, bytes: u64) {
         self.written_bytes.fetch_add(bytes, Ordering::Relaxed);
+    }
+
+    /// RLIMIT_FSIZE's soft limit: the most a write may take a file to.
+    #[inline]
+    pub fn file_size_limit(&self) -> u64 {
+        self.file_size_limit.load(Ordering::Relaxed)
+    }
+
+    /// Makes `limit` the soft limit [`ProcessObject::file_size_limit`]
+    /// gives. Called with the POSIX state locked, as its limit changes.
+    pub fn set_file_size_limit(&self, limit: u64) {
+        self.file_size_limit.store(limit, Ordering::Relaxed);
     }
 
     /// The bytes its threads have read and written.

@@ -233,7 +233,13 @@ const IO_LEVELS: u32 = 8;
 enum LimitKind: u32 {
     /// CPU time, in seconds (RLIMIT_CPU).
     cpu = 0;
-    /// The size of a file written, in bytes (RLIMIT_FSIZE).
+    /// The size of a file written, in bytes (RLIMIT_FSIZE): a write that
+    /// would take a file past it is cut short, one that starts at or past
+    /// it fails with too_big (radix-file(2)), and so does growing a file
+    /// past it; both raise SIGXFSZ for the thread first, whose default
+    /// action ends the process. The kernel enforces it for writes to the
+    /// files of a filesystem or a block device, not to pipes, sockets or
+    /// terminals.
     file_size = 1;
     /// The size of the data segment, in bytes (RLIMIT_DATA).
     data = 2;
@@ -295,7 +301,7 @@ enum ProcessState: u8 {
 }
 
 /// A process.
-interface process = 0x000a version 8 {
+interface process = 0x000a version 9 {
     kind = process;
     /// Makes a kernel object, charged to this process's resource domain,
     /// and puts its capability, with every right, in slot `to`: a process
@@ -693,4 +699,23 @@ interface process = 0x000a version 8 {
     /// getgroups(2) gives them. Needs the read right.
     method identity = 55 (groups: out bytes) -> (user: u32, group: u32, count: u32)
         raises [no_such_slot, empty_slot, missing_rights, bad_address];
+    /// Reads, and with `set` changes, resource limit `resource` of process
+    /// `pid` (0: the caller), as Linux's prlimit(2), and returns it as it
+    /// was; the rules for the values are `limits`'. Another process's
+    /// limits, read or set, need what `kill` needs (not_permitted); one
+    /// that is not there fails with no_such_process. Another process's
+    /// RLIMIT_NOFILE cannot be set (not_permitted): its C library keeps
+    /// it. (Since Phase 16, ADR 0497.)
+    method limits_of = 56 (pid: u64, resource: LimitKind, set: bool, current: u64, max: u64)
+        -> (current: u64, max: u64)
+        raises [no_such_slot, empty_slot, missing_rights, invalid_argument, not_permitted,
+                no_such_process];
+    /// The CPU time, in nanoseconds, that thread `id` of the caller's
+    /// process has used (0: the calling thread), or with `process`, that
+    /// process `id` has used (0: the caller), its ended threads' included:
+    /// the clocks of pthread_getcpuclockid(3) and clock_getcpuclockid(3).
+    /// A thread of another process, or a thread or process that is not
+    /// there, fails with no_such_process. (Since Phase 16, ADR 0497.)
+    method cpu_time = 57 (id: u64, process: bool) -> (ns: u64)
+        raises [no_such_slot, empty_slot, missing_rights, no_such_process];
 }

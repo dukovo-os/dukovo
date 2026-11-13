@@ -1,8 +1,9 @@
 // SPDX-FileCopyrightText: 2026 The Dukovo contributors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! Pipes (Phase 8, radix-process(2)'s `pipe`): a buffer of [`CAPACITY`]
-//! bytes with a reading end and a writing end.
+//! Pipes (Phase 8, radix-process(2)'s `pipe`): a buffer with a reading
+//! end and a writing end. A pipe holds [`DEFAULT_CAPACITY`] bytes until
+//! `pipe_size` (radix-file(2)) changes it.
 //!
 //! Each end is a node of its own on a filesystem that is mounted nowhere
 //! (`pipefs`, [`radix_vfs::mount::Mount::detached`]), so a pipe's ends are file
@@ -34,11 +35,11 @@ use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 
 use radix_abi::Status;
 use radix_abi::errors::{File as FileError, Kernel};
-use radix_abi::file::FILES_IN_FLIGHT_MAX;
+use radix_abi::file::{FILES_IN_FLIGHT_MAX, PIPE_SIZE_MAX};
 use radix_abi::process::PipeFlags;
 use radix_abi::signal::SIGPIPE;
 use radix_cap::{ObjectKind, Rights, SlotRef};
-use radix_mm::Kmalloc;
+use radix_mm::{Kmalloc, PAGE_SIZE};
 use radix_sync::{Mutex, Once};
 use radix_tty::Ring;
 use radix_vfs::mount::{Location, MountRef};
@@ -54,8 +55,8 @@ use crate::user::names::Identity;
 use crate::user::posix::poll::{self, Polled};
 use crate::user::posix::signal::{Restart, interrupted};
 
-/// How many bytes a pipe holds, as on Linux.
-pub const CAPACITY: usize = 65536;
+/// How many bytes a new pipe holds, as on Linux.
+pub const DEFAULT_CAPACITY: usize = 65536;
 
 /// The most bytes a write puts in at once, unmixed with others: POSIX's
 /// PIPE_BUF.
@@ -122,12 +123,26 @@ fn heap() -> Kmalloc {
     radix_mm::HEAP.with(radix_mm::Flags::MAY_SLEEP)
 }
 
+/// Zeroed storage for a buffer of `size` bytes.
+fn storage(size: usize) -> Result<alloc::vec::Vec<u8, Kmalloc>, Status> {
+    let mut storage = alloc::vec::Vec::new_in(heap());
+    storage.try_reserve_exact(size).map_err(|_| Kernel::NoMemory.status(0))?;
+    while storage.len() < size {
+        // Room was reserved above.
+        let _ = storage.push_within_capacity(0);
+    }
+    Ok(storage)
+}
+
 /// A pipe.
 pub struct Pipe {
     /// Its buffer.
     buffer: Mutex<Buffer>,
     /// How many bytes it holds, as the buffer says, for the waits.
     len: AtomicUsize,
+    /// How many bytes its buffer holds, as the buffer says, for the waits:
+    /// changed only with the buffer locked.
+    capacity: AtomicUsize,
     /// How many reading and writing ends are open.
     readers: AtomicU32,
     writers: AtomicU32,
@@ -160,16 +175,15 @@ impl Pipe {
     /// A new, empty pipe, with `ends` ends reading it and as many writing
     /// it, the pipe `named` is if any.
     fn with_ends(ends: u32, named: Option<NodeRef>) -> Result<KArc<Pipe>, Status> {
-        let mut buffer = alloc::vec::Vec::new_in(heap());
-        buffer.try_reserve_exact(CAPACITY).map_err(|_| Kernel::NoMemory.status(0))?;
-        while buffer.len() < CAPACITY {
-            // Room was reserved above.
-            let _ = buffer.push_within_capacity(0);
-        }
-        let buffer = Buffer { ring: Ring::new(buffer), taken: 0, attachments: Fifo::new() };
+        let buffer = Buffer {
+            ring: Ring::new(storage(DEFAULT_CAPACITY)?),
+            taken: 0,
+            attachments: Fifo::new(),
+        };
         mem::arc(Pipe {
             buffer: Mutex::new(buffer),
             len: AtomicUsize::new(0),
+            capacity: AtomicUsize::new(DEFAULT_CAPACITY),
             readers: AtomicU32::new(ends),
             writers: AtomicU32::new(ends),
             files: AtomicUsize::new(0),
@@ -183,6 +197,14 @@ impl Pipe {
 
     fn key(&self) -> usize {
         core::ptr::from_ref::<Pipe>(self) as usize
+    }
+
+    /// How many bytes fit in a pipe that holds `len`. The length and the
+    /// capacity are read apart, and a resize may shrink the buffer between
+    /// the reads, but only to what it holds, so the true room is never
+    /// negative.
+    fn free_bytes(&self, len: usize) -> usize {
+        self.capacity.load(Ordering::Acquire).saturating_sub(len)
     }
 
     /// Something changed: the waits look again, and so do its pollers.
@@ -204,7 +226,7 @@ impl Pipe {
         let len = self.len.load(Ordering::Acquire);
         let mut events = 0;
         if write {
-            if CAPACITY - len >= ATOMIC {
+            if self.free_bytes(len) >= ATOMIC {
                 events |= poll::WRITABLE;
             }
             if self.readers.load(Ordering::Acquire) == 0 {
@@ -228,7 +250,60 @@ impl Pipe {
 
     /// Whether a write of [`ATOMIC`] bytes would fit now.
     pub fn has_room(&self) -> bool {
-        CAPACITY - self.len.load(Ordering::Acquire) >= ATOMIC
+        self.free_bytes(self.len.load(Ordering::Acquire)) >= ATOMIC
+    }
+
+    /// Its size: how many bytes it can hold, as F_GETPIPE_SZ gives it.
+    pub fn size(&self) -> usize {
+        self.capacity.load(Ordering::Acquire)
+    }
+
+    /// Changes its size to `size` bytes, rounded up to a power of two of at
+    /// least a page, as Linux's F_SETPIPE_SZ does, and returns the size it
+    /// has now. The bytes it holds stay in order, with the files riding on
+    /// them. A pipe that grows can be written to at once, so its waiters
+    /// and pollers look again.
+    ///
+    /// # Errors
+    ///
+    /// Fails with `invalid_argument` for a `size` past 2^31, with
+    /// `not_permitted` for growing the pipe past [`PIPE_SIZE_MAX`] (Radix
+    /// has no privilege that lifts it), with `busy` for a size smaller than
+    /// what the pipe holds, and with `no_memory` if there is none for the
+    /// new buffer.
+    pub fn resize(&self, size: u64) -> Result<usize, Status> {
+        if size > 1 << 31 {
+            return Err(Kernel::InvalidArgument.status(0));
+        }
+        let wanted = (size as usize).max(PAGE_SIZE).next_power_of_two();
+        // No pipe is ever larger than PIPE_SIZE_MAX, so a size past it
+        // always grows the pipe. Refusing it here, before the new buffer is
+        // made, keeps a request for 2 GiB from being allocated first.
+        if wanted > PIPE_SIZE_MAX as usize {
+            return Err(Kernel::NotPermitted.status(0));
+        }
+        // Made before the buffer is locked: the allocation may sleep.
+        let fresh = storage(wanted)?;
+        let mut buffer = self.buffer.lock();
+        if buffer.ring.len() > wanted {
+            return Err(Kernel::Busy.status(0));
+        }
+        if wanted == buffer.ring.capacity() {
+            return Ok(wanted);
+        }
+        let mut ring = Ring::new(fresh);
+        let held = buffer.ring.len();
+        // The sink cannot fail, and the new ring has room for all of it.
+        let _ = buffer.ring.read_with::<()>(held, &mut |run| {
+            ring.push(run);
+            Ok(())
+        });
+        let old = core::mem::replace(&mut buffer.ring, ring);
+        self.capacity.store(wanted, Ordering::Release);
+        drop(buffer);
+        drop(old);
+        self.changed();
+        Ok(wanted)
     }
 
     /// How many ends read it, and how many write it.
@@ -460,7 +535,7 @@ impl Pipe {
             }
             let room = if atomic { total - done + keep } else { 1 };
             wait::wait_until(self.key(), "pipe write", || {
-                CAPACITY - self.len.load(Ordering::Acquire) >= room
+                self.free_bytes(self.len.load(Ordering::Acquire)) >= room
                     || self.readers.load(Ordering::Acquire) == 0
                     || sched::interrupted()
             });

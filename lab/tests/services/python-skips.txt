@@ -129,18 +129,9 @@ test.test_os.test_os.FwalkTests.test_walk_prune
 test.test_os.test_os.FwalkTests.test_walk_symlink
 test.test_os.test_os.FwalkTests.test_walk_topdown
 
-# F_GETPIPE_SZ and F_SETPIPE_SZ, Linux's, which Radix does not have.
-test.test_fcntl.TestFcntl.test_fcntl_f_pipesize
-test.test_fcntl.TestFcntl.test_fcntl_large_buffer
-test.test_fcntl.TestFcntl.test_fcntl_small_buffer
-test.test_subprocess.ProcessTestCase.test_pipesize_default
-test.test_subprocess.ProcessTestCase.test_pipesizes
-test.test_subprocess.ProcessTestCaseNoPoll.test_pipesize_default
-test.test_subprocess.ProcessTestCaseNoPoll.test_pipesizes
-
-# Radix has no prlimit(2), and does not enforce RLIMIT_FSIZE.
-test.test_resource.ResourceTest.test_fsize_enforced
-test.test_resource.ResourceTest.test_prlimit
+# futimens(2) needs a descriptor open for writing: a capability that
+# only reads cannot change what is said of its file (ADR 0213).
+test.test_os.test_posix.PosixTester.test_utime_with_fd
 
 # What the bundle leaves out: libpython, Python's headers and its
 # Makefile, which nothing on Radix could load or build against, and the
@@ -152,27 +143,17 @@ test.test_sysconfig.TestSysConfig.test_get_config_h_filename
 test.test_sysconfig.TestSysConfig.test_srcdir
 
 # Other gaps of Radix's that these tests find, each in deferred work:
-# the time a thread has used (pthread_getcpuclockid), file sizes past
-# the test disk, fopen of a path with the wrong type, lowering the
-# descriptor limit, chown's errors, scandir's attributes, copying into a
-# folder that does not exist, a race on a symbolic link while a folder
-# is removed, TLS shut down on a slow socket, subinterpreters' checks of
-# types, fstatvfs(3), sched_getaffinity(2) of a process that is not
-# there, and futimens(2) of a file opened for reading.
+# lowering the descriptor limit, chown's errors, scandir's attributes,
+# copying into a folder that does not exist, a race on a symbolic link
+# while a folder is removed, TLS shut down on a slow socket, and
+# subinterpreters' checks of types.
 test.datetimetester.CapiTest_Fast.test_type_check_in_subinterp
 test.test_asyncio.test_ssl.TestSSL.test_remote_shutdown_receives_trailing_data_on_slow_socket
-test.test_capi.test_file.CAPIFileTest.test_py_fopen
-test.test_io.test_general.CIOTest.test_large_file_ops
-test.test_io.test_general.PyIOTest.test_large_file_ops
 test.test_os.test_os.TestScandir.test_attributes
-test.test_os.test_posix.PosixTester.test_fstatvfs
-test.test_os.test_posix.PosixTester.test_sched_getaffinity
-test.test_os.test_posix.PosixTester.test_utime_with_fd
 test.test_shutil.TestCopy.test_copyfile_nonexistent_dir
 test.test_shutil.TestMisc.test_chown
 test.test_subprocess.POSIXProcessTestCase.test_close_fds_when_max_fd_is_lowered
 test.test_tempfile.TestTemporaryDirectory.test_cleanup_with_symlink_race
-test.test_time.TimeTestCase.test_pthread_getcpuclockid
 
 # The bundle's library is sealed and compiled when it is built, so an
 # import the audit tests watch finds the module without the file events
