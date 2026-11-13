@@ -76,7 +76,7 @@ their pull requests conflicted.
 | [0055](0055-page-cache-and-writeback.md) | File data lives in per-file page caches, metadata in a block cache per device, written back every five seconds | Accepted |
 | [0056](0056-own-fat-implementation.md) | FAT is our own implementation from Microsoft's specification, checked against dosfstools and mtools | Accepted |
 | [0057](0057-hierarchy-proc-and-sys.md) | Spark builds the directory hierarchy; /proc and /sys are plain text, with Linux's layout where both have a thing | Accepted |
-| [0058](0058-kernel-stack-frame-budget.md) | Every kernel function's stack frame is held to 2 KiB, checked after every release build | Accepted |
+| [0058](0058-kernel-stack-frame-budget.md) | Every kernel function's stack frame is held to 2 KiB, checked after every release build | Accepted; a program's threads have 32 KiB kernel stacks since [0523](0523-a-program-s-threads-have-32-kib-kernel-stacks.md) |
 | [0059](0059-file-operations-fast-paths.md) | A path with no `..` is walked without a chain, each mount filters its mount points, and a file method looks its capability up once | Accepted |
 | [0060](0060-anonymous-memory-in-the-kernel.md) | Anonymous memory is the kernel's: made when touched, charged to the domain, and shared copy-on-write after a fork | Accepted |
 | [0061](0061-posix-process-tree-in-the-kernel.md) | The kernel keeps POSIX's process tree, groups and sessions, beside the capabilities | Accepted |

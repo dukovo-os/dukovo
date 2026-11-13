@@ -58,10 +58,11 @@ locks held.
 
 A context (`arch/x86_64/src/thread.rs`) is a stack and a one-page
 *context block*: the saved stack pointer, an `on_cpu` word, and the
-extended-state save area. A new thread's stack (16 KiB), block and an
-unmapped guard page below them are one area of the mapping window, so an
-overflow faults on the guard. Each CPU starts with an idle thread made
-from its start-up stack; the boot code becomes the thread `kmain`.
+extended-state save area. A new thread's stack (16 KiB, or 32 KiB for a
+program's thread, ADR 0523), block and an unmapped guard page below them
+are one area of the mapping window, so an overflow faults on the guard.
+Each CPU starts with an idle thread made from its start-up stack; the
+boot code becomes the thread `kmain`.
 
 **Eager extended state.** Every switch saves the outgoing thread's x87,
 SSE, AVX and AVX-512 registers and protection keys (those the CPU has;

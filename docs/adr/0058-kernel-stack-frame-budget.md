@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 # 0058. Every kernel function's stack frame is held to 2 KiB, checked after every release build
 
-- Status: Accepted
+- Status: Accepted; a program's threads have 32 KiB kernel stacks since [0523](0523-a-program-s-threads-have-32-kib-kernel-stacks.md)
 - Date: 2026-10-22
 
 ## Context
