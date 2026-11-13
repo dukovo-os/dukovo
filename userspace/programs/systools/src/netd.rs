@@ -84,6 +84,10 @@ const SCAN: Duration = Duration::from_secs(5);
 const ADDRESSES_MAX: usize = 4;
 const DNS_MAX: usize = 3;
 
+/// Whether the connection is metered, for updated(8): `yes` or `no` for
+/// the card that carries the default route, then a line for each card.
+const METERED: &str = "/system/live/netd/metered";
+
 /// What `netd leases` reads: each serving card's leases, a line each.
 const SERVER_LISTING: &str = "/system/live/netd/leases";
 
@@ -1090,6 +1094,8 @@ struct Netd {
     serving_before: Vec<(u32, Serving)>,
     /// The leases each card's server lists for `netd leases`.
     listing: Listing,
+    /// The text of the metered file as it was written last.
+    metered: Option<String>,
 }
 
 impl Netd {
@@ -1172,6 +1178,7 @@ impl Netd {
         if changed {
             self.write_resolv();
         }
+        self.update_metered(&interfaces);
     }
 
     /// Sets a card that came up as the settings say: at netd's `first`
@@ -1368,6 +1375,51 @@ impl Netd {
                 card.name,
                 util::strip_os_error(&err)
             ),
+        }
+    }
+
+    /// Whether `card`'s connection is metered: as its `metered` setting
+    /// says, else as the server of its DHCP lease says.
+    fn is_metered(&self, card: &Card) -> bool {
+        let setup = self.setup(&card.name, &mac_text(card.mac));
+        setup.metered.unwrap_or_else(|| match &card.how {
+            How::Dhcp { client, .. } => client.lease().is_some_and(|lease| lease.metered),
+            _ => false,
+        })
+    }
+
+    /// Writes the metered file again if what it says changed, and logs
+    /// when the connection that carries the default route became metered
+    /// or stopped being.
+    fn update_metered(&mut self, interfaces: &[Interface]) {
+        let cards: Vec<(&str, bool)> =
+            self.cards.iter().map(|card| (card.name.as_str(), self.is_metered(card))).collect();
+        let default = default_route_card(interfaces);
+        let text = metered_text(&cards, default);
+        if self.metered.as_deref() == Some(&text) {
+            return;
+        }
+        let was = self.metered.as_deref().is_some_and(|text| text.starts_with("yes"));
+        let is = text.starts_with("yes");
+        if is {
+            eprintln!(
+                "netd: {} is metered: updates wait for another connection",
+                default.unwrap_or("the connection")
+            );
+        } else if was {
+            eprintln!("netd: the default connection is not metered now: updates go ahead");
+        }
+        if let Err(err) = write_synced(METERED, &text, 0o644) {
+            eprintln!("netd: cannot write {METERED}: {}", util::strip_os_error(&err));
+        }
+        self.metered = Some(text);
+    }
+
+    /// [`Netd::update_metered`] with the interfaces as they are now.
+    fn refresh_metered(&mut self) {
+        let read = ip::read_interfaces(Path::new(ip::INTERFACES), Path::new(ip::ROUTES));
+        if let Ok(interfaces) = read {
+            self.update_metered(&interfaces);
         }
     }
 
@@ -1651,6 +1703,7 @@ impl Netd {
         }
         self.cards[at] = card;
         self.write_resolv();
+        self.refresh_metered();
     }
 
     fn unbind(&mut self, at: usize) {
@@ -1667,6 +1720,7 @@ impl Netd {
         }
         self.cards[at] = card;
         self.write_resolv();
+        self.refresh_metered();
     }
 
     /// Writes the cards' DNS servers into resolv.conf, or takes it away
@@ -1921,6 +1975,28 @@ fn timed_serves(text: &str) -> bool {
     value.is_some_and(|(_, value)| matches!(value.trim(), "nts" | "nts+ntp"))
 }
 
+/// The card that carries the default route, by its interface's routes:
+/// the first with an IPv4 default route, else the first with an IPv6 one.
+fn default_route_card(interfaces: &[Interface]) -> Option<&str> {
+    let by = |has: fn(&Interface) -> bool| interfaces.iter().find(|interface| has(interface));
+    let carrying = by(|interface| interface.router.is_some())
+        .or_else(|| by(|interface| interface.ipv6.router().is_some()));
+    carrying.map(|interface| interface.name.as_str())
+}
+
+/// The text of the metered file for `cards`, each with whether it is
+/// metered, and the card `default` that carries the default route: the
+/// first line says whether that one is, and `no` when there is none.
+fn metered_text(cards: &[(&str, bool)], default: Option<&str>) -> String {
+    let word = |metered: bool| if metered { "yes" } else { "no" };
+    let on_default = cards.iter().any(|(name, metered)| Some(*name) == default && *metered);
+    let mut text = format!("{}\n", word(on_default));
+    for (name, metered) in cards {
+        text += &format!("{name} {}\n", word(*metered));
+    }
+    text
+}
+
 /// The table `netd leases` shows for the lines of [`SERVER_LISTING`] at
 /// `wall`: each lease with the time left of it, and each reservation no
 /// client has. A line that is not one, or a lease that has ended, is left
@@ -2030,6 +2106,7 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
         dhcp6_before: Vec::new(),
         serving_before: Vec::new(),
         listing: Listing::default(),
+        metered: None,
     };
     netd.read_settings();
     netd.run().map_err(|e| util::failed(&"netd", e))?;
@@ -2481,6 +2558,7 @@ mod tests {
             dhcp6_before: Vec::new(),
             serving_before: Vec::new(),
             listing: Listing::default(),
+            metered: None,
         }
     }
 
@@ -2546,6 +2624,58 @@ mod tests {
         assert!(!timed_serves("serve = nts\nserve = off\n"));
         assert!(timed_serves("serve = off\nserve = nts\n"));
         assert!(!timed_serves("serve = yes\n"));
+    }
+
+    /// A card with the routes given: an IPv4 default router, an IPv6 one.
+    fn routed(name: &str, v4: Option<Ipv4Addr>, v6: Option<Ipv6Addr>) -> Interface {
+        Interface {
+            name: name.to_string(),
+            index: 2,
+            mtu: 1500,
+            mac: "52:54:00:12:34:56".to_string(),
+            loopback: false,
+            carrier: true,
+            operstate: "up".to_string(),
+            addresses: Vec::new(),
+            router: v4,
+            ipv6: ip::Ipv6 { given_router: v6, ..ip::Ipv6::default() },
+            kind: ip::Kind::Card,
+            master: None,
+            received: [0; 4],
+            sent: [0; 4],
+        }
+    }
+
+    #[test]
+    fn the_default_route_is_carried_by_the_card_that_has_one() {
+        let v4 = Some(Ipv4Addr::new(192, 168, 1, 1));
+        let v6 = Some("fe80::1".parse().unwrap());
+        assert_eq!(default_route_card(&[]), None);
+        assert_eq!(default_route_card(&[routed("net0", None, None)]), None);
+        let cards = [routed("net0", None, None), routed("net1", v4, None)];
+        assert_eq!(default_route_card(&cards), Some("net1"));
+        // An IPv4 route is preferred; one that is only IPv6 still counts.
+        let cards = [routed("net0", None, v6), routed("net1", v4, None)];
+        assert_eq!(default_route_card(&cards), Some("net1"));
+        let cards = [routed("net0", None, None), routed("net1", None, v6)];
+        assert_eq!(default_route_card(&cards), Some("net1"));
+    }
+
+    #[test]
+    fn the_metered_file_says_whether_the_default_connection_is() {
+        // The card with the default route decides the first line.
+        assert_eq!(
+            metered_text(&[("net0", false), ("net1", true)], Some("net1")),
+            "yes\nnet0 no\nnet1 yes\n"
+        );
+        // A metered card that is not the way out does not matter.
+        assert_eq!(
+            metered_text(&[("net0", false), ("net1", true)], Some("net0")),
+            "no\nnet0 no\nnet1 yes\n"
+        );
+        // Without a default route nothing is metered.
+        assert_eq!(metered_text(&[("net1", true)], None), "no\nnet1 yes\n");
+        assert_eq!(metered_text(&[], None), "no\n");
     }
 
     #[test]
