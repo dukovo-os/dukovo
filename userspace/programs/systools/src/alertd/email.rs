@@ -33,16 +33,20 @@ use rustls::RootCertStore;
 use rustls::pki_types::ServerName;
 
 use super::settings::Secret;
+use super::trouble;
 use crate::{logd, tls, util};
 
 /// How long connecting may take, and a read or a write.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
-const IO_TIMEOUT: Duration = Duration::from_secs(30);
+const IO_TIMEOUT: Duration = trouble::SILENCE;
 
 /// The longest reply line and the most reply lines read: RFC 5321 allows
 /// 512 bytes of reply line.
 const REPLY_LINE_MAX: usize = 1000;
 const REPLY_LINES_MAX: usize = 100;
+
+/// Whose certificates count, for the words of a refused certificate.
+const TRUSTED: &str = "the system trusts or the file `ca` names";
 
 /// The most characters of a server's words in an error.
 const SAID_MAX: usize = 200;
@@ -187,41 +191,10 @@ impl Tls {
     }
 
     fn handshake(&self, tcp: TcpStream) -> Result<tls::Stream, String> {
-        tls::handshake(tcp, self.name.clone(), &self.config)
-            .map_err(|err| format!("TLS with {}:{}: {}", self.host, self.port, self.refusal(&err)))
-    }
-
-    /// Why the handshake failed, in words for `alerts test`.
-    fn refusal(&self, err: &io::Error) -> String {
-        use rustls::CertificateError as Certificate;
-        let Some(error) = err.get_ref().and_then(|inner| inner.downcast_ref::<rustls::Error>())
-        else {
-            return match err.kind() {
-                io::ErrorKind::UnexpectedEof => "the server closed the connection".to_string(),
-                io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut => {
-                    format!("no handshake within {} seconds", IO_TIMEOUT.as_secs())
-                }
-                _ => util::strip_os_error(err),
-            };
-        };
-        let host = &self.host;
-        match error {
-            rustls::Error::InvalidCertificate(Certificate::UnknownIssuer) => {
-                "its certificate is not from an authority the system trusts or the file `ca` \
-                 names"
-                    .into()
-            }
-            rustls::Error::InvalidCertificate(
-                Certificate::NotValidForName | Certificate::NotValidForNameContext { .. },
-            ) => format!("its certificate is not for {host}"),
-            rustls::Error::InvalidCertificate(
-                Certificate::Expired | Certificate::ExpiredContext { .. },
-            ) => "its certificate has expired".into(),
-            rustls::Error::InvalidCertificate(
-                Certificate::NotValidYet | Certificate::NotValidYetContext { .. },
-            ) => "its certificate is not valid yet".into(),
-            other => other.to_string(),
-        }
+        tls::handshake(tcp, self.name.clone(), &self.config).map_err(|err| {
+            let why = trouble::connection(&err, &self.host, TRUSTED);
+            format!("TLS with {}:{}: {why}", self.host, self.port)
+        })
     }
 }
 
@@ -267,12 +240,7 @@ impl Reply {
     /// Its text as one line, cut to [`SAID_MAX`] characters: for the words
     /// of an error.
     fn said(&self) -> String {
-        let text = self.lines.join(" ");
-        let mut said: String = text.chars().take(SAID_MAX).collect();
-        if said.len() < text.len() {
-            said.push_str("...");
-        }
-        format!("{} {said}", self.code)
+        format!("{} {}", self.code, trouble::cut(&self.lines.join(" "), SAID_MAX))
     }
 
     /// Whether an EHLO reply offers `extension`.
