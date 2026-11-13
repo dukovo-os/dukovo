@@ -262,6 +262,17 @@ _/kernel/firmware/memmap/_*n*_/start_, _end_, _type_
 	*System RAM*, *Reserved*, *ACPI Tables*, *ACPI Non-volatile Storage*
 	or *Unusable memory*. *lsmem*(1) reads it.
 
+_/kernel/fs/btrfs/_*uuid*_/label_, _disks_, _missing_, _behind_
+	A directory for each Btrfs filesystem mounted, named by its ID as
+	Linux's _/sys/fs/btrfs_ names it (*2f3c9a61-0b7e-4d2a-9c11-5e8f0a7d4b23*),
+	and read anew each time a file is opened (ADR 0484): its label, or an
+	empty line; how many disks it has; how many of them are missing,
+	missing at the mount or failed since (ADR 0153), so that it holds a
+	second copy of nothing they held until each is replaced; and how many
+	missed changes, which are read last until a scrub catches them up.
+	*metricsd*(8) watches them, and raises an alert when a disk is
+	missing.
+
 _/kernel/class/dmi/id/sys_vendor_, _product_name_, _product_version_, _product_family_, _product_sku_
 	Where the firmware has SMBIOS tables (ADR 0231), what it calls the
 	machine: who made it, its product name, version, family and SKU, as

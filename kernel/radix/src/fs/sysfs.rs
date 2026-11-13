@@ -49,6 +49,12 @@
 //!   (ADR 0144);
 //! - `/kernel/firmware/microcode`: what became of the CPU microcode the
 //!   boot loader handed over, if it handed any (ADR 0468);
+//! - `/kernel/fs/btrfs/<uuid>`, for each Btrfs filesystem mounted, by its
+//!   ID as Linux's `/sys/fs/btrfs` names it (ADR 0484): its `label`, and
+//!   how many `disks` it has, how many of them are `missing` (missing at
+//!   the mount or failed since, ADR 0153) and how many are `behind` (they
+//!   missed changes, until a scrub catches them up), which metricsd(8)
+//!   watches;
 //! - `/kernel/class/dmi/id`, where the firmware has SMBIOS tables
 //!   (ADR 0231): Linux's files of the names the firmware gives the
 //!   machine, its board, chassis and firmware (`sys_vendor`,
@@ -180,6 +186,9 @@ pub fn make() -> Result<FsRef> {
     if i2c::found() {
         i2c_bus(&bus)?;
     }
+    let filesystems = root.add_dir("fs", next_id())?;
+    let btrfs: radix_vfs::mem::KBox<dyn Listing> = mem::boxed(BtrfsVolumes)?;
+    filesystems.add("btrfs", ListedDir::make(next_id(), btrfs)?)?;
     let firmware = root.add_dir("firmware", next_id())?;
     let memmap: radix_vfs::mem::KBox<dyn Listing> = mem::boxed(MemoryMap)?;
     firmware.add("memmap", ListedDir::make(next_id(), memmap)?)?;
@@ -526,6 +535,56 @@ fn cpu(system: &FixedDir) -> Result<()> {
 fn value(generate: impl Fn(&mut Text) -> fmt::Result + Send + Sync + 'static) -> Result<NodeRef> {
     let generate: Generator = mem::boxed(generate)?;
     Generated::make(next_id(), generate)
+}
+
+/// `/kernel/fs/btrfs`: a directory per Btrfs filesystem mounted, named by
+/// its ID as a UUID.
+struct BtrfsVolumes;
+
+/// A Btrfs filesystem's ID as Linux writes it: `xxxxxxxx-xxxx-xxxx-xxxx-
+/// xxxxxxxxxxxx`, in lower case.
+fn uuid_text(id: &[u8; 16]) -> TextBuf<36> {
+    let mut text = TextBuf::new();
+    for (at, byte) in id.iter().enumerate() {
+        if matches!(at, 4 | 6 | 8 | 10) {
+            let _ = text.write_char('-');
+        }
+        let _ = write!(text, "{byte:02x}");
+    }
+    text
+}
+
+impl Listing for BtrfsVolumes {
+    fn list(&self, f: &mut dyn FnMut(&str, Kind) -> bool) {
+        for (id, _) in &super::btrfs_volumes() {
+            if !f(uuid_text(id).as_str(), Kind::Directory) {
+                return;
+            }
+        }
+    }
+
+    fn lookup(&self, name: &str) -> Result<NodeRef> {
+        let volumes = super::btrfs_volumes();
+        let (_, fs) =
+            volumes.iter().find(|(id, _)| uuid_text(id).as_str() == name).ok_or(Error::NotFound)?;
+        let dir = FixedDir::new(next_id())?;
+        // Each file reads the filesystem when it is opened, so that a disk
+        // failing shows at once; one unmounted since fails to read.
+        let count = |pick: fn(&radix_btrfs::BtrfsFs) -> usize| {
+            let fs = fs.clone();
+            value(move |text| writeln!(text, "{}", pick(&*fs.upgrade().ok_or(fmt::Error)?)))
+        };
+        dir.add("disks", count(|fs| fs.disks().0)?)?;
+        dir.add("missing", count(|fs| fs.disks().1)?)?;
+        dir.add("behind", count(radix_btrfs::BtrfsFs::behind)?)?;
+        let fs = fs.clone();
+        let label = value(move |text| {
+            radix_vfs::FileSystem::label(&*fs.upgrade().ok_or(fmt::Error)?, text)?;
+            writeln!(text)
+        })?;
+        dir.add("label", label)?;
+        Ok(dir)
+    }
 }
 
 /// `/kernel/block`: a directory per disk and partition.

@@ -1094,6 +1094,20 @@ pub fn warn_failed_disks() {
     }
 }
 
+/// The Btrfs filesystems mounted, by their IDs, for `/kernel/fs/btrfs`
+/// (ADR 0484). Each is held weakly, so that letting one go never drops a
+/// filesystem while the lock is held: whoever upgrades one does so after
+/// it, as an unmount does.
+pub fn btrfs_volumes() -> mem::KVec<([u8; 16], alloc::sync::Weak<radix_btrfs::BtrfsFs, mem::Alloc>)> {
+    let mut volumes = mem::vec();
+    for m in BTRFS.lock().iter().flatten().filter(|m| m.fs.strong_count() > 0) {
+        if mem::push(&mut volumes, (m.id, m.fs.clone())).is_err() {
+            break;
+        }
+    }
+    volumes
+}
+
 /// Mounts the Btrfs filesystem on `device` with the disks of it among the
 /// others the kernel found, but those it swaps to, as with Linux's
 /// `degraded` mount option.
