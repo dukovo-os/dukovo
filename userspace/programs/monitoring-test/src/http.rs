@@ -3,13 +3,14 @@
 
 //! The webhook receiver of the boot test: it reads one HTTP/1.1 request
 //! on each connection, writes it to [`HOOKS`](crate::records::HOOKS) with
-//! its method, path, headers and body, and answers `200` and `{}` as
+//! its method, path, the kind of webhook the path is for, its headers and
+//! body, and answers `200` and `{}` as
 //! Slack, ntfy and Matrix do, or `403` and a JSON error to a path that
 //! begins with [`DENIED`], as a service does that refuses a token.
 
 use std::io::{self, BufRead, BufReader, Read, Write};
 
-use crate::config::DENIED;
+use crate::config::{DENIED, kind_of};
 use crate::records::{HOOKS, Records};
 
 /// The longest a request's head may be, and its body.
@@ -118,6 +119,7 @@ fn read_request<R: BufRead>(reader: &mut R) -> Result<Request, Bad> {
 fn block(request: &Request, tls: bool) -> String {
     let mut block = String::from("== hook\n");
     block.push_str(&format!("request: {} {}\n", request.method, request.path));
+    block.push_str(&format!("kind: {}\n", kind_of(&request.path)));
     block.push_str(&format!("tls: {}\n", if tls { "yes" } else { "no" }));
     for (name, value) in &request.headers {
         block.push_str(&format!("{name}: {value}\n"));
@@ -192,7 +194,7 @@ mod tests {
         );
         assert_eq!(
             recorded,
-            "== hook\nrequest: POST /slack-hook\ntls: yes\nhost: 127.0.0.1:8443\n\
+            "== hook\nrequest: POST /slack-hook\nkind: slack\ntls: yes\nhost: 127.0.0.1:8443\n\
              content-type: application/json\ncontent-length: 15\n-- body\n{\"text\":\"hi\"}  \n== end\n"
         );
     }

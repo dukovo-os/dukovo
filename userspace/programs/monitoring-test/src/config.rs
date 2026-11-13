@@ -23,9 +23,41 @@ pub const PASSWORD: &str = "tea party";
 /// The folder the receivers write what they get in.
 pub const FOLDER: &str = "/shared/monitoring";
 
+/// The paths alerts.toml gives each kind of webhook. Matrix's are below
+/// its homeserver's address, which is the receiver's.
+pub const NTFY: &str = "/ntfy-topic";
+pub const SLACK: &str = "/slack-hook";
+pub const DISCORD: &str = "/discord-hook";
+pub const JSON: &str = "/json-hook";
+pub const MATRIX: &str = "/_matrix/";
+
 /// The path that is answered 403, as a service that refuses a token or a
 /// room does.
 pub const DENIED: &str = "/denied";
+
+/// The kinds of webhook, in the order alerts.toml names them.
+pub const KINDS: [&str; 5] = ["ntfy", "slack", "discord", "matrix", "json"];
+
+/// Which kind of webhook a request to `path` is for, or `denied` for the
+/// path that is refused, or `other`.
+pub fn kind_of(path: &str) -> &'static str {
+    let starts = |prefix: &str| path.starts_with(prefix);
+    if starts(NTFY) {
+        "ntfy"
+    } else if starts(SLACK) {
+        "slack"
+    } else if starts(DISCORD) {
+        "discord"
+    } else if starts(MATRIX) {
+        "matrix"
+    } else if starts(JSON) {
+        "json"
+    } else if starts(DENIED) {
+        "denied"
+    } else {
+        "other"
+    }
+}
 
 /// The test authority's certificate, as alertd's `ca` setting names it.
 pub const CA_FILE: &str = "/system/settings/ssl/test-ca.pem";
@@ -36,7 +68,7 @@ pub const CA_FILE: &str = "/system/settings/ssl/test-ca.pem";
 /// so that `alerts test` shows each service's own words.
 pub fn alerts_toml(broken: bool) -> String {
     let password = if broken { "coffee" } else { PASSWORD };
-    let discord = if broken { DENIED } else { "/discord-hook" };
+    let discord = if broken { DENIED } else { DISCORD };
     format!(
         "[email]\n\
          to = [\"ops@example.test\"]\n\
@@ -49,11 +81,11 @@ pub fn alerts_toml(broken: bool) -> String {
          \n\
          [[webhook]]\n\
          kind = \"ntfy\"\n\
-         url = \"https://127.0.0.1:{HTTPS_PORT}/ntfy-topic\"\n\
+         url = \"https://127.0.0.1:{HTTPS_PORT}{NTFY}\"\n\
          \n\
          [[webhook]]\n\
          kind = \"slack\"\n\
-         url = \"https://127.0.0.1:{HTTPS_PORT}/slack-hook\"\n\
+         url = \"https://127.0.0.1:{HTTPS_PORT}{SLACK}\"\n\
          \n\
          [[webhook]]\n\
          kind = \"discord\"\n\
@@ -67,7 +99,7 @@ pub fn alerts_toml(broken: bool) -> String {
          \n\
          [[webhook]]\n\
          kind = \"json\"\n\
-         url = \"http://127.0.0.1:{HTTP_PORT}/json-hook\"\n\
+         url = \"http://127.0.0.1:{HTTP_PORT}{JSON}\"\n\
          token = \"json-token\"\n"
     )
 }
@@ -91,5 +123,28 @@ mod tests {
         let text = alerts_toml(true);
         assert!(text.contains("password = \"coffee\"") && !text.contains(PASSWORD));
         assert!(text.contains(&format!("{HTTPS_PORT}{DENIED}")));
+    }
+
+    #[test]
+    fn a_request_is_of_the_kind_whose_path_it_is_for() {
+        assert_eq!(kind_of("/ntfy-topic"), "ntfy");
+        assert_eq!(kind_of("/slack-hook"), "slack");
+        assert_eq!(kind_of("/discord-hook"), "discord");
+        assert_eq!(
+            kind_of("/_matrix/client/v3/rooms/%21room%3Aexample.test/send/m.room.message/7"),
+            "matrix"
+        );
+        assert_eq!(kind_of("/json-hook"), "json");
+        assert_eq!(kind_of("/denied"), "denied");
+        assert_eq!(kind_of("/elsewhere"), "other");
+    }
+
+    #[test]
+    fn the_paths_the_settings_name_are_the_paths_that_are_told_apart() {
+        let text = alerts_toml(false);
+        for path in [NTFY, SLACK, DISCORD, JSON] {
+            assert!(text.contains(path), "{path}");
+        }
+        assert!(KINDS.iter().all(|kind| text.contains(&format!("kind = \"{kind}\""))));
     }
 }

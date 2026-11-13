@@ -14,14 +14,29 @@
 //!
 //! The certificate is tls-test's, for 127.0.0.1, from its test authority.
 //! Each message and request is written, with its headers, to
-//! `/shared/monitoring/mail.txt` and `hooks.txt`, a block each that the
-//! test counts and reads with `grep`; `ready` is made in that folder when
-//! all three listen.
+//! `/shared/monitoring/mail.txt` and `hooks.txt`, a block each, which
+//! `seen` and `wait` read back; `ready` is made in that folder when all
+//! three listen.
 //!
-//! - `monitoring-test config [broken]` prints the alerts.toml that names
-//!   the receivers (with a wrong password and a refused address when
-//!   `broken`).
-//! - `monitoring-test ca` prints the test authority's certificate.
+//! The other commands are what the test types, so that it types little.
+//! As root (through elevate):
+//!
+//! - `monitoring-test setup` makes the receivers a service and starts it,
+//!   makes the system trust the test authority, and writes alerts.toml,
+//!   which names the receivers, at mode 600; alertd reads it.
+//! - `monitoring-test settings good|broken|loose` writes alerts.toml again
+//!   and has alertd read it: with a wrong password and an address the
+//!   receiver refuses (*broken*), or readable by everyone (*loose*), which
+//!   alertd refuses.
+//!
+//! As anyone:
+//!
+//! - `monitoring-test seen [--details] PHRASE...` counts, in a line for
+//!   each PHRASE, how many times each receiver was sent it, in a
+//!   message's body and not its headers; with `--details`, also how each
+//!   came (TLS, the account, the bearer token).
+//! - `monitoring-test wait PHRASE [SECONDS]` waits until the mail server
+//!   has been sent PHRASE, and a few seconds more for the webhooks.
 //! - `monitoring-test ask REQUEST` sends the line REQUEST to alertd's
 //!   socket and prints its answer, as whoever runs it: a user who is not
 //!   root sees alertd's own refusal.
@@ -30,6 +45,8 @@ mod base64;
 mod config;
 mod http;
 mod records;
+mod seen;
+mod setup;
 mod smtp;
 mod tls;
 
@@ -53,6 +70,14 @@ const NAME: &str = "monitoring-test";
 /// The socket alertd answers on.
 const SOCKET: &str = "/system/live/alerts/socket";
 
+/// What a wrong command line is told.
+const USAGE: &str = "use: monitoring-test [serve | setup | settings good|broken|loose | seen \
+     [--details] PHRASE... | wait PHRASE [SECONDS] | ask REQUEST]";
+
+/// How long `wait` waits for a message when the line gives no time: a
+/// batch is sent 30 seconds after the change.
+const WAIT_SECONDS: u64 = 90;
+
 /// How long a client of the receivers, or alertd, may be silent.
 const PATIENCE: Duration = Duration::from_secs(20);
 
@@ -61,11 +86,19 @@ fn main() -> ExitCode {
     let words: Vec<&str> = args.iter().map(String::as_str).collect();
     let result = match words.as_slice() {
         [] | ["serve"] => serve(),
-        ["config"] => print(config::alerts_toml(false).as_bytes()),
-        ["config", "broken"] => print(config::alerts_toml(true).as_bytes()),
-        ["ca"] => print(tls::authority()),
+        ["setup"] => setup::setup(),
+        ["settings", which] => setup::Settings::parse(which)
+            .ok_or_else(|| format!("settings are good, broken or loose, not {which}"))
+            .and_then(setup::settings),
+        ["seen", "--details", phrases @ ..] if !phrases.is_empty() => seen(phrases, true),
+        ["seen", phrases @ ..] if !phrases.is_empty() => seen(phrases, false),
+        ["wait", phrase] => seen::wait(Path::new(FOLDER), phrase, WAIT_SECONDS),
+        ["wait", phrase, seconds] => seconds
+            .parse()
+            .map_err(|_| format!("wait takes a number of seconds, not {seconds}"))
+            .and_then(|seconds| seen::wait(Path::new(FOLDER), phrase, seconds)),
         ["ask", request] => ask(request),
-        _ => Err("use: monitoring-test [serve | config [broken] | ca | ask REQUEST]".to_string()),
+        _ => Err(USAGE.to_string()),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -76,9 +109,14 @@ fn main() -> ExitCode {
     }
 }
 
-/// Writes `bytes` to the standard output.
-fn print(bytes: &[u8]) -> Result<(), String> {
-    io::stdout().write_all(bytes).map_err(|err| format!("cannot write: {err}"))
+/// Prints what the receivers were sent each of `phrases` in.
+fn seen(phrases: &[&str], details: bool) -> Result<(), String> {
+    let lines = seen::report(Path::new(FOLDER), phrases, details)
+        .map_err(|err| format!("{FOLDER}: {err}"))?;
+    for line in lines {
+        println!("{line}");
+    }
+    Ok(())
 }
 
 /// Listens on 127.0.0.1 for the three receivers, says when it does, and

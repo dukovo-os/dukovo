@@ -342,6 +342,15 @@ machine-restore userspace/programs/systools/src/snap.rs userspace/programs/systo
 machine-restore userspace/spark/src/main.rs
 microcode kernel/lib/microcode/
 mm-stress kernel/mm/
+monitoring kernel/net/ userspace/defaults/alerts.toml userspace/defaults/spark/services/alertd.toml
+monitoring userspace/programs/consoled/ userspace/programs/monitoring-test/
+monitoring userspace/programs/systools/src/alertd.rs userspace/programs/systools/src/alertd/
+monitoring userspace/programs/systools/src/alerts.rs userspace/programs/systools/src/alerts/
+monitoring userspace/programs/systools/src/authd.rs userspace/programs/systools/src/authd/
+monitoring userspace/programs/systools/src/elevate.rs userspace/programs/systools/src/log.rs
+monitoring userspace/programs/systools/src/login.rs userspace/programs/systools/src/notifyd.rs
+monitoring userspace/programs/systools/src/sign_in_notices.rs userspace/programs/tls-test/testdata/
+monitoring userspace/programs/tuf/src/http.rs
 msr kernel/arch/
 net kernel/net/
 network-capture kernel/net/ ports/libpcap/ ports/tcpdump/ userspace/posix/capturetest.c

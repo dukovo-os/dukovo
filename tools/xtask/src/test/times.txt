@@ -98,6 +98,7 @@ machine-check-program 20
 machine-restore 190
 microcode 10
 mm-stress 17
+monitoring 190
 msr 15
 net 21
 network-capture 28
