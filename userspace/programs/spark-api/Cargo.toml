@@ -1,0 +1,20 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+[package]
+name = "spark-api"
+description = "What Spark and the programs that ask it share: the rules of the service graph, when a service is ready, and the show answer's format (spark(8), ADR 0470)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+# Without the standard library, so that Spark, which has none, writes
+# the show answer with the types its clients read it with.
+serde = { version = "1", default-features = false, features = ["alloc", "derive"] }
+serde_json = { version = "1.0.140", default-features = false, features = ["alloc"] }
+
+[lints]
+workspace = true

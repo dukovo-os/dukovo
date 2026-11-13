@@ -1957,6 +1957,22 @@ pub const CASES: &[Case] = &[
         second: None,
     },
     Case {
+        name: "service-graph",
+        about: "services wait for what they name (ADR 0470): one that requires another starts once that one listens, one whose requirement ends or is stopped by a request is stopped too, one that keeps failing its health check is restarted until Spark gives up on it and starts again once fixed, two that wait for each other never start, a setup step is done before what requires it starts, and shutting down stops a service before the one it requires",
+        firmware: Firmware::Bios,
+        media: Media::Usb,
+        cmdline: "lockdep -- --services --posix /system/tests/posix/graphtest",
+        cpus: 2,
+        memory: "512M",
+        reboot: false,
+        image: TestImage::Plain,
+        cpu_model: None,
+        qemu: &[],
+        script: service_graph,
+        disks: &[],
+        second: None,
+    },
+    Case {
         name: "logging",
         about: "logd keeps the kernel log, the services' lines among them, as lines of JSON; log, journalctl and dmesg read it by service, level, time and pattern; a program cannot pass its lines off as a service's; logd started again keeps no record twice; the audit log holds Spark's and the kernel's security events and no program's; logtrim and journalctl --vacuum-time trim the log; notifyd names each notification's sender as the kernel does, refuses a flood and logs none of them",
         firmware: Firmware::Bios,
@@ -10864,6 +10880,54 @@ fn spark_stop(vm: &mut Vm, case: &Case) -> Result<(), String> {
         return Err("a service was started again that should not have been".into());
     }
     Ok(())
+}
+
+/// The `service-graph` test (ADR 0470): graphtest
+/// (userspace/posix/graphtest.c) writes services that name each other
+/// and checks what `service` says of them; the log holds Spark's side of
+/// each step, and shutting down stops g-web before g-db, which it
+/// requires.
+fn service_graph(vm: &mut Vm, case: &Case) -> Result<(), String> {
+    boot_report(vm, case)?;
+    vm.expect_ahead("spark: started /system/tests/posix/graphtest as process ")?;
+    vm.expect("spark: g-db is ready (listening on 7001) ")?;
+    vm.expect("spark: started g-web (/system/tests/posix/graphtest) as process ")?;
+    vm.expect("spark: asked to power off the machine")?;
+    vm.expect("spark: every service has stopped")?;
+    vm.expect_exit(QEMU_EXIT_POWER_OFF)?;
+    let log = vm.log();
+    let failed: Vec<&str> = log
+        .lines()
+        .filter(|line| line.contains("graphtest: FAILED") || line.contains("status never said"))
+        .map(str::trim)
+        .collect();
+    if !failed.is_empty() {
+        return Err(format!("graphtest failed: {}", failed.join("; ")));
+    }
+    if !log.contains("graphtest: every check passed") {
+        return Err("graphtest did not pass every check".into());
+    }
+    for said in [
+        "spark: stopping g-needs: it requires g-broken, which is stopped",
+        "spark: stopping g-top: it requires g-base, which was stopped",
+        "spark: g-sick failed its health check (exited with code 0x1: no \
+         /system/settings/g-sick-ok)",
+        "spark: g-sick failed its health check 2 times in a row; restarting it",
+        "spark: gave up on g-sick after 2 failed starts in a row",
+        "spark: g-a and g-b wait for each other",
+        "spark: not starting g-a: it waits for itself, through g-a and g-b",
+        "spark: g-setup is done",
+    ] {
+        if !log.contains(said) {
+            return Err(format!("the log does not show \"{said}\""));
+        }
+    }
+    // At shutdown, g-web, which requires g-db, ends first.
+    let ended = |name: &str| log.rfind(&format!("spark: {name} (process "));
+    match (ended("g-web"), ended("g-db")) {
+        (Some(web), Some(db)) if web < db => Ok(()),
+        _ => Err("shutting down did not stop g-web before g-db".into()),
+    }
 }
 
 fn microcode(vm: &mut Vm, case: &Case) -> Result<(), String> {

@@ -17,6 +17,7 @@ use std::os::unix::net::UnixStream;
 use crate::args::{Arg, Args};
 use crate::servicefiles;
 use crate::util::{self, Fail, fail, fail_with, usage};
+use spark_api::show::{self, HealthState, State};
 
 /// Spark's control socket.
 pub const CONTROL: &str = "/system/live/spark/control";
@@ -213,35 +214,69 @@ pub fn halt(args: &mut Args) -> Result<i32, Fail> {
     end_now(args, End::Halt)
 }
 
-/// One line of Spark's status answer: a service.
-#[derive(Debug, PartialEq, Eq)]
-struct Status {
-    name: String,
-    state: String,
-    pid: String,
-    restarts: String,
-    last: String,
-    restart: String,
-    description: String,
+/// What Spark says of the services, or of service `name` alone.
+fn shown(name: Option<&str>) -> Result<Vec<show::Service>, Fail> {
+    let request = name.map_or_else(|| String::from("show"), |name| format!("show {name}"));
+    let answer = ask(&request)?;
+    show::parse(&answer).map(|document| document.services).map_err(fail)
 }
 
-fn statuses(answer: &str) -> Vec<Status> {
-    answer
-        .lines()
-        .filter(|line| !line.starts_with('#'))
-        .filter_map(|line| {
-            let f: Vec<&str> = line.splitn(7, '\t').collect();
-            (f.len() == 7).then(|| Status {
-                name: f[0].into(),
-                state: f[1].into(),
-                pid: f[2].into(),
-                restarts: f[3].into(),
-                last: f[4].into(),
-                restart: f[5].into(),
-                description: f[6].into(),
-            })
-        })
-        .collect()
+/// `service NAME status`: what Spark says of `service`, as systemctl
+/// status lays it out; 0 when it runs or is done, 3 otherwise (LSB).
+fn print_status(service: &show::Service) -> i32 {
+    println!("{} - {}", service.name, service.description);
+    let pid = service.pid.map_or_else(String::new, |pid| format!(" as process {pid}"));
+    let active = match service.state {
+        State::Running => format!("active (running){pid}"),
+        State::Done => String::from("active (exited)"),
+        State::Starting => format!("activating (starting{pid}, ready once {})", service.ready_when),
+        State::Pending => format!("activating (waiting for {})", service.waiting_for.join(", ")),
+        State::Waiting => String::from("activating (waiting to start again)"),
+        State::Stopping if service.pid.is_some() => format!("deactivating (stopping{pid})"),
+        State::Stopping => String::from("deactivating (stopping what it left running)"),
+        State::Failed => String::from("failed (Spark gave up on it)"),
+        State::Disabled => String::from("inactive (disabled)"),
+        State::Stopped => String::from("inactive (dead)"),
+    };
+    println!("   Active: {active}");
+    if let Some(why) = &service.why {
+        println!("      Why: {why}");
+    }
+    let links: Vec<String> = [("requires", &service.requires), ("wants", &service.wants)]
+        .into_iter()
+        .chain([("after", &service.after)])
+        .filter(|(_, names)| !names.is_empty())
+        .map(|(key, names)| format!("{key} {}", names.join(", ")))
+        .collect();
+    if !links.is_empty() {
+        println!("    Needs: {}", links.join("; "));
+    }
+    if let Some(by) = &service.started_by {
+        println!("  Started: by {by}");
+    }
+    if let Some(health) = &service.health {
+        let state = match health.state {
+            HealthState::Unknown => String::from("not checked yet"),
+            HealthState::Passing => String::from("passing"),
+            HealthState::Failing => {
+                let last = health.last_failure.as_deref().unwrap_or("no reason given");
+                format!("failing, {} checks in a row ({last})", health.failures)
+            }
+        };
+        println!("   Health: {state}");
+    }
+    let give_up = match service.give_up_after {
+        0 => String::new(),
+        n => format!("; gives up after {n} failed starts in a row"),
+    };
+    println!("  Restart: {}, {} restarts so far{give_up}", service.restart, service.restarts);
+    if let Some(end) = &service.last_end {
+        println!("     Last: {end}");
+    }
+    if let Some(complaint) = &service.complaint {
+        println!("     File: {complaint}; it runs its last good copy");
+    }
+    if matches!(service.state, State::Running | State::Done) { 0 } else { 3 }
 }
 
 /// service(8): `service NAME start|stop|restart|status`, or
@@ -252,14 +287,13 @@ pub fn service(args: &mut Args) -> Result<i32, Fail> {
     while let Some(arg) = args.next()? {
         match arg {
             Arg::Long(l) if l == "status-all" => {
-                let answer = ask("status")?;
-                for status in statuses(&answer) {
-                    let mark = match status.state.as_str() {
-                        "running" => '+',
-                        "waiting" => '?',
+                for service in shown(None)? {
+                    let mark = match service.state {
+                        State::Running | State::Done => '+',
+                        State::Pending | State::Starting | State::Waiting => '?',
                         _ => '-',
                     };
-                    println!(" [ {mark} ]  {}", status.name);
+                    println!(" [ {mark} ]  {}", service.name);
                 }
                 return Ok(0);
             }
@@ -306,28 +340,14 @@ pub fn service(args: &mut Args) -> Result<i32, Fail> {
             ask(&format!("restart {name}"))?;
             Ok(0)
         }
-        "status" => {
-            let answer = ask("status")?;
-            let Some(status) = statuses(&answer).into_iter().find(|s| &s.name == name) else {
-                // LSB: 4 is an unknown service.
-                return Err(fail_with(4, format!("{name}: unrecognized service")));
-            };
-            println!("{} - {}", status.name, status.description);
-            let active = match status.state.as_str() {
-                "running" => format!("active (running) as process {}", status.pid),
-                "waiting" => "activating (waiting to start again)".into(),
-                "stopping" => "deactivating (stopping what it left running)".into(),
-                "disabled" => "inactive (disabled)".into(),
-                _ => "inactive (dead)".into(),
-            };
-            println!("   Active: {active}");
-            println!("  Restart: {}, {} restarts so far", status.restart, status.restarts);
-            if status.last != "-" {
-                println!("     Last: ended with wait status {}", status.last);
+        "status" => match shown(Some(name)) {
+            Ok(services) => Ok(services.first().map_or(3, print_status)),
+            // LSB: 4 is an unknown service.
+            Err(fail) if fail.message.starts_with("no service is called") => {
+                Err(fail_with(4, format!("{name}: unrecognized service")))
             }
-            // LSB: 0 runs, 3 does not.
-            Ok(if status.state == "running" { 0 } else { 3 })
-        }
+            Err(fail) => Err(fail),
+        },
         other => {
             Err(usage(format!("{name}: unknown command `{other}' (start, stop, restart, status)")))
         }
@@ -350,15 +370,5 @@ mod tests {
         assert_eq!(delay("09:00", (10, 0)), Some(23 * 3600));
         assert_eq!(delay("24:00", (10, 0)), None);
         assert_eq!(delay("soon", (10, 0)), None);
-    }
-
-    #[test]
-    fn reads_spark_s_status() {
-        let answer =
-            "consoled\trunning\t12\t0\t-\talways\tVirtual consoles\n#\tshutdown\tpower off\t60\n";
-        let statuses = statuses(answer);
-        assert_eq!(statuses.len(), 1);
-        assert_eq!((statuses[0].name.as_str(), statuses[0].pid.as_str()), ("consoled", "12"));
-        assert_eq!(statuses[0].description, "Virtual consoles");
     }
 }

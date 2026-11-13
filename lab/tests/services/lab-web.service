@@ -1,0 +1,12 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+#
+# The graph lab test's service: it requires nginx, so it starts only
+# once nginx is ready, and stops when nginx is stopped (ADR 0470).
+
+service_version = 2
+description = "Requires nginx"
+program = "/system/commands/nukesh"
+arguments = ["-c", "while :; do sleep 1; done"]
+enabled = false
+requires = ["nginx"]

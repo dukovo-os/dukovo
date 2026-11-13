@@ -34,8 +34,9 @@ timeout = 30
 
 *essential*
 	The services the machine needs, by name. Each that is turned on must
-	be running; one that is turned off, or ended with status 0 and is not
-	meant to restart, does not count. By default: logging, sign-in, the
+	be running, and pass its own health check if its file gives it one
+	(*service.toml*(5)); one that is turned off, done as a setup step, or
+	ended with status 0 and is not meant to restart, does not count. By default: logging, sign-in, the
 	consoles, the network and SSH.
 
 *stable*
@@ -63,7 +64,8 @@ timeout = 30
 		Seconds it may take before it fails: 60 by default.
 
 An update being tried fails at once when an essential service restarts
-three times, or stops after a failure; when the essential services are
+three times, or fails its health check past that, or stops after a
+failure, or Spark gives up on it; when the essential services are
 not all running by the deadline; or when a required check fails. It
 then gives up its remaining tries, and the machine restarts into the
 version before it, with the settings from before the update. On any

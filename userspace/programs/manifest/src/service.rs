@@ -39,7 +39,7 @@ use serde::de::{self, Deserializer, MapAccess, Visitor};
 use crate::Error;
 
 /// The version of the format this reads, the newest there is.
-pub const VERSION: u32 = 1;
+pub const VERSION: u32 = 2;
 
 /// Every setting of a service file, a table's after the table: what
 /// service.toml(5) must document.
@@ -75,7 +75,25 @@ pub const KEYS: &[&str] = &[
     "backup.before",
     "backup.after",
     "backup.time_limit",
+    "requires",
+    "wants",
+    "after",
+    "give_up_after",
+    "ready",
+    "ready.when",
+    "ready.port",
+    "ready.path",
+    "ready.timeout",
+    "health",
+    "health.command",
+    "health.every",
+    "health.timeout",
+    "health.failures",
 ];
+
+/// The keys of service_version 2 (ADR 0470), which a file of version 1
+/// may not use.
+const VERSION_2_KEYS: &[&str] = &["requires", "wants", "after", "give_up_after", "ready", "health"];
 
 /// The order of a service whose file gives none.
 pub const ORDER_DEFAULT: u32 = 50;
@@ -149,6 +167,104 @@ pub struct Service {
     pub account: Option<String>,
     /// What it runs around backups' snapshots (ADR 0463).
     pub backup: Backup,
+    /// The services it requires: started first and ready, or it does not
+    /// start (ADR 0470).
+    pub requires: Vec<String>,
+    /// The services it wants: started first; it starts whether or not
+    /// they do.
+    pub wants: Vec<String>,
+    /// The services it starts after, when they are starting too.
+    pub after: Vec<String>,
+    /// The failed starts in a row after which Spark stops trying; 0 for
+    /// never.
+    pub give_up_after: u32,
+    /// When it is ready, for what waits for it.
+    pub ready: Ready,
+    /// Its health check, if it has one.
+    pub health: Option<Health>,
+}
+
+/// When a service is ready, and how long it has to get there.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Ready {
+    /// What makes it ready.
+    pub when: ReadyWhen,
+    /// Seconds from its start to get ready, after which its start has
+    /// failed.
+    pub timeout: u32,
+}
+
+impl Default for Ready {
+    fn default() -> Ready {
+        Ready { when: ReadyWhen::Started, timeout: READY_TIMEOUT_DEFAULT }
+    }
+}
+
+/// What makes a service ready.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ReadyWhen {
+    /// Its process running.
+    Started,
+    /// A socket of its listening on this port, or on any port of
+    /// `network.listen` when it names none.
+    Listening(Option<u16>),
+    /// This path being a socket made since it started.
+    Socket(String),
+    /// Its health check passing for the first time.
+    Healthy,
+    /// Its process ending with status 0, as a setup step's does.
+    Ended,
+}
+
+impl ReadyWhen {
+    /// The word `ready.when` says it with.
+    pub fn name(&self) -> &'static str {
+        match self {
+            ReadyWhen::Started => "started",
+            ReadyWhen::Listening(_) => "listening",
+            ReadyWhen::Socket(_) => "socket",
+            ReadyWhen::Healthy => "healthy",
+            ReadyWhen::Ended => "ended",
+        }
+    }
+}
+
+/// How long a service has to get ready by default, in seconds, as
+/// systemd's TimeoutStartSec.
+pub const READY_TIMEOUT_DEFAULT: u32 = 90;
+
+/// A service's health check: a command run as the service runs, every so
+/// often, which passes by exiting with 0 in time, as health.toml(5)'s
+/// checks do.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Health {
+    /// A program's absolute path and its arguments.
+    pub command: Vec<String>,
+    /// Seconds from the end of one check to the start of the next.
+    pub every: u32,
+    /// Seconds a check may take before it is stopped and fails.
+    pub timeout: u32,
+    /// Failed checks in a row after which the service is restarted.
+    pub failures: u32,
+}
+
+impl Service {
+    /// What is wrong with the services it names, given its own name,
+    /// which its file does not hold: it may not name itself.
+    ///
+    /// # Errors
+    ///
+    /// Which list names it, in plain words.
+    pub fn check_links(&self, name: &str) -> Result<(), String> {
+        for (key, names) in
+            [("requires", &self.requires), ("wants", &self.wants), ("after", &self.after)]
+        {
+            if names.iter().any(|other| other == name) {
+                return Err(format!("{key} names {name}, the service itself"));
+            }
+        }
+        Ok(())
+    }
 }
 
 /// The commands a service runs around backups' snapshots (ADR 0463),
@@ -603,6 +719,32 @@ enabled = false
 # account = "NAME"
 # When it is started again after it ends: always, on-failure or never.
 restart = "on-failure"
+# With service_version = 2 (Dukovo 1.0 and later), it can wait for other
+# services and say when it is ready, and Spark can check its health:
+# the services it requires, started first and ready or it does not
+# start; those it wants, started first whether or not they start; those
+# it starts after when they start too; and the failed starts in a row
+# after which Spark stops trying, 0 for never.
+# requires = []
+# wants = []
+# after = []
+# give_up_after = 0
+# When it is ready, in [ready] or as ready.KEY: started, listening (on
+# ready.port, or on any port of network.listen), socket (once ready.path
+# is a socket made since it started), healthy (once its health check
+# passes) or ended (once it exits with 0, as a setup step does); and the
+# seconds it has to get there.
+# ready.when = "started"
+# ready.port = 8080
+# ready.path = "/system/live/services/NAME/NAME.sock"
+# ready.timeout = 90
+# Its health check, in [health] or as health.KEY: a command run as it
+# runs, every so many seconds, which passes by exiting with 0 within its
+# timeout; so many failed checks in a row restart it.
+# health.command = ["/system/commands/true"]
+# health.every = 30
+# health.timeout = 10
+# health.failures = 3
 # The secrets Spark hands it as read-only files, in the folder
 # SECRETS_DIRECTORY names, never in its environment; set each with
 # `service secret set NAME SECRET`.
@@ -825,14 +967,90 @@ struct File {
     account: Option<String>,
     #[serde(default)]
     backup: Backup,
+    #[serde(default, deserialize_with = "requires")]
+    requires: Option<Vec<String>>,
+    #[serde(default, deserialize_with = "wants")]
+    wants: Option<Vec<String>>,
+    #[serde(default, deserialize_with = "after")]
+    after: Option<Vec<String>>,
+    #[serde(default, deserialize_with = "give_up_after")]
+    give_up_after: Option<u32>,
+    ready: Option<ReadyFile>,
+    health: Option<HealthFile>,
+}
+
+/// `[ready]` as written.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReadyFile {
+    #[serde(default, deserialize_with = "ready_when")]
+    when: ReadyWord,
+    #[serde(default, deserialize_with = "ready_port")]
+    port: Option<u16>,
+    path: Option<String>,
+    #[serde(default = "ready_timeout_default", deserialize_with = "ready_timeout")]
+    timeout: u32,
+}
+
+/// `ready.when` as written.
+#[derive(Clone, Copy, Default)]
+enum ReadyWord {
+    #[default]
+    Started,
+    Listening,
+    Socket,
+    Healthy,
+    Ended,
+}
+
+impl ReadyWord {
+    const WORDS: &[&str] = &["started", "listening", "socket", "healthy", "ended"];
+}
+
+/// `[health]` as written.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct HealthFile {
+    #[serde(deserialize_with = "health_command")]
+    command: Vec<String>,
+    #[serde(default = "health_every_default", deserialize_with = "health_every")]
+    every: u32,
+    #[serde(default = "health_timeout_default", deserialize_with = "health_timeout")]
+    timeout: u32,
+    #[serde(default = "health_failures_default", deserialize_with = "health_failures")]
+    failures: u32,
+}
+
+impl File {
+    /// The first key of service_version 2 the file sets, if any.
+    fn version_2_key(&self) -> Option<&'static str> {
+        let set = [
+            self.requires.is_some(),
+            self.wants.is_some(),
+            self.after.is_some(),
+            self.give_up_after.is_some(),
+            self.ready.is_some(),
+            self.health.is_some(),
+        ];
+        VERSION_2_KEYS.iter().zip(set).find_map(|(key, set)| set.then_some(*key))
+    }
 }
 
 impl TryFrom<File> for Service {
     type Error = String;
 
     fn try_from(file: File) -> Result<Service, String> {
-        if file.service_version.is_none() {
-            return Err(format!("it has no service_version: add `service_version = {VERSION}`"));
+        let Some(Version(version)) = file.service_version else {
+            // The lowest version the file can be, which more releases read.
+            let lowest = if file.version_2_key().is_some() { 2 } else { 1 };
+            return Err(format!("it has no service_version: add `service_version = {lowest}`"));
+        };
+        if version < 2
+            && let Some(key) = file.version_2_key()
+        {
+            return Err(format!(
+                "{key} needs service_version = 2: change the file's service_version to 2"
+            ));
         }
         let Some(Program(program)) = file.program else {
             return Err("it names no program: add a line such as \
@@ -854,6 +1072,15 @@ impl TryFrom<File> for Service {
             }
         }
         file.backup.check()?;
+        let requires = file.requires.unwrap_or_default();
+        let wants = file.wants.unwrap_or_default();
+        let after = file.after.unwrap_or_default();
+        check_named_once(&requires, &wants, &after)?;
+        let health = file.health.map(Health::try_from).transpose()?;
+        let ready = match file.ready {
+            Some(ready) => ready.check(&file.permissions, file.restart, health.is_some())?,
+            None => Ready::default(),
+        };
         Ok(Service {
             description: file.description,
             program,
@@ -867,6 +1094,12 @@ impl TryFrom<File> for Service {
             permissions: file.permissions,
             account: file.account,
             backup: file.backup,
+            requires,
+            wants,
+            after,
+            give_up_after: file.give_up_after.unwrap_or(0),
+            ready,
+            health,
         })
     }
 }
@@ -884,19 +1117,253 @@ pub(crate) fn weight_default() -> u32 {
 }
 
 /// `service_version`: a version this reads.
-struct Version;
+struct Version(u32);
 
 impl<'de> Deserialize<'de> for Version {
     fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Version, D::Error> {
         match whole(d, "service_version")? {
-            1 => Ok(Version),
+            1 => Ok(Version(1)),
+            2 => Ok(Version(2)),
             n if n > u64::from(VERSION) => Err(de::Error::custom(format!(
                 "this file is for service_version {n}, and this Dukovo reads version {VERSION} \
                  and earlier: update Dukovo to use it"
             ))),
-            _ => Err(de::Error::custom(format!("service_version is {VERSION}"))),
+            _ => Err(de::Error::custom(format!("service_version is 1 or {VERSION}"))),
         }
     }
+}
+
+/// The most services one of `requires`, `wants` and `after` names.
+pub(crate) const LINKS_MAX: usize = 32;
+
+/// The longest a service has to get ready, in seconds.
+pub(crate) const READY_TIMEOUT_MAX: u32 = 3600;
+
+/// The longest wait between health checks, in seconds: a day.
+pub(crate) const HEALTH_EVERY_MAX: u32 = 86_400;
+
+/// The most failed checks in a row before a restart, and the most failed
+/// starts in a row before Spark gives up.
+pub(crate) const HEALTH_FAILURES_MAX: u32 = 100;
+pub(crate) const GIVE_UP_AFTER_MAX: u32 = 1000;
+
+/// Checks that no service is named in two of `requires`, `wants` and
+/// `after`: each says something of its own.
+pub(crate) fn check_named_once(
+    requires: &[String],
+    wants: &[String],
+    after: &[String],
+) -> Result<(), String> {
+    let lists = [("requires", requires), ("wants", wants), ("after", after)];
+    for (at, (key, names)) in lists.iter().enumerate() {
+        for (other_key, others) in &lists[at + 1..] {
+            if let Some(name) = names.iter().find(|name| others.contains(name)) {
+                return Err(format!(
+                    "{name} is in {key} and {other_key}: {key} says it already, so leave it out \
+                     of {other_key}"
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+impl ReadyFile {
+    /// The service's readiness, checked against the rest of its file.
+    fn check(
+        self,
+        permissions: &Permissions,
+        restart: Restart,
+        health: bool,
+    ) -> Result<Ready, String> {
+        if self.port.is_some() && !matches!(self.when, ReadyWord::Listening) {
+            return Err("ready.port is for ready.when = \"listening\" alone".into());
+        }
+        if !matches!(self.when, ReadyWord::Socket)
+            && let Some(path) = &self.path
+        {
+            return Err(format!(
+                "ready.path is for ready.when = \"socket\" alone, not `{}`",
+                path.escape_debug()
+            ));
+        }
+        let when = match self.when {
+            ReadyWord::Started => ReadyWhen::Started,
+            ReadyWord::Listening => {
+                let listen = &permissions.network.listen;
+                if listen.is_empty() {
+                    return Err("ready.when = \"listening\" needs the ports it listens on in \
+                                network.listen"
+                        .into());
+                }
+                if let Some(port) = self.port
+                    && !listen.iter().any(|ports| ports.first <= port && port <= ports.last)
+                {
+                    return Err(format!("ready.port {port} is none of network.listen's ports"));
+                }
+                ReadyWhen::Listening(self.port)
+            }
+            ReadyWord::Socket => {
+                let Some(path) = self.path else {
+                    return Err(
+                        "ready.when = \"socket\" needs the socket's path in ready.path".into()
+                    );
+                };
+                if !path.starts_with('/') || path.contains('\0') {
+                    return Err(format!(
+                        "ready.path is an absolute path, such as \
+                         /system/live/services/web/web.sock, not `{}`",
+                        path.escape_debug()
+                    ));
+                }
+                ReadyWhen::Socket(path)
+            }
+            ReadyWord::Healthy if !health => {
+                return Err("ready.when = \"healthy\" needs a [health] check".into());
+            }
+            ReadyWord::Healthy => ReadyWhen::Healthy,
+            ReadyWord::Ended if restart == Restart::Always => {
+                return Err("ready.when = \"ended\" is for a service that ends, so its restart \
+                            is on-failure or never, not always"
+                    .into());
+            }
+            ReadyWord::Ended => ReadyWhen::Ended,
+        };
+        Ok(Ready { when, timeout: self.timeout })
+    }
+}
+
+impl TryFrom<HealthFile> for Health {
+    type Error = String;
+
+    fn try_from(file: HealthFile) -> Result<Health, String> {
+        if file.timeout > file.every {
+            return Err(format!(
+                "health.timeout is at most health.every, {} seconds, not {}",
+                file.every, file.timeout
+            ));
+        }
+        Ok(Health {
+            command: file.command,
+            every: file.every,
+            timeout: file.timeout,
+            failures: file.failures,
+        })
+    }
+}
+
+/// A whole number from `low` to `high`, for `key`, which counts `unit`.
+fn whole_within<'de, D: Deserializer<'de>>(
+    d: D,
+    key: &'static str,
+    (low, high): (u32, u32),
+    unit: &str,
+) -> Result<u32, D::Error> {
+    let n = whole(d, key)?;
+    u32::try_from(n)
+        .ok()
+        .filter(|n| (low..=high).contains(n))
+        .ok_or_else(|| de::Error::custom(format!("{key} is from {low} to {high}{unit}, not {n}")))
+}
+
+/// The names a link list holds: each a service's name, each once.
+fn links<'de, D: Deserializer<'de>>(d: D, key: &str) -> Result<Option<Vec<String>>, D::Error> {
+    let names = Vec::<String>::deserialize(d)?;
+    if names.len() > LINKS_MAX {
+        return Err(de::Error::custom(format!("{key} names at most {LINKS_MAX} services")));
+    }
+    for (at, name) in names.iter().enumerate() {
+        check_name(name).map_err(|why| de::Error::custom(format!("{key}: {why}")))?;
+        if names[..at].contains(name) {
+            return Err(de::Error::custom(format!("{key} names {name} twice")));
+        }
+    }
+    Ok(Some(names))
+}
+
+fn requires<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Vec<String>>, D::Error> {
+    links(d, "requires")
+}
+
+fn wants<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Vec<String>>, D::Error> {
+    links(d, "wants")
+}
+
+fn after<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Vec<String>>, D::Error> {
+    links(d, "after")
+}
+
+fn give_up_after<'de, D: Deserializer<'de>>(d: D) -> Result<Option<u32>, D::Error> {
+    whole_within(d, "give_up_after", (0, GIVE_UP_AFTER_MAX), " failed starts").map(Some)
+}
+
+fn ready_when<'de, D: Deserializer<'de>>(d: D) -> Result<ReadyWord, D::Error> {
+    let words = [
+        ReadyWord::Started,
+        ReadyWord::Listening,
+        ReadyWord::Socket,
+        ReadyWord::Healthy,
+        ReadyWord::Ended,
+    ];
+    Ok(words[word(d, "ready.when", ReadyWord::WORDS)?])
+}
+
+fn ready_port<'de, D: Deserializer<'de>>(d: D) -> Result<Option<u16>, D::Error> {
+    let n = whole(d, "ready.port")?;
+    match u16::try_from(n) {
+        Ok(port @ 1..) => Ok(Some(port)),
+        _ => Err(de::Error::custom(format!("ready.port is from 1 to 65535, not {n}"))),
+    }
+}
+
+fn ready_timeout_default() -> u32 {
+    READY_TIMEOUT_DEFAULT
+}
+
+fn ready_timeout<'de, D: Deserializer<'de>>(d: D) -> Result<u32, D::Error> {
+    whole_within(d, "ready.timeout", (1, READY_TIMEOUT_MAX), " seconds")
+}
+
+/// `health.command`: a program's absolute path, then its arguments.
+fn health_command<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<String>, D::Error> {
+    let words = Vec::<String>::deserialize(d)?;
+    match words.first() {
+        None => Err(de::Error::custom(
+            "health.command names a program, such as [\"/system/commands/true\"]",
+        )),
+        Some(program) if !program.starts_with('/') => Err(de::Error::custom(format!(
+            "health.command starts with a program's absolute path, not `{}`",
+            program.escape_debug()
+        ))),
+        Some(_) if words.iter().any(|word| word.contains('\0')) => {
+            Err(de::Error::custom("health.command holds a NUL"))
+        }
+        Some(_) => Ok(words),
+    }
+}
+
+fn health_every_default() -> u32 {
+    30
+}
+
+fn health_every<'de, D: Deserializer<'de>>(d: D) -> Result<u32, D::Error> {
+    whole_within(d, "health.every", (1, HEALTH_EVERY_MAX), " seconds")
+}
+
+fn health_timeout_default() -> u32 {
+    10
+}
+
+fn health_timeout<'de, D: Deserializer<'de>>(d: D) -> Result<u32, D::Error> {
+    whole_within(d, "health.timeout", (1, READY_TIMEOUT_MAX), " seconds")
+}
+
+fn health_failures_default() -> u32 {
+    3
+}
+
+fn health_failures<'de, D: Deserializer<'de>>(d: D) -> Result<u32, D::Error> {
+    whole_within(d, "health.failures", (1, HEALTH_FAILURES_MAX), " failed checks")
 }
 
 /// `program`: an absolute path.

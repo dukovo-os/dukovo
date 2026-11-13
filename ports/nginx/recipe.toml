@@ -37,7 +37,10 @@ programs = ["nginx-service"]
 links = ["mlibc", "zlib", "openssl"]
 
 # nginx-service sets the data folder up and runs nginx in the
-# foreground, as Spark's service.
+# foreground, as Spark's service. It starts after the network is up, for
+# a site bound to an address, and after the resolver, since nginx looks
+# up the names in proxy_pass once, as it starts; it is ready once it
+# listens (ADR 0470).
 [[bundle.services]]
 name = "nginx"
 program = "nginx-service"
@@ -45,6 +48,8 @@ account = "nginx"
 restart = "on-failure"
 start = "when-enabled"
 limits = { memory = "512M" }
+after = ["netd", "resolved"]
+ready = { when = "listening", timeout = 30 }
 
 [bundle.permissions."network.listen"]
 ports = [80, 443]

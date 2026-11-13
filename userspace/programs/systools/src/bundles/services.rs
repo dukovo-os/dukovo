@@ -28,8 +28,9 @@
 //! reaches a service, which runs for no one.
 
 use std::fmt::Write as _;
+use std::path::Path;
 
-use manifest::bundle::{Access, Manifest, Service, Start};
+use manifest::bundle::{Access, Manifest, Service, ServiceName, Start};
 use manifest::service::{self as service_file, Ports};
 
 use super::run;
@@ -202,6 +203,40 @@ fn list<'a>(items: impl IntoIterator<Item = &'a str>) -> String {
     format!("[{}]", items.join(", "))
 }
 
+/// Where the system's own service files are: a bundle's service may name
+/// one of them in `requires`, `wants` or `after` (ADR 0470).
+const SYSTEM_SERVICES: &str = "/system/resources/default-settings/spark/services";
+
+/// The path in the bundle of `manifest`'s program `program`, for this
+/// computer, which its service `service` runs.
+fn program_path<'a>(
+    manifest: &'a Manifest,
+    program: &str,
+    service: &str,
+) -> Result<&'a str, String> {
+    manifest
+        .programs
+        .get(program)
+        .and_then(|found| found.path.get(&run::ARCH))
+        .map(|path| path.0.as_str())
+        .ok_or_else(|| {
+            format!("its service {service} runs {program}, which it has none of for this computer")
+        })
+}
+
+/// Checks that `name`, which `manifest`'s service `service` names in
+/// `key`, is a service of the bundle's or one the system brings.
+fn linked(manifest: &Manifest, name: &ServiceName, key: &str, service: &str) -> Result<(), String> {
+    let own = manifest.services.iter().any(|other| other.name == *name);
+    if own || Path::new(&format!("{SYSTEM_SERVICES}/{name}.toml")).exists() {
+        return Ok(());
+    }
+    Err(format!(
+        "its service {service} names {name} in {key}, which is neither one of its services nor \
+         one the system brings"
+    ))
+}
+
 /// The service file bundled writes for `service` of `manifest`,
 /// installed in `folder`; `enabled`, whether it starts at boot, when an
 /// administrator turned it on or off already. Checked as Spark reads it.
@@ -213,16 +248,7 @@ pub fn file(
 ) -> Result<String, String> {
     let id = &manifest.id.0;
     let name = &service.name.0;
-    let program = manifest
-        .programs
-        .get(service.program.0.as_str())
-        .and_then(|program| program.path.get(&run::ARCH))
-        .ok_or_else(|| {
-            format!(
-                "its service {name} runs {}, which it has none of for this computer",
-                service.program
-            )
-        })?;
+    let program = program_path(manifest, &service.program.0, name)?;
     let account = account(service);
     let data = data_folder(id, &account);
     let live = live_folder(&account);
@@ -236,17 +262,33 @@ pub fn file(
          each setting.\n",
         manifest.version
     );
-    let _ = writeln!(o, "service_version = 1");
+    // Version 2 only when it uses its keys, so that a release before 1.0
+    // reads the files of the bundles that do not (ADR 0454).
+    let version = if service.uses_version_2() { 2 } else { 1 };
+    let _ = writeln!(o, "service_version = {version}");
     let description =
         format!("{name}, a service of {}", crate::bundles::sheet::shown(&manifest.name.0, 60));
     let _ = writeln!(o, "description = {}", quoted(&description));
-    let _ = writeln!(o, "program = {}", quoted(&format!("{folder}/{}", program.0)));
+    let _ = writeln!(o, "program = {}", quoted(&format!("{folder}/{program}")));
     let _ = writeln!(o, "arguments = {}", list(service.arguments.iter().map(String::as_str)));
     let _ = writeln!(o, "account = {}", quoted(&account));
     let _ = writeln!(o, "order = {ORDER}");
     let _ = writeln!(o, "enabled = {enabled}");
     let _ = writeln!(o, "restart = {}", quoted(service.restart.name()));
     let _ = writeln!(o, "secrets = {}", list(service.secrets.iter().map(String::as_str)));
+    let links =
+        [("requires", &service.requires), ("wants", &service.wants), ("after", &service.after)];
+    for (key, names) in links {
+        for name in names {
+            linked(manifest, name, key, &service.name.0)?;
+        }
+        if !names.is_empty() {
+            let _ = writeln!(o, "{key} = {}", list(names.iter().map(|n| n.0.as_str())));
+        }
+    }
+    if service.give_up_after > 0 {
+        let _ = writeln!(o, "give_up_after = {}", service.give_up_after);
+    }
     let _ = writeln!(o, "\n[environment]");
     // As a person's session has them: the account's, whatever the
     // manifest says.
@@ -279,9 +321,36 @@ pub fn file(
         holds.shared.iter().filter(move |(_, w)| *w == write).map(|(f, _)| format!("/shared/{f}"))
     };
     let read: Vec<String> = std::iter::once(folder.to_string()).chain(shared(false)).collect();
-    let read_write: Vec<String> = [data, live].into_iter().chain(shared(true)).collect();
+    let read_write: Vec<String> = [data, live.clone()].into_iter().chain(shared(true)).collect();
     let _ = writeln!(o, "files.read = {}", list(read.iter().map(String::as_str)));
     let _ = writeln!(o, "files.read-write = {}", list(read_write.iter().map(String::as_str)));
+    if let Some(ready) = &service.ready {
+        let _ = writeln!(o, "\n[ready]");
+        let _ = writeln!(o, "when = {}", quoted(ready.when.name()));
+        if let Some(port) = ready.port {
+            let _ = writeln!(o, "port = {port}");
+        }
+        if let Some(path) = &ready.path {
+            let _ = writeln!(o, "path = {}", quoted(&format!("{live}/{path}")));
+        }
+        if let Some(timeout) = ready.timeout {
+            let _ = writeln!(o, "timeout = {timeout}");
+        }
+    }
+    if let Some(command) = service.health.as_ref().and_then(|health| health.command.as_ref()) {
+        let program = program_path(manifest, &command.program.0, name)?;
+        let words = std::iter::once(format!("{folder}/{program}")).chain(command.arguments.clone());
+        let words: Vec<String> = words.collect();
+        let _ = writeln!(o, "\n[health]");
+        let _ = writeln!(o, "command = {}", list(words.iter().map(String::as_str)));
+        for (key, value) in
+            [("every", command.every), ("timeout", command.timeout), ("failures", command.failures)]
+        {
+            if let Some(value) = value {
+                let _ = writeln!(o, "{key} = {value}");
+            }
+        }
+    }
     service_file::from_toml(&o)
         .map_err(|err| format!("its service {name}'s file does not read: {err}"))?;
     Ok(o)
@@ -371,6 +440,51 @@ mod tests {
         );
         assert!(text.starts_with("# The service web of the bundle org.example.web 0.1.0"));
         assert_eq!(enabled(&text), Some(true));
+    }
+
+    #[test]
+    fn a_service_that_says_what_it_needs_gets_a_version_2_file() {
+        let m = manifest(
+            r#"{"name": "web", "program": "web", "requires": ["db"], "after": ["netd-like"],
+                "give_up_after": 5, "ready": {"when": "listening", "port": 8080, "timeout": 30},
+                "health": {"command": {"program": "web", "arguments": ["--check"], "every": 20}}},
+               {"name": "db", "program": "web", "account": "web-db",
+                "ready": {"when": "socket", "path": "db.sock"}},
+               {"name": "netd-like", "program": "web", "account": "web-net"}"#,
+            r#""network.listen": {"need": "required", "ports": [8080]}"#,
+        );
+        let folder = "/applications/org.example.web";
+        let text = file(&m, &m.services[0], folder, None).unwrap();
+        assert!(text.contains("service_version = 2\n"), "{text}");
+        let read = service_file::from_toml(&text).unwrap();
+        assert_eq!(
+            (read.requires, read.after, read.give_up_after),
+            (vec!["db".into()], vec!["netd-like".into()], 5)
+        );
+        assert_eq!(read.ready.when, service_file::ReadyWhen::Listening(Some(8080)));
+        assert_eq!(read.ready.timeout, 30);
+        let health = read.health.unwrap();
+        assert_eq!(health.command, [format!("{folder}/bin/web"), "--check".into()]);
+        assert_eq!((health.every, health.timeout, health.failures), (20, 10, 3));
+        // A socket's name is in the service's own live folder.
+        let db = service_file::from_toml(&file(&m, &m.services[1], folder, None).unwrap()).unwrap();
+        let socket = "/system/live/services/web-db/db.sock".to_string();
+        assert_eq!(db.ready.when, service_file::ReadyWhen::Socket(socket));
+        // One that says none of it stays at version 1, which releases
+        // before 1.0 read.
+        let plain = file(&m, &m.services[2], folder, None).unwrap();
+        assert!(plain.contains("service_version = 1\n"), "{plain}");
+    }
+
+    #[test]
+    fn a_service_may_name_only_its_bundle_s_and_the_system_s() {
+        let m = manifest(r#"{"name": "web", "program": "web", "wants": ["nosuch"]}"#, "");
+        let err = file(&m, &m.services[0], "/applications/org.example.web", None).unwrap_err();
+        assert_eq!(
+            err,
+            "its service web names nosuch in wants, which is neither one of its services nor one \
+             the system brings"
+        );
     }
 
     #[test]

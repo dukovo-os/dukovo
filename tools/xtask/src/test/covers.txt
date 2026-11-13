@@ -478,6 +478,8 @@ service-bundle userspace/programs/installer/ userspace/programs/manifest/
 service-bundle userspace/programs/system-release/ userspace/programs/systools/src/bundled.rs
 service-bundle userspace/programs/systools/src/bundles.rs userspace/programs/systools/src/bundles/
 service-bundle userspace/programs/systools/src/releases.rs
+service-graph userspace/posix/graphtest.c userspace/programs/spark-api/ userspace/spark/src/supervisor/
+service-graph userspace/programs/manifest/src/service.rs userspace/programs/systools/src/power.rs
 service-update image/grub/installed.cfg.in tools/xtask/src/bundles.rs tools/xtask/src/grub.rs
 service-update tools/xtask/src/grub_theme.rs tools/xtask/src/release.rs userspace/programs/dkv/
 service-update userspace/programs/installer/ userspace/programs/manifest/

@@ -333,6 +333,8 @@ boot test; those that Phases 11 to 13 add from now on are listed only there
                    swap area Linux's mkswap made on, and gets it all back
   spark-stop       Spark stops a service that ignores SIGTERM, and what a
                    service leaves behind
+  service-graph    services start after what they require once it is ready,
+                   health checks, giving up, circles, and stops in order
   logging          logd keeps the kernel log and the services' lines; log,
                    journalctl and dmesg read them; a restart keeps none twice;
                    the audit log, and logtrim

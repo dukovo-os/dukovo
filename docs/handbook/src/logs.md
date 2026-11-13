@@ -140,6 +140,33 @@ the last 64, and `notifications -f` follows them. The notifyd service
 keeps them in memory only, never on the disk or in the log, and
 refuses more than 10 in 10 seconds from one program.
 
+## When a service does not run
+
+`service NAME status` says what Spark knows of a service: whether it
+runs, and if not, why, in one line. The `Why` line names the service it
+waits for or the failure that stopped it:
+
+| `Why` says | What to do |
+| --- | --- |
+| it requires NAME, which is stopped | Start that one: `elevate service NAME start` starts both |
+| it requires NAME, which has no service file | The service file names a service that is not installed, or is misspelt |
+| it did not get ready in 90 s: nothing listened on port 8080 | The service started but never listened: read its log, `elevate log NAME` |
+| it failed to start 5 times in a row (the last: ...) | Spark gave up on it; fix what the last failure names, then `elevate service NAME start` |
+| it waits for itself, through a and b | Two services wait for each other: change one of their files |
+
+`Health` shows its health check's last result, with the last line a
+failed check wrote, and `Last` how its process last ended. Spark's own
+lines about it are in the log:
+
+```
+$ elevate log | grep 'spark: web'
+spark: web failed its health check (exited with code 0x7: connection refused)
+spark: web failed its health check 3 times in a row; restarting it
+```
+
+service.toml(5) explains each of these, and spark(8) every line Spark
+writes.
+
 ## When logd is not running
 
 `log` and `journalctl` read through logd. If it has stopped, `service

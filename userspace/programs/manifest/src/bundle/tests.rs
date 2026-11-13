@@ -346,6 +346,64 @@ fn commands_and_services_run_its_programs() {
 }
 
 #[test]
+fn a_service_says_what_it_needs_and_when_it_is_ready() {
+    let in_service = |more: &str| {
+        errors(&with(&format!(
+            ",\n  \"services\": [ {{ \"name\": \"app\", \"program\": \"app\", {more} }} ]"
+        )))
+        .join("\n")
+    };
+    let good = with(
+        ",\n  \"services\": [ { \"name\": \"app\", \"program\": \"app\", \
+         \"requires\": [\"db\"], \"after\": [\"netd\"], \"give_up_after\": 5, \
+         \"ready\": { \"when\": \"healthy\", \"timeout\": 30 }, \
+         \"health\": { \"command\": { \"program\": \"app\", \"arguments\": [\"--check\"] } } } ]",
+    );
+    let manifest = from_json(&good).unwrap();
+    let svc = &manifest.services[0];
+    assert!(svc.uses_version_2());
+    assert_eq!(
+        svc.ready.as_ref().map(|r| (r.when, r.timeout)),
+        Some((ReadyWord::Healthy, Some(30)))
+    );
+    assert!(!from_json(&with("")).unwrap().services.iter().any(Service::uses_version_2));
+
+    for (more, said) in [
+        ("\"requires\": [\"app\"]", "requires names app, the service itself"),
+        ("\"wants\": [\"db\", \"db\"]", "wants names db twice"),
+        ("\"requires\": [\"db\"], \"after\": [\"db\"]", "db is in requires and after"),
+        ("\"give_up_after\": 1001", "give_up_after is from 0 to 1000 failed starts, not 1001"),
+        ("\"ready\": { \"when\": \"started\", \"port\": 80 }", "ready.port is for ready.when"),
+        ("\"ready\": { \"when\": \"socket\" }", "names its socket in ready.path"),
+        (
+            "\"ready\": { \"when\": \"listening\", \"path\": \"a.sock\" }",
+            "names its socket in ready.path",
+        ),
+        ("\"ready\": { \"when\": \"started\", \"timeout\": 0 }", "ready.timeout is from 1 to 3600"),
+        ("\"ready\": { \"when\": \"healthy\" }", "ready.when = \"healthy\" needs a health.command"),
+        ("\"ready\": { \"when\": \"ended\" }", "restart is on-failure or never, not always"),
+        ("\"ready\": { \"when\": \"soon\" }", "unknown variant `soon`"),
+        ("\"health\": {}", "service app's health names a socket or a command"),
+        (
+            "\"health\": { \"command\": { \"program\": \"tool\" } }",
+            "health.command runs tool, which programs does not name",
+        ),
+        (
+            "\"health\": { \"command\": { \"program\": \"app\", \"every\": 5, \"timeout\": 6 } }",
+            "has timeout from 1 to 5 seconds, not 6",
+        ),
+        (
+            "\"health\": { \"command\": { \"program\": \"app\", \"failures\": 0 } }",
+            "has failures from 1 to 100 failed checks, not 0",
+        ),
+        ("\"requires\": [\"-db\"]", "-db"),
+    ] {
+        let said_now = in_service(more);
+        assert!(said_now.contains(said), "{more}: {said_now}");
+    }
+}
+
+#[test]
 fn provides_names_one_thing_each() {
     let provides = |items: &str| with(&format!(",\n  \"provides\": [\n    {items}\n  ]"));
     let text =

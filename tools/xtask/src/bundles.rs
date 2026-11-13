@@ -33,6 +33,13 @@ pub const KEY_VARIABLE: &str = "OB_BUNDLE_KEY";
 /// for.
 const REQUIRES_OS: &str = "0.12";
 
+/// The lowest release that reads what a service needs and when it is
+/// ready (ADR 0470): a bundle whose services say so requires it.
+const REQUIRES_OS_GRAPH: &str = "1.0";
+
+/// The keys of a bundle's service that only [`REQUIRES_OS_GRAPH`] reads.
+const GRAPH_KEYS: [&str; 5] = ["requires", "wants", "after", "give_up_after", "ready"];
+
 /// The folder a bundle's port installs into, `$PORT_BUNDLE`: beside the
 /// port's stamp, in `out/ports/<name>/bundle`, so that a cache keeps or
 /// loses both together. Under target/, CI's Cargo cache brought back
@@ -298,7 +305,12 @@ pub fn manifest(port: &Port) -> String {
     let _ = writeln!(o, "  \"license\": {},", json(&recipe.license));
     let _ = writeln!(o, "  \"homepage\": {},", json(&recipe.homepage));
     let _ = writeln!(o, "  \"source\": {},", json(&source_url(port)));
-    let _ = writeln!(o, "  \"requires_os\": {},", json(REQUIRES_OS));
+    let graph = spec.services.iter().any(|service| {
+        GRAPH_KEYS.iter().any(|key| service.contains_key(*key))
+            || service.get("health").and_then(|health| health.get("command")).is_some()
+    });
+    let requires_os = if graph { REQUIRES_OS_GRAPH } else { REQUIRES_OS };
+    let _ = writeln!(o, "  \"requires_os\": {},", json(requires_os));
     let _ = writeln!(o, "  \"architectures\": [\"x86_64\"],");
     let programs: Vec<String> = spec
         .commands
@@ -462,6 +474,7 @@ fn random<const N: usize>() -> Result<[u8; N]> {
 mod tests {
     use super::*;
     use crate::ports::{BundleRecipe, Recipe};
+    use manifest::bundle::ReadyWord;
 
     fn port() -> Port {
         let text = r#"
@@ -513,6 +526,13 @@ mod tests {
         assert!(manifest.permissions.get("network.listen").is_some());
         assert!(manifest.permissions.get("files.shared").is_some());
         assert!(manifest.data.settings && manifest.data.data && !manifest.data.cache);
+        // It starts after the network and the resolver, and is ready once
+        // it listens, which only 1.0 and later read.
+        let after: Vec<&str> = service.after.iter().map(|name| name.0.as_str()).collect();
+        assert_eq!(after, ["netd", "resolved"]);
+        let ready = service.ready.as_ref().unwrap();
+        assert_eq!((ready.when, ready.timeout), (ReadyWord::Listening, Some(30)));
+        assert_eq!(manifest.requires_os.to_string(), "1.0");
     }
 
     /// Valkey's recipe: its aliases are commands that run valkey-server

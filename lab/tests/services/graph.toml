@@ -1,0 +1,78 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# nginx from the catalog with its dependency lines (ADR 0470): it starts
+# after the network and the resolver, and Spark counts it ready once it
+# listens. A service that requires it starts with it, stops when nginx is
+# stopped, and brings nginx back when it is started again.
+about = "nginx from the catalog starts after the network and the resolver and is ready once it listens; a service that requires it stops with it and brings it back (ADR 0470)"
+time = "5m"
+host_needs = ["curl", "scp"]
+
+[[step]]
+host = "sh {here}/copy-bundle.sh org.nginx.nginx {machine} {machine-port:22}"
+expect = "copied: org.nginx.nginx"
+[[step]]
+host = "sh {here}/copy-file.sh {here}/lab-web.service {machine} {machine-port:22}"
+expect = "copied: lab-web.service"
+# From nothing: a run before may have left them.
+[[step]]
+run = "sh -c 'rm -f /system/settings/spark/services/lab-web.toml; bundle remove --for-everyone --purge org.nginx.nginx > /dev/null 2>&1; bundle install --for-everyone --yes /users/lab/org.nginx.nginx.dkv | tail -1'"
+root = true
+expect = "installed org.nginx.nginx"
+[[step]]
+run = "service nginx enable"
+root = true
+# It is starting until it listens, which takes seconds on a slow
+# machine.
+[[step]]
+run = "sh -c 'i=0; while [ $i -lt 60 ] && ! service nginx status > /dev/null; do sleep 1; i=$((i + 1)); done; service nginx status'"
+root = true
+expect = ["Active: active (running)", "Needs: after netd, resolved"]
+# The pattern's brackets keep the log's line of this command out.
+[[step]]
+run = "sh -c 'log | grep \"[s]park: nginx is ready (listening)\" | tail -1'"
+root = true
+expect = "spark: nginx is ready (listening)"
+[[step]]
+host = "curl -s http://{machine}:{machine-port:80}/"
+expect = "Welcome to nginx!"
+# A service that requires nginx.
+[[step]]
+run = "sh -c 'cp /users/lab/lab-web.service /system/settings/spark/services/lab-web.toml && service lab-web start && echo started'"
+root = true
+expect = "started"
+[[step]]
+run = "service lab-web status"
+root = true
+expect = ["Active: active (running)", "Needs: requires nginx"]
+# Stopping nginx stops it too.
+[[step]]
+run = "service nginx stop"
+root = true
+[[step]]
+wait = "3s"
+[[step]]
+run = "service lab-web status"
+root = true
+exit = 3
+expect = ["Active: inactive (dead)", "Why: it requires nginx, which was stopped"]
+# Starting it brings nginx back, and it starts once nginx listens.
+[[step]]
+run = "service lab-web start"
+root = true
+[[step]]
+run = "sh -c 'i=0; while [ $i -lt 60 ] && ! service lab-web status > /dev/null; do sleep 1; i=$((i + 1)); done; service lab-web status'"
+root = true
+expect = "Active: active (running)"
+[[step]]
+run = "service nginx status"
+root = true
+expect = ["Active: active (running)", "Started: by lab-web, which requires it"]
+[[step]]
+host = "curl -s http://{machine}:{machine-port:80}/"
+expect = "Welcome to nginx!"
+[[step]]
+run = "sh -c 'service lab-web stop; rm /system/settings/spark/services/lab-web.toml /users/lab/lab-web.service; bundle remove --for-everyone --purge org.nginx.nginx'"
+root = true
+expect = "removed org.nginx.nginx"

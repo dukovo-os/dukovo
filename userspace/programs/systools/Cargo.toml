@@ -39,6 +39,9 @@ netproto = { path = "../netproto" }
 # (ADR 0216); bundle(1) reads bundle manifests and prints their schema
 # (ADR 0221).
 manifest = { path = "../manifest", features = ["schema"] }
+# service(8), sysupdate's health check and bundled(8) read what Spark
+# says of the services, its `show` answer (ADR 0470).
+spark-api = { path = "../spark-api" }
 # bundle(1)'s signatures (ADR 0222): minisign's Ed25519 over BLAKE2b-512,
 # the SHA-256 of each file, and the zip a .dkv file is, in the dkv crate
 # that ob shares (ADR 0370).

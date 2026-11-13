@@ -4299,6 +4299,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "spark-api"
+version = "0.15.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "spin"
 version = "0.9.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4522,6 +4530,7 @@ dependencies = [
  "slots",
  "smoltcp",
  "socket2",
+ "spark-api",
  "ssh-key",
  "system-release",
  "toml 0.9.12+spec-1.1.0",

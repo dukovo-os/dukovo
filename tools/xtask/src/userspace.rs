@@ -417,6 +417,7 @@ pub const HOST_TESTED: &[&str] = &[
     "slots",
     "smb",
     "smbd",
+    "spark-api",
     "system-release",
     "systools",
     "tuf",
