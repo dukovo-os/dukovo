@@ -742,17 +742,18 @@ settings names it, and its `servers` setting names this machine.
 
 The server answers the computers on the networks of the machine's own
 addresses and no others. `serve-allow` names others, such as
-`serve-allow = 10.0.0.0/8, 192.168.0.0/16`, or `any` for everyone. It
-answers while the machine's clock is set from the network, and for
-three hours after the last time it was, and not otherwise;
-`serve-unsynced = yes` has it answer from a clock nothing has set, for a
-network that has no other source of time.
+`serve-allow = 10.0.0.0/8, 192.168.0.0/16`, or `any` for everyone. Its
+answers say the time is synchronized while the machine's clock is set
+from the network and for three hours after the last time it was; after
+that they say it is not, and clients do not take it.
+`serve-unsynced = yes` has it serve, at stratum 10, a clock nothing has
+set, for a network that has no other source of time.
 
 `timedatectl timesync-status` says what it is doing, among the rest of
 timed's status:
 
 ```
-Serving time over NTS to 192.168.10.0/24: 41 answers in the last hour, 3 clients
+Serving: time over NTS and plain NTP to this machine's networks: 41 answers and 3 key establishments to 5 clients since timed started
 ```
 
 The server uses ports 4460 for NTS and 123 for plain NTP, which
@@ -764,9 +765,9 @@ works only at the server that made it.
 
 netd's DHCP server (see [Give your network
 addresses](#give-your-network-addresses)) names the card's own address
-to the computers it serves as their time server while `serve` is not
-`off`. That DHCP option names a plain NTP server, so the devices that
-read it get their time only with `serve = nts+ntp`.
+to the computers it serves as their time server while `serve = nts+ntp`
+answers them. That DHCP option names a plain NTP server, so with `serve
+= nts` it names none, and the devices that read it keep their own.
 
 ## Fetching with curl
 

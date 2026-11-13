@@ -9,8 +9,8 @@
 // a gives each card on the cable's network an address from 10.9.0.100 to
 // 10.9.0.150 for a minute, and b's, whose MAC address its settings
 // reserve, 10.9.0.20 as `b`. The router, the DNS servers and the domain
-// are set; the time server is a's, as timed serves time; the connection
-// is metered. a's timed serves NTS and plain NTP with a certificate for
+// are set; the time server is a's while its timed answers plain NTP,
+// which DHCP clients speak; the connection is metered. a's timed serves NTS and plain NTP with a certificate for
 // a.test that an authority of its own signed, on a clock that nothing
 // set (`serve-unsynced`). b's clock starts an hour ahead (the case's
 // -rtc), and b's timed asks a.test, which b's hosts file gives, and
@@ -270,6 +270,25 @@ static int ask_wait(int seconds, const char *needle, const char *command) {
 	return ask(line, "ok");
 }
 
+// Asks b to do `command` each second, for at most `seconds`, until its
+// answer starts with `wanted`, as netd takes its settings again some time
+// after `service netd reload` returns; only the last answer can fail.
+static int ask_until(int seconds, const char *command, const char *wanted) {
+	for(int tries = 1; tries < seconds; tries++) {
+		fprintf(control_out, "%s\n", command);
+		fflush(control_out);
+		if(!fgets(answer, sizeof(answer), control_in))
+			break;
+		answer[strcspn(answer, "\n")] = 0;
+		if(strncmp(answer, wanted, strlen(wanted)) == 0) {
+			printf("networkservetest: b: %s\n", answer);
+			return 1;
+		}
+		check_sleep_ms(1000);
+	}
+	return ask(command, wanted);
+}
+
 // b's clock, in seconds since 1970; 0 if it did not say.
 static long long b_time(void) {
 	return ask("time", "ok ") ? atoll(answer + 3) : 0;
@@ -388,19 +407,31 @@ static void plain_ntp(void) {
 }
 
 // What the offer made to a client, one line, says: the address and what
-// the settings gave with it.
+// the settings gave with it, with a as the time server while its timed
+// answers plain NTP, which DHCP clients speak, and none while it serves
+// NTS alone.
 #define OFFER_OTHER \
 	"ok offer " POOL_FIRST " server " A_ADDRESS \
 	" lease 60 router 10.9.0.2 dns 10.9.0.53,10.9.0.54 time " A_ADDRESS \
 	" domain serve.test metered"
+#define OFFER_OTHER_NO_TIME \
+	"ok offer " POOL_FIRST " server " A_ADDRESS \
+	" lease 60 router 10.9.0.2 dns 10.9.0.53,10.9.0.54 domain serve.test metered"
 
 // A client of its own MAC address, with netd on b stopped so that its
 // port 68 is free, is offered the pool's lowest address with what is
 // set, gets it, and gives it back; b's own MAC address is offered the
-// address reserved for it.
+// address reserved for it. The offer names a as the time server only
+// while a's timed answers plain NTP: not while it serves NTS alone, as
+// plain_ntp left it.
 static void other_client(void) {
 	CHECK(ask("run service netd stop", "ok 0"));
-	CHECK(ask("dhcp discover " OTHER_MAC, OFFER_OTHER));
+	CHECK(run("service netd reload") == 0);
+	CHECK(ask_until(10, "dhcp discover " OTHER_MAC, OFFER_OTHER_NO_TIME));
+	time_settings("nts+ntp");
+	restart_time();
+	CHECK(run("service netd reload") == 0);
+	CHECK(ask_until(10, "dhcp discover " OTHER_MAC, OFFER_OTHER));
 	CHECK(ask("dhcp discover " B_MAC, "ok offer " B_ADDRESS " server " A_ADDRESS));
 	CHECK(ask("dhcp request " OTHER_MAC " " POOL_FIRST, "ok ack " POOL_FIRST));
 	CHECK(wait_for_lease(OTHER_MAC, 10) > 0);
@@ -413,7 +444,7 @@ static void other_client(void) {
 	CHECK(ask("run service netd start", "ok 0"));
 	CHECK(ask_wait(60, B_ADDRESS "/24", "ip -4 address show dev net0"));
 	printf("networkservetest: a second client was offered the lowest address of the pool with what "
-		   "is set, got it, and gave it back\n");
+		   "is set, with a time server only while a answered plain NTP, got it, and gave it back\n");
 }
 
 static int a(void) {

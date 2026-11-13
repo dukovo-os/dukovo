@@ -1299,8 +1299,9 @@ impl Netd {
     }
 
     /// The pool `setup` gives the server of the card `name`, with the
-    /// defaults of what it leaves out worked out now.
-    fn pool_of(&self, name: &str, setup: &Setup, timed_serves: bool) -> Option<Pool> {
+    /// defaults of what it leaves out worked out now; `timed` is timed(5)'s
+    /// settings, which say whether the card's address is the time server.
+    fn pool_of(&self, name: &str, setup: &Setup, timed: &str) -> Option<Pool> {
         let server = &setup.server;
         let (first, last) = server.range?;
         let card = setup.server_address(first)?;
@@ -1308,7 +1309,10 @@ impl Netd {
             Some(router) => router,
             None => setup.router.filter(|&router| card.contains(router)),
         };
-        let time = server.time.unwrap_or_else(|| timed_serves.then_some(card.ip));
+        // DHCP clients ask their time server in plain NTP.
+        let time = server.time.unwrap_or_else(|| {
+            crate::timed::answers_plain_ntp_from(timed, IpAddr::V4(first)).then_some(card.ip)
+        });
         Some(Pool {
             card: name.to_string(),
             address: card.ip,
@@ -1331,7 +1335,7 @@ impl Netd {
     /// with the pool they give.
     fn start_serving(&mut self, card: &mut Card) {
         let setup = self.setup(&card.name, &mac_text(card.mac));
-        let Some(pool) = self.pool_of(&card.name, &setup, timed_serves_time()) else { return };
+        let Some(pool) = self.pool_of(&card.name, &setup, &timed_settings()) else { return };
         // It answers from the card's address, which the kernel must have
         // taken.
         if !card.given.iter().any(|cidr| cidr.ip == pool.address) {
@@ -1429,7 +1433,7 @@ impl Netd {
         for card in &self.cards {
             let Some(serving) = &card.serving else { continue };
             let setup = self.setup(&card.name, &mac_text(card.mac));
-            if let Some(pool) = self.pool_of(&card.name, &setup, timed_serves_time()) {
+            if let Some(pool) = self.pool_of(&card.name, &setup, &timed_settings()) {
                 serving.set_pool(pool);
             }
         }
@@ -1960,19 +1964,9 @@ fn plural(count: u32, unit: &str) -> String {
     if count == 1 { format!("1 {unit}") } else { format!("{count} {unit}s") }
 }
 
-/// Whether timed(5)'s settings now make timed serve time.
-fn timed_serves_time() -> bool {
-    timed_serves(&fs::read_to_string(crate::timed::SETTINGS).unwrap_or_default())
-}
-
-/// Whether timed(5)'s settings `text` make timed serve time: the last
-/// `serve` line says `nts` or `nts+ntp`.
-fn timed_serves(text: &str) -> bool {
-    let value = text
-        .lines()
-        .filter_map(|line| line.split('#').next()?.split_once('='))
-        .rfind(|(key, _)| key.trim() == "serve");
-    value.is_some_and(|(_, value)| matches!(value.trim(), "nts" | "nts+ntp"))
+/// timed(5)'s settings as they are now.
+fn timed_settings() -> String {
+    fs::read_to_string(crate::timed::SETTINGS).unwrap_or_default()
 }
 
 /// The card that carries the default route, by its interface's routes:
@@ -2571,22 +2565,32 @@ mod tests {
             ["127.0.0.53", "10.0.2.3", "fec0::3", "10.0.2.3", "1.1.1.1", "8.8.8.8", "9.9.9.9"];
         netd.cards
             .push(Card { dns: dns.map(|dns| dns.parse().unwrap()).to_vec(), ..placeholder() });
-        let pool = |text: &str, timed: bool| {
+        let pool = |text: &str, timed: &str| {
             let (cards, wrong) = parse_settings(text);
             assert_eq!(wrong, Vec::<String>::new());
             netd.pool_of("net1", &cards[0].1, timed).unwrap()
         };
         let bare = "[net1]\naddress = 192.168.10.1/24\nrouter = 192.168.10.254\n\
                     dhcp-server = 192.168.10.100-192.168.10.199\n";
-        let pool_bare = pool(bare, true);
+        let serving = "serve = nts+ntp\nserve-certificate = /system/settings/ssl/a.pem\n\
+                       serve-key = /system/settings/ssl/a.key\n";
+        let pool_bare = pool(bare, serving);
         assert_eq!(
             (pool_bare.address, pool_bare.prefix, pool_bare.lease, pool_bare.router),
             (ip("192.168.10.1"), 24, Duration::from_hours(12), Some(ip("192.168.10.254")))
         );
         assert_eq!(pool_bare.dns, [ip("10.0.2.3"), ip("1.1.1.1"), ip("8.8.8.8")]);
-        // The card's address is the time server while timed serves time.
+        // The card's address is the time server while timed answers plain
+        // NTP from the pool, which DHCP clients speak: not NTS alone, nor
+        // to other networks, nor without a certificate.
         assert_eq!(pool_bare.time, Some(ip("192.168.10.1")));
-        assert_eq!(pool(bare, false).time, None);
+        assert_eq!(pool(bare, "").time, None);
+        assert_eq!(pool(bare, &serving.replace("nts+ntp", "nts")).time, None);
+        let elsewhere = format!("{serving}serve-allow = 10.0.0.0/8\n");
+        assert_eq!(pool(bare, &elsewhere).time, None);
+        let here = format!("{serving}serve-allow = 10.0.0.0/8, 192.168.10.0/24\n");
+        assert_eq!(pool(bare, &here).time, Some(ip("192.168.10.1")));
+        assert_eq!(pool(bare, "serve = nts+ntp\n").time, None);
         assert_eq!(
             (pool_bare.domain, pool_bare.metered, pool_bare.reserved.len()),
             (None, false, 0)
@@ -2597,7 +2601,7 @@ mod tests {
              dhcp-server-time = none\ndhcp-server-lease = 1m\ndhcp-server-metered = yes\n\
              dhcp-server-domain = lab.example\n"
         );
-        let pool_set = pool(&set, true);
+        let pool_set = pool(&set, serving);
         assert_eq!((pool_set.router, pool_set.time), (None, None));
         assert_eq!(pool_set.dns, [ip("192.168.10.1")]);
         assert_eq!((pool_set.lease, pool_set.metered), (Duration::from_mins(1), true));
@@ -2607,23 +2611,10 @@ mod tests {
             "[net1]\naddress = 192.168.10.1/24\naddress = 10.0.0.1/8\nrouter = 10.0.0.254\n\
              dhcp-server = 192.168.10.100-192.168.10.199\n",
         );
-        assert_eq!(netd.pool_of("net1", &cards[0].1, false).unwrap().router, None);
+        assert_eq!(netd.pool_of("net1", &cards[0].1, "").unwrap().router, None);
         // No range, no pool.
         let (cards, _) = parse_settings("[net1]\naddress = 192.168.10.1/24\n");
-        assert_eq!(netd.pool_of("net1", &cards[0].1, false), None);
-    }
-
-    #[test]
-    fn timed_serves_time_when_its_settings_say_so() {
-        assert!(timed_serves("serve = nts\n"));
-        assert!(timed_serves("servers = a.test\n serve=nts+ntp # for the lab\n"));
-        assert!(!timed_serves("serve = off\n"));
-        assert!(!timed_serves(""));
-        assert!(!timed_serves("# serve = nts\nservers = nts.example\n"));
-        // The last line is the one that counts, as in timed(5).
-        assert!(!timed_serves("serve = nts\nserve = off\n"));
-        assert!(timed_serves("serve = off\nserve = nts\n"));
-        assert!(!timed_serves("serve = yes\n"));
+        assert_eq!(netd.pool_of("net1", &cards[0].1, ""), None);
     }
 
     /// A card with the routes given: an IPv4 default router, an IPv6 one.

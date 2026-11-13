@@ -44,8 +44,9 @@ connections (ADR 0502) open for this phase.
     - the router is the section's `router`;
     - the DNS servers are those resolv.conf names that are not
       loopback;
-    - the time server is the card's address while timed serves time
-      (ADR 0487).
+    - the time server is the card's address while timed answers plain
+      NTP from the card's network (ADR 0487), since a client told of a
+      time server by DHCP asks it in plain NTP.
   - A mistake turns the server off for that card and says why.
 - **It answers as RFC 2131 has a server answer**
   (`systools/src/dhcp_server.rs`, which has no I/O of its own and is

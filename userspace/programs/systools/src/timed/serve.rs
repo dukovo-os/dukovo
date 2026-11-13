@@ -139,6 +139,19 @@ pub struct ServeSettings {
     pub unsynced: bool,
 }
 
+impl ServeSettings {
+    /// Whether these settings answer plain NTP from `client`, an address on
+    /// one of the machine's own networks: what a DHCP client that netd(8)
+    /// gives this machine as its time server (option 42) speaks.
+    pub fn answer_plain_ntp_from(&self, client: IpAddr) -> bool {
+        self.mode == Mode::NtsAndNtp
+            && match &self.allow {
+                Allow::Own | Allow::Any => true,
+                Allow::Networks(networks) => networks.iter().any(|&network| on(client, network)),
+            }
+    }
+}
+
 /// Takes the timed(5) setting `key` = `value` if it is one of serving's:
 /// `None` if it is not, else whether `value` is wrong.
 pub fn setting(settings: &mut ServeSettings, key: &str, value: &str) -> Option<Result<(), String>> {

@@ -326,7 +326,7 @@ machine asks for them.
 | Promiscuous mode for packet capture | ADR 0346 |
 | Firewall rules for outbound traffic and rate limits | ADR 0334 |
 | Routing beyond a tunnel's subnet before the routing table | ADR 0339 |
-| timed: choosing among servers, training the clock's frequency, `CLOCK_REALTIME` timers after a step, authenticated fallback, leap seconds | ADR 0194 |
+| timed: choosing among servers, training the clock's frequency, `CLOCK_REALTIME` timers after a step, authenticated fallback, leap seconds | ADRs 0194, 0487 |
 | `AF_UNIX` datagram and sequenced-packet sockets, `MSG_PEEK`, credentials as control messages | ADR 0091 |
 | A per-person setting for low ports | ADR 0257 |
 | SMB: pipelined reads and writes, a page cache, leases and oplocks, change notices, locks other sessions see, `LsarQueryInformationPolicy` | ADRs 0227 to 0229 |
@@ -343,7 +343,7 @@ machine asks for them.
 | DHCP relay agents: a request with `giaddr` set is ignored, and netd's log says so once | ADR 0486 |
 | An ICMP probe of an address before netd's DHCP server offers it: a client's DECLINE covers a conflict (RFC 2131, section 3.1.5) | ADR 0486 |
 | Detecting another DHCP server on a card's network | ADR 0486 |
-| NTS keys shared between several time servers (RFC 8915, section 6): the cookies of timed's server work at that server alone | ADR 0486 |
+| NTS keys shared between several time servers (RFC 8915, section 6): the cookies of timed's server work at that server alone | ADR 0487 |
 
 ### Devices and firmware
 

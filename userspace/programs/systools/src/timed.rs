@@ -165,6 +165,14 @@ pub fn parse_settings(text: &str) -> (Settings, Vec<String>) {
     (settings, wrong)
 }
 
+/// Whether timed(5)'s settings `text` answer plain NTP from `client`, an
+/// address on one of the machine's own networks, as DHCP clients told of
+/// this machine as their time server speak it: only `serve = nts+ntp`, with
+/// a certificate and key, and `serve-allow` letting `client` in.
+pub fn answers_plain_ntp_from(text: &str, client: IpAddr) -> bool {
+    parse_settings(text).0.serve.answer_plain_ntp_from(client)
+}
+
 /// Splits `name[:port]`, or `[v6]:port`.
 fn host_port(text: &str, default: u16) -> (String, u16) {
     if let Some(rest) = text.strip_prefix('[')

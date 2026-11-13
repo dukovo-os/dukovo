@@ -55,7 +55,7 @@ as one stratum further from the reference clock than the server it last
 set the clock by. Three hours after its last sync, or before its first,
 it says it is not synchronized, and clients do not take its time.
 *netd*(8)'s DHCP server gives clients this machine as their time server
-while it serves (*network*(5)).
+while it serves them plain NTP (*network*(5)), which they ask in.
 
 *serve =* *off* | *nts* | *nts+ntp*
 	What it serves: nothing, the default; NTS alone; or NTS and plain

@@ -114,10 +114,11 @@ comment.
 	characters. Without it they are told of none.
 
 *dhcp-server-time =* _address_ | *none*
-	The time server the clients are told of (DHCP option 42). By
-	default the card's own address while *timed*(8) serves the time
-	(*serve* in *timed*(5)), and otherwise none. *none* tells them of
-	none.
+	The time server the clients are told of (DHCP option 42), which
+	they ask in plain NTP. By default the card's own address while
+	*timed*(8) answers plain NTP from the clients' network (*serve =
+	nts+ntp* in *timed*(5), with *serve-allow* letting them in), and
+	otherwise none. *none* tells them of none.
 
 *dhcp-server-metered =* *yes* | *no*
 	With *yes* the clients are told that the connection is metered, by

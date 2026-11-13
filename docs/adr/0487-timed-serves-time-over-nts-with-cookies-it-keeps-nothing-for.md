@@ -90,7 +90,8 @@ the devices that cannot do better.
     authenticated is one an NTS client must not trust. A plain request
     gets the `RATE` kiss, at most once a second.
 - **netd's DHCP server gives this machine as the time server** (option
-  42) while `serve` is on (ADR 0486). `timedatectl timesync-status`
+  42) while `serve = nts+ntp` lets the clients' network in (ADR 0486),
+  as those clients ask in plain NTP; with NTS alone it gives none. `timedatectl timesync-status`
   shows how many answers and key establishments were served.
 
 ## Consequences

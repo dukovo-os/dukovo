@@ -7,8 +7,8 @@
 //! log-forward's: machine a's card is an e1000e and b's a virtio card.
 //! Machine a gives 10.9.0.100 to 10.9.0.150 by DHCP for a minute, and b's
 //! MAC address 10.9.0.20 as b, with a router, two DNS servers and a domain
-//! that are set, its own address for a time server as its timed serves the
-//! time, and the metered flag. Machine b asks for an address: it must get
+//! that are set, its own address for a time server as its timed answers
+//! plain NTP, and the metered flag. Machine b asks for an address: it must get
 //! 10.9.0.20 with all of that, a's netd leases must list it by name, its
 //! lease must be renewed at the half of it and end later, and netd on b must
 //! say the connection is metered to updated(8). a's timed serves NTS and
@@ -20,8 +20,9 @@
 //! b must get an answer at stratum 10 from a, and none once a serves NTS
 //! alone. With netd on b stopped, a client of another MAC address must be
 //! offered the lowest address of the pool with the options that are set,
-//! get it, and give it back, which a's netd logs; b's own MAC address must
-//! be offered its reservation.
+//! with no time server while a serves NTS alone and a's own once it answers
+//! plain NTP again, get it, and give it back, which a's netd logs; b's own
+//! MAC address must be offered its reservation.
 
 use super::super::*;
 
@@ -31,7 +32,7 @@ const PEER_CMDLINE: &str = "lockdep -- --service-dir /system/tests/services/serv
 
 pub const CASE: Case = Case {
     name: "network-serve",
-    about: "two machines on a cable: a's netd gives b the address reserved for it with the router, DNS servers, domain, time server and metered flag that are set, lists it, renews it and takes a second client's lease and release; b, whose clock starts an hour ahead, takes the time from a's timed over NTS; a plain NTP query gets an answer while a serves it and none once it serves NTS alone (ADR 0486)",
+    about: "two machines on a cable: a's netd gives b the address reserved for it with the router, DNS servers, domain, time server and metered flag that are set, lists it, renews it and takes a second client's lease and release, naming itself the time server only while it answers plain NTP; b, whose clock starts an hour ahead, takes the time from a's timed over NTS; a plain NTP query gets an answer while a serves it and none once it serves NTS alone (ADR 0486)",
     firmware: Firmware::Uefi,
     media: Media::Usb,
     cmdline: "lockdep -- --service-dir /system/tests/services/serve --posix --network /system/tests/posix/networkservetest a",
@@ -66,7 +67,7 @@ const PARTS: &[&str] = &[
     "networkservetest: b started an hour ahead, and timed took the time from a over NTS and stepped the clock to within a second of a's",
     "networkservetest: b renewed its lease at the half of it, and the end moved on",
     "networkservetest: a plain NTP query got an answer from a stratum 10 server, and none once it served NTS alone",
-    "networkservetest: a second client was offered the lowest address of the pool with what is set, got it, and gave it back",
+    "networkservetest: a second client was offered the lowest address of the pool with what is set, with a time server only while a answered plain NTP, got it, and gave it back",
 ];
 
 /// What netd on a logs of what it gave, once the parts have passed: the
