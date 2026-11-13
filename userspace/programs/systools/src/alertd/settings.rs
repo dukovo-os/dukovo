@@ -836,7 +836,7 @@ mod tests {
     fn the_examples_in_the_file_that_ships_are_channels_when_they_are_uncommented() {
         // The indented comment lines are the examples; `# room` stays a
         // comment, as the file shows it.
-        let uncommented: String = SHIPPED
+        let mut uncommented = SHIPPED
             .lines()
             .filter_map(|line| line.strip_prefix("#   "))
             .filter(|line| {
@@ -844,8 +844,9 @@ mod tests {
                     && !line.starts_with("service ")
                     && !line.starts_with("alerts ")
             })
-            .map(|line| format!("{line}\n"))
-            .collect();
+            .collect::<Vec<_>>()
+            .join("\n");
+        uncommented.push('\n');
         let (settings, wrong) = read_settings(&uncommented, "server");
         assert_eq!(wrong, Vec::<String>::new(), "{uncommented}");
         let names: Vec<&str> = settings.channels.iter().map(|c| c.name.as_str()).collect();
