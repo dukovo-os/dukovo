@@ -485,6 +485,12 @@ pub fn domain(data: &[u8]) -> Option<String> {
     (name.len() <= 253 && name.split('.').all(label_ok)).then(|| name.to_string())
 }
 
+/// Whether the vendor-specific information a server gave holds
+/// [`ANDROID_METERED`], alone or among other bytes.
+fn says_metered(data: &[u8]) -> bool {
+    data.windows(ANDROID_METERED.len()).any(|window| window == ANDROID_METERED)
+}
+
 /// The lease an offer or acknowledgement gives, if it is one a card may
 /// take: from `server`, if the message does not say which server it is.
 fn lease_of(
@@ -510,9 +516,7 @@ fn lease_of(
                 router = Some(Ipv4Addr::from(octets));
             }
             OPTION_DOMAIN => name = domain(option.data),
-            OPTION_VENDOR => {
-                metered = option.data.windows(ANDROID_METERED.len()).any(|w| w == ANDROID_METERED)
-            }
+            OPTION_VENDOR => metered = says_metered(option.data),
             _ => {}
         }
     }

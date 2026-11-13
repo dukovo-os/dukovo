@@ -31,11 +31,22 @@
 //! and gives the card the address it gets as ip(8) would. The DNS servers
 //! DHCPv6 gives and routers advertise go into resolv.conf after DHCP's.
 //!
+//! A card with an address of its own and a `dhcp-server` range in network(5)
+//! gives the clients on its network addresses by DHCP (the server is
+//! [`crate::dhcp_server`], ADR 0486). It has a thread of its own on a
+//! socket on port 67, bound to the card, which answers each request under
+//! the server's lock and then keeps the leases in
+//! `/system/state/netd/dhcp-server-<card>` and lists them in
+//! `/system/live/netd/leases`, which `netd leases` shows. The log has a line
+//! for each new lease, decline and release, and when the pool is full. The
+//! settings read again give each server its new pool, with the leases that
+//! still fit it.
+//!
 //! Bridges and VLANs that ip(8) makes (ADR 0333) are set up as cards are,
 //! by their names; a bridge's port is not, while it is one: its bridge
 //! has the addresses.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::io::{self, Write};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddrV4, SocketAddrV6, UdpSocket};
@@ -43,13 +54,17 @@ use std::os::fd::{AsRawFd, FromRawFd};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
+use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use radix_abi::network::{Ipv6Flags, Ipv6Settings};
 
 use crate::args::Args;
 use crate::dhcp::{self, Action, Client, Lease};
-use crate::dhcp_server::{self, Reservation, mac_of};
+use crate::dhcp_server::{
+    self, Event, Lease as Granted, Pool, Reply, Reservation, Server, mac_of, mac_text,
+};
 use crate::dhcp6;
 use crate::ip::{self, Cidr, Cidr6, Interface, Network};
 use crate::util::{self, Fail};
@@ -68,6 +83,12 @@ const SCAN: Duration = Duration::from_secs(5);
 /// DNS servers resolv.conf takes.
 const ADDRESSES_MAX: usize = 4;
 const DNS_MAX: usize = 3;
+
+/// What `netd leases` reads: each serving card's leases, a line each.
+const SERVER_LISTING: &str = "/system/live/netd/leases";
+
+/// How long a lease of a card's server lasts unless the settings say.
+const SERVER_LEASE_DEFAULT: Duration = Duration::from_hours(12);
 
 /// The most reservations a card's server takes.
 const RESERVATIONS_MAX: usize = 1024;
@@ -158,6 +179,12 @@ impl Dhcpv6 {
 impl Setup {
     fn dhcp(&self) -> bool {
         self.dhcp.unwrap_or(self.addresses.is_empty())
+    }
+
+    /// The address its DHCP server answers from: the first whose network
+    /// holds `first`, the range's first address, else the first one.
+    fn server_address(&self, first: Ipv4Addr) -> Option<Cidr> {
+        self.addresses.iter().find(|cidr| cidr.contains(first)).or(self.addresses.first()).copied()
     }
 
     /// Whether netd leaves the card alone: no DHCP, and nothing of its
@@ -487,9 +514,7 @@ fn check_server(name: &str, setup: &mut Setup, wrong: &mut Vec<String>) {
         wrong.push(format!("{name}: dhcp-server cannot go with dhcp = yes"));
         return;
     }
-    let Some(&card) =
-        setup.addresses.iter().find(|cidr| cidr.contains(first)).or(setup.addresses.first())
-    else {
+    let Some(card) = setup.server_address(first) else {
         wrong.push(format!("{name}: dhcp-server needs an address of the card's own"));
         return;
     };
@@ -633,6 +658,8 @@ struct Card {
     dhcp6: Option<Dhcp6>,
     /// The last failure to send, so that each is said once.
     failure: Option<String>,
+    /// Its DHCP server, while the settings give it one.
+    serving: Option<Serving>,
 }
 
 /// A card's DHCPv6 client, on its socket, and what it got.
@@ -644,6 +671,229 @@ struct Dhcp6 {
     given: Option<Cidr6>,
     dns: Vec<Ipv6Addr>,
     domains: Vec<String>,
+}
+
+/// What each serving card's server lists for `netd leases`, by card: the
+/// lines of [`SERVER_LISTING`].
+type Listing = Arc<Mutex<BTreeMap<String, String>>>;
+
+/// A card's DHCP server at work: its pool and leases behind a lock, and
+/// the thread that answers the clients on its socket, which ends when the
+/// server is dropped.
+#[derive(Debug)]
+struct Serving {
+    card: String,
+    server: Arc<Mutex<Server>>,
+    stop: Arc<AtomicBool>,
+    listing: Listing,
+    thread: Option<thread::JoinHandle<()>>,
+}
+
+impl Serving {
+    /// Starts a server for `pool` with the `leases` it had, answering on
+    /// `socket`.
+    fn start(
+        pool: Pool,
+        leases: Vec<Granted>,
+        socket: UdpSocket,
+        listing: &Listing,
+    ) -> io::Result<Serving> {
+        let card = pool.card.clone();
+        let server = Arc::new(Mutex::new(Server::new(pool, leases)));
+        let stop = Arc::new(AtomicBool::new(false));
+        let thread = thread::Builder::new().name(format!("dhcp-server {card}")).spawn({
+            let (card, server, stop, listing) =
+                (card.clone(), server.clone(), stop.clone(), listing.clone());
+            move || serve(&socket, &card, &server, &stop, &listing)
+        })?;
+        let serving =
+            Serving { card, server, stop, listing: listing.clone(), thread: Some(thread) };
+        serving.keep();
+        Ok(serving)
+    }
+
+    /// Gives the server `pool`, which keeps the leases that fit it.
+    fn set_pool(&self, pool: Pool) {
+        let mut server = self.server.lock().unwrap_or_else(PoisonError::into_inner);
+        if *server.pool() == pool {
+            return;
+        }
+        server.set_pool(pool);
+        drop(server);
+        self.keep();
+    }
+
+    /// Writes the server's leases to the card's file and lists them.
+    fn keep(&self) {
+        let server = self.server.lock().unwrap_or_else(PoisonError::into_inner);
+        let (leases, rows) = (server.leases().to_vec(), server.listing(wall()));
+        drop(server);
+        keep_leases(&self.card, &self.listing, &leases, rows);
+    }
+}
+
+impl Drop for Serving {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(thread) = self.thread.take() {
+            // The thread sees the flag within a poll's timeout; it
+            // holds the socket until then, which a new server on the
+            // same card needs free.
+            let _ = thread.join();
+        }
+        publish(&self.listing, &self.card, String::new());
+    }
+}
+
+/// How long a server's thread waits for a request before it looks at its
+/// stop flag.
+const SERVE_POLL_MS: libc::c_int = 250;
+
+/// Answers the requests that come to `socket` for the card `card`, until
+/// `stop` is set: each under the server's lock, then, with the lock
+/// released, the lease files written, the reply sent and the event logged.
+fn serve(
+    socket: &UdpSocket,
+    card: &str,
+    server: &Mutex<Server>,
+    stop: &AtomicBool,
+    listing: &Listing,
+) {
+    let mut buffer = [0u8; 2048];
+    let mut failure: Option<String> = None;
+    while !stop.load(Ordering::Relaxed) {
+        let mut poll = libc::pollfd { fd: socket.as_raw_fd(), events: libc::POLLIN, revents: 0 };
+        // SAFETY: `poll` is one valid pollfd.
+        let ready = unsafe { libc::poll(&raw mut poll, 1, SERVE_POLL_MS) };
+        if ready < 0 {
+            // Not a signal's interruption: wait before trying again, as
+            // the loop would spin.
+            thread::sleep(Duration::from_millis(100));
+            continue;
+        }
+        // A datagram longer than the buffer is cut, and the server takes
+        // none that long.
+        while !stop.load(Ordering::Relaxed)
+            && let Ok((len, from)) = socket.recv_from(&mut buffer)
+        {
+            // Clients send from port 68 (RFC 2131).
+            if from.port() != CLIENT_PORT {
+                continue;
+            }
+            let now = wall();
+            let mut guard = server.lock().unwrap_or_else(PoisonError::into_inner);
+            let (reply, event) = guard.handle(&buffer[..len], Instant::now(), now);
+            let writes = matches!(
+                event,
+                Some(
+                    Event::Leased(_) | Event::Renewed | Event::Released(_) | Event::Declined { .. }
+                )
+            );
+            let kept = writes.then(|| (guard.leases().to_vec(), guard.listing(now)));
+            drop(guard);
+            // The lease is kept before the client is told it has it.
+            if let Some((leases, rows)) = kept {
+                keep_leases(card, listing, &leases, rows);
+            }
+            if let Reply::Send { to, message } = reply {
+                let sent = socket.send_to(&message, to).err().map(|err| util::strip_os_error(&err));
+                if sent.is_some() && sent != failure {
+                    eprintln!(
+                        "netd: {card}: cannot send to {to}: {}",
+                        sent.as_deref().unwrap_or("")
+                    );
+                }
+                failure = sent;
+            }
+            if let Some(event) = event {
+                say(card, &event, now);
+            }
+        }
+    }
+}
+
+/// `52:54:00:12:34:56`, and the name after it if there is one.
+fn client_text(mac: [u8; 6], name: Option<&str>) -> String {
+    match name {
+        Some(name) => format!("{} ({name})", mac_text(mac)),
+        None => mac_text(mac),
+    }
+}
+
+/// Logs what happened to the card `card`'s server at `wall`, if it is
+/// worth a line: not the renewal of a lease.
+fn say(card: &str, event: &Event, wall: u64) {
+    match event {
+        Event::Leased(lease) => {
+            let left = u32::try_from(lease.ends.saturating_sub(wall)).unwrap_or(u32::MAX);
+            let client = client_text(lease.mac, lease.name.as_deref());
+            eprintln!("netd: {card}: gave {} to {client} for {}", lease.address, lasting(left));
+        }
+        Event::Released(lease) => {
+            let client = client_text(lease.mac, lease.name.as_deref());
+            eprintln!("netd: {card}: {client} released {}", lease.address);
+        }
+        Event::Declined { address, mac, name } => {
+            let client = client_text(*mac, name.as_deref());
+            eprintln!(
+                "netd: {card}: {client} says {address} is in use by another machine; it is left \
+                 alone for 10 minutes"
+            );
+        }
+        Event::Full { mac } => eprintln!(
+            "netd: {card}: the pool is full: {} gets no address until a lease ends",
+            mac_text(*mac)
+        ),
+        Event::Relayed => {
+            eprintln!(
+                "netd: {card}: a request came through a relay agent; relayed requests are ignored"
+            );
+        }
+        Event::Renewed => {}
+    }
+}
+
+/// Keeps the card `card`'s leases in its file in [`LEASES`], and lists
+/// `rows` of them for `netd leases`.
+fn keep_leases(card: &str, listing: &Listing, leases: &[Granted], rows: String) {
+    let path = format!("{LEASES}/dhcp-server-{card}");
+    if let Err(err) = write_synced(&path, &dhcp_server::leases_text(leases), 0o600) {
+        eprintln!(
+            "netd: {card}: cannot keep its DHCP leases in {path}: {}",
+            util::strip_os_error(&err)
+        );
+    }
+    publish(listing, card, rows);
+}
+
+/// Puts the card `card`'s `rows` in the list and writes it, which anyone
+/// may read. The list is written under its lock, so that two cards'
+/// writes do not cross.
+fn publish(listing: &Listing, card: &str, rows: String) {
+    let mut listing = listing.lock().unwrap_or_else(PoisonError::into_inner);
+    if rows.is_empty() {
+        listing.remove(card);
+    } else {
+        listing.insert(card.to_string(), rows);
+    }
+    let text: String = listing.values().map(String::as_str).collect();
+    if let Err(err) = write_synced(SERVER_LISTING, &text, 0o644) {
+        eprintln!("netd: cannot write {SERVER_LISTING}: {}", util::strip_os_error(&err));
+    }
+}
+
+/// Writes `text` to `path` with `mode`, whole or not at all: to a file
+/// beside it, which is synced, then renamed.
+fn write_synced(path: &str, text: &str, mode: u32) -> io::Result<()> {
+    if let Some(dir) = Path::new(path).parent() {
+        fs::create_dir_all(dir)?;
+    }
+    let new = format!("{path}.new");
+    let mut file =
+        fs::OpenOptions::new().write(true).create(true).truncate(true).mode(mode).open(&new)?;
+    file.write_all(text.as_bytes())?;
+    file.sync_all()?;
+    fs::rename(new, path)
 }
 
 /// Set by SIGTERM: netd ends. Set by SIGHUP: it reads the settings
@@ -731,9 +981,9 @@ fn seed() -> u64 {
     if got == 8 { u64::from_ne_bytes(bytes) } else { util::now_ns() }
 }
 
-/// A UDP socket on port 68 of the card named `name` that may broadcast,
-/// which does not block.
-fn client_socket(name: &str) -> io::Result<UdpSocket> {
+/// A UDP socket on `port`, 68 for a client and 67 for a server, of the
+/// card named `name` that may broadcast, which does not block.
+fn dhcp_socket(name: &str, port: u16) -> io::Result<UdpSocket> {
     let check = |result: libc::c_int| {
         if result < 0 { Err(io::Error::last_os_error()) } else { Ok(result) }
     };
@@ -763,7 +1013,7 @@ fn client_socket(name: &str) -> io::Result<UdpSocket> {
     // SAFETY: all zeros is a valid sockaddr_in: 0.0.0.0, port 0.
     let mut address: libc::sockaddr_in = unsafe { util::zeroed() };
     address.sin_family = libc::AF_INET as libc::sa_family_t;
-    address.sin_port = CLIENT_PORT.to_be();
+    address.sin_port = port.to_be();
     // SAFETY: the address is valid for its length.
     check(unsafe {
         libc::bind(
@@ -835,6 +1085,11 @@ struct Netd {
     /// change stays as it is.
     ipv6_before: Vec<(u32, Ipv6Setup)>,
     dhcp6_before: Vec<(u32, Dhcp6)>,
+    /// The cards' DHCP servers while the settings are read again, which
+    /// the cards that serve still take over, by their numbers.
+    serving_before: Vec<(u32, Serving)>,
+    /// The leases each card's server lists for `netd leases`.
+    listing: Listing,
 }
 
 impl Netd {
@@ -909,6 +1164,7 @@ impl Netd {
             }
             if let Some(mut card) = self.card(interface, now, first) {
                 self.keep_dhcp6(&mut card);
+                self.start_serving(&mut card);
                 self.cards.push(card);
                 changed = true;
             }
@@ -937,6 +1193,7 @@ impl Netd {
             dns6: Vec::new(),
             dhcp6: None,
             failure: None,
+            serving: None,
         };
         if setup.alone() {
             eprintln!("netd: {} is left as it is, as {SETTINGS} says", card.name);
@@ -972,7 +1229,7 @@ impl Netd {
     /// on with the lease it keeps; while another socket holds the port,
     /// the card waits for it, which is said once, when `say`.
     fn ask(card: &mut Card, interface: &Interface, now: Instant, say: bool) {
-        let socket = match client_socket(&card.name) {
+        let socket = match dhcp_socket(&card.name, CLIENT_PORT) {
             Ok(socket) => socket,
             Err(err) => {
                 if say {
@@ -1015,6 +1272,115 @@ impl Netd {
             }
         };
         card.how = How::Dhcp { socket, client: Box::new(client) };
+    }
+
+    /// The IPv4 DNS servers resolv.conf names that are not loopback
+    /// addresses: those a card's server gives its clients unless the
+    /// settings name others.
+    fn default_dns(&self) -> Vec<Ipv4Addr> {
+        let mut servers: Vec<Ipv4Addr> = Vec::new();
+        for dns in self.cards.iter().flat_map(|card| &card.dns) {
+            if let IpAddr::V4(dns) = dns
+                && !dns.is_loopback()
+                && !servers.contains(dns)
+            {
+                servers.push(*dns);
+            }
+        }
+        servers.truncate(DNS_MAX);
+        servers
+    }
+
+    /// The pool `setup` gives the server of the card `name`, with the
+    /// defaults of what it leaves out worked out now.
+    fn pool_of(&self, name: &str, setup: &Setup, timed_serves: bool) -> Option<Pool> {
+        let server = &setup.server;
+        let (first, last) = server.range?;
+        let card = setup.server_address(first)?;
+        let router = match server.router {
+            Some(router) => router,
+            None => setup.router.filter(|&router| card.contains(router)),
+        };
+        let time = server.time.unwrap_or_else(|| timed_serves.then_some(card.ip));
+        Some(Pool {
+            card: name.to_string(),
+            address: card.ip,
+            prefix: card.prefix,
+            first,
+            last,
+            lease: server.lease.unwrap_or(SERVER_LEASE_DEFAULT),
+            router,
+            dns: server.dns.clone().unwrap_or_else(|| self.default_dns()),
+            domain: server.domain.clone(),
+            time,
+            metered: server.metered.unwrap_or(false),
+            reserved: server.reserved.iter().map(|(_, reservation)| reservation.clone()).collect(),
+        })
+    }
+
+    /// Starts the DHCP server of `card` if its settings give it one, on a
+    /// socket of its own on port 67, with the leases it kept; or goes on
+    /// with the server it had before the settings were read again, now
+    /// with the pool they give.
+    fn start_serving(&mut self, card: &mut Card) {
+        let setup = self.setup(&card.name, &mac_text(card.mac));
+        let Some(pool) = self.pool_of(&card.name, &setup, timed_serves_time()) else { return };
+        // It answers from the card's address, which the kernel must have
+        // taken.
+        if !card.given.iter().any(|cidr| cidr.ip == pool.address) {
+            eprintln!(
+                "netd: {}: dhcp-server is off: the card does not have {}",
+                card.name, pool.address
+            );
+            return;
+        }
+        if let Some(at) = self.serving_before.iter().position(|(index, _)| *index == card.index) {
+            let (_, serving) = self.serving_before.swap_remove(at);
+            serving.set_pool(pool);
+            card.serving = Some(serving);
+            return;
+        }
+        let socket = match dhcp_socket(&card.name, SERVER_PORT) {
+            Ok(socket) => socket,
+            Err(err) => {
+                eprintln!(
+                    "netd: {}: no socket on port {SERVER_PORT} for its DHCP server: {}",
+                    card.name,
+                    util::strip_os_error(&err)
+                );
+                return;
+            }
+        };
+        let kept = fs::read_to_string(format!("{LEASES}/dhcp-server-{}", card.name));
+        let leases = kept.map_or_else(|_| Vec::new(), |text| dhcp_server::parse_leases(&text));
+        let (kept, range) = (leases.len(), format!("{}-{}", pool.first, pool.last));
+        let lease = lasting(u32::try_from(pool.lease.as_secs()).unwrap_or(u32::MAX));
+        match Serving::start(pool, leases, socket, &self.listing) {
+            Ok(serving) => {
+                eprintln!(
+                    "netd: {}: giving addresses {range} by DHCP, for {lease} each; {kept} leases kept",
+                    card.name
+                );
+                card.serving = Some(serving);
+            }
+            Err(err) => eprintln!(
+                "netd: {}: cannot start its DHCP server: {}",
+                card.name,
+                util::strip_os_error(&err)
+            ),
+        }
+    }
+
+    /// Gives the servers that use the default DNS servers or time
+    /// server the current ones.
+    fn refresh_pools(&self) {
+        for card in &self.cards {
+            let Some(serving) = &card.serving else { continue };
+            let setup = self.setup(&card.name, &mac_text(card.mac));
+            if let Some(pool) = self.pool_of(&card.name, &setup, timed_serves_time()) {
+                serving.set_pool(pool);
+            }
+        }
     }
 
     /// Gives `card` the addresses `ours` and `router` in place of those
@@ -1304,8 +1670,10 @@ impl Netd {
     }
 
     /// Writes the cards' DNS servers into resolv.conf, or takes it away
-    /// when there are none.
+    /// when there are none, and gives the DHCP servers that default to
+    /// them the same.
     fn write_resolv(&self) {
+        self.refresh_pools();
         let mut servers: Vec<IpAddr> = Vec::new();
         let mut search: Vec<String> = Vec::new();
         // The settings' and DHCP's first, then DHCPv6's and those routers
@@ -1459,6 +1827,9 @@ impl Netd {
             if let Some(dhcp6) = card.dhcp6.take() {
                 self.dhcp6_before.push((card.index, dhcp6));
             }
+            if let Some(serving) = card.serving.take() {
+                self.serving_before.push((card.index, serving));
+            }
             drop(card);
         }
         self.scan(now);
@@ -1467,6 +1838,8 @@ impl Netd {
         // lost that.
         self.ipv6_before.clear();
         self.dhcp6_before.clear();
+        // A server whose card no longer serves ends here.
+        self.serving_before.clear();
         self.write_resolv();
     }
 }
@@ -1487,6 +1860,7 @@ fn placeholder() -> Card {
         dns6: Vec::new(),
         dhcp6: None,
         failure: None,
+        serving: None,
     }
 }
 
@@ -1532,6 +1906,75 @@ fn plural(count: u32, unit: &str) -> String {
     if count == 1 { format!("1 {unit}") } else { format!("{count} {unit}s") }
 }
 
+/// Whether timed(5)'s settings now make timed serve time.
+fn timed_serves_time() -> bool {
+    timed_serves(&fs::read_to_string(crate::timed::SETTINGS).unwrap_or_default())
+}
+
+/// Whether timed(5)'s settings `text` make timed serve time: the last
+/// `serve` line says `nts` or `nts+ntp`.
+fn timed_serves(text: &str) -> bool {
+    let value = text
+        .lines()
+        .filter_map(|line| line.split('#').next()?.split_once('='))
+        .rfind(|(key, _)| key.trim() == "serve");
+    value.is_some_and(|(_, value)| matches!(value.trim(), "nts" | "nts+ntp"))
+}
+
+/// The table `netd leases` shows for the lines of [`SERVER_LISTING`] at
+/// `wall`: each lease with the time left of it, and each reservation no
+/// client has. A line that is not one, or a lease that has ended, is left
+/// out.
+fn leases_table(text: &str, wall: u64) -> String {
+    let mut rows: Vec<[String; 5]> = Vec::new();
+    for line in text.lines() {
+        let [card, address, mac, name, ends] = line.split_whitespace().collect::<Vec<_>>()[..]
+        else {
+            continue;
+        };
+        let left = match ends.parse::<u64>() {
+            Ok(ends) if ends > wall => util::elapsed(ends - wall),
+            Ok(_) => continue,
+            Err(_) if ends == "reserved" => "reserved".to_string(),
+            Err(_) => continue,
+        };
+        let name = if name == "-" { "" } else { name };
+        rows.push([card, address, mac, name, &left].map(str::to_string));
+    }
+    if rows.is_empty() {
+        return String::new();
+    }
+    let header = ["CARD", "ADDRESS", "MAC", "NAME", "LEFT"].map(str::to_string);
+    rows.insert(0, header);
+    let widths: Vec<usize> =
+        (0..5).map(|at| rows.iter().map(|row| row[at].len()).max().unwrap_or(0)).collect();
+    let mut table = String::new();
+    for row in &rows {
+        let cells: Vec<String> =
+            row.iter().zip(&widths).map(|(cell, width)| format!("{cell:width$}")).collect();
+        table += cells.join("  ").trim_end();
+        table += "\n";
+    }
+    table
+}
+
+/// `netd leases`: the leases the cards' DHCP servers have given.
+fn leases(args: &mut Args) -> Result<i32, Fail> {
+    if let Some(arg) = args.next()? {
+        return Err(args.unknown(&arg));
+    }
+    match fs::read_to_string(SERVER_LISTING) {
+        Ok(text) => {
+            print!("{}", leases_table(&text, wall()));
+            Ok(0)
+        }
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Err(util::fail(
+            "no card gives addresses by DHCP: network(5)'s dhcp-server turns it on".into(),
+        )),
+        Err(err) => Err(util::failed(&SERVER_LISTING, err)),
+    }
+}
+
 /// The file of the lease of the card with the address `mac`.
 fn lease_path(mac: [u8; 6]) -> String {
     let name: Vec<String> = mac.iter().map(|byte| format!("{byte:02x}")).collect();
@@ -1558,6 +2001,12 @@ fn forget_lease(mac: [u8; 6]) {
 
 /// netd(8).
 pub fn main(args: &mut Args) -> Result<i32, Fail> {
+    if let Some(command) = args.subcommand() {
+        return match command.to_str() {
+            Some("leases") => leases(args),
+            _ => Err(util::usage("usage: netd [leases]".into())),
+        };
+    }
     if let Some(arg) = args.next()? {
         return Err(args.unknown(&arg));
     }
@@ -1579,6 +2028,8 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
         secret: load_secret(),
         ipv6_before: Vec::new(),
         dhcp6_before: Vec::new(),
+        serving_before: Vec::new(),
+        listing: Listing::default(),
     };
     netd.read_settings();
     netd.run().map_err(|e| util::failed(&"netd", e))?;
@@ -1770,7 +2221,7 @@ mod tests {
             net1.server,
             ServerSetup {
                 range: Some((ip("192.168.10.100"), ip("192.168.10.199"))),
-                lease: Some(Duration::from_secs(12 * 3600)),
+                lease: Some(Duration::from_hours(12)),
                 router: Some(Some(ip("192.168.10.254"))),
                 dns: Some(vec![ip("192.168.10.1")]),
                 domain: Some("lab.example".into()),
@@ -1908,7 +2359,7 @@ mod tests {
         );
         let server = &cards[0].1.server;
         assert_eq!(server.range, Some((ip("192.168.10.100"), ip("192.168.10.199"))));
-        assert_eq!(server.lease, Some(Duration::from_secs(90 * 60)));
+        assert_eq!(server.lease, Some(Duration::from_mins(90)));
         assert_eq!(wrong.len(), 14, "{wrong:#?}");
         let said = |at: usize, key: &str, value: &str| {
             format!("{SETTINGS}:{at}: '{value}' is not a {key} here")
@@ -2017,6 +2468,108 @@ mod tests {
         ] {
             assert_eq!(secs(bad), None, "{bad}");
         }
+    }
+
+    fn netd() -> Netd {
+        Netd {
+            cards: Vec::new(),
+            settings: Vec::new(),
+            scanned: None,
+            network: &ip::Slots,
+            secret: [0; 16],
+            ipv6_before: Vec::new(),
+            dhcp6_before: Vec::new(),
+            serving_before: Vec::new(),
+            listing: Listing::default(),
+        }
+    }
+
+    #[test]
+    fn a_server_pool_has_the_defaults_the_settings_leave_out() {
+        let mut netd = netd();
+        // The DNS servers resolv.conf names: not loopback, not IPv6, once
+        // each, at most three.
+        let dns =
+            ["127.0.0.53", "10.0.2.3", "fec0::3", "10.0.2.3", "1.1.1.1", "8.8.8.8", "9.9.9.9"];
+        netd.cards
+            .push(Card { dns: dns.map(|dns| dns.parse().unwrap()).to_vec(), ..placeholder() });
+        let pool = |text: &str, timed: bool| {
+            let (cards, wrong) = parse_settings(text);
+            assert_eq!(wrong, Vec::<String>::new());
+            netd.pool_of("net1", &cards[0].1, timed).unwrap()
+        };
+        let bare = "[net1]\naddress = 192.168.10.1/24\nrouter = 192.168.10.254\n\
+                    dhcp-server = 192.168.10.100-192.168.10.199\n";
+        let pool_bare = pool(bare, true);
+        assert_eq!(
+            (pool_bare.address, pool_bare.prefix, pool_bare.lease, pool_bare.router),
+            (ip("192.168.10.1"), 24, Duration::from_hours(12), Some(ip("192.168.10.254")))
+        );
+        assert_eq!(pool_bare.dns, [ip("10.0.2.3"), ip("1.1.1.1"), ip("8.8.8.8")]);
+        // The card's address is the time server while timed serves time.
+        assert_eq!(pool_bare.time, Some(ip("192.168.10.1")));
+        assert_eq!(pool(bare, false).time, None);
+        assert_eq!(
+            (pool_bare.domain, pool_bare.metered, pool_bare.reserved.len()),
+            (None, false, 0)
+        );
+        // What the settings say is used, and `none` is none.
+        let set = format!(
+            "{bare}dhcp-server-router = none\ndhcp-server-dns = 192.168.10.1\n\
+             dhcp-server-time = none\ndhcp-server-lease = 1m\ndhcp-server-metered = yes\n\
+             dhcp-server-domain = lab.example\n"
+        );
+        let pool_set = pool(&set, true);
+        assert_eq!((pool_set.router, pool_set.time), (None, None));
+        assert_eq!(pool_set.dns, [ip("192.168.10.1")]);
+        assert_eq!((pool_set.lease, pool_set.metered), (Duration::from_mins(1), true));
+        assert_eq!(pool_set.domain.as_deref(), Some("lab.example"));
+        // A section's router that is not on the network is not given.
+        let (cards, _) = parse_settings(
+            "[net1]\naddress = 192.168.10.1/24\naddress = 10.0.0.1/8\nrouter = 10.0.0.254\n\
+             dhcp-server = 192.168.10.100-192.168.10.199\n",
+        );
+        assert_eq!(netd.pool_of("net1", &cards[0].1, false).unwrap().router, None);
+        // No range, no pool.
+        let (cards, _) = parse_settings("[net1]\naddress = 192.168.10.1/24\n");
+        assert_eq!(netd.pool_of("net1", &cards[0].1, false), None);
+    }
+
+    #[test]
+    fn timed_serves_time_when_its_settings_say_so() {
+        assert!(timed_serves("serve = nts\n"));
+        assert!(timed_serves("servers = a.test\n serve=nts+ntp # for the lab\n"));
+        assert!(!timed_serves("serve = off\n"));
+        assert!(!timed_serves(""));
+        assert!(!timed_serves("# serve = nts\nservers = nts.example\n"));
+        // The last line is the one that counts, as in timed(5).
+        assert!(!timed_serves("serve = nts\nserve = off\n"));
+        assert!(timed_serves("serve = off\nserve = nts\n"));
+        assert!(!timed_serves("serve = yes\n"));
+    }
+
+    #[test]
+    fn netd_leases_shows_each_lease_with_its_time_left() {
+        let text = "net1 192.168.10.20 52:54:00:12:34:58 printer reserved\n\
+                    net1 192.168.10.100 52:54:00:12:34:56 laptop 1800043200\n\
+                    net1 192.168.10.101 52:54:00:12:34:57 - 1800000100\n\
+                    net1 192.168.10.102 52:54:00:12:34:59 gone 1799999999\n\
+                    not a lease\n\
+                    net1 192.168.10.103 52:54:00:12:34:5a - soon\n\
+                    net2 10.0.0.5 52:54:00:12:34:5b phone 1800003600\n";
+        assert_eq!(
+            leases_table(text, 1_800_000_000),
+            "CARD  ADDRESS         MAC                NAME     LEFT\n\
+             net1  192.168.10.20   52:54:00:12:34:58  printer  reserved\n\
+             net1  192.168.10.100  52:54:00:12:34:56  laptop   12:00:00\n\
+             net1  192.168.10.101  52:54:00:12:34:57           01:40\n\
+             net2  10.0.0.5        52:54:00:12:34:5b  phone    01:00:00\n"
+        );
+        assert_eq!(leases_table("", 1_800_000_000), "");
+        assert_eq!(
+            leases_table("net1 192.168.10.102 52:54:00:12:34:59 gone 5\n", 1_800_000_000),
+            ""
+        );
     }
 
     #[test]

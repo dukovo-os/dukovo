@@ -365,13 +365,12 @@ impl Server {
         &self.pool
     }
 
-    /// Changes the pool, keeping the leases that still fit it. Offers and
-    /// declined addresses are forgotten.
+    /// Changes the pool, keeping the leases and the offers that still fit
+    /// it, and the addresses declined.
     pub fn set_pool(&mut self, pool: Pool) {
         self.pool = pool;
-        self.offers.clear();
-        self.declined.clear();
-        self.full = false;
+        let pool = &self.pool;
+        self.offers.retain(|(offer, _)| pool.allows(offer));
         self.keep_fitting();
     }
 
@@ -781,7 +780,7 @@ pub fn leases_text(leases: &[Lease]) -> String {
         let client = if lease.client == default {
             "-".to_string()
         } else {
-            lease.client.iter().map(|byte| format!("{byte:02x}")).collect()
+            lease.client.iter().fold(String::new(), |hex, byte| hex + &format!("{byte:02x}"))
         };
         text += &format!(
             "{} {} {} {client} {}\n",
@@ -819,7 +818,7 @@ fn parse_lease(line: &str) -> Option<Lease> {
 
 /// The bytes `text` gives in hexadecimal.
 fn hex_bytes(text: &str) -> Option<Vec<u8>> {
-    if text.len() % 2 != 0 || !text.is_ascii() {
+    if !text.len().is_multiple_of(2) || !text.is_ascii() {
         return None;
     }
     (0..text.len()).step_by(2).map(|at| u8::from_str_radix(&text[at..at + 2], 16).ok()).collect()
@@ -868,6 +867,7 @@ mod tests {
     }
 
     /// What a client sends.
+    #[derive(Clone, Copy)]
     struct Ask<'a> {
         kind: DhcpMessageType,
         mac: [u8; 6],
@@ -1530,6 +1530,38 @@ mod tests {
         // printer's reservation still holds.
         server.set_pool(Pool { first: address(101), last: address(103), ..pool() });
         assert_eq!(server.leases(), [leases[6].clone()]);
+    }
+
+    #[test]
+    fn a_changed_pool_keeps_the_offers_that_still_fit_it() {
+        let (now, mut server) = (Instant::now(), server());
+        let discover = |server: &mut Server, mac| {
+            sent(&handle(server, &ask(DhcpMessageType::Discover, mac), now, WALL).0).1.yiaddr
+        };
+        assert_eq!(discover(&mut server, LAPTOP), address(100));
+        assert_eq!(discover(&mut server, PHONE), address(101));
+        let decline =
+            Ask { requested: Some(address(100)), ..ask(DhcpMessageType::Decline, LAPTOP) };
+        assert!(matches!(handle(&mut server, &decline, now, WALL).1, Some(Event::Declined { .. })));
+        // New DNS servers, and a range that no longer holds 101.
+        server.set_pool(Pool { dns: vec![address(5)], last: address(100), ..pool() });
+        let request = |mac, wanted| Ask {
+            requested: Some(wanted),
+            server: Some(SERVER),
+            ..ask(DhcpMessageType::Request, mac)
+        };
+        let (reply, _) = handle(&mut server, &request(PHONE, address(101)), now, WALL);
+        assert_eq!(sent(&reply).1.kind, DhcpMessageType::Nak);
+        // The offer of 100 was declined by then, and the decline holds.
+        let (reply, event) = handle(&mut server, &ask(DhcpMessageType::Discover, PHONE), now, WALL);
+        assert_eq!((reply, event), (Reply::None, Some(Event::Full { mac: PHONE })));
+        server.set_pool(Pool { dns: vec![address(6)], ..pool() });
+        let (reply, _) = handle(&mut server, &ask(DhcpMessageType::Discover, PHONE), now, WALL);
+        let (_, offer) = sent(&reply);
+        assert_eq!((offer.yiaddr, offer.option(6)), (address(101), Some(&[192, 168, 10, 6][..])));
+        let (reply, event) = handle(&mut server, &request(PHONE, address(101)), now, WALL);
+        assert_eq!(sent(&reply).1.kind, DhcpMessageType::Ack);
+        assert!(matches!(event, Some(Event::Leased(_))));
     }
 
     #[test]
