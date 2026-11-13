@@ -76,6 +76,7 @@
 //! repair a system that will not start (ADR 0460).
 
 mod account;
+mod admin_settings;
 mod alertd;
 mod alerts;
 mod args;

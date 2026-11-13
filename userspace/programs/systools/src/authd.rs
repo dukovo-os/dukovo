@@ -89,7 +89,8 @@ use crate::{proc, sessions, signin, sshkeys, sys};
 /// How long a connection has to send its request.
 const REQUEST_TIME: Duration = Duration::from_secs(10);
 
-/// The most connections at a time, and from one process.
+/// The most connections at a time, and from one process: a program that
+/// runs as root, as admind does, may hold half of them.
 const CLIENTS_MAX: usize = 64;
 const CLIENTS_PER_PROCESS: usize = 4;
 
@@ -248,6 +249,8 @@ struct Authd {
     tickets: HashMap<Vec<u8>, Ticket>,
     /// The keyrings open now, by their owners' numbers.
     keyrings: HashMap<u32, keyring::Keyring>,
+    /// The web console's sign-ins under way and sessions (ADR 0514).
+    console: console::State,
 }
 
 /// What a ticket for a password over SSH holds (ADR 0348).
@@ -343,7 +346,9 @@ macro_rules! audit {
     ($($arg:tt)*) => { println!("<86>authd: {}", format_args!($($arg)*)) };
 }
 
+mod console;
 mod keyring;
+mod proofs;
 
 /// The longest name a line of authd's shows.
 const SHOWN_MAX: usize = 64;
@@ -553,6 +558,9 @@ impl Authd {
             }
             let peer = Peer::of(&stream);
             let held = self.clients.iter().filter(|c| c.peer.process == peer.process).count();
+            // admind, one process, holds a connection for each elevated
+            // command of the web console's that runs (ADR 0514).
+            let most = if peer.is_root() { CLIENTS_MAX / 2 } else { CLIENTS_PER_PROCESS };
             let mut client = Client {
                 stream,
                 peer,
@@ -568,9 +576,8 @@ impl Authd {
                 asked: None,
                 done: false,
             };
-            if held >= CLIENTS_PER_PROCESS {
-                let why =
-                    format!("more than {CLIENTS_PER_PROCESS} requests at once from one program");
+            if held >= most {
+                let why = format!("more than {most} requests at once from one program");
                 client.ended = true;
                 client.answer(&Answer::Refused(why), now, now);
             }
@@ -645,6 +652,9 @@ impl Authd {
             Request::SshPassword { connection, name, .. } => {
                 ssh_from(connection).map(|from| (name.clone(), ssh_source(from)))
             }
+            // The web console's, for its browser's address, or the
+            // person's own requests that carry their password.
+            Request::Console(asked) => self.console.turn(asked, peer, &util::user_name(peer.user)),
             _ => None,
         };
         let turn = checks
@@ -702,11 +712,12 @@ impl Authd {
                     (add_service(files, name, whose, home, peer), now)
                 }
                 Request::Rename { name, new } => (self.rename(files, name, new, peer), now),
-                Request::Set { name, full_name, admin, without_password } => {
+                Request::Set { name, full_name, admin, without_password, console } => {
                     let change = Change {
                         full_name: full_name.as_deref(),
                         admin: *admin,
                         without_password: *without_password,
+                        console: *console,
                     };
                     (self.set(files, name, &change, peer), now)
                 }
@@ -770,6 +781,7 @@ impl Authd {
                 | Request::KeyringRemove { .. }
                 | Request::KeyringUnlock { .. }
                 | Request::KeyringLock => self.keyring(&files, &request, peer, now),
+                Request::Console(asked) => self.console(i, &files, asked, peer, now),
                 Request::KerberosTickets { uid } => {
                     (self.kerberos_tickets(&files, *uid, peer), now)
                 }
@@ -1197,6 +1209,9 @@ impl Authd {
                 continue;
             }
             if let Some(session) = self.sessions.remove(&process) {
+                if session.terminal == console::TERMINAL && !session.elevated {
+                    self.console.worker_ended(process);
+                }
                 if session.elevated {
                     audit!(
                         "{}'s elevated process {process} on {} ended with status {status:#x}",
@@ -1360,6 +1375,13 @@ impl Authd {
             recorded: false,
         };
         self.sessions.insert(process, session);
+        self.hold(i, process, relay);
+        (Answer::Done(process.to_string()), now)
+    }
+
+    /// Keeps client `i`'s connection while elevated command `process`
+    /// runs, passing on the signals its pipe, `relay`, asks for.
+    fn hold(&mut self, i: usize, process: i32, relay: Option<OwnedFd>) {
         let client = &mut self.clients[i];
         client.session = Some(process);
         client.relay = relay.map(|fd| {
@@ -1367,7 +1389,6 @@ impl Authd {
             unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_SETFL, libc::O_NONBLOCK) };
             (fd, Vec::new())
         });
-        (Answer::Done(process.to_string()), now)
     }
 
     /// Unlocks elevate in `peer`'s pane for 15 minutes, or 15 more.
@@ -2253,6 +2274,7 @@ impl Authd {
         }
         self.wrong.retain(|(account, _), _| account != name);
         self.remove_keyring(&user);
+        console::removed(name);
         // Its own /tmp goes with it (ADR 0255); its sign-in records stay,
         // root's to read.
         let tmp = format!("{}/{}", signin::TMP, user.uid);
@@ -2335,6 +2357,11 @@ impl Authd {
         {
             eprintln!("authd: {why}");
         }
+        // Its passkeys and app go with it; its API tokens, which name the
+        // account, end.
+        if let Err(why) = console::renamed(name, new) {
+            eprintln!("authd: {why}");
+        }
         self.wrong.retain(|(account, _), _| account != name);
         audit!(
             "renamed the account {name} ({}) to {new}, its home {}, for process {} (user {})",
@@ -2346,14 +2373,18 @@ impl Authd {
         Answer::Done(format!("renamed {name} to {new}, home {}", after.home))
     }
 
-    /// Changes `name`'s full name, or whether it is an administrator.
+    /// Changes `name`'s full name, whether it is an administrator, and
+    /// whether it signs in to the web console.
     fn set(&mut self, files: Files, name: &str, change: &Change<'_>, peer: Peer) -> Answer {
-        let Change { full_name, admin, without_password } = *change;
+        let Change { full_name, admin, without_password, console } = *change;
         let Some(user) = files.user(name).cloned() else {
             return Answer::Refused(format!("there is no account {}", shown(name)));
         };
         // Anyone changes their own full name, as chfn(1) lets them.
-        let own = peer.user == user.uid && admin.is_none() && without_password.is_none();
+        let own = peer.user == user.uid
+            && admin.is_none()
+            && without_password.is_none()
+            && console.is_none();
         if !peer.is_root() && !own {
             let why = "only an administrator, inside elevate, changes an account's settings; \
                        anyone changes their own full name";
@@ -2394,6 +2425,15 @@ impl Authd {
                     .into(),
             );
         }
+        if let Some(console) = console {
+            if let Err(why) = accounts::set_console(&mut groups, name, console) {
+                return Answer::Refused(why);
+            }
+            changed.push(
+                if console { "signs in to the web console" } else { "not in the console group" }
+                    .into(),
+            );
+        }
         let written = replace(accounts::GROUP, &groups.text(), 0o644)
             .and_then(|()| replace(accounts::PASSWD, &users.text(), 0o644));
         if let Err(why) = written {
@@ -2407,6 +2447,11 @@ impl Authd {
             {
                 signal_command(process, libc::SIGKILL);
             }
+        }
+        // Someone who may no longer sign in to the web console is signed
+        // out of it.
+        if !accounts::may_use_console(&user, &groups) {
+            self.end_console_sessions(&user.name, "the account may no longer use it");
         }
         let changed = changed.join(", ");
         audit!(
@@ -2761,6 +2806,7 @@ struct Change<'a> {
     full_name: Option<&'a str>,
     admin: Option<bool>,
     without_password: Option<bool>,
+    console: Option<bool>,
 }
 
 /// The account of `peer`, if it is an administrator's, or why not.
@@ -2967,6 +3013,7 @@ impl Authd {
             }
             self.wrong.retain(|_, wrong| now.saturating_duration_since(wrong.next) < FORGET);
             self.unlocked.retain(|_, until| *until > now);
+            self.console.tidy(now);
             for client in &mut self.clients {
                 if client.deadline <= now {
                     client.done = true;
@@ -3116,6 +3163,7 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
     // The sign-in records (ADR 0254), which no one but root lists.
     own_dir(signins::DIR, 0o711)?;
     own_dir(keyring::FOLDER, 0o700)?;
+    own_dir(console::FOLDER, 0o700)?;
     let boot = sessions::boot_seconds();
     let system = signins::parse(&read_text(signins::SYSTEM).unwrap_or_default());
     // Started again since the computer started, it records no start.
@@ -3163,6 +3211,7 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
         children,
         tickets: HashMap::new(),
         keyrings: HashMap::new(),
+        console: console::State::default(),
     };
     authd.run_loop().map_err(|e| util::failed(&"authd", e))?;
     let _ = fs::remove_file(accounts::SOCKET);

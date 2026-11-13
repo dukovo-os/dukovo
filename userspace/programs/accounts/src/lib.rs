@@ -23,6 +23,7 @@
 //! are kept as they are when a file is written again, so that an edit by
 //! hand is never lost.
 
+pub mod console;
 pub mod forwarding;
 #[cfg(feature = "hash")]
 pub mod hash;
@@ -89,6 +90,14 @@ pub const WITHOUT_PASSWORD: &str = "elevate-without-password";
 
 /// The [`WITHOUT_PASSWORD`] group's number, when authd makes it.
 pub const WITHOUT_PASSWORD_GROUP: u32 = 11;
+
+/// The group of the people who may sign in to the web console besides
+/// the administrators (ADR 0514): what they see and do there is what
+/// their own account may, as at a terminal. Its members are named in it.
+pub const CONSOLE: &str = "console";
+
+/// The [`CONSOLE`] group's number, when authd makes it.
+pub const CONSOLE_GROUP: u32 = 12;
 /// The folders a new home has, as the security design names them: each
 /// of the user's own, with `applications` for their bundles and
 /// `app-data` for apps' private data (Phase 13d).
@@ -506,6 +515,12 @@ pub fn set_without_password(
     set_member(groups, WITHOUT_PASSWORD, WITHOUT_PASSWORD_GROUP, name, without)
 }
 
+/// Lists `name` in the [`CONSOLE`] group, made if there is none, or takes
+/// it out.
+pub fn set_console(groups: &mut Table<Group>, name: &str, member: bool) -> Result<(), String> {
+    set_member(groups, CONSOLE, CONSOLE_GROUP, name, member)
+}
+
 /// Lists `name` among the members of the group `group`, made with the
 /// number `gid` if there is none, or takes it out.
 fn set_member(
@@ -614,6 +629,14 @@ pub fn is_admin(user: &User, groups: &Table<Group>) -> bool {
 pub fn elevates_without_password(user: &User, groups: &Table<Group>) -> bool {
     is_admin(user, groups)
         && groups.entries().any(|g| g.name == WITHOUT_PASSWORD && g.members.contains(&user.name))
+}
+
+/// Whether `user` may sign in to the web console: a person who is an
+/// administrator or is named in the [`CONSOLE`] group. Root never does.
+pub fn may_use_console(user: &User, groups: &Table<Group>) -> bool {
+    user.is_person()
+        && (is_admin(user, groups)
+            || groups.entries().any(|g| g.name == CONSOLE && g.members.contains(&user.name)))
 }
 
 /// The groups `user` is in besides its own, as initgroups(3) finds
