@@ -25,12 +25,11 @@ restart = "always"
 [limits]
 memory = "32M"
 
-# What it holds beyond what every service reads (service.toml(5)): the
-# whole tree, past the owners and modes of files, since it asks every
-# mounted filesystem for its space, and the mounts, in /volumes and
-# elsewhere, come and go, so that no list of places can name them; and the
-# port of the Prometheus endpoint, which is open only when metrics.toml
-# names an address and the networks that may ask.
+# What it holds beyond what every service reads (service.toml(5)): its
+# history and newest row, and the port of the Prometheus endpoint, which is
+# open only when metrics.toml names an address and the networks that may
+# ask. It reads each filesystem's space from the kernel's /kernel/fs/space
+# (radix-sysfs(5)), so it needs no view of the mounts themselves.
 [permissions]
-runs-with-your-access = true
 network.listen = [9100]
+files.read-write = ["/system/state/metrics", "/system/live/metrics"]

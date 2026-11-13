@@ -24,12 +24,13 @@
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::Read;
+use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::proc::{self, CpuTimes, Memory, Process};
 use crate::sensors::{self, Kind};
-use crate::{df, util};
+use crate::util;
 
 /// The kinds of filesystem in `/processes/mounts` that hold the
 /// machine's files, as the kernel names them and, for FAT, as Linux does.
@@ -224,7 +225,10 @@ impl Reader {
             load: proc::parse_loadavg(&in_text("loadavg")),
             memory: proc::parse_memory(&in_text("meminfo")),
             disks: read_disks(&kernel.join("block")),
-            filesystems: read_filesystems(&in_text("mounts")),
+            filesystems: read_filesystems(
+                &in_text("mounts"),
+                &fs::read(kernel.join("fs/space")).unwrap_or_default(),
+            ),
             networks: read_networks(&kernel.join("class/net")),
             temperatures: read_temperatures(&kernel.join("class/hwmon")),
             zones: read_zones(&kernel.join("class/thermal")),
@@ -450,23 +454,44 @@ fn read_volumes(btrfs: &Path) -> Vec<Volume> {
     volumes
 }
 
-/// The filesystems of the mounts in `mounts` that hold files, with their
-/// space; a mount whose space cannot be read is left out.
-fn read_filesystems(mounts: &[u8]) -> Vec<Filesystem> {
+/// The filesystems of the mounts in `mounts` (`/processes/mounts`) that
+/// hold files, with their space from `space`, the kernel's `fs/space`
+/// (radix-sysfs(5)): metricsd's view holds `/kernel` but not every mount,
+/// so statvfs(3) could not reach each. A mount the kernel gives no space
+/// for, or none, is left out.
+fn read_filesystems(mounts: &[u8], space: &[u8]) -> Vec<Filesystem> {
+    let spaces = parse_space(space);
     proc::parse_mounts(mounts)
         .into_iter()
         .filter(|mount| FILESYSTEMS.contains(&mount.kind.as_str()))
         .filter_map(|mount| {
-            let space = df::statvfs(&mount.path).ok().filter(|space| space.size > 0)?;
+            let &(size, free) = spaces.get(mount.path.as_bytes())?;
+            (size > 0).then_some(())?;
             Some(Filesystem {
                 device: mount.source,
                 fstype: if mount.kind == "fat" { "vfat".into() } else { mount.kind },
                 mount: mount.path.to_string_lossy().into_owned(),
                 read_only: mount.read_only,
-                size: space.size,
-                free: space.free,
-                available: space.available,
+                size,
+                // The kernel keeps no blocks back for root alone.
+                free,
+                available: free,
             })
+        })
+        .collect()
+}
+
+/// The kernel's `fs/space`: each mount's path, unescaped, with its size
+/// and free space in bytes. A line that does not read is left out.
+fn parse_space(text: &[u8]) -> HashMap<Vec<u8>, (u64, u64)> {
+    text.split(|&byte| byte == b'\n')
+        .filter_map(|line| {
+            let mut fields = line.split(|&byte| byte == b' ');
+            let path = proc::unescape(fields.next()?);
+            let mut number = || std::str::from_utf8(fields.next()?).ok()?.parse::<u64>().ok();
+            let (block_size, blocks, free) = (number()?, number()?, number()?);
+            let bytes = |count: u64| count.checked_mul(block_size);
+            Some((path, (bytes(blocks)?, bytes(free)?)))
         })
         .collect()
 }
@@ -775,28 +800,36 @@ mod tests {
     }
 
     #[test]
-    fn filesystems_are_those_of_a_disk_kind_with_their_space() {
-        let here = std::env::temp_dir();
-        let mounts = format!(
-            "vda1 / btrfs rw label=root\ntmpfs /tmp tmpfs rw\nvda2 /boot fat rw\n\
-             sdb1 {} ext4 ro\nproc /processes proc rw\nsdc1 /gone ntfs rw\n",
-            here.display()
-        );
-        let found = read_filesystems(mounts.as_bytes());
-        let said: Vec<(&str, &str, &str)> = found
+    fn filesystems_are_those_of_a_disk_kind_with_the_kernel_s_space() {
+        let mounts = "vda1 / btrfs rw label=root\ntmpfs /tmp tmpfs rw\nvda2 /boot fat rw\n\
+                      sdb1 /volumes/my\\040disk ext4 ro\nproc /processes proc rw\n\
+                      sdc1 /gone ntfs rw\nsdd1 /empty ext4 rw\n";
+        // The kernel's lines, with the path escaped as /processes/mounts
+        // escapes it; /gone has none, /empty no blocks, and one is wrong.
+        let space = "/ 4096 1000 250 0 0\n/tmp 4096 10 10 0 0\n/boot 512 2048 1024 0 0\n\
+                     /volumes/my\\040disk 4096 100 0 0 0\n/empty 4096 0 0 0 0\n\
+                     /wrong 4096 many 0 0 0\n";
+        let found = read_filesystems(mounts.as_bytes(), space.as_bytes());
+        let said: Vec<(&str, &str, &str, bool, u64, u64)> = found
             .iter()
-            .map(|f| (f.device.as_str(), f.fstype.as_str(), f.mount.as_str()))
+            .map(|f| {
+                let what = (f.device.as_str(), f.fstype.as_str(), f.mount.as_str());
+                (what.0, what.1, what.2, f.read_only, f.size, f.available)
+            })
             .collect();
-        // /boot and /gone are not there on this machine; / is.
-        assert!(said.contains(&("vda1", "btrfs", "/")), "{said:?}");
-        assert!(said.contains(&("sdb1", "ext4", here.to_str().unwrap())), "{said:?}");
-        assert!(!said.iter().any(|(_, kind, _)| *kind == "tmpfs" || *kind == "proc"));
-        // A read-only mount is said to be.
-        let read_only = |mount: &str| found.iter().find(|f| f.mount == mount).map(|f| f.read_only);
-        assert_eq!(read_only(here.to_str().unwrap()), Some(true));
-        assert_eq!(read_only("/"), Some(false));
-        let root = found.iter().find(|f| f.mount == "/").unwrap();
-        assert!(root.size > 0 && root.used() <= root.size && root.available <= root.size);
+        assert_eq!(
+            said,
+            [
+                ("vda1", "btrfs", "/", false, 4_096_000, 1_024_000),
+                ("vda2", "vfat", "/boot", false, 1_048_576, 524_288),
+                ("sdb1", "ext4", "/volumes/my disk", true, 409_600, 0),
+            ]
+        );
+        assert_eq!(found[0].used(), 3_072_000);
+        // With no space from the kernel, there are none.
+        assert!(read_filesystems(mounts.as_bytes(), b"").is_empty());
+        // A size past what a u64 holds is not read.
+        assert!(parse_space(b"/ 4096 18446744073709551615 0 0 0\n").is_empty());
     }
 
     #[test]
@@ -1024,6 +1057,7 @@ mod tests {
         put(&services, "web.toml", "service_version = 1\n");
         put(&services, "settings.d/web.toml", "override\n");
         put(&kernel, "block/vda/stat", "1 0 2 3 4 0 5 6 0 7 8\n");
+        put(&kernel, "fs/space", &format!("{} 4096 100 40 0 0\n", dir.display()));
         let mut reader = Reader::new(Sources { processes, kernel, services });
         let snapshot = reader.read();
         assert_eq!(snapshot.cpus.len(), 1);
