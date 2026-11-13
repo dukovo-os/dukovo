@@ -93,9 +93,21 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
             other => return Err(args.unknown(&other)),
         }
     }
-    if !(port.exists() || (has_virtio_console() && appears(&port, PORT_WAIT))) {
-        say!("no guest agent channel, {}: nothing to answer", port.display());
-        return Ok(0);
+    if !port.exists() {
+        if !has_virtio_console() {
+            say!("no guest agent channel, {}: nothing to answer", port.display());
+            return Ok(0);
+        }
+        if !appears(&port, PORT_WAIT) {
+            say!(
+                "no guest agent channel, {}: the host named no such port within {} s ({}): \
+                 nothing to answer",
+                port.display(),
+                PORT_WAIT.as_secs(),
+                named_ports(port.parent().unwrap_or(Path::new("/")))
+            );
+            return Ok(0);
+        }
     }
     let file = OpenOptions::new()
         .read(true)
@@ -128,6 +140,25 @@ fn appears(path: &Path, wait: Duration) -> bool {
             return false;
         }
         std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// The ports the host has named, linked in `dir`, for the line that says
+/// the agent's is not among them: "it named none", or "it named a and b".
+fn named_ports(dir: &Path) -> String {
+    let mut names: Vec<String> = std::fs::read_dir(dir)
+        .map(|entries| {
+            entries
+                .flatten()
+                .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                .collect()
+        })
+        .unwrap_or_default();
+    names.sort();
+    match names.split_last() {
+        None => String::from("it named none"),
+        Some((last, [])) => format!("it named {last}"),
+        Some((last, rest)) => format!("it named {} and {last}", rest.join(", ")),
     }
 }
 

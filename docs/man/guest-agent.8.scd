@@ -24,8 +24,10 @@ The host talks over the virtio console port that QEMU names
 _/devices/virtio-ports/org.qemu.guest_agent.0_ once the host has named
 it. On a machine with a virtio console it waits up to 10 seconds for
 that name, which can come after the service starts; on a machine without
-one, as a computer, it ends at once, saying there is nothing to answer,
-as it does when the host names no such port.
+one, as a computer, it ends at once, saying there is nothing to answer.
+When the host names no such port in that time, it ends saying which
+ports the host did name, so that a channel set up under another name
+shows in the log.
 
 Each request is a JSON object, *{"execute": "guest-ping"}*, with
 *"arguments"* if the command takes any and an *"id"* that the answer

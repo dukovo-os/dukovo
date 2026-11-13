@@ -57,8 +57,9 @@ reach.
   `--no-wait` (systemctl's `--no-block`) returns at once, and `-q`
   prints only a failure.
 - **`service list`** is a table of every service: its state, with
-  `health failing` where its check fails, whether it starts at boot,
-  and since when; under it, the services not running as asked.
+  `health failing` where a running service's check fails, whether it
+  starts at boot, and since when; under it, the services not running as
+  asked.
   `--failed` lists those alone and exits 1 when there are some;
   `--json` prints Spark's `show` document. A service that is off as it
   is meant to be, a driver the kernel left none of its cards or one

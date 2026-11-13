@@ -405,10 +405,13 @@ fn start_events(gpios: &[Option<Gpio>; MAX_CONTROLLERS]) {
         return;
     }
     let _ = EVENT_LIST.set(events);
-    let options = Options::new().policy(Policy::Fair { nice: -5 });
+    // Held until it is kept, so that an event that fires as it starts
+    // wakes it: a level event stays masked until the thread runs it.
+    let options = Options::new().held().policy(Policy::Fair { nice: -5 });
     match sched::spawn("gpio-events", run_events, 0, options) {
         Ok(thread) => {
-            let _ = EVENT_THREAD.set(thread);
+            let _ = EVENT_THREAD.set(thread.clone());
+            sched::release(&thread);
         }
         Err(err) => warn!("GPIO: could not start the thread `gpio-events`: {err}"),
     }

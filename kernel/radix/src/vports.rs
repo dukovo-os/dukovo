@@ -136,10 +136,14 @@ fn try_bind(function: &Function) -> Result<(), &'static str> {
     })?;
     let ports = carrier.lines.len();
     *CARRIERS[index].lock() = Some(carrier);
-    let options = Options::new().policy(Policy::Fair { nice: -5 });
+    // Held until it is kept for the interrupt to wake: run at once, it
+    // could say a port is ready and sleep before then, and the host's
+    // answer, the port's name, would wake no one.
+    let options = Options::new().held().policy(Policy::Fair { nice: -5 });
     match sched::spawn(NAMES[index], run, index, options) {
         Ok(thread) => {
-            let _ = THREADS[index].set(thread);
+            let _ = THREADS[index].set(thread.clone());
+            sched::release(&thread);
         }
         Err(err) => {
             warn!("Ports: could not start the thread of the virtio console: {err}");

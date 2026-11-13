@@ -208,3 +208,22 @@ fn a_port_named_after_the_start_is_waited_for_and_one_never_named_is_not() {
     assert!(started.elapsed() >= Duration::from_millis(300));
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+#[test]
+fn the_ports_the_host_did_name_are_said() {
+    let dir = std::env::temp_dir().join(format!("guest-agent-named-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(named_ports(&dir), "it named none");
+    std::fs::create_dir_all(&dir).unwrap();
+    assert_eq!(named_ports(&dir), "it named none");
+    std::fs::write(dir.join("org.qemu.guest_agent.1"), b"").unwrap();
+    assert_eq!(named_ports(&dir), "it named org.qemu.guest_agent.1");
+    for name in ["com.redhat.spice.0", "org.libguestfs.channel.0"] {
+        std::fs::write(dir.join(name), b"").unwrap();
+    }
+    assert_eq!(
+        named_ports(&dir),
+        "it named com.redhat.spice.0, org.libguestfs.channel.0 and org.qemu.guest_agent.1"
+    );
+    std::fs::remove_dir_all(&dir).unwrap();
+}

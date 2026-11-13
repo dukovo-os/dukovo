@@ -628,7 +628,9 @@ fn list_text(services: &[&show::Service], clock: &Clock, header: bool) -> String
         .iter()
         .map(|service| {
             let mut state = String::from(service.state.word());
-            if service.health.as_ref().is_some_and(|h| h.state == HealthState::Failing) {
+            if service.state == State::Running
+                && service.health.as_ref().is_some_and(|h| h.state == HealthState::Failing)
+            {
                 state.push_str(", health failing");
             }
             [
@@ -810,6 +812,9 @@ mod tests {
         web.description = "Lab web".into();
         web.enabled = false;
         web.state = State::Failed;
+        // Its last checks failed, but a service that does not run has no
+        // health to show.
+        web.health = Some(Health { state: HealthState::Failing, ..Health::default() });
         let mut sick = nginx();
         sick.name = "lab-sick".into();
         sick.health = Some(Health { state: HealthState::Failing, ..Health::default() });

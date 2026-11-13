@@ -65,7 +65,10 @@ static const char G_WEB[] = "service_version = 2\n"
 		"enabled = false\n"
 		"requires = [\"g-db\"]\n";
 
-// A service that fails, and one that requires it.
+// A service that fails, and one that requires it. g-needs waits to be
+// ready for a socket it never makes, so it is still starting when Spark
+// sees g-broken end and stops it; were it ready at once, its waited start
+// could say it is ready first.
 static const char G_BROKEN[] = "service_version = 2\n"
 		"description = \"Fails at once\"\n"
 		"program = \"" SELF "\"\n"
@@ -78,7 +81,12 @@ static const char G_NEEDS[] = "service_version = 2\n"
 		"program = \"" SELF "\"\n"
 		"arguments = [\"--sleep\"]\n"
 		"enabled = false\n"
-		"requires = [\"g-broken\"]\n";
+		"requires = [\"g-broken\"]\n"
+		"\n"
+		"[ready]\n"
+		"when = \"socket\"\n"
+		"path = \"/system/live/services/g-needs/g-needs.sock\"\n"
+		"timeout = 30\n";
 
 // A service whose health check fails until SICK_OK is there.
 static const char G_SICK[] = "service_version = 2\n"
