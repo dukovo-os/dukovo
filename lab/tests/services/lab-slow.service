@@ -1,0 +1,25 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+#
+# The command lab test's slow service: it is ready once its health check
+# passes, which it does once /system/settings/lab-slow-ok is there, and
+# has 10 s to get there; Spark gives up on it after two starts in a row
+# that did not (ADR 0470, ADR 0471).
+
+service_version = 2
+description = "Ready once fixed"
+program = "/system/commands/nukesh"
+arguments = ["-c", "while :; do sleep 1; done"]
+enabled = false
+restart = "on-failure"
+give_up_after = 2
+
+[ready]
+when = "healthy"
+timeout = 10
+
+[health]
+command = ["/system/commands/nukesh", "-c", "test -e /system/settings/lab-slow-ok || { echo not yet; exit 1; }"]
+every = 2
+timeout = 2
+failures = 3

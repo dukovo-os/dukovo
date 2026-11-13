@@ -5,12 +5,16 @@
 //! every service, or of one, as [`spark_api::show`]'s document, which
 //! service(8), sysupdate, bundled(8) and the web console read.
 
+use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
-use spark_api::show::{self, Health, HealthState, Show};
+use spark_api::show::{self, Health, HealthState, Holds, Show};
 
-use super::{MS, SECOND, Service, Shutdown, State, Supervisor, ending, now};
+use super::{
+    MS, SECOND, Service, Shutdown, State, Supervisor, cards_for, ending, now, pci_address,
+};
+use crate::services::Spec;
 
 impl Supervisor {
     /// The answer to `show`, or to `show NAME` with `name`.
@@ -34,7 +38,7 @@ impl Supervisor {
         let document = Show {
             show_version: show::VERSION,
             now_ms: time / MS,
-            services: services.into_iter().map(described).collect(),
+            services: services.into_iter().map(|s| described(s, self.devices)).collect(),
             shutdown,
         };
         match show::to_json(&document) {
@@ -47,8 +51,9 @@ impl Supervisor {
     }
 }
 
-/// `service` as the document describes it.
-fn described(service: &Service) -> show::Service {
+/// `service` as the document describes it, with `devices` the root
+/// device capability, for the cards it drives.
+fn described(service: &Service, devices: Option<u32>) -> show::Service {
     let spec = &service.spec;
     let state = match service.state {
         State::Starting(_) | State::Running(_) if service.stop_by.is_some() => {
@@ -98,9 +103,47 @@ fn described(service: &Service) -> show::Service {
         last_end: service.last.map(ending),
         last_status: service.last,
         why: service.why.clone(),
+        off_as_meant: service.off_as_meant,
         waiting_for: service.waiting_for.clone(),
         started_by: service.wanted_by.clone(),
         health,
         complaint: service.complaint.clone(),
+        cause: service.cause.clone(),
+        last_line: service.last_line.clone(),
+        last_request: service.last_request.clone(),
+        holds: holds(spec, devices),
+    }
+}
+
+/// What `spec` gives its service, beyond what every service's view holds.
+fn holds(spec: &Spec, devices: Option<u32>) -> Holds {
+    let (changes, reads): (Vec<_>, Vec<_>) = spec.places.iter().partition(|place| place.write);
+    let admin = [
+        (spec.configure, "network"),
+        (spec.hardware, "hardware"),
+        (spec.time, "time"),
+        (spec.firewall, "firewall"),
+    ];
+    Holds {
+        whole_tree: spec.whole_tree,
+        account: spec.account.clone(),
+        reads: reads.into_iter().map(|place| place.path.clone()).collect(),
+        changes: changes.into_iter().map(|place| place.path.clone()).collect(),
+        mounts: spec.mounts.clone(),
+        secrets: spec.secrets.clone(),
+        listen: spec
+            .listen
+            .iter()
+            .map(|&(first, count)| match count {
+                1 => first.to_string(),
+                _ => format!("{first}-{}", first + count - 1),
+            })
+            .collect(),
+        outbound: spec.outbound,
+        admin: admin.iter().filter(|(has, _)| *has).map(|(_, word)| word.to_string()).collect(),
+        names: spec.names,
+        cards: cards_for(devices, spec).iter().map(|card| pci_address(card.address)).collect(),
+        memory_bytes: spec.memory_pages.map(|pages| pages * 4096),
+        cpu_weight: spec.weight,
     }
 }

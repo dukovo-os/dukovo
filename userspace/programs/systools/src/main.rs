@@ -162,6 +162,7 @@ mod scrub;
 mod sensors;
 mod serial;
 mod serial_console;
+mod service;
 mod servicefiles;
 mod sessions;
 mod share;
@@ -333,7 +334,7 @@ const TOOLS: &[(&str, Tool)] = &[
     ("sensors", sensors::main),
     ("serial", serial::main),
     ("serial-console", serial_console::main),
-    ("service", power::service),
+    ("service", service::service),
     ("setfacl", facl::setfacl),
     ("share", share::main),
     ("shutdown", power::shutdown),

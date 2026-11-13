@@ -1,23 +1,21 @@
 // SPDX-FileCopyrightText: 2026 The Dukovo contributors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! shutdown(8), reboot(8), poweroff(8), halt(8) and service(8): requests
-//! to Spark over its control socket, `/system/live/spark/control`
-//! (spark(8)); service(8)'s `check`, `new` and `edit` are in
-//! `servicefiles`.
+//! shutdown(8), reboot(8), poweroff(8) and halt(8): requests to Spark
+//! over its control socket, `/system/live/spark/control` (spark(8)),
+//! whose `request` the other clients use too; service(8) is in
+//! `service`.
 //!
 //! Spark stops the services in order and then turns the machine off,
 //! restarts it or halts it; with `--force` it skips the services. The
-//! options are systemd's and sysvinit's, and service(8) is Debian's.
+//! options are systemd's and sysvinit's.
 
 use std::io::{Read, Write};
 use std::net::Shutdown;
 use std::os::unix::net::UnixStream;
 
 use crate::args::{Arg, Args};
-use crate::servicefiles;
-use crate::util::{self, Fail, fail, fail_with, usage};
-use spark_api::show::{self, HealthState, State};
+use crate::util::{self, Fail, fail, usage};
 
 /// Spark's control socket.
 pub const CONTROL: &str = "/system/live/spark/control";
@@ -212,146 +210,6 @@ pub fn poweroff(args: &mut Args) -> Result<i32, Fail> {
 /// halt(8).
 pub fn halt(args: &mut Args) -> Result<i32, Fail> {
     end_now(args, End::Halt)
-}
-
-/// What Spark says of the services, or of service `name` alone.
-fn shown(name: Option<&str>) -> Result<Vec<show::Service>, Fail> {
-    let request = name.map_or_else(|| String::from("show"), |name| format!("show {name}"));
-    let answer = ask(&request)?;
-    show::parse(&answer).map(|document| document.services).map_err(fail)
-}
-
-/// `service NAME status`: what Spark says of `service`, as systemctl
-/// status lays it out; 0 when it runs or is done, 3 otherwise (LSB).
-fn print_status(service: &show::Service) -> i32 {
-    println!("{} - {}", service.name, service.description);
-    let pid = service.pid.map_or_else(String::new, |pid| format!(" as process {pid}"));
-    let active = match service.state {
-        State::Running => format!("active (running){pid}"),
-        State::Done => String::from("active (exited)"),
-        State::Starting => format!("activating (starting{pid}, ready once {})", service.ready_when),
-        State::Pending => format!("activating (waiting for {})", service.waiting_for.join(", ")),
-        State::Waiting => String::from("activating (waiting to start again)"),
-        State::Stopping if service.pid.is_some() => format!("deactivating (stopping{pid})"),
-        State::Stopping => String::from("deactivating (stopping what it left running)"),
-        State::Failed => String::from("failed (Spark gave up on it)"),
-        State::Disabled => String::from("inactive (disabled)"),
-        State::Stopped => String::from("inactive (dead)"),
-    };
-    println!("   Active: {active}");
-    if let Some(why) = &service.why {
-        println!("      Why: {why}");
-    }
-    let links: Vec<String> = [("requires", &service.requires), ("wants", &service.wants)]
-        .into_iter()
-        .chain([("after", &service.after)])
-        .filter(|(_, names)| !names.is_empty())
-        .map(|(key, names)| format!("{key} {}", names.join(", ")))
-        .collect();
-    if !links.is_empty() {
-        println!("    Needs: {}", links.join("; "));
-    }
-    if let Some(by) = &service.started_by {
-        println!("  Started: by {by}");
-    }
-    if let Some(health) = &service.health {
-        let state = match health.state {
-            HealthState::Unknown => String::from("not checked yet"),
-            HealthState::Passing => String::from("passing"),
-            HealthState::Failing => {
-                let last = health.last_failure.as_deref().unwrap_or("no reason given");
-                format!("failing, {} checks in a row ({last})", health.failures)
-            }
-        };
-        println!("   Health: {state}");
-    }
-    let give_up = match service.give_up_after {
-        0 => String::new(),
-        n => format!("; gives up after {n} failed starts in a row"),
-    };
-    println!("  Restart: {}, {} restarts so far{give_up}", service.restart, service.restarts);
-    if let Some(end) = &service.last_end {
-        println!("     Last: {end}");
-    }
-    if let Some(complaint) = &service.complaint {
-        println!("     File: {complaint}; it runs its last good copy");
-    }
-    if matches!(service.state, State::Running | State::Done) { 0 } else { 3 }
-}
-
-/// service(8): `service NAME start|stop|restart|status`, or
-/// `service --status-all`.
-pub fn service(args: &mut Args) -> Result<i32, Fail> {
-    args.stop_at_operand();
-    let mut operands = Vec::new();
-    while let Some(arg) = args.next()? {
-        match arg {
-            Arg::Long(l) if l == "status-all" => {
-                for service in shown(None)? {
-                    let mark = match service.state {
-                        State::Running | State::Done => '+',
-                        State::Pending | State::Starting | State::Waiting => '?',
-                        _ => '-',
-                    };
-                    println!(" [ {mark} ]  {}", service.name);
-                }
-                return Ok(0);
-            }
-            Arg::Long(l) if l == "help" => {
-                println!(
-                    "Usage: service < option > | --status-all | [ service_name [ command | --full-restart ] ]"
-                );
-                println!("       service service_name enable | disable");
-                println!(
-                    "       service check [ service_name | file ]... | new service_name | edit service_name"
-                );
-                println!(
-                    "       service secret set service_name secret | list service_name | remove service_name secret"
-                );
-                return Ok(0);
-            }
-            Arg::Operand(value) => operands.push(value.to_string_lossy().into_owned()),
-            other => return Err(args.unknown(&other)),
-        }
-    }
-    operands.extend(args.rest().into_iter().map(|a| a.to_string_lossy().into_owned()));
-    // The files' own commands come first, as `service check logd`.
-    match operands.first().map(String::as_str) {
-        Some("check") => return servicefiles::check(&operands[1..]),
-        Some("new") => return servicefiles::new(&operands[1..]),
-        Some("edit") => return servicefiles::edit(&operands[1..]),
-        Some("secret") => return servicefiles::secret(&operands[1..]),
-        _ => {}
-    }
-    let (Some(name), Some(command)) = (operands.first(), operands.get(1)) else {
-        return Err(usage(
-            "Usage: service < option > | --status-all | [ service_name [ command | --full-restart ] ]"
-                .into(),
-        ));
-    };
-    match command.as_str() {
-        "enable" => servicefiles::enable(name, true),
-        "disable" => servicefiles::enable(name, false),
-        "start" | "stop" | "restart" | "reload" => {
-            ask(&format!("{command} {name}"))?;
-            Ok(0)
-        }
-        "--full-restart" => {
-            ask(&format!("restart {name}"))?;
-            Ok(0)
-        }
-        "status" => match shown(Some(name)) {
-            Ok(services) => Ok(services.first().map_or(3, print_status)),
-            // LSB: 4 is an unknown service.
-            Err(fail) if fail.message.starts_with("no service is called") => {
-                Err(fail_with(4, format!("{name}: unrecognized service")))
-            }
-            Err(fail) => Err(fail),
-        },
-        other => {
-            Err(usage(format!("{name}: unknown command `{other}' (start, stop, restart, status)")))
-        }
-    }
 }
 
 #[cfg(test)]

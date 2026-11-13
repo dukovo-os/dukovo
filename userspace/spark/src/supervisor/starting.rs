@@ -33,6 +33,7 @@ use radix_rt::{SYS, println};
 use spark_api::graph::{self, Link, Node, Peer, Verdict};
 use spark_api::ready;
 
+use super::watch::say;
 use super::{MS, SECOND, STOP_WAIT, Service, Shutdown, State, Supervisor, now};
 
 /// How often Spark looks whether a starting service is ready.
@@ -124,7 +125,7 @@ impl Supervisor {
                 service.failures = 0;
             }
             service.held = false;
-            service.why = None;
+            service.set_why(None, None);
             service.set(State::Pending);
         }
         let root = service.spec.name.clone();
@@ -144,7 +145,7 @@ impl Supervisor {
                     service.failures = 0;
                 }
                 service.held = false;
-                service.why = None;
+                service.set_why(None, None);
                 service.set(State::Pending);
             }
         }
@@ -222,16 +223,14 @@ impl Supervisor {
     /// returns whether it is no longer pending.
     fn try_start(&mut self, index: usize) -> bool {
         let service = &self.services[index];
-        let verdict = match &service.circle {
-            Some(why) => Verdict::Refuse(why.clone()),
-            None => {
-                let links = service.spec.links();
-                let links: Vec<(&str, Link)> =
-                    links.iter().map(|(name, link)| (name.as_str(), *link)).collect();
-                graph::verdict(&links, |name| self.peer(name))
-            }
-        };
-        match verdict {
+        if let Some(why) = &service.circle {
+            self.refuse(index, why.clone(), None);
+            return true;
+        }
+        let links = service.spec.links();
+        let links: Vec<(&str, Link)> =
+            links.iter().map(|(name, link)| (name.as_str(), *link)).collect();
+        match graph::verdict(&links, |name| self.peer(name)) {
             Verdict::Go => {
                 self.services[index].waiting_for.clear();
                 self.start(index);
@@ -241,16 +240,22 @@ impl Supervisor {
                 self.services[index].waiting_for = names;
                 false
             }
-            Verdict::Refuse(why) => {
-                let service = &mut self.services[index];
-                println!("spark: not starting {}: {why}", service.spec.name);
-                service.waiting_for.clear();
-                service.why = Some(why);
-                service.set(State::Stopped);
-                self.stop_dependents(index);
+            Verdict::Refuse { why, cause } => {
+                self.refuse(index, why, Some(&cause));
                 true
             }
         }
+    }
+
+    /// Refuses to start pending service `index`, for `why`, which names
+    /// service `cause` if it names one, and stops what requires it.
+    fn refuse(&mut self, index: usize, why: String, cause: Option<&str>) {
+        let service = &mut self.services[index];
+        say(&mut self.told, index, format!("not starting {}: {why}", service.spec.name));
+        service.waiting_for.clear();
+        service.set_why(Some(why), cause);
+        service.set(State::Stopped);
+        self.stop_dependents(index);
     }
 
     /// What service `name` is doing, as a service that names it sees it.
@@ -305,7 +310,11 @@ impl Supervisor {
                 match service.state {
                     State::Pending | State::Waiting(_) => service.set(State::Stopped),
                     State::Starting(pid) | State::Running(pid) => {
-                        println!("spark: stopping {}: {why}", service.spec.name);
+                        say(
+                            &mut self.told,
+                            other,
+                            format!("stopping {}: {why}", service.spec.name),
+                        );
                         service.stop_by.get_or_insert(now() + STOP_WAIT);
                         // Its end comes through `ended`, as a stop request's
                         // does.
@@ -315,7 +324,7 @@ impl Supervisor {
                     State::Stopped | State::Done | State::Failed => continue,
                 }
                 service.held = true;
-                service.why = Some(why);
+                service.set_why(Some(why), Some(name.as_str()));
                 stopped.push(service.spec.name.clone());
                 queue.push(other);
             }
@@ -384,7 +393,7 @@ impl Supervisor {
         let State::Starting(pid) = service.state else { return };
         let time = now();
         service.ready_ns = Some(time);
-        service.why = None;
+        service.set_why(None, None);
         service.set(State::Running(pid));
         if let Some(health) = &service.spec.health {
             service.checks.next = time + u64::from(health.every) * SECOND;
@@ -397,12 +406,13 @@ impl Supervisor {
             ReadyWhen::Ended | ReadyWhen::Started => String::new(),
         };
         let after = time.saturating_sub(service.started_ns);
-        println!(
-            "spark: {} is ready{how} {}.{} s after its start",
+        let line = format!(
+            "{} is ready{how} {}.{} s after its start",
             service.spec.name,
             after / SECOND,
             after % SECOND / (100 * MS)
         );
+        say(&mut self.told, index, line);
     }
 
     /// Starting service `index` was not ready in time: it is stopped, and
@@ -418,11 +428,12 @@ impl Supervisor {
             ReadyWhen::Ended | ReadyWhen::Started => String::from("it had not ended"),
         };
         let seconds = service.spec.ready.timeout;
-        println!(
-            "spark: {} did not get ready in {seconds} s: {missing}; stopping it",
+        let line = format!(
+            "{} did not get ready in {seconds} s: {missing}; stopping it",
             service.spec.name
         );
-        service.why = Some(format!("it did not get ready in {seconds} s: {missing}"));
+        say(&mut self.told, index, line);
+        service.set_why(Some(format!("it did not get ready in {seconds} s: {missing}")), None);
         service.stop_by = Some(now() + STOP_WAIT);
         let _ = process::kill(&SYS, SLOT_PROCESS, pid as i64, signal::SIGTERM);
     }

@@ -80,8 +80,13 @@ pub struct Service {
     /// Its last wait status, as waitpid(2) gives it.
     pub last_status: Option<u32>,
     /// Why it is not running as asked, as a clause that follows its
-    /// name: "it requires db, which is stopped".
+    /// name: "it requires db, which is stopped"; or, while it is
+    /// `off_as_meant`, why it is off.
     pub why: Option<String>,
+    /// Whether it is stopped as it is meant to be, which is no failure:
+    /// the kernel left it none of the cards it drives, or Rescue or
+    /// essentials leave it off until it is started.
+    pub off_as_meant: bool,
     /// While it is pending: the services it waits for.
     pub waiting_for: Vec<String>,
     /// What started it: "boot", "a request", or "web, which requires it".
@@ -90,6 +95,65 @@ pub struct Service {
     pub health: Option<Health>,
     /// What is wrong with its file, while it runs its last good copy.
     pub complaint: Option<String>,
+    /// The service its `why` names, when it names one: the requirement
+    /// that stopped, failed or is missing, which an explanation follows.
+    pub cause: Option<String>,
+    /// The last line its output wrote, kept from its end until its next
+    /// start: most often what a program says as it fails.
+    pub last_line: Option<String>,
+    /// The last request that started, stopped or restarted it.
+    pub last_request: Option<Request>,
+    /// What its file gives it to reach and do.
+    pub holds: Holds,
+}
+
+/// A request a client made of Spark.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Request {
+    /// `start`, `stop` or `restart`.
+    pub verb: String,
+    /// The user the asking process acts for.
+    pub user: u32,
+    /// The asking process, by number.
+    pub process: u64,
+    /// When it asked.
+    pub ms: u64,
+}
+
+/// What a service's file gives it (service.toml(5), ADR 0217), beyond
+/// what every service's view holds.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Holds {
+    /// It runs with Spark's root, the whole tree, in place of a view:
+    /// `runs-with-your-access`.
+    pub whole_tree: bool,
+    /// The account it acts for, a bundle's service's; root's when none.
+    pub account: Option<String>,
+    /// The places it may read, by absolute path.
+    pub reads: Vec<String>,
+    /// The places it may change.
+    pub changes: Vec<String>,
+    /// The places it mounts filesystems beneath.
+    pub mounts: Vec<String>,
+    /// The names of its secrets.
+    pub secrets: Vec<String>,
+    /// The ports it may listen on: "80", or a range as "8000-8010".
+    pub listen: Vec<String>,
+    /// Whether it may connect out.
+    pub outbound: bool,
+    /// The machine's settings it may change: "network", "hardware",
+    /// "time" and "firewall".
+    pub admin: Vec<String>,
+    /// Whether it may give processes and files another user's name.
+    pub names: bool,
+    /// The PCI cards it was given, by address, as "0000:00:03.0".
+    pub cards: Vec<String>,
+    /// Its domain's memory limit, if it has one.
+    pub memory_bytes: Option<u64>,
+    /// Its domain's CPU weight.
+    pub cpu_weight: u32,
 }
 
 /// What a service is doing.
@@ -222,21 +286,41 @@ mod tests {
             waiting_for: ["db".into()].into(),
             started_by: Some("boot".into()),
             health: Some(Health { state: HealthState::Failing, failures: 2, ..Health::default() }),
+            cause: Some("db".into()),
+            last_line: Some("web: cannot reach db".into()),
+            last_request: Some(Request { verb: "start".into(), user: 0, process: 81, ms: 50_000 }),
+            holds: Holds {
+                account: Some("org.example.web".into()),
+                changes: ["/system/state/org.example.web".into()].into(),
+                secrets: ["tls-key".into()].into(),
+                listen: ["80".into(), "8000-8010".into()].into(),
+                cpu_weight: 100,
+                ..Holds::default()
+            },
             ..Service::default()
         }
     }
 
     #[test]
     fn a_document_reads_back_as_it_was_written() {
+        let e1000d = Service {
+            name: "e1000d".into(),
+            state: State::Stopped,
+            why: Some("the kernel left it none of the cards it drives".into()),
+            off_as_meant: true,
+            ..Service::default()
+        };
         let show = Show {
             show_version: VERSION,
             now_ms: 51_234,
-            services: [web()].into(),
+            services: [web(), e1000d].into(),
             shutdown: Some(Shutdown { end: "power off".into(), in_seconds: 60 }),
         };
         let json = to_json(&show).unwrap();
         assert!(json.contains(r#""state":"pending""#), "{json}");
+        assert!(json.contains(r#""off_as_meant":true"#), "{json}");
         assert!(json.contains(r#""health":{"state":"failing""#), "{json}");
+        assert!(json.contains(r#""listen":["80","8000-8010"]"#), "{json}");
         assert_eq!(parse(&format!("{json}\n")), Ok(show));
     }
 

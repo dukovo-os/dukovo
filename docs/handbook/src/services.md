@@ -35,9 +35,11 @@ starts, stops and reloads them as it does the system's own:
 | --- | --- |
 | Start it now and at each boot | `elevate service NAME enable` |
 | Stop it, and no longer start it at boot | `elevate service NAME disable` |
+| Start, stop or restart it now, and watch it happen | `elevate service NAME start` (`stop`, `restart`) |
 | Read its settings again | `elevate service NAME reload` |
-| See what Spark knows of it | `service NAME status` |
-| Read its log | `elevate log NAME` |
+| List every service and how it runs | `service list` |
+| See what Spark knows of it, and what it may reach | `service NAME status` |
+| Read its log, with Spark's lines about it | `elevate service NAME logs` |
 
 What a service writes goes to the system's log, under its name, so
 `log NAME` reads it and logtrim keeps it within the log's room (see
@@ -87,7 +89,28 @@ every = 30
 | `give_up_after` | Failed starts in a row after which Spark stops trying, until `service NAME start` |
 
 `service NAME start` starts what the service requires and wants first,
-and fails with the reason when one it requires cannot start.
+and waits until the service is ready, showing each step as Spark takes
+it:
+
+```
+$ elevate service shop start
+started postgres (/applications/org.postgresql.postgresql/bin/postgres) as process 212
+postgres is ready (listening on 5432) 2.1 s after its start
+started shop (/applications/commands/shop) as process 220
+shop is ready (listening on 8080) 0.4 s after its start
+```
+
+When one it requires cannot start, it stops and says why, with the last
+line the failed program wrote:
+
+```
+$ elevate service shop start
+started postgres (/applications/org.postgresql.postgresql/bin/postgres) as process 212
+postgres (process 212) exited with code 0x1
+service: shop waits for postgres, which could not start: it exited with code 0x1 ("FATAL: data directory has wrong ownership"); Spark tries postgres again in 0.1 s
+```
+
+Ctrl-C stops the watching, not the start; `--no-wait` returns at once.
 `service NAME status` says what it waits for, why it is not running,
 what it needs and what started it:
 
@@ -105,8 +128,8 @@ a service, or a service it requires stops, the reason is in `status`'s
 `Why` line and in the log:
 
 ```
-$ elevate log | grep 'spark: .*shop'
-spark: stopping shop: it requires postgres, which Spark gave up on
+$ elevate service shop logs
+Nov 13 10:40:12 web spark: stopping shop: it requires postgres, which Spark gave up on
 ```
 
 Restarting a service leaves those that require it running: they
@@ -114,6 +137,54 @@ reconnect. Shutting down stops a service before those it needs.
 
 The system's own services keep their start order by `order` in this
 release; their files move to version 2 in the release after it.
+
+## Seeing what a service does
+
+`service list` shows every service, its state, whether it starts at
+boot and since when, and names those that are not running as asked:
+
+```
+$ service list
+SERVICE   STATE                    AT BOOT  SINCE     DESCRIPTION
+nginx     running                  on       10:42:03  nginx web server
+postgres  failed                   on       10:43:10  PostgreSQL
+shop      stopped                  on       10:43:10  Shop
+
+Not running as asked: postgres and shop. `service postgres status` says why.
+```
+
+`service list --failed` lists those alone, and exits 1 when there are
+some, for a script or a monitoring check. A service that is off as it
+is meant to be is not among them: a network driver the kernel left no
+cards to drive, as on most virtual machines, or a service Rescue or
+essentials leave off.
+
+`service NAME status` says what Spark knows of a service, what its
+file lets it reach, which processes it runs and its last lines in the
+log:
+
+```
+$ service nginx status
+nginx - nginx web server
+   Active: active (running) as process 57 since 10:42:03, 2 min ago; ready in 10.4 s
+    Needs: after netd, resolved
+  Started: by boot
+    Holds: its own view, acting for org.nginx.nginx
+           reads /applications/org.nginx.nginx, /shared/www
+           changes /system/state/org.nginx.nginx
+           listens on 80 (open), 443 (open); connects out
+           memory up to 256M; CPU weight 100
+Processes: 3 (57 nginx, 58 nginx, 59 nginx), 12.3M of memory, 1.2 s of CPU
+  Restart: on-failure, 0 restarts so far
+
+Nov 13 10:42:03 spark: started nginx (/applications/org.nginx.nginx/bin/nginx-service) as process 57
+Nov 13 10:42:13 spark: nginx is ready (listening) 10.4 s after its start
+```
+
+`Holds` is the whole of what the service may touch beyond what every
+service reads: a port marked `(open)` is one something listens on now.
+A service stopped by hand says who stopped it and when (`Asked`), and
+one that ended says the last line it wrote (`Last`).
 
 ## The web server: nginx
 

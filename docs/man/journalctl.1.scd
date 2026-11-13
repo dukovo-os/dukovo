@@ -25,7 +25,8 @@ options that change the journal's files are not taken.
 # OPTIONS
 
 *-u*, *--unit* _service_
-	Only the records of this service, the lines Spark wrote for it;
+	Only the records of this service: the lines its programs wrote,
+	and Spark's lines that name it, as *log -s* takes them (*log*(1));
 	*.service* may follow its name.
 
 *-t*, *--identifier* _name_

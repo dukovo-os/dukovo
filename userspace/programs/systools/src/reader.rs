@@ -744,10 +744,11 @@ fn ask_status() -> io::Result<String> {
     Ok(String::from_utf8_lossy(&answer).into_owned())
 }
 
-/// Runs `service readerd COMMAND`.
+/// Runs `service readerd COMMAND --quiet`, which returns once readerd
+/// has started or stopped, and says only what went wrong.
 fn service(command: &str) -> Result<(), Fail> {
     let status = Command::new("/system/commands/service")
-        .args(["readerd", command])
+        .args(["readerd", command, "--quiet"])
         .status()
         .map_err(|e| util::failed(&"service", e))?;
     if status.success() { Ok(()) } else { Err(fail(format!("`service readerd {command}` failed"))) }

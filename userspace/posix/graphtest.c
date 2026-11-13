@@ -1,15 +1,21 @@
 // SPDX-FileCopyrightText: 2026 The Dukovo contributors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-// What the service-graph boot test runs (ADR 0470): services that name
-// each other in requires and after, say when they are ready and check
-// their health. graphtest writes their files, starts them with
+// What the service-graph boot test runs (ADR 0470, ADR 0471): services
+// that name each other in requires and after, say when they are ready
+// and check their health. graphtest writes their files, starts them with
 // service(8) and checks what `service NAME status` says: a service waits
 // for one it requires until that one listens; one whose requirement ends
 // is stopped, as is one whose requirement a request stops; one that
 // keeps failing its health check is restarted until Spark gives up on
 // it, and starts again once fixed; two that wait for each other never
-// start; and a setup step is done before what requires it starts. Then
+// start; and a setup step is done before what requires it starts.
+//
+// It checks how service(8) waits, too: a start shows Spark's lines about
+// the service and what it requires as they come and returns once the
+// service is ready, or fails saying why; a stop names what it stops with
+// the service; four waits run at once and a fifth start is answered
+// without one; and a wait that Ctrl-C ends leaves its start going. Then
 // it powers the machine off with g-web and g-db running, for the test's
 // script to see g-web stop first.
 //
@@ -20,6 +26,7 @@
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #include "check.h"
@@ -58,7 +65,10 @@ static const char G_WEB[] = "service_version = 2\n"
 		"enabled = false\n"
 		"requires = [\"g-db\"]\n";
 
-// A service that fails, and one that requires it.
+// A service that fails, and one that requires it. g-needs waits to be
+// ready for a socket it never makes, so it is still starting when Spark
+// sees g-broken end and stops it; were it ready at once, its waited start
+// could say it is ready first.
 static const char G_BROKEN[] = "service_version = 2\n"
 		"description = \"Fails at once\"\n"
 		"program = \"" SELF "\"\n"
@@ -71,7 +81,12 @@ static const char G_NEEDS[] = "service_version = 2\n"
 		"program = \"" SELF "\"\n"
 		"arguments = [\"--sleep\"]\n"
 		"enabled = false\n"
-		"requires = [\"g-broken\"]\n";
+		"requires = [\"g-broken\"]\n"
+		"\n"
+		"[ready]\n"
+		"when = \"socket\"\n"
+		"path = \"/system/live/services/g-needs/g-needs.sock\"\n"
+		"timeout = 30\n";
 
 // A service whose health check fails until SICK_OK is there.
 static const char G_SICK[] = "service_version = 2\n"
@@ -135,6 +150,29 @@ static const char G_TOP[] = "service_version = 2\n"
 		"enabled = false\n"
 		"requires = [\"g-base\"]\n";
 
+// A service that just runs, for the watch counts.
+static const char G_PLAIN[] = "service_version = 2\n"
+		"description = \"Runs\"\n"
+		"program = \"" SELF "\"\n"
+		"arguments = [\"--sleep\"]\n"
+		"enabled = false\n";
+
+// A service that listens 10 s after it starts, for the watch counts, with
+// its port three times: in its arguments, [ready] and its permissions.
+static const char G_SLOW[] = "service_version = 2\n"
+		"description = \"Listens after 10 s\"\n"
+		"program = \"" SELF "\"\n"
+		"arguments = [\"--listen\", \"%d\", \"10000\"]\n"
+		"enabled = false\n"
+		"\n"
+		"[ready]\n"
+		"when = \"listening\"\n"
+		"port = %d\n"
+		"timeout = 60\n"
+		"\n"
+		"[permissions]\n"
+		"network.listen = [%d]\n";
+
 // Writes `text` to `path`.
 static void write_file(const char *path, const char *text) {
 	int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
@@ -168,11 +206,54 @@ static int says(const char *name, const char *text, int seconds) {
 	}
 }
 
-// g-web waits for g-db, which it requires, until g-db listens.
+// A `service NAME start` that waits, run in the background with its
+// output and errors on `from`.
+struct waiting {
+	pid_t pid;
+	int from;
+};
+
+// Runs `service NAME start` in the background.
+static struct waiting start_waiting(const char *name) {
+	struct waiting waiting = {-1, -1};
+	int out[2];
+	if(pipe(out))
+		return waiting;
+	waiting.pid = fork();
+	if(!waiting.pid) {
+		dup2(out[1], STDOUT_FILENO);
+		dup2(out[1], STDERR_FILENO);
+		close(out[0]);
+		close(out[1]);
+		execv(SERVICE, (char *const[]){SERVICE, (char *)name, "start", NULL});
+		_exit(127);
+	}
+	close(out[1]);
+	waiting.from = out[0];
+	return waiting;
+}
+
+// Waits for `waiting` to end, with what it wrote in `output`; returns its
+// exit status, or 128 and the signal that ended it.
+static int finish(struct waiting waiting) {
+	size_t len = 0;
+	ssize_t got;
+	while(len < sizeof(output) - 1 && (got = read(waiting.from, output + len, sizeof(output) - 1 - len)) > 0)
+		len += got;
+	output[len] = 0;
+	close(waiting.from);
+	int status;
+	if(waitpid(waiting.pid, &status, 0) != waiting.pid)
+		return -1;
+	return WIFEXITED(status) ? WEXITSTATUS(status) : 128 + WTERMSIG(status);
+}
+
+// g-web waits for g-db, which it requires, until g-db listens; a start
+// that does not wait returns at once.
 static void waits_until_ready(void) {
 	write_service("g-db", G_DB);
 	write_service("g-web", G_WEB);
-	STATUS(0, SERVICE, "g-web", "start");
+	STATUS(0, SERVICE, "g-web", "start", "--no-wait");
 	// g-db listens only after 1.5 s.
 	CHECK(says("g-web", "Active: activating (waiting for g-db)", 2));
 	CHECK(says("g-db", "Active: activating (starting as process", 2));
@@ -182,11 +263,33 @@ static void waits_until_ready(void) {
 	CHECK(says("g-db", "Started: by g-web, which requires it", 1));
 }
 
-// g-needs stops once g-broken, which it requires, ends for good.
+// A stop names what it stops with the service; a start waits until the
+// service is ready, with Spark's lines about it and what it requires as
+// they come, and says who asked.
+static void a_start_shows_the_way(void) {
+	CONTAINS("stopping g-web: it requires g-db, which was stopped", SERVICE, "g-db", "stop");
+	CHECK(says("g-web", "Active: inactive (dead)", 1));
+	long long asked = check_now_ns();
+	CONTAINS("g-db is ready (listening on 7001)", SERVICE, "g-web", "start");
+	// g-db listens only after 1.5 s, and the start waited for it.
+	CHECK(check_now_ns() - asked >= 1500000000LL);
+	CHECK(strstr(output, "started g-db (" SELF ") as process") != NULL);
+	CHECK(strstr(output, "started g-web (" SELF ") as process") != NULL);
+	CHECK(says("g-web", "Active: active (running)", 1));
+	CHECK(says("g-web", "Asked: to start by ", 1));
+	// The services' logs hold Spark's lines about them.
+	CONTAINS("started g-web (" SELF ") as process", SERVICE, "g-web", "logs");
+}
+
+// g-needs stops once g-broken, which it requires, ends for good, and the
+// start that waited for it fails saying why.
 static void stops_with_its_requirement(void) {
 	write_service("g-broken", G_BROKEN);
 	write_service("g-needs", G_NEEDS);
-	STATUS(0, SERVICE, "g-needs", "start");
+	output_errors = 1;
+	STATUS(1, SERVICE, "g-needs", "start");
+	output_errors = 0;
+	CHECK(strstr(output, "could not start g-needs: it requires g-broken, which is stopped") != NULL);
 	CHECK(says("g-needs", "Why: it requires g-broken, which is stopped", 10));
 	CHECK(says("g-needs", "Active: inactive (dead)", 10));
 	CHECK(says("g-broken", "Last: exited with code 0x1", 1));
@@ -198,7 +301,7 @@ static void a_stop_stops_what_requires_it(void) {
 	write_service("g-top", G_TOP);
 	STATUS(0, SERVICE, "g-top", "start");
 	CHECK(says("g-top", "Active: active (running)", 5));
-	STATUS(0, SERVICE, "g-base", "stop");
+	CONTAINS("stopping g-top: it requires g-base, which was stopped", SERVICE, "g-base", "stop");
 	CHECK(says("g-top", "Why: it requires g-base, which was stopped", 5));
 	CHECK(says("g-top", "Active: inactive (dead)", 5));
 	CHECK(says("g-base", "Active: inactive (dead)", 5));
@@ -239,6 +342,37 @@ static void a_setup_step_comes_first(void) {
 	CHECK(says("g-setup", "Active: active (exited)", 1));
 }
 
+// Four waits run at once, and a fifth start is answered without one; a
+// wait that Ctrl-C ends leaves its start going and frees its watch.
+static void four_waits_at_once(void) {
+	struct waiting waits[4];
+	char names[4][16];
+	for(int i = 0; i < 4; i++) {
+		char text[sizeof(G_SLOW) + 16];
+		snprintf(names[i], sizeof(names[i]), "g-slow%d", i);
+		snprintf(text, sizeof(text), G_SLOW, 7010 + i, 7010 + i, 7010 + i);
+		write_service(names[i], text);
+		waits[i] = start_waiting(names[i]);
+	}
+	// Each is starting once Spark has its request, and is watched from then.
+	for(int i = 0; i < 4; i++)
+		CHECK(says(names[i], "Active: activating (starting as process", 5));
+	write_service("g-fifth", G_PLAIN);
+	CONTAINS("not watched: 4 watches already", SERVICE, "g-fifth", "start");
+	kill(waits[0].pid, SIGINT);
+	CHECK(finish(waits[0]) == 130);
+	CHECK(strstr(output, "g-slow0 goes on starting; `service g-slow0 status` says how it goes") != NULL);
+	write_service("g-sixth", G_PLAIN);
+	CONTAINS("started g-sixth (" SELF ") as process", SERVICE, "g-sixth", "start");
+	CHECK(strstr(output, "not watched") == NULL);
+	for(int i = 1; i < 4; i++) {
+		CHECK(finish(waits[i]) == 0);
+		CHECK(strstr(output, "is ready (listening on 701") != NULL);
+	}
+	CHECK(says("g-slow0", "Active: active (running)", 10));
+	CONTAINS("g-slow0", SERVICE, "list");
+}
+
 // `--listen PORT DELAY_MS`: listens on PORT after DELAY_MS, then sleeps.
 static int listen_after(int port, long delay_ms) {
 	check_sleep_ms(delay_ms);
@@ -274,11 +408,13 @@ int main(int argc, char **argv) {
 	}
 	check_start("graphtest");
 	RUN(waits_until_ready);
+	RUN(a_start_shows_the_way);
 	RUN(stops_with_its_requirement);
 	RUN(a_stop_stops_what_requires_it);
 	RUN(gives_up_on_a_sick_service);
 	RUN(a_circle_never_starts);
 	RUN(a_setup_step_comes_first);
+	RUN(four_waits_at_once);
 	int status = check_end();
 	fflush(stdout);
 	// Shutting down stops g-web before g-db, which it requires.

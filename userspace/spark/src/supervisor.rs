@@ -57,6 +57,7 @@
 mod health;
 mod show;
 mod starting;
+mod watch;
 
 use alloc::format;
 use alloc::string::{String, ToString};
@@ -83,7 +84,9 @@ use radix_rt::{SYS, println, slots};
 use crate::services::{self, Restart, Spec};
 use crate::views;
 use manifest::service::ReadyWhen;
+use spark_api::show::Request;
 use starting::Wanted;
+use watch::{Told, Verb, Watch, say};
 
 /// Where the service files are.
 pub const SERVICES_DIR: &str = "system/settings/spark/services";
@@ -138,6 +141,8 @@ const KILL_WAIT: u64 = SECOND;
 
 /// The longest line of a service's output kept; longer ones are cut.
 const LINE_MAX: usize = 1024;
+/// The longest last line of a service's output `show` gives.
+const LAST_LINE_MAX: usize = 200;
 
 /// The most control connections served at once.
 const CONNECTIONS_MAX: usize = 8;
@@ -456,6 +461,18 @@ struct Service {
     /// Why it could not start, when it last could not, for the request
     /// that asked.
     why: Option<String>,
+    /// The service `why` names, when it names one.
+    cause: Option<String>,
+    /// Whether `why` says why it is off as it is meant to be, which is
+    /// no failure: see [`Service::leave_off`].
+    off_as_meant: bool,
+    /// How many times Spark has tried to start it, which a watch counts
+    /// from.
+    attempts: u32,
+    /// The last line its output wrote, from its last start on.
+    last_line: Option<String>,
+    /// The last request that started, stopped or restarted it.
+    last_request: Option<Request>,
     /// When it came to its state.
     since_ns: u64,
     /// What made it start: "boot", "a request", or the service whose
@@ -506,6 +523,11 @@ impl Service {
             good,
             complaint: None,
             why: None,
+            cause: None,
+            off_as_meant: false,
+            attempts: 0,
+            last_line: None,
+            last_request: None,
             since_ns: now(),
             wanted_by: None,
             waiting_for: Vec::new(),
@@ -523,6 +545,23 @@ impl Service {
     fn set(&mut self, state: State) {
         self.state = state;
         self.since_ns = now();
+    }
+
+    /// Says why it is not running as asked, or that nothing keeps it
+    /// from it, with `cause` the service `why` names, if it names one.
+    fn set_why(&mut self, why: Option<String>, cause: Option<&str>) {
+        self.why = why;
+        self.cause = cause.map(String::from);
+        self.off_as_meant = false;
+    }
+
+    /// Notes that it is off as it is meant to be, for `why`: the kernel
+    /// left it none of the cards it drives, or Rescue or essentials leave
+    /// it off until it is started. `service list` does not count it as
+    /// not running as asked, nor sysupdate's health check as failing.
+    fn leave_off(&mut self, why: String) {
+        self.set_why(Some(why), None);
+        self.off_as_meant = true;
     }
 
     /// When Spark must look at it again, given that it is `time`: its
@@ -595,14 +634,21 @@ enum Shutdown {
 /// not read.
 struct Connection {
     file: File,
-    /// The process that connected, as the kernel says (0 if it cannot).
+    /// The process that connected and the user it acts for, as the
+    /// kernel says (0 if it cannot).
     peer: u64,
+    user: u32,
     request: Vec<u8>,
     until: u64,
-    /// The answer, once the request is whole, and how much of it is
-    /// written: a long one, as `show`'s, may not fit the socket at once.
-    answer: Option<Vec<u8>>,
+    /// Whether its request was whole and is answered.
+    answered: bool,
+    /// What is to be written to it, and how much of that is: a long
+    /// answer, as `show`'s, may not fit the socket at once, and a watch
+    /// adds lines as Spark says them.
+    out: Vec<u8>,
     written: usize,
+    /// While its request waits for the service to settle.
+    watch: Option<Watch>,
 }
 
 /// The services' backup hooks a `hooks` request runs (ADR 0463), one
@@ -663,6 +709,9 @@ pub struct Supervisor {
     listener: Option<File>,
     connections: Vec<Connection>,
     services: Vec<Service>,
+    /// What Spark said about the services in this turn of its loop, for
+    /// the watches.
+    told: Vec<Told>,
     /// The directory the service files are in, beneath the root.
     dir: String,
     program: Option<Program>,
@@ -739,6 +788,7 @@ impl Supervisor {
             listener: None,
             connections: Vec::new(),
             services: Vec::new(),
+            told: Vec::new(),
             dir: String::from(SERVICES_DIR),
             program: None,
             hooks: None,
@@ -903,7 +953,7 @@ impl Supervisor {
                 continue;
             }
             match self.left_off(&self.services[index].spec.name) {
-                Some(why) => self.services[index].why = Some(String::from(why)),
+                Some(why) => self.services[index].leave_off(String::from(why)),
                 None => self.want(index, Wanted::Boot),
             }
         }
@@ -971,7 +1021,7 @@ impl Supervisor {
             Err(err) => {
                 let service = &mut self.services[index];
                 if service.complaint.as_ref() != Some(&err) {
-                    println!("spark: {err}; it runs its last good copy");
+                    say(&mut self.told, index, format!("{err}; it runs its last good copy"));
                     service.complaint = Some(err);
                 }
             }
@@ -996,14 +1046,16 @@ impl Supervisor {
     /// Starts service `index`, whose links let it: it is running, or
     /// starting until it is ready as its `ready.when` says.
     fn start(&mut self, index: usize) {
+        self.services[index].attempts += 1;
+        self.services[index].last_line = None;
         let spec = &self.services[index].spec;
         if !spec.devices.is_empty() && cards_for(self.devices, spec).is_empty() {
             // Not an end: there is nothing for it to drive, as on a
             // machine where the kernel drives its cards itself.
             let why = String::from("the kernel left it none of the cards it drives");
-            println!("spark: not starting {}: {why}", spec.name);
+            say(&mut self.told, index, format!("not starting {}: {why}", spec.name));
             let service = &mut self.services[index];
-            service.why = Some(why);
+            service.leave_off(why);
             service.set(State::Stopped);
             self.stop_dependents(index);
             return;
@@ -1019,19 +1071,22 @@ impl Supervisor {
         let (number, output) = match started {
             Ok(started) => started,
             Err(what) => {
-                println!("spark: could not start {}: {what}", service.spec.name);
-                service.why = Some(what);
+                say(
+                    &mut self.told,
+                    index,
+                    format!("could not start {}: {what}", service.spec.name),
+                );
+                service.set_why(Some(what), None);
                 // As if it had ended at once.
                 return self.schedule(index, None);
             }
         };
-        println!(
-            "spark: started {} ({}) as process {number}",
-            service.spec.name, service.spec.program
-        );
+        let line =
+            format!("started {} ({}) as process {number}", service.spec.name, service.spec.program);
+        say(&mut self.told, index, line);
         service.output = Some(output);
         service.started_ns = time;
-        service.why = None;
+        service.set_why(None, None);
         service.unhealthy = false;
         service.checks = health::Checks::default();
         service.socket_before = socket_before;
@@ -1258,7 +1313,7 @@ impl Supervisor {
             // count as ready.
             service.ready_ns = Some(time);
             service.set(State::Done);
-            println!("spark: {} is done", service.spec.name);
+            say(&mut self.told, index, format!("{} is done", service.spec.name));
             return;
         }
         // A restart request is a start, whatever the file says.
@@ -1281,12 +1336,15 @@ impl Supervisor {
                 (None, None) => String::from("it could not start"),
             };
             let name = &service.spec.name;
-            println!(
-                "spark: gave up on {name} after {give_up} failed starts in a row (the last: \
-                 {last}); `service {name} start` tries again"
+            let line = format!(
+                "gave up on {name} after {give_up} failed starts in a row (the last: {last}); \
+                 `service {name} start` tries again"
             );
-            service.why =
-                Some(format!("it failed to start {give_up} times in a row (the last: {last})"));
+            say(&mut self.told, index, line);
+            service.set_why(
+                Some(format!("it failed to start {give_up} times in a row (the last: {last})")),
+                None,
+            );
             service.set(State::Failed);
             self.stop_dependents(index);
             return;
@@ -1298,12 +1356,13 @@ impl Supervisor {
         service.quick += 1;
         service.restarts += 1;
         service.set(State::Waiting(time + wait));
-        println!(
-            "spark: starting {} again in {}.{} s",
+        let line = format!(
+            "starting {} again in {}.{} s",
             service.spec.name,
             wait / SECOND,
             wait % SECOND / (100 * MS)
         );
+        say(&mut self.told, index, line);
     }
 
     /// Service `index` ended with `status` and is not started again: it
@@ -1316,7 +1375,7 @@ impl Supervisor {
             && service.why.is_none()
             && !service.held
         {
-            service.why = Some(format!("it {}", ending(status)));
+            service.set_why(Some(format!("it {}", ending(status))), None);
         }
         service.set(State::Stopped);
         if !shutting_down {
@@ -1325,20 +1384,31 @@ impl Supervisor {
     }
 
     /// Copies what is in `output` to the log, a line at a time, each
-    /// after `name: ` unless it starts with it. Returns false at its end.
-    fn copy_lines(output: &File, line: &mut Vec<u8>, name: Option<&str>) -> bool {
+    /// after `name: ` unless it starts with it, keeping the last in `last`
+    /// if given. Returns false at its end.
+    fn copy_lines(
+        output: &File,
+        line: &mut Vec<u8>,
+        name: Option<&str>,
+        mut last: Option<&mut Option<String>>,
+    ) -> bool {
+        let mut flush = |line: &mut Vec<u8>| {
+            if let (Some(said), Some(last)) = (flush_line(line, name), last.as_deref_mut()) {
+                *last = Some(kept(said));
+            }
+        };
         let mut buffer = [0u8; 512];
         loop {
             match file_abi::read(&SYS, output.slot(), file_abi::CURRENT, &mut buffer) {
                 Ok(read) if read.count == 0 => {
-                    flush_line(line, name);
+                    flush(line);
                     return false;
                 }
                 Ok(read) => {
                     for &byte in &buffer[..read.count as usize] {
                         match byte {
                             b'\r' => {}
-                            b'\n' => flush_line(line, name),
+                            b'\n' => flush(line),
                             _ if line.len() < LINE_MAX => line.push(byte),
                             _ => {}
                         }
@@ -1372,7 +1442,7 @@ impl Supervisor {
         }
         if self.program.as_ref().is_some_and(|p| p.number == pid) {
             let Some(mut program) = self.program.take() else { return };
-            Self::copy_lines(&program.master, &mut program.line, None);
+            Self::copy_lines(&program.master, &mut program.line, None, None);
             flush_line(&mut program.line, None);
             println!("spark: process {pid} ({}) {}", program.path, ending(status));
             self.note_idle();
@@ -1387,15 +1457,18 @@ impl Supervisor {
         let service = &mut self.services[index];
         if let Some(output) = service.output.take() {
             let name = service.spec.name.clone();
-            Self::copy_lines(&output, &mut service.line, Some(&name));
-            flush_line(&mut service.line, Some(&name));
+            Self::copy_lines(&output, &mut service.line, Some(&name), Some(&mut service.last_line));
+            if let Some(said) = flush_line(&mut service.line, Some(&name)) {
+                service.last_line = Some(kept(said));
+            }
         }
         let stops = service.domain.and_then(|d| resource_domain::info(&SYS, d).ok());
         let stops = stops.map_or(service.oom_stops, |info| info.oom_stops);
         let stopped = stops > service.oom_stops && status & 0x7f == signal::SIGKILL;
         service.oom_stops = stops;
         let cause = if stopped { " (stopped by the out-of-memory policy)" } else { "" };
-        println!("spark: {} (process {pid}) {}{cause}", service.spec.name, ending(status));
+        let line = format!("{} (process {pid}) {}{cause}", service.spec.name, ending(status));
+        say(&mut self.told, index, line);
         service.stop_by = None;
         // A check of a service that has ended says nothing of it.
         let checking = service.checks.stop();
@@ -1421,10 +1494,11 @@ impl Supervisor {
             let _ = resource_domain::stop(&SYS, domain);
         } else if !killed {
             let plural = if threads == 1 { "" } else { "s" };
-            println!(
-                "spark: {} left {threads} thread{plural} behind; stopping its domain",
+            let line = format!(
+                "{} left {threads} thread{plural} behind; stopping its domain",
                 service.spec.name
             );
+            say(&mut self.told, index, line);
             let _ = resource_domain::stop(&SYS, domain);
         }
         service.set(State::Draining(status, now() + DRAIN_POLL));
@@ -1442,11 +1516,12 @@ impl Supervisor {
                     if service.stop_by.is_some_and(|by| by <= time) =>
                 {
                     service.stop_by = None;
-                    println!(
-                        "spark: {} did not end in {} s; stopping its domain",
+                    let line = format!(
+                        "{} did not end in {} s; stopping its domain",
                         service.spec.name,
                         STOP_WAIT / SECOND
                     );
+                    say(&mut self.told, index, line);
                     match service.domain {
                         Some(domain) => {
                             service.killed = true;
@@ -1483,23 +1558,33 @@ impl Supervisor {
             }
             if let Ok(file) = File::own(slot) {
                 let until = now() + CONNECTION_WAIT;
-                let peer = file_abi::socket_state(&SYS, slot).map_or(0, |state| state.peer);
+                let (peer, user) = file_abi::socket_state(&SYS, slot)
+                    .map_or((0, 0), |state| (state.peer, state.user));
                 self.connections.push(Connection {
                     file,
                     peer,
+                    user,
                     request: Vec::new(),
                     until,
-                    answer: None,
+                    answered: false,
+                    out: Vec::new(),
                     written: 0,
+                    watch: None,
                 });
             }
         }
     }
 
     /// Reads what connection `index` sent; once it is a whole line,
-    /// answers it, and closes the connection once the answer is written.
+    /// answers it, and closes the connection once the answer is written,
+    /// or, for a watch, once it has settled. A watch with nothing to write
+    /// is polled only for its reader going.
     fn serve(&mut self, index: usize) {
-        if self.connections[index].answer.is_some() {
+        if self.connections[index].idle() {
+            self.connections.remove(index);
+            return;
+        }
+        if self.connections[index].answered {
             return self.write_answer(index);
         }
         let mut buffer = [0u8; 256];
@@ -1518,44 +1603,55 @@ impl Supervisor {
         }
         let request = String::from_utf8_lossy(&connection.request).into_owned();
         let request = request.lines().next().unwrap_or("").trim().to_string();
-        let peer = connection.peer;
+        let asker = (connection.peer, connection.user);
         if let Some(phase) = request.strip_prefix("hooks ") {
             let connection = self.connections.remove(index);
             self.begin_hooks(connection.file, phase.trim());
             return;
         }
-        let answer = self.answer(&request, peer);
+        let (answer, watch) = self.answer(&request, asker);
         let connection = &mut self.connections[index];
-        connection.answer = Some(answer.into_bytes());
-        connection.until = now() + CONNECTION_WAIT;
+        connection.answered = true;
+        connection.out = answer.into_bytes();
+        connection.until = watch.as_ref().map_or(now() + CONNECTION_WAIT, Watch::until);
+        connection.watch = watch;
         self.write_answer(index);
     }
 
-    /// Writes what the socket takes of connection `index`'s answer, and
-    /// closes the connection once all of it is written, or its reader has
-    /// gone.
+    /// Writes what the socket takes of what connection `index` has to
+    /// write, and closes the connection once all of it is written, unless
+    /// it is a watch that has not settled, or once its reader has gone.
     fn write_answer(&mut self, index: usize) {
         let connection = &mut self.connections[index];
-        let Some(answer) = &connection.answer else { return };
-        while connection.written < answer.len() {
-            let rest = &answer[connection.written..];
+        while connection.written < connection.out.len() {
+            let rest = &connection.out[connection.written..];
             match file_abi::write(&SYS, connection.file.slot(), file_abi::CURRENT, rest) {
                 Ok(wrote) if wrote.count > 0 => connection.written += wrote.count as usize,
                 // The rest goes once the reader has read some.
                 Err(status) if Kernel::from_status(status) == Some(Kernel::WouldBlock) => return,
-                _ => break,
+                _ => {
+                    self.connections.remove(index);
+                    return;
+                }
             }
         }
-        self.connections.remove(index);
+        if connection.watch.is_some() {
+            connection.out.clear();
+            connection.written = 0;
+        } else {
+            self.connections.remove(index);
+        }
     }
 
-    /// The answer to the control request `request` from process `peer`;
-    /// one that changes something is a security event.
-    fn answer(&mut self, request: &str, peer: u64) -> String {
+    /// The answer to the control request `request` from `asker`, a
+    /// process and the user it acts for, and the watch it asked for, if
+    /// any; a request that changes something is a security event.
+    fn answer(&mut self, request: &str, asker: (u64, u32)) -> (String, Option<Watch>) {
         let mut words = request.split_whitespace();
         let verb = words.next().unwrap_or("");
         let rest: Vec<&str> = words.collect();
-        match verb {
+        let peer = asker.0;
+        let answer = match verb {
             "poweroff" | "reboot" | "halt" => {
                 let end = match verb {
                     "poweroff" => End::PowerOff,
@@ -1590,48 +1686,85 @@ impl Supervisor {
             },
             "status" => self.answer_status(),
             "show" => self.answer_show(rest.first().copied()),
-            "reload" => {
-                let Some(&name) = rest.first() else {
-                    return "error: reload needs a service's name\n".into();
-                };
-                let Some(service) = self.services.iter().find(|s| s.spec.name == name) else {
-                    return format!("error: no service is called {name}\n");
-                };
-                let Some(pid) = service.state.pid() else {
-                    return format!("error: {name} is not running\n");
-                };
-                let _ = process::kill(&SYS, SLOT_PROCESS, pid as i64, signal::SIGHUP);
-                audit!("asked {name} to reload, by process {peer}");
-                format!("ok: asked {name} to reload\n")
-            }
-            "start" | "stop" | "restart" => {
-                let Some(&name) = rest.first() else {
-                    return format!("error: {verb} needs a service's name\n");
-                };
-                if matches!(self.shutdown, Some(Shutdown::Stopping { .. })) {
-                    return "error: shutting down\n".into();
-                }
-                // A file added since boot, as `service new` adds one, is
-                // read when its service is first started.
-                let found = match self.services.iter().position(|s| s.spec.name == name) {
-                    Some(index) => Ok(index),
-                    None if verb != "stop" => self.add_linked(name),
-                    None => Err(format!("no service is called {name}")),
-                };
-                let index = match found {
-                    Ok(index) => index,
-                    Err(err) => return format!("error: {err}\n"),
-                };
-                audit!("asked to {verb} {name}, by process {peer}");
-                match verb {
-                    "start" => self.answer_start(index),
-                    "stop" => self.answer_stop(index),
-                    _ => self.answer_restart(index),
-                }
-            }
+            "reload" => self.answer_reload(rest.first().copied(), peer),
+            "start" => return self.answer_service(Verb::Start, &rest, asker),
+            "stop" => return self.answer_service(Verb::Stop, &rest, asker),
+            "restart" => return self.answer_service(Verb::Restart, &rest, asker),
             "" => "error: an empty request\n".into(),
             other => format!("error: unknown request `{other}`\n"),
+        };
+        (answer, None)
+    }
+
+    /// The answer to `reload NAME` from process `peer`: SIGHUP for the
+    /// service, if it runs.
+    fn answer_reload(&self, name: Option<&str>, peer: u64) -> String {
+        let Some(name) = name else {
+            return "error: reload needs a service's name\n".into();
+        };
+        let Some(service) = self.services.iter().find(|s| s.spec.name == name) else {
+            return format!("error: no service is called {name}\n");
+        };
+        let Some(pid) = service.state.pid() else {
+            return format!("error: {name} is not running\n");
+        };
+        let _ = process::kill(&SYS, SLOT_PROCESS, pid as i64, signal::SIGHUP);
+        audit!("asked {name} to reload, by process {peer}");
+        format!("ok: asked {name} to reload\n")
+    }
+
+    /// The answer to `start`, `stop` or `restart` NAME, from `asker`; with
+    /// `--wait` after the name, and an `ok:` answer, the watch that follows
+    /// it until the service settles, unless WATCHES_MAX run already.
+    fn answer_service(
+        &mut self,
+        verb: Verb,
+        rest: &[&str],
+        (peer, user): (u64, u32),
+    ) -> (String, Option<Watch>) {
+        let word = verb.word();
+        let (name, wait) = match rest {
+            [name] => (*name, false),
+            [name, "--wait"] => (*name, true),
+            [] => return (format!("error: {word} needs a service's name\n"), None),
+            _ => return (format!("error: {word} takes a service's name, and --wait\n"), None),
+        };
+        if matches!(self.shutdown, Some(Shutdown::Stopping { .. })) {
+            return ("error: shutting down\n".into(), None);
         }
+        // A file added since boot, as `service new` adds one, is read when
+        // its service is first started.
+        let found = match self.services.iter().position(|s| s.spec.name == name) {
+            Some(index) => Ok(index),
+            None if verb != Verb::Stop => self.add_linked(name),
+            None => Err(format!("no service is called {name}")),
+        };
+        let index = match found {
+            Ok(index) => index,
+            Err(err) => return (format!("error: {err}\n"), None),
+        };
+        audit!("asked to {word} {name}, by process {peer}");
+        let watch = if wait { self.watch(index, verb) } else { None };
+        let unwatched = wait && watch.is_none();
+        let mut answer = match verb {
+            Verb::Start => self.answer_start(index),
+            Verb::Stop => self.answer_stop(index),
+            Verb::Restart => self.answer_restart(index),
+        };
+        self.services[index].last_request =
+            Some(Request { verb: String::from(word), user, process: peer, ms: now() / MS });
+        if !answer.starts_with("ok:") {
+            return (answer, None);
+        }
+        if unwatched {
+            answer.truncate(answer.trim_end().len());
+            answer.push_str(&format!("; not watched: {} watches already\n", watch::WATCHES_MAX));
+        }
+        let watch = watch.map(|mut watch| {
+            self.follow(&mut watch);
+            watch
+        });
+        (answer, watch)
     }
 
     /// The answer to `status`: a line a service, its fields after tabs,
@@ -1736,7 +1869,7 @@ impl Supervisor {
         let name = service.spec.name.clone();
         service.held = true;
         service.restarting = false;
-        service.why = None;
+        service.set_why(None, None);
         let running = match service.state {
             State::Starting(pid) | State::Running(pid) => {
                 // It ends, and `ended` leaves it stopped; `step_stops`
@@ -2058,7 +2191,7 @@ impl Supervisor {
         let Some(run) = self.hooks.as_mut().and_then(|h| h.running.as_mut()) else { return };
         let name = self.services[run.index].spec.name.clone();
         if let Some(output) = &run.output
-            && !Self::copy_lines(output, &mut run.line, Some(&name))
+            && !Self::copy_lines(output, &mut run.line, Some(&name), None)
         {
             run.output = None;
         }
@@ -2070,7 +2203,7 @@ impl Supervisor {
         let Some(mut run) = hooks.running.take() else { return };
         let name = self.services[run.index].spec.name.clone();
         if let Some(output) = run.output.take() {
-            Self::copy_lines(&output, &mut run.line, Some(&name));
+            Self::copy_lines(&output, &mut run.line, Some(&name), None);
             flush_line(&mut run.line, Some(&name));
         }
         let line = if run.stopped {
@@ -2122,8 +2255,16 @@ impl Supervisor {
                 add(listener.slot(), readable, Source::Listener);
             }
             for (i, connection) in self.connections.iter().enumerate() {
-                // Its request, or room for the rest of its answer.
-                let events = if connection.answer.is_some() { writable } else { readable };
+                // Its request, or room for the rest of its answer; a watch
+                // with nothing to write hears only of its reader going,
+                // which poll always says.
+                let events = if connection.idle() {
+                    0
+                } else if connection.answered {
+                    writable
+                } else {
+                    readable
+                };
                 add(connection.file.slot(), events, Source::Connection(i));
             }
             for (i, service) in self.services.iter().enumerate() {
@@ -2190,7 +2331,8 @@ impl Supervisor {
                             let service = &mut self.services[i];
                             if let Some(output) = &service.output {
                                 let name = service.spec.name.clone();
-                                if !Self::copy_lines(output, &mut service.line, Some(&name)) {
+                                let last = Some(&mut service.last_line);
+                                if !Self::copy_lines(output, &mut service.line, Some(&name), last) {
                                     service.output = None;
                                 }
                             }
@@ -2199,8 +2341,12 @@ impl Supervisor {
                         Source::Hook => self.hook_output(),
                         Source::Program => {
                             if let Some(program) = &mut self.program {
-                                let open =
-                                    Self::copy_lines(&program.master, &mut program.line, None);
+                                let open = Self::copy_lines(
+                                    &program.master,
+                                    &mut program.line,
+                                    None,
+                                    None,
+                                );
                                 let hang_up = PollEvents::HANG_UP.0 as u16;
                                 program.hung_up = !open || entry.found & hang_up != 0;
                             }
@@ -2211,8 +2357,8 @@ impl Supervisor {
             self.reap();
             let time = now();
             // A connection that sent no whole request in time is closed;
-            // its client reads the end.
-            self.connections.retain(|c| c.until > time);
+            // its client reads the end. A watch's time is its own.
+            self.connections.retain(|c| c.watch.is_some() || c.until > time);
             self.step_stops(time);
             self.step_hook(time);
             self.step_ready(time);
@@ -2229,6 +2375,7 @@ impl Supervisor {
             }
             self.step_pending();
             self.step_shutdown();
+            self.step_watches(now());
             self.pet_watchdog(time);
         }
     }
@@ -2270,12 +2417,13 @@ fn dependents_words(names: &[String], lead: &str) -> String {
     }
 }
 
-/// Logs `line` after `name: `, unless it starts with that, and empties it.
-/// A `<N>` before the text, which sets its level as on Linux (sd-daemon(3)'s
-/// `<3>` for an error), stays in front, where the kernel reads it.
-fn flush_line(line: &mut Vec<u8>, name: Option<&str>) {
+/// Logs `line` after `name: `, unless it starts with that, and empties it;
+/// returns its text without its level, if it held any. A `<N>` before the
+/// text, which sets its level as on Linux (sd-daemon(3)'s `<3>` for an
+/// error), stays in front, where the kernel reads it.
+fn flush_line(line: &mut Vec<u8>, name: Option<&str>) -> Option<String> {
     if line.is_empty() {
-        return;
+        return None;
     }
     let text = String::from_utf8_lossy(line);
     let (level, text) = match text.strip_prefix('<').and_then(|rest| rest.split_once('>')) {
@@ -2292,5 +2440,19 @@ fn flush_line(line: &mut Vec<u8>, name: Option<&str>) {
         }
         _ => println!("{level}{text}"),
     }
+    let said = String::from(text);
     line.clear();
+    Some(said)
+}
+
+/// A service's line as `show` keeps it: at most LAST_LINE_MAX bytes.
+fn kept(mut line: String) -> String {
+    if line.len() > LAST_LINE_MAX {
+        let mut end = LAST_LINE_MAX;
+        while !line.is_char_boundary(end) {
+            end -= 1;
+        }
+        line.truncate(end);
+    }
+    line
 }

@@ -457,10 +457,11 @@ pub fn daemon(args: &mut Args) -> Result<i32, Fail> {
     }
 }
 
-/// Starts or stops brailled's service.
+/// Starts or stops brailled's service, and returns once it has started
+/// or stopped; service(8) says only what went wrong.
 fn service(command: &str) -> Result<(), Fail> {
     let status = Command::new("/system/commands/service")
-        .args(["brailled", command])
+        .args(["brailled", command, "--quiet"])
         .status()
         .map_err(|e| util::failed(&"service", e))?;
     if status.success() {

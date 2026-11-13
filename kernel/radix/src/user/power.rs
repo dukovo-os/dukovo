@@ -66,9 +66,13 @@ static THREAD: Once<ThreadRef> = Once::new();
 
 /// Starts the thread, then the power button.
 pub fn start() {
-    match sched::spawn("power", run, 0, Options::new().policy(Policy::Fair { nice: -5 })) {
+    // Held until it is kept, so that a press that comes as it starts
+    // wakes it.
+    let options = Options::new().held().policy(Policy::Fair { nice: -5 });
+    match sched::spawn("power", run, 0, options) {
         Ok(thread) => {
-            let _ = THREAD.set(thread);
+            let _ = THREAD.set(thread.clone());
+            sched::release(&thread);
         }
         Err(err) => {
             log_error!("Power: could not start the thread that passes the power button on: {err}");

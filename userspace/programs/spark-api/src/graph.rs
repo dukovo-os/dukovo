@@ -72,9 +72,14 @@ pub enum Verdict {
     Go,
     /// Not yet: the services it waits for, which are coming.
     Wait(Vec<String>),
-    /// Not until something changes: why, as a clause after a service's
-    /// name, such as "it requires db, which is stopped".
-    Refuse(String),
+    /// Not until something changes.
+    Refuse {
+        /// Why, as a clause after a service's name: "it requires db,
+        /// which is stopped".
+        why: String,
+        /// The required service that is off.
+        cause: String,
+    },
 }
 
 /// Whether a service whose file names `links` may start, given what each
@@ -87,7 +92,10 @@ pub fn verdict<'a>(links: &[(&str, Link)], peer: impl Fn(&str) -> Peer<'a>) -> V
             Peer::Ready => {}
             Peer::Coming => coming.push(name.to_string()),
             Peer::Off(why) if link == Link::Requires => {
-                return Verdict::Refuse(format!("it requires {name}, which {why}"));
+                return Verdict::Refuse {
+                    why: format!("it requires {name}, which {why}"),
+                    cause: name.to_string(),
+                };
             }
             Peer::Off(_) => {}
         }
@@ -260,11 +268,17 @@ mod tests {
         let links = [("cache", Link::After), ("web", Link::Requires)];
         assert_eq!(
             verdict(&links, peers),
-            Verdict::Refuse("it requires web, which is stopped".into())
+            Verdict::Refuse {
+                why: "it requires web, which is stopped".into(),
+                cause: "web".into()
+            }
         );
         assert_eq!(
             verdict(&[("gone", Link::Requires)], peers),
-            Verdict::Refuse("it requires gone, which has no service file".into())
+            Verdict::Refuse {
+                why: "it requires gone, which has no service file".into(),
+                cause: "gone".into()
+            }
         );
     }
 
