@@ -1,0 +1,43 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+#
+# Where alerts go besides the screen (alerts.toml(5), alerts(8), ADR
+# 0485). alertd(8) shows each alert as a notification and at the next
+# sign-in; with a channel below it also sends it by email or to a webhook.
+# With none, it sends nothing.
+#
+# Once this file names a channel it holds secrets: a password, a token, or
+# an address that is a token itself. alertd then reads it only when it is
+# root's and no one else can read it:
+#
+#   chmod 600 /system/settings/alerts.toml
+#   service alertd reload
+#   alerts test
+#
+# Email, through the provider's submission server. Port 587 starts TLS
+# after connecting and 465 has it from the start; alertd never sends
+# without TLS, and checks the server's certificate against the system's
+# roots and the file `ca` names (which must be in /system/settings/ssl):
+#
+#   [email]
+#   to = ["ops@example.com"]
+#   from = "alerts@server.example.com"   # default: alerts@ and the machine's name
+#   server = "smtp.example.com"
+#   port = 587                           # 587 (default) or 465
+#   user = "alerts@example.com"          # optional
+#   password = "app-password"            # optional, with user
+#   ca = "/system/settings/ssl/mail-ca.pem"   # optional
+#   severity = "warning"                 # "critical" sends only critical alerts
+#   cleared = true                       # also say when an alert clears
+#
+# A webhook, one [[webhook]] for each. The kind is ntfy, matrix, slack,
+# discord or json. The address is https; only json may use http, and only
+# to a private address:
+#
+#   [[webhook]]
+#   kind = "ntfy"
+#   url = "https://ntfy.sh/server-alerts-7f3a"
+#   token = "tk_..."                     # ntfy, matrix and json
+#   # room = "!abc:example.org"          # matrix only; url is the homeserver
+#   severity = "warning"
+#   cleared = true
