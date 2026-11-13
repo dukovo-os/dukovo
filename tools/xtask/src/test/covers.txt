@@ -212,6 +212,13 @@ gpio kernel/drivers/gpio/ tools/xtask/src/acpi/
 guest-agent userspace/programs/systools/src/guest_agent.rs userspace/programs/systools/src/guest_agent/
 guest-agent userspace/defaults/spark/services/guest-agent.toml userspace/programs/systools/src/ip.rs
 guest-agent userspace/programs/systools/src/power.rs kernel/drivers/virtio/src/console.rs
+hardware-check kernel/drivers/ahci/ kernel/lib/mca/ kernel/radix/src/mce.rs
+hardware-check userspace/programs/systools/src/hardware.rs userspace/programs/systools/src/hardware/
+hardware-check userspace/programs/systools/src/diskhealth.rs userspace/programs/systools/src/dmesg.rs
+hardware-check userspace/programs/systools/src/logger.rs userspace/programs/systools/src/nic.rs
+hardware-check userspace/programs/systools/src/priority.rs userspace/programs/systools/src/selftest.rs
+hardware-check userspace/programs/systools/src/sensors.rs userspace/programs/systools/src/elevate.rs
+hardware-check userspace/programs/systools/src/authd.rs userspace/programs/systools/src/authd/
 hyperv kernel/drivers/hyperv/ kernel/radix/src/hyperv.rs kernel/arch/x86_64/src/hyperv.rs
 hyperv kernel/arch/x86_64/src/time.rs kernel/radix/src/fs/disk/storvsc.rs
 hyperv kernel/drivers/mana/ kernel/radix/src/vpci.rs

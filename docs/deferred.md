@@ -204,6 +204,9 @@ machine with AMT, an AMD machine and a laptop; see
 | A service's own log files, turned over: nginx logs to the system's log, and an `access_log` to a file of its own is never turned over (ADR 0491) | Needs timers | 16a |
 | The web console's lab tests run on QEMU in CI for every PR (ADR 0510) | CI runs no lab tests yet; they run on QEMU before each PR, and the console's pages arrive from C3 | admind (Phase 16, PR C2a) |
 | A crash dump sent with a problem report, with the person's consent (ADR 0483) | A dump is kept on the machine and sent nowhere; the reports come with the reporting service | 16b, with the problem reports |
+| Tests of displays in `hardware check`: colours and patterns that show dead or stuck pixels, and the backlight (ADR 0488) | A test draws on the screen and needs the person to look at it, which takes the window manager (windowd) | Release 1.1, with the window manager |
+| `hardware check` saying that a network link is slower than the card and its partner both offer, HW-151 (ADR 0488) | The kernel shows a card's current speed and duplex alone, not the speeds the card offers or its partner does, so a cable that makes a link negotiate down looks like a slow port | A driver that reports what the card and its partner offer |
+| `hardware check` counting a card's receive errors, HW-153, on a driver that does (ADR 0488) | The check reads `rx_errors` of each card, which the kernel gives as 0 for every card, since its drivers count only the frames they drop | Drivers that count frames with a bad checksum or length |
 
 ### Phase 17: Go
 

@@ -54,6 +54,9 @@
 //! its name, lists and changes the firmware's boot entries (ADR 0313).
 //! `changes` says what changed between two starts, from the record the
 //! health check keeps of each (ADR 0500).
+//! `hardware` checks the memory, the disks, the processors, the sensors,
+//! the battery and the network cards for faults, and keeps what it found
+//! (ADR 0488).
 //! `dumps` saves the kernel's crash dump at the boot after a panic, and
 //! lists, shows and deletes the saved ones (ADR 0483).
 //! `audiocd` lists, plays and rips music CDs (ADR 0447); `burn` writes
@@ -112,6 +115,7 @@ mod floppy;
 mod fstrim;
 mod git_credential;
 mod guest_agent;
+mod hardware;
 mod hexdump;
 mod hwinfo;
 mod iostat;
@@ -270,6 +274,7 @@ const TOOLS: &[(&str, Tool)] = &[
     ("git-credential-keyring", git_credential::main),
     ("guest-agent", guest_agent::main),
     ("halt", power::halt),
+    ("hardware", hardware::main),
     ("hd", hexdump::hd),
     ("hexdump", hexdump::main),
     ("host", dig::host),

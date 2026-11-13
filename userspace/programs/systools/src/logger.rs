@@ -112,6 +112,23 @@ fn line(priority: u8, message: &str) -> Vec<u8> {
     line
 }
 
+/// Names this thread `tag`, which the kernel puts in front of each record
+/// it writes.
+fn name_thread(tag: &str) {
+    if let Ok(name) = CString::new(thread_name(tag)) {
+        // SAFETY: names this thread with a C string of at most 15 bytes.
+        unsafe { libc::pthread_setname_np(libc::pthread_self(), name.as_ptr()) };
+    }
+}
+
+/// Writes `message` to the log as program `tag`, at syslog level `level`
+/// of the user facility.
+pub(crate) fn log(tag: &str, level: u8, message: &str) -> Result<(), Fail> {
+    name_thread(tag);
+    let mut kmsg = OpenOptions::new().write(true).open(KMSG).map_err(|e| util::failed(&KMSG, e))?;
+    kmsg.write_all(&line(8 + level, message)).map_err(|e| util::failed(&KMSG, e))
+}
+
 /// logger(1).
 pub fn main(args: &mut Args) -> Result<i32, Fail> {
     let mut tag: Option<String> = None;
@@ -154,11 +171,7 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
         }
     }
     let tag = tag.unwrap_or_else(|| util::user_name(util::own_user()));
-    let name = thread_name(&tag);
-    if let Ok(name) = CString::new(name) {
-        // SAFETY: names this thread with a C string of at most 15 bytes.
-        unsafe { libc::pthread_setname_np(libc::pthread_self(), name.as_ptr()) };
-    }
+    name_thread(&tag);
     let mut kmsg = if no_act {
         None
     } else {

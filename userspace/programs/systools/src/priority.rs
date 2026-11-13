@@ -336,6 +336,19 @@ fn affinity(thread: u64) -> Result<Mask, radix_abi::Status> {
     Ok(mask)
 }
 
+/// Confines the calling thread to CPU `cpu`, for a program that runs a
+/// thread on each CPU and must say which one gave an answer.
+pub(crate) fn pin_to(cpu: usize) -> Result<(), Fail> {
+    let mut mask = vec![0u8; cpu / 8 + 1];
+    mask[cpu / 8] |= 1 << (cpu % 8);
+    abi::set_affinity(&SYS, SLOT_PROCESS, 0, &mask).map_err(|s| {
+        fail(format!(
+            "cannot pin a thread to CPU {cpu}: {}",
+            util::strip_os_error(&sys::io_error(s))
+        ))
+    })
+}
+
 /// taskset(1).
 pub fn taskset(args: &mut Args) -> Result<i32, Fail> {
     args.stop_at_operand();

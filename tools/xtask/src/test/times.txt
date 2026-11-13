@@ -68,6 +68,7 @@ fuzz 27
 git-https 15
 git-keyring 127
 gpio 11
+hardware-check 150
 i2c 22
 install-beside 150
 install-bios 115

@@ -34,6 +34,7 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 - [Server hardening]()
 - [Logs, monitoring and troubleshooting](logs.md)
 - [Metrics and early warnings](metrics.md)
+- [Checking the hardware](hardware-check.md)
 - [Alerts: email, ntfy and webhooks](alerts.md)
   - [Setting up alert email](alert-email.md)
   - [What each alert means](alert-meanings.md)
