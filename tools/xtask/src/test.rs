@@ -7328,7 +7328,7 @@ fn watchdog_esb(vm: &mut Vm, case: &Case) -> Result<(), String> {
 }
 
 fn watchdog_tco(vm: &mut Vm, case: &Case) -> Result<(), String> {
-    watchdog_restarts(vm, case, "the Intel ICH9 TCO timer, with timeouts from 4 to 1227 s")
+    watchdog_restarts(vm, case, "the Intel ICH9 TCO timer, with timeouts from 2 to 613 s")
 }
 
 /// Spark, asked to stop responding, leaves the watchdog `found` unpetted,
