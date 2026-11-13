@@ -448,11 +448,25 @@ Memory: 1009 MiB free of 1009 MiB in the frame allocator's zones:
 
 The kernel writes every message to all of these at once:
 
-*Serial port*
-	COM1, I/O port 0x3F8, 115200 baud, 8 data bits, no parity, 1 stop bit,
-	when the port exists. The kernel debugger also runs here. Programs
-	open it as the terminal _/devices/ttyS0_; while one has it open,
-	as *serial-console*(8) does, the log stays off it (ADR 0318).
+*Serial ports*
+	COM1, I/O port 0x3F8, at 115200 baud, 8 data bits, no parity, 1 stop
+	bit, or the line *console=ttyS0* gives, when the port exists; then
+	COM2 to COM4 and the 16550s on PCI cards and of Intel AMT, as they
+	are found. Each is a terminal named as on Linux: COM1 to COM4 are
+	_/devices/ttyS0_ to _ttyS3_ and the PCI ports follow from _ttyS4_
+	(ADR 0480). *serial-log=* chooses which carry the log; all do
+	unless it says otherwise. The kernel debugger also runs on them.
+	Each is sent the log at its own pace, so a slow port never holds up
+	another, and one that stops taking bytes, as AMT's port can with no
+	management console open, is skipped until it takes them again,
+	when it resumes at the last screenful (about 2 KiB). While a program
+	has a port open, as *serial-console*(8) does, the log stays off it
+	(ADR 0318). The log names each port as it is found:
+
+```
+Serial: COM2 at I/O port 0x2f8 is the terminal /devices/ttyS1, at 57600 baud, 8N1; the kernel log is not on it; typing by ISA interrupt 3
+Serial: the Intel AMT Serial-over-LAN port at 0000:00:16.3, I/O port 0xf0e0, is the terminal /devices/ttyS4, at 115200 baud, 8N1; the kernel log and kdb are on it; typing by MSI
+```
 
 *Framebuffer*
 	The linear framebuffer GRUB set up, under UEFI and BIOS. Text is drawn
@@ -501,8 +515,8 @@ them to *init*, and the kernel does not read them.
 	the in-memory log always keep every level.
 
 *kdb*
-	Start the kernel debugger on the debug console (the serial port, and
-	the Debug Capability with *dbc*) at the end of boot, at every
+	Start the kernel debugger on the debug console (the serial ports that
+	carry the log, and the Debug Capability with *dbc*) at the end of boot, at every
 	breakpoint, and after a panic. See *radix-debug*(7).
 
 *dbc*
@@ -616,7 +630,7 @@ them to *init*, and the kernel does not read them.
 	kept, and shows when Esc is pressed, when an error is logged, when
 	a program such as *consoled*(8) takes the screen and gives it back,
 	or a minute after the boot began if no program has taken the screen.
-	The serial port gets the whole log either way. An installed system's
+	The serial ports that carry the log get the whole log either way. An installed system's
 	boot menu gives it (ADR 0426).
 
 *crashlog*=off
@@ -656,18 +670,36 @@ them to *init*, and the kernel does not read them.
 	that the command line could not open already: the words after *--*
 	start any program as root.
 
-*console*=*ttyS0*[,_options_]
-	Read by *serial-console*(8) and *consoled*(8), not the kernel: a
-	console on the first serial port, _/devices/ttyS0_, as on Linux. With
-	*install*, the installer's screens run there and not on tty1;
-	otherwise the sign-in, or root's shell with *console-sign-in=off*,
-	runs there as well as on the screen's consoles. The install stick's
-	*Install Dukovo (serial console)* entry gives it, and a system
-	installed that way keeps it in its boot menu. _options_ are Linux's:
-	the speed, 300 to 115200, then optionally the parity, *n*, *o* or
-	*e*, and the data bits, *7* or *8*, as in *115200n8*, the line's
-	setting when none are given (ADR 0318). Other *console=* flags, as
-	*console=tty0*, are passed over.
+*console*=*ttyS*_n_[,_options_]
+	A console on serial port _/devices/ttyS_n_, as on Linux: COM1 to
+	COM4 are *ttyS0* to *ttyS3*, and the ports of PCI cards and of
+	Intel AMT follow from *ttyS4* (ADRs 0318 and 0480). The kernel runs
+	the port at _options_ from its first use, and *serial-console*(8)
+	keeps a sign-in on it, or root's shell with *console-sign-in=off*,
+	as well as on the screen's consoles. It may be given for several
+	ports, as *console=ttyS1,57600 console=ttyS4*; the last *console=*
+	is the primary console, which runs the installer's screens with
+	*install*, in place of tty1, and Rescue's with *rescue=*. The install
+	stick's *Install Dukovo (serial console)* entry gives
+	*console=ttyS0*, and a system installed over a serial port keeps
+	that port's in its boot menu. _options_ are Linux's: the speed, 300
+	to 115200, then optionally the parity, *n*, *o* or *e*, and the data
+	bits, *7* or *8*, as in *115200n8*, the line's setting when none are
+	given; a final *r*, for flow control, is passed over, as a 16550 has
+	none. A speed above 115200, past what a 16550 runs at, or options
+	the kernel does not read are warned about at boot, and the port runs
+	at 115200n8. Other *console=* flags, as *console=tty0*, are passed
+	over by the kernel, but the last of all still names the primary
+	console.
+
+*serial-log*=_ports_
+	The serial ports that carry the kernel log, *kdb* and a panic
+	report: *all*, the default; *none*; or a list of names, as
+	*serial-log=ttyS0,ttyS4* (ADR 0480). A port left out is sent nothing
+	by the kernel and is not read by *kdb*, for a port with a UPS or a
+	modem on it; it is still a terminal, and *console=* can still give
+	it a sign-in. It counts from the kernel's first line, COM1's
+	included. A name that is no serial port's is warned about at boot.
 
 *netlog*=_host_[:_port_]
 	Read by *netlog*(8), not the kernel: send the log over UDP to this
@@ -711,9 +743,10 @@ them to *init*, and the kernel does not read them.
 	once they end, as Live console on their first page or the end of
 	the install leaves them. The install stick's entry gives
 	*console-sign-in=off* with it, so that the other consoles have
-	root's shell for a look around during the install. With
-	*console=ttyS0* too, *serial-console*(8) runs the screens on the
-	first serial port instead, and tty1 has the shell (ADR 0318).
+	root's shell for a look around during the install. When the primary
+	console, the last *console=*, is a serial port, as *console=ttyS0*,
+	*serial-console*(8) runs the screens on that port instead, and tty1
+	has the shell (ADRs 0318 and 0480).
 
 *speech*
 	Read by *readerd*(8), not the kernel: the screen reader speaks from

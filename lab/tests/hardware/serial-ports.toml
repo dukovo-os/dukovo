@@ -1,0 +1,57 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "Every serial port the machine has, COM1 to COM4, a PCI card's and Intel AMT's Serial-over-LAN port, is a terminal named as Linux names it, from ttyS0, ttyS4 on PCI (ADR 0480): /kernel/class/tty lists each with its I/O port, kind and interrupt, stty reads each line, AMT's port has MSI for its typing, and a program's text written on the log ports reaches the lab's serial cable. Needs a machine with a serial port"
+time = "3m"
+
+[[step]]
+run = "ls /kernel/class/tty"
+expect = "ttyS"
+or_skip = "needs a machine with a serial port"
+
+# Each port has its terminal and its entries. (The boot test
+# serial-ports checks the log's line for each; the kernel log's ring may
+# have moved past it in a boot the tests share.)
+[[step]]
+run = '''sh -c 'for p in /kernel/class/tty/ttyS*; do n=$(basename $p); [ -e /devices/$n ] || echo "no terminal: $n"; echo "$n: $(cat $p/kind) at $(cat $p/port), $(cat $p/interrupt), log $(cat $p/console)"; done; echo "port""s: listed"' '''
+expect = "ports: listed"
+expect_not = ["no terminal:", "No such file"]
+
+# COM1 to COM4 keep Linux's names and addresses; the PCI ports come after.
+[[step]]
+run = '''sh -c 'for p in /kernel/class/tty/ttyS*; do n=$(basename $p); k=$(cat $p/kind); a=$(cat $p/port); case "$n $k $a" in "ttyS0 com1 0x3F8"|"ttyS1 com2 0x2F8"|"ttyS2 com3 0x3E8"|"ttyS3 com4 0x2E8") ;; "ttyS0 "*|"ttyS1 "*|"ttyS2 "*|"ttyS3 "*|*" com"*) echo "misnamed: $n $k $a" ;; esac; done; echo "nam""es: checked"' '''
+expect = "names: checked"
+expect_not = "misnamed:"
+
+# stty reads each port's line, which runs at 115200 baud unless the
+# command line's console= gives another.
+[[step]]
+run = '''sh -c 'for p in /kernel/class/tty/ttyS*; do n=$(basename $p); echo "$n: $(stty -F /devices/$n -a | head -n 1)"; done' '''
+root = true
+expect = "speed "
+expect_not = ["stty:", "Input/output error"]
+
+# AMT's port, on PCI, takes typing by MSI where the machine has it. The
+# OptiPlex's AMT Serial-over-LAN is on in MEBx.
+[[step]]
+run = '''sh -c 'found=none; for p in /kernel/class/tty/ttyS*; do [ "$(cat $p/kind)" = amt-sol ] && found="$(basename $p) $(cat $p/interrupt) $(cat $p/pci)"; done; echo "amt sol: $found"' '''
+expect = "amt sol: "
+expect_not = "polled"
+
+# A program's text goes out on each log port, the lab's cable among them,
+# while the log stays off the port it has open. The text is put together
+# on the machine, so that no log line of the command holds it whole.
+[[step]]
+run = '''sh -c 'a=serial-ports; for p in /kernel/class/tty/ttyS*; do n=$(basename $p); [ "$(cat $p/console)" = Y ] || continue; echo "$a: a program wrote this on $n" | timeout 5 tee /devices/$n > /dev/null && echo "wrote $n"; done; echo "writ""ing: done"' '''
+root = true
+expect = ["wrote ttyS", "writing: done"]
+[[step]]
+serial = "serial-ports: a program wrote this on ttyS"
+
+# The log comes back to the ports once they are closed.
+[[step]]
+run = '''sh -c 'echo "serial""-ports: the log is back" > /devices/kmsg; echo "logg""ed"' '''
+root = true
+expect = "logged"
+[[step]]
+serial = "serial-ports: the log is back"

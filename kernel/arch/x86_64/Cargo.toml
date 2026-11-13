@@ -32,6 +32,9 @@ radix-sensors = { path = "../../lib/sensors" }
 radix-smbios = { path = "../../lib/smbios" }
 radix-smbus = { path = "../../drivers/smbus" }
 radix-sync = { path = "../../lib/sync" }
+# Linux's console options for COM1 (`console=ttyS0,57600n8`, ADR 0480).
+radix-tty = { path = "../../lib/tty" }
+radix-uart = { path = "../../drivers/uart" }
 radix-vtd = { path = "../../drivers/vtd" }
 radix-watchdog = { path = "../../drivers/watchdog" }
 

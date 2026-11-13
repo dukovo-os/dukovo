@@ -1,32 +1,40 @@
 // SPDX-FileCopyrightText: 2026 The Dukovo contributors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! serial-console(8): a console on the PC's first serial port,
-//! `/devices/ttyS0`, for a computer with no screen (Phase 14, ADR 0318),
-//! as agetty(8) keeps one on Linux.
+//! serial-console(8): consoles on serial ports, for a computer with no
+//! screen or one managed from afar (Phase 14, ADRs 0318 and 0480), as
+//! agetty(8) and systemd's serial-getty keep them on Linux.
 //!
 //! Spark starts it at every boot. It does something only when the kernel
-//! was started with `console=ttyS0`, as the install stick's "Install
+//! was started with `console=ttyS<n>`, as the install stick's "Install
 //! Dukovo (serial console)" entry and a system installed from it are
-//! (dukovo-boot(7)); otherwise it ends at once and stays stopped. Then it
-//! runs, on the line, and again each time it ends:
+//! (dukovo-boot(7)); otherwise it ends at once and stays stopped. It keeps
+//! a console on each port a `console=` flag names, as Linux keeps one on
+//! each of its consoles, in a process of its own that it starts again
+//! should it end: COM2 for a BMC's Serial-over-LAN is `ttyS1`, Intel AMT's
+//! `ttyS4`. The last `console=` is the primary console, as on Linux. On
+//! each port it runs, and again each time it ends:
 //!
-//! - under the kernel flag `install`, the installer's screens, once, as
-//!   consoled(8) runs them on tty1, which then leaves them to the line;
+//! - under the kernel flag `install`, on the primary console, the
+//!   installer's screens, once, as consoled(8) runs them on tty1, which
+//!   then leaves them to the line;
+//! - under `rescue=`, on the primary console, Rescue's screens, and
+//!   nothing on the others;
 //! - under `console-sign-in=off`, root's shell, with no sign-in;
 //! - otherwise the issue text, /system/settings/issue, and the sign-in,
 //!   login(1).
 //!
 //! Each session finds the line as a new terminal is, at the speed and
-//! character format `console=ttyS0,115200n8` gives (115200n8 when it
+//! character format its `console=ttyS1,57600n8` gives (115200n8 when it
 //! gives none, the line GRUB and the kernel log run), whatever the last
 //! session left; with TERM=vt220, as Linux's serial consoles have; and
 //! with the size of the terminal at the other end, which is asked for as
 //! xterm's resize(1) asks, or 80 by 24 when nothing answers.
 //!
-//! serial-console holds no descriptor of the line while a session runs,
-//! so that once the session's programs are done with it, the kernel's
-//! log goes out on it again until the next session starts.
+//! serial-console holds no descriptor of a line while a session runs, so
+//! that once the session's programs are done with it, the kernel's log
+//! goes out on it again, if `serial-log=` gives it the log, until the next
+//! session starts.
 
 use std::ffi::CString;
 use std::fs::OpenOptions;
@@ -40,16 +48,9 @@ use crate::args::Args;
 use crate::elevate;
 use crate::util::{self, Fail};
 
-/// The PC's first serial port, COM1, as a terminal.
-const LINE: &str = "/devices/ttyS0";
-
-/// The line's name, as the issue text's `\l` and the sign-in records give
-/// it.
-const LINE_NAME: &str = "ttyS0";
-
-/// The kernel flag that asks for the console, with Linux's options after
-/// a comma: `console=ttyS0,115200n8`.
-const FLAG: &str = "console=ttyS0";
+/// The kernel flag that asks for a console, with a port's name and
+/// Linux's options after a comma: `console=ttyS1,57600n8`.
+const FLAG: &str = "console=";
 
 /// What runs once under the kernel flag `install`.
 const INSTALLER: &str = "/system/commands/dukovo-install";
@@ -131,27 +132,65 @@ const SPEEDS: &[(u32, libc::speed_t)] = &[
     (115_200, libc::B115200),
 ];
 
-/// What the kernel flags of command line `line`, those before a lone
-/// `--`, ask of the serial console: nothing without `console=ttyS0`;
-/// otherwise its format, or why its options are not one. Of several, the
-/// last counts, as on Linux.
-fn asked(line: &str) -> Option<Result<Format, String>> {
-    let flag = line
-        .split_whitespace()
-        .take_while(|word| *word != "--")
-        .filter(|word| word.strip_prefix(FLAG).is_some_and(|r| r.is_empty() || r.starts_with(',')))
-        .last()?;
-    Some(match flag.strip_prefix(FLAG).and_then(|rest| rest.strip_prefix(',')) {
-        None => Ok(Format::DEFAULT),
-        Some(options) => format_of(options),
+/// A serial port a `console=` flag names, and how it asks the port to
+/// run.
+#[derive(Debug, PartialEq, Eq)]
+struct Asked {
+    /// The port's name: `ttyS1`.
+    name: String,
+    /// Its format, or why its options are not one.
+    format: Result<Format, String>,
+}
+
+/// The serial ports the kernel flags of command line `line`, those before
+/// a lone `--`, ask for consoles on: each `console=ttyS<n>`, with the
+/// options of its last flag, as on Linux, in the order of their last
+/// flags. The last is the primary console if it is a serial port's.
+fn consoles(line: &str) -> Vec<Asked> {
+    let mut asked: Vec<Asked> = Vec::new();
+    let flags = line.split_whitespace().take_while(|word| *word != "--");
+    for value in flags.filter_map(|word| word.strip_prefix(FLAG)) {
+        let (name, options) = match value.split_once(',') {
+            Some((name, options)) => (name, Some(options)),
+            None => (value, None),
+        };
+        if !is_serial_port(name) {
+            continue;
+        }
+        let format = options.map_or(Ok(Format::DEFAULT), |options| format_of(name, options));
+        asked.retain(|earlier| earlier.name != name);
+        asked.push(Asked { name: name.to_string(), format });
+    }
+    asked
+}
+
+/// Whether `name` is a serial port's, as the kernel names them: `ttyS`
+/// and a number, with no leading zero.
+fn is_serial_port(name: &str) -> bool {
+    name.strip_prefix("ttyS").is_some_and(|digits| {
+        !digits.is_empty()
+            && digits.bytes().all(|byte| byte.is_ascii_digit())
+            && (digits == "0" || !digits.starts_with('0'))
     })
 }
 
-/// The format Linux's console options `options` give: the speed in baud,
-/// then optionally the parity, `n`, `o` or `e`, and the data bits, `7` or
-/// `8`, as in `115200n8`. A final `r`, RTS/CTS flow control, is passed
-/// over: the PC's serial port does none (ADR 0318).
-fn format_of(options: &str) -> Result<Format, String> {
+/// Whether the kernel flags of command line `line` make serial port
+/// `name` the primary console: the last `console=` is its.
+fn is_primary(line: &str, name: &str) -> bool {
+    let flags = line.split_whitespace().take_while(|word| *word != "--");
+    flags
+        .filter_map(|word| word.strip_prefix(FLAG))
+        .last()
+        .is_some_and(|value| value.split_once(',').map_or(value, |(port, _)| port) == name)
+}
+
+/// The format Linux's console options `options` for port `name` give:
+/// the speed in baud, then optionally the parity, `n`, `o` or `e`, and
+/// the data bits, `7` or `8`, as in `115200n8`. A final `r`, RTS/CTS flow
+/// control, is passed over: the PC's serial ports do none (ADR 0318).
+fn format_of(name: &str, options: &str) -> Result<Format, String> {
+    let flag = format!("{FLAG}{name}");
+    let flag = flag.as_str();
     let digits = options.find(|c: char| !c.is_ascii_digit()).unwrap_or(options.len());
     let (speed, rest) = options.split_at(digits);
     let speed = speed
@@ -160,7 +199,7 @@ fn format_of(options: &str) -> Result<Format, String> {
         .and_then(|baud| SPEEDS.iter().find(|(speed, _)| *speed == baud))
         .map(|(_, code)| *code)
         .ok_or_else(|| {
-            format!("{FLAG},{options}: the speed must be one of 300, 600, 1200, ... 57600, 115200")
+            format!("{flag},{options}: the speed must be one of 300, 600, 1200, ... 57600, 115200")
         })?;
     let mut rest = rest.chars();
     let parity = match rest.next() {
@@ -168,20 +207,20 @@ fn format_of(options: &str) -> Result<Format, String> {
         Some('o') => libc::PARENB | libc::PARODD,
         Some('e') => libc::PARENB,
         Some(other) => {
-            return Err(format!("{FLAG},{options}: the parity must be n, o or e, not {other}"));
+            return Err(format!("{flag},{options}: the parity must be n, o or e, not {other}"));
         }
     };
     let size = match rest.next() {
         None | Some('8') => libc::CS8,
         Some('7') => libc::CS7,
         Some(other) => {
-            return Err(format!("{FLAG},{options}: the data bits must be 7 or 8, not {other}"));
+            return Err(format!("{flag},{options}: the data bits must be 7 or 8, not {other}"));
         }
     };
     // Only flow control may follow, which is passed over.
     let flow: String = rest.collect();
     if !flow.is_empty() && flow != "r" {
-        return Err(format!("{FLAG},{options}: more than a speed, a parity, data bits and r"));
+        return Err(format!("{flag},{options}: more than a speed, a parity, data bits and r"));
     }
     Ok(Format { speed, parity, size })
 }
@@ -227,61 +266,165 @@ fn c_string(text: &str) -> CString {
     CString::new(text).unwrap_or_default()
 }
 
+/// A serial port serial-console keeps a console on.
+#[derive(Debug)]
+struct Port {
+    /// Its name, `ttyS1`, as the issue text's `\l` and the sign-in
+    /// records give it.
+    name: String,
+    /// Its terminal: `/devices/ttyS1`.
+    line: String,
+    format: Format,
+    /// Whether it is the primary console, which runs the installer and
+    /// Rescue.
+    primary: bool,
+}
+
+/// What the sessions on every port share.
+struct Shared {
+    /// Root's shell, which runs under `console-sign-in=off`.
+    shell: String,
+    /// Whether people sign in, rather than get root's shell.
+    sign_in: bool,
+    /// Whether Rescue's screens run, under `rescue=`.
+    rescue: bool,
+    /// /system/settings/issue's text.
+    issue: String,
+    env: Vec<CString>,
+}
+
 /// serial-console(8).
 pub fn main(args: &mut Args) -> Result<i32, Fail> {
     if let Some(arg) = args.next()? {
         return Err(args.unknown(&arg));
     }
     let command_line = std::fs::read_to_string("/kernel/cmdline").unwrap_or_default();
-    let Some(format) = asked(&command_line) else {
+    let asked = consoles(&command_line);
+    if asked.is_empty() {
         // Spark starts it at every boot; with no serial console asked for,
         // it has nothing to do, and stays stopped (restart = on-failure).
-        eprintln!("serial-console: the kernel was not started with {FLAG}: no serial console");
+        eprintln!(
+            "serial-console: the kernel was not started with {FLAG}ttyS<n>: no serial console"
+        );
         return Ok(0);
-    };
-    let format = format.unwrap_or_else(|why| {
-        eprintln!("serial-console: {why}; the line runs at 115200n8");
-        Format::DEFAULT
-    });
-    if !Path::new(LINE).exists() {
-        eprintln!("serial-console: no {LINE}: this computer has no serial port COM1");
+    }
+    let rescue = util::kernel_word("rescue=").is_some();
+    let mut ports = Vec::new();
+    for Asked { name, format } in asked {
+        let format = format.unwrap_or_else(|why| {
+            eprintln!("serial-console: {why}; {name} runs at 115200n8");
+            Format::DEFAULT
+        });
+        let line = format!("/devices/{name}");
+        if !Path::new(&line).exists() {
+            eprintln!("serial-console: no {line}: this computer has no serial port {name}");
+            continue;
+        }
+        let primary = is_primary(&command_line, &name);
+        // Rescue runs on the primary console alone.
+        if primary || !rescue {
+            ports.push(Port { name, line, format, primary });
+        }
+    }
+    if ports.is_empty() {
         return Ok(0);
     }
     let passwd = std::fs::read_to_string(accounts::PASSWD).unwrap_or_default();
     let root = elevate::root_account(accounts::users(&passwd).entries().cloned());
-    let sign_in = !util::kernel_flag("console-sign-in=off");
-    let issue = std::fs::read_to_string(ISSUE).unwrap_or_else(|_| DEFAULT_ISSUE.into());
-    let env = environment(&root.shell, &root.home);
-    let mut once = util::kernel_flag("install").then(|| Session::once(INSTALLER));
-    // Rescue (ADR 0460): its screens, again whenever they end.
-    let rescue = util::kernel_word("rescue=").is_some();
-    match (&once, sign_in) {
-        _ if rescue => eprintln!("serial-console: rescue: Rescue's screens on {LINE}"),
-        (Some(_), _) => eprintln!("serial-console: install: the installer's screens on {LINE}"),
-        (None, false) => eprintln!("serial-console: console-sign-in=off: root's shell on {LINE}"),
-        (None, true) => eprintln!("serial-console: the sign-in on {LINE}"),
+    let shared = Shared {
+        env: environment(&root.shell, &root.home),
+        shell: root.shell,
+        sign_in: !util::kernel_flag("console-sign-in=off"),
+        rescue,
+        issue: std::fs::read_to_string(ISSUE).unwrap_or_else(|_| DEFAULT_ISSUE.into()),
+    };
+    keep(&ports, &shared, util::kernel_flag("install"))
+}
+
+/// Keeps a console on each of `ports`, each in a process of its own, and
+/// starts one again should it end; under `install`, the primary
+/// console's first session is the installer.
+fn keep(ports: &[Port], shared: &Shared, install: bool) -> ! {
+    let mut consoles: Vec<(libc::pid_t, Instant)> =
+        ports.iter().map(|port| start_console(port, shared, install && port.primary)).collect();
+    loop {
+        let mut status = 0;
+        // SAFETY: waitpid writes the status.
+        let pid = unsafe { libc::waitpid(-1, &raw mut status, 0) };
+        if pid < 0 {
+            // Interrupted; there is always a console to wait for.
+            continue;
+        }
+        let Some(index) = consoles.iter().position(|&(console, _)| console == pid) else {
+            continue;
+        };
+        let port = &ports[index];
+        eprintln!(
+            "serial-console: the console on {} ended (status {status:#x}); starting it again",
+            port.line
+        );
+        if consoles[index].1.elapsed() < QUICK {
+            std::thread::sleep(PAUSE);
+        }
+        consoles[index] = start_console(port, shared, false);
+    }
+}
+
+/// Starts the console on `port` in a process of its own, trying again
+/// every 10 seconds while the system has no room for one.
+fn start_console(port: &Port, shared: &Shared, install: bool) -> (libc::pid_t, Instant) {
+    loop {
+        // SAFETY: serial-console has one thread, so the child may go on
+        // running its code.
+        let pid = unsafe { libc::fork() };
+        if pid == 0 {
+            serve(port, shared, install);
+        }
+        if pid > 0 {
+            return (pid, Instant::now());
+        }
+        let err = io::Error::last_os_error();
+        eprintln!(
+            "serial-console: cannot start the console on {}: {err}; trying again in {} seconds",
+            port.line,
+            PAUSE.as_secs()
+        );
+        std::thread::sleep(PAUSE);
+    }
+}
+
+/// The console on `port`: runs its sessions, one after another, for good;
+/// under `install`, the installer first.
+fn serve(port: &Port, shared: &Shared, install: bool) -> ! {
+    let line = &port.line;
+    let mut once = install.then(|| Session::once(INSTALLER));
+    match (&once, shared.sign_in) {
+        _ if shared.rescue => eprintln!("serial-console: rescue: Rescue's screens on {line}"),
+        (Some(_), _) => eprintln!("serial-console: install: the installer's screens on {line}"),
+        (None, false) => eprintln!("serial-console: console-sign-in=off: root's shell on {line}"),
+        (None, true) => eprintln!("serial-console: the sign-in on {line}"),
     }
     let mut quick_exits = 0;
     loop {
         let session = match once.take() {
             Some(installer) => installer,
-            None if rescue => Session::once(RESCUE),
-            None if sign_in => Session::sign_in(),
-            None => Session::shell(&root.shell),
+            None if shared.rescue => Session::once(RESCUE),
+            None if shared.sign_in => Session::sign_in(),
+            None => Session::shell(&shared.shell),
         };
         let started = Instant::now();
-        match run(&session, &env, format, &issue) {
+        match run(port, &session, shared) {
             Ok(status) if started.elapsed() < QUICK => {
                 eprintln!("serial-console: {} ended at once (status {status:#x})", session.path);
             }
             Ok(_) => {}
-            Err(err) => eprintln!("serial-console: cannot start {} on {LINE}: {err}", session.path),
+            Err(err) => eprintln!("serial-console: cannot start {} on {line}: {err}", session.path),
         }
         quick_exits = if started.elapsed() < QUICK { quick_exits + 1 } else { 0 };
         if quick_exits >= QUICK_MAX {
             eprintln!(
-                "serial-console: {QUICK_MAX} sessions in a row ended at once; starting the next \
-                 in {} seconds",
+                "serial-console: {QUICK_MAX} sessions in a row ended at once on {line}; starting \
+                 the next in {} seconds",
                 PAUSE.as_secs()
             );
             std::thread::sleep(PAUSE);
@@ -303,22 +446,23 @@ fn environment(shell: &str, home: &str) -> Vec<CString> {
         .collect()
 }
 
-/// Runs one session on the line and waits for it to end. Its wait status.
-fn run(session: &Session, env: &[CString], format: Format, issue: &str) -> io::Result<i32> {
+/// Runs one session on `port`'s line and waits for it to end. Its wait
+/// status.
+fn run(port: &Port, session: &Session, shared: &Shared) -> io::Result<i32> {
     let line: OwnedFd = OpenOptions::new()
         .read(true)
         .write(true)
         .custom_flags(libc::O_NOCTTY | libc::O_CLOEXEC)
-        .open(LINE)?
+        .open(&port.line)?
         .into();
-    set_line(line.as_raw_fd(), format)?;
+    set_line(line.as_raw_fd(), port.format)?;
     let (rows, cols) = ask_size(line.as_raw_fd()).unwrap_or(FALLBACK_SIZE);
     let size = libc::winsize { ws_row: rows, ws_col: cols, ws_xpixel: 0, ws_ypixel: 0 };
     // SAFETY: TIOCSWINSZ reads the winsize, which lives for the call.
     unsafe { libc::ioctl(line.as_raw_fd(), libc::TIOCSWINSZ, &raw const size) };
     if session.issue {
         // The terminal turns each newline into a return and a newline.
-        write_all(line.as_raw_fd(), expand_issue(issue).as_bytes());
+        write_all(line.as_raw_fd(), expand_issue(&shared.issue, &port.name).as_bytes());
         // A failed start's notice, until the next start (ADR 0501).
         if let Ok(notice) = std::fs::read_to_string(crate::sysupdate::health::NOTICE) {
             write_all(line.as_raw_fd(), format!("{}\n", notice.trim_end()).as_bytes());
@@ -328,7 +472,7 @@ fn run(session: &Session, env: &[CString], format: Format, issue: &str) -> io::R
             write_all(line.as_raw_fd(), format!("{}\n", notice.trim_end()).as_bytes());
         }
     }
-    let pid = start(line.as_raw_fd(), session, env)?;
+    let pid = start(line.as_raw_fd(), session, &shared.env)?;
     // The session's programs hold the line now; serial-console keeps none
     // of it, so that the line closes when they are done.
     drop(line);
@@ -528,10 +672,10 @@ fn start(fd: RawFd, session: &Session, env: &[CString]) -> io::Result<libc::pid_
 }
 
 /// /system/settings/issue's text, with agetty(8)'s escapes: `\l` the
-/// line's name, `\n` the computer's name, `\s` the system's, `\r` its
+/// line's name, `line`, `\n` the computer's name, `\s` the system's, `\r` its
 /// release, `\v` its version, `\m` the machine, `\\` a backslash, as
 /// consoled(8) shows it on the screen's consoles.
-fn expand_issue(issue: &str) -> String {
+fn expand_issue(issue: &str, line: &str) -> String {
     // SAFETY: all zeros is a valid utsname: arrays of bytes.
     let mut names: libc::utsname = unsafe { std::mem::zeroed() };
     // SAFETY: uname fills the structure it is given.
@@ -551,7 +695,7 @@ fn expand_issue(issue: &str) -> String {
             continue;
         }
         match chars.next() {
-            Some('l') => out.push_str(LINE_NAME),
+            Some('l') => out.push_str(line),
             Some('n') => out.push_str(&field(&names.nodename)),
             Some('s') => out.push_str(&field(&names.sysname)),
             Some('r') => out.push_str(&field(&names.release)),
@@ -568,23 +712,39 @@ fn expand_issue(issue: &str) -> String {
 mod tests {
     use super::*;
 
+    fn asked(name: &str, format: Format) -> Asked {
+        Asked { name: name.to_string(), format: Ok(format) }
+    }
+
     #[test]
-    fn only_console_tty_s0_asks_for_the_console() {
-        assert_eq!(asked("live install quiet"), None);
-        assert_eq!(asked("console=tty0 quiet"), None);
-        assert_eq!(asked("console=ttyS1,9600"), None);
-        assert_eq!(asked("console=ttyS00"), None);
+    fn every_console_port_is_found_once_primary_last() {
+        assert!(consoles("live install quiet").is_empty());
+        assert!(consoles("console=tty0 quiet").is_empty());
+        assert!(consoles("console=ttyS00 console=ttyS console=ttyS1x").is_empty());
         // After `--` the words are Spark's.
-        assert_eq!(asked("quiet -- console=ttyS0"), None);
-        assert_eq!(asked("live console=ttyS0 install"), Some(Ok(Format::DEFAULT)));
-        // The last counts.
+        assert!(consoles("quiet -- console=ttyS0").is_empty());
+        assert_eq!(consoles("live console=ttyS0 install"), [asked("ttyS0", Format::DEFAULT)]);
+        // A port's last flag counts, and its place among the others is
+        // that of its last.
         let nine = Format { speed: libc::B9600, ..Format::DEFAULT };
-        assert_eq!(asked("console=ttyS0 console=ttyS0,9600"), Some(Ok(nine)));
-        assert_eq!(asked("console=ttyS0,9600 console=tty0"), Some(Ok(nine)));
+        assert_eq!(consoles("console=ttyS0 console=ttyS0,9600"), [asked("ttyS0", nine)]);
+        let line = "console=ttyS4 console=ttyS1,9600 console=tty0 console=ttyS4,115200n8";
+        assert_eq!(consoles(line), [asked("ttyS1", nine), asked("ttyS4", Format::DEFAULT)]);
+        assert_eq!(consoles("console=ttyS12"), [asked("ttyS12", Format::DEFAULT)]);
+        // Options no port runs are said, not passed over.
+        assert!(consoles("console=ttyS1,fast")[0].format.is_err());
+        // The primary console is the last `console=`, a serial port's or
+        // not.
+        assert!(is_primary(line, "ttyS4"));
+        assert!(!is_primary(line, "ttyS1"));
+        assert!(!is_primary("console=ttyS0 console=tty0", "ttyS0"));
+        assert!(is_primary("console=ttyS1,57600 quiet -- console=ttyS0", "ttyS1"));
+        assert!(!is_primary("quiet", "ttyS0"));
     }
 
     #[test]
     fn linux_console_options_give_the_format() {
+        let format_of = |options| format_of("ttyS1", options);
         assert_eq!(format_of("115200n8"), Ok(Format::DEFAULT));
         assert_eq!(format_of("115200"), Ok(Format::DEFAULT));
         assert_eq!(format_of("115200n8r"), Ok(Format::DEFAULT));
@@ -603,6 +763,8 @@ mod tests {
         for bad in ["", "n8", "230400", "115200x8", "115200n9", "115200n8rr", "fast"] {
             assert!(format_of(bad).is_err(), "{bad}");
         }
+        // The flag in the message is the port's own.
+        assert!(format_of("fast").unwrap_err().starts_with("console=ttyS1,fast: "));
     }
 
     #[test]
@@ -636,7 +798,7 @@ mod tests {
 
     #[test]
     fn the_issue_names_the_line() {
-        assert_eq!(expand_issue("on \\l, \\\\ \\q"), "on ttyS0, \\ q");
-        assert!(!expand_issue("\\s \\r").contains('\\'));
+        assert_eq!(expand_issue("on \\l, \\\\ \\q", "ttyS4"), "on ttyS4, \\ q");
+        assert!(!expand_issue("\\s \\r", "ttyS0").contains('\\'));
     }
 }

@@ -182,19 +182,34 @@ impl Machine {
     }
 }
 
-/// The first serial port, as a terminal: where serial-console(8) runs the
-/// installer under the kernel flag `console=ttyS0`.
-pub const SERIAL_LINE: &str = "/devices/ttyS0";
-
-/// Whether the installer's terminal is the first serial port.
+/// The serial port the installer's terminal is, as `ttyS4`, if it is
+/// one: serial-console(8) runs the installer on the primary console when
+/// that is a serial port's, as `console=ttyS0` makes it (ADR 0480).
 #[must_use]
-pub fn on_serial_console() -> bool {
+pub fn serial_port() -> Option<String> {
     // SAFETY: ttyname returns a C string the C library keeps, or null;
     // the installer asks before it starts any thread that would.
     let name = unsafe { libc::ttyname(0) };
+    if name.is_null() {
+        return None;
+    }
     // SAFETY: a non-null result is a C string, which is read at once.
-    !name.is_null()
-        && unsafe { std::ffi::CStr::from_ptr(name) }.to_bytes() == SERIAL_LINE.as_bytes()
+    let path = unsafe { std::ffi::CStr::from_ptr(name) }.to_str().ok()?;
+    serial_port_of(path).map(str::to_string)
+}
+
+/// The port's name in terminal path `path`, if it is a serial port's:
+/// `/devices/ttyS4` is `ttyS4`.
+fn serial_port_of(path: &str) -> Option<&str> {
+    let name = path.strip_prefix("/devices/")?;
+    let digits = name.strip_prefix("ttyS")?;
+    (!digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit())).then_some(name)
+}
+
+/// Whether the installer's terminal is a serial port.
+#[must_use]
+pub fn on_serial_console() -> bool {
+    serial_port().is_some()
 }
 
 /// Whether the kernel has the flag `speech`, as the install stick's
@@ -220,22 +235,27 @@ fn has_flag(line: &str, flag: &str) -> bool {
     line.split_whitespace().take_while(|word| *word != "--").any(|word| word == flag)
 }
 
-/// The kernel flag that keeps a console on the first serial port, for the
-/// installed system's menu: the live system's own `console=ttyS0` word,
-/// with its speed if it gives one, or plain `console=ttyS0`.
+/// The kernel flag that keeps a console on the serial port the installer
+/// runs on, for the installed system's menu: the live system's own
+/// `console=` word for that port, with its speed if it gives one, or
+/// plain `console=ttyS4`; `console=ttyS0` when the installer is on none.
 #[must_use]
 pub fn serial_console_flag() -> String {
+    let port = serial_port().unwrap_or_else(|| "ttyS0".to_string());
     let line = fs::read_to_string("/kernel/cmdline").unwrap_or_default();
-    console_word(&line).unwrap_or("console=ttyS0").to_string()
+    console_word(&line, &port).map_or_else(|| format!("console={port}"), str::to_string)
 }
 
-/// The last `console=ttyS0` word, with or without options, among the
-/// kernel flags of command line `line`, those before a lone `--`.
-fn console_word(line: &str) -> Option<&str> {
+/// The last `console=` word for serial port `port`, with or without
+/// options, among the kernel flags of command line `line`, those before a
+/// lone `--`.
+fn console_word<'a>(line: &'a str, port: &str) -> Option<&'a str> {
     line.split_whitespace()
         .take_while(|word| *word != "--")
         .filter(|word| {
-            word.strip_prefix("console=ttyS0").is_some_and(|r| r.is_empty() || r.starts_with(','))
+            word.strip_prefix("console=")
+                .and_then(|value| value.strip_prefix(port))
+                .is_some_and(|rest| rest.is_empty() || rest.starts_with(','))
         })
         .last()
 }
@@ -407,15 +427,31 @@ mod tests {
     #[test]
     fn the_serial_consoles_flag_is_the_live_systems_own() {
         assert_eq!(
-            console_word("live install console=ttyS0 console-sign-in=off"),
+            console_word("live install console=ttyS0 console-sign-in=off", "ttyS0"),
             Some("console=ttyS0")
         );
         assert_eq!(
-            console_word("console=ttyS0 console=ttyS0,9600n8 quiet"),
+            console_word("console=ttyS0 console=ttyS0,9600n8 quiet", "ttyS0"),
             Some("console=ttyS0,9600n8")
         );
-        assert_eq!(console_word("console=tty0 console=ttyS1"), None);
-        assert_eq!(console_word("live -- console=ttyS0"), None);
+        assert_eq!(
+            console_word("console=ttyS1,57600 console=ttyS4,9600", "ttyS4"),
+            Some("console=ttyS4,9600")
+        );
+        // ttyS1 is not ttyS10.
+        assert_eq!(console_word("console=ttyS10", "ttyS1"), None);
+        assert_eq!(console_word("console=tty0 console=ttyS1", "ttyS0"), None);
+        assert_eq!(console_word("live -- console=ttyS0", "ttyS0"), None);
+    }
+
+    #[test]
+    fn a_serial_port_is_known_by_its_terminal() {
+        assert_eq!(serial_port_of("/devices/ttyS0"), Some("ttyS0"));
+        assert_eq!(serial_port_of("/devices/ttyS4"), Some("ttyS4"));
+        assert_eq!(serial_port_of("/devices/tty1"), None);
+        assert_eq!(serial_port_of("/devices/ttyUSB0"), None);
+        assert_eq!(serial_port_of("/devices/ttyS"), None);
+        assert_eq!(serial_port_of("/devices/pts/0"), None);
     }
 
     #[test]

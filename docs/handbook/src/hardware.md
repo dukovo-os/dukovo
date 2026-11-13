@@ -220,3 +220,26 @@ This machine serves other work until Dukovo runs containers (Phase 18),
 so Phase 10's checks run on the Dell. From then, the
 [disk check](#disk-check) runs on this machine too, on the one NVMe drive
 agreed for testing; the other drive is written only by agreement.
+
+## Serial ports
+
+Every 16550-compatible serial port is a terminal, named as Linux names
+it, so a `console=` line from a server's manual or a Linux system works
+unchanged
+([ADR 0480](https://github.com/dukovo-os/dukovo/blob/main/docs/adr/0480-every-16550-is-a-terminal-with-linux-s-name-and-serial-log-chooses-the-log-s-ports.md)):
+
+| Port | Name | Where it is found |
+| --- | --- | --- |
+| COM1 | `ttyS0` | I/O port 0x3F8, ISA interrupt 4 |
+| COM2 | `ttyS1` | I/O port 0x2F8, ISA interrupt 3; most servers' BMC Serial-over-LAN |
+| COM3 | `ttyS2` | I/O port 0x3E8; read every 10 ms, as its interrupt is COM1's |
+| COM4 | `ttyS3` | I/O port 0x2E8, ISA interrupt 3, shared with COM2 |
+| PCI cards and Intel AMT's Serial-over-LAN | `ttyS4` on | PCI, in the order found; MSI where the card has it |
+
+`ls /kernel/class/tty` lists the ports a machine has, and each port's
+folder says where it is and how it is read (radix-sysfs(5)). The
+kernel's log, `kdb` and a panic report go to every port unless
+`serial-log=` names the ones to use: `serial-log=ttyS0` keeps a UPS or a
+modem on COM2 free of the kernel's text. `console=ttyS1,57600n8` runs a
+port at another speed from boot and gives it a sign-in; it may be given
+for more than one port. uart(4) and serial-console(8) have the details.

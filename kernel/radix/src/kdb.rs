@@ -92,12 +92,12 @@ pub fn on_breakpoint(fault: &Fault) {
         Some(location) => write!(why, "breakpoint at {:#x} in {location}", fault.pc),
         None => write!(why, "breakpoint at {:#x}", fault.pc),
     };
-    // The other CPUs keep running, and COM1's interrupt would hand what
-    // is typed there to /devices/ttyS0 if a program has it open; it is
-    // kdb's until kdb is left.
-    crate::ttys::hold_for_kdb(true);
+    // The other CPUs keep running, and the serial ports' interrupts would
+    // hand what is typed there to the terminals that programs have open;
+    // it is kdb's until kdb is left.
+    crate::serial::hold_for_kdb(true);
     enter(&Session { fault: Some(fault), panic_backtrace: None }, why.as_str());
-    crate::ttys::hold_for_kdb(false);
+    crate::serial::hold_for_kdb(false);
 }
 
 /// Runs `kdb` after a panic, with the other CPUs stopped. Returns when the

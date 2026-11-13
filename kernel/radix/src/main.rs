@@ -81,10 +81,9 @@ mod report;
 mod sched;
 mod schedtest;
 mod selftest;
+mod serial;
 mod swap;
 mod symbols;
-mod ttys;
-mod uart;
 mod usb;
 mod user;
 mod usertest;
@@ -225,6 +224,9 @@ pub extern "Rust" fn radix_kernel_main(mut params: BootParams) -> ! {
     for flag in flags.unknown() {
         warn!("Unknown kernel flag `{flag}` ignored; see dukovo-boot(7)");
     }
+    serial::check_flags(&flags);
+    // COM2 to COM4, so that the log goes to them from here on (ADR 0480).
+    serial::find_legacy(flags);
     let _ =
         BOOT.set(BootSummary { memory_map: params.memory_map, reservations: params.reservations });
     report::memory(&params);
@@ -274,6 +276,8 @@ pub extern "Rust" fn radix_kernel_main(mut params: BootParams) -> ! {
     join::start();
     sched::rcu::start_thread();
     oom::start();
+    // Before the PCI scan, whose serial ports join it as they are found.
+    serial::start();
     usb::init(flags.value("usb") == Some("off"));
     usb::dbc::init(flags.has("dbc"));
     net::init(flags.value("ip"), flags.value("gateway"), flags.value("e1000"));
@@ -284,7 +288,6 @@ pub extern "Rust" fn radix_kernel_main(mut params: BootParams) -> ! {
     fs::writeback::start();
     fs::kmsg::start();
     fs::keyboard::start();
-    ttys::start();
     // After the PCI scan, which the AML's PCI regions reach through, and
     // before the power button.
     acpi::start(flags.value("aml") == Some("off"));

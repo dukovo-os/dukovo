@@ -331,8 +331,8 @@ pub fn init() {
                 nvme::bind(&function, &mut controllers);
             } else if crate::i2c::designware::is_lpss(&function) {
                 crate::i2c::designware::bind_lpss(&function);
-            } else if let Some(kind) = crate::uart::identify(&function) {
-                crate::uart::bind(&function, kind);
+            } else if let Some(kind) = crate::serial::pci::identify(&function) {
+                crate::serial::pci::bind(&function, kind);
             } else if let Some(card) = crate::net::identify(&function) {
                 crate::net::bind_card(&function, card);
             } else {

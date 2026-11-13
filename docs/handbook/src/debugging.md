@@ -105,9 +105,13 @@ registers, memory dumps and symbol lookups.
 On a machine without a serial port on its board, a PCI Express serial
 card gives it one: the kernel finds 16550-compatible ports on the PCI
 bus, such as those of cards built on the ASIX AX99100, and sends them
-the kernel log, from the start of boot, and `kdb`, as it does COM1. On a
-vPro machine, Intel AMT's Serial-over-LAN port works the same way, over
-the network to a management console. `uart(4)` describes both.
+the kernel log, from the start of boot, and `kdb`, as it does COM1 to
+COM4. On a vPro machine, Intel AMT's Serial-over-LAN port works the
+same way, over the network to a management console. Each port gets the
+log at its own pace, and one that stops taking it, as AMT's does with
+no session open, picks up at the last screenful when it starts again.
+`serial-log=ttyS0,ttyS4` keeps the log and `kdb` on the ports it names
+alone. `uart(4)` describes them.
 
 ## The lock checker
 

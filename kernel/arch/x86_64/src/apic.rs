@@ -502,16 +502,7 @@ pub fn route_sci(madt: Option<&Madt<'_>>, irq: u8, vector: u8, destination: u32)
 /// [`route_isa`] and [`route_sci`]: `sci` makes a polarity or trigger
 /// mode that conforms to the bus active low and level-triggered.
 fn route(madt: Option<&Madt<'_>>, irq: u8, vector: u8, destination: u32, sci: bool) -> Option<u32> {
-    let (gsi, flags) = madt
-        .and_then(|madt| {
-            madt.entries().find_map(|entry| match entry {
-                MadtEntry::InterruptSourceOverride { source, gsi, flags } if source == irq => {
-                    Some((gsi, flags))
-                }
-                _ => None,
-            })
-        })
-        .unwrap_or((u32::from(irq), 0));
+    let (gsi, flags) = isa_gsi(madt, irq);
     // MPS INTI flags: polarity in bits 0-1 and trigger mode in bits 2-3,
     // 3 for active low and for level; 0 conforms to the bus, which for ISA
     // is active high and edge, and for the SCI active low and level.
@@ -523,6 +514,36 @@ fn route(madt: Option<&Madt<'_>>, irq: u8, vector: u8, destination: u32, sci: bo
         low |= LEVEL;
     }
     program(gsi, low, vector, destination)
+}
+
+/// The global system interrupt ISA interrupt `irq` arrives at, and the
+/// MPS INTI flags of the MADT's override for it: the same number, and 0,
+/// without one.
+fn isa_gsi(madt: Option<&Madt<'_>>, irq: u8) -> (u32, u16) {
+    madt.and_then(|madt| {
+        madt.entries().find_map(|entry| match entry {
+            MadtEntry::InterruptSourceOverride { source, gsi, flags } if source == irq => {
+                Some((gsi, flags))
+            }
+            _ => None,
+        })
+    })
+    .unwrap_or((u32::from(irq), 0))
+}
+
+/// Whether ISA interrupt `irq`'s I/O APIC input is still masked, and so
+/// has no handler yet: for interrupts that two devices share, such as COM2
+/// and COM4's interrupt 3, which is routed once. False if no I/O APIC has
+/// it.
+pub fn isa_input_free(madt: Option<&Madt<'_>>, irq: u8) -> bool {
+    let (gsi, _) = isa_gsi(madt, irq);
+    let has = |io: &&IoApic| (io.gsi_base..io.gsi_base + io.inputs).contains(&gsi);
+    let list = IOAPICS.lock_irq();
+    list.0
+        .iter()
+        .flatten()
+        .find(has)
+        .is_some_and(|io| io.read(0x10 + 2 * (gsi - io.gsi_base)) & MASKED != 0)
 }
 
 /// Sends global system interrupt `gsi`, as a device's ACPI resources name

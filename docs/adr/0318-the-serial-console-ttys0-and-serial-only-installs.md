@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 # 0318. The serial console: ttyS0 and serial-only installs
 
-- Status: Accepted
+- Status: Accepted; every serial port is a terminal, carried with COM1's by one `serial` thread, and serial-console keeps one on each `console=` port, since [0480](0480-every-16550-is-a-terminal-with-linux-s-name-and-serial-log-chooses-the-log-s-ports.md)
 - Date: 2026-11-08
 
 ## Context

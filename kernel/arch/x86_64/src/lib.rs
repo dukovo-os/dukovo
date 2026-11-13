@@ -502,6 +502,10 @@ impl Devices for Arch {
         Some(vector)
     }
 
+    fn route_isa_interrupt(irq: u8, handler: fn(usize), arg: usize) -> Option<(u32, u32)> {
+        devices::route_isa(irq, handler, arg)
+    }
+
     fn start_keyboard(byte: fn(u8)) -> Option<&'static str> {
         i8042::start(byte)
     }
@@ -1270,7 +1274,7 @@ impl Platform for Arch {
     }
 
     fn has_debug_console() -> bool {
-        serial::present()
+        serial::carries_log()
     }
 
     fn console_write(text: &str) {

@@ -4297,6 +4297,102 @@ pub fn port_line(dir: &Path, name: &str) -> PathBuf {
     dir.join(format!("{name}.port"))
 }
 
+/// A serial port of the machine's, through the Unix socket QEMU listens
+/// on for its character device ([`SERIAL_LINE`], [`PORT_LINE`]): what the
+/// port sends, as a thread collects it, and typing on it.
+pub struct SocketLine {
+    stream: UnixStream,
+    /// What the port is, for a failure's message.
+    what: &'static str,
+    /// What the port sent so far.
+    output: Arc<Mutex<Vec<u8>>>,
+    /// End of the last match.
+    cursor: usize,
+    deadline: Instant,
+}
+
+impl SocketLine {
+    /// Connects to the socket at `path`, as soon as QEMU listens on it:
+    /// from its start, before the firmware runs, so what the port sends
+    /// before is lost.
+    pub fn connect(
+        path: &Path,
+        what: &'static str,
+        deadline: Instant,
+    ) -> Result<SocketLine, String> {
+        let stream = loop {
+            match UnixStream::connect(path) {
+                Ok(stream) => break stream,
+                Err(err) if Instant::now() >= deadline => {
+                    return Err(format!("{}: {err}", path.display()));
+                }
+                Err(_) => std::thread::sleep(Duration::from_millis(20)),
+            }
+        };
+        let mut reader = stream.try_clone().map_err(|err| err.to_string())?;
+        let output = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&output);
+        std::thread::spawn(move || {
+            let mut buf = [0u8; 4096];
+            while let Ok(n @ 1..) = reader.read(&mut buf) {
+                sink.lock().expect("the line's lock is not poisoned").extend_from_slice(&buf[..n]);
+            }
+        });
+        Ok(SocketLine { stream, what, output, cursor: 0, deadline })
+    }
+
+    /// Waits until the port has sent `needle` after the last match.
+    pub fn expect(&mut self, needle: &str) -> Result<(), String> {
+        loop {
+            {
+                let output = self.output.lock().expect("the line's lock is not poisoned");
+                let found = output[self.cursor..]
+                    .windows(needle.len())
+                    .position(|window| window == needle.as_bytes());
+                if let Some(at) = found {
+                    self.cursor += at + needle.len();
+                    return Ok(());
+                }
+                if Instant::now() >= self.deadline {
+                    let text = String::from_utf8_lossy(&output);
+                    let start = text.floor_char_boundary(text.len().saturating_sub(2000));
+                    return Err(format!(
+                        "{} never sent {needle:?}; its last bytes:\n{}",
+                        self.what,
+                        &text[start..]
+                    ));
+                }
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    /// Waits until the shell on the port is ready for a command: Nukesh
+    /// ends each prompt with the mark terminals find prompts by, OSC
+    /// 133;B, where a person's typing starts. Its prompt itself is
+    /// coloured, so its `# ` is not in the bytes as one piece.
+    pub fn expect_prompt(&mut self) -> Result<(), String> {
+        self.expect("\x1b]133;B")
+    }
+
+    /// Everything the port has sent so far.
+    pub fn sent(&self) -> String {
+        String::from_utf8_lossy(&self.output.lock().expect("the line's lock is not poisoned"))
+            .into_owned()
+    }
+
+    /// Types `text` on the port, a byte at a time, as a person would.
+    pub fn send(&mut self, text: &str) -> Result<(), String> {
+        for byte in text.bytes() {
+            self.stream
+                .write_all(&[byte])
+                .map_err(|err| format!("typing on {}: {err}", self.what))?;
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        Ok(())
+    }
+}
+
 /// How the reason a case's second boot failed starts.
 const AFTER_THE_REBOOT: &str = "after the reboot";
 

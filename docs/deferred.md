@@ -189,7 +189,7 @@ machine with AMT, an AMD machine and a laptop; see
 | Rescue's reinstall from the update server (ADR 0460) | Rescue reinstalls from its own copy, an update folder or an update file, with networking off | Phase 16, with the update server on Dukovo (16e) |
 | The firmware sets and the catalog's bundles going through the waves (ADRs 0456, 0469) | Only system releases have rollouts; a firmware set is staged only when its owner asks | Phase 16, with the update server on Dukovo (16e) |
 | The installer installing the install stick's firmware set, and update files carrying one (ADR 0468) | A machine takes the firmware package by staging a set from the update server or a repository folder after it is installed | Phase 16, with the installer's question (16c) |
-| Serial ports as terminals programs open, and a choice of which ports carry the log (ADR 0360) | Full serial console | 16b |
+| GRUB's menu on the serial ports a machine has, the firmware's console redirection (SPCR) read for the serial console, a `serial` command, and the install stick's installer on whichever port Enter is pressed on (ADR 0480) | The ports are terminals and the log chooses its ports; the boot menu and the installer still use COM1 alone | 16b, the serial console's second part |
 | A local time server, and netd's DHCP server (ADR 0194) | Server roles | 16b |
 | elevate in the web console, with comments kept by its settings editor (ADRs 0216, 0219) | Dukovo Admin | 16c |
 | A certificate from certd for nginx's sites and for the lab test `services/nginx`, which makes one with openssl meanwhile (ADR 0491) | certd comes with Phase 16 | Phase 16's certd |
@@ -359,6 +359,7 @@ machine asks for them.
 | CompactFlash in PCMCIA and CardBus adapters | ADR 0446 |
 | MS-JIS CD-Text | ADR 0447 |
 | Writing CD-Text when burning a CD | ADR 0449 |
+| Serial ports: typing by INTx on PCI ports without MSI, and by MSI-X on functions that have only that (they are polled); COM3's interrupt, which is COM1's (it is polled); memory-mapped 16550s, such as AMD's `AMDI0020` and Intel's LPSS UARTs (not used); the AX99100's 256-byte FIFO and rates above 115200 | ADRs 0360, 0480 |
 | FLAC with linear prediction, a few per cent smaller | ADR 0447 |
 
 ### Accounts, bundles and the console

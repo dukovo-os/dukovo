@@ -102,6 +102,14 @@
 //!   `temp<k>_input`, `temp<k>_fault` and `temp<k>_label`.
 //!   Each `name` says which, and a sensor that gives no reading fails to
 //!   read (EIO);
+//! - `/kernel/class/tty/ttyS<n>`, for each serial port (ADR 0480), as
+//!   Linux's `tty` class shows them: its first I/O `port` (`0x2F8`) and
+//!   whether it is a `console` (`Y` or `N`), here whether it carries the
+//!   kernel log (`serial-log=`); and Radix's own `kind` (`com1` to
+//!   `com4`, `amt-sol`, `ax99100`, `qemu` or `pci`), `pci`, its
+//!   function's address, for a port on PCI, and `interrupt`, how typing
+//!   reaches the kernel (`isa 3`, `msi` or `polled`)
+//!   ([`crate::serial::ports`]);
 //! - `/kernel/class/net/<name>`, for each network interface (ADR 0190,
 //!   [`net`]): its `ifindex`, `address`, `mtu`, `flags`, `operstate`,
 //!   `statistics` and the rest of Linux's files, and Radix's `ipv4`, its
@@ -137,7 +145,7 @@ use crate::acpi::{devices, thermal, ucsi};
 
 mod net;
 mod usb;
-use crate::{Arch, hwmon, i2c, pstate};
+use crate::{Arch, hwmon, i2c, pstate, serial};
 
 static COMMAND_LINE: Once<&'static str> = Once::new();
 static ROOT: Once<KArc<FixedDir>> = Once::new();
@@ -219,6 +227,10 @@ pub fn make() -> Result<FsRef> {
     }
     if monitors {
         hwmon_class(&class)?;
+    }
+    let serial = crate::serial::ports();
+    if serial.iter().any(Option::is_some) {
+        tty_class(&class, &serial)?;
     }
     let system = root.add_dir("devices", next_id())?.add_dir("system", next_id())?;
     cpu(&system)?;
@@ -398,6 +410,23 @@ fn thermal_class(class: &FixedDir) -> Result<()> {
             let _ = write!(name, "trip_point_{trip}_hyst");
             zone_dir.add(name.as_str(), value(|text| writeln!(text, "0"))?)?;
         }
+    }
+    Ok(())
+}
+
+/// `/kernel/class/tty`: the serial ports.
+fn tty_class(class: &FixedDir, ports: &[Option<serial::About>]) -> Result<()> {
+    let dir = class.add_dir("tty", next_id())?;
+    for about in ports.iter().flatten().copied() {
+        let port = dir.add_dir(about.name().as_str(), next_id())?;
+        port.add("port", value(move |text| writeln!(text, "0x{:X}", about.base))?)?;
+        let console = if about.log { 'Y' } else { 'N' };
+        port.add("console", value(move |text| writeln!(text, "{console}"))?)?;
+        port.add("kind", value(move |text| writeln!(text, "{}", about.kind.word()))?)?;
+        if let serial::Kind::Pci { address, .. } = about.kind {
+            port.add("pci", value(move |text| writeln!(text, "{address}"))?)?;
+        }
+        port.add("interrupt", value(move |text| writeln!(text, "{}", about.interrupt))?)?;
     }
     Ok(())
 }

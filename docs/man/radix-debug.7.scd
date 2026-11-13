@@ -33,8 +33,9 @@ finds one of its objects damaged (see *HEAP CORRUPTION*). The panicking
 CPU then:
 
 . stops the other CPUs with a non-maskable interrupt;
-. writes the report to the serial port, the serial ports of PCI cards and
-  AMT's (*uart*(4)), the VGA text screen if in use, the Debug Capability
+. writes the report to the serial ports that carry the log, COM1 to
+  COM4 and those of PCI cards and AMT (*uart*(4)), the VGA text screen
+  if in use, the Debug Capability
   console with the *dbc* flag (giving each up to 2 s to go out), and the
   crash log;
 . fills the framebuffer with the report under a red *RADIX KERNEL PANIC*
@@ -178,23 +179,25 @@ A slot whose magic, version, ring size or hash does not match is ignored.
 
 # KERNEL DEBUGGER
 
-*kdb* is a command line on the debug console: the serial port, for use
-under QEMU (where *ob run* connects the serial port to the terminal) or
-on machines with one; the serial ports of PCI cards and Intel AMT's
-Serial-over-LAN port, on machines without one (*uart*(4), ADR 0360);
-and with the *dbc* flag the Debug Capability console too (see *DEBUG
-CAPABILITY CONSOLE*). Boot with the *kdb* flag,
+*kdb* is a command line on the debug console: the serial ports, COM1
+for use under QEMU (where *ob run* connects the serial port to the
+terminal) or on machines with one, COM2 to COM4, and the serial ports
+of PCI cards and Intel AMT's Serial-over-LAN port, on machines without
+COM1 (*uart*(4), ADRs 0360 and 0480); and with the *dbc* flag the Debug
+Capability console too (see *DEBUG CAPABILITY CONSOLE*). The kernel
+flag *serial-log=* chooses the serial ports *kdb* is on; it reads what
+is typed on any of them, and on no other. Boot with the *kdb* flag,
 for example *./ob run --cmdline kdb*. The kernel then enters *kdb*:
 
 - at the end of boot, after *Boot complete.*;
 - at a breakpoint instruction (*int3*), with the registers it saved;
 - after a panic, with the panic's registers and backtrace.
 
-COM1 is also the terminal _/devices/ttyS0_ (*serial-console*(8), ADR
-0318). While a program has it open the kernel log stays off the line,
-which the program draws on, but *kdb* and a panic report still go out
-on it, and at a breakpoint what is typed on COM1 is *kdb*'s until it is
-left.
+Each serial port is also a terminal, COM1 _/devices/ttyS0_
+(*serial-console*(8), ADRs 0318 and 0480). While a program has one
+open the kernel log stays off the line, which the program draws on,
+but *kdb* and a panic report still go out on it, and at a breakpoint
+what is typed on it is *kdb*'s until it is left.
 
 Only the CPU that entered *kdb* stops; the others keep running, except
 after a panic. Without a debug console *kdb* says so in the log and does

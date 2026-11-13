@@ -300,6 +300,25 @@ _/kernel/class/watchdog/watchdog0/bootstatus_
 	*32*, Linux's WDIOF_CARDRESET, if it restarted the machine at the end
 	of the boot before this one; *0* if not.
 
+_/kernel/class/tty/ttyS_*n*_/port_, _console_
+	Each serial port the kernel found, by its terminal's name, as
+	Linux's _/sys/class/tty_ shows them (ADR 0480): COM1 to COM4 are
+	*ttyS0* to *ttyS3*, and the ports of PCI cards and Intel AMT follow
+	from *ttyS4*. _port_ is its first I/O port, as *0x2F8*; _console_ is
+	*Y* if it carries the kernel log, *kdb* and a panic report, as the
+	kernel flag *serial-log=* chooses, and *N* if not (*dukovo-boot*(7)).
+	Without a serial port, _/kernel/class/tty_ is not there.
+
+_/kernel/class/tty/ttyS_*n*_/kind_, _pci_, _interrupt_
+	Radix's own. _kind_ is *com1* to *com4*; *amt-sol* for Intel AMT's
+	Serial-over-LAN port; *ax99100* for a port of an ASIX AX99100 card;
+	*qemu* for QEMU's *pci-serial*; or *pci* for any other PCI 16550.
+	_pci_, only for a port on PCI, is its function's address, as
+	*0000:00:16.3*. _interrupt_ is how typing reaches the kernel: *isa 3*
+	or *isa 4*, the ISA interrupt; *msi*; or *polled*, every 10 ms while
+	the terminal is open, for COM3, whose interrupt is COM1's, and a PCI
+	port without MSI.
+
 _/kernel/class/power_supply/_*name*_/type_, _online_
 	For each AC adapter of the firmware's (_ACPI0003_, through uACPI;
 	*dukovo-boot*(7)'s *ACPI*), by its name in the ACPI namespace, as

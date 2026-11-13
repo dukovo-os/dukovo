@@ -614,6 +614,19 @@ pub trait Devices {
         arg: usize,
     ) -> Option<u32>;
 
+    /// Routes ISA interrupt `irq` to `handler(arg)` on the boot CPU, with
+    /// interrupts masked, through the firmware's overrides of ISA's own
+    /// edge-triggered, active-high interrupts: on a PC, COM2 and COM4's
+    /// interrupt 3 (ADR 0480). Returns its vector and the global system
+    /// interrupt it arrives at, or `None` if the machine has no ISA
+    /// interrupts, the input has a handler already, or no vector is free.
+    /// An edge-triggered handler must leave no device that shares the
+    /// input with an interrupt pending, or it sends no more.
+    fn route_isa_interrupt(irq: u8, handler: fn(usize), arg: usize) -> Option<(u32, u32)> {
+        let _ = (irq, handler, arg);
+        None
+    }
+
     /// Starts the machine's built-in keyboard, if it has one: on a PC the
     /// PS/2 keyboard behind the i8042 controller (Phase 9). `byte` is
     /// called, in an interrupt handler with interrupts masked, with each
@@ -629,7 +642,7 @@ pub trait Devices {
 
     /// Makes the machine's own serial port the line of a terminal, if it
     /// has one: on a PC, COM1, which the kernel log and `kdb` already use
-    /// (ADR 0318). `byte` is called, in an interrupt handler with
+    /// unless `serial-log=` leaves it out (ADRs 0318 and 0480). `byte` is called, in an interrupt handler with
     /// interrupts masked, with each byte the port receives once
     /// [`Devices::serial_line_open`] has turned its interrupt on. Returns
     /// what the port is, for the log, or `None` if the machine has none
@@ -713,8 +726,9 @@ pub trait Devices {
 
     /// Reads `size` bytes (1, 2 or 4) from I/O port `port` (Phase 11g,
     /// ADR 0243): only within the I/O BAR of a PCI function the caller
-    /// drives, as a UHCI controller's registers are. All ones where there
-    /// are no I/O ports.
+    /// drives, as a UHCI controller's registers are, or the fixed ports of
+    /// a legacy device it drives, as COM2's are. All ones where there are
+    /// no I/O ports.
     fn device_port_read(port: u16, size: u8) -> u32;
 
     /// Writes `size` bytes of `value` to I/O port `port`, within the I/O

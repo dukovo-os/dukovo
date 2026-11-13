@@ -30,7 +30,7 @@ use radix_mm::{FRAMES, Flags, Owner};
 use radix_sync::SpinLock;
 
 use crate::memory::{self, PAGE};
-use crate::{apic, iommu, paging, smp};
+use crate::{acpi, apic, iommu, paging, smp};
 
 /// The first vector for devices.
 pub const FIRST: u8 = 0x50;
@@ -83,6 +83,24 @@ pub fn allocate(
         }
     };
     Some((vector, message))
+}
+
+/// Routes ISA interrupt `irq` to `handler(arg)` on the boot CPU, through
+/// the MADT's overrides: a vector for it, and its I/O APIC input. Returns
+/// the vector and the global system interrupt, or `None` if the input has
+/// an interrupt already, no vector is free, or it could not be routed.
+pub fn route_isa(irq: u8, handler: fn(usize), arg: usize) -> Option<(u32, u32)> {
+    let madt = acpi::get().and_then(|acpi| acpi.madt.as_ref());
+    if !apic::isa_input_free(madt, irq) {
+        return None;
+    }
+    let (vector, _) = allocate(None, 0, handler, arg)?;
+    let destination = smp::info(0).map_or(0, |cpu| cpu.hardware_id);
+    let Some(gsi) = apic::route_isa(madt, irq, vector as u8, destination) else {
+        free(vector);
+        return None;
+    };
+    Some((vector, gsi))
 }
 
 /// Gives back a vector from [`allocate`]; behind an IOMMU that remaps

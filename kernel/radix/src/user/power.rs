@@ -216,7 +216,7 @@ fn wind_down() {
     // lines show.
     console::give_back();
     // As do the PCI serial ports, which a thread sends to.
-    crate::uart::flush();
+    crate::serial::flush();
 }
 
 /// What a method does to the machine.
