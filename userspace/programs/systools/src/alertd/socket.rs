@@ -6,7 +6,9 @@
 //! which alertd closes it.
 //!
 //! Each connection has a thread of its own, at most 16 at a time; a 17th
-//! is told alertd is busy. A request has 5 seconds in all to arrive,
+//! is told alertd is busy. Those of programs that may not ask have two
+//! threads of their own, past which they are refused unread, so that they
+//! never take the threads of those that may. A request has 5 seconds in all to arrive,
 //! whatever it does, and is at most 16 KiB, so a program that sends it
 //! slowly or without end holds one thread for a few seconds and nothing
 //! else.
@@ -23,7 +25,7 @@ use std::io::{self, BufRead, BufReader, Read, Write};
 use std::os::fd::AsRawFd;
 use std::os::unix::net::UnixStream;
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -35,6 +37,10 @@ use crate::{notifyd, proc, sys};
 
 /// How long a request has to arrive in all, and an answer to be read.
 const REQUEST_TIME: Duration = Duration::from_secs(5);
+
+/// The most connections of those who may not ask that are read before
+/// they are refused; past it, one is refused at once.
+const REFUSING_MAX: usize = 2;
 
 /// The history's newest changes `history` gives without a count, and the
 /// most it gives.
@@ -55,24 +61,40 @@ pub struct Who {
 pub fn accept(alertd: &Arc<Alertd>, stream: UnixStream) {
     // The listener is not blocking, and a stream may take after it.
     let _ = stream.set_nonblocking(false);
-    if alertd.serving.fetch_add(1, Ordering::AcqRel) >= CONNECTIONS_MAX {
-        alertd.serving.fetch_sub(1, Ordering::AcqRel);
-        return refuse(&stream, BUSY);
-    }
     // Asked at once: the peer waits for its answer, so it is still there.
     let who = who_is(&stream);
+    admit(alertd, stream, who);
+}
+
+/// Serves `stream`, from `who`, on a thread of its own, or turns it away
+/// at once. Those who may not ask are counted apart and kept to a few
+/// threads, so that a person's program that connects again and again
+/// cannot take the threads the system's services raise alerts on.
+fn admit(alertd: &Arc<Alertd>, stream: UnixStream, who: Result<Who, String>) {
+    let root = who.is_ok();
+    let max = if root { CONNECTIONS_MAX } else { REFUSING_MAX };
+    if count(alertd, root).fetch_add(1, Ordering::AcqRel) >= max {
+        count(alertd, root).fetch_sub(1, Ordering::AcqRel);
+        return refuse(&stream, who.err().as_deref().unwrap_or(BUSY));
+    }
     let this = Arc::clone(alertd);
     let own = stream.try_clone();
     let started = thread::Builder::new().name("alertd-request".into()).spawn(move || {
         serve(&this, &stream, who);
-        this.serving.fetch_sub(1, Ordering::AcqRel);
+        count(&this, root).fetch_sub(1, Ordering::AcqRel);
     });
     if started.is_err() {
-        alertd.serving.fetch_sub(1, Ordering::AcqRel);
+        count(alertd, root).fetch_sub(1, Ordering::AcqRel);
         if let Ok(stream) = own {
             refuse(&stream, BUSY);
         }
     }
+}
+
+/// The count of connections being served of those who may ask, when
+/// `root`, else of those who may not.
+fn count(alertd: &Alertd, root: bool) -> &AtomicUsize {
+    if root { &alertd.serving } else { &alertd.refusing }
 }
 
 /// Says `why` to a connection that is turned away.
@@ -408,10 +430,37 @@ mod tests {
         let (alertd, _screen, _dir) = fixture("socket-busy", Vec::new());
         alertd.serving.store(CONNECTIONS_MAX, Ordering::Release);
         let (client, server) = UnixStream::pair().unwrap();
-        accept(&alertd, server);
+        admit(&alertd, server, root());
         let mut answer = String::new();
         BufReader::new(&client).read_to_string(&mut answer).unwrap();
         assert_eq!(refusal(&answer.lines().map(str::to_string).collect::<Vec<_>>()), BUSY);
         assert_eq!(alertd.serving.load(Ordering::Acquire), CONNECTIONS_MAX);
+    }
+
+    #[test]
+    fn those_who_may_not_ask_never_take_the_threads_of_those_who_may() {
+        let (alertd, _screen, _dir) = fixture("socket-not-root", Vec::new());
+        // Their own few are taken: the next is refused at once, unread,
+        // and root's are all still free.
+        alertd.refusing.store(REFUSING_MAX, Ordering::Release);
+        let (client, server) = UnixStream::pair().unwrap();
+        let started = Instant::now();
+        admit(&alertd, server, Err(NOT_ROOT.into()));
+        let mut answer = String::new();
+        BufReader::new(&client).read_to_string(&mut answer).unwrap();
+        assert_eq!(refusal(&answer.lines().map(str::to_string).collect::<Vec<_>>()), NOT_ROOT);
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert_eq!(alertd.refusing.load(Ordering::Acquire), REFUSING_MAX);
+        assert_eq!(alertd.serving.load(Ordering::Acquire), 0);
+        // One of them while there is room is read, then refused, on a
+        // thread counted with theirs.
+        alertd.refusing.store(0, Ordering::Release);
+        let (mut client, server) = UnixStream::pair().unwrap();
+        admit(&alertd, server, Err(NOT_ROOT.into()));
+        client.write_all(b"{\"ask\":\"list\"}\n").unwrap();
+        let mut answer = String::new();
+        BufReader::new(&client).read_to_string(&mut answer).unwrap();
+        assert_eq!(refusal(&answer.lines().map(str::to_string).collect::<Vec<_>>()), NOT_ROOT);
+        assert_eq!(alertd.serving.load(Ordering::Acquire), 0);
     }
 }

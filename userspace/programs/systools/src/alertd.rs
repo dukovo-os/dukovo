@@ -99,6 +99,9 @@ struct Alertd {
     tells: SyncSender<Tell>,
     /// How many connections are being served.
     serving: AtomicUsize,
+    /// How many connections of those who may not ask are being read, to
+    /// be refused.
+    refusing: AtomicUsize,
 }
 
 /// The time now, in seconds since 1970.
@@ -119,6 +122,7 @@ impl Alertd {
             host,
             tells,
             serving: AtomicUsize::new(0),
+            refusing: AtomicUsize::new(0),
         }
     }
 

@@ -60,7 +60,7 @@ impl Severity {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Alert {
     /// The source's own name for it, of `a-z`, `0-9` and `._:/-`, up to
-    /// [`KEY_MAX`] long: `fs-full:/data`, `smart:WD-WCC4E1234567`.
+    /// [`KEY_MAX`] long: `fs-full:/data`, `smart:wd-wcc4e1234567`.
     pub key: String,
     pub severity: Severity,
     /// What is wrong, in one line of up to [`TITLE_MAX`] characters:
