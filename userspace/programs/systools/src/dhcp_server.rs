@@ -650,11 +650,16 @@ impl Server {
 
     /// The message that answers `request`, sent to the client's address
     /// when it has one on this network, else to everyone on it: a client
-    /// with no address cannot take a reply to one.
+    /// with no address cannot take a reply to one. A refusal always goes
+    /// to everyone, as RFC 2131 (4.1) has it for a request that came
+    /// without a relay.
     fn reply(&self, request: &Request, answer: &Answer) -> Reply {
         let Some(message) = self.message(request, answer) else { return Reply::None };
         let on_network = |ip: &Ipv4Addr| !ip.is_unspecified() && self.pool.network().contains(*ip);
-        let to = Some(request.ciaddr).filter(on_network).unwrap_or(Ipv4Addr::BROADCAST);
+        let to = Some(request.ciaddr)
+            .filter(on_network)
+            .filter(|_| !matches!(answer, Answer::Nak))
+            .unwrap_or(Ipv4Addr::BROADCAST);
         Reply::Send { to: SocketAddrV4::new(to, CLIENT_PORT), message }
     }
 
@@ -694,8 +699,12 @@ impl Server {
             transaction_id: request.xid,
             secs: 0,
             client_hardware_address: EthernetAddress(request.mac),
-            // An acknowledgement of a client that has an address names it.
-            client_ip: if ok { request.ciaddr } else { Ipv4Addr::UNSPECIFIED },
+            // An acknowledgement of a client that has an address names it;
+            // an offer and a refusal leave it out (RFC 2131, table 3).
+            client_ip: match answer {
+                Answer::Ack(_) | Answer::Inform => request.ciaddr,
+                Answer::Offer(_) | Answer::Nak => Ipv4Addr::UNSPECIFIED,
+            },
             your_ip: given.unwrap_or(Ipv4Addr::UNSPECIFIED),
             server_ip: Ipv4Addr::UNSPECIFIED,
             router: pool.router.filter(|_| ok),
@@ -1033,6 +1042,18 @@ mod tests {
     }
 
     #[test]
+    fn an_offer_names_no_address_the_client_has() {
+        let (now, mut server) = (Instant::now(), server());
+        let asking = Ask { ciaddr: address(77), ..ask(DhcpMessageType::Discover, LAPTOP) };
+        let (reply, _) = handle(&mut server, &asking, now, WALL);
+        let (_, offer) = sent(&reply);
+        assert_eq!(
+            (offer.kind, offer.yiaddr, offer.ciaddr),
+            (DhcpMessageType::Offer, address(100), Ipv4Addr::UNSPECIFIED)
+        );
+    }
+
+    #[test]
     fn the_options_always_sent_and_those_the_pool_has_a_value_for() {
         let (now, mut server) = (Instant::now(), server());
         let (reply, _) = handle(&mut server, &ask(DhcpMessageType::Discover, LAPTOP), now, WALL);
@@ -1271,14 +1292,13 @@ mod tests {
         );
         assert_eq!(event, Some(Event::Renewed));
         assert_eq!(server.leases()[0].ends, WALL + LEASE / 2 + LEASE);
-        // Another client's address, or one no one holds, is refused.
+        // Another client's address, or one no one holds, is refused, in a
+        // message to everyone, as RFC 2131 (4.1) has every refusal go.
         for (mac, held) in [(PHONE, address(100)), (LAPTOP, address(101))] {
             let (reply, event) = handle(&mut server, &renew(mac, held), now, WALL);
             let (to, nak) = sent(&reply);
-            assert_eq!(
-                (to, nak.kind, event),
-                (SocketAddrV4::new(held, CLIENT_PORT), DhcpMessageType::Nak, None)
-            );
+            assert_eq!((to, nak.kind, event), (broadcast(), DhcpMessageType::Nak, None));
+            assert_eq!(nak.ciaddr, Ipv4Addr::UNSPECIFIED);
         }
         // A lease that ended, with its address still the client's, is
         // extended, which is the client's address coming back.
