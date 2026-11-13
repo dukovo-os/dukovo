@@ -8,10 +8,10 @@
 # `python3 -m test --ignorefile`. When a gap closes, its lines go: the
 # gaps waiting on work are in docs/deferred.md.
 
-# mlibc has no sysconf(_SC_SEM_NSEMS_MAX), which multiprocessing's tests
-# ask before they start, so each of these suites stops in its setup: they
-# return when the C library answers it (deferred work).
-test_concurrent_futures
+# multiprocessing's suites get past their setup now that sysconf(3)
+# answers _SC_SEM_NSEMS_MAX; they share sockets between processes by
+# passing them over Unix-domain sockets (SCM_RIGHTS), which Radix does
+# not pass yet, and return to the run with that work (deferred work).
 test_multiprocessing_fork
 test_multiprocessing_forkserver
 test_multiprocessing_spawn
@@ -160,27 +160,9 @@ test.test_subprocess.ProcessTestCase.test_pipesizes
 test.test_subprocess.ProcessTestCaseNoPoll.test_pipesize_default
 test.test_subprocess.ProcessTestCaseNoPoll.test_pipesizes
 
-# The C library: strsignal(3) gives the signal's name, not its
-# description; strptime(3) and strftime(3) have no %Z name for the time
-# zone; fma(3) loses a negative zero's sign; writev(3) with no buffers and
-# dladdr(3) in a static program end the program; pathconf(3) and
-# ttyname(3) answer a bad descriptor with other errors (deferred work).
-test.test_c_stack_unwind.ManualStackUnwindTests.test_manual_unwind_finds_expected_frames
-test.test_math.FMATests.test_fma_zero_result
-test.test_os.test_os.TestInvalidFD.test_fpathconf_bad_fd
-test.test_os.test_os.TestInvalidFD.test_pathconf_negative_fd_uses_fd_semantics
-test.test_os.test_os.TestInvalidFD.test_ttyname
-test.test_signal.PosixTests.test_strsignal
-test.test_strptime.CalculationTests.test_day_of_week_calculation
-test.test_strptime.CalculationTests.test_gregorian_calculation
-test.test_strptime.CalculationTests.test_julian_calculation
-test.test_time.TimeTestCase.test_strptime
-
-# Radix has no prlimit(2), does not enforce RLIMIT_FSIZE, and its
-# syslog(3) keeps no log mask.
+# Radix has no prlimit(2), and does not enforce RLIMIT_FSIZE.
 test.test_resource.ResourceTest.test_fsize_enforced
 test.test_resource.ResourceTest.test_prlimit
-test.test_syslog.Test.test_setlogmask
 
 # What the bundle leaves out: libpython, Python's headers and its
 # Makefile, which nothing on Radix could load or build against, and the
@@ -190,16 +172,6 @@ test.test_build_details.CPythonBuildDetailsTests.test_platform
 test.test_sysconfig.MakefileTests.test_get_makefile_filename
 test.test_sysconfig.TestSysConfig.test_get_config_h_filename
 test.test_sysconfig.TestSysConfig.test_srcdir
-
-# writev(3) with no buffers ends the program in the C library: this
-# test stops its whole worker, so it is left out by itself.
-test.test_os.test_posix.PosixTester.test_writev
-
-# getaddrinfo(3) knows no service names ("http") and no IPv6 scope
-# by an interface's name.
-test.test_asyncio.test_base_events.BaseEventLoopWithSelectorTests.test_create_connection_ipv6_scope
-test.test_asyncio.test_base_events.BaseEventLoopWithSelectorTests.test_create_connection_service_name
-test.test_socket.GeneralModuleTests.test_getaddrinfo_ipv6_scopeid_symbolic
 
 # Other gaps of Radix's that these tests find, each in deferred work:
 # a pseudo-terminal's functions, a new process's event loop, the time

@@ -586,8 +586,9 @@ impl FileSystem for PipeFs {
 }
 
 /// The mount pipes' ends are on, made when first needed; sockets'
-/// (`socket`) are on it too.
-pub(super) fn mount() -> radix_vfs::Result<MountRef> {
+/// (`socket`) are on it too. The `caps` self-test makes it before it
+/// counts what the heap holds (`captest`).
+pub(crate) fn mount() -> radix_vfs::Result<MountRef> {
     static MOUNT: Once<MountRef> = Once::new();
     if let Some(mount) = MOUNT.get() {
         return Ok(mount.clone());
@@ -659,8 +660,9 @@ pub fn make(
 
 /// Makes a pipe the kernel writes (`trace`): the pipe, whose writing end
 /// is the kernel's to close with [`Pipe::close_writer`], and a
-/// description of its reading end.
-pub(super) fn for_kernel() -> Result<(KArc<Pipe>, FileRef), Status> {
+/// description of its reading end. The `caps` self-test makes some to
+/// release (`captest`).
+pub(crate) fn for_kernel() -> Result<(KArc<Pipe>, FileRef), Status> {
     let mount = mount().map_err(super::status)?;
     let pipe = Pipe::new()?;
     let node: NodeRef = mem::arc(End { pipe: pipe.clone(), write: false, reads_too: false })

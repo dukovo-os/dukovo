@@ -2318,7 +2318,7 @@ pub const CASES: &[Case] = &[
     },
     Case {
         name: "caps",
-        about: "no capability can be forged or widened, revokes win against 3 other CPUs, and 4 CPUs at once keep the store whole",
+        about: "no capability can be forged or widened, revokes win against 3 other CPUs, 4 CPUs at once keep the store whole, and a file released twice in one change is dropped after its locks",
         firmware: Firmware::Uefi,
         media: Media::Usb,
         cmdline: "qemu-exit lockdep selftest=caps",

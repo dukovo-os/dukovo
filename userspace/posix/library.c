@@ -5,17 +5,28 @@
 // glibc 2.39 has it on Linux: allocations near the top of the address
 // space and on large alignments, a null environ, popen, message
 // catalogs, the functions that were "Not implemented", and threads'
-// stacks and signal masks.
+// stacks and signal masks; and those CPython's test suite found (ADR
+// 0495): sysconf's answers, writev and readv of no buffers, strsignal's
+// words, pathconf's errors, the syslog mask, fma's sign of zero, dladdr
+// in a static program, and getaddrinfo's service names and IPv6 scopes.
 
+#include <dlfcn.h>
 #include <fcntl.h>
 #include <limits.h>
 #include <malloc.h>
+#include <math.h>
+#include <net/if.h>
+#include <netdb.h>
+#include <netinet/in.h>
 #include <netinet/ether.h>
 #include <nl_types.h>
 #include <pthread.h>
 #include <stdint.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/uio.h>
 #include <sys/utsname.h>
+#include <syslog.h>
 
 #include "check.h"
 
@@ -425,6 +436,85 @@ static void masks(void) {
 	close(ends[1]);
 }
 
+static void found_by_python(void) {
+	// sysconf answers what Python's multiprocessing and os.ttyname ask.
+	CHECK(sysconf(_SC_SEM_NSEMS_MAX) >= 256);
+	CHECK(sysconf(_SC_SEM_VALUE_MAX) >= 32767);
+	CHECK(sysconf(_SC_TTY_NAME_MAX) == 32);
+
+	// writev and readv of no buffers move nothing, without waiting, and
+	// check the descriptor.
+	int pipes[2];
+	CHECK(pipe(pipes) == 0);
+	struct iovec none = {NULL, 0};
+	CHECK(writev(pipes[1], &none, 0) == 0);
+	CHECK(writev(pipes[1], &none, 1) == 0);
+	CHECK(readv(pipes[0], &none, 0) == 0);
+	close(pipes[0]);
+	close(pipes[1]);
+	CHECK_ERROR(writev(pipes[1], &none, 0), EBADF);
+
+	// strsignal's words are glibc's.
+	CHECK(strcmp(strsignal(SIGINT), "Interrupt") == 0);
+	CHECK(strcmp(strsignal(SIGKILL), "Killed") == 0);
+	CHECK(strcmp(strsignal(SIGRTMIN + 3), "Real-time signal 3") == 0);
+	CHECK(strcmp(strsignal(200), "Unknown signal 200") == 0);
+
+	// pathconf and fpathconf need the file to be there.
+	CHECK(pathconf("/", _PC_NAME_MAX) == 255);
+	CHECK_ERROR(pathconf("/no/such/file", _PC_NAME_MAX), ENOENT);
+	CHECK_ERROR(fpathconf(-1, _PC_NAME_MAX), EBADF);
+	CHECK_ERROR(fpathconf(pipes[0], _PC_NAME_MAX), EBADF);
+
+	// A mask of 0 leaves the mask as it is.
+	int mask = LOG_UPTO(LOG_WARNING);
+	int old = setlogmask(mask);
+	CHECK(setlogmask(0) == mask);
+	CHECK(setlogmask(old) == mask);
+
+	// A product that rounds to zero keeps its sign.
+	volatile double tiny = 1e-300, zero = 0.0;
+	CHECK(signbit(fma(tiny, -tiny, zero)) && fma(tiny, -tiny, zero) == 0.0);
+	CHECK(!signbit(fma(tiny, tiny, -zero)));
+
+	// dladdr finds the static program itself, with no symbol.
+	Dl_info info;
+	CHECK(dladdr((void *)found_by_python, &info) != 0 && info.dli_fname
+			&& strstr(info.dli_fname, "library") && info.dli_sname == NULL);
+
+	// getaddrinfo: a service nobody names, and IPv6 scopes.
+	struct addrinfo hints = {0}, *result;
+	hints.ai_socktype = SOCK_STREAM;
+	CHECK(getaddrinfo("127.0.0.1", "no-such-service", &hints, &result) == EAI_SERVICE);
+	CHECK(getaddrinfo("127.0.0.1", "http", &hints, &result) == 0
+			&& ntohs(((struct sockaddr_in *)result->ai_addr)->sin_port) == 80);
+	if(result)
+		freeaddrinfo(result);
+	hints.ai_family = AF_INET6;
+	result = NULL;
+	CHECK(getaddrinfo("fe80::1%7", "80", &hints, &result) == 0
+			&& ((struct sockaddr_in6 *)result->ai_addr)->sin6_scope_id == 7);
+	if(result)
+		freeaddrinfo(result);
+	struct if_nameindex *interfaces = if_nameindex();
+	CHECK(interfaces && interfaces[0].if_name);
+	if(interfaces && interfaces[0].if_name) {
+		char name[64];
+		snprintf(name, sizeof(name), "ff02::1%%%s", interfaces[0].if_name);
+		result = NULL;
+		CHECK(getaddrinfo(name, "80", &hints, &result) == 0
+				&& ((struct sockaddr_in6 *)result->ai_addr)->sin6_scope_id
+						== interfaces[0].if_index);
+		if(result)
+			freeaddrinfo(result);
+		// A global address takes a number only.
+		snprintf(name, sizeof(name), "2001:db8::1%%%s", interfaces[0].if_name);
+		CHECK(getaddrinfo(name, "80", &hints, &result) == EAI_NONAME);
+		if_freenameindex(interfaces);
+	}
+	CHECK(getaddrinfo("fe80::1%no-such-interface", "80", &hints, &result) == EAI_NONAME);
+}
+
 int main(void) {
 	check_start("library");
 	RUN(allocations);
@@ -435,5 +525,6 @@ int main(void) {
 	RUN(bsd_lines);
 	RUN(stacks);
 	RUN(masks);
+	RUN(found_by_python);
 	return check_end();
 }

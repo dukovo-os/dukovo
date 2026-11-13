@@ -1,0 +1,24 @@
+SPDX-FileCopyrightText: 2026 The Dukovo contributors
+SPDX-License-Identifier: Apache-2.0 OR MIT
+
+fma(x, y, z) with z zero gives the product's sign when the product
+rounds to zero: musl's code (options/ansi/musl-generic-math) added z to
+x*y rounded, so that fma(1e-300, -1e-300, 0.0) was +0.0, where the
+exact result, a tiny negative number, rounds to -0.0, as glibc and the
+FMA instruction give. x and y are finite and nonzero there, so x*y
+rounded once is the result. CPython's math.fma checks it. Meant for
+upstream, in musl too.
+
+diff --git a/options/ansi/musl-generic-math/fma.c b/options/ansi/musl-generic-math/fma.c
+index f65eab7..bf33a0c 100644
+--- a/options/ansi/musl-generic-math/fma.c
++++ b/options/ansi/musl-generic-math/fma.c
+@@ -64,7 +64,7 @@ double fma(double x, double y, double z)
+ 		return x*y + z;
+ 	if (nz.e >= ZEROINFNAN) {
+ 		if (nz.e > ZEROINFNAN) /* z==0 */
+-			return x*y + z;
++			return x*y; /* x*y is not 0: its sign, even if it rounds to 0 */
+ 		return z;
+ 	}
+ 

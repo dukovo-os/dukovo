@@ -1,0 +1,27 @@
+SPDX-FileCopyrightText: 2026 The Dukovo contributors
+SPDX-License-Identifier: Apache-2.0 OR MIT
+
+Has dladdr find a static program as the object an address of it is in,
+as patch 0030 has dlsym find nothing in one: it looked through the
+program's symbols by its hash table, which a static program has none
+of, and stopped the program on an assertion ("unexpected hash style").
+dladdr now gives the program's path and no symbol, as musl's does.
+CPython's stack unwinding test asks it of its frames. Meant for
+upstream.
+
+diff --git a/options/rtld/generic/main.cpp b/options/rtld/generic/main.cpp
+index d3a7fea..ac19da2 100644
+--- a/options/rtld/generic/main.cpp
++++ b/options/rtld/generic/main.cpp
+@@ -979,6 +979,11 @@ int __dlapi_reverse(const void *ptr, __dlapi_symbol *info) {
+ 
+ 	for(size_t i = 0; i < initialRepository->loadedObjects.size(); i++) {
+ 		auto object = initialRepository->loadedObjects[i];
++		// A static program has no hash table, and no symbols to look
++		// through: the search below finds it as the object the address
++		// is in.
++		if(object->hashStyle == HashStyle::none)
++			continue;
+ 
+ 		auto eligible = [&] (ObjectSymbol cand) {
+ 			if(cand.symbol()->st_shndx == SHN_UNDEF)

@@ -1,0 +1,235 @@
+SPDX-FileCopyrightText: 2026 The Dukovo contributors
+SPDX-License-Identifier: Apache-2.0 OR MIT
+
+Corners of the C library that CPython's test suite found, each as glibc
+2.39 has it on Linux:
+  - writev with no buffers writes nothing and returns 0, as a write of
+    no bytes does, where an assertion ended the program; the descriptor
+    is checked all the same (the system layer);
+  - strsignal gives glibc's words for each signal, "Interrupt" for
+    SIGINT where it gave "SIGINT", "Real-time signal N" for those from
+    SIGRTMIN, and "Unknown signal N" for any other, and psignal with it;
+  - fpathconf fails with EBADF for a descriptor that is not open, and
+    pathconf with stat's errors for a path that is not there, where
+    both answered for any;
+  - setlogmask(0) leaves the mask as it is and returns it, as POSIX
+    says, where it set an empty mask; syslog no longer drops messages
+    of priority LOG_EMERG, which a test of the priority against the mask
+    did, and openlog's LOG_PID, LOG_CONS and LOG_PERROR take effect, as
+    a variable never set stood for them.
+Meant for upstream.
+
+diff --git a/options/posix/generic/posix_string.cpp b/options/posix/generic/posix_string.cpp
+index 63c5e4e..8f505a6 100644
+--- a/options/posix/generic/posix_string.cpp
++++ b/options/posix/generic/posix_string.cpp
+@@ -4,6 +4,7 @@
+ 
+ #include <bits/ensure.h>
+ #include <errno.h>
++#include <stdio.h>
+ #include <stdlib.h>
+ #include <string.h>
+ #include <strings.h>
+@@ -81,45 +82,54 @@ char *strsep(char **m, const char *del) {
+ 	return tok;
+ }
+ 
++// glibc's words for each signal on Linux, so that messages read as they
++// do there: "Interrupt", "Killed", "Real-time signal 3"; any other is
++// "Unknown signal N", as there.
+ char *strsignal(int sig) {
+-	#define CASE_FOR(sigconst) case sigconst: s = #sigconst; break;
+-	const char *s;
++	const char *s = nullptr;
+ 	switch(sig) {
+-	CASE_FOR(SIGABRT)
+-	CASE_FOR(SIGFPE)
+-	CASE_FOR(SIGILL)
+-	CASE_FOR(SIGINT)
+-	CASE_FOR(SIGSEGV)
+-	CASE_FOR(SIGTERM)
+-	CASE_FOR(SIGPROF)
+-	CASE_FOR(SIGIO)
+-	CASE_FOR(SIGPWR)
+-	CASE_FOR(SIGALRM)
+-	CASE_FOR(SIGBUS)
+-	CASE_FOR(SIGCHLD)
+-	CASE_FOR(SIGCONT)
+-	CASE_FOR(SIGHUP)
+-	CASE_FOR(SIGKILL)
+-	CASE_FOR(SIGPIPE)
+-	CASE_FOR(SIGQUIT)
+-	CASE_FOR(SIGSTOP)
+-	CASE_FOR(SIGTSTP)
+-	CASE_FOR(SIGTTIN)
+-	CASE_FOR(SIGTTOU)
+-	CASE_FOR(SIGUSR1)
+-	CASE_FOR(SIGUSR2)
+-	CASE_FOR(SIGSYS)
+-	CASE_FOR(SIGTRAP)
+-	CASE_FOR(SIGURG)
+-	CASE_FOR(SIGVTALRM)
+-	CASE_FOR(SIGXCPU)
+-	CASE_FOR(SIGXFSZ)
+-	CASE_FOR(SIGWINCH)
+-	default:
+-		mlibc::infoLogger() << "mlibc: Unknown signal number " << sig << frg::endlog;
+-		s = "Unknown signal number";
++	case SIGHUP: s = "Hangup"; break;
++	case SIGINT: s = "Interrupt"; break;
++	case SIGQUIT: s = "Quit"; break;
++	case SIGILL: s = "Illegal instruction"; break;
++	case SIGTRAP: s = "Trace/breakpoint trap"; break;
++	case SIGABRT: s = "Aborted"; break;
++	case SIGBUS: s = "Bus error"; break;
++	case SIGFPE: s = "Floating point exception"; break;
++	case SIGKILL: s = "Killed"; break;
++	case SIGUSR1: s = "User defined signal 1"; break;
++	case SIGSEGV: s = "Segmentation fault"; break;
++	case SIGUSR2: s = "User defined signal 2"; break;
++	case SIGPIPE: s = "Broken pipe"; break;
++	case SIGALRM: s = "Alarm clock"; break;
++	case SIGTERM: s = "Terminated"; break;
++#ifdef SIGSTKFLT
++	case SIGSTKFLT: s = "Stack fault"; break;
++#endif
++	case SIGCHLD: s = "Child exited"; break;
++	case SIGCONT: s = "Continued"; break;
++	case SIGSTOP: s = "Stopped (signal)"; break;
++	case SIGTSTP: s = "Stopped"; break;
++	case SIGTTIN: s = "Stopped (tty input)"; break;
++	case SIGTTOU: s = "Stopped (tty output)"; break;
++	case SIGURG: s = "Urgent I/O condition"; break;
++	case SIGXCPU: s = "CPU time limit exceeded"; break;
++	case SIGXFSZ: s = "File size limit exceeded"; break;
++	case SIGVTALRM: s = "Virtual timer expired"; break;
++	case SIGPROF: s = "Profiling timer expired"; break;
++	case SIGWINCH: s = "Window changed"; break;
++	case SIGIO: s = "I/O possible"; break;
++	case SIGPWR: s = "Power failure"; break;
++	case SIGSYS: s = "Bad system call"; break;
+ 	}
+-	return const_cast<char *>(s);
++	if(s)
++		return const_cast<char *>(s);
++	static thread_local char buffer[32];
++	if(sig >= SIGRTMIN && sig <= SIGRTMAX)
++		snprintf(buffer, sizeof(buffer), "Real-time signal %d", sig - SIGRTMIN);
++	else
++		snprintf(buffer, sizeof(buffer), "Unknown signal %d", sig);
++	return buffer;
+ }
+ 
+ char *strcasestr(const char *s, const char *pattern) {
+diff --git a/options/posix/generic/sys-uio.cpp b/options/posix/generic/sys-uio.cpp
+index 9532987..997af4c 100644
+--- a/options/posix/generic/sys-uio.cpp
++++ b/options/posix/generic/sys-uio.cpp
+@@ -23,8 +23,6 @@ ssize_t readv(int fd, const struct iovec *iovs, int iovc) {
+ }
+ 
+ ssize_t writev(int fd, const struct iovec *iovs, int iovc) {
+-	__ensure(iovc);
+-
+ 	ssize_t written = 0;
+ 
+ 	if constexpr (mlibc::IsImplemented<Writev>) {
+diff --git a/options/posix/generic/syslog.cpp b/options/posix/generic/syslog.cpp
+index 75071ad..4adf84b 100644
+--- a/options/posix/generic/syslog.cpp
++++ b/options/posix/generic/syslog.cpp
+@@ -21,7 +21,6 @@ static char log_ident[32];
+ static int log_options;
+ static int log_facility = LOG_USER;
+ static int log_fd = -1;
+-static int log_opt;
+ static int log_mask = 0xff;
+ 
+ static int use_mlibc_logger = 0;
+@@ -62,10 +61,12 @@ void openlog(const char *ident, int options, int facility) {
+ 		__openlog();
+ }
+ 
++// A mask of 0 leaves the mask as it is, as POSIX says.
+ int setlogmask(int mask) {
+ 	int old_mask = log_mask;
+ 
+-	log_mask = mask;
++	if(mask)
++		log_mask = mask;
+ 
+ 	return old_mask;
+ }
+@@ -75,10 +76,6 @@ static void _vsyslog(int priority, const char *message, va_list ap) {
+ 		return e == ECONNREFUSED || e == ECONNRESET || e == ENOTCONN || e == EPIPE;
+ 	};
+ 
+-	if(!(priority & log_mask)) {
+-		return;
+-	}
+-
+ 	char timebuf[16];
+ 	time_t now;
+ 	struct tm tm;
+@@ -105,7 +102,7 @@ static void _vsyslog(int priority, const char *message, va_list ap) {
+ 	gmtime_r(&now, &tm);
+ 	strftime(timebuf, sizeof timebuf, "%b %e %T", &tm);
+ 
+-	pid = (log_opt & LOG_PID) ? getpid() : 0;
++	pid = (log_options & LOG_PID) ? getpid() : 0;
+ 	l = snprintf(buf, sizeof buf, "<%d>%s %n%s%s%.0d%s: ",
+ 		priority, timebuf, &hlen, log_ident, (pid ? "[" : ""), pid, (pid ? "]" : ""));
+ 	errno = errno_save;
+@@ -120,14 +117,14 @@ static void _vsyslog(int priority, const char *message, va_list ap) {
+ 		if(send(log_fd, buf, l, 0) < 0 && (!is_lost_conn(errno)
+ 		    || connect(log_fd, (const sockaddr *)&log_addr, sizeof log_addr) < 0
+ 		    || send(log_fd, buf, l, 0) < 0)
+-		    && (log_opt & LOG_CONS)) {
++		    && (log_options & LOG_CONS)) {
+ 			fd = open("/dev/console", O_WRONLY|O_NOCTTY|O_CLOEXEC);
+ 			if(fd >= 0) {
+ 				dprintf(fd, "%.*s", l - hlen, buf + hlen);
+ 				close(fd);
+ 			}
+ 		}
+-		if(log_opt & LOG_PERROR)
++		if(log_options & LOG_PERROR)
+ 			dprintf(STDERR_FILENO, "%.*s", l - hlen, buf + hlen);
+ 	}
+ }
+diff --git a/options/posix/generic/unistd.cpp b/options/posix/generic/unistd.cpp
+index 00663e7..25de8be 100644
+--- a/options/posix/generic/unistd.cpp
++++ b/options/posix/generic/unistd.cpp
+@@ -308,7 +308,15 @@ long path_limit(int name) {
+ 
+ } // namespace
+ 
+-long fpathconf(int, int name) {
++// Each is the same for every file, but the file must be there, as on
++// glibc: EBADF for a descriptor that is not open, and stat's errors for
++// a path.
++long fpathconf(int fd, int name) {
++	struct stat st;
++	if(int e = mlibc::sysdep_or_enosys<Stat>(mlibc::fsfd_target::fd, fd, "", 0, &st); e) {
++		errno = e;
++		return -1;
++	}
+ 	return path_limit(name);
+ }
+ 
+@@ -651,7 +659,12 @@ int nice(int nice) {
+ 	return new_nice;
+ }
+ 
+-long pathconf(const char *, int name) {
++long pathconf(const char *path, int name) {
++	struct stat st;
++	if(int e = mlibc::sysdep_or_enosys<Stat>(mlibc::fsfd_target::path, -1, path, 0, &st); e) {
++		errno = e;
++		return -1;
++	}
+ 	return path_limit(name);
+ }
+ 

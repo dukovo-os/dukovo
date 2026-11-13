@@ -701,8 +701,12 @@ foreground. The tests are:
 	The C library's corners, as glibc 2.39 has them: allocations near
 	the top of memory and on large alignments, a null *environ*,
 	*popen*, message catalogs, the functions mlibc had left
-	unfinished, stacks a thread's creator gives it, and new threads'
-	signal masks.
+	unfinished, stacks a thread's creator gives it, new threads'
+	signal masks, and those CPython's test suite found: *writev* and
+	*readv* with no buffers, the signals' descriptions, *pathconf*'s
+	errors, the log mask of *syslog*, *fma*'s signed zero, *dladdr* in
+	a static program, service names and IPv6 scopes in *getaddrinfo*,
+	and the semaphore and terminal name limits of *sysconf*.
 
 *dynamic*
 	A program with a private library found through *$ORIGIN*, and a

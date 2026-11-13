@@ -1,0 +1,46 @@
+SPDX-FileCopyrightText: 2001-present Python Software Foundation
+SPDX-FileCopyrightText: 2026 The Dukovo contributors
+SPDX-License-Identifier: Python-2.0
+
+Time zone names given back to the C library, as on musl
+
+strftime's %Z gives the name a struct tm's tm_zone points to only when
+the C library made that name: Radix's mlibc reads time zones with
+musl's code (ADR 0194), which, as musl, gives "" for any other pointer.
+time.strftime makes its struct tm from Python's struct_time, so %Z was
+always empty, and time.strptime with %Z failed. CPython gives musl its
+own names back, matched by their text; this does the same on Radix.
+
+--- a/Modules/timemodule.c
++++ b/Modules/timemodule.c
+@@ -593,7 +593,7 @@
+ #endif
+ }
+ 
+-#if defined(__linux__) && !defined(__GLIBC__)
++#if (defined(__linux__) && !defined(__GLIBC__)) || defined(__radix__)
+ static const char *utc_string = NULL;
+ #endif
+ 
+@@ -645,10 +645,10 @@
+             if (p->tm_zone == NULL) {
+                 return 0;
+             }
+-#if defined(__linux__) && !defined(__GLIBC__)
++#if (defined(__linux__) && !defined(__GLIBC__)) || defined(__radix__)
+             // Make an attempt to return the C library's own timezone strings to
+             // it. musl refuses to process a tm_zone field unless it produced
+-            // it. See issue #34672.
++            // it, as Radix's C library does with musl's code. See issue #34672.
+             if (utc_string && strcmp(p->tm_zone, utc_string) == 0) {
+                 p->tm_zone = utc_string;
+             }
+@@ -2118,7 +2118,7 @@
+         return -1;
+     }
+ 
+-#if defined(__linux__) && !defined(__GLIBC__)
++#if (defined(__linux__) && !defined(__GLIBC__)) || defined(__radix__)
+     struct tm tm;
+     const time_t zero = 0;
+     if (gmtime_r(&zero, &tm) != NULL)

@@ -308,8 +308,9 @@ pub struct FileObject {
     /// it is made: finding out takes dynamic type checks, which every
     /// read and write of a plain file would otherwise make.
     special: Special,
-    /// The next released object to drop, while it waits in [`DROPPED`].
-    next: SpinLock<Option<FileRef>>,
+    /// Whether it waits in [`DROPPED`], and the released object after it
+    /// there.
+    next: SpinLock<Link>,
     /// Where it was opened.
     pub opened: Opened,
     /// The name it acts for (ADR 0214): what the second gate checks on
@@ -399,7 +400,7 @@ impl FileObject {
             (&raw mut (*place).flags).write(AtomicU32::new(description.bits()));
             (&raw mut (*place).locked).write(AtomicBool::new(false));
             (&raw mut (*place).special).write(special);
-            (&raw mut (*place).next).write(SpinLock::new(None));
+            (&raw mut (*place).next).write(SpinLock::new(Link { queued: false, next: None }));
             (&raw mut (*place).name).write(name);
             Opened::write_at(&raw mut (*place).opened, &(*place).at, from);
         }
@@ -544,11 +545,40 @@ pub fn release(file: FileRef) {
     }
 }
 
+/// An object's place in [`DROPPED`].
+struct Link {
+    /// Whether it waits there: from when [`defer_drop`] queues it until
+    /// [`drop_deferred`] takes it off, just before it drops the queue's
+    /// reference.
+    queued: bool,
+    /// The released object after it.
+    next: Option<FileRef>,
+}
+
 /// Queues a released object to be dropped once the store's locks have
-/// gone.
+/// gone. An object released through several capabilities' objects
+/// before the queue is drained is queued once: each later reference goes
+/// at once, as a count, since the queue's own reference outlives it.
+/// Queueing it again would overwrite its link, and drop the rest of the
+/// queue with the locks held.
 fn defer_drop(file: FileRef) {
     let mut head = DROPPED.lock();
-    *file.next.lock() = head.take();
+    // SAFETY: `file` keeps the object alive until it is either dropped
+    // while the queue holds a reference of its own, below, or moved into
+    // the queue, which drops nothing while `head` is held; `link` goes
+    // before either can let go of the queue's reference.
+    #[allow(unsafe_code)]
+    let object = unsafe { &*FileRef::as_ptr(&file) };
+    let mut link = object.next.lock();
+    if link.queued {
+        // The queue drops its reference only after taking `link` and
+        // marking the object taken off: this one is not the last.
+        drop(file);
+        return;
+    }
+    link.queued = true;
+    link.next = head.take();
+    drop(link);
     *head = Some(file);
     ANY_DROPPED.store(true, Ordering::Release);
     crate::caps::queued();
@@ -564,9 +594,14 @@ pub fn drop_deferred() {
         ANY_DROPPED.store(false, Ordering::Release);
         head.take()
     };
-    // One after another, never recursively.
+    // One after another, never recursively. Once taken off, an object
+    // released again meanwhile is queued again, with its own reference.
     while let Some(file) = list {
-        list = file.next.lock().take();
+        list = {
+            let mut link = file.next.lock();
+            link.queued = false;
+            link.next.take()
+        };
         drop(file);
     }
 }
