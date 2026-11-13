@@ -327,6 +327,9 @@ pub fn lease_text(lease: &Lease, card: &str, obtained: u64) -> String {
         "server = {}\nobtained = {obtained}\nseconds = {}\nrenew = {}\nrebind = {}\n",
         lease.server, lease.seconds, lease.renew, lease.rebind
     );
+    if lease.metered {
+        text += "metered = yes\n";
+    }
     text
 }
 
@@ -350,6 +353,7 @@ pub fn parse_lease(text: &str) -> Option<(Lease, u64)> {
         seconds: number("seconds")?,
         renew: number("renew")?,
         rebind: number("rebind")?,
+        metered: one("metered") == Some("yes"),
     };
     Some((lease, one("obtained")?.parse().ok()?))
 }
@@ -1538,6 +1542,7 @@ mod tests {
             seconds: 86_400,
             renew: 43_200,
             rebind: 75_600,
+            metered: false,
         };
         let text = lease_text(&lease, "net0 (52:54:00:12:34:56)", 1_761_900_000);
         assert_eq!(
@@ -1556,7 +1561,14 @@ mod tests {
         );
         assert_eq!(parse_lease(&text), Some((lease.clone(), 1_761_900_000)));
         let bare = Lease { router: None, dns: Vec::new(), domain: None, ..lease };
-        assert_eq!(parse_lease(&lease_text(&bare, "net0", 5)), Some((bare, 5)));
+        assert_eq!(parse_lease(&lease_text(&bare, "net0", 5)), Some((bare.clone(), 5)));
+        // A lease file written before leases carried it reads as not
+        // metered, and the line is only written when it is.
+        assert!(!text.contains("metered"));
+        let metered = Lease { metered: true, ..bare };
+        let text = lease_text(&metered, "net0", 5);
+        assert!(text.ends_with("rebind = 75600\nmetered = yes\n"));
+        assert_eq!(parse_lease(&text), Some((metered, 5)));
         // A file cut short is no lease.
         assert_eq!(parse_lease(&text[..text.len() - 14]), None);
         assert_eq!(parse_lease("address = 10.0.2.15/24\n"), None);
