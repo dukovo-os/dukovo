@@ -150,6 +150,14 @@ path = "lab/tests/storage/floppy.img"
 SPDX-FileCopyrightText = "2026 The Dukovo contributors"
 SPDX-License-Identifier = "Apache-2.0 OR MIT"
 
+# The packages the lab's browser steps drive web pages with, and npm's lock
+# of them (lab/browsers). JSON has no comments, and npm writes the lock
+# file itself.
+[[annotations]]
+path = ["lab/browsers/package.json", "lab/browsers/package-lock.json"]
+SPDX-FileCopyrightText = "2026 The Dukovo contributors"
+SPDX-License-Identifier = "Apache-2.0 OR MIT"
+
 # uACPI 7.0.0 at commit c0edece, https://github.com/uACPI/uACPI, unmodified
 # but for the build files left out: the AML interpreter the kernel links
 # (ADR 0200). Its files carry no headers; its license file is

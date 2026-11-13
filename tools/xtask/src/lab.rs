@@ -32,7 +32,9 @@
 //! The commands that build the image also build the Linux kit that
 //! performance tests hold Dukovo to ([`linux_kit`]), and pass it on with
 //! `--linux`. A kit that will not build (offline the first time, say) only
-//! makes those tests skip.
+//! makes those tests skip. They also make the browser kit that the web
+//! console's tests drive pages with ([`browser_kit`], ADR 0510) and pass
+//! it on with `--browsers`, with the same effect when it will not build.
 //!
 //! `ob lab coverage` is ob's own, not dukovo-lab's: it holds Phase 16's
 //! commands, services, pages and routes to the tests that cover them
@@ -313,6 +315,7 @@ const VALUED: &[&str] = &[
     "--schedule",
     "--run-id",
     "--ob",
+    "--browsers",
 ];
 
 /// `ob lab`: runs dukovo-lab on `lab/tests`, building the lab image first
@@ -393,6 +396,16 @@ pub fn command(ctx: &Ctx, args: &mut Args) -> Result<()> {
         // steps that read the screen.
         if !rest.iter().any(|arg| arg == "--fonts") {
             lab.arg("--fonts").arg(ctx.root.join(CONSOLE_FONTS));
+        }
+        // Playwright's browsers and axe-core, which the web console's tests
+        // drive pages with (ADR 0510).
+        if !rest.iter().any(|arg| arg == "--browsers") {
+            match browser_kit(ctx, no_build) {
+                Ok(kit) => {
+                    lab.arg("--browsers").arg(kit);
+                }
+                Err(why) => eprintln!("    note: the web console's tests will skip: {why}"),
+            }
         }
         // ob itself, whose disc-drive holds a test's music CD in a QEMU
         // machine, as QEMU's own drives hold none (ADR 0447).
@@ -511,6 +524,10 @@ const BUNDLES_ENV: &str = "DUKOVO_LAB_BUNDLES";
 /// the PSF files the kernel and consoled draw in.
 const CONSOLE_FONTS: &str = "kernel/lib/fbcon/fonts";
 
+/// The folder whose `package.json` pins the packages of the browser kit to
+/// exact versions, and whose `package-lock.json` pins what they need.
+const BROWSERS: &str = "lab/browsers";
+
 /// The file in a Linux kit's folder that describes it, as dukovo-lab reads
 /// it.
 const KIT_FILE: &str = "kit.toml";
@@ -562,6 +579,73 @@ fn kit_file(kernel: &str, initrd: &str) -> String {
          done = \"{KIT_DONE}\"\n",
         bench::LINUX_CMDLINE
     )
+}
+
+/// Makes the browser kit that the web console's tests drive pages with, and
+/// gives its folder, `out/lab-browsers`, for dukovo-lab's `--browsers`:
+/// Playwright and axe-core as `lab/browsers/package-lock.json` pins them,
+/// installed with `npm ci`, and Playwright's three engines in the kit's
+/// `browsers` folder. The environment may provide engines of its own with
+/// `PLAYWRIGHT_BROWSERS_PATH`, as the cloud build machines do, and then none
+/// are installed. A kit that holds the lock's packages is not made again,
+/// and `--no-build` makes none.
+fn browser_kit(ctx: &Ctx, no_build: bool) -> std::result::Result<PathBuf, String> {
+    let source = ctx.root.join(BROWSERS);
+    let kit = ctx.out.join("lab-browsers");
+    let lock = std::fs::read(source.join("package-lock.json"))
+        .map_err(|err| format!("reading {BROWSERS}/package-lock.json: {err}"))?;
+    let made = kit.join("node_modules").is_dir()
+        && std::fs::read(kit.join("package-lock.json")).is_ok_and(|made| made == lock);
+    if no_build {
+        return if made {
+            Ok(kit)
+        } else {
+            Err("no browser kit was made yet, and --no-build makes none".into())
+        };
+    }
+    // npx comes with npm, so one message serves both.
+    let node_tool = |name: &str| {
+        process::find_program(name)
+            .ok_or_else(|| "npm is not installed: install Node.js 22 or later".to_string())
+    };
+    if !made {
+        let npm = node_tool("npm")?;
+        step("Making the browser kit that the web console's tests drive pages with");
+        for file in ["package.json", "package-lock.json"] {
+            process::copy(&source.join(file), &kit.join(file)).map_err(|err| err.to_string())?;
+        }
+        let installed = kit_command(ctx, Command::new(npm).arg("ci").current_dir(&kit));
+        if installed.is_err() {
+            // The copy of the lock says the packages are in; a failed
+            // install left some of them out.
+            let _ = std::fs::remove_file(kit.join("package-lock.json"));
+        }
+        installed?;
+    }
+    if std::env::var_os("PLAYWRIGHT_BROWSERS_PATH").is_none() {
+        let npx = node_tool("npx")?;
+        step("Installing the browsers that the web console's tests drive");
+        let engines = ["playwright", "install", "chromium", "firefox", "webkit"];
+        let browsers = kit.join("browsers");
+        kit_command(
+            ctx,
+            Command::new(npx)
+                .args(engines)
+                .env("PLAYWRIGHT_BROWSERS_PATH", browsers)
+                .current_dir(&kit),
+        )?;
+    }
+    Ok(kit)
+}
+
+/// Runs `command` in the browser kit, quietly; when it fails, the last
+/// lines of what it said.
+fn kit_command(ctx: &Ctx, command: &mut Command) -> std::result::Result<(), String> {
+    process::output(ctx, command).map(|_| ()).map_err(|err| {
+        let said = err.to_string();
+        let lines: Vec<&str> = said.lines().collect();
+        lines[lines.len().saturating_sub(8)..].join("\n")
+    })
 }
 
 /// The kit an earlier `ob lab` built, for `--no-build`.
@@ -943,6 +1027,27 @@ mod tests {
             .filter(|entry| entry.as_ref().unwrap().path().extension().is_some_and(|e| e == "psfu"))
             .count();
         assert!(fonts > 0, "no .psfu fonts in {}", folder.display());
+    }
+
+    #[test]
+    fn the_browser_kit_names_each_package_at_one_exact_version() {
+        // A kit made a month later is the same kit only when no package
+        // floats: no `^`, `~`, `*`, `x`, range or tag.
+        let path =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").join(BROWSERS).join("package.json");
+        let text = std::fs::read_to_string(&path).unwrap();
+        let package: serde_json::Value = serde_json::from_str(&text).unwrap();
+        let packages = package["dependencies"].as_object().unwrap();
+        assert!(packages.contains_key("playwright") && packages.contains_key("axe-core"));
+        for (name, version) in packages {
+            let version = version.as_str().unwrap();
+            let numbers = version.split('.').collect::<Vec<_>>();
+            let exact = numbers.len() == 3
+                && numbers
+                    .iter()
+                    .all(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit()));
+            assert!(exact, "{name} is at \"{version}\", which is not one exact version");
+        }
     }
 
     #[test]

@@ -1573,6 +1573,17 @@ _target/userspace/_).
 	When the kit cannot be built, *ob* says why and the performance tests
 	skip. A *--linux* given after _command_ is passed on instead.
 
+	For *run* and *ui*, also make the browser kit that the web console's
+	tests drive pages with (ADR 0510), in _out/lab-browsers_, and pass it
+	with *--browsers*: Playwright and axe-core at the versions that
+	_lab/browsers/package.json_ pins, installed with *npm ci*, and
+	Playwright's Chromium, Firefox and WebKit in the kit's _browsers_
+	folder, installed with *playwright install* unless
+	*PLAYWRIGHT_BROWSERS_PATH* names engines already. With *--no-build*,
+	the kit already in _out_ is used. When the kit cannot be made (no
+	*npm*, no network), *ob* says why and the tests with *browser* steps
+	skip. A *--browsers* given after _command_ is passed on instead.
+
 	For *run* and *ui*, also pass the console's fonts,
 	_kernel/lib/fbcon/fonts_, with *--fonts*, which the *screen* steps
 	read the console's text with, and build the install stick and the
@@ -1595,8 +1606,9 @@ _target/userspace/_).
 	bundles' commands and services) that _lab/before-phase-16.txt_ does
 	not list and that has no entry; an entry with no tests or with a
 	test that is not in _lab/tests_; a test that never names what it
-	covers, in its file or in a script beside it that it runs as
-	_{here}/NAME_; or an entry of something the tree no longer has.
+	covers, in its file, in a script beside it that it runs as
+	_{here}/NAME_ or in the script of its *browser* step; or an entry of
+	something the tree no longer has.
 
 	*dukovo-lab* is found on *PATH*, or at *OB_LAB*. The handbook's Lab
 	tests chapter shows how to write a test, and its Coverage section

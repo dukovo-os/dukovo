@@ -1,0 +1,59 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# The lab's browser step on a real page: nginx from the catalog serves two
+# small pages over HTTPS, and the lab PC's browsers open them, in each
+# engine and in dark and light, press a button, check the page with
+# axe-core, and must find the fault in the page that has one. The pages
+# are nginx's because the admin console does not exist yet, and the
+# console's own page tests replace nothing here: this test checks the lab's
+# browser step, whatever page it is shown. The certificate is one openssl
+# makes, as in services/nginx; the browser does not check it.
+about = "A browser on the lab PC opens a page the machine serves over HTTPS, in each engine and in dark and light, and the accessibility check finds a fault it is shown (ADR 0510)"
+time = "10m"
+host_needs = ["curl", "scp"]
+
+[[step]]
+host = "sh {here}/../services/copy-bundle.sh org.nginx.nginx {machine} {machine-port:22}"
+expect = "copied: org.nginx.nginx"
+# From nothing: a run before may have left it installed.
+[[step]]
+run = "sh -c 'bundle remove --for-everyone --purge org.nginx.nginx > /dev/null 2>&1; bundle install --for-everyone --yes /users/lab/org.nginx.nginx.dkv | tail -1'"
+root = true
+expect = "installed org.nginx.nginx"
+[[step]]
+run = "service nginx enable"
+root = true
+# Spark counts it ready once it listens (ADR 0470), which takes seconds
+# on a slow machine.
+[[step]]
+run = "sh -c 'i=0; while [ $i -lt 60 ] && ! service nginx status > /dev/null; do sleep 1; i=$((i + 1)); done; service nginx status'"
+root = true
+expect = "Active: active (running)"
+# A certificate of its own, the account's to read, and the HTTPS server
+# its settings hold turned on, as their comments say.
+[[step]]
+run = '''sh -c 'cd /shared/services/org.nginx.nginx/nginx/conf && openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 1 -subj /CN=lab -keyout key.pem -out cert.pem 2>/dev/null && chown nginx:nginx key.pem cert.pem && sed -i "/^    #server {/,/^    #}/s/^    #/    /" nginx.conf && service nginx reload && echo reloaded' '''
+root = true
+expect = "reloaded"
+# The pages go to the lab account's home, then into the folder nginx reads.
+[[step]]
+host = "sh {here}/../services/copy-file.sh {here}/page.html {machine} {machine-port:22}"
+expect = "copied: page.html"
+[[step]]
+host = "sh {here}/../services/copy-file.sh {here}/flawed.html {machine} {machine-port:22}"
+expect = "copied: flawed.html"
+[[step]]
+run = "sh -c 'mkdir -p /shared/www && cp /users/lab/page.html /shared/www/lab-browser.html && cp /users/lab/flawed.html /shared/www/lab-browser-flawed.html && chmod 644 /shared/www/lab-browser*.html && echo placed'"
+root = true
+expect = "placed"
+[[step]]
+host = "sh -c 'i=0; while [ $i -lt 60 ] && ! curl -sfk https://{machine}:{machine-port:443}/lab-browser.html > /dev/null; do sleep 1; i=$((i + 1)); done; curl -sfk https://{machine}:{machine-port:443}/lab-browser.html'"
+expect = "The lab can see this page"
+[[step]]
+browser = "browser.mjs"
+port = 443
+[[step]]
+run = "sh -c 'rm -f /shared/www/lab-browser*.html && bundle remove --for-everyone --purge org.nginx.nginx'"
+root = true
+expect = "removed org.nginx.nginx"
