@@ -21,9 +21,11 @@ shut it down cleanly. The *guest-agent* service runs it at each boot
 
 The host talks over the virtio console port that QEMU names
 *org.qemu.guest_agent.0*, which the kernel links from
-_/devices/virtio-ports/org.qemu.guest_agent.0_. On a machine without the
-port, as a computer or a virtual machine whose host gives none, it ends
-at once, saying there is nothing to answer.
+_/devices/virtio-ports/org.qemu.guest_agent.0_ once the host has named
+it. On a machine with a virtio console it waits up to 10 seconds for
+that name, which can come after the service starts; on a machine without
+one, as a computer, it ends at once, saying there is nothing to answer,
+as it does when the host names no such port.
 
 Each request is a JSON object, *{"execute": "guest-ping"}*, with
 *"arguments"* if the command takes any and an *"id"* that the answer

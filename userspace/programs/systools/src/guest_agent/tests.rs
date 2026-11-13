@@ -190,3 +190,21 @@ fn mistakes_are_answered_with_errors() {
     let (answer, _) = ask("{\"execute\": \"guest-nothing\", \"id\": 5}");
     assert_eq!(answer.unwrap()["id"], 5);
 }
+
+#[test]
+fn a_port_named_after_the_start_is_waited_for_and_one_never_named_is_not() {
+    let dir = std::env::temp_dir().join(format!("guest-agent-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let port = dir.join("org.qemu.guest_agent.0");
+    let named = port.clone();
+    let host = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(200));
+        std::fs::write(named, b"").unwrap();
+    });
+    assert!(appears(&port, Duration::from_secs(5)));
+    host.join().unwrap();
+    let started = Instant::now();
+    assert!(!appears(&dir.join("other"), Duration::from_millis(300)));
+    assert!(started.elapsed() >= Duration::from_millis(300));
+    std::fs::remove_dir_all(&dir).unwrap();
+}

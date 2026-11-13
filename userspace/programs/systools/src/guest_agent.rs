@@ -17,8 +17,10 @@
 //! what came before it, as `guest-sync-delimited`'s clients send to begin
 //! afresh. [`answer`] says what each command answers.
 //!
-//! On a machine without the port, the service ends at once: there is
-//! nothing to answer.
+//! On a machine without a virtio console, the service ends at once:
+//! there is nothing to answer. On one with a console, it waits up to
+//! [`PORT_WAIT`] for the port: the kernel links it only once the host has
+//! named it, which can come after the service starts.
 //!
 //! If the host gets no answer, look for the `guest-agent:` lines of the
 //! log, then try the port by hand from the host (guest-agent(8)).
@@ -29,16 +31,24 @@ mod tests;
 use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde_json::{Map, Value, json};
 
 use crate::args::{Arg, Args};
 use crate::util::{self, Fail};
-use crate::{ip, power};
+use crate::{ip, lspci, power};
 
 /// The port QEMU's guest agent channel is, by its name.
 pub const PORT: &str = "/devices/virtio-ports/org.qemu.guest_agent.0";
+
+/// A virtio console's PCI vendor and device, modern and transitional
+/// (virtio 1.2, section 4.1.2.1).
+const VIRTIO_CONSOLE: [(&str, &str); 2] = [("0x1af4", "0x1043"), ("0x1af4", "0x1003")];
+
+/// How long it waits for the host to name its port, on a machine with a
+/// virtio console.
+const PORT_WAIT: Duration = Duration::from_secs(10);
 
 /// The most bytes a request may hold: more is thrown away and refused.
 const MOST: usize = 64 * 1024;
@@ -83,7 +93,7 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
             other => return Err(args.unknown(&other)),
         }
     }
-    if !port.exists() {
+    if !(port.exists() || (has_virtio_console() && appears(&port, PORT_WAIT))) {
         say!("no guest agent channel, {}: nothing to answer", port.display());
         return Ok(0);
     }
@@ -94,6 +104,31 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
         .map_err(|err| util::failed(&port.display(), err))?;
     say!("answering the host on {}", port.display());
     serve(&file, &port)
+}
+
+/// Whether the machine has a virtio console, among the PCI functions the
+/// kernel found.
+fn has_virtio_console() -> bool {
+    let Ok(functions) = std::fs::read_dir(lspci::DEVICES) else { return false };
+    functions.flatten().any(|function| {
+        let read = |name| std::fs::read_to_string(function.path().join(name)).unwrap_or_default();
+        let (vendor, device) = (read("vendor"), read("device"));
+        VIRTIO_CONSOLE.iter().any(|&ids| ids == (vendor.trim(), device.trim()))
+    })
+}
+
+/// Whether `path` is there within `wait`, looking every 50 ms.
+fn appears(path: &Path, wait: Duration) -> bool {
+    let until = Instant::now() + wait;
+    loop {
+        if path.exists() {
+            return true;
+        }
+        if Instant::now() >= until {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
 }
 
 fn help() -> Result<i32, Fail> {

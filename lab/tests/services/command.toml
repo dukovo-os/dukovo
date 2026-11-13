@@ -79,7 +79,7 @@ run = "sh -c 'cp /users/lab/lab-slow.service /system/settings/spark/services/lab
 root = true
 expect = ["lab-slow goes on starting; `service lab-slow status` says how it goes", "exit 130"]
 [[step]]
-run = "sh -c 'service lab-slow status; touch /system/settings/lab-slow-ok'"
+run = "sh -c 'service lab-slow status; status=$?; touch /system/settings/lab-slow-ok; exit $status'"
 root = true
 exit = 3
 expect = "Active: activating (starting as process "
