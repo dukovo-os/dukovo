@@ -20,9 +20,15 @@ use crate::util::{self, Fail, fail, usage};
 /// Spark's control socket.
 pub const CONTROL: &str = "/system/live/spark/control";
 
-/// Sends Spark `request` and returns its answer.
+/// Sends Spark `request` on its control socket and returns its answer.
 pub fn request(request: &str) -> Result<String, Fail> {
-    let mut stream = UnixStream::connect(CONTROL).map_err(|e| util::failed(&CONTROL, e))?;
+    request_at(CONTROL, request)
+}
+
+/// Sends `request` to Spark's socket `socket`, the control socket or
+/// certd's (spark(8)), and returns its answer.
+pub fn request_at(socket: &str, request: &str) -> Result<String, Fail> {
+    let mut stream = UnixStream::connect(socket).map_err(|e| util::failed(&socket, e))?;
     stream.write_all(format!("{request}\n").as_bytes())?;
     let _ = stream.shutdown(Shutdown::Write);
     let mut answer = String::new();

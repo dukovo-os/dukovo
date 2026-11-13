@@ -59,6 +59,9 @@
 //! `audiocd` lists, plays and rips music CDs (ADR 0447); `burn` writes
 //! CDs, DVDs and Blu-ray discs, of data or of audio, and `mkiso` makes a
 //! disc image of a folder (ADR 0449).
+//! `certd` keeps the machine's certificates, which `cert` lists, adds and
+//! removes, and which Spark copies for the services that name them (ADR
+//! 0512).
 //! `bundle` makes, signs, installs and runs bundles, which `bundled`
 //! installs, seals and removes (ADRs 0221 to 0223 and 0225); called by a
 //! name that is no tool's, through a link in a commands folder of
@@ -83,6 +86,8 @@ mod btrfs;
 mod bundled;
 mod bundles;
 mod burn;
+mod cert;
+mod certd;
 mod changes;
 mod cloud;
 mod column;
@@ -233,6 +238,8 @@ const TOOLS: &[(&str, Tool)] = &[
     ("bundle", bundles::main),
     ("bundled", bundled::main),
     ("burn", burn::main),
+    ("cert", cert::main),
+    ("certd", certd::main),
     ("changes", changes::changes),
     ("chgrp", modes::chgrp),
     ("chmod", modes::chmod),

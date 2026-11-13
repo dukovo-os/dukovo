@@ -1,0 +1,13 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+#
+# The certificates boot test's service that names a certificate the test
+# adds later: it does not start until the certificate exists, and then
+# the certificate cannot be removed while this file names it.
+
+service_version = 1
+description = "Holds a certificate added by hand"
+program = "/system/commands/sleep"
+arguments = ["1000000"]
+restart = "never"
+certificates = ["added.example"]

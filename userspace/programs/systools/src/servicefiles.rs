@@ -58,6 +58,31 @@ fn path_of(what: &str) -> Result<PathBuf, Fail> {
     Ok(Path::new(DIR).join(format!("{what}.toml")))
 }
 
+/// Every service file in [`DIR`] that reads, with its override over it, as
+/// the service's name, its file and what it says; one that does not read
+/// is left out, as `service check` reports it.
+pub fn read_all() -> Vec<(String, PathBuf, service::Service)> {
+    let Ok(entries) = fs::read_dir(DIR) else { return Vec::new() };
+    let mut paths: Vec<PathBuf> = entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().is_some_and(|extension| extension == "toml"))
+        .collect();
+    paths.sort();
+    paths
+        .into_iter()
+        .filter_map(|path| {
+            let name = path.file_stem()?.to_str()?.to_string();
+            let text = fs::read_to_string(&path).ok()?;
+            let over = fs::read_to_string(override_path(&path))
+                .ok()
+                .and_then(|over| service::Override::from_toml(&over).ok());
+            let read = service::from_toml_over(&text, over.as_ref()).ok()?;
+            Some((name, path, read))
+        })
+        .collect()
+}
+
 /// The override file of the service file at `path` (ADR 0386):
 /// `settings.d/NAME.toml` beside it.
 fn override_path(path: &Path) -> PathBuf {

@@ -1,0 +1,125 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# certd and cert (ADR 0512), on the machine as it is: certd has made the
+# machine's own certificate, which an ordinary account lists; a service
+# file that names a certificate that does not exist does not start; a chain
+# made on the lab PC without its intermediate is refused by cert add with
+# the issuer's name, and with it, and its authority among the machine's, is
+# added, and cert remove refuses it while a service file names it. Then the
+# clock is set back before the system's making and the machine restarted:
+# certd waits for a right clock and says so, cert check fails with the
+# clock as the reason, and once the clock is right certd makes nothing new.
+about = "certd has made the machine's own certificate; a service file naming a certificate that does not exist does not start; cert add refuses a chain without its intermediate, naming the issuer, adds the whole chain, and cert remove refuses it while a service file names it; after a restart with the clock set back certd waits and says so, cert check fails with the clock as the reason, and nothing new is made once the clock is right (ADR 0512)"
+time = "6m"
+fresh = true
+host_needs = ["openssl", "scp"]
+
+# What a run before may have left, put back.
+[[step]]
+run = '''sh -c 'service lab-certs stop > /dev/null 2>&1; rm -f /system/settings/spark/services/lab-certs.toml; cert remove lab-certs.example > /dev/null 2>&1; ln -sf /system/resources/certificates/ca-certificates.crt /system/settings/ssl/certs/ca-certificates.crt; service timed enable > /dev/null 2>&1; echo clean' '''
+root = true
+expect = "clean"
+
+# certd is ready: the machine's own certificate is there, with 800 days, and
+# an ordinary account sees it, in a folder it reads.
+[[step]]
+run = "cert check"
+[[step]]
+run = '''sh -c 'cert list; echo "state $(stat -c %a /system/state)"' '''
+expect = ["this-machine", "self-signed", "state 755"]
+expect_not = "ran out"
+
+# A service file that names a certificate that does not exist.
+[[step]]
+run = '''sh -c 'printf "service_version = 1\ndescription = \"x\"\nprogram = \"/system/commands/sleep\"\narguments = [\"1000\"]\nrestart = \"never\"\ncertificates = [\"lab-certs.example\"]\n" > /system/settings/spark/services/lab-certs.toml' '''
+root = true
+[[step]]
+run = '''sh -c 'service lab-certs start 2>&1; echo "rc=$?"' '''
+root = true
+expect = ["its certificate lab-certs.example does not exist", "rc=1"]
+
+# A chain without its intermediate is refused, naming the issuer; the root
+# among the machine's authorities (a file of its own in place of the link
+# to the system's, as dukovo-certificates(7) says) and the whole chain, it
+# is added.
+[[step]]
+host = "sh {here}/certificates-chain.sh {machine} {machine-port:22}"
+expect = "copied: the chain of lab-certs.example"
+[[step]]
+run = "cert add lab-certs.example --chain /users/lab/lab-certs-leaf.pem --key /users/lab/lab-certs-leaf.key"
+root = true
+exit = 1
+expect = "the chain stops at CN=Lab-Intermediate"
+[[step]]
+run = '''sh -c 'cd /system/settings/ssl/certs && cat /system/resources/certificates/ca-certificates.crt /users/lab/lab-certs-root.pem > roots.new && mv roots.new ca-certificates.crt && cert add lab-certs.example --chain /users/lab/lab-certs-chain.pem --key /users/lab/lab-certs-leaf.key' '''
+root = true
+expect = "lab-certs.example added: lab-certs.example, runs out "
+[[step]]
+run = "cert list"
+expect = ["lab-certs.example", "added", "lab-certs"]
+# The service file names it now, so it stays.
+[[step]]
+run = '''sh -c 'service lab-certs start 2>&1; cert remove lab-certs.example 2>&1; echo "rc=$?"' '''
+root = true
+expect = ["lab-certs names it in /system/settings/spark/services/lab-certs.toml", "rc=1"]
+# Without the file, it goes.
+[[step]]
+run = '''sh -c 'service lab-certs stop > /dev/null 2>&1; rm /system/settings/spark/services/lab-certs.toml; cert remove lab-certs.example' '''
+root = true
+expect = "lab-certs.example removed"
+[[step]]
+run = '''sh -c 'ln -sf /system/resources/certificates/ca-certificates.crt /system/settings/ssl/certs/ca-certificates.crt; rm -f /users/lab/lab-certs-*; echo restored' '''
+root = true
+expect = "restored"
+
+# The clock set back before the system's making, and the machine
+# restarted with it: timed, which would set it right, stays off.
+[[step]]
+run = '''sh -c 'cert show this-machine | grep SHA-256 > /users/lab/lab-certs-fingerprint; date -u +%s > /users/lab/lab-certs-time; service timed disable && timedatectl set-time "2025-01-01 00:00:00" && echo clock-set-back' '''
+root = true
+expect = "clock-set-back"
+[[step]]
+run = "sh -c '(sleep 2; reboot) > /dev/null 2>&1 &'"
+root = true
+[[step]]
+serial = "asked to restart the machine"
+[[step]]
+serial = "Boot complete."
+[[step]]
+wait = "ready"
+# certd waits, and says so.
+[[step]]
+run = '''sh -c 'i=0; while [ $i -lt 60 ] && ! log certd | grep -q "[c]ertificates wait until it is set"; do sleep 2; i=$((i + 1)); done; log certd | grep "[c]ertificates wait until it is set"' '''
+root = true
+expect = "the clock is wrong (2025-01-01); certificates wait until it is set"
+[[step]]
+run = "cert check"
+exit = 1
+expect = "the clock is wrong"
+# The machine's certificate is still there to be listed and shown.
+[[step]]
+run = "cert show this-machine"
+expect = "this-machine"
+
+# The clock set right again: the time it was before, and the seconds the
+# clock has run since it was set back (the real-time clock kept counting
+# from 2025-01-01). certd says it looks again, within a minute, and makes
+# nothing new.
+[[step]]
+run = '''sh -c 'before=$(cat /users/lab/lab-certs-time); now=$(date -u +%s); timedatectl set-time "$(date -u -d @$((before + now - 1735689600)) "+%Y-%m-%d %H:%M:%S")" && echo clock-right' '''
+root = true
+expect = "clock-right"
+[[step]]
+run = '''sh -c 'i=0; while [ $i -lt 60 ] && ! log certd | grep -q "[t]he clock is set; looking"; do sleep 2; i=$((i + 1)); done; log certd | grep "[t]he clock is set; looking"' '''
+root = true
+expect = "certd: the clock is set; looking at the certificates"
+[[step]]
+run = "cert check"
+[[step]]
+run = '''sh -c 'cert show this-machine | grep SHA-256 | cmp - /users/lab/lab-certs-fingerprint && echo nothing-new' '''
+expect = "nothing-new"
+[[step]]
+run = '''sh -c 'service timed enable; rm -f /users/lab/lab-certs-*; echo timed-on' '''
+root = true
+expect = "timed-on"

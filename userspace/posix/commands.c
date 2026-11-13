@@ -136,6 +136,8 @@ static const char *const ELSEWHERE[][2] = {
 		{"brailled", "the braille boot test's service: it finds the braille display only that test plugs in"},
 		{"braille", "the braille boot test's: it shows whether brailled found that display"},
 		{"brltty", "the braille boot test's: brailled runs it for that display"},
+		{"cert", "the certificates boot test's: it lists, adds and checks the certificates certd keeps"},
+		{"certd", "the certificates boot test's service: it makes the machine's own certificate and tells Spark"},
 		{"dumps", "the crash-dump boot test's service and command: it saves, lists and shows the dump a panic left, which needs a restart that keeps RAM"},
 		{"alertd", "the monitoring boot test's service: it keeps the alerts and sends them to that test's mail and webhook receivers"},
 		{"alerts", "the monitoring boot test's: it lists, raises, clears and tests alerts through alertd"},

@@ -201,10 +201,13 @@ machine with AMT, an AMD machine and a laptop; see
 | A bundle's service raising alerts (ADR 0485) | alertd serves root's processes and the system's services alone, which covers every shipped service; a bundle's service runs as an account of its own | A need |
 | A certificate authority of its own for a webhook in alerts.toml(5) (ADR 0485) | Webhooks trust the system's roots; a private authority is added to them as dukovo-certificates(7) says | A need |
 | Silencing an alert for a while (ADR 0485) | An alert is told only when it changes, so one that stays does not repeat; `severity` and `cleared` in alerts.toml(5) quiet a channel | A need |
-| A certificate from certd for nginx's sites and for the lab test `services/nginx`, which makes one with openssl meanwhile (ADR 0491) | certd comes with Phase 16 | Phase 16's certd |
+| A certificate for each of nginx's sites: the web console's Add website flow names a certificate for a site and has nginx serve it (ADRs 0491, 0512) | nginx serves its HTTPS server with one certificate, `this-machine` or one added with `cert add`, that its service file names | The web console's Add website flow (C7) |
+| Certificates from an authority on the network, Let's Encrypt and any ACME server: `cert get`, renewal and revoking, HTTP-01 and DNS-01 (ADR 0512) | certd makes the machine's own certificate and keeps ones added by hand; it has no network and no port | Phase 16, PR C1b2, until it merges |
+| A service's choice of being restarted instead of sent SIGHUP when its certificates change (ADR 0512) | Every server Dukovo ships reads its certificates again on SIGHUP: nginx, PostgreSQL and admind | Zero-downtime restarts (A4) |
 | Spark setting a service's `open_files` (RLIMIT_NOFILE); nginx raises its own to the hard limit, 4096, meanwhile (ADRs 0385, 0491) | Service limits | 16a |
 | A service's own log files, turned over: nginx logs to the system's log, and an `access_log` to a file of its own is never turned over (ADR 0491) | Needs timers | 16a |
 | The web console's lab tests run on QEMU in CI for every PR (ADR 0510) | CI runs no lab tests yet; they run on QEMU before each PR, and the console's pages arrive from C3 | admind (Phase 16, PR C2a) |
+| Screenshots of the real web console for dukovo.org, saved by the lab's web-console category at each release: the duke-nas demo data, dark and light, of the boards the site shows (Overview, Services with Show commands, Reliability, Firewall, the phone views and Move to new hardware); then a clickable demo mode of the console (ADR 0510) | The site shows drawn pictures of the console's boards | The console's pages (C3 to C6) for the screenshots; 1.0.0-alpha.1 for the demo mode |
 | A crash dump sent with a problem report, with the person's consent (ADR 0483) | A dump is kept on the machine and sent nowhere; the reports come with the reporting service | 16b, with the problem reports |
 
 ### Phase 17: Go
@@ -336,6 +339,7 @@ machine asks for them.
 | Item | Source |
 | --- | --- |
 | An interface MTU below 1500 from DHCP's option 26 | ADR 0197 |
+| RSA keys made by certd: `this-machine` has an ECDSA P-256 key, since ring makes no RSA keys and every browser takes ECDSA; a certificate with an RSA key added by `cert add` works | ADR 0512 |
 | ENA's low-latency queues; gVNIC's DQO queue format; SFP+ modules; fiber and SerDes gigabit cards | ADR 0197 |
 | Legacy INTx interrupts through `_PRT`, for cards and SD controllers without MSI | ADRs 0197, 0198, 0437 |
 | MSI-X with several queues in driver programs | ADR 0198 |

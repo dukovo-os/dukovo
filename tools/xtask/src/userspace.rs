@@ -145,6 +145,8 @@ pub const STD_LINKS: &[(&str, &str)] = &[
     ("system/commands/bundle", "systools"),
     ("system/commands/bundled", "systools"),
     ("system/commands/burn", "systools"),
+    ("system/commands/cert", "systools"),
+    ("system/commands/certd", "systools"),
     ("system/commands/changes", "systools"),
     ("system/commands/chgrp", "systools"),
     ("system/commands/chmod", "systools"),

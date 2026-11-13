@@ -3,13 +3,16 @@
 
 # nginx from the catalog, on the machine's own network card (ADR 0491):
 # installed for everyone and enabled, it serves the lab PC over HTTP and,
-# with a certificate of its own, over HTTPS; the lab PC then keeps 16
-# requests at a time coming for 20 seconds while the machine has nginx
-# reload its settings five times, and no request may go without its page.
-# The certificate is one openssl makes until certd gives them.
-about = "nginx from the catalog serves the lab PC over HTTP and HTTPS, and reloads under load lose no request (ADR 0491)"
-time = "5m"
-host_needs = ["curl", "scp"]
+# with the machine's own certificate, which certd keeps and Spark gives it
+# (ADR 0512), over HTTPS to a client that trusts that certificate alone,
+# with no -k; the lab PC then keeps 16 requests at a time coming for 20
+# seconds while the machine has nginx reload its settings five times, and
+# again while the machine makes the certificate anew twice, 10 seconds
+# apart, and no request may go without its page. The certificate nginx
+# serves afterwards is the new one.
+about = "nginx from the catalog serves the lab PC over HTTP and, with the machine's own certificate from certd, over HTTPS to a client that trusts it; reloads and renewals of the certificate under load lose no request (ADRs 0491, 0512)"
+time = "6m"
+host_needs = ["curl", "scp", "ssh", "openssl"]
 
 [[step]]
 host = "sh {here}/copy-bundle.sh org.nginx.nginx {machine} {machine-port:22}"
@@ -31,16 +34,20 @@ expect = "Active: active (running)"
 [[step]]
 host = "curl -s http://{machine}:{machine-port:80}/"
 expect = "Welcome to nginx!"
-# A certificate of its own, the account's to read, and the HTTPS server
-# its settings hold turned on, as their comments say.
+# The machine's own certificate, which certd made, named in nginx's service
+# file, and the HTTPS server its settings hold turned on, as their comments
+# say; a restart has Spark copy the certificate for nginx.
 [[step]]
-run = '''sh -c 'cd /shared/services/org.nginx.nginx/nginx/conf && openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 1 -subj /CN=lab -keyout key.pem -out cert.pem 2>/dev/null && chown nginx:nginx key.pem cert.pem && sed -i "/^    #server {/,/^    #}/s/^    #/    /" nginx.conf && service nginx reload && echo reloaded' '''
+run = '''sh -c 'sed -i "/^secrets = /a certificates = [\"this-machine\"]" /system/settings/spark/services/nginx.toml && cd /shared/services/org.nginx.nginx/nginx/conf && sed -i "/^    #server {/,/^    #}/s/^    #/    /" nginx.conf && service nginx restart && echo restarted' '''
 root = true
-expect = "reloaded"
+expect = "restarted"
 [[step]]
-wait = "2s"
+run = "sh -c 'i=0; while [ $i -lt 60 ] && ! service nginx status > /dev/null; do sleep 1; i=$((i + 1)); done; service nginx status'"
+root = true
+expect = "Active: active (running)"
+# The lab PC trusts that certificate and no other, and the machine's name.
 [[step]]
-host = "curl -sk https://{machine}:{machine-port:443}/"
+host = "sh {here}/nginx-cert.sh trust {machine} {machine-port:22} {machine-port:443}"
 expect = "Welcome to nginx!"
 # Five reloads, two seconds apart, by a shell of the machine's own so that
 # the step returns, while the lab PC asks.
@@ -55,6 +62,21 @@ expect = "lost 0"
 run = '''sh -c 'log nginx | grep -q "\"GET /?n=" && echo requests-logged' '''
 root = true
 expect = "requests-logged"
+# Two renewals of the certificate, 10 seconds apart, by a shell of the
+# machine's own, while the lab PC asks: Spark has nginx read the new
+# certificate on SIGHUP, which loses no request. The machine's own
+# certificate is the one nginx serves afterwards.
+[[step]]
+run = "sh -c '(sleep 3; cert renew this-machine; sleep 10; cert renew this-machine) > /dev/null 2>&1 &'"
+root = true
+[[step]]
+host = "sh {here}/nginx-load.sh {machine} {machine-port:80} {machine-port:443}"
+expect = "lost 0"
+# The second SIGHUP comes 10 seconds after the first: wait for it, which
+# polls the fingerprint nginx serves up to a bound.
+[[step]]
+host = "sh -c 'i=0; while [ $i -lt 30 ]; do sh {here}/nginx-cert.sh served {machine} {machine-port:22} {machine-port:443} && exit 0; sleep 2; i=$((i + 1)); done; sh {here}/nginx-cert.sh served {machine} {machine-port:22} {machine-port:443}'"
+expect = "serving the fingerprint cert show gives"
 [[step]]
 run = "bundle remove --for-everyone --purge org.nginx.nginx"
 root = true

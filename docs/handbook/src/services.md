@@ -354,23 +354,23 @@ nginx reads only what its service may: its bundle, its data folder,
 
 ### HTTPS
 
-The HTTPS server in `nginx.conf` needs a certificate and its key beside
-the settings, readable by the account nginx. Until certd gives
-certificates, make one of its own with openssl, which browsers warn
-about, for a test or a private network, or copy in one a certificate
-authority gave you:
+The HTTPS server in `nginx.conf` needs a certificate and its key. certd
+keeps them and Spark gives nginx a copy: name the machine's own
+certificate, `this-machine`, or one you added with `cert add`, in
+nginx's service file, remove the `#` signs before the second `server`
+block of `nginx.conf`, and restart nginx:
 
 ```
-$ conf=/shared/services/org.nginx.nginx/nginx/conf
-$ elevate openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 \
-    -nodes -days 365 -subj /CN=$(hostname) \
-    -keyout $conf/key.pem -out $conf/cert.pem
-$ elevate chown nginx:nginx $conf/key.pem $conf/cert.pem
+$ elevate service edit nginx          # add: certificates = ["this-machine"]
+$ elevate nano /shared/services/org.nginx.nginx/nginx/conf/nginx.conf
+$ elevate service nginx restart
 ```
 
-Then remove the `#` signs before the second `server` block of
-`nginx.conf` and reload. It serves HTTP/1.1 and
-HTTP/2 over TLS 1.2 and 1.3.
+It serves HTTP/1.1 and HTTP/2 over TLS 1.2 and 1.3. A renewed
+certificate reaches it without a restart or a lost request. Browsers
+warn of `this-machine` until told to trust its fingerprint; the
+[Certificates](certificates.md) chapter has that, adding a certificate
+from an authority, and what to do when something is wrong.
 
 ### A reverse proxy
 
@@ -489,7 +489,10 @@ requirepass a-long-password
 Valkey's protected mode refuses clients from elsewhere while the default
 user has no password. Clients then give it with `AUTH`, or `valkey-cli
 -a`. For TLS, `valkey.conf` has the lines to turn on, with a certificate
-and key the account `valkey` reads, as for nginx's HTTPS.
+and key the account `valkey` reads, such as ones made with `openssl req`
+and given to that account with `chown`. Valkey does not read its
+certificates again on SIGHUP, which Spark sends when a certificate of
+certd's changes, so it names none of them.
 
 What differs from a Linux distribution:
 

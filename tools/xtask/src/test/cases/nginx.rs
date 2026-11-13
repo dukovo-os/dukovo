@@ -13,13 +13,14 @@
 //! nginx -t` asks, in her pane, whether nginx may run with root's access,
 //! then checks the settings. Settings that do not read fail it, and leave
 //! nginx as it was on a reload, serving, with the wrong line in its log,
-//! and it serves again after a restart, over the settings it copied. With a
-//! certificate of its own made with openssl and the HTTPS server of its
-//! settings turned on, `service nginx reload` has it serve HTTPS too; three
-//! more reloads while 300 requests come over HTTP and HTTPS lose none of
-//! them. `log nginx` holds a line for each request, and its process
-//! number's file is the account's; set to log requests to a file of its
-//! data folder's logs folder, it does. The power button ends it.
+//! and it serves again after a restart, over the settings it copied. With
+//! the machine's own certificate from certd(8) named in its service file
+//! and the HTTPS server of its settings turned on, a restart has it serve
+//! HTTPS too, to a client that trusts that certificate and no other; three
+//! reloads while 300 requests come over HTTP and HTTPS lose none of them.
+//! `log nginx` holds a line for each request, and its process number's
+//! file is the account's; set to log requests to a file of its data
+//! folder's logs folder, it does. The power button ends it.
 
 use super::super::*;
 
@@ -35,6 +36,9 @@ const FILE: &str = "org.nginx.nginx-1.30.6.dkv";
 /// Its settings' folder, in its account's data folder.
 const CONF: &str = "/shared/services/org.nginx.nginx/nginx/conf";
 
+/// Its service file, which bundled wrote.
+const SERVICE_FILE: &str = "/system/settings/spark/services/nginx.toml";
+
 /// The folder of the log files of its own its settings may name.
 const LOGS: &str = "/shared/services/org.nginx.nginx/nginx/logs";
 
@@ -47,7 +51,7 @@ const DISKS: &[Disk] = &[
 /// The test.
 pub const CASE: Case = Case {
     name: "nginx",
-    about: "nginx, the catalog's web server, serves (ADR 0491): installed for everyone from its .dkv file and enabled, it runs as its own account and serves its welcome page, then a page in /shared/www, and a 404 for a PHP page, never its code; elevate nginx -t asks in her pane and checks its settings; settings that do not read fail it and leave it serving, with the wrong line in its log; it serves after a restart; with a certificate of its own it serves HTTPS too, and reloads while 300 requests come over HTTP and HTTPS lose none; log nginx holds the requests, and a file of its own does when its settings say",
+    about: "nginx, the catalog's web server, serves (ADR 0491): installed for everyone from its .dkv file and enabled, it runs as its own account and serves its welcome page, then a page in /shared/www, and a 404 for a PHP page, never its code; elevate nginx -t asks in her pane and checks its settings; settings that do not read fail it and leave it serving, with the wrong line in its log; it serves after a restart; with the machine's own certificate from certd named in its service file it serves HTTPS too, to a client that trusts that certificate, and reloads while 300 requests come over HTTP and HTTPS lose none; log nginx holds the requests, and a file of its own does when its settings say",
     firmware: Firmware::Uefi,
     media: Media::Usb,
     // As a normal boot: Spark starts the services, bundled among them.
@@ -150,25 +154,27 @@ fn nginx(vm: &mut Vm, case: &Case) -> Result<(), String> {
          -s http://localhost/ && break; sleep 1; done",
     )?;
     vm.expect_screen(&["restart 0", "<p>Hello from Dukovo</p>"])?;
-    // HTTPS: a certificate of its own, the account's to read, and the
-    // HTTPS server of its settings turned on, as their comments say.
+    // HTTPS: the machine's own certificate, which certd keeps, named in
+    // its service file, and the HTTPS server of its settings turned on,
+    // as their comments say. A restart has Spark copy the certificate.
     answer_prompt(
         vm,
         "$",
         &format!(
-            "clear; elevate sh -c 'cd {CONF} && openssl req -x509 -newkey ec -pkeyopt \
-             ec_paramgen_curve:P-256 -nodes -days 365 -subj /CN=dukovo -keyout key.pem -out \
-             cert.pem 2>/dev/null && chown nginx:nginx key.pem cert.pem && sed -i \
-             \"/^    #server {{/,/^    #}}/s/^    #/    /\" nginx.conf && service nginx reload' && \
-             echo reloaded"
+            "clear; elevate sh -c 'sed -i \"/^secrets = /a certificates = [\\\"this-machine\\\"]\" \
+             {SERVICE_FILE} && cd {CONF} && sed -i \"/^    #server {{/,/^    #}}/s/^    #/    /\" \
+             nginx.conf && service nginx restart' && echo restarted"
         ),
     )?;
-    vm.expect_screen(&["reloaded"])?;
+    vm.expect_screen(&["restarted"])?;
+    // The client trusts that certificate, which names this machine and
+    // localhost, and no other: no -k.
     answer_prompt(
         vm,
         "$",
-        "clear; for i in 1 2 3 4 5; do curl -sk -o /dev/null -w 'https %{http_code}\\n' \
-         https://localhost/ && break; sleep 1; done",
+        "clear; cert show this-machine --pem > /tmp/machine.pem; for i in 1 2 3 4 5; do curl -s \
+         --cacert /tmp/machine.pem -o /dev/null -w 'https %{http_code}\\n' https://localhost/ && \
+         break; sleep 1; done",
     )?;
     vm.expect_screen(&["https 200"])?;
     // Reloads under load: 300 requests at 50 a second, over HTTP and
@@ -176,7 +182,7 @@ fn nginx(vm: &mut Vm, case: &Case) -> Result<(), String> {
     answer_prompt(
         vm,
         "$",
-        "clear; curl -sk --rate 50/s --out-null -w '%{http_code}\\n' \
+        "clear; curl -s --cacert /tmp/machine.pem --rate 50/s --out-null -w '%{http_code}\\n' \
          '{http,https}://localhost/?n=[1-150]' > /tmp/codes & sleep 1; elevate sh -c 'for i in 1 \
          2 3; do service nginx reload; sleep 1; done'; wait; echo \"served $(grep -c '^200$' \
          /tmp/codes) of $(grep -c . /tmp/codes)\" > /tmp/served",
