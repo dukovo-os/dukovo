@@ -34,6 +34,9 @@ wait = "2s"
 host = "sh -c 'end=$(($(date +%s) + 20)); n=0; while [ $(date +%s) -lt $end ]; do curl -sk --parallel --parallel-max 16 -o /dev/null \"http://$0:$1/?n=[1-400]\" > /dev/null 2>&1 || true; n=$((n + 1)); done; echo load-rounds $n' {machine} {machine-port:80} {machine-port:443}"
 expect = "load-rounds"
 [[step]]
+run = "sh -c 'watchdog; cat /proc/uptime 2>/dev/null || uptime; dmesg | grep -i -e watchdog -e \"crash log\" -e spark: | head -20; echo \"diag\"-done'"
+expect = "diag-done"
+[[step]]
 host = "ping -c 5 -W 1 {machine}"
 expect = " 0% packet loss"
 [[step]]
