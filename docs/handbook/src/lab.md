@@ -330,14 +330,14 @@ with SHA-1, CBC or MD5. The lab's `docs/test-files.md` describes the
 
 ## Tests with the lab PC as a peer
 
-File sharing, WireGuard and Kerberos need a computer at the other
-end. A `host` step runs its command on the lab PC itself, in a
+File sharing, WireGuard, Kerberos and syslog need a computer at the
+other end. A `host` step runs its command on the lab PC itself, in a
 folder of the test's own, so a test stands that end up with the lab
 PC's own programs and checks Dukovo against them both ways: Dukovo's
 `smb` and `nfs` against the lab PC's Samba and NFS-Ganesha, the lab
 PC's `smbclient` and kernel NFS client against Dukovo's `smbd` and
-`nfsd`, `wgd` against the lab PC's WireGuard, and `kinit` against the
-lab PC's MIT KDC. A server started with `background = true` runs until the test
+`nfsd`, `wgd` against the lab PC's WireGuard, `logforward` against the lab
+PC's rsyslog over TLS, and `kinit` against the lab PC's MIT KDC. A server started with `background = true` runs until the test
 ends, which stops it. `{peer}` is the lab PC's address as the machine
 sees it, `{port:NAME}` a free port of the lab PC's for one of the test's
 servers, and `{machine}` with `{machine-port:N}` where the lab PC

@@ -48,6 +48,12 @@ On the other computer, *nc -klu 6666* shows what comes, and so does a
 syslog server listening on that port. The datagrams are not encrypted
 or authenticated: name a target on a network that may read the log.
 
+netlog is for the boot's first seconds and for a machine that hangs.
+*logforward*(8) is for everything after: it sends the log that logd keeps
+to syslog servers as RFC 5424 messages, over TLS if the server takes it,
+and sends again what a server missed while it was away, which netlog
+cannot, as it keeps nothing.
+
 # SIGNALS
 
 *SIGHUP*
@@ -80,5 +86,5 @@ the network driver; and IPv6 targets (Phase 12d of the roadmap).
 
 # SEE ALSO
 
-*netlog*(5), *dukovo-boot*(7), *dmesg*(1), *logd*(8), *logger*(1),
-*dukovo-privacy*(7), *service*(8), *spark*(8), *systools*(1)
+*netlog*(5), *logforward*(8), *dukovo-boot*(7), *dmesg*(1), *logd*(8),
+*logger*(1), *dukovo-privacy*(7), *service*(8), *spark*(8), *systools*(1)

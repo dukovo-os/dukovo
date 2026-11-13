@@ -119,6 +119,8 @@ const PEER_WANTS: &[(&str, &str)] = &[
     ("python3", "python3"),
     ("age", "age"),
     ("restic", "restic"),
+    ("rsyslogd", "rsyslog rsyslog-gnutls"),
+    ("openssl", "openssl"),
 ];
 
 /// How a lab image lets the lab in: the lab's public key, for SSH, and

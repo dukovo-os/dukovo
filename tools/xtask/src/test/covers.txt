@@ -304,6 +304,11 @@ live-dvd userspace/programs/system-release/ userspace/programs/systools/src/rele
 live-uefi image/grub/live.cfg.in tools/xtask/src/release.rs userspace/programs/system-release/
 live-uefi userspace/programs/systools/src/releases.rs
 lockdep kernel/lib/lockdep/ kernel/lib/sync/
+log-forward kernel/net/ ports/openssl/ userspace/defaults/spark/services/logforward.toml
+log-forward userspace/posix/logforwardtest.c userspace/programs/systools/src/logd.rs
+log-forward userspace/programs/systools/src/logforward.rs userspace/programs/systools/src/logforward/
+log-forward userspace/programs/systools/src/logger.rs userspace/programs/systools/src/netd.rs
+log-forward userspace/programs/systools/src/tls.rs userspace/spark/tests/services/forward/
 logging kernel/lib/klog/ userspace/defaults/log/ userspace/posix/logtest.c
 logging userspace/programs/systools/src/dmesg.rs userspace/programs/systools/src/log.rs
 logging userspace/programs/systools/src/logd.rs userspace/programs/systools/src/logger.rs

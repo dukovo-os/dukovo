@@ -1,0 +1,21 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+#
+# A service of the log-forward boot test: logforward(8) as the system's
+# own file has it, which sends the log to the syslog servers that machine
+# a's logforwardtest runs, as the settings machine b's writes name.
+
+service_version = 1
+description = "Log to syslog servers"
+program = "/system/commands/logforward"
+arguments = ["run"]
+order = 25
+restart = "always"
+
+[limits]
+memory = "16M"
+
+[permissions]
+network.outbound = true
+files.read = ["/system/state/log"]
+files.read-write = ["/system/state/logforward", "/system/live/logforward"]

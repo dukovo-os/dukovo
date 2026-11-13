@@ -173,6 +173,11 @@ firewall and WireGuard.
 - **`netlog` sends the log to another computer** over UDP as it is
   written, to debug a machine whose screen shows nothing
   ([ADR 0196](https://github.com/dukovo-os/dukovo/blob/main/docs/adr/0196-netlog-sends-the-kernel-log-over-udp.md)).
+- **`logforward` sends the log to syslog servers** as RFC 5424 messages
+  over TLS, TCP or UDP, from the log's own files, keeping its place in
+  them for each server so that a server that was away is sent what it
+  missed
+  ([ADR 0482](https://github.com/dukovo-os/dukovo/blob/main/docs/adr/0482-the-log-goes-to-syslog-servers-from-logforward-with-the-log-s-own-files-as-its-queue.md)).
 - **IPv6, with nothing to set**: each card makes its link-local address
   and, from what its routers advertise, a stable address that is the
   same on the same network at every boot but tells no network its MAC
@@ -630,7 +635,10 @@ line (dukovo-boot(7)), or name the target in `/system/settings/netlog`
 (netlog(5)) to keep it. netlog(8) sends every record from the start of
 boot, each as one line with its priority and time, as a syslog server
 takes them. The log goes unencrypted, so send it only across a network
-you trust with it.
+you trust with it. For the log of a machine that runs, to a syslog
+server that keeps it, over TLS, and sent again after the server was
+away, use logforward(8) (see
+[Logs, monitoring and troubleshooting](logs.md)).
 
 ## Trying the network services
 

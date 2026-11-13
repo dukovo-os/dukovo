@@ -1,0 +1,34 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+#
+# Sends the system's log to syslog servers as RFC 5424 messages over TLS,
+# TCP or UDP: logforward(8) reads the log's day files in
+# /system/state/log, keeps each server's place in them on the disk, and so
+# sends what a server missed while it was away. The servers are the ones
+# /system/settings/logforward.toml names (logforward.toml(5)); with none it
+# sends nothing (ADR 0482).
+#
+# service.toml(5) explains each setting. `service check logforward`
+# checks this file, and `service edit logforward` checks it as you save.
+
+service_version = 1
+description = "Log to syslog servers"
+program = "/system/commands/logforward"
+arguments = ["run"]
+# After resolved, which finds the servers' addresses.
+order = 25
+# Started again whenever it ends: always, on-failure or never.
+restart = "always"
+
+[limits]
+memory = "16M"
+
+# What it holds beyond what every service reads (service.toml(5)): the
+# network to reach the servers, the log's day files, which it reads and
+# never writes (every service reads /system/settings, where the
+# destinations' certificates and keys are), its places in the log, and the
+# folder its status goes in.
+[permissions]
+network.outbound = true
+files.read = ["/system/state/log"]
+files.read-write = ["/system/state/logforward", "/system/live/logforward"]

@@ -72,6 +72,13 @@ starts, when a day begins, after each 64 MiB it writes, when it reads
 its settings again (SIGHUP, which *service logd reload* sends) and when
 *logtrim*(8) asks. Each removal is a security event.
 
+*logforward*(8) sends the log to syslog servers, as RFC 5424 messages: a
+service of its own that reads these day files, never writes them, and
+keeps its place in them for each server, so that a server that was away
+is sent what it missed. A day that logd trims before a server has it is
+lost to that server, and *logforward* says so. *netlog*(8) sends the
+kernel's records over UDP as they are written, instead.
+
 logd flushes what it wrote to the disk 5 seconds after the first record
 that is not on it yet, and when it is stopped. Started again, it goes
 on from the record after the last one of this boot that it kept, so
@@ -127,4 +134,5 @@ exits with 1 if it cannot start.
 # SEE ALSO
 
 *log*(1), *journalctl*(1), *logger*(1), *logtrim*(8), *log*(5), *dmesg*(1),
-*spark*(8), *service*(8), *radix-kernel-log*(2), *systools*(1)
+*logforward*(8), *netlog*(8), *spark*(8), *service*(8),
+*radix-kernel-log*(2), *systools*(1)
