@@ -1097,7 +1097,7 @@ impl Xhci {
     /// ring before it is done. Linux does so every half ring; the
     /// interrupt stays held off until [`Xhci::events_read`].
     pub fn events_progress(&mut self) {
-        self.interrupter.write32(rt::ERDP, self.events.dequeue_phys() as u32);
+        write64(&self.interrupter, rt::ERDP, self.events.dequeue_phys());
     }
 
     /// Tells the controller how far the events have been read, and that
@@ -1113,10 +1113,12 @@ impl Xhci {
         // Events that came meanwhile interrupt again once EHB is cleared.
         self.op.write32(op::USBSTS, op::EINT);
         self.interrupter.write32(rt::IMAN, rt::IP | rt::IE);
-        // The segment is one page, so the high half, written at the start,
-        // never changes.
+        // Both halves are written, as Linux does, although the high half
+        // never changes: Intel's controllers take a 64-bit register's new
+        // value only when its high half is written, and with the low half
+        // alone the ring fills and its events come only now and then.
         self.read = false;
-        self.interrupter.write32(rt::ERDP, self.events.dequeue_phys() as u32 | rt::EHB);
+        write64(&self.interrupter, rt::ERDP, self.events.dequeue_phys() | u64::from(rt::EHB));
     }
 
     /// Gives the controller `command` and waits for it to finish; the
