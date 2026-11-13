@@ -223,6 +223,7 @@ type Tool = fn(&mut Args) -> Result<i32, Fail>;
 
 /// The tools, by name, in order.
 const TOOLS: &[(&str, Tool)] = &[
+    ("acme-answer", cert::acme::answer::main),
     ("alertd", alertd::main),
     ("alerts", alerts::command::main),
     ("audio", sound::main),

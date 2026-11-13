@@ -125,7 +125,8 @@ fn at(seconds: i64) -> Result<OffsetDateTime, String> {
 /// If it cannot be made or written.
 pub fn renew(store: &Store, lock: &Lock, host: &str, now: i64) -> Result<Details, String> {
     let pair = make(host, now)?;
-    let files = Files { chain: &pair.chain, key: &pair.key, kind: Kind::SelfSigned, made: now };
+    let files =
+        Files { chain: &pair.chain, key: &pair.key, kind: Kind::SelfSigned, made: now, acme: None };
     store.install(lock, NAME, &files)?;
     let chain = inspect::chain_of(&pair.chain)?;
     inspect::details(&chain[0])
@@ -354,7 +355,13 @@ mod tests {
         let store = Store::at(&scratch.0.join("certificates"), std::time::Duration::from_secs(5));
         let (one, other) = (make("duke-nas", NOW).unwrap(), make("duke-nas", NOW).unwrap());
         let lock = store.lock().unwrap();
-        let files = Files { chain: &one.chain, key: &other.key, kind: Kind::SelfSigned, made: NOW };
+        let files = Files {
+            chain: &one.chain,
+            key: &other.key,
+            kind: Kind::SelfSigned,
+            made: NOW,
+            acme: None,
+        };
         store.install(&lock, NAME, &files).unwrap();
         assert!(load(&store).unwrap().is_some());
         assert!(load_with_key(&store).unwrap_err().contains("not the certificate's"));

@@ -13,6 +13,11 @@
 //!   .NAME.6/                     the one before, kept for readers still in it
 //! ```
 //!
+//! A certificate from an authority also has its directory, names, challenge
+//! and key type in `certificate.toml`, and when certd renews it (ADR 0513).
+//! Those it changes in place, `renew_at` and `revoked`, are written beside
+//! the file and renamed over it, so a reader sees the old file or the new.
+//!
 //! A reader (`cert list`, Spark's copy) takes no lock: it follows the link,
 //! and the link only ever leads to a generation whose files are all
 //! written. Writers (certd, `cert add`, `cert remove`, `cert renew`) hold
@@ -39,6 +44,9 @@ use crate::util;
 /// What the writers' lock is called, in the store.
 const LOCK_FILE: &str = ".lock";
 
+/// The folder of the accounts at authorities, beside the store's.
+const ACCOUNTS: &str = "accounts";
+
 /// What certd knows of a certificate beyond its files.
 pub const META_FILE: &str = "certificate.toml";
 
@@ -58,6 +66,8 @@ pub enum Kind {
     SelfSigned,
     /// An administrator added it with `cert add`.
     Added,
+    /// An ACME authority issued it, as `cert get` asked.
+    Acme,
 }
 
 impl Kind {
@@ -66,15 +76,79 @@ impl Kind {
         match self {
             Kind::SelfSigned => "self-signed",
             Kind::Added => "added",
+            Kind::Acme => "acme",
         }
     }
 }
 
-/// `certificate.toml`: the kind, and when it was made or added.
+/// How an authority was shown that the machine holds a name.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Challenge {
+    /// An answer served on port 80, which certd can give again unattended.
+    Http01,
+    /// A TXT record an administrator made by hand: certd cannot renew it.
+    DnsManual,
+}
+
+impl Challenge {
+    /// The word `certificate.toml` uses.
+    pub fn word(self) -> &'static str {
+        match self {
+            Challenge::Http01 => "http-01",
+            Challenge::DnsManual => "dns-manual",
+        }
+    }
+}
+
+/// The key type of a certificate from an authority.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KeyKind {
+    EcdsaP256,
+    EcdsaP384,
+}
+
+impl KeyKind {
+    /// The word `certificate.toml` and `cert get --key` use.
+    pub fn word(self) -> &'static str {
+        match self {
+            KeyKind::EcdsaP256 => "ecdsa-p256",
+            KeyKind::EcdsaP384 => "ecdsa-p384",
+        }
+    }
+}
+
+/// What certd knows of a certificate from an authority, beyond its files:
+/// what it takes to get another like it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Acme {
+    /// The authority's directory URL.
+    pub directory: String,
+    /// The DNS names asked for, the first its common name.
+    pub names: Vec<String>,
+    pub challenge: Challenge,
+    pub key: KeyKind,
+    /// The authority's profile, if one was asked for.
+    pub profile: Option<String>,
+    /// When certd renews it, in seconds since 1970, once it has said.
+    pub renew_at: Option<i64>,
+    /// Whether it was revoked: certd does not renew it.
+    pub revoked: bool,
+}
+
+/// `certificate.toml`: the kind, when it was made or added, and for a
+/// certificate from an authority what it was asked for.
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Meta {
     kind: String,
     made: toml::value::Datetime,
+    directory: Option<String>,
+    names: Option<Vec<String>>,
+    challenge: Option<String>,
+    key: Option<String>,
+    profile: Option<String>,
+    renew_at: Option<toml::value::Datetime>,
+    revoked: Option<bool>,
 }
 
 /// What a writer puts in a new generation.
@@ -86,6 +160,8 @@ pub struct Files<'a> {
     pub kind: Kind,
     /// When it is made or added, in seconds since 1970.
     pub made: i64,
+    /// What an authority was asked for, for [`Kind::Acme`] and no other.
+    pub acme: Option<&'a Acme>,
 }
 
 /// A certificate as the store holds it, without its key.
@@ -95,6 +171,8 @@ pub struct Stored {
     pub kind: Kind,
     /// When certd made it or it was added, in seconds since 1970.
     pub made: i64,
+    /// What an authority was asked for, if it issued the certificate.
+    pub acme: Option<Acme>,
     /// `fullchain.pem`.
     pub chain: Vec<u8>,
 }
@@ -124,6 +202,52 @@ impl Store {
     /// The folder of the store.
     pub fn dir(&self) -> &Path {
         &self.dir
+    }
+
+    /// The folder of the accounts at authorities, beside the store's
+    /// (ADR 0513).
+    pub fn accounts(&self) -> PathBuf {
+        self.dir.parent().unwrap_or(&self.dir).join(ACCOUNTS)
+    }
+
+    /// The text of account file `file` of the accounts folder, if there
+    /// is one.
+    ///
+    /// # Errors
+    ///
+    /// If the file is there and cannot be read.
+    pub fn account(&self, file: &str) -> Result<Option<Vec<u8>>, String> {
+        let path = self.accounts().join(file);
+        match fs::read(&path) {
+            Ok(text) => Ok(Some(text)),
+            Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(err) => Err(failed(&path, &err)),
+        }
+    }
+
+    /// Writes account file `file`, 0600 in a folder that is 0700, unless
+    /// there is one: whether it was written. The key in it is the account's.
+    ///
+    /// # Errors
+    ///
+    /// If the folder or the file cannot be made or written.
+    pub fn add_account(&self, _lock: &Lock, file: &str, text: &str) -> Result<bool, String> {
+        let folder = self.accounts();
+        fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(&folder)
+            .map_err(|err| failed(&folder, &err))?;
+        fs::set_permissions(&folder, fs::Permissions::from_mode(0o700))
+            .map_err(|err| failed(&folder, &err))?;
+        let path = folder.join(file);
+        match write_new(&path, 0o600, text) {
+            Ok(()) => {}
+            Err(_) if path.exists() => return Ok(false),
+            Err(why) => return Err(why),
+        }
+        sync_dir(&folder)?;
+        Ok(true)
     }
 
     /// Takes the writers' lock, waiting for whoever holds it, and makes
@@ -223,9 +347,9 @@ impl Store {
         let folder = self.dir.join(service::certificate_generation(name, generation));
         let chain = read(&folder.join(CERTIFICATE_FILES[0]))?;
         let meta = read(&folder.join(META_FILE))?;
-        let (kind, made) = parse_meta(&meta)
+        let (kind, made, acme) = parse_meta(&meta)
             .map_err(|why| format!("{}: {why}", folder.join(META_FILE).display()))?;
-        Ok(Stored { name: name.to_string(), kind, made, chain })
+        Ok(Stored { name: name.to_string(), kind, made, acme, chain })
     }
 
     /// Where certificate `name`'s files are, through its link.
@@ -302,6 +426,34 @@ impl Store {
         Ok(())
     }
 
+    /// Changes what certificate `name`, from an authority, says of what it
+    /// was asked for, in the generation the link leads to: the new file is
+    /// written beside `certificate.toml` and renamed over it.
+    ///
+    /// # Errors
+    ///
+    /// If there is no such certificate, it is not from an authority, or the
+    /// file cannot be written.
+    pub fn set_acme(&self, _lock: &Lock, name: &str, acme: &Acme) -> Result<(), String> {
+        let stored = self.get(name)?;
+        if stored.kind != Kind::Acme {
+            return Err(format!("{name} is not a certificate from an authority"));
+        }
+        let generation =
+            self.generation(name)?.ok_or_else(|| format!("there is no certificate {name}"))?;
+        let folder = self.dir.join(service::certificate_generation(name, generation));
+        let new = folder.join(format!("{META_FILE}.new"));
+        match fs::remove_file(&new) {
+            Ok(()) => {}
+            Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+            Err(err) => return Err(failed(&new, &err)),
+        }
+        write_new(&new, 0o644, &meta_text(stored.kind, stored.made, Some(acme)))?;
+        let meta = folder.join(META_FILE);
+        fs::rename(&new, &meta).map_err(|err| failed(&meta, &err))?;
+        sync_dir(&folder)
+    }
+
     /// The numbers of the generations of `name` the folder holds, whether
     /// a link leads to them or not.
     fn generations(&self, name: &str) -> Result<Vec<u64>, String> {
@@ -345,29 +497,112 @@ impl Store {
 /// Makes the generation folder `folder` and writes the files into it.
 fn write_generation(folder: &Path, files: &Files<'_>) -> Result<(), String> {
     make_dir(folder)?;
-    let meta = format!(
-        "kind = \"{}\"\nmade = {}\n",
-        files.kind.word(),
-        util::time_text(files.made, "%FT%TZ", true)
-    );
+    let meta = meta_text(files.kind, files.made, files.acme);
     write_new(&folder.join(CERTIFICATE_FILES[0]), 0o644, files.chain)?;
     write_new(&folder.join(CERTIFICATE_FILES[1]), 0o600, files.key)?;
     write_new(&folder.join(META_FILE), 0o644, &meta)?;
     sync_dir(folder)
 }
 
-/// The kind and time `certificate.toml`'s `text` says.
-fn parse_meta(text: &[u8]) -> Result<(Kind, i64), String> {
+/// `certificate.toml` for a certificate of kind `kind`, made at time
+/// `made`, with what an authority was asked for if `acme` has it.
+fn meta_text(kind: Kind, made: i64, acme: Option<&Acme>) -> String {
+    let time = |seconds| util::time_text(seconds, "%FT%TZ", true);
+    let mut text = format!("kind = \"{}\"\nmade = {}\n", kind.word(), time(made));
+    let Some(acme) = acme else { return text };
+    let names: Vec<String> = acme.names.iter().map(|name| quoted(name)).collect();
+    text.push_str(&format!("directory = {}\n", quoted(&acme.directory)));
+    text.push_str(&format!("names = [{}]\n", names.join(", ")));
+    text.push_str(&format!("challenge = \"{}\"\n", acme.challenge.word()));
+    text.push_str(&format!("key = \"{}\"\n", acme.key.word()));
+    if let Some(profile) = &acme.profile {
+        text.push_str(&format!("profile = {}\n", quoted(profile)));
+    }
+    if let Some(renew_at) = acme.renew_at {
+        text.push_str(&format!("renew_at = {}\n", time(renew_at)));
+    }
+    if acme.revoked {
+        text.push_str("revoked = true\n");
+    }
+    text
+}
+
+/// `text` as a TOML string, in quotes.
+fn quoted(text: &str) -> String {
+    let mut quoted = String::from("\"");
+    for character in text.chars() {
+        match character {
+            '"' => quoted.push_str("\\\""),
+            '\\' => quoted.push_str("\\\\"),
+            '\n' => quoted.push_str("\\n"),
+            '\r' => quoted.push_str("\\r"),
+            '\t' => quoted.push_str("\\t"),
+            control if control.is_control() => {
+                quoted.push_str(&format!("\\u{:04X}", u32::from(control)));
+            }
+            other => quoted.push(other),
+        }
+    }
+    quoted.push('"');
+    quoted
+}
+
+/// The kind, time and what an authority was asked for, as
+/// `certificate.toml`'s `text` says.
+fn parse_meta(text: &[u8]) -> Result<(Kind, i64, Option<Acme>), String> {
     let text = std::str::from_utf8(text).map_err(|_| "it is not UTF-8 text".to_string())?;
     let meta: Meta = toml::from_str(text).map_err(|err| err.message().to_string())?;
+    let time = |datetime: &toml::value::Datetime| {
+        tuf::time::parse(&datetime.to_string())
+            .ok_or_else(|| format!("`{datetime}` is not a time in UTC"))
+    };
     let kind = match meta.kind.as_str() {
         "self-signed" => Kind::SelfSigned,
         "added" => Kind::Added,
+        "acme" => Kind::Acme,
         other => return Err(format!("its kind `{other}` is not one certd knows")),
     };
-    let made = tuf::time::parse(&meta.made.to_string())
-        .ok_or_else(|| format!("`{}` is not a time in UTC", meta.made))?;
-    Ok((kind, made))
+    let made = time(&meta.made)?;
+    if kind != Kind::Acme {
+        let beyond = [
+            ("directory", meta.directory.is_some()),
+            ("names", meta.names.is_some()),
+            ("challenge", meta.challenge.is_some()),
+            ("key", meta.key.is_some()),
+            ("profile", meta.profile.is_some()),
+            ("renew_at", meta.renew_at.is_some()),
+            ("revoked", meta.revoked.is_some()),
+        ];
+        if let Some((key, _)) = beyond.iter().find(|(_, there)| *there) {
+            return Err(format!("`{key}` belongs to a certificate from an authority"));
+        }
+        return Ok((kind, made, None));
+    }
+    let needs = |what: &str| format!("a certificate from an authority needs `{what}`");
+    let directory = meta.directory.clone().ok_or_else(|| needs("directory"))?;
+    let names =
+        meta.names.clone().filter(|names| !names.is_empty()).ok_or_else(|| needs("names"))?;
+    let challenge = match meta.challenge.as_deref().ok_or_else(|| needs("challenge"))? {
+        "http-01" => Challenge::Http01,
+        "dns-manual" => Challenge::DnsManual,
+        other => return Err(format!("its challenge `{other}` is not one certd knows")),
+    };
+    let key = match meta.key.as_deref().ok_or_else(|| needs("key"))? {
+        "ecdsa-p256" => KeyKind::EcdsaP256,
+        "ecdsa-p384" => KeyKind::EcdsaP384,
+        other => return Err(format!("its key type `{other}` is not one certd knows")),
+    };
+    let renew_at = meta.renew_at.as_ref().map(time).transpose()?;
+    let acme = Acme {
+        directory,
+        names,
+        challenge,
+        key,
+        profile: meta.profile.clone(),
+        renew_at,
+        revoked: meta.revoked.unwrap_or(false),
+    };
+    Ok((kind, made, Some(acme)))
 }
 
 fn read(path: &Path) -> Result<Vec<u8>, String> {
@@ -423,7 +658,7 @@ mod tests {
     }
 
     fn files<'a>(chain: &'a str, key: &'a str) -> Files<'a> {
-        Files { chain, key, kind: Kind::Added, made: 1_800_000_000 }
+        Files { chain, key, kind: Kind::Added, made: 1_800_000_000, acme: None }
     }
 
     fn install(store: &Store, name: &str, chain: &str) -> u64 {
@@ -596,10 +831,113 @@ mod tests {
     fn certificate_toml_says_the_kind_and_the_time() {
         assert_eq!(
             parse_meta(b"kind = \"self-signed\"\nmade = 2026-11-13T15:00:00Z\n").unwrap(),
-            (Kind::SelfSigned, 1_794_582_000)
+            (Kind::SelfSigned, 1_794_582_000, None)
         );
         assert!(parse_meta(b"kind = \"acme\"\nmade = 2026-11-13T15:00:00Z\n").is_err());
         assert!(parse_meta(b"kind = \"added\"\n").is_err());
         assert!(parse_meta(&[0xff, 0xfe]).is_err());
+    }
+
+    fn acme() -> Acme {
+        Acme {
+            directory: "https://acme-v02.api.letsencrypt.org/directory".into(),
+            names: vec!["example.com".into(), "www.example.com".into()],
+            challenge: Challenge::Http01,
+            key: KeyKind::EcdsaP256,
+            profile: None,
+            renew_at: None,
+            revoked: false,
+        }
+    }
+
+    #[test]
+    fn certificate_toml_of_a_certificate_from_an_authority_round_trips() {
+        let plain = acme();
+        let text = meta_text(Kind::Acme, 1_794_582_000, Some(&plain));
+        assert_eq!(
+            text,
+            "kind = \"acme\"\nmade = 2026-11-13T15:00:00Z\n\
+             directory = \"https://acme-v02.api.letsencrypt.org/directory\"\n\
+             names = [\"example.com\", \"www.example.com\"]\nchallenge = \"http-01\"\n\
+             key = \"ecdsa-p256\"\n"
+        );
+        assert_eq!(
+            parse_meta(text.as_bytes()).unwrap(),
+            (Kind::Acme, 1_794_582_000, Some(plain.clone()))
+        );
+        let full = Acme {
+            challenge: Challenge::DnsManual,
+            key: KeyKind::EcdsaP384,
+            profile: Some("classic".into()),
+            renew_at: Some(1_800_000_000),
+            revoked: true,
+            ..plain
+        };
+        let text = meta_text(Kind::Acme, 1_794_582_000, Some(&full));
+        assert!(
+            text.ends_with(
+                "profile = \"classic\"\nrenew_at = 2027-01-15T08:00:00Z\nrevoked = true\n"
+            )
+        );
+        assert_eq!(parse_meta(text.as_bytes()).unwrap().2, Some(full));
+    }
+
+    #[test]
+    fn certificate_toml_refuses_keys_it_does_not_know_or_a_kind_does_not_have() {
+        let head = "kind = \"acme\"\nmade = 2026-11-13T15:00:00Z\n";
+        let body = "directory = \"https://a.example/dir\"\nnames = [\"a.example\"]\n\
+                    challenge = \"http-01\"\nkey = \"ecdsa-p256\"\n";
+        assert!(parse_meta(format!("{head}{body}").as_bytes()).is_ok());
+        let unknown = parse_meta(format!("{head}{body}colour = \"red\"\n").as_bytes());
+        assert!(unknown.unwrap_err().contains("unknown field `colour`"));
+        let missing = parse_meta(format!("{head}names = [\"a.example\"]\n").as_bytes());
+        assert_eq!(missing.unwrap_err(), "a certificate from an authority needs `directory`");
+        let empty = body.replace("[\"a.example\"]", "[]");
+        assert!(parse_meta(format!("{head}{empty}").as_bytes()).unwrap_err().contains("`names`"));
+        let word = body.replace("http-01", "tls-alpn-01");
+        assert!(
+            parse_meta(format!("{head}{word}").as_bytes()).unwrap_err().contains("tls-alpn-01")
+        );
+        let key = body.replace("ecdsa-p256", "rsa-2048");
+        assert!(parse_meta(format!("{head}{key}").as_bytes()).unwrap_err().contains("rsa-2048"));
+        let added = "kind = \"added\"\nmade = 2026-11-13T15:00:00Z\nrevoked = true\n";
+        assert!(parse_meta(added.as_bytes()).unwrap_err().contains("`revoked` belongs"));
+    }
+
+    #[test]
+    fn a_string_in_certificate_toml_is_escaped() {
+        assert_eq!(quoted("a\"b\\c\nd\u{1}"), "\"a\\\"b\\\\c\\nd\\u0001\"");
+        let tricky = Acme { profile: Some("a\"\nrevoked = true".into()), ..acme() };
+        let text = meta_text(Kind::Acme, 1_794_582_000, Some(&tricky));
+        assert_eq!(parse_meta(text.as_bytes()).unwrap().2, Some(tricky));
+    }
+
+    #[test]
+    fn what_an_authority_was_asked_for_is_kept_and_changed_in_place() {
+        let scratch = Scratch::new("store-acme");
+        let store = store(&scratch);
+        let lock = store.lock().unwrap();
+        let first = acme();
+        let files = Files {
+            chain: "chain",
+            key: "key",
+            kind: Kind::Acme,
+            made: 1_800_000_000,
+            acme: Some(&first),
+        };
+        store.install(&lock, "example.com", &files).unwrap();
+        assert_eq!(store.get("example.com").unwrap().acme, Some(first.clone()));
+        let later = Acme { renew_at: Some(1_805_000_000), ..first };
+        store.set_acme(&lock, "example.com", &later).unwrap();
+        let stored = store.get("example.com").unwrap();
+        assert_eq!((stored.kind, stored.acme), (Kind::Acme, Some(later)));
+        assert_eq!(folders(&store), [".example.com.1", ".lock", "example.com"]);
+        assert_eq!(fs::read_dir(store.dir().join(".example.com.1")).unwrap().count(), 3);
+        drop(lock);
+        install(&store, "added.example", "chain");
+        let lock = store.lock().unwrap();
+        let refused = store.set_acme(&lock, "added.example", &acme()).unwrap_err();
+        assert_eq!(refused, "added.example is not a certificate from an authority");
+        assert_eq!(store.accounts(), scratch.0.join("accounts"));
     }
 }

@@ -5,7 +5,7 @@ certd(8) "Dukovo" "Dukovo Manual"
 
 # NAME
 
-certd - keep the machine's own certificate and watch the others
+certd - keep the machine's own certificate, renew the ones from an authority and watch the others
 
 # SYNOPSIS
 
@@ -16,8 +16,9 @@ certd - keep the machine's own certificate and watch the others
 certd keeps the certificates that *cert*(8) lists, in
 _/system/state/certd/certificates_ (ADR 0512). Spark runs it as the
 *certd* service, after *timed*(8), with the place it keeps them in and
-the folder of its socket to Spark read-only (*spark*(8),
-*service.toml*(5)). It takes no argument.
+the folder of its socket to Spark read-only, the network to reach an
+authority and port 80 to answer it (*spark*(8), *service.toml*(5)). It
+takes no argument.
 
 The machine's own certificate is *this-machine*, which certd makes for
 the services that name it, such as the web console and *nginx*: an
@@ -55,6 +56,12 @@ machines do not all wake together, certd looks at the certificates:
   and critical when 7 days or fewer are left or once the certificate
   has run out. The line says to add its new version with *cert add*
   _name_ *--replace*. With nothing to tell, the notice is removed.
+- For each certificate that *cert get* got by HTTP (*cert*(8)), it
+  renews it when its day has come (*Renewal*, below). A certificate
+  that *cert get* got with *--dns* is told as one added by hand is, at
+  21 days and again at 7 days left, with the line saying to run
+  *elevate cert get* _name_ *--dns* again, since certd cannot add the
+  TXT records.
 
 A clock that is before the system's making is wrong: a machine whose
 battery is flat boots with 1970 on it. certd makes and judges no
@@ -65,6 +72,45 @@ reason, so the service is not ready until then.
 
 A look at which a certificate could not be made is repeated 5 minutes
 later.
+
+# RENEWAL
+
+certd renews a certificate from an authority at a day it chooses and
+keeps in the certificate's _certificate.toml_ as *renew_at*, which
+*cert list* and *cert show* tell. It asks the authority for the window
+in which it suggests renewing (ACME renewal information, ARI, RFC 9773),
+naming the certificate by its authority key identifier and serial
+number, and picks a time at random inside the window, so that the
+machines of a site do not all ask on the same minute; a window that has
+begun is cut short to start now. A time already kept stays while it is
+inside the window; one the window no longer holds, as when the authority
+asks for certificates to be replaced sooner, is replaced by a new pick.
+The authority says when to ask again, and certd does not ask before: an
+hour at the least and a day at the most, kept in memory, so that a restart
+asks once more. An authority that has no renewal information has the
+certificate renewed when two thirds of its life are gone, which is 30
+days before a certificate of 90 days runs out and 15 before one of 45.
+
+When the day has come, certd gets a new certificate for the same names,
+by the same means, as *cert get* does with the key type and the profile
+the certificate was got with, a new key, and the account kept in
+_/system/state/certd/accounts_. The order names the certificate it
+replaces, which the authority counts as a renewal for its rate limits.
+The new certificate is installed, Spark copies it for the services that
+name it and sends each a SIGHUP, and certd logs one line with the day it
+now runs out. It listens on port 80 for the minutes the authority's check
+takes, which the right to listen the service holds opens only while a
+socket is bound (the firewall still decides who gets through, and a
+service that holds the port needs no rule); where nginx holds the port,
+certd writes the answers into _/system/live/certd/acme-challenge_ for
+nginx to serve, as *cert*(8) says.
+
+A renewal that fails is logged with the reason in words and tried again
+at the next look. From 14 days left, the sign-in notice says that it
+could not be renewed and when the certificate runs out, with a
+notification, critical from 7 days. A certificate revoked with *cert
+revoke* is not renewed, and the notice says to get a new one with *cert
+get*.
 
 # READINESS
 
@@ -99,7 +145,16 @@ _/system/state/certd/certificates_
 	_/var_ is on Linux.
 
 _/system/state/certd/certificates/.lock_
-	Held while a certificate is written, by certd and by *cert*(8).
+	Held while a certificate is written, by certd and by *cert*(8), and
+	not while an authority is asked.
+
+_/system/state/certd/accounts_
+	The account at each authority (*cert*(8)).
+
+_/system/live/certd/acme-challenge_
+	The answers to an authority's check, one file a token, which certd
+	puts here while an order runs when nginx holds port 80, and takes
+	away afterwards.
 
 _/system/live/spark/certd/socket_
 	Spark's socket for certd, through which it asks for a copy
@@ -117,11 +172,13 @@ _/system/settings/spark/services/certd.toml_
 
 # LIMITS
 
-Not yet: certificates from an authority on the network (ACME), which
-make a certificate for a name the machine is reached by on the internet
-without a person adding it; and RSA keys, which certd does not make
-(ring makes none, and every browser takes ECDSA), though one added by
-hand with *cert add* works.
+Not yet: certificates proved by DNS that renew by themselves, which
+need the DNS provider's own interface; External Account Binding, which
+some authorities ask for; TLS-ALPN-01; certificates for IP addresses;
+and RSA keys, which certd does not make (ring makes none, and every
+browser takes ECDSA), though one added by hand with *cert add* works.
+certd does not ask Spark whether nginx runs, so when port 80 is taken it
+takes nginx to hold it.
 
 # SEE ALSO
 

@@ -369,6 +369,16 @@ run = "smb ls -o user=alice,password=alice-share-pass //{peer}:{port:smb}/share"
 expect = "from-lab-pc.txt"
 ```
 
+The ACME test (`services/acme`) has the lab PC run Pebble, Let's Encrypt's
+own test authority, with its DNS server. `lab/pebble/kit.sh` builds the
+two programs from one release of Pebble, named in the script with the
+SHA-256 of the source it takes from the Go module proxy, with the lab PC's
+Go; it keeps them under `~/.cache/dukovo-lab` (or `DUKOVO_LAB_PEBBLE`) and
+skips the test where it cannot fetch or build them. The test points the
+machine's resolver at that DNS server, so the made-up names it asks
+certificates for resolve, and has the machine trust an authority of the
+test's own for Pebble's address.
+
 The scripts that set the lab PC's side up sit beside the tests that use
 them, as `lab/tests/sharing/samba.sh`, and keep everything in the
 test's folder: they never change the lab PC's own settings or

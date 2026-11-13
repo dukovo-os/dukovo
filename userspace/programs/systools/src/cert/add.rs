@@ -126,7 +126,7 @@ fn read_limited(path: &Path) -> Result<Text, String> {
 }
 
 /// Steps 2 to 5, on the chain file and the key file.
-fn check_texts(
+pub(super) fn check_texts(
     chain: &Text,
     key: &Text,
     untrusted: bool,
@@ -430,7 +430,13 @@ mod tests {
 
     fn put(store: &Store, name: &str, kind: Kind) {
         let lock = store.lock().unwrap();
-        store.install(&lock, name, &Files { chain: "chain", key: "key", kind, made: NOW }).unwrap();
+        store
+            .install(
+                &lock,
+                name,
+                &Files { chain: "chain", key: "key", kind, made: NOW, acme: None },
+            )
+            .unwrap();
     }
 
     #[test]
@@ -503,8 +509,13 @@ mod tests {
         };
         let checked = check(&store, &request, &pki.roots, NOW).unwrap();
         let lock = store.lock().unwrap();
-        let files =
-            Files { chain: &checked.chain, key: &checked.key, kind: Kind::Added, made: NOW };
+        let files = Files {
+            chain: &checked.chain,
+            key: &checked.key,
+            kind: Kind::Added,
+            made: NOW,
+            acme: None,
+        };
         store.install(&lock, "nas.example", &files).unwrap();
         drop(lock);
         let again = check(&store, &request, &pki.roots, NOW).unwrap_err();

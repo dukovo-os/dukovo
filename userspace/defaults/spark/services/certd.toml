@@ -3,9 +3,11 @@
 #
 # Keeps the machine's certificates: certd(8) makes this-machine, the
 # certificate for the machine's own name, and makes it again before it runs
-# out; it keeps the certificates `cert add` stores, tells a person when one
-# is about to run out, and tells Spark, which copies each certificate for
-# the services that name it (ADR 0512). `cert list` shows them.
+# out; it keeps the certificates `cert add` and `cert get` store, renews the
+# ones an ACME authority such as Let's Encrypt issued, tells a person when
+# one is about to run out, and tells Spark, which copies each certificate
+# for the services that name it (ADR 0512, ADR 0513). `cert list` shows
+# them.
 #
 # service.toml(5) explains each setting. `service check certd` checks this
 # file, and `service edit certd` checks it as you save.
@@ -36,8 +38,21 @@ memory = "32M"
 
 # What it holds beyond what every service reads (service.toml(5)): the
 # folder of its socket to Spark, which it only reads, as Spark makes the
-# socket there; the store of the certificates; and the sign-in notices,
-# where it says what needs a person's attention.
+# socket there; the store of the certificates and the accounts at
+# authorities; the sign-in notices, where it says what needs a person's
+# attention; and the folder where it puts the answers to an authority's
+# checks when nginx holds port 80 (nginx's file reads it, as the handbook's
+# Certificates chapter says).
+#
+# To renew a certificate from an authority it connects out to the
+# authority, and it listens on port 80 while it answers the authority's
+# check, which is the only time anything answers there: Spark gives the
+# capability to listen, which opens nothing until a socket is bound, and the
+# firewall (firewall(8)) still decides whether other machines get through.
+# Close it with `firewall deny tcp 80`, and certd renews through nginx or
+# not at all.
 [permissions]
+network.outbound = true
+network.listen = [80]
 files.read = ["/system/live/spark/certd"]
-files.read-write = ["/system/state/certd", "/system/live/sign-in"]
+files.read-write = ["/system/state/certd", "/system/live/sign-in", "/system/live/certd"]

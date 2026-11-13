@@ -103,6 +103,34 @@ lacks. The authorities it checks against are the settings' file of this
 page's first section, so an authority of your own, added as above, is
 trusted there too.
 
+# LET'S ENCRYPT
+
+*cert get* gets a certificate from Let's Encrypt, or from any authority
+that speaks ACME, without a person adding it, and *certd*(8) renews it
+before it runs out:
+
+```
+elevate firewall allow tcp 80
+elevate cert get example.com --name example.com --name www.example.com
+```
+
+The authority checks that the names are the machine's. By default it
+fetches a file from port 80 of each name's address, so each name must
+lead to this machine from the internet (a router needs port 80
+forwarded to it) and the firewall must let it in, which *cert get* says
+before it asks the authority anything. With *--dns* it looks a TXT record
+up, which the command shows and a person adds at the name's DNS
+provider, and which also proves a wildcard name. A certificate got that
+way is not renewed by certd, which warns before it runs out.
+
+The certificate from Let's Encrypt is vouched for by the authorities
+above; one from another authority is vouched for only if its authority
+is among them, and *cert show* says if not. A certificate from an
+authority of your own, such as a company's, is got from its ACME
+address with *--directory*, and trusted by adding its root as above.
+*cert*(8) describes the command, and the handbook's Certificates chapter
+the steps for a site.
+
 # TLS
 
 Dukovo's programs in Rust use rustls on ring for TLS, each linked into

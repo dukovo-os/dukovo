@@ -3,8 +3,8 @@
 
 //! cert(8): the machine's certificates, which certd(8) keeps (ADR 0512).
 //!
-//! `cert list` and `cert show` read the store as anyone may; `add`,
-//! `remove` and `renew` change it, as root, under the store's lock, and tell
+//! `cert list` and `cert show` read the store as anyone may; `add`, `get`,
+//! `remove`, `renew` and `revoke` change it, as root, under the store's lock, and tell
 //! Spark through its control socket, which copies the certificate again for
 //! the services that name it and has them read it. `cert check` is certd's
 //! health check.
@@ -13,16 +13,19 @@
 //! - [`inspect`] reads PEM files and certificates, and checks a chain
 //!   against the system's roots;
 //! - [`machine`] makes `this-machine` and says when it needs making again;
-//! - [`add`] is what `cert add` checks.
+//! - [`add`] is what `cert add` checks;
+//! - [`acme`] gets certificates from an authority, renews and revokes them
+//!   (ADR 0513).
 //!
 //! When it misbehaves, `cert show NAME` names what is wrong with a
 //! certificate's files, `log certd` shows what certd did, `spark`'s own
 //! lines say why a service did not get its copy, and the `certificates` boot
 //! test covers it all.
 
+pub mod acme;
 mod add;
 #[cfg(test)]
-mod fixtures;
+pub(crate) mod fixtures;
 pub mod inspect;
 pub mod machine;
 pub mod store;
@@ -41,6 +44,10 @@ use store::{Files, Kind, Store, Stored};
 /// What a mistake in the command line is told.
 const USAGE: &str = "usage: cert list [--json]\n       cert show NAME [--json] [--pem]\n       \
                      cert add NAME --chain FILE --key FILE [--replace] [--untrusted]\n       \
+                     cert get NAME [--name DNS]... [--dns] [--staging] [--dry-run]\n                \
+                     [--directory URL] [--email ADDRESS] [--agree-terms]\n                \
+                     [--key ecdsa-p256|ecdsa-p384] [--profile PROFILE] [--yes]\n       \
+                     cert revoke NAME [--reason REASON]\n       \
                      cert remove NAME\n       cert renew NAME\n       cert check";
 
 /// How many of a certificate's names `cert list` shows.
@@ -91,6 +98,8 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
         Some("list") => list(args),
         Some("show") => show(args),
         Some("add") => add_certificate(args),
+        Some("get") => get(args),
+        Some("revoke") => revoke(args),
         Some("remove") => remove(args),
         Some("renew") => renew(args),
         Some("check") => check(args),
@@ -159,6 +168,12 @@ struct Summary {
     issuer: String,
     trusted: bool,
     used_by: Vec<String>,
+    /// When certd renews a certificate from an authority, once it has said.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    renews: Option<String>,
+    /// Set for a certificate that was revoked.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    revoked: bool,
 }
 
 fn summary(read: &Certificate, now: i64) -> Summary {
@@ -174,6 +189,13 @@ fn summary(read: &Certificate, now: i64) -> Summary {
         issuer: first.issuer.clone(),
         trusted: read.trust == Trust::Trusted,
         used_by: read.used_by.clone(),
+        renews: read
+            .stored
+            .acme
+            .as_ref()
+            .and_then(|acme| acme.renew_at)
+            .map(|at| util::time_text(at, "%FT%TZ", true)),
+        revoked: read.stored.acme.as_ref().is_some_and(|acme| acme.revoked),
     }
 }
 
@@ -241,7 +263,7 @@ fn list_table(certificates: &[Certificate], now: i64, colour: bool) -> String {
             read.stored.name.clone(),
             read.stored.kind.word().to_string(),
             names,
-            runs_out(first, now),
+            runs_out(first, now) + &renewal_note(&read.stored),
             used_by,
         ]);
     }
@@ -261,6 +283,9 @@ fn list_table(certificates: &[Certificate], now: i64, colour: bool) -> String {
             let padding = " ".repeat(widths[column] - cell.chars().count() + 2);
             if colour && column == 3 && number > 0 && cell.starts_with("ran out") {
                 text.push_str(&format!("\x1b[1;31m{cell}\x1b[0m{padding}"));
+            } else if colour && column == 3 && number > 0 && cell.ends_with(REVOKED) {
+                let (before, word) = cell.split_at(cell.len() - REVOKED.len());
+                text.push_str(&format!("{before}\x1b[1;31m{word}\x1b[0m{padding}"));
             } else {
                 text.push_str(&format!("{cell}{padding}"));
             }
@@ -268,6 +293,22 @@ fn list_table(certificates: &[Certificate], now: i64, colour: bool) -> String {
         text.push('\n');
     }
     text
+}
+
+/// What `list` says of a certificate that is shown revoked.
+const REVOKED: &str = ", revoked";
+
+/// What `list` adds after when a certificate runs out: when certd renews
+/// one from an authority, or that it was revoked.
+fn renewal_note(stored: &Stored) -> String {
+    match &stored.acme {
+        Some(acme) if acme.revoked => REVOKED.to_string(),
+        Some(acme) => match acme.renew_at {
+            Some(at) => format!(", renews {}", util::local_time(at, "%F")),
+            None => String::new(),
+        },
+        None => String::new(),
+    }
 }
 
 /// When a certificate runs out, as `list` says it.
@@ -369,6 +410,16 @@ fn shown_text(read: &Certificate, now: i64, chain_file: &str, key_file: &str) ->
     for (number, details) in read.chain.iter().enumerate() {
         lines.push(("Chain", format!("{}: {}", number + 1, details.subject)));
     }
+    if let Some(acme) = &read.stored.acme {
+        lines.push(("Authority", acme.directory.clone()));
+        lines.push(("Proved by", acme.challenge.word().to_string()));
+        lines.push(("Asked for", format!("{}, {}", acme.names.join(", "), acme.key.word())));
+        if acme.revoked {
+            lines.push(("Revoked", String::from("yes: get a new one with `cert get`")));
+        } else if let Some(at) = acme.renew_at {
+            lines.push(("Renews", util::local_time(at, "%F")));
+        }
+    }
     lines.push((
         "Trusted",
         match read.trust.why_not() {
@@ -443,7 +494,13 @@ fn add_certificate(args: &mut Args) -> Result<i32, Fail> {
     let request = add::Request { name: &name, chain: &chain, key: &key, replace, untrusted };
     let roots = tls::roots(&[], "cert");
     let checked = add::check(&store, &request, &roots, now).map_err(fail)?;
-    let files = Files { chain: &checked.chain, key: &checked.key, kind: Kind::Added, made: now };
+    let files = Files {
+        chain: &checked.chain,
+        key: &checked.key,
+        kind: Kind::Added,
+        made: now,
+        acme: None,
+    };
     store.install(&lock, &name, &files).map_err(fail)?;
     drop(lock);
     println!(
@@ -492,6 +549,83 @@ fn remove(args: &mut Args) -> Result<i32, Fail> {
     Ok(0)
 }
 
+/// `cert get NAME [--name DNS]... [--dns] [--staging] [--dry-run] [--directory URL]
+/// [--email ADDRESS] [--agree-terms] [--key TYPE] [--profile PROFILE] [--yes]`.
+fn get(args: &mut Args) -> Result<i32, Fail> {
+    let mut options = acme::Get {
+        name: String::new(),
+        names: Vec::new(),
+        dns: false,
+        staging: false,
+        dry_run: false,
+        directory: None,
+        email: None,
+        agree_terms: false,
+        key: None,
+        profile: None,
+        yes: false,
+    };
+    let mut name = None;
+    let text = |args: &mut Args| -> Result<String, Fail> {
+        args.value()?.into_string().map_err(|_| usage("an option's value is not text".into()))
+    };
+    while let Some(arg) = args.next()? {
+        match arg {
+            Arg::Long(option) if option == "name" => options.names.push(text(args)?),
+            Arg::Long(option) if option == "dns" => options.dns = true,
+            Arg::Long(option) if option == "staging" => options.staging = true,
+            Arg::Long(option) if option == "dry-run" => options.dry_run = true,
+            Arg::Long(option) if option == "directory" => options.directory = Some(text(args)?),
+            Arg::Long(option) if option == "email" => options.email = Some(text(args)?),
+            Arg::Long(option) if option == "agree-terms" => options.agree_terms = true,
+            Arg::Long(option) if option == "key" => {
+                options.key = Some(acme::key_kind(&text(args)?).map_err(usage)?);
+            }
+            Arg::Long(option) if option == "profile" => options.profile = Some(text(args)?),
+            Arg::Long(option) if option == "yes" => options.yes = true,
+            Arg::Operand(operand) if name.is_none() => name = Some(operand),
+            other => return Err(args.unknown(&other)),
+        }
+    }
+    let Some(name) = name.and_then(|name| name.into_string().ok()) else {
+        return Err(usage("get takes the name of a certificate".into()));
+    };
+    if options.directory.is_some() && options.staging {
+        return Err(usage(
+            "--staging and --directory each name an authority: give one of them".into(),
+        ));
+    }
+    if let Some(email) = &options.email
+        && (!email.contains('@') || email.contains([' ', ',', '?', '&']))
+    {
+        return Err(usage(format!("`{email}` is not an email address")));
+    }
+    options.name = name;
+    acme::get(&options)
+}
+
+/// `cert revoke NAME [--reason REASON]`.
+fn revoke(args: &mut Args) -> Result<i32, Fail> {
+    let (mut name, mut reason) = (None, None);
+    while let Some(arg) = args.next()? {
+        match arg {
+            Arg::Long(option) if option == "reason" => {
+                reason = Some(
+                    args.value()?
+                        .into_string()
+                        .map_err(|_| usage("the reason is not text".into()))?,
+                );
+            }
+            Arg::Operand(operand) if name.is_none() => name = Some(operand),
+            other => return Err(args.unknown(&other)),
+        }
+    }
+    let Some(name) = name.and_then(|name| name.into_string().ok()) else {
+        return Err(usage("revoke takes the name of a certificate".into()));
+    };
+    acme::revoke(&name, reason.as_deref())
+}
+
 /// `cert renew NAME`.
 fn renew(args: &mut Args) -> Result<i32, Fail> {
     let name = one_name(args, "renew")?;
@@ -500,16 +634,23 @@ fn renew(args: &mut Args) -> Result<i32, Fail> {
     let now = now();
     need_clock(now)?;
     let store = Store::system();
-    let lock = store.lock().map_err(fail)?;
     if name != machine::NAME {
-        return Err(fail(match store.generation(&name).map_err(fail)? {
-            None => format!("there is no certificate {name}"),
-            Some(_) => format!(
-                "a certificate added by hand renews where it came from: add its new version \
-                 with `cert add {name} --replace`"
-            ),
-        }));
+        let kind = {
+            let _lock = store.lock().map_err(fail)?;
+            match store.generation(&name).map_err(fail)? {
+                None => return Err(fail(format!("there is no certificate {name}"))),
+                Some(_) => store.get(&name).map_err(fail)?.kind,
+            }
+        };
+        if kind == Kind::Acme {
+            return renew_from_authority(&store, &name, now);
+        }
+        return Err(fail(format!(
+            "a certificate added by hand renews where it came from: add its new version with \
+             `cert add {name} --replace`"
+        )));
     }
+    let lock = store.lock().map_err(fail)?;
     let details = machine::renew(&store, &lock, &util::hostname(), now).map_err(fail)?;
     drop(lock);
     println!(
@@ -518,6 +659,22 @@ fn renew(args: &mut Args) -> Result<i32, Fail> {
         runs_out(&details, now)
     );
     if let Err(why) = tell_spark(power::CONTROL, &name) {
+        eprintln!("cert: {}", spark_warning(&why));
+    }
+    Ok(0)
+}
+
+/// `cert renew` of a certificate from an authority: asks again, now,
+/// whatever certd's time for it is.
+fn renew_from_authority(store: &Store, name: &str, now: i64) -> Result<i32, Fail> {
+    let mut say = |line: &str| println!("{line}");
+    let (details, notes) =
+        acme::renew(store, name, acme::Who::Administrator, now, &mut say).map_err(fail)?;
+    println!("{name} renewed: {}, runs out {}", details.names.join(", "), runs_out(&details, now));
+    for note in &notes {
+        eprintln!("cert: {note}");
+    }
+    if let Err(why) = tell_spark(power::CONTROL, name) {
         eprintln!("cert: {}", spark_warning(&why));
     }
     Ok(0)
@@ -549,7 +706,7 @@ mod tests {
 
     fn certificate(name: &str, kind: Kind, used_by: &[&str], trust: Trust) -> Certificate {
         Certificate {
-            stored: Stored { name: name.into(), kind, made: NOW, chain: Vec::new() },
+            stored: Stored { name: name.into(), kind, made: NOW, acme: None, chain: Vec::new() },
             chain: vec![details_of_known()],
             trust,
             used_by: used_by.iter().map(|service| (*service).to_string()).collect(),
