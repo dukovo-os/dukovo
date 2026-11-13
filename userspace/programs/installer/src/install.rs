@@ -415,8 +415,9 @@ fn copy_system(source: &Source, root: &Path, log: &mut Log) -> Result<(), String
 /// starts the slot, which names the root by its Btrfs UUID (ADR 0307).
 /// The two disks of a mirror have one UUID, so either one's menu finds
 /// the root on whichever disk is there. With `serial_console`, the menu's
-/// Dukovo entries start the kernel with `console=ttyS0`, so that the
-/// system's sign-in is on the serial port too (ADR 0318).
+/// Dukovo entries start the kernel with `console=` for the serial port the
+/// installer runs on, `console=ttyS0` on any other, so that the system's
+/// sign-in is on that port too (ADRs 0318 and 0480).
 fn install_grub(
     parts: &Parts,
     slot: &Path,

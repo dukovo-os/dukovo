@@ -8,8 +8,14 @@
 //! register does not hold a value and turns the console off, so writes cost
 //! nothing there.
 //!
+//! The command line sets it up at the first look at the boot information,
+//! before the kernel logs a line ([`configure`], ADR 0480):
+//! `console=ttyS0,57600n8` gives it Linux's console options, and
+//! `serial-log=` may leave it out of the ports that carry the log, `kdb`
+//! and a panic report, for a device such as a UPS on it.
+//!
 //! It is also the line of the terminal `/devices/ttyS0` (ADR 0318), which
-//! the kernel's `ttys` driver carries: [`start_line`] routes COM1's ISA
+//! the kernel's `serial` thread carries: [`start_line`] routes COM1's ISA
 //! interrupt 4 to a handler that hands each byte received to the driver,
 //! [`line_send`] fills the transmitter's FIFO without waiting for it, and
 //! [`line_set`] sets the speed and the character format a program asks
@@ -21,11 +27,13 @@
 
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
+use radix_hal::cmdline::CommandLine;
 use radix_klog::{Sink, Style};
 use radix_sync::{Once, SpinLock};
+use radix_tty::line::Line;
 
 use super::io::{inb, outb};
-use crate::{acpi, apic, devices, smp};
+use crate::devices;
 
 /// A 16550-compatible UART at a fixed I/O port base.
 #[derive(Clone, Copy)]
@@ -70,6 +78,9 @@ const TX_SPIN_LIMIT: u32 = 100_000;
 const COM1: Serial = Serial { base: 0x3f8 };
 
 static PRESENT: AtomicBool = AtomicBool::new(false);
+/// Whether COM1 carries the kernel log, `kdb` and a panic report, as
+/// `serial-log=` says.
+static LOG: AtomicBool = AtomicBool::new(true);
 /// Serialises whole writes, so lines from different CPUs do not interleave.
 static LOCK: SpinLock<()> = SpinLock::new(());
 /// The bytes the transmitter takes at once: [`FIFO_BYTES`], or 1 without
@@ -147,9 +158,35 @@ pub fn present() -> bool {
     PRESENT.load(Ordering::Relaxed)
 }
 
-/// Writes `text` to COM1, turning `\n` into `\r\n`.
-pub fn write(text: &str) {
+/// Sets COM1 up as the command line `flags` says (ADR 0480): the line of
+/// its last `console=ttyS0,<options>`, and whether it carries the log,
+/// `kdb` and a panic report (`serial-log=`). Called once, at the first
+/// look at the boot information, before the kernel has logged a line, so
+/// that the log goes out at the speed the far end expects. Options it
+/// cannot run are passed over here; the kernel's `main` warns of them.
+pub fn configure(flags: &CommandLine<'_>) {
     if !present() {
+        return;
+    }
+    let options = flags.console_options("ttyS0").flatten();
+    if let Some(registers) =
+        options.and_then(Line::from_console_options).as_ref().and_then(radix_uart::line_registers)
+    {
+        line_set(registers.divisor, registers.control);
+    }
+    LOG.store(flags.carries_log("ttyS0"), Ordering::Relaxed);
+}
+
+/// Whether COM1 exists and carries the kernel log, `kdb` and a panic
+/// report.
+pub fn carries_log() -> bool {
+    present() && LOG.load(Ordering::Relaxed)
+}
+
+/// Writes `text` to COM1, turning `\n` into `\r\n`, if it carries the
+/// log.
+pub fn write(text: &str) {
+    if !carries_log() {
         return;
     }
     // Interrupts stay off while the lock is held, so a handler on this CPU
@@ -168,13 +205,15 @@ pub fn write(text: &str) {
     }
 }
 
-/// A byte received on COM1, if one is waiting.
+/// A byte received on COM1, if one is waiting and it carries the log:
+/// `kdb`'s.
 pub fn read() -> Option<u8> {
-    if present() { COM1.read_byte() } else { None }
+    if carries_log() { COM1.read_byte() } else { None }
 }
 
 /// The kernel log's serial console. While a program has the line's
-/// terminal open the log stays off it, but for a panic's report.
+/// terminal open the log stays off it, but for a panic's report; and none
+/// goes out if `serial-log=` leaves COM1 out.
 pub struct SerialSink;
 
 impl Sink for SerialSink {
@@ -196,15 +235,11 @@ pub fn start_line(byte: fn(u8)) -> Option<&'static str> {
         return None;
     }
     RECEIVED.call_once(|| byte);
-    let Some((vector, _)) = devices::allocate(None, 0, interrupt, 0) else {
-        radix_klog::warn!("Serial: no interrupt vector is free for COM1");
-        return None;
-    };
-    let destination = smp::info(0).map_or(0, |cpu| cpu.hardware_id);
-    let madt = acpi::get().and_then(|acpi| acpi.madt.as_ref());
-    let Some(gsi) = apic::route_isa(madt, IRQ_COM1, vector as u8, destination) else {
-        radix_klog::warn!("Serial: COM1's ISA interrupt {IRQ_COM1} could not be routed");
-        devices::free(vector);
+    let Some((vector, gsi)) = devices::route_isa(IRQ_COM1, interrupt, 0) else {
+        radix_klog::warn!(
+            "Serial: COM1's ISA interrupt {IRQ_COM1} could not be routed: it has another \
+             handler, or no vector is free"
+        );
         return None;
     };
     radix_klog::info!(

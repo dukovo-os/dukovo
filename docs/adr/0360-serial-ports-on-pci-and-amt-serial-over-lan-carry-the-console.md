@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 # 0360. Serial ports on PCI cards and AMT's Serial-over-LAN port carry the console beside COM1
 
-- Status: Accepted
+- Status: Accepted; the ports are terminals named from `ttyS4`, `serial-log=` chooses the log's ports, and each sends the log at its own pace, since [0480](0480-every-16550-is-a-terminal-with-linux-s-name-and-serial-log-chooses-the-log-s-ports.md)
 - Date: 2026-11-03
 
 ## Context

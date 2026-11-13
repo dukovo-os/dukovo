@@ -187,11 +187,14 @@ extern "C" fn radix_arch_entry(magic: u32, info_phys: u32, slide: u64) -> ! {
         panic!("not started by a Multiboot2 boot loader (magic {magic:#x})");
     }
     // A first look at the boot information, through the identity map:
-    // the memory map decides where the direct map goes.
+    // the memory map decides where the direct map goes, and the command
+    // line how COM1 runs, before the kernel logs a line on it (ADR 0480).
     let early = BootInfo::parse(boot_info_bytes(info_phys, 0))
         .unwrap_or_else(|err| panic!("bad boot information: {err}"));
+    let early_flags = CommandLine::new(early.command_line().unwrap_or(""));
+    crate::serial::configure(&early_flags);
     // Trace points record from here when asked to, before anything else.
-    if CommandLine::new(early.command_line().unwrap_or("")).has("trace") {
+    if early_flags.has("trace") {
         radix_klog::trace::set_enabled(true);
     }
     radix_klog::tracepoint!("boot.entry", magic, info_phys);

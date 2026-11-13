@@ -5,9 +5,11 @@
 //! shared with the PC's own serial port in Phase 14, ADR 0318): its
 //! speed, its character size, its parity and stop bits and its flow
 //! control, a [`Line`], read from a Linux `c_cflag` and `c_ospeed`
-//! ([`Line::from_cflag`]). Each serial driver then sets its port as the
-//! line says: a USB adapter through its class's or its maker's requests,
-//! a 16550 through its divisor and line control register.
+//! ([`Line::from_cflag`]), or from the options of the kernel flag
+//! `console=` ([`Line::from_console_options`], Phase 16, ADR 0480). Each
+//! serial driver then sets its port as the line says: a USB adapter
+//! through its class's or its maker's requests, a 16550 through its
+//! divisor and line control register.
 
 /// The bits of a Linux `c_cflag` that say how the line goes.
 pub mod cflag {
@@ -25,6 +27,8 @@ pub mod cflag {
     pub const PARODD: u32 = 0o1000;
     /// The modem lines are lowered on the last close.
     pub const HUPCL: u32 = 0o2000;
+    /// The receiver is on.
+    pub const CREAD: u32 = 0o200;
     /// The modem's carrier is not waited for.
     pub const CLOCAL: u32 = 0o4000;
     /// Mark or space parity.
@@ -122,6 +126,78 @@ pub struct Line {
 }
 
 impl Line {
+    /// 115200 baud, 8 data bits, no parity, one stop bit: the line GRUB
+    /// and the kernel log run a PC's serial ports at unless `console=`
+    /// says otherwise.
+    pub const DEFAULT: Line =
+        Line { rate: 115_200, data_bits: 8, parity: Parity::None, stop: Stop::One, rts_cts: false };
+
+    /// The line Linux's console options say, as `console=ttyS1,57600n8`
+    /// gives them: the speed in bits per second, then optionally the
+    /// parity, `n`, `o` or `e`, the data bits, `7` or `8`, and `r` for RTS
+    /// and CTS flow control, in that order. `None` for a speed Linux has
+    /// no code for, or anything else.
+    pub fn from_console_options(options: &str) -> Option<Line> {
+        let digits = options.find(|c: char| !c.is_ascii_digit()).unwrap_or(options.len());
+        let (rate, rest) = options.split_at(digits);
+        let rate: u32 = rate.parse().ok()?;
+        if rate == 0 || !RATES.iter().any(|&(_, known)| known == rate) {
+            return None;
+        }
+        let mut line = Line { rate, ..Line::DEFAULT };
+        let mut rest = rest.chars().peekable();
+        if let Some(&parity) = rest.peek()
+            && !parity.is_ascii_digit()
+            && parity != 'r'
+        {
+            line.parity = match parity {
+                'n' => Parity::None,
+                'o' => Parity::Odd,
+                'e' => Parity::Even,
+                _ => return None,
+            };
+            rest.next();
+        }
+        if let Some(&bits) = rest.peek()
+            && bits != 'r'
+        {
+            line.data_bits = match bits {
+                '7' => 7,
+                '8' => 8,
+                _ => return None,
+            };
+            rest.next();
+        }
+        match (rest.next(), rest.next()) {
+            (None, _) => {}
+            (Some('r'), None) => line.rts_cts = true,
+            _ => return None,
+        }
+        Some(line)
+    }
+
+    /// The bits of a Linux `c_cflag` that say this line, as
+    /// [`Line::from_cflag`] reads them, without `CREAD` and `CLOCAL`;
+    /// `None` for a speed Linux has no code for.
+    pub fn cflag(&self) -> Option<u32> {
+        let code = RATES.iter().find(|&&(_, rate)| rate == self.rate).map(|&(code, _)| code)?;
+        let mut flags = code | (u32::from(self.data_bits.clamp(5, 8) - 5) << 4);
+        if self.stop != Stop::One {
+            flags |= cflag::CSTOPB;
+        }
+        flags |= match self.parity {
+            Parity::None => 0,
+            Parity::Odd => cflag::PARENB | cflag::PARODD,
+            Parity::Even => cflag::PARENB,
+            Parity::Mark => cflag::PARENB | cflag::CMSPAR | cflag::PARODD,
+            Parity::Space => cflag::PARENB | cflag::CMSPAR,
+        };
+        if self.rts_cts {
+            flags |= cflag::CRTSCTS;
+        }
+        Some(flags)
+    }
+
     /// The line a Linux `c_cflag` says, with `ospeed` the speed in bits per
     /// second if the cflag's code is [`cflag::BOTHER`]; a code Linux does
     /// not have is 9600.

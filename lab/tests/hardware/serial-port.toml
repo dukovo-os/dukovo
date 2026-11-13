@@ -34,7 +34,7 @@ expect = "speed 115200 baud"
 # started it, it ended with 0, and it stays stopped.
 [[step]]
 run = "serial-console"
-expect = "the kernel was not started with console=ttyS0: no serial console"
+expect = "the kernel was not started with console=ttyS<n>: no serial console"
 [[step]]
 run = "service serial-console status"
 root = true

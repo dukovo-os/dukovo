@@ -3,7 +3,7 @@
 
 [package]
 name = "radix-uart"
-description = "16550-compatible serial ports for the Radix kernel: serial cards on PCI such as the ASIX AX99100's, Intel AMT's Serial-over-LAN port, and the registers that set any 16550's line"
+description = "16550-compatible serial ports for the Radix kernel: COM2 to COM4, serial cards on PCI such as the ASIX AX99100's, Intel AMT's Serial-over-LAN port, the console that carries the kernel log to them, and the registers that set any 16550's line"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

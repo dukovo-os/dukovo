@@ -188,6 +188,12 @@ over a BMC's serial-over-LAN, which the board shows as COM1:
 (install-answers(5)). serial-console(8) describes the port's console,
 and `console=ttyS0,9600n8` on the command line runs it at another speed.
 
+An install started with another port's `console=`, such as
+`console=ttyS1` for a BMC's Serial-over-LAN on COM2 or `console=ttyS4`
+for Intel AMT's, keeps that port: the installed system's sign-in is on
+the port the installer ran on. [Supported hardware](hardware.md#serial-ports)
+lists the ports' names.
+
 ## Installing from an answers file
 
 1. Start the computer from the install stick

@@ -390,6 +390,8 @@ dependencies = [
  "radix-smbios",
  "radix-smbus",
  "radix-sync",
+ "radix-tty",
+ "radix-uart",
  "radix-vtd",
  "radix-watchdog",
 ]

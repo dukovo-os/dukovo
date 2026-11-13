@@ -335,6 +335,51 @@ fn lines_are_read_from_cflag() {
 }
 
 #[test]
+fn console_options_give_the_line() {
+    use crate::line::{Line, Parity};
+    assert_eq!(Line::from_console_options("115200n8"), Some(Line::DEFAULT));
+    assert_eq!(Line::from_console_options("115200"), Some(Line::DEFAULT));
+    let nine = Line::from_console_options("9600").unwrap();
+    assert_eq!((nine.rate, nine.data_bits, nine.parity), (9600, 8, Parity::None));
+    let odd = Line::from_console_options("57600o").unwrap();
+    assert_eq!((odd.rate, odd.data_bits, odd.parity), (57600, 8, Parity::Odd));
+    let seven = Line::from_console_options("9600e7").unwrap();
+    assert_eq!((seven.data_bits, seven.parity), (7, Parity::Even));
+    let flow = Line::from_console_options("115200n8r").unwrap();
+    assert!(flow.rts_cts && flow.rate == 115_200);
+    assert!(Line::from_console_options("38400r").unwrap().rts_cts);
+    // A rate above what a 16550 runs at is still a line; its driver says
+    // whether it can run it.
+    assert_eq!(Line::from_console_options("230400").map(|line| line.rate), Some(230_400));
+    for bad in ["", "0", "n8", "12345", "115200x8", "115200n9", "115200n8rr", "fast", "9600 n8"] {
+        assert_eq!(Line::from_console_options(bad), None, "{bad}");
+    }
+}
+
+#[test]
+fn a_line_gives_its_cflag_back() {
+    use crate::line::{B115200, Line, Parity, Stop, cflag};
+    assert_eq!(Line::DEFAULT.cflag(), Some(B115200 | cflag::CSIZE));
+    for line in [
+        Line::DEFAULT,
+        Line { rate: 9600, data_bits: 7, parity: Parity::Even, stop: Stop::Two, rts_cts: true },
+        Line {
+            rate: 300,
+            data_bits: 5,
+            parity: Parity::Mark,
+            stop: Stop::OneAndHalf,
+            ..Line::DEFAULT
+        },
+        Line { rate: 57600, parity: Parity::Space, ..Line::DEFAULT },
+        Line { rate: 1200, parity: Parity::Odd, ..Line::DEFAULT },
+    ] {
+        let flags = line.cflag().unwrap();
+        assert_eq!(Line::from_cflag(flags | cflag::CREAD | cflag::CLOCAL, 0), line);
+    }
+    assert_eq!(Line { rate: 250_000, ..Line::DEFAULT }.cflag(), None);
+}
+
+#[test]
 fn a_raw_line_carries_bytes_as_they_are() {
     // CS8, CREAD and CLOCAL, at 115200 baud.
     let cflag = 0o10002 | 0o60 | 0o200 | 0o4000;

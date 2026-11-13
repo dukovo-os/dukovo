@@ -254,7 +254,7 @@ install-serial userspace/programs/disk/
 install-serial userspace/programs/installer/ userspace/programs/systools/src/efiboot.rs
 install-serial userspace/programs/systools/src/last.rs userspace/programs/systools/src/mkfs.rs
 install-serial userspace/programs/systools/src/rdisk.rs
-install-serial userspace/programs/systools/src/serial_console.rs
+install-serial kernel/radix/src/serial/ userspace/programs/systools/src/serial_console.rs
 install-speech userspace/programs/installer/ userspace/programs/consoled/
 install-speech userspace/programs/systools/src/reader.rs ports/espeak-ng/
 install-uefi image/grub/installed.cfg.in tools/xtask/src/grub.rs tools/xtask/src/grub_theme.rs
@@ -392,7 +392,7 @@ optical-ide kernel/drivers/ide/ kernel/drivers/scsi/ kernel/fs/iso9660/ kernel/f
 optical-ide kernel/radix/src/fs/disk/handed.rs kernel/radix/src/fs/disk/ide.rs kernel/radix/src/fs/disk/optical.rs
 optical-ide userspace/programs/systools/src/eject.rs userspace/programs/systools/src/volumed.rs
 page-fault kernel/mm/
-pci-serial kernel/drivers/uart/
+pci-serial kernel/drivers/uart/ kernel/radix/src/serial/
 posix docs/man/ kernel/lib/posix/ ports/7zip/ ports/bc/ ports/bzip2/ ports/curl/ ports/db1/
 posix ports/diffutils/ ports/file/ ports/git/ ports/grep/ ports/gzip/ ports/iperf3/ ports/jq/
 posix ports/less/ ports/libarchive/ ports/libc-test/ ports/libevent/ ports/libpcap/ ports/locales/
@@ -472,6 +472,8 @@ sd-card-change kernel/fs/fat/ userspace/programs/systools/src/eject.rs userspace
 send-receive kernel/fs/btrfs/ kernel/radix/src/user/files.rs ports/diffutils/ ports/uutils-coreutils/
 send-receive userspace/programs/systools/src/subvolume.rs userspace/programs/systools/src/subvolume/
 send-receive userspace/programs/systools/src/snap.rs userspace/programs/systools/src/facl.rs
+serial-ports kernel/arch/x86_64/src/serial.rs kernel/drivers/uart/ kernel/radix/src/serial/
+serial-ports kernel/radix/src/fs/sysfs.rs userspace/programs/systools/src/serial_console.rs
 service-bundle image/grub/installed.cfg.in tools/xtask/src/bundles.rs tools/xtask/src/grub.rs
 service-bundle tools/xtask/src/grub_theme.rs tools/xtask/src/release.rs userspace/programs/dkv/
 service-bundle userspace/programs/installer/ userspace/programs/manifest/

@@ -75,10 +75,11 @@ pub struct Answers {
     /// choice if not given. Saved for release 0.16, which brings it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub web_console: Option<bool>,
-    /// Whether the installed system keeps a console on the first serial
-    /// port, with `console=ttyS0` on its kernel's command line (ADR
-    /// 0318): its sign-in and the startup-trouble menu show there too. As
-    /// the installer itself runs, on the serial port or not, if not given.
+    /// Whether the installed system keeps a console on a serial port, with
+    /// `console=ttyS0` on its kernel's command line, or the port the
+    /// installer runs on (ADRs 0318 and 0480): its sign-in and the
+    /// startup-trouble menu show there too. As the installer itself runs,
+    /// on a serial port or not, if not given.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub serial_console: Option<bool>,
     /// The screen reader, text size, sticky keys and slow keys of the

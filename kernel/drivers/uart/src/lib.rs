@@ -1,13 +1,14 @@
 // SPDX-FileCopyrightText: 2026 The Dukovo contributors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! 16550-compatible serial ports on PCI for the Radix kernel (ADR 0360):
-//! serial cards, such as those built on the ASIX AX99100, and the
-//! Serial-over-LAN port of Intel's Active Management Technology (AMT),
-//! which a vPro machine's management engine carries over the network.
-//! The kernel makes each one a console beside COM1, for the lab machines
-//! that have no COM1 (see the *Dukovo Test Lab* design): the kernel log
-//! goes to it, and `kdb` reads what is typed on it.
+//! 16550-compatible serial ports for the Radix kernel (ADRs 0360 and
+//! 0480): the PC's COM2 to COM4, serial cards on PCI, such as those
+//! built on the ASIX AX99100, and the Serial-over-LAN port of Intel's
+//! Active Management Technology (AMT), which a vPro machine's management
+//! engine carries over the network. The kernel makes each one a terminal
+//! that programs open, with the name Linux gives it, and those that
+//! `serial-log=` chooses carry the kernel log and `kdb`. COM1 is the
+//! architecture's own, from the kernel's first instructions on.
 //!
 //! [`identify`] says from a PCI function's IDs and class whether it is
 //! one. A function whose class is a serial controller with a
@@ -22,22 +23,28 @@
 //! say.
 //!
 //! [`Uart::probe`] checks that a port answers, through its scratch
-//! register, and programs it the way COM1 is: 115200 baud from the
-//! 1.8432 MHz clock every one of these runs its divisor from (divisor 1),
-//! 8 data bits, no parity, one stop bit, FIFOs on and interrupts off.
-//! What is to be written waits in an [`Output`] ring, whose oldest bytes
-//! give way when it is full, and [`Console`] sends it to every port, a
-//! FIFO's worth at a time, as the ports take it: from a thread that
-//! comes back when they have sent it ([`Console::try_send`]), or at once
-//! for `kdb` and the panic path ([`Console::send_now`]). A port busy for
-//! [`STALL_NS`] is *stalled* and skipped until its transmitter is empty
-//! again: AMT's port may stall this way when no management console has
-//! a Serial-over-LAN session open, and a card's may when its far end
-//! holds it up, and the others must not wait on it.
+//! register, and programs the line it is given ([`line_registers`] makes
+//! one from a terminal's settings or `console=`'s options), with FIFOs on
+//! where it has them and interrupts off. Its other calls are what a
+//! terminal's line needs: [`Uart::transmit`] fills the transmitter
+//! without waiting for it, [`Uart::take_received`] empties the receiver,
+//! and [`Uart::receive_interrupts`] turns its interrupt on, for a port
+//! whose interrupt reaches the kernel.
 //!
-//! [`line_registers`] gives the divisor and the line control register
-//! that set any 16550's line as a terminal's settings say, for the PC's
-//! own COM1 when a program opens it as `/devices/ttyS0` (ADR 0318).
+//! The kernel log waits in an [`Output`] ring, which keeps its newest
+//! bytes, and a [`Console`] sends it to the log ports, each at its own
+//! pace from its own place in the ring, a FIFO's worth at a time: from a
+//! thread that comes back while they still have some to send
+//! ([`Console::send_some`]), or at once for `kdb` and the panic path
+//! ([`Console::send_now`]). No port waits on another: a port at 9600
+//! baud falls behind and skips what gave way in the ring, while those at
+//! 115200 keep up. A port busy for [`STALL_NS`] is *stalled* and skipped
+//! until its transmitter is empty again, as AMT's port may be when no
+//! management console has a Serial-over-LAN session open, and a card's
+//! when its far end holds it up; it then picks up at the last screenful
+//! of the log ([`RESUME_BYTES`]), rather than at the backlog. While a
+//! program has a port open as a terminal, the log stays off it, but for
+//! `kdb`'s words and a panic report.
 //!
 //! The crate is a compartment with no `unsafe` code; its tests run it
 //! against simulated ports.
@@ -72,6 +79,10 @@ pub const STALL_NS: u64 = 100_000_000;
 /// Polls in a row of ports that stay busy, when the clock does not move,
 /// before they are taken as stalled.
 pub const SPIN_LIMIT: u32 = 1_000_000;
+
+/// How much of the newest log a port that takes bytes again after a
+/// stall is sent: about a screenful of lines, 0.2 s at 115200 baud.
+pub const RESUME_BYTES: usize = 2048;
 
 /// ASIX's PCI vendor ID.
 const ASIX: u16 = 0x125b;
@@ -168,7 +179,9 @@ mod reg {
     pub const DATA: u16 = 0;
     /// Interrupt enable, or the divisor's high byte with DLAB set.
     pub const INTERRUPTS: u16 = 1;
-    /// FIFO control (write).
+    /// Interrupt identification (read).
+    pub const IDENTIFY: u16 = 2;
+    /// FIFO control (write), at the same offset.
     pub const FIFO: u16 = 2;
     /// Line control.
     pub const LINE: u16 = 3;
@@ -180,6 +193,27 @@ mod reg {
     pub const SCRATCH: u16 = 7;
 }
 
+/// Interrupt enable: a received byte waits, or the receive FIFO reached
+/// its threshold or has held bytes for four characters' time.
+const INTERRUPTS_RECEIVED: u8 = 1 << 0;
+/// Interrupt identification: set while no interrupt is pending.
+const IDENTIFY_NONE: u8 = 1 << 0;
+/// Interrupt identification: both bits set once the FIFOs are on, which
+/// only a 16550A and later have; a 16550 without the A, whose FIFOs do
+/// not work, sets one.
+const IDENTIFY_FIFOS: u8 = 0xc0;
+/// FIFO control: FIFOs on and both cleared, a receive interrupt at 14
+/// bytes.
+const FIFO_ON: u8 = 0xc7;
+/// Line control: the divisor latch in place of the data and interrupt
+/// enable registers.
+const LINE_DLAB: u8 = 1 << 7;
+/// Modem control: DTR and RTS, which stay raised.
+const MODEM_DTR_RTS: u8 = 0x03;
+/// Modem control: OUT2, which on a PC lets a COM port's interrupt reach
+/// the interrupt controller, and which Linux raises on every port whose
+/// interrupt it takes.
+const MODEM_OUT2: u8 = 1 << 3;
 /// Line status: a received byte is waiting.
 const STATUS_DATA_READY: u8 = 1 << 0;
 /// Line status: the transmitter's holding register, or with FIFOs on its
@@ -187,6 +221,10 @@ const STATUS_DATA_READY: u8 = 1 << 0;
 const STATUS_TX_EMPTY: u8 = 1 << 5;
 /// What a port that no longer answers reads as.
 const GONE: u8 = 0xff;
+
+/// The most bytes [`Uart::discard_received`] reads, should a port read as
+/// always holding one.
+const DISCARD_LIMIT: usize = 256;
 
 /// The clock a 16550's divisor divides, in bits per second: its
 /// 1.8432 MHz crystal over 16.
@@ -207,6 +245,13 @@ pub struct LineRegisters {
     /// bits 0 and 1, two stop bits (one and a half for five-bit
     /// characters) in bit 2, and the parity in bits 3 to 5.
     pub control: u8,
+}
+
+impl LineRegisters {
+    /// 115200 baud, 8 data bits, no parity, one stop bit: the line GRUB
+    /// and the kernel log run, and a port's own until `console=` or a
+    /// program sets another.
+    pub const DEFAULT: LineRegisters = LineRegisters { divisor: 1, control: 0x03 };
 }
 
 /// The registers that set a 16550's line as `line` says (ADR 0318), or
@@ -256,16 +301,20 @@ const LINE_STICK: u8 = 1 << 5;
 pub struct Uart<P> {
     regs: P,
     base: u16,
+    /// The bytes its transmitter takes at once: [`FIFO_BYTES`] with its
+    /// FIFOs on, else 1.
+    fifo: usize,
 }
 
 impl<P: IoPorts> Uart<P> {
     /// The port at `base` in `regs`, if one answers there, programmed for
-    /// 115200 baud, 8N1, FIFOs on, interrupts off.
-    pub fn probe(regs: P, base: u16) -> Option<Uart<P>> {
+    /// `line`, with FIFOs on if it has working ones, interrupts off, and
+    /// DTR and RTS raised.
+    pub fn probe(regs: P, base: u16, line: LineRegisters) -> Option<Uart<P>> {
         if base.checked_add(PORT_SIZE)? > regs.len() {
             return None;
         }
-        let uart = Uart { regs, base };
+        let mut uart = Uart { regs, base, fifo: 1 };
         for pattern in [0x5a, 0xa5] {
             uart.write(reg::SCRATCH, pattern);
             if uart.read(reg::SCRATCH) != pattern {
@@ -273,30 +322,100 @@ impl<P: IoPorts> Uart<P> {
             }
         }
         uart.write(reg::INTERRUPTS, 0x00);
-        uart.write(reg::LINE, 0x80); // DLAB on
-        uart.write(reg::DATA, 0x01); // divisor 1: 1.8432 MHz / 16 = 115200 baud
-        uart.write(reg::INTERRUPTS, 0x00);
-        uart.write(reg::LINE, 0x03); // 8N1, DLAB off
-        uart.write(reg::FIFO, 0xc7); // FIFOs on and cleared, 14-byte threshold
-        uart.write(reg::MODEM, 0x03); // DTR and RTS
+        uart.set_line(line);
+        uart.write(reg::FIFO, FIFO_ON);
+        if uart.read(reg::IDENTIFY) & IDENTIFY_FIFOS == IDENTIFY_FIFOS {
+            uart.fifo = FIFO_BYTES;
+        } else {
+            // An 8250 or 16450 has none; a 16550's do not work.
+            uart.write(reg::FIFO, 0x00);
+        }
+        uart.write(reg::MODEM, MODEM_DTR_RTS);
         Some(uart)
     }
 
-    /// Whether the transmitter takes [`FIFO_BYTES`] more bytes.
+    /// The bytes its transmitter takes at once: [`FIFO_BYTES`] with its
+    /// FIFOs on, else 1.
+    pub fn fifo(&self) -> usize {
+        self.fifo
+    }
+
+    /// Sets its speed and character format; a divisor of 0 is passed
+    /// over.
+    pub fn set_line(&self, line: LineRegisters) {
+        if line.divisor == 0 {
+            return;
+        }
+        let [low, high] = line.divisor.to_le_bytes();
+        self.write(reg::LINE, LINE_DLAB);
+        self.write(reg::DATA, low);
+        self.write(reg::INTERRUPTS, high);
+        self.write(reg::LINE, line.control & !LINE_DLAB);
+    }
+
+    /// Turns its receive interrupt on or off, with OUT2, which a PC's COM
+    /// port needs to pass it on.
+    pub fn receive_interrupts(&self, on: bool) {
+        if on {
+            self.write(reg::MODEM, MODEM_DTR_RTS | MODEM_OUT2);
+            self.write(reg::INTERRUPTS, INTERRUPTS_RECEIVED);
+        } else {
+            self.write(reg::INTERRUPTS, 0x00);
+            self.write(reg::MODEM, MODEM_DTR_RTS);
+        }
+    }
+
+    /// Whether an interrupt of its is pending.
+    pub fn interrupt_pending(&self) -> bool {
+        let identify = self.read(reg::IDENTIFY);
+        identify != GONE && identify & IDENTIFY_NONE == 0
+    }
+
+    /// Whether the transmitter is empty, and takes [`Uart::fifo`] bytes.
     pub fn ready(&self) -> bool {
         let status = self.read(reg::STATUS);
         status != GONE && status & STATUS_TX_EMPTY != 0
     }
 
-    /// Hands `byte` to the transmitter; call [`Uart::ready`] first.
-    pub fn send(&self, byte: u8) {
-        self.write(reg::DATA, byte);
+    /// Hands the transmitter as much of `bytes` as it takes now, without
+    /// waiting: up to [`Uart::fifo`] once it is empty, else nothing.
+    /// Returns how many it took.
+    pub fn transmit(&self, bytes: &[u8]) -> usize {
+        if bytes.is_empty() || !self.ready() {
+            return 0;
+        }
+        let count = bytes.len().min(self.fifo);
+        for &byte in &bytes[..count] {
+            self.write(reg::DATA, byte);
+        }
+        count
     }
 
-    /// A received byte, if one is waiting.
-    pub fn receive(&self) -> Option<u8> {
-        let status = self.read(reg::STATUS);
-        (status != GONE && status & STATUS_DATA_READY != 0).then(|| self.read(reg::DATA))
+    /// Moves what the receiver holds into `into`, as much as fits;
+    /// returns how many bytes. A port that went away reads as holding
+    /// none.
+    pub fn take_received(&self, into: &mut [u8]) -> usize {
+        let mut count = 0;
+        while count < into.len() {
+            let status = self.read(reg::STATUS);
+            if status == GONE || status & STATUS_DATA_READY == 0 {
+                break;
+            }
+            into[count] = self.read(reg::DATA);
+            count += 1;
+        }
+        count
+    }
+
+    /// Drops what the receiver holds, as Linux's 8250 driver does when a
+    /// port is opened: what was typed before is nobody's.
+    pub fn discard_received(&self) {
+        let mut sink = [0u8; FIFO_BYTES];
+        for _ in 0..DISCARD_LIMIT / FIFO_BYTES {
+            if self.take_received(&mut sink) < sink.len() {
+                break;
+            }
+        }
     }
 
     fn read(&self, offset: u16) -> u8 {
@@ -308,20 +427,108 @@ impl<P: IoPorts> Uart<P> {
     }
 }
 
-/// A port of a [`Console`]: whether it is stalled, and since when it has
-/// been busy.
+/// How the last bytes a port of a [`Console`] could take went.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Sent {
+    /// It sent all there is.
+    All,
+    /// Its transmitter is busy, and it is waited for.
+    Busy,
+    /// It is stalled, and skipped.
+    Stalled,
+}
+
+/// A port of a [`Console`], and its place in the [`Output`].
 #[derive(Debug)]
-struct Line<P> {
+struct Port<P> {
     uart: Uart<P>,
+    /// Whether it carries the kernel log, `kdb` and a panic report.
+    log: bool,
+    /// Whether a program has it open as a terminal, which keeps the log
+    /// off it.
+    open: bool,
+    /// Where the next byte for it is in all the text ever written.
+    next: u64,
     stalled: bool,
+    /// When it was first found busy, since it last took bytes.
     busy_since: Option<u64>,
 }
 
-/// Up to `N` ports that each get what is written, in step: a chunk goes
-/// to every port that is not stalled once each can take it.
+impl<P: IoPorts> Port<P> {
+    /// Hands the port what waits for it in `pending`, a FIFO's worth at a
+    /// time, for as long as it takes it now. `moved` is set if it took
+    /// some.
+    fn send(&mut self, pending: &mut impl Pending, now_ns: u64, moved: &mut bool) -> Sent {
+        if self.stalled {
+            if !self.uart.ready() {
+                return Sent::Stalled;
+            }
+            self.stalled = false;
+            self.next = resume_point(pending, self.next);
+        }
+        let mut chunk = [0u8; FIFO_BYTES];
+        let room = self.uart.fifo().min(FIFO_BYTES);
+        loop {
+            let (from, len) = pending.peek_from(self.next, &mut chunk[..room]);
+            // Bytes that gave way in the ring are skipped.
+            self.next = from;
+            if len == 0 {
+                self.busy_since = None;
+                return Sent::All;
+            }
+            let taken = self.uart.transmit(&chunk[..len]);
+            if taken == 0 {
+                let since = *self.busy_since.get_or_insert(now_ns);
+                if now_ns.saturating_sub(since) < STALL_NS {
+                    return Sent::Busy;
+                }
+                self.stalled = true;
+                self.busy_since = None;
+                return Sent::Stalled;
+            }
+            self.busy_since = None;
+            self.next = from + taken as u64;
+            *moved = true;
+        }
+    }
+}
+
+/// Where a port that stalled at `next` picks the log up again: there, if
+/// it is among the newest [`RESUME_BYTES`], else at the first line that
+/// starts in them.
+fn resume_point(pending: &mut impl Pending, next: u64) -> u64 {
+    let floor = pending.end().saturating_sub(RESUME_BYTES as u64);
+    if next >= floor {
+        return next;
+    }
+    let mut scan = [0u8; 64];
+    let mut position = floor;
+    while position - floor < RESUME_BYTES as u64 {
+        let (from, len) = pending.peek_from(position, &mut scan);
+        if len == 0 {
+            return from;
+        }
+        if let Some(newline) = scan[..len].iter().position(|&byte| byte == b'\n') {
+            return from + newline as u64 + 1;
+        }
+        position = from + len as u64;
+    }
+    floor
+}
+
+/// What a round of sending did.
+struct Round {
+    /// Whether a port that is not stalled still has bytes to send.
+    waiting: bool,
+    /// Whether any port took bytes.
+    moved: bool,
+}
+
+/// Up to `N` ports, each the line of a terminal, and those that carry the
+/// log sent it from their own place in an [`Output`].
 #[derive(Debug)]
 pub struct Console<P, const N: usize> {
-    lines: [Option<Line<P>>; N],
+    ports: [Option<Port<P>>; N],
 }
 
 impl<P, const N: usize> Default for Console<P, N> {
@@ -333,12 +540,12 @@ impl<P, const N: usize> Default for Console<P, N> {
 impl<P, const N: usize> Console<P, N> {
     /// A console with no port.
     pub const fn new() -> Self {
-        Console { lines: [const { None }; N] }
+        Console { ports: [const { None }; N] }
     }
 
     /// How many ports it has.
     pub fn len(&self) -> usize {
-        self.lines.iter().flatten().count()
+        self.ports.iter().flatten().count()
     }
 
     /// Whether it has none.
@@ -346,160 +553,162 @@ impl<P, const N: usize> Console<P, N> {
         self.len() == 0
     }
 
-    /// Adds `uart`; false, and it is dropped, when the console is full.
-    pub fn add(&mut self, uart: Uart<P>) -> bool {
-        match self.lines.iter_mut().find(|line| line.is_none()) {
-            Some(slot) => {
-                *slot = Some(Line { uart, stalled: false, busy_since: None });
-                true
-            }
-            None => false,
+    /// Adds `uart`, which carries the log if `log`; gives its index, or
+    /// `None`, and it is dropped, when the console is full. It starts at
+    /// the oldest byte the ring holds, so that a port found late in the
+    /// boot gets the log from as near the start as there is.
+    pub fn add(&mut self, uart: Uart<P>, log: bool) -> Option<usize> {
+        let index = self.ports.iter().position(Option::is_none)?;
+        self.ports[index] =
+            Some(Port { uart, log, open: false, next: 0, stalled: false, busy_since: None });
+        Some(index)
+    }
+
+    /// Port `index`'s UART, for its terminal's line.
+    pub fn uart(&self, index: usize) -> Option<&Uart<P>> {
+        self.port(index).map(|port| &port.uart)
+    }
+
+    /// Whether port `index` carries the log.
+    pub fn carries_log(&self, index: usize) -> bool {
+        self.port(index).is_some_and(|port| port.log)
+    }
+
+    /// Moves the log ports that a program has open on to `position`, so
+    /// that [`Console::send_now`] gives them only what is written from
+    /// there: `kdb`'s words, not the log they were spared.
+    pub fn skip_open_to(&mut self, position: u64) {
+        for port in self.ports.iter_mut().flatten().filter(|port| port.open) {
+            port.next = port.next.max(position);
         }
     }
 
-    /// How many ports are stalled.
-    pub fn stalled(&self) -> usize {
-        self.lines.iter().flatten().filter(|line| line.stalled).count()
+    fn port(&self, index: usize) -> Option<&Port<P>> {
+        self.ports.get(index)?.as_ref()
     }
 }
 
 impl<P: IoPorts, const N: usize> Console<P, N> {
-    /// Hands `chunk`, at most [`FIFO_BYTES`], to every port that is not
-    /// stalled, if each can take it now; true if it went (to no port at
-    /// all, when every one is stalled). A port busy for [`STALL_NS`] from
-    /// when it was first found busy, by the clock `now_ns`, is stalled
-    /// and skipped from then on, at the cost of one status read a chunk,
-    /// until its transmitter is empty again.
-    pub fn try_send(&mut self, chunk: &[u8], now_ns: u64) -> bool {
-        debug_assert!(chunk.len() <= FIFO_BYTES);
-        let mut ready = [false; N];
-        let mut blocked = false;
-        for (line, ready) in self.lines.iter_mut().zip(ready.iter_mut()) {
-            let Some(line) = line else { continue };
-            if line.uart.ready() {
-                line.stalled = false;
-                line.busy_since = None;
-                *ready = true;
-            } else if !line.stalled {
-                let since = *line.busy_since.get_or_insert(now_ns);
-                if now_ns.saturating_sub(since) >= STALL_NS {
-                    line.stalled = true;
-                } else {
-                    blocked = true;
-                }
-            }
+    /// Port `index` was opened as a terminal (`open`), or closed for the
+    /// last time. An open port gets no log; a closed one takes the log
+    /// again from the newest byte in `pending`, not the backlog.
+    pub fn set_open(&mut self, index: usize, open: bool, pending: &mut impl Pending) {
+        let Some(port) = self.ports.get_mut(index).and_then(Option::as_mut) else { return };
+        port.open = open;
+        if !open {
+            port.next = pending.end();
+            port.stalled = false;
+            port.busy_since = None;
         }
-        if blocked {
-            return false;
-        }
-        for (line, ready) in self.lines.iter().zip(ready) {
-            if let (Some(line), true) = (line, ready) {
-                for &byte in chunk {
-                    line.uart.send(byte);
-                }
-            }
-        }
-        true
     }
 
-    /// Sends what waits in `pending` that the ports take now, and
-    /// returns: for a thread that comes back. True if nothing is left.
+    /// Sends each log port that no program has open what waits for it in
+    /// `pending`, as much as it takes now, and returns: for a thread that
+    /// comes back. True if none still has some, but those stalled.
     pub fn send_some(&mut self, pending: &mut impl Pending, now_ns: u64) -> bool {
-        let mut chunk = [0u8; FIFO_BYTES];
-        loop {
-            let (position, len) = pending.peek(&mut chunk);
-            if len == 0 {
-                return true;
-            }
-            if !self.try_send(&chunk[..len], now_ns) {
-                return false;
-            }
-            pending.consume_until(position + len as u64);
-        }
+        !self.round(pending, now_ns, false).waiting
     }
 
-    /// Sends what waits in `pending`, as the ports take it, until nothing
-    /// is left or the clock `now_ns` reaches `deadline_ns`: for `kdb` and
+    /// Sends every log port, open ones too, what waits for it in
+    /// `pending`, as the ports take it, until each has sent all or is
+    /// stalled, or the clock `now_ns` reaches `deadline_ns`: for `kdb` and
     /// the panic path, which cannot wait for a thread. Should the clock
-    /// not move, a port still busy after [`SPIN_LIMIT`] polls in a row is
-    /// stalled. True if all of it went.
+    /// not move, ports still busy after [`SPIN_LIMIT`] polls in a row in
+    /// which none took a byte are stalled. True if all of it went.
     pub fn send_now(
         &mut self,
         pending: &mut impl Pending,
         now_ns: &mut impl FnMut() -> u64,
         deadline_ns: u64,
     ) -> bool {
-        let mut chunk = [0u8; FIFO_BYTES];
         let mut polls = 0;
         loop {
-            let (position, len) = pending.peek(&mut chunk);
-            if len == 0 {
+            let now = now_ns();
+            let round = self.round(pending, now, true);
+            if !round.waiting {
                 return true;
             }
-            let now = now_ns();
             if now >= deadline_ns {
                 return false;
             }
-            if self.try_send(&chunk[..len], now) {
-                pending.consume_until(position + len as u64);
+            if round.moved {
                 polls = 0;
-            } else {
-                polls += 1;
-                if polls >= SPIN_LIMIT {
-                    self.stall_busy();
-                    polls = 0;
-                }
-                core::hint::spin_loop();
+                continue;
             }
+            polls += 1;
+            if polls >= SPIN_LIMIT {
+                self.stall_busy();
+                polls = 0;
+            }
+            core::hint::spin_loop();
         }
     }
 
-    /// A byte typed on any port, the first port's first.
+    /// A byte typed on a log port, the first port's first: `kdb`'s.
     pub fn read(&mut self) -> Option<u8> {
-        self.lines.iter().flatten().find_map(|line| line.uart.receive())
+        let mut byte = [0u8];
+        self.ports
+            .iter()
+            .flatten()
+            .filter(|port| port.log)
+            .find_map(|port| (port.uart.take_received(&mut byte) == 1).then_some(byte[0]))
     }
 
     /// Whether port `index` is stalled, for the tests.
     #[cfg(test)]
     fn is_stalled(&self, index: usize) -> bool {
-        self.lines[index].as_ref().is_some_and(|line| line.stalled)
+        self.port(index).is_some_and(|port| port.stalled)
     }
 
-    /// Stalls every port still waiting to take a chunk.
+    /// Sends each log port, open ones too if `with_open`, what it takes
+    /// now.
+    fn round(&mut self, pending: &mut impl Pending, now_ns: u64, with_open: bool) -> Round {
+        let mut round = Round { waiting: false, moved: false };
+        for port in self.ports.iter_mut().flatten() {
+            if port.log && (with_open || !port.open) {
+                let sent = port.send(pending, now_ns, &mut round.moved);
+                round.waiting |= sent == Sent::Busy;
+            }
+        }
+        round
+    }
+
+    /// Stalls every port still waiting to take bytes.
     fn stall_busy(&mut self) {
-        for line in self.lines.iter_mut().flatten() {
-            if line.busy_since.is_some() {
-                line.stalled = true;
+        for port in self.ports.iter_mut().flatten() {
+            if port.busy_since.take().is_some() {
+                port.stalled = true;
             }
         }
     }
 }
 
-/// Text waiting to be sent, which a [`Console`] takes a chunk at a time:
-/// an [`Output`], or one behind a lock that is taken for each chunk.
+/// The text written for the ports, which a [`Console`] reads a chunk at a
+/// time by its place in all the text ever written: an [`Output`], or one
+/// behind a lock that is taken for each chunk, so that the log adds to it
+/// while the ports send.
 pub trait Pending {
-    /// Copies the oldest bytes waiting, up to a chunk's worth, to
-    /// `chunk`; gives where the first is in all the text ever written,
-    /// and how many there are. They stay until
-    /// [`Pending::consume_until`].
-    fn peek(&mut self, chunk: &mut [u8; FIFO_BYTES]) -> (u64, usize);
+    /// Copies what was written from `position` on, or from the oldest
+    /// byte still held if that is later, to `chunk`, as much as fits;
+    /// gives where the copy starts and how many bytes it holds.
+    fn peek_from(&mut self, position: u64, chunk: &mut [u8]) -> (u64, usize);
 
-    /// Drops the bytes before `position`, now that they are sent; those
-    /// that already gave way to newer ones are gone already.
-    fn consume_until(&mut self, position: u64);
+    /// The place after the newest byte.
+    fn end(&mut self) -> u64;
 }
 
-/// The text waiting to be sent: a ring of `N` bytes, with `\n` made
-/// `\r\n` as a terminal wants it, whose oldest bytes give way to new ones
-/// when it is full, so that the log never waits on the ports.
+/// The text written for the ports: a ring of its newest `N` bytes, with
+/// `\n` made `\r\n` as a terminal wants it, whose oldest bytes give way
+/// to new ones, so that the log never waits on the ports. Each byte has
+/// its place in all the text ever written, which the ports keep theirs
+/// by.
 #[derive(Debug)]
 pub struct Output<const N: usize> {
     bytes: [u8; N],
-    start: usize,
-    len: usize,
-    /// Where the oldest byte waiting is in all the text ever written.
-    position: u64,
-    lost: u64,
+    /// The place of the oldest byte held.
+    oldest: u64,
+    /// The place after the newest.
+    end: u64,
 }
 
 impl<const N: usize> Default for Output<N> {
@@ -511,7 +720,7 @@ impl<const N: usize> Default for Output<N> {
 impl<const N: usize> Output<N> {
     /// An empty ring.
     pub const fn new() -> Self {
-        Output { bytes: [0; N], start: 0, len: 0, position: 0, lost: 0 }
+        Output { bytes: [0; N], oldest: 0, end: 0 }
     }
 
     /// Adds `text`.
@@ -524,63 +733,64 @@ impl<const N: usize> Output<N> {
         }
     }
 
-    /// How many bytes wait.
+    /// The place of the oldest byte held.
+    pub fn oldest(&self) -> u64 {
+        self.oldest
+    }
+
+    /// The place after the newest byte.
+    pub fn end(&self) -> u64 {
+        self.end
+    }
+
+    /// How many bytes it holds.
     pub fn len(&self) -> usize {
-        self.len
+        // At most N.
+        (self.end - self.oldest) as usize
     }
 
-    /// Whether none wait.
+    /// Whether it holds none.
     pub fn is_empty(&self) -> bool {
-        self.len == 0
-    }
-
-    /// How many bytes gave way to newer ones, ever.
-    pub fn lost(&self) -> u64 {
-        self.lost
+        self.end == self.oldest
     }
 
     /// Keeps only the newest `count` bytes: the panic path keeps the
     /// report, which comes last, rather than a backlog it has no time
     /// for.
     pub fn keep_newest(&mut self, count: usize) {
-        if self.len > count {
-            let lost = self.len - count;
-            self.lost += lost as u64;
-            self.drop_oldest(lost);
-        }
+        self.oldest = self.oldest.max(self.end.saturating_sub(count as u64));
     }
 
     fn push_byte(&mut self, byte: u8) {
         if N == 0 {
             return;
         }
-        if self.len == N {
-            self.lost += 1;
-            self.drop_oldest(1);
+        if self.len() == N {
+            self.oldest += 1;
         }
-        self.bytes[(self.start + self.len) % N] = byte;
-        self.len += 1;
+        self.bytes[Self::index(self.end)] = byte;
+        self.end += 1;
     }
 
-    fn drop_oldest(&mut self, count: usize) {
-        let count = count.min(self.len);
-        self.start = (self.start + count) % N.max(1);
-        self.len -= count;
-        self.position += count as u64;
+    /// Where the byte at `position` is in the ring.
+    fn index(position: u64) -> usize {
+        // The remainder is below N, a usize.
+        (position % N as u64) as usize
     }
 }
 
 impl<const N: usize> Pending for Output<N> {
-    fn peek(&mut self, chunk: &mut [u8; FIFO_BYTES]) -> (u64, usize) {
-        let count = self.len.min(FIFO_BYTES);
-        for (i, byte) in chunk.iter_mut().take(count).enumerate() {
-            *byte = self.bytes[(self.start + i) % N];
+    fn peek_from(&mut self, position: u64, chunk: &mut [u8]) -> (u64, usize) {
+        let from = position.clamp(self.oldest, self.end);
+        // At most N.
+        let count = ((self.end - from) as usize).min(chunk.len());
+        for (offset, byte) in chunk[..count].iter_mut().enumerate() {
+            *byte = self.bytes[Self::index(from + offset as u64)];
         }
-        (self.position, count)
+        (from, count)
     }
 
-    fn consume_until(&mut self, position: u64) {
-        let count = position.saturating_sub(self.position);
-        self.drop_oldest(usize::try_from(count).unwrap_or(usize::MAX));
+    fn end(&mut self) -> u64 {
+        self.end
     }
 }

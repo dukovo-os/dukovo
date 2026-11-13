@@ -164,6 +164,19 @@ pub const FLAGS: &[Flag] = &[
                   as the boot tests run it",
     },
     Flag {
+        name: "console",
+        value: Some("ttySn,options"),
+        summary: "run serial port ttySn at Linux's console options, such as 57600n8 (115200n8 when \
+                  none are given), from boot, and give it a sign-in through serial-console; the \
+                  last is the primary console. May be given for several ports",
+    },
+    Flag {
+        name: "serial-log",
+        value: Some("ports"),
+        summary: "the serial ports that carry the kernel log, kdb and a panic report: all (the \
+                  default), none, or names such as ttyS0,ttyS4",
+    },
+    Flag {
         name: "netlog",
         value: Some("host:port"),
         summary: "for netlog, not the kernel: send the log over UDP to this host as it is \
@@ -319,6 +332,41 @@ impl<'a> CommandLine<'a> {
         self.flags().filter(|&(flag, _)| flag == name).filter_map(|(_, value)| value).last()
     }
 
+    /// What the last `console=` flag for serial port `name` gives as its
+    /// options: `Some(None)` for `console=ttyS1`, `Some(Some("57600n8"))`
+    /// for `console=ttyS1,57600n8`, and `None` when no `console=` names
+    /// the port. Names compare whole: `ttyS1` is not `ttyS10`.
+    pub fn console_options(&self, name: &str) -> Option<Option<&'a str>> {
+        self.flags()
+            .filter(|&(flag, _)| flag == "console")
+            .filter_map(|(_, value)| value)
+            .filter_map(|value| match value.split_once(',') {
+                Some((port, options)) => (port == name).then_some(Some(options)),
+                None => (value == name).then_some(None),
+            })
+            .last()
+    }
+
+    /// The port the last `console=` flag names, without its options: the
+    /// primary console, as Linux's `/dev/console` is.
+    pub fn primary_console(&self) -> Option<&'a str> {
+        let value =
+            self.flags().filter(|&(flag, _)| flag == "console").filter_map(|(_, v)| v).last()?;
+        Some(value.split_once(',').map_or(value, |(port, _)| port))
+    }
+
+    /// Whether serial port `name` carries the kernel log, `kdb` and a
+    /// panic report, as `serial-log=` says: every port without it or with
+    /// `all`, none with `none`, otherwise those its comma-separated list
+    /// names.
+    pub fn carries_log(&self, name: &str) -> bool {
+        match self.value("serial-log") {
+            None | Some("all") => true,
+            Some("none") => false,
+            Some(ports) => ports.split(',').any(|port| port == name),
+        }
+    }
+
     /// Flags the kernel does not know, for a warning at boot.
     pub fn unknown(&self) -> impl Iterator<Item = &'a str> + 'a {
         self.flags()
@@ -351,6 +399,43 @@ mod tests {
         assert_eq!(line.unknown().count(), 0);
         let args: Vec<_> = line.init_args().collect();
         assert_eq!(args, ["/system/tests/hello", "--", "kdb", "x=1"]);
+    }
+
+    #[test]
+    fn console_names_a_port_whole() {
+        let line =
+            CommandLine::new("console=tty0 console=ttyS1,9600 console=ttyS10 -- console=ttyS2");
+        assert_eq!(line.console_options("ttyS1"), Some(Some("9600")));
+        assert_eq!(line.console_options("ttyS10"), Some(None));
+        assert_eq!(line.console_options("ttyS0"), None);
+        assert_eq!(line.console_options("ttyS2"), None);
+        // The last for a port counts, as for any flag.
+        let line = CommandLine::new("console=ttyS1,9600 console=ttyS1,57600n8 console=ttyS1");
+        assert_eq!(line.console_options("ttyS1"), Some(None));
+    }
+
+    #[test]
+    fn the_last_console_is_the_primary() {
+        assert_eq!(
+            CommandLine::new("console=ttyS4 console=ttyS1,57600").primary_console(),
+            Some("ttyS1")
+        );
+        assert_eq!(CommandLine::new("console=ttyS0 console=tty0").primary_console(), Some("tty0"));
+        assert_eq!(CommandLine::new("quiet -- console=ttyS0").primary_console(), None);
+        assert_eq!(CommandLine::new("console").primary_console(), None);
+    }
+
+    #[test]
+    fn serial_log_chooses_ports() {
+        assert!(CommandLine::new("quiet").carries_log("ttyS4"));
+        assert!(CommandLine::new("serial-log=all").carries_log("ttyS4"));
+        assert!(!CommandLine::new("serial-log=none").carries_log("ttyS0"));
+        let line = CommandLine::new("serial-log=ttyS0,ttyS4");
+        assert!(line.carries_log("ttyS0") && line.carries_log("ttyS4"));
+        assert!(!line.carries_log("ttyS1") && !line.carries_log("ttyS40"));
+        // The last counts.
+        assert!(!CommandLine::new("serial-log=all serial-log=ttyS1").carries_log("ttyS0"));
+        assert!(CommandLine::new("serial-log=all -- serial-log=none").carries_log("ttyS0"));
     }
 
     #[test]

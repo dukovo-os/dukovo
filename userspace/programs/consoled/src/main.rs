@@ -19,9 +19,10 @@
 //! _/system/settings/keyboard_ names (keymap(1), ADR 0149), read again on
 //! SIGHUP, which `service consoled reload` sends. With the kernel flag
 //! `install`, tty1 runs the installer's screens before its shell
-//! (dukovo-install(8)), in the largest font they fit, unless `console=ttyS0`
-//! puts them on the serial port, where serial-console(8) runs them (ADR
-//! 0318). Notifications from
+//! (dukovo-install(8)), in the largest font they fit, unless the primary
+//! console, the last `console=`, is a serial port's, such as `console=ttyS0`,
+//! which puts them there, where serial-console(8) runs them (ADRs 0318 and
+//! 0480). Notifications from
 //! notifyd(8) show on the bottom line (`notices`, ADR 0212). A braille
 //! display reads the shown console, and types on it, through BRLTTY
 //! (`braille`, ADR 0326). When
@@ -189,22 +190,27 @@ fn has_flag(line: &str, flag: &str) -> bool {
     line.split_whitespace().take_while(|w| *w != "--").any(|w| w == flag)
 }
 
-/// Whether the kernel flags of command line `line` ask for a console on
-/// the serial port, `console=ttyS0` with or without Linux's options after
-/// a comma, which serial-console(8) keeps.
-fn has_serial_console(line: &str) -> bool {
-    line.split_whitespace().take_while(|w| *w != "--").any(|w| {
-        w.strip_prefix("console=ttyS0").is_some_and(|r| r.is_empty() || r.starts_with(','))
-    })
+/// The serial port the kernel flags of command line `line` make the
+/// primary console, if they do: the port of the last `console=`, with or
+/// without Linux's options after a comma, when it is a `ttyS` port, on
+/// which serial-console(8) runs the installer.
+fn serial_console(line: &str) -> Option<&str> {
+    let flags = line.split_whitespace().take_while(|w| *w != "--");
+    let value = flags.filter_map(|w| w.strip_prefix("console=")).last()?;
+    let port = value.split_once(',').map_or(value, |(port, _)| port);
+    let digits = port.strip_prefix("ttyS")?;
+    let number = !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit());
+    (number && (digits == "0" || !digits.starts_with('0'))).then_some(port)
 }
 
-/// Whether the installer's screens run on the serial port rather than on
-/// tty1: the kernel was started with `console=ttyS0`, as the install
-/// stick's "Install Dukovo (serial console)" entry starts it, and the
-/// computer has the port (ADR 0318).
-fn installs_on_serial() -> bool {
+/// The serial port the installer's screens run on rather than on tty1:
+/// the primary console's, as the install stick's "Install Dukovo (serial
+/// console)" entry makes `console=ttyS0`, if the computer has the port
+/// (ADRs 0318 and 0480).
+fn installs_on_serial() -> Option<String> {
     let line = std::fs::read_to_string("/kernel/cmdline").unwrap_or_default();
-    has_serial_console(&line) && std::path::Path::new("/devices/ttyS0").exists()
+    let port = serial_console(&line)?;
+    std::path::Path::new("/devices").join(port).exists().then(|| port.to_string())
 }
 
 /// Root's shell and home from the user database, as login(1) reads them.
@@ -819,9 +825,10 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    let install = kernel_flag("install") && !installs_on_serial();
-    if kernel_flag("install") && !install {
-        eprintln!("consoled: install: the installer's screens are on the serial port, ttyS0");
+    let serial = installs_on_serial();
+    let install = kernel_flag("install") && serial.is_none();
+    if let Some(port) = serial.filter(|_| kernel_flag("install")) {
+        eprintln!("consoled: install: the installer's screens are on the serial port, {port}");
     }
     let grid = if install { INSTALLER_GRID } else { radix_fbcon::MIN_GRID };
     let mut screen = match Screen::open("/devices/fb0", grid) {
@@ -934,7 +941,7 @@ fn main() -> ExitCode {
 
 #[cfg(test)]
 mod tests {
-    use super::{has_flag, has_serial_console, rescue_flag};
+    use super::{has_flag, rescue_flag, serial_console};
 
     #[test]
     fn sign_in_is_off_only_by_a_kernel_flag() {
@@ -957,11 +964,15 @@ mod tests {
     }
 
     #[test]
-    fn the_serial_console_is_asked_for_with_or_without_options() {
-        assert!(has_serial_console("live install console=ttyS0 console-sign-in=off"));
-        assert!(has_serial_console("console=tty0 console=ttyS0,115200n8"));
-        assert!(!has_serial_console("console=tty0 console=ttyS1"));
-        assert!(!has_serial_console("console=ttyS00"));
-        assert!(!has_serial_console("live -- console=ttyS0"));
+    fn the_primary_console_is_the_serial_ports_with_or_without_options() {
+        assert_eq!(serial_console("live install console=ttyS0 console-sign-in=off"), Some("ttyS0"));
+        assert_eq!(serial_console("console=tty0 console=ttyS0,115200n8"), Some("ttyS0"));
+        assert_eq!(serial_console("console=ttyS0 console=ttyS4,57600"), Some("ttyS4"));
+        // The last console is the primary, as on Linux: here the screen.
+        assert_eq!(serial_console("console=ttyS1 console=tty0"), None);
+        assert_eq!(serial_console("console=ttyS00"), None);
+        assert_eq!(serial_console("console=ttyS"), None);
+        assert_eq!(serial_console("live -- console=ttyS0"), None);
+        assert_eq!(serial_console("live install"), None);
     }
 }

@@ -35,9 +35,10 @@
 //! programs wrote to send it ([`Tty::line_take`]), and sets the line as
 //! the terminal's settings say ([`Tty::line_settings`]). Its node is
 //! `/devices/ttyACM0` or `/devices/ttyUSB0`, as Linux names it, and it
-//! starts at 9600 baud with CLOCAL, as Linux's serial ports do. The PC's
-//! own COM1 is `/devices/ttyS0` (ADR 0318, `crate::ttys`), which keeps
-//! the 115200 baud the kernel log runs it at. The terminal wakes its
+//! starts at 9600 baud with CLOCAL, as Linux's serial ports do. A PC's own
+//! serial ports are `/devices/ttyS0` and on (ADRs 0318 and 0480,
+//! `crate::serial`), which keep the line the kernel log runs them at,
+//! 115200 baud or their `console=` line. The terminal wakes its
 //! driver whenever something changes; when the device goes, the node
 //! goes, and the terminal hangs up as when a master goes
 //! ([`Tty::line_gone`]).
@@ -1038,8 +1039,9 @@ pub const LINE_CFLAG: u32 = 0o15 | 0o60 | 0o200 | 0o2000 | 0o4000;
 
 /// Makes the terminal of a serial line, whose driver is its master, and
 /// its node `/devices/{name}`, with the control flags `cflag` and the
-/// speed they name (as [`LINE_CFLAG`] for a USB adapter; the PC's COM1
-/// keeps the 115200 baud it already runs at, ADR 0318); `wake(argument)`
+/// speed they name (as [`LINE_CFLAG`] for a USB adapter; a PC's serial
+/// port keeps the line it already runs at, 115200 baud or its `console=`
+/// line, ADRs 0318 and 0480); `wake(argument)`
 /// wakes the driver whenever the terminal changes. The driver lets go of
 /// it with [`Tty::line_gone`].
 pub fn make_line(
