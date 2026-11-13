@@ -1,0 +1,36 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+#
+# The machine's history and early warnings: metricsd(8) reads the
+# processors, memory, disks, filesystems, network cards, temperatures and
+# what each service uses once a minute, keeps two weeks of that at the
+# minute and a year at an hour in /system/state/metrics, and tells alertd(8)
+# of a filesystem that is filling, a Btrfs volume that lost a disk, memory
+# or a certificate that runs out, and a sensor that is too hot. With
+# `listen` in /system/settings/metrics.toml (metrics.toml(5)) it also
+# answers a Prometheus server (ADR 0484).
+#
+# service.toml(5) explains each setting. `service check metricsd` checks
+# this file, and `service edit metricsd` checks it as you save.
+
+service_version = 1
+description = "Metrics history and early warnings"
+program = "/system/commands/metricsd"
+arguments = ["run"]
+# After netd, so that the address the endpoint listens on is up.
+order = 24
+# Started again whenever it ends: always, on-failure or never.
+restart = "always"
+
+[limits]
+memory = "32M"
+
+# What it holds beyond what every service reads (service.toml(5)): the
+# whole tree, past the owners and modes of files, since it asks every
+# mounted filesystem for its space, and the mounts, in /volumes and
+# elsewhere, come and go, so that no list of places can name them; and the
+# port of the Prometheus endpoint, which is open only when metrics.toml
+# names an address and the networks that may ask.
+[permissions]
+runs-with-your-access = true
+network.listen = [9100]

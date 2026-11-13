@@ -30,7 +30,9 @@
 //! `timedatectl` shows it and sets the time zone (ADR 0194); `netlog`
 //! sends the log to another computer as it is written (ADR 0196), and
 //! `logforward` sends it to syslog servers over TLS, TCP or UDP, keeping
-//! it until each has it (ADR 0482);
+//! it until each has it (ADR 0482); `metricsd` keeps the history of the
+//! machine's processors, memory, disks, network cards and temperatures
+//! (ADR 0484);
 //! `firewall` gives the packet filter its rules and says what listens
 //! (ADR 0334).
 //! `authd` keeps the accounts, which `user` and `passwd` change, `login`
@@ -292,6 +294,7 @@ const TOOLS: &[(&str, Tool)] = &[
     ("lsof", lsof::main),
     ("lspci", lspci::main),
     ("lsusb", lsusb::main),
+    ("metricsd", metricsd::main),
     ("mkfs", mkfs::mkfs),
     ("mkfs-btrfs", btrfs::mkfs_btrfs),
     ("mkfs-exfat", mkfs::mkfs_exfat),

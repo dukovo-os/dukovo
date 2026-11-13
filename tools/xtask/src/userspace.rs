@@ -207,6 +207,7 @@ pub const STD_LINKS: &[(&str, &str)] = &[
     ("system/commands/lsof", "systools"),
     ("system/commands/lspci", "systools"),
     ("system/commands/lsusb", "systools"),
+    ("system/commands/metricsd", "systools"),
     ("system/commands/mkfs", "systools"),
     ("system/commands/mkfs-btrfs", "systools"),
     ("system/commands/mkfs-exfat", "systools"),

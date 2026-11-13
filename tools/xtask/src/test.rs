@@ -6746,7 +6746,7 @@ fn consoles(vm: &mut Vm, case: &Case) -> Result<(), String> {
     vm.expect("Boot complete.")?;
     vm.expect("spark: Spark v2 is process ")?;
     vm.expect("spark: listening at /system/live/spark/control")?;
-    vm.expect("spark: 30 services in /system/settings/spark/services, 26 enabled")?;
+    vm.expect("spark: 31 services in /system/settings/spark/services, 27 enabled")?;
     vm.expect("spark: started consoled (/system/commands/consoled) as process ")?;
     vm.expect("consoled: console of ")?;
     vm.expect("consoled: started /system/commands/nukesh on tty1 as process ")?;
@@ -10377,7 +10377,7 @@ fn principals(vm: &mut Vm, case: &Case) -> Result<(), String> {
 fn services(vm: &mut Vm, case: &Case) -> Result<(), String> {
     boot_report(vm, case)?;
     vm.expect("Boot complete.")?;
-    vm.expect_anywhere("spark: 30 services in /system/settings/spark/services, 26 enabled")?;
+    vm.expect_anywhere("spark: 31 services in /system/settings/spark/services, 27 enabled")?;
     vm.expect_ahead("spark: started /system/tests/posix/servicetest as process ")?;
     let code = program_line(vm, "(/system/tests/posix/servicetest) exited with code ")?;
     let log = vm.log();
