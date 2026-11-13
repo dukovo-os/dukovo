@@ -14,8 +14,8 @@
 //! once Spark has given up on the service, and a warning before. It
 //! clears as soon as the service is as asked.
 //!
-//! What "as asked" means is decided by [`not_as_asked`], one rule for
-//! every alert this raises.
+//! What "as asked" means is decided by [`not_as_asked`], the rule
+//! `service list` marks services by.
 
 use std::collections::HashMap;
 
@@ -33,22 +33,9 @@ pub const EVERY_SECONDS: u64 = 10;
 /// The source of these alerts.
 pub const SOURCE: &str = "spark";
 
-/// Whether `service` is not doing what Spark was asked of it: it failed,
-/// it should run and does not, or it runs and fails its health check. A
-/// service that is disabled, or stopped by a request, is as asked.
-pub fn not_as_asked(service: &Service) -> bool {
-    match service.state {
-        State::Failed => true,
-        State::Disabled => false,
-        // Stopped with a reason is refused or ended for good; without
-        // one, someone stopped it.
-        State::Stopped => service.enabled && service.why.is_some(),
-        State::Pending | State::Starting | State::Waiting | State::Stopping => service.enabled,
-        State::Running | State::Done => {
-            service.health.as_ref().is_some_and(|health| health.state == HealthState::Failing)
-        }
-    }
-}
+/// Whether `service` is not doing what Spark was asked of it: the rule
+/// `service list` marks services by, so that the two never disagree.
+pub use crate::service::not_as_asked;
 
 /// When each service was first seen wrong, in Spark's milliseconds.
 #[derive(Debug, Default)]
@@ -150,13 +137,17 @@ mod tests {
     }
 
     #[test]
-    fn a_service_is_not_as_asked_when_failed_refused_unready_or_unhealthy() {
+    fn a_service_is_not_as_asked_when_failed_refused_waiting_or_unhealthy() {
         assert!(not_as_asked(&service("a", State::Failed)));
+        assert!(not_as_asked(&service("a", State::Waiting)));
         let refused =
             Service { why: Some("it requires db".into()), ..service("a", State::Stopped) };
         assert!(not_as_asked(&refused));
-        for state in [State::Pending, State::Starting, State::Waiting, State::Stopping] {
-            assert!(not_as_asked(&service("a", state)), "{state:?}");
+        // A driver whose device is not there is off as it is meant to be.
+        let no_card = Service { off_as_meant: true, ..refused };
+        assert!(!not_as_asked(&no_card));
+        for state in [State::Pending, State::Starting, State::Stopping] {
+            assert!(!not_as_asked(&service("a", state)), "{state:?}");
         }
         let unhealthy = Service {
             health: Some(Health { state: HealthState::Failing, ..Health::default() }),

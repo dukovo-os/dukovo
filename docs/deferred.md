@@ -197,6 +197,7 @@ machine with AMT, an AMD machine and a laptop; see
 | TLS and a password for the Prometheus endpoint (ADR 0484) | The endpoint is plain HTTP, answering only the networks `allow` names, as most node_exporter setups run it | A need |
 | The alerts page and push notices in the web console (ADR 0485) | Alerts reach the screen, the next sign-in, email and webhooks; `alerts` lists them | 16c, Dukovo Admin |
 | A bundle's service raising alerts (ADR 0485) | alertd serves root's processes and the system's services alone, which covers every shipped service; a bundle's service runs as an account of its own | A need |
+| A certificate authority of its own for a webhook in alerts.toml(5) (ADR 0485) | Webhooks trust the system's roots; a private authority is added to them as dukovo-certificates(7) says | A need |
 | Silencing an alert for a while (ADR 0485) | An alert is told only when it changes, so one that stays does not repeat; `severity` and `cleared` in alerts.toml(5) quiet a channel | A need |
 | A certificate from certd for nginx's sites and for the lab test `services/nginx`, which makes one with openssl meanwhile (ADR 0491) | certd comes with Phase 16 | Phase 16's certd |
 | Spark setting a service's `open_files` (RLIMIT_NOFILE); nginx raises its own to the hard limit, 4096, meanwhile (ADRs 0385, 0491) | Service limits | 16a |

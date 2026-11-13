@@ -64,7 +64,9 @@ writes.
   back to its last whole record at the next start.
   - Appending suits Btrfs: copy on write never rewrites an old extent,
     and snapshots go on sharing them.
-  - About 2 MB a day for a typical server, and under 40 MB in all.
+  - About 0.6 MB a day for a machine with 100 series, a few disks,
+    cards, sensors and services, and about 20 MB in all; at most 1024
+    series are kept.
   - `metricsd::store::read` is how the `metrics` command and the web
     console read it.
 - **The latest values are in `/system/live/metrics/now`**, a `name
@@ -107,7 +109,7 @@ writes.
 - The web console's charts read the store directly, with nothing to
   install.
 - The store's format is Dukovo's own. It is read through
-  `metricsd::store::read`, and `metrics --since … --json` exports it.
+  `metricsd::store::read`, and `metrics show … --since … --json` exports it.
 - Not yet, each a row of docs/deferred.md: TLS and authentication on the
   Prometheus endpoint. It serves only the networks `allow` names, as most
   node_exporter setups do.
@@ -118,10 +120,15 @@ writes.
     - each source's parsing;
     - each warning with its hysteresis;
     - the Prometheus text and its access rule.
-  - **The `monitoring` boot test:** metricsd at a 1-second step, a
-    filesystem filled past the line, the alert at alertd and by email,
-    the endpoint scraped, and metricsd's own CPU under 1% of a core.
-  - **The lab's tests** read a real machine's sensors and disks.
+  - **The `monitoring` boot test:** the latest values and the history
+    of an installed system, the endpoint scraped with node_exporter's
+    names and the alerts alertd holds, other paths and methods refused,
+    and the port closed once `listen` goes.
+  - **The lab's tests:** `monitoring/metrics-scrape` checks a scrape
+    with promtool and its figures against free, df, ps and date on a
+    real machine; `monitoring/early-warning-disk` fills a USB stick past
+    the line, and the `fs-full` alert reaches a mail server and clears
+    when the stick is emptied.
 
 ## Alternatives considered
 

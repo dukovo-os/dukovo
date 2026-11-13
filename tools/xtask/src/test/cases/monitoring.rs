@@ -256,24 +256,40 @@ fn an_open_settings_file_is_refused(vm: &mut Vm) -> Result<(), String> {
     )
 }
 
-/// The steps of the metrics half of this test (metricsd, ADR 0484) go
-/// here, after the alerts and before the machine is powered off. They
-/// run as alice, who has the shorthand `$a` for `elevate alerts` and
-/// `$m` for the test's program, and use [`run`] to type a command and
-/// check the screen:
-///
-/// - `metrics` lists cpu, memory and fs series after 5 seconds;
-/// - `metrics show fs.used --since 1m` has rows;
-/// - `curl http://127.0.0.1:9100/metrics` with `listen` set has
-///   node_exporter's names, and a request from an address outside
-///   `allow` is closed;
-/// - service.cpu for metricsd stays under its budget.
-///
-/// A small test disk filled to 95 percent raises `fs-full`, which reaches
-/// the mail server, and freeing it clears it: the monitoring-test
-/// program's `wait` and `seen` read what the receivers heard.
-fn metrics(_vm: &mut Vm) -> Result<(), String> {
-    Ok(())
+/// metricsd keeps the machine's history (ADR 0484): it holds the
+/// processors, memory and the root filesystem, and the root's use over
+/// the last minutes. With `listen` and `allow` in metrics.toml it answers
+/// a Prometheus server on 127.0.0.1 with node_exporter's names and the
+/// alerts alertd holds, the second alert of the steps before still
+/// active, and nothing but `GET /metrics`; without them it answers none.
+fn metrics(vm: &mut Vm) -> Result<(), String> {
+    run(
+        vm,
+        "for s in cpu memory.used 'fs.used{/}'; do elevate metrics list \"$s\" > /dev/null && \
+         echo \"kept $s\"; done; elevate metrics show 'fs.used{/}' --since 10m > /dev/null; \
+         echo \"points $?\"",
+        30,
+        &["kept cpu", "kept memory.used", "kept fs.used{/}", "points 0"],
+    )?;
+    run(
+        vm,
+        "elevate sh -c 'printf \"[prometheus]\\nlisten = [\\\"127.0.0.1:9100\\\"]\\nallow = \
+         [\\\"127.0.0.1\\\"]\\n\" > /system/settings/metrics.toml && service metricsd reload'; \
+         for i in 1 2 3 4 5 6 7 8 9 10; do curl -sf http://127.0.0.1:9100/metrics > p.txt && break; \
+         sleep 1; done; for n in node_cpu_seconds_total node_memory_MemTotal_bytes \
+         dukovo_alerts_active; do grep -q \"^$n\" p.txt && echo \"has $n\"; done",
+        60,
+        &["has node_cpu_seconds_total", "has node_memory_MemTotal_bytes", "has dukovo_alerts_active"],
+    )?;
+    run(
+        vm,
+        "curl -s -o /dev/null -w 'other %{http_code} ' http://127.0.0.1:9100/other; curl -s -o \
+         /dev/null -X POST -w 'post %{http_code}\\n' http://127.0.0.1:9100/metrics; elevate rm \
+         /system/settings/metrics.toml; elevate service metricsd reload; sleep 3; curl -s \
+         http://127.0.0.1:9100/metrics > /dev/null; echo \"closed $?\"",
+        60,
+        &["other 404 post 405", "closed 7"],
+    )
 }
 
 #[cfg(test)]
@@ -292,6 +308,16 @@ mod tests {
 
     #[test]
     fn what_a_command_waits_for_is_not_in_the_command() {
+        for needle in ["kept cpu", "points 0", "has dukovo_alerts_active", "other 404", "closed 7"] {
+            let source = include_str!("monitoring.rs");
+            let commands = source.split("fn metrics(").nth(1).unwrap().split("#[cfg(test)]").next();
+            let typed: String = commands
+                .unwrap()
+                .lines()
+                .filter(|line| !line.trim_start().starts_with("&["))
+                .collect();
+            assert!(!typed.contains(needle), "{needle}");
+        }
         // The screen is read for output: a line that the typed command
         // holds would be found before the command had run.
         let command = "$a test; echo \"test $?\"; $m seen --details 'can read this'";

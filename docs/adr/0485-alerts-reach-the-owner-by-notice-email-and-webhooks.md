@@ -139,11 +139,17 @@ was never set up.
     - each webhook kind's request;
     - batching, retries and the outbox across a restart;
     - each producer's alerts.
-  - **The `monitoring` boot test:** a filesystem filled past 95% reaches
-    a mail catcher on lo through STARTTLS and a webhook catcher, clears
-    when emptied, and `alerts test` names a refused channel.
-  - **The lab's tests** do the same on the hardware campaign's machines
-    with a real disk's SMART record.
+  - **The `monitoring` boot test:** on an installed system, `alerts
+    test` reaches a mail server on lo through STARTTLS and a receiver of
+    each webhook kind; alerts raised, raised again, cleared and raised
+    across a restart of alertd are each told once by every channel; a
+    refused password and a refused address are said in the servers'
+    words; a user who is not root is refused; and an alerts.toml others
+    can read sets up no channel.
+  - **The lab's tests:** `monitoring/alerts-email` and
+    `monitoring/alerts-webhook` against a mail server and a receiver on
+    the lab PC, and `monitoring/early-warning-disk`, where a full USB
+    stick's alert is mailed and cleared.
 
 ## Alternatives considered
 
